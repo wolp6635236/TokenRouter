@@ -16,6 +16,14 @@
                 <Icon name="play" size="sm" class="text-green-500" :stroke-width="2" />
                 {{ t('admin.providers.testConnection') }}
               </button>
+              <button
+                v-if="provider.platform === 'openai'"
+                @click="$emit('quality-probe', provider); $emit('close')"
+                class="dropdown-item"
+              >
+                <Icon name="beaker" size="sm" class="text-amber-500" :stroke-width="2" />
+                {{ t('admin.providers.qualityProbe') }}
+              </button>
               <button @click="$emit('stats', provider); $emit('close')" class="dropdown-item">
                 <Icon name="chart" size="sm" class="text-indigo-500" />
                 {{ t('admin.providers.viewStats') }}
@@ -87,7 +95,7 @@ import { Icon } from '@/components/icons'
 import type { Provider } from '@/types'
 
 const props = defineProps<{ show: boolean; provider: Provider | null; position: { top: number; left: number } | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'advanced-scheduler-score', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'invite-reset', 'create-spark-shadow', 'delete'])
+const emit = defineEmits(['close', 'test', 'quality-probe', 'stats', 'advanced-scheduler-score', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'invite-reset', 'create-spark-shadow', 'delete'])
 const { t } = useI18n()
 const canDuplicate = computed(() => {
   if (!props.provider || props.provider.parent_provider_id != null) return false

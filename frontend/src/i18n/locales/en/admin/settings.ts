@@ -23,6 +23,24 @@ export default {
         antigravity: 'Antigravity',
         ollamaCloud: 'Ollama Cloud'
       },
+      qualityProbe: {
+        title: 'Quality probe',
+        description: 'Run candy and ModelTrace checks on OpenAI providers. The switch is off by default.',
+        enabled: 'Enable scheduled probes',
+        enabledHint: 'When on, the server checks due OpenAI providers every minute through the test channel. Upstream accounts pay the usage.',
+        intervalMinutes: 'Interval after a pass (minutes)',
+        intervalHint: 'Wait this long after a passing probe before the next automatic run.',
+        model: 'Probe model',
+        modelHint: 'Empty uses gpt-6-astra. Use latest to pick the lexicographically last Astra name from the provider mapping.',
+        cooldownMinutes: 'Failure cooldown (minutes)',
+        cooldownHint: 'After a degrade verdict, pause scheduling and wait this long before retrying.',
+        maxAttempts: 'Automatic attempts',
+        maxAttemptsHint: 'After this many consecutive failures the server emails you and stops the automatic loop.',
+        notifyEmail: 'Notification email',
+        notifyEmailHint: 'The third failure sends mail here.',
+        loadFailed: 'Failed to load quality probe settings',
+        saveFailed: 'Failed to save quality probe settings'
+      },
       preAggregation: {
         title: 'Pre-aggregation',
         description: 'Manage usage and operations aggregation jobs and coverage status.',

@@ -1,0 +1,52 @@
+name: Check upstream release
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Query official latest release
+        id: probe
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tools/check-upstream-release.sh
+      - name: Fail on query error
+        if: steps.probe.outcome == 'failure' && steps.probe.outputs.changed != 'true'
+        run: exit 1
+      - name: Open tracking issue
+        if: steps.probe.outcome == 'failure' && steps.probe.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.probe.outputs.new_tag }}
+          SEEN: ${{ steps.probe.outputs.seen_tag }}
+        run: |
+          set -euo pipefail
+          title="官方 TokenRouter 发布了 ${TAG}"
+          existing="$(gh issue list --state open --search "in:title ${title}" --json number --jq 'length')"
+          if [ "$existing" != "0" ]; then
+            echo "已有跟踪 Issue"
+            exit 0
+          fi
+          body=$(cat <<EOF
+          官方仓库 [TokenFlux/TokenRouter](https://github.com/TokenFlux/TokenRouter) 的 latest Release 是 \`${TAG}\`，对照文件里是 \`${SEEN}\`。
+
+          处理步骤：
+
+          1. \`git fetch upstream\`
+          2. 按 [同步上游](docs/operations/development_workflow.md#同步上游) merge，迁移文件按本 fork 规则重编号
+          3. 跑这项涉及的测试
+          4. 打本仓库 \`v*\` tag，走 Release workflow
+          5. \`bash tools/check-upstream-release.sh --update-seen ${TAG}\`
+          EOF
+          )
+          gh issue create --title "$title" --body "$body"

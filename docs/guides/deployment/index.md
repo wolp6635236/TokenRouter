@@ -56,9 +56,13 @@ sudo systemctl enable tokenrouter
 
 ### 升级
 
-在管理后台左上角点击"检测更新"，可以在线升级：自动检测新版本，下载并应用更新，也支持回滚。
+在管理后台左上角点击"检测更新"，可以在线升级：自动检测新版本，下载并应用更新，也支持回滚。检测更新读取 `update.github_repo`（环境变量 `UPDATE_GITHUB_REPO`），缺省是 `wolp6635236/TokenRouter`。
 
 匿名访问 GitHub Release API 被限流时，可以在安装脚本的进程环境或 Docker `.env` 里设置 `UPDATE_GITHUB_TOKEN`。这个令牌只会发给 `https://api.github.com` 的版本检查请求，跨目标的重定向会移除认证头；Release 资源和校验和的下载始终是匿名的。系统不会改用 `GITHUB_TOKEN` 或 `GH_TOKEN`。
+
+Compose 的 `image` 和 `pull_policy: always` 决定重建时拉取哪份镜像。面板更新替换的是正在运行的进程二进制。线上实例使用本仓库 GHCR 镜像，或固定本 fork 的发布 tag。若 `image` 仍是 `ghcr.io/tokenflux/tokenrouter`，容器重建会回到官方构建。
+
+官方新 Release 的感知脚本和 merge 流程见[开发、验证与上游同步](../../operations/development_workflow.md#同步上游)。
 
 ### 常用命令
 

@@ -13,6 +13,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/qualityprobe"
 )
 
 type maintenanceRuntimeReady struct{}
@@ -25,6 +26,7 @@ func provideMaintenanceRuntime(
 	announcementExpiry *site.AnnouncementExpiryService,
 	scheduledTestRunner *provider.ScheduledTestRunnerService,
 	groupAvailabilityProbeRunner *routing.GroupAvailabilityProbeRunnerService,
+	qualityProbeRunner *qualityprobe.Runner,
 	cfg *config.Config,
 	manager *lifecycle.Manager,
 	concurrency *scheduler.ConcurrencyService,
@@ -94,6 +96,17 @@ func provideMaintenanceRuntime(
 	}, Stop: func(ctx context.Context) error {
 		if scheduledTestRunner != nil {
 			return scheduledTestRunner.StopContext(ctx)
+		}
+		return nil
+	}})
+	manager.Register(lifecycle.Hook{Name: "QualityProbeRunner", StartOrder: 980, StopOrder: 20, Start: func(ctx context.Context) error {
+		if qualityProbeRunner != nil {
+			return qualityProbeRunner.StartContext(ctx)
+		}
+		return nil
+	}, Stop: func(ctx context.Context) error {
+		if qualityProbeRunner != nil {
+			return qualityProbeRunner.StopContext(ctx)
 		}
 		return nil
 	}})

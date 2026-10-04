@@ -1638,6 +1638,32 @@ export async function resetWebSearchUsage(payload: {
   );
 }
 
+export interface QualityProbeSettings {
+  enabled: boolean;
+  interval_minutes: number;
+  model: string;
+  cooldown_minutes: number;
+  max_attempts: number;
+  notify_email: string;
+}
+
+export async function getQualityProbeSettings(): Promise<QualityProbeSettings> {
+  const { data } = await apiClient.get<QualityProbeSettings>(
+    "/admin/quality-probe/settings",
+  );
+  return data;
+}
+
+export async function saveQualityProbeSettings(
+  payload: QualityProbeSettings,
+): Promise<QualityProbeSettings> {
+  const { data } = await apiClient.put<QualityProbeSettings>(
+    "/admin/quality-probe/settings",
+    payload,
+  );
+  return data;
+}
+
 // --- 预聚合统一配置 ---
 
 export interface PreAggregationTaskSettings {
@@ -1736,6 +1762,8 @@ export const settingsAPI = {
   updateWebSearchEmulationConfig,
   testWebSearchEmulation,
   resetWebSearchUsage,
+  getQualityProbeSettings,
+  saveQualityProbeSettings,
   getPreAggregationSettings,
   updatePreAggregationSettings,
   backfillPreAggregation,

@@ -23,6 +23,24 @@ export default {
         antigravity: 'Antigravity',
         ollamaCloud: 'Ollama Cloud'
       },
+      qualityProbe: {
+        title: '降智探测',
+        description: '对 OpenAI 提供商定时做糖果题和 ModelTrace。总开关默认关闭。',
+        enabled: '启用定时探测',
+        enabledHint: '开启后每分钟检查到期的 OpenAI 提供商，走测试通道，费用记在上游账号。',
+        intervalMinutes: '通过后的间隔（分钟）',
+        intervalHint: '本轮通过后，下次自动探测要等这么久。',
+        model: '探测模型',
+        modelHint: '留空使用 gpt-6-astra。填写 latest 时，从该提供商映射里选字典序最大的 Astra。',
+        cooldownMinutes: '失败冷却（分钟）',
+        cooldownHint: '判定降智后，临时停调并等待这么久再测。',
+        maxAttempts: '自动循环次数',
+        maxAttemptsHint: '连续失败达到这个次数后发邮件，并停止自动循环。',
+        notifyEmail: '通知邮箱',
+        notifyEmailHint: '第三次失败时发到这个地址。',
+        loadFailed: '加载降智探测设置失败',
+        saveFailed: '保存降智探测设置失败'
+      },
       preAggregation: {
         title: '预聚合',
         description: '管理使用记录和运维指标的聚合任务与覆盖状态。',

@@ -176,6 +176,10 @@ POST /api/v1/creative/runs/{id}/outputs/{index}/ack
 
 测试结果不会作为能力探测状态返回或保存，但认证错误、限流和额度观测照常记录。只有没带 `test_type` 的旧调用，才按模型名做兼容判断。图片结果通过 SSE 的 `image` 事件返回，文字结果通过 `content` 事件返回；提供商的平台没有对应的图片端点时，返回流式错误事件。
 
+### 降智探测
+
+OpenAI 提供商的降智探测由 `qualityprobe/httpapi` 处理。`GET`/`PUT /api/v1/admin/quality-probe/settings` 读写运行时键 `quality_probe_settings`。`POST /api/v1/admin/providers/:id/quality-probe` 立即探测该提供商；`GET` 返回 Extra 里保存的循环状态。规则见[降智探测](../domains/quality_probe.md)。
+
 创作台的 JWT 和工作区入口由 `creative/httpapi` 处理，批量图片的 Key 入口由 `batchimage/httpapi` 处理。批量下载流关闭时会释放下载许可，应用关闭时等待完整的 HTTP 调用结束。创作供应商已经成功、但临时输出无法交付时，返回 `result_lost`，资金按已经确认的服务收取；这个状态表示生成发生过，系统也不会自动重新生成。
 
 ### 高级调度评分诊断

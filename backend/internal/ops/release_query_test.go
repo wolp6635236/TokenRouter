@@ -21,37 +21,47 @@ func (s *updateServiceCacheStub) GetUpdateInfo(context.Context) (string, error) 
 	}
 	return s.data, nil
 }
+
 func (s *updateServiceCacheStub) SetUpdateInfo(_ context.Context, data string, _ time.Duration) error {
 	s.data = data
 	return nil
 }
 
 type updateServiceGitHubClientStub struct {
+	lastRepo       string
 	release        *GitHubRelease
 	recentReleases []*GitHubRelease
 	recentErr      error
 }
 
-func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchLatestRelease(_ context.Context, repo string) (*GitHubRelease, error) {
+	s.lastRepo = repo
 	return s.release, nil
 }
-func (s *updateServiceGitHubClientStub) FetchRecentReleases(context.Context, string, int) ([]*GitHubRelease, error) {
+
+func (s *updateServiceGitHubClientStub) FetchRecentReleases(_ context.Context, repo string, _ int) ([]*GitHubRelease, error) {
+	s.lastRepo = repo
 	return s.recentReleases, s.recentErr
 }
+
 func (s *updateServiceGitHubClientStub) DownloadFile(context.Context, string, string, int64) error {
 	panic("DownloadFile should not be called when no update is available")
 }
+
 func (s *updateServiceGitHubClientStub) FetchChecksumFile(context.Context, string) ([]byte, error) {
 	panic("FetchChecksumFile should not be called when no update is available")
 }
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *ReleaseQuery {
 	return NewReleaseQuery(
 		&updateServiceCacheStub{},
 		&updateServiceGitHubClientStub{recentReleases: releases},
 		current,
 		"release",
+		"",
 	)
 }
+
 func TestUpdateServiceListRollbackVersionsFiltersAndCaps(t *testing.T) {
 	releases := []*GitHubRelease{
 		{TagName: "v0.1.148", PublishedAt: "2026-07-09T00:00:00Z"},                       // 新于当前版本，排除。
@@ -74,6 +84,7 @@ func TestUpdateServiceListRollbackVersionsFiltersAndCaps(t *testing.T) {
 	require.Equal(t, "0.1.144", versions[1].Version)
 	require.Equal(t, "0.1.143", versions[2].Version)
 }
+
 func TestUpdateServiceListRollbackVersionsSortsUnorderedInput(t *testing.T) {
 	releases := []*GitHubRelease{
 		{TagName: "v0.1.144"},
@@ -90,6 +101,7 @@ func TestUpdateServiceListRollbackVersionsSortsUnorderedInput(t *testing.T) {
 	require.Equal(t, "0.1.145", versions[1].Version)
 	require.Equal(t, "0.1.144", versions[2].Version)
 }
+
 func TestUpdateServiceListRollbackVersionsRejectsNonSemverTags(t *testing.T) {
 	releases := []*GitHubRelease{
 		{TagName: "v0.1.146"},
@@ -105,6 +117,7 @@ func TestUpdateServiceListRollbackVersionsRejectsNonSemverTags(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []RollbackVersion{{Version: "0.1.146"}}, versions)
 }
+
 func TestUpdateServiceListRollbackVersionsEmptyWhenNoneOlder(t *testing.T) {
 	releases := []*GitHubRelease{
 		{TagName: "v0.1.147"},
@@ -117,16 +130,54 @@ func TestUpdateServiceListRollbackVersionsEmptyWhenNoneOlder(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, versions)
 }
+
 func TestUpdateServiceListRollbackVersionsPropagatesFetchError(t *testing.T) {
 	svc := NewReleaseQuery(
 		&updateServiceCacheStub{},
 		&updateServiceGitHubClientStub{recentErr: errors.New("github unavailable")},
 		"0.1.147",
 		"release",
+		"",
 	)
 
 	_, err := svc.ListRollbackVersions(context.Background())
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "github unavailable")
+}
+
+func TestReleaseQueryUsesConfiguredGitHubRepo(t *testing.T) {
+	client := &updateServiceGitHubClientStub{
+		release: &GitHubRelease{TagName: "v0.2.5", Name: "0.2.5"},
+	}
+	svc := NewReleaseQuery(
+		&updateServiceCacheStub{},
+		client,
+		"0.2.4",
+		"release",
+		"wolp6635236/TokenRouter",
+	)
+
+	_, err := svc.FetchLatestRelease(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, "wolp6635236/TokenRouter", client.lastRepo)
+}
+
+func TestReleaseQueryDefaultsGitHubRepo(t *testing.T) {
+	client := &updateServiceGitHubClientStub{
+		release: &GitHubRelease{TagName: "v0.2.5"},
+	}
+	svc := NewReleaseQuery(
+		&updateServiceCacheStub{},
+		client,
+		"0.2.4",
+		"release",
+		"",
+	)
+
+	_, err := svc.FetchLatestRelease(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, DefaultUpdateGitHubRepo, client.lastRepo)
 }

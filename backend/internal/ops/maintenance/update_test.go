@@ -125,5 +125,5 @@ func TestUpdateServiceRollbackToVersionAcceptsVPrefix(t *testing.T) {
 
 // newMaintenanceUpdateForTest 只装配原发布查询与安装器，拒绝路径仍运行真实维护规则。
 func newMaintenanceUpdateForTest(cache ops.UpdateCache, client *updateServiceGitHubClientStub, version, buildType string) *maintenance.UpdateService {
-	return maintenance.NewUpdateService(ops.NewReleaseQuery(cache, client, version, buildType), opsadapter.NewBinaryInstaller(client, nil))
+	return maintenance.NewUpdateService(ops.NewReleaseQuery(cache, client, version, buildType, ""), opsadapter.NewBinaryInstaller(client, nil))
 }

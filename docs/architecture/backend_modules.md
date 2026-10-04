@@ -179,6 +179,8 @@ backend/
 │   ├── promotion/                                       邀请、优惠码、返利和转入余额
 │   │   ├── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
 │   │   └── postgres/                                    PostgreSQL 持久化及事务适配
+│   ├── qualityprobe/                                    OpenAI 降智探测、三轮复测停调和分组保底
+│   │   └── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
 │   ├── protocol/                                        协议 ID、报文与纯转换
 │   │   ├── anthropic/                                   Messages 报文、beta、签名和用量事件
 │   │   ├── bridge/                                      协议间转换、工具修复与流转换状态
@@ -410,6 +412,7 @@ app/lifecycle 管理这些组件的启动和关闭。audit 独立记录操作审
 | apikey | [身份与租户](../domains/identity_and_tenancy.md)、[复合 Key](../domains/composite_api_keys.md)、[模型重定向](../domains/api_key_model_redirects.md) |
 | routing | [路由与结算](../domains/routing_and_billing.md)、[模型目录](../interfaces/model_catalog_and_marketplace.md)、[协议能力](../interfaces/protocol_capabilities.md) |
 | provider | [提供商能力矩阵](../interfaces/upstream_provider_matrix.md)、[提供商维护](../operations/provider_maintenance.md)、[上游用量](../interfaces/upstream_usage.md) |
+| qualityprobe | [降智探测](../domains/quality_probe.md) |
 | scheduler | [提供商调度与缓存](provider_scheduling_and_cache.md) |
 | gateway | [请求生命周期](gateway_request_lifecycle.md)、[网关策略](../domains/gateway_policy_controls.md)、[错误策略](../interfaces/gateway_error_policy.md) |
 | protocol、upstream | [协议能力](../interfaces/protocol_capabilities.md)、[接口目录中的平台专题](../interfaces/index.md) |

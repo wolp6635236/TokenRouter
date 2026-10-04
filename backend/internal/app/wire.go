@@ -32,6 +32,7 @@ func initializeApplication(ctx context.Context, cfg *config.Config, info BuildIn
 		searchAssemblyProviders,
 		moderationAssemblyProviders,
 		notificationAssemblyProviders,
+		qualityprobeAssemblyProviders,
 		modelCatalogAssemblyProviders,
 		billingAssemblyProviders,
 		usageAssemblyProviders,

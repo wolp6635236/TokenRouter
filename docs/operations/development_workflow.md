@@ -224,6 +224,18 @@ CI 的安装器兼容测试在 Linux 上运行，依赖 Bash 4+ 和 `sha256sum`�
 
 同步以 upstream 的一个 PR 或 commit 为最小的审查单位，逐项理解变更，并保留 fork 在产品、计费、安全和部署上的设计。解决冲突后，运行这一项涉及的测试，再形成符合 Conventional Commits 的本地提交；`SYNC.md` 只记录本地的进度，不进入提交。
 
+官方新 Release 由 `tools/check-upstream-release.sh` 对照 `tools/upstream-release.seen` 里记录的 tag。本地运行：
+
+```bash
+bash tools/check-upstream-release.sh
+```
+
+最新 tag 与对照文件相同时退出 0。官方更新时打印新 tag 并退出 2。GitHub Action `.github/workflows/check-upstream-release.yml` 每 6 小时执行一次，发现新 tag 时开 Issue。维护者确认后：`git fetch upstream`，按下面两条 fork 规则 merge，跑相关测试，再打本仓库 `v*` tag 走 `release.yml`。发版完成后把对照文件写成已并入的官方 tag：
+
+```bash
+bash tools/check-upstream-release.sh --update-seen vX.Y.Z
+```
+
 两条 fork 专属的规则：
 
 1. 上游新增 `backend/migrations/` 文件时，按上游的顺序，把前缀重新编号为本 fork 当前最大迁移 ID 依次加一，并修复所有精确引用了文件名的地方；不能按原名照搬。

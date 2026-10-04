@@ -199,7 +199,8 @@ internal/promotion internal/server/httpx internal/settings`, Tests: "internal/te
 	"internal/promotion": {Production: `ent/... internal/identity internal/identity/contact internal/identity/httpapi/authctx
 internal/identity/httpapi/dto internal/pkg/ internal/promotion/... internal/server/httpx
 internal/settings`, Tests: ""},
-	"internal/protocol": {Production: "internal/protocol/...", Tests: "internal/testutil/assertion"},
+	"internal/protocol":     {Production: "internal/protocol/...", Tests: "internal/testutil/assertion"},
+	"internal/qualityprobe": {Production: "internal/qualityprobe/... internal/pkg/ internal/server/httpx", Tests: ""},
 	"internal/routing": {Production: `internal/modelcatalog ent/... internal/provider internal/apikey/httpapi/dto internal/billing internal/billing/pricing
 internal/billing/provider internal/idempotency internal/idempotency/httpapi
 internal/infra/postgres/... internal/infra/telemetry/... internal/pkg/ internal/protocol

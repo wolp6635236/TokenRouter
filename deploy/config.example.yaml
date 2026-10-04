@@ -1164,3 +1164,5 @@ update:
   # Leave empty for direct connection (recommended for overseas servers)
   # 留空表示直连（适用于海外服务器）
   proxy_url: ""
+  # 面板在线更新读取的 GitHub owner/repo。
+  github_repo: "wolp6635236/TokenRouter"

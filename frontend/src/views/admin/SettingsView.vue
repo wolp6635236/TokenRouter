@@ -3174,6 +3174,11 @@
             </SettingsSection>
           </SettingsCard>
 
+          <QualityProbeSettingsCard
+            v-show="activeGatewaySection === 'openai'"
+            v-content-reveal="activeGatewaySection === 'openai'"
+          />
+
           <!-- 跨平台用户提示词替换 -->
           <SettingsCard
             v-show="activeGatewaySection === 'general'" v-content-reveal="activeGatewaySection === 'general'"
@@ -5532,6 +5537,7 @@ import SettingsSection from "@/components/common/settings/SettingsSection.vue";
 import SettingsSegmented, { type SettingsSegmentedOption } from "@/components/common/settings/SettingsSegmented.vue";
 import SettingsSubpanel from "@/components/common/settings/SettingsSubpanel.vue";
 import SettingsTagInput from "@/components/common/settings/SettingsTagInput.vue";
+import QualityProbeSettingsCard from "@/components/admin/settings/QualityProbeSettingsCard.vue";
 import { useDirtyTracker } from "@/composables/useDirtyTracker";
 import { provideSettingsSaveRegistry, type SettingsSaveTarget } from "@/composables/useSettingsSaveRegistry";
 import { useI18n } from "vue-i18n";

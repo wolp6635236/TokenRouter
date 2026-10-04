@@ -73,8 +73,12 @@ func provideReleaseClient(cfg *config.Config) opsadapter.ReleaseClient {
 	return opsadapter.NewReleaseClient(opsadapter.ReleaseOptions{ProxyURL: cfg.Update.ProxyURL, AllowDirectOnProxyError: cfg.Security.ProxyFallback.AllowDirectOnError, GitHubToken: os.Getenv("UPDATE_GITHUB_TOKEN")})
 }
 
-func provideReleaseQuery(cache ops.UpdateCache, client opsadapter.ReleaseClient, info BuildInfo) *ops.ReleaseQuery {
-	return ops.NewReleaseQuery(cache, client, info.Version, info.BuildType)
+func provideReleaseQuery(cache ops.UpdateCache, client opsadapter.ReleaseClient, info BuildInfo, cfg *config.Config) *ops.ReleaseQuery {
+	repo := ""
+	if cfg != nil {
+		repo = cfg.Update.GitHubRepo
+	}
+	return ops.NewReleaseQuery(cache, client, info.Version, info.BuildType, repo)
 }
 
 func provideUpdateMaintenance(query *ops.ReleaseQuery, client opsadapter.ReleaseClient) *maintenance.UpdateService {

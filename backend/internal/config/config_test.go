@@ -31,6 +31,26 @@ func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	require.Equal(t, DefaultModelsListReadMaxBytes, cfg.Gateway.ModelsListReadMaxBytes)
 }
 
+func TestLoadDefaultUpdateGitHubRepo(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, DefaultUpdateGitHubRepo, cfg.Update.GitHubRepo)
+}
+
+func TestNormalizeUpdateGitHubRepo(t *testing.T) {
+	got, err := NormalizeUpdateGitHubRepo("")
+	require.NoError(t, err)
+	require.Equal(t, DefaultUpdateGitHubRepo, got)
+
+	got, err = NormalizeUpdateGitHubRepo("https://github.com/acme/router.git")
+	require.NoError(t, err)
+	require.Equal(t, "acme/router", got)
+
+	_, err = NormalizeUpdateGitHubRepo("not a repo")
+	require.Error(t, err)
+}
+
 func TestLoadTimezonePrecedence(t *testing.T) {
 	tests := []struct {
 		name         string

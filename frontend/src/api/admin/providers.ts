@@ -498,6 +498,27 @@ export async function testProvider(id: number): Promise<{
   return data
 }
 
+export interface QualityProbeReport {
+  skipped: boolean
+  skip_reason?: string
+  provider_id: number
+  model?: string
+  candy_ok: boolean
+  trace_ok: boolean
+  degraded: boolean
+  temp_unscheduled: boolean
+  kept_for_coverage: boolean
+  email_sent: boolean
+  consecutive_fails: number
+  cycle_stopped: boolean
+  error?: string
+}
+
+export async function runQualityProbe(id: number): Promise<QualityProbeReport> {
+  const { data } = await apiClient.post<QualityProbeReport>(`/admin/providers/${id}/quality-probe`)
+  return data
+}
+
 /**
  * Refresh provider credentials
  * @param id - Provider ID
@@ -1223,6 +1244,7 @@ export const providersAPI = {
   delete: deleteProvider,
   toggleStatus,
   testProvider,
+  runQualityProbe,
   refreshCredentials,
   applyOAuthCredentials,
   getStats,

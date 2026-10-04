@@ -6,6 +6,8 @@
 
 - [配置分层](#配置分层)：先确定一个选项属于哪一层。
 - [进程配置来源](#进程配置来源)：修改默认值、YAML 或环境变量时读取。
+- [产品名称兼容](#产品名称兼容)：修改默认产品名、调试变量或旧品牌兼容时读取。
+- [在线更新仓库](#在线更新仓库)：修改面板更新读取的 GitHub 仓库时读取。
 - [首次初始化](#首次初始化)：修改 setup 和安全密钥引导时读取。
 - [数据库运行时设置](#数据库运行时设置)：修改管理员设置和热更新时读取。
 - [领域配置](#领域配置)：业务实体用专用表，不放进通用键值设置。
@@ -102,6 +104,10 @@
 
 迁移 283 只在站点名称、站点标题、发件人名称和支付商品前缀去掉首尾空白后恰好等于旧产品名时，把它们改成 TokenRouter。自定义的值、历史订单、邮件记录和已经绑定的 TOTP 密钥都保持不变。新绑定的 TOTP 显示 TokenRouter，旧的绑定继续用原来的密钥验证。
 
+### 在线更新仓库
+
+`update.github_repo`（环境变量 `UPDATE_GITHUB_REPO`）指定管理后台检测更新和下载 Release 时使用的 GitHub `owner/repo`。缺省是 `wolp6635236/TokenRouter`。空值按缺省处理。值必须是 `owner/repo`，也可以写成带或不带 `.git` 的 GitHub HTTPS URL。修改后需要重启进程。官方仓库 `TokenFlux/TokenRouter` 由 `tools/check-upstream-release.sh` 对照 `tools/upstream-release.seen` 感知新 Release，流程见[开发、验证与上游同步](../operations/development_workflow.md#同步上游)。
+
 ## 首次初始化
 
 setup 按 `DATA_DIR`、可写的 `/app/data`、当前目录的顺序，选择 `config.yaml` 和 `.installed` 的位置。正常情况下，配置文件和安装锁只要有一个存在，就不会重新开放初始化；`SKIP_SETUP` 是部署者手动跳过的开关。修改这套判断时，要保证"删掉一个文件也无法远程强制重装"。
@@ -117,7 +123,7 @@ setup 的数据库和 Redis 连接测试由精简版 bootstrap 执行，输入�
 
 `settings` 是一张 `key/value/updated_at` 表，删除某个键表示恢复它的 getter 的默认行为。`settings.Store` 和它的 PostgreSQL 适配层负责通用的读写、版本字段和更新通知。身份的注册、安全和验证码设置，OAuth 配置的解释，提供商冷却和导入模板，推广开关，用量排行，审计保留期和网关策略，分别由所属模块读取和解释；面板限流的配置和缓存在 `server/runtimeconfig`。
 
-运行时设置包括：注册和邮件验证、第三方登录、SMTP、TOTP、会话绑定、step-up、登录协议、面板限流、部分冷却和流超时、支付展示，以及各种功能开关。不同 getter 在缺键时的回退值，可能来自代码常量，也可能来自 app 传入的启动选项，所以缺失的键不一定等于 `false`。
+运行时设置包括：注册和邮件验证、第三方登录、SMTP、TOTP、会话绑定、step-up、登录协议、面板限流、部分冷却和流超时、支付展示、降智探测（`quality_probe_settings`），以及各种功能开关。不同 getter 在缺键时的回退值，可能来自代码常量，也可能来自 app 传入的启动选项，所以缺失的键不一定等于 `false`。
 
 usage、audit 和 ops 的静态参数，由 app 整理成各模块的 Options；动态的 Ops 设置和日志配置，由数据库里的键控制。统一的预聚合控制器在 `settings/preaggregation`，带十五秒缓存和更新通知。运行日志按"应用、持久化失败时回滚、清理 Reload"的顺序处理。
 

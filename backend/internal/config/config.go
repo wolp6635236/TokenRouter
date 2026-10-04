@@ -160,11 +160,47 @@ type GeminiTierQuotaConfig struct {
 	CooldownMinutes *int   `mapstructure:"cooldown_minutes" json:"cooldown_minutes"`
 }
 
+// DefaultUpdateGitHubRepo 是面板在线更新缺省读取的 GitHub 仓库。
+const DefaultUpdateGitHubRepo = "wolp6635236/TokenRouter"
+
 type UpdateConfig struct {
 	// ProxyURL 用于访问 GitHub 的代理地址
 	// 支持 http/https/socks5/socks5h 协议
 	// 例如: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080"
 	ProxyURL string `mapstructure:"proxy_url"`
+	// GitHubRepo 是面板在线更新读取的 owner/repo，例如 wolp6635236/TokenRouter。
+	GitHubRepo string `mapstructure:"github_repo"`
+}
+
+// NormalizeUpdateGitHubRepo 把空值和 GitHub URL 收成 owner/repo。
+func NormalizeUpdateGitHubRepo(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "https://github.com/")
+	s = strings.TrimPrefix(s, "http://github.com/")
+	s = strings.TrimSuffix(s, ".git")
+	s = strings.Trim(s, "/")
+	if s == "" {
+		s = DefaultUpdateGitHubRepo
+	}
+	owner, repo, ok := strings.Cut(s, "/")
+	if !ok || strings.Contains(repo, "/") || owner == "" || repo == "" {
+		return "", fmt.Errorf("update.github_repo must be owner/repo")
+	}
+	if !isGitHubName(owner) || !isGitHubName(repo) {
+		return "", fmt.Errorf("update.github_repo must be owner/repo")
+	}
+	return owner + "/" + repo, nil
+}
+
+func isGitHubName(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type IdempotencyConfig struct {
@@ -2325,6 +2361,7 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.session_idle_timeout_minutes", 0)
 	viper.SetDefault("gateway.user_message_queue.mode", "")
 	viper.SetDefault("update.proxy_url", "")
+	viper.SetDefault("update.github_repo", DefaultUpdateGitHubRepo)
 
 	// sticky escape 使用实际默认值，保留显式 error rate 0，并让显式 TTFT 0
 	// 进入配置校验。配置文件或环境变量仍可覆盖这些值。
@@ -2379,6 +2416,12 @@ func setEnvReachableDefaults() {
 
 func (c *Config) Validate() error {
 	c.normalizePricingCatalogSource()
+
+	githubRepo, err := NormalizeUpdateGitHubRepo(c.Update.GitHubRepo)
+	if err != nil {
+		return err
+	}
+	c.Update.GitHubRepo = githubRepo
 
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {

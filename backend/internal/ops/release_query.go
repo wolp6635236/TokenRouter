@@ -18,16 +18,22 @@ type ReleaseQuery struct {
 	cache                     UpdateCache
 	githubClient              ReleaseQueryClient
 	currentVersion, buildType string
+	githubRepo                string
 }
 
+// DefaultUpdateGitHubRepo 是面板在线更新缺省读取的 GitHub 仓库。
+const DefaultUpdateGitHubRepo = "wolp6635236/TokenRouter"
+
 // @project-doc docs/operations/ops_monitoring_and_alerting.md#ops_release_and_maintenance
-func NewReleaseQuery(cache UpdateCache, client ReleaseQueryClient, version, buildType string) *ReleaseQuery {
-	return &ReleaseQuery{cache, client, version, buildType}
+func NewReleaseQuery(cache UpdateCache, client ReleaseQueryClient, version, buildType, githubRepo string) *ReleaseQuery {
+	if githubRepo == "" {
+		githubRepo = DefaultUpdateGitHubRepo
+	}
+	return &ReleaseQuery{cache, client, version, buildType, githubRepo}
 }
 
 const (
 	updateCacheTTL        = 1200
-	githubRepo            = "TokenFlux/TokenRouter"
 	maxRollbackVersions   = 3
 	rollbackFetchPageSize = 15
 )
@@ -108,7 +114,7 @@ func (s *ReleaseQuery) GetFromCache(ctx context.Context) (*UpdateInfo, error) {
 }
 
 func (s *ReleaseQuery) FetchLatestRelease(ctx context.Context) (*UpdateInfo, error) {
-	release, err := s.githubClient.FetchLatestRelease(ctx, githubRepo)
+	release, err := s.githubClient.FetchLatestRelease(ctx, s.githubRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +176,7 @@ func NormalizeRollbackVersion(raw string) (string, bool) { return normalizeRollb
 
 // FetchRollbackCandidates 拉取最近 release，并只保留严格早于当前版本的最新候选。
 func (s *ReleaseQuery) FetchRollbackCandidates(ctx context.Context) ([]*GitHubRelease, error) {
-	releases, err := s.githubClient.FetchRecentReleases(ctx, githubRepo, rollbackFetchPageSize)
+	releases, err := s.githubClient.FetchRecentReleases(ctx, s.githubRepo, rollbackFetchPageSize)
 	if err != nil {
 		return nil, err
 	}

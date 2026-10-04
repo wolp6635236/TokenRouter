@@ -15,6 +15,7 @@ import (
 	routeops "github.com/TokenFlux/TokenRouter/internal/ops/httpapi"
 	routepromotion "github.com/TokenFlux/TokenRouter/internal/promotion/httpapi"
 	routeprovider "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
+	routequalityprobe "github.com/TokenFlux/TokenRouter/internal/qualityprobe/httpapi"
 	routerouting "github.com/TokenFlux/TokenRouter/internal/routing/httpapi"
 	routingdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
 	routescheduler "github.com/TokenFlux/TokenRouter/internal/scheduler/httpapi"
@@ -79,6 +80,7 @@ func provideAdminRouteMount(eAdminTLSFingerprintProfile *routeegress.TLSFingerpr
 	eAdminUser *routeidentity.AdminUserHandler[dto.APIKey[routingdto.Group]],
 	eAdminOps *routeops.OpsHandler,
 	eSearch *routesearch.Handler,
+	eQualityProbe *routequalityprobe.Handler,
 ) adminRouteMount {
 	return func(v1 *gin.RouterGroup, security httpRouteSecurity, protocolCatalog gin.HandlerFunc) {
 		admin := v1.Group("/admin")
@@ -181,6 +183,10 @@ func provideAdminRouteMount(eAdminTLSFingerprintProfile *routeegress.TLSFingerpr
 				routegateway.RegisterGatewaySettingsRoutes(adminSettings, eGatewaySettings)
 				routenotification.RegisterSettingsRoutes(adminSettings, eNotification)
 				routesearch.RegisterSettingsRoutes(adminSettings, eSearch)
+			}
+
+			{
+				routequalityprobe.RegisterRoutes(admin, eQualityProbe)
 			}
 
 			// 数据管理

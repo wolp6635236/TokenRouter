@@ -483,7 +483,7 @@
     <AdvancedSchedulerScoreModal :show="showAdvancedSchedulerScore" :provider="advancedSchedulerScoreAcc" @close="closeAdvancedSchedulerScoreModal" />
     <CodexInviteResetModal :show="showInviteReset" :provider="inviteResetAcc" @close="closeInviteResetModal" @updated="enterAutoRefreshSilentWindow" />
     <ScheduledTestsPanel :show="showSchedulePanel" :provider-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <ProviderActionMenu :show="menu.show" :provider="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @advanced-scheduler-score="handleAdvancedSchedulerScore" @schedule="handleSchedule" @duplicate="handleDuplicateProvider" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @invite-reset="handleInviteReset" @create-spark-shadow="handleCreateSparkShadow" @delete="handleDelete" />
+    <ProviderActionMenu :show="menu.show" :provider="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @quality-probe="handleQualityProbe" @stats="handleViewStats" @advanced-scheduler-score="handleAdvancedSchedulerScore" @schedule="handleSchedule" @duplicate="handleDuplicateProvider" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @invite-reset="handleInviteReset" @create-spark-shadow="handleCreateSparkShadow" @delete="handleDelete" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="handleExternalProvidersChanged" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditProviderModal
@@ -2720,6 +2720,28 @@ const closeAdvancedSchedulerScoreModal = () => { showAdvancedSchedulerScore.valu
 const closeInviteResetModal = () => { showInviteReset.value = false; inviteResetAcc.value = null }
 const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = null }
 const handleTest = (a: Provider) => { testingAcc.value = a; showTest.value = true }
+const qualityProbeInFlight = new Set<number>()
+const handleQualityProbe = async (a: Provider) => {
+  if (qualityProbeInFlight.has(a.id)) return
+  qualityProbeInFlight.add(a.id)
+  try {
+    const report = await adminAPI.providers.runQualityProbe(a.id)
+    if (report.skipped) {
+      appStore.showSuccess(t('admin.providers.qualityProbeSkipped', { name: a.name, reason: report.skip_reason || '' }))
+    } else if (report.kept_for_coverage) {
+      appStore.showError(t('admin.providers.qualityProbeKept', { name: a.name }))
+    } else if (report.degraded) {
+      appStore.showError(t('admin.providers.qualityProbeDegraded', { name: a.name, count: report.consecutive_fails }))
+    } else {
+      appStore.showSuccess(t('admin.providers.qualityProbePassed', { name: a.name }))
+    }
+    reload()
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.providers.qualityProbeFailed'))
+  } finally {
+    qualityProbeInFlight.delete(a.id)
+  }
+}
 const handleViewStats = (a: Provider) => { statsAcc.value = a; showStats.value = true }
 const handleAdvancedSchedulerScore = (a: Provider) => { advancedSchedulerScoreAcc.value = a; showAdvancedSchedulerScore.value = true }
 const handleInviteReset = (a: Provider) => { inviteResetAcc.value = a; showInviteReset.value = true }

@@ -30,6 +30,26 @@
 - 所有任务直接在当前 `main` 分支上完成。用户明确要求时，才创建或切换 Git 分支。
 - 提交前，检查本次变更涉及的代码里有没有明显需要清理或前后矛盾的地方。处理起来安全、又和本次修改相关的，一并处理。
 
+## 降智探测
+
+本仓库在 TokenRouter 上做二次开发。降智探测和同类“按账号质量改调度资格”的能力放在旁路模块，上游合并时这类改动集中在探测包和 app 装配。判定、循环和保底规则见 [docs/domains/quality_probe.md](docs/domains/quality_probe.md)。改这项能力时遵守下面几条。
+
+- 业务放在 `backend/internal/qualityprobe`，管理 HTTP 放在 `qualityprobe/httpapi`，Wire 和生命周期放在 `backend/internal/app`（`quality_probe.go`、`assembly_qualityprobe_wire.go`、管理路由、maintenance runner）。前端入口是提供商菜单的探测按钮，以及设置页网关 → OpenAI 里的探测卡片。
+- `gateway`、`scheduler`、`provider` 核心包继续走现有选号和评分。探测通过已有的 `temp_unschedulable_until` / `temp_unschedulable_reason` 进入筛选，原因常量是 `quality_degraded`。引用 `qualityprobe` 的是 app 适配器和 `qualityprobe/httpapi`。
+- 探测调用 `provider.TestService`（管理测号通道），用量记在上游账号。邮件调用 `notification.Mailer.SendEmail`。
+- 运行时键 `quality_probe_settings`，缺省关闭。覆盖 `platform=openai`（OAuth 和 API Key）。循环状态写在提供商 Extra 的 `quality_probe`。新增探测字段时继续写 Extra；和上游并行加迁移时，编号容易冲突。
+- 糖果题和 ModelTrace 都未通过才记降智。失败后按设置冷却再测，连续达到次数上限后发邮件并停止自动循环。该提供商在任一所属分组里已经是最后一个可调度成员时，保持可调度，失败计数和邮件仍执行。
+- 清除临时停调前核对原因是 `quality_degraded`。其他原因的临时停调由提供商健康恢复处理。
+- 连续 502/503 由提供商上已有的临时停调规则和自定义错误码处理。
+
+## 面板更新与上游同步
+
+本 fork 的管理后台在线更新读取 `update.github_repo`（环境变量 `UPDATE_GITHUB_REPO`），缺省是 `wolp6635236/TokenRouter`。改缺省仓库时，同步改 `config.DefaultUpdateGitHubRepo`、`ops.DefaultUpdateGitHubRepo`，以及 `tools/upstream-release.seen` 的说明。
+
+官方仓库是 `TokenFlux/TokenRouter`，本地 remote 名 `upstream`。感知官方新 Release 用 `tools/check-upstream-release.sh`，对照 `tools/upstream-release.seen`。GitHub Action `.github/workflows/check-upstream-release.yml` 每 6 小时跑一次，发现新 tag 时开 Issue。维护者确认后执行 fetch、merge、冲突处理和本 fork 的迁移编号规则，再打 tag 走 `release.yml`。发版后把 seen 文件写成已并入的官方 tag：`bash tools/check-upstream-release.sh --update-seen vX.Y.Z`。
+
+Docker Compose 的 `image` 和 `pull_policy: always` 决定重建时拉取哪份镜像。面板更新替换的是正在运行的进程二进制。线上实例使用本仓库 GHCR 镜像，或固定本 fork 的发布 tag。
+
 ## Go 格式化
 
 - 每次提交前，在仓库根目录运行 `make fmt-go-changed`。它用 `golangci-lint fmt` 格式化本次改动的手写 Go 文件，并跳过生成文件。
