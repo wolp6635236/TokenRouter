@@ -563,6 +563,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/quality-probe',
+    name: 'AdminQualityProbe',
+    component: () => import('@/views/admin/QualityProbeLogsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Quality probe log',
+      titleKey: 'admin.providers.qualityProbeLogs.title',
+      descriptionKey: 'admin.providers.qualityProbeLogs.description'
+    }
+  },
+  {
     path: '/admin/announcements',
     name: 'AdminAnnouncements',
     component: () => import('@/views/admin/AnnouncementsView.vue'),

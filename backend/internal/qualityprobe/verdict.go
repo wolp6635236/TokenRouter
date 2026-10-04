@@ -6,6 +6,7 @@ type ProbeRound struct {
 	CandyError      string
 	ModelTraceOK    bool
 	ModelTraceError string
+	Samples         []ProbeSample
 }
 
 // IsDegraded 在糖果题和 ModelTrace 都未通过时返回 true。

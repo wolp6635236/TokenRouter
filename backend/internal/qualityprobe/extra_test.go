@@ -38,3 +38,34 @@ func TestParseStoredState_EmptyAndRoundTrip(t *testing.T) {
 		t.Fatalf("next retry = %v", got.NextRetryAt)
 	}
 }
+
+func TestAppendProbeLogCapsHistory(t *testing.T) {
+	var history []ProbeLog
+	for i := 0; i < MaxProbeHistory+5; i++ {
+		history = appendProbeLog(history, ProbeLog{Trigger: TriggerManual, ConsecutiveFails: i})
+	}
+	if len(history) != MaxProbeHistory {
+		t.Fatalf("len = %d", len(history))
+	}
+	if history[0].ConsecutiveFails != MaxProbeHistory+4 {
+		t.Fatalf("newest = %+v", history[0])
+	}
+}
+
+func TestClipSampleText(t *testing.T) {
+	short := clipSampleText("ok")
+	if short != "ok" {
+		t.Fatalf("short = %q", short)
+	}
+	runes := make([]rune, MaxSampleChars+3)
+	for i := range runes {
+		runes[i] = 'a'
+	}
+	got := clipSampleText(string(runes))
+	if []rune(got)[len([]rune(got))-1] != '…' {
+		t.Fatalf("clipped = %q", got[len(got)-8:])
+	}
+	if len([]rune(got)) != MaxSampleChars+1 {
+		t.Fatalf("len = %d", len([]rune(got)))
+	}
+}

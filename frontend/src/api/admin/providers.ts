@@ -498,6 +498,14 @@ export async function testProvider(id: number): Promise<{
   return data
 }
 
+export interface QualityProbeSample {
+  name: string
+  prompt: string
+  answer: string
+  ok: boolean
+  error?: string
+}
+
 export interface QualityProbeReport {
   skipped: boolean
   skip_reason?: string
@@ -512,10 +520,23 @@ export interface QualityProbeReport {
   consecutive_fails: number
   cycle_stopped: boolean
   error?: string
+  samples?: QualityProbeSample[]
 }
 
-export async function runQualityProbe(id: number): Promise<QualityProbeReport> {
-  const { data } = await apiClient.post<QualityProbeReport>(`/admin/providers/${id}/quality-probe`)
+const QUALITY_PROBE_TIMEOUT_MS = 180_000
+
+export async function runQualityProbe(
+  id: number,
+  options?: { timeout?: number; signal?: AbortSignal }
+): Promise<QualityProbeReport> {
+  const { data } = await apiClient.post<QualityProbeReport>(
+    `/admin/providers/${id}/quality-probe`,
+    undefined,
+    {
+      timeout: options?.timeout ?? QUALITY_PROBE_TIMEOUT_MS,
+      signal: options?.signal,
+    }
+  )
   return data
 }
 

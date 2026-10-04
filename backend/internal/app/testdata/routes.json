@@ -175,6 +175,7 @@
   "GET /api/v1/admin/proxies/:id/stats",
   "GET /api/v1/admin/proxies/all",
 	"GET /api/v1/admin/proxies/data",
+	"GET /api/v1/admin/quality-probe/logs",
 	"GET /api/v1/admin/quality-probe/settings",
 	"GET /api/v1/admin/redeem-codes",
   "GET /api/v1/admin/redeem-codes/:id",

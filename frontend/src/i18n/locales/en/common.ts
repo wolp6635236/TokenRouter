@@ -134,6 +134,7 @@ export default {
     subscriptions: 'Subscriptions',
     userSubscriptions: 'Users',
     providers: 'Providers',
+    qualityProbe: 'Quality probe',
     proxies: 'Proxies',
     redeemCodes: 'Redeem Codes',
     ops: 'Ops',

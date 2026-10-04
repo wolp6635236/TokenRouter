@@ -21,9 +21,12 @@ type Prober interface {
 
 // Snapshot 是探测需要的提供商字段。
 type Snapshot struct {
-	ID                      int64
-	Name                    string
-	Platform                string
+	ID       int64
+	Name     string
+	Platform string
+	Status   string
+	// SchedulingOff 为 true 表示管理员关掉了「参与调度」。
+	SchedulingOff           bool
 	Schedulable             bool
 	GroupIDs                []int64
 	Extra                   map[string]any
@@ -39,6 +42,11 @@ type Directory interface {
 	SetTempUnschedulable(context.Context, int64, time.Time, string) error
 	ClearTempUnschedulable(context.Context, int64) error
 	SchedulableIDs(context.Context, int64) ([]int64, error)
+}
+
+// GroupIndex 提供当前启用中的分组 ID。
+type GroupIndex interface {
+	ActiveIDs(context.Context) ([]int64, error)
 }
 
 // Catalog 返回该提供商可测的模型名。
@@ -61,6 +69,7 @@ type SettingsRepo interface {
 type Engine struct {
 	Settings SettingsRepo
 	Dir      Directory
+	Groups   GroupIndex
 	Prober   Prober
 	Catalog  Catalog
 	Mail     Mailer
@@ -70,19 +79,23 @@ type Engine struct {
 
 // RunReport 是一轮探测的对外结果。
 type RunReport struct {
-	Skipped          bool   `json:"skipped"`
-	SkipReason       string `json:"skip_reason,omitempty"`
-	ProviderID       int64  `json:"provider_id"`
-	Model            string `json:"model,omitempty"`
-	CandyOK          bool   `json:"candy_ok"`
-	TraceOK          bool   `json:"trace_ok"`
-	Degraded         bool   `json:"degraded"`
-	TempUnscheduled  bool   `json:"temp_unscheduled"`
-	KeptForCoverage  bool   `json:"kept_for_coverage"`
-	EmailSent        bool   `json:"email_sent"`
-	ConsecutiveFails int    `json:"consecutive_fails"`
-	CycleStopped     bool   `json:"cycle_stopped"`
-	Error            string `json:"error,omitempty"`
+	Skipped          bool          `json:"skipped"`
+	SkipReason       string        `json:"skip_reason,omitempty"`
+	ProviderID       int64         `json:"provider_id"`
+	Model            string        `json:"model,omitempty"`
+	CandyOK          bool          `json:"candy_ok"`
+	TraceOK          bool          `json:"trace_ok"`
+	Degraded         bool          `json:"degraded"`
+	TempUnscheduled  bool          `json:"temp_unscheduled"`
+	KeptForCoverage  bool          `json:"kept_for_coverage"`
+	EmailSent        bool          `json:"email_sent"`
+	ConsecutiveFails int           `json:"consecutive_fails"`
+	CycleStopped     bool          `json:"cycle_stopped"`
+	Error            string        `json:"error,omitempty"`
+	Trigger          Trigger       `json:"trigger,omitempty"`
+	At               time.Time     `json:"at,omitempty"`
+	ProviderName     string        `json:"provider_name,omitempty"`
+	Samples          []ProbeSample `json:"samples,omitempty"`
 }
 
 func (e *Engine) now() time.Time {
@@ -128,12 +141,13 @@ func (e *Engine) SaveSettings(ctx context.Context, cfg Settings) error {
 
 // SettingsPayload 是管理端读写的 JSON 形状。
 type SettingsPayload struct {
-	Enabled         bool   `json:"enabled"`
-	IntervalMinutes int    `json:"interval_minutes"`
-	Model           string `json:"model"`
-	CooldownMinutes int    `json:"cooldown_minutes"`
-	MaxAttempts     int    `json:"max_attempts"`
-	NotifyEmail     string `json:"notify_email"`
+	Enabled         bool    `json:"enabled"`
+	IntervalMinutes int     `json:"interval_minutes"`
+	Model           string  `json:"model"`
+	CooldownMinutes int     `json:"cooldown_minutes"`
+	MaxAttempts     int     `json:"max_attempts"`
+	NotifyEmail     string  `json:"notify_email"`
+	GroupIDs        []int64 `json:"group_ids"`
 }
 
 func fileFromSettings(cfg Settings) SettingsPayload {
@@ -164,6 +178,7 @@ func fileFromSettings(cfg Settings) SettingsPayload {
 		CooldownMinutes: cooldown,
 		MaxAttempts:     maxAttempts,
 		NotifyEmail:     email,
+		GroupIDs:        NormalizeGroupIDs(cfg.GroupIDs),
 	}
 }
 
@@ -185,6 +200,7 @@ func (f SettingsPayload) Settings() Settings {
 	if strings.TrimSpace(f.NotifyEmail) != "" {
 		cfg.NotifyEmail = strings.TrimSpace(f.NotifyEmail)
 	}
+	cfg.GroupIDs = NormalizeGroupIDs(f.GroupIDs)
 	return cfg
 }
 

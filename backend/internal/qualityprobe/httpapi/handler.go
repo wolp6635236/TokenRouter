@@ -76,10 +76,22 @@ func (h *Handler) Status(c *gin.Context) {
 	response.Success(c, state)
 }
 
+// ListLogs GET /api/v1/admin/quality-probe/logs
+func (h *Handler) ListLogs(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	logs, err := h.engine.ListLogs(c.Request.Context(), limit)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, logs)
+}
+
 // RegisterRoutes 挂到管理员路由组。
 func RegisterRoutes(admin *gin.RouterGroup, endpoint *Handler) {
 	admin.GET("/quality-probe/settings", endpoint.GetSettings)
 	admin.PUT("/quality-probe/settings", endpoint.PutSettings)
+	admin.GET("/quality-probe/logs", endpoint.ListLogs)
 	admin.GET("/providers/:id/quality-probe", endpoint.Status)
 	admin.POST("/providers/:id/quality-probe", endpoint.Run)
 }

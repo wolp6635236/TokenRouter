@@ -178,7 +178,7 @@ POST /api/v1/creative/runs/{id}/outputs/{index}/ack
 
 ### 降智探测
 
-OpenAI 提供商的降智探测由 `qualityprobe/httpapi` 处理。`GET`/`PUT /api/v1/admin/quality-probe/settings` 读写运行时键 `quality_probe_settings`。`POST /api/v1/admin/providers/:id/quality-probe` 立即探测该提供商；`GET` 返回 Extra 里保存的循环状态。规则见[降智探测](../domains/quality_probe.md)。
+OpenAI 提供商的降智探测由 `qualityprobe/httpapi` 处理。`GET`/`PUT /api/v1/admin/quality-probe/settings` 读写运行时键 `quality_probe_settings`。`GET /api/v1/admin/quality-probe/logs` 汇总各提供商 Extra 里的探测记录，记录里带四次测号的提问和截断后的回答。`POST /api/v1/admin/providers/:id/quality-probe` 立即探测该提供商；`GET` 返回 Extra 里保存的循环状态。规则见[降智探测](../domains/quality_probe.md)。
 
 创作台的 JWT 和工作区入口由 `creative/httpapi` 处理，批量图片的 Key 入口由 `batchimage/httpapi` 处理。批量下载流关闭时会释放下载许可，应用关闭时等待完整的 HTTP 调用结束。创作供应商已经成功、但临时输出无法交付时，返回 `result_lost`，资金按已经确认的服务收取；这个状态表示生成发生过，系统也不会自动重新生成。
 

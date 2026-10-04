@@ -347,6 +347,7 @@ const adminNavItems = computed((): NavItem[] => {
       ],
     },
     { path: '/admin/providers', label: t('nav.providers'), icon: 'globe' as const },
+    { path: '/admin/quality-probe', label: t('nav.qualityProbe'), icon: 'beaker' as const },
     { path: '/admin/announcements', label: t('nav.announcements'), icon: 'bell' as const },
     { path: '/admin/proxies', label: t('nav.proxies'), icon: 'server' as const },
     {
