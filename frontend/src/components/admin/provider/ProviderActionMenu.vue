@@ -16,14 +16,24 @@
                 <Icon name="play" size="sm" class="text-green-500" :stroke-width="2" />
                 {{ t('admin.providers.testConnection') }}
               </button>
-              <button
+              <div
                 v-if="provider.platform === 'openai'"
-                @click="$emit('quality-probe', provider); $emit('close')"
-                class="dropdown-item"
+                ref="probeTriggerEl"
+                @mouseenter="openProbeFlyout"
+                @mouseleave="scheduleCloseProbeFlyout"
               >
-                <Icon name="beaker" size="sm" class="text-amber-500" :stroke-width="2" />
-                {{ t('admin.providers.qualityProbe') }}
-              </button>
+                <button
+                  type="button"
+                  class="dropdown-item w-full justify-between"
+                  @click.prevent="openProbeFlyout"
+                >
+                  <span class="flex min-w-0 items-center gap-2">
+                    <Icon name="beaker" size="sm" class="text-amber-500" :stroke-width="2" />
+                    {{ t('admin.providers.qualityProbe') }}
+                  </span>
+                  <Icon name="chevronRight" size="sm" class="text-gray-400 dark:text-dark-400" />
+                </button>
+              </div>
               <button @click="$emit('stats', provider); $emit('close')" class="dropdown-item">
                 <Icon name="chart" size="sm" class="text-indigo-500" />
                 {{ t('admin.providers.viewStats') }}
@@ -84,19 +94,59 @@
           </div>
         </div>
       </MotionTransition>
+      <MotionTransition name="dropdown-fade">
+        <div
+          v-if="show && probeFlyoutOpen && probeFlyoutPos"
+          class="action-menu max-h-64 w-56 overflow-y-auto"
+          :style="{ top: probeFlyoutPos.top + 'px', left: probeFlyoutPos.left + 'px' }"
+          @click.stop
+          @mouseenter="cancelCloseProbeFlyout"
+          @mouseleave="scheduleCloseProbeFlyout"
+        >
+          <div class="py-1">
+            <p v-if="probeModelsLoading" class="px-4 py-2 text-xs text-gray-500 dark:text-dark-400">
+              {{ t('common.loading') }}
+            </p>
+            <p v-else-if="probeModelsError" class="px-4 py-2 text-xs text-red-600 dark:text-red-400">
+              {{ probeModelsError }}
+            </p>
+            <p v-else-if="!probeModels.length" class="px-4 py-2 text-xs text-gray-500 dark:text-dark-400">
+              {{ t('admin.providers.qualityProbeModelsEmpty') }}
+            </p>
+            <button
+              v-for="model in probeModels"
+              :key="model.id"
+              type="button"
+              class="dropdown-item-sm"
+              @click="selectProbeModel(model.id)"
+            >
+              <span class="min-w-0 truncate">{{ model.display_name || model.id }}</span>
+            </button>
+          </div>
+        </div>
+      </MotionTransition>
   </Teleport>
 </template>
 
 <script setup lang="ts">
 import MotionTransition from '@/components/common/MotionTransition.vue'
-import { computed, watch, onUnmounted } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
-import type { Provider } from '@/types'
+import { adminAPI } from '@/api/admin'
+import type { ClaudeModel, Provider } from '@/types'
 
 const props = defineProps<{ show: boolean; provider: Provider | null; position: { top: number; left: number } | null }>()
 const emit = defineEmits(['close', 'test', 'quality-probe', 'stats', 'advanced-scheduler-score', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'invite-reset', 'create-spark-shadow', 'delete'])
 const { t } = useI18n()
+const probeTriggerEl = ref<HTMLElement | null>(null)
+const probeFlyoutOpen = ref(false)
+const probeFlyoutPos = ref<{ top: number; left: number } | null>(null)
+const probeModels = ref<ClaudeModel[]>([])
+const probeModelsLoading = ref(false)
+const probeModelsError = ref('')
+let probeCloseTimer: number | undefined
+let probeLoadSeq = 0
 const canDuplicate = computed(() => {
   if (!props.provider || props.provider.parent_provider_id != null) return false
   return ['apikey', 'upstream', 'bedrock', 'service_account'].includes(props.provider.type)
@@ -149,6 +199,85 @@ const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape') emit('close')
 }
 
+function cancelCloseProbeFlyout() {
+  if (probeCloseTimer !== undefined) {
+    window.clearTimeout(probeCloseTimer)
+    probeCloseTimer = undefined
+  }
+}
+
+function closeProbeFlyout() {
+  cancelCloseProbeFlyout()
+  probeFlyoutOpen.value = false
+  probeFlyoutPos.value = null
+}
+
+function scheduleCloseProbeFlyout() {
+  cancelCloseProbeFlyout()
+  probeCloseTimer = window.setTimeout(() => {
+    closeProbeFlyout()
+  }, 120)
+}
+
+function placeProbeFlyout() {
+  const rect = probeTriggerEl.value?.getBoundingClientRect()
+  if (!rect) {
+    return
+  }
+  const width = 224
+  let left = rect.left - width - 4
+  if (left < 8) {
+    left = rect.right + 4
+  }
+  const maxLeft = window.innerWidth - width - 8
+  if (left > maxLeft) {
+    left = Math.max(8, maxLeft)
+  }
+  probeFlyoutPos.value = {
+    top: Math.max(8, rect.top),
+    left
+  }
+}
+
+async function openProbeFlyout() {
+  if (!props.provider) {
+    return
+  }
+  cancelCloseProbeFlyout()
+  probeFlyoutOpen.value = true
+  await nextTick()
+  placeProbeFlyout()
+  const seq = ++probeLoadSeq
+  const providerId = props.provider.id
+  probeModelsLoading.value = true
+  probeModelsError.value = ''
+  try {
+    const models = await adminAPI.providers.getAvailableModels(providerId)
+    if (seq !== probeLoadSeq) {
+      return
+    }
+    probeModels.value = models
+  } catch (error: any) {
+    if (seq !== probeLoadSeq) {
+      return
+    }
+    probeModels.value = []
+    probeModelsError.value = error?.message || t('admin.providers.qualityProbeModelsLoadFailed')
+  } finally {
+    if (seq === probeLoadSeq) {
+      probeModelsLoading.value = false
+    }
+  }
+}
+
+function selectProbeModel(model: string) {
+  if (!props.provider) {
+    return
+  }
+  emit('quality-probe', props.provider, model)
+  emit('close')
+}
+
 watch(
   () => props.show,
   (visible) => {
@@ -156,6 +285,9 @@ watch(
       window.addEventListener('keydown', handleKeydown)
     } else {
       window.removeEventListener('keydown', handleKeydown)
+      closeProbeFlyout()
+      probeModels.value = []
+      probeModelsError.value = ''
     }
   },
   { immediate: true }
@@ -163,5 +295,6 @@ watch(
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  closeProbeFlyout()
 })
 </script>

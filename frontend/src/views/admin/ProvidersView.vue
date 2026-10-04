@@ -451,6 +451,9 @@
               </div>
             </div>
           </template>
+          <template #cell-quality_probe="{ row }">
+            <QualityProbeResultBadge :extra="row.extra" />
+          </template>
           <template #cell-actions="{ row }">
             <div class="flex items-center gap-1">
               <button @click="handleEdit(row)" class="flex flex-col items-center gap-0.5 rounded-control p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400">
@@ -552,6 +555,7 @@ import ImportDataModal from '@/components/admin/provider/ImportDataModal.vue'
 import ReAuthProviderModal from '@/components/admin/provider/ReAuthProviderModal.vue'
 import ProviderTestModal from '@/components/admin/provider/ProviderTestModal.vue'
 import QualityProbeResultModal from '@/components/admin/provider/QualityProbeResultModal.vue'
+import QualityProbeResultBadge from '@/components/admin/provider/QualityProbeResultBadge.vue'
 import ProviderStatsModal from '@/components/admin/provider/ProviderStatsModal.vue'
 import AdvancedSchedulerScoreModal from '@/components/admin/provider/AdvancedSchedulerScoreModal.vue'
 import CodexInviteResetModal from '@/components/admin/provider/CodexInviteResetModal.vue'
@@ -2175,6 +2179,7 @@ const allColumns = computed(() => {
     { key: 'created_at', label: t('admin.providers.columns.createdAt'), sortable: true },
     { key: 'expires_at', label: t('admin.providers.columns.expiresAt'), sortable: true },
     { key: 'notes', label: t('admin.providers.columns.notes'), sortable: false },
+    { key: 'quality_probe', label: t('admin.providers.columns.qualityProbe'), sortable: false },
     { key: 'actions', label: t('admin.providers.columns.actions'), sortable: false }
   )
   return c
@@ -2739,15 +2744,14 @@ const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = nul
 const handleTest = (a: Provider) => { testingAcc.value = a; showTest.value = true }
 const qualityProbeInFlight = new Set<number>()
 const closeQualityProbeModal = () => {
-  qualityProbeAbort?.abort()
-  qualityProbeAbort = null
+  // 关掉弹窗后请求继续，跑完写入 Extra。
   showQualityProbe.value = false
   qualityProbeAcc.value = null
   qualityProbeLoading.value = false
   qualityProbeReport.value = null
   qualityProbeError.value = ''
 }
-const handleQualityProbe = async (a: Provider) => {
+const handleQualityProbe = async (a: Provider, model?: string) => {
   if (qualityProbeInFlight.has(a.id)) {
     qualityProbeAcc.value = a
     showQualityProbe.value = true
@@ -2763,7 +2767,7 @@ const handleQualityProbe = async (a: Provider) => {
   qualityProbeLoading.value = true
   showQualityProbe.value = true
   try {
-    const report = await adminAPI.providers.runQualityProbe(a.id, { signal: abort.signal })
+    const report = await adminAPI.providers.runQualityProbe(a.id, { signal: abort.signal, model })
     if (abort.signal.aborted) {
       return
     }

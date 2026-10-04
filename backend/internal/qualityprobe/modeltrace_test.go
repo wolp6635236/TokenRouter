@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestBuildTraceChallenges_HasThreeNumericTasks(t *testing.T) {
+func TestBuildTraceChallenges_HasNumericTask(t *testing.T) {
 	challenges := BuildTraceChallenges(rand.New(rand.NewSource(1)))
-	if len(challenges) != 3 {
-		t.Fatalf("len = %d, want 3", len(challenges))
+	if len(challenges) != 1 {
+		t.Fatalf("len = %d, want 1", len(challenges))
 	}
 	for _, item := range challenges {
 		if item.ExpectedCount < 292 || item.ExpectedCount > 332 {
@@ -23,16 +23,16 @@ func TestBuildTraceChallenges_HasThreeNumericTasks(t *testing.T) {
 	}
 }
 
-func TestTraceSampleValid_RequiresSeventyPercentNumbers(t *testing.T) {
+func TestTraceSampleValid_RequiresFiftyFivePercentNumbers(t *testing.T) {
 	expected := 100
 	if TraceSampleValid("1 2 3", expected) {
 		t.Fatal("too few numbers must fail")
 	}
-	parts := make([]string, 70)
+	parts := make([]string, 80)
 	for i := range parts {
 		parts[i] = "1"
 	}
 	if !TraceSampleValid(strings.Join(parts, " "), expected) {
-		t.Fatal("70 numbers should pass the 70% threshold")
+		t.Fatal("80 numbers should pass the minimum-count threshold")
 	}
 }

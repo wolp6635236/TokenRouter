@@ -1,9 +1,19 @@
 package qualityprobe
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
+
+// persistCtx 给 Extra 和临时停调单独一套不随请求取消的 context。
+// 关掉探测弹窗后 HTTP context 已经取消，写库需要还能成功。
+func persistCtx(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
+}
 
 const (
 	// ExtraKey 是提供商 Extra 里保存探测状态的键。
@@ -38,6 +48,8 @@ type ProbeLog struct {
 	Model            string        `json:"model,omitempty"`
 	CandyOK          bool          `json:"candy_ok"`
 	TraceOK          bool          `json:"trace_ok"`
+	TracePrediction  string        `json:"trace_prediction,omitempty"`
+	TraceProbability float64       `json:"trace_probability,omitempty"`
 	Degraded         bool          `json:"degraded"`
 	TempUnscheduled  bool          `json:"temp_unscheduled"`
 	KeptForCoverage  bool          `json:"kept_for_coverage"`

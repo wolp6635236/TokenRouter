@@ -75,6 +75,8 @@ type Engine struct {
 	Mail     Mailer
 	Now      func() time.Time
 	NotFound error
+	// AnalyzeTrace 覆盖默认指纹归因，测试里注入。
+	AnalyzeTrace func([]TraceOutput) (TraceResult, error)
 }
 
 // RunReport 是一轮探测的对外结果。
@@ -85,6 +87,8 @@ type RunReport struct {
 	Model            string        `json:"model,omitempty"`
 	CandyOK          bool          `json:"candy_ok"`
 	TraceOK          bool          `json:"trace_ok"`
+	TracePrediction  string        `json:"trace_prediction,omitempty"`
+	TraceProbability float64       `json:"trace_probability,omitempty"`
 	Degraded         bool          `json:"degraded"`
 	TempUnscheduled  bool          `json:"temp_unscheduled"`
 	KeptForCoverage  bool          `json:"kept_for_coverage"`

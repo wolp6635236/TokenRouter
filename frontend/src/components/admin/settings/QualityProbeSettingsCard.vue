@@ -24,11 +24,13 @@
         :label="t('admin.settings.qualityProbe.enabled')"
         :hint="t('admin.settings.qualityProbe.enabledHint')"
       />
-      <SettingRow
-        id="quality-probe-groups"
-        :label="t('admin.settings.qualityProbe.groups')"
-        :hint="t('admin.settings.qualityProbe.groupsHint')"
-      >
+      <div class="space-y-2">
+        <div>
+          <p class="text-sm font-medium text-primary-900 dark:text-dark-50">
+            {{ t('admin.settings.qualityProbe.groups') }}
+          </p>
+          <p class="input-hint">{{ t('admin.settings.qualityProbe.groupsHint') }}</p>
+        </div>
         <div class="max-h-40 overflow-auto rounded-control border border-gray-200 p-3 dark:border-dark-600">
           <p v-if="groupsLoading" class="py-2 text-center text-xs text-gray-500">{{ t('common.loading') }}</p>
           <p v-else-if="!groups.length" class="py-2 text-center text-xs text-gray-500">{{ t('admin.pricing.form.noGroupsAvailable') }}</p>
@@ -48,7 +50,7 @@
             </label>
           </div>
         </div>
-      </SettingRow>
+      </div>
       <SettingRow
         id="quality-probe-interval"
         field

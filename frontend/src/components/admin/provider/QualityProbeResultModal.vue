@@ -37,7 +37,12 @@
           <dt class="text-gray-500 dark:text-dark-400">{{ t('admin.providers.qualityProbeDialog.candy') }}</dt>
           <dd>{{ report.candy_ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}</dd>
           <dt class="text-gray-500 dark:text-dark-400">{{ t('admin.providers.qualityProbeDialog.trace') }}</dt>
-          <dd>{{ report.trace_ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}</dd>
+          <dd>
+            {{ report.trace_ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}
+            <span v-if="report.trace_prediction" class="text-gray-500 dark:text-dark-400">
+              （{{ fingerprintLabel(report.trace_prediction, report.trace_probability) }}）
+            </span>
+          </dd>
           <dt class="text-gray-500 dark:text-dark-400">{{ t('admin.providers.qualityProbeDialog.consecutive') }}</dt>
           <dd>{{ report.consecutive_fails }}</dd>
         </dl>
@@ -84,6 +89,16 @@ const props = defineProps<{
 
 const emit = defineEmits<{ close: [] }>()
 const { t, te } = useI18n()
+
+function fingerprintLabel(prediction?: string, probability?: number) {
+  if (!prediction) {
+    return ''
+  }
+  if (probability == null || Number.isNaN(probability)) {
+    return prediction
+  }
+  return `${prediction} ${Math.round(probability * 100)}%`
+}
 
 const skipReasonText = computed(() => {
   const reason = props.report?.skip_reason || ''

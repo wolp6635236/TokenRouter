@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"strconv"
+	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/qualityprobe"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
 )
+
+const manualProbeTimeout = 3 * time.Minute
 
 // Handler 管理降智探测设置和手动探测。
 type Handler struct {
@@ -53,7 +57,14 @@ func (h *Handler) Run(c *gin.Context) {
 		response.BadRequest(c, "Invalid provider ID")
 		return
 	}
-	report, err := h.engine.Run(c.Request.Context(), id, qualityprobe.TriggerManual)
+	// 关掉弹窗会取消 HTTP 请求。探测和写 Extra 继续跑完，记录页才能看到这一轮。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), manualProbeTimeout)
+	defer cancel()
+	var payload struct {
+		Model string `json:"model"`
+	}
+	_ = c.ShouldBindJSON(&payload)
+	report, err := h.engine.RunWithModel(ctx, id, qualityprobe.TriggerManual, payload.Model)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -76,15 +87,18 @@ func (h *Handler) Status(c *gin.Context) {
 	response.Success(c, state)
 }
 
-// ListLogs GET /api/v1/admin/quality-probe/logs
+// ListLogs GET /api/v1/admin/quality-probe/logs，按 page、page_size 分页，单页最多 100 条。
 func (h *Handler) ListLogs(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.Query("limit"))
-	logs, err := h.engine.ListLogs(c.Request.Context(), limit)
+	page, pageSize := response.ParsePagination(c)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	logs, total, err := h.engine.ListLogs(c.Request.Context(), page, pageSize)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, logs)
+	response.Paginated(c, logs, int64(total), page, pageSize)
 }
 
 // RegisterRoutes 挂到管理员路由组。

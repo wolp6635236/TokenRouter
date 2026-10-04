@@ -11,6 +11,7 @@ import type {
   FooterLinkGroup,
   LoginAgreementDocument,
   NotifyEmailEntry,
+  PaginatedResponse,
 } from "@/types";
 import type { QualityProbeSample } from "./providers";
 
@@ -1676,6 +1677,8 @@ export interface QualityProbeLogItem {
   model?: string
   candy_ok: boolean
   trace_ok: boolean
+  trace_prediction?: string
+  trace_probability?: number
   degraded: boolean
   temp_unscheduled: boolean
   kept_for_coverage: boolean
@@ -1686,12 +1689,21 @@ export interface QualityProbeLogItem {
   samples?: QualityProbeSample[]
 }
 
-export async function listQualityProbeLogs(limit = 200): Promise<QualityProbeLogItem[]> {
-  const { data } = await apiClient.get<QualityProbeLogItem[]>(
+export async function listQualityProbeLogs(
+  page = 1,
+  pageSize = 20,
+): Promise<PaginatedResponse<QualityProbeLogItem>> {
+  const { data } = await apiClient.get<PaginatedResponse<QualityProbeLogItem>>(
     '/admin/quality-probe/logs',
-    { params: { limit } },
+    { params: { page, page_size: pageSize } },
   )
-  return data ?? []
+  return {
+    items: data?.items ?? [],
+    total: data?.total ?? 0,
+    page: data?.page ?? page,
+    page_size: data?.page_size ?? pageSize,
+    pages: data?.pages ?? 0,
+  }
 }
 
 // --- 预聚合统一配置 ---

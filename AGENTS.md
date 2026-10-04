@@ -38,7 +38,7 @@
 - `gateway`、`scheduler`、`provider` 核心包继续走现有选号和评分。探测通过已有的 `temp_unschedulable_until` / `temp_unschedulable_reason` 进入筛选，原因常量是 `quality_degraded`。引用 `qualityprobe` 的是 app 适配器和 `qualityprobe/httpapi`。
 - 探测调用 `provider.TestService`（管理测号通道），用量记在上游账号。邮件调用 `notification.Mailer.SendEmail`。
 - 运行时键 `quality_probe_settings`，缺省关闭。覆盖 `platform=openai`（OAuth 和 API Key）。自动探测要求账号 `status=active`、打开了「参与调度」，并且至少属于一个启用中的分组。`group_ids` 为空时覆盖全部启用中的 OpenAI 分组；非空时覆盖勾选且仍为启用状态的分组。循环状态和最近 50 条记录（含各次提问和截断后的回答）写在提供商 Extra 的 `quality_probe`。新增探测字段时继续写 Extra；和上游并行加迁移时，编号容易冲突。
-- 糖果题和 ModelTrace 都未通过才记降智。失败后按设置冷却再测，连续达到次数上限后发邮件并停止自动循环。该提供商在任一所属分组里已经是最后一个可调度成员时，保持可调度，失败计数和邮件仍执行。
+- 糖果题和 ModelTrace 都未通过才记降智。ModelTrace 用内置指纹库归因，最可能模型属于 GPT-6 算通过。失败后按设置冷却再测，连续达到次数上限后发邮件并停止自动循环。该提供商在任一所属分组里已经是最后一个可调度成员时，保持可调度，失败计数和邮件仍执行。
 - 清除临时停调前核对原因是 `quality_degraded`。其他原因的临时停调由提供商健康恢复处理。
 - 连续 502/503 由提供商上已有的临时停调规则和自定义错误码处理。
 

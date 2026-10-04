@@ -513,6 +513,8 @@ export interface QualityProbeReport {
   model?: string
   candy_ok: boolean
   trace_ok: boolean
+  trace_prediction?: string
+  trace_probability?: number
   degraded: boolean
   temp_unscheduled: boolean
   kept_for_coverage: boolean
@@ -527,11 +529,11 @@ const QUALITY_PROBE_TIMEOUT_MS = 180_000
 
 export async function runQualityProbe(
   id: number,
-  options?: { timeout?: number; signal?: AbortSignal }
+  options?: { timeout?: number; signal?: AbortSignal; model?: string }
 ): Promise<QualityProbeReport> {
   const { data } = await apiClient.post<QualityProbeReport>(
     `/admin/providers/${id}/quality-probe`,
-    undefined,
+    options?.model ? { model: options.model } : undefined,
     {
       timeout: options?.timeout ?? QUALITY_PROBE_TIMEOUT_MS,
       signal: options?.signal,

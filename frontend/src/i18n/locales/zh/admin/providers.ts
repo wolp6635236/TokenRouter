@@ -146,6 +146,7 @@ export default {
         type: '类型',
         capacity: '容量',
         notes: '备注',
+        qualityProbe: '降智',
         priority: '优先级',
         billingRateMultiplier: '提供商倍率',
         weight: '权重',
@@ -483,12 +484,19 @@ export default {
       },
       testConnection: '测试连接',
       qualityProbe: '降智探测',
+      qualityProbeModelsEmpty: '这个账号没有可探测的模型',
+      qualityProbeModelsLoadFailed: '加载模型失败',
       qualityProbeRunning: '正在探测 {name}',
       qualityProbePassed: '{name} 通过降智探测',
       qualityProbeDegraded: '{name} 判定降智（连续 {count} 次）',
       qualityProbeKept: '{name} 判定降智，分组保底未停调',
       qualityProbeSkipped: '{name} 跳过探测：{reason}',
       qualityProbeFailed: '降智探测失败',
+      qualityProbeList: {
+        passed: '通过',
+        degraded: '降智',
+        skipped: '跳过'
+      },
       qualityProbeLogs: {
         title: '降智探测记录',
         description: '自动探测和手动探测的历史结果，每个提供商保留最近 50 条。点「查看」打开该轮提问和回答。',
@@ -507,6 +515,7 @@ export default {
         verdictSkipped: '跳过',
         model: '模型',
         view: '查看',
+        fingerprint: '指纹归因',
         detailTitle: '{name} 的探测问答',
         prompt: '提问',
         answer: '回答',
@@ -516,7 +525,7 @@ export default {
       qualityProbeDialog: {
         title: '{name} 的降智探测',
         running: '正在探测 {name}…',
-        runningHint: '会连续跑糖果题和三道 ModelTrace，通常要一两分钟。',
+        runningHint: '会连续跑糖果题和一道 ModelTrace，用指纹库判断是不是 GPT-6，通常不到一分钟。',
         passed: '本轮未记降智（糖果题和 ModelTrace 至少一项通过）。',
         degraded: '糖果题和 ModelTrace 都未通过，记为降智。',
         kept: '糖果题和 ModelTrace 都未通过。该账号在某个分组里已是最后一个可调度成员，保持可调度。',
@@ -680,6 +689,9 @@ export default {
         remaining: '剩余时间',
         matchedKeyword: '匹配关键词',
         errorMessage: '错误详情',
+        reasons: {
+          quality_degraded: '降智探测未通过'
+        },
         reset: '恢复状态',
         resetSuccess: '提供商状态已恢复',
         resetFailed: '恢复提供商状态失败',

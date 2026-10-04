@@ -2,13 +2,10 @@
   <AppLayout>
     <TablePageLayout>
       <template #filters>
-        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <p class="text-sm text-gray-500 dark:text-dark-400">
-            {{ t('admin.providers.qualityProbeLogs.description') }}
-          </p>
+        <div class="flex items-center justify-end">
           <button
             type="button"
-            class="btn btn-secondary btn-icon shrink-0 self-end"
+            class="btn btn-secondary btn-icon shrink-0"
             :disabled="loading"
             :title="t('common.refresh')"
             :aria-label="t('common.refresh')"
@@ -46,7 +43,12 @@
           </template>
           <template #cell-trace_ok="{ row }">
             <span v-if="row.skipped">—</span>
-            <span v-else>{{ row.trace_ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}</span>
+            <span v-else>
+              {{ row.trace_ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}
+              <span v-if="row.trace_prediction" class="block text-xs text-gray-500 dark:text-dark-400">
+                {{ row.trace_prediction }}
+              </span>
+            </span>
           </template>
           <template #cell-verdict="{ row }">
             <span
@@ -73,6 +75,16 @@
           </template>
         </DataTable>
       </template>
+      <template #pagination>
+        <Pagination
+          v-if="pagination.total > 0"
+          :page="pagination.page"
+          :total="pagination.total"
+          :page-size="pagination.page_size"
+          @update:page="handlePageChange"
+          @update:pageSize="handlePageSizeChange"
+        />
+      </template>
     </TablePageLayout>
     <BaseDialog
       :show="Boolean(detail)"
@@ -81,6 +93,9 @@
       @close="detail = null"
     >
       <div v-if="detail" class="space-y-4 text-sm">
+        <p v-if="detail.trace_prediction" class="text-gray-600 dark:text-dark-300">
+          {{ t('admin.providers.qualityProbeLogs.fingerprint') }}：{{ detail.trace_prediction }}
+        </p>
         <p v-if="detail.error" class="break-words text-xs text-red-600 dark:text-red-400">
           {{ detail.error }}
         </p>
@@ -96,9 +111,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { adminAPI } from '@/api/admin'
 import type { QualityProbeLogItem } from '@/api/admin/settings'
 import { formatDateTime } from '@/utils/format'
@@ -106,6 +122,7 @@ import type { Column } from '@/components/common/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
+import Pagination from '@/components/common/Pagination.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import QualityProbeSamples from '@/components/admin/provider/QualityProbeSamples.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -115,6 +132,11 @@ const appStore = useAppStore()
 const loading = ref(false)
 const logs = ref<QualityProbeLogItem[]>([])
 const detail = ref<QualityProbeLogItem | null>(null)
+const pagination = reactive({
+  page: 1,
+  page_size: getPersistedPageSize(),
+  total: 0
+})
 
 const detailTitle = computed(() => {
   if (!detail.value) {
@@ -173,12 +195,27 @@ function openDetail(row: QualityProbeLogItem) {
 async function load() {
   loading.value = true
   try {
-    logs.value = await adminAPI.settings.listQualityProbeLogs(200)
+    const res = await adminAPI.settings.listQualityProbeLogs(pagination.page, pagination.page_size)
+    logs.value = res.items
+    pagination.total = res.total
+    pagination.page = res.page
+    pagination.page_size = res.page_size
   } catch (error: any) {
     appStore.showError(error?.message || t('admin.providers.qualityProbeLogs.loadFailed'))
   } finally {
     loading.value = false
   }
+}
+
+function handlePageChange(next: number) {
+  pagination.page = next
+  load()
+}
+
+function handlePageSizeChange(size: number) {
+  pagination.page_size = size
+  pagination.page = 1
+  load()
 }
 
 onMounted(load)

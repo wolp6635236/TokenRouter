@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,6 +29,7 @@ func (m *memSettings) Set(_ context.Context, _ string, value string) error {
 }
 
 type memDir struct {
+	mu          sync.Mutex
 	items       map[int64]*Snapshot
 	schedulable map[int64][]int64
 	temp        map[int64]string
@@ -35,15 +37,25 @@ type memDir struct {
 }
 
 func (d *memDir) Get(_ context.Context, id int64) (*Snapshot, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	item, ok := d.items[id]
 	if !ok {
 		return nil, errors.New("missing")
 	}
 	copyItem := *item
+	if item.Extra != nil {
+		copyItem.Extra = map[string]any{}
+		for key, value := range item.Extra {
+			copyItem.Extra[key] = value
+		}
+	}
 	return &copyItem, nil
 }
 
 func (d *memDir) ListByPlatform(_ context.Context, platform string) ([]Snapshot, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	out := make([]Snapshot, 0)
 	for _, item := range d.items {
 		if item.Platform == platform {
@@ -53,7 +65,14 @@ func (d *memDir) ListByPlatform(_ context.Context, platform string) ([]Snapshot,
 	return out, nil
 }
 
-func (d *memDir) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
+func (d *memDir) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	item := d.items[id]
 	if item.Extra == nil {
 		item.Extra = map[string]any{}
@@ -65,6 +84,8 @@ func (d *memDir) UpdateExtra(_ context.Context, id int64, updates map[string]any
 }
 
 func (d *memDir) SetTempUnschedulable(_ context.Context, id int64, _ time.Time, reason string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.temp == nil {
 		d.temp = map[int64]string{}
 	}
@@ -76,6 +97,8 @@ func (d *memDir) SetTempUnschedulable(_ context.Context, id int64, _ time.Time, 
 }
 
 func (d *memDir) ClearTempUnschedulable(_ context.Context, id int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.cleared = append(d.cleared, id)
 	delete(d.temp, id)
 	item := d.items[id]
@@ -85,6 +108,8 @@ func (d *memDir) ClearTempUnschedulable(_ context.Context, id int64) error {
 }
 
 func (d *memDir) SchedulableIDs(_ context.Context, groupID int64) ([]int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.schedulable[groupID], nil
 }
 
@@ -102,6 +127,22 @@ func (p *scriptedProber) ProbeText(context.Context, int64, string, string) (Text
 	return TextResult{Answer: text}, nil
 }
 
+type countingProber struct {
+	mu    sync.Mutex
+	calls map[int64]int
+}
+
+func (p *countingProber) ProbeText(_ context.Context, providerID int64, _, _ string) (TextResult, error) {
+	time.Sleep(20 * time.Millisecond)
+	p.mu.Lock()
+	if p.calls == nil {
+		p.calls = map[int64]int{}
+	}
+	p.calls[providerID]++
+	p.mu.Unlock()
+	return TextResult{Answer: "21"}, nil
+}
+
 type recordingMail struct {
 	to      string
 	subject string
@@ -117,6 +158,10 @@ func (m *recordingMail) Send(_ context.Context, to, subject, _ string) error {
 
 func enabledJSON() string {
 	return `{"enabled":true,"interval_minutes":30,"model":"gpt-6-astra","cooldown_minutes":5,"max_attempts":3,"notify_email":"295783453@qq.com"}`
+}
+
+func passAstra(_ []TraceOutput) (TraceResult, error) {
+	return TraceResult{Prediction: "gpt-6-astra", Probability: 1}, nil
 }
 
 func numbers(n int) string {
@@ -146,10 +191,11 @@ func TestEngine_PassClearsTempAndSchedulesInterval(t *testing.T) {
 		schedulable: map[int64][]int64{1: {7, 8}},
 	}
 	engine := &Engine{
-		Settings: &memSettings{raw: enabledJSON()},
-		Dir:      dir,
-		Prober:   &scriptedProber{answers: []string{"answer 21", numbers(400), numbers(400), numbers(400)}},
-		Now:      func() time.Time { return now },
+		Settings:     &memSettings{raw: enabledJSON()},
+		Dir:          dir,
+		Prober:       &scriptedProber{answers: []string{"answer 21", numbers(400)}},
+		AnalyzeTrace: passAstra,
+		Now:          func() time.Time { return now },
 	}
 	got, err := engine.Run(context.Background(), 7, TriggerAuto)
 	if err != nil {
@@ -318,6 +364,30 @@ func TestEngine_AutoSkipOutsideGroups(t *testing.T) {
 	}
 }
 
+func TestEngine_CanceledContextStillWritesHistory(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "usfast", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Prober:   &scriptedProber{answers: []string{"21", numbers(400)}},
+		Dir:      dir,
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := engine.Run(ctx, 1, TriggerManual); err != nil {
+		t.Fatal(err)
+	}
+	state := ParseStoredState(dir.items[1].Extra)
+	if len(state.History) != 1 {
+		t.Fatalf("history = %+v", state.History)
+	}
+}
+
 func TestEngine_ListLogsOrdersNewestFirst(t *testing.T) {
 	now := time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
 	dir := &memDir{
@@ -334,22 +404,91 @@ func TestEngine_ListLogsOrdersNewestFirst(t *testing.T) {
 	}
 	engine := &Engine{
 		Settings: &memSettings{raw: enabledJSON()},
-		Prober:   &scriptedProber{answers: []string{"21", numbers(400), numbers(400), numbers(400)}},
+		Prober:   &scriptedProber{answers: []string{"21", numbers(400)}},
 		Dir:      dir,
 		Now:      func() time.Time { return now },
 	}
 	if _, err := engine.Run(context.Background(), 7, TriggerManual); err != nil {
 		t.Fatal(err)
 	}
-	logs, err := engine.ListLogs(context.Background(), 10)
+	logs, total, err := engine.ListLogs(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(logs) != 1 || logs[0].ProviderID != 7 || logs[0].Trigger != TriggerManual {
-		t.Fatalf("logs = %+v", logs)
+	if total != 1 || len(logs) != 1 || logs[0].ProviderID != 7 || logs[0].Trigger != TriggerManual {
+		t.Fatalf("logs = %+v total = %d", logs, total)
 	}
-	if len(logs[0].Samples) != 4 || logs[0].Samples[0].Name != "candy" || logs[0].Samples[0].Answer != "21" {
+	if len(logs[0].Samples) != 2 || logs[0].Samples[0].Name != "candy" || logs[0].Samples[0].Answer != "21" {
 		t.Fatalf("samples = %+v", logs[0].Samples)
+	}
+}
+
+func TestEngine_ListLogsPaginatesNewestFirst(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "a", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+			2: {ID: 2, Name: "b", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	now := time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
+	clock := now
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Prober:   &scriptedProber{answers: []string{"21", numbers(400), "21", numbers(400)}},
+		Dir:      dir,
+		Now:      func() time.Time { return clock },
+	}
+	if _, err := engine.Run(context.Background(), 1, TriggerManual); err != nil {
+		t.Fatal(err)
+	}
+	clock = now.Add(time.Minute)
+	if _, err := engine.Run(context.Background(), 2, TriggerManual); err != nil {
+		t.Fatal(err)
+	}
+	page1, total, err := engine.ListLogs(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(page1) != 1 || page1[0].ProviderID != 2 {
+		t.Fatalf("page1 = %+v total = %d", page1, total)
+	}
+	page2, _, err := engine.ListLogs(context.Background(), 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2) != 1 || page2[0].ProviderID != 1 {
+		t.Fatalf("page2 = %+v", page2)
+	}
+}
+
+func TestEngine_RunDueProbesEachDueProvider(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+			2: {ID: 2, Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+			3: {ID: 3, Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2, 3}},
+	}
+	prober := &countingProber{}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{1}},
+		Prober:   prober,
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	engine.RunDue(context.Background())
+	prober.mu.Lock()
+	defer prober.mu.Unlock()
+	if len(prober.calls) != 3 {
+		t.Fatalf("probed = %+v", prober.calls)
+	}
+	for id, n := range prober.calls {
+		if n != 2 {
+			t.Fatalf("provider %d calls = %d", id, n)
+		}
 	}
 }
 
@@ -459,7 +598,7 @@ func TestEngine_AutoRunsWhenOneGroupActive(t *testing.T) {
 		Settings: &memSettings{raw: enabledJSON()},
 		Dir:      dir,
 		Groups:   memGroups{ids: []int64{9}},
-		Prober:   &scriptedProber{answers: []string{"21", numbers(400), numbers(400), numbers(400)}},
+		Prober:   &scriptedProber{answers: []string{"21", numbers(400)}},
 		Now:      func() time.Time { return time.Unix(1, 0) },
 	}
 	got, err := engine.Run(context.Background(), 1, TriggerAuto)
@@ -468,5 +607,37 @@ func TestEngine_AutoRunsWhenOneGroupActive(t *testing.T) {
 	}
 	if got.Skipped {
 		t.Fatalf("report = %+v", got)
+	}
+}
+
+type stubCatalog struct {
+	models []string
+}
+
+func (c stubCatalog) Models(context.Context, *Snapshot) []string {
+	return c.models
+}
+
+func TestEngine_ManualUsesRequestedModel(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "a", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	engine := &Engine{
+		Settings:     &memSettings{raw: enabledJSON()},
+		Dir:          dir,
+		Catalog:      stubCatalog{models: []string{"gpt-6-astra"}},
+		Prober:       &scriptedProber{answers: []string{"21", numbers(400)}},
+		AnalyzeTrace: passAstra,
+		Now:          func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.RunWithModel(context.Background(), 1, TriggerManual, "gpt-5.6-terra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "gpt-5.6-terra" {
+		t.Fatalf("model = %q", got.Model)
 	}
 }

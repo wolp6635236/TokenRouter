@@ -5,12 +5,22 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
+// autoProbeConcurrency 是自动探测同时跑的提供商数。
+// 每个提供商内部仍是糖果题和一道 ModelTrace 依次打。再高主要叠加上游连接和 token，不是本机 goroutine。
+const autoProbeConcurrency = 4
+
 // Run 对单个提供商执行一轮探测并应用决策。
 func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (RunReport, error) {
-	return e.runWithActive(ctx, providerID, trigger, nil)
+	return e.RunWithModel(ctx, providerID, trigger, "")
+}
+
+// RunWithModel 执行一轮探测。manualModel 非空且 trigger 为手动时，用该模型，不用设置里的探测模型。
+func (e *Engine) RunWithModel(ctx context.Context, providerID int64, trigger Trigger, manualModel string) (RunReport, error) {
+	return e.runWithActive(ctx, providerID, trigger, nil, strings.TrimSpace(manualModel))
 }
 
 func (e *Engine) runWithActive(
@@ -18,6 +28,7 @@ func (e *Engine) runWithActive(
 	providerID int64,
 	trigger Trigger,
 	active map[int64]struct{},
+	manualModel string,
 ) (RunReport, error) {
 	report := RunReport{ProviderID: providerID}
 	if e == nil || e.Dir == nil {
@@ -64,6 +75,9 @@ func (e *Engine) runWithActive(
 		return e.finishSkip(ctx, snap, state, trigger, "not_due")
 	}
 	model := ResolveProbeModel(cfg.Model, e.catalogModels(ctx, snap))
+	if trigger == TriggerManual && manualModel != "" {
+		model = manualModel
+	}
 	report.Model = model
 	round := e.probeRound(ctx, providerID, model)
 	held := e.lastSchedulableHeld(ctx, snap)
@@ -89,17 +103,18 @@ func (e *Engine) runWithActive(
 		LastModel:        model,
 		UpdatedAt:        now,
 	}
+	writeCtx := persistCtx(ctx)
 	if decision.ClearTemp {
 		if strings.TrimSpace(snap.TempUnschedulableReason) == "" ||
 			snap.TempUnschedulableReason == TempUnscheduleReason {
-			if err := e.Dir.ClearTempUnschedulable(ctx, providerID); err != nil {
+			if err := e.Dir.ClearTempUnschedulable(writeCtx, providerID); err != nil {
 				return report, err
 			}
 		}
 	}
 	if decision.TempUnschedule {
 		until := now.Add(decision.Cooldown)
-		if err := e.Dir.SetTempUnschedulable(ctx, providerID, until, TempUnscheduleReason); err != nil {
+		if err := e.Dir.SetTempUnschedulable(writeCtx, providerID, until, TempUnscheduleReason); err != nil {
 			return report, err
 		}
 	}
@@ -118,6 +133,8 @@ func (e *Engine) runWithActive(
 		Model:            model,
 		CandyOK:          round.CandyOK,
 		TraceOK:          round.ModelTraceOK,
+		TracePrediction:  round.TracePrediction,
+		TraceProbability: round.TraceProbability,
 		Degraded:         decision.Degraded,
 		TempUnscheduled:  decision.TempUnschedule,
 		KeptForCoverage:  decision.SkipBecauseLastInGroup,
@@ -127,7 +144,7 @@ func (e *Engine) runWithActive(
 		Error:            stored.LastError,
 		Samples:          round.Samples,
 	})
-	if err := e.Dir.UpdateExtra(ctx, providerID, stored.extraUpdate()); err != nil {
+	if err := e.Dir.UpdateExtra(writeCtx, providerID, stored.extraUpdate()); err != nil {
 		return report, err
 	}
 	return RunReport{
@@ -136,6 +153,8 @@ func (e *Engine) runWithActive(
 		Model:            model,
 		CandyOK:          round.CandyOK,
 		TraceOK:          round.ModelTraceOK,
+		TracePrediction:  round.TracePrediction,
+		TraceProbability: round.TraceProbability,
 		Degraded:         decision.Degraded,
 		TempUnscheduled:  decision.TempUnschedule,
 		KeptForCoverage:  decision.SkipBecauseLastInGroup,
@@ -166,12 +185,24 @@ func (e *Engine) RunDue(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	sem := make(chan struct{}, autoProbeConcurrency)
+	var wg sync.WaitGroup
+loop:
 	for i := range items {
-		if ctx.Err() != nil {
-			return
+		id := items[i].ID
+		select {
+		case <-ctx.Done():
+			break loop
+		case sem <- struct{}{}:
 		}
-		_, _ = e.runWithActive(ctx, items[i].ID, TriggerAuto, active)
+		wg.Add(1)
+		go func(providerID int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			_, _ = e.runWithActive(ctx, providerID, TriggerAuto, active, "")
+		}(id)
 	}
+	wg.Wait()
 }
 
 // Status 返回提供商 Extra 里的探测状态。
@@ -212,26 +243,29 @@ func (e *Engine) finishSkip(ctx context.Context, snap *Snapshot, state StoredSta
 		CycleStopped:     state.CycleStopped,
 	})
 	state.UpdatedAt = report.At
-	if err := e.Dir.UpdateExtra(ctx, snap.ID, state.extraUpdate()); err != nil {
+	if err := e.Dir.UpdateExtra(persistCtx(ctx), snap.ID, state.extraUpdate()); err != nil {
 		return report, err
 	}
 	return report, nil
 }
 
-// ListLogs 汇总 OpenAI 提供商 Extra 里的探测记录，按时间倒序。
-func (e *Engine) ListLogs(ctx context.Context, limit int) ([]LogItem, error) {
+// ListLogs 汇总 OpenAI 提供商 Extra 里的探测记录，按时间倒序分页。
+func (e *Engine) ListLogs(ctx context.Context, page, pageSize int) ([]LogItem, int, error) {
 	if e == nil || e.Dir == nil {
-		return nil, fmt.Errorf("quality probe engine is incomplete")
+		return nil, 0, fmt.Errorf("quality probe engine is incomplete")
 	}
-	if limit <= 0 {
-		limit = 200
+	if page < 1 {
+		page = 1
 	}
-	if limit > 500 {
-		limit = 500
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
 	}
 	items, err := e.Dir.ListByPlatform(ctx, PlatformOpenAI)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]LogItem, 0)
 	for i := range items {
@@ -250,10 +284,16 @@ func (e *Engine) ListLogs(ctx context.Context, limit int) ([]LogItem, error) {
 		}
 		return out[i].At.After(out[j].At)
 	})
-	if len(out) > limit {
-		out = out[:limit]
+	total := len(out)
+	start := (page - 1) * pageSize
+	if start >= total {
+		return []LogItem{}, total, nil
 	}
-	return out, nil
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return append([]LogItem(nil), out[start:end]...), total, nil
 }
 
 func (e *Engine) activeGroupSet(ctx context.Context) (map[int64]struct{}, error) {
@@ -341,7 +381,7 @@ func (e *Engine) probeRound(ctx context.Context, providerID int64, model string)
 	}
 	round.Samples = append(round.Samples, candySample)
 	challenges := BuildTraceChallenges(nil)
-	okCount := 0
+	outputs := make([]TraceOutput, 0, len(challenges))
 	var traceErrs []string
 	for i, challenge := range challenges {
 		result, probeErr := e.Prober.ProbeText(ctx, providerID, model, challenge.Prompt)
@@ -361,14 +401,31 @@ func (e *Engine) probeRound(ctx context.Context, providerID int64, model string)
 		sample.Answer = result.Answer
 		sample.Error = result.Error
 		if TraceSampleValid(result.Answer, challenge.ExpectedCount) {
-			okCount++
 			sample.OK = true
 		}
+		outputs = append(outputs, TraceOutput{
+			Text:          result.Answer,
+			ExpectedCount: challenge.ExpectedCount,
+		})
 		round.Samples = append(round.Samples, sample)
 	}
-	round.ModelTraceOK = okCount == len(challenges)
+	attr, attrErr := e.analyzeTrace(outputs)
+	if attrErr != nil {
+		traceErrs = append(traceErrs, attrErr.Error())
+	} else {
+		round.TracePrediction = attr.Prediction
+		round.TraceProbability = attr.Probability
+		round.ModelTraceOK = FingerprintMatchesGPT6(attr.Prediction)
+	}
 	round.ModelTraceError = strings.Join(traceErrs, "; ")
 	return round
+}
+
+func (e *Engine) analyzeTrace(outputs []TraceOutput) (TraceResult, error) {
+	if e != nil && e.AnalyzeTrace != nil {
+		return e.AnalyzeTrace(outputs)
+	}
+	return AnalyzeTraceOutputs(outputs)
 }
 
 func firstError(round ProbeRound) string {

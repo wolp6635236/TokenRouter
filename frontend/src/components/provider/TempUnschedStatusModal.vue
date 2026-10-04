@@ -82,7 +82,7 @@
             {{ t('admin.providers.tempUnschedulable.errorMessage') }}
           </p>
           <div class="mt-2 rounded-compact bg-gray-50 p-2 text-xs text-gray-700 dark:bg-dark-700 dark:text-gray-300">
-            {{ state?.error_message || '-' }}
+            {{ errorMessageText }}
           </div>
         </div>
 
@@ -131,6 +131,7 @@ import { adminAPI } from '@/api/admin'
 import type { Provider, TempUnschedulableStatus } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import { formatDateTime } from '@/utils/format'
+import { displayTempUnschedErrorMessage } from '@/components/provider/tempUnschedErrorMessage'
 
 const props = defineProps<{
   show: boolean
@@ -142,7 +143,7 @@ const emit = defineEmits<{
   reset: [provider: Provider]
 }>()
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const appStore = useAppStore()
 
 const loading = ref(false)
@@ -178,6 +179,8 @@ const triggerEvidenceText = computed(() => {
   }
   return t('admin.providers.tempUnschedulable.multipleErrorCount', { count })
 })
+
+const errorMessageText = computed(() => displayTempUnschedErrorMessage(state.value?.error_message, t, te))
 
 const triggeredAtText = computed(() => {
   if (!state.value?.triggered_at_unix) return '-'

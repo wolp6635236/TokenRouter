@@ -248,6 +248,7 @@ export default {
         type: 'Type',
         capacity: 'Capacity',
         notes: 'Notes',
+        qualityProbe: 'Quality probe',
         priority: 'Priority',
         billingRateMultiplier: 'Billing Rate',
         weight: 'Weight',
@@ -574,6 +575,9 @@ export default {
         remaining: 'Remaining',
         matchedKeyword: 'Matched Keyword',
         errorMessage: 'Error Details',
+        reasons: {
+          quality_degraded: 'Failed the quality probe'
+        },
         reset: 'Recover State',
         resetSuccess: 'Provider state recovered successfully',
         resetFailed: 'Failed to recover provider state',
@@ -632,12 +636,19 @@ export default {
       },
       testConnection: 'Test Connection',
       qualityProbe: 'Quality probe',
+      qualityProbeModelsEmpty: 'This account has no probeable models',
+      qualityProbeModelsLoadFailed: 'Failed to load models',
       qualityProbeRunning: 'Probing {name}',
       qualityProbePassed: '{name} passed the quality probe',
       qualityProbeDegraded: '{name} failed the quality probe ({count} consecutive)',
       qualityProbeKept: '{name} failed the quality probe and was kept as the last schedulable member',
       qualityProbeSkipped: '{name} skipped the probe: {reason}',
       qualityProbeFailed: 'Quality probe failed',
+      qualityProbeList: {
+        passed: 'Passed',
+        degraded: 'Degraded',
+        skipped: 'Skipped'
+      },
       qualityProbeLogs: {
         title: 'Quality probe log',
         description: 'Automatic and manual probe history. Each provider keeps the latest 50 runs. Open View to read the prompts and answers.',
@@ -656,6 +667,7 @@ export default {
         verdictSkipped: 'Skipped',
         model: 'Model',
         view: 'View',
+        fingerprint: 'Fingerprint',
         detailTitle: 'Probe Q&A for {name}',
         prompt: 'Prompt',
         answer: 'Answer',
@@ -665,7 +677,7 @@ export default {
       qualityProbeDialog: {
         title: 'Quality probe for {name}',
         running: 'Probing {name}…',
-        runningHint: 'This runs the candy prompt and three ModelTrace items in sequence. It often takes one to two minutes.',
+        runningHint: 'This runs the candy prompt and one ModelTrace item, then scores it against the fingerprint bank. It often finishes in under a minute.',
         passed: 'Not marked degraded: candy or ModelTrace passed.',
         degraded: 'Candy and ModelTrace both failed. Marked degraded.',
         kept: 'Candy and ModelTrace both failed. This account is the last schedulable member in a group, so it stays schedulable.',
