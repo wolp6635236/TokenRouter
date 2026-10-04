@@ -525,7 +525,7 @@ export default {
       qualityProbeDialog: {
         title: '{name} 的降智探测',
         running: '正在探测 {name}…',
-        runningHint: '会连续跑糖果题和一道 ModelTrace，用指纹库判断是不是 GPT-6，通常不到一分钟。',
+        runningHint: '会连续跑糖果题和一道 ModelTrace，用指纹库判断是不是本次请求的模型，通常不到一分钟。',
         passed: '本轮未记降智（糖果题和 ModelTrace 至少一项通过）。',
         degraded: '糖果题和 ModelTrace 都未通过，记为降智。',
         kept: '糖果题和 ModelTrace 都未通过。该账号在某个分组里已是最后一个可调度成员，保持可调度。',
@@ -546,7 +546,7 @@ export default {
           cycle_stopped: '自动循环已停止。',
           not_due: '尚未到自动探测时间。',
           group: '账号不在所选分组里，或所属分组都已禁用。',
-          account: '账号未开启：状态不是 active，或关掉了「参与调度」。',
+          model: '探测模型不在该账号的可用模型里。',
         },
       },
       reAuthorize: '重新授权',

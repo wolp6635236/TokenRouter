@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,8 @@ var (
 	fingerprintBankOnce sync.Once
 	fingerprintBankVal  *fingerprintBank
 	fingerprintBankErr  error
+	// 指纹库条目没有日期快照名，请求里的 gpt-6-astra-2026-10-01 对上 gpt-6-astra。
+	fingerprintDatedSuffix = regexp.MustCompile(`-\d{4}-\d{2}-\d{2}$`)
 )
 
 type fingerprintBank struct {
@@ -162,9 +165,16 @@ func analyzeTraceOutputs(outputs []TraceOutput, bank *fingerprintBank) (TraceRes
 	}, nil
 }
 
-// FingerprintMatchesGPT6 在归因结果属于 GPT-6 时返回 true。
-func FingerprintMatchesGPT6(prediction string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(prediction)), "gpt-6-")
+// FingerprintMatchesRequested 在归因结果与本次请求的模型为同一条时返回 true。
+func FingerprintMatchesRequested(requested, prediction string) bool {
+	want := fingerprintModelKey(requested)
+	got := fingerprintModelKey(prediction)
+	return want != "" && got != "" && want == got
+}
+
+func fingerprintModelKey(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return fingerprintDatedSuffix.ReplaceAllString(name, "")
 }
 
 func parseFingerprintNumbers(text string) []int {

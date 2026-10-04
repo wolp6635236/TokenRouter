@@ -131,7 +131,7 @@ func clipSampleText(text string) string {
 
 func shouldRecordLog(skipReason string) bool {
 	switch skipReason {
-	case "not_due", "cycle_stopped", "group", "account":
+	case "not_due", "cycle_stopped", "group", "account", "model":
 		return false
 	default:
 		return true

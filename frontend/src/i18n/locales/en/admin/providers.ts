@@ -677,7 +677,7 @@ export default {
       qualityProbeDialog: {
         title: 'Quality probe for {name}',
         running: 'Probing {name}…',
-        runningHint: 'This runs the candy prompt and one ModelTrace item, then scores it against the fingerprint bank. It often finishes in under a minute.',
+        runningHint: 'This runs the candy prompt and one ModelTrace item, then scores it against the fingerprint bank for the requested model. It often finishes in under a minute.',
         passed: 'Not marked degraded: candy or ModelTrace passed.',
         degraded: 'Candy and ModelTrace both failed. Marked degraded.',
         kept: 'Candy and ModelTrace both failed. This account is the last schedulable member in a group, so it stays schedulable.',
@@ -698,7 +698,7 @@ export default {
           cycle_stopped: 'The automatic loop has stopped.',
           not_due: 'The automatic probe is not due yet.',
           group: 'The account is outside the selected groups, or every group it belongs to is disabled.',
-          account: 'The account is off: status is not active, or scheduling is turned off.',
+          model: 'The probe model is not in this account’s available models.',
         },
       },
       reAuthorize: 'Re-Authorize',

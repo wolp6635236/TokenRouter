@@ -111,6 +111,13 @@ describe('admin ProvidersView priority column preferences', () => {
     })
   })
 
+  it('places quality_probe immediately after groups', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const keys = wrapper.findAll('[data-column]').map(node => node.attributes('data-column'))
+    expect(keys.indexOf('quality_probe')).toBe(keys.indexOf('groups') + 1)
+  })
+
   it('shows priority as a sortable column for fresh preferences', async () => {
     const wrapper = mountView()
     await flushPromises()

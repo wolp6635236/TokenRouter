@@ -70,3 +70,18 @@ func TestDefaultSettings(t *testing.T) {
 		t.Fatalf("email = %q, want %q", got.NotifyEmail, DefaultNotifyEmail)
 	}
 }
+
+func TestCatalogContainsModel(t *testing.T) {
+	if !CatalogContainsModel([]string{"gpt-5.6-terra", "gpt-6-astra"}, "gpt-6-astra") {
+		t.Fatal("exact astra should match")
+	}
+	if !CatalogContainsModel([]string{"gpt-6-astra-2026-10-01"}, "gpt-6-astra") {
+		t.Fatal("dated astra should match settings astra")
+	}
+	if CatalogContainsModel([]string{"gpt-5.6-terra", "gpt-6-sol"}, "gpt-6-astra") {
+		t.Fatal("terra whitelist should not match astra")
+	}
+	if !CatalogContainsModel([]string{"gpt-6-*"}, "gpt-6-astra") {
+		t.Fatal("wildcard should match")
+	}
+}

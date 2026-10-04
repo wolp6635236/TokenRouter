@@ -8,6 +8,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/qualityprobe"
 	qualityprobehttp "github.com/TokenFlux/TokenRouter/internal/qualityprobe/httpapi"
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
@@ -167,19 +168,14 @@ type qualityProbeCatalog struct {
 }
 
 func (c qualityProbeCatalog) Models(ctx context.Context, snap *qualityprobe.Snapshot) []string {
-	names := []string{qualityprobe.DefaultProbeModel}
 	if snap == nil {
-		return names
+		return nil
 	}
 	record, err := c.store.GetByID(ctx, snap.ID)
 	if err != nil || record == nil {
-		return names
+		return nil
 	}
-	mapping := provider.StringMappingFromRaw(record.Credentials["model_mapping"])
-	for key, value := range mapping {
-		names = append(names, key, value)
-	}
-	return names
+	return record.GetConfiguredRequestModels(provideradapter.ModelDefaults())
 }
 
 type qualityProbeMail struct {

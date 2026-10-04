@@ -216,6 +216,71 @@ func TestEngine_PassClearsTempAndSchedulesInterval(t *testing.T) {
 	}
 }
 
+func TestEngine_LunaFingerprintFailsAstraRequest(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			7: {
+				ID:          7,
+				Name:        "plus045",
+				Platform:    PlatformOpenAI,
+				Schedulable: true,
+				GroupIDs:    []int64{1},
+			},
+		},
+		schedulable: map[int64][]int64{1: {7, 8}},
+	}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Prober:   &scriptedProber{answers: []string{"wrong", numbers(400)}},
+		AnalyzeTrace: func([]TraceOutput) (TraceResult, error) {
+			return TraceResult{Prediction: "gpt-6-luna", Probability: 0.98}, nil
+		},
+		Now: func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 7, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TraceOK || got.CandyOK || !got.Degraded {
+		t.Fatalf("report = %+v", got)
+	}
+	if got.TracePrediction != "gpt-6-luna" {
+		t.Fatalf("prediction = %q", got.TracePrediction)
+	}
+}
+
+func TestEngine_CandyPassHoldsWhenFingerprintMismatches(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			7: {
+				ID:          7,
+				Name:        "plus045",
+				Platform:    PlatformOpenAI,
+				Schedulable: true,
+				GroupIDs:    []int64{1},
+			},
+		},
+		schedulable: map[int64][]int64{1: {7, 8}},
+	}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Prober:   &scriptedProber{answers: []string{"answer 21", numbers(400)}},
+		AnalyzeTrace: func([]TraceOutput) (TraceResult, error) {
+			return TraceResult{Prediction: "gpt-6-luna", Probability: 0.98}, nil
+		},
+		Now: func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 7, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.CandyOK || got.TraceOK || got.Degraded {
+		t.Fatalf("report = %+v", got)
+	}
+}
+
 func TestEngine_KeepLastDoesNotTempUnschedule(t *testing.T) {
 	dir := &memDir{
 		items: map[int64]*Snapshot{
@@ -598,6 +663,7 @@ func TestEngine_AutoRunsWhenOneGroupActive(t *testing.T) {
 		Settings: &memSettings{raw: enabledJSON()},
 		Dir:      dir,
 		Groups:   memGroups{ids: []int64{9}},
+		Catalog:  stubCatalog{models: []string{"gpt-6-astra"}},
 		Prober:   &scriptedProber{answers: []string{"21", numbers(400)}},
 		Now:      func() time.Time { return time.Unix(1, 0) },
 	}
@@ -607,6 +673,46 @@ func TestEngine_AutoRunsWhenOneGroupActive(t *testing.T) {
 	}
 	if got.Skipped {
 		t.Fatalf("report = %+v", got)
+	}
+}
+
+func TestEngine_AutoSkipWhenProbeModelMissing(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {
+				ID:       1,
+				Name:     "plus065-terra",
+				Platform: PlatformOpenAI,
+				GroupIDs: []int64{9},
+			},
+		},
+		schedulable: map[int64][]int64{9: {1, 2}},
+	}
+	prober := &scriptedProber{answers: []string{"21", numbers(400)}}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{9}},
+		Catalog:  stubCatalog{models: []string{"gpt-5.6-terra", "gpt-6-sol"}},
+		Prober:   prober,
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Skipped || got.SkipReason != "model" {
+		t.Fatalf("report = %+v", got)
+	}
+	if prober.index != 0 {
+		t.Fatal("auto probe ran without the settings model")
+	}
+	manual, err := engine.Run(context.Background(), 1, TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.SkipReason == "model" {
+		t.Fatal("manual probe should ignore missing settings model")
 	}
 }
 

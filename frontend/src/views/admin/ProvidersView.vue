@@ -234,7 +234,7 @@
       <template #table>
         <div ref="providerTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
-          column-order-storage-key="admin-providers-column-order"
+          :column-order-storage-key="PROVIDERS_COLUMN_ORDER_KEY"
           ref="dataTableRef"
           :columns="cols"
           :data="providers"
@@ -556,6 +556,10 @@ import ReAuthProviderModal from '@/components/admin/provider/ReAuthProviderModal
 import ProviderTestModal from '@/components/admin/provider/ProviderTestModal.vue'
 import QualityProbeResultModal from '@/components/admin/provider/QualityProbeResultModal.vue'
 import QualityProbeResultBadge from '@/components/admin/provider/QualityProbeResultBadge.vue'
+import {
+  PROVIDERS_COLUMN_ORDER_KEY,
+  migrateQualityProbeColumnOrder
+} from '@/components/admin/provider/providersColumnOrder'
 import ProviderStatsModal from '@/components/admin/provider/ProviderStatsModal.vue'
 import AdvancedSchedulerScoreModal from '@/components/admin/provider/AdvancedSchedulerScoreModal.vue'
 import CodexInviteResetModal from '@/components/admin/provider/CodexInviteResetModal.vue'
@@ -1552,6 +1556,7 @@ const toggleAutoRefreshDropdown = () => {
 }
 
 if (typeof window !== 'undefined') {
+  migrateQualityProbeColumnOrder(window.localStorage)
   loadSavedColumns()
   loadSavedAutoRefresh()
 }
@@ -2169,6 +2174,7 @@ const allColumns = computed(() => {
     { key: 'today_stats', label: t('admin.providers.columns.todayStats'), sortable: false }
   ]
   c.push({ key: 'groups', label: t('admin.providers.columns.groups'), sortable: false })
+  c.push({ key: 'quality_probe', label: t('admin.providers.columns.qualityProbe'), sortable: false })
   c.push({ key: 'usage', label: t('admin.providers.columns.usageWindows'), sortable: false })
   c.push(
     { key: 'proxy', label: t('admin.providers.columns.proxy'), sortable: false },
@@ -2179,7 +2185,6 @@ const allColumns = computed(() => {
     { key: 'created_at', label: t('admin.providers.columns.createdAt'), sortable: true },
     { key: 'expires_at', label: t('admin.providers.columns.expiresAt'), sortable: true },
     { key: 'notes', label: t('admin.providers.columns.notes'), sortable: false },
-    { key: 'quality_probe', label: t('admin.providers.columns.qualityProbe'), sortable: false },
     { key: 'actions', label: t('admin.providers.columns.actions'), sortable: false }
   )
   return c

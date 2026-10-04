@@ -74,11 +74,15 @@ func (e *Engine) runWithActive(
 	if trigger == TriggerAuto && !due(state, now) {
 		return e.finishSkip(ctx, snap, state, trigger, "not_due")
 	}
-	model := ResolveProbeModel(cfg.Model, e.catalogModels(ctx, snap))
+	catalog := e.catalogModels(ctx, snap)
+	model := ResolveProbeModel(cfg.Model, catalog)
 	if trigger == TriggerManual && manualModel != "" {
 		model = manualModel
 	}
 	report.Model = model
+	if trigger == TriggerAuto && e.Catalog != nil && !CatalogContainsModel(catalog, model) {
+		return e.finishSkip(ctx, snap, state, trigger, "model")
+	}
 	round := e.probeRound(ctx, providerID, model)
 	held := e.lastSchedulableHeld(ctx, snap)
 	decision := Decide(DecideInput{
@@ -415,7 +419,7 @@ func (e *Engine) probeRound(ctx context.Context, providerID int64, model string)
 	} else {
 		round.TracePrediction = attr.Prediction
 		round.TraceProbability = attr.Probability
-		round.ModelTraceOK = FingerprintMatchesGPT6(attr.Prediction)
+		round.ModelTraceOK = FingerprintMatchesRequested(model, attr.Prediction)
 	}
 	round.ModelTraceError = strings.Join(traceErrs, "; ")
 	return round

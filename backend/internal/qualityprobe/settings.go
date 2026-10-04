@@ -128,6 +128,33 @@ func ResolveProbeModel(configured string, catalog []string) string {
 	return astras[len(astras)-1]
 }
 
+// CatalogContainsModel 判断该提供商可用模型里有没有本轮探测模型。
+func CatalogContainsModel(catalog []string, model string) bool {
+	want := catalogModelKey(model)
+	if want == "" {
+		return false
+	}
+	for _, item := range catalog {
+		got := catalogModelKey(item)
+		if got == "" {
+			continue
+		}
+		if got == want {
+			return true
+		}
+		if strings.HasSuffix(got, "*") && strings.HasPrefix(want, strings.TrimSuffix(got, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
+func catalogModelKey(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.TrimPrefix(normalized, "openai/")
+	return fingerprintModelKey(normalized)
+}
+
 func isGPT6AstraModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	normalized = strings.TrimPrefix(normalized, "openai/")

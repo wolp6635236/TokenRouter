@@ -16,12 +16,26 @@ func TestParseFingerprintNumbers_LongestRun(t *testing.T) {
 	}
 }
 
-func TestFingerprintMatchesGPT6(t *testing.T) {
-	if !FingerprintMatchesGPT6("gpt-6-astra") || !FingerprintMatchesGPT6("gpt-6-sol") {
-		t.Fatal("gpt-6 should pass")
+func TestFingerprintMatchesRequested(t *testing.T) {
+	cases := []struct {
+		requested  string
+		prediction string
+		want       bool
+	}{
+		{requested: "gpt-6-astra", prediction: "gpt-6-astra", want: true},
+		{requested: "GPT-6-Astra", prediction: "gpt-6-astra", want: true},
+		{requested: "gpt-6-astra-2026-10-01", prediction: "gpt-6-astra", want: true},
+		{requested: "gpt-6-astra", prediction: "gpt-6-luna", want: false},
+		{requested: "gpt-6-astra", prediction: "gpt-6-sol", want: false},
+		{requested: "gpt-6-astra", prediction: "gpt-5.6-terra", want: false},
+		{requested: "gpt-6-luna", prediction: "gpt-6-luna", want: true},
+		{requested: "", prediction: "gpt-6-astra", want: false},
 	}
-	if FingerprintMatchesGPT6("gpt-5.6-terra") || FingerprintMatchesGPT6("claude-opus-5") {
-		t.Fatal("non gpt-6 should fail")
+	for _, tc := range cases {
+		got := FingerprintMatchesRequested(tc.requested, tc.prediction)
+		if got != tc.want {
+			t.Fatalf("requested=%q prediction=%q got=%v want=%v", tc.requested, tc.prediction, got, tc.want)
+		}
 	}
 }
 
@@ -41,8 +55,8 @@ func TestAnalyzeTraceOutputs_TerraSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if FingerprintMatchesGPT6(got.Prediction) {
-		t.Fatalf("prediction = %s p=%f, want a non-gpt-6 model", got.Prediction, got.Probability)
+	if FingerprintMatchesRequested("gpt-6-astra", got.Prediction) {
+		t.Fatalf("prediction = %s p=%f, want a model other than the requested gpt-6-astra", got.Prediction, got.Probability)
 	}
 	t.Logf("prediction = %s p=%.4f", got.Prediction, got.Probability)
 }
