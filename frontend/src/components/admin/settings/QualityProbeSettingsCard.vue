@@ -25,6 +25,31 @@
         :hint="t('admin.settings.qualityProbe.enabledHint')"
       />
       <SettingRow
+        id="quality-probe-groups"
+        :label="t('admin.settings.qualityProbe.groups')"
+        :hint="t('admin.settings.qualityProbe.groupsHint')"
+      >
+        <div class="max-h-40 overflow-auto rounded-control border border-gray-200 p-3 dark:border-dark-600">
+          <p v-if="groupsLoading" class="py-2 text-center text-xs text-gray-500">{{ t('common.loading') }}</p>
+          <p v-else-if="!groups.length" class="py-2 text-center text-xs text-gray-500">{{ t('admin.pricing.form.noGroupsAvailable') }}</p>
+          <div v-else class="flex flex-wrap gap-2">
+            <label
+              v-for="group in groups"
+              :key="group.id"
+              class="inline-flex max-w-full cursor-pointer items-center gap-2 rounded-control p-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-dark-700"
+              :class="[
+                form.group_ids.includes(group.id) ? 'bg-primary-50 dark:bg-primary-500/8 dark:text-primary-500' : '',
+                group.status === 'inactive' ? 'opacity-60' : '',
+              ]"
+            >
+              <input v-model="form.group_ids" type="checkbox" :value="group.id" class="h-4 w-4 shrink-0 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500" />
+              <GroupBadge :name="group.name" :display-brand="group.display_brand" :rate-multiplier="group.rate_multiplier" class="min-w-0" />
+              <span v-if="group.status === 'inactive'" class="shrink-0 text-xs text-gray-400">{{ t('admin.settings.qualityProbe.groupInactive') }}</span>
+            </label>
+          </div>
+        </div>
+      </SettingRow>
+      <SettingRow
         id="quality-probe-interval"
         field
         label-for="quality-probe-interval"
@@ -117,23 +142,31 @@ import SettingRow from '@/components/common/settings/SettingRow.vue'
 import SettingToggleRow from '@/components/common/settings/SettingToggleRow.vue'
 import SettingsCard from '@/components/common/settings/SettingsCard.vue'
 import SettingsSection from '@/components/common/settings/SettingsSection.vue'
+import GroupBadge from '@/components/common/GroupBadge.vue'
+import type { AdminGroup } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 const loading = ref(false)
 const loaded = ref(false)
+const groupsLoading = ref(false)
+const groups = ref<AdminGroup[]>([])
 const form = reactive<QualityProbeSettings>({
   enabled: false,
   interval_minutes: 30,
   model: 'gpt-6-astra',
   cooldown_minutes: 5,
   max_attempts: 3,
-  notify_email: '295783453@qq.com'
+  notify_email: '295783453@qq.com',
+  group_ids: []
 })
 const snapshot = ref('')
 
 function serialize(value: QualityProbeSettings) {
-  return JSON.stringify(value)
+  return JSON.stringify({
+    ...value,
+    group_ids: [...(value.group_ids || [])].sort((a, b) => a - b)
+  })
 }
 
 const dirty = computed(() => loaded.value && serialize(form) !== snapshot.value)
@@ -143,8 +176,17 @@ async function load() {
   try {
     const data = await adminAPI.settings.getQualityProbeSettings()
     Object.assign(form, data)
+    form.group_ids = [...(data.group_ids || [])]
     snapshot.value = serialize(form)
     loaded.value = true
+    groupsLoading.value = true
+    try {
+      groups.value = await adminAPI.groups.getAllIncludingInactive()
+    } catch {
+      groups.value = []
+    } finally {
+      groupsLoading.value = false
+    }
   } catch (error: any) {
     appStore.showError(error?.message || t('admin.settings.qualityProbe.loadFailed'))
   } finally {
@@ -154,7 +196,10 @@ async function load() {
 
 async function save() {
   try {
-    const data = await adminAPI.settings.saveQualityProbeSettings({ ...form })
+    const data = await adminAPI.settings.saveQualityProbeSettings({
+      ...form,
+      group_ids: [...form.group_ids]
+    })
     Object.assign(form, data)
     snapshot.value = serialize(form)
     return true

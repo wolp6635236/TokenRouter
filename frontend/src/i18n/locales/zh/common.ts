@@ -134,6 +134,7 @@ export default {
     subscriptions: '订阅管理',
     userSubscriptions: '用户订阅',
     providers: '提供商管理',
+    qualityProbe: '降智探测',
     proxies: 'IP管理',
     redeemCodes: '兑换码',
     ops: '运维监控',

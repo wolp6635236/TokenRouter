@@ -10,18 +10,21 @@ import (
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/qualityprobe"
 	qualityprobehttp "github.com/TokenFlux/TokenRouter/internal/qualityprobe/httpapi"
+	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 func provideQualityProbeEngine(
 	store *settings.Store,
 	providers *providerpostgres.ProviderStore,
+	groups *routingpostgres.GroupStore,
 	tests *provider.TestService,
 	mailer *notification.Mailer,
 ) *qualityprobe.Engine {
 	return &qualityprobe.Engine{
 		Settings: store,
 		Dir:      qualityProbeDirectory{store: providers},
+		Groups:   qualityProbeGroups{store: groups},
 		Prober:   qualityProbeProber{tests: tests},
 		Catalog:  qualityProbeCatalog{store: providers},
 		Mail:     qualityProbeMail{mailer: mailer},
@@ -101,12 +104,25 @@ func snapshotFromRecord(record *provider.Record) qualityprobe.Snapshot {
 		ID:                      record.ID,
 		Name:                    record.Name,
 		Platform:                record.Platform,
+		Status:                  record.Status,
+		SchedulingOff:           !record.Schedulable,
 		Schedulable:             record.IsSchedulable(),
 		GroupIDs:                record.GroupIDs,
 		Extra:                   record.Extra,
 		TempUnschedulableUntil:  record.TempUnschedulableUntil,
 		TempUnschedulableReason: record.TempUnschedulableReason,
 	}
+}
+
+type qualityProbeGroups struct {
+	store *routingpostgres.GroupStore
+}
+
+func (g qualityProbeGroups) ActiveIDs(ctx context.Context) ([]int64, error) {
+	if g.store == nil {
+		return nil, nil
+	}
+	return g.store.ListActiveIDs(ctx)
 }
 
 type qualityProbeProber struct {

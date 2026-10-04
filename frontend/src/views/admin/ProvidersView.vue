@@ -479,6 +479,14 @@
     <EditProviderModal :show="showEdit" :provider="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleProviderUpdated" />
     <ReAuthProviderModal :show="showReAuth" :provider="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleProviderUpdated" />
     <ProviderTestModal :show="showTest" :provider="testingAcc" @close="closeTestModal" />
+    <QualityProbeResultModal
+      :show="showQualityProbe"
+      :provider="qualityProbeAcc"
+      :loading="qualityProbeLoading"
+      :report="qualityProbeReport"
+      :error="qualityProbeError"
+      @close="closeQualityProbeModal"
+    />
     <ProviderStatsModal :show="showStats" :provider="statsAcc" @close="closeStatsModal" />
     <AdvancedSchedulerScoreModal :show="showAdvancedSchedulerScore" :provider="advancedSchedulerScoreAcc" @close="closeAdvancedSchedulerScoreModal" />
     <CodexInviteResetModal :show="showInviteReset" :provider="inviteResetAcc" @close="closeInviteResetModal" @updated="enterAutoRefreshSilentWindow" />
@@ -521,6 +529,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
+import type { QualityProbeReport } from '@/api/admin/providers'
 import { isUpstreamUsageQueryEnabled, supportsUpstreamUsageQuery } from '@/utils/upstreamUsage'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
@@ -542,6 +551,7 @@ import ProviderActionMenu from '@/components/admin/provider/ProviderActionMenu.v
 import ImportDataModal from '@/components/admin/provider/ImportDataModal.vue'
 import ReAuthProviderModal from '@/components/admin/provider/ReAuthProviderModal.vue'
 import ProviderTestModal from '@/components/admin/provider/ProviderTestModal.vue'
+import QualityProbeResultModal from '@/components/admin/provider/QualityProbeResultModal.vue'
 import ProviderStatsModal from '@/components/admin/provider/ProviderStatsModal.vue'
 import AdvancedSchedulerScoreModal from '@/components/admin/provider/AdvancedSchedulerScoreModal.vue'
 import CodexInviteResetModal from '@/components/admin/provider/CodexInviteResetModal.vue'
@@ -643,6 +653,7 @@ const showDeleteDialog = ref(false)
 const showCreateShadowDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
+const showQualityProbe = ref(false)
 const showStats = ref(false)
 const showAdvancedSchedulerScore = ref(false)
 const showInviteReset = ref(false)
@@ -655,6 +666,11 @@ const deletingAcc = ref<Provider | null>(null)
 const creatingShadowAcc = ref<Provider | null>(null)
 const reAuthAcc = ref<Provider | null>(null)
 const testingAcc = ref<Provider | null>(null)
+const qualityProbeAcc = ref<Provider | null>(null)
+const qualityProbeLoading = ref(false)
+const qualityProbeReport = ref<QualityProbeReport | null>(null)
+const qualityProbeError = ref('')
+let qualityProbeAbort: AbortController | null = null
 const statsAcc = ref<Provider | null>(null)
 const advancedSchedulerScoreAcc = ref<Provider | null>(null)
 const inviteResetAcc = ref<Provider | null>(null)
@@ -1764,6 +1780,7 @@ const isAnyModalOpen = computed(() => {
     showDeleteDialog.value ||
     showReAuth.value ||
     showTest.value ||
+    showQualityProbe.value ||
     showStats.value ||
     showInviteReset.value ||
     showSchedulePanel.value ||
@@ -2721,24 +2738,44 @@ const closeInviteResetModal = () => { showInviteReset.value = false; inviteReset
 const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = null }
 const handleTest = (a: Provider) => { testingAcc.value = a; showTest.value = true }
 const qualityProbeInFlight = new Set<number>()
+const closeQualityProbeModal = () => {
+  qualityProbeAbort?.abort()
+  qualityProbeAbort = null
+  showQualityProbe.value = false
+  qualityProbeAcc.value = null
+  qualityProbeLoading.value = false
+  qualityProbeReport.value = null
+  qualityProbeError.value = ''
+}
 const handleQualityProbe = async (a: Provider) => {
-  if (qualityProbeInFlight.has(a.id)) return
+  if (qualityProbeInFlight.has(a.id)) {
+    qualityProbeAcc.value = a
+    showQualityProbe.value = true
+    return
+  }
+  qualityProbeAbort?.abort()
+  const abort = new AbortController()
+  qualityProbeAbort = abort
   qualityProbeInFlight.add(a.id)
+  qualityProbeAcc.value = a
+  qualityProbeReport.value = null
+  qualityProbeError.value = ''
+  qualityProbeLoading.value = true
+  showQualityProbe.value = true
   try {
-    const report = await adminAPI.providers.runQualityProbe(a.id)
-    if (report.skipped) {
-      appStore.showSuccess(t('admin.providers.qualityProbeSkipped', { name: a.name, reason: report.skip_reason || '' }))
-    } else if (report.kept_for_coverage) {
-      appStore.showError(t('admin.providers.qualityProbeKept', { name: a.name }))
-    } else if (report.degraded) {
-      appStore.showError(t('admin.providers.qualityProbeDegraded', { name: a.name, count: report.consecutive_fails }))
-    } else {
-      appStore.showSuccess(t('admin.providers.qualityProbePassed', { name: a.name }))
+    const report = await adminAPI.providers.runQualityProbe(a.id, { signal: abort.signal })
+    if (abort.signal.aborted) {
+      return
     }
+    qualityProbeReport.value = report
     reload()
   } catch (error: any) {
-    appStore.showError(error?.message || t('admin.providers.qualityProbeFailed'))
+    if (abort.signal.aborted || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') {
+      return
+    }
+    qualityProbeError.value = error?.message || t('admin.providers.qualityProbeFailed')
   } finally {
+    qualityProbeLoading.value = false
     qualityProbeInFlight.delete(a.id)
   }
 }

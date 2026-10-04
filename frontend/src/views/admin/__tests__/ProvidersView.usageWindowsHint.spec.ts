@@ -104,6 +104,7 @@ function mountView() {
         ImportDataModal: true,
         ReAuthProviderModal: true,
         ProviderTestModal: true,
+        QualityProbeResultModal: true,
         ProviderStatsModal: true,
         ScheduledTestsPanel: true,
         SyncFromCrsModal: true,

@@ -258,6 +258,7 @@ func TestEngine_NotDueSkipsProbe(t *testing.T) {
 			1: {
 				ID:       1,
 				Platform: PlatformOpenAI,
+				GroupIDs: []int64{1},
 				Extra: map[string]any{
 					ExtraKey: map[string]any{
 						"next_retry_at": until.Format(time.RFC3339),
@@ -282,5 +283,190 @@ func TestEngine_NotDueSkipsProbe(t *testing.T) {
 	}
 	if prober.index != 0 {
 		t.Fatal("probe ran before due")
+	}
+}
+
+func TestEngine_AutoSkipOutsideGroups(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "a", Platform: PlatformOpenAI, GroupIDs: []int64{2}},
+		},
+	}
+	prober := &scriptedProber{answers: []string{"21"}}
+	engine := &Engine{
+		Settings: &memSettings{raw: `{"enabled":true,"interval_minutes":30,"group_ids":[9],"max_attempts":3,"cooldown_minutes":5,"notify_email":"a@b.c","model":"gpt-6-astra"}`},
+		Dir:      dir,
+		Prober:   prober,
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Skipped || got.SkipReason != "group" {
+		t.Fatalf("report = %+v", got)
+	}
+	if prober.index != 0 {
+		t.Fatal("auto probe ran outside selected groups")
+	}
+	manual, err := engine.Run(context.Background(), 1, TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.Skipped && manual.SkipReason == "group" {
+		t.Fatal("manual probe should ignore group filter")
+	}
+}
+
+func TestEngine_ListLogsOrdersNewestFirst(t *testing.T) {
+	now := time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			7: {
+				ID:          7,
+				Name:        "codex-a",
+				Platform:    PlatformOpenAI,
+				Schedulable: true,
+				GroupIDs:    []int64{1},
+			},
+		},
+		schedulable: map[int64][]int64{1: {7, 8}},
+	}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Prober:   &scriptedProber{answers: []string{"21", numbers(400), numbers(400), numbers(400)}},
+		Dir:      dir,
+		Now:      func() time.Time { return now },
+	}
+	if _, err := engine.Run(context.Background(), 7, TriggerManual); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := engine.ListLogs(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || logs[0].ProviderID != 7 || logs[0].Trigger != TriggerManual {
+		t.Fatalf("logs = %+v", logs)
+	}
+	if len(logs[0].Samples) != 4 || logs[0].Samples[0].Name != "candy" || logs[0].Samples[0].Answer != "21" {
+		t.Fatalf("samples = %+v", logs[0].Samples)
+	}
+}
+
+type memGroups struct {
+	ids []int64
+}
+
+func (g memGroups) ActiveIDs(context.Context) ([]int64, error) {
+	return g.ids, nil
+}
+
+func TestEngine_AutoSkipInactiveAccount(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Platform: PlatformOpenAI, Status: "error", GroupIDs: []int64{1}},
+		},
+	}
+	prober := &scriptedProber{answers: []string{"21"}}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Prober:   prober,
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Skipped || got.SkipReason != "account" {
+		t.Fatalf("report = %+v", got)
+	}
+	if prober.index != 0 {
+		t.Fatal("auto probe ran on inactive account")
+	}
+	manual, err := engine.Run(context.Background(), 1, TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.SkipReason == "account" {
+		t.Fatal("manual probe should ignore account filter")
+	}
+}
+
+func TestEngine_AutoSkipSchedulingOff(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Platform: PlatformOpenAI, SchedulingOff: true, GroupIDs: []int64{1}},
+		},
+	}
+	prober := &scriptedProber{answers: []string{"21"}}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Prober:   prober,
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Skipped || got.SkipReason != "account" {
+		t.Fatalf("report = %+v", got)
+	}
+	if prober.index != 0 {
+		t.Fatal("auto probe ran with scheduling off")
+	}
+}
+
+func TestEngine_AutoSkipDisabledGroup(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Platform: PlatformOpenAI, GroupIDs: []int64{8, 9}},
+		},
+	}
+	prober := &scriptedProber{answers: []string{"21"}}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{3}},
+		Prober:   prober,
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Skipped || got.SkipReason != "group" {
+		t.Fatalf("report = %+v", got)
+	}
+	if prober.index != 0 {
+		t.Fatal("auto probe ran in disabled groups")
+	}
+}
+
+func TestEngine_AutoRunsWhenOneGroupActive(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {
+				ID:       1,
+				Platform: PlatformOpenAI,
+				GroupIDs: []int64{8, 9},
+			},
+		},
+		schedulable: map[int64][]int64{8: {1, 2}, 9: {1}},
+	}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{9}},
+		Prober:   &scriptedProber{answers: []string{"21", numbers(400), numbers(400), numbers(400)}},
+		Now:      func() time.Time { return time.Unix(1, 0) },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Skipped {
+		t.Fatalf("report = %+v", got)
 	}
 }

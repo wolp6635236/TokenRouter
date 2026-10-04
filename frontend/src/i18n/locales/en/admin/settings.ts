@@ -27,7 +27,7 @@ export default {
         title: 'Quality probe',
         description: 'Run candy and ModelTrace checks on OpenAI providers. The switch is off by default.',
         enabled: 'Enable scheduled probes',
-        enabledHint: 'When on, the server checks due OpenAI providers every minute through the test channel. Upstream accounts pay the usage.',
+        enabledHint: 'When on, the server checks due accounts every minute. It only probes OpenAI providers that are active, have scheduling turned on, and sit in an enabled group. Upstream accounts pay the usage.',
         intervalMinutes: 'Interval after a pass (minutes)',
         intervalHint: 'Wait this long after a passing probe before the next automatic run.',
         model: 'Probe model',
@@ -38,6 +38,9 @@ export default {
         maxAttemptsHint: 'After this many consecutive failures the server emails you and stops the automatic loop.',
         notifyEmail: 'Notification email',
         notifyEmailHint: 'The third failure sends mail here.',
+        groups: 'Automatic probe groups',
+        groupsHint: 'Multi-select. Leave empty to cover every enabled OpenAI group. The timer only probes OpenAI accounts that are active, have scheduling turned on, and belong to an enabled group in that set. Disabled groups are skipped. The provider menu still probes any OpenAI account.',
+        groupInactive: 'Disabled',
         loadFailed: 'Failed to load quality probe settings',
         saveFailed: 'Failed to save quality probe settings'
       },

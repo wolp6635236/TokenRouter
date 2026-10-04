@@ -3,12 +3,22 @@ package qualityprobe
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
 
 // Run 对单个提供商执行一轮探测并应用决策。
 func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (RunReport, error) {
+	return e.runWithActive(ctx, providerID, trigger, nil)
+}
+
+func (e *Engine) runWithActive(
+	ctx context.Context,
+	providerID int64,
+	trigger Trigger,
+	active map[int64]struct{},
+) (RunReport, error) {
 	report := RunReport{ProviderID: providerID}
 	if e == nil || e.Dir == nil {
 		return report, fmt.Errorf("quality probe engine is incomplete")
@@ -26,29 +36,32 @@ func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (Ru
 	}
 	state := ParseStoredState(snap.Extra)
 	if !cfg.Enabled {
-		return RunReport{ProviderID: providerID, Skipped: true, SkipReason: "disabled"}, nil
+		return e.finishSkip(ctx, snap, state, trigger, "disabled")
 	}
 	if snap.Platform != PlatformOpenAI {
-		return RunReport{ProviderID: providerID, Skipped: true, SkipReason: "platform"}, nil
+		return e.finishSkip(ctx, snap, state, trigger, "platform")
+	}
+	if trigger == TriggerAuto && !AccountAutoEligible(snap) {
+		return e.finishSkip(ctx, snap, state, trigger, "account")
+	}
+	if trigger == TriggerAuto {
+		if active == nil {
+			loaded, groupErr := e.activeGroupSet(ctx)
+			if groupErr != nil {
+				return report, groupErr
+			}
+			active = loaded
+		}
+		if !AutoScopeAllowed(cfg.GroupIDs, snap.GroupIDs, active) {
+			return e.finishSkip(ctx, snap, state, trigger, "group")
+		}
 	}
 	now := e.now()
 	if trigger == TriggerAuto && state.CycleStopped {
-		return RunReport{
-			ProviderID:       providerID,
-			Skipped:          true,
-			SkipReason:       "cycle_stopped",
-			ConsecutiveFails: state.ConsecutiveFails,
-			CycleStopped:     true,
-		}, nil
+		return e.finishSkip(ctx, snap, state, trigger, "cycle_stopped")
 	}
 	if trigger == TriggerAuto && !due(state, now) {
-		return RunReport{
-			ProviderID:       providerID,
-			Skipped:          true,
-			SkipReason:       "not_due",
-			ConsecutiveFails: state.ConsecutiveFails,
-			CycleStopped:     state.CycleStopped,
-		}, nil
+		return e.finishSkip(ctx, snap, state, trigger, "not_due")
 	}
 	model := ResolveProbeModel(cfg.Model, e.catalogModels(ctx, snap))
 	report.Model = model
@@ -63,14 +76,7 @@ func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (Ru
 		Trigger:             trigger,
 	})
 	if decision.Skip {
-		return RunReport{
-			ProviderID:       providerID,
-			Skipped:          true,
-			SkipReason:       "decide",
-			ConsecutiveFails: decision.ConsecutiveFails,
-			CycleStopped:     decision.StopCycle,
-			Error:            firstError(round),
-		}, nil
+		return e.finishSkip(ctx, snap, state, trigger, "decide")
 	}
 	next := nextRetry(now, cfg, decision)
 	stored := StoredState{
@@ -82,9 +88,6 @@ func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (Ru
 		LastError:        firstError(round),
 		LastModel:        model,
 		UpdatedAt:        now,
-	}
-	if err := e.Dir.UpdateExtra(ctx, providerID, stored.extraUpdate()); err != nil {
-		return report, err
 	}
 	if decision.ClearTemp {
 		if strings.TrimSpace(snap.TempUnschedulableReason) == "" ||
@@ -105,13 +108,13 @@ func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (Ru
 		subject, body := emailCopy(snap, stored)
 		if err := e.Mail.Send(ctx, cfg.NotifyEmail, subject, body); err != nil {
 			stored.LastError = joinErrors(stored.LastError, err.Error())
-			_ = e.Dir.UpdateExtra(ctx, providerID, stored.extraUpdate())
 		} else {
 			emailSent = true
 		}
 	}
-	return RunReport{
-		ProviderID:       providerID,
+	stored.History = appendProbeLog(state.History, ProbeLog{
+		At:               now,
+		Trigger:          trigger,
 		Model:            model,
 		CandyOK:          round.CandyOK,
 		TraceOK:          round.ModelTraceOK,
@@ -122,6 +125,27 @@ func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (Ru
 		ConsecutiveFails: decision.ConsecutiveFails,
 		CycleStopped:     decision.StopCycle,
 		Error:            stored.LastError,
+		Samples:          round.Samples,
+	})
+	if err := e.Dir.UpdateExtra(ctx, providerID, stored.extraUpdate()); err != nil {
+		return report, err
+	}
+	return RunReport{
+		ProviderID:       providerID,
+		ProviderName:     snap.Name,
+		Model:            model,
+		CandyOK:          round.CandyOK,
+		TraceOK:          round.ModelTraceOK,
+		Degraded:         decision.Degraded,
+		TempUnscheduled:  decision.TempUnschedule,
+		KeptForCoverage:  decision.SkipBecauseLastInGroup,
+		EmailSent:        emailSent,
+		ConsecutiveFails: decision.ConsecutiveFails,
+		CycleStopped:     decision.StopCycle,
+		Error:            stored.LastError,
+		Trigger:          trigger,
+		At:               now,
+		Samples:          round.Samples,
 	}, nil
 }
 
@@ -138,11 +162,15 @@ func (e *Engine) RunDue(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	active, err := e.activeGroupSet(ctx)
+	if err != nil {
+		return
+	}
 	for i := range items {
 		if ctx.Err() != nil {
 			return
 		}
-		_, _ = e.Run(ctx, items[i].ID, TriggerAuto)
+		_, _ = e.runWithActive(ctx, items[i].ID, TriggerAuto, active)
 	}
 }
 
@@ -159,6 +187,88 @@ func (e *Engine) Status(ctx context.Context, providerID int64) (StoredState, err
 		return StoredState{}, fmt.Errorf("provider %d is missing", providerID)
 	}
 	return ParseStoredState(snap.Extra), nil
+}
+
+func (e *Engine) finishSkip(ctx context.Context, snap *Snapshot, state StoredState, trigger Trigger, reason string) (RunReport, error) {
+	report := RunReport{
+		ProviderID:       snap.ID,
+		ProviderName:     snap.Name,
+		Skipped:          true,
+		SkipReason:       reason,
+		ConsecutiveFails: state.ConsecutiveFails,
+		CycleStopped:     state.CycleStopped,
+		Trigger:          trigger,
+		At:               e.now(),
+	}
+	if !shouldRecordLog(reason) {
+		return report, nil
+	}
+	state.History = appendProbeLog(state.History, ProbeLog{
+		At:               report.At,
+		Trigger:          trigger,
+		Skipped:          true,
+		SkipReason:       reason,
+		ConsecutiveFails: state.ConsecutiveFails,
+		CycleStopped:     state.CycleStopped,
+	})
+	state.UpdatedAt = report.At
+	if err := e.Dir.UpdateExtra(ctx, snap.ID, state.extraUpdate()); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
+// ListLogs 汇总 OpenAI 提供商 Extra 里的探测记录，按时间倒序。
+func (e *Engine) ListLogs(ctx context.Context, limit int) ([]LogItem, error) {
+	if e == nil || e.Dir == nil {
+		return nil, fmt.Errorf("quality probe engine is incomplete")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	items, err := e.Dir.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LogItem, 0)
+	for i := range items {
+		state := ParseStoredState(items[i].Extra)
+		for _, entry := range state.History {
+			out = append(out, LogItem{
+				ProviderID:   items[i].ID,
+				ProviderName: items[i].Name,
+				ProbeLog:     entry,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].At.Equal(out[j].At) {
+			return out[i].ProviderID > out[j].ProviderID
+		}
+		return out[i].At.After(out[j].At)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (e *Engine) activeGroupSet(ctx context.Context) (map[int64]struct{}, error) {
+	if e == nil || e.Groups == nil {
+		return nil, nil
+	}
+	ids, err := e.Groups.ActiveIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
+	return out, nil
 }
 
 func due(state StoredState, now time.Time) bool {
@@ -216,28 +326,45 @@ func (e *Engine) probeRound(ctx context.Context, providerID int64, model string)
 		round.ModelTraceError = "prober is missing"
 		return round
 	}
-	candy, err := e.Prober.ProbeText(ctx, providerID, model, CandyPrompt())
+	candyPrompt := CandyPrompt()
+	candy, err := e.Prober.ProbeText(ctx, providerID, model, candyPrompt)
+	candySample := ProbeSample{Name: "candy", Prompt: candyPrompt}
 	if err != nil {
 		round.CandyError = err.Error()
+		candySample.Error = err.Error()
 	} else {
 		round.CandyError = candy.Error
 		round.CandyOK = HasStandalone21(candy.Answer)
+		candySample.Answer = candy.Answer
+		candySample.Error = candy.Error
+		candySample.OK = round.CandyOK
 	}
+	round.Samples = append(round.Samples, candySample)
 	challenges := BuildTraceChallenges(nil)
 	okCount := 0
 	var traceErrs []string
-	for _, challenge := range challenges {
+	for i, challenge := range challenges {
 		result, probeErr := e.Prober.ProbeText(ctx, providerID, model, challenge.Prompt)
+		sample := ProbeSample{
+			Name:   fmt.Sprintf("trace_%d", i+1),
+			Prompt: challenge.Prompt,
+		}
 		if probeErr != nil {
 			traceErrs = append(traceErrs, probeErr.Error())
+			sample.Error = probeErr.Error()
+			round.Samples = append(round.Samples, sample)
 			continue
 		}
 		if result.Error != "" {
 			traceErrs = append(traceErrs, result.Error)
 		}
+		sample.Answer = result.Answer
+		sample.Error = result.Error
 		if TraceSampleValid(result.Answer, challenge.ExpectedCount) {
 			okCount++
+			sample.OK = true
 		}
+		round.Samples = append(round.Samples, sample)
 	}
 	round.ModelTraceOK = okCount == len(challenges)
 	round.ModelTraceError = strings.Join(traceErrs, "; ")

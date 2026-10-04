@@ -27,6 +27,8 @@ type Settings struct {
 	Cooldown    time.Duration
 	MaxAttempts int
 	NotifyEmail string
+	// GroupIDs 限制自动探测覆盖的分组。空切片表示全部启用中的 OpenAI 分组。
+	GroupIDs []int64
 }
 
 // DefaultSettings 返回关闭状态的默认配置。
@@ -38,7 +40,69 @@ func DefaultSettings() Settings {
 		Cooldown:    5 * time.Minute,
 		MaxAttempts: 3,
 		NotifyEmail: DefaultNotifyEmail,
+		GroupIDs:    nil,
 	}
+}
+
+// NormalizeGroupIDs 去掉空值和重复，并按 ID 排序。
+func NormalizeGroupIDs(ids []int64) []int64 {
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// AutoGroupAllowed 判断自动探测是否覆盖该提供商。selected 为空且 active 为 nil 时，账号所属分组都视为启用。
+func AutoGroupAllowed(selected, providerGroups []int64) bool {
+	return AutoScopeAllowed(selected, providerGroups, nil)
+}
+
+// AutoScopeAllowed 要求账号至少属于一个启用中的分组；selected 非空时还要落在所选分组里。
+func AutoScopeAllowed(selected, providerGroups []int64, active map[int64]struct{}) bool {
+	selectedSet := map[int64]struct{}{}
+	for _, id := range selected {
+		selectedSet[id] = struct{}{}
+	}
+	for _, id := range providerGroups {
+		if active != nil {
+			if _, ok := active[id]; !ok {
+				continue
+			}
+		}
+		if len(selectedSet) == 0 {
+			return true
+		}
+		if _, ok := selectedSet[id]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// AccountAutoEligible 判断账号是否满足定时探测：状态为 active，且打开了参与调度。
+func AccountAutoEligible(snap *Snapshot) bool {
+	if snap == nil {
+		return false
+	}
+	if snap.SchedulingOff {
+		return false
+	}
+	if snap.Status != "" && snap.Status != "active" {
+		return false
+	}
+	return true
 }
 
 // ResolveProbeModel 选择本轮探测模型。configured 为空时用默认 Astra；

@@ -27,7 +27,7 @@ export default {
         title: '降智探测',
         description: '对 OpenAI 提供商定时做糖果题和 ModelTrace。总开关默认关闭。',
         enabled: '启用定时探测',
-        enabledHint: '开启后每分钟检查到期的 OpenAI 提供商，走测试通道，费用记在上游账号。',
+        enabledHint: '开启后每分钟检查到期账号。只探测启用分组里、状态为 active 且打开了「参与调度」的 OpenAI 提供商。走测试通道，费用记在上游账号。',
         intervalMinutes: '通过后的间隔（分钟）',
         intervalHint: '本轮通过后，下次自动探测要等这么久。',
         model: '探测模型',
@@ -38,6 +38,9 @@ export default {
         maxAttemptsHint: '连续失败达到这个次数后发邮件，并停止自动循环。',
         notifyEmail: '通知邮箱',
         notifyEmailHint: '第三次失败时发到这个地址。',
+        groups: '自动探测分组',
+        groupsHint: '多选。不选表示覆盖全部启用中的 OpenAI 分组。定时探测只跑所选（或全部）启用分组里、状态为 active 且打开了「参与调度」的 OpenAI 账号。禁用分组不会进入定时探测。提供商菜单仍可对任意 OpenAI 账号手动探测。',
+        groupInactive: '已禁用',
         loadFailed: '加载降智探测设置失败',
         saveFailed: '保存降智探测设置失败'
       },

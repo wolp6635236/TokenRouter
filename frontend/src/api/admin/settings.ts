@@ -12,6 +12,7 @@ import type {
   LoginAgreementDocument,
   NotifyEmailEntry,
 } from "@/types";
+import type { QualityProbeSample } from "./providers";
 
 export interface PaymentMethodFeeConfig {
   enabled: boolean;
@@ -1645,6 +1646,7 @@ export interface QualityProbeSettings {
   cooldown_minutes: number;
   max_attempts: number;
   notify_email: string;
+  group_ids: number[];
 }
 
 export async function getQualityProbeSettings(): Promise<QualityProbeSettings> {
@@ -1662,6 +1664,34 @@ export async function saveQualityProbeSettings(
     payload,
   );
   return data;
+}
+
+export interface QualityProbeLogItem {
+  provider_id: number
+  provider_name: string
+  at: string
+  trigger: 'auto' | 'manual' | string
+  skipped: boolean
+  skip_reason?: string
+  model?: string
+  candy_ok: boolean
+  trace_ok: boolean
+  degraded: boolean
+  temp_unscheduled: boolean
+  kept_for_coverage: boolean
+  email_sent: boolean
+  consecutive_fails: number
+  cycle_stopped: boolean
+  error?: string
+  samples?: QualityProbeSample[]
+}
+
+export async function listQualityProbeLogs(limit = 200): Promise<QualityProbeLogItem[]> {
+  const { data } = await apiClient.get<QualityProbeLogItem[]>(
+    '/admin/quality-probe/logs',
+    { params: { limit } },
+  )
+  return data ?? []
 }
 
 // --- 预聚合统一配置 ---
@@ -1764,6 +1794,7 @@ export const settingsAPI = {
   resetWebSearchUsage,
   getQualityProbeSettings,
   saveQualityProbeSettings,
+  listQualityProbeLogs,
   getPreAggregationSettings,
   updatePreAggregationSettings,
   backfillPreAggregation,
