@@ -31,6 +31,7 @@ type DecideInput struct {
 type Decision struct {
 	Skip                   bool
 	Degraded               bool
+	UpstreamError          bool
 	TempUnschedule         bool
 	ClearTemp              bool
 	Cooldown               time.Duration
@@ -63,6 +64,14 @@ func Decide(in DecideInput) Decision {
 	if cooldown <= 0 {
 		cooldown = 5 * time.Minute
 	}
+	// 上游报错保留原有失败计数和循环状态，不按降智处理。
+	if HasUpstreamError(in.Round) {
+		return Decision{
+			UpstreamError:    true,
+			ConsecutiveFails: in.State.ConsecutiveFails,
+			StopCycle:        in.State.CycleStopped,
+		}
+	}
 	if !IsDegraded(in.Round) {
 		return Decision{
 			ClearTemp: true,
@@ -75,6 +84,9 @@ func Decide(in DecideInput) Decision {
 		Cooldown:         cooldown,
 		StopCycle:        fails >= maxAttempts,
 		SendEmail:        fails == maxAttempts,
+	}
+	if !in.Settings.UnscheduleOnDegraded {
+		return out
 	}
 	if in.LastSchedulableHeld {
 		out.SkipBecauseLastInGroup = true

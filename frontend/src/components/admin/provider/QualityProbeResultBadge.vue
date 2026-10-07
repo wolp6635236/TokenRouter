@@ -31,6 +31,9 @@ const label = computed(() => {
   if (result.value.kind === 'degraded') {
     return t('admin.providers.qualityProbeList.degraded')
   }
+  if (result.value.kind === 'upstream_error') {
+    return t('admin.providers.qualityProbeList.upstreamError')
+  }
   if (result.value.kind === 'skipped') {
     return t('admin.providers.qualityProbeList.skipped')
   }
@@ -43,6 +46,9 @@ const badgeClass = computed(() => {
   }
   if (result.value.kind === 'degraded') {
     return 'badge-warning'
+  }
+  if (result.value.kind === 'upstream_error') {
+    return 'badge-danger'
   }
   if (result.value.kind === 'skipped') {
     return 'badge-gray'

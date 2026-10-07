@@ -15,24 +15,28 @@
 
 运行时设置键是 `quality_probe_settings`。总开关默认关闭。开启后只探测 `platform=openai` 的提供商，包括 OAuth 和 API Key。定时探测的账号还要满足：`status=active`、打开了「参与调度」，至少属于一个启用中的分组，并且该账号的可用模型里包含设置中的探测模型（与管理测号目录同一份最终白名单和映射）。`group_ids` 再限制自动探测覆盖哪些分组，多选；空数组表示全部启用中的 OpenAI 分组。禁用分组不进入定时探测。白名单缺少探测模型时 `skip_reason=model`，不写入 history。提供商菜单的手动探测仍针对任意 OpenAI 账号。默认周期 30 分钟，可改。默认模型是 `gpt-6-astra`；配置为 `latest` 时，从该提供商可用模型里取字典序最大的 Astra 名称，目录没有 Astra 时仍用 `gpt-6-astra`，随后同样检查账号是否具备该模型。
 
+`schedule_enabled` 默认开启，配合 `schedule_start` / `schedule_end`（本地时区 `HH:MM`，默认 `08:00`–`00:00`）限制自动探测时段；窗口是左闭右开，起点大于终点时跨午夜。总开关是管理员保存的意图，进出时段只改变自动探测是否运行。时段外自动探测直接返回 `skip_reason=schedule`，history 保持原样；手动探测仍只检查总开关。关掉 `schedule_enabled` 后，只要总开关打开就全天自动探测。
+
+`unschedule_on_degraded` 默认开启。开启时降智会写入 `quality_degraded` 临时停调（分组保底仍生效）。关闭后仍判定降智、累计次数、发邮件和停自动循环，账号保持可调度；保存为关闭时立即清掉 OpenAI 账号上已有的 `quality_degraded` 临时停调，其它原因的临时停调继续由原有恢复路径处理。
+
 探测走提供商测试通道，费用记在上游账号上。循环状态和最近 50 条记录写在提供商 Extra 的 `quality_probe` 键，`history` 同时收录自动探测和手动探测，每条带上测号的提问和截断后的回答。后台每分钟扫描到期且命中上述过滤的提供商，最多同时探测 4 台；每台内部是糖果题加一道 ModelTrace，依次调用。通过后的下次自动探测按设置的周期（默认 30 分钟），失败后按冷却（默认 5 分钟）。
 
-管理接口：`GET`/`PUT /api/v1/admin/quality-probe/settings`，`GET /api/v1/admin/quality-probe/logs`，`GET`/`POST /api/v1/admin/providers/:id/quality-probe`。管理侧栏「降智探测」列出汇总记录并分页，可打开该轮问答。提供商列表在分组列后读 `extra.quality_probe` 显示最近一轮通过、降智或跳过。管理员在提供商菜单悬停「降智探测」时列出该账号可用模型，点模型后弹出结果对话框并按所选模型探测。自动循环停止后，菜单里的手动探测仍会执行。POST 可带 `model`；没带时用设置里的探测模型。POST 会连续打两次测试通道，前端超时 180 秒；关掉弹窗或浏览器取消请求后，服务端仍把这一轮跑完并写入 Extra。总开关关闭时立即返回 `skip_reason=disabled`。账号未开启时自动探测返回 `skip_reason=account`。自动探测未命中启用中的所选分组时返回 `skip_reason=group`。设置中的探测模型不在该账号可用模型里时返回 `skip_reason=model`。history 保存实际跑完的探测，以及手动触发且需要展示的跳过（例如总开关关闭）。
+管理接口：`GET`/`PUT /api/v1/admin/quality-probe/settings`，`GET /api/v1/admin/quality-probe/logs`，`GET`/`POST /api/v1/admin/providers/:id/quality-probe`。管理侧栏「降智探测」列出汇总记录并分页，可打开该轮问答。提供商列表在分组列后读 `extra.quality_probe` 显示最近一轮通过、降智、上游报错或跳过。管理员在提供商菜单悬停「降智探测」时列出该账号可用模型，点模型后弹出结果对话框并按所选模型探测。自动循环停止后，菜单里的手动探测仍会执行。POST 可带 `model`；没带时用设置里的探测模型。POST 会连续打两次测试通道，前端超时 180 秒；关掉弹窗或浏览器取消请求后，服务端仍把这一轮跑完并写入 Extra。总开关关闭时立即返回 `skip_reason=disabled`。账号未开启时自动探测返回 `skip_reason=account`。自动探测未命中启用中的所选分组时返回 `skip_reason=group`。设置中的探测模型不在该账号可用模型里时返回 `skip_reason=model`。时段外自动探测返回 `skip_reason=schedule`。history 保存实际跑完的探测，以及手动触发且需要展示的跳过（例如总开关关闭）。
 
 <a id="quality_probe_verdict"></a>
 ## 判定
 
-一轮探测包含糖果题和 ModelTrace。糖果题原文与 CPA 插件相同，回答里出现独立的 `21` 算通过。ModelTrace 发一道数值选择题，把有效回答送进内置的 [ModelTrace](https://github.com/xqy2006/ModelTrace) `unified_bank.json` 做归因；最可能模型与本次请求的模型为同一条算通过。请求名带日期后缀时（例如 `gpt-6-astra-2026-10-01`）与指纹库中的 `gpt-6-astra` 视为同一条。请求 `gpt-6-astra`、归因 `gpt-6-luna` 时 ModelTrace 未通过。回答里 1 到 355 的整数少于 80 个，或不足题目数量的 55%，这次不进入归因，ModelTrace 未通过。两样都未通过才记为降智。
+一轮探测包含糖果题和 ModelTrace。糖果题原文与 CPA 插件相同，回答里出现独立的 `21` 算通过。ModelTrace 发一道数值选择题，把有效回答送进内置的 [ModelTrace](https://github.com/xqy2006/ModelTrace) `unified_bank.json` 做归因；最可能模型与本次请求的模型为同一条算通过。请求名带日期后缀时（例如 `gpt-6-astra-2026-10-01`）与指纹库中的 `gpt-6-astra` 视为同一条。请求 `gpt-6-astra`、归因 `gpt-6-luna` 时 ModelTrace 未通过。回答里 1 到 355 的整数少于 80 个，或不足题目数量的 55%，这次不进入归因，ModelTrace 未通过。测号通道返回错误时（例如 403 余额不足、超时）记为上游报错；失败计数、临时停调和自动循环保持原样，下次按通过后的间隔再测。糖果题和 ModelTrace 都拿到回答且都未通过时才记为降智。
 
 <a id="quality_probe_cycle"></a>
 ## 连续失败
 
-连续失败次数记在提供商探测状态上。每次降智后临时停调 5 分钟，到期再测。第 3 次仍失败时发邮件到设置里的收件人（默认 `295783453@qq.com`），并停止自动循环。管理员手动探测在停循环之后仍可执行；本轮通过则清临时停调、清失败计数，自动循环重新打开。邮件只在失败次数从 2 变成 3 时发一次。
+连续失败次数记在提供商探测状态上。`unschedule_on_degraded` 开启时，每次降智后临时停调一段冷却（默认 5 分钟），到期再测；关闭时跳过临时停调，冷却只决定下次自动再测的时间。第 3 次仍失败时发邮件到设置里的收件人（默认 `295783453@qq.com`），并停止自动循环。管理员手动探测在停循环之后仍可执行；本轮通过则清临时停调、清失败计数，自动循环重新打开。邮件只在失败次数从 2 变成 3 时发一次。
 
 <a id="quality_probe_keep_one"></a>
 ## 分组保底
 
-停调前检查该提供商所在的全部分组。只要有一个分组里它已经是仍可调度的最后一个成员，就保持可调度，仍累计失败次数和发邮件。可调度指 active、schedulable、未到期、且没有其他原因的临时停调。
+`unschedule_on_degraded` 开启且准备停调前，检查该提供商所在的全部分组。只要有一个分组里它已经是仍可调度的最后一个成员，就保持可调度，仍累计失败次数和发邮件。可调度指 active、schedulable、未到期、且没有其他原因的临时停调。
 
 <a id="quality_probe_placement"></a>
 ## 代码位置

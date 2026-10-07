@@ -49,6 +49,10 @@ func (e *Engine) runWithActive(
 	if !cfg.Enabled {
 		return e.finishSkip(ctx, snap, state, trigger, "disabled")
 	}
+	now := e.now()
+	if trigger == TriggerAuto && !AutoScheduleActive(cfg, now) {
+		return e.finishSkip(ctx, snap, state, trigger, "schedule")
+	}
 	if snap.Platform != PlatformOpenAI {
 		return e.finishSkip(ctx, snap, state, trigger, "platform")
 	}
@@ -67,7 +71,6 @@ func (e *Engine) runWithActive(
 			return e.finishSkip(ctx, snap, state, trigger, "group")
 		}
 	}
-	now := e.now()
 	if trigger == TriggerAuto && state.CycleStopped {
 		return e.finishSkip(ctx, snap, state, trigger, "cycle_stopped")
 	}
@@ -98,14 +101,15 @@ func (e *Engine) runWithActive(
 	}
 	next := nextRetry(now, cfg, decision)
 	stored := StoredState{
-		ConsecutiveFails: decision.ConsecutiveFails,
-		CycleStopped:     decision.StopCycle,
-		NextRetryAt:      next,
-		LastCandyOK:      round.CandyOK,
-		LastTraceOK:      round.ModelTraceOK,
-		LastError:        firstError(round),
-		LastModel:        model,
-		UpdatedAt:        now,
+		ConsecutiveFails:  decision.ConsecutiveFails,
+		CycleStopped:      decision.StopCycle,
+		NextRetryAt:       next,
+		LastCandyOK:       round.CandyOK,
+		LastTraceOK:       round.ModelTraceOK,
+		LastUpstreamError: decision.UpstreamError,
+		LastError:         firstError(round),
+		LastModel:         model,
+		UpdatedAt:         now,
 	}
 	writeCtx := persistCtx(ctx)
 	if decision.ClearTemp {
@@ -140,6 +144,7 @@ func (e *Engine) runWithActive(
 		TracePrediction:  round.TracePrediction,
 		TraceProbability: round.TraceProbability,
 		Degraded:         decision.Degraded,
+		UpstreamError:    decision.UpstreamError,
 		TempUnscheduled:  decision.TempUnschedule,
 		KeptForCoverage:  decision.SkipBecauseLastInGroup,
 		EmailSent:        emailSent,
@@ -160,6 +165,7 @@ func (e *Engine) runWithActive(
 		TracePrediction:  round.TracePrediction,
 		TraceProbability: round.TraceProbability,
 		Degraded:         decision.Degraded,
+		UpstreamError:    decision.UpstreamError,
 		TempUnscheduled:  decision.TempUnschedule,
 		KeptForCoverage:  decision.SkipBecauseLastInGroup,
 		EmailSent:        emailSent,
@@ -179,6 +185,9 @@ func (e *Engine) RunDue(ctx context.Context) {
 	}
 	cfg, err := e.LoadSettings(ctx)
 	if err != nil || !cfg.Enabled {
+		return
+	}
+	if !AutoScheduleActive(cfg, e.now()) {
 		return
 	}
 	items, err := e.Dir.ListByPlatform(ctx, PlatformOpenAI)

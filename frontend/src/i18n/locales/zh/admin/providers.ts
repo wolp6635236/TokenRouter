@@ -482,6 +482,7 @@ export default {
       qualityProbeList: {
         passed: '通过',
         degraded: '降智',
+        upstreamError: '上游报错',
         skipped: '跳过'
       },
       qualityProbeLogs: {
@@ -498,6 +499,7 @@ export default {
         verdict: '结论',
         verdictPass: '未记降智',
         verdictDegraded: '降智',
+        verdictUpstreamError: '上游报错',
         verdictKept: '降智（保底）',
         verdictSkipped: '跳过',
         model: '模型',
@@ -515,6 +517,7 @@ export default {
         runningHint: '会连续跑糖果题和一道 ModelTrace，用指纹库判断是不是本次请求的模型，通常不到一分钟。',
         passed: '本轮未记降智（糖果题和 ModelTrace 至少一项通过）。',
         degraded: '糖果题和 ModelTrace 都未通过，记为降智。',
+        upstreamError: '上游测号报错，结论记为上游报错；调度和定时探测照常。',
         kept: '糖果题和 ModelTrace 都未通过。该账号在某个分组里已是最后一个可调度成员，保持可调度。',
         candy: '糖果题',
         trace: 'ModelTrace',

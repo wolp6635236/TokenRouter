@@ -1,4 +1,4 @@
-export type QualityProbeListKind = 'passed' | 'degraded' | 'skipped'
+export type QualityProbeListKind = 'passed' | 'degraded' | 'upstream_error' | 'skipped'
 
 export interface QualityProbeListResult {
   kind: QualityProbeListKind
@@ -43,6 +43,9 @@ export function qualityProbeListResult(extra: unknown): QualityProbeListResult |
     if (asBool(latest.skipped)) {
       return { kind: 'skipped', at: asText(latest.at) || asText(state.updated_at) || undefined }
     }
+    if (asBool(latest.upstream_error)) {
+      return { kind: 'upstream_error', at: asText(latest.at) || asText(state.updated_at) || undefined }
+    }
     if (asBool(latest.degraded)) {
       return { kind: 'degraded', at: asText(latest.at) || asText(state.updated_at) || undefined }
     }
@@ -51,6 +54,9 @@ export function qualityProbeListResult(extra: unknown): QualityProbeListResult |
   const updatedAt = asText(state.updated_at)
   if (!updatedAt && !asText(state.last_model)) {
     return null
+  }
+  if (asBool(state.last_upstream_error)) {
+    return { kind: 'upstream_error', at: updatedAt || undefined }
   }
   if (!asBool(state.last_candy_ok) && !asBool(state.last_trace_ok)) {
     return { kind: 'degraded', at: updatedAt || undefined }

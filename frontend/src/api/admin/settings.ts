@@ -1586,6 +1586,10 @@ export interface QualityProbeSettings {
   max_attempts: number;
   notify_email: string;
   group_ids: number[];
+  schedule_enabled: boolean;
+  schedule_start: string;
+  schedule_end: string;
+  unschedule_on_degraded: boolean;
 }
 
 export async function getQualityProbeSettings(): Promise<QualityProbeSettings> {
@@ -1618,6 +1622,7 @@ export interface QualityProbeLogItem {
   trace_prediction?: string
   trace_probability?: number
   degraded: boolean
+  upstream_error?: boolean
   temp_unscheduled: boolean
   kept_for_coverage: boolean
   email_sent: boolean

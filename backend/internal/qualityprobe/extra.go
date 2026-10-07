@@ -28,15 +28,16 @@ const (
 
 // StoredState 是写入 Extra 的探测循环状态。
 type StoredState struct {
-	ConsecutiveFails int        `json:"consecutive_fails"`
-	CycleStopped     bool       `json:"cycle_stopped"`
-	NextRetryAt      *time.Time `json:"next_retry_at,omitempty"`
-	LastCandyOK      bool       `json:"last_candy_ok"`
-	LastTraceOK      bool       `json:"last_trace_ok"`
-	LastError        string     `json:"last_error,omitempty"`
-	LastModel        string     `json:"last_model,omitempty"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	History          []ProbeLog `json:"history,omitempty"`
+	ConsecutiveFails  int        `json:"consecutive_fails"`
+	CycleStopped      bool       `json:"cycle_stopped"`
+	NextRetryAt       *time.Time `json:"next_retry_at,omitempty"`
+	LastCandyOK       bool       `json:"last_candy_ok"`
+	LastTraceOK       bool       `json:"last_trace_ok"`
+	LastUpstreamError bool       `json:"last_upstream_error,omitempty"`
+	LastError         string     `json:"last_error,omitempty"`
+	LastModel         string     `json:"last_model,omitempty"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	History           []ProbeLog `json:"history,omitempty"`
 }
 
 // ProbeLog 是一轮探测写入 Extra 的记录。
@@ -51,6 +52,7 @@ type ProbeLog struct {
 	TracePrediction  string        `json:"trace_prediction,omitempty"`
 	TraceProbability float64       `json:"trace_probability,omitempty"`
 	Degraded         bool          `json:"degraded"`
+	UpstreamError    bool          `json:"upstream_error,omitempty"`
 	TempUnscheduled  bool          `json:"temp_unscheduled"`
 	KeptForCoverage  bool          `json:"kept_for_coverage"`
 	EmailSent        bool          `json:"email_sent"`
@@ -131,7 +133,7 @@ func clipSampleText(text string) string {
 
 func shouldRecordLog(skipReason string) bool {
 	switch skipReason {
-	case "not_due", "cycle_stopped", "group", "account", "model":
+	case "not_due", "cycle_stopped", "group", "account", "model", "schedule":
 		return false
 	default:
 		return true

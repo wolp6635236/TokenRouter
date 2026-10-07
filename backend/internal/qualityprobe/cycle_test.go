@@ -58,6 +58,37 @@ func TestDecide_ThirdDegradeSendsEmailAndStopsCycle(t *testing.T) {
 	}
 }
 
+func TestDecide_UpstreamErrorKeepsCycleAndScheduling(t *testing.T) {
+	cfg := DefaultSettings()
+	cfg.Enabled = true
+	got := Decide(DecideInput{
+		Settings: cfg,
+		Platform: PlatformOpenAI,
+		State: CycleState{
+			ConsecutiveFails: 2,
+			CycleStopped:     false,
+		},
+		Round: ProbeRound{
+			CandyOK:      false,
+			ModelTraceOK: false,
+			Samples: []ProbeSample{
+				{Name: "candy", Error: `API returned 403: Insufficient account balance`},
+				{Name: "trace_1", Error: `API returned 403: Insufficient account balance`},
+			},
+		},
+		Trigger: TriggerAuto,
+	})
+	if !got.UpstreamError || got.Degraded || got.TempUnschedule || got.SendEmail || got.ClearTemp {
+		t.Fatalf("decision = %+v", got)
+	}
+	if got.ConsecutiveFails != 2 {
+		t.Fatalf("consecutive = %d, want preserved 2", got.ConsecutiveFails)
+	}
+	if got.StopCycle {
+		t.Fatal("upstream error must leave the automatic loop running")
+	}
+}
+
 func TestDecide_PassClearsFailures(t *testing.T) {
 	cfg := DefaultSettings()
 	cfg.Enabled = true
@@ -182,5 +213,30 @@ func TestDecide_ManualStillRunsAfterCycleStopped(t *testing.T) {
 	}
 	if !got.TempUnschedule {
 		t.Fatal("manual retest that still fails keeps the provider unschedulable")
+	}
+}
+
+func TestDecide_UnscheduleOnDegradedOffKeepsSchedulable(t *testing.T) {
+	cfg := DefaultSettings()
+	cfg.Enabled = true
+	cfg.UnscheduleOnDegraded = false
+	got := Decide(DecideInput{
+		Settings: cfg,
+		Platform: PlatformOpenAI,
+		State:    CycleState{ConsecutiveFails: 2},
+		Round:    ProbeRound{CandyOK: false, ModelTraceOK: false},
+		Trigger:  TriggerAuto,
+	})
+	if !got.Degraded {
+		t.Fatal("expected degrade verdict")
+	}
+	if got.TempUnschedule {
+		t.Fatal("unschedule_on_degraded=false must leave the account schedulable")
+	}
+	if !got.SendEmail || !got.StopCycle {
+		t.Fatal("email and cycle stop still run at the attempt limit")
+	}
+	if got.SkipBecauseLastInGroup {
+		t.Fatal("keep-one skip is unused when unscheduling is off")
 	}
 }

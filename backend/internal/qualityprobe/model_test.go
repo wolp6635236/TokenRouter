@@ -67,6 +67,18 @@ func TestDefaultSettings(t *testing.T) {
 	if got.NotifyEmail != DefaultNotifyEmail {
 		t.Fatalf("email = %q, want %q", got.NotifyEmail, DefaultNotifyEmail)
 	}
+	if !got.ScheduleEnabled {
+		t.Fatal("schedule window starts enabled")
+	}
+	if got.ScheduleStart != DefaultScheduleStart {
+		t.Fatalf("schedule start = %q, want %q", got.ScheduleStart, DefaultScheduleStart)
+	}
+	if got.ScheduleEnd != DefaultScheduleEnd {
+		t.Fatalf("schedule end = %q, want %q", got.ScheduleEnd, DefaultScheduleEnd)
+	}
+	if !got.UnscheduleOnDegraded {
+		t.Fatal("degraded accounts start unschedulable")
+	}
 }
 
 func TestCatalogContainsModel(t *testing.T) {

@@ -8,7 +8,7 @@ describe('qualityProbeListResult', () => {
     expect(qualityProbeListResult({ quality_probe: {} })).toBeNull()
   })
 
-  it('优先用 history 第一条：跳过、降智、通过', () => {
+  it('优先用 history 第一条：跳过、上游报错、降智、通过', () => {
     expect(
       qualityProbeListResult({
         quality_probe: {
@@ -18,6 +18,13 @@ describe('qualityProbeListResult', () => {
         }
       })
     ).toEqual({ kind: 'skipped', at: '2026-10-04T21:00:00+08:00' })
+    expect(
+      qualityProbeListResult({
+        quality_probe: {
+          history: [{ skipped: false, upstream_error: true, at: '2026-10-04T21:00:30+08:00' }]
+        }
+      })
+    ).toEqual({ kind: 'upstream_error', at: '2026-10-04T21:00:30+08:00' })
     expect(
       qualityProbeListResult({
         quality_probe: {

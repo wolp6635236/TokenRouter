@@ -169,6 +169,9 @@ function verdictLabel(row: QualityProbeLogItem) {
   if (row.skipped) {
     return t('admin.providers.qualityProbeLogs.verdictSkipped')
   }
+  if (row.upstream_error) {
+    return t('admin.providers.qualityProbeLogs.verdictUpstreamError')
+  }
   if (row.degraded && row.kept_for_coverage) {
     return t('admin.providers.qualityProbeLogs.verdictKept')
   }
@@ -181,6 +184,9 @@ function verdictLabel(row: QualityProbeLogItem) {
 function verdictClass(row: QualityProbeLogItem) {
   if (row.skipped) {
     return 'badge-gray'
+  }
+  if (row.upstream_error) {
+    return 'badge-danger'
   }
   if (row.degraded) {
     return 'badge-warning'

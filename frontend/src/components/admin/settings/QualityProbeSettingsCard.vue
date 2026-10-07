@@ -24,6 +24,51 @@
         :label="t('admin.settings.qualityProbe.enabled')"
         :hint="t('admin.settings.qualityProbe.enabledHint')"
       />
+      <SettingToggleRow
+        id="quality-probe-schedule-enabled"
+        v-model="form.schedule_enabled"
+        :label="t('admin.settings.qualityProbe.scheduleEnabled')"
+        :hint="t('admin.settings.qualityProbe.scheduleEnabledHint')"
+      />
+      <div
+        v-if="form.schedule_enabled"
+        class="grid gap-4 sm:grid-cols-2"
+      >
+        <SettingRow
+          id="quality-probe-schedule-start"
+          field
+          label-for="quality-probe-schedule-start"
+          :label="t('admin.settings.qualityProbe.scheduleStart')"
+          :hint="t('admin.settings.qualityProbe.scheduleStartHint')"
+        >
+          <input
+            id="quality-probe-schedule-start"
+            v-model="form.schedule_start"
+            type="time"
+            class="input"
+          />
+        </SettingRow>
+        <SettingRow
+          id="quality-probe-schedule-end"
+          field
+          label-for="quality-probe-schedule-end"
+          :label="t('admin.settings.qualityProbe.scheduleEnd')"
+          :hint="t('admin.settings.qualityProbe.scheduleEndHint')"
+        >
+          <input
+            id="quality-probe-schedule-end"
+            v-model="form.schedule_end"
+            type="time"
+            class="input"
+          />
+        </SettingRow>
+      </div>
+      <SettingToggleRow
+        id="quality-probe-unschedule-on-degraded"
+        v-model="form.unschedule_on_degraded"
+        :label="t('admin.settings.qualityProbe.unscheduleOnDegraded')"
+        :hint="t('admin.settings.qualityProbe.unscheduleOnDegradedHint')"
+      />
       <div class="space-y-2">
         <div>
           <p class="text-sm font-medium text-primary-900 dark:text-dark-50">
@@ -160,13 +205,31 @@ const form = reactive<QualityProbeSettings>({
   cooldown_minutes: 5,
   max_attempts: 3,
   notify_email: '295783453@qq.com',
-  group_ids: []
+  group_ids: [],
+  schedule_enabled: true,
+  schedule_start: '08:00',
+  schedule_end: '00:00',
+  unschedule_on_degraded: true
 })
 const snapshot = ref('')
+
+function normalizeClock(value: string | undefined, fallback: string) {
+  const raw = (value || '').trim()
+  if (/^\d{2}:\d{2}$/.test(raw)) {
+    return raw
+  }
+  // type=time 有时带秒，保存前收成 HH:MM
+  if (/^\d{2}:\d{2}:\d{2}$/.test(raw)) {
+    return raw.slice(0, 5)
+  }
+  return fallback
+}
 
 function serialize(value: QualityProbeSettings) {
   return JSON.stringify({
     ...value,
+    schedule_start: normalizeClock(value.schedule_start, '08:00'),
+    schedule_end: normalizeClock(value.schedule_end, '00:00'),
     group_ids: [...(value.group_ids || [])].sort((a, b) => a - b)
   })
 }
@@ -177,8 +240,14 @@ async function load() {
   loading.value = true
   try {
     const data = await adminAPI.settings.getQualityProbeSettings()
-    Object.assign(form, data)
-    form.group_ids = [...(data.group_ids || [])]
+    Object.assign(form, {
+      ...data,
+      schedule_enabled: data.schedule_enabled !== false,
+      schedule_start: normalizeClock(data.schedule_start, '08:00'),
+      schedule_end: normalizeClock(data.schedule_end, '00:00'),
+      unschedule_on_degraded: data.unschedule_on_degraded !== false,
+      group_ids: [...(data.group_ids || [])]
+    })
     snapshot.value = serialize(form)
     loaded.value = true
     groupsLoading.value = true
@@ -200,9 +269,18 @@ async function save() {
   try {
     const data = await adminAPI.settings.saveQualityProbeSettings({
       ...form,
+      schedule_start: normalizeClock(form.schedule_start, '08:00'),
+      schedule_end: normalizeClock(form.schedule_end, '00:00'),
       group_ids: [...form.group_ids]
     })
-    Object.assign(form, data)
+    Object.assign(form, {
+      ...data,
+      schedule_enabled: data.schedule_enabled !== false,
+      schedule_start: normalizeClock(data.schedule_start, '08:00'),
+      schedule_end: normalizeClock(data.schedule_end, '00:00'),
+      unschedule_on_degraded: data.unschedule_on_degraded !== false,
+      group_ids: [...(data.group_ids || [])]
+    })
     snapshot.value = serialize(form)
     return true
   } catch (error: any) {

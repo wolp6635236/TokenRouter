@@ -214,6 +214,69 @@ func TestEngine_PassClearsTempAndSchedulesInterval(t *testing.T) {
 	}
 }
 
+type errorProber struct {
+	msg string
+	n   int
+}
+
+func (p *errorProber) ProbeText(context.Context, int64, string, string) (TextResult, error) {
+	p.n++
+	return TextResult{Error: p.msg}, nil
+}
+
+func TestEngine_UpstreamErrorDoesNotDegradeOrUnschedule(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			7: {
+				ID:          7,
+				Name:        "dmxcode-pro",
+				Platform:    PlatformOpenAI,
+				Schedulable: true,
+				GroupIDs:    []int64{1},
+				Extra: map[string]any{
+					ExtraKey: map[string]any{"consecutive_fails": 1},
+				},
+			},
+		},
+		schedulable: map[int64][]int64{1: {7, 8}},
+	}
+	prober := &errorProber{msg: `API returned 403: {"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}`}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{1}},
+		Catalog:  stubCatalog{models: []string{"gpt-6-astra"}},
+		Prober:   prober,
+		Now:      func() time.Time { return time.Unix(100, 0) },
+	}
+	got, err := engine.Run(context.Background(), 7, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpstreamError || got.Degraded || got.TempUnscheduled || got.CycleStopped || got.EmailSent {
+		t.Fatalf("report = %+v", got)
+	}
+	if got.ConsecutiveFails != 1 {
+		t.Fatalf("consecutive = %d, want preserved 1", got.ConsecutiveFails)
+	}
+	if dir.temp[7] != "" {
+		t.Fatalf("temp reason = %q", dir.temp[7])
+	}
+	if prober.n != 2 {
+		t.Fatalf("probe calls = %d, want 2", prober.n)
+	}
+	state := ParseStoredState(dir.items[7].Extra)
+	if !state.LastUpstreamError || state.CycleStopped || state.ConsecutiveFails != 1 {
+		t.Fatalf("state = %+v", state)
+	}
+	if len(state.History) != 1 || !state.History[0].UpstreamError || state.History[0].Degraded {
+		t.Fatalf("history = %+v", state.History)
+	}
+	if state.NextRetryAt == nil || !state.NextRetryAt.Equal(time.Unix(100, 0).Add(30*time.Minute)) {
+		t.Fatalf("next retry = %v", state.NextRetryAt)
+	}
+}
+
 func TestEngine_LunaFingerprintFailsAstraRequest(t *testing.T) {
 	dir := &memDir{
 		items: map[int64]*Snapshot{
@@ -743,5 +806,141 @@ func TestEngine_ManualUsesRequestedModel(t *testing.T) {
 	}
 	if got.Model != "gpt-5.6-terra" {
 		t.Fatalf("model = %q", got.Model)
+	}
+}
+
+func TestEngine_AutoSkipsOutsideScheduleWindow(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	previous := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = previous })
+	night := time.Date(2026, 10, 7, 2, 0, 0, 0, loc)
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "a", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	prober := &countingProber{}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{1}},
+		Catalog:  stubCatalog{models: []string{"gpt-6-astra"}},
+		Prober:   prober,
+		Now:      func() time.Time { return night },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Skipped || got.SkipReason != "schedule" {
+		t.Fatalf("report = %+v", got)
+	}
+	if len(prober.calls) != 0 {
+		t.Fatalf("auto probe outside window must not call upstream: %v", prober.calls)
+	}
+}
+
+func TestEngine_ManualRunsOutsideScheduleWindow(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	previous := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = previous })
+	night := time.Date(2026, 10, 7, 2, 0, 0, 0, loc)
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "a", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	engine := &Engine{
+		Settings:     &memSettings{raw: enabledJSON()},
+		Dir:          dir,
+		Catalog:      stubCatalog{models: []string{"gpt-6-astra"}},
+		Prober:       &scriptedProber{answers: []string{"21", numbers(400)}},
+		AnalyzeTrace: passAstra,
+		Now:          func() time.Time { return night },
+	}
+	got, err := engine.Run(context.Background(), 1, TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Skipped {
+		t.Fatalf("manual probe still runs outside the window: %+v", got)
+	}
+	if !got.CandyOK || !got.TraceOK {
+		t.Fatalf("report = %+v", got)
+	}
+}
+
+func TestEngine_RunDueNoopOutsideScheduleWindow(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	previous := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = previous })
+	night := time.Date(2026, 10, 7, 2, 0, 0, 0, loc)
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "a", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+			2: {ID: 2, Name: "b", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	prober := &countingProber{}
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{1}},
+		Catalog:  stubCatalog{models: []string{"gpt-6-astra"}},
+		Prober:   prober,
+		Now:      func() time.Time { return night },
+	}
+	engine.RunDue(context.Background())
+	if len(prober.calls) != 0 {
+		t.Fatalf("RunDue outside window must not probe: %v", prober.calls)
+	}
+}
+
+func TestEngine_SaveSettingsClearsQualityDegradedWhenUnscheduleOff(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {
+				ID:                      1,
+				Name:                    "a",
+				Platform:                PlatformOpenAI,
+				TempUnschedulableReason: TempUnscheduleReason,
+			},
+			2: {
+				ID:                      2,
+				Name:                    "b",
+				Platform:                PlatformOpenAI,
+				TempUnschedulableReason: "other_reason",
+			},
+			3: {
+				ID:                      3,
+				Name:                    "c",
+				Platform:                "anthropic",
+				TempUnschedulableReason: TempUnscheduleReason,
+			},
+		},
+	}
+	settings := &memSettings{raw: enabledJSON()}
+	engine := &Engine{Settings: settings, Dir: dir}
+	cfg := DefaultSettings()
+	cfg.Enabled = true
+	cfg.UnscheduleOnDegraded = false
+	if err := engine.SaveSettings(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(dir.cleared) != 1 || dir.cleared[0] != 1 {
+		t.Fatalf("cleared = %v, want only openai quality_degraded #1", dir.cleared)
+	}
+	loaded, err := engine.LoadSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UnscheduleOnDegraded {
+		t.Fatal("saved unschedule_on_degraded=false must round-trip")
 	}
 }

@@ -21,6 +21,9 @@
         <p v-if="report.skipped" class="text-gray-800 dark:text-dark-100" data-testid="quality-probe-skipped">
           {{ skipReasonText }}
         </p>
+        <p v-else-if="report.upstream_error" class="text-red-600 dark:text-red-400">
+          {{ t('admin.providers.qualityProbeDialog.upstreamError') }}
+        </p>
         <p v-else-if="report.degraded && report.kept_for_coverage" class="text-amber-700 dark:text-amber-300">
           {{ t('admin.providers.qualityProbeDialog.kept') }}
         </p>

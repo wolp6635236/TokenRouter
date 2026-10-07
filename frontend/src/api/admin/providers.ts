@@ -464,6 +464,7 @@ export interface QualityProbeReport {
   trace_prediction?: string
   trace_probability?: number
   degraded: boolean
+  upstream_error?: boolean
   temp_unscheduled: boolean
   kept_for_coverage: boolean
   email_sent: boolean

@@ -634,6 +634,7 @@ export default {
       qualityProbeList: {
         passed: 'Passed',
         degraded: 'Degraded',
+        upstreamError: 'Upstream error',
         skipped: 'Skipped'
       },
       qualityProbeLogs: {
@@ -650,6 +651,7 @@ export default {
         verdict: 'Verdict',
         verdictPass: 'Not degraded',
         verdictDegraded: 'Degraded',
+        verdictUpstreamError: 'Upstream error',
         verdictKept: 'Degraded (kept)',
         verdictSkipped: 'Skipped',
         model: 'Model',
@@ -667,6 +669,7 @@ export default {
         runningHint: 'This runs the candy prompt and one ModelTrace item, then scores it against the fingerprint bank for the requested model. It often finishes in under a minute.',
         passed: 'Not marked degraded: candy or ModelTrace passed.',
         degraded: 'Candy and ModelTrace both failed. Marked degraded.',
+        upstreamError: 'The upstream probe call failed. Recorded as an upstream error; scheduling and the timer continue.',
         kept: 'Candy and ModelTrace both failed. This account is the last schedulable member in a group, so it stays schedulable.',
         candy: 'Candy prompt',
         trace: 'ModelTrace',

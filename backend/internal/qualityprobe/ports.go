@@ -90,6 +90,7 @@ type RunReport struct {
 	TracePrediction  string        `json:"trace_prediction,omitempty"`
 	TraceProbability float64       `json:"trace_probability,omitempty"`
 	Degraded         bool          `json:"degraded"`
+	UpstreamError    bool          `json:"upstream_error,omitempty"`
 	TempUnscheduled  bool          `json:"temp_unscheduled"`
 	KeptForCoverage  bool          `json:"kept_for_coverage"`
 	EmailSent        bool          `json:"email_sent"`
@@ -131,27 +132,64 @@ func (e *Engine) LoadSettings(ctx context.Context) (Settings, error) {
 	return file.Settings(), nil
 }
 
-// SaveSettings 写入运行配置。
+// SaveSettings 写入运行配置。关闭「降智后停调」时，立即清掉 OpenAI 账号上的 quality_degraded 临时停调。
 func (e *Engine) SaveSettings(ctx context.Context, cfg Settings) error {
 	if e == nil || e.Settings == nil {
 		return errors.New("quality probe settings store is missing")
+	}
+	previous, err := e.LoadSettings(ctx)
+	if err != nil {
+		return err
 	}
 	payload, err := json.Marshal(SettingsDTO(cfg))
 	if err != nil {
 		return err
 	}
-	return e.Settings.Set(ctx, SettingKeyQualityProbe, string(payload))
+	if err := e.Settings.Set(ctx, SettingKeyQualityProbe, string(payload)); err != nil {
+		return err
+	}
+	if previous.UnscheduleOnDegraded && !cfg.UnscheduleOnDegraded {
+		if clearErr := e.clearQualityDegraded(ctx); clearErr != nil {
+			return clearErr
+		}
+	}
+	return nil
+}
+
+// clearQualityDegraded 清掉 OpenAI 提供商上由降智探测写入的临时停调。
+func (e *Engine) clearQualityDegraded(ctx context.Context) error {
+	if e == nil || e.Dir == nil {
+		return nil
+	}
+	items, err := e.Dir.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		return err
+	}
+	writeCtx := persistCtx(ctx)
+	for i := range items {
+		if strings.TrimSpace(items[i].TempUnschedulableReason) != TempUnscheduleReason {
+			continue
+		}
+		if err := e.Dir.ClearTempUnschedulable(writeCtx, items[i].ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SettingsPayload 是管理端读写的 JSON 形状。
 type SettingsPayload struct {
-	Enabled         bool    `json:"enabled"`
-	IntervalMinutes int     `json:"interval_minutes"`
-	Model           string  `json:"model"`
-	CooldownMinutes int     `json:"cooldown_minutes"`
-	MaxAttempts     int     `json:"max_attempts"`
-	NotifyEmail     string  `json:"notify_email"`
-	GroupIDs        []int64 `json:"group_ids"`
+	Enabled              bool    `json:"enabled"`
+	IntervalMinutes      int     `json:"interval_minutes"`
+	Model                string  `json:"model"`
+	CooldownMinutes      int     `json:"cooldown_minutes"`
+	MaxAttempts          int     `json:"max_attempts"`
+	NotifyEmail          string  `json:"notify_email"`
+	GroupIDs             []int64 `json:"group_ids"`
+	ScheduleEnabled      *bool   `json:"schedule_enabled"`
+	ScheduleStart        string  `json:"schedule_start"`
+	ScheduleEnd          string  `json:"schedule_end"`
+	UnscheduleOnDegraded *bool   `json:"unschedule_on_degraded"`
 }
 
 func fileFromSettings(cfg Settings) SettingsPayload {
@@ -175,14 +213,20 @@ func fileFromSettings(cfg Settings) SettingsPayload {
 	if model == "" {
 		model = DefaultProbeModel
 	}
+	scheduleEnabled := cfg.ScheduleEnabled
+	unscheduleOnDegraded := cfg.UnscheduleOnDegraded
 	return SettingsPayload{
-		Enabled:         cfg.Enabled,
-		IntervalMinutes: interval,
-		Model:           model,
-		CooldownMinutes: cooldown,
-		MaxAttempts:     maxAttempts,
-		NotifyEmail:     email,
-		GroupIDs:        NormalizeGroupIDs(cfg.GroupIDs),
+		Enabled:              cfg.Enabled,
+		IntervalMinutes:      interval,
+		Model:                model,
+		CooldownMinutes:      cooldown,
+		MaxAttempts:          maxAttempts,
+		NotifyEmail:          email,
+		GroupIDs:             NormalizeGroupIDs(cfg.GroupIDs),
+		ScheduleEnabled:      &scheduleEnabled,
+		ScheduleStart:        NormalizeClock(cfg.ScheduleStart, DefaultScheduleStart),
+		ScheduleEnd:          NormalizeClock(cfg.ScheduleEnd, DefaultScheduleEnd),
+		UnscheduleOnDegraded: &unscheduleOnDegraded,
 	}
 }
 
@@ -205,6 +249,18 @@ func (f SettingsPayload) Settings() Settings {
 		cfg.NotifyEmail = strings.TrimSpace(f.NotifyEmail)
 	}
 	cfg.GroupIDs = NormalizeGroupIDs(f.GroupIDs)
+	if f.ScheduleEnabled != nil {
+		cfg.ScheduleEnabled = *f.ScheduleEnabled
+	}
+	if strings.TrimSpace(f.ScheduleStart) != "" {
+		cfg.ScheduleStart = NormalizeClock(f.ScheduleStart, DefaultScheduleStart)
+	}
+	if strings.TrimSpace(f.ScheduleEnd) != "" {
+		cfg.ScheduleEnd = NormalizeClock(f.ScheduleEnd, DefaultScheduleEnd)
+	}
+	if f.UnscheduleOnDegraded != nil {
+		cfg.UnscheduleOnDegraded = *f.UnscheduleOnDegraded
+	}
 	return cfg
 }
 
