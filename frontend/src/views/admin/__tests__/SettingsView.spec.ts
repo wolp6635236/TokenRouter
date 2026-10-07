@@ -701,6 +701,7 @@ function mountView() {
         ModelWhitelistSelector: true,
         ImageUpload: ImageUploadStub,
         BackupSettings: true,
+        QualityProbeSettingsCard: true,
       },
     },
   });
@@ -1555,6 +1556,7 @@ describe("admin SettingsView payment visible method controls", () => {
           ModelWhitelistSelector: true,
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
+          QualityProbeSettingsCard: true,
         },
       },
     });
@@ -1653,6 +1655,7 @@ describe("admin SettingsView payment visible method controls", () => {
           ModelWhitelistSelector: true,
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
+          QualityProbeSettingsCard: true,
         },
       },
     });
@@ -1721,6 +1724,7 @@ describe("admin SettingsView payment visible method controls", () => {
           ModelWhitelistSelector: true,
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
+          QualityProbeSettingsCard: true,
         },
       },
     });
@@ -1788,6 +1792,7 @@ describe("admin SettingsView payment visible method controls", () => {
           ModelWhitelistSelector: true,
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
+          QualityProbeSettingsCard: true,
         },
       },
     });

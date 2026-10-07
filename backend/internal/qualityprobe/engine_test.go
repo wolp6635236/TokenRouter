@@ -155,7 +155,12 @@ func (m *recordingMail) Send(_ context.Context, to, subject, _ string) error {
 }
 
 func enabledJSON() string {
-	return `{"enabled":true,"interval_minutes":30,"model":"gpt-6-astra","cooldown_minutes":5,"max_attempts":3,"notify_email":"295783453@qq.com"}`
+	// 关掉时段窗口，避免 CI 的 UTC 与本地 Asia/Shanghai 对 Unix(1) 等固定时钟得出不同结论。
+	return `{"enabled":true,"interval_minutes":30,"model":"gpt-6-astra","cooldown_minutes":5,"max_attempts":3,"notify_email":"295783453@qq.com","schedule_enabled":false}`
+}
+
+func scheduleEnabledJSON() string {
+	return `{"enabled":true,"interval_minutes":30,"model":"gpt-6-astra","cooldown_minutes":5,"max_attempts":3,"notify_email":"295783453@qq.com","schedule_enabled":true}`
 }
 
 func passAstra(_ []TraceOutput) (TraceResult, error) {
@@ -466,7 +471,7 @@ func TestEngine_AutoSkipOutsideGroups(t *testing.T) {
 	}
 	prober := &scriptedProber{answers: []string{"21"}}
 	engine := &Engine{
-		Settings: &memSettings{raw: `{"enabled":true,"interval_minutes":30,"group_ids":[9],"max_attempts":3,"cooldown_minutes":5,"notify_email":"a@b.c","model":"gpt-6-astra"}`},
+		Settings: &memSettings{raw: `{"enabled":true,"interval_minutes":30,"group_ids":[9],"max_attempts":3,"cooldown_minutes":5,"notify_email":"a@b.c","model":"gpt-6-astra","schedule_enabled":false}`},
 		Dir:      dir,
 		Prober:   prober,
 		Now:      func() time.Time { return time.Unix(1, 0) },
@@ -823,7 +828,7 @@ func TestEngine_AutoSkipsOutsideScheduleWindow(t *testing.T) {
 	}
 	prober := &countingProber{}
 	engine := &Engine{
-		Settings: &memSettings{raw: enabledJSON()},
+		Settings: &memSettings{raw: scheduleEnabledJSON()},
 		Dir:      dir,
 		Groups:   memGroups{ids: []int64{1}},
 		Catalog:  stubCatalog{models: []string{"gpt-6-astra"}},
@@ -855,7 +860,7 @@ func TestEngine_ManualRunsOutsideScheduleWindow(t *testing.T) {
 		schedulable: map[int64][]int64{1: {1, 2}},
 	}
 	engine := &Engine{
-		Settings:     &memSettings{raw: enabledJSON()},
+		Settings:     &memSettings{raw: scheduleEnabledJSON()},
 		Dir:          dir,
 		Catalog:      stubCatalog{models: []string{"gpt-6-astra"}},
 		Prober:       &scriptedProber{answers: []string{"21", numbers(400)}},
@@ -889,7 +894,7 @@ func TestEngine_RunDueNoopOutsideScheduleWindow(t *testing.T) {
 	}
 	prober := &countingProber{}
 	engine := &Engine{
-		Settings: &memSettings{raw: enabledJSON()},
+		Settings: &memSettings{raw: scheduleEnabledJSON()},
 		Dir:      dir,
 		Groups:   memGroups{ids: []int64{1}},
 		Catalog:  stubCatalog{models: []string{"gpt-6-astra"}},

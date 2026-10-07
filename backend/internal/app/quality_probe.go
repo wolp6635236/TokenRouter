@@ -155,7 +155,8 @@ func (s *qualityProbeSink) Begin(context.Context, bool) error { return nil }
 
 func (s *qualityProbeSink) Emit(_ context.Context, event provider.TestEvent) error {
 	if event.Text != "" {
-		s.text.WriteString(event.Text)
+		// strings.Builder.WriteString 不会返回错误，显式丢弃以满足 errcheck。
+		_, _ = s.text.WriteString(event.Text)
 	}
 	if event.Error != "" {
 		s.lastError = event.Error
