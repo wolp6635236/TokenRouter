@@ -8,7 +8,7 @@ import (
 
 // GrokStandaloneSearchModel 读取独立搜索当前配置的默认型号。
 func GrokStandaloneSearchModel() string {
-	return xai.ResolveDefaultTextModel(xai.RuntimeModelMappingOptions().DefaultText)
+	return xai.ResolveDefaultTextModel(xai.RuntimeDefaultTextModel())
 }
 func GrokStandaloneSearchMaxResults(n int) int { return xai.NormalizeGrokWebSearchMaxResults(n) }
 

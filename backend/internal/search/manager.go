@@ -311,16 +311,6 @@ func (m *Manager) GetUsage(ctx context.Context, providerType string) (int64, err
 	return m.state.Usage(ctx, providerType)
 }
 
-// GetAllUsage returns usage for every configured provider.
-func (m *Manager) GetAllUsage(ctx context.Context) map[string]int64 {
-	result := make(map[string]int64, len(m.configs))
-	for _, cfg := range m.configs {
-		used, _ := m.GetUsage(ctx, cfg.Type)
-		result[cfg.Type] = used
-	}
-	return result
-}
-
 // ResetUsage deletes the Redis quota key for the given provider, resetting usage to 0.
 func (m *Manager) ResetUsage(ctx context.Context, providerType string) error {
 	if m.state == nil {

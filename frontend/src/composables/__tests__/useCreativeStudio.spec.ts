@@ -34,6 +34,8 @@ vi.mock('@/utils/creativeLocalStore', async (importOriginal) => {
     loadAsset: vi.fn(),
     loadSetting: vi.fn(),
     saveSetting: vi.fn(),
+    saveRunParams: vi.fn(),
+    loadRunParamsMap: vi.fn(),
     clearAll: vi.fn(),
   }
 })
@@ -122,6 +124,8 @@ describe('useCreativeStudio', () => {
     mockedStore.loadSetting.mockResolvedValue(null)
     mockedStore.saveSetting.mockResolvedValue(undefined)
     mockedStore.clearAll.mockResolvedValue(undefined)
+    mockedStore.saveRunParams.mockResolvedValue(undefined)
+    mockedStore.loadRunParamsMap.mockResolvedValue(new Map())
     // listAssets 按 kind 返回，默认全部为空
     mockedStore.listAssets.mockImplementation((kind: string) =>
       Promise.resolve(kind === 'output' || kind === 'source' || kind === 'mask' ? [] : []),
@@ -317,6 +321,96 @@ describe('useCreativeStudio', () => {
       await vi.advanceTimersByTimeAsync(3000)
       expect(mockedApi.getCreativeRuns).toHaveBeenCalledTimes(1)
       expect(mockedApi.getCreativeRun).not.toHaveBeenCalled()
+    })
+
+    it('提交成功后记录发请求前的提示词和参数', async () => {
+      const { studio } = await setupStudio()
+      studio.prompt.value = '一只猫'
+      studio.quality.value = 'high'
+      await Promise.resolve()
+      let resolveRun!: (run: CreativeRun) => void
+      mockedApi.createCreativeRun.mockReturnValue(new Promise((resolve) => { resolveRun = resolve }))
+
+      const pending = studio.createRun({ sourceBlobs: [], maskBlob: null })
+      studio.prompt.value = '提交后继续编辑'
+      resolveRun(makeRun({ id: 'run-7', status: 'queued' }))
+      await pending
+
+      const expected = expect.objectContaining({
+        runId: 'run-7',
+        optionKey: creativeOptionKey(MODEL),
+        groupName: 'Group A',
+        operation: 'generate',
+        prompt: '一只猫',
+        imageSize: '1K',
+        aspectRatio: 'auto',
+        quality: 'high',
+        background: 'auto',
+        thinkingLevel: 'minimal',
+        referenceCount: 0,
+      })
+      expect(mockedStore.saveRunParams).toHaveBeenCalledWith(expected)
+      expect(studio.runParamsMap.value.get('run-7')).toEqual(expected)
+    })
+
+    it('任务参数写入失败时任务照常提交', async () => {
+      const { studio } = await setupStudio()
+      studio.prompt.value = '一只猫'
+      await Promise.resolve()
+      mockedStore.saveRunParams.mockRejectedValue(new localStore.LocalStoreQuotaError())
+      vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+      const ok = await studio.createRun({ sourceBlobs: [], maskBlob: null })
+      await Promise.resolve()
+
+      expect(ok).toBe(true)
+      expect(studio.error.value).toBe('')
+      expect(studio.runParamsMap.value.has('run-1')).toBe(true)
+    })
+
+    it('applyRunParams 把历史参数和提示词填回输入框，超出模型能力的参数回到默认值', async () => {
+      mockedStore.loadRunParamsMap.mockResolvedValue(new Map([
+        ['run-3', {
+          runId: 'run-3',
+          optionKey: creativeOptionKey(MODEL),
+          groupName: 'Group A',
+          operation: 'edit',
+          prompt: '历史提示词',
+          imageSize: '4K',
+          aspectRatio: '16:9',
+          quality: 'low',
+          background: 'transparent',
+          thinkingLevel: 'high',
+          referenceCount: 2,
+          createdAt: 1,
+        }],
+      ]))
+      const { studio } = await setupStudio()
+      await studio.refreshHistory()
+
+      expect(studio.applyRunParams('missing-run')).toBe(false)
+      expect(studio.applyRunParams('run-3')).toBe(true)
+
+      expect(studio.prompt.value).toBe('历史提示词')
+      expect(studio.operation.value).toBe('edit')
+      // 模型目录没有 4K，回到默认的 1K
+      expect(studio.imageSize.value).toBe('1K')
+      expect(studio.aspectRatio.value).toBe('16:9')
+      expect(studio.quality.value).toBe('low')
+      expect(studio.background.value).toBe('transparent')
+      expect(studio.thinkingLevel.value).toBe('high')
+    })
+
+    it('任务参数读取失败时历史照常刷新', async () => {
+      mockedStore.loadRunParamsMap.mockRejectedValue(new localStore.LocalStoreError('unavailable', 'blocked'))
+      mockedApi.getCreativeRuns.mockResolvedValue({ items: [makeRun({ id: 'run-5', status: 'failed' })], total: 1 })
+      vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      const { studio } = await setupStudio()
+
+      await studio.refreshHistory()
+
+      expect(studio.error.value).toBe('')
+      expect(studio.runHistory.value.map((run) => run.id)).toEqual(['run-5'])
     })
 
     it('inpaint 时附加 mask 文件与幂等键', async () => {

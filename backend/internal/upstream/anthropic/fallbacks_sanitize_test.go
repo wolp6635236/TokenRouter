@@ -1,5 +1,3 @@
-//go:build unit
-
 package anthropic_test
 
 import (

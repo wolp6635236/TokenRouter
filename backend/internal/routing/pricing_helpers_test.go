@@ -1,5 +1,3 @@
-//go:build unit
-
 package routing
 
 // testPtrFloat64 为测试价卡生成可空金额指针。

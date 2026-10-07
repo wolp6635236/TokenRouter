@@ -220,7 +220,7 @@ const dropdownStyle = computed(() => {
   }
 })
 
-const dateLocale = computed(() => (locale.value === 'zh' ? 'zh-CN' : 'en-US'))
+const dateLocale = computed(() => locale.value)
 
 const today = computed(() => {
   // Use local timezone to avoid UTC timezone issues
@@ -429,7 +429,7 @@ const monthLabel = computed(() => {
 })
 
 // 中文日历以周一开头，英文以周日开头。
-const weekStartsOn = computed(() => (locale.value === 'zh' ? 1 : 0))
+const weekStartsOn = computed(() => (locale.value === 'zh-Hans' ? 1 : 0))
 
 const weekdayLabels = computed(() => {
   // 2023-01-01 是周日，以它为基准依次生成一周的星期缩写。

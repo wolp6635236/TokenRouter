@@ -1,5 +1,3 @@
-//go:build unit
-
 package payment
 
 import (
@@ -545,10 +543,7 @@ func TestDecryptConfig_PlaintextAndLegacyCompat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			lb := NewDefaultLoadBalancer(nil, tt.key)
-			got, err := lb.decryptConfig(tt.stored)
-			if err != nil {
-				t.Fatalf("decryptConfig unexpected error: %v", err)
-			}
+			got := lb.decryptConfig(tt.stored)
 			if !stringMapEqual(got, tt.want) {
 				t.Fatalf("decryptConfig = %v, want %v", got, tt.want)
 			}

@@ -118,7 +118,7 @@ func (s *OpenAIProviderTest) Execute(c *TestRun, value *providercore.Record, mod
 	// OAuth 提供商使用 ChatGPT Codex 上游，测试与转发共用模型归一化规则。
 	upstreamTestModelID := testModelID
 	if isOAuth {
-		upstreamTestModelID = s.normalizeModel(credentialProvider, testModelID)
+		upstreamTestModelID = strings.TrimSpace(testModelID)
 	}
 	payload := openai.TestResponsesPayload(upstreamTestModelID, prompt, isOAuth)
 	payloadBytes, _ := json.Marshal(payload)
@@ -323,7 +323,7 @@ func (s *OpenAIProviderTest) executeNativeCompaction(c *TestRun, value *provider
 	c.Begin(true)
 
 	if isOAuth {
-		testModelID = s.normalizeModel(credentialProvider, testModelID)
+		testModelID = strings.TrimSpace(testModelID)
 	}
 	payloadBytes, _ := json.Marshal(openai.CompactionTestPayload(testModelID, isOAuth))
 	if !c.TaskRecoveryTried {
@@ -864,13 +864,6 @@ func (s *OpenAIProviderTest) read(ctx context.Context, id int64) (*providercore.
 func (s *OpenAIProviderTest) agentHeaders(ctx context.Context, value *providercore.Record) (http.Header, error) {
 	headers, _, err := AgentIdentityHeaders(ctx, value, s.EnsureTask)
 	return headers, err
-}
-
-func (s *OpenAIProviderTest) normalizeModel(value *providercore.Record, model string) string {
-	if value.UsesOpenAICodexProtocol() {
-		return openai.NormalizeCodexModel(model)
-	}
-	return strings.TrimSpace(model)
 }
 
 func setTestChatGPTHeaders(headers http.Header, value *providercore.Record) {

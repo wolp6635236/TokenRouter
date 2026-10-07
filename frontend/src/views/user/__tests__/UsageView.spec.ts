@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 
 import UsageView from '../UsageView.vue'
+
+enableAutoUnmount(afterEach)
 
 const {
   query,
@@ -36,6 +38,20 @@ const {
 }))
 
 const messages: Record<string, string> = {
+  'usage.time': 'Time',
+  'usage.reasoningEffort': 'Reasoning Effort',
+  'usage.inboundEndpoint': 'Inbound Endpoint',
+  'admin.usage.ipAddress': 'IP Address',
+  'admin.usage.inputTokens': 'Input Tokens',
+  'admin.usage.outputTokens': 'Output Tokens',
+  'admin.usage.cacheReadTokens': 'Cache Read Tokens',
+  'admin.usage.cacheCreationTokens': 'Cache Creation Tokens',
+  'usage.rate': 'Rate Multiplier',
+  'usage.userBilled': 'Billed Cost',
+  'usage.original': 'Original Cost',
+  'usage.firstToken': 'First Token (ms)',
+  'usage.duration': 'Duration (ms)',
+
   'admin.dashboard.timeRange': 'Time range',
   'admin.dashboard.granularity': 'Granularity',
   'admin.dashboard.day': 'Day',
@@ -78,6 +94,7 @@ vi.mock('@/api', () => ({
     getStats,
     getDashboardModels,
     getDashboardSnapshotV2,
+    listMyErrorRequests: vi.fn().mockResolvedValue({ items: [], total: 0, pages: 0 }),
   },
   keysAPI: {
     list,
@@ -237,6 +254,20 @@ describe('user UsageView', () => {
     expect(getAvailable).toHaveBeenCalled()
   })
 
+  it('分组筛选使用展示名称，并在切换语言后刷新', async () => {
+    getAvailable.mockResolvedValue([{ id: 1, name: 'business-group', display_name: 'English group' }, { id: 2, name: 'Legacy group' }])
+    const wrapper = mountUsageView()
+    await flushPromises()
+    const options = () => wrapper.findAllComponents({ name: 'Select' }).flatMap(item => item.props('options') || [])
+    expect(options()).toContainEqual(expect.objectContaining({ value: 1, label: 'English group' }))
+    expect(options()).toContainEqual(expect.objectContaining({ value: 2, label: 'Legacy group' }))
+    getAvailable.mockResolvedValue([{ id: 1, name: 'business-group', display_name: '中文分组' }])
+    window.dispatchEvent(new CustomEvent('locale-changed', { detail: 'zh-Hans' }))
+    await flushPromises()
+    expect(options()).toContainEqual(expect.objectContaining({ value: 1, label: '中文分组' }))
+    wrapper.unmount()
+  })
+
   it('主筛选框初始值为 null，显示“全部”选项，请求参数不带未选条件', async () => {
     const wrapper = mountUsageView()
     await flushPromises()
@@ -314,7 +345,7 @@ describe('user UsageView', () => {
     let exportedBlob: Blob | null = null
     let csvContent = ''
     const OriginalBlob = globalThis.Blob
-    vi.stubGlobal('Blob', vi.fn((parts: BlobPart[], options?: BlobPropertyBag) => {
+    vi.stubGlobal('Blob', vi.fn(function (parts: BlobPart[], options?: BlobPropertyBag) {
       csvContent = parts.map((part) => String(part)).join('')
       return new OriginalBlob(parts, options)
     }))
@@ -339,7 +370,7 @@ describe('user UsageView', () => {
     expect(showSuccess).toHaveBeenCalled()
     expect(csvContent.startsWith('\uFEFF')).toBe(true)
     expect(csvContent.slice(1)).toBe([
-      'Time,API Key Name,Model,Reasoning Effort,Inbound Endpoint,IP Address,Type,Billing Mode,Input Tokens,Output Tokens,Cache Read Tokens,Cache Creation Tokens,Rate Multiplier,Billed Cost,Original Cost,First Token (ms),Duration (ms)',
+      'Time,API Key,Model,Reasoning Effort,Inbound Endpoint,IP Address,Type,Billing mode,Input Tokens,Output Tokens,Cache Read Tokens,Cache Creation Tokens,Rate Multiplier,Billed Cost,Original Cost,First Token (ms),Duration (ms)',
       '2026-03-08T00:00:00Z,demo-key,gpt-5.4,"\'-",,203.0.113.10,Sync,Token,4057,101,278272,4,1,0.09288300,0.09288300,12,345',
     ].join('\n'))
     expect(csvContent).toContain('IP Address')
@@ -387,7 +418,7 @@ describe('user UsageView', () => {
 
     let csvContent = ''
     const OriginalBlob = globalThis.Blob
-    vi.stubGlobal('Blob', vi.fn((parts: BlobPart[], options?: BlobPropertyBag) => {
+    vi.stubGlobal('Blob', vi.fn(function (parts: BlobPart[], options?: BlobPropertyBag) {
       csvContent = parts.map((part) => String(part)).join('')
       return new OriginalBlob(parts, options)
     }))
@@ -399,7 +430,7 @@ describe('user UsageView', () => {
 
     await (wrapper.vm as any).exportToCSV()
 
-    expect(csvContent).toContain('Billing Mode')
+    expect(csvContent).toContain('Billing mode')
     expect(csvContent).toContain('Image')
     expect(csvContent).not.toContain(',Token,0,0,0,0,')
 

@@ -247,7 +247,7 @@ Responses 生图有一个明确的协议适配例外：请求的图片模型进�
 
 Messages、Chat、Responses 和 WebSocket 都保留手动映射后的完整模型 ID，不做 Codex 拼写纠正、旧型号迁移、日期剥离或 effort 后缀解析。明确的 `output_config.effort` 按最终的上游型号转换；GPT-5.6 支持原生的 max，不会降成 xhigh。能力判断可以只读地识别供应商限定名的型号尾段，例如 `openai/gpt-5.6-sol` 支持明确的 max；这种识别不用于改写转发的 ID 或生成价格候选，Messages 桥接和 Responses 转换遵守同样的规则。
 
-GPT-5.6 的内置产品只有 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`。裸的 `gpt-5.6` 不是预设型号，也不是 Sol 的别名，OAuth 归一化和用量计费候选都不会自动把它改成 Sol 或旧的 GPT；未知的名称按兼容上游的透传规则处理，能否使用由上游决定。管理员手动配置的 Key、分组和提供商映射照常有效，历史配置和用量记录不会被回写。模型目录的查询和能力来源，见[模型目录与市场](model_catalog_and_marketplace.md#model_catalog_metadata_lookup)。
+GPT-5.6 的内置产品是 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`。裸的 `gpt-5.6` 按未知型号处理。请求通过提供商的模型范围和协议资格检查后，上游收到手动映射后的完整型号，计费候选使用选定的计费模型。未知名称是否可用由上游决定。管理员配置的 Key、分组和提供商映射参与请求处理，历史配置和用量记录保持原值。模型目录的查询和能力来源，见[模型目录与市场](model_catalog_and_marketplace.md#model_catalog_metadata_lookup)。
 
 `gpt-6-astra` 的最终上游请求只接受 `low` 到 `max` 的推理档位。网关不为 Astra 硬编码档位的改写；需要兼容遗留的 `minimal` 或 `none` 的分组，在"推理强度映射"里按请求模型配置目标值（例如都映射到 `low`）。`none` 只能用于映射，不能作为最大推理强度，因为它没有可以比较的强度排名；没有配置映射时，普通转发层保持客户端的档位，是否接受由上游或对应的兼容层决定。GPT-5.6 仍然支持 `none`。本地价格目录和代码里的回退，都保留 Astra 的官方标准价；远端价卡还没同步时，也不会按其他 GPT 型号计费。
 

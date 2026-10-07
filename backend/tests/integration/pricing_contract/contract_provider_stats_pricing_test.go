@@ -1,5 +1,3 @@
-//go:build unit
-
 package pricingcontract
 
 import (
@@ -11,7 +9,6 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
@@ -44,7 +41,7 @@ import (
 // The key must match what getFallbackPricing resolves to for a given model name.
 // E.g., model "claude-sonnet-4" resolves to key "claude-sonnet-4".
 func newTestBillingServiceWithPrices(prices map[string]*purepricing.ModelPricing) *billing.Calculator {
-	return newCalculatorWithPrices(nil, nil, prices)
+	return newCalculatorWithPrices(nil, prices)
 }
 
 func TestTryModelFilePricing_Success(t *testing.T) {
@@ -648,7 +645,7 @@ func TestResolveProviderStatsCost_Gemini36FlashTierUsesFallbackPricing(t *testin
 		Status: billing.StatusActive,
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, "antigravity")
-	bs := newCalculator(&config.Config{}, nil)
+	bs := newCalculator(nil)
 
 	result := contractProviderStatsCost(
 		context.Background(),

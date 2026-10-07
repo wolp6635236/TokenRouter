@@ -360,7 +360,6 @@ const emit = defineEmits<{
   close: []
 }>()
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 void emit // 模板中通过 $emit 使用，脚本侧保留引用避免类型告警。
 
 const { t } = useI18n()

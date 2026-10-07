@@ -593,21 +593,9 @@ onUnmounted(() => {
 })
 
 function resolveLocalizedSiteName(settings: PublicSettings | null): string {
-  const isZh = String(locale.value).toLowerCase().startsWith('zh')
-  const primary = isZh ? settings?.site_name_zh : settings?.site_name_en
-  const secondary = isZh ? settings?.site_name_en : settings?.site_name_zh
-  return firstConfiguredText(primary, secondary, settings?.site_name, 'TokenRouter')
+  return settings?.site_name?.trim() || 'TokenRouter'
 }
 
-function firstConfiguredText(...values: Array<string | undefined>): string {
-  for (const value of values) {
-    const normalized = value?.trim()
-    if (normalized) {
-      return normalized
-    }
-  }
-  return ''
-}
 
 // ==================== 登录条款 ====================
 

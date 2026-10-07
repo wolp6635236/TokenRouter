@@ -33,50 +33,11 @@ builds:
       - -X main.Date={{.Date}}
       - -X main.BuildType=release
 
-  # 旧更新器只提取普通文件 sub2api，不能使用符号链接。
-  - id: legacy-compat
-    dir: backend
-    main: ./cmd/server
-    binary: sub2api
-    # CI matrix 已完成编译时由适配器导入产物，本地发布仍直接调用 Go。
-    tool: '{{ if .Env.GORELEASER_PREBUILT_DIR }}../tools/goreleaser_prebuilt.sh{{ else }}go{{ end }}'
-    flags:
-      - -tags=embed
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - windows
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
-    ldflags:
-      - -s -w
-      - -X main.Commit={{.Commit}}
-      - -X main.Date={{.Date}}
-      - -X main.BuildType=release
-
 archives:
   - id: default
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-    format_overrides:
-      - goos: windows
-        formats: [zip]
-    files:
-      - LICENSE*
-      - README*
-      - deploy/*
-
-  - id: legacy-compat
-    formats: [tar.gz]
-    name_template: >-
-      sub2api_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     format_overrides:
       - goos: windows
         formats: [zip]

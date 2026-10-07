@@ -100,7 +100,7 @@ func RegisterGatewayRoutes(
 	}
 	responsesWSHTTP := h.ResponsesWSHTTP
 	if responsesWSHTTP == nil && h.OpenAIEnabled {
-		responsesWSHTTP = provideResponsesWSHTTP(nil, nil, nil, nil, commonOpenAI, nil, nil, nil, activity, nil, nil, nil)
+		responsesWSHTTP = provideResponsesWSHTTP(nil, nil, nil, nil, commonOpenAI, nil, nil, nil, activity, nil, nil, nil, nil)
 	}
 	modelsHTTP := h.ModelsHTTP
 	if modelsHTTP == nil && h.TextEnabled {

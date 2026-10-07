@@ -3,6 +3,8 @@ package httpapi
 import (
 	"strconv"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -69,7 +71,7 @@ func (h *SubscriptionHandler) List(c *gin.Context) {
 
 	out := make([]UserSubscription, 0, len(subscriptions))
 	for i := range subscriptions {
-		out = append(out, *UserSubscriptionFromService(&subscriptions[i]))
+		out = append(out, *UserSubscriptionFromService(&subscriptions[i], locale.FromContext(c.Request.Context())))
 	}
 	response.Success(c, out)
 }
@@ -92,7 +94,7 @@ func (h *SubscriptionHandler) GetActive(c *gin.Context) {
 
 	out := make([]UserSubscription, 0, len(subscriptions))
 	for i := range subscriptions {
-		out = append(out, *UserSubscriptionFromService(&subscriptions[i]))
+		out = append(out, *UserSubscriptionFromService(&subscriptions[i], locale.FromContext(c.Request.Context())))
 	}
 	response.Success(c, out)
 }
@@ -122,7 +124,7 @@ func (h *SubscriptionHandler) GetProgress(c *gin.Context) {
 			continue
 		}
 		result = append(result, SubscriptionProgressInfo{
-			Subscription: UserSubscriptionFromService(sub),
+			Subscription: UserSubscriptionFromService(sub, locale.FromContext(c.Request.Context())),
 			Progress:     progress,
 		})
 	}
@@ -163,7 +165,7 @@ func (h *SubscriptionHandler) GetSummary(c *gin.Context) {
 		}
 
 		if sub.Plan != nil {
-			item.PlanName = sub.Plan.Name
+			item.PlanName = billing.LocalizePlan(sub.Plan, locale.FromContext(c.Request.Context())).Name
 		}
 
 		// Format expiration time

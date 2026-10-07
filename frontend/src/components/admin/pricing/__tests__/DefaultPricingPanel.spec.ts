@@ -4,7 +4,8 @@ import DefaultPricingPanel from '../DefaultPricingPanel.vue'
 import { listDefaultPricing, updateDefaultPricing } from '@/api/admin/pricing'
 
 vi.mock('@/api/admin/pricing', () => ({ listDefaultPricing: vi.fn(), updateDefaultPricing: vi.fn() }))
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('vue-i18n', async () => ({
+  ...await vi.importActual<typeof import('vue-i18n')>('vue-i18n'), useI18n: () => ({ t: (key: string) => key }) }))
 const stubs = {
   TablePageLayout: { template: '<div><slot name="filters"/><slot name="table"/><slot name="pagination"/></div>' },
   DataTable: { props: ['data'], template: '<div><div v-for="row in data" :key="row.model"><slot name="cell-price" :row="row"/><slot name="cell-actions" :row="row"/></div><slot v-if="!data.length" name="empty"/></div>' },

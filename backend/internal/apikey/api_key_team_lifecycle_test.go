@@ -1,5 +1,3 @@
-//go:build unit
-
 package apikey_test
 
 import (
@@ -76,7 +74,7 @@ func TestValidateTeamKeyLifecycle(t *testing.T) {
 			if test.mutate != nil {
 				test.mutate(key)
 			}
-			err := (newAPIKeyTestService(apiKeyTestDependencies{cfg: test.cfg})).ValidateTeamKeyLifecycle(key)
+			err := newAPIKeyTestService(apiKeyTestDependencies{cfg: test.cfg}).ValidateTeamKeyLifecycle(key)
 			if test.want == nil {
 				require.NoError(t, err)
 				return

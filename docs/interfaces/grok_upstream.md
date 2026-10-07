@@ -122,10 +122,9 @@ Grok Build CLI 的模型配置指向 TokenRouter 对外的地址（以 `/v1` 结
 - `grok-4.20-0309-reasoning`
 - `grok-4.20-0309-non-reasoning`
 - `grok-4.20-multi-agent-0309`
-- `grok-imagine`
 - `grok-imagine-image`
 - `grok-imagine-image-quality`
-- `grok-imagine-edit`
+- `grok-imagine-image-2.0`
 - `grok-imagine-video`
 - `grok-imagine-video-1.5`
 

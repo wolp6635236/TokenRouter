@@ -1,5 +1,3 @@
-//go:build unit
-
 package creative_test
 
 import (
@@ -1245,7 +1243,7 @@ func (r *creativeFakeRunRepo) CompleteProviderOutcome(ctx context.Context, id st
 // TestCreativeUnpricedModelDoesNotReserve 验证缺价型号不展示，也不会进入资金预留。
 func TestCreativeUnpricedModelDoesNotReserve(t *testing.T) {
 	svc := newCreativeTestService()
-	svc.ImageUnitPrice = creativePriceFixture(billingtestkit.Calculator(0, nil, nil), nil)
+	svc.ImageUnitPrice = creativePriceFixture(billingtestkit.Calculator(nil, nil), nil)
 	listed, err := svc.ListModels(context.Background(), 7)
 	require.NoError(t, err)
 	require.Empty(t, listed.Data)

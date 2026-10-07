@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
@@ -23,6 +25,7 @@ func (h *PlanHandler) GetPlans(c *gin.Context) {
 		return
 	}
 	type planWithPlatform struct {
+		Resolution           locale.Resolution `json:"localization_resolution"`
 		ID                   int64             `json:"id"`
 		Name                 string            `json:"name"`
 		Description          string            `json:"description"`
@@ -44,6 +47,7 @@ func (h *PlanHandler) GetPlans(c *gin.Context) {
 	result := make([]planWithPlatform, 0, len(plans))
 	for _, p := range plans {
 		result = append(result, planWithPlatform{
+			Resolution:           p.Resolution,
 			ID:                   int64(p.ID),
 			Name:                 p.Name,
 			Description:          p.Description,

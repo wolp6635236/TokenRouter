@@ -8,7 +8,6 @@ export type {
   AlertRule,
   AlertEvent,
   AlertSeverity,
-  ThresholdMode,
   MetricType,
   Operator,
   EmailNotificationConfig,

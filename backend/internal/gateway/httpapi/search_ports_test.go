@@ -64,7 +64,7 @@ func TestSearchNativePortsCompleteEachRequestOnce(t *testing.T) {
 				Data:            map[string]*pricing.CatalogModelPricing{"grok-web-search": {}, "grok-x-search": {}},
 				BillingDefaults: pricing.OperationPrices{SearchPricePer1k: &searchPrice},
 			})
-			fixture.Dependencies.Calculator = billing.NewCalculator(catalogue, billing.CalculatorOptions{DefaultRateMultiplier: 1.1})
+			fixture.Dependencies.Calculator = billing.NewCalculator(catalogue, billing.CalculatorOptions{})
 			recorder := fixture.Core(nil, false)
 			ports := SearchPorts{Selector: target, Funding: admission.NewFundingAdmission(checks, nil), Recorder: recorder}
 			handler := NewSearchHandler(ports)

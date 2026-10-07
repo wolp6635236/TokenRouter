@@ -139,5 +139,5 @@ func (r liveModelResolver) ResolveModel(ctx context.Context, groupID *int64, mod
 	if err != nil {
 		return "", "", err
 	}
-	return routing, gatewayprovider.ExecutionModelPolicy(r.provider).OpenAIUpstream(routing, false, false), nil
+	return routing, gatewayprovider.ExecutionModelPolicy(r.provider).OpenAIUpstream(routing, false), nil
 }

@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing"
@@ -43,7 +41,7 @@ func (s *Compatible) UpstreamRoutingModelRestricted(ctx context.Context, groupID
 	}
 	upstreamModel := gatewayprovider.ExecutionModelPolicy(provider).UpstreamModel(ctx, routingModel)
 	if requireCompact {
-		upstreamModel = gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(routingModel, true, requeststate.OpenAIHTTPPassthroughRoutingFromContext(ctx))
+		upstreamModel = gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(routingModel, true)
 	}
 	if upstreamModel == "" {
 		return false

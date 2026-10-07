@@ -6,7 +6,6 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingadapter "github.com/TokenFlux/TokenRouter/internal/billing/provider"
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
 	catalogprovider "github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
@@ -14,9 +13,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// provideBillingCalculator 从启动配置提取计费参数，构造共享的计算器。
-func provideBillingCalculator(cfg *config.Config, catalog *catalogprovider.Service, calendar timezone.Calendar) *billing.Calculator {
-	return billing.NewCalculator(catalog, billing.CalculatorOptions{DefaultRateMultiplier: cfg.Default.RateMultiplier, Now: calendar.Now, LoadLocation: billingadapter.LoadPricingLocation})
+// provideBillingCalculator 构造使用模型目录和应用时钟的共享计算器。
+func provideBillingCalculator(catalog *catalogprovider.Service, calendar timezone.Calendar) *billing.Calculator {
+	return billing.NewCalculator(catalog, billing.CalculatorOptions{Now: calendar.Now, LoadLocation: billingadapter.LoadPricingLocation})
 }
 
 func provideBillingPriceResolver(modelConfigs *routing.PricingConfigService, calculator *billing.Calculator) *billing.PriceResolver {

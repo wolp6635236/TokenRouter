@@ -159,6 +159,20 @@ func (_c *UserCreate) SetNillableStatus(v *string) *UserCreate {
 	return _c
 }
 
+// SetPreferredLocale sets the "preferred_locale" field.
+func (_c *UserCreate) SetPreferredLocale(v string) *UserCreate {
+	_c.mutation.SetPreferredLocale(v)
+	return _c
+}
+
+// SetNillablePreferredLocale sets the "preferred_locale" field if the given value is not nil.
+func (_c *UserCreate) SetNillablePreferredLocale(v *string) *UserCreate {
+	if v != nil {
+		_c.SetPreferredLocale(*v)
+	}
+	return _c
+}
+
 // SetUsername sets the "username" field.
 func (_c *UserCreate) SetUsername(v string) *UserCreate {
 	_c.mutation.SetUsername(v)
@@ -757,6 +771,11 @@ func (_c *UserCreate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "User.status": %w`, err)}
 		}
 	}
+	if v, ok := _c.mutation.PreferredLocale(); ok {
+		if err := user.PreferredLocaleValidator(v); err != nil {
+			return &ValidationError{Name: "preferred_locale", err: fmt.Errorf(`ent: validator failed for field "User.preferred_locale": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.Username(); !ok {
 		return &ValidationError{Name: "username", err: errors.New(`ent: missing required field "User.username"`)}
 	}
@@ -868,6 +887,10 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Status(); ok {
 		_spec.SetField(user.FieldStatus, field.TypeString, value)
 		_node.Status = value
+	}
+	if value, ok := _c.mutation.PreferredLocale(); ok {
+		_spec.SetField(user.FieldPreferredLocale, field.TypeString, value)
+		_node.PreferredLocale = &value
 	}
 	if value, ok := _c.mutation.Username(); ok {
 		_spec.SetField(user.FieldUsername, field.TypeString, value)
@@ -1361,6 +1384,24 @@ func (u *UserUpsert) UpdateStatus() *UserUpsert {
 	return u
 }
 
+// SetPreferredLocale sets the "preferred_locale" field.
+func (u *UserUpsert) SetPreferredLocale(v string) *UserUpsert {
+	u.Set(user.FieldPreferredLocale, v)
+	return u
+}
+
+// UpdatePreferredLocale sets the "preferred_locale" field to the value that was provided on create.
+func (u *UserUpsert) UpdatePreferredLocale() *UserUpsert {
+	u.SetExcluded(user.FieldPreferredLocale)
+	return u
+}
+
+// ClearPreferredLocale clears the value of the "preferred_locale" field.
+func (u *UserUpsert) ClearPreferredLocale() *UserUpsert {
+	u.SetNull(user.FieldPreferredLocale)
+	return u
+}
+
 // SetUsername sets the "username" field.
 func (u *UserUpsert) SetUsername(v string) *UserUpsert {
 	u.Set(user.FieldUsername, v)
@@ -1791,6 +1832,27 @@ func (u *UserUpsertOne) SetStatus(v string) *UserUpsertOne {
 func (u *UserUpsertOne) UpdateStatus() *UserUpsertOne {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetPreferredLocale sets the "preferred_locale" field.
+func (u *UserUpsertOne) SetPreferredLocale(v string) *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.SetPreferredLocale(v)
+	})
+}
+
+// UpdatePreferredLocale sets the "preferred_locale" field to the value that was provided on create.
+func (u *UserUpsertOne) UpdatePreferredLocale() *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdatePreferredLocale()
+	})
+}
+
+// ClearPreferredLocale clears the value of the "preferred_locale" field.
+func (u *UserUpsertOne) ClearPreferredLocale() *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.ClearPreferredLocale()
 	})
 }
 
@@ -2429,6 +2491,27 @@ func (u *UserUpsertBulk) SetStatus(v string) *UserUpsertBulk {
 func (u *UserUpsertBulk) UpdateStatus() *UserUpsertBulk {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetPreferredLocale sets the "preferred_locale" field.
+func (u *UserUpsertBulk) SetPreferredLocale(v string) *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.SetPreferredLocale(v)
+	})
+}
+
+// UpdatePreferredLocale sets the "preferred_locale" field to the value that was provided on create.
+func (u *UserUpsertBulk) UpdatePreferredLocale() *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdatePreferredLocale()
+	})
+}
+
+// ClearPreferredLocale clears the value of the "preferred_locale" field.
+func (u *UserUpsertBulk) ClearPreferredLocale() *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.ClearPreferredLocale()
 	})
 }
 

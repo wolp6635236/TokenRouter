@@ -22,14 +22,10 @@ func (s *Snapshot) ApplySiteAdminReadSettings(value *site.AdminReadSettings) {
 	s.PurchaseSubscriptionEnabled = value.PurchaseSubscriptionEnabled
 	s.PurchaseSubscriptionURL = value.PurchaseSubscriptionURL
 	s.SiteLogo = value.SiteLogo
+	s.SiteTexts = value.SiteTexts
+	s.DefaultLocale = value.DefaultLocale
 	s.SiteName = value.SiteName
-	s.SiteNameEn = value.SiteNameEn
-	s.SiteNameZh = value.SiteNameZh
 	s.SiteSubtitle = value.SiteSubtitle
-	s.SiteSubtitleEn = value.SiteSubtitleEn
-	s.SiteSubtitleZh = value.SiteSubtitleZh
-	s.SiteTitleEn = value.SiteTitleEn
-	s.SiteTitleZh = value.SiteTitleZh
 	s.TableDefaultPageSize = value.TableDefaultPageSize
 	s.TablePageSizeOptions = value.TablePageSizeOptions
 }

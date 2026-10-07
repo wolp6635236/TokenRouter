@@ -1,5 +1,3 @@
-//go:build unit
-
 package billing_test
 
 import (
@@ -11,7 +9,6 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
@@ -322,7 +319,7 @@ func TestCalculateCostUnified_ImageMode(t *testing.T) {
 		ByID:          map[int64]*routingtestkit.Configuration{},
 	})
 
-	bs := newCalculatorWithPrices(&config.Config{}, nil, map[string]*pricing.ModelPricing{})
+	bs := newCalculatorWithPrices(nil, map[string]*pricing.ModelPricing{})
 	resolver := billingtestkit.PriceResolver(cs, bs)
 	groupID := int64(2)
 

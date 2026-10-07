@@ -24,6 +24,7 @@ import (
 	gatewayws "github.com/TokenFlux/TokenRouter/internal/gateway/ws"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
@@ -36,6 +37,7 @@ import (
 
 // Bindings 绑定 WS 入站和每轮执行接口。
 type Bindings struct {
+	Pricing      *admission.ModelPricing
 	Common       openaiattempt.Bindings
 	Dependencies gatewayhttp.OpenAIDependencies
 	Prompt       gatewayhttp.MessagesPrompt
@@ -461,7 +463,16 @@ func (t *openAIWSEntryTarget) ResolveRouting(ctx context.Context, model string, 
 	if responses {
 		capability = provider.OpenAIEndpointCapabilityResponses
 	}
-	return t.root.bindings.ResolveRouting(ctx, t.root.key.GroupID, t.provider, model, capability)
+	mapped, err := t.root.bindings.ResolveRouting(ctx, t.root.key.GroupID, t.provider, model, capability)
+	if err != nil {
+		return "", err
+	}
+	err = gatewayhttp.CheckTextModelPricing(ctx, t.root.bindings.Pricing, t.root.key, t.provider, model, mapped, nil, protocol.ProtocolResponsesWebSocket)
+	if err != nil {
+		gatewayhttp.MarkOpsClientBusinessLimited(t.root.c, gatewayhttp.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		return "", err
+	}
+	return mapped, nil
 }
 
 func (t *openAIWSEntryTarget) Warning(_ context.Context, model string, status int, body []byte, message string, snapshot gatewayws.EntryCyberSnapshot) {

@@ -20,8 +20,7 @@ func (imageTokenCatalog) GetModelPricing(model string) *pricing.CatalogModelPric
 	return &pricing.CatalogModelPricing{InputCostPerToken: 1e-6, OutputCostPerToken: 2e-6, OutputCostPerImageToken: 3e-6}
 }
 
-func (imageTokenCatalog) GetStatus() map[string]any { return nil }
-func (imageTokenCatalog) ForceUpdate() error        { return nil }
+func (imageTokenCatalog) ForceUpdate() error { return nil }
 
 // TestImageTokenUsageUsesExactTokenPricing 验证生图响应的实际 token 用量继续使用独立 token 价。
 func TestImageTokenUsageUsesExactTokenPricing(t *testing.T) {

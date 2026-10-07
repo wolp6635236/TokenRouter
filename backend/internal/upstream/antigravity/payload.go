@@ -17,7 +17,7 @@ import (
 var AntigravityPassthroughErrorMessages = []string{
 	"prompt is too long",
 }
-var ErrProjectIDRequired = errors.New("该 standard-tier Antigravity 提供商需配置 project_id")
+var ErrProjectIDRequired = errors.New("this standard-tier Antigravity provider requires project_id")
 
 // PromptTooLongError 表示上游明确返回 prompt too long
 type PromptTooLongError struct {
@@ -47,7 +47,7 @@ func ApplyThinkingModelSuffix(mappedModel string, thinkingEnabled bool) string {
 func InjectIdentityPatchToGeminiRequest(body []byte) ([]byte, error) {
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
-		return nil, fmt.Errorf("解析 Gemini 请求失败: %w", err)
+		return nil, fmt.Errorf("parse Gemini request: %w", err)
 	}
 
 	// 检查现有 systemInstruction 是否已包含身份提示词
@@ -93,7 +93,7 @@ func InjectIdentityPatchToGeminiRequest(body []byte) ([]byte, error) {
 func WrapV1InternalRequest(projectID, model string, originalBody []byte) ([]byte, error) {
 	var request any
 	if err := json.Unmarshal(originalBody, &request); err != nil {
-		return nil, fmt.Errorf("解析请求体失败: %w", err)
+		return nil, fmt.Errorf("parse request body: %w", err)
 	}
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {

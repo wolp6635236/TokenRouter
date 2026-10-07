@@ -184,8 +184,3 @@ func DefaultModelIDs() []string {
 
 // DefaultTestModel 测试时使用的默认模型
 const DefaultTestModel = "claude-sonnet-4-5-20250929"
-
-// NormalizeModelID 保留调用方明确指定的型号与日期。
-func NormalizeModelID(id string) string {
-	return id
-}

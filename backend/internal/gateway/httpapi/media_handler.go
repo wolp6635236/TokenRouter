@@ -28,7 +28,6 @@ type MediaSubject struct {
 }
 type GrokMediaInput struct {
 	Model          string
-	HasInputImage  bool
 	ModerationBody []byte
 }
 type MediaHTTPFailure struct {
@@ -74,7 +73,6 @@ type MediaHTTPPorts interface {
 	NewGenerationPorts(*gin.Context, GenerationHTTPInput, *zap.Logger, *bool) media.GenerationPorts
 	MaxSwitches() int
 	ParseGrok(string, []byte) GrokMediaInput
-	NormalizeGrok(string, string, bool) string
 	ResolveCompositeVideo(*gin.Context, string, int64) (*MediaAccess, int64, error)
 	ResolveVideoProvider(context.Context, *int64, string, int64, int64) (int64, error)
 	RewriteGrok([]byte, string, string) ([]byte, string, error)
@@ -243,7 +241,7 @@ func (h *MediaHandler) GrokMedia(c *gin.Context, endpoint, requestID string) {
 	contentType := c.GetHeader("Content-Type")
 	parsed := h.ports.ParseGrok(contentType, body)
 	requestModel := parsed.Model
-	routingModel := h.ports.NormalizeGrok(endpoint, requestModel, parsed.HasInputImage)
+	routingModel := strings.TrimSpace(requestModel)
 	if generation && strings.TrimSpace(requestModel) == "" {
 		h.ports.Error(c, 400, "invalid_request_error", "model is required")
 		return

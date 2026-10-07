@@ -12,5 +12,5 @@ import (
 func TestMain(m *testing.M) {
 	time.Local = time.UTC
 	gin.SetMode(gin.TestMode)
-	os.Exit(m.Run())
+	os.Exit(runIdentityTests(m))
 }

@@ -8,11 +8,11 @@ var ErrAPIKeyNotFound = apperror.NotFound("API_KEY_NOT_FOUND", "api key not foun
 
 var ErrAPIKeyQuotaExhausted = apperror.TooManyRequests("API_KEY_QUOTA_EXHAUSTED", "api key quota exhausted")
 
-var ErrAPIKeyRateLimit1dExceeded = apperror.TooManyRequests("API_KEY_RATE_1D_EXCEEDED", "api key 日限额已用完")
+var ErrAPIKeyRateLimit1dExceeded = apperror.TooManyRequests("API_KEY_RATE_1D_EXCEEDED", "The API key daily limit has been reached")
 
-var ErrAPIKeyRateLimit5hExceeded = apperror.TooManyRequests("API_KEY_RATE_5H_EXCEEDED", "api key 5小时限额已用完")
+var ErrAPIKeyRateLimit5hExceeded = apperror.TooManyRequests("API_KEY_RATE_5H_EXCEEDED", "The API key five-hour limit has been reached")
 
-var ErrAPIKeyRateLimit7dExceeded = apperror.TooManyRequests("API_KEY_RATE_7D_EXCEEDED", "api key 7天限额已用完")
+var ErrAPIKeyRateLimit7dExceeded = apperror.TooManyRequests("API_KEY_RATE_7D_EXCEEDED", "The API key seven-day limit has been reached")
 
 var ErrProviderNotFound = apperror.NotFound("PROVIDER_NOT_FOUND", "provider not found")
 
@@ -26,13 +26,13 @@ var ErrPreferredSubscriptionInvalid = apperror.Forbidden("PREFERRED_SUBSCRIPTION
 
 var ErrSubscriptionNotFound = apperror.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found")
 
-var ErrTeamMemberDailyExceeded = apperror.TooManyRequests("TEAM_MEMBER_DAILY_LIMIT_EXCEEDED", "团队成员日限额已用完")
+var ErrTeamMemberDailyExceeded = apperror.TooManyRequests("TEAM_MEMBER_DAILY_LIMIT_EXCEEDED", "The team member daily limit has been reached")
 
-var ErrTeamMemberMonthlyExceeded = apperror.TooManyRequests("TEAM_MEMBER_MONTHLY_LIMIT_EXCEEDED", "团队成员月限额已用完")
+var ErrTeamMemberMonthlyExceeded = apperror.TooManyRequests("TEAM_MEMBER_MONTHLY_LIMIT_EXCEEDED", "The team member monthly limit has been reached")
 
-var ErrTeamMemberWeeklyExceeded = apperror.TooManyRequests("TEAM_MEMBER_WEEKLY_LIMIT_EXCEEDED", "团队成员周限额已用完")
+var ErrTeamMemberWeeklyExceeded = apperror.TooManyRequests("TEAM_MEMBER_WEEKLY_LIMIT_EXCEEDED", "The team member weekly limit has been reached")
 
-var ErrTeamMembershipRequired = apperror.Forbidden("TEAM_MEMBERSHIP_REQUIRED", "需要先加入团队")
+var ErrTeamMembershipRequired = apperror.Forbidden("TEAM_MEMBERSHIP_REQUIRED", "Team membership is required")
 
 var ErrUserNotFound = apperror.NotFound("USER_NOT_FOUND", "user not found")
 

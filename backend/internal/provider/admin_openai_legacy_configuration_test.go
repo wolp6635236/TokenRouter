@@ -1,55 +1,14 @@
-//go:build unit
-
 package provider_test
 
 import (
 	"context"
-	"encoding/json"
-	"maps"
 	"testing"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/stretchr/testify/require"
 )
-
-type importDefaultsMemoryRepo struct {
-	settings.Repository
-	value string
-}
-
-func (r *importDefaultsMemoryRepo) GetValue(context.Context, string) (string, error) {
-	return r.value, nil
-}
-
-func (r *importDefaultsMemoryRepo) Set(_ context.Context, _ string, value string) error {
-	r.value = value
-	return nil
-}
-
-// TestOpenAIImportDefaultsNormalizeLegacyConfiguration 检查模板读写时清理废弃字段，缺省配置及关闭状态保持不变。
-func TestOpenAIImportDefaultsNormalizeLegacyConfiguration(t *testing.T) {
-	ctx := context.Background()
-	repo := &importDefaultsMemoryRepo{value: `{"extra":{"openai_compact_mode":"auto","openai_native_compaction_v2_mode":"force_off","openai_responses_probe_status":{},"keep":7}}`}
-	svc := providercore.NewRuntimeSettings(repo, settings.ErrSettingNotFound)
-	got, err := svc.GetOpenAIOAuthImportDefaults(ctx)
-	require.NoError(t, err)
-	require.Equal(t, map[string]any{"openai_compact_mode": "force_on", providercore.OpenAINativeCompactionV2ModeExtraKey: "force_off", "keep": float64(7)}, got.Extra)
-	input := &transfer.OpenAIOAuthImportDefaults{Extra: map[string]any{"openai_compact_mode": "auto", "openai_compact_supported": false, "keep": 7}}
-	original := maps.Clone(input.Extra)
-	require.NoError(t, svc.SetOpenAIOAuthImportDefaults(ctx, input))
-	require.Equal(t, original, input.Extra)
-	var stored transfer.OpenAIOAuthImportDefaults
-	require.NoError(t, json.Unmarshal([]byte(repo.value), &stored))
-	require.Equal(t, map[string]any{"openai_compact_mode": "force_on", "keep": float64(7)}, stored.Extra)
-	require.NoError(t, svc.SetOpenAIOAuthImportDefaults(ctx, &transfer.OpenAIOAuthImportDefaults{}))
-	got, err = svc.GetOpenAIOAuthImportDefaults(ctx)
-	require.NoError(t, err)
-	require.Empty(t, got.Extra)
-}
 
 // TestUpdateProviderDeprecatedProbeOnlyPreservesConfiguration 验证只有废弃键的单提供商更新不得覆盖管理员保存的路由和两个压缩开关。
 func TestUpdateProviderDeprecatedProbeOnlyPreservesConfiguration(t *testing.T) {

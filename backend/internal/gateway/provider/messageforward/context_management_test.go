@@ -1,5 +1,3 @@
-//go:build unit
-
 package messageforward
 
 import (
@@ -334,9 +332,8 @@ func TestBuildCountTokensRequest_OAuthMimic_DropsInjectedMaxTokens(t *testing.T)
 			Status:      billing.StatusActive, Schedulable: true,
 		},
 	}
-	normalized, _ := claude.NormalizeClaudeOAuthRequestBody(
-		[]byte(`{"model":"claude-sonnet-4-5","messages":[]}`),
-		"claude-sonnet-4-5", claude.ClaudeOAuthNormalizeOptions{},
+	normalized := claude.NormalizeClaudeOAuthRequestBody(
+		[]byte(`{"model":"claude-sonnet-4-5","messages":[]}`), claude.ClaudeOAuthNormalizeOptions{},
 	)
 	require.Equal(t, int64(128000), gjson.GetBytes(normalized, "max_tokens").Int(),
 		"前置条件：OAuth mimic 注入 Claude Code 默认 max_tokens")

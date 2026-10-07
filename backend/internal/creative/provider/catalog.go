@@ -31,7 +31,7 @@ func (a catalogProvider) IsModelSupported(model string) bool {
 }
 
 func (a catalogProvider) ResolveMappedModel(model string) (string, bool) {
-	return provider.ResolveMappedModel(a.Platform, a.GetModelMapping(), model)
+	return provider.ResolveMappedModel(a.GetModelMapping(), model)
 }
 
 func (a catalogProvider) PlatformID() string { return a.Platform }

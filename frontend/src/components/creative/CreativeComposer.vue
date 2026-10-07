@@ -2,7 +2,7 @@
   <!-- 聊天式输入框：顶部状态行，中间提示词，左下模型 / 参数 / 操作三个调参入口，右下费用 + 发送 -->
   <div
     ref="rootRef"
-    class="composer-shell canvas-island relative w-[min(600px,calc(100vw-2rem))]"
+    class="composer-shell canvas-island relative w-[min(600px,calc(100vw-2rem))] max-w-full"
   >
     <!-- 状态行：生成进度、错误、失败原因或当前操作的画布引导，同一时间只显示一条 -->
     <Collapse :open="statusLine !== null" unmount-on-hide>
@@ -35,7 +35,6 @@
       class="composer-textarea block w-full resize-none bg-transparent px-4 pb-1.5 pt-3.5 text-sm leading-relaxed text-gray-900 outline-none placeholder:text-gray-400 dark:text-dark-50 dark:placeholder:text-dark-400"
       :class="studio.busy.value && 'opacity-60'"
       :placeholder="t('creative.panel.promptPlaceholder')"
-      @input="autosize"
       @keydown="onKeydown"
     ></textarea>
 
@@ -136,7 +135,7 @@
                     v-if="group.options.length <= SEGMENTED_MAX_OPTIONS"
                     :model-value="group.value"
                     :options="group.options"
-                    :aria-label="group.label"
+                    :ariaLabel="group.label"
                     block
                     @update:model-value="(value) => selectParam(group, value)"
                   />
@@ -185,7 +184,7 @@
                     v-if="group.options.length <= SEGMENTED_MAX_OPTIONS"
                     :model-value="group.value"
                     :options="group.options"
-                    :aria-label="group.label"
+                    :ariaLabel="group.label"
                     block
                     @update:model-value="(value) => selectParam(group, value)"
                   />
@@ -265,9 +264,21 @@
       </span>
 
       <div class="ml-auto flex items-center gap-3">
-        <span v-if="studio.estimatedCost.value !== null" class="max-sm:hidden whitespace-nowrap text-xs tabular-nums text-gray-500 dark:text-dark-400">
-          {{ t('creative.panel.estimatedCost', { cost: formatBalanceAmount(studio.estimatedCost.value, { fractionDigits: 3 }) }) }}
-        </span>
+        <!-- 单张预估价：金额加深加粗，余额符号和“/ 张”弱化，emoji 符号和数字之间留出间距。 -->
+        <i18n-t
+          v-if="estimatedCostText !== null"
+          keypath="creative.panel.estimatedCost"
+          tag="span"
+          scope="global"
+          class="composer-cost"
+        >
+          <template #cost>
+            <span class="composer-cost-amount">
+              <span class="composer-cost-unit">{{ balanceUnitSymbol }}</span>
+              <span>{{ estimatedCostText }}</span>
+            </span>
+          </template>
+        </i18n-t>
         <button
           ref="sendButtonRef"
           type="button"
@@ -339,7 +350,19 @@ const studio = props.studio
 const emit = defineEmits<Emits>()
 const { t } = useI18n()
 const appStore = useAppStore()
-const { formatBalanceAmount } = useBalanceDisplay()
+const { formatBalanceAmount, balanceUnitSymbol } = useBalanceDisplay()
+
+// 单张预估价最多保留 3 位小数并去掉末尾的 0，价格 1 显示成“1”。“1.000”容易被看成一千。
+const estimatedCostText = computed(() => {
+  const cost = studio.estimatedCost.value
+  if (cost === null) return null
+  const normalized = Number(cost.toFixed(3))
+  let fractionDigits = 0
+  while (fractionDigits < 3 && Number(normalized.toFixed(fractionDigits)) !== normalized) {
+    fractionDigits += 1
+  }
+  return formatBalanceAmount(normalized, { fractionDigits, withSymbol: false })
+})
 
 // 输入框自适应高度上限（约 6 行）
 const TEXTAREA_MAX_HEIGHT = 160
@@ -644,13 +667,15 @@ function autosize(): void {
   el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT)}px`
 }
 
-// 空画布引导的示例提示词：写入提示词、调整高度并把光标放到末尾
+// 输入框挂载或提示词变化后，等 DOM 更新再测量内容高度。
+watch([prompt, textareaRef], autosize, { flush: 'post' })
+
+// 空画布引导的示例提示词：写入提示词并把光标放到末尾
 function fillPrompt(text: string): void {
   prompt.value = text
   const el = textareaRef.value
   if (!el) return
   requestAnimationFrame(() => {
-    autosize()
     el.focus()
     el.setSelectionRange(text.length, text.length)
   })
@@ -725,6 +750,22 @@ defineExpose({ sendButtonRef, fillPrompt })
 }
 
 /* 发送按钮：可用时品牌青实底；禁用时灰色实底加灰色箭头 */
+/* 单张预估价：整行按基线对齐，“/ 张”用浅色小字，金额用 14px 中粗深色数字。 */
+.composer-cost {
+  @apply inline-flex items-baseline gap-1 whitespace-nowrap text-xs text-gray-400 max-sm:hidden;
+  @apply dark:text-dark-400;
+}
+
+.composer-cost-amount {
+  @apply inline-flex items-baseline gap-0.5 text-sm font-medium tabular-nums text-gray-700;
+  @apply dark:text-dark-100;
+}
+
+/* 余额符号可能是 emoji，缩到 12px 并降低不透明度，和金额数字的视觉重量接近。 */
+.composer-cost-unit {
+  @apply text-xs opacity-70;
+}
+
 .composer-send {
   @apply inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-primary-600 text-white transition-colors hover:bg-primary-700;
   @apply disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400;

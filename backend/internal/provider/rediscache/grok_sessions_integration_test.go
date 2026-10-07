@@ -11,16 +11,16 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // TestGrokSessionsRedisWireAndSingleConsumption 检查两个 Store 共用 Redis 会话 JSON、键和 TTL，并且会话只能消费一次。
 func TestGrokSessionsRedisWireAndSingleConsumption(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	uri, err := container.ConnectionString(ctx)

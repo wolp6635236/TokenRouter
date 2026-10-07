@@ -47,16 +47,10 @@ describe('gateway settings locale copy', () => {
     expect(en.admin.settings.gatewayForwarding).not.toHaveProperty('cchSigningHint')
   })
 
-  it('limits the Grok cross-client mapping copy to Claude Messages', () => {
-    // 检查文案所述的接入范围为 Claude Messages。
-    const zhCopy = zh.admin.settings.gatewayForwarding
-    const enCopy = en.admin.settings.gatewayForwarding
-
-    expect(zhCopy.grokCrossClientMap).toContain('Claude Messages')
-    expect(zhCopy.grokCrossClientMapHint).toContain('Anthropic Messages')
-    expect(zhCopy.grokCrossClientMapHint).not.toContain('GPT')
-    expect(enCopy.grokCrossClientMap).toContain('Claude Messages')
-    expect(enCopy.grokCrossClientMapHint).toContain('Anthropic Messages')
-    expect(enCopy.grokCrossClientMapHint).not.toContain('GPT')
+  it('omits retired Grok cross-client mapping controls', () => {
+    for (const copy of [zh.admin.settings.gatewayForwarding, en.admin.settings.gatewayForwarding]) {
+      expect(copy).not.toHaveProperty('grokCrossClientMap')
+      expect(copy).not.toHaveProperty('grokCrossClientMapHint')
+    }
   })
 })

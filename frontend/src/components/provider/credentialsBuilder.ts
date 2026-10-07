@@ -344,17 +344,6 @@ export function defaultCNAdaptiveBaseUrls(
   }
 }
 
-// ===== 国产供应商用量单元格可见性（单一事实源） =====
-// CNProviderQuotaCell / CNProviderBalanceCell 与 ProviderUsageCell 的占位符判定
-// 共用同一组显示条件。
-
-export function cnQuotaCellVisible(platform: string, providerMode: string): boolean {
-  return (platform === 'kimi' || platform === 'zhipu') && providerMode === 'coding'
-}
-
-export function cnBalanceCellVisible(platform: string, providerMode: string): boolean {
-  return (platform === 'kimi' || platform === 'deepseek') && providerMode !== 'coding'
-}
 /**
  * 将请求头覆写写入 credentials。
  * create 模式：关闭时不写入任何字段；edit 模式：关闭时删除字段（全量替换语义）。

@@ -17,7 +17,7 @@ func resolveAntigravityModel(value *provider.Record, requested string) string {
 		return ""
 	}
 	mapping := provider.ResolveModelMapping(value, ModelDefaults())
-	mapped, _ := provider.ResolveMappedModel(value.Platform, mapping, requested)
+	mapped, _ := provider.ResolveMappedModel(mapping, requested)
 	return mapped
 }
 

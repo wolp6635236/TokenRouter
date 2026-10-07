@@ -6,6 +6,7 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
+import { responseErrorMessage, localizedErrorMessage } from '@/i18n/errors'
 import {
   ADMIN_UI_REQUEST_HEADER,
   USER_UI_REQUEST_HEADER,
@@ -80,6 +81,11 @@ apiClient.interceptors.request.use(
 
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => {
+    // 切换期间完成的旧 GET 重新读取当前语言，调用方不会收到旧文案。
+    const requestLocale = response.config?.headers?.['Accept-Language']
+    if (response.config?.method === 'get' && requestLocale && requestLocale !== getLocale()) {
+      return apiClient.request(response.config)
+    }
     // Unwrap standard API response format { code, message, data }
     const apiResponse = response.data as ApiResponse<unknown>
     if (apiResponse && typeof apiResponse === 'object' && 'code' in apiResponse) {
@@ -92,7 +98,7 @@ apiClient.interceptors.response.use(
         return Promise.reject({
           status: response.status,
           code: apiResponse.code,
-          message: apiResponse.message || 'Unknown error',
+          message: responseErrorMessage(String(response.config?.url || ''), resp.reason, response.status, apiResponse.message || ''),
           reason: resp.reason,
           metadata: resp.metadata,
         })
@@ -181,7 +187,7 @@ apiClient.interceptors.response.use(
               return Promise.reject({
                 status: 401,
                 code: 'AUTH_SESSION_CHANGED',
-                message: 'Authentication session changed while refreshing.'
+                message: localizedErrorMessage('AUTH_SESSION_CHANGED', 401)
               })
             }
 
@@ -199,7 +205,7 @@ apiClient.interceptors.response.use(
             return Promise.reject({
               status: 401,
               code: 'TOKEN_REFRESH_FAILED',
-              message: 'Session expired. Please log in again.'
+              message: localizedErrorMessage('SESSION_EXPIRED', 401)
             })
           }
         }
@@ -234,7 +240,7 @@ apiClient.interceptors.response.use(
         code: apiData.code,
         reason: apiData.reason,
         error: apiData.error,
-        message: apiData.message || apiData.detail || error.message,
+        message: responseErrorMessage(url, apiData.reason, status, apiData.message || apiData.detail || error.message),
         metadata: apiData.metadata,
       })
     }
@@ -242,7 +248,7 @@ apiClient.interceptors.response.use(
     // Network error
     return Promise.reject({
       status: 0,
-      message: 'Network error. Please check your connection.'
+      message: localizedErrorMessage('NETWORK_ERROR', 0)
     })
   }
 )

@@ -14,7 +14,7 @@
           <SettingsSegmented
             v-model="storageForm.type"
             :options="storageTypeOptions"
-            :aria-label="t('admin.backup.storage.title')"
+            :ariaLabel="t('admin.backup.storage.title')"
           />
 
           <div v-if="storageForm.type === 'local'">
@@ -85,7 +85,7 @@
               <SettingsSegmented
                 v-model="s3Form.upload_mode"
                 :options="uploadModeOptions"
-                :aria-label="t('admin.backup.s3.uploadMode')"
+                :ariaLabel="t('admin.backup.s3.uploadMode')"
               />
               <p class="input-hint">{{ t('admin.backup.s3.uploadModeHint') }}</p>
             </div>

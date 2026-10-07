@@ -1064,21 +1064,6 @@ func TestQoderGatewayWritesAnthropicToolUseStreamKeepsParallelCallIndexes(t *tes
 	require.Empty(t, openToolBlocks)
 }
 
-func TestQoderGatewayNonStreamingKeepaliveKeepsJSONParseable(t *testing.T) {
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-
-	keepalive := qoder.QoderNonStreamingKeepalive(&upstream.OutputContext{Writer: c.Writer})
-	require.NotNil(t, keepalive)
-	require.NoError(t, keepalive())
-	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(`{"ok":true}`))
-
-	require.True(t, json.Valid(rec.Body.Bytes()))
-	require.Equal(t, "\n{\"ok\":true}", rec.Body.String())
-	require.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
-	require.Equal(t, "no", rec.Header().Get("X-Accel-Buffering"))
-}
-
 func TestQoderGatewayStreamKeepaliveDoesNotCommitBeforeStart(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

@@ -227,7 +227,7 @@ func TestAPIKeyFastModeIgnoresUnsupportedProviderAdapters(t *testing.T) {
 }
 
 func TestClaudeUsageSpeedDrivesFastBilling(t *testing.T) {
-	billing := billingtestkit.Calculator(0, nil, nil)
+	billing := billingtestkit.Calculator(nil, nil)
 	svc := completion.NewRecorder(completion.Dependencies{Calculator: billing, Prices: billingtestkit.PriceResolver(nil, billing)}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 	groupID := int64(11)

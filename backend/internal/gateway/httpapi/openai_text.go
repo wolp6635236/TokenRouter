@@ -81,7 +81,6 @@ type OpenAITextBackend interface {
 	BindPlan(*gin.Context, routing.RoutePlan)
 	ImageIntent(string, []byte, routing.GroupMappingResult, string) ([]byte, string, bool)
 	ExplicitImageIntent(string, string, []byte) bool
-	PassthroughContext(context.Context) context.Context
 	ImageContext(context.Context) context.Context
 	AllowsImages(*apikey.APIKey) bool
 	FeatureDenied(*gin.Context)

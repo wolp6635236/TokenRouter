@@ -1,6 +1,12 @@
 export default {
 // Common
   common: {
+    submitting: "提交中…",
+    sending: "发送中…",
+    tryAgain: "重试",
+    multiplier: "倍率",
+    rightsReserved: "保留所有权利。",
+
     ruleIndex: '规则 #{index}',
     retry: '重试',
     loading: '加载中...',

@@ -20,10 +20,6 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     providers: {
       importData: vi.fn()
-    },
-    settings: {
-      getOpenAIOAuthImportDefaults: vi.fn(),
-      updateOpenAIOAuthImportDefaults: vi.fn()
     }
   }
 }))

@@ -21,15 +21,35 @@ import {
 	listAssets,
   loadAsset,
   loadSceneJson,
+  loadRunParamsMap,
   loadSetting,
   localAssetKey,
 	outputAssetKey,
 	rotateCreativeWorkspaceId,
 	saveAsset,
+  saveRunParams,
   saveSceneJson,
   saveSetting,
   type LocalAsset,
+  type LocalRunParams,
 } from '@/utils/creativeLocalStore'
+
+function makeRunParams(runId: string): LocalRunParams {
+  return {
+    runId,
+    optionKey: 'g1::model-x',
+    groupName: 'Group A',
+    operation: 'generate',
+    prompt: `prompt for ${runId}`,
+    imageSize: '1K',
+    aspectRatio: 'auto',
+    quality: 'high',
+    background: '',
+    thinkingLevel: '',
+    referenceCount: 0,
+    createdAt: 1,
+  }
+}
 
 function makeAsset(partial: Partial<LocalAsset> & Pick<LocalAsset, 'key' | 'kind'>): LocalAsset {
   return {
@@ -111,6 +131,32 @@ describe('creativeLocalStore', () => {
 		expect(await loadSetting('creative:selection')).toEqual({ optionKey: 'b' })
 	})
 
+  it('loadRunParamsMap 读回 run: 前缀的记录，设置项保持原值', async () => {
+    await saveSetting('creative:selection', { optionKey: 'a' })
+    await saveRunParams(makeRunParams('run-1'))
+    await saveRunParams(makeRunParams('run-2'))
+
+    const map = await loadRunParamsMap()
+
+    expect([...map.keys()].sort()).toEqual(['run-1', 'run-2'])
+    expect(map.get('run-1')?.prompt).toBe('prompt for run-1')
+    expect(await loadSetting('creative:selection')).toEqual({ optionKey: 'a' })
+  })
+
+  it('saveRunParams 超过 200 条时删除最早写入的记录', async () => {
+    let now = 1000
+    vi.spyOn(Date, 'now').mockImplementation(() => now++)
+    for (let i = 0; i < 201; i++) {
+      await saveRunParams(makeRunParams(`run-${i}`))
+    }
+
+    const map = await loadRunParamsMap()
+
+    expect(map.size).toBe(200)
+    expect(map.has('run-0')).toBe(false)
+    expect(map.has('run-200')).toBe(true)
+  })
+
 	it('工作区首次生成并在同源标签页之间复用', () => {
 		const first = getCreativeWorkspaceId()
 
@@ -138,16 +184,18 @@ describe('creativeLocalStore', () => {
 		expect(() => getCreativeWorkspaceId()).toThrow(LocalStoreError)
 	})
 
-  it('clearAll 清空素材、场景与设置', async () => {
+  it('clearAll 清空素材、场景、设置和任务参数', async () => {
     await saveAsset(makeAsset({ key: localAssetKey('source', 'c'), kind: 'source' }))
     await saveSceneJson('creative:canvas', '{}')
     await saveSetting('creative:selection', {})
+    await saveRunParams(makeRunParams('run-1'))
 
     await clearAll()
 
     expect(await listAssets('source')).toEqual([])
     expect(await loadSceneJson('creative:canvas')).toBeNull()
     expect(await loadSetting('creative:selection')).toBeNull()
+    expect((await loadRunParamsMap()).size).toBe(0)
   })
 
   it('clearKind 只清空指定种类的素材', async () => {

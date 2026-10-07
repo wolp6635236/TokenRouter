@@ -1,3 +1,4 @@
+import { getLocale } from '@/i18n'
 import { buildGatewayUrl } from './client'
 
 export type BatchImageStatus =
@@ -130,6 +131,7 @@ async function parseBatchImageError(response: Response): Promise<Error> {
 function authHeaders(apiKey: string, extra?: HeadersInit): HeadersInit {
   return {
     Authorization: `Bearer ${apiKey}`,
+    'Accept-Language': getLocale(),
     ...extra,
   }
 }

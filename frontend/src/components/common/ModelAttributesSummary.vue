@@ -58,6 +58,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
@@ -116,7 +117,7 @@ function knownModalities(values: string[] | undefined): ModelModality[] {
 
 function formatValue(value: string | number | undefined) {
   if (value === undefined || value === null) return t('admin.modelAttributes.unknown')
-  return typeof value === 'number' ? value.toLocaleString() : value
+  return typeof value === 'number' ? value.toLocaleString(getLocale()) : value
 }
 
 // 未返回模态表示未知，显式空数组表示无。

@@ -5,30 +5,19 @@ import (
 	"sync/atomic"
 )
 
-var (
-	runtimeMappingOpts    atomic.Value // ModelMappingOptions
-	runtimeMappingVersion atomic.Uint64
-)
+var runtimeDefaultTextModel atomic.Pointer[string]
 
-func init() {
-	runtimeMappingOpts.Store(ModelMappingOptions{})
-	runtimeMappingVersion.Store(1)
+// SetRuntimeDefaultTextModel 发布允许省略模型的请求所用的默认文本型号。
+func SetRuntimeDefaultTextModel(model string) {
+	runtimeDefaultTextModel.Store(&model)
 }
 
-// SetRuntimeModelMappingOptions 更新 Grok 缺省文本型号的进程级快照。
-func SetRuntimeModelMappingOptions(opts ModelMappingOptions) {
-	runtimeMappingOpts.Store(opts)
-	runtimeMappingVersion.Add(1)
-}
-
-// RuntimeModelMappingOptions 返回最近一次已发布的 Grok 运行时映射配置。
-func RuntimeModelMappingOptions() ModelMappingOptions {
-	if value := runtimeMappingOpts.Load(); value != nil {
-		if opts, ok := value.(ModelMappingOptions); ok {
-			return opts
-		}
+// RuntimeDefaultTextModel 返回配置的默认文本型号，空值交由调用方选择默认值。
+func RuntimeDefaultTextModel() string {
+	if model := runtimeDefaultTextModel.Load(); model != nil {
+		return *model
 	}
-	return ModelMappingOptions{}
+	return ""
 }
 
 // DefaultResponsesModel 是 Grok Responses 请求未指定模型时使用的默认模型。
@@ -44,8 +33,7 @@ type Model struct {
 	DisplayName string `json:"display_name,omitempty"`
 }
 
-// DefaultTextModel 是空模型字段和 Grok 文本别名的内置回退目标，
-// 运维可通过设置键 grok_default_text_model 覆盖运行时默认值。
+// DefaultTextModel 是允许省略模型的文本请求使用的默认型号。
 const DefaultTextModel = "grok-4.6"
 
 // 以下为官方 Imagine 模型 ID。
@@ -56,12 +44,6 @@ const (
 	DefaultImagineVideoModel        = "grok-imagine-video"
 	DefaultImagineVideo15Model      = "grok-imagine-video-1.5"
 )
-
-// ModelMappingOptions 保存允许省略模型的请求所用的默认文本型号。
-type ModelMappingOptions struct {
-	// DefaultText 仅用于空模型，空值使用 DefaultTextModel。
-	DefaultText string
-}
 
 var defaultModels = []Model{
 	// 文本模型。
@@ -81,27 +63,18 @@ var defaultModels = []Model{
 	{ID: DefaultImagineVideo15Model, Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok Imagine Video 1.5"},
 }
 
-// grokTextResponsesModelAliases 登记 Responses 原生文本型号的精确身份。
-var grokTextResponsesModelAliases = map[string]string{
-	"grok-4.6": "grok-4.6",
-
-	"grok-4.5": "grok-4.5",
-
-	"grok-4.3": "grok-4.3",
-
-	"grok-3-mini": "grok-3-mini",
-
-	"grok-3-mini-fast": "grok-3-mini-fast",
-
-	"grok-build-0.1": "grok-build-0.1",
-
-	"grok-composer-2.5-fast": "grok-composer-2.5-fast",
-
-	"grok-4.20-0309-reasoning": "grok-4.20-0309-reasoning",
-
-	"grok-4.20-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
-
-	"grok-4.20-multi-agent-0309": "grok-4.20-multi-agent-0309",
+// grokTextResponsesModels 登记支持 Responses 的文本型号。
+var grokTextResponsesModels = map[string]struct{}{
+	"grok-4.6":                     {},
+	"grok-4.5":                     {},
+	"grok-4.3":                     {},
+	"grok-3-mini":                  {},
+	"grok-3-mini-fast":             {},
+	"grok-build-0.1":               {},
+	"grok-composer-2.5-fast":       {},
+	"grok-4.20-0309-reasoning":     {},
+	"grok-4.20-0309-non-reasoning": {},
+	"grok-4.20-multi-agent-0309":   {},
 }
 
 func DefaultModels() []Model {
@@ -117,20 +90,6 @@ func DefaultModelIDs() []string {
 		ids = append(ids, model.ID)
 	}
 	return ids
-}
-
-// DefaultModelMapping 根据当前运行时配置构造 Grok 的内置模型映射。
-func DefaultModelMapping() map[string]string {
-	return ModelMappingWithOptions(RuntimeModelMappingOptions())
-}
-
-// ModelMappingWithOptions 仅提供原生完整型号的自映射。
-func ModelMappingWithOptions(opts ModelMappingOptions) map[string]string {
-	mapping := make(map[string]string, len(defaultModels))
-	for _, model := range defaultModels {
-		mapping[model.ID] = model.ID
-	}
-	return mapping
 }
 
 // NormalizeModelID 保留完整模型 ID，允许省略模型的入口使用协议默认值。
@@ -153,26 +112,11 @@ func grokReasoningModelID(model string) string {
 	return model
 }
 
-// IsGrokModelID 判断模型是否为 Grok/xAI 原生 ID 或别名；Claude/OpenAI 模型返回 false。
-func IsGrokModelID(model string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(model))
-	if normalized == "" {
-		return false
-	}
-	if strings.HasPrefix(normalized, "grok") {
-		return true
-	}
-	if strings.HasPrefix(normalized, "imagine") {
-		return true
-	}
-	return false
-}
-
 // IsGrokTextResponsesModelID 判断模型是否为 Responses API 已知的 Grok 文本模型；
 // Imagine 媒体模型和未知自定义 ID 返回 false。
 func IsGrokTextResponsesModelID(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
-	_, ok := grokTextResponsesModelAliases[normalized]
+	_, ok := grokTextResponsesModels[normalized]
 	return ok
 }
 

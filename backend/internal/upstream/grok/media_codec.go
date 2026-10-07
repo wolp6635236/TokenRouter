@@ -466,16 +466,7 @@ func (m MediaCodec) NormalizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, bo
 	if err != nil {
 		return nil, "", err
 	}
-	info := m.ParseGrokMediaRequest(contentType, body)
-	upstreamModel := m.NormalizeGrokMediaModelForEndpoint(endpoint, info.Model, info.HasInputImage())
-	if upstreamModel == "" || upstreamModel == info.Model {
-		return body, contentType, nil
-	}
-	out, err := sjson.SetBytes(body, "model", upstreamModel)
-	if err != nil {
-		return nil, "", fmt.Errorf("rewrite grok media model: %w", err)
-	}
-	return out, contentType, nil
+	return body, contentType, nil
 }
 
 // CanonicalizeGrokMediaImageURLFields 把指定对象或对象数组中的 image_url 统一为 url。
@@ -542,15 +533,6 @@ func (m MediaCodec) SanitizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, bod
 	default:
 		return body, contentType, nil
 	}
-}
-
-func (r GrokMediaRequestInfo) HasInputImage() bool {
-	return len(r.InputImageURLs) > 0 || len(r.Uploads) > 0
-}
-
-// NormalizeGrokMediaModelForEndpoint 保留请求的完整媒体型号。
-func (m MediaCodec) NormalizeGrokMediaModelForEndpoint(endpoint GrokMediaEndpoint, model string, hasInputImage bool) string {
-	return strings.TrimSpace(model)
 }
 
 func (m MediaCodec) ExtractGrokMediaVideoRequestID(body []byte) string {

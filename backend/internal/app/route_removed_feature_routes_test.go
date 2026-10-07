@@ -37,6 +37,7 @@ func TestRemovedFeatureRoutesReturnNotFound(t *testing.T) {
 
 	removedPath := "/api/v1/" + "data" + "-sharing"
 	for _, path := range []string{
+		"/api/v1/admin/settings/openai-oauth-import-defaults",
 		removedPath,
 		removedPath + "/export/download",
 		"/api/v1/admin/" + "data" + "-sharing",

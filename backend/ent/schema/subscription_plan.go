@@ -3,6 +3,8 @@ package schema
 import (
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
@@ -31,6 +33,7 @@ func (SubscriptionPlan) Annotations() []schema.Annotation {
 
 func (SubscriptionPlan) Fields() []ent.Field {
 	return []ent.Field{
+		field.JSON("localization", billing.PlanLocalization{}).Optional().SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.String("name").
 			MaxLen(100).
 			NotEmpty(),

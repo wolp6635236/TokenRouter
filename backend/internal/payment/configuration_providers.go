@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
@@ -52,26 +54,17 @@ func (s *ConfigService) ListProviderInstancesWithConfig(ctx context.Context) ([]
 			Enabled: inst.Enabled, RefundEnabled: inst.RefundEnabled, AllowUserRefund: inst.AllowUserRefund,
 			SortOrder: inst.SortOrder, PaymentMode: inst.PaymentMode,
 		}
-		resp.Config, err = s.ConfigDecryptAndMaskConfig(inst.ProviderKey, inst.Config)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt config for instance %d: %w", inst.ID, err)
-		}
+		resp.Config = s.ConfigDecryptAndMaskConfig(inst.ProviderKey, inst.Config)
 		result = append(result, resp)
 	}
 	return result, nil
 }
 
-// ConfigDecryptAndMaskConfig returns the stored config with sensitive fields omitted.
-// Admin UIs display masked placeholders for these; the raw values never leave
-// the server. Callers that need the full config (e.g. payment runtime) must
-// use ConfigDecryptConfig directly.
-func (s *ConfigService) ConfigDecryptAndMaskConfig(providerKey, encrypted string) (map[string]string, error) {
-	cfg, err := s.ConfigDecryptConfig(encrypted)
-	if err != nil {
-		return nil, err
-	}
+// ConfigDecryptAndMaskConfig 读取管理员展示的配置，并移除支付提供商的敏感字段。
+func (s *ConfigService) ConfigDecryptAndMaskConfig(providerKey, stored string) map[string]string {
+	cfg := s.ConfigDecryptConfig(stored)
 	if cfg == nil {
-		return nil, nil
+		return nil
 	}
 	masked := make(map[string]string, len(cfg))
 	for k, v := range cfg {
@@ -80,7 +73,7 @@ func (s *ConfigService) ConfigDecryptAndMaskConfig(providerKey, encrypted string
 		}
 		masked[k] = v
 	}
-	return masked, nil
+	return masked
 }
 
 // ConfigProviderSensitiveConfigFields is the authoritative list of config keys that
@@ -155,6 +148,9 @@ func (s *ConfigService) CreateProviderInstance(ctx context.Context, req CreatePr
 		return nil, err
 	}
 	if req.ProviderKey == TypeEasyPay {
+		if err := prepareMethodNames(req.Config, nil); err != nil {
+			return nil, err
+		}
 		if err := ConfigValidateEasyPayCustomMethods(req.Config, typesStr); err != nil {
 			return nil, err
 		}
@@ -240,9 +236,11 @@ func ConfigValidateProviderRequest(providerKey, name, supportedTypes string) err
 var ConfigEasyPayCustomMethodCodePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 type ConfigEasyPayCustomMethodConfig struct {
-	Type         string `json:"type"`
-	UpstreamType string `json:"upstreamType"`
-	DisplayName  string `json:"displayName"`
+	ID                      string                 `json:"id,omitempty"`
+	DisplayNameLocalization *locale.Update[string] `json:"displayNameLocalization,omitempty"`
+	Type                    string                 `json:"type"`
+	UpstreamType            string                 `json:"upstreamType"`
+	DisplayName             string                 `json:"displayName"`
 }
 
 func ConfigValidateEasyPayCustomMethods(config map[string]string, supportedTypes string) error {
@@ -331,13 +329,15 @@ func (s *ConfigService) UpdateProviderInstance(ctx context.Context, id int64, re
 	}
 	var mergedConfig map[string]string
 	if req.Config != nil {
-		currentConfig, err := s.ConfigDecryptConfig(current.Config)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt existing config: %w", err)
-		}
+		currentConfig := s.ConfigDecryptConfig(current.Config)
 		mergedConfig, err = s.ConfigMergeConfig(ctx, id, req.Config)
 		if err != nil {
 			return nil, err
+		}
+		if current.ProviderKey == TypeEasyPay {
+			if err := prepareMethodNames(mergedConfig, currentConfig); err != nil {
+				return nil, err
+			}
 		}
 		if ConfigHasPendingOrderProtectedConfigChange(current.ProviderKey, currentConfig, mergedConfig) {
 			count, err := getPendingOrderCount()
@@ -362,10 +362,7 @@ func (s *ConfigService) UpdateProviderInstance(ctx context.Context, id int64, re
 	}
 	configToValidate := mergedConfig
 	if configToValidate == nil {
-		configToValidate, err = s.ConfigDecryptConfig(current.Config)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt existing config: %w", err)
-		}
+		configToValidate = s.ConfigDecryptConfig(current.Config)
 	}
 	if current.ProviderKey == TypeEasyPay {
 		if err := ConfigValidateEasyPayCustomMethods(configToValidate, nextSupportedTypes); err != nil {
@@ -385,6 +382,9 @@ func (s *ConfigService) UpdateProviderInstance(ctx context.Context, id int64, re
 		}
 	}
 	u := InstancePatch{}
+	if req.Config != nil {
+		u.ExpectedConfig = &current.Config
+	}
 	if req.Name != nil {
 		u.Name = configPointer(*req.Name)
 	}
@@ -481,10 +481,7 @@ func (s *ConfigService) ConfigMergeConfig(ctx context.Context, id int64, newConf
 	if err != nil {
 		return nil, fmt.Errorf("load existing provider: %w", err)
 	}
-	existing, err := s.ConfigDecryptConfig(inst.Config)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt existing config for instance %d: %w", id, err)
-	}
+	existing := s.ConfigDecryptConfig(inst.Config)
 	if existing == nil {
 		existing = map[string]string{}
 	}
@@ -499,35 +496,14 @@ func (s *ConfigService) ConfigMergeConfig(ctx context.Context, id int64, newConf
 	return existing, nil
 }
 
-// ConfigDecryptConfig parses a stored provider config.
-// New records are plaintext JSON; legacy records are AES-256-GCM ciphertext
-// ("iv:authTag:ciphertext"). Values that cannot be parsed as either — including
-// legacy ciphertext with no/invalid TOTP_ENCRYPTION_KEY — are treated as empty,
-// letting the admin re-enter the config via the UI to complete the migration.
-//
-// TODO(deprecated-legacy-ciphertext): The AES fallback branch is a transitional
-// shim for pre-plaintext records. Remove it (and the encryptionKey field) after
-// a few releases once all live deployments have re-saved their provider configs.
-func (s *ConfigService) ConfigDecryptConfig(stored string) (map[string]string, error) {
-	if stored == "" {
-		return nil, nil
+// ConfigDecryptConfig 读取支付实例配置，无法解析时记录日志并返回空配置。
+func (s *ConfigService) ConfigDecryptConfig(stored string) map[string]string {
+	config, ok := parseProviderConfig(stored, s.encryptionKey)
+	if !ok {
+		s.warn("payment provider config unreadable, treating as empty for re-entry",
+			"stored_len", len(stored))
 	}
-	var cfg map[string]string
-	if err := json.Unmarshal([]byte(stored), &cfg); err == nil {
-		return cfg, nil
-	}
-	// Deprecated: legacy AES-256-GCM ciphertext fallback — scheduled for removal.
-	if len(s.encryptionKey) == AES256KeySize {
-		//nolint:staticcheck // SA1019: intentional legacy fallback, scheduled for removal
-		if plaintext, err := Decrypt(stored, s.encryptionKey); err == nil {
-			if err := json.Unmarshal([]byte(plaintext), &cfg); err == nil {
-				return cfg, nil
-			}
-		}
-	}
-	s.warn("payment provider config unreadable, treating as empty for re-entry",
-		"stored_len", len(stored))
-	return nil, nil
+	return config
 }
 
 func (s *ConfigService) DeleteProviderInstance(ctx context.Context, id int64) error {

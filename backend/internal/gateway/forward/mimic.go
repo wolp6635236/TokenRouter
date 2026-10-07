@@ -7,7 +7,7 @@ type MimicPorts interface {
 	SystemSettings(context.Context) (bool, string, string)
 	RewriteMimicSystem([]byte, string, string, string) []byte
 	MimicMetadata(context.Context, []byte) string
-	NormalizeOAuth([]byte, string, NormalizeOptions) ([]byte, string)
+	NormalizeOAuth([]byte, NormalizeOptions) []byte
 	RewriteCache(context.Context, []byte) []byte
 	RewriteTools([]byte) ([]byte, bool)
 	BindTools()
@@ -30,7 +30,7 @@ func Mimic(ctx context.Context, p MimicPorts, eligible bool, body []byte, model 
 		options.InjectMetadata = true
 		options.MetadataUserID = metadata
 	}
-	body, _ = p.NormalizeOAuth(body, model, options)
+	body = p.NormalizeOAuth(body, options)
 	body = p.RewriteCache(ctx, body)
 	if next, found := p.RewriteTools(body); found {
 		body = next

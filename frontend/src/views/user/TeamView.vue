@@ -314,6 +314,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import Skeleton from '@/components/common/Skeleton.vue'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import { vContentReveal } from '@/directives/contentReveal'
@@ -569,4 +570,5 @@ onMounted(async () => {
   try { await loadContext(); await loadTeamData() } catch (error: any) { appStore.showError(error?.message || t('team.loadFailed')) } finally { loading.value = false }
   await invitationRequest
 })
+useLocaleRefresh(loadTeamData)
 </script>

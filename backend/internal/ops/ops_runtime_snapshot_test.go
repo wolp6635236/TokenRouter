@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -129,26 +130,35 @@ func TestOpsRuntimeSettingsBackgroundRefreshConverges(t *testing.T) {
 	})
 }
 
+// TestOpsRuntimeSettingsRefreshFailuresKeepLastKnownGoodSnapshot 检查连续刷新失败后的缓存值。
 func TestOpsRuntimeSettingsRefreshFailuresKeepLastKnownGoodSnapshot(t *testing.T) {
-	repo := &opsRuntimeRefreshRepo{values: map[string]string{
-		SettingKeyOpsMonitoringEnabled: "false",
-		SettingKeyOpsAdvancedSettings:  `{"ignore_no_available_providers":true}`,
-	}}
-	svc := &OpsService{settingRepo: repo}
-	svc.initRuntimeSettings(context.Background())
-	repo.fail.Store(true)
-	svc.startRuntimeSettingsRefresh(context.Background(), 5*time.Millisecond, 0, 50*time.Millisecond)
-	t.Cleanup(svc.StopRuntimeSettingsRefresh)
-	waitForOpsRefresh(t, time.Second, func() bool {
-		return svc.RuntimeSettingsRefreshHealth().FailureTotal >= 3
-	})
+	synctest.Test(t, func(t *testing.T) {
+		repo := &opsRuntimeRefreshRepo{values: map[string]string{
+			SettingKeyOpsMonitoringEnabled: "false",
+			SettingKeyOpsAdvancedSettings:  `{"ignore_no_available_providers":true}`,
+		}}
+		svc := &OpsService{settingRepo: repo}
+		svc.initRuntimeSettings(context.Background())
+		repo.fail.Store(true)
+		svc.startRuntimeSettingsRefresh(context.Background(), 5*time.Millisecond, 0, 50*time.Millisecond)
+		defer svc.StopRuntimeSettingsRefresh()
 
-	if svc.IsMonitoringEnabled(context.Background()) {
-		t.Fatal("failed refresh overwrote last known monitoring state")
-	}
-	if !svc.OpsAdvancedSettingsSnapshot().IgnoreNoAvailableProviders {
-		t.Fatal("failed refresh overwrote last known advanced settings")
-	}
+		// 虚拟时钟逐次触发刷新，Wait 等待每次刷新完成。
+		synctest.Wait()
+		for range 3 {
+			time.Sleep(5 * time.Millisecond)
+			synctest.Wait()
+		}
+		if got := svc.RuntimeSettingsRefreshHealth().FailureTotal; got != 3 {
+			t.Fatalf("refresh failures = %d, want 3", got)
+		}
+		if svc.IsMonitoringEnabled(context.Background()) {
+			t.Fatal("failed refresh overwrote last known monitoring state")
+		}
+		if !svc.OpsAdvancedSettingsSnapshot().IgnoreNoAvailableProviders {
+			t.Fatal("failed refresh overwrote last known advanced settings")
+		}
+	})
 }
 
 func TestOpsRuntimeSettingsRefreshStopEndsLifecycle(t *testing.T) {

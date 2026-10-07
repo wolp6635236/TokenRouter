@@ -408,26 +408,14 @@ func DiffSettings(before *composite.Snapshot, after *composite.Snapshot, beforeA
 	if before.SiteLogo != after.SiteLogo {
 		changed = append(changed, "site_logo")
 	}
+	if !reflect.DeepEqual(before.SiteTexts, after.SiteTexts) {
+		changed = append(changed, "site_texts")
+	}
+	if before.DefaultLocale != after.DefaultLocale {
+		changed = append(changed, "default_locale")
+	}
 	if before.SiteSubtitle != after.SiteSubtitle {
 		changed = append(changed, "site_subtitle")
-	}
-	if before.SiteNameZh != after.SiteNameZh {
-		changed = append(changed, "site_name_zh")
-	}
-	if before.SiteNameEn != after.SiteNameEn {
-		changed = append(changed, "site_name_en")
-	}
-	if before.SiteTitleZh != after.SiteTitleZh {
-		changed = append(changed, "site_title_zh")
-	}
-	if before.SiteTitleEn != after.SiteTitleEn {
-		changed = append(changed, "site_title_en")
-	}
-	if before.SiteSubtitleZh != after.SiteSubtitleZh {
-		changed = append(changed, "site_subtitle_zh")
-	}
-	if before.SiteSubtitleEn != after.SiteSubtitleEn {
-		changed = append(changed, "site_subtitle_en")
 	}
 	if before.APIBaseURL != after.APIBaseURL {
 		changed = append(changed, "api_base_url")

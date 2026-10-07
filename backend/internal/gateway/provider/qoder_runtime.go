@@ -125,7 +125,7 @@ func mapQoderRequestModel(value *provider.Record, body []byte) []byte {
 	if model == "" {
 		return body
 	}
-	mapped, matched := provider.ResolveMappedModel(value.Platform, provider.ResolveModelMapping(value, provideradapter.ModelDefaults()), model)
+	mapped, matched := provider.ResolveMappedModel(provider.ResolveModelMapping(value, provideradapter.ModelDefaults()), model)
 	if !matched || mapped == "" || mapped == model {
 		return body
 	}

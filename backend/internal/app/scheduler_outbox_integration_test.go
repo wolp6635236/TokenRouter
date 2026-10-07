@@ -15,16 +15,16 @@ import (
 	schedulerpostgres "github.com/TokenFlux/TokenRouter/internal/scheduler/postgres"
 	schedulerredis "github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache/codec"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // TestSchedulerSnapshotOutboxReplay 使用生产组件检查 outbox 回放。
 func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
 	f := newDatabaseFixture(t)
 	ctx := t.Context()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	address, err := container.Endpoint(ctx, "")

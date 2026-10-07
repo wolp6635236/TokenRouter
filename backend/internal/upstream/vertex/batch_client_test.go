@@ -85,13 +85,18 @@ func TestVertexBatchAndGCSLocalTransport(t *testing.T) {
 
 func TestVertexGCSStreamCancellation(t *testing.T) {
 	exited := make(chan struct{})
+	finishResponse := make(chan struct{})
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "first\n")
 		_ = http.NewResponseController(w).Flush()
 		<-r.Context().Done()
 		close(exited)
+		// 等待读取断言结束后再返回，使客户端观察到取消错误。
+		// 提前结束响应会让正常 EOF 与客户端取消竞争。
+		<-finishResponse
 	}))
 	defer server.Close()
+	defer close(finishResponse)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewVertexGCSObjectStore(server.URL, server.Client())
@@ -102,7 +107,7 @@ func TestVertexGCSStreamCancellation(t *testing.T) {
 	require.NoError(t, err)
 	cancel()
 	_, err = io.ReadAll(body)
-	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
 	require.NoError(t, body.Close())
 	select {
 	case <-exited:

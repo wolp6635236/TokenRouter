@@ -43,6 +43,10 @@ func (s *InputSource) PublicVersion() string { return s.options.Version() }
 // PublicInputKeys 保留旧公开聚合的查询集合和顺序；返回独立列表。
 func PublicInputKeys() []string {
 	return []string{
+		"balance_unit_name_localized", "oidc_connect_provider_name_localized", "balance_low_notify_recharge_url_localized",
+		SettingKeySiteTexts,
+		SettingKeyDefaultLocale,
+		"site_title",
 		"registration_enabled",
 		"email_verify_enabled",
 		"force_email_on_third_party_signup",
@@ -71,12 +75,6 @@ func PublicInputKeys() []string {
 		"site_name",
 		"site_logo",
 		"site_subtitle",
-		"site_name_zh",
-		"site_name_en",
-		"site_title_zh",
-		"site_title_en",
-		"site_subtitle_zh",
-		"site_subtitle_en",
 		"api_base_url",
 		"contact_info",
 		"doc_url",

@@ -1,5 +1,3 @@
-//go:build unit
-
 package anthropic_test
 
 import (
@@ -268,7 +266,7 @@ func TestComputeFinalCountTokensAnthropicBeta_OAuthTransparent_AppendsBetaTokenC
 
 func TestNormalizeClaudeOAuthRequestBody_InjectsContextManagement_ThinkingEnabled(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-6","thinking":{"type":"enabled","budget_tokens":1000},"messages":[]}`)
-	out, _ := claude.NormalizeClaudeOAuthRequestBody(body, "claude-sonnet-4-6", claude.ClaudeOAuthNormalizeOptions{})
+	out := claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{})
 	require.True(t, gjson.GetBytes(out, "context_management").Exists())
 	require.Equal(t, "clear_thinking_20251015",
 		gjson.GetBytes(out, "context_management.edits.0.type").String())
@@ -276,7 +274,7 @@ func TestNormalizeClaudeOAuthRequestBody_InjectsContextManagement_ThinkingEnable
 
 func TestNormalizeClaudeOAuthRequestBody_InjectsContextManagement_ThinkingAdaptive(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-7","thinking":{"type":"adaptive"},"messages":[]}`)
-	out, _ := claude.NormalizeClaudeOAuthRequestBody(body, "claude-opus-4-7", claude.ClaudeOAuthNormalizeOptions{})
+	out := claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{})
 	require.True(t, gjson.GetBytes(out, "context_management").Exists())
 }
 
@@ -284,14 +282,14 @@ func TestNormalizeClaudeOAuthRequestBody_HaikuStillInjects_StripDeferredToSaniti
 	// Haiku + thinking=enabled：normalize 阶段仍按 CLI mimicry 行为补齐字段；
 	// 最终是否保留仍由 beta 能力对称的 sanitize 统一决定。
 	body := []byte(`{"model":"claude-haiku-4-5","thinking":{"type":"enabled","budget_tokens":1000},"messages":[]}`)
-	out, _ := claude.NormalizeClaudeOAuthRequestBody(body, "claude-haiku-4-5", claude.ClaudeOAuthNormalizeOptions{})
+	out := claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{})
 	require.True(t, gjson.GetBytes(out, "context_management").Exists(),
 		"normalize 不再按 model 名短路；strip 责任移交 sanitize 层")
 }
 
 func TestNormalizeClaudeOAuthRequestBody_PreservesClientContextManagement(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-7","context_management":{"edits":[{"type":"custom_strategy"}]},"thinking":{"type":"enabled","budget_tokens":1000},"messages":[]}`)
-	out, _ := claude.NormalizeClaudeOAuthRequestBody(body, "claude-opus-4-7", claude.ClaudeOAuthNormalizeOptions{})
+	out := claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{})
 	require.Equal(t, "custom_strategy",
 		gjson.GetBytes(out, "context_management.edits.0.type").String(),
 		"客户端透传的 context_management 内容必须原样保留")
@@ -299,13 +297,13 @@ func TestNormalizeClaudeOAuthRequestBody_PreservesClientContextManagement(t *tes
 
 func TestNormalizeClaudeOAuthRequestBody_NoThinking_NoInject(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[]}`)
-	out, _ := claude.NormalizeClaudeOAuthRequestBody(body, "claude-sonnet-4-6", claude.ClaudeOAuthNormalizeOptions{})
+	out := claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{})
 	require.False(t, gjson.GetBytes(out, "context_management").Exists())
 }
 
-func TestNormalizeClaudeOAuthRequestBody_HaikuShortModelStillNormalizesToDatedID(t *testing.T) {
+// TestNormalizeClaudeOAuthRequestBody_PreservesHaikuModel 检查请求体保留客户端型号。
+func TestNormalizeClaudeOAuthRequestBody_PreservesHaikuModel(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","messages":[]}`)
-	out, modelID := claude.NormalizeClaudeOAuthRequestBody(body, "claude-haiku-4-5", claude.ClaudeOAuthNormalizeOptions{})
-	require.Equal(t, "claude-haiku-4-5", modelID)
+	out := claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{})
 	require.Equal(t, "claude-haiku-4-5", gjson.GetBytes(out, "model").String())
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
@@ -33,25 +35,27 @@ func NewAnnouncementService(
 }
 
 type CreateAnnouncementInput struct {
-	Title      string
-	Content    string
-	Status     string
-	NotifyMode string
-	Targeting  AnnouncementTargeting
-	StartsAt   *time.Time
-	EndsAt     *time.Time
-	ActorID    *int64 // 管理员用户ID
+	Localization *locale.Update[AnnouncementCopy]
+	Title        string
+	Content      string
+	Status       string
+	NotifyMode   string
+	Targeting    AnnouncementTargeting
+	StartsAt     *time.Time
+	EndsAt       *time.Time
+	ActorID      *int64 // 管理员用户ID
 }
 
 type UpdateAnnouncementInput struct {
-	Title      *string
-	Content    *string
-	Status     *string
-	NotifyMode *string
-	Targeting  *AnnouncementTargeting
-	StartsAt   **time.Time
-	EndsAt     **time.Time
-	ActorID    *int64 // 管理员用户ID
+	Localization *locale.Update[AnnouncementCopy]
+	Title        *string
+	Content      *string
+	Status       *string
+	NotifyMode   *string
+	Targeting    *AnnouncementTargeting
+	StartsAt     **time.Time
+	EndsAt       **time.Time
+	ActorID      *int64 // 管理员用户ID
 }
 
 type UserAnnouncement struct {
@@ -73,6 +77,15 @@ func (s *AnnouncementService) Create(ctx context.Context, input *CreateAnnouncem
 		return nil, ErrAnnouncementNilInput
 	}
 
+	localized := locale.Original(AnnouncementCopy{Title: input.Title, Content: input.Content})
+	if input.Localization != nil {
+		var err error
+		localized, err = locale.Prepare(localized, *input.Localization, validateAnnouncementCopy)
+		if err != nil {
+			return nil, err
+		}
+		input.Title, input.Content = localized.Source.Title, localized.Source.Content
+	}
 	title := strings.TrimSpace(input.Title)
 	content := strings.TrimSpace(input.Content)
 	if title == "" || len(title) > 200 {
@@ -110,13 +123,14 @@ func (s *AnnouncementService) Create(ctx context.Context, input *CreateAnnouncem
 	}
 
 	a := &Announcement{
-		Title:      title,
-		Content:    content,
-		Status:     status,
-		NotifyMode: notifyMode,
-		Targeting:  targeting,
-		StartsAt:   input.StartsAt,
-		EndsAt:     input.EndsAt,
+		Localization: AnnouncementLocalization(localized),
+		Title:        title,
+		Content:      content,
+		Status:       status,
+		NotifyMode:   notifyMode,
+		Targeting:    targeting,
+		StartsAt:     input.StartsAt,
+		EndsAt:       input.EndsAt,
 	}
 	if input.ActorID != nil && *input.ActorID > 0 {
 		a.CreatedBy = input.ActorID
@@ -140,6 +154,20 @@ func (s *AnnouncementService) Update(ctx context.Context, id int64, input *Updat
 		return nil, err
 	}
 
+	if a.Localization.Revision == 0 {
+		a.Localization = AnnouncementLocalization(locale.Original(AnnouncementCopy{Title: a.Title, Content: a.Content}))
+	}
+	if input.Localization != nil {
+		next, err := locale.Prepare(locale.Content[AnnouncementCopy](a.Localization), *input.Localization, validateAnnouncementCopy)
+		if err != nil {
+			return nil, err
+		}
+		a.Localization = AnnouncementLocalization(next)
+		a.Title, a.Content = next.Source.Title, next.Source.Content
+		input.Title, input.Content = nil, nil
+	} else if input.Title != nil || input.Content != nil {
+		return nil, locale.ErrConflict
+	}
 	if input.Title != nil {
 		title := strings.TrimSpace(*input.Title)
 		if title == "" || len(title) > 200 {
@@ -268,6 +296,11 @@ func (s *AnnouncementService) ListForUser(ctx context.Context, userID int64, unr
 		}
 		if !a.Targeting.Matches(user.Balance, activePlanIDs) {
 			continue
+		}
+		if a.Localization.Revision > 0 {
+			var copy AnnouncementCopy
+			copy, a.Resolution = a.Localization.Resolve(locale.FromContext(ctx))
+			a.Title, a.Content = copy.Title, copy.Content
 		}
 		visible = append(visible, a)
 		ids = append(ids, a.ID)
@@ -426,4 +459,18 @@ func isValidAnnouncementNotifyMode(mode string) bool {
 	default:
 		return false
 	}
+}
+
+// validateAnnouncementCopy 对每个语言版本校验完整标题和正文。
+func validateAnnouncementCopy(copy AnnouncementCopy) error {
+	if strings.TrimSpace(copy.Title) == "" || len([]rune(copy.Title)) > 200 {
+		return ErrAnnouncementInvalidTitle
+	}
+	if strings.TrimSpace(copy.Content) == "" {
+		return ErrAnnouncementContentRequired
+	}
+	if len(copy.Content) > 1<<20 {
+		return ErrPageTooLarge
+	}
+	return nil
 }

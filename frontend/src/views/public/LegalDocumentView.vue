@@ -20,7 +20,7 @@
           to="/login"
           class="inline-flex flex-shrink-0 items-center justify-center rounded-control bg-primary-600 px-4 py-2 text-sm font-semibold text-white shadow-none transition hover:bg-primary-700"
         >
-          登录
+          {{ t('legal.login') }}
         </RouterLink>
       </div>
     </header>
@@ -32,8 +32,8 @@
         v-else-if="loadError"
         class="rounded-control border border-red-200 bg-red-50 p-6 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200"
       >
-        <h1 class="text-lg font-semibold">文档加载失败</h1>
-        <p class="mt-2 text-sm">请稍后刷新页面重试。</p>
+        <h1 class="text-lg font-semibold">{{ t('legal.loadFailed') }}</h1>
+        <p class="mt-2 text-sm">{{ t('legal.retry') }}</p>
       </section>
 
       <section
@@ -45,9 +45,9 @@
             <Icon name="document" size="sm" />
           </span>
           <div>
-            <h1 class="text-lg font-semibold text-gray-900 dark:text-white">文档不存在</h1>
+            <h1 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('legal.notFound') }}</h1>
             <p class="mt-2 text-sm leading-6 text-gray-600 dark:text-dark-300">
-              当前条款文档不存在或已被管理员移除。
+              {{ t('legal.notFoundDescription') }}
             </p>
           </div>
         </div>
@@ -60,12 +60,12 @@
               <Icon :name="documentIcon" size="md" />
             </span>
             <div class="min-w-0">
-              <p class="text-sm font-medium text-primary-700 dark:text-primary-300">登录条款</p>
+              <p class="text-sm font-medium text-primary-700 dark:text-primary-300">{{ t('legal.title') }}</p>
               <h1 class="mt-2 break-words text-2xl font-bold tracking-normal text-gray-950 dark:text-white sm:text-3xl">
                 {{ currentDocument.title }}
               </h1>
               <p v-if="updatedAt" class="mt-3 text-sm text-gray-500 dark:text-dark-400">
-                更新日期：{{ updatedAt }}
+                {{ t('legal.updatedAt', { date: updatedAt }) }}
               </p>
             </div>
           </div>
@@ -80,7 +80,7 @@
           v-else
           class="rounded-control border border-dashed border-gray-300 bg-white px-6 py-14 text-center text-sm text-gray-500 dark:border-dark-700 dark:bg-dark-900 dark:text-dark-400"
         >
-          暂无正文内容
+          {{ t('legal.empty') }}
         </div>
       </article>
     </main>
@@ -91,17 +91,20 @@
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import { vContentReveal } from '@/directives/contentReveal'
 
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeUrl } from '@/utils/url'
 import { useAppStore } from '@/stores/app'
+import { useI18n } from 'vue-i18n'
+import { apiClient } from '@/api/client'
 import type { LoginAgreementDocument } from '@/types'
 
 type LegalDocumentIcon = 'document' | 'shield' | 'globe' | 'cog'
 
+const { t, locale } = useI18n()
 const route = useRoute()
 const appStore = useAppStore()
 const settings = computed(() => appStore.cachedPublicSettings)
@@ -114,7 +117,6 @@ marked.setOptions({
 })
 
 const documentId = computed(() => String(route.params.documentId || ''))
-const documents = computed(() => settings.value?.login_agreement_documents ?? [])
 const siteName = computed(() => settings.value?.site_name || 'TokenRouter')
 const siteLogo = computed(() => sanitizeUrl(settings.value?.site_logo || '', {
   allowRelative: true,
@@ -122,13 +124,24 @@ const siteLogo = computed(() => sanitizeUrl(settings.value?.site_logo || '', {
 }))
 const updatedAt = computed(() => settings.value?.login_agreement_updated_at || '')
 
-const currentDocument = computed<LoginAgreementDocument | null>(() => {
-  const id = documentId.value
-  if (!id) {
-    return null
+const currentDocument = ref<LoginAgreementDocument | null>(null)
+let documentGeneration = 0
+watch([documentId, locale], async ([id]) => {
+  const generation = ++documentGeneration
+  loading.value = true
+  loadError.value = false
+  try {
+    await appStore.fetchPublicSettings()
+    const { data } = await apiClient.get<LoginAgreementDocument>(`/settings/legal/${encodeURIComponent(id)}`)
+    if (generation === documentGeneration) currentDocument.value = data
+  } catch (error) {
+    if (generation !== documentGeneration) return
+    currentDocument.value = null
+    loadError.value = (error as { status?: number }).status !== 404
+  } finally {
+    if (generation === documentGeneration) loading.value = false
   }
-  return documents.value.find((doc) => doc.id === id) ?? null
-})
+}, { immediate: true })
 
 const hasContent = computed(() => Boolean(currentDocument.value?.content_md?.trim()))
 
@@ -142,27 +155,14 @@ const renderedHtml = computed(() => {
 })
 
 const documentIcon = computed<LegalDocumentIcon>(() => {
-  const title = currentDocument.value?.title || ''
-  if (title.includes('政策') || title.includes('隐私')) {
-    return 'shield'
-  }
-  if (title.includes('国家') || title.includes('地区')) {
-    return 'globe'
-  }
-  if (title.includes('特定')) {
-    return 'cog'
-  }
+  const id = currentDocument.value?.id || ''
+  if (id === 'usage-policy' || id === 'privacy') return 'shield'
+  if (id === 'supported-regions') return 'globe'
+  if (id === 'service-specific-terms') return 'cog'
   return 'document'
 })
 
-onMounted(async () => {
-  loadError.value = false
-  const loadedSettings = await appStore.fetchPublicSettings()
-  if (!loadedSettings) {
-    loadError.value = true
-  }
-  loading.value = false
-})
+
 </script>
 
 <style scoped>

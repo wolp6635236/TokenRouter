@@ -219,15 +219,15 @@ func TestCatalogLookupSparkBillingPolicyDoesNotSupplyCapabilities(t *testing.T) 
 }
 
 func TestCatalogLookupGrokUsesKnownRuntimeAliases(t *testing.T) {
-	previous := xai.RuntimeModelMappingOptions()
-	t.Cleanup(func() { xai.SetRuntimeModelMappingOptions(previous) })
+	previous := xai.RuntimeDefaultTextModel()
+	t.Cleanup(func() { xai.SetRuntimeDefaultTextModel(previous) })
 	text := catalogLookupTestPricing(1e-6, "text")
 	vision := catalogLookupTestPricing(2e-6, "text", "image")
 	svc := newModelCatalogFixture(modelCatalogFixture{pricingData: map[string]*purepricing.CatalogModelPricing{
 		"grok-4.5": text, "grok-4.6": vision, "grok-4.20-0309-reasoning": vision,
 	}})
 	require.Nil(t, svc.GetModelPricing("x-ai/grok-latest"))
-	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{})
+	xai.SetRuntimeDefaultTextModel("")
 	for _, alias := range []string{"grok", "xai/grok-latest", "grok-4.6-latest", "grok-4.20-reasoning"} {
 		require.Nil(t, svc.GetModelPricing(alias))
 		input, _ := svc.GetModelModalities(alias)
@@ -235,7 +235,7 @@ func TestCatalogLookupGrokUsesKnownRuntimeAliases(t *testing.T) {
 	}
 	// 默认模型配置只去空白，返回的名称也要兼容前缀、大小写和已知固定别名。
 	for _, target := range []string{"GROK-4.6", "xai/grok-4.6", "X-AI/GROK-4.6", "grok-4.6-latest"} {
-		xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{DefaultText: target})
+		xai.SetRuntimeDefaultTextModel(target)
 		for _, alias := range []string{"grok", "grok-latest"} {
 			require.Nil(t, svc.GetModelPricing(alias), target)
 			input, _ := svc.GetModelModalities(alias)
@@ -254,11 +254,11 @@ func TestCatalogLookupGrokUsesKnownRuntimeAliases(t *testing.T) {
 
 // TestCatalogLookupGrokDefaultAliasCycle 验证非法默认配置形成循环时保持未知，不无限展开候选。
 func TestCatalogLookupGrokDefaultAliasCycle(t *testing.T) {
-	previous := xai.RuntimeModelMappingOptions()
-	t.Cleanup(func() { xai.SetRuntimeModelMappingOptions(previous) })
+	previous := xai.RuntimeDefaultTextModel()
+	t.Cleanup(func() { xai.SetRuntimeDefaultTextModel(previous) })
 	svc := newModelCatalogFixture(modelCatalogFixture{pricingData: map[string]*purepricing.CatalogModelPricing{}})
 	for _, target := range []string{"grok", "grok-latest", "xai/grok-latest"} {
-		xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{DefaultText: target})
+		xai.SetRuntimeDefaultTextModel(target)
 		require.Nil(t, svc.GetModelPricing("grok"))
 		input, output := svc.GetModelModalities("grok-latest")
 		require.Nil(t, input)

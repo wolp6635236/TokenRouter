@@ -105,6 +105,11 @@ func Status(v string) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldStatus, v))
 }
 
+// PreferredLocale applies equality check predicate on the "preferred_locale" field. It's identical to PreferredLocaleEQ.
+func PreferredLocale(v string) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldPreferredLocale, v))
+}
+
 // Username applies equality check predicate on the "username" field. It's identical to UsernameEQ.
 func Username(v string) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldUsername, v))
@@ -688,6 +693,81 @@ func StatusEqualFold(v string) predicate.User {
 // StatusContainsFold applies the ContainsFold predicate on the "status" field.
 func StatusContainsFold(v string) predicate.User {
 	return predicate.User(sql.FieldContainsFold(FieldStatus, v))
+}
+
+// PreferredLocaleEQ applies the EQ predicate on the "preferred_locale" field.
+func PreferredLocaleEQ(v string) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleNEQ applies the NEQ predicate on the "preferred_locale" field.
+func PreferredLocaleNEQ(v string) predicate.User {
+	return predicate.User(sql.FieldNEQ(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleIn applies the In predicate on the "preferred_locale" field.
+func PreferredLocaleIn(vs ...string) predicate.User {
+	return predicate.User(sql.FieldIn(FieldPreferredLocale, vs...))
+}
+
+// PreferredLocaleNotIn applies the NotIn predicate on the "preferred_locale" field.
+func PreferredLocaleNotIn(vs ...string) predicate.User {
+	return predicate.User(sql.FieldNotIn(FieldPreferredLocale, vs...))
+}
+
+// PreferredLocaleGT applies the GT predicate on the "preferred_locale" field.
+func PreferredLocaleGT(v string) predicate.User {
+	return predicate.User(sql.FieldGT(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleGTE applies the GTE predicate on the "preferred_locale" field.
+func PreferredLocaleGTE(v string) predicate.User {
+	return predicate.User(sql.FieldGTE(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleLT applies the LT predicate on the "preferred_locale" field.
+func PreferredLocaleLT(v string) predicate.User {
+	return predicate.User(sql.FieldLT(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleLTE applies the LTE predicate on the "preferred_locale" field.
+func PreferredLocaleLTE(v string) predicate.User {
+	return predicate.User(sql.FieldLTE(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleContains applies the Contains predicate on the "preferred_locale" field.
+func PreferredLocaleContains(v string) predicate.User {
+	return predicate.User(sql.FieldContains(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleHasPrefix applies the HasPrefix predicate on the "preferred_locale" field.
+func PreferredLocaleHasPrefix(v string) predicate.User {
+	return predicate.User(sql.FieldHasPrefix(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleHasSuffix applies the HasSuffix predicate on the "preferred_locale" field.
+func PreferredLocaleHasSuffix(v string) predicate.User {
+	return predicate.User(sql.FieldHasSuffix(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleIsNil applies the IsNil predicate on the "preferred_locale" field.
+func PreferredLocaleIsNil() predicate.User {
+	return predicate.User(sql.FieldIsNull(FieldPreferredLocale))
+}
+
+// PreferredLocaleNotNil applies the NotNil predicate on the "preferred_locale" field.
+func PreferredLocaleNotNil() predicate.User {
+	return predicate.User(sql.FieldNotNull(FieldPreferredLocale))
+}
+
+// PreferredLocaleEqualFold applies the EqualFold predicate on the "preferred_locale" field.
+func PreferredLocaleEqualFold(v string) predicate.User {
+	return predicate.User(sql.FieldEqualFold(FieldPreferredLocale, v))
+}
+
+// PreferredLocaleContainsFold applies the ContainsFold predicate on the "preferred_locale" field.
+func PreferredLocaleContainsFold(v string) predicate.User {
+	return predicate.User(sql.FieldContainsFold(FieldPreferredLocale, v))
 }
 
 // UsernameEQ applies the EQ predicate on the "username" field.

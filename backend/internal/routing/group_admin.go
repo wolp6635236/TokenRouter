@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	wireprotocol "github.com/TokenFlux/TokenRouter/internal/protocol"
@@ -233,6 +235,15 @@ func (s *GroupAdmin) CreateGroup(ctx context.Context, input *CreateGroupInput) (
 	if group.ProtocolFallbacks == nil {
 		group.ProtocolFallbacks = capability.DefaultProtocolFallbacks(platform)
 	}
+	if input.Localization != nil {
+		next, err := locale.Prepare(locale.Original(GroupCopy{DisplayName: group.Name, Description: group.Description}), *input.Localization, ValidateGroupCopy)
+		if err != nil {
+			return nil, err
+		}
+		group.Localization = GroupLocalization(next)
+	} else {
+		group.Localization = GroupLocalization(GroupContent(group))
+	}
 	var legacy *LegacyGroupProtocolPatch
 	if input.AllowedProtocols == nil || input.LegacyProtocolInput {
 		legacy = &LegacyGroupProtocolPatch{Image: &group.AllowImageGeneration, Batch: &group.AllowBatchImageGeneration, Live: &group.AllowLive}
@@ -387,6 +398,14 @@ func (s *GroupAdmin) UpdateGroup(ctx context.Context, id int64, input *UpdateGro
 	group, err := s.groupRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if input.Localization != nil {
+		current := GroupContent(group)
+		next, err := locale.Prepare(current, *input.Localization, ValidateGroupCopy)
+		if err != nil {
+			return nil, err
+		}
+		group.Localization = GroupLocalization(next)
 	}
 	previousAllowedProtocols := group.EffectiveAllowedProtocols()
 

@@ -9,7 +9,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // New 为 token、锁和取消行为测试启动隔离的 Redis 实例。
@@ -17,7 +16,7 @@ func New(t *testing.T) *redis.Client {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	uri, err := container.ConnectionString(ctx)

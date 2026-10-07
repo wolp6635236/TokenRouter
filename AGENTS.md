@@ -50,14 +50,23 @@
 
 Docker Compose 的 `image` 和 `pull_policy: always` 决定重建时拉取哪份镜像。面板更新替换的是正在运行的进程二进制。线上实例使用本仓库 GHCR 镜像，或固定本 fork 的发布 tag。
 
+## 验证与推送
+
+- 开发时运行改动所在包或组件的局部测试。
+- 每个本地检出执行一次 `make hooks`。推送时 hook 运行和 `make check` 相同的快检：按相对远端的改动选择格式、lint、单元测试和前端关联测试，在当前工作区执行。
+- CI 运行全量 lint、单元、集成、前端、构建和脚本检查。集成测试和改动包的下游使用方只在 CI 里检查，推送后查看 CI 结果。
+- 本地需要完整验收时运行 `make verify`，它执行和 CI 相同的检查，需要 Docker。
+- 测试失败或检查中断时，修复原因后重新验证。跳过的测试需要说明原因，不能计为通过。
+- 安全扫描使用 `make security`。
+
 ## Go 格式化
 
-- 每次提交前，在仓库根目录运行 `make fmt-go-changed`。它用 `golangci-lint fmt` 格式化本次改动的手写 Go 文件，并跳过生成文件。
+- 每次提交前，在仓库根目录运行 `make fmt`。它用 `golangci-lint fmt` 格式化本次改动的手写 Go 文件，并跳过生成文件。
 - 格式规则维护在 `backend/.golangci.yml`：启用 `gofumpt` 默认规则，同时保留现有的 `gofmt` 重写规则。工具版本以 `.golangci-version` 为准，本地和 CI 使用同一版本；`gofumpt` 使用 golangci-lint 内置的版本。
 - 命令处理暂存、未暂存和未跟踪的 Go 文件。生成文件按 `package` 声明前的 `// Code generated ... DO NOT EDIT.` 标记识别，格式化工具只对手写文件运行。
 - 格式化以整个改动文件为单位。执行后检查 diff，把属于本次提交的格式化结果重新暂存。暂存需要手动 `git add`，部分暂存的文件要逐块确认。
-- 提交前运行 `make check-fmt-go-changed`，确认格式差异已经清零。没有 Go 文件改动时，命令直接通过。
-- 检查已提交的代码时，比较的是提交之间的差异，命令为 `make check-fmt-go-changed FMT_BASE=<基准提交>`。CI 中 PR 的基准是目标分支和源提交的共同祖先，push 的基准是推送前的提交。
+- 提交前运行 `make fmt-check`，确认格式差异已经清零。没有 Go 文件改动时，命令直接通过。
+- 检查已提交的代码时，比较的是提交之间的差异，命令为 `make fmt-check BASE=<基准提交>`。CI 中 PR 的基准是目标分支和源提交的共同祖先，push 的基准是推送前的提交。
 
 ## 计划模式
 

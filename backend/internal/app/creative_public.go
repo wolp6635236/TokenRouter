@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
@@ -140,7 +142,7 @@ type creativeGroups struct{ store *routingpostgres.GroupStore }
 
 func (r creativeGroups) GetByIDLite(ctx context.Context, id int64) (*creative.GroupView, error) {
 	v, err := r.store.GetByIDLite(ctx, id)
-	return creativeGroupView(v), err
+	return creativeGroupView(v, locale.FromContext(ctx)), err
 }
 
 func (r creativeGroups) ListActive(ctx context.Context) ([]creative.GroupView, error) {
@@ -150,18 +152,19 @@ func (r creativeGroups) ListActive(ctx context.Context) ([]creative.GroupView, e
 	}
 	out := make([]creative.GroupView, len(v))
 	for i := range v {
-		out[i] = *creativeGroupView(&v[i])
+		out[i] = *creativeGroupView(&v[i], locale.FromContext(ctx))
 	}
 	return out, nil
 }
 
-func creativeGroupView(g *routing.Group) *creative.GroupView {
+func creativeGroupView(g *routing.Group, language string) *creative.GroupView {
 	if g == nil {
 		return nil
 	}
+	display, _ := routing.GroupDisplay(g, language)
 	return &creative.GroupView{
 		ID:                   g.ID,
-		Name:                 g.Name,
+		Name:                 display.DisplayName,
 		ClaudeCodeOnly:       g.ClaudeCodeOnly,
 		IsExclusive:          g.IsExclusive,
 		AllowImageGeneration: g.AllowImageGeneration,

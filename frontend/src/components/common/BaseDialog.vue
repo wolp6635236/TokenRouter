@@ -72,6 +72,7 @@ import Icon from '@/components/icons/Icon.vue'
 import { Z_INDEX } from '@/constants/overlay'
 
 // 生成唯一ID以避免多个对话框时ID冲突
+// eslint-disable-next-line no-useless-assignment -- 后续对话框实例需要读取更新后的标题计数器。
 const dialogId = `modal-title-${++dialogIdCounter}`
 
 // 焦点管理

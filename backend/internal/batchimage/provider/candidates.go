@@ -88,5 +88,5 @@ func (r candidateRules) IsModelSupported(model string) bool {
 }
 
 func (r candidateRules) ResolveMappedModel(model string) (string, bool) {
-	return provider.ResolveMappedModel(r.Platform, r.GetModelMapping(), model)
+	return provider.ResolveMappedModel(r.GetModelMapping(), model)
 }

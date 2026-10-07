@@ -61,7 +61,7 @@
             <SettingsSegmented
               v-model="qoderSite"
               block
-              :aria-label="t('admin.providers.qoder.site.label')"
+              :ariaLabel="t('admin.providers.qoder.site.label')"
               :options="qoderSiteOptions"
             />
             <SettingsNotice v-if="qoderSiteChanged" tone="warning">
@@ -77,7 +77,7 @@
                 <span class="input-label">{{ t('admin.providers.cnProviders.providerMode.title') }}</span>
                 <SettingsSegmented
                   v-model="editProviderMode"
-                  :aria-label="t('admin.providers.cnProviders.providerMode.title')"
+                  :ariaLabel="t('admin.providers.cnProviders.providerMode.title')"
                   :options="cnProviderModeSegmentOptions"
                 />
                 <p class="input-hint">{{ t(`admin.providers.cnProviders.providerMode.${editProviderMode}Desc`) }}</p>

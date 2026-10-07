@@ -124,14 +124,6 @@ export function getRefreshToken(): string | null {
 }
 
 /**
- * Get token expiration timestamp from localStorage
- */
-export function getTokenExpiresAt(): number | null {
-  const value = localStorage.getItem('token_expires_at')
-  return value ? parseInt(value, 10) : null
-}
-
-/**
  * Clear authentication token from localStorage
  */
 export function clearAuthToken(): void {
@@ -342,23 +334,6 @@ export async function prepareOAuthBindAccessTokenCookie(): Promise<void> {
  */
 export async function refreshToken(): Promise<RefreshTokenResponse> {
   return refreshAuthTokens()
-}
-
-/**
- * Revoke all sessions for the current user
- * @returns Response with message
- */
-export async function revokeAllSessions(): Promise<{ message: string }> {
-  const { data } = await apiClient.post<{ message: string }>('/auth/revoke-all-sessions')
-  return data
-}
-
-/**
- * Check if user is authenticated
- * @returns True if user has valid token
- */
-export function isAuthenticated(): boolean {
-  return getAuthToken() !== null
 }
 
 /**
@@ -668,14 +643,6 @@ export async function createPendingWeChatOAuthAccount(
   return createPendingOAuthAccount('wechat', invitationCode, decision, affiliateCode)
 }
 
-export async function createPendingDingTalkOAuthAccount(
-  invitationCode: string,
-  decision?: OAuthAdoptionDecision,
-  affiliateCode?: string
-): Promise<PendingOAuthCreateAccountResponse> {
-  return createPendingOAuthAccount('dingtalk', invitationCode, decision, affiliateCode)
-}
-
 export async function completePendingOAuthBindLogin(
   decision?: OAuthAdoptionDecision
 ): Promise<PendingOAuthBindLoginResponse> {
@@ -699,13 +666,11 @@ export const authAPI = {
   register,
   getCurrentUser,
   logout,
-  isAuthenticated,
   setAuthToken,
   setRefreshToken,
   setTokenExpiresAt,
   getAuthToken,
   getRefreshToken,
-  getTokenExpiresAt,
   clearAuthToken,
   getPublicSettings,
   sendVerifyCode,
@@ -715,7 +680,6 @@ export const authAPI = {
   forgotPassword,
   resetPassword,
   refreshToken,
-  revokeAllSessions,
   getPendingOAuthBindLoginKind,
   isPendingOAuthCreateAccountRequired,
   hasPendingOAuthSuggestedProfile,
@@ -727,7 +691,6 @@ export const authAPI = {
   completeLinuxDoOAuthRegistration,
   completeOIDCOAuthRegistration,
   completeWeChatOAuthRegistration,
-  createPendingDingTalkOAuthAccount
 }
 
 export default authAPI

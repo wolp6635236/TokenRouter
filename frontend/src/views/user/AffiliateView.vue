@@ -153,6 +153,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import Skeleton from '@/components/common/Skeleton.vue'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import { computed, onMounted, ref } from 'vue'
@@ -193,7 +194,7 @@ const formattedRebateRate = computed(() => {
 })
 
 function formatCount(value: number): string {
-  return value.toLocaleString()
+  return value.toLocaleString(getLocale())
 }
 
 // 返利额度最终按 1:1 转入余额，因此统一使用后台配置的余额单位展示。

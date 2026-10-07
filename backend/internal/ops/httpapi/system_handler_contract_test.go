@@ -1,5 +1,3 @@
-//go:build unit
-
 package httpapi
 
 import (
@@ -94,7 +92,7 @@ func newSystemHandlerTestRouter(t *testing.T, updateSvc *systemHandlerUpdateServ
 		ProcessingTimeout:  time.Second,
 		SystemOperationTTL: time.Minute,
 	})
-	handler := NewSystemHandler(updateSvc, lockSvc)
+	handler := NewSystemRuntimeHandler(updateSvc, maintenance.NewOperations(updateSvc, lockSvc, nil))
 
 	router := gin.New()
 	router.POST("/api/v1/admin/system/update", handler.PerformUpdate)
@@ -347,7 +345,8 @@ func TestSystemHandlerRestartPreservesResponse(t *testing.T) {
 	repo := newSystemOperationFixture()
 	lock := maintenance.NewSystemOperationLockService(repo, maintenance.Options{Log: logging.LegacyPrintf, ProcessingTimeout: time.Hour, SystemOperationTTL: time.Hour})
 	restart := &restartRecorder{}
-	handler := NewSystemHandler(&systemHandlerUpdateServiceStub{}, lock, restart)
+	update := &systemHandlerUpdateServiceStub{}
+	handler := NewSystemRuntimeHandler(update, maintenance.NewOperations(update, lock, restart))
 	router := gin.New()
 	router.POST("/api/v1/admin/system/restart", handler.RestartService)
 	response := httptest.NewRecorder()

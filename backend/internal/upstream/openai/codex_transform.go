@@ -12,22 +12,6 @@ import (
 
 const ImagesResponsesMainModel = "gpt-5.4-mini"
 
-var CodexModelMap = map[string]string{
-	"gpt-6-astra":         "gpt-6-astra",
-	"gpt-5.4-nano":        "gpt-5.4-nano",
-	"gpt-5.6-sol":         "gpt-5.6-sol",
-	"gpt-5.6-terra":       "gpt-5.6-terra",
-	"gpt-5.6-luna":        "gpt-5.6-luna",
-	"gpt-5.5-pro":         "gpt-5.5-pro",
-	"gpt-5.5":             "gpt-5.5",
-	"codex-auto-review":   "codex-auto-review",
-	"gpt-5.4":             "gpt-5.4",
-	"gpt-5.4-mini":        "gpt-5.4-mini",
-	"gpt-5.3-codex":       "gpt-5.3-codex",
-	"gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
-	"gpt-5.2":             "gpt-5.2",
-}
-
 type CodexTransformResult struct {
 	Modified        bool
 	NormalizedModel string
@@ -541,17 +525,8 @@ func StringifyCodexContentText(value any) string {
 	}
 }
 
-// NormalizeCodexModel 保留显式映射后的完整型号，不补全缺省模型。
-func NormalizeCodexModel(model string) string {
-	return strings.TrimSpace(model)
-}
-
-func CodexModelLookupKey(modelID string) string {
-	return strings.ToLower(strings.TrimSpace(modelID))
-}
-
 func IsCodexSparkModel(model string) bool {
-	return strings.EqualFold(NormalizeCodexModel(model), "gpt-5.3-codex-spark")
+	return strings.EqualFold(strings.TrimSpace(model), "gpt-5.3-codex-spark")
 }
 
 func HasOpenAIImageGenerationTool(reqBody map[string]any) bool {
@@ -1117,17 +1092,6 @@ func SupportsVerbosity(model string) bool {
 	}
 
 	return minor >= 3
-}
-
-func GetNormalizedCodexModel(modelID string) string {
-	key := CodexModelLookupKey(modelID)
-	if key == "" {
-		return ""
-	}
-	if mapped, ok := CodexModelMap[key]; ok {
-		return mapped
-	}
-	return ""
 }
 
 // ExtractTextFromContent extracts plain text from a content value that is either

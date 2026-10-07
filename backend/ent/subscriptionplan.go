@@ -11,6 +11,7 @@ import (
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
 	"github.com/TokenFlux/TokenRouter/ent/subscriptionplan"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
 // SubscriptionPlan is the model entity for the SubscriptionPlan schema.
@@ -18,6 +19,8 @@ type SubscriptionPlan struct {
 	config `json:"-"`
 	// ID of the ent.
 	ID int64 `json:"id,omitempty"`
+	// Localization holds the value of the "localization" field.
+	Localization billing.PlanLocalization `json:"localization,omitempty"`
 	// Name holds the value of the "name" field.
 	Name string `json:"name,omitempty"`
 	// Description holds the value of the "description" field.
@@ -94,7 +97,7 @@ func (*SubscriptionPlan) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case subscriptionplan.FieldGroupIds, subscriptionplan.FieldGroupRateMultipliers:
+		case subscriptionplan.FieldLocalization, subscriptionplan.FieldGroupIds, subscriptionplan.FieldGroupRateMultipliers:
 			values[i] = new([]byte)
 		case subscriptionplan.FieldForSale:
 			values[i] = new(sql.NullBool)
@@ -127,6 +130,14 @@ func (_m *SubscriptionPlan) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
 			_m.ID = int64(value.Int64)
+		case subscriptionplan.FieldLocalization:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field localization", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Localization); err != nil {
+					return fmt.Errorf("unmarshal field localization: %w", err)
+				}
+			}
 		case subscriptionplan.FieldName:
 			if value, ok := values[i].(*sql.NullString); !ok {
 				return fmt.Errorf("unexpected type %T for field name", values[i])
@@ -289,6 +300,9 @@ func (_m *SubscriptionPlan) String() string {
 	var builder strings.Builder
 	builder.WriteString("SubscriptionPlan(")
 	builder.WriteString(fmt.Sprintf("id=%v, ", _m.ID))
+	builder.WriteString("localization=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Localization))
+	builder.WriteString(", ")
 	builder.WriteString("name=")
 	builder.WriteString(_m.Name)
 	builder.WriteString(", ")

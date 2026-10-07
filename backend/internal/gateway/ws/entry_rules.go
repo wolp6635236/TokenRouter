@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
@@ -72,6 +74,14 @@ var ErrEntryLocalRoutingRejected = errors.New("local websocket routing rejected"
 
 func EntryLocalRoutingReason(model string) string {
 	return fmt.Sprintf("model %s is not available for this websocket group or provider", strings.TrimSpace(model))
+}
+
+// EntryLocalRoutingErrorReason 为缺价拒绝提供可操作的提示。
+func EntryLocalRoutingErrorReason(model string, err error) string {
+	if errors.Is(err, pricing.ErrModelPricingUnavailable) {
+		return admission.ModelPricingUnavailableMessage
+	}
+	return EntryLocalRoutingReason(model)
 }
 
 func EntryLocalRoutingCause(err error) error {

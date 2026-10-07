@@ -91,7 +91,7 @@ func TestGrokExplicitMappingPrecedesBuiltinNormalization(t *testing.T) {
 			},
 		},
 	}
-	require.Equal(t, "grok-4.3", gatewayprovider.ExecutionModelPolicy(direct).OpenAIUpstream("grok", false, true))
+	require.Equal(t, "grok-4.3", gatewayprovider.ExecutionModelPolicy(direct).OpenAIUpstream("grok", false))
 
 	aliasTarget := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -102,7 +102,7 @@ func TestGrokExplicitMappingPrecedesBuiltinNormalization(t *testing.T) {
 			},
 		},
 	}
-	require.Equal(t, "grok-latest", gatewayprovider.ExecutionModelPolicy(aliasTarget).OpenAIUpstream("client-alias", false, true))
+	require.Equal(t, "grok-latest", gatewayprovider.ExecutionModelPolicy(aliasTarget).OpenAIUpstream("client-alias", false))
 	require.Equal(t, "grok-latest", gatewayprovider.ExecutionModelPolicy(aliasTarget).UpstreamModel(context.Background(), "client-alias"))
 }
 

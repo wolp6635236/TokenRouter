@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 
 import { defineComponent, h, onMounted } from 'vue'
 import UserDashboardUsageChart from '../UserDashboardUsageChart.vue'
@@ -10,6 +10,17 @@ import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import { Line } from 'vue-chartjs'
 import { usageAPI } from '@/api/usage'
 import { formatDayKey } from '../usageChartData'
+
+// 图表替身接收数据和选项，供组件测试检查配置。
+vi.mock('vue-chartjs', () => ({
+  Line: {
+    name: 'Line',
+    props: ['data', 'options', 'plugins'],
+    render: () => null,
+  },
+}))
+
+enableAutoUnmount(afterEach)
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')

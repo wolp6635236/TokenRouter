@@ -1714,7 +1714,7 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 	billingCacheSvc := newBillingEligibilityFixture(cfg)
 	billingCacheSvc.Start()
 	t.Cleanup(billingCacheSvc.Stop)
-	completionInput4 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+	completionInput4 := billingtestkit.Calculator(nil, nil)
 	completionInput5 := &providercore.DeferredService{}
 	gatewaySvc, gatewaySvcChoices, gatewaySvcCredentialPort := newOpenAIExecutionAndSelectionFixture(
 		providerRepo,
@@ -1821,7 +1821,7 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 			billingCacheSvc := newBillingEligibilityFixture(cfg)
 			billingCacheSvc.Start()
 			t.Cleanup(billingCacheSvc.Stop)
-			completionInput6 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+			completionInput6 := billingtestkit.Calculator(nil, nil)
 			completionInput7 := &providercore.DeferredService{}
 			gatewaySvc, gatewaySvcChoices, gatewaySvcCredentialPort := newOpenAIExecutionAndSelectionFixture(
 				providerRepo,
@@ -1906,7 +1906,7 @@ func TestOpenAIResponses_APIKeyPassthroughSSERateLimitUsesConfiguredPoolRetry(t 
 	billingCacheSvc := newBillingEligibilityFixture(cfg)
 	billingCacheSvc.Start()
 	t.Cleanup(billingCacheSvc.Stop)
-	completionInput8 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+	completionInput8 := billingtestkit.Calculator(nil, nil)
 	completionInput9 := &providercore.DeferredService{}
 	gatewaySvc, gatewaySvcChoices, gatewaySvcCredentialPort := newOpenAIExecutionAndSelectionFixture(
 		providerRepo,
@@ -2071,7 +2071,7 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 	rateLimitSvc := newAppHealthObserverFixture(providerRepo, cfg)
 	billingCacheSvc := newBillingEligibilityFixture(cfg)
 	billingCacheSvc.Start()
-	completionInput10 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+	completionInput10 := billingtestkit.Calculator(nil, nil)
 	completionInput11 := &providercore.DeferredService{}
 	gatewaySvc, gatewaySvcChoices, gatewaySvcCredentialPort := newOpenAIExecutionAndSelectionFixture(
 		providerRepo,
@@ -2285,7 +2285,7 @@ func TestOpenAIResponsesWebSocket_FirstOutputTimeoutWithoutDownstreamReusesClien
 	rateLimitSvc := newAppHealthObserverFixture(providerRepo, cfg)
 	billingCacheSvc := newBillingEligibilityFixture(cfg)
 	billingCacheSvc.Start()
-	completionInput12 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+	completionInput12 := billingtestkit.Calculator(nil, nil)
 	completionInput13 := &providercore.DeferredService{}
 	gatewaySvc, gatewaySvcChoices, gatewaySvcCredentialPort := newOpenAIExecutionAndSelectionFixture(
 		providerRepo, nil, cfg, nil, nil, rateLimitSvc,
@@ -2484,7 +2484,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 
 	billingCacheSvc := newBillingEligibilityFixture(cfg)
 	billingCacheSvc.Start()
-	completionInput14 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+	completionInput14 := billingtestkit.Calculator(nil, nil)
 	completionInput15 := &providercore.DeferredService{}
 	gatewaySvc, gatewaySvcChoices, gatewaySvcCredentialPort := newOpenAIExecutionAndSelectionFixture(
 		providerRepo,

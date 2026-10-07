@@ -12,13 +12,13 @@ import (
 func TestNormalizeClaudeOAuthRequestBody_PreservesTopLevelFieldOrder(t *testing.T) {
 	body := []byte(`{"alpha":1,"model":"claude-3-5-sonnet-latest","temperature":0.2,"system":"You are OpenCode, the best coding agent on the planet.","messages":[],"tool_choice":{"type":"auto"},"omega":2}`)
 
-	result, modelID := claude.NormalizeClaudeOAuthRequestBody(body, "claude-3-5-sonnet-latest", claude.ClaudeOAuthNormalizeOptions{
+	result := claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{
 		InjectMetadata: true,
 		MetadataUserID: "user-1",
 	})
 	resultStr := string(result)
 
-	require.Equal(t, claude.NormalizeModelID("claude-3-5-sonnet-latest"), modelID)
+	require.Equal(t, "claude-3-5-sonnet-latest", gjson.GetBytes(result, "model").String())
 	assertJSONTokenOrder(t, resultStr, `"alpha"`, `"model"`, `"temperature"`, `"system"`, `"messages"`, `"omega"`, `"tools"`, `"metadata"`, `"max_tokens"`)
 	require.Contains(t, resultStr, `"temperature":0.2`)
 	require.NotContains(t, resultStr, `"tool_choice"`)

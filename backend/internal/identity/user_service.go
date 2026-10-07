@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	xdraw "golang.org/x/image/draw"
@@ -269,6 +271,18 @@ func (s *UserService) ProfileUpdateProfile(ctx context.Context, userID int64, re
 
 	// fields 只登记本次请求真正带上的字段，避免旧快照覆盖并发写入。
 	var fields UserUpdateFields
+	if req.ClearPreferredLocale {
+		user.PreferredLocale = nil
+		fields.PreferredLocale = true
+	}
+	if req.PreferredLocale != nil {
+		code := locale.Normalize(*req.PreferredLocale)
+		if code == "" {
+			return nil, oldConcurrency, infraerrors.BadRequest("INVALID_LOCALE", "Language is not supported.")
+		}
+		user.PreferredLocale = &code
+		fields.PreferredLocale = true
+	}
 
 	// 主邮箱属于登录身份，不能在普通资料更新中无验证修改。
 	if req.Email != nil {

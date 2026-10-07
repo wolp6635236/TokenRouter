@@ -63,7 +63,7 @@ func (s *OpenAIImagesExecutor) forwardOpenAIImagesAPIKey(
 ) (*forwardcore.OpenAIResult, error) {
 	startTime := time.Now()
 	requestModel, upstreamModel, err := gatewaymedia.ResolveImageModels(parsed.Model, groupMappedModel, "", func(model string) string {
-		return gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(model, false, false)
+		return gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(model, false)
 	})
 	if err != nil {
 		return nil, err

@@ -6,14 +6,10 @@ import (
 	"strings"
 	"time"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror" // Cancel rate limit configuration constants.
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 const (
-	LifecycleRateLimitUnitDay             = "day"
-	LifecycleRateLimitUnitMinute          = "minute"
-	LifecycleRateLimitUnitHour            = "hour"
-	LifecycleRateLimitModeFixed           = "fixed"
 	LifecycleCheckPaidResultAlreadyPaid   = "already_paid"
 	LifecycleCheckPaidResultCancelled     = "cancelled"
 	LifecycleCheckPaidResultProcessing    = "processing"

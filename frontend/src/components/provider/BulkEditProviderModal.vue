@@ -84,7 +84,7 @@
             <SettingsSegmented
               v-model="modelRestrictionMode"
               block
-              :aria-label="t('admin.providers.modelRestriction')"
+              :ariaLabel="t('admin.providers.modelRestriction')"
               :options="modelRestrictionModeOptions"
             />
             <div v-if="modelRestrictionMode === 'whitelist'" v-content-reveal class="space-y-2">
@@ -292,7 +292,7 @@
               <SettingsSegmented
                 v-model="userMsgQueueMode"
                 deselectable
-                :aria-label="t('admin.providers.quotaControl.rpmLimit.userMsgQueue')"
+                :ariaLabel="t('admin.providers.quotaControl.rpmLimit.userMsgQueue')"
                 :options="umqModeOptions"
               />
             </div>
@@ -1005,7 +1005,7 @@ const getModelRestrictionSignature = (state: ParsedModelRestrictionState) => {
 const parseProviderModelRestriction = (provider: Provider): ParsedModelRestrictionState => {
   const credentials = (provider.credentials as Record<string, unknown>) || {}
 
-  let allowedModels: string[] = []
+  let allowedModels: string[]
   let modelMappings: ModelMappingRow[] = []
 
   if (provider.platform === 'antigravity') {

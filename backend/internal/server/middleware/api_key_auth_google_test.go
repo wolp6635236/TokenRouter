@@ -109,7 +109,7 @@ func TestGoogleAPIKeyAuthCompositeModelListStillChecksQuota(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, w.Code)
 	var response googleErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
-	require.Equal(t, "API key 额度已用完", response.Error.Message)
+	require.Equal(t, "The API key quota has been exhausted.", response.Error.Message)
 }
 
 func TestAPIKeyAuthWithSubscriptionGoogle_UsageKeepsUnavailablePreferredSubscription(t *testing.T) {
@@ -686,7 +686,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_MarksUnavailableGroupBusinessLimited(t
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	var resp googleErrorResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, "API Key 所属分组已删除", resp.Error.Message)
+	require.Equal(t, "The API key group has been deleted.", resp.Error.Message)
 	require.True(t, markedBusinessLimited)
 	require.Equal(t, gatewayhttp.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable, businessLimitedReason)
 	require.True(t, rejected)
@@ -762,7 +762,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_RejectsRuntimeKeyRestrictions(t *testi
 				apiKey.ExpiresAt = &expiredAt
 			},
 			wantCode:    http.StatusForbidden,
-			wantMessage: "API key 已过期",
+			wantMessage: "The API key has expired.",
 			wantStatus:  "PERMISSION_DENIED",
 		},
 		{
@@ -772,7 +772,7 @@ func TestApiKeyAuthWithSubscriptionGoogle_RejectsRuntimeKeyRestrictions(t *testi
 				apiKey.QuotaUsed = 10
 			},
 			wantCode:    http.StatusTooManyRequests,
-			wantMessage: "API key 额度已用完",
+			wantMessage: "The API key quota has been exhausted.",
 			wantStatus:  "RESOURCE_EXHAUSTED",
 		},
 	}

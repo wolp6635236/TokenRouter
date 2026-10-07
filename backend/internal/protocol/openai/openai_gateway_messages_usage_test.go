@@ -1,5 +1,3 @@
-//go:build unit
-
 package openai_test
 
 import (

@@ -1,5 +1,3 @@
-//go:build unit
-
 package integration
 
 import (
@@ -422,7 +420,7 @@ func TestCreativeFullChainSmoke(t *testing.T) {
 	results := &creative.Results{Repo: repo, TransientStore: store, Queue: queue, Funding: creative.Funding{Store: billing}, TransientTTL: time.Duration(cfg.Creative.TransientTTLSeconds) * time.Second}
 	managed := apikey.ManagedKeys{Store: &smokeFakeManagedKeyRepo{}, Prefix: cfg.Default.APIKeyPrefix, ManagedBy: creative.CreativeManagedBy, NamePrefix: "creative-studio"}
 	price := 0.02
-	prices := billingtestkit.SharedPriceResolver(billingtestkit.Calculator(0, nil, nil), 12, pricing.DefaultBillingSettings(), []routing.ModelPricingEntry{{Models: []string{"*"}, BillingMode: routing.BillingModeImage, PerRequestPrice: &price}})
+	prices := billingtestkit.SharedPriceResolver(billingtestkit.Calculator(nil, nil), 12, pricing.DefaultBillingSettings(), []routing.ModelPricingEntry{{Models: []string{"*"}, BillingMode: routing.BillingModeImage, PerRequestPrice: &price}})
 	svc := &creative.Public{
 		Repo: repo, UserRepo: &smokeFakeUserRepo{}, ProviderRepo: &smokeFakeProviderRepo{}, GroupRepo: &smokeFakeGroupRepo{}, UserGroupRateRepo: &smokeFakeRateRepo{}, Queue: queue, TransientStore: store, Results: results, Settings: smokeCreativeSettingReader{}, UserNotFound: identity.ErrUserNotFound,
 		Options: creative.PublicOptions{Enabled: cfg.Creative.Enabled, MaxAssetBytes: cfg.Creative.MaxAssetBytes, MaxTotalInputBytes: cfg.Creative.MaxTotalInputBytes, MaxPromptChars: cfg.Creative.MaxPromptChars, DefaultImageSize: cfg.Creative.DefaultImageSize},

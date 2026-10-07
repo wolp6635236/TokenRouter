@@ -113,14 +113,3 @@ func (s *archiveHTTPFixture) ListProviders(ctx context.Context, page, size int, 
 	s.list.providers = s.providers
 	return s.list.ListProviders(ctx, page, size, platform, kind, status, search, gid, privacy, sortBy, order)
 }
-
-// archiveSettingFixture 只提供原模板读取，保留缺少键时的空值和意外写入拒绝。
-type archiveSettingFixture struct{ values map[string]string }
-
-func (s *archiveSettingFixture) GetValue(_ context.Context, key string) (string, error) {
-	return s.values[key], nil
-}
-
-func (*archiveSettingFixture) Set(context.Context, string, string) error {
-	panic("unexpected Set call")
-}

@@ -39,7 +39,7 @@ func TestDisplaySettingsPreserveNameAndMenuValues(t *testing.T) {
 			require.Empty(t, repo.keys)
 			require.Equal(t, tc.wantName, reader.GetSiteName(context.Background()))
 			require.Equal(t, tc.wantMenu, reader.GetCustomMenuItemsRaw(context.Background()))
-			require.Equal(t, []string{SettingKeySiteName, SettingKeyCustomMenuItems}, repo.keys)
+			require.Equal(t, []string{SettingKeySiteTexts, SettingKeySiteName, SettingKeyCustomMenuItems}, repo.keys)
 		})
 	}
 }

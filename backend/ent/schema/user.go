@@ -58,6 +58,8 @@ func (User) Fields() []ent.Field {
 			Default(identity.StatusActive),
 
 		// 可选资料字段（后续迁移加入，数据库默认值为空字符串）
+		// preferred_locale 保存用户主动选择的界面和通知语言。
+		field.String("preferred_locale").MaxLen(35).Optional().Nillable(),
 		field.String("username").
 			MaxLen(100).
 			Default(""),

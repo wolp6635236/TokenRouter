@@ -25,8 +25,6 @@ export interface OpenAITokenInfo {
   [key: string]: unknown
 }
 
-export type OpenAIOAuthPlatform = 'openai'
-
 export interface OpenAIOAuthSession {
   authUrl: string
   sessionId: string

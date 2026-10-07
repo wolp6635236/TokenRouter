@@ -45,3 +45,22 @@ func TestUninitializedClockKeepsMonotonicReading(t *testing.T) {
 		}
 	}
 }
+
+// TestCalendarInjectedClock 检查固定时钟用于日界线及用户时区转换。
+func TestCalendarInjectedClock(t *testing.T) {
+	fixed := time.Date(2026, time.October, 5, 23, 30, 0, 0, time.UTC)
+	loc := time.FixedZone("UTC+8", 8*60*60)
+	calendar := NewCalendarWithClock(loc, func() time.Time { return fixed })
+	if got := calendar.Today(); got.Day() != 6 || got.Hour() != 0 {
+		t.Fatalf("日界线计算错误: %v", got)
+	}
+	if got := calendar.NowInUserLocation("UTC"); !got.Equal(fixed) || got.Location() != time.UTC {
+		t.Fatalf("用户时区未使用固定时钟: %v", got)
+	}
+	if got := NewCalendarWithClock(nil, func() time.Time { return fixed }).Now(); got != fixed {
+		t.Fatalf("未指定时区时应保留时钟返回值: %v", got)
+	}
+	if got := NewCalendarWithClock(nil, nil).Now(); time.Since(got) > time.Second {
+		t.Fatalf("nil 时钟应使用系统时间: %v", got)
+	}
+}

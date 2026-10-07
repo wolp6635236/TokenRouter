@@ -21,10 +21,10 @@ func GroupAvailable(key *apikey.APIKey) (string, string, bool) {
 	}
 	group := key.Group
 	if group == nil || strings.EqualFold(group.Status, "deleted") {
-		return "GROUP_DELETED", "API Key 所属分组已删除", false
+		return "GROUP_DELETED", "The API key group has been deleted.", false
 	}
 	if !group.IsActive() {
-		return "GROUP_DISABLED", "API Key 所属分组已停用", false
+		return "GROUP_DISABLED", "The API key group is disabled.", false
 	}
 	return "", "", true
 }

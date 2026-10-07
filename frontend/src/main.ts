@@ -2,7 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
-import i18n, { initI18n } from './i18n'
+import i18n, { initI18n, getLocale } from './i18n'
 import { useAppStore } from '@/stores/app'
 import { initTheme } from '@/composables/useTheme'
 import { updateFavicon } from '@/utils/branding'
@@ -48,6 +48,7 @@ async function bootstrap() {
   updateFavicon(appStore.siteLogo)
 
   await initI18n()
+  if (appStore.cachedPublicSettings?.locale !== getLocale()) await appStore.fetchPublicSettings(true)
 
   app.use(router)
   app.use(i18n)

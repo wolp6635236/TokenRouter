@@ -337,12 +337,12 @@ func (_q *SubscriptionPlanQuery) WithRedeemCodes(opts ...func(*RedeemCodeQuery))
 // Example:
 //
 //	var v []struct {
-//		Name string `json:"name,omitempty"`
+//		Localization billing.PlanLocalization `json:"localization,omitempty"`
 //		Count int `json:"count,omitempty"`
 //	}
 //
 //	client.SubscriptionPlan.Query().
-//		GroupBy(subscriptionplan.FieldName).
+//		GroupBy(subscriptionplan.FieldLocalization).
 //		Aggregate(ent.Count()).
 //		Scan(ctx, &v)
 func (_q *SubscriptionPlanQuery) GroupBy(field string, fields ...string) *SubscriptionPlanGroupBy {
@@ -360,11 +360,11 @@ func (_q *SubscriptionPlanQuery) GroupBy(field string, fields ...string) *Subscr
 // Example:
 //
 //	var v []struct {
-//		Name string `json:"name,omitempty"`
+//		Localization billing.PlanLocalization `json:"localization,omitempty"`
 //	}
 //
 //	client.SubscriptionPlan.Query().
-//		Select(subscriptionplan.FieldName).
+//		Select(subscriptionplan.FieldLocalization).
 //		Scan(ctx, &v)
 func (_q *SubscriptionPlanQuery) Select(fields ...string) *SubscriptionPlanSelect {
 	_q.ctx.Fields = append(_q.ctx.Fields, fields...)

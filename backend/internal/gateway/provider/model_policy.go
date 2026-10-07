@@ -52,15 +52,10 @@ func (p ModelPolicy) ForwardModel(requested, dispatchMapped string) string {
 	return p.Mapped(model)
 }
 
+// NormalizeOpenAI 清理兼容请求的模型字段，并为 Grok 空字段选用默认型号。
 func (p ModelPolicy) NormalizeOpenAI(model string) string {
-	if p.Record == nil {
-		return strings.TrimSpace(model)
-	}
-	if p.Record.IsGrok() {
+	if p.Record != nil && p.Record.IsGrok() {
 		return grok.NormalizeModelID(model)
-	}
-	if p.Record.UsesOpenAICodexProtocol() && !p.Record.IsOpenAIPassthroughEnabled() {
-		return NormalizeCodexModel(model)
 	}
 	return strings.TrimSpace(model)
 }
@@ -87,7 +82,7 @@ func (p ModelPolicy) RawChat() bool {
 }
 
 // OpenAIUpstream 按压缩规则与普通单跳映射解析模型，透传只影响传输方式。
-func (p ModelPolicy) OpenAIUpstream(requested string, compact, _ bool) string {
+func (p ModelPolicy) OpenAIUpstream(requested string, compact bool) string {
 	requested = strings.TrimSpace(requested)
 	if requested == "" {
 		return ""
@@ -112,7 +107,7 @@ func (p ModelPolicy) OpenAIUpstream(requested string, compact, _ bool) string {
 			return compactModel
 		}
 	}
-	return strings.TrimSpace(p.NormalizeOpenAI(model))
+	return p.NormalizeOpenAI(model)
 }
 
 func (p ModelPolicy) CanonicalSchedulingModel(requested string) string {
@@ -121,7 +116,7 @@ func (p ModelPolicy) CanonicalSchedulingModel(requested string) string {
 		return model
 	}
 	if p.Record.IsOpenAI() {
-		return p.OpenAIUpstream(model, false, false)
+		return p.OpenAIUpstream(model, false)
 	}
 	if mapped := strings.TrimSpace(p.Mapped(model)); mapped != "" {
 		model = mapped
@@ -156,11 +151,10 @@ func (p ModelPolicy) AnthropicUpstream(mapped string) string {
 	if mapped == "" || p.Record.Platform != capability.PlatformAnthropic || p.Record.Type == capability.ProviderTypeAPIKey || p.Record.IsBedrock() {
 		return mapped
 	}
-	normalized := anthropic.NormalizeModelID(mapped)
 	if p.Record.Type == capability.ProviderTypeServiceAccount {
-		return vertex.NormalizeVertexAnthropicModelID(normalized)
+		return vertex.NormalizeVertexAnthropicModelID(mapped)
 	}
-	return normalized
+	return mapped
 }
 
 func modelThinking(ctx context.Context) *bool {
@@ -194,8 +188,6 @@ func (p ModelPolicy) Supports(ctx context.Context, model string) bool {
 		return value.FinalModelWhitelisted(p.AnthropicUpstream(mapped), provideradapter.ModelDefaults(), provideradapter.ModelRules(value))
 	}
 	rules := provideradapter.ModelRules(value)
-	// OAuth 目录资格与实际转发使用相同的完整型号，不生成后缀别名。
-	rules.NormalizeOpenAI = NormalizeCodexModel
 	return value.IsModelSupported(model, provideradapter.ModelDefaults(), rules)
 }
 
@@ -215,7 +207,7 @@ func (p ModelPolicy) UpstreamModel(ctx context.Context, requested string) string
 	} else if value.Platform == capability.PlatformAntigravity {
 		model = provideradapter.FinalAntigravityModel(value, requested, modelThinking(ctx))
 	} else if value.Platform == capability.PlatformOpenAI || value.Platform == capability.PlatformGrok {
-		model = p.OpenAIUpstream(requested, false, true)
+		model = p.OpenAIUpstream(requested, false)
 	} else {
 		mapped := provider.ResolveForwardMappedModel(value, requested, provideradapter.ModelDefaults())
 		if value.Platform == capability.PlatformQoder {
@@ -316,7 +308,7 @@ func (p ModelPolicy) ForwardMappedModels(requested string, compact bool) (billin
 	if billingModel == "" {
 		billingModel = requested
 	}
-	upstreamModel = p.OpenAIUpstream(requested, compact, false)
+	upstreamModel = p.OpenAIUpstream(requested, compact)
 	if strings.TrimSpace(upstreamModel) == "" {
 		upstreamModel = billingModel
 	}

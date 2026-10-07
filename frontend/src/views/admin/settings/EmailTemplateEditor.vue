@@ -323,6 +323,11 @@ const eventDisplayMeta: Record<string, EventDisplayMeta> = {
     timing: "用户添加并验证额外通知邮箱时发送。",
     categoryLabel: "认证安全",
   },
+  "team.ownership_transfer": {
+    label: "团队所有权转让",
+    timing: "团队所有者发起所有权转让时发送。",
+    categoryLabel: "团队",
+  },
   "team.invitation": {
     label: "团队邀请",
     timing: "团队所有者邀请指定邮箱加入团队，或重新发送团队邀请时发送。",
@@ -390,6 +395,11 @@ const eventDisplayMetaEn: Record<string, EventDisplayMeta> = {
     label: "Notification Email Verification",
     timing: "Sent when a user adds and verifies an extra notification email address.",
     categoryLabel: "Auth",
+  },
+  "team.ownership_transfer": {
+    label: "Team Ownership Transfer",
+    timing: "Sent when the team owner requests an ownership transfer.",
+    categoryLabel: "Team",
   },
   "team.invitation": {
     label: "Team Invitation",

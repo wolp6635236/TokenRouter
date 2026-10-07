@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	ErrTeamFeatureDisabled        = infraerrors.Forbidden("TEAM_FEATURE_DISABLED", "团队功能未启用")
+	ErrTeamFeatureDisabled        = infraerrors.Forbidden("TEAM_FEATURE_DISABLED", "The team feature is disabled")
 	ErrTeamSelfServiceDisabled    = infraerrors.Forbidden("TEAM_SELF_SERVICE_DISABLED", "暂不允许用户自助创建团队")
 	ErrTeamNotFound               = infraerrors.NotFound("TEAM_NOT_FOUND", "团队不存在")
 	ErrTeamMembershipRequired     = billing.ErrTeamMembershipRequired
@@ -23,7 +23,7 @@ var (
 	ErrTeamOwnerTransferRequired  = infraerrors.Conflict("TEAM_OWNER_TRANSFER_REQUIRED", "删除团队所有者前必须先转让所有权或解散团队")
 	ErrTeamTransferInvalid        = infraerrors.BadRequest("TEAM_TRANSFER_INVALID", "所有权转让无效")
 	ErrTeamTransferExpired        = infraerrors.BadRequest("TEAM_TRANSFER_EXPIRED", "所有权转让已过期")
-	ErrTeamSuspended              = infraerrors.Forbidden("TEAM_SUSPENDED", "团队已暂停")
+	ErrTeamSuspended              = infraerrors.Forbidden("TEAM_SUSPENDED", "The team is suspended")
 	ErrTeamMemberDailyExceeded    = billing.ErrTeamMemberDailyExceeded
 	ErrTeamMemberWeeklyExceeded   = billing.ErrTeamMemberWeeklyExceeded
 	ErrTeamMemberMonthlyExceeded  = billing.ErrTeamMemberMonthlyExceeded

@@ -2,9 +2,13 @@ package billing
 
 import (
 	"time"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 type SubscriptionPlan struct {
+	Localization         PlanLocalization
+	Resolution           locale.Resolution
 	ID                   int64
 	Name                 string
 	Description          string

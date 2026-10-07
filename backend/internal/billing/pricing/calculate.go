@@ -124,17 +124,6 @@ func MaxReasoningEffortBillingMultiplier(model, effort string, pricing *ModelPri
 // ErrModelPricingUnavailable 表示当前所有定价来源都无法为请求模型提供价格。
 var ErrModelPricingUnavailable = errors.New("pricing not found")
 
-// IsGrokMediaFamilyModel 判断模型 ID 是否属于按图片、视频或音频单位计费的媒体族。
-// 带版本号的媒体 ID 不能进入未知文本兜底；vision 多模态对话仍按 token 计费。
-func IsGrokMediaFamilyModel(native string) bool {
-	for _, marker := range []string{"imagine", "image", "video", "audio", "speech", "tts", "transcribe", "realtime"} {
-		if strings.Contains(native, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 // ConfigTierOverridePrice 根据模型目录中的层级比例推导价卡层级价格。
 // 价卡覆盖普通价时，priority/Fast 价格仍按对应服务层级计算。
 func ConfigTierOverridePrice(baseStandard, baseTier, configStandard float64) float64 {

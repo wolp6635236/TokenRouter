@@ -2,11 +2,14 @@ package filesystem
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
@@ -21,6 +24,26 @@ func New(dataDir string) *Pages {
 
 // @project-doc docs/interfaces/http_api.md#site_pages
 func (s *Pages) ReadMarkdown(ctx context.Context, slug string) ([]byte, error) {
+	return s.readMarkdownPath(ctx, slug+".md")
+}
+
+// ReadLocalizedMarkdown 依次读取请求语言和原文，文件错误原样返回。
+func (s *Pages) ReadLocalizedMarkdown(ctx context.Context, slug, language string) ([]byte, string, error) {
+	for _, code := range locale.Candidates(language) {
+		content, err := s.readMarkdownPath(ctx, filepath.Join(slug, code+".md"))
+		if err == nil {
+			return content, code, nil
+		}
+		if !errors.Is(err, site.ErrPageNotFound) {
+			return nil, "", err
+		}
+	}
+	content, err := s.ReadMarkdown(ctx, slug)
+	return content, "", err
+}
+
+// readMarkdownPath 在同一个文件句柄上检查读取范围和内容大小。
+func (s *Pages) readMarkdownPath(ctx context.Context, relative string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -28,7 +51,7 @@ func (s *Pages) ReadMarkdown(ctx context.Context, slug string) ([]byte, error) {
 	if err != nil {
 		return nil, site.ErrPageNotFound
 	}
-	target, err := filepath.EvalSymlinks(filepath.Join(s.pagesDir, slug+".md"))
+	target, err := filepath.EvalSymlinks(filepath.Join(s.pagesDir, relative))
 	if err != nil || !isPathWithinBase(target, root) {
 		return nil, site.ErrPageNotFound
 	}
@@ -77,7 +100,15 @@ func (s *Pages) ListPages(context.Context) ([]string, error) {
 	return slugs, nil
 }
 
-func (s *Pages) ImagePath(_ context.Context, slug, filename string) (string, error) {
+func (s *Pages) ImagePath(ctx context.Context, slug, filename string) (string, error) {
+	if code, ok := locale.Explicit(ctx); ok {
+		path, valid := resolvePageImagePath(s.pagesDir, filepath.Join(s.pagesDir, slug, code), filename)
+		if valid {
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				return path, nil
+			}
+		}
+	}
 	path, ok := resolvePageImagePath(s.pagesDir, filepath.Join(s.pagesDir, slug), filename)
 	if !ok {
 		return "", site.ErrPageNotFound
@@ -91,7 +122,7 @@ func (s *Pages) ImagePath(_ context.Context, slug, filename string) (string, err
 
 func resolvePageImagePath(pagesDir, imagesDir, filename string) (string, bool) {
 	relPath, ok := cleanPageImageRelativePath(filename)
-	if !ok {
+	if !ok || !isPageImage(relPath) {
 		return "", false
 	}
 
@@ -111,10 +142,20 @@ func resolvePageImagePath(pagesDir, imagesDir, filename string) (string, bool) {
 		return "", false
 	}
 	realTarget, err := filepath.EvalSymlinks(cleanedTarget)
-	if err != nil || !isPathWithinBase(realTarget, realImagesDir) {
+	if err != nil || !isPathWithinBase(realTarget, realImagesDir) || !isPageImage(realTarget) {
 		return "", false
 	}
 	return realTarget, true
+}
+
+// isPageImage 限制公开图片路径，符号链接解析后的文件也接受此检查。
+func isPageImage(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".ico", ".bmp":
+		return true
+	default:
+		return false
+	}
 }
 
 func cleanPageImageRelativePath(filename string) (string, bool) {

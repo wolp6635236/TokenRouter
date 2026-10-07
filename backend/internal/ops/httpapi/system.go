@@ -19,17 +19,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SystemHandler handles system-related operations
-// RestartRequester 向进程发送关闭请求。
-type (
-	RestartRequester = maintenance.RestartRequester
-	SystemHandler    struct {
-		idemhttp.Executor
-
-		updateSvc  systemUpdateService
-		operations *maintenance.Operations
-	}
-)
+// SystemHandler 处理系统版本查询、更新、回退和重启请求。
+type SystemHandler struct {
+	idemhttp.Executor
+	updateSvc  systemUpdateService
+	operations *maintenance.Operations
+}
 
 type systemUpdateService interface {
 	CheckUpdate(ctx context.Context, force bool) (*ops.UpdateInfo, error)
@@ -37,18 +32,6 @@ type systemUpdateService interface {
 	Rollback() error
 	ListRollbackVersions(ctx context.Context) ([]ops.RollbackVersion, error)
 	RollbackToVersion(ctx context.Context, version string) error
-}
-
-// NewSystemHandler creates a new SystemHandler
-func NewSystemHandler(updateSvc systemUpdateService, lockSvc *maintenance.SystemOperationLockService, restarters ...RestartRequester) *SystemHandler {
-	var restarter RestartRequester
-	if len(restarters) > 0 {
-		restarter = restarters[0]
-	}
-	return &SystemHandler{
-		updateSvc:  updateSvc,
-		operations: maintenance.NewOperations(updateSvc, lockSvc, restarter),
-	}
 }
 
 // GetVersion returns the current version

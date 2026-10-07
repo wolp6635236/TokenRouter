@@ -7,6 +7,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 	identitydto "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	sitedto "github.com/TokenFlux/TokenRouter/internal/site/httpapi/dto"
 )
@@ -147,15 +148,12 @@ type UpdateSettingsRequest struct {
 	GoogleOAuthFrontendRedirectURL string `json:"google_oauth_frontend_redirect_url"`
 
 	// OEM设置
+	LocalizedSettings           locale.TextUpdates               `json:"localized_settings"`
+	SiteTexts                   sitedto.LocalizedTexts           `json:"site_texts"`
+	DefaultLocale               string                           `json:"default_locale"`
 	SiteName                    string                           `json:"site_name"`
 	SiteLogo                    string                           `json:"site_logo"`
 	SiteSubtitle                string                           `json:"site_subtitle"`
-	SiteNameZh                  string                           `json:"site_name_zh"`
-	SiteNameEn                  string                           `json:"site_name_en"`
-	SiteTitleZh                 string                           `json:"site_title_zh"`
-	SiteTitleEn                 string                           `json:"site_title_en"`
-	SiteSubtitleZh              string                           `json:"site_subtitle_zh"`
-	SiteSubtitleEn              string                           `json:"site_subtitle_en"`
 	APIBaseURL                  string                           `json:"api_base_url"`
 	ContactInfo                 string                           `json:"contact_info"`
 	DocURL                      string                           `json:"doc_url"`

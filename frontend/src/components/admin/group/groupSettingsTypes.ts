@@ -1,3 +1,4 @@
+import type { LocalizedUpdate } from '@/i18n/content'
 import type {
   GroupAdvancedSchedulerOverrides,
   GroupRoutingPolicy,
@@ -9,6 +10,7 @@ import type { CodexImageToolMode } from '@/utils/codexImageToolMode'
 
 // 表单类型描述可编辑草稿，页面初始化和提交逻辑处理 API 兼容字段。
 export interface GroupSettingsDraft {
+  localization?: LocalizedUpdate<{ display_name: string; description: string }>
   name: string
   description: string
   display_brand: string

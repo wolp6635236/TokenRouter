@@ -21,7 +21,6 @@ func TestDataManagementService_GetAgentHealth_Deprecated(t *testing.T) {
 	require.False(t, health.Enabled)
 	require.Equal(t, backup.DataManagementDeprecatedReason, health.Reason)
 	require.Equal(t, socketPath, health.SocketPath)
-	require.Nil(t, health.Agent)
 }
 
 func TestDataManagementService_EnsureAgentEnabled_Deprecated(t *testing.T) {

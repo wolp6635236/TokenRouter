@@ -402,16 +402,10 @@ func (s *ResponseAdapter) StartAntigravityCompatScanner(
 }
 
 func (s *ResponseAdapter) AntigravityCompatStreamTimeout() time.Duration {
-	if false {
-		return 0
-	}
 	return time.Duration(s.Options.StreamDataIntervalTimeout) * time.Second
 }
 
 func (s *ResponseAdapter) NewAntigravityCompatKeepaliveTicker() (*time.Ticker, <-chan time.Time) {
-	if false {
-		return nil, nil
-	}
 	interval := time.Duration(s.Options.StreamKeepaliveInterval) * time.Second
 	if interval <= 0 {
 		return nil, nil

@@ -1,6 +1,8 @@
 package billing
 
 type SubscriptionPlanSnapshot struct {
+	Locale          string   `json:"locale,omitempty"`
+	ProductName     string   `json:"product_name,omitempty"`
 	Name            string   `json:"name"`
 	Price           float64  `json:"price"`
 	Currency        string   `json:"currency,omitempty"` // 下单时的套餐标价币种

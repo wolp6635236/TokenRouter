@@ -1,5 +1,3 @@
-//go:build unit
-
 package pricingcontract
 
 import (
@@ -52,7 +50,7 @@ func TestMediaPricingCardsHaveSameGroupAndPricingConfigSemantics(t *testing.T) {
 						group := &routing.Group{ID: 100, RateMultiplier: 1.5}
 						cards := []routing.ModelPricingEntry{card}
 
-						billing := newCalculator(nil, nil)
+						billing := newCalculator(nil)
 						resolver := billingtestkit.ResolverWithCards(t, billing, cards)
 						svc := completion.NewRecorder(completion.Dependencies{Calculator: billing, Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
 
@@ -72,7 +70,7 @@ func TestMediaPricingCardsHaveSameGroupAndPricingConfigSemantics(t *testing.T) {
 func TestAsyncImageUnitPricingUsesCardsAndPerImageFallback(t *testing.T) {
 	ctx := context.Background()
 	model := "gemini-3.1-flash-image"
-	billing := newCalculator(nil, newCatalogFixture(catalogFixture{pricingData: map[string]*pricing.CatalogModelPricing{model: {OutputCostPerToken: 0.000001, OutputCostPerImageToken: 0.000002, OutputCostPerImage: 0.2}}}))
+	billing := newCalculator(newCatalogFixture(catalogFixture{pricingData: map[string]*pricing.CatalogModelPricing{model: {OutputCostPerToken: 0.000001, OutputCostPerImageToken: 0.000002, OutputCostPerImage: 0.2}}}))
 	pricingConfig := routing.ModelPricingEntry{Models: []string{model}, BillingMode: routing.BillingModeImage, PerRequestPrice: testPtrFloat64(0.4), Intervals: []routing.PricingInterval{{TierLabel: "512", PerRequestPrice: testPtrFloat64(0)}}}
 	resolver := billingtestkit.ResolverWithCards(t, billing, []routing.ModelPricingEntry{pricingConfig})
 	group := &routing.Group{ID: 100}

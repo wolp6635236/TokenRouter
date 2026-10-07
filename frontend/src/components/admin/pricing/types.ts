@@ -453,18 +453,3 @@ export function getPlatformTagClass(platform: string): string {
     default: return 'bg-gray-200/80 text-gray-800 dark:bg-dark-700 dark:text-dark-100'
   }
 }
-
-/** 平台对应的模型文字色（仅 text-*，用于 input/text 场景），与 getPlatformTagClass 同色系。 */
-export function getPlatformTextClass(platform: string): string {
-  switch (platform) {
-    case 'anthropic': return 'text-orange-700 dark:text-orange-400'
-    case 'openai': return 'text-emerald-700 dark:text-emerald-400'
-    case 'gemini': return 'text-blue-700 dark:text-blue-400'
-    case 'antigravity': return 'text-purple-700 dark:text-purple-400'
-    case 'grok': return 'text-slate-700 dark:text-slate-300'
-    case 'kimi': return 'text-pink-700 dark:text-pink-400'
-    case 'zhipu': return 'text-indigo-700 dark:text-indigo-400'
-    case 'deepseek': return 'text-teal-700 dark:text-teal-400'
-    default: return ''
-  }
-}

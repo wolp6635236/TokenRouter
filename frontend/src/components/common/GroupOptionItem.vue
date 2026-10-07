@@ -41,7 +41,7 @@
           <span class="font-bold">{{ userRateMultiplier }}x</span>
         </template>
         <template v-else>
-          {{ rateMultiplier }}x 倍率
+          {{ rateMultiplier }}x {{ t('common.multiplier') }}
         </template>
       </span>
       <span

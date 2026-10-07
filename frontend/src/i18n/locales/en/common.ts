@@ -1,6 +1,12 @@
 export default {
 // Common
   common: {
+    submitting: "Submitting…",
+    sending: "Sending…",
+    tryAgain: "Try again",
+    multiplier: "Multiplier",
+    rightsReserved: "All rights reserved.",
+
     ruleIndex: 'Rule #{index}',
     retry: 'Retry',
     loading: 'Loading...',

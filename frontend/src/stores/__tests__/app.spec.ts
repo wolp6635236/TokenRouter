@@ -3,6 +3,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useAppStore } from '@/stores/app'
 import { getPublicSettings } from '@/api/auth'
 import type { PublicSettings } from '@/types'
+import { i18n } from '@/i18n'
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -17,6 +18,7 @@ function createDeferred<T>() {
 
 function createPublicSettings(overrides: Partial<PublicSettings> = {}): PublicSettings {
   return {
+    locale: 'en',
     registration_enabled: false,
     email_verify_enabled: false,
     force_email_on_third_party_signup: false,
@@ -73,6 +75,7 @@ vi.mock('@/api/auth', () => ({
 describe('useAppStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    i18n.global.locale.value = 'en'
     vi.useFakeTimers()
     localStorage.clear()
     vi.mocked(getPublicSettings).mockReset()
@@ -389,6 +392,43 @@ describe('useAppStore', () => {
       expect(store.publicSettingsLoaded).toBe(false)
       expect(store.cachedPublicSettings).toBeNull()
       consoleError.mockRestore()
+    })
+
+    it('账户语言在组件挂载前恢复时，重新读取首屏配置', async () => {
+      window.__APP_CONFIG__ = createPublicSettings({ locale: 'en', site_name: 'English site' })
+      const store = useAppStore()
+      store.initFromInjectedConfig()
+
+      // 账户恢复先于组件监听器，缓存读取需要自行检查语言。
+      i18n.global.locale.value = 'zh-Hans'
+      const translated = createPublicSettings({ locale: 'zh-Hans', site_name: '中文站点' })
+      vi.mocked(getPublicSettings).mockResolvedValue(translated)
+
+      await expect(store.fetchPublicSettings()).resolves.toEqual(translated)
+      expect(store.siteName).toBe('中文站点')
+      expect(window.__APP_CONFIG__?.locale).toBe('zh-Hans')
+      await store.fetchPublicSettings()
+      expect(getPublicSettings).toHaveBeenCalledTimes(1)
+    })
+
+    it('首次读取时跳过语言不匹配的注入配置', async () => {
+      window.__APP_CONFIG__ = createPublicSettings({ locale: 'zh-Hans', site_name: '中文站点' })
+      const english = createPublicSettings({ locale: 'en', site_name: 'English site' })
+      vi.mocked(getPublicSettings).mockResolvedValue(english)
+      const store = useAppStore()
+
+      await expect(store.fetchPublicSettings()).resolves.toEqual(english)
+      expect(getPublicSettings).toHaveBeenCalledTimes(1)
+      expect(store.siteName).toBe('English site')
+    })
+
+    it('复用当前语言的注入配置', async () => {
+      const settings = createPublicSettings()
+      window.__APP_CONFIG__ = settings
+      const store = useAppStore()
+
+      await expect(store.fetchPublicSettings()).resolves.toEqual(settings)
+      expect(getPublicSettings).not.toHaveBeenCalled()
     })
 
     it('从 window.__APP_CONFIG__ 初始化', () => {

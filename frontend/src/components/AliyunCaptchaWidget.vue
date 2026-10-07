@@ -23,6 +23,7 @@
 </template>
 
 <script setup lang="ts">
+import { vendorLocale } from '@/i18n/catalog'
 import Icon from '@/components/icons/Icon.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -152,7 +153,7 @@ function initCaptcha(): void {
     onBizResultCallback: () => {},
     getInstance: () => {},
     slideStyle: { width: 360, height: 40 },
-    language: locale.value.toLowerCase().startsWith('zh') ? 'cn' : 'en'
+    language: vendorLocale('aliyun', locale.value)
   })
 }
 

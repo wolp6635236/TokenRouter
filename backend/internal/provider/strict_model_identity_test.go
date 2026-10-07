@@ -10,10 +10,12 @@ import (
 func TestExplicitAntigravityMappingIsNotAugmented(t *testing.T) {
 	raw := map[string]any{"gemini-pro-agent": "custom", "gemini-3.1-pro-high": "gemini-3.1-pro-high"}
 	value := &Record{Platform: PlatformAntigravity, Credentials: map[string]any{"model_mapping": raw}}
-	defaults := ModelMappingDefaults{AntigravityAgentModel: "gemini-pro-agent"}
+	defaults := ModelMappingDefaults{}
 	got := ResolveModelMapping(value, defaults)
 	require.Equal(t, map[string]string{"gemini-pro-agent": "custom", "gemini-3.1-pro-high": "gemini-3.1-pro-high"}, got)
 	got["gemini-pro-agent"] = "changed"
 	require.Equal(t, "custom", raw["gemini-pro-agent"])
-	require.Equal(t, "gemini-3.1-pro-preview-customtools", NormalizeRequestedModelForLookup(PlatformGemini, "gemini-3.1-pro-preview-customtools"))
+	model, matched := ResolveMappedModel(nil, "gemini-3.1-pro-preview-customtools")
+	require.False(t, matched)
+	require.Equal(t, "gemini-3.1-pro-preview-customtools", model)
 }

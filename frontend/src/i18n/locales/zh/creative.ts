@@ -112,17 +112,32 @@ export default {
       missing: '素材缺失',
     },
     history: {
+      noOutputs: "没有输出图片",
       title: '历史记录',
       elapsed: '已用时 {time}',
       toggle: '展开 / 收起历史记录',
       empty: '暂无创作记录。',
       importToCanvas: '导入到画布',
       download: '下载',
+      copyPrompt: '复制提示词',
+      promptCopied: '提示词已复制',
+      reuseParams: '填入输入框',
+      // 提示词只保存在提交任务的浏览器里，本机没有记录时显示
+      promptUnavailable: '本机没有这次任务的提示词记录。',
+      // 参数标签的短名称，侧栏较窄，用两到三个字
+      params: {
+        group: '分组',
+        size: '尺寸',
+        ratio: '比例',
+        thinking: '思考',
+        references: '参考图',
+        count: '张数',
+      },
       clearData: '清空本机创作数据',
       clearSuccess: '本机创作数据已清空。',
       confirmClearTitle: '清空本机创作数据？',
       confirmClearMessage:
-        '将永久删除本机保存的源图、mask、生成结果、画布场景与创作草稿，并重置当前浏览器工作区；旧历史会从本机列表隐藏（任务元数据仍保留在服务端），后续任务进入新的工作区。已生成的图片无法找回，且不会影响账户余额。',
+        '将永久删除本机保存的源图、mask、生成结果、画布场景、创作草稿和历史任务的提示词，并重置当前浏览器工作区。旧历史会从本机列表隐藏（任务元数据仍保留在服务端），后续任务进入新的工作区。已生成的图片无法找回。账户余额保持不变。',
     },
     status: {
       queued: '排队中',

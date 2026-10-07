@@ -8,6 +8,9 @@ import (
 
 // GroupConfig 保存分组配置值，供提供商等模块读取。
 type GroupConfig struct {
+	Localization GroupLocalization
+	// DisplayName 是请求生成的展示值，持久化继续使用 Name。
+	DisplayName   string
 	RoutingPolicy GroupRoutingPolicy
 	ID            int64
 	Name          string

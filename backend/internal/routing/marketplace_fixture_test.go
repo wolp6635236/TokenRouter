@@ -23,7 +23,7 @@ func newMarketplaceFixture(groups routing.MarketplaceGroups, settings routing.Ma
 }
 
 func newMarketplaceCalculator(catalog *catalogprovider.Service, prices map[string]*pricing.ModelPricing) *billing.Calculator {
-	return billingtestkit.Calculator(0, catalog, prices)
+	return billingtestkit.Calculator(catalog, prices)
 }
 
 func NewModelPricingResolver(pricingConfigs *routing.PricingConfigService, calculator *billing.Calculator) *billing.PriceResolver {

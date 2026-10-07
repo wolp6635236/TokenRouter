@@ -10,7 +10,7 @@ import (
 // TestModelIdentityPreservesEffortSuffix 验证转发不修正拼写、不拆解档位、不替换未知型号。
 func TestModelIdentityPreservesEffortSuffix(t *testing.T) {
 	for _, model := range []string{"gpt-5.4-xhigh", "gpt-5.6-sol-max", "gpt-5.1-codex-max", "gpt5.6sol", "vendor/gpt-5.4", "claude-opus-5.5", "claude-opus-5-5", ""} {
-		require.Equal(t, model, NormalizeCodexModel(model))
+		require.Equal(t, model, (ModelPolicy{}).NormalizeOpenAI(model))
 	}
 }
 

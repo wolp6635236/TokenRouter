@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"sort"
 	"time"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 
 	"github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/setting"
@@ -102,4 +105,38 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 func (r *settingRepository) Delete(ctx context.Context, key string) error {
 	_, err := r.client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 	return err
+}
+
+// CompareAndSetMultiple 在同一事务里锁定内容版本、比较旧值并提交全部设置。
+func (r *settingRepository) CompareAndSetMultiple(ctx context.Context, values map[string]string, expected map[string]*string) error {
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	keys := make([]string, 0, len(expected))
+	for key := range expected {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, err := tx.Client().ExecContext(ctx, "INSERT INTO settings (key,value,updated_at) VALUES ($1,'',now()) ON CONFLICT (key) DO NOTHING", key); err != nil {
+			return err
+		}
+		current, err := tx.Setting.Query().Where(setting.KeyEQ(key)).ForUpdate().Only(ctx)
+		if err != nil {
+			return err
+		}
+		prior := expected[key]
+		if prior == nil && current.Value != "" || prior != nil && current.Value != *prior {
+			return locale.ErrConflict
+		}
+	}
+	now := time.Now()
+	for key, value := range values {
+		if err := tx.Setting.Create().SetKey(key).SetValue(value).SetUpdatedAt(now).OnConflictColumns(setting.FieldKey).UpdateNewValues().Exec(ctx); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

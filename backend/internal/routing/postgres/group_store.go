@@ -14,6 +14,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/group"
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/lib/pq"
@@ -95,6 +96,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *routi
 	builder := client.Group.Create().
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
+		SetLocalization(groupIn.Localization).
 		SetSchedulerType(string(groupIn.SchedulerType)).
 		SetAdvancedSchedulerOverrides(groupIn.AdvancedSchedulerOverrides).
 		SetDisplayBrand(groupIn.DisplayBrand).
@@ -256,8 +258,10 @@ func (r *GroupStore) Update(ctx context.Context, groupIn *routing.Group) error {
 	}
 
 	builder := client.Group.UpdateOneID(groupIn.ID).
+		Where(group.UpdatedAtEQ(groupIn.UpdatedAt)).
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
+		SetLocalization(groupIn.Localization).
 		SetSchedulerType(string(schedulerType)).
 		SetAdvancedSchedulerOverrides(groupIn.AdvancedSchedulerOverrides).
 		SetDisplayBrand(groupIn.DisplayBrand).
@@ -319,6 +323,9 @@ func (r *GroupStore) Update(ctx context.Context, groupIn *routing.Group) error {
 	builder = builder.SetSupportedModelScopes(groupIn.SupportedModelScopes)
 
 	updated, err := builder.Save(ctx)
+	if dbent.IsNotFound(err) {
+		return locale.ErrConflict
+	}
 	if err != nil {
 		return translatePersistenceError(err, routing.ErrGroupNotFound, routing.ErrGroupExists)
 	}

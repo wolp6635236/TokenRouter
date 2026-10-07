@@ -37,48 +37,33 @@
 
       <!-- Copyright -->
       <div class="mt-8 text-center text-xs text-gray-400 dark:text-dark-500">
-        &copy; {{ currentYear }} {{ siteName }}. All rights reserved.
+        &copy; {{ currentYear }} {{ siteName }}. {{ t('common.rightsReserved') }}
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+const { t } = useI18n()
 import { vContentReveal } from '@/directives/contentReveal'
 import { useRoute as useMotionRoute } from 'vue-router'
 const motionRoute = useMotionRoute()
 
 import { computed, onMounted } from 'vue'
-import { useI18n } from 'vue-i18n'
 import AuthBackground from '@/components/auth/AuthBackground.vue'
 import { useAppStore } from '@/stores'
 import { sanitizeUrl } from '@/utils/url'
 
 const appStore = useAppStore()
-const { locale } = useI18n()
 
 const siteName = computed(() => appStore.siteName || 'TokenRouter')
 const siteLogo = computed(() => sanitizeUrl(appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
-const siteSubtitle = computed(() => {
-  const settings = appStore.cachedPublicSettings
-  const isZh = String(locale.value).toLowerCase().startsWith('zh')
-  const primary = isZh ? settings?.site_subtitle_zh : settings?.site_subtitle_en
-  const secondary = isZh ? settings?.site_subtitle_en : settings?.site_subtitle_zh
-  return firstConfiguredText(primary, secondary, settings?.site_subtitle, 'Subscription to API Conversion Platform')
-})
+const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_text_overrides?.includes('site_subtitle') ? appStore.cachedPublicSettings.site_subtitle || '' : t('home.heroDescription'))
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
 
 const currentYear = computed(() => new Date().getFullYear())
 
-function firstConfiguredText(...values: Array<string | undefined>): string {
-  for (const value of values) {
-    const normalized = value?.trim()
-    if (normalized) {
-      return normalized
-    }
-  }
-  return ''
-}
 
 onMounted(() => {
   appStore.fetchPublicSettings()

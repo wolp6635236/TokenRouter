@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/subscriptionplan"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -18,7 +20,6 @@ func NewPlanStore(client *dbent.Client) *PlanStore { return &PlanStore{entClient
 
 func (s *PlanStore) ListPlans(ctx context.Context) ([]*billing.SubscriptionPlan, error) {
 	models, err := s.entClient.SubscriptionPlan.Query().Order(subscriptionplan.BySortOrder()).All(ctx)
-
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +32,6 @@ func (s *PlanStore) ListPlans(ctx context.Context) ([]*billing.SubscriptionPlan,
 
 func (s *PlanStore) ListPlansForSale(ctx context.Context) ([]*billing.SubscriptionPlan, error) {
 	models, err := s.entClient.SubscriptionPlan.Query().Where(subscriptionplan.ForSaleEQ(true)).Order(subscriptionplan.BySortOrder()).All(ctx)
-
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +77,13 @@ func (s *PlanStore) CreatePlan(ctx context.Context, req billing.CreatePlanReques
 	if req.MonthlyLimitUSD != nil {
 		builder.SetMonthlyLimitUsd(*req.MonthlyLimitUSD)
 	}
+	if req.Localization != nil {
+		next, err := locale.Prepare(locale.Original(billing.PlanCopy{}), *req.Localization, billing.ValidatePlanCopy)
+		if err != nil {
+			return nil, err
+		}
+		builder.SetLocalization(billing.PlanLocalization(next))
+	}
 	plan, err := builder.Save(ctx)
 	if err != nil {
 		return nil, err
@@ -100,7 +107,7 @@ func (s *PlanStore) UpdatePlan(ctx context.Context, id int64, req billing.Update
 		}
 		groupIDs = billing.NormalizePlanGroupIDs(groupID, *req.GroupIDs)
 	}
-	useTx := req.GroupIDs != nil || req.GroupRateMultipliers != nil
+	useTx := req.GroupIDs != nil || req.GroupRateMultipliers != nil || req.Localization != nil
 	client := s.entClient
 	var tx *dbent.Tx
 	if useTx {
@@ -132,6 +139,18 @@ func (s *PlanStore) UpdatePlan(ctx context.Context, id int64, req billing.Update
 	}
 
 	update := client.SubscriptionPlan.UpdateOneID(id)
+	if req.Localization != nil {
+		current, err := client.SubscriptionPlan.Query().Where(subscriptionplan.IDEQ(id)).ForUpdate().Only(ctx)
+		if err != nil {
+			return nil, err
+		}
+		content := billing.PlanContent(PlanFromEntity(current))
+		next, err := locale.Prepare(content, *req.Localization, billing.ValidatePlanCopy)
+		if err != nil {
+			return nil, err
+		}
+		update.SetLocalization(billing.PlanLocalization(next))
+	}
 	if req.GroupIDs != nil {
 		update.SetGroupIds(groupIDs)
 	}
@@ -247,6 +266,7 @@ func syncPlanGroupMappings(ctx context.Context, exec planGroupMappingExecutor, p
 	}
 	return nil
 }
+
 func (s *PlanStore) DeletePlan(ctx context.Context, id int64) error {
 	return s.entClient.SubscriptionPlan.DeleteOneID(id).Exec(ctx)
 }

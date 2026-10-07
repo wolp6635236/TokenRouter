@@ -15,6 +15,10 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
+vi.mock('@/composables/useClipboard', () => ({
+  useClipboard: () => ({ copyToClipboard: vi.fn() }),
+}))
+
 vi.mock('@/composables/useBalanceDisplay', () => ({
   useBalanceDisplay: () => ({
     formatBalanceAmount: (value: number | null | undefined) => String(value ?? ''),
@@ -35,8 +39,10 @@ function createStudio(asset: LocalAsset) {
     currentRun: ref(null),
     loadingHistory: ref(false),
     outputAssetMap: ref(new Map([[asset.key, asset]])),
+    runParamsMap: ref(new Map()),
     refreshHistory: vi.fn(),
     importOutputToCanvas: vi.fn(),
+    applyRunParams: vi.fn(),
   }
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
@@ -33,6 +35,7 @@ type ChangePasswordRequest struct {
 
 // UpdateProfileRequest represents the update profile request payload
 type UpdateProfileRequest struct {
+	PreferredLocale        json.RawMessage `json:"preferred_locale"`
 	Email                  json.RawMessage `json:"email"`
 	Username               *string         `json:"username"`
 	AvatarURL              *string         `json:"avatar_url"`
@@ -135,7 +138,16 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 
+	var preferredLocale *string
+	if len(req.PreferredLocale) > 0 {
+		if err := json.Unmarshal(req.PreferredLocale, &preferredLocale); err != nil {
+			response.ErrorFrom(c, apperror.BadRequest("INVALID_LOCALE", "Language is not supported."))
+			return
+		}
+	}
 	svcReq := identity.UpdateProfileRequest{
+		ClearPreferredLocale:   len(req.PreferredLocale) > 0 && preferredLocale == nil,
+		PreferredLocale:        preferredLocale,
 		Username:               req.Username,
 		AvatarURL:              req.AvatarURL,
 		BalanceNotifyEnabled:   req.BalanceNotifyEnabled,

@@ -3,23 +3,28 @@ package dto
 import (
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 type Group struct {
-	ModelAttributes map[string]modelcatalog.Presentation `json:"model_attributes,omitempty"`
-	Models          []string                             `json:"models"`
-	ModelProtocols  map[string][]protocol.ProtocolID     `json:"model_protocols,omitempty"`
-	ID              int64                                `json:"id"`
-	Name            string                               `json:"name"`
-	Description     string                               `json:"description"`
-	DisplayBrand    string                               `json:"display_brand"`
-	RateMultiplier  float64                              `json:"rate_multiplier"`
-	Capacity        *GroupCapacity                       `json:"capacity,omitempty"`
-	IsExclusive     bool                                 `json:"is_exclusive"`
-	Status          string                               `json:"status"`
+	LocalizationResolution *locale.Resolution                   `json:"localization_resolution,omitempty"`
+	SearchTerms            []string                             `json:"search_terms,omitempty"`
+	DisplayName            string                               `json:"display_name,omitempty"`
+	ModelAttributes        map[string]modelcatalog.Presentation `json:"model_attributes,omitempty"`
+	Models                 []string                             `json:"models"`
+	ModelProtocols         map[string][]protocol.ProtocolID     `json:"model_protocols,omitempty"`
+	ID                     int64                                `json:"id"`
+	Name                   string                               `json:"name"`
+	Description            string                               `json:"description"`
+	DisplayBrand           string                               `json:"display_brand"`
+	RateMultiplier         float64                              `json:"rate_multiplier"`
+	Capacity               *GroupCapacity                       `json:"capacity,omitempty"`
+	IsExclusive            bool                                 `json:"is_exclusive"`
+	Status                 string                               `json:"status"`
 	// 会话隔离开启后，目标分组会拒绝其它分组已归属的显式会话切入。
 	SessionIsolationEnabled bool `json:"session_isolation_enabled"`
 
@@ -73,6 +78,7 @@ type GroupCapacity struct {
 // AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
 // 注意：普通用户接口不得返回 model_routing/provider_count/provider_groups 等内部信息。
 type AdminGroup[A any] struct {
+	Localization routing.GroupLocalization `json:"localization"`
 	Group
 	// ForceOpenAIFast 仅管理端可见，用于控制 OpenAI 分组的 Fast 策略。
 	ForceOpenAIFast bool `json:"force_openai_fast"`

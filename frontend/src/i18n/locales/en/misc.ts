@@ -784,6 +784,7 @@ marketplace: {
       deleteChannel: 'Delete Channel',
       deleteChannelConfirm: 'Are you sure you want to delete this channel?',
       planName: 'Plan Name',
+      planCopy: 'Plan copy',
       planDescription: 'Plan Description',
       createPlan: 'Create Plan',
       editPlan: 'Edit Plan',

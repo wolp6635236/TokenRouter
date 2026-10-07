@@ -7,7 +7,7 @@
       </div>
       <ContentSkeleton v-if="loading" variant="list" :rows="3" class="py-4" />
       <div v-else-if="apiKeys.length === 0" class="py-8 text-center"><p class="text-sm text-gray-500">{{ t('admin.users.noApiKeys') }}</p></div>
-      <div v-else ref="scrollContainerRef" class="max-h-96 space-y-3 overflow-y-auto" @scroll="closeGroupSelector">
+      <div v-else class="max-h-96 space-y-3 overflow-y-auto" @scroll="closeGroupSelector">
         <div v-for="key in apiKeys" :key="key.id" class="rounded-surface border border-gray-200 bg-white p-4 dark:border-dark-600 dark:bg-dark-800">
           <div class="flex items-start justify-between">
             <div class="min-w-0 flex-1">
@@ -156,7 +156,6 @@ const updatingKeyIds = ref(new Set<number>())
 const groupSelectorKeyId = ref<number | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
 const dropdownRef = ref<HTMLElement | null>(null)
-const scrollContainerRef = ref<HTMLElement | null>(null)
 const groupButtonRefs = ref<Map<number, HTMLElement>>(new Map())
 
 const selectedKeyForGroup = computed(() => {

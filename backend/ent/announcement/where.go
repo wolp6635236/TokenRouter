@@ -105,6 +105,16 @@ func UpdatedAt(v time.Time) predicate.Announcement {
 	return predicate.Announcement(sql.FieldEQ(FieldUpdatedAt, v))
 }
 
+// LocalizationIsNil applies the IsNil predicate on the "localization" field.
+func LocalizationIsNil() predicate.Announcement {
+	return predicate.Announcement(sql.FieldIsNull(FieldLocalization))
+}
+
+// LocalizationNotNil applies the NotNil predicate on the "localization" field.
+func LocalizationNotNil() predicate.Announcement {
+	return predicate.Announcement(sql.FieldNotNull(FieldLocalization))
+}
+
 // TitleEQ applies the EQ predicate on the "title" field.
 func TitleEQ(v string) predicate.Announcement {
 	return predicate.Announcement(sql.FieldEQ(FieldTitle, v))

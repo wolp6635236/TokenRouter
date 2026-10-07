@@ -355,8 +355,8 @@ batch_image:
 核心冒烟和编译命令：
 
 ```bash
-go test -tags=unit ./internal/batchimage/... ./internal/upstream/gemini/... ./internal/upstream/vertex/... -run 'Test(BatchImage|GeminiProvider|VertexProvider|BuildGeminiBatchJSONL|BuildVertexBatchJSONL)' -count=1
-go test -tags=unit ./internal/config ./internal/batchimage/... ./internal/creative/... ./internal/billing/... -count=1
+go test ./internal/batchimage/... ./internal/upstream/gemini/... ./internal/upstream/vertex/... -run 'Test(BatchImage|GeminiProvider|VertexProvider|BuildGeminiBatchJSONL|BuildVertexBatchJSONL)' -count=1
+go test ./internal/config ./internal/batchimage/... ./internal/creative/... ./internal/billing/... -count=1
 go test ./internal/config ./internal/batchimage/... ./internal/creative/... ./internal/billing/... ./internal/app -run '^$'
 go test ./... -run '^$'
 ```

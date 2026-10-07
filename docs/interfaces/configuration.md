@@ -121,7 +121,7 @@ setup 的数据库和 Redis 连接测试由精简版 bootstrap 执行，输入�
 <a id="runtime_settings"></a>
 ## 数据库运行时设置
 
-`settings` 是一张 `key/value/updated_at` 表，删除某个键表示恢复它的 getter 的默认行为。`settings.Store` 和它的 PostgreSQL 适配层负责通用的读写、版本字段和更新通知。身份的注册、安全和验证码设置，OAuth 配置的解释，提供商冷却和导入模板，推广开关，用量排行，审计保留期和网关策略，分别由所属模块读取和解释；面板限流的配置和缓存在 `server/runtimeconfig`。
+`settings` 是一张 `key/value/updated_at` 表，删除某个键表示恢复它的 getter 的默认行为。`settings.Store` 和它的 PostgreSQL 适配层负责通用的读写、版本字段和更新通知。身份的注册、安全和验证码设置，OAuth 配置的解释，提供商冷却，推广开关，用量排行，审计保留期和网关策略，分别由所属模块读取和解释；面板限流的配置和缓存在 `server/runtimeconfig`。
 
 运行时设置包括：注册和邮件验证、第三方登录、SMTP、TOTP、会话绑定、step-up、登录协议、面板限流、部分冷却和流超时、支付展示、降智探测（`quality_probe_settings`），以及各种功能开关。不同 getter 在缺键时的回退值，可能来自代码常量，也可能来自 app 传入的启动选项，所以缺失的键不一定等于 `false`。
 
@@ -137,9 +137,13 @@ usage、audit 和 ops 的静态参数，由 app 整理成各模块的 Options；
 
 ### 综合设置的保存
 
-综合设置 `PUT /api/v1/admin/settings` 在读取旧值之前，先进入实例内的更新保护。app 为综合输入的 295 个字段静态登记了各自的业务所有者、持久化的键和顺序，构造时拒绝重复登记，装配测试检查遗漏和重复。系统设置、认证默认值、Fast 策略和支付设置，先完成校验和整理，再做一次原子的批量写入。提交之前任何一步失败，运行状态和成功通知都不会发布。提交之后，如果必要的运行时应用失败，返回 `SETTINGS_APPLY_FAILED`，metadata 里标明 `persisted=true` 和失败的模块；配置已经保存，系统不会假装回滚，也不会自动重写或重试。
+综合设置 `PUT /api/v1/admin/settings` 在读取旧值之前，先进入实例内的更新保护。app 为综合输入的字段静态登记了各自的业务所有者、持久化的键和顺序，构造时拒绝重复登记，装配测试检查遗漏和重复。系统设置、认证默认值、Fast 策略和支付设置，先完成校验和整理，再做一次原子的批量写入。提交之前任何一步失败，运行状态和成功通知都不会发布。提交之后，如果必要的运行时应用失败，返回 `SETTINGS_APPLY_FAILED`，metadata 里标明 `persisted=true` 和失败的模块；配置已经保存，系统不会假装回滚，也不会自动重写或重试。
 
-专用的设置入口各有自己的写入范围和通知行为。业务更新按"校验、批量原子写入、刷新缓存、发送通知"的顺序执行。Store 的写方法不会自动广播，单个键的更新只发送它原本就有的通知；旧的单回调接口按替换处理，应用的订阅可以注销。版本字段按应用版本赋值，JSON 中可以省略，没有持久的 revision，也没有跨实例的消息协议。公开设置、CSP、search 配置运行时和动态 worker 的回调由 app 装配。公开 API、embed 注入和 CSP 由 site 统一提供，各自保持字段格式：公开来源一次批量查询，认证、团队和用量分别解释自己需要的字段，site 只把公开的键和安全处理过的数据交给渲染层；OAuth secret 不会进入 web。
+专用的设置入口各有自己的写入范围和通知行为。业务更新按“校验、批量原子写入、刷新缓存、发送通知”的顺序执行。业务调用方在持久化和缓存刷新完成后调用 `Store.NotifyUpdated`。`Subscribe` 按登记顺序同步通知订阅者，并返回幂等的注销函数。注销会阻止尚未领取的回调，已领取的回调可以完成一次。版本字段按应用版本赋值，JSON 中可以省略。运营内容另有持久化 `revision`，保存时在事务内比较已读取的版本，冲突返回 409。综合设置读取同时保存数据库原始值，参与者从同一快照校验文案版本。设置更新通知在单个应用实例内发布。公开设置、CSP、search 配置运行时和动态 worker 的回调由 app 装配。公开 API、embed 注入和 CSP 由 site 统一提供，各自保持字段格式：公开来源一次批量查询，认证、团队和用量分别解释自己需要的字段，site 只把公开的键和安全处理过的数据交给渲染层；OAuth secret 不会进入 web。
+
+### 用户可见文案
+
+站点文案使用 `site_texts`，其他独立运营文案通过 `localized_settings` 提交，完整字段和存储规则见[用户侧国际化](user_localization.md#content_owners)。`default_locale` 初始为 `en`。管理接口拒绝站点名称、标题和副标题的 `_zh`、`_en` 写入，返回 `REMOVED_SETTING_FIELD`。译文版本、核对和删除操作由统一内容模型处理。
 
 ### 部分更新与敏感字段
 
@@ -178,7 +182,7 @@ Google GIS 同样由默认策略和对旧自定义策略的增强共同放行：
 <a id="notification_delivery"></a>
 ### 通知与 SMTP
 
-notification 接收已经确定的事件、收件人、语言、来源标识和模板变量，维护 13 类事件、模板覆盖、退订和投递去重；SMTP 在技术适配层里。完整的生命周期见[通知与邮件投递](../domains/notification_delivery.md)。identity 维护验证码、重置令牌和 Redis 里的凭据，各入口的"先存后发"或"先发后存"顺序各不相同。模板或配置出错时，可以使用原始正文作为回退；发送失败或结果不确定时，不会自动重发。
+notification 接收已经确定的事件、收件人、语言、来源标识和模板变量，维护用户与管理员通知事件、模板覆盖、退订和投递去重。SMTP 在技术适配层里。完整的生命周期见[通知与邮件投递](../domains/notification_delivery.md)。identity 维护验证码、重置令牌和 Redis 里的凭据，各入口的"先存后发"或"先发后存"顺序各不相同。用户自定义模板缺失或无效时，使用选定语言的内置模板。SMTP 发送失败或结果不确定时，自动流程停止重发。
 
 同一个投递 key 的读取、发送和成功标记，在一个服务实例内协调；不同的 key 可以并行。退订密钥的首次生成也在实例内协调，已有的密钥、HMAC 和令牌有效期保持不变。这些保证只在单个服务进程内成立；SMTP 已经接收、但成功标记写入失败时，投递结果仍然不确定，系统没有恰好一次的投递协议。
 
@@ -254,7 +258,7 @@ base URL 模式只在提供商没有保存手动端点时生效，可以选 CLI 
 
 ## 前端变量
 
-Vite 在构建和 dev server 启动时读取 `VITE_API_BASE_URL`、`VITE_WS_BASE_URL`、`VITE_DEV_PROXY_TARGET` 和 `VITE_DEV_PORT`。默认的 API base 是 `/api/v1`，dev proxy target 是 `http://localhost:8080`，dev port 是 `3000`。
+Vite 在构建和 dev server 启动时读取 `VITE_API_BASE_URL`、`VITE_DEV_PROXY_TARGET` 和 `VITE_DEV_PORT`。默认的 API base 是 `/api/v1`，dev proxy target 是 `http://localhost:8080`，dev port 是 `3000`。
 
 `VITE_*` 会被打包进客户端代码，所以里面只能放公开的值。生产环境的内嵌前端，动态的品牌、功能和公开认证配置通过后端设置注入或 API 获取，和 Vite 构建变量是两条通道。修改后端的公开 URL 时，还要核对 OAuth callback、邮件链接、CORS 和 CSP、反向代理路径，只改前端的 base 是不够的。
 

@@ -13,15 +13,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // TestVideoTasksRedisOwnershipAndCompletion 验证同一隔离 Redis 验证原键、归属和失败释放，不把内存替身当作持久认领证据。
 func TestVideoTasksRedisOwnershipAndCompletion(t *testing.T) {
 	ctx := context.Background()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	host, err := container.Host(ctx)

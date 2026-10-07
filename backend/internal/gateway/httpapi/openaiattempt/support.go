@@ -37,7 +37,7 @@ func OpenAIProviderScheduleModel(c *gin.Context, provider *gatewayprovider.Execu
 			}
 		}
 	}
-	return gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(forwardModel, requireCompact, false)
+	return gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(forwardModel, requireCompact)
 }
 
 // AppendOpenAIProviderProxyLogFields 追加可公开的代理定位字段。

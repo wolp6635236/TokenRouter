@@ -67,11 +67,12 @@
               @change="toggleRowSelection(row, index, ($event.target as HTMLInputElement).checked)"
             />
           </div>
+          <!-- 标签和取值的字号不同，两边按首行文字的基线对齐。取值以图标或色条开头时，单元格给文字加 self-baseline。 -->
           <div
             v-for="column in dataColumns"
             :key="column.key"
             :data-field="column.key"
-            class="flex min-w-0 items-start justify-between gap-4"
+            class="flex min-w-0 items-baseline justify-between gap-4"
           >
             <span class="text-xs font-medium tracking-wider text-gray-500 dark:text-dark-300">
               {{ column.label }}
@@ -302,7 +303,7 @@ import Skeleton from './Skeleton.vue'
 import { TABLE_DESKTOP_MEDIA_QUERY } from '@/constants/layout'
 import { useTableColumnOrder } from '@/composables/useTableColumnOrder'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const isDesktopViewport = ref(
   typeof window === 'undefined' ? true : window.matchMedia(TABLE_DESKTOP_MEDIA_QUERY).matches
@@ -615,10 +616,10 @@ type PersistedSortState = {
   order: 'asc' | 'desc'
 }
 
-const collator = new Intl.Collator(undefined, {
+const collator = computed(() => new Intl.Collator(locale?.value, {
   numeric: true,
   sensitivity: 'base'
-})
+}))
 
 const getSortableKeys = () => {
   const keys = new Set<string>()
@@ -740,7 +741,7 @@ const compareSortValues = (a: any, b: any): number => {
 
   const aStr = toSortableString(a)
   const bStr = toSortableString(b)
-  const res = collator.compare(aStr, bStr)
+  const res = collator.value.compare(aStr, bStr)
   if (res === 0) return 0
   return res < 0 ? -1 : 1
 }

@@ -553,7 +553,7 @@ const dialogTabs = [
 // 键盘切换与鼠标使用同一页签状态，保持草稿和焦点顺序。
 function onDialogTabKeydown(event: KeyboardEvent, key: string) {
   const index = dialogTabs.findIndex(tab => tab.key === key)
-  let next = index
+  let next: number
   if (event.key === 'ArrowRight') next = (index + 1) % dialogTabs.length
   else if (event.key === 'ArrowLeft') next = (index + dialogTabs.length - 1) % dialogTabs.length
   else if (event.key === 'Home') next = 0
@@ -884,7 +884,7 @@ async function loadAllPricingConfigsForConflict() {
   try {
     const response = await adminAPI.pricing.list(1, 1000)
     allPricingConfigsForConflict.value = response.items || []
-  } catch (error) {
+  } catch {
     // Fallback to current page data
     allPricingConfigsForConflict.value = pricingConfigs.value
   }

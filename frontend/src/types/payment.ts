@@ -1,3 +1,13 @@
+import type { LocalizedUpdate } from '@/i18n/content'
+
+// 套餐文案按语言作为完整版本编辑。
+export type PlanCopy = {
+  name: string
+  description: string
+  features: string
+  product_name: string
+}
+
 /**
  * Payment System Type Definitions
  */
@@ -131,6 +141,8 @@ export type PublicPaymentOrder = PaymentOrder
 // ==================== Plans & Channels ====================
 
 export interface SubscriptionPlan {
+  product_name?: string
+  localization?: LocalizedUpdate<PlanCopy>
   id: number
   group_id?: number
   group_ids?: number[]

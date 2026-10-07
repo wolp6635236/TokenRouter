@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/ipmatch"
@@ -53,16 +55,16 @@ var (
 	ErrCompositeKeyPrefixNotFound        = infraerrors.BadRequest("COMPOSITE_KEY_PREFIX_NOT_FOUND", "composite api key model prefix was not found")
 	ErrCompositeKeyUnsupported           = infraerrors.BadRequest("COMPOSITE_KEY_ENDPOINT_UNSUPPORTED", "composite api key is not supported for this endpoint")
 	// ErrAPIKeyExpired        = infraerrors.Forbidden("API_KEY_EXPIRED", "api key has expired")
-	ErrAPIKeyExpired = infraerrors.Forbidden("API_KEY_EXPIRED", "api key 已过期")
+	ErrAPIKeyExpired = infraerrors.Forbidden("API_KEY_EXPIRED", "The API key has expired.")
 	// ErrAPIKeyQuotaExhausted = billing.ErrAPIKeyQuotaExhausted
-	ErrAPIKeyQuotaExhausted = infraerrors.TooManyRequests("API_KEY_QUOTA_EXHAUSTED", "api key 额度已用完")
+	ErrAPIKeyQuotaExhausted = infraerrors.TooManyRequests("API_KEY_QUOTA_EXHAUSTED", "The API key quota has been exhausted.")
 
 	// Rate limit errors
 	ErrAPIKeyRateLimit5hExceeded = billing.ErrAPIKeyRateLimit5hExceeded
 	ErrAPIKeyRateLimit1dExceeded = billing.ErrAPIKeyRateLimit1dExceeded
 	ErrAPIKeyRateLimit7dExceeded = billing.ErrAPIKeyRateLimit7dExceeded
-	ErrTeamActorInactive         = infraerrors.Forbidden("TEAM_ACTOR_INACTIVE", "团队密钥所属成员已停用")
-	ErrTeamBillingOwnerInactive  = infraerrors.Forbidden("TEAM_BILLING_OWNER_INACTIVE", "团队付款所有者已停用")
+	ErrTeamActorInactive         = infraerrors.Forbidden("TEAM_ACTOR_INACTIVE", "The member assigned to this team API key is inactive")
+	ErrTeamBillingOwnerInactive  = infraerrors.Forbidden("TEAM_BILLING_OWNER_INACTIVE", "The team billing owner is inactive")
 )
 
 // NewAPIKeyLimitReachedError 返回包含当前数量和上限的结构化冲突错误。
@@ -1643,7 +1645,7 @@ func (s *APIKeyService) ListBillingSubscriptionsForScope(ctx context.Context, us
 		options = append(options, APIKeyBillingSubscriptionOption{
 			ID:               subscription.ID,
 			PlanID:           subscription.PlanID,
-			PlanName:         subscription.Plan.Name,
+			PlanName:         billing.LocalizePlan(subscription.Plan, locale.FromContext(ctx)).Name,
 			ExpiresAt:        subscription.ExpiresAt,
 			GroupsRestricted: len(subscription.Plan.GroupIDs) > 0,
 			ApplicableGroups: append([]int64(nil), subscription.Plan.GroupIDs...),

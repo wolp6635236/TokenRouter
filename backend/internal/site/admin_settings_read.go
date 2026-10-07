@@ -26,14 +26,10 @@ type AdminReadSettings struct {
 	PurchaseSubscriptionEnabled bool
 	PurchaseSubscriptionURL     string
 	SiteLogo                    string
+	SiteTexts                   LocalizedTexts `json:"site_texts"`
+	DefaultLocale               string         `json:"default_locale"`
 	SiteName                    string
-	SiteNameEn                  string
-	SiteNameZh                  string
 	SiteSubtitle                string
-	SiteSubtitleEn              string
-	SiteSubtitleZh              string
-	SiteTitleEn                 string
-	SiteTitleZh                 string
 	TableDefaultPageSize        int
 	TablePageSizeOptions        []int
 }
@@ -46,6 +42,11 @@ func ReadAdminSettings(settings map[string]string) *AdminReadSettings {
 		loginAgreementUpdatedAt = defaultLoginAgreementDate
 	}
 	result := &AdminReadSettings{}
+	result.SiteTexts = ParseLocalizedTexts(settings)
+	result.DefaultLocale = settings[SettingKeyDefaultLocale]
+	if result.DefaultLocale == "" {
+		result.DefaultLocale = "en"
+	}
 	result.FrontendURL = settings[SettingKeyFrontendURL]
 	result.LoginAgreementEnabled = settings[SettingKeyLoginAgreementEnabled] == "true"
 	result.LoginAgreementMode = NormalizeLoginAgreementMode(settings[SettingKeyLoginAgreementMode])
@@ -54,12 +55,6 @@ func ReadAdminSettings(settings map[string]string) *AdminReadSettings {
 	result.SiteName = settingvalues.StringOrDefault(settings, SettingKeySiteName, "TokenRouter")
 	result.SiteLogo = settings[SettingKeySiteLogo]
 	result.SiteSubtitle = settingvalues.StringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform")
-	result.SiteNameZh = settings[SettingKeySiteNameZh]
-	result.SiteNameEn = settings[SettingKeySiteNameEn]
-	result.SiteTitleZh = settings[SettingKeySiteTitleZh]
-	result.SiteTitleEn = settings[SettingKeySiteTitleEn]
-	result.SiteSubtitleZh = settings[SettingKeySiteSubtitleZh]
-	result.SiteSubtitleEn = settings[SettingKeySiteSubtitleEn]
 	result.APIBaseURL = settings[SettingKeyAPIBaseURL]
 	result.ContactInfo = settings[SettingKeyContactInfo]
 	result.DocURL = settings[SettingKeyDocURL]

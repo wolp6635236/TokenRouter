@@ -28,6 +28,7 @@ func (Announcement) Annotations() []schema.Annotation {
 
 func (Announcement) Fields() []ent.Field {
 	return []ent.Field{
+		field.JSON("localization", site.AnnouncementLocalization{}).Optional().SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.String("title").
 			MaxLen(200).
 			NotEmpty().

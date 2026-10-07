@@ -1,5 +1,3 @@
-//go:build unit
-
 package maintenance_test
 
 import (

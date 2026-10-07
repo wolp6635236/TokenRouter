@@ -10,7 +10,7 @@ import (
 
 func TestCalculateSearchCost(t *testing.T) {
 	t.Parallel()
-	s := billingtestkit.Calculator(0, nil, map[string]*pricing.ModelPricing{})
+	s := billingtestkit.Calculator(nil, map[string]*pricing.ModelPricing{})
 	require.Equal(t, 0.0, s.CalculateSearchCost(0, floatPtr(10), 1).ActualCost)
 	// 配置和目录均缺价时沿用零成本记录，不生成默认金额。
 	require.Zero(t, s.CalculateSearchCost(5, nil, 1).ActualCost)
@@ -25,7 +25,7 @@ func TestCalculateSearchCost(t *testing.T) {
 
 func TestCalculateAudioCost(t *testing.T) {
 	t.Parallel()
-	s := billingtestkit.Calculator(0, nil, map[string]*pricing.ModelPricing{})
+	s := billingtestkit.Calculator(nil, map[string]*pricing.ModelPricing{})
 	rt, tts, stt := 0.10, 15.0, 0.50
 	cfg := &pricing.AudioPriceConfig{RealtimePerMin: &rt, TTSPerMChars: &tts, STTPerHour: &stt}
 	require.InDelta(t, 0.20, s.CalculateAudioCost("realtime", 2, cfg, 1).ActualCost, 1e-9)

@@ -1,5 +1,3 @@
-//go:build unit
-
 package httpapi_test
 
 import (
@@ -102,16 +100,16 @@ func conversionSSEFormat(t *testing.T, body, format string) string {
 			require.NoError(t, err)
 		}
 		if format != "data_only" {
-			result.WriteString("event:" + eventType + "\n")
+			_, _ = result.WriteString("event:" + eventType + "\n")
 		}
 		if format == "comments" {
-			result.WriteString(": heartbeat\nid: test\n")
+			_, _ = result.WriteString(": heartbeat\nid: test\n")
 		}
 		payload := string(data)
 		if format == "multiline" {
 			payload = "{\ndata:" + strings.TrimPrefix(payload, "{")
 		}
-		result.WriteString("data:" + payload + "\n\n")
+		_, _ = result.WriteString("data:" + payload + "\n\n")
 	})
 	if format == "eof" {
 		return strings.TrimRight(result.String(), "\n")

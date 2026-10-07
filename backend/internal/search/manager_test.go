@@ -49,14 +49,6 @@ func TestManager_GetUsage_NilRedis(t *testing.T) {
 	require.Equal(t, int64(0), used)
 }
 
-func TestManager_GetAllUsage_NilRedis(t *testing.T) {
-	m := newTestManager([]ProviderConfig{
-		{Type: "brave"},
-	}, nil)
-	usage := m.GetAllUsage(context.Background())
-	require.Equal(t, int64(0), usage["brave"])
-}
-
 func TestQuotaTTLFromSubscription_NilSubscription(t *testing.T) {
 	ttl := quotaTTLFromSubscription(nil)
 	require.Equal(t, defaultQuotaTTL, ttl)

@@ -2529,14 +2529,12 @@ const collectSelectionMetadata = (rows: Provider[]) => {
 const loadBulkEditFilterMetadata = async (filters: ProviderBulkEditFilterSnapshot) => {
   const rows: Provider[] = []
   let page = 1
-  let total = 0
-
   while (true) {
     const response = await adminAPI.providers.list(page, BULK_EDIT_FILTER_METADATA_PAGE_SIZE, {
       ...filters,
       lite: '1'
     })
-    total = response.total
+    const total = response.total
     rows.push(...response.items)
 
     if (rows.length >= total || response.items.length === 0) {

@@ -37,22 +37,6 @@ func (ModelDisplayCatalogue) GrokModels() []modeldisplay.GrokModel {
 }
 func (ModelDisplayCatalogue) GrokModelIDs() []string { return grok.DefaultModelIDs() }
 
-// GrokModelAlias 根据精确匹配的已知别名解析模型厂商。
-func (ModelDisplayCatalogue) GrokModelAlias(id string) (modeldisplay.GrokModel, bool) {
-	target, ok := grok.DefaultModelMapping()[id]
-	if !ok {
-		return modeldisplay.GrokModel{}, false
-	}
-	for _, model := range grok.DefaultModels() {
-		if model.ID == target {
-			model.ID = id
-			model.DisplayName = id
-			return modeldisplay.GrokModel(model), true
-		}
-	}
-	return modeldisplay.GrokModel{}, false
-}
-
 func (ModelDisplayCatalogue) GrokSupportsXHigh(model string) bool {
 	return (grok.BodyCodec{NewID: uuid.NewString}).GrokSupportsXHighReasoningEffort(model)
 }

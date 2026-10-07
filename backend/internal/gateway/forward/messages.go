@@ -108,8 +108,7 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 			normalizeOpts.MetadataUserID = metadata
 		}
 
-		var normalizedBody []byte
-		normalizedBody, reqModel = p.NormalizeOAuth(body, reqModel, normalizeOpts)
+		normalizedBody := p.NormalizeOAuth(body, normalizeOpts)
 		if err := replaceBody(normalizedBody); err != nil {
 			return nil, err
 		}

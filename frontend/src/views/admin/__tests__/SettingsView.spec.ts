@@ -17,8 +17,6 @@ const {
   getOverloadCooldownSettings,
   getOpenAI403CooldownSettings,
   updateOpenAI403CooldownSettings,
-  getOpenAIOAuthImportDefaults,
-  updateOpenAIOAuthImportDefaults,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
   getPanelRateLimitSettings,
@@ -37,7 +35,6 @@ const {
   updateProvider,
   createProvider,
   deleteProvider,
-  listTLSFingerprintProfiles,
   fetchPublicSettings,
   adminSettingsFetch,
   showError,
@@ -56,8 +53,6 @@ const {
   getOverloadCooldownSettings: vi.fn(),
   getOpenAI403CooldownSettings: vi.fn(),
   updateOpenAI403CooldownSettings: vi.fn(),
-  getOpenAIOAuthImportDefaults: vi.fn(),
-  updateOpenAIOAuthImportDefaults: vi.fn(),
   getRateLimit429CooldownSettings: vi.fn(),
   updateRateLimit429CooldownSettings: vi.fn(),
   getPanelRateLimitSettings: vi.fn().mockResolvedValue({
@@ -99,7 +94,6 @@ const {
   updateProvider: vi.fn(),
   createProvider: vi.fn(),
   deleteProvider: vi.fn(),
-  listTLSFingerprintProfiles: vi.fn(),
   fetchPublicSettings: vi.fn(),
   adminSettingsFetch: vi.fn(),
   showError: vi.fn(),
@@ -112,7 +106,11 @@ const {
   }),
 }));
 
-const localeRef = vi.hoisted(() => ({ value: "zh-CN" }));
+// 使用 Vue ref，使模板取得语言字符串。
+const localeRef = await vi.hoisted(async () => {
+  const { ref } = await import("vue");
+  return ref("zh-CN");
+});
 
 vi.mock("@/api", () => ({
   adminAPI: {
@@ -128,8 +126,6 @@ vi.mock("@/api", () => ({
       getOverloadCooldownSettings,
       getOpenAI403CooldownSettings,
       updateOpenAI403CooldownSettings,
-      getOpenAIOAuthImportDefaults,
-      updateOpenAIOAuthImportDefaults,
       getRateLimit429CooldownSettings,
       updateRateLimit429CooldownSettings,
       getPanelRateLimitSettings,
@@ -156,9 +152,6 @@ vi.mock("@/api", () => ({
       updateProvider,
       createProvider,
       deleteProvider,
-    },
-    tlsFingerprintProfiles: {
-      list: listTLSFingerprintProfiles,
     },
   },
 }));
@@ -338,13 +331,6 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.defaults.platformQuotaNotice": "月限额为 30 天滚动窗口，非自然月",
     "admin.settings.authSourceDefaults.platformQuotasOverride": "平台限额覆盖",
     "admin.settings.authSourceDefaults.platformQuotasOverrideHint": "留空的字段继承「系统默认平台限额」；填 0 表示禁止该窗口使用。",
-    "admin.providers.openAIOAuthImportDefaultsTitle": "OpenAI OAuth 导入默认值",
-    "admin.providers.openAIOAuthImportDefaultsDescription": "这些默认值会在添加 OpenAI OAuth 提供商时自动带入，也会用于批量导入中缺失字段的 OpenAI OAuth 提供商。",
-    "admin.providers.openAIOAuthImportDefaultsProvider": "提供商字段",
-    "admin.providers.openAIOAuthImportDefaultsOpenAIOptions": "OpenAI OAuth 选项",
-    "admin.providers.openAIOAuthImportDefaultsUnset": "不设置",
-    "admin.providers.openAIOAuthImportDefaultsCredentialsJson": "Credentials 附加 JSON",
-    "admin.providers.openAIOAuthImportDefaultsExtraJson": "Extra 附加 JSON",
     "admin.providers.openai.oauthPassthrough": "自动透传（仅替换认证）",
     "admin.providers.openai.oauthPassthroughDesc": "开启后，该 OpenAI 提供商将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。",
     "admin.providers.openai.wsMode": "WS mode",
@@ -794,8 +780,6 @@ describe("admin SettingsView payment visible method controls", () => {
     getOverloadCooldownSettings.mockReset();
     getOpenAI403CooldownSettings.mockReset();
     updateOpenAI403CooldownSettings.mockReset();
-    getOpenAIOAuthImportDefaults.mockReset();
-    updateOpenAIOAuthImportDefaults.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
@@ -809,7 +793,6 @@ describe("admin SettingsView payment visible method controls", () => {
     updateProvider.mockReset();
     createProvider.mockReset();
     deleteProvider.mockReset();
-    listTLSFingerprintProfiles.mockReset();
     fetchPublicSettings.mockReset();
     adminSettingsFetch.mockReset();
     showError.mockReset();
@@ -852,10 +835,6 @@ describe("admin SettingsView payment visible method controls", () => {
       threshold_count: 3,
       threshold_window_minutes: 180,
     });
-    getOpenAIOAuthImportDefaults.mockResolvedValue({
-      credentials: { model_whitelist: [] },
-    });
-    updateOpenAIOAuthImportDefaults.mockImplementation(async (payload) => payload);
     getRateLimit429CooldownSettings.mockResolvedValue({
       enabled: true,
       cooldown_seconds: 5,
@@ -891,10 +870,6 @@ describe("admin SettingsView payment visible method controls", () => {
     getProviders.mockResolvedValue({
       data: [],
     });
-    listTLSFingerprintProfiles.mockResolvedValue([
-      { id: 7, name: "Codex TLS" },
-      { id: 9, name: "Node TLS" },
-    ]);
     fetchPublicSettings.mockResolvedValue(undefined);
     adminSettingsFetch.mockResolvedValue(undefined);
   });
@@ -1904,8 +1879,8 @@ describe("admin SettingsView payment visible method controls", () => {
       wrapper.get('[data-testid="gateway-card-openai-403-cooldown"]').isVisible(),
     ).toBe(true);
     expect(
-      wrapper.get('[data-testid="gateway-card-openai-oauth-defaults"]').isVisible(),
-    ).toBe(true);
+      wrapper.find('[data-testid="gateway-card-openai-oauth-defaults"]').exists(),
+    ).toBe(false);
     expect(
       wrapper.get('[data-testid="gateway-card-openai-scheduling"]').isVisible(),
     ).toBe(true);
@@ -2129,152 +2104,6 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(paymentHelpImageUpload?.attributes("data-remove-label")).toBe("移除");
   });
 
-  it("renders and submits OpenAI OAuth import default TLS fingerprint settings", async () => {
-    getOpenAIOAuthImportDefaults.mockResolvedValueOnce({
-      credentials: { model_whitelist: ["gpt-5.2"] },
-      extra: {
-        enable_tls_fingerprint: true,
-        tls_fingerprint_profile_id: 7,
-      },
-    });
-
-    const wrapper = mountView();
-
-    await flushPromises();
-
-    expect(listTLSFingerprintProfiles).toHaveBeenCalledTimes(1);
-    expect(wrapper.text()).toContain("TLS 指纹模拟");
-
-    const toggle = wrapper.get('[data-testid="openai-oauth-default-tls-fingerprint-toggle"]');
-    expect((toggle.element as HTMLInputElement).checked).toBe(true);
-
-    const profileSelect = wrapper.get('[data-testid="openai-oauth-default-tls-fingerprint-profile"]');
-    expect((profileSelect.element as HTMLSelectElement).value).toBe("7");
-    await profileSelect.setValue("9");
-
-    await saveFromSaveBar(wrapper);
-
-    expect(updateOpenAIOAuthImportDefaults).toHaveBeenCalledWith(
-      expect.objectContaining({
-        extra: expect.objectContaining({
-          enable_tls_fingerprint: true,
-          tls_fingerprint_profile_id: 9,
-        }),
-      }),
-    );
-  });
-
-  it("loads and submits the OpenAI OAuth import default native V2 compact mode", async () => {
-    getOpenAIOAuthImportDefaults.mockResolvedValueOnce({
-      credentials: { model_whitelist: ["gpt-5.2"] },
-      extra: { openai_native_compaction_v2_mode: "force_off" },
-    });
-
-    const wrapper = mountView();
-    await flushPromises();
-
-    const mode = wrapper.get('[data-testid="openai-oauth-default-native-compaction-v2-mode"]');
-    expect((mode.element as HTMLInputElement).checked).toBe(false);
-    await mode.setValue(true);
-
-    await saveFromSaveBar(wrapper);
-
-    expect(updateOpenAIOAuthImportDefaults).toHaveBeenCalledWith(
-      expect.objectContaining({
-        extra: expect.objectContaining({ openai_native_compaction_v2_mode: "force_on" }),
-      }),
-    );
-  });
-
-  it("loads and submits the OpenAI OAuth import default Codex image tool policy", async () => {
-    getOpenAIOAuthImportDefaults.mockResolvedValueOnce({
-      credentials: { model_whitelist: ["gpt-5.2"] },
-      extra: {
-        codex_image_generation_explicit_tool_policy: "strip",
-        codex_image_generation_bridge: false,
-        codex_image_generation_bridge_enabled: true,
-      },
-    });
-
-    const wrapper = mountView();
-    await flushPromises();
-
-    const imagePolicy = wrapper.get<HTMLSelectElement>(
-      '[data-testid="openai-oauth-default-codex-image-tool-select"]',
-    );
-    expect(imagePolicy.element.value).toBe("block");
-
-    await imagePolicy.setValue("enabled");
-
-    await saveFromSaveBar(wrapper);
-
-    const extra = updateOpenAIOAuthImportDefaults.mock.calls[0]?.[0]?.extra;
-    expect(extra?.codex_image_generation_bridge).toBe(true);
-    expect(extra).not.toHaveProperty("codex_image_generation_bridge_enabled");
-    expect(extra).not.toHaveProperty("codex_image_generation_explicit_tool_policy");
-  });
-
-  it("renders and submits OpenAI OAuth import default auto-pause and Claude Code allow settings", async () => {
-    getOpenAIOAuthImportDefaults.mockResolvedValueOnce({
-      credentials: { model_whitelist: ["gpt-5.2"] },
-      extra: {
-        codex_cli_only: true,
-        codex_cli_only_allowed_clients: ["claude_code"],
-        auto_pause_5h_threshold: 0.91,
-        auto_pause_7d_threshold: 0.82,
-        auto_pause_5h_disabled: true,
-      },
-    });
-
-    const wrapper = mountView();
-
-    await flushPromises();
-
-    const allowClaudeCodeToggle = wrapper.get(
-      '[data-testid="openai-oauth-default-codex-allow-claude-code-toggle"]',
-    );
-    expect((allowClaudeCodeToggle.element as HTMLInputElement).checked).toBe(true);
-
-    const fiveHourDisabledToggle = wrapper.get(
-      '[data-testid="openai-oauth-default-auto-pause-5h-disabled"]',
-    );
-    expect((fiveHourDisabledToggle.element as HTMLInputElement).checked).toBe(true);
-    await fiveHourDisabledToggle.setValue(false);
-
-    const fiveHourThreshold = wrapper.get(
-      '[data-testid="openai-oauth-default-auto-pause-5h-threshold"]',
-    );
-    expect((fiveHourThreshold.element as HTMLInputElement).value).toBe("91");
-    await fiveHourThreshold.setValue("95");
-
-    const sevenDayThreshold = wrapper.get(
-      '[data-testid="openai-oauth-default-auto-pause-7d-threshold"]',
-    );
-    expect((sevenDayThreshold.element as HTMLInputElement).value).toBe("82");
-
-    const sevenDayDisabledToggle = wrapper.get(
-      '[data-testid="openai-oauth-default-auto-pause-7d-disabled"]',
-    );
-    await sevenDayDisabledToggle.setValue(true);
-
-    await saveFromSaveBar(wrapper);
-
-    expect(updateOpenAIOAuthImportDefaults).toHaveBeenCalledWith(
-      expect.objectContaining({
-        extra: expect.objectContaining({
-          codex_cli_only: true,
-          codex_cli_only_allowed_clients: ["claude_code"],
-          auto_pause_5h_threshold: 0.95,
-          auto_pause_7d_threshold: 0.82,
-          auto_pause_7d_disabled: true,
-        }),
-      }),
-    );
-    expect(updateOpenAIOAuthImportDefaults.mock.calls[0]?.[0]?.extra).not.toHaveProperty(
-      "auto_pause_5h_disabled",
-    );
-  });
-
   it("loads creative model candidates and submits the configured capability subset", async () => {
     const creativeSettings = [{
       group_id: 12,
@@ -2377,8 +2206,6 @@ describe("admin SettingsView security tab controls", () => {
     getOverloadCooldownSettings.mockReset();
     getOpenAI403CooldownSettings.mockReset();
     updateOpenAI403CooldownSettings.mockReset();
-    getOpenAIOAuthImportDefaults.mockReset();
-    updateOpenAIOAuthImportDefaults.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
@@ -2390,7 +2217,6 @@ describe("admin SettingsView security tab controls", () => {
     updateProvider.mockReset();
     createProvider.mockReset();
     deleteProvider.mockReset();
-    listTLSFingerprintProfiles.mockReset();
     fetchPublicSettings.mockReset();
     adminSettingsFetch.mockReset();
     showError.mockReset();
@@ -2436,10 +2262,6 @@ describe("admin SettingsView security tab controls", () => {
       threshold_count: 3,
       threshold_window_minutes: 180,
     });
-    getOpenAIOAuthImportDefaults.mockResolvedValue({
-      credentials: { model_whitelist: [] },
-    });
-    updateOpenAIOAuthImportDefaults.mockImplementation(async (payload) => payload);
     getRateLimit429CooldownSettings.mockResolvedValue({
       enabled: true,
       cooldown_seconds: 5,
@@ -2469,7 +2291,6 @@ describe("admin SettingsView security tab controls", () => {
     getProviders.mockResolvedValue({
       data: [],
     });
-    listTLSFingerprintProfiles.mockResolvedValue([]);
     fetchPublicSettings.mockResolvedValue(undefined);
     adminSettingsFetch.mockResolvedValue(undefined);
   });

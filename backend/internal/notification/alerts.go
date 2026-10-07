@@ -60,42 +60,38 @@ func (s *AlertDelivery) SendBalanceLowEmails(recipients []string, userID int64, 
 	if displayName == "" {
 		displayName = userEmail
 	}
-	if s.notificationEmailService != nil {
-		fallbackRecipients := make([]string, 0, len(recipients))
-		for _, to := range recipients {
-			ctx, cancel := context.WithTimeout(context.Background(), emailSendTimeout)
-			err := s.notificationEmailService.Send(ctx, NotificationEmailSendInput{
-				Event:          NotificationEmailEventBalanceLow,
-				RecipientEmail: to,
-				RecipientName:  displayName,
-				UserID:         userID,
-				SourceType:     "balance_low",
-				SourceID:       strconv.FormatInt(userID, 10),
-				ReminderKey:    time.Now().UTC().Format("2006-01-02"),
-				Variables: map[string]string{
-					"current_balance": fmt.Sprintf("%.2f", balance),
-					"threshold":       fmt.Sprintf("%.2f", threshold),
-					"recharge_url":    rechargeURL,
-				},
-			})
-			cancel()
-			if err != nil {
-				if ShouldFallbackNotificationEmail(err) {
-					slog.Warn("template balance low notification failed; falling back to built-in body", "to", to, "err", err.Error())
-					fallbackRecipients = append(fallbackRecipients, to)
-				} else {
-					slog.Warn("template balance low notification delivery failed; not sending fallback to avoid duplicates", "to", to, "err", err.Error())
-				}
+	for _, to := range recipients {
+		ctx, cancel := context.WithTimeout(context.Background(), emailSendTimeout)
+		input := SendRequest{
+			Event: NotificationEmailEventBalanceLow, RecipientEmail: to, RecipientName: displayName,
+			UserID: userID, SourceType: "balance_low", SourceID: strconv.FormatInt(userID, 10),
+			ReminderKey: time.Now().UTC().Format("2006-01-02"),
+			Variables:   map[string]string{"current_balance": fmt.Sprintf("%.2f", balance), "threshold": fmt.Sprintf("%.2f", threshold), "recharge_url": rechargeURL},
+		}
+		var err error
+		if s.notificationEmailService != nil {
+			err = s.notificationEmailService.Send(ctx, input)
+		} else if mailer, ok := s.emailService.(interface {
+			SendUserNotification(context.Context, SendRequest) error
+		}); ok {
+			err = mailer.SendUserNotification(ctx, input)
+		} else {
+			// 独立发送器使用英文内置模板，带账户偏好的部署通过通知服务发送。
+			official := notificationEmailOfficialTemplates[input.Event][notificationEmailDefaultLocale]
+			input.Variables["site_name"] = siteName
+			input.Variables["recipient_name"] = displayName
+			input.Variables["recipient_email"] = to
+			var rendered NotificationEmailPreview
+			rendered, err = RenderNotificationEmail(input.Event, official.Subject, official.HTML, input.Variables, nil)
+			if err == nil {
+				err = s.emailService.SendEmail(ctx, to, rendered.Subject, rendered.HTML)
 			}
 		}
-		if len(fallbackRecipients) == 0 {
-			return
+		cancel()
+		if err != nil {
+			slog.Error("余额提醒发送失败", "user_id", userID, "error", err)
 		}
-		recipients = fallbackRecipients
 	}
-	subject := fmt.Sprintf("[%s] 余额不足提醒 / Balance Low Alert", SanitizeEmailHeader(siteName))
-	body := s.BuildBalanceLowEmailBody(html.EscapeString(displayName), balance, threshold, html.EscapeString(siteName), rechargeURL)
-	s.sendEmails(recipients, subject, body, "user_email", userEmail, "balance", balance)
 }
 
 // SendQuotaAlertEmails 向管理员邮箱发送提供商配额告警。

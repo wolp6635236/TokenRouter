@@ -291,13 +291,13 @@ const bindLoginPassword = ref('')
 const legacyPendingOAuthToken = ref('')
 const accountActionError = ref('')
 const canReturnToCreateAccount = ref(false)
-const bindSuccessMessage = t('profile.authBindings.bindSuccess')
+const bindSuccessMessage = computed(() => t('profile.authBindings.bindSuccess'))
 const needsTotpChallenge = ref(false)
 const totpTempToken = ref('')
 const totpCode = ref('')
 const totpError = ref('')
 const totpUserEmailMasked = ref('')
-const providerName = '钉钉'
+const providerName = computed(() => t('profile.authBindings.providers.dingtalk'))
 
 const needsCreateAccount = computed(() => pendingAccountAction.value === 'create_account')
 const needsChooser = computed(() => pendingAccountAction.value === 'choose_account_action')
@@ -575,7 +575,7 @@ async function finalizeCompletion(completion: PendingOAuthExchangeResponse, redi
     const bindRedirect = sanitizeRedirectPath(completion.redirect || '/profile')
     clearPendingAuthSession()
     clearAllAffiliateCodes()
-    appStore.showSuccess(bindSuccessMessage)
+    appStore.showSuccess(bindSuccessMessage.value)
     await router.replace(bindRedirect)
     return
   }

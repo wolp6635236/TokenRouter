@@ -48,9 +48,9 @@ func TestBuildGrokXSearchResponsesBodyAcceptsInputAlias(t *testing.T) {
 }
 
 func TestResolveGrokStandaloneSearchModelUsesRuntimeDefault(t *testing.T) {
-	original := xai.RuntimeModelMappingOptions()
-	t.Cleanup(func() { xai.SetRuntimeModelMappingOptions(original) })
-	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{DefaultText: "grok-4.6"})
+	original := xai.RuntimeDefaultTextModel()
+	t.Cleanup(func() { xai.SetRuntimeDefaultTextModel(original) })
+	xai.SetRuntimeDefaultTextModel("grok-4.6")
 
 	model := GrokStandaloneSearchModel()
 	body, err := buildStandaloneXSearchForTest(searchtools.StandaloneRequest{Query: "latest posts from xAI"}, model)

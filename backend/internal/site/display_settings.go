@@ -1,6 +1,10 @@
 package site
 
-import "context"
+import (
+	"context"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+)
 
 // DisplaySettings 按原时点读取站点名称与前端地址，不增加缓存或批量查询。
 type DisplaySettings struct {
@@ -18,11 +22,7 @@ func NewDisplaySettings(store interface {
 }
 
 func (s *DisplaySettings) GetSiteName(ctx context.Context) string {
-	value, err := s.store.GetValue(ctx, SettingKeySiteName)
-	if err != nil || value == "" {
-		return "TokenRouter"
-	}
-	return value
+	return locale.ReadGroupedText(ctx, s.store, SettingKeySiteTexts, SettingKeySiteName, "TokenRouter")
 }
 
 func (s *DisplaySettings) GetFrontendURL(ctx context.Context) string {

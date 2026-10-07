@@ -135,6 +135,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import { vSegmented } from '@/directives/segmented'
 import ExpandableTableRow from '@/components/common/ExpandableTableRow.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -347,7 +348,7 @@ const barOptions = computed(() => ({
 }))
 
 const formatNumber = (value: number): string => {
-  return value.toLocaleString()
+  return value.toLocaleString(getLocale())
 }
 
 const formatCost = (value: number): string => {

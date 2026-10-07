@@ -7,8 +7,8 @@
   >
     <!-- 分组使用管理员配置的展示品牌。 -->
     <ProviderIcon v-if="brandName" :brand="brandName" size="14px" />
-    <!-- Group name -->
-    <span class="truncate">{{ name }}</span>
+    <!-- 分组名加 self-baseline，徽章的基线取自分组名，移动卡片的标签和它对齐。 -->
+    <span class="self-baseline truncate">{{ name }}</span>
     <!-- Right side label -->
     <span v-if="showLabel" :class="labelClass">
       <template v-if="hasCustomRate">

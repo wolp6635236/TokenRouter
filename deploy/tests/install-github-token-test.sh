@@ -100,7 +100,7 @@ assert_unsafe_invocation_rejected url-option -s --url \
 test "$(grep -c 'github_api_curl .*https://api.github.com/' "$ROOT_DIR/deploy/install.sh")" -eq 3
 
 # 资源与校验和下载必须继续直接调用 curl。
-grep -Fq 'curl -sL "$download_url"' "$ROOT_DIR/deploy/install.sh"
-grep -Fq 'curl -sL "$checksum_url"' "$ROOT_DIR/deploy/install.sh"
+grep -Fq 'curl -fsSL "$download_url"' "$ROOT_DIR/deploy/install.sh"
+grep -Fq 'curl -fsSL "$checksum_url"' "$ROOT_DIR/deploy/install.sh"
 
 echo "install GitHub token checks passed"

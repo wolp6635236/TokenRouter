@@ -53,6 +53,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import { vContentReveal } from '@/directives/contentReveal'
 
 import { computed, ref, onMounted, onUnmounted } from 'vue'
@@ -188,7 +189,7 @@ async function pollOrderStatus() {
     // 认证令牌固定存储在 auth_token，弹窗查询也必须携带它。
     const token = localStorage.getItem('auth_token') || ''
     const res = await fetch(buildApiUrl(`/payment/orders/${orderId}`), {
-      headers: token ? { Authorization: 'Bearer ' + token } : {},
+      headers: { 'Accept-Language': getLocale(), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
       credentials: 'include',
     })
     if (!res.ok) return

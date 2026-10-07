@@ -12,9 +12,9 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/search"
 	"github.com/TokenFlux/TokenRouter/internal/search/rediscache"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // countingExecutor 核对取消后的尝试与代理故障分类，实际第一条请求仍通过 HTTP 执行。
@@ -36,7 +36,7 @@ func (e *countingExecutor) IsProxyError(err error) bool {
 func TestSearchRedisReservations(t *testing.T) {
 	setup, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	container, err := tcredis.Run(setup, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(setup, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	address, err := container.ConnectionString(setup)

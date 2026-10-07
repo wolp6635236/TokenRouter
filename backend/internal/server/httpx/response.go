@@ -4,6 +4,10 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 
@@ -57,17 +61,22 @@ func Accepted(c *gin.Context, data any) {
 
 // Error 返回错误响应
 func Error(c *gin.Context, statusCode int, message string) {
-	c.JSON(statusCode, Response{
-		Code:     statusCode,
-		Message:  message,
-		Reason:   "",
-		Metadata: nil,
-	})
+	ErrorWithDetails(c, statusCode, message, "", nil)
 }
 
 // ErrorWithDetails returns an error response compatible with the existing envelope while
 // optionally providing structured error fields (reason/metadata).
 func ErrorWithDetails(c *gin.Context, statusCode int, message, reason string, metadata map[string]string) {
+	if c.Request != nil && !strings.HasPrefix(c.Request.URL.Path, "/api/v1/admin/") && !strings.HasPrefix(c.Request.URL.Path, "/setup/") {
+		if reason == "" {
+			reason = "HTTP_" + strconv.Itoa(statusCode)
+		}
+		language, exists := locale.Explicit(c.Request.Context())
+		if !exists {
+			language = locale.Negotiate(c.GetHeader("Accept-Language"), locale.Default())
+		}
+		message = locale.ErrorText(language, reason, statusCode, message)
+	}
 	c.JSON(statusCode, Response{
 		Code:     statusCode,
 		Message:  message,

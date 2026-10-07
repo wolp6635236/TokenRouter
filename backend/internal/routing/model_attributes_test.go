@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,6 +44,32 @@ func (r *attributeRepoFixture) Save(_ context.Context, value *ModelAttributeConf
 	return nil
 }
 func (r *attributeRepoFixture) Delete(context.Context, int64) error { r.config = nil; return nil }
+
+// TestModelAttributesRequestLanguage 检查单分组与批量查询使用同一请求语言。
+func TestModelAttributesRequestLanguage(t *testing.T) {
+	en := "en"
+	content := locale.Update[string]{Content: locale.Content[string]{
+		SourceLocale: &en, Source: "English name", Revision: 1, SourceRevision: 1,
+		Translations: map[string]locale.Translation[string]{"zh-Hans": {Value: "中文名称", SourceRevision: 1}},
+	}}
+	config := &ModelAttributeConfig{Status: StatusActive, Rules: []ModelAttributeRule{
+		{Models: []string{"model"}, Attributes: modelcatalog.Attributes{DisplayNameLocalization: &content}},
+	}}
+	service := ModelAttributeService{
+		Repo:    &attributeRepoFixture{config: config, groups: map[int64]*ModelAttributeConfig{1: config}},
+		Catalog: ModelAttributeCatalog{Lookup: func(string) modelcatalog.Attributes { return modelcatalog.Attributes{} }},
+	}
+	models := []RequestableModel{{ID: "model"}}
+	for code, want := range map[string]string{"en": "English name", "zh-Hans": "中文名称"} {
+		ctx := locale.WithLanguage(context.Background(), code)
+		single, err := service.ResolveModels(ctx, 1, models)
+		require.NoError(t, err)
+		batch, err := service.ResolveGroups(ctx, map[int64][]RequestableModel{1: models})
+		require.NoError(t, err)
+		require.Equal(t, want, *single["model"].DisplayName)
+		require.Equal(t, single["model"], batch[1]["model"])
+	}
+}
 
 func TestModelAttributesUseFinalModelsWithoutChangingRoutes(t *testing.T) {
 	yes, no := true, false

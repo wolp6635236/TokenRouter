@@ -4,6 +4,8 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/paymentauditlog"
 	"github.com/TokenFlux/TokenRouter/ent/paymentorder"
@@ -67,6 +69,9 @@ func (s *InstanceStore) CreateInstance(ctx context.Context, v payment.ProviderIn
 
 func (s *InstanceStore) UpdateInstance(ctx context.Context, id int64, v payment.InstancePatch) (*payment.ProviderInstance, error) {
 	q := s.client.PaymentProviderInstance.UpdateOneID(id)
+	if v.ExpectedConfig != nil {
+		q.Where(paymentproviderinstance.ConfigEQ(*v.ExpectedConfig))
+	}
 	if v.Name != nil {
 		q.SetName(*v.Name)
 	}
@@ -95,6 +100,9 @@ func (s *InstanceStore) UpdateInstance(ctx context.Context, id int64, v payment.
 		q.SetPaymentMode(*v.PaymentMode)
 	}
 	row, err := q.Save(ctx)
+	if dbent.IsNotFound(err) && v.ExpectedConfig != nil {
+		return nil, locale.ErrConflict
+	}
 	return InstanceFromEntity(row), err
 }
 

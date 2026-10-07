@@ -11,8 +11,7 @@ import (
 // HTMLCache manages the cached index.html with injected settings
 type HTMLCache struct {
 	mu              sync.RWMutex
-	cachedHTML      []byte
-	etag            string
+	entries         map[string]CachedHTML
 	baseHTMLHash    string // Hash of the original index.html (immutable after build)
 	settingsVersion uint64 // Incremented when settings change
 }
@@ -42,35 +41,32 @@ func (c *HTMLCache) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.entries = nil
 	c.settingsVersion++
-	c.cachedHTML = nil
-	c.etag = ""
 }
 
-// Get 返回当前渲染快照。
-func (c *HTMLCache) Get() *CachedHTML {
-	cached, _ := c.Snapshot()
-	return cached
-}
-
-// Snapshot 同时取得内容和失效代次，使后续回源只能发布到原代次。
-func (c *HTMLCache) Snapshot() (*CachedHTML, uint64) {
+// Snapshot 在同一次锁保护内读取语言快照和失效版本。
+func (c *HTMLCache) Snapshot(code string) (*CachedHTML, uint64) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.cachedHTML == nil {
+	snapshot, ok := c.entries[code]
+	if !ok {
 		return nil, c.settingsVersion
 	}
-	return &CachedHTML{Content: c.cachedHTML, ETag: c.etag}, c.settingsVersion
+	return &CachedHTML{Content: append([]byte(nil), snapshot.Content...), ETag: snapshot.ETag}, c.settingsVersion
 }
 
-// Publish 返回本次渲染的内容与 ETag；跨过失效点的回源不进入共享缓存。
-func (c *HTMLCache) Publish(version uint64, html, settingsJSON []byte) CachedHTML {
+// Publish 将语言加入 ETag，跨过失效点的渲染保持为当前请求私有。
+func (c *HTMLCache) Publish(code string, version uint64, html, settingsJSON []byte) CachedHTML {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	rendered := CachedHTML{Content: html, ETag: c.generateETag(settingsJSON)}
+	key := append([]byte(code+"\n"), settingsJSON...)
+	rendered := CachedHTML{Content: html, ETag: c.generateETag(key)}
 	if version == c.settingsVersion {
-		c.cachedHTML = rendered.Content
-		c.etag = rendered.ETag
+		if c.entries == nil {
+			c.entries = map[string]CachedHTML{}
+		}
+		c.entries[code] = CachedHTML{Content: append([]byte(nil), html...), ETag: rendered.ETag}
 	}
 	return rendered
 }

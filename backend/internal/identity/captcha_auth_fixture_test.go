@@ -1,5 +1,3 @@
-//go:build unit
-
 package identity_test
 
 import (
@@ -59,6 +57,7 @@ type captchaAuthSettings struct {
 func (s captchaAuthSettings) GetCaptchaProviderConfig(ctx context.Context) (identity.CaptchaProviderConfig, error) {
 	return s.runtime.GetCaptchaProviderConfig(ctx)
 }
+
 func (s captchaAuthSettings) IsEmailVerifyEnabled(ctx context.Context) bool {
 	return s.runtime.IsEmailVerifyEnabled(ctx)
 }
@@ -89,9 +88,11 @@ func newAuthServiceForCaptchaTest(values map[string]string, required bool, turns
 	}
 	return svc
 }
+
 func newAuthServiceForRegisterTurnstileTest(values map[string]string, verifier identity.TurnstileVerifier) *identity.AuthService {
 	return newAuthServiceForCaptchaTest(values, true, verifier, nil)
 }
+
 func newAliyunAuthServiceForTest(options *identity.AuthOptions, values map[string]string, verifier *aliyunVerifierSpy) *identity.AuthService {
 	runtime := identity.NewRuntimeSettings(&captchaSettingsStore{values: values}, settings.ErrSettingNotFound)
 	turnstile := identity.NewTurnstileService(runtime, &turnstileVerifierSpy{})

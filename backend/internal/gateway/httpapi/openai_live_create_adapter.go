@@ -80,7 +80,7 @@ func (t *liveCreateTarget) ResolveModel(ctx context.Context, model string) (stri
 	if err != nil {
 		return "", "", err
 	}
-	return routing, gatewayprovider.ExecutionModelPolicy(t.provider).OpenAIUpstream(routing, false, false), nil
+	return routing, gatewayprovider.ExecutionModelPolicy(t.provider).OpenAIUpstream(routing, false), nil
 }
 
 func (t *liveCreateTarget) AllowsClient(ctx context.Context, identity session.LiveCallIdentity) bool {

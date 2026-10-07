@@ -6,18 +6,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNativeModelCatalogue 验证默认模型仅自映射，默认文本设置不会增加隐式别名。
+// TestNativeModelCatalogue 检查默认目录中的完整型号。
 func TestNativeModelCatalogue(t *testing.T) {
-	mapping := ModelMappingWithOptions(ModelMappingOptions{DefaultText: "custom-grok"})
-	require.NotEmpty(t, mapping)
-	for from, to := range mapping {
-		require.Equal(t, from, to)
-	}
+	models := DefaultModelIDs()
+	require.NotEmpty(t, models)
 	for _, alias := range []string{"grok", "grok-latest", "grok-build", "gpt-*", "claude-*", "xai/grok", "grok-imagine-edit", "grok-imagine-video-1.5-preview"} {
-		require.NotContains(t, mapping, alias)
+		require.NotContains(t, models, alias)
 	}
-	require.Contains(t, mapping, "grok-4.6")
-	require.Contains(t, mapping, DefaultImagineVideo15Model)
+	require.Contains(t, models, "grok-4.6")
+	require.Contains(t, models, DefaultImagineVideo15Model)
 }
 
 // TestExplicitGrokIDsRemainUnchanged 验证文本、媒体和供应商限定名均保留原值。

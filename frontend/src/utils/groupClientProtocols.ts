@@ -21,10 +21,6 @@ export function effectiveGroupClientProtocols(protocols: readonly ProtocolID[] |
   return orderedProtocols((protocols ?? []).filter(protocol => supported.has(protocol)))
 }
 
-export function hasGroupClientProtocol(protocols: readonly ProtocolID[], protocol: ProtocolID): boolean {
-  return protocols.includes(protocol)
-}
-
 export function setGroupClientProtocol(protocols: readonly ProtocolID[], protocol: ProtocolID, enabled: boolean): ProtocolID[] {
   const next = new Set(protocols)
   if (enabled && supportedGroupClientProtocols().includes(protocol)) next.add(protocol)

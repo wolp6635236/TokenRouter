@@ -4,6 +4,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
@@ -199,19 +201,30 @@ func (c AnnouncementCondition) validate() error {
 	}
 }
 
+// AnnouncementCopy 将标题和正文作为同一语言版本保存。
+type AnnouncementCopy struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+// AnnouncementLocalization 是公告的多语言内容。
+type AnnouncementLocalization locale.Content[AnnouncementCopy]
+
 type Announcement struct {
-	ID         int64
-	Title      string
-	Content    string
-	Status     string
-	NotifyMode string
-	Targeting  AnnouncementTargeting
-	StartsAt   *time.Time
-	EndsAt     *time.Time
-	CreatedBy  *int64
-	UpdatedBy  *int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	Localization AnnouncementLocalization
+	Resolution   locale.Resolution
+	ID           int64
+	Title        string
+	Content      string
+	Status       string
+	NotifyMode   string
+	Targeting    AnnouncementTargeting
+	StartsAt     *time.Time
+	EndsAt       *time.Time
+	CreatedBy    *int64
+	UpdatedBy    *int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 func (a *Announcement) IsActiveAt(now time.Time) bool {
@@ -229,4 +242,9 @@ func (a *Announcement) IsActiveAt(now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// Resolve 按请求语言选取同一版本的公告标题和正文。
+func (c AnnouncementLocalization) Resolve(code string) (AnnouncementCopy, locale.Resolution) {
+	return locale.Content[AnnouncementCopy](c).Resolve(code)
 }

@@ -3,8 +3,12 @@ package text
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
@@ -80,4 +84,52 @@ func TestFixedResponsesRetainsPartialFailureAcrossIndependentRequests(t *testing
 		require.Equal(t, 1, p.completed)
 		require.Zero(t, p.switched)
 	}
+}
+
+// TestPricingRejectionStopsTextAttempts 覆盖三个文本入口共用的尝试循环及错误返回。
+func TestPricingRejectionStopsTextAttempts(t *testing.T) {
+	prices := &admission.ModelPricing{Resolver: billing.NewPriceResolver(nil, billing.NewCalculator(nil, billing.CalculatorOptions{}), nil, nil)}
+	rejected := prices.Check(context.Background(), nil, "codex-auto-review")
+	require.ErrorIs(t, rejected, admission.ErrModelPricingRejected)
+	require.ErrorIs(t, rejected, pricing.ErrModelPricingUnavailable)
+	for _, tc := range []struct {
+		name string
+		kind execution.TextKind
+	}{
+		{name: "responses", kind: execution.TextOpenAIResponses},
+		{name: "chat", kind: execution.TextOpenAIChat},
+		{name: "messages", kind: execution.TextOpenAIMessages},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cause := fmt.Errorf("prepare request: %w", rejected)
+			runtime := &fixedResponseRuntime{outcome: ResponseOutcome{Outcome: Outcome{Err: cause}}}
+			executor := NewResponsesExecutor(runtime, ResponseOptions{MaxSwitches: 3}, ResponseOptions{MaxSwitches: 3})
+			result, err := executor.Execute(context.Background(), execution.Request{Text: execution.TextState{Kind: tc.kind}}, nil)
+			require.ErrorIs(t, err, admission.ErrModelPricingRejected)
+			require.Equal(t, 1, result.Attempts)
+			session := runtime.sessions[0]
+			require.Equal(t, 1, session.selected)
+			require.Equal(t, 1, session.forwarded)
+			require.Zero(t, session.failures)
+			require.Zero(t, session.failed)
+			require.Zero(t, session.successes)
+			require.Zero(t, session.completed)
+			require.Zero(t, session.switched)
+			require.Zero(t, session.waited)
+		})
+	}
+}
+
+// TestUsagePricingFailureKeepsCompletion 结算阶段的普通缺价错误仍经过完成处理。
+func TestUsagePricingFailureKeepsCompletion(t *testing.T) {
+	runtime := &fixedResponseRuntime{outcome: ResponseOutcome{NativePartial: true, Outcome: Outcome{
+		Err: pricing.ErrModelPricingUnavailable, HasResult: true,
+		Attempt: upstream.AttemptResult{HasUsage: true, Usage: upstream.TokenUsage{OutputTokens: 2}},
+	}}}
+	executor := NewResponsesExecutor(runtime, ResponseOptions{}, ResponseOptions{})
+	result, err := executor.Execute(context.Background(), execution.Request{}, nil)
+	require.ErrorIs(t, err, pricing.ErrModelPricingUnavailable)
+	require.Equal(t, 2, result.Attempt.Usage.OutputTokens)
+	require.Equal(t, 1, runtime.sessions[0].completed)
+	require.Equal(t, 1, runtime.sessions[0].failures)
 }

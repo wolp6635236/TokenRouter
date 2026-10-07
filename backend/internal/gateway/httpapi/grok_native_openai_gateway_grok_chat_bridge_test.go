@@ -1,5 +1,3 @@
-//go:build unit
-
 package httpapi
 
 import (
@@ -203,6 +201,7 @@ func TestGrokChatResponsesBridgeEligibility(t *testing.T) {
 		})
 	}
 }
+
 func TestGrokChatResponsesRuntimeEligibility(t *testing.T) {
 	t.Parallel()
 	require.True(t, gatewayprovider.GrokBodyCodec().GrokChatResponsesRuntimeEligible("grok-4.5", "isolated-id"))

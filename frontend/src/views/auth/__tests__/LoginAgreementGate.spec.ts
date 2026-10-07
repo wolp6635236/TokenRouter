@@ -203,7 +203,7 @@ describe.each(['login', 'register'] as const)('%s 协议提交门禁', (page) =>
   it('条款弹窗模式仍在进入页面时显示并保持原有门禁', async () => {
     mocks.settings.mockResolvedValue({ ...baseSettings, login_agreement_mode: 'modal' })
     const view = await mountPage(page)
-    expect(document.body.textContent).toContain('条款更新通知')
+    expect(document.body.textContent).toContain('legal.updateNotice')
     expect(view.get('#email').attributes('disabled')).toBeDefined()
     expect(view.get('#password').attributes('disabled')).toBeDefined()
     expect(view.find('#login-agreement-consent').exists()).toBe(false)

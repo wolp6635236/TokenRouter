@@ -13,9 +13,10 @@ import (
 
 // PreparedChange 包含校验后的设置值和提交后执行的函数。
 type PreparedChange struct {
-	Module string
-	Values map[string]string
-	Apply  func(context.Context) error
+	Module   string
+	Values   map[string]string
+	Expected map[string]*string
+	Apply    func(context.Context) error
 }
 
 // Updates 统一同实例综合更新的读取、准备、提交和运行发布。
@@ -81,6 +82,7 @@ func (s *UpdateSession) Commit(changes ...PreparedChange) error {
 		return errors.New("settings update already committed")
 	}
 	values := make(map[string]string)
+	expected := make(map[string]*string)
 	for _, change := range changes {
 		if change.Module == "" {
 			return errors.New("settings change has no owner")
@@ -91,11 +93,20 @@ func (s *UpdateSession) Commit(changes ...PreparedChange) error {
 			}
 		}
 		maps.Copy(values, change.Values)
+		maps.Copy(expected, change.Expected)
 	}
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.owner.repo.SetMultiple(s.ctx, values); err != nil {
+	if len(expected) > 0 {
+		writer, ok := s.owner.repo.(ConditionalRepository)
+		if !ok {
+			return errors.New("settings repository does not support conditional updates")
+		}
+		if err := writer.CompareAndSetMultiple(s.ctx, values, expected); err != nil {
+			return err
+		}
+	} else if err := s.owner.repo.SetMultiple(s.ctx, values); err != nil {
 		return err
 	}
 	s.committed = true

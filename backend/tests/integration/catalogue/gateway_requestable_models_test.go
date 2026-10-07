@@ -593,7 +593,7 @@ func TestModelMarketplaceUsesResolvedGroupMappedPricingModel(t *testing.T) {
 		},
 	}
 	pricingConfigService := routingtestkit.PricingConfig(groupID, capability.PlatformOpenAI, pricingConfig)
-	billingService := billingtestkit.Calculator(0, nil, nil)
+	billingService := billingtestkit.Calculator(nil, nil)
 	gatewayService := newCatalogueFixture(&modelsListProviderRepoStub{byGroup: map[int64][]providercore.Record{groupID: {provider}}}, pricingConfigService, cataloguePriceResolver(pricingConfigService, billingService))
 	marketplace := newCatalogueMarketplace(nil, gatewayService, billingService)
 
@@ -629,7 +629,7 @@ func TestModelMarketplaceKeepsAmbiguousUpstreamModelUnpriced(t *testing.T) {
 		{ID: 72, Platform: capability.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"group-model": "upstream-b"}, "model_whitelist": []any{"upstream-b"}}},
 	}
 	pricingConfigService := routingtestkit.PricingConfig(groupID, capability.PlatformOpenAI, pricingConfig)
-	billingService := billingtestkit.Calculator(0, nil, nil)
+	billingService := billingtestkit.Calculator(nil, nil)
 	gatewayService := newCatalogueFixture(&modelsListProviderRepoStub{byGroup: map[int64][]providercore.Record{groupID: providers}}, pricingConfigService, cataloguePriceResolver(pricingConfigService, billingService))
 	marketplace := newCatalogueMarketplace(nil, gatewayService, billingService)
 
@@ -660,7 +660,7 @@ func TestModelMarketplaceQoderUsesResolvedRequestedPricingModelWithoutRemapping(
 		}},
 	}
 	pricingConfigService := routingtestkit.PricingConfig(groupID, capability.PlatformQoder, pricingConfig)
-	billingService := billingtestkit.Calculator(0, nil, nil)
+	billingService := billingtestkit.Calculator(nil, nil)
 	marketplace := newCatalogueMarketplace(nil, newCatalogueFixture(nil, pricingConfigService, cataloguePriceResolver(pricingConfigService, billingService)), billingService)
 
 	pricing := marketplace.RequestableModelPricing(context.Background(), &routing.Group{ID: groupID, RateMultiplier: 1}, routing.MarketplaceModelDef{ID: "client-model", PricingModel: "client-model"})

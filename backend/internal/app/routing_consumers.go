@@ -6,6 +6,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
@@ -69,5 +70,7 @@ func (b billingGroups) GetByIDLite(ctx context.Context, id int64) (*billing.Subs
 	if err != nil || g == nil {
 		return nil, err
 	}
-	return &billing.SubscriptionPlanGroup{ID: g.ID, Name: g.Name}, nil
+	// 订阅接口展示请求语言的分组文案。
+	display, _ := routing.GroupDisplay(g, locale.FromContext(ctx))
+	return &billing.SubscriptionPlanGroup{ID: g.ID, Name: display.DisplayName}, nil
 }

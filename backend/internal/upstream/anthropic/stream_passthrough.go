@@ -231,7 +231,9 @@ func StreamResponsePassthrough(
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-			if time.Since(lastRead) < streamInterval {
+			if elapsed := time.Since(lastRead); elapsed < streamInterval {
+				// 定时器先于最近读取时间创建时，首次触发可能略早，需要补齐剩余等待。
+				intervalTimer.Reset(streamInterval - elapsed)
 				continue
 			}
 			if clientDisconnected {

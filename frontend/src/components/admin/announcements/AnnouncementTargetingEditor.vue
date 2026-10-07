@@ -1,136 +1,109 @@
 <template>
-  <div class="rounded-surface border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/50">
-    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-      <div>
-        <div class="text-sm font-medium text-gray-900 dark:text-white">
-          {{ t('admin.announcements.form.targetingMode') }}
-        </div>
-        <div class="mt-1 text-xs text-gray-500 dark:text-dark-400">
-          {{ mode === 'all' ? t('admin.announcements.form.targetingAll') : t('admin.announcements.form.targetingCustom') }}
-        </div>
-      </div>
-
-      <div class="flex items-center gap-3">
-        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <input
-            type="radio"
-            name="announcement-targeting-mode"
-            value="all"
-            :checked="mode === 'all'"
-            @change="setMode('all')"
-            class="h-4 w-4"
-          />
-          {{ t('admin.announcements.form.targetingAll') }}
-        </label>
-        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <input
-            type="radio"
-            name="announcement-targeting-mode"
-            value="custom"
-            :checked="mode === 'custom'"
-            @change="setMode('custom')"
-            class="h-4 w-4"
-          />
-          {{ t('admin.announcements.form.targetingCustom') }}
-        </label>
-      </div>
-    </div>
-
-    <RuleListEditor
-      v-if="mode === 'custom'"
-      class="mt-4"
-      :items="anyOf"
-      :item-key="targetingRowKey"
-      :title="`OR (${anyOf.length}/50)`"
-      :add-label="t('admin.announcements.form.addOrGroup')"
-      :empty-text="`${t('admin.announcements.form.targetingCustom')}: ${t('admin.announcements.form.addOrGroup')}`"
-      :max="50"
-      :error="validationError"
-      variant="card"
-      :item-label="(index) => `${t('admin.announcements.form.targetingCustom')} #${index + 1}`"
-      test-id="announcement-groups"
-      @add="addOrGroup"
-      @remove="removeOrGroup"
+  <div>
+    <SettingRow
+      id="announcement-targeting"
+      :label="t('admin.announcements.form.targetingMode')"
+      :hint="mode === 'all' ? t('admin.announcements.form.targetingAllHint') : t('admin.announcements.form.targetingCustomHint')"
     >
-      <template #row="{ item: group, index: groupIndex }">
+      <SettingsSegmented
+        v-model="mode"
+        :options="modeOptions"
+        :ariaLabel="t('admin.announcements.form.targetingMode')"
+      />
+    </SettingRow>
+
+    <!-- 收起过程中冻结条件列表，过渡期间显示收起前的内容 -->
+    <Collapse :open="mode === 'custom'" unmount-on-hide>
+      <div class="pt-4">
         <RuleListEditor
-          :items="group.all_of || []"
+          :items="anyOf"
           :item-key="targetingRowKey"
-          :title="`AND (${group.all_of?.length || 0}/50)`"
-          :add-label="t('admin.announcements.form.addAndCondition')"
+          :add-label="t('admin.announcements.form.addOrGroup')"
+          add-placement="footer"
           :max="50"
+          :error="validationError"
           variant="card"
-          :item-label="(index) => t('common.ruleIndex', { index: index + 1 })"
-          :test-id="`announcement-conditions-${groupIndex}`"
-          @add="addAndCondition(groupIndex)"
-          @remove="removeAndCondition(groupIndex, $event)"
+          :item-label="(index) => t('admin.announcements.form.conditionGroupItem', { index: index + 1 })"
+          test-id="announcement-groups"
+          @add="addOrGroup"
+          @remove="removeOrGroup"
         >
-          <template #row="{ item: cond, index: condIndex }">
-            <div class="flex flex-col gap-3 md:flex-row md:items-end">
-              <div class="w-full md:w-52">
-                <label class="input-label">{{ t('admin.announcements.form.conditionType') }}</label>
-                <Select
-                  :model-value="cond.type"
-                  :options="conditionTypeOptions"
-                  @update:model-value="(v) => setConditionType(groupIndex, condIndex, v as any)"
-                />
-              </div>
-              <div v-if="cond.type === 'subscription'" class="min-w-0 flex-1">
-                <label class="input-label">{{ t('admin.announcements.form.selectPackages') }}</label>
-                <div class="grid max-h-40 grid-cols-1 gap-2 overflow-y-auto rounded-surface border border-gray-200 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-800 sm:grid-cols-2">
-                  <label
-                    v-for="plan in plans"
-                    :key="plan.id"
-                    class="flex cursor-pointer items-start gap-2 rounded-control px-2 py-1.5 transition-colors hover:bg-white dark:hover:bg-dark-700"
-                  >
-                    <input
-                      type="checkbox"
-                      :checked="subscriptionSelections[groupIndex]?.[condIndex]?.includes(plan.id)"
-                      class="mt-0.5 h-4 w-4 rounded-compact border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500"
-                      @change="togglePlanSelection(groupIndex, condIndex, plan.id, ($event.target as HTMLInputElement).checked)"
+          <template #row="{ item: group, index: groupIndex }">
+            <RuleListEditor
+              :items="group.all_of || []"
+              :item-key="targetingRowKey"
+              :add-label="t('admin.announcements.form.addAndCondition')"
+              add-placement="footer"
+              :max="50"
+              :test-id="`announcement-conditions-${groupIndex}`"
+              @add="addAndCondition(groupIndex)"
+              @remove="removeAndCondition(groupIndex, $event)"
+            >
+              <!-- 每个条件占一行：左侧选类型，右侧填套餐或余额阈值 -->
+              <template #row="{ item: cond, index: condIndex }">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-start">
+                  <div class="w-full shrink-0 sm:w-36">
+                    <Select
+                      :model-value="cond.type"
+                      :options="conditionTypeOptions"
+                      :aria-label="t('admin.announcements.form.conditionType')"
+                      @update:model-value="(v) => setConditionType(groupIndex, condIndex, v as any)"
                     />
-                    <div class="min-w-0">
-                      <div class="text-sm font-medium text-gray-900 dark:text-white">
-                        {{ plan.name }}
-                      </div>
-                      <div class="text-xs text-gray-500 dark:text-dark-400">
-                        {{ plan.validity_days }} {{ t('payment.days') }}
-                      </div>
-                    </div>
-                  </label>
+                  </div>
                   <div
-                    v-if="plans.length === 0"
-                    class="sm:col-span-2 py-2 text-center text-sm text-gray-500 dark:text-dark-400"
+                    v-if="cond.type === 'subscription'"
+                    class="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:min-h-9"
+                    role="group"
+                    :aria-label="t('admin.announcements.form.selectPackages')"
                   >
-                    {{ t('admin.announcements.form.selectPackages') }}
+                    <button
+                      v-for="plan in plans"
+                      :key="plan.id"
+                      type="button"
+                      :aria-pressed="isPlanSelected(groupIndex, condIndex, plan.id)"
+                      :class="['plan-chip', isPlanSelected(groupIndex, condIndex, plan.id) && 'plan-chip-active']"
+                      @click="togglePlanSelection(groupIndex, condIndex, plan.id, !isPlanSelected(groupIndex, condIndex, plan.id))"
+                    >
+                      <Icon
+                        v-if="isPlanSelected(groupIndex, condIndex, plan.id)"
+                        name="check"
+                        size="xs"
+                        :stroke-width="2.5"
+                        :animate-on-hover="false"
+                      />
+                      <span>{{ plan.name }}</span>
+                      <span class="plan-chip-meta">{{ plan.validity_days }}{{ t('payment.days') }}</span>
+                    </button>
+                    <span v-if="plans.length === 0" class="text-sm text-gray-500 dark:text-dark-400">
+                      {{ t('admin.announcements.form.noPlans') }}
+                    </span>
+                  </div>
+                  <div v-else class="flex min-w-0 flex-1 gap-2">
+                    <div class="w-24 shrink-0">
+                      <Select
+                        :model-value="cond.operator"
+                        :options="balanceOperatorOptions"
+                        :aria-label="t('admin.announcements.form.operator')"
+                        @update:model-value="(v) => setOperator(groupIndex, condIndex, v as any)"
+                      />
+                    </div>
+                    <input
+                      :value="String(cond.value ?? '')"
+                      type="number"
+                      step="any"
+                      class="input min-w-0 flex-1"
+                      :placeholder="t('admin.announcements.form.balanceValue')"
+                      :aria-label="t('admin.announcements.form.balanceValue')"
+                      @input="(e) => setBalanceValue(groupIndex, condIndex, (e.target as HTMLInputElement).value)"
+                    />
                   </div>
                 </div>
-              </div>
-              <div v-else class="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
-                <div class="w-full sm:w-44">
-                  <label class="input-label">{{ t('admin.announcements.form.operator') }}</label>
-                  <Select
-                    :model-value="cond.operator"
-                    :options="balanceOperatorOptions"
-                    @update:model-value="(v) => setOperator(groupIndex, condIndex, v as any)"
-                  />
-                </div>
-                <div class="w-full sm:flex-1">
-                  <label class="input-label">{{ t('admin.announcements.form.balanceValue') }}</label>
-                  <input
-                    :value="String(cond.value ?? '')"
-                    type="number"
-                    step="any"
-                    class="input"
-                    @input="(e) => setBalanceValue(groupIndex, condIndex, (e.target as HTMLInputElement).value)"
-                  />
-                </div>
-              </div>
-            </div>
+              </template>
+            </RuleListEditor>
           </template>
         </RuleListEditor>
-      </template>
-    </RuleListEditor>
+      </div>
+    </Collapse>
   </div>
 </template>
 
@@ -146,8 +119,12 @@ import type {
   SubscriptionPlan
 } from '@/types'
 
+import Icon from '@/components/icons/Icon.vue'
 import Select from '@/components/common/Select.vue'
 import RuleListEditor from '@/components/common/RuleListEditor.vue'
+import Collapse from '@/components/common/Collapse.vue'
+import SettingRow from '@/components/common/settings/SettingRow.vue'
+import SettingsSegmented, { type SettingsSegmentedOption } from '@/components/common/settings/SettingsSegmented.vue'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 
 const { t } = useI18n()
@@ -164,7 +141,16 @@ const emit = defineEmits<{
 const anyOf = computed(() => props.modelValue?.any_of ?? [])
 
 type Mode = 'all' | 'custom'
-const mode = computed<Mode>(() => (anyOf.value.length === 0 ? 'all' : 'custom'))
+// 条件组为空表示所有用户。切换模式时改写 targeting。
+const mode = computed<Mode>({
+  get: () => (anyOf.value.length === 0 ? 'all' : 'custom'),
+  set: setMode
+})
+
+const modeOptions = computed<SettingsSegmentedOption<Mode>[]>(() => [
+  { value: 'all', label: t('admin.announcements.form.targetingAll'), icon: 'users' },
+  { value: 'custom', label: t('admin.announcements.form.targetingCustom'), icon: 'filter' }
+])
 
 const conditionTypeOptions = computed(() => [
   { value: 'subscription', label: t('admin.announcements.form.conditionSubscription') },
@@ -317,6 +303,10 @@ function ensureSelectionPath(groupIndex: number, condIndex: number) {
   if (!subscriptionSelections[groupIndex][condIndex]) subscriptionSelections[groupIndex][condIndex] = []
 }
 
+function isPlanSelected(groupIndex: number, condIndex: number, planID: number): boolean {
+  return subscriptionSelections[groupIndex]?.[condIndex]?.includes(planID) ?? false
+}
+
 function togglePlanSelection(groupIndex: number, condIndex: number, planID: number, checked: boolean) {
   ensureSelectionPath(groupIndex, condIndex)
   const current = subscriptionSelections[groupIndex][condIndex] ?? []
@@ -398,7 +388,7 @@ const validationError = computed(() => {
 
     for (const c of allOf) {
       if (c.type === 'subscription') {
-        if (!c.plan_ids || c.plan_ids.length === 0) return t('admin.announcements.form.selectPackages')
+        if (!c.plan_ids || c.plan_ids.length === 0) return t('admin.announcements.form.packagesRequired')
       }
     }
   }
@@ -406,3 +396,26 @@ const validationError = computed(() => {
   return ''
 })
 </script>
+
+<style scoped>
+/* 套餐用可多选的胶囊，选中时带品牌色描边和淡底。 */
+.plan-chip {
+  @apply inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-sm;
+  @apply border-primary-900/10 bg-white text-gray-700 hover:border-black/20;
+  @apply dark:border-dark-600 dark:bg-dark-950 dark:text-dark-100 dark:hover:border-dark-500;
+  @apply transition-colors duration-fast;
+}
+
+.plan-chip-meta {
+  @apply text-xs text-gray-400 dark:text-dark-400;
+}
+
+.plan-chip.plan-chip-active {
+  @apply border-primary-500 bg-primary-500/8 text-primary-700;
+  @apply dark:border-primary-500 dark:bg-primary-500/15 dark:text-primary-400;
+}
+
+.plan-chip-active .plan-chip-meta {
+  @apply text-primary-600/70 dark:text-primary-400/70;
+}
+</style>

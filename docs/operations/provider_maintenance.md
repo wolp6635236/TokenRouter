@@ -61,7 +61,7 @@ app 直接构造、绑定并登记一个 `BackgroundRefreshService`，它的 `Re
 
 ### 导入、导出和同步
 
-提供商的文件导入导出由 `provider.Archive` 负责，HTTP 在 `provider/httpapi`。备份时，管理员可以明确选择导出原始凭据，影子提供商被排除，跨调用传递时使用独立的副本；导入时，先处理代理，再读取一次动态模板，然后逐项创建，最后执行隐私设置。`provider/transfer` 只负责文件格式和省略、null 的标记，模板的默认内容由设置用例提供。ID Token 只复用 OpenAI 的非认证解码，补齐缺失的提示，不作为身份验证。
+提供商的文件导入导出由 `provider.Archive` 负责，HTTP 在 `provider/httpapi`。管理员可以选择导出原始凭据，导出会排除影子提供商，跨调用传递时使用独立的副本。导入先处理代理，再按文件中的配置逐项创建提供商，最后执行隐私设置。`provider/transfer` 定义文件格式，省略和 null 字段按提供商创建规则处理。ID Token 通过 OpenAI 的非认证解码补齐缺失的身份提示。
 
 Codex session 文件的导入由 `provider.CodexImporter` 负责，HTTP 直接调用这个用例，纯解析和身份索引在 provider 内部维护。只有 access token 的，按 access 的摘要匹配；完整的 OAuth 按用户和提供商兼容匹配；Agent Identity 按团队隔离，并合并 runtime。索引和导入用的 map 在跨调用传递时复制。时钟和私钥验证都由外部注入，导入时的 JWT 解码只用来补齐提示，不承担认证；OAuth 批量创建使用相同的合并、保护字段和摘要规则，供应商交换由 upstream 执行。
 
@@ -155,7 +155,7 @@ OpenAI 的额度和重置，由 `provider.OpenAIQuotaService` 统一编排，app
 
 Codex 的邀请资格、规则和 credit 查询的汇总，由 `provider.CodexInviteResetService` 执行；资格接口失败时，只关闭邀请入口，已有的次数照常按顺序查询。提供商 provider 在准备时读取共享的 token、代理和专用的 TLS 和 UA，`upstream/openai.CodexInviteClient` 负责 HTTP 报文和关闭响应体。管理员路由直接绑定这个用例。
 
-OpenAI API Key 不会自动探测 Responses 能力；创建、编辑、批量更新和复制，都以管理员选择的上游协议为准，历史的探测字段已经清除，不参与调度。两种压缩也由各自的管理员开关决定，手动连接测试不更新能力配置，但额度观测、401 认证错误的记录和 429 限流的处理照常进行。提供商和 OAuth 导入模板共用同一套历史输入清理，读取模板时也不返回旧的探测状态或自动模式。API Key 的文字测试可以明确选择 Responses 或 Chat Completions，OAuth 使用 Codex Responses。HTTP continuation 是独立的开关，没有配置时关闭。
+OpenAI API Key 不会自动探测 Responses 能力；创建、编辑、批量更新和复制，都以管理员选择的上游协议为准，历史的探测字段已经清除，不参与调度。两种压缩也由各自的管理员开关决定，手动连接测试不更新能力配置，但额度观测、401 认证错误的记录和 429 限流的处理照常进行。提供商写入时统一清理历史探测状态，并将兼容的压缩开关值规范为开启或关闭。API Key 的文字测试可以明确选择 Responses 或 Chat Completions，OAuth 使用 Codex Responses。HTTP continuation 是独立的开关，没有配置时关闭。
 
 调度数据要保留原生协议集合、认证方式、两种压缩开关和 continuation 设置，配置变化时按提供商数据的失效机制传播。国产供应商不会异步写回旧的 OpenAI 文本路由镜像。Grok 的计费和媒体资格、Ollama Cloud 和各平台的额度探测，各自是独立的流程。
 

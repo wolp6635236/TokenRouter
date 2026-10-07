@@ -8,7 +8,7 @@
 - [订单与快照](#订单与快照)：修改下单和提供商配置时读取。
 - [支付状态机](#支付状态机)：修改回调、查单、取消或重试时读取。
 - [强制过期与失败退避](#forced_expiration_recovery)：上游状态无法确认时，管理员如何恢复、后台如何重试。
-- [回调安全](#回调安全)：修改 webhook 验证时读取。
+- [回调安全](#callback_security)：修改 webhook 验证时读取。
 - [履约与幂等](#履约与幂等)：修改充值和订阅发放时读取。
 - [退款](#退款)：修改退款资格和权益回收时读取。
 - [订阅生命周期](#订阅生命周期)：修改套餐、排队、额度窗口或撤销时读取。
@@ -36,13 +36,15 @@ billing 负责余额的原子调整、订阅、套餐和兑换规则；SQL 和 E
 订单持久化以下创建时的信息：
 
 - 应发权益金额 `amount`、实际支付金额 `pay_amount`、费率和固定费用，以及币种。
-- `order_type`；订阅订单还有 `plan_id` 和 `plan_snapshot`。
-- `provider_instance_id`、`provider_key` 和 `provider_snapshot`，回调、查单和退款都使用订单当时的实例。
+- `order_type`、订阅订单的 `plan_id` 和 `plan_snapshot`。套餐快照包括下单语言、当时展示的套餐名称和商品名称。
+- `provider_instance_id`、`provider_key` 和 `provider_snapshot`，回调、查单和退款使用订单当时的实例。`display_locale` 与 `display_subject` 固定渠道使用的商品描述。
 - 客户端来源、过期时间、外部 trade number、invoice 和 receipt 信息，以及每次状态变化的时间点。
 
 `payment.Runtime`、`ConfigService`、`ProviderBindings` 和选择器由 app 直接装配，HTTP 和后台使用同一组下单、查询、履约和退款实例。具体渠道的构造、密钥和环境信息留在渠道适配层。第一次读取实例失败时不标记为已加载；刷新时先构造完整的候选表再原子发布，整体读取失败时保留旧表并允许重试，单个配置损坏时跳过它。
 
 提供商实例决定支持的支付类型、模式、限额、排序和退款能力。删除或修改当前实例后，历史订单仍按原来的实例解释；只有解析旧订单时，才按保存的 provider key 或兼容注册表回退。
+
+套餐介绍、权益、支付帮助和自定义方式名称的翻译规则见[用户侧国际化](../interfaces/user_localization.md#content_owners)。
 
 ## 支付状态机
 
@@ -72,6 +74,7 @@ PENDING -> PROCESSING -> PAID -> RECHARGING -> COMPLETED
 
 只要还有处于 `EXPIRED` 状态的 `ORDER_FORCE_EXPIRED` 订单，它对应的 provider instance 可以禁用，但不能硬删除，因为回调验证和迟到付款的恢复还需要这个实例的历史凭据。订单离开过期状态后，这个限制自动解除。
 
+<a id="callback_security"></a>
 ## 回调安全
 
 Webhook 路由不使用用户 JWT，所以提供商验签、订单绑定和金额验证就是它的授权检查：
@@ -82,7 +85,13 @@ Webhook 路由不使用用户 JWT，所以提供商验签、订单绑定和金�
 4. 核对通知金额是有限的正数，并且与订单的 `pay_amount` 在币种容差内一致，然后才进入 `PAID`。
 5. 无关的事件，按提供商的要求返回成功响应；验签或处理失败时返回失败，让提供商重试。本地确实不存在的订单，可以确认接收以停止无意义的重试，同时记录告警。
 
-回调是主要的信号。主动 verify、查单和后台 reconcile 用于漏掉回调、弹窗支付或进程中断后的恢复，它们和回调调用同一套状态迁移和履约函数，加余额只发生在履约函数里。
+易支付的 MD5 协议直接拼接参数值，浏览器中的下单 URL 带有签名。`EasyPay.VerifyNotification` 在验签前检查字段白名单：`pid`、`trade_no`、`out_trade_no`、`type`、`name`、`money`、`trade_status`、`param`、`sign`、`sign_type`。出现白名单外的字段或重复字段时拒绝通知，空值字段也参与检查。
+
+字段名白名单需要配合字段内容校验：`pid`、`trade_no`、`out_trade_no`、`type`、`money`、`trade_status` 都需要非空，含 `&`、`=`、NUL、回车、换行或首尾空白时拒绝。`type` 使用和自定义支付方式配置相同的格式，接受小写字母、数字、下划线和连字符。`pid` 需要匹配验签实例，金额需要是有限的正数。商品名称和可选 `param` 支持自由文本。所有参数按协议解码一次后验签，入账前再与订单快照核对商户和金额。
+
+下单时，`CanonicalizeReturnURL` 校验用户提供的结果页地址，拒绝 URL 用户信息（userinfo）以及主机名中的 `&`、`=`。它使用校验后的 scheme、host 和固定 `/payment/result` 路径重建 URL。服务端随后生成 `order_id`、`out_trade_no`、`resume_token` 和 `status` 参数。结果页参数用于找回订单和展示页面，付款确认依赖回调验签或上游查单。
+
+回调是主要的信号。主动 verify、查单和后台 reconcile 用于漏掉回调、弹窗支付或进程中断后的恢复，它们和回调调用同一套状态迁移和履约函数，加余额只发生在履约函数里。易支付兼容平台携带白名单外的通知字段时，回调会被拒绝，订单可通过主动查单确认付款。
 
 ## 履约与幂等
 

@@ -896,6 +896,11 @@ affiliate: {
     selectDateRange: '选择日期范围',
     selectEndDate: '请选择结束日期',
     previousMonth: '上个月',
-    nextMonth: '下个月'
+    nextMonth: '下个月',
+    selectDateTime: '选择日期和时间',
+    now: '此刻',
+    hour: '时',
+    minute: '分',
+    clear: '清除'
   },
 }

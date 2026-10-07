@@ -1,5 +1,3 @@
-//go:build unit
-
 package pricingcontract
 
 import (
@@ -28,7 +26,7 @@ import (
 
 // TestMaxReasoningPricing_IntervalsAndBillingModes 验证核对区间、缓存桶和分组倍率的组合，并确保按次费用不受推理倍率影响。
 func TestMaxReasoningPricing_IntervalsAndBillingModes(t *testing.T) {
-	bs := newCalculator(nil, nil)
+	bs := newCalculator(nil)
 	resolver := billingtestkit.PriceResolver(nil, bs)
 	for _, factor := range []float64{1, 1.5, 3} {
 		resolved := &pricing.ResolvedPricing{
@@ -68,7 +66,7 @@ func TestMaxReasoningPricing_IntervalsAndBillingModes(t *testing.T) {
 
 // TestMaxReasoningPricing_ProviderStatsPriority 验证提供商自定义价独立于用户费用，模型价兜底按实际档位计价。
 func TestMaxReasoningPricing_ProviderStatsPriority(t *testing.T) {
-	bs := newCalculator(nil, nil)
+	bs := newCalculator(nil)
 	pricingConfig := &routingtestkit.Configuration{ID: 1, Status: billing.StatusActive, ProviderStatsPricingRules: []routing.ProviderStatsPricingRule{{
 		GroupIDs: []int64{10}, Pricing: []routing.ModelPricingEntry{{Models: []string{"claude-fable-5-1"}, InputPrice: testPtrFloat64(0.01)}},
 	}}}
@@ -88,7 +86,7 @@ func TestMaxReasoningPricing_ProviderStatsPriority(t *testing.T) {
 
 // TestMaxReasoningPricing_OpenAIUsageUsesFinalEffort 验证OpenAI 兼容转发的账单按结果档位计算，策略前的 max 仅用于审计。
 func TestMaxReasoningPricing_OpenAIUsageUsesFinalEffort(t *testing.T) {
-	bs := newCalculator(nil, nil)
+	bs := newCalculator(nil)
 	for _, resolver := range []*billing.PriceResolver{nil, billingtestkit.PriceResolver(nil, bs)} {
 		svc := completion.NewRecorder(completion.Dependencies{Calculator: bs, Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
 

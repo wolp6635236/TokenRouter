@@ -26,7 +26,7 @@ Login page for existing users to authenticate.
 </template>
 
 <script setup lang="ts">
-import { LoginView } from '@/views/auth'
+import LoginView from '@/views/auth/LoginView.vue'
 </script>
 ```
 
@@ -73,7 +73,7 @@ Registration page for new users to create accounts.
 </template>
 
 <script setup lang="ts">
-import { RegisterView } from '@/views/auth'
+import RegisterView from '@/views/auth/RegisterView.vue'
 </script>
 ```
 

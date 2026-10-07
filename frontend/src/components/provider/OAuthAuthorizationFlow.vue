@@ -23,7 +23,7 @@
         <SettingsSegmented
           v-if="methodOptions.length <= 4"
           v-model="inputMethod"
-          :aria-label="methodLabel || t('admin.providers.oauth.authMethod')"
+          :ariaLabel="methodLabel || t('admin.providers.oauth.authMethod')"
           :options="methodOptions"
         />
         <Select

@@ -1,5 +1,3 @@
-//go:build unit
-
 package pricing_test
 
 import (

@@ -208,7 +208,7 @@ function isRelativeMarkdownAsset(src: string): boolean {
     .every((part) => part !== '..' && !part.includes('\\'))
 }
 
-function buildPageImageUrl(slug: string, src: string): string {
+function buildPageImageUrl(slug: string, src: string, language: string): string {
   const trimmed = src.trim()
   const [pathPart, suffix = ''] = trimmed.split(/([?#].*)/, 2)
   const encodedPath = pathPart
@@ -216,26 +216,34 @@ function buildPageImageUrl(slug: string, src: string): string {
     .filter((part) => part && part !== '.')
     .map((part) => encodeURIComponent(part))
     .join('/')
-  return buildApiUrl(`/pages/${encodeURIComponent(slug)}/images/${encodedPath}${suffix}`)
+  const url = buildApiUrl(`/pages/${encodeURIComponent(slug)}/images/${encodedPath}${suffix}`)
+  const [base, fragment] = url.split('#', 2)
+  return language ? `${base}${base.includes('?') ? '&' : '?'}locale=${encodeURIComponent(language)}${fragment ? '#' + fragment : ''}` : url
 }
 
+let markdownGeneration = 0
+
 async function fetchAndRenderMarkdown(slug: string) {
+  const generation = ++markdownGeneration
   loading.value = true
   tocItems.value = []
   activeHeadingId.value = ''
   try {
     const resp = await fetch(buildApiUrl(`/pages/${encodeURIComponent(slug)}`), {
-      headers: authStore.token ? { Authorization: `Bearer ${authStore.token}` } : {},
+      headers: { 'Accept-Language': locale.value, ...(authStore.token ? { Authorization: `Bearer ${authStore.token}` } : {}) },
     })
+    if (generation !== markdownGeneration) return
     if (!resp.ok) {
       renderedHtml.value = `<p class="text-red-500">${t('customPage.markdownNotFound')}</p>`
       return
     }
     let raw = await resp.text()
+    if (generation !== markdownGeneration) return
+    const contentLanguage = resp.headers.get('Content-Language') || ''
 
     raw = raw.replace(
       /!\[([^\]]*)\]\(([^)]+)\)/g,
-      (match, alt, src) => isRelativeMarkdownAsset(src) ? `![${alt}](${buildPageImageUrl(slug, src)})` : match
+      (match, alt, src) => isRelativeMarkdownAsset(src) ? `![${alt}](${buildPageImageUrl(slug, src, contentLanguage)})` : match
     )
 
     const html = marked.parse(raw) as string
@@ -262,7 +270,7 @@ async function fetchAndRenderMarkdown(slug: string) {
   } catch {
     renderedHtml.value = `<p class="text-red-500">${t('customPage.markdownLoadFailed')}</p>`
   } finally {
-    loading.value = false
+    if (generation === markdownGeneration) loading.value = false
     await nextTick()
     await nextTick()
     injectCopyButtons()
@@ -328,7 +336,7 @@ function injectCopyButtons() {
   })
 }
 
-watch(markdownSlug, (slug) => {
+watch([markdownSlug, locale], ([slug]) => {
   if (slug) {
     fetchAndRenderMarkdown(slug)
   } else {

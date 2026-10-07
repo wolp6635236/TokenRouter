@@ -1,5 +1,3 @@
-//go:build unit
-
 package pricingcontract
 
 import (
@@ -50,7 +48,7 @@ func TestOpenAIMediaPricingUsesModifierOnlyCards(t *testing.T) {
 						factor *= 2
 					}
 					require.NoError(t, (routing.PricingConfigValidation{LoadLocation: pricingprovider.LoadPricingLocation}).PricingEntries([]routing.ModelPricingEntry{card}))
-					billing := newCalculator(nil, newCatalogFixture(catalogFixture{pricingData: map[string]*pricing.CatalogModelPricing{
+					billing := newCalculator(newCatalogFixture(catalogFixture{pricingData: map[string]*pricing.CatalogModelPricing{
 						model: {Mode: media, InputCostPerToken: 0.001, OutputCostPerToken: 0.002, OutputCostPerImageToken: 0.004},
 					}}))
 					group := &routing.Group{ID: 100}
@@ -60,7 +58,7 @@ func TestOpenAIMediaPricingUsesModifierOnlyCards(t *testing.T) {
 					svc := completion.NewRecorder(completion.Dependencies{Calculator: billing, Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 					key := &apikey.APIKey{GroupID: &group.ID, Group: group}
-					resolved := svc.ResolveOpenAIConfigPricing(context.Background(), model, gatewaycapture.ProjectCompletionKey(key))
+					resolved := svc.ResolveConfigPricing(context.Background(), model, gatewaycapture.ProjectCompletionKey(key))
 					require.NotNil(t, resolved)
 					require.Equal(t, pricing.PricingSourceCatalog, resolved.Source)
 					result := &forwardcore.OpenAIResult{Model: model, ReasoningEffort: &effort, ImageCount: 1}
@@ -92,7 +90,7 @@ func TestOpenAIMediaModifiersPreserveInheritedRequestBilling(t *testing.T) {
 				result = &forwardcore.OpenAIResult{Model: model, VideoCount: 2, VideoDurationSeconds: 8}
 				wantTotal, rate = 4, 0.8
 			}
-			billing := newCalculator(nil, nil)
+			billing := newCalculator(nil)
 			resolver := billingtestkit.ResolverWithCards(t, billing, []routing.ModelPricingEntry{{Models: []string{model}, BillingMode: mode, PerRequestPrice: testPtrFloat64(0.25)}})
 			group := &routing.Group{ID: 100}
 			svc := completion.NewRecorder(completion.Dependencies{Calculator: billing, Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
@@ -117,15 +115,15 @@ func TestCNProviderPricingModifiersDoNotCountAsExplicitPrices(t *testing.T) {
 				group := &routing.Group{ID: 100}
 				pricingConfigCards := []routing.ModelPricingEntry{card}
 
-				resolver := billingtestkit.ResolverWithCards(t, newCalculator(nil, nil), pricingConfigCards)
+				resolver := billingtestkit.ResolverWithCards(t, newCalculator(nil), pricingConfigCards)
 				svc := completion.NewRecorder(completion.Dependencies{Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 				key := &apikey.APIKey{Group: group}
-				require.NotNil(t, svc.ResolveOpenAIConfigPricing(context.Background(), model, gatewaycapture.ProjectCompletionKey(key)))
+				require.NotNil(t, svc.ResolveConfigPricing(context.Background(), model, gatewaycapture.ProjectCompletionKey(key)))
 				require.Empty(t, svc.FilterCNProviderBillingModelCandidates(context.Background(), gatewaycapture.ProjectCompletionProvider(gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), gatewaycapture.ProjectCompletionKey(key), []string{model}))
 				// 显式零价仍是管理员的定价合同，应允许候选进入结算。
-				resolver = billingtestkit.SharedPriceResolver(newCalculator(nil, nil), group.ID, pricing.DefaultBillingSettings(), []routing.ModelPricingEntry{{Models: []string{model}, InputPrice: testPtrFloat64(0)}})
-				svc = completion.NewRecorder(completion.Dependencies{Calculator: newCalculator(nil, nil), Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
+				resolver = billingtestkit.SharedPriceResolver(newCalculator(nil), group.ID, pricing.DefaultBillingSettings(), []routing.ModelPricingEntry{{Models: []string{model}, InputPrice: testPtrFloat64(0)}})
+				svc = completion.NewRecorder(completion.Dependencies{Calculator: newCalculator(nil), Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
 				require.Equal(t, []string{model}, svc.FilterCNProviderBillingModelCandidates(context.Background(), gatewaycapture.ProjectCompletionProvider(gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), gatewaycapture.ProjectCompletionKey(key), []string{model}))
 			})
 		}

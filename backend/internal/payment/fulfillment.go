@@ -472,7 +472,9 @@ func (s *Fulfillment) SendBalanceRechargeSuccessNotification(ctx context.Context
 			currentBalance = fmt.Sprintf("%.2f", user.Balance)
 		}
 	}
+	language, _ := o.ProviderSnapshot["display_locale"].(string)
 	return s.runtime.Notify(ctx, PaymentNotice{
+		Locale:         language,
 		Event:          "balance.recharge_success",
 		RecipientEmail: o.UserEmail,
 		RecipientName:  FirstNonEmpty(o.UserName, o.UserEmail),
@@ -506,7 +508,9 @@ func (s *Fulfillment) SendSubscriptionPurchaseSuccessNotification(ctx context.Co
 			}
 		}
 	}
+	language, _ := o.ProviderSnapshot["display_locale"].(string)
 	return s.runtime.Notify(ctx, PaymentNotice{
+		Locale:         language,
 		Event:          "subscription.purchase_success",
 		RecipientEmail: o.UserEmail,
 		RecipientName:  FirstNonEmpty(o.UserName, o.UserEmail),

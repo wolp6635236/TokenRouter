@@ -1,5 +1,3 @@
-//go:build unit
-
 package searchtools_test
 
 import (

@@ -28,6 +28,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAnnouncementStore } from '@/stores/announcements'
@@ -78,6 +79,8 @@ const refreshAll = async () => {
     refreshing.value = false
   }
 }
+
+useLocaleRefresh(() => Promise.all([usageState.loadFilterOptions(), usageState.load()]))
 
 // revealChart 在热力图选中某天后，把趋势图滚动到可见区域。
 const revealChart = () => {

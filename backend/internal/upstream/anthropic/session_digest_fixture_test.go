@@ -1,5 +1,3 @@
-//go:build unit
-
 package anthropic_test
 
 // splitChain 辅助函数：按 "-" 分割摘要链

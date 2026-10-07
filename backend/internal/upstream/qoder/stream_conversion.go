@@ -174,29 +174,6 @@ func ReadQoderSSEEventsContext(ctx context.Context, resp *http.Response, keepali
 	return events, nil
 }
 
-func QoderNonStreamingKeepalive(c *upstream.OutputContext) func() error {
-	if c == nil || c.Writer == nil {
-		return nil
-	}
-	header := c.Writer.Header()
-	header.Set("Content-Type", "application/json; charset=utf-8")
-	header.Set("Cache-Control", "no-cache")
-	header.Set("Connection", "keep-alive")
-	header.Set("X-Accel-Buffering", "no")
-	return func() error {
-		if !c.Writer.Written() {
-			c.Writer.WriteHeader(http.StatusOK)
-		}
-		// 非流式客户端会把最终 body 当作 JSON 解析；空白字符可以保持连接活跃，
-		// 同时不会破坏 JSON 文档。
-		_, err := io.WriteString(c.Writer, "\n")
-		if flusher, ok := c.Writer.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		return err
-	}
-}
-
 func WriteQoderStreamKeepalive(c *upstream.OutputContext, started bool) error {
 	if c == nil || c.Writer == nil || !started {
 		return nil

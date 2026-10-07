@@ -51,7 +51,7 @@ describe('属性管理页面', () => {
     await wrapper.get('#attribute-form').trigger('submit')
     await flushPromises()
     expect(modelAttributesAPI.save).toHaveBeenCalledWith(expect.objectContaining({
-      rules: [{ models: ['upstream'], attributes: { tool_call: false } }, { models: ['vendor/known'], attributes }],
+      rules: [expect.objectContaining({ models: ['upstream'], attributes: { tool_call: false } }), expect.objectContaining({ id: expect.any(String), models: ['vendor/known'], attributes })],
     }))
     wrapper.unmount()
   })
@@ -85,7 +85,7 @@ describe('属性管理页面', () => {
     expect(modelAttributesAPI.getModelDefaultAttributes).toHaveBeenCalledTimes(2)
     const fields = wrapper.findAllComponents(ModelAttributesFields)[1]!
     await fields.get('input').setValue('Manual')
-    expect(fields.props('modelValue')).toEqual({ display_name: 'Manual' })
+    expect(fields.props('modelValue')).toMatchObject({ display_name: 'Manual', display_name_localization: { source: 'Manual' } })
     wrapper.unmount()
   })
 
@@ -109,7 +109,7 @@ describe('属性管理页面', () => {
       resolve({ display_name: 'Stale', tool_call: true })
       await flushPromises()
 
-      expect(rule.attributes).toEqual(action === '手动编辑' ? { display_name: 'Manual' } : {})
+      expect(rule.attributes).toMatchObject(action === '手动编辑' ? { display_name: 'Manual', display_name_localization: { source: 'Manual' } } : {})
       wrapper.unmount()
     },
   )

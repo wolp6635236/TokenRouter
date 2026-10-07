@@ -1,5 +1,3 @@
-//go:build unit
-
 package creative_test
 
 import (
@@ -56,7 +54,7 @@ func (r *creativePricingConfigFixture) GetGroupPlatforms(context.Context, []int6
 func newResolverWithPricingConfig(t *testing.T, cards []routing.ModelPricingEntry) *billing.PriceResolver {
 	t.Helper()
 	platform := capability.PlatformAnthropic
-	calculator := billingtestkit.Calculator(0, nil, map[string]*pricing.ModelPricing{"claude-sonnet-4": {InputPricePerToken: 3e-6, OutputPricePerToken: 15e-6, CacheCreationPricePerToken: 3.75e-6, CacheReadPricePerToken: 0.3e-6, SupportsCacheBreakdown: false}})
+	calculator := billingtestkit.Calculator(nil, map[string]*pricing.ModelPricing{"claude-sonnet-4": {InputPricePerToken: 3e-6, OutputPricePerToken: 15e-6, CacheCreationPricePerToken: 3.75e-6, CacheReadPricePerToken: 0.3e-6, SupportsCacheBreakdown: false}})
 	pricingConfigs := routing.NewPricingConfigService(&creativePricingConfigFixture{cards: cards, platform: platform}, nil, routing.PricingConfigOptions{Warn: slog.Warn, Now: time.Now, LoadLocation: pricingprovider.LoadPricingLocation})
 	return billing.NewPriceResolver(pricingConfigs, calculator, modelidentity.Identity, func(model string, err error) {
 		slog.Debug("failed to get model pricing from model catalog, using fallback", "model", model, "error", err)

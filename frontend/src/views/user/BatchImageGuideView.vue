@@ -794,6 +794,8 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
+import { getLocale } from '@/i18n'
 import TableSkeletonBody from '@/components/common/TableSkeletonBody.vue'
 import MotionTransition from '@/components/common/MotionTransition.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
@@ -1008,7 +1010,7 @@ const createApiKeyOptions = computed<SelectOption[]>(() => [
   },
   ...geminiApiKeys.value.map(key => ({
     value: key.id,
-    label: `${key.name} · ${key.group?.name || 'Gemini'}`,
+    label: `${key.name} · ${(key.group?.display_name || key.group?.name) || 'Gemini'}`,
   })),
 ])
 
@@ -1108,7 +1110,7 @@ const endpointBase = computed(() => {
   const configured = appStore.apiBaseUrl?.trim()
   if (configured) return configured.replace(/\/+$/, '')
   if (typeof window !== 'undefined') return window.location.origin.replace(/\/+$/, '')
-  return '<你的 TokenRouter API 端点>'
+  return isZhLocale() ? '<你的 TokenRouter API 端点>' : '<Your TokenRouter API endpoint>'
 })
 
 const selectedModelReferenceLimit = computed(() => referenceImageLimitForModel(form.model))
@@ -1142,7 +1144,60 @@ function referenceImageLimitForModel(model: string) {
   return 0
 }
 
-const agentInstruction = computed(() => `---
+// 下载的操作说明按界面语言生成，接口字段保持机器可读格式。
+const agentInstruction = computed(() => !isZhLocale() ? `---
+name: tokenrouter-batch-image
+description: Use for Gemini or Vertex batch image generation, result downloads, and retries of failed images.
+---
+
+Build the batch from the user's conversation, attached files, or directory. Ask for missing decisions about the task or output directory. Use this endpoint:
+${endpointBase.value}
+
+Preparation:
+1. Preserve every prompt in full and assign stable custom_id values such as img_001.
+2. Infer a task name from the request or use the current timestamp.
+3. Use the requested output directory; ask for it when missing.
+4. Sum output_count across all items before submitting. Each batch allows up to 200 output images. Split larger requests into separate batches.
+5. Associate reference images with the intended items. Gemini 2.5 Flash Image supports up to 3 references per item; Gemini 3 Pro Image supports up to 14. References are input attachments. The backend counts attachments again for every output_count repetition when applying its attachment limit.
+6. Prefer gs:// file_uri references or split batches when reference images are large or repeatedly reused. Each repetition consumes upstream input tokens.
+7. Fetch available keys and models. Use the requested model when supported by the chosen key, otherwise the key's default or first available model. Select by user-visible key and model information.
+8. Submit, poll, and download through the API.
+
+API endpoints:
+- Models: GET ${joinEndpointPath(endpointBase.value, '/v1/images/batches/models')}
+- Submit: POST ${joinEndpointPath(endpointBase.value, '/v1/images/batches')}
+- Status: GET ${joinEndpointPath(endpointBase.value, '/v1/images/batches/{id}')}
+- Items: GET ${joinEndpointPath(endpointBase.value, '/v1/images/batches/{id}/items')}
+- Download: GET ${joinEndpointPath(endpointBase.value, '/v1/images/batches/{id}/download')}
+- Cancel: POST ${joinEndpointPath(endpointBase.value, '/v1/images/batches/{id}/cancel')}
+
+Authenticate with Authorization: Bearer <API key>. Use Accept-Language: en.
+Example request:
+{
+  "model": "<available model>",
+  "task_name": "<task name or timestamp>",
+  "items": [{
+    "custom_id": "img_001",
+    "prompt": "<complete prompt>",
+    "output_count": 1,
+    "reference_images": [{ "id": "face", "type": "subject", "mime_type": "image/png", "data": "<base64 without data URL prefix>" }]
+  }]
+}
+
+Execution and recovery:
+- Keep API keys out of repository files, logs, recovery records, and replies.
+- Keep reference image base64 out of logs and replies. Save request JSON containing base64 in the user's output directory and exclude it from commits. Recovery records identify reference files, their purpose and count, and the request file path.
+- output_count defaults to 1 and supports up to 4 per item. The system expands each repetition into a separate item. Check the 200-output limit before submitting.
+- User billing follows successful output image count. References create upstream input token and temporary storage costs for each repetition. Displayed reserved and settled amounts follow output image count.
+- After submission, immediately write batch-image-resume.json in the output directory with endpoint, task_name, batch_id, model, output_dir, request_file, submitted_at, last_status, status_url, items_url, download_url, prompt_count, expected_output_count, and the custom_id/prompt/reference details needed for failed-item retries.
+- After every status query, update last_checked_at, last_status, success and failure counts, charged amount, and a failure summary. Resume from this record after interruption.
+- Wait about 20 to 30 seconds before the first query. Poll queued batches every 60 to 120 seconds. After three consecutive queued results, stop active polling, tell the user the batch is queued, and keep the recovery record for later resumption.
+- Poll running batches about every 60 seconds, or less frequently for large batches or a busy server. Poll processing_results every 20 to 45 seconds.
+- On completion, report task name, batch ID, success and failure counts, charged amount, and output path.
+- Download successful images. For failures, show custom_id, error code, error source, and a short explanation. Retry failed items only. If their original prompts are missing, ask the user to provide them.
+- Before cancellation, explain that indexed successful images remain chargeable and the remaining reserved balance is released.
+- Load image previews on demand.
+` : `---
 name: tokenrouter-batch-image
 description: 当用户希望用 Gemini/Vertex 批量生成图片、批量跑提示词、下载批量生图结果、重试失败图片时使用。
 ---
@@ -1314,6 +1369,8 @@ function readFileAsBase64(file: File): Promise<string> {
     reader.readAsDataURL(file)
   })
 }
+
+useLocaleRefresh(loadApiKeys)
 
 async function loadApiKeys() {
   loadingKeys.value = true
@@ -2668,12 +2725,12 @@ function batchImageErrorMessage(error: any, fallback: string) {
 
 function formatDate(timestamp: number) {
   if (!timestamp) return ''
-  return new Date(timestamp * 1000).toLocaleString()
+  return new Date(timestamp * 1000).toLocaleString(getLocale())
 }
 
 function defaultTaskName(timestamp?: number) {
   const date = timestamp ? new Date(timestamp * 1000) : new Date()
-  return date.toLocaleString()
+  return date.toLocaleString(getLocale())
 }
 
 onMounted(() => {

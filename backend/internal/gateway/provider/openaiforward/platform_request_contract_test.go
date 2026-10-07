@@ -1,5 +1,3 @@
-//go:build unit
-
 package openaiforward_test
 
 import (

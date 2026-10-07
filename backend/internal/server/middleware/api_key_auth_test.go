@@ -1,5 +1,3 @@
-//go:build unit
-
 package middleware
 
 import (
@@ -1230,7 +1228,7 @@ func TestAPIKeyAuthGoogleRejectsExclusiveGroupWhenUserNoLongerAllowed(t *testing
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusForbidden, w.Code)
-	require.Contains(t, w.Body.String(), "API Key 所属专属分组不再允许当前用户使用")
+	require.Contains(t, w.Body.String(), "You do not have access to the selected group.")
 	require.True(t, markedBusinessLimited)
 }
 
@@ -1795,7 +1793,7 @@ func TestAPIKeyAuthRemovedBillingPathUsesNormalQuotaChecks(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusTooManyRequests, w.Code)
-	requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+	requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "The API key quota has been exhausted.")
 }
 
 func TestAPIKeyAuthUsageStillTouchesLastUsed(t *testing.T) {
@@ -1946,7 +1944,7 @@ func TestAPIKeyAuthOpenAIQuotaErrorFormat(t *testing.T) {
 		} `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
-	require.Equal(t, "API key 额度已用完", response.Error.Message)
+	require.Equal(t, "The API key quota has been exhausted.", response.Error.Message)
 	require.Equal(t, "insufficient_quota", response.Error.Type)
 	require.Nil(t, response.Error.Param)
 	require.Equal(t, "insufficient_quota", response.Error.Code)
@@ -1977,7 +1975,7 @@ func TestAPIKeyAuthQuotaErrorKeepsLegacyFormatOutsideResponses(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusTooManyRequests, w.Code)
-	requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+	requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "The API key quota has been exhausted.")
 }
 
 func TestAPIKeyAuthAllowsBatchManagementAfterQuotaExhaustion(t *testing.T) {
@@ -2041,7 +2039,7 @@ func TestAPIKeyAuthCompositeModelListStillChecksQuota(t *testing.T) {
 		router.ServeHTTP(w, req)
 
 		require.Equal(t, http.StatusTooManyRequests, w.Code, path)
-		requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+		requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "The API key quota has been exhausted.")
 	}
 }
 

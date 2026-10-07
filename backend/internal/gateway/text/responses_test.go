@@ -17,6 +17,7 @@ type responseFixture struct {
 	skipFirst                                                            bool
 	selected, forwarded, completed, switched, waited, partial, exhausted int
 	providers                                                            []int64
+	failures, failed, successes                                          int
 }
 
 func (*responseFixture) Context() context.Context { return context.Background() }
@@ -50,10 +51,10 @@ func (p *responseFixture) RetryWait(*AttemptFailure, int, int, time.Duration) { 
 func (p *responseFixture) Exhausted(*AttemptFailure)                          { p.exhausted++ }
 func (p *responseFixture) Switched()                                          { p.switched++ }
 func (*responseFixture) Switching(*AttemptFailure, int, int)                  {}
-func (*responseFixture) OtherFailure(error)                                   {}
-func (*responseFixture) Failed()                                              {}
+func (p *responseFixture) OtherFailure(error)                                 { p.failures++ }
+func (p *responseFixture) Failed()                                            { p.failed++ }
 func (p *responseFixture) Complete()                                          { p.completed++ }
-func (*responseFixture) Success()                                             {}
+func (p *responseFixture) Success()                                           { p.successes++ }
 func (*responseFixture) Completed(int)                                        {}
 
 func TestResponsesUnsupportedContinuationSkipsWithoutSwitchBudget(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/redeemcode"
 	"github.com/TokenFlux/TokenRouter/ent/subscriptionplan"
 	"github.com/TokenFlux/TokenRouter/ent/usersubscription"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
 // SubscriptionPlanUpdate is the builder for updating SubscriptionPlan entities.
@@ -28,6 +29,26 @@ type SubscriptionPlanUpdate struct {
 // Where appends a list predicates to the SubscriptionPlanUpdate builder.
 func (_u *SubscriptionPlanUpdate) Where(ps ...predicate.SubscriptionPlan) *SubscriptionPlanUpdate {
 	_u.mutation.Where(ps...)
+	return _u
+}
+
+// SetLocalization sets the "localization" field.
+func (_u *SubscriptionPlanUpdate) SetLocalization(v billing.PlanLocalization) *SubscriptionPlanUpdate {
+	_u.mutation.SetLocalization(v)
+	return _u
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_u *SubscriptionPlanUpdate) SetNillableLocalization(v *billing.PlanLocalization) *SubscriptionPlanUpdate {
+	if v != nil {
+		_u.SetLocalization(*v)
+	}
+	return _u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (_u *SubscriptionPlanUpdate) ClearLocalization() *SubscriptionPlanUpdate {
+	_u.mutation.ClearLocalization()
 	return _u
 }
 
@@ -474,6 +495,12 @@ func (_u *SubscriptionPlanUpdate) sqlSave(ctx context.Context) (_node int, err e
 			}
 		}
 	}
+	if value, ok := _u.mutation.Localization(); ok {
+		_spec.SetField(subscriptionplan.FieldLocalization, field.TypeJSON, value)
+	}
+	if _u.mutation.LocalizationCleared() {
+		_spec.ClearField(subscriptionplan.FieldLocalization, field.TypeJSON)
+	}
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(subscriptionplan.FieldName, field.TypeString, value)
 	}
@@ -671,6 +698,26 @@ type SubscriptionPlanUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *SubscriptionPlanMutation
+}
+
+// SetLocalization sets the "localization" field.
+func (_u *SubscriptionPlanUpdateOne) SetLocalization(v billing.PlanLocalization) *SubscriptionPlanUpdateOne {
+	_u.mutation.SetLocalization(v)
+	return _u
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_u *SubscriptionPlanUpdateOne) SetNillableLocalization(v *billing.PlanLocalization) *SubscriptionPlanUpdateOne {
+	if v != nil {
+		_u.SetLocalization(*v)
+	}
+	return _u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (_u *SubscriptionPlanUpdateOne) ClearLocalization() *SubscriptionPlanUpdateOne {
+	_u.mutation.ClearLocalization()
+	return _u
 }
 
 // SetName sets the "name" field.
@@ -1145,6 +1192,12 @@ func (_u *SubscriptionPlanUpdateOne) sqlSave(ctx context.Context) (_node *Subscr
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.Localization(); ok {
+		_spec.SetField(subscriptionplan.FieldLocalization, field.TypeJSON, value)
+	}
+	if _u.mutation.LocalizationCleared() {
+		_spec.ClearField(subscriptionplan.FieldLocalization, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(subscriptionplan.FieldName, field.TypeString, value)

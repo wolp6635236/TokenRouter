@@ -6,12 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/apikey/httpapi/dto"
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
@@ -25,7 +24,6 @@ type APIKeyHandler[G any] struct {
 
 	apiKeyService        *apikey.APIKeyService
 	groupCapacityService GroupCapacityReader
-	groupModels          func(context.Context, int64) ([]string, map[string][]protocol.ProtocolID)
 	groupPresentation    func(context.Context, *routing.Group, *accessview.GroupCapacitySummary) *G
 	presentGroup         func(*routing.Group, *accessview.GroupCapacitySummary) *G
 }
@@ -37,11 +35,6 @@ func NewAPIKeyHandler[G any](keys *apikey.APIKeyService, present func(*routing.G
 	return &APIKeyHandler[G]{apiKeyService: keys, presentGroup: present}
 }
 
-// SetGroupModelsReader 设置已授权控制台分组的模型目录读取函数。
-func (h *APIKeyHandler[G]) SetGroupModelsReader(read func(context.Context, int64) ([]string, map[string][]protocol.ProtocolID)) {
-	h.groupModels = read
-}
-
 // SetGroupPresentation 设置已授权控制台查询的分组展示函数。
 func (h *APIKeyHandler[G]) SetGroupPresentation(present func(context.Context, *routing.Group, *accessview.GroupCapacitySummary) *G) {
 	h.groupPresentation = present
@@ -49,8 +42,16 @@ func (h *APIKeyHandler[G]) SetGroupPresentation(present func(context.Context, *r
 
 func (h *APIKeyHandler[G]) SetGroupCapacityService(c GroupCapacityReader) { h.groupCapacityService = c }
 
-func (h *APIKeyHandler[G]) keyResponse(k *apikey.APIKey) *dto.APIKey[G] {
-	return dto.APIKeyFromKey(k, func(g *routing.Group) *G { return h.presentGroup(g, nil) })
+func (h *APIKeyHandler[G]) keyResponse(k *apikey.APIKey, language string) *dto.APIKey[G] {
+	return dto.APIKeyFromKey(k, func(g *routing.Group) *G {
+		if g != nil {
+			copy := routing.CloneGroup(g)
+			display, _ := routing.GroupDisplay(g, language)
+			copy.DisplayName, copy.Description = display.DisplayName, display.Description
+			return h.presentGroup(copy, nil)
+		}
+		return h.presentGroup(g, nil)
+	})
 }
 
 // CreateAPIKeyRequest represents the create API key request payload
@@ -210,7 +211,7 @@ func (h *APIKeyHandler[G]) List(c *gin.Context) {
 
 	out := make([]dto.APIKey[G], 0, len(keys))
 	for i := range keys {
-		out = append(out, *h.keyResponse(&keys[i]))
+		out = append(out, *h.keyResponse(&keys[i], locale.FromContext(c.Request.Context())))
 	}
 	response.Paginated(c, out, result.Total, page, pageSize)
 }
@@ -242,7 +243,7 @@ func (h *APIKeyHandler[G]) GetByID(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, h.keyResponse(key))
+	response.Success(c, h.keyResponse(key, locale.FromContext(c.Request.Context())))
 }
 
 // Create handles creating a new API key
@@ -300,7 +301,7 @@ func (h *APIKeyHandler[G]) Create(c *gin.Context) {
 		if err != nil {
 			return nil, err
 		}
-		return h.keyResponse(key), nil
+		return h.keyResponse(key, locale.FromContext(c.Request.Context())), nil
 	})
 }
 
@@ -377,7 +378,7 @@ func (h *APIKeyHandler[G]) Update(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, h.keyResponse(key))
+	response.Success(c, h.keyResponse(key, locale.FromContext(c.Request.Context())))
 }
 
 // RotateCredential 轮换当前用户的 API Key 凭据并返回原记录的新凭据。
@@ -397,7 +398,7 @@ func (h *APIKeyHandler[G]) RotateCredential(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, h.keyResponse(key))
+	response.Success(c, h.keyResponse(key, locale.FromContext(c.Request.Context())))
 }
 
 // Delete handles deleting an API key
@@ -460,9 +461,6 @@ func (h *APIKeyHandler[G]) GetAvailableGroups(c *gin.Context) {
 		var capacity *accessview.GroupCapacitySummary
 		if value, ok := capacityMap[groups[i].ID]; ok {
 			capacity = &value
-		}
-		if h.groupModels != nil {
-			groups[i].Models, groups[i].ModelProtocols = h.groupModels(c.Request.Context(), groups[i].ID)
 		}
 		groupDTO := h.presentGroup(&groups[i], capacity)
 		if h.groupPresentation != nil {

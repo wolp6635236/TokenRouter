@@ -9,11 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 type ModelMarketplaceGroup struct {
+	SearchTerms []string
+	Resolution  locale.Resolution
 	ID          int64
 	Name        string
 	Description string
@@ -100,10 +104,12 @@ func (s *Marketplace) ListPublic(ctx context.Context, options MarketplaceListOpt
 			officialPriceRatio = discountConfig.officialPriceRatio(group.RateMultiplier)
 			officialPriceRMBEquivalent = discountConfig.officialPriceRMBEquivalent(group.RateMultiplier)
 		}
+		display, resolution := GroupDisplay(group, locale.FromContext(ctx))
 		out = append(out, ModelMarketplaceGroup{
+			SearchTerms: GroupSearchTexts(group), Resolution: resolution,
 			ID:          group.ID,
-			Name:        group.Name,
-			Description: group.Description,
+			Name:        display.DisplayName,
+			Description: display.Description,
 
 			DisplayBrand:               marketplaceGroupDisplayBrand(group),
 			SortOrder:                  group.SortOrder,

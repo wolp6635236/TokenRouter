@@ -891,6 +891,11 @@ affiliate: {
     selectDateRange: 'Select date range',
     selectEndDate: 'Select an end date',
     previousMonth: 'Previous month',
-    nextMonth: 'Next month'
+    nextMonth: 'Next month',
+    selectDateTime: 'Select date and time',
+    now: 'Now',
+    hour: 'Hour',
+    minute: 'Minute',
+    clear: 'Clear'
   },
 }

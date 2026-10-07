@@ -135,6 +135,16 @@ func UpdatedAt(v time.Time) predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldEQ(FieldUpdatedAt, v))
 }
 
+// LocalizationIsNil applies the IsNil predicate on the "localization" field.
+func LocalizationIsNil() predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldIsNull(FieldLocalization))
+}
+
+// LocalizationNotNil applies the NotNil predicate on the "localization" field.
+func LocalizationNotNil() predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldNotNull(FieldLocalization))
+}
+
 // NameEQ applies the EQ predicate on the "name" field.
 func NameEQ(v string) predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldEQ(FieldName, v))

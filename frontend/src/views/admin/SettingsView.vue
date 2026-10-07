@@ -322,13 +322,6 @@
             </SettingsSection>
           </SettingsCard>
 
-          <div
-            v-show="activeGatewaySection === 'openai'" v-content-reveal="activeGatewaySection === 'openai'"
-            data-testid="gateway-card-openai-oauth-defaults"
-          >
-            <OpenAIOAuthImportDefaultsSettings />
-          </div>
-
           <!-- 限流冷却（429） -->
           <SettingsCard
             v-show="activeGatewaySection === 'general'" v-content-reveal="activeGatewaySection === 'general'"
@@ -562,16 +555,8 @@
 
                 <!-- 动作为拦截时填写返回给客户端的错误信息。 -->
                 <div v-if="rule.action === 'block'">
-                  <label :for="`beta-policy-${rule.beta_token}-error`" class="input-label">
-                    {{ t("admin.settings.betaPolicy.errorMessage") }}
-                  </label>
-                  <input
-                    :id="`beta-policy-${rule.beta_token}-error`"
-                    v-model="rule.error_message"
-                    type="text"
-                    class="input"
-                    :placeholder="t('admin.settings.betaPolicy.errorMessagePlaceholder')"
-                  />
+                  <label class="input-label">{{ t('admin.settings.betaPolicy.errorMessage') }}</label>
+                  <input v-model="rule.error_message" type="text" class="input" :placeholder="t('admin.settings.betaPolicy.errorMessagePlaceholder')" />
                   <p class="input-hint">
                     {{ t("admin.settings.betaPolicy.errorMessageHint") }}
                   </p>
@@ -645,13 +630,8 @@
                     {{ t("admin.settings.betaPolicy.fallbackActionHint") }}
                   </p>
                   <div v-if="rule.fallback_action === 'block'" class="mt-2">
-                    <input
-                      v-model="rule.fallback_error_message"
-                      type="text"
-                      class="input"
-                      :aria-label="t('admin.settings.betaPolicy.errorMessage')"
-                      :placeholder="t('admin.settings.betaPolicy.fallbackErrorMessagePlaceholder')"
-                    />
+                    <label class="input-label">{{ t('admin.settings.betaPolicy.errorMessage') }}</label>
+                    <input v-model="rule.fallback_error_message" type="text" class="input" :placeholder="t('admin.settings.betaPolicy.fallbackErrorMessagePlaceholder')" />
                     <p class="input-hint">
                       {{ t("admin.settings.betaPolicy.errorMessageHint") }}
                     </p>
@@ -781,16 +761,8 @@
                       </p>
                     </div>
                     <div v-if="rule.action === 'block'">
-                      <label :for="`openai-fast-policy-error-${ruleIndex}`" class="input-label">
-                        {{ t("admin.settings.openaiFastPolicy.errorMessage") }}
-                      </label>
-                      <input
-                        :id="`openai-fast-policy-error-${ruleIndex}`"
-                        v-model="rule.error_message"
-                        type="text"
-                        class="input"
-                        :placeholder="t('admin.settings.openaiFastPolicy.errorMessagePlaceholder')"
-                      />
+                      <label class="input-label">{{ t('admin.settings.openaiFastPolicy.errorMessage') }}</label>
+                      <input v-model="rule.error_message" type="text" class="input" :placeholder="t('admin.settings.openaiFastPolicy.errorMessagePlaceholder')" />
                       <p class="input-hint">
                         {{ t("admin.settings.openaiFastPolicy.errorMessageHint") }}
                       </p>
@@ -852,13 +824,8 @@
                         {{ t("admin.settings.openaiFastPolicy.fallbackActionHint") }}
                       </p>
                       <div v-if="rule.fallback_action === 'block'" class="mt-2">
-                        <input
-                          v-model="rule.fallback_error_message"
-                          type="text"
-                          class="input"
-                          :aria-label="t('admin.settings.openaiFastPolicy.errorMessage')"
-                          :placeholder="t('admin.settings.openaiFastPolicy.fallbackErrorMessagePlaceholder')"
-                        />
+                        <label class="input-label">{{ t('admin.settings.openaiFastPolicy.errorMessage') }}</label>
+                        <input v-model="rule.fallback_error_message" type="text" class="input" :placeholder="t('admin.settings.openaiFastPolicy.fallbackErrorMessagePlaceholder')" />
                       </div>
                     </div>
                   </div>
@@ -1181,7 +1148,7 @@
                     <SettingsSegmented
                       :model-value="captchaProviderSelection"
                       :options="captchaProviderOptions"
-                      :aria-label="t('admin.settings.captcha.provider')"
+                      :ariaLabel="t('admin.settings.captcha.provider')"
                       block
                       @update:model-value="selectCaptchaProvider($event as CaptchaProviderSelection)"
                     />
@@ -1237,7 +1204,7 @@
                       <SettingsSegmented
                         :model-value="form.tencent_captcha_region === 'intl' ? 'intl' : 'cn'"
                         :options="tencentCaptchaRegionOptions"
-                        :aria-label="t('admin.settings.tencentCaptcha.region')"
+                        :ariaLabel="t('admin.settings.tencentCaptcha.region')"
                         @update:model-value="form.tencent_captcha_region = $event as string"
                       />
                       <p class="input-hint">{{ t("admin.settings.tencentCaptcha.regionHint") }}</p>
@@ -1356,7 +1323,7 @@
                       <SettingsSegmented
                         :model-value="form.aliyun_captcha_region === 'sgp' ? 'sgp' : 'cn'"
                         :options="aliyunCaptchaRegionOptions"
-                        :aria-label="t('admin.settings.aliyunCaptcha.region')"
+                        :ariaLabel="t('admin.settings.aliyunCaptcha.region')"
                         @update:model-value="form.aliyun_captcha_region = $event as string"
                       />
                       <p class="input-hint">{{ t("admin.settings.aliyunCaptcha.regionHint") }}</p>
@@ -1980,7 +1947,7 @@
                     <SettingsSegmented
                       v-model="form.dingtalk_connect_corp_restriction_policy"
                       :options="dingtalkCorpPolicyOptions"
-                      :aria-label="t('admin.settings.dingtalk.corpPolicy.label')"
+                      :ariaLabel="t('admin.settings.dingtalk.corpPolicy.label')"
                       block
                     />
                     <p class="input-hint">{{ t("admin.settings.dingtalk.corpPolicy.hint") }}</p>
@@ -2142,16 +2109,7 @@
                 <SettingsSubpanel>
                   <div class="grid gap-4 md:grid-cols-3">
                     <div>
-                      <label for="oidc-provider-name" class="input-label">
-                        {{ t("admin.settings.oidc.providerName") }}
-                      </label>
-                      <input
-                        id="oidc-provider-name"
-                        v-model="form.oidc_connect_provider_name"
-                        type="text"
-                        class="input"
-                        :placeholder="t('admin.settings.oidc.providerNamePlaceholder')"
-                      />
+                      <LocalizedEditor :label="t('admin.settings.oidc.providerName')" :placeholder="t('admin.settings.oidc.providerNamePlaceholder')" v-model="form.localized_settings.oidc_connect_provider_name" :default-source-locale="getLocale()" />
                     </div>
                     <div>
                       <label for="oidc-client-id" class="input-label">
@@ -3699,16 +3657,7 @@
               <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
                 <div class="grid content-start gap-4 md:grid-cols-2">
                   <div>
-                    <label for="balance-unit-name" class="input-label">
-                      {{ t("admin.settings.balanceDisplay.unitName") }}
-                    </label>
-                    <input
-                      id="balance-unit-name"
-                      v-model="form.balance_unit_name"
-                      type="text"
-                      class="input"
-                      :placeholder="t('admin.settings.balanceDisplay.unitNamePlaceholder')"
-                    />
+                    <LocalizedEditor :label="t('admin.settings.balanceDisplay.unitName')" :placeholder="t('admin.settings.balanceDisplay.unitNamePlaceholder')" v-model="form.localized_settings.balance_unit_name" :default-source-locale="getLocale()" />
                     <p class="input-hint">{{ t("admin.settings.balanceDisplay.unitNameHint") }}</p>
                   </div>
                   <div>
@@ -3865,71 +3814,11 @@
               :hint="t('admin.settings.site.siteCopyDescription')"
             >
               <div>
-                <div class="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label for="site-name-zh" class="input-label">{{ t("admin.settings.site.siteNameZh") }}</label>
-                    <input
-                      id="site-name-zh"
-                      v-model="form.site_name_zh"
-                      type="text"
-                      class="input"
-                      :placeholder="t('admin.settings.site.siteNameZhPlaceholder')"
-                    />
-                  </div>
-                  <div>
-                    <label for="site-name-en" class="input-label">{{ t("admin.settings.site.siteNameEn") }}</label>
-                    <input
-                      id="site-name-en"
-                      v-model="form.site_name_en"
-                      type="text"
-                      class="input"
-                      :placeholder="t('admin.settings.site.siteNameEnPlaceholder')"
-                    />
-                  </div>
-                </div>
-                <p class="input-hint">{{ t("admin.settings.site.siteNameHint") }}</p>
+                <label class="input-label">{{ t('localization.defaultLanguage') }}</label>
+                <Select v-model="form.default_locale" :options="availableLocales.map(item => ({ value: item.code, label: item.name }))" />
               </div>
-              <div class="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label for="site-title-zh" class="input-label">{{ t("admin.settings.site.siteTitleZh") }}</label>
-                  <input
-                    id="site-title-zh"
-                    v-model="form.site_title_zh"
-                    type="text"
-                    class="input"
-                    :placeholder="t('admin.settings.site.siteTitleZhPlaceholder')"
-                  />
-                </div>
-                <div>
-                  <label for="site-title-en" class="input-label">{{ t("admin.settings.site.siteTitleEn") }}</label>
-                  <input
-                    id="site-title-en"
-                    v-model="form.site_title_en"
-                    type="text"
-                    class="input"
-                    :placeholder="t('admin.settings.site.siteTitleEnPlaceholder')"
-                  />
-                </div>
-                <div>
-                  <label for="site-subtitle-zh" class="input-label">{{ t("admin.settings.site.siteSubtitleZh") }}</label>
-                  <textarea
-                    id="site-subtitle-zh"
-                    v-model="form.site_subtitle_zh"
-                    rows="2"
-                    class="input resize-y"
-                    :placeholder="t('admin.settings.site.siteSubtitleZhPlaceholder')"
-                  ></textarea>
-                </div>
-                <div>
-                  <label for="site-subtitle-en" class="input-label">{{ t("admin.settings.site.siteSubtitleEn") }}</label>
-                  <textarea
-                    id="site-subtitle-en"
-                    v-model="form.site_subtitle_en"
-                    rows="2"
-                    class="input resize-y"
-                    :placeholder="t('admin.settings.site.siteSubtitleEnPlaceholder')"
-                  ></textarea>
-                </div>
+              <div v-for="key in ['site_name', 'site_title', 'site_subtitle']" :key="key">
+                <LocalizedEditor :label="t(`localization.fields.${key}`)" v-model="form.site_texts[key]" :default-source-locale="getLocale()" />
               </div>
               <div>
                 <p class="input-label">{{ t("admin.settings.site.siteLogo") }}</p>
@@ -3958,25 +3847,11 @@
               </div>
               <div class="grid gap-4 md:grid-cols-2">
                 <div>
-                  <label for="contact-info" class="input-label">{{ t("admin.settings.site.contactInfo") }}</label>
-                  <input
-                    id="contact-info"
-                    v-model="form.contact_info"
-                    type="text"
-                    class="input"
-                    :placeholder="t('admin.settings.site.contactInfoPlaceholder')"
-                  />
+                  <LocalizedEditor :label="t('admin.settings.site.contactInfo')" :placeholder="t('admin.settings.site.contactInfoPlaceholder')" v-model="form.site_texts.contact_info" :default-source-locale="getLocale()" />
                   <p class="input-hint">{{ t("admin.settings.site.contactInfoHint") }}</p>
                 </div>
                 <div>
-                  <label for="doc-url" class="input-label">{{ t("admin.settings.site.docUrl") }}</label>
-                  <input
-                    id="doc-url"
-                    v-model="form.doc_url"
-                    type="url"
-                    class="input font-mono text-sm"
-                    :placeholder="t('admin.settings.site.docUrlPlaceholder')"
-                  />
+                  <LocalizedEditor :label="t('admin.settings.site.docUrl')" :placeholder="t('admin.settings.site.docUrlPlaceholder')" input-class="font-mono text-sm" v-model="form.site_texts.doc_url" :default-source-locale="getLocale()" />
                   <p class="input-hint">{{ t("admin.settings.site.docUrlHint") }}</p>
                 </div>
               </div>
@@ -3997,18 +3872,17 @@
               >
                 <template #row="{ item: ep, index: epIndex }">
                   <div class="grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <label :for="`custom-endpoint-${epIndex}-name`" class="input-label">
-                        {{ t("admin.settings.site.customEndpoints.name") }}
-                      </label>
-                      <input
-                        :id="`custom-endpoint-${epIndex}-name`"
-                        v-model="ep.name"
-                        type="text"
-                        class="input"
-                        :placeholder="t('admin.settings.site.customEndpoints.namePlaceholder')"
-                      />
-                    </div>
+                    <LocalizedFieldsEditor
+                      class="sm:col-span-2"
+                      layout="grid gap-4 sm:grid-cols-2"
+                      :model-value="ep.localization"
+                      :source="{ name: ep.name, description: ep.description }"
+                      :fields="[
+                        { key: 'name', label: t('admin.settings.site.customEndpoints.name'), placeholder: t('admin.settings.site.customEndpoints.namePlaceholder') },
+                        { key: 'description', label: t('admin.settings.site.customEndpoints.descriptionLabel'), placeholder: t('admin.settings.site.customEndpoints.descriptionPlaceholder') },
+                      ]"
+                      @update:model-value="ep.localization = $event; ep.name = $event.source.name; ep.description = $event.source.description"
+                    />
                     <div>
                       <label :for="`custom-endpoint-${epIndex}-url`" class="input-label">
                         {{ t("admin.settings.site.customEndpoints.endpointUrl") }}
@@ -4019,18 +3893,6 @@
                         type="url"
                         class="input font-mono text-sm"
                         :placeholder="t('admin.settings.site.customEndpoints.endpointUrlPlaceholder')"
-                      />
-                    </div>
-                    <div class="sm:col-span-2">
-                      <label :for="`custom-endpoint-${epIndex}-description`" class="input-label">
-                        {{ t("admin.settings.site.customEndpoints.descriptionLabel") }}
-                      </label>
-                      <input
-                        :id="`custom-endpoint-${epIndex}-description`"
-                        v-model="ep.description"
-                        type="text"
-                        class="input"
-                        :placeholder="t('admin.settings.site.customEndpoints.descriptionPlaceholder')"
                       />
                     </div>
                   </div>
@@ -4076,14 +3938,7 @@
 
             <SettingsSection>
               <div>
-                <label for="home-content" class="input-label">{{ t("admin.settings.site.homeContent") }}</label>
-                <textarea
-                  id="home-content"
-                  v-model="form.home_content"
-                  rows="6"
-                  class="input font-mono text-sm"
-                  :placeholder="t('admin.settings.site.homeContentPlaceholder')"
-                ></textarea>
+                <LocalizedEditor :label="t('admin.settings.site.homeContent')" :placeholder="t('admin.settings.site.homeContentPlaceholder')" input-class="font-mono text-sm" v-model="form.site_texts.home_content" :default-source-locale="getLocale()" :rows="6" />
                 <p class="input-hint">{{ t("admin.settings.site.homeContentHint") }}</p>
               </div>
               <!-- 自定义首页用 iframe 嵌入外部页面时，对方的 CSP 可能禁止嵌入。 -->
@@ -4120,18 +3975,45 @@
               >
                 <template #row="{ item, index: menuIndex }">
                   <div class="grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <label :for="`custom-menu-${menuIndex}-label`" class="input-label">
-                        {{ t("admin.settings.customMenu.name") }}
-                      </label>
-                      <input
-                        :id="`custom-menu-${menuIndex}-label`"
-                        v-model="item.label"
-                        type="text"
-                        class="input"
-                        :placeholder="t('admin.settings.customMenu.namePlaceholder')"
-                      />
-                    </div>
+                    <!-- 管理员专用菜单按原文保存名称和链接。 -->
+                    <template v-if="item.visibility === 'admin'">
+                      <div>
+                        <label :for="`custom-menu-${menuIndex}-label`" class="input-label">
+                          {{ t("admin.settings.customMenu.name") }}
+                        </label>
+                        <input
+                          :id="`custom-menu-${menuIndex}-label`"
+                          v-model="item.label"
+                          type="text"
+                          class="input"
+                          :placeholder="t('admin.settings.customMenu.namePlaceholder')"
+                        />
+                      </div>
+                      <div>
+                        <label :for="`custom-menu-${menuIndex}-url`" class="input-label">
+                          {{ t("admin.settings.customMenu.url") }}
+                        </label>
+                        <input
+                          :id="`custom-menu-${menuIndex}-url`"
+                          v-model="item.url"
+                          type="url"
+                          class="input font-mono text-sm"
+                          :placeholder="t('admin.settings.customMenu.urlPlaceholder')"
+                        />
+                      </div>
+                    </template>
+                    <LocalizedFieldsEditor
+                      v-else
+                      class="sm:col-span-2"
+                      layout="grid gap-4 sm:grid-cols-2"
+                      :model-value="item.localization"
+                      :source="{ label: item.label, url: item.url }"
+                      :fields="[
+                        { key: 'label', label: t('admin.settings.customMenu.name'), placeholder: t('admin.settings.customMenu.namePlaceholder') },
+                        { key: 'url', label: t('admin.settings.customMenu.url'), placeholder: t('admin.settings.customMenu.urlPlaceholder'), url: true, inputClass: 'font-mono text-sm' },
+                      ]"
+                      @update:model-value="item.localization = $event; item.label = $event.source.label; item.url = $event.source.url"
+                    />
                     <div>
                       <label :for="`custom-menu-${menuIndex}-visibility`" class="input-label">
                         {{ t("admin.settings.customMenu.visibility") }}
@@ -4140,18 +4022,6 @@
                         :id="`custom-menu-${menuIndex}-visibility`"
                         v-model="item.visibility"
                         :options="customMenuVisibilityOptions"
-                      />
-                    </div>
-                    <div class="sm:col-span-2">
-                      <label :for="`custom-menu-${menuIndex}-url`" class="input-label">
-                        {{ t("admin.settings.customMenu.url") }}
-                      </label>
-                      <input
-                        :id="`custom-menu-${menuIndex}-url`"
-                        v-model="item.url"
-                        type="url"
-                        class="input font-mono text-sm"
-                        :placeholder="t('admin.settings.customMenu.urlPlaceholder')"
                       />
                     </div>
                     <div class="sm:col-span-2">
@@ -4246,12 +4116,12 @@
               >
                 <template #row="{ item: group, index: gIndex }">
                   <div class="space-y-4">
-                    <input
-                      v-model="group.title"
-                      type="text"
-                      class="input sm:max-w-xs"
-                      :aria-label="t('admin.settings.homeFooter.groupTitlePlaceholder')"
+                    <LocalizedEditor
+                      class="sm:max-w-xs"
+                      :label="t('admin.settings.homeFooter.groupTitle')"
                       :placeholder="t('admin.settings.homeFooter.groupTitlePlaceholder')"
+                      :model-value="group.localization || originalContent(group.title)"
+                      @update:model-value="group.localization = $event; group.title = $event.source"
                     />
                     <RuleListEditor
                       :items="group.links"
@@ -4259,26 +4129,20 @@
                       :remove-label="t('admin.settings.homeFooter.removeLink')"
                       add-placement="footer"
                       :test-id="`footer-links-${gIndex}`"
-                      @add="group.links.push({ label: '', url: '' })"
+                      @add="addFooterLink(group)"
                       @remove="group.links.splice($event, 1)"
                     >
                       <template #row="{ item: link }">
-                        <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-                          <input
-                            v-model="link.label"
-                            type="text"
-                            class="input"
-                            :aria-label="t('admin.settings.homeFooter.linkLabel')"
-                            :placeholder="t('admin.settings.homeFooter.linkLabel')"
-                          />
-                          <input
-                            v-model="link.url"
-                            type="text"
-                            class="input min-w-0 font-mono text-sm"
-                            :aria-label="t('admin.settings.homeFooter.linkUrlPlaceholder')"
-                            :placeholder="t('admin.settings.homeFooter.linkUrlPlaceholder')"
-                          />
-                        </div>
+                        <LocalizedFieldsEditor
+                          layout="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+                          :model-value="link.localization"
+                          :source="{ label: link.label, url: link.url }"
+                          :fields="[
+                            { key: 'label', label: t('admin.settings.homeFooter.linkLabel'), placeholder: t('admin.settings.homeFooter.linkLabel') },
+                            { key: 'url', label: t('admin.settings.homeFooter.linkUrl'), placeholder: t('admin.settings.homeFooter.linkUrlPlaceholder'), inputClass: 'min-w-0 font-mono text-sm' },
+                          ]"
+                          @update:model-value="link.localization = $event; link.label = $event.source.label; link.url = $event.source.url"
+                        />
                       </template>
                     </RuleListEditor>
                   </div>
@@ -4287,14 +4151,7 @@
             </SettingsSection>
             <SettingsSection>
               <div>
-                <label for="footer-text" class="input-label">{{ t("admin.settings.homeFooter.extraText") }}</label>
-                <textarea
-                  id="footer-text"
-                  v-model="form.footer_text"
-                  rows="2"
-                  class="input resize-y"
-                  :placeholder="t('admin.settings.homeFooter.extraTextPlaceholder')"
-                ></textarea>
+                <LocalizedEditor :label="t('admin.settings.homeFooter.extraText')" :placeholder="t('admin.settings.homeFooter.extraTextPlaceholder')" v-model="form.site_texts.footer_text" :default-source-locale="getLocale()" :rows="2" />
               </div>
             </SettingsSection>
           </SettingsCard>
@@ -4321,7 +4178,7 @@
                 <SettingsSegmented
                   v-model="form.login_agreement_mode"
                   :options="loginAgreementModeOptions"
-                  :aria-label="t('admin.settings.loginAgreement.mode')"
+                  :ariaLabel="t('admin.settings.loginAgreement.mode')"
                 />
                 <p class="input-hint">
                   {{
@@ -4389,18 +4246,6 @@
                     </div>
                     <div class="grid gap-4 lg:grid-cols-2">
                       <div>
-                        <label :for="`login-agreement-${index}-title`" class="input-label">
-                          {{ t("admin.settings.loginAgreement.documentTitle") }}
-                        </label>
-                        <input
-                          :id="`login-agreement-${index}-title`"
-                          v-model="doc.title"
-                          type="text"
-                          class="input"
-                          :placeholder="t('admin.settings.loginAgreement.documentTitlePlaceholder')"
-                        />
-                      </div>
-                      <div>
                         <label :for="`login-agreement-${index}-slug`" class="input-label">
                           {{ t("admin.settings.loginAgreement.documentSlug") }}
                         </label>
@@ -4419,18 +4264,15 @@
                         </div>
                       </div>
                     </div>
-                    <div>
-                      <label :for="`login-agreement-${index}-content`" class="input-label">
-                        {{ t("admin.settings.loginAgreement.documentContent") }}
-                      </label>
-                      <textarea
-                        :id="`login-agreement-${index}-content`"
-                        v-model="doc.content_md"
-                        rows="8"
-                        class="input font-mono text-sm"
-                        :placeholder="t('admin.settings.loginAgreement.documentContentPlaceholder')"
-                      ></textarea>
-                    </div>
+                    <LocalizedFieldsEditor
+                      :model-value="doc.localization"
+                      :source="{ title: doc.title, content_md: doc.content_md }"
+                      :fields="[
+                        { key: 'title', label: t('admin.settings.loginAgreement.documentTitle'), placeholder: t('admin.settings.loginAgreement.documentTitlePlaceholder') },
+                        { key: 'content_md', label: t('admin.settings.loginAgreement.documentContent'), placeholder: t('admin.settings.loginAgreement.documentContentPlaceholder'), multiline: true, rows: 8, inputClass: 'font-mono text-sm' },
+                      ]"
+                      @update:model-value="doc.localization = $event; doc.title = $event.source.title; doc.content_md = $event.source.content_md"
+                    />
                   </div>
                 </template>
               </RuleListEditor>
@@ -4755,36 +4597,18 @@
               <SettingsSection>
                 <div class="grid gap-4 sm:grid-cols-3">
                   <div>
-                    <label for="payment-product-name-prefix" class="input-label">
-                      {{ t("admin.settings.payment.productNamePrefix") }}
-                    </label>
-                    <input
-                      id="payment-product-name-prefix"
-                      v-model="form.payment_product_name_prefix"
-                      type="text"
-                      class="input"
-                      placeholder="TokenRouter"
-                    />
+                    <LocalizedEditor :label="t('admin.settings.payment.productNamePrefix')" placeholder="TokenRouter" v-model="form.localized_settings.payment_product_name_prefix" :default-source-locale="getLocale()" />
                   </div>
                   <div>
-                    <label for="payment-product-name-suffix" class="input-label">
-                      {{ t("admin.settings.payment.productNameSuffix") }}
-                    </label>
-                    <input
-                      id="payment-product-name-suffix"
-                      v-model="form.payment_product_name_suffix"
-                      type="text"
-                      class="input"
-                      placeholder="CNY"
-                    />
+                    <LocalizedEditor :label="t('admin.settings.payment.productNameSuffix')" placeholder="CNY" v-model="form.localized_settings.payment_product_name_suffix" :default-source-locale="getLocale()" />
                   </div>
                   <div>
                     <p class="input-label">{{ t("admin.settings.payment.preview") }}</p>
                     <div class="flex min-h-9 items-center rounded-control border border-primary-900/10 bg-gray-50 px-4 text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-dark-200">
                       {{
-                        (form.payment_product_name_prefix || "TokenRouter") +
+                        (resolveContent(form.localized_settings.payment_product_name_prefix, locale).value || "TokenRouter") +
                         " 100 " +
-                        (form.payment_product_name_suffix || "CNY")
+                        (resolveContent(form.localized_settings.payment_product_name_suffix, locale).value || "CNY")
                       }}
                     </div>
                   </div>
@@ -5132,25 +4956,19 @@
               <SettingsSection>
                 <div class="grid gap-4 sm:grid-cols-2">
                   <div>
-                    <p class="input-label">{{ t("admin.settings.payment.helpImage") }}</p>
-                    <ImageUpload
-                      v-model="form.payment_help_image_url"
+                    <LocalizedEditor :label="t('admin.settings.payment.helpImage')" v-model="form.localized_settings.payment_help_image_url" :default-source-locale="getLocale()">
+<template #default="{ value, update }">
+<ImageUpload
+                      :model-value="value" @update:model-value="update"
                       :upload-label="t('admin.settings.site.uploadImage')"
                       :remove-label="t('admin.settings.site.remove')"
                       :placeholder="t('admin.settings.payment.helpImagePlaceholder')"
                     />
+</template>
+</LocalizedEditor>
                   </div>
                   <div>
-                    <label for="payment-help-text" class="input-label">
-                      {{ t("admin.settings.payment.helpText") }}
-                    </label>
-                    <textarea
-                      id="payment-help-text"
-                      v-model="form.payment_help_text"
-                      rows="3"
-                      class="input"
-                      :placeholder="t('admin.settings.payment.helpTextPlaceholder')"
-                    ></textarea>
+                    <LocalizedEditor :label="t('admin.settings.payment.helpText')" :placeholder="t('admin.settings.payment.helpTextPlaceholder')" v-model="form.localized_settings.payment_help_text" :default-source-locale="getLocale()" :rows="3" />
                     <p class="input-hint">{{ t("admin.settings.payment.helpTextHint") }}</p>
                   </div>
                 </div>
@@ -5278,14 +5096,7 @@
                     />
                   </div>
                   <div>
-                    <label for="smtp-from-name" class="input-label">{{ t("admin.settings.smtp.fromName") }}</label>
-                    <input
-                      id="smtp-from-name"
-                      v-model="form.smtp_from_name"
-                      type="text"
-                      class="input"
-                      :placeholder="t('admin.settings.smtp.fromNamePlaceholder')"
-                    />
+                    <LocalizedEditor :label="t('admin.settings.smtp.fromName')" :placeholder="t('admin.settings.smtp.fromNamePlaceholder')" v-model="form.localized_settings.smtp_from_name" :default-source-locale="getLocale()" />
                   </div>
                 </div>
                 <SettingToggleRow
@@ -5389,16 +5200,7 @@
                 </SettingsSubpanel>
               </Collapse>
               <div>
-                <label for="balance-low-notify-recharge-url" class="input-label">
-                  {{ t("admin.settings.balanceNotify.rechargeUrl") }}
-                </label>
-                <input
-                  id="balance-low-notify-recharge-url"
-                  v-model="form.balance_low_notify_recharge_url"
-                  type="url"
-                  class="input"
-                  :placeholder="currentOrigin"
-                />
+                <LocalizedEditor :label="t('admin.settings.balanceNotify.rechargeUrl')" :placeholder="currentOrigin" v-model="form.localized_settings.balance_low_notify_recharge_url" :default-source-locale="getLocale()" />
                 <p class="input-hint">{{ t("admin.settings.balanceNotify.rechargeUrlHint") }}</p>
               </div>
             </SettingsSection>
@@ -5540,6 +5342,11 @@ import SettingsTagInput from "@/components/common/settings/SettingsTagInput.vue"
 import QualityProbeSettingsCard from "@/components/admin/settings/QualityProbeSettingsCard.vue";
 import { useDirtyTracker } from "@/composables/useDirtyTracker";
 import { provideSettingsSaveRegistry, type SettingsSaveTarget } from "@/composables/useSettingsSaveRegistry";
+import type { CustomMenuItem, CustomEndpoint, FooterLinkGroup } from "@/types";
+import LocalizedFieldsEditor from "@/components/common/LocalizedFieldsEditor.vue";
+import LocalizedEditor from "@/components/common/LocalizedEditor.vue";
+import { newContentID, originalContent, resolveContent, type LocalizedUpdate } from "@/i18n/content";
+import { availableLocales, getLocale } from "@/i18n";
 import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 import { adminAPI } from "@/api";
@@ -5592,7 +5399,6 @@ import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import BalanceIcon from "@/components/common/BalanceIcon.vue";
-import OpenAIOAuthImportDefaultsSettings from "@/components/admin/provider/OpenAIOAuthImportDefaultsSettings.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
 import { useBalanceDisplay } from "@/composables/useBalanceDisplay";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
@@ -6226,15 +6032,12 @@ const form = reactive<SettingsForm>({
   force_email_on_third_party_signup: false,
   default_user_rpm_limit: 0,
   default_user_api_key_limit: 100,
+  localized_settings: Object.fromEntries(["balance_unit_name", "balance_low_notify_recharge_url", "oidc_connect_provider_name", "payment_help_text", "payment_help_image_url", "payment_product_name_prefix", "payment_product_name_suffix", "smtp_from_name"].map(key => [key, originalContent(key === "balance_unit_name" ? "USD" : "", getLocale())])) as Record<string, LocalizedUpdate<string>>,
+  default_locale: "en",
+  site_texts: Object.fromEntries(["site_name", "site_title", "site_subtitle", "contact_info", "doc_url", "home_content", "purchase_subscription_url", "footer_text"].map(key => [key, originalContent(key === "site_name" ? "TokenRouter" : "", getLocale())])) as Record<string, LocalizedUpdate<string>>,
   site_name: "TokenRouter",
   site_logo: "",
   site_subtitle: "Subscription to API Conversion Platform",
-  site_name_zh: "",
-  site_name_en: "",
-  site_title_zh: "",
-  site_title_en: "",
-  site_subtitle_zh: "",
-  site_subtitle_en: "",
   api_base_url: "",
   contact_info: "",
   doc_url: "",
@@ -6273,23 +6076,9 @@ const form = reactive<SettingsForm>({
   usage_ranking_show_total_tokens: true,
   usage_ranking_show_requests: true,
   usage_ranking_show_actual_cost: true,
-  custom_menu_items: [] as Array<{
-    id: string;
-    label: string;
-    icon_svg: string;
-    url: string;
-    visibility: "user" | "admin";
-    sort_order: number;
-  }>,
-  custom_endpoints: [] as Array<{
-    name: string;
-    endpoint: string;
-    description: string;
-  }>,
-  footer_links: [] as Array<{
-    title: string;
-    links: Array<{ label: string; url: string }>;
-  }>,
+  custom_menu_items: [] as CustomMenuItem[],
+  custom_endpoints: [] as CustomEndpoint[],
+  footer_links: [] as FooterLinkGroup[],
   footer_text: "",
   home_featured_models: [] as string[],
   frontend_url: "",
@@ -6728,7 +6517,7 @@ const {
   balanceUnitSymbol: previewBalanceUnitSymbol,
   formatBalanceAmount: formatPreviewBalanceAmount,
 } = useBalanceDisplay({
-  unitName: computed(() => form.balance_unit_name),
+  unitName: computed(() => resolveContent(form.localized_settings.balance_unit_name, locale.value).value),
   unitSymbol: computed(() => form.balance_unit_symbol),
   iconSvg: computed(() => form.balance_icon_svg),
 });
@@ -7657,7 +7446,8 @@ async function setAndCopyOIDCRedirectUrl() {
 // Custom menu item management
 function addMenuItem() {
   form.custom_menu_items.push({
-    id: "",
+    id: newContentID(),
+    localization: originalContent({ label: "", url: "" }, getLocale()),
     label: "",
     icon_svg: "",
     url: "",
@@ -7689,7 +7479,7 @@ function moveMenuItem(index: number, direction: -1 | 1) {
 
 // Custom endpoint management
 function addEndpoint() {
-  form.custom_endpoints.push({ name: "", endpoint: "", description: "" });
+  form.custom_endpoints.push({ id: newContentID(), name: "", endpoint: "", description: "", localization: originalContent({ name: "", description: "" }, getLocale()) });
 }
 
 function removeEndpoint(index: number) {
@@ -7697,8 +7487,12 @@ function removeEndpoint(index: number) {
 }
 
 // Footer link group management
+function addFooterLink(group: FooterLinkGroup) {
+  group.links.push({ id: newContentID(), label: "", url: "", localization: originalContent({ label: "", url: "" }, getLocale()) });
+}
+
 function addFooterGroup() {
-  form.footer_links.push({ title: "", links: [{ label: "", url: "" }] });
+  form.footer_links.push({ id: newContentID(), title: "", localization: originalContent("", getLocale()), links: [] });
 }
 
 // 默认底栏模板:基于站内已有页面 + 已配置的文档/联系方式,可直接用或小改
@@ -7749,9 +7543,10 @@ function moveFooterGroup(index: number, direction: -1 | 1) {
 function normalizeFooterLinksForSave() {
   return form.footer_links
     .map((group) => ({
+      ...group,
       title: group.title.trim(),
       links: group.links
-        .map((link) => ({ label: link.label.trim(), url: link.url.trim() }))
+        .map((link) => ({ ...link, label: link.label.trim(), url: link.url.trim() }))
         .filter((link) => link.label && link.url),
     }))
     .filter((group) => group.title && group.links.length > 0);
@@ -7813,7 +7608,8 @@ function normalizeHomeFeaturedModelsForSave() {
 
 function addLoginAgreementDocument() {
   form.login_agreement_documents.push({
-    id: `custom-${Date.now().toString(36)}`,
+    id: newContentID(),
+    localization: originalContent({ title: "", content_md: "" }, getLocale()),
     title: "",
     content_md: "",
   });
@@ -7831,6 +7627,7 @@ function normalizeLoginAgreementDocumentsForSave(): LoginAgreementDocument[] {
         `doc-${index + 1}`,
       title: doc.title.trim(),
       content_md: doc.content_md.trim(),
+      localization: doc.localization,
     }))
     .filter((doc) => doc.title || doc.content_md);
 }
@@ -7917,11 +7714,6 @@ async function loadSettings({ silent = false } = {}) {
         (form as Record<string, unknown>)[key] = value;
       }
     }
-    form.site_name_zh = form.site_name_zh || settings.site_name || "TokenRouter";
-    form.site_name_en = form.site_name_en || "";
-    form.site_subtitle_zh =
-      form.site_subtitle_zh || settings.site_subtitle || "";
-    form.site_subtitle_en = form.site_subtitle_en || "";
     syncCaptchaProviderSelection();
     form.login_agreement_mode =
       settings.login_agreement_mode === "checkbox" ? "checkbox" : "modal";
@@ -7934,6 +7726,7 @@ async function loadSettings({ silent = false } = {}) {
             id: doc.id || "",
             title: doc.title || "",
             content_md: doc.content_md || "",
+            localization: doc.localization,
           }))
         : defaultLoginAgreementDocuments();
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(settings));
@@ -8480,7 +8273,6 @@ async function saveSettings(): Promise<boolean> {
       affiliate_admin_recharge_enabled: form.affiliate_admin_recharge_enabled,
       default_concurrency: form.default_concurrency,
       default_subscriptions: normalizedDefaultSubscriptions,
-      balance_unit_name: form.balance_unit_name,
       balance_unit_symbol: form.balance_unit_symbol,
       balance_icon_svg: form.balance_icon_svg,
       reasoning_point_rmb_unit_price: form.reasoning_point_rmb_unit_price,
@@ -8492,20 +8284,11 @@ async function saveSettings(): Promise<boolean> {
       force_email_on_third_party_signup: form.force_email_on_third_party_signup,
       default_user_rpm_limit: form.default_user_rpm_limit,
       default_user_api_key_limit: form.default_user_api_key_limit,
-      site_name: form.site_name_zh || form.site_name_en || form.site_name,
+      localized_settings: form.localized_settings,
+      site_texts: form.site_texts,
+      default_locale: form.default_locale,
       site_logo: form.site_logo,
-      site_subtitle:
-        form.site_subtitle_zh || form.site_subtitle_en || form.site_subtitle,
-      site_name_zh: form.site_name_zh,
-      site_name_en: form.site_name_en,
-      site_title_zh: form.site_title_zh,
-      site_title_en: form.site_title_en,
-      site_subtitle_zh: form.site_subtitle_zh,
-      site_subtitle_en: form.site_subtitle_en,
       api_base_url: form.api_base_url,
-      contact_info: form.contact_info,
-      doc_url: form.doc_url,
-      home_content: form.home_content,
       backend_mode_enabled: form.backend_mode_enabled,
       hide_ccs_import_button: form.hide_ccs_import_button,
       table_default_page_size: form.table_default_page_size,
@@ -8519,7 +8302,6 @@ async function saveSettings(): Promise<boolean> {
       custom_menu_items: form.custom_menu_items,
       custom_endpoints: form.custom_endpoints,
       footer_links: normalizeFooterLinksForSave(),
-      footer_text: form.footer_text,
       home_featured_models: normalizeHomeFeaturedModelsForSave(),
       frontend_url: form.frontend_url,
       smtp_host: form.smtp_host,
@@ -8527,7 +8309,6 @@ async function saveSettings(): Promise<boolean> {
       smtp_username: form.smtp_username,
       smtp_password: form.smtp_password || undefined,
       smtp_from_email: form.smtp_from_email,
-      smtp_from_name: form.smtp_from_name,
       smtp_use_tls: form.smtp_use_tls,
       turnstile_enabled: form.turnstile_enabled,
       turnstile_site_key: form.turnstile_site_key,
@@ -8599,7 +8380,6 @@ async function saveSettings(): Promise<boolean> {
       wechat_connect_frontend_redirect_url:
         form.wechat_connect_frontend_redirect_url,
       oidc_connect_enabled: form.oidc_connect_enabled,
-      oidc_connect_provider_name: form.oidc_connect_provider_name,
       oidc_connect_client_id: form.oidc_connect_client_id,
       oidc_connect_client_secret: form.oidc_connect_client_secret || undefined,
       oidc_connect_issuer_url: form.oidc_connect_issuer_url,
@@ -8700,10 +8480,6 @@ async function saveSettings(): Promise<boolean> {
       payment_method_fees: form.payment_method_fees,
       payment_enabled_types: form.payment_enabled_types,
       payment_load_balance_strategy: form.payment_load_balance_strategy,
-      payment_product_name_prefix: form.payment_product_name_prefix,
-      payment_product_name_suffix: form.payment_product_name_suffix,
-      payment_help_image_url: form.payment_help_image_url,
-      payment_help_text: form.payment_help_text,
       payment_cancel_rate_limit_enabled: form.payment_cancel_rate_limit_enabled,
       payment_cancel_rate_limit_max:
         Number(form.payment_cancel_rate_limit_max) || 10,
@@ -8967,8 +8743,8 @@ async function sendTestEmail() {
       smtp_port: form.smtp_port,
       smtp_username: form.smtp_username,
       smtp_password: smtpPasswordForSend,
+      smtp_from_name: form.localized_settings.smtp_from_name.source,
       smtp_from_email: form.smtp_from_email,
-      smtp_from_name: form.smtp_from_name,
       smtp_use_tls: form.smtp_use_tls,
     });
     // API returns { message: "..." } on success, errors are thrown as exceptions

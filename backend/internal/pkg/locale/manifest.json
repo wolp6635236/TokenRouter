@@ -1,0 +1,7 @@
+{
+  "default": "en",
+  "locales": [
+    { "code": "en", "name": "English", "direction": "ltr", "aliases": ["en-US", "en-GB"], "fallbacks": [], "catalog": "en" },
+    { "code": "zh-Hans", "name": "简体中文", "direction": "ltr", "aliases": ["zh", "zh-CN", "zh-SG", "cn"], "fallbacks": [], "catalog": "zh" }
+  ]
+}

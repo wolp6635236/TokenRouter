@@ -22,7 +22,7 @@ import (
 
 // ResolverCalculator 为区间用例提供独立的基础价输入。
 func ResolverCalculator() *billing.Calculator {
-	return Calculator(0, nil, ResolverFallbackPrices())
+	return Calculator(nil, ResolverFallbackPrices())
 }
 
 // ResolverFallbackPrices 每个夹具独立持有输入，避免从计算器读取私有状态。

@@ -42,7 +42,7 @@ func TestCNProviderAnthropicUsageBillsUncachedInput(t *testing.T) {
 		},
 	}
 
-	billing := billingtestkit.Calculator(0, nil, nil)
+	billing := billingtestkit.Calculator(nil, nil)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			claudeUsage := protocolanthropic.ParseClaudeUsageFromResponseBody([]byte(tt.body))

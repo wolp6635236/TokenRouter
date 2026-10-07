@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/announcement"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
@@ -26,6 +28,7 @@ func (r *announcementRepository) Create(ctx context.Context, a *site.Announcemen
 	builder := client.Announcement.Create().
 		SetTitle(a.Title).
 		SetContent(a.Content).
+		SetLocalization(a.Localization).
 		SetStatus(a.Status).
 		SetNotifyMode(a.NotifyMode).
 		SetTargeting(a.Targeting)
@@ -65,8 +68,10 @@ func (r *announcementRepository) GetByID(ctx context.Context, id int64) (*site.A
 func (r *announcementRepository) Update(ctx context.Context, a *site.Announcement) error {
 	client := clientFromContext(ctx, r.client)
 	builder := client.Announcement.UpdateOneID(a.ID).
+		Where(announcement.UpdatedAtEQ(a.UpdatedAt)).
 		SetTitle(a.Title).
 		SetContent(a.Content).
+		SetLocalization(a.Localization).
 		SetStatus(a.Status).
 		SetNotifyMode(a.NotifyMode).
 		SetTargeting(a.Targeting)
@@ -93,6 +98,9 @@ func (r *announcementRepository) Update(ctx context.Context, a *site.Announcemen
 	}
 
 	updated, err := builder.Save(ctx)
+	if dbent.IsNotFound(err) {
+		return locale.ErrConflict
+	}
 	if err != nil {
 		return announcementPersistenceError(err)
 	}
@@ -242,18 +250,19 @@ func announcementEntityToService(m *dbent.Announcement) *site.Announcement {
 		return nil
 	}
 	return &site.Announcement{
-		ID:         m.ID,
-		Title:      m.Title,
-		Content:    m.Content,
-		Status:     m.Status,
-		NotifyMode: m.NotifyMode,
-		Targeting:  m.Targeting,
-		StartsAt:   m.StartsAt,
-		EndsAt:     m.EndsAt,
-		CreatedBy:  m.CreatedBy,
-		UpdatedBy:  m.UpdatedBy,
-		CreatedAt:  m.CreatedAt,
-		UpdatedAt:  m.UpdatedAt,
+		Localization: m.Localization,
+		ID:           m.ID,
+		Title:        m.Title,
+		Content:      m.Content,
+		Status:       m.Status,
+		NotifyMode:   m.NotifyMode,
+		Targeting:    m.Targeting,
+		StartsAt:     m.StartsAt,
+		EndsAt:       m.EndsAt,
+		CreatedBy:    m.CreatedBy,
+		UpdatedBy:    m.UpdatedBy,
+		CreatedAt:    m.CreatedAt,
+		UpdatedAt:    m.UpdatedAt,
 	}
 }
 

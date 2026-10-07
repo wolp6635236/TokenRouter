@@ -45,7 +45,7 @@ func (p *openAIPassthroughExecutionAdapter) ForwardModel(model string, compact b
 			return configured
 		}
 	}
-	return gatewayadapter.ExecutionModelPolicy(p.provider).OpenAIUpstream(model, compact, true)
+	return gatewayadapter.ExecutionModelPolicy(p.provider).OpenAIUpstream(model, compact)
 }
 
 func (p *openAIPassthroughExecutionAdapter) InstructionsRejection(model string, body []byte) string {

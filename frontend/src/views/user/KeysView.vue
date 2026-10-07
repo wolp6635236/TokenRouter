@@ -165,7 +165,7 @@
               >
                 <span class="max-w-24 truncate font-mono font-medium">{{ binding.prefix }}</span>
                 <span class="opacity-40">/</span>
-                <span class="max-w-28 truncate opacity-75">{{ binding.group?.name || `#${binding.group_id}` }}</span>
+                <span class="max-w-28 truncate opacity-75">{{ (binding.group?.display_name || binding.group?.name) || `#${binding.group_id}` }}</span>
               </span>
               <span
                 v-if="hiddenCompositeGroupCount(row) > 0"
@@ -183,7 +183,7 @@
               >
                 <GroupBadge
                   v-if="row.group"
-                  :name="row.group.name"
+                  :name="(row.group.display_name || row.group.name)"
                   :display-brand="row.group.display_brand"
                   :rate-multiplier="row.group.rate_multiplier"
                   :user-rate-multiplier="userGroupRates[row.group.id]"
@@ -1216,6 +1216,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import Skeleton from '@/components/common/Skeleton.vue'
 import MotionTransition from '@/components/common/MotionTransition.vue'
 	import { watch, ref, reactive, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
@@ -1290,6 +1291,7 @@ const formatDateTimeLocal = (isoDate: string): string => {
 }
 
 interface GroupOption {
+  search_terms?: string[]
   value: number
   label: string
   description: string | null
@@ -1710,7 +1712,8 @@ const onStatusFilterChange = (value: string | number | boolean | null) => {
 const buildGroupOptions = (source: Group[]) =>
   source.map((group) => ({
     value: group.id,
-    label: group.name,
+    label: group.display_name || group.name,
+    search_terms: group.search_terms,
     description: group.description,
     displayBrand: group.display_brand?.trim() || null,
     rate: group.rate_multiplier,
@@ -1789,7 +1792,7 @@ const filteredGroupOptions = computed(() => {
   const query = groupSearchQuery.value.trim().toLowerCase()
   if (!query) return allGroupOptions.value
   return allGroupOptions.value.filter((opt) => {
-    return opt.label.toLowerCase().includes(query) ||
+    return opt.search_terms?.some(text => text.toLowerCase().includes(query)) || opt.label.toLowerCase().includes(query) ||
       (opt.displayBrand && opt.displayBrand.toLowerCase().includes(query)) ||
       (opt.description && opt.description.toLowerCase().includes(query))
   })
@@ -2101,7 +2104,7 @@ const toggleKeyStatus = async (key: ApiKey) => {
       newStatus === 'active' ? t('keys.keyEnabledSuccess') : t('keys.keyDisabledSuccess')
     )
     loadApiKeys()
-  } catch (error) {
+  } catch {
     appStore.showError(t('keys.failedToUpdateStatus'))
   }
 }
@@ -2183,7 +2186,7 @@ const changeGroup = async (key: ApiKey, newGroupId: number | null) => {
 
   try {
     await submitGroupChange(key, newGroupId)
-  } catch (error) {
+  } catch {
     appStore.showError(t('keys.failedToChangeGroup'))
   }
 }
@@ -2599,7 +2602,7 @@ const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType) => {
         appStore.showError(t('keys.ccSwitchNotInstalled'))
       }
     }, 100)
-  } catch (error) {
+  } catch {
     appStore.showError(t('keys.ccSwitchNotInstalled'))
   }
 }
@@ -2642,6 +2645,7 @@ onUnmounted(() => {
   abortController?.abort()
 	if (resetTimer) clearInterval(resetTimer)
 })
+useLocaleRefresh(() => Promise.all([loadApiKeys(), loadGroups(), loadFormGroups(), loadBillingOptions(), loadPublicSettings()]))
 </script>
 
 <style scoped>

@@ -73,6 +73,20 @@ func (_c *GroupCreate) SetNillableDeletedAt(v *time.Time) *GroupCreate {
 	return _c
 }
 
+// SetLocalization sets the "localization" field.
+func (_c *GroupCreate) SetLocalization(v accessview.GroupLocalization) *GroupCreate {
+	_c.mutation.SetLocalization(v)
+	return _c
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableLocalization(v *accessview.GroupLocalization) *GroupCreate {
+	if v != nil {
+		_c.SetLocalization(*v)
+	}
+	return _c
+}
+
 // SetName sets the "name" field.
 func (_c *GroupCreate) SetName(v string) *GroupCreate {
 	_c.mutation.SetName(v)
@@ -993,6 +1007,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldDeletedAt, field.TypeTime, value)
 		_node.DeletedAt = &value
 	}
+	if value, ok := _c.mutation.Localization(); ok {
+		_spec.SetField(group.FieldLocalization, field.TypeJSON, value)
+		_node.Localization = value
+	}
 	if value, ok := _c.mutation.Name(); ok {
 		_spec.SetField(group.FieldName, field.TypeString, value)
 		_node.Name = value
@@ -1332,6 +1350,24 @@ func (u *GroupUpsert) UpdateDeletedAt() *GroupUpsert {
 // ClearDeletedAt clears the value of the "deleted_at" field.
 func (u *GroupUpsert) ClearDeletedAt() *GroupUpsert {
 	u.SetNull(group.FieldDeletedAt)
+	return u
+}
+
+// SetLocalization sets the "localization" field.
+func (u *GroupUpsert) SetLocalization(v accessview.GroupLocalization) *GroupUpsert {
+	u.Set(group.FieldLocalization, v)
+	return u
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateLocalization() *GroupUpsert {
+	u.SetExcluded(group.FieldLocalization)
+	return u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *GroupUpsert) ClearLocalization() *GroupUpsert {
+	u.SetNull(group.FieldLocalization)
 	return u
 }
 
@@ -1931,6 +1967,27 @@ func (u *GroupUpsertOne) UpdateDeletedAt() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearDeletedAt() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetLocalization sets the "localization" field.
+func (u *GroupUpsertOne) SetLocalization(v accessview.GroupLocalization) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetLocalization(v)
+	})
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateLocalization() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateLocalization()
+	})
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *GroupUpsertOne) ClearLocalization() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearLocalization()
 	})
 }
 
@@ -2782,6 +2839,27 @@ func (u *GroupUpsertBulk) UpdateDeletedAt() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearDeletedAt() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearDeletedAt()
+	})
+}
+
+// SetLocalization sets the "localization" field.
+func (u *GroupUpsertBulk) SetLocalization(v accessview.GroupLocalization) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetLocalization(v)
+	})
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateLocalization() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateLocalization()
+	})
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *GroupUpsertBulk) ClearLocalization() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearLocalization()
 	})
 }
 

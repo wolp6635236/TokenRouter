@@ -22,14 +22,6 @@ export interface VersionInfo {
 }
 
 /**
- * Get current version
- */
-export async function getVersion(): Promise<{ version: string }> {
-  const { data } = await apiClient.get<{ version: string }>('/admin/system/version')
-  return data
-}
-
-/**
  * Check for updates
  * @param force - Force refresh from GitHub API
  */
@@ -98,7 +90,6 @@ export async function restartService(): Promise<{ message: string }> {
 }
 
 export const systemAPI = {
-  getVersion,
   checkUpdates,
   performUpdate,
   getRollbackVersions,

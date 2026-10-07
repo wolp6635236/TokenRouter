@@ -143,10 +143,10 @@ func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, 
 }
 
 func (s *AnthropicProviderTest) executeVertex(c *TestRun, ctx context.Context, value *providercore.Record, testModelID string, prompt string) error {
-	if mappedModel, matched := providercore.ResolveMappedModel(value.Platform, providercore.ResolveModelMapping(value, ModelDefaults()), testModelID); matched {
+	if mappedModel, matched := providercore.ResolveMappedModel(providercore.ResolveModelMapping(value, ModelDefaults()), testModelID); matched {
 		testModelID = mappedModel
 	} else {
-		testModelID = vertex.NormalizeVertexAnthropicModelID(claude.NormalizeModelID(testModelID))
+		testModelID = vertex.NormalizeVertexAnthropicModelID(testModelID)
 	}
 
 	c.Begin(true)
@@ -338,6 +338,6 @@ func (s *AnthropicProviderTest) resolveTLSProfile(value *providercore.Record) *t
 
 // mappedTestModel 对提供商测试模型执行一次映射。
 func mappedTestModel(value *providercore.Record, model string) string {
-	mapped, _ := providercore.ResolveMappedModel(value.Platform, providercore.ResolveModelMapping(value, ModelDefaults()), model)
+	mapped, _ := providercore.ResolveMappedModel(providercore.ResolveModelMapping(value, ModelDefaults()), model)
 	return mapped
 }

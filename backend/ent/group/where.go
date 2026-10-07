@@ -345,6 +345,16 @@ func DeletedAtNotNil() predicate.Group {
 	return predicate.Group(sql.FieldNotNull(FieldDeletedAt))
 }
 
+// LocalizationIsNil applies the IsNil predicate on the "localization" field.
+func LocalizationIsNil() predicate.Group {
+	return predicate.Group(sql.FieldIsNull(FieldLocalization))
+}
+
+// LocalizationNotNil applies the NotNil predicate on the "localization" field.
+func LocalizationNotNil() predicate.Group {
+	return predicate.Group(sql.FieldNotNull(FieldLocalization))
+}
+
 // NameEQ applies the EQ predicate on the "name" field.
 func NameEQ(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldName, v))

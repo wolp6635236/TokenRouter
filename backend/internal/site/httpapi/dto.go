@@ -3,15 +3,18 @@ package httpapi
 import (
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
 
 type Announcement struct {
-	ID         int64  `json:"id"`
-	Title      string `json:"title"`
-	Content    string `json:"content"`
-	Status     string `json:"status"`
-	NotifyMode string `json:"notify_mode"`
+	Localization site.AnnouncementLocalization `json:"localization"`
+	ID           int64                         `json:"id"`
+	Title        string                        `json:"title"`
+	Content      string                        `json:"content"`
+	Status       string                        `json:"status"`
+	NotifyMode   string                        `json:"notify_mode"`
 
 	Targeting site.AnnouncementTargeting `json:"targeting"`
 
@@ -26,10 +29,11 @@ type Announcement struct {
 }
 
 type UserAnnouncement struct {
-	ID         int64  `json:"id"`
-	Title      string `json:"title"`
-	Content    string `json:"content"`
-	NotifyMode string `json:"notify_mode"`
+	Localization locale.Resolution `json:"localization"`
+	ID           int64             `json:"id"`
+	Title        string            `json:"title"`
+	Content      string            `json:"content"`
+	NotifyMode   string            `json:"notify_mode"`
 
 	StartsAt *time.Time `json:"starts_at,omitempty"`
 	EndsAt   *time.Time `json:"ends_at,omitempty"`
@@ -45,18 +49,19 @@ func AnnouncementFromService(a *site.Announcement) *Announcement {
 		return nil
 	}
 	return &Announcement{
-		ID:         a.ID,
-		Title:      a.Title,
-		Content:    a.Content,
-		Status:     a.Status,
-		NotifyMode: a.NotifyMode,
-		Targeting:  a.Targeting,
-		StartsAt:   a.StartsAt,
-		EndsAt:     a.EndsAt,
-		CreatedBy:  a.CreatedBy,
-		UpdatedBy:  a.UpdatedBy,
-		CreatedAt:  a.CreatedAt,
-		UpdatedAt:  a.UpdatedAt,
+		Localization: a.Localization,
+		ID:           a.ID,
+		Title:        a.Title,
+		Content:      a.Content,
+		Status:       a.Status,
+		NotifyMode:   a.NotifyMode,
+		Targeting:    a.Targeting,
+		StartsAt:     a.StartsAt,
+		EndsAt:       a.EndsAt,
+		CreatedBy:    a.CreatedBy,
+		UpdatedBy:    a.UpdatedBy,
+		CreatedAt:    a.CreatedAt,
+		UpdatedAt:    a.UpdatedAt,
 	}
 }
 
@@ -65,14 +70,15 @@ func UserAnnouncementFromService(a *site.UserAnnouncement) *UserAnnouncement {
 		return nil
 	}
 	return &UserAnnouncement{
-		ID:         a.Announcement.ID,
-		Title:      a.Announcement.Title,
-		Content:    a.Announcement.Content,
-		NotifyMode: a.Announcement.NotifyMode,
-		StartsAt:   a.Announcement.StartsAt,
-		EndsAt:     a.Announcement.EndsAt,
-		ReadAt:     a.ReadAt,
-		CreatedAt:  a.Announcement.CreatedAt,
-		UpdatedAt:  a.Announcement.UpdatedAt,
+		Localization: a.Announcement.Resolution,
+		ID:           a.Announcement.ID,
+		Title:        a.Announcement.Title,
+		Content:      a.Announcement.Content,
+		NotifyMode:   a.Announcement.NotifyMode,
+		StartsAt:     a.Announcement.StartsAt,
+		EndsAt:       a.Announcement.EndsAt,
+		ReadAt:       a.ReadAt,
+		CreatedAt:    a.Announcement.CreatedAt,
+		UpdatedAt:    a.Announcement.UpdatedAt,
 	}
 }

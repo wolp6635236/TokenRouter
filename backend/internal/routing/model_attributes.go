@@ -2,9 +2,14 @@ package routing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
@@ -17,20 +22,22 @@ var (
 
 // ModelAttributeRule 以最终上游模型匹配展示属性，不参与可请求性计算。
 type ModelAttributeRule struct {
+	ID         string                  `json:"id"`
 	Models     []string                `json:"models"`
 	Attributes modelcatalog.Attributes `json:"attributes"`
 }
 
 // ModelAttributeConfig 是可以被多个分组共享的属性档案。
 type ModelAttributeConfig struct {
-	ID          int64                `json:"id"`
-	Name        string               `json:"name"`
-	Description string               `json:"description"`
-	Status      string               `json:"status"`
-	GroupIDs    []int64              `json:"group_ids"`
-	Rules       []ModelAttributeRule `json:"rules"`
-	CreatedAt   time.Time            `json:"created_at"`
-	UpdatedAt   time.Time            `json:"updated_at"`
+	ExpectedUpdatedAt time.Time            `json:"-"`
+	ID                int64                `json:"id"`
+	Name              string               `json:"name"`
+	Description       string               `json:"description"`
+	Status            string               `json:"status"`
+	GroupIDs          []int64              `json:"group_ids"`
+	Rules             []ModelAttributeRule `json:"rules"`
+	CreatedAt         time.Time            `json:"created_at"`
+	UpdatedAt         time.Time            `json:"updated_at"`
 }
 
 // ModelAttributeRepository 在同一事务中保存规则与分组关联。
@@ -100,12 +107,57 @@ func (s *ModelAttributeService) Save(ctx context.Context, config *ModelAttribute
 		seenGroups[id] = true
 	}
 	var oldGroups []int64
+	oldRules := map[string]ModelAttributeRule{}
 	if config.ID != 0 {
 		old, err := s.Repo.Get(ctx, config.ID)
 		if err != nil {
 			return err
 		}
+		if !config.UpdatedAt.IsZero() && !config.UpdatedAt.Equal(old.UpdatedAt) {
+			return locale.ErrConflict
+		}
+		config.ExpectedUpdatedAt = old.UpdatedAt
+		EnsureModelRuleIDs(old)
+		for _, rule := range old.Rules {
+			oldRules[rule.ID] = rule
+		}
 		oldGroups = old.GroupIDs
+	}
+	EnsureModelRuleIDs(config)
+	seenRuleIDs := map[string]bool{}
+	for i := range config.Rules {
+		rule := &config.Rules[i]
+		if seenRuleIDs[rule.ID] {
+			return apperror.BadRequest("DUPLICATE_CONTENT_ID", "Content ID is duplicated.")
+		}
+		seenRuleIDs[rule.ID] = true
+		if rule.Attributes.DisplayNameLocalization == nil {
+			continue
+		}
+		prior := oldRules[rule.ID].Attributes
+		original := ""
+		if prior.DisplayName != nil {
+			original = *prior.DisplayName
+		}
+		current := locale.Original(original)
+		if prior.DisplayNameLocalization != nil {
+			current = prior.DisplayNameLocalization.Content
+		}
+		next, err := locale.Prepare(current, *rule.Attributes.DisplayNameLocalization, func(value string) error {
+			if len([]rune(value)) > 200 {
+				return apperror.BadRequest("MODEL_DISPLAY_NAME_TOO_LONG", "Model display name exceeds 200 characters.")
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		rule.Attributes.DisplayNameLocalization = &locale.Update[string]{Content: next}
+		if next.Source != "" {
+			rule.Attributes.DisplayName = &next.Source
+		} else {
+			rule.Attributes.DisplayName = nil
+		}
 	}
 	if config.Rules == nil {
 		config.Rules = []ModelAttributeRule{}
@@ -151,7 +203,7 @@ func (s *ModelAttributeService) ResolveModels(ctx context.Context, groupID int64
 	if err != nil {
 		return nil, err
 	}
-	return s.resolveModels(config, models), nil
+	return s.resolveModels(config, models, locale.FromContext(ctx)), nil
 }
 
 // ResolveGroups 批量读取本次展示所需的属性档案，分组之间共享同一次数据库查询。
@@ -171,13 +223,13 @@ func (s *ModelAttributeService) ResolveGroups(ctx context.Context, groups map[in
 		return nil, err
 	}
 	for _, id := range ids {
-		result[id] = s.resolveModels(configs[id], groups[id])
+		result[id] = s.resolveModels(configs[id], groups[id], locale.FromContext(ctx))
 	}
 	return result, nil
 }
 
 // resolveModels 将档案规则叠加到最终上游模型的目录属性上。
-func (s *ModelAttributeService) resolveModels(config *ModelAttributeConfig, models []RequestableModel) map[string]EffectiveModelAttributes {
+func (s *ModelAttributeService) resolveModels(config *ModelAttributeConfig, models []RequestableModel, language string) map[string]EffectiveModelAttributes {
 	var candidates func(string) []string
 	if s.Catalog.Candidates != nil {
 		candidates = s.Catalog.Candidates()
@@ -189,15 +241,26 @@ func (s *ModelAttributeService) resolveModels(config *ModelAttributeConfig, mode
 			names = []string{model.ID}
 		}
 		values := make([]modelcatalog.Attributes, 0, len(names))
+		var searchTerms []string
+		var resolution *locale.Resolution
 		for _, name := range names {
 			base := s.Catalog.Lookup(name)
 			if config != nil && config.Status == StatusActive {
 				base = modelcatalog.Merge(base, config.match(name, candidates))
 			}
+			if base.DisplayNameLocalization != nil {
+				searchTerms = append(searchTerms, locale.SearchTexts(base.DisplayNameLocalization.Content, func(text string) []string { return []string{text} })...)
+				value, actual := base.DisplayNameLocalization.Resolve(language)
+				resolution = &actual
+				if value != "" {
+					base.DisplayName = &value
+				}
+				base.DisplayNameLocalization = nil
+			}
 			values = append(values, base)
 		}
 		attrs, different := modelcatalog.Common(values)
-		result[model.ID] = EffectiveModelAttributes{Attributes: attrs, RouteDifferences: different}
+		result[model.ID] = EffectiveModelAttributes{Attributes: attrs, RouteDifferences: different, SearchTerms: searchTerms, LocalizationResolution: resolution}
 	}
 	return result
 }
@@ -229,4 +292,16 @@ func (c *ModelAttributeConfig) match(model string, expand func(string) []string)
 		}
 	}
 	return modelcatalog.Attributes{}
+}
+
+// EnsureModelRuleIDs 给历史规则生成稳定标识，编辑模型匹配项后仍可找到对应译文。
+func EnsureModelRuleIDs(config *ModelAttributeConfig) {
+	for i := range config.Rules {
+		if config.Rules[i].ID != "" {
+			continue
+		}
+		body, _ := json.Marshal(config.Rules[i].Models)
+		sum := sha256.Sum256(body)
+		config.Rules[i].ID = hex.EncodeToString(sum[:8])
+	}
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 const MaxPageFileSize = 1 << 20
@@ -60,16 +62,32 @@ func (s *Pages) visibility(ctx context.Context, slug string) (string, bool) {
 	return "", false
 }
 
+// ReadMarkdown 返回符合当前用户权限的页面正文。
 func (s *Pages) ReadMarkdown(ctx context.Context, slug string, admin bool) ([]byte, error) {
+	content, _, err := s.ReadLocalizedMarkdown(ctx, slug, admin)
+	return content, err
+}
+
+// ReadLocalizedMarkdown 在权限检查后选择译文，管理员专用页面读取原文。
+func (s *Pages) ReadLocalizedMarkdown(ctx context.Context, slug string, admin bool) ([]byte, string, error) {
 	if !validSlugPattern.MatchString(slug) || len(slug) > 64 {
-		return nil, ErrPageSlug
+		return nil, "", ErrPageSlug
 	}
 	visibility, found := s.visibility(ctx, slug)
 	if !found || visibility == "admin" && !admin {
-		return nil, ErrPageNotFound
+		return nil, "", ErrPageNotFound
 	}
-	return s.files.ReadMarkdown(ctx, slug)
+	if visibility != "admin" {
+		if files, ok := s.files.(interface {
+			ReadLocalizedMarkdown(context.Context, string, string) ([]byte, string, error)
+		}); ok {
+			return files.ReadLocalizedMarkdown(ctx, slug, locale.FromContext(ctx))
+		}
+	}
+	content, err := s.files.ReadMarkdown(ctx, slug)
+	return content, "", err
 }
+
 func (s *Pages) ListPages(ctx context.Context) ([]string, error) { return s.files.ListPages(ctx) }
 func (s *Pages) ImagePath(ctx context.Context, slug, filename string) (string, error) {
 	if !validSlugPattern.MatchString(slug) || len(slug) > 64 {

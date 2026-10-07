@@ -1,5 +1,3 @@
-//go:build unit
-
 package batchimage_test
 
 import (
@@ -279,7 +277,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 			},
 		}}}
 
-		svc.Pricing = &batchimage.Pricing{Resolver: billingtestkit.SharedPriceResolver(billingtestkit.Calculator(0, nil, nil), groupID, pricing.DefaultBillingSettings(), testImageModelPricing(map[string]*float64{"1K": &imagePrice})), GroupRepo: svc.GroupRepo}
+		svc.Pricing = &batchimage.Pricing{Resolver: billingtestkit.SharedPriceResolver(billingtestkit.Calculator(nil, nil), groupID, pricing.DefaultBillingSettings(), testImageModelPricing(map[string]*float64{"1K": &imagePrice})), GroupRepo: svc.GroupRepo}
 
 		got, err := svc.Submit(ctx, batchimage.BatchImageOwner{UserID: 11, APIKeyID: 22, GroupID: &groupID}, validBatchImageSubmitRequest(), "")
 		require.NoError(t, err)

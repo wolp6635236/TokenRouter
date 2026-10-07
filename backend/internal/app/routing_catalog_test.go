@@ -1,5 +1,3 @@
-//go:build unit
-
 package app
 
 import (
@@ -26,7 +24,7 @@ func setupModelDefaultPricingRouter(billingSvc *billing.Calculator) *gin.Engine 
 
 // TestGetModelDefaultPricing_QoderMatchesOtherPlatforms 验证同一模型的默认价不受平台影响，Qoder 别名也可以读取内置价。
 func TestGetModelDefaultPricing_QoderMatchesOtherPlatforms(t *testing.T) {
-	router := setupModelDefaultPricingRouter(billingtestkit.Calculator(0, nil, nil))
+	router := setupModelDefaultPricingRouter(billingtestkit.Calculator(nil, nil))
 	for _, model := range []string{"claude-opus-4-6", "CLAUDE-OPUS-4-6", "qwen3.8-max", "qmodel"} {
 		t.Run(model, func(t *testing.T) {
 			var responses []string
@@ -45,7 +43,7 @@ func TestGetModelDefaultPricing_QoderMatchesOtherPlatforms(t *testing.T) {
 }
 
 func TestGetModelDefaultPricing_Fable51ReturnsCacheTTLs(t *testing.T) {
-	billingSvc := billingtestkit.Calculator(0, nil, nil)
+	billingSvc := billingtestkit.Calculator(nil, nil)
 	router := setupModelDefaultPricingRouter(billingSvc)
 	req := httptest.NewRequest(http.MethodGet, "/pricing/defaults/model?model=claude-fable-5-1", nil)
 	w := httptest.NewRecorder()
@@ -67,7 +65,7 @@ func TestGetModelDefaultPricing_Fable51ReturnsCacheTTLs(t *testing.T) {
 }
 
 func TestGetModelDefaultPricing_UnknownQoderRouteKeysRemainUnpriced(t *testing.T) {
-	billingSvc := billingtestkit.Calculator(0, nil, nil)
+	billingSvc := billingtestkit.Calculator(nil, nil)
 	router := setupModelDefaultPricingRouter(billingSvc)
 
 	for _, model := range []string{"qmodel", "qmodel_38max", "ultimate", "q35model", "gmodel"} {

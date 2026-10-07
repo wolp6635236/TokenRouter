@@ -6,18 +6,21 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/idempotency"
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	groupdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
 )
 
 // CreateGroupRequest represents create group request
 type CreateGroupRequest struct {
+	Localization               *locale.Update[routing.GroupCopy]       `json:"localization"`
 	RoutingPolicy              routing.GroupRoutingPolicy              `json:"routing_policy"`
 	Name                       string                                  `json:"name" binding:"required"`
 	Description                string                                  `json:"description"`
@@ -78,6 +81,7 @@ type CreateGroupRequest struct {
 
 // UpdateGroupRequest represents update group request
 type UpdateGroupRequest struct {
+	Localization               *locale.Update[routing.GroupCopy]        `json:"localization"`
 	RoutingPolicy              *routing.GroupRoutingPolicy              `json:"routing_policy"`
 	Name                       string                                   `json:"name"`
 	Description                *string                                  `json:"description"`
@@ -140,9 +144,9 @@ type UpdateGroupRequest struct {
 // List handles listing all groups with pagination
 // GET /api/v1/admin/groups
 func (h *GroupHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
+	page, pageSize := httpx.ParsePagination(c)
 	if _, supplied := c.GetQuery("platform"); supplied {
-		response.ErrorFrom(c, infraerrors.BadRequest("REMOVED_GROUP_FIELD", "groups no longer have a platform"))
+		httpx.ErrorFrom(c, infraerrors.BadRequest("REMOVED_GROUP_FIELD", "groups no longer have a platform"))
 		return
 	}
 	platform := ""
@@ -165,7 +169,7 @@ func (h *GroupHandler) List(c *gin.Context) {
 
 	groups, total, err := h.adminService.ListGroups(c.Request.Context(), page, pageSize, platform, status, search, isExclusive, sortBy, sortOrder)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
@@ -173,7 +177,7 @@ func (h *GroupHandler) List(c *gin.Context) {
 	for i := range groups {
 		outGroups = append(outGroups, *groupdto.AdminGroupFromRouting[struct{}](&groups[i]))
 	}
-	response.Paginated(c, outGroups, total, page, pageSize)
+	httpx.Paginated(c, outGroups, total, page, pageSize)
 }
 
 // GetAll 返回所有启用分组，不分页。
@@ -182,7 +186,7 @@ func (h *GroupHandler) List(c *gin.Context) {
 // GET /api/v1/admin/groups/all
 func (h *GroupHandler) GetAll(c *gin.Context) {
 	if _, supplied := c.GetQuery("platform"); supplied {
-		response.ErrorFrom(c, infraerrors.BadRequest("REMOVED_GROUP_FIELD", "groups no longer have a platform"))
+		httpx.ErrorFrom(c, infraerrors.BadRequest("REMOVED_GROUP_FIELD", "groups no longer have a platform"))
 		return
 	}
 	includeInactive := c.Query("include_inactive") == "true"
@@ -197,7 +201,7 @@ func (h *GroupHandler) GetAll(c *gin.Context) {
 	}
 
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
@@ -205,7 +209,7 @@ func (h *GroupHandler) GetAll(c *gin.Context) {
 	for i := range groups {
 		outGroups = append(outGroups, *groupdto.AdminGroupFromRouting[struct{}](&groups[i]))
 	}
-	response.Success(c, outGroups)
+	httpx.Success(c, outGroups)
 }
 
 // GetByID handles getting a group by ID
@@ -213,29 +217,29 @@ func (h *GroupHandler) GetAll(c *gin.Context) {
 func (h *GroupHandler) GetByID(c *gin.Context) {
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		httpx.BadRequest(c, "Invalid group ID")
 		return
 	}
 
 	group, err := h.adminService.GetGroup(c.Request.Context(), groupID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, groupdto.AdminGroupFromRouting[struct{}](group))
+	httpx.Success(c, groupdto.AdminGroupFromRouting[struct{}](group))
 }
 
 // GetModelsListCandidates 获取自定义 /v1/models 列表可选模型 ID。
 // GET /api/v1/admin/groups/:id/models-list-candidates
 func (h *GroupHandler) GetModelsListCandidates(c *gin.Context) {
 	if _, supplied := c.GetQuery("platform"); supplied {
-		response.ErrorFrom(c, infraerrors.BadRequest("REMOVED_GROUP_FIELD", "groups no longer have a platform"))
+		httpx.ErrorFrom(c, infraerrors.BadRequest("REMOVED_GROUP_FIELD", "groups no longer have a platform"))
 		return
 	}
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || groupID < 0 {
-		response.BadRequest(c, "Invalid group ID")
+		httpx.BadRequest(c, "Invalid group ID")
 		return
 	}
 
@@ -245,19 +249,19 @@ func (h *GroupHandler) GetModelsListCandidates(c *gin.Context) {
 		"",
 	)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, gin.H{"models": models})
+	httpx.Success(c, gin.H{"models": models})
 }
 
 // Create handles creating a new group
 // POST /api/v1/admin/groups
 func (h *GroupHandler) Create(c *gin.Context) {
 	var req CreateGroupRequest
-	if err := bindManagementJSON(c, &req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := httpx.BindJSONStrict(c, &req); err != nil {
+		httpx.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 	legacyProtocolInput := req.AllowedProtocols == nil && req.LegacyAllowedClientProtocols != nil
@@ -266,6 +270,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 	}
 
 	group, err := h.adminService.CreateGroup(c.Request.Context(), &routing.CreateGroupInput{
+		Localization:                    req.Localization,
 		Name:                            req.Name,
 		Description:                     req.Description,
 		SchedulerType:                   req.SchedulerType,
@@ -306,11 +311,11 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		CopyProvidersFromGroupIDs:       req.CopyProvidersFromGroupIDs,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, groupdto.AdminGroupFromRouting[struct{}](group))
+	httpx.Success(c, groupdto.AdminGroupFromRouting[struct{}](group))
 }
 
 // Duplicate 创建停用状态的分组副本，并保留源分组的提供商绑定。
@@ -318,7 +323,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 func (h *GroupHandler) Duplicate(c *gin.Context) {
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || groupID <= 0 {
-		response.BadRequest(c, "Invalid group ID")
+		httpx.BadRequest(c, "Invalid group ID")
 		return
 	}
 	actorScope := idempotencyhttp.AdminActorScope(c)
@@ -346,18 +351,18 @@ func (h *GroupHandler) Duplicate(c *gin.Context) {
 				slog.Warn("group_duplicate_recovery_failed", "group_id", groupID, "actor_scope", actorScope, "reason", reason, "error", recoverErr)
 			} else if recovered != nil {
 				c.Header("X-Idempotency-Recovered", "true")
-				response.Success(c, groupdto.AdminGroupFromRouting[struct{}](recovered))
+				httpx.Success(c, groupdto.AdminGroupFromRouting[struct{}](recovered))
 				return
 			}
 		}
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
 	if result != nil && result.Replayed {
 		c.Header("X-Idempotency-Replayed", "true")
 	}
-	response.Success(c, result.Data)
+	httpx.Success(c, result.Data)
 }
 
 // Update handles updating a group
@@ -365,13 +370,13 @@ func (h *GroupHandler) Duplicate(c *gin.Context) {
 func (h *GroupHandler) Update(c *gin.Context) {
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		httpx.BadRequest(c, "Invalid group ID")
 		return
 	}
 
 	var req UpdateGroupRequest
-	if err := bindManagementJSON(c, &req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := httpx.BindJSONStrict(c, &req); err != nil {
+		httpx.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 	legacyProtocolInput := req.AllowedProtocols == nil && req.LegacyAllowedClientProtocols != nil
@@ -380,6 +385,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 	}
 
 	group, err := h.adminService.UpdateGroup(c.Request.Context(), groupID, &routing.UpdateGroupInput{
+		Localization:                    req.Localization,
 		Name:                            req.Name,
 		Description:                     req.Description,
 		SchedulerType:                   req.SchedulerType,
@@ -421,11 +427,11 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		CopyProvidersFromGroupIDs:       req.CopyProvidersFromGroupIDs,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, groupdto.AdminGroupFromRouting[struct{}](group))
+	httpx.Success(c, groupdto.AdminGroupFromRouting[struct{}](group))
 }
 
 // Delete handles deleting a group
@@ -433,17 +439,17 @@ func (h *GroupHandler) Update(c *gin.Context) {
 func (h *GroupHandler) Delete(c *gin.Context) {
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		httpx.BadRequest(c, "Invalid group ID")
 		return
 	}
 
 	err = h.adminService.DeleteGroup(c.Request.Context(), groupID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Group deleted successfully"})
+	httpx.Success(c, gin.H{"message": "Group deleted successfully"})
 }
 
 // UpdateSortOrderRequest represents the request to update group sort orders
@@ -458,8 +464,8 @@ type UpdateSortOrderRequest struct {
 // PUT /api/v1/admin/groups/sort-order
 func (h *GroupHandler) UpdateSortOrder(c *gin.Context) {
 	var req UpdateSortOrderRequest
-	if err := bindManagementJSON(c, &req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := httpx.BindJSONStrict(c, &req); err != nil {
+		httpx.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -472,11 +478,11 @@ func (h *GroupHandler) UpdateSortOrder(c *gin.Context) {
 	}
 
 	if err := h.adminService.UpdateGroupSortOrders(c.Request.Context(), updates); err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Sort order updated successfully"})
+	httpx.Success(c, gin.H{"message": "Sort order updated successfully"})
 }
 
 // GroupAdministration 提供路由管理所需的操作。

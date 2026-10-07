@@ -43,9 +43,9 @@ type FulfillmentSubscriptions interface {
 	GetActiveSubscription(context.Context, int64, int64) (*billing.UserSubscription, error)
 }
 type PaymentNotice struct {
-	Event, RecipientEmail, RecipientName, SourceType, SourceID string
-	UserID                                                     int64
-	Variables                                                  map[string]string
+	Event, RecipientEmail, RecipientName, SourceType, SourceID, Locale string
+	UserID                                                             int64
+	Variables                                                          map[string]string
 }
 type FulfillmentRuntime struct {
 	Now           func() time.Time

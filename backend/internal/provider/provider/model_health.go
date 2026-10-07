@@ -36,15 +36,13 @@ func (s *ModelHealth) LimitKey(value *provider.Record, requested string, thinkin
 		normalized := key
 		if value.IsGrok() {
 			normalized = grok.NormalizeModelID(key)
-		} else if value.UsesOpenAICodexProtocol() {
-			normalized = openai.NormalizeCodexModel(key)
 		}
 		if normalized = strings.TrimSpace(normalized); normalized != "" {
 			return normalized
 		}
 		return key
 	}
-	mapped, _ := provider.ResolveMappedModel(value.Platform, provider.ResolveModelMapping(value, ModelDefaults()), key)
+	mapped, _ := provider.ResolveMappedModel(provider.ResolveModelMapping(value, ModelDefaults()), key)
 	if mapped = strings.TrimSpace(mapped); mapped != "" {
 		return mapped
 	}
@@ -60,6 +58,6 @@ func (s *ModelHealth) Observe(ctx context.Context, value *provider.Record, model
 
 // ObserveSparkRateLimit 接收本次请求的 thinking 参数。
 func (s *ModelHealth) ObserveSparkRateLimit(ctx context.Context, value *provider.Record, model string, status int, headers http.Header, body []byte, thinking *bool) bool {
-	key := openai.NormalizeCodexModel(s.LimitKey(value, model, thinking))
+	key := s.LimitKey(value, model, thinking)
 	return s.Health.ApplySparkRateLimit(ctx, value, key, status, openai.IsCodexSparkModel(model), func() (provider.OpenAI429Disposition, *time.Time) { return ClassifyOpenAI429(headers, body) })
 }

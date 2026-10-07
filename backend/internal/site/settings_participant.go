@@ -3,14 +3,24 @@ package site
 import (
 	"context"
 	"encoding/json"
+	"strings"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 // SettingsParticipant 准备综合入口传入的站点设置，提交后使公开 HTML 缓存失效。
 func SettingsParticipant() settings.Participant {
-	keys := []string{SettingKeyAPIBaseURL, SettingKeyContactInfo, SettingKeyCustomEndpoints, SettingKeyCustomMenuItems, SettingKeyDocURL, SettingKeyFooterLinks, SettingKeyFooterText, SettingKeyFrontendURL, SettingKeyHideCcsImportButton, SettingKeyHomeContent, SettingKeyHomeFeaturedModels, SettingKeyLoginAgreementDocuments, SettingKeyLoginAgreementEnabled, SettingKeyLoginAgreementMode, SettingKeyLoginAgreementUpdatedAt, SettingKeyPurchaseSubscriptionEnabled, SettingKeyPurchaseSubscriptionURL, SettingKeySiteLogo, SettingKeySiteName, SettingKeySiteNameEn, SettingKeySiteNameZh, SettingKeySiteSubtitle, SettingKeySiteSubtitleEn, SettingKeySiteSubtitleZh, SettingKeySiteTitleEn, SettingKeySiteTitleZh, SettingKeyTableDefaultPageSize, SettingKeyTablePageSizeOptions}
-	return settings.Participant{Module: "site", Fields: keys, Keys: keys, Prepare: func(_ context.Context, input settings.Fields, _ map[string]string) (settings.PreparedChange, error) {
+	keys := []string{SettingKeySiteTexts, SettingKeyDefaultLocale, "site_title", SettingKeyAPIBaseURL, SettingKeyContactInfo, SettingKeyCustomEndpoints, SettingKeyCustomMenuItems, SettingKeyDocURL, SettingKeyFooterLinks, SettingKeyFooterText, SettingKeyFrontendURL, SettingKeyHideCcsImportButton, SettingKeyHomeContent, SettingKeyHomeFeaturedModels, SettingKeyLoginAgreementDocuments, SettingKeyLoginAgreementEnabled, SettingKeyLoginAgreementMode, SettingKeyLoginAgreementUpdatedAt, SettingKeyPurchaseSubscriptionEnabled, SettingKeyPurchaseSubscriptionURL, SettingKeySiteLogo, SettingKeySiteName, SettingKeySiteSubtitle, SettingKeyTableDefaultPageSize, SettingKeyTablePageSizeOptions}
+	fields := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if key != "site_title" {
+			fields = append(fields, key)
+		}
+	}
+	return settings.Participant{Module: "site", Fields: fields, Keys: keys, Prepare: func(_ context.Context, input settings.Fields, current map[string]string) (settings.PreparedChange, error) {
 		if len(input) == 0 {
 			return settings.PreparedChange{}, nil
 		}
@@ -22,6 +32,52 @@ func SettingsParticipant() settings.Participant {
 		if err = json.Unmarshal(raw, &value); err != nil {
 			return settings.PreparedChange{}, err
 		}
+		expected := map[string]*string{}
+		if _, exists := input[SettingKeySiteTexts]; exists {
+			prepared, err := PrepareLocalizedTexts(current, value.SiteTexts)
+			if err != nil {
+				return settings.PreparedChange{}, err
+			}
+			value.SiteTexts = prepared
+			if raw, exists := current[SettingKeySiteTexts]; exists {
+				expected[SettingKeySiteTexts] = &raw
+			} else {
+				expected[SettingKeySiteTexts] = nil
+			}
+		}
+		if _, exists := input[SettingKeyLoginAgreementDocuments]; exists && (strings.Contains(string(input[SettingKeyLoginAgreementDocuments]), `"localization"`) || strings.Contains(current[SettingKeyLoginAgreementDocuments], `"localization"`)) {
+			docs, err := PrepareLegalDocuments(current[SettingKeyLoginAgreementDocuments], value.LoginAgreementDocuments)
+			if err != nil {
+				return settings.PreparedChange{}, err
+			}
+			value.LoginAgreementDocuments = docs
+			if raw, exists := current[SettingKeyLoginAgreementDocuments]; exists {
+				expected[SettingKeyLoginAgreementDocuments] = &raw
+			} else {
+				expected[SettingKeyLoginAgreementDocuments] = nil
+			}
+		}
+		for key, target := range map[string]*string{SettingKeyCustomMenuItems: &value.CustomMenuItems, SettingKeyCustomEndpoints: &value.CustomEndpoints, SettingKeyFooterLinks: &value.FooterLinks} {
+			if _, sent := input[key]; !sent || !strings.Contains(*target, `"localization"`) && !strings.Contains(current[key], `"localization"`) {
+				continue
+			}
+			prepared, err := PrepareNavigation(key, *target, current[key])
+			if err != nil {
+				return settings.PreparedChange{}, err
+			}
+			*target = prepared
+			if raw, exists := current[key]; exists {
+				expected[key] = &raw
+			} else {
+				expected[key] = nil
+			}
+		}
+		if _, exists := input[SettingKeyDefaultLocale]; exists {
+			value.DefaultLocale = locale.Normalize(value.DefaultLocale)
+			if value.DefaultLocale == "" {
+				return settings.PreparedChange{}, apperror.BadRequest("INVALID_LOCALE", "Language is not supported.")
+			}
+		}
 		values, err := PrepareAdminSettings(&value)
 		if err != nil {
 			return settings.PreparedChange{}, err
@@ -31,6 +87,11 @@ func SettingsParticipant() settings.Participant {
 				delete(values, key)
 			}
 		}
-		return settings.PreparedChange{Values: values}, nil
+		if value.SiteTexts != nil {
+			for key, content := range value.SiteTexts {
+				values[key] = content.Source
+			}
+		}
+		return settings.PreparedChange{Values: values, Expected: expected}, nil
 	}}
 }

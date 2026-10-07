@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
@@ -28,16 +30,31 @@ type Plans struct {
 func NewPlans(store PlanRepository, orders PlanOrders) *Plans {
 	return &Plans{store: store, orders: orders}
 }
+
 func (s *Plans) ListPlans(ctx context.Context) ([]*SubscriptionPlan, error) {
 	return s.store.ListPlans(ctx)
 }
+
 func (s *Plans) ListPlansForSale(ctx context.Context) ([]*SubscriptionPlan, error) {
-	return s.store.ListPlansForSale(ctx)
+	items, err := s.store.ListPlansForSale(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i] = LocalizePlan(items[i], locale.FromContext(ctx))
+	}
+	return items, nil
 }
+
 func (s *Plans) GetPlan(ctx context.Context, id int64) (*SubscriptionPlan, error) {
 	return s.store.GetPlan(ctx, id)
 }
+
 func (s *Plans) CreatePlan(ctx context.Context, req CreatePlanRequest) (*SubscriptionPlan, error) {
+	if req.Localization != nil {
+		copy := req.Localization.Source
+		req.Name, req.Description, req.Features, req.ProductName = copy.Name, copy.Description, copy.Features, copy.ProductName
+	}
 	groupIDs := NormalizePlanGroupIDs(req.GroupID, req.GroupIDs)
 	groupRates, err := NormalizePlanGroupRateMultipliers(groupIDs, req.GroupRateMultipliers)
 	if err != nil {
@@ -60,12 +77,22 @@ func (s *Plans) CreatePlan(ctx context.Context, req CreatePlanRequest) (*Subscri
 	req.Currency = currency
 	return s.store.CreatePlan(ctx, req)
 }
+
 func (s *Plans) UpdatePlan(ctx context.Context, id int64, req UpdatePlanRequest) (*SubscriptionPlan, error) {
+	// 文案更新携带内容版本，以便同时更新原文并标记过期译文。
+	if req.Localization == nil && (req.Name != nil || req.Description != nil || req.Features != nil || req.ProductName != nil) {
+		return nil, apperror.BadRequest("LOCALIZATION_REQUIRED", "Use localization to update plan text.")
+	}
+	if req.Localization != nil {
+		copy := req.Localization.Source
+		req.Name, req.Description, req.Features, req.ProductName = &copy.Name, &copy.Description, &copy.Features, &copy.ProductName
+	}
 	if err := ValidatePlanPatch(req); err != nil {
 		return nil, err
 	}
 	return s.store.UpdatePlan(ctx, id, req)
 }
+
 func (s *Plans) DeletePlan(ctx context.Context, id int64) error {
 	count, err := s.orders.CountInProgressByPlan(ctx, id)
 	if err != nil {

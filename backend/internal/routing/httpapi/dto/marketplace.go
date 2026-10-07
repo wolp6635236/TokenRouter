@@ -4,6 +4,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
@@ -113,9 +115,11 @@ type ModelMarketplaceAvailability struct {
 }
 
 type ModelMarketplaceGroup struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	SearchTerms []string          `json:"search_terms,omitempty"`
+	Resolution  locale.Resolution `json:"localization_resolution"`
+	ID          int64             `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
 
 	DisplayBrand               string                        `json:"display_brand"`
 	SortOrder                  int                           `json:"sort_order"`
@@ -146,6 +150,7 @@ func ModelMarketplaceGroupsFromRouting(groups []routing.ModelMarketplaceGroup) [
 		}
 
 		out = append(out, ModelMarketplaceGroup{
+			SearchTerms: group.SearchTerms, Resolution: group.Resolution,
 			ID:          group.ID,
 			Name:        group.Name,
 			Description: group.Description,

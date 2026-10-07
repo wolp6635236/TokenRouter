@@ -61,8 +61,6 @@ const (
 
 	StorageTierUnlimited = 100 * TB // 100TB
 	StorageTierAIPremium = 2 * TB   // 2TB
-	StorageTierStandard  = 200 * GB // 200GB
-	StorageTierBasic     = 100 * GB // 100GB
 	StorageTierFree      = 15 * GB  // 15GB
 )
 

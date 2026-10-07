@@ -9,7 +9,7 @@ type CountPorts interface {
 	ResolveModel(context.Context, string) string
 	ReplaceModel([]byte, string) []byte
 	IsCountClaudeCode(context.Context, string) bool
-	NormalizeOAuth([]byte, string, NormalizeOptions) ([]byte, string)
+	NormalizeOAuth([]byte, NormalizeOptions) []byte
 	RewriteCache(context.Context, []byte) []byte
 	RewriteTools([]byte) ([]byte, bool)
 	ToolsLast([]byte) []byte

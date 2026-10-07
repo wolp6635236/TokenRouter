@@ -1,10 +1,12 @@
 package routing
 
 import (
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 type CreateGroupInput struct {
+	Localization  *locale.Update[GroupCopy]
 	RoutingPolicy GroupRoutingPolicy
 	Name          string
 	Description   string
@@ -67,6 +69,7 @@ type CreateGroupInput struct {
 }
 
 type UpdateGroupInput struct {
+	Localization  *locale.Update[GroupCopy]
 	RoutingPolicy *GroupRoutingPolicy
 	Name          string
 	Description   *string

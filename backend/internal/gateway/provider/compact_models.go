@@ -22,7 +22,7 @@ func (p compactAttemptModels) ProviderModel(model string) (string, bool) {
 }
 func (p compactAttemptModels) GlobalModel() string { return p.defaults.Default }
 func (p compactAttemptModels) ResolveGlobalModel(model string) string {
-	return ExecutionModelPolicy(p.target).OpenAIUpstream(model, false, false)
+	return ExecutionModelPolicy(p.target).OpenAIUpstream(model, false)
 }
 
 func (p CompactModels) Recovery(target *ExecutionProvider) compact.Recovery {

@@ -11,6 +11,7 @@ func GroupFromRoutingBase(g *routing.Group) Group {
 		Models: append([]string{}, g.Models...), ModelProtocols: g.ModelProtocols,
 		ID:                              g.ID,
 		Name:                            g.Name,
+		DisplayName:                     g.DisplayName,
 		Description:                     g.Description,
 		DisplayBrand:                    g.DisplayBrand,
 		RateMultiplier:                  g.RateMultiplier,
@@ -45,6 +46,7 @@ func AdminGroupFromRouting[A any](g *routing.Group) *AdminGroup[A] {
 		return nil
 	}
 	out := &AdminGroup[A]{
+		Localization:               routing.GroupLocalization(routing.GroupContent(g)),
 		Group:                      GroupFromRoutingBase(g),
 		ForceOpenAIFast:            g.ForceOpenAIFast,
 		OpenAIFastPolicy:           g.EffectiveOpenAIFastPolicy(),
@@ -68,11 +70,18 @@ func AdminGroupFromRouting[A any](g *routing.Group) *AdminGroup[A] {
 }
 
 // GroupFromRouting 将分组转换为用户或管理员的 DTO 字段。
-func GroupFromRouting(g *routing.Group) *Group {
+func GroupFromRouting(g *routing.Group, language ...string) *Group {
 	if g == nil {
 		return nil
 	}
 	out := GroupFromRoutingBase(g)
+	if len(language) > 0 {
+		copy, actual := routing.GroupDisplay(g, language[0])
+		out.LocalizationResolution = &actual
+		out.SearchTerms = routing.GroupSearchTexts(g)
+		out.DisplayName = copy.DisplayName
+		out.Description = copy.Description
+	}
 	return &out
 }
 

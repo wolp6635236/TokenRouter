@@ -1,5 +1,3 @@
-//go:build unit
-
 package identity_test
 
 // runProfileBackground 异步执行缓存失效，各用例通过同步断言等待完成。

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/notification/contract"
 )
 
@@ -64,6 +66,7 @@ func (s *Mailer) GetSMTPConfig(ctx context.Context) (*SMTPConfig, error) {
 		SettingKeySMTPPassword,
 		SettingKeySMTPFrom,
 		SettingKeySMTPFromName,
+		locale.TextSettingKey(SettingKeySMTPFromName),
 		SettingKeySMTPUseTLS,
 	}
 
@@ -92,7 +95,7 @@ func (s *Mailer) GetSMTPConfig(ctx context.Context) (*SMTPConfig, error) {
 		Username: strings.TrimSpace(settings[SettingKeySMTPUsername]),
 		Password: strings.TrimSpace(settings[SettingKeySMTPPassword]),
 		From:     strings.TrimSpace(settings[SettingKeySMTPFrom]),
-		FromName: strings.TrimSpace(settings[SettingKeySMTPFromName]),
+		FromName: locale.ResolveSettingText(settings, SettingKeySMTPFromName, "", locale.FromContext(ctx)),
 		UseTLS:   useTLS,
 	}, nil
 }
@@ -123,4 +126,13 @@ func (s *NotificationEmailService) CheckTransport(ctx context.Context) error {
 	}
 	_, err := source.GetSMTPConfig(ctx)
 	return err
+}
+
+// SendUserNotification 让用户邮件及内置模板回退共用语言选择和发送状态。
+func (s *Mailer) SendUserNotification(ctx context.Context, input SendRequest) error {
+	sender := s.notificationEmailService
+	if sender == nil {
+		sender = NewNotificationEmailService(s.settingRepo, s)
+	}
+	return sender.Send(ctx, input)
 }

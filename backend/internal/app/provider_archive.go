@@ -23,9 +23,9 @@ func (p grokImportQuotaProbe) QueryQuota(ctx context.Context, id int64) (*provid
 }
 
 // provideProviderArchive 为文件导入导出绑定共享的代理、提供商、探测和隐私组件。
-func provideProviderArchive(admin *provider.Admin, proxies *egress.ProxyTransfer, privacy *provider.PrivacyService, settings *provider.RuntimeSettings, probes *provider.GrokImportProbeScheduler, grok *provider.GrokQuotaService, tasks *lifecycle.Tasks) *provider.Archive {
+func provideProviderArchive(admin *provider.Admin, proxies *egress.ProxyTransfer, privacy *provider.PrivacyService, probes *provider.GrokImportProbeScheduler, grok *provider.GrokQuotaService, tasks *lifecycle.Tasks) *provider.Archive {
 	options := provider.ArchiveOptions{
-		Now: time.Now, Info: slog.Info, Error: slog.Error, Debug: slog.Debug, DecodeIDToken: provideradapter.DecodeArchiveIDToken, Background: tasks.Go, ForcePrivacy: privacy.ForceAntigravityPrivacy, Defaults: settings.GetOpenAIOAuthImportDefaults,
+		Now: time.Now, Info: slog.Info, Error: slog.Error, Debug: slog.Debug, DecodeIDToken: provideradapter.DecodeArchiveIDToken, Background: tasks.Go, ForcePrivacy: privacy.ForceAntigravityPrivacy,
 		Probe: func(snapshot provider.ProviderSnapshot) {
 			probes.Schedule(grokImportQuotaProbe{source: grok}, &snapshot)
 		},

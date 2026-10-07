@@ -393,15 +393,46 @@ func parseEasyPayQueryResponse(statusCode int, body []byte, fallbackTradeNo stri
 	}, nil
 }
 
+// VerifyNotification 检查易支付通知字段和签名后解析支付结果。
+// @project-doc docs/domains/payments_and_entitlements.md#callback_security
 func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[string]string) (*payment.PaymentNotification, error) {
 	values, err := url.ParseQuery(rawBody)
 	if err != nil {
 		return nil, fmt.Errorf("parse notify: %w", err)
 	}
-	// url.ParseQuery already decodes values — no additional decode needed.
-	params := make(map[string]string)
-	for k := range values {
-		params[k] = values.Get(k)
+	// 易支付签名直接拼接参数值，验签前需要检查字段名和结构化字段的内容。
+	params := make(map[string]string, len(values))
+	for key, entries := range values {
+		switch key {
+		case "pid", "trade_no", "out_trade_no", "type", "name", "money", "trade_status", "param", "sign", "sign_type":
+		default:
+			return nil, fmt.Errorf("unexpected notify param: %s", key)
+		}
+		// 每个字段对应一个值，重复字段会让不同处理步骤读取到不同内容。
+		if len(entries) != 1 {
+			return nil, fmt.Errorf("duplicate notify param: %s", key)
+		}
+		params[key] = entries[0]
+	}
+	// 商品名和扩展参数允许自由文本，订单标识等字段需要独立于参数分隔符。
+	for _, key := range []string{"pid", "trade_no", "out_trade_no", "type", "money", "trade_status"} {
+		value := params[key]
+		if value == "" {
+			return nil, fmt.Errorf("missing notify param: %s", key)
+		}
+		if strings.ContainsAny(value, "&=\x00\r\n") || strings.TrimSpace(value) != value {
+			return nil, fmt.Errorf("invalid notify param: %s", key)
+		}
+	}
+	if !payment.ConfigEasyPayCustomMethodCodePattern.MatchString(params["type"]) {
+		return nil, fmt.Errorf("invalid notify param: type")
+	}
+	if params["pid"] != strings.TrimSpace(e.config["pid"]) {
+		return nil, fmt.Errorf("easypay notify pid mismatch")
+	}
+	amount, err := strconv.ParseFloat(params["money"], 64)
+	if err != nil || !payment.IsValidProviderAmount(amount) {
+		return nil, fmt.Errorf("invalid notify param: money")
 	}
 	sign := params["sign"]
 	if sign == "" {
@@ -414,18 +445,9 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[st
 	if params["trade_status"] == tradeStatusSuccess {
 		status = payment.ProviderStatusSuccess
 	}
-	amount, _ := strconv.ParseFloat(params["money"], 64)
-
-	metadata := e.MerchantIdentityMetadata()
-	if pid := strings.TrimSpace(params["pid"]); pid != "" {
-		if metadata == nil {
-			metadata = map[string]string{}
-		}
-		metadata["pid"] = pid
-	}
 	return &payment.PaymentNotification{
 		TradeNo: params["trade_no"], OrderID: params["out_trade_no"],
-		Amount: amount, Status: status, RawData: rawBody, Metadata: metadata,
+		Amount: amount, Status: status, RawData: rawBody, Metadata: e.MerchantIdentityMetadata(),
 	}, nil
 }
 

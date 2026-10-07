@@ -81,7 +81,7 @@ def main() -> int:
                 return result.returncode
             different = True
     if args.check and different:
-        print("请运行 make fmt-go-changed，并检查、重新暂存格式化后的文件。", file=sys.stderr)
+        print("请运行 make fmt，并检查、重新暂存格式化后的文件。", file=sys.stderr)
         return 1
     print(f"已{'检查' if args.check else '格式化'} {len(files)} 个手写 Go 文件。")
     return 0

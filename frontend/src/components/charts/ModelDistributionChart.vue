@@ -230,6 +230,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import { vSegmented } from '@/directives/segmented'
 import ExpandableTableRow from '@/components/common/ExpandableTableRow.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -483,7 +484,7 @@ const rankingDoughnutOptions = computed(() => ({
 }))
 
 const formatNumber = (value: number): string => {
-  return toFiniteNumber(value).toLocaleString()
+  return toFiniteNumber(value).toLocaleString(getLocale())
 }
 
 const getRankingUserLabel = (item: UserSpendingRankingItem): string => {

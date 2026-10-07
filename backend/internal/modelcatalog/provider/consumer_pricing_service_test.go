@@ -528,8 +528,8 @@ func TestDefaultPricingIncludesGemini35FlashRates(t *testing.T) {
 	}
 }
 
-// TestDefaultCatalogDoesNotReintroduceLegacyModels 验证旧资源独有模型不会被隐式并回统一目录。
-func TestDefaultCatalogDoesNotReintroduceLegacyModels(t *testing.T) {
+// TestDefaultCatalogRequiresConfiguredAutoReviewPricing 要求内部型号通过手动价卡或模型映射取得价格。
+func TestDefaultCatalogRequiresConfiguredAutoReviewPricing(t *testing.T) {
 	service := newOfflinePricingFixture(t)
 	require.NotContains(t, service.Snapshot().Data, "codex-auto-review")
 	require.Nil(t, service.GetModelPricing("codex-auto-review"))

@@ -14,6 +14,8 @@ const (
 	Label = "announcement"
 	// FieldID holds the string denoting the id field in the database.
 	FieldID = "id"
+	// FieldLocalization holds the string denoting the localization field in the database.
+	FieldLocalization = "localization"
 	// FieldTitle holds the string denoting the title field in the database.
 	FieldTitle = "title"
 	// FieldContent holds the string denoting the content field in the database.
@@ -52,6 +54,7 @@ const (
 // Columns holds all SQL columns for announcement fields.
 var Columns = []string{
 	FieldID,
+	FieldLocalization,
 	FieldTitle,
 	FieldContent,
 	FieldStatus,

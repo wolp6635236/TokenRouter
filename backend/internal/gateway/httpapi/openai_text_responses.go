@@ -198,10 +198,7 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 	}
 	// 客户端声明的生图意图用于权限、并发和提供商能力检查，宽泛意图用于转发时的工具处理与计费。
 	imageIntent := h.backend.ExplicitImageIntent("/v1/responses", routingModel, forwardBody)
-	// HTTP Responses 入口按提供商开关启用自动透传，upstream 据此计算用于限制检查的模型。
-	selectionCtx := h.backend.PassthroughContext(c.Request.Context())
-	// 错误诊断使用同一入口的模型规则，可透传模型按透传资格判断。
-	c.Request = c.Request.WithContext(selectionCtx)
+	selectionCtx := c.Request.Context()
 	if imageIntent {
 		// 生图家族限流的上下文标记使用分组映射后的客户端生图意图。
 		selectionCtx = h.backend.ImageContext(selectionCtx)

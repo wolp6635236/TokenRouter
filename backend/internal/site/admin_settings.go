@@ -27,14 +27,10 @@ type AdminSettings struct {
 	PurchaseSubscriptionEnabled bool                     `json:"purchase_subscription_enabled"`
 	PurchaseSubscriptionURL     string                   `json:"purchase_subscription_url"`
 	SiteLogo                    string                   `json:"site_logo"`
+	SiteTexts                   LocalizedTexts           `json:"site_texts"`
+	DefaultLocale               string                   `json:"default_locale"`
 	SiteName                    string                   `json:"site_name"`
-	SiteNameEn                  string                   `json:"site_name_en"`
-	SiteNameZh                  string                   `json:"site_name_zh"`
 	SiteSubtitle                string                   `json:"site_subtitle"`
-	SiteSubtitleEn              string                   `json:"site_subtitle_en"`
-	SiteSubtitleZh              string                   `json:"site_subtitle_zh"`
-	SiteTitleEn                 string                   `json:"site_title_en"`
-	SiteTitleZh                 string                   `json:"site_title_zh"`
 	TableDefaultPageSize        int                      `json:"table_default_page_size"`
 	TablePageSizeOptions        []int                    `json:"table_page_size_options"`
 }
@@ -47,6 +43,16 @@ const (
 // PrepareAdminSettings 规范化登录协议和表格配置，生成站点待保存值。
 func PrepareAdminSettings(settings *AdminSettings) (map[string]string, error) {
 	updates := map[string]string{}
+	if settings.SiteTexts != nil {
+		raw, err := json.Marshal(settings.SiteTexts)
+		if err != nil {
+			return nil, err
+		}
+		updates[SettingKeySiteTexts] = string(raw)
+	}
+	if settings.DefaultLocale != "" {
+		updates[SettingKeyDefaultLocale] = settings.DefaultLocale
+	}
 	updates[SettingKeyFrontendURL] = settings.FrontendURL
 	settings.LoginAgreementMode = NormalizeLoginAgreementMode(settings.LoginAgreementMode)
 	settings.LoginAgreementUpdatedAt = strings.TrimSpace(settings.LoginAgreementUpdatedAt)
@@ -64,12 +70,6 @@ func PrepareAdminSettings(settings *AdminSettings) (map[string]string, error) {
 	updates[SettingKeySiteName] = settings.SiteName
 	updates[SettingKeySiteLogo] = settings.SiteLogo
 	updates[SettingKeySiteSubtitle] = settings.SiteSubtitle
-	updates[SettingKeySiteNameZh] = settings.SiteNameZh
-	updates[SettingKeySiteNameEn] = settings.SiteNameEn
-	updates[SettingKeySiteTitleZh] = settings.SiteTitleZh
-	updates[SettingKeySiteTitleEn] = settings.SiteTitleEn
-	updates[SettingKeySiteSubtitleZh] = settings.SiteSubtitleZh
-	updates[SettingKeySiteSubtitleEn] = settings.SiteSubtitleEn
 	updates[SettingKeyAPIBaseURL] = settings.APIBaseURL
 	updates[SettingKeyContactInfo] = settings.ContactInfo
 	updates[SettingKeyDocURL] = settings.DocURL

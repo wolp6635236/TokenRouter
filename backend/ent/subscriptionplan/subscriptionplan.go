@@ -14,6 +14,8 @@ const (
 	Label = "subscription_plan"
 	// FieldID holds the string denoting the id field in the database.
 	FieldID = "id"
+	// FieldLocalization holds the string denoting the localization field in the database.
+	FieldLocalization = "localization"
 	// FieldName holds the string denoting the name field in the database.
 	FieldName = "name"
 	// FieldDescription holds the string denoting the description field in the database.
@@ -75,6 +77,7 @@ const (
 // Columns holds all SQL columns for subscriptionplan fields.
 var Columns = []string{
 	FieldID,
+	FieldLocalization,
 	FieldName,
 	FieldDescription,
 	FieldPrice,

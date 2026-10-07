@@ -12,7 +12,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -102,11 +101,11 @@ func NewAPIKeyAuthorization(apiKeyService *apikey.APIKeyService, subscriptionSer
 		if billingErr != nil {
 			switch {
 			case errors.Is(billingErr, billing.ErrPreferredSubscriptionGroup):
-				httpx.AbortWithError(c, 403, "PREFERRED_SUBSCRIPTION_GROUP_NOT_ALLOWED", billingErr.Error())
+				keyhttp.AbortWithError(c, 403, "PREFERRED_SUBSCRIPTION_GROUP_NOT_ALLOWED", billingErr.Error())
 			case errors.Is(billingErr, billing.ErrPreferredSubscriptionInvalid):
-				httpx.AbortWithError(c, 403, "PREFERRED_SUBSCRIPTION_INVALID", billingErr.Error())
+				keyhttp.AbortWithError(c, 403, "PREFERRED_SUBSCRIPTION_INVALID", billingErr.Error())
 			default:
-				httpx.AbortWithError(c, 500, "INTERNAL_ERROR", "Failed to validate subscription")
+				keyhttp.AbortWithError(c, 500, "INTERNAL_ERROR", "Failed to validate subscription")
 			}
 			return
 		}
@@ -124,15 +123,15 @@ func NewAPIKeyAuthorization(apiKeyService *apikey.APIKeyService, subscriptionSer
 				case admission.KeyQuotaExceeded:
 					AbortAPIKeyQuotaError(c)
 				case admission.KeyExpired:
-					httpx.AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+					keyhttp.AbortWithError(c, 403, "API_KEY_EXPIRED", "The API key has expired.")
 				case admission.MaintenanceFailed:
-					httpx.AbortWithError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
+					keyhttp.AbortWithError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
 				case admission.SubscriptionLimitExceeded:
-					httpx.AbortWithError(c, 429, "USAGE_LIMIT_EXCEEDED", failure.Error())
+					keyhttp.AbortWithError(c, 429, "USAGE_LIMIT_EXCEEDED", failure.Error())
 				case admission.SubscriptionInvalid:
-					httpx.AbortWithError(c, 403, "SUBSCRIPTION_INVALID", failure.Error())
+					keyhttp.AbortWithError(c, 403, "SUBSCRIPTION_INVALID", failure.Error())
 				case admission.InsufficientBalance:
-					httpx.AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+					keyhttp.AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 				}
 				return
 			}
@@ -201,7 +200,7 @@ func NewGoogleAPIKeyAuthorization(apiKeyService *apikey.APIKeyService, subscript
 		if !admission.GroupAllowed(apiKey) {
 			options.business(c)
 			options.reject(c, "group_not_allowed")
-			keyhttp.AbortGoogleError(c, 403, "API Key 所属专属分组不再允许当前用户使用")
+			keyhttp.AbortGoogleError(c, 403, "You do not have access to the selected group.")
 			return
 		}
 		ApplyAPIKeyModelRedirect(c, apiKey)
@@ -237,9 +236,9 @@ func NewGoogleAPIKeyAuthorization(apiKeyService *apikey.APIKeyService, subscript
 				switch failure.Kind {
 				case admission.KeyQuotaExceeded:
 					status = 429
-					message = "API key 额度已用完"
+					message = "The API key quota has been exhausted."
 				case admission.KeyExpired:
-					message = "API key 已过期"
+					message = "The API key has expired."
 				case admission.MaintenanceFailed:
 					status = 500
 					message = "Failed to maintain subscription usage windows"
@@ -282,12 +281,12 @@ func NewGoogleAPIKeyAuthorization(apiKeyService *apikey.APIKeyService, subscript
 }
 
 func AbortAPIKeyQuotaError(c *gin.Context) {
-	const message = "API key 额度已用完"
+	const message = "The API key quota has been exhausted."
 	if IsOpenAICompatibleAPIKeyRequest(c) {
 		AbortOpenAIQuotaError(c, http.StatusTooManyRequests, message)
 		return
 	}
-	httpx.AbortWithError(c, http.StatusTooManyRequests, "API_KEY_QUOTA_EXHAUSTED", message)
+	keyhttp.AbortWithError(c, http.StatusTooManyRequests, "API_KEY_QUOTA_EXHAUSTED", message)
 }
 
 func IsOpenAICompatibleAPIKeyRequest(c *gin.Context) bool {
@@ -327,7 +326,7 @@ func abortAuthorizationGroupUnavailable(c *gin.Context, key *apikey.APIKey, o AP
 	if key != nil && !key.IsComposite && key.GroupID == nil && !IsAPIKeyUsageRequest(c.Request.Method, c.Request.URL.Path) && !IsBatchImageBillingBypassRequest(c.Request.Method, c.Request.URL.Path) && !IsGrokVideoTaskRead(c.Request.Method, c.Request.URL.Path) {
 		o.business(c)
 		o.reject(c, "group_unassigned")
-		httpx.AbortWithError(c, http.StatusForbidden, "GROUP_REQUIRED", "API Key 尚未绑定分组，请先在控制台选择分组")
+		keyhttp.AbortWithError(c, http.StatusForbidden, "GROUP_REQUIRED", "Select a group for this API key in the console")
 		return true
 	}
 
@@ -341,7 +340,7 @@ func abortAuthorizationGroupUnavailable(c *gin.Context, key *apikey.APIKey, o AP
 	} else {
 		o.reject(c, "group_disabled")
 	}
-	httpx.AbortWithError(c, 403, code, message)
+	keyhttp.AbortWithError(c, 403, code, message)
 	return true
 }
 
@@ -351,7 +350,7 @@ func abortAuthorizationGroupNotAllowed(c *gin.Context, key *apikey.APIKey, o API
 	}
 	o.business(c)
 	o.reject(c, "group_not_allowed")
-	httpx.AbortWithError(c, 403, "GROUP_NOT_ALLOWED", "API Key 所属专属分组不再允许当前用户使用")
+	keyhttp.AbortWithError(c, 403, "GROUP_NOT_ALLOWED", "You do not have access to the selected group.")
 	return true
 }
 
@@ -384,7 +383,7 @@ func acquireKeyRequest(c *gin.Context, keys *apikey.APIKeyService, key *apikey.A
 	if options.Authentication.Google {
 		keyhttp.AbortGoogleError(c, status, err.Error())
 	} else {
-		httpx.AbortWithError(c, status, code, err.Error())
+		keyhttp.AbortWithError(c, status, code, err.Error())
 	}
 	return nil, false
 }

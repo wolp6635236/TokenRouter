@@ -40,14 +40,15 @@ type UserListFilters struct {
 // 注意这里没有 balance / total_recharged：余额只能经由 AdjustBalance、
 // SetBalance、UpdateBalance、DeductBalance 等原子接口修改，Update 永远不碰它们。
 type UserUpdateFields struct {
-	Email        bool
-	Username     bool
-	Notes        bool
-	PasswordHash bool
-	Role         bool
-	Status       bool
-	Concurrency  bool
-	RPMLimit     bool
+	PreferredLocale bool
+	Email           bool
+	Username        bool
+	Notes           bool
+	PasswordHash    bool
+	Role            bool
+	Status          bool
+	Concurrency     bool
+	RPMLimit        bool
 	// APIKeyLimit 是 fork 的用户级 API Key 数量上限。
 	APIKeyLimit  bool
 	SignupSource bool
@@ -178,6 +179,8 @@ type StartUserIdentityBindingResult struct {
 
 // UpdateProfileRequest 更新用户资料请求
 type UpdateProfileRequest struct {
+	ClearPreferredLocale   bool     `json:"-"`
+	PreferredLocale        *string  `json:"preferred_locale"`
 	Email                  *string  `json:"email"`
 	Username               *string  `json:"username"`
 	AvatarURL              *string  `json:"avatar_url"`

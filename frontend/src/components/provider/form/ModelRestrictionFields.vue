@@ -6,7 +6,7 @@
     <SettingsSegmented
       v-model="mode"
       block
-      :aria-label="t('admin.providers.modelRestriction')"
+      :ariaLabel="t('admin.providers.modelRestriction')"
       :options="modeOptions"
     />
 

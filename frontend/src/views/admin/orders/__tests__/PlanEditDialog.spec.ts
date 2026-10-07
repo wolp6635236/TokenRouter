@@ -132,8 +132,8 @@ describe('PlanEditDialog', () => {
     const inputs = wrapper.findAll('input')
     await inputs[0].setValue('Starter')
     await wrapper.find('textarea').setValue('Starter plan')
-    await inputs[2].setValue('9.99')
-    await inputs[4].setValue('30')
+    await wrapper.find('[data-testid="plan-price"]').setValue('9.99')
+    await wrapper.find('[data-testid="plan-validity_days"]').setValue('30')
     await wrapper.find('input[maxlength="3"]').setValue('nzd')
     await wrapper.find('form').trigger('submit.prevent')
     await flushPromises()
@@ -161,9 +161,9 @@ describe('PlanEditDialog', () => {
     const inputs = wrapper.findAll('input')
     await inputs[0].setValue('Starter')
     await wrapper.find('textarea').setValue('Starter plan')
-    await inputs[2].setValue('9.99')
-    await inputs[4].setValue('30')
-    await inputs[5].setValue('5')
+    await wrapper.find('[data-testid="plan-price"]').setValue('9.99')
+    await wrapper.find('[data-testid="plan-validity_days"]').setValue('30')
+    await wrapper.find('[data-testid="plan-daily_limit_usd"]').setValue('5')
     await wrapper.find('form').trigger('submit.prevent')
     await flushPromises()
 
@@ -188,11 +188,11 @@ describe('PlanEditDialog', () => {
     const inputs = wrapper.findAll('input')
     await inputs[0].setValue('Starter')
     await wrapper.find('textarea').setValue('Starter plan')
-    await inputs[2].setValue('9.99')
-    await inputs[4].setValue('30')
-    await inputs[5].setValue('10')
-    await inputs[6].setValue('0')
-    await inputs[7].setValue('100')
+    await wrapper.find('[data-testid="plan-price"]').setValue('9.99')
+    await wrapper.find('[data-testid="plan-validity_days"]').setValue('30')
+    await wrapper.find('[data-testid="plan-daily_limit_usd"]').setValue('10')
+    await wrapper.find('[data-testid="plan-weekly_limit_usd"]').setValue('0')
+    await wrapper.find('[data-testid="plan-monthly_limit_usd"]').setValue('100')
     await wrapper.find('form').trigger('submit.prevent')
     await flushPromises()
 
@@ -213,8 +213,8 @@ describe('PlanEditDialog', () => {
     const inputs = wrapper.findAll('input')
     await inputs[0].setValue('Global')
     await wrapper.find('textarea').setValue('Global plan')
-    await inputs[2].setValue('9.99')
-    await inputs[4].setValue('30')
+    await wrapper.find('[data-testid="plan-price"]').setValue('9.99')
+    await wrapper.find('[data-testid="plan-validity_days"]').setValue('30')
     await wrapper.find('form').trigger('submit.prevent')
     await flushPromises()
 
@@ -234,8 +234,8 @@ describe('PlanEditDialog', () => {
     const inputs = wrapper.findAll('input')
     await inputs[0].setValue('Grouped')
     await wrapper.find('textarea').setValue('Grouped plan')
-    await inputs[2].setValue('9.99')
-    await inputs[4].setValue('30')
+    await wrapper.find('[data-testid="plan-price"]').setValue('9.99')
+    await wrapper.find('[data-testid="plan-validity_days"]').setValue('30')
     await wrapper.find('input[type="checkbox"][value="1"]').setValue(true)
     await wrapper.find('input[type="number"][placeholder="1.5x"]').setValue('1.25')
     await wrapper.find('form').trigger('submit.prevent')
@@ -255,7 +255,7 @@ describe('PlanEditDialog', () => {
       recharge_fee_rate: 2.5
     })
 
-    await wrapper.findAll('input')[2].setValue('9.99')
+    await wrapper.find('[data-testid="plan-price"]').setValue('9.99')
 
     expect(wrapper.text()).toContain(formatPaymentAmount(71.43, 'CNY'))
     expect(wrapper.text()).toContain('fee 2.5%')
@@ -268,7 +268,7 @@ describe('PlanEditDialog', () => {
       recharge_fee_rate: 2.5
     })
 
-    await wrapper.findAll('input')[2].setValue('9.99')
+    await wrapper.find('[data-testid="plan-price"]').setValue('9.99')
 
     expect(wrapper.text()).not.toContain('CNY charge:')
     expect(wrapper.text()).not.toContain(formatPaymentAmount(71.43, 'CNY'))

@@ -8,16 +8,16 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // TestSessionAndWindowCachesKeepIndependentState 检查会话与窗口缓存使用各自的键，数据彼此独立。
 func TestSessionAndWindowCachesKeepIndependentState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)

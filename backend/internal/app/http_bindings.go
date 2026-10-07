@@ -37,6 +37,17 @@ func provideRouterRuntime(public *site.PublicService, pages *sitehttp.PageHandle
 	manager.Register(lifecycle.Hook{Name: "SettingsUpdateAdmission", StopOrder: 14, Stop: func(context.Context) error { store.Updates().Seal(); return nil }})
 	manager.Register(lifecycle.Hook{Name: "SettingsUpdates", StopOrder: 17, Stop: store.Updates().Stop})
 
+	var defaultLanguage atomic.Value
+	defaultLanguage.Store("en")
+	refreshLanguage := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if value, err := store.GetValue(ctx, "default_locale"); err == nil {
+			defaultLanguage.Store(value)
+		}
+	}
+	refreshLanguage()
+	store.Subscribe(refreshLanguage)
 	var origins atomic.Pointer[[]string]
 	empty := []string{}
 	origins.Store(&empty)
@@ -50,6 +61,7 @@ func provideRouterRuntime(public *site.PublicService, pages *sitehttp.PageHandle
 	}
 	middleware.SetIngressRejectRecorder(opsService)
 	rt := &server.RouterRuntime{Middleware: []gin.HandlerFunc{
+		middleware.Locale(func() string { value, _ := defaultLanguage.Load().(string); return value }),
 		middleware.RequestLogger(), identityhttp.SessionBindingContext(func() identityhttp.ForwardedIPSettings {
 			value := cfg.ForwardedClientIPSettings()
 			return identityhttp.ForwardedIPSettings{TrustForwardedIP: value.TrustForwardedIP, Headers: value.Headers}

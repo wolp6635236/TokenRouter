@@ -37,6 +37,11 @@ export const useAnnouncementStore = defineStore('announcements', () => {
       const all = await announcementsAPI.list(false, force)
       // 保留完整可见列表，确保不同界面可以按各自规则排序和统计。
       announcements.value = all
+      if (currentPopup.value) currentPopup.value = all.find(item => item.id === currentPopup.value?.id) || null
+      popupQueue.value = popupQueue.value.flatMap(item => {
+        const updated = all.find(candidate => candidate.id === item.id)
+        return updated ? [updated] : []
+      })
       enqueueNewPopups()
     } catch (err: any) {
       // Revert throttle timestamp on failure so retry is allowed

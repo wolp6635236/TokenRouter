@@ -73,7 +73,7 @@ func (s *QoderProviderTest) Execute(c *TestRun, value *providercore.Record, mode
 		return (TestStreamOutput{}).Error(c, "Failed to encode Qoder test payload")
 	}
 	mapping := providercore.ResolveModelMapping(value, ModelDefaults())
-	if mapped, matched := providercore.ResolveMappedModel(value.Platform, mapping, strings.TrimSpace(qoder.GjsonString(requestBody, "model"))); matched && mapped != "" {
+	if mapped, matched := providercore.ResolveMappedModel(mapping, strings.TrimSpace(qoder.GjsonString(requestBody, "model"))); matched && mapped != "" {
 		requestBody = s.RewriteModel(requestBody, mapped)
 	}
 	payload, modelKey, err := qoder.BuildQoderPayloadFromChatCompletionsForSite(requestBody, qoder.FirstNonEmptyQoder(value.GetCredential("user_type"), "personal_standard"), site)

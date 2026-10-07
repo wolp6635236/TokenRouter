@@ -39,7 +39,7 @@ func TestOpenAIFastBillingUsesExplicitCatalogRates(t *testing.T) {
 			CacheReadInputTokenCostPriority: 1e-6,
 		},
 	}
-	billing := billingtestkit.Calculator(0, newCatalogFixture(catalogFixture{pricingData: catalog}), nil)
+	billing := billingtestkit.Calculator(newCatalogFixture(catalogFixture{pricingData: catalog}), nil)
 	tokens := billingpricing.UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000}
 
 	standard := func(model string) *billingpricing.CostBreakdown {
@@ -94,7 +94,7 @@ func TestOpenAIFastBillingUsesExplicitCatalogRates(t *testing.T) {
 }
 
 func TestOpenAIFastBilling_FastMultiplierOverridesCatalogRates(t *testing.T) {
-	svc := billingtestkit.Calculator(0, nil, map[string]*billingpricing.ModelPricing{})
+	svc := billingtestkit.Calculator(nil, map[string]*billingpricing.ModelPricing{})
 	t.Parallel()
 
 	catalog := &billingpricing.ModelPricing{

@@ -22,7 +22,7 @@ export async function getAvailable(
     params.subscription_id = subscriptionId
   }
   const { data } = await apiClient.get<Group[]>('/groups/available', { params })
-  return data
+  return data.map(group => ({ ...group, canonical_name: group.name, name: group.display_name || group.name }))
 }
 
 /**

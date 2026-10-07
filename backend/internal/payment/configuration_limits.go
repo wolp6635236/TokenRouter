@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
@@ -33,7 +35,7 @@ func (s *ConfigService) GetAvailableMethodLimits(ctx context.Context) (*MethodLi
 		}
 		ml := ConfigPcAggregateMethodLimits(pt, insts)
 		ml = ConfigPcApplyEffectiveMethodFee(cfg, ml)
-		ml.DisplayName = s.ConfigPcAggregateMethodDisplayName(pt, insts)
+		ml.DisplayName = s.ConfigPcAggregateMethodDisplayName(pt, insts, locale.FromContext(ctx))
 		ml.Currency = currency
 		resp.Methods[ml.PaymentType] = ml
 	}
@@ -138,8 +140,8 @@ func (s *ConfigService) ConfigPcInstancePaymentCurrency(inst *ProviderInstance) 
 	}
 	cfg := map[string]string{}
 	if s != nil {
-		decrypted, err := s.ConfigDecryptConfig(inst.Config)
-		if err == nil && decrypted != nil {
+		decrypted := s.ConfigDecryptConfig(inst.Config)
+		if decrypted != nil {
 			cfg = decrypted
 		}
 	}
@@ -147,17 +149,18 @@ func (s *ConfigService) ConfigPcInstancePaymentCurrency(inst *ProviderInstance) 
 }
 
 type ConfigEasyPayCustomMethodDisplayConfig struct {
-	Type        string `json:"type"`
-	DisplayName string `json:"displayName"`
+	DisplayNameLocalization *locale.Update[string] `json:"displayNameLocalization,omitempty"`
+	Type                    string                 `json:"type"`
+	DisplayName             string                 `json:"displayName"`
 }
 
-func (s *ConfigService) ConfigPcAggregateMethodDisplayName(pt string, instances []*ProviderInstance) string {
+func (s *ConfigService) ConfigPcAggregateMethodDisplayName(pt string, instances []*ProviderInstance, language string) string {
 	pt = strings.TrimSpace(pt)
 	if pt == "" {
 		return ""
 	}
 	for _, inst := range instances {
-		displayName := s.ConfigPcInstanceEasyPayCustomMethodDisplayName(inst, pt)
+		displayName := s.ConfigPcInstanceEasyPayCustomMethodDisplayName(inst, pt, language)
 		if displayName != "" {
 			return displayName
 		}
@@ -165,14 +168,14 @@ func (s *ConfigService) ConfigPcAggregateMethodDisplayName(pt string, instances 
 	return ""
 }
 
-func (s *ConfigService) ConfigPcInstanceEasyPayCustomMethodDisplayName(inst *ProviderInstance, pt string) string {
+func (s *ConfigService) ConfigPcInstanceEasyPayCustomMethodDisplayName(inst *ProviderInstance, pt string, language string) string {
 	if inst == nil || inst.ProviderKey != TypeEasyPay {
 		return ""
 	}
 	cfg := map[string]string{}
 	if s != nil {
-		decrypted, err := s.ConfigDecryptConfig(inst.Config)
-		if err == nil && decrypted != nil {
+		decrypted := s.ConfigDecryptConfig(inst.Config)
+		if decrypted != nil {
 			cfg = decrypted
 		}
 	}
@@ -187,6 +190,10 @@ func (s *ConfigService) ConfigPcInstanceEasyPayCustomMethodDisplayName(inst *Pro
 	}
 	for _, method := range methods {
 		if strings.TrimSpace(method.Type) == pt {
+			if method.DisplayNameLocalization != nil {
+				value, _ := method.DisplayNameLocalization.Resolve(language)
+				return value
+			}
 			return strings.TrimSpace(method.DisplayName)
 		}
 	}

@@ -110,17 +110,32 @@ export default {
       missing: 'Missing',
     },
     history: {
+      noOutputs: "No output images",
       title: 'History',
       elapsed: 'Elapsed {time}',
       toggle: 'Toggle run history',
       empty: 'No creative runs yet.',
       importToCanvas: 'Send to canvas',
       download: 'Download',
+      copyPrompt: 'Copy prompt',
+      promptCopied: 'Prompt copied',
+      reuseParams: 'Use in composer',
+      // 提示词保存在提交任务的浏览器中
+      promptUnavailable: 'This browser has no prompt saved for this run.',
+      // 侧栏参数标签使用短名称
+      params: {
+        group: 'Group',
+        size: 'Size',
+        ratio: 'Ratio',
+        thinking: 'Thinking',
+        references: 'References',
+        count: 'Images',
+      },
       clearData: 'Clear local creative data',
       clearSuccess: 'Local creative data cleared.',
       confirmClearTitle: 'Clear local creative data?',
       confirmClearMessage:
-        'This permanently deletes locally stored source images, masks, results, canvas scenes and creative drafts, and resets this browser workspace. Older history will be hidden from this browser (task metadata remains on the server), and new runs will use a new workspace. Images already generated cannot be recovered. This does not affect your account balance.',
+        'This permanently deletes locally stored source images, masks, results, canvas scenes, creative drafts and run prompts, and resets this browser workspace. Older history will be hidden from this browser (task metadata remains on the server), and new runs will use a new workspace. Images already generated cannot be recovered. Your account balance stays the same.',
     },
     status: {
       queued: 'Queued',

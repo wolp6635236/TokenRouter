@@ -145,6 +145,33 @@ const baseImageRow = {
   image_size_breakdown: null,
 }
 
+it('用量分组徽章优先显示译文，缺少展示名称时使用业务名称', async () => {
+  const wrapper = mount(UsageTable, {
+    props: {
+      data: [
+        { ...baseImageRow, request_id: 'translated', group: { id: 1, name: 'business-name', display_name: 'English group' } },
+        { ...baseImageRow, request_id: 'original', group: { id: 2, name: 'Original group' } },
+      ],
+      loading: false,
+      columns: [{ key: 'group', label: 'Group' }],
+      showProviderBilling: false,
+    },
+    global: {
+      stubs: {
+        DataTable: { props: ['data'], template: '<div><slot v-for="row in data" name="cell-group" :row="row" /></div>' },
+        GroupBadge: { props: ['name'], template: '<span data-test="group-name">{{ name }}</span>' },
+        EmptyState: true,
+        Icon: true,
+        Teleport: true,
+      },
+    },
+  })
+  expect(wrapper.findAll('[data-test="group-name"]').map(item => item.text())).toEqual(['English group', 'Original group'])
+  await wrapper.setProps({ data: [{ ...baseImageRow, group: { id: 1, name: 'business-name', display_name: '中文分组' } }] })
+  expect(wrapper.get('[data-test="group-name"]').text()).toBe('中文分组')
+  wrapper.unmount()
+})
+
 describe('admin UsageTable request ID column', () => {
   beforeEach(() => {
     clipboardMocks.copyToClipboard.mockReset().mockResolvedValue(true)

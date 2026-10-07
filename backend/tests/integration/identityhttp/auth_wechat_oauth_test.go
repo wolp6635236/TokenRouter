@@ -1,5 +1,3 @@
-//go:build unit
-
 package identityhttp_test
 
 import (
@@ -49,7 +47,6 @@ import (
 )
 
 func TestWeChatOAuthStartRedirectsAndSetsPendingCookies(t *testing.T) {
-
 	handler, client := newWeChatOAuthTestHandlerWithSettings(t, false, map[string]string{
 		identitycore.SettingKeyWeChatConnectEnabled:             "true",
 		identitycore.SettingKeyWeChatConnectAppID:               "wx-open-app",
@@ -82,7 +79,6 @@ func TestWeChatOAuthStartRedirectsAndSetsPendingCookies(t *testing.T) {
 }
 
 func TestWeChatOAuthStart_AllowsOpenModeWhenBothCapabilitiesEnabled(t *testing.T) {
-
 	handler, client := newWeChatOAuthTestHandlerWithSettings(t, false, map[string]string{
 		identitycore.SettingKeyWeChatConnectEnabled:             "true",
 		identitycore.SettingKeyWeChatConnectAppID:               "wx-shared-app",
@@ -1159,9 +1155,10 @@ func TestCompleteWeChatOAuthRegistrationRejectsAdoptExistingUserSession(t *testi
 		SetUpstreamIdentityClaims(map[string]any{
 			"username": "wechat_user",
 		}).
-		SetLocalFlowState(map[string]any{identityhttp.OauthCompletionResponseKey: map[string]any{
-			"step": "bind_login_required",
-		},
+		SetLocalFlowState(map[string]any{
+			identityhttp.OauthCompletionResponseKey: map[string]any{
+				"step": "bind_login_required",
+			},
 		}).
 		SetExpiresAt(time.Now().UTC().Add(10 * time.Minute)).
 		Save(ctx)
@@ -1201,13 +1198,14 @@ func TestCompleteWeChatOAuthRegistrationReturnsPendingSessionWhenChoiceStillRequ
 		SetUpstreamIdentityClaims(map[string]any{
 			"username": "wechat_user",
 		}).
-		SetLocalFlowState(map[string]any{identityhttp.OauthCompletionResponseKey: map[string]any{
-			"step":                  identityhttp.OauthPendingChoiceStep,
-			"redirect":              "/dashboard",
-			"email":                 "fresh@example.com",
-			"resolved_email":        "fresh@example.com",
-			"force_email_on_signup": true,
-		},
+		SetLocalFlowState(map[string]any{
+			identityhttp.OauthCompletionResponseKey: map[string]any{
+				"step":                  identityhttp.OauthPendingChoiceStep,
+				"redirect":              "/dashboard",
+				"email":                 "fresh@example.com",
+				"resolved_email":        "fresh@example.com",
+				"force_email_on_signup": true,
+			},
 		}).
 		SetExpiresAt(time.Now().UTC().Add(10 * time.Minute)).
 		Save(ctx)

@@ -68,7 +68,7 @@ func recordFixture() (*Recorder, *recordStore, *recordWriter, *Input, *[]string)
 	events := []string{}
 	funds := &recordStore{events: &events}
 	logs := &recordWriter{events: &events}
-	calculator := billing.NewCalculator(recordPriceCatalog{}, billing.CalculatorOptions{DefaultRateMultiplier: 1})
+	calculator := billing.NewCalculator(recordPriceCatalog{}, billing.CalculatorOptions{})
 	recorder := NewRecorder(Dependencies{Calculator: calculator, Funds: funds, Models: recordModels{}, Logs: logs, Effects: recordEffects{&events}}, RecorderOptions{DefaultMultiplier: 1})
 	input := &Input{
 		Result:    &Result{Model: "claude-sonnet-4", Usage: TokenUsage{InputTokens: 10, OutputTokens: 2, CacheReadInputTokens: 3, CacheCreationInputTokens: 1}},
@@ -153,5 +153,4 @@ func (recordPriceCatalog) GetModelPricing(model string) *pricing.CatalogModelPri
 	}
 	return &pricing.CatalogModelPricing{InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6}
 }
-func (recordPriceCatalog) GetStatus() map[string]any { return nil }
-func (recordPriceCatalog) ForceUpdate() error        { return nil }
+func (recordPriceCatalog) ForceUpdate() error { return nil }

@@ -276,7 +276,7 @@ func TestResolveOpenAIForwardMappedModels_CompactMappingPrecedence(t *testing.T)
 			if upstream != tt.wantUpstream {
 				t.Fatalf("upstream model = %q, want %q", upstream, tt.wantUpstream)
 			}
-			if scheduler := (ModelPolicy{Record: tt.provider}).OpenAIUpstream("gpt-5.5", tt.requireCompact, false); scheduler != upstream {
+			if scheduler := (ModelPolicy{Record: tt.provider}).OpenAIUpstream("gpt-5.5", tt.requireCompact); scheduler != upstream {
 				t.Fatalf("scheduler model %q disagrees with Forward model %q", scheduler, upstream)
 			}
 		})
@@ -332,7 +332,8 @@ func TestResolveOpenAIErrorSchedulingModelPrefersActualUpstreamModel(t *testing.
 	}
 }
 
-func TestNormalizeCodexModel(t *testing.T) {
+// TestOpenAIUpstreamPreservesModelID 检查最终请求使用完整模型名称。
+func TestOpenAIUpstreamPreservesModelID(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.3-codex-spark":       "gpt-5.3-codex-spark",
 		"gpt-5.3-codex-spark-high":  "gpt-5.3-codex-spark-high",
@@ -346,8 +347,8 @@ func TestNormalizeCodexModel(t *testing.T) {
 	}
 
 	for input, expected := range cases {
-		if got := NormalizeCodexModel(input); got != expected {
-			t.Fatalf("normalizeCodexModel(%q) = %q, want %q", input, got, expected)
+		if got := (ModelPolicy{}).OpenAIUpstream(input, false); got != expected {
+			t.Fatalf("OpenAIUpstream(%q) = %q, want %q", input, got, expected)
 		}
 	}
 }

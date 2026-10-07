@@ -286,6 +286,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { vContentReveal } from '@/directives/contentReveal'
 import { useRoute as useMotionRoute } from 'vue-router'
 const motionRoute = useMotionRoute()
@@ -313,6 +314,7 @@ import { initTheme, useTheme } from '@/composables/useTheme'
 import { getMarketplaceModels } from '@/api/marketplace'
 import { providerBrandDisplayName, providerBrandFilterKey, resolveProviderBrand } from '@/utils/providerBrand'
 import { formatCompactTokenRange } from '@/utils/formatters'
+import { formatPriceNumber, pricingKind } from '@/utils/marketplacePricing'
 import { marketplaceProtocols } from '@/utils/marketplaceProtocols'
 import { sanitizeUrl } from '@/utils/url'
 import type { MarketplaceGroup, MarketplaceModelPricing, MarketplacePricingInterval } from '@/types'
@@ -400,6 +402,7 @@ const groupSelectOptions = computed(() => [
   ...sortedGroups.value.map((group) => ({
     value: group.id,
     label: group.name,
+    search_terms: group.search_terms,
   })),
 ])
 
@@ -415,7 +418,7 @@ const filteredGroups = computed<VisibleMarketplaceGroup[]>(() => {
       return []
     }
 
-    const groupMatchesKeyword = !keyword || [group.name, group.description, groupBrandSource(group), groupBrandLabel(group)]
+    const groupMatchesKeyword = !keyword || [group.name, group.description, groupBrandSource(group), groupBrandLabel(group), ...(group.search_terms || [])]
       .filter(Boolean)
       .some((value) => value.toLowerCase().includes(keyword))
 
@@ -428,7 +431,7 @@ const filteredGroups = computed<VisibleMarketplaceGroup[]>(() => {
         return true
       }
 
-      return [model.id, model.display_name].some((value) => value.toLowerCase().includes(keyword))
+      return [model.id, model.display_name, ...(model.attributes?.search_terms || [])].some((value) => value.toLowerCase().includes(keyword))
     })
 
     if (models.length === 0) {
@@ -452,27 +455,6 @@ function hasPositiveValue(value?: number | null): value is number {
 function hasContextIntervalPricing(pricing: MarketplaceModelPricing): boolean {
   // 缺价范围由后端排除，已返回的零价区间仍需展示范围标签。
   return (pricing.context_intervals?.length ?? 0) > 0
-}
-
-function hasImagePricing(pricing: MarketplaceModelPricing): boolean {
-  return [
-    pricing.image_price_1k,
-    pricing.image_price_2k,
-    pricing.image_price_4k,
-  ].some((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
-}
-
-function pricingKind(pricing: MarketplaceModelPricing): Exclude<PricingFilter, 'all'> {
-  if (pricing.price_status !== 'priced') {
-    return 'unpriced'
-  }
-  if (pricing.pricing_mode === 'image' && hasImagePricing(pricing)) {
-    return 'image'
-  }
-  if (pricing.pricing_mode === 'token') {
-    return 'token'
-  }
-  return 'unpriced'
 }
 
 // 面板内重置只清空下拉条件；空结果页的重置还会一并清空搜索词。
@@ -511,17 +493,6 @@ function formatMaxDiscountOff(ratio?: number): string | null {
 
 function formatPrice(value: number): string {
   return `${formatPriceNumber(value)} ${balanceUnitName.value}`
-}
-
-function formatPriceNumber(value: number): string {
-  const abs = Math.abs(value)
-  const maximumFractionDigits = abs >= 1 ? 2 : abs >= 0.01 ? 4 : 6
-  const minimumFractionDigits = abs >= 1 ? 2 : 4
-
-  return new Intl.NumberFormat(undefined, {
-    minimumFractionDigits,
-    maximumFractionDigits,
-  }).format(value)
 }
 
 function formatPerMillion(value: number): string {
@@ -720,4 +691,5 @@ onMounted(async () => {
   await fetchMarketplace()
 })
 
+useLocaleRefresh(fetchMarketplace)
 </script>

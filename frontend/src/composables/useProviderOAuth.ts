@@ -16,15 +16,6 @@ export type AuthInputMethod =
   | 'sso_cookie'
   | 'email_password'
 
-export interface OAuthState {
-  authUrl: string
-  authCode: string
-  sessionId: string
-  sessionKey: string
-  loading: boolean
-  error: string
-}
-
 export interface TokenInfo {
   org_uuid?: string
   account_uuid?: string

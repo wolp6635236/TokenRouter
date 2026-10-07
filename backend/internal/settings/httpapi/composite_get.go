@@ -164,15 +164,12 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		GoogleOAuthClientSecretConfigured:                settings.GoogleOAuthClientSecretConfigured,
 		GoogleOAuthRedirectURL:                           settings.GoogleOAuthRedirectURL,
 		GoogleOAuthFrontendRedirectURL:                   settings.GoogleOAuthFrontendRedirectURL,
+		LocalizedSettings:                                settings.LocalizedSettings,
+		SiteTexts:                                        settings.SiteTexts,
+		DefaultLocale:                                    settings.DefaultLocale,
 		SiteName:                                         settings.SiteName,
 		SiteLogo:                                         settings.SiteLogo,
 		SiteSubtitle:                                     settings.SiteSubtitle,
-		SiteNameZh:                                       settings.SiteNameZh,
-		SiteNameEn:                                       settings.SiteNameEn,
-		SiteTitleZh:                                      settings.SiteTitleZh,
-		SiteTitleEn:                                      settings.SiteTitleEn,
-		SiteSubtitleZh:                                   settings.SiteSubtitleZh,
-		SiteSubtitleEn:                                   settings.SiteSubtitleEn,
 		APIBaseURL:                                       settings.APIBaseURL,
 		ContactInfo:                                      settings.ContactInfo,
 		DocURL:                                           settings.DocURL,
@@ -366,11 +363,7 @@ func OpenaiFastPolicySettingsFromDTO(s *gatewaydto.OpenAIFastPolicySettings) *ti
 func loginAgreementDocumentsToDTO(items []site.LoginAgreementDocument) []sitedto.LoginAgreementDocument {
 	result := make([]sitedto.LoginAgreementDocument, 0, len(items))
 	for _, item := range items {
-		result = append(result, sitedto.LoginAgreementDocument{
-			ID:        item.ID,
-			Title:     item.Title,
-			ContentMD: item.ContentMD,
-		})
+		result = append(result, sitedto.LoginAgreementDocument(item))
 	}
 	return result
 }
@@ -380,13 +373,18 @@ func loginAgreementDocumentsToService(items []sitedto.LoginAgreementDocument) []
 	for _, item := range items {
 		title := strings.TrimSpace(item.Title)
 		content := strings.TrimSpace(item.ContentMD)
+		if item.Localization != nil {
+			title = item.Localization.Source.Title
+			content = item.Localization.Source.ContentMD
+		}
 		if title == "" && content == "" {
 			continue
 		}
 		result = append(result, site.LoginAgreementDocument{
-			ID:        strings.TrimSpace(item.ID),
-			Title:     title,
-			ContentMD: content,
+			ID:           strings.TrimSpace(item.ID),
+			Localization: item.Localization,
+			Title:        title,
+			ContentMD:    content,
 		})
 	}
 	return result

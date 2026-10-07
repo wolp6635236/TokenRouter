@@ -74,47 +74,46 @@ Pagination component with page numbers, navigation, and page size selector.
 
 ---
 
-### Modal.vue
+### BaseDialog.vue
 
-Modal dialog with customizable size and close behavior.
+通用弹窗提供标题、内容和页脚插槽，并管理焦点与关闭后的清理。
 
-**Props:**
+属性：
 
-- `show: boolean` - Control modal visibility
-- `title: string` - Modal title
-- `size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'` - Modal size (default: 'md')
-- `closeOnEscape?: boolean` - Close on Escape key (default: true)
-- `closeOnClickOutside?: boolean` - Close on backdrop click (default: true)
+- `show: boolean`：控制弹窗显示。
+- `title: string`：弹窗标题。
+- `width?: 'narrow' | 'normal' | 'wide' | 'extra-wide' | 'full'`：宽度档位，默认为 `normal`。
+- `closeOnEscape?: boolean`：按 Escape 触发关闭，默认开启。
+- `closeOnClickOutside?: boolean`：点击遮罩触发关闭，默认关闭。
 
-**Events:**
+事件：
 
-- `close` - Emitted when modal should close
+- `close`：调用方收到事件后关闭弹窗。
+- `after-leave`：关闭动画完成。
 
-**Slots:**
+插槽：
 
-- `default` - Modal body content
-- `footer` - Modal footer content
+- `default`：弹窗正文。
+- `footer`：页脚操作。
 
-**Usage:**
+用法：
 
 ```vue
-<Modal :show="showModal" title="Edit User" size="lg" @close="showModal = false">
+<BaseDialog :show="showDialog" title="Edit User" width="wide" @close="showDialog = false">
   <form @submit.prevent="saveUser">
-    <!-- Form content -->
+    <!-- 用户资料表单 -->
   </form>
 
   <template #footer>
-    <button @click="showModal = false">Cancel</button>
+    <button @click="showDialog = false">Cancel</button>
     <button @click="saveUser">Save</button>
   </template>
-</Modal>
+</BaseDialog>
 ```
-
----
 
 ### ConfirmDialog.vue
 
-Confirmation dialog built on top of Modal component.
+ConfirmDialog 使用 BaseDialog 显示确认内容和操作按钮。
 
 **Props:**
 
@@ -147,27 +146,6 @@ Confirmation dialog built on top of Modal component.
 
 ---
 
-### StatCard.vue
-
-Statistics card component for displaying metrics with optional change indicators.
-
-**Props:**
-
-- `title: string` - Card title
-- `value: number | string` - Main value to display
-- `icon?: Component` - Icon component
-- `change?: number` - Percentage change value
-- `changeType?: 'up' | 'down' | 'neutral'` - Change direction (default: 'neutral')
-- `formatValue?: (value) => string` - Custom value formatter
-
-**Usage:**
-
-```vue
-<StatCard title="Total Users" :value="1234" :icon="UserIcon" :change="12.5" change-type="up" />
-```
-
----
-
 ### Toast.vue
 
 Toast notification component that automatically displays toasts from the app store.
@@ -196,23 +174,6 @@ appStore.addToast({
   type: 'error',
   message: 'Failed to delete user'
 })
-```
-
----
-
-### LoadingSpinner.vue
-
-Simple animated loading spinner.
-
-**Props:**
-
-- `size?: 'sm' | 'md' | 'lg' | 'xl'` - Spinner size (default: 'md')
-- `color?: 'primary' | 'secondary' | 'white' | 'gray'` - Spinner color (default: 'primary')
-
-**Usage:**
-
-```vue
-<LoadingSpinner size="lg" color="primary" />
 ```
 
 ---
@@ -301,16 +262,12 @@ Validation is opt-in. Compute issues with `validateModelMappingRows(rows, option
 
 ## Import
 
-You can import components individually:
-
-```typescript
-import { DataTable, Pagination, Modal } from '@/components/common'
-```
-
-Or import specific components:
+组件按文件路径导入：
 
 ```typescript
 import DataTable from '@/components/common/DataTable.vue'
+import Pagination from '@/components/common/Pagination.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
 ```
 
 ## Features

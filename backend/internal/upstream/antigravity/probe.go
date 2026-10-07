@@ -151,7 +151,7 @@ func Probe(ctx context.Context, input RetryInput, options RetryOptions, model st
 	if err != nil {
 		var switchErr *AntigravityProviderSwitchError
 		if errors.As(err, &switchErr) {
-			return nil, fmt.Errorf("该提供商模型 %s 当前限流中，请稍后重试", switchErr.RateLimitedModel)
+			return nil, fmt.Errorf("provider model %s is rate limited; try again later", switchErr.RateLimitedModel)
 		}
 		return nil, err
 	}
@@ -161,10 +161,10 @@ func Probe(ctx context.Context, input RetryInput, options RetryOptions, model st
 	defer func() { _ = result.Resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(result.Resp.Body, limit()))
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if result.Resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API 返回 %d: %s", result.Resp.StatusCode, string(body))
+		return nil, fmt.Errorf("API returned %d: %s", result.Resp.StatusCode, string(body))
 	}
 	return &TestConnectionResult{Text: ExtractTextFromSSEResponse(body), MappedModel: model}, nil
 }

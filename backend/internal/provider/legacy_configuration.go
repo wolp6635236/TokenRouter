@@ -13,7 +13,7 @@ var DeprecatedOpenAIProviderExtraKeys = [...]string{
 	"openai_native_compaction_v2_last_status", "openai_native_compaction_v2_last_error",
 }
 
-// NormalizeLegacyOpenAIProviderExtra 收拢提供商和导入模板的历史兼容处理。
+// NormalizeLegacyOpenAIProviderExtra 清理提供商历史探测字段并规范化压缩开关。
 // 规范化请求携带的开关，省略项保持缺省，auto 和其他兼容值按开启处理。
 // @project-doc docs/interfaces/openai_upstream.md#openai_account_configuration
 func NormalizeLegacyOpenAIProviderExtra(extra map[string]any) {

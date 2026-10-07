@@ -42,7 +42,7 @@ export function useClipboard() {
   ): Promise<boolean> => {
     if (!text) return false
 
-    let success = false
+    let success: boolean
 
     if (isClipboardSupported()) {
       try {

@@ -15,7 +15,7 @@ type defaultCatalogStub struct {
 func (s defaultCatalogStub) GetModelPricing(model string) *pricing.CatalogModelPricing {
 	return s.entries[model]
 }
-func (s defaultCatalogStub) GetStatus() map[string]any { return nil }
+
 func (s defaultCatalogStub) ForceUpdate() error {
 	panic("default price queries must not update the catalog")
 }

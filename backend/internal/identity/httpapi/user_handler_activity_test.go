@@ -1,5 +1,3 @@
-//go:build unit
-
 package httpapi
 
 import (
@@ -15,7 +13,6 @@ import (
 )
 
 func TestUserHandlerListIncludesActivityFieldsAndSortParams(t *testing.T) {
-
 	lastLoginAt := time.Date(2026, 4, 20, 8, 0, 0, 0, time.UTC)
 	lastActiveAt := lastLoginAt.Add(30 * time.Minute)
 	lastUsedAt := lastLoginAt.Add(90 * time.Minute)
@@ -68,7 +65,6 @@ func TestUserHandlerListIncludesActivityFieldsAndSortParams(t *testing.T) {
 }
 
 func TestUserHandlerGetByIDIncludesActivityFields(t *testing.T) {
-
 	lastLoginAt := time.Date(2026, 4, 20, 8, 0, 0, 0, time.UTC)
 	lastActiveAt := lastLoginAt.Add(30 * time.Minute)
 	lastUsedAt := lastLoginAt.Add(90 * time.Minute)

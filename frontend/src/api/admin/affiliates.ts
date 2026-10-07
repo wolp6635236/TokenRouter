@@ -6,22 +6,6 @@
 import { apiClient } from '../client'
 import type { PaginatedResponse } from '@/types'
 
-export interface AffiliateAdminEntry {
-  user_id: number
-  email: string
-  username: string
-  aff_code: string
-  aff_code_custom: boolean
-  aff_rebate_rate_percent?: number | null
-  aff_count: number
-}
-
-export interface ListAffiliateUsersParams {
-  page?: number
-  page_size?: number
-  search?: string
-}
-
 export interface ListAffiliateRecordsParams {
   page?: number
   page_size?: number
@@ -93,80 +77,6 @@ export interface AffiliateUserOverview {
   history_quota: number
 }
 
-export interface UpdateAffiliateUserRequest {
-  aff_code?: string
-  aff_rebate_rate_percent?: number | null
-  /** 设为 true 时显式清除用户专属比例。 */
-  clear_rebate_rate?: boolean
-}
-
-export interface BatchSetRateRequest {
-  user_ids: number[]
-  aff_rebate_rate_percent?: number | null
-  /** 设为 true 时批量清除比例。 */
-  clear?: boolean
-}
-
-export interface SimpleUser {
-  id: number
-  email: string
-  username: string
-}
-
-export async function listUsers(
-  params: ListAffiliateUsersParams = {},
-): Promise<PaginatedResponse<AffiliateAdminEntry>> {
-  const { data } = await apiClient.get<PaginatedResponse<AffiliateAdminEntry>>(
-    '/admin/affiliates/users',
-    {
-      params: {
-        page: params.page ?? 1,
-        page_size: params.page_size ?? 20,
-        search: params.search ?? '',
-      },
-    },
-  )
-  return data
-}
-
-export async function lookupUsers(q: string): Promise<SimpleUser[]> {
-  const { data } = await apiClient.get<SimpleUser[]>(
-    '/admin/affiliates/users/lookup',
-    { params: { q } },
-  )
-  return data
-}
-
-export async function updateUserSettings(
-  userId: number,
-  payload: UpdateAffiliateUserRequest,
-): Promise<{ user_id: number }> {
-  const { data } = await apiClient.put<{ user_id: number }>(
-    `/admin/affiliates/users/${userId}`,
-    payload,
-  )
-  return data
-}
-
-export async function clearUserSettings(
-  userId: number,
-): Promise<{ user_id: number }> {
-  const { data } = await apiClient.delete<{ user_id: number }>(
-    `/admin/affiliates/users/${userId}`,
-  )
-  return data
-}
-
-export async function batchSetRate(
-  payload: BatchSetRateRequest,
-): Promise<{ affected: number }> {
-  const { data } = await apiClient.post<{ affected: number }>(
-    '/admin/affiliates/users/batch-rate',
-    payload,
-  )
-  return data
-}
-
 function recordParams(params: ListAffiliateRecordsParams = {}) {
   return {
     page: params.page ?? 1,
@@ -220,11 +130,6 @@ export async function getUserOverview(
 }
 
 export const affiliatesAPI = {
-  listUsers,
-  lookupUsers,
-  updateUserSettings,
-  clearUserSettings,
-  batchSetRate,
   listInviteRecords,
   listRebateRecords,
   listTransferRecords,

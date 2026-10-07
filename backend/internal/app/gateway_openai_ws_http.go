@@ -31,9 +31,11 @@ func provideResponsesWSHTTP(
 	activity *gatewayRequestActivity,
 	choices *selection.Compatible, planner *gatewayprovider.RoutePlanner,
 	subscriptions *billing.SubscriptionService,
+	prices *billing.PriceResolver,
 ) *gatewayhttp.ResponsesWSHandler {
 	options := responsesWSOptions(cfg)
 	b := responsesWSBindings(source, credentials, funding, keys, common, prompt, blocks, choices, planner, subscriptions)
+	b.Pricing = &admission.ModelPricing{Resolver: prices}
 	result := wsentry.New(options, b)
 	result.BindRequestActivity(activity.Enter)
 	return result

@@ -145,10 +145,6 @@ func (p openAITextHTTPBackend) ExplicitImageIntent(path, model string, body []by
 	return gatewayprovider.ImageIntent().IsExplicitImageGenerationIntent(path, model, body)
 }
 
-func (p openAITextHTTPBackend) PassthroughContext(ctx context.Context) context.Context {
-	return requeststate.WithOpenAIHTTPPassthroughRouting(ctx)
-}
-
 func (p openAITextHTTPBackend) ImageContext(ctx context.Context) context.Context {
 	return requeststate.WithOpenAIImageGenerationIntent(ctx)
 }

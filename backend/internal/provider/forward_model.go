@@ -7,7 +7,7 @@ func ResolveForwardMappedModel(value *Record, requested string, defaults ModelMa
 	if value == nil {
 		return ""
 	}
-	mapped, matched := ResolveMappedModel(value.Platform, ResolveModelMapping(value, defaults), requested)
+	mapped, matched := ResolveMappedModel(ResolveModelMapping(value, defaults), requested)
 	if !matched || strings.TrimSpace(mapped) == "" {
 		return requested
 	}

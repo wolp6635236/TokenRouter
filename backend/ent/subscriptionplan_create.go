@@ -14,6 +14,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/redeemcode"
 	"github.com/TokenFlux/TokenRouter/ent/subscriptionplan"
 	"github.com/TokenFlux/TokenRouter/ent/usersubscription"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
 // SubscriptionPlanCreate is the builder for creating a SubscriptionPlan entity.
@@ -22,6 +23,20 @@ type SubscriptionPlanCreate struct {
 	mutation *SubscriptionPlanMutation
 	hooks    []Hook
 	conflict []sql.ConflictOption
+}
+
+// SetLocalization sets the "localization" field.
+func (_c *SubscriptionPlanCreate) SetLocalization(v billing.PlanLocalization) *SubscriptionPlanCreate {
+	_c.mutation.SetLocalization(v)
+	return _c
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_c *SubscriptionPlanCreate) SetNillableLocalization(v *billing.PlanLocalization) *SubscriptionPlanCreate {
+	if v != nil {
+		_c.SetLocalization(*v)
+	}
+	return _c
 }
 
 // SetName sets the "name" field.
@@ -450,6 +465,10 @@ func (_c *SubscriptionPlanCreate) createSpec() (*SubscriptionPlan, *sqlgraph.Cre
 		_spec = sqlgraph.NewCreateSpec(subscriptionplan.Table, sqlgraph.NewFieldSpec(subscriptionplan.FieldID, field.TypeInt64))
 	)
 	_spec.OnConflict = _c.conflict
+	if value, ok := _c.mutation.Localization(); ok {
+		_spec.SetField(subscriptionplan.FieldLocalization, field.TypeJSON, value)
+		_node.Localization = value
+	}
 	if value, ok := _c.mutation.Name(); ok {
 		_spec.SetField(subscriptionplan.FieldName, field.TypeString, value)
 		_node.Name = value
@@ -561,7 +580,7 @@ func (_c *SubscriptionPlanCreate) createSpec() (*SubscriptionPlan, *sqlgraph.Cre
 // of the `INSERT` statement. For example:
 //
 //	client.SubscriptionPlan.Create().
-//		SetName(v).
+//		SetLocalization(v).
 //		OnConflict(
 //			// Update the row with the new values
 //			// the was proposed for insertion.
@@ -570,7 +589,7 @@ func (_c *SubscriptionPlanCreate) createSpec() (*SubscriptionPlan, *sqlgraph.Cre
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.SubscriptionPlanUpsert) {
-//			SetName(v+v).
+//			SetLocalization(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *SubscriptionPlanCreate) OnConflict(opts ...sql.ConflictOption) *SubscriptionPlanUpsertOne {
@@ -605,6 +624,24 @@ type (
 		*sql.UpdateSet
 	}
 )
+
+// SetLocalization sets the "localization" field.
+func (u *SubscriptionPlanUpsert) SetLocalization(v billing.PlanLocalization) *SubscriptionPlanUpsert {
+	u.Set(subscriptionplan.FieldLocalization, v)
+	return u
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsert) UpdateLocalization() *SubscriptionPlanUpsert {
+	u.SetExcluded(subscriptionplan.FieldLocalization)
+	return u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *SubscriptionPlanUpsert) ClearLocalization() *SubscriptionPlanUpsert {
+	u.SetNull(subscriptionplan.FieldLocalization)
+	return u
+}
 
 // SetName sets the "name" field.
 func (u *SubscriptionPlanUpsert) SetName(v string) *SubscriptionPlanUpsert {
@@ -919,6 +956,27 @@ func (u *SubscriptionPlanUpsertOne) Update(set func(*SubscriptionPlanUpsert)) *S
 		set(&SubscriptionPlanUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetLocalization sets the "localization" field.
+func (u *SubscriptionPlanUpsertOne) SetLocalization(v billing.PlanLocalization) *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetLocalization(v)
+	})
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertOne) UpdateLocalization() *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateLocalization()
+	})
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *SubscriptionPlanUpsertOne) ClearLocalization() *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.ClearLocalization()
+	})
 }
 
 // SetName sets the "name" field.
@@ -1371,7 +1429,7 @@ func (_c *SubscriptionPlanCreateBulk) ExecX(ctx context.Context) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.SubscriptionPlanUpsert) {
-//			SetName(v+v).
+//			SetLocalization(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *SubscriptionPlanCreateBulk) OnConflict(opts ...sql.ConflictOption) *SubscriptionPlanUpsertBulk {
@@ -1445,6 +1503,27 @@ func (u *SubscriptionPlanUpsertBulk) Update(set func(*SubscriptionPlanUpsert)) *
 		set(&SubscriptionPlanUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetLocalization sets the "localization" field.
+func (u *SubscriptionPlanUpsertBulk) SetLocalization(v billing.PlanLocalization) *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetLocalization(v)
+	})
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertBulk) UpdateLocalization() *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateLocalization()
+	})
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *SubscriptionPlanUpsertBulk) ClearLocalization() *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.ClearLocalization()
+	})
 }
 
 // SetName sets the "name" field.

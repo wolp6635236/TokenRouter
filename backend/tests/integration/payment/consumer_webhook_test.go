@@ -1,5 +1,3 @@
-//go:build unit
-
 package payment_test
 
 import (
@@ -27,7 +25,6 @@ import (
 )
 
 func TestWriteSuccessResponse(t *testing.T) {
-
 	tests := []struct {
 		name            string
 		providerKey     string
@@ -274,18 +271,22 @@ func (p webhookHandlerProviderStub) ProviderKey() string { return p.key }
 func (p webhookHandlerProviderStub) SupportedTypes() []payment.PaymentType {
 	return []payment.PaymentType{payment.PaymentType(p.key)}
 }
+
 func (p webhookHandlerProviderStub) CreatePayment(context.Context, payment.CreatePaymentRequest) (*payment.CreatePaymentResponse, error) {
 	panic("unexpected call")
 }
+
 func (p webhookHandlerProviderStub) QueryOrder(context.Context, string) (*payment.QueryOrderResponse, error) {
 	panic("unexpected call")
 }
+
 func (p webhookHandlerProviderStub) VerifyNotification(context.Context, string, map[string]string) (*payment.PaymentNotification, error) {
 	if p.verifyErr != nil {
 		return nil, p.verifyErr
 	}
 	return p.notification, nil
 }
+
 func (p webhookHandlerProviderStub) Refund(context.Context, payment.RefundRequest) (*payment.RefundResponse, error) {
 	panic("unexpected call")
 }

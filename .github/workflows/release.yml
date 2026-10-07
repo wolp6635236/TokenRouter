@@ -87,12 +87,12 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9
+          package_json_file: frontend/package.json
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version-file: .node-version
           cache: 'pnpm'
           cache-dependency-path: frontend/pnpm-lock.yaml
 
@@ -159,10 +159,6 @@ jobs:
           go-version-file: backend/go.mod
           check-latest: false
           cache-dependency-path: backend/go.sum
-
-      - name: Verify Go version
-        run: |
-          go version | grep -q 'go1.27.0'
 
       - name: Build ${{ matrix.target }} binary
         working-directory: backend
@@ -240,10 +236,6 @@ jobs:
           go-version-file: backend/go.mod
           check-latest: false
           cache-dependency-path: backend/go.sum
-
-      - name: Verify Go version
-        run: |
-          go version | grep -q 'go1.27.0'
 
       # Docker setup for GoReleaser
       - name: Set up QEMU

@@ -1,5 +1,3 @@
-//go:build unit
-
 package integration
 
 import (
@@ -1145,6 +1143,7 @@ func (s *emailBindUserRepoStub) UpdateConcurrency(context.Context, int64, int) e
 func (s *emailBindUserRepoStub) BatchSetConcurrency(context.Context, []int64, int) (int, error) {
 	return 0, nil
 }
+
 func (s *emailBindUserRepoStub) BatchAddConcurrency(context.Context, []int64, int) (int, error) {
 	return 0, nil
 }
@@ -1178,6 +1177,7 @@ func (s *emailBindUserRepoStub) SetBalance(ctx context.Context, id int64, value 
 func (s *emailBindUserRepoStub) LockRegistrationEmail(context.Context, string) error {
 	return nil
 }
+
 func (s *emailBindUserRepoStub) BatchUpdateLimits(context.Context, []int64, *int, *int) (int, error) {
 	return 0, nil
 }
@@ -1203,8 +1203,11 @@ func (s *emailBindUserRepoStub) UnbindUserAuthProvider(context.Context, int64, s
 }
 
 func (s *emailBindUserRepoStub) UpdateTotpSecret(context.Context, int64, *string) error { return nil }
-func (s *emailBindUserRepoStub) EnableTotp(context.Context, int64) error                { return nil }
-func (s *emailBindUserRepoStub) DisableTotp(context.Context, int64) error               { return nil }
+
+func (s *emailBindUserRepoStub) EnableTotp(context.Context, int64) error { return nil }
+
+func (s *emailBindUserRepoStub) DisableTotp(context.Context, int64) error { return nil }
+
 func (s *emailBindUserRepoStub) GetByIDIncludeDeleted(ctx context.Context, id int64) (*identity.User, error) {
 	return s.GetByID(ctx, id)
 }

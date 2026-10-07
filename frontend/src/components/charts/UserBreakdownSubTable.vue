@@ -15,7 +15,7 @@
             {{ user.email || `User #${user.user_id}` }}
           </td>
           <td class="py-1 text-right text-gray-500 dark:text-gray-400">
-            {{ user.requests.toLocaleString() }}
+            {{ user.requests.toLocaleString(getLocale()) }}
           </td>
           <td class="py-1 text-right text-gray-500 dark:text-gray-400">
             {{ formatTokens(user.total_tokens) }}
@@ -36,6 +36,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import TableSkeletonBody from '@/components/common/TableSkeletonBody.vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'

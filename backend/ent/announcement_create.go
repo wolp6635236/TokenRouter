@@ -24,6 +24,20 @@ type AnnouncementCreate struct {
 	conflict []sql.ConflictOption
 }
 
+// SetLocalization sets the "localization" field.
+func (_c *AnnouncementCreate) SetLocalization(v site.AnnouncementLocalization) *AnnouncementCreate {
+	_c.mutation.SetLocalization(v)
+	return _c
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_c *AnnouncementCreate) SetNillableLocalization(v *site.AnnouncementLocalization) *AnnouncementCreate {
+	if v != nil {
+		_c.SetLocalization(*v)
+	}
+	return _c
+}
+
 // SetTitle sets the "title" field.
 func (_c *AnnouncementCreate) SetTitle(v string) *AnnouncementCreate {
 	_c.mutation.SetTitle(v)
@@ -297,6 +311,10 @@ func (_c *AnnouncementCreate) createSpec() (*Announcement, *sqlgraph.CreateSpec)
 		_spec = sqlgraph.NewCreateSpec(announcement.Table, sqlgraph.NewFieldSpec(announcement.FieldID, field.TypeInt64))
 	)
 	_spec.OnConflict = _c.conflict
+	if value, ok := _c.mutation.Localization(); ok {
+		_spec.SetField(announcement.FieldLocalization, field.TypeJSON, value)
+		_node.Localization = value
+	}
 	if value, ok := _c.mutation.Title(); ok {
 		_spec.SetField(announcement.FieldTitle, field.TypeString, value)
 		_node.Title = value
@@ -364,7 +382,7 @@ func (_c *AnnouncementCreate) createSpec() (*Announcement, *sqlgraph.CreateSpec)
 // of the `INSERT` statement. For example:
 //
 //	client.Announcement.Create().
-//		SetTitle(v).
+//		SetLocalization(v).
 //		OnConflict(
 //			// Update the row with the new values
 //			// the was proposed for insertion.
@@ -373,7 +391,7 @@ func (_c *AnnouncementCreate) createSpec() (*Announcement, *sqlgraph.CreateSpec)
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.AnnouncementUpsert) {
-//			SetTitle(v+v).
+//			SetLocalization(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *AnnouncementCreate) OnConflict(opts ...sql.ConflictOption) *AnnouncementUpsertOne {
@@ -408,6 +426,24 @@ type (
 		*sql.UpdateSet
 	}
 )
+
+// SetLocalization sets the "localization" field.
+func (u *AnnouncementUpsert) SetLocalization(v site.AnnouncementLocalization) *AnnouncementUpsert {
+	u.Set(announcement.FieldLocalization, v)
+	return u
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *AnnouncementUpsert) UpdateLocalization() *AnnouncementUpsert {
+	u.SetExcluded(announcement.FieldLocalization)
+	return u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *AnnouncementUpsert) ClearLocalization() *AnnouncementUpsert {
+	u.SetNull(announcement.FieldLocalization)
+	return u
+}
 
 // SetTitle sets the "title" field.
 func (u *AnnouncementUpsert) SetTitle(v string) *AnnouncementUpsert {
@@ -614,6 +650,27 @@ func (u *AnnouncementUpsertOne) Update(set func(*AnnouncementUpsert)) *Announcem
 		set(&AnnouncementUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetLocalization sets the "localization" field.
+func (u *AnnouncementUpsertOne) SetLocalization(v site.AnnouncementLocalization) *AnnouncementUpsertOne {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.SetLocalization(v)
+	})
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *AnnouncementUpsertOne) UpdateLocalization() *AnnouncementUpsertOne {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.UpdateLocalization()
+	})
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *AnnouncementUpsertOne) ClearLocalization() *AnnouncementUpsertOne {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.ClearLocalization()
+	})
 }
 
 // SetTitle sets the "title" field.
@@ -940,7 +997,7 @@ func (_c *AnnouncementCreateBulk) ExecX(ctx context.Context) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.AnnouncementUpsert) {
-//			SetTitle(v+v).
+//			SetLocalization(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *AnnouncementCreateBulk) OnConflict(opts ...sql.ConflictOption) *AnnouncementUpsertBulk {
@@ -1014,6 +1071,27 @@ func (u *AnnouncementUpsertBulk) Update(set func(*AnnouncementUpsert)) *Announce
 		set(&AnnouncementUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetLocalization sets the "localization" field.
+func (u *AnnouncementUpsertBulk) SetLocalization(v site.AnnouncementLocalization) *AnnouncementUpsertBulk {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.SetLocalization(v)
+	})
+}
+
+// UpdateLocalization sets the "localization" field to the value that was provided on create.
+func (u *AnnouncementUpsertBulk) UpdateLocalization() *AnnouncementUpsertBulk {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.UpdateLocalization()
+	})
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (u *AnnouncementUpsertBulk) ClearLocalization() *AnnouncementUpsertBulk {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.ClearLocalization()
+	})
 }
 
 // SetTitle sets the "title" field.

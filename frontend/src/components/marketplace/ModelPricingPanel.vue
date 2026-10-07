@@ -142,6 +142,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
 import { formatCompactTokenRange } from '@/utils/formatters'
+import { formatPriceNumber, pricingKind } from '@/utils/marketplacePricing'
 import type { MarketplaceModel, MarketplaceModelPricing, MarketplacePricingInterval } from '@/types'
 
 // 完整定价面板在卡片内展开、收起，并提供上下文区间与 fast mode 切换。
@@ -166,19 +167,6 @@ interface PricingRow {
 
 function hasPositiveValue(value?: number | null): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
-}
-
-// 价格格式化与模型广场卡片预览使用相同规则。
-
-function formatPriceNumber(value: number): string {
-  const abs = Math.abs(value)
-  const maximumFractionDigits = abs >= 1 ? 2 : abs >= 0.01 ? 4 : 6
-  const minimumFractionDigits = abs >= 1 ? 2 : 4
-
-  return new Intl.NumberFormat(undefined, {
-    minimumFractionDigits,
-    maximumFractionDigits,
-  }).format(value)
 }
 
 function formatPrice(value: number): string {
@@ -279,27 +267,6 @@ function imagePricingRows(pricing: MarketplaceModelPricing): PricingRow[] {
       value: formatPerImage(item.price),
     }]
   })
-}
-
-function hasImagePricing(pricing: MarketplaceModelPricing): boolean {
-  return [
-    pricing.image_price_1k,
-    pricing.image_price_2k,
-    pricing.image_price_4k,
-  ].some((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
-}
-
-function pricingKind(pricing: MarketplaceModelPricing): 'token' | 'image' | 'unpriced' {
-  if (pricing.price_status !== 'priced') {
-    return 'unpriced'
-  }
-  if (pricing.pricing_mode === 'image' && hasImagePricing(pricing)) {
-    return 'image'
-  }
-  if (pricing.pricing_mode === 'token') {
-    return 'token'
-  }
-  return 'unpriced'
 }
 
 const hasDisplayPricing = computed(() => pricingKind(props.model.pricing) !== 'unpriced')

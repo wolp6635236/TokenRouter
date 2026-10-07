@@ -8,6 +8,7 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 func BuildCheckoutDraft(req CreateOrderRequest, user *Buyer, plan *SubscriptionPlan, cfg *PaymentConfig, amount, limitAmount float64, fee FeeBreakdown, sel *InstanceSelection) CheckoutDraft {
@@ -30,6 +31,11 @@ func BuildCheckoutDraft(req CreateOrderRequest, user *Buyer, plan *SubscriptionP
 		ProviderSnapshot: BuildPaymentOrderProviderSnapshot(sel, req),
 		BillingSnapshot:  BillingInfoSnapshot(req.BillingInfo),
 	}
+	if order.ProviderSnapshot == nil {
+		order.ProviderSnapshot = map[string]any{}
+	}
+	order.ProviderSnapshot["display_locale"] = locale.Negotiate(req.Locale, locale.Default())
+	order.ProviderSnapshot["display_subject"] = PaymentSubject(plan, limitAmount, cfg, sel, req.Locale)
 	if sel != nil {
 		order.ProviderInstanceID = NilIfEmpty(strings.TrimSpace(sel.InstanceID))
 		order.ProviderKey = NilIfEmpty(strings.TrimSpace(sel.ProviderKey))
@@ -38,6 +44,8 @@ func BuildCheckoutDraft(req CreateOrderRequest, user *Buyer, plan *SubscriptionP
 		id := plan.ID
 		order.PlanID = &id
 		order.PlanSnapshot = billing.SubscriptionPlanSnapshot{
+			Locale:          locale.Negotiate(req.Locale, locale.Default()),
+			ProductName:     plan.ProductName,
 			Name:            plan.Name,
 			Price:           plan.Price,
 			Currency:        plan.Currency,

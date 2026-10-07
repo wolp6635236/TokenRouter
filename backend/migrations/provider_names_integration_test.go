@@ -28,7 +28,7 @@ func TestProviderNamesMigration(t *testing.T) {
 	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	before := fstest.MapFS{}
+	historical := fstest.MapFS{}
 	entries, err := fs.ReadDir(migrations.FS, ".")
 	require.NoError(t, err)
 	for _, entry := range entries {
@@ -37,9 +37,9 @@ func TestProviderNamesMigration(t *testing.T) {
 		}
 		content, err := migrations.FS.ReadFile(entry.Name())
 		require.NoError(t, err)
-		before[entry.Name()] = &fstest.MapFile{Data: content}
+		historical[entry.Name()] = &fstest.MapFile{Data: content}
 	}
-	require.NoError(t, infra.ApplyMigrations(ctx, db, before))
+	require.NoError(t, infra.ApplyMigrations(ctx, db, historical))
 	_, err = db.ExecContext(ctx, `
  INSERT INTO users(id,email,password_hash) VALUES(71,'provider-migration@example.test','fixture');
  INSERT INTO accounts(id,name,platform,type,credentials) VALUES(71,'fixture','openai','api_key','{"account_mode":"payg","chatgpt_account_id":"external","account_uuid":"external-uuid","chatgpt_account_is_fedramp":true,"service_account_json":{"client_email":"fixture@example.test"},"model_mapping":{"account-report":"gpt-4.1","provider-report":"gpt-4.1-mini"},"header_overrides":{"x-account-id":"external-account"},"vendor_data":{"accountId":"vendor-id"}}');
@@ -60,6 +60,8 @@ func TestProviderNamesMigration(t *testing.T) {
 	require.NoError(t, err)
 	migration, err := migrations.FS.ReadFile("282_rename_accounts_to_providers.sql")
 	require.NoError(t, err)
+	// 改名断言使用截至 282 的迁移，后续迁移可以删除这些历史配置。
+	historical["282_rename_accounts_to_providers.sql"] = &fstest.MapFile{Data: migration}
 	apply := func() error {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
@@ -95,10 +97,10 @@ func TestProviderNamesMigration(t *testing.T) {
 	_, err = db.ExecContext(ctx, "UPDATE accounts SET credentials = credentials - 'provider_mode' WHERE id=71")
 	require.NoError(t, err)
 	started = time.Now()
-	require.NoError(t, infra.ApplyMigrations(ctx, db, migrations.FS))
+	require.NoError(t, infra.ApplyMigrations(ctx, db, historical))
 	t.Logf("provider migration took %s", time.Since(started))
 	// runner 重试不执行已提交迁移；SQL 自身重放也不覆盖配置。
-	require.NoError(t, infra.ApplyMigrations(ctx, db, migrations.FS))
+	require.NoError(t, infra.ApplyMigrations(ctx, db, historical))
 	require.NoError(t, apply())
 	var count, changed int
 	var cost float64
@@ -124,6 +126,9 @@ func TestProviderNamesMigration(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key='notification_email_template:content_moderation.account_disabled:en'").Scan(&setting))
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT to_regclass('unrelated_accounts_pkey') IS NOT NULL AND to_regclass('unrelated_accounts_id_seq') IS NOT NULL").Scan(&oldExists))
 	require.True(t, oldExists)
+	// 继续升级到当前版本后，全局导入模板应被清理。
+	require.NoError(t, infra.ApplyMigrations(ctx, db, migrations.FS))
+	require.ErrorIs(t, db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key='openai_oauth_import_defaults'").Scan(&setting), sql.ErrNoRows)
 	// 在相同隔离实例中重建空 schema，验证全新安装可执行全部历史迁移。
 	_, err = db.ExecContext(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public")
 	require.NoError(t, err)

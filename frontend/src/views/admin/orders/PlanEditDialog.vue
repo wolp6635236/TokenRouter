@@ -6,26 +6,21 @@
     @close="emit('close')"
   >
     <form id="plan-form" class="space-y-4" @submit.prevent="handleSavePlan">
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div>
-          <label class="input-label">{{ t('payment.admin.planName') }} <span class="text-red-500">*</span></label>
-          <input v-model="planForm.name" type="text" class="input" required />
-        </div>
-        <div>
-          <label class="input-label">{{ t('payment.admin.sortOrder') }}</label>
-          <input v-model.number="planForm.sort_order" type="number" min="0" class="input" />
-        </div>
-      </div>
-
       <div>
-        <label class="input-label">{{ t('payment.admin.planDescription') }} <span class="text-red-500">*</span></label>
-        <textarea v-model="planForm.description" rows="2" class="input" required />
+        <LocalizedFieldsEditor
+          v-model="planForm.localization"
+          layout="grid grid-cols-1 gap-4 md:grid-cols-2"
+          :source="planForm.localization.source"
+          :fields="planCopyFields"
+          :dialog-title="t('payment.admin.planCopy')"
+        />
+        <p class="input-hint">{{ t('payment.admin.featuresHint') }}</p>
       </div>
 
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div>
           <label class="input-label">{{ t('payment.admin.price') }} <span class="text-red-500">*</span></label>
-          <input v-model.number="planForm.price" type="number" step="0.01" min="0.01" class="input" required />
+          <input data-testid="plan-price" v-model.number="planForm.price" type="number" step="0.01" min="0.01" class="input" required />
           <p v-if="subscriptionCnyPreview" class="mt-1 text-xs font-medium text-primary-600 dark:text-primary-400">
             {{ t('payment.admin.subscriptionCnyPayPreview', { amount: subscriptionCnyPreview.amount }) }}
             <span v-if="subscriptionCnyPreview.feeRate > 0">
@@ -35,39 +30,45 @@
         </div>
         <div>
           <label class="input-label">{{ t('payment.admin.originalPrice') }}</label>
-          <input v-model.number="planForm.original_price" type="number" step="0.01" min="0" class="input" />
+          <input data-testid="plan-original_price" v-model.number="planForm.original_price" type="number" step="0.01" min="0" class="input" />
         </div>
       </div>
 
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div>
           <label class="input-label">{{ t('payment.admin.validity') }} <span class="text-red-500">*</span></label>
-          <input v-model.number="planForm.validity_days" type="number" min="1" class="input" required />
+          <input data-testid="plan-validity_days" v-model.number="planForm.validity_days" type="number" min="1" class="input" required />
         </div>
         <div>
           <label class="input-label">{{ t('payment.admin.validityUnit') }} <span class="text-red-500">*</span></label>
-          <Select v-model="planForm.validity_unit" :options="validityUnitOptions" />
+          <Select data-testid="plan-validity_unit" v-model="planForm.validity_unit" :options="validityUnitOptions" />
         </div>
       </div>
       <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
         <div>
           <label class="input-label">{{ t('payment.admin.dailyLimit') }}</label>
-          <input v-model.number="planForm.daily_limit_usd" type="number" step="0.01" min="0" class="input" />
+          <input data-testid="plan-daily_limit_usd" v-model.number="planForm.daily_limit_usd" type="number" step="0.01" min="0" class="input" />
         </div>
         <div>
           <label class="input-label">{{ t('payment.admin.weeklyLimit') }}</label>
-          <input v-model.number="planForm.weekly_limit_usd" type="number" step="0.01" min="0" class="input" />
+          <input data-testid="plan-weekly_limit_usd" v-model.number="planForm.weekly_limit_usd" type="number" step="0.01" min="0" class="input" />
         </div>
         <div>
           <label class="input-label">{{ t('payment.admin.monthlyLimit') }}</label>
-          <input v-model.number="planForm.monthly_limit_usd" type="number" step="0.01" min="0" class="input" />
+          <input data-testid="plan-monthly_limit_usd" v-model.number="planForm.monthly_limit_usd" type="number" step="0.01" min="0" class="input" />
         </div>
       </div>
 
-      <div>
-        <label class="input-label">{{ t('payment.admin.currency') }}</label>
-        <input v-model="planForm.currency" type="text" maxlength="3" class="input uppercase" :placeholder="t('payment.admin.currencyPlaceholder')" />
-        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.currencyHint') }}</p>
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div>
+          <label class="input-label">{{ t('payment.admin.currency') }}</label>
+          <input v-model="planForm.currency" type="text" maxlength="3" class="input uppercase" :placeholder="t('payment.admin.currencyPlaceholder')" />
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.currencyHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('payment.admin.sortOrder') }}</label>
+          <input data-testid="plan-sort_order" v-model.number="planForm.sort_order" type="number" min="0" class="input" />
+        </div>
       </div>
 
       <div>
@@ -114,19 +115,6 @@
         </div>
       </div>
 
-      <div>
-        <label class="input-label">{{ t('payment.admin.features') }}</label>
-        <textarea
-          v-model="planFeaturesText"
-          rows="3"
-          class="input"
-          :placeholder="t('payment.admin.featuresPlaceholder')"
-        />
-        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          {{ t('payment.admin.featuresHint') }}
-        </p>
-      </div>
-
       <div class="flex items-center gap-3">
         <label class="text-sm text-gray-700 dark:text-gray-300">{{ t('payment.admin.forSale') }}</label>
         <Toggle v-model="planForm.for_sale" variant="flush" on-class="bg-primary-500" />
@@ -147,6 +135,10 @@
 </template>
 
 <script setup lang="ts">
+import LocalizedFieldsEditor from '@/components/common/LocalizedFieldsEditor.vue'
+import { originalContent, type LocalizedUpdate } from '@/i18n/content'
+import { getLocale } from '@/i18n'
+import type { PlanCopy } from '@/types/payment'
 import Toggle from '@/components/common/Toggle.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -178,10 +170,15 @@ const appStore = useAppStore()
 const saving = ref(false)
 const groupsLoading = ref(false)
 const groups = ref<AdminGroup[]>([])
-const planFeaturesText = ref('')
+// 套餐名称、介绍、权益和商品名共用一份译文，权益按行填写。
+const planCopyFields = computed(() => [
+  { key: 'name' as const, label: t('payment.admin.planName'), required: true },
+  { key: 'product_name' as const, label: t('localization.productName') },
+  { key: 'description' as const, label: t('payment.admin.planDescription'), multiline: true, rows: 2, required: true, class: 'md:col-span-2' },
+  { key: 'features' as const, label: t('payment.admin.features'), multiline: true, placeholder: t('payment.admin.featuresPlaceholder'), class: 'md:col-span-2' },
+])
 const planForm = reactive({
-  name: '',
-  description: '',
+  localization: originalContent({ name: '', description: '', features: '', product_name: '' }, getLocale()) as LocalizedUpdate<PlanCopy>,
   price: 0,
   original_price: null as number | null,
   currency: '',
@@ -235,8 +232,11 @@ watch(
     loadGroups()
     if (props.plan) {
       Object.assign(planForm, {
-        name: props.plan.name,
-        description: props.plan.description,
+        localization: JSON.parse(JSON.stringify(props.plan.localization || originalContent({
+          name: props.plan.name, description: props.plan.description,
+          features: Array.isArray(props.plan.features) ? props.plan.features.join('\n') : props.plan.features || '',
+          product_name: props.plan.product_name || '',
+        }))),
         price: props.plan.price,
         original_price: props.plan.original_price ?? null,
         currency: props.plan.currency || '',
@@ -250,13 +250,11 @@ watch(
         sort_order: props.plan.sort_order || 0,
         for_sale: props.plan.for_sale
       })
-      planFeaturesText.value = (props.plan.features || []).join('\n')
       return
     }
 
     Object.assign(planForm, {
-      name: '',
-      description: '',
+      localization: originalContent({ name: '', description: '', features: '', product_name: '' }, getLocale()),
       price: 0,
       original_price: null,
       currency: '',
@@ -270,7 +268,6 @@ watch(
       sort_order: 0,
       for_sale: true
     })
-    planFeaturesText.value = ''
   },
   { immediate: true }
 )
@@ -349,8 +346,10 @@ function buildPlanPayload() {
     return acc
   }, {})
   return {
-    name: planForm.name.trim(),
-    description: planForm.description.trim(),
+    localization: planForm.localization,
+    name: planForm.localization.source.name.trim(),
+    description: planForm.localization.source.description.trim(),
+    product_name: planForm.localization.source.product_name,
     price: planForm.price,
     original_price: normalizeNullableNumber(planForm.original_price),
     currency: planForm.currency.trim().toUpperCase(),
@@ -363,17 +362,13 @@ function buildPlanPayload() {
     group_rate_multipliers: groupRateMultipliers,
     sort_order: planForm.sort_order,
     for_sale: planForm.for_sale,
-    features: planFeaturesText.value
-      .split('\n')
-      .map((feature) => feature.trim())
-      .filter(Boolean)
-      .join('\n')
+    features: planForm.localization.source.features
   }
 }
 
 async function handleSavePlan() {
-  if (!planForm.name.trim()) {
-    appStore.showError(t('payment.admin.planNameRequired'))
+  if (!planForm.localization.source.name.trim()) {
+    appStore.showError(t('localization.nameRequired'))
     return
   }
   if (!planForm.price || planForm.price <= 0) {

@@ -145,6 +145,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		response.BadRequest(c, "grok_cross_client_model_map_enabled has been removed; configure explicit model_mapping instead")
 		return
 	}
+	for _, field := range []string{"site_name_zh", "site_name_en", "site_title_zh", "site_title_en", "site_subtitle_zh", "site_subtitle_en"} {
+		if _, exists := sentFields[field]; exists {
+			response.ErrorWithDetails(c, http.StatusBadRequest, "Use site_texts to edit translations.", "REMOVED_SETTING_FIELD", map[string]string{"field": field})
+			return
+		}
+	}
 	if rejectRemovedUngroupedKeySchedulingField(c, sentFields) || rejectRemovedPlatformQuotaFields(c, sentFields) || rejectDeprecatedAdvancedSchedulerRequestFields(c, sentFields) {
 		return
 	}
@@ -1433,15 +1439,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		GoogleOAuthClientSecret:                req.GoogleOAuthClientSecret,
 		GoogleOAuthRedirectURL:                 req.GoogleOAuthRedirectURL,
 		GoogleOAuthFrontendRedirectURL:         req.GoogleOAuthFrontendRedirectURL,
+		LocalizedSettings:                      req.LocalizedSettings,
+		SiteTexts:                              req.SiteTexts,
+		DefaultLocale:                          req.DefaultLocale,
 		SiteName:                               req.SiteName,
 		SiteLogo:                               req.SiteLogo,
 		SiteSubtitle:                           req.SiteSubtitle,
-		SiteNameZh:                             req.SiteNameZh,
-		SiteNameEn:                             req.SiteNameEn,
-		SiteTitleZh:                            req.SiteTitleZh,
-		SiteTitleEn:                            req.SiteTitleEn,
-		SiteSubtitleZh:                         req.SiteSubtitleZh,
-		SiteSubtitleEn:                         req.SiteSubtitleEn,
 		APIBaseURL:                             req.APIBaseURL,
 		ContactInfo:                            req.ContactInfo,
 		DocURL:                                 req.DocURL,
@@ -1998,7 +2001,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		fields[name] = value
 	}
-	prepared, err := h.preparedParticipants(update.Context(), fields, values)
+	prepared, err := h.preparedParticipants(update.Context(), fields, values, previousSettings.StoredValues)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -2156,15 +2159,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		GoogleOAuthClientSecretConfigured:                updatedSettings.GoogleOAuthClientSecretConfigured,
 		GoogleOAuthRedirectURL:                           updatedSettings.GoogleOAuthRedirectURL,
 		GoogleOAuthFrontendRedirectURL:                   updatedSettings.GoogleOAuthFrontendRedirectURL,
+		LocalizedSettings:                                updatedSettings.LocalizedSettings,
+		SiteTexts:                                        updatedSettings.SiteTexts,
+		DefaultLocale:                                    updatedSettings.DefaultLocale,
 		SiteName:                                         updatedSettings.SiteName,
 		SiteLogo:                                         updatedSettings.SiteLogo,
 		SiteSubtitle:                                     updatedSettings.SiteSubtitle,
-		SiteNameZh:                                       updatedSettings.SiteNameZh,
-		SiteNameEn:                                       updatedSettings.SiteNameEn,
-		SiteTitleZh:                                      updatedSettings.SiteTitleZh,
-		SiteTitleEn:                                      updatedSettings.SiteTitleEn,
-		SiteSubtitleZh:                                   updatedSettings.SiteSubtitleZh,
-		SiteSubtitleEn:                                   updatedSettings.SiteSubtitleEn,
 		APIBaseURL:                                       updatedSettings.APIBaseURL,
 		ContactInfo:                                      updatedSettings.ContactInfo,
 		DocURL:                                           updatedSettings.DocURL,

@@ -20,7 +20,7 @@ func TestModelMarketplaceQoderProviderMappedCustomModelUsesRouteKeyManualPricing
 	outputPrice := 0.02
 	pricingConfigService := routingtestkit.PricingConfig(groupID, capability.PlatformQoder, routingtestkit.Configuration{ID: groupID, Status: billing.StatusActive, BillingModelSource: routing.BillingModelSourceUpstream, ModelPricing: []routing.ModelPricingEntry{{Models: []string{"qmodel"}, BillingMode: routing.BillingModeToken, InputPrice: &inputPrice, OutputPrice: &outputPrice}}})
 
-	billingService := billingtestkit.Calculator(0, nil, nil)
+	billingService := billingtestkit.Calculator(nil, nil)
 	svc := newCatalogueMarketplace(nil, newCatalogueFixture(&modelsListProviderRepoStub{byGroup: map[int64][]providercore.Record{
 		groupID: {
 			{
@@ -96,7 +96,7 @@ func TestModelMarketplaceListPublicPrefetchesProvidersOnce(t *testing.T) {
 		},
 	}
 	gatewayService := newCatalogueFixture(providerRepo, nil, nil)
-	service := newCatalogueMarketplace(&marketplaceGroupRepoStub{groups: groups}, gatewayService, billingtestkit.Calculator(0, nil, nil))
+	service := newCatalogueMarketplace(&marketplaceGroupRepoStub{groups: groups}, gatewayService, billingtestkit.Calculator(nil, nil))
 
 	result, err := service.ListPublic(context.Background(), routing.MarketplaceListOptions{IncludeCapacity: true})
 	if err != nil {

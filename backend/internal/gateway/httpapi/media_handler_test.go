@@ -55,7 +55,6 @@ func (p *mediaHTTPProbe) ParseGrok(string, []byte) GrokMediaInput {
 	p.steps = append(p.steps, "parse")
 	return GrokMediaInput{}
 }
-func (p *mediaHTTPProbe) NormalizeGrok(string, string, bool) string { return "" }
 
 type unreadableMediaBody struct{ reads int }
 

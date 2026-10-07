@@ -21,7 +21,7 @@ type Provider struct {
 	Name, Platform string
 }
 
-const SessionBlockedClientMessage = "该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please start a new session"
+const SessionBlockedClientMessage = "This session is blocked by the security policy. Start a new session."
 
 func cloneID(in *int64) *int64 {
 	if in == nil {

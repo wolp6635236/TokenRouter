@@ -1,5 +1,3 @@
-//go:build unit
-
 package team_test
 
 import (

@@ -57,7 +57,7 @@
 - 原生按钮、`role="button"` 和 `.btn` 的文字不可选中，按钮内的图片不可拖拽；正文、表格数据和输入内容可以选中复制。
 - 图标按钮有两档：`.btn-icon`（h-9 w-9）和 `.btn-icon-sm`（h-8 w-8），自带 `rounded-control` 和居中布局，调用处只需补 hover 和颜色类。`.btn-sm` 用在表格行内等紧凑场景。
 - 需要选择框时使用 `frontend/src/components/common/Select.vue`。原生 `<select>` 的面板样式、深色配色和键盘交互与项目组件对不上；`check:ui` 检查不到它，评审时需要人工确认。
-- 下拉触发器（Select、DateRangePicker）在模板里组合 `input input-trigger` 和各自的状态类，基线样式来自这两个类。
+- 下拉触发器（Select、DateRangePicker、DateTimePicker）在模板里组合 `input input-trigger` 和各自的状态类，基线样式来自这两个类。
 - 分段切换（两到五个互斥选项，例如指标、时间范围、数据来源）用 `style.css` 的 `.segmented` 轨道、`.segmented-item` 选项和 `.segmented-item-active` 选中态。轨道加 `v-segmented`（`directives/segmented.ts`），所有选项共用一个选中背景；内边距、字号和高度由调用方用工具类补充；放进 36px 工具栏时，给轨道加 `h-9 items-stretch`。选中项保留 1px 描边，因为浅色模式下只靠阴影和白底看不清选中项的轮廓。选项和选中背景的圆角取 `--segmented-item-radius`（`control` 减去 1px 边框和 2px 内边距），和轨道外缘同心；调整轨道的边框或内边距时，同步修改这个值。页面级的大页签用 `.tabs`。
 - 输入框的图标和字符前后缀使用 `style.css` 里的 `input-icon-*` 机制：容器 `input-icon-wrap`，图标位 `input-icon` 或 `input-icon-right`（可点击的内容再加 `input-icon-action`），输入框按图标所在的一侧加 `input-has-icon` 或 `input-has-icon-right`。文本留白由变量推算：`留白 = inset + slot`。档位：默认（inset 0.75rem，留白 2.5rem）、`input-icon-lg`（登录注册表单，inset 0.875rem，留白 2.75rem）、`input-icon-text`（`$` 等窄字符前缀，留白 2rem）；紧凑搜索框内联 `--input-icon-slot:1.5rem`（留白 2.25rem）。
 - 价格管理和属性管理的页签栏和下方工具栏之间 16px。搜索框使用同样的图标布局，`sm` 及以上固定 `w-64`，更窄时随工具栏剩余宽度伸缩，占位提示写明可以搜索配置名称或模型名称。工具栏相邻控件之间 `gap-2`；配置页的状态筛选框用 `w-32 shrink-0`，默认目录页的两个筛选条件收进 `FilterDropdown`（规则见[菜单与浮层](#菜单与浮层)）。两页的默认目录信息共用 `ModelCatalogInfo`，用辅助字号展示来源、短版本号和更新时间，窄屏自动换行。
@@ -85,6 +85,7 @@
   - 面板默认左边缘对齐触发按钮，右侧放不下时向左平移，水平方向的夹取复用 `getFloatingPanelPosition`。有生效条件时，按钮换成品牌色描边并显示数量角标。
   - 面板里有输入框状态，或者测试需要直接访问字段时，传 `keep-mounted`；运维看板这类自定义按钮样式用 `trigger-class` 覆盖。
 - 日期范围用 `DateRangePicker`：左侧是分组的快捷范围，右侧是自绘的单月日历，原生 `type="date"` 输入不再使用。在日历上点两次确定起止日期，反向点选时自动对调。起止日期和主按钮同色，中间的日期用淡品牌青色带连起来，今天用小圆点标出。最晚可以选到明天，用来兼容时区差异。没点应用就取消、点外部或按 Esc 关闭时，改动全部丢弃，触发器只显示已经生效的范围。弹层由 `getFloatingPanelPosition` 定位：触发器在视口右半边时右对齐，在左半边时左对齐。
+- 单个日期时间（例如公告的开始和结束时间）用 `DateTimePicker`。值的格式和 `datetime-local` 相同（`YYYY-MM-DDTHH:mm`），空字符串表示未设置。原生 `type="datetime-local"` 的面板跟随浏览器和系统主题，深色模式下和项目控件的配色对不上。弹层左侧是和 `DateRangePicker` 同款的单月日历，可以选未来的日期。右侧是时、分两列滚动列表，列高等于日历网格。`placeholder` 写空值的含义，例如“立即生效”。有值时，触发器右侧显示 ×，点一下清空。传入 `min` 后，早于这个日期的日子置灰。点确定才写回，点取消、点外部或按 Esc 会丢弃草稿。弹层打开时按 Esc 只关闭弹层，外层弹窗保持打开。点“此刻”直接写入当前时间。传入 `presets` 后，弹层左侧多出一列快捷选项，点击后直接写回。公告结束时间的快捷选项是 1、3、7、30 天，从开始时间起算，没填开始时间时从现在起算。定位规则和 `DateRangePicker` 相同。
 - 表格行内的操作菜单（4 个 `*ActionMenu`）的浮层容器用 `.action-menu` 类（fixed 定位、层级和面板样式），宽度类（w-48/w-52）和 `action-menu-content` 钩子类写在调用处。
 - 创作台画布上的浮层（顶部工具条、设置、历史、输入框、空画布引导的胶囊）用 `.canvas-island`：85% 不透明的白底或 `dark-900` 底、淡描边、背景模糊和一档柔和阴影，深色模式减弱阴影。浮层里的 32px 图标按钮用 `.canvas-tool-btn`，选中态加 `.canvas-tool-btn-active`，按钮组之间用 `.canvas-tool-divider`。展开的菜单和弹层用实底的 `.dropdown` 或同等样式。
 - 遮罩透明度有两档，都来自 CSS 变量：浅色模式在 `:root` 定义常规遮罩 `--overlay-bg`（black/50）和媒体灯箱等使用的强遮罩 `--overlay-bg-strong`（black/70）；深色模式在 `html.dark` 中整体加深为 black/70 和 black/85。模板写 `bg-[var(--overlay-bg)]`，`bg-black/50` 这类字面值会被门禁拦截。
@@ -135,9 +136,10 @@
 - 分区：`SettingsSection` 提供 `text-sm font-semibold` 的标题、`.input-hint` 说明和 `actions` 插槽。相邻分区之间自动加 `border-t pt-6`，页内分区间距 24px，分区内 16px。分区标题用这个组件的标题，`.input-label` 留给字段标签；分隔线由组件自动添加。
 - 设置行：布尔项用 `SettingToggleRow`（左侧是标题、说明和可选的 `HelpTooltip`，右侧是 `Toggle size="md"` 默认的 inset 变体）。右侧是选择框或输入框时用 `SettingRow` 并传 `field`，控件宽度固定 `sm:w-56`，窄屏改成上下排列。
 - 依赖字段：开关打开后才需要的字段，放进用 `Collapse` 包裹的 `SettingsSubpanel`（`rounded-surface`、淡边框、浅底、`p-4`），展开时有过渡动画。
-- 选择与提示：两到五个互斥选项用 `SettingsSegmented`（基于 `.segmented` 和 `v-segmented`）；带图标和说明的类型选择用卡片，选中时显示品牌色描边和浅底。说明、风险提示和错误用 `SettingsNotice` 的 `info`、`warning`、`error` 三种语气，颜色由组件决定。字段说明用 `.input-hint`。
+- 选择与提示：两到五个互斥选项用 `SettingsSegmented`（基于 `.segmented` 和 `v-segmented`），无障碍名称通过 `:ariaLabel` 传入，组件输出 `aria-label`；带图标和说明的类型选择用卡片，选中时显示品牌色描边和浅底。说明、风险提示和错误用 `SettingsNotice` 的 `info`、`warning`、`error` 三种语气，颜色由组件决定。字段说明用 `.input-hint`。
 - 整页设置：系统设置页这类整页表单，每组设置放在 `SettingsCard` 里。卡片头部是 `text-lg` 标题和说明，内容区 `p-6`，`SettingsSection` 之间相隔 24px。卡片里不放保存按钮。刷新、测试连接这类工具按钮和控制整张卡片的总开关放在 `actions` 插槽，显示在标题右侧。设置行下方需要提醒权限或风险时，在 `SettingToggleRow` 的 `hint` 插槽里放 `SettingsNotice`。
 - 字段布局：开关、选择框和短数字用 `SettingRow`，标题在左，控件在右。设置行没有说明文字时，标题和控件垂直居中。URL、密钥、长文本和多行文本用上下布局：`.input-label` 在上，输入框占满宽度，`.input-hint` 在输入框下方。两个以上这样的字段可以放进 `md:grid-cols-2` 网格。一组同类的短字段（各平台的阈值、调度权重、和提供商弹窗对应的默认值）也用上下布局的网格并排。
+- 多语言字段：面向用户的运营文案用 `LocalizedEditor`（传 `label`）或 `LocalizedFieldsEditor`，表单里和普通输入框一样只编辑原文。翻译入口是标签行右侧的 `text-xs` 小链接，显示已有语言；有译文过期或需要选择原文语言时变成琥珀色。翻译弹窗是贴边分栏的工作区弹窗，左栏是语言列表，右栏编辑选中的语言；它用 `modal-nested` 层级，可以叠在公告、套餐等弹窗上。占位文字、等宽字体和栅格布局分别通过 `placeholder`、`inputClass` 和 `layout` 传入。
 - 标签输入：逐个录入的字符串列表（邮箱后缀白名单、转发 IP 请求头）用 `SettingsTagInput`。组件负责展示标签和转发输入事件，分隔、去重和规范化由调用方处理。
 - 整页保存：页面里所有设置都通过 `SettingsSaveBar` 保存。有未保存的修改时，视口底部居中浮出一条深色浮条（浅色模式 `gray-900` 底，深色模式 `dark-900` 底加 `dark-500` 边线），上面是提示文字和“放弃”“保存设置”两个标准尺寸按钮。浮条用 `rounded-dialog`（16px）和 8px 内边距，里面 `rounded-control`（8px）的按钮与外框弧度同心。每块设置用 `useDirtyTracker` 记录加载或保存后的快照，数据源各自加载完成后调用 `markClean(key)`。快照里去掉只读的展示数据，例如联网搜索的已用额度。页面用 `provideSettingsSaveRegistry` 创建登记表，本页的表单和子组件（子组件调用 `useSettingsSaveTarget`）把修改状态和返回是否成功的保存函数登记进去。每块登记时同时提供 `discard`，从服务器重新加载这块设置。点保存时按登记顺序只提交有修改的几块，某一块失败时其余几块照常保存，全部成功后提示一次。点放弃时，有修改的几块各自重新加载。
 - 批量编辑：每个可以修改的项用 `BulkApplyField` 包裹，左侧的复选框（`${id}-enabled`）决定是否提交。未勾选时内容区加 `inert` 并置灰，键盘也进不去。布尔值放在 `control` 插槽的开关里，界面上只有这一个开关，左侧复选框负责是否提交。
@@ -245,7 +247,7 @@
 - 两种弹窗共用 `useDialogLifecycle`：滚动锁保持到弹窗实际退出完成，快速重新打开不会重复计数，旧弹窗不会抢走新弹窗的焦点，Escape 只关闭最上层的 BaseDialog。父级按需挂载的安全凭证弹窗使用 `useLeavingPresence`，关闭后等外壳的 `after-leave` 再卸载。
 - Toast 和用户直接增删的短列表用 `motion-list`，以稳定的业务 key 识别进入、退出和位置变化。分页表格、虚拟列表和轮询结果不做逐行动效。
 - 系统开启减少动态效果时，普通过渡变量缩短到 1ms，位移归零，Collapse 和内容淡入直接切到最终状态；动态修改这个偏好会取消正在进行的内容淡入。完成和清理通过 Vue 生命周期和动画完成事件执行，业务代码里不用定时器估算结束时间。
-- 专用动画保留自己的几何：CreativeCanvas 工具条展开、CreativeRunHistory 详情和 CustomPageView 目录抽屉使用普通的时长和缓动；通用图标、加载反馈、计时进度和公开页的数字滚动使用各自的节奏，并各自处理减少动态效果。切换主题时临时关闭过渡。
+- 专用动画保留自己的几何：CreativeCanvas 工具条展开、CreativeRunHistory 侧栏滑入和条目详情、CustomPageView 目录抽屉使用普通的时长和缓动；通用图标、加载反馈、计时进度和公开页的数字滚动使用各自的节奏，并各自处理减少动态效果。切换主题时临时关闭过渡。
 - 用户兑换成功时，卡片内显示 `RedeemCelebration`：统计区保留占位，显示成功图标和权益信息；彩纸动画持续 2 秒，由动画完成事件移除；提示保留 3 秒后按公共 fade 退出。每次成功用独立的序号触发，再次提交或卸载时清理上一次的效果。减少动态效果时只显示静态的成功信息，播放过程中修改偏好也立即取消装饰。成功消息通过礼貌播报区域通知辅助技术。
 - 用户仪表盘的专用动效时长集中在 `components/user/dashboard/dashboardMotion.ts`：脚本直接引用常量，样式读取页面根节点注入的 `--dash-*` 变量。包括这些动效：
   - 指标数字滚动（`useCountUp`，四次方缓出，读屏只读最终值）。
@@ -291,6 +293,8 @@
 全站只有一套密度：表头 `px-4 py-2 text-xs font-medium tracking-wider`，数据单元格 `px-4 py-3 text-sm`。`.table` 组件类、`TablePageLayout` 的深度样式和 `DataTable` 三处要保持一致。
 
 分页表格的表体和 `Pagination` 共用一个 `rounded-surface` 外框，外框用 `overflow-hidden` 裁出底部圆角。分页放在表体的滚动区域之外，两者之间直接相接，没有 `space-y-*` 或外边距；固定高度的表格用 flex 分配表体高度，分页不收缩。`TablePageLayout` 已经包含这个结构；独立卡片和弹窗也按这个约定，嵌入 `UsageTable` 时传 `flat`，表格只保留外框这一层边框。桌面分页上下留白 8px，浅色底 `gray-50/80`，深色底 `dark-900`，控件高 36px；窄屏显示上一页、下一页和当前页数。
+
+移动端卡片里，`DataTable` 的每一行左边是 `text-xs` 标签，右边是单元格内容，两边用 `items-baseline` 按首行文字对齐。单元格的首个元素是图标、头像或色条时，flex 容器会拿这个元素的底边当基线，标签就会偏下。这类单元格给第一行文字加 `self-baseline`，参考 `GroupBadge` 的分组名和 `UsageTable` 的 Token、延迟列。
 
 两个合法例外：
 

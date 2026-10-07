@@ -1,5 +1,3 @@
-//go:build unit
-
 package provider
 
 import (
@@ -16,22 +14,20 @@ import (
 )
 
 func TestGrokProviderModelMappingRemainsIndependentFromRuntimeSettings(t *testing.T) {
-	original := xai.RuntimeModelMappingOptions()
-	t.Cleanup(func() { xai.SetRuntimeModelMappingOptions(original) })
+	original := xai.RuntimeDefaultTextModel()
+	t.Cleanup(func() { xai.SetRuntimeDefaultTextModel(original) })
 	provider := &acct.Record{Platform: capability.PlatformGrok, Credentials: map[string]any{}}
 
-	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{})
+	xai.SetRuntimeDefaultTextModel("")
 	requireMappedModel(t, provider, "claude-sonnet-4-5", "claude-sonnet-4-5")
 
-	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{
-		DefaultText: "grok-build-0.1",
-	})
+	xai.SetRuntimeDefaultTextModel("grok-build-0.1")
 	requireMappedModel(t, provider, "claude-sonnet-4-5", "claude-sonnet-4-5")
 }
 
 func requireMappedModel(t *testing.T, provider *acct.Record, requested, expected string) {
 	t.Helper()
-	if actual, _ := acct.ResolveMappedModel(provider.Platform, acct.ResolveModelMapping(provider, ModelDefaults()), requested); actual != expected {
+	if actual, _ := acct.ResolveMappedModel(acct.ResolveModelMapping(provider, ModelDefaults()), requested); actual != expected {
 		t.Fatalf("GetMappedModel(%q) = %q, want %q", requested, actual, expected)
 	}
 }
@@ -474,7 +470,7 @@ func TestProviderGetMappedModel(t *testing.T) {
 				Platform:    tt.platform,
 				Credentials: tt.credentials,
 			}
-			result, _ := acct.ResolveMappedModel(provider.Platform, acct.ResolveModelMapping(provider, ModelDefaults()), tt.requestedModel)
+			result, _ := acct.ResolveMappedModel(acct.ResolveModelMapping(provider, ModelDefaults()), tt.requestedModel)
 			if result != tt.expected {
 				t.Errorf("GetMappedModel(%q) = %q, want %q", tt.requestedModel, result, tt.expected)
 			}
@@ -620,7 +616,7 @@ func TestProviderResolveMappedModel(t *testing.T) {
 				Platform:    tt.platform,
 				Credentials: tt.credentials,
 			}
-			mappedModel, matched := acct.ResolveMappedModel(provider.Platform, acct.ResolveModelMapping(provider, ModelDefaults()), tt.requestedModel)
+			mappedModel, matched := acct.ResolveMappedModel(acct.ResolveModelMapping(provider, ModelDefaults()), tt.requestedModel)
 			if mappedModel != tt.expectedModel || matched != tt.expectedMatch {
 				t.Fatalf("ResolveMappedModel(%q) = (%q, %v), want (%q, %v)", tt.requestedModel, mappedModel, matched, tt.expectedModel, tt.expectedMatch)
 			}
@@ -666,6 +662,10 @@ func TestProviderGetModelMapping_GoogleOneUsesConservativeDefaults(t *testing.T)
 	if provider.IsModelSupported("gemini-3.5-flash", ModelDefaults(), ModelRules(provider)) {
 		t.Fatal("Google One defaults must not treat unsupported models as eligible")
 	}
+	mapping["gemini-2.5-flash"] = "mutated"
+	if acct.ResolveModelMapping(provider, ModelDefaults())["gemini-2.5-flash"] != "gemini-2.5-flash" {
+		t.Fatal("Google One 默认映射被调用方修改")
+	}
 }
 
 func TestProviderGetModelMapping_GoogleOnePreservesExplicitMapping(t *testing.T) {
@@ -709,7 +709,7 @@ func TestProviderGetModelMapping_AntigravityRespectsWildcardOverride(t *testing.
 	if _, exists := mapping["gemini-3.1-pro-low"]; exists {
 		t.Fatalf("did not expect explicit gemini-3.1-pro-low passthrough when wildcard already exists")
 	}
-	if mapped, _ := acct.ResolveMappedModel(provider.Platform, acct.ResolveModelMapping(provider, ModelDefaults()), "gemini-3-flash"); mapped != "gemini-3.1-pro-high" {
+	if mapped, _ := acct.ResolveMappedModel(acct.ResolveModelMapping(provider, ModelDefaults()), "gemini-3-flash"); mapped != "gemini-3.1-pro-high" {
 		t.Fatalf("expected wildcard mapping to stay effective, got: %q", mapped)
 	}
 }

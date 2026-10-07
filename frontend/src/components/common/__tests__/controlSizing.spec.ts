@@ -79,8 +79,7 @@ describe('36px control sizing', () => {
     expect(buttons.every((button) => button.classes().includes('h-9'))).toBe(true)
   })
 
-  it('keeps the latest page-specific sizing fixes explicit', () => {
-    const providerBulkActionsSource = readSource('../../admin/provider/ProviderBulkActionsBar.vue')
+  it('uses shared sizing in page controls', () => {
     const userUsageSource = readSource('../../../views/user/UsageView.vue')
     const adminUsageSource = readSource('../../../views/admin/UsageView.vue')
     const riskControlSource = readSource('../../../views/admin/RiskControlView.vue')
@@ -91,7 +90,6 @@ describe('36px control sizing', () => {
     const adminOrdersSource = readSource('../../../views/admin/orders/AdminOrdersView.vue')
     const adminPaymentPlansSource = readSource('../../../views/admin/orders/AdminPaymentPlansView.vue')
 
-    expect(providerBulkActionsSource).toContain('class="btn btn-primary btn-sm h-[30px]"')
     expect(userUsageSource).toContain('<div class="card p-4">')
     expect(adminUsageSource).toContain('<div class="card p-4">')
     expect(riskControlSource).toContain('class="grid grid-cols-1 items-start gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,440px)]"')

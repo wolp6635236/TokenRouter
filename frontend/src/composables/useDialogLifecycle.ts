@@ -22,7 +22,7 @@ export function useDialogLifecycle(visible: () => boolean, panel: Ref<HTMLElemen
     }
     closingPanel = null
     await nextTick()
-    if (!visible() || dialogs.at(-1) !== token) return
+    if (!visible() || dialogs[dialogs.length - 1] !== token) return
     const target = panel.value?.querySelector<HTMLElement>(
       'button:not(:disabled), [href], input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
     )
@@ -32,7 +32,7 @@ export function useDialogLifecycle(visible: () => boolean, panel: Ref<HTMLElemen
 
   function release() {
     if (!held) return
-    const wasTop = dialogs.at(-1) === token
+    const wasTop = dialogs[dialogs.length - 1] === token
     dialogs.splice(dialogs.indexOf(token), 1)
     held = false
     if (dialogs.length === 0) document.body.classList.remove('modal-open')
@@ -52,5 +52,5 @@ export function useDialogLifecycle(visible: () => boolean, panel: Ref<HTMLElemen
   }
 
   onBeforeUnmount(release)
-  return { afterLeave, isTop: () => dialogs.at(-1) === token }
+  return { afterLeave, isTop: () => dialogs[dialogs.length - 1] === token }
 }

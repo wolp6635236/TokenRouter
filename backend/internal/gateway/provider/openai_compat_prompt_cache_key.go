@@ -8,28 +8,15 @@ import (
 
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 const compatPromptCacheKeyPrefix = "compat_cc_"
 
-// ShouldAutoInjectPromptCacheKeyForCompat 保持原自动缓存标识适用的模型范围。
+// ShouldAutoInjectPromptCacheKeyForCompat 判断兼容请求是否自动生成提示缓存键。
 func ShouldAutoInjectPromptCacheKeyForCompat(model string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(model))
-	canonical := capability.CanonicalizeOpenAIModelAliasSpelling(trimmed)
-	// 仅对完整的 GPT-6 Astra 名称开启此兼容状态，避免把其他 GPT-6
-	// 系列或未公开别名误当成同一缓存身份。
-	if canonical == "gpt-6-astra" {
-		return true
-	}
-	// 仅对 Responses 兼容路径支持的 GPT-5 族开启自动注入，避免 normalizeCodexModel
-	// 的默认兜底把任意模型（如 gpt-4o、claude-*）误判为 gpt-5.4。
-	if !strings.Contains(trimmed, "gpt-5") && !strings.Contains(trimmed, "codex") {
-		return false
-	}
-	normalized := strings.TrimSpace(strings.ToLower(NormalizeCodexModel(trimmed)))
-	return strings.HasPrefix(normalized, "gpt-5") || strings.Contains(normalized, "codex")
+	return trimmed == "gpt-6-astra" || strings.HasPrefix(trimmed, "gpt-5") || strings.Contains(trimmed, "codex")
 }
 
 // DeriveCompatPromptCacheKey 从原首轮稳定内容派生兼容缓存键，不引入新状态。
@@ -38,10 +25,7 @@ func DeriveCompatPromptCacheKey(req *protocolopenai.ChatCompletionsRequest, mapp
 		return ""
 	}
 
-	normalizedModel := NormalizeCodexModel(strings.TrimSpace(mappedModel))
-	if normalizedModel == "" {
-		normalizedModel = NormalizeCodexModel(strings.TrimSpace(req.Model))
-	}
+	normalizedModel := strings.TrimSpace(mappedModel)
 	if normalizedModel == "" {
 		normalizedModel = strings.TrimSpace(req.Model)
 	}
@@ -89,10 +73,7 @@ func DeriveAnthropicCompatPromptCacheKey(req *protocolanthropic.AnthropicRequest
 		return anchorKey
 	}
 
-	normalizedModel := NormalizeCodexModel(strings.TrimSpace(mappedModel))
-	if normalizedModel == "" {
-		normalizedModel = NormalizeCodexModel(strings.TrimSpace(req.Model))
-	}
+	normalizedModel := strings.TrimSpace(mappedModel)
 	if normalizedModel == "" {
 		normalizedModel = strings.TrimSpace(req.Model)
 	}

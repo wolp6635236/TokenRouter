@@ -21,9 +21,9 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"gopkg.in/yaml.v3"
 )
 
@@ -146,9 +146,9 @@ func TestProcessModes(t *testing.T) {
 	backendRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	require.NoError(t, err)
 	binary := filepath.Join(t.TempDir(), "server")
+	// 构建继承调用方的工具链设置，版本声明由 go.mod 维护。
 	build := exec.Command("go", "build", "-ldflags=-X main.Version=test-contract -X main.Commit=test-head -X main.Date=test-date -X main.BuildType=test", "-o", binary, "./cmd/server")
 	build.Dir = backendRoot
-	build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.0")
 	buildOutput, err := build.CombinedOutput()
 	require.NoError(t, err, string(buildOutput))
 	t.Run("version", func(t *testing.T) {
@@ -159,7 +159,7 @@ func TestProcessModes(t *testing.T) {
 	})
 	fixture := newDatabaseFixture(t)
 	ctx := context.Background()
-	rdb, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	rdb, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, rdb.Terminate(context.Background())) })
 	redisHost, err := rdb.Host(ctx)
@@ -346,7 +346,6 @@ func TestProcessModes(t *testing.T) {
 		tool := filepath.Join(t.TempDir(), "jwtgen")
 		build := exec.Command("go", "build", "-o", tool, "./cmd/jwtgen")
 		build.Dir = backendRoot
-		build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.0")
 		data, e := build.CombinedOutput()
 		require.NoError(t, e, string(data))
 		var id int64
@@ -381,7 +380,6 @@ func TestProcessModes(t *testing.T) {
 		tool := filepath.Join(t.TempDir(), "cleanup-ingress-reject-logs")
 		build := exec.Command("go", "build", "-o", tool, "./cmd/cleanup-ingress-reject-logs")
 		build.Dir = backendRoot
-		build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.0")
 		output, e := build.CombinedOutput()
 		require.NoError(t, e, string(output))
 		var id int64

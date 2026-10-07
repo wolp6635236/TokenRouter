@@ -336,6 +336,27 @@ func fetchCapturedFingerprint(t *testing.T, captureURL string, profile *Profile)
 	return &fp
 }
 
+// skipIfExternalServiceUnavailable 在抓包服务不可达时跳过测试，其他错误直接失败。
+func skipIfExternalServiceUnavailable(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "certificate has expired") ||
+			strings.Contains(errStr, "certificate is not yet valid") ||
+			strings.Contains(errStr, "connection refused") ||
+			strings.Contains(errStr, "connection reset") ||
+			strings.Contains(errStr, "broken pipe") ||
+			strings.Contains(errStr, "EOF") ||
+			strings.Contains(errStr, "no such host") ||
+			strings.Contains(errStr, "network is unreachable") ||
+			strings.Contains(errStr, "timeout") ||
+			strings.Contains(errStr, "deadline exceeded") {
+			t.Skipf("skipping test: external service unavailable: %v", err)
+		}
+		t.Fatalf("failed to get fingerprint: %v", err)
+	}
+}
+
 func uint16sToInts(vals []uint16) []int {
 	result := make([]int, len(vals))
 	for i, v := range vals {

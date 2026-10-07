@@ -1,5 +1,3 @@
-//go:build unit
-
 package billing_test
 
 // gpt56LadderCatalogJSON 用于验证目录驱动的 GPT-5.6 阶梯；fallback 不再隐式补阶梯。

@@ -2,6 +2,7 @@ import { apiClient } from '../client'
 import type { ModelAttributes } from '@/types/modelAttributes'
 
 export interface AttributeRule {
+  id?: string
   models: string[]
   attributes: ModelAttributes
 }

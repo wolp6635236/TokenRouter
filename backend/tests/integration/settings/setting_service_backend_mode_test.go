@@ -1,5 +1,3 @@
-//go:build unit
-
 package settings_test
 
 import (
@@ -57,7 +55,6 @@ func (s *bmUpdateRepoStub) Delete(ctx context.Context, key string) error {
 }
 
 func TestUpdateSettings_InvalidatesBackendModeCache(t *testing.T) {
-
 	repo := &bmUpdateRepoStub{
 		getValueFn: func(ctx context.Context, key string) (string, error) {
 			require.Equal(t, gateway.SettingKeyBackendModeEnabled, key)

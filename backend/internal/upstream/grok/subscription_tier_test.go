@@ -1,5 +1,3 @@
-//go:build unit
-
 package grok
 
 import (
@@ -69,7 +67,6 @@ func TestCanonicalGrokPlanUsesOnlyGrok45ResponsesWindow(t *testing.T) {
 	require.Equal(t, "free", CanonicalGrokPlan(&zero, "free", nil))
 
 	require.Equal(t, "supergrok_heavy", CanonicalGrokPlan(&zero, "SuperGrokPro", &QuotaSnapshot{
-
 		Model: "grok-4.5",
 
 		Requests: &QuotaWindow{Limit: &heavyReq},
@@ -79,7 +76,6 @@ func TestCanonicalGrokPlanUsesOnlyGrok45ResponsesWindow(t *testing.T) {
 		LastHeadersSeenAt: fresh,
 	}))
 	require.Equal(t, "supergrok", CanonicalGrokPlan(&zero, "SuperGrokPro", &QuotaSnapshot{
-
 		Model: "grok-4.6",
 
 		Requests: &QuotaWindow{Limit: &heavyReq},
@@ -94,7 +90,6 @@ func TestCanonicalGrokPlanUsesOnlyGrok45ResponsesWindow(t *testing.T) {
 		LastHeadersSeenAt: fresh,
 	}))
 	require.Equal(t, "supergrok", CanonicalGrokPlan(&zero, "SuperGrokPro", &QuotaSnapshot{
-
 		Model: "grok-4.5",
 
 		Requests: &QuotaWindow{Limit: &superReq},
@@ -109,7 +104,6 @@ func TestCanonicalGrokPlanUsesOnlyGrok45ResponsesWindow(t *testing.T) {
 		LastHeadersSeenAt: stale,
 	}))
 	require.Equal(t, "supergrok_heavy", CanonicalGrokPlan(&zero, "SuperGrokPro", &QuotaSnapshot{
-
 		Model: "grok-4.6",
 
 		Requests: &QuotaWindow{Limit: &superReq},

@@ -31,8 +31,8 @@ func HistoricalPrices() map[string]*pricing.ModelPricing {
 	return prices
 }
 
-// Calculator 组合跨模块计费测试的输入；实例和所有计算仍由 billing 拥有。
-func Calculator(multiplier float64, catalog *catalogprovider.Service, prices map[string]*pricing.ModelPricing) *billing.Calculator {
+// Calculator 为跨模块计费测试准备模型目录，并构造 billing.Calculator。
+func Calculator(catalog *catalogprovider.Service, prices map[string]*pricing.ModelPricing) *billing.Calculator {
 	useBaseline := prices == nil && catalog == nil
 	if useBaseline {
 		prices = HistoricalPrices()
@@ -89,8 +89,7 @@ func Calculator(multiplier float64, catalog *catalogprovider.Service, prices map
 		source = catalog
 	}
 	return billing.NewCalculator(source, billing.CalculatorOptions{
-		DefaultRateMultiplier: multiplier,
-		Now:                   timezone.NewCalendar(time.Local).Now,
-		LoadLocation:          billingadapter.LoadPricingLocation,
+		Now:          timezone.NewCalendar(time.Local).Now,
+		LoadLocation: billingadapter.LoadPricingLocation,
 	})
 }

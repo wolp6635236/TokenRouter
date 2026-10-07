@@ -1,38 +1,11 @@
 package provider
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
 	"github.com/stretchr/testify/require"
 )
-
-// TestArchiveDefaultsPreservePresenceAndIsolation 检查省略、null、false 和空集合分别处理，每个导入条目使用独立的默认模板副本。
-func TestArchiveDefaultsPreservePresenceAndIsolation(t *testing.T) {
-	concurrency, priority := 4, 3
-	defaults := &transfer.OpenAIOAuthImportDefaults{Provider: transfer.OpenAIOAuthImportProviderDefaults{Concurrency: &concurrency, Priority: &priority}, Credentials: map[string]any{"model_mapping": map[string]any{"alias": "model"}}, Extra: map[string]any{"enabled": true, "list": []any{"default"}, "nullable": "default"}}
-	var item transfer.DataProvider
-	require.NoError(t, json.Unmarshal([]byte(`{"name":"fixture","platform":"openai","type":"oauth","credentials":{"id_token":"token"},"concurrency":null,"extra":{"enabled":false,"list":[],"nullable":null}}`), &item))
-	ApplyArchiveDefaults(&item, defaults)
-	require.Nil(t, item.Concurrency)
-	require.True(t, item.ConcurrencySet)
-	require.Equal(t, 3, *item.Priority)
-	require.Equal(t, false, item.Extra["enabled"])
-	require.Equal(t, []any{}, item.Extra["list"])
-	require.Contains(t, item.Extra, "nullable")
-	require.Nil(t, item.Extra["nullable"])
-	mapping, ok := item.Credentials["model_mapping"].(map[string]any)
-	require.True(t, ok)
-	mapping["alias"] = "changed"
-	*item.Priority = 91
-	require.Equal(t, map[string]any{"alias": "model"}, defaults.Credentials["model_mapping"])
-	require.Equal(t, 3, priority)
-	data, err := json.Marshal(item)
-	require.NoError(t, err)
-	require.NotContains(t, string(data), "ConcurrencySet")
-	require.NotContains(t, string(data), "PrioritySet")
-}
 
 // TestArchiveIdentityHintsDoNotReplaceExplicitValues 检查 ID Token 补齐导入提示时保持平台、类型和已有非空值。
 func TestArchiveIdentityHintsDoNotReplaceExplicitValues(t *testing.T) {

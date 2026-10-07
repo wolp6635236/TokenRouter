@@ -41,15 +41,15 @@
             />
           </div>
           <div class="md:col-span-2">
-            <label :for="`${idPrefix}-description`" class="input-label">{{
-              t('admin.groups.form.description')
-            }}</label>
-            <textarea
-              :id="`${idPrefix}-description`"
-              v-model="form.description"
-              rows="3"
-              class="input"
-              :placeholder="t('admin.groups.optionalDescription')"
+            <LocalizedFieldsEditor
+              :model-value="form.localization"
+              :source-locale="mode === 'create' ? (locale || 'en') : null"
+              :source="{ display_name: form.name, description: form.description }"
+              :fields="[
+                { key: 'display_name', label: t('localization.displayName') },
+                { key: 'description', label: t('admin.groups.form.description'), placeholder: t('admin.groups.optionalDescription'), multiline: true },
+              ]"
+              @update:model-value="form.localization = $event; form.description = $event.source.description"
             />
           </div>
         </div>
@@ -468,6 +468,7 @@
 </template>
 
 <script setup lang="ts">
+import LocalizedFieldsEditor from '@/components/common/LocalizedFieldsEditor.vue'
 import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
@@ -518,7 +519,7 @@ const emit = defineEmits<{
   invertModels: []
   moveModel: [from: number, to: number]
 }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const idPrefix = computed(() => `${props.mode}-group`)
 // 所有平台共用同一组页签，平台差异体现在页内字段。
 const tabs = computed(() =>

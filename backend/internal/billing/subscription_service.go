@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
@@ -1067,6 +1068,11 @@ func (s *SubscriptionService) GetSubscriptionProgress(ctx context.Context, subsc
 	sub, err := s.userSubRepo.GetByID(ctx, subscriptionID)
 	if err != nil {
 		return nil, ErrSubscriptionNotFound
+	}
+	if locale.UserPresentation(ctx) {
+		localized := *sub
+		localized.Plan = LocalizePlan(sub.Plan, locale.FromContext(ctx))
+		sub = &localized
 	}
 	return s.CalculateProgress(sub), nil
 }

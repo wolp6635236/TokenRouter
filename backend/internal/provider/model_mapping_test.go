@@ -22,3 +22,27 @@ func TestModelMappingDefaultsAreLazyAndIsolated(t *testing.T) {
 	require.Equal(t, "default-model", defaults["alias"])
 	require.Equal(t, "default-model", ResolveModelMapping(r, options)["alias"])
 }
+
+// TestResolveMappedModelPreservesMatchOrder 检查原始精确值、通配符和去空白后的匹配顺序。
+func TestResolveMappedModelPreservesMatchOrder(t *testing.T) {
+	cases := []struct {
+		name      string
+		mapping   map[string]string
+		requested string
+		want      string
+		matched   bool
+	}{
+		{name: "原始精确值优先", mapping: map[string]string{" model ": "raw", "model": "trimmed", "*": "wildcard"}, requested: " model ", want: "raw", matched: true},
+		{name: "原始通配符优先", mapping: map[string]string{"model": "trimmed", "*": "wildcard"}, requested: " model ", want: "wildcard", matched: true},
+		{name: "去空白后匹配", mapping: map[string]string{"model": "trimmed"}, requested: " model ", want: "trimmed", matched: true},
+		{name: "未命中保留输入", mapping: map[string]string{"other": "target"}, requested: " model ", want: " model "},
+		{name: "映射执行一次", mapping: map[string]string{"first": "second", "second": "third"}, requested: "first", want: "second", matched: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, matched := ResolveMappedModel(tc.mapping, tc.requested)
+			require.Equal(t, tc.want, model)
+			require.Equal(t, tc.matched, matched)
+		})
+	}
+}

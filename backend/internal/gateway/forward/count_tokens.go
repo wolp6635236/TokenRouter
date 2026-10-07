@@ -79,8 +79,7 @@ func CountTokens(ctx context.Context, p CountPorts, in MessageInput, parsed *req
 
 	if shouldMimicClaudeCode {
 		normalizeOpts := NormalizeOptions{StripSystemCacheControl: true}
-		var normalizedBody []byte
-		normalizedBody, reqModel = p.NormalizeOAuth(body, reqModel, normalizeOpts)
+		normalizedBody := p.NormalizeOAuth(body, normalizeOpts)
 		if err := replaceBody(normalizedBody); err != nil {
 			return err
 		}

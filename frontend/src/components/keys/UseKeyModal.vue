@@ -4,7 +4,7 @@
       <template v-if="compositeGroups?.length">
         <p class="text-sm text-gray-600 dark:text-gray-400">{{ t('keys.useKeyModal.compositeDescription') }}</p>
         <div v-for="binding in compositeGroups" :key="binding.group_id" class="rounded-control border border-gray-200 p-3 dark:border-dark-600">
-          <p class="text-sm font-medium">{{ binding.group?.name || `#${binding.group_id}` }}</p>
+          <p class="text-sm font-medium">{{ (binding.group?.display_name || binding.group?.name) || `#${binding.group_id}` }}</p>
           <template v-if="binding.group?.models?.length">
             <code class="text-xs">{{ binding.prefix }}/{{ binding.group.models[0] }}</code>
             <button type="button" class="btn btn-secondary btn-sm ml-2" @click="copyContent(`${binding.prefix}/${binding.group.models[0]}`, binding.group_id)">{{ t('keys.useKeyModal.copy') }}</button>

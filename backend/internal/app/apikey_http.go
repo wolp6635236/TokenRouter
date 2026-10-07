@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
@@ -23,7 +25,7 @@ func provideKeyHTTP(keys *apikey.APIKeyService, capacity *routing.CapacityServic
 	})
 	handler.SetGroupCapacityService(capacity)
 	handler.SetGroupPresentation(func(ctx context.Context, group *routing.Group, summary *accessview.GroupCapacitySummary) *dto.Group {
-		result := dto.GroupFromRouting(apikey.RoutingGroup(group))
+		result := dto.GroupFromRouting(apikey.RoutingGroup(group), locale.FromContext(ctx))
 		if summary != nil {
 			result.Capacity = dto.GroupCapacityFromSummary(summary)
 		}

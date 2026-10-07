@@ -170,6 +170,7 @@ backend/
 │   ├── pkg/                                             无业务归属的通用工具；分类目录
 │   │   ├── apperror/                                    应用错误类别、reason 与安全元数据
 │   │   ├── ipmatch/                                     IP 与 CIDR 匹配
+│   │   ├── locale/                                      共用语言目录、内容版本和用户错误文案
 │   │   ├── logredact/                                   凭据、地址和日志的脱敏与截断
 │   │   ├── oauthpkce/                                   OAuth PKCE 生成
 │   │   ├── pagination/                                  分页值与切片分页计算
@@ -229,6 +230,7 @@ backend/
 │   │   └── testkit/                                     该模块测试所需的替身与夹具
 │   ├── setup/                                           CLI、Web 和自动首次初始化
 │   ├── site/                                            站点展示、公告、菜单和页面权限
+│   │   ├── content/                                     导航与协议的纯内容类型及解析
 │   │   ├── filesystem/                                  站点 Markdown 和图片的路径及读取限制
 │   │   ├── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
 │   │   │   └── dto/                                     HTTP 展示值、请求值及脱敏映射
@@ -313,7 +315,7 @@ backend/
 <a id="static_dependencies"></a>
 ## 静态依赖
 
-实线箭头表示生产代码的 Go import，从导入方指向被依赖方。下图挑选了几个具体包来展示各层关系，各业务核心的实际依赖以代码为准。依赖限制由 `tools/architecture/` 的 arch-go 架构测试执行：按角色限制能用哪些技术库，按模块表限制模块之间的协作，纯叶子包、平台依赖方向和文件级的特殊权限另有单独检查。执行入口为 `make -C backend test-architecture`；golangci-lint 负责通用代码质量检查。
+实线箭头表示生产代码的 Go import，从导入方指向被依赖方。下图挑选了几个具体包来展示各层关系，各业务核心的实际依赖以代码为准。依赖限制由 `tools/architecture/` 的 arch-go 架构测试执行：按角色限制能用哪些技术库，按模块表限制模块之间的协作，纯叶子包、平台依赖方向和文件级的特殊权限另有单独检查。执行入口为 `make lint-go`，它先运行架构测试，再用 golangci-lint 检查通用代码质量。
 
 ```mermaid
 flowchart TB

@@ -137,42 +137,6 @@ func (s *Calculator) CalculateCostInternal(model string, tokens UsageTokens, rat
 	return s.ComputeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, true), nil
 }
 
-// CalculateCostWithConfig 使用配置中的默认倍率计算费用
-func (s *Calculator) CalculateCostWithConfig(model string, tokens UsageTokens) (*CostBreakdown, error) {
-	multiplier := s.options.DefaultRateMultiplier
-	if multiplier <= 0 {
-		multiplier = 1.0
-	}
-	return s.CalculateCost(model, tokens, multiplier)
-}
-
-// GetEstimatedCost 估算费用（用于前端展示）
-func (s *Calculator) GetEstimatedCost(model string, estimatedInputTokens, estimatedOutputTokens int) (float64, error) {
-	tokens := UsageTokens{
-		InputTokens:  estimatedInputTokens,
-		OutputTokens: estimatedOutputTokens,
-	}
-
-	breakdown, err := s.CalculateCostWithConfig(model, tokens)
-	if err != nil {
-		return 0, err
-	}
-
-	return breakdown.ActualCost, nil
-}
-
-// GetCatalogStatus 获取统一模型目录的加载和更新状态。
-func (s *Calculator) GetCatalogStatus() map[string]any {
-	if s.catalog != nil {
-		return s.catalog.GetStatus()
-	}
-	return map[string]any{
-		"model_count":  0,
-		"last_updated": "unavailable",
-		"local_hash":   "N/A",
-	}
-}
-
 // ForceUpdatePricing 强制更新价格数据
 func (s *Calculator) ForceUpdatePricing() error {
 	if s.catalog != nil {
@@ -374,15 +338,13 @@ func (s *Calculator) DefaultVideoPrice(model string, resolution string) (float64
 // PriceCatalog 暴露目录读取及既有维护操作，不向核心暴露文件或网络客户端。
 type PriceCatalog interface {
 	GetModelPricing(string) *purepricing.CatalogModelPricing
-	GetStatus() map[string]any
 	ForceUpdate() error
 }
 
-// CalculatorOptions 包含 app 提供的默认倍率、时钟、时区加载器和平台模型标识。
+// CalculatorOptions 包含 app 提供的时钟和时区加载器。
 type CalculatorOptions struct {
-	DefaultRateMultiplier float64
-	Now                   func() time.Time
-	LoadLocation          func(string) (*time.Location, error)
+	Now          func() time.Time
+	LoadLocation func(string) (*time.Location, error)
 }
 
 // Calculator 统一拥有查价及计费编排；价卡算法由 pricing 唯一实现。

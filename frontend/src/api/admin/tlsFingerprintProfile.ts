@@ -103,11 +103,6 @@ export async function list(): Promise<TLSFingerprintProfile[]> {
   return data
 }
 
-export async function getById(id: number): Promise<TLSFingerprintProfile> {
-  const { data } = await apiClient.get<TLSFingerprintProfile>(`/admin/tls-fingerprint-profiles/${id}`)
-  return data
-}
-
 export async function create(profileData: CreateProfileRequest): Promise<TLSFingerprintProfile> {
   const { data } = await apiClient.post<TLSFingerprintProfile>('/admin/tls-fingerprint-profiles', profileData)
   return data
@@ -148,14 +143,8 @@ export async function listCollectorCaptures(token: string): Promise<TLSFingerpri
   return data
 }
 
-export async function deleteCollectorSession(token: string): Promise<{ deleted: boolean }> {
-  const { data } = await apiClient.delete<{ deleted: boolean }>(`/admin/tls-fingerprint-profiles/collector/sessions/${encodeURIComponent(token)}`)
-  return data
-}
-
 export const tlsFingerprintProfileAPI = {
   list,
-  getById,
   create,
   update,
   delete: deleteProfile,
@@ -164,7 +153,6 @@ export const tlsFingerprintProfileAPI = {
   stopCollector,
   createCollectorSession,
   listCollectorCaptures,
-  deleteCollectorSession
 }
 
 export default tlsFingerprintProfileAPI

@@ -186,6 +186,26 @@ func (_u *UserUpdate) SetNillableStatus(v *string) *UserUpdate {
 	return _u
 }
 
+// SetPreferredLocale sets the "preferred_locale" field.
+func (_u *UserUpdate) SetPreferredLocale(v string) *UserUpdate {
+	_u.mutation.SetPreferredLocale(v)
+	return _u
+}
+
+// SetNillablePreferredLocale sets the "preferred_locale" field if the given value is not nil.
+func (_u *UserUpdate) SetNillablePreferredLocale(v *string) *UserUpdate {
+	if v != nil {
+		_u.SetPreferredLocale(*v)
+	}
+	return _u
+}
+
+// ClearPreferredLocale clears the value of the "preferred_locale" field.
+func (_u *UserUpdate) ClearPreferredLocale() *UserUpdate {
+	_u.mutation.ClearPreferredLocale()
+	return _u
+}
+
 // SetUsername sets the "username" field.
 func (_u *UserUpdate) SetUsername(v string) *UserUpdate {
 	_u.mutation.SetUsername(v)
@@ -1063,6 +1083,11 @@ func (_u *UserUpdate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "User.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.PreferredLocale(); ok {
+		if err := user.PreferredLocaleValidator(v); err != nil {
+			return &ValidationError{Name: "preferred_locale", err: fmt.Errorf(`ent: validator failed for field "User.preferred_locale": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Username(); ok {
 		if err := user.UsernameValidator(v); err != nil {
 			return &ValidationError{Name: "username", err: fmt.Errorf(`ent: validator failed for field "User.username": %w`, err)}
@@ -1131,6 +1156,12 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(user.FieldStatus, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.PreferredLocale(); ok {
+		_spec.SetField(user.FieldPreferredLocale, field.TypeString, value)
+	}
+	if _u.mutation.PreferredLocaleCleared() {
+		_spec.ClearField(user.FieldPreferredLocale, field.TypeString)
 	}
 	if value, ok := _u.mutation.Username(); ok {
 		_spec.SetField(user.FieldUsername, field.TypeString, value)
@@ -2068,6 +2099,26 @@ func (_u *UserUpdateOne) SetNillableStatus(v *string) *UserUpdateOne {
 	return _u
 }
 
+// SetPreferredLocale sets the "preferred_locale" field.
+func (_u *UserUpdateOne) SetPreferredLocale(v string) *UserUpdateOne {
+	_u.mutation.SetPreferredLocale(v)
+	return _u
+}
+
+// SetNillablePreferredLocale sets the "preferred_locale" field if the given value is not nil.
+func (_u *UserUpdateOne) SetNillablePreferredLocale(v *string) *UserUpdateOne {
+	if v != nil {
+		_u.SetPreferredLocale(*v)
+	}
+	return _u
+}
+
+// ClearPreferredLocale clears the value of the "preferred_locale" field.
+func (_u *UserUpdateOne) ClearPreferredLocale() *UserUpdateOne {
+	_u.mutation.ClearPreferredLocale()
+	return _u
+}
+
 // SetUsername sets the "username" field.
 func (_u *UserUpdateOne) SetUsername(v string) *UserUpdateOne {
 	_u.mutation.SetUsername(v)
@@ -2958,6 +3009,11 @@ func (_u *UserUpdateOne) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "User.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.PreferredLocale(); ok {
+		if err := user.PreferredLocaleValidator(v); err != nil {
+			return &ValidationError{Name: "preferred_locale", err: fmt.Errorf(`ent: validator failed for field "User.preferred_locale": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Username(); ok {
 		if err := user.UsernameValidator(v); err != nil {
 			return &ValidationError{Name: "username", err: fmt.Errorf(`ent: validator failed for field "User.username": %w`, err)}
@@ -3043,6 +3099,12 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(user.FieldStatus, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.PreferredLocale(); ok {
+		_spec.SetField(user.FieldPreferredLocale, field.TypeString, value)
+	}
+	if _u.mutation.PreferredLocaleCleared() {
+		_spec.ClearField(user.FieldPreferredLocale, field.TypeString)
 	}
 	if value, ok := _u.mutation.Username(); ok {
 		_spec.SetField(user.FieldUsername, field.TypeString, value)

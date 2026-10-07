@@ -15,7 +15,7 @@
          胶囊形，高度与左上角设置、右上角历史两个按钮相同。窄屏限宽并换行，两侧各留出浮层的位置；
          局部重绘的画笔组在窄屏会折成两行，两行的胶囊端头会切到按钮，这时改用 dialog 圆角。 -->
     <div
-      class="canvas-toolbar canvas-island absolute left-1/2 top-3 z-10 flex max-sm:w-fit max-sm:max-w-[calc(100%-8rem)] max-sm:flex-wrap max-sm:justify-center -translate-x-1/2 items-center gap-1 rounded-full p-1"
+      class="canvas-toolbar canvas-island absolute top-3 z-10 flex max-sm:w-fit max-sm:max-w-[calc(100%-8rem)] max-sm:flex-wrap max-sm:justify-center -translate-x-1/2 items-center gap-1 rounded-full p-1"
       :class="isInpaint && 'max-sm:rounded-dialog'"
     >
       <!-- 上传图片：裁剪确认后直接放上画布当前视角中心 -->
@@ -277,16 +277,34 @@ const RESOLUTION_TAG_BACKGROUND_STYLE = {
 }
 // 圆点网格的场景间距（px，缩放 1 时）
 const GRID_SPACING = 20
+// 细网格在屏幕上的最小点距（px）。细网格点距落在 [GRID_MIN_PITCH, 2 × GRID_MIN_PITCH) 区间。
+const GRID_MIN_PITCH = 12
 
-// 圆点网格锚定场景坐标：背景位置 = 视口平移分量，间距 = 场景间距 × 缩放系数；
-// 因此平移时网格与图片同步滑动，缩小变密、放大变稀疏，与画布缩放观感一致。
+// 圆点网格锚定场景坐标，平移时和图片同步滑动。
+// 场景间距按 2 的幂缩放，屏幕点距保持在固定区间：缩小到区间下限时步长翻倍，放大到上限时步长减半。
+// 网格分两层：粗网格点距是细网格的 2 倍，透明度固定。细网格随点距从下限增大到上限而淡入。
+// 跳级前后屏幕上可见的点相同，缩放过程中点阵密度连续变化。
 function syncDotGrid(): void {
   const el = containerRef.value
   if (!el || !canvas) return
   const vpt = canvas.viewportTransform
-  const spacing = GRID_SPACING * canvas.getZoom()
-  el.style.backgroundPosition = `${vpt[4]}px ${vpt[5]}px`
-  el.style.backgroundSize = `${spacing}px ${spacing}px`
+  const rawPitch = GRID_SPACING * canvas.getZoom()
+  const pitch = rawPitch * 2 ** Math.ceil(Math.log2(GRID_MIN_PITCH / rawPitch))
+  const progress = Math.min(1, Math.max(0, (pitch - GRID_MIN_PITCH) / GRID_MIN_PITCH))
+  // smoothstep 让细网格在区间两端淡入淡出得更平缓
+  const fineOpacity = progress * progress * (3 - 2 * progress)
+  const x = vpt[4]
+  const y = vpt[5]
+  el.style.setProperty('--grid-fine-opacity', fineOpacity.toFixed(3))
+  el.style.backgroundSize = `${pitch * 2}px ${pitch * 2}px`
+  // 渐变圆点位于图块中心，图块边长为 2 × pitch。
+  // 第一层是粗网格，圆点落在场景原点；后三层是细网格，分别补齐右侧、下方和右下的点。
+  el.style.backgroundPosition = [
+    `${x - pitch}px ${y - pitch}px`,
+    `${x}px ${y - pitch}px`,
+    `${x - pitch}px ${y}px`,
+    `${x}px ${y}px`,
+  ].join(', ')
   // 独立 mask 画布必须与主画布共享视口变换，保证平移和缩放时笔迹跟随图片
   if (maskCanvas) {
     maskCanvas.setViewportTransform([...vpt] as TMat2D)
@@ -1966,12 +1984,28 @@ defineExpose({
 </script>
 
 <style scoped>
-/* 圆点网格：浅色主题用暗点，dark 类下用亮点，画布背景透明透出；点的透明度压低，不和图片抢视线 */
+/* 圆点网格：浅色主题用暗点，dark 类下用亮点，画布背景透明透出；点的透明度压低，不和图片抢视线。
+   第一层是粗网格，后三层是细网格，图块尺寸、位置和 --grid-fine-opacity 由 syncDotGrid 写入。
+   默认值对应缩放 1 时的网格，供脚本同步前的首帧使用。
+   圆点从 0.55px 开始渐隐到 1.25px，边缘带抗锯齿，高分屏上是干净的小圆点。 */
 .dot-grid {
   /* 禁止浏览器接管双指手势，交由画布实现缩放与平移。 */
   touch-action: none;
-  background-image: radial-gradient(circle, rgb(15 23 42 / 0.08) 1px, transparent 1px);
-  background-size: 20px 20px;
+  --grid-fine-opacity: 0.74;
+  --grid-dot-alpha: 0.1;
+  --grid-dot: rgb(15 23 42 / var(--grid-dot-alpha));
+  --grid-dot-fine: rgb(15 23 42 / calc(var(--grid-dot-alpha) * var(--grid-fine-opacity)));
+  background-image:
+    radial-gradient(circle, var(--grid-dot) 0.55px, transparent 1.25px),
+    radial-gradient(circle, var(--grid-dot-fine) 0.55px, transparent 1.25px),
+    radial-gradient(circle, var(--grid-dot-fine) 0.55px, transparent 1.25px),
+    radial-gradient(circle, var(--grid-dot-fine) 0.55px, transparent 1.25px);
+  background-size: 40px 40px;
+  background-position:
+    -20px -20px,
+    0 -20px,
+    -20px 0,
+    0 0;
 }
 
 /* 拖放期间给画布边缘提供稳定反馈，不改变图片与 Fabric 对象尺寸。 */
@@ -1980,10 +2014,18 @@ defineExpose({
 }
 
 .dark .dot-grid {
-  background-image: radial-gradient(circle, rgb(255 255 255 / 0.1) 1px, transparent 1px);
+  --grid-dot-alpha: 0.11;
+  --grid-dot: rgb(255 255 255 / var(--grid-dot-alpha));
+  --grid-dot-fine: rgb(255 255 255 / calc(var(--grid-dot-alpha) * var(--grid-fine-opacity)));
 }
 
 /* 胶囊工具条里的按钮用圆形，悬停底色和外壳弧线同心 */
+/* 工具条在历史侧栏左侧的区域居中，--creative-history-reserve 由创作台页面在侧栏展开时设置 */
+.canvas-toolbar {
+  left: calc((100% - var(--creative-history-reserve, 0px)) / 2);
+  transition: left var(--motion-layout) var(--motion-ease);
+}
+
 .canvas-toolbar .canvas-tool-btn {
   border-radius: 9999px;
 }

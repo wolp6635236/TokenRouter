@@ -542,6 +542,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import Collapse from '@/components/common/Collapse.vue'
 
@@ -729,7 +730,7 @@ function formatPublishedAt(publishedAt: string): string {
   if (!publishedAt) return ''
   const date = new Date(publishedAt)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleDateString()
+  return date.toLocaleDateString(getLocale())
 }
 
 async function handleRollback() {
@@ -764,7 +765,7 @@ async function handleRestart() {
   try {
     await restartService()
     // Service will restart, page will reload automatically or show disconnected
-  } catch (error) {
+  } catch {
     // Expected - connection will be lost during restart
     console.log('Service restarting...')
   }

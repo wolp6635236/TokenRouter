@@ -1244,14 +1244,11 @@ func (s *UsageLogRepoSuite) TestDashboardAggregationConsistency() {
 func (s *UsageLogRepoSuite) TestUsageAnalyticsQueriesExecuteOnPostgreSQL() {
 	loc, err := time.LoadLocation("Pacific/Honolulu")
 	s.Require().NoError(err)
-	calendar := timezone.NewCalendar(loc)
+	now := time.Date(2026, time.October, 5, 22, 0, 0, 0, time.UTC)
+	calendar := timezone.NewCalendarWithClock(loc, func() time.Time { return now })
 	s.repo = NewUsageLogRepositoryWithSQL(s.client, s.tx, calendar)
 
-	now := time.Now().UTC().Truncate(time.Second)
 	todayStart := calendar.Today().UTC()
-	if !now.After(todayStart.Add(3 * time.Hour)) {
-		s.T().Skip("当前业务日尚无足够的完整小时用于聚合查询")
-	}
 	yesterdayStart := todayStart.AddDate(0, 0, -1)
 	createdAt := todayStart.Add(90 * time.Minute)
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "analytics-query@test.com"})

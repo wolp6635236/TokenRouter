@@ -1,5 +1,3 @@
-//go:build unit
-
 package batchimage_test
 
 import (

@@ -143,7 +143,7 @@ export function useGeminiOAuth() {
   const getCapabilities = async (): Promise<GeminiOAuthCapabilities | null> => {
     try {
       return await adminAPI.gemini.getCapabilities()
-    } catch (err: any) {
+    } catch {
       // Capabilities are optional for older servers; don't block the UI.
       return null
     }

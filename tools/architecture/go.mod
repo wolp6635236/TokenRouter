@@ -1,6 +1,6 @@
 module github.com/TokenFlux/TokenRouter/tools/architecture
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/arch-go/arch-go/v2 v2.1.2

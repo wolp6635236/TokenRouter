@@ -87,10 +87,6 @@ func openAIStickyProviderMatchesGroup(provider *gatewayprovider.ExecutionProvide
 	return false
 }
 
-func shouldEscapeAdvancedStickyProvider(stats *schedulercore.RuntimeStats, id int64, cfg policy.StickyEscapeConfig) (string, float64, float64, bool) {
-	return schedulercore.ShouldEscapeSticky(stats, id, policy.StickyEscapeConfig{Enabled: cfg.Enabled, TtftMs: cfg.TtftMs, ErrorRate: cfg.ErrorRate})
-}
-
 func (s *compatiblePicker) isProviderTransportCompatible(provider *gatewayprovider.ExecutionProvider, requiredTransport egress.OpenAIUpstreamTransport) bool {
 	if requiredTransport == egress.OpenAIUpstreamTransportAny || requiredTransport == egress.OpenAIUpstreamTransportHTTPSSE {
 		return true

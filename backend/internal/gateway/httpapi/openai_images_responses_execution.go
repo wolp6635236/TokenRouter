@@ -125,7 +125,7 @@ func (s *OpenAIImagesExecutor) forwardOpenAIImagesOAuth(
 ) (*forwardcore.OpenAIResult, error) {
 	startTime := time.Now()
 	requestModel, upstreamModel, err := gatewaymedia.ResolveImageModels(parsed.Model, groupMappedModel, "gpt-image-2", func(model string) string {
-		return gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(model, false, false)
+		return gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(model, false)
 	})
 	if err != nil {
 		return nil, err

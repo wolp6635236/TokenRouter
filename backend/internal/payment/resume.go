@@ -198,6 +198,8 @@ func ResumeVisibleMethodSourceSettingKey(method string) string {
 	}
 }
 
+// CanonicalizeReturnURL 校验支付结果页地址，并清除用户提供的查询参数和片段。
+// @project-doc docs/domains/payments_and_entitlements.md#callback_security
 func CanonicalizeReturnURL(raw string, srcHost string, srcURL string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -210,9 +212,12 @@ func CanonicalizeReturnURL(raw string, srcHost string, srcURL string) (string, e
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must use http or https")
 	}
-	parsed.Fragment = ""
-	if parsed.Path == "" {
-		parsed.Path = "/"
+	if parsed.User != nil {
+		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must not contain user information")
+	}
+	// URL 解析器允许主机名包含参数分隔符，支付签名会直接拼接这些字符。
+	if strings.ContainsAny(parsed.Host, "&=") {
+		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url host contains invalid characters")
 	}
 	if parsed.Path != ResumePaymentResultReturnPath {
 		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must target the canonical internal payment result page")
@@ -220,7 +225,13 @@ func CanonicalizeReturnURL(raw string, srcHost string, srcURL string) (string, e
 	if !ResumeAllowedReturnURLHost(parsed.Host, srcHost, srcURL) {
 		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must use the same host as the current site or browser origin")
 	}
-	return parsed.String(), nil
+	// 从校验后的地址组成部分重建结果页，查询参数由服务端随后生成。
+	canonical := url.URL{
+		Scheme: parsed.Scheme,
+		Host:   parsed.Host,
+		Path:   ResumePaymentResultReturnPath,
+	}
+	return canonical.String(), nil
 }
 
 func ResumeAllowedReturnURLHost(returnURLHost string, requestHost string, refererURL string) bool {

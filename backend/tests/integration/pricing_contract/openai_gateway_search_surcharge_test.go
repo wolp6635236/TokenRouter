@@ -1,5 +1,3 @@
-//go:build unit
-
 package pricingcontract
 
 import (
@@ -20,7 +18,7 @@ func TestCalculateOpenAIRecordUsageCost_SearchIsAdditiveToTokens(t *testing.T) {
 
 	price := 10.0 // 每千次搜索 10 美元，100 次搜索费用为 1 美元。
 	svc := completion.NewRecorder(completion.Dependencies{
-		Calculator: newCalculator(nil, nil),
+		Calculator: newCalculator(nil),
 	}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 	apiKey := &completion.KeySnapshot{
@@ -51,7 +49,7 @@ func TestCalculateOpenAIRecordUsageCost_SearchOnlyWhenNoTokenPricing(t *testing.
 
 	price := 10.0
 	svc := completion.NewRecorder(completion.Dependencies{
-		Calculator: newCalculator(nil, nil),
+		Calculator: newCalculator(nil),
 	}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 	apiKey := &completion.KeySnapshot{
@@ -77,7 +75,7 @@ func TestCalculateOpenAIRecordUsageCost_TokenPricingErrorNotSwallowedBySearch(t 
 
 	price := 10.0
 	svc := completion.NewRecorder(completion.Dependencies{
-		Calculator: newCalculator(nil, nil),
+		Calculator: newCalculator(nil),
 	}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 	apiKey := &completion.KeySnapshot{

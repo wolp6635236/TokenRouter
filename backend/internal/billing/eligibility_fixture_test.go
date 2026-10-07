@@ -1,5 +1,3 @@
-//go:build unit
-
 package billing
 
 // newEligibilityForTest 构造资金准入检查器，用 goroutine 执行缓存回填。

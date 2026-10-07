@@ -1,5 +1,3 @@
-//go:build unit
-
 package app
 
 import (
@@ -108,7 +106,7 @@ func newGatewaySessionLimitFixture(t *testing.T, providerType string, failover b
 	billingCache := newBillingEligibilityFixture(cfg)
 	billingCache.Start()
 	t.Cleanup(billingCache.Stop)
-	completionInput1 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+	completionInput1 := billingtestkit.Calculator(nil, nil)
 	gateway, gatewayChoices, messages := newGenericExecutionAndSelectionFixture(
 		nil, &fakeGroupRepo{group: group}, nil, nil, cfg, snapshots, nil, nil, nil, upstream, nil, nil, sessions, sessions,
 		nil, nil, nil, nil, nil, nil, responseHeaderFilterForTest(cfg),

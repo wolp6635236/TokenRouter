@@ -29,6 +29,7 @@
 </template>
 
 <script setup lang="ts">
+import { vendorLocale } from '@/i18n/catalog'
 import Skeleton from '@/components/common/Skeleton.vue'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import { onMounted, ref } from 'vue'
@@ -97,7 +98,7 @@ function restoreAirwallexSnapshot(): PaymentRecoverySnapshot | null {
 
 onMounted(async () => {
   const snapshot = restoreAirwallexSnapshot()
-  const checkoutLocale = locale.value.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+  const checkoutLocale = vendorLocale('airwallex', locale.value)
 
   if (!snapshot) {
     loading.value = false

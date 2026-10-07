@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
@@ -259,14 +262,18 @@ func (r *Store) getGroupStatsFromAnalytics(ctx context.Context, start, end time.
 	if err != nil || !ok {
 		return nil, false, err
 	}
+	extraGroup := ""
+	if locale.UserPresentation(ctx) {
+		extraGroup = ", g.localization"
+	}
 	rows, err := r.sql.QueryContext(ctx, query.cte+`
-		SELECT c.group_id, COALESCE(g.name, ''), COALESCE(SUM(c.total_requests), 0),
+		SELECT c.group_id, `+postgresinfra.LocalizedTextExpression(ctx, "g.localization", "display_name", "COALESCE(g.name, '')")+`, COALESCE(SUM(c.total_requests), 0),
 		       COALESCE(SUM(c.input_tokens + c.output_tokens + c.cache_creation_tokens + c.cache_read_tokens), 0),
 		       COALESCE(SUM(c.total_cost), 0), COALESCE(SUM(c.actual_cost), 0),
 		       COALESCE(SUM(c.provider_cost), 0)
 		FROM combined c
 		LEFT JOIN groups g ON g.id = NULLIF(c.group_id, 0) `+query.where+`
-		GROUP BY c.group_id, g.name ORDER BY 4 DESC`, query.args...)
+		GROUP BY c.group_id, g.name`+extraGroup+` ORDER BY 4 DESC`, query.args...)
 	if err != nil {
 		return nil, false, err
 	}

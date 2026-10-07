@@ -2,11 +2,9 @@ package httpapi
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/backup"
-	middleware2 "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 
@@ -22,22 +20,6 @@ func NewDataManagementHandler(dataManagementService *backup.DataManagementServic
 }
 
 type dataManagementService interface {
-	GetConfig(ctx context.Context) (backup.DataManagementConfig, error)
-	UpdateConfig(ctx context.Context, cfg backup.DataManagementConfig) (backup.DataManagementConfig, error)
-	ValidateS3(ctx context.Context, cfg backup.DataManagementS3Config) (backup.DataManagementTestS3Result, error)
-	CreateBackupJob(ctx context.Context, input backup.DataManagementCreateBackupJobInput) (backup.DataManagementBackupJob, error)
-	ListSourceProfiles(ctx context.Context, sourceType string) ([]backup.DataManagementSourceProfile, error)
-	CreateSourceProfile(ctx context.Context, input backup.DataManagementCreateSourceProfileInput) (backup.DataManagementSourceProfile, error)
-	UpdateSourceProfile(ctx context.Context, input backup.DataManagementUpdateSourceProfileInput) (backup.DataManagementSourceProfile, error)
-	DeleteSourceProfile(ctx context.Context, sourceType, profileID string) error
-	SetActiveSourceProfile(ctx context.Context, sourceType, profileID string) (backup.DataManagementSourceProfile, error)
-	ListS3Profiles(ctx context.Context) ([]backup.DataManagementS3Profile, error)
-	CreateS3Profile(ctx context.Context, input backup.DataManagementCreateS3ProfileInput) (backup.DataManagementS3Profile, error)
-	UpdateS3Profile(ctx context.Context, input backup.DataManagementUpdateS3ProfileInput) (backup.DataManagementS3Profile, error)
-	DeleteS3Profile(ctx context.Context, profileID string) error
-	SetActiveS3Profile(ctx context.Context, profileID string) (backup.DataManagementS3Profile, error)
-	ListBackupJobs(ctx context.Context, input backup.DataManagementListBackupJobsInput) (backup.DataManagementListBackupJobsResult, error)
-	GetBackupJob(ctx context.Context, jobID string) (backup.DataManagementBackupJob, error)
 	EnsureAgentEnabled(ctx context.Context) error
 	GetAgentHealth(ctx context.Context) backup.DataManagementAgentHealth
 }
@@ -109,26 +91,11 @@ func (h *DataManagementHandler) GetAgentHealth(c *gin.Context) {
 		"reason":      health.Reason,
 		"socket_path": health.SocketPath,
 	}
-	if health.Agent != nil {
-		payload["agent"] = gin.H{
-			"status":         health.Agent.Status,
-			"version":        health.Agent.Version,
-			"uptime_seconds": health.Agent.UptimeSeconds,
-		}
-	}
 	response.Success(c, payload)
 }
 
 func (h *DataManagementHandler) GetConfig(c *gin.Context) {
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	cfg, err := h.dataManagementService.GetConfig(c.Request.Context())
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, cfg)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) UpdateConfig(c *gin.Context) {
@@ -138,15 +105,7 @@ func (h *DataManagementHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	cfg, err := h.dataManagementService.UpdateConfig(c.Request.Context(), req)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, cfg)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) TestS3(c *gin.Context) {
@@ -156,25 +115,7 @@ func (h *DataManagementHandler) TestS3(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	result, err := h.dataManagementService.ValidateS3(c.Request.Context(), backup.DataManagementS3Config{
-		Enabled:         true,
-		Endpoint:        req.Endpoint,
-		Region:          req.Region,
-		Bucket:          req.Bucket,
-		AccessKeyID:     req.AccessKeyID,
-		SecretAccessKey: req.SecretAccessKey,
-		Prefix:          req.Prefix,
-		ForcePathStyle:  req.ForcePathStyle,
-		UseSSL:          req.UseSSL,
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"ok": result.OK, "message": result.Message})
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) CreateBackupJob(c *gin.Context) {
@@ -184,29 +125,7 @@ func (h *DataManagementHandler) CreateBackupJob(c *gin.Context) {
 		return
 	}
 
-	req.IdempotencyKey = normalizeBackupIdempotencyKey(c.GetHeader("X-Idempotency-Key"), req.IdempotencyKey)
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-
-	triggeredBy := "admin:unknown"
-	if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok {
-		triggeredBy = "admin:" + strconv.FormatInt(subject.UserID, 10)
-	}
-	job, err := h.dataManagementService.CreateBackupJob(c.Request.Context(), backup.DataManagementCreateBackupJobInput{
-		BackupType:     req.BackupType,
-		UploadToS3:     req.UploadToS3,
-		S3ProfileID:    req.S3ProfileID,
-		PostgresID:     req.PostgresID,
-		RedisID:        req.RedisID,
-		TriggeredBy:    triggeredBy,
-		IdempotencyKey: req.IdempotencyKey,
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"job_id": job.JobID, "status": job.Status})
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) ListSourceProfiles(c *gin.Context) {
@@ -220,15 +139,7 @@ func (h *DataManagementHandler) ListSourceProfiles(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	items, err := h.dataManagementService.ListSourceProfiles(c.Request.Context(), sourceType)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"items": items})
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) CreateSourceProfile(c *gin.Context) {
@@ -244,21 +155,7 @@ func (h *DataManagementHandler) CreateSourceProfile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	profile, err := h.dataManagementService.CreateSourceProfile(c.Request.Context(), backup.DataManagementCreateSourceProfileInput{
-		SourceType: sourceType,
-		ProfileID:  req.ProfileID,
-		Name:       req.Name,
-		Config:     req.Config,
-		SetActive:  req.SetActive,
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, profile)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) UpdateSourceProfile(c *gin.Context) {
@@ -279,20 +176,7 @@ func (h *DataManagementHandler) UpdateSourceProfile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	profile, err := h.dataManagementService.UpdateSourceProfile(c.Request.Context(), backup.DataManagementUpdateSourceProfileInput{
-		SourceType: sourceType,
-		ProfileID:  profileID,
-		Name:       req.Name,
-		Config:     req.Config,
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, profile)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) DeleteSourceProfile(c *gin.Context) {
@@ -307,14 +191,7 @@ func (h *DataManagementHandler) DeleteSourceProfile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	if err := h.dataManagementService.DeleteSourceProfile(c.Request.Context(), sourceType, profileID); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"deleted": true})
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) SetActiveSourceProfile(c *gin.Context) {
@@ -329,28 +206,11 @@ func (h *DataManagementHandler) SetActiveSourceProfile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	profile, err := h.dataManagementService.SetActiveSourceProfile(c.Request.Context(), sourceType, profileID)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, profile)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) ListS3Profiles(c *gin.Context) {
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-
-	items, err := h.dataManagementService.ListS3Profiles(c.Request.Context())
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"items": items})
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) CreateS3Profile(c *gin.Context) {
@@ -360,31 +220,7 @@ func (h *DataManagementHandler) CreateS3Profile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-
-	profile, err := h.dataManagementService.CreateS3Profile(c.Request.Context(), backup.DataManagementCreateS3ProfileInput{
-		ProfileID: req.ProfileID,
-		Name:      req.Name,
-		SetActive: req.SetActive,
-		S3: backup.DataManagementS3Config{
-			Enabled:         req.Enabled,
-			Endpoint:        req.Endpoint,
-			Region:          req.Region,
-			Bucket:          req.Bucket,
-			AccessKeyID:     req.AccessKeyID,
-			SecretAccessKey: req.SecretAccessKey,
-			Prefix:          req.Prefix,
-			ForcePathStyle:  req.ForcePathStyle,
-			UseSSL:          req.UseSSL,
-		},
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, profile)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) UpdateS3Profile(c *gin.Context) {
@@ -400,30 +236,7 @@ func (h *DataManagementHandler) UpdateS3Profile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-
-	profile, err := h.dataManagementService.UpdateS3Profile(c.Request.Context(), backup.DataManagementUpdateS3ProfileInput{
-		ProfileID: profileID,
-		Name:      req.Name,
-		S3: backup.DataManagementS3Config{
-			Enabled:         req.Enabled,
-			Endpoint:        req.Endpoint,
-			Region:          req.Region,
-			Bucket:          req.Bucket,
-			AccessKeyID:     req.AccessKeyID,
-			SecretAccessKey: req.SecretAccessKey,
-			Prefix:          req.Prefix,
-			ForcePathStyle:  req.ForcePathStyle,
-			UseSSL:          req.UseSSL,
-		},
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, profile)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) DeleteS3Profile(c *gin.Context) {
@@ -433,14 +246,7 @@ func (h *DataManagementHandler) DeleteS3Profile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	if err := h.dataManagementService.DeleteS3Profile(c.Request.Context(), profileID); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"deleted": true})
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) SetActiveS3Profile(c *gin.Context) {
@@ -450,43 +256,11 @@ func (h *DataManagementHandler) SetActiveS3Profile(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	profile, err := h.dataManagementService.SetActiveS3Profile(c.Request.Context(), profileID)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, profile)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) ListBackupJobs(c *gin.Context) {
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-
-	pageSize := int32(20)
-	if raw := strings.TrimSpace(c.Query("page_size")); raw != "" {
-		v, err := strconv.Atoi(raw)
-		if err != nil || v <= 0 {
-			response.BadRequest(c, "Invalid page_size")
-			return
-		}
-		pageSize = int32(v)
-	}
-
-	result, err := h.dataManagementService.ListBackupJobs(c.Request.Context(), backup.DataManagementListBackupJobsInput{
-		PageSize:   pageSize,
-		PageToken:  c.Query("page_token"),
-		Status:     c.Query("status"),
-		BackupType: c.Query("backup_type"),
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, result)
+	h.respondAgentUnavailable(c)
 }
 
 func (h *DataManagementHandler) GetBackupJob(c *gin.Context) {
@@ -496,33 +270,24 @@ func (h *DataManagementHandler) GetBackupJob(c *gin.Context) {
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
-		return
-	}
-	job, err := h.dataManagementService.GetBackupJob(c.Request.Context(), jobID)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, job)
+	h.respondAgentUnavailable(c)
 }
 
-func (h *DataManagementHandler) requireAgentEnabled(c *gin.Context) bool {
+// respondAgentUnavailable 写出数据管理服务缺失或功能下线的错误响应。
+func (h *DataManagementHandler) respondAgentUnavailable(c *gin.Context) {
 	if h.dataManagementService == nil {
 		err := infraerrors.ServiceUnavailable(
 			backup.DataManagementAgentUnavailableReason,
 			"data management agent service is not configured",
 		).WithMetadata(map[string]string{"socket_path": backup.DefaultDataManagementAgentSocketPath})
 		response.ErrorFrom(c, err)
-		return false
+		return
 	}
 
 	if err := h.dataManagementService.EnsureAgentEnabled(c.Request.Context()); err != nil {
 		response.ErrorFrom(c, err)
-		return false
+		return
 	}
-
-	return true
 }
 
 func (h *DataManagementHandler) getAgentHealth(c *gin.Context) backup.DataManagementAgentHealth {
@@ -534,12 +299,4 @@ func (h *DataManagementHandler) getAgentHealth(c *gin.Context) backup.DataManage
 		}
 	}
 	return h.dataManagementService.GetAgentHealth(c.Request.Context())
-}
-
-func normalizeBackupIdempotencyKey(headerValue, bodyValue string) string {
-	headerKey := strings.TrimSpace(headerValue)
-	if headerKey != "" {
-		return headerKey
-	}
-	return strings.TrimSpace(bodyValue)
 }

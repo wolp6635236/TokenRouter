@@ -24,13 +24,6 @@ type DataManagementAgentHealth struct {
 	Enabled    bool
 	Reason     string
 	SocketPath string
-	Agent      *DataManagementAgentInfo
-}
-
-type DataManagementAgentInfo struct {
-	Status        string
-	Version       string
-	UptimeSeconds int64
 }
 
 type DataManagementService struct {

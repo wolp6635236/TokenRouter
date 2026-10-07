@@ -794,6 +794,17 @@ describe('user KeysView column settings', () => {
     expect(form.classes()).toEqual(expect.arrayContaining(['min-w-0', 'max-w-full']))
   })
 
+  it('分组选择器优先显示当前语言的展示名称', async () => {
+    getAvailableGroups.mockResolvedValue([{ id: 42, name: 'business-group', display_name: 'English group', rate_multiplier: 1 }])
+    const wrapper = await mountView()
+    await getButtonByText(wrapper, 'Create API Key').trigger('click')
+    await nextTick()
+    const select = wrapper.findAllComponents({ name: 'Select' }).find(
+      item => item.attributes('data-tour') === 'key-form-group'
+    )
+    expect(select?.props('options')[0].label).toBe('English group')
+  })
+
   it('用户侧分组选择器不展示或投影容量数据', async () => {
     getAvailableGroups.mockResolvedValueOnce([{
       id: 42,

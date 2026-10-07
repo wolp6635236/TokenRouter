@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	wireprotocol "github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/gin-gonic/gin"
 )
@@ -28,7 +29,14 @@ type RouteEndpoints struct {
 
 // RegisterGatewayRoutes 保持每条原生/别名路径及中间件顺序；不增加请求尝试循环。
 // @project-doc docs/architecture/gateway_request_lifecycle.md#gateway_pipeline
-func RegisterGatewayRoutes(r *gin.Engine, endpoints RouteEndpoints, options RouteMiddleware, registerBatchImages func(*gin.RouterGroup)) {
+func RegisterGatewayRoutes(engine *gin.Engine, endpoints RouteEndpoints, options RouteMiddleware, registerBatchImages func(*gin.RouterGroup)) {
+	// 网关协议响应使用英文，网站设置和账户语言由网站路由处理。
+	r := engine.Group("", func(c *gin.Context) {
+		ctx := locale.WithLanguage(c.Request.Context(), "en")
+		c.Request = c.Request.WithContext(ctx)
+		c.Header("Content-Language", "en")
+		c.Next()
+	})
 	guards := NewRouteGuards(options)
 
 	requireGroupClientProtocol := guards.RequireGroupClientProtocol

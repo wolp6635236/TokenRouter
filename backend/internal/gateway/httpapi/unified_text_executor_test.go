@@ -106,7 +106,7 @@ func TestUnifiedNativeUsageSurvivesCaptureAndRecord(t *testing.T) {
 	result.NativeUsage.InputTokens = 999
 	require.Equal(t, 100, input.Result.Usage.InputTokens)
 	logs := &unifiedRecordWriter{}
-	recorder := completion.NewRecorder(completion.Dependencies{Calculator: billing.NewCalculator(nil, billing.CalculatorOptions{DefaultRateMultiplier: 1}), Funds: unifiedRecordFunds{}, Logs: logs, Effects: unifiedRecordEffects{}, Models: unifiedRecordModels{}}, completion.RecorderOptions{DefaultMultiplier: 1})
+	recorder := completion.NewRecorder(completion.Dependencies{Calculator: billing.NewCalculator(nil, billing.CalculatorOptions{}), Funds: unifiedRecordFunds{}, Logs: logs, Effects: unifiedRecordEffects{}, Models: unifiedRecordModels{}}, completion.RecorderOptions{DefaultMultiplier: 1})
 	require.NoError(t, recorder.Record(context.Background(), input, true))
 	require.Len(t, logs.rows, 1)
 	row := logs.rows[0]

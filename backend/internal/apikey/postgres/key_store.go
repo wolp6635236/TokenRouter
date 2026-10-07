@@ -782,7 +782,7 @@ func (r *KeyStore) KeyListByUserIDWithUsageSort(ctx context.Context, q *dbent.AP
 		return left > right
 	})
 
-	pageKeys := paginateKeyRows(outKeys, params)
+	pageKeys := pagination.Slice(outKeys, params)
 	if err := r.KeyAttachLastUsedIPs(ctx, pageKeys); err != nil {
 		return nil, nil, err
 	}

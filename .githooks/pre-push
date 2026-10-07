@@ -1,0 +1,4 @@
+#!/bin/sh
+# Git 从 stdin 传入待推送引用，快检失败时阻止推送。git push --no-verify 跳过检查。
+set -eu
+exec python3 -B "$(git rev-parse --show-toplevel)/tools/check_changed.py" --pre-push "$1"

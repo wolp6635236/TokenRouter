@@ -1,4 +1,4 @@
-import { defineConfig, loadEnv, Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import checker from 'vite-plugin-checker'
 import { resolve } from 'path'
@@ -93,7 +93,7 @@ export default defineConfig(({ mode }) => {
     ],
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
+      '@': resolve(import.meta.dirname, 'src'),
       // 使用 vue-i18n 运行时版本，避免 CSP unsafe-eval 问题
       'vue-i18n': 'vue-i18n/dist/vue-i18n.runtime.esm-bundler.js'
     }
@@ -106,55 +106,58 @@ export default defineConfig(({ mode }) => {
   build: {
     outDir: '../backend/internal/web/dist',
     emptyOutDir: true,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        /**
-         * 手动分包配置
-         * 分离第三方库并按功能合并应用代码，避免循环依赖
-         */
-        manualChunks(id: string) {
-          if (id.includes('node_modules')) {
-            // Vue 核心库
-            if (
-              id.includes('/vue/') ||
-              id.includes('/vue-router/') ||
-              id.includes('/pinia/') ||
-              id.includes('/@vue/')
-            ) {
-              return 'vendor-vue'
+        strictExecutionOrder: true,
+        codeSplitting: {
+          groups: [{
+            test: /node_modules/,
+            includeDependenciesRecursively: false,
+            // 支付 SDK 的初始化由对应支付页面触发。
+            name(id: string) {
+              if (id.includes('node_modules')) {
+                // Vue 核心库
+                if (
+                  id.includes('/vue/') ||
+                  id.includes('/vue-router/') ||
+                  id.includes('/pinia/') ||
+                  id.includes('/@vue/')
+                ) {
+                  return 'vendor-vue'
+                }
+
+                // UI 工具库（较大，单独分离）
+                if (id.includes('/@vueuse/') || id.includes('/xlsx/')) {
+                  return 'vendor-ui'
+                }
+
+                // 图表库
+                if (id.includes('/chart.js/') || id.includes('/vue-chartjs/')) {
+                  return 'vendor-chart'
+                }
+
+                // 国际化
+                if (id.includes('/vue-i18n/') || id.includes('/@intlify/')) {
+                  return 'vendor-i18n'
+                }
+
+                // Stripe 在支付流程中按需加载。
+                if (id.includes('/@stripe/stripe-js/')) {
+                  return 'vendor-stripe'
+                }
+
+                // Airwallex 在模块加载时预取支付脚本，独立分包让支付页按需触发。
+                if (id.includes('/@airwallex/')) {
+                  return 'vendor-airwallex'
+                }
+
+                // 其他第三方库合并
+                return 'vendor-misc'
+              }
+
+              return null
             }
-
-            // UI 工具库（较大，单独分离）
-            if (id.includes('/@vueuse/') || id.includes('/xlsx/')) {
-              return 'vendor-ui'
-            }
-
-            // 图表库
-            if (id.includes('/chart.js/') || id.includes('/vue-chartjs/')) {
-              return 'vendor-chart'
-            }
-
-            // 国际化
-            if (id.includes('/vue-i18n/') || id.includes('/@intlify/')) {
-              return 'vendor-i18n'
-            }
-
-            // Stripe 仅在支付流程中按需加载，避免进入首页公共依赖。
-            if (id.includes('/@stripe/stripe-js/')) {
-              return 'vendor-stripe'
-            }
-
-            // Airwallex 在模块加载时预取支付脚本，独立分包让支付页按需触发。
-            if (id.includes('/@airwallex/')) {
-              return 'vendor-airwallex'
-            }
-
-            // 其他小型第三方库合并
-            return 'vendor-misc'
-          }
-
-          // 应用代码：按入口点自动分包，不手动干预
-          // 按功能合并应用 chunk，减少循环依赖和碎片文件。
+          }]
         }
       }
     }

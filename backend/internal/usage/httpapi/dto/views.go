@@ -10,12 +10,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-func groupFromView(v *usage.GroupView) *Group {
+func groupFromView(v *usage.GroupView, language ...string) *Group {
 	if v == nil {
 		return nil
 	}
-	out := routingdto.GroupFromRoutingBase((*routing.Group)(v))
-	return &out
+	return routingdto.GroupFromRouting((*routing.Group)(v), language...)
 }
 
 func providerFromView(v *usage.ProviderView) *ProviderSummary {
@@ -33,7 +32,7 @@ func userFromView(v *usage.UserView) *User {
 	return identitydto.UserFromIdentityShallow[APIKey](u)
 }
 
-func keyFromView(v *usage.KeyView) *APIKey {
+func keyFromView(v *usage.KeyView, language ...string) *APIKey {
 	if v == nil {
 		return nil
 	}
@@ -42,5 +41,7 @@ func keyFromView(v *usage.KeyView) *APIKey {
 	for _, g := range v.CompositeGroups {
 		k.CompositeGroups = append(k.CompositeGroups, apikey.APIKeyCompositeGroup{ID: g.ID, APIKeyID: g.APIKeyID, GroupID: g.GroupID, Prefix: g.Prefix, NormalizedPrefix: g.NormalizedPrefix, SortOrder: g.SortOrder, UserGroupRPMOverride: g.UserGroupRPMOverride, Group: apikey.GroupFromRouting((*routing.Group)(g.Group))})
 	}
-	return keydto.APIKeyFromKey(k, func(g *routing.Group) *Group { return groupFromView((*usage.GroupView)(apikey.RoutingGroup(g))) })
+	return keydto.APIKeyFromKey(k, func(g *routing.Group) *Group {
+		return groupFromView((*usage.GroupView)(apikey.RoutingGroup(g)), language...)
+	})
 }

@@ -1,5 +1,3 @@
-//go:build unit
-
 package session
 
 import (
@@ -655,12 +653,15 @@ func (*hashTestAdapter) GenerateSessionHash(p *ParsedRequest) string {
 	return GenerateSessionHash(p, nil)
 }
 
-type SessionContext = requeststate.SessionContext
-type ParsedRequest = requeststate.ParsedRequest
+type (
+	SessionContext = requeststate.SessionContext
+	ParsedRequest  = requeststate.ParsedRequest
+)
 
 func ParseGatewayRequest(body *requeststate.RequestBodyRef, protocol string) (*ParsedRequest, error) {
 	return requeststate.ParseGatewayRequest(body, protocol)
 }
+
 func NewRequestBodyRef(body []byte) *requeststate.RequestBodyRef {
 	return requeststate.NewRequestBodyRef(body)
 }

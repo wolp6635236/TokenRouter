@@ -6,7 +6,12 @@ import (
 )
 
 // UserSubscriptionFromService 委托所属模块的唯一实现。
-func UserSubscriptionFromService(sub *billing.UserSubscription) *UserSubscription {
+func UserSubscriptionFromService(sub *billing.UserSubscription, language ...string) *UserSubscription {
+	if sub != nil && len(language) > 0 {
+		copy := *sub
+		copy.Plan = billing.LocalizePlan(sub.Plan, language[0])
+		return billingdto.UserSubscriptionFromService(&copy)
+	}
 	return billingdto.UserSubscriptionFromService(sub)
 }
 

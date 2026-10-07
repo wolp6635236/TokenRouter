@@ -1,0 +1,30 @@
+name: Set up Go
+description: 安装 go.mod 声明的 Go 版本，按缓存组恢复模块、编译和 lint 缓存。
+inputs:
+  group:
+    description: 缓存组。编译内容相同的 job 共用一组。
+    required: true
+outputs:
+  cache-key:
+    description: 本次运行的缓存键，交给 actions/cache/save 使用。
+    value: ${{ steps.cache.outputs.cache-primary-key }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v6
+      with:
+        go-version-file: backend/go.mod
+        check-latest: false
+        cache: false
+    # 缓存键带提交 SHA，只由 main 的 push 保存；其他运行按前缀恢复最近一份。
+    - id: cache
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+          ~/.cache/golangci-lint
+        key: go-${{ inputs.group }}-${{ hashFiles('backend/go.sum', 'tools/architecture/go.sum', '.golangci-version') }}-${{ github.sha }}
+        restore-keys: |
+          go-${{ inputs.group }}-${{ hashFiles('backend/go.sum', 'tools/architecture/go.sum', '.golangci-version') }}-
+          go-${{ inputs.group }}-

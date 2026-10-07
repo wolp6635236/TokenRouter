@@ -27,7 +27,7 @@ type Recording struct {
 
 // NewRecording 配置记录夹具的默认倍率和缓存期限，并构造计费计算器。
 func NewRecording(logs usage.UsageLogRepository, funds completion.Store, rates billing.UserGroupRateRepository, withResolver bool) *Recording {
-	calculator := billingtestkit.Calculator(1.1, nil, nil)
+	calculator := billingtestkit.Calculator(nil, nil)
 	fixture := &Recording{
 		Options: completion.RecorderOptions{DefaultMultiplier: 1.1},
 		Dependencies: completion.Dependencies{

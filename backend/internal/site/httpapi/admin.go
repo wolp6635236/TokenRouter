@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
@@ -27,23 +29,25 @@ func NewAdminAnnouncementHandler(announcementService *site.AnnouncementService) 
 }
 
 type CreateAnnouncementRequest struct {
-	Title      string                     `json:"title" binding:"required"`
-	Content    string                     `json:"content" binding:"required"`
-	Status     string                     `json:"status" binding:"omitempty,oneof=draft active archived"`
-	NotifyMode string                     `json:"notify_mode" binding:"omitempty,oneof=silent popup"`
-	Targeting  site.AnnouncementTargeting `json:"targeting"`
-	StartsAt   *int64                     `json:"starts_at"` // Unix seconds, 0/empty = immediate
-	EndsAt     *int64                     `json:"ends_at"`   // Unix seconds, 0/empty = never
+	Localization *locale.Update[site.AnnouncementCopy] `json:"localization" binding:"required"`
+	Title        string                                `json:"title"`
+	Content      string                                `json:"content"`
+	Status       string                                `json:"status" binding:"omitempty,oneof=draft active archived"`
+	NotifyMode   string                                `json:"notify_mode" binding:"omitempty,oneof=silent popup"`
+	Targeting    site.AnnouncementTargeting            `json:"targeting"`
+	StartsAt     *int64                                `json:"starts_at"` // Unix seconds, 0/empty = immediate
+	EndsAt       *int64                                `json:"ends_at"`   // Unix seconds, 0/empty = never
 }
 
 type UpdateAnnouncementRequest struct {
-	Title      *string                     `json:"title"`
-	Content    *string                     `json:"content"`
-	Status     *string                     `json:"status" binding:"omitempty,oneof=draft active archived"`
-	NotifyMode *string                     `json:"notify_mode" binding:"omitempty,oneof=silent popup"`
-	Targeting  *site.AnnouncementTargeting `json:"targeting"`
-	StartsAt   *int64                      `json:"starts_at"` // Unix seconds, 0 = clear
-	EndsAt     *int64                      `json:"ends_at"`   // Unix seconds, 0 = clear
+	Localization *locale.Update[site.AnnouncementCopy] `json:"localization"`
+	Title        *string                               `json:"title"`
+	Content      *string                               `json:"content"`
+	Status       *string                               `json:"status" binding:"omitempty,oneof=draft active archived"`
+	NotifyMode   *string                               `json:"notify_mode" binding:"omitempty,oneof=silent popup"`
+	Targeting    *site.AnnouncementTargeting           `json:"targeting"`
+	StartsAt     *int64                                `json:"starts_at"` // Unix seconds, 0 = clear
+	EndsAt       *int64                                `json:"ends_at"`   // Unix seconds, 0 = clear
 }
 
 // List handles listing announcements with filters
@@ -116,12 +120,13 @@ func (h *AdminAnnouncementHandler) Create(c *gin.Context) {
 	}
 
 	input := &site.CreateAnnouncementInput{
-		Title:      req.Title,
-		Content:    req.Content,
-		Status:     req.Status,
-		NotifyMode: req.NotifyMode,
-		Targeting:  req.Targeting,
-		ActorID:    &subject.UserID,
+		Localization: req.Localization,
+		Title:        req.Title,
+		Content:      req.Content,
+		Status:       req.Status,
+		NotifyMode:   req.NotifyMode,
+		Targeting:    req.Targeting,
+		ActorID:      &subject.UserID,
 	}
 
 	if req.StartsAt != nil && *req.StartsAt > 0 {
@@ -164,12 +169,13 @@ func (h *AdminAnnouncementHandler) Update(c *gin.Context) {
 	}
 
 	input := &site.UpdateAnnouncementInput{
-		Title:      req.Title,
-		Content:    req.Content,
-		Status:     req.Status,
-		NotifyMode: req.NotifyMode,
-		Targeting:  req.Targeting,
-		ActorID:    &subject.UserID,
+		Localization: req.Localization,
+		Title:        req.Title,
+		Content:      req.Content,
+		Status:       req.Status,
+		NotifyMode:   req.NotifyMode,
+		Targeting:    req.Targeting,
+		ActorID:      &subject.UserID,
 	}
 
 	if req.StartsAt != nil {

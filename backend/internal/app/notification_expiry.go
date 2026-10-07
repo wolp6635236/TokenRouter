@@ -8,6 +8,7 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/notification"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 type expiryNotifications struct {
@@ -26,7 +27,13 @@ func (n expiryNotifications) Ready(ctx context.Context) error {
 }
 
 func (n expiryNotifications) Send(ctx context.Context, r billing.ExpiryReminder) error {
+	language := n.Service.ResolveRecipientLocale(ctx, r.UserID, r.RecipientEmail)
+	if r.PlanLocalization.Revision > 0 {
+		copy, _ := locale.Content[billing.PlanCopy](r.PlanLocalization).Resolve(language)
+		r.PlanName = copy.Name
+	}
 	return n.Service.Send(ctx, notification.SendRequest{
+		Locale:         language,
 		Event:          notification.NotificationEmailEventSubscriptionExpiryReminder,
 		RecipientEmail: r.RecipientEmail, RecipientName: r.RecipientName, UserID: r.UserID,
 		SourceType: "user_subscription", SourceID: strconv.FormatInt(r.SubscriptionID, 10),

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/site"
@@ -16,7 +18,7 @@ type PageHandler struct{ pages *site.Pages }
 func NewPageHandler(pages *site.Pages) *PageHandler { return &PageHandler{pages: pages} }
 func (h *PageHandler) GetPageContent(c *gin.Context) {
 	role, _ := authctx.GetUserRoleFromContext(c)
-	content, err := h.pages.ReadMarkdown(c.Request.Context(), c.Param("slug"), role == "admin")
+	content, language, err := h.pages.ReadLocalizedMarkdown(c.Request.Context(), c.Param("slug"), role == "admin")
 	switch {
 	case errors.Is(err, site.ErrPageSlug):
 		response.BadRequest(c, "Invalid page slug")
@@ -27,6 +29,8 @@ func (h *PageHandler) GetPageContent(c *gin.Context) {
 	case err != nil:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read page"})
 	default:
+		c.Header("Content-Language", language)
+		c.Header("Vary", "Accept-Language")
 		c.Data(http.StatusOK, "text/markdown; charset=utf-8", content)
 	}
 }
@@ -37,7 +41,13 @@ func (h *PageHandler) ListPages(c *gin.Context) {
 }
 
 func (h *PageHandler) ServePageImage(c *gin.Context) {
-	path, err := h.pages.ImagePath(c.Request.Context(), c.Param("slug"), strings.TrimPrefix(c.Param("filename"), "/"))
+	ctx := c.Request.Context()
+	if language := locale.Normalize(c.Query("locale")); language != "" {
+		ctx = locale.WithLanguage(ctx, language)
+	} else {
+		ctx = locale.WithoutLanguage(ctx)
+	}
+	path, err := h.pages.ImagePath(ctx, c.Param("slug"), strings.TrimPrefix(c.Param("filename"), "/"))
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return

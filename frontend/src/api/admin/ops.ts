@@ -4,23 +4,11 @@
  * - Dashboard overview (raw path)
  */
 
-import { apiClient, buildGatewayUrl } from '../client'
+import { apiClient } from '../client'
 import type { PaginatedResponse } from '@/types'
 
 export interface OpsRequestOptions {
   signal?: AbortSignal
-}
-
-export type OpsUpstreamErrorEvent = {
-  at_unix_ms?: number
-  platform?: string
-  provider_id?: number
-  provider_name?: string
-  upstream_status_code?: number
-  upstream_request_id?: string
-  kind?: string
-  message?: string
-  detail?: string
 }
 
 export interface OpsDashboardOverview {
@@ -461,229 +449,10 @@ export async function getRealtimeTrafficSummary(
   return data
 }
 
-/**
- * Subscribe to realtime QPS updates via WebSocket.
- *
- * Note: browsers cannot set Authorization headers for WebSockets.
- * We authenticate via Sec-WebSocket-Protocol using a prefixed token item:
- *   ["tokenrouter-admin", "jwt.<token>"]
- */
-export interface SubscribeQPSOptions {
-  token?: string | null
-  onOpen?: () => void
-  onClose?: (event: CloseEvent) => void
-  onError?: (event: Event) => void
-  /**
-   * Called when the server closes with an application close code that indicates
-   * reconnecting is not useful (e.g. feature flag disabled).
-   */
-  onFatalClose?: (event: CloseEvent) => void
-  /**
-   * More granular status updates for UI (connecting/reconnecting/offline/etc).
-   */
-  onStatusChange?: (status: OpsWSStatus) => void
-  /**
-   * Called when a reconnect is scheduled (helps display "retry in Xs").
-   */
-  onReconnectScheduled?: (info: { attempt: number, delayMs: number }) => void
-  wsBaseUrl?: string
-  /**
-   * Maximum reconnect attempts. Defaults to Infinity to keep the dashboard live.
-   * Set to 0 to disable reconnect.
-   */
-  maxReconnectAttempts?: number
-  reconnectBaseDelayMs?: number
-  reconnectMaxDelayMs?: number
-  /**
-   * Stale connection detection (heartbeat-by-observation).
-   * If no messages are received within this window, the socket is closed to trigger a reconnect.
-   * Set to 0 to disable.
-   */
-  staleTimeoutMs?: number
-  /**
-   * How often to check staleness. Only used when `staleTimeoutMs > 0`.
-   */
-  staleCheckIntervalMs?: number
-}
-
-export type OpsWSStatus = 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'closed'
-
-export const OPS_WS_CLOSE_CODES = {
-  REALTIME_DISABLED: 4001
-} as const
-
-const OPS_WS_BASE_PROTOCOL = 'tokenrouter-admin'
-
-export function subscribeQPS(onMessage: (data: any) => void, options: SubscribeQPSOptions = {}): () => void {
-  let ws: WebSocket | null = null
-  let reconnectAttempts = 0
-  const maxReconnectAttempts = Number.isFinite(options.maxReconnectAttempts as number)
-    ? (options.maxReconnectAttempts as number)
-    : Infinity
-  const baseDelayMs = options.reconnectBaseDelayMs ?? 1000
-  const maxDelayMs = options.reconnectMaxDelayMs ?? 30000
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  let shouldReconnect = true
-  let isConnecting = false
-  let hasConnectedOnce = false
-  let lastMessageAt = 0
-  const staleTimeoutMs = options.staleTimeoutMs ?? 120_000
-  const staleCheckIntervalMs = options.staleCheckIntervalMs ?? 30_000
-  let staleTimer: ReturnType<typeof setInterval> | null = null
-
-  const setStatus = (status: OpsWSStatus) => {
-    options.onStatusChange?.(status)
-  }
-
-  const clearReconnectTimer = () => {
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
-    }
-  }
-
-  const clearStaleTimer = () => {
-    if (staleTimer) {
-      clearInterval(staleTimer)
-      staleTimer = null
-    }
-  }
-
-  const startStaleTimer = () => {
-    clearStaleTimer()
-    if (!staleTimeoutMs || staleTimeoutMs <= 0) return
-    staleTimer = setInterval(() => {
-      if (!shouldReconnect) return
-      if (!ws || ws.readyState !== WebSocket.OPEN) return
-      if (!lastMessageAt) return
-      const ageMs = Date.now() - lastMessageAt
-      if (ageMs > staleTimeoutMs) {
-        // Treat as a half-open connection; closing triggers the normal reconnect path.
-        ws.close()
-      }
-    }, staleCheckIntervalMs)
-  }
-
-  const scheduleReconnect = () => {
-    if (!shouldReconnect) return
-    if (hasConnectedOnce && reconnectAttempts >= maxReconnectAttempts) return
-
-    // If we're offline, wait for the browser to come back online.
-    if (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
-      setStatus('offline')
-      return
-    }
-
-    const expDelay = baseDelayMs * Math.pow(2, reconnectAttempts)
-    const delay = Math.min(expDelay, maxDelayMs)
-    const jitter = Math.floor(Math.random() * 250)
-    clearReconnectTimer()
-    reconnectTimer = setTimeout(() => {
-      reconnectAttempts++
-      connect()
-    }, delay + jitter)
-    options.onReconnectScheduled?.({ attempt: reconnectAttempts + 1, delayMs: delay + jitter })
-  }
-
-  const handleOnline = () => {
-    if (!shouldReconnect) return
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
-    connect()
-  }
-
-  const handleOffline = () => {
-    setStatus('offline')
-  }
-
-  const connect = () => {
-    if (!shouldReconnect) return
-    if (isConnecting) return
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
-    if (hasConnectedOnce && reconnectAttempts >= maxReconnectAttempts) return
-
-    isConnecting = true
-    setStatus(hasConnectedOnce ? 'reconnecting' : 'connecting')
-    const wsBaseUrl = options.wsBaseUrl || import.meta.env.VITE_WS_BASE_URL
-    const wsURL = wsBaseUrl
-      ? new URL(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${wsBaseUrl}/api/v1/admin/ops/ws/qps`)
-      : new URL(buildGatewayUrl('/api/v1/admin/ops/ws/qps').replace(/^http/, 'ws'))
-
-    // Do NOT put admin JWT in the URL query string (it can leak via access logs, proxies, etc).
-    // Browsers cannot set Authorization headers for WebSockets, so we pass the token via
-    // Sec-WebSocket-Protocol (subprotocol list): ["tokenrouter-admin", "jwt.<token>"].
-    const rawToken = String(options.token ?? localStorage.getItem('auth_token') ?? '').trim()
-    // 同时提供旧协议，让新前端也能连接尚未升级的后端。
-    const protocols: string[] = [OPS_WS_BASE_PROTOCOL, 'sub2api-admin']
-    if (rawToken) protocols.push(`jwt.${rawToken}`)
-
-    ws = new WebSocket(wsURL.toString(), protocols)
-
-    ws.onopen = () => {
-      reconnectAttempts = 0
-      isConnecting = false
-      hasConnectedOnce = true
-      clearReconnectTimer()
-      lastMessageAt = Date.now()
-      startStaleTimer()
-      setStatus('connected')
-      options.onOpen?.()
-    }
-
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        lastMessageAt = Date.now()
-        onMessage(data)
-      } catch (err) {
-        console.warn('[OpsWS] Failed to parse message:', err)
-      }
-    }
-
-    ws.onerror = (error) => {
-      console.error('[OpsWS] Connection error:', error)
-      options.onError?.(error)
-    }
-
-    ws.onclose = (event) => {
-      isConnecting = false
-      options.onClose?.(event)
-      clearStaleTimer()
-      ws = null
-
-      // If the server explicitly tells us to stop reconnecting, honor it.
-      if (event && typeof event.code === 'number' && event.code === OPS_WS_CLOSE_CODES.REALTIME_DISABLED) {
-        shouldReconnect = false
-        clearReconnectTimer()
-        setStatus('closed')
-        options.onFatalClose?.(event)
-        return
-      }
-
-      scheduleReconnect()
-    }
-  }
-
-  window.addEventListener('online', handleOnline)
-  window.addEventListener('offline', handleOffline)
-  connect()
-
-  return () => {
-    shouldReconnect = false
-    window.removeEventListener('online', handleOnline)
-    window.removeEventListener('offline', handleOffline)
-    clearReconnectTimer()
-    clearStaleTimer()
-    if (ws) ws.close()
-    ws = null
-    setStatus('closed')
-  }
-}
-
 export type OpsSeverity = string
 export type OpsPhase = string
 
 export type AlertSeverity = 'critical' | 'warning' | 'info'
-export type ThresholdMode = 'count' | 'percentage' | 'both'
 export type MetricType =
   | 'success_rate'
   | 'error_rate'
@@ -1119,15 +888,6 @@ export async function listErrorLogs(params: OpsErrorListQueryParams): Promise<Op
   return data
 }
 
-export async function getErrorLogDetail(id: number): Promise<OpsErrorDetail> {
-  const { data } = await apiClient.get<OpsErrorDetail>(`/admin/ops/errors/${id}`)
-  return data
-}
-
-export async function updateErrorResolved(errorId: number, resolved: boolean): Promise<void> {
-  await apiClient.put(`/admin/ops/errors/${errorId}/resolve`, { resolved })
-}
-
 // New split endpoints
 export async function listRequestErrors(params: OpsErrorListQueryParams): Promise<OpsErrorLogsResponse> {
   const { data } = await apiClient.get<OpsErrorLogsResponse>('/admin/ops/request-errors', { params })
@@ -1147,14 +907,6 @@ export async function getRequestErrorDetail(id: number): Promise<OpsErrorDetail>
 export async function getUpstreamErrorDetail(id: number): Promise<OpsErrorDetail> {
   const { data } = await apiClient.get<OpsErrorDetail>(`/admin/ops/upstream-errors/${id}`)
   return data
-}
-
-export async function updateRequestErrorResolved(errorId: number, resolved: boolean): Promise<void> {
-  await apiClient.put(`/admin/ops/request-errors/${errorId}/resolve`, { resolved })
-}
-
-export async function updateUpstreamErrorResolved(errorId: number, resolved: boolean): Promise<void> {
-  await apiClient.put(`/admin/ops/upstream-errors/${errorId}/resolve`, { resolved })
 }
 
 export async function listRequestErrorUpstreamErrors(
@@ -1318,20 +1070,15 @@ export const opsAPI = {
   getUserConcurrencyStats,
   getProviderAvailabilityStats,
   getRealtimeTrafficSummary,
-  subscribeQPS,
 
   // Legacy unified endpoints
   listErrorLogs,
-  getErrorLogDetail,
-  updateErrorResolved,
 
   // New split endpoints
   listRequestErrors,
   listUpstreamErrors,
   getRequestErrorDetail,
   getUpstreamErrorDetail,
-  updateRequestErrorResolved,
-  updateUpstreamErrorResolved,
   listRequestErrorUpstreamErrors,
 
   listRequestDetails,

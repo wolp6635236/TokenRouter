@@ -245,6 +245,7 @@
 
 <script setup lang="ts">
 import MotionTransition from '@/components/common/MotionTransition.vue'
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -300,7 +301,7 @@ const bindLoginPassword = ref('')
 const legacyPendingOAuthToken = ref('')
 const accountActionError = ref('')
 const canReturnToCreateAccount = ref(false)
-const bindSuccessMessage = t('profile.authBindings.bindSuccess')
+const bindSuccessMessage = computed(() => t('profile.authBindings.bindSuccess'))
 const needsTotpChallenge = ref(false)
 const totpTempToken = ref('')
 const totpCode = ref('')
@@ -401,6 +402,8 @@ function sanitizeRedirectPath(path: string | null | undefined): string {
   if (path.includes('\n') || path.includes('\r')) return '/dashboard'
   return path
 }
+
+useLocaleRefresh(loadProviderName)
 
 async function loadProviderName() {
   try {
@@ -600,7 +603,7 @@ async function finalizeCompletion(completion: PendingOAuthExchangeResponse, redi
     const bindRedirect = sanitizeRedirectPath(completion.redirect || '/profile')
     clearPendingAuthSession()
     clearAllAffiliateCodes()
-    appStore.showSuccess(bindSuccessMessage)
+    appStore.showSuccess(bindSuccessMessage.value)
     await router.replace(bindRedirect)
     return
   }

@@ -22,7 +22,7 @@
       <SettingsSegmented
         v-model="testScope"
         :options="scopeOptions"
-        :aria-label="t('admin.providers.testDialog.scope')"
+        :ariaLabel="t('admin.providers.testDialog.scope')"
         :disabled="busy"
         class="hidden shrink-0 sm:inline-flex"
       />
@@ -37,7 +37,7 @@
         <SettingsSegmented
           v-model="testScope"
           :options="scopeOptions"
-          :aria-label="t('admin.providers.testDialog.scope')"
+          :ariaLabel="t('admin.providers.testDialog.scope')"
           :disabled="busy"
           block
           class="sm:hidden"
@@ -52,7 +52,7 @@
           <SettingsSegmented
             v-model="testType"
             :options="testTypeOptions"
-            :aria-label="t('admin.providers.testDialog.type')"
+            :ariaLabel="t('admin.providers.testDialog.type')"
             :disabled="busy"
             block
           />

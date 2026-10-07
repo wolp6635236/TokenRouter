@@ -1,6 +1,8 @@
 package payment
 
-import "context"
+import (
+	"context"
+)
 
 type InstanceFilter struct {
 	EnabledOnly        bool
@@ -11,6 +13,7 @@ type InstanceFilter struct {
 	ExcludeID          int64
 }
 type InstancePatch struct {
+	ExpectedConfig  *string
 	Name            *string
 	Config          *string
 	SupportedTypes  *string

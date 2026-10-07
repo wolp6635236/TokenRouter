@@ -14,6 +14,7 @@ func UserFromEntity(u *dbent.User) *identitycore.User {
 		return nil
 	}
 	out := &identitycore.User{
+		PreferredLocale:            u.PreferredLocale,
 		ID:                         u.ID,
 		Email:                      u.Email,
 		Username:                   u.Username,

@@ -76,7 +76,7 @@ type MessagePorts interface {
 	SystemSettings(context.Context) (bool, string, string)
 	RewriteSystem([]byte, *requeststate.ParsedRequest, string, string) []byte
 	Metadata(context.Context, *requeststate.ParsedRequest) string
-	NormalizeOAuth([]byte, string, NormalizeOptions) ([]byte, string)
+	NormalizeOAuth([]byte, NormalizeOptions) []byte
 	RewriteCache(context.Context, []byte) []byte
 	RewriteTools([]byte) ([]byte, bool)
 	BindTools()

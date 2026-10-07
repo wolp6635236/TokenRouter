@@ -9,8 +9,6 @@ import (
 	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
 	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 
 	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
@@ -135,9 +133,7 @@ func TestAdvancedSchedulerUsesRoutingModelAndKeepsRequestedModel(t *testing.T) {
 	require.True(t, scheduler.isProviderRequestCompatible(context.Background(), provider, req))
 }
 
-// TestOpenAIHTTPPassthroughKeepsExplicitModelScope 检查 OAuth 归一化和自动透传是否按上游模型限制候选。
-
-// TestOpenAIHTTPPassthroughKeepsExplicitModelScope 验证自动透传提供商不会被保留的旧白名单误拒绝。
+// TestOpenAIHTTPPassthroughKeepsExplicitModelScope 检查透传提供商的最终模型白名单。
 func TestOpenAIHTTPPassthroughKeepsExplicitModelScope(t *testing.T) {
 	provider := gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -154,12 +150,9 @@ func TestOpenAIHTTPPassthroughKeepsExplicitModelScope(t *testing.T) {
 		},
 	}
 	plainCtx := context.Background()
-	passthroughCtx := requeststate.WithOpenAIHTTPPassthroughRouting(plainCtx)
 
 	require.False(t, gatewayprovider.ExecutionModelPolicy(&provider).SupportsCompatibleRouting(plainCtx, "client-model"))
-	require.False(t, gatewayprovider.ExecutionModelPolicy(&provider).SupportsCompatibleRouting(passthroughCtx, "client-model"))
 	require.False(t, gatewayprovider.CompatibleProviderEligible(plainCtx, &provider, capability.PlatformOpenAI, "client-model", false, ""))
-	require.False(t, gatewayprovider.CompatibleProviderEligible(passthroughCtx, &provider, capability.PlatformOpenAI, "client-model", false, ""))
 
 	scheduler := &compatiblePicker{service: newCompatibleSelectionForTest(CompatibleDependencies{
 		Reads: Reads{},
@@ -168,20 +161,15 @@ func TestOpenAIHTTPPassthroughKeepsExplicitModelScope(t *testing.T) {
 	}, nil), stats: schedulercore.NewRuntimeStats(time.Now)}
 	req := schedulercore.PlatformSelectionInput{Platform: capability.PlatformOpenAI, RequestedModel: "client-model", RoutingModel: "client-model"}
 	require.False(t, scheduler.isProviderRequestCompatible(plainCtx, &provider, req))
-	require.False(t, scheduler.isProviderRequestCompatible(passthroughCtx, &provider, req))
 
 	plainErr := noAvailableOpenAISelectionErrorForRoutingWithDetails(plainCtx, "client-model", "client-model", false, "", []gatewayprovider.ExecutionProvider{provider})
 	var modelErr *routing.GroupModelUnsupportedError
 	require.True(t, errors.As(plainErr, &modelErr))
-	passthroughErr := noAvailableOpenAISelectionErrorForRoutingWithDetails(passthroughCtx, "client-model", "client-model", false, "", []gatewayprovider.ExecutionProvider{provider})
-	modelErr = nil
-	require.True(t, errors.As(passthroughErr, &modelErr))
 
 	repo := schedulerTestOpenAIProviderRepo{providers: []gatewayprovider.ExecutionProvider{provider}}
 	svc := newCompatibleSelectionForTest(CompatibleDependencies{Reads: Reads{Providers: repo}}, nil)
 
 	require.False(t, gatewayprovider.NewModelAvailability(gatewaytestkit.AvailabilityStore{Source: repo}, svc.groupPolicies, true).DiagnoseCompatibleRouting(plainCtx, nil, "client-model", capability.PlatformOpenAI).HasModelSupport)
-	require.False(t, gatewayprovider.NewModelAvailability(gatewaytestkit.AvailabilityStore{Source: repo}, svc.groupPolicies, true).DiagnoseCompatibleRouting(passthroughCtx, nil, "client-model", capability.PlatformOpenAI).HasModelSupport)
 }
 
 // TestResolveOpenAIWSRoutingModelForProviderStrictlyFollowsBillingBasis 验证长连接每轮都严格按所选依据检查 R、C 或 U。

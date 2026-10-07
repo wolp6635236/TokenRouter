@@ -18,11 +18,6 @@ export function getSeverityClass(severity: OpsSeverity): string {
   return classes[String(severity || '')] || classes.P3
 }
 
-export function truncateMessage(msg: string, maxLength = 80): string {
-  if (!msg) return ''
-  return msg.length > maxLength ? msg.substring(0, maxLength) + '...' : msg
-}
-
 /**
  * 格式化日期时间（短格式，和旧 Ops 页面一致）。
  * 输出: `MM-DD HH:mm:ss`
@@ -67,11 +62,6 @@ export function formatHistoryLabel(date: string | undefined, timeRange: string):
     return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   }
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-export function formatByteRate(bytes: number, windowMinutes: number): string {
-  const seconds = Math.max(1, (windowMinutes || 1) * 60)
-  return `${formatBytes(bytes / seconds, 1)}/s`
 }
 
 /**

@@ -182,6 +182,7 @@ func (r *IdentityScopedKeyLockRegistry) lock(keys ...string) func() {
 	}
 }
 
+// IdentityNormalizeLockKeys 去除锁键的首尾空白和重复项，并按字典顺序排列以固定加锁顺序。
 func IdentityNormalizeLockKeys(keys ...string) []string {
 	if len(keys) == 0 {
 		return nil

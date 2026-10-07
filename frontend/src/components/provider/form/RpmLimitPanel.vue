@@ -20,7 +20,7 @@
       <SettingsSegmented
         v-model="strategy"
         block
-        :aria-label="t('admin.providers.quotaControl.rpmLimit.strategy')"
+        :ariaLabel="t('admin.providers.quotaControl.rpmLimit.strategy')"
         :options="strategyOptions"
       />
       <p class="input-hint">{{ strategyHint }}</p>

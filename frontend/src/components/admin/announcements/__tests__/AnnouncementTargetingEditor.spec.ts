@@ -36,7 +36,7 @@ describe('AnnouncementTargetingEditor', () => {
     await wrapper.get('[data-testid="announcement-groups-remove-0"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('input[type="number"]').element).toBe(element)
-    expect(wrapper.text()).toContain('OR (1/50)')
+    expect(wrapper.findAll('[data-testid="announcement-groups-row"]')).toHaveLength(1)
     wrapper.unmount()
   })
 

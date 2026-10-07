@@ -1,5 +1,3 @@
-//go:build unit
-
 package forward_test
 
 import (

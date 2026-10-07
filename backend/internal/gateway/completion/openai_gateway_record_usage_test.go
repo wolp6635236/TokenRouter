@@ -11,7 +11,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
@@ -838,7 +837,7 @@ func TestOpenAIGatewayServiceRecordUsage_GPT56SeparatesCacheWriteForBillingAndSt
 	userRepo := &completiontestkit.UserStore{}
 	subRepo := &completiontestkit.SubscriptionStore{}
 	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, nil)
-	svc.Dependencies.Calculator = billingtestkit.Calculator(svc.Options.DefaultMultiplier, newModelCatalogFixture(modelCatalogFixture{pricingData: map[string]*pricing.CatalogModelPricing{
+	svc.Dependencies.Calculator = billingtestkit.Calculator(newModelCatalogFixture(modelCatalogFixture{pricingData: map[string]*pricing.CatalogModelPricing{
 		"gpt-5.6-sol": {
 			InputCostPerToken:           5e-6,
 			CacheCreationInputTokenCost: 6.25e-6,
@@ -952,9 +951,7 @@ func TestOpenAIGatewayServiceRecordUsage_LongContextBillingIgnoresLegacyProvider
 // swapInOpenAILadderCatalog 换入带 above_272k 阶梯字段的测试目录，OpenAI 长上下文规则从目录读取。
 func swapInOpenAILadderCatalog(t *testing.T, svc *completiontestkit.Recording) {
 	t.Helper()
-	cfg := &config.Config{}
-	cfg.Default.RateMultiplier = 1.1
-	svc.Dependencies.Calculator = NewBillingService(cfg, newStubCatalogFromJSON(t, openAILadderCatalogJSON))
+	svc.Dependencies.Calculator = NewBillingService(newStubCatalogFromJSON(t, openAILadderCatalogJSON))
 }
 
 func TestOpenAIGatewayServiceRecordUsage_GroupControlsLongContextBilling(t *testing.T) {
@@ -2412,7 +2409,7 @@ func newOpenAIImageConfigPricingResolverForTest(t *testing.T, groupID int64, mod
 	cache.LoadedAt = time.Now()
 
 	cs := routingtestkit.ModelConfigFromData(cache)
-	return billingtestkit.PriceResolver(cs, NewBillingService(&config.Config{}, nil))
+	return billingtestkit.PriceResolver(cs, NewBillingService(nil))
 }
 
 func newOpenAITokenImageConfigPricingResolverForTest(t *testing.T, groupID int64, model string) *billing.PriceResolver {
@@ -2432,12 +2429,12 @@ func newOpenAITokenImageConfigPricingResolverForTest(t *testing.T, groupID int64
 	cache.LoadedAt = time.Now()
 
 	cs := routingtestkit.ModelConfigFromData(cache)
-	return billingtestkit.PriceResolver(cs, NewBillingService(&config.Config{}, nil))
+	return billingtestkit.PriceResolver(cs, NewBillingService(nil))
 }
 
 func TestGatewayServiceCalculateRecordUsageCost_PricingConfigImageBillingUsesImageCount(t *testing.T) {
 	groupID := int64(126)
-	billingService := NewBillingService(&config.Config{}, nil)
+	billingService := NewBillingService(nil)
 	svc := completion.NewRecorder(completion.Dependencies{
 		Calculator: billingService,
 		Prices:     newOpenAIImageConfigPricingResolverForTest(t, groupID, "gemini-image", 0.25),
@@ -2480,8 +2477,8 @@ func TestGatewayServiceCalculateRecordUsageCost_PricingConfigImageBillingUsesSiz
 	pricingConfigService := routingtestkit.ModelConfigFromData(cache)
 
 	svc := completion.NewRecorder(completion.Dependencies{
-		Calculator: NewBillingService(&config.Config{}, nil),
-		Prices:     billingtestkit.PriceResolver(pricingConfigService, NewBillingService(&config.Config{}, nil)),
+		Calculator: NewBillingService(nil),
+		Prices:     billingtestkit.PriceResolver(pricingConfigService, NewBillingService(nil)),
 	}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 	cost := svc.CalculateRecordUsageCost(
@@ -2507,7 +2504,7 @@ func TestGatewayServiceCalculateRecordUsageCost_UsesSharedImagePrice(t *testing.
 	pricingConfigPrice := 0.25
 
 	svc := completion.NewRecorder(completion.Dependencies{
-		Calculator: NewBillingService(&config.Config{}, nil),
+		Calculator: NewBillingService(nil),
 		Prices:     newOpenAIImageConfigPricingResolverForTest(t, groupID, "gemini-image", pricingConfigPrice),
 	}, completion.RecorderOptions{DefaultMultiplier: 1})
 
@@ -2551,8 +2548,8 @@ func TestGatewayServiceCalculateRecordUsageCost_PricingConfigImageBillingNormali
 	pricingConfigService := routingtestkit.ModelConfigFromData(cache)
 
 	svc := completion.NewRecorder(completion.Dependencies{
-		Calculator: NewBillingService(&config.Config{}, nil),
-		Prices:     billingtestkit.PriceResolver(pricingConfigService, NewBillingService(&config.Config{}, nil)),
+		Calculator: NewBillingService(nil),
+		Prices:     billingtestkit.PriceResolver(pricingConfigService, NewBillingService(nil)),
 	}, completion.RecorderOptions{DefaultMultiplier: 1})
 
 	cost := svc.CalculateRecordUsageCost(

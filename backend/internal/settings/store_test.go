@@ -28,8 +28,6 @@ func TestStorePreservesWriteAndExplicitNotificationBoundary(t *testing.T) {
 	store := New(repo)
 	require.Same(t, store, New(store))
 	var events []string
-	store.SetOnUpdateCallback(func() { events = append(events, "old") })
-	store.SetOnUpdateCallback(func() { events = append(events, "replacement") })
 	store.Subscribe(func() { require.Equal(t, "v", repo.values["k"]); events = append(events, "subscriber") })
 	repo.err = errors.New("write failed")
 	require.Error(t, store.SetMultiple(context.Background(), map[string]string{"k": "v"}))
@@ -38,7 +36,7 @@ func TestStorePreservesWriteAndExplicitNotificationBoundary(t *testing.T) {
 	require.NoError(t, store.SetMultiple(context.Background(), map[string]string{"k": "v"}))
 	require.Empty(t, events)
 	store.NotifyUpdated()
-	require.Equal(t, []string{"replacement", "subscriber"}, events)
+	require.Equal(t, []string{"subscriber"}, events)
 }
 
 func TestStoreUnsubscribeDuringNotification(t *testing.T) {

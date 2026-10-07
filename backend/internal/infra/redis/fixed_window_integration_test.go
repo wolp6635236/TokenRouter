@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 const redisImageTag = "redis:8.4-alpine"
@@ -69,7 +69,7 @@ func startRedis(t *testing.T, ctx context.Context) *redis.Client {
 	t.Helper()
 	ensureDockerAvailable(t)
 
-	redisContainer, err := tcredis.Run(ctx, redisImageTag)
+	redisContainer, err := rediscontainer.Run(ctx, redisImageTag)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = redisContainer.Terminate(ctx)
@@ -97,6 +97,9 @@ func ensureDockerAvailable(t *testing.T) {
 	t.Helper()
 	if dockerAvailable() {
 		return
+	}
+	if os.Getenv("CI") != "" || os.Getenv("TOKENROUTER_VERIFY_STRICT") == "1" {
+		t.Fatal("Docker 未启用，无法执行集成测试")
 	}
 	t.Skip("Docker 未启用，跳过依赖 testcontainers 的集成测试")
 }

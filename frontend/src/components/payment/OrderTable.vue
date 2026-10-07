@@ -39,6 +39,7 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { PaymentOrder } from '@/types/payment'
@@ -57,7 +58,7 @@ const props = defineProps<{
   showUser?: boolean
 }>()
 
-function formatDate(dateStr: string) { return new Date(dateStr).toLocaleString() }
+function formatDate(dateStr: string) { return new Date(dateStr).toLocaleString(getLocale()) }
 
 /** 余额到账金额使用用户配置的单位，套餐订单使用渠道币种。 */
 function formatOrderAmount(amount: number, order: PaymentOrder): string {

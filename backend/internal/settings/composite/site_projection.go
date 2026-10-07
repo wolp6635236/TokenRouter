@@ -23,14 +23,10 @@ func (s *Snapshot) SiteAdminSettings() site.AdminSettings {
 		PurchaseSubscriptionEnabled: s.PurchaseSubscriptionEnabled,
 		PurchaseSubscriptionURL:     s.PurchaseSubscriptionURL,
 		SiteLogo:                    s.SiteLogo,
+		SiteTexts:                   s.SiteTexts,
+		DefaultLocale:               s.DefaultLocale,
 		SiteName:                    s.SiteName,
-		SiteNameEn:                  s.SiteNameEn,
-		SiteNameZh:                  s.SiteNameZh,
 		SiteSubtitle:                s.SiteSubtitle,
-		SiteSubtitleEn:              s.SiteSubtitleEn,
-		SiteSubtitleZh:              s.SiteSubtitleZh,
-		SiteTitleEn:                 s.SiteTitleEn,
-		SiteTitleZh:                 s.SiteTitleZh,
 		TableDefaultPageSize:        s.TableDefaultPageSize,
 		TablePageSizeOptions:        s.TablePageSizeOptions,
 	}
@@ -56,14 +52,10 @@ func (s *Snapshot) ApplySiteAdminSettings(value site.AdminSettings) {
 	s.PurchaseSubscriptionEnabled = value.PurchaseSubscriptionEnabled
 	s.PurchaseSubscriptionURL = value.PurchaseSubscriptionURL
 	s.SiteLogo = value.SiteLogo
+	s.SiteTexts = value.SiteTexts
+	s.DefaultLocale = value.DefaultLocale
 	s.SiteName = value.SiteName
-	s.SiteNameEn = value.SiteNameEn
-	s.SiteNameZh = value.SiteNameZh
 	s.SiteSubtitle = value.SiteSubtitle
-	s.SiteSubtitleEn = value.SiteSubtitleEn
-	s.SiteSubtitleZh = value.SiteSubtitleZh
-	s.SiteTitleEn = value.SiteTitleEn
-	s.SiteTitleZh = value.SiteTitleZh
 	s.TableDefaultPageSize = value.TableDefaultPageSize
 	s.TablePageSizeOptions = value.TablePageSizeOptions
 }

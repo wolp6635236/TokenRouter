@@ -291,6 +291,8 @@ const filteredOptions = computed(() => {
   if (isSearchable.value && searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
     opts = opts.filter((opt) => {
+      // 名称与有效译文共用一次过滤，结果按业务条目去重。
+      if (Array.isArray(opt.search_terms) && opt.search_terms.some((text: string) => text.toLowerCase().includes(query))) return true
       // Match label
       if (getOptionLabel(opt).toLowerCase().includes(query)) return true
       // Also match description if present

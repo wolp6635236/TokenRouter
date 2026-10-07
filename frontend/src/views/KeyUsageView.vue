@@ -423,6 +423,9 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
+import { getLocale } from '@/i18n'
+import { localizedErrorMessage } from '@/i18n/errors'
 import { vContentReveal } from '@/directives/contentReveal'
 import { useRoute as useMotionRoute } from 'vue-router'
 const motionRoute = useMotionRoute()
@@ -464,7 +467,6 @@ const isQuerying = ref(false)
 const showResults = ref(false)
 const showLoading = ref(false)
 const showDatePicker = ref(false)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const resultData = ref<any>(null)
 const now = ref(new Date())
 let resetTimer: ReturnType<typeof setInterval> | null = null
@@ -768,7 +770,7 @@ const detailRows = computed<DetailRow[]>(() => {
       })
     }
     if (data.rate_limits) {
-      const windowMap: Record<string, string> = { '5h': '5H', '1d': locale.value === 'zh' ? '日' : 'D', '7d': '7D' }
+      const windowMap: Record<string, string> = { '5h': '5H', '1d': locale.value === 'zh-Hans' ? '日' : 'D', '7d': '7D' }
       for (const rl of data.rate_limits) {
         const pct = rl.limit > 0 ? (rl.used / rl.limit) * 100 : 0
         let valueStr = `${formatUsageBalance(rl.used)} / ${formatUsageBalance(rl.limit)}`
@@ -799,21 +801,21 @@ const detailRows = computed<DetailRow[]>(() => {
         const pct = (sub.daily_usage_usd / sub.daily_limit_usd) * 100
         rows.push({
           iconBg: 'bg-primary-500/10', iconColor: 'text-primary-500', iconSvg: '',
-          label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh' ? '日' : 'D'})`, value: `${formatUsageBalance(sub.daily_usage_usd)} / ${formatUsageBalance(sub.daily_limit_usd)}`, valueClass: getUsageColor(pct), useBalanceIcon: true,
+          label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh-Hans' ? '日' : 'D'})`, value: `${formatUsageBalance(sub.daily_usage_usd)} / ${formatUsageBalance(sub.daily_limit_usd)}`, valueClass: getUsageColor(pct), useBalanceIcon: true,
         })
       }
       if (sub.weekly_limit_usd > 0) {
         const pct = (sub.weekly_usage_usd / sub.weekly_limit_usd) * 100
         rows.push({
           iconBg: 'bg-indigo-500/10', iconColor: 'text-indigo-500', iconSvg: '',
-          label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh' ? '周' : 'W'})`, value: `${formatUsageBalance(sub.weekly_usage_usd)} / ${formatUsageBalance(sub.weekly_limit_usd)}`, valueClass: getUsageColor(pct), useBalanceIcon: true,
+          label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh-Hans' ? '周' : 'W'})`, value: `${formatUsageBalance(sub.weekly_usage_usd)} / ${formatUsageBalance(sub.weekly_limit_usd)}`, valueClass: getUsageColor(pct), useBalanceIcon: true,
         })
       }
       if (sub.monthly_limit_usd > 0) {
         const pct = (sub.monthly_usage_usd / sub.monthly_limit_usd) * 100
         rows.push({
           iconBg: 'bg-emerald-500/10', iconColor: 'text-emerald-500', iconSvg: '',
-          label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh' ? '月' : 'M'})`, value: `${formatUsageBalance(sub.monthly_usage_usd)} / ${formatUsageBalance(sub.monthly_limit_usd)}`, valueClass: getUsageColor(pct), useBalanceIcon: true,
+          label: `${t('keyUsage.usedQuota')} (${locale.value === 'zh-Hans' ? '月' : 'M'})`, value: `${formatUsageBalance(sub.monthly_usage_usd)} / ${formatUsageBalance(sub.monthly_limit_usd)}`, valueClass: getUsageColor(pct), useBalanceIcon: true,
         })
       }
       if (sub.expires_at) {
@@ -878,7 +880,6 @@ const usageStatCells = computed<StatCell[]>(() => {
   ]
 })
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const modelStats = computed<any[]>(() => resultData.value?.model_stats || [])
 
 interface DailyUsageRow {
@@ -908,13 +909,13 @@ function formatUsageBalance(value: number | null | undefined): string {
 
 function fmtNum(val: number | null | undefined): string {
   if (val == null) return '-'
-  return val.toLocaleString()
+  return val.toLocaleString(getLocale())
 }
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return '-'
   const d = new Date(iso)
-  const loc = locale.value === 'zh' ? 'zh-CN' : 'en-US'
+  const loc = locale.value
   return d.toLocaleDateString(loc, { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
@@ -928,19 +929,27 @@ function getBrowserTimezone(): string {
 
 // ==================== API Query ====================
 
-async function fetchUsage(key: string) {
+async function fetchUsage(key: string): Promise<any> {
+  const requestedLocale = getLocale()
   const dateParams = getDateParams()
   const url = buildGatewayUrl('/v1/usage') + (dateParams ? '?' + dateParams : '')
   const res = await fetch(url, {
-    headers: { 'Authorization': 'Bearer ' + key },
+    headers: { 'Authorization': 'Bearer ' + key, 'Accept-Language': requestedLocale },
   })
+  const data = await res.json().catch(() => null)
+  if (requestedLocale !== getLocale()) return fetchUsage(key)
   if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    const msg = body?.error?.message || body?.message || `${t('keyUsage.queryFailed')} (${res.status})`
-    throw new Error(msg)
+    const message = data?.error?.message || data?.message || `${t('keyUsage.queryFailed')} (${res.status})`
+    throw new Error(localizedErrorMessage(data?.error?.code || data?.reason, res.status, message))
   }
-  return await res.json()
+  return data
 }
+
+useLocaleRefresh(async () => {
+  if (!resultData.value || isQuerying.value) return
+  const data = await fetchUsage(apiKey.value.trim())
+  resultData.value = data
+})
 
 async function queryKey() {
   if (isQuerying.value) return
@@ -985,9 +994,10 @@ function formatResetTime(resetAt: string | null | undefined): string {
   const days = Math.floor(diff / 86400000)
   const hours = Math.floor((diff % 86400000) / 3600000)
   const mins = Math.floor((diff % 3600000) / 60000)
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${mins}m`
-  return `${mins}m`
+  const unit = (value: number, name: string) => new Intl.NumberFormat(getLocale(), { style: 'unit', unit: name, unitDisplay: 'narrow' }).format(value)
+  if (days > 0) return `${unit(days, 'day')} ${unit(hours, 'hour')}`
+  if (hours > 0) return `${unit(hours, 'hour')} ${unit(mins, 'minute')}`
+  return unit(mins, 'minute')
 }
 
 onMounted(() => {

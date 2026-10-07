@@ -12,6 +12,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,7 @@ func (f billingPlanHTTPFixture) ListPlans(context.Context) ([]*billing.Subscript
 	return f.plans, nil
 }
 
-// TestBillingPlanHTTPPreservesEntJSON 比较 handler 响应与未预加载关系的 Ent 套餐 JSON。
+// TestBillingPlanHTTPPreservesEntJSON 检查套餐字段和未填写文案时的初始编辑内容。
 func TestBillingPlanHTTPPreservesEntJSON(t *testing.T) {
 	zero, original := 0.0, 25.0
 	now := time.Date(2026, 9, 12, 10, 15, 0, 0, time.FixedZone("test", 8*60*60))
@@ -46,7 +47,12 @@ func TestBillingPlanHTTPPreservesEntJSON(t *testing.T) {
 				Data json.RawMessage `json:"data"`
 			}
 			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
-			expected, err := json.Marshal([]*dbent.SubscriptionPlan{original})
+			copy := *original
+			copy.Localization = billing.PlanLocalization{
+				Source:   billing.PlanCopy{Name: original.Name, Description: original.Description, Features: original.Features, ProductName: original.ProductName},
+				Revision: 1, SourceRevision: 1, Translations: map[string]locale.Translation[billing.PlanCopy]{},
+			}
+			expected, err := json.Marshal([]*dbent.SubscriptionPlan{&copy})
 			require.NoError(t, err)
 			require.JSONEq(t, string(expected), string(envelope.Data))
 		})

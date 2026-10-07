@@ -75,16 +75,6 @@ export async function list(): Promise<ErrorPassthroughRule[]> {
 }
 
 /**
- * Get rule by ID
- * @param id - Rule ID
- * @returns Rule details
- */
-export async function getById(id: number): Promise<ErrorPassthroughRule> {
-  const { data } = await apiClient.get<ErrorPassthroughRule>(`/admin/error-passthrough-rules/${id}`)
-  return data
-}
-
-/**
  * Create new rule
  * @param ruleData - Rule data
  * @returns Created rule
@@ -127,7 +117,6 @@ export async function toggleEnabled(id: number, enabled: boolean): Promise<Error
 
 export const errorPassthroughAPI = {
   list,
-  getById,
   create,
   update,
   delete: deleteRule,

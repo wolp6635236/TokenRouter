@@ -45,6 +45,6 @@ func TestSettingsFieldOwnership(t *testing.T) {
 		delete(owners, name)
 		count++
 	}
-	require.Equal(t, 285, count, "HTTP 字段变化必须同步阶段契约")
+	require.Equal(t, 282, count, "HTTP 字段变化需要同步字段登记")
 	require.Empty(t, owners, "参与者不应声明不存在的输入字段")
 }

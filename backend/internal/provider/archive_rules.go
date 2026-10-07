@@ -8,55 +8,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
 )
 
-func ApplyArchiveDefaults(item *transfer.DataProvider, defaults *transfer.OpenAIOAuthImportDefaults) {
-	if defaults == nil {
-		return
-	}
-	if !strings.EqualFold(strings.TrimSpace(item.Platform), PlatformOpenAI) {
-		return
-	}
-	if !strings.EqualFold(strings.TrimSpace(item.Type), ProviderTypeOAuth) {
-		return
-	}
-
-	if !item.NotesSet && defaults.Provider.Notes != nil {
-		item.Notes = clonePointer(defaults.Provider.Notes)
-	}
-	if !item.ConcurrencySet && defaults.Provider.Concurrency != nil {
-		item.Concurrency = clonePointer(defaults.Provider.Concurrency)
-	}
-	if !item.PrioritySet && defaults.Provider.Priority != nil {
-		item.Priority = clonePointer(defaults.Provider.Priority)
-	}
-	if !item.RateMultiplierSet && defaults.Provider.RateMultiplier != nil {
-		item.RateMultiplier = clonePointer(defaults.Provider.RateMultiplier)
-	}
-	if !item.ExpiresAtSet && defaults.Provider.ExpiresAt != nil {
-		item.ExpiresAt = clonePointer(defaults.Provider.ExpiresAt)
-	}
-	if !item.AutoPauseOnExpiredSet && defaults.Provider.AutoPauseOnExpired != nil {
-		item.AutoPauseOnExpired = clonePointer(defaults.Provider.AutoPauseOnExpired)
-	}
-
-	mergeArchiveDefaults(&item.Credentials, defaults.Credentials)
-	mergeArchiveDefaults(&item.Extra, defaults.Extra)
-}
-
-func mergeArchiveDefaults(target *map[string]any, defaults map[string]any) {
-	if len(defaults) == 0 {
-		return
-	}
-	if *target == nil {
-		*target = map[string]any{}
-	}
-	for key, value := range defaults {
-		// 只按顶层键做缺失合并；null、false、0、空数组都算已提供。
-		if _, exists := (*target)[key]; !exists {
-			(*target)[key] = CloneValues(map[string]any{key: value})[key]
-		}
-	}
-}
-
 func ValidateArchiveProvider(item transfer.DataProvider) error {
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.New("provider name is required")

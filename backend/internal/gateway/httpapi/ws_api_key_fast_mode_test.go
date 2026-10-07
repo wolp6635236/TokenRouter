@@ -45,7 +45,7 @@ func fastModeTestResolver() *billingcore.PriceResolver {
 			SupportsPromptCaching: true,
 		},
 	}})
-	billing := billingtestkit.Calculator(0, pricing, nil)
+	billing := billingtestkit.Calculator(pricing, nil)
 	return billingtestkit.PriceResolver(nil, billing)
 }
 

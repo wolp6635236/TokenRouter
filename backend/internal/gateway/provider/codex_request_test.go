@@ -1383,7 +1383,8 @@ func TestApplyCodexOAuthTransform_EmptyInput(t *testing.T) {
 	require.Len(t, input, 0)
 }
 
-func TestNormalizeCodexModel_Gpt53(t *testing.T) {
+// TestCodexTransformPreservesModelID 检查 Codex 请求中的完整型号。
+func TestCodexTransformPreservesModelID(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.4":                   "gpt-5.4",
 		"gpt5.5":                    "gpt5.5",
@@ -1424,11 +1425,14 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 	}
 
 	for input, expected := range cases {
-		require.Equal(t, expected, gatewayprovider.NormalizeCodexModel(input))
+		body := map[string]any{"model": input}
+		gatewayprovider.ApplyCodexOAuthTransform(body, false, false)
+		require.Equal(t, expected, body["model"])
 	}
 }
 
-func TestNormalizeCodexModel_RemovedModelsFallbackToSupportedTargets(t *testing.T) {
+// TestCodexTransformPreservesLegacyModelID 检查历史型号和空字段的转发值。
+func TestCodexTransformPreservesLegacyModelID(t *testing.T) {
 	cases := map[string]string{
 		"":                   "",
 		"gpt-5":              "gpt-5",
@@ -1444,7 +1448,9 @@ func TestNormalizeCodexModel_RemovedModelsFallbackToSupportedTargets(t *testing.
 	}
 
 	for input, expected := range cases {
-		require.Equal(t, expected, gatewayprovider.NormalizeCodexModel(input))
+		body := map[string]any{"model": input}
+		gatewayprovider.ApplyCodexOAuthTransform(body, false, false)
+		require.Equal(t, expected, body["model"])
 	}
 }
 

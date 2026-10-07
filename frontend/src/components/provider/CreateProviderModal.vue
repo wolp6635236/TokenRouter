@@ -442,7 +442,7 @@
                   v-model="qoderSite"
                   block
                   :disabled="submitting || isQoderOAuthProviderCreating"
-                  :aria-label="t('admin.providers.qoder.site.label')"
+                  :ariaLabel="t('admin.providers.qoder.site.label')"
                   :options="qoderSiteOptions"
                 />
               </div>
@@ -474,7 +474,7 @@
               <span class="input-label">{{ t('admin.providers.addMethod') }}</span>
               <SettingsSegmented
                 v-model="addMethod"
-                :aria-label="t('admin.providers.addMethod')"
+                :ariaLabel="t('admin.providers.addMethod')"
                 :options="addMethodOptions"
               />
             </div>
@@ -742,7 +742,7 @@
                 <span class="input-label">{{ t('admin.providers.bedrockAuthMode') }}</span>
                 <SettingsSegmented
                   v-model="bedrockAuthMode"
-                  :aria-label="t('admin.providers.bedrockAuthMode')"
+                  :ariaLabel="t('admin.providers.bedrockAuthMode')"
                   :options="bedrockAuthModeOptions"
                 />
               </div>
@@ -1569,7 +1569,7 @@ import Collapse from '@/components/common/Collapse.vue'
 // 协议选择保存提供商支持的协议集合。
 const upstreamProtocols = ref<ProtocolID[] | undefined>(undefined)
 
-import { normalizeLegacyOpenAIExtra, normalizeOpenAICompactMode } from '@/utils/openaiLegacyConfiguration'
+import { normalizeLegacyOpenAIExtra } from '@/utils/openaiLegacyConfiguration'
 import ProviderProtocolSelector from './ProviderProtocolSelector.vue'
 import { loadProtocolCatalog, nativeProtocolOptions } from '@/api/admin/protocolCapabilities'
 import type { ProtocolID } from '@/types'
@@ -1583,7 +1583,6 @@ import {
   getModelsByPlatform,
   buildModelMappingObject,
   buildPersistedModelRestriction,
-  splitPersistedModelRestriction,
   fetchAntigravityDefaultMappings
 } from '@/composables/useModelWhitelist'
 import { adminAPI } from '@/api/admin'
@@ -1614,7 +1613,6 @@ import type {
   OpenAIOAuthClientPolicy,
   UpstreamUsageAdapter
 } from '@/types'
-import type { OpenAIOAuthImportDefaults } from '@/api/admin/settings'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
@@ -1688,7 +1686,6 @@ import {
 import {
   OPENAI_WS_MODE_OFF,
   isOpenAIWSModeEnabled,
-  resolveOpenAIWSModeFromExtra,
   resolveOpenAIWSModeConcurrencyHintKey,
   type OpenAIWSMode
 } from '@/utils/openaiWsMode'
@@ -2231,205 +2228,6 @@ const openAIWSModeConcurrencyHintKey = computed(() =>
   resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2Mode.value)
 )
 
-const openAIOAuthImportDefaults = ref<OpenAIOAuthImportDefaults | null>(null)
-const openAIOAuthImportDefaultsLoaded = ref(false)
-const openAIOAuthImportDefaultsApplied = ref(false)
-const isOpenAIOAuthImportDefaultsTarget = computed(
-  () => form.platform === 'openai' && providerCategory.value === 'oauth-based'
-)
-
-const normalizeOpenAITLSFingerprintProfileId = (value: unknown): number | null => {
-  // 默认值来自 JSON 配置，兼容数字和数字字符串，非法值回落到内置默认 profile。
-  if (typeof value === 'number' && Number.isInteger(value)) {
-    return value === 0 ? null : value
-  }
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
-    return Number.isInteger(parsed) && parsed !== 0 ? parsed : null
-  }
-  return null
-}
-
-const normalizeOpenAIOAuthClientPolicy = (policy: unknown, legacyCodexOnly?: unknown): OpenAIOAuthClientPolicy => {
-  if (policy === 'codex_only' || policy === 'tls_router_matched_only' || policy === 'any') {
-    return policy
-  }
-  return legacyCodexOnly === true ? 'codex_only' : 'any'
-}
-
-const splitDefaultMappingObject = (raw: unknown): ModelMappingRow[] => {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return []
-  }
-
-  return Object.entries(raw as Record<string, unknown>)
-    .map(([from, to]) => ({ from: from.trim(), to: String(to).trim() }))
-    .filter((mapping) => mapping.from && mapping.to)
-}
-
-const isSameStringList = (left: string[], right: string[]) => {
-  return left.length === right.length && left.every((item, index) => item === right[index])
-}
-
-const applyOpenAIOAuthImportDefaultsToForm = () => {
-  const defaults = openAIOAuthImportDefaults.value
-  if (!defaults || !isOpenAIOAuthImportDefaultsTarget.value || openAIOAuthImportDefaultsApplied.value) {
-    return
-  }
-
-  const provider = defaults.provider || {}
-  if (typeof provider.notes === 'string' && form.notes.trim() === '') {
-    form.notes = provider.notes
-  }
-  if (
-    typeof provider.concurrency === 'number' &&
-    Number.isFinite(provider.concurrency) &&
-    provider.concurrency > 0 &&
-    form.concurrency === 10
-  ) {
-    form.concurrency = provider.concurrency
-  }
-  if (
-    typeof provider.priority === 'number' &&
-    Number.isFinite(provider.priority) &&
-    provider.priority > 0 &&
-    form.priority === 1
-  ) {
-    form.priority = provider.priority
-  }
-  if (
-    typeof provider.rate_multiplier === 'number' &&
-    Number.isFinite(provider.rate_multiplier) &&
-    provider.rate_multiplier >= 0 &&
-    form.rate_multiplier === 1
-  ) {
-    form.rate_multiplier = provider.rate_multiplier
-  }
-  if (
-    typeof provider.expires_at === 'number' &&
-    Number.isFinite(provider.expires_at) &&
-    provider.expires_at >= 0 &&
-    form.expires_at === null
-  ) {
-    form.expires_at = provider.expires_at
-  }
-  if (typeof provider.auto_pause_on_expired === 'boolean' && autoPauseOnExpired.value === true) {
-    autoPauseOnExpired.value = provider.auto_pause_on_expired
-  }
-
-  const credentials = defaults.credentials || {}
-  const openAIModels = getModelsByPlatform('openai')
-  const defaultModelRestriction = splitPersistedModelRestriction(
-    credentials.model_mapping && typeof credentials.model_mapping === 'object' && !Array.isArray(credentials.model_mapping)
-      ? credentials.model_mapping as Record<string, string>
-      : undefined,
-    credentials.model_whitelist
-  )
-  const hasDefaultModelWhitelist =
-    Object.prototype.hasOwnProperty.call(credentials, 'model_whitelist') ||
-    defaultModelRestriction.allowedModels.length > 0
-  if (
-    hasDefaultModelWhitelist &&
-    modelRestrictionMode.value === 'whitelist' &&
-    modelMappings.value.length === 0 &&
-    isSameStringList(allowedModels.value, openAIModels)
-  ) {
-    allowedModels.value = defaultModelRestriction.allowedModels
-  }
-  if (defaultModelRestriction.modelMappings.length > 0 && modelMappings.value.length === 0) {
-    modelMappings.value = defaultModelRestriction.modelMappings
-    modelRestrictionMode.value = 'mapping'
-  }
-  const defaultCompactMappings = splitDefaultMappingObject(credentials.compact_model_mapping)
-  if (defaultCompactMappings.length > 0 && openAICompactModelMappings.value.length === 0) {
-    openAICompactModelMappings.value = defaultCompactMappings
-  }
-
-  const extra = defaults.extra || {}
-  if (extra.openai_passthrough === true || extra.openai_oauth_passthrough === true) {
-    openaiPassthroughEnabled.value = true
-  }
-  openAIOAuthClientPolicy.value = normalizeOpenAIOAuthClientPolicy(extra.openai_oauth_client_policy, extra.codex_cli_only)
-  if (
-    Array.isArray(extra.codex_cli_only_allowed_clients) &&
-    extra.codex_cli_only_allowed_clients.includes('claude_code')
-  ) {
-    codexCLIOnlyAllowClaudeCodeEnabled.value = true
-  }
-  if (
-    typeof extra.auto_pause_5h_threshold === 'number' &&
-    Number.isFinite(extra.auto_pause_5h_threshold) &&
-    autoPause5hThreshold.value == null
-  ) {
-    autoPause5hThreshold.value = extra.auto_pause_5h_threshold * 100
-  }
-  if (
-    typeof extra.auto_pause_7d_threshold === 'number' &&
-    Number.isFinite(extra.auto_pause_7d_threshold) &&
-    autoPause7dThreshold.value == null
-  ) {
-    autoPause7dThreshold.value = extra.auto_pause_7d_threshold * 100
-  }
-  if (extra.auto_pause_5h_disabled === true) {
-    autoPause5hDisabled.value = true
-  }
-  if (extra.auto_pause_7d_disabled === true) {
-    autoPause7dDisabled.value = true
-  }
-  const defaultWSMode = resolveOpenAIWSModeFromExtra(extra, {
-    modeKey: 'openai_oauth_responses_websockets_v2_mode',
-    enabledKey: 'openai_oauth_responses_websockets_v2_enabled',
-    fallbackEnabledKeys: ['responses_websockets_v2_enabled', 'openai_ws_enabled'],
-    defaultMode: OPENAI_WS_MODE_OFF
-  })
-  if (openaiOAuthResponsesWebSocketV2Mode.value === OPENAI_WS_MODE_OFF) {
-    openaiOAuthResponsesWebSocketV2Mode.value = defaultWSMode
-  }
-  if (openAICompactMode.value === 'force_on') {
-    openAICompactMode.value = normalizeOpenAICompactMode(extra.openai_compact_mode)
-  }
-  if (openAINativeCompactionV2Mode.value === 'force_on') {
-    openAINativeCompactionV2Mode.value = normalizeOpenAICompactMode(extra.openai_native_compaction_v2_mode)
-  }
-  if (extra.enable_tls_fingerprint === true) {
-    tlsFingerprintEnabled.value = true
-    tlsFingerprintProfileId.value = normalizeOpenAITLSFingerprintProfileId(extra.tls_fingerprint_profile_id)
-    tlsFingerprintRouterId.value = normalizeOpenAITLSFingerprintProfileId(extra.tls_fingerprint_router_id)
-  }
-
-  openAIOAuthImportDefaultsApplied.value = true
-}
-
-const loadOpenAIOAuthImportDefaults = async () => {
-  if (openAIOAuthImportDefaultsLoaded.value) {
-    applyOpenAIOAuthImportDefaultsToForm()
-    return
-  }
-  try {
-    openAIOAuthImportDefaults.value = await adminAPI.settings.getOpenAIOAuthImportDefaults()
-    openAIOAuthImportDefaultsLoaded.value = true
-    applyOpenAIOAuthImportDefaultsToForm()
-  } catch (error: any) {
-    appStore.showError(error?.message || t('admin.providers.openAIOAuthImportDefaultsLoadFailed'))
-  }
-}
-
-const applyOpenAIOAuthCredentialDefaults = (credentials: Record<string, unknown>) => {
-  if (!isOpenAIOAuthImportDefaultsTarget.value) {
-    return
-  }
-
-  const defaults = openAIOAuthImportDefaults.value?.credentials || {}
-  for (const [key, value] of Object.entries(defaults)) {
-    if (key === 'model_whitelist' || key === 'model_mapping' || key === 'compact_model_mapping') {
-      continue
-    }
-    if (!Object.prototype.hasOwnProperty.call(credentials, key)) {
-      credentials[key] = value
-    }
-  }
-}
-
 const geminiQuotaDocs = {
   codeAssist: 'https://developers.google.com/gemini-code-assist/resources/quotas',
   aiStudio: 'https://ai.google.dev/pricing',
@@ -2636,9 +2434,6 @@ watch(
         .catch(() => { tlsFingerprintRouters.value = [] })
       // Modal opened - fill related models
       allowedModels.value = []
-      if (isOpenAIOAuthImportDefaultsTarget.value) {
-        void loadOpenAIOAuthImportDefaults()
-      }
       // Antigravity: 默认使用映射模式并填充默认映射
       if (form.platform === 'antigravity') {
         antigravityModelRestrictionMode.value = 'mapping'
@@ -2683,17 +2478,6 @@ watch(
     }
   },
   { immediate: true }
-)
-
-watch(
-  isOpenAIOAuthImportDefaultsTarget,
-  (enabled) => {
-    if (!enabled) {
-      openAIOAuthImportDefaultsApplied.value = false
-      return
-    }
-    void loadOpenAIOAuthImportDefaults()
-  }
 )
 
 // Reset platform-specific settings when platform changes
@@ -3167,9 +2951,6 @@ const resetForm = () => {
   qoderOAuth.resetState()
   grokOAuth.resetState()
   oauthFlowRef.value?.reset()
-  openAIOAuthImportDefaults.value = null
-  openAIOAuthImportDefaultsLoaded.value = false
-  openAIOAuthImportDefaultsApplied.value = false
 }
 
 const finishClose = () => {
@@ -3190,11 +2971,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     return base
   }
 
-  const defaultsExtra =
-    providerCategory.value === 'oauth-based'
-      ? openAIOAuthImportDefaults.value?.extra
-      : undefined
-  const extra: Record<string, unknown> = { ...(defaultsExtra || {}), ...(base || {}) }
+  const extra: Record<string, unknown> = { ...base }
   if (providerCategory.value === 'oauth-based') {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
@@ -3611,10 +3388,8 @@ const handleSubmit = async () => {
     }
   }
 
-  // Add model mapping if configured（OpenAI 开启自动透传时不应用）
-  if (true) {
-    applyPersistedModelRestriction(credentials)
-  }
+  // 保存模型映射和最终白名单。
+  applyPersistedModelRestriction(credentials)
   if (form.platform === 'openai') {
     const compactModelMapping = buildOpenAICompactModelMapping()
     if (compactModelMapping) {
@@ -4051,11 +3826,8 @@ const buildOpenAIOAuthProviderRequest = (
   const oauthExtra = openaiOAuth.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
   const extra = buildOpenAIExtra(oauthExtra)
 
-  applyOpenAIOAuthCredentialDefaults(credentials)
-  // OpenAI OAuth 透传模式下不应用模型限制。
-  if (true) {
-    applyPersistedModelRestriction(credentials)
-  }
+  // 将创建表单中的模型限制写入凭据。
+  applyPersistedModelRestriction(credentials)
   const compactModelMapping = buildOpenAICompactModelMapping()
   if (compactModelMapping) {
     credentials.compact_model_mapping = compactModelMapping
@@ -4299,8 +4071,6 @@ const handleOpenAIExchange = async (authCodeInput: string) => {
   const usedSessionIds = new Set<string>()
 
   try {
-    await loadOpenAIOAuthImportDefaults()
-
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i]
       const session = findOpenAIAuthSession(entry, sessions, usedSessionIds)
@@ -4386,10 +4156,8 @@ const OPENAI_MOBILE_RT_CLIENT_ID = 'app_LlGpXReQgckcGGUo2JrYvtJK'
 
 const buildOpenAICodexImportCredentialExtras = (): Record<string, unknown> | null => {
   const credentials: Record<string, unknown> = {}
-  if (true) {
-    // 与其他 OpenAI OAuth 创建方式保持一致：映射和最终白名单分别保存。
-    applyPersistedModelRestriction(credentials)
-  }
+  // 模型映射和最终白名单分别保存。
+  applyPersistedModelRestriction(credentials)
 
   const compactModelMapping = buildOpenAICompactModelMapping()
   if (compactModelMapping) {
@@ -4451,9 +4219,8 @@ const handleOpenAIImportCodexSession = async (content: string) => {
   oauthClient.error.value = ''
 
   try {
-    await loadOpenAIOAuthImportDefaults()
     await loadProtocolCatalog()
-    // 默认配置加载完成后生成凭据快照，快照包含管理员设置的模型限制。
+    // Session 导入使用表单中的模型限制和协议配置。
     const credentialExtras = buildOpenAICodexImportCredentialExtras()
     if (credentialExtras === null) {
       return
@@ -4531,8 +4298,7 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
   oauthClient.error.value = ''
 
   try {
-    await loadOpenAIOAuthImportDefaults()
-    // 默认配置加载完成后生成凭据快照，快照包含管理员设置的模型限制。
+    // PAT 导入使用表单中的模型限制和协议配置。
     const credentialExtras = buildOpenAICodexImportCredentialExtras()
     if (credentialExtras === null) {
       return
@@ -4594,8 +4360,6 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
   const errors: string[] = []
 
   try {
-    await loadOpenAIOAuthImportDefaults()
-
     for (let i = 0; i < refreshTokens.length; i++) {
       try {
         const tokenInfo = await oauthClient.validateRefreshToken(

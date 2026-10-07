@@ -3,6 +3,8 @@ package dto
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/TokenFlux/TokenRouter/internal/site/content"
 )
 
 // ParseHomeFeaturedModels 将 JSON 字符串解析为首页展示模型 ID 列表。
@@ -22,74 +24,32 @@ func ParseHomeFeaturedModels(raw string) []string {
 // ParseFooterLinks parses a JSON string into a slice of FooterLinkGroup.
 // Returns empty slice on empty/invalid input.
 func ParseFooterLinks(raw string) []FooterLinkGroup {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "[]" {
-		return []FooterLinkGroup{}
-	}
-	var groups []FooterLinkGroup
-	if err := json.Unmarshal([]byte(raw), &groups); err != nil {
-		return []FooterLinkGroup{}
-	}
-	return groups
+	return content.ParseFooterGroups(raw)
 }
 
 // FooterLinkGroup 首页底栏链接分组（一列）。
-type FooterLinkGroup struct {
-	Title string       `json:"title"`
-	Links []FooterLink `json:"links"`
-}
+type FooterLinkGroup = content.FooterLinkGroup
 
 // FooterLink 首页底栏单条链接。
-type FooterLink struct {
-	Label string `json:"label"`
-	URL   string `json:"url"`
-}
+type FooterLink = content.FooterLink
 
 // ParseCustomEndpoints parses a JSON string into a slice of CustomEndpoint.
 // Returns empty slice on empty/invalid input.
 func ParseCustomEndpoints(raw string) []CustomEndpoint {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "[]" {
-		return []CustomEndpoint{}
-	}
-	var items []CustomEndpoint
-	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return []CustomEndpoint{}
-	}
-	return items
+	return content.ParseEndpoints(raw)
 }
 
 // ParseCustomMenuItems parses a JSON string into a slice of CustomMenuItem.
 // Returns empty slice on empty/invalid input.
 func ParseCustomMenuItems(raw string) []CustomMenuItem {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "[]" {
-		return []CustomMenuItem{}
-	}
-	var items []CustomMenuItem
-	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return []CustomMenuItem{}
-	}
-	return items
+	return content.ParseMenus(raw)
 }
 
 // CustomEndpoint represents an admin-configured API endpoint for quick copy.
-type CustomEndpoint struct {
-	Name        string `json:"name"`
-	Endpoint    string `json:"endpoint"`
-	Description string `json:"description"`
-}
+type CustomEndpoint = content.CustomEndpoint
 
 // CustomMenuItem represents a user-configured custom menu entry.
-type CustomMenuItem struct {
-	ID         string `json:"id"`
-	Label      string `json:"label"`
-	IconSVG    string `json:"icon_svg"`
-	URL        string `json:"url"`
-	PageSlug   string `json:"page_slug,omitempty"`
-	Visibility string `json:"visibility"` // "user" or "admin"
-	SortOrder  int    `json:"sort_order"`
-}
+type CustomMenuItem = content.CustomMenuItem
 
 // ParseUserVisibleMenuItems parses custom menu items and filters out admin-only entries.
 func ParseUserVisibleMenuItems(raw string) []CustomMenuItem {

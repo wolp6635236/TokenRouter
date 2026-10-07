@@ -574,7 +574,7 @@ func TestOpenAIGatewayService_SelectProviderByPreviousResponseIDUsesResolvedRout
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Provider)
 	require.Equal(t, provider.Record.ID, selection.Provider.Record.ID)
-	require.Equal(t, "allowed-upstream", gatewayprovider.ExecutionModelPolicy(selection.Provider).OpenAIUpstream("dispatch-model", false, false))
+	require.Equal(t, "allowed-upstream", gatewayprovider.ExecutionModelPolicy(selection.Provider).OpenAIUpstream("dispatch-model", false))
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}

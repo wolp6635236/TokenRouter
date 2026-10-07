@@ -1,5 +1,3 @@
-//go:build unit
-
 package server
 
 import (
@@ -46,7 +44,6 @@ func TestProvideHTTPServerEnablesBoundedH2C(t *testing.T) {
 }
 
 func TestConfigureTrustedProxies(t *testing.T) {
-
 	tests := []struct {
 		name string
 		cfg  Options

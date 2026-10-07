@@ -163,11 +163,7 @@ func (p mediaHTTPAdapter) NewGenerationPorts(c *gin.Context, in gatewayhttp.Gene
 func (p mediaHTTPAdapter) MaxSwitches() int { return p.h.bindings.Options.MaxSwitches }
 func (p mediaHTTPAdapter) ParseGrok(contentType string, body []byte) gatewayhttp.GrokMediaInput {
 	value := gatewayadapter.GrokMediaCodec().ParseGrokMediaRequest(contentType, body)
-	return gatewayhttp.GrokMediaInput{Model: value.Model, HasInputImage: value.HasInputImage(), ModerationBody: value.ModerationBody()}
-}
-
-func (p mediaHTTPAdapter) NormalizeGrok(endpoint, model string, hasImage bool) string {
-	return gatewayadapter.GrokMediaCodec().NormalizeGrokMediaModelForEndpoint(grok.GrokMediaEndpoint(endpoint), model, hasImage)
+	return gatewayhttp.GrokMediaInput{Model: value.Model, ModerationBody: value.ModerationBody()}
 }
 
 func (p mediaHTTPAdapter) ResolveCompositeVideo(c *gin.Context, requestID string, userID int64) (*gatewayhttp.MediaAccess, int64, error) {

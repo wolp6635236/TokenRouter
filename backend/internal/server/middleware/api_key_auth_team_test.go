@@ -1,5 +1,3 @@
-//go:build unit
-
 package middleware
 
 import (
@@ -14,7 +12,6 @@ import (
 )
 
 func TestTeamAPIKeyErrorsHaveStableGatewayStatus(t *testing.T) {
-
 	tests := []struct {
 		name       string
 		err        error

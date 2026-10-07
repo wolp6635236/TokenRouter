@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
@@ -341,7 +343,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 
 	out := make([]dto.UsageLog, 0, len(records))
 	for i := range records {
-		out = append(out, *dto.FromUsage(&records[i]))
+		out = append(out, *dto.FromUsage(&records[i], locale.FromContext(c.Request.Context())))
 	}
 	response.Paginated(c, out, result.Total, page, pageSize)
 }
@@ -487,7 +489,7 @@ func (h *UsageHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.FromUsage(record))
+	response.Success(c, dto.FromUsage(record, locale.FromContext(c.Request.Context())))
 }
 
 // Ranking 获取指定时间范围内的用量排行。

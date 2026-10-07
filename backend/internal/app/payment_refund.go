@@ -108,7 +108,7 @@ func providePaymentRuntime(client *dbent.Client, registry *payment.Registry, bal
 			return &payment.RefundUser{Balance: u.Balance}, e
 		},
 		Notify: func(ctx context.Context, n payment.PaymentNotice) error {
-			return notification.Send(ctx, notificationcore.NotificationEmailSendInput{Event: n.Event, RecipientEmail: n.RecipientEmail, RecipientName: n.RecipientName, UserID: n.UserID, SourceType: n.SourceType, SourceID: n.SourceID, Variables: n.Variables})
+			return notification.Send(ctx, notificationcore.NotificationEmailSendInput{Event: n.Event, Locale: n.Locale, RecipientEmail: n.RecipientEmail, RecipientName: n.RecipientName, UserID: n.UserID, SourceType: n.SourceType, SourceID: n.SourceID, Variables: n.Variables})
 		},
 	})
 	orderLifecycle := payment.NewOrderLifecycle(fulfillment, resume, func(ctx context.Context) func() { return timing.ObserveDependency(ctx, "payment") })

@@ -78,8 +78,12 @@ export interface CreativeRun {
   status: CreativeRunStatus
   operation: CreativeOperation
   model: string
+  // 用户提交的模型名；model 是服务端校验后实际执行的模型
+  requested_model?: string
   group_id: string
   requested_output_count: number
+  image_size?: string
+  aspect_ratio?: string
   output_format?: string
   estimated_cost?: number
   hold_amount?: number

@@ -8,12 +8,10 @@ const {
   createProviderMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
-  getOpenAIOAuthImportDefaultsMock,
 } = vi.hoisted(() => ({
   createProviderMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
-  getOpenAIOAuthImportDefaultsMock: vi.fn(),
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -35,7 +33,6 @@ vi.mock('@/api/admin', () => ({
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
       getSettings: vi.fn().mockResolvedValue({}),
-      getOpenAIOAuthImportDefaults: getOpenAIOAuthImportDefaultsMock,
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([]),
@@ -192,15 +189,6 @@ async function openCodexImportStep() {
   return wrapper
 }
 
-// 用于验证异步默认配置加载与导入请求之间的时序。
-function createDeferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise
-  })
-  return { promise, resolve }
-}
-
 describe('CreateProviderModal OpenAI provider options', () => {
   beforeEach(() => {
     createProviderMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
@@ -213,9 +201,6 @@ describe('CreateProviderModal OpenAI provider options', () => {
       warnings: [],
     })
     createOpenAICodexPATMock.mockReset().mockResolvedValue({})
-    getOpenAIOAuthImportDefaultsMock
-      .mockReset()
-      .mockResolvedValue({ credentials: { model_whitelist: [] }, extra: {} })
   })
 
   // 切换到 Antigravity 后，API Key 控件和静态地址输入应消失。
@@ -533,29 +518,6 @@ describe('CreateProviderModal OpenAI provider options', () => {
       model_whitelist: [],
     })
     expect(importCodexSessionMock.mock.calls[0]?.[0]?.credential_extras).not.toHaveProperty('model_mapping')
-  })
-
-  it.each([
-    ['Session', 'import-codex-session', importCodexSessionMock],
-    ['PAT', 'import-codex-pat', createOpenAICodexPATMock],
-  ])('等待 OpenAI OAuth 默认配置后再构造 Codex %s 凭据', async (_name, triggerTestId, apiMock) => {
-    const deferred = createDeferred<{
-      credentials: { model_whitelist: string[] }
-      extra: Record<string, unknown>
-    }>()
-    getOpenAIOAuthImportDefaultsMock.mockImplementation(() => deferred.promise)
-
-    const wrapper = await openCodexImportStep()
-    await wrapper.get(`[data-testid="${triggerTestId}"]`).trigger('click')
-    await flushPromises()
-
-    expect(apiMock).not.toHaveBeenCalled()
-
-    deferred.resolve({ credentials: { model_whitelist: ['gpt-5.2'] }, extra: {} })
-    await flushPromises()
-
-    expect(apiMock).toHaveBeenCalledTimes(1)
-    expect(apiMock.mock.calls[0]?.[0]?.credential_extras?.model_whitelist).toEqual(['gpt-5.2'])
   })
 
   it('defaults Codex fingerprint convergence to off for OAuth imports', async () => {

@@ -248,7 +248,7 @@ describe('KeyUsageView', () => {
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining('/v1/usage?'),
       expect.objectContaining({
-        headers: { Authorization: 'Bearer sk-test-key' }
+        headers: expect.objectContaining({ Authorization: 'Bearer sk-test-key' })
       })
     )
     expect(String(mockFetch.mock.calls[0][0])).toContain('days=30')

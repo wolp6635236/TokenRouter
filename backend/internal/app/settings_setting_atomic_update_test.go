@@ -66,7 +66,7 @@ func TestSettingsCombinedWriteAndApplyErrors(t *testing.T) {
 			options, store := newCompositeSettingsHTTPFixture(repo, &config.Config{Default: config.DefaultConfig{UserConcurrency: 5}})
 			h := settingshttp.NewHandler(options)
 			notified := false
-			store.SetOnUpdateCallback(func() { notified = true })
+			store.Subscribe(func() { notified = true })
 			rec := doUpdateSettings(t, h, map[string]any{"site_name": "after"}, nil)
 			require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
 			require.False(t, notified)

@@ -347,6 +347,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { vSegmented } from '@/directives/segmented'
 import MotionTransition from '@/components/common/MotionTransition.vue'
 import { ref, reactive, computed, onMounted, watch } from 'vue'
@@ -1425,6 +1426,11 @@ onMounted(async () => {
   finally { loading.value = false }
   // Fetch active subscriptions (uses cache, non-blocking)
   subscriptionStore.fetchActiveSubscriptions().catch(() => {})
+})
+useLocaleRefresh(async () => {
+  const { data } = await paymentAPI.getCheckoutInfo()
+  checkout.value = data
+  if (selectedPlan.value) selectedPlan.value = data.plans.find(plan => plan.id === selectedPlan.value?.id) || null
 })
 </script>
 

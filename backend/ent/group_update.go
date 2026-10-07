@@ -64,6 +64,26 @@ func (_u *GroupUpdate) ClearDeletedAt() *GroupUpdate {
 	return _u
 }
 
+// SetLocalization sets the "localization" field.
+func (_u *GroupUpdate) SetLocalization(v accessview.GroupLocalization) *GroupUpdate {
+	_u.mutation.SetLocalization(v)
+	return _u
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableLocalization(v *accessview.GroupLocalization) *GroupUpdate {
+	if v != nil {
+		_u.SetLocalization(*v)
+	}
+	return _u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (_u *GroupUpdate) ClearLocalization() *GroupUpdate {
+	_u.mutation.ClearLocalization()
+	return _u
+}
+
 // SetName sets the "name" field.
 func (_u *GroupUpdate) SetName(v string) *GroupUpdate {
 	_u.mutation.SetName(v)
@@ -960,6 +980,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if _u.mutation.DeletedAtCleared() {
 		_spec.ClearField(group.FieldDeletedAt, field.TypeTime)
 	}
+	if value, ok := _u.mutation.Localization(); ok {
+		_spec.SetField(group.FieldLocalization, field.TypeJSON, value)
+	}
+	if _u.mutation.LocalizationCleared() {
+		_spec.ClearField(group.FieldLocalization, field.TypeJSON)
+	}
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(group.FieldName, field.TypeString, value)
 	}
@@ -1479,6 +1505,26 @@ func (_u *GroupUpdateOne) SetNillableDeletedAt(v *time.Time) *GroupUpdateOne {
 // ClearDeletedAt clears the value of the "deleted_at" field.
 func (_u *GroupUpdateOne) ClearDeletedAt() *GroupUpdateOne {
 	_u.mutation.ClearDeletedAt()
+	return _u
+}
+
+// SetLocalization sets the "localization" field.
+func (_u *GroupUpdateOne) SetLocalization(v accessview.GroupLocalization) *GroupUpdateOne {
+	_u.mutation.SetLocalization(v)
+	return _u
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableLocalization(v *accessview.GroupLocalization) *GroupUpdateOne {
+	if v != nil {
+		_u.SetLocalization(*v)
+	}
+	return _u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (_u *GroupUpdateOne) ClearLocalization() *GroupUpdateOne {
+	_u.mutation.ClearLocalization()
 	return _u
 }
 
@@ -2407,6 +2453,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.DeletedAtCleared() {
 		_spec.ClearField(group.FieldDeletedAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.Localization(); ok {
+		_spec.SetField(group.FieldLocalization, field.TypeJSON, value)
+	}
+	if _u.mutation.LocalizationCleared() {
+		_spec.ClearField(group.FieldLocalization, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(group.FieldName, field.TypeString, value)

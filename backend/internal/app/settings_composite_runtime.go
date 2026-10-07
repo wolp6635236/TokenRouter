@@ -25,7 +25,7 @@ func provideCompositeReadOptions(cfg *config.Config, oauth *identity.OAuthSettin
 		value := cfg.ForwardedClientIPSettings()
 		return runtimeconfig.ForwardedInput{APIKeyACLTrustForwardedIP: value.TrustForwardedIP, ForwardedClientIPHeaders: value.Headers}
 	}, PublishModel: func(model string) {
-		grok.SetRuntimeModelMappingOptions(grok.ModelMappingOptions{DefaultText: model})
+		grok.SetRuntimeDefaultTextModel(model)
 	}}
 }
 

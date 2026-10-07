@@ -20,7 +20,6 @@
       </span>
       <input
         key="model-input"
-        ref="inputRef"
         v-model="inputValue"
         type="text"
         class="min-w-0 flex-1 basis-32 border-none bg-transparent text-sm outline-none placeholder:text-gray-400 dark:text-white"
@@ -59,7 +58,6 @@ const emit = defineEmits<{
 }>()
 
 const inputValue = ref('')
-const inputRef = ref<HTMLInputElement>()
 
 function addModel() {
   const val = inputValue.value.trim()

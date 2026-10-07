@@ -64,15 +64,14 @@ func (h *PublicHandler) GetPublicSettings(c *gin.Context) {
 		AliyunCaptchaSceneID:                settings.AliyunCaptchaSceneID,
 		AliyunCaptchaPrefix:                 settings.AliyunCaptchaPrefix,
 		AliyunCaptchaRegion:                 settings.AliyunCaptchaRegion,
+		Locale:                              settings.Locale,
+		SiteTextOverrides:                   settings.SiteTextOverrides,
+		TextLanguages:                       settings.TextLanguages,
+		DefaultLocale:                       settings.DefaultLocale,
+		SiteTitle:                           settings.SiteTitle,
 		SiteName:                            settings.SiteName,
 		SiteLogo:                            settings.SiteLogo,
 		SiteSubtitle:                        settings.SiteSubtitle,
-		SiteNameZh:                          settings.SiteNameZh,
-		SiteNameEn:                          settings.SiteNameEn,
-		SiteTitleZh:                         settings.SiteTitleZh,
-		SiteTitleEn:                         settings.SiteTitleEn,
-		SiteSubtitleZh:                      settings.SiteSubtitleZh,
-		SiteSubtitleEn:                      settings.SiteSubtitleEn,
 		APIBaseURL:                          settings.APIBaseURL,
 		ContactInfo:                         settings.ContactInfo,
 		DocURL:                              settings.DocURL,
@@ -124,4 +123,15 @@ func (h *PublicHandler) GetPublicSettings(c *gin.Context) {
 		BalanceLowNotifyRechargeURL:         settings.BalanceLowNotifyRechargeURL,
 		AllowUserViewErrorRequests:          settings.AllowUserViewErrorRequests,
 	})
+}
+
+// GetLegalDocument 按当前语言返回公开协议，正文在用户打开时读取。
+func (h *PublicHandler) GetLegalDocument(c *gin.Context) {
+	doc, err := h.settingService.GetLegalDocument(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.NotFound(c, "Document not found.")
+		return
+	}
+	c.Header("Vary", "Accept-Language")
+	response.Success(c, doc)
 }

@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 
@@ -12,9 +10,8 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
 )
 
 func NewPricingHandler(pricingConfigs *routing.PricingConfigService, catalog *routing.PricingCatalog) *PricingHandler {
@@ -400,7 +397,7 @@ func providerStatsPricingRuleRequestToService(r providerStatsPricingRuleRequest)
 // List handles listing pricingConfigs with pagination
 // GET /api/v1/admin/pricing/configs
 func (h *PricingHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
+	page, pageSize := httpx.ParsePagination(c)
 	status := c.Query("status")
 	search := strings.TrimSpace(c.Query("search"))
 	if len(search) > 100 {
@@ -414,7 +411,7 @@ func (h *PricingHandler) List(c *gin.Context) {
 		SortOrder: c.DefaultQuery("sort_order", "desc"),
 	}, status, search)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
@@ -422,7 +419,7 @@ func (h *PricingHandler) List(c *gin.Context) {
 	for i := range pricingConfigs {
 		out = append(out, pricingConfigToResponse(&pricingConfigs[i]))
 	}
-	response.Paginated(c, out, pag.Total, page, pageSize)
+	httpx.Paginated(c, out, pag.Total, page, pageSize)
 }
 
 // GetByID handles getting a pricingConfig by ID
@@ -430,25 +427,25 @@ func (h *PricingHandler) List(c *gin.Context) {
 func (h *PricingHandler) GetByID(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_PRICING_CONFIG_ID", "Invalid pricing configuration ID"))
+		httpx.ErrorFrom(c, infraerrors.BadRequest("INVALID_PRICING_CONFIG_ID", "Invalid pricing configuration ID"))
 		return
 	}
 
 	pricingConfig, err := h.pricingConfigs.GetByID(c.Request.Context(), id)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, pricingConfigToResponse(pricingConfig))
+	httpx.Success(c, pricingConfigToResponse(pricingConfig))
 }
 
 // Create handles creating a new pricingConfig
 // POST /api/v1/admin/pricing/configs
 func (h *PricingHandler) Create(c *gin.Context) {
 	var req createPricingConfigRequest
-	if err := bindManagementJSON(c, &req); err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
+	if err := httpx.BindJSONStrict(c, &req); err != nil {
+		httpx.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
 		return
 	}
 
@@ -457,12 +454,12 @@ func (h *PricingHandler) Create(c *gin.Context) {
 	var statsRules []routing.ProviderStatsPricingRule
 	for i, r := range req.ProviderStatsPricingRules {
 		if len(r.GroupIDs) == 0 && len(r.ProviderIDs) == 0 {
-			response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
+			httpx.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
 				fmt.Sprintf("pricing rule #%d must have at least one group or provider", i+1)))
 			return
 		}
 		if len(r.Pricing) == 0 {
-			response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
+			httpx.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
 				fmt.Sprintf("pricing rule #%d must have at least one pricing entry", i+1)))
 			return
 		}
@@ -483,11 +480,11 @@ func (h *PricingHandler) Create(c *gin.Context) {
 		ProviderStatsPricingRules: statsRules,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, pricingConfigToResponse(pricingConfig))
+	httpx.Success(c, pricingConfigToResponse(pricingConfig))
 }
 
 // Update handles updating a pricingConfig
@@ -495,13 +492,13 @@ func (h *PricingHandler) Create(c *gin.Context) {
 func (h *PricingHandler) Update(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_PRICING_CONFIG_ID", "Invalid pricing configuration ID"))
+		httpx.ErrorFrom(c, infraerrors.BadRequest("INVALID_PRICING_CONFIG_ID", "Invalid pricing configuration ID"))
 		return
 	}
 
 	var req updatePricingConfigRequest
-	if err := bindManagementJSON(c, &req); err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
+	if err := httpx.BindJSONStrict(c, &req); err != nil {
+		httpx.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
 		return
 	}
 
@@ -522,12 +519,12 @@ func (h *PricingHandler) Update(c *gin.Context) {
 		statsRules := make([]routing.ProviderStatsPricingRule, 0, len(*req.ProviderStatsPricingRules))
 		for i, r := range *req.ProviderStatsPricingRules {
 			if len(r.GroupIDs) == 0 && len(r.ProviderIDs) == 0 {
-				response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
+				httpx.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
 					fmt.Sprintf("pricing rule #%d must have at least one group or provider", i+1)))
 				return
 			}
 			if len(r.Pricing) == 0 {
-				response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
+				httpx.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
 					fmt.Sprintf("pricing rule #%d must have at least one pricing entry", i+1)))
 				return
 			}
@@ -540,11 +537,11 @@ func (h *PricingHandler) Update(c *gin.Context) {
 
 	pricingConfig, err := h.pricingConfigs.Update(c.Request.Context(), id, input)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, pricingConfigToResponse(pricingConfig))
+	httpx.Success(c, pricingConfigToResponse(pricingConfig))
 }
 
 // Delete handles deleting a pricingConfig
@@ -552,16 +549,16 @@ func (h *PricingHandler) Update(c *gin.Context) {
 func (h *PricingHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_PRICING_CONFIG_ID", "Invalid pricing configuration ID"))
+		httpx.ErrorFrom(c, infraerrors.BadRequest("INVALID_PRICING_CONFIG_ID", "Invalid pricing configuration ID"))
 		return
 	}
 
 	if err := h.pricingConfigs.Delete(c.Request.Context(), id); err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "PricingConfig deleted successfully"})
+	httpx.Success(c, gin.H{"message": "PricingConfig deleted successfully"})
 }
 
 // GetModelDefaultPricing 获取模型的默认定价（用于前端自动填充）
@@ -569,14 +566,14 @@ func (h *PricingHandler) Delete(c *gin.Context) {
 func (h *PricingHandler) GetModelDefaultPricing(c *gin.Context) {
 	model := strings.TrimSpace(c.Query("model"))
 	if model == "" {
-		response.ErrorFrom(c, infraerrors.BadRequest("MISSING_PARAMETER", "model parameter is required").
+		httpx.ErrorFrom(c, infraerrors.BadRequest("MISSING_PARAMETER", "model parameter is required").
 			WithMetadata(map[string]string{"param": "model"}))
 		return
 	}
 	pricing, err := h.catalog.DefaultPricing(model)
 	if err != nil {
 		// 模型不在定价列表中
-		response.Success(c, gin.H{"found": false})
+		httpx.Success(c, gin.H{"found": false})
 		return
 	}
 
@@ -588,7 +585,7 @@ func (h *PricingHandler) GetModelDefaultPricing(c *gin.Context) {
 		}
 		cacheWrite1hPrice = &pricing.CacheCreation1hPrice
 	}
-	response.Success(c, gin.H{
+	httpx.Success(c, gin.H{
 		"found":                           true,
 		"input_price":                     pricing.InputPricePerToken,
 		"output_price":                    pricing.OutputPricePerToken,
@@ -599,18 +596,4 @@ func (h *PricingHandler) GetModelDefaultPricing(c *gin.Context) {
 		"image_input_price":               pricing.ImageInputPricePerToken,
 		"image_output_price":              pricing.ImageOutputPricePerToken,
 	})
-}
-
-// bindManagementJSON 拒绝未知字段，并沿用 Gin 的字段校验。
-func bindManagementJSON(c *gin.Context, target any) error {
-	decoder := json.NewDecoder(c.Request.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return fmt.Errorf("request must contain one JSON object")
-	}
-	return binding.Validator.ValidateStruct(target)
 }

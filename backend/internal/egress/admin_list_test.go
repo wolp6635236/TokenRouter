@@ -1,5 +1,3 @@
-//go:build unit
-
 package egress_test
 
 import (

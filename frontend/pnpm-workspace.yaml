@@ -1,9 +1,33 @@
 packages:
   - .
 
+# esbuild 和 Vue 兼容入口安装时构建，DOM 测试使用 Canvas 替身。
 allowBuilds:
   esbuild: true
   vue-demi: true
+  canvas: false
+
+minimumReleaseAgeExclude:
+  - "@typescript-eslint/eslint-plugin@8.71.1"
+  - "@typescript-eslint/parser@8.71.1"
+  - "@typescript-eslint/project-service@8.71.1"
+  - "@typescript-eslint/scope-manager@8.71.1"
+  - "@typescript-eslint/tsconfig-utils@8.71.1"
+  - "@typescript-eslint/type-utils@8.71.1"
+  - "@typescript-eslint/types@8.71.1"
+  - "@typescript-eslint/typescript-estree@8.71.1"
+  - "@typescript-eslint/utils@8.71.1"
+  - "@typescript-eslint/visitor-keys@8.71.1"
+  - postcss@8.5.29
+  - typescript-eslint@8.71.1
 
 overrides:
-  nanoid: 3.3.18
+  # Vue 编译器和 i18n 共用修复索引偏移 DoS 的 source-map-js 版本。
+  "source-map-js@<1.2.2": ">=1.2.2"
+  "js-cookie": "3.0.7"
+  "form-data@<4.0.6": ">=4.0.6"
+  "nanoid": "3.3.18"
+  "postcss@<8.5.18": ">=8.5.18"
+  "dompurify@<3.4.14": ">=3.4.14"
+  "postcss": "8.5.29"
+  "ws@<8.21.0": ">=8.21.0"

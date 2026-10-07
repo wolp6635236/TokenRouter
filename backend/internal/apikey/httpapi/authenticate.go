@@ -28,7 +28,9 @@ type AuthenticationOptions struct {
 }
 
 func AbortWithError(c *gin.Context, status int, code, message string) {
-	httpx.AbortWithError(c, status, code, message)
+	// API Key 鉴权错误使用固定英文提示。
+	c.JSON(status, httpx.NewErrorResponse(code, message))
+	c.Abort()
 }
 
 func (o AuthenticationOptions) reject(c *gin.Context, reason string) {
@@ -157,7 +159,7 @@ func Authenticate(c *gin.Context, auth *apikey.APIKeyService, o AuthenticationOp
 			o.abort(c, 401, "INVALID_API_KEY", "Invalid API key")
 		case errors.Is(err, apikey.ErrGroupDisabledForUser):
 			o.business(c, "api_key_group_unavailable")
-			o.abort(c, 403, "GROUP_DISABLED_FOR_USER", "API Key 所属公开分组已被禁用")
+			o.abort(c, 403, "GROUP_DISABLED_FOR_USER", "The public group assigned to this API key is disabled for your account")
 		case errors.Is(err, apikey.ErrAPIKeyAuthOverloaded):
 			o.reject(c, "api_key_auth_overloaded")
 			o.abort(c, 503, "API_KEY_AUTH_OVERLOADED", "API key authentication is temporarily unavailable")

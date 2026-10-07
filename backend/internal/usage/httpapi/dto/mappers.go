@@ -7,7 +7,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-func usageLogFromServiceUser(l *usage.UsageLog) UsageLog {
+func usageLogFromServiceUser(l *usage.UsageLog, language ...string) UsageLog {
 	// 普通用户 DTO：严禁包含管理员字段（例如 provider_rate_multiplier、provider、upstream_model）。
 	requestType := l.EffectiveRequestType()
 	stream, openAIWSMode := usage.ApplyLegacyRequestFields(requestType, l.Stream, l.OpenAIWSMode)
@@ -72,9 +72,9 @@ func usageLogFromServiceUser(l *usage.UsageLog) UsageLog {
 		BillingMode:               l.BillingMode,
 		CreatedAt:                 l.CreatedAt,
 		User:                      userFromView(l.User),
-		APIKey:                    keyFromView(l.APIKey),
-		Group:                     groupFromView(l.Group),
-		Subscription:              billinghttpapi.UserSubscriptionFromService(l.Subscription),
+		APIKey:                    keyFromView(l.APIKey, language...),
+		Group:                     groupFromView(l.Group, language...),
+		Subscription:              billinghttpapi.UserSubscriptionFromService(l.Subscription, language...),
 	}
 }
 
@@ -101,11 +101,11 @@ func cloneBillingAllocationsDTO(allocations []billing.BillingAllocation) []billi
 // FromUsage converts a service UsageLog to DTO for regular users.
 // FromUsage 转换普通用户可见的用量日志 DTO。
 // 该 DTO 保留用户计费和请求元数据，但排除管理员专用的提供商/上游内部字段。
-func FromUsage(l *usage.UsageLog) *UsageLog {
+func FromUsage(l *usage.UsageLog, language ...string) *UsageLog {
 	if l == nil {
 		return nil
 	}
-	u := usageLogFromServiceUser(l)
+	u := usageLogFromServiceUser(l, language...)
 	return &u
 }
 

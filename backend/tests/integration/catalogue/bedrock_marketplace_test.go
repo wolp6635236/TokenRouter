@@ -1,5 +1,3 @@
-//go:build unit
-
 package catalogue_test
 
 import (
@@ -61,7 +59,7 @@ func TestBedrockRegionRouting_MarketplaceUsesSharedResolution(t *testing.T) {
 			}
 			marketplace := newCatalogueMarketplace(
 				&bedrockMarketplaceGroups{groups: []routing.Group{{ID: groupID, Name: "Bedrock", Status: billing.StatusActive, RateMultiplier: 1, ActiveProviderCount: 1}}},
-				gateway, billingtestkit.Calculator(0, nil, nil),
+				gateway, billingtestkit.Calculator(nil, nil),
 			)
 			groups, err := marketplace.ListPublic(context.Background(), routing.MarketplaceListOptions{IncludeCapacity: true})
 			require.NoError(t, err)

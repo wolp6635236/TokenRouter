@@ -32,7 +32,6 @@ vi.mock('@/api/admin', () => ({
     settings: {
       getSettings: getSettingsMock,
       getWebSearchEmulationConfig: getWebSearchEmulationConfigMock,
-      getOpenAIOAuthImportDefaults: vi.fn()
     },
     tlsFingerprintProfiles: {
       list: listTLSProfilesMock

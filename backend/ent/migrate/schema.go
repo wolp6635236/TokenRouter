@@ -171,6 +171,7 @@ var (
 	// AnnouncementsColumns holds the columns for the "announcements" table.
 	AnnouncementsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "localization", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "title", Type: field.TypeString, Size: 200},
 		{Name: "content", Type: field.TypeString, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "draft"},
@@ -192,22 +193,22 @@ var (
 			{
 				Name:    "announcement_status",
 				Unique:  false,
-				Columns: []*schema.Column{AnnouncementsColumns[3]},
+				Columns: []*schema.Column{AnnouncementsColumns[4]},
 			},
 			{
 				Name:    "announcement_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{AnnouncementsColumns[10]},
+				Columns: []*schema.Column{AnnouncementsColumns[11]},
 			},
 			{
 				Name:    "announcement_starts_at",
 				Unique:  false,
-				Columns: []*schema.Column{AnnouncementsColumns[6]},
+				Columns: []*schema.Column{AnnouncementsColumns[7]},
 			},
 			{
 				Name:    "announcement_ends_at",
 				Unique:  false,
-				Columns: []*schema.Column{AnnouncementsColumns[7]},
+				Columns: []*schema.Column{AnnouncementsColumns[8]},
 			},
 		},
 	}
@@ -751,6 +752,7 @@ var (
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "localization", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "name", Type: field.TypeString, Size: 100},
 		{Name: "description", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "rate_multiplier", Type: field.TypeFloat64, Default: 1, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
@@ -799,12 +801,12 @@ var (
 			{
 				Name:    "group_status",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[8]},
+				Columns: []*schema.Column{GroupsColumns[9]},
 			},
 			{
 				Name:    "group_is_exclusive",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[7]},
+				Columns: []*schema.Column{GroupsColumns[8]},
 			},
 			{
 				Name:    "group_deleted_at",
@@ -814,17 +816,17 @@ var (
 			{
 				Name:    "group_sort_order",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[24]},
+				Columns: []*schema.Column{GroupsColumns[25]},
 			},
 			{
 				Name:    "group_session_isolation_enabled",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[41]},
+				Columns: []*schema.Column{GroupsColumns[42]},
 			},
 			{
 				Name:    "idx_groups_duplicate_operation_id_active",
 				Unique:  true,
-				Columns: []*schema.Column{GroupsColumns[9]},
+				Columns: []*schema.Column{GroupsColumns[10]},
 				Annotation: &entsql.IndexAnnotation{
 					Where: "duplicate_operation_id IS NOT NULL AND deleted_at IS NULL",
 				},
@@ -1567,6 +1569,7 @@ var (
 	// SubscriptionPlansColumns holds the columns for the "subscription_plans" table.
 	SubscriptionPlansColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "localization", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "name", Type: field.TypeString, Size: 100},
 		{Name: "description", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "price", Type: field.TypeFloat64, SchemaType: map[string]string{"postgres": "decimal(20,2)"}},
@@ -1595,7 +1598,7 @@ var (
 			{
 				Name:    "subscriptionplan_for_sale",
 				Unique:  false,
-				Columns: []*schema.Column{SubscriptionPlansColumns[15]},
+				Columns: []*schema.Column{SubscriptionPlansColumns[16]},
 			},
 		},
 	}
@@ -2051,6 +2054,7 @@ var (
 		{Name: "frozen_balance", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
 		{Name: "concurrency", Type: field.TypeInt, Default: 5},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
+		{Name: "preferred_locale", Type: field.TypeString, Nullable: true, Size: 35},
 		{Name: "username", Type: field.TypeString, Size: 100, Default: ""},
 		{Name: "notes", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "totp_secret_encrypted", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},

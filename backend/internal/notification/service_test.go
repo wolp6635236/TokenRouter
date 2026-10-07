@@ -54,7 +54,7 @@ func TestNotificationEmailTemplateOverrideAndRestore(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.True(t, updated.IsCustom)
-	require.Equal(t, "zh", updated.Locale)
+	require.Equal(t, "zh-Hans", updated.Locale)
 	require.Equal(t, "充值完成：{{recharge_amount}}", updated.Subject)
 	require.NotNil(t, updated.UpdatedAt)
 
@@ -344,8 +344,8 @@ func TestNotificationEmailLocaleMemoryNormalizesAcceptLanguage(t *testing.T) {
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
 
 	svc.RememberRecipientLocale(ctx, 42, "User@Example.com", "zh-CN,zh;q=0.9,en;q=0.8")
-	require.Equal(t, "zh", svc.ResolveRecipientLocale(ctx, 42, "user@example.com"))
-	require.Equal(t, "zh", svc.ResolveRecipientLocale(ctx, 0, "user@example.com"))
+	require.Equal(t, "zh-Hans", svc.ResolveRecipientLocale(ctx, 42, "user@example.com"))
+	require.Equal(t, "zh-Hans", svc.ResolveRecipientLocale(ctx, 0, "user@example.com"))
 }
 
 func TestNotificationEmailDeliveryKeyUsesShortStableHash(t *testing.T) {
@@ -473,4 +473,14 @@ func TestEmailQueueTasksPreserveLocaleHints(t *testing.T) {
 	resetTask := <-queue.taskChan
 	require.Equal(t, TaskTypePasswordReset, resetTask.TaskType)
 	require.Equal(t, "en-US", resetTask.Locale)
+}
+
+// TestNotificationAccountPreference 验证交易请求记忆不会覆盖账户的主动语言选择。
+func TestNotificationAccountPreference(t *testing.T) {
+	ctx := context.Background()
+	repo := mailtest.NewMemorySettings()
+	svc := NewNotificationEmailService(repo, nil)
+	svc.SetRecipientLocaleReader(func(context.Context, int64, string) string { return "en" })
+	svc.RememberRecipientLocale(ctx, 42, "user@example.com", "zh-CN")
+	require.Equal(t, "en", svc.ResolveRecipientLocale(ctx, 42, "user@example.com"))
 }

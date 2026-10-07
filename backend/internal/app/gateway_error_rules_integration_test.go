@@ -11,16 +11,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	gatewaypg "github.com/TokenFlux/TokenRouter/internal/gateway/postgres"
 	gatewayredis "github.com/TokenFlux/TokenRouter/internal/gateway/rediscache"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // TestErrorRulesStorageAndSubscription 使用迁移后的数据库和 Redis 检查规则发布、兼容键及写入失败的处理。
 func TestErrorRulesStorageAndSubscription(t *testing.T) {
 	f := newDatabaseFixture(t)
 	ctx := context.Background()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	addr, err := container.Endpoint(ctx, "")

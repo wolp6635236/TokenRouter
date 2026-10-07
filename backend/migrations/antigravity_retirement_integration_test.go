@@ -29,7 +29,7 @@ func TestAntigravityRetirementMigration(t *testing.T) {
 	require.NoError(t, err)
 	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { require.NoError(t, db.Close()) }()
 	require.NoError(t, postgres.ApplyMigrations(ctx, db, migrations.FS))
 	require.NoError(t, postgres.ApplyMigrations(ctx, db, migrations.FS))
 	_, err = db.ExecContext(ctx, `INSERT INTO providers (id,name,platform,type,credentials,status,schedulable,deleted_at) VALUES
@@ -45,12 +45,12 @@ func TestAntigravityRetirementMigration(t *testing.T) {
 	// 另一连接持有 usage 锁时，迁移仍应完成。
 	locked, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	defer locked.Rollback()
+	defer func() { _ = locked.Rollback() }()
 	_, err = locked.ExecContext(ctx, `LOCK TABLE usage_logs IN ACCESS EXCLUSIVE MODE`)
 	require.NoError(t, err)
 	conn, err := db.Conn(ctx)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { require.NoError(t, conn.Close()) }()
 	_, err = conn.ExecContext(ctx, `SET lock_timeout = '1s'`)
 	require.NoError(t, err)
 	migration, err := migrations.FS.ReadFile("286_disable_antigravity_static_providers.sql")

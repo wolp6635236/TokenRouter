@@ -30,6 +30,26 @@ func (_u *AnnouncementUpdate) Where(ps ...predicate.Announcement) *AnnouncementU
 	return _u
 }
 
+// SetLocalization sets the "localization" field.
+func (_u *AnnouncementUpdate) SetLocalization(v site.AnnouncementLocalization) *AnnouncementUpdate {
+	_u.mutation.SetLocalization(v)
+	return _u
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_u *AnnouncementUpdate) SetNillableLocalization(v *site.AnnouncementLocalization) *AnnouncementUpdate {
+	if v != nil {
+		_u.SetLocalization(*v)
+	}
+	return _u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (_u *AnnouncementUpdate) ClearLocalization() *AnnouncementUpdate {
+	_u.mutation.ClearLocalization()
+	return _u
+}
+
 // SetTitle sets the "title" field.
 func (_u *AnnouncementUpdate) SetTitle(v string) *AnnouncementUpdate {
 	_u.mutation.SetTitle(v)
@@ -320,6 +340,12 @@ func (_u *AnnouncementUpdate) sqlSave(ctx context.Context) (_node int, err error
 			}
 		}
 	}
+	if value, ok := _u.mutation.Localization(); ok {
+		_spec.SetField(announcement.FieldLocalization, field.TypeJSON, value)
+	}
+	if _u.mutation.LocalizationCleared() {
+		_spec.ClearField(announcement.FieldLocalization, field.TypeJSON)
+	}
 	if value, ok := _u.mutation.Title(); ok {
 		_spec.SetField(announcement.FieldTitle, field.TypeString, value)
 	}
@@ -434,6 +460,26 @@ type AnnouncementUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *AnnouncementMutation
+}
+
+// SetLocalization sets the "localization" field.
+func (_u *AnnouncementUpdateOne) SetLocalization(v site.AnnouncementLocalization) *AnnouncementUpdateOne {
+	_u.mutation.SetLocalization(v)
+	return _u
+}
+
+// SetNillableLocalization sets the "localization" field if the given value is not nil.
+func (_u *AnnouncementUpdateOne) SetNillableLocalization(v *site.AnnouncementLocalization) *AnnouncementUpdateOne {
+	if v != nil {
+		_u.SetLocalization(*v)
+	}
+	return _u
+}
+
+// ClearLocalization clears the value of the "localization" field.
+func (_u *AnnouncementUpdateOne) ClearLocalization() *AnnouncementUpdateOne {
+	_u.mutation.ClearLocalization()
+	return _u
 }
 
 // SetTitle sets the "title" field.
@@ -755,6 +801,12 @@ func (_u *AnnouncementUpdateOne) sqlSave(ctx context.Context) (_node *Announceme
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.Localization(); ok {
+		_spec.SetField(announcement.FieldLocalization, field.TypeJSON, value)
+	}
+	if _u.mutation.LocalizationCleared() {
+		_spec.ClearField(announcement.FieldLocalization, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.Title(); ok {
 		_spec.SetField(announcement.FieldTitle, field.TypeString, value)

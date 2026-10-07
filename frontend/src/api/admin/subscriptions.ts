@@ -6,9 +6,7 @@
 import { apiClient } from '../client'
 import type {
   UserSubscription,
-  SubscriptionProgress,
   AssignSubscriptionRequest,
-  BulkAssignSubscriptionRequest,
   ExtendSubscriptionRequest,
   PaginatedResponse
 } from '@/types'
@@ -50,47 +48,12 @@ export async function list(
 }
 
 /**
- * Get subscription by ID
- * @param id - Subscription ID
- * @returns Subscription details
- */
-export async function getById(id: number): Promise<UserSubscription> {
-  const { data } = await apiClient.get<UserSubscription>(`/admin/subscriptions/${id}`)
-  return data
-}
-
-/**
- * Get subscription progress
- * @param id - Subscription ID
- * @returns Subscription progress with usage stats
- */
-export async function getProgress(id: number): Promise<SubscriptionProgress> {
-  const { data } = await apiClient.get<SubscriptionProgress>(`/admin/subscriptions/${id}/progress`)
-  return data
-}
-
-/**
  * Assign subscription to user
  * @param request - Assignment request
  * @returns Created subscription
  */
 export async function assign(request: AssignSubscriptionRequest): Promise<UserSubscription> {
   const { data } = await apiClient.post<UserSubscription>('/admin/subscriptions/assign', request)
-  return data
-}
-
-/**
- * Bulk assign subscriptions to multiple users
- * @param request - Bulk assignment request
- * @returns Created subscriptions
- */
-export async function bulkAssign(
-  request: BulkAssignSubscriptionRequest
-): Promise<UserSubscription[]> {
-  const { data } = await apiClient.post<UserSubscription[]>(
-    '/admin/subscriptions/bulk-assign',
-    request
-  )
   return data
 }
 
@@ -143,60 +106,13 @@ export async function resetQuota(
   return data
 }
 
-/**
- * List subscriptions by plan
- * @param planId - Plan ID
- * @param page - Page number
- * @param pageSize - Items per page
- * @returns Paginated list of subscriptions in the plan
- */
-export async function listByPlan(
-  planId: number,
-  page: number = 1,
-  pageSize: number = 20
-): Promise<PaginatedResponse<UserSubscription>> {
-  const { data } = await apiClient.get<PaginatedResponse<UserSubscription>>(
-    `/admin/plans/${planId}/subscriptions`,
-    {
-      params: { page, page_size: pageSize }
-    }
-  )
-  return data
-}
-
-/**
- * List subscriptions by user
- * @param userId - User ID
- * @param page - Page number
- * @param pageSize - Items per page
- * @returns Paginated list of user's subscriptions
- */
-export async function listByUser(
-  userId: number,
-  page: number = 1,
-  pageSize: number = 20
-): Promise<PaginatedResponse<UserSubscription>> {
-  const { data } = await apiClient.get<PaginatedResponse<UserSubscription>>(
-    `/admin/users/${userId}/subscriptions`,
-    {
-      params: { page, page_size: pageSize }
-    }
-  )
-  return data
-}
-
 export const subscriptionsAPI = {
   list,
-  getById,
-  getProgress,
   assign,
-  bulkAssign,
   extend,
   revoke,
   restore,
   resetQuota,
-  listByPlan,
-  listByUser
 }
 
 export default subscriptionsAPI

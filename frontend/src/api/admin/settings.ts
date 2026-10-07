@@ -1,3 +1,4 @@
+import type { LocalizedUpdate } from '@/i18n/content';
 /**
  * 管理员系统设置接口。
  * 负责后台系统设置的读取与保存。
@@ -148,12 +149,6 @@ export interface PaymentVisibleMethodSourceOption {
   labelEn: string;
 }
 
-export interface WeChatConnectModeOption {
-  value: WeChatConnectMode;
-  labelZh: string;
-  labelEn: string;
-}
-
 const AUTH_SOURCE_TYPES: AuthSourceType[] = [
   "email",
   "linuxdo",
@@ -225,19 +220,6 @@ const PAYMENT_VISIBLE_METHOD_SOURCE_ALIASES: Record<
     easypay: "easypay_wxpay",
   },
 };
-const WECHAT_CONNECT_MODE_OPTIONS: WeChatConnectModeOption[] = [
-  { value: "open", labelZh: "PC 应用", labelEn: "PC App" },
-  {
-    value: "mp",
-    labelZh: "公众号",
-    labelEn: "Official Account",
-  },
-  {
-    value: "mobile",
-    labelZh: "移动应用",
-    labelEn: "Mobile App",
-  },
-];
 const WECHAT_CONNECT_MODE_ALIASES: Record<string, WeChatConnectMode> = {
   open: "open",
   open_platform: "open",
@@ -342,10 +324,6 @@ export function normalizePaymentVisibleMethodSource(
   if (!normalized) return "";
 
   return PAYMENT_VISIBLE_METHOD_SOURCE_ALIASES[method][normalized] ?? "";
-}
-
-export function getWeChatConnectModeOptions(): WeChatConnectModeOption[] {
-  return WECHAT_CONNECT_MODE_OPTIONS;
 }
 
 export function normalizeWeChatConnectMode(source: unknown): WeChatConnectMode {
@@ -489,15 +467,12 @@ export interface SystemSettings {
   force_email_on_third_party_signup?: boolean;
   // ── 平台限额（嵌套 JSON，系统层 + 7 auth-source 层）────────────────────────────────
   // OEM settings
+  localized_settings: Record<string, LocalizedUpdate<string>>;
+  site_texts: Record<string, LocalizedUpdate<string>>;
+  default_locale: string;
   site_name: string;
   site_logo: string;
   site_subtitle: string;
-  site_name_zh: string;
-  site_name_en: string;
-  site_title_zh: string;
-  site_title_en: string;
-  site_subtitle_zh: string;
-  site_subtitle_en: string;
   api_base_url: string;
   contact_info: string;
   doc_url: string;
@@ -824,15 +799,12 @@ export interface UpdateSettingsRequest {
   auth_source_default_google_grant_on_first_bind?: boolean;
   force_email_on_third_party_signup?: boolean;
   // ── 平台限额（嵌套 JSON，系统层 + 7 auth-source 层）────────────────────────────────
+  localized_settings?: Record<string, LocalizedUpdate<string>>;
+  site_texts?: Record<string, LocalizedUpdate<string>>;
+  default_locale?: string;
   site_name?: string;
   site_logo?: string;
   site_subtitle?: string;
-  site_name_zh?: string;
-  site_name_en?: string;
-  site_title_zh?: string;
-  site_title_en?: string;
-  site_subtitle_zh?: string;
-  site_subtitle_en?: string;
   api_base_url?: string;
   contact_info?: string;
   doc_url?: string;
@@ -1336,40 +1308,6 @@ export async function updateOpenAI403CooldownSettings(
   return data
 }
 
-// ==================== OpenAI OAuth Import Defaults ====================
-
-export interface OpenAIOAuthImportProviderDefaults {
-  notes?: string | null
-  concurrency?: number | null
-  priority?: number | null
-  rate_multiplier?: number | null
-  expires_at?: number | null
-  auto_pause_on_expired?: boolean | null
-}
-
-export interface OpenAIOAuthImportDefaults {
-  provider?: OpenAIOAuthImportProviderDefaults
-  credentials?: Record<string, unknown>
-  extra?: Record<string, unknown>
-}
-
-export async function getOpenAIOAuthImportDefaults(): Promise<OpenAIOAuthImportDefaults> {
-  const { data } = await apiClient.get<OpenAIOAuthImportDefaults>(
-    '/admin/settings/openai-oauth-import-defaults'
-  )
-  return data
-}
-
-export async function updateOpenAIOAuthImportDefaults(
-  defaults: OpenAIOAuthImportDefaults
-): Promise<OpenAIOAuthImportDefaults> {
-  const { data } = await apiClient.put<OpenAIOAuthImportDefaults>(
-    '/admin/settings/openai-oauth-import-defaults',
-    defaults
-  )
-  return data
-}
-
 // ==================== 429 Rate Limit Cooldown Settings ====================
 
 export interface RateLimit429CooldownSettings {
@@ -1788,8 +1726,6 @@ export const settingsAPI = {
   updateOverloadCooldownSettings,
   getOpenAI403CooldownSettings,
   updateOpenAI403CooldownSettings,
-  getOpenAIOAuthImportDefaults,
-  updateOpenAIOAuthImportDefaults,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
   getPanelRateLimitSettings,

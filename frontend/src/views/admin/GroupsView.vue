@@ -575,6 +575,7 @@
 </template>
 
 <script setup lang="ts">
+import type { LocalizedUpdate } from '@/i18n/content'
 import MotionTransition from '@/components/common/MotionTransition.vue'
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -1091,6 +1092,7 @@ const editAvailabilityProbeModelOptions = computed(() =>
 );
 
 const createForm = reactive({
+  localization: undefined as LocalizedUpdate<{ display_name: string; description: string }> | undefined,
   name: "",
   description: "",
   display_brand: "",
@@ -1445,6 +1447,7 @@ const convertApiFormatToRoutingRules = async (
 };
 
 const editForm = reactive({
+  localization: undefined as LocalizedUpdate<{ display_name: string; description: string }> | undefined,
   name: "",
   description: "",
   display_brand: "",
@@ -1719,6 +1722,7 @@ const closeCreateModal = () => {
     providerSearchRunner.clearKey(getCreateRuleSearchKey(rule));
   });
   clearAllProviderSearchState();
+  createForm.localization = undefined;
   createForm.name = "";
   createForm.description = "";
   createForm.display_brand = "";
@@ -1844,6 +1848,7 @@ const handleCreateGroup = async () => {
 
 const handleEdit = async (group: AdminGroup) => {
   editingGroup.value = group;
+  editForm.localization = group.localization ? JSON.parse(JSON.stringify(group.localization)) : undefined;
   editForm.name = group.name;
   editForm.description = group.description || "";
   editForm.display_brand = group.display_brand || "";

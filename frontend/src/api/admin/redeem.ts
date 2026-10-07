@@ -46,16 +46,6 @@ export async function list(
 }
 
 /**
- * Get redeem code by ID
- * @param id - Redeem code ID
- * @returns Redeem code details
- */
-export async function getById(id: number): Promise<RedeemCode> {
-  const { data } = await apiClient.get<RedeemCode>(`/admin/redeem-codes/${id}`)
-  return data
-}
-
-/**
  * Generate new redeem codes
  * @param count - Number of codes to generate
  * @param type - Type of redeem code
@@ -164,16 +154,6 @@ export async function batchUpdate(
 }
 
 /**
- * Expire redeem code
- * @param id - Redeem code ID
- * @returns Updated redeem code
- */
-export async function expire(id: number): Promise<RedeemCode> {
-  const { data } = await apiClient.post<RedeemCode>(`/admin/redeem-codes/${id}/expire`)
-  return data
-}
-
-/**
  * Export redeem codes to CSV
  * @param filters - Optional filters
  * @returns CSV data as blob
@@ -194,13 +174,11 @@ export async function exportCodes(filters?: {
 
 export const redeemAPI = {
   list,
-  getById,
   generate,
   update,
   delete: deleteCode,
   batchDelete,
   batchUpdate,
-  expire,
   exportCodes
 }
 

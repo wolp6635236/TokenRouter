@@ -6,11 +6,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/identity/contact"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
 
 // Snapshot 保留综合读取、部分写入合并和旧消费者需要的字段形状。
 type Snapshot struct {
+	// StoredValues 保存本次读取的数据库值，供内容版本检查和部分更新使用。
+	StoredValues map[string]string `json:"-"`
+
 	RegistrationEnabled                 bool
 	EmailVerifyEnabled                  bool
 	RegistrationEmailSuffixWhitelist    []string
@@ -150,15 +154,12 @@ type Snapshot struct {
 	GoogleOAuthRedirectURL            string
 	GoogleOAuthFrontendRedirectURL    string
 
+	LocalizedSettings           settings.LocalizedTexts `json:"localized_settings"`
+	SiteTexts                   site.LocalizedTexts     `json:"site_texts"`
+	DefaultLocale               string                  `json:"default_locale"`
 	SiteName                    string
 	SiteLogo                    string
 	SiteSubtitle                string
-	SiteNameZh                  string
-	SiteNameEn                  string
-	SiteTitleZh                 string
-	SiteTitleEn                 string
-	SiteSubtitleZh              string
-	SiteSubtitleEn              string
 	APIBaseURL                  string
 	ContactInfo                 string
 	DocURL                      string

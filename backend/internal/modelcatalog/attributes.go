@@ -4,23 +4,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 // Attributes 描述模型展示信息，网关准入和参数转换使用各自的规则。
 // 指针保留未知、显式 false 和空模态集合的区别。
 // @project-doc docs/interfaces/model_catalog_and_marketplace.md#model_attributes
 type Attributes struct {
-	DisplayName      *string   `json:"display_name,omitempty"`
-	Context          *int      `json:"context,omitempty"`
-	InputLimit       *int      `json:"input_limit,omitempty"`
-	OutputLimit      *int      `json:"output_limit,omitempty"`
-	InputModalities  *[]string `json:"input_modalities,omitempty"`
-	OutputModalities *[]string `json:"output_modalities,omitempty"`
-	Reasoning        *bool     `json:"reasoning,omitempty"`
-	ToolCall         *bool     `json:"tool_call,omitempty"`
-	StructuredOutput *bool     `json:"structured_output,omitempty"`
-	Temperature      *bool     `json:"temperature,omitempty"`
-	Attachment       *bool     `json:"attachment,omitempty"`
+	DisplayNameLocalization *locale.Update[string] `json:"display_name_localization,omitempty"`
+	DisplayName             *string                `json:"display_name,omitempty"`
+	Context                 *int                   `json:"context,omitempty"`
+	InputLimit              *int                   `json:"input_limit,omitempty"`
+	OutputLimit             *int                   `json:"output_limit,omitempty"`
+	InputModalities         *[]string              `json:"input_modalities,omitempty"`
+	OutputModalities        *[]string              `json:"output_modalities,omitempty"`
+	Reasoning               *bool                  `json:"reasoning,omitempty"`
+	ToolCall                *bool                  `json:"tool_call,omitempty"`
+	StructuredOutput        *bool                  `json:"structured_output,omitempty"`
+	Temperature             *bool                  `json:"temperature,omitempty"`
+	Attachment              *bool                  `json:"attachment,omitempty"`
 }
 
 // fields 通过值编码复制所有可选字段，避免展示消费者改写目录快照。
@@ -129,6 +132,8 @@ func intersection(a, b *[]string) *[]string {
 
 // Presentation 是模型信息的展示值，不表达网关准入决策。
 type Presentation struct {
+	SearchTerms            []string           `json:"search_terms,omitempty"`
+	LocalizationResolution *locale.Resolution `json:"localization_resolution,omitempty"`
 	Attributes
 	RouteDifferences bool `json:"route_differences,omitempty"`
 }

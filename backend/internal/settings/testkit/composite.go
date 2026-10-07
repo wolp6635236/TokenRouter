@@ -84,7 +84,7 @@ func NewComposite(repo settings.Repository, cfg *config.Config) *Composite {
 		value := cfg.ForwardedClientIPSettings()
 		return runtimeconfig.ForwardedInput{APIKeyACLTrustForwardedIP: value.TrustForwardedIP, ForwardedClientIPHeaders: value.Headers}
 	}, PublishModel: func(model string) {
-		grok.SetRuntimeModelMappingOptions(grok.ModelMappingOptions{DefaultText: model})
+		grok.SetRuntimeDefaultTextModel(model)
 	}}
 	result.Prepare = composite.PrepareOptions{ReadValues: store.GetAll, Gateway: rules, Scheduler: defaults, ValidatePlans: validate}
 	steps := []composite.Application{

@@ -14,15 +14,16 @@ import (
 	_ "github.com/TokenFlux/TokenRouter/ent/runtime"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
 	"github.com/stretchr/testify/require"
 )
 
 // testStore 只创建隔离存储，跨模块资金操作直接使用各模块原生参与实现。
 func testStore(t *testing.T) (*dbent.Client, *sql.DB) {
 	t.Helper()
-	db := postgrescontainer.New(t)
-	return dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db))), db
+	db := databaseSuite.New(t)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	return client, db
 }
 
 // testEntClient 为闭合事务用例提供可提交的独立数据库。

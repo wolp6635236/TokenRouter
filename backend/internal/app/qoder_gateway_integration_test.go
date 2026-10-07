@@ -56,7 +56,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
 // balanceReader 从数据库读取余额并返回给 billing。
@@ -72,7 +72,7 @@ func (r balanceReader) GetByID(ctx context.Context, id int64) (*billing.UserSumm
 func TestQoderHTTPStorageChain(t *testing.T) {
 	f := newDatabaseFixture(t)
 	ctx := context.Background()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	addr, err := container.Endpoint(ctx, "")

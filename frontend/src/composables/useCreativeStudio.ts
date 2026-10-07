@@ -1,7 +1,7 @@
 /**
  * 创作台任务与素材状态
  * 管理模型目录和参数选择，保存并恢复参数，创建 run（支持幂等重试）。
- * 轮询任务输出，将历史记录关联到本地素材，并调用视图提供的画布操作。
+ * 轮询任务输出，将历史记录关联到本地素材和提交参数，并调用视图提供的画布操作。
  * 点击生成时，视图从画布收集源图和 mask（选中的图片与画笔 mask）。
  * 轮询定时器在 composable 内注册 onBeforeUnmount 清理。
  */
@@ -29,12 +29,15 @@ import {
   clearAll,
   getCreativeWorkspaceId,
   listAssets,
+  loadRunParamsMap,
   loadSetting,
   outputAssetKey,
   rotateCreativeWorkspaceId,
   saveAsset,
+  saveRunParams,
   saveSetting,
   type LocalAsset,
+  type LocalRunParams,
 } from '@/utils/creativeLocalStore'
 
 // 生成参数来源：视图在点击生成时从画布收集（选中的源图 + 画笔 mask）
@@ -117,6 +120,8 @@ export function useCreativeStudio() {
   const missingOutputKeys = ref<Set<string>>(new Set())
   // 本地输出素材索引：outputAssetKey → asset
   const outputAssetMap = ref<Map<string, LocalAsset>>(new Map())
+  // 本地任务参数索引：runId → 提交时的提示词和参数
+  const runParamsMap = ref<Map<string, LocalRunParams>>(new Map())
   // 当前表单提交意图的幂等键：失败后重试复用，成功后重置
   const activeIdempotencyKey = ref('')
   // 画布桥接实例（视图在挂载时注册，卸载时可传 null 解绑）
@@ -139,6 +144,7 @@ export function useCreativeStudio() {
     currentRun.value = null
     runHistory.value = []
     outputAssetMap.value = new Map()
+    runParamsMap.value = new Map()
     missingOutputKeys.value = new Set()
     activeIdempotencyKey.value = ''
   }
@@ -406,6 +412,41 @@ export function useCreativeStudio() {
     }
   }
 
+  // ==================== 任务参数 ====================
+
+  // 记录任务提交时的提示词和参数，供历史记录展示和填回输入框。
+  // 写入失败时记日志，任务照常提交。
+  async function rememberRunParams(params: LocalRunParams): Promise<void> {
+    const nextMap = new Map(runParamsMap.value)
+    nextMap.set(params.runId, params)
+    runParamsMap.value = nextMap
+    try {
+      await saveRunParams(params)
+    } catch (e) {
+      console.error(`Failed to save creative run params ${params.runId}:`, e)
+    }
+  }
+
+  // 把历史任务的模型、参数和提示词填回输入框；模型已经下线时保留当前模型。
+  // 本地没有这次任务的参数记录时返回 false。
+  function applyRunParams(runId: string): boolean {
+    const params = runParamsMap.value.get(runId)
+    if (!params) return false
+    if (models.value.some((m) => creativeOptionKey(m) === params.optionKey)) {
+      selectedOptionKey.value = params.optionKey
+    }
+    operation.value = params.operation
+    imageSize.value = params.imageSize
+    aspectRatio.value = params.aspectRatio
+    quality.value = params.quality
+    background.value = params.background
+    thinkingLevel.value = params.thinkingLevel
+    prompt.value = truncatePrompt(params.prompt, capabilities.value.max_prompt_chars)
+    // 模型能力可能已经变化，超出范围的参数回到模型默认值
+    normalizeSelection()
+    return true
+  }
+
   // ==================== 创建 run ====================
 
   async function createRun(exported: CreativeExportInput): Promise<boolean> {
@@ -484,10 +525,25 @@ export function useCreativeStudio() {
         form.append('mask', exported.maskBlob, 'mask.png')
       }
 
+      // 请求期间用户可能继续编辑输入框，参数快照在发请求前取
+      const submitted: Omit<LocalRunParams, 'runId' | 'createdAt'> = {
+        optionKey: creativeOptionKey(option),
+        groupName: option.group_name,
+        operation: operation.value,
+        prompt: prompt.value,
+        imageSize: imageSize.value,
+        aspectRatio: aspectRatio.value,
+        quality: quality.value,
+        background: background.value,
+        thinkingLevel: thinkingLevel.value,
+        referenceCount: exported.sourceBlobs.length,
+      }
+
       const run = await createCreativeRun(form, requestWorkspaceId, activeIdempotencyKey.value)
       // 提交成功，重置幂等键；失败重试时保留
       activeIdempotencyKey.value = ''
       if (!isWorkspaceCurrent(requestWorkspaceId, requestGeneration)) return true
+      void rememberRunParams({ ...submitted, runId: run.id, createdAt: Date.now() })
       currentRun.value = run
       upsertRunInHistory(run)
       startPolling(run.id, { placeOnCanvas: true })
@@ -688,11 +744,9 @@ export function useCreativeStudio() {
     clearPollingTimer()
     const generation = ++historyRefreshGeneration
     loadingHistory.value = true
-    let requestWorkspaceId = ''
-    let requestWorkspaceGeneration = 0
     try {
-      requestWorkspaceId = readWorkspaceId()
-      requestWorkspaceGeneration = workspaceGeneration
+      const requestWorkspaceId = readWorkspaceId()
+      const requestWorkspaceGeneration = workspaceGeneration
       const page = await getCreativeRuns(requestWorkspaceId, 1, 20)
       // 活动接口返回全部 queued/running/settlement 任务，历史页的最近 20 条记录可能缺少仍在进行的任务。
       // 旧版测试替身或旧后端没有该接口时仍保留历史接口行为。
@@ -766,7 +820,15 @@ export function useCreativeStudio() {
       // 只需输出素材索引（missing 判定用）；源图 / mask 素材已由画布自行管理
       const outputs = await listAssets('output')
       const map = new Map(outputs.map((a) => [a.key, a]))
+      const storedRunParams = await loadStoredRunParams()
       if (generation !== historyRefreshGeneration || !isWorkspaceCurrent(requestWorkspaceId, requestWorkspaceGeneration)) return
+      if (storedRunParams) {
+        // 刚提交的任务可能还没写进 IndexedDB，内存里的记录一并保留
+        for (const [runId, params] of runParamsMap.value) {
+          if (!storedRunParams.has(runId)) storedRunParams.set(runId, params)
+        }
+        runParamsMap.value = storedRunParams
+      }
       const missing = new Set<string>()
       for (const run of mergedItems) {
         if (!terminalHarvestedRunIds.has(run.id)) {
@@ -818,9 +880,19 @@ export function useCreativeStudio() {
     }
   }
 
+  // 读取本地任务参数；读取失败时返回 null，历史列表照常显示服务端返回的参数。
+  async function loadStoredRunParams(): Promise<Map<string, LocalRunParams> | null> {
+    try {
+      return await loadRunParamsMap()
+    } catch (e) {
+      console.error('Failed to load creative run params:', e)
+      return null
+    }
+  }
+
   // ==================== 本地数据 ====================
 
-  // 清空本机创作数据（素材 + 场景 + 设置）并重置内存状态；
+  // 清空本机创作数据（素材、场景、设置和任务参数）并重置内存状态；
   // 清空成功后旋转工作区，使旧任务在当前浏览器立即不可见。
   async function clearLocalData(): Promise<void> {
     stopPolling()
@@ -888,6 +960,7 @@ export function useCreativeStudio() {
     error,
     missingOutputKeys,
     outputAssetMap,
+    runParamsMap,
     // 计算
     operationOptions,
     imageSizeOptions,
@@ -906,5 +979,6 @@ export function useCreativeStudio() {
     clearLocalData,
     registerCanvasBridge,
     importOutputToCanvas,
+    applyRunParams,
   }
 }

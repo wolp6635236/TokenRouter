@@ -7,8 +7,8 @@
 # Stage 3: Final minimal image
 # =============================================================================
 
-ARG NODE_IMAGE=node:24-alpine
-ARG GOLANG_IMAGE=golang:1.27.0-alpine
+ARG NODE_IMAGE=node:26.10.0-alpine
+ARG GOLANG_IMAGE=golang:1.27.1-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
@@ -24,20 +24,21 @@ ARG NPM_CONFIG_REGISTRY
 
 WORKDIR /app/frontend
 
-# 安装 pnpm，并固定到 v9 以匹配 CI、保证镜像构建可复现
-RUN corepack enable && corepack prepare pnpm@9 --activate
+# Node 版本需要与 .node-version 一致，镜像覆盖值同样检查；pnpm 版本取 package.json 的 packageManager。
+COPY .node-version /app/
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN test "$(node -p 'process.versions.node')" = "$(cat /app/.node-version)" && \
+    npm install --global "$(node -p 'require("./package.json").packageManager')"
 
-# Install dependencies first (better caching)
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+# 源码变化时复用已安装的依赖层。
 RUN --mount=type=cache,id=tokenrouter-pnpm-store,target=/root/.local/share/pnpm/store \
     if [ -n "${NPM_CONFIG_REGISTRY}" ]; then pnpm config set registry "${NPM_CONFIG_REGISTRY}"; fi && \
     pnpm install --frozen-lockfile --prefer-offline
 
-# 复制前端源码并构建。
-# LegalDocumentView.vue 构建时会通过 ../../../../docs/legal/*.md?raw
-# 读取法律文档，因此 docs/legal/ 需要与 frontend/ 同级放在 /app/docs/legal/。
+# 复制前端源码、法律文档和共享语言资源后构建。
 COPY frontend/ ./
 COPY docs/legal/ /app/docs/legal/
+COPY backend/internal/pkg/locale/*.json /app/backend/internal/pkg/locale/
 RUN pnpm run build
 
 # -----------------------------------------------------------------------------

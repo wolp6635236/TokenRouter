@@ -12,6 +12,7 @@
 </template>
 
 <script setup lang="ts">
+import { vendorLocale } from '@/i18n/catalog'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -68,7 +69,7 @@ function createVerificationPromise(revealInternational: boolean = true): Promise
       .then((TencentCaptcha) => {
         if (cancelPending !== cancel) return
 
-        const userLanguage = locale.value.toLowerCase().startsWith('zh') ? 'zh-cn' : 'en'
+        const userLanguage = vendorLocale('tencent', locale.value)
         const handleResult = (result: TencentCaptchaResult): void => {
           if (result.ret === 2) {
             finish(() => resolve(null))

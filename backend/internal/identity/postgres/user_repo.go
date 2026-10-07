@@ -1503,6 +1503,13 @@ func (r *UserStore) IdentityUpdateWithClient(ctx context.Context, client *dbent.
 	if fields.Email {
 		updateOp = updateOp.SetEmail(userIn.Email)
 	}
+	if fields.PreferredLocale {
+		if userIn.PreferredLocale == nil {
+			updateOp = updateOp.ClearPreferredLocale()
+		} else {
+			updateOp = updateOp.SetPreferredLocale(*userIn.PreferredLocale)
+		}
+	}
 	if fields.Username {
 		updateOp = updateOp.SetUsername(userIn.Username)
 	}

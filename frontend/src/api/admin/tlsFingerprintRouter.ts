@@ -59,11 +59,6 @@ export async function list(): Promise<TLSFingerprintRouter[]> {
   return data
 }
 
-export async function getById(id: number): Promise<TLSFingerprintRouter> {
-  const { data } = await apiClient.get<TLSFingerprintRouter>(`/admin/tls-fingerprint-routers/${id}`)
-  return data
-}
-
 export async function create(payload: CreateTLSFingerprintRouterRequest): Promise<TLSFingerprintRouter> {
   const { data } = await apiClient.post<TLSFingerprintRouter>('/admin/tls-fingerprint-routers', payload)
   return data
@@ -81,7 +76,6 @@ export async function deleteRouter(id: number): Promise<{ message: string }> {
 
 export const tlsFingerprintRouterAPI = {
   list,
-  getById,
   create,
   update,
   delete: deleteRouter

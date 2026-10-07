@@ -8,6 +8,7 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	identityredis "github.com/TokenFlux/TokenRouter/internal/identity/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/notification"
 	notificationhttp "github.com/TokenFlux/TokenRouter/internal/notification/httpapi"
@@ -29,8 +30,21 @@ func provideEmailChallenges(cache identity.EmailCache, mail *notification.Mailer
 	return identity.NewEmailChallenges(cache, mail)
 }
 
-func provideNotification(store *settings.Store, mail *notification.Mailer) *notification.NotificationEmailService {
+func provideNotification(store *settings.Store, mail *notification.Mailer, users *identitypostgres.UserStore) *notification.NotificationEmailService {
 	n := notification.NewNotificationEmailService(store, mail)
+	n.SetRecipientLocaleReader(func(ctx context.Context, id int64, email string) string {
+		var user *identity.User
+		var err error
+		if id > 0 {
+			user, err = users.GetByID(ctx, id)
+		} else {
+			user, err = users.GetByEmail(ctx, email)
+		}
+		if err == nil && user != nil && user.PreferredLocale != nil {
+			return *user.PreferredLocale
+		}
+		return ""
+	})
 	mail.SetNotificationEmailService(n)
 	return n
 }

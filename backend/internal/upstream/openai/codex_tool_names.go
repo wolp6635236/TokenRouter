@@ -81,14 +81,6 @@ func AliasOpenAIOAuthReservedToolNames(reqBody map[string]any) (map[string]strin
 	return reverse, true, nil
 }
 
-func AliasOpenAIOAuthReservedToolName(name string) string {
-	trimmed := strings.TrimSpace(name)
-	if strings.EqualFold(trimmed, CodexReservedPythonToolName) {
-		return CodexPythonToolAlias
-	}
-	return name
-}
-
 func CollectOpenAIResponsesToolNameFields(reqBody map[string]any) []CodexToolNameField {
 	fields := make([]CodexToolNameField, 0, 8)
 	appendName := func(object map[string]any, key string) {

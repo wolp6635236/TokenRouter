@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import json
+from pathlib import Path
+import subprocess
 import sys
 from datetime import date
 
@@ -21,7 +23,7 @@ def split_kv(line: str) -> tuple[str, str]:
 
 
 def parse_exceptions(path: str) -> list[dict]:
-    # 轻量解析异常清单，避免引入额外依赖。
+    # 逐项读取例外清单的包名、公告和有效期。
     exceptions = []
     current = None
     with open(path, "r", encoding="utf-8") as handle:
@@ -49,7 +51,7 @@ def parse_exceptions(path: str) -> list[dict]:
 
 
 def pick_advisory_id(advisory: dict) -> str | None:
-    # 优先使用可稳定匹配的标识（GHSA/URL/CVE），避免误匹配到其他同名漏洞。
+    # 优先用 GHSA、URL 或 CVE 匹配漏洞公告。
     return (
         advisory.get("github_advisory_id")
         or advisory.get("url")
@@ -106,25 +108,73 @@ def iter_vulns(data: dict):
             elif isinstance(via, str):
                 advisories.append(via)
                 titles.append(via)
-            title = "; ".join([t for t in titles if t])
+            title = "; ".join(str(t) for t in titles if t)
             for advisory_id in [a for a in advisories if a]:
                 yield name, severity, advisory_id, title
 
 
+def validate_audit(data: dict, exit_code: int | None = None) -> None:
+    """审计报告需要完整结构，网络错误和缺失字段返回失败。"""
+    if not isinstance(data, dict) or 'error' in data:
+        raise ValueError("审计服务返回错误报告")
+    sections = [key for key in ('advisories', 'vulnerabilities') if key in data]
+    if not sections or any(not isinstance(data[key], dict) for key in sections):
+        raise ValueError("审计报告缺少漏洞列表")
+    counts = data.get('metadata', {}).get('vulnerabilities')
+    levels = ('info', 'low', 'moderate', 'high', 'critical')
+    if not isinstance(counts, dict) or any(type(counts.get(level)) is not int or counts[level] < 0 for level in levels):
+        raise ValueError("审计报告缺少有效的漏洞计数")
+    for advisory in data.get('advisories', {}).values():
+        if not isinstance(advisory, dict) or not (advisory.get('module_name') or advisory.get('name')):
+            raise ValueError("漏洞记录缺少包名")
+        if advisory.get('severity') not in levels or not pick_advisory_id(advisory):
+            raise ValueError("漏洞记录缺少等级或公告标识")
+    for name, vulnerability in data.get('vulnerabilities', {}).items():
+        if not name or not isinstance(vulnerability, dict) or vulnerability.get('severity') not in levels:
+            raise ValueError("漏洞记录缺少包名或等级")
+        via = vulnerability.get('via')
+        if not isinstance(via, list) or not via:
+            raise ValueError("漏洞记录缺少公告来源")
+        for item in via:
+            if isinstance(item, str):
+                if not item:
+                    raise ValueError("漏洞来源为空")
+            elif not isinstance(item, dict) or not any(item.get(key) for key in ('github_advisory_id', 'url', 'source')):
+                raise ValueError("漏洞来源缺少公告标识")
+    findings = list(iter_vulns(data))
+    high_count = sum(1 for _, level, _, _ in findings if level in HIGH_SEVERITIES)
+    if (counts['high'] + counts['critical'] > 0) != (high_count > 0):
+        raise ValueError("审计计数与高危漏洞记录不符")
+    if sum(counts[level] for level in levels) > 0 and not findings:
+        raise ValueError("审计报告有漏洞计数但缺少记录")
+    if exit_code is not None and (exit_code not in (0, 1) or exit_code != int(high_count > 0)):
+        raise ValueError("审计命令执行失败，退出码: " + str(exit_code))
+
+
+def run_audit() -> tuple[dict, int]:
+    """执行 pnpm audit，返回 JSON 报告和退出码；stderr 原样转给调用方查看。"""
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(['pnpm', '--dir', 'frontend', 'audit', '--prod', '--audit-level=high', '--json'],
+                            cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+    return json.loads(result.stdout), result.returncode
+
+
 def normalize_severity(severity: str) -> str:
-    # 统一大小写，避免比较失败。
+    # 漏洞等级按小写比较。
     return (severity or "").strip().lower()
 
 
 def normalize_package(name: str) -> str:
-    # 包名只去掉首尾空白，保留原始大小写，同时兼容非字符串输入。
+    # 将包名转成字符串并去掉首尾空白。
     if name is None:
         return ""
     return str(name).strip()
 
 
 def normalize_advisory(advisory: str) -> str:
-    # advisory 统一为小写匹配，避免 GHSA/URL 因大小写差异导致漏匹配。
+    # 公告标识转成小写后匹配。
     # pnpm 的 source 字段可能是数字，这里统一转为字符串以保证可比较。
     if advisory is None:
         return ""
@@ -141,12 +191,24 @@ def parse_date(value: str) -> date | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--audit", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--audit")
+    source.add_argument("--run", action="store_true")
+    parser.add_argument("--exit-code", type=int)
     parser.add_argument("--exceptions", required=True)
     args = parser.parse_args()
 
-    with open(args.audit, "r", encoding="utf-8") as handle:
-        audit = json.load(handle)
+    try:
+        if args.run:
+            audit, exit_code = run_audit()
+        else:
+            with open(args.audit, "r", encoding="utf-8") as handle:
+                audit = json.load(handle)
+            exit_code = args.exit_code
+        validate_audit(audit, exit_code)
+    except (ValueError, OSError, AttributeError, TypeError, subprocess.CalledProcessError) as error:
+        print("审计未完成: " + str(error), file=sys.stderr)
+        return 1
 
     # 读取异常清单并建立索引，便于快速匹配包名 + advisory。
     exceptions = parse_exceptions(args.exceptions)

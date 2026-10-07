@@ -205,9 +205,10 @@ func EnsureClaudeOAuthMetadataUserID(body []byte, userID string) ([]byte, bool) 
 	return SetJSONRawBytes(body, "metadata", raw)
 }
 
-func NormalizeClaudeOAuthRequestBody(body []byte, modelID string, opts ClaudeOAuthNormalizeOptions) ([]byte, string) {
+// NormalizeClaudeOAuthRequestBody 整理 OAuth 请求的系统提示、工具、缓存和上下文配置。
+func NormalizeClaudeOAuthRequestBody(body []byte, opts ClaudeOAuthNormalizeOptions) []byte {
 	if len(body) == 0 {
-		return body, modelID
+		return body
 	}
 
 	out := body
@@ -216,18 +217,6 @@ func NormalizeClaudeOAuthRequestBody(body []byte, modelID string, opts ClaudeOAu
 	if next, changed := NormalizeClaudeOAuthSystemBody(out, opts); changed {
 		out = next
 		modified = true
-	}
-
-	rawModel := gjson.GetBytes(out, "model")
-	if rawModel.Exists() && rawModel.Type == gjson.String {
-		normalized := NormalizeModelID(rawModel.String())
-		if normalized != rawModel.String() {
-			if next, ok := SetJSONValueBytes(out, "model", normalized); ok {
-				out = next
-				modified = true
-			}
-			modelID = normalized
-		}
 	}
 
 	// 确保 tools 字段存在（即使为空数组）
@@ -297,10 +286,10 @@ func NormalizeClaudeOAuthRequestBody(body []byte, modelID string, opts ClaudeOAu
 	}
 
 	if !modified {
-		return body, modelID
+		return body
 	}
 
-	return out, modelID
+	return out
 }
 
 // BuildStableSessionSeed 为伪装路径合成的 metadata.user_id session_id 生成"会话级稳定"种子。

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
@@ -573,7 +576,7 @@ func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime
 	query := fmt.Sprintf(`
 		SELECT
 			COALESCE(ul.group_id, 0) as group_id,
-			COALESCE(g.name, '') as group_name,
+			`+postgresinfra.LocalizedTextExpression(ctx, "g.localization", "display_name", "COALESCE(g.name, '')")+` as group_name,
 			COUNT(*) as requests,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens), 0) as total_tokens,
 			COALESCE(SUM(ul.total_cost), 0) as cost,
@@ -618,7 +621,11 @@ func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime
 		args = append(args, int16(*billingType))
 	}
 	query, args = appendUsageLogBillingModeQueryFilter(query, args, billingMode, "ul")
-	query += " GROUP BY ul.group_id, g.name ORDER BY total_tokens DESC"
+	query += " GROUP BY ul.group_id, g.name"
+	if locale.UserPresentation(ctx) {
+		query += ", g.localization"
+	}
+	query += " ORDER BY total_tokens DESC"
 
 	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {

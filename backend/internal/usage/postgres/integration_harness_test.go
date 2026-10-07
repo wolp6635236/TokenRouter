@@ -25,10 +25,10 @@ import (
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	_ "github.com/lib/pq"
 	redisclient "github.com/redis/go-redis/v9"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 const (
@@ -52,7 +52,7 @@ func TestMain(m *testing.M) {
 
 	if !dockerIsAvailable(ctx) {
 		// In CI we expect Docker to be available so integration tests should fail loudly.
-		if os.Getenv("CI") != "" {
+		if os.Getenv("CI") != "" || os.Getenv("TOKENROUTER_VERIFY_STRICT") == "1" {
 			log.Printf("docker is not available (CI=true); failing integration tests")
 			os.Exit(1)
 		}
@@ -75,7 +75,7 @@ func TestMain(m *testing.M) {
 	}
 	defer func() { _ = pgContainer.Terminate(ctx) }()
 
-	redisContainer, err := tcredis.Run(
+	redisContainer, err := rediscontainer.Run(
 		ctx,
 		redisImageTag,
 	)

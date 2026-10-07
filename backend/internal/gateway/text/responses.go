@@ -2,8 +2,10 @@ package text
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 )
 
@@ -86,7 +88,8 @@ func RunResponses(options ResponseOptions, p ResponsePorts) {
 			return
 		}
 		outcome := p.Forward()
-		if outcome.Stop {
+		// 缺价拒绝已经输出客户端错误，此时结束请求。
+		if outcome.Stop || errors.Is(outcome.Err, admission.ErrModelPricingRejected) {
 			return
 		}
 		if outcome.Err != nil {

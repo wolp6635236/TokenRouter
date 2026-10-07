@@ -218,40 +218,43 @@ func TestSettingHandler_UpdateSettings_PreservesOmittedAuthSourceDefaults(t *tes
 	require.Equal(t, true, data["force_email_on_third_party_signup"])
 }
 
+// TestSettingHandler_UpdateSettings_AcceptsMarkdownCustomMenuURL 检查菜单地址规范化和浏览器生成的内容标识。
 func TestSettingHandler_UpdateSettings_AcceptsMarkdownCustomMenuURL(t *testing.T) {
-	repo := &settingHandlerRepoStub{
-		values: map[string]string{
-			promotion.SettingKeyPromoCodeEnabled: "true",
-		},
+	for _, test := range []struct {
+		id     string
+		status int
+	}{
+		{"guide", http.StatusOK},
+		{"00112233445566778899aabbccddeeff", http.StatusOK},
+		{"00112233-4455-6677-8899-aabbccddeeff", http.StatusBadRequest},
+	} {
+		t.Run(test.id, func(t *testing.T) {
+			repo := &settingHandlerRepoStub{values: map[string]string{promotion.SettingKeyPromoCodeEnabled: "true"}}
+			options, _ := newCompositeSettingsHTTPFixture(repo, &config.Config{Default: config.DefaultConfig{UserConcurrency: 5}})
+			handler := settingshttp.NewHandler(options)
+			body := map[string]any{
+				"promo_code_enabled": true,
+				"custom_menu_items": []map[string]any{{
+					"id": test.id, "label": "Guide", "icon_svg": "", "url": " md:guide ", "visibility": "user", "sort_order": 0,
+				}},
+			}
+			rawBody, err := json.Marshal(body)
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", bytes.NewReader(rawBody))
+			c.Request.Header.Set("Content-Type", "application/json")
+			handler.UpdateSettings(c)
+			require.Equal(t, test.status, rec.Code, rec.Body.String())
+			if test.status != http.StatusOK {
+				require.NotContains(t, repo.values, site.SettingKeyCustomMenuItems)
+				return
+			}
+			var saved []site.CustomMenuItem
+			require.NoError(t, json.Unmarshal([]byte(repo.values[site.SettingKeyCustomMenuItems]), &saved))
+			require.Equal(t, []site.CustomMenuItem{{ID: test.id, Label: "Guide", URL: "md:guide", Visibility: "user"}}, saved)
+		})
 	}
-	options, _ := newCompositeSettingsHTTPFixture(repo, &config.Config{Default: config.DefaultConfig{UserConcurrency: 5}})
-	handler := settingshttp.NewHandler(options)
-
-	body := map[string]any{
-		"promo_code_enabled": true,
-		"custom_menu_items": []map[string]any{
-			{
-				"id":         "guide",
-				"label":      "Guide",
-				"icon_svg":   "",
-				"url":        " md:guide ",
-				"visibility": "user",
-				"sort_order": 0,
-			},
-		},
-	}
-	rawBody, err := json.Marshal(body)
-	require.NoError(t, err)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", bytes.NewReader(rawBody))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	handler.UpdateSettings(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.JSONEq(t, `[{"id":"guide","label":"Guide","icon_svg":"","url":"md:guide","visibility":"user","sort_order":0}]`, repo.values[site.SettingKeyCustomMenuItems])
 }
 
 func TestSettingHandler_UpdateSettings_RejectsEmptyMarkdownCustomMenuSlug(t *testing.T) {

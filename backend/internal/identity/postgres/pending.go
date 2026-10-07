@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,7 +42,7 @@ func newAuthPendingIdentityScopedKeyLockRegistry() *authPendingIdentityScopedKey
 }
 
 func (r *authPendingIdentityScopedKeyLockRegistry) lock(keys ...string) func() {
-	normalized := normalizeAuthPendingIdentityLockKeys(keys...)
+	normalized := IdentityNormalizeLockKeys(keys...)
 	if len(normalized) == 0 {
 		return func() {}
 	}
@@ -82,31 +81,6 @@ func (r *authPendingIdentityScopedKeyLockRegistry) lock(keys ...string) func() {
 	}
 }
 
-func normalizeAuthPendingIdentityLockKeys(keys ...string) []string {
-	if len(keys) == 0 {
-		return nil
-	}
-
-	deduped := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		trimmed := strings.TrimSpace(key)
-		if trimmed == "" {
-			continue
-		}
-		deduped[trimmed] = struct{}{}
-	}
-	if len(deduped) == 0 {
-		return nil
-	}
-
-	normalized := make([]string, 0, len(deduped))
-	for key := range deduped {
-		normalized = append(normalized, key)
-	}
-	sort.Strings(normalized)
-	return normalized
-}
-
 func authPendingIdentityAdvisoryLockHash(key string) int64 {
 	hasher := fnv.New64a()
 	_, _ = hasher.Write([]byte(key))
@@ -115,7 +89,7 @@ func authPendingIdentityAdvisoryLockHash(key string) int64 {
 
 func lockAuthPendingIdentityKeys(ctx context.Context, client *dbent.Client, keys ...string) (func(), error) {
 	release := authPendingIdentityScopedKeyLocks.lock(keys...)
-	normalized := normalizeAuthPendingIdentityLockKeys(keys...)
+	normalized := IdentityNormalizeLockKeys(keys...)
 	if len(normalized) == 0 || client == nil || client.Driver().Dialect() != dialect.Postgres {
 		return release, nil
 	}

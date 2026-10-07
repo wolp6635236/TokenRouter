@@ -23,6 +23,18 @@ const shouldShowAnnouncementPopup = computed(() => (
   route.path !== '/' && route.name !== 'Home'
 ))
 
+// 用户主动切换语言时刷新共享展示数据，页面中的编辑草稿继续保留。
+async function onLocaleChanged() {
+  await appStore.fetchPublicSettings(true)
+  if (authStore.isAuthenticated) {
+    await Promise.allSettled([
+      announcementStore.fetchAnnouncements(true),
+      subscriptionStore.fetchActiveSubscriptions(true),
+    ])
+  }
+  updateDocumentTitle()
+}
+
 function updateDocumentTitle() {
   const customMenuItems = [
     ...(appStore.cachedPublicSettings?.custom_menu_items ?? []),
@@ -102,10 +114,12 @@ router.afterEach(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('locale-changed', onLocaleChanged)
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 onMounted(async () => {
+  window.addEventListener('locale-changed', onLocaleChanged)
   // Check if setup is needed
   try {
     const status = await getSetupStatus()

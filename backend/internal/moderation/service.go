@@ -76,7 +76,7 @@ const (
 	defaultContentModerationBanThreshold               = 10
 	defaultContentModerationViolationWindowHours       = 720
 	defaultContentModerationBlockHTTPStatus            = 403
-	defaultContentModerationBlockMessage               = "内容审计命中风险规则，请调整输入后重试"
+	defaultContentModerationBlockMessage               = "This request was blocked by the site's content policy. Revise your input and try again."
 	defaultContentModerationRetryCount                 = 2
 	maxContentModerationRetryCount                     = 5
 	defaultContentModerationHitRetentionDays           = 180
@@ -1304,7 +1304,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				"input_hash", hashText)
 			message := cfg.BlockMessage
 			if message != "" {
-				message = fmt.Sprintf("%s（hash: %s）", message, hashText)
+				message = fmt.Sprintf("%s (hash: %s)", message, hashText)
 			}
 			scores := map[string]float64{"hash": 1.0}
 			log := s.buildStructuredLog(input, cfg, ContentModerationActionHashBlock, true, "hash", 1.0, scores, content, nil, nil, "", nil)
@@ -3117,7 +3117,7 @@ func (cfg *ContentModerationConfig) normalize() {
 	if cfg.QueueSize > maxContentModerationQueueSize {
 		cfg.QueueSize = maxContentModerationQueueSize
 	}
-	if strings.TrimSpace(cfg.BlockMessage) == "" {
+	if strings.TrimSpace(cfg.BlockMessage) == "" || cfg.BlockMessage == "内容审计命中风险规则，请调整输入后重试" {
 		cfg.BlockMessage = defaultContentModerationBlockMessage
 	}
 	cfg.BlockMessage = strings.TrimSpace(cfg.BlockMessage)

@@ -7,8 +7,6 @@ import (
 
 	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 
 	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
@@ -62,7 +60,6 @@ func TestOpenAIUpstreamRestrictionUsesActuallyForwardedOAuthModel(t *testing.T) 
 		pricingModel       string
 		provider           *gatewayprovider.ExecutionProvider
 		restricted         bool
-		httpPassthrough    bool
 	}{
 		{
 			name:               "OAuth 后缀型号不能借用基名价格",
@@ -103,7 +100,6 @@ func TestOpenAIUpstreamRestrictionUsesActuallyForwardedOAuthModel(t *testing.T) 
 					},
 				},
 			},
-			httpPassthrough: true,
 		},
 	}
 
@@ -126,9 +122,6 @@ func TestOpenAIUpstreamRestrictionUsesActuallyForwardedOAuthModel(t *testing.T) 
 			}, nil)
 
 			ctx := context.Background()
-			if tt.httpPassthrough {
-				ctx = requeststate.WithOpenAIHTTPPassthroughRouting(ctx)
-			}
 			restricted := upstreamRestrictedForTest(svc, ctx, tt.groupID, tt.provider, "client-alias", false)
 			require.Equal(t, tt.restricted, restricted)
 		})

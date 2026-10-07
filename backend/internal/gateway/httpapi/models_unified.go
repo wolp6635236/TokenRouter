@@ -30,13 +30,6 @@ func (h *ModelsHandler) WriteUnifiedModelsList(c *gin.Context, ids []string) {
 	models := make([]gin.H, 0, len(ids))
 	for _, id := range ids {
 		item := known[id]
-		if aliases, ok := h.catalog.(interface {
-			GrokModelAlias(string) (GrokModel, bool)
-		}); item == nil && ok {
-			if model, exists := aliases.GrokModelAlias(id); exists {
-				item = h.unifiedGrokModel(model)
-			}
-		}
 		if item == nil {
 			item = gin.H{"id": id, "object": "model", "type": "model", "display_name": id, "owned_by": "tokenrouter"}
 		}

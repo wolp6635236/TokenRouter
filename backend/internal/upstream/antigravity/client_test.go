@@ -1,5 +1,3 @@
-//go:build unit
-
 package antigravity
 
 import (
@@ -950,8 +948,8 @@ func TestClient_ExchangeCode_ServerError_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("服务器返回 400 时应返回错误")
 	}
-	if !strings.Contains(err.Error(), "token 交换失败") {
-		t.Errorf("错误信息应包含 'token 交换失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "token exchange failed") {
+		t.Errorf("错误信息应包含 'token exchange failed': got %s", err.Error())
 	}
 	if !strings.Contains(err.Error(), "400") {
 		t.Errorf("错误信息应包含状态码 400: got %s", err.Error())
@@ -978,8 +976,8 @@ func TestClient_ExchangeCode_InvalidJSON_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("无效 JSON 响应应返回错误")
 	}
-	if !strings.Contains(err.Error(), "token 解析失败") {
-		t.Errorf("错误信息应包含 'token 解析失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "parse token response") {
+		t.Errorf("错误信息应包含 'parse token response': got %s", err.Error())
 	}
 }
 
@@ -1081,8 +1079,8 @@ func TestClient_RefreshToken_ServerError_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("服务器返回 401 时应返回错误")
 	}
-	if !strings.Contains(err.Error(), "token 刷新失败") {
-		t.Errorf("错误信息应包含 'token 刷新失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "token refresh failed") {
+		t.Errorf("错误信息应包含 'token refresh failed': got %s", err.Error())
 	}
 }
 
@@ -1106,8 +1104,8 @@ func TestClient_RefreshToken_InvalidJSON_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("无效 JSON 响应应返回错误")
 	}
-	if !strings.Contains(err.Error(), "token 解析失败") {
-		t.Errorf("错误信息应包含 'token 解析失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "parse token response") {
+		t.Errorf("错误信息应包含 'parse token response': got %s", err.Error())
 	}
 }
 
@@ -1201,8 +1199,8 @@ func TestClient_GetUserInfo_Unauthorized_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("服务器返回 401 时应返回错误")
 	}
-	if !strings.Contains(err.Error(), "获取用户信息失败") {
-		t.Errorf("错误信息应包含 '获取用户信息失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "fetch user info failed") {
+		t.Errorf("错误信息应包含 'fetch user info failed': got %s", err.Error())
 	}
 	if !strings.Contains(err.Error(), "401") {
 		t.Errorf("错误信息应包含状态码 401: got %s", err.Error())
@@ -1225,8 +1223,8 @@ func TestClient_GetUserInfo_InvalidJSON_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("无效 JSON 响应应返回错误")
 	}
-	if !strings.Contains(err.Error(), "用户信息解析失败") {
-		t.Errorf("错误信息应包含 '用户信息解析失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "parse user info") {
+		t.Errorf("错误信息应包含 'parse user info': got %s", err.Error())
 	}
 }
 
@@ -1355,8 +1353,8 @@ func TestClient_LoadCodeAssist_HTTPError_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("服务器返回 403 时应返回错误")
 	}
-	if !strings.Contains(err.Error(), "loadCodeAssist 失败") {
-		t.Errorf("错误信息应包含 'loadCodeAssist 失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "loadCodeAssist failed") {
+		t.Errorf("错误信息应包含 'loadCodeAssist failed': got %s", err.Error())
 	}
 	if !strings.Contains(err.Error(), "403") {
 		t.Errorf("错误信息应包含状态码 403: got %s", err.Error())
@@ -1378,8 +1376,8 @@ func TestClient_LoadCodeAssist_InvalidJSON_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("无效 JSON 响应应返回错误")
 	}
-	if !strings.Contains(err.Error(), "响应解析失败") {
-		t.Errorf("错误信息应包含 '响应解析失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "parse response") {
+		t.Errorf("错误信息应包含 'parse response': got %s", err.Error())
 	}
 }
 
@@ -1583,7 +1581,7 @@ func TestClient_FetchAvailableModels_UsesConfiguredBodyLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("响应超过配置上限时应返回错误")
 	}
-	if !strings.Contains(err.Error(), "响应超过 8 字节") {
+	if !strings.Contains(err.Error(), "response exceeds 8 bytes") {
 		t.Fatalf("错误应包含配置上限: %v", err)
 	}
 }
@@ -1602,8 +1600,8 @@ func TestClient_FetchAvailableModels_HTTPError_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("服务器返回 403 时应返回错误")
 	}
-	if !strings.Contains(err.Error(), "fetchAvailableModels 失败") {
-		t.Errorf("错误信息应包含 'fetchAvailableModels 失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "fetchAvailableModels failed") {
+		t.Errorf("错误信息应包含 'fetchAvailableModels failed': got %s", err.Error())
 	}
 }
 
@@ -1622,8 +1620,8 @@ func TestClient_FetchAvailableModels_InvalidJSON_RealCall(t *testing.T) {
 	if err == nil {
 		t.Fatal("无效 JSON 响应应返回错误")
 	}
-	if !strings.Contains(err.Error(), "响应解析失败") {
-		t.Errorf("错误信息应包含 '响应解析失败': got %s", err.Error())
+	if !strings.Contains(err.Error(), "parse response") {
+		t.Errorf("错误信息应包含 'parse response': got %s", err.Error())
 	}
 }
 

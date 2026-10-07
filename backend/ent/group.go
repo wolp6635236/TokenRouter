@@ -28,6 +28,8 @@ type Group struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 	// DeletedAt holds the value of the "deleted_at" field.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	// Localization holds the value of the "localization" field.
+	Localization accessview.GroupLocalization `json:"localization,omitempty"`
 	// Name holds the value of the "name" field.
 	Name string `json:"name,omitempty"`
 	// Description holds the value of the "description" field.
@@ -221,7 +223,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case group.FieldAdvancedSchedulerOverrides, group.FieldRoutingPolicy, group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldAllowedProtocols, group.FieldProtocolFallbacks, group.FieldModelsListConfig, group.FieldAvailabilityProbeConfig, group.FieldReasoningEffortMappings:
+		case group.FieldLocalization, group.FieldAdvancedSchedulerOverrides, group.FieldRoutingPolicy, group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldAllowedProtocols, group.FieldProtocolFallbacks, group.FieldModelsListConfig, group.FieldAvailabilityProbeConfig, group.FieldReasoningEffortMappings:
 			values[i] = new([]byte)
 		case group.FieldIsExclusive, group.FieldAllowImageGeneration, group.FieldAllowBatchImageGeneration, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldAllowLive, group.FieldForceOpenaiFast, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet, group.FieldSessionIsolationEnabled:
 			values[i] = new(sql.NullBool)
@@ -272,6 +274,14 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.DeletedAt = new(time.Time)
 				*_m.DeletedAt = value.Time
+			}
+		case group.FieldLocalization:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field localization", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Localization); err != nil {
+					return fmt.Errorf("unmarshal field localization: %w", err)
+				}
 			}
 		case group.FieldName:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -615,6 +625,9 @@ func (_m *Group) String() string {
 		builder.WriteString("deleted_at=")
 		builder.WriteString(v.Format(time.ANSIC))
 	}
+	builder.WriteString(", ")
+	builder.WriteString("localization=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Localization))
 	builder.WriteString(", ")
 	builder.WriteString("name=")
 	builder.WriteString(_m.Name)

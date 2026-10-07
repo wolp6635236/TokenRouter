@@ -13,6 +13,8 @@ func CloneGroupConfig(g *GroupConfig) *GroupConfig {
 		return nil
 	}
 	out := *g
+	out.Localization.Translations = maps.Clone(g.Localization.Translations)
+	out.Localization.SourceLocale = cloneGroupPointer(g.Localization.SourceLocale)
 	out.Models = slices.Clone(g.Models)
 	out.ModelProtocols = maps.Clone(g.ModelProtocols)
 	for model, protocols := range out.ModelProtocols {

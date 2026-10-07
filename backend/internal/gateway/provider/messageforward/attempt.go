@@ -147,8 +147,9 @@ func (a *attempt) Metadata(ctx context.Context, p *requeststate.ParsedRequest) s
 	return metadataUserID(p, a.provider, fp)
 }
 
-func (a *attempt) NormalizeOAuth(body []byte, model string, o forwardcore.NormalizeOptions) ([]byte, string) {
-	return claude.NormalizeClaudeOAuthRequestBody(body, model, claude.ClaudeOAuthNormalizeOptions{StripSystemCacheControl: o.StripSystemCacheControl, InjectMetadata: o.InjectMetadata, MetadataUserID: o.MetadataUserID})
+// NormalizeOAuth 根据本次设置整理 Anthropic OAuth 请求体。
+func (a *attempt) NormalizeOAuth(body []byte, o forwardcore.NormalizeOptions) []byte {
+	return claude.NormalizeClaudeOAuthRequestBody(body, claude.ClaudeOAuthNormalizeOptions{StripSystemCacheControl: o.StripSystemCacheControl, InjectMetadata: o.InjectMetadata, MetadataUserID: o.MetadataUserID})
 }
 
 func (a *attempt) RewriteCache(ctx context.Context, body []byte) []byte {

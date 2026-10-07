@@ -1,3 +1,4 @@
+import type { LocalizedUpdate } from '@/i18n/content'
 import type { ModelAttributes } from './modelAttributes'
 /**
  * Core Type Definitions for TokenRouter Frontend
@@ -67,6 +68,7 @@ export interface UserProfileSourceContext {
 }
 
 export interface User {
+  preferred_locale?: string | null
   id: number
   username: string
   email: string
@@ -188,6 +190,7 @@ export interface SendVerifyCodeResponse {
 }
 
 export interface CustomMenuItem {
+  localization?: LocalizedUpdate<{ label: string; url: string }>
   id: string
   label: string
   icon_svg: string
@@ -198,28 +201,40 @@ export interface CustomMenuItem {
 }
 
 export interface CustomEndpoint {
+  id?: string
+  localization?: LocalizedUpdate<{ name: string; description: string }>
   name: string
   endpoint: string
   description: string
 }
 
 export interface FooterLink {
+  id?: string
+  localization?: LocalizedUpdate<{ label: string; url: string }>
   label: string
   url: string
 }
 
 export interface FooterLinkGroup {
+  id?: string
+  localization?: LocalizedUpdate<string>
   title: string
   links: FooterLink[]
 }
 
 export interface LoginAgreementDocument {
+  localization?: LocalizedUpdate<{ title: string; content_md: string }>
   id: string
   title: string
   content_md: string
 }
 
 export interface PublicSettings {
+  locale?: string
+  site_text_overrides?: string[]
+  text_languages?: Record<string, { locale: string | null; fallback: boolean }>
+  default_locale?: string
+  site_title?: string
   registration_enabled: boolean
   email_verify_enabled: boolean
   force_email_on_third_party_signup: boolean
@@ -248,12 +263,6 @@ export interface PublicSettings {
   site_name: string
   site_logo: string
   site_subtitle: string
-  site_name_zh?: string
-  site_name_en?: string
-  site_title_zh?: string
-  site_title_en?: string
-  site_subtitle_zh?: string
-  site_subtitle_en?: string
   api_base_url: string
   contact_info: string
   doc_url: string
@@ -318,37 +327,6 @@ export interface AuthResponse {
 
 export type CurrentUserResponse = User
 
-// ==================== Subscription Types ====================
-
-export interface Subscription {
-  id: number
-  user_id: number
-  name: string
-  url: string
-  type: 'clash' | 'v2ray' | 'surge' | 'quantumult' | 'shadowrocket'
-  update_interval: number // in hours
-  last_updated: string | null
-  node_count: number
-  is_active: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface CreateSubscriptionRequest {
-  name: string
-  url: string
-  type: Subscription['type']
-  update_interval?: number
-}
-
-export interface UpdateSubscriptionRequest {
-  name?: string
-  url?: string
-  type?: Subscription['type']
-  update_interval?: number
-  is_active?: boolean
-}
-
 // ==================== Announcement Types ====================
 
 export type AnnouncementStatus = 'draft' | 'active' | 'archived'
@@ -374,6 +352,7 @@ export interface AnnouncementTargeting {
 }
 
 export interface Announcement {
+  localization: LocalizedUpdate<{ title: string; content: string }>
   id: number
   title: string
   content: string
@@ -401,6 +380,7 @@ export interface UserAnnouncement {
 }
 
 export interface CreateAnnouncementRequest {
+  localization: LocalizedUpdate<{ title: string; content: string }>
   title: string
   content: string
   status?: AnnouncementStatus
@@ -411,6 +391,7 @@ export interface CreateAnnouncementRequest {
 }
 
 export interface UpdateAnnouncementRequest {
+  localization?: LocalizedUpdate<{ title: string; content: string }>
   title?: string
   content?: string
   status?: AnnouncementStatus
@@ -429,78 +410,12 @@ export interface AnnouncementUserReadStatus {
   read_at?: string
 }
 
-// ==================== Proxy Node Types ====================
-
-export interface ProxyNode {
-  id: number
-  subscription_id: number
-  name: string
-  type: 'ss' | 'ssr' | 'vmess' | 'vless' | 'trojan' | 'hysteria' | 'hysteria2'
-  server: string
-  port: number
-  config: Record<string, unknown> // JSON configuration specific to proxy type
-  latency: number | null // in milliseconds
-  last_checked: string | null
-  is_available: boolean
-  created_at: string
-  updated_at: string
-}
-
-// ==================== Conversion Types ====================
-
-export interface ConversionRequest {
-  subscription_ids: number[]
-  target_type: 'clash' | 'v2ray' | 'surge' | 'quantumult' | 'shadowrocket'
-  filter?: {
-    name_pattern?: string
-    types?: ProxyNode['type'][]
-    min_latency?: number
-    max_latency?: number
-    available_only?: boolean
-  }
-  sort?: {
-    by: 'name' | 'latency' | 'type'
-    order: 'asc' | 'desc'
-  }
-}
-
-export interface ConversionResult {
-  url: string // URL to download the converted subscription
-  expires_at: string
-  node_count: number
-}
-
-// ==================== Statistics Types ====================
-
-export interface SubscriptionStats {
-  subscription_id: number
-  total_nodes: number
-  available_nodes: number
-  avg_latency: number | null
-  by_type: Record<ProxyNode['type'], number>
-  last_update: string
-}
-
-export interface UserStats {
-  total_subscriptions: number
-  total_nodes: number
-  active_subscriptions: number
-  total_conversions: number
-  last_conversion: string | null
-}
-
 // ==================== API Response Types ====================
 
 export interface ApiResponse<T = unknown> {
   code: number
   message: string
   data: T
-}
-
-export interface ApiError {
-  detail: string
-  code?: string
-  field?: string
 }
 
 export interface PaginatedResponse<T> {
@@ -521,35 +436,6 @@ export interface Toast {
   message: string
   title?: string
   duration?: number // in milliseconds, undefined means no auto-dismiss
-}
-
-export interface AppState {
-  sidebarCollapsed: boolean
-  loading: boolean
-  toasts: Toast[]
-}
-
-// ==================== Validation Types ====================
-
-export interface ValidationError {
-  field: string
-  message: string
-}
-
-// ==================== Table/List Types ====================
-
-export interface SortConfig {
-  key: string
-  order: 'asc' | 'desc'
-}
-
-export interface FilterConfig {
-  [key: string]: string | number | boolean | null | undefined
-}
-
-export interface PaginationConfig {
-  page: number
-  page_size: number
 }
 
 // ==================== API Key & Group Types ====================
@@ -707,6 +593,7 @@ export interface MarketplaceGroupAvailability {
 }
 
 export interface MarketplaceGroup {
+  search_terms?: string[]
   id: number
   name: string
   description: string
@@ -747,6 +634,8 @@ export interface ReasoningEffortMapping {
 }
 
 export interface Group {
+  search_terms?: string[]
+  display_name?: string
   // 后端按组内提供商能力解析的可请求模型。
   models?: string[]
   model_attributes?: Record<string, ModelAttributes>
@@ -805,6 +694,7 @@ export interface GroupRoutingPolicy {
 }
 
 export interface AdminGroup extends Group {
+  localization?: LocalizedUpdate<{ display_name: string; description: string }>
   routing_policy: GroupRoutingPolicy
   // 该策略由管理端配置，在管理员分组接口中返回。
   force_openai_fast?: boolean
@@ -959,6 +849,7 @@ export interface UpdateApiKeyRequest {
 }
 
 export interface CreateGroupRequest {
+  localization?: LocalizedUpdate<{ display_name: string; description: string }>
   name: string
   description?: string | null
   scheduler_type?: GroupSchedulerType
@@ -1004,6 +895,7 @@ export interface CreateGroupRequest {
 }
 
 export interface UpdateGroupRequest {
+  localization?: LocalizedUpdate<{ display_name: string; description: string }>
   name?: string
   description?: string | null
   scheduler_type?: GroupSchedulerType
@@ -1061,7 +953,6 @@ export type ProviderPlatform =
   | 'zhipu'
   | 'deepseek'
 export type ProviderType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account' | 'cosy'
-export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
 // Claude Model type (returned by /v1/models and provider models API)
@@ -1165,13 +1056,6 @@ export interface GeminiCredentials {
   scope?: string
   expires_at?: string
   model_mapping?: Record<string, string>
-}
-
-export interface TempUnschedulableRule {
-  error_code: number
-  keywords: string[]
-  duration_minutes: number
-  description: string
 }
 
 export interface TempUnschedulableState {
@@ -1553,12 +1437,6 @@ export type UpstreamUsageAdapter =
   | 'zhipu_coding'
   | 'deepseek_balance'
 
-export interface UpstreamUsageQueryConfig {
-  enabled: boolean
-  adapter: UpstreamUsageAdapter
-  base_url?: string
-}
-
 export interface UpstreamUsageAmount {
   used?: number
   total?: number
@@ -1658,7 +1536,6 @@ export type OpenAITextRouteMode =
   | 'preserve_client_protocol'
   | 'force_responses'
   | 'force_chat_completions'
-export type OpenAIWorkloadCapability = 'text_generation' | 'embeddings'
 
 export interface OpenAICompactState {
   openai_compact_mode?: OpenAICompactMode
@@ -1977,34 +1854,6 @@ export interface UsageLogTiming {
   upstream_wrote_request_error?: boolean
 }
 
-export interface UsageCleanupFilters {
-  start_time: string
-  end_time: string
-  user_id?: number
-  api_key_id?: number
-  provider_id?: number
-  group_id?: number
-  model?: string | null
-  request_type?: UsageRequestType | null
-  stream?: boolean | null
-  billing_type?: number | null
-}
-
-export interface UsageCleanupTask {
-  id: number
-  status: string
-  filters: UsageCleanupFilters
-  created_by: number
-  deleted_rows: number
-  error_message?: string | null
-  canceled_by?: number | null
-  canceled_at?: string | null
-  started_at?: string | null
-  finished_at?: string | null
-  created_at: string
-  updated_at: string
-}
-
 export interface RedeemCode {
   /** 领取者需要有成功付款记录。 */
   requires_payment?: boolean
@@ -2052,11 +1901,6 @@ export interface BatchUpdateRedeemCodeFields {
   status?: 'unused' | 'disabled'
   expires_at?: string | null
   notes?: string
-}
-
-export interface BatchUpdateRedeemCodesRequest {
-  ids: number[]
-  fields: BatchUpdateRedeemCodeFields
 }
 
 export interface RedeemCodeRequest {
@@ -2221,14 +2065,6 @@ export interface UserSpendingRankingResponse {
   end_date: string
 }
 
-export interface ApiKeyUsageTrendPoint {
-  date: string
-  api_key_id: number
-  key_name: string
-  requests: number
-  tokens: number
-}
-
 // ==================== Admin User Management ====================
 
 export interface UpdateUserRequest {
@@ -2279,57 +2115,8 @@ export interface UserSubscription {
   plan?: SubscriptionPlan
 }
 
-export interface SubscriptionProgress {
-  id: number
-  plan_id: number
-  plan_name: string
-  starts_at: string
-  expires_at: string
-  status: 'active' | 'pending' | 'expired' | 'suspended' | 'revoked'
-  expires_in_days: number
-  daily: {
-    limit_usd: number
-    used_usd: number
-    remaining_usd: number
-    percentage: number
-    window_start: string
-    resets_at: string
-    resets_in_seconds: number
-  } | null
-  weekly: {
-    limit_usd: number
-    used_usd: number
-    remaining_usd: number
-    percentage: number
-    window_start: string
-    resets_at: string
-    resets_in_seconds: number
-  } | null
-  monthly: {
-    limit_usd: number
-    used_usd: number
-    remaining_usd: number
-    percentage: number
-    window_start: string
-    resets_at: string
-    resets_in_seconds: number
-  } | null
-}
-
-export interface SubscriptionProgressInfo {
-  subscription: UserSubscription
-  progress: SubscriptionProgress
-}
-
 export interface AssignSubscriptionRequest {
   user_id: number
-  plan_id: number
-  validity_days?: number
-  notes?: string
-}
-
-export interface BulkAssignSubscriptionRequest {
-  user_ids: number[]
   plan_id: number
   validity_days?: number
   notes?: string

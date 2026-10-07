@@ -84,7 +84,7 @@ func (s *OpenAIRequests) EnforceClient(ctx context.Context, c *gin.Context, prov
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
 				"type":    "forbidden_error",
-				"message": openAIClientPolicyForbiddenMessage(result),
+				"message": OpenAIClientPolicyForbiddenMessage(result),
 			},
 		})
 	}
@@ -141,17 +141,6 @@ func (s *OpenAIRequests) WSTLSProfile(provider *gatewayprovider.ExecutionProvide
 	// Responses WebSocket 是 HTTP/1.1 Upgrade，连接池键也按剥离 h2 后的模板隔离。
 	profile = tlsfingerprint.HTTP1OnlyProfile(profile)
 	return profile, egress.WebSocketTLSIdentity(gatewayprovider.ExecutionTLSSelection(provider, routerMatch), true, tlsfingerprint.CacheKey(profile))
-}
-
-func openAIClientPolicyForbiddenMessage(result providercore.CodexClientRestrictionDetectionResult) string {
-	// 按客户端策略返回拒绝原因。
-	if result.Policy == providercore.OpenAIOAuthClientPolicyCodexOnly {
-		return "This provider only allows Codex official clients"
-	}
-	if result.Policy == providercore.OpenAIOAuthClientPolicyTLSRouterMatchedOnly {
-		return "This provider only allows clients matched by the configured TLS router"
-	}
-	return "This provider only allows configured OpenAI OAuth clients"
 }
 
 func (s *OpenAIRequests) ApplyUserAgent(ctx context.Context, _ *gin.Context, value *gatewayprovider.ExecutionProvider, req *http.Request, passthrough bool, matches ...egress.TLSFingerprintRouterMatchResult) {

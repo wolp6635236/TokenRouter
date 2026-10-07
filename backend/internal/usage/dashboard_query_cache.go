@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
 )
 
@@ -164,6 +166,9 @@ func (h *DashboardService) GetGroupStatsCached(
 		BillingType:        billingType,
 		NativeCompactionV2: nativeCompactionV2,
 	})
+	if locale.UserPresentation(ctx) {
+		key = "user:" + locale.FromContext(ctx) + ":" + key
+	}
 	entry, hit, err := h.queryCaches.dashboardGroupStatsCache.GetOrLoadContext(ctx, key, func(shared context.Context) (any, error) {
 		return h.GetGroupStatsWithUsageFilters(shared, startTime, endTime, UsageLogFilters{
 			UserID: userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID, TeamID: teamID,

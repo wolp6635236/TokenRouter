@@ -34,20 +34,6 @@ type JWTClaims struct {
 	jwt.RegisteredClaims
 }
 
-type PendingOAuthClaims struct {
-	Email    string `json:"email"`
-	Username string `json:"username"`
-	AffCode  string `json:"aff_code,omitempty"`
-	Purpose  string `json:"purpose"`
-	jwt.RegisteredClaims
-}
-
-type PendingOAuthIdentity struct {
-	Email    string
-	Username string
-	AffCode  string
-}
-
 // TokenPair 包含Access Token和Refresh Token
 type TokenPair struct {
 	AccessToken  string `json:"access_token"`
@@ -473,67 +459,6 @@ func RandomHexString(byteLength int) (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// CreatePendingOAuthToken 生成短期 JWT，用于在用户补全邀请码时暂存 OAuth 身份。
-func (s *SessionService) CreatePendingOAuthToken(email, username string) (string, error) {
-	return s.CreatePendingOAuthTokenWithAffiliate(email, username, "")
-}
-
-// CreatePendingOAuthTokenWithAffiliate 生成带邀请返利码的待补全 OAuth token。
-func (s *SessionService) CreatePendingOAuthTokenWithAffiliate(email, username, affiliateCode string) (string, error) {
-	now := s.now()
-	claims := &PendingOAuthClaims{
-		Email:    email,
-		Username: username,
-		AffCode:  strings.TrimSpace(affiliateCode),
-		Purpose:  PendingOAuthPurpose,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(now.Add(PendingOAuthTokenTTL)),
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now),
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.options.Secret))
-}
-
-// VerifyPendingOAuthToken validates a pending OAuth token and returns the embedded identity.
-// Returns ErrInvalidToken when the token is invalid or expired.
-func (s *SessionService) VerifyPendingOAuthToken(tokenStr string) (email, username string, err error) {
-	identity, err := s.VerifyPendingOAuthTokenDetails(tokenStr)
-	if err != nil {
-		return "", "", err
-	}
-	return identity.Email, identity.Username, nil
-}
-
-func (s *SessionService) VerifyPendingOAuthTokenDetails(tokenStr string) (*PendingOAuthIdentity, error) {
-	if len(tokenStr) > MaxTokenLength {
-		return nil, ErrInvalidToken
-	}
-	parser := jwt.NewParser(jwt.WithTimeFunc(s.now), jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}))
-	token, parseErr := parser.ParseWithClaims(tokenStr, &PendingOAuthClaims{}, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-		}
-		return []byte(s.options.Secret), nil
-	})
-	if parseErr != nil {
-		return nil, ErrInvalidToken
-	}
-	claims, ok := token.Claims.(*PendingOAuthClaims)
-	if !ok || !token.Valid {
-		return nil, ErrInvalidToken
-	}
-	if claims.Purpose != PendingOAuthPurpose {
-		return nil, ErrInvalidToken
-	}
-	return &PendingOAuthIdentity{
-		Email:    claims.Email,
-		Username: claims.Username,
-		AffCode:  strings.TrimSpace(claims.AffCode),
-	}, nil
-}
-
 // SessionOptions 固化启动 JWT 配置，运行时会话绑定开关按请求读取。
 type SessionOptions struct {
 	Now                      func() time.Time
@@ -559,9 +484,3 @@ type SessionService struct {
 func NewSessionService(options SessionOptions, users SessionUserReader, cache RefreshTokenCache, settings SessionSettings, logf LogFunc) *SessionService {
 	return &SessionService{options: options, userRepo: users, refreshTokenCache: cache, settingService: settings, observer: Observer{Log: logf}}
 }
-
-// PendingOAuthPurpose 是待补全 OAuth 注册 token 的用途标记。
-const PendingOAuthPurpose = "pending_oauth_registration"
-
-// PendingOAuthTokenTTL 是待补全 OAuth 注册 token 的有效期。
-const PendingOAuthTokenTTL = 10 * time.Minute

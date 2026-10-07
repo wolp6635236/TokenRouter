@@ -3038,9 +3038,7 @@ func TestDefaultOpenAIProviderScheduler_ShouldEscapeStickyProvider_ThresholdBoun
 	stats.Report(providerID, true, &ttft)
 	stats.Report(providerID, false, nil)
 	stats.Report(providerID, true, nil)
-	scheduler := &compatiblePicker{stats: stats}
-
-	reason, errorRate, observedTTFT, shouldEscape := shouldEscapeAdvancedStickyProvider(scheduler.stats, providerID, policy.StickyEscapeConfig{
+	reason, errorRate, observedTTFT, shouldEscape := schedulercore.ShouldEscapeSticky(stats, providerID, policy.StickyEscapeConfig{
 		Enabled:   true,
 		TtftMs:    15000,
 		ErrorRate: 0.5,
@@ -3053,14 +3051,14 @@ func TestDefaultOpenAIProviderScheduler_ShouldEscapeStickyProvider_ThresholdBoun
 	for i := 0; i < 4; i++ {
 		stats.Report(providerID, false, nil)
 	}
-	reason, errorRate, _, shouldEscape = shouldEscapeAdvancedStickyProvider(scheduler.stats, providerID, policy.StickyEscapeConfig{
+	reason, errorRate, _, shouldEscape = schedulercore.ShouldEscapeSticky(stats, providerID, policy.StickyEscapeConfig{
 		Enabled:   true,
 		TtftMs:    15000,
 		ErrorRate: 1,
 	})
 	require.False(t, shouldEscape)
 	require.Empty(t, reason)
-	reason, errorRate, observedTTFT, shouldEscape = shouldEscapeAdvancedStickyProvider(scheduler.stats, providerID, policy.StickyEscapeConfig{
+	reason, errorRate, observedTTFT, shouldEscape = schedulercore.ShouldEscapeSticky(stats, providerID, policy.StickyEscapeConfig{
 		Enabled:   true,
 		TtftMs:    15000,
 		ErrorRate: errorRate,

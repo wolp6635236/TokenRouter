@@ -1,5 +1,3 @@
-//go:build unit
-
 package billing_test
 
 // testPtrFloat64 returns a pointer to the given float64 value.

@@ -1,5 +1,3 @@
-//go:build unit
-
 package payment_test
 
 import (
@@ -348,7 +346,6 @@ func TestResolveOrderPublicByResumeTokenReturnsBadRequestForMismatchedToken(t *t
 }
 
 func TestVerifyOrderPublicRejectsBlankOutTradeNo(t *testing.T) {
-
 	db, err := sql.Open("sqlite", "file:payment_handler_public_verify_blank?mode=memory&cache=shared")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })

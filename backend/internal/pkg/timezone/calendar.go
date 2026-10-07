@@ -9,11 +9,17 @@ import (
 // Calendar 持有日期计算使用的时区，不修改进程全局状态。
 type Calendar struct {
 	location *time.Location
+	now      func() time.Time
 }
 
 // NewCalendar 使用指定时区；nil 延续 Go 的本地时区语义。
 func NewCalendar(loc *time.Location) Calendar {
 	return Calendar{location: loc}
+}
+
+// NewCalendarWithClock 使用调用方提供的时钟；传 nil 时读取系统时间。
+func NewCalendarWithClock(loc *time.Location, now func() time.Time) Calendar {
+	return Calendar{location: loc, now: now}
 }
 
 // Location 返回本对象的时区，零值使用 time.Local。
@@ -24,12 +30,17 @@ func (c Calendar) Location() *time.Location {
 	return c.location
 }
 
+// Now 返回日历时区的当前时间；零值保留系统时钟的单调读数。
 func (c Calendar) Now() time.Time {
-	// 未指定时区时保留 time.Now 的单调时钟，兼容全局初始化前的调用。
-	if c.location == nil {
-		return time.Now()
+	now := time.Now
+	if c.now != nil {
+		now = c.now
 	}
-	return time.Now().In(c.Location())
+	value := now()
+	if c.location == nil {
+		return value
+	}
+	return value.In(c.Location())
 }
 
 // UTCOffset 返回给定时刻在当前时区的 UTC 偏移文本。
@@ -131,7 +142,7 @@ func (c Calendar) NowInUserLocation(userTZ string) time.Time {
 		return c.Now()
 	}
 	if userLoc, err := time.LoadLocation(userTZ); err == nil {
-		return time.Now().In(userLoc)
+		return c.Now().In(userLoc)
 	}
 	return c.Now()
 }

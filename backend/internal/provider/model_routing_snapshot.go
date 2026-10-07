@@ -7,14 +7,14 @@ import (
 // ModelRoutingSnapshot 保存本次模型匹配需要的规则。
 // 在模型匹配时创建，并按需读取动态默认模型。
 type ModelRoutingSnapshot struct {
-	platform string
-	mapping  map[string]string
+	mapping map[string]string
 }
 
-func NewModelRoutingSnapshot(platform string, mapping map[string]string) ModelRoutingSnapshot {
-	return ModelRoutingSnapshot{platform: platform, mapping: maps.Clone(mapping)}
+// NewModelRoutingSnapshot 复制模型配置，供本次请求匹配使用。
+func NewModelRoutingSnapshot(mapping map[string]string) ModelRoutingSnapshot {
+	return ModelRoutingSnapshot{mapping: maps.Clone(mapping)}
 }
 
 func (s ModelRoutingSnapshot) Resolve(requested string) (string, bool) {
-	return ResolveMappedModel(s.platform, s.mapping, requested)
+	return ResolveMappedModel(s.mapping, requested)
 }

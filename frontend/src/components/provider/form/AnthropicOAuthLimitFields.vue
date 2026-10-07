@@ -111,7 +111,7 @@
       </div>
       <SettingsSegmented
         v-model="userMsgQueueMode"
-        :aria-label="t('admin.providers.quotaControl.rpmLimit.userMsgQueue')"
+        :ariaLabel="t('admin.providers.quotaControl.rpmLimit.userMsgQueue')"
         :options="umqModeOptions"
       />
     </div>

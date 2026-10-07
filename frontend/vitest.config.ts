@@ -6,12 +6,13 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
+      '@': resolve(import.meta.dirname, 'src'),
       'vue-i18n': 'vue-i18n/dist/vue-i18n.runtime.esm-bundler.js'
     }
   },
   test: {
     globals: true,
+    clearMocks: false,
     environment: 'jsdom',
     setupFiles: ['./src/__tests__/setup.ts'],
     include: ['src/**/*.{test,spec}.{js,ts,jsx,tsx}'],
@@ -28,12 +29,10 @@ export default defineConfig({
         'src/main.ts'
       ],
       thresholds: {
-        global: {
-          statements: 80,
-          branches: 80,
-          functions: 80,
-          lines: 80
-        }
+        statements: 80,
+        branches: 80,
+        functions: 80,
+        lines: 80
       }
     }
   }

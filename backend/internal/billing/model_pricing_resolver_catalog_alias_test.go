@@ -9,7 +9,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	billingadapter "github.com/TokenFlux/TokenRouter/internal/billing/provider"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	catalogprovider "github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -21,9 +20,9 @@ import (
 
 // TestResolveCatalogAliasesPreserveConfigPricing 验证旧别名缺价，完整型号的显式零价独立生效。
 func TestResolveCatalogAliasesPreserveConfigPricing(t *testing.T) {
-	previous := xai.RuntimeModelMappingOptions()
-	t.Cleanup(func() { xai.SetRuntimeModelMappingOptions(previous) })
-	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{DefaultText: "X-AI/GROK-4.6"})
+	previous := xai.RuntimeDefaultTextModel()
+	t.Cleanup(func() { xai.SetRuntimeDefaultTextModel(previous) })
+	xai.SetRuntimeDefaultTextModel("X-AI/GROK-4.6")
 	for _, tc := range []struct{ platform, base, alias string }{
 		{capability.PlatformGemini, "gemini-3.8-flash", "gemini-3.8-flash-tiered"},
 		{capability.PlatformGemini, "gemini-3.7-flash", "models/gemini-3.7-flash-medium"},
@@ -47,7 +46,7 @@ func TestResolveCatalogAliasesPreserveConfigPricing(t *testing.T) {
 						tc.base: {Mode: "chat", InputCostPerToken: 1e-6, OutputCostPerToken: 2e-6},
 					}})
 				}
-				resolver := billingtestkit.PriceResolver(pricingConfigs, newCalculator(&config.Config{}, catalog))
+				resolver := billingtestkit.PriceResolver(pricingConfigs, newCalculator(catalog))
 				input := billing.PricingInput{Model: tc.alias, GroupID: &groupID}
 				resolved := resolver.Resolve(context.Background(), input)
 				require.True(t, resolved.IsUnpriced(), "catalog=%v", hasCatalog)
@@ -87,7 +86,7 @@ func TestResolveCatalogAliasesUseUnifiedPricingConfig(t *testing.T) {
 	catalog := newCatalogFixture(catalogFixture{pricingData: map[string]*pricing.CatalogModelPricing{
 		"gemini-3.8-flash": {Mode: "chat", InputCostPerToken: 1e-6},
 	}})
-	resolver := billingtestkit.PriceResolver(pricingConfigs, newCalculator(&config.Config{}, catalog))
+	resolver := billingtestkit.PriceResolver(pricingConfigs, newCalculator(catalog))
 	resolved := resolver.Resolve(context.Background(), billing.PricingInput{Model: "gemini-3.8-flash-tiered", GroupID: &groupID})
 	require.True(t, resolved.IsUnpriced())
 }
@@ -108,7 +107,7 @@ func TestGroupAndPricingCatalogAliasPrecedence(t *testing.T) {
 
 				repository := &routingtestkit.ConfigRows{Platforms: map[int64]string{group.ID: tc.platform}}
 				pricingConfigs := routingtestkit.NewPricingConfigService(repository, nil, routing.PricingConfigOptions{Now: time.Now, LoadLocation: billingadapter.LoadPricingLocation})
-				resolver := billingtestkit.PriceResolver(pricingConfigs, newCalculator(&config.Config{}, nil))
+				resolver := billingtestkit.PriceResolver(pricingConfigs, newCalculator(nil))
 				resolve := func(cards []routing.ModelPricingEntry) *pricing.ResolvedPricing {
 					configPricing := routingtestkit.Configuration{ID: 990, Status: billing.StatusActive, GroupIDs: []int64{group.ID}}
 					configPricing.ModelPricing = cards

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/team"
 )
@@ -34,7 +36,7 @@ func (r *TeamKeys) ListTeamKeys(ctx context.Context, teamID int64, actorUserID *
 	actorCondition, args := TeamKeyActorCondition(actorUserID, args)
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT k.id, k.user_id, COALESCE(u.email, ''), k.name, k.key, k.status, k.team_owner_disabled, k.group_id,
-		       COALESCE(g.name, ''), k.last_used_at, k.created_at
+		       `+postgresinfra.LocalizedTextExpression(ctx, "g.localization", "display_name", "COALESCE(g.name, '')")+`, k.last_used_at, k.created_at
 		FROM api_keys k
 		LEFT JOIN users u ON u.id = k.user_id
 		LEFT JOIN groups g ON g.id = k.group_id

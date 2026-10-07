@@ -492,6 +492,7 @@
 </template>
 
 <script setup lang="ts">
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { vContentReveal } from '@/directives/contentReveal'
 import { useRoute as useMotionRoute } from 'vue-router'
 const motionRoute = useMotionRoute()
@@ -580,24 +581,9 @@ const siteName = computed(() => appStore.siteName || 'TokenRouter')
 const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_logo || appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
 const docUrl = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.doc_url || appStore.docUrl || ''))
 const homeContent = computed(() => appStore.cachedPublicSettings?.home_content || '')
-const currentLanguage = computed(() => String(locale.value).toLowerCase().startsWith('zh') ? 'zh' : 'en')
-const numberLocale = computed(() => currentLanguage.value === 'zh' ? 'zh-CN' : 'en-US')
-const homeHeroTitle = computed(() => {
-  const settings = appStore.cachedPublicSettings
-  return localizedHomeCopy(
-    settings?.site_title_zh,
-    settings?.site_title_en,
-    t('home.heroTitle')
-  )
-})
-const homeHeroSubtitle = computed(() => {
-  const settings = appStore.cachedPublicSettings
-  return localizedHomeCopy(
-    settings?.site_subtitle_zh,
-    settings?.site_subtitle_en,
-    t('home.heroDescription')
-  )
-})
+const numberLocale = computed(() => locale.value)
+const homeHeroTitle = computed(() => appStore.cachedPublicSettings?.site_text_overrides?.includes('site_title') ? appStore.cachedPublicSettings.site_title || '' : t('home.heroTitle'))
+const homeHeroSubtitle = computed(() => appStore.cachedPublicSettings?.site_text_overrides?.includes('site_subtitle') ? appStore.cachedPublicSettings.site_subtitle || '' : t('home.heroDescription'))
 
 // 自定义首页支持 URL iframe 和 HTML 两种模式。
 const isHomeContentUrl = computed(() => {
@@ -1109,22 +1095,6 @@ watch(
   { immediate: true }
 )
 
-function localizedHomeCopy(zhText: string | undefined, enText: string | undefined, fallback: string): string {
-  const primary = currentLanguage.value === 'zh' ? zhText : enText
-  const secondary = currentLanguage.value === 'zh' ? enText : zhText
-  return firstConfiguredText(primary, secondary, fallback)
-}
-
-function firstConfiguredText(...values: Array<string | undefined>): string {
-  for (const value of values) {
-    const normalized = value?.trim()
-    if (normalized) {
-      return normalized
-    }
-  }
-  return ''
-}
-
 function mergeProviderVisualBrands(brands: string[]): string[] {
   const seen = new Set<string>()
   const merged: string[] = []
@@ -1208,6 +1178,7 @@ onUnmounted(() => {
     homeMarketplaceButtonIconTimer = null
   }
 })
+useLocaleRefresh(fetchHomeMarketplace)
 </script>
 
 <style scoped>

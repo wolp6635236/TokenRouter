@@ -123,7 +123,7 @@
             </div>
           </div>
         </div>
-        <RuleListEditor :items="form.rules" :title="t('admin.modelAttributes.rules')" :empty-text="t('admin.modelAttributes.emptyRules')" variant="card" @add="form.rules.push({ models: [], attributes: {} })" @remove="form.rules.splice($event, 1)" @move="moveRule">
+        <RuleListEditor :items="form.rules" :title="t('admin.modelAttributes.rules')" :empty-text="t('admin.modelAttributes.emptyRules')" variant="card" @add="addRule()" @remove="form.rules.splice($event, 1)" @move="moveRule">
           <template #row="{ item }">
             <div class="space-y-4">
               <div>
@@ -155,6 +155,7 @@
 </template>
 
 <script setup lang="ts">
+import { newContentID } from '@/i18n/content'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -266,6 +267,10 @@ async function onModelsUpdate(rule: AttributeRule, models: string[]) {
   } catch {
     // 目录查询失败时保留表单，用户仍可手动填写。
   }
+}
+
+function addRule() {
+  form.value.rules.push({ id: newContentID(), models: [], attributes: {} })
 }
 
 async function save() {

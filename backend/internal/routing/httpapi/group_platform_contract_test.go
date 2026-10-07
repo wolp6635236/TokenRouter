@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +16,7 @@ func bindGroupPlatformJSON(t *testing.T, target any, body string) error {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/", bytes.NewBufferString(body))
 	c.Request.Header.Set("Content-Type", "application/json")
-	return bindManagementJSON(c, target)
+	return httpx.BindJSONStrict(c, target)
 }
 
 func TestGroupManagementRejectsRetiredFields(t *testing.T) {

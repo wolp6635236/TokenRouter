@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 var (
@@ -26,7 +26,7 @@ var (
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	if err != nil {
 		log.Printf("启动隔离 Redis 失败: %v", err)
 		os.Exit(1)

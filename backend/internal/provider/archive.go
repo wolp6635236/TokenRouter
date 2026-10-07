@@ -32,7 +32,6 @@ func (e *ArchiveInputError) Unwrap() error { return e.Err }
 
 type ArchiveOptions struct {
 	Now                func() time.Time
-	Defaults           func(context.Context) (*transfer.OpenAIOAuthImportDefaults, error)
 	DecodeIDToken      func(string) (*ArchiveIdentityHints, error)
 	Probe              func(ProviderSnapshot)
 	ForcePrivacy       func(context.Context, *Record) string
@@ -199,13 +198,6 @@ func (h *Archive) Import(ctx context.Context, req transfer.DataImportRequest) (t
 
 	// 收集需要异步设置隐私的 Antigravity OAuth 提供商
 	var privacyProviders []*Record
-	var openAIOAuthImportDefaults *transfer.OpenAIOAuthImportDefaults
-	if h.options.Defaults != nil {
-		openAIOAuthImportDefaults, err = h.options.Defaults(ctx)
-		if err != nil {
-			return result, err
-		}
-	}
 
 	for i := range dataPayload.Providers {
 		item := cloneArchiveItem(dataPayload.Providers[i])
@@ -235,7 +227,6 @@ func (h *Archive) Import(ctx context.Context, req transfer.DataImportRequest) (t
 			}
 		}
 
-		ApplyArchiveDefaults(&item, openAIOAuthImportDefaults)
 		h.enrichIdentity(&item)
 
 		providerInput := &CreateProviderInput{

@@ -219,6 +219,8 @@
 </template>
 
 <script setup lang="ts">
+import { getLocale } from '@/i18n'
+import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import Skeleton from '@/components/common/Skeleton.vue'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import { computed, onMounted, ref } from 'vue'
@@ -455,13 +457,10 @@ function diffLocalCalendarDays(target: Date, base: Date): number {
 }
 
 function formatDurationParts(parts: RemainingDurationParts): string {
-  if (parts.days > 0) {
-    return `${parts.days}d ${parts.hours}h`
-  }
-  if (parts.hours > 0) {
-    return `${parts.hours}h ${parts.minutes}m`
-  }
-  return `${parts.minutes}m`
+  const values: Array<[number, string]> = parts.days > 0
+    ? [[parts.days, 'day'], [parts.hours, 'hour']]
+    : parts.hours > 0 ? [[parts.hours, 'hour'], [parts.minutes, 'minute']] : [[parts.minutes, 'minute']]
+  return values.map(([value, unit]) => new Intl.NumberFormat(getLocale(), { style: 'unit', unit, unitDisplay: 'narrow' }).format(value)).join(' ')
 }
 
 function formatUsageWindow(
@@ -510,4 +509,5 @@ function formatResetTime(windowStart: string | null, windowHours: number): strin
 onMounted(() => {
   loadSubscriptions()
 })
+useLocaleRefresh(loadSubscriptions)
 </script>

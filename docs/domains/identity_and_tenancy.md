@@ -42,6 +42,8 @@ Key 的使用方直接使用 `apikey.APIKey`、`APIKeyRepository` 和 `APIKeySer
 
 管理员用户列表和详情的最近使用时间来自事务内维护的[用户活动汇总](../operations/observability_and_data_lifecycle.md#user_activity_summary)。排序在筛选后、分页前完成，升序把空时间放在前面，降序放在末尾；相同时间再按同方向的用户 ID 排序。搜索按邮箱、用户名、备注和 API Key 内容匹配，各字段分别查询候选用户 ID，再去重合并。计数和分页使用同一组条件。
 
+`User.preferred_locale` 是可为空的账户语言偏好，当前用户资料接口负责查询和修改。主动选择使用规范语言代码，登录、浏览器保存和邮件选择的顺序见[用户侧国际化](../interfaces/user_localization.md#language_selection)。管理员用户属性表单的定义和值按原文保存。
+
 <a id="authentication_boundaries"></a>
 ## 认证入口
 

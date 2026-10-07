@@ -1,5 +1,3 @@
-//go:build unit
-
 package identityhttp_test
 
 import (

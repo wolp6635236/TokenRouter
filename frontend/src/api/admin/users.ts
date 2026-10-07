@@ -187,16 +187,6 @@ export async function updateBalance(
   return data
 }
 
-/**
- * Update user concurrency
- * @param id - User ID
- * @param concurrency - New concurrency limit
- * @returns Updated user
- */
-export async function updateConcurrency(id: number, concurrency: number): Promise<AdminUser> {
-  return update(id, { concurrency })
-}
-
 /** 通过一次请求覆盖多个用户的并发数和/或 RPM 上限。 */
 export async function batchUpdateLimits(
   request: BatchUpdateUserLimitsRequest
@@ -225,30 +215,6 @@ export async function toggleStatus(id: number, status: 'active' | 'disabled'): P
  */
 export async function getUserApiKeys(id: number): Promise<PaginatedResponse<ApiKey>> {
   const { data } = await apiClient.get<PaginatedResponse<ApiKey>>(`/admin/users/${id}/api-keys`)
-  return data
-}
-
-/**
- * Get user's usage statistics
- * @param id - User ID
- * @param period - Time period
- * @returns User usage statistics
- */
-export async function getUserUsageStats(
-  id: number,
-  period: string = 'month'
-): Promise<{
-  total_requests: number
-  total_cost: number
-  total_tokens: number
-}> {
-  const { data } = await apiClient.get<{
-    total_requests: number
-    total_cost: number
-    total_tokens: number
-  }>(`/admin/users/${id}/usage`, {
-    params: { period }
-  })
   return data
 }
 
@@ -336,11 +302,9 @@ export const usersAPI = {
   update,
   delete: deleteUser,
   updateBalance,
-  updateConcurrency,
   batchUpdateLimits,
   toggleStatus,
   getUserApiKeys,
-  getUserUsageStats,
   getUserBalanceHistory,
   replaceGroup,
   bindUserAuthIdentity,

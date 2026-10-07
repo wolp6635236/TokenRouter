@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
@@ -188,7 +191,8 @@ type ProviderDraftTestResult struct {
 }
 
 func (s *ConfigService) GetByID(ctx context.Context, id int64) (*SubscriptionPlan, error) {
-	return s.plans.GetPlan(ctx, id)
+	plan, err := s.plans.GetPlan(ctx, id)
+	return billing.LocalizePlan(plan, locale.FromContext(ctx)), err
 }
 
 // GetPaymentConfig returns the full payment configuration.
@@ -205,9 +209,15 @@ func (s *ConfigService) GetPaymentConfig(ctx context.Context) (*PaymentConfig, e
 		SettingPaymentVisibleMethodAlipayEnabled, SettingPaymentVisibleMethodAlipaySource,
 		SettingPaymentVisibleMethodWxpayEnabled, SettingPaymentVisibleMethodWxpaySource,
 	}
+	for _, key := range []string{SettingProductNamePrefix, SettingProductNameSuffix, SettingHelpImageURL, SettingHelpText} {
+		keys = append(keys, locale.TextSettingKey(key))
+	}
 	vals, err := s.settingRepo.GetMultiple(ctx, keys)
 	if err != nil {
 		return nil, fmt.Errorf("get payment config settings: %w", err)
+	}
+	for _, key := range []string{SettingProductNamePrefix, SettingProductNameSuffix, SettingHelpImageURL, SettingHelpText} {
+		vals[key] = locale.ResolveSettingText(vals, key, "", locale.FromContext(ctx))
 	}
 	cfg := s.ConfigParsePaymentConfig(vals)
 	// Load Stripe publishable key from the first enabled Stripe provider instance
@@ -283,8 +293,8 @@ func (s *ConfigService) ConfigGetStripePublishableKey(ctx context.Context) strin
 	if err != nil || len(instances) == 0 {
 		return ""
 	}
-	cfg, err := s.ConfigDecryptConfig(instances[0].Config)
-	if err != nil || cfg == nil {
+	cfg := s.ConfigDecryptConfig(instances[0].Config)
+	if cfg == nil {
 		return ""
 	}
 	return cfg[ConfigKeyPublishableKey]

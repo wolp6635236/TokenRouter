@@ -2,16 +2,15 @@ package egress
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
 var (
-	ErrProxyNotFound = infraerrors.NotFound("PROXY_NOT_FOUND", "proxy not found")
-	ErrProxyInUse    = infraerrors.Conflict("PROXY_IN_USE", "proxy is in use by providers")
+	ErrProxyNotFound = apperror.NotFound("PROXY_NOT_FOUND", "proxy not found")
+	ErrProxyInUse    = apperror.Conflict("PROXY_IN_USE", "proxy is in use by providers")
 )
 
 type ProxyRepository interface {
@@ -35,112 +34,4 @@ type ProxyRepository interface {
 	ListAllForFallback(ctx context.Context) ([]Proxy, error)
 	CountExpired(ctx context.Context) (int64, error)
 	CountExpiringSoon(ctx context.Context, now time.Time) (int64, error)
-}
-
-// UpdateProxyRequest 更新代理请求
-type UpdateProxyRequest struct {
-	Name     *string `json:"name"`
-	Protocol *string `json:"protocol"`
-	Host     *string `json:"host"`
-	Port     *int    `json:"port"`
-	Username *string `json:"username"`
-	Password *string `json:"password"`
-	Status   *string `json:"status"`
-}
-
-// ProxyService 代理管理服务
-type ProxyService struct {
-	proxyRepo ProxyRepository
-}
-
-// NewProxyService 创建代理服务实例
-func NewProxyService(proxyRepo ProxyRepository) *ProxyService {
-	return &ProxyService{
-		proxyRepo: proxyRepo,
-	}
-}
-
-// GetByID 根据ID获取代理
-func (s *ProxyService) GetByID(ctx context.Context, id int64) (*Proxy, error) {
-	proxy, err := s.proxyRepo.GetByID(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("get proxy: %w", err)
-	}
-	return proxy, nil
-}
-
-// List 获取代理列表
-func (s *ProxyService) List(ctx context.Context, params pagination.PaginationParams) ([]Proxy, *pagination.PaginationResult, error) {
-	proxies, pagination, err := s.proxyRepo.List(ctx, params)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list proxies: %w", err)
-	}
-	return proxies, pagination, nil
-}
-
-// ListActive 获取活跃代理列表
-func (s *ProxyService) ListActive(ctx context.Context) ([]Proxy, error) {
-	proxies, err := s.proxyRepo.ListActive(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list active proxies: %w", err)
-	}
-	return proxies, nil
-}
-
-// Update 更新代理
-func (s *ProxyService) Update(ctx context.Context, id int64, req UpdateProxyRequest) (*Proxy, error) {
-	proxy, err := s.proxyRepo.GetByID(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("get proxy: %w", err)
-	}
-
-	// 更新字段
-	if req.Name != nil {
-		proxy.Name = *req.Name
-	}
-
-	if req.Protocol != nil {
-		proxy.Protocol = *req.Protocol
-	}
-
-	if req.Host != nil {
-		proxy.Host = *req.Host
-	}
-
-	if req.Port != nil {
-		proxy.Port = *req.Port
-	}
-
-	if req.Username != nil {
-		proxy.Username = *req.Username
-	}
-
-	if req.Password != nil {
-		proxy.Password = *req.Password
-	}
-
-	if req.Status != nil {
-		proxy.Status = *req.Status
-	}
-
-	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
-		return nil, fmt.Errorf("update proxy: %w", err)
-	}
-
-	return proxy, nil
-}
-
-// Delete 删除代理
-func (s *ProxyService) Delete(ctx context.Context, id int64) error {
-	// 检查代理是否存在
-	_, err := s.proxyRepo.GetByID(ctx, id)
-	if err != nil {
-		return fmt.Errorf("get proxy: %w", err)
-	}
-
-	if err := s.proxyRepo.Delete(ctx, id); err != nil {
-		return fmt.Errorf("delete proxy: %w", err)
-	}
-
-	return nil
 }

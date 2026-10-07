@@ -12,6 +12,7 @@ func GroupFromEnt(g *dbent.Group) *routing.Group {
 	}
 	routingPolicy := routing.DecodeGroupRoutingPolicy(g.RoutingPolicy)
 	return &routing.Group{
+		Localization:                    g.Localization,
 		ID:                              g.ID,
 		Name:                            g.Name,
 		Description:                     derefString(g.Description),

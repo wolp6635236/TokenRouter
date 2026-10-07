@@ -807,6 +807,7 @@ marketplace: {
       deleteChannel: '删除渠道',
       deleteChannelConfirm: '确定要删除此渠道吗？',
       planName: '套餐名称',
+      planCopy: '套餐文案',
       planDescription: '套餐描述',
       createPlan: '创建套餐',
       editPlan: '编辑套餐',

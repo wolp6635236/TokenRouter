@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 var (
@@ -28,7 +28,7 @@ func TestMain(m *testing.M) { os.Exit(runRedisTests(m)) }
 
 func runRedisTests(m *testing.M) int {
 	ctx := context.Background()
-	c, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	c, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

@@ -27,6 +27,7 @@ type ExpiryReminder struct {
 	RecipientEmail, RecipientName, PlanName string
 	ExpiresAt                               time.Time
 	DaysRemaining                           int
+	PlanLocalization                        PlanLocalization
 }
 
 // ExpiryNotifier 由通知适配层报告配置状态并投递提醒。
@@ -249,12 +250,16 @@ func (s *SubscriptionExpiryService) sendExpiryReminderIfDue(parent context.Conte
 		return
 	}
 
+	var localization PlanLocalization
+	if sub.Plan != nil {
+		localization = sub.Plan.Localization
+	}
 	ctx, cancel := context.WithTimeout(parent, s.expiryReminderSendTimeout())
 	defer cancel()
 	if err := s.notificationEmailService.Send(ctx, ExpiryReminder{
 		UserID: sub.UserID, SubscriptionID: sub.ID,
 		RecipientEmail: sub.User.Email, RecipientName: reminderRecipientName(sub.User),
-		PlanName: subscriptionReminderPlanName(sub), ExpiresAt: sub.ExpiresAt, DaysRemaining: daysRemaining,
+		PlanLocalization: localization, PlanName: subscriptionReminderPlanName(sub), ExpiresAt: sub.ExpiresAt, DaysRemaining: daysRemaining,
 	}); err != nil {
 		s.observe("[SubscriptionExpiry] Send expiry reminder failed: subscription=%d user=%d err=%v", sub.ID, sub.UserID, err)
 	}

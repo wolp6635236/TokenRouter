@@ -1,9 +1,23 @@
 <template>
   <AppLayout full-viewport>
     <!-- 整个内容区即无限画布背景:fullViewport 模式下 app-main 无内边距,画布经 flex 链铺满全幅(含顶部,点阵直达 header 边界) -->
-    <div ref="stageRef" class="relative h-full min-h-0">
+    <!-- --creative-history-w 是历史侧栏在 md 起的宽度；侧栏展开时 --creative-history-reserve 记下侧栏占用的右侧宽度，
+         顶部工具条和输入框据此在左侧剩余区域居中。窄屏侧栏盖在画布上，这个变量保持未设置。 -->
+    <div
+      ref="stageRef"
+      class="relative h-full min-h-0"
+      :class="[
+        '[--creative-history-w:20rem] xl:[--creative-history-w:24rem]',
+        historyOpen && 'md:[--creative-history-reserve:calc(var(--creative-history-w)_+_0.75rem)]',
+      ]"
+    >
       <CreativeCanvas ref="canvasRef" class="absolute inset-0" :operation="studio.operation.value" :allowed-mimes="studio.capabilities.value.allowed_mime_types" @error="onCanvasError" />
-      <CreativeRunHistory ref="historyRef" :studio="studio" :active-run-count="activeRunCount" />
+      <CreativeRunHistory
+        ref="historyRef"
+        v-model:open="historyOpen"
+        :studio="studio"
+        :active-run-count="activeRunCount"
+      />
 
       <!-- 设置：左上角齿轮按钮，点击向下展开菜单 -->
       <div ref="settingsRef" class="absolute left-3 top-3 z-20">
@@ -69,8 +83,8 @@
         </div>
       </MotionTransition>
 
-      <!-- 聊天式输入框：固定底部居中，不随选中图片移动 -->
-      <div class="absolute bottom-4 left-1/2 z-30 -translate-x-1/2">
+      <!-- 聊天式输入框：固定底部居中，不随选中图片移动；历史侧栏展开时在侧栏左侧居中 -->
+      <div class="creative-composer-dock absolute bottom-4 z-30 -translate-x-1/2">
         <CreativeComposer
           ref="composerRef"
           :studio="studio"
@@ -108,6 +122,7 @@
  * - 生成时从画布收集输入：edit/inpaint 取当前选中图片的原始 blob，inpaint 另取画笔 mask 导出
  * - 注册画布桥接：收割成功的输出自动上板；历史里的输出可一键导入画布
  * - 左上角设置（清空画布 / 清空本机创作数据）、右上角历史、顶部工具栏（上传 / 下载 / 局部重绘画笔组 / 删除），三块浮层同高
+ * - 历史从右侧拉开侧栏：md 起停靠右侧，工具条和输入框移到侧栏左侧区域居中；窄屏侧栏带遮罩盖住画布
  * - 画布没有图片时，中央显示上传入口和示例提示词
  * 图片本体只存当前浏览器（IndexedDB），生成时才把所选素材发给模型供应商。
  */
@@ -137,6 +152,8 @@ const settingsRef = ref<HTMLDivElement | null>(null)
 const showClearConfirm = ref(false)
 // 设置菜单开关（齿轮在画布左上角，菜单向下展开）
 const settingsOpen = ref(false)
+// 历史侧栏开关，决定工具条和输入框是否给侧栏让位
+const historyOpen = ref(false)
 const submissionAnimationVisible = ref(false)
 const submissionAnimationStyle = ref<Record<string, string>>({})
 let submissionAnimationFrame: number | null = null
@@ -305,6 +322,15 @@ async function onClearLocalData(): Promise<void> {
 /* 设置菜单动效用全局 pop-float,锚点方向(左上锚、向上收起)用局部变量表达。 */
 .settings-pop-float {
   --pop-shift: calc(-1 * var(--motion-shift));
+}
+
+/* 输入框在侧栏左侧的区域居中，最大宽度同样扣掉侧栏；侧栏开合时平移过去 */
+.creative-composer-dock {
+  left: calc((100% - var(--creative-history-reserve, 0px)) / 2);
+  max-width: calc(100% - var(--creative-history-reserve, 0px) - 1.5rem);
+  transition:
+    left var(--motion-layout) var(--motion-ease),
+    max-width var(--motion-layout) var(--motion-ease);
 }
 
 /* 空画布引导里的上传和示例提示词按钮 */

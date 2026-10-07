@@ -8,7 +8,6 @@ import (
 // ModelPlatformRules 只在平台专有资格分支按需调用，模型配置与一跳匹配由 provider 拥有。
 type ModelPlatformRules struct {
 	NormalizeQoder      func(string) string
-	NormalizeOpenAI     func(string) string
 	QoderCompatible     func(string) bool
 	OpenAIOAuthServable func(string) bool
 }
@@ -19,12 +18,7 @@ func (a *Record) IsModelSupported(requestedModel string, defaults ModelMappingDe
 		return false
 	}
 	mapping := ResolveModelMapping(a, defaults)
-	model, _ := ResolveMappedModel(a.Platform, mapping, requestedModel)
-	if a.IsOpenAIOAuth() && !a.IsOpenAIPassthroughEnabled() && rules.NormalizeOpenAI != nil {
-		if normalized := rules.NormalizeOpenAI(model); normalized != "" {
-			model = normalized
-		}
-	}
+	model, _ := ResolveMappedModel(mapping, requestedModel)
 	scope := a.effectiveModelScope(defaults, mapping)
 	if !ModelInFinalWhitelist(a.Platform, model, scope, rules.NormalizeQoder) {
 		return false
@@ -70,13 +64,13 @@ func (a *Record) effectiveModelScope(defaults ModelMappingDefaults, mapping map[
 	scope := make(map[string]struct{})
 	if defaults.Models != nil {
 		for _, model := range defaults.Models(a) {
-			scope[NormalizeRequestedModelForLookup(a.Platform, model)] = struct{}{}
+			scope[strings.TrimSpace(model)] = struct{}{}
 		}
 	}
 	// 明确映射的目标是管理员声明的能力；通配目标不能隐式放开全部模型。
 	for _, model := range mapping {
 		if model != "" && !strings.Contains(model, "*") {
-			scope[NormalizeRequestedModelForLookup(a.Platform, model)] = struct{}{}
+			scope[strings.TrimSpace(model)] = struct{}{}
 		}
 	}
 	return scope
@@ -117,14 +111,14 @@ func (a *Record) GetConfiguredRequestModels(defaults ModelMappingDefaults) []str
 
 // ResolveMappedModel 获取映射后的模型名，并返回是否命中了提供商级映射。
 // matched=true 表示命中了精确映射或通配符映射，即使映射结果与原模型名相同。
-func ResolveMappedModel(platform string, mapping map[string]string, requestedModel string) (mappedModel string, matched bool) {
+func ResolveMappedModel(mapping map[string]string, requestedModel string) (mappedModel string, matched bool) {
 	if len(mapping) == 0 {
 		return requestedModel, false
 	}
 	if mappedModel, matched := ResolveRequestedModelInMapping(mapping, requestedModel); matched {
 		return mappedModel, true
 	}
-	normalized := NormalizeRequestedModelForLookup(platform, requestedModel)
+	normalized := strings.TrimSpace(requestedModel)
 	if normalized != requestedModel {
 		if mappedModel, matched := ResolveRequestedModelInMapping(mapping, normalized); matched {
 			return mappedModel, true
@@ -133,15 +127,14 @@ func ResolveMappedModel(platform string, mapping map[string]string, requestedMod
 	return requestedModel, false
 }
 
-// ModelInFinalWhitelist 检查最终上游模型是否命中白名单。
-// Gemini 和 Antigravity 使用模型归一化函数解析 customtools 等别名。
+// ModelInFinalWhitelist 检查最终模型是否命中白名单，Qoder 按路由键比较别名。
 func ModelInFinalWhitelist(platform, model string, whitelist map[string]struct{}, normalizeQoder func(string) string) bool {
 	if len(whitelist) == 0 {
 		return false
 	}
-	model = NormalizeRequestedModelForLookup(platform, model)
+	model = strings.TrimSpace(model)
 	for pattern := range whitelist {
-		pattern = NormalizeRequestedModelForLookup(platform, pattern)
+		pattern = strings.TrimSpace(pattern)
 		if strings.EqualFold(model, pattern) || (strings.HasSuffix(pattern, "*") && strings.HasPrefix(strings.ToLower(model), strings.ToLower(strings.TrimSuffix(pattern, "*")))) {
 			return true
 		}

@@ -101,7 +101,7 @@ func TestCreativeExecutorForwardsModelAllowedByGroupScheduler(t *testing.T) {
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(body, "model").String())
 
 	// 模型目录和执行数据各自持有策略的深拷贝，修改副本后持久化分组的数据保持不变。
-	view := creativeGroupView(group)
+	view := creativeGroupView(group, "en")
 	executionGroup, err := executor.Group(ctx, group.ID)
 	require.NoError(t, err)
 	view.RoutingPolicy.ModelMapping["gpt-image-1"] = "changed"
@@ -129,5 +129,5 @@ func TestCreativeExecutorKeepsPersistedGroupWhenClientRestricted(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "no compatible creative provider")
 	require.False(t, selected)
-	require.True(t, creativeGroupView(group).ClaudeCodeOnly)
+	require.True(t, creativeGroupView(group, "en").ClaudeCodeOnly)
 }

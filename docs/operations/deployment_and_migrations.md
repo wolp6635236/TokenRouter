@@ -15,6 +15,10 @@
 
 标准发布先生成一次前端静态资源，再由独立的 runner 把同一份前端嵌进各平台的 Go 二进制，并行交叉编译；最后的发布阶段统一归档二进制，并用 Linux `amd64` 和 `arm64` 的产物组装多架构镜像和必要的运行时工具。GitHub Release 同时发布 Linux `amd64`、Linux `arm64` 等产物，具体的矩阵以 [release workflow](../../.github/workflows/release.yml) 为准。
 
+源码镜像的前端阶段校验 `.node-version`，再按 `frontend/package.json` 的 `packageManager` 字段安装 pnpm，本地和 CI 读取同样的版本声明。默认 Node 镜像使用 26.10.0，覆盖 `NODE_IMAGE` 时仍需满足完整版本检查。Node 26 镜像通过 npm 安装声明的 pnpm 版本，冻结安装前复制 workspace 配置。
+
+前端构建会导入 `backend/internal/pkg/locale/manifest.json` 和 `error_messages.json`。根目录和 `deploy/` 的 Dockerfile 在前端构建阶段将这些文件复制到 `/app/backend/internal/pkg/locale/`，与源码中的相对导入路径一致。
+
 仓库支持以下运行方式：
 
 | 方式 | 入口 | 依赖和说明 |
@@ -36,7 +40,7 @@
 
 新的产物、安装目录、systemd 服务、容器用户和 Compose 服务都使用 `tokenrouter`。镜像保留 `/app/sub2api` 兼容链接，容器的 UID 和 GID 仍是 1000。安装器识别到 `/opt/sub2api`、旧配置和旧 unit 时，继续使用原来的目录、可执行文件路径、服务和用户；同时发现新旧两套安装时停止，以免覆盖另一套部署。
 
-标准发布的主归档命名为 `tokenrouter_<版本>_<系统>_<架构>`，另外还有 `sub2api_` 前缀的兼容归档。每个归档都包含新旧两个普通二进制文件，旧的更新器可以继续提取 `sub2api`。CI 里两个 GoReleaser build ID 复用同一组矩阵二进制，所有归档都写进 `checksums.txt`。新的更新器优先使用新归档，并兼容旧归档，替换的位置仍是当前实际的可执行文件路径；下载、校验和、备份和失败恢复的规则不变。
+标准发布的归档命名为 `tokenrouter_<版本>_<系统>_<架构>`，包含 `tokenrouter` 可执行文件。CI 将矩阵编译的二进制导入 GoReleaser，所有归档都写进 `checksums.txt`。当前更新器优先使用 `tokenrouter_` 归档，并支持读取历史发布的 `sub2api_` 归档，替换的位置是当前实际的可执行文件路径。只识别 `sub2api_` 归档或包内 `sub2api` 文件的旧更新器需要手动升级。
 
 官方价格补充和离线模型目录都内嵌在二进制里，后台在线更新、安装脚本、完整归档和 Docker 使用同一份默认数据。替换或回退二进制时，官方补充随版本切换，不需要额外安装资源文件。安装器不会创建或覆盖外部的价格补充。`pricing.fallback_file` 默认为空，手动配置的自定义文件照常读取，并优先于内嵌补充；旧的打包路径按[配置兼容规则](../interfaces/configuration.md#configuration_sources)处理。不再需要旧文件时，清空这个配置，文件本身由部署者管理。
 

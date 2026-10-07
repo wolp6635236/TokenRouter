@@ -379,7 +379,7 @@ func TestLiveSidebandRewritesEachSessionModelAndRestoresResponse(t *testing.T) {
 			},
 		},
 	}
-	upstreamModel := gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream("gpt-5", false, false)
+	upstreamModel := gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream("gpt-5", false)
 	record := &session.LiveCallRecord{
 		GroupID:            44,
 		Model:              "gpt-5",

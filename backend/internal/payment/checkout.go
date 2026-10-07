@@ -10,11 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/shopspring/decimal"
 )
 
 func (s *Checkout) CreateOrder(ctx context.Context, req CreateOrderRequest) (*CreateOrderResponse, error) {
+	req.Locale = locale.Negotiate(req.Locale, locale.FromContext(ctx))
+	ctx = locale.WithLanguage(ctx, req.Locale)
 	if req.OrderType == "" {
 		req.OrderType = OrderTypeBalance
 	}
@@ -283,7 +287,10 @@ func (s *Checkout) InvokeProvider(ctx context.Context, order *Order, req CreateO
 		return nil, infraerrors.ServiceUnavailable("PAYMENT_PROVIDER_MISCONFIGURED", "provider_misconfigured").
 			WithMetadata(map[string]string{"provider": sel.ProviderKey, "instance_id": sel.InstanceID})
 	}
-	subject := s.BuildPaymentSubject(plan, limitAmount, cfg, sel)
+	subject, _ := order.ProviderSnapshot["display_subject"].(string)
+	if subject == "" {
+		subject = PaymentSubject(plan, limitAmount, cfg, sel, locale.FromContext(ctx))
+	}
 	outTradeNo := order.OutTradeNo
 	canonicalReturnURL, err := CanonicalizeReturnURL(req.ReturnURL, req.SrcHost, req.SrcURL)
 	if err != nil {
@@ -411,10 +418,18 @@ func SelectedInstanceSupportedTypes(sel *InstanceSelection) string {
 }
 
 func (s *Checkout) BuildPaymentSubject(plan *SubscriptionPlan, limitAmount float64, cfg *PaymentConfig, sel *InstanceSelection) string {
+	return PaymentSubject(plan, limitAmount, cfg, sel, locale.Default())
+}
+
+// PaymentSubject 生成下单时保存的商品标题。
+func PaymentSubject(plan *SubscriptionPlan, limitAmount float64, cfg *PaymentConfig, sel *InstanceSelection, language string) string {
 	if plan != nil {
 		productName := plan.ProductName
 		if productName == "" {
 			productName = "TokenRouter Subscription " + plan.Name
+			if locale.Normalize(language) == "zh-Hans" {
+				productName = "TokenRouter 订阅 " + plan.Name
+			}
 		}
 		return ApplyPaymentProductNameAffix(productName, cfg)
 	}

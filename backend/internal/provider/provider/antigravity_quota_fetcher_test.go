@@ -1,5 +1,3 @@
-//go:build unit
-
 package provider
 
 import (
@@ -421,7 +419,7 @@ func TestFetchQuotaUsesConfiguredModelsListBodyLimit(t *testing.T) {
 			"project_id":   "project",
 		},
 	}, "")
-	require.ErrorContains(t, err, "响应超过 8 字节")
+	require.ErrorContains(t, err, "response exceeds 8 bytes")
 }
 
 func TestFetchQuota_ForbiddenReturnsIsForbidden(t *testing.T) {

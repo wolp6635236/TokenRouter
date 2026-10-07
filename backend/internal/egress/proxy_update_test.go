@@ -1,5 +1,3 @@
-//go:build unit
-
 package egress_test
 
 import (
@@ -29,22 +27,7 @@ func (s *updatingProxyRepoStub) Update(_ context.Context, proxy *egress.Proxy) e
 	return nil
 }
 
-func TestBothProxyUpdateServicesUseRepositoryUpdateBoundary(t *testing.T) {
-	t.Run("ProxyService", func(t *testing.T) {
-		repo := &updatingProxyRepoStub{
-			proxyRepoStub: &proxyRepoStub{},
-			proxy:         &egress.Proxy{ID: 9, Protocol: "http", Host: "old.example", Port: 8080, Status: billing.StatusActive},
-		}
-		svc := egress.NewProxyService(repo)
-		host := "new.example"
-
-		_, err := svc.Update(context.Background(), 9, egress.UpdateProxyRequest{Host: &host})
-
-		require.NoError(t, err)
-		require.Equal(t, 1, repo.updateCalls)
-		require.Equal(t, host, repo.proxy.Host)
-	})
-
+func TestProxyAdminUpdateUsesRepositoryUpdate(t *testing.T) {
 	t.Run("adminService", func(t *testing.T) {
 		repo := &updatingProxyRepoStub{
 			proxyRepoStub: &proxyRepoStub{},

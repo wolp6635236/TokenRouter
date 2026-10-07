@@ -70,7 +70,6 @@ func (s *GrokProviderTest) Execute(c *TestRun, value *providercore.Record, model
 		if mapped := strings.TrimSpace(mappedTestModel(value, imageModel)); mapped != "" {
 			imageModel = mapped
 		}
-		imageModel = (xai.MediaCodec{}).NormalizeGrokMediaModelForEndpoint(xai.GrokMediaEndpointImagesGenerations, imageModel, false)
 		imagePrompt := strings.TrimSpace(prompt)
 		if imagePrompt == "" {
 			imagePrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."

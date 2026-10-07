@@ -27,7 +27,7 @@ type ForbiddenError struct {
 }
 
 func (e *ForbiddenError) Error() string {
-	return fmt.Sprintf("fetchAvailableModels 失败 (HTTP %d): %s", e.StatusCode, e.Body)
+	return fmt.Sprintf("fetchAvailableModels failed (HTTP %d): %s", e.StatusCode, e.Body)
 }
 
 // NewAPIRequestWithURL 使用指定的 base URL 创建 Antigravity API 请求（v1internal 端点）
@@ -150,28 +150,28 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenURL, strings.NewReader(params.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := servertiming.Do(c.httpClient, req)
 	if err != nil {
-		return nil, fmt.Errorf("token 交换请求失败: %w", err)
+		return nil, fmt.Errorf("send token exchange request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token 交换失败 (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("token exchange failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var tokenResp TokenResponse
 	if err := json.Unmarshal(bodyBytes, &tokenResp); err != nil {
-		return nil, fmt.Errorf("token 解析失败: %w", err)
+		return nil, fmt.Errorf("parse token response: %w", err)
 	}
 
 	return &tokenResp, nil
@@ -192,28 +192,28 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*TokenR
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenURL, strings.NewReader(params.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := servertiming.Do(c.httpClient, req)
 	if err != nil {
-		return nil, fmt.Errorf("token 刷新请求失败: %w", err)
+		return nil, fmt.Errorf("send token refresh request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token 刷新失败 (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("token refresh failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var tokenResp TokenResponse
 	if err := json.Unmarshal(bodyBytes, &tokenResp); err != nil {
-		return nil, fmt.Errorf("token 解析失败: %w", err)
+		return nil, fmt.Errorf("parse token response: %w", err)
 	}
 
 	return &tokenResp, nil
@@ -223,28 +223,28 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*TokenR
 func (c *Client) GetUserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, UserInfoURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	resp, err := servertiming.Do(c.httpClient, req)
 	if err != nil {
-		return nil, fmt.Errorf("用户信息请求失败: %w", err)
+		return nil, fmt.Errorf("send user info request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("获取用户信息失败 (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("fetch user info failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var userInfo UserInfo
 	if err := json.Unmarshal(bodyBytes, &userInfo); err != nil {
-		return nil, fmt.Errorf("用户信息解析失败: %w", err)
+		return nil, fmt.Errorf("parse user info: %w", err)
 	}
 
 	return &userInfo, nil
@@ -260,7 +260,7 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, nil, fmt.Errorf("encode request: %w", err)
 	}
 
 	// 固定顺序：prod -> daily
@@ -271,7 +271,7 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 		apiURL := baseURL + "/v1internal:loadCodeAssist"
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(string(bodyBytes)))
 		if err != nil {
-			lastErr = fmt.Errorf("创建请求失败: %w", err)
+			lastErr = fmt.Errorf("create request: %w", err)
 			continue
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -280,7 +280,7 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 
 		resp, err := servertiming.Do(c.httpClient, req)
 		if err != nil {
-			lastErr = fmt.Errorf("loadCodeAssist 请求失败: %w", err)
+			lastErr = fmt.Errorf("loadCodeAssist request failed: %w", err)
 			if shouldFallbackToNextURL(err, 0) && urlIdx < len(availableURLs)-1 {
 				log.Printf("[antigravity] loadCodeAssist URL fallback: %s -> %s", baseURL, availableURLs[urlIdx+1])
 				continue
@@ -291,7 +291,7 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 		respBodyBytes, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close() // 立即关闭，避免循环内 defer 导致的资源泄漏
 		if err != nil {
-			return nil, nil, fmt.Errorf("读取响应失败: %w", err)
+			return nil, nil, fmt.Errorf("read response: %w", err)
 		}
 
 		// 检查是否需要 URL 降级
@@ -301,12 +301,12 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, nil, fmt.Errorf("loadCodeAssist 失败 (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
+			return nil, nil, fmt.Errorf("loadCodeAssist failed (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
 		}
 
 		var loadResp LoadCodeAssistResponse
 		if err := json.Unmarshal(respBodyBytes, &loadResp); err != nil {
-			return nil, nil, fmt.Errorf("响应解析失败: %w", err)
+			return nil, nil, fmt.Errorf("parse response: %w", err)
 		}
 
 		// 解析原始 JSON 为 map
@@ -328,7 +328,7 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (string, error) {
 	tierID = strings.TrimSpace(tierID)
 	if tierID == "" {
-		return "", fmt.Errorf("tier_id 为空")
+		return "", fmt.Errorf("tier_id is required")
 	}
 
 	reqBody := OnboardUserRequest{TierID: tierID}
@@ -338,7 +338,7 @@ func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (s
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %w", err)
+		return "", fmt.Errorf("encode request: %w", err)
 	}
 
 	availableURLs := BaseURLs
@@ -350,7 +350,7 @@ func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (s
 		for attempt := 1; attempt <= 5; attempt++ {
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
 			if err != nil {
-				lastErr = fmt.Errorf("创建请求失败: %w", err)
+				lastErr = fmt.Errorf("create request: %w", err)
 				break
 			}
 			req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -359,7 +359,7 @@ func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (s
 
 			resp, err := servertiming.Do(c.httpClient, req)
 			if err != nil {
-				lastErr = fmt.Errorf("onboardUser 请求失败: %w", err)
+				lastErr = fmt.Errorf("onboardUser request failed: %w", err)
 				if shouldFallbackToNextURL(err, 0) && urlIdx < len(availableURLs)-1 {
 					log.Printf("[antigravity] onboardUser URL fallback: %s -> %s", baseURL, availableURLs[urlIdx+1])
 					break
@@ -370,7 +370,7 @@ func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (s
 			respBodyBytes, err := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if err != nil {
-				return "", fmt.Errorf("读取响应失败: %w", err)
+				return "", fmt.Errorf("read response: %w", err)
 			}
 
 			if shouldFallbackToNextURL(nil, resp.StatusCode) && urlIdx < len(availableURLs)-1 {
@@ -379,13 +379,13 @@ func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (s
 			}
 
 			if resp.StatusCode != http.StatusOK {
-				lastErr = fmt.Errorf("onboardUser 失败 (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
+				lastErr = fmt.Errorf("onboardUser failed (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
 				return "", lastErr
 			}
 
 			var onboardResp OnboardUserResponse
 			if err := json.Unmarshal(respBodyBytes, &onboardResp); err != nil {
-				lastErr = fmt.Errorf("onboardUser 响应解析失败: %w", err)
+				lastErr = fmt.Errorf("onboardUser response parsing failed: %w", err)
 				return "", lastErr
 			}
 
@@ -394,7 +394,7 @@ func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (s
 					DefaultURLAvailability.MarkSuccess(baseURL)
 					return projectID, nil
 				}
-				lastErr = fmt.Errorf("onboardUser 完成但未返回 project_id")
+				lastErr = fmt.Errorf("onboardUser completed without project_id")
 				return "", lastErr
 			}
 
@@ -410,7 +410,7 @@ func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (s
 	if lastErr != nil {
 		return "", lastErr
 	}
-	return "", fmt.Errorf("onboardUser 未返回 project_id")
+	return "", fmt.Errorf("onboardUser did not return project_id")
 }
 
 func extractProjectIDFromOnboardResponse(resp map[string]any) string {
@@ -445,7 +445,7 @@ func (c *Client) FetchAvailableModels(ctx context.Context, accessToken, projectI
 	reqBody := FetchAvailableModelsRequest{Project: projectID}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, nil, fmt.Errorf("encode request: %w", err)
 	}
 
 	// 固定顺序：prod -> daily
@@ -457,7 +457,7 @@ func (c *Client) FetchAvailableModels(ctx context.Context, accessToken, projectI
 		apiURL := baseURL + "/v1internal:fetchAvailableModels"
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(string(bodyBytes)))
 		if err != nil {
-			lastErr = fmt.Errorf("创建请求失败: %w", err)
+			lastErr = fmt.Errorf("create request: %w", err)
 			continue
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -466,7 +466,7 @@ func (c *Client) FetchAvailableModels(ctx context.Context, accessToken, projectI
 
 		resp, err := servertiming.Do(fetchClient, req)
 		if err != nil {
-			lastErr = fmt.Errorf("fetchAvailableModels 请求失败: %w", err)
+			lastErr = fmt.Errorf("fetchAvailableModels request failed: %w", err)
 			if shouldFallbackToNextURL(err, 0) && urlIdx < len(availableURLs)-1 {
 				log.Printf("[antigravity] fetchAvailableModels URL fallback: %s -> %s", baseURL, availableURLs[urlIdx+1])
 				continue
@@ -477,10 +477,10 @@ func (c *Client) FetchAvailableModels(ctx context.Context, accessToken, projectI
 		respBodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit+1))
 		_ = resp.Body.Close() // 立即关闭，避免循环内 defer 导致的资源泄漏
 		if err != nil {
-			return nil, nil, fmt.Errorf("读取响应失败: %w", err)
+			return nil, nil, fmt.Errorf("read response: %w", err)
 		}
 		if int64(len(respBodyBytes)) > bodyLimit {
-			return nil, nil, fmt.Errorf("响应超过 %d 字节", bodyLimit)
+			return nil, nil, fmt.Errorf("response exceeds %d bytes", bodyLimit)
 		}
 
 		// 检查是否需要 URL 降级
@@ -497,12 +497,12 @@ func (c *Client) FetchAvailableModels(ctx context.Context, accessToken, projectI
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, nil, fmt.Errorf("fetchAvailableModels 失败 (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
+			return nil, nil, fmt.Errorf("fetchAvailableModels failed (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
 		}
 
 		var modelsResp FetchAvailableModelsResponse
 		if err := json.Unmarshal(respBodyBytes, &modelsResp); err != nil {
-			return nil, nil, fmt.Errorf("响应解析失败: %w", err)
+			return nil, nil, fmt.Errorf("parse response: %w", err)
 		}
 
 		// 解析原始 JSON 为 map
@@ -564,13 +564,13 @@ func (c *Client) SetUserSettings(ctx context.Context, accessToken string) (*SetU
 	payload := SetUserSettingsRequest{UserSettings: map[string]any{}}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, fmt.Errorf("encode request: %w", err)
 	}
 
 	apiURL := privacyBaseURL + "/v1internal:setUserSettings"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -581,22 +581,22 @@ func (c *Client) SetUserSettings(ctx context.Context, accessToken string) (*SetU
 
 	resp, err := servertiming.Do(c.httpClient, req)
 	if err != nil {
-		return nil, fmt.Errorf("setUserSettings 请求失败: %w", err)
+		return nil, fmt.Errorf("setUserSettings request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("setUserSettings 失败 (HTTP %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("setUserSettings failed (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	var result SetUserSettingsResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("响应解析失败: %w", err)
+		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
 	return &result, nil
@@ -607,13 +607,13 @@ func (c *Client) FetchUserInfo(ctx context.Context, accessToken, projectID strin
 	reqBody := FetchUserInfoRequest{Project: projectID}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, fmt.Errorf("encode request: %w", err)
 	}
 
 	apiURL := privacyBaseURL + "/v1internal:fetchUserInfo"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -624,22 +624,22 @@ func (c *Client) FetchUserInfo(ctx context.Context, accessToken, projectID strin
 
 	resp, err := servertiming.Do(c.httpClient, req)
 	if err != nil {
-		return nil, fmt.Errorf("fetchUserInfo 请求失败: %w", err)
+		return nil, fmt.Errorf("fetchUserInfo request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetchUserInfo 失败 (HTTP %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("fetchUserInfo failed (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	var result FetchUserInfoResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("响应解析失败: %w", err)
+		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
 	return &result, nil

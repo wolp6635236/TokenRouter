@@ -923,70 +923,39 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 	})
 }
 
-// TestHTMLCache 验证 HTML 缓存。
+// TestHTMLCache 检查按语言发布、失效和设置变化后的 ETag。
 func TestHTMLCache(t *testing.T) {
-	t.Run("new_cache_returns_nil", func(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
 		cache := NewHTMLCache()
-		assert.Nil(t, cache.Get())
+		value, _ := cache.Snapshot("en")
+		assert.Nil(t, value)
 	})
-
-	t.Run("set_and_get", func(t *testing.T) {
+	t.Run("publish and invalidate", func(t *testing.T) {
 		cache := NewHTMLCache()
 		cache.SetBaseHTML([]byte("<html></html>"))
-
 		html := []byte("<html><body>test</body></html>")
-		settings := []byte(`{"key":"value"}`)
-		cache.Set(html, settings)
-
-		result := cache.Get()
-		require.NotNil(t, result)
-		assert.Equal(t, html, result.Content)
-		assert.NotEmpty(t, result.ETag)
-	})
-
-	t.Run("invalidate_clears_cache", func(t *testing.T) {
-		cache := NewHTMLCache()
-		cache.SetBaseHTML([]byte("<html></html>"))
-
-		html := []byte("<html><body>test</body></html>")
-		settings := []byte(`{"key":"value"}`)
-		cache.Set(html, settings)
-
-		require.NotNil(t, cache.Get())
-
+		_, version := cache.Snapshot("en")
+		cache.Publish("en", version, html, []byte(`{"key":"value"}`))
+		value, _ := cache.Snapshot("en")
+		require.NotNil(t, value)
+		assert.Equal(t, html, value.Content)
+		assert.True(t, strings.HasPrefix(value.ETag, `"`))
+		assert.True(t, strings.HasSuffix(value.ETag, `"`))
+		assert.Contains(t, value.ETag[1:len(value.ETag)-1], "-")
 		cache.Invalidate()
-
-		assert.Nil(t, cache.Get())
+		value, _ = cache.Snapshot("en")
+		assert.Nil(t, value)
 	})
-
-	t.Run("etag_changes_with_settings", func(t *testing.T) {
+	t.Run("settings change etag", func(t *testing.T) {
 		cache := NewHTMLCache()
 		cache.SetBaseHTML([]byte("<html></html>"))
-
-		html := []byte("<html><body>test</body></html>")
-
-		cache.Set(html, []byte(`{"v":1}`))
-		etag1 := cache.Get().ETag
-
+		html := []byte("<html>test</html>")
+		_, version := cache.Snapshot("en")
+		first := cache.Publish("en", version, html, []byte(`{"v":1}`))
 		cache.Invalidate()
-		cache.Set(html, []byte(`{"v":2}`))
-		etag2 := cache.Get().ETag
-
-		assert.NotEqual(t, etag1, etag2)
-	})
-
-	t.Run("etag_format", func(t *testing.T) {
-		cache := NewHTMLCache()
-		cache.SetBaseHTML([]byte("<html></html>"))
-
-		cache.Set([]byte("<html></html>"), []byte(`{}`))
-		result := cache.Get()
-
-		// ETag should be quoted
-		assert.True(t, strings.HasPrefix(result.ETag, `"`))
-		assert.True(t, strings.HasSuffix(result.ETag, `"`))
-		// Should contain dash separator
-		assert.Contains(t, result.ETag[1:len(result.ETag)-1], "-")
+		_, version = cache.Snapshot("en")
+		second := cache.Publish("en", version, html, []byte(`{"v":2}`))
+		assert.NotEqual(t, first.ETag, second.ETag)
 	})
 }
 

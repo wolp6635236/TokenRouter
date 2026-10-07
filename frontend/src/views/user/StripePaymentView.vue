@@ -153,7 +153,7 @@ const showPaymentElement = ref(false)
 let stripeInstance: Stripe | null = null
 let elementsInstance: StripeElements | null = null
 
-// 与 StripePaymentInline 同一外观约定:主题切换用 elements.update 即时重应用。
+// 主题切换时通过 elements.update 更新支付表单外观。
 const { isDark } = useTheme()
 const stripeAppearance = () =>
   ({ theme: isDark.value ? 'night' : 'stripe', variables: { borderRadius: '8px' } }) as const

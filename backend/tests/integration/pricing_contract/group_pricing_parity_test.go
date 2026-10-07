@@ -1,5 +1,3 @@
-//go:build unit
-
 package pricingcontract
 
 import (
@@ -257,7 +255,7 @@ func TestTierOnlyPricingPreservesImagePricesEqually(t *testing.T) {
 		prices["claude-sonnet-4"].InputPricePerToken = 0.001
 		prices["claude-sonnet-4"].ImageInputPricePerToken = 0.003
 		prices["claude-sonnet-4"].ImageOutputPricePerToken = 0.004
-		bs := newCalculatorWithPrices(nil, nil, prices)
+		bs := newCalculatorWithPrices(nil, prices)
 		group := &routing.Group{ID: 100}
 		r := billingtestkit.ResolverWithCards(t, bs, nil)
 		if source == "channel" {
@@ -278,7 +276,7 @@ func TestQoderGroupPricingConfigBlankPricesParity(t *testing.T) {
 	card := routing.ModelPricingEntry{Models: []string{"claude-opus-4-6"}, BillingMode: routing.BillingModeToken, InputPrice: testPtrFloat64(0.001)}
 	var costs []float64
 	for _, source := range []string{"channel"} {
-		bs := newCalculator(nil, nil)
+		bs := newCalculator(nil)
 		group := &routing.Group{ID: 100}
 		r := billingtestkit.ResolverWithCards(t, bs, nil)
 		if source == "channel" {
@@ -305,7 +303,7 @@ func TestModifierCardsPreserveBuiltinPricingPolicy(t *testing.T) {
 	}
 	for _, scope := range []string{"channel"} {
 		t.Run(scope, func(t *testing.T) {
-			bs := newCalculator(nil, nil)
+			bs := newCalculator(nil)
 			group := &routing.Group{ID: 100}
 			pricingConfigCards := []routing.ModelPricingEntry{card}
 
@@ -347,7 +345,7 @@ func TestQoderPricingMatchesOtherPlatforms(t *testing.T) {
 					case "free":
 						card.InputPrice, card.OutputPrice = testPtrFloat64(0), testPtrFloat64(0)
 					}
-					bs := newCalculator(nil, nil)
+					bs := newCalculator(nil)
 					r := billingtestkit.ResolverWithCards(t, bs, []routing.ModelPricingEntry{card})
 					gateway := completion.NewRecorder(completion.Dependencies{Prices: r, Calculator: bs}, completion.RecorderOptions{DefaultMultiplier: 1})
 

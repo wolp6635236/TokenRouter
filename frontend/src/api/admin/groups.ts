@@ -68,20 +68,9 @@ export async function getAllIncludingInactive(): Promise<AdminGroup[]> {
   return data
 }
 
-
 /** 获取当前 TokenRouter 服务端的 Live 运行环境能力。 */
 export async function getLiveCapability(): Promise<LiveCapability> {
   const { data } = await apiClient.get<LiveCapability>('/admin/groups/live-capability')
-  return data
-}
-
-/**
- * Get group by ID
- * @param id - Group ID
- * @returns Group details
- */
-export async function getById(id: number): Promise<AdminGroup> {
-  const { data } = await apiClient.get<AdminGroup>(`/admin/groups/${id}`)
   return data
 }
 
@@ -209,34 +198,6 @@ export async function deleteGroup(id: number): Promise<{ message: string }> {
 }
 
 /**
- * Toggle group status
- * @param id - Group ID
- * @param status - New status
- * @returns Updated group
- */
-export async function toggleStatus(id: number, status: 'active' | 'inactive'): Promise<AdminGroup> {
-  return update(id, { status })
-}
-
-/**
- * Get API keys in a group
- * @param id - Group ID
- * @param page - Page number
- * @param pageSize - Items per page
- * @returns Paginated list of API keys in the group
- */
-export async function getGroupApiKeys(
-  id: number,
-  page: number = 1,
-  pageSize: number = 20
-): Promise<PaginatedResponse<any>> {
-  const { data } = await apiClient.get<PaginatedResponse<any>>(`/admin/groups/${id}/api-keys`, {
-    params: { page, page_size: pageSize }
-  })
-  return data
-}
-
-/**
  * Rate multiplier entry for a user in a group
  */
 export interface GroupRateMultiplierEntry {
@@ -272,16 +233,6 @@ export async function updateSortOrder(
   const { data } = await apiClient.put<{ message: string }>('/admin/groups/sort-order', {
     updates
   })
-  return data
-}
-
-/**
- * Clear all rate multipliers for a group
- * @param id - Group ID
- * @returns Success confirmation
- */
-export async function clearGroupRateMultipliers(id: number): Promise<{ message: string }> {
-  const { data } = await apiClient.delete<{ message: string }>(`/admin/groups/${id}/rate-multipliers`)
   return data
 }
 
@@ -383,16 +334,12 @@ export const groupsAPI = {
   getAll,
   getAllIncludingInactive,
   getLiveCapability,
-  getById,
   getModelsListCandidates,
   create,
   duplicate,
   update,
   delete: deleteGroup,
-  toggleStatus,
-  getGroupApiKeys,
   getGroupRateMultipliers,
-  clearGroupRateMultipliers,
   batchSetGroupRateMultipliers,
   getGroupRPMOverrides,
   clearGroupRPMOverrides,

@@ -1,5 +1,3 @@
-//go:build unit
-
 package grok_test
 
 import (

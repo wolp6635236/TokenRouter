@@ -8,15 +8,16 @@ import (
 )
 
 type User[K any] struct {
-	ID            int64   `json:"id"`
-	Email         string  `json:"email"`
-	Username      string  `json:"username"`
-	Role          string  `json:"role"`
-	Balance       float64 `json:"balance"`
-	FrozenBalance float64 `json:"frozen_balance"`
-	Concurrency   int     `json:"concurrency"`
-	Status        string  `json:"status"`
-	AllowedGroups []int64 `json:"allowed_groups"`
+	PreferredLocale *string `json:"preferred_locale"`
+	ID              int64   `json:"id"`
+	Email           string  `json:"email"`
+	Username        string  `json:"username"`
+	Role            string  `json:"role"`
+	Balance         float64 `json:"balance"`
+	FrozenBalance   float64 `json:"frozen_balance"`
+	Concurrency     int     `json:"concurrency"`
+	Status          string  `json:"status"`
+	AllowedGroups   []int64 `json:"allowed_groups"`
 	// DisabledPublicGroups 为管理员显式禁止该用户使用的公开分组 ID。
 	DisabledPublicGroups []int64    `json:"disabled_public_groups"`
 	LastActiveAt         *time.Time `json:"last_active_at,omitempty"`
@@ -57,6 +58,7 @@ func UserFromIdentityShallow[K any](u *identity.User) *User[K] {
 		return nil
 	}
 	return &User[K]{
+		PreferredLocale:            u.PreferredLocale,
 		ID:                         u.ID,
 		Email:                      u.Email,
 		Username:                   u.Username,

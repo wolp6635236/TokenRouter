@@ -78,7 +78,7 @@ func (h *ModelAttributeHandler) Get(c *gin.Context) {
 
 func (h *ModelAttributeHandler) Save(c *gin.Context) {
 	var value routing.ModelAttributeConfig
-	if err := bindManagementJSON(c, &value); err != nil {
+	if err := httpx.BindJSONStrict(c, &value); err != nil {
 		httpx.ErrorFrom(c, apperror.BadRequest("INVALID_ATTRIBUTE_CONFIG", err.Error()))
 		return
 	}

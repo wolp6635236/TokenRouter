@@ -381,9 +381,9 @@ const totpTempToken = ref('')
 const totpCode = ref('')
 const totpError = ref('')
 const totpUserEmailMasked = ref('')
-const bindSuccessMessage = t('profile.authBindings.bindSuccess')
+const bindSuccessMessage = computed(() => t('profile.authBindings.bindSuccess'))
 
-const providerName = t('auth.wechatProviderName')
+const providerName = computed(() => t('auth.wechatProviderName'))
 const showBackToChooser = computed(
   () => pendingAccountAction.value === 'create_account' || pendingAccountAction.value === 'bind_login'
 )
@@ -811,7 +811,7 @@ async function finalizeCompletion(completion: PendingOAuthExchangeResponse, redi
     const bindRedirect = sanitizeRedirectPath(completion.redirect || '/profile')
     clearPendingAuthSession()
     clearAllAffiliateCodes()
-    appStore.showSuccess(bindSuccessMessage)
+    appStore.showSuccess(bindSuccessMessage.value)
     await router.replace(bindRedirect)
     return
   }

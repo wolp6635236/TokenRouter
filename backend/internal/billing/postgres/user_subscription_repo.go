@@ -711,6 +711,7 @@ func PlanFromEntity(plan *dbent.SubscriptionPlan) *billing.SubscriptionPlan {
 		return nil
 	}
 	return &billing.SubscriptionPlan{
+		Localization:         plan.Localization,
 		ID:                   plan.ID,
 		Name:                 plan.Name,
 		Description:          plan.Description,

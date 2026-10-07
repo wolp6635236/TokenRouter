@@ -1,5 +1,3 @@
-//go:build unit
-
 package app
 
 import (
@@ -966,7 +964,7 @@ func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*gatewayHTTPEn
 	cfg.Gateway.MaxProviderSwitches = 3
 	billingCache := newBillingEligibilityFixture(cfg)
 	billingCache.Start()
-	completionInput2 := billingtestkit.Calculator(cfg.Default.RateMultiplier, nil, nil)
+	completionInput2 := billingtestkit.Calculator(nil, nil)
 	completionInput3 := &providercore.DeferredService{}
 	gateway, gatewayChoices, gatewayCredentialPort := newOpenAIExecutionAndSelectionFixture(
 		repo, nil, cfg, nil, nil, nil, upstream,

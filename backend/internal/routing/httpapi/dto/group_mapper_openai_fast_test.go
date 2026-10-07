@@ -1,5 +1,3 @@
-//go:build unit
-
 package dto_test
 
 import (

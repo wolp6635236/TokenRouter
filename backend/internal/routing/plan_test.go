@@ -52,7 +52,7 @@ func TestRoutePlanModelChainAndAttemptSnapshots(t *testing.T) {
 	candidate, ok := plan.ResolveCandidate(provider.ProviderSnapshot{ID: 1, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, EnabledProtocols: []capability.ProtocolID{capability.ProtocolOpenAIResponses}})
 	require.True(t, ok)
 	rules := map[string]string{"group-model": "upstream-one", "upstream-one": "must-not-recurse"}
-	snapshot := provider.ProviderSnapshot{ID: 1, ModelPolicy: provider.NewModelRoutingSnapshot(capability.PlatformOpenAI, rules)}
+	snapshot := provider.ProviderSnapshot{ID: 1, ModelPolicy: provider.NewModelRoutingSnapshot(rules)}
 	rules["group-model"] = "upstream-two"
 	first, matched := candidate.ResolveModel(snapshot, "group-model")
 	require.True(t, matched)
@@ -61,7 +61,7 @@ func TestRoutePlanModelChainAndAttemptSnapshots(t *testing.T) {
 	require.Equal(t, BillingModelSourceUpstream, first.Models.RestrictionModelSource)
 	require.Empty(t, candidate.Models.ProviderMappedModel)
 	require.Empty(t, plan.Models().ProviderMappedModel)
-	fresh := provider.ProviderSnapshot{ID: 1, ModelPolicy: provider.NewModelRoutingSnapshot(capability.PlatformOpenAI, rules)}
+	fresh := provider.ProviderSnapshot{ID: 1, ModelPolicy: provider.NewModelRoutingSnapshot(rules)}
 	second, matched := candidate.ResolveModel(fresh, "group-model")
 	require.True(t, matched)
 	require.Equal(t, "upstream-two", second.Models.ProviderMappedModel)

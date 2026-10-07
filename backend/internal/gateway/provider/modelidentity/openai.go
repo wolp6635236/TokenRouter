@@ -4,13 +4,7 @@ import (
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
-
-// NormalizeOpenAI 返回已登记的完整 OpenAI 型号，未知名称返回空字符串。
-func NormalizeOpenAI(model string) string {
-	return openai.GetNormalizedCodexModel(model)
-}
 
 // IsGPT56 只识别已登记的 GPT-5.6 完整型号。
 func IsGPT56(model string) bool {

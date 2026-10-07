@@ -54,9 +54,9 @@ func (s RoutingState) ResolveAttempt(snapshot provider.ProviderSnapshot, previou
 // ResolveModel 复用原生一跳规则，不在选择候选时提前读取模型配置。
 func (a AttemptRoute) ResolveModel(id int64, platform string, mapping map[string]string, requested string) (string, bool) {
 	if a.planned {
-		snapshot := provider.ProviderSnapshot{ID: id, Platform: platform, ModelPolicy: provider.NewModelRoutingSnapshot(platform, mapping)}
+		snapshot := provider.ProviderSnapshot{ID: id, Platform: platform, ModelPolicy: provider.NewModelRoutingSnapshot(mapping)}
 		candidate, matched := a.candidate.ResolveModel(snapshot, requested)
 		return candidate.Models.ProviderMappedModel, matched
 	}
-	return provider.ResolveMappedModel(platform, mapping, requested)
+	return provider.ResolveMappedModel(mapping, requested)
 }

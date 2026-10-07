@@ -17,9 +17,9 @@
 
 | 工具 | 版本来源 | 当前要求 |
 | --- | --- | --- |
-| Go | `backend/go.mod`、CI | `1.27.0` |
-| Node.js | `.github/workflows/backend-ci.yml` | `20` |
-| pnpm | CI 和根 Makefile | `9`；根命令默认使用 `npx --yes pnpm@9` |
+| Go | `backend/go.mod`、CI | `1.27.1` |
+| Node.js | `.node-version` | `26.10.0` |
+| pnpm | `frontend/package.json` 的 `packageManager` | `12.9.1`；本地 pnpm 读取该字段并切换到声明的版本 |
 | golangci-lint | `.golangci-version` | 本地和 CI 使用同一个完整版本，配置在 `backend/.golangci.yml` |
 | gofumpt | golangci-lint 内置 | 使用默认规则，不开启 extra，不单独维护版本 |
 | arch-go | `tools/architecture/go.mod` | `v2.1.2`；通过 Go API 使用，由独立的工具模块运行 |
@@ -33,7 +33,7 @@ go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@"$(cat .golang
 
 在仓库根目录执行安装命令，并把 Go 安装目录里的二进制加入 PATH。`tools/golangci-lint.sh` 会验证实际的版本，版本不符的本地工具会被拒绝；CI 的 action 从同一个版本文件读取要安装的版本。
 
-升级 Go 时，同时修改 `backend/go.mod`，以及 `backend-ci.yml`（两处）、`release.yml`（两处）和 `security-scan.yml` 里对 `go version` 的硬断言。workflow 都通过 `go-version-file: backend/go.mod` 安装工具链，漏改任何一处断言，版本校验步骤都会失败。
+Go 版本在 `backend/go.mod` 声明。根 Makefile 据此设置 `GOTOOLCHAIN`，本地 Go 较旧时自动下载声明的版本；workflow 使用 `go-version-file` 安装。Node 版本在 `.node-version` 声明，CI 和 Dockerfile 按它安装。pnpm 版本写在 `frontend/package.json` 的 `packageManager` 字段，CI 的 `pnpm/action-setup` 和 Dockerfile 都读取这个字段。pnpm 12 把自身版本和各平台安装包记录在 `pnpm-lock.yaml` 开头的独立文档里，缺少这段记录时冻结安装会失败。升级 pnpm 时，先改 `packageManager`，再用新版本执行一次 `pnpm install`，把锁文件的变化一起提交。前端 ESLint 10 使用 `eslint.config.js`，pnpm 12 的依赖覆盖和构建许可维护在 `frontend/pnpm-workspace.yaml`。TypeScript 使用 typescript-eslint 支持的最新 6.x 系列，升级到 7.x 前核对解析器的 peerDependencies。
 
 个人的数据库路径、固定的密码，或者某台机器的服务配置，不写进工程文档。开发配置使用不提交的环境文件或 `backend/config.yaml`；可以提交的样例在 `deploy/`。前端开发服务器默认通过 `VITE_DEV_PROXY_TARGET` 代理到后端，端口由 `VITE_DEV_PORT` 控制。
 
@@ -53,8 +53,6 @@ pnpm run dev
 docker compose -f deploy/docker-compose.dev.yml up --build
 ```
 
-根 Makefile 里保留了 `build-datamanagementd` 和 `test-datamanagementd` 目标，但仓库里没有 `datamanagement/` 源码树；除非工作范围里明确提供了这部分可选源码，这两个目标不算在默认的通过条件里。
-
 <a id="backend_dependency_rules"></a>
 ## 依赖规则
 
@@ -68,7 +66,7 @@ HTTP、用例、存储和后台资源，由 app 装配各模块的实现。业�
 - 普通的辅助子包继承所属的角色。没有登记的顶层模块和平台，只能使用少量基础标准库，要声明业务或 I/O 依赖，需要先登记。新目录不能靠任意嵌套的 `postgres` 之类的名称，获得适配层的权限。
 - 扫描器读取所有手写的 Go 文件，覆盖测试、构建标签、平台文件和 wireinject；生成代码不参与架构规则的判断。这是静态的 import 检查，所有构建组合实际编译、执行的结果，需要另外验证。
 
-`make -C backend test-architecture` 用固定版本 arch-go 的 Go API 检查规则，并运行正反例、扫描覆盖和文件许可的使用方测试。工具要读取独立模块之外的源码，所以入口使用 `-count=1` 关闭测试缓存。后端的 `make test` 和 CI 的 lint job 都执行这个入口；CI 分别缓存后端和架构工具的 Go 依赖。修改角色和模块关系时，维护规则表，不另外引入生成配置的流程。golangci-lint 负责通用的代码质量检查，架构白名单不放在它里面。
+`make lint-go` 的第一步用固定版本 arch-go 的 Go API 检查规则，并运行正反例、扫描覆盖和文件许可的使用方测试。工具要读取独立模块之外的源码，所以入口使用 `-count=1` 关闭测试缓存。CI 的 go-lint job 和推送前快检都运行这一步，CI 的 lint 缓存组同时包含后端和架构工具的 Go 依赖。修改角色和模块关系时，维护规则表，不另外引入生成配置的流程。golangci-lint 负责通用的代码质量检查，架构白名单不放在它里面。
 
 ### 通用规则
 
@@ -80,7 +78,7 @@ HTTP、用例、存储和后台资源，由 app 装配各模块的实现。业�
 
 ### 文件级许可
 
-保留路径上的旧依赖，按准确的源文件和 import 登记：许可不覆盖同目录的新文件，也不覆盖允许包的其他子包。每次添加路径或修改规则，分别用普通、unit、integration 三个集合，验证合法的依赖和违规的夹具；已有的失败不会自动变成白名单。
+保留路径上的旧依赖，按准确的源文件和 import 登记：许可不覆盖同目录的新文件，也不覆盖允许包的其他子包。每次添加路径或修改规则，分别用无标签和 integration 两个集合验证合法依赖和违规夹具。已有的失败同样需要按源文件登记，才能通过检查。
 
 删除或迁移文件后，同步删除对应的文件许可，并检查源目录和目标目录的角色。文件许可的使用方测试，会拒绝已经没有实际 import 的过时条目。验证要覆盖：删除后恢复同名文件、旧文件新增禁止的 import、同目录的新文件和非法的子包；只检查迁出后的正向 lint 是不够的。迁出的文件按目标目录的角色规则检查，同目录新增的文件不会继承例外。
 
@@ -111,7 +109,7 @@ HTTP、用例、存储和后台资源，由 app 装配各模块的实现。业�
 - API 的类型和调用放在 `src/api/`，跨页面的状态放进 store 或 composable，view 里不重复写协议。
 - 修改依赖时同步更新 `frontend/pnpm-lock.yaml`，CI 使用 frozen lockfile。
 
-支付页动态导入 Stripe 和 Airwallex SDK，`frontend/vite.config.ts` 将它们分别放进独立的 vendor 包。Airwallex 在模块加载时会预取远程支付脚本，因此它和同命名空间的依赖一起分包。调整分包规则后，检查生产构建的依赖关系，确认支付 SDK 由支付流程触发加载。
+支付页动态导入 Stripe 和 Airwallex SDK，`frontend/vite.config.ts` 通过 Rolldown 的 `codeSplitting` 将它们分别放进独立的 vendor 包。Airwallex 在模块加载时会预取远程支付脚本，因此它和同命名空间的依赖一起分包。调整分包规则后，检查生产构建的依赖关系，确认支付 SDK 由支付流程触发加载。
 
 ## 生成代码与迁移
 
@@ -129,43 +127,99 @@ Ent schema 不是生产环境的迁移器。数据库的变更需要新建 `back
 
 ## 验证策略
 
-验证的范围随风险扩大：先运行受影响的包或组件，再运行仓库的门禁。后端常用的命令：
-
-```bash
-# 受影响的包
-(cd backend && GOTOOLCHAIN=go1.27.0 go test ./internal/provider/... ./internal/routing/... ./internal/egress/...)
-
-# 架构检查覆盖全部标签，不需要按标签重复执行
-make -C backend test-architecture
-
-# 与 CI 一致的测试分层
-make -C backend test-unit
-make -C backend test-integration
-
-# 架构检查、普通测试、lint 配置校验和 lint
-make -C backend test
-```
+| 阶段 | 入口 | 内容 |
+| --- | --- | --- |
+| 开发 | 局部命令 | 改动所在的包或组件 |
+| 推送 | `pre-push` hook，等同 `make check` | 按改动文件选择的快检，在当前工作区执行 |
+| CI | `.github/workflows/ci.yml` | 全量 lint、单元、集成、前端、构建和脚本检查 |
+| 本地全量 | `make verify` | 与 CI 相同的检查，需要 Docker |
 
 ### 测试分层
 
-普通、unit 和 integration 三组全量测试分别串行运行，避免多个 Ent schema loader 会话争用临时目录；用 go list 和 JSON 事件核对实际的标签、OS 文件和执行的测试。`make -C backend test-integration` 固定使用 `-p=4`，本地和 CI 共用这个入口，测试内部的并发和断言保持不变。测试事件、跳过、原始的失败和之后的通过，分别保存，不能只比较数量来代替逐项诊断。跳过和只编译的结果，不算行为通过。
+后端测试按构建标签分三层：
 
-集成测试可能启动 PostgreSQL 和 Redis 容器；环境里没有 Docker 时，明确报告没有运行，单元测试的结果代替不了它。涉及迁移时，还要运行 migration runner 和对应的 schema、数据回归测试。
+- 单元测试没有构建标签，`make test-go` 执行 `go test ./...`。外部依赖用 SQLite、miniredis、sqlmock 或本地 HTTP 夹具代替。
+- 集成测试带 `//go:build integration`，通过 Testcontainers 启动 PostgreSQL 和 Redis。`make test-integration` 用 grep 找出含这个标签的包，只编译和运行这些包，包级并发为 4。集成构建同时编译同包的无标签测试，这些包的单元测试会再运行一次。
+- embed 测试带 `//go:build embed`，读取前端生产构建的产物。`make test-embed` 对 `internal/web` 和 `cmd/server` 运行 lint 和测试。
 
-外部 E2E 测试在 `backend/tests/integration`；`make -C backend test-e2e` 和 `test-e2e-local` 使用同一个 Go 测试入口，读取服务地址和测试凭据的环境变量。没有配置服务和供应商凭据时，只能报告测试被选中或通过编译，不能说行为已经验证。
+新测试默认不加标签，需要 Docker 的测试才加 `integration`。同一个包的无标签文件和 integration 文件会一起编译，两边的测试函数和辅助函数需要使用不同的名字。只给单元测试构建用的文件标记 `//go:build !integration`，例如 `tests/integration/identity/suite_test.go`。
 
-这个目录也存放跨模块的装配测试，具体的执行集合由文件的构建标签决定：
+集成测试需要 Docker。本地没有 Docker 时，交付说明里写明集成测试没有运行。涉及迁移时，还要运行 migration runner 和对应的 schema、数据回归测试。
 
-- `tests/integration/pricing_contract` 保存价格配置和市场价卡、Key 快照、完成处理和资金分配的跨模块测试，使用 unit 标签；纯的提供商统计匹配和计算测试在 `billing/pricing`。这些测试直接调用模块和已有的存储替身，目录名不代表运行了真实的数据库。
-- 身份注册和邮箱绑定，使用 identity 和 PostgreSQL 适配层，在 SQLite 夹具上验证规则；批量任务的运行时使用 batchimage 和 miniredis。这些 `unit` 测试不能代替真实 PostgreSQL 和 Redis 上的事务和竞争证据。
+外部 E2E 测试带 `e2e` 标签，位于 `backend/tests/integration`，用 `make test-e2e` 运行，服务地址和测试凭据从环境变量读取。没有配置服务和供应商凭据时，结果只说明测试通过了编译。
+
+调用线上供应商接口的测试默认跳过，分别由 `OPENAI_API_KEY`、`QODER_RUN_REAL_API_TESTS`、`QODER_RUN_LOCAL_AUTH_TESTS` 和 `TLSFINGERPRINT_NETWORK_TESTS` 开启。本机设置了这些变量时，`make test-go` 会向供应商发出请求。
+
+`backend/tests/integration` 也存放跨模块的装配测试，具体的执行集合由文件的构建标签决定：
+
+- `tests/integration/pricing_contract` 保存价格配置和市场价卡、Key 快照、完成处理和资金分配的跨模块测试，属于单元测试。纯的提供商统计匹配和计算测试在 `billing/pricing`。这些测试直接调用模块和已有的存储替身，没有连接数据库。
+- 身份注册和邮箱绑定，使用 identity 和 PostgreSQL 适配层，在 SQLite 夹具上验证规则；批量任务的运行时使用 batchimage 和 miniredis。PostgreSQL 和 Redis 上的事务和并发行为由集成测试验证。
 - Messages、Chat、Responses 和 Raw Chat 的协议测试，直接构造 `gateway/httpapi` 的单次执行器，共用实际的请求、响应和会话组件；纯流终态和用量 JSON 的断言在 `protocol/openai`。阻塞读取、响应关闭等 I/O 替身在 `gateway/testkit` 共用，测试不重建旧的网关应用图。
 - 用量 HTTP、仪表盘和 DTO 的接口测试，直接构造 usage 和使用方的查询数据，不经过旧的 service 或完整的设置服务。日期测试明确指定 Calendar，分别覆盖用户时区的回退、夏令时和各入口的结束边界；清理任务的存储缺失错误，先由 PostgreSQL 适配层的测试核对，再用相同的错误链输入 HTTP 夹具。
 - 团队所有权的两次有序 SQL 更新，由 `team/postgres` 同包的测试直接验证。sqlmock 夹具检查关闭错误时，同时登记关闭的预期，测试资源的清理不会被误判为业务 SQL 的失败。
 
+identity 和 promotion 的集成测试通过 `postgrescontainer.Suite` 在各自的测试进程内复用 PostgreSQL 容器，模板数据库执行当前源码的全部迁移后关闭连接。每个测试从模板克隆独立数据库，支持提交、回滚和多连接；测试完成后依次关闭应用连接、连接池并删除数据库。删除使用 `DROP DATABASE ... WITH (FORCE)`，服务端还没处理完的断开会被直接终止，删除失败时测试失败。`TestMain` 最后回收容器。模板随进程销毁，迁移、恢复及实例级测试使用独立容器入口。
+
+Redis 测试通过 `rediscontainer.Run` 启动独立容器，等待监听就绪及启动日志，等待上限为一分钟。调用方的 context 可提前取消；超时或就绪检查失败仍使测试失败。这个入口覆盖库默认的十秒监听等待，以容纳 Docker 并发启动时的延迟。
+
+纯内存的重试与超时测试使用 `testing/synctest` 推进虚拟时间。网络测试使用本地服务和短退避配置，退避算法单独核对递增与上限，生产默认参数由正常配置提供。
+
+### 推送前快检
+
+每个检出执行一次 `make hooks`，它把 `core.hooksPath` 设为 `.githooks`。`pre-push` 调用 `tools/check_changed.py`，以待推送引用的远端旧提交为基准。新分支使用上游分支或远端默认分支的共同祖先，一次推送多个引用时取这些基准的共同祖先。比较范围是基准到当前工作区，未提交和未跟踪的文件也计入，检查在当前工作区执行。
+
+| 改动 | 检查 |
+| --- | --- |
+| 任意文件 | `git diff --check` |
+| `backend/**/*.go` | Go 格式、arch-go，改动包的 golangci-lint（`--new-from-rev`，带 integration 标签）和 `go test` |
+| `backend/go.mod`、`backend/go.sum` | 同上，lint 和测试范围扩大到整个模块 |
+| `frontend/src`、`frontend/public` | 改动文件的 eslint，`check:ui`、`typecheck` 和 `vitest related` |
+| `frontend` 下的其他文件 | 依赖文件改动时先冻结安装，再跑完整 lint、typecheck 和 Vitest |
+| `backend/internal/pkg/locale/*.json` | 引用这些文件的前端测试 |
+| `deploy/`、`tools/goreleaser*` | `make test-scripts` |
+| `tools/*.py`、`.githooks/` | `make test-tools` |
+
+快检使用 Go 测试缓存，没有改动的包直接复用上次结果。集成测试、前端生产构建和改动包的下游使用方由 CI 检查。快检失败会阻止推送，修复后重新推送；确需跳过时使用 `git push --no-verify`。手动执行 `make check` 时，基准默认取上游分支的共同祖先，也可以传 `BASE=<提交>`。
+
+### CI
+
+`.github/workflows/ci.yml` 在每次 push 和 PR 上并行运行以下 job：
+
+| job | 内容 |
+| --- | --- |
+| go-lint | `make lint-go`、`make test-tools`、`make fmt-check` |
+| go-test | `make test-go` |
+| go-integration | 安装 PostgreSQL 18 客户端，再执行 `make test-integration` |
+| frontend | `make lint-frontend`、`make test-frontend` |
+| build | `make build`、`make test-embed` |
+| scripts | 在 macOS 上执行 `make test-scripts`，覆盖系统自带的 Bash 3.2 |
+| installer | `make test-installer`，Linux 安装器依赖 Bash 4+ 和 `sha256sum` |
+
+workflow 设置 `GOFLAGS=-count=1`，每次重新执行 Go 测试。同一分支推送新提交时，还在运行的旧检查会被取消。失败原因看对应 job 的日志，`go test` 在输出末尾列出失败的测试和断言。
+
+Go 的模块、编译和 golangci-lint 缓存分 lint、test、build 三组，由 `.github/actions/setup-go` 恢复。缓存键由组名、`go.sum` 与 golangci-lint 版本的哈希、提交 SHA 组成，恢复时按前缀取最近一份。main 分支的 push 成功后保存缓存，go-integration 恢复 go-test 保存的 test 组。pnpm 的下载缓存由 `actions/setup-node` 管理。
+
+### 本地全量验证
+
+`make verify` 依次执行 lint、test-tools、test、test-integration、build、test-embed、test-scripts 和 test-installer，任何一步失败就停止。它需要 Docker、PostgreSQL 18 的 `pg_dump` 和 `psql`、`.golangci-version` 声明的 golangci-lint，以及 Python 3.10+。macOS 上的安装器测试通过 Ubuntu 24.04 容器执行。发布前或改动范围很大时运行它。
+
+### 局部验证命令
+
+```bash
+# 改动所在的包
+(cd backend && go test ./internal/provider/... ./internal/routing/...)
+
+# 单个包的集成测试，需要 Docker
+(cd backend && go test -tags=integration ./internal/usage/postgres/...)
+
+# 架构测试和全量 golangci-lint
+make lint-go
+```
+
 ### 各模块的验证要求
 
 - 资金：使用真实的 PostgreSQL 事务确认回滚、持久化去重、8 位和 10 位的精度，以及 Redis 用户锁的交错；SQLite 和 mock 不能代替这些证据。
-- 身份：SDK 验证、令牌消费和认证缓存，分别覆盖普通和 unit 构建的选择，以及真实的 PostgreSQL 和 Redis。
+- 身份：SDK 验证、令牌消费和认证缓存需要单元测试，以及 PostgreSQL 和 Redis 上的集成测试。
 - 用量和观测：需要真实的队列、事务、取消事件和查询次数的证据，只编译或跳过都不能代替。
 - 上游平台：分别验证 HTTP 提交、语义输出、可重试的窗口和已观测的用量。平台验证使用本地的 HTTP、TLS、WS 和隔离的存储夹具，这些结果不能当作对真实供应商的验证。
 - 通知、站点、审核、搜索：真实的 SMTP 和 TLS 夹具、页面文件的访问范围、PostgreSQL 上审核的回滚、Redis 的预占和释放、配置的交错，以及有上限的关闭。
@@ -175,26 +229,31 @@ make -C backend test
 - 纯规则：测试直接传入值；平台选择、HTTP 的失败和取消、目录的热更新，还要验证实际的调用方。管理员目录完整的 JSON、24 项的顺序和 TypeScript 类型，由 app 的组合测试对照前端的 fixture，不能靠修改夹具掩盖输出的差异。
 - 推广与支付：资金验证使用真实的 PostgreSQL，分别检查 Promo、返利转入、订单履约和退款的短事务；退款渠道使用本地夹具，不发起真实的付款或退款。回退新的退款代码之前，保留并核实 `REFUND_PREPARED` 记录，只替换二进制、再重新发起渠道退款是不行的。
 - 备份和维护：只对隔离的 PostgreSQL、本地的 S3 和 HTTP 夹具，以及临时的可执行文件操作。恢复至少覆盖真实的成功提交、SQL 失败回滚、输入中断和取消；系统锁覆盖同一业务 ID 不同的认领版本。二进制替换的测试不能使用测试进程或部署实例的真实路径。初始化和两个维护命令，要验证退出前释放了连接，Wire 可以重复生成，Ent 和已发布的 SQL 保持不变。
-- 装配：验证覆盖普通、unit、integration，以及 wireinject、embed 和 OS 的文件选择；lint 没有报错，不代表规则一定命中了。
+- 装配：验证覆盖无标签、integration、wireinject、embed 和各 OS 的文件选择。lint 通过后，还需要确认规则实际检查到了目标文件。
 
 ### 其他环境要求
 
 备份恢复的集成测试，还需要 PATH 里有 `pg_dump` 和 `psql`。目前的恢复夹具使用 PostgreSQL 18，CI 明确安装 PostgreSQL 18 的客户端；本地也使用同一个主版本，runner 自带的旧客户端可能无法备份测试数据库。断言时间戳不变时，比较操作前后从数据库读回的值；Ent 创建时返回的纳秒级内存值，和 PostgreSQL 保存的微秒值不能直接比较。
 
-前端的门禁：
+前端命令：
 
 ```bash
-# CI 使用 lint、类型检查和关键的 Vitest 集
+# ESLint、UI token 检查和类型检查
+make lint-frontend
+
+# 完整 Vitest
 make test-frontend
 
-# 变更涉及其他组件时，运行它们的测试或完整套件
-npx --yes pnpm@9 --dir frontend run test:run
-npx --yes pnpm@9 --dir frontend run build
+# 生产资源和嵌入资源的后端
+make build
 ```
 
-部署文件变更时，运行 `.github/workflows/backend-ci.yml` 里对应的 shell 和 Compose 检查；依赖或安全相关的变更，还要运行 `make secret-scan`、`govulncheck` 或相应的审计。最后至少执行 `git diff --check`，并确认没有意外的生成物、环境文件或秘密。
+部署文件变更时执行 `make test-scripts` 和 `make test-installer`。依赖安全检查使用 `make security`，Security Scan workflow 分别调用它的 `security-go` 和 `security-frontend`。govulncheck 版本在 `.govulncheck-version` 固定，漏洞数据在线更新。前端审计的 stderr 原样输出；报告为空、包含错误对象或结构不完整时返回失败，高危漏洞按 `.github/audit-exceptions.yml` 核对例外与有效期。
 
-CI 的安装器兼容测试在 Linux 上运行，依赖 Bash 4+ 和 `sha256sum`。Apple container 测试和其余的 shell、Compose 检查在 macOS 上运行，覆盖系统自带的 Bash 3.2。
+Vue 的最低版本为 `3.5.42`，该版本修复了 `@vue/server-renderer` 属性名检查中的 XSS 漏洞。`frontend/pnpm-workspace.yaml` 将低于 `1.2.2` 的 `source-map-js` 依赖提升到修复版本，覆盖 Vue 编译器和 i18n 引入的索引偏移 DoS 漏洞。更新这些依赖时同步维护锁文件，并运行前端测试、生产构建和安全扫描。
+
+管理员用量导出通过动态导入 `xlsx` 生成工作簿，当前使用 `0.18.5`，调用 `aoa_to_sheet`、`sheet_add_aoa` 和 `write`。两条 SheetJS 漏洞例外有效期为 2026-10-06。[原型污染公告](https://github.com/advisories/GHSA-4r6h-8v6p-xvw6)说明纯导出流程不受该漏洞影响；[ReDoS 公告](https://github.com/advisories/GHSA-5pgg-2g8v-p4x9)仍需按升级后的依赖审计结果核对。后续优先评估 [SheetJS 官方分发](https://docs.sheetjs.com/docs/getting-started/installation/nodejs/)的修复版本并验证导出兼容性，普通 npm 版本范围更新无法取得公告列出的修复版本。替换导出库作为单独变更处理。
+
 
 ## 提交与文档
 
@@ -202,17 +261,17 @@ CI 的安装器兼容测试在 Linux 上运行，依赖 Bash 4+ 和 `sha256sum`�
 
 ### Go 格式化
 
-每次提交代码之前，在仓库根目录运行 `make fmt-go-changed`，再运行 `make check-fmt-go-changed`。这两个入口需要 Python 3 和指定版本的 golangci-lint。`tools/format_go.py` 筛选文件后，调用 `golangci-lint fmt --config backend/.golangci.yml`，检查模式加上 `--diff`。配置启用 gofumpt 的默认规则，并保留 gofmt 的 `interface{}` → `any`、`a[b:len(a)]` → `a[b:]` 两条重写规则；gofumpt 不单独维护版本。
+每次提交代码之前，在仓库根目录运行 `make fmt`，再运行 `make fmt-check`。这两个入口需要 Python 3 和指定版本的 golangci-lint。`tools/format_go.py` 筛选文件后，调用 `golangci-lint fmt --config backend/.golangci.yml`，检查模式加上 `--diff`。配置启用 gofumpt 的默认规则，并保留 gofmt 的 `interface{}` → `any`、`a[b:len(a)]` → `a[b:]` 两条重写规则；gofumpt 不单独维护版本。
 
 命令处理暂存、未暂存和未跟踪的 Go 文件，按整个文件格式化，覆盖后端和仓库的工具模块；删除的文件、符号链接、vendor 和 node_modules，以及带标准生成标记的文件会被跳过。生成标记是 `package` 声明之前的 `// Code generated ... DO NOT EDIT.`，Ent schema 等手写的源文件照常参与格式化。脚本会预先排除生成文件，格式化配置也使用严格的生成文件识别。
 
-格式化之后检查 diff，把属于这次提交的修改重新暂存。部分暂存的文件需要逐块核对，命令不会修改 Git 的暂存区。检查入口发现格式差异或工具执行失败时，返回非零状态；本地通过 AGENTS.md 要求执行，没有安装 Git hook。
+格式化之后检查 diff，把属于这次提交的修改重新暂存。部分暂存的文件需要逐块核对，命令不会修改 Git 的暂存区。检查入口发现格式差异或工具执行失败时返回非零状态。推送前快检检查整个待推送区间的格式。
 
-检查已经提交的改动，使用 `make check-fmt-go-changed FMT_BASE=<基准提交>`，它按基准和 HEAD 的差异选择文件，工作区干净时也会检查。CI 的 PR 检出源提交，以目标分支和源提交的共同祖先为基准；普通 push 比较推送前后的提交，新分支第一次推送比较默认分支的共同祖先，默认分支第一次推送比较空树。基准无法解析时检查失败，不会悄悄跳过。
+检查已经提交的改动，使用 `make fmt-check BASE=<基准提交>`，它按基准和 HEAD 的差异选择文件，工作区干净时也会检查。CI 的 PR 检出源提交，以目标分支和源提交的共同祖先为基准；普通 push 比较推送前后的提交，新分支第一次推送比较默认分支的共同祖先，默认分支第一次推送比较空树。基准无法解析时检查失败，不会悄悄跳过。
 
-现有的全量 lint 保留 gofmt 和其他规则；配置里的 `linters.exclusions.rules` 只排除 gofumpt 的报告，新增代码的检查交给上面按改动文件执行的入口，历史文件不需要全部重新格式化。这条排除不影响 `golangci-lint fmt`。后端的 `make test` 使用同一个版本校验入口。
+格式规则由 `golangci-lint fmt` 的改动文件入口检查。全量 lint 检查错误处理、未使用代码和静态分析：`make lint-go` 带 integration 标签检查无标签和集成文件，`make test-embed` 检查 embed 文件。
 
-`PYTHONDONTWRITEBYTECODE=1 python3 tools/test_format_go.py` 在临时的 Git 仓库里，验证文件筛选、生成代码的排除、暂存区的保护、干净工作区下的提交差异，以及两种格式化规则同时生效；CI 安装指定版本后，也会执行这个测试。
+`tools/test_format_go.py` 在临时 Git 仓库里验证文件筛选、生成代码排除、暂存区保护、干净工作区下的提交差异，以及两种格式化规则同时生效。CI 的 go-lint job 通过 `make test-tools` 运行它。
 
 ### 本地文件和文档
 
@@ -245,7 +304,7 @@ bash tools/check-upstream-release.sh --update-seen vX.Y.Z
 
 ## 发布
 
-`.github/workflows/release.yml` 由 `v*` tag 或手动 dispatch 触发。标准发布只构建一次前端，再把 Linux、Windows 和 macOS 的五个 Go 目标，分配到独立的 runner 并行编译；最后的 job 通过 `tools/goreleaser_prebuilt.sh` 把这些二进制导入 GoReleaser，统一生成 Release 归档、校验和、双架构镜像和 manifest。新旧品牌的两个 build ID 在 CI 里复制同一份预编译的二进制，两个归档都包含 `tokenrouter` 和 `sub2api` 两个普通文件，以兼容旧的更新器；镜像只使用主 build ID。
+`.github/workflows/release.yml` 由 `v*` tag 或手动 dispatch 触发。标准发布只构建一次前端，再把 Linux、Windows 和 macOS 的五个 Go 目标，分配到独立的 runner 并行编译；最后的 job 通过 `tools/goreleaser_prebuilt.sh` 把这些二进制导入 GoReleaser，统一生成 Release 归档、校验和、双架构镜像和 manifest。GoReleaser 使用 `tokenrouter` build ID 生成五个平台归档，每个归档包含 `tokenrouter` 可执行文件，镜像复用其中的 Linux 二进制。
 
 每个镜像架构只构建一次，同时打上 GHCR 和可选的 DockerHub 标签；没有配置 DockerHub 时，不会创建占位镜像。simple release 跳过二进制矩阵，只构建精简的镜像集合。workflow 从 annotated tag 的 body 读取 release notes，成功后把 `backend/cmd/server/VERSION` 同步回默认分支。
 

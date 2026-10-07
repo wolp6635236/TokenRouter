@@ -60,17 +60,10 @@ type dataProvider struct {
 }
 
 func setupProviderDataRouter(coordinators ...*idempotency.IdempotencyCoordinator) (*gin.Engine, *archiveHTTPFixture) {
-	return setupProviderDataRouterWithSettings(nil, coordinators...)
-}
-
-func setupProviderDataRouterWithSettings(settingService *providercore.RuntimeSettings, coordinators ...*idempotency.IdempotencyCoordinator) (*gin.Engine, *archiveHTTPFixture) {
 	router := gin.New()
 	adminSvc := newArchiveHTTPFixture()
 
 	options := providercore.ArchiveOptions{Now: time.Now, DecodeIDToken: provideradapter.DecodeArchiveIDToken}
-	if settingService != nil {
-		options.Defaults = settingService.GetOpenAIOAuthImportDefaults
-	}
 	core := providercore.NewArchive(adminSvc, egress.NewProxyTransfer(adminSvc, nil, time.Now), options)
 	h := NewArchiveHandler(core)
 	if len(coordinators) > 0 {
@@ -380,9 +373,8 @@ func TestImportDataIdempotencyIgnoresDeprecatedLongContextBillingExtra(t *testin
 	require.Equal(t, "value", adminSvc.createdProviders[0].Extra["preserved"])
 }
 
-func TestImportDataAppliesOpenAIOAuthDefaultModelWhitelistWhenMissing(t *testing.T) {
-	settingSvc := providercore.NewRuntimeSettings(&archiveSettingFixture{}, nil)
-	router, adminSvc := setupProviderDataRouterWithSettings(settingSvc)
+func TestImportDataLeavesOpenAIOAuthModelWhitelistUnset(t *testing.T) {
+	router, adminSvc := setupProviderDataRouter()
 
 	postImportProvider(t, router, map[string]any{
 		"name":        "openai-oauth",
@@ -392,19 +384,11 @@ func TestImportDataAppliesOpenAIOAuthDefaultModelWhitelistWhenMissing(t *testing
 	})
 
 	require.Len(t, adminSvc.createdProviders, 1)
-	require.Equal(t, []string{
-		"gpt-5.2",
-		"gpt-5.3",
-		"gpt-5.3-spark",
-		"gpt-5.4",
-		"gpt-5.4-mini",
-		"gpt-5.5",
-	}, adminSvc.createdProviders[0].Credentials["model_whitelist"])
+	require.NotContains(t, adminSvc.createdProviders[0].Credentials, "model_whitelist")
 }
 
 func TestImportDataKeepsExistingOpenAIOAuthModelWhitelist(t *testing.T) {
-	settingSvc := providercore.NewRuntimeSettings(&archiveSettingFixture{}, nil)
-	router, adminSvc := setupProviderDataRouterWithSettings(settingSvc)
+	router, adminSvc := setupProviderDataRouter()
 
 	postImportProvider(t, router, map[string]any{
 		"name":     "openai-oauth",
@@ -421,11 +405,7 @@ func TestImportDataKeepsExistingOpenAIOAuthModelWhitelist(t *testing.T) {
 }
 
 func TestImportDataTreatsOpenAIOAuthNullProviderFieldAsPresent(t *testing.T) {
-	repo := &archiveSettingFixture{values: map[string]string{
-		providercore.SettingKeyOpenAIOAuthImportDefaults: `{"provider":{"concurrency":7}}`,
-	}}
-	settingSvc := providercore.NewRuntimeSettings(repo, nil)
-	router, adminSvc := setupProviderDataRouterWithSettings(settingSvc)
+	router, adminSvc := setupProviderDataRouter()
 
 	postImportProvider(t, router, map[string]any{
 		"name":        "openai-oauth",
@@ -439,9 +419,8 @@ func TestImportDataTreatsOpenAIOAuthNullProviderFieldAsPresent(t *testing.T) {
 	require.Equal(t, 0, adminSvc.createdProviders[0].Concurrency)
 }
 
-func TestImportDataDoesNotApplyOpenAIOAuthDefaultsToOtherPlatforms(t *testing.T) {
-	settingSvc := providercore.NewRuntimeSettings(&archiveSettingFixture{}, nil)
-	router, adminSvc := setupProviderDataRouterWithSettings(settingSvc)
+func TestImportDataLeavesAnthropicModelWhitelistUnset(t *testing.T) {
+	router, adminSvc := setupProviderDataRouter()
 
 	postImportProvider(t, router, map[string]any{
 		"name":        "anthropic-oauth",

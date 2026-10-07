@@ -88,6 +88,8 @@ func TestOpenAIGatewayService_Forward_PreservePreviousResponseIDWhenWSEnabled(t 
 	}
 
 	options := &wsFixtureOptions{}
+	options.WS.RetryBackoffInitialMS = 1
+	options.WS.RetryBackoffMaxMS = 1
 	options.Request.URLPolicy.Enabled = false
 	options.Request.URLPolicy.AllowInsecureHTTP = true
 	options.WS.Enabled = true
@@ -482,6 +484,8 @@ func TestOpenAIGatewayService_Forward_WSv2FailureDoesNotFallbackHTTP(t *testing.
 	}
 
 	options := &wsFixtureOptions{}
+	options.WS.RetryBackoffInitialMS = 1
+	options.WS.RetryBackoffMaxMS = 1
 	options.Request.URLPolicy.Enabled = false
 	options.Request.URLPolicy.AllowInsecureHTTP = true
 	options.WS.Enabled = true
@@ -691,6 +695,8 @@ func TestOpenAIGatewayService_Forward_WSv2StreamEarlyCloseDoesNotFallbackHTTP(t 
 	}
 
 	options := &wsFixtureOptions{}
+	options.WS.RetryBackoffInitialMS = 1
+	options.WS.RetryBackoffMaxMS = 1
 	options.Request.URLPolicy.Enabled = false
 	options.Request.URLPolicy.AllowInsecureHTTP = true
 	options.WS.Enabled = true
@@ -767,6 +773,8 @@ func TestOpenAIGatewayService_Forward_WSv2RetryExhaustedDoesNotFallbackHTTP(t *t
 	}
 
 	options := &wsFixtureOptions{}
+	options.WS.RetryBackoffInitialMS = 1
+	options.WS.RetryBackoffMaxMS = 1
 	options.Request.URLPolicy.Enabled = false
 	options.Request.URLPolicy.AllowInsecureHTTP = true
 	options.WS.Enabled = true
@@ -920,6 +928,8 @@ func TestOpenAIGatewayService_Forward_WSv2ConnectionLimitRetryExhaustedDoesNotFa
 	}
 
 	options := &wsFixtureOptions{}
+	options.WS.RetryBackoffInitialMS = 1
+	options.WS.RetryBackoffMaxMS = 1
 	options.Request.URLPolicy.Enabled = false
 	options.Request.URLPolicy.AllowInsecureHTTP = true
 	options.WS.Enabled = true

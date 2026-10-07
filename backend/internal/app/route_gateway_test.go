@@ -30,6 +30,21 @@ func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 	return newGatewayRoutesTestRouterWithOptions(&config.Config{}, platform...)
 }
 
+// TestGatewayRoutesIgnoreRequestLanguage 检查网关和裸路径别名的英文错误响应。
+func TestGatewayRoutesIgnoreRequestLanguage(t *testing.T) {
+	router := newGatewayRoutesTestRouterWithGroup(&config.Config{}, &routing.Group{ID: 1, AllowedProtocols: []protocolcore.ProtocolID{}})
+	for _, path := range []string{"/v1/responses", "/responses", "/backend-api/codex/responses", "/v1/chat/completions"} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"test"}`))
+		request.Header.Set("Accept-Language", "zh-CN")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		require.Equal(t, http.StatusForbidden, response.Code)
+		require.Equal(t, "en", response.Header().Get("Content-Language"))
+		require.Contains(t, response.Body.String(), "protocol_not_allowed")
+		require.NotRegexp(t, `[\p{Han}]`, response.Body.String())
+	}
+}
+
 func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string) *gin.Engine {
 	return newGatewayRoutesTestRouterWithOptions(cfg, platform...)
 }

@@ -3,6 +3,7 @@
  * Manages user authentication state, login/logout, token refresh, and token persistence
  */
 
+import { getLocale, setLocale } from '@/i18n'
 import { defineStore } from 'pinia'
 import { ref, computed, readonly } from 'vue'
 import { authAPI, isTotp2FARequired, passkeyAPI, type LoginResponse } from '@/api'
@@ -76,6 +77,19 @@ function clearPendingAuthSessionStorage(): void {
 
 export const useAuthStore = defineStore('auth', () => {
   // ==================== State ====================
+
+  let localeUserID: number | null = null
+
+  // 每次登录同步账户选择，后台资料轮询保持当前切换结果。
+  async function syncUserLocale(value: User): Promise<void> {
+    if (localeUserID === value.id) return
+    localeUserID = value.id
+    try {
+      await setLocale(value.preferred_locale || getLocale(), !value.preferred_locale)
+    } catch {
+      localeUserID = null
+    }
+  }
 
   const user = ref<User | null>(null)
   const token = ref<string | null>(null)
@@ -307,6 +321,7 @@ export const useAuthStore = defineStore('auth', () => {
 
     const userData = response.user
     user.value = userData
+    void syncUserLocale(userData)
 
     // Persist to localStorage
     localStorage.setItem(AUTH_TOKEN_KEY, response.access_token)
@@ -355,6 +370,7 @@ export const useAuthStore = defineStore('auth', () => {
     stopAutoRefresh()
     stopTokenRefresh()
     token.value = null
+    localeUserID = null
     user.value = null
 
     token.value = newToken
@@ -436,6 +452,7 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await authAPI.getCurrentUser()
       const userData = response.data
       user.value = userData
+    void syncUserLocale(userData)
 
       // Update localStorage
       localStorage.setItem(AUTH_USER_KEY, JSON.stringify(userData))
@@ -463,6 +480,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     refreshTokenValue.value = null
     tokenExpiresAt.value = null
+    localeUserID = null
     user.value = null
     localStorage.removeItem(AUTH_TOKEN_KEY)
     localStorage.removeItem(AUTH_USER_KEY)

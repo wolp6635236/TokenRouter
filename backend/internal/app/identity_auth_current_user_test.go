@@ -1,5 +1,3 @@
-//go:build unit
-
 package app
 
 import (
@@ -19,7 +17,6 @@ import (
 )
 
 func TestAuthHandlerGetCurrentUserReturnsProfileCompatibilityFields(t *testing.T) {
-
 	verifiedAt := time.Date(2026, 4, 20, 8, 30, 0, 0, time.UTC)
 	repo := &userHandlerRepoStub{
 		user: &identity.User{

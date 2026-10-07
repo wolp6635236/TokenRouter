@@ -81,8 +81,8 @@ describe('EasyPay custom methods config', () => {
     expect(parseEasyPayCustomMethods(
       '[{"type":"ldc","upstreamType":"epay","displayName":"LDC"},{"type":"usdt_trc20","upstreamType":"usdt","displayName":"USDT-TRC20"}]',
     )).toEqual([
-      { type: 'ldc', upstreamType: 'epay', displayName: 'LDC' },
-      { type: 'usdt_trc20', upstreamType: 'usdt', displayName: 'USDT-TRC20' },
+      { id: 'ldc', type: 'ldc', upstreamType: 'epay', displayName: 'LDC' },
+      { id: 'usdt_trc20', type: 'usdt_trc20', upstreamType: 'usdt', displayName: 'USDT-TRC20' },
     ])
   })
 

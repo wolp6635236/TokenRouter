@@ -97,7 +97,6 @@
       前两行格子改为下方弹出，避免超出卡片顶部。
     -->
     <div
-      ref="tooltipRef"
       data-testid="heatmap-tooltip"
       class="pointer-events-none absolute z-20 whitespace-nowrap tooltip-panel rounded-control px-2 py-1 text-xs shadow-lg"
       :style="tooltipStyle"
@@ -173,7 +172,6 @@ const days = ref<HeatmapDay[]>([])
 const hoveredDay = ref<HeatmapDay | null>(null)
 const cardRef = ref<HTMLElement | null>(null)
 const gridWrapRef = ref<HTMLElement | null>(null)
-const tooltipRef = ref<HTMLElement | null>(null)
 const tooltipContentRef = ref<HTMLElement | null>(null)
 // 悬停格子中心相对卡片左上角的坐标，用于 tooltip 定位
 const hoverPos = ref({ left: 0, top: 0 })

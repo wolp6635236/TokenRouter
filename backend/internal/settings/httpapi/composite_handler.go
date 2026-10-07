@@ -73,11 +73,11 @@ func NewHandler(o HandlerOptions) *Handler {
 	return &Handler{settingService: o.Settings, settingsParticipants: o.Participants, participantError: o.ParticipantError, opsService: o.Monitoring, paymentConfigService: o.Payment, turnstileService: o.Turnstile, aliyunCaptchaService: o.Aliyun, userAttributeService: o.Attributes, totpService: o.Totp, userService: o.User, creativeModelReader: o.Creative}
 }
 
-func (h *Handler) preparedParticipants(ctx context.Context, input settings.Fields, values map[string]string) ([]settings.PreparedChange, error) {
+func (h *Handler) preparedParticipants(ctx context.Context, input settings.Fields, values, current map[string]string) ([]settings.PreparedChange, error) {
 	if h.participantError != nil {
 		return nil, h.participantError
 	}
-	prepared, err := h.settingsParticipants.Prepare(ctx, input, values)
+	prepared, err := h.settingsParticipants.Prepare(ctx, input, current)
 	if err != nil {
 		return nil, err
 	}

@@ -46,6 +46,24 @@ export interface LocalSettingRecord {
   updatedAt: number
 }
 
+// 任务提交时的提示词和参数快照。服务端不保存提示词明文，历史记录从这里读取提示词、画质等参数。
+export interface LocalRunParams {
+  runId: string
+  // 提交时选中的模型选项 key（group_id::model），填回输入框时用来重新选中模型
+  optionKey: string
+  groupName: string
+  operation: string
+  prompt: string
+  imageSize: string
+  aspectRatio: string
+  quality: string
+  background: string
+  thinkingLevel: string
+  // 随任务上传的参考图张数，局部重绘的 mask 不计入
+  referenceCount: number
+  createdAt: number
+}
+
 // 本地存储错误类型
 export type LocalStoreErrorType = 'quota' | 'unavailable' | 'unknown'
 
@@ -305,9 +323,55 @@ export async function loadSetting<T = unknown>(key: string): Promise<T | null> {
   return record ? (record.value as T) : null
 }
 
+// ==================== 任务参数 API ====================
+
+// 任务参数记录和设置项共用 settings store，key 带 run: 前缀；清空本机数据时一起删除。
+const RUN_PARAMS_KEY_PREFIX = 'run:'
+// 历史列表展示最近 20 条任务和全部进行中任务，本地最多保留最近 200 条参数记录。
+const MAX_RUN_PARAMS_RECORDS = 200
+
+function runParamsKeyRange(): IDBKeyRange {
+  return IDBKeyRange.bound(RUN_PARAMS_KEY_PREFIX, `${RUN_PARAMS_KEY_PREFIX}\uffff`)
+}
+
+// 保存一次任务的参数快照，超过上限时删除最早的记录。
+export async function saveRunParams(params: LocalRunParams): Promise<void> {
+  const record: LocalSettingRecord = {
+    key: `${RUN_PARAMS_KEY_PREFIX}${params.runId}`,
+    value: params,
+    updatedAt: Date.now(),
+  }
+  const db = await openStore()
+  try {
+    const store = db.transaction(STORE_SETTINGS, 'readwrite').objectStore(STORE_SETTINGS)
+    await idbRequest(store.put(record))
+    const records = await idbRequest(store.getAll(runParamsKeyRange()) as IDBRequest<LocalSettingRecord[]>)
+    if (records.length <= MAX_RUN_PARAMS_RECORDS) return
+    records.sort((a, b) => a.updatedAt - b.updatedAt)
+    for (const stale of records.slice(0, records.length - MAX_RUN_PARAMS_RECORDS)) {
+      await idbRequest(store.delete(stale.key))
+    }
+  } catch (error) {
+    throw toLocalStoreError(error)
+  }
+}
+
+// 读取全部任务参数快照，按 runId 建索引。
+export async function loadRunParamsMap(): Promise<Map<string, LocalRunParams>> {
+  const records = await withStore(STORE_SETTINGS, 'readonly', (store) =>
+    store.getAll(runParamsKeyRange()) as IDBRequest<LocalSettingRecord[]>,
+  )
+  const map = new Map<string, LocalRunParams>()
+  for (const record of records) {
+    const params = record.value as LocalRunParams | null
+    if (params && typeof params.runId === 'string') map.set(params.runId, params)
+  }
+  return map
+}
+
 // ==================== 维护 API ====================
 
-// 清空创作台全部本地数据（素材 + 场景 + 设置）
+// 清空创作台全部本地数据（素材、场景、设置和任务参数）
 export async function clearAll(): Promise<void> {
   const db = await openStore()
   try {

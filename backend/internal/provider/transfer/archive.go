@@ -48,22 +48,11 @@ type DataProvider struct {
 	RateMultiplier     *float64       `json:"rate_multiplier,omitempty"`
 	ExpiresAt          *int64         `json:"expires_at,omitempty"`
 	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired,omitempty"`
-
-	NotesSet              bool `json:"-"`
-	ConcurrencySet        bool `json:"-"`
-	PrioritySet           bool `json:"-"`
-	RateMultiplierSet     bool `json:"-"`
-	ExpiresAtSet          bool `json:"-"`
-	AutoPauseOnExpiredSet bool `json:"-"`
 }
 
+// UnmarshalJSON 接受导入条目中的扩展字段。
 func (a *DataProvider) UnmarshalJSON(data []byte) error {
 	type dataProviderAlias DataProvider
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
 
 	var decoded dataProviderAlias
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -71,12 +60,6 @@ func (a *DataProvider) UnmarshalJSON(data []byte) error {
 	}
 
 	*a = DataProvider(decoded)
-	_, a.NotesSet = raw["notes"]
-	_, a.ConcurrencySet = raw["concurrency"]
-	_, a.PrioritySet = raw["priority"]
-	_, a.RateMultiplierSet = raw["rate_multiplier"]
-	_, a.ExpiresAtSet = raw["expires_at"]
-	_, a.AutoPauseOnExpiredSet = raw["auto_pause_on_expired"]
 	return nil
 }
 

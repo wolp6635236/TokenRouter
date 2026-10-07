@@ -55,7 +55,7 @@ func TestNativeCompletionRuntimeOneFinancialEffect(t *testing.T) {
 	cfg.Default.RateMultiplier = 1
 	rates := app.NewGatewayBillingRatesForTest(nil, cfg)
 	health := app.NewProviderHealthRuntimeForTest(providers, nil, cfg, nil, nil, nil, nil, nil)
-	calculator := billing.NewCalculator(nativeCompletionCatalog{}, billing.CalculatorOptions{DefaultRateMultiplier: 1})
+	calculator := billing.NewCalculator(nativeCompletionCatalog{}, billing.CalculatorOptions{})
 	prices := billing.NewPriceResolver(nil, calculator, nil, nil, nil)
 	recorders := app.NewCompletionRecordersForTest(rates, calculator, prices, funds, logs, nil, nil, deferred, nil, nil, providers, health, nil, tasks, cfg)
 	for _, openAI := range []bool{false, true} {

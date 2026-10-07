@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+
 	"github.com/TokenFlux/TokenRouter/internal/notification/contract"
 )
 
@@ -34,6 +36,7 @@ const (
 	NotificationEmailEventContentModerationViolation  = "content_moderation.violation_notice"
 	NotificationEmailEventContentModerationDisabled   = "content_moderation.account_disabled"
 	NotificationEmailEventOpsAlert                    = "ops.alert"
+	NotificationEmailEventTeamOwnershipTransfer       = "team.ownership_transfer"
 	NotificationEmailEventOpsScheduledReport          = "ops.scheduled_report"
 
 	notificationEmailTemplateKeyPrefix    = "notification_email_template:"
@@ -43,7 +46,7 @@ const (
 	notificationEmailLocaleEmailKeyPrefix = "notification_email_locale:email:"
 	notificationEmailUnsubscribeSecretKey = "notification_email_unsubscribe_secret"
 	notificationEmailDefaultLocale        = "en"
-	notificationEmailLocaleChinese        = "zh"
+	notificationEmailLocaleChinese        = "zh-Hans"
 	notificationEmailMaxSubjectLength     = 200
 	notificationEmailMaxHTMLLength        = 30000
 	notificationEmailUnsubscribeTTL       = 365 * 24 * time.Hour
@@ -51,16 +54,23 @@ const (
 
 var (
 	notificationEmailPlaceholderPattern = regexp.MustCompile(`{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}`)
-	notificationEmailLocales            = []string{notificationEmailDefaultLocale, notificationEmailLocaleChinese}
+	notificationEmailLocales            = func() []string {
+		codes := []string{}
+		for _, item := range locale.Definitions() {
+			codes = append(codes, item.Code)
+		}
+		return codes
+	}()
 	notificationEmailCommonPlaceholders = []string{"site_name", "recipient_name", "recipient_email"}
 	// 摘要指标保持独立占位符，方便管理员在模板中重排或省略单项指标。
 	notificationEmailOpsSummaryPlaceholders = contract.SummaryPlaceholders()
 )
 
 type NotificationEmailService struct {
-	locks        keyCoordinator
-	settingRepo  SettingRepository
-	emailService Sender
+	recipientLocale func(context.Context, int64, string) string
+	locks           keyCoordinator
+	settingRepo     SettingRepository
+	emailService    Sender
 }
 
 type NotificationEmailEventInfo struct {
@@ -253,7 +263,7 @@ func (s *NotificationEmailService) GetTemplate(ctx context.Context, event, local
 	normalizedLocale := normalizeNotificationLocale(locale)
 	official, ok := notificationEmailOfficialTemplates[normalizedEvent][normalizedLocale]
 	if !ok {
-		return NotificationEmailTemplate{}, fmt.Errorf("official template not found for %s/%s", normalizedEvent, normalizedLocale)
+		official = notificationEmailOfficialTemplates[normalizedEvent][notificationEmailDefaultLocale]
 	}
 
 	tmpl := NotificationEmailTemplate{
@@ -269,7 +279,7 @@ func (s *NotificationEmailService) GetTemplate(ctx context.Context, event, local
 		if errors.Is(err, ErrSettingNotFound) {
 			return tmpl, nil
 		}
-		return NotificationEmailTemplate{}, err
+		return tmpl, nil
 	}
 	if strings.TrimSpace(raw) == "" {
 		return tmpl, nil
@@ -277,10 +287,10 @@ func (s *NotificationEmailService) GetTemplate(ctx context.Context, event, local
 
 	var stored notificationEmailStoredTemplate
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return NotificationEmailTemplate{}, fmt.Errorf("decode email template override: %w", err)
+		return tmpl, nil
 	}
 	if err := validateNotificationEmailTemplate(normalizedEvent, stored.Subject, stored.HTML); err != nil {
-		return NotificationEmailTemplate{}, err
+		return tmpl, nil
 	}
 	tmpl.Subject = stored.Subject
 	tmpl.HTML = stored.HTML
@@ -377,15 +387,13 @@ func (s *NotificationEmailService) Send(ctx context.Context, input SendRequest) 
 		}
 	}
 
-	locale := normalizeNotificationLocale(input.Locale)
-	if strings.TrimSpace(input.Locale) == "" {
-		locale = s.ResolveRecipientLocale(ctx, input.UserID, recipient)
-	}
-	tmpl, err := s.GetTemplate(ctx, normalizedEvent, locale)
+	selectedLocale := locale.Negotiate(input.Locale, s.ResolveRecipientLocale(ctx, input.UserID, recipient))
+	ctx = locale.WithLanguage(ctx, selectedLocale)
+	tmpl, err := s.GetTemplate(ctx, normalizedEvent, selectedLocale)
 	if err != nil {
 		return NotificationEmailTemplateErr(err)
 	}
-	variables := s.runtimeVariables(ctx, normalizedEvent, locale, input)
+	variables := s.runtimeVariables(ctx, normalizedEvent, selectedLocale, input)
 	rendered, err := RenderNotificationEmail(normalizedEvent, tmpl.Subject, tmpl.HTML, variables, input.RawHTMLVariables)
 	if err != nil {
 		return NotificationEmailTemplateErr(err)
@@ -428,9 +436,6 @@ func (s *NotificationEmailService) RememberRecipientLocale(ctx context.Context, 
 	if strings.TrimSpace(acceptLanguage) == "" || s == nil || s.settingRepo == nil {
 		return
 	}
-	if userID > 0 {
-		_ = s.settingRepo.Set(ctx, notificationEmailLocaleUserKeyPrefix+strconv.FormatInt(userID, 10), locale)
-	}
 	if emailHash := NotificationEmailHash(email); emailHash != "" {
 		_ = s.settingRepo.Set(ctx, notificationEmailLocaleEmailKeyPrefix+emailHash, locale)
 	}
@@ -440,6 +445,12 @@ func (s *NotificationEmailService) ResolveRecipientLocale(ctx context.Context, u
 	if s == nil || s.settingRepo == nil {
 		return notificationEmailDefaultLocale
 	}
+	if s.recipientLocale != nil {
+		if selected := locale.Normalize(s.recipientLocale(ctx, userID, email)); selected != "" {
+			return selected
+		}
+	}
+
 	if userID > 0 {
 		if locale, err := s.settingRepo.GetValue(ctx, notificationEmailLocaleUserKeyPrefix+strconv.FormatInt(userID, 10)); err == nil && strings.TrimSpace(locale) != "" {
 			return normalizeNotificationLocale(locale)
@@ -450,7 +461,8 @@ func (s *NotificationEmailService) ResolveRecipientLocale(ctx context.Context, u
 			return normalizeNotificationLocale(locale)
 		}
 	}
-	return notificationEmailDefaultLocale
+	fallback, _ := s.settingRepo.GetValue(ctx, "default_locale")
+	return locale.Negotiate("", fallback)
 }
 
 func (s *NotificationEmailService) IsUnsubscribed(ctx context.Context, email, event string) (bool, error) {
@@ -503,11 +515,15 @@ func (s *NotificationEmailService) eventInfo(event string) (NotificationEmailEve
 	return info, normalized, nil
 }
 
-func (s *NotificationEmailService) sampleVariables(ctx context.Context, event, locale string) map[string]string {
+func (s *NotificationEmailService) sampleVariables(ctx context.Context, event, languageCode string) map[string]string {
+	ctx = locale.WithLanguage(ctx, languageCode)
 	info := notificationEmailEventDefinitions[event]
 	variables := make(map[string]string, len(info.Placeholders))
-	for key, value := range notificationEmailSampleVariables(locale) {
+	for key, value := range notificationEmailSampleVariables(languageCode) {
 		variables[key] = value
+	}
+	if event == NotificationEmailEventBalanceLow {
+		variables["recharge_url"] = locale.ReadSettingText(ctx, s.settingRepo, "balance_low_notify_recharge_url", variables["recharge_url"])
 	}
 	variables["site_name"] = s.siteName(ctx)
 	if variables["unsubscribe_url"] == "" && info.Optional {
@@ -516,8 +532,9 @@ func (s *NotificationEmailService) sampleVariables(ctx context.Context, event, l
 	return variables
 }
 
-func (s *NotificationEmailService) runtimeVariables(ctx context.Context, event, locale string, input NotificationEmailSendInput) map[string]string {
-	variables := s.sampleVariables(ctx, event, locale)
+func (s *NotificationEmailService) runtimeVariables(ctx context.Context, event, languageCode string, input NotificationEmailSendInput) map[string]string {
+	ctx = locale.WithLanguage(ctx, languageCode)
+	variables := s.sampleVariables(ctx, event, languageCode)
 	for key, value := range input.Variables {
 		variables[key] = value
 	}
@@ -548,6 +565,9 @@ func (s *NotificationEmailService) runtimeVariables(ctx context.Context, event, 
 			}
 		}
 	}
+	if event == NotificationEmailEventBalanceLow {
+		variables["recharge_url"] = locale.ReadSettingText(ctx, s.settingRepo, "balance_low_notify_recharge_url", variables["recharge_url"])
+	}
 	variables["site_name"] = s.siteName(ctx)
 	variables["recipient_email"] = input.RecipientEmail
 	if strings.TrimSpace(input.RecipientName) != "" {
@@ -562,14 +582,7 @@ func (s *NotificationEmailService) runtimeVariables(ctx context.Context, event, 
 }
 
 func (s *NotificationEmailService) siteName(ctx context.Context) string {
-	if s == nil || s.settingRepo == nil {
-		return defaultSiteName
-	}
-	name, err := s.settingRepo.GetValue(ctx, SettingKeySiteName)
-	if err != nil || strings.TrimSpace(name) == "" {
-		return defaultSiteName
-	}
-	return strings.TrimSpace(name)
+	return locale.ReadGroupedText(ctx, s.settingRepo, "site_texts", "site_name", defaultSiteName)
 }
 
 func (s *NotificationEmailService) baseURL(ctx context.Context) string {
@@ -790,20 +803,12 @@ func notificationEmailPlaceholdersIn(raw string) []string {
 }
 
 func normalizeNotificationLocale(raw string) string {
-	trimmed := strings.ToLower(strings.TrimSpace(raw))
-	if trimmed == "" {
-		return notificationEmailDefaultLocale
-	}
-	for _, part := range strings.Split(trimmed, ",") {
-		tag := strings.TrimSpace(strings.Split(part, ";")[0])
-		if strings.HasPrefix(tag, "zh") || tag == "cn" {
-			return notificationEmailLocaleChinese
-		}
-		if strings.HasPrefix(tag, "en") {
-			return notificationEmailDefaultLocale
-		}
-	}
-	return notificationEmailDefaultLocale
+	return locale.Negotiate(raw, notificationEmailDefaultLocale)
+}
+
+// SetRecipientLocaleReader 由 app 注入账户语言读取，通知模块接收最终偏好值。
+func (s *NotificationEmailService) SetRecipientLocaleReader(read func(context.Context, int64, string) string) {
+	s.recipientLocale = read
 }
 
 func notificationEmailTemplateKey(event, locale string) string {
@@ -901,6 +906,7 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 			"expires_in_minutes":  "15",
 			"reset_url":           "https://example.com/reset-password?token=preview",
 			"team_name":           "平台研发团队",
+			"transfer_url":        "https://example.com/team?transfer=preview",
 			"invitation_url":      "https://example.com/team?invitation=preview",
 			"expires_at":          "2026-08-03T12:00:00+09:00",
 			"subscription_group":  "Claude Pro",
@@ -952,6 +958,7 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 		"expires_in_minutes":  "15",
 		"reset_url":           "https://example.com/reset-password?token=preview",
 		"team_name":           "Platform Engineering",
+		"transfer_url":        "https://example.com/team?transfer=preview",
 		"invitation_url":      "https://example.com/team?invitation=preview",
 		"expires_at":          "2026-08-03T12:00:00+09:00",
 		"subscription_group":  "Claude Pro",
@@ -1028,6 +1035,7 @@ var notificationEmailEventOrder = []string{
 	NotificationEmailEventAuthPasswordReset,
 	NotificationEmailEventNotificationEmailVerifyCode,
 	NotificationEmailEventTeamInvitation,
+	NotificationEmailEventTeamOwnershipTransfer,
 	NotificationEmailEventSubscriptionPurchaseSuccess,
 	NotificationEmailEventSubscriptionExpiryReminder,
 	NotificationEmailEventBalanceLow,
@@ -1040,6 +1048,13 @@ var notificationEmailEventOrder = []string{
 }
 
 var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
+	NotificationEmailEventTeamOwnershipTransfer: {
+		Event:       NotificationEmailEventTeamOwnershipTransfer,
+		Label:       "Team ownership transfer",
+		Description: "Sent when team ownership is offered to a user.",
+		Category:    "team", Optional: false,
+		Placeholders: append(append([]string{}, notificationEmailCommonPlaceholders...), "team_name", "transfer_url"),
+	},
 	NotificationEmailEventAuthVerifyCode: {
 		Event:        NotificationEmailEventAuthVerifyCode,
 		Label:        "Email verification code",
@@ -1157,6 +1172,17 @@ var notificationEmailEventDefinitions = map[string]NotificationEmailEventInfo{
 }
 
 var notificationEmailOfficialTemplates = map[string]map[string]notificationEmailOfficialTemplate{
+	NotificationEmailEventTeamOwnershipTransfer: {
+		notificationEmailDefaultLocale: {
+			Subject: "[{{site_name}}] Team ownership transfer",
+			HTML:    notificationEmailCard("#4f46e5", "Team ownership transfer", `<p>Hello {{recipient_name}},</p><p>You have been offered ownership of <strong>{{team_name}}</strong>.</p><p><a class="button" href="{{transfer_url}}">Review the transfer</a></p>`),
+		},
+		notificationEmailLocaleChinese: {
+			Subject: "[{{site_name}}] 团队所有权转让",
+			HTML:    notificationEmailChineseCard("#4f46e5", "团队所有权转让", `<p>{{recipient_name}}，您好：</p><p>您收到团队 <strong>{{team_name}}</strong> 的所有权转让请求。</p><p><a class="button" href="{{transfer_url}}">查看转让请求</a></p>`),
+		},
+	},
+
 	NotificationEmailEventAuthVerifyCode: {
 		notificationEmailDefaultLocale: {
 			Subject: "[{{site_name}}] Email verification code",
@@ -1169,7 +1195,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 邮箱验证码",
-			HTML: notificationEmailCard("#4f46e5", "邮箱验证码", `
+			HTML: notificationEmailChineseCard("#4f46e5", "邮箱验证码", `
 <p>{{recipient_name}}，您好：</p>
 <p>您的验证码是：</p>
 <p style="font-size: 32px; font-weight: 700; letter-spacing: 8px; text-align: center;">{{verification_code}}</p>
@@ -1190,7 +1216,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 密码重置请求",
-			HTML: notificationEmailCard("#7c3aed", "密码重置", `
+			HTML: notificationEmailChineseCard("#7c3aed", "密码重置", `
 <p>{{recipient_name}}，您好：</p>
 <p>我们收到了您的密码重置请求，请点击下方按钮设置新密码。</p>
 <p><a class="button" href="{{reset_url}}">重置密码</a></p>
@@ -1212,7 +1238,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 通知邮箱验证码",
-			HTML: notificationEmailCard("#0ea5e9", "通知邮箱验证", `
+			HTML: notificationEmailChineseCard("#0ea5e9", "通知邮箱验证", `
 <p>{{recipient_name}}，您好：</p>
 <p>您正在添加额外的通知邮箱，请输入以下验证码完成验证。</p>
 <p style="font-size: 32px; font-weight: 700; letter-spacing: 8px; text-align: center;">{{verification_code}}</p>
@@ -1233,7 +1259,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 邀请您加入团队 {{team_name}}",
-			HTML: notificationEmailCard("#0f766e", "团队邀请", `
+			HTML: notificationEmailChineseCard("#0f766e", "团队邀请", `
 <p>{{recipient_name}}，您好：</p>
 <p>您被邀请加入 {{site_name}} 上的团队 <strong>{{team_name}}</strong>。</p>
 <p><a class="button" href="{{invitation_url}}">查看并处理邀请</a></p>
@@ -1253,7 +1279,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 订阅购买成功",
-			HTML: notificationEmailCard("#2563eb", "订阅已开通", `
+			HTML: notificationEmailChineseCard("#2563eb", "订阅已开通", `
 <p>{{recipient_name}}，您好：</p>
 <p>您的 <strong>{{subscription_group}}</strong> 订阅已成功开通，有效期 <strong>{{subscription_days}}</strong> 天。</p>
 <p>到期时间：<strong>{{expiry_time}}</strong></p>
@@ -1271,7 +1297,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 订阅将在 {{days_remaining}} 天后到期",
-			HTML: notificationEmailCard("#f97316", "订阅到期提醒", `
+			HTML: notificationEmailChineseCard("#f97316", "订阅到期提醒", `
 <p>{{recipient_name}}，您好：</p>
 <p>您的 <strong>{{subscription_group}}</strong> 订阅将在 <strong>{{days_remaining}}</strong> 天后到期。</p>
 <p>到期时间：<strong>{{expiry_time}}</strong></p>
@@ -1290,7 +1316,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 余额不足提醒",
-			HTML: notificationEmailCard("#d97706", "余额不足提醒", `
+			HTML: notificationEmailChineseCard("#d97706", "余额不足提醒", `
 <p>{{recipient_name}}，您好：</p>
 <p>您当前余额为 <strong>${{current_balance}}</strong>，已低于提醒阈值 <strong>${{threshold}}</strong>。</p>
 <p>请及时充值以免服务中断。</p>
@@ -1309,7 +1335,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 余额充值成功",
-			HTML: notificationEmailCard("#16a34a", "余额充值成功", `
+			HTML: notificationEmailChineseCard("#16a34a", "余额充值成功", `
 <p>{{recipient_name}}，您好：</p>
 <p>您的余额充值 <strong>${{recharge_amount}}</strong> 已完成。</p>
 <p>当前余额：<strong>${{current_balance}}</strong></p>
@@ -1332,7 +1358,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 提供商限额告警 - {{provider_name}}",
-			HTML: notificationEmailCard("#dc2626", "提供商限额告警", `
+			HTML: notificationEmailChineseCard("#dc2626", "提供商限额告警", `
 <p>上游提供商 <strong>{{provider_name}}</strong> 已触发配置的额度告警阈值。</p>
 <table style="width:100%;border-collapse:collapse;">
   <tr><td>提供商 ID</td><td>{{provider_id}}</td></tr>
@@ -1360,7 +1386,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 账户风控提醒",
-			HTML: notificationEmailCard("#ef4444", "账户风控提醒", `
+			HTML: notificationEmailChineseCard("#ef4444", "账户风控提醒", `
 <p>{{recipient_name}}，您好：</p>
 <p>您的 API 请求触发了平台内容审核/风控策略。</p>
 <table style="width:100%;border-collapse:collapse;">
@@ -1388,7 +1414,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[{{site_name}}] 账户已被禁用",
-			HTML: notificationEmailCard("#b91c1c", "账户已被禁用", `
+			HTML: notificationEmailChineseCard("#b91c1c", "账户已被禁用", `
 <p>{{recipient_name}}，您好：</p>
 <p>您的账户在统计周期内多次触发平台内容审核/风控规则，系统已自动禁用该账户。</p>
 <table style="width:100%;border-collapse:collapse;">
@@ -1413,7 +1439,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 		},
 		notificationEmailLocaleChinese: {
 			Subject: "[运维告警][{{severity}}] {{rule_name}}",
-			HTML: notificationEmailCard("#ea580c", "运维告警", `
+			HTML: notificationEmailChineseCard("#ea580c", "运维告警", `
 <p><strong>规则</strong>：{{rule_name}}</p>
 <p><strong>严重级别</strong>：{{severity}}</p>
 <p><strong>状态</strong>：{{alert_status}}</p>
@@ -1438,7 +1464,7 @@ var notificationEmailOfficialTemplates = map[string]map[string]notificationEmail
 func notificationEmailOpsScheduledReportTemplate(locale string) string {
 	if normalizeNotificationLocale(locale) == notificationEmailLocaleChinese {
 		return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-Hans">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1627,9 +1653,20 @@ func notificationEmailOpsScheduledReportTemplate(locale string) string {
 </html>`
 }
 
-func notificationEmailCard(accent, title, content string) string {
+// notificationEmailChineseCard 为中文事件使用中文页脚。
+func notificationEmailChineseCard(accent, title, content string) string {
+	return notificationEmailCard(accent, title, content, "zh-Hans")
+}
+
+func notificationEmailCard(accent, title, content string, language ...string) string {
+	selected := "en"
+	footer := "This email was sent by {{site_name}}. Please do not reply directly."
+	if len(language) > 0 && language[0] == "zh-Hans" {
+		selected = "zh-Hans"
+		footer = "此邮件由 {{site_name}} 自动发送，请勿直接回复。"
+	}
 	return `<!DOCTYPE html>
-<html>
+<html lang="` + selected + `">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1648,7 +1685,7 @@ func notificationEmailCard(accent, title, content string) string {
   <div class="container">
     <div class="header"><h1>` + title + `</h1></div>
     <div class="content">` + content + `</div>
-    <div class="footer">This email was sent by {{site_name}}. Please do not reply directly.</div>
+    <div class="footer">` + footer + `</div>
   </div>
 </body>
 </html>`

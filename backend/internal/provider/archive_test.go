@@ -65,14 +65,11 @@ func TestArchiveExportPreservesOrderAndIndependentSecrets(t *testing.T) {
 	require.Equal(t, "upstream", mapping["alias"])
 }
 
-// TestArchiveImportRetainsPartialResultsAndLazyDefaults 检查代理导入后读取一次动态模板，提供商逐项处理并返回部分成功结果，输入使用独立副本。
-func TestArchiveImportRetainsPartialResultsAndLazyDefaults(t *testing.T) {
+// TestArchiveImportRetainsPartialResults 检查逐项导入的部分成功结果，以及凭据副本中的身份补齐。
+func TestArchiveImportRetainsPartialResults(t *testing.T) {
 	events := []string{}
 	records := &archiveProvidersFixture{events: &events}
-	options := ArchiveOptions{Defaults: func(context.Context) (*transfer.OpenAIOAuthImportDefaults, error) {
-		events = append(events, "defaults")
-		return &transfer.OpenAIOAuthImportDefaults{Credentials: map[string]any{"model_mapping": map[string]any{"alias": "target"}}}, nil
-	}, DecodeIDToken: func(string) (*ArchiveIdentityHints, error) {
+	options := ArchiveOptions{DecodeIDToken: func(string) (*ArchiveIdentityHints, error) {
 		events = append(events, "decode")
 		return &ArchiveIdentityHints{Email: "decoded@example.test"}, nil
 	}}
@@ -83,7 +80,7 @@ func TestArchiveImportRetainsPartialResultsAndLazyDefaults(t *testing.T) {
 	require.Equal(t, 1, result.ProxyCreated)
 	require.Equal(t, 1, result.ProviderCreated)
 	require.Equal(t, 1, result.ProviderFailed)
-	require.Equal(t, []string{"proxies", "defaults", "decode", "create", "create"}, events)
+	require.Equal(t, []string{"proxies", "decode", "create", "create"}, events)
 	require.Equal(t, map[string]any{"id_token": "fixture"}, input.Data.Providers[0].Credentials)
 	require.Equal(t, "decoded@example.test", records.created[0].Credentials["email"])
 }

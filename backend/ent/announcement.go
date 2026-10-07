@@ -19,6 +19,8 @@ type Announcement struct {
 	config `json:"-"`
 	// ID of the ent.
 	ID int64 `json:"id,omitempty"`
+	// Localization holds the value of the "localization" field.
+	Localization site.AnnouncementLocalization `json:"localization,omitempty"`
 	// 公告标题
 	Title string `json:"title,omitempty"`
 	// 公告内容（支持 Markdown）
@@ -70,7 +72,7 @@ func (*Announcement) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case announcement.FieldTargeting:
+		case announcement.FieldLocalization, announcement.FieldTargeting:
 			values[i] = new([]byte)
 		case announcement.FieldID, announcement.FieldCreatedBy, announcement.FieldUpdatedBy:
 			values[i] = new(sql.NullInt64)
@@ -99,6 +101,14 @@ func (_m *Announcement) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
 			_m.ID = int64(value.Int64)
+		case announcement.FieldLocalization:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field localization", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Localization); err != nil {
+					return fmt.Errorf("unmarshal field localization: %w", err)
+				}
+			}
 		case announcement.FieldTitle:
 			if value, ok := values[i].(*sql.NullString); !ok {
 				return fmt.Errorf("unexpected type %T for field title", values[i])
@@ -212,6 +222,9 @@ func (_m *Announcement) String() string {
 	var builder strings.Builder
 	builder.WriteString("Announcement(")
 	builder.WriteString(fmt.Sprintf("id=%v, ", _m.ID))
+	builder.WriteString("localization=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Localization))
+	builder.WriteString(", ")
 	builder.WriteString("title=")
 	builder.WriteString(_m.Title)
 	builder.WriteString(", ")

@@ -249,12 +249,12 @@ func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 		return s.billingService.CalculateWebSearchCost(result.WebSearchCalls, webSearchPricePerCallFromAPIKey(apiKey), webSearchMultiplier), nil
 	}
 	if IsGrokVideoUsageResult(result, billingModels) {
-		if resolved := s.ResolveOpenAIConfigPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
+		if resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
 			return s.CalculateOpenAIVideoCost(ctx, billingModel, apiKey, result, videoMultiplier)
 		}
 	}
 	if result != nil && result.AudioUsage != nil {
-		if resolved := s.ResolveOpenAIConfigPricing(ctx, billingModel, apiKey); resolved != nil &&
+		if resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey); resolved != nil &&
 			(resolved.Mode == BillingModePerRequest) {
 			gid := apiKey.Group.ID
 			return s.billingService.CalculateCostUnified(CostInput{
@@ -269,7 +269,7 @@ func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 
 	if result != nil && result.ImageCount > 0 {
 		// 共享价格配置定价为令牌计费时走令牌路径，否则走图片计费
-		resolved := s.ResolveOpenAIConfigPricing(ctx, billingModel, apiKey)
+		resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey)
 		if resolved != nil && resolved.Mode != BillingModeToken {
 			return s.CalculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier)
 		}
@@ -428,7 +428,7 @@ func (s *Recorder) imageUsesTokenPricing(model, size string, usage TokenUsage) b
 
 func (s *Recorder) CalculateOpenAIImageCost(ctx context.Context, billingModel string, apiKey *KeySnapshot, result *Result, multiplier float64) (*CostBreakdown, error) {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
-	resolved := s.ResolveOpenAIConfigPricing(ctx, billingModel, apiKey)
+	resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey)
 	if resolved != nil {
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
 			Ctx: ctx, Model: billingModel, GroupID: apiKey.GroupID,
@@ -455,7 +455,7 @@ func (s *Recorder) CalculateOpenAIVideoCost(ctx context.Context, billingModel st
 	}
 	resolution := NormalizeVideoBillingResolutionOrDefault(result.VideoResolution)
 	durationSeconds := NormalizeVideoBillingDurationSecondsOrDefault(result.VideoDurationSeconds)
-	resolved := s.ResolveOpenAIConfigPricing(ctx, billingModel, apiKey)
+	resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey)
 	if resolved != nil {
 		units := float64(videoCount)
 		if resolved.Mode == BillingModeVideo {
@@ -496,7 +496,7 @@ func (s *Recorder) FilterCNProviderBillingModelCandidates(
 		}
 		if IsCNProviderClaudeFallbackCandidate(candidate) {
 			// 纯倍率可用于媒体计费，国产模型的 Claude 基础价仍需单独配置。
-			resolved := s.ResolveOpenAIConfigPricing(ctx, candidate, apiKey)
+			resolved := s.ResolveConfigPricing(ctx, candidate, apiKey)
 			if !resolved.HasEffectiveOverridePricing() {
 				continue
 			}
@@ -512,18 +512,6 @@ func IsCNProviderClaudeFallbackCandidate(model string) bool {
 		strings.Contains(model, "opus") ||
 		strings.Contains(model, "sonnet") ||
 		strings.Contains(model, "haiku")
-}
-
-func (s *Recorder) ResolveOpenAIConfigPricing(ctx context.Context, billingModel string, apiKey *KeySnapshot) *ResolvedPricing {
-	if s.resolver == nil || apiKey == nil || apiKey.Group == nil {
-		return nil
-	}
-	gid := apiKey.Group.ID
-	resolved := s.resolver.Resolve(ctx, PricingInput{Model: billingModel, GroupID: &gid})
-	if resolved.HasConfiguredPricing() {
-		return resolved
-	}
-	return nil
 }
 
 func OpenAIUsageBillingModel(result *Result, fields PricingUsageFields) string {

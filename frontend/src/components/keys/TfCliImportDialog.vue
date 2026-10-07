@@ -230,7 +230,7 @@ const keyLabel = computed(() => props.apiKey?.name || `#${props.apiKey?.id ?? ''
 const groupLabel = computed(() => {
   const key = props.apiKey
   if (!key || key.is_composite || key.group_id == null) return ''
-  return key.group?.name || String(key.group_id)
+  return (key.group?.display_name || key.group?.name) || String(key.group_id)
 })
 
 const importErrorMessage = computed(() => {
@@ -296,7 +296,7 @@ async function sendKey(): Promise<void> {
     host: pageOrigin,
     key_name: key.name,
     ...(!key.is_composite && key.group_id != null
-      ? { group_id: key.group_id, group_name: key.group?.name }
+      ? { group_id: key.group_id, group_name: (key.group?.display_name || key.group?.name) }
       : {}),
   }
   const result = await importKeyToTf(destination, payload, controller.signal)

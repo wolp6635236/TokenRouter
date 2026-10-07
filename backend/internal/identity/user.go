@@ -10,23 +10,25 @@ import (
 )
 
 type User struct {
-	Subscriptions  []billing.UserSubscription
-	ID             int64
-	Email          string
-	Username       string
-	Notes          string
-	AvatarURL      string
-	AvatarSource   string
-	AvatarMIME     string
-	AvatarByteSize int
-	AvatarSHA256   string
-	PasswordHash   string
-	Role           string
-	Balance        float64
-	FrozenBalance  float64
-	Concurrency    int
-	Status         string
-	AllowedGroups  []int64
+	Subscriptions []billing.UserSubscription
+	ID            int64
+	Email         string
+	// PreferredLocale 为空时使用浏览器或站点默认语言。
+	PreferredLocale *string
+	Username        string
+	Notes           string
+	AvatarURL       string
+	AvatarSource    string
+	AvatarMIME      string
+	AvatarByteSize  int
+	AvatarSHA256    string
+	PasswordHash    string
+	Role            string
+	Balance         float64
+	FrozenBalance   float64
+	Concurrency     int
+	Status          string
+	AllowedGroups   []int64
 	// DisabledPublicGroups 保存管理员为该用户显式禁止使用的公开分组 ID。
 	DisabledPublicGroups []int64
 	// GroupRestrictionsLoaded 表示用户分组授权/禁用列表已从仓储加载，避免认证缓存误判空列表。

@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
@@ -31,6 +34,7 @@ func scanAttributeConfig(row interface{ Scan(...any) error }) (*routing.ModelAtt
 		return nil, err
 	}
 	result.GroupIDs = []int64(groups)
+	routing.EnsureModelRuleIDs(&result)
 	return &result, nil
 }
 
@@ -126,9 +130,9 @@ func (s *ModelAttributeStore) Save(ctx context.Context, config *routing.ModelAtt
 	if config.ID == 0 {
 		err = tx.QueryRowContext(ctx, `INSERT INTO model_attribute_configs(name,description,status,rules) VALUES ($1,$2,$3,$4) RETURNING id,created_at,updated_at`, config.Name, config.Description, config.Status, string(body)).Scan(&config.ID, &config.CreatedAt, &config.UpdatedAt)
 	} else {
-		err = tx.QueryRowContext(ctx, `UPDATE model_attribute_configs SET name=$2,description=$3,status=$4,rules=$5,updated_at=NOW() WHERE id=$1 RETURNING created_at,updated_at`, config.ID, config.Name, config.Description, config.Status, string(body)).Scan(&config.CreatedAt, &config.UpdatedAt)
+		err = tx.QueryRowContext(ctx, `UPDATE model_attribute_configs SET name=$2,description=$3,status=$4,rules=$5,updated_at=NOW() WHERE id=$1 AND ($6::timestamptz IS NULL OR updated_at=$6) RETURNING created_at,updated_at`, config.ID, config.Name, config.Description, config.Status, string(body), optionalAttributeTimestamp(config.ExpectedUpdatedAt)).Scan(&config.CreatedAt, &config.UpdatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return routing.ErrAttributeConfigNotFound
+			return locale.ErrConflict
 		}
 	}
 	if err != nil {
@@ -155,4 +159,12 @@ func (s *ModelAttributeStore) Delete(ctx context.Context, id int64) error {
 		return routing.ErrAttributeConfigNotFound
 	}
 	return err
+}
+
+// optionalAttributeTimestamp 对创建和内部无版本调用使用空条件。
+func optionalAttributeTimestamp(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }

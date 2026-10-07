@@ -7,16 +7,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // TestDashboardCacheLegacyKeyAndTTL 验证原键可直接读入新实现，新写入也可由原始 Redis 客户端按旧键读取。
 func TestDashboardCacheLegacyKeyAndTTL(t *testing.T) {
 	ctx := context.Background()
-	container, err := tcredis.Run(ctx, "redis:8.4-alpine")
+	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 	url, err := container.ConnectionString(ctx)

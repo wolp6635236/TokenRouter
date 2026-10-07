@@ -30,23 +30,28 @@ type Repository interface {
 	Delete(context.Context, string) error
 }
 
+// ConditionalRepository 在一次事务中比较旧值并提交整个设置批次。
+type ConditionalRepository interface {
+	Repository
+	CompareAndSetMultiple(context.Context, map[string]string, map[string]*string) error
+}
+
 type subscription struct {
 	active atomic.Bool
 	id     uint64
 	fn     func()
 }
 
-// Store 共用底层存取与通知状态。业务校验、敏感值处理和领域缓存留在调用模块。
-// 写方法不会隐式广播；调用者在原有缓存刷新成功的位置调用 NotifyUpdated。
+// Store 提供设置读写和订阅通知，业务校验和领域缓存在调用模块处理。
+// 调用方在设置持久化和缓存刷新完成后调用 NotifyUpdated。
 // @project-doc docs/interfaces/configuration.md#runtime_settings
 type Store struct {
-	updates        *Updates
-	repo           Repository
-	mu             sync.RWMutex
-	version        string
-	nextID         uint64
-	subscribers    []*subscription
-	legacyCallback func()
+	updates     *Updates
+	repo        Repository
+	mu          sync.RWMutex
+	version     string
+	nextID      uint64
+	subscribers []*subscription
 }
 
 // New 在 repo 为 Store 时返回该实例，否则为 repo 创建 Store。
@@ -88,13 +93,6 @@ func (s *Store) Version() string {
 	return s.version
 }
 
-// SetOnUpdateCallback 替换当前的单个更新回调。
-func (s *Store) SetOnUpdateCallback(fn func()) {
-	s.mu.Lock()
-	s.legacyCallback = fn
-	s.mu.Unlock()
-}
-
 // Subscribe 按登记顺序同步通知。注销幂等并阻止尚未领取的回调；已领取的回调可以完成一次。
 func (s *Store) Subscribe(fn func()) func() {
 	if fn == nil {
@@ -123,16 +121,12 @@ func (s *Store) Subscribe(fn func()) func() {
 	}
 }
 
-// NotifyUpdated 由业务更新入口在持久化及原有缓存刷新后显式调用。
+// NotifyUpdated 通知已登记的订阅者，调用方在持久化和缓存刷新后调用。
 // 回调在锁外执行，允许回调注销自身或继续读取设置。
 func (s *Store) NotifyUpdated() {
 	s.mu.RLock()
-	legacy := s.legacyCallback
 	subs := append([]*subscription(nil), s.subscribers...)
 	s.mu.RUnlock()
-	if legacy != nil {
-		legacy()
-	}
 	for _, sub := range subs {
 		if sub.active.Load() {
 			sub.fn()

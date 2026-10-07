@@ -3,9 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/ops"
@@ -32,44 +29,6 @@ WHERE o.created_at >= $1 AND o.created_at < $2
 	return count, nil
 }
 
-func opsMetricsSLACountableSQL(statusExpr, upstreamStatusExpr, upstreamErrorsExpr, ownerExpr, businessExpr string, ignoredStatusCodes []int) string {
-	return fmt.Sprintf("(NOT COALESCE(%s, false) AND NOT %s)", businessExpr, opsMetricsClientSideStatusExcludedSQL(statusExpr, upstreamStatusExpr, upstreamErrorsExpr, ownerExpr, ignoredStatusCodes))
-}
-
-func opsMetricsBusinessLimitedSQL(statusExpr, upstreamStatusExpr, upstreamErrorsExpr, ownerExpr, businessExpr string, ignoredStatusCodes []int) string {
-	return fmt.Sprintf("(COALESCE(%s, false) OR %s)", businessExpr, opsMetricsClientSideStatusExcludedSQL(statusExpr, upstreamStatusExpr, upstreamErrorsExpr, ownerExpr, ignoredStatusCodes))
-}
-
-func opsMetricsClientSideStatusExcludedSQL(statusExpr, upstreamStatusExpr, upstreamErrorsExpr, ownerExpr string, ignoredStatusCodes []int) string {
-	// 分钟级系统指标也排除配置的客户端侧状态码，保持 dashboard/raw 与 system metrics 口径一致。
-	return fmt.Sprintf("(%s AND NOT %s)", opsMetricsIgnoredStatusCodeSQL(statusExpr, ignoredStatusCodes), opsMetricsUpstreamContextSQL(upstreamStatusExpr, upstreamErrorsExpr, ownerExpr))
-}
-
-func opsMetricsIgnoredStatusCodeSQL(statusExpr string, ignoredStatusCodes []int) string {
-	codes := ops.NormalizeOpsIgnoredStatusCodes(ignoredStatusCodes)
-	if len(codes) == 0 {
-		return "FALSE"
-	}
-	parts := make([]string, 0, len(codes))
-	for _, code := range codes {
-		parts = append(parts, strconv.Itoa(code))
-	}
-	return fmt.Sprintf("COALESCE(%s, 0) IN (%s)", statusExpr, strings.Join(parts, ", "))
-}
-
-func opsMetricsUpstreamContextSQL(upstreamStatusExpr, upstreamErrorsExpr, ownerExpr string) string {
-	upstreamErrorsPresentSQL := fmt.Sprintf(`COALESCE(
-  CASE
-    WHEN jsonb_typeof(COALESCE(NULLIF(%s, 'null'::jsonb), '[]'::jsonb)) = 'array'
-      THEN jsonb_array_length(COALESCE(NULLIF(%s, 'null'::jsonb), '[]'::jsonb))
-    ELSE 0
-  END,
-  0
-) > 0`, upstreamErrorsExpr, upstreamErrorsExpr)
-
-	return fmt.Sprintf("(%s IS NOT NULL OR %s OR LOWER(COALESCE(%s, '')) = 'provider')", upstreamStatusExpr, upstreamErrorsPresentSQL, ownerExpr)
-}
-
 func (c *MetricsQueries) QueryErrorCounts(ctx context.Context, start, end time.Time, ignoredStatusCodes []int) (
 	errorTotal int64,
 	businessLimited int64,
@@ -79,8 +38,8 @@ func (c *MetricsQueries) QueryErrorCounts(ctx context.Context, start, end time.T
 	upstream529 int64,
 	err error,
 ) {
-	businessLimitedSQL := opsMetricsBusinessLimitedSQL("status_code", "upstream_status_code", "upstream_errors", "error_owner", "is_business_limited", ignoredStatusCodes)
-	slaCountableSQL := opsMetricsSLACountableSQL("status_code", "upstream_status_code", "upstream_errors", "error_owner", "is_business_limited", ignoredStatusCodes)
+	businessLimitedSQL := opsBusinessLimitedSQL("status_code", "upstream_status_code", "upstream_errors", "error_owner", "is_business_limited", ignoredStatusCodes)
+	slaCountableSQL := opsSLACountableSQL("status_code", "upstream_status_code", "upstream_errors", "error_owner", "is_business_limited", ignoredStatusCodes)
 	q := `
 SELECT
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400), 0) AS error_total,

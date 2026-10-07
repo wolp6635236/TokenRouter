@@ -71,7 +71,7 @@
 
         <template #cell-model="{ row }">
           <div v-if="row.model_mapping_chain && row.model_mapping_chain.includes('→')" class="space-y-0.5 text-xs">
-            <div v-for="(step, i) in row.model_mapping_chain.split('→')" :key="i"
+            <div v-for="(step, i) in (row.model_mapping_chain as string).split('→')" :key="i"
                  class="break-all"
                  :class="i === 0 ? 'font-medium text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'"
                  :style="i > 0 ? `padding-left: ${i * 0.75}rem` : ''">
@@ -129,7 +129,7 @@
           <!-- 两侧使用记录共用 API Key 的分组徽章，倍率由费用列展示。 -->
           <GroupBadge
             v-if="row.group"
-            :name="row.group.name"
+            :name="row.group.display_name || row.group.name"
             :display-brand="row.group.display_brand"
             :show-rate="false"
           />
@@ -157,7 +157,8 @@
           <!-- 图片生成请求（非令牌计费时显示图片格式） -->
           <div v-if="isImageUsage(row)" class="flex items-center gap-1.5">
             <Icon name="modalityImage" size="sm" class="h-4 w-4 text-indigo-500" />
-            <span class="font-medium text-gray-900 dark:text-white">{{ row.image_count }}{{ t('usage.imageUnit') }}</span>
+            <!-- 图片数量加 self-baseline，移动卡片的标签对齐这行文字。 -->
+            <span class="self-baseline font-medium text-gray-900 dark:text-white">{{ row.image_count }}{{ t('usage.imageUnit') }}</span>
             <span class="text-gray-400">({{ formatImageBillingSize(row, t) }})</span>
           </div>
           <!-- Token 请求 -->
@@ -166,7 +167,8 @@
               <div class="flex items-center gap-2">
                 <div class="inline-flex items-center gap-1">
                   <Icon name="arrowDown" size="sm" class="h-3.5 w-3.5 text-emerald-500" />
-                  <span class="font-medium text-gray-900 dark:text-white">{{ row.input_tokens?.toLocaleString() || 0 }}</span>
+                  <!-- 输入 token 数加 self-baseline，移动卡片的标签对齐这行文字。 -->
+                  <span class="self-baseline font-medium text-gray-900 dark:text-white">{{ row.input_tokens?.toLocaleString() || 0 }}</span>
                 </div>
                 <div class="inline-flex items-center gap-1">
                   <Icon name="arrowUp" size="sm" class="h-3.5 w-3.5 text-violet-500" />
@@ -256,7 +258,8 @@
                 : LATENCY_BAR_CLASSES[durationSeverity(row.duration_ms ?? 0)]"
               aria-hidden="true"
             ></span>
-            <div class="grid grid-cols-[max-content_max-content] items-baseline gap-x-2 gap-y-0.5 text-xs">
+            <!-- 文字网格加 self-baseline，移动卡片的标签对齐网格第一行。 -->
+            <div class="grid grid-cols-[max-content_max-content] items-baseline gap-x-2 gap-y-0.5 self-baseline text-xs">
               <span class="text-gray-400 dark:text-gray-500">{{ t('usage.latencyFirstToken') }}</span>
               <span v-if="row.first_token_ms != null" class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ formatDuration(row.first_token_ms) }}</span>
               <span v-else class="text-gray-400 dark:text-gray-500">-</span>

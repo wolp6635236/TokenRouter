@@ -30,14 +30,5 @@ var GoogleOneModels = []Model{
 	{ID: "gemini-2.0-flash", Type: "model", DisplayName: "Gemini 2.0 Flash", CreatedAt: ""},
 }
 
-// GoogleOneModelMapping 为每个提供商返回新的白名单映射，避免调用方修改包级目录。
-func GoogleOneModelMapping() map[string]string {
-	mapping := make(map[string]string, len(GoogleOneModels))
-	for _, model := range GoogleOneModels {
-		mapping[model.ID] = model.ID
-	}
-	return mapping
-}
-
 // DefaultTestModel is the default model to preselect in test flows.
 const DefaultTestModel = "gemini-2.0-flash"

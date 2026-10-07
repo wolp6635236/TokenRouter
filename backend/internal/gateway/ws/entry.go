@@ -426,7 +426,7 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 				turnCapability := turnImageIntent && requestPlatform == "openai"
 				routingModel, resolveErr := selection.Target.ResolveRouting(turnCtx, redirectedModel, turnCapability)
 				if resolveErr != nil {
-					return "", p.CloseError(1008, EntryLocalRoutingReason(redirectedModel), EntryLocalRoutingCause(resolveErr))
+					return "", p.CloseError(1008, EntryLocalRoutingErrorReason(redirectedModel, resolveErr), EntryLocalRoutingCause(resolveErr))
 				}
 				return routingModel, nil
 			},

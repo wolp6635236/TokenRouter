@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
@@ -20,6 +21,7 @@ import (
 
 // UnifiedTextExecutor 根据当次选中的提供商执行一次交换，选号和切号只由外层循环拥有。
 type UnifiedTextExecutor struct {
+	Pricing          *admission.ModelPricing
 	OpenAI           *OpenAIResponsesExecutor
 	Anthropic        *MessagesExecutor
 	Gemini           *GeminiExecutor
@@ -83,9 +85,12 @@ func (e *UnifiedTextExecutor) Chat(ctx context.Context, c *gin.Context, target *
 	return e.native(ctx, c, target, body, protocol.ProtocolOpenAIChatCompletions)
 }
 
-// prepare 在提供商确定后裁决其能表达的推理策略，每次切号均从该次输入重新计算。
+// prepare 在提供商确定后检查模型价格和推理策略，每次切号都重新计算。
 func (e *UnifiedTextExecutor) prepare(c *gin.Context, target *gatewayadapter.ExecutionProvider, body []byte, source protocol.ProtocolID) ([]byte, error) {
 	SetOpsSelectedProvider(c, target.Record.ID, target.Record.Platform)
+	if err := e.checkPricing(c, target, body, source); err != nil {
+		return nil, err
+	}
 	key, _ := EffectiveAPIKey(c)
 	var result []byte
 	var err error
