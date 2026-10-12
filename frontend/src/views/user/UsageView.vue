@@ -1012,5 +1012,10 @@ onUnmounted(() => {
 watch(endpointDistributionSource, () => {
   // Endpoint 来源切换由图表组件基于已加载统计数据处理。
 })
-useLocaleRefresh(() => Promise.all([loadFilterOptions(), loadLogs(), loadErrors()]))
+// 错误记录接口受后台开关控制，关闭时返回 403，只在用户停留在该标签页时随语言刷新。
+useLocaleRefresh(() => {
+  const tasks: Promise<unknown>[] = [loadFilterOptions(), loadLogs()]
+  if (activeTab.value === 'errors') tasks.push(loadErrors())
+  return Promise.all(tasks)
+})
 </script>

@@ -20,6 +20,7 @@ const {
   showWarning,
   showSuccess,
   showInfo,
+  listMyErrorRequests,
 } = vi.hoisted(() => ({
   query: vi.fn(),
   getStats: vi.fn(),
@@ -35,6 +36,7 @@ const {
   showWarning: vi.fn(),
   showSuccess: vi.fn(),
   showInfo: vi.fn(),
+  listMyErrorRequests: vi.fn(),
 }))
 
 const messages: Record<string, string> = {
@@ -94,7 +96,7 @@ vi.mock('@/api', () => ({
     getStats,
     getDashboardModels,
     getDashboardSnapshotV2,
-    listMyErrorRequests: vi.fn().mockResolvedValue({ items: [], total: 0, pages: 0 }),
+    listMyErrorRequests,
   },
   keysAPI: {
     list,
@@ -202,7 +204,9 @@ describe('user UsageView', () => {
     showWarning.mockReset()
     showSuccess.mockReset()
     showInfo.mockReset()
+    listMyErrorRequests.mockReset()
 
+    listMyErrorRequests.mockResolvedValue({ items: [], total: 0, pages: 0 })
     query.mockResolvedValue({ items: [usageLog], total: 1, pages: 1 })
     getStats.mockResolvedValue({
       total_requests: 1,
@@ -266,6 +270,16 @@ describe('user UsageView', () => {
     await flushPromises()
     expect(options()).toContainEqual(expect.objectContaining({ value: 1, label: '中文分组' }))
     wrapper.unmount()
+  })
+
+  it('错误记录开关关闭时，切换语言不请求错误记录接口', async () => {
+    mountUsageView()
+    await flushPromises()
+    window.dispatchEvent(new CustomEvent('locale-changed', { detail: 'zh-Hans' }))
+    await flushPromises()
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(listMyErrorRequests).not.toHaveBeenCalled()
+    expect(showError).not.toHaveBeenCalled()
   })
 
   it('主筛选框初始值为 null，显示“全部”选项，请求参数不带未选条件', async () => {
