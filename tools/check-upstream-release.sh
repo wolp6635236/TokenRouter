@@ -23,6 +23,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 	exit 0
 fi
 
+# bash 3.2 在 set -u 下展开空数组会报 unbound variable，下面用 ${arr[@]+...} 形式展开。
 auth_header=()
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
 	auth_header=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -34,7 +35,7 @@ body="$(
 	curl -fsSL \
 		-H "Accept: application/vnd.github+json" \
 		-H "X-GitHub-Api-Version: 2022-11-28" \
-		"${auth_header[@]}" \
+		${auth_header[@]+"${auth_header[@]}"} \
 		"$API_URL"
 )"
 
@@ -68,7 +69,7 @@ if [[ "$tag" == "$seen" ]]; then
 	exit 0
 fi
 
-echo "官方发布了 $tag。确认后 git fetch upstream，merge，处理冲突，再打本仓库 tag。"
+echo "官方发布了 ${tag}。确认后 git fetch upstream，merge，处理冲突，再打本仓库 tag。"
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
 	echo "changed=true" >>"$GITHUB_OUTPUT"
 fi
