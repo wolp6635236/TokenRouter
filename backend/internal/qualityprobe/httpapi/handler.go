@@ -5,9 +5,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/qualityprobe"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 const manualProbeTimeout = 3 * time.Minute
@@ -21,7 +22,8 @@ func New(engine *qualityprobe.Engine) *Handler {
 	return &Handler{engine: engine}
 }
 
-// GetSettings GET /api/v1/admin/quality-probe/settings
+// GetSettings 返回当前的降智探测设置。
+// GET /api/v1/admin/quality-probe/settings
 func (h *Handler) GetSettings(c *gin.Context) {
 	cfg, err := h.engine.LoadSettings(c.Request.Context())
 	if err != nil {
@@ -31,7 +33,8 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	response.Success(c, qualityprobe.SettingsDTO(cfg))
 }
 
-// PutSettings PUT /api/v1/admin/quality-probe/settings
+// PutSettings 保存降智探测设置。
+// PUT /api/v1/admin/quality-probe/settings
 func (h *Handler) PutSettings(c *gin.Context) {
 	var payload qualityprobe.SettingsPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -50,7 +53,8 @@ func (h *Handler) PutSettings(c *gin.Context) {
 	response.Success(c, qualityprobe.SettingsDTO(cfg))
 }
 
-// Run POST /api/v1/admin/providers/:id/quality-probe
+// Run 对单个提供商手动执行一次探测。
+// POST /api/v1/admin/providers/:id/quality-probe
 func (h *Handler) Run(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -72,7 +76,8 @@ func (h *Handler) Run(c *gin.Context) {
 	response.Success(c, report)
 }
 
-// Status GET /api/v1/admin/providers/:id/quality-probe
+// Status 返回单个提供商的探测状态和最近记录。
+// GET /api/v1/admin/providers/:id/quality-probe
 func (h *Handler) Status(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {

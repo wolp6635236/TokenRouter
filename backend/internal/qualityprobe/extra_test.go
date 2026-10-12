@@ -39,7 +39,7 @@ func TestParseStoredState_EmptyAndRoundTrip(t *testing.T) {
 
 func TestAppendProbeLogCapsHistory(t *testing.T) {
 	var history []ProbeLog
-	for i := 0; i < MaxProbeHistory+5; i++ {
+	for i := range MaxProbeHistory + 5 {
 		history = appendProbeLog(history, ProbeLog{Trigger: TriggerManual, ConsecutiveFails: i})
 	}
 	if len(history) != MaxProbeHistory {

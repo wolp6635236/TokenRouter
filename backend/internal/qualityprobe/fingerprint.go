@@ -1,6 +1,7 @@
 package qualityprobe
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -9,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"unicode"
-
-	_ "embed"
 )
 
 const (
@@ -20,10 +19,10 @@ const (
 	fingerprintAlpha    = 0.5
 )
 
-//go:embed data/unified_bank.json
-var unifiedBankJSON []byte
-
 var (
+	//go:embed data/unified_bank.json
+	unifiedBankJSON []byte
+
 	fingerprintBankOnce sync.Once
 	fingerprintBankVal  *fingerprintBank
 	fingerprintBankErr  error
@@ -259,13 +258,7 @@ func orderedBlockFeature(numbers []int) []float64 {
 		}
 		for _, value := range chunk {
 			idx := int(math.Floor(((float64(value) - 1) / 355) * 16))
-			if idx > 15 {
-				idx = 15
-			}
-			if idx < 0 {
-				idx = 0
-			}
-			bins[idx]++
+			bins[max(0, min(idx, 15))]++
 		}
 		total := 0.0
 		for _, value := range bins {
@@ -351,7 +344,7 @@ func splitIntoFour(values []int) [][]int {
 	remainder := len(values) % 4
 	chunks := make([][]int, 4)
 	start := 0
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		size := base
 		if i < remainder {
 			size++
@@ -388,12 +381,9 @@ func standardize(values []float64) []float64 {
 }
 
 func dot(left, right []float64) float64 {
-	n := len(left)
-	if len(right) < n {
-		n = len(right)
-	}
+	n := min(len(left), len(right))
 	sum := 0.0
-	for i := 0; i < n; i++ {
+	for i := range n {
 		sum += left[i] * right[i]
 	}
 	return sum

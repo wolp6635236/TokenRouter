@@ -6,15 +6,6 @@ import (
 	"time"
 )
 
-// persistCtx 给 Extra 和临时停调单独一套不随请求取消的 context。
-// 关掉探测弹窗后 HTTP context 已经取消，写库需要还能成功。
-func persistCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return context.WithoutCancel(ctx)
-}
-
 const (
 	// ExtraKey 是提供商 Extra 里保存探测状态的键。
 	ExtraKey = "quality_probe"
@@ -76,6 +67,15 @@ type LogItem struct {
 	ProviderID   int64  `json:"provider_id"`
 	ProviderName string `json:"provider_name"`
 	ProbeLog
+}
+
+// persistCtx 给 Extra 和临时停调单独一套不随请求取消的 context。
+// 关掉探测弹窗后 HTTP context 已经取消，写库需要还能成功。
+func persistCtx(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
 }
 
 // ParseStoredState 从提供商 Extra 读取探测状态，缺省时返回零值。

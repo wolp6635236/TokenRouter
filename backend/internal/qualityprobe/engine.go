@@ -302,10 +302,7 @@ func (e *Engine) ListLogs(ctx context.Context, page, pageSize int) ([]LogItem, i
 	if start >= total {
 		return []LogItem{}, total, nil
 	}
-	end := start + pageSize
-	if end > total {
-		end = total
-	}
+	end := min(start+pageSize, total)
 	return append([]LogItem(nil), out[start:end]...), total, nil
 }
 

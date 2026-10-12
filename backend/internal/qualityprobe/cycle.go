@@ -2,13 +2,13 @@ package qualityprobe
 
 import "time"
 
-// Trigger 区分定时任务和管理员手动探测。
-type Trigger string
-
 const (
 	TriggerAuto   Trigger = "auto"
 	TriggerManual Trigger = "manual"
 )
+
+// Trigger 区分定时任务和管理员手动探测。
+type Trigger string
 
 // CycleState 记录某个提供商的连续失败次数和是否已停止自动循环。
 type CycleState struct {

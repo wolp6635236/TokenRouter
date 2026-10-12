@@ -3,6 +3,7 @@ package qualityprobe
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,43 @@ import (
 type memSettings struct {
 	raw string
 	err error
+}
+
+type memDir struct {
+	mu          sync.Mutex
+	items       map[int64]*Snapshot
+	schedulable map[int64][]int64
+	temp        map[int64]string
+	cleared     []int64
+}
+
+type scriptedProber struct {
+	answers []string
+	index   int
+}
+
+type countingProber struct {
+	mu    sync.Mutex
+	calls map[int64]int
+}
+
+type recordingMail struct {
+	to      string
+	subject string
+	n       int
+}
+
+type errorProber struct {
+	msg string
+	n   int
+}
+
+type memGroups struct {
+	ids []int64
+}
+
+type stubCatalog struct {
+	models []string
 }
 
 func (m *memSettings) GetValue(context.Context, string) (string, error) {
@@ -26,14 +64,6 @@ func (m *memSettings) Set(_ context.Context, _ string, value string) error {
 	return nil
 }
 
-type memDir struct {
-	mu          sync.Mutex
-	items       map[int64]*Snapshot
-	schedulable map[int64][]int64
-	temp        map[int64]string
-	cleared     []int64
-}
-
 func (d *memDir) Get(_ context.Context, id int64) (*Snapshot, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -44,9 +74,7 @@ func (d *memDir) Get(_ context.Context, id int64) (*Snapshot, error) {
 	copyItem := *item
 	if item.Extra != nil {
 		copyItem.Extra = map[string]any{}
-		for key, value := range item.Extra {
-			copyItem.Extra[key] = value
-		}
+		maps.Copy(copyItem.Extra, item.Extra)
 	}
 	return &copyItem, nil
 }
@@ -75,9 +103,7 @@ func (d *memDir) UpdateExtra(ctx context.Context, id int64, updates map[string]a
 	if item.Extra == nil {
 		item.Extra = map[string]any{}
 	}
-	for key, value := range updates {
-		item.Extra[key] = value
-	}
+	maps.Copy(item.Extra, updates)
 	return nil
 }
 
@@ -111,11 +137,6 @@ func (d *memDir) SchedulableIDs(_ context.Context, groupID int64) ([]int64, erro
 	return d.schedulable[groupID], nil
 }
 
-type scriptedProber struct {
-	answers []string
-	index   int
-}
-
 func (p *scriptedProber) ProbeText(context.Context, int64, string, string) (TextResult, error) {
 	if p.index >= len(p.answers) {
 		return TextResult{}, errors.New("no more answers")
@@ -123,11 +144,6 @@ func (p *scriptedProber) ProbeText(context.Context, int64, string, string) (Text
 	text := p.answers[p.index]
 	p.index++
 	return TextResult{Answer: text}, nil
-}
-
-type countingProber struct {
-	mu    sync.Mutex
-	calls map[int64]int
 }
 
 func (p *countingProber) ProbeText(_ context.Context, providerID int64, _, _ string) (TextResult, error) {
@@ -139,12 +155,6 @@ func (p *countingProber) ProbeText(_ context.Context, providerID int64, _, _ str
 	p.calls[providerID]++
 	p.mu.Unlock()
 	return TextResult{Answer: "21"}, nil
-}
-
-type recordingMail struct {
-	to      string
-	subject string
-	n       int
 }
 
 func (m *recordingMail) Send(_ context.Context, to, subject, _ string) error {
@@ -217,11 +227,6 @@ func TestEngine_PassClearsTempAndSchedulesInterval(t *testing.T) {
 	if state.NextRetryAt == nil || !state.NextRetryAt.Equal(now.Add(30*time.Minute)) {
 		t.Fatalf("next retry = %v", state.NextRetryAt)
 	}
-}
-
-type errorProber struct {
-	msg string
-	n   int
 }
 
 func (p *errorProber) ProbeText(context.Context, int64, string, string) (TextResult, error) {
@@ -623,10 +628,6 @@ func TestEngine_RunDueProbesEachDueProvider(t *testing.T) {
 	}
 }
 
-type memGroups struct {
-	ids []int64
-}
-
 func (g memGroups) ActiveIDs(context.Context) ([]int64, error) {
 	return g.ids, nil
 }
@@ -780,10 +781,6 @@ func TestEngine_AutoSkipWhenProbeModelMissing(t *testing.T) {
 	if manual.SkipReason == "model" {
 		t.Fatal("manual probe should ignore missing settings model")
 	}
-}
-
-type stubCatalog struct {
-	models []string
 }
 
 func (c stubCatalog) Models(context.Context, *Snapshot) []string {

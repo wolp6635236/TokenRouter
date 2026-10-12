@@ -1,6 +1,7 @@
 package qualityprobe
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -133,9 +134,7 @@ func NormalizeGroupIDs(ids []int64) []int64 {
 		seen[id] = struct{}{}
 		out = append(out, id)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i] < out[j]
-	})
+	slices.Sort(out)
 	return out
 }
 

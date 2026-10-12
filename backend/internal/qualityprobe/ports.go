@@ -103,6 +103,21 @@ type RunReport struct {
 	Samples          []ProbeSample `json:"samples,omitempty"`
 }
 
+// SettingsPayload 是管理端读写的 JSON 形状。
+type SettingsPayload struct {
+	Enabled              bool    `json:"enabled"`
+	IntervalMinutes      int     `json:"interval_minutes"`
+	Model                string  `json:"model"`
+	CooldownMinutes      int     `json:"cooldown_minutes"`
+	MaxAttempts          int     `json:"max_attempts"`
+	NotifyEmail          string  `json:"notify_email"`
+	GroupIDs             []int64 `json:"group_ids"`
+	ScheduleEnabled      *bool   `json:"schedule_enabled"`
+	ScheduleStart        string  `json:"schedule_start"`
+	ScheduleEnd          string  `json:"schedule_end"`
+	UnscheduleOnDegraded *bool   `json:"unschedule_on_degraded"`
+}
+
 func (e *Engine) now() time.Time {
 	if e != nil && e.Now != nil {
 		return e.Now()
@@ -175,21 +190,6 @@ func (e *Engine) clearQualityDegraded(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// SettingsPayload 是管理端读写的 JSON 形状。
-type SettingsPayload struct {
-	Enabled              bool    `json:"enabled"`
-	IntervalMinutes      int     `json:"interval_minutes"`
-	Model                string  `json:"model"`
-	CooldownMinutes      int     `json:"cooldown_minutes"`
-	MaxAttempts          int     `json:"max_attempts"`
-	NotifyEmail          string  `json:"notify_email"`
-	GroupIDs             []int64 `json:"group_ids"`
-	ScheduleEnabled      *bool   `json:"schedule_enabled"`
-	ScheduleStart        string  `json:"schedule_start"`
-	ScheduleEnd          string  `json:"schedule_end"`
-	UnscheduleOnDegraded *bool   `json:"unschedule_on_degraded"`
 }
 
 func fileFromSettings(cfg Settings) SettingsPayload {

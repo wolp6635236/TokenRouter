@@ -15,6 +15,31 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
+type qualityProbeDirectory struct {
+	store *providerpostgres.ProviderStore
+}
+
+type qualityProbeGroups struct {
+	store *routingpostgres.GroupStore
+}
+
+type qualityProbeProber struct {
+	tests *provider.TestService
+}
+
+type qualityProbeSink struct {
+	text      strings.Builder
+	lastError string
+}
+
+type qualityProbeCatalog struct {
+	store *providerpostgres.ProviderStore
+}
+
+type qualityProbeMail struct {
+	mailer *notification.Mailer
+}
+
 func provideQualityProbeEngine(
 	store *settings.Store,
 	providers *providerpostgres.ProviderStore,
@@ -39,10 +64,6 @@ func provideQualityProbeHTTP(engine *qualityprobe.Engine) *qualityprobehttp.Hand
 
 func provideQualityProbeRunner(engine *qualityprobe.Engine) *qualityprobe.Runner {
 	return &qualityprobe.Runner{Engine: engine}
-}
-
-type qualityProbeDirectory struct {
-	store *providerpostgres.ProviderStore
 }
 
 func (d qualityProbeDirectory) Get(ctx context.Context, id int64) (*qualityprobe.Snapshot, error) {
@@ -115,19 +136,11 @@ func snapshotFromRecord(record *provider.Record) qualityprobe.Snapshot {
 	}
 }
 
-type qualityProbeGroups struct {
-	store *routingpostgres.GroupStore
-}
-
 func (g qualityProbeGroups) ActiveIDs(ctx context.Context) ([]int64, error) {
 	if g.store == nil {
 		return nil, nil
 	}
 	return g.store.ListActiveIDs(ctx)
-}
-
-type qualityProbeProber struct {
-	tests *provider.TestService
 }
 
 func (p qualityProbeProber) ProbeText(ctx context.Context, providerID int64, model, prompt string) (qualityprobe.TextResult, error) {
@@ -146,11 +159,6 @@ func (p qualityProbeProber) ProbeText(ctx context.Context, providerID int64, mod
 	return result, err
 }
 
-type qualityProbeSink struct {
-	text      strings.Builder
-	lastError string
-}
-
 func (s *qualityProbeSink) Begin(context.Context, bool) error { return nil }
 
 func (s *qualityProbeSink) Emit(_ context.Context, event provider.TestEvent) error {
@@ -164,10 +172,6 @@ func (s *qualityProbeSink) Emit(_ context.Context, event provider.TestEvent) err
 	return nil
 }
 
-type qualityProbeCatalog struct {
-	store *providerpostgres.ProviderStore
-}
-
 func (c qualityProbeCatalog) Models(ctx context.Context, snap *qualityprobe.Snapshot) []string {
 	if snap == nil {
 		return nil
@@ -177,10 +181,6 @@ func (c qualityProbeCatalog) Models(ctx context.Context, snap *qualityprobe.Snap
 		return nil
 	}
 	return record.GetConfiguredRequestModels(provideradapter.ModelDefaults())
-}
-
-type qualityProbeMail struct {
-	mailer *notification.Mailer
 }
 
 func (m qualityProbeMail) Send(ctx context.Context, to, subject, body string) error {
