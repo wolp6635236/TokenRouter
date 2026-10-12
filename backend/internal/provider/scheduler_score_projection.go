@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"slices"
 	"sort"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
@@ -12,10 +13,12 @@ type SchedulerScoreProviders interface {
 	ListProvidersForSchedulerScoreFilter(context.Context, string, string, string, string, int64, string) ([]Record, error)
 	ListSchedulableProvidersForAdvancedSchedulerScore(context.Context, *int64, string) ([]Record, error)
 }
+
 type SchedulerLoadRequest struct {
 	ID             int64
 	MaxConcurrency int
 }
+
 type SchedulerLoad struct {
 	ProviderID                                 int64
 	CurrentConcurrency, WaitingCount, LoadRate int
@@ -27,9 +30,25 @@ type SchedulerScoreOptions struct {
 	Score func(context.Context, *accessview.GroupConfig, []*Record, map[int64]*SchedulerLoad) map[int64]ProviderSchedulerScore
 	Warn  func(string, ...any)
 }
+
 type SchedulerScoreView struct {
 	adminService SchedulerScoreProviders
 	options      SchedulerScoreOptions
+}
+
+// ProviderSchedulerScore 表示管理端展示的提供商调度评分。
+type ProviderSchedulerScore struct {
+	BaseScore             float64 `json:"base_score"`
+	StickyScore           float64 `json:"sticky_score"`
+	StickyScoreInfinity   bool    `json:"sticky_score_infinity"`
+	StickyWeightedEnabled bool    `json:"sticky_weighted_enabled"`
+}
+
+// ProviderSchedulerGroupScore 表示提供商在指定分组中的调度评分。
+type ProviderSchedulerGroupScore struct {
+	GroupID   *int64 `json:"group_id"`
+	GroupName string `json:"group_name,omitempty"`
+	ProviderSchedulerScore
 }
 
 func NewSchedulerScoreView(reader SchedulerScoreProviders, options SchedulerScoreOptions) *SchedulerScoreView {
@@ -141,7 +160,7 @@ func (h *SchedulerScoreView) buildAdvancedProviderSchedulerScores(
 	for groupID := range advancedGroups {
 		groupIDList = append(groupIDList, groupID)
 	}
-	sort.Slice(groupIDList, func(i, j int) bool { return groupIDList[i] < groupIDList[j] })
+	slices.Sort(groupIDList)
 
 	groupPools := make(map[int64][]Record, len(groupIDList))
 	if h.adminService != nil {

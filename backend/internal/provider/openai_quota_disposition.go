@@ -6,15 +6,15 @@ import (
 	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// OpenAI429Disposition 区分明确耗尽窗口和兼容重置观测，不决定请求重试。
-type OpenAI429Disposition uint8
-
 const (
 	OpenAI429Transient OpenAI429Disposition = iota
 	OpenAI429Quota5h
 	OpenAI429Quota7d
 	OpenAI429QuotaReset
 )
+
+// OpenAI429Disposition 区分明确耗尽窗口和兼容重置观测，不决定请求重试。
+type OpenAI429Disposition uint8
 
 // OpenAIExhaustedWindow 优先判断 7d 窗口，缺少重置时间的满额窗口也视为耗尽。
 func OpenAIExhaustedWindow(snapshot *openaiprotocol.OpenAICodexUsageSnapshot, clock func() time.Time) (OpenAI429Disposition, *time.Time) {

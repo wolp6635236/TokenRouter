@@ -3,8 +3,9 @@ package clientmeta
 import (
 	"strings"
 
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 // Codex 审查线索记录请求声明，权限校验和提供商选择由各自的入口处理。

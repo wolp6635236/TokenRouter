@@ -15,7 +15,7 @@ type ClaudeAuthorizationSession struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// ClaudeAuthorizationSessions manages OAuth sessions in memory
+// ClaudeAuthorizationSessions manages OAuth sessions in memory.
 type ClaudeAuthorizationSessions struct {
 	runtimeMu      sync.Mutex
 	runtimeStarted bool
@@ -28,7 +28,7 @@ type ClaudeAuthorizationSessions struct {
 	stopCh chan struct{}
 }
 
-// NewClaudeAuthorizationSessions creates a new session store
+// NewClaudeAuthorizationSessions creates a new session store.
 func NewClaudeAuthorizationSessions() *ClaudeAuthorizationSessions {
 	store := &ClaudeAuthorizationSessions{
 		sessions: make(map[string]*ClaudeAuthorizationSession),
@@ -46,8 +46,7 @@ func (s *ClaudeAuthorizationSessions) Start() {
 		return
 	}
 	s.runtimeStarted = true
-	s.runtimeWG.Add(1)
-	go func() { defer s.runtimeWG.Done(); s.cleanup() }()
+	s.runtimeWG.Go(func() { ; s.cleanup() })
 }
 
 // Stop 幂等停止并等待清理循环，未启动实例也可安全关闭。
@@ -67,7 +66,7 @@ func (s *ClaudeAuthorizationSessions) Set(sessionID string, session *ClaudeAutho
 	s.sessions[sessionID] = session
 }
 
-// Get retrieves a session
+// Get retrieves a session.
 func (s *ClaudeAuthorizationSessions) Get(sessionID string) (*ClaudeAuthorizationSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -81,14 +80,14 @@ func (s *ClaudeAuthorizationSessions) Get(sessionID string) (*ClaudeAuthorizatio
 	return session, true
 }
 
-// Delete removes a session
+// Delete removes a session.
 func (s *ClaudeAuthorizationSessions) Delete(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
 }
 
-// cleanup removes expired sessions periodically
+// cleanup removes expired sessions periodically.
 func (s *ClaudeAuthorizationSessions) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()

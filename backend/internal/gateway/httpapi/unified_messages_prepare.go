@@ -3,14 +3,20 @@ package httpapi
 import (
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
+)
+
+const (
+	nativeMessageStreamKey      = "native_message_stream_started"
+	nativeMessageInterceptedKey = "native_message_intercepted"
 )
 
 // NativeMessageQueue 连接既有消息队列服务，统一执行器不另建锁或等待循环。
@@ -18,11 +24,6 @@ type NativeMessageQueue interface {
 	AcquireWithWait(*gin.Context, int64, int, bool, *bool, time.Duration, *zap.Logger) (func(), error)
 	ThrottleWithPing(*gin.Context, int64, int, bool, *bool, time.Duration, *zap.Logger) error
 }
-
-const (
-	nativeMessageStreamKey      = "native_message_stream_started"
-	nativeMessageInterceptedKey = "native_message_intercepted"
-)
 
 // BindNativeMessageStreamState 让消息排队的 SSE ping 与外层尝试共享已输出状态。
 func BindNativeMessageStreamState(c *gin.Context, started *bool) {

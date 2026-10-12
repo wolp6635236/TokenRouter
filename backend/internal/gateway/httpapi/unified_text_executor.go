@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
@@ -16,7 +18,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
-	"github.com/gin-gonic/gin"
 )
 
 // UnifiedTextExecutor 根据当次选中的提供商执行一次交换，选号和切号只由外层循环拥有。

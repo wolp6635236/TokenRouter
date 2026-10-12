@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const cyberSessionTranscriptLookupOverflowBlockKey = "transcript_lookup_limit_exceeded"
+
 // legacyCyberSessionBlockStore 适配单键缓存接口，使使用该接口的部署继续支持会话屏蔽。
 type legacyCyberSessionBlockStore interface {
 	SetCyberSessionBlocked(ctx context.Context, key string, ttl time.Duration) error
@@ -48,8 +50,6 @@ func (a legacyCyberSessionBlockStoreAdapter) FindCyberSessionBlocked(ctx context
 	}
 	return "", nil
 }
-
-const cyberSessionTranscriptLookupOverflowBlockKey = "transcript_lookup_limit_exceeded"
 
 // AdaptCyberSessionBlockStore 优先使用批量屏蔽接口，缺少该接口时适配单键缓存。
 func AdaptCyberSessionBlockStore(cache GatewayCache) CyberSessionBlockStore {

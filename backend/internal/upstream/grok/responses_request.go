@@ -3,6 +3,7 @@ package grok
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -50,4 +51,21 @@ func ApplyCLIHeaders(headers http.Header) {
 	headers.Set("x-grok-client-version", version)
 	headers.Set("x-grok-client-identifier", CLIClientIdentifier)
 	headers.Set("X-Grok-Client-Mode", "interactive")
+}
+
+// ProviderTestBody 使用管理端提示词构造 Responses 探测请求体。
+func ProviderTestBody(model, prompt string) ([]byte, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = DefaultResponsesModel
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		prompt = "hi"
+	}
+	return json.Marshal(map[string]any{
+		"model":  model,
+		"input":  prompt,
+		"stream": true,
+	})
 }

@@ -5,10 +5,10 @@ package app
 import (
 	"context"
 
+	"github.com/google/wire"
+
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-
-	"github.com/google/wire"
 )
 
 // initializeApplication 构造并登记资源，Application.Run 负责启动。

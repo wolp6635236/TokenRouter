@@ -1,9 +1,10 @@
 package httpapi
 
 import (
-	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 )
 
 // MediaNoProvider 保存无可用提供商错误的分类结果。

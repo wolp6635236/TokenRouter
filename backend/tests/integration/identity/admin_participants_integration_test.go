@@ -8,20 +8,25 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	keycore "github.com/TokenFlux/TokenRouter/internal/apikey"
 	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
-
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 // adminFailure 在参与写入已经执行后返回错误，检测独立提交与漏回滚。
 type adminFailure struct {
 	identity.AdminKeyParticipant
+	failure error
+}
+
+type keyUpdateFailure struct {
+	keycore.APIKeyRepository
 	failure error
 }
 
@@ -38,11 +43,6 @@ func (p adminFailure) UpdateGroupIDByUserAndGroup(ctx context.Context, id, oldID
 		return n, err
 	}
 	return n, p.failure
-}
-
-type keyUpdateFailure struct {
-	keycore.APIKeyRepository
-	failure error
 }
 
 func (p keyUpdateFailure) Update(ctx context.Context, key *keycore.APIKey, fields keycore.APIKeyUpdateFields) error {

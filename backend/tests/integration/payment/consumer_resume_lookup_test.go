@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	paymenttestkit "github.com/TokenFlux/TokenRouter/internal/payment/testkit"
-	sqlitetest "github.com/TokenFlux/TokenRouter/internal/testutil/sqlite"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/payment"
+	paymenttestkit "github.com/TokenFlux/TokenRouter/internal/payment/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-	"github.com/stretchr/testify/require"
+	sqlitetest "github.com/TokenFlux/TokenRouter/internal/testutil/sqlite"
 )
 
 type paymentResumeLookupProvider struct {

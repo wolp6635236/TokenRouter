@@ -5,7 +5,6 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
@@ -13,6 +12,22 @@ import (
 type mimicAttempt struct {
 	*attempt
 	systemRaw any
+}
+
+// shouldNormalizeDateline 日期指纹只在 Anthropic OAuth/SetupToken 的开关开启时处理。
+func (r *Runtime) shouldNormalizeDateline(ctx context.Context, target *gatewayadapter.ExecutionProvider) bool {
+	return target != nil && target.View().IsAnthropicOAuthOrSetupToken() && r.dependencies.Settings != nil && r.dependencies.Settings.IsClientDatelineNormalizationEnabled(ctx)
+}
+
+func (r *Runtime) normalizeDateline(ctx context.Context, target *gatewayadapter.ExecutionProvider, body []byte) ([]byte, bool) {
+	if !r.shouldNormalizeDateline(ctx, target) {
+		return nil, false
+	}
+	next, _, changed := anthropic.NormalizeDateline(body)
+	if !changed {
+		return nil, false
+	}
+	return next, true
 }
 
 func (a *mimicAttempt) RewriteMimicSystem(body []byte, model, prompt, blocks string) []byte {
@@ -38,7 +53,7 @@ func (a *mimicAttempt) MimicMetadata(ctx context.Context, body []byte) string {
 	return metadataUserIDFromBody(ctx, a.provider, fp, body)
 }
 
-// mimic 将兼容协议的请求体交给已有伪装流程，状态与当前转换 attempt 共用。
+// mimic 处理兼容协议请求体，与当前转换 attempt 共用状态。
 func (r *Runtime) mimic(ctx context.Context, output HTTPBoundary, state *AttemptState, target *gatewayadapter.ExecutionProvider, body []byte, system any, model string) []byte {
 	a := newAttempt(r, output, target)
 	a.state = state

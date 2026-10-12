@@ -7,7 +7,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 

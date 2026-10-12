@@ -5,28 +5,17 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	dbent "github.com/TokenFlux/TokenRouter/ent"
-
-	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
-
 	"github.com/TokenFlux/TokenRouter/internal/config"
-
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-
 	egresshttp "github.com/TokenFlux/TokenRouter/internal/egress/httpapi"
-
 	egresspostgres "github.com/TokenFlux/TokenRouter/internal/egress/postgres"
-
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
+	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	schedulerpostgres "github.com/TokenFlux/TokenRouter/internal/scheduler/postgres"
 )
 

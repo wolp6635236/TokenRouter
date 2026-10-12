@@ -32,11 +32,6 @@ type Updates struct {
 	cancel context.CancelFunc
 }
 
-func newUpdates(repo Repository) *Updates {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Updates{repo: repo, gate: make(chan struct{}, 1), done: make(chan struct{}), run: ctx, cancel: cancel}
-}
-
 // UpdateSession 的保护从读取旧值前开始，一直覆盖提交后的应用。
 // 调用者必须 Close；它不会把已提交的数据回滚。
 type UpdateSession struct {
@@ -46,6 +41,11 @@ type UpdateSession struct {
 	stop      func() bool
 	once      sync.Once
 	committed bool
+}
+
+func newUpdates(repo Repository) *Updates {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Updates{repo: repo, gate: make(chan struct{}, 1), done: make(chan struct{}), run: ctx, cancel: cancel}
 }
 
 func (u *Updates) Begin(ctx context.Context) (*UpdateSession, error) {

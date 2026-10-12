@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
@@ -18,9 +21,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
+
+// grokVideoObserver 记录视频任务日志，media 判断完成资格并认领结算。
+type grokVideoObserver struct{ log *zap.Logger }
 
 func (h *Runtime) resolveCompositeGrokVideoAPIKey(
 	ctx context.Context,
@@ -197,9 +201,6 @@ func recordGrokMediaUsage(
 		}
 	})
 }
-
-// grokVideoObserver 记录视频任务日志，media 判断完成资格并认领结算。
-type grokVideoObserver struct{ log *zap.Logger }
 
 func (o grokVideoObserver) ObserveVideo(n gatewaymedia.VideoNotice) {
 	switch n.Kind {

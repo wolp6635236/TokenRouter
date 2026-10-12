@@ -841,6 +841,7 @@ affiliates: {
         kimi: 'Kimi',
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
+        jev: 'Jev',
       },
       saving: '保存中...',
       noGroups: '暂无分组',
@@ -1031,7 +1032,7 @@ affiliates: {
         tooltipEdit: '选择一个或多个分组，保存后当前分组的提供商会被替换为这些分组的提供商（去重）。',
         selectPlaceholder: '选择分组以复制其提供商...',
         hint: '可选多个分组，提供商会自动去重',
-        hintEdit: '⚠️ 注意：这会替换当前分组的所有提供商绑定'
+        hintEdit: '注意：这会替换当前分组的所有提供商绑定'
       },
       modelRouting: {
         title: '模型路由配置',

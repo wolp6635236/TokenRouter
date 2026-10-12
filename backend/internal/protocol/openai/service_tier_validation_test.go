@@ -113,3 +113,25 @@ func TestValidateOpenAIServiceTierField(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeOpenAIServiceTier(t *testing.T) {
+	t.Run("fast maps to priority", func(t *testing.T) {
+		got := NormalizeServiceTier(" fast ")
+		require.NotNil(t, got)
+		require.Equal(t, "priority", *got)
+	})
+
+	t.Run("openai official tiers preserved", func(t *testing.T) {
+		// 合法 service_tier 值原样保留，Codex 可发送 priority、flex 和 ultrafast。
+		for _, tier := range []string{"priority", "flex", "auto", "default", "scale", "ultrafast"} {
+			got := NormalizeServiceTier(tier)
+			require.NotNil(t, got, "tier %q should not be normalized to nil", tier)
+			require.Equal(t, tier, *got)
+		}
+	})
+
+	t.Run("invalid ignored", func(t *testing.T) {
+		require.Nil(t, NormalizeServiceTier("turbo"))
+		require.Nil(t, NormalizeServiceTier("xxx"))
+	})
+}

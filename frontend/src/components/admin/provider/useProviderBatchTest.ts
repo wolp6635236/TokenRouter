@@ -48,12 +48,12 @@ export function useProviderBatchTest(t: Translate) {
   )
   const detailRow = computed(() => (detailModel.value ? rows.value[detailModel.value] ?? null : null))
 
-  // 打开弹窗或切换提供商时，默认选中前 MAX_BATCH_MODELS 个模型。
+  // 打开弹窗或切换提供商后，由管理员选择本次测试的型号。
   function reset(nextModels: string[]) {
     abort()
     baseModels.value = nextModels
     customModels.value = []
-    selected.value = new Set(nextModels.slice(0, MAX_BATCH_MODELS))
+    selected.value = new Set()
     rows.value = {}
     detailModel.value = null
   }

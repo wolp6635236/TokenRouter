@@ -8,14 +8,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
+
+// 交换器只使用本地可控闸门，真实数据库在交换暂停期间完成管理员改凭据。
+type refreshExchange struct {
+	started chan struct{}
+	release chan struct{}
+	calls   int
+}
 
 // TestRefreshCredentialsCASAndOuterRollback 验证核对状态比较及同连接参与，外层回滚和 outbox 写入失败都不能留下轮换凭据。
 func TestRefreshCredentialsCASAndOuterRollback(t *testing.T) {
@@ -93,13 +99,6 @@ func TestRefreshCredentialsOutboxFailureRollsBack(t *testing.T) {
 	current, err := repo.GetByID(ctx, row.ID)
 	require.NoError(t, err)
 	require.Equal(t, "first", current.Credentials["refresh_token"])
-}
-
-// 交换器只使用本地可控闸门，真实数据库在交换暂停期间完成管理员改凭据。
-type refreshExchange struct {
-	started chan struct{}
-	release chan struct{}
-	calls   int
 }
 
 func (e *refreshExchange) CanRefresh(a *providercore.Record) bool {

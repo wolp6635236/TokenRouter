@@ -8,6 +8,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
+// groupSource 只补充原生分组接口的默认组读取，选择规则仍由 routing 拥有。
+type groupSource struct{ routing.GroupRepository }
+
 // NewService 使跨模块旧夹具直接构造原生认证服务；生产装配仍由 app 注入。
 func NewService(keys apikey.APIKeyRepository, users identity.UserRepository, groups routing.GroupRepository, subs billing.UserSubscriptionRepository, rates billing.UserGroupRateRepository, cache apikey.APIKeyCache, cfg *config.Config) *apikey.APIKeyService {
 	var groupReader apikey.GroupRepository
@@ -32,6 +35,3 @@ func NewService(keys apikey.APIKeyRepository, users identity.UserRepository, gro
 	})
 	return core
 }
-
-// groupSource 只补充原生分组接口的默认组读取，选择规则仍由 routing 拥有。
-type groupSource struct{ routing.GroupRepository }

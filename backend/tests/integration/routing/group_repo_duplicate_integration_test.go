@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 func TestCreateGroupFromSourceRollsBackWhenOutboxInsertFails(t *testing.T) {

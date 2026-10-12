@@ -6,6 +6,36 @@ import (
 	"strings"
 )
 
+// ResponsesEventToAnthropicState tracks state for converting a sequence of
+// Responses SSE events directly into Anthropic SSE events.
+type ResponsesEventToAnthropicState struct {
+	MessageStartSent bool
+	MessageStopSent  bool
+
+	ContentBlockIndex   int
+	ContentBlockOpen    bool
+	CurrentBlockType    string // "text" | "thinking" | "tool_use"
+	CurrentToolName     string
+	CurrentToolArgs     string
+	CurrentToolHadDelta bool
+	// PendingThinkingSignature 保存 reasoning.encrypted_content，并在 thinking 块
+	// 关闭前通过 signature_delta 发出。
+	PendingThinkingSignature string
+	HasToolCall              bool
+
+	// OutputIndexToBlockIdx maps Responses output_index → Anthropic content block index.
+	OutputIndexToBlockIdx map[int]int
+
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+
+	ResponseID string
+	Model      string
+	Created    int64
+}
+
 // ResponsesToAnthropic converts a Responses API response directly into an
 // Anthropic Messages response. Reasoning output items are mapped to thinking
 // blocks; function_call items become tool_use blocks.
@@ -22,18 +52,18 @@ func ResponsesToAnthropic(resp *ResponsesResponse, model string) *AnthropicRespo
 	for _, item := range resp.Output {
 		switch item.Type {
 		case "reasoning":
-			summaryText := ""
+			var summaryText strings.Builder
 			for _, s := range item.Summary {
 				if s.Type == "summary_text" && s.Text != "" {
-					summaryText += s.Text
+					_, _ = summaryText.WriteString(s.Text)
 				}
 			}
 			// 始终将 encrypted_content 暴露为 thinking.signature，让 Claude Code
 			// 等多轮客户端可以回传。模型未生成可见摘要时，仅含签名的 thinking 块也有效。
-			if summaryText != "" || strings.TrimSpace(item.EncryptedContent) != "" {
+			if summaryText.String() != "" || strings.TrimSpace(item.EncryptedContent) != "" {
 				blocks = append(blocks, AnthropicContentBlock{
 					Type:      "thinking",
-					Thinking:  summaryText,
+					Thinking:  summaryText.String(),
 					Signature: item.EncryptedContent,
 				})
 			}
@@ -99,10 +129,7 @@ func anthropicUsageFromResponsesUsage(usage *ResponsesUsage) AnthropicUsage {
 		cachedTokens = usage.InputTokensDetails.CachedTokens
 	}
 
-	inputTokens := usage.InputTokens - cachedTokens - usage.CacheCreationInputTokens
-	if inputTokens < 0 {
-		inputTokens = 0
-	}
+	inputTokens := max(usage.InputTokens-cachedTokens-usage.CacheCreationInputTokens, 0)
 
 	return AnthropicUsage{
 		InputTokens:              inputTokens,
@@ -158,36 +185,6 @@ func sanitizeAnthropicToolUseInput(name string, raw string) json.RawMessage {
 		return json.RawMessage(raw)
 	}
 	return sanitized
-}
-
-// ResponsesEventToAnthropicState tracks state for converting a sequence of
-// Responses SSE events directly into Anthropic SSE events.
-type ResponsesEventToAnthropicState struct {
-	MessageStartSent bool
-	MessageStopSent  bool
-
-	ContentBlockIndex   int
-	ContentBlockOpen    bool
-	CurrentBlockType    string // "text" | "thinking" | "tool_use"
-	CurrentToolName     string
-	CurrentToolArgs     string
-	CurrentToolHadDelta bool
-	// PendingThinkingSignature 保存 reasoning.encrypted_content，并在 thinking 块
-	// 关闭前通过 signature_delta 发出。
-	PendingThinkingSignature string
-	HasToolCall              bool
-
-	// OutputIndexToBlockIdx maps Responses output_index → Anthropic content block index.
-	OutputIndexToBlockIdx map[int]int
-
-	InputTokens              int
-	OutputTokens             int
-	CacheReadInputTokens     int
-	CacheCreationInputTokens int
-
-	ResponseID string
-	Model      string
-	Created    int64
 }
 
 // NewResponsesEventToAnthropicState returns an initialised stream state.

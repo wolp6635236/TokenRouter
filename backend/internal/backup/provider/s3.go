@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
@@ -29,14 +29,12 @@ const (
 	s3MaxUploadConcurrency = 8
 	s3MaxUploadParts       = 10000
 	s3UploadFailTimeout    = 30 * time.Second
-)
 
-const (
 	backupStreamPartSizeBytes = 16 * 1024 * 1024
 	backupStreamConcurrency   = 1
 )
 
-// S3BackupStore implements backup.BackupObjectStore using AWS S3 compatible storage
+// S3BackupStore implements backup.BackupObjectStore using AWS S3 compatible storage.
 type S3BackupStore struct {
 	client            *s3.Client
 	bucket            string
@@ -45,7 +43,17 @@ type S3BackupStore struct {
 	uploadMode        string
 }
 
-// NewS3BackupStoreFactory returns a BackupObjectStoreFactory that creates S3-backed stores
+type contextAwareReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+type s3UploadProgressListener struct {
+	uploaded   atomic.Int64
+	onProgress func(uploadedBytes int64)
+}
+
+// NewS3BackupStoreFactory returns a BackupObjectStoreFactory that creates S3-backed stores.
 func NewS3BackupStoreFactory() backup.BackupObjectStoreFactory {
 	return func(ctx context.Context, cfg *backup.BackupS3Config) (backup.BackupObjectStore, error) {
 		region := cfg.Region
@@ -143,11 +151,6 @@ func (s *S3BackupStore) uploadBackupSpooledPut(ctx context.Context, key string, 
 		return 0, err
 	}
 	return written, nil
-}
-
-type contextAwareReader struct {
-	ctx    context.Context
-	reader io.Reader
 }
 
 // Read 在每次读取前检查取消信号，避免磁盘暂存阶段忽略任务超时。
@@ -274,11 +277,6 @@ func (s *S3BackupStore) HeadBucket(ctx context.Context) error {
 		return fmt.Errorf("S3 HeadBucket failed: %w", err)
 	}
 	return nil
-}
-
-type s3UploadProgressListener struct {
-	uploaded   atomic.Int64
-	onProgress func(uploadedBytes int64)
 }
 
 func (l *s3UploadProgressListener) OnObjectBytesTransferred(_ context.Context, event *transfermanager.ObjectBytesTransferredEvent) {

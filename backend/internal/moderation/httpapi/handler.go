@@ -6,18 +6,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 type ContentModerationHandler struct {
 	service *moderation.ContentModerationService
-}
-
-func NewContentModerationHandler(svc *moderation.ContentModerationService) *ContentModerationHandler {
-	return &ContentModerationHandler{service: svc}
 }
 
 type contentModerationConfigRequest struct {
@@ -76,6 +73,10 @@ type contentModerationAPIKeyTestRequest struct {
 
 type contentModerationHashRequest struct {
 	InputHash string `json:"input_hash"`
+}
+
+func NewContentModerationHandler(svc *moderation.ContentModerationService) *ContentModerationHandler {
+	return &ContentModerationHandler{service: svc}
 }
 
 func (h *ContentModerationHandler) GetConfig(c *gin.Context) {
@@ -177,6 +178,7 @@ func (h *ContentModerationHandler) GetStatus(c *gin.Context) {
 func (h *ContentModerationHandler) ListLogs(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
 	filter := moderation.ContentModerationLogFilter{
+		RequestID: strings.TrimSpace(c.Query("request_id")),
 		Pagination: pagination.PaginationParams{
 			Page:      page,
 			PageSize:  pageSize,
@@ -294,7 +296,7 @@ func (h *ContentModerationHandler) GetCyberSummary(c *gin.Context) {
 }
 
 func parseCyberWarningFilter(c *gin.Context, withPagination bool) (moderation.ContentModerationCyberWarningFilter, string, bool) {
-	filter := moderation.ContentModerationCyberWarningFilter{Search: c.Query("search")}
+	filter := moderation.ContentModerationCyberWarningFilter{Search: c.Query("search"), RequestID: strings.TrimSpace(c.Query("request_id"))}
 	if withPagination {
 		page, pageSize := response.ParsePagination(c)
 		filter.Pagination = pagination.PaginationParams{

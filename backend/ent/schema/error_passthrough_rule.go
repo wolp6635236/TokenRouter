@@ -1,14 +1,14 @@
 package schema
 
 import (
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 // ErrorPassthroughRule 定义全局错误透传规则的 schema。
@@ -53,13 +53,13 @@ func (ErrorPassthroughRule) Fields() []ent.Field {
 		field.Int("priority").
 			Default(0),
 
-		// error_codes: 匹配的错误码列表（OR关系）
+		// error_codes: 匹配的错误码列表（OR 关系）
 		// 例如：[422, 400] 表示匹配 422 或 400 错误码
 		field.JSON("error_codes", []int{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// keywords: 匹配的关键词列表（OR关系）
+		// keywords: 匹配的关键词列表（OR 关系）
 		// 例如：["context limit", "model not supported"]
 		// 关键词匹配不区分大小写
 		field.JSON("keywords", []string{}).

@@ -6,15 +6,6 @@ import (
 	"time"
 )
 
-// HTTP2Options 保留上游 HTTP/2 代理回退的原技术配置。
-type HTTP2Options struct {
-	Enabled                   bool
-	AllowProxyFallbackToHTTP1 bool
-	FallbackErrorThreshold    int
-	FallbackWindow            time.Duration
-	FallbackTTL               time.Duration
-}
-
 const (
 	defaultOpenAIHTTP2FallbackErrorThreshold = 2
 	defaultOpenAIHTTP2FallbackWindow         = 60 * time.Second
@@ -26,19 +17,39 @@ const (
 	TransportGrok                            = "grok"
 )
 
-// EgressPolicy 是本次执行的出站策略，敏感代理信息不参与 JSON 或普通日志。
-type EgressPolicy struct {
-	ProxyURL           string                 `json:"-"`
-	TLSProfile         *TLSFingerprintProfile `json:"-"`
-	Headers            map[string]string      `json:"-"`
-	TransportMode      string
-	ValidateResolvedIP bool
-	PublicHostsOnly    bool
-	DisableRedirects   bool
+// HTTP2Options 配置上游 HTTP/2 及代理回退的阈值和持续时间。
+type HTTP2Options struct {
+	Enabled                   bool
+	AllowProxyFallbackToHTTP1 bool
+	FallbackErrorThreshold    int
+	FallbackWindow            time.Duration
+	FallbackTTL               time.Duration
 }
 
 // TransportPolicy 在同一生产上游池的所有调用方之间共享回退状态。
 type TransportPolicy struct{ fallbacks sync.Map }
+
+type openAIHTTP2FallbackState struct {
+	mu            sync.Mutex
+	windowStart   time.Time
+	errorCount    int
+	fallbackUntil time.Time
+}
+
+// TransportRequest 包含本次出站请求的传输参数和策略。
+type TransportRequest struct {
+	TLSProfile                                            *TLSFingerprintProfile
+	Headers                                               map[string]string
+	ValidateResolvedIP, PublicHostsOnly, DisableRedirects bool
+	Profile                                               string
+	ProxyURL                                              string
+	ProxyKey                                              string
+	ProxyScheme                                           string
+	HTTP2                                                 HTTP2Options
+	HasTLSProfile                                         bool
+	TLSSupportsHTTP2                                      bool
+	Now                                                   time.Time
+}
 
 func (p *TransportPolicy) Resolve(profile, proxyKey, proxyScheme string, options HTTP2Options, now time.Time) string {
 	if profile == "grok" {
@@ -97,13 +108,6 @@ func httpProxyKey(key string) bool {
 	return strings.HasPrefix(key, "http://") || strings.HasPrefix(key, "https://")
 }
 
-type openAIHTTP2FallbackState struct {
-	mu            sync.Mutex
-	windowStart   time.Time
-	errorCount    int
-	fallbackUntil time.Time
-}
-
 func (s *openAIHTTP2FallbackState) isFallbackActive(now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -158,21 +162,6 @@ func (s *openAIHTTP2FallbackState) recordFailure(now time.Time, threshold int, w
 	s.windowStart = time.Time{}
 	s.errorCount = 0
 	return true, s.fallbackUntil
-}
-
-// TransportRequest 包含本次出站请求的传输参数和策略。
-type TransportRequest struct {
-	TLSProfile                                            *TLSFingerprintProfile
-	Headers                                               map[string]string
-	ValidateResolvedIP, PublicHostsOnly, DisableRedirects bool
-	Profile                                               string
-	ProxyURL                                              string
-	ProxyKey                                              string
-	ProxyScheme                                           string
-	HTTP2                                                 HTTP2Options
-	HasTLSProfile                                         bool
-	TLSSupportsHTTP2                                      bool
-	Now                                                   time.Time
 }
 
 // Plan 生成连接池使用的策略，TLS 能力不足时回退到 HTTP/1。

@@ -38,7 +38,7 @@ func usageUpstreamRequestIDPtr(provider *acctcore.Record, h http.Header, wsMode 
 	}
 	if len(id) > maxUsageUpstreamRequestIDLen {
 		id = id[:maxUsageUpstreamRequestIDLen]
-		for len(id) > 0 && !utf8.ValidString(id) {
+		for id != "" && !utf8.ValidString(id) {
 			id = id[:len(id)-1]
 		}
 	}

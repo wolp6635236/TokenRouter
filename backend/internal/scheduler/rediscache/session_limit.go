@@ -6,8 +6,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 // 会话限制缓存常量定义
@@ -18,10 +19,10 @@ import (
 // - Member: sessionUUID（从 metadata.user_id 中提取）
 // - Score: Unix 时间戳（会话最后活跃时间）
 //
-// 通过 ZREMRANGEBYSCORE 自动清理过期会话，无需手动管理 TTL
+// 通过 ZREMRANGEBYSCORE 自动清理过期会话，无需手动管理 TTL。
 const (
 	// 会话限制键前缀
-	// 格式: session_limit:provider:{providerID}
+	// 格式: session_limit:provider:{providerID}。
 	sessionLimitKeyPrefix = "session_limit:provider:"
 )
 
@@ -32,7 +33,7 @@ var (
 	// ARGV[1] = maxSessions
 	// ARGV[2] = idleTimeout（秒）
 	// ARGV[3] = sessionUUID
-	// 返回: 1 = 允许, 0 = 拒绝
+	// 返回: 1 = 允许, 0 = 拒绝。
 	registerSessionScript = redis.NewScript(`
 		-- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 		-- 5.0 及以上默认按效果复制；保留调用不改变行为。
@@ -75,7 +76,7 @@ var (
 	// refreshSessionScript 刷新会话时间戳
 	// KEYS[1] = session_limit:provider:{providerID}
 	// ARGV[1] = idleTimeout（秒）
-	// ARGV[2] = sessionUUID
+	// ARGV[2] = sessionUUID.
 	refreshSessionScript = redis.NewScript(`
 		-- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 		-- 5.0 及以上默认按效果复制；保留调用不改变行为。
@@ -98,7 +99,7 @@ var (
 
 	// getActiveSessionCountScript 获取活跃会话数
 	// KEYS[1] = session_limit:provider:{providerID}
-	// ARGV[1] = idleTimeout（秒）
+	// ARGV[1] = idleTimeout（秒）。
 	getActiveSessionCountScript = redis.NewScript(`
 		-- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 		-- 5.0 及以上默认按效果复制；保留调用不改变行为。
@@ -119,7 +120,7 @@ var (
 	// isSessionActiveScript 检查会话是否活跃
 	// KEYS[1] = session_limit:provider:{providerID}
 	// ARGV[1] = idleTimeout（秒）
-	// ARGV[2] = sessionUUID
+	// ARGV[2] = sessionUUID.
 	isSessionActiveScript = redis.NewScript(`
 		-- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 		-- 5.0 及以上默认按效果复制；保留调用不改变行为。
@@ -153,7 +154,7 @@ type sessionLimitCache struct {
 }
 
 // NewSessionLimitCache 创建会话限制缓存
-// defaultIdleTimeoutMinutes: 默认空闲超时时间（分钟），用于无参数查询
+// defaultIdleTimeoutMinutes: 默认空闲超时时间（分钟），用于无参数查询。
 func NewSessionLimitCache(rdb *redis.Client, defaultIdleTimeoutMinutes int) scheduler.SessionLimitCache {
 	if defaultIdleTimeoutMinutes <= 0 {
 		defaultIdleTimeoutMinutes = 5 // 默认 5 分钟
@@ -179,12 +180,12 @@ func NewSessionLimitCache(rdb *redis.Client, defaultIdleTimeoutMinutes int) sche
 	}
 }
 
-// sessionLimitKey 生成会话限制的 Redis 键
+// sessionLimitKey 生成会话限制的 Redis 键。
 func sessionLimitKey(providerID int64) string {
 	return fmt.Sprintf("%s%d", sessionLimitKeyPrefix, providerID)
 }
 
-// RegisterSession 注册会话活动
+// RegisterSession 注册会话活动。
 func (c *sessionLimitCache) RegisterSession(ctx context.Context, providerID int64, sessionUUID string, maxSessions int, idleTimeout time.Duration) (bool, error) {
 	if sessionUUID == "" || maxSessions <= 0 {
 		return true, nil // 无效参数，默认允许
@@ -204,7 +205,7 @@ func (c *sessionLimitCache) RegisterSession(ctx context.Context, providerID int6
 }
 
 // UnregisterSession 立即移除会话注册（不等待空闲超时）
-// 请求最终失败时调用：上游从未服务该会话，继续占槽会卡住 max_sessions 受限的提供商
+// 请求最终失败时调用：上游从未服务该会话，继续占槽会卡住 max_sessions 受限的提供商。
 func (c *sessionLimitCache) UnregisterSession(ctx context.Context, providerID int64, sessionUUID string) error {
 	if sessionUUID == "" {
 		return nil
@@ -212,7 +213,7 @@ func (c *sessionLimitCache) UnregisterSession(ctx context.Context, providerID in
 	return c.rdb.ZRem(ctx, sessionLimitKey(providerID), sessionUUID).Err()
 }
 
-// RefreshSession 刷新会话时间戳
+// RefreshSession 刷新会话时间戳。
 func (c *sessionLimitCache) RefreshSession(ctx context.Context, providerID int64, sessionUUID string, idleTimeout time.Duration) error {
 	if sessionUUID == "" {
 		return nil
@@ -228,7 +229,7 @@ func (c *sessionLimitCache) RefreshSession(ctx context.Context, providerID int64
 	return err
 }
 
-// GetActiveSessionCount 获取活跃会话数
+// GetActiveSessionCount 获取活跃会话数。
 func (c *sessionLimitCache) GetActiveSessionCount(ctx context.Context, providerID int64) (int, error) {
 	key := sessionLimitKey(providerID)
 	idleTimeoutSeconds := int(c.defaultIdleTimeout.Seconds())
@@ -240,7 +241,7 @@ func (c *sessionLimitCache) GetActiveSessionCount(ctx context.Context, providerI
 	return result, nil
 }
 
-// GetActiveSessionCountBatch 批量获取多个提供商的活跃会话数
+// GetActiveSessionCountBatch 批量获取多个提供商的活跃会话数。
 func (c *sessionLimitCache) GetActiveSessionCountBatch(ctx context.Context, providerIDs []int64, idleTimeouts map[int64]time.Duration) (map[int64]int, error) {
 	if len(providerIDs) == 0 {
 		return make(map[int64]int), nil
@@ -277,7 +278,7 @@ func (c *sessionLimitCache) GetActiveSessionCountBatch(ctx context.Context, prov
 	return results, nil
 }
 
-// IsSessionActive 检查会话是否活跃
+// IsSessionActive 检查会话是否活跃。
 func (c *sessionLimitCache) IsSessionActive(ctx context.Context, providerID int64, sessionUUID string) (bool, error) {
 	if sessionUUID == "" {
 		return false, nil

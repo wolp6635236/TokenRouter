@@ -5,12 +5,13 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/idempotency"
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // CreateProviderRequest 保留创建提供商的 HTTP 输入。
@@ -32,7 +33,7 @@ type CreateProviderRequest struct {
 }
 
 // UpdateProviderRequest 保留编辑提供商的 HTTP 输入。
-// 使用指针类型来区分"未提供"和"设置为0"
+// 使用指针类型来区分"未提供"和"设置为 0"。
 type UpdateProviderRequest struct {
 	Name               string         `json:"name"`
 	Notes              *string        `json:"notes"`
@@ -102,7 +103,6 @@ func (h *ManagementHandler) Create(c *gin.Context) {
 		return h.presenter.Present(ctx, provider), nil
 	})
 	if err != nil {
-
 		if retryAfter := idempotency.RetryAfterSecondsFromError(err); retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
 		}
@@ -213,7 +213,6 @@ func (h *ManagementHandler) Update(c *gin.Context) {
 		AutoPauseOnExpired: req.AutoPauseOnExpired,
 	})
 	if err != nil {
-
 		response.ErrorFrom(c, err)
 		return
 	}

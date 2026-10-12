@@ -4,9 +4,10 @@ import (
 	"strconv"
 	"strings"
 
-	wireopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	wireopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 func NormalizeOllamaCloudChatCompletionsRequest(body []byte) []byte {

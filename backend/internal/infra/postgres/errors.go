@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 
@@ -15,8 +16,7 @@ func IsUniqueConstraintViolation(err error) bool {
 	// 优先检测 PostgreSQL 特定错误码（最精确）。
 	// 错误码 23505 对应 unique_violation。
 	// 参考：https://www.postgresql.org/docs/current/errcodes-appendix.html
-	var pgErr *pq.Error
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pq.Error](err); ok {
 		return pgErr.Code == "23505"
 	}
 
@@ -41,4 +41,12 @@ func SQLState(err error) string {
 		return ""
 	}
 	return string(pgErr.Code)
+}
+
+// IsNoRows 通过 sql.ErrNoRows 或无结果错误消息识别查询无行。
+func IsNoRows(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "no rows in result set")
 }

@@ -60,8 +60,7 @@ func TestWaitOwnershipFailOpenAndRepeatedRelease(t *testing.T) {
 			}
 			var wg sync.WaitGroup
 			for range 8 {
-				wg.Add(1)
-				go func() { defer wg.Done(); result.Release() }()
+				wg.Go(func() { ; result.Release() })
 			}
 			wg.Wait()
 			require.Equal(t, 1, cache.count)

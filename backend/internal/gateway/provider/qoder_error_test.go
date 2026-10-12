@@ -5,8 +5,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
 func TestQoderGatewayErrorDetailsUsesAPIErrorMessage(t *testing.T) {

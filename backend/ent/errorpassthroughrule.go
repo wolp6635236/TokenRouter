@@ -86,7 +86,7 @@ func (_m *ErrorPassthroughRule) assignValues(columns []string, values []any) err
 			if !ok {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
-			_m.ID = int64(value.Int64)
+			_m.ID = value.Int64
 		case errorpassthroughrule.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])

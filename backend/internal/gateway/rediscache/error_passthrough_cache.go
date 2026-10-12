@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 )
 
 const (
@@ -27,14 +28,14 @@ type errorPassthroughCache struct {
 	localMu             sync.RWMutex
 }
 
-// NewErrorPassthroughCache 创建错误透传规则缓存
+// NewErrorPassthroughCache 创建错误透传规则缓存。
 func NewErrorPassthroughCache(rdb *redis.Client) errorpolicy.ErrorPassthroughCache {
 	return &errorPassthroughCache{
 		rdb: rdb,
 	}
 }
 
-// Get 从缓存获取规则列表
+// Get 从缓存获取规则列表。
 func (c *errorPassthroughCache) Get(ctx context.Context) ([]*errorpolicy.ErrorPassthroughRule, bool) {
 	// 先检查本地缓存
 	c.localMu.RLock()
@@ -68,7 +69,7 @@ func (c *errorPassthroughCache) Get(ctx context.Context) ([]*errorpolicy.ErrorPa
 	return rules, true
 }
 
-// Set 设置缓存
+// Set 设置缓存。
 func (c *errorPassthroughCache) Set(ctx context.Context, rules []*errorpolicy.ErrorPassthroughRule) error {
 	rules = errorpolicy.CloneRules(rules)
 	data, err := json.Marshal(rules)
@@ -88,7 +89,7 @@ func (c *errorPassthroughCache) Set(ctx context.Context, rules []*errorpolicy.Er
 	return nil
 }
 
-// Invalidate 使缓存失效
+// Invalidate 使缓存失效。
 func (c *errorPassthroughCache) Invalidate(ctx context.Context) error {
 	// 清除本地缓存
 	c.localMu.Lock()
@@ -99,12 +100,12 @@ func (c *errorPassthroughCache) Invalidate(ctx context.Context) error {
 	return c.rdb.Del(ctx, errorPassthroughCacheKey).Err()
 }
 
-// NotifyUpdate 通知其他实例刷新缓存
+// NotifyUpdate 通知其他实例刷新缓存。
 func (c *errorPassthroughCache) NotifyUpdate(ctx context.Context) error {
 	return c.rdb.Publish(ctx, errorPassthroughPubSubKey, "refresh").Err()
 }
 
-// SubscribeUpdates 订阅缓存更新通知
+// SubscribeUpdates 订阅缓存更新通知。
 func (c *errorPassthroughCache) SubscribeUpdates(ctx context.Context, handler func()) {
 	subscriberCtx, cancel := context.WithCancel(ctx)
 	c.subscriptionMu.Lock()

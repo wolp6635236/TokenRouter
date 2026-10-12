@@ -10,16 +10,6 @@ const (
 	AllowedClientClaudeCode = "claude_code"
 )
 
-// AllowedClientEntry 描述一个被额外放行的非官方 Codex 客户端签名。
-// Originator 必须精确等值匹配（归一化后）。
-// UAContains 为必填字段：列表为空，或列表中存在任何空白 marker，均视为非法配置，
-// 整体安全失败（return false）；每一项都必须出现在 User-Agent 中。
-// 这确保双因子匹配不会因缺失 UA 声明而退化为仅凭可伪造的 originator 单因子放行。
-type AllowedClientEntry struct {
-	Originator string
-	UAContains []string
-}
-
 // allowedClientRegistry 固化各命名预设的签名规则。
 //
 // Claude Code codex 插件签名来源：插件以 clientInfo.name="Claude Code" 完成 app-server
@@ -30,6 +20,16 @@ var allowedClientRegistry = map[string]AllowedClientEntry{
 		Originator: "Claude Code",
 		UAContains: []string{"Claude Code/"},
 	},
+}
+
+// AllowedClientEntry 描述一个被额外放行的非官方 Codex 客户端签名。
+// Originator 必须精确等值匹配（归一化后）。
+// UAContains 为必填字段：列表为空，或列表中存在任何空白 marker，均视为非法配置，
+// 整体安全失败（return false）；每一项都必须出现在 User-Agent 中。
+// 这确保双因子匹配不会因缺失 UA 声明而退化为仅凭可伪造的 originator 单因子放行。
+type AllowedClientEntry struct {
+	Originator string
+	UAContains []string
 }
 
 // IsAllowedClientMatch 判断请求头是否命中给定的额外客户端签名。

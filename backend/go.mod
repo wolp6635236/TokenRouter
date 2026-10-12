@@ -1,6 +1,6 @@
 module github.com/TokenFlux/TokenRouter
 
-go 1.27.1
+go 1.27.2
 
 require (
 	entgo.io/ent v0.14.5
@@ -42,6 +42,7 @@ require (
 	github.com/stripe/stripe-go/v85 v85.0.0
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/captcha v1.3.52
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.52
+	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.40.0
 	github.com/tidwall/gjson v1.18.0
@@ -50,12 +51,13 @@ require (
 	github.com/wechatpay-apiv3/wechatpay-go v0.2.21
 	github.com/zeromicro/go-zero v1.9.4
 	go.uber.org/zap v1.24.0
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.45.0
-	golang.org/x/mod v0.38.0
-	golang.org/x/net v0.57.0
-	golang.org/x/sync v0.22.0
-	golang.org/x/term v0.45.0
+	golang.org/x/mod v0.41.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/term v0.46.0
+	golang.org/x/text v0.42.0
 	google.golang.org/api v0.264.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -178,7 +180,6 @@ require (
 	github.com/spf13/cast v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
-	github.com/testcontainers/testcontainers-go v0.40.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
@@ -203,9 +204,8 @@ require (
 	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/tools v0.48.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/tools v0.51.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/grpc v1.83.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

@@ -7,21 +7,21 @@ import (
 	"errors"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/lib/pq"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/lib/pq"
 )
+
+const attributeSelect = `SELECT c.id,c.name,c.description,c.status,c.rules,c.created_at,c.updated_at,
+ COALESCE((SELECT array_agg(g.group_id ORDER BY g.group_id) FROM model_attribute_config_groups g WHERE g.config_id=c.id),'{}'::bigint[])
+ FROM model_attribute_configs c `
 
 // ModelAttributeStore 独立保存属性档案，所有写操作在事务内替换分组关联。
 type ModelAttributeStore struct{ db *sql.DB }
 
 func NewModelAttributeStore(db *sql.DB) *ModelAttributeStore { return &ModelAttributeStore{db: db} }
-
-const attributeSelect = `SELECT c.id,c.name,c.description,c.status,c.rules,c.created_at,c.updated_at,
- COALESCE((SELECT array_agg(g.group_id ORDER BY g.group_id) FROM model_attribute_config_groups g WHERE g.config_id=c.id),'{}'::bigint[])
- FROM model_attribute_configs c `
 
 func scanAttributeConfig(row interface{ Scan(...any) error }) (*routing.ModelAttributeConfig, error) {
 	var result routing.ModelAttributeConfig
@@ -104,8 +104,7 @@ func (s *ModelAttributeStore) ForGroups(ctx context.Context, ids []int64) (map[i
 }
 
 func attributeStoreError(err error) error {
-	var pg *pq.Error
-	if errors.As(err, &pg) {
+	if pg, ok := errors.AsType[*pq.Error](err); ok {
 		if pg.Code == "23505" {
 			return routing.ErrAttributeConfigConflict
 		}

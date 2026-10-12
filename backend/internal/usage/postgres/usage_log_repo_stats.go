@@ -9,16 +9,62 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
-	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
-	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/lib/pq"
 	"golang.org/x/sync/errgroup"
+
+	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// GetUserStatsAggregated returns aggregated usage statistics for a user using database-level aggregation
+// UsageStats 表示用量统计。
+type UsageStats = usage.UsageStats
+
+// BatchUserUsageStats 表示单个用户的批量用量统计。
+type BatchUserUsageStats = usage.BatchUserUsageStats
+
+// PlatformUsage 表示按平台拆分的用量明细。
+type PlatformUsage = usage.PlatformUsage
+
+// BatchAPIKeyUsageStats 表示单个 API Key 的批量用量统计。
+type BatchAPIKeyUsageStats = usage.BatchAPIKeyUsageStats
+
+// ProviderUsageHistory 表示提供商的每日用量历史。
+type ProviderUsageHistory = usage.ProviderUsageHistory
+
+// ProviderUsageSummary 表示提供商的用量汇总统计。
+type ProviderUsageSummary = usage.ProviderUsageSummary
+
+// ProviderUsageStatsResponse 表示提供商完整的用量统计响应。
+type ProviderUsageStatsResponse = usage.ProviderUsageStatsResponse
+
+// EndpointStat represents endpoint usage statistics row.
+type EndpointStat = usage.EndpointStat
+
+// GetProviderWindowStatsPair 扫描两个窗口的并集，分别计算各自起点后的统计。
+func (r *Store) GetProviderWindowStatsPair(ctx context.Context, id int64, firstStart, secondStart time.Time) (*usage.ProviderStats, *usage.ProviderStats, error) {
+	const query = `SELECT
+	 COUNT(*) FILTER (WHERE created_at >= $2),
+	 COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens+cache_read_tokens) FILTER (WHERE created_at >= $2),0),
+	 COALESCE(SUM(COALESCE(provider_stats_cost,total_cost)*COALESCE(provider_rate_multiplier,1)) FILTER (WHERE created_at >= $2),0),
+	 COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $2),0),
+	 COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $2),0),
+	 COUNT(*) FILTER (WHERE created_at >= $3),
+	 COALESCE(SUM(input_tokens+output_tokens+cache_creation_tokens+cache_read_tokens) FILTER (WHERE created_at >= $3),0),
+	 COALESCE(SUM(COALESCE(provider_stats_cost,total_cost)*COALESCE(provider_rate_multiplier,1)) FILTER (WHERE created_at >= $3),0),
+	 COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $3),0),
+	 COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $3),0)
+	 FROM usage_logs WHERE provider_id=$1 AND created_at >= LEAST($2,$3)`
+	a, b := &usage.ProviderStats{}, &usage.ProviderStats{}
+	if err := scanSingleRow(ctx, r.sql, query, []any{id, firstStart, secondStart},
+		&a.Requests, &a.Tokens, &a.Cost, &a.StandardCost, &a.UserCost,
+		&b.Requests, &b.Tokens, &b.Cost, &b.StandardCost, &b.UserCost); err != nil {
+		return nil, nil, err
+	}
+	return a, b, nil
+}
+
+// GetUserStatsAggregated returns aggregated usage statistics for a user using database-level aggregation.
 func (r *Store) GetUserStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) (*usage.UsageStats, error) {
 	query := `
 		SELECT
@@ -57,7 +103,7 @@ func (r *Store) GetUserStatsAggregated(ctx context.Context, userID int64, startT
 	return &stats, nil
 }
 
-// GetAPIKeyStatsAggregated returns aggregated usage statistics for an API key using database-level aggregation
+// GetAPIKeyStatsAggregated returns aggregated usage statistics for an API key using database-level aggregation.
 func (r *Store) GetAPIKeyStatsAggregated(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) (*usage.UsageStats, error) {
 	query := `
 		SELECT
@@ -106,7 +152,7 @@ func (r *Store) GetAPIKeyStatsAggregated(ctx context.Context, apiKeyID int64, st
 // 新实现使用 SQL 聚合函数：
 // 1. 在数据库层完成 COUNT/SUM/AVG 计算
 // 2. 只返回单行聚合结果，大幅减少数据传输量
-// 3. 利用数据库索引优化聚合查询性能
+// 3. 利用数据库索引优化聚合查询性能。
 func (r *Store) GetProviderStatsAggregated(ctx context.Context, providerID int64, startTime, endTime time.Time) (*usage.UsageStats, error) {
 	query := `
 		SELECT
@@ -146,7 +192,7 @@ func (r *Store) GetProviderStatsAggregated(ctx context.Context, providerID int64
 }
 
 // GetModelStatsAggregated 使用 SQL 聚合统计模型使用数据
-// 性能优化：数据库层聚合计算，避免应用层循环统计
+// 性能优化：数据库层聚合计算，避免应用层循环统计。
 func (r *Store) GetModelStatsAggregated(ctx context.Context, modelName string, startTime, endTime time.Time) (*usage.UsageStats, error) {
 	query := fmt.Sprintf(`
 		SELECT
@@ -186,7 +232,7 @@ func (r *Store) GetModelStatsAggregated(ctx context.Context, modelName string, s
 }
 
 // GetDailyStatsAggregated 使用 SQL 聚合统计用户的每日使用数据
-// 性能优化：使用 GROUP BY 在数据库层按日期分组聚合，避免应用层循环分组统计
+// 性能优化：使用 GROUP BY 在数据库层按日期分组聚合，避免应用层循环分组统计。
 func (r *Store) GetDailyStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) (result []map[string]any, err error) {
 	tzName := r.resolveUsageStatsTimezone()
 	query := `
@@ -274,7 +320,7 @@ func (r *Store) resolveUsageStatsTimezone() string {
 	return "UTC"
 }
 
-// GetProviderTodayStats 获取提供商今日统计
+// GetProviderTodayStats 获取提供商今日统计。
 func (r *Store) GetProviderTodayStats(ctx context.Context, providerID int64) (*usage.ProviderStats, error) {
 	today := r.calendar.Today()
 
@@ -306,7 +352,7 @@ func (r *Store) GetProviderTodayStats(ctx context.Context, providerID int64) (*u
 	return stats, nil
 }
 
-// GetProviderWindowStats 获取提供商时间窗口内的统计
+// GetProviderWindowStats 获取提供商时间窗口内的统计。
 func (r *Store) GetProviderWindowStats(ctx context.Context, providerID int64, startTime time.Time) (*usage.ProviderStats, error) {
 	query := `
 		SELECT
@@ -444,15 +490,6 @@ func (r *Store) GetGeminiUsageTotalsBatch(ctx context.Context, providerIDs []int
 	return result, nil
 }
 
-// UsageStats 表示用量统计。
-type UsageStats = usage.UsageStats
-
-// BatchUserUsageStats 表示单个用户的批量用量统计。
-type BatchUserUsageStats = usage.BatchUserUsageStats
-
-// PlatformUsage 表示按平台拆分的用量明细。
-type PlatformUsage = usage.PlatformUsage
-
 func normalizePositiveInt64IDs(ids []int64) []int64 {
 	if len(ids) == 0 {
 		return nil
@@ -552,9 +589,6 @@ func (r *Store) GetBatchUserUsageStats(ctx context.Context, userIDs []int64, sta
 	return result, nil
 }
 
-// BatchAPIKeyUsageStats 表示单个 API Key 的批量用量统计。
-type BatchAPIKeyUsageStats = usage.BatchAPIKeyUsageStats
-
 // GetBatchAPIKeyUsageStats gets today and total actual_cost for multiple API keys within a time range.
 // If startTime is zero, defaults to 30 days ago.
 func (r *Store) GetBatchAPIKeyUsageStats(ctx context.Context, apiKeyIDs []int64, startTime, endTime time.Time) (map[int64]*BatchAPIKeyUsageStats, error) {
@@ -631,7 +665,7 @@ func resolveEndpointColumn(endpointType string) string {
 	}
 }
 
-// GetGlobalStats gets usage statistics for all users within a time range
+// GetGlobalStats gets usage statistics for all users within a time range.
 func (r *Store) GetGlobalStats(ctx context.Context, startTime, endTime time.Time) (*UsageStats, error) {
 	query := `
 		SELECT
@@ -709,6 +743,10 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 	}
 	if filters.PersonalOnly {
 		conditions = append(conditions, "team_id IS NULL")
+	}
+	if id := strings.TrimSpace(filters.RequestID); id != "" {
+		conditions = append(conditions, usageRequestIDCondition("", len(args)+1))
+		args = append(args, id)
 	}
 	conditions, args = appendUsageLogModelWhereCondition(conditions, args, filters.Model, filters.ModelFilterSource)
 	conditions, args = appendRequestTypeOrStreamWhereCondition(conditions, args, filters.RequestType, filters.Stream)
@@ -789,7 +827,7 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 		if filters.EndpointSource != "" && filters.EndpointSource != "inbound" {
 			return
 		}
-		res, err := r.getEndpointStatsByColumnWithFilters(c, "inbound_endpoint", start, end, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.ModelFilterSource, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2)
+		res, err := r.getEndpointStatsByColumnWithFilters(c, "inbound_endpoint", start, end, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.ModelFilterSource, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2, filters.RequestID)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				logger.LegacyPrintf("repository.usage_log", "GetEndpointStatsWithFilters failed in GetStatsWithFilters: %v", err)
@@ -802,7 +840,7 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 		if filters.EndpointSource != "" && filters.EndpointSource != "upstream" {
 			return
 		}
-		res, err := r.getEndpointStatsByColumnWithFilters(c, "upstream_endpoint", start, end, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.ModelFilterSource, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2)
+		res, err := r.getEndpointStatsByColumnWithFilters(c, "upstream_endpoint", start, end, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.ModelFilterSource, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2, filters.RequestID)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				logger.LegacyPrintf("repository.usage_log", "GetUpstreamEndpointStatsWithFilters failed in GetStatsWithFilters: %v", err)
@@ -815,7 +853,7 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 		if filters.EndpointSource != "" && filters.EndpointSource != "path" {
 			return
 		}
-		res, err := r.getEndpointPathStatsWithFilters(c, start, end, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.ModelFilterSource, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2)
+		res, err := r.getEndpointPathStatsWithFilters(c, start, end, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.ModelFilterSource, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2, filters.RequestID)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				logger.LegacyPrintf("repository.usage_log", "getEndpointPathStatsWithFilters failed in GetStatsWithFilters: %v", err)
@@ -858,22 +896,16 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 	return stats, nil
 }
 
-// ProviderUsageHistory 表示提供商的每日用量历史。
-type ProviderUsageHistory = usage.ProviderUsageHistory
+func (r *Store) getEndpointStatsByColumnWithFilters(ctx context.Context, endpointColumn string, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID, teamID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool, requestIDs ...string) (results []EndpointStat, err error) {
+	requestID := ""
+	if len(requestIDs) > 0 {
+		requestID = strings.TrimSpace(requestIDs[0])
+	}
 
-// ProviderUsageSummary 表示提供商的用量汇总统计。
-type ProviderUsageSummary = usage.ProviderUsageSummary
-
-// ProviderUsageStatsResponse 表示提供商完整的用量统计响应。
-type ProviderUsageStatsResponse = usage.ProviderUsageStatsResponse
-
-// EndpointStat represents endpoint usage statistics row.
-type EndpointStat = usage.EndpointStat
-
-func (r *Store) getEndpointStatsByColumnWithFilters(ctx context.Context, endpointColumn string, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID, teamID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool) (results []EndpointStat, err error) {
 	if endpointColumn == "inbound_endpoint" {
 		analyticsFilters := UsageLogFilters{
-			UserID: userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID,
+			RequestID: requestID,
+			UserID:    userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID,
 			TeamID: teamID, Model: model, ModelFilterSource: modelSource,
 			RequestType: requestType, Stream: stream, BillingType: billingType,
 			BillingMode: billingMode, PersonalOnly: personalOnly, IncludeOwnedTeam: includeOwnedTeam,
@@ -901,6 +933,11 @@ func (r *Store) getEndpointStatsByColumnWithFilters(ctx context.Context, endpoin
 		FROM %s
 		WHERE created_at >= $1 AND created_at < $2
 	`, endpointColumn, source)
+
+	if requestID != "" {
+		query += " AND " + usageRequestIDCondition("", len(args)+1)
+		args = append(args, requestID)
+	}
 
 	if scopeCondition != "" {
 		query += " AND " + scopeCondition
@@ -959,7 +996,12 @@ func (r *Store) getEndpointStatsByColumnWithFilters(ctx context.Context, endpoin
 	return results, nil
 }
 
-func (r *Store) getEndpointPathStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID, teamID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool) (results []EndpointStat, err error) {
+func (r *Store) getEndpointPathStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID, teamID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool, requestIDs ...string) (results []EndpointStat, err error) {
+	requestID := ""
+	if len(requestIDs) > 0 {
+		requestID = strings.TrimSpace(requestIDs[0])
+	}
+
 	// 路径统计与单端点统计保持同一费用口径。
 	args := []any{startTime, endTime}
 	source, scopeCondition, args, scopeErr := r.buildUsageLogScopeSource(ctx, args, userID, includeOwnedTeam, "")
@@ -980,6 +1022,11 @@ func (r *Store) getEndpointPathStatsWithFilters(ctx context.Context, startTime, 
 		FROM %s
 		WHERE created_at >= $1 AND created_at < $2
 	`, source)
+
+	if requestID != "" {
+		query += " AND " + usageRequestIDCondition("", len(args)+1)
+		args = append(args, requestID)
+	}
 
 	if scopeCondition != "" {
 		query += " AND " + scopeCondition

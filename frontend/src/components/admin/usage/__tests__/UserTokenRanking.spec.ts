@@ -1,11 +1,13 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 
 import UserTokenRanking from '../UserTokenRanking.vue'
 
 const getUserBreakdown = vi.fn()
 
-vi.mock('@/api/admin/dashboard', () => ({
+vi.mock('@/api/admin/dashboard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/admin/dashboard')>()),
   getUserBreakdown: (...args: unknown[]) => getUserBreakdown(...args),
 }))
 
@@ -38,13 +40,29 @@ const mountRanking = (props: Record<string, unknown> = {}) =>
       filters: {},
       ...props,
     },
-    global: { stubs: { Select: true } },
+    global: { plugins: [createPinia()], stubs: { Select: true } },
   })
+
+const originalConfig = window.__APP_CONFIG__
 
 describe('UserTokenRanking', () => {
   beforeEach(() => {
     getUserBreakdown.mockReset()
     getUserBreakdown.mockResolvedValue({ users: [item(1, 100), item(2, 50)] })
+  })
+
+  afterEach(() => {
+    window.__APP_CONFIG__ = originalConfig
+  })
+
+  it('消费列用配置的余额符号显示用户实际扣费', async () => {
+    window.__APP_CONFIG__ = { ...originalConfig, balance_unit_symbol: '🍥' }
+    const wrapper = mountRanking()
+    await flushPromises()
+
+    const costCell = wrapper.findAll('tbody tr')[0].findAll('td').at(-1)!
+    expect(costCell.text()).toBe('🍥0.5000')
+    wrapper.unmount()
   })
 
   it('loads on mount with shared filters and emits select-user with id + email on row click', async () => {

@@ -5,9 +5,10 @@ import (
 	"net/http"
 	"runtime/debug"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 )
 
 func openAITextMaxBytesError(err error) (*http.MaxBytesError, bool) {

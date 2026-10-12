@@ -10,14 +10,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 const (
 	PreAggregationMinIntervalSeconds = 30
 	PreAggregationMaxIntervalSeconds = 3600
 	preAggregationSettingsCacheTTL   = 15 * time.Second
+
+	SettingKeyPreAggregationSettings = "pre_aggregation_settings"
 )
 
 // PreAggregationUsageSettings 定义使用记录预聚合运行参数。
@@ -73,6 +76,26 @@ type PreAggregationSettingsService struct {
 	updateMu    sync.Mutex
 	listenersMu sync.RWMutex
 	listeners   []func(PreAggregationSettings, PreAggregationSettings)
+}
+
+// Repository 是设置控制器实际需要的读写端口。
+type Repository interface {
+	GetValue(context.Context, string) (string, error)
+	Set(context.Context, string, string) error
+}
+
+// Options 包含部署时的用量和 Ops 聚合开关。
+type Options struct {
+	Usage                             UsageOptions
+	OpsEnabled, OpsAggregationEnabled bool
+}
+
+// UsageOptions 配置用量聚合开关、周期和回填能力。
+type UsageOptions struct {
+	Enabled         bool
+	IntervalSeconds int
+	BackfillEnabled bool
+	BackfillMaxDays int
 }
 
 // NewPreAggregationSettingsService 创建统一预聚合配置服务。
@@ -269,25 +292,3 @@ func parsePreAggregationSettings(raw string, defaults PreAggregationSettings) (P
 	}
 	return result, nil
 }
-
-// Repository 是设置控制器实际需要的读写端口。
-type Repository interface {
-	GetValue(context.Context, string) (string, error)
-	Set(context.Context, string, string) error
-}
-
-// Options 包含部署时的用量和 Ops 聚合开关。
-type Options struct {
-	Usage                             UsageOptions
-	OpsEnabled, OpsAggregationEnabled bool
-}
-
-// UsageOptions 配置用量聚合开关、周期和回填能力。
-type UsageOptions struct {
-	Enabled         bool
-	IntervalSeconds int
-	BackfillEnabled bool
-	BackfillMaxDays int
-}
-
-const SettingKeyPreAggregationSettings = "pre_aggregation_settings"

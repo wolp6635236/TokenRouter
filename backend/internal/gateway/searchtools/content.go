@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/search/contract"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/search/contract"
 )
 
 const (

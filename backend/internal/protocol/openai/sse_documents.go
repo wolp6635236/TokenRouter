@@ -13,6 +13,12 @@ const (
 	MaxConcatenatedJSONBytes     = 16 * 1024 * 1024
 )
 
+type SSEJSONDocumentScanner struct {
+	scanner *bufio.Scanner
+	pending []string
+	current string
+}
+
 // SplitConcatenatedJSONDocuments 仅识别多个完整 Responses 事件黏连在同一传输消息中的形态。
 // 其他畸形载荷保持原样，继续交给既有错误路径处理。
 func SplitConcatenatedJSONDocuments(payload []byte) ([][]byte, bool) {
@@ -48,12 +54,6 @@ func SplitConcatenatedJSONDocuments(payload []byte) ([][]byte, bool) {
 		}
 		documents = append(documents, raw)
 	}
-}
-
-type SSEJSONDocumentScanner struct {
-	scanner *bufio.Scanner
-	pending []string
-	current string
 }
 
 func NewSSEJSONDocumentScanner(scanner *bufio.Scanner) *SSEJSONDocumentScanner {

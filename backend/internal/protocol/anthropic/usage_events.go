@@ -3,8 +3,9 @@ package anthropic
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 // ParseSSEUsagePassthrough 从 Anthropic SSE data 行提取 usage（包级函数：

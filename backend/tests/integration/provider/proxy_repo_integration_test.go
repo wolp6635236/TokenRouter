@@ -7,15 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/egress/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/stretchr/testify/suite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/egress/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/stretchr/testify/suite"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 type ProxyRepoSuite struct {

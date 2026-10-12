@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
@@ -13,7 +14,7 @@ import (
 // TestSelectedProviderSlotOwnsOnlyAcquiredResource 验证已取得槽位直接复用，粘性绑定保持原样，重复清理释放一次。
 func TestSelectedProviderSlotOwnsOnlyAcquiredResource(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	var released atomic.Int32
 	acquired := 0
 	hooks := ProviderSlotHooks{Acquired: func(*gin.Context) { acquired++ }, CapacityLimited: func(*gin.Context) { t.Fatal("unexpected capacity failure") }}
@@ -29,7 +30,7 @@ func TestSelectedProviderSlotOwnsOnlyAcquiredResource(t *testing.T) {
 
 func TestSelectedProviderSlotMissingWaitPlanKeepsErrorShape(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	limited := false
 	status := 0
 	kind, message := "", ""

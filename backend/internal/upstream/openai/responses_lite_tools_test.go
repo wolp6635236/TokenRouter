@@ -3,9 +3,10 @@ package openai
 import (
 	"testing"
 
-	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
 func TestNormalizeOpenAIResponsesLiteTools_MovesNamespacesAndKeepsSupportedTools(t *testing.T) {

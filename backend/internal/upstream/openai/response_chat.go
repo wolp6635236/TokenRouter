@@ -12,11 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"go.uber.org/zap"
 )
 
 // CompatResponseResult 记录上游响应，计费模型由入站处理器补充。

@@ -1,14 +1,15 @@
 package openaiattempt
 
 import (
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 func (h *Support) RecordOpenAICyberWarning(c *gin.Context, reqLog *zap.Logger, apiKey *apikey.APIKey, provider *gatewayprovider.ExecutionProvider, model string, statusCode int, responseBody []byte, warningText string) {

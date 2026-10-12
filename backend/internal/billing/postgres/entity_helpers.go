@@ -12,6 +12,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
+// sqlExecutor 提供存储适配层使用的 SQL 执行和查询方法。
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 // clientFromContext 从 context 中获取事务 client，如果不存在则返回默认 client。
 //
 // 这个辅助函数支持 repository 方法在事务上下文中工作：
@@ -93,12 +99,6 @@ func derefString(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-// sqlExecutor 提供存储适配层使用的 SQL 执行和查询方法。
-type sqlExecutor interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 // userSummaryFromEntity 从预加载的用户实体提取权益查询资料，nil 返回 nil。

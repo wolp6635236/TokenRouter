@@ -17,7 +17,7 @@
           v-for="preset in presets"
           :key="preset.label"
           type="button"
-          class="rounded-control bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-300 dark:hover:bg-dark-500"
+          class="rounded-control bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600"
           @click="appendRule({ ...preset.rule })"
         >
           + {{ preset.label }}

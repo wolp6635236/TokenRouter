@@ -4,12 +4,10 @@ import (
 	"context"
 	"net/http"
 
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 )
 
 // invalidJSONObservation 将 JSON 解析失败交给健康策略处理并构造转发错误。

@@ -6,16 +6,20 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/tidwall/gjson"
 )
 
 // RunEntry 拥有入站升级后的准入、提供商尝试及每 turn 调度/资金/审核/完成编排。
@@ -23,6 +27,8 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 	// 逐轮租约失效时终止整个会话，HTTP 桥接的断连隔离仍能接收内部取消。
 	ctx, abortSession := requestcontext.WithAbort(ctx)
 	defer abortSession()
+	requestRecords := newEntryRequestRecords(ctx)
+	defer requestRecords.close()
 	apiKey, subject, reqLog := in.Key, in.Subject, p.Logger()
 	clientLifecycleCtx, firstTurnStartedAt := in.ClientLifecycleContext, in.FirstTurnStartedAt
 	var err error
@@ -40,6 +46,7 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 		return
 	}
 	clientReqModel := reqModel
+	telemetry.UpdateRequest(requestRecords.next, func(record *telemetry.RequestRecord) { record.Model = clientReqModel })
 	ctx, reqModel = p.Redirect(ctx, clientReqModel)
 	p.BindContext(ctx)
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
@@ -380,7 +387,9 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 			maxReasoningEffortOverLimit = apiKey.Group.MaxReasoningEffortOverLimit
 			reasoningEffortMappings = apiKey.Group.ReasoningEffortMappings
 		}
+		attemptRecords := requestRecords.attempt()
 		hooks := &EntryHooks{
+			TurnStarted:                 func(turn int, _ time.Time) { _ = attemptRecords.context(ctx, turn) },
 			ClientLifecycleContext:      clientLifecycleCtx,
 			InitialRequestModel:         reqModel,
 			InitialTurnStartedAt:        firstTurnStartedAt,
@@ -431,6 +440,8 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 				return routingModel, nil
 			},
 			BeforeRequest: func(turn int, payload []byte, originalModel, _ string) ([]byte, error) {
+				turnContext := attemptRecords.context(ctx, turn)
+				telemetry.UpdateRequest(turnContext, func(record *telemetry.RequestRecord) { record.Model = originalModel })
 				if turn == 1 {
 					return payload, nil
 				}
@@ -473,6 +484,7 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 				return payload, nil
 			},
 			BeforeTurn: func(turn int) error {
+				_ = attemptRecords.context(ctx, turn)
 				if cyberBlockedThisConn.Load() {
 					return p.CloseError(1008, p.BlockedMessage(), nil)
 				}
@@ -530,14 +542,16 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 				turn := capture.Turn
 				result := capture.Result
 				turnErr := capture.Err
-				if _, retryable := p.Failover(turnErr); turnErr == nil || !retryable {
+				_, requestRetry := p.Failover(turnErr)
+				requestCtx := attemptRecords.finish(ctx, capture, provider.ID, provider.Platform, turnErr != nil && requestRetry)
+				if turnErr == nil || !requestRetry {
 					releaseKey()
 				}
 				turnClientModel := strings.TrimSpace(capture.OriginalModel)
 				if turnClientModel == "" {
 					turnClientModel = clientReqModel
 				}
-				turnCtx, turnModel := p.Redirect(ctx, turnClientModel)
+				turnCtx, turnModel := p.Redirect(requestCtx, turnClientModel)
 				// 当前分组和分组映射结果进入独立计划，不改变原解析位置。
 				turnCtx, turnGroupMapping := p.Plan(turnCtx, turnModel)
 				releaseTurnSlots()
@@ -565,7 +579,7 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 						EntryError(turnErr),
 					)
 				}
-				if result == nil {
+				if result == nil || result.LocalWarmup {
 					return
 				}
 				// WS 每个 turn 的分组映射可能覆盖默认计费模型，统一在记录用量前解析。
@@ -586,11 +600,11 @@ func RunEntry(ctx context.Context, p EntryPorts, in EntryInput, client ClientSoc
 				}
 				completionInput := selection.Target.PrepareCompletion(turnCtx, result, capture, turnModel, turnGroupMapping, turnRequestBody, cyberPolicyHandled)
 				recorder, report := p.CompletionRecorder(), p.CompletionObserver()
-				p.SubmitCompletion(result, func(taskCtx context.Context) {
+				p.SubmitCompletion(result, completion.WrapTaskContext(turnCtx, func(taskCtx context.Context) {
 					if err := recorder.Record(taskCtx, completionInput, true); err != nil {
 						report(completionInput.Provider.ID, completionInput.Result.RequestID, err)
 					}
-				})
+				}))
 			},
 		}
 

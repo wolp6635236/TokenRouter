@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 
@@ -146,8 +147,8 @@ func (s *ManagementBatch) DeleteNormalized(ctx context.Context, providerIDs []in
 		return nil, err
 	}
 
-	sort.Slice(successIDs, func(i, j int) bool { return successIDs[i] < successIDs[j] })
-	sort.Slice(failedIDs, func(i, j int) bool { return failedIDs[i] < failedIDs[j] })
+	slices.Sort(successIDs)
+	slices.Sort(failedIDs)
 	sort.Slice(errorsByProvider, func(i, j int) bool {
 		return errorsByProvider[i].ProviderID < errorsByProvider[j].ProviderID
 	})

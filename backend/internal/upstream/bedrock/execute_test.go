@@ -13,14 +13,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/stretchr/testify/require"
 )
 
 type executionSink struct {
 	body   bytes.Buffer
 	events []upstream.OutputEvent
+}
+
+type executionBody struct {
+	io.ReadCloser
+	closed *atomic.Int32
 }
 
 func (s *executionSink) Begin(upstream.OutputHead) error { return nil }
@@ -29,11 +35,6 @@ func (s *executionSink) Emit(event upstream.OutputEvent) error {
 	s.events = append(s.events, event)
 	_, _ = s.body.Write(event.Data)
 	return nil
-}
-
-type executionBody struct {
-	io.ReadCloser
-	closed *atomic.Int32
 }
 
 func (b *executionBody) Close() error { b.closed.Add(1); return b.ReadCloser.Close() }

@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 const LegacyEncryptionKey = "0123456789abcdef0123456789abcdef"

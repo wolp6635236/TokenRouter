@@ -13,6 +13,11 @@ type ScheduledTestService struct {
 	resultRepo ScheduledTestResultRepository
 }
 
+type ScheduledTestOptions struct {
+	Now     func() time.Time
+	NextRun func(string, time.Time) (time.Time, error)
+}
+
 // NewScheduledTestService 仅保存依赖，不启动后台任务。
 func NewScheduledTestService(
 	planRepo ScheduledTestPlanRepository,
@@ -82,9 +87,4 @@ func (s *ScheduledTestService) SaveResult(ctx context.Context, planID int64, max
 		return err
 	}
 	return s.resultRepo.PruneOldResults(ctx, planID, maxResults)
-}
-
-type ScheduledTestOptions struct {
-	Now     func() time.Time
-	NextRun func(string, time.Time) (time.Time, error)
 }

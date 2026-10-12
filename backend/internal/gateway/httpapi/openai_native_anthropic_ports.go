@@ -4,24 +4,19 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
+	"github.com/gin-gonic/gin"
 
 	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
 	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
 type openAINativeAnthropicAdapter struct {

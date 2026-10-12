@@ -83,7 +83,8 @@
                   value === 'active' ? 'bg-green-500' : 'bg-red-500',
                 ]"
               ></span>
-              <span class="text-gray-700 dark:text-gray-300">
+              <!-- 状态文字加 self-baseline，移动卡片的标签对齐文字。 -->
+              <span class="self-baseline text-gray-700 dark:text-gray-300">
                 {{ value === 'active' ? t('team.statusActive') : t('team.statusSuspended') }}
               </span>
             </div>

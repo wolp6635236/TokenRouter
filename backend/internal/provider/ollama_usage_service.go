@@ -8,10 +8,18 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+)
+
+const (
+	ollamaCloudUsageManualRefreshInterval = 30 * time.Second
+	ollamaCloudUsageMaxPerCycle           = 20
+	ollamaCloudUsageLeaderLockKey         = "ollama:cloud:usage:leader"
+	ollamaCloudUsageLeaderLockTTL         = 2 * time.Minute
 )
 
 type OllamaProviderReader interface {
@@ -49,6 +57,16 @@ type OllamaCloudUsageService struct {
 	options                 OllamaUsageOptions
 }
 
+type OllamaUsageRepository interface {
+	ListOllamaCloudUsageGroupProviders(context.Context, []*Record) ([]Record, error)
+	SaveOllamaCloudUsageSession(context.Context, *Record, string, bool) error
+	DeleteOllamaCloudUsageSession(context.Context, *Record) error
+	SetOllamaCloudUsageAutoRefresh(context.Context, *Record, bool) error
+	UpdateOllamaCloudUsageSnapshot(context.Context, *Record, *OllamaCloudUsageSnapshot) error
+	DisableOllamaCloudUsageAutoRefresh(context.Context, *Record) error
+	ListDueOllamaCloudUsageProviders(context.Context, time.Time, time.Duration, time.Duration, int) ([]Record, error)
+}
+
 func NewOllamaCloudUsageService(repo OllamaProviderReader, settings OllamaUsageSettingsStore, cipher OllamaSessionCipher, options OllamaUsageOptions) *OllamaCloudUsageService {
 	if options.Now == nil {
 		options.Now = time.Now
@@ -60,23 +78,6 @@ func NewOllamaCloudUsageService(repo OllamaProviderReader, settings OllamaUsageS
 	s.runtime = NewOllamaUsageRuntime(s.RunDue, options.Log)
 	return s
 }
-
-type OllamaUsageRepository interface {
-	ListOllamaCloudUsageGroupProviders(context.Context, []*Record) ([]Record, error)
-	SaveOllamaCloudUsageSession(context.Context, *Record, string, bool) error
-	DeleteOllamaCloudUsageSession(context.Context, *Record) error
-	SetOllamaCloudUsageAutoRefresh(context.Context, *Record, bool) error
-	UpdateOllamaCloudUsageSnapshot(context.Context, *Record, *OllamaCloudUsageSnapshot) error
-	DisableOllamaCloudUsageAutoRefresh(context.Context, *Record) error
-	ListDueOllamaCloudUsageProviders(context.Context, time.Time, time.Duration, time.Duration, int) ([]Record, error)
-}
-
-const (
-	ollamaCloudUsageManualRefreshInterval = 30 * time.Second
-	ollamaCloudUsageMaxPerCycle           = 20
-	ollamaCloudUsageLeaderLockKey         = "ollama:cloud:usage:leader"
-	ollamaCloudUsageLeaderLockTTL         = 2 * time.Minute
-)
 
 func (s *OllamaCloudUsageService) StartContext(ctx context.Context) error {
 	if s == nil {
@@ -197,7 +198,7 @@ func (s *OllamaCloudUsageService) SaveSession(ctx context.Context, providerID in
 	}
 	normalized, err := egress.NormalizeOllamaCloudUsageCookie(session)
 	if err != nil {
-		return nil, infraerrors.BadRequest("INVALID_OLLAMA_CLOUD_USAGE_SESSION", err.Error())
+		return nil, apperror.BadRequest("INVALID_OLLAMA_CLOUD_USAGE_SESSION", err.Error())
 	}
 	provider, err := s.providerRepo.GetByID(ctx, providerID)
 	if err != nil {
@@ -462,11 +463,11 @@ func (s *OllamaCloudUsageService) refreshLoadedProvider(ctx context.Context, pro
 	}
 	cookie, err := s.encryptor.Decrypt(ciphertext)
 	if err != nil {
-		return nil, infraerrors.ServiceUnavailable("OLLAMA_CLOUD_USAGE_SESSION_DECRYPT_FAILED", "stored Ollama web session cannot be decrypted")
+		return nil, apperror.ServiceUnavailable("OLLAMA_CLOUD_USAGE_SESSION_DECRYPT_FAILED", "stored Ollama web session cannot be decrypted")
 	}
 	cookie, err = egress.NormalizeOllamaCloudUsageCookie(cookie)
 	if err != nil {
-		return nil, infraerrors.ServiceUnavailable("OLLAMA_CLOUD_USAGE_SESSION_INVALID", "stored Ollama web session is invalid")
+		return nil, apperror.ServiceUnavailable("OLLAMA_CLOUD_USAGE_SESSION_INVALID", "stored Ollama web session is invalid")
 	}
 	if s.options.Fetch == nil {
 		return nil, ErrOllamaCloudUsageUnavailable

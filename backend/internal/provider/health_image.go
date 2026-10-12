@@ -7,6 +7,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// 图片能力使用独立的缓存条目记录原因和冷却时间。
+const (
+	OpenAIImageRateLimitReason        = "openai_image_rate_limited"
+	OpenAIImageCapabilityLossReason   = "openai_image_capability_lost"
+	OpenAIImageCapabilityLossCooldown = 30 * time.Minute
+	OpenAIImageGenerationRateLimitKey = "openai:image_generation"
+)
+
 // ApplyImageRateLimit 按图片能力记录 OpenAI 限流，其他能力保持当前状态。
 func (s *HealthService) ApplyImageRateLimit(ctx context.Context, provider *Record, statusCode int, observe func() (bool, time.Time)) bool {
 	if s == nil || provider == nil || s.providerRepo == nil {
@@ -60,11 +68,3 @@ func (s *HealthService) ApplyImageCapabilityLoss(ctx context.Context, provider *
 	s.options.Info("openai_image_capability_lost", "provider_id", provider.ID, "scope", OpenAIImageGenerationRateLimitKey, "reset_at", resetAt, "reset_in", time.Until(resetAt).Truncate(time.Second))
 	return true
 }
-
-// 图片能力使用独立的缓存条目记录原因和冷却时间。
-const (
-	OpenAIImageRateLimitReason        = "openai_image_rate_limited"
-	OpenAIImageCapabilityLossReason   = "openai_image_capability_lost"
-	OpenAIImageCapabilityLossCooldown = 30 * time.Minute
-	OpenAIImageGenerationRateLimitKey = "openai:image_generation"
-)

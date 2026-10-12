@@ -2,28 +2,100 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
-
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
-
-	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	"github.com/TokenFlux/TokenRouter/internal/moderation"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/moderation"
+	moderationadapter "github.com/TokenFlux/TokenRouter/internal/moderation/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
+
+// liveModerationSettings 只供应原 HTTP 测试的设置快照，实际审核仍执行原生服务与 HTTP 客户端。
+type liveModerationSettings struct {
+	settings.Repository
+	values map[string]string
+}
+
+// liveModerationLogs 为测试提供无历史违规记录的查询结果。
+type liveModerationLogs struct {
+	moderation.ContentModerationRepository
+}
+
+// newLiveModerationRuntime 仅装配实际审核核心与本地协议客户端；后台工作由当前测试等待。
+func newLiveModerationRuntime(t *testing.T, settings moderation.SettingRepository, repo moderation.ContentModerationRepository) *moderation.ContentModerationService {
+	t.Helper()
+	var background sync.WaitGroup
+	t.Cleanup(background.Wait)
+	core := moderation.NewContentModerationService(settings, repo, nil, nil, nil, nil, nil, moderation.Runtime{
+		Audit:         moderationadapter.NewAuditClient(),
+		SnapshotMedia: moderationadapter.SnapshotMedia,
+		Background:    func(_ string, fn func()) { background.Go(fn) },
+		CyberText:     openai.IsOpenAICyberWarningText,
+		CyberPolicy:   openai.DetectOpenAICyberPolicy,
+		ErrorMessage:  upstream.ExtractErrorMessage,
+		MissingRow:    func(err error) bool { return errors.Is(err, sql.ErrNoRows) },
+		MissingUser:   func(err error) bool { return errors.Is(err, identity.ErrUserNotFound) },
+	})
+	t.Cleanup(func() {
+		if err := core.Stop(); err != nil {
+			t.Errorf("停止审核运行时: %v", err)
+		}
+	})
+	return core
+}
+
+func (s *liveModerationSettings) GetValue(_ context.Context, key string) (string, error) {
+	if v, ok := s.values[key]; ok {
+		return v, nil
+	}
+	return "", settings.ErrSettingNotFound
+}
+
+func (s *liveModerationSettings) Get(ctx context.Context, key string) (*settings.Setting, error) {
+	v, e := s.GetValue(ctx, key)
+	if e != nil {
+		return nil, e
+	}
+	return &settings.Setting{Key: key, Value: v}, nil
+}
+
+func (s *liveModerationSettings) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, k := range keys {
+		if v, ok := s.values[k]; ok {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+func (*liveModerationLogs) CreateLog(context.Context, *moderation.ContentModerationLog) error {
+	return nil
+}
+
+func (*liveModerationLogs) CountFlaggedByUserSince(context.Context, int64, time.Time) (int, error) {
+	return 0, nil
+}
 
 func TestParseLiveCallRequestMultipartPreservesSession(t *testing.T) {
 	session := `{"model":"gpt-live-test","delegation":{"type":"client"},"instructions":"你好"}`
@@ -33,7 +105,7 @@ func TestParseLiveCallRequestMultipartPreservesSession(t *testing.T) {
 	require.NoError(t, writer.WriteField("session", session))
 	require.NoError(t, writer.Close())
 
-	request := httptest.NewRequest("POST", "/v1/live", &body)
+	request := httptest.NewRequest(http.MethodPost, "/v1/live", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	context.Request = request
@@ -47,7 +119,7 @@ func TestParseLiveCallRequestMultipartPreservesSession(t *testing.T) {
 
 func TestParseLiveCallRequestJSONPreservesSessionWithoutDelegation(t *testing.T) {
 	body := `{"sdp":"v=0\\r\\n","session":{"model":"gpt-live-test","instructions":"standalone"}}`
-	request := httptest.NewRequest("POST", "/backend-api/codex/realtime/calls", bytes.NewBufferString(body))
+	request := httptest.NewRequest(http.MethodPost, "/backend-api/codex/realtime/calls", bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	context.Request = request
@@ -66,7 +138,7 @@ func TestParseLiveCallRequestRejectsInvalidJSONShape(t *testing.T) {
 		`{"sdp":"v=0\\r\\n","session":{"type":"quicksilver"}} {}`,
 	}
 	for _, body := range testCases {
-		request := httptest.NewRequest("POST", "/backend-api/codex/realtime/calls", bytes.NewBufferString(body))
+		request := httptest.NewRequest(http.MethodPost, "/backend-api/codex/realtime/calls", bytes.NewBufferString(body))
 		request.Header.Set("Content-Type", "application/json")
 		context, _ := gin.CreateTestContext(httptest.NewRecorder())
 		context.Request = request

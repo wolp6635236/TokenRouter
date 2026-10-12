@@ -1,10 +1,166 @@
 package modelcatalog
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// 多个中继的模态可以不同；裸名只能借用唯一公共身份的属性。
+const ambiguousImageCatalog = `{
+	"models":{"openai/gpt-image-2.5-flare":{
+		"name":"GPT Image 2.5 Flare",
+		"modalities":{"input":["text","image"],"output":["image"]}
+	}},
+	"providers":{
+		"azure":{"models":{"gpt-image-2.5-flare":{
+			"canonical_model_id":"openai/gpt-image-2.5-flare",
+			"modalities":{"input":["text"],"output":["image"]},
+			"cost":{"input":1,"output":2}
+		}}},
+		"relay":{"models":{"gpt-image-2.5-flare":{
+			"canonical_model_id":"openai/gpt-image-2.5-flare",
+			"cost":{"input":3,"output":4}
+		}}}
+	}
+}`
+
+func TestLookupAttributesCanonicalFallback(t *testing.T) {
+	for _, variant := range []string{"flare", "sunburst"} {
+		t.Run(variant, func(t *testing.T) {
+			model := "gpt-image-2.5-" + variant
+			catalog, err := Parse([]byte(strings.ReplaceAll(ambiguousImageCatalog, "flare", variant)))
+			require.NoError(t, err)
+			attributes, found := catalog.LookupAttributes(model, nil)
+			require.True(t, found)
+			require.Equal(t, []string{"text", "image"}, *attributes.InputModalities)
+			require.Equal(t, []string{"image"}, *attributes.OutputModalities)
+
+			// 属性回退后价格仍有歧义，返回的属性可独立修改。
+			require.True(t, catalog.RequiresExact(model))
+			_, found = catalog.Lookup([]string{model})
+			require.False(t, found)
+			(*attributes.InputModalities)[0] = "audio"
+			again, found := catalog.LookupAttributes(model, nil)
+			require.True(t, found)
+			require.Equal(t, []string{"text", "image"}, *again.InputModalities)
+
+			qualified, found := catalog.LookupAttributes("azure/"+model, []string{model})
+			require.True(t, found)
+			require.Equal(t, []string{"text"}, *qualified.InputModalities)
+			price, found := catalog.Lookup([]string{"azure/" + model})
+			require.True(t, found)
+			require.Equal(t, 1.0, *price.Cost.Input)
+			// 精确条目缺失的属性保持未知。
+			qualified, found = catalog.LookupAttributes("relay/"+model, []string{model})
+			require.True(t, found)
+			require.Nil(t, qualified.InputModalities)
+			_, found = catalog.LookupAttributes("azure/missing", nil)
+			require.False(t, found)
+		})
+	}
+}
+
+func TestLookupAttributesRejectsUncertainCanonical(t *testing.T) {
+	for _, canonical := range []string{"", "other/model", "openai/missing"} {
+		t.Run(canonical, func(t *testing.T) {
+			// 第一个供应商改为其他归属，另一条记录和公共资料维持现值。
+			body := strings.Replace(ambiguousImageCatalog,
+				`"canonical_model_id":"openai/gpt-image-2.5-flare"`,
+				`"canonical_model_id":"`+canonical+`"`, 1)
+			catalog, err := Parse([]byte(body))
+			require.NoError(t, err)
+			_, found := catalog.LookupAttributes("gpt-image-2.5-flare", nil)
+			require.False(t, found)
+		})
+	}
+	// 所有来源一致但缺少公共资料时，属性保持未知。
+	body := strings.ReplaceAll(ambiguousImageCatalog,
+		`"canonical_model_id":"openai/gpt-image-2.5-flare"`,
+		`"canonical_model_id":"openai/missing"`)
+	catalog, err := Parse([]byte(body))
+	require.NoError(t, err)
+	_, found := catalog.LookupAttributes("gpt-image-2.5-flare", nil)
+	require.False(t, found)
+}
+
+func TestLookupAttributesKeepsOriginalEndpoint(t *testing.T) {
+	body := strings.Replace(ambiguousImageCatalog, `"azure":`, `"openai":`, 1)
+	catalog, err := Parse([]byte(body))
+	require.NoError(t, err)
+	attributes, found := catalog.LookupAttributes("gpt-image-2.5-flare", nil)
+	require.True(t, found)
+	require.Equal(t, []string{"text"}, *attributes.InputModalities)
+}
+
+// TestOfflineEmbeddingOrigin 验证实际内嵌目录中缺少 canonical 关联的原厂模型。
+func TestOfflineEmbeddingOrigin(t *testing.T) {
+	body, err := Offline()
+	require.NoError(t, err)
+	catalog, err := Parse(body)
+	require.NoError(t, err)
+	for _, model := range []string{"text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"} {
+		t.Run(model, func(t *testing.T) {
+			entry, found := catalog.Lookup([]string{model})
+			require.True(t, found)
+			require.True(t, entry.FirstParty)
+			require.Equal(t, "openai", entry.Provider)
+			require.False(t, catalog.Ambiguous[model])
+			qualified, found := catalog.Lookup([]string{"openai/" + model})
+			require.True(t, found)
+			require.Equal(t, qualified.Cost, entry.Cost)
+		})
+	}
+}
+
+func TestKnownOriginWithoutCanonicalAndExplicitForeignOrigin(t *testing.T) {
+	catalog, err := Parse([]byte(`{
+		"providers": {
+			"openai": {"models": {
+				"embedding": {"cost":{"input":1,"output":0}},
+				"foreign": {"canonical_model_id":"author/foreign","cost":{"input":9,"output":9}}
+			}},
+			"azure": {"models":{"embedding":{"cost":{"input":2,"output":0}}}},
+			"author": {"models":{"foreign":{"canonical_model_id":"author/foreign","cost":{"input":3,"output":4}}}},
+			"relay-a": {"models":{"unknown":{"cost":{"input":5,"output":6}}}},
+			"relay-b": {"models":{"unknown":{"cost":{"input":7,"output":8}}}}
+		}
+	}`))
+	require.NoError(t, err)
+	entry, found := catalog.Lookup([]string{"embedding"})
+	require.True(t, found)
+	require.Equal(t, "openai", entry.Provider)
+	entry, found = catalog.Lookup([]string{"azure/embedding"})
+	require.True(t, found)
+	require.False(t, entry.FirstParty)
+	require.Equal(t, 2.0, *entry.Cost.Input)
+	entry, found = catalog.Lookup([]string{"foreign"})
+	require.True(t, found)
+	require.Equal(t, "author", entry.Provider)
+	require.True(t, catalog.Ambiguous["unknown"])
+}
+
+func TestMistralOriginRespectsForeignCanonical(t *testing.T) {
+	catalog, err := Parse([]byte(`{"providers":{
+		"mistral":{"models":{
+			"devstral-latest":{"cost":{"input":0.4,"output":2}},
+			"glm-test":{"canonical_model_id":"zhipuai/glm-test","cost":{"input":9,"output":9}}
+		}},
+		"requesty":{"models":{"devstral-latest":{"cost":{"input":0.44,"output":2.2}}}},
+		"zai":{"models":{"glm-test":{"canonical_model_id":"zhipuai/glm-test","cost":{"input":1,"output":2}}}}
+	}}`))
+	require.NoError(t, err)
+	entry, found := catalog.Lookup([]string{"devstral-latest"})
+	require.True(t, found)
+	require.Equal(t, "mistral", entry.Provider)
+	entry, found = catalog.Lookup([]string{"glm-test"})
+	require.True(t, found)
+	require.Equal(t, "zai", entry.Provider)
+	entry, found = catalog.Lookup([]string{"mistral/glm-test"})
+	require.True(t, found)
+	require.False(t, entry.FirstParty)
+}
 
 func TestOfflineCatalog(t *testing.T) {
 	body, err := Offline()
@@ -34,21 +190,4 @@ func TestCatalogIdentityAndUnpricedAttributes(t *testing.T) {
 	require.Nil(t, noPrice.Cost.Input)
 	require.NotNil(t, noPrice.Attributes.Reasoning)
 	require.False(t, *noPrice.Attributes.Reasoning)
-}
-
-func TestAttributeMergeAndCommon(t *testing.T) {
-	yes, no := true, false
-	context, smaller := 100, 50
-	modalities, empty := []string{"text", "image", "pdf"}, []string{}
-	base := Attributes{Context: &context, Reasoning: &yes, InputModalities: &modalities}
-	patched := Merge(base, Attributes{Reasoning: &no, InputModalities: &empty})
-	require.Equal(t, 100, *patched.Context)
-	require.False(t, *patched.Reasoning)
-	require.NotNil(t, patched.InputModalities)
-	require.Empty(t, *patched.InputModalities)
-	common, different := Common([]Attributes{base, {Context: &smaller, Reasoning: &no}})
-	require.True(t, different)
-	require.Equal(t, 50, *common.Context)
-	require.False(t, *common.Reasoning)
-	require.Nil(t, common.InputModalities)
 }

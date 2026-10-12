@@ -3,9 +3,10 @@ package requeststate
 import (
 	"strings"
 
-	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 )
 
 // ThinkingRequestOptions 固化原调用入口的协议族和模型资格，保留未指定模型时的兼容过滤。

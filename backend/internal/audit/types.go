@@ -7,11 +7,8 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// ErrAuditLogNotFound 审计日志不存在。
-var ErrAuditLogNotFound = infraerrors.NotFound("AUDIT_LOG_NOT_FOUND", "audit log not found")
-
-// 审计日志相关常量。
 const (
+	// 审计日志相关常量。
 	// AuditAuthMethodJWT / AuditAuthMethodAdminAPIKey 与 auth 中间件写入的 auth_method 对齐。
 	AuditAuthMethodJWT         = "jwt"
 	AuditAuthMethodAdminAPIKey = "admin_api_key"
@@ -21,10 +18,8 @@ const (
 	// AuditRequestBodyCaptureLimit 请求体参与脱敏解析的原始大小上限（字节）。
 	// 审计中间件按此上限截断读取，超出的请求体仅记录占位符不解析。
 	AuditRequestBodyCaptureLimit = 256 * 1024
-)
 
-// 内置审计动作名（认证/安全事件与特殊操作使用固定值，普通请求由路由自动推导）。
-const (
+	// 内置审计动作名（认证/安全事件与特殊操作使用固定值，普通请求由路由自动推导）。
 	AuditActionLogin                  = "auth.login"
 	AuditActionLogin2FA               = "auth.login.2fa"
 	AuditActionRegister               = "auth.register"
@@ -34,6 +29,9 @@ const (
 	AuditActionAuditLogClear          = "admin.audit_log.clear"
 	AuditActionUserSubscriptionRevoke = "user.subscriptions.revoke"
 )
+
+// ErrAuditLogNotFound 审计日志不存在。
+var ErrAuditLogNotFound = infraerrors.NotFound("AUDIT_LOG_NOT_FOUND", "audit log not found")
 
 // AuditLog 一条管理面操作审计记录。
 type AuditLog struct {
@@ -58,8 +56,9 @@ type AuditLog struct {
 
 // AuditLogFilter 审计日志列表查询条件。
 type AuditLogFilter struct {
-	Page     int
-	PageSize int
+	RequestID string
+	Page      int
+	PageSize  int
 
 	StartTime   *time.Time
 	EndTime     *time.Time

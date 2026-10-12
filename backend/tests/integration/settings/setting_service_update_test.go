@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
@@ -23,104 +23,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/runtimeconfig"
 	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
+	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/site"
 	"github.com/TokenFlux/TokenRouter/internal/team"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"github.com/stretchr/testify/require"
 )
-
-type settingUpdateRepoStub struct {
-	updates        map[string]string
-	values         map[string]string
-	setMultipleErr error
-}
-
-func (s *settingUpdateRepoStub) Get(ctx context.Context, key string) (*settingscore.Setting, error) {
-	panic("unexpected Get call")
-}
-
-func (s *settingUpdateRepoStub) GetValue(ctx context.Context, key string) (string, error) {
-	if s.values != nil {
-		if value, ok := s.values[key]; ok {
-			return value, nil
-		}
-	}
-	return "", settingscore.ErrSettingNotFound
-}
-
-func (s *settingUpdateRepoStub) Set(ctx context.Context, key, value string) error {
-	panic("unexpected Set call")
-}
-
-func (s *settingUpdateRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
-	panic("unexpected GetMultiple call")
-}
-
-func (s *settingUpdateRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
-	s.updates = make(map[string]string, len(settings))
-	for k, v := range settings {
-		s.updates[k] = v
-		if s.values == nil {
-			s.values = map[string]string{}
-		}
-		s.values[k] = v
-	}
-	return s.setMultipleErr
-}
-
-func (s *settingUpdateRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
-	out := make(map[string]string, len(s.values))
-	for key, value := range s.values {
-		out[key] = value
-	}
-	return out, nil
-}
-
-func (s *settingUpdateRepoStub) Delete(ctx context.Context, key string) error {
-	panic("unexpected Delete call")
-}
-
-type settingGetAllRepoStub struct {
-	values map[string]string
-}
-
-func (s *settingGetAllRepoStub) Get(ctx context.Context, key string) (*settingscore.Setting, error) {
-	panic("unexpected Get call")
-}
-
-func (s *settingGetAllRepoStub) GetValue(ctx context.Context, key string) (string, error) {
-	panic("unexpected GetValue call")
-}
-
-func (s *settingGetAllRepoStub) Set(ctx context.Context, key, value string) error {
-	panic("unexpected Set call")
-}
-
-func (s *settingGetAllRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
-	panic("unexpected GetMultiple call")
-}
-
-func (s *settingGetAllRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
-	panic("unexpected SetMultiple call")
-}
-
-func (s *settingGetAllRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
-	out := make(map[string]string, len(s.values))
-	for key, value := range s.values {
-		out[key] = value
-	}
-	return out, nil
-}
-
-func (s *settingGetAllRepoStub) Delete(ctx context.Context, key string) error {
-	panic("unexpected Delete call")
-}
 
 type forwardedIPMigrationRepoStub struct {
 	values         map[string]string
 	updates        map[string]string
 	getMultipleErr error
 	setMultipleErr error
+}
+
+type settingAntigravityUARepoStub struct {
+	values map[string]string
+}
+
+type defaultSubPlanReaderStub struct {
+	byID  map[int64]*billing.SubscriptionPlan
+	errBy map[int64]error
+	calls []int64
 }
 
 func (s *forwardedIPMigrationRepoStub) Get(context.Context, string) (*settingscore.Setting, error) {
@@ -172,10 +95,6 @@ func (s *forwardedIPMigrationRepoStub) Delete(context.Context, string) error {
 	panic("unexpected Delete call")
 }
 
-type settingAntigravityUARepoStub struct {
-	values map[string]string
-}
-
 func (s *settingAntigravityUARepoStub) Get(ctx context.Context, key string) (*settingscore.Setting, error) {
 	panic("unexpected Get call")
 }
@@ -205,12 +124,6 @@ func (s *settingAntigravityUARepoStub) GetAll(ctx context.Context) (map[string]s
 
 func (s *settingAntigravityUARepoStub) Delete(ctx context.Context, key string) error {
 	panic("unexpected Delete call")
-}
-
-type defaultSubPlanReaderStub struct {
-	byID  map[int64]*billing.SubscriptionPlan
-	errBy map[int64]error
-	calls []int64
 }
 
 func TestSettingService_AffiliateAdminRechargeSetting(t *testing.T) {
@@ -244,7 +157,7 @@ func TestSettingService_AffiliateAdminRechargeSetting(t *testing.T) {
 	})
 }
 
-// TestSettingService_PageFeatureFlagsArePersisted 验证页面功能开关必须独立持久化，避免保存其他设置时互相覆盖。
+// TestSettingService_PageFeatureFlagsArePersisted 检查页面功能开关分别持久化。
 func TestSettingService_PageFeatureFlagsArePersisted(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	svc := settingskit.NewComposite(repo, &config.Config{})
@@ -268,7 +181,7 @@ func TestSettingService_CreativeWorkerCountIsPersisted(t *testing.T) {
 	require.Equal(t, "7", repo.updates[creative.SettingKeyCreativeWorkerCount])
 }
 
-// TestSettingService_CreativeWorkerCountCallbackOnlyAfterWrite 验证失败写入不会改变运行时 worker 数量。
+// TestSettingService_CreativeWorkerCountCallbackOnlyAfterWrite 检查写入成功后才更新运行时 worker 数量。
 func TestSettingService_CreativeWorkerCountCallbackOnlyAfterWrite(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	svc := settingskit.NewComposite(repo, &config.Config{})
@@ -764,7 +677,7 @@ func TestSettingService_ParseSettings_APIKeyACLTrustForwardedIPUsesStoredValue(t
 	require.False(t, got.APIKeyACLTrustForwardedIP)
 }
 
-// TestSettingService_ParseSettings_CreativeEnabledDefaultsTrue 验证创作台开关与 TeamEnabled 同款"缺省 true"语义：键缺失时开启，显式 "false" 才关闭。
+// TestSettingService_ParseSettings_CreativeEnabledDefaultsTrue 检查创作台开关在键缺失时开启，值为“false”时关闭。
 func TestSettingService_ParseSettings_CreativeEnabledDefaultsTrue(t *testing.T) {
 	svc := settingskit.NewComposite(&settingUpdateRepoStub{}, &config.Config{})
 

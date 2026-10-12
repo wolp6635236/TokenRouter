@@ -19,13 +19,13 @@ func (r *AntigravityRefreshRules) CacheKey(value *Record) string {
 	return AntigravityTokenCacheKey(value)
 }
 
-// CanRefresh 检查是否可以刷新此提供商
+// CanRefresh 检查是否可以刷新此提供商。
 func (r *AntigravityRefreshRules) CanRefresh(provider *Record) bool {
 	return provider.Platform == PlatformAntigravity && provider.Type == ProviderTypeOAuth
 }
 
 // NeedsRefresh 检查提供商是否需要刷新
-// Antigravity 使用固定的15分钟刷新窗口，忽略全局配置
+// Antigravity 使用固定的 15 分钟刷新窗口，忽略全局配置。
 func (r *AntigravityRefreshRules) NeedsRefresh(provider *Record, _ time.Duration) bool {
 	if !r.CanRefresh(provider) {
 		return false
@@ -55,7 +55,7 @@ func AntigravityForceTokenRefreshExtra(reason string) map[string]any {
 	}
 }
 
-// Refresh 执行 token 刷新
+// Refresh 执行 token 刷新。
 func (r *AntigravityRefreshRules) Refresh(ctx context.Context, provider *Record) (map[string]any, error) {
 	tokenInfo, err := r.RefreshProviderToken(ctx, provider)
 	if err != nil {

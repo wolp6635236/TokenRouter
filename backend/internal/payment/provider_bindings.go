@@ -162,7 +162,7 @@ func PaymentOrderFallbackProviderKey(registry *Registry, order *Order) string {
 		return ""
 	}
 	if registry != nil {
-		if key := strings.TrimSpace(registry.GetProviderKey(PaymentType(order.PaymentType))); key != "" {
+		if key := strings.TrimSpace(registry.GetProviderKey(order.PaymentType)); key != "" {
 			return key
 		}
 	}
@@ -174,7 +174,7 @@ func (s *ProviderBindings) CreateProviderFromInstance(ctx context.Context, inst 
 		return nil, fmt.Errorf("payment provider instance is missing")
 	}
 
-	cfg, err := s.loadBalancer.GetInstanceConfig(ctx, int64(inst.ID))
+	cfg, err := s.loadBalancer.GetInstanceConfig(ctx, inst.ID)
 	if err != nil {
 		return nil, fmt.Errorf("load provider instance config: %w", err)
 	}
@@ -182,7 +182,7 @@ func (s *ProviderBindings) CreateProviderFromInstance(ctx context.Context, inst 
 		cfg["paymentMode"] = inst.PaymentMode
 	}
 
-	instID := strconv.FormatInt(int64(inst.ID), 10)
+	instID := strconv.FormatInt(inst.ID, 10)
 	prov, err := s.runtime.Factory(inst.ProviderKey, instID, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create provider from instance: %w", err)
@@ -408,7 +408,7 @@ func (s *ProviderBindings) LoadProviders(ctx context.Context) ([]Provider, error
 	}
 	providers := make([]Provider, 0, len(instances))
 	for _, inst := range instances {
-		cfg, err := s.loadBalancer.GetInstanceConfig(ctx, int64(inst.ID))
+		cfg, err := s.loadBalancer.GetInstanceConfig(ctx, inst.ID)
 		if err != nil {
 			s.warn("[PaymentService] failed to decrypt config for instance", "instanceID", inst.ID, "error", err)
 			continue

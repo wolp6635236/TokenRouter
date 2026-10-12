@@ -4,14 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/stretchr/testify/require"
 )
 
-// TestGrokRequestableModelsExcludeBuiltinAliases 验证原默认目录与提供商显式别名断言直接组合原生解析器。
+// TestGrokRequestableModelsExcludeBuiltinAliases 空配置目录为空，具体映射可以加入自定义别名。
 func TestGrokRequestableModelsExcludeBuiltinAliases(t *testing.T) {
 	groupID := int64(4510)
 	provider := providercore.Record{ID: 1, Platform: capability.PlatformGrok, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{}}
@@ -19,7 +19,7 @@ func TestGrokRequestableModelsExcludeBuiltinAliases(t *testing.T) {
 	service := newCatalogueFixture(repo, nil, nil)
 
 	result := service.ResolveRequestableModels(context.Background(), &groupID, capability.PlatformGrok)
-	require.ElementsMatch(t, xai.DefaultModelIDs(), routing.RequestableModelIDs(result.Models))
+	require.Empty(t, result.Models)
 	require.NotContains(t, routing.RequestableModelIDs(result.Models), "grok")
 	require.NotContains(t, routing.RequestableModelIDs(result.Models), "grok-latest")
 

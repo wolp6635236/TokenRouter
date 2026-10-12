@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
 )
 
-// reserveRequestScript 使用 Redis 时间检查最近 60 秒的请求和两分钟的并发租约。
-// 两项检查都通过后再写入，超限请求不会消耗另一项额度。
-var reserveRequestScript = redis.NewScript(`
+var (
+	// reserveRequestScript 使用 Redis 时间检查最近 60 秒的请求和两分钟的并发租约。
+	// 两项检查都通过后再写入，超限请求不会消耗另一项额度。
+	reserveRequestScript = redis.NewScript(`
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local concurrency = tonumber(ARGV[2])
@@ -42,8 +44,8 @@ end
 return {0, 0}
 `)
 
-// refreshRequestScript 仅续租仍有效的请求，过期租约要求请求停止。
-var refreshRequestScript = redis.NewScript(`
+	// refreshRequestScript 仅续租仍有效的请求，过期租约要求请求停止。
+	refreshRequestScript = redis.NewScript(`
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local expires = redis.call('ZSCORE', KEYS[1], ARGV[1])
@@ -52,6 +54,7 @@ redis.call('ZADD', KEYS[1], now + 120000, ARGV[1])
 redis.call('PEXPIRE', KEYS[1], 120000)
 return 1
 `)
+)
 
 // requestLimitKeys 用同一个 Key ID 聚合所有分组和实例的请求。
 func requestLimitKeys(id int64) []string {

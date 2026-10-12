@@ -7,6 +7,13 @@ import (
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
+const (
+	OpenAIQuotaResetWarningCacheRefreshFailed     = "reset_credit_cache_refresh_failed"
+	OpenAIQuotaResetWarningProviderRecoveryFailed = "provider_state_recovery_failed"
+	OpenAIQuotaResetWarningProviderRefreshFailed  = "provider_state_refresh_failed"
+	OpenAIQuotaResetPostProcessTimeout            = 8 * time.Second
+)
+
 type OpenAIQuotaOperations interface {
 	QueryUsage(context.Context, int64) (*wire.OpenAIQuotaUsage, error)
 	CacheResetCreditsSnapshot(context.Context, int64, *wire.OpenAIRateLimitResetCredits) error
@@ -20,8 +27,6 @@ type OpenAIQuotaProviderReader interface {
 	GetProvider(context.Context, int64) (*Record, error)
 }
 type OpenAIQuotaOutcomeError struct{ Message string }
-
-func (e *OpenAIQuotaOutcomeError) Error() string { return e.Message }
 
 type OpenAIQuotaResetOutcome struct {
 	wire.OpenAIQuotaResetResult
@@ -43,6 +48,8 @@ type OpenAIQuotaActions struct {
 	activity  operationActivity
 }
 
+func (e *OpenAIQuotaOutcomeError) Error() string { return e.Message }
+
 func NewOpenAIQuotaActions(quota OpenAIQuotaOperations, recovery OpenAIQuotaRecoverer, providers OpenAIQuotaProviderReader, warn func(string, ...any)) *OpenAIQuotaActions {
 	return &OpenAIQuotaActions{Quota: quota, Recovery: recovery, Providers: providers, Warn: warn}
 }
@@ -50,13 +57,6 @@ func NewOpenAIQuotaActions(quota OpenAIQuotaOperations, recovery OpenAIQuotaReco
 func (s *OpenAIQuotaActions) StopContext(ctx context.Context) error {
 	return s.activity.stop(ctx, "OpenAIQuotaActions")
 }
-
-const (
-	OpenAIQuotaResetWarningCacheRefreshFailed     = "reset_credit_cache_refresh_failed"
-	OpenAIQuotaResetWarningProviderRecoveryFailed = "provider_state_recovery_failed"
-	OpenAIQuotaResetWarningProviderRefreshFailed  = "provider_state_refresh_failed"
-	OpenAIQuotaResetPostProcessTimeout            = 8 * time.Second
-)
 
 func (s *OpenAIQuotaActions) Reset(ctx context.Context, providerID int64) (*OpenAIQuotaResetOutcome, error) {
 	runtimeCtx, done, err := s.activity.begin(context.WithoutCancel(ctx), ErrOpenAIQuotaStopped)

@@ -4,9 +4,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/team"
-	"github.com/gin-gonic/gin"
 )
 
 // AdminHandler 处理平台管理员的团队运维操作。

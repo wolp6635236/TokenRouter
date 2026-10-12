@@ -14,6 +14,12 @@ type idempotencyRepository struct {
 	sql Executor
 }
 
+// Executor 保留 DB 与显式 SQL 事务的存储适配能力；生产仍由 app 传入独立 DB。
+type Executor interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func NewIdempotencyRepository(sqlDB Executor) idempotency.IdempotencyRepository {
 	return &idempotencyRepository{sql: sqlDB}
 }
@@ -234,10 +240,4 @@ func (r *idempotencyRepository) DeleteExpired(ctx context.Context, now time.Time
 		return 0, err
 	}
 	return res.RowsAffected()
-}
-
-// Executor 保留 DB 与显式 SQL 事务的存储适配能力；生产仍由 app 传入独立 DB。
-type Executor interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }

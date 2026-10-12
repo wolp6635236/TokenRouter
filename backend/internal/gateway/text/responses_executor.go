@@ -17,6 +17,13 @@ type ResponsesExecutor struct {
 	standard, responses ResponseOptions
 }
 
+type responseExecutionObservation struct {
+	ResponsePorts
+	selected ResponseSelection
+	result   execution.ExecutionResult
+	err      error
+}
+
 func NewResponsesExecutor(runtime ResponseRuntime, standard, responses ResponseOptions) *ResponsesExecutor {
 	return &ResponsesExecutor{runtime, standard, responses}
 }
@@ -35,13 +42,6 @@ func (e *ResponsesExecutor) Execute(ctx context.Context, in execution.Request, s
 	observed := &responseExecutionObservation{ResponsePorts: session}
 	RunResponses(options, observed)
 	return observed.result, observed.err
-}
-
-type responseExecutionObservation struct {
-	ResponsePorts
-	selected ResponseSelection
-	result   execution.ExecutionResult
-	err      error
 }
 
 func (o *responseExecutionObservation) CanAttempt() bool {

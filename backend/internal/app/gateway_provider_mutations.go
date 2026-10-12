@@ -4,9 +4,8 @@ import (
 	"context"
 	"time"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // UpdateConfiguration 将配置更新交给提供商存储，由存储处理事务、锁和资金字段保护。

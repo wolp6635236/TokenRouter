@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"go.uber.org/zap"
+
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"go.uber.org/zap"
 )
 
 type RawFallbackPorts interface {

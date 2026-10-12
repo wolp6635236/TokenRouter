@@ -4,24 +4,20 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
-	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
-
-	time "time"
-
-	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-
-	completion "github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	"github.com/stretchr/testify/require"
+	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
 )
 
 // TestMaxReasoningPricing_IntervalsAndBillingModes 验证核对区间、缓存桶和分组倍率的组合，并确保按次费用不受推理倍率影响。
@@ -84,7 +80,7 @@ func TestMaxReasoningPricing_ProviderStatsPriority(t *testing.T) {
 	require.InDelta(t, *standard*3, *cost, 1e-12)
 }
 
-// TestMaxReasoningPricing_OpenAIUsageUsesFinalEffort 验证OpenAI 兼容转发的账单按结果档位计算，策略前的 max 仅用于审计。
+// TestMaxReasoningPricing_OpenAIUsageUsesFinalEffort 验证 OpenAI 兼容转发的账单按结果档位计算，策略前的 max 仅用于审计。
 func TestMaxReasoningPricing_OpenAIUsageUsesFinalEffort(t *testing.T) {
 	bs := newCalculator(nil)
 	for _, resolver := range []*billing.PriceResolver{nil, billingtestkit.PriceResolver(nil, bs)} {

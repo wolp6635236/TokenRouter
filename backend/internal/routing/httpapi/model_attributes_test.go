@@ -6,10 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 type attributeHTTPStore struct{ saved *routing.ModelAttributeConfig }

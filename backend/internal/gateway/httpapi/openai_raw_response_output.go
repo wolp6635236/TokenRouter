@@ -6,18 +6,16 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/gin-gonic/gin"
 
 	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) RawOptions(c *gin.Context, resp *http.Response, provider *gatewayprovider.ExecutionProvider, billingModel, upstreamModel string, serviceTier *string, writeError func(*gin.Context, int, string, string)) openai.RawResponseOptions {

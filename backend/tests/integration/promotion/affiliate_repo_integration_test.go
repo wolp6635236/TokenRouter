@@ -8,16 +8,14 @@ import (
 	"testing"
 	"time"
 
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	"github.com/TokenFlux/TokenRouter/internal/promotion"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/promotion"
+	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
 )
 
 func querySingleFloat(t *testing.T, ctx context.Context, client *dbent.Client, query string, args ...any) float64 {
@@ -107,23 +105,15 @@ LIMIT 1`, u.ID)
 	require.InDelta(t, 12.34, historyAfter, 1e-9)
 }
 
-// TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction guards the
-// cross-layer tx propagation invariant: when AccrueQuota is called with a ctx
-// that already carries a transaction (via dbent.NewTxContext), repo.withTx
-// must reuse that tx rather than opening a nested one. If this invariant
-// breaks, AccrueQuota would commit independently and survive a rollback of
-// the outer tx, which would violate payment_fulfillment's all-or-nothing
-// semantics.
+// TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction 检查 AccrueQuota 使用 dbent.NewTxContext 传入的事务。
+// 外层事务回滚后返利记录一同回滚，支付履约的资金和返利写入保持同一次提交。
 func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 	ctx := context.Background()
 
 	integrationEntClient, _ := testStore(t)
 	outerTx, err := integrationEntClient.Tx(ctx)
 	require.NoError(t, err, "begin outer tx")
-	// Defensive cleanup: if any require.* below fires before the explicit
-	// Rollback, this prevents the tx from leaking until container teardown.
-	// Rollback is idempotent at the driver level (extra rollback returns an
-	// error we ignore).
+	// 断言提前结束测试时也回滚事务，重复回滚返回的错误可忽略。
 	t.Cleanup(func() { _ = outerTx.Rollback() })
 	client := outerTx.Client()
 	txCtx := dbent.NewTxContext(ctx, outerTx)
@@ -162,8 +152,7 @@ func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 		"SELECT aff_quota::double precision FROM user_affiliates WHERE user_id = $1", inviter.ID)
 	require.InDelta(t, 3.5, innerQuota, 1e-9)
 
-	// Roll back the outer tx; if AccrueQuota had opened its own inner tx and
-	// committed it, the rows would still be visible to the global client.
+	// 外层事务回滚后，通过事务外客户端检查返利记录也已撤销。
 	require.NoError(t, outerTx.Rollback())
 
 	rows, err := integrationEntClient.QueryContext(ctx,
@@ -211,15 +200,9 @@ VALUES ($1, $2, 0, 0, NOW(), NOW())`, u.ID, affCode)
 	require.InDelta(t, 3.21, persistedBalance, 1e-9)
 }
 
-// TestAffiliateRepository_AdminCustomCode covers the success path of admin
-// invite-code rewrite + reset within a shared test transaction:
-// - UpdateUserAffCode replaces aff_code, sets aff_code_custom=true, lookup works
-// - the old code can no longer be found
-// - ResetUserAffCode reverts aff_code_custom and assigns a new system-format code
-//
-// The conflict path (duplicate code → ErrAffiliateCodeTaken) lives in its own
-// test because a unique-violation aborts the surrounding Postgres tx, which
-// would poison subsequent assertions in the same transaction.
+// TestAffiliateRepository_AdminCustomCode 检查自定义邀请码的写入、查询与重置。
+// 重置后恢复系统格式并清除自定义标记，被替换的邀请码退出查询。
+// 重复邀请码的冲突由独立测试检查，因为唯一约束失败会终止当前 PostgreSQL 事务。
 func TestAffiliateRepository_AdminCustomCode(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -273,10 +256,8 @@ func TestAffiliateRepository_AdminCustomCode(t *testing.T) {
 	require.ErrorIs(t, err, promotion.ErrAffiliateProfileNotFound)
 }
 
-// TestAffiliateRepository_AdminCustomCode_Conflict isolates the unique-violation
-// path. PostgreSQL aborts the enclosing tx when a unique constraint fires, so
-// this test must be the only assertion and run in its own tx — production
-// callers each have their own outer tx, so this matches real behavior.
+// TestAffiliateRepository_AdminCustomCode_Conflict 检查重复邀请码触发唯一约束。
+// PostgreSQL 会终止发生冲突的事务，此用例单独创建事务。
 func TestAffiliateRepository_AdminCustomCode_Conflict(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -304,8 +285,7 @@ func TestAffiliateRepository_AdminCustomCode_Conflict(t *testing.T) {
 	require.ErrorIs(t, err, promotion.ErrAffiliateCodeTaken)
 }
 
-// TestAffiliateRepository_AdminRebateRate covers per-user exclusive rate
-// set/clear and the Batch variant including NULL semantics.
+// TestAffiliateRepository_AdminRebateRate 检查专属返利率的单个和批量设置，以及用 NULL 清除配置。
 func TestAffiliateRepository_AdminRebateRate(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -362,8 +342,7 @@ func TestAffiliateRepository_AdminRebateRate(t *testing.T) {
 	}
 }
 
-// TestAffiliateRepository_ListUsersWithCustomSettings verifies the admin list
-// only includes users with at least one override applied.
+// TestAffiliateRepository_ListUsersWithCustomSettings 检查管理列表包含设置了自定义邀请码或专属返利率的用户。
 func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -372,7 +351,7 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 
 	repo := promotionpostgres.NewAffiliateRepository(client, func(tx *dbent.Tx) promotionpostgres.TransferBalance { return billingpostgres.BalanceInTx(tx) })
 
-	// User without any custom config — should NOT appear in the list.
+	// 未设置自定义配置的用户不在列表中。
 	plainEmail := fmt.Sprintf("affiliate-plain-%d@example.com", time.Now().UnixNano())
 	uPlain := mustCreateUser(t, client, &identity.User{
 		Email: plainEmail, PasswordHash: "hash",
@@ -381,7 +360,7 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	_, err := repo.EnsureUserAffiliate(txCtx, uPlain.ID)
 	require.NoError(t, err)
 
-	// User with a custom code — should appear.
+	// 设置自定义邀请码的用户在列表中。
 	uCode := mustCreateUser(t, client, &identity.User{
 		Email:        fmt.Sprintf("affiliate-codeonly-%d@example.com", time.Now().UnixNano()),
 		PasswordHash: "hash",
@@ -389,7 +368,7 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	})
 	require.NoError(t, repo.UpdateUserAffCode(txCtx, uCode.ID, fmt.Sprintf("VIP%09d", time.Now().UnixNano()%1_000_000_000)))
 
-	// User with only an exclusive rate — should appear.
+	// 设置专属返利率的用户在列表中。
 	uRate := mustCreateUser(t, client, &identity.User{
 		Email:        fmt.Sprintf("affiliate-rateonly-%d@example.com", time.Now().UnixNano()),
 		PasswordHash: "hash",
@@ -403,8 +382,7 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Build a quick lookup to assert per-user attributes (other tests may have
-	// inserted custom rows in the same DB; we only care about our 3).
+	// 按用户 ID 索引结果，检查本用例创建的三个用户。
 	byUserID := make(map[int64]promotion.AffiliateAdminEntry, len(entries))
 	for _, e := range entries {
 		byUserID[e.UserID] = e
@@ -424,4 +402,71 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	require.InDelta(t, 33.3, *rateEntry.AffRebateRatePercent, 1e-9)
 
 	require.GreaterOrEqual(t, total, int64(2), "total must include at least our 2 custom rows")
+}
+
+// testEntTx 为测试创建 Ent 事务，测试结束时回滚。
+func testEntTx(t *testing.T) *dbent.Tx {
+	t.Helper()
+	client := testEntClient(t)
+	tx, err := client.Tx(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	return tx
+}
+
+// mustCreateUser 将用户夹具写入数据库。
+func mustCreateUser(t *testing.T, client *dbent.Client, u *identity.User) *identity.User {
+	t.Helper()
+	ctx := context.Background()
+
+	if u.Email == "" {
+		u.Email = "user-" + time.Now().Format(time.RFC3339Nano) + "@example.com"
+	}
+	if u.PasswordHash == "" {
+		u.PasswordHash = "test-password-hash"
+	}
+	if u.Role == "" {
+		u.Role = identity.RoleUser
+	}
+	if u.Status == "" {
+		u.Status = billing.StatusActive
+	}
+	if u.Concurrency == 0 {
+		u.Concurrency = 5
+	}
+
+	create := client.User.Create().
+		SetEmail(u.Email).
+		SetPasswordHash(u.PasswordHash).
+		SetRole(u.Role).
+		SetStatus(u.Status).
+		SetBalance(u.Balance).
+		SetConcurrency(u.Concurrency).
+		SetUsername(u.Username).
+		SetNotes(u.Notes)
+	if !u.CreatedAt.IsZero() {
+		create.SetCreatedAt(u.CreatedAt)
+	}
+	if !u.UpdatedAt.IsZero() {
+		create.SetUpdatedAt(u.UpdatedAt)
+	}
+
+	created, err := create.Save(ctx)
+	require.NoError(t, err, "create user")
+
+	u.ID = created.ID
+	u.CreatedAt = created.CreatedAt
+	u.UpdatedAt = created.UpdatedAt
+
+	if len(u.AllowedGroups) > 0 {
+		for _, groupID := range u.AllowedGroups {
+			_, err := client.UserAllowedGroup.Create().
+				SetUserID(u.ID).
+				SetGroupID(groupID).
+				Save(ctx)
+			require.NoError(t, err, "create user_allowed_groups row")
+		}
+	}
+
+	return u
 }

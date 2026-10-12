@@ -6,15 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	geminiwire "github.com/TokenFlux/TokenRouter/internal/protocol/gemini"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
 
 type ResponseOptions struct {
@@ -36,6 +38,11 @@ type (
 		FirstTokenMs *int
 	}
 )
+
+type NativeStreamResult struct {
+	Usage        *upstream.TokenUsage
+	FirstTokenMs *int
+}
 
 func (s *ResponseAdapter) HandleNonStreamingResponse(c *upstream.OutputContext, resp *http.Response, originalModel string) (*upstream.TokenUsage, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -184,10 +191,10 @@ func CollectGeminiSSE(body io.Reader, isOAuth bool, observers ...func([]byte)) (
 
 	for {
 		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
+		if line != "" {
 			trimmed := strings.TrimRight(line, "\r\n")
-			if strings.HasPrefix(trimmed, "data:") {
-				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if after, ok := strings.CutPrefix(trimmed, "data:"); ok {
+				payload := strings.TrimSpace(after)
 				switch payload {
 				case "", "[DONE]":
 					if payload == "[DONE]" {
@@ -244,9 +251,7 @@ func PickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) 
 func AppendCollectedGeminiParts(collected []any, parts []map[string]any) []any {
 	for _, part := range parts {
 		partCopy := make(map[string]any, len(part))
-		for key, value := range part {
-			partCopy[key] = value
-		}
+		maps.Copy(partCopy, part)
 
 		text, hasText := partCopy["text"].(string)
 		if hasText && text != "" && len(collected) > 0 {
@@ -256,9 +261,7 @@ func AppendCollectedGeminiParts(collected []any, parts []map[string]any) []any {
 				currentThought, _ := partCopy["thought"].(bool)
 				if previousHasText && previousThought == currentThought {
 					previousCopy := make(map[string]any, len(previous))
-					for key, value := range previous {
-						previousCopy[key] = value
-					}
+					maps.Copy(previousCopy, previous)
 					previousCopy["text"] = previousText + text
 					collected[len(collected)-1] = previousCopy
 					continue
@@ -279,9 +282,7 @@ func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) ma
 
 	// 浅拷贝外层响应，避免直接改动调用方保留的 map。
 	result := make(map[string]any)
-	for k, v := range response {
-		result[k] = v
-	}
+	maps.Copy(result, response)
 
 	// 取出或创建 candidates。
 	candidates, ok := result["candidates"].([]any)
@@ -298,9 +299,7 @@ func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) ma
 		candidates[0] = candidate
 	} else {
 		candidateCopy := make(map[string]any, len(candidate))
-		for key, value := range candidate {
-			candidateCopy[key] = value
-		}
+		maps.Copy(candidateCopy, candidate)
 		candidate = candidateCopy
 		candidates[0] = candidate
 	}
@@ -312,9 +311,7 @@ func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) ma
 		candidate["content"] = content
 	} else {
 		contentCopy := make(map[string]any, len(content))
-		for key, value := range content {
-			contentCopy[key] = value
-		}
+		maps.Copy(contentCopy, content)
 		content = contentCopy
 		candidate["content"] = content
 	}
@@ -323,11 +320,6 @@ func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) ma
 	result["candidates"] = candidates
 
 	return result
-}
-
-type NativeStreamResult struct {
-	Usage        *upstream.TokenUsage
-	FirstTokenMs *int
 }
 
 func (s *ResponseAdapter) HandleNativeNonStreamingResponse(c *upstream.OutputContext, resp *http.Response, isOAuth bool) (*upstream.TokenUsage, error) {
@@ -407,10 +399,10 @@ func (s *ResponseAdapter) HandleNativeStreamingResponse(c *upstream.OutputContex
 
 	for {
 		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
+		if line != "" {
 			trimmed := strings.TrimRight(line, "\r\n")
-			if strings.HasPrefix(trimmed, "data:") {
-				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if after, ok0 := strings.CutPrefix(trimmed, "data:"); ok0 {
+				payload := strings.TrimSpace(after)
 				// keepalive 和结束标记直接透传。
 				if payload == "[DONE]" {
 					c.NextEvent(false, true)
@@ -476,7 +468,7 @@ func (s *ResponseAdapter) HandleNativeStreamingResponse(c *upstream.OutputContex
 }
 
 // UnwrapGeminiResponse 解包 Gemini OAuth 响应中的 response 字段
-// 使用 gjson 零拷贝提取，避免完整 Unmarshal+Marshal
+// 使用 gjson 零拷贝提取，避免完整 Unmarshal+Marshal。
 func UnwrapGeminiResponse(raw []byte) ([]byte, error) {
 	result := gjson.GetBytes(raw, "response")
 	if result.Exists() && result.Type == gjson.JSON {

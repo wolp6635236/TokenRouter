@@ -5,12 +5,18 @@ import (
 	"encoding/json"
 	"testing"
 
-	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/stretchr/testify/require"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
+	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
 )
+
+type settingPublicRepoStub struct {
+	values map[string]string
+	err    error
+}
 
 func TestSettingService_ParseSettingsMasksTencentCaptchaCredentials(t *testing.T) {
 	svc := settingskit.NewComposite(&settingGetAllRepoStub{values: map[string]string{
@@ -48,7 +54,7 @@ func TestSettingService_GetPublicSettingsExposesOnlyTencentCaptchaAppID(t *testi
 	require.NoError(t, err)
 	require.True(t, settings.TencentCaptchaEnabled)
 	require.Equal(t, "123456789", settings.TencentCaptchaAppID)
-	// 站点必须原样公开下发：前端据此决定加载哪个站点的 SDK 脚本与构造函数形态。
+	// 公开设置下发站点名称，前端据此选择 SDK 脚本与构造函数。
 	require.Equal(t, identity.TencentCaptchaRegionINTL, settings.TencentCaptchaRegion)
 
 	raw, err := json.Marshal(settings)
@@ -76,7 +82,44 @@ func TestSettingService_GetTencentCaptchaConfig(t *testing.T) {
 		AppSecretKey:   "app-secret",
 		CloudSecretID:  "cloud-secret-id",
 		CloudSecretKey: "cloud-secret-key",
-		// 未配置站点时回落中国站，保持存量部署行为不变
+		// 未配置站点时使用中国站。
 		Region: identity.TencentCaptchaRegionCN,
 	}, got)
+}
+
+func (s *settingPublicRepoStub) Get(ctx context.Context, key string) (*settingscore.Setting, error) {
+	panic("unexpected Get call")
+}
+
+func (s *settingPublicRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	panic("unexpected GetValue call")
+}
+
+func (s *settingPublicRepoStub) Set(ctx context.Context, key, value string) error {
+	panic("unexpected Set call")
+}
+
+func (s *settingPublicRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if value, ok := s.values[key]; ok {
+			out[key] = value
+		}
+	}
+	return out, nil
+}
+
+func (s *settingPublicRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
+	panic("unexpected SetMultiple call")
+}
+
+func (s *settingPublicRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
+	panic("unexpected GetAll call")
+}
+
+func (s *settingPublicRepoStub) Delete(ctx context.Context, key string) error {
+	panic("unexpected Delete call")
 }

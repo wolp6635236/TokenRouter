@@ -40,6 +40,22 @@ type (
 	}
 )
 
+// codexInviteResetInviteState 保存邀请操作结果，重置次数查询单独返回结果。
+type codexInviteResetInviteState struct {
+	eligibility        map[string]any
+	rules              map[string]any
+	available          bool
+	unavailableReason  string
+	unavailableMessage string
+}
+
+// codexInviteResetCreditState 保存 usage 基础数据和尽力获取到的 credit 明细。
+type codexInviteResetCreditState struct {
+	availableCount int
+	credits        []CodexInviteResetCredit
+	rawCredits     map[string]any
+}
+
 func (s *CodexInviteResetService) prepareProvider(ctx context.Context, id int64) (*codexInviteResetProviderContext, error) {
 	if s == nil || s.Options.Read == nil {
 		return nil, apperror.InternalServer("CODEX_INVITE_RESET_SERVICE_NOT_CONFIGURED", "codex invite reset service is not configured")
@@ -67,22 +83,6 @@ func (s *CodexInviteResetService) getJSON(ctx context.Context, value *codexInvit
 
 func (s *CodexInviteResetService) postJSON(ctx context.Context, value *codexInviteResetProviderContext, path string, body map[string]any) (map[string]any, error) {
 	return value.client.PostJSON(ctx, path, body)
-}
-
-// codexInviteResetInviteState 保存邀请操作结果，重置次数查询单独返回结果。
-type codexInviteResetInviteState struct {
-	eligibility        map[string]any
-	rules              map[string]any
-	available          bool
-	unavailableReason  string
-	unavailableMessage string
-}
-
-// codexInviteResetCreditState 保存 usage 基础数据和尽力获取到的 credit 明细。
-type codexInviteResetCreditState struct {
-	availableCount int
-	credits        []CodexInviteResetCredit
-	rawCredits     map[string]any
 }
 
 // GetStatus 查询邀请资格和可用重置次数。

@@ -63,6 +63,7 @@ watch(() => [props.platform, props.type, props.authMode, protocolCatalog.value],
   if (props.modelValue === undefined || changed) emit('update:modelValue', [...options.value])
 }, { immediate: true })
 function protocolName(id: ProtocolID) {
+  if (id === 'openai_responses_websocket') return t('admin.protocols.responsesWebSocket')
   return protocolCatalog.value?.protocols.find(item => item.id === id)?.name ?? id
 }
 function protocolEndpoint(id: ProtocolID) {

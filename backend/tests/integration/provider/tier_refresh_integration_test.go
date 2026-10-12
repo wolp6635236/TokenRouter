@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // TestTierObservationUsesCurrentIdentityAndFieldPatch 验证真实配置事务验证 Drive 观测只写自身字段，并在取锁后重新比较凭据身份。

@@ -15,7 +15,7 @@ func TestRemoveAsyncImageStorageSettingMigration(t *testing.T) {
 	require.NoError(t, err)
 
 	var statements []string
-	for _, line := range strings.Split(string(content), "\n") {
+	for line := range strings.SplitSeq(string(content), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "--") {
 			continue

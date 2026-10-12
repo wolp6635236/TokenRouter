@@ -7,24 +7,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 )
 
-// BillingMode 使用统一价卡的计费模式。
-type BillingMode = pricing.BillingMode
-
-const BillingModeToken = pricing.BillingModeToken
-
-const BillingModePerRequest = pricing.BillingModePerRequest
-
-const BillingModeImage = pricing.BillingModeImage
-
-const BillingModeVideo = pricing.BillingModeVideo
-
 const (
+	BillingModeToken      = pricing.BillingModeToken
+	BillingModePerRequest = pricing.BillingModePerRequest
+	BillingModeImage      = pricing.BillingModeImage
+	BillingModeVideo      = pricing.BillingModeVideo
+
 	BillingModelSourceRequested   = "requested"
 	BillingModelSourceUpstream    = "upstream"
 	BillingModelSourceGroupMapped = "group_mapped"
 )
 
-// PricingConfig 价格配置实体
+// BillingMode 使用统一价卡的计费模式。
+type BillingMode = pricing.BillingMode
+
+// PricingConfig 价格配置实体。
 type PricingConfig struct {
 	pricing.BillingSettings
 	ID                 int64
@@ -60,7 +57,16 @@ type TimePricingPeriod = pricing.TimePricingPeriod
 // PricingInterval 定义上下文或媒体规格的价格区间。
 type PricingInterval = pricing.PricingInterval
 
-// IsActive 判断价格配置是否启用
+// PricingUsageFields 价格配置相关的使用记录字段（嵌入到各平台的 RecordUsageInput 中）。
+type PricingUsageFields struct {
+	PricingConfigID    int64  // 价格配置 ID（0 = 无价格配置）
+	OriginalModel      string // Key 重定向后的请求模型（分组映射前）
+	GroupMappedModel   string // 分组映射后的模型名（无映射时等于 OriginalModel）
+	BillingModelSource string // 计费模型来源："requested" / "upstream" / "group_mapped"
+	ModelMappingChain  string // 映射链描述，如 "a→b→c"
+}
+
+// IsActive 判断价格配置是否启用。
 func (c *PricingConfig) IsActive() bool {
 	return c.Status == StatusActive
 }
@@ -72,7 +78,7 @@ func (c *PricingConfig) GetModelPricing(model string) *ModelPricingEntry {
 
 	for i := range c.ModelPricing {
 		for _, m := range c.ModelPricing[i].Models {
-			if strings.ToLower(m) == modelLower {
+			if strings.EqualFold(m, modelLower) {
 				cp := c.ModelPricing[i].Clone()
 				return &cp
 			}
@@ -82,7 +88,7 @@ func (c *PricingConfig) GetModelPricing(model string) *ModelPricingEntry {
 	return nil
 }
 
-// Clone 返回 PricingConfig 的深拷贝
+// Clone 返回 PricingConfig 的深拷贝。
 func (c *PricingConfig) Clone() *PricingConfig {
 	if c == nil {
 		return nil
@@ -126,13 +132,4 @@ func (c *PricingConfig) Clone() *PricingConfig {
 // ValidateIntervals 委托唯一纯定价实现，保留旧调用签名。
 func ValidateIntervals(intervals []PricingInterval, mode BillingMode) error {
 	return pricing.ValidateIntervals(intervals, mode)
-}
-
-// PricingUsageFields 价格配置相关的使用记录字段（嵌入到各平台的 RecordUsageInput 中）
-type PricingUsageFields struct {
-	PricingConfigID    int64  // 价格配置 ID（0 = 无价格配置）
-	OriginalModel      string // Key 重定向后的请求模型（分组映射前）
-	GroupMappedModel   string // 分组映射后的模型名（无映射时等于 OriginalModel）
-	BillingModelSource string // 计费模型来源："requested" / "upstream" / "group_mapped"
-	ModelMappingChain  string // 映射链描述，如 "a→b→c"
 }

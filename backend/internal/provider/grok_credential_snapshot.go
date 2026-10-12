@@ -17,8 +17,7 @@ func WithGrokCredentialFailureSnapshot(err error, provider *Record) error {
 	if err == nil || provider == nil || !provider.IsGrokOAuth() {
 		return err
 	}
-	var existing *grokCredentialFailureSnapshotError
-	if errors.As(err, &existing) {
+	if _, ok := errors.AsType[*grokCredentialFailureSnapshotError](err); ok {
 		return err
 	}
 	return &grokCredentialFailureSnapshotError{cause: err, snapshot: GrokCredentialMutationSnapshot(provider)}

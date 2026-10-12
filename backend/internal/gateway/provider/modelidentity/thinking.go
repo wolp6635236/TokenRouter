@@ -2,11 +2,6 @@ package modelidentity
 
 import "strings"
 
-// ThinkingProtocol 描述上游对 thinking block 的处理规则。
-// 不同上游对历史 thinking block 的要求相反：Anthropic 官方要求有效签名，
-// 第三方 Anthropic 兼容上游通常要求原样回传历史 thinking block。
-type ThinkingProtocol int
-
 const (
 	// ThinkingProtocolUnknown 表示无法识别协议族，默认保守不剥离。
 	ThinkingProtocolUnknown ThinkingProtocol = iota
@@ -17,6 +12,11 @@ const (
 	// ThinkingProtocolPassbackRequired 表示第三方兼容规则：原样回传 thinking block。
 	ThinkingProtocolPassbackRequired
 )
+
+// ThinkingProtocol 描述上游对 thinking block 的处理规则。
+// 不同上游对历史 thinking block 的要求相反：Anthropic 官方要求有效签名，
+// 第三方 Anthropic 兼容上游通常要求原样回传历史 thinking block。
+type ThinkingProtocol int
 
 // ResolveThinkingProtocol 根据上游模型 ID 推断 thinking 协议族。
 //

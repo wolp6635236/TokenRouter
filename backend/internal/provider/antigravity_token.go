@@ -9,16 +9,24 @@ import (
 	"time"
 )
 
+const (
+	antigravityProjectIDFallbackCredentialKey = "antigravity_project_id"
+
+	antigravityTokenRefreshSkew = 3 * time.Minute
+	antigravityTokenCacheSkew   = 5 * time.Minute
+	antigravityBackfillCooldown = 5 * time.Minute
+	// antigravityRequestRefreshTimeout 请求路径上 token 刷新的最大等待时间。
+	// 超过此时间直接放弃刷新、标记提供商临时不可调度并触发 failover，
+	// 让后台 TokenRefreshService 在下个周期继续重试。
+	antigravityRequestRefreshTimeout = 8 * time.Second
+)
+
 type AntigravityTokenState struct{ backfillCooldown sync.Map }
 
 // AntigravityTokenSource 独占原 project 回填冷却，消费者共享同一实例。
 type AntigravityTokenSource struct {
 	state   AntigravityTokenState
 	Options AntigravityTokenOptions
-}
-
-func (s *AntigravityTokenSource) GetAccessToken(ctx context.Context, value *Record) (string, error) {
-	return s.state.GetAccessToken(ctx, value, s.Options)
 }
 
 type AntigravityTokenOptions struct {
@@ -33,15 +41,25 @@ type AntigravityTokenOptions struct {
 	Warn, Debug          func(string, ...any)
 }
 
-const (
-	antigravityTokenRefreshSkew = 3 * time.Minute
-	antigravityTokenCacheSkew   = 5 * time.Minute
-	antigravityBackfillCooldown = 5 * time.Minute
-	// antigravityRequestRefreshTimeout 请求路径上 token 刷新的最大等待时间。
-	// 超过此时间直接放弃刷新、标记提供商临时不可调度并触发 failover，
-	// 让后台 TokenRefreshService 在下个周期继续重试。
-	antigravityRequestRefreshTimeout = 8 * time.Second
-)
+func ResolveAntigravityProjectID(provider *Record, missing error) (string, error) {
+	if provider == nil {
+		return "", missing
+	}
+	if projectID := strings.TrimSpace(provider.GetCredential("project_id")); projectID != "" {
+		return projectID, nil
+	}
+	if projectID := strings.TrimSpace(provider.GetCredential(antigravityProjectIDFallbackCredentialKey)); projectID != "" {
+		return projectID, nil
+	}
+	if projectID := strings.TrimSpace(provider.GetExtraString(antigravityProjectIDFallbackCredentialKey)); projectID != "" {
+		return projectID, nil
+	}
+	return "", missing
+}
+
+func (s *AntigravityTokenSource) GetAccessToken(ctx context.Context, value *Record) (string, error) {
+	return s.state.GetAccessToken(ctx, value, s.Options)
+}
 
 // GetAccessToken returns a valid access_token.
 // @project-doc docs/interfaces/antigravity_upstream.md#antigravity_account_contract

@@ -17,9 +17,10 @@ defineProps<{
     :title="tooltip"
   >
     <slot />
-    <span class="font-mono">{{ current }}</span>
-    <span class="text-gray-400 dark:text-gray-500">/</span>
-    <span class="font-mono">{{ max }}</span>
-    <span v-if="suffix" class="text-xs opacity-60">{{ suffix }}</span>
+    <!-- 文字加 self-baseline，徽章的基线取自数字，移动卡片的标签和它对齐。 -->
+    <span class="self-baseline font-mono">{{ current }}</span>
+    <span class="self-baseline text-gray-400 dark:text-gray-500">/</span>
+    <span class="self-baseline font-mono">{{ max }}</span>
+    <span v-if="suffix" class="self-baseline text-xs opacity-60">{{ suffix }}</span>
   </span>
 </template>

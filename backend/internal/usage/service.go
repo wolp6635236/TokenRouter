@@ -5,22 +5,21 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
 )
 
 var ErrUsageLogNotFound = infraerrors.NotFound("USAGE_LOG_NOT_FOUND", "usage log not found")
 
-// UsageService 使用统计服务
+// UsageService 使用统计服务。
 type UsageService struct {
 	statsQueryCache *querycache.Cache
 	usageRepo       UsageLogRepository
 	readers         QueryReaders
 }
 
-// NewUsageService 创建使用统计服务实例
+// NewUsageService 创建使用统计服务实例。
 func NewUsageService(usageRepo UsageLogRepository, optional ...QueryReaders) *UsageService {
 	readers := queryReaders(usageRepo)
 	if len(optional) > 0 {
@@ -33,7 +32,7 @@ func NewUsageService(usageRepo UsageLogRepository, optional ...QueryReaders) *Us
 	}
 }
 
-// GetByID 根据ID获取使用日志
+// GetByID 根据 ID 获取使用日志。
 func (s *UsageService) GetByID(ctx context.Context, id int64) (*UsageLog, error) {
 	log, err := s.usageRepo.GetByID(ctx, id)
 	if err != nil {
@@ -42,7 +41,7 @@ func (s *UsageService) GetByID(ctx context.Context, id int64) (*UsageLog, error)
 	return log, nil
 }
 
-// ListByUser 获取用户的使用日志列表
+// ListByUser 获取用户的使用日志列表。
 func (s *UsageService) ListByUser(ctx context.Context, userID int64, params pagination.PaginationParams) ([]UsageLog, *pagination.PaginationResult, error) {
 	logs, pagination, err := s.usageRepo.ListByUser(ctx, userID, params)
 	if err != nil {
@@ -51,7 +50,7 @@ func (s *UsageService) ListByUser(ctx context.Context, userID int64, params pagi
 	return logs, pagination, nil
 }
 
-// ListByAPIKey 获取API Key的使用日志列表
+// ListByAPIKey 获取 API Key 的使用日志列表。
 func (s *UsageService) ListByAPIKey(ctx context.Context, apiKeyID int64, params pagination.PaginationParams) ([]UsageLog, *pagination.PaginationResult, error) {
 	logs, pagination, err := s.usageRepo.ListByAPIKey(ctx, apiKeyID, params)
 	if err != nil {
@@ -60,7 +59,7 @@ func (s *UsageService) ListByAPIKey(ctx context.Context, apiKeyID int64, params 
 	return logs, pagination, nil
 }
 
-// ListByProvider 获取提供商的使用日志列表
+// ListByProvider 获取提供商的使用日志列表。
 func (s *UsageService) ListByProvider(ctx context.Context, providerID int64, params pagination.PaginationParams) ([]UsageLog, *pagination.PaginationResult, error) {
 	logs, pagination, err := s.usageRepo.ListByProvider(ctx, providerID, params)
 	if err != nil {
@@ -78,7 +77,7 @@ func (s *UsageService) GetUsageRanking(ctx context.Context, startTime, endTime t
 	return ranking, nil
 }
 
-// Delete 删除使用日志（管理员功能，谨慎使用）
+// Delete 删除使用日志（管理员功能，谨慎使用）。
 func (s *UsageService) Delete(ctx context.Context, id int64) error {
 	if err := s.usageRepo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete usage log: %w", err)

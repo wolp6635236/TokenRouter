@@ -5,18 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
 const proxyLatencyKeyPrefix = "proxy:latency:"
 
-func proxyLatencyKey(proxyID int64) string {
-	return fmt.Sprintf("%s%d", proxyLatencyKeyPrefix, proxyID)
-}
-
 type proxyLatencyCache struct {
 	rdb *redis.Client
+}
+
+func proxyLatencyKey(proxyID int64) string {
+	return fmt.Sprintf("%s%d", proxyLatencyKeyPrefix, proxyID)
 }
 
 func NewProxyLatencyCache(rdb *redis.Client) egress.ProxyLatencyCache {

@@ -9,12 +9,12 @@ import (
 	"io"
 )
 
-// AESEncryptor implements SecretEncryptor using AES-256-GCM
+// AESEncryptor implements SecretEncryptor using AES-256-GCM.
 type AESEncryptor struct {
 	key []byte
 }
 
-// NewAESEncryptor creates a new AES encryptor
+// NewAESEncryptor creates a new AES encryptor.
 func NewAESEncryptor(key []byte) (*AESEncryptor, error) {
 	if len(key) != 32 {
 		return nil, fmt.Errorf("AES-256 key must be 32 bytes, got %d", len(key))
@@ -23,7 +23,7 @@ func NewAESEncryptor(key []byte) (*AESEncryptor, error) {
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM
-// Output format: base64(nonce + ciphertext + tag)
+// Output format: base64(nonce + ciphertext + tag).
 func (e *AESEncryptor) Encrypt(plaintext string) (string, error) {
 	block, err := aes.NewCipher(e.key)
 	if err != nil {
@@ -49,7 +49,7 @@ func (e *AESEncryptor) Encrypt(plaintext string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// Decrypt decrypts ciphertext using AES-256-GCM
+// Decrypt decrypts ciphertext using AES-256-GCM.
 func (e *AESEncryptor) Decrypt(ciphertext string) (string, error) {
 	// Decode from base64
 	data, err := base64.StdEncoding.DecodeString(ciphertext)

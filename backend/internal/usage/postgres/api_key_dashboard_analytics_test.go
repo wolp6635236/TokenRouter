@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
-	"github.com/stretchr/testify/require"
 )
 
 // TestAPIKeyDashboardAnalyticsFallback 聚合状态读取失败时，完整使用原始累计和今日结果。

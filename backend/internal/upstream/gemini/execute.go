@@ -13,13 +13,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-type ResponseMode uint8
-
 const (
 	MessagesResponse ResponseMode = iota
 	NativeResponse
 	OpenAIResponse
 )
+
+type ResponseMode uint8
 
 type Target struct {
 	ProviderID                          int64
@@ -36,6 +36,8 @@ type Target struct {
 	BeforeResponse func(context.Context, *http.Response, string) (stop bool, err error)
 }
 
+type Executor struct{}
+
 func (t *Target) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -44,8 +46,6 @@ func (t *Target) TargetID() int64 {
 }
 func (t *Target) String() string   { return fmt.Sprintf("gemini target provider=%d", t.TargetID()) }
 func (t *Target) GoString() string { return t.String() }
-
-type Executor struct{}
 
 // @project-doc docs/interfaces/gemini_upstream.md#gemini_native_execution
 func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {

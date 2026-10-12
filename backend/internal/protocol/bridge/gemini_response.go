@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// GeminiToAnthropicResponseProcessor 非流式响应处理器
+// GeminiToAnthropicResponseProcessor 非流式响应处理器。
 type GeminiToAnthropicResponseProcessor struct {
 	runtime           GeminiConversionRuntime
 	diagnostics       []string
@@ -18,7 +18,13 @@ type GeminiToAnthropicResponseProcessor struct {
 	hasToolCall       bool
 }
 
-// NewGeminiToAnthropicResponseProcessor 创建非流式响应处理器
+// GeminiConversionRuntime 使用平台传入的 ID 生成函数。
+type GeminiConversionRuntime struct {
+	RandomID  func() string
+	MessageID func() string
+}
+
+// NewGeminiToAnthropicResponseProcessor 创建非流式响应处理器。
 func NewGeminiToAnthropicResponseProcessor(runtime GeminiConversionRuntime) *GeminiToAnthropicResponseProcessor {
 	return &GeminiToAnthropicResponseProcessor{
 		runtime:       runtime,
@@ -26,7 +32,7 @@ func NewGeminiToAnthropicResponseProcessor(runtime GeminiConversionRuntime) *Gem
 	}
 }
 
-// Process 处理 Gemini 响应
+// Process 处理 Gemini 响应。
 func (p *GeminiToAnthropicResponseProcessor) Process(geminiResp *GeminiResponse, responseID, originalModel string) *ClaudeResponse {
 	// 获取 parts
 	var parts []GeminiPart
@@ -62,7 +68,7 @@ func (p *GeminiToAnthropicResponseProcessor) Process(geminiResp *GeminiResponse,
 	return p.buildResponse(geminiResp, responseID, originalModel)
 }
 
-// processPart 处理单个 part
+// processPart 处理单个 part。
 func (p *GeminiToAnthropicResponseProcessor) processPart(part *GeminiPart) {
 	signature := part.ThoughtSignature
 
@@ -188,7 +194,7 @@ func (p *GeminiToAnthropicResponseProcessor) processGrounding(grounding *GeminiG
 	p.flushText()
 }
 
-// flushText 刷新 text builder
+// flushText 刷新 text builder。
 func (p *GeminiToAnthropicResponseProcessor) flushText() {
 	if p.textBuilder == "" {
 		return
@@ -201,7 +207,7 @@ func (p *GeminiToAnthropicResponseProcessor) flushText() {
 	p.textBuilder = ""
 }
 
-// flushThinking 刷新 thinking builder
+// flushThinking 刷新 thinking builder。
 func (p *GeminiToAnthropicResponseProcessor) flushThinking() {
 	if p.thinkingBuilder == "" && p.thinkingSignature == "" {
 		return
@@ -216,7 +222,7 @@ func (p *GeminiToAnthropicResponseProcessor) flushThinking() {
 	p.thinkingSignature = ""
 }
 
-// buildResponse 构建最终响应
+// buildResponse 构建最终响应。
 func (p *GeminiToAnthropicResponseProcessor) buildResponse(geminiResp *GeminiResponse, responseID, originalModel string) *ClaudeResponse {
 	var finishReason string
 	if len(geminiResp.Candidates) > 0 {
@@ -305,12 +311,6 @@ func buildGroundingText(grounding *GeminiGroundingMetadata) string {
 	}
 
 	return builder.String()
-}
-
-// GeminiConversionRuntime 使用平台传入的 ID 生成函数。
-type GeminiConversionRuntime struct {
-	RandomID  func() string
-	MessageID func() string
 }
 
 // TakeDiagnostics 交回本轮纯转换诊断，由平台适配按原日志格式输出。

@@ -20,15 +20,15 @@ func MatchSignaturePatterns(respBody []byte, patterns []string) bool {
 	return false
 }
 
-// IsThinkingBlockSignatureError 检测是否是thinking block相关错误
-// 这类错误可以通过过滤thinking blocks并重试来解决
+// IsThinkingBlockSignatureError 检测是否是 thinking block 相关错误
+// 这类错误可以通过过滤 thinking blocks 并重试来解决。
 func IsThinkingBlockSignatureError(message string) (bool, string) {
 	msg := strings.ToLower(strings.TrimSpace(message))
 	if msg == "" {
 		return false, ""
 	}
 
-	// 检测signature相关的错误（更宽松的匹配）
+	// 检测 signature 相关的错误（更宽松的匹配）
 	// 例如: "Invalid `signature` in `thinking` block", "***.signature" 等
 	if strings.Contains(msg, "signature") {
 		return true, ""

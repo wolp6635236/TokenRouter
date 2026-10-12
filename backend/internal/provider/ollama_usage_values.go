@@ -3,7 +3,7 @@ package provider
 import (
 	"time"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
@@ -11,7 +11,43 @@ const (
 	OllamaCloudUsageStatusOK           = "ok"
 	OllamaCloudUsageStatusUnauthorized = "unauthorized"
 	OllamaCloudUsageStatusFailed       = "failed"
+
+	OllamaCloudUsageSessionExtraKey     = "ollama_cloud_usage_session"
+	OllamaCloudUsageAutoRefreshExtraKey = "ollama_cloud_usage_auto_refresh"
+	OllamaCloudUsageMinFetchInterval    = 15 * time.Minute
 )
+
+var (
+	ErrOllamaCloudUsageUnavailable = apperror.ServiceUnavailable(
+		"OLLAMA_CLOUD_USAGE_UNAVAILABLE", "Ollama Cloud usage is unavailable",
+	)
+	ErrOllamaCloudUsageProviderInvalid = apperror.BadRequest(
+		"OLLAMA_CLOUD_USAGE_PROVIDER_INVALID", "provider must be an OpenAI or Anthropic API key provider using https://ollama.com",
+	)
+	ErrOllamaCloudUsageSessionRequired = apperror.BadRequest(
+		"OLLAMA_CLOUD_USAGE_SESSION_REQUIRED", "an Ollama web session must be configured first",
+	)
+	ErrOllamaCloudUsageEncryptionKey = apperror.BadRequest(
+		"OLLAMA_CLOUD_USAGE_ENCRYPTION_KEY_NOT_CONFIGURED", "cannot store an Ollama web session without a fixed TOTP_ENCRYPTION_KEY",
+	)
+	ErrOllamaCloudUsageIdentityChanged = apperror.Conflict(
+		"OLLAMA_CLOUD_USAGE_IDENTITY_CHANGED", "provider identity or Ollama web session changed during refresh; retry",
+	)
+	ErrOllamaCloudUsageRefreshRateLimited = apperror.TooManyRequests(
+		"OLLAMA_CLOUD_USAGE_REFRESH_RATE_LIMITED", "Ollama Cloud usage can be refreshed manually once every 30 seconds",
+	)
+)
+
+// OllamaUsageFetchInput 保存出站用量查询参数。
+type OllamaUsageFetchInput struct {
+	ProviderID  int64
+	Concurrency int
+	ProxyURL    string `json:"-"`
+	Cookie      string `json:"-"`
+	ObservedAt  time.Time
+}
+
+type OllamaUsageObservation = usageview.OllamaUsageObservation
 
 // OllamaCloudUsageSettings 控制可选的请求驱动刷新任务。
 //
@@ -48,30 +84,3 @@ type OllamaCloudUsageState struct {
 	EncryptionKeyConfigured bool                      `json:"encryption_key_configured"`
 	Snapshot                *OllamaCloudUsageSnapshot `json:"snapshot,omitempty"`
 }
-
-const (
-	OllamaCloudUsageSessionExtraKey     = "ollama_cloud_usage_session"
-	OllamaCloudUsageAutoRefreshExtraKey = "ollama_cloud_usage_auto_refresh"
-	OllamaCloudUsageMinFetchInterval    = 15 * time.Minute
-)
-
-var (
-	ErrOllamaCloudUsageUnavailable = infraerrors.ServiceUnavailable(
-		"OLLAMA_CLOUD_USAGE_UNAVAILABLE", "Ollama Cloud usage is unavailable",
-	)
-	ErrOllamaCloudUsageProviderInvalid = infraerrors.BadRequest(
-		"OLLAMA_CLOUD_USAGE_PROVIDER_INVALID", "provider must be an OpenAI or Anthropic API key provider using https://ollama.com",
-	)
-	ErrOllamaCloudUsageSessionRequired = infraerrors.BadRequest(
-		"OLLAMA_CLOUD_USAGE_SESSION_REQUIRED", "an Ollama web session must be configured first",
-	)
-	ErrOllamaCloudUsageEncryptionKey = infraerrors.BadRequest(
-		"OLLAMA_CLOUD_USAGE_ENCRYPTION_KEY_NOT_CONFIGURED", "cannot store an Ollama web session without a fixed TOTP_ENCRYPTION_KEY",
-	)
-	ErrOllamaCloudUsageIdentityChanged = infraerrors.Conflict(
-		"OLLAMA_CLOUD_USAGE_IDENTITY_CHANGED", "provider identity or Ollama web session changed during refresh; retry",
-	)
-	ErrOllamaCloudUsageRefreshRateLimited = infraerrors.TooManyRequests(
-		"OLLAMA_CLOUD_USAGE_REFRESH_RATE_LIMITED", "Ollama Cloud usage can be refreshed manually once every 30 seconds",
-	)
-)

@@ -18,6 +18,59 @@ const (
 	QuotaUsagePath = "/api/v2/quota/usage"
 )
 
+// AuthStatusAuthInfo 是 Gateway 身份请求内嵌的可选提供商信息。
+type AuthStatusAuthInfo struct {
+	UserName       string `json:"userName,omitempty"`
+	OrganizationID string `json:"orgId,omitempty"`
+}
+
+// AuthStatusParams 完整对应官方 Gateway 身份请求结构；末尾三个零值字段也必须发送。
+type AuthStatusParams struct {
+	AccessKey          string             `json:"accessKey,omitempty"`
+	SecretKey          string             `json:"secretKey,omitempty"`
+	SecurityToken      string             `json:"securityToken,omitempty"`
+	UserID             string             `json:"userId,omitempty"`
+	OrganizationID     string             `json:"orgId,omitempty"`
+	Token              string             `json:"token,omitempty"`
+	PersonalToken      string             `json:"personalToken"`
+	SecurityOauthToken string             `json:"securityOauthToken"`
+	RefreshToken       string             `json:"refreshToken"`
+	NeedRefresh        bool               `json:"needRefresh"`
+	AuthInfo           AuthStatusAuthInfo `json:"authInfo"`
+}
+
+// gatewayHTTPPayload 对应官方 remoting.HttpPayload，是 Gateway 身份接口的外层载荷。
+type gatewayHTTPPayload struct {
+	Payload       string `json:"payload"`
+	EncodeVersion string `json:"encodeVersion"`
+	RequestID     string `json:"requestId,omitempty"`
+}
+
+// AuthStatusResult 兼容国内 Gateway status/refresh 返回的完整身份字段。
+type AuthStatusResult struct {
+	Name                      string         `json:"name"`
+	ID                        string         `json:"id"`
+	ProviderID                string         `json:"accountId"`
+	StaffID                   string         `json:"staffId"`
+	Token                     string         `json:"token"`
+	Quota                     any            `json:"quota"`
+	WhitelistStatus           any            `json:"whitelistStatus"`
+	OrganizationID            string         `json:"orgId"`
+	OrganizationName          string         `json:"orgName"`
+	YxUID                     string         `json:"yxUid"`
+	AvatarURL                 string         `json:"avatarUrl"`
+	SecurityOauthToken        string         `json:"securityOauthToken"`
+	RefreshToken              string         `json:"refreshToken"`
+	ExpireTime                FlexibleInt64  `json:"expireTime"`
+	IsSubProvider             bool           `json:"isSubAccount"`
+	Email                     string         `json:"email"`
+	UserType                  string         `json:"userType"`
+	IsPrivacyPolicyModifiable bool           `json:"isPrivacyPolicyModifiable"`
+	IsQuotaExceeded           bool           `json:"isQuotaExceeded"`
+	FeatureSwitches           map[string]any `json:"featureSwitches"`
+	TeamSwitches              map[string]any `json:"teamSwitches"`
+}
+
 // ExchangeQoderCN20PATContext 完成国内现代 PAT 的 exchange、userinfo 和 status 链路。
 func ExchangeQoderCN20PATContext(
 	ctx context.Context,
@@ -78,59 +131,6 @@ func RefreshQoderCN20SessionContext(
 		return nil, time.Time{}, fmt.Errorf("qoder: load refreshed userinfo: %w", err)
 	}
 	return CompleteQoderCN20IdentityContext(ctx, normalized, token, user, machine, doer)
-}
-
-// AuthStatusAuthInfo 是 Gateway 身份请求内嵌的可选提供商信息。
-type AuthStatusAuthInfo struct {
-	UserName       string `json:"userName,omitempty"`
-	OrganizationID string `json:"orgId,omitempty"`
-}
-
-// AuthStatusParams 完整对应官方 Gateway 身份请求结构；末尾三个零值字段也必须发送。
-type AuthStatusParams struct {
-	AccessKey          string             `json:"accessKey,omitempty"`
-	SecretKey          string             `json:"secretKey,omitempty"`
-	SecurityToken      string             `json:"securityToken,omitempty"`
-	UserID             string             `json:"userId,omitempty"`
-	OrganizationID     string             `json:"orgId,omitempty"`
-	Token              string             `json:"token,omitempty"`
-	PersonalToken      string             `json:"personalToken"`
-	SecurityOauthToken string             `json:"securityOauthToken"`
-	RefreshToken       string             `json:"refreshToken"`
-	NeedRefresh        bool               `json:"needRefresh"`
-	AuthInfo           AuthStatusAuthInfo `json:"authInfo"`
-}
-
-// gatewayHTTPPayload 对应官方 remoting.HttpPayload，是 Gateway 身份接口的外层载荷。
-type gatewayHTTPPayload struct {
-	Payload       string `json:"payload"`
-	EncodeVersion string `json:"encodeVersion"`
-	RequestID     string `json:"requestId,omitempty"`
-}
-
-// AuthStatusResult 兼容国内 Gateway status/refresh 返回的完整身份字段。
-type AuthStatusResult struct {
-	Name                      string         `json:"name"`
-	ID                        string         `json:"id"`
-	ProviderID                string         `json:"accountId"`
-	StaffID                   string         `json:"staffId"`
-	Token                     string         `json:"token"`
-	Quota                     any            `json:"quota"`
-	WhitelistStatus           any            `json:"whitelistStatus"`
-	OrganizationID            string         `json:"orgId"`
-	OrganizationName          string         `json:"orgName"`
-	YxUID                     string         `json:"yxUid"`
-	AvatarURL                 string         `json:"avatarUrl"`
-	SecurityOauthToken        string         `json:"securityOauthToken"`
-	RefreshToken              string         `json:"refreshToken"`
-	ExpireTime                FlexibleInt64  `json:"expireTime"`
-	IsSubProvider             bool           `json:"isSubAccount"`
-	Email                     string         `json:"email"`
-	UserType                  string         `json:"userType"`
-	IsPrivacyPolicyModifiable bool           `json:"isPrivacyPolicyModifiable"`
-	IsQuotaExceeded           bool           `json:"isQuotaExceeded"`
-	FeatureSwitches           map[string]any `json:"featureSwitches"`
-	TeamSwitches              map[string]any `json:"teamSwitches"`
 }
 
 // CompleteQoderCN20IdentityContext 将国内 OpenAPI token 换成可用于推理的最终 COSY 身份。

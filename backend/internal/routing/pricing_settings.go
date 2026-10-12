@@ -104,7 +104,7 @@ func ParseMinutes(hhmm string) (int, bool) {
 		return 0, false
 	}
 	hour := 0
-	for i := 0; i < colon; i++ {
+	for i := range colon {
 		digit := hhmm[i] - '0'
 		if digit > 9 {
 			return 0, false

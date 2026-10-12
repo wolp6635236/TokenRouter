@@ -6,14 +6,30 @@ import (
 	"errors"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"golang.org/x/sync/errgroup"
 )
 
-// getPerformanceStats 获取 RPM 和 TPM（近5分钟平均值，可选纳入 Owner 团队）。
+// UserStats 用户使用统计。
+type UserStats struct {
+	TotalRequests   int64   `json:"total_requests"`
+	TotalTokens     int64   `json:"total_tokens"`
+	TotalCost       float64 `json:"total_cost"`
+	InputTokens     int64   `json:"input_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	CacheReadTokens int64   `json:"cache_read_tokens"`
+}
+
+// DashboardStats 仪表盘统计。
+type DashboardStats = usage.DashboardStats
+
+// UserDashboardStats 用户仪表盘统计。
+type UserDashboardStats = usage.UserDashboardStats
+
+// getPerformanceStats 获取 RPM 和 TPM（近 5 分钟平均值，可选纳入 Owner 团队）。
 func (r *Store) getPerformanceStats(ctx context.Context, userID int64, includeOwnedTeam bool) (rpm, tpm int64, err error) {
 	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
 	args := []any{fiveMinutesAgo}
@@ -37,16 +53,6 @@ func (r *Store) getPerformanceStats(ctx context.Context, userID int64, includeOw
 		return 0, 0, err
 	}
 	return requestCount / 5, tokenCount / 5, nil
-}
-
-// UserStats 用户使用统计
-type UserStats struct {
-	TotalRequests   int64   `json:"total_requests"`
-	TotalTokens     int64   `json:"total_tokens"`
-	TotalCost       float64 `json:"total_cost"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
 }
 
 func (r *Store) GetUserStats(ctx context.Context, userID int64, startTime, endTime time.Time) (*UserStats, error) {
@@ -79,9 +85,6 @@ func (r *Store) GetUserStats(ctx context.Context, userID int64, startTime, endTi
 	}
 	return stats, nil
 }
-
-// DashboardStats 仪表盘统计
-type DashboardStats = usage.DashboardStats
 
 // runDashboardQueries 仅在连接池上并行查询；事务等单连接执行器必须串行使用。
 func (r *Store) runDashboardQueries(ctx context.Context, queries ...func(context.Context) error) error {
@@ -361,17 +364,10 @@ func (r *Store) fillDashboardUsageStatsFromUsageLogs(ctx context.Context, stats 
 			COUNT(DISTINCT CASE WHEN created_at >= $3::timestamptz AND created_at < $4::timestamptz THEN user_id END) AS hourly_active_users
 		FROM scoped
 	`
-	if err := scanSingleRow(ctx, r.sql, activeUsersQuery, []any{todayUTC, todayEnd, hourStart, hourEnd}, &stats.ActiveUsers, &stats.HourlyActiveUsers); err != nil {
-		return err
-	}
-
-	return nil
+	return scanSingleRow(ctx, r.sql, activeUsersQuery, []any{todayUTC, todayEnd, hourStart, hourEnd}, &stats.ActiveUsers, &stats.HourlyActiveUsers)
 }
 
-// UserDashboardStats 用户仪表盘统计
-type UserDashboardStats = usage.UserDashboardStats
-
-// GetUserDashboardStats 获取用户专属的仪表盘统计
+// GetUserDashboardStats 获取用户专属的仪表盘统计。
 func (r *Store) GetUserDashboardStats(ctx context.Context, userID int64) (*UserDashboardStats, error) {
 	if stats, ok, err := r.getUserDashboardStatsFromAnalytics(ctx, userID); err == nil && ok {
 		return stats, nil
@@ -473,7 +469,7 @@ func (r *Store) GetUserDashboardStats(ctx context.Context, userID int64) (*UserD
 	return stats, nil
 }
 
-// getPerformanceStatsByAPIKey 获取指定 API Key 的 RPM 和 TPM（近5分钟平均值）
+// getPerformanceStatsByAPIKey 获取指定 API Key 的 RPM 和 TPM（近 5 分钟平均值）。
 func (r *Store) getPerformanceStatsByAPIKey(ctx context.Context, apiKeyID int64) (rpm, tpm int64, err error) {
 	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
 	query := `
@@ -492,7 +488,7 @@ func (r *Store) getPerformanceStatsByAPIKey(ctx context.Context, apiKeyID int64)
 	return requestCount / 5, tokenCount / 5, nil
 }
 
-// GetAPIKeyDashboardStats 获取指定 API Key 的仪表盘统计（按 api_key_id 过滤）
+// GetAPIKeyDashboardStats 获取指定 API Key 的仪表盘统计（按 api_key_id 过滤）。
 func (r *Store) GetAPIKeyDashboardStats(ctx context.Context, apiKeyID int64) (*UserDashboardStats, error) {
 	stats, aggregated, err := r.getAPIKeyDashboardStatsFromAnalytics(ctx, apiKeyID)
 	if err != nil {

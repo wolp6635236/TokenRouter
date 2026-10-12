@@ -18,6 +18,9 @@ type RankingSettingsUpdate struct {
 	ShowActualCost  *bool
 }
 
+// rankingSortError 保留历史 HTTP 文案，错误身份由领域校验表达。
+type rankingSortError struct{}
+
 // ResolveRankingSettings 保留旧客户端省略时回退以及显式排序必须可见的规则。
 func ResolveRankingSettings(current UsageRankingSettings, input RankingSettingsUpdate) (UsageRankingSettings, error) {
 	if input.Limit > 0 {
@@ -94,8 +97,5 @@ func SettingsParticipant() settings.Participant {
 		return settings.PreparedChange{Values: values}, nil
 	}}
 }
-
-// rankingSortError 保留历史 HTTP 文案，错误身份由领域校验表达。
-type rankingSortError struct{}
 
 func (rankingSortError) Error() string { return "Invalid usage ranking sort field" }

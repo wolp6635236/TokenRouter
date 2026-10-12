@@ -1,13 +1,20 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/gin-gonic/gin"
 )
+
+var claudeCodeValidator = clientmeta.NewClaudeCodeValidator()
 
 // ClientDetection 只携带识别结果；请求许可与平台默认值仍由相应用例裁决。
 type ClientDetection struct {
@@ -15,7 +22,19 @@ type ClientDetection struct {
 	Version    string
 }
 
-var claudeCodeValidator = clientmeta.NewClaudeCodeValidator()
+// SetClaudeCodeClientContext 将客户端识别结果写入 HTTP 请求上下文，供后续处理读取。
+func SetClaudeCodeClientContext(c *gin.Context, body []byte, parsed *requeststate.ParsedRequest) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	probe, _ := requeststate.IsMaxTokensOneHaikuRequestFromContext(c.Request.Context())
+	result := DetectClaudeCodeRequest(c, body, parsed, probe)
+	ctx := requeststate.SetClaudeCodeClient(c.Request.Context(), result.ClaudeCode)
+	if result.ClaudeCode && result.Version != "" {
+		ctx = requeststate.SetClaudeCodeVersion(ctx, result.Version)
+	}
+	c.Request = c.Request.WithContext(ctx)
+}
 
 // DetectClaudeCodeRequest 返回客户端识别结果，兼容入口将结果写入 context。
 func DetectClaudeCodeRequest(c *gin.Context, body []byte, parsedReq *requeststate.ParsedRequest, probe bool) ClientDetection {
@@ -66,4 +85,36 @@ func ClaudeCodeBodyMapFromParsedRequest(parsedReq *requeststate.ParsedRequest) m
 		bodyMap["metadata"] = map[string]any{"user_id": parsedReq.MetadataUserID}
 	}
 	return bodyMap
+}
+
+// PrepareMessageClientContext 在路由与提供商选择前解析客户端、探针和 thinking 的可信请求内状态。
+func PrepareMessageClientContext(c *gin.Context, body []byte, bounds func(context.Context) (string, string)) error {
+	// 身份探测宽松读取 stream，规范化解析副本，出站使用原报文。
+	identityBody := body
+	if value := gjson.GetBytes(body, "stream"); value.Exists() && value.Type != gjson.True && value.Type != gjson.False {
+		var err error
+		identityBody, err = sjson.SetBytes(body, "stream", value.Bool())
+		if err != nil {
+			return err
+		}
+	}
+	parsed, err := requeststate.ParseGatewayRequest(requeststate.NewRequestBodyRef(identityBody), "anthropic")
+	if err != nil {
+		return err
+	}
+	probe := clientmeta.IsHaikuProbe(parsed.Model, parsed.MaxTokens)
+	ctx := requeststate.WithIsMaxTokensOneHaikuRequest(c.Request.Context(), probe)
+	c.Request = c.Request.WithContext(ctx)
+	detected := DetectClaudeCodeRequest(c, body, parsed, probe)
+	ctx = requeststate.SetClaudeCodeClient(ctx, detected.ClaudeCode)
+	ctx = requeststate.SetClaudeCodeVersion(ctx, detected.Version)
+	ctx = requeststate.WithThinkingEnabled(ctx, parsed.ThinkingEnabled)
+	c.Request = c.Request.WithContext(ctx)
+	if detected.ClaudeCode && bounds != nil {
+		minimum, maximum := bounds(ctx)
+		if message := clientmeta.ClaudeVersionRejection(detected.Version, minimum, maximum); message != "" {
+			return errors.New(message)
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package apperror
 import (
 	"errors"
 	"fmt"
+	"maps"
 )
 
 const (
@@ -24,6 +25,11 @@ type Status struct {
 type ApplicationError struct {
 	Status
 	cause error
+}
+
+// Newf New(code fmt.Sprintf(format, a...)).
+func Newf(code Category, reason, format string, a ...any) *ApplicationError {
+	return New(code, reason, fmt.Sprintf(format, a...))
 }
 
 func (e *ApplicationError) Error() string {
@@ -64,9 +70,7 @@ func (e *ApplicationError) WithMetadata(md map[string]string) *ApplicationError 
 		return err
 	}
 	err.Metadata = make(map[string]string, len(md))
-	for k, v := range md {
-		err.Metadata[k] = v
-	}
+	maps.Copy(err.Metadata, md)
 	return err
 }
 
@@ -79,11 +83,6 @@ func New(code Category, reason, message string) *ApplicationError {
 			Reason:  reason,
 		},
 	}
-}
-
-// Newf New(code fmt.Sprintf(format, a...))
-func Newf(code Category, reason, format string, a ...any) *ApplicationError {
-	return New(code, reason, fmt.Sprintf(format, a...))
 }
 
 // CategoryOf 返回可被包装的错误类别；nil 保留旧成功标识。
@@ -120,9 +119,7 @@ func Clone(err *ApplicationError) *ApplicationError {
 	var metadata map[string]string
 	if err.Metadata != nil {
 		metadata = make(map[string]string, len(err.Metadata))
-		for k, v := range err.Metadata {
-			metadata[k] = v
-		}
+		maps.Copy(metadata, err.Metadata)
 	}
 	return &ApplicationError{
 		cause: err.cause,

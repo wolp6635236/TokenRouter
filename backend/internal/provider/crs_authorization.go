@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"maps"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
@@ -60,9 +61,7 @@ func (s *CRSAuthorization) Refresh(ctx context.Context, provider *Record) map[st
 		} else {
 			// 保留现有非令牌配置。
 			newCredentials = make(map[string]any)
-			for k, v := range provider.Credentials {
-				newCredentials[k] = v
-			}
+			maps.Copy(newCredentials, provider.Credentials)
 			// 覆盖本次返回的令牌字段。
 			newCredentials["access_token"] = tokenInfo.AccessToken
 			newCredentials["token_type"] = tokenInfo.TokenType

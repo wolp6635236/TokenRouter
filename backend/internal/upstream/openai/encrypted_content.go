@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
-	"github.com/tidwall/gjson"
 )
 
 func OpenAIEncryptedContentDigest(encrypted string) string {

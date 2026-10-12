@@ -109,3 +109,5 @@ Beta 配置值和模型白名单、消息缓存断点、messages 和 count_token
 Claude token 的读取和回填、版本比较、刷新资格和凭据合并在 `provider`，使用现有的缓存和刷新协调器。Vertex 的交换使用 `upstream/vertex` 和 `upstream/internal/googleauth`；提供商缓存的协调由 provider 负责，详见 [Vertex 服务账号与对象流](gemini_upstream.md#vertex_service_account_execution)。执行接口分别报告已观测的用量（包括明确的零）、语义输出、终态和旧的 TTFT；网关的 text 和 forward、HTTP、completion 分别负责尝试、展示和完成的顺序，结算资格由完成器按入口的规则判断。
 
 相关文档：[网关请求生命周期](../architecture/gateway_request_lifecycle.md)、[提供商调度与缓存一致性](../architecture/provider_scheduling_and_cache.md)、[提供商维护](../operations/provider_maintenance.md)。
+
+模型名称与通用候选来自[统一模型目录](model_catalog_and_marketplace.md#model_catalog_resolution)。提供商空白名单允许任意型号，平台的请求格式、认证和协议规则分别检查；默认测试型号用于探测请求。

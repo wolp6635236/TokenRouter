@@ -3,18 +3,16 @@ package httpapi
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
-
 	protocolgemini "github.com/TokenFlux/TokenRouter/internal/protocol/gemini"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // GeminiHTTPBindings 提供会话读取和路径资格检查。

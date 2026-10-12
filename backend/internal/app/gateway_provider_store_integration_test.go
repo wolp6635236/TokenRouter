@@ -1,6 +1,6 @@
 //go:build integration
 
-package app_test
+package app
 
 import (
 	"context"
@@ -8,21 +8,24 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/internal/app"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
 )
+
+// NewExecutionProviderStoreForTest 为集成测试构造执行提供商存储。
+var NewExecutionProviderStoreForTest = provideExecutionProviderStore
 
 // TestExecutionStoreUsesNativeStateAndOuterTransaction 检查执行入口使用提供商存储的资金字段保护，并加入外层 Ent 事务。
 func TestExecutionStoreUsesNativeStateAndOuterTransaction(t *testing.T) {
 	f := newDatabaseFixture(t)
 	ctx := t.Context()
-	data := app.NewProviderStoreForTest(f.client, f.db, nil)
+	data := NewProviderStoreForTest(f.client, f.db, nil)
 	funds := billingpostgres.NewProviderUsageStore(f.db, billingpostgres.ProviderUsageOptions{})
-	store := app.NewExecutionProviderStoreForTest(data, funds)
+	store := NewExecutionProviderStoreForTest(data, funds)
 	row, err := f.client.Provider.Create().SetName("execution-store").SetPlatform(provider.PlatformOpenAI).SetType(provider.ProviderTypeAPIKey).SetCredentials(map[string]any{"api_key": "fixture-key"}).SetExtra(map[string]any{"quota_limit": 100.0, "quota_used": 0.0}).Save(ctx)
 	require.NoError(t, err)
 	value, err := store.GetByID(ctx, row.ID)

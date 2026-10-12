@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	batchimageprovider "github.com/TokenFlux/TokenRouter/internal/batchimage/provider"
 	billingcore "github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 func TestBatchImageCleanupService_DeleteOutputsForOwner(t *testing.T) {

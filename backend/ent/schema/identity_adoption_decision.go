@@ -3,8 +3,6 @@ package schema
 import (
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
@@ -12,6 +10,8 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 // IdentityAdoptionDecision stores the one-time profile adoption choice captured during a pending auth flow.

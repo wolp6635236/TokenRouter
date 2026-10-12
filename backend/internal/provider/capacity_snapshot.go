@@ -26,6 +26,11 @@ type CapacitySnapshot struct {
 	QuotaAutoPaused           bool
 }
 
+type LoadObservation struct {
+	ID             int64
+	MaxConcurrency int
+}
+
 func ProjectCapacity(id int64, config RuntimeConfig, quotaAutoPaused bool) CapacitySnapshot {
 	return CapacitySnapshot{ID: id, Concurrency: config.Concurrency, MaxSessions: config.GetMaxSessions(), SessionIdleTimeoutMinutes: config.GetSessionIdleTimeoutMinutes(), BaseRPM: config.GetBaseRPM(), QuotaAutoPaused: quotaAutoPaused}
 }

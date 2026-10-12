@@ -4,14 +4,13 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) ImageOptions(c *gin.Context) upstreamopenai.ImageResponseOptions {

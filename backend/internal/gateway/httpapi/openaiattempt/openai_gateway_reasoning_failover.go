@@ -1,9 +1,10 @@
 package openaiattempt
 
 import (
+	"go.uber.org/zap"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"go.uber.org/zap"
 )
 
 // openAIPassthroughFailoverState 记录请求是否尝试过 OpenAI 透传提供商。

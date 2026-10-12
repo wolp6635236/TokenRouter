@@ -14,6 +14,10 @@ const (
 	redeemRateLimitDuration  = 24 * time.Hour
 )
 
+type RedeemCache struct {
+	rdb *redis.Client
+}
+
 // redeemRateLimitKey generates the Redis key for redeem attempt rate limiting.
 func redeemRateLimitKey(userID int64) string {
 	return fmt.Sprintf("%s%d", redeemRateLimitKeyPrefix, userID)
@@ -22,10 +26,6 @@ func redeemRateLimitKey(userID int64) string {
 // redeemLockKey generates the Redis key for redeem code locking.
 func redeemLockKey(code string) string {
 	return redeemLockKeyPrefix + code
-}
-
-type RedeemCache struct {
-	rdb *redis.Client
 }
 
 func NewRedeemCache(rdb *redis.Client) *RedeemCache {

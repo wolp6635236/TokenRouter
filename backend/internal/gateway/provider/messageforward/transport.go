@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
@@ -14,7 +16,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"go.uber.org/zap"
 )
 
 // requestTLS 在原发送位置读取配置 ID，TLS 策略与缓存由 egress 唯一拥有。

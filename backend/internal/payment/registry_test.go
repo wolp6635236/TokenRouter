@@ -14,20 +14,10 @@ type mockProvider struct {
 	supportedTypes []PaymentType
 }
 
-func (m *mockProvider) Name() string                  { return m.name }
-func (m *mockProvider) ProviderKey() string           { return m.key }
-func (m *mockProvider) SupportedTypes() []PaymentType { return m.supportedTypes }
-func (m *mockProvider) CreatePayment(_ context.Context, _ CreatePaymentRequest) (*CreatePaymentResponse, error) {
-	return nil, nil
-}
-func (m *mockProvider) QueryOrder(_ context.Context, _ string) (*QueryOrderResponse, error) {
-	return nil, nil
-}
-func (m *mockProvider) VerifyNotification(_ context.Context, _ string, _ map[string]string) (*PaymentNotification, error) {
-	return nil, nil
-}
-func (m *mockProvider) Refund(_ context.Context, _ RefundRequest) (*RefundResponse, error) {
-	return nil, nil
+// blockedProvider 暂停候选渠道构造，用于检查发布前的注册表读取。
+type blockedProvider struct {
+	mockProvider
+	entered, release chan struct{}
 }
 
 func TestRegistryRegisterAndGetProvider(t *testing.T) {
@@ -203,20 +193,20 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 	wg.Add(goroutines * 2)
 
 	// Concurrent writers
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 			p := &mockProvider{
 				name:           fmt.Sprintf("Provider-%d", idx),
 				key:            fmt.Sprintf("key-%d", idx),
-				supportedTypes: []PaymentType{PaymentType(fmt.Sprintf("type-%d", idx))},
+				supportedTypes: []PaymentType{fmt.Sprintf("type-%d", idx)},
 			}
 			r.Register(p)
 		}(i)
 	}
 
 	// Concurrent readers
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 			_ = r.SupportedTypes()
@@ -231,4 +221,59 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 	if len(types) != goroutines {
 		t.Fatalf("after concurrent registration, expected %d types, got %d", goroutines, len(types))
 	}
+}
+
+func TestRegistryReplacePublishesOnlyCompleteMap(t *testing.T) {
+	registry := NewRegistry()
+	old := &mockProvider{name: "old", supportedTypes: []string{TypeAlipay, TypeWxpay}}
+	registry.Register(old)
+	next := &mockProvider{name: "new-a", supportedTypes: []string{TypeAlipay}}
+	blocked := &blockedProvider{
+		mockProvider: mockProvider{name: "new-b", supportedTypes: []string{TypeWxpay}},
+		entered:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	done := make(chan struct{})
+	go func() { registry.Replace([]Provider{next, blocked}); close(done) }()
+	<-blocked.entered
+	a, ea := registry.GetProvider(TypeAlipay)
+	b, eb := registry.GetProvider(TypeWxpay)
+	close(blocked.release)
+	<-done
+	if ea != nil || eb != nil || a != old || b != old {
+		t.Fatal("候选未就绪时不能发布空表或半张表")
+	}
+	a, ea = registry.GetProvider(TypeAlipay)
+	b, eb = registry.GetProvider(TypeWxpay)
+	if ea != nil || eb != nil || a != next || b != blocked {
+		t.Fatal("发布后必须包含完整候选")
+	}
+}
+
+func (m *mockProvider) Name() string { return m.name }
+
+func (m *mockProvider) ProviderKey() string { return m.key }
+
+func (m *mockProvider) SupportedTypes() []PaymentType { return m.supportedTypes }
+
+func (m *mockProvider) CreatePayment(_ context.Context, _ CreatePaymentRequest) (*CreatePaymentResponse, error) {
+	return nil, nil
+}
+
+func (m *mockProvider) QueryOrder(_ context.Context, _ string) (*QueryOrderResponse, error) {
+	return nil, nil
+}
+
+func (m *mockProvider) VerifyNotification(_ context.Context, _ string, _ map[string]string) (*PaymentNotification, error) {
+	return nil, nil
+}
+
+func (m *mockProvider) Refund(_ context.Context, _ RefundRequest) (*RefundResponse, error) {
+	return nil, nil
+}
+
+func (p *blockedProvider) SupportedTypes() []PaymentType {
+	close(p.entered)
+	<-p.release
+	return p.supportedTypes
 }

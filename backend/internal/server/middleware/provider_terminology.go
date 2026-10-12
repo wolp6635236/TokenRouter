@@ -5,9 +5,10 @@ import (
 	"io"
 	"strings"
 
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
+
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
 // ProviderTerminology 拒绝管理契约中的旧上游账号字段；凭据与第三方导入载荷交给所属适配器。
@@ -22,7 +23,7 @@ func ProviderTerminology() gin.HandlerFunc {
 			return
 		}
 		legacy := func(key string) bool {
-			for _, part := range strings.Split(key, "_") {
+			for part := range strings.SplitSeq(key, "_") {
 				if part == "account" || part == "accounts" {
 					return true
 				}

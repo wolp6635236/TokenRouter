@@ -9,10 +9,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 )
 
 type contractBatchUseCases struct {
@@ -21,6 +22,16 @@ type contractBatchUseCases struct {
 	input  batchimage.BatchImageSubmitRequest
 	key    string
 	marked atomic.Int64
+}
+
+type contractDownload struct {
+	DownloadUseCases
+	closed atomic.Int64
+}
+
+type contractBody struct {
+	io.Reader
+	closed *atomic.Int64
 }
 
 func (s *contractBatchUseCases) Submit(_ context.Context, owner batchimage.BatchImageOwner, input batchimage.BatchImageSubmitRequest, key string) (*batchimage.BatchImagePublicBatch, error) {
@@ -35,21 +46,13 @@ func (s *contractBatchUseCases) MarkDownloaded(context.Context, batchimage.Batch
 	return nil
 }
 
-type contractDownload struct {
-	DownloadUseCases
-	closed atomic.Int64
-}
-type contractBody struct {
-	io.Reader
-	closed *atomic.Int64
-}
-
 func (b contractBody) Close() error { b.closed.Add(1); return nil }
+
 func (d *contractDownload) OpenItemContent(context.Context, batchimage.BatchImageOwner, string, string, int) (*batchimage.BatchImageContentStream, error) {
 	return &batchimage.BatchImageContentStream{Reader: contractBody{Reader: strings.NewReader("image-data"), closed: &d.closed}, ContentType: "image/png", Filename: "output.png"}, nil
 }
 
-// TestBatchHTTPSubmitProjectionAndParseOrder 验证HTTP 层保留付款主体、会话和幂等输入，不能让任务核心再次解析凭据。
+// TestBatchHTTPSubmitProjectionAndParseOrder 检查 HTTP 层传入付款主体、会话和幂等参数的顺序。
 func TestBatchHTTPSubmitProjectionAndParseOrder(t *testing.T) {
 	usecases := &contractBatchUseCases{}
 	var authCalls atomic.Int64
@@ -61,10 +64,10 @@ func TestBatchHTTPSubmitProjectionAndParseOrder(t *testing.T) {
 	router := gin.New()
 	router.POST("/batches", h.Submit)
 	bad := httptest.NewRecorder()
-	router.ServeHTTP(bad, httptest.NewRequest("POST", "/batches", strings.NewReader("{")))
+	router.ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/batches", strings.NewReader("{")))
 	require.Equal(t, 400, bad.Code)
 	require.Zero(t, authCalls.Load())
-	req := httptest.NewRequest("POST", "/batches", strings.NewReader(`{"model":"image","items":[{"prompt":"hello"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/batches", strings.NewReader(`{"model":"image","items":[{"prompt":"hello"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "same-key")
 	response := httptest.NewRecorder()
@@ -76,7 +79,7 @@ func TestBatchHTTPSubmitProjectionAndParseOrder(t *testing.T) {
 	require.Equal(t, "session-1", *usecases.input.SessionID)
 }
 
-// TestBatchHTTPDownloadClosesStream 验证下载响应写完后关闭唯一受控流，并按原时机记下载状态。
+// TestBatchHTTPDownloadClosesStream 检查下载响应写完后关闭流并记录下载状态。
 func TestBatchHTTPDownloadClosesStream(t *testing.T) {
 	usecases := &contractBatchUseCases{}
 	download := &contractDownload{}
@@ -91,4 +94,21 @@ func TestBatchHTTPDownloadClosesStream(t *testing.T) {
 	require.Contains(t, response.Header().Get("Content-Disposition"), "output.png")
 	require.Equal(t, int64(1), download.closed.Load())
 	require.Equal(t, int64(1), usecases.marked.Load())
+}
+
+func TestAppendBatchImageAPIKeyModelAliasesPreservesProvider(t *testing.T) {
+	models := AppendBatchImageAPIKeyModelAliases([]batchimage.BatchImagePublicModel{
+		{ID: "gemini-image", Object: "image.batch.model", Platform: "gemini"},
+		{ID: "gemini-image", Object: "image.batch.model", Platform: "antigravity"},
+	}, map[string]string{
+		"image-review": "gemini-image",
+		"wild-*":       "gemini-image",
+	})
+
+	require.Equal(t, []batchimage.BatchImagePublicModel{
+		{ID: "gemini-image", Object: "image.batch.model", Platform: "gemini"},
+		{ID: "gemini-image", Object: "image.batch.model", Platform: "antigravity"},
+		{ID: "image-review", Object: "image.batch.model", Platform: "gemini"},
+		{ID: "image-review", Object: "image.batch.model", Platform: "antigravity"},
+	}, models)
 }

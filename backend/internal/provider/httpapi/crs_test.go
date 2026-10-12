@@ -8,29 +8,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 // 通过 handler 和用例检查默认值、响应字段和故障响应。
 type crsHTTPStore struct{ provider.CRSProviderStore }
 
+type crsHTTPProxy struct{ reads int }
+
+type crsHTTPExport struct{ failure error }
+
 func (crsHTTPStore) ListCRSAccountIDs(context.Context) (map[string]int64, error) {
 	return map[string]int64{"old": 1}, nil
 }
-
-type crsHTTPProxy struct{ reads int }
 
 func (p *crsHTTPProxy) ListActive(context.Context) ([]egress.Proxy, error) {
 	p.reads++
 	return nil, nil
 }
 func (*crsHTTPProxy) Create(context.Context, *egress.Proxy) error { panic("未请求创建代理") }
-
-type crsHTTPExport struct{ failure error }
 
 func (e crsHTTPExport) Fetch(context.Context, string, string, string) (*transfer.CRSExportResponse, error) {
 	return &transfer.CRSExportResponse{}, e.failure

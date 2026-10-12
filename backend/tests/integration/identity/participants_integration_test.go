@@ -9,21 +9,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/redeemcodeusage"
-
 	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
 	teampostgres "github.com/TokenFlux/TokenRouter/internal/team/postgres"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
 )
 
 // 在 Key 已写入后注入错误，验证成员和 Key 实际使用同一事务连接。

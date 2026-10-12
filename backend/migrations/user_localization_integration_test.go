@@ -10,12 +10,13 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-	"github.com/TokenFlux/TokenRouter/migrations"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestUserLocalizationMigrations 检查空库升级、历史内容、语言偏好及事务失败回滚。

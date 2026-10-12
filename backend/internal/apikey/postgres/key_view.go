@@ -11,6 +11,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
 )
 
+type SQLExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 func userEntityToKeyView(u *dbent.User) *keycore.User {
 	if u == nil {
 		return nil
@@ -99,9 +104,4 @@ func groupEntityToKeyView(g *dbent.Group) *routing.Group {
 		CreatedAt:                       g.CreatedAt,
 		UpdatedAt:                       g.UpdatedAt,
 	}
-}
-
-type SQLExecutor interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }

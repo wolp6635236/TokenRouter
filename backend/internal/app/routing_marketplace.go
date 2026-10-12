@@ -5,26 +5,16 @@ import (
 	"log/slog"
 	"time"
 
-	routingprovider "github.com/TokenFlux/TokenRouter/internal/routing/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/usage"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	routinghttp "github.com/TokenFlux/TokenRouter/internal/routing/httpapi"
 	routingdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
-
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
-
-// provideMarketplace 绑定分组、设置和报价查询，平台模型信息在查询时读取。
-func provideMarketplace(groups *routingpostgres.GroupStore, store *settings.Store, catalogue *routing.RequestableCatalogue, prices *billing.PriceResolver, calculator *billing.Calculator, capacity *routing.CapacityService, availability routing.GroupAvailabilityProbeRepository, cfg *config.Config, attributes *routing.ModelAttributeService) *routing.Marketplace {
-	options := routing.MarketplaceOptions{Attributes: attributes.ResolveGroups, Timezone: cfg.Timezone, Now: time.Now, Warn: slog.Warn, DefaultModels: routingprovider.MarketplaceModelDefs, DisplayNames: routingprovider.MarketplaceDisplayNames}
-	return routing.NewMarketplace(groups, store, catalogue, catalogue.Resolver, marketplacePrices{prices, calculator}, capacity, availability, options)
-}
 
 type marketplacePrices struct {
 	resolver   *billing.PriceResolver
@@ -33,6 +23,12 @@ type marketplacePrices struct {
 
 // marketplaceStats 返回公开首页需要的 Dashboard 计数。
 type marketplaceStats struct{ source *usage.DashboardService }
+
+// provideMarketplace 绑定分组、设置和报价查询，平台模型信息在查询时读取。
+func provideMarketplace(groups *routingpostgres.GroupStore, store *settings.Store, catalogue *routing.RequestableCatalogue, prices *billing.PriceResolver, calculator *billing.Calculator, capacity *routing.CapacityService, availability routing.GroupAvailabilityProbeRepository, cfg *config.Config, attributes *routing.ModelAttributeService) *routing.Marketplace {
+	options := routing.MarketplaceOptions{Attributes: attributes.ResolveGroups, Timezone: cfg.Timezone, Now: time.Now, Warn: slog.Warn}
+	return routing.NewMarketplace(groups, store, catalogue, catalogue.Resolver, marketplacePrices{prices, calculator}, capacity, availability, options)
+}
 
 func (s marketplaceStats) PublicStats(ctx context.Context) (routingdto.ModelMarketplaceStats, error) {
 	value, err := s.source.GetPublicDashboardStats(ctx)

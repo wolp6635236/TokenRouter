@@ -24,10 +24,7 @@ func CodexResetAtRFC3339(base time.Time, resetAfterSeconds *int) *string {
 	if resetAfterSeconds == nil {
 		return nil
 	}
-	sec := *resetAfterSeconds
-	if sec < 0 {
-		sec = 0
-	}
+	sec := max(*resetAfterSeconds, 0)
 	resetAt := base.Add(time.Duration(sec) * time.Second).Format(time.RFC3339)
 	return &resetAt
 }

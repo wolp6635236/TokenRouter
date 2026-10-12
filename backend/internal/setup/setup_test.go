@@ -44,7 +44,6 @@ func TestDecideAdminBootstrap(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			shouldCreate, reason := identity.DecideAdminBootstrap(tc.totalUsers, tc.adminUsers)

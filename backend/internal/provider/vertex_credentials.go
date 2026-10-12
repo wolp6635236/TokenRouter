@@ -8,21 +8,21 @@ import (
 
 const VertexDefaultLocation = "us-central1"
 
-func (a *Record) VertexLocation(model string) string {
-	if a == nil {
+func (r *Record) VertexLocation(model string) string {
+	if r == nil {
 		return VertexDefaultLocation
 	}
-	if model != "" && a.Credentials != nil {
-		if raw, ok := a.Credentials["vertex_model_locations"].(map[string]any); ok {
+	if model != "" && r.Credentials != nil {
+		if raw, ok := r.Credentials["vertex_model_locations"].(map[string]any); ok {
 			if loc, ok := raw[model].(string); ok && strings.TrimSpace(loc) != "" {
 				return strings.TrimSpace(loc)
 			}
 		}
 	}
-	if v := strings.TrimSpace(a.GetCredential("location")); v != "" {
+	if v := strings.TrimSpace(r.GetCredential("location")); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(a.GetCredential("vertex_location")); v != "" {
+	if v := strings.TrimSpace(r.GetCredential("vertex_location")); v != "" {
 		return v
 	}
 	return VertexDefaultLocation
@@ -51,14 +51,14 @@ func VertexServiceAccountJSON(provider *Record) ([]byte, error) {
 }
 
 // VertexProjectID 优先使用配置的 project，解析失败时返回空字符串。
-func (a *Record) VertexProjectID(parseProject func([]byte) (string, error)) string {
-	if a == nil {
+func (r *Record) VertexProjectID(parseProject func([]byte) (string, error)) string {
+	if r == nil {
 		return ""
 	}
-	if v := strings.TrimSpace(a.GetCredential("project_id")); v != "" {
+	if v := strings.TrimSpace(r.GetCredential("project_id")); v != "" {
 		return v
 	}
-	raw, err := VertexServiceAccountJSON(a)
+	raw, err := VertexServiceAccountJSON(r)
 	if err != nil {
 		return ""
 	}

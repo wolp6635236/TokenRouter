@@ -6,11 +6,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // ModelAttributeHandler 提供属性档案和默认目录查询，不绑定生成请求入口。

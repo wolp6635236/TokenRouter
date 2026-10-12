@@ -7,14 +7,13 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-
-	"github.com/stretchr/testify/require"
 )
 
 // TestUserRepository_DeleteUser_AtomicWithAPIKeys 复现 AdminService.DeleteUser 的事务编排场景：

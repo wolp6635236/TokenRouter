@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 )
 
 func TestMigration203EnforcesOpenAILongContextBillingWriteInvariant(t *testing.T) {

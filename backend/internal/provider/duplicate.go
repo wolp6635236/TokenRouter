@@ -13,34 +13,10 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-const maxProviderNameRunes = 100
-
-const duplicateProviderOperationIDExtraKey = "duplicate_operation_id"
-
-func duplicateProviderName(sourceName string) string {
-	const suffix = " (Copy)"
-	nameRunes := []rune(strings.TrimSpace(sourceName))
-	maxBaseRunes := maxProviderNameRunes - len([]rune(suffix))
-	if len(nameRunes) > maxBaseRunes {
-		nameRunes = nameRunes[:maxBaseRunes]
-	}
-	return string(nameRunes) + suffix
-}
-
-func cloneProviderJSONMap(value map[string]any) (map[string]any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	cloned := make(map[string]any, len(value))
-	if err := json.Unmarshal(payload, &cloned); err != nil {
-		return nil, err
-	}
-	return cloned, nil
-}
+const (
+	maxProviderNameRunes                 = 100
+	duplicateProviderOperationIDExtraKey = "duplicate_operation_id"
+)
 
 var duplicateProviderDiscardedExtraKeys = map[string]struct{}{
 	// 重试标识用于当前复制操作，后续复制使用各自的标识。
@@ -97,6 +73,31 @@ var duplicateProviderDiscardedExtraKeys = map[string]struct{}{
 	"codex_7d_reset_at":                      {},
 	"upstream_billing_probe":                 {},
 	"upstream_billing_probe_enabled":         {},
+}
+
+func duplicateProviderName(sourceName string) string {
+	const suffix = " (Copy)"
+	nameRunes := []rune(strings.TrimSpace(sourceName))
+	maxBaseRunes := maxProviderNameRunes - len([]rune(suffix))
+	if len(nameRunes) > maxBaseRunes {
+		nameRunes = nameRunes[:maxBaseRunes]
+	}
+	return string(nameRunes) + suffix
+}
+
+func cloneProviderJSONMap(value map[string]any) (map[string]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	cloned := make(map[string]any, len(value))
+	if err := json.Unmarshal(payload, &cloned); err != nil {
+		return nil, err
+	}
+	return cloned, nil
 }
 
 func duplicateProviderExtra(value map[string]any) (map[string]any, error) {

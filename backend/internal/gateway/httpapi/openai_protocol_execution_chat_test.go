@@ -1,0 +1,2534 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	billingcore "github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	openaicore "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+)
+
+func TestAdaptiveProtocolRoutesChatCompletionsToNativeChat(t *testing.T) {
+	body := []byte(`{"model":"glm-4.7","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	upstream := &auxiliaryHTTPRecorder{err: errors.New("stop after capture")}
+	svc := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+	provider := adaptiveProtocolTestProvider(capability.PlatformZhipu, map[string]any{
+		providercore.APIProtocolChatCompletions: "http://chat.example",
+		providercore.APIProtocolAnthropic:       "http://anthropic.example",
+	})
+
+	_, err := svc.Text.Chat(context.Background(), adaptiveProtocolTestContext("/v1/chat/completions", body), provider, body, "", "")
+	require.Error(t, err)
+	require.Equal(t, "http://chat.example/v1/chat/completions", upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "messages").IsArray())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+}
+
+func TestAdaptiveProtocolRoutesResponsesShapedChatToNativeResponses(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4","input":"hello","max_output_tokens":32,"stream":false}`)
+	upstream := &auxiliaryHTTPRecorder{err: errors.New("stop after capture")}
+	svc := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+	provider := adaptiveProtocolTestProvider(capability.PlatformDeepseek, map[string]any{
+		providercore.APIProtocolChatCompletions: "http://chat.example",
+		providercore.APIProtocolAnthropic:       "http://anthropic.example",
+		providercore.APIProtocolResponses:       "http://responses.example",
+	})
+
+	_, err := svc.Text.Chat(context.Background(), adaptiveProtocolTestContext("/v1/chat/completions", body), provider, body, "", "")
+	require.Error(t, err)
+	require.Equal(t, "http://responses.example/responses", upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+}
+
+func TestAdaptiveProtocolConvertsResponsesShapedChatForChatOnlyProvider(t *testing.T) {
+	body := []byte(`{"model":"glm-4.7","input":"hello","max_output_tokens":32,"stream":false}`)
+	upstream := &auxiliaryHTTPRecorder{err: errors.New("stop after capture")}
+	svc := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+	provider := adaptiveProtocolTestProvider(capability.PlatformZhipu, map[string]any{
+		providercore.APIProtocolChatCompletions: "http://chat.example",
+		providercore.APIProtocolAnthropic:       "http://anthropic.example",
+	})
+
+	_, err := svc.Text.Chat(context.Background(), adaptiveProtocolTestContext("/v1/chat/completions", body), provider, body, "", "")
+	require.Error(t, err)
+	require.Equal(t, "http://chat.example/v1/chat/completions", upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "messages").IsArray())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+}
+
+func TestAdaptiveProtocolRoutesKimiResponsesShapedChatToNativeResponses(t *testing.T) {
+	body := []byte(`{"model":"k3-256k","input":"hello","max_output_tokens":32,"stream":false}`)
+	upstream := &auxiliaryHTTPRecorder{err: errors.New("stop after capture")}
+	svc := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+	provider := adaptiveProtocolTestProvider(capability.PlatformKimi, map[string]any{
+		providercore.APIProtocolChatCompletions: "http://chat.example",
+		providercore.APIProtocolAnthropic:       "http://anthropic.example",
+		providercore.APIProtocolResponses:       "http://responses.example/v1",
+	})
+
+	_, err := svc.Text.Chat(context.Background(), adaptiveProtocolTestContext("/v1/chat/completions", body), provider, body, "", "")
+	require.Error(t, err)
+	require.Equal(t, "http://responses.example/v1/responses", upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+}
+
+func TestForwardAsChatCompletions_ServiceTierFastNormalizedToPriorityUpstream(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"service_tier":"fast","stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-chat-st"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop"}}`)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, transport: upstream, readers: newHTTPReadersFixture(&gatewaytestkit.FastPolicySettingsRepo{Values: map[string]string{}}, nil)})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 21,
+			Name:        "openai-compatible",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-compatible"},
+			Extra:       map[string]any{},
+		},
+	}
+
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.5")
+	require.Error(t, err) // upstream 400 → 错误返回，但请求体已被 recorder 捕获
+	require.NotNil(t, upstream.lastBody)
+	require.Equal(t, "priority", gjson.GetBytes(upstream.lastBody, "service_tier").String(),
+		"client alias fast must reach upstream as priority")
+}
+
+func TestForwardAsChatCompletions_ServiceTierPriorityPreservedUpstream(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"service_tier":"priority","stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-chat-st2"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop"}}`)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, transport: upstream, readers: newHTTPReadersFixture(&gatewaytestkit.FastPolicySettingsRepo{Values: map[string]string{}}, nil)})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 2,
+			Name:        "openai-compatible",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-compatible"},
+			Extra:       map[string]any{},
+		},
+	}
+
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.5")
+	require.Error(t, err)
+	require.NotNil(t, upstream.lastBody)
+	require.Equal(t, "priority", gjson.GetBytes(upstream.lastBody, "service_tier").String())
+}
+
+func TestForwardAsChatCompletions_KeepsOutboundAndObservedServiceTiersSeparate(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"service_tier":"fast","stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	streamPayload := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_c1\",\"object\":\"response\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"it_1\",\"output_index\":0,\"delta\":\"hi\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_c1\",\"object\":\"response\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"service_tier\":\"default\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n" +
+		"data: [DONE]\n\n"
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid-chat-echo"}},
+		Body:       io.NopCloser(strings.NewReader(streamPayload)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{Request: OpenAIRequestOptions{URLPolicy: egress.OperatorURLPolicy{Enabled: false}}}, transport: upstream, readers: newHTTPReadersFixture(&gatewaytestkit.FastPolicySettingsRepo{Values: map[string]string{}}, nil)})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 21,
+			Name:        "openai-compatible",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-compatible"},
+			Extra:       map[string]any{},
+			Status:      billingcore.StatusActive,
+			Schedulable: true,
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.5")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.ServiceTier)
+	require.Equal(t, "priority", *result.ServiceTier)
+	require.Equal(t, "default", result.UpstreamResponseServiceTier)
+	// 缓冲转回 Chat Completions：客户端响应里如实回显 default。
+	require.Contains(t, rec.Body.String(), `"service_tier":"default"`)
+	require.NotContains(t, rec.Body.String(), `"service_tier":"priority"`)
+}
+
+func TestOpenAIAgentIdentityChatRecoveryKeepsAutoDerivedSessionIsolationStable(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 52, Name: "agent-identity", Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth,
+			Status: billingcore.StatusActive, Schedulable: true, Concurrency: 1,
+			Credentials: map[string]any{
+				"auth_mode":         providercore.OpenAIAuthModeAgentIdentity,
+				"agent_runtime_id":  key.RuntimeID,
+				"agent_private_key": privateKey,
+				"task_id":           "task-cache-old",
+			},
+			Extra: map[string]any{},
+		},
+	}
+	repo := &agentIdentityForwardRepo{provider: provider}
+	registerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"task_id":"task-cache-new"}`)
+	}))
+	defer registerServer.Close()
+
+	invalidTask := func() *http.Response {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))}
+	}
+	upstream := &auxiliaryHTTPRecorder{responses: []*http.Response{invalidTask(), invalidTask()}}
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, providers: repo, registerTaskURL: registerServer.URL, transport: upstream})
+	body := []byte(`{"model":"gpt-5.4","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 99})
+
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.4")
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 2)
+	firstKey := gjson.GetBytes(upstream.bodies[0], "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(upstream.bodies[1], "prompt_cache_key").String()
+	require.NotEmpty(t, firstKey)
+	require.Equal(t, firstKey, secondKey)
+	require.Equal(t, upstreamcore.GenerateSessionUUID(openai.IsolateOpenAIUpstreamSessionID(99, provideradapter.CodexIdentityNamespace(CodexIdentityRecord(c, provider.View())), firstKey)), upstream.requests[0].Header.Get("session_id"))
+	require.Equal(t, upstream.requests[0].Header.Get("session_id"), upstream.requests[1].Header.Get("session_id"))
+}
+
+func TestForwardAsChatCompletions_OpenAICompatibleRawUsageGuard(t *testing.T) {
+	tests := []struct {
+		name             string
+		model            string
+		upstreamResponse string
+		modelMapping     map[string]any
+		wantGuarded      bool
+	}{
+		{
+			name:             "Grok response without usage",
+			model:            "grok-4.5",
+			upstreamResponse: `{"id":"resp_missing","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			wantGuarded:      true,
+		},
+		{
+			name:             "namespaced Grok response without usage",
+			model:            "x-ai/grok-4.5",
+			upstreamResponse: `{"id":"resp_namespaced","object":"chat.completion","model":"x-ai/grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			wantGuarded:      true,
+		},
+		{
+			name:             "Grok response with aggregate usage passes",
+			model:            "grok-4.5",
+			upstreamResponse: `{"id":"resp_usage","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}`,
+			wantGuarded:      false,
+		},
+		{
+			name:             "Grok alias mapped to non-Grok remains unchanged",
+			model:            "grok-alias",
+			upstreamResponse: `{"id":"resp_mapped","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			modelMapping:     map[string]any{"grok-alias": "gpt-5.4"},
+			wantGuarded:      false,
+		},
+		{
+			name:             "Grok response with detail-only usage",
+			model:            "grok-4.5",
+			upstreamResponse: `{"id":"resp_detail_only","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"input_tokens_details":{"text_tokens":9,"image_tokens":2},"output_tokens_details":{"image_tokens":1}}}`,
+			wantGuarded:      true,
+		},
+		{
+			name:             "non-Grok response without usage remains unchanged",
+			model:            "gpt-5.4",
+			upstreamResponse: `{"id":"resp_openai","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			wantGuarded:      false,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + testCase.model + `","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+			upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"rid-openai-compatible"}},
+				Body:       io.NopCloser(strings.NewReader(testCase.upstreamResponse)),
+			}}
+			service := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+			provider := rawChatCompletionsTestProvider()
+			provider.Record.Name = "openai-compatible"
+			provider.Record.Extra = map[string]any{"openai_responses_probe_status": "unsupported"}
+			if testCase.modelMapping != nil {
+				provider.Record.Credentials["model_mapping"] = testCase.modelMapping
+			}
+
+			result, err := service.Text.Chat(context.Background(), c, provider, body, "", "")
+
+			if !testCase.wantGuarded {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.True(t, c.Writer.Written())
+				return
+			}
+			require.Nil(t, result)
+			var failoverErr *forwardcore.UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+			require.Equal(t, "grok_missing_usage", gjson.GetBytes(failoverErr.ResponseBody, "error.code").String())
+			require.Equal(t, "rid-openai-compatible", http.Header(failoverErr.ResponseHeaders).Get("x-request-id"))
+			require.False(t, c.Writer.Written())
+			require.Empty(t, recorder.Body.String())
+			rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+			require.True(t, ok)
+			events, ok := rawEvents.([]*ops.OpsUpstreamErrorEvent)
+			require.True(t, ok)
+			require.NotEmpty(t, events)
+			require.Equal(t, capability.PlatformGrok, events[len(events)-1].Platform)
+		})
+	}
+}
+
+func TestForwardAsChatCompletions_PreserveClientProtocolUsesVersionedChatURL(t *testing.T) {
+	body := []byte(`{"model":"glm-4.5-air","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_raw_chat"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"chatcmpl_1","object":"chat.completion","model":"glm-4.5-air","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`,
+			)),
+		},
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+	provider := rawChatCompletionsTestProvider()
+	provider.Record.Credentials["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
+
+	tlsMatch := egress.TLSFingerprintRouterMatchResult{Matched: true, UpstreamUserAgent: "router-agent"}
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "", tlsMatch)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
+	require.Equal(t, "ok", gjson.GetBytes(rec.Body.Bytes(), "choices.0.message.content").String())
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://open.bigmodel.cn/api/paas/v4/chat/completions", upstream.requests[0].URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
+	require.Equal(t, "router-agent", upstream.requests[0].Header.Get("User-Agent"))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"content":"ok"`)
+}
+
+func TestForwardAsChatCompletions_UnknownModelWithoutMessagesDispatchKeepsRequestedModel(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt6","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_chat_unknown_model"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"model not found"}}`)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream, options: &responsesFixtureOptions{Request: OpenAIRequestOptions{URLPolicy: egress.OperatorURLPolicy{Enabled: false}}}})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, "gpt6", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.NotEqual(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestForwardAsChatCompletions_APIKeyPropagatesPromptCacheKeyInResponsesBody(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("api_key", &apikey.APIKey{ID: 99})
+	SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_chat_prompt_cache"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop before response parsing"}}`)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream, options: &responsesFixtureOptions{Request: OpenAIRequestOptions{URLPolicy: egress.OperatorURLPolicy{Enabled: false}}}})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 2,
+			Name:        "openai-compatible",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"api_key": "sk-compatible",
+			},
+			Extra: map[string]any{
+				"openai_text_route_mode": "force_responses",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "cache-key-123", "gpt-5.4")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, "cache-key-123", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "https://api.openai.com/v1/responses", upstream.lastReq.URL.String())
+	require.Equal(t, "/v1/responses", GetActualOpenAIUpstreamEndpoint(c))
+	require.Equal(t, "Bearer sk-compatible", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, upstreamcore.GenerateSessionUUID(upstreamcore.IsolateSessionID(99, "cache-key-123")), upstream.lastReq.Header.Get("session_id"))
+}
+
+func TestForwardAsChatCompletions_APIKeyResponsesRecordsThirdPartyMaxEffort(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max","stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_deepseek_max","object":"response","model":"deepseek-v4-flash","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream, options: &responsesFixtureOptions{Request: OpenAIRequestOptions{URLPolicy: egress.OperatorURLPolicy{Enabled: false}}}})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 23,
+			Name:        "deepseek-compatible",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-compatible"},
+			Extra: map[string]any{
+				"openai_text_route_mode": "force_responses",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "https://api.openai.com/v1/responses", upstream.lastReq.URL.String())
+	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "max", *result.ReasoningEffort)
+}
+
+func TestForwardAsChatCompletions_APIKeyResponsesDoesNotRecordDroppedNestedEffort(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	// Chat Completions 只接受顶层 reasoning_effort；嵌套字段不会进入协议转换结果。
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}],"reasoning":{"effort":"max"},"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_deepseek_default","object":"response","model":"deepseek-v4-flash","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream, options: &responsesFixtureOptions{Request: OpenAIRequestOptions{URLPolicy: egress.OperatorURLPolicy{Enabled: false}}}})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 23,
+			Name:        "deepseek-compatible",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-compatible"},
+			Extra: map[string]any{
+				"openai_text_route_mode": "force_responses",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "reasoning").Exists())
+	require.Nil(t, result.ReasoningEffort)
+}
+
+func TestForwardAsChatCompletions_TransportErrorFailsOver(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{
+		err: errors.New(`Post "https://api.openai.com/v1/responses": EOF`),
+	}
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream, options: &responsesFixtureOptions{Request: OpenAIRequestOptions{URLPolicy: egress.OperatorURLPolicy{Enabled: false}}}})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 22,
+			Name:        "openai-compatible",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"api_key": "sk-compatible",
+			},
+			Extra: map[string]any{
+				"openai_text_route_mode": "force_responses",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.4")
+
+	require.Nil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "transport error must trigger provider failover")
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, 0, rec.Body.Len(), "service must not write a hard 502 before handler can fail over")
+}
+
+func TestForwardAsChatCompletions_APIKeyAutoDerivesStableIsolatedPromptCacheKey(t *testing.T) {
+	response := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop before response parsing"}}`)),
+		}
+	}
+	upstream := &auxiliaryHTTPRecorder{responses: []*http.Response{response(), response(), response()}}
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 2, Name: "openai-compatible", Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-compatible"},
+			Extra: map[string]any{
+				"openai_text_route_mode": "force_responses",
+			},
+		},
+	}
+	firstBody := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"be concise"},{"role":"user","content":"hello"}],"stream":false}`)
+	appendedBody := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"be concise"},{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"continue"}],"stream":false}`)
+
+	forward := func(apiKeyID int64, body []byte) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set("api_key", &apikey.APIKey{ID: apiKeyID})
+		result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.4")
+		require.Error(t, err)
+		require.Nil(t, result)
+	}
+
+	forward(99, firstBody)
+	forward(99, appendedBody)
+	forward(100, appendedBody)
+
+	firstKey := gjson.GetBytes(upstream.bodies[0], "prompt_cache_key").String()
+	appendedKey := gjson.GetBytes(upstream.bodies[1], "prompt_cache_key").String()
+	otherTenantKey := gjson.GetBytes(upstream.bodies[2], "prompt_cache_key").String()
+	require.NotEmpty(t, firstKey)
+	require.Equal(t, firstKey, appendedKey)
+	require.NotEqual(t, firstKey, otherTenantKey)
+	require.Equal(t, upstreamcore.GenerateSessionUUID(firstKey), upstream.requests[0].Header.Get("session_id"))
+	require.Equal(t, upstream.requests[0].Header.Get("session_id"), upstream.requests[1].Header.Get("session_id"))
+	require.Equal(t, upstreamcore.GenerateSessionUUID(otherTenantKey), upstream.requests[2].Header.Get("session_id"))
+	require.NotEqual(t, upstream.requests[1].Header.Get("session_id"), upstream.requests[2].Header.Get("session_id"))
+}
+
+func TestForwardAsChatCompletions_ResponsesShapeDoesNotAutoDerivePromptCacheKey(t *testing.T) {
+	response := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop before response parsing"}}`)),
+		}
+	}
+	upstream := &auxiliaryHTTPRecorder{responses: []*http.Response{response(), response(), response()}}
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 2, Name: "openai-compatible", Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-compatible"},
+			Extra: map[string]any{
+				"openai_text_route_mode": "force_responses",
+			},
+		},
+	}
+	firstBody := []byte(`{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"first unrelated input"}]}],"stream":false}`)
+	secondBody := []byte(`{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"second unrelated input"}]}],"stream":false}`)
+
+	forward := func(body []byte, promptCacheKey string) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		c.Set("api_key", &apikey.APIKey{ID: 99})
+		result, err := svc.Text.Chat(context.Background(), c, provider, body, promptCacheKey, "gpt-5.4")
+		require.Error(t, err)
+		require.Nil(t, result)
+	}
+
+	forward(firstBody, "")
+	forward(secondBody, "")
+	forward(secondBody, "explicit-responses-key")
+
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "prompt_cache_key").Exists())
+	require.Empty(t, upstream.requests[0].Header.Get("session_id"))
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "prompt_cache_key").Exists())
+	require.Empty(t, upstream.requests[1].Header.Get("session_id"))
+	require.Equal(t, "explicit-responses-key", gjson.GetBytes(upstream.bodies[2], "prompt_cache_key").String())
+	require.Equal(t, upstreamcore.GenerateSessionUUID(upstreamcore.IsolateSessionID(99, "explicit-responses-key")), upstream.requests[2].Header.Get("session_id"))
+}
+
+func TestForwardAsChatCompletions_OAuthDoesNotInjectDefaultInstructions(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_chat_no_default_instructions"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop before response parsing"}}`)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 3,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.4")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, ChatgptCodexURL, upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
+	require.Equal(t, "", gjson.GetBytes(upstream.lastBody, "instructions").String())
+	require.NotContains(t, string(upstream.lastBody), "Communicate with the user by streaming thinking")
+}
+
+func forwardOAuthChatCompletionsForUpstreamBody(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_chat_system_promotion"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop before response parsing"}}`)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 4,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.4")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.NotEmpty(t, upstream.lastBody)
+	return upstream.lastBody
+}
+
+func TestForwardAsChatCompletions_OAuthPromotesSystemMessageWithoutDuplication(t *testing.T) {
+	const systemPrompt = "Unique system prefix for token accounting."
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"` + systemPrompt + `"},{"role":"user","content":"hello"}],"stream":false}`)
+
+	upstreamBody := forwardOAuthChatCompletionsForUpstreamBody(t, body)
+
+	require.Equal(t, systemPrompt, gjson.GetBytes(upstreamBody, "instructions").String())
+	require.Equal(t, int64(1), gjson.GetBytes(upstreamBody, "input.#").Int())
+	require.Equal(t, "user", gjson.GetBytes(upstreamBody, "input.0.role").String())
+	require.Equal(t, 1, strings.Count(string(upstreamBody), systemPrompt))
+}
+
+func TestForwardAsChatCompletions_OAuthJsonObjectKeepsSystemMessageInInput(t *testing.T) {
+	const systemPrompt = "Return JSON only."
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"` + systemPrompt + `"},{"role":"user","content":"symbol data"}],"response_format":{"type":" JSON_OBJECT "},"stream":false}`)
+
+	upstreamBody := forwardOAuthChatCompletionsForUpstreamBody(t, body)
+
+	require.Equal(t, systemPrompt, gjson.GetBytes(upstreamBody, "instructions").String())
+	require.Equal(t, int64(2), gjson.GetBytes(upstreamBody, "input.#").Int())
+	require.Equal(t, "developer", gjson.GetBytes(upstreamBody, "input.0.role").String())
+	require.Equal(t, systemPrompt, gjson.GetBytes(upstreamBody, "input.0.content").String())
+	require.Equal(t, 2, strings.Count(string(upstreamBody), systemPrompt))
+}
+
+func TestForwardAsChatCompletions_OAuthKeepsMixedSystemContentInInput(t *testing.T) {
+	const systemPrompt = "Inspect this reference image."
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":[{"type":"text","text":"` + systemPrompt + `"},{"type":"image_url","image_url":{"url":"https://example.com/reference.png"}}]},{"role":"user","content":"hello"}],"stream":false}`)
+
+	upstreamBody := forwardOAuthChatCompletionsForUpstreamBody(t, body)
+
+	require.Equal(t, systemPrompt, gjson.GetBytes(upstreamBody, "instructions").String())
+	require.Equal(t, int64(2), gjson.GetBytes(upstreamBody, "input.#").Int())
+	require.Equal(t, "developer", gjson.GetBytes(upstreamBody, "input.0.role").String())
+	require.Equal(t, int64(2), gjson.GetBytes(upstreamBody, "input.0.content.#").Int())
+	require.Equal(t, "input_image", gjson.GetBytes(upstreamBody, "input.0.content.1.type").String())
+	require.Equal(t, "https://example.com/reference.png", gjson.GetBytes(upstreamBody, "input.0.content.1.image_url").String())
+}
+
+func TestForwardAsChatCompletions_ClientDisconnectDrainsUpstreamUsage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Writer = &openAIChatFailingWriter{ResponseWriter: c.Writer, failAfter: 0}
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":11,"output_tokens":5,"total_tokens":16,"input_tokens_details":{"cached_tokens":4}}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_disconnect"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 11, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+}
+
+func TestForwardAsChatCompletions_BufferedContextWindowResponseFailedReturnsErrorWithoutFailover(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"large prompt"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_failed","object":"response","model":"gpt-5.5","status":"failed","output":[],"error":{"code":"upstream_error","message":"input exceeds the context window"}}}`,
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_failed_buffered"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.5")
+	require.Error(t, err)
+	require.Nil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.True(t, c.Writer.Written())
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), "input exceeds the context window")
+}
+
+func TestForwardAsChatCompletions_StreamContextWindowResponseFailedReturnsErrorWithoutFailover(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` + strings.Repeat("large prompt ", 6000) + `"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_failed","model":"gpt-5.5","status":"in_progress","output":[]}}`,
+		"",
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_failed","object":"response","model":"gpt-5.5","status":"failed","output":[],"error":{"code":"upstream_error","message":"input exceeds the context window"}}}`,
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_failed_stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.5")
+	require.Error(t, err)
+	require.NotNil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.True(t, c.Writer.Written())
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.Contains(t, rec.Body.String(), "input exceeds the context window")
+	require.NotContains(t, rec.Body.String(), "[DONE]")
+}
+
+func TestForwardAsChatCompletions_StreamBareErrorAfterOutputDoesNotFailOver(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial"}`,
+		"",
+		`event: error`,
+		`data: {"type":"error","error":{"type":"server_error","code":"server_error","message":"temporary upstream failure"}}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1, Name: "openai-oauth", Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth, Concurrency: 1,
+			Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.5")
+
+	require.Error(t, err)
+	require.NotNil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.Contains(t, rec.Body.String(), "partial")
+	require.Contains(t, rec.Body.String(), "temporary upstream failure")
+	require.NotContains(t, rec.Body.String(), "[DONE]")
+}
+
+func TestForwardAsChatCompletions_StreamCyberPolicyNoFailover(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` + strings.Repeat("large prompt ", 6000) + `"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_cyber","model":"gpt-5.5","status":"in_progress","output":[]}}`,
+		"",
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_cyber","object":"response","model":"gpt-5.5","status":"failed","output":[],"error":{"code":"cyber_policy","message":"flagged for cyber policy"}}}`,
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_cyber"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.5")
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "cyber must NOT trigger failover")
+	require.NotNil(t, GetOpsCyberPolicy(c), "cyber mark must be set")
+	respBody := rec.Body.String()
+	require.Contains(t, respBody, `"error"`)
+	require.Contains(t, respBody, `"cyber_policy"`)
+	require.Contains(t, respBody, "data: [DONE]")
+}
+
+func TestForwardAsChatCompletions_StreamsUsageWithoutClientStreamOptions(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":13,"output_tokens":7,"total_tokens":20,"input_tokens_details":{"cached_tokens":5}}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_usage_no_stream_options"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 13, result.Usage.InputTokens)
+	require.Equal(t, 7, result.Usage.OutputTokens)
+	require.Equal(t, 5, result.Usage.CacheReadInputTokens)
+
+	responseBody := rec.Body.String()
+	require.Contains(t, responseBody, `"usage"`)
+	require.Contains(t, responseBody, `"prompt_tokens":13`)
+	require.Contains(t, responseBody, `"completion_tokens":7`)
+	require.Contains(t, responseBody, `"cached_tokens":5`)
+}
+
+func TestForwardAsChatCompletions_StreamsTopLevelTerminalUsage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_top","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_top","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}]},"usage":{"input_tokens":21,"output_tokens":9,"total_tokens":30,"input_tokens_details":{"cached_tokens":4}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_top_level_usage"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 21, result.Usage.InputTokens)
+	require.Equal(t, 9, result.Usage.OutputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+
+	responseBody := rec.Body.String()
+	require.Contains(t, responseBody, `"usage"`)
+	require.Contains(t, responseBody, `"prompt_tokens":21`)
+	require.Contains(t, responseBody, `"completion_tokens":9`)
+	require.Contains(t, responseBody, `"cached_tokens":4`)
+}
+
+func TestForwardAsChatCompletions_BufferedTopLevelTerminalUsage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_top_buffered","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}]},"usage":{"input_tokens":18,"output_tokens":6,"total_tokens":24,"input_tokens_details":{"cached_tokens":3}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_buffered_top_level_usage"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 18, result.Usage.InputTokens)
+	require.Equal(t, 6, result.Usage.OutputTokens)
+	require.Equal(t, 3, result.Usage.CacheReadInputTokens)
+
+	responseBody := rec.Body.String()
+	require.Contains(t, responseBody, `"usage"`)
+	require.Contains(t, responseBody, `"prompt_tokens":18`)
+	require.Contains(t, responseBody, `"completion_tokens":6`)
+	require.Contains(t, responseBody, `"cached_tokens":3`)
+}
+
+func TestForwardAsChatCompletions_TerminalUsageWithoutUpstreamCloseReturns(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Writer = &openAIChatFailingWriter{ResponseWriter: c.Writer, failAfter: 0}
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := []byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":17,"output_tokens":8,"total_tokens":25,"input_tokens_details":{"cached_tokens":6}}}}` + "\n\n")
+	upstreamStream := gatewaytestkit.NewBlockingReadCloser(upstreamBody)
+	defer func() {
+		require.NoError(t, upstreamStream.Close())
+	}()
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_terminal_no_close"}},
+		Body:       upstreamStream,
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	type forwardResult struct {
+		result *forwardcore.OpenAIResult
+		err    error
+	}
+	resultCh := make(chan forwardResult, 1)
+	go func() {
+		result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+		resultCh <- forwardResult{result: result, err: err}
+	}()
+
+	select {
+	case got := <-resultCh:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.result)
+		require.Equal(t, 17, got.result.Usage.InputTokens)
+		require.Equal(t, 8, got.result.Usage.OutputTokens)
+		require.Equal(t, 6, got.result.Usage.CacheReadInputTokens)
+	case <-time.After(time.Second):
+		require.Fail(t, "ForwardAsChatCompletions should return after terminal usage event even if upstream keeps the connection open")
+	}
+}
+
+func TestForwardAsChatCompletions_EventNamedTerminalWithoutUpstreamCloseReturns(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := []byte(strings.Join([]string{
+		`event: response.created`,
+		`data: {"response":{"id":"resp_1","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"delta":"ok"}`,
+		``,
+		`event: response.completed`,
+		`data: {"response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":17,"output_tokens":8,"total_tokens":25,"input_tokens_details":{"cached_tokens":6}}}}`,
+		``,
+		``,
+	}, "\n"))
+	upstreamStream := gatewaytestkit.NewBlockingReadCloser(upstreamBody)
+	defer func() {
+		require.NoError(t, upstreamStream.Close())
+	}()
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_event_named_terminal"}},
+		Body:       upstreamStream,
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	type forwardResult struct {
+		result *forwardcore.OpenAIResult
+		err    error
+	}
+	resultCh := make(chan forwardResult, 1)
+	go func() {
+		result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+		resultCh <- forwardResult{result: result, err: err}
+	}()
+
+	select {
+	case got := <-resultCh:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.result)
+		require.Equal(t, 17, got.result.Usage.InputTokens)
+		require.Equal(t, 8, got.result.Usage.OutputTokens)
+		require.Equal(t, 6, got.result.Usage.CacheReadInputTokens)
+		require.Contains(t, rec.Body.String(), `"content":"ok"`)
+	case <-time.After(time.Second):
+		require.Fail(t, "ForwardAsChatCompletions should use SSE event names when data payloads omit type")
+	}
+}
+
+func TestForwardAsChatCompletions_EventTypeDoesNotLeakAcrossFrames(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`event: response.created`,
+		`data: {"response":{"id":"resp_1","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		``,
+		`event: response.completed`,
+		`data: {"response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":17,"output_tokens":8,"total_tokens":25,"input_tokens_details":{"cached_tokens":6}}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_event_boundary"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, rec.Body.String(), `"content":"ok"`)
+	require.Contains(t, rec.Body.String(), `data: [DONE]`)
+}
+
+func TestForwardAsChatCompletions_BufferedTerminalWithoutUpstreamCloseReturns(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := []byte(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":17,"output_tokens":8,"total_tokens":25,"input_tokens_details":{"cached_tokens":6}}}}` + "\n\n")
+	upstreamStream := gatewaytestkit.NewBlockingReadCloser(upstreamBody)
+	defer func() {
+		require.NoError(t, upstreamStream.Close())
+	}()
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_buffered_terminal_no_close"}},
+		Body:       upstreamStream,
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	type forwardResult struct {
+		result *forwardcore.OpenAIResult
+		err    error
+	}
+	resultCh := make(chan forwardResult, 1)
+	go func() {
+		result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+		resultCh <- forwardResult{result: result, err: err}
+	}()
+
+	select {
+	case got := <-resultCh:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.result)
+		require.Equal(t, 17, got.result.Usage.InputTokens)
+		require.Equal(t, 8, got.result.Usage.OutputTokens)
+		require.Equal(t, 6, got.result.Usage.CacheReadInputTokens)
+		require.Contains(t, rec.Body.String(), `"finish_reason":"stop"`)
+	case <-time.After(time.Second):
+		require.Fail(t, "ForwardAsChatCompletions buffered response should return after terminal usage event even if upstream keeps the connection open")
+	}
+}
+
+func TestForwardAsChatCompletions_DoneSentinelWithoutTerminalReturnsError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := "data: [DONE]\n\n"
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_missing_terminal"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing terminal event")
+	require.NotNil(t, result)
+	require.Zero(t, result.Usage.InputTokens)
+	require.Zero(t, result.Usage.OutputTokens)
+}
+
+func TestForwardAsChatCompletions_UpstreamRequestIgnoresClientCancel(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	reqCtx, cancel := context.WithCancel(context.Background())
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body)).WithContext(reqCtx)
+	c.Request.Header.Set("Content-Type", "application/json")
+	cancel()
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_ctx"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 1,
+			Name:        "openai-oauth",
+			Platform:    capability.PlatformOpenAI,
+			Type:        capability.ProviderTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+			},
+		},
+	}
+
+	result, err := svc.Text.Chat(reqCtx, c, provider, body, "", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.NoError(t, upstream.lastReq.Context().Err())
+}
+
+func TestForwardGrokChatViaResponsesNonStreamingCachesAndReturnsChat(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"system","content":"be concise"},{"role":"user","content":"hi"}],"stream":false,"prompt_cache_key":"stable-session","tools":[],"functions":null,"tool_choice":"none"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7101})
+
+	provider := grokChatBridgeTestProvider(71)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_cache", 9856)}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Equal(t, grok.GrokChatResponsesEndpoint, result.UpstreamEndpoint)
+	require.Equal(t, "grok-4.5", result.BillingModel)
+	require.Equal(t, "grok-4.5", result.UpstreamModel)
+	require.Equal(t, 9908, result.Usage.InputTokens)
+	require.Equal(t, 12, result.Usage.OutputTokens)
+	require.Equal(t, 9856, result.Usage.CacheReadInputTokens)
+
+	identity := gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String()
+	require.NotEmpty(t, identity)
+	require.NotEqual(t, "stable-session", identity)
+	require.Equal(t, identity, upstream.lastReq.Header.Get(GrokConversationIDHeader))
+	require.Equal(t, "web_search", gjson.GetBytes(upstream.lastBody, "tools.0.type").String())
+	require.Equal(t, "x_search", gjson.GetBytes(upstream.lastBody, "tools.1.type").String())
+	require.Equal(t, "none", gjson.GetBytes(upstream.lastBody, "tool_choice").String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+	require.Equal(t, "system", gjson.GetBytes(upstream.lastBody, "input.0.role").String())
+	require.Equal(t, "user", gjson.GetBytes(upstream.lastBody, "input.1.role").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "include").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Exists())
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "cached ok", gjson.Get(recorder.Body.String(), "choices.0.message.content").String())
+	require.Equal(t, int64(9856), gjson.Get(recorder.Body.String(), "usage.prompt_tokens_details.cached_tokens").Int())
+	require.NotNil(t, repo.updates[provider.Record.ID]["grok_usage_snapshot"])
+}
+
+func TestForwardGrokChatViaResponsesNonStreamingRejectsCompletedResponseWithoutUsage(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false,"prompt_cache_key":"stable-session"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7102})
+
+	provider := grokChatBridgeTestProvider(72)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","sequence_number":0,"delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_missing_usage","object":"response","model":"grok-4.5","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}]}}`,
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "Xai-Request-Id": []string{"rid-responses-missing-usage"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	service := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := service.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.Nil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Equal(t, "grok_missing_usage", gjson.GetBytes(failoverErr.ResponseBody, "error.code").String())
+	require.Equal(t, "rid-responses-missing-usage", http.Header(failoverErr.ResponseHeaders).Get("x-request-id"))
+	require.False(t, c.Writer.Written())
+	require.Empty(t, recorder.Body.String())
+}
+
+func TestForwardGrokChatImageWithoutCacheIdentityUsesResponses(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":[{"type":"text","text":"what is this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QQ=="}}]}],"stream":false}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+
+	provider := grokChatBridgeTestProvider(711)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_image", 0)}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Equal(t, grok.GrokChatResponsesEndpoint, result.UpstreamEndpoint)
+	require.Equal(t, "input_text", gjson.GetBytes(upstream.lastBody, "input.0.content.0.type").String())
+	require.Equal(t, "what is this", gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String())
+	require.Equal(t, "input_image", gjson.GetBytes(upstream.lastBody, "input.0.content.1.type").String())
+	require.Equal(t, "data:image/png;base64,QQ==", gjson.GetBytes(upstream.lastBody, "input.0.content.1.image_url").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").Exists())
+	require.Empty(t, upstream.lastReq.Header.Get(GrokConversationIDHeader))
+}
+
+func TestForwardGrokChatViaResponsesCodeBuddyUsesStableConversationHeader(t *testing.T) {
+	const conversationID = "codebuddy-session-42"
+	tests := []struct {
+		name      string
+		requestID string
+		messageID string
+		body      []byte
+	}{
+		{
+			name:      "first turn",
+			requestID: "request-one",
+			messageID: "message-one",
+			body:      []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"first question"}],"stream":false,"tools":[]}`),
+		},
+		{
+			name:      "later turn with tools",
+			requestID: "request-two",
+			messageID: "message-two",
+			body:      []byte(`{"model":"grok-4.5","messages":[{"role":"system","content":"be concise"},{"role":"user","content":"different later question"}],"stream":false,"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup a value","parameters":{"type":"object","properties":{"key":{"type":"string"}}}}}],"tool_choice":"auto"}`),
+		},
+	}
+
+	var stableIdentity string
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(tt.body))
+			c.Request.Header.Set(CodeBuddyConversationHeader, conversationID)
+			c.Request.Header.Set("X-Conversation-Request-ID", tt.requestID)
+			c.Request.Header.Set("X-Conversation-Message-ID", tt.messageID)
+			c.Request.Header.Set("X-Request-ID", "generic-"+tt.requestID)
+			c.Set("api_key", &apikey.APIKey{ID: 7111})
+
+			identity := ResolveGrokCacheIdentity(c, tt.body, "", "grok-4.5")
+			require.NotEmpty(t, identity)
+			if index == 0 {
+				stableIdentity = identity
+			} else {
+				require.Equal(t, stableIdentity, identity)
+			}
+			require.NotContains(t, identity, conversationID)
+
+			provider := grokChatBridgeTestProvider(int64(711 + index))
+			repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+				providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+			}}
+			upstream := &auxiliaryHTTPRecorder{resp: grokChatBridgeCompletedResponse("resp_codebuddy_"+strconv.Itoa(index), 4096)}
+			svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+			result, err := svc.Text.Chat(context.Background(), c, provider, tt.body, "", "")
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+			require.Equal(t, grok.GrokChatResponsesEndpoint, result.UpstreamEndpoint)
+			require.Equal(t, identity, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+			require.Equal(t, identity, upstream.lastReq.Header.Get(GrokConversationIDHeader))
+		})
+	}
+}
+
+func TestForwardGrokChatViaResponsesTraeToolHistoryKeepsCacheRoute(t *testing.T) {
+	firstTurnBody := []byte(`{"model":"grok-4.5","messages":[{"role":"system","content":"Be concise"},{"role":"user","content":"Find alpha"}],"stream":false,"prompt_cache_key":"trae-session","tools":[{"type":"function","function":{"name":"lookup","description":"Lookup a value","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]},"strict":false}}],"tool_choice":"auto","parallel_tool_calls":true}`)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"system","content":"Be concise"},{"role":"user","content":"Find alpha"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_lookup","type":"function","function":{"name":"lookup","arguments":"{\"key\":\"alpha\"}"}}]},{"role":"tool","tool_call_id":"call_lookup","content":"{\"value\":\"ok\"}"},{"role":"user","content":"Summarize"}],"stream":false,"prompt_cache_key":"trae-session","tools":[{"type":"function","function":{"name":"lookup","description":"Lookup a value","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]},"strict":false}}],"tool_choice":"auto","parallel_tool_calls":true}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Request.Header.Set("X-TokenRouter-Grok-Client-Tool-Cache", "prefer-cache")
+	c.Set("api_key", &apikey.APIKey{ID: 7151})
+
+	provider := grokChatBridgeTestProvider(715)
+	provider.Record.Credentials["subscription_tier"] = "free"
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_trae", 8192)}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	firstTurnIdentity := ResolveGrokCacheIdentity(c, firstTurnBody, "", "grok-4.5")
+	extendedTurnIdentity := ResolveGrokCacheIdentity(c, body, "", "grok-4.5")
+	require.NotEmpty(t, firstTurnIdentity)
+	require.Equal(t, firstTurnIdentity, extendedTurnIdentity)
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Equal(t, grok.GrokChatResponsesEndpoint, result.UpstreamEndpoint)
+	require.Equal(t, extendedTurnIdentity, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.Equal(t, extendedTurnIdentity, upstream.lastReq.Header.Get(GrokConversationIDHeader))
+
+	tools := gjson.GetBytes(upstream.lastBody, "tools").Array()
+	require.Len(t, tools, 3)
+	require.Equal(t, "function", tools[0].Get("type").String())
+	require.Equal(t, "lookup", tools[0].Get("name").String())
+	require.Equal(t, "Lookup a value", tools[0].Get("description").String())
+	require.Equal(t, "string", tools[0].Get("parameters.properties.key.type").String())
+	require.True(t, tools[0].Get("strict").Exists())
+	require.False(t, tools[0].Get("strict").Bool())
+	require.Equal(t, "web_search", tools[1].Get("type").String())
+	require.Equal(t, "x_search", tools[2].Get("type").String())
+	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "tool_choice").String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Bool())
+
+	require.Equal(t, "function_call", gjson.GetBytes(upstream.lastBody, "input.2.type").String())
+	require.Equal(t, "call_lookup", gjson.GetBytes(upstream.lastBody, "input.2.call_id").String())
+	require.Equal(t, "lookup", gjson.GetBytes(upstream.lastBody, "input.2.name").String())
+	require.Equal(t, `{"key":"alpha"}`, gjson.GetBytes(upstream.lastBody, "input.2.arguments").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(upstream.lastBody, "input.3.type").String())
+	require.Equal(t, "call_lookup", gjson.GetBytes(upstream.lastBody, "input.3.call_id").String())
+	require.Equal(t, `{"value":"ok"}`, gjson.GetBytes(upstream.lastBody, "input.3.output").String())
+}
+
+func TestForwardGrokChatViaResponsesTraeCompatibilityFieldsKeepCacheRoute(t *testing.T) {
+	firstTurnBody := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"Find alpha"}],"instructions":"Return concise JSON","stream":false,"response_format":{"type":"json_object"},"service_tier":"fast","stop":null,"reasoning_effort":null,"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup a value","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}}],"tool_choice":"auto","parallel_tool_calls":true}`)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"Find alpha"},{"role":"assistant","content":null,"reasoning_content":"I should use lookup","tool_calls":[{"index":0,"id":"call_lookup","type":"function","function":{"name":"lookup","arguments":"{\"key\":\"alpha\"}"}}]},{"role":"tool","tool_call_id":"call_lookup","content":"{\"value\":\"ok\"}"},{"role":"user","content":"Summarize"}],"instructions":"Return concise JSON","stream":false,"response_format":{"type":"json_object"},"service_tier":"fast","stop":null,"reasoning_effort":null,"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup a value","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}}],"tool_choice":"auto","parallel_tool_calls":true}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7161})
+
+	provider := grokChatBridgeTestProvider(716)
+	provider.Record.Credentials["subscription_tier"] = "free"
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_trae_compat", 12288)}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	firstTurnIdentity := ResolveGrokCacheIdentity(c, firstTurnBody, "", "grok-4.5")
+	extendedTurnIdentity := ResolveGrokCacheIdentity(c, body, "", "grok-4.5")
+	require.NotEmpty(t, firstTurnIdentity)
+	require.Equal(t, firstTurnIdentity, extendedTurnIdentity)
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Equal(t, grok.GrokChatResponsesEndpoint, result.UpstreamEndpoint)
+	require.Equal(t, 12288, result.Usage.CacheReadInputTokens)
+	require.Equal(t, extendedTurnIdentity, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.Equal(t, extendedTurnIdentity, upstream.lastReq.Header.Get(GrokConversationIDHeader))
+	require.Equal(t, "Return concise JSON", gjson.GetBytes(upstream.lastBody, "instructions").String())
+	require.Equal(t, "json_object", gjson.GetBytes(upstream.lastBody, "text.format.type").String())
+	require.Equal(t, "priority", gjson.GetBytes(upstream.lastBody, "service_tier").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "stop").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "reasoning").Exists())
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.1.content").String(), "<thinking>I should use lookup</thinking>")
+	require.Equal(t, "function_call", gjson.GetBytes(upstream.lastBody, "input.2.type").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(upstream.lastBody, "input.3.type").String())
+
+	tools := gjson.GetBytes(upstream.lastBody, "tools").Array()
+	require.Len(t, tools, 3)
+	require.Equal(t, "lookup", tools[0].Get("name").String())
+	require.Equal(t, "web_search", tools[1].Get("type").String())
+	require.Equal(t, "x_search", tools[2].Get("type").String())
+	require.Equal(t, int64(12288), gjson.Get(recorder.Body.String(), "usage.prompt_tokens_details.cached_tokens").Int())
+}
+
+func TestForwardGrokChatViaResponsesStreamingPropagatesCachedUsage(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7201})
+
+	provider := grokChatBridgeTestProvider(72)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_stream", 4096)}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Stream)
+	require.Equal(t, grok.GrokChatResponsesEndpoint, result.UpstreamEndpoint)
+	require.Equal(t, 4096, result.Usage.CacheReadInputTokens)
+	require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	require.Contains(t, recorder.Body.String(), `"content":"cached ok"`)
+	require.Contains(t, recorder.Body.String(), `"cached_tokens":4096`)
+	require.Contains(t, recorder.Body.String(), "data: [DONE]")
+}
+
+func TestForwardGrokChatRuntimeGateFallsBackToRaw(t *testing.T) {
+	tests := []struct {
+		name         string
+		setAPIKey    bool
+		mappedModel  string
+		wantUpstream string
+	}{
+		{name: "missing cache identity", wantUpstream: "grok-4.5"},
+		{name: "non cache capable mapped model", setAPIKey: true, mappedModel: "grok-4.3", wantUpstream: "grok-4.3"},
+	}
+
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+			if tt.setAPIKey {
+				c.Set("api_key", &apikey.APIKey{ID: int64(7301 + index)})
+			}
+
+			provider := grokChatBridgeTestProvider(int64(73 + index))
+			if tt.mappedModel != "" {
+				provider.Record.Credentials["model_mapping"] = map[string]any{"grok-4.5": tt.mappedModel}
+			}
+			repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+				providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+			}}
+			upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"chat_raw","object":"chat.completion","model":"` + tt.wantUpstream + `","choices":[{"index":0,"message":{"role":"assistant","content":"raw ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+				)),
+			}}
+			svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+			result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, grok.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+			require.Equal(t, grok.GrokChatRawEndpoint, result.UpstreamEndpoint)
+			require.Equal(t, tt.wantUpstream, result.UpstreamModel)
+			require.False(t, gjson.GetBytes(upstream.lastBody, "tools").Exists())
+			require.Equal(t, "raw ok", gjson.Get(recorder.Body.String(), "choices.0.message.content").String())
+		})
+	}
+}
+
+func TestForwardGrokChatViaResponses429UsesGrokRateLimitPolicy(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7501})
+
+	provider := grokChatBridgeTestProvider(75)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"Retry-After":  []string{"45"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+	before := time.Now()
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.Error(t, err)
+	require.Nil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr))
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.Equal(t, "45", http.Header(failoverErr.ResponseHeaders).Get("Retry-After"))
+	require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Equal(t, grok.GrokChatResponsesEndpoint, GetActualOpenAIUpstreamEndpoint(c))
+	require.Equal(t, 1, repo.rateLimitedCalls)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.WithinDuration(t, before.Add(45*time.Second), repo.lastRateLimitResetAt, time.Second)
+	require.True(t, httpFixtureRuntimeBlocked(svc, provider))
+}
+
+func TestForwardGrokRawChat429PreservesRetryAfter(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false,"stop":"done"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7551})
+
+	provider := grokChatBridgeTestProvider(755)
+	provider.Record.Credentials["expires_at"] = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"Retry-After":  []string{"45"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.Equal(t, "45", http.Header(failoverErr.ResponseHeaders).Get("Retry-After"))
+	require.Equal(t, grok.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+}
+
+func TestForwardGrokRawChatErrorRecordsActualEndpoint(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false,"stop":"done"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grok.GrokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7601})
+
+	provider := grokChatBridgeTestProvider(76)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"bad request"}}`)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, grok.GrokChatRawEndpoint, GetActualOpenAIUpstreamEndpoint(c))
+}
+
+func grokChatBridgeTestProvider(id int64) *gatewayprovider.ExecutionProvider {
+	return &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: id,
+			Name:        "grok-cache-bridge",
+			Platform:    capability.PlatformGrok,
+			Type:        capability.ProviderTypeOAuth,
+			Status:      billingcore.StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"access_token":  "access-token",
+				"refresh_token": "refresh-token",
+				"expires_at":    time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339),
+				"base_url":      grok.DefaultCLIBaseURL,
+			},
+		},
+	}
+}
+
+func grokChatBridgeCompletedResponse(responseID string, cachedTokens int) *http.Response {
+	body := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","sequence_number":0,"delta":"cached ok"}`,
+		"",
+		`data: {"type":"response.completed","sequence_number":1,"response":{"id":"` + responseID + `","object":"response","model":"grok-4.5","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"cached ok"}]}],"usage":{"input_tokens":9908,"output_tokens":12,"total_tokens":9920,"input_tokens_details":{"cached_tokens":` + strconv.Itoa(cachedTokens) + `}}}}`,
+		"",
+	}, "\n")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":                   []string{"text/event-stream"},
+			"Xai-Request-Id":                 []string{responseID + "-request"},
+			"X-Ratelimit-Limit-Requests":     []string{"10"},
+			"X-Ratelimit-Remaining-Requests": []string{"9"},
+		},
+		Body: io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestForwardGrokChatViaResponsesDropsRedundantViewImage(t *testing.T) {
+	body := grokInlineImageChatRequest()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 7991})
+
+	provider := grokChatBridgeTestProvider(799)
+	repo := &grokQuotaProviderRepo{grokFixtureProviders: &grokFixtureProviders{
+		providersByID: map[int64]*gatewayprovider.ExecutionProvider{provider.Record.ID: provider},
+	}}
+	upstream := &auxiliaryHTTPRecorder{resp: grokChatBridgeCompletedResponse("resp_chat_image", 0)}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Equal(t, "input_image", gjson.GetBytes(upstream.lastBody, "input.0.content.1.type").String())
+	assertGrokInlineImageTools(t, upstream.lastBody, "tools.#(name==\"%s\")")
+}
+
+func TestForwardGrokRawChatDropsRedundantViewImage(t *testing.T) {
+	body := grokInlineImageChatRequest()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 800, Platform: capability.PlatformGrok, Type: capability.ProviderTypeAPIKey, Concurrency: 1,
+			Credentials: map[string]any{"api_key": "test-key", "base_url": "https://grok.example.test/v1"},
+		},
+	}
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl","object":"chat.completion","model":"grok-4.6","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+		)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "https://grok.example.test/v1/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "image_url", gjson.GetBytes(upstream.lastBody, "messages.0.content.1.type").String())
+	assertGrokInlineImageTools(t, upstream.lastBody, "tools.#(function.name==\"%s\")")
+}
+
+func grokInlineImageChatRequest() []byte {
+	return []byte(`{
+		"model":"grok-4.6",
+		"messages":[{"role":"user","content":[
+			{"type":"text","text":"What text is in this image?"},
+			{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}
+		]}],
+		"stream":false,
+		"tools":[
+			{"type":"function","function":{"name":"view_image","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}},
+			{"type":"function","function":{"name":"shell_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}}
+		],
+		"tool_choice":"auto"
+	}`)
+}
+
+func TestForwardAsChatCompletionsForGrokStopFallsBackToXAIChatCompletions(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false,"stop":"done","prompt_cache_key":"raw-client-cache-key"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Set("api_key", &apikey.APIKey{ID: 5101})
+
+	provider := gatewaytestkit.HealthyGrokOAuthProvider(51, "access-token")
+	repo := &grokQuotaProviderRepo{
+		grokFixtureProviders: &grokFixtureProviders{
+			providersByID: map[int64]*gatewayprovider.ExecutionProvider{51: provider},
+		},
+	}
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":                   []string{"application/json"},
+			"Xai-Request-Id":                 []string{"xai-req"},
+			"X-Ratelimit-Limit-Requests":     []string{"10"},
+			"X-Ratelimit-Remaining-Requests": []string{"9"},
+			"X-Ratelimit-Limit-Tokens":       []string{"1000"},
+			"X-Ratelimit-Remaining-Tokens":   []string{"990"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"id":"chatcmpl","object":"chat.completion","model":"grok-4.3","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":1}}}`)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer access-token", upstream.lastReq.Header.Get("Authorization"))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(GrokConversationIDHeader))
+	require.NotEqual(t, "raw-client-cache-key", upstream.lastReq.Header.Get(GrokConversationIDHeader))
+	require.Equal(t, "grok-4.5", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").Exists())
+	require.Equal(t, "grok-4.5", result.Model)
+	require.Equal(t, "grok-4.5", result.UpstreamModel)
+	require.Equal(t, 1, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
+	require.Equal(t, 1, result.Usage.CacheReadInputTokens)
+	require.NotNil(t, repo.updates[51]["grok_usage_snapshot"])
+	require.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestForwardAsChatCompletionsForGrokAPIKeyUsesConfiguredRawEndpointWithoutOAuthIdentity(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 706,
+			Platform:    capability.PlatformGrok,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"api_key":  "third-party-key",
+				"base_url": "https://grok.example.test/v1",
+			},
+		},
+	}
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl","object":"chat.completion","model":"grok-4.5","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.Equal(t, "https://grok.example.test/v1/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer third-party-key", upstream.lastReq.Header.Get("Authorization"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+	require.NotEqual(t, grok.DefaultGrokUpstreamUserAgent(), upstream.lastReq.Header.Get("User-Agent"))
+}
+
+func TestForwardAsChatCompletionsForGrokAPIKeyRejectsNonStreamingResponseWithoutUsage(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	provider := &gatewayprovider.ExecutionProvider{
+		Record: providercore.Record{
+			LoadLocation: time.LoadLocation, ID: 707,
+			Name:        "grok-api-key",
+			Platform:    capability.PlatformGrok,
+			Type:        capability.ProviderTypeAPIKey,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"api_key":  "third-party-key",
+				"base_url": "https://grok.example.test/v1",
+			},
+		},
+	}
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "Xai-Request-Id": []string{"rid-grok-raw-missing-usage"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"resp_missing_usage","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+		)),
+	}}
+	service := newResponsesFixture(responsesFixtureInputs{options: protocolHTTPOptions(), transport: upstream})
+
+	result, err := service.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.Nil(t, result)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Equal(t, "grok_missing_usage", gjson.GetBytes(failoverErr.ResponseBody, "error.code").String())
+	require.Equal(t, "rid-grok-raw-missing-usage", http.Header(failoverErr.ResponseHeaders).Get("x-request-id"))
+	require.False(t, c.Writer.Written())
+	require.Empty(t, recorder.Body.String())
+}
+
+func TestForwardAsChatCompletionsForGrokStreamingUsesRawXAIChatCompletions(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	provider := gatewaytestkit.HealthyGrokOAuthProvider(53, "access-token")
+	repo := &grokQuotaProviderRepo{
+		grokFixtureProviders: &grokFixtureProviders{
+			providersByID: map[int64]*gatewayprovider.ExecutionProvider{53: provider},
+		},
+	}
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_grok","object":"chat.completion.chunk","model":"grok-4.3","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_grok","object":"chat.completion.chunk","model":"grok-4.3","choices":[],"usage":{"prompt_tokens":6,"completion_tokens":4,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":1}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":                   []string{"text/event-stream"},
+			"X-Request-Id":                   []string{"chat-stream-req"},
+			"X-Ratelimit-Limit-Requests":     []string{"10"},
+			"X-Ratelimit-Remaining-Requests": []string{"7"},
+		},
+		Body: io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), options: protocolHTTPOptions(), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer access-token", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "text/event-stream", upstream.lastReq.Header.Get("Accept"))
+	require.Equal(t, grok.CLIUserAgent(grok.CLIClientVersion), upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, "grok-4.5", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "stream_options.include_usage").Bool())
+	require.True(t, result.Stream)
+	require.Equal(t, 6, result.Usage.InputTokens)
+	require.Equal(t, 4, result.Usage.OutputTokens)
+	require.Equal(t, 1, result.Usage.CacheReadInputTokens)
+	require.Contains(t, recorder.Body.String(), "data: [DONE]")
+	require.NotNil(t, repo.updates[53]["grok_usage_snapshot"])
+}
+
+func TestForwardAsChatCompletionsForGrokStreamingStopFallsBackToRawXAIChatCompletions(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hi"}],"stream":true,"stop":"done"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set(GrokConversationIDHeader, "native-client-conversation")
+	c.Set("api_key", &apikey.APIKey{ID: 5301})
+
+	provider := gatewaytestkit.HealthyGrokOAuthProvider(53, "access-token")
+	repo := &grokQuotaProviderRepo{
+		grokFixtureProviders: &grokFixtureProviders{
+			providersByID: map[int64]*gatewayprovider.ExecutionProvider{53: provider},
+		},
+	}
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_grok","object":"chat.completion.chunk","model":"grok-4.3","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_grok","object":"chat.completion.chunk","model":"grok-4.3","choices":[],"usage":{"prompt_tokens":6,"completion_tokens":4,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":1}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":                   []string{"text/event-stream"},
+			"X-Request-Id":                   []string{"chat-stream-req"},
+			"X-Ratelimit-Limit-Requests":     []string{"10"},
+			"X-Ratelimit-Remaining-Requests": []string{"7"},
+		},
+		Body: io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), options: protocolHTTPOptions(), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer access-token", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "text/event-stream", upstream.lastReq.Header.Get("Accept"))
+	require.Equal(t, grok.CLIUserAgent(grok.CLIClientVersion), upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, grok.CLIClientVersion, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(GrokConversationIDHeader))
+	require.NotEqual(t, "native-client-conversation", upstream.lastReq.Header.Get(GrokConversationIDHeader))
+	require.Equal(t, "grok-4.5", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "stream_options.include_usage").Bool())
+	require.True(t, result.Stream)
+	require.Equal(t, 6, result.Usage.InputTokens)
+	require.Equal(t, 4, result.Usage.OutputTokens)
+	require.Equal(t, 1, result.Usage.CacheReadInputTokens)
+	require.Contains(t, recorder.Body.String(), "data: [DONE]")
+	require.NotNil(t, repo.updates[53]["grok_usage_snapshot"])
+}
+
+func TestForwardAsChatCompletionsForGrokComposerBridgesImageInput(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-composer-2.5-fast","messages":[{"role":"system","content":"You are concise."},{"role":"user","content":[{"type":"text","text":"What is shown?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]}],"metadata":{"large_id":9007199254740993},"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("api_key", &apikey.APIKey{ID: 5501})
+
+	provider := gatewaytestkit.HealthyGrokOAuthProvider(55, "access-token")
+	repo := &grokQuotaProviderRepo{
+		grokFixtureProviders: &grokFixtureProviders{
+			providersByID: map[int64]*gatewayprovider.ExecutionProvider{55: provider},
+		},
+	}
+	upstream := &auxiliaryHTTPRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "xai-request-id": []string{"vision-req"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_vision","object":"response","model":"grok-build-0.1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"A small diagram with ABC letters."}]}],"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type":                   []string{"application/json"},
+				"X-Request-Id":                   []string{"composer-req"},
+				"X-Ratelimit-Limit-Requests":     []string{"10"},
+				"X-Ratelimit-Remaining-Requests": []string{"9"},
+				"X-Ratelimit-Limit-Tokens":       []string{"1000"},
+				"X-Ratelimit-Remaining-Tokens":   []string{"980"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"id":"chatcmpl_composer","object":"chat.completion","model":"grok-composer-2.5-fast","choices":[{"index":0,"message":{"role":"assistant","content":"It shows ABC."},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)),
+		},
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{grokTokens: newHTTPGrokTokenFixture(repo, nil), options: protocolHTTPOptions(), transport: upstream, providers: repo})
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, grok.DefaultCLIBaseURL+"/responses", upstream.requests[0].URL.String())
+	require.Empty(t, upstream.requests[0].Header.Get(GrokConversationIDHeader))
+	require.Equal(t, "grok-build-0.1", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Equal(t, "input_image", gjson.GetBytes(upstream.bodies[0], "input.0.content.1.type").String())
+	require.Equal(t, grok.DefaultCLIBaseURL+"/chat/completions", upstream.requests[1].URL.String())
+	require.NotEmpty(t, upstream.requests[1].Header.Get(GrokConversationIDHeader))
+	require.Equal(t, "grok-composer-2.5-fast", gjson.GetBytes(upstream.bodies[1], "model").String())
+	require.False(t, strings.Contains(string(upstream.bodies[1]), "image_url"))
+	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.bodies[1], "metadata.large_id").Raw)
+	require.Contains(t, gjson.GetBytes(upstream.bodies[1], "messages.1.content").String(), "Image 1 description")
+	require.Contains(t, gjson.GetBytes(upstream.bodies[1], "messages.1.content").String(), "A small diagram with ABC letters.")
+	require.Equal(t, 14, result.Usage.InputTokens)
+	require.Equal(t, 12, result.Usage.OutputTokens)
+	require.Equal(t, "It shows ABC.", gjson.Get(recorder.Body.String(), "choices.0.message.content").String())
+	require.NotNil(t, repo.updates[55]["grok_usage_snapshot"])
+}
+
+// forcedResponsesChatTestProvider 让 Chat 入站进入 Responses 错误转换测试路径。
+func forcedResponsesChatTestProvider() *gatewayprovider.ExecutionProvider {
+	provider := rawChatCompletionsTestProvider()
+	provider.Record.Extra = map[string]any{"openai_text_route_mode": "force_responses"}
+	return provider
+}
+
+func TestForwardAsChatCompletions_ResponseFailed_PassthroughRule(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	bindPassthroughRule(c, "openai", []string{"context_length_exceeded"}, 400)
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(buildContextLengthFailedSSE())),
+	}}
+	svc := newWSFixture(wsFixtureInputs{options: rawChatCompletionsTestConfig(), transport: upstream})
+
+	provider := forcedResponsesChatTestProvider()
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "passthrough")
+	require.Equal(t, 400, rec.Code, "passthrough rule should override 502 to 400")
+
+	respBody := rec.Body.String()
+	errType := gjson.Get(respBody, "error.type").String()
+	require.Equal(t, "upstream_error", errType)
+	errMsg := gjson.Get(respBody, "error.message").String()
+	require.NotEmpty(t, errMsg, "passthrough should preserve error message")
+	require.Contains(t, errMsg, "context window")
+}
+
+func TestForwardAsChatCompletions_ResponseFailed_NoRule_Still502(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(buildContextLengthFailedSSE())),
+	}}
+	svc := newWSFixture(wsFixtureInputs{options: rawChatCompletionsTestConfig(), transport: upstream})
+
+	provider := forcedResponsesChatTestProvider()
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code, "without passthrough rule should still be 502")
+}
+
+// TestForwardAsChatCompletions_ResponseFailedCustomErrorMissReturnsGeneric500 验证 HTTP 200 流内失败未命中自定义错误码时返回通用错误。
+func TestForwardAsChatCompletions_ResponseFailedCustomErrorMissReturnsGeneric500(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	failed := `{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"temporary failure"},"output":[]}}`
+	repo := &openAIWSPolicyRepo{}
+	svc := newWSFixture(wsFixtureInputs{options: rawChatCompletionsTestConfig(), transport: &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: " + failed + "\n\n")),
+	}}})
+	setWSFixtureHealth(svc, newUpstreamHealthForTest(repo, svc.options, nil, providercore.HealthOptions{}, nil))
+
+	provider := forcedResponsesChatTestProvider()
+	provider.Record.Credentials["custom_error_codes_enabled"] = true
+	provider.Record.Credentials["custom_error_codes"] = []any{float64(http.StatusUnprocessableEntity)}
+
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.Error(t, err)
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, "Upstream gateway error", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.Zero(t, repo.setErrorCalls)
+}
+
+// TestForwardAsChatCompletions_ResponseFailedCustomNonDefaultStatusFailsOver 验证 response.failed 携带非默认状态码时，命中提供商策略并切换提供商。
+func TestForwardAsChatCompletions_ResponseFailedCustomNonDefaultStatusFailsOver(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	failed := `{"type":"response.failed","response":{"status":"failed","error":{"status_code":422,"code":"configured","type":"upstream_error","message":"configured failure"},"output":[]}}`
+	repo := &openAIWSPolicyRepo{}
+	svc := newWSFixture(wsFixtureInputs{options: rawChatCompletionsTestConfig(), transport: &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: " + failed + "\n\n")),
+	}}})
+	setWSFixtureHealth(svc, newUpstreamHealthForTest(repo, svc.options, nil, providercore.HealthOptions{}, nil))
+
+	provider := forcedResponsesChatTestProvider()
+	provider.Record.Credentials["custom_error_codes_enabled"] = true
+	provider.Record.Credentials["custom_error_codes"] = []any{float64(http.StatusUnprocessableEntity)}
+
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	var failoverErr *forwardcore.UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusUnprocessableEntity, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameProvider)
+	require.False(t, c.Writer.Written())
+	require.Equal(t, 1, repo.setErrorCalls)
+}
+
+func TestForwardAsChatCompletions_ResponseFailed_ErrorCodeRuleMatchesViaSemanticStatus(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	bindStatusCodePassthroughRule(c, "openai", http.StatusBadRequest, "context_length_exceeded", http.StatusBadRequest)
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(buildContextLengthFailedSSE())),
+	}}
+	svc := newWSFixture(wsFixtureInputs{options: rawChatCompletionsTestConfig(), transport: upstream})
+
+	provider := forcedResponsesChatTestProvider()
+	_, err := svc.Text.Chat(context.Background(), c, provider, body, "", "")
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code, "error-code-conditioned rule should match via semantic status inference")
+	respBody := rec.Body.String()
+	require.Equal(t, "upstream_error", gjson.Get(respBody, "error.type").String())
+	require.Contains(t, gjson.Get(respBody, "error.message").String(), "context window")
+}
+
+func TestNormalizeResponsesRequestServiceTier(t *testing.T) {
+	t.Parallel()
+
+	req := &openaicore.ResponsesRequest{ServiceTier: " fast "}
+	normalizeResponsesRequestServiceTier(req)
+	require.Equal(t, "priority", req.ServiceTier)
+
+	req.ServiceTier = "flex"
+	normalizeResponsesRequestServiceTier(req)
+	require.Equal(t, "flex", req.ServiceTier)
+
+	// OpenAI 官方合法 tier 应被透传保留。
+	req.ServiceTier = "auto"
+	normalizeResponsesRequestServiceTier(req)
+	require.Equal(t, "auto", req.ServiceTier)
+
+	req.ServiceTier = "default"
+	normalizeResponsesRequestServiceTier(req)
+	require.Equal(t, "default", req.ServiceTier)
+
+	req.ServiceTier = "scale"
+	normalizeResponsesRequestServiceTier(req)
+	require.Equal(t, "scale", req.ServiceTier)
+
+	// 真未知值仍被剥离。
+	req.ServiceTier = "turbo"
+	normalizeResponsesRequestServiceTier(req)
+	require.Empty(t, req.ServiceTier)
+}
+
+func TestNormalizeResponsesBodyServiceTier(t *testing.T) {
+	t.Parallel()
+
+	body, tier, err := normalizeResponsesBodyServiceTier([]byte(`{"model":"gpt-5.1","service_tier":"fast"}`))
+	require.NoError(t, err)
+	require.Equal(t, "priority", tier)
+	require.Equal(t, "priority", gjson.GetBytes(body, "service_tier").String())
+
+	body, tier, err = normalizeResponsesBodyServiceTier([]byte(`{"model":"gpt-5.1","service_tier":"flex"}`))
+	require.NoError(t, err)
+	require.Equal(t, "flex", tier)
+	require.Equal(t, "flex", gjson.GetBytes(body, "service_tier").String())
+
+	// OpenAI 官方 tier 直接保留在 body 中（透传上游）。
+	body, tier, err = normalizeResponsesBodyServiceTier([]byte(`{"model":"gpt-5.1","service_tier":"auto"}`))
+	require.NoError(t, err)
+	require.Equal(t, "auto", tier)
+	require.Equal(t, "auto", gjson.GetBytes(body, "service_tier").String())
+
+	body, tier, err = normalizeResponsesBodyServiceTier([]byte(`{"model":"gpt-5.1","service_tier":"default"}`))
+	require.NoError(t, err)
+	require.Equal(t, "default", tier)
+	require.Equal(t, "default", gjson.GetBytes(body, "service_tier").String())
+
+	body, tier, err = normalizeResponsesBodyServiceTier([]byte(`{"model":"gpt-5.1","service_tier":"scale"}`))
+	require.NoError(t, err)
+	require.Equal(t, "scale", tier)
+	require.Equal(t, "scale", gjson.GetBytes(body, "service_tier").String())
+
+	body, tier, err = normalizeResponsesBodyServiceTier([]byte(`{"model":"gpt-5.6-sol","service_tier":"ultrafast"}`))
+	require.NoError(t, err)
+	require.Equal(t, "ultrafast", tier)
+	require.Equal(t, "ultrafast", gjson.GetBytes(body, "service_tier").String())
+
+	// 真未知值才会被删除。
+	body, tier, err = normalizeResponsesBodyServiceTier([]byte(`{"model":"gpt-5.1","service_tier":"turbo"}`))
+	require.NoError(t, err)
+	require.Empty(t, tier)
+	require.False(t, gjson.GetBytes(body, "service_tier").Exists())
+}
+
+func TestOpenAISetupTokenChatCompletionsUsesCodexTransform(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"setup instructions"},{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop after request capture"}}`)),
+	}}
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{}, transport: upstream})
+	provider := openAISetupTokenCompatProvider(71)
+
+	result, err := svc.Text.Chat(context.Background(), c, provider, body, "", "gpt-5.4")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, ChatgptCodexURL, upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer setup-token-value", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "chatgpt-setup", upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.NotEmpty(t, upstream.lastReq.Header.Get("originator"))
+	require.Equal(t, "setup instructions", gjson.GetBytes(upstream.lastBody, "instructions").String())
+	require.Equal(t, int64(1), gjson.GetBytes(upstream.lastBody, "input.#").Int())
+	require.Equal(t, "user", gjson.GetBytes(upstream.lastBody, "input.0.role").String())
+	require.NotEmpty(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+}

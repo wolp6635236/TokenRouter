@@ -1,8 +1,10 @@
 package authctx
 
 import (
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 )
 
 const (
@@ -31,6 +33,9 @@ type authenticationRecord struct {
 }
 
 func SetPrincipal(c *gin.Context, p identity.Principal, concurrency int, email string) {
+	if c.Request != nil {
+		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) { record.UserID = p.UserID })
+	}
 	subject := AuthSubject{UserID: p.UserID, Concurrency: concurrency}
 	c.Set(principalKey, authenticationRecord{Principal: p, Subject: subject, HasSubject: true, Role: p.Role, HasRole: true})
 	c.Set(ContextKeyUser, subject)
@@ -79,6 +84,9 @@ func GetUserRoleFromContext(c *gin.Context) (string, bool) {
 
 // SetAuthenticatedPrincipal 保存调用身份，并复制网关已解析的付款用户和并发资料。
 func SetAuthenticatedPrincipal(c *gin.Context, p identity.Principal) {
+	if c.Request != nil {
+		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) { record.UserID = p.UserID })
+	}
 	record := authenticationRecord{Principal: p}
 	if v, ok := c.Get(ContextKeyUser); ok {
 		record.Subject, record.HasSubject = v.(AuthSubject)

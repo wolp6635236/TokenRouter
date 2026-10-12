@@ -5,26 +5,23 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
+
+// capacityProviders 将提供商存储记录转换为路由需要的容量数据。
+type capacityProviders struct {
+	Store    *providerpostgres.ProviderStore
+	Settings func(context.Context) provider.QuotaAutoPauseSettings
+}
 
 // provideGroupCapacity 绑定提供商存储及并发、会话和 RPM 实例，查询时读取动态设置。
 func provideGroupCapacity(providers *providerpostgres.ProviderStore, groups *routingpostgres.GroupStore, concurrency *scheduler.ConcurrencyService, sessions scheduler.SessionLimitCache, rpm scheduler.RPMCache, settings *provider.QuotaSettingsCache) *routing.CapacityService {
 	return routing.NewCapacityService(capacityProviders{Store: providers, Settings: func(ctx context.Context) provider.QuotaAutoPauseSettings {
 		return settings.GetOpenAIQuotaAutoPauseSettings(ctx)
 	}}, groups, concurrency, sessions, rpm)
-}
-
-// capacityProviders 将提供商存储记录转换为路由需要的容量数据。
-type capacityProviders struct {
-	Store    *providerpostgres.ProviderStore
-	Settings func(context.Context) provider.QuotaAutoPauseSettings
 }
 
 func (r capacityProviders) ListSchedulableByGroupID(ctx context.Context, id int64) ([]provider.CapacitySnapshot, error) {

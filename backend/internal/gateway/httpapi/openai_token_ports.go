@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -15,8 +18,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // OpenAICountTarget 提供选择快照读取和计数执行接口。

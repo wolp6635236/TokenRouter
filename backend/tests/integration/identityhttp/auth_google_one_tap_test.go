@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
 	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 type googleIDTokenVerifierStub struct {

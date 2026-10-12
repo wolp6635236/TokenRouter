@@ -65,3 +65,9 @@ func TestNormalizeOpsErrorType(t *testing.T) {
 		})
 	}
 }
+
+// TestNativeAccountErrorsKeepTheirClassification 检查登录用户和上游错误中的 account 按原始文本分类。
+func TestNativeAccountErrorsKeepTheirClassification(t *testing.T) {
+	require.True(t, isOpsClientAuthError("", "user account is not active"))
+	require.True(t, isOpsLocalBusinessLimitError("", "insufficient account balance"))
+}

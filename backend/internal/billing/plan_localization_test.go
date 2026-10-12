@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 // TestPlanTextRequiresLocalization 防止普通列更新成功后，购买页仍读取旧内容。

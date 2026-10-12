@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	QoderUsageQuotaSnapshotExtraKey  = "qoder_quota_snapshot"
+	QoderUsageQuotaUpdatedAtExtraKey = "qoder_quota_updated_at"
+)
+
 // qoderUsageFlightResult 让同 key 的等待者核对本轮身份，不共享可变结果。
 type qoderUsageFlightResult struct {
 	Usage    *UsageInfo
@@ -20,11 +25,6 @@ type QoderUsageOptions struct {
 	Enrich  func(*UsageInfo, *Record)
 }
 
-const (
-	QoderUsageQuotaSnapshotExtraKey  = "qoder_quota_snapshot"
-	QoderUsageQuotaUpdatedAtExtraKey = "qoder_quota_updated_at"
-)
-
 func (s *OAuthUsageService) GetQoderUsage(ctx context.Context, provider *Record, force bool) (*UsageInfo, error) {
 	now := s.options.Now()
 	if provider == nil {
@@ -35,10 +35,8 @@ func (s *OAuthUsageService) GetQoderUsage(ctx context.Context, provider *Record,
 	}
 
 	if !force {
-		if cached, ok := s.cache.LoadQoder(provider.ID); ok {
-			if cache, ok := cached.(*OAuthQoderUsageCache); ok && QoderUsageCacheUsable(provider, cache, s.options.Now()) {
-				return CloneUsageInfo(cache.UsageInfo), nil
-			}
+		if cache, ok := s.cache.LoadQoder(provider.ID); ok && QoderUsageCacheUsable(provider, cache, s.options.Now()) {
+			return cache.UsageInfo, nil
 		}
 	}
 
@@ -46,10 +44,8 @@ func (s *OAuthUsageService) GetQoderUsage(ctx context.Context, provider *Record,
 	flightKey := fmt.Sprintf("qoder-usage:%d", provider.ID)
 	result, flightErr, _ := s.cache.DoQoder(flightKey, func() (any, error) {
 		if !force {
-			if cached, ok := s.cache.LoadQoder(provider.ID); ok {
-				if cache, ok := cached.(*OAuthQoderUsageCache); ok && QoderUsageCacheUsable(provider, cache, s.options.Now()) {
-					return qoderUsageFlightResult{CloneUsageInfo(cache.UsageInfo), cache.Identity}, nil
-				}
+			if cache, ok := s.cache.LoadQoder(provider.ID); ok && QoderUsageCacheUsable(provider, cache, s.options.Now()) {
+				return qoderUsageFlightResult{cache.UsageInfo, cache.Identity}, nil
 			}
 		}
 

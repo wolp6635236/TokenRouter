@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
@@ -20,18 +23,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
-
-// textPricingFixture 提供一个目录型号及可选的分组价卡。
-func textPricingFixture(t *testing.T, cards ...routing.ModelPricingEntry) *admission.ModelPricing {
-	t.Helper()
-	calculator := testkit.Calculator(nil, map[string]*pricing.ModelPricing{
-		"gpt-5.6-luna": {InputPricePerToken: 2e-7, OutputPricePerToken: 1.2e-6},
-	})
-	return &admission.ModelPricing{Resolver: testkit.ResolverWithCards(t, calculator, cards)}
-}
 
 // TestTextModelPricingSources 区分目录、手动零价和缺少基础价的倍率条目。
 func TestTextModelPricingSources(t *testing.T) {

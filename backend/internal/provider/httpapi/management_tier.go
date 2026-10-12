@@ -3,9 +3,15 @@ package httpapi
 import (
 	"strconv"
 
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
+
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
+
+// BatchRefreshTierRequest represents batch tier refresh request.
+type BatchRefreshTierRequest struct {
+	ProviderIDs []int64 `json:"provider_ids"`
+}
 
 // RefreshTier 校验提供商 ID，缺失时返回 404，成功时返回档位数据。
 func (h *ManagementHandler) RefreshTier(c *gin.Context) {
@@ -44,9 +50,4 @@ func (h *ManagementHandler) BatchRefreshTier(c *gin.Context) {
 		failures = append(failures, gin.H{"provider_id": v.ProviderID, "error": v.Error})
 	}
 	response.Success(c, gin.H{"total": result.Total, "success": result.Success, "failed": result.Failed, "errors": failures})
-}
-
-// BatchRefreshTierRequest represents batch tier refresh request
-type BatchRefreshTierRequest struct {
-	ProviderIDs []int64 `json:"provider_ids"`
 }

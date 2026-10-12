@@ -5,24 +5,17 @@ import (
 	"errors"
 	"net/http"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
-
 	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
@@ -125,8 +118,7 @@ func (p *openAIChatExecutionAdapter) NormalizeRequestTier(r *protocolopenai.Resp
 
 func (p *openAIChatExecutionAdapter) ApplyChatFast(ctx context.Context, model string, body []byte) ([]byte, error) {
 	updated, err := tierpolicy.ApplyBody(body, p.s.FastPolicy.Input(ctx, p.provider, model))
-	var blocked *tierpolicy.BlockedError
-	if errors.As(err, &blocked) {
+	if blocked, ok := errors.AsType[*tierpolicy.BlockedError](err); ok {
 		p.PolicyDenied()
 		p.ChatError(403, "permission_error", blocked.Message)
 	}

@@ -3,8 +3,12 @@ package mediaentry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -16,6 +20,7 @@ import (
 	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	routingerrors "github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -23,8 +28,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	upstreamgrok "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 type generationRequestAdapter struct {
@@ -116,13 +119,11 @@ func (p *generationRequestAdapter) ForwardGeneration(ctx context.Context, _ gate
 		after = gatewayhttp.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(p.c)
 	}
 	outcome := gatewaymedia.GenerationOutcome{Result: generationResultView(result), Err: err, OutputChanged: after != p.writerBefore}
-	var failure *forwardcore.UpstreamFailoverError
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		outcome.Failure = failure.RetryFailure()
 		outcome.ReportFailure = failure.ShouldReportProviderScheduleFailure()
 	}
-	var imageErr *openai.OpenAIImagesUpstreamError
-	if errors.As(err, &imageErr) {
+	if imageErr, ok := errors.AsType[*openai.OpenAIImagesUpstreamError](err); ok {
 		outcome.ImageError = true
 		outcome.ImageErrorRetryable = openai.IsOpenAIImagesRetryableUpstreamError(imageErr)
 		outcome.ImageErrorStatus = imageErr.StatusCode
@@ -316,6 +317,8 @@ func (p *generationRequestAdapter) completeGrok(requestCtx context.Context, valu
 	}
 	if endpoint == upstreamgrok.GrokMediaEndpointVideoStatus || endpoint == upstreamgrok.GrokMediaEndpointVideoContent {
 		taskID := strings.TrimSpace(requestID)
+		billingKey := gatewaymedia.StableGrokVideoBillingRequestID(taskID)
+		telemetry.RecordRelatedRequest(requestCtx, telemetry.RequestRecord{RequestID: telemetry.StableRequestID(fmt.Sprintf("%d/%s", apiKey.ID, billingKey)), State: firstNonEmptyString(result.VideoState, "running"), Aliases: []telemetry.RequestAlias{{Kind: "task", Value: taskID}, {Kind: "billing", Value: billingKey}}})
 		if billResult := prepareGrokVideoCompletionBilling(requestCtx, h, reqLog, apiKey, subject, taskID, result); billResult != nil {
 			recordGrokMediaUsage(c, h, reqLog, apiKey, subject, subscription, provider, billResult, billResult.Model, groupMapping, body, taskID)
 		}
@@ -328,7 +331,7 @@ func generationResultView(r *forwardcore.OpenAIResult) *gatewaymedia.GenerationR
 	if r == nil {
 		return nil
 	}
-	return gatewaymedia.CloneGenerationResult(&gatewaymedia.GenerationResult{RequestID: r.RequestID, ResponseID: r.ResponseID, Model: r.Model, BillingModel: r.BillingModel, UpstreamModel: r.UpstreamModel, Usage: r.Usage, Stream: r.Stream, Duration: r.Duration, FirstTokenMs: r.FirstTokenMs, ImageCount: r.ImageCount, VideoCount: r.VideoCount, VideoDurationSeconds: r.VideoDurationSeconds, ImageSize: r.ImageSize, ImageInputSize: r.ImageInputSize, ImageOutputSize: r.ImageOutputSize, ImageSizeSource: r.ImageSizeSource, VideoResolution: r.VideoResolution, ImageOutputSizes: r.ImageOutputSizes, ImageSizeBreakdown: r.ImageSizeBreakdown, Headers: http.Header(r.UpstreamHeaders).Clone(), ResponseHeaders: http.Header(r.ResponseHeaders).Clone()})
+	return gatewaymedia.CloneGenerationResult(&gatewaymedia.GenerationResult{RequestID: r.RequestID, ResponseID: r.ResponseID, Model: r.Model, BillingModel: r.BillingModel, UpstreamModel: r.UpstreamModel, Usage: r.Usage, Stream: r.Stream, Duration: r.Duration, FirstTokenMs: r.FirstTokenMs, ImageCount: r.ImageCount, VideoCount: r.VideoCount, VideoState: r.VideoState, VideoDurationSeconds: r.VideoDurationSeconds, ImageSize: r.ImageSize, ImageInputSize: r.ImageInputSize, ImageOutputSize: r.ImageOutputSize, ImageSizeSource: r.ImageSizeSource, VideoResolution: r.VideoResolution, ImageOutputSizes: r.ImageOutputSizes, ImageSizeBreakdown: r.ImageSizeBreakdown, Headers: http.Header(r.UpstreamHeaders).Clone(), ResponseHeaders: http.Header(r.ResponseHeaders).Clone()})
 }
 
 func legacyGenerationResult(r *gatewaymedia.GenerationResult) *forwardcore.OpenAIResult {
@@ -336,7 +339,7 @@ func legacyGenerationResult(r *gatewaymedia.GenerationResult) *forwardcore.OpenA
 		return nil
 	}
 	r = gatewaymedia.CloneGenerationResult(r)
-	return &forwardcore.OpenAIResult{RequestID: r.RequestID, ResponseID: r.ResponseID, Model: r.Model, BillingModel: r.BillingModel, UpstreamModel: r.UpstreamModel, Usage: r.Usage, Stream: r.Stream, Duration: r.Duration, FirstTokenMs: r.FirstTokenMs, ImageCount: r.ImageCount, VideoCount: r.VideoCount, VideoDurationSeconds: r.VideoDurationSeconds, ImageSize: r.ImageSize, ImageInputSize: r.ImageInputSize, ImageOutputSize: r.ImageOutputSize, ImageSizeSource: r.ImageSizeSource, VideoResolution: r.VideoResolution, ImageOutputSizes: r.ImageOutputSizes, ImageSizeBreakdown: r.ImageSizeBreakdown, UpstreamHeaders: http.Header(r.Headers).Clone(), ResponseHeaders: http.Header(r.ResponseHeaders).Clone()}
+	return &forwardcore.OpenAIResult{RequestID: r.RequestID, ResponseID: r.ResponseID, Model: r.Model, BillingModel: r.BillingModel, UpstreamModel: r.UpstreamModel, Usage: r.Usage, Stream: r.Stream, Duration: r.Duration, FirstTokenMs: r.FirstTokenMs, ImageCount: r.ImageCount, VideoCount: r.VideoCount, VideoState: r.VideoState, VideoDurationSeconds: r.VideoDurationSeconds, ImageSize: r.ImageSize, ImageInputSize: r.ImageInputSize, ImageOutputSize: r.ImageOutputSize, ImageSizeSource: r.ImageSizeSource, VideoResolution: r.VideoResolution, ImageOutputSizes: r.ImageOutputSizes, ImageSizeBreakdown: r.ImageSizeBreakdown, UpstreamHeaders: http.Header(r.Headers).Clone(), ResponseHeaders: http.Header(r.ResponseHeaders).Clone()}
 }
 
 // MediaClassify 媒体最终错误接口只适配父层共同错误分类、风控观察和响应写入。
@@ -372,8 +375,7 @@ func (p *generationRequestAdapter) MediaError(status int, typ, message string, s
 }
 
 func (p *generationRequestAdapter) MediaFailover(err error, stream bool) {
-	var value *forwardcore.UpstreamFailoverError
-	if errors.As(err, &value) {
+	if value, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		p.h.bindings.Common.Support.HandleFailoverExhausted(p.c, value, stream)
 	}
 }

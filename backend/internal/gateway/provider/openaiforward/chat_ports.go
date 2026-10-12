@@ -4,11 +4,12 @@ import (
 	"context"
 	"net/http"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"go.uber.org/zap"
 )
 
 type ChatProfile struct {

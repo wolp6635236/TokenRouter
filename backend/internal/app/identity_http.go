@@ -6,32 +6,31 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
-	"github.com/TokenFlux/TokenRouter/internal/promotion"
-	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
-	"github.com/TokenFlux/TokenRouter/internal/site"
-
-	"github.com/TokenFlux/TokenRouter/internal/payment"
-
-	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
-
 	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
 	identityadapter "github.com/TokenFlux/TokenRouter/internal/identity/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/notification"
+	"github.com/TokenFlux/TokenRouter/internal/payment"
+	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/promotion"
+	promotionhttp "github.com/TokenFlux/TokenRouter/internal/promotion/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
-
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
+	"github.com/TokenFlux/TokenRouter/internal/site"
 )
+
+// identityVerificationDelivery 转换身份模块生成的验证邮件事件。
+type identityVerificationDelivery struct {
+	mail       *notification.Mailer
+	challenges *identity.EmailChallenges
+}
 
 // identityHTTP 组合身份认证和微信支付授权的 HTTP 处理器。
 type identityHTTP struct {
@@ -45,6 +44,23 @@ type identityHTTPSettings struct {
 	*admission.BackendMode
 	public    *site.PublicService
 	composite *composite.Runtime
+}
+
+func (d identityVerificationDelivery) SendNotifyVerification(ctx context.Context, n identity.NotifyVerificationNotice) error {
+	return d.mail.SendNotifyVerification(ctx, n.UserID, n.Email, n.Code, n.Locale, n.SiteName)
+}
+
+func providePanelUserHTTP(users *identity.UserService, g *identityAuthGraph, mail *notification.Mailer, cache identity.EmailCache, challenges *identity.EmailChallenges) *identityhttp.UserHandler {
+	return identityhttp.NewUserHandler(users, g.Core, identityVerificationDelivery{mail: mail, challenges: challenges}, cache)
+}
+
+func providePromotionUserHTTP(s *promotion.AffiliateService) *promotionhttp.UserHandler {
+	return promotionhttp.NewUserHandler(s)
+}
+
+// GenerateVerifyCode 调用身份模块生成验证码，再交给投递流程。
+func (d identityVerificationDelivery) GenerateVerifyCode() (string, error) {
+	return d.challenges.GenerateVerifyCode()
 }
 
 func (s identityHTTPSettings) ReadBackendMode(ctx context.Context) bool {

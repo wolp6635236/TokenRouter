@@ -4,11 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/imroc/req/v3"
+
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+)
+
+const (
+	PrivacyModeTrainingOff = "training_off"
+	PrivacyModeFailed      = "training_set_failed"
+	PrivacyModeCFBlocked   = "training_set_cf_blocked"
 )
 
 type (
@@ -16,12 +24,6 @@ type (
 	ChatGPTAccountInfo   = wire.ChatGPTAccountInfo
 	PrivacyEndpoints     struct{ Settings, Providers, Subscriptions string }
 	PrivacyClient        struct{ Endpoints PrivacyEndpoints }
-)
-
-const (
-	PrivacyModeTrainingOff = "training_off"
-	PrivacyModeFailed      = "training_set_failed"
-	PrivacyModeCFBlocked   = "training_set_cf_blocked"
 )
 
 // DisableOpenAITraining 调用 ChatGPT 设置接口关闭训练数据共享。
@@ -57,7 +59,7 @@ func (p PrivacyClient) DisableOpenAITraining(ctx context.Context, clientFactory 
 		return PrivacyModeFailed
 	}
 
-	if resp.StatusCode == 403 || resp.StatusCode == 503 {
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusServiceUnavailable {
 		body := resp.String()
 		if strings.Contains(body, "cloudflare") || strings.Contains(body, "cf-") || strings.Contains(body, "Just a moment") {
 			slog.Warn("openai_privacy_cf_blocked", "status", resp.StatusCode)
@@ -257,7 +259,7 @@ func ChatGPTAccountObjectID(acct map[string]any, fallbackID string) string {
 	return strings.TrimSpace(fallbackID)
 }
 
-// ExtractPlanType 从单个 provider 对象中提取 plan_type
+// ExtractPlanType 从单个 provider 对象中提取 plan_type。
 func ExtractPlanType(acct map[string]any) string {
 	if provider, ok := acct["account"].(map[string]any); ok {
 		if planType, ok := provider["plan_type"].(string); ok && planType != "" {

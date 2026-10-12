@@ -2,9 +2,11 @@ package routing
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
@@ -17,13 +19,21 @@ const (
 	ReasoningEffortOverLimitDowngrade = "downgrade"
 	// ReasoningEffortOverLimitDeny 表示超出上限时拒绝请求。
 	ReasoningEffortOverLimitDeny = "deny"
+
+	// 推理强度映射支持精确、前缀和后缀匹配。
+	ReasoningEffortMatchExact  = "exact"
+	ReasoningEffortMatchPrefix = "prefix"
+	ReasoningEffortMatchSuffix = "suffix"
 )
 
-// ReasoningEffortOverLimitError 表示显式推理强度超过分组上限且策略要求拒绝。
+// ReasoningEffortOverLimitError 表示请求的推理强度超过分组上限且策略要求拒绝。
 type ReasoningEffortOverLimitError struct {
 	Requested string
 	Max       string
 }
+
+// ReasoningEffortMapping 在应用分组上限前，改写请求中的 OpenAI/Codex 推理强度值。
+type ReasoningEffortMapping = accessview.ReasoningEffortMapping
 
 func (e *ReasoningEffortOverLimitError) Error() string {
 	if e == nil {
@@ -79,8 +89,8 @@ func NormalizeReasoningEffortMappingValue(raw string) string {
 	return NormalizeMaxReasoningEffort(value)
 }
 
-// NormalizeRequestedOpenAIReasoningEffort 仅用于记录客户端显式请求值。none 没有
-// 可比较的强度排名，不能作为分组上限，但必须保留在请求审计中。
+// NormalizeRequestedOpenAIReasoningEffort 规范化客户端请求中的推理强度值。
+// none 表示关闭推理，请求审计记录该值，分组上限使用可比较的强度排名。
 func NormalizeRequestedOpenAIReasoningEffort(raw string) string {
 	return NormalizeReasoningEffortMappingValue(raw)
 }
@@ -118,10 +128,8 @@ func NormalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 	}
 
 	value := NormalizeMaxReasoningEffort(raw)
-	for _, allowed := range allowedValues {
-		if value == allowed {
-			return value, nil
-		}
+	if slices.Contains(allowedValues, value) {
+		return value, nil
 	}
 	return "", fmt.Errorf(
 		"reasoning effort %q is not supported for platform %q; allowed values: %s",
@@ -142,10 +150,8 @@ func NormalizeReasoningEffortMappingValueForPlatform(platform, raw string) (stri
 	}
 
 	value := NormalizeReasoningEffortMappingValue(raw)
-	for _, allowed := range allowedValues {
-		if value == allowed {
-			return value, nil
-		}
+	if slices.Contains(allowedValues, value) {
+		return value, nil
 	}
 	return "", fmt.Errorf(
 		"reasoning effort mapping value %q is not supported for platform %q; allowed values: %s",

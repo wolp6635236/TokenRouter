@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 // GroupPolicyView 包含当前分组的路由策略和允许的协议。
@@ -17,9 +16,43 @@ type GroupPolicyView struct {
 	AllowedProtocols  []protocol.ProtocolID
 	ProtocolFallbacks map[protocol.ProtocolID][]protocol.ProtocolID
 	RequireOAuthOnly  bool
+	// ModelsList 保存已启用的自定义展示型号，供目录生成候选。
+	ModelsList []string
 }
 
-// DecodeGroupRoutingPolicy 对损坏的持久化策略保持拒绝，避免回源失败放宽权限。
+// PlatformBoolOverride 读取分组的布尔覆盖，兼容按平台保存的对象。
+// 未配置或值类型不匹配时返回 nil，由调用方使用默认策略。
+func PlatformBoolOverride(values map[string]any, key string, platform string) *bool {
+	if values == nil {
+		return nil
+	}
+	if v, ok := values[key].(bool); ok {
+		return BoolOverridePtr(v)
+	}
+	if typed, ok := values[key].(map[string]bool); ok {
+		if value, found := typed[platform]; found {
+			return BoolOverridePtr(value)
+		}
+	}
+	raw, ok := values[key].(map[string]any)
+	if !ok {
+		return nil
+	}
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		return nil
+	}
+	if v, ok := raw[platform].(bool); ok {
+		return BoolOverridePtr(v)
+	}
+	return nil
+}
+
+func BoolOverridePtr(v bool) *bool {
+	return &v
+}
+
+// DecodeGroupRoutingPolicy 解析存储的策略，数据损坏时返回拒绝全部模型的策略。
 func DecodeGroupRoutingPolicy(raw []byte) GroupRoutingPolicy {
 	var policy GroupRoutingPolicy
 	if len(raw) > 0 && json.Unmarshal(raw, &policy) != nil {
@@ -54,7 +87,7 @@ func ValidateGroupRoutingPolicy(p GroupRoutingPolicy) error {
 	return nil
 }
 
-// GetGroupPolicy 只读取分组策略；生产装配优先使用当前请求的可信认证快照。
+// GetGroupPolicy 读取分组策略，生产装配优先使用当前请求的可信认证快照。
 func (s *PricingConfigService) GetGroupPolicy(ctx context.Context, groupID int64) (*GroupPolicyView, error) {
 	if s == nil || s.options.ReadGroup == nil {
 		return nil, nil
@@ -70,7 +103,11 @@ func (s *PricingConfigService) GetGroupPolicy(ctx context.Context, groupID int64
 	if !policy.Enabled {
 		policy = GroupRoutingPolicy{}
 	}
-	return &GroupPolicyView{GroupRoutingPolicy: policy, AllowedProtocols: append([]protocol.ProtocolID{}, group.AllowedProtocols...), ProtocolFallbacks: protocol.CloneFallbacks(group.ProtocolFallbacks), RequireOAuthOnly: group.RequireOAuthOnly}, nil
+	var models []string
+	if group.CustomModelsListEnabled() {
+		models = append([]string(nil), group.ModelsListConfig.Models...)
+	}
+	return &GroupPolicyView{ModelsList: models, GroupRoutingPolicy: policy, AllowedProtocols: append([]protocol.ProtocolID{}, group.AllowedProtocols...), ProtocolFallbacks: protocol.CloneFallbacks(group.ProtocolFallbacks), RequireOAuthOnly: group.RequireOAuthOnly}, nil
 }
 
 func (p *GroupPolicyView) RestrictionSource() string {
@@ -133,4 +170,19 @@ func (p *GroupPolicyView) IsBedrockCCCompatEnabled(platform string) bool {
 	}
 	value := PlatformBoolOverride(p.FeaturesConfig, featureKeyBedrockCCCompat, platform)
 	return value != nil && *value
+}
+
+// ModelForRestriction 根据分组白名单检查阶段确定限制检查使用的模型。
+// upstream 返回空（需逐提供商检查）。
+func ModelForRestriction(source, requestedModel, groupMappedModel string) string {
+	switch source {
+	case BillingModelSourceRequested:
+		return requestedModel
+	case BillingModelSourceUpstream:
+		return ""
+	case BillingModelSourceGroupMapped:
+		return groupMappedModel
+	default:
+		return groupMappedModel
+	}
 }

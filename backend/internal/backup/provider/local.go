@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -172,7 +173,7 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, 
 	return written, nil
 }
 
-// rooted 校验真实目标，再由同一个目录句柄完成操作，防止校验后替换路径越界。
+// rooted 校验目标后用同一个目录句柄访问，防止校验后替换路径造成越界。
 func (s *LocalBackupStore) rooted(key string) (*os.Root, string, error) {
 	full, err := s.safePath(key)
 	if err != nil {
@@ -196,8 +197,8 @@ func (s *LocalBackupStore) rooted(key string) (*os.Root, string, error) {
 	for {
 		target, e := filepath.EvalSymlinks(probe)
 		if e == nil {
-			for i := len(suffix) - 1; i >= 0; i-- {
-				target = filepath.Join(target, suffix[i])
+			for _, s := range slices.Backward(suffix) {
+				target = filepath.Join(target, s)
 			}
 			rel, e := filepath.Rel(base, target)
 			if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -213,4 +214,27 @@ func (s *LocalBackupStore) rooted(key string) (*os.Root, string, error) {
 		suffix = append(suffix, filepath.Base(probe))
 		probe = filepath.Dir(probe)
 	}
+}
+
+// DefaultBackupLocalPath 返回数据目录下的 backups 路径。
+func DefaultBackupLocalPath() string {
+	return filepath.Join(resolveBackupDataDir(), "backups")
+}
+
+// resolveBackupDataDir 依次选择 DATA_DIR、可写的 /app/data 和当前目录。
+func resolveBackupDataDir() string {
+	if dir := os.Getenv("DATA_DIR"); strings.TrimSpace(dir) != "" {
+		return dir
+	}
+
+	dockerDataDir := "/app/data"
+	if info, err := os.Stat(dockerDataDir); err == nil && info.IsDir() {
+		testFile := filepath.Join(dockerDataDir, ".write_test")
+		if f, err := os.Create(testFile); err == nil {
+			_ = f.Close()
+			_ = os.Remove(testFile)
+			return dockerDataDir
+		}
+	}
+	return "."
 }

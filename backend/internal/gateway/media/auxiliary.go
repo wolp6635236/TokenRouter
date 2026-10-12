@@ -5,8 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 // RealtimeAudioUsage 为已观测到音频且时长为正的会话计算用量。

@@ -6,23 +6,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 // Responses 保留 HTTP Responses 的 compact、归属和等待后资金检查顺序。
 // @project-doc docs/interfaces/openai_upstream.md#openai_protocol_dispatch
 func (h *OpenAITextHandler) Responses(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}

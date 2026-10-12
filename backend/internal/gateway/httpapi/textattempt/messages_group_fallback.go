@@ -5,13 +5,14 @@ import (
 	"net/http"
 	"strconv"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"go.uber.org/zap"
 )
 
 // Fallback 调用分组准入接口，gateway/text 限制每个请求最多回退一次。

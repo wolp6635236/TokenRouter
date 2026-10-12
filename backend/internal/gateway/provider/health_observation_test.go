@@ -5,9 +5,26 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
+
+// TestUpdateSessionWindow_EmptyHeadersSkipsOptionalDependencies 验证空响应头必须先短路；未装配健康服务的请求仍可完成正常输出与会话释放。
+func TestUpdateSessionWindow_EmptyHeadersSkipsOptionalDependencies(t *testing.T) {
+	var service *provideradapter.UpstreamHealth
+
+	for name, headers := range map[string]http.Header{"nil": nil, "empty": {}, "unrelated": {"Content-Type": {"application/json"}}} {
+		t.Run(name, func(t *testing.T) {
+			require.NotPanics(t, func() {
+				ObserveExecutionSessionWindow(context.Background(), service, nil,
+
+					headers)
+			})
+		})
+	}
+}
 
 // TestHealthObservationKeepsRawAndEffectiveModel 检查空模型与缺省模型的区别，供应商解析使用原始模型，冷却使用规范模型。
 func TestHealthObservationKeepsRawAndEffectiveModel(t *testing.T) {

@@ -66,17 +66,6 @@ type IdempotencyConfig struct {
 	ObserveOnly          bool
 }
 
-func DefaultIdempotencyConfig() IdempotencyConfig {
-	return IdempotencyConfig{
-		DefaultTTL:           24 * time.Hour,
-		SystemOperationTTL:   1 * time.Hour,
-		ProcessingTimeout:    30 * time.Second,
-		FailedRetryBackoff:   5 * time.Second,
-		MaxStoredResponseLen: 64 * 1024,
-		ObserveOnly:          true, // 默认先观察再强制，避免老客户端立刻中断
-	}
-}
-
 type IdempotencyExecuteOptions struct {
 	Scope          string
 	ActorScope     string
@@ -99,6 +88,29 @@ type IdempotencyCoordinator struct {
 	cfg      IdempotencyConfig
 }
 
+func DefaultIdempotencyConfig() IdempotencyConfig {
+	return IdempotencyConfig{
+		DefaultTTL:           24 * time.Hour,
+		SystemOperationTTL:   1 * time.Hour,
+		ProcessingTimeout:    30 * time.Second,
+		FailedRetryBackoff:   5 * time.Second,
+		MaxStoredResponseLen: 64 * 1024,
+		ObserveOnly:          true, // 默认先观察再强制，避免老客户端立刻中断
+	}
+}
+
+func NewIdempotencyCoordinator(repo IdempotencyRepository, cfg IdempotencyConfig, observers ...Observer) *IdempotencyCoordinator {
+	var observer Observer
+	if len(observers) > 0 {
+		observer = observers[0]
+	}
+	return &IdempotencyCoordinator{
+		observer: observer,
+		repo:     repo,
+		cfg:      cfg,
+	}
+}
+
 // DefaultWriteIdempotencyTTL 保留未装配或非正配置时的默认值。
 func (c *IdempotencyCoordinator) DefaultWriteIdempotencyTTL() time.Duration {
 	if c != nil && c.cfg.DefaultTTL > 0 {
@@ -113,18 +125,6 @@ func (c *IdempotencyCoordinator) DefaultSystemOperationIdempotencyTTL() time.Dur
 		return c.cfg.SystemOperationTTL
 	}
 	return DefaultIdempotencyConfig().SystemOperationTTL
-}
-
-func NewIdempotencyCoordinator(repo IdempotencyRepository, cfg IdempotencyConfig, observers ...Observer) *IdempotencyCoordinator {
-	var observer Observer
-	if len(observers) > 0 {
-		observer = observers[0]
-	}
-	return &IdempotencyCoordinator{
-		observer: observer,
-		repo:     repo,
-		cfg:      cfg,
-	}
 }
 
 func NormalizeIdempotencyKey(raw string) (string, error) {

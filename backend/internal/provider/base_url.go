@@ -7,31 +7,31 @@ import (
 // OpenAIBaseURL 解析 OpenAI 协议族提供商的上游 base_url。
 // 适用 openai 与国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）；grok 走 GetGrokBaseURL，
 // Grok 的默认地址由调用方解析，此处返回空字符串。
-func (a *Record) OpenAIBaseURL(adaptive bool) string {
-	if !a.IsOpenAI() && !a.IsCNProvider() {
+func (r *Record) OpenAIBaseURL(adaptive bool) string {
+	if !r.IsOpenAI() && !r.IsCNProvider() {
 		return ""
 	}
-	if _, unified := a.Credentials[UpstreamProtocolsKey]; a.IsCNProvider() && (unified || adaptive) {
-		if baseURLs, ok := a.Credentials["api_base_urls"].(map[string]any); ok {
+	if _, unified := r.Credentials[UpstreamProtocolsKey]; r.IsCNProvider() && (unified || adaptive) {
+		if baseURLs, ok := r.Credentials["api_base_urls"].(map[string]any); ok {
 			if baseURL, ok := baseURLs[APIProtocolChatCompletions].(string); ok && strings.TrimSpace(baseURL) != "" {
 				return strings.TrimSpace(baseURL)
 			}
 		}
 	}
-	if a.Type == ProviderTypeAPIKey || a.Type == ProviderTypeUpstream {
-		if baseURL := strings.TrimSpace(a.GetCredential("base_url")); baseURL != "" {
+	if r.Type == ProviderTypeAPIKey || r.Type == ProviderTypeUpstream {
+		if baseURL := strings.TrimSpace(r.GetCredential("base_url")); baseURL != "" {
 			return baseURL
 		}
 	}
 	// 平台默认 base_url：CN 供应商按 provider_mode 选择 payg / coding 默认值。
-	switch a.Platform {
+	switch r.Platform {
 	case PlatformKimi:
-		if a.GetProviderMode() == ProviderModeCoding {
+		if r.GetProviderMode() == ProviderModeCoding {
 			return DefaultKimiCodingBaseURL
 		}
 		return DefaultKimiPayGBaseURL
 	case PlatformZhipu:
-		if a.GetProviderMode() == ProviderModeCoding {
+		if r.GetProviderMode() == ProviderModeCoding {
 			return DefaultZhipuCodingBaseURL
 		}
 		return DefaultZhipuPayGBaseURL

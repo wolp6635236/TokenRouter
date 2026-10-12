@@ -11,12 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // PassthroughOptions 配置响应透传的观测、HTTP 输出和心跳。

@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	captcha "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/captcha/v20190722"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 type tencentCaptchaAPI interface {

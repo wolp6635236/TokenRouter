@@ -18,6 +18,16 @@ type probeScheduleStub struct {
 	err    error
 }
 
+type probeExecutorStub struct{}
+
+// 即便底层暂不响应取消，关闭调用也受预算约束，只有其真正结束后才报告完成。
+type uncancellableProbeRepo struct {
+	groupAvailabilityProbeRunnerRepoStub
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 func (s *probeScheduleStub) Start(run func()) error { s.starts++; s.run = run; return s.err }
 func (s *probeScheduleStub) Stop() context.Context {
 	s.stops++
@@ -25,8 +35,6 @@ func (s *probeScheduleStub) Stop() context.Context {
 	cancel()
 	return ctx
 }
-
-type probeExecutorStub struct{}
 
 func (probeExecutorStub) Select(_ context.Context, _ GroupAvailabilityProbeDueGroup, model string) (GroupProbeTarget, error) {
 	return GroupProbeTarget{ProviderID: 1, ModelID: model}, nil
@@ -79,14 +87,6 @@ func TestProbeStopCancelsClaimAndWaitsForRun(t *testing.T) {
 	runner.runDue()
 	calls, _ := repo.claimSnapshot()
 	require.Equal(t, 1, calls)
-}
-
-// 即便底层暂不响应取消，关闭调用也受预算约束，只有其真正结束后才报告完成。
-type uncancellableProbeRepo struct {
-	groupAvailabilityProbeRunnerRepoStub
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
 }
 
 func (r *uncancellableProbeRepo) ClaimDue(context.Context, time.Time, time.Time, string, int) ([]GroupAvailabilityProbeDueGroup, error) {

@@ -5,13 +5,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	keycore "github.com/TokenFlux/TokenRouter/internal/apikey"
 	billingcore "github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/gin-gonic/gin"
 )
 
 type PublicUsageContext struct {
@@ -27,10 +27,6 @@ type (
 )
 type PublicBalanceQuery func(context.Context, int64) (*PublicUserBalance, error)
 
-func (f PublicBalanceQuery) GetByID(ctx context.Context, id int64) (*PublicUserBalance, error) {
-	return f(ctx, id)
-}
-
 type PublicWindowReader interface {
 	GetRateLimitData(context.Context, int64) (*billingcore.APIKeyRateLimitData, error)
 }
@@ -45,6 +41,10 @@ type (
 		calendar       timezone.Calendar
 	}
 )
+
+func (f PublicBalanceQuery) GetByID(ctx context.Context, id int64) (*PublicUserBalance, error) {
+	return f(ctx, id)
+}
 
 func NewPublicUsageHandler(u *usage.UsageService, keys PublicWindowReader, users PublicBalanceReader, settings BalanceUnitReader, request PublicUsageContext, calendar timezone.Calendar) *PublicUsageHandler {
 	return &PublicUsageHandler{usageService: u, apiKeyService: keys, userService: users, settingService: settings, request: request, calendar: calendar}
@@ -132,7 +132,7 @@ func (h *PublicUsageHandler) buildAPIKeyUsageBilling(c *gin.Context, ctx context
 	return billing, nil, &balance, nil
 }
 
-// UsageUnrestricted 处理 unrestricted 模式的响应（向后兼容）
+// UsageUnrestricted 处理 unrestricted 模式的响应（向后兼容）。
 func (h *PublicUsageHandler) UsageUnrestricted(c *gin.Context, ctx context.Context, apiKey *keycore.APIKey, subject authctx.AuthSubject, usageData gin.H, dailyUsage any, modelStats any, balanceUnitName string) {
 	billing, subscription, balance, billingErr := h.buildAPIKeyUsageBilling(c, ctx, apiKey, subject, balanceUnitName)
 	if billingErr != nil {
@@ -208,7 +208,7 @@ func (h *PublicUsageHandler) UsageUnrestricted(c *gin.Context, ctx context.Conte
 	c.JSON(http.StatusOK, resp)
 }
 
-// usageQuotaLimited 处理 quota_limited 模式的响应
+// usageQuotaLimited 处理 quota_limited 模式的响应。
 func (h *PublicUsageHandler) usageQuotaLimited(c *gin.Context, ctx context.Context, apiKey *keycore.APIKey, subject authctx.AuthSubject, usageData gin.H, dailyUsage any, modelStats any, balanceUnitName string) {
 	resp := gin.H{
 		"mode":    "quota_limited",
@@ -330,7 +330,7 @@ func (h *PublicUsageHandler) buildAPIKeyDailyUsage(c *gin.Context, apiKeyID int6
 	return stats
 }
 
-// buildUsageData 构建 today/total 用量摘要
+// buildUsageData 构建 today/total 用量摘要。
 func (h *PublicUsageHandler) buildUsageData(ctx context.Context, apiKeyID int64) gin.H {
 	if h.usageService == nil {
 		return nil

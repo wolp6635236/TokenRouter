@@ -50,8 +50,7 @@ func CreativeHTTPStatusError(statusCode int, message string) *CreativeUpstreamEr
 
 // IsRetryableCreativeError 判断错误是否值得 worker 有限重试。
 func IsRetryableCreativeError(err error) bool {
-	var upstreamErr *CreativeUpstreamError
-	if errors.As(err, &upstreamErr) {
+	if upstreamErr, ok := errors.AsType[*CreativeUpstreamError](err); ok {
 		return upstreamErr.Retryable
 	}
 	// 未知错误（网络层、序列化等）保守视为可重试，由最大次数兜底。

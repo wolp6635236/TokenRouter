@@ -22,10 +22,6 @@ type DingTalkDepartmentReader interface {
 }
 type DingTalkDepartmentFunc func(context.Context, int64) (string, error)
 
-func (f DingTalkDepartmentFunc) ResolveDepartmentPath(ctx context.Context, id int64) (string, error) {
-	return f(ctx, id)
-}
-
 // ProfileSyncObserver 把既有诊断交给装配适配，核心不安装日志后端。
 type (
 	ProfileSyncObserver func(level, message string, args ...any)
@@ -35,6 +31,10 @@ type (
 		Observe    ProfileSyncObserver
 	}
 )
+
+func (f DingTalkDepartmentFunc) ResolveDepartmentPath(ctx context.Context, id int64) (string, error) {
+	return f(ctx, id)
+}
 
 func (s *DingTalkProfileSync) log(level, message string, args ...any) {
 	if s.Observe != nil {

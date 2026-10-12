@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 func TestOpenAIReasoningEffortPolicyContext(t *testing.T) {
@@ -210,4 +211,12 @@ func TestApplyOpenAIReasoningEffortPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRequestedReasoningEffortContext(t *testing.T) {
+	ctx := WithRequestedReasoningEffort(context.Background(), " max ")
+	got := RequestedReasoningEffortFromContext(ctx)
+	require.NotNil(t, got)
+	require.Equal(t, "max", *got)
+	require.Nil(t, RequestedReasoningEffortFromContext(context.Background()))
 }

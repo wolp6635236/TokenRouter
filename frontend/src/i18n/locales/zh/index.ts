@@ -6,8 +6,10 @@ import creative from './creative'
 import admin from './admin'
 import misc from './misc'
 import team from './team'
+import requests from './requests'
 
 export default {
+  requests,
   legal: {
     "login": "登录",
     "loadFailed": "文档加载失败",

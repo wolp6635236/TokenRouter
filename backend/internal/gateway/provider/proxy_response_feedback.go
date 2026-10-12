@@ -5,12 +5,12 @@ import (
 	"errors"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"go.uber.org/zap"
 
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"go.uber.org/zap"
 )
 
 func openAIProxyStreamCircuitProxyID(provider *ExecutionProvider) (int64, bool) {

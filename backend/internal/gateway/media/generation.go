@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
@@ -21,6 +22,8 @@ type GenerationResult struct {
 	ImageSize, ImageInputSize, ImageOutputSize, ImageSizeSource, VideoResolution string
 	ImageOutputSizes                                                             []string
 	ImageSizeBreakdown                                                           map[string]int
+	// VideoState 是已归一化的视频任务状态，用于完成请求摘要。
+	VideoState string
 }
 type GenerationSelection struct {
 	Provider   provider.ProviderSnapshot
@@ -312,9 +315,7 @@ func CloneGenerationResult(input *GenerationResult) *GenerationResult {
 	}
 	if input.ImageSizeBreakdown != nil {
 		output.ImageSizeBreakdown = make(map[string]int, len(input.ImageSizeBreakdown))
-		for key, value := range input.ImageSizeBreakdown {
-			output.ImageSizeBreakdown[key] = value
-		}
+		maps.Copy(output.ImageSizeBreakdown, input.ImageSizeBreakdown)
 	}
 	output.Headers = cloneGenerationHeaders(input.Headers)
 	output.ResponseHeaders = cloneGenerationHeaders(input.ResponseHeaders)

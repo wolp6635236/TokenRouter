@@ -18,6 +18,7 @@ func TestDetectInterceptType_SuggestionModeUnaffected(t *testing.T) {
 	got := DetectInterceptType(body, "claude-sonnet-4-5", 256, false)
 	require.Equal(t, InterceptTypeSuggestionMode, got)
 }
+
 func TestDetectInterceptType_MaxTokensOneHaikuRequiresClaudeCodeClient(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 

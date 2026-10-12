@@ -8,15 +8,16 @@ import (
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	protocolgemini "github.com/TokenFlux/TokenRouter/internal/protocol/gemini"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
+
+// geminiDigestSessionKeyPrefix Gemini 摘要 fallback 会话 key 前缀。
+const geminiDigestSessionKeyPrefix = "gemini:digest:"
 
 // BuildGeminiDigestChain 根据 Gemini 请求生成摘要链
 // 格式: s:<hash>-u:<hash>-m:<hash>-u:<hash>-...
-// s = systemInstruction, u = user, m = model
+// s = systemInstruction, u = user, m = model.
 func BuildGeminiDigestChain(req *protocolgemini.GeminiRequest) string {
 	if req == nil {
 		return ""
@@ -45,7 +46,7 @@ func BuildGeminiDigestChain(req *protocolgemini.GeminiRequest) string {
 
 // GenerateGeminiPrefixHash 生成前缀 hash（用于分区隔离）
 // 组合: userID + apiKeyID + ip + userAgent + platform + model
-// 返回 16 字符的 Base64 编码的 SHA256 前缀
+// 返回 16 字符的 Base64 编码的 SHA256 前缀。
 func GenerateGeminiPrefixHash(userID, apiKeyID int64, ip, userAgent, platform, model string) string {
 	// 组合所有标识符
 	normalizedUserAgent := requeststate.NormalizeSessionUserAgent(userAgent)
@@ -62,7 +63,7 @@ func GenerateGeminiPrefixHash(userID, apiKeyID int64, ip, userAgent, platform, m
 }
 
 // ParseGeminiSessionValue 解析 Gemini 会话缓存值
-// 格式: {uuid}:{providerID}
+// 格式: {uuid}:{providerID}。
 func ParseGeminiSessionValue(value string) (uuid string, providerID int64, ok bool) {
 	if value == "" {
 		return "", 0, false
@@ -84,13 +85,10 @@ func ParseGeminiSessionValue(value string) (uuid string, providerID int64, ok bo
 }
 
 // FormatGeminiSessionValue 格式化 Gemini 会话缓存值
-// 格式: {uuid}:{providerID}
+// 格式: {uuid}:{providerID}。
 func FormatGeminiSessionValue(uuid string, providerID int64) string {
 	return uuid + ":" + strconv.FormatInt(providerID, 10)
 }
-
-// geminiDigestSessionKeyPrefix Gemini 摘要 fallback 会话 key 前缀
-const geminiDigestSessionKeyPrefix = "gemini:digest:"
 
 // GenerateGeminiDigestSessionKey 拼接 prefixHash 和 uuid 各自前八位，生成 Gemini 内容摘要的会话键。
 // SelectProviderWithLoadAwareness 据此保持会话粘性。

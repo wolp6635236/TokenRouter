@@ -3,15 +3,17 @@ package bootstrap
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"fmt"
 	"time"
 
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	ip "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
 type SetupRedisConfig struct {
@@ -42,8 +44,7 @@ func BuildDatabaseConnectionDSNs(cfg *SetupDatabaseConfig) (bootstrapDSN, target
 	return BuildPostgresDSN(cfg, "postgres"), BuildPostgresDSN(cfg, cfg.DBName)
 }
 
-// 测试数据库连接，并在目标数据库不存在时创建它。
-
+// TestSetupDatabaseConnection 检查数据库连接，并在目标数据库不存在时创建它。
 func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 	// 先连接维护数据库，否则目标数据库尚未创建时会直接连接失败。
 	defaultDSN, targetDSN := BuildDatabaseConnectionDSNs(cfg)
@@ -69,7 +70,7 @@ func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 		return fmt.Errorf("ping failed: %w", err)
 	}
 
-	// Check if target database exists
+	// 查询目标数据库是否存在。
 	var exists bool
 	row := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", cfg.DBName)
 	if err := row.Scan(&exists); err != nil {
@@ -113,8 +114,7 @@ func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 	return nil
 }
 
-// TestSetupRedisConnection tests the Redis connection
-
+// TestSetupRedisConnection 检查 Redis 连接。
 func TestSetupRedisConnection(cfg *SetupRedisConfig) error {
 	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -169,4 +169,9 @@ func InitializeSetupAdmin(ctx context.Context, cfg *SetupDatabaseConfig, input i
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return CreateInitialAdmin(ctx, db, input, password)
+}
+
+// CreateInitialAdmin 装配安装所需的身份存储并创建管理员。
+func CreateInitialAdmin(ctx context.Context, db *sql.DB, input identity.InitialAdminInput, password func() (string, error)) (bool, string, error) {
+	return ip.CreateInitialAdmin(ctx, db, input, password)
 }

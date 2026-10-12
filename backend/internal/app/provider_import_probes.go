@@ -12,6 +12,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// 导入队列读取探测摘要。
+type grokQuotaImportProbe struct{ Source *provider.GrokQuotaService }
+
 // provideProviderImportProbes 为提供商导入绑定按需启动的探测队列。
 func provideProviderImportProbes(manager *lifecycle.Manager) *provider.GrokImportProbeScheduler {
 	queue := provider.NewGrokImportProbeScheduler(provider.GrokImportProbeOptions{Concurrency: 3, Timeout: 25 * time.Second, Debug: slog.Debug, Info: slog.Info, Warn: slog.Warn, Error: slog.Error})
@@ -50,9 +53,6 @@ func provideGrokOAuthWithImports(
 	}})
 	return providerhttp.NewGrokOAuthHandler(auth, imports, quota, providerhttp.GrokOAuthHTTPOptions{ProxyURL: proxyURL, RuntimeSanity: func() any { return grok.RuntimeSanity() }, Reconciler: reconciler})
 }
-
-// 导入队列读取探测摘要。
-type grokQuotaImportProbe struct{ Source *provider.GrokQuotaService }
 
 func (p grokQuotaImportProbe) QueryQuota(ctx context.Context, id int64) (*provider.GrokImportProbeResult, error) {
 	v, err := p.Source.QueryQuota(ctx, id)

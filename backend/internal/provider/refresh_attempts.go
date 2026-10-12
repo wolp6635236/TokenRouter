@@ -43,6 +43,11 @@ type RefreshAttempts struct {
 	PostActions, SyncCleanup          func(context.Context, *Record)
 }
 
+type rateLimitedRefreshExecutor struct {
+	OAuthRefreshExecutor
+	acquireRate func(context.Context) (func(), error)
+}
+
 func (s RefreshAttempts) Run(
 	ctx context.Context,
 	provider *Record,
@@ -178,8 +183,7 @@ func (s RefreshAttempts) Run(
 		if IsProviderScopedTerminalRefreshError(err) {
 			return err
 		}
-		var stateUnavailableErr *RefreshStateUnavailableError
-		if errors.As(err, &stateUnavailableErr) {
+		if _, ok := errors.AsType[*RefreshStateUnavailableError](err); ok {
 			return &ProviderCycleContainmentRefreshError{Cause: err}
 		}
 		if s.AmbiguousEntitlement(provider, err) {
@@ -206,18 +210,17 @@ func (s RefreshAttempts) Run(
 					return &ProviderConfigurationRefreshError{
 						Cause: errors.New("grok OAuth conditional refresh mutation repository is not configured"),
 					}
-				} else {
-					persistentlyBlocked, setErr = conditionalRepo.SetGrokOAuthRefreshErrorIfCredentialsUnchanged(
-						ctx,
-						provider.ID,
-						provider.Credentials,
-						provider.ProxyID,
-						errorMsg,
-					)
-					if setErr == nil && !persistentlyBlocked {
-						s.Info("token_refresh.grok_error_status_skipped_stale_credentials", "provider_id", provider.ID)
-						return ErrRefreshSkipped
-					}
+				}
+				persistentlyBlocked, setErr = conditionalRepo.SetGrokOAuthRefreshErrorIfCredentialsUnchanged(
+					ctx,
+					provider.ID,
+					provider.Credentials,
+					provider.ProxyID,
+					errorMsg,
+				)
+				if setErr == nil && !persistentlyBlocked {
+					s.Info("token_refresh.grok_error_status_skipped_stale_credentials", "provider_id", provider.ID)
+					return ErrRefreshSkipped
 				}
 			} else {
 				if failureProvider == nil {
@@ -335,13 +338,12 @@ func (s RefreshAttempts) Run(
 		} else if !applied {
 			s.Info("token_refresh.grok_temp_unschedulable_skipped_stale_credentials", "provider_id", provider.ID)
 			return ErrRefreshSkipped
-		} else {
-			publishFailure(until, "token_refresh_retry_exhausted")
-			s.Info("token_refresh.temp_unschedulable_set",
-				"provider_id", provider.ID,
-				"until", until.Format(time.RFC3339),
-			)
 		}
+		publishFailure(until, "token_refresh_retry_exhausted")
+		s.Info("token_refresh.temp_unschedulable_set",
+			"provider_id", provider.ID,
+			"until", until.Format(time.RFC3339),
+		)
 		return lastErr
 	}
 
@@ -374,11 +376,6 @@ func (s RefreshAttempts) Run(
 	}
 
 	return lastErr
-}
-
-type rateLimitedRefreshExecutor struct {
-	OAuthRefreshExecutor
-	acquireRate func(context.Context) (func(), error)
 }
 
 func (e *rateLimitedRefreshExecutor) Refresh(ctx context.Context, provider *Record) (map[string]any, error) {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -42,24 +43,6 @@ type MessagesCapture struct {
 type QuotaUpdater interface {
 	UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error
 	UpdateRateLimitUsage(ctx context.Context, apiKeyID int64, cost float64) error
-}
-
-func CompletionRequestID(ctx context.Context, upstreamRequestID string) string {
-	return completion.ResolveRequestID(RequestIdentity(ctx, upstreamRequestID, ""), scheduler.GenerateRequestID)
-}
-
-// StableAudioBillingRequestID 为单次 TTS/STT HTTP 调用生成持久用量去重键，优先沿用上游请求 ID。
-func StableAudioBillingRequestID(upstreamRequestID string) string {
-	return completion.StableAudioRequestID(upstreamRequestID, scheduler.GenerateRequestID)
-}
-
-// StableRealtimeBillingRequestID 为单个 Realtime WebSocket 会话生成持久用量去重键。
-func StableRealtimeBillingRequestID(sessionID string) string {
-	return completion.StableRealtimeRequestID(sessionID, scheduler.GenerateRequestID)
-}
-
-func CompletionPayloadFingerprint(ctx context.Context, requestPayloadHash string) string {
-	return completion.PayloadFingerprint(RequestIdentity(ctx, "", requestPayloadHash))
 }
 
 // OpenAICapture 包含同步捕获的输入和 HTTP 请求或 WS turn 的计费时刻。
@@ -108,6 +91,24 @@ type CyberCapture struct {
 	routing.PricingUsageFields
 }
 
+func CompletionBillingKey(ctx context.Context, upstreamRequestID string) string {
+	return completion.ResolveBillingKey(RequestIdentity(ctx, upstreamRequestID, ""), scheduler.GenerateRequestID)
+}
+
+// StableAudioBillingRequestID 为单次 TTS/STT HTTP 调用生成持久用量去重键，优先沿用上游请求 ID。
+func StableAudioBillingRequestID(upstreamRequestID string) string {
+	return completion.StableAudioRequestID(upstreamRequestID, scheduler.GenerateRequestID)
+}
+
+// StableRealtimeBillingRequestID 为单个 Realtime WebSocket 会话生成持久用量去重键。
+func StableRealtimeBillingRequestID(sessionID string) string {
+	return completion.StableRealtimeRequestID(sessionID, scheduler.GenerateRequestID)
+}
+
+func CompletionPayloadFingerprint(ctx context.Context, requestPayloadHash string) string {
+	return completion.PayloadFingerprint(RequestIdentity(ctx, "", requestPayloadHash))
+}
+
 // CaptureMessages 在提交完成记录时保存用量和付款主体快照。
 func CaptureMessages(ctx context.Context, in *MessagesCapture) *completion.Input {
 	if in == nil {
@@ -131,7 +132,7 @@ func CaptureMessages(ctx context.Context, in *MessagesCapture) *completion.Input
 		PricingUsageFields: in.PricingUsageFields,
 	}
 	if in.Result != nil {
-		out.RequestID = CompletionRequestID(ctx, in.Result.RequestID)
+		captureRequestIdentity(ctx, out, in.Result.RequestID)
 		out.RequestedReasoningEffort = requeststate.CanonicalRequestedReasoningEffort(in.RequestBody)
 	}
 	return completion.Snapshot(out)
@@ -164,7 +165,7 @@ func CaptureOpenAI(ctx context.Context, in *OpenAICapture) *completion.Input {
 		RequestedReasoningEffort: requeststate.CanonicalRequestedReasoningEffort(in.RequestBody),
 	}
 	if in.Result != nil {
-		out.RequestID = CompletionRequestID(ctx, in.Result.RequestID)
+		captureRequestIdentity(ctx, out, in.Result.RequestID)
 	}
 	return completion.Snapshot(out)
 }
@@ -211,4 +212,66 @@ func CaptureCyber(ctx context.Context, in CyberCapture) *completion.Input {
 		CyberBlocked:       true,
 		NativeCompactionV2: in.NativeCompactionV2,
 	})
+}
+
+// captureRequestIdentity 在请求结束前拆分排障标识和计费去重键。
+func captureRequestIdentity(ctx context.Context, out *completion.Input, upstreamID string) {
+	out.BillingKey = CompletionBillingKey(ctx, upstreamID)
+	out.BillingKey = out.SettlementKey()
+	out.RequestID = telemetry.RequestIDValue(ctx)
+	if out.RequestID == "" || out.Result.VideoCount > 0 {
+		var keyID int64
+		if out.APIKey != nil {
+			keyID = out.APIKey.ID
+		}
+		out.RequestID = telemetry.StableRequestID(fmt.Sprintf("%d/%s", keyID, out.BillingKey))
+	}
+	childRequest := telemetry.IsChildRequest(ctx)
+	if out.RequestID == telemetry.RequestIDValue(ctx) {
+		telemetry.UpdateRequest(ctx, func(record *telemetry.RequestRecord) {
+			record.Model = out.Result.Model
+			if out.Provider != nil {
+				record.ProviderID = out.Provider.ID
+				record.Platform = out.Provider.Platform
+				attempt := telemetry.RequestAttempt{Number: len(record.Attempts) + 1, ProviderID: out.Provider.ID, Outcome: "completed", DurationMs: out.Result.Duration.Milliseconds()}
+				if out.Result.UpstreamRequestID != nil {
+					attempt.RequestID = *out.Result.UpstreamRequestID
+				}
+				if !childRequest && len(record.Attempts) < 256 {
+					record.Attempts = append(record.Attempts, attempt)
+				}
+			}
+		})
+		telemetry.AddRequestAlias(ctx, "billing", out.BillingKey)
+		if !completion.ForcedRequestID(upstreamID) && !strings.HasPrefix(upstreamID, "x_search:") {
+			telemetry.AddRequestAlias(ctx, "upstream", upstreamID)
+		}
+		telemetry.AddRequestAlias(ctx, "upstream", out.Result.ResponseID)
+		if out.Result.UpstreamRequestID != nil {
+			telemetry.AddRequestAlias(ctx, "upstream", *out.Result.UpstreamRequestID)
+		}
+	}
+	if out.RequestID != telemetry.RequestIDValue(ctx) {
+		record := telemetry.RequestRecord{RequestID: out.RequestID, State: "completed", Model: out.Result.Model, StartedAt: out.PricingAt}
+		if record.StartedAt.IsZero() {
+			record.StartedAt = time.Now().Add(-out.Result.Duration)
+		}
+		record.DurationMs = out.Result.Duration.Milliseconds()
+		record.Aliases = []telemetry.RequestAlias{{Kind: "billing", Value: out.BillingKey}}
+		if upstreamID != "" {
+			record.Aliases = append(record.Aliases, telemetry.RequestAlias{Kind: "upstream", Value: upstreamID})
+		}
+		if out.APIKey != nil {
+			record.UserID = out.APIKey.ActorUserID
+			record.APIKeyID = out.APIKey.ID
+			if out.APIKey.TeamID != nil {
+				record.TeamID = *out.APIKey.TeamID
+			}
+		}
+		if out.Provider != nil {
+			record.ProviderID = out.Provider.ID
+			record.Platform = out.Provider.Platform
+		}
+		telemetry.RecordRelatedRequest(ctx, record)
+	}
 }

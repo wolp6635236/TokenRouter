@@ -6,11 +6,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/migrations"
-	"github.com/stretchr/testify/require"
 )
 
 // TestRequestLimitsPersistence 覆盖空库迁移、重复执行、局部更新和认证查询。

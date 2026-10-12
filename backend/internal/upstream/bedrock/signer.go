@@ -8,17 +8,17 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
-// BedrockSigner 使用 AWS SigV4 对 Bedrock 请求签名
+// BedrockSigner 使用 AWS SigV4 对 Bedrock 请求签名。
 type BedrockSigner struct {
 	credentials aws.Credentials
 	Region      string
 	signer      *v4.Signer
 }
 
-// NewBedrockSigner 创建 BedrockSigner
+// NewBedrockSigner 创建 BedrockSigner。
 func NewBedrockSigner(accessKeyID, secretAccessKey, sessionToken, region string) *BedrockSigner {
 	return &BedrockSigner{
 		credentials: aws.Credentials{

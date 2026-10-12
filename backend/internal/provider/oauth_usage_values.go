@@ -11,7 +11,7 @@ import (
 //
 // cost: 提供商费用（COALESCE(provider_stats_cost, total_cost) * provider_rate_multiplier）
 // standard_cost: 标准费用（total_cost，不含倍率）
-// user_cost: 用户或 API Key 的实际扣费（actual_cost，受分组倍率影响）
+// user_cost: 用户或 API Key 的实际扣费（actual_cost，受分组倍率影响）。
 type WindowStats struct {
 	Requests     int64   `json:"requests"`
 	Tokens       int64   `json:"tokens"`
@@ -20,7 +20,7 @@ type WindowStats struct {
 	UserCost     float64 `json:"user_cost"`
 }
 
-// UsageProgress 使用量进度
+// UsageProgress 使用量进度。
 type UsageProgress struct {
 	Utilization      float64      `json:"utilization"`            // 使用率百分比 (0-100+，100表示100%)
 	ResetsAt         *time.Time   `json:"resets_at"`              // 重置时间
@@ -30,13 +30,13 @@ type UsageProgress struct {
 	LimitRequests    int64        `json:"limit_requests,omitempty"`
 }
 
-// AntigravityModelQuota Antigravity 单个模型的配额信息
+// AntigravityModelQuota Antigravity 单个模型的配额信息。
 type AntigravityModelQuota struct {
 	Utilization int    `json:"utilization"` // 使用率 0-100
 	ResetTime   string `json:"reset_time"`  // 重置时间 ISO8601
 }
 
-// AntigravityModelDetail Antigravity 单个模型的详细能力信息
+// AntigravityModelDetail Antigravity 单个模型的详细能力信息。
 type AntigravityModelDetail struct {
 	DisplayName        string          `json:"display_name,omitempty"`
 	SupportsImages     *bool           `json:"supports_images,omitempty"`
@@ -84,7 +84,7 @@ type QoderQuotaInfo struct {
 	SnapshotFromProvider bool                `json:"snapshot_from_provider,omitempty"`
 }
 
-// UsageInfo 提供商使用量信息
+// UsageInfo 提供商使用量信息。
 type UsageInfo struct {
 	Source             string         `json:"source,omitempty"`               // "passive" or "active"
 	UpdatedAt          *time.Time     `json:"updated_at,omitempty"`           // 更新时间

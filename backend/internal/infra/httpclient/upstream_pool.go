@@ -18,13 +18,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
-	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
-
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/net/http2"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 )
 
 const (
@@ -35,8 +35,12 @@ const (
 	http2PingTimeout                   = 15 * time.Second
 )
 
-// ErrUpstreamClientLimitReached 表示所有缓存条目仍被在途请求占用。
-var ErrUpstreamClientLimitReached = errors.New("upstream client cache limit reached")
+var (
+	// ErrUpstreamClientLimitReached 表示所有缓存条目仍被在途请求占用。
+	ErrUpstreamClientLimitReached = errors.New("upstream client cache limit reached")
+
+	errResponseHeaderTimeout = &responseHeaderTimeoutError{}
+)
 
 // TransportProtocol 只描述传输能力；CacheVariant 保留调用方已有的隔离标识。
 type TransportProtocol struct {
@@ -68,6 +72,59 @@ type UpstreamRequestOptions struct {
 type UpstreamPool struct {
 	mu      sync.RWMutex
 	clients map[string]*upstreamClientEntry
+}
+
+// UpstreamSettings 包含已解析的连接池参数和响应头超时。
+type UpstreamSettings struct {
+	MaxIdleConns          int           // 最大空闲连接总数
+	MaxIdleConnsPerHost   int           // 每主机最大空闲连接数
+	MaxConnsPerHost       int           // 每主机最大连接数（含活跃）
+	IdleConnTimeout       time.Duration // 空闲连接超时时间
+	ResponseHeaderTimeout time.Duration // 等待响应头超时时间
+}
+
+// upstreamClientEntry 上游客户端缓存条目
+// 记录客户端实例及其元数据，用于连接池管理和淘汰策略。
+type upstreamClientEntry struct {
+	client       *http.Client // HTTP 客户端实例
+	proxyKey     string       // 代理标识（用于检测代理变更）
+	poolKey      string       // 连接池配置标识（用于检测配置变更）
+	protocolMode string       // 协议模式（default/openai_h1/openai_h2/openai_h1_fallback）
+	lastUsed     int64        // 最后使用时间戳（纳秒），用于 LRU 淘汰
+	inFlight     int64        // 当前进行中的请求数，>0 时不可淘汰
+}
+
+type responseHeaderTimeoutError struct{}
+
+// responseHeaderTimeoutRoundTripper 为裸 http2.Transport 补齐等待响应头超时。
+// 请求拿到响应头后会停止计时，避免长时间 SSE 响应在读取 Body 阶段被误取消。
+type responseHeaderTimeoutRoundTripper struct {
+	base    http.RoundTripper
+	timeout time.Duration
+}
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+// trackedBody 带跟踪功能的响应体包装器
+// 在 Close 时执行回调，用于更新请求计数。
+type trackedBody struct {
+	io.ReadCloser // 原始响应体
+	once          sync.Once
+	onClose       func() // 关闭时的回调函数
+}
+
+type zstdResponseReader struct {
+	io.ReadCloser
+	warnOnce sync.Once
+}
+
+// decompressedBody 组合解压 reader 和原始 body 的 close。
+type decompressedBody struct {
+	reader io.Reader
+	closer io.Closer
 }
 
 // NewUpstreamPool 创建独立的上游池，不与通用或 req 客户端池合并状态。
@@ -107,26 +164,6 @@ func (s *UpstreamPool) Do(req *http.Request, opts UpstreamRequestOptions) (*http
 	decompressResponseBody(resp)
 	resp.Body = wrapTrackedBody(resp.Body, release)
 	return resp, nil
-}
-
-// UpstreamSettings 包含已解析的连接池参数和响应头超时。
-type UpstreamSettings struct {
-	MaxIdleConns          int           // 最大空闲连接总数
-	MaxIdleConnsPerHost   int           // 每主机最大空闲连接数
-	MaxConnsPerHost       int           // 每主机最大连接数（含活跃）
-	IdleConnTimeout       time.Duration // 空闲连接超时时间
-	ResponseHeaderTimeout time.Duration // 等待响应头超时时间
-}
-
-// upstreamClientEntry 上游客户端缓存条目
-// 记录客户端实例及其元数据，用于连接池管理和淘汰策略
-type upstreamClientEntry struct {
-	client       *http.Client // HTTP 客户端实例
-	proxyKey     string       // 代理标识（用于检测代理变更）
-	poolKey      string       // 连接池配置标识（用于检测配置变更）
-	protocolMode string       // 协议模式（default/openai_h1/openai_h2/openai_h1_fallback）
-	lastUsed     int64        // 最后使用时间戳（纳秒），用于 LRU 淘汰
-	inFlight     int64        // 当前进行中的请求数，>0 时不可淘汰
 }
 
 // acquire 保持读锁快速路径、写锁重查和只逐出空闲条目的原有顺序。
@@ -220,7 +257,7 @@ func (s *UpstreamPool) acquire(opts UpstreamRequestOptions) (*upstreamClientEntr
 }
 
 // shouldReuseEntry 判断缓存条目是否可复用
-// 若代理或连接池配置发生变化，则需要重建客户端
+// 若代理或连接池配置发生变化，则需要重建客户端。
 func (s *UpstreamPool) shouldReuseEntry(entry *upstreamClientEntry, isolation, proxyKey, poolKey string) bool {
 	if entry == nil {
 		return false
@@ -277,7 +314,7 @@ func (s *UpstreamPool) evictIdleLocked(now time.Time, ttl time.Duration) {
 	}
 }
 
-// evictOldestIdleLocked 淘汰最久未使用且无活跃请求的客户端（需持有锁）
+// evictOldestIdleLocked 淘汰最久未使用且无活跃请求的客户端（需持有锁）。
 func (s *UpstreamPool) evictOldestIdleLocked() bool {
 	var (
 		oldestKey   string
@@ -306,7 +343,7 @@ func (s *UpstreamPool) evictOldestIdleLocked() bool {
 }
 
 // evictOverLimitLocked 淘汰超出数量限制的客户端（需持有锁）
-// 使用 LRU 策略，优先淘汰最久未使用且无活跃请求的客户端
+// 使用 LRU 策略，优先淘汰最久未使用且无活跃请求的客户端。
 func (s *UpstreamPool) evictOverLimitLocked(maxClients int) bool {
 	if maxClients <= 0 {
 		return false
@@ -412,11 +449,8 @@ func buildUpstreamTransport(settings UpstreamSettings, proxyURL *url.URL, protoc
 	switch {
 	case protocol.HTTP2:
 		transport.ForceAttemptHTTP2 = true
-		// 显式配置 http2 并启用 PING 健康探测，剔除代理/NAT 静默掐断的死连接，
-		// 避免请求挂在死连接上直到 TCP 重传超时（分钟级）。
-		if _, err := enableHTTP2KeepAlive(transport); err != nil {
-			return nil, err
-		}
+		// 空闲 PING 用于发现代理或 NAT 已断开、客户端仍认为可用的连接。
+		enableHTTP2KeepAlive(transport)
 	case protocol.DisableHTTP2:
 		transport.ForceAttemptHTTP2 = false
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
@@ -427,16 +461,21 @@ func buildUpstreamTransport(settings UpstreamSettings, proxyURL *url.URL, protoc
 	return transport, nil
 }
 
-func enableHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
-	h2, err := http2.ConfigureTransports(transport)
-	if err != nil {
-		return nil, err
+// enableHTTP2KeepAlive 配置标准库的 HTTP/2 协商和空闲 PING。
+func enableHTTP2KeepAlive(transport *http.Transport) {
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = new(tls.Config)
 	}
-	if h2 != nil {
-		h2.ReadIdleTimeout = http2ReadIdleTimeout
-		h2.PingTimeout = http2PingTimeout
+	if transport.Protocols == nil {
+		transport.Protocols = new(http.Protocols)
+		transport.Protocols.SetHTTP1(true)
 	}
-	return h2, nil
+	transport.Protocols.SetHTTP2(true)
+	if transport.HTTP2 == nil {
+		transport.HTTP2 = new(http.HTTP2Config)
+	}
+	transport.HTTP2.SendPingTimeout = http2ReadIdleTimeout
+	transport.HTTP2.PingTimeout = http2PingTimeout
 }
 
 // buildUpstreamTransportWithTLSFingerprint 构建带 TLS 指纹伪装的 RoundTripper
@@ -502,6 +541,7 @@ func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyUR
 	transport.DialTLSContext = dialTLSContext
 
 	if useHTTP2 && dialTLSContext != nil {
+		//nolint:staticcheck // uTLS 返回独立的 ConnectionState 类型，通过 x/net 的裸连接拨号接口传给 HTTP/2。
 		h2Transport := &http2.Transport{
 			IdleConnTimeout: settings.IdleConnTimeout,
 			ReadIdleTimeout: http2ReadIdleTimeout,
@@ -532,10 +572,6 @@ func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyUR
 	return transport, nil
 }
 
-var errResponseHeaderTimeout = &responseHeaderTimeoutError{}
-
-type responseHeaderTimeoutError struct{}
-
 func (e *responseHeaderTimeoutError) Error() string {
 	return "net/http: timeout awaiting response headers"
 }
@@ -548,14 +584,7 @@ func (e *responseHeaderTimeoutError) Temporary() bool {
 	return true
 }
 
-// responseHeaderTimeoutRoundTripper 为裸 http2.Transport 补齐等待响应头超时。
-// 请求拿到响应头后会停止计时，避免长时间 SSE 响应在读取 Body 阶段被误取消。
-type responseHeaderTimeoutRoundTripper struct {
-	base    http.RoundTripper
-	timeout time.Duration
-}
-
-// RoundTrip 只接受官方 CLI 身份、OAuth Bearer 和明确 Access denied 响应作为回退候选。
+// RoundTrip 在等待响应头超时后取消请求，收到响应头后停止计时。
 func (r *responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if r == nil || r.base == nil {
 		return nil, errors.New("response header timeout round tripper missing base")
@@ -597,7 +626,7 @@ func (r *responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.
 	return resp, nil
 }
 
-// CloseIdleConnections 透传底层连接池关闭能力，避免包装后空闲 h2 连接无法被回收。
+// CloseIdleConnections 关闭底层传输的空闲连接。
 func (r *responseHeaderTimeoutRoundTripper) CloseIdleConnections() {
 	if r == nil || r.base == nil {
 		return
@@ -609,13 +638,8 @@ func (r *responseHeaderTimeoutRoundTripper) CloseIdleConnections() {
 	}
 }
 
-type cancelOnCloseReadCloser struct {
-	io.ReadCloser
-	cancel context.CancelFunc
-}
-
 // Close 关闭响应体并执行回调
-// 使用 sync.Once 确保回调只执行一次
+// 使用 sync.Once 确保回调只执行一次。
 func (r *cancelOnCloseReadCloser) Close() error {
 	err := r.ReadCloser.Close()
 	if r.cancel != nil {
@@ -624,16 +648,8 @@ func (r *cancelOnCloseReadCloser) Close() error {
 	return err
 }
 
-// trackedBody 带跟踪功能的响应体包装器
-// 在 Close 时执行回调，用于更新请求计数
-type trackedBody struct {
-	io.ReadCloser // 原始响应体
-	once          sync.Once
-	onClose       func() // 关闭时的回调函数
-}
-
 // Close 关闭响应体并执行回调
-// 使用 sync.Once 确保回调只执行一次
+// 使用 sync.Once 确保回调只执行一次。
 func (b *trackedBody) Close() error {
 	err := b.ReadCloser.Close()
 	if b.onClose != nil {
@@ -710,11 +726,6 @@ func decompressResponseBody(resp *http.Response) {
 	resp.ContentLength = -1
 }
 
-type zstdResponseReader struct {
-	io.ReadCloser
-	warnOnce sync.Once
-}
-
 func (r *zstdResponseReader) Read(p []byte) (int, error) {
 	n, err := r.ReadCloser.Read(p)
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -723,12 +734,6 @@ func (r *zstdResponseReader) Read(p []byte) (int, error) {
 		})
 	}
 	return n, err
-}
-
-// decompressedBody 组合解压 reader 和原始 body 的 close。
-type decompressedBody struct {
-	reader io.Reader
-	closer io.Closer
 }
 
 func (d *decompressedBody) Read(p []byte) (int, error) {
@@ -741,4 +746,16 @@ func (d *decompressedBody) Close() error {
 		_ = rc.Close()
 	}
 	return d.closer.Close()
+}
+
+// CloseIdleConnections 在请求与后台任务完成后释放本池的空闲连接。
+// 缓存条目继续复用，调用方仍需关闭使用中的响应体。
+func (s *UpstreamPool) CloseIdleConnections() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.clients {
+		if entry != nil && entry.client != nil {
+			entry.client.CloseIdleConnections()
+		}
+	}
 }

@@ -11,18 +11,21 @@ func (c operationClock) now() time.Time {
 	}
 	return time.Now()
 }
+
 func clockFromOptional(clocks []func() time.Time) operationClock {
 	if len(clocks) > 0 {
 		return operationClock{read: clocks[0]}
 	}
 	return operationClock{}
 }
+
 func (s *SessionService) now() time.Time {
 	if s != nil && s.options.Now != nil {
 		return s.options.Now()
 	}
 	return time.Now()
 }
+
 func (s *UserAdmin) now() time.Time {
 	if s.Now != nil {
 		return s.Now()

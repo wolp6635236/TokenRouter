@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	gatewayws "github.com/TokenFlux/TokenRouter/internal/gateway/ws"
-
 	coderws "github.com/coder/websocket"
+
+	gatewayws "github.com/TokenFlux/TokenRouter/internal/gateway/ws"
 )
 
 func SummarizeWSCloseErrorForLog(err error) (string, string) {
@@ -20,8 +20,7 @@ func SummarizeWSCloseErrorForLog(err error) (string, string) {
 	}
 	closeStatus := fmt.Sprintf("%d(%s)", int(statusCode), statusCode.String())
 	closeReason := "-"
-	var closeErr coderws.CloseError
-	if errors.As(err, &closeErr) {
+	if closeErr, ok := errors.AsType[coderws.CloseError](err); ok {
 		reason := strings.TrimSpace(closeErr.Reason)
 		if reason != "" {
 			closeReason = reason
@@ -32,8 +31,7 @@ func SummarizeWSCloseErrorForLog(err error) (string, string) {
 
 // ResponsesWSCloseInfo 提取客户端关闭错误的状态和原因。
 func ResponsesWSCloseInfo(err error) gatewayws.EntryClose {
-	var closed *OpenAIWSClientCloseError
-	if errors.As(err, &closed) {
+	if closed, ok := errors.AsType[*OpenAIWSClientCloseError](err); ok {
 		return gatewayws.EntryClose{Status: int(closed.StatusCode()), Reason: closed.Reason(), Present: true}
 	}
 	return gatewayws.EntryClose{}

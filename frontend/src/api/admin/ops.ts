@@ -852,6 +852,7 @@ export async function getTokenStats(
 export type OpsErrorListView = 'errors' | 'excluded' | 'all'
 
 export type OpsErrorListQueryParams = {
+ request_id?: string
   page?: number
   page_size?: number
   time_range?: string

@@ -4,18 +4,16 @@ import (
 	"context"
 	"net/http"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/gin-gonic/gin"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/gin-gonic/gin"
 )
 
 // httpFailover 对 >=400 的上游响应做 failover 判定：命中时

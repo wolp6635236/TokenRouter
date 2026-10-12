@@ -13,7 +13,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
@@ -28,7 +27,7 @@ func (r *Runtime) Open(ctx context.Context, in execution.Request, sink upstream.
 	base := responsesAttemptBridge{
 		fixed: r.dependencies, c: output.HTTP, apiKey: apikey.CopyAPIKey(in.Funding.Key), subject: authctx.AuthSubject{UserID: in.UserID, Concurrency: in.Concurrency}, subscription: in.Funding.Subscription, reqLog: output.Log,
 		body: in.Body, forwardBody: in.AttemptBody, sessionHashBody: in.Text.SessionHashBody, reqModel: in.Model, forwardModel: in.Text.ForwardModel, sessionHash: in.SessionHash, previousResponseID: in.Text.PreviousResponseID, requestPlatform: in.Text.Platform, reqStream: in.Stream,
-		nativeCompactionV2: in.Text.NativeCompactionV2, legacyCompact: in.Text.LegacyCompact, requireCompact: in.Text.RequireCompact, streamStarted: output.StreamStarted, selectionCtx: in.Text.SelectionContext, groupMapping: routing.GroupMappingResult(in.Text.Mapping), routingStart: in.Text.RoutingStart, requiredCapability: in.Text.RequiredCapability,
+		nativeCompactionV2: in.Text.NativeCompactionV2, legacyCompact: in.Text.LegacyCompact, requireCompact: in.Text.RequireCompact, streamStarted: output.StreamStarted, selectionCtx: in.Text.SelectionContext, groupMapping: in.Text.Mapping, routingStart: in.Text.RoutingStart, requiredCapability: in.Text.RequiredCapability,
 	}
 	switch in.Text.Kind {
 	case execution.TextOpenAIChat:
@@ -41,7 +40,7 @@ func (r *Runtime) Open(ctx context.Context, in execution.Request, sink upstream.
 			providerLayerModel:     in.Text.ProviderLayerModel,
 			currentRoutingModel:    in.Text.ProviderLayerModel,
 			promptCacheKey:         in.Text.PromptCacheKey,
-			groupMappingMsg:        routing.GroupMappingResult(in.Text.Mapping),
+			groupMappingMsg:        in.Text.Mapping,
 			mappedBodyForMessages:  mapped,
 		}, nil
 	default:

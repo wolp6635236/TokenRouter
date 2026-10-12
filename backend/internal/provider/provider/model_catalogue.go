@@ -12,21 +12,60 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 	geminicli "github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/jev"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 // ChatGPT Codex 模型清单地址仅供管理员手动同步 OAuth 提供商模型使用；
 // fork 已移除独立的 manifest 网关透传服务，不在此恢复任何代理路由。
 const DefaultCodexModelsURL = "https://chatgpt.com/backend-api/codex/models"
+
+type upstreamModelEntry struct {
+	ID           string          `json:"id"`
+	Slug         string          `json:"slug"`
+	Model        string          `json:"model"`
+	ModelID      string          `json:"modelId"`
+	ModelIDSnake string          `json:"model_id"`
+	Name         string          `json:"name"`
+	Meta         json.RawMessage `json:"_meta"`
+}
+
+type upstreamModelEntryMetadata struct {
+	ID           string `json:"id"`
+	Model        string `json:"model"`
+	ModelID      string `json:"modelId"`
+	ModelIDSnake string `json:"model_id"`
+	Name         string `json:"name"`
+}
+
+// ModelCatalogueOptions 包含模型查询所需的启动参数和请求端点。
+type ModelCatalogueOptions struct {
+	ValidateURL       func(string) (string, error)
+	OperatorValidator grok.BaseURLValidator
+	BodyLimit         int64
+	CodexModelsURL    string
+}
+
+// ModelCatalogue 执行模型目录请求，不另建缓存或后台任务。
+type ModelCatalogue struct {
+	Options            ModelCatalogueOptions
+	Transport          QoderTransport
+	Profiles           *egressprovider.TLSProfiles
+	ClaudeTokens       *providercore.ClaudeTokenSource
+	GrokTokens         *providercore.GrokTokenSource
+	GeminiTokens       *providercore.GeminiTokenSource
+	AntigravityTokens  *providercore.AntigravityTokenSource
+	DefaultGrokBaseURL func(context.Context) string
+	Read               func(context.Context, int64) (*providercore.Record, error)
+	EnsureTask         func(context.Context, *providercore.Record, string) error
+}
 
 func newUpstreamModelSyncConfigError(message string, err error) error {
 	return &providercore.UpstreamModelSyncError{Kind: providercore.UpstreamModelSyncErrorConfiguration, Message: message, Err: err}
@@ -86,6 +125,9 @@ func (s *ModelCatalogue) FetchUpstreamSupportedModels(ctx context.Context, value
 	}
 
 	extractModels := extractUpstreamModelIDs
+	if value.Platform == capability.PlatformJev {
+		extractModels = extractJevModelIDs
+	}
 	if value.IsGrok() {
 		extractModels = extractGrokUpstreamModelIDs
 	}
@@ -102,6 +144,8 @@ func (s *ModelCatalogue) FetchUpstreamSupportedModels(ctx context.Context, value
 
 func (s *ModelCatalogue) buildUpstreamModelsRequest(ctx context.Context, value *providercore.Record) (*http.Request, error) {
 	switch {
+	case value.Platform == capability.PlatformJev:
+		return s.buildJevUpstreamModelsRequest(ctx, value)
 	case value.IsGrok():
 		return s.buildGrokUpstreamModelsRequest(ctx, value)
 	case value.IsOpenAI() || value.IsCNProvider():
@@ -116,6 +160,22 @@ func (s *ModelCatalogue) buildUpstreamModelsRequest(ctx context.Context, value *
 			fmt.Sprintf("Unsupported platform for upstream model sync: %s", value.Platform), nil,
 		)
 	}
+}
+
+// buildJevUpstreamModelsRequest 使用 Jev 地址和 Bearer 凭据构造模型列表请求。
+func (s *ModelCatalogue) buildJevUpstreamModelsRequest(ctx context.Context, value *providercore.Record) (*http.Request, error) {
+	base, err := s.Options.ValidateURL(value.GetJevBaseURL())
+	if err != nil {
+		return nil, newUpstreamModelSyncConfigError("Invalid Jev base URL", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jev.EndpointURL(base, "models"), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+value.GetCredential("api_key"))
+	req.Header.Set("Accept", "application/json")
+	ApplyProviderHeaderOverrides(value, req.Header)
+	return req, nil
 }
 
 // buildGrokUpstreamModelsRequest 按 Grok 转发地址规则构造模型列表请求。
@@ -487,24 +547,6 @@ func buildGeminiModelsURL(base string) string {
 	return normalized + "/v1beta/models"
 }
 
-type upstreamModelEntry struct {
-	ID           string          `json:"id"`
-	Slug         string          `json:"slug"`
-	Model        string          `json:"model"`
-	ModelID      string          `json:"modelId"`
-	ModelIDSnake string          `json:"model_id"`
-	Name         string          `json:"name"`
-	Meta         json.RawMessage `json:"_meta"`
-}
-
-type upstreamModelEntryMetadata struct {
-	ID           string `json:"id"`
-	Model        string `json:"model"`
-	ModelID      string `json:"modelId"`
-	ModelIDSnake string `json:"model_id"`
-	Name         string `json:"name"`
-}
-
 func extractUpstreamModelIDs(body []byte) ([]string, error) {
 	return extractUpstreamModelIDsWithSelector(body, upstreamModelEntryID)
 }
@@ -634,29 +676,24 @@ func buildCodexModelsManifestURL(endpoint string, appendModelsPath bool, clientV
 	return requestURL, nil
 }
 
-// ModelCatalogueOptions 包含模型查询所需的启动参数和请求端点。
-type ModelCatalogueOptions struct {
-	ValidateURL       func(string) (string, error)
-	OperatorValidator grok.BaseURLValidator
-	BodyLimit         int64
-	CodexModelsURL    string
-}
-
-// ModelCatalogue 执行模型目录请求，不另建缓存或后台任务。
-type ModelCatalogue struct {
-	Options            ModelCatalogueOptions
-	Transport          QoderTransport
-	Profiles           *egressprovider.TLSProfiles
-	ClaudeTokens       *providercore.ClaudeTokenSource
-	GrokTokens         *providercore.GrokTokenSource
-	GeminiTokens       *providercore.GeminiTokenSource
-	AntigravityTokens  *providercore.AntigravityTokenSource
-	DefaultGrokBaseURL func(context.Context) string
-	Read               func(context.Context, int64) (*providercore.Record, error)
-	EnsureTask         func(context.Context, *providercore.Record, string) error
-}
-
 func (s *ModelCatalogue) agentHeaders(ctx context.Context, value *providercore.Record) (http.Header, error) {
 	headers, _, err := AgentIdentityHeaders(ctx, value, s.EnsureTask)
 	return headers, err
+}
+
+// extractJevModelIDs 读取 TypeSafe 的 name 字段，型号中的路径前缀属于 ID。
+func extractJevModelIDs(body []byte) ([]string, error) {
+	var response struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(response.Models))
+	for _, model := range response.Models {
+		models = append(models, model.Name)
+	}
+	return dedupeAndSortModelIDs(models), nil
 }

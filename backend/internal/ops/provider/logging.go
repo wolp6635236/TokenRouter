@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"go.uber.org/zap"
 )
 
 type LogControl struct{}
@@ -16,7 +17,7 @@ func (LogControl) Apply(cfg *ops.OpsRuntimeLogConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("nil runtime log config")
 	}
-	if err := logging.Reconfigure(func(opts *logging.InitOptions) error {
+	return logging.Reconfigure(func(opts *logging.InitOptions) error {
 		opts.Level = strings.ToLower(strings.TrimSpace(cfg.Level))
 		opts.Caller = cfg.Caller
 		opts.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.StacktraceLevel))
@@ -24,10 +25,7 @@ func (LogControl) Apply(cfg *ops.OpsRuntimeLogConfig) error {
 		opts.Sampling.Initial = cfg.SamplingInitial
 		opts.Sampling.Thereafter = cfg.SamplingNext
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 func (LogControl) Changed(operatorID int64, oldCfg *ops.OpsRuntimeLogConfig, newCfg *ops.OpsRuntimeLogConfig, action string) {

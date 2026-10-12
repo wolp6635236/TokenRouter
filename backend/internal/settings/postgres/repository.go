@@ -5,10 +5,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	"github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/setting"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 

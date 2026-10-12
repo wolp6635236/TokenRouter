@@ -6,10 +6,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/google/uuid"
 )
 
 func providePaymentExpiry(runtime *payment.Runtime, cache provider.CNMonitorLeader, db *sql.DB) *payment.OrderExpiry {

@@ -15,11 +15,6 @@ type usageQueryReader struct {
 	reads atomic.Int32
 }
 
-func (r *usageQueryReader) GetByID(context.Context, int64) (*Record, error) {
-	r.reads.Add(1)
-	return CloneRecord(r.value), nil
-}
-
 type usageQueryExecution struct {
 	started   chan struct{}
 	cancelled chan struct{}
@@ -28,9 +23,17 @@ type usageQueryExecution struct {
 	calls     atomic.Int32
 }
 
-func (*usageQueryExecution) Available() bool        { return true }
-func (*usageQueryExecution) Supports(string) bool   { return true }
+func (r *usageQueryReader) GetByID(context.Context, int64) (*Record, error) {
+	r.reads.Add(1)
+	return CloneRecord(r.value), nil
+}
+
+func (*usageQueryExecution) Available() bool { return true }
+
+func (*usageQueryExecution) Supports(string) bool { return true }
+
 func (*usageQueryExecution) BaseURL(*Record) string { return "https://usage.example" }
+
 func (e *usageQueryExecution) Query(ctx context.Context, _ *Record, _ UpstreamUsageQueryConfig) (*UpstreamUsageInfo, error) {
 	e.calls.Add(1)
 	close(e.started)
@@ -47,15 +50,6 @@ func newUsageQueryTest(t *testing.T, ignore bool) (*UpstreamUsageService, *usage
 	r := &usageQueryReader{value: &Record{ID: 1, Type: ProviderTypeAPIKey, Platform: PlatformOpenAI, Status: StatusActive}}
 	e := &usageQueryExecution{started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{}), ignore: ignore}
 	return NewUpstreamUsageService(r, e, UpstreamUsageOptions{}), r, e
-}
-
-func waitUsageSignal(t *testing.T, ch <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(time.Second):
-		t.Fatal("查询未到达预期阶段")
-	}
 }
 
 // TestUpstreamQueriesStopOwnsDetachedWork 验证首个 HTTP 等待方离开后，共享网络查询仍由提供商实例持有并在停机时等待。

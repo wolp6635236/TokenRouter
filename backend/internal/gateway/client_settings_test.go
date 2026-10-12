@@ -1,12 +1,12 @@
-package gateway_test
+package gateway
 
 import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway"
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/stretchr/testify/require"
+
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 type allowClaudeCodeSettingRepoStub struct {
@@ -55,18 +55,18 @@ func (s *allowClaudeCodeSettingRepoStub) Delete(ctx context.Context, key string)
 
 func TestSettingService_IsOpenAIAllowClaudeCodeCodexPluginEnabled(t *testing.T) {
 	t.Run("默认关闭（设置缺失）", func(t *testing.T) {
-		svc := gateway.NewRuntimeSettings(&allowClaudeCodeSettingRepoStub{values: map[string]string{}}, settingscore.ErrSettingNotFound, nil)
+		svc := NewRuntimeSettings(&allowClaudeCodeSettingRepoStub{values: map[string]string{}}, settingscore.ErrSettingNotFound, nil)
 		require.False(t, svc.IsOpenAIAllowClaudeCodeCodexPluginEnabled(context.Background()))
 	})
 	t.Run("值为 true 时开启", func(t *testing.T) {
-		svc := gateway.NewRuntimeSettings(&allowClaudeCodeSettingRepoStub{values: map[string]string{
-			gateway.SettingKeyOpenAIAllowClaudeCodeCodexPlugin: "true",
+		svc := NewRuntimeSettings(&allowClaudeCodeSettingRepoStub{values: map[string]string{
+			SettingKeyOpenAIAllowClaudeCodeCodexPlugin: "true",
 		}}, settingscore.ErrSettingNotFound, nil)
 		require.True(t, svc.IsOpenAIAllowClaudeCodeCodexPluginEnabled(context.Background()))
 	})
 	t.Run("值非 true 时关闭", func(t *testing.T) {
-		svc := gateway.NewRuntimeSettings(&allowClaudeCodeSettingRepoStub{values: map[string]string{
-			gateway.SettingKeyOpenAIAllowClaudeCodeCodexPlugin: "false",
+		svc := NewRuntimeSettings(&allowClaudeCodeSettingRepoStub{values: map[string]string{
+			SettingKeyOpenAIAllowClaudeCodeCodexPlugin: "false",
 		}}, settingscore.ErrSettingNotFound, nil)
 		require.False(t, svc.IsOpenAIAllowClaudeCodeCodexPluginEnabled(context.Background()))
 	})
@@ -75,20 +75,20 @@ func TestSettingService_IsOpenAIAllowClaudeCodeCodexPluginEnabled(t *testing.T) 
 // TestSettingService_MigrateGrokDefaultTextModel 验证历史默认值应升级，管理员已明确设置的模型和缺失设置均保持不变。
 func TestSettingService_MigrateGrokDefaultTextModel(t *testing.T) {
 	t.Run("升级历史默认值", func(t *testing.T) {
-		repo := &allowClaudeCodeSettingRepoStub{values: map[string]string{gateway.SettingKeyGrokDefaultTextModel: "grok-4.5"}}
-		svc := gateway.NewRuntimeSettings(repo, settingscore.ErrSettingNotFound, nil)
+		repo := &allowClaudeCodeSettingRepoStub{values: map[string]string{SettingKeyGrokDefaultTextModel: "grok-4.5"}}
+		svc := NewRuntimeSettings(repo, settingscore.ErrSettingNotFound, nil)
 		require.NoError(t, svc.MigrateGrokDefaultTextModel(context.Background()))
-		require.Equal(t, "grok-4.6", repo.sets[gateway.SettingKeyGrokDefaultTextModel])
+		require.Equal(t, "grok-4.6", repo.sets[SettingKeyGrokDefaultTextModel])
 	})
 	t.Run("保留显式模型", func(t *testing.T) {
-		repo := &allowClaudeCodeSettingRepoStub{values: map[string]string{gateway.SettingKeyGrokDefaultTextModel: "grok-4.3"}}
-		svc := gateway.NewRuntimeSettings(repo, settingscore.ErrSettingNotFound, nil)
+		repo := &allowClaudeCodeSettingRepoStub{values: map[string]string{SettingKeyGrokDefaultTextModel: "grok-4.3"}}
+		svc := NewRuntimeSettings(repo, settingscore.ErrSettingNotFound, nil)
 		require.NoError(t, svc.MigrateGrokDefaultTextModel(context.Background()))
 		require.Empty(t, repo.sets)
 	})
 	t.Run("缺失设置不写入", func(t *testing.T) {
 		repo := &allowClaudeCodeSettingRepoStub{values: map[string]string{}}
-		svc := gateway.NewRuntimeSettings(repo, settingscore.ErrSettingNotFound, nil)
+		svc := NewRuntimeSettings(repo, settingscore.ErrSettingNotFound, nil)
 		require.NoError(t, svc.MigrateGrokDefaultTextModel(context.Background()))
 		require.Empty(t, repo.sets)
 	})

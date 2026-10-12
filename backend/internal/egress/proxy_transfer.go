@@ -37,7 +37,6 @@ func (h *ProxyTransfer) Export(ctx context.Context, query ProxyExportQuery) ([]T
 			return nil, "", err
 		}
 	} else {
-
 		proxies, err = h.listProxiesFiltered(ctx, query.Protocol, query.Status, query.Search, query.SortBy, query.SortOrder)
 		if err != nil {
 			return nil, "", err

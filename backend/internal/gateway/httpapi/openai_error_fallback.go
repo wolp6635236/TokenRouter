@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/gin-gonic/gin"
 )
 
 func (h OpenAIErrorOutput) EnsureResponse(c *gin.Context, streamStarted bool, err error) bool {

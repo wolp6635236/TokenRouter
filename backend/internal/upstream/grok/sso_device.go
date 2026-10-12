@@ -39,8 +39,6 @@ var (
 
 type SSOHTTPError struct{ Status int }
 
-func (e SSOHTTPError) Error() string { return fmt.Sprintf("xAI OAuth HTTP %d", e.Status) }
-
 type SSODeviceHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -57,6 +55,8 @@ type ssoDeviceFlow struct {
 	cookieJar http.CookieJar
 	sleep     func(context.Context, time.Duration) error
 }
+
+func (e SSOHTTPError) Error() string { return fmt.Sprintf("xAI OAuth HTTP %d", e.Status) }
 
 func ConvertSSOToBuild(ctx context.Context, ssoToken string, opts *SSODeviceOptions) (*TokenResponse, error) {
 	ssoToken = NormalizeSSOToken(ssoToken)
@@ -258,7 +258,7 @@ func (f *ssoDeviceFlow) do(ctx context.Context, method, endpoint string, form ur
 	currentMethod := method
 	currentForm := form
 	// 手动跟随重定向，确保每一跳都经过受信任域名校验且共享本次流程的 Cookie。
-	for redirects := 0; redirects <= 8; redirects++ {
+	for range 9 {
 		var body io.Reader
 		if currentForm != nil {
 			body = strings.NewReader(currentForm.Encode())
@@ -382,7 +382,7 @@ func NormalizeSSOToken(value string) string {
 	if strings.HasPrefix(strings.ToLower(value), "cookie:") {
 		value = strings.TrimSpace(value[len("cookie:"):])
 	}
-	for _, part := range strings.Split(value, ";") {
+	for part := range strings.SplitSeq(value, ";") {
 		name, token, found := strings.Cut(strings.TrimSpace(part), "=")
 		if !found {
 			continue

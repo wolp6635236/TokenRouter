@@ -27,8 +27,6 @@ type SnapshotGroup struct {
 	Status   string
 }
 
-func (g *SnapshotGroup) IsActive() bool { return g != nil && g.Status == "active" }
-
 // SnapshotProviderSource 按分组和平台查询可调度提供商，返回可发布的快照对象。
 type SnapshotProviderSource interface {
 	GetByID(context.Context, int64) (SnapshotProvider, error)
@@ -85,3 +83,5 @@ type SnapshotBindings struct {
 	GroupNotFound    error
 	Diagnostics      Diagnostics
 }
+
+func (g *SnapshotGroup) IsActive() bool { return g != nil && g.Status == "active" }

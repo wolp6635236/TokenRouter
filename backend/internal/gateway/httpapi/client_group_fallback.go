@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -12,7 +14,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
 )
 
 // ClientGroupFallbackResolver 只返回完成授权、协议和资金校验后的最终分组。

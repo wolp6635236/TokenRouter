@@ -4,7 +4,15 @@ import (
 	"encoding/json"
 )
 
-// ClaudeRequest Claude Messages API 请求
+const (
+	// ClaudeCodeBillingHeaderPrefix 是协议报文中计费归因文本的前缀。
+	ClaudeCodeBillingHeaderPrefix = "x-anthropic-billing-header"
+
+	// ClaudeCodeEntrypointMarker 是报文中标识入口来源的字段名。
+	ClaudeCodeEntrypointMarker = "cc_entrypoint="
+)
+
+// ClaudeRequest Claude Messages API 请求。
 type ClaudeRequest struct {
 	Model       string          `json:"model"`
 	Messages    []ClaudeMessage `json:"messages"`
@@ -19,19 +27,19 @@ type ClaudeRequest struct {
 	Metadata    *ClaudeMetadata `json:"metadata,omitempty"`
 }
 
-// ClaudeMessage Claude 消息
+// ClaudeMessage Claude 消息。
 type ClaudeMessage struct {
 	Role    string          `json:"role"` // user, assistant
 	Content json.RawMessage `json:"content"`
 }
 
-// ThinkingConfig Thinking 配置
+// ThinkingConfig Thinking 配置。
 type ThinkingConfig struct {
 	Type         string `json:"type"`                    // "enabled" / "adaptive" / "disabled"
 	BudgetTokens int    `json:"budget_tokens,omitempty"` // thinking budget
 }
 
-// ClaudeMetadata 请求元数据
+// ClaudeMetadata 请求元数据。
 type ClaudeMetadata struct {
 	UserID string `json:"user_id,omitempty"`
 }
@@ -39,7 +47,7 @@ type ClaudeMetadata struct {
 // ClaudeTool Claude 工具定义
 // 支持两种格式：
 // 1. 标准格式: { "name": "...", "description": "...", "input_schema": {...} }
-// 2. Custom 格式 (MCP): { "type": "custom", "name": "...", "custom": { "description": "...", "input_schema": {...} } }
+// 2. Custom 格式 (MCP): { "type": "custom", "name": "...", "custom": { "description": "...", "input_schema": {...} } }。
 type ClaudeTool struct {
 	Type        string          `json:"type,omitempty"` // "custom" 或空（标准格式）
 	Name        string          `json:"name"`
@@ -48,22 +56,22 @@ type ClaudeTool struct {
 	Custom      *CustomToolSpec `json:"custom,omitempty"`       // custom 格式使用
 }
 
-// CustomToolSpec MCP custom 工具规格
+// CustomToolSpec MCP custom 工具规格。
 type CustomToolSpec struct {
 	Description string         `json:"description,omitempty"`
 	InputSchema map[string]any `json:"input_schema"`
 }
 
-// ClaudeCustomToolSpec 兼容旧命名（MCP custom 工具规格）
+// ClaudeCustomToolSpec 兼容旧命名（MCP custom 工具规格）。
 type ClaudeCustomToolSpec = CustomToolSpec
 
-// SystemBlock system prompt 数组形式的元素
+// SystemBlock system prompt 数组形式的元素。
 type SystemBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
 
-// ContentBlock Claude 消息内容块（解析后）
+// ContentBlock Claude 消息内容块（解析后）。
 type ContentBlock struct {
 	Type string `json:"type"`
 	// text
@@ -83,14 +91,14 @@ type ContentBlock struct {
 	Source *ImageSource `json:"source,omitempty"`
 }
 
-// ImageSource Claude 图片来源
+// ImageSource Claude 图片来源。
 type ImageSource struct {
 	Type      string `json:"type"`       // "base64"
 	MediaType string `json:"media_type"` // "image/png", "image/jpeg" 等
 	Data      string `json:"data"`
 }
 
-// ClaudeResponse Claude Messages API 响应
+// ClaudeResponse Claude Messages API 响应。
 type ClaudeResponse struct {
 	ID           string              `json:"id"`
 	Type         string              `json:"type"` // "message"
@@ -102,7 +110,7 @@ type ClaudeResponse struct {
 	Usage        ClaudeUsage         `json:"usage"`
 }
 
-// ClaudeContentItem Claude 响应内容项
+// ClaudeContentItem Claude 响应内容项。
 type ClaudeContentItem struct {
 	Type string `json:"type"` // text, thinking, tool_use
 
@@ -119,7 +127,7 @@ type ClaudeContentItem struct {
 	Input any    `json:"input,omitempty"`
 }
 
-// ClaudeUsage Claude 用量统计
+// ClaudeUsage Claude 用量统计。
 type ClaudeUsage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
@@ -128,19 +136,19 @@ type ClaudeUsage struct {
 	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
 }
 
-// ClaudeError Claude 错误响应
+// ClaudeError Claude 错误响应。
 type ClaudeError struct {
 	Type  string      `json:"type"` // "error"
 	Error ErrorDetail `json:"error"`
 }
 
-// ErrorDetail 错误详情
+// ErrorDetail 错误详情。
 type ErrorDetail struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
 }
 
-// ClaudeModel Claude API 模型格式
+// ClaudeModel Claude API 模型格式。
 type ClaudeModel struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"`

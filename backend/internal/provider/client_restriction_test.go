@@ -1,17 +1,16 @@
-package provider_test
+package provider
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 // newCodexDetectorTestContext 为识别器提供按需读取的 HTTP Header 字符串。
@@ -26,24 +25,24 @@ func newCodexDetectorTestContext(ua string, originator string) func() (string, s
 	return func() (string, string) { return req.Header.Get("User-Agent"), req.Header.Get("originator") }
 }
 
-func newCodexDetectorFixture(cfg *config.Config) *providercore.CodexClientDetector {
-	return &providercore.CodexClientDetector{Options: providercore.CodexClientOptions{ForceCLI: cfg != nil && cfg.Gateway.ForceCodexCLI, OfficialUserAgent: openai.IsCodexOfficialClientRequestStrict, OfficialOriginator: openai.IsCodexOfficialClientOriginator, AllowedClients: openai.MatchAllowedClients}}
+func newCodexDetectorFixture(cfg *config.Config) *CodexClientDetector {
+	return &CodexClientDetector{Options: CodexClientOptions{ForceCLI: cfg != nil && cfg.Gateway.ForceCodexCLI, OfficialUserAgent: openai.IsCodexOfficialClientRequestStrict, OfficialOriginator: openai.IsCodexOfficialClientOriginator, AllowedClients: openai.MatchAllowedClients}}
 }
 
 func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 	t.Run("未开启开关时绕过", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth, Extra: map[string]any{}}
+		provider := &Record{Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth, Extra: map[string]any{}}
 
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", ""), provider, nil, false)
 		require.False(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonDisabled, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonDisabled, result.Reason)
 	})
 
 	t.Run("开启后 codex_cli_rs 命中", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -52,12 +51,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("codex_cli_rs/0.99.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后 codex-tui 命中", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -66,12 +65,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("codex-tui/0.125.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后 codex_vscode 命中", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -80,12 +79,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("codex_vscode/1.0.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后 codex_vscode_copilot 命中", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -94,12 +93,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("codex_vscode_copilot/1.0.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后 codex_app 命中", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -108,12 +107,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("codex_app/2.1.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后 UA 尾部官方客户端命中", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -123,12 +122,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext(ua, ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后 originator 命中", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -137,12 +136,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", "codex_chatgpt_desktop"), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedOriginator, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedOriginator, result.Reason)
 	})
 
 	t.Run("开启后伪造复合 UA 拒绝", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -151,12 +150,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("Mozilla/5.0 codex_cli_rs/0.1.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后伪造 originator 拒绝", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -165,12 +164,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", "my_codex_thing"), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("开启后非官方客户端拒绝", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -179,14 +178,14 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", "my_client"), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("开启 ForceCodexCLI 时允许通过", func(t *testing.T) {
 		detector := newCodexDetectorFixture(&config.Config{
 			Gateway: config.GatewayConfig{ForceCodexCLI: true},
 		})
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -195,7 +194,7 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", "my_client"), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonForceCodexCLI, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonForceCodexCLI, result.Reason)
 	})
 }
 
@@ -207,7 +206,7 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 
 	t.Run("配置 claude_code 白名单且命中真实签名时放行", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
@@ -219,12 +218,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		result := detector.DetectClient(newCodexDetectorTestContext(claudeCodeUA, claudeCodeOriginator), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedAllowedClient, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedAllowedClient, result.Reason)
 	})
 
 	t.Run("配置白名单但伪造 originator 仍拒绝", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
@@ -236,12 +235,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		result := detector.DetectClient(newCodexDetectorTestContext(claudeCodeUA, "my_client"), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("未配置白名单时 Claude Code 签名仍拒绝", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -250,12 +249,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		result := detector.DetectClient(newCodexDetectorTestContext(claudeCodeUA, claudeCodeOriginator), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("未开启 codex_cli_only 时白名单不参与，直接绕过", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only_allowed_clients": []any{"claude_code"}},
@@ -264,12 +263,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		result := detector.DetectClient(newCodexDetectorTestContext(claudeCodeUA, claudeCodeOriginator), provider, nil, false)
 		require.False(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonDisabled, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonDisabled, result.Reason)
 	})
 
 	t.Run("全局列表含 claude_code + 命中签名 → 放行(global)", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -282,12 +281,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedGlobalAllowedClient, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedGlobalAllowedClient, result.Reason)
 	})
 
 	t.Run("全局列表含 claude_code + 非签名 → 403", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -295,12 +294,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", "my_client"), provider, []string{"claude_code"}, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("全局列表为空 + 提供商未配 → 403", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra:    map[string]any{"codex_cli_only": true},
@@ -313,12 +312,12 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("提供商白名单优先于全局列表（reason=provider）", func(t *testing.T) {
 		detector := newCodexDetectorFixture(nil)
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
@@ -333,7 +332,7 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 			(egress.TLSFingerprintRouterMatchResult{}).Matched,
 		)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedAllowedClient, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedAllowedClient, result.Reason)
 	})
 }
 
@@ -341,59 +340,59 @@ func TestOpenAICodexClientRestrictionDetector_Detect_ClientPolicy(t *testing.T) 
 	detector := newCodexDetectorFixture(nil)
 
 	t.Run("新字段 any 直接绕过旧字段", func(t *testing.T) {
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
-				"openai_oauth_client_policy": providercore.OpenAIOAuthClientPolicyAny,
+				"openai_oauth_client_policy": OpenAIOAuthClientPolicyAny,
 				"codex_cli_only":             true,
 			},
 		}
 
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", ""), provider, nil, false)
 		require.False(t, result.Enabled)
-		require.Equal(t, providercore.OpenAIOAuthClientPolicyAny, result.Policy)
-		require.Equal(t, providercore.CodexClientRestrictionReasonDisabled, result.Reason)
+		require.Equal(t, OpenAIOAuthClientPolicyAny, result.Policy)
+		require.Equal(t, CodexClientRestrictionReasonDisabled, result.Reason)
 	})
 
 	t.Run("新字段 codex_only 仍按官方客户端判定", func(t *testing.T) {
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
-				"openai_oauth_client_policy": providercore.OpenAIOAuthClientPolicyCodexOnly,
+				"openai_oauth_client_policy": OpenAIOAuthClientPolicyCodexOnly,
 			},
 		}
 
 		result := detector.DetectClient(newCodexDetectorTestContext("curl/8.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.OpenAIOAuthClientPolicyCodexOnly, result.Policy)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+		require.Equal(t, OpenAIOAuthClientPolicyCodexOnly, result.Policy)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
 	})
 
 	t.Run("TLS 路由器策略未绑定路由器时拒绝", func(t *testing.T) {
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
-				"openai_oauth_client_policy": providercore.OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
+				"openai_oauth_client_policy": OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
 			},
 		}
 
 		result := detector.DetectClient(newCodexDetectorTestContext("opencode/1.0", ""), provider, nil, false)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.OpenAIOAuthClientPolicyTLSRouterMatchedOnly, result.Policy)
-		require.Equal(t, providercore.CodexClientRestrictionReasonTLSRouterMissing, result.Reason)
+		require.Equal(t, OpenAIOAuthClientPolicyTLSRouterMatchedOnly, result.Policy)
+		require.Equal(t, CodexClientRestrictionReasonTLSRouterMissing, result.Reason)
 	})
 
 	t.Run("TLS 路由器策略命中时放行", func(t *testing.T) {
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
-				"openai_oauth_client_policy": providercore.OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
+				"openai_oauth_client_policy": OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
 				"tls_fingerprint_router_id":  int64(9),
 			},
 		}
@@ -406,15 +405,15 @@ func TestOpenAICodexClientRestrictionDetector_Detect_ClientPolicy(t *testing.T) 
 		)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedTLSRouter, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedTLSRouter, result.Reason)
 	})
 
 	t.Run("TLS 路由器策略命中时不受伪造 UA 影响", func(t *testing.T) {
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
-				"openai_oauth_client_policy": providercore.OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
+				"openai_oauth_client_policy": OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
 				"tls_fingerprint_router_id":  int64(9),
 			},
 		}
@@ -427,15 +426,15 @@ func TestOpenAICodexClientRestrictionDetector_Detect_ClientPolicy(t *testing.T) 
 		)
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonMatchedTLSRouter, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonMatchedTLSRouter, result.Reason)
 	})
 
 	t.Run("TLS 路由器策略未命中时拒绝", func(t *testing.T) {
-		provider := &providercore.Record{
+		provider := &Record{
 			Platform: capability.PlatformOpenAI,
 			Type:     capability.ProviderTypeOAuth,
 			Extra: map[string]any{
-				"openai_oauth_client_policy": providercore.OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
+				"openai_oauth_client_policy": OpenAIOAuthClientPolicyTLSRouterMatchedOnly,
 				"tls_fingerprint_router_id":  int64(9),
 			},
 		}
@@ -448,6 +447,6 @@ func TestOpenAICodexClientRestrictionDetector_Detect_ClientPolicy(t *testing.T) 
 		)
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
-		require.Equal(t, providercore.CodexClientRestrictionReasonNotMatchedTLSRouter, result.Reason)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedTLSRouter, result.Reason)
 	})
 }

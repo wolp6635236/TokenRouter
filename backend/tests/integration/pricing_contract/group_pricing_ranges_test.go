@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"testing"
 
-	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-
+	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/stretchr/testify/require"
 )
 
 // TestPricingDisplayPreservesDefaultRanges 验证展示必须补齐首段、中间空档和尾段，并与同一上下文的实际单价一致。

@@ -25,6 +25,21 @@ var vertexSupportedBetaTokens = map[string]bool{
 	"interleaved-thinking-2025-05-14":        true,
 }
 
+// AnthropicRequestOptions 配置请求头、项目、区域和 beta 策略。
+type AnthropicRequestOptions struct {
+	ClientBeta           string
+	ClientHeaders        http.Header
+	AllowedHeaders       map[string]bool
+	Project              func() string
+	Location             func(string) string
+	Policy               func(context.Context, string) (map[string]struct{}, error)
+	SanitizeBody         func([]byte, string) ([]byte, bool)
+	WireCasing           func(string) string
+	AddHeader, SetHeader func(http.Header, string, string)
+	DeleteHeader         func(http.Header, string)
+	Debug                func(http.Header, []byte, map[string]string)
+}
+
 // FilterBetaTokens 解析 client 的 anthropic-beta header，先剔除 drop 集合中的
 // token（BetaPolicy filter + 默认 drop），再只保留 Vertex 支持的 token，去重后逗号拼接。
 // 返回最终 header（可能为空字符串）。
@@ -49,21 +64,6 @@ func FilterBetaTokens(header string, drop map[string]struct{}) string {
 		out = append(out, t)
 	}
 	return strings.Join(out, ",")
-}
-
-// AnthropicRequestOptions 配置请求头、项目、区域和 beta 策略。
-type AnthropicRequestOptions struct {
-	ClientBeta           string
-	ClientHeaders        http.Header
-	AllowedHeaders       map[string]bool
-	Project              func() string
-	Location             func(string) string
-	Policy               func(context.Context, string) (map[string]struct{}, error)
-	SanitizeBody         func([]byte, string) ([]byte, bool)
-	WireCasing           func(string) string
-	AddHeader, SetHeader func(http.Header, string, string)
-	DeleteHeader         func(http.Header, string)
-	Debug                func(http.Header, []byte, map[string]string)
 }
 
 func BuildAnthropicRequest(ctx context.Context, body []byte, token, modelID string, reqStream bool, options AnthropicRequestOptions) (*http.Request, error) {

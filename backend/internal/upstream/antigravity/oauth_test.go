@@ -7,14 +7,13 @@ import (
 	"encoding/hex"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// ---------------------------------------------------------------------------
 // getClientSecret
-// ---------------------------------------------------------------------------
 
 func TestGetClientSecret_环境变量设置(t *testing.T) {
 	old := defaultClientSecret
@@ -84,9 +83,7 @@ func TestGetClientSecret_环境变量有前后空格(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // ForwardBaseURLs
-// ---------------------------------------------------------------------------
 
 func TestForwardBaseURLs_Daily优先(t *testing.T) {
 	urls := ForwardBaseURLs()
@@ -108,13 +105,7 @@ func TestForwardBaseURLs_Daily优先(t *testing.T) {
 	}
 
 	// 验证 prod URL 也在列表中
-	found := false
-	for _, u := range urls {
-		if u == antigravityProdBaseURL {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(urls, antigravityProdBaseURL)
 	if !found {
 		t.Error("ForwardBaseURLs 中缺少 prod URL")
 	}
@@ -129,9 +120,7 @@ func TestForwardBaseURLs_不修改原切片(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // URLAvailability
-// ---------------------------------------------------------------------------
 
 func TestNewURLAvailability(t *testing.T) {
 	ua := NewURLAvailability(5 * time.Minute)
@@ -293,13 +282,9 @@ func TestURLAvailability_GetAvailableURLsWithBase_LastSuccess不在列表中(t *
 	}
 }
 
-// ---------------------------------------------------------------------------
 // SessionStore
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
 // GenerateRandomBytes
-// ---------------------------------------------------------------------------
 
 func TestGenerateRandomBytes_长度正确(t *testing.T) {
 	sizes := []int{0, 1, 16, 32, 64, 128}
@@ -329,9 +314,7 @@ func TestGenerateRandomBytes_不同调用产生不同结果(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateState
-// ---------------------------------------------------------------------------
 
 func TestGenerateState_返回值格式(t *testing.T) {
 	state, err := GenerateState()
@@ -359,9 +342,7 @@ func TestGenerateState_唯一性(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateSessionID
-// ---------------------------------------------------------------------------
 
 func TestGenerateSessionID_返回值格式(t *testing.T) {
 	id, err := GenerateSessionID()
@@ -389,9 +370,7 @@ func TestGenerateSessionID_唯一性(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateCodeVerifier
-// ---------------------------------------------------------------------------
 
 func TestGenerateCodeVerifier_返回值格式(t *testing.T) {
 	verifier, err := GenerateCodeVerifier()
@@ -419,9 +398,7 @@ func TestGenerateCodeVerifier_唯一性(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateCodeChallenge
-// ---------------------------------------------------------------------------
 
 func TestGenerateCodeChallenge_SHA256_Base64URL(t *testing.T) {
 	verifier := "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
@@ -467,9 +444,7 @@ func TestGenerateCodeChallenge_不同输入不同输出(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // BuildAuthorizationURL
-// ---------------------------------------------------------------------------
 
 func TestBuildAuthorizationURL_参数验证(t *testing.T) {
 	state := "test-state-123"
@@ -543,9 +518,7 @@ func TestBuildAuthorizationURL_特殊字符编码(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // 常量值验证
-// ---------------------------------------------------------------------------
 
 func TestConstants_值正确(t *testing.T) {
 	if AuthorizeURL != "https://accounts.google.com/o/oauth2/v2/auth" {

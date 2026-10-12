@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestOpenAIManualCapabilityMigrations 验证隔离旧表验证两轮迁移的回填、幂等以及无关配置保留。
@@ -25,7 +26,7 @@ func TestOpenAIManualCapabilityMigrations(t *testing.T) {
  (4,'kimi','apikey','{"api_protocol":"responses"}','{"openai_responses_probe_status":"unsupported"}'),
  (5,'zhipu','apikey','{"api_protocol":"adaptive"}','{}');`)
 	require.NoError(t, err)
-	for repeat := 0; repeat < 2; repeat++ {
+	for range 2 {
 		for _, file := range []string{"269_group_openai_fast_policy.sql", "270_openai_manual_protocol_capabilities.sql"} {
 			data, err := dbmigrations.FS.ReadFile(file)
 			require.NoError(t, err)

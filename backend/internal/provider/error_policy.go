@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// ErrorPolicyResult 表示错误策略检查的结果
-type ErrorPolicyResult int
-
 const (
 	ErrorPolicyNone            ErrorPolicyResult = iota // 未命中任何策略，继续默认逻辑
 	ErrorPolicyCustomSkipped                            // 自定义错误码开启但未命中，返回通用错误
@@ -16,6 +13,9 @@ const (
 	ErrorPolicyTempUnscheduled                          // 临时不可调度规则命中
 	ErrorPolicyPoolBypassed                             // 池模式跳过默认本地状态，继续响应分类
 )
+
+// ErrorPolicyResult 表示错误策略检查的结果。
+type ErrorPolicyResult int
 
 // UpstreamErrorDecision 汇总配置的错误策略和默认的提供商状态处理结果。
 // 网关必须使用 Policy 区分池模式绕过与自定义错误码未命中，不能只依赖 StopScheduling。
@@ -121,7 +121,7 @@ func (s *HealthService) CheckErrorPolicy(ctx context.Context, provider *Record, 
 	return ErrorPolicyNone
 }
 
-// ApplyAuthenticationFailure 处理认证类错误(401/403)，停止提供商调度
+// ApplyAuthenticationFailure 处理认证类错误(401/403)，停止提供商调度。
 func (s *HealthService) ApplyAuthenticationFailure(ctx context.Context, provider *Record, errorMsg string) {
 	s.notifyProviderSchedulingBlocked(provider, time.Time{}, "auth_error")
 	if err := s.providerRepo.SetError(ctx, provider.ID, errorMsg); err != nil {
@@ -131,7 +131,7 @@ func (s *HealthService) ApplyAuthenticationFailure(ctx context.Context, provider
 	s.options.Warn("provider_disabled_auth_error", "provider_id", provider.ID, "error", errorMsg)
 }
 
-// ApplyCustomErrorCode 处理自定义错误码，停止提供商调度
+// ApplyCustomErrorCode 处理自定义错误码，停止提供商调度。
 func (s *HealthService) ApplyCustomErrorCode(ctx context.Context, provider *Record, statusCode int, errorMsg string) {
 	msg := "Custom error code " + strconv.Itoa(statusCode) + ": " + errorMsg
 	s.notifyProviderSchedulingBlocked(provider, time.Time{}, "custom_error_code")
@@ -142,8 +142,8 @@ func (s *HealthService) ApplyCustomErrorCode(ctx context.Context, provider *Reco
 	s.options.Warn("provider_disabled_custom_error", "provider_id", provider.ID, "status_code", statusCode, "error", errorMsg)
 }
 
-// ApplyOverload 处理529过载错误
-// 根据配置决定是否暂停提供商调度及冷却时长
+// ApplyOverload 处理 529 过载错误
+// 根据配置决定是否暂停提供商调度及冷却时长。
 func (s *HealthService) ApplyOverload(ctx context.Context, provider *Record) {
 	var settings *OverloadCooldownSettings
 	if s.options.OverloadSettings != nil {

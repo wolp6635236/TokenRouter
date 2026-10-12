@@ -13,6 +13,13 @@ type CompatResponses struct {
 	TTL      func() time.Duration
 }
 
+type compatResponseBinding struct {
+	ResponseID           string
+	TurnState            string
+	ContinuationDisabled bool
+	ExpiresAt            time.Time
+}
+
 func (s *CompatResponses) ttl() time.Duration {
 	if s != nil && s.TTL != nil {
 		return s.TTL()
@@ -27,13 +34,6 @@ func CompatResponseKey(providerID, apiKeyID int64, prompt string) string {
 		return ""
 	}
 	return strings.Join([]string{strconv.FormatInt(providerID, 10), strconv.FormatInt(apiKeyID, 10), key}, "\x00")
-}
-
-type compatResponseBinding struct {
-	ResponseID           string
-	TurnState            string
-	ContinuationDisabled bool
-	ExpiresAt            time.Time
 }
 
 func (s *CompatResponses) Response(key string) string {

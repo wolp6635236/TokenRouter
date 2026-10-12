@@ -19,6 +19,12 @@ type ResultAccess struct {
 	Providers ResultProviders
 }
 
+// boundProvider 只交付当前任务的供应商操作，凭据不进入公开结果。
+type boundProvider struct {
+	platform BatchImageProvider
+	provider *provider.Record
+}
+
 func (a ResultAccess) Download(ctx context.Context, job *batchimage.BatchImageJob) (batchimage.BoundProvider, error) {
 	if a.Registry == nil || a.Providers == nil || job == nil {
 		return nil, batchimage.ErrBatchImageDownloadFailed
@@ -53,12 +59,6 @@ func (a ResultAccess) Cleanup(ctx context.Context, job *batchimage.BatchImageJob
 		return nil, err
 	}
 	return BindProvider(selected, value), nil
-}
-
-// boundProvider 只交付当前任务的供应商操作，凭据不进入公开结果。
-type boundProvider struct {
-	platform BatchImageProvider
-	provider *provider.Record
 }
 
 func (b boundProvider) OpenResult(ctx context.Context, job *batchimage.BatchImageJob) (io.ReadCloser, string, error) {

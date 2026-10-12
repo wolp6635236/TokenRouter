@@ -9,12 +9,16 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
+
+// 兼容原 data: 前缀后可选空白，保留各平台独立的终态判定。
+var sseDataPrefix = regexp.MustCompile(`^data:\s*`)
+
+// TestStreamOutput 将供应商流同步转换为提供商测试事件。
+type TestStreamOutput struct{}
 
 // Gemini 保留 Gemini 流的内容、图片与终态事件顺序。
 func (s TestStreamOutput) Gemini(c *TestRun, body io.Reader) error {
@@ -336,9 +340,3 @@ func (s TestStreamOutput) Error(c *TestRun, errorMsg string) error {
 	s.SendEvent(c, providercore.TestEvent{Type: "error", Error: errorMsg})
 	return fmt.Errorf("%s", errorMsg)
 }
-
-// TestStreamOutput 将供应商流同步转换为提供商测试事件。
-type TestStreamOutput struct{}
-
-// 兼容原 data: 前缀后可选空白，保留各平台独立的终态判定。
-var sseDataPrefix = regexp.MustCompile(`^data:\s*`)

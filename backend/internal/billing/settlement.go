@@ -9,13 +9,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/shopspring/decimal"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-var ErrUsageBillingRequestIDRequired = errors.New("usage billing request_id is required")
+const (
+	// UsageBillingMonetaryScale 是余额与 API Key 金额计数的规范小数位数，
+	// 对齐 users.balance / api_keys.quota_used 等 NUMERIC(20,8) 列。
+	UsageBillingMonetaryScale = 8
 
-var ErrUsageBillingRequestConflict = errors.New("usage billing request fingerprint conflict")
+	taskCostEpsilon = 0.00000001
+)
+
+var (
+	ErrTaskInsufficientBalance       = apperror.New(apperror.Category(402), "BATCH_IMAGE_INSUFFICIENT_BALANCE", "insufficient balance for batch image hold")
+	ErrTaskNotFound                  = apperror.New(apperror.CategoryNotFound, "BATCH_IMAGE_JOB_NOT_FOUND", "batch image job not found")
+	ErrUsageBillingRequestIDRequired = errors.New("usage billing request_id is required")
+	ErrUsageBillingRequestConflict   = errors.New("usage billing request fingerprint conflict")
+
+	// ErrTaskSettlementCostExceedsHold 沿用历史错误 reason 与消息。
+	ErrTaskSettlementCostExceedsHold = apperror.Conflict("BATCH_IMAGE_SETTLEMENT_COST_EXCEEDS_HOLD", "batch image settlement cost exceeds held balance")
+
+	ErrImageTaskPricingMissing = apperror.New(apperror.CategoryBadRequest, "BATCH_IMAGE_SETTLEMENT_PRICING_MISSING", "batch image settlement pricing is missing")
+)
 
 // UsageBillingCommand describes one billable request that must be applied at most once.
 type UsageBillingCommand struct {
@@ -57,6 +74,95 @@ type UsageBillingCommand struct {
 	ProviderQuotaCost   float64
 }
 
+// ProviderQuotaState holds the post-increment quota state returned by the DB transaction.
+// All values are post-update (i.e., already include the increment).
+type ProviderQuotaState struct {
+	TotalUsed   float64
+	TotalLimit  float64
+	DailyUsed   float64
+	DailyLimit  float64
+	WeeklyUsed  float64
+	WeeklyLimit float64
+}
+
+type UsageBillingApplyResult struct {
+	Applied                 bool
+	APIKeyQuotaExhausted    bool
+	NewBalance              *float64            // post-deduction balance (nil = no balance deduction)
+	QuotaState              *ProviderQuotaState // post-increment quota state (nil = no quota increment)
+	SubscriptionAmountUSD   float64
+	BalanceAmountUSD        float64
+	BillingAllocations      []BillingAllocation
+	EffectiveRateMultiplier *float64
+}
+
+// TaskFundsCommand describes an idempotent balance hold operation.
+type TaskFundsCommand struct {
+	RequestID          string
+	APIKeyID           int64
+	RequestFingerprint string
+	RequestPayloadHash string
+	UserID             int64
+	ActorUserID        int64
+	TeamID             *int64
+	GroupID            *int64
+	// APIKeyBillingMode 与 PreferredSubscriptionID 冻结提交时的资金来源，避免任务执行期间切换 Key 配置改变结算对象。
+	APIKeyBillingMode       string
+	PreferredSubscriptionID *int64
+	Task                    TaskReference
+	HoldAmount              float64
+	ActualAmount            float64
+	// 第二版价格快照按基础金额分配，避免订阅与余额共担时沿用同一个倍率。
+	PricingSnapshotVersion          int
+	BaseAmountUSD                   float64
+	ActualBaseAmountUSD             float64
+	SubscriptionRateMultiplier      float64
+	SubscriptionRateMultiplierScale float64
+	BalanceRateMultiplier           float64
+	SettlementRateScale             float64
+	DisablePlanGroupRateMultiplier  bool
+	// BalanceHoldAmount 和 SubscriptionHoldAllocations 是提交时持久化的资金预占快照。
+	// 两者都为空时按旧任务处理，视为 HoldAmount 全部来自余额冻结。
+	BalanceHoldAmount           float64
+	SubscriptionHoldAllocations []BillingAllocation
+	// AllowanceReserved 区分新任务预记和滚动升级期间的旧任务。
+	AllowanceReserved bool
+	// ReservedAt 用于只回退仍属于原窗口的预记额度。
+	ReservedAt time.Time
+}
+
+type TaskFundsResult struct {
+	Applied               bool
+	NewBalance            *float64
+	FrozenBalance         *float64
+	HoldAmountUSD         float64
+	EstimatedAmountUSD    float64
+	ActualAmountUSD       float64
+	SubscriptionAmountUSD float64
+	BalanceAmountUSD      float64
+	BillingAllocations    []BillingAllocation
+}
+
+// TaskCapturePlan 描述批量任务从预占金额收敛到实际金额时的资金拆分。
+type TaskCapturePlan struct {
+	BalanceHoldAmount     float64
+	ActualAmountUSD       float64
+	SubscriptionAmountUSD float64
+	BalanceAmountUSD      float64
+	BillingAllocations    []BillingAllocation
+	SubscriptionReleases  []BillingAllocation
+}
+
+// TaskScope 标识装配时登记的任务类型，供资金操作选择任务存储。
+type TaskScope string
+
+// TaskReference 显式携带原预占动作 ID；新增路由字段不参与历史指纹。
+type TaskReference struct {
+	Scope            TaskScope
+	ID               string
+	ReserveRequestID string
+}
+
 func (c *UsageBillingCommand) Normalize() {
 	if c == nil {
 		return
@@ -88,10 +194,6 @@ func (c *UsageBillingCommand) Normalize() {
 	// 升级前后同一 request_id 的重试算出不同指纹而被判为 fingerprint conflict。
 	c.quantizeMonetaryFields()
 }
-
-// UsageBillingMonetaryScale 是余额与 API Key 金额计数的规范小数位数，
-// 对齐 users.balance / api_keys.quota_used 等 NUMERIC(20,8) 列。
-const UsageBillingMonetaryScale = 8
 
 // quantizeMonetaryFields 量化命令中直接写入 NUMERIC(20,8) 计数列的金额。
 // BillableAmountUSD 和 BaseAmountUSD 仍保留原始精度，供 10 位精度的订阅结算与用量事实使用；
@@ -189,63 +291,6 @@ func HashUsageRequestPayload(payload []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ProviderQuotaState holds the post-increment quota state returned by the DB transaction.
-// All values are post-update (i.e., already include the increment).
-type ProviderQuotaState struct {
-	TotalUsed   float64
-	TotalLimit  float64
-	DailyUsed   float64
-	DailyLimit  float64
-	WeeklyUsed  float64
-	WeeklyLimit float64
-}
-
-type UsageBillingApplyResult struct {
-	Applied                 bool
-	APIKeyQuotaExhausted    bool
-	NewBalance              *float64            // post-deduction balance (nil = no balance deduction)
-	QuotaState              *ProviderQuotaState // post-increment quota state (nil = no quota increment)
-	SubscriptionAmountUSD   float64
-	BalanceAmountUSD        float64
-	BillingAllocations      []BillingAllocation
-	EffectiveRateMultiplier *float64
-}
-
-// TaskFundsCommand describes an idempotent balance hold operation.
-type TaskFundsCommand struct {
-	RequestID          string
-	APIKeyID           int64
-	RequestFingerprint string
-	RequestPayloadHash string
-	UserID             int64
-	ActorUserID        int64
-	TeamID             *int64
-	GroupID            *int64
-	// APIKeyBillingMode 与 PreferredSubscriptionID 冻结提交时的资金来源，避免任务执行期间切换 Key 配置改变结算对象。
-	APIKeyBillingMode       string
-	PreferredSubscriptionID *int64
-	Task                    TaskReference
-	HoldAmount              float64
-	ActualAmount            float64
-	// 第二版价格快照按基础金额分配，避免订阅与余额共担时沿用同一个倍率。
-	PricingSnapshotVersion          int
-	BaseAmountUSD                   float64
-	ActualBaseAmountUSD             float64
-	SubscriptionRateMultiplier      float64
-	SubscriptionRateMultiplierScale float64
-	BalanceRateMultiplier           float64
-	SettlementRateScale             float64
-	DisablePlanGroupRateMultiplier  bool
-	// BalanceHoldAmount 和 SubscriptionHoldAllocations 是提交时持久化的资金预占快照。
-	// 两者都为空时按旧任务处理，视为 HoldAmount 全部来自余额冻结。
-	BalanceHoldAmount           float64
-	SubscriptionHoldAllocations []BillingAllocation
-	// AllowanceReserved 区分新任务预记和滚动升级期间的旧任务。
-	AllowanceReserved bool
-	// ReservedAt 用于只回退仍属于原窗口的预记额度。
-	ReservedAt time.Time
-}
-
 func (c *TaskFundsCommand) Normalize() {
 	if c == nil {
 		return
@@ -328,28 +373,6 @@ func buildTaskFundsFingerprint(c *TaskFundsCommand) string {
 	}
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
-}
-
-type TaskFundsResult struct {
-	Applied               bool
-	NewBalance            *float64
-	FrozenBalance         *float64
-	HoldAmountUSD         float64
-	EstimatedAmountUSD    float64
-	ActualAmountUSD       float64
-	SubscriptionAmountUSD float64
-	BalanceAmountUSD      float64
-	BillingAllocations    []BillingAllocation
-}
-
-// TaskCapturePlan 描述批量任务从预占金额收敛到实际金额时的资金拆分。
-type TaskCapturePlan struct {
-	BalanceHoldAmount     float64
-	ActualAmountUSD       float64
-	SubscriptionAmountUSD float64
-	BalanceAmountUSD      float64
-	BillingAllocations    []BillingAllocation
-	SubscriptionReleases  []BillingAllocation
 }
 
 // EffectiveTaskBalanceHoldAmount 返回实际冻结余额，并兼容迁移前全额冻结余额的任务。
@@ -485,18 +508,3 @@ func CloneBillingAllocation(allocation BillingAllocation, amount float64) Billin
 	}
 	return cloned
 }
-
-// TaskScope 标识装配时登记的任务类型，供资金操作选择任务存储。
-type TaskScope string
-
-// TaskReference 显式携带原预占动作 ID；新增路由字段不参与历史指纹。
-type TaskReference struct {
-	Scope            TaskScope
-	ID               string
-	ReserveRequestID string
-}
-
-const taskCostEpsilon = 0.00000001
-
-// ErrTaskSettlementCostExceedsHold 沿用历史错误 reason 与消息。
-var ErrTaskSettlementCostExceedsHold = apperror.Conflict("BATCH_IMAGE_SETTLEMENT_COST_EXCEEDS_HOLD", "batch image settlement cost exceeds held balance")

@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestRemoveGroupMediaPricingMigration 验证删列迁移可以重放，不修改模型价卡和独立于分组配置的历史任务快照。

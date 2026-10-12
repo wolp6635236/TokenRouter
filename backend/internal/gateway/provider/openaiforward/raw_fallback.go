@@ -8,13 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 func MessagesViaRawChat(ctx context.Context, body []byte, defaultMappedModel string, p RawFallbackPorts) (*Result, error) {

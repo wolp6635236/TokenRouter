@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestOpenAIImportCapabilityCleanupMigration 验证覆盖异常历史数据、模板缺省语义和重复执行，不依赖生产设置内容。
@@ -38,7 +39,7 @@ CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMPTZ D
 			_, err := tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('openai_oauth_import_defaults',$1)
 ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`, tc.input)
 			require.NoError(t, err)
-			for repeat := 0; repeat < 2; repeat++ {
+			for range 2 {
 				_, err = tx.ExecContext(ctx, string(migration))
 				require.NoError(t, err)
 			}

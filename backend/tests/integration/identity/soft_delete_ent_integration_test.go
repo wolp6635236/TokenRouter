@@ -9,17 +9,15 @@ import (
 	"testing"
 	"time"
 
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-
-	apikeyerrors "github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/apikey"
 	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 	"github.com/TokenFlux/TokenRouter/ent/usersubscription"
-
-	"github.com/stretchr/testify/require"
+	apikeyerrors "github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 )
 
 func uniqueSoftDeleteValue(t *testing.T, prefix string) string {

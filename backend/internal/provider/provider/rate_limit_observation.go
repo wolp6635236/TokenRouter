@@ -7,19 +7,24 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
-
-	openaiupstream "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	anthropicupstream "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	anthropicupstream "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
+	openaiupstream "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// Observe429 处理429限流错误
-// 解析响应头获取重置时间，标记提供商为限流状态
+// RateLimitObserver 解析供应商限流响应并调用健康状态写入函数。
+type RateLimitObserver struct {
+	Health          *providercore.HealthService
+	Plans           providercore.OpenAIPlanWriter
+	RetryOpenAI     func(*providercore.Record, http.Header, []byte) bool
+	NextGeminiDaily func() *int64
+}
+
+// Observe429 处理 429 限流错误
+// 解析响应头获取重置时间，标记提供商为限流状态。
 func (s *RateLimitObserver) Observe429(ctx context.Context, provider *providercore.Record, headers http.Header, responseBody []byte) {
 	// Spark 影子的限流状态由 /wham/usage 的 codex_bengalfox 用量驱动。
 	// /responses 429 中的 x-codex-* 和 usage_limit_reached 属于全局窗口，不能用于暂停仍有配额的影子。
@@ -113,7 +118,7 @@ func (s *RateLimitObserver) Observe429(ctx context.Context, provider *providerco
 		return
 	}
 
-	// 解析Unix时间戳
+	// 解析 Unix 时间戳
 	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
 	if err != nil {
 		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err)
@@ -128,7 +133,7 @@ func (s *RateLimitObserver) Observe429(ctx context.Context, provider *providerco
 		return
 	}
 
-	// 根据重置时间反推5h窗口
+	// 根据重置时间反推 5h 窗口
 	windowEnd := resetAt
 	s.Health.UpdateRejectedSessionWindow(ctx, provider, windowEnd)
 
@@ -141,14 +146,6 @@ func (s *RateLimitObserver) PersistCodexSnapshot(ctx context.Context, value *pro
 		return
 	}
 	s.Health.PersistCodexObservation(ctx, value, openaiupstream.ParseCodexRateLimitHeaders(headers))
-}
-
-// RateLimitObserver 解析供应商限流响应并调用健康状态写入函数。
-type RateLimitObserver struct {
-	Health          *providercore.HealthService
-	Plans           providercore.OpenAIPlanWriter
-	RetryOpenAI     func(*providercore.Record, http.Header, []byte) bool
-	NextGeminiDaily func() *int64
 }
 
 func (s *RateLimitObserver) observeCNQuota(ctx context.Context, value *providercore.Record, body []byte) bool {

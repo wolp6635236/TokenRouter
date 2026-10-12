@@ -6,12 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
-	batchredis "github.com/TokenFlux/TokenRouter/internal/batchimage/rediscache"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
+	batchredis "github.com/TokenFlux/TokenRouter/internal/batchimage/rediscache"
 )
+
+type noopBatchImageProcessor struct{}
 
 func TestBatchImageWorkerRuntime_StartupDoesNotCreateRedisBatchImageKeys(t *testing.T) {
 	mr := miniredis.RunT(t)
@@ -41,8 +44,6 @@ func TestBatchImageWorkerRuntime_StartupDoesNotCreateRedisBatchImageKeys(t *test
 		require.False(t, strings.HasPrefix(key, "batch_image:"), "unexpected Redis key created at startup: %s", key)
 	}
 }
-
-type noopBatchImageProcessor struct{}
 
 func (noopBatchImageProcessor) Process(context.Context, string) (batchimage.BatchImageProcessResult, error) {
 	return batchimage.BatchImageProcessResult{}, nil

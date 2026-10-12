@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 )
 
 func runServerTimingRequest(

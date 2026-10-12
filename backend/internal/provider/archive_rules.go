@@ -8,6 +8,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
 )
 
+// ArchiveIdentityHints 保存供应商解码出的导入提示，身份认证使用单独的验证流程。
+type ArchiveIdentityHints struct{ Email, PlanType, ChatGPTAccountID, ChatGPTUserID, OrganizationID string }
+
 func ValidateArchiveProvider(item transfer.DataProvider) error {
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.New("provider name is required")
@@ -45,9 +48,6 @@ func ValidateArchiveProvider(item transfer.DataProvider) error {
 	}
 	return nil
 }
-
-// ArchiveIdentityHints 保存供应商解码出的导入提示，身份认证使用单独的验证流程。
-type ArchiveIdentityHints struct{ Email, PlanType, ChatGPTAccountID, ChatGPTUserID, OrganizationID string }
 
 // ArchiveIDToken 提取 OpenAI OAuth 导入的可选身份提示。
 func ArchiveIDToken(item *transfer.DataProvider) string {

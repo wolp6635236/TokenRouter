@@ -1,9 +1,21 @@
 package openai
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+)
+
+var (
+	benchmarkWSParseStringSink string
+	benchmarkWSParseMapSink    map[string]any
+
+	// 基准保留响应 ID 和响应对象的存在状态。
+	benchmarkOpenAIWSStringSink string
+	benchmarkOpenAIWSBoolSink   bool
 )
 
 func TestParseOpenAIWSEventEnvelope(t *testing.T) {
@@ -73,4 +85,83 @@ func TestOpenAIWSMessageLikelyContainsToolCalls(t *testing.T) {
 	require.False(t, WSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_text.delta","delta":"hello"}`)))
 	require.True(t, WSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"tool_calls":[{"id":"tc1"}]}}`)))
 	require.True(t, WSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"type":"function_call"}}`)))
+}
+
+func BenchmarkWSIngressPayloadParseLegacy(b *testing.B) {
+	raw := benchmarkWSIngressPayloadBytes()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		eventType, model, promptCacheKey, previousResponseID, payload, err := legacyParseWSIngressPayload(raw)
+		if err == nil {
+			benchmarkWSParseStringSink = eventType + model + promptCacheKey + previousResponseID
+			benchmarkWSParseMapSink = payload
+		}
+	}
+}
+
+func BenchmarkWSIngressPayloadParseOptimized(b *testing.B) {
+	raw := benchmarkWSIngressPayloadBytes()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		eventType, model, promptCacheKey, previousResponseID, payload, err := optimizedParseWSIngressPayload(raw)
+		if err == nil {
+			benchmarkWSParseStringSink = eventType + model + promptCacheKey + previousResponseID
+			benchmarkWSParseMapSink = payload
+		}
+	}
+}
+
+func benchmarkWSIngressPayloadBytes() []byte {
+	return []byte(`{"type":"response.create","model":"gpt-5.3-codex","prompt_cache_key":"cache_bench","previous_response_id":"resp_prev_bench","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+}
+
+func legacyParseWSIngressPayload(raw []byte) (eventType, model, promptCacheKey, previousResponseID string, payload map[string]any, err error) {
+	values := gjson.GetManyBytes(raw, "type", "model", "prompt_cache_key", "previous_response_id")
+	eventType = strings.TrimSpace(values[0].String())
+	if eventType == "" {
+		eventType = "response.create"
+	}
+	model = strings.TrimSpace(values[1].String())
+	promptCacheKey = strings.TrimSpace(values[2].String())
+	previousResponseID = strings.TrimSpace(values[3].String())
+	payload = make(map[string]any)
+	if err = json.Unmarshal(raw, &payload); err != nil {
+		return "", "", "", "", nil, err
+	}
+	if _, exists := payload["type"]; !exists {
+		payload["type"] = "response.create"
+	}
+	return eventType, model, promptCacheKey, previousResponseID, payload, nil
+}
+
+func optimizedParseWSIngressPayload(raw []byte) (eventType, model, promptCacheKey, previousResponseID string, payload map[string]any, err error) {
+	payload = make(map[string]any)
+	if err = json.Unmarshal(raw, &payload); err != nil {
+		return "", "", "", "", nil, err
+	}
+	eventType = WSPayloadString(payload, "type")
+	if eventType == "" {
+		eventType = "response.create"
+		payload["type"] = eventType
+	}
+	model = WSPayloadString(payload, "model")
+	promptCacheKey = WSPayloadString(payload, "prompt_cache_key")
+	previousResponseID = WSPayloadString(payload, "previous_response_id")
+	return eventType, model, promptCacheKey, previousResponseID, payload, nil
+}
+
+func BenchmarkOpenAIWSEventEnvelopeParse(b *testing.B) {
+	event := []byte(`{"type":"response.completed","response":{"id":"resp_bench_1","model":"gpt-5.1","usage":{"input_tokens":12,"output_tokens":8}}}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		_, responseID, response := ParseWSEventEnvelope(event)
+		benchmarkOpenAIWSStringSink = responseID
+		benchmarkOpenAIWSBoolSink = response.Exists()
+	}
 }

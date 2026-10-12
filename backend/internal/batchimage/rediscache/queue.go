@@ -7,8 +7,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 )
 
 const (
@@ -25,7 +26,8 @@ const (
 	batchImageReservePollInterval = time.Second
 )
 
-var batchImageMoveDueDelayedScript = redis.NewScript(`
+var (
+	batchImageMoveDueDelayedScript = redis.NewScript(`
 local jobs = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, ARGV[2])
 for _, job in ipairs(jobs) do
   redis.call("ZREM", KEYS[1], job)
@@ -34,7 +36,7 @@ end
 return #jobs
 `)
 
-var batchImageRecoverStaleActiveScript = redis.NewScript(`
+	batchImageRecoverStaleActiveScript = redis.NewScript(`
 local jobs = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, ARGV[2])
 for _, job in ipairs(jobs) do
   redis.call("ZREM", KEYS[1], job)
@@ -43,24 +45,24 @@ end
 return #jobs
 `)
 
-var batchImageReleaseLockScript = redis.NewScript(`
+	batchImageReleaseLockScript = redis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("DEL", KEYS[1])
 end
 return 0
 `)
 
-var batchImageRefreshLockScript = redis.NewScript(`
+	batchImageRefreshLockScript = redis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("PEXPIRE", KEYS[1], ARGV[2])
 end
 return 0
 `)
 
-// batchImageReserveScript 原子地从 ready 弹出并写入 active zset。
-// BRPop + ZAdd 两步方案在两步之间进程崩溃时 job 会脱离所有队列结构，
-// 且 inflight 去重键（默认 7 天）会挡住所有重新入队。
-var batchImageReserveScript = redis.NewScript(`
+	// batchImageReserveScript 原子地从 ready 弹出并写入 active zset。
+	// BRPop + ZAdd 两步方案在两步之间进程崩溃时 job 会脱离所有队列结构，
+	// 且 inflight 去重键（默认 7 天）会挡住所有重新入队。
+	batchImageReserveScript = redis.NewScript(`
 local job = redis.call("RPOP", KEYS[1])
 if not job then
   return nil
@@ -69,16 +71,38 @@ redis.call("ZADD", KEYS[2], ARGV[1], job)
 return job
 `)
 
-// batchImageEnqueueScript 原子地设置 inflight 去重键并推入 ready。
-// SetNX + LPush 两步方案在两步之间进程崩溃时，inflight 键（默认 7 天）
-// 会挡住所有后续入队，而 job 从未进入 ready。
-var batchImageEnqueueScript = redis.NewScript(`
+	// batchImageEnqueueScript 原子地设置 inflight 去重键并推入 ready。
+	// SetNX + LPush 两步方案在两步之间进程崩溃时，inflight 键（默认 7 天）
+	// 会挡住所有后续入队，而 job 从未进入 ready。
+	batchImageEnqueueScript = redis.NewScript(`
 if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
   redis.call("LPUSH", KEYS[2], ARGV[1])
   return 1
 end
 return 0
 `)
+
+	// 队列数据格式保持不变；锁 token 比较与队列修改处于同一 Lua 调用。
+	batchImageOwnedMutation = redis.NewScript(`
+local owner=redis.call("GET",KEYS[1])
+if ARGV[2]=="" then
+ if owner then return 0 end
+elseif owner~=ARGV[2] then return 0 end
+if ARGV[3]=="heartbeat" then
+ redis.call("ZADD",KEYS[2],"XX",ARGV[4],ARGV[1])
+elseif ARGV[3]=="ack" then
+ redis.call("ZREM",KEYS[2],ARGV[1]);redis.call("ZREM",KEYS[3],ARGV[1]);redis.call("DEL",KEYS[5])
+else
+ redis.call("ZREM",KEYS[2],ARGV[1]);redis.call("ZREM",KEYS[3],ARGV[1])
+ if tonumber(ARGV[5])<=0 then redis.call("LPUSH",KEYS[4],ARGV[1]) else redis.call("ZADD",KEYS[3],ARGV[6],ARGV[1]) end
+end
+return 1
+`)
+
+	_ batchimage.BatchImageJobLockRefresher = (*batchImageRedisJobLock)(nil)
+
+	_ batchimage.BatchImageQueue = (*batchImageQueue)(nil)
+)
 
 type batchImageQueue struct {
 	rdb            *redis.Client
@@ -91,14 +115,6 @@ type batchImageQueue struct {
 	lockTTL        time.Duration
 }
 
-func NewBatchImageQueue(rdb *redis.Client, cfg *QueueOptions) batchimage.BatchImageQueue {
-	opts := QueueOptions{}
-	if cfg != nil {
-		opts = *cfg
-	}
-	return newBatchImageQueueWithOptions(rdb, opts)
-}
-
 type QueueOptions struct {
 	ReadyKey       string
 	DelayedKey     string
@@ -107,6 +123,22 @@ type QueueOptions struct {
 	LockPrefix     string
 	InflightTTL    time.Duration
 	LockTTL        time.Duration
+}
+
+type batchImageRedisJobLock struct {
+	rdb   *redis.Client
+	key   string
+	token string
+	queue *batchImageQueue
+	id    string
+}
+
+func NewBatchImageQueue(rdb *redis.Client, cfg *QueueOptions) batchimage.BatchImageQueue {
+	opts := QueueOptions{}
+	if cfg != nil {
+		opts = *cfg
+	}
+	return newBatchImageQueueWithOptions(rdb, opts)
 }
 
 func newBatchImageQueueWithOptions(rdb *redis.Client, opts QueueOptions) *batchImageQueue {
@@ -180,10 +212,7 @@ func (q *batchImageQueue) Reserve(ctx context.Context, blockTimeout time.Duratio
 		if remaining <= 0 {
 			return batchimage.ReservedBatchImageJob{}, batchimage.ErrBatchImageQueueEmpty
 		}
-		wait := batchImageReservePollInterval
-		if remaining < wait {
-			wait = remaining
-		}
+		wait := min(remaining, batchImageReservePollInterval)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -226,23 +255,6 @@ func (q *batchImageQueue) Ack(ctx context.Context, id string) error {
 func (q *batchImageQueue) Heartbeat(ctx context.Context, id string) error {
 	return q.mutateOwned(ctx, id, "", "heartbeat", 0)
 }
-
-// 队列数据格式保持不变；锁 token 比较与队列修改处于同一 Lua 调用。
-var batchImageOwnedMutation = redis.NewScript(`
-local owner=redis.call("GET",KEYS[1])
-if ARGV[2]=="" then
- if owner then return 0 end
-elseif owner~=ARGV[2] then return 0 end
-if ARGV[3]=="heartbeat" then
- redis.call("ZADD",KEYS[2],"XX",ARGV[4],ARGV[1])
-elseif ARGV[3]=="ack" then
- redis.call("ZREM",KEYS[2],ARGV[1]);redis.call("ZREM",KEYS[3],ARGV[1]);redis.call("DEL",KEYS[5])
-else
- redis.call("ZREM",KEYS[2],ARGV[1]);redis.call("ZREM",KEYS[3],ARGV[1])
- if tonumber(ARGV[5])<=0 then redis.call("LPUSH",KEYS[4],ARGV[1]) else redis.call("ZADD",KEYS[3],ARGV[6],ARGV[1]) end
-end
-return 1
-`)
 
 func (q *batchImageQueue) mutateOwned(ctx context.Context, id, token, action string, delay time.Duration) error {
 	if !batchimage.IsValidBatchImageID(id) {
@@ -307,14 +319,6 @@ func (q *batchImageQueue) lockKey(batchID string) string {
 	return q.lockPrefix + batchID
 }
 
-type batchImageRedisJobLock struct {
-	rdb   *redis.Client
-	key   string
-	token string
-	queue *batchImageQueue
-	id    string
-}
-
 func (l *batchImageRedisJobLock) Release(ctx context.Context) error {
 	if l == nil || l.rdb == nil || l.key == "" || l.token == "" {
 		return nil
@@ -340,8 +344,6 @@ func (l *batchImageRedisJobLock) Refresh(ctx context.Context, ttl time.Duration)
 	return nil
 }
 
-var _ batchimage.BatchImageJobLockRefresher = (*batchImageRedisJobLock)(nil)
-
 func newBatchImageLockToken() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -349,8 +351,6 @@ func newBatchImageLockToken() (string, error) {
 	}
 	return hex.EncodeToString(b[:]), nil
 }
-
-var _ batchimage.BatchImageQueue = (*batchImageQueue)(nil)
 
 func (l *batchImageRedisJobLock) Heartbeat(ctx context.Context) error {
 	return l.queue.mutateOwned(ctx, l.id, l.token, "heartbeat", 0)

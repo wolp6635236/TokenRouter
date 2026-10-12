@@ -5,21 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
+	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
@@ -32,17 +32,25 @@ type openAIProviderSchedulerMetrics struct {
 	schedulercore.PlatformMetrics
 }
 
-func (m *openAIProviderSchedulerMetrics) recordSwitch() {
-	if m != nil {
-		m.RecordSwitch()
-	}
-}
-
 type compatiblePicker struct {
 	service       *Compatible
 	metrics       openAIProviderSchedulerMetrics
 	stats         *schedulercore.RuntimeStats
 	freeQuotaGate atomic.Pointer[providercore.FreeQuotaGate]
+}
+
+// pickerEngine 包含候选评分、计数和反馈操作。
+type pickerEngine interface {
+	Select(context.Context, schedulercore.PlatformSelectionInput) (*gatewayprovider.SelectionResult, schedulercore.PlatformDecision, error)
+	ReportResult(int64, bool, *int, ...policy.FeedbackConfig)
+	ReportSwitch()
+	SnapshotMetrics() schedulercore.PlatformMetricsSnapshot
+}
+
+func (m *openAIProviderSchedulerMetrics) recordSwitch() {
+	if m != nil {
+		m.RecordSwitch()
+	}
 }
 
 func newDefaultOpenAIProviderScheduler(service *Compatible, stats *schedulercore.RuntimeStats) pickerEngine {
@@ -74,10 +82,8 @@ func openAIStickyProviderMatchesGroup(provider *gatewayprovider.ExecutionProvide
 	if groupID == nil || *groupID <= 0 {
 		return false
 	}
-	for _, providerGroupID := range provider.Record.GroupIDs {
-		if providerGroupID == *groupID {
-			return true
-		}
+	if slices.Contains(provider.Record.GroupIDs, *groupID) {
+		return true
 	}
 	for _, providerGroup := range provider.Record.ProviderGroups {
 		if providerGroup.GroupID == *groupID {
@@ -529,32 +535,6 @@ func (s *Compatible) selectProviderWithSchedulerForRoutingOnce(
 		if preserveGuardianParentBinding {
 			legacySessionHash = ""
 		}
-		if requiredTransport == egress.OpenAIUpstreamTransportAny || requiredTransport == egress.OpenAIUpstreamTransportHTTPSSE {
-			effectiveExcludedIDs := cloneExcludedProviderIDs(excludedIDs)
-			for {
-				selection, err := s.selectProviderWithLoadAwarenessForRouting(ctx, groupID, platform, legacySessionHash, requestedModel, routingModel, effectiveExcludedIDs, requireCompact, requiredCapability)
-				if err != nil {
-					return nil, decision, err
-				}
-				if selection == nil || selection.Provider == nil {
-					return selection, decision, nil
-				}
-				if providerSupportsOpenAICapabilities(ctx, selection.Provider, requiredCapability, requiredImageCapability) {
-					return selection, decision, nil
-				}
-				if selection.ReleaseFunc != nil {
-					selection.ReleaseFunc()
-				}
-				if effectiveExcludedIDs == nil {
-					effectiveExcludedIDs = make(map[int64]struct{})
-				}
-				if _, exists := effectiveExcludedIDs[selection.Provider.Record.ID]; exists {
-					return nil, decision, schedulercore.ErrNoAvailableProviders
-				}
-				effectiveExcludedIDs[selection.Provider.Record.ID] = struct{}{}
-			}
-		}
-
 		effectiveExcludedIDs := cloneExcludedProviderIDs(excludedIDs)
 		for {
 			selection, err := s.selectProviderWithLoadAwarenessForRouting(ctx, groupID, platform, legacySessionHash, requestedModel, routingModel, effectiveExcludedIDs, requireCompact, requiredCapability)
@@ -564,7 +544,9 @@ func (s *Compatible) selectProviderWithSchedulerForRoutingOnce(
 			if selection == nil || selection.Provider == nil {
 				return selection, decision, nil
 			}
-			if s.isOpenAIProviderTransportCompatible(selection.Provider, requiredTransport) &&
+			if (requiredTransport == egress.OpenAIUpstreamTransportAny ||
+				requiredTransport == egress.OpenAIUpstreamTransportHTTPSSE ||
+				s.isOpenAIProviderTransportCompatible(selection.Provider, requiredTransport)) &&
 				providerSupportsOpenAICapabilities(ctx, selection.Provider, requiredCapability, requiredImageCapability) {
 				return selection, decision, nil
 			}
@@ -624,7 +606,6 @@ func (s *Compatible) selectProviderWithSchedulerForRoutingOnce(
 		ExcludedIDs:              excludedIDs,
 	})
 	if selection != nil {
-
 		selection.AdvancedScheduler = true
 		feedback := effectiveSettings.Feedback
 		selection.AdvancedSchedulerFeedback = &feedback
@@ -664,19 +645,11 @@ func (s *Compatible) isOpenAIProviderTransportCompatible(provider *gatewayprovid
 		return false
 	}
 	if requiredTransport == egress.OpenAIUpstreamTransportResponsesWebsocketV2Ingress {
-
 		if provider.View().IsGrok() {
 			return true
 		}
-		if s.options.WS == nil || !s.options.WS.ModeRouterV2Enabled {
-			return s.ResolveTransport(provider).Transport == egress.OpenAIUpstreamTransportResponsesWebsocketV2
-		}
-		switch provider.View().ResolveOpenAIResponsesWebSocketV2Mode(s.options.WSIngressMode) {
-		case providercore.OpenAIWSIngressModeCtxPool, providercore.OpenAIWSIngressModePassthrough, providercore.OpenAIWSIngressModeHTTPBridge, providercore.OpenAIWSIngressModeShared, providercore.OpenAIWSIngressModeDedicated:
-			return true
-		default:
-			return false
-		}
+		return provider.Route.Protocol() == protocol.ProtocolOpenAIResponses || provider.View().SupportsResponsesWS() ||
+			(provider.View().IsOpenAI() && slices.Contains(provider.View().UpstreamProtocols(), capability.ProtocolOpenAIResponses))
 	}
 	return s.ResolveTransport(provider).Transport == requiredTransport
 }
@@ -710,7 +683,6 @@ func (s *Compatible) ReportOpenAIProviderScheduleResult(providerOrID any, model 
 		s.clearOpenAIProviderModelTransientState(providerID, providercore.NormalizeTransientModel(model))
 	}
 	if provider == nil {
-
 		s.reportOpenAIProviderScheduleResult(false, providerID, model, success, firstTokenMs)
 		return healthTripped
 	}
@@ -826,4 +798,18 @@ func (s *compatiblePicker) selectBySessionHash(ctx context.Context, req schedule
 // openAIQuotaHeadroomFactor 旧候选只转换额度观测；评分信号使用提供商模块唯一实现。
 func openAIQuotaHeadroomFactor(value *gatewayprovider.ExecutionProvider, now time.Time) float64 {
 	return providercore.OpenAIQuotaHeadroomFactor(gatewayprovider.ExecutionRecord(value), now)
+}
+
+// requestRoutingModel 返回提供商层模型，未提供时使用客户端模型。
+func requestRoutingModel(input schedulercore.PlatformSelectionInput) string {
+	if model := strings.TrimSpace(input.RoutingModel); model != "" {
+		return model
+	}
+	return input.RequestedModel
+}
+
+// cloneSelectionInput 复制本次选择输入和排除集合。
+func cloneSelectionInput(input schedulercore.PlatformSelectionInput) schedulercore.PlatformSelectionInput {
+	input.ExcludedIDs = maps.Clone(input.ExcludedIDs)
+	return input
 }

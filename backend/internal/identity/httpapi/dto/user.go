@@ -53,6 +53,15 @@ type AdminUser[K any] struct {
 	GroupRates map[int64]float64 `json:"group_rates,omitempty"`
 }
 
+// AuthResponse 保留认证响应字段和省略条件。
+type AuthResponse[K any] struct {
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token,omitempty"`
+	ExpiresIn    int      `json:"expires_in,omitempty"`
+	TokenType    string   `json:"token_type"`
+	User         *User[K] `json:"user"`
+}
+
 func UserFromIdentityShallow[K any](u *identity.User) *User[K] {
 	if u == nil {
 		return nil
@@ -105,13 +114,4 @@ func AdminUserFromIdentity[K any](u *identity.User, keys []K) *AdminUser[K] {
 		return nil
 	}
 	return &AdminUser[K]{User: *base, Notes: u.Notes, LastUsedAt: u.LastUsedAt, GroupRates: u.GroupRates}
-}
-
-// AuthResponse 保留认证响应字段和省略条件。
-type AuthResponse[K any] struct {
-	AccessToken  string   `json:"access_token"`
-	RefreshToken string   `json:"refresh_token,omitempty"`
-	ExpiresIn    int      `json:"expires_in,omitempty"`
-	TokenType    string   `json:"token_type"`
-	User         *User[K] `json:"user"`
 }

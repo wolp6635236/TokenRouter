@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
 
 // expectUsageAnalyticsRangeRebuild 声明多维小时和日聚合重建的 SQL 预期。

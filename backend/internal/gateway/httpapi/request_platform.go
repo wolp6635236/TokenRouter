@@ -3,11 +3,10 @@ package httpapi
 import (
 	"strings"
 
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	"github.com/gin-gonic/gin"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 )
 
 // OpenAICompatibleRequestPlatform 不从分组推断平台，空值表示按提供商能力选择。

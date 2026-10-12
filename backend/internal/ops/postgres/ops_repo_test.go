@@ -1,0 +1,412 @@
+package postgres
+
+import (
+	"database/sql"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
+)
+
+func TestBuildOpsErrorLogsWhere_UserScopedFilters(t *testing.T) {
+	uid := int64(42)
+	kid := int64(7)
+	filter := &ops.OpsErrorLogFilter{
+		UserID:             &uid,
+		APIKeyID:           &kid,
+		Model:              "claude-sonnet-4-5",
+		ExcludeCountTokens: true,
+		ErrorPhasesAny:     []string{"auth"},
+		ErrorTypesAny:      []string{"rate_limit_error"},
+		View:               "all",
+	}
+	where, args := buildOpsErrorLogsWhere(filter)
+
+	for _, want := range []string{
+		"e.user_id = $",
+		"e.api_key_id = $",
+		"COALESCE(e.requested_model, e.model, '') = $",
+		"COALESCE(e.is_count_tokens, false) = false",
+		"e.error_phase = ANY($",
+		"e.error_type = ANY($",
+	} {
+		if !strings.Contains(where, want) {
+			t.Fatalf("where missing %q\nfull: %s", want, where)
+		}
+	}
+	if len(args) != 5 {
+		t.Fatalf("expected 5 args, got %d", len(args))
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_ModelFuzzy(t *testing.T) {
+	// 默认（ModelFuzzy=false）保持精确匹配
+	exact := &ops.OpsErrorLogFilter{Model: "claude"}
+	whereExact, _ := buildOpsErrorLogsWhere(exact)
+	if !strings.Contains(whereExact, "COALESCE(e.requested_model, e.model, '') = $") {
+		t.Fatalf("default should be exact match, got: %s", whereExact)
+	}
+
+	// ModelFuzzy=true 使用 ILIKE 匹配。
+	fuzzy := &ops.OpsErrorLogFilter{Model: "claude", ModelFuzzy: true}
+	whereFuzzy, args := buildOpsErrorLogsWhere(fuzzy)
+	if !strings.Contains(whereFuzzy, "COALESCE(e.requested_model, e.model, '') ILIKE $") {
+		t.Fatalf("ModelFuzzy should use ILIKE, got: %s", whereFuzzy)
+	}
+	if len(args) != 1 || args[0] != "%claude%" {
+		t.Fatalf("expected arg \"%%claude%%\", got %v", args)
+	}
+
+	// 通配符转义：输入含 % 应被转义为字面量
+	esc := &ops.OpsErrorLogFilter{Model: "50%off", ModelFuzzy: true}
+	_, escArgs := buildOpsErrorLogsWhere(esc)
+	if len(escArgs) != 1 || escArgs[0] != `%50\%off%` {
+		t.Fatalf("expected escaped arg, got %v", escArgs)
+	}
+
+	esc2 := &ops.OpsErrorLogFilter{Model: "gpt_4o", ModelFuzzy: true}
+	_, escArgs2 := buildOpsErrorLogsWhere(esc2)
+	if len(escArgs2) != 1 || escArgs2[0] != `%gpt\_4o%` {
+		t.Fatalf("underscore should be escaped, got %v", escArgs2)
+	}
+}
+
+// TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption 检查状态码为 200 的流式 cyber_policy 拒绝记录也能出现在管理端和用户端列表中。
+func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
+	// 默认过滤允许 cyber_policy 记录通过，对其他错误检查状态码。
+	where, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{})
+	if !strings.Contains(where, "e.error_type = 'cyber_policy'") {
+		t.Fatalf("default filter must exempt cyber_policy from status >= 400 guard\nfull: %s", where)
+	}
+	if !strings.Contains(where, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("default filter must still include the status >= 400 guard for non-cyber rows\nfull: %s", where)
+	}
+
+	// 未允许 recovered upstream 时，phase=upstream 按状态码过滤。
+	whereUpstream, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{Phase: "upstream"})
+	if !strings.Contains(whereUpstream, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("upstream phase without IncludeRecoveredUpstream must keep the status guard\nfull: %s", whereUpstream)
+	}
+	if !strings.Contains(whereUpstream, "e.error_phase = $") {
+		t.Fatalf("upstream phase filter must emit the error_phase condition\nfull: %s", whereUpstream)
+	}
+
+	// Ops 上游列表允许 recovered upstream 后跳过状态码过滤。
+	whereRecovered, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{Phase: "upstream", IncludeRecoveredUpstream: true})
+	if strings.Contains(whereRecovered, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("upstream phase with IncludeRecoveredUpstream must not add the client-visible status guard\nfull: %s", whereRecovered)
+	}
+
+	// provider_auth 使用提供方健康开关，在单独的凭据阶段返回。
+	whereProviderAuth, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{Phase: "provider_auth", IncludeRecoveredUpstream: true})
+	if strings.Contains(whereProviderAuth, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("provider_auth phase with IncludeRecoveredUpstream must expose recovered rows\nfull: %s", whereProviderAuth)
+	}
+	if !strings.Contains(whereProviderAuth, "e.error_phase = $") {
+		t.Fatalf("provider_auth recovered filter must retain its explicit phase\nfull: %s", whereProviderAuth)
+	}
+
+	whereProviderHealth, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{
+		ErrorPhasesAny:           []string{"upstream", "provider_auth"},
+		IncludeRecoveredUpstream: true,
+	})
+	if strings.Contains(whereProviderHealth, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("provider-health ANY filter must expose recovered inference and credential rows\nfull: %s", whereProviderHealth)
+	}
+	if !strings.Contains(whereProviderHealth, "e.error_phase = ANY($") {
+		t.Fatalf("provider-health filter must preserve distinct phase values\nfull: %s", whereProviderHealth)
+	}
+
+	whereUserProviderAuth, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{ErrorPhasesAny: []string{"provider_auth"}})
+	if !strings.Contains(whereUserProviderAuth, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("request-error provider_auth filters must exclude recovered successes\nfull: %s", whereUserProviderAuth)
+	}
+
+	whereMixed, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{
+		ErrorPhasesAny:           []string{"provider_auth", "request"},
+		IncludeRecoveredUpstream: true,
+	})
+	if !strings.Contains(whereMixed, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("recovered opt-in must not bypass the guard for non-provider phases\nfull: %s", whereMixed)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_UserOwnershipIsDirectOnly(t *testing.T) {
+	uid := int64(42)
+	filter := &ops.OpsErrorLogFilter{UserID: &uid}
+	where, args := buildOpsErrorLogsWhere(filter)
+	if !strings.Contains(where, "e.user_id = $1") {
+		t.Fatalf("user scope should match user_id exactly, got: %s", where)
+	}
+	if len(args) != 1 || args[0] != uid {
+		t.Fatalf("expected user id arg %d, got %v", uid, args)
+	}
+	if strings.Contains(where, "deleted_key_owner_user_id") {
+		t.Fatalf("user ownership must not depend on deleted-key attribution: %s", where)
+	}
+}
+
+// TestProviderAuthFilterIncludesLegacyRows 检查凭据阶段筛选是否包含数据库中的历史阶段值。
+func TestProviderAuthFilterIncludesLegacyRows(t *testing.T) {
+	where, args := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{Phase: "provider_auth"})
+	if !strings.Contains(where, " OR e.error_phase = $") {
+		t.Fatalf("missing legacy phase condition: %s", where)
+	}
+	found := false
+	for _, arg := range args {
+		if value, ok := arg.(string); ok && value == "account_auth" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("legacy phase missing from query arguments")
+	}
+}
+
+func TestOpsInsertErrorLogArgsPreservesExplicitZeroUpstreamStatus(t *testing.T) {
+	zero := 0
+	args := opsInsertErrorLogArgs(&ops.OpsInsertErrorLogInput{UpstreamStatusCode: &zero})
+
+	require.Len(t, args, 38)
+	encoded, ok := args[27].(sql.NullInt64)
+	require.True(t, ok)
+	require.True(t, encoded.Valid)
+	require.Zero(t, encoded.Int64)
+}
+
+func TestOpsNullableIntPointerDistinguishesNilZeroAndStatus(t *testing.T) {
+	missing := testassert.MustType[sql.NullInt64](opsNullableIntPointer(nil))
+	require.False(t, missing.Valid)
+
+	zeroValue := 0
+	zero := testassert.MustType[sql.NullInt64](opsNullableIntPointer(&zeroValue))
+	require.True(t, zero.Valid)
+	require.Zero(t, zero.Int64)
+
+	statusValue := 503
+	status := testassert.MustType[sql.NullInt64](opsNullableIntPointer(&statusValue))
+	require.True(t, status.Valid)
+	require.EqualValues(t, 503, status.Int64)
+}
+
+func TestBuildOpsErrorLogsWhere_QueryUsesQualifiedColumns(t *testing.T) {
+	filter := &ops.OpsErrorLogFilter{
+		Query: "ACCESS_DENIED",
+	}
+
+	where, args := buildOpsErrorLogsWhere(filter)
+	if where == "" {
+		t.Fatalf("where should not be empty")
+	}
+	if len(args) != 1 {
+		t.Fatalf("args len = %d, want 1", len(args))
+	}
+	if !strings.Contains(where, "e.request_id ILIKE $") {
+		t.Fatalf("where should include qualified request_id condition: %s", where)
+	}
+	if !strings.Contains(where, "e.client_request_id ILIKE $") {
+		t.Fatalf("where should include qualified client_request_id condition: %s", where)
+	}
+	if !strings.Contains(where, "e.error_message ILIKE $") {
+		t.Fatalf("where should include qualified error_message condition: %s", where)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_UserQueryUsesExistsSubquery(t *testing.T) {
+	filter := &ops.OpsErrorLogFilter{
+		UserQuery: "admin@",
+	}
+
+	where, args := buildOpsErrorLogsWhere(filter)
+	if where == "" {
+		t.Fatalf("where should not be empty")
+	}
+	if len(args) != 1 {
+		t.Fatalf("args len = %d, want 1", len(args))
+	}
+	if !strings.Contains(where, "EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id AND u.email ILIKE $") {
+		t.Fatalf("where should include EXISTS user email condition: %s", where)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_DefaultErrorsExcludesClientAuthStatuses(t *testing.T) {
+	where, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{})
+
+	if !strings.Contains(where, "NOT COALESCE(e.is_business_limited, false)") {
+		t.Fatalf("where should exclude business-limited rows: %s", where)
+	}
+	if !strings.Contains(where, "COALESCE(e.status_code, 0) IN (401, 403)") {
+		t.Fatalf("where should exclude client-side 401/403 from default errors view: %s", where)
+	}
+	if !strings.Contains(where, "e.upstream_status_code IS NOT NULL") || !strings.Contains(where, "LOWER(COALESCE(e.error_owner, '')) = 'provider'") {
+		t.Fatalf("where should preserve upstream 401/403 in default errors view: %s", where)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_CustomIgnoredStatuses(t *testing.T) {
+	where, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{IgnoredStatusCodes: []int{418, 401, 418}})
+
+	if !strings.Contains(where, "COALESCE(e.status_code, 0) IN (401, 418)") {
+		t.Fatalf("where should use normalized custom ignored status codes: %s", where)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_EmptyIgnoredStatusesDisablesStatusExclusion(t *testing.T) {
+	where, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{IgnoredStatusCodes: []int{}})
+
+	if strings.Contains(where, "COALESCE(e.status_code, 0) IN (401, 403)") {
+		t.Fatalf("where should not use default ignored status codes when explicitly empty: %s", where)
+	}
+	if !strings.Contains(where, "FALSE AND NOT") {
+		t.Fatalf("where should keep business-limited branch but disable status-code exclusion: %s", where)
+	}
+}
+
+func TestBuildOpsErrorLogsWhere_ExcludedIncludesClientAuthStatuses(t *testing.T) {
+	where, _ := buildOpsErrorLogsWhere(&ops.OpsErrorLogFilter{View: "excluded"})
+
+	if !strings.Contains(where, "COALESCE(e.is_business_limited, false) OR") {
+		t.Fatalf("where should include business-limited rows: %s", where)
+	}
+	if !strings.Contains(where, "COALESCE(e.status_code, 0) IN (401, 403)") {
+		t.Fatalf("where should include client-side 401/403 in excluded view: %s", where)
+	}
+	if !strings.Contains(where, "e.upstream_status_code IS NOT NULL") || !strings.Contains(where, "LOWER(COALESCE(e.error_owner, '')) = 'provider'") {
+		t.Fatalf("where should keep upstream 401/403 out of excluded view: %s", where)
+	}
+}
+
+func TestOpsErrorLogInsertDoesNotPersistRequestReplayFields(t *testing.T) {
+	disallowedColumns := []string{
+		"request_body",
+		"request_headers",
+		"request_body_truncated",
+		"request_body_bytes",
+		"is_retryable",
+		"retry_count",
+		"resolved_retry_id",
+	}
+
+	insertSQL := strings.ToLower(insertOpsErrorLogSQL)
+	for _, column := range disallowedColumns {
+		if strings.Contains(insertSQL, column) {
+			t.Fatalf("ops error log insert still references dropped replay column %q", column)
+		}
+	}
+
+	inputType := reflect.TypeFor[ops.OpsInsertErrorLogInput]()
+	disallowedFields := []string{
+		"RequestBodyJSON",
+		"RequestBodyTruncated",
+		"RequestBodyBytes",
+		"RequestHeadersJSON",
+		"IsRetryable",
+		"RetryCount",
+		"ResolvedRetryID",
+	}
+	for _, field := range disallowedFields {
+		if _, ok := inputType.FieldByName(field); ok {
+			t.Fatalf("OpsInsertErrorLogInput still carries replay field %q", field)
+		}
+	}
+}
+
+func TestBuildOpsSystemLogsWhere_WithClientRequestIDAndUserID(t *testing.T) {
+	start := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC)
+	userID := int64(12)
+	apiKeyID := int64(56)
+	providerID := int64(34)
+
+	filter := &ops.OpsSystemLogFilter{
+		StartTime:       &start,
+		EndTime:         &end,
+		Host:            "api-node-1",
+		Level:           "warn",
+		Component:       "http.access",
+		RequestID:       "req-1",
+		ClientRequestID: "creq-1",
+		UserID:          &userID,
+		APIKeyID:        &apiKeyID,
+		ProviderID:      &providerID,
+		Platform:        "openai",
+		Model:           "gpt-5",
+		Query:           "timeout",
+	}
+
+	where, args, hasConstraint := buildOpsSystemLogsWhere(filter)
+	if !hasConstraint {
+		t.Fatalf("expected hasConstraint=true")
+	}
+	if where == "" {
+		t.Fatalf("where should not be empty")
+	}
+	if len(args) != 13 {
+		t.Fatalf("args len = %d, want 13", len(args))
+	}
+	if !contains(where, "l.host = $") {
+		t.Fatalf("where should include host condition: %s", where)
+	}
+	if !contains(where, "COALESCE(l.client_request_id,'') = $") {
+		t.Fatalf("where should include client_request_id condition: %s", where)
+	}
+	if !contains(where, "l.user_id = $") {
+		t.Fatalf("where should include user_id condition: %s", where)
+	}
+	if !contains(where, "l.api_key_id = $") {
+		t.Fatalf("where should include api_key_id condition: %s", where)
+	}
+}
+
+func TestBuildOpsSystemLogsCleanupWhere_RequireConstraint(t *testing.T) {
+	where, args, hasConstraint := buildOpsSystemLogsCleanupWhere(&ops.OpsSystemLogCleanupFilter{})
+	if hasConstraint {
+		t.Fatalf("expected hasConstraint=false")
+	}
+	if where == "" {
+		t.Fatalf("where should not be empty")
+	}
+	if len(args) != 0 {
+		t.Fatalf("args len = %d, want 0", len(args))
+	}
+}
+
+func TestBuildOpsSystemLogsCleanupWhere_WithClientRequestIDAndUserID(t *testing.T) {
+	userID := int64(9)
+	apiKeyID := int64(10)
+	filter := &ops.OpsSystemLogCleanupFilter{
+		Host:            "api-node-2",
+		ClientRequestID: "creq-9",
+		UserID:          &userID,
+		APIKeyID:        &apiKeyID,
+	}
+
+	where, args, hasConstraint := buildOpsSystemLogsCleanupWhere(filter)
+	if !hasConstraint {
+		t.Fatalf("expected hasConstraint=true")
+	}
+	if len(args) != 4 {
+		t.Fatalf("args len = %d, want 4", len(args))
+	}
+	if !contains(where, "l.host = $") {
+		t.Fatalf("where should include host condition: %s", where)
+	}
+	if !contains(where, "COALESCE(l.client_request_id,'') = $") {
+		t.Fatalf("where should include client_request_id condition: %s", where)
+	}
+	if !contains(where, "l.user_id = $") {
+		t.Fatalf("where should include user_id condition: %s", where)
+	}
+	if !contains(where, "l.api_key_id = $") {
+		t.Fatalf("where should include api_key_id condition: %s", where)
+	}
+}
+
+func contains(s string, sub string) bool {
+	return strings.Contains(s, sub)
+}

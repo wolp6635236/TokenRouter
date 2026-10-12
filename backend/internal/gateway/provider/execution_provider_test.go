@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // TestExecutionProviderPreservesNativeGraphAndIsolation 检查执行目标复制是否保留根关联，并复制外部凭据 map。

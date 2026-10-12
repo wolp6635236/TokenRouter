@@ -23,6 +23,13 @@ type sqlQueryRower interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
+// UserStatusTx 在调用方的 SQL 事务中锁定和禁用用户，提交由调用方负责。
+type UserStatusTx interface {
+	LockUser(context.Context, int64) (string, bool, error)
+	SetDisabled(context.Context, int64) (bool, error)
+}
+type UserParticipation func(*sql.Tx) UserStatusTx
+
 func NewContentModerationRepository(db *sql.DB, users UserParticipation) *Store {
 	return &Store{db: db, users: users}
 }
@@ -935,6 +942,9 @@ func buildContentModerationLogWhere(filter moderation.ContentModerationLogFilter
 	if endpoint := strings.TrimSpace(filter.Endpoint); endpoint != "" {
 		add("l.endpoint = $%d", endpoint)
 	}
+	if id := strings.TrimSpace(filter.RequestID); id != "" {
+		add("l.request_id = ANY(ARRAY(SELECT id FROM request_lookup_ids($%d)))", id)
+	}
 	if search := strings.TrimSpace(filter.Search); search != "" {
 		like := "%" + search + "%"
 		args = append(args, like, like, like, like, like)
@@ -963,6 +973,9 @@ func buildContentModerationCyberWhere(filter moderation.ContentModerationCyberWa
 	if filter.ProviderID != nil {
 		add("w.provider_id = $%d", *filter.ProviderID)
 	}
+	if id := strings.TrimSpace(filter.RequestID); id != "" {
+		add("w.request_id = ANY(ARRAY(SELECT id FROM request_lookup_ids($%d)))", id)
+	}
 	if search := strings.TrimSpace(filter.Search); search != "" {
 		like := "%" + search + "%"
 		args = append(args, like, like, like, like, like, like, like)
@@ -978,9 +991,7 @@ func buildContentModerationCyberWhere(filter moderation.ContentModerationCyberWa
 	return where, args
 }
 
-// UserStatusTx 在调用方的 SQL 事务中锁定和禁用用户，提交由调用方负责。
-type UserStatusTx interface {
-	LockUser(context.Context, int64) (string, bool, error)
-	SetDisabled(context.Context, int64) (bool, error)
+// paginationResultFromTotal 根据总数和分页参数生成查询分页结果。
+func paginationResultFromTotal(total int64, params pagination.PaginationParams) *pagination.PaginationResult {
+	return pagination.ResultFromTotal(total, params)
 }
-type UserParticipation func(*sql.Tx) UserStatusTx

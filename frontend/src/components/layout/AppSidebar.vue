@@ -386,6 +386,7 @@ const adminNavItems = computed((): NavItem[] => {
         ]
       : []),
     { path: '/admin/usage', label: t('nav.usage'), icon: 'chart' as const },
+    { path: '/admin/requests', label: t('requests.title'), icon: 'search' as const },
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: 'shieldCheck' as const }
   ]
 

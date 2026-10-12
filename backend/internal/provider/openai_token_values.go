@@ -7,13 +7,13 @@ import (
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// OpenAIAuthURLResult contains the authorization URL and session info
+// OpenAIAuthURLResult contains the authorization URL and session info.
 type OpenAIAuthURLResult struct {
 	AuthURL   string `json:"auth_url"`
 	SessionID string `json:"session_id"`
 }
 
-// OpenAIExchangeCodeInput represents the input for code exchange
+// OpenAIExchangeCodeInput represents the input for code exchange.
 type OpenAIExchangeCodeInput struct {
 	SessionID              string
 	Code                   string
@@ -23,7 +23,7 @@ type OpenAIExchangeCodeInput struct {
 	TLSFingerprintRouterID *int64
 }
 
-// OpenAITokenInfo represents the token information for OpenAI
+// OpenAITokenInfo represents the token information for OpenAI.
 type OpenAITokenInfo struct {
 	AccessToken           string `json:"access_token"`
 	RefreshToken          string `json:"refresh_token"`

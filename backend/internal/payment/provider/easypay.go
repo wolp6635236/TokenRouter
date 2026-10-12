@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -45,8 +46,30 @@ type easyPayCustomMethod struct {
 	DisplayName  string `json:"displayName"`
 }
 
+type easyPayQueryData struct {
+	TradeStatus *string `json:"trade_status"`
+	Status      *int    `json:"status"`
+	Money       *string `json:"money"`
+	TradeNo     *string `json:"trade_no"`
+}
+
+type easyPayQueryResponse struct {
+	Code        int              `json:"code"`
+	Msg         string           `json:"msg"`
+	TradeStatus *string          `json:"trade_status"`
+	Status      *int             `json:"status"`
+	Money       *string          `json:"money"`
+	TradeNo     *string          `json:"trade_no"`
+	Data        easyPayQueryData `json:"data"`
+}
+
+type easyPayRefundAttempt struct {
+	params   map[string]string
+	refundID string
+}
+
 // NewEasyPay creates a new EasyPay provider.
-// config keys: pid, pkey, apiBase, notifyUrl, returnUrl, cid, cidAlipay, cidWxpay
+// config keys: pid, pkey, apiBase, notifyUrl, returnUrl, cid, cidAlipay, cidWxpay.
 func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 	for _, k := range []string{"pid", "pkey", "apiBase", "notifyUrl", "returnUrl"} {
 		if strings.TrimSpace(config[k]) == "" {
@@ -54,9 +77,7 @@ func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 		}
 	}
 	cfg := make(map[string]string, len(config))
-	for k, v := range config {
-		cfg[k] = v
-	}
+	maps.Copy(cfg, config)
 	cfg["apiBase"] = normalizeEasyPayAPIBase(cfg["apiBase"])
 	return &EasyPay{
 		instanceID: instanceID,
@@ -299,23 +320,6 @@ func (e *EasyPay) upstreamPaymentType(paymentType string) string {
 	return paymentType
 }
 
-type easyPayQueryData struct {
-	TradeStatus *string `json:"trade_status"`
-	Status      *int    `json:"status"`
-	Money       *string `json:"money"`
-	TradeNo     *string `json:"trade_no"`
-}
-
-type easyPayQueryResponse struct {
-	Code        int              `json:"code"`
-	Msg         string           `json:"msg"`
-	TradeStatus *string          `json:"trade_status"`
-	Status      *int             `json:"status"`
-	Money       *string          `json:"money"`
-	TradeNo     *string          `json:"trade_no"`
-	Data        easyPayQueryData `json:"data"`
-}
-
 func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.QueryOrderResponse, error) {
 	params := map[string]string{
 		"act": "order", "pid": e.config["pid"],
@@ -476,11 +480,6 @@ func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payme
 	return nil, firstErr
 }
 
-type easyPayRefundAttempt struct {
-	params   map[string]string
-	refundID string
-}
-
 func (e *EasyPay) refundAttempts(req payment.RefundRequest) []easyPayRefundAttempt {
 	base := map[string]string{
 		"pid": e.config["pid"], "key": e.config["pkey"], "money": req.Amount,
@@ -501,9 +500,7 @@ func (e *EasyPay) refundAttempts(req payment.RefundRequest) []easyPayRefundAttem
 
 func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -572,7 +569,7 @@ func summarizeEasyPayResponse(body []byte) string {
 	}
 	if len(summary) > maxEasypayErrorSummary {
 		truncated := summary[:maxEasypayErrorSummary]
-		for len(truncated) > 0 && !utf8.ValidString(truncated) {
+		for truncated != "" && !utf8.ValidString(truncated) {
 			truncated = truncated[:len(truncated)-1]
 		}
 		return truncated + "..."

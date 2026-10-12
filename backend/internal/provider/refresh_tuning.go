@@ -4,10 +4,10 @@ import (
 	"time"
 )
 
-// TokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
-const TokenRefreshTempUnschedDuration = 10 * time.Minute
-
 const (
+	// TokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间。
+	TokenRefreshTempUnschedDuration = 10 * time.Minute
+
 	DefaultTokenRefreshCandidatePageSize        = 200
 	MaxTokenRefreshCandidatePageSize            = 1000
 	DefaultTokenRefreshProviderConcurrency      = 4
@@ -89,10 +89,7 @@ func (s *RefreshTuning) RetryBackoff(providerID int64, attempt int) time.Duratio
 	if s == nil || s.RetryBackoffSeconds <= 0 {
 		return 0
 	}
-	shift := attempt - 1
-	if shift > 10 {
-		shift = 10
-	}
+	shift := min(attempt-1, 10)
 	baseSeconds := min(s.RetryBackoffSeconds, int(MaxTokenRefreshRetryBackoff/time.Second))
 	base := time.Duration(baseSeconds) * time.Second * time.Duration(1<<shift)
 	// 重试间隔按稳定种子在 75% 到 125% 之间变化，不同实例的重试时间错开，同一输入可复现。
@@ -119,10 +116,7 @@ func ClampRefreshAttemptToLockLease(timeout, lease time.Duration) time.Duration 
 	if timeout <= 0 || lease <= 0 {
 		return timeout
 	}
-	margin := lease / 10
-	if margin > MaxTokenRefreshLockSafetyMargin {
-		margin = MaxTokenRefreshLockSafetyMargin
-	}
+	margin := min(lease/10, MaxTokenRefreshLockSafetyMargin)
 	if margin <= 0 {
 		margin = time.Nanosecond
 	}

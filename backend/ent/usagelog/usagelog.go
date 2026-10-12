@@ -26,6 +26,8 @@ const (
 	FieldProviderID = "provider_id"
 	// FieldPlatform holds the string denoting the platform field in the database.
 	FieldPlatform = "platform"
+	// FieldBillingKey holds the string denoting the billing_key field in the database.
+	FieldBillingKey = "billing_key"
 	// FieldRequestID holds the string denoting the request_id field in the database.
 	FieldRequestID = "request_id"
 	// FieldModel holds the string denoting the model field in the database.
@@ -187,6 +189,7 @@ var Columns = []string{
 	FieldAPIKeyID,
 	FieldProviderID,
 	FieldPlatform,
+	FieldBillingKey,
 	FieldRequestID,
 	FieldModel,
 	FieldRequestedModel,
@@ -251,6 +254,8 @@ var (
 	DefaultPlatform string
 	// PlatformValidator is a validator for the "platform" field. It is called by the builders before save.
 	PlatformValidator func(string) error
+	// BillingKeyValidator is a validator for the "billing_key" field. It is called by the builders before save.
+	BillingKeyValidator func(string) error
 	// RequestIDValidator is a validator for the "request_id" field. It is called by the builders before save.
 	RequestIDValidator func(string) error
 	// ModelValidator is a validator for the "model" field. It is called by the builders before save.
@@ -363,6 +368,11 @@ func ByProviderID(opts ...sql.OrderTermOption) OrderOption {
 // ByPlatform orders the results by the platform field.
 func ByPlatform(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPlatform, opts...).ToFunc()
+}
+
+// ByBillingKey orders the results by the billing_key field.
+func ByBillingKey(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBillingKey, opts...).ToFunc()
 }
 
 // ByRequestID orders the results by the request_id field.

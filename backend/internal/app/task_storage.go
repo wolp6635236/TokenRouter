@@ -3,12 +3,13 @@ package app
 import (
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	batchredis "github.com/TokenFlux/TokenRouter/internal/batchimage/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	creativeredis "github.com/TokenFlux/TokenRouter/internal/creative/rediscache"
-	"github.com/redis/go-redis/v9"
 )
 
 // provideCreativeQueue 根据队列配置构造创作台队列，并设置键名和租约时间。

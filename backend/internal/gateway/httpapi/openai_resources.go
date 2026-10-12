@@ -4,9 +4,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 // OpenAIImageAdmissionOptions 只包含静态技术参数，nil 保留未配置时的旁路。

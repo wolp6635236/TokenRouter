@@ -13,14 +13,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
 )
 
-// CredentialMode 描述传输认证形式，不引入业务提供商实体。
-type CredentialMode string
-
 const (
 	APIKeyCredential         CredentialMode = "apikey"
 	OAuthCredential          CredentialMode = "oauth"
 	ServiceAccountCredential CredentialMode = "service_account"
 )
+
+// CredentialMode 描述传输认证形式，不引入业务提供商实体。
+type CredentialMode string
 
 type (
 	TokenSnapshot struct{ AccessToken, ProjectID string }

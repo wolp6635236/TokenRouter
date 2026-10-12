@@ -8,9 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 const (
@@ -18,6 +19,8 @@ const (
 	cnUsageMonitorLeaderLockKey   = "cn:usage:monitor:leader"
 	cnUsageMonitorReasonPrefix    = "cn_usage_monitor:"
 )
+
+var ErrCNMonitorStopped = errors.New("CN usage monitor is stopped")
 
 // CNMonitorStore 只提供监控所需的提供商读取、快照 CAS 和身份条件健康写入。
 type CNMonitorStore interface {
@@ -118,8 +121,6 @@ func (s *CNUsageMonitor) StartContext(parent context.Context) error {
 	}()
 	return nil
 }
-
-var ErrCNMonitorStopped = errors.New("CN usage monitor is stopped")
 
 func (s *CNUsageMonitor) Stop() { _ = s.StopContext(context.Background()) }
 func (s *CNUsageMonitor) StopContext(ctx context.Context) error {
@@ -265,7 +266,7 @@ func (s *CNUsageMonitor) persistAttempt(
 	}
 	snapshot.LastAttemptAt = now
 	if queryErr != nil || result == nil {
-		code := infraerrors.Reason(queryErr)
+		code := apperror.Reason(queryErr)
 		if code == "" {
 			code = "CN_USAGE_MONITOR_QUERY_FAILED"
 		}

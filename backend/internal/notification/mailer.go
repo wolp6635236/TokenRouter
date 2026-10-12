@@ -6,16 +6,35 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	"github.com/TokenFlux/TokenRouter/internal/notification/contract"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
+
+const (
+	SettingKeySMTPFrom     = "smtp_from"
+	SettingKeySMTPFromName = "smtp_from_name"
+	SettingKeySMTPHost     = "smtp_host"
+	SettingKeySMTPPassword = "smtp_password"
+	SettingKeySMTPPort     = "smtp_port"
+	SettingKeySMTPUseTLS   = "smtp_use_tls"
+	SettingKeySMTPUsername = "smtp_username"
+)
+
+var ErrEmailNotConfigured = contract.ErrEmailNotConfigured
 
 type Mailer struct {
 	settingRepo              SettingRepository
 	transport                SMTPTransport
 	notificationEmailService *NotificationEmailService
 }
+
+type (
+	SMTPConfig    = contract.SMTPConfig
+	SMTPTransport interface {
+		Send(context.Context, *SMTPConfig, string, string, string) error
+		Test(context.Context, *SMTPConfig) error
+	}
+)
 
 func NewMailer(repo SettingRepository, transport SMTPTransport) *Mailer {
 	return &Mailer{settingRepo: repo, transport: transport}
@@ -44,8 +63,6 @@ func (s *Mailer) TestSMTPConnectionContext(ctx context.Context, cfg *SMTPConfig)
 	return s.transport.Test(ctx, cfg)
 }
 
-var ErrEmailNotConfigured = contract.ErrEmailNotConfigured
-
 func EmailRecipientName(email string) string {
 	trimmed := strings.TrimSpace(email)
 	if trimmed == "" {
@@ -57,7 +74,7 @@ func EmailRecipientName(email string) string {
 	return trimmed
 }
 
-// GetSMTPConfig 从数据库获取SMTP配置
+// GetSMTPConfig 从数据库获取 SMTP 配置。
 func (s *Mailer) GetSMTPConfig(ctx context.Context) (*SMTPConfig, error) {
 	keys := []string{
 		SettingKeySMTPHost,
@@ -99,16 +116,6 @@ func (s *Mailer) GetSMTPConfig(ctx context.Context) (*SMTPConfig, error) {
 		UseTLS:   useTLS,
 	}, nil
 }
-
-const (
-	SettingKeySMTPFrom     = "smtp_from"
-	SettingKeySMTPFromName = "smtp_from_name"
-	SettingKeySMTPHost     = "smtp_host"
-	SettingKeySMTPPassword = "smtp_password"
-	SettingKeySMTPPort     = "smtp_port"
-	SettingKeySMTPUseTLS   = "smtp_use_tls"
-	SettingKeySMTPUsername = "smtp_username"
-)
 
 // SanitizeEmailHeader 防止模板参数注入额外邮件头。
 func SanitizeEmailHeader(s string) string { return strings.NewReplacer("\r", "", "\n", "").Replace(s) }

@@ -10,23 +10,33 @@ import (
 	"time"
 )
 
+const (
+	GeminiQuotaPolicySettingKey = "gemini_quota_policy"
+	geminiQuotaCacheTTL         = time.Minute
+)
+
+type GeminiTierQuotaOverride struct {
+	ProRPD          *int64 `json:"pro_rpd"`
+	FlashRPD        *int64 `json:"flash_rpd"`
+	CooldownMinutes *int   `json:"cooldown_minutes"`
+}
+
+// GeminiQuotaOptions 区分静态配置和按原 TTL 加载的动态设置。
+type GeminiQuotaOptions struct {
+	StaticTiers  map[string]GeminiTierQuotaOverride
+	StaticPolicy string
+	LoadPolicy   func(context.Context) (string, error)
+	NotFound     error
+	Now          func() time.Time
+	Log          func(string, ...any)
+}
+
 // GeminiQuotaService 拥有唯一策略缓存，构造不读取设置也不启动后台任务。
 type GeminiQuotaService struct {
 	options  GeminiQuotaOptions
 	mu       sync.Mutex
 	cachedAt time.Time
 	policy   *GeminiQuotaPolicy
-}
-
-func NewGeminiQuotaService(options GeminiQuotaOptions) *GeminiQuotaService {
-	options.StaticTiers = cloneGeminiTierOverrides(options.StaticTiers)
-	if options.Now == nil {
-		options.Now = time.Now
-	}
-	if options.Log == nil {
-		options.Log = func(string, ...any) {}
-	}
-	return &GeminiQuotaService{options: options}
 }
 
 type GeminiTierPolicy struct {
@@ -37,8 +47,6 @@ type GeminiTierPolicy struct {
 type GeminiQuotaPolicy struct {
 	tiers map[string]GeminiTierPolicy
 }
-
-const geminiQuotaCacheTTL = time.Minute
 
 type geminiQuotaOverridesV1 struct {
 	Tiers map[string]GeminiTierQuotaOverride `json:"tiers"`
@@ -59,6 +67,31 @@ type GeminiQuotaRuleOverride struct {
 type GeminiModelQuotaOverride struct {
 	RPD *int64 `json:"rpd,omitempty"`
 	RPM *int64 `json:"rpm,omitempty"`
+}
+
+func cloneGeminiTierOverrides(values map[string]GeminiTierQuotaOverride) map[string]GeminiTierQuotaOverride {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]GeminiTierQuotaOverride, len(values))
+	for id, v := range values {
+		v.ProRPD = clonePointer(v.ProRPD)
+		v.FlashRPD = clonePointer(v.FlashRPD)
+		v.CooldownMinutes = clonePointer(v.CooldownMinutes)
+		out[id] = v
+	}
+	return out
+}
+
+func NewGeminiQuotaService(options GeminiQuotaOptions) *GeminiQuotaService {
+	options.StaticTiers = cloneGeminiTierOverrides(options.StaticTiers)
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	if options.Log == nil {
+		options.Log = func(string, ...any) {}
+	}
+	return &GeminiQuotaService{options: options}
 }
 
 func (s *GeminiQuotaService) Policy(ctx context.Context) *GeminiQuotaPolicy {

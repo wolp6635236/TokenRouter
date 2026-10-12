@@ -17,15 +17,15 @@ type RefreshFailureNotice struct {
 	Reason         string
 }
 
-func (n RefreshFailureNotice) String() string {
-	return fmt.Sprintf("refresh failure notice (provider_id=%d)", n.ProviderID)
-}
-func (n RefreshFailureNotice) GoString() string { return n.String() }
-
 // Prepare 在条件写入前读取停止代次，返回的发布函数按代次检查当前阻断状态。
 type RefreshFailureObserver interface {
 	PrepareRefreshFailure(int64) func(RefreshFailureNotice)
 }
+
+func (n RefreshFailureNotice) String() string {
+	return fmt.Sprintf("refresh failure notice (provider_id=%d)", n.ProviderID)
+}
+func (n RefreshFailureNotice) GoString() string { return n.String() }
 
 // PrepareRefreshFailureNotice 在写入前固定认证身份和通知代次，发布时据此检查阻断状态。
 func PrepareRefreshFailureNotice(observer RefreshFailureObserver, value *Record) func(time.Time, string) {

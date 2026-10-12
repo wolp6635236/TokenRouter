@@ -3,9 +3,23 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
+)
+
+const (
+	antigravityUserAgentVersionCacheTTL  = 60 * time.Second
+	antigravityUserAgentVersionErrorTTL  = 5 * time.Second
+	antigravityUserAgentVersionDBTimeout = 5 * time.Second
+	openAICodexUserAgentCacheTTL         = 60 * time.Second
+	openAICodexUserAgentErrorTTL         = 5 * time.Second
+	openAICodexUserAgentDBTimeout        = 5 * time.Second
+	DefaultOpenAICodexUserAgent          = "codex-tui/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.144.1)"
+	openAIAllowCodexPluginCacheTTL       = 60 * time.Second
+	openAIAllowCodexPluginErrorTTL       = 5 * time.Second
+	openAIAllowCodexPluginDBTimeout      = 5 * time.Second
 )
 
 // ClientSettingsOptions 提供平台参数校验和动态默认值读取函数。
@@ -13,6 +27,7 @@ type ClientSettingsOptions struct {
 	NormalizeUserAgentVersion func(string) string
 	DefaultUserAgentVersion   func() string
 }
+
 type cachedAntigravityUserAgentVersion struct {
 	version   string
 	expiresAt int64 // unix nano
@@ -22,26 +37,6 @@ type cachedOpenAICodexUserAgent struct {
 	value     string
 	expiresAt int64 // unix nano
 }
-
-const antigravityUserAgentVersionCacheTTL = 60 * time.Second
-
-const antigravityUserAgentVersionErrorTTL = 5 * time.Second
-
-const antigravityUserAgentVersionDBTimeout = 5 * time.Second
-
-const openAICodexUserAgentCacheTTL = 60 * time.Second
-
-const openAICodexUserAgentErrorTTL = 5 * time.Second
-
-const openAICodexUserAgentDBTimeout = 5 * time.Second
-
-const DefaultOpenAICodexUserAgent = "codex-tui/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.144.1)"
-
-const openAIAllowCodexPluginCacheTTL = 60 * time.Second
-
-const openAIAllowCodexPluginErrorTTL = 5 * time.Second
-
-const openAIAllowCodexPluginDBTimeout = 5 * time.Second
 
 type cachedOpenAIAllowCodexPlugin struct {
 	value     bool
@@ -216,4 +211,31 @@ func (s *RuntimeSettings) PublishCodexPlugin(enabled bool) {
 		value:     enabled,
 		expiresAt: time.Now().Add(openAIAllowCodexPluginCacheTTL).UnixNano(),
 	})
+}
+
+// MigrateGrokDefaultTextModel 将数据库中的 grok-4.5 默认模型升级为 grok-4.6。
+func (s *RuntimeSettings) MigrateGrokDefaultTextModel(ctx context.Context) error {
+	if s == nil || s.settingRepo == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ForwardingSettingsReadTimeout)
+	defer cancel()
+
+	value, err := s.settingRepo.GetValue(dbCtx, SettingKeyGrokDefaultTextModel)
+	if err != nil {
+		if errors.Is(err, s.notFound) {
+			return nil
+		}
+		return fmt.Errorf("get %s setting: %w", SettingKeyGrokDefaultTextModel, err)
+	}
+	if strings.TrimSpace(value) != "grok-4.5" {
+		return nil
+	}
+	if err := s.settingRepo.Set(dbCtx, SettingKeyGrokDefaultTextModel, "grok-4.6"); err != nil {
+		return fmt.Errorf("set %s setting: %w", SettingKeyGrokDefaultTextModel, err)
+	}
+	return nil
 }

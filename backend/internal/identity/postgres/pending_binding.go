@@ -3,10 +3,12 @@ package postgres
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/ent/authidentitychannel"
@@ -507,9 +509,7 @@ func ApplyPendingOAuthBindingTx(
 	}
 
 	metadata := cloneOAuthMetadata(identity.Metadata)
-	for key, value := range session.UpstreamIdentityClaims {
-		metadata[key] = value
-	}
+	maps.Copy(metadata, session.UpstreamIdentityClaims)
 	if decision != nil && decision.AdoptDisplayName && adoptedDisplayName != "" {
 		metadata["display_name"] = adoptedDisplayName
 	}

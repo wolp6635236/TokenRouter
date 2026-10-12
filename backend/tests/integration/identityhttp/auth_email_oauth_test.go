@@ -9,20 +9,18 @@ import (
 	"testing"
 	"time"
 
-	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
-
-	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/ent/redeemcode"
+	dbuser "github.com/TokenFlux/TokenRouter/ent/user"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
-
-	dbuser "github.com/TokenFlux/TokenRouter/ent/user"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 func TestEmailOAuthCallbackRequiresPendingRegistrationWhenInvitationEnabled(t *testing.T) {

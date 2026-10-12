@@ -3,10 +3,11 @@ package httpapi
 import (
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/gin-gonic/gin"
 )
 
 // opsCyberPolicyKey 是 HTTP 和 WS turn 记录供应商拒绝证据的键。

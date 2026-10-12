@@ -84,7 +84,7 @@ func TestMachineOSForNormalizesArchitectureAliases(t *testing.T) {
 }
 
 func TestModelsAndAliasesAreSiteAware(t *testing.T) {
-	require.Equal(t, []string{
+	require.ElementsMatch(t, []string{
 		"claude-opus-4-6",
 		"auto",
 		"performance",
@@ -101,7 +101,7 @@ func TestModelsAndAliasesAreSiteAware(t *testing.T) {
 		"deepseek-v4-flash",
 		"minimax-m3",
 	}, DefaultRequestModelIDsForSite(SiteGlobal))
-	require.Equal(t, []string{
+	require.ElementsMatch(t, []string{
 		"auto",
 		"qwen3.8-max",
 		"qwen3.7-max",
@@ -194,12 +194,12 @@ func TestThinkingCapabilityForSiteUsesSiteSnapshot(t *testing.T) {
 func TestThinkingCapabilitySnapshotsCoverEveryModel(t *testing.T) {
 	tests := []struct {
 		name         string
-		models       []Model
+		models       []string
 		aliases      map[string]string
 		capabilities map[string]ThinkingCapability
 	}{
-		{name: "国际站", models: globalModels, aliases: globalAliases, capabilities: globalThinkingCapabilities},
-		{name: "国内站", models: cnModels, aliases: cnAliases, capabilities: cnThinkingCapabilities},
+		{name: "国际站", models: DefaultRequestModelIDsForSite(SiteGlobal), aliases: globalAliases, capabilities: globalThinkingCapabilities},
+		{name: "国内站", models: DefaultRequestModelIDsForSite(SiteCN), aliases: cnAliases, capabilities: cnThinkingCapabilities},
 	}
 
 	for _, tt := range tests {
@@ -207,8 +207,8 @@ func TestThinkingCapabilitySnapshotsCoverEveryModel(t *testing.T) {
 			// 能力表必须显式覆盖站点的所有 route key，避免新增模型静默沿用零值能力。
 			wantRoutes := make(map[string]struct{}, len(tt.aliases))
 			for _, model := range tt.models {
-				route, ok := tt.aliases[model.ID]
-				require.True(t, ok, "%s模型 %q 缺少 route key", tt.name, model.ID)
+				route, ok := tt.aliases[model]
+				require.True(t, ok, "%s模型 %q 缺少 route key", tt.name, model)
 				wantRoutes[route] = struct{}{}
 			}
 			require.Len(t, tt.aliases, len(tt.models), "%s模型和 alias 数量必须一致", tt.name)

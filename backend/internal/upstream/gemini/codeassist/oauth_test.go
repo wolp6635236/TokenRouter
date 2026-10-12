@@ -6,13 +6,9 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
 // SessionStore 测试
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
 // GenerateRandomBytes 测试
-// ---------------------------------------------------------------------------
 
 func TestGenerateRandomBytes(t *testing.T) {
 	tests := []int{0, 1, 16, 32, 64}
@@ -29,7 +25,7 @@ func TestGenerateRandomBytes(t *testing.T) {
 }
 
 func TestGenerateRandomBytes_Uniqueness(t *testing.T) {
-	// 两次调用应该返回不同的结果（极小概率相同，32字节足够）
+	// 两次调用应该返回不同的结果（极小概率相同，32 字节足够）
 	a, _ := GenerateRandomBytes(32)
 	b, _ := GenerateRandomBytes(32)
 	if string(a) == string(b) {
@@ -37,9 +33,7 @@ func TestGenerateRandomBytes_Uniqueness(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateState 测试
-// ---------------------------------------------------------------------------
 
 func TestGenerateState(t *testing.T) {
 	state, err := GenerateState()
@@ -59,9 +53,7 @@ func TestGenerateState(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateSessionID 测试
-// ---------------------------------------------------------------------------
 
 func TestGenerateSessionID(t *testing.T) {
 	sid, err := GenerateSessionID()
@@ -86,9 +78,7 @@ func TestGenerateSessionID_Uniqueness(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateCodeVerifier 测试
-// ---------------------------------------------------------------------------
 
 func TestGenerateCodeVerifier(t *testing.T) {
 	verifier, err := GenerateCodeVerifier()
@@ -111,9 +101,7 @@ func TestGenerateCodeVerifier(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // GenerateCodeChallenge 测试
-// ---------------------------------------------------------------------------
 
 func TestGenerateCodeChallenge(t *testing.T) {
 	// 使用已知输入验证输出
@@ -135,9 +123,7 @@ func TestGenerateCodeChallenge_NoPadding(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // base64URLEncode 测试
-// ---------------------------------------------------------------------------
 
 func TestBase64URLEncode(t *testing.T) {
 	tests := []struct {
@@ -164,9 +150,7 @@ func TestBase64URLEncode(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // hasRestrictedScope 测试
-// ---------------------------------------------------------------------------
 
 func TestHasRestrictedScope(t *testing.T) {
 	tests := []struct {
@@ -198,9 +182,7 @@ func TestHasRestrictedScope(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // BuildAuthorizationURL 测试
-// ---------------------------------------------------------------------------
 
 func TestBuildAuthorizationURL(t *testing.T) {
 	t.Setenv(GeminiCLIOAuthClientSecretEnv, "test-secret")
@@ -303,9 +285,7 @@ func TestBuildAuthorizationURL_UsesBuiltinSecretFallback(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // EffectiveOAuthConfig 测试
-// ---------------------------------------------------------------------------
 
 func TestEffectiveOAuthConfig_GoogleOne(t *testing.T) {
 	// 内置的 Gemini CLI client secret 不嵌入在此仓库中。
@@ -419,9 +399,7 @@ func TestEffectiveOAuthConfig_ScopeFiltering(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // EffectiveOAuthConfig 测试 - 新增分支覆盖
-// ---------------------------------------------------------------------------
 
 func TestEffectiveOAuthConfig_OnlyClientID_NoSecret(t *testing.T) {
 	// 只提供 clientID 不提供 secret 应报错
@@ -488,8 +466,8 @@ func TestEffectiveOAuthConfig_AIStudio_ScopeNormalization(t *testing.T) {
 	}
 	if strings.Contains(cfg.Scopes, "auth/generative-language ") || strings.HasSuffix(cfg.Scopes, "auth/generative-language") {
 		// 返回的 scope 包含归一化后的 generative-language.retriever。
-		parts := strings.Fields(cfg.Scopes)
-		for _, p := range parts {
+		parts := strings.FieldsSeq(cfg.Scopes)
+		for p := range parts {
 			if p == "https://www.googleapis.com/auth/generative-language" {
 				t.Errorf("ai_studio 应将 generative-language 归一化为 generative-language.retriever，实际 scopes: %q", cfg.Scopes)
 			}

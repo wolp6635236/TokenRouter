@@ -13,22 +13,30 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	coderws "github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	proxyurl "github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
-	openaiwsv2 "github.com/TokenFlux/TokenRouter/internal/upstream/openai/wsrelay"
-	coderws "github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	openaiwsv2 "github.com/TokenFlux/TokenRouter/internal/upstream/openai/ws/relay"
 )
 
-const WSMessageReadLimitBytes int64 = 16 * 1024 * 1024
 const (
+	WSMessageReadLimitBytes int64 = 16 * 1024 * 1024
+
 	openAIWSProxyTransportMaxIdleConns        = 128
 	openAIWSProxyTransportMaxIdleConnsPerHost = 64
 	openAIWSProxyTransportIdleConnTimeout     = 90 * time.Second
 	openAIWSProxyClientCacheMaxEntries        = 256
 	openAIWSProxyClientCacheIdleTTL           = 15 * time.Minute
+)
+
+var (
+	_ openaiwsv2.FrameConn = (*coderOpenAIWSClientConn)(nil)
+
+	// ErrWSConnClosed 与连接池共用同一错误身份。
+	ErrWSConnClosed = errors.New("openai ws connection closed")
 )
 
 type WSTransportMetricsSnapshot struct {
@@ -59,12 +67,6 @@ type WSTransportMetricsDialer interface {
 	SnapshotTransportMetrics() WSTransportMetricsSnapshot
 }
 
-func NewDefaultWSClientDialer() WSClientDialer {
-	return &CoderWSClientDialer{
-		proxyClients: make(map[string]*openAIWSProxyClientEntry),
-	}
-}
-
 type CoderWSClientDialer struct {
 	proxyMu      sync.Mutex
 	proxyClients map[string]*openAIWSProxyClientEntry
@@ -76,6 +78,21 @@ type CoderWSClientDialer struct {
 type WSHandshakeError struct {
 	Body []byte
 	Err  error
+}
+
+type openAIWSProxyClientEntry struct {
+	client           *http.Client
+	lastUsedUnixNano int64
+}
+
+type coderOpenAIWSClientConn struct {
+	conn *coderws.Conn
+}
+
+func NewDefaultWSClientDialer() WSClientDialer {
+	return &CoderWSClientDialer{
+		proxyClients: make(map[string]*openAIWSProxyClientEntry),
+	}
 }
 
 func (e *WSHandshakeError) Error() string {
@@ -90,11 +107,6 @@ func (e *WSHandshakeError) Unwrap() error {
 		return nil
 	}
 	return e.Err
-}
-
-type openAIWSProxyClientEntry struct {
-	client           *http.Client
-	lastUsedUnixNano int64
 }
 
 func (d *CoderWSClientDialer) Dial(
@@ -302,12 +314,6 @@ func (d *CoderWSClientDialer) SnapshotTransportMetrics() WSTransportMetricsSnaps
 	}
 }
 
-type coderOpenAIWSClientConn struct {
-	conn *coderws.Conn
-}
-
-var _ openaiwsv2.FrameConn = (*coderOpenAIWSClientConn)(nil)
-
 func (c *coderOpenAIWSClientConn) WriteJSON(ctx context.Context, value any) error {
 	if c == nil || c.conn == nil {
 		return ErrWSConnClosed
@@ -387,6 +393,3 @@ func (c *coderOpenAIWSClientConn) Close() error {
 	_ = c.conn.CloseNow()
 	return nil
 }
-
-// ErrWSConnClosed 与连接池共用同一错误身份。
-var ErrWSConnClosed = errors.New("openai ws connection closed")

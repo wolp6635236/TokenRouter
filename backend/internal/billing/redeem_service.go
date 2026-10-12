@@ -11,7 +11,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
+const (
+	redeemMaxErrorsPerHour = 20
+
+	redeemLockDuration = 10 * time.Second // 锁超时时间，防止死锁
+)
+
 var (
+	ErrRedeemCodeExists   = apperror.Conflict("REDEEM_CODE_EXISTS", "redeem code already exists")
+	ErrRedeemCodeNotFound = apperror.NotFound("REDEEM_CODE_NOT_FOUND", "redeem code not found")
+	ErrRedeemCodeUsed     = apperror.Conflict("REDEEM_CODE_USED", "redeem code already used")
+
 	ErrRedeemPaymentRequired               = apperror.Forbidden("REDEEM_PAYMENT_REQUIRED", "a successful payment is required to redeem this code")
 	ErrRedeemPaymentRequirementUnsupported = apperror.BadRequest("REDEEM_PAYMENT_REQUIREMENT_UNSUPPORTED", "invitation codes cannot require a payment")
 	ErrRedeemCodeExpired                   = apperror.BadRequest("REDEEM_CODE_EXPIRED", "redeem code has expired")
@@ -19,20 +29,13 @@ var (
 	ErrRedeemCodeAlreadyUsed               = apperror.Conflict("REDEEM_CODE_ALREADY_USED", "you have already used this redeem code")
 	ErrRedeemRateLimited                   = apperror.TooManyRequests("REDEEM_RATE_LIMITED", "too many failed attempts, please try again later")
 	ErrRedeemCodeLocked                    = apperror.Conflict("REDEEM_CODE_LOCKED", "redeem code is being processed, please try again")
-)
 
-const (
-	redeemMaxErrorsPerHour = 20
-
-	redeemLockDuration = 10 * time.Second // 锁超时时间，防止死锁
+	// 以下错误表示仓储缺少原子调整余额或并发额度的能力。
+	ErrRedeemBalanceUnsupported     = errors.New("user repository does not support atomic redeem balance adjustments")
+	ErrRedeemConcurrencyUnsupported = errors.New("user repository does not support atomic redeem concurrency adjustments")
 )
 
 type ctxKeySkipRedeemAffiliate struct{}
-
-// ContextSkipRedeemAffiliate 返回跳过兑换层返利的上下文，支付订单会在订单层做带审计去重的返利。
-func ContextSkipRedeemAffiliate(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxKeySkipRedeemAffiliate{}, true)
-}
 
 // RedeemTransactions 隐藏兑换权益与 usage/次数提交的数据库事务。
 type RedeemTransactions interface {
@@ -40,6 +43,7 @@ type RedeemTransactions interface {
 	ApplyBalance(context.Context, int64, float64) error
 	ApplyConcurrency(context.Context, int64, int) error
 }
+
 type (
 	RedeemAuthInvalidator interface{ InvalidateAuthCacheByUserID(context.Context, int64) }
 	RedeemAffiliate       interface {
@@ -67,6 +71,11 @@ type RedeemService struct {
 	authCacheInvalidator RedeemAuthInvalidator
 	affiliateService     RedeemAffiliate
 	runtime              RedeemRuntime
+}
+
+// ContextSkipRedeemAffiliate 返回跳过兑换层返利的上下文，支付订单会在订单层做带审计去重的返利。
+func ContextSkipRedeemAffiliate(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySkipRedeemAffiliate{}, true)
 }
 
 func NewRedeemService(repo RedeemCodeRepository, users BalanceReader, subs *SubscriptionService, cache RedeemCache, eligibility *Eligibility, transactions RedeemTransactions, auth RedeemAuthInvalidator, affiliate RedeemAffiliate, runtime RedeemRuntime) *RedeemService {
@@ -168,7 +177,7 @@ func (s *RedeemService) BatchUpdate(ctx context.Context, input *RedeemCodeBatchU
 	return &RedeemCodeBatchUpdateResult{Updated: updated}, nil
 }
 
-// checkRedeemRateLimit 检查用户兑换错误次数是否超限
+// checkRedeemRateLimit 检查用户兑换错误次数是否超限。
 func (s *RedeemService) checkRedeemRateLimit(ctx context.Context, userID int64) error {
 	if s.cache == nil {
 		return nil
@@ -187,7 +196,7 @@ func (s *RedeemService) checkRedeemRateLimit(ctx context.Context, userID int64) 
 	return nil
 }
 
-// incrementRedeemErrorCount 增加用户兑换错误计数
+// incrementRedeemErrorCount 增加用户兑换错误计数。
 func (s *RedeemService) incrementRedeemErrorCount(ctx context.Context, userID int64) {
 	if s.cache == nil {
 		return
@@ -197,7 +206,7 @@ func (s *RedeemService) incrementRedeemErrorCount(ctx context.Context, userID in
 }
 
 // acquireRedeemLock 尝试获取兑换码的分布式锁
-// 返回 true 表示获取成功，false 表示锁已被占用
+// 返回 true 表示获取成功，false 表示锁已被占用。
 func (s *RedeemService) acquireRedeemLock(ctx context.Context, code string) bool {
 	if s.cache == nil {
 		return true // 无 Redis 时降级为不加锁
@@ -211,7 +220,7 @@ func (s *RedeemService) acquireRedeemLock(ctx context.Context, code string) bool
 	return ok
 }
 
-// releaseRedeemLock 释放兑换码的分布式锁
+// releaseRedeemLock 释放兑换码的分布式锁。
 func (s *RedeemService) releaseRedeemLock(ctx context.Context, code string) {
 	if s.cache == nil {
 		return
@@ -372,7 +381,7 @@ func (s *RedeemService) redeemInTx(ctx, txCtx context.Context, userID int64, cod
 	return redeemCode, nil
 }
 
-// invalidateRedeemCaches 失效兑换相关的缓存
+// invalidateRedeemCaches 失效兑换相关的缓存。
 func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64, redeemCode *RedeemCode) {
 	switch redeemCode.Type {
 	case RedeemTypeBalance:
@@ -419,7 +428,7 @@ func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, u
 	}
 }
 
-// GetByID 根据ID获取兑换码
+// GetByID 根据 ID 获取兑换码。
 func (s *RedeemService) GetByID(ctx context.Context, id int64) (*RedeemCode, error) {
 	code, err := s.redeemRepo.GetByID(ctx, id)
 	if err != nil {
@@ -428,7 +437,7 @@ func (s *RedeemService) GetByID(ctx context.Context, id int64) (*RedeemCode, err
 	return code, nil
 }
 
-// GetByCode 根据Code获取兑换码
+// GetByCode 根据 Code 获取兑换码。
 func (s *RedeemService) GetByCode(ctx context.Context, code string) (*RedeemCode, error) {
 	redeemCode, err := s.redeemRepo.GetByCode(ctx, code)
 	if err != nil {
@@ -437,7 +446,7 @@ func (s *RedeemService) GetByCode(ctx context.Context, code string) (*RedeemCode
 	return redeemCode, nil
 }
 
-// List 获取兑换码列表（管理员功能）
+// List 获取兑换码列表（管理员功能）。
 func (s *RedeemService) List(ctx context.Context, params pagination.PaginationParams) ([]RedeemCode, *pagination.PaginationResult, error) {
 	codes, pagination, err := s.redeemRepo.List(ctx, params)
 	if err != nil {
@@ -446,7 +455,7 @@ func (s *RedeemService) List(ctx context.Context, params pagination.PaginationPa
 	return codes, pagination, nil
 }
 
-// Delete 删除兑换码（管理员功能）
+// Delete 删除兑换码（管理员功能）。
 func (s *RedeemService) Delete(ctx context.Context, id int64) error {
 	// 检查兑换码是否存在
 	code, err := s.redeemRepo.GetByID(ctx, id)
@@ -496,12 +505,6 @@ func (s *RedeemService) GetUserHistory(ctx context.Context, userID int64, page, 
 	}
 	return codes, result.Total, nil
 }
-
-// 以下错误表示仓储缺少原子调整余额或并发额度的能力。
-var (
-	ErrRedeemBalanceUnsupported     = errors.New("user repository does not support atomic redeem balance adjustments")
-	ErrRedeemConcurrencyUnsupported = errors.New("user repository does not support atomic redeem concurrency adjustments")
-)
 
 func (s *RedeemService) runBackground(name string, fn func()) {
 	if s.runtime.Background == nil {

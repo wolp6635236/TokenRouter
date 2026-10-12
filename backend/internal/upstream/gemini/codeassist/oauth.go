@@ -7,10 +7,44 @@ import (
 	"os"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
+)
+
+const (
+	AIStudioBaseURL  = "https://generativelanguage.googleapis.com"
+	GeminiCliBaseURL = "https://cloudcode-pa.googleapis.com"
+
+	AuthorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
+	TokenURL     = "https://oauth2.googleapis.com/token"
+
+	// AIStudioOAuthRedirectURI 是 AI Studio OAuth 默认回调地址，供用户复制回调 URL。
+	// Google OAuth 客户端需要登记此地址，支持 localhost 回调的客户端类型除外。
+	AIStudioOAuthRedirectURI = "http://localhost:1455/auth/callback"
+
+	// DefaultCodeAssistScopes 包含 Code Assist API 访问和用户信息权限。
+	DefaultCodeAssistScopes = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+
+	// DefaultAIStudioScopes 配置普通 Google 账户访问 generativelanguage.googleapis.com 的 OAuth 权限。
+	// 权限包含 cloud-platform 和 generative-language.retriever。
+	// 参考：https://ai.google.dev/gemini-api/docs/oauth
+	DefaultAIStudioScopes = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever"
+
+	// GeminiCLIRedirectURI 是 Gemini CLI 的 Code Assist OAuth 回调地址。
+	GeminiCLIRedirectURI = "https://codeassist.google.com/authcode"
+
+	// GeminiCLIOAuthClientID 是 Gemini CLI 使用的公开 OAuth 客户端 ID。
+	// 内置凭据支持直接登录，可用权限由 Google 限制。
+	GeminiCLIOAuthClientID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+	// GeminiCLIOAuthClientSecret 是 Gemini CLI 使用的公开 OAuth 客户端密钥。
+	GeminiCLIOAuthClientSecret = "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"
+
+	// GeminiCLIOAuthClientSecretEnv 是覆盖内置客户端密钥的环境变量名。
+	GeminiCLIOAuthClientSecretEnv = "GEMINI_CLI_OAUTH_CLIENT_SECRET"
+
+	// GeminiCLIUserAgent 是请求内部接口时使用的 Gemini CLI User-Agent。
+	GeminiCLIUserAgent = "GeminiCLI/0.1.5 (Windows; AMD64)"
 )
 
 type OAuthConfig = google.OAuthConfig

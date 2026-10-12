@@ -26,5 +26,5 @@ func TestRequestPolicyCopiesTLSHeadersAndHidesCredentials(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "fixture-password")
 	require.NotContains(t, fmt.Sprintf("%v %#v", policy, policy), "fixture-password")
-	require.NotContains(t, fmt.Sprintf("%v", policy), "original")
+	require.NotContains(t, policy.String(), "original")
 }

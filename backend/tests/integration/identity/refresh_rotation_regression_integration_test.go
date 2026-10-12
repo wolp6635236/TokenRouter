@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/identity/rediscache"
 	identitytestkit "github.com/TokenFlux/TokenRouter/internal/identity/testkit"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
 // refreshReadBarrier 让两个请求都读取到原凭据，再同时进入轮换，验证真实 Redis 原子消费。
@@ -24,6 +24,12 @@ type refreshReadBarrier struct {
 	identity.RefreshTokenCache
 	arrived chan struct{}
 	release chan struct{}
+}
+
+// refreshDeleteFailure 同时覆盖旧删除入口与新消费入口，不模拟 Redis 的成功行为。
+type refreshDeleteFailure struct {
+	identity.RefreshTokenCache
+	failure error
 }
 
 func (c *refreshReadBarrier) GetRefreshToken(ctx context.Context, key string) (*identity.RefreshTokenData, error) {
@@ -42,12 +48,6 @@ func (c *refreshReadBarrier) GetRefreshToken(ctx context.Context, key string) (*
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-// refreshDeleteFailure 同时覆盖旧删除入口与新消费入口，不模拟 Redis 的成功行为。
-type refreshDeleteFailure struct {
-	identity.RefreshTokenCache
-	failure error
 }
 
 func (c refreshDeleteFailure) DeleteRefreshToken(context.Context, string) error { return c.failure }
@@ -77,8 +77,7 @@ func TestRefreshRotationConsumesOnce(t *testing.T) {
 	results := make(chan error, 2)
 	var workers sync.WaitGroup
 	for range 2 {
-		workers.Add(1)
-		go func() { defer workers.Done(); _, e := auth.RefreshTokenPair(ctx, pair.RefreshToken); results <- e }()
+		workers.Go(func() { ; _, e := auth.RefreshTokenPair(ctx, pair.RefreshToken); results <- e })
 	}
 	for range 2 {
 		select {

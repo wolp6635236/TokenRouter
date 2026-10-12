@@ -2,6 +2,7 @@ package requeststate
 
 import (
 	"encoding/json"
+	"maps"
 	"sync"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
@@ -84,9 +85,7 @@ func (s *ResponseTools) SetCodexNames(session bool, reverse map[string]string) {
 		return
 	}
 	copyMap := make(map[string]string, len(reverse))
-	for aliased, original := range reverse {
-		copyMap[aliased] = original
-	}
+	maps.Copy(copyMap, reverse)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if session {

@@ -3,11 +3,13 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/proxy"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
@@ -15,6 +17,8 @@ import (
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
+
+const proxyProviderOutboxChunkSize = 500
 
 // ProxyProviderParticipant 不拥有事务；操作必须落到给定连接。
 type ProxyProviderParticipant interface {
@@ -26,10 +30,6 @@ type ProxyStoreOptions struct {
 	Enqueue   func(context.Context, postgresinfra.Executor, any) error
 }
 
-func NewProxyStore(client *dbent.Client, db postgresinfra.Executor, options ProxyStoreOptions) *ProxyStore {
-	return &ProxyStore{client: client, sql: db, changes: options}
-}
-
 // sqlQuerier 已替换为 postgresinfra.Executor（定义在 group_repo.go），
 // ProxyStore 使用同一接口以支持 ExecContext。
 type ProxyStore struct {
@@ -38,7 +38,11 @@ type ProxyStore struct {
 	sql     postgresinfra.Executor
 }
 
-const proxyProviderOutboxChunkSize = 500
+type ProxyConnectionIdentity = egress.ProxyConnectionIdentity
+
+func NewProxyStore(client *dbent.Client, db postgresinfra.Executor, options ProxyStoreOptions) *ProxyStore {
+	return &ProxyStore{client: client, sql: db, changes: options}
+}
 
 func (r *ProxyStore) Create(ctx context.Context, proxyIn *egress.Proxy) error {
 	builder := r.client.Proxy.Create().
@@ -130,8 +134,6 @@ func (r *ProxyStore) Update(ctx context.Context, proxyIn *egress.Proxy) error {
 	return nil
 }
 
-type ProxyConnectionIdentity = egress.ProxyConnectionIdentity
-
 func ProxyConnectionIdentityFromProxy(proxyIn *egress.Proxy) ProxyConnectionIdentity {
 	return egress.ProxyConnectionIdentityFromProxy(proxyIn)
 }
@@ -217,10 +219,7 @@ func lockProxyConnectionIdentity(ctx context.Context, client *dbent.Client, prox
 func (r *ProxyStore) EnqueueProviderChanges(ctx context.Context, exec postgresinfra.Executor, providerIDs []int64) error {
 	providerIDs = SortedUniqueProviderIDs(providerIDs)
 	for start := 0; start < len(providerIDs); start += proxyProviderOutboxChunkSize {
-		end := start + proxyProviderOutboxChunkSize
-		if end > len(providerIDs) {
-			end = len(providerIDs)
-		}
+		end := min(start+proxyProviderOutboxChunkSize, len(providerIDs))
 		payload := map[string]any{"provider_ids": providerIDs[start:end]}
 		if err := r.changes.Enqueue(ctx, exec, payload); err != nil {
 			return err
@@ -238,7 +237,7 @@ func (r *ProxyStore) List(ctx context.Context, params pagination.PaginationParam
 	return r.ListWithFilters(ctx, params, "", "", "")
 }
 
-// ListWithFilters lists proxies with optional filtering by protocol, status, and search query
+// ListWithFilters lists proxies with optional filtering by protocol, status, and search query.
 func (r *ProxyStore) ListWithFilters(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]egress.Proxy, *pagination.PaginationResult, error) {
 	q := r.client.Proxy.Query()
 	if protocol != "" {
@@ -276,7 +275,7 @@ func (r *ProxyStore) ListWithFilters(ctx context.Context, params pagination.Pagi
 	return outProxies, pagination.ResultFromTotal(int64(total), params), nil
 }
 
-// ListWithFiltersAndProviderCount lists proxies with filters and includes provider count per proxy
+// ListWithFiltersAndProviderCount lists proxies with filters and includes provider count per proxy.
 func (r *ProxyStore) ListWithFiltersAndProviderCount(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]egress.ProxyWithProviderCount, *pagination.PaginationResult, error) {
 	q := r.client.Proxy.Query()
 	if protocol != "" {
@@ -403,7 +402,7 @@ func (r *ProxyStore) ListActive(ctx context.Context) ([]egress.Proxy, error) {
 	return outProxies, nil
 }
 
-// ExistsByHostPortAuth checks if a proxy with the same host, port, username, and password exists
+// ExistsByHostPortAuth checks if a proxy with the same host, port, username, and password exists.
 func (r *ProxyStore) ExistsByHostPortAuth(ctx context.Context, host string, port int, username, password string) (bool, error) {
 	q := r.client.Proxy.Query().
 		Where(proxy.HostEQ(host), proxy.PortEQ(port))
@@ -423,7 +422,7 @@ func (r *ProxyStore) ExistsByHostPortAuth(ctx context.Context, host string, port
 	return count > 0, err
 }
 
-// CountProvidersByProxyID returns the number of providers using a specific proxy
+// CountProvidersByProxyID returns the number of providers using a specific proxy.
 func (r *ProxyStore) CountProvidersByProxyID(ctx context.Context, proxyID int64) (int64, error) {
 	var count int64
 	if err := postgresinfra.ScanSingleRow(ctx, r.sql, "SELECT COUNT(*) FROM providers WHERE proxy_id = $1 AND deleted_at IS NULL", []any{proxyID}, &count); err != nil {
@@ -474,7 +473,7 @@ func (r *ProxyStore) ListProviderSummariesByProxyID(ctx context.Context, proxyID
 	return out, nil
 }
 
-// GetProviderCountsForProxies returns a map of proxy ID to provider count for all proxies
+// GetProviderCountsForProxies returns a map of proxy ID to provider count for all proxies.
 func (r *ProxyStore) GetProviderCountsForProxies(ctx context.Context) (counts map[int64]int64, err error) {
 	rows, err := r.sql.QueryContext(ctx, "SELECT proxy_id, COUNT(*) AS count FROM providers WHERE proxy_id IS NOT NULL AND deleted_at IS NULL GROUP BY proxy_id")
 	if err != nil {
@@ -501,7 +500,7 @@ func (r *ProxyStore) GetProviderCountsForProxies(ctx context.Context) (counts ma
 	return counts, nil
 }
 
-// ListActiveWithProviderCount returns all active proxies with provider count, sorted by creation time descending
+// ListActiveWithProviderCount returns all active proxies with provider count, sorted by creation time descending.
 func (r *ProxyStore) ListActiveWithProviderCount(ctx context.Context) ([]egress.ProxyWithProviderCount, error) {
 	proxies, err := r.client.Proxy.Query().
 		Where(proxy.StatusEQ(egress.StatusActive)).
@@ -635,7 +634,7 @@ func SortedUniqueProviderIDs(providerIDs []int64) []int64 {
 	if len(providerIDs) < 2 {
 		return providerIDs
 	}
-	sort.Slice(providerIDs, func(i, j int) bool { return providerIDs[i] < providerIDs[j] })
+	slices.Sort(providerIDs)
 	write := 1
 	for _, providerID := range providerIDs[1:] {
 		if providerID == providerIDs[write-1] {

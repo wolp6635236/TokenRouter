@@ -19,9 +19,6 @@ type PolicyBlocked struct {
 	Cause   error
 }
 
-func (e *PolicyBlocked) Error() string { return e.Message }
-func (e *PolicyBlocked) Unwrap() error { return e.Cause }
-
 // DialResult 保存单次拨号的观测结果。
 type DialResult struct {
 	PreparationError bool
@@ -90,7 +87,11 @@ type PassthroughOptions struct {
 
 // PassthroughSession 拥有入站过滤、逐轮快照、relay 观察和错误收尾。
 type PassthroughSession struct {
-	Options PassthroughOptions
-	Port    PassthroughPort
-	Hooks   *PassthroughHooks
+	Parameters func() Parameters
+	Options    PassthroughOptions
+	Port       PassthroughPort
+	Hooks      *PassthroughHooks
 }
+
+func (e *PolicyBlocked) Error() string { return e.Message }
+func (e *PolicyBlocked) Unwrap() error { return e.Cause }

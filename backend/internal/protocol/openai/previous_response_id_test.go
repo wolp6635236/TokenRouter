@@ -2,6 +2,9 @@ package openai
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestClassifyOpenAIPreviousResponseIDKind(t *testing.T) {
@@ -33,4 +36,31 @@ func TestIsOpenAIPreviousResponseIDLikelyMessageID(t *testing.T) {
 	if ClassifyOpenAIPreviousResponseIDKind("resp_123") == OpenAIPreviousResponseIDKindMessageID {
 		t.Fatal("expected resp_123 not to be identified as message id")
 	}
+}
+
+func TestRemovePreviousResponseIDFromBody(t *testing.T) {
+	t.Run("empty body returned as-is", func(t *testing.T) {
+		require.Equal(t, []byte{}, RemovePreviousResponseIDFromBody([]byte{}))
+		require.Nil(t, RemovePreviousResponseIDFromBody(nil))
+	})
+
+	t.Run("no previous_response_id field is a no-op", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":"hi"}`)
+		result := RemovePreviousResponseIDFromBody(body)
+		require.Equal(t, body, result)
+	})
+
+	t.Run("strips previous_response_id and preserves other fields", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","previous_response_id":"resp_abc","input":"hi"}`)
+		result := RemovePreviousResponseIDFromBody(body)
+		require.False(t, gjson.GetBytes(result, "previous_response_id").Exists())
+		require.Equal(t, "gpt-5", gjson.GetBytes(result, "model").String())
+		require.Equal(t, "hi", gjson.GetBytes(result, "input").String())
+	})
+
+	t.Run("empty-string previous_response_id is also stripped", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","previous_response_id":""}`)
+		result := RemovePreviousResponseIDFromBody(body)
+		require.False(t, gjson.GetBytes(result, "previous_response_id").Exists())
+	})
 }

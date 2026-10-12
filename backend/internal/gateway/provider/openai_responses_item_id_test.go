@@ -4,9 +4,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func TestOpenAIResponsesInputItemIDPrefixUsesObservedOutputContracts(t *testing.T) {
@@ -150,7 +151,7 @@ func TestSanitizeOpenAIResponsesInputItemIDsStripsOnlyNonPairCallIDs(t *testing.
 	sanitized, changed, err := SanitizeOpenAIResponsesInputItemIDs(body)
 	require.NoError(t, err)
 	require.True(t, changed)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.False(t, gjson.GetBytes(sanitized, "input."+strconv.Itoa(i)+".call_id").Exists())
 	}
 	for i := 3; i < 10; i++ {

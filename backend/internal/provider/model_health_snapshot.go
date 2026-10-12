@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-func (a *Record) ModelRateLimitResetAt(scope string) *time.Time {
-	if a == nil || a.Extra == nil || scope == "" {
+func (r *Record) ModelRateLimitResetAt(scope string) *time.Time {
+	if r == nil || r.Extra == nil || scope == "" {
 		return nil
 	}
-	rawLimits, ok := a.Extra["model_rate_limits"].(map[string]any)
+	rawLimits, ok := r.Extra["model_rate_limits"].(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -48,4 +48,39 @@ func SetModelRateLimitSnapshot(provider *Record, scope string, resetAt time.Time
 		payload["reason"] = reason
 	}
 	limits[scope] = payload
+}
+
+// ModelRateLimitActive 用提供商记录的时钟判断模型限流是否到期。
+func (r *Record) ModelRateLimitActive(key string) bool {
+	reset := r.ModelRateLimitResetAt(key)
+	return reset != nil && r.now().Before(*reset)
+}
+
+// ModelRateLimitRemaining 返回模型限流的剩余时间，已到期时返回零。
+func (r *Record) ModelRateLimitRemaining(key string) time.Duration {
+	reset := r.ModelRateLimitResetAt(key)
+	if reset == nil {
+		return 0
+	}
+	remaining := reset.Sub(r.now())
+	if remaining > 0 {
+		return remaining
+	}
+	return 0
+}
+
+// ModelRateLimitAllows 判断所选模型的限流窗口是否允许请求。
+func (r *Record) ModelRateLimitAllows(keys []string) bool {
+	if r == nil {
+		return false
+	}
+	for _, key := range keys {
+		if r.ModelRateLimitActive(key) {
+			if r.Platform == PlatformAntigravity && r.IsOveragesEnabled() && !r.ModelRateLimitActive(CreditsExhaustedKey) {
+				return true
+			}
+			return false
+		}
+	}
+	return true
 }

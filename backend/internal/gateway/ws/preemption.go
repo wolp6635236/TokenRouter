@@ -8,16 +8,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/google/uuid"
-)
 
-var ErrSessionPreempted = errors.New("openai ws session preempted by newer request")
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+)
 
 const (
 	preemptOwnerTTL      = 2 * time.Hour
 	preemptWatchInterval = 2 * time.Second
 )
+
+var ErrSessionPreempted = errors.New("openai ws session preempted by newer request")
 
 // PreemptKey 保留分组、Key 和会话三个隔离维度。
 type PreemptKey struct {
@@ -40,10 +41,6 @@ type Preemption struct {
 	RedisTimeout time.Duration
 }
 
-func CacheHash(apiKeyID int64, hash string) string {
-	return fmt.Sprintf("wspreempt:%d:%s", apiKeyID, strings.TrimSpace(hash))
-}
-
 type preemptEntry struct {
 	generation uint64
 	cancel     func()
@@ -53,6 +50,10 @@ type PreemptRegistry struct {
 	mu     sync.Mutex
 	next   uint64
 	active map[PreemptKey]preemptEntry
+}
+
+func CacheHash(apiKeyID int64, hash string) string {
+	return fmt.Sprintf("wspreempt:%d:%s", apiKeyID, strings.TrimSpace(hash))
 }
 
 func (r *PreemptRegistry) Begin(key PreemptKey, cancel func()) (cleanup func(), preemptedPrevious bool) {

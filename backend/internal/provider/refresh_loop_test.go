@@ -18,7 +18,7 @@ func TestRefreshLoopConcurrentStartAndBoundedStop(t *testing.T) {
 	loop := NewRefreshLoop(func(ctx context.Context) { cycles.Add(1); close(entered); <-ctx.Done(); close(finished) })
 	require.Zero(t, cycles.Load())
 	var wg sync.WaitGroup
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		wg.Go(func() {
 			started, err := loop.StartContext(context.Background(), time.Hour)
 			if err != nil {

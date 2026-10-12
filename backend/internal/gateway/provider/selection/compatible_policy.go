@@ -6,11 +6,11 @@ import (
 	"time"
 
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-const openaiStickySessionTTL = time.Hour // 粘性会话TTL
+const openaiStickySessionTTL = time.Hour
 
 func (s *Compatible) CheckGroupModelRestriction(ctx context.Context, groupID *int64, requestedModel string) bool {
 	if groupID == nil || s.groupPolicies == nil || requestedModel == "" {
@@ -62,4 +62,16 @@ func (s *Compatible) NeedsUpstreamGroupRestriction(ctx context.Context, groupID 
 		return false
 	}
 	return ch.RestrictionSource() == routing.BillingModelSourceUpstream
+}
+
+// shadowProtocolsAllowed 按母提供商的协议配置判断影子提供商是否可用。
+func (s *Compatible) shadowProtocolsAllowed(ctx context.Context, provider *gatewayprovider.ExecutionProvider) bool {
+	if provider == nil || !provider.View().IsShadow() {
+		return true
+	}
+	if source, _ := requeststate.ClientProtocolFromContext(ctx); source == "" {
+		return true
+	}
+	parent := s.parentProviderLookup(ctx)(*provider.Record.ParentProviderID)
+	return parent != nil && gatewayprovider.ExecutionModelPolicy(parent).AllowsProtocol(ctx)
 }

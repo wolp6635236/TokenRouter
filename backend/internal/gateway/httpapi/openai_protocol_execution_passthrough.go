@@ -8,22 +8,16 @@ import (
 	"strings"
 	"time"
 
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/gin-gonic/gin"
-
-	"go.uber.org/zap"
 )
 
 // Passthrough 调用目标执行器准备当前提供商的请求并处理恢复。
@@ -53,7 +47,7 @@ func logOpenAIPassthroughInstructionsRejected(
 	if provider != nil {
 		providerID = provider.Record.ID
 		providerName = strings.TrimSpace(provider.Record.Name)
-		providerType = strings.TrimSpace(string(provider.Record.Type))
+		providerType = strings.TrimSpace(provider.Record.Type)
 	}
 	fields := []zap.Field{
 		zap.String("component", "service.openai_gateway"),

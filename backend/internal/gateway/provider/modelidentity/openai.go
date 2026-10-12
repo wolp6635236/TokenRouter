@@ -1,6 +1,7 @@
 package modelidentity
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -9,12 +10,7 @@ import (
 // IsGPT56 只识别已登记的 GPT-5.6 完整型号。
 func IsGPT56(model string) bool {
 	normalized := capability.CanonicalizeOpenAIModelAliasSpelling(model)
-	for _, prefix := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		if normalized == prefix {
-			return true
-		}
-	}
-	return false
+	return slices.Contains([]string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}, normalized)
 }
 
 // UsageCandidates 只使用已选定的计费模型；仅缺少模型元数据时补取首个明确值。

@@ -4,14 +4,47 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/cespare/xxhash/v2"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// GenerateSessionHash 从预解析请求计算粘性会话 hash
+// GrokPreviousResponseSeed 根据 Responses 的 previous_response_id 返回稳定的粘性种子。
+// resp_* 响应 ID 可生成种子，消息 ID 和未知格式返回空字符串。
+func GrokPreviousResponseSeed(body []byte) string {
+	id := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+	if id == "" {
+		return ""
+	}
+	if protocolopenai.ClassifyOpenAIPreviousResponseIDKind(id) != protocolopenai.OpenAIPreviousResponseIDKindResponseID {
+		return ""
+	}
+	// 为内容种子添加前缀，与响应 ID 区分。
+	return "grok-prev-resp:" + id
+}
+
+// GrokStickyAffinitySeed 用模型和会话 ID 构造粘性路由种子。
+func GrokStickyAffinitySeed(sessionID string, body []byte) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	model := ""
+	if len(body) > 0 {
+		model = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+	}
+	if model == "" {
+		return "grok-affinity:v1:" + sessionID
+	}
+	return "grok-affinity:v1:" + model + ":" + sessionID
+}
+
+// GenerateSessionHash 从预解析请求计算粘性会话 hash。
 func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string, ...any)) string {
 	if observe == nil {
 		observe = func(string, ...any) {}
@@ -49,7 +82,7 @@ func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string
 		return hash
 	}
 
-	// 3. 最后 fallback: 使用 session上下文 + system + 所有消息的完整摘要串
+	// 3. 最后 fallback: 使用 session 上下文 + system + 所有消息的完整摘要串
 	var combined strings.Builder
 	// 哈希中加入请求来源，使不同用户的相同消息生成不同哈希。
 	if parsed.SessionContext != nil {
@@ -271,4 +304,30 @@ func ExtractCacheableTextFromMessagesRaw(raw []byte) string {
 func HashContent(content string) string {
 	h := xxhash.Sum64String(content)
 	return strconv.FormatUint(h, 36)
+}
+
+// MessagesMetadataSession 从 Claude 会话 ID、已有散列或 metadata.user_id 选择粘性会话标识。
+func MessagesMetadataSession(claudeSessionID, sessionHash, promptCacheKey, reqModel string, body []byte) (string, string) {
+	// Anthropic metadata.user_id 和 X-Claude-Code-Session-Id 用于本地提供商粘性，后者比内容摘要更稳定。
+	// 上游 GPT/Codex 的 prompt_cache_key 和 session_id 由 ForwardAsAnthropic 根据 cache_control 或完整消息摘要派生，
+	// 使后续 turn 的缓存键随内容滚动。
+	if promptCacheKey == "" {
+		if claudeSessionID != "" {
+			return currentSessionHash(claudeSessionID), promptCacheKey
+		}
+	}
+	if sessionHash != "" {
+		return sessionHash, promptCacheKey
+	}
+	if userID := strings.TrimSpace(gjson.GetBytes(body, "metadata.user_id").String()); userID != "" {
+		seed := reqModel + "-" + userID
+		sessionHash = currentSessionHash(seed)
+	}
+	return sessionHash, promptCacheKey
+}
+
+// currentSessionHash 按调度会话的格式计算哈希。
+func currentSessionHash(seed string) string {
+	current, _ := scheduler.DeriveSessionHashes(seed)
+	return current
 }

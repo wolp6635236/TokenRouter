@@ -14,17 +14,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// 严格客户端把 OpenAI Responses SSE 事件类型视为闭集，未知的 `event: ping`
-// 会中断整轮响应。Grok 订阅背后的供应商网关会注入计费或保活 ping，因此将其
-// 改写为所有解析器都会忽略的 SSE 注释，同时让下游连接继续保持活跃。
-var responsesPingComment = []byte(": ping\n\n")
-
 // 供应商 ping 通常只包含一行 event 和一行短 data。限制判定期间的缓冲量，
 // 防止上游用永不结束的帧持续占用网关内存；超过限制的帧保持原样透传。
 const (
 	ResponsesPingFrameMaxLines = 16
 	ResponsesPingFrameMaxBytes = 16 * 1024
 )
+
+// 严格客户端把 OpenAI Responses SSE 事件类型视为闭集，未知的 `event: ping`
+// 会中断整轮响应。Grok 订阅背后的供应商网关会注入计费或保活 ping，因此将其
+// 改写为所有解析器都会忽略的 SSE 注释，同时让下游连接继续保持活跃。
+var responsesPingComment = []byte(": ping\n\n")
 
 type ResponsesBillingPingFilterBody struct {
 	*io.PipeReader
@@ -68,10 +68,7 @@ func FilterGrokResponsesBillingPings(
 	scanner := bufio.NewScanner(source)
 	scanBuf := httpclient.GetSSEScannerBuf64K()
 	defer httpclient.PutSSEScannerBuf64K(scanBuf)
-	initialBufferSize := len(scanBuf)
-	if maxLineSize < initialBufferSize {
-		initialBufferSize = maxLineSize
-	}
+	initialBufferSize := min(maxLineSize, len(scanBuf))
 	scanner.Buffer(scanBuf[:0:initialBufferSize], maxLineSize)
 	scanner.Split(ScanSSELinesPreservingEndings)
 

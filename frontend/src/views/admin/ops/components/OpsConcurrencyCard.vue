@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { opsAPI, type OpsProviderAvailabilityStatsResponse, type OpsConcurrencyStatsResponse, type OpsUserConcurrencyStatsResponse } from '@/api/admin/ops'
 import Icon from '@/components/icons/Icon.vue'
+import { vSegmented } from '@/directives/segmented'
 
 interface Props {
   platformFilter?: string
@@ -384,7 +385,8 @@ watch(
       </div>
       <!-- 四种统计维度独占一行，窄列下标题也不会被挤压换行。 -->
       <div
-        class="grid grid-cols-4 items-center rounded-control bg-gray-100 p-0.5 dark:bg-dark-950"
+        v-segmented
+        class="segmented grid grid-cols-4 items-center"
         role="group"
         :aria-label="t('admin.ops.concurrency.title')"
       >
@@ -392,10 +394,8 @@ watch(
           v-for="option in dimensionOptions"
           :key="option.value"
           type="button"
-          class="flex h-7 w-full items-center justify-center rounded-control transition-colors"
-          :class="displayDimension === option.value
-            ? 'bg-white text-blue-600 shadow-sm dark:bg-dark-800 dark:text-blue-400'
-            : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'"
+          class="segmented-item flex h-7 w-full items-center justify-center"
+          :class="{ 'segmented-item-active': displayDimension === option.value }"
           :title="option.label"
           :aria-label="option.label"
           :aria-pressed="displayDimension === option.value"
@@ -582,7 +582,7 @@ watch(
               </span>
               <span
                 v-else
-                class="inline-flex items-center gap-1 rounded-compact bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-400"
+                class="inline-flex items-center gap-1 rounded-compact bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-dark-300"
               >
                 {{ t('admin.ops.providerAvailability.unavailable') }}
               </span>

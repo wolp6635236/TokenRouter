@@ -11,14 +11,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-type RestartRequester interface{ RequestRestart() error }
-type UpdateAPI interface {
-	CheckUpdate(context.Context, bool) (*ops.UpdateInfo, error)
-	PerformUpdate(context.Context) error
-	Rollback() error
-	ListRollbackVersions(context.Context) ([]ops.RollbackVersion, error)
-	RollbackToVersion(context.Context, string) error
-}
+type (
+	RestartRequester interface{ RequestRestart() error }
+	UpdateAPI        interface {
+		CheckUpdate(context.Context, bool) (*ops.UpdateInfo, error)
+		PerformUpdate(context.Context) error
+		Rollback() error
+		ListRollbackVersions(context.Context) ([]ops.RollbackVersion, error)
+		RollbackToVersion(context.Context, string) error
+	}
+)
 
 // Operations 拥有已接受维护操作的锁、取消和关闭等待。
 type Operations struct {
@@ -58,11 +60,13 @@ func (s *Operations) StopContext(ctx context.Context) error {
 	<-s.done
 	return s.stopErr
 }
+
 func (s *Operations) workContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	work, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	stop := context.AfterFunc(s.ctx, cancel)
 	return work, func() { stop(); cancel() }
 }
+
 func (s *Operations) acquire(ctx context.Context, id string) (*SystemOperationLock, func(string, bool), error) {
 	s.mu.Lock()
 	if s.closed {
@@ -96,6 +100,7 @@ func (s *Operations) acquire(ctx context.Context, id string) (*SystemOperationLo
 		})
 	}, nil
 }
+
 func (s *Operations) Update(ctx context.Context, operationID string) (any, error) {
 	lock, release, err := s.acquire(ctx, operationID)
 	if err != nil {
@@ -137,6 +142,7 @@ func (s *Operations) Update(ctx context.Context, operationID string) (any, error
 		"operation_id": lock.OperationID(),
 	}, nil
 }
+
 func (s *Operations) Rollback(ctx context.Context, operationID, targetVersion string) (any, error) {
 	lock, release, err := s.acquire(ctx, operationID)
 	if err != nil {
@@ -172,6 +178,7 @@ func (s *Operations) Rollback(ctx context.Context, operationID, targetVersion st
 		"operation_id": lock.OperationID(),
 	}, nil
 }
+
 func (s *Operations) Restart(ctx context.Context, operationID string) (any, error) {
 	lock, release, err := s.acquire(ctx, operationID)
 	if err != nil {

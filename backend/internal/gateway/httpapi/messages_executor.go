@@ -3,12 +3,13 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/messageforward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/gin-gonic/gin"
 )
 
 // MessagesExecutor 为每次调用创建独立的 HTTP 输出适配器并传给运行时。

@@ -5,18 +5,19 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/stretchr/testify/require"
 )
 
 type fundingCheckFixture func(context.Context, billing.CheckInput) error
 
+type rpmCheckFixture func(context.Context, *scheduler.RPMUser, *scheduler.RPMGroup) error
+
 func (f fundingCheckFixture) Check(ctx context.Context, input billing.CheckInput) error {
 	return f(ctx, input)
 }
-
-type rpmCheckFixture func(context.Context, *scheduler.RPMUser, *scheduler.RPMGroup) error
 
 func (f rpmCheckFixture) Check(ctx context.Context, user *scheduler.RPMUser, group *scheduler.RPMGroup) error {
 	return f(ctx, user, group)

@@ -10,22 +10,23 @@ fail() {
   exit 1
 }
 
-# 使用完整行匹配，避免相似配置掩盖路径或参数错误。
+# 去掉行首缩进后按完整行匹配，避免相似配置掩盖路径或参数错误。
+# go:embed 指令写在 var 块里时带缩进。
 assert_line() {
   file=$1
   line=$2
-  grep -Fqx "$line" "$file" || fail "$file is missing: $line"
+  sed 's/^[[:space:]]*//' "$file" | grep -Fqx "$line" || fail "$file is missing: $line"
 }
 
-test -s backend/internal/modelcatalog/model_pricing_supplements.json || \
-  fail 'pricing supplements are missing or empty'
+test -s backend/internal/modelcatalog/model_supplements.json || \
+  fail 'model supplements are missing or empty'
 test -s backend/internal/modelcatalog/catalog.json.gz || \
   fail 'embedded models.dev catalog is missing or empty'
 test -s backend/internal/modelcatalog/LICENSE.models.dev || \
   fail 'models.dev license is missing or empty'
 
-# 官方补充与离线目录都由 Go 编译器嵌入，运行镜像无需另行复制价格资源。
-assert_line backend/internal/modelcatalog/catalog.go '//go:embed model_pricing_supplements.json'
+# 官方模型补充与离线目录都由 Go 编译器嵌入。
+assert_line backend/internal/modelcatalog/catalog.go '//go:embed model_supplements.json'
 assert_line backend/internal/modelcatalog/catalog.go '//go:embed catalog.json.gz'
 
 printf 'docker runtime resources test passed\n'

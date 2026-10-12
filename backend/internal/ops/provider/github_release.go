@@ -27,6 +27,20 @@ type githubReleaseClientError struct {
 	err error
 }
 
+// ReleaseOptions 配置发布查询的代理、认证和下载参数。
+type ReleaseOptions struct {
+	ProxyURL                string
+	AllowDirectOnProxyError bool
+	GitHubToken             string
+}
+
+// ReleaseClient 为系统维护提供发布资产下载方法。
+type ReleaseClient interface {
+	ops.ReleaseQueryClient
+	DownloadFile(context.Context, string, string, int64) error
+	FetchChecksumFile(context.Context, string) ([]byte, error)
+}
+
 // NewReleaseClient 创建 GitHub Release 客户端
 // proxyURL 为空时直连 GitHub，支持 http/https/socks5/socks5h 协议
 // 代理配置失败时行为由 allowDirectOnProxyError 控制：
@@ -253,18 +267,4 @@ func (c *githubReleaseClient) FetchChecksumFile(ctx context.Context, url string)
 	}
 
 	return io.ReadAll(resp.Body)
-}
-
-// ReleaseOptions 配置发布查询的代理、认证和下载参数。
-type ReleaseOptions struct {
-	ProxyURL                string
-	AllowDirectOnProxyError bool
-	GitHubToken             string
-}
-
-// ReleaseClient 为系统维护提供发布资产下载方法。
-type ReleaseClient interface {
-	ops.ReleaseQueryClient
-	DownloadFile(context.Context, string, string, int64) error
-	FetchChecksumFile(context.Context, string) ([]byte, error)
 }

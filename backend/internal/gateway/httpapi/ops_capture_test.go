@@ -6,24 +6,66 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	opscore "github.com/TokenFlux/TokenRouter/internal/ops"
-
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	opscore "github.com/TokenFlux/TokenRouter/internal/ops"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 type ingressRejectSettingRepo struct {
 	settingscore.Repository
 	getValueCalls int
 }
+
+type ingressRejectOpsRepo struct {
+	opscore.OpsRepository
+	insertCalls int
+	entries     []*opscore.OpsInsertErrorLogInput
+}
+
+type blockingOpsResponseWriter struct {
+	gin.ResponseWriter
+	writeStarted chan struct{}
+	writeRelease chan struct{}
+}
+
+type deterministicOpsCaptureWriterStatePool struct {
+	states []*opsCaptureWriterState
+}
+
+func setupOpsErrorLogTestQueue(t *testing.T, size int) {
+	t.Helper()
+	previous, previousQueue := opsErrorLogQueue, testOpsCaptureQueue
+	opsErrorLogQueue = make(chan opsErrorLogJob, size)
+	testOpsCaptureQueue = &captureOpsErrorQueue{}
+	t.Cleanup(func() { opsErrorLogQueue, testOpsCaptureQueue = previous, previousQueue })
+}
+
+func flushOpsErrorLogBatch(batch []opsErrorLogJob) {
+	for _, job := range batch {
+		if job.ops != nil && job.entry != nil {
+			_ = job.ops.RecordErrorBatch(context.Background(), []*opscore.OpsInsertErrorLogInput{job.entry})
+		}
+	}
+}
+
+// OpsErrorLogQueueLength 记录测试中的同步提交，工作线程和停机处理由 ops 集成测试覆盖。
+func OpsErrorLogQueueLength() int64 { return testOpsCaptureQueue.Health().Length }
+
+func OpsErrorLogEnqueuedTotal() int64 { return testOpsCaptureQueue.Health().Enqueued }
+
+func newOpsServiceFixture(repo opscore.OpsRepository, settings opscore.Settings) *opscore.OpsService {
+	return opscore.NewOpsService(repo, settings, nil, nil, nil, nil, nil, nil)
+}
+
+func markOpsIngressRejectedFixture(c *gin.Context) { c.Set("ops_test_rejected", true) }
 
 func (r *ingressRejectSettingRepo) GetValue(context.Context, string) (string, error) {
 	r.getValueCalls++
@@ -37,12 +79,6 @@ func (r *ingressRejectSettingRepo) GetMultiple(context.Context, []string) (map[s
 
 func (r *ingressRejectSettingRepo) Set(context.Context, string, string) error {
 	return nil
-}
-
-type ingressRejectOpsRepo struct {
-	opscore.OpsRepository
-	insertCalls int
-	entries     []*opscore.OpsInsertErrorLogInput
 }
 
 func (r *ingressRejectOpsRepo) InsertErrorLog(_ context.Context, entry *opscore.OpsInsertErrorLogInput) (int64, error) {
@@ -1711,7 +1747,7 @@ func BenchmarkOpsCaptureWriterSuccessfulSSEFrames(b *testing.B) {
 	frame := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
 	state := &opsCaptureWriterState{limit: opsCaptureWriterLimit}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		state.captureResponseChunk(frame, http.StatusOK)
 	}
 	if state.buf.Len() != 0 {
@@ -1758,4 +1794,212 @@ func TestSetOpsEndpointContext_NilContext(t *testing.T) {
 	require.NotPanics(t, func() {
 		SetOpsEndpointContext(nil, "model", int16(1))
 	})
+}
+
+func (w *blockingOpsResponseWriter) WriteString(s string) (int, error) {
+	close(w.writeStarted)
+	<-w.writeRelease
+	return w.ResponseWriter.WriteString(s)
+}
+
+func (p *deterministicOpsCaptureWriterStatePool) Get() any {
+	if len(p.states) == 0 {
+		return &opsCaptureWriterState{limit: opsCaptureWriterLimit}
+	}
+	last := len(p.states) - 1
+	state := p.states[last]
+	p.states = p.states[:last]
+	return state
+}
+
+func (p *deterministicOpsCaptureWriterStatePool) Put(value any) {
+	if state, ok := value.(*opsCaptureWriterState); ok && state != nil {
+		p.states = append(p.states, state)
+	}
+}
+
+func TestOpsCaptureWriter_NilInnerWriter_NoPanic(t *testing.T) {
+	w := &opsCaptureWriter{}
+
+	assert.NotPanics(t, func() {
+		assert.Equal(t, 0, w.Status())
+	})
+	assert.NotPanics(t, func() {
+		assert.Equal(t, -1, w.Size())
+	})
+	assert.NotPanics(t, func() {
+		assert.False(t, w.Written())
+	})
+	assert.NotPanics(t, func() {
+		n, err := w.Write([]byte("test"))
+		assert.Equal(t, 0, n)
+		assert.NoError(t, err)
+	})
+	assert.NotPanics(t, func() {
+		n, err := w.WriteString("test")
+		assert.Equal(t, 0, n)
+		assert.NoError(t, err)
+	})
+	assert.NotPanics(t, func() {
+		h := w.Header()
+		assert.NotNil(t, h)
+	})
+	assert.NotPanics(t, func() {
+		w.WriteHeader(http.StatusOK)
+	})
+	assert.NotPanics(t, func() {
+		w.WriteHeaderNow()
+	})
+	assert.NotPanics(t, func() {
+		w.Flush()
+	})
+	assert.NotPanics(t, func() {
+		conn, rw, err := w.Hijack()
+		assert.Nil(t, conn)
+		assert.Nil(t, rw)
+		assert.Error(t, err)
+	})
+	assert.NotPanics(t, func() {
+		ch := w.CloseNotify()
+		assert.NotNil(t, ch)
+	})
+	assert.NotPanics(t, func() {
+		p := w.Pusher()
+		assert.Nil(t, p)
+	})
+}
+
+func TestOpsCaptureWriter_StaleLeaseCannotReachReacquiredState(t *testing.T) {
+	pool := &deterministicOpsCaptureWriterStatePool{}
+
+	firstRecorder := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstRecorder)
+	stale := acquireOpsCaptureWriterFromPool(pool, firstContext.Writer)
+	releaseOpsCaptureWriter(stale)
+
+	secondRecorder := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondRecorder)
+	current := acquireOpsCaptureWriterFromPool(pool, secondContext.Writer)
+	defer releaseOpsCaptureWriter(current)
+	require.NotSame(t, stale, current)
+	require.Same(t, stale.state, current.state)
+
+	current.WriteHeader(http.StatusInternalServerError)
+	_, err := current.WriteString("current")
+	require.NoError(t, err)
+	require.Equal(t, []byte("current"), current.capturedBytes())
+
+	n, err := stale.WriteString("stale")
+	require.NoError(t, err)
+	require.Zero(t, n)
+	require.Nil(t, stale.capturedBytes())
+	require.Equal(t, []byte("current"), current.capturedBytes())
+	require.NotContains(t, secondRecorder.Body.String(), "stale")
+
+	// Releasing the stale handle must not return an active state to the pool.
+	releaseOpsCaptureWriter(stale)
+	thirdRecorder := httptest.NewRecorder()
+	thirdContext, _ := gin.CreateTestContext(thirdRecorder)
+	other := acquireOpsCaptureWriterFromPool(pool, thirdContext.Writer)
+	defer releaseOpsCaptureWriter(other)
+	require.NotSame(t, current.state, other.state)
+}
+
+func TestOpsCaptureWriter_ReleaseWaitsForDelegatedWriteWithoutHoldingStateMutex(t *testing.T) {
+	pool := &deterministicOpsCaptureWriterStatePool{}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	inner := &blockingOpsResponseWriter{
+		ResponseWriter: ctx.Writer,
+		writeStarted:   make(chan struct{}),
+		writeRelease:   make(chan struct{}),
+	}
+	w := acquireOpsCaptureWriterFromPool(pool, inner)
+
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		_, _ = w.WriteString("body")
+	}()
+	<-inner.writeStarted
+
+	if !w.state.mu.TryLock() {
+		t.Fatal("state mutex remained held across the delegated network write")
+	}
+	w.state.mu.Unlock()
+
+	releaseDone := make(chan struct{})
+	go func() {
+		releaseOpsCaptureWriter(w)
+		close(releaseDone)
+	}()
+	select {
+	case <-releaseDone:
+		t.Fatal("release returned while a delegated write was still active")
+	case <-time.After(20 * time.Millisecond):
+	}
+	require.Empty(t, pool.states)
+
+	close(inner.writeRelease)
+	<-writeDone
+	select {
+	case <-releaseDone:
+	case <-time.After(time.Second):
+		t.Fatal("release did not finish after the delegated write returned")
+	}
+	require.Len(t, pool.states, 1)
+}
+
+func TestOpsClassificationTreatsCredentialFailureAsAuthNotInference(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set(OpsUpstreamStatusCodeKey, http.StatusForbidden)
+	c.Set(OpsUpstreamErrorMessageKey, "stale inference message")
+	c.Set(OpsUpstreamErrorDetailKey, "stale inference detail")
+	c.Set(OpsUpstreamErrorsKey, []*opscore.OpsUpstreamErrorEvent{
+		{Stage: "inference", UpstreamStatusCode: http.StatusForbidden, Message: "stale inference message", Detail: "stale inference detail"},
+		{
+			Stage:              opscore.ErrorPhaseProviderAuth,
+			Scope:              "provider",
+			Reason:             "grok_oauth_credential_revoked",
+			UpstreamStatusCode: 0,
+			Message:            "Grok OAuth credentials require provider action",
+		},
+	})
+
+	phase, _, owner, source := classifyOpsErrorLog(c, "upstream_error", "No healthy Grok OAuth provider is currently available", "", http.StatusServiceUnavailable)
+	require.Equal(t, "provider_auth", phase)
+	require.Equal(t, "provider", owner)
+	require.Equal(t, "gateway", source)
+
+	entry := &opscore.OpsInsertErrorLogInput{}
+	applyOpsUpstreamFieldsFromContext(c, entry)
+	require.NotNil(t, entry.UpstreamStatusCode)
+	require.Zero(t, *entry.UpstreamStatusCode)
+	require.NotNil(t, entry.UpstreamErrorMessage)
+	require.Equal(t, "Grok OAuth credentials require provider action", *entry.UpstreamErrorMessage)
+	require.Nil(t, entry.UpstreamErrorDetail)
+	require.Len(t, entry.UpstreamErrors, 2)
+	require.Equal(t, http.StatusForbidden, entry.UpstreamErrors[0].UpstreamStatusCode)
+}
+
+func TestOpsCaptureWriterDoesNotCopyIngressRejectBody(t *testing.T) {
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	writer := acquireOpsCaptureWriter(context.Writer)
+	defer releaseOpsCaptureWriter(writer)
+	writer.setContext(context, opsAccessFixture().Rejected)
+	context.Writer = writer
+	markOpsIngressRejectedFixture(context)
+	context.Status(http.StatusUnauthorized)
+	_, err := context.Writer.WriteString(`{"code":"INVALID_API_KEY","message":"Invalid API key"}`)
+	require.NoError(t, err)
+	require.Empty(t, writer.capturedBytes())
+}
+
+func TestKeyPrefix(t *testing.T) {
+	if got := keyPrefix("sk-3f2a9c7e", 8); got != "sk-3f2a9" {
+		t.Errorf("keyPrefix=%q want %q", got, "sk-3f2a9")
+	}
+	if got := keyPrefix("abc", 8); got != "abc" {
+		t.Errorf("short key should be returned as-is, got %q", got)
+	}
 }

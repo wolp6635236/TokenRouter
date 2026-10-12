@@ -4,8 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/moderation"
 )
 
 const contentModerationFlaggedHashSetKey = "content_moderation:flagged_hashes"

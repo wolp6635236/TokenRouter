@@ -5,6 +5,7 @@ import (
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
@@ -27,4 +28,8 @@ func provideCyberHTTP(core *session.CyberBlocks, records GatewayCompletionRecord
 		port = moderator
 	}
 	return gatewayhttp.NewBoundCyberHandler(core, port, runtime)
+}
+
+func provideCyberBlocks(cache session.GatewayCache, settings *moderation.RuntimeSettings) *session.CyberBlocks {
+	return session.NewCyberBlocks(session.AdaptCyberSessionBlockStore(cache), settings.GetCyberSessionBlockRuntime, func(format string, args ...any) { logging.LegacyPrintf("service.openai_gateway", format, args...) })
 }

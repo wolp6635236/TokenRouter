@@ -4,6 +4,9 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
@@ -14,8 +17,6 @@ import (
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // ForwardPorts 是一个提供商的一次平台执行，提供商切换由 gateway/text 拥有。

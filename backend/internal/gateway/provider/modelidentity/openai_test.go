@@ -1,20 +1,19 @@
-package modelidentity_test
+package modelidentity
 
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
 	"github.com/stretchr/testify/require"
 )
 
 func TestUsageBillingModelCandidates_BareGPT56ExcludesSol(t *testing.T) {
 	require.Equal(t,
 		[]string{"gpt-5.6"},
-		modelidentity.UsageCandidates("gpt-5.6"),
+		UsageCandidates("gpt-5.6"),
 	)
 	require.Equal(t,
 		[]string{"openai/gpt-5.6"},
-		modelidentity.UsageCandidates("openai/gpt-5.6"),
+		UsageCandidates("openai/gpt-5.6"),
 	)
 }
 
@@ -36,7 +35,35 @@ func TestUsageCandidatesPreserveModelID(t *testing.T) {
 
 	for _, model := range models {
 		t.Run(model, func(t *testing.T) {
-			require.Equal(t, []string{model}, modelidentity.UsageCandidates(model))
+			require.Equal(t, []string{model}, UsageCandidates(model))
 		})
+	}
+}
+
+func TestUsageBillingModelCandidatesPreserveCodexAutoReviewModel(t *testing.T) {
+	candidates := UsageCandidates("codex-auto-review")
+
+	expected := []string{"codex-auto-review"}
+	if len(candidates) != len(expected) {
+		t.Fatalf("usageBillingModelCandidates(codex-auto-review) = %#v, want %#v", candidates, expected)
+	}
+	for i := range expected {
+		if candidates[i] != expected[i] {
+			t.Fatalf("usageBillingModelCandidates(codex-auto-review) = %#v, want %#v", candidates, expected)
+		}
+	}
+}
+
+func TestUsageBillingModelCandidatesPreserveGPT55ProModel(t *testing.T) {
+	candidates := UsageCandidates("openai/gpt-5.5-pro")
+
+	expected := []string{"openai/gpt-5.5-pro"}
+	if len(candidates) != len(expected) {
+		t.Fatalf("usageBillingModelCandidates(openai/gpt-5.5-pro) = %#v, want %#v", candidates, expected)
+	}
+	for i := range expected {
+		if candidates[i] != expected[i] {
+			t.Fatalf("usageBillingModelCandidates(openai/gpt-5.5-pro) = %#v, want %#v", candidates, expected)
+		}
 	}
 }

@@ -36,7 +36,7 @@ func TestBraveProvider_Search_Success(t *testing.T) {
 	p := NewBraveProvider("test-key", srv.Client())
 	// Override the endpoint for testing
 	origURL := *braveSearchURL
-	u, _ := http.NewRequest("GET", srv.URL, nil)
+	u, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	*braveSearchURL = *u.URL
 	defer func() { *braveSearchURL = origURL }()
 
@@ -59,7 +59,7 @@ func TestBraveProvider_Search_DefaultMaxResults(t *testing.T) {
 
 	p := NewBraveProvider("key", srv.Client())
 	origURL := *braveSearchURL
-	u, _ := http.NewRequest("GET", srv.URL, nil)
+	u, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	*braveSearchURL = *u.URL
 	defer func() { *braveSearchURL = origURL }()
 
@@ -69,14 +69,14 @@ func TestBraveProvider_Search_DefaultMaxResults(t *testing.T) {
 
 func TestBraveProvider_Search_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(429)
+		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte("rate limited"))
 	}))
 	defer srv.Close()
 
 	p := NewBraveProvider("key", srv.Client())
 	origURL := *braveSearchURL
-	u, _ := http.NewRequest("GET", srv.URL, nil)
+	u, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	*braveSearchURL = *u.URL
 	defer func() { *braveSearchURL = origURL }()
 
@@ -92,7 +92,7 @@ func TestBraveProvider_Search_InvalidJSON(t *testing.T) {
 
 	p := NewBraveProvider("key", srv.Client())
 	origURL := *braveSearchURL
-	u, _ := http.NewRequest("GET", srv.URL, nil)
+	u, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	*braveSearchURL = *u.URL
 	defer func() { *braveSearchURL = origURL }()
 
@@ -109,7 +109,7 @@ func TestBraveProvider_Search_EmptyResults(t *testing.T) {
 
 	p := NewBraveProvider("key", srv.Client())
 	origURL := *braveSearchURL
-	u, _ := http.NewRequest("GET", srv.URL, nil)
+	u, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	*braveSearchURL = *u.URL
 	defer func() { *braveSearchURL = origURL }()
 

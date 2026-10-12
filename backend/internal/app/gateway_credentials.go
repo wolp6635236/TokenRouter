@@ -6,12 +6,16 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 )
+
+// grokCredentialStateWriter 为存储条件更新补齐待比较的原因值。
+type grokCredentialStateWriter struct {
+	store *providerpostgres.ProviderStore
+}
 
 // provideGrokCredentialRecovery 绑定共享的提供商存储、运行阻断状态和 token 源。
 func provideGrokCredentialRecovery(store *providerpostgres.ProviderStore, tokens *provider.GrokTokenSource, blocks *provider.RuntimeBlockState) *provider.GrokCredentialRecovery {
@@ -30,11 +34,6 @@ func provideRequestCredentials(source *provider.OpenAIExecutionCredentials, toke
 
 func provideRequestCredentialExecutor(runtime *gatewayadapter.RequestCredentials) *gatewayhttp.RequestCredentialExecutor {
 	return &gatewayhttp.RequestCredentialExecutor{Runtime: runtime}
-}
-
-// grokCredentialStateWriter 为存储条件更新补齐待比较的原因值。
-type grokCredentialStateWriter struct {
-	store *providerpostgres.ProviderStore
 }
 
 func (s grokCredentialStateWriter) SetGrokCredentialErrorIfMatch(ctx context.Context, id int64, snapshot provider.CredentialMutationSnapshot, reason string) (bool, error) {

@@ -3,11 +3,11 @@
 package app
 
 import (
-	anthropicredis "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic/rediscache"
+	"github.com/google/wire"
 
 	gatewaytransport "github.com/TokenFlux/TokenRouter/internal/gateway/provider/transport"
-	httpclient "github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
-	"github.com/google/wire"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	anthropicredis "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic/rediscache"
 )
 
 // upstreamAssemblyProviders 汇总上游客户端的 Wire provider。

@@ -5,8 +5,7 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	xai "github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
 // EvaluateGrokQuotaAutoPause 保留先解析快照、再取时的原判断顺序，不写入健康状态。
@@ -34,7 +33,7 @@ func EvaluateGrokQuotaAutoPause(provider *Record, clock func() time.Time) (bool,
 	return false, QuotaAutoPauseDecision{}
 }
 
-func grokQuotaRetryAfterActive(snapshot *xai.QuotaSnapshot, now time.Time) bool {
+func grokQuotaRetryAfterActive(snapshot *usageview.QuotaSnapshot, now time.Time) bool {
 	if snapshot == nil || snapshot.RetryAfterSeconds == nil || *snapshot.RetryAfterSeconds <= 0 {
 		return false
 	}
@@ -50,7 +49,7 @@ func grokQuotaRetryAfterActive(snapshot *xai.QuotaSnapshot, now time.Time) bool 
 }
 
 // GrokQuotaWindowAutoPause 根据观测窗口判断是否暂时停止调度。
-func GrokQuotaWindowAutoPause(name string, window *xai.QuotaWindow, now time.Time) (bool, QuotaAutoPauseDecision) {
+func GrokQuotaWindowAutoPause(name string, window *usageview.QuotaWindow, now time.Time) (bool, QuotaAutoPauseDecision) {
 	if window == nil || window.Limit == nil || window.Remaining == nil || *window.Limit <= 0 {
 		return false, QuotaAutoPauseDecision{}
 	}
@@ -64,7 +63,7 @@ func GrokQuotaWindowAutoPause(name string, window *xai.QuotaWindow, now time.Tim
 	return false, QuotaAutoPauseDecision{}
 }
 
-func grokQuotaSnapshotStaleForPause(snapshot *xai.QuotaSnapshot, now time.Time) bool {
+func grokQuotaSnapshotStaleForPause(snapshot *usageview.QuotaSnapshot, now time.Time) bool {
 	if snapshot == nil || strings.TrimSpace(snapshot.UpdatedAt) == "" {
 		return false
 	}

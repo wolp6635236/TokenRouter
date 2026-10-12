@@ -1,5 +1,13 @@
 package contract
 
+const (
+	DefaultMaxResults = 5
+
+	// Provider type identifiers.
+	ProviderTypeBrave  = "brave"
+	ProviderTypeTavily = "tavily"
+)
+
 // SearchResult represents a single web search result.
 type SearchResult struct {
 	URL     string `json:"url"`
@@ -20,14 +28,6 @@ type SearchResponse struct {
 	Results []SearchResult
 	Query   string // the query that was actually executed
 }
-
-const DefaultMaxResults = 5
-
-// Provider type identifiers.
-const (
-	ProviderTypeBrave  = "brave"
-	ProviderTypeTavily = "tavily"
-)
 
 // ProviderConfig holds the configuration for a single search provider.
 type ProviderConfig struct {

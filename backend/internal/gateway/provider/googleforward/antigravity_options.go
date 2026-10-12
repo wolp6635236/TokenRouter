@@ -29,7 +29,7 @@ func (s *Antigravity) readUpstreamErrorBody(resp *http.Response) []byte {
 }
 
 // getLogConfig 获取上游错误日志配置
-// 返回是否记录日志体和最大字节数
+// 返回是否记录日志体和最大字节数。
 func (s *Antigravity) getLogConfig() (logBody bool, maxBytes int) {
 	maxBytes = 2048 // 默认值
 	if !s.Options.Configured {
@@ -42,7 +42,7 @@ func (s *Antigravity) getLogConfig() (logBody bool, maxBytes int) {
 	return cfg.LogErrorBody, maxBytes
 }
 
-// getUpstreamErrorDetail 获取上游错误详情（用于日志记录）
+// getUpstreamErrorDetail 获取上游错误详情（用于日志记录）。
 func (s *Antigravity) getUpstreamErrorDetail(body []byte) string {
 	logBody, maxBytes := s.getLogConfig()
 	if !logBody {

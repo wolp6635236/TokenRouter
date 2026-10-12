@@ -3,25 +3,23 @@ package app
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
-
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
-	"github.com/gin-gonic/gin"
 )
 
 // qoderCompatibleExecution 连接 Qoder 兼容入口的选择、刷新和完成记录操作。
@@ -31,6 +29,17 @@ type qoderCompatibleExecution struct {
 	runtime *gatewayprovider.QoderRuntime
 	refresh *provideradapter.QoderRequestRefresh
 	keys    *apikey.APIKeyService
+}
+
+type qoderCompatibleSelection struct {
+	owner *qoderCompatibleExecution
+	value *gatewayprovider.SelectionResult
+}
+
+// qoderCompatibleTarget 保存单次调用的提供商，向 HTTP 层返回其快照。
+type qoderCompatibleTarget struct {
+	owner *qoderCompatibleExecution
+	value *gatewayprovider.ExecutionProvider
 }
 
 func (p *qoderCompatibleExecution) Select(ctx context.Context, id *int64, hash, model string, excluded map[int64]struct{}, userID int64) (gatewayhttp.QoderCompatibleSelection, error) {
@@ -43,11 +52,6 @@ func (p *qoderCompatibleExecution) Select(ctx context.Context, id *int64, hash, 
 
 func (p *qoderCompatibleExecution) Plan(ctx context.Context, key *apikey.APIKey, model string) routing.RoutePlan {
 	return p.PlanKey(ctx, key, model)
-}
-
-type qoderCompatibleSelection struct {
-	owner *qoderCompatibleExecution
-	value *gatewayprovider.SelectionResult
 }
 
 func (s *qoderCompatibleSelection) Target() gatewayhttp.QoderCompatibleTarget {
@@ -65,12 +69,6 @@ func (s *qoderCompatibleSelection) Report(id int64, ok bool, result *forward.Mes
 }
 
 func (s *qoderCompatibleSelection) Switched() { s.owner.choices.RecordAdvancedProviderSwitch(s.value) }
-
-// qoderCompatibleTarget 保存单次调用的提供商，向 HTTP 层返回其快照。
-type qoderCompatibleTarget struct {
-	owner *qoderCompatibleExecution
-	value *gatewayprovider.ExecutionProvider
-}
 
 func (t *qoderCompatibleTarget) Snapshot() provider.ProviderSnapshot {
 	return gatewayprovider.ExecutionSnapshot(t.value)

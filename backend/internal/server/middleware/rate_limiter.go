@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	ippkg "github.com/TokenFlux/TokenRouter/internal/server/clientip"
-
 	"github.com/gin-gonic/gin"
+
+	ippkg "github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
 const (
@@ -28,24 +28,10 @@ type RateLimiter struct {
 	prefix  string
 }
 
-// NewRateLimiter 接受计数能力，HTTP 层不构造数据库客户端。
-func NewRateLimiter(allower FixedWindowAllower) *RateLimiter {
-	return &RateLimiter{allower: allower, prefix: "rate_limit:"}
-}
-
-// Allow 保留面板调用方的结果形状，错误时继续返回零值。
-func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (AllowResult, error) {
-	allowed, count, retry, err := r.allower.Allow(ctx, key, limit, window)
-	if err != nil {
-		return AllowResult{}, err
-	}
-	return AllowResult{Allowed: allowed, Count: count, RetryAfter: retry}, nil
-}
-
-// RateLimitFailureMode Redis 故障策略
+// RateLimitFailureMode Redis 故障策略。
 type RateLimitFailureMode int
 
-// RateLimitOptions 限流可选配置
+// RateLimitOptions 限流可选配置。
 type RateLimitOptions struct {
 	FailureMode RateLimitFailureMode
 }
@@ -60,6 +46,20 @@ type AllowResult struct {
 	RetryAfter time.Duration
 }
 
+// NewRateLimiter 接受计数能力，HTTP 层不构造数据库客户端。
+func NewRateLimiter(allower FixedWindowAllower) *RateLimiter {
+	return &RateLimiter{allower: allower, prefix: "rate_limit:"}
+}
+
+// Allow 保留面板调用方的结果形状，错误时继续返回零值。
+func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (AllowResult, error) {
+	allowed, count, retry, err := r.allower.Allow(ctx, key, limit, window)
+	if err != nil {
+		return AllowResult{}, err
+	}
+	return AllowResult{Allowed: allowed, Count: count, RetryAfter: retry}, nil
+}
+
 // clientIPForRateLimit 返回 IP 维度限流使用的客户端地址。
 // 与审计日志/会话绑定/API Key IP ACL 共用同一套安全客户端 IP 解析
 // （SessionBindingContext 快照：兼容开关开启时信任反代转发头，关闭时走
@@ -72,7 +72,7 @@ func clientIPForRateLimit(c *gin.Context) string {
 	return c.ClientIP()
 }
 
-// LimitWithOptions 返回速率限制中间件（带可选配置）
+// LimitWithOptions 返回速率限制中间件（带可选配置）。
 func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Duration, opts RateLimitOptions) gin.HandlerFunc {
 	failureMode := opts.FailureMode
 	if failureMode != RateLimitFailClose {

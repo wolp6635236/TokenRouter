@@ -63,15 +63,13 @@ func (s *GroupAvailabilityProbeRunnerService) runDue() {
 			wg.Wait()
 			return
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
 			// 每个分组独立计时，数据库维护和其它分组不会挤占它的合法重试窗口。
 			probeCtx, probeCancel := context.WithTimeout(parent, groupAvailabilityProbeMaxRunDuration)
 			defer probeCancel()
 			s.runOne(probeCtx, group)
-		}()
+		})
 	}
 	wg.Wait()
 }

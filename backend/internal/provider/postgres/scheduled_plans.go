@@ -12,6 +12,14 @@ type scheduledTestPlanRepository struct {
 	db *sql.DB
 }
 
+type scheduledTestResultRepository struct {
+	db *sql.DB
+}
+
+type scheduledScannable interface {
+	Scan(dest ...any) error
+}
+
 func NewScheduledTestPlanRepository(db *sql.DB) provider.ScheduledTestPlanRepository {
 	return &scheduledTestPlanRepository{db: db}
 }
@@ -82,10 +90,6 @@ func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int
 	return err
 }
 
-type scheduledTestResultRepository struct {
-	db *sql.DB
-}
-
 func NewScheduledTestResultRepository(db *sql.DB) provider.ScheduledTestResultRepository {
 	return &scheduledTestResultRepository{db: db}
 }
@@ -147,10 +151,6 @@ func (r *scheduledTestResultRepository) PruneOldResults(ctx context.Context, pla
 		)
 	`, planID, keepCount)
 	return err
-}
-
-type scheduledScannable interface {
-	Scan(dest ...any) error
 }
 
 func scanScheduledPlan(row scheduledScannable) (*provider.ScheduledTestPlan, error) {

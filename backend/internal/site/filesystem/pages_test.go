@@ -1,10 +1,76 @@
 package filesystem
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/TokenFlux/TokenRouter/internal/site"
 )
+
+// TestLocalizedPageFiles 覆盖正文实际语言、图片目录、公共回退及目录外符号链接。
+func TestLocalizedPageFiles(t *testing.T) {
+	root := t.TempDir()
+	files := New(root)
+	dir := filepath.Join(root, "pages")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "guide", "en"), 0o755))
+	for path, body := range map[string]string{"guide.md": "原文", "guide/en.md": "English", "guide/en/logo.png": "translated", "guide/shared.png": "shared"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, path), []byte(body), 0o600))
+	}
+	ctx := context.Background()
+	body, language, err := files.ReadLocalizedMarkdown(ctx, "guide", "en-US")
+	require.NoError(t, err)
+	require.Equal(t, "English", string(body))
+	require.Equal(t, "en", language)
+	body, language, err = files.ReadLocalizedMarkdown(ctx, "guide", "zh")
+	require.NoError(t, err)
+	require.Equal(t, "原文", string(body))
+	require.Empty(t, language)
+	selected := locale.WithLanguage(ctx, "en")
+	image, err := files.ImagePath(selected, "guide", "logo.png")
+	require.NoError(t, err)
+	require.Contains(t, image, "/guide/en/logo.png")
+	image, err = files.ImagePath(selected, "guide", "shared.png")
+	require.NoError(t, err)
+	require.Contains(t, image, "/guide/shared.png")
+	external := filepath.Join(t.TempDir(), "external.md")
+	require.NoError(t, os.WriteFile(external, []byte("private"), 0o600))
+	require.NoError(t, os.Symlink(external, filepath.Join(dir, "guide", "zh-Hans.md")))
+	body, language, err = files.ReadLocalizedMarkdown(ctx, "guide", "zh")
+	require.NoError(t, err)
+	require.Equal(t, "原文", string(body))
+	require.Empty(t, language)
+	_, err = files.ImagePath(selected, "guide", "../guide.md")
+	require.ErrorIs(t, err, site.ErrPageNotFound)
+}
+
+// TestMarkdownRootAndSize 检查页面正文的大小上限，以及根目录内外符号链接的读取结果。
+func TestMarkdownRootAndSize(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	pages := filepath.Join(root, "pages")
+	require.NoError(t, os.WriteFile(filepath.Join(pages, "guide.md"), []byte("guide"), 0o600))
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte("private-fixture"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(pages, "escape.md")))
+	_, err := store.ReadMarkdown(context.Background(), "escape")
+	require.ErrorIs(t, err, site.ErrPageNotFound)
+	require.NoError(t, os.Symlink(filepath.Join(pages, "guide.md"), filepath.Join(pages, "inside.md")))
+	body, err := store.ReadMarkdown(context.Background(), "inside")
+	require.NoError(t, err)
+	require.Equal(t, "guide", string(body))
+	require.NoError(t, os.WriteFile(filepath.Join(pages, "limit.md"), make([]byte, site.MaxPageFileSize), 0o600))
+	body, err = store.ReadMarkdown(context.Background(), "limit")
+	require.NoError(t, err)
+	require.Len(t, body, site.MaxPageFileSize)
+	require.NoError(t, os.WriteFile(filepath.Join(pages, "large.md"), make([]byte, site.MaxPageFileSize+1), 0o600))
+	_, err = store.ReadMarkdown(context.Background(), "large")
+	require.ErrorIs(t, err, site.ErrPageTooLarge)
+}
 
 func TestCleanPageImageRelativePath(t *testing.T) {
 	tests := []struct {
@@ -44,13 +110,13 @@ func TestResolvePageImagePath(t *testing.T) {
 	root := t.TempDir()
 	pagesDir := filepath.Join(root, "pages")
 	base := filepath.Join(pagesDir, "guide")
-	if err := os.MkdirAll(filepath.Join(base, "images"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(base, "images"), 0o755); err != nil {
 		t.Fatalf("create images dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(base, "logo.png"), []byte("fake"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "logo.png"), []byte("fake"), 0o644); err != nil {
 		t.Fatalf("create direct image: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(base, "images", "logo.png"), []byte("fake"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "images", "logo.png"), []byte("fake"), 0o644); err != nil {
 		t.Fatalf("create image: %v", err)
 	}
 
@@ -83,13 +149,13 @@ func TestResolvePageImagePathRejectsSymlinkEscape(t *testing.T) {
 	base := filepath.Join(pagesDir, "guide")
 	outside := filepath.Join(root, "outside")
 
-	if err := os.MkdirAll(base, 0755); err != nil {
+	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatalf("create page dir: %v", err)
 	}
-	if err := os.MkdirAll(outside, 0755); err != nil {
+	if err := os.MkdirAll(outside, 0o755); err != nil {
 		t.Fatalf("create outside dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(outside, "secret.png"), []byte("secret"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "secret.png"), []byte("secret"), 0o644); err != nil {
 		t.Fatalf("create outside file: %v", err)
 	}
 	if err := os.Symlink(outside, filepath.Join(base, "images")); err != nil {

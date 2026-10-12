@@ -5,16 +5,14 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
-
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 type qoderCompatibleAttemptBridge struct {

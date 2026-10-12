@@ -5,14 +5,26 @@ import (
 	"fmt"
 	"strings"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+// NormalizeResponsesLiteForProvider 根据提供商凭据类型规范化 Lite 请求。
+func NormalizeResponsesLiteForProvider(value *providercore.Record, body []byte) ([]byte, bool, error) {
+	if value == nil || value.Platform != capability.PlatformOpenAI {
+		return body, false, nil
+	}
+	if value.IsOpenAIOAuth() {
+		return openai.NormalizeResponsesLiteToolsPayload(body)
+	}
+	return openai.NormalizeResponsesLiteParallelToolCallsPayload(body)
+}
 
 func NormalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, provider *providercore.Record, responsesLite bool) ([]byte, bool, error) {
 	if provider == nil || !provider.IsOpenAI() {
@@ -134,8 +146,8 @@ func NormalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, provider *p
 			changed = true
 		}
 	}
-	// Keep this last: earlier compatibility passes may filter or rebuild input.
-	// Remote compaction v2 requires one trigger as the final input item.
+	// 前面的兼容处理可能过滤或重建 input。
+	// Remote compaction v2 的触发项在这些处理结束后放到 input 末尾。
 	if triggerBody, triggerChanged, err := openaiprotocol.NormalizeCompactionTriggerInputOrder(normalized); err != nil {
 		return body, false, fmt.Errorf("normalize websocket compaction trigger order: %w", err)
 	} else if triggerChanged {

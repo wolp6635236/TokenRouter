@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// 评分考虑缺省中性值、次窗口折扣和观测有效期。
+const (
+	openAIQuotaHeadroomNeutralFactor      = 0.5
+	openAIQuotaHeadroomSecondaryLowRemain = 0.10
+	openAIQuotaHeadroomSnapshotStaleAfter = 8 * time.Hour
+)
+
 // OpenAIQuotaHeadroomFactor 把 Codex quota 快照转换成 0..1 的调度因子。
 // 7d/primary 剩余额度越高分越高；5h/secondary 接近耗尽时会折扣该分值。
 func OpenAIQuotaHeadroomFactor(provider *Record, now time.Time) float64 {
@@ -49,13 +56,6 @@ func openAIQuotaWindowResetAny(extra map[string]any, now time.Time, windows ...s
 	}
 	return false
 }
-
-// 评分考虑缺省中性值、次窗口折扣和观测有效期。
-const (
-	openAIQuotaHeadroomNeutralFactor      = 0.5
-	openAIQuotaHeadroomSecondaryLowRemain = 0.10
-	openAIQuotaHeadroomSnapshotStaleAfter = 8 * time.Hour
-)
 
 func clampQuotaFactor(v float64) float64 {
 	switch {

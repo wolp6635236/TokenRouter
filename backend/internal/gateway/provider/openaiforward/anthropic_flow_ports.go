@@ -4,11 +4,12 @@ import (
 	"context"
 	"net/http"
 
+	"go.uber.org/zap"
+
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"go.uber.org/zap"
 )
 
 type NativeAnthropicPorts interface {

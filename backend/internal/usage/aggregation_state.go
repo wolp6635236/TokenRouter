@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// AnalyticsChangeKind 是现有聚合状态的闭合更新种类。
-type AnalyticsChangeKind uint8
-
 const (
 	AnalyticsManualRequest AnalyticsChangeKind = iota + 1
 	AnalyticsRunStarted
@@ -18,14 +15,17 @@ const (
 	AnalyticsManualProgress
 )
 
+var ErrAnalyticsRequestSuperseded = errors.New("manual backfill request superseded")
+
+// AnalyticsChangeKind 是现有聚合状态的闭合更新种类。
+type AnalyticsChangeKind uint8
+
 // AnalyticsStateChange 包含分析任务的状态更新及预期的手工回填时间。
 type AnalyticsStateChange struct {
 	Kind                                      AnalyticsChangeKind
 	State                                     UsageAnalyticsAggregationState
 	ExpectedManualStart, ExpectedManualCursor *time.Time
 }
-
-var ErrAnalyticsRequestSuperseded = errors.New("manual backfill request superseded")
 
 // ApplyAnalyticsStateChange 在存储锁定的最新行上应用本次拥有的字段。
 // @project-doc docs/operations/pre_aggregation.md#usage_state_ownership

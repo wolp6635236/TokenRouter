@@ -14,6 +14,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 )
 
+const (
+	defaultProxyProbeTimeout          = 10 * time.Second
+	defaultProxyProbeResponseMaxBytes = int64(1024 * 1024)
+)
+
+// probeURLs 按优先级排列的内置探测 URL 列表。
+// 某些 AI API 专用代理只允许访问特定域名，因此需要多个备选。
+var probeURLs = []struct {
+	url    string
+	parser string
+}{
+	{"http://ip-api.com/json/?lang=zh-CN", "ip-api"},
+	{"http://api64.ipify.org?format=json", "ipify"},
+}
+
 type ProxyProbeTarget struct {
 	URL    string
 	Parser string
@@ -24,6 +39,19 @@ type ProxyProbeOptions struct {
 	ValidateResolvedIP bool
 	MaxResponseBytes   int64
 	Targets            []ProxyProbeTarget
+}
+
+type configuredProbeTarget struct {
+	url    string
+	parser string
+}
+
+type proxyProbeService struct {
+	insecureSkipVerify  bool
+	allowPrivateHosts   bool
+	validateResolvedIP  bool
+	maxResponseBytes    int64
+	configuredProbeURLs []configuredProbeTarget
 }
 
 func NewProxyExitInfoProber(options ProxyProbeOptions) egress.ProxyExitInfoProber {
@@ -42,34 +70,6 @@ func NewProxyExitInfoProber(options ProxyProbeOptions) egress.ProxyExitInfoProbe
 		}
 	}
 	return &proxyProbeService{insecureSkipVerify: options.InsecureSkipVerify, allowPrivateHosts: options.AllowPrivateHosts, validateResolvedIP: options.ValidateResolvedIP, maxResponseBytes: maxBytes, configuredProbeURLs: targets}
-}
-
-const (
-	defaultProxyProbeTimeout          = 10 * time.Second
-	defaultProxyProbeResponseMaxBytes = int64(1024 * 1024)
-)
-
-// probeURLs 按优先级排列的内置探测 URL 列表。
-// 某些 AI API 专用代理只允许访问特定域名，因此需要多个备选。
-var probeURLs = []struct {
-	url    string
-	parser string
-}{
-	{"http://ip-api.com/json/?lang=zh-CN", "ip-api"},
-	{"http://api64.ipify.org?format=json", "ipify"},
-}
-
-type configuredProbeTarget struct {
-	url    string
-	parser string
-}
-
-type proxyProbeService struct {
-	insecureSkipVerify  bool
-	allowPrivateHosts   bool
-	validateResolvedIP  bool
-	maxResponseBytes    int64
-	configuredProbeURLs []configuredProbeTarget
 }
 
 func (s *proxyProbeService) ProbeProxy(ctx context.Context, proxyURL string) (*egress.ProxyExitInfo, int64, error) {
@@ -108,7 +108,7 @@ func (s *proxyProbeService) ProbeProxy(ctx context.Context, proxyURL string) (*e
 
 func (s *proxyProbeService) probeWithURL(ctx context.Context, client *http.Client, url string, parser string) (*egress.ProxyExitInfo, int64, error) {
 	startTime := time.Now()
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -168,7 +168,7 @@ func (s *proxyProbeService) parseIPAPI(body []byte, latencyMs int64) (*egress.Pr
 		}
 		return nil, latencyMs, fmt.Errorf("failed to parse response: %w (body: %s)", err, preview)
 	}
-	if strings.ToLower(ipInfo.Status) != "success" {
+	if !strings.EqualFold(ipInfo.Status, "success") {
 		if ipInfo.Message == "" {
 			ipInfo.Message = "ip-api request failed"
 		}
@@ -206,7 +206,7 @@ func (s *proxyProbeService) parseIPify(body []byte, latencyMs int64) (*egress.Pr
 // parseChatGPTTrace 解析 Cloudflare trace 端点的纯文本响应。
 func (s *proxyProbeService) parseChatGPTTrace(body []byte, latencyMs int64) (*egress.ProxyExitInfo, int64, error) {
 	var ip, loc string
-	for _, line := range strings.Split(string(body), "\n") {
+	for line := range strings.SplitSeq(string(body), "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
 		if !found {
 			continue

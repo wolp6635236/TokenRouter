@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/stretchr/testify/require"
 )
 
 type reauthenticationKeys struct {
@@ -18,12 +19,17 @@ type reauthenticationKeys struct {
 	reads int
 }
 
+type reauthenticationGroups struct{ GroupRepository }
+
+type staleReauthenticationCache struct {
+	APIKeyCache
+	entry *APIKeyAuthCacheEntry
+}
+
 func (r *reauthenticationKeys) GetByKeyForAuth(context.Context, string) (*APIKey, error) {
 	r.reads++
 	return CopyAPIKey(r.key), r.err
 }
-
-type reauthenticationGroups struct{ GroupRepository }
 
 func (reauthenticationGroups) GetByIDLite(_ context.Context, id int64) (*routing.Group, error) {
 	return &routing.Group{ID: id, Status: "active"}, nil
@@ -82,11 +88,6 @@ func TestReauthenticate(t *testing.T) {
 			require.Zero(t, previous.QuotaUsed)
 		})
 	}
-}
-
-type staleReauthenticationCache struct {
-	APIKeyCache
-	entry *APIKeyAuthCacheEntry
 }
 
 func (c staleReauthenticationCache) GetAuthCache(context.Context, string) (*APIKeyAuthCacheEntry, error) {

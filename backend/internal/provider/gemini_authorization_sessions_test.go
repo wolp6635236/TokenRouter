@@ -101,7 +101,7 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 	wg.Add(goroutines * 3)
 
 	// 并发写入
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 			sid := "concurrent-" + string(rune('A'+idx%26))
@@ -114,7 +114,7 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 	}
 
 	// 并发读取
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 			sid := "concurrent-" + string(rune('A'+idx%26))
@@ -123,7 +123,7 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 	}
 
 	// 并发删除
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 			sid := "concurrent-" + string(rune('A'+idx%26))

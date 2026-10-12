@@ -11,7 +11,7 @@ import (
 
 var retryInRegex = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
 
-// ParseGeminiRateLimitResetTime 解析 Gemini 格式的 429 响应，返回重置时间的 Unix 时间戳
+// ParseGeminiRateLimitResetTime 解析 Gemini 格式的 429 响应，返回重置时间的 Unix 时间戳。
 func ParseGeminiRateLimitResetTime(body []byte, nextDaily func() *int64) *int64 {
 	// 第一阶段：gjson 结构化提取
 	errMsg := gjson.GetBytes(body, "error.message").String()

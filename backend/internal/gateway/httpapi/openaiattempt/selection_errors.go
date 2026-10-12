@@ -3,10 +3,11 @@ package openaiattempt
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
 )
 
 // 兼容错误结构保持同一 HTTP 类型。

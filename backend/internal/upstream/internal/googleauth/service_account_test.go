@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
 )
 
 func TestServiceAccountSignedExchange(t *testing.T) {
@@ -48,4 +50,23 @@ func TestServiceAccountSignedExchange(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "fixture-token", got)
 	require.Equal(t, 55*time.Minute, ttl)
+}
+
+// TestVertexServiceAccountHTTPClientRecordsDependency 检查服务账号客户端记录 HTTP 耗时。
+func TestVertexServiceAccountHTTPClientRecordsDependency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := NewServiceAccountHTTPClient("")
+	require.NoError(t, err)
+	collector := timing.New(time.Now())
+	ctx := timing.WithCollector(context.Background(), collector)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Contains(t, collector.HeaderValue(time.Now(), "bypass"), "dep_http;dur=")
 }

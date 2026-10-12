@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 const (
@@ -18,17 +19,17 @@ const (
 	totpAttemptsTTL       = 15 * time.Minute
 )
 
-// TotpCache implements identity.TotpCache using Redis
+// TotpCache implements identity.TotpCache using Redis.
 type TotpCache struct {
 	rdb *redis.Client
 }
 
-// NewTotpCache creates a new TOTP cache
+// NewTotpCache creates a new TOTP cache.
 func NewTotpCache(rdb *redis.Client) identity.TotpCache {
 	return &TotpCache{rdb: rdb}
 }
 
-// GetSetupSession retrieves a TOTP setup session
+// GetSetupSession retrieves a TOTP setup session.
 func (c *TotpCache) GetSetupSession(ctx context.Context, userID int64) (*identity.TotpSetupSession, error) {
 	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	data, err := c.rdb.Get(ctx, key).Bytes()
@@ -47,7 +48,7 @@ func (c *TotpCache) GetSetupSession(ctx context.Context, userID int64) (*identit
 	return &session, nil
 }
 
-// SetSetupSession stores a TOTP setup session
+// SetSetupSession stores a TOTP setup session.
 func (c *TotpCache) SetSetupSession(ctx context.Context, userID int64, session *identity.TotpSetupSession, ttl time.Duration) error {
 	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	data, err := json.Marshal(session)
@@ -62,13 +63,13 @@ func (c *TotpCache) SetSetupSession(ctx context.Context, userID int64, session *
 	return nil
 }
 
-// DeleteSetupSession deletes a TOTP setup session
+// DeleteSetupSession deletes a TOTP setup session.
 func (c *TotpCache) DeleteSetupSession(ctx context.Context, userID int64) error {
 	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
-// GetLoginSession retrieves a TOTP login session
+// GetLoginSession retrieves a TOTP login session.
 func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*identity.TotpLoginSession, error) {
 	key := totpLoginKeyPrefix + tempToken
 	data, err := c.rdb.Get(ctx, key).Bytes()
@@ -87,7 +88,7 @@ func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*ide
 	return &session, nil
 }
 
-// SetLoginSession stores a TOTP login session
+// SetLoginSession stores a TOTP login session.
 func (c *TotpCache) SetLoginSession(ctx context.Context, tempToken string, session *identity.TotpLoginSession, ttl time.Duration) error {
 	key := totpLoginKeyPrefix + tempToken
 	data, err := json.Marshal(session)
@@ -102,13 +103,13 @@ func (c *TotpCache) SetLoginSession(ctx context.Context, tempToken string, sessi
 	return nil
 }
 
-// DeleteLoginSession deletes a TOTP login session
+// DeleteLoginSession deletes a TOTP login session.
 func (c *TotpCache) DeleteLoginSession(ctx context.Context, tempToken string) error {
 	key := totpLoginKeyPrefix + tempToken
 	return c.rdb.Del(ctx, key).Err()
 }
 
-// IncrementVerifyAttempts increments the verify attempt counter
+// IncrementVerifyAttempts increments the verify attempt counter.
 func (c *TotpCache) IncrementVerifyAttempts(ctx context.Context, userID int64) (int, error) {
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 
@@ -129,7 +130,7 @@ func (c *TotpCache) IncrementVerifyAttempts(ctx context.Context, userID int64) (
 	return int(count), nil
 }
 
-// GetVerifyAttempts gets the current verify attempt count
+// GetVerifyAttempts gets the current verify attempt count.
 func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, error) {
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	count, err := c.rdb.Get(ctx, key).Int()
@@ -142,7 +143,7 @@ func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, e
 	return count, nil
 }
 
-// ClearVerifyAttempts clears the verify attempt counter
+// ClearVerifyAttempts clears the verify attempt counter.
 func (c *TotpCache) ClearVerifyAttempts(ctx context.Context, userID int64) error {
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()

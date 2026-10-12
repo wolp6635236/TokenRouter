@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// TLSFingerprintProfileRepository 定义 TLS 指纹模板的数据访问接口
+// TLSFingerprintProfileRepository 定义 TLS 指纹模板的数据访问接口。
 type TLSFingerprintProfileRepository interface {
 	List(ctx context.Context) ([]*TLSFingerprintProfile, error)
 	GetByID(ctx context.Context, id int64) (*TLSFingerprintProfile, error)
@@ -16,7 +16,7 @@ type TLSFingerprintProfileRepository interface {
 	Delete(ctx context.Context, id int64) error
 }
 
-// TLSFingerprintProfileCache 定义 TLS 指纹模板的缓存接口
+// TLSFingerprintProfileCache 定义 TLS 指纹模板的缓存接口。
 type TLSFingerprintProfileCache interface {
 	Get(ctx context.Context) ([]*TLSFingerprintProfile, bool)
 	Set(ctx context.Context, profiles []*TLSFingerprintProfile) error
@@ -25,7 +25,7 @@ type TLSFingerprintProfileCache interface {
 	SubscribeUpdates(ctx context.Context, handler func())
 }
 
-// TLSFingerprintProfileService TLS 指纹模板管理服务
+// TLSFingerprintProfileService TLS 指纹模板管理服务。
 type TLSFingerprintProfileService struct {
 	diagnostics Diagnostics
 	repo        TLSFingerprintProfileRepository
@@ -37,7 +37,7 @@ type TLSFingerprintProfileService struct {
 	startOnce  sync.Once
 }
 
-// NewTLSFingerprintProfileService 创建 TLS 指纹模板服务
+// NewTLSFingerprintProfileService 创建 TLS 指纹模板服务。
 func NewTLSFingerprintProfileService(
 	repo TLSFingerprintProfileRepository,
 	cache TLSFingerprintProfileCache,
@@ -63,17 +63,17 @@ func (s *TLSFingerprintProfileService) Stop() {
 	}
 }
 
-// List 获取所有模板
+// List 获取所有模板。
 func (s *TLSFingerprintProfileService) List(ctx context.Context) ([]*TLSFingerprintProfile, error) {
 	return s.repo.List(ctx)
 }
 
-// GetByID 根据 ID 获取模板
+// GetByID 根据 ID 获取模板。
 func (s *TLSFingerprintProfileService) GetByID(ctx context.Context, id int64) (*TLSFingerprintProfile, error) {
 	return s.repo.GetByID(ctx, id)
 }
 
-// Create 创建模板
+// Create 创建模板。
 func (s *TLSFingerprintProfileService) Create(ctx context.Context, profile *TLSFingerprintProfile) (*TLSFingerprintProfile, error) {
 	if err := profile.Validate(); err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (s *TLSFingerprintProfileService) Create(ctx context.Context, profile *TLSF
 	return created, nil
 }
 
-// Update 更新模板
+// Update 更新模板。
 func (s *TLSFingerprintProfileService) Update(ctx context.Context, profile *TLSFingerprintProfile) (*TLSFingerprintProfile, error) {
 	if err := profile.Validate(); err != nil {
 		return nil, err
@@ -109,7 +109,7 @@ func (s *TLSFingerprintProfileService) Update(ctx context.Context, profile *TLSF
 	return updated, nil
 }
 
-// Delete 删除模板
+// Delete 删除模板。
 func (s *TLSFingerprintProfileService) Delete(ctx context.Context, id int64) error {
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
@@ -123,7 +123,7 @@ func (s *TLSFingerprintProfileService) Delete(ctx context.Context, id int64) err
 }
 
 // GetProfileByID 根据 ID 从本地缓存获取 Profile（用于 DoWithTLS 热路径）
-// 返回 nil 表示未找到，调用方应 fallback 到内置默认 Profile
+// 返回 nil 表示未找到，调用方应 fallback 到内置默认 Profile。
 func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *TLSFingerprintProfile {
 	if s == nil {
 		return nil
@@ -138,7 +138,7 @@ func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *TLSFingerprintP
 	return nil
 }
 
-// getRandomProfile 从本地缓存中随机选择一个 Profile
+// getRandomProfile 从本地缓存中随机选择一个 Profile。
 func (s *TLSFingerprintProfileService) getRandomProfile() *TLSFingerprintProfile {
 	if s == nil {
 		return nil

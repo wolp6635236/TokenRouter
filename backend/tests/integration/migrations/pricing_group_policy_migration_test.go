@@ -7,8 +7,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 func TestMigration274PreservesPricesAndCopiesPolicies(t *testing.T) {

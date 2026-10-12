@@ -5,18 +5,25 @@ import (
 	"io"
 )
 
+// DecodedImage 是 base64 解码后的图片字节与嗅探出的 MIME。
+type DecodedImage struct {
+	Bytes []byte
+	Mime  string
+}
+
+// ImageOutput 是执行器返回的一张输出图片。
+type ImageOutput struct {
+	Index int
+	Bytes []byte
+	Mime  string
+}
+
 // ReadLimitedBody 读取上游响应体，限制最大读取量，避免异常响应撑爆内存。
 func ReadLimitedBody(body io.Reader, limit int64) ([]byte, error) {
 	if limit <= 0 {
 		limit = 64 << 20
 	}
 	return io.ReadAll(io.LimitReader(body, limit))
-}
-
-// DecodedImage 是 base64 解码后的图片字节与嗅探出的 MIME。
-type DecodedImage struct {
-	Bytes []byte
-	Mime  string
 }
 
 // DecodeBase64Image 解码上游返回的 base64 图片并按魔数嗅探 MIME。
@@ -48,11 +55,4 @@ func SniffImageMIME(data []byte) string {
 		return "image/webp"
 	}
 	return ""
-}
-
-// ImageOutput 是执行器返回的一张输出图片。
-type ImageOutput struct {
-	Index int
-	Bytes []byte
-	Mime  string
 }

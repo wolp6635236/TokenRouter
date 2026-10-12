@@ -9,16 +9,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/messageforward"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 type nativeQueueProbe struct {
@@ -26,6 +27,8 @@ type nativeQueueProbe struct {
 	released            atomic.Int32
 	err                 error
 }
+
+type nativeBedrockPolicy struct{}
 
 func (q *nativeQueueProbe) AcquireWithWait(_ *gin.Context, _ int64, _ int, _ bool, started *bool, _ time.Duration, _ *zap.Logger) (func(), error) {
 	q.acquired++
@@ -114,8 +117,6 @@ func TestUnifiedMessageThrottleAndToolResults(t *testing.T) {
 	release()
 	require.Equal(t, 1, queue.throttled, "工具结果不进入真实用户消息队列")
 }
-
-type nativeBedrockPolicy struct{}
 
 func (nativeBedrockPolicy) GetGroupPolicy(context.Context, int64) (*routing.GroupPolicyView, error) {
 	return &routing.GroupPolicyView{GroupRoutingPolicy: routing.GroupRoutingPolicy{Enabled: true, FeaturesConfig: map[string]any{"bedrock_cc_compat": map[string]any{"anthropic": true}}}}, nil

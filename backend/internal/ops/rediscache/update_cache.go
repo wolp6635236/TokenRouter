@@ -4,8 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
 const updateCacheKey = "update:latest"

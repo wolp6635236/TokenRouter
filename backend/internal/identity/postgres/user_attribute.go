@@ -9,12 +9,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
-// UserAttributeDefinitionRepository implementation
+// UserAttributeDefinitionRepository implementation.
 type userAttributeDefinitionRepository struct {
 	client *dbent.Client
 }
 
-// NewUserAttributeDefinitionRepository creates a new repository instance
+// UserAttributeValueRepository implementation.
+type userAttributeValueRepository struct {
+	client *dbent.Client
+}
+
+// NewUserAttributeDefinitionRepository creates a new repository instance.
 func NewUserAttributeDefinitionRepository(client *dbent.Client) identity.UserAttributeDefinitionRepository {
 	return &userAttributeDefinitionRepository{client: client}
 }
@@ -144,12 +149,7 @@ func (r *userAttributeDefinitionRepository) ExistsByKey(ctx context.Context, key
 		Exist(ctx)
 }
 
-// UserAttributeValueRepository implementation
-type userAttributeValueRepository struct {
-	client *dbent.Client
-}
-
-// NewUserAttributeValueRepository creates a new repository instance
+// NewUserAttributeValueRepository creates a new repository instance.
 func NewUserAttributeValueRepository(client *dbent.Client) identity.UserAttributeValueRepository {
 	return &userAttributeValueRepository{client: client}
 }

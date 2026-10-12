@@ -3,6 +3,9 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
@@ -10,8 +13,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 type compatibleTextHTTPBackend struct {

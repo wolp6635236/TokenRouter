@@ -1,6 +1,6 @@
 <template>
   <div class="relative">
-    <!-- Admin: Full version badge with dropdown -->
+    <!-- 版本号只对管理员显示，点击展开更新、重启和回滚面板。 -->
     <template v-if="isAdmin">
       <button
         @click="toggleDropdown"
@@ -138,7 +138,7 @@
                 <button
                   @click="handleUpdate"
                   :disabled="updating"
-                  class="flex w-full items-center justify-center gap-2 rounded-control bg-red-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  class="btn btn-danger w-full"
                 >
                   {{ t('version.retry') }}
                 </button>
@@ -177,7 +177,7 @@
                 <button
                   @click="handleRestart"
                   :disabled="restarting"
-                  class="flex w-full items-center justify-center gap-2 rounded-control bg-green-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  class="btn btn-success w-full"
                 >
                   <Icon
                     name="loader"
@@ -272,11 +272,11 @@
                   </div>
                 </div>
 
-                <!-- Update button -->
+                <!-- 更新按钮用全站主按钮样式，颜色和其他主按钮一致。 -->
                 <button
                   @click="handleUpdate"
                   :disabled="updating"
-                  class="flex w-full items-center justify-center gap-2 rounded-control bg-primary-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  class="btn btn-primary w-full"
                 >
                   <Icon
                     name="loader"
@@ -445,26 +445,21 @@
                               <div
                                 class="flex items-center justify-between border-b border-gray-200 bg-gray-100 px-2 py-1.5 dark:border-dark-600 dark:bg-dark-700"
                               >
-                                <div
-                                  class="flex items-center gap-0.5 rounded-control bg-gray-200/70 p-0.5 dark:bg-dark-600/70"
-                                >
+                                <div v-segmented class="segmented">
                                   <button
                                     v-for="tab in manualTabs"
                                     :key="tab.key"
+                                    type="button"
                                     @click="manualTab = tab.key"
-                                    class="rounded-compact px-2 py-0.5 text-xs font-medium transition-colors"
-                                    :class="
-                                      manualTab === tab.key
-                                        ? 'bg-white text-gray-700 shadow-sm dark:bg-dark-800 dark:text-dark-100'
-                                        : 'text-gray-400 hover:text-gray-600 dark:text-dark-400 dark:hover:text-dark-200'
-                                    "
+                                    class="segmented-item px-2 py-0.5 text-xs"
+                                    :class="{ 'segmented-item-active': manualTab === tab.key }"
                                   >
                                     {{ tab.label }}
                                   </button>
                                 </div>
                                 <button
                                   @click="copyToClipboard(activeManualCommand)"
-                                  class="flex items-center gap-1 rounded-compact px-1.5 py-0.5 text-xs text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-600 dark:text-dark-400 dark:hover:bg-dark-600 dark:hover:text-dark-200"
+                                  class="flex items-center gap-1 rounded-compact px-1.5 py-0.5 text-xs text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-600 dark:text-dark-400 dark:hover:bg-dark-700 dark:hover:text-dark-200"
                                 >
                                   <Icon
                                     :name="copied ? 'check' : 'copy'"
@@ -503,7 +498,7 @@
                             <button
                               @click="handleRollback"
                               :disabled="rollingBack"
-                              class="flex w-full items-center justify-center gap-2 rounded-control bg-amber-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              class="btn btn-warning w-full"
                             >
                               <Icon
                                 name="loader"
@@ -533,11 +528,6 @@
         </div>
       </MotionTransition>
     </template>
-
-    <!-- Non-admin: Simple static version text -->
-    <span v-else-if="version" class="text-xs text-gray-500 dark:text-dark-400">
-      v{{ version }}
-    </span>
   </div>
 </template>
 
@@ -559,6 +549,7 @@ import {
 } from '@/api/admin/system'
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
+import { vSegmented } from '@/directives/segmented'
 
 const GITHUB_REPO = 'TokenFlux/TokenRouter'
 // CI 发布到 GHCR 的镜像 tag 不带 v 前缀，例如 ghcr.io/tokenflux/tokenrouter:0.1.146。

@@ -17,6 +17,18 @@ type deliveryContractStore struct {
 	recorded *bool
 }
 
+type deliveryContractOutcomes struct {
+	recorded bool
+	cancel   context.CancelFunc
+	metadata []CreativeRunOutput
+}
+
+type deliveryContractRepo struct {
+	CreativeRunRepository
+	updates int
+	code    string
+}
+
 func (s *deliveryContractStore) LoadOutput(context.Context, string, int) ([]byte, error) {
 	return nil, s.loadErr
 }
@@ -32,12 +44,6 @@ func (s *deliveryContractStore) SaveOutput(context.Context, string, int, []byte,
 	return nil
 }
 
-type deliveryContractOutcomes struct {
-	recorded bool
-	cancel   context.CancelFunc
-	metadata []CreativeRunOutput
-}
-
 func (s *deliveryContractOutcomes) RecordProviderOutcome(_ context.Context, _ string, _ int64, metadata []CreativeRunOutput, _ time.Time) error {
 	s.recorded = true
 	s.metadata = metadata
@@ -49,12 +55,6 @@ func (s *deliveryContractOutcomes) RecordProviderOutcome(_ context.Context, _ st
 
 func (s *deliveryContractOutcomes) CompleteProviderOutcome(context.Context, string, float64, bool, time.Time) error {
 	return nil
-}
-
-type deliveryContractRepo struct {
-	CreativeRunRepository
-	updates int
-	code    string
 }
 
 func (r *deliveryContractRepo) UpdateCreativeRunOutput(_ context.Context, _ string, _ int, _ string, _ string, _ int64, _ *time.Time, code, _ string) error {

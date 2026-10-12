@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// CodexSparkRateLimitReason 返回 Spark 模型限流的原因。
+const CodexSparkRateLimitReason = "openai_codex_spark_rate_limit"
+
 // ApplySparkRateLimit 将 Spark 配额窗口写入模型限流。
 // x-codex-* 使用率和 reset 时间属于 Spark 模型，其他模型继续按各自的额度调度。
 func (s *HealthService) ApplySparkRateLimit(ctx context.Context, provider *Record, modelKey string, statusCode int, spark bool, observe func() (OpenAI429Disposition, *time.Time)) bool {
@@ -40,6 +43,3 @@ func (s *HealthService) ApplySparkRateLimit(ctx context.Context, provider *Recor
 	s.options.Info("openai_codex_spark_model_rate_limited", "provider_id", provider.ID, "model", modelKey, "reset_at", *resetAt)
 	return true
 }
-
-// CodexSparkRateLimitReason 返回 Spark 模型限流的原因。
-const CodexSparkRateLimitReason = "openai_codex_spark_rate_limit"

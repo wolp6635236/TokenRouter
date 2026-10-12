@@ -71,3 +71,15 @@ func PopulateUsageFromResponseJSON(body []byte, usage *ForwardUsage) {
 		*usage = parsedUsage
 	}
 }
+
+// RequestPayloadView 解包 Responses WS 事件，返回实际请求对象视图。
+func RequestPayloadView(body []byte) gjson.Result {
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return root
+	}
+	if root.Get("type").String() == "response.create" && root.Get("response").IsObject() {
+		return root.Get("response")
+	}
+	return root
+}

@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/imroc/req/v3"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 )
 
 // EmailOAuthProviderConfig 保存 GitHub/Google 这类邮箱 OAuth 登录的配置。
@@ -19,6 +20,9 @@ type (
 	EmailOAuthTokenResponse = identity.EmailOAuthTokenResponse
 	EmailOAuthProfile       = identity.EmailOAuthProfile
 )
+
+// EmailOAuthClientAdapter 复用现有客户端，身份 HTTP 不依赖具体网络实现。
+type EmailOAuthClientAdapter struct{}
 
 func ExchangeEmailOAuthCode(ctx context.Context, cfg EmailOAuthOptions, code string) (*EmailOAuthTokenResponse, error) {
 	resp, err := req.C().
@@ -157,9 +161,6 @@ func ParseGoogleOAuthProfile(body string) (*EmailOAuthProfile, error) {
 		},
 	}, nil
 }
-
-// EmailOAuthClientAdapter 复用现有客户端，身份 HTTP 不依赖具体网络实现。
-type EmailOAuthClientAdapter struct{}
 
 func (EmailOAuthClientAdapter) ExchangeCode(ctx context.Context, c EmailOAuthOptions, code string) (*EmailOAuthTokenResponse, error) {
 	return ExchangeEmailOAuthCode(ctx, c, code)

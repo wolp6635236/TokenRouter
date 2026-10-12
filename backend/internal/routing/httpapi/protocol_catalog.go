@@ -3,11 +3,11 @@ package httpapi
 import (
 	"maps"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
 )
 
 // ProtocolProviderProfile 描述可展示的原生选项，不包含令牌或提供商标识。
@@ -33,11 +33,27 @@ type ProtocolCatalogResponse struct {
 	AuxiliaryOperations []AuxiliaryOperation      `json:"auxiliary_operations"`
 }
 
+// AuxiliaryOperation 登记主协议的辅助操作；资源生命周期不会生成新的协议复选框。
+type AuxiliaryOperation struct {
+	Operation     string              `json:"operation"`
+	Protocol      protocol.ProtocolID `json:"protocol,omitempty"`
+	Authorization string              `json:"authorization"`
+}
+
+// Protocol 保留管理员目录的 JSON 顺序和字段。
+type Protocol struct {
+	ID           protocol.ProtocolID `json:"id"`
+	Name         string              `json:"name"`
+	Endpoint     string              `json:"endpoint"`
+	UpstreamOnly bool                `json:"upstream_only"`
+	Platforms    []string            `json:"platforms"`
+}
+
 // AdminProtocolCatalog 生成管理端使用的协议能力目录。
 func AdminProtocolCatalog(endpoints map[protocol.ProtocolID]string) ProtocolCatalogResponse {
 	providers := []ProtocolProviderProfile{}
 	groups := []ProtocolGroupProfile{}
-	for _, platform := range []string{capability.PlatformAnthropic, capability.PlatformOpenAI, capability.PlatformGemini, capability.PlatformAntigravity, capability.PlatformGrok, capability.PlatformQoder, capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek} {
+	for _, platform := range capability.ProviderPlatforms() {
 		for _, providerType := range []string{capability.ProviderTypeOAuth, capability.ProviderTypeSetupToken, capability.ProviderTypeAPIKey, capability.ProviderTypeUpstream, capability.ProviderTypeBedrock, capability.ProviderTypeServiceAccount, capability.ProviderTypeCosy} {
 			if platform == capability.PlatformAntigravity && providerType != capability.ProviderTypeOAuth {
 				continue
@@ -64,13 +80,6 @@ func AdminProtocolCatalog(endpoints map[protocol.ProtocolID]string) ProtocolCata
 	}
 }
 
-// AuxiliaryOperation 登记主协议的辅助操作；资源生命周期不会生成新的协议复选框。
-type AuxiliaryOperation struct {
-	Operation     string              `json:"operation"`
-	Protocol      protocol.ProtocolID `json:"protocol,omitempty"`
-	Authorization string              `json:"authorization"`
-}
-
 func AuxiliaryOperations() []AuxiliaryOperation {
 	return []AuxiliaryOperation{
 		{"/messages/count_tokens", protocol.ProtocolAnthropicMessages, "protocol"},
@@ -85,15 +94,6 @@ func AuxiliaryOperations() []AuxiliaryOperation {
 		{"Live sideband", protocol.ProtocolLive, "session"},
 		{"custom voice read/update/delete/audio", protocol.ProtocolCustomVoices, "protocol_and_resource"},
 	}
-}
-
-// Protocol 保留管理员目录的 JSON 顺序和字段。
-type Protocol struct {
-	ID           protocol.ProtocolID `json:"id"`
-	Name         string              `json:"name"`
-	Endpoint     string              `json:"endpoint"`
-	UpstreamOnly bool                `json:"upstream_only"`
-	Platforms    []string            `json:"platforms"`
 }
 
 func publicProtocols(endpoints map[protocol.ProtocolID]string) []Protocol {

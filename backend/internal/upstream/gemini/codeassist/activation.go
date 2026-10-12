@@ -7,7 +7,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
 )
 
-// ExtractActivationURL extracts the API activation URL from error details
+// ExtractActivationURL extracts the API activation URL from error details.
 func ExtractActivationURL(body string) string {
 	var errResp google.ErrorResponse
 	if err := json.Unmarshal([]byte(body), &errResp); err != nil {
@@ -42,7 +42,7 @@ func ExtractActivationURL(body string) string {
 	return ""
 }
 
-// IsServiceDisabledError checks if the error is a SERVICE_DISABLED error
+// IsServiceDisabledError checks if the error is a SERVICE_DISABLED error.
 func IsServiceDisabledError(body string) bool {
 	var errResp google.ErrorResponse
 	if err := json.Unmarshal([]byte(body), &errResp); err != nil {

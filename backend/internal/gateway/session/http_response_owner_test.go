@@ -20,6 +20,7 @@ func (p *ownerReaderProbe) GetHTTPResponseOwner(context.Context, int64, string) 
 	p.reads++
 	return p.user, p.key, p.found, p.err
 }
+
 func TestHTTPResponseOwnershipPreservesTenantAndLegacyKeys(t *testing.T) {
 	for _, tc := range []struct {
 		name                               string
@@ -41,6 +42,7 @@ func TestHTTPResponseOwnershipPreservesTenantAndLegacyKeys(t *testing.T) {
 		})
 	}
 }
+
 func TestHTTPResponseOwnershipPreservesShortCircuitAndFailure(t *testing.T) {
 	reads := 0
 	storeErr := errors.New("owner read unavailable")

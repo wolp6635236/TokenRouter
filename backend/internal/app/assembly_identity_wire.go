@@ -3,17 +3,13 @@
 package app
 
 import (
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-
-	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
-	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
-
-	identityredis "github.com/TokenFlux/TokenRouter/internal/identity/rediscache"
-
 	"github.com/google/wire"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
+	identityredis "github.com/TokenFlux/TokenRouter/internal/identity/rediscache"
 )
 
 // identityAssemblyProviders 汇总 identity 模块的 Wire provider。

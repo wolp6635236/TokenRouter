@@ -4,13 +4,16 @@ import (
 	"strings"
 )
 
+// CatalogQuery 使用同一份完整模型身份查询价格与属性。
+type CatalogQuery struct {
+	Entries    map[string]*CatalogModelPricing
+	Candidates func(string) []string
+}
+
 // GetModelPricing 按完整模型身份查询目录，不借用其它型号的价格。
 func (s *CatalogQuery) GetModelPricing(modelName string) *CatalogModelPricing {
 	candidates := s.modelLookupCandidates(modelName)
-	if entry := s.LookupModelCatalogEntry(candidates); entry != nil {
-		return entry
-	}
-	return nil
+	return s.LookupModelCatalogEntry(candidates)
 }
 
 // GetModelModalities 从完整型号的目录条目读取模态。
@@ -36,12 +39,6 @@ func (s *CatalogQuery) LookupModelCatalogEntry(candidates []string) *CatalogMode
 		}
 	}
 	return nil
-}
-
-// CatalogQuery 使用同一份完整模型身份查询价格与属性。
-type CatalogQuery struct {
-	Entries    map[string]*CatalogModelPricing
-	Candidates func(string) []string
 }
 
 func (s *CatalogQuery) modelLookupCandidates(model string) []string {

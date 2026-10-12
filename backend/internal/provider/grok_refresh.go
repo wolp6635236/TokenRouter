@@ -8,19 +8,27 @@ import (
 	"time"
 )
 
-// 基础预热窗口：访问令牌剩余有效期低于该值时刷新。
-// Grok 访问令牌通常约一小时有效，提前刷新可在请求路径缓存未命中时保持提供商池可用。
-const GrokTokenRefreshSkew = time.Hour
+const (
+	// 基础预热窗口：访问令牌剩余有效期低于该值时刷新。
+	// Grok 访问令牌通常约一小时有效，提前刷新可在请求路径缓存未命中时保持提供商池可用。
+	GrokTokenRefreshSkew = time.Hour
 
-// 每个提供商的预热窗口减去一个由稳定种子计算的偏移量，范围为 [0, GrokTokenRefreshJitterMax]。
-// 同批导入的提供商因此分散到不同刷新时间。
-const GrokTokenRefreshJitterMax = 3 * time.Minute
+	// 每个提供商的预热窗口减去一个由稳定种子计算的偏移量，范围为 [0, GrokTokenRefreshJitterMax]。
+	// 同批导入的提供商因此分散到不同刷新时间。
+	GrokTokenRefreshJitterMax = 3 * time.Minute
 
-// 为刷新窗口设置下限，偏移后仍有时间完成刷新。
-const GrokTokenRefreshSkewMin = 30 * time.Minute
+	// 为刷新窗口设置下限，偏移后仍有时间完成刷新。
+	GrokTokenRefreshSkewMin = 30 * time.Minute
+)
 
 type GrokTokenRefresher struct {
 	grokOAuthService GrokRefreshTokenService
+}
+
+// 刷新器接收提供商的 token 和凭据转换函数。
+type GrokRefreshTokenService interface {
+	RefreshProviderToken(context.Context, *Record) (*GrokTokenInfo, error)
+	BuildProviderCredentials(*GrokTokenInfo) map[string]any
 }
 
 func NewGrokTokenRefresher(grokOAuthService GrokRefreshTokenService) *GrokTokenRefresher {
@@ -64,7 +72,7 @@ func GrokTokenRefreshWindowWithJitter(providerID int64, refreshWindow time.Durat
 	h := fnv.New32a()
 	var b [8]byte
 	id := uint64(providerID)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		b[i] = byte(id >> (8 * i))
 	}
 	_, _ = h.Write(b[:])
@@ -91,10 +99,4 @@ func (r *GrokTokenRefresher) Refresh(ctx context.Context, provider *Record) (map
 		newCredentials["base_url"] = baseURL
 	}
 	return newCredentials, nil
-}
-
-// 刷新器接收提供商的 token 和凭据转换函数。
-type GrokRefreshTokenService interface {
-	RefreshProviderToken(context.Context, *Record) (*GrokTokenInfo, error)
-	BuildProviderCredentials(*GrokTokenInfo) map[string]any
 }

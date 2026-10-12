@@ -22,6 +22,15 @@ type QoderClient struct {
 	Headers  map[string]string
 }
 
+// QoderFixture 保存测试依赖，阻塞流测试在执行前替换客户端。
+type QoderFixture struct {
+	Runtime *gatewayprovider.QoderRuntime
+	Tokens  *provideradapter.QoderTokenProvider
+	Client  qoder.StreamClient
+}
+
+type qoderFixtureClient struct{ fixture *QoderFixture }
+
 func (c *QoderClient) StreamRequestContext(ctx context.Context, _ *qoder.SessionContext, _ string, body []byte, headers map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api1.qoder.sh/test", strings.NewReader(string(body)))
 	if err != nil {
@@ -65,15 +74,6 @@ func (c *QoderClient) BodyCount() int {
 	}
 	return len(c.Bodies)
 }
-
-// QoderFixture 保存测试依赖，阻塞流测试在执行前替换客户端。
-type QoderFixture struct {
-	Runtime *gatewayprovider.QoderRuntime
-	Tokens  *provideradapter.QoderTokenProvider
-	Client  qoder.StreamClient
-}
-
-type qoderFixtureClient struct{ fixture *QoderFixture }
 
 func (c qoderFixtureClient) StreamRequestContext(ctx context.Context, session *qoder.SessionContext, path string, body []byte, headers map[string]string) (*http.Response, error) {
 	return c.fixture.Client.StreamRequestContext(ctx, session, path, body, headers)

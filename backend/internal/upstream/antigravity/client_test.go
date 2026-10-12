@@ -17,9 +17,19 @@ import (
 
 const defaultFetchAvailableModelsBodyLimit int64 = 8 << 20
 
-// ---------------------------------------------------------------------------
+// timeoutError 实现 net.Error 接口用于测试。
+type timeoutError struct{}
+
+// 测试调用 Client 方法，通过 RoundTripper 拦截 HTTP 请求
+
+// redirectRoundTripper 将请求中特定前缀的 URL 重定向到 httptest server。
+type redirectRoundTripper struct {
+	// 原始 URL 前缀 -> 替换目标 URL 的映射
+	redirects map[string]string
+	transport http.RoundTripper
+}
+
 // NewAPIRequestWithURL
-// ---------------------------------------------------------------------------
 
 func TestNewAPIRequestWithURL_普通请求(t *testing.T) {
 	ctx := context.Background()
@@ -85,9 +95,7 @@ func TestNewAPIRequestWithURL_空Body(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // NewAPIRequest
-// ---------------------------------------------------------------------------
 
 func TestNewAPIRequest_使用默认URL(t *testing.T) {
 	ctx := context.Background()
@@ -102,9 +110,7 @@ func TestNewAPIRequest_使用默认URL(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // TierInfo.UnmarshalJSON
-// ---------------------------------------------------------------------------
 
 func TestTierInfo_UnmarshalJSON_字符串格式(t *testing.T) {
 	data := []byte(`"free-tier"`)
@@ -185,9 +191,7 @@ func TestTierInfo_UnmarshalJSON_通过JSON嵌套结构(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // LoadCodeAssistResponse.GetTier
-// ---------------------------------------------------------------------------
 
 func TestGetTier_PaidTier优先(t *testing.T) {
 	resp := &LoadCodeAssistResponse{
@@ -273,9 +277,7 @@ func TestTierIDToPlanType(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // NewClient
-// ---------------------------------------------------------------------------
 
 func mustNewClient(t *testing.T, proxyURL string) *Client {
 	t.Helper()
@@ -344,9 +346,7 @@ func TestNewClient_无效代理URL(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // IsConnectionError
-// ---------------------------------------------------------------------------
 
 func TestIsConnectionError_nil(t *testing.T) {
 	if IsConnectionError(nil) {
@@ -365,9 +365,6 @@ func TestIsConnectionError_超时错误(t *testing.T) {
 		t.Error("超时错误应判定为连接错误")
 	}
 }
-
-// timeoutError 实现 net.Error 接口用于测试
-type timeoutError struct{}
 
 func (e *timeoutError) Error() string   { return "timeout" }
 func (e *timeoutError) Timeout() bool   { return true }
@@ -414,9 +411,7 @@ func TestIsConnectionError_包装的netOpError(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // shouldFallbackToNextURL
-// ---------------------------------------------------------------------------
 
 func TestShouldFallbackToNextURL_连接错误(t *testing.T) {
 	err := &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("refused")}
@@ -460,9 +455,7 @@ func TestShouldFallbackToNextURL_无错误且200(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.ExchangeCode (使用 httptest)
-// ---------------------------------------------------------------------------
 
 func TestClient_ExchangeCode_成功(t *testing.T) {
 	old := defaultClientSecret
@@ -597,9 +590,7 @@ func TestClient_ExchangeCode_服务器返回错误(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.RefreshToken (使用 httptest)
-// ---------------------------------------------------------------------------
 
 func TestClient_RefreshToken_MockServer(t *testing.T) {
 	old := defaultClientSecret
@@ -674,9 +665,7 @@ func TestClient_RefreshToken_无ClientSecret(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.GetUserInfo (使用 httptest)
-// ---------------------------------------------------------------------------
 
 func TestClient_GetUserInfo_成功(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -748,9 +737,7 @@ func TestClient_GetUserInfo_服务器返回错误(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // TokenResponse / UserInfo JSON 序列化
-// ---------------------------------------------------------------------------
 
 func TestTokenResponse_JSON序列化(t *testing.T) {
 	jsonData := `{"access_token":"at","expires_in":3600,"token_type":"Bearer","scope":"openid","refresh_token":"rt"}`
@@ -783,9 +770,7 @@ func TestUserInfo_JSON序列化(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // LoadCodeAssistResponse JSON 序列化
-// ---------------------------------------------------------------------------
 
 func TestLoadCodeAssistResponse_完整JSON(t *testing.T) {
 	jsonData := `{
@@ -812,22 +797,11 @@ func TestLoadCodeAssistResponse_完整JSON(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// 测试调用 Client 方法，通过 RoundTripper 拦截 HTTP 请求
-// ===========================================================================
-
-// redirectRoundTripper 将请求中特定前缀的 URL 重定向到 httptest server
-type redirectRoundTripper struct {
-	// 原始 URL 前缀 -> 替换目标 URL 的映射
-	redirects map[string]string
-	transport http.RoundTripper
-}
-
 func (rt *redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	originalURL := req.URL.String()
 	for prefix, target := range rt.redirects {
-		if strings.HasPrefix(originalURL, prefix) {
-			newURL := target + strings.TrimPrefix(originalURL, prefix)
+		if after, ok := strings.CutPrefix(originalURL, prefix); ok {
+			newURL := target + after
 			parsed, err := url.Parse(newURL)
 			if err != nil {
 				return nil, err
@@ -842,7 +816,7 @@ func (rt *redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	return rt.transport.RoundTrip(req)
 }
 
-// newTestClientWithRedirect 创建一个 Client，将指定 URL 前缀的请求重定向到 mock server
+// newTestClientWithRedirect 创建一个 Client，将指定 URL 前缀的请求重定向到 mock server。
 func newTestClientWithRedirect(redirects map[string]string) *Client {
 	return &Client{
 		httpClient: &http.Client{
@@ -854,9 +828,7 @@ func newTestClientWithRedirect(redirects map[string]string) *Client {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.ExchangeCode 测试
-// ---------------------------------------------------------------------------
 
 func TestClient_ExchangeCode_Success_RealCall(t *testing.T) {
 	old := defaultClientSecret
@@ -1005,9 +977,7 @@ func TestClient_ExchangeCode_ContextCanceled_RealCall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.RefreshToken 测试
-// ---------------------------------------------------------------------------
 
 func TestClient_RefreshToken_Success_RealCall(t *testing.T) {
 	old := defaultClientSecret
@@ -1133,9 +1103,7 @@ func TestClient_RefreshToken_ContextCanceled_RealCall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.GetUserInfo 测试
-// ---------------------------------------------------------------------------
 
 func TestClient_GetUserInfo_Success_RealCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1248,11 +1216,9 @@ func TestClient_GetUserInfo_ContextCanceled_RealCall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.LoadCodeAssist 测试
-// ---------------------------------------------------------------------------
 
-// withMockBaseURLs 临时替换 BaseURLs，测试结束后恢复
+// withMockBaseURLs 临时替换 BaseURLs，测试结束后恢复。
 func withMockBaseURLs(t *testing.T, urls []string) {
 	t.Helper()
 	origBaseURLs := BaseURLs
@@ -1458,9 +1424,7 @@ func TestClient_LoadCodeAssist_ContextCanceled_RealCall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Client.FetchAvailableModels 测试
-// ---------------------------------------------------------------------------
 
 func TestClient_FetchAvailableModels_Success_RealCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1725,9 +1689,7 @@ func TestClient_FetchAvailableModels_EmptyModels_RealCall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // LoadCodeAssist 和 FetchAvailableModels 的 408 fallback 测试
-// ---------------------------------------------------------------------------
 
 func TestClient_LoadCodeAssist_408Fallback_RealCall(t *testing.T) {
 	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

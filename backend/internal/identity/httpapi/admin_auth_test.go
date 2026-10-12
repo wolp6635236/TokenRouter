@@ -7,16 +7,19 @@ import (
 	"testing"
 	"time"
 
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
+
+type stubUserRepo struct {
+	getByID func(ctx context.Context, id int64) (*identity.User, error)
+}
 
 func TestAdminAuthJWTValidatesTokenVersion(t *testing.T) {
 	cfg := &config.Config{JWT: config.JWTConfig{Secret: "test-secret", ExpireHour: 1}}
@@ -43,7 +46,7 @@ func TestAdminAuthJWTValidatesTokenVersion(t *testing.T) {
 	userService := identity.NewUserService(userRepo, nil, nil, nil, func(_ string, fn func()) bool { go fn(); return true })
 
 	router := gin.New()
-	router.Use(gin.HandlerFunc(identityhttp.AdminAuth(authService, userService, nil, nil)))
+	router.Use(identityhttp.AdminAuth(authService, userService, nil, nil))
 	router.GET("/t", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
@@ -121,10 +124,6 @@ func TestAdminAuthJWTValidatesTokenVersion(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, w.Code)
 	})
-}
-
-type stubUserRepo struct {
-	getByID func(ctx context.Context, id int64) (*identity.User, error)
 }
 
 func (s *stubUserRepo) Create(ctx context.Context, user *identity.User) error {

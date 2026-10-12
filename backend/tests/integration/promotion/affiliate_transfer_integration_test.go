@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
-
-	"github.com/stretchr/testify/require"
 )
 
 // TestAffiliateTransferLedgerFailureRollsBackFunds 验证转账流水失败必须回滚同事务的清零、余额和累计充值，不能只保证计提原子性。

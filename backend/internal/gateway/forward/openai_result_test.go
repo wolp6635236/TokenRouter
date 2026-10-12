@@ -17,6 +17,7 @@ func TestOpenAIForwardResultSucceededForScheduling_TerminalEvents(t *testing.T) 
 		{name: "non websocket zero value", result: &OpenAIResult{}, expected: true},
 		{name: "websocket legacy empty terminal", result: &OpenAIResult{OpenAIWSMode: true}, expected: true},
 		{name: "completed", result: &OpenAIResult{OpenAIWSMode: true, UpstreamTerminalEvent: "response.completed"}, expected: true},
+		{name: "local warmup", result: &OpenAIResult{LocalWarmup: true, OpenAIWSMode: true, UpstreamTerminalEvent: "response.completed"}, expected: false},
 		{name: "done", result: &OpenAIResult{OpenAIWSMode: true, UpstreamTerminalEvent: "response.done"}, expected: true},
 		{name: "failed", result: &OpenAIResult{OpenAIWSMode: true, UpstreamTerminalEvent: "response.failed"}, expected: false},
 		{name: "incomplete", result: &OpenAIResult{OpenAIWSMode: true, UpstreamTerminalEvent: "response.incomplete"}, expected: false},
@@ -32,7 +33,7 @@ func TestOpenAIForwardResultSucceededForScheduling_TerminalEvents(t *testing.T) 
 
 // TestOpenAIResultReplayStaysOutsideJSON 检查恢复输入在跨包读写后仍被结果 JSON 序列化忽略。
 func TestOpenAIResultReplayStaysOutsideJSON(t *testing.T) {
-	result := &OpenAIResult{Model: "model-visible"}
+	result := &OpenAIResult{Model: "model-visible", LocalWarmup: true}
 	result.SetWSReplayInput([]json.RawMessage{json.RawMessage(`{"prompt":"replay-private"}`)}, true)
 	result.SetWSProviderFailoverReplayInput([]json.RawMessage{json.RawMessage(`{"prompt":"failover-private"}`)})
 	input, present := result.WSReplayInput()
@@ -44,4 +45,23 @@ func TestOpenAIResultReplayStaysOutsideJSON(t *testing.T) {
 	require.Contains(t, string(raw), "model-visible")
 	require.NotContains(t, string(raw), "replay-private")
 	require.NotContains(t, string(raw), "failover-private")
+	require.NotContains(t, string(raw), "LocalWarmup")
+}
+
+func TestOpenAIForwardSucceededForScheduling(t *testing.T) {
+	require.True(t, schedulingSucceeded(nil))
+	require.True(t, schedulingSucceeded(&OpenAIResult{}))
+	require.True(t, schedulingSucceeded(&OpenAIResult{
+		OpenAIWSMode:          true,
+		UpstreamTerminalEvent: "response.completed",
+	}))
+	require.False(t, schedulingSucceeded(&OpenAIResult{
+		OpenAIWSMode:          true,
+		UpstreamTerminalEvent: "response.failed",
+	}))
+}
+
+// schedulingSucceeded 读取结果的调度成功判定。
+func schedulingSucceeded(result *OpenAIResult) bool {
+	return result.SucceededForScheduling()
 }

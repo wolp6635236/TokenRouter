@@ -11,15 +11,32 @@ import (
 	"sync/atomic"
 	"time"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 // Run 执行双向 relay，按轮处理策略检查、完成和失败。
 func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, firstClientMessage []byte) error {
 	p, o, hooks := s.Port, s.Options, s.Hooks
+	var turnParameters atomic.Pointer[Parameters]
+	initial := DefaultParameters()
+	initial.ReadTimeoutSeconds = int(o.IdleTimeout / time.Second)
+	initial.WriteTimeoutSeconds = int(o.WriteTimeout / time.Second)
+	if s.Parameters != nil {
+		initial = s.Parameters()
+	}
+	turnParameters.Store(&initial)
+	currentWriteTimeout := func() time.Duration { return time.Duration(turnParameters.Load().WriteTimeoutSeconds) * time.Second }
+	currentIdleTimeout := func() time.Duration {
+		if s.Parameters != nil {
+			return time.Duration(s.Parameters().IngressInterTurnIdleTimeoutSeconds) * time.Second
+		}
+		return o.InterTurnIdleTimeout
+	}
+
 	firstTurnStartedAt := time.Now()
 	if hooks != nil && !hooks.InitialTurnStartedAt.IsZero() {
 		firstTurnStartedAt = hooks.InitialTurnStartedAt
@@ -39,11 +56,11 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	if firstRequestModel == "" && hooks != nil {
 		firstRequestModel = strings.TrimSpace(hooks.InitialRequestModel)
 	}
-	if next, policyErr := p.Reasoning(firstClientMessage, firstRequestModel); policyErr != nil {
+	next, policyErr := p.Reasoning(firstClientMessage, firstRequestModel)
+	if policyErr != nil {
 		return p.CloseError(1008, policyErr.Error(), policyErr)
-	} else {
-		firstClientMessage = next
 	}
+	firstClientMessage = next
 	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
 	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
 	initialRequestModel := ""
@@ -203,7 +220,7 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			}
 			timeout := p.FirstOutputTimeout(reasoningEffort)
 			if timeout <= 0 {
-				timeout = o.IdleTimeout
+				timeout = time.Duration(turnParameters.Load().ReadTimeoutSeconds) * time.Second
 			}
 			model := RequestModelForFrame(payload)
 			if model == "" {
@@ -213,10 +230,11 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				model = requestModel
 			}
 			return Deadline{
-				Timeout:         timeout,
-				StartedAt:       time.Now(),
-				RequestModel:    model,
-				ReasoningEffort: reasoningEffort,
+				Timeout:           timeout,
+				ActiveReadTimeout: time.Duration(turnParameters.Load().ReadTimeoutSeconds) * time.Second,
+				StartedAt:         time.Now(),
+				RequestModel:      model,
+				ReasoningEffort:   reasoningEffort,
 			}
 		}, p.ClosedError())
 
@@ -229,6 +247,7 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		conn:                 clientConn,
 		controlCtx:           ctx,
 		interTurnIdleTimeout: o.InterTurnIdleTimeout,
+		idleTimeout:          currentIdleTimeout,
 		interTurnStarted:     make(chan struct{}, 1),
 		restoreResponseModel: func(payload []byte) []byte {
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
@@ -309,19 +328,16 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			originalResponseCreate := payload
 			if isResponseCreate {
 				requestModelForPolicy := usageMeta.RequestModelForFrame(payload)
-				if next, policyErr := p.Reasoning(payload, requestModelForPolicy); policyErr != nil {
+				next, policyErr := p.Reasoning(payload, requestModelForPolicy)
+				if policyErr != nil {
 					return payload, nil, p.CloseError(1008, policyErr.Error(), policyErr)
-				} else {
-					payload = next
 				}
+				payload = next
 			}
 			if isResponseCreate {
 				usageMeta.CaptureRequestedReasoningEffort(originalResponseCreate)
 			}
-			turnNo := int(completedTurns.Load()) + 1
-			if turnNo < 2 {
-				turnNo = 2
-			}
+			turnNo := max(int(completedTurns.Load())+1, 2)
 			if isResponseCreate && hooks != nil && hooks.BeforeRequest != nil {
 				requestModel := usageMeta.RequestModelForFrame(payload)
 				if requestModel == "" {
@@ -383,6 +399,10 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 					}
 				}
 				usageMeta.UpdateFromResponseCreate(out)
+				if s.Parameters != nil {
+					next := s.Parameters()
+					turnParameters.Store(&next)
+				}
 				turnPayloads.Push(TurnPayload{
 					StartedAt:                responseCreateAt,
 					RequestBody:              out,
@@ -478,8 +498,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		UpstreamConn:       relayUpstreamFrameConn,
 		FirstClientMessage: firstClientMessage,
 		Options: RelayOptions{
-			WriteTimeout:       o.WriteTimeout,
-			FirstTurnStartedAt: firstTurnStartedAt,
+			WriteTimeout:        o.WriteTimeout,
+			WriteTimeoutForTurn: currentWriteTimeout,
+			FirstTurnStartedAt:  firstTurnStartedAt,
 			TakeNextTurnStartedAt: func() time.Time {
 				startedAt := acceptedTurnStartedAt.Swap(nil)
 				if startedAt == nil {
@@ -504,10 +525,7 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			OnUpstreamEvent: func(eventType string, payload []byte) {
 				warning := p.Warning(eventType, payload)
 				if warning != nil && hooks != nil && hooks.OnUpstreamError != nil {
-					turnNo := int(completedTurns.Load()) + 1
-					if turnNo < 1 {
-						turnNo = 1
-					}
+					turnNo := max(int(completedTurns.Load())+1, 1)
 					turnPayload := turnPayloads.Peek()
 					hooks.OnUpstreamError(turnNo, turnPayload.OriginalModel, warning.StatusCode, warning.ResponseBody, warning.Message)
 				}
@@ -698,8 +716,7 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	))
 
 	relayErr := relayExit.Err
-	var firstOutputTimeoutErr *FirstOutputTimeoutError
-	if errors.As(relayErr, &firstOutputTimeoutErr) {
+	if firstOutputTimeoutErr, ok := errors.AsType[*FirstOutputTimeoutError](relayErr); ok {
 		deadline := firstOutputTimeoutErr.Deadline
 		failoverErr := p.FirstOutputFailure(ctx, deadline, handshakeHeaders)
 
@@ -715,8 +732,7 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			)
 		}
 	}
-	var activeTurnTimeoutErr *ActiveTurnTimeoutError
-	if errors.As(relayErr, &activeTurnTimeoutErr) {
+	if activeTurnTimeoutErr, ok := errors.AsType[*ActiveTurnTimeoutError](relayErr); ok {
 		relayErr = p.CloseError(
 			1001,
 			"upstream websocket read timeout; please reconnect",

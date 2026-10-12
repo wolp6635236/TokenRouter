@@ -9,6 +9,9 @@ import audit from './audit'
 
 export default {
     protocols: {
+      responsesWebSocketHTTPHint: 'When conversion is allowed, the client keeps its WebSocket connection while the upstream receives regular HTTP Responses requests.',
+      responsesWebSocket: 'Long conversations (WebSocket)',
+      responsesWebSocketHTTP: 'Convert to a regular Responses request',
       nativeTitle: 'Native upstream protocols',
       nativeHint: 'Only native protocols for this provider type are shown. An empty set disables new calls.',
       loadError: 'Failed to load protocol capabilities. Please reopen the form.',

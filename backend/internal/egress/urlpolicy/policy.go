@@ -131,8 +131,8 @@ func IsAllowedHost(host string, allowlist []string) bool {
 		if entry == "" {
 			continue
 		}
-		if strings.HasPrefix(entry, "*.") {
-			suffix := strings.TrimPrefix(entry, "*.")
+		if after, ok := strings.CutPrefix(entry, "*."); ok {
+			suffix := after
 			if host == suffix || strings.HasSuffix(host, "."+suffix) {
 				return true
 			}

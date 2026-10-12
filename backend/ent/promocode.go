@@ -92,7 +92,7 @@ func (_m *PromoCode) assignValues(columns []string, values []any) error {
 			if !ok {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
-			_m.ID = int64(value.Int64)
+			_m.ID = value.Int64
 		case promocode.FieldCode:
 			if value, ok := values[i].(*sql.NullString); !ok {
 				return fmt.Errorf("unexpected type %T for field code", values[i])

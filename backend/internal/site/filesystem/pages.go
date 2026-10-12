@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
 
@@ -171,7 +170,7 @@ func cleanPageImageRelativePath(filename string) (string, bool) {
 	}
 
 	parts := make([]string, 0)
-	for _, part := range strings.Split(decoded, "/") {
+	for part := range strings.SplitSeq(decoded, "/") {
 		switch part {
 		case "", ".":
 			continue

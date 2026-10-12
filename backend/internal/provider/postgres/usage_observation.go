@@ -76,3 +76,8 @@ func (r *ProviderStore) updateUsageRateLimit(ctx context.Context, v provider.Usa
 	r.afterChange(ctx, v.ID)
 	return true, nil
 }
+
+// UpdatePrivacyModeIfUnchanged 在 Extra 和 outbox 写入事务内比较请求身份，再更新隐私模式。
+func (r *ProviderStore) UpdatePrivacyModeIfUnchanged(ctx context.Context, v provider.UsageObservationVersion, mode string) (bool, error) {
+	return r.UpdateUsageExtraIfUnchanged(ctx, v, map[string]any{"privacy_mode": mode})
+}

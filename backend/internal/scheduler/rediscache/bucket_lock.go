@@ -6,14 +6,10 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
-
-// BucketLocks 使用调度 Redis 管理桶锁。
-type BucketLocks struct{ client *redis.Client }
-
-func NewBucketLocks(client *redis.Client) *BucketLocks { return &BucketLocks{client: client} }
 
 var releaseBucketOwner = redis.NewScript(`
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -21,6 +17,11 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0
 `)
+
+// BucketLocks 使用调度 Redis 管理桶锁。
+type BucketLocks struct{ client *redis.Client }
+
+func NewBucketLocks(client *redis.Client) *BucketLocks { return &BucketLocks{client: client} }
 
 // AcquireBucketLease 按给定字符串键和 TTL 取得锁，锁值是持有者令牌。
 func (s *BucketLocks) AcquireBucketLease(ctx context.Context, bucket scheduler.SchedulerBucket, ttl time.Duration) (*scheduler.BucketLease, bool, error) {

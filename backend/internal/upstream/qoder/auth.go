@@ -14,14 +14,16 @@ import (
 	"time"
 )
 
-// CenterBaseURL 是国际站 Center 服务地址，保留名称以兼容旧调用。
-const CenterBaseURL = GlobalCenterBaseURL
+const (
+	// CenterBaseURL 是国际站 Center 服务地址，保留名称以兼容旧调用。
+	CenterBaseURL = GlobalCenterBaseURL
 
-// APIBaseURL 是国际站推理地址，保留名称以兼容旧调用。
-const APIBaseURL = GlobalGatewayBaseURL
+	// APIBaseURL 是国际站推理地址，保留名称以兼容旧调用。
+	APIBaseURL = GlobalGatewayBaseURL
 
-// ClientVersion 是国际站 COSY 客户端版本，保留名称以兼容旧调用。
-const ClientVersion = GlobalClientVersion
+	// ClientVersion 是国际站 COSY 客户端版本，保留名称以兼容旧调用。
+	ClientVersion = GlobalClientVersion
+)
 
 // GenerateRequestID 生成随机请求 ID。
 func GenerateRequestID() string {
@@ -157,7 +159,7 @@ func exchangeJobToken(ctx context.Context, inner map[string]any, machine *Machin
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("qoder: %s failed with status %d: %s", operation, resp.StatusCode, RedactSensitiveText(string(bodyBytes)))
 	}

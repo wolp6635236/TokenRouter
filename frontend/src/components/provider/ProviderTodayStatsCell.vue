@@ -2,9 +2,9 @@
   <div>
     <!-- Loading state -->
     <div v-if="props.loading && !props.stats" class="space-y-0.5">
-      <div class="h-3 w-12 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-      <div class="h-3 w-16 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-      <div class="h-3 w-10 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+      <div class="skeleton h-3 w-12"></div>
+      <div class="skeleton h-3 w-16"></div>
+      <div class="skeleton h-3 w-10"></div>
     </div>
 
     <!-- Error state -->
@@ -36,14 +36,14 @@
       <div class="flex items-center gap-1">
         <span class="text-gray-500 dark:text-gray-400">{{ t('usage.providerBilled') }}:</span>
         <span class="font-medium text-emerald-600 dark:text-emerald-400">{{
-          formatCurrency(props.stats.cost)
+          formatUsdAmount(props.stats.cost, { fractionDigits: 2 })
         }}</span>
       </div>
-      <!-- Cost (User/API Key) -->
+      <!-- 用户扣费按站点配置的余额单位展示。 -->
       <div v-if="props.stats.user_cost != null" class="flex items-center gap-1">
         <span class="text-gray-500 dark:text-gray-400">{{ t('usage.userBilled') }}:</span>
         <span class="font-medium text-gray-700 dark:text-gray-300">{{
-          formatCurrency(props.stats.user_cost)
+          formatBalanceAmount(props.stats.user_cost, { fractionDigits: 2 })
         }}</span>
       </div>
     </div>
@@ -55,8 +55,9 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
 import type { WindowStats } from '@/types'
-import { formatNumber, formatCurrency } from '@/utils/format'
+import { formatNumber } from '@/utils/format'
 
 const props = withDefaults(
   defineProps<{
@@ -72,6 +73,7 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
+const { formatBalanceAmount, formatUsdAmount } = useBalanceDisplay()
 
 // Format large token numbers (e.g., 1234567 -> 1.23M)
 // 紧凑变体:K 档 1 位小数、M 档 2 位小数,与共享 formatTokens(K 档 2 位小数)精度不同,有意保留本地。

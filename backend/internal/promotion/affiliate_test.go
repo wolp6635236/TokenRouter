@@ -57,12 +57,10 @@ func TestValidateExclusiveRate_BoundaryAndInvalid(t *testing.T) {
 	require.NoError(t, validateExclusiveRate(nil))
 
 	for _, v := range []float64{0, 0.01, 50, 99.99, 100} {
-		v := v
 		require.NoError(t, validateExclusiveRate(&v), "value %v should be valid", v)
 	}
 
 	for _, v := range []float64{-0.01, 100.01, -100, 200} {
-		v := v
 		require.Error(t, validateExclusiveRate(&v), "value %v should be rejected", v)
 	}
 
@@ -114,7 +112,6 @@ func TestIsValidAffiliateCodeFormat(t *testing.T) {
 		{"whitespace", "ABCDEFGHJK M", false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(t, tc.want, isValidAffiliateCodeFormat(tc.in))

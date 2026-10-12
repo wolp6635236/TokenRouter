@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	sessionstore "github.com/TokenFlux/TokenRouter/internal/infra/redis/session"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
+	sessionstore "github.com/TokenFlux/TokenRouter/internal/infra/redis/session"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 func TestSessionStoreRedisFallbackIsLimitedToFailedWrites(t *testing.T) {

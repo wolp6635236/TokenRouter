@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// TempUnschedState 临时不可调度状态
+// TempUnschedState 临时不可调度状态。
 type TempUnschedState struct {
 	UntilUnix            int64  `json:"until_unix"`                       // 解除时间（Unix 时间戳）
 	TriggeredAtUnix      int64  `json:"triggered_at_unix"`                // 触发时间（Unix 时间戳）
@@ -17,7 +17,7 @@ type TempUnschedState struct {
 	TriggerWindowMinutes int    `json:"trigger_window_minutes,omitempty"` // 计数窗口（分钟）
 }
 
-// TempUnschedCache 临时不可调度缓存接口
+// TempUnschedCache 临时不可调度缓存接口。
 type TempUnschedCache interface {
 	SetTempUnsched(ctx context.Context, providerID int64, state *TempUnschedState) error
 	GetTempUnsched(ctx context.Context, providerID int64) (*TempUnschedState, error)

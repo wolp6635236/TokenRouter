@@ -10,61 +10,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/app/bootstrap"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
 	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/TokenFlux/TokenRouter/internal/app/bootstrap"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
-// Config paths
 const (
+	// Config paths.
 	ConfigFileName          = "config.yaml"
 	InstallLockFile         = ".installed"
 	defaultUserConcurrency  = 5
 	defaultMigrationTimeout = 60 * time.Second
+
+	adminBootstrapReasonAdminExists            = "admin_exists"
+	adminBootstrapReasonUsersExistWithoutAdmin = "users_exist_without_admin"
 )
-
-// setupDefaultAdminConcurrency 使用统一的首次管理员并发默认值。
-func setupDefaultAdminConcurrency() int {
-	return defaultUserConcurrency
-}
-
-// GetDataDir returns the data directory for storing config and lock files.
-// Priority: DATA_DIR env > /app/data (if exists and writable) > current directory
-func GetDataDir() string {
-	// Check DATA_DIR environment variable first
-	if dir := os.Getenv("DATA_DIR"); dir != "" {
-		return dir
-	}
-
-	// Check if /app/data exists and is writable (Docker environment)
-	dockerDataDir := "/app/data"
-	if info, err := os.Stat(dockerDataDir); err == nil && info.IsDir() {
-		// Try to check if writable by creating a temp file
-		testFile := dockerDataDir + "/.write_test"
-		if f, err := os.Create(testFile); err == nil {
-			_ = f.Close()
-			_ = os.Remove(testFile)
-			return dockerDataDir
-		}
-	}
-
-	// Default to current directory
-	return "."
-}
-
-// GetConfigFilePath returns the full path to config.yaml
-func GetConfigFilePath() string {
-	return GetDataDir() + "/" + ConfigFileName
-}
-
-// GetInstallLockPath returns the full path to .installed lock file
-func GetInstallLockPath() string {
-	return GetDataDir() + "/" + InstallLockFile
-}
 
 // SetupConfig 保存初始设置所需的配置。
 type SetupConfig struct {
@@ -97,10 +61,44 @@ type JWTConfig struct {
 	ExpireHour int    `json:"expire_hour" yaml:"expire_hour"`
 }
 
-const (
-	adminBootstrapReasonAdminExists            = "admin_exists"
-	adminBootstrapReasonUsersExistWithoutAdmin = "users_exist_without_admin"
-)
+// setupDefaultAdminConcurrency 使用统一的首次管理员并发默认值。
+func setupDefaultAdminConcurrency() int {
+	return defaultUserConcurrency
+}
+
+// GetDataDir returns the data directory for storing config and lock files.
+// Priority: DATA_DIR env > /app/data (if exists and writable) > current directory.
+func GetDataDir() string {
+	// Check DATA_DIR environment variable first
+	if dir := os.Getenv("DATA_DIR"); dir != "" {
+		return dir
+	}
+
+	// Check if /app/data exists and is writable (Docker environment)
+	dockerDataDir := "/app/data"
+	if info, err := os.Stat(dockerDataDir); err == nil && info.IsDir() {
+		// Try to check if writable by creating a temp file
+		testFile := dockerDataDir + "/.write_test"
+		if f, err := os.Create(testFile); err == nil {
+			_ = f.Close()
+			_ = os.Remove(testFile)
+			return dockerDataDir
+		}
+	}
+
+	// Default to current directory
+	return "."
+}
+
+// GetConfigFilePath returns the full path to config.yaml.
+func GetConfigFilePath() string {
+	return GetDataDir() + "/" + ConfigFileName
+}
+
+// GetInstallLockPath returns the full path to .installed lock file.
+func GetInstallLockPath() string {
+	return GetDataDir() + "/" + InstallLockFile
+}
 
 // skipSetupEnabled 解析显式跳过首次安装向导的环境开关。
 func skipSetupEnabled() bool {
@@ -113,7 +111,7 @@ func skipSetupEnabled() bool {
 }
 
 // NeedsSetup checks if the system needs initial setup
-// Uses multiple checks to prevent attackers from forcing re-setup by deleting config
+// Uses multiple checks to prevent attackers from forcing re-setup by deleting config.
 func NeedsSetup() bool {
 	if skipSetupEnabled() {
 		logging.L().Debug("setup.needs_setup_bypassed", zap.String("reason", "skip_setup_enabled"))
@@ -185,7 +183,7 @@ func Install(cfg *SetupConfig) error {
 	return nil
 }
 
-// createInstallLock creates a lock file to prevent re-installation attacks
+// createInstallLock creates a lock file to prevent re-installation attacks.
 func createInstallLock() error {
 	content := fmt.Sprintf("installed_at=%s\n", time.Now().UTC().Format(time.RFC3339))
 	return os.WriteFile(GetInstallLockPath(), []byte(content), 0o400) // Read-only for owner
@@ -290,17 +288,15 @@ func generateSecret(length int) (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// =============================================================================
 // Auto Setup for Docker Deployment
-// =============================================================================
 
-// AutoSetupEnabled checks if auto setup is enabled via environment variable
+// AutoSetupEnabled checks if auto setup is enabled via environment variable.
 func AutoSetupEnabled() bool {
 	val := os.Getenv("AUTO_SETUP")
 	return val == "true" || val == "1" || val == "yes"
 }
 
-// getEnvOrDefault gets environment variable or returns default value
+// getEnvOrDefault gets environment variable or returns default value.
 func getEnvOrDefault(key, defaultValue string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
@@ -308,7 +304,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvIntOrDefault gets environment variable as int or returns default value
+// getEnvIntOrDefault gets environment variable as int or returns default value.
 func getEnvIntOrDefault(key string, defaultValue int) int {
 	if val := os.Getenv(key); val != "" {
 		if i, err := strconv.Atoi(val); err == nil {
@@ -319,7 +315,7 @@ func getEnvIntOrDefault(key string, defaultValue int) int {
 }
 
 // AutoSetupFromEnv performs automatic setup using environment variables
-// This is designed for Docker deployment where all config is passed via env vars
+// This is designed for Docker deployment where all config is passed via env vars.
 func AutoSetupFromEnv() error {
 	logging.LegacyPrintf("setup", "%s", "Auto setup enabled, configuring from environment variables...")
 	logging.LegacyPrintf("setup", "Data directory: %s", GetDataDir())

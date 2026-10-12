@@ -8,9 +8,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-func (a *Record) LegacyUpstreamProtocols(legacyMode string) []capability.ProtocolID {
-	options := a.NativeProtocolOptions()
-	if a.IsCNProvider() {
+func (r *Record) LegacyUpstreamProtocols(legacyMode string) []capability.ProtocolID {
+	options := r.NativeProtocolOptions()
+	if r.IsCNProvider() {
 		switch legacyMode {
 		case APIProtocolAdaptive:
 			return options
@@ -22,8 +22,8 @@ func (a *Record) LegacyUpstreamProtocols(legacyMode string) []capability.Protoco
 			return []capability.ProtocolID{capability.ProtocolOpenAIChatCompletions}
 		}
 	}
-	if a.IsOpenAIApiKey() {
-		workloads, found := a.OpenAIWorkloadCapabilitySet()
+	if r.IsOpenAIApiKey() {
+		workloads, found := r.OpenAIWorkloadCapabilitySet()
 		if found && !workloads["text_generation"] {
 			options = slices.DeleteFunc(options, func(p capability.ProtocolID) bool {
 				return p != capability.ProtocolEmbeddings && p != capability.ProtocolImagesGenerations && p != capability.ProtocolImagesEdits
@@ -32,11 +32,11 @@ func (a *Record) LegacyUpstreamProtocols(legacyMode string) []capability.Protoco
 		if found && !workloads["embeddings"] {
 			options = slices.DeleteFunc(options, func(p capability.ProtocolID) bool { return p == capability.ProtocolEmbeddings })
 		}
-		mode := ResolveUpstreamTextProtocol(a.Extra, TextProtocolResponses)
+		mode := ResolveUpstreamTextProtocol(r.Extra, TextProtocolResponses)
 		if mode == TextProtocolChatCompletions {
 			options = slices.DeleteFunc(options, func(p capability.ProtocolID) bool { return p == capability.ProtocolOpenAIResponses })
 		}
-		if ResolveUpstreamTextProtocol(a.Extra, TextProtocolChatCompletions) == TextProtocolResponses {
+		if ResolveUpstreamTextProtocol(r.Extra, TextProtocolChatCompletions) == TextProtocolResponses {
 			options = slices.DeleteFunc(options, func(p capability.ProtocolID) bool { return p == capability.ProtocolOpenAIChatCompletions })
 		}
 	}

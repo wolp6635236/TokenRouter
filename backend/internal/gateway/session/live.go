@@ -31,13 +31,6 @@ type LiveAttestationUnavailableError struct {
 	Reason string
 }
 
-func (e *LiveAttestationUnavailableError) Error() string {
-	if e == nil || e.Reason == "" {
-		return "Live attestation is unavailable"
-	}
-	return "Live attestation is unavailable: " + e.Reason
-}
-
 type LiveCallRequest = wire.LiveCallRequest
 
 // LiveCallIdentity 保存创建者身份和 fork 路由所需的入站元数据。
@@ -91,4 +84,11 @@ type LiveCallStore interface {
 	ReleaseLiveController(ctx context.Context, callHash, owner string) (bool, error)
 	GetLiveController(ctx context.Context, callHash string) (string, error)
 	MarkLiveCallClosed(ctx context.Context, callHash string, ttl time.Duration) (bool, error)
+}
+
+func (e *LiveAttestationUnavailableError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "Live attestation is unavailable"
+	}
+	return "Live attestation is unavailable: " + e.Reason
 }

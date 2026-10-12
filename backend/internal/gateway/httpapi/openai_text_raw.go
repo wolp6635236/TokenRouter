@@ -3,13 +3,12 @@ package httpapi
 import (
 	"context"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/gin-gonic/gin"
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 )
 
 // RawChat 将 Chat Completions 请求直转至 {base_url}/v1/chat/completions。

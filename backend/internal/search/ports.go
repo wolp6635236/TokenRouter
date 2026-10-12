@@ -7,18 +7,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/search/contract"
 )
 
+const (
+	ProviderTypeBrave  = contract.ProviderTypeBrave
+	ProviderTypeTavily = contract.ProviderTypeTavily
+	defaultMaxResults  = contract.DefaultMaxResults
+)
+
 type (
 	SearchRequest  = contract.SearchRequest
 	SearchResponse = contract.SearchResponse
 	SearchResult   = contract.SearchResult
 	ProviderConfig = contract.ProviderConfig
 	Provider       = contract.Provider
-)
-
-const (
-	ProviderTypeBrave  = contract.ProviderTypeBrave
-	ProviderTypeTavily = contract.ProviderTypeTavily
-	defaultMaxResults  = contract.DefaultMaxResults
 )
 
 type QuotaState interface {

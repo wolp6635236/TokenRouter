@@ -179,7 +179,7 @@
                     <button
                       v-for="fmt in getCopyFormats(row)"
                       :key="fmt.label"
-                      class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-gray-100 dark:hover:bg-dark-600"
+                      class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-gray-100 dark:hover:bg-dark-800"
                       @click.stop="copyFormat(fmt.value)"
                     >
                       <span class="truncate font-mono text-gray-600 dark:text-gray-300">{{ fmt.label }}</span>
@@ -218,10 +218,11 @@
                 :alt="row.country || row.country_code"
                 class="h-4 w-6 rounded-compact"
               />
-              <span v-if="formatLocation(row)" class="text-sm text-gray-700 dark:text-gray-200">
+              <!-- 位置文字加 self-baseline，移动卡片的标签对齐文字。 -->
+              <span v-if="formatLocation(row)" class="self-baseline text-sm text-gray-700 dark:text-gray-200">
                 {{ formatLocation(row) }}
               </span>
-              <span v-else class="text-sm text-gray-400">-</span>
+              <span v-else class="self-baseline text-sm text-gray-400">-</span>
             </div>
           </template>
 
@@ -229,7 +230,7 @@
             <button
               v-if="(value || 0) > 0"
               type="button"
-              class="inline-flex items-center rounded-compact bg-gray-100 px-2 py-0.5 text-xs font-medium text-primary-700 hover:bg-gray-200 dark:bg-dark-600 dark:text-primary-300 dark:hover:bg-dark-500"
+              class="inline-flex items-center rounded-compact bg-gray-100 px-2 py-0.5 text-xs font-medium text-primary-700 hover:bg-gray-200 dark:bg-dark-700 dark:text-primary-300 dark:hover:bg-dark-600"
               @click="openProvidersModal(row)"
             >
               {{ t('admin.groups.providersCount', { count: value || 0 }) }}
@@ -788,7 +789,7 @@
       @close="closeQualityReportDialog"
     >
       <div v-if="qualityReport" class="space-y-4">
-        <div class="rounded-surface border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-700">
+        <div class="rounded-surface border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-800">
           <div class="flex items-center justify-between gap-4">
             <div>
               <div class="text-sm text-gray-500 dark:text-gray-400">

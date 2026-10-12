@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // TestPrivacyObservationIdentityAndOutbox 检查隐私观测与 Extra/outbox 一起提交，身份变化或事件失败时拒绝成功模式写入。

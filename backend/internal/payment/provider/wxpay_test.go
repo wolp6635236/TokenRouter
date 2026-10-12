@@ -7,16 +7,18 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"maps"
 	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/payment"
 	"github.com/wechatpay-apiv3/wechatpay-go/core"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/h5"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/jsapi"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/native"
+
+	"github.com/TokenFlux/TokenRouter/internal/payment"
 )
 
 // generateTestKeyPair returns a fresh RSA 2048 key pair as PEM strings.
@@ -220,12 +222,8 @@ func TestNewWxpay(t *testing.T) {
 	// helper to clone and override config fields
 	withOverride := func(overrides map[string]string) map[string]string {
 		cfg := make(map[string]string, len(validConfig))
-		for k, v := range validConfig {
-			cfg[k] = v
-		}
-		for k, v := range overrides {
-			cfg[k] = v
-		}
+		maps.Copy(cfg, validConfig)
+		maps.Copy(cfg, overrides)
 		return cfg
 	}
 

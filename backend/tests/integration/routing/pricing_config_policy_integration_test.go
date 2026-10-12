@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 func TestPricingConfigCRUDPreservesIndependentGroupPolicies(t *testing.T) {

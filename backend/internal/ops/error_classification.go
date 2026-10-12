@@ -4,8 +4,35 @@ import (
 	"strings"
 )
 
-// ErrorPhaseProviderAuth 保留供应商提供商认证失败的观测阶段值。
-const ErrorPhaseProviderAuth = "provider_auth"
+const (
+	// ErrorPhaseProviderAuth 保留供应商提供商认证失败的观测阶段值。
+	ErrorPhaseProviderAuth = "provider_auth"
+
+	opsErrNoAvailableProviders   = "no available providers"
+	opsErrInsufficientBalance    = "insufficient balance"
+	opsCodeInsufficientBalance   = "INSUFFICIENT_BALANCE"
+	opsCodeUsageLimitExceeded    = "USAGE_LIMIT_EXCEEDED"
+	opsCodeSubscriptionNotFound  = "SUBSCRIPTION_NOT_FOUND"
+	opsCodeSubscriptionInvalid   = "SUBSCRIPTION_INVALID"
+	opsCodeUserInactive          = "USER_INACTIVE"
+	opsCodeInvalidAPIKey         = "INVALID_API_KEY"
+	opsCodeAPIKeyRequired        = "API_KEY_REQUIRED"
+	opsCodeAPIKeyExpired         = "API_KEY_EXPIRED"
+	opsCodeAPIKeyDisabled        = "API_KEY_DISABLED"
+	opsCodeUserNotFound          = "USER_NOT_FOUND"
+	opsCodeAPIKeyQuotaExhausted  = "API_KEY_QUOTA_EXHAUSTED"
+	opsCodeAPIKeyQueryDeprecated = "api_key_in_query_deprecated"
+	opsCodeGroupDeleted          = "GROUP_DELETED"
+	opsCodeGroupDisabled         = "GROUP_DISABLED"
+)
+
+// ErrorClassificationInput 仅固化 HTTP 层观测到的事实；分类核心不读取 Gin 或可变请求状态。
+type ErrorClassificationInput struct {
+	Type, Message, Code                                                    string
+	Status                                                                 int
+	RoutingCapacityLimited, ClientBusinessLimited, LocalModelConfiguration bool
+	UpstreamError, UpstreamClientInvalidRequest, ProviderAuthFailure       bool
+}
 
 // isKnownOpsErrorType returns true if t is a recognized error type used by the
 // ops classification pipeline.  Upstream proxies sometimes return garbage values
@@ -284,31 +311,4 @@ func classifyOpsErrorSource(phase string, message string) string {
 		}
 		return "gateway"
 	}
-}
-
-const (
-	opsErrNoAvailableProviders   = "no available providers"
-	opsErrInsufficientBalance    = "insufficient balance"
-	opsCodeInsufficientBalance   = "INSUFFICIENT_BALANCE"
-	opsCodeUsageLimitExceeded    = "USAGE_LIMIT_EXCEEDED"
-	opsCodeSubscriptionNotFound  = "SUBSCRIPTION_NOT_FOUND"
-	opsCodeSubscriptionInvalid   = "SUBSCRIPTION_INVALID"
-	opsCodeUserInactive          = "USER_INACTIVE"
-	opsCodeInvalidAPIKey         = "INVALID_API_KEY"
-	opsCodeAPIKeyRequired        = "API_KEY_REQUIRED"
-	opsCodeAPIKeyExpired         = "API_KEY_EXPIRED"
-	opsCodeAPIKeyDisabled        = "API_KEY_DISABLED"
-	opsCodeUserNotFound          = "USER_NOT_FOUND"
-	opsCodeAPIKeyQuotaExhausted  = "API_KEY_QUOTA_EXHAUSTED"
-	opsCodeAPIKeyQueryDeprecated = "api_key_in_query_deprecated"
-	opsCodeGroupDeleted          = "GROUP_DELETED"
-	opsCodeGroupDisabled         = "GROUP_DISABLED"
-)
-
-// ErrorClassificationInput 仅固化 HTTP 层观测到的事实；分类核心不读取 Gin 或可变请求状态。
-type ErrorClassificationInput struct {
-	Type, Message, Code                                                    string
-	Status                                                                 int
-	RoutingCapacityLimited, ClientBusinessLimited, LocalModelConfiguration bool
-	UpstreamError, UpstreamClientInvalidRequest, ProviderAuthFailure       bool
 }

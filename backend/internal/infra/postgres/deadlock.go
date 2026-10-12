@@ -12,15 +12,15 @@ const (
 	postgresDeadlockMaxRetries  = 2
 	postgresDeadlockMaxAttempts = postgresDeadlockMaxRetries + 1
 	postgresDeadlockRetryJitter = 30 * time.Millisecond
+
+	// DeadlockMaxAttempts 供调用方在降级日志中记录整段重试次数。
+	DeadlockMaxAttempts = postgresDeadlockMaxAttempts
 )
 
 var postgresDeadlockRetryBaseDelays = [...]time.Duration{
 	20 * time.Millisecond,
 	50 * time.Millisecond,
 }
-
-// DeadlockMaxAttempts 供调用方在降级日志中记录整段重试次数。
-const DeadlockMaxAttempts = postgresDeadlockMaxAttempts
 
 // RetryDeadlock 对完整操作做有界重试；调用方必须确保每次 fn 都创建独立事务或语句。
 func RetryDeadlock[T any](ctx context.Context, operation string, batchSize int, fn func() (T, error)) (T, error) {

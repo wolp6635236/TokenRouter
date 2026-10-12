@@ -17,12 +17,26 @@ const (
 )
 
 // braveSearchURL is pre-parsed at init time; url.Parse cannot fail on a constant literal.
-var braveSearchURL, _ = url.Parse(braveSearchEndpoint) //nolint:errcheck
+var braveSearchURL, _ = url.Parse(braveSearchEndpoint)
 
 // BraveProvider implements web search via the Brave Search API.
 type BraveProvider struct {
 	apiKey     string
 	httpClient *http.Client
+}
+
+// braveResponse is the minimal structure of the Brave Search API response.
+type braveResponse struct {
+	Web struct {
+		Results []braveResult `json:"results"`
+	} `json:"web"`
+}
+
+type braveResult struct {
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Age         string `json:"age"`
 }
 
 // NewBraveProvider creates a Brave Search provider.
@@ -89,18 +103,4 @@ func (b *BraveProvider) Search(ctx context.Context, req SearchRequest) (*SearchR
 	}
 
 	return &SearchResponse{Results: results, Query: req.Query}, nil
-}
-
-// braveResponse is the minimal structure of the Brave Search API response.
-type braveResponse struct {
-	Web struct {
-		Results []braveResult `json:"results"`
-	} `json:"web"`
-}
-
-type braveResult struct {
-	URL         string `json:"url"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Age         string `json:"age"`
 }

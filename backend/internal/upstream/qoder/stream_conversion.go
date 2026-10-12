@@ -12,17 +12,18 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
 
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	"github.com/google/uuid"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -44,43 +45,14 @@ const (
 	QoderDSMLInvokeEnd      = "</｜｜DSML｜｜invoke>"
 	QoderDSMLParameterStart = "<｜｜DSML｜｜parameter"
 	QoderDSMLParameterEnd   = "</｜｜DSML｜｜parameter>"
+
+	defaultMaxLineSize = upstream.DefaultSSELineLimit
 )
 
-// DefaultQoderModelAliases 将兜底的 TokenRouter 请求侧 alias 映射到 Qoder API key。
-// 已配置 model_mapping 的 Qoder 提供商以提供商配置为准，此表仅作为兜底路由和默认展示面。
-var DefaultQoderModelAliases = map[string]QoderModelInfo{
-	// 通过加密 reasoning metadata 确认该路由为 Claude Opus 4.6。
-	"claude-opus-4-6": {Key: "ultimate", Source: "system", Provider: "Claude", Notes: "Confirmed Claude Opus 4.6 via encrypted reasoning metadata.", DisplayName: "Claude Opus 4.6"},
-	// Qoder 自动选择路由，具体上游模型动态变化且未确认。
-	"auto": {Key: "auto", Source: "system", Provider: "Qoder", Notes: "Qoder-selected route; exact upstream model is dynamic and unconfirmed.", DisplayName: "Qoder Auto"},
-	// Qoder performance/efficient/lite tier 目前没有确认到具体供应商模型。
-	"performance": {Key: "performance", Source: "system", Provider: "Qoder", Notes: "Qoder performance tier; exact upstream model is unconfirmed.", DisplayName: "Qoder Performance"},
-	"efficient":   {Key: "efficient", Source: "system", Provider: "Qoder", Notes: "Qoder efficient tier; exact upstream model is unconfirmed.", DisplayName: "Qoder Efficient"},
-	// Qoder lite tier 尚未验证，观测结果不完全一致。
-	"lite": {Key: "lite", Source: "system", Provider: "Qoder", Notes: "Unverified Qoder lite tier; observations are mixed.", DisplayName: "Qoder Lite"},
-	// Qoder UI 暴露的是这些供应商模型名，这里把可读公开 alias 映射到内部 route key。
-	"qwen3.8-max":       {Key: "qmodel_38max", Source: "system", Provider: "Qwen", Notes: "Qoder UI model name Qwen3.8-Max.", DisplayName: "Qwen3.8-Max"},
-	"qwen3.7-max":       {Key: "qmodel_latest", Source: "system", Provider: "Qwen", Notes: "Qoder UI model name Qwen3.7-Max.", DisplayName: "Qwen3.7-Max"},
-	"qwen3.7-plus":      {Key: "qmodel", Source: "system", Provider: "Qwen", Notes: "Qoder UI model name Qwen3.7-Plus.", DisplayName: "Qwen3.7-Plus"},
-	"qwen3.6-flash":     {Key: "q36fmodel", Source: "system", Provider: "Qwen", Notes: "Qoder CN UI model name Qwen3.6-Flash.", DisplayName: "Qwen3.6-Flash"},
-	"deepseek-v4-pro":   {Key: "dmodel", Source: "system", Provider: "DeepSeek", Notes: "Qoder UI model name DeepSeek-V4-Pro.", DisplayName: "DeepSeek-V4-Pro"},
-	"deepseek-v4-flash": {Key: "dfmodel", Source: "system", Provider: "DeepSeek", Notes: "Qoder UI model name DeepSeek-V4-Flash.", DisplayName: "DeepSeek-V4-Flash"},
-	"glm-5.3":           {Key: "gmodel", Source: "system", Provider: "GLM", Notes: "Qoder UI model name GLM-5.3.", DisplayName: "GLM-5.3"},
-	"glm-5.2":           {Key: "gm51model", Source: "system", Provider: "GLM", Notes: "Qoder UI model name GLM-5.2.", DisplayName: "GLM-5.2"},
-	// Qoder 1.15.0 起同时展示 Kimi-K3 与 Kimi-K2.7-Code，两者使用不同路由 key。
-	"kimi-k3":        {Key: "kmodel_latest", Source: "system", Provider: "Kimi", Notes: "Qoder UI model name Kimi-K3.", DisplayName: "Kimi-K3"},
-	"kimi-k2.7-code": {Key: "kmodel", Source: "system", Provider: "Kimi", Notes: "Qoder UI model name Kimi-K2.7-Code.", DisplayName: "Kimi-K2.7-Code"},
-	"minimax-m3":     {Key: "mmodel", Source: "system", Provider: "MiniMax", Notes: "Qoder UI model name MiniMax-M3.", DisplayName: "MiniMax-M3"},
-	"minimax-m2.7":   {Key: "mmodel", Source: "system", Provider: "MiniMax", Notes: "Qoder CN UI model name MiniMax-M2.7.", DisplayName: "MiniMax-M2.7"},
-}
-
+// QoderModelInfo 包含上游请求的路由键和来源标记。
 type QoderModelInfo struct {
-	Key         string `json:"key"`
-	Source      string `json:"source"`
-	Provider    string `json:"provider,omitempty"`
-	Notes       string `json:"notes,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	Description string `json:"description,omitempty"`
+	Key    string `json:"key"`
+	Source string `json:"source"`
 }
 
 type QoderMessage struct {
@@ -89,6 +61,86 @@ type QoderMessage struct {
 	ToolCallID  string
 	Raw         map[string]any
 	TextContent []map[string]any
+}
+
+type QoderStreamResult struct {
+	// HasUsage 标记上游已明确提供计量，显式零值与缺失分开。
+	HasUsage     bool
+	Usage        upstream.TokenUsage
+	UsageDetails UsageDetails
+	TotalTokens  int
+	HasOutput    bool
+}
+
+type QoderStreamWriteTracker struct {
+	disconnected bool
+}
+
+type QoderDisconnectAwareWriter struct {
+	writer  io.Writer
+	tracker *QoderStreamWriteTracker
+}
+
+type QoderToolNameMapper func(string) string
+
+type QoderOpenAIStreamResponseOption struct {
+	mapUsage     func(upstream.TokenUsage) upstream.TokenUsage
+	mapToolName  QoderToolNameMapper
+	includeUsage bool
+}
+
+type QoderAnthropicStreamResponseOption struct {
+	mapUsage    func(upstream.TokenUsage) upstream.TokenUsage
+	mapToolName QoderToolNameMapper
+}
+
+type QoderResponsesStreamResponseOption struct {
+	mapUsage    func(upstream.TokenUsage) upstream.TokenUsage
+	mapToolName QoderToolNameMapper
+	responseID  string
+}
+
+type QoderTextToolCallTransformer struct {
+	buffer       string
+	nextToolCall int
+}
+
+type QoderOpenAIToolCallAccumulator struct {
+	calls               []QoderOpenAIToolCallState
+	slotByUpstreamIndex map[int]int
+	mapToolName         QoderToolNameMapper
+}
+
+type QoderOpenAIToolCallState struct {
+	ID        string
+	Type      string
+	Name      string
+	Arguments string
+}
+
+type QoderResponsesStreamToolState struct {
+	itemID      string
+	callID      string
+	name        string
+	arguments   string
+	outputIndex int
+	added       bool
+	done        bool
+}
+
+type QoderAnthropicContentWriter struct {
+	w                 io.Writer
+	nextIndex         int
+	openTextIndex     *int
+	openThinkingIndex *int
+	pendingToolCalls  *QoderOpenAIToolCallAccumulator
+	mapToolName       QoderToolNameMapper
+	sawToolCall       bool
+}
+
+type QoderEventResult struct {
+	events []SSEEvent
+	err    error
 }
 
 func QoderMessageHasToolCalls(message QoderMessage) bool {
@@ -185,24 +237,6 @@ func WriteQoderStreamKeepalive(c *upstream.OutputContext, started bool) error {
 	return err
 }
 
-type QoderStreamResult struct {
-	// HasUsage 标记上游已明确提供计量，显式零值与缺失分开。
-	HasUsage     bool
-	Usage        upstream.TokenUsage
-	UsageDetails UsageDetails
-	TotalTokens  int
-	HasOutput    bool
-}
-
-type QoderStreamWriteTracker struct {
-	disconnected bool
-}
-
-type QoderDisconnectAwareWriter struct {
-	writer  io.Writer
-	tracker *QoderStreamWriteTracker
-}
-
 func (w QoderDisconnectAwareWriter) Write(p []byte) (int, error) {
 	if w.tracker != nil && w.tracker.disconnected {
 		return len(p), nil
@@ -230,25 +264,6 @@ func (w QoderDisconnectAwareWriter) Flush() {
 	if flusher, ok := w.writer.(http.Flusher); ok {
 		flusher.Flush()
 	}
-}
-
-type QoderToolNameMapper func(string) string
-
-type QoderOpenAIStreamResponseOption struct {
-	mapUsage     func(upstream.TokenUsage) upstream.TokenUsage
-	mapToolName  QoderToolNameMapper
-	includeUsage bool
-}
-
-type QoderAnthropicStreamResponseOption struct {
-	mapUsage    func(upstream.TokenUsage) upstream.TokenUsage
-	mapToolName QoderToolNameMapper
-}
-
-type QoderResponsesStreamResponseOption struct {
-	mapUsage    func(upstream.TokenUsage) upstream.TokenUsage
-	mapToolName QoderToolNameMapper
-	responseID  string
 }
 
 func QoderOpenAIStreamUsageMapper(mapper func(upstream.TokenUsage) upstream.TokenUsage) QoderOpenAIStreamResponseOption {
@@ -329,11 +344,6 @@ func QoderResponsesStreamResponseOptions(options []QoderResponsesStreamResponseO
 		}
 	}
 	return usageMapper, toolNameMapper, responseID
-}
-
-type QoderTextToolCallTransformer struct {
-	buffer       string
-	nextToolCall int
 }
 
 func NewQoderTextToolCallTransformer() *QoderTextToolCallTransformer {
@@ -755,19 +765,6 @@ func NormalizeQoderOutboundToolCallEvent(event SSEEvent) SSEEvent {
 func QoderTextToolCallID(index int, segment string) string {
 	sum := sha1.Sum([]byte(fmt.Sprintf("%d\n%s", index, segment)))
 	return fmt.Sprintf("call_%x", sum[:12])
-}
-
-type QoderOpenAIToolCallAccumulator struct {
-	calls               []QoderOpenAIToolCallState
-	slotByUpstreamIndex map[int]int
-	mapToolName         QoderToolNameMapper
-}
-
-type QoderOpenAIToolCallState struct {
-	ID        string
-	Type      string
-	Name      string
-	Arguments string
 }
 
 func NewQoderOpenAIToolCallAccumulator(toolNameMappers ...QoderToolNameMapper) *QoderOpenAIToolCallAccumulator {
@@ -1715,16 +1712,6 @@ func WriteQoderResponsesStreamResponse(ctx context.Context, c *upstream.OutputCo
 	return result, nil
 }
 
-type QoderResponsesStreamToolState struct {
-	itemID      string
-	callID      string
-	name        string
-	arguments   string
-	outputIndex int
-	added       bool
-	done        bool
-}
-
 func ToResponsesCallIDForQoder(id string) string {
 	trimmed := strings.TrimSpace(id)
 	if trimmed == "" {
@@ -1751,16 +1738,6 @@ func QoderResponsesUsage(usage upstream.TokenUsage) *protocolopenai.ResponsesUsa
 		out.InputTokensDetails = &protocolopenai.ResponsesInputTokensDetails{CachedTokens: usage.CacheReadInputTokens}
 	}
 	return out
-}
-
-type QoderAnthropicContentWriter struct {
-	w                 io.Writer
-	nextIndex         int
-	openTextIndex     *int
-	openThinkingIndex *int
-	pendingToolCalls  *QoderOpenAIToolCallAccumulator
-	mapToolName       QoderToolNameMapper
-	sawToolCall       bool
 }
 
 func NewQoderAnthropicContentWriter(w io.Writer, toolNameMapper ...QoderToolNameMapper) *QoderAnthropicContentWriter {
@@ -1947,11 +1924,6 @@ func (w *QoderAnthropicContentWriter) stopReason() string {
 		return "tool_use"
 	}
 	return "end_turn"
-}
-
-type QoderEventResult struct {
-	events []SSEEvent
-	err    error
 }
 
 func QoderSendEventResult(ctx context.Context, results chan<- QoderEventResult, result QoderEventResult) bool {
@@ -2236,9 +2208,9 @@ func QoderUsageFromEvents(events []SSEEvent) upstream.TokenUsage {
 }
 
 func QoderUsageDetailsFromEvents(events []SSEEvent) UsageDetails {
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].HasUsage {
-			return events[i].UsageDetails
+	for _, event := range slices.Backward(events) {
+		if event.HasUsage {
+			return event.UsageDetails
 		}
 	}
 	return UsageDetails{}
@@ -2286,15 +2258,15 @@ func QoderEventsWithUsage(events []SSEEvent, usage upstream.TokenUsage) []SSEEve
 func QoderTotalTokensFromEvents(events []SSEEvent, usage upstream.TokenUsage) int {
 	var lastPromptTokens int
 	var lastCompletionTokens int
-	for i := len(events) - 1; i >= 0; i-- {
-		if !events[i].HasUsage {
+	for _, event := range slices.Backward(events) {
+		if !event.HasUsage {
 			continue
 		}
-		if events[i].TotalTokens > 0 {
-			return events[i].TotalTokens
+		if event.TotalTokens > 0 {
+			return event.TotalTokens
 		}
-		lastPromptTokens = events[i].PromptTokens
-		lastCompletionTokens = events[i].CompletionTokens
+		lastPromptTokens = event.PromptTokens
+		lastCompletionTokens = event.CompletionTokens
 		break
 	}
 	if lastPromptTokens > 0 || lastCompletionTokens > 0 {
@@ -2417,17 +2389,17 @@ func ResolveQoderModelForSite(site Site, model string) QoderModelInfo {
 }
 
 func LatestQoderUserText(messages []QoderMessage) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" && strings.TrimSpace(messages[i].Text) != "" {
-			return messages[i].Text
+	for _, message := range slices.Backward(messages) {
+		if message.Role == "user" && strings.TrimSpace(message.Text) != "" {
+			return message.Text
 		}
 	}
 	return ""
 }
 
 func LatestQoderPromptText(messages []QoderMessage) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if text := QoderPromptTextForMessage(messages[i]); text != "" {
+	for _, message := range slices.Backward(messages) {
+		if text := QoderPromptTextForMessage(message); text != "" {
 			return text
 		}
 	}
@@ -2554,19 +2526,18 @@ func GjsonBool(body []byte, path string) bool {
 
 // LookupQoderModelAlias 仅解析当前公开 alias，未命中的模型由调用方原样透传。
 func LookupQoderModelAlias(model string) (QoderModelInfo, bool) {
-	model = NormalizeQoderAliasModel(model)
-	info, ok := DefaultQoderModelAliases[model]
-	return info, ok
+	for _, site := range []Site{SiteGlobal, SiteCN} {
+		if info, ok := LookupQoderModelAliasForSite(site, model); ok {
+			return info, true
+		}
+	}
+	return QoderModelInfo{}, false
 }
 
-// LookupQoderModelAliasForSite 只解析提供商站点实际支持的公开 alias。
+// LookupQoderModelAliasForSite 使用站点实际的路由映射。
 func LookupQoderModelAliasForSite(site Site, model string) (QoderModelInfo, bool) {
-	model = NormalizeQoderAliasModel(model)
-	if _, ok := AliasForSite(site, model); !ok {
-		return QoderModelInfo{}, false
-	}
-	info, ok := DefaultQoderModelAliases[model]
-	return info, ok
+	key, ok := AliasForSite(site, NormalizeQoderAliasModel(model))
+	return QoderModelInfo{Key: key, Source: "system"}, ok
 }
 
 func NormalizeQoderAliasModel(model string) string {
@@ -2581,8 +2552,6 @@ func FirstNonEmptyQoder(values ...string) string {
 	}
 	return ""
 }
-
-const defaultMaxLineSize = upstream.DefaultSSELineLimit
 
 // qoderPartialStreamResult 保留已服务且已观测用量的失败结果，不推断缺失计量。
 func qoderPartialStreamResult(result *QoderStreamResult) *QoderStreamResult {

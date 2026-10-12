@@ -6,19 +6,18 @@ import (
 	"net/http"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"go.uber.org/zap"
 )
 
 // openAIMessageAttemptBridge 与 Responses 共享固定能力，保留各自错误与计量时机。
@@ -147,15 +146,13 @@ func (b *openAIMessageAttemptBridge) Forward() textflow.ResponseOutcome {
 	out.NativePartial = err != nil && b.result != nil && b.result.NativeUsage != nil && (b.result.NativeUsage.HasObservedTokens() || b.result.ImageCount > 0)
 	out.Attempt.HTTPCommitted = b.c.Writer.Written()
 	if err != nil && !out.Images {
-		var overLimit *routing.ReasoningEffortOverLimitError
-		if errors.As(err, &overLimit) {
+		if overLimit, ok := errors.AsType[*routing.ReasoningEffortOverLimitError](err); ok {
 			b.reqLog.Info("openai_messages.reasoning_effort_policy_denied", zap.String("reason", overLimit.Error()))
 			out.Stop = true
 			return out
 		}
 	}
-	var retry *forwardcore.UpstreamFailoverError
-	if errors.As(err, &retry) {
+	if retry, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		out.Failure = &textflow.AttemptFailure{Cause: err, Policy: retry.RetryFailure()}
 	}
 	return out
@@ -168,32 +165,10 @@ func (b *openAIMessageAttemptBridge) Complete() {
 	if res == nil {
 		return
 	}
-	gatewayhttp.StampOpenAIRequestedReasoningEffort(res, b.c)
-	userAgent := b.c.GetHeader("User-Agent")
-	clientIP := clientip.GetClientIP(b.c)
-	requestPayloadHash := billing.HashUsageRequestPayload(b.body)
-	inboundEndpoint := gatewayhttp.GetInboundEndpoint(b.c)
-	upstreamEndpoint := ResolveOpenAIUpstreamEndpoint(b.c, b.provider, res)
-
-	clientSessionID := gatewayhttp.ExtractClientSessionID(b.c)
-	// 入队前捕获资金和报文数据，worker 使用这份快照。
-	completionInput := gatewaycapture.CaptureOpenAI(gatewayhttp.CompletionContext(b.c), &gatewaycapture.OpenAICapture{
+	completionInput := b.captureCompletion(gatewaycapture.OpenAICapture{
 		Result:             res,
-		APIKey:             b.apiKey,
-		User:               b.apiKey.User,
-		Provider:           gatewaycapture.ExecutionCompletionRecord(b.provider),
-		Subscription:       b.subscription,
-		InboundEndpoint:    inboundEndpoint,
-		UpstreamEndpoint:   upstreamEndpoint,
-		UserAgent:          userAgent,
-		IPAddress:          clientIP,
-		RequestPayloadHash: requestPayloadHash,
-		RequestBody:        b.body,
-		APIKeyService:      b.binding().apiKeyService,
-
-		ClientSessionID:    clientSessionID,
+		RequestPayloadHash: billing.HashUsageRequestPayload(b.body),
 		PricingUsageFields: b.groupMappingMsg.ToUsageFields(b.reqModel, res.UpstreamModel),
-		CyberBlocked:       b.cyberPolicyHandled,
 	})
 	completionUserID := b.subject.UserID
 	completionModel := b.reqModel

@@ -3,9 +3,9 @@ package anthropic
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 // Observation 分别记录响应报告的用量、内容输出和终态，零用量与缺失用量分开表示。

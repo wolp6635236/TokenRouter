@@ -4,13 +4,13 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 )
 
-// JWTAuth JWT认证中间件实现
+// JWTAuth JWT 认证中间件实现。
 func JWTAuth(
 	authService SessionAuth,
 	userService UserReader,
@@ -19,14 +19,14 @@ func JWTAuth(
 	auditService AuthObserver,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 从Authorization header中提取token
+		// 从 Authorization header 中提取 token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			AbortWithError(c, 401, "UNAUTHORIZED", "Authorization header is required")
 			return
 		}
 
-		// 验证Bearer scheme
+		// 验证 Bearer scheme
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			AbortWithError(c, 401, "INVALID_AUTH_HEADER", "Authorization header format must be 'Bearer {token}'")
@@ -39,7 +39,7 @@ func JWTAuth(
 			return
 		}
 
-		// 验证token
+		// 验证 token
 		claims, err := authService.ValidateToken(tokenString)
 		if err != nil {
 			if errors.Is(err, identity.ErrTokenExpired) {

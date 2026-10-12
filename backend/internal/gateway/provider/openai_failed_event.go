@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 // BuildOpenAIResponseFailedSSE 构造可被客户端解析的 Responses 失败事件。

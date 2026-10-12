@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
@@ -16,8 +19,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // CountTokensBackend 组合固定依赖，每次仅建立无槽尝试状态。
@@ -33,7 +34,7 @@ type CountTokensBackend interface {
 	FailoverObservation(context.Context, string, map[string]any)
 }
 type CountTokensHandler struct {
-	requestLifetime
+	RequestLifetime
 
 	maxBodyBytes int64
 	maxSwitches  int
@@ -57,15 +58,15 @@ func countMaxBytesError(err error) (*http.MaxBytesError, bool) {
 
 // CountTokens handles token counting endpoint
 // POST /v1/messages/count_tokens
-// 特点：校验订阅/余额，但不计算并发、不记录使用量
+// 特点：校验订阅/余额，但不计算并发、不记录使用量。
 func (h *CountTokensHandler) CountTokens(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "anthropic")
+	done, accepted := h.BeginRequest(c, "anthropic")
 	if !accepted {
 		return
 	}
 	defer done()
 
-	// 从context获取apiKey和user（ApiKeyAuth中间件已设置）
+	// 从 context 获取 apiKey 和 user（ApiKeyAuth 中间件已设置）
 	apiKey, ok := h.backend.Access(c)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
@@ -135,7 +136,7 @@ func (h *CountTokensHandler) CountTokens(c *gin.Context) {
 	h.backend.ObserveRequest(c, parsedReq.Model, parsedReq.Stream)
 	h.backend.ObserveEndpoint(c, parsedReq.Stream)
 
-	// 获取订阅信息（可能为nil）
+	// 获取订阅信息（可能为 nil）
 	subscription, _ := SubscriptionFromContext(c)
 
 	// 校验 billing eligibility（订阅/余额）

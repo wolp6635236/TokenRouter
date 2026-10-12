@@ -50,17 +50,6 @@ describe('ProviderModelMappingEditor', () => {
     expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
   })
 
-  it('点击预设发出 preset 事件，由调用方处理去重', async () => {
-    mountEditor([], {
-      presets: [{ label: 'Sonnet', from: 'claude-sonnet', to: 'claude-sonnet-4-6', color: '' }],
-    })
-
-    const preset = wrapper!.findAll('button').find((button) => button.text().includes('Sonnet'))
-    await preset!.trigger('click')
-
-    expect(wrapper!.emitted('preset')).toEqual([['claude-sonnet', 'claude-sonnet-4-6']])
-  })
-
   it('透传增删事件', async () => {
     const rows = [{ from: 'a', to: 'b' }]
     mountEditor(rows)

@@ -118,7 +118,7 @@ func (_m *AuthIdentity) assignValues(columns []string, values []any) error {
 			if !ok {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
-			_m.ID = int64(value.Int64)
+			_m.ID = value.Int64
 		case authidentity.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])

@@ -2,9 +2,31 @@ package provider
 
 import (
 	"context"
+	"maps"
 	"strconv"
 	"time"
 )
+
+// SessionWindowStore 提供会话窗口观测字段的写入接口。
+type SessionWindowStore interface {
+	UpdateSessionWindow(context.Context, int64, *time.Time, *time.Time, string) error
+	UpdateExtra(context.Context, int64, map[string]any) error
+}
+
+// QuotaWindowObservation 是供应商 Adapter 提供的限流窗口观测。
+type QuotaWindowObservation struct {
+	Window        string
+	ResetAt       time.Time
+	FiveHourReset *time.Time
+	Reason        string
+}
+
+// SessionWindowObservation 保存响应中的窗口字段和解析后的被动用量统计。
+type SessionWindowObservation struct {
+	Status  string
+	Reset   string
+	Passive map[string]any
+}
 
 func shouldPersistAnthropicWindowLimit(provider *Record, limit *QuotaWindowObservation, now time.Time) bool {
 	if provider == nil || limit == nil || !limit.ResetAt.After(now) {
@@ -116,7 +138,7 @@ func (s *HealthService) UpdateSessionWindow(ctx context.Context, provider *Recor
 			// 检测可能的毫秒时间戳（秒级约为 1e9，毫秒约为 1e12）
 			if ts > 1e11 {
 				s.options.Warn("provider_session_window_header_millis_detected", "provider_id", provider.ID, "raw_reset", resetStr)
-				ts = ts / 1000
+				ts /= 1000
 			}
 			end := time.Unix(ts, 0)
 			// 校验时间戳是否在合理范围内（不早于 5h 前，不晚于 7 天后）
@@ -165,33 +187,12 @@ func (s *HealthService) UpdateSessionWindow(ctx context.Context, provider *Recor
 	// 被动采样：从响应头收集 5h + 7d + 7d_oi utilization，合并为一次 DB 写入
 	s.PersistPassiveUsage(ctx, provider, observation.Passive)
 
-	// 如果状态为allowed且之前有限流，说明窗口已重置，清除限流状态
+	// 如果状态为 allowed 且之前有限流，说明窗口已重置，清除限流状态
 	if status == "allowed" && provider.IsRateLimited() && s.options.ClearWindowRateLimit != nil {
 		if err := s.options.ClearWindowRateLimit(ctx, provider.ID); err != nil {
 			s.options.Warn("rate_limit_clear_failed", "provider_id", provider.ID, "error", err)
 		}
 	}
-}
-
-// SessionWindowStore 提供会话窗口观测字段的写入接口。
-type SessionWindowStore interface {
-	UpdateSessionWindow(context.Context, int64, *time.Time, *time.Time, string) error
-	UpdateExtra(context.Context, int64, map[string]any) error
-}
-
-// QuotaWindowObservation 是供应商 Adapter 提供的限流窗口观测。
-type QuotaWindowObservation struct {
-	Window        string
-	ResetAt       time.Time
-	FiveHourReset *time.Time
-	Reason        string
-}
-
-// SessionWindowObservation 保存响应中的窗口字段和解析后的被动用量统计。
-type SessionWindowObservation struct {
-	Status  string
-	Reset   string
-	Passive map[string]any
 }
 
 // PersistPassiveUsage 在有采样字段时写入，采样时读取当前时间。
@@ -200,9 +201,7 @@ func (s *HealthService) PersistPassiveUsage(ctx context.Context, value *Record, 
 		return
 	}
 	updates := make(map[string]any, len(fields)+1)
-	for key, field := range fields {
-		updates[key] = field
-	}
+	maps.Copy(updates, fields)
 	updates["passive_usage_sampled_at"] = s.options.Now().UTC().Format(time.RFC3339)
 	if err := s.options.SessionWindows.UpdateExtra(ctx, value.ID, updates); err != nil {
 		s.options.Warn("passive_usage_update_failed", "provider_id", value.ID, "error", err)

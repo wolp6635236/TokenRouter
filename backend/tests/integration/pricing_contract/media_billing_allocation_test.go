@@ -5,21 +5,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-
-	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 // TestMediaAllocationRatesPreserveBalanceMultiplier 验证两类网关都保留订阅、余额各自的倍率；高峰只影响最终按 token 结算的请求。

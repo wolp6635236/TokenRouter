@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-	"github.com/stretchr/testify/require"
 )
 
 // TestCompletionContextSnapshotsModelTraceAndKeepsWorkerBudget 验证交接后继续推进 turn，已排队任务只能看到提交时的模型链。

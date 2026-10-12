@@ -3,26 +3,21 @@ package app
 import (
 	"context"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/gateway"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
+	"github.com/TokenFlux/TokenRouter/internal/server/runtimeconfig"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
-
-	"github.com/TokenFlux/TokenRouter/internal/server/runtimeconfig"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/config"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
-	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 // provideOAuthSettings 从启动配置提取认证需要的字段，交给 OAuth 设置读取器。

@@ -28,14 +28,6 @@ type QoderSessions[T comparable] struct {
 	activity            operationActivity
 }
 
-// StopContext 取消共享构建并等待已进入工作，停止后禁止新构建及迟到回填。
-func (p *QoderSessions[T]) StopContext(ctx context.Context) error {
-	if p == nil {
-		return nil
-	}
-	return p.activity.stop(ctx, "qoder credentials")
-}
-
 type QoderSessionCacheEntry[T comparable] struct {
 	CredentialsHash string
 	Session         T
@@ -53,6 +45,14 @@ type QoderSessionProviderState struct {
 // qoderSessionBuildResult[T] 保存 singleflight 共享的 session 构建结果。
 type qoderSessionBuildResult[T comparable] struct {
 	Session T
+}
+
+// StopContext 取消共享构建并等待已进入工作，停止后禁止新构建及迟到回填。
+func (p *QoderSessions[T]) StopContext(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	return p.activity.stop(ctx, "qoder credentials")
 }
 
 // @project-doc docs/interfaces/qoder_upstream.md#qoder_account_contract

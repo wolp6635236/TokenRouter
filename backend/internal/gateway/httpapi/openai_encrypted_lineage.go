@@ -4,12 +4,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/gin-gonic/gin"
 
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+)
 
-	"github.com/gin-gonic/gin"
+const (
+	// invalid_encrypted_content 表示上游拒绝的加密 reasoning 或 compaction 项。
+	// 客户端会话历史可能反复携带这些项，每轮都会触发拒绝、剥离和重试。
+	// OpenAIWSStateStore 按会话保存 encrypted_content 摘要，并设置 TTL 和容量限制。
+	// 后续请求剥离命中摘要的项，新密文使用不同摘要。
+
+	OpenAIInvalidEncryptedContentReason = "invalid_encrypted_content"
+
+	// OpenAIWSIngressLineageContextKey 在 gin context 中携带 ingress 会话哈希，
+	// 供 HTTP bridge turn 内的 lineage 记录复用同一会话键。
+	OpenAIWSIngressLineageContextKey = "openai_ws_ingress_session_hash"
 )
 
 // OpenAIEncryptedLineage 通过 HTTP 与 WS 共用的会话存储读写失效密文。
@@ -17,17 +29,6 @@ type OpenAIEncryptedLineage struct {
 	Store session.OpenAIWSStateStore
 	TTL   func() time.Duration
 }
-
-// invalid_encrypted_content 表示上游拒绝的加密 reasoning 或 compaction 项。
-// 客户端会话历史可能反复携带这些项，每轮都会触发拒绝、剥离和重试。
-// OpenAIWSStateStore 按会话保存 encrypted_content 摘要，并设置 TTL 和容量限制。
-// 后续请求剥离命中摘要的项，新密文使用不同摘要。
-
-const OpenAIInvalidEncryptedContentReason = "invalid_encrypted_content"
-
-// OpenAIWSIngressLineageContextKey 在 gin context 中携带 ingress 会话哈希，
-// 供 HTTP bridge turn 内的 lineage 记录复用同一会话键。
-const OpenAIWSIngressLineageContextKey = "openai_ws_ingress_session_hash"
 
 // Mark 把本次被上游拒绝的密文摘要写入
 // 会话 lineage。digests 须在剥离前收集。

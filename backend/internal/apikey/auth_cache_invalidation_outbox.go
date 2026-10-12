@@ -285,10 +285,7 @@ func (w *AuthCacheInvalidationWorker) Health(ctx context.Context) AuthCacheInval
 		KeyHealth.LastError = stats.LastError
 	}
 	if stats.OldestCreatedAt != nil {
-		KeyHealth.OldestLag = w.now().Sub(*stats.OldestCreatedAt)
-		if KeyHealth.OldestLag < 0 {
-			KeyHealth.OldestLag = 0
-		}
+		KeyHealth.OldestLag = max(w.now().Sub(*stats.OldestCreatedAt), 0)
 	}
 	return KeyHealth
 }

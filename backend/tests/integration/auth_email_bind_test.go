@@ -9,27 +9,52 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/ent/enttest"
-
-	"entgo.io/ent/dialect"
 	dbuser "github.com/TokenFlux/TokenRouter/ent/user"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/stretchr/testify/require"
-
-	entsql "entgo.io/ent/dialect/sql"
-
-	_ "modernc.org/sqlite"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 type emailBindDefaultSubAssignerStub struct {
 	calls []*billing.AssignSubscriptionInput
+}
+
+type flakyEmailBindDefaultSubAssignerStub struct {
+	err   error
+	calls []*billing.AssignSubscriptionInput
+}
+
+type emailBindSettingRepoStub struct {
+	values map[string]string
+}
+
+type emailBindCacheStub struct {
+	data      *identity.VerificationCodeData
+	err       error
+	setEmails []string
+}
+
+type emailBindRefreshTokenCacheStub struct {
+	mu       sync.Mutex
+	tokens   map[string]*identity.RefreshTokenData
+	userSets map[int64]map[string]struct{}
+	families map[string]map[string]struct{}
+}
+
+type emailBindUserRepoStub struct {
+	mu           sync.Mutex
+	usersByID    map[int64]*identity.User
+	usersByEmail map[string]*identity.User
 }
 
 func (s *emailBindDefaultSubAssignerStub) AssignOrExtendSubscription(
@@ -39,11 +64,6 @@ func (s *emailBindDefaultSubAssignerStub) AssignOrExtendSubscription(
 	cloned := *input
 	s.calls = append(s.calls, &cloned)
 	return &billing.UserSubscription{UserID: input.UserID, PlanID: input.PlanID}, false, nil
-}
-
-type flakyEmailBindDefaultSubAssignerStub struct {
-	err   error
-	calls []*billing.AssignSubscriptionInput
 }
 
 func (s *flakyEmailBindDefaultSubAssignerStub) AssignOrExtendSubscription(
@@ -793,10 +813,6 @@ func createEmailBindTestUser(t *testing.T, client *dbent.Client, email, username
 	return user
 }
 
-type emailBindSettingRepoStub struct {
-	values map[string]string
-}
-
 func (s *emailBindSettingRepoStub) Get(context.Context, string) (*settingscore.Setting, error) {
 	panic("unexpected Get call")
 }
@@ -832,12 +848,6 @@ func (s *emailBindSettingRepoStub) GetAll(context.Context) (map[string]string, e
 
 func (s *emailBindSettingRepoStub) Delete(context.Context, string) error {
 	panic("unexpected Delete call")
-}
-
-type emailBindCacheStub struct {
-	data      *identity.VerificationCodeData
-	err       error
-	setEmails []string
 }
 
 func (s *emailBindCacheStub) GetVerificationCode(context.Context, string) (*identity.VerificationCodeData, error) {
@@ -894,13 +904,6 @@ func (s *emailBindCacheStub) GetNotifyCodeUserRate(context.Context, int64) (int6
 
 func (s *emailBindCacheStub) IncrNotifyCodeUserRate(context.Context, int64, time.Duration) (int64, error) {
 	return 0, nil
-}
-
-type emailBindRefreshTokenCacheStub struct {
-	mu       sync.Mutex
-	tokens   map[string]*identity.RefreshTokenData
-	userSets map[int64]map[string]struct{}
-	families map[string]map[string]struct{}
 }
 
 func newEmailBindRefreshTokenCacheStub() *emailBindRefreshTokenCacheStub {
@@ -1016,12 +1019,6 @@ func (s *emailBindRefreshTokenCacheStub) IsTokenInFamily(_ context.Context, fami
 	defer s.mu.Unlock()
 	_, ok := s.families[familyID][tokenHash]
 	return ok, nil
-}
-
-type emailBindUserRepoStub struct {
-	mu           sync.Mutex
-	usersByID    map[int64]*identity.User
-	usersByEmail map[string]*identity.User
 }
 
 func newEmailBindUserRepoStub(user *identity.User) *emailBindUserRepoStub {

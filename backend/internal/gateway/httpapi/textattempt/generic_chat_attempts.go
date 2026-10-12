@@ -5,23 +5,21 @@ import (
 	"errors"
 	"net/http"
 
-	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
-
-	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
-	"go.uber.org/zap"
 )
 
-// 单请求适配不另存缓存或重试状态。
+// genericChatAttemptBridge 保存 Chat Completions 单次请求的转发状态。
 type genericChatAttemptBridge struct {
 	messageAttemptBridge
 	requestCtx                          context.Context
@@ -30,7 +28,7 @@ type genericChatAttemptBridge struct {
 	groupMapping                        routing.GroupMappingResult
 }
 
-// Select 保留通用 ChatCompletions 适配；循环复用 gateway/text。
+// Select 选择本次 Chat Completions 请求使用的提供商。
 func (b *genericChatAttemptBridge) Select(excluded map[int64]struct{}) (textflow.Selection, error) {
 	var err error
 	b.selection, err = b.binding().selectProvider(b.c.Request.Context(), b.apiKey.GroupID, b.selectionSessionHash, b.reqModel, excluded, "", int64(0))
@@ -42,7 +40,7 @@ func (b *genericChatAttemptBridge) Select(excluded map[int64]struct{}) (textflow
 	return gatewaycapture.CaptureTextSelection(b.provider), nil
 }
 
-// FirstSelectionFailure 保留通用 ChatCompletions 适配；循环复用 gateway/text。
+// FirstSelectionFailure 处理首次选择提供商失败的响应。
 func (b *genericChatAttemptBridge) FirstSelectionFailure(err error, _ bool) {
 	if handleGroupSelectionBusinessError(b.c, err, *b.streamStarted, func(status int, errType string, message string, responseStarted bool) {
 		b.binding().chatCompletionsErrorResponse(b.c, status, errType, message)
@@ -61,7 +59,7 @@ func (b *genericChatAttemptBridge) FirstSelectionFailure(err error, _ bool) {
 	b.binding().chatCompletionsErrorResponse(b.c, cls.Status, cls.ErrType, message)
 }
 
-// Acquire 保留通用 ChatCompletions 适配；循环复用 gateway/text。
+// Acquire 申请用户和提供商的并发名额。
 func (b *genericChatAttemptBridge) Acquire() bool {
 	var err error
 	// 4. Acquire provider concurrency slot
@@ -91,7 +89,7 @@ func (b *genericChatAttemptBridge) Acquire() bool {
 	return true
 }
 
-// Forward 保留通用 ChatCompletions 适配；循环复用 gateway/text。
+// Forward 按提供商平台转发 Chat Completions 请求。
 func (b *genericChatAttemptBridge) Forward(_ textflow.AttemptState) textflow.Outcome {
 	var err error
 
@@ -151,7 +149,7 @@ func (b *genericChatAttemptBridge) Forward(_ textflow.AttemptState) textflow.Out
 	return out
 }
 
-// OtherFailure 保留通用 ChatCompletions 适配；循环复用 gateway/text。
+// OtherFailure 处理尝试转发时的普通错误。
 func (b *genericChatAttemptBridge) OtherFailure(err error) {
 	upstreamErrorAlreadyCommunicated := gatewayhttp.ForwardErrorAlreadyCommunicated(b.c, b.writerSizeBeforeForward, err)
 	wroteFallback := false
@@ -166,7 +164,7 @@ func (b *genericChatAttemptBridge) OtherFailure(err error) {
 	)
 }
 
-// Complete 保留通用 ChatCompletions 适配；循环复用 gateway/text。
+// Complete 记录已完成请求的用量和调度结果。
 func (b *genericChatAttemptBridge) Complete(_ textflow.AttemptState) {
 	// 6. Record usage
 	userAgent := b.c.GetHeader("User-Agent")
@@ -208,12 +206,19 @@ func (b *genericChatAttemptBridge) Complete(_ textflow.AttemptState) {
 }
 
 func (b *genericChatAttemptBridge) Context() context.Context { return b.requestCtx }
-func (b *genericChatAttemptBridge) Begin()                   {}
-func (b *genericChatAttemptBridge) PrepareAttempt() bool     { return true }
-func (b *genericChatAttemptBridge) Intercept() bool          { return false }
-func (b *genericChatAttemptBridge) SingleProviderRetry()     {}
-func (b *genericChatAttemptBridge) Abandon(int64)            {}
-func (b *genericChatAttemptBridge) Success()                 {}
+
+func (b *genericChatAttemptBridge) Begin() {}
+
+func (b *genericChatAttemptBridge) PrepareAttempt() bool { return true }
+
+func (b *genericChatAttemptBridge) Intercept() bool { return false }
+
+func (b *genericChatAttemptBridge) SingleProviderRetry() {}
+
+func (b *genericChatAttemptBridge) Abandon(int64) {}
+
+func (b *genericChatAttemptBridge) Success() {}
+
 func (b *genericChatAttemptBridge) Exhausted(err *textflow.AttemptFailure, _ string, stream bool) {
 	var original *forwardcore.UpstreamFailoverError
 	if err != nil && errors.As(err.Cause, &original) {
@@ -224,9 +229,15 @@ func (b *genericChatAttemptBridge) Exhausted(err *textflow.AttemptFailure, _ str
 }
 
 func (b *genericChatAttemptBridge) PolicyFailure(err error) {
-	var original *anthropic.BetaBlockedError
-	if errors.As(err, &original) {
+	if original, ok := errors.AsType[*anthropic.BetaBlockedError](err); ok {
 		gatewayhttp.MarkOpsClientBusinessLimited(b.c, gatewayhttp.OpsClientBusinessLimitedReasonLocalPolicyDenied)
 		b.binding().chatCompletionsErrorResponse(b.c, http.StatusBadRequest, "invalid_request_error", original.Message)
 	}
+}
+
+// shouldUseAntigravityCompat 判断提供商是否需要走 Antigravity 兼容转换。
+func shouldUseAntigravityCompat(provider *gatewaycapture.ExecutionProvider) bool {
+	return provider != nil &&
+		provider.Record.Platform == capability.PlatformAntigravity &&
+		provider.Record.Type == capability.ProviderTypeOAuth
 }

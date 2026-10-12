@@ -7,7 +7,7 @@ import (
 
 const OpenAISessionTTL = 30 * time.Minute
 
-// OpenAIOAuthSession stores OAuth flow state for OpenAI
+// OpenAIOAuthSession stores OAuth flow state for OpenAI.
 type OpenAIOAuthSession struct {
 	State        string    `json:"state"`
 	CodeVerifier string    `json:"code_verifier"`
@@ -17,7 +17,7 @@ type OpenAIOAuthSession struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// OpenAISessionStore manages OAuth sessions in memory
+// OpenAISessionStore manages OAuth sessions in memory.
 type OpenAISessionStore struct {
 	runtimeMu      sync.Mutex
 	runtimeStarted bool
@@ -30,7 +30,7 @@ type OpenAISessionStore struct {
 	stopCh chan struct{}
 }
 
-// NewOpenAISessionStore creates a new session store
+// NewOpenAISessionStore creates a new session store.
 func NewOpenAISessionStore() *OpenAISessionStore {
 	store := &OpenAISessionStore{
 		sessions: make(map[string]*OpenAIOAuthSession),
@@ -41,14 +41,14 @@ func NewOpenAISessionStore() *OpenAISessionStore {
 	return store
 }
 
-// Set stores a session
+// Set stores a session.
 func (s *OpenAISessionStore) Set(sessionID string, session *OpenAIOAuthSession) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sessionID] = session
 }
 
-// Get retrieves a session
+// Get retrieves a session.
 func (s *OpenAISessionStore) Get(sessionID string) (*OpenAIOAuthSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -63,7 +63,7 @@ func (s *OpenAISessionStore) Get(sessionID string) (*OpenAIOAuthSession, bool) {
 	return session, true
 }
 
-// Delete removes a session
+// Delete removes a session.
 func (s *OpenAISessionStore) Delete(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,8 +78,7 @@ func (s *OpenAISessionStore) Start() {
 		return
 	}
 	s.runtimeStarted = true
-	s.runtimeWG.Add(1)
-	go func() { defer s.runtimeWG.Done(); s.cleanup() }()
+	s.runtimeWG.Go(func() { ; s.cleanup() })
 }
 
 // Stop 幂等停止并等待清理循环，未启动实例也可安全关闭。

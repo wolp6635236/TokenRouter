@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// grokFreeQuotaGateCacheMinSweepAge 是条目可被清理前的最短存活时间。
+const grokFreeQuotaGateCacheMinSweepAge = 5 * time.Minute
+
 // FreeQuotaOptions 是免费档位调度准入的配置参数。
 type FreeQuotaOptions struct {
 	Enabled      bool
@@ -35,23 +38,6 @@ type FreeQuotaGate struct {
 	metrics    *FreeQuotaMetrics
 }
 
-// NewFreeQuotaGate 构造免费额度检查器，配置读取和异步回源在调用时执行。
-func NewFreeQuotaGate(options func() FreeQuotaOptions, load func(context.Context, []int64, time.Time) (map[int64]int64, error), background func(string, func()) bool, now func() time.Time, observe func(bool, string, ...any), metrics *FreeQuotaMetrics) *FreeQuotaGate {
-	if now == nil {
-		now = time.Now
-	}
-	if metrics == nil {
-		metrics = &FreeQuotaMetrics{}
-	}
-	if observe == nil {
-		observe = func(bool, string, ...any) {}
-	}
-	if options == nil {
-		options = func() FreeQuotaOptions { return FreeQuotaOptions{} }
-	}
-	return &FreeQuotaGate{options: options, load: load, background: background, now: now, observe: observe, metrics: metrics}
-}
-
 type grokFreeQuotaGateSettings struct {
 	limitTokens int64
 	gateTokens  int64
@@ -69,6 +55,23 @@ type grokFreeQuotaGateCacheEntry struct {
 type FreeQuotaMetrics struct {
 	QueryFailureTotal atomic.Int64
 	BlockedTotal      atomic.Int64
+}
+
+// NewFreeQuotaGate 构造免费额度检查器，配置读取和异步回源在调用时执行。
+func NewFreeQuotaGate(options func() FreeQuotaOptions, load func(context.Context, []int64, time.Time) (map[int64]int64, error), background func(string, func()) bool, now func() time.Time, observe func(bool, string, ...any), metrics *FreeQuotaMetrics) *FreeQuotaGate {
+	if now == nil {
+		now = time.Now
+	}
+	if metrics == nil {
+		metrics = &FreeQuotaMetrics{}
+	}
+	if observe == nil {
+		observe = func(bool, string, ...any) {}
+	}
+	if options == nil {
+		options = func() FreeQuotaOptions { return FreeQuotaOptions{} }
+	}
+	return &FreeQuotaGate{options: options, load: load, background: background, now: now, observe: observe, metrics: metrics}
 }
 
 func resolveGrokFreeQuotaGateSettings(cfg FreeQuotaOptions) (grokFreeQuotaGateSettings, bool) {
@@ -233,19 +236,13 @@ func (g *FreeQuotaGate) refresh(settings grokFreeQuotaGateSettings, providerIDs 
 	}
 }
 
-// grokFreeQuotaGateCacheMinSweepAge 是条目可被清理前的最短存活时间。
-const grokFreeQuotaGateCacheMinSweepAge = 5 * time.Minute
-
 // sweepGrokFreeQuotaGateCache 回收超过 TTL 较久的条目，删除或离开免费档位的提供商可随之释放内存。
 // 仍活跃的提供商会在下次未命中时重新填充。
 func sweepGrokFreeQuotaGateCache(cache *sync.Map, now time.Time, cacheTTL time.Duration) {
 	if cache == nil || cacheTTL <= 0 {
 		return
 	}
-	maxAge := cacheTTL * 20
-	if maxAge < grokFreeQuotaGateCacheMinSweepAge {
-		maxAge = grokFreeQuotaGateCacheMinSweepAge
-	}
+	maxAge := max(cacheTTL*20, grokFreeQuotaGateCacheMinSweepAge)
 	cache.Range(func(key, value any) bool {
 		entry, ok := value.(grokFreeQuotaGateCacheEntry)
 		if !ok || now.Sub(entry.checkedAt) > maxAge {

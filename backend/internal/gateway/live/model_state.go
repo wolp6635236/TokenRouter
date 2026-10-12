@@ -4,22 +4,23 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 )
+
+type liveSidebandModelState struct {
+	mu             sync.RWMutex
+	clientModel    string
+	internalModels map[string]struct{}
+}
 
 func firstModel(first, fallback string) string {
 	if strings.TrimSpace(first) != "" {
 		return first
 	}
 	return fallback
-}
-
-type liveSidebandModelState struct {
-	mu             sync.RWMutex
-	clientModel    string
-	internalModels map[string]struct{}
 }
 
 // newLiveSidebandModelState 使用创建会话时的模型链初始化双向恢复状态。

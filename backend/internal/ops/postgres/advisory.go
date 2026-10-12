@@ -17,6 +17,7 @@ func NewAdvisory(db *sql.DB) ops.AdvisoryLocker {
 	}
 	return &Advisory{db}
 }
+
 func (a *Advisory) Acquire(ctx context.Context, key string) (func(), bool) {
 	return infra.TryAcquireDBAdvisoryLock(ctx, a.db, infra.HashAdvisoryLockID(key))
 }

@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/stretchr/testify/require"
 )
 
 // recordStore 记录结算调用次数，用于检查日志重试时结算仍仅执行一次。
@@ -20,6 +21,20 @@ type recordStore struct {
 	events  *[]string
 }
 
+type recordWriter struct {
+	rows               []*usage.UsageLog
+	bestErr, errorSync error
+	events             *[]string
+	contexts           []error
+}
+
+type recordEffects struct{ events *[]string }
+
+type recordModels struct{}
+
+// recordPriceCatalog 仅为资金和日志时序测试提供明确目录价。
+type recordPriceCatalog struct{}
+
 func (s *recordStore) Apply(ctx context.Context, c *billing.UsageBillingCommand) (*billing.UsageBillingApplyResult, error) {
 	s.calls++
 	s.command = c
@@ -28,13 +43,6 @@ func (s *recordStore) Apply(ctx context.Context, c *billing.UsageBillingCommand)
 		return nil, err
 	}
 	return &billing.UsageBillingApplyResult{Applied: true, BalanceAmountUSD: c.BillableAmountUSD}, s.err
-}
-
-type recordWriter struct {
-	rows               []*usage.UsageLog
-	bestErr, errorSync error
-	events             *[]string
-	contexts           []error
 }
 
 func (w *recordWriter) CreateBestEffort(ctx context.Context, r *usage.UsageLog) error {
@@ -51,8 +59,6 @@ func (w *recordWriter) Create(ctx context.Context, r *usage.UsageLog) (bool, err
 	return true, w.errorSync
 }
 
-type recordEffects struct{ events *[]string }
-
 func (e recordEffects) ProviderUsed(int64) { *e.events = append(*e.events, "used") }
 
 func (e recordEffects) InvalidateAuth(context.Context, string) { *e.events = append(*e.events, "auth") }
@@ -61,9 +67,8 @@ func (e recordEffects) Settled(SettlementInput, *billing.UsageBillingApplyResult
 	*e.events = append(*e.events, "effects")
 }
 
-type recordModels struct{}
-
 func (recordModels) Candidates(model string, _ ...string) []string { return []string{model} }
+
 func recordFixture() (*Recorder, *recordStore, *recordWriter, *Input, *[]string) {
 	events := []string{}
 	funds := &recordStore{events: &events}
@@ -144,13 +149,46 @@ func TestSnapshotIsolatesQueueInputs(t *testing.T) {
 	require.Equal(t, 2.0, frozen.Subscription.Plan.GroupRateMultipliers[7])
 }
 
-// recordPriceCatalog 仅为资金和日志时序测试提供明确目录价。
-type recordPriceCatalog struct{}
-
 func (recordPriceCatalog) GetModelPricing(model string) *pricing.CatalogModelPricing {
 	if model != "claude-sonnet-4" {
 		return nil
 	}
 	return &pricing.CatalogModelPricing{InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6}
 }
+
 func (recordPriceCatalog) ForceUpdate() error { return nil }
+
+// TestRecordCyberRetainsFailureFactAndDoesNotResettleLogFailure 检查 Cyber 记录分类和结算失败后的日志。
+func TestRecordCyberRetainsFailureFactAndDoesNotResettleLogFailure(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		core, funds, logs, in, _ := recordFixture()
+		if failed {
+			funds.err = errors.New("settlement failed")
+		} else {
+			logs.bestErr = errors.New("queue full")
+			logs.errorSync = errors.New("write failed")
+		}
+		core.RecordCyber(context.Background(), in)
+		require.Equal(t, 1, funds.calls)
+		require.NotEmpty(t, logs.rows)
+		for _, row := range logs.rows {
+			require.Equal(t, RequestTypeCyberBlocked, row.RequestType)
+			if failed {
+				require.Zero(t, row.ActualCost)
+			}
+		}
+		require.False(t, in.CyberBlocked)
+	}
+}
+
+// TestRecordCyberPreservesZeroUsage 验证零用量审核记录也进入结算，金额保持为零。
+func TestRecordCyberPreservesZeroUsage(t *testing.T) {
+	core, funds, logs, in, _ := recordFixture()
+	in.Result.Usage = TokenUsage{}
+	core.RecordCyber(context.Background(), in)
+	require.Equal(t, 1, funds.calls)
+	require.Zero(t, funds.command.BillableAmountUSD)
+	require.NotEmpty(t, logs.rows)
+	require.Zero(t, logs.rows[0].ActualCost)
+	require.Equal(t, RequestTypeCyberBlocked, logs.rows[0].RequestType)
+}

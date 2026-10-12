@@ -22,22 +22,6 @@ XcW+ML9FoCI6AOvOzwIDAQAB
 
 var parsedPubKey *rsa.PublicKey
 
-func init() {
-	block, _ := pem.Decode([]byte(ServerPublicKeyPEM))
-	if block == nil {
-		panic("qoder: failed to decode PEM public key")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		panic(fmt.Sprintf("qoder: failed to parse public key: %v", err))
-	}
-	var ok bool
-	parsedPubKey, ok = pub.(*rsa.PublicKey)
-	if !ok {
-		panic("qoder: public key is not RSA")
-	}
-}
-
 // AuthIdentity 表示用户认证身份。
 type AuthIdentity struct {
 	Name               string `json:"name"`
@@ -67,6 +51,22 @@ type SessionContext struct {
 	Machine       *MachineIdentity
 	Site          Site
 	ClientVersion string
+}
+
+func init() {
+	block, _ := pem.Decode([]byte(ServerPublicKeyPEM))
+	if block == nil {
+		panic("qoder: failed to decode PEM public key")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		panic(fmt.Sprintf("qoder: failed to parse public key: %v", err))
+	}
+	var ok bool
+	parsedPubKey, ok = pub.(*rsa.PublicKey)
+	if !ok {
+		panic("qoder: public key is not RSA")
+	}
 }
 
 // BuildAuthPayloadJSON 将 AuthIdentity 转换为紧凑 JSON 字节。

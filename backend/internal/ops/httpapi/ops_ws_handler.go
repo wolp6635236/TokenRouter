@@ -12,11 +12,51 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	servermiddleware "github.com/TokenFlux/TokenRouter/internal/server/middleware"
-	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
+)
+
+const (
+	envOpsWSTrustProxy     = "OPS_WS_TRUST_PROXY"
+	envOpsWSTrustedProxies = "OPS_WS_TRUSTED_PROXIES"
+	envOpsWSOriginPolicy   = "OPS_WS_ORIGIN_POLICY"
+	envOpsWSMaxConns       = "OPS_WS_MAX_CONNS"
+	envOpsWSMaxConnsPerIP  = "OPS_WS_MAX_CONNS_PER_IP"
+
+	OriginPolicyStrict     = "strict"
+	OriginPolicyPermissive = "permissive"
+
+	qpsWSPushInterval = 2 * time.Second
+
+	defaultMaxWSConns      = 100
+	defaultMaxWSConnsPerIP = 20
+
+	opsWSCloseRealtimeDisabled = 4001
+
+	qpsWSWriteTimeout = 10 * time.Second
+	qpsWSPongWait     = 60 * time.Second
+	qpsWSPingInterval = 30 * time.Second
+
+	// We don't expect clients to send application messages; we only read to process control frames (Pong/Close).
+	qpsWSMaxReadBytes = 1024
+)
+
+var (
+	opsWSProxyConfig = loadOpsWSProxyConfigFromEnv()
+
+	upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return isAllowedOpsWSOrigin(r)
+		},
+		// 优先协商 tokenrouter-admin，兼容 sub2api-admin。JWT 用于认证。
+		Subprotocols: []string{"tokenrouter-admin", "sub2api-admin"},
+	}
+
+	opsWSLimits = loadOpsWSRuntimeLimitsFromEnv()
 )
 
 type OpsWSProxyConfig struct {
@@ -25,55 +65,10 @@ type OpsWSProxyConfig struct {
 	OriginPolicy   string
 }
 
-const (
-	envOpsWSTrustProxy     = "OPS_WS_TRUST_PROXY"
-	envOpsWSTrustedProxies = "OPS_WS_TRUSTED_PROXIES"
-	envOpsWSOriginPolicy   = "OPS_WS_ORIGIN_POLICY"
-	envOpsWSMaxConns       = "OPS_WS_MAX_CONNS"
-	envOpsWSMaxConnsPerIP  = "OPS_WS_MAX_CONNS_PER_IP"
-)
-
-const (
-	OriginPolicyStrict     = "strict"
-	OriginPolicyPermissive = "permissive"
-)
-
-var opsWSProxyConfig = loadOpsWSProxyConfigFromEnv()
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return isAllowedOpsWSOrigin(r)
-	},
-	// 优先协商 tokenrouter-admin，兼容 sub2api-admin。JWT 用于认证。
-	Subprotocols: []string{"tokenrouter-admin", "sub2api-admin"},
-}
-
-const (
-	qpsWSPushInterval = 2 * time.Second
-
-	defaultMaxWSConns      = 100
-	defaultMaxWSConnsPerIP = 20
-)
-
-const (
-	opsWSCloseRealtimeDisabled = 4001
-)
-
 type opsWSRuntimeLimits struct {
 	MaxConns      int32
 	MaxConnsPerIP int32
 }
-
-var opsWSLimits = loadOpsWSRuntimeLimitsFromEnv()
-
-const (
-	qpsWSWriteTimeout = 10 * time.Second
-	qpsWSPongWait     = 60 * time.Second
-	qpsWSPingInterval = 30 * time.Second
-
-	// We don't expect clients to send application messages; we only read to process control frames (Pong/Close).
-	qpsWSMaxReadBytes = 1024
-)
 
 func closeWS(conn *websocket.Conn, code int, reason string) {
 	if conn == nil {
@@ -161,9 +156,7 @@ func handleQPSWebSocket(parentCtx context.Context, conn *websocket.Conn, rt *ops
 	closeFrameCh := make(chan []byte, 1)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer cancel()
 
 		conn.SetReadLimit(qpsWSMaxReadBytes)
@@ -192,7 +185,7 @@ func handleQPSWebSocket(parentCtx context.Context, conn *websocket.Conn, rt *ops
 				return
 			}
 		}
-	}()
+	})
 
 	// Push QPS data every 2 seconds (values are globally cached and refreshed at most once per qpsWSRefreshInterval).
 	pushTicker := time.NewTicker(qpsWSPushInterval)
@@ -436,7 +429,7 @@ func defaultTrustedProxies() []netip.Prefix {
 }
 
 func parseTrustedProxyList(raw string) (prefixes []netip.Prefix, invalid []string) {
-	for _, token := range strings.Split(raw, ",") {
+	for token := range strings.SplitSeq(raw, ",") {
 		item := strings.TrimSpace(token)
 		if item == "" {
 			continue

@@ -63,12 +63,7 @@ func (p ModelPolicy) Schedulable(ctx context.Context, model string) bool {
 
 // Limited 检查模型各限流窗口是否生效。
 func (p ModelPolicy) Limited(ctx context.Context, model string) bool {
-	for _, key := range p.LimitKeys(ctx, model) {
-		if p.Record.ModelRateLimitActive(key) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(p.LimitKeys(ctx, model), p.Record.ModelRateLimitActive)
 }
 
 // LimitRemaining 返回各模型限流窗口中最长的剩余时间。

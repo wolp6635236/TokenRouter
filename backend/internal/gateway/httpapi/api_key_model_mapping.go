@@ -6,11 +6,19 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-	"github.com/gin-gonic/gin"
 )
+
+// ApiKeyModelResponseWriter 只恢复已登记内部模型对应的协议元数据字段。
+type ApiKeyModelResponseWriter struct {
+	gin.ResponseWriter
+	trace       *modeltrace.APIKeyModelRedirectTrace
+	clientModel string
+}
 
 // ApplyAPIKeyModelRedirect 在复合 Key 选组后应用单 Key 模型重定向。
 // 解析失败时原请求交给协议处理器返回校验错误。
@@ -93,13 +101,6 @@ func SetAPIKeyModelRedirectContext(c *gin.Context, sourceModel, targetModel stri
 	}
 }
 
-// ApiKeyModelResponseWriter 只恢复已登记内部模型对应的协议元数据字段。
-type ApiKeyModelResponseWriter struct {
-	gin.ResponseWriter
-	trace       *modeltrace.APIKeyModelRedirectTrace
-	clientModel string
-}
-
 func (w *ApiKeyModelResponseWriter) Write(data []byte) (int, error) {
 	w.Header().Del("Content-Length")
 	w.trace.RegisterResponsePayload(data)
@@ -113,4 +114,36 @@ func (w *ApiKeyModelResponseWriter) Write(data []byte) (int, error) {
 
 func (w *ApiKeyModelResponseWriter) WriteString(value string) (int, error) {
 	return w.Write([]byte(value))
+}
+
+// APIKeyModelRedirectContext 为非 HTTP 请求体入口创建单次 Key 重定向上下文。
+func APIKeyModelRedirectContext(ctx context.Context, apiKey *apikey.APIKey, clientModel string) (context.Context, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	clientModel = strings.TrimSpace(clientModel)
+	targetModel, matched := apiKey.ResolveModelMapping(clientModel)
+	if !matched {
+		return ctx, clientModel
+	}
+	trace := modeltrace.NewAPIKeyModelRedirectTrace(clientModel, clientModel, targetModel)
+	ctx = modeltrace.WithContext(ctx, trace)
+	ctx = context.WithValue(ctx, telemetry.ClientModel, clientModel)
+	return ctx, targetModel
+}
+
+// PropagateAPIKeyModelRedirectTrace 将模型重定向记录和客户端模型复制到异步任务上下文。
+func PropagateAPIKeyModelRedirectTrace(dst, src context.Context) context.Context {
+	trace, ok := modeltrace.FromContext(src)
+	if !ok {
+		return dst
+	}
+	if dst == nil {
+		dst = context.Background()
+	}
+	dst = modeltrace.WithContext(dst, trace)
+	if strings.TrimSpace(trace.ClientModel) != "" {
+		dst = context.WithValue(dst, telemetry.ClientModel, trace.ClientModel)
+	}
+	return dst
 }

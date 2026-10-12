@@ -5,17 +5,17 @@ import (
 	"time"
 )
 
+const (
+	RefreshFailurePermanent RefreshFailureKind = iota
+	RefreshFailureCooldown
+)
+
 // RefreshFailureVersion 记录交换失败时的身份，后续写入按身份和调度状态比较。
 type RefreshFailureVersion struct {
 	CredentialVersion
 	Schedulable bool
 }
 type RefreshFailureKind uint8
-
-const (
-	RefreshFailurePermanent RefreshFailureKind = iota
-	RefreshFailureCooldown
-)
 
 type RefreshFailure struct {
 	Kind    RefreshFailureKind

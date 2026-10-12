@@ -7,11 +7,23 @@ import (
 	"strconv"
 	"strings"
 
-	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
+
+// ClaudeFableOAuthSystemPromptBlocks keeps the Claude Code identity required by
+// OAuth credentials without the generic CLI expansion block. Fable 5 rejects
+// that expansion upstream with stop_reason=refusal and zero output tokens,
+// while the native billing + identity shape is accepted. Original client
+// system instructions are still migrated into the message history by
+// RewriteSystemForNonClaudeCodeWithPromptBlocks.
+const ClaudeFableOAuthSystemPromptBlocks = `[
+	{"type":"text","text":"{billing_header}"},
+	{"type":"text","text":"{claude_code_system_prompt}"}
+]`
 
 type AnthropicCacheControlPayload struct {
 	Type string `json:"type"`
@@ -29,6 +41,21 @@ type ClaudeOAuthNormalizeOptions struct {
 	InjectMetadata          bool
 	MetadataUserID          string
 	StripSystemCacheControl bool
+}
+
+type ClaudeOAuthSystemPromptBlockConfig struct {
+	Enabled      *bool           `json:"enabled,omitempty"`
+	Type         string          `json:"type,omitempty"`
+	Text         string          `json:"text,omitempty"`
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
+}
+type ClaudeOAuthSystemPromptBlocksEnvelope struct {
+	Blocks []ClaudeOAuthSystemPromptBlockConfig `json:"blocks"`
+}
+
+type CacheControlPath struct {
+	Path string
+	Log  string
 }
 
 // SanitizeSystemText rewrites only the fixed OpenCode identity sentence (if present).
@@ -329,7 +356,7 @@ func NormalizeSystemParam(system any) any {
 }
 
 // SystemIncludesClaudeCodePrompt 检查 system 中是否已包含 Claude Code 提示词
-// 使用前缀匹配支持多种变体（标准版、Agent SDK 版等）
+// 使用前缀匹配支持多种变体（标准版、Agent SDK 版等）。
 func SystemIncludesClaudeCodePrompt(system any) bool {
 	system = NormalizeSystemParam(system)
 	switch v := system.(type) {
@@ -347,7 +374,7 @@ func SystemIncludesClaudeCodePrompt(system any) bool {
 	return false
 }
 
-// HasClaudeCodePrefix 检查文本是否以 Claude Code 提示词的特征前缀开头
+// HasClaudeCodePrefix 检查文本是否以 Claude Code 提示词的特征前缀开头。
 func HasClaudeCodePrefix(text string) bool {
 	for _, prefix := range ClaudeCodePromptPrefixes {
 		if strings.HasPrefix(text, prefix) {
@@ -358,7 +385,7 @@ func HasClaudeCodePrefix(text string) bool {
 }
 
 // InjectClaudeCodePrompt 在 system 开头注入 Claude Code 提示词
-// 处理 null、字符串、数组三种格式
+// 处理 null、字符串、数组三种格式。
 func InjectClaudeCodePrompt(body []byte, system any) []byte {
 	system = NormalizeSystemParam(system)
 	claudeCodeBlock, err := MarshalAnthropicSystemTextBlock(ClaudeCodeSystemPrompt, true)
@@ -460,27 +487,6 @@ func InjectClaudeCodePrompt(body []byte, system any) []byte {
 	}
 	return result
 }
-
-type ClaudeOAuthSystemPromptBlockConfig struct {
-	Enabled      *bool           `json:"enabled,omitempty"`
-	Type         string          `json:"type,omitempty"`
-	Text         string          `json:"text,omitempty"`
-	CacheControl json.RawMessage `json:"cache_control,omitempty"`
-}
-type ClaudeOAuthSystemPromptBlocksEnvelope struct {
-	Blocks []ClaudeOAuthSystemPromptBlockConfig `json:"blocks"`
-}
-
-// ClaudeFableOAuthSystemPromptBlocks keeps the Claude Code identity required by
-// OAuth credentials without the generic CLI expansion block. Fable 5 rejects
-// that expansion upstream with stop_reason=refusal and zero output tokens,
-// while the native billing + identity shape is accepted. Original client
-// system instructions are still migrated into the message history by
-// RewriteSystemForNonClaudeCodeWithPromptBlocks.
-const ClaudeFableOAuthSystemPromptBlocks = `[
-	{"type":"text","text":"{billing_header}"},
-	{"type":"text","text":"{claude_code_system_prompt}"}
-]`
 
 func ClaudeOAuthSystemPromptBlocksForModel(model, configured string) string {
 	if IsAnthropicFableModel(model) {
@@ -752,11 +758,6 @@ func RewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expa
 	}
 
 	return out
-}
-
-type CacheControlPath struct {
-	Path string
-	Log  string
 }
 
 func CollectCacheControlPaths(body []byte) (invalidThinking []CacheControlPath, messagePaths []string, toolPaths []string, systemPaths []string) {

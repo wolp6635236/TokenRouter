@@ -5,11 +5,13 @@
 <a id="protocol_catalog"></a>
 ## 能力目录
 
-24 项能力目录只在后端的 `routing/capability.ProtocolCatalog` 维护。管理员接口 `GET /api/v1/admin/protocol-capabilities` 返回 `protocols`、`providers`、`groups` 和 `auxiliary_operations`：
+25 项能力目录只在后端的 `routing/capability.ProtocolCatalog` 维护。管理员接口 `GET /api/v1/admin/protocol-capabilities` 返回 `protocols`、`providers`、`groups` 和 `auxiliary_operations`：
 
 - 提供商 profile 按平台、类型和认证方式列出原生选项。
 - `groups` 是数组，只有一个不带 `platform` 的通用 profile，列出所有分组可用的入口、默认集合、转换目标和默认映射。`defaults` 只包含 Messages、Responses、Chat 三个文本入口，`default_fallbacks` 为 `{}`。
 - 目录里没有凭据。前端共用这份只读结果，不维护自己的平台白名单。
+
+Responses WebSocket 的客户端许可在分组协议控制中设置，提供商协议集合声明上游能力。连接方式和在线调参见 [Responses 长连接与在线参数](openai_upstream.md#responses_ws_runtime)。
 
 提供商和分组共用 `protocol.ProtocolID`，平台和提供商类型的常量在 `routing/capability` 定义。HTTP 方法、路径、别名和 WebSocket 标记在 `gateway/httpapi` 声明，实际的路由门禁读取同一份声明；app 把展示用的地址注入 `routing/httpapi` 的目录 handler，纯目录代码不依赖 HTTP 适配层。路由层只规范化别名前缀；各文本入口按自己的原生错误格式和动作校验，Compact 在 Responses 子路径校验之后再检查。内部的路由元数据不出现在管理员 API 的响应里，协议 ID、JSON 字段和持久化格式保持稳定。
 
@@ -21,6 +23,7 @@
 | `openai_responses` | OpenAI Responses | `POST /v1/responses` | 现有的九个平台 |
 | `openai_chat_completions` | Chat Completions | `POST /v1/chat/completions` | 现有的九个平台 |
 | `gemini_generate_content` | Gemini GenerateContent | `POST /v1beta/models/{model}:generateContent`、`:streamGenerateContent` | Gemini、Antigravity |
+| `systemone` | SystemOne | `POST /v1/systemone` | Jev |
 | `openai_embeddings` | Embeddings | `POST /v1/embeddings` | OpenAI |
 | `openai_images_generations` | Images 图片生成 | `POST /v1/images/generations` | OpenAI、Grok |
 | `openai_images_edits` | Images 图片编辑 | `POST /v1/images/edits` | OpenAI、Grok |
@@ -41,7 +44,7 @@
 
 平台一列表示实际候选提供商和转换器支持的范围；所有分组都可以配置这些入口。开放一个入口，并不会自动产生可用的提供商。
 
-这 21 个客户端控制项里，图片生成和图片编辑分开控制，视频的生成、编辑和扩展也分开控制。HTTP 和 SSE 共用所属协议的控制项；Responses WebSocket 有自己的传输和会话要求，所以单独控制。
+这 22 个客户端控制项里，图片生成和图片编辑分开控制，视频的生成、编辑和扩展也分开控制。HTTP 和 SSE 共用所属协议的控制项；Responses WebSocket 有自己的传输和会话要求，所以单独控制。
 
 已有的无 `/v1` 前缀别名、`/backend-api/codex/*` 别名和 `/antigravity/*` 强制平台入口，都映射到相同的协议 ID，不增加控制项。`POST /v1/videos` 归入视频生成。
 
@@ -55,7 +58,7 @@
 | `gemini_batch_generate_content` | Gemini Batch GenerateContent | `/v1beta/models/{model}:batchGenerateContent` | Gemini API Key |
 | `vertex_batch_prediction` | Vertex Batch Prediction | `/v1/projects/{project}/locations/{location}/batchPredictionJobs` | Gemini Vertex Service Account |
 
-这 3 个上游专用项加上 21 个客户端控制项，就是 24 项目录。
+这 3 个上游专用项加上 22 个客户端控制项，就是 25 项目录。
 
 批量图片是持久作业的入口：分组控制 `image_batches`，执行器检查提供商启用的是 Gemini Batch 还是 Vertex Batch 协议，并使用现有的 provider 选择和任务绑定。批量图片没有文本那样可以任选的转换目标。
 
@@ -68,10 +71,11 @@ Antigravity 对 Google 内部接口的封装，算作 `gemini_generate_content` 
 
 这些判断是纯计算，不读取凭据、配置或请求 Context；每次判断候选都重新计算，明确设为空的集合不会被默认值补上。RoutePlan 负责候选协议这一部分，模型改写、最终的权限和资金检查、重试的时机，由调用链按既定顺序执行。
 
-`credentials.upstream_protocols` 是原生协议 ID 的数组，空数组表示这个提供商不再承接新的调用。创建、编辑、复制、导入和批量编辑使用同一套校验：不允许重复、未知，或者提供商认证方式不支持的项，出错时返回 HTTP 400 / `UPSTREAM_PROTOCOLS_INVALID`。批量更新先验证全部提供商，再用同一条 SQL 原子地写入每个提供商的协议补丁。
+`credentials.upstream_protocols` 是原生协议 ID 的数组，空数组表示这个提供商不再承接新的调用。创建、编辑、复制、导入和批量编辑使用同一套校验：不允许重复、未知，或者提供商认证方式不支持的项，出错时返回 HTTP 400 / `UPSTREAM_PROTOCOLS_INVALID`。批量更新先验证全部提供商，再用同一条 SQL 原子地写入每个提供商的协议补丁。显式协议集合在旧 WS 桥接配置转换之前完成类型、重复项和选项校验。连接方式的完整保存、批量更新和 Extra 按键更新共用枚举校验，非法值在写入前返回错误。
 
 各平台的原生协议：
 
+- Jev API Key：SystemOne，支持同步决策请求。
 - OpenAI API Key：Responses、Chat、Embeddings、Images 生成和编辑、Responses WebSocket、Compact、Alpha Search。
 - OpenAI OAuth：Responses、WebSocket、Compact、Alpha Search、Live。PAT 没有 Alpha Search 和 Live，Agent Identity 没有 Live。OpenAI 没有 Messages 原生项。
 - Grok：HTTP Responses、Chat、Images、视频和 Voice 是原生项；WebSocket、搜索和 Compact 是转换入口。
@@ -115,6 +119,8 @@ Responses 图片策略和 Images 入口互相独立：`inherit` 沿用提供商�
 管理员的用量记录按上游实际的响应格式采集模型名。Responses 的 JSON `model` 和流式的 `response.model`、Chat 的顶层 `model`、Messages 的 `model` 和 `message_start.message.model`、Gemini 的 `modelVersion`，都在响应改写之前读取。这覆盖了八个适用平台的原生、透传和转换分支；Bedrock 在 EventStream 解码之后读取，Vertex 复用对应的原生协议，Antigravity 在内部响应解包之后读取。
 
 Responses WebSocket 的连接池、透传、HTTP 桥接和 Grok 兼容路径，每轮单独保存观测结果。原生 V2 压缩随 Responses 一起处理；旧版 Compact 只在实际响应里有模型声明时才采集，标准的 `response.compaction` 没有模型字段时留空。
+
+SystemOne 在响应模型恢复之前采集顶层 `model`，缺失或非法用量的响应仍可以交付有效答案，处理规则见 [Jev 用量与价格](jev_upstream.md#systemone_usage)。
 
 Qoder 当前的原始响应解析还没有确认模型声明的位置，转换后生成的客户端模型名不算观测结果。Live 和 Realtime、Embeddings、独立搜索、媒体、批量任务和计数接口不在采集范围内。模型声明只代表直接上游返回的身份，中转背后实际运行的模型无法据此确定。
 

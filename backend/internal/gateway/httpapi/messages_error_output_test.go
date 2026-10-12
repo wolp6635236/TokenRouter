@@ -63,7 +63,7 @@ func TestGatewayEnsureForwardErrorResponse_SkipsCommittedSSEError(t *testing.T) 
 	require.Equal(t, 1, strings.Count(w.Body.String(), "event: error"))
 }
 
-// TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed 验证case B 回归：Anthropic-backed /responses，Writer 已被写过时
+// TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed 验证 case B 回归：Anthropic-backed /responses，Writer 已被写过时
 // ensureForwardErrorResponse 仍要发 response.failed。
 func TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()

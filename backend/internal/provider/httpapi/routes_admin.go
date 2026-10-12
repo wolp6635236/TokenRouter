@@ -4,6 +4,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ProviderRouteEndpoints 只汇总提供商模块已经构造的 HTTP 实例。
+type ProviderRouteEndpoints struct {
+	ProviderArchive     *ArchiveHandler
+	ProviderCRS         *CRSHandler
+	ProviderCodexImport *CodexImportHandler
+	ProviderManagement  *ManagementHandler
+	ProviderOAuthUsage  *OAuthUsageHandler
+	ProviderOllama      *OllamaUsageHandler
+	ProviderTests       *TestHandler
+	CodexInviteReset    *CodexInviteResetHandler
+	OAuth               *ClaudeOAuthHandler
+	OpenAIOAuth         *OpenAIOAuthHandler
+	UpstreamUsage       *UpstreamUsageHandler
+}
+
 // RegisterAntigravityOAuthRoutes 注册所属管理路由；组鉴权、限流和审计由 app 预先安装。
 func RegisterAntigravityOAuthRoutes(admin *gin.RouterGroup, endpoint *AntigravityOAuthHandler) {
 	antigravity := admin.Group("/antigravity")
@@ -81,21 +96,6 @@ func RegisterScheduledTestRoutes(admin *gin.RouterGroup, endpoint *ScheduledTest
 	}
 	// Nested under providers
 	admin.GET("/providers/:id/scheduled-test-plans", endpoint.ListByProvider)
-}
-
-// ProviderRouteEndpoints 只汇总提供商模块已经构造的 HTTP 实例。
-type ProviderRouteEndpoints struct {
-	ProviderArchive     *ArchiveHandler
-	ProviderCRS         *CRSHandler
-	ProviderCodexImport *CodexImportHandler
-	ProviderManagement  *ManagementHandler
-	ProviderOAuthUsage  *OAuthUsageHandler
-	ProviderOllama      *OllamaUsageHandler
-	ProviderTests       *TestHandler
-	CodexInviteReset    *CodexInviteResetHandler
-	OAuth               *ClaudeOAuthHandler
-	OpenAIOAuth         *OpenAIOAuthHandler
-	UpstreamUsage       *UpstreamUsageHandler
 }
 
 // RegisterProviderRoutes 注册提供商管理路由，诊断路由由 scheduler 注入。

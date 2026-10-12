@@ -4,6 +4,7 @@ package billing_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,24 +12,19 @@ import (
 	"testing"
 	"time"
 
-	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
-	teampostgres "github.com/TokenFlux/TokenRouter/internal/team/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
-	"github.com/TokenFlux/TokenRouter/internal/team"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-)
 
-func float64Ptr(v float64) *float64 {
-	return &v
-}
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/team"
+	teampostgres "github.com/TokenFlux/TokenRouter/internal/team/postgres"
+)
 
 // insertBatchImageAllowanceTestJob 创建额度预记测试所需的最小任务记录。
 func insertBatchImageAllowanceTestJob(t *testing.T, batchID string, actorUserID, billingUserID, apiKeyID int64, teamID *int64, createdAt time.Time) {
@@ -424,7 +420,7 @@ func TestUsageBillingRepositoryBatchImageUnlimitedKeyReleaseKeepsExistingUsage(t
 		Key:    "sk-batch-unlimited-" + uuid.NewString(),
 		Name:   "batch-unlimited",
 	})
-	// 预占时间与窗口使用同一数据库时钟，避免主机/容器微小时差破坏本用例的窗口内前提。
+	// 预占时间与窗口使用同一数据库时钟，预占时刻落在窗口内。
 	var reservedAt time.Time
 	err := integrationDB.QueryRowContext(ctx, `
 		UPDATE api_keys SET quota_used = 1, usage_5h = 1, usage_1d = 1, usage_7d = 1,
@@ -770,4 +766,9 @@ func TestUsageBillingRepositoryBatchImageReleaseKeepsNewWindowConservative(t *te
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT quota_used, usage_5h FROM api_keys WHERE id = $1`, apiKey.ID).Scan(&quotaUsed, &usage5h))
 	require.InDelta(t, 0, quotaUsed, 0.000001)
 	require.InDelta(t, 0.5, usage5h, 0.000001)
+}
+
+// newTaskFundsFixture 为任务资金测试构造结算存储和资金服务。
+func newTaskFundsFixture(db *sql.DB) *billing.Funds {
+	return billing.NewFunds(newSettlementFixture(db))
 }

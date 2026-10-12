@@ -8,24 +8,20 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-
 	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
 // ChatResponses 执行兼容桥接；不适用时由调用者选择原生 Chat 分支。
@@ -96,8 +92,7 @@ func (s *GrokExecutor) ChatResponses(
 
 	updatedBody, policyErr := tierpolicy.ApplyBody(responsesBody, s.FastPolicy.Input(ctx, provider, upstreamModel))
 	if policyErr != nil {
-		var blocked *tierpolicy.BlockedError
-		if errors.As(policyErr, &blocked) {
+		if blocked, ok := errors.AsType[*tierpolicy.BlockedError](policyErr); ok {
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			WriteForwardChatError(c, http.StatusForbidden, "permission_error", blocked.Message)
 		}

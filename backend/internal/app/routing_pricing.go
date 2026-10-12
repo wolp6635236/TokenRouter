@@ -13,7 +13,6 @@ import (
 	catalogprovider "github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-	routingadapter "github.com/TokenFlux/TokenRouter/internal/routing/provider"
 )
 
 func providePricingConfigService(repo *routingpostgres.PricingConfigStore, groups *routingpostgres.GroupStore, invalidator apikey.APIKeyAuthCacheInvalidator) *routing.PricingConfigService {
@@ -53,11 +52,9 @@ func providePricingCatalog(calculator *billing.Calculator, prices *catalogprovid
 			entries[model] = platform
 			modes[model] = value.Mode
 		}
-		for _, platform := range []string{"anthropic", "openai", "gemini", "antigravity", "qoder", "grok"} {
-			for _, model := range routingadapter.DefaultGroupModelCandidates(platform) {
-				if _, exists := entries[model]; !exists {
-					entries[model] = platform
-				}
+		for _, entry := range prices.AttributesSnapshot().Items {
+			if _, exists := entries[entry.Model]; !exists {
+				entries[entry.Model] = entry.Provider
 			}
 		}
 		names := make([]string, 0, len(entries))

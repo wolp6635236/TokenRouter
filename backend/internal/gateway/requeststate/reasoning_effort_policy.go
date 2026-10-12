@@ -4,9 +4,10 @@ import (
 	"context"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 type requestedReasoningEffortContextKey struct{}

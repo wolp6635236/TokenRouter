@@ -6,6 +6,11 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+	"golang.org/x/net/http/httpguts"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
@@ -13,13 +18,12 @@ import (
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
-	"golang.org/x/net/http/httpguts"
 )
 
-const openCodeSessionHeader = "X-OpenCode-Session"
+const (
+	openCodeSessionHeader        = "X-OpenCode-Session"
+	OpenAICodexRoutingHintHeader = "x-codex-routing-hint"
+)
 
 // ApplyOpenCodeSessionHeader forwards the caller-owned conversation identifier
 // only to OpenCode's official API origin. The caller applies this after provider
@@ -64,8 +68,6 @@ func ResolveOpenAIUpstreamOriginatorForClient(read func() string, official bool,
 	}
 	return openai.ResolveUpstreamOriginator(read, official, match.Matched, match.UpstreamOriginator)
 }
-
-const OpenAICodexRoutingHintHeader = "x-codex-routing-hint"
 
 // SetOpenAICodexRoutingHint 为 OpenAI OAuth 请求生成 Codex 后端路由提示。
 // 调用方传入最终上游模型名，以及应用本地改写和过滤策略后的 serviceTier。

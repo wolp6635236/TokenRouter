@@ -8,19 +8,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
-
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
 type BatchImageHandler struct {
@@ -29,6 +26,31 @@ type BatchImageHandler struct {
 	download DownloadUseCases
 	cleanup  CleanupUseCases
 	access   AccessPorts
+}
+
+// AccessPorts 读取已认证请求的唯一快照；任务 handler 不再次解析或验证凭据。
+type AccessPorts struct {
+	Key                   func(*gin.Context) (*apikey.APIKey, bool)
+	PreferredSubscription func(*gin.Context) (*billing.UserSubscription, bool)
+	SessionID             func(*gin.Context) string
+}
+
+type UseCases interface {
+	Submit(context.Context, batchimage.BatchImageOwner, batchimage.BatchImageSubmitRequest, string) (*batchimage.BatchImagePublicBatch, error)
+	Get(context.Context, batchimage.BatchImageOwner, string) (*batchimage.BatchImagePublicBatch, error)
+	List(context.Context, batchimage.BatchImageOwner, batchimage.BatchImageJobsQuery) (*batchimage.BatchImagePublicListResponse, error)
+	ListModels(context.Context, batchimage.BatchImageOwner) (*batchimage.BatchImagePublicModelsResponse, error)
+	ListItems(context.Context, batchimage.BatchImageOwner, string, batchimage.BatchImageItemsQuery) (*batchimage.BatchImagePublicItemsResponse, error)
+	Cancel(context.Context, batchimage.BatchImageOwner, string) (*batchimage.BatchImagePublicBatch, error)
+	MarkDownloaded(context.Context, batchimage.BatchImageOwner, string) error
+	DeleteRecord(context.Context, batchimage.BatchImageOwner, string) error
+}
+type DownloadUseCases interface {
+	OpenItemContent(context.Context, batchimage.BatchImageOwner, string, string, int) (*batchimage.BatchImageContentStream, error)
+	StreamZip(context.Context, batchimage.BatchImageOwner, string, batchimage.BatchImageZipOptions, io.Writer) (*batchimage.BatchImageZipResult, error)
+}
+type CleanupUseCases interface {
+	DeleteOutputsForOwner(context.Context, batchimage.BatchImageOwner, string) (*batchimage.BatchImagePublicBatch, error)
 }
 
 func NewBatchImageHandler(service UseCases, download DownloadUseCases, cleanup CleanupUseCases, access AccessPorts) *BatchImageHandler {
@@ -428,13 +450,6 @@ func BatchImageError(c *gin.Context, err error) {
 	})
 }
 
-// AccessPorts 读取已认证请求的唯一快照；任务 handler 不再次解析或验证凭据。
-type AccessPorts struct {
-	Key                   func(*gin.Context) (*apikey.APIKey, bool)
-	PreferredSubscription func(*gin.Context) (*billing.UserSubscription, bool)
-	SessionID             func(*gin.Context) string
-}
-
 func (h *BatchImageHandler) preferred(c *gin.Context, k *apikey.APIKey) (*billing.UserSubscription, bool) {
 	if apikey.APIKeyEffectiveBillingMode(k) != apikey.APIKeyBillingModeSubscription {
 		return nil, true
@@ -444,24 +459,6 @@ func (h *BatchImageHandler) preferred(c *gin.Context, k *apikey.APIKey) (*billin
 		return nil, false
 	}
 	return value, true
-}
-
-type UseCases interface {
-	Submit(context.Context, batchimage.BatchImageOwner, batchimage.BatchImageSubmitRequest, string) (*batchimage.BatchImagePublicBatch, error)
-	Get(context.Context, batchimage.BatchImageOwner, string) (*batchimage.BatchImagePublicBatch, error)
-	List(context.Context, batchimage.BatchImageOwner, batchimage.BatchImageJobsQuery) (*batchimage.BatchImagePublicListResponse, error)
-	ListModels(context.Context, batchimage.BatchImageOwner) (*batchimage.BatchImagePublicModelsResponse, error)
-	ListItems(context.Context, batchimage.BatchImageOwner, string, batchimage.BatchImageItemsQuery) (*batchimage.BatchImagePublicItemsResponse, error)
-	Cancel(context.Context, batchimage.BatchImageOwner, string) (*batchimage.BatchImagePublicBatch, error)
-	MarkDownloaded(context.Context, batchimage.BatchImageOwner, string) error
-	DeleteRecord(context.Context, batchimage.BatchImageOwner, string) error
-}
-type DownloadUseCases interface {
-	OpenItemContent(context.Context, batchimage.BatchImageOwner, string, string, int) (*batchimage.BatchImageContentStream, error)
-	StreamZip(context.Context, batchimage.BatchImageOwner, string, batchimage.BatchImageZipOptions, io.Writer) (*batchimage.BatchImageZipResult, error)
-}
-type CleanupUseCases interface {
-	DeleteOutputsForOwner(context.Context, batchimage.BatchImageOwner, string) (*batchimage.BatchImagePublicBatch, error)
 }
 
 // BindActivity 在构造阶段绑定任务入口关闭屏障，释放覆盖完整 HTTP 流式输出。

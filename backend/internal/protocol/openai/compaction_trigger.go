@@ -1,8 +1,9 @@
 package openai
 
 import (
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
 // NormalizeCompactionTriggerInputOrder keeps a single compaction trigger as

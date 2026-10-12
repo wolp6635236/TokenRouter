@@ -12,10 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 const (

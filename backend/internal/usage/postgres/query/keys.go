@@ -6,11 +6,11 @@ import (
 	"strings"
 
 	"entgo.io/ent/dialect"
-	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres" // KeyLatestUsageLogIPsQuery 按数据库方言生成批量查询：PostgreSQL 使用数组，
-
 	// 其它方言使用逐项占位符，便于 SQLite 回归测试覆盖真实 SQL。
 	// 每个 Key 只做一次有序索引探测，避免为整段历史记录计算窗口排名。
 	"github.com/lib/pq"
+
+	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres" // KeyLatestUsageLogIPsQuery 按数据库方言生成批量查询：PostgreSQL 使用数组，
 )
 
 func KeyLatestUsageLogIPsQuery(apiKeyIDs []int64, dialectName string) (string, []any) {

@@ -3,8 +3,9 @@ package httpapi
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // OpenAIResponsesRequestPathSuffix 提取 Responses 路径后缀并检查协议白名单。
@@ -37,11 +38,11 @@ func RawOpenAIResponsesRequestPathSuffix(c *gin.Context) string {
 	if normalizedPath == "" {
 		return ""
 	}
-	idx := strings.LastIndex(normalizedPath, "/responses")
-	if idx < 0 {
+	_, after, ok := strings.CutLast(normalizedPath, "/responses")
+	if !ok {
 		return ""
 	}
-	suffix := normalizedPath[idx+len("/responses"):]
+	suffix := after
 	if suffix == "" || suffix == "/" {
 		return ""
 	}

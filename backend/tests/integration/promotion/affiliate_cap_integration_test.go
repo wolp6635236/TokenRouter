@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
-
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
+	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 	settingspostgres "github.com/TokenFlux/TokenRouter/internal/settings/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 // 两个调用在尝试加锁前汇合，锁内读取不得依赖修复前的错误交错。

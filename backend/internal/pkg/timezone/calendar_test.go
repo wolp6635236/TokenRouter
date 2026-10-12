@@ -31,7 +31,7 @@ func TestCalendarKeepsExplicitLocation(t *testing.T) {
 	}
 }
 
-// TestUninitializedClockKeepsMonotonicReading 检查初始化前 Now 与用户时区回退仍保有单调时钟读数。
+// TestUninitializedClockKeepsMonotonicReading 检查默认时钟及用户时区回退结果中的单调读数。
 func TestUninitializedClockKeepsMonotonicReading(t *testing.T) {
 	calendar := NewCalendar(nil)
 	for name, value := range map[string]time.Time{
@@ -39,7 +39,7 @@ func TestUninitializedClockKeepsMonotonicReading(t *testing.T) {
 		"invalid_user": calendar.NowInUserLocation("invalid/timezone"),
 		"calendar":     calendar.Now(),
 	} {
-		// 这里比较完整 Time 值；Equal 不区分是否携带单调时钟读数。
+		// 比较完整 Time 值，以区分是否携带单调时钟读数。
 		if reflect.DeepEqual(value, value.Round(0)) {
 			t.Errorf("%s: initialization fallback must preserve monotonic time", name)
 		}
@@ -62,5 +62,80 @@ func TestCalendarInjectedClock(t *testing.T) {
 	}
 	if got := NewCalendarWithClock(nil, nil).Now(); time.Since(got) > time.Second {
 		t.Fatalf("nil 时钟应使用系统时间: %v", got)
+	}
+}
+
+// testCalendar 为测试创建指定时区的日期对象。
+func testCalendar(t *testing.T, name string) Calendar {
+	t.Helper()
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewCalendar(location)
+}
+
+func TestToday(t *testing.T) {
+	calendar := testCalendar(t, "Asia/Shanghai")
+	today := calendar.Today()
+	now := calendar.Now()
+	if today.Hour() != 0 || today.Minute() != 0 || today.Second() != 0 {
+		t.Errorf("Today() not at start of day: %v", today)
+	}
+	if today.Year() != now.Year() || today.Month() != now.Month() || today.Day() != now.Day() {
+		t.Errorf("Today() date mismatch: today=%v, now=%v", today, now)
+	}
+}
+
+func TestStartOfDay(t *testing.T) {
+	calendar := testCalendar(t, "Asia/Shanghai")
+	input := time.Date(2024, 6, 15, 15, 30, 45, 123456789, calendar.Location())
+	start := calendar.StartOfDay(input)
+	want := time.Date(2024, 6, 15, 0, 0, 0, 0, calendar.Location())
+	if !start.Equal(want) {
+		t.Errorf("StartOfDay: got %v, want %v", start, want)
+	}
+}
+
+func TestTruncateVsStartOfDay(t *testing.T) {
+	calendar := testCalendar(t, "Asia/Shanghai")
+	now := calendar.Now()
+	truncated := now.Truncate(24 * time.Hour)
+	start := calendar.StartOfDay(now)
+	t.Logf("Now: %v, Truncate(24h): %v, StartOfDay: %v", now, truncated, start)
+	if start.Hour() != 0 {
+		t.Errorf("StartOfDay should be at hour 0, got %d", start.Hour())
+	}
+}
+
+func TestDSTAwareness(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("America/New_York timezone not available: %v", err)
+	}
+	calendar := NewCalendar(location)
+	_ = calendar.Today()
+	_ = calendar.Now()
+	_ = calendar.StartOfDay(calendar.Now())
+}
+
+func TestStartOfWeek_Boundaries(t *testing.T) {
+	calendar := testCalendar(t, "Asia/Shanghai")
+	location := calendar.Location()
+	want := time.Date(2026, 5, 18, 0, 0, 0, 0, location)
+	cases := []struct {
+		name string
+		in   time.Time
+	}{
+		{"friday", time.Date(2026, 5, 22, 14, 30, 0, 0, location)},
+		{"sunday", time.Date(2026, 5, 24, 10, 0, 0, 0, location)},
+		{"monday-self", time.Date(2026, 5, 18, 9, 15, 30, 0, location)},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := calendar.StartOfWeek(item.in); !got.Equal(want) {
+				t.Errorf("StartOfWeek(%v) = %v, want %v", item.in, got, want)
+			}
+		})
 	}
 }

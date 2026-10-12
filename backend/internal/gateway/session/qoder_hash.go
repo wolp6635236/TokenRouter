@@ -4,9 +4,10 @@ import (
 	"net/textproto"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/tidwall/gjson"
 )
 
 // QoderExplicitSessionSeed 按列表顺序读取 Header 的首值，均为空时再读取请求体中的会话标识。

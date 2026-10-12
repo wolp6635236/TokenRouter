@@ -3,12 +3,13 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 type OpenAITokenOptions struct {
@@ -36,7 +37,7 @@ type OpenAITokenBackend interface {
 	InputTokensExecution(*gin.Context, InputTokensCall) text.InputTokensPorts
 }
 type OpenAITokensHandler struct {
-	requestLifetime
+	RequestLifetime
 	options OpenAITokenOptions
 	backend OpenAITokenBackend
 	prompt  MessagesPrompt

@@ -5,30 +5,27 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
-	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	queuepolicy "github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	queuepolicy "github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-
-	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // messageAttemptBridge 适配 Messages 单次尝试，异步完成仅捕获 completion.Input。
@@ -220,7 +217,7 @@ func (b *messageAttemptBridge) Acquire() bool {
 // Forward 应用消息队列和兼容策略，再向所选平台转发请求。
 func (b *messageAttemptBridge) Forward(state textflow.AttemptState) textflow.Outcome {
 	var err error
-	// ===== 用户消息串行队列 START =====
+	// 用户消息串行队列开始。
 	var queueRelease func()
 	umqMode := b.binding().getUserMsgQueueMode(b.provider, b.attemptParsedReq)
 
@@ -271,7 +268,7 @@ func (b *messageAttemptBridge) Forward(state textflow.AttemptState) textflow.Out
 	b.sessionAttempts.Own(b.provider.Record.ID, queueRelease)
 	// 注入回调到 ParsedRequest：使用外层 wrapper 以便提前清理 AfterFunc
 	b.attemptParsedReq.OnUpstreamAccepted = queueRelease
-	// ===== 用户消息串行队列 END =====
+	// 用户消息串行队列结束。
 
 	// Bedrock CC 兼容：清理 body 专有字段 + 过滤 anthropic-beta header，适用于所有转发路径
 	if err := b.attemptParsedReq.ReplaceBody(b.binding().bedrockCompat(b.c, b.attemptParsedReq.Body.Bytes(), b.attemptParsedReq.Model, b.provider, b.currentAPIKey.GroupID)); err != nil {
@@ -477,15 +474,13 @@ func (b *messageAttemptBridge) Exhausted(err *textflow.AttemptFailure, platform 
 		b.binding().handleFailoverExhaustedSimple(b.c, 502, *b.streamStarted)
 		return
 	}
-	var original *forwardcore.UpstreamFailoverError
-	if errors.As(err.Cause, &original) {
+	if original, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err.Cause); ok {
 		b.binding().handleFailoverExhausted(b.c, original, platform, forceStream || *b.streamStarted)
 	}
 }
 
 func (b *messageAttemptBridge) PolicyFailure(err error) {
-	var original *anthropic.BetaBlockedError
-	if errors.As(err, &original) {
+	if original, ok := errors.AsType[*anthropic.BetaBlockedError](err); ok {
 		gatewayhttp.MarkOpsClientBusinessLimited(b.c, gatewayhttp.OpsClientBusinessLimitedReasonLocalPolicyDenied)
 		b.binding().errorResponse(b.c, http.StatusBadRequest, "invalid_request_error", original.Message)
 	}
@@ -496,8 +491,7 @@ func (b *messageAttemptBridge) Switched() {
 }
 func (b *messageAttemptBridge) Abandon(id int64) { b.sessionAttempts.Abandon(id) }
 func (b *messageAttemptBridge) TempUnscheduleRetryableError(ctx context.Context, id int64, err *textflow.AttemptFailure) {
-	var original *forwardcore.UpstreamFailoverError
-	if errors.As(err.Cause, &original) {
+	if original, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err.Cause); ok {
 		b.binding().tempUnschedule(ctx, id, original)
 	}
 }

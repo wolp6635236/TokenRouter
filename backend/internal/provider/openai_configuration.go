@@ -72,10 +72,7 @@ func NormalizeOpenAIAPIKeyConfiguration(provider *Record) error {
 		return err
 	}
 	DiscardDeprecatedProviderExtra(provider.Extra)
-	if err := NormalizeOpenAIResponsesContinuationSupported(provider.Extra, true); err != nil {
-		return err
-	}
-	return nil
+	return NormalizeOpenAIResponsesContinuationSupported(provider.Extra, true)
 }
 
 // NormalizeOpenAIAPIKeyConfigurationPatch 规范化增量中提供的字段。
@@ -95,10 +92,7 @@ func NormalizeOpenAIAPIKeyConfigurationPatch(credentials, extra map[string]any) 
 		return err
 	}
 	DiscardDeprecatedProviderExtra(extra)
-	if err := NormalizeOpenAIResponsesContinuationSupported(extra, false); err != nil {
-		return err
-	}
-	return nil
+	return NormalizeOpenAIResponsesContinuationSupported(extra, false)
 }
 
 func NormalizeOpenAIWorkloadCapabilities(credentials map[string]any, applyDefault bool) error {

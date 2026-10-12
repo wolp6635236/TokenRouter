@@ -8,6 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// OpenAIErrorOutput 不保存请求和 Handler，回调只负责同步的 HTTP 观测与心跳接管。
+type OpenAIErrorOutput struct {
+	stopCompact func(*gin.Context) bool
+	markStream  func(*gin.Context, string, string, int)
+	markFailure func(*gin.Context, string, string, string, int)
+	metadata    func(*gin.Context) (string, string)
+}
+
 func (h OpenAIErrorOutput) WriteAnthropicStreamingError(c *gin.Context, status int, kind, message string, started bool) {
 	if !started {
 		WriteAnthropicError(c, status, kind, "", message)
@@ -76,14 +84,6 @@ func (h OpenAIErrorOutput) WriteStreamingErrorWithCode(
 	c.JSON(status, gin.H{"error": gin.H{
 		"type": errType, "code": code, "message": message,
 	}})
-}
-
-// OpenAIErrorOutput 不保存请求和 Handler，回调只负责同步的 HTTP 观测与心跳接管。
-type OpenAIErrorOutput struct {
-	stopCompact func(*gin.Context) bool
-	markStream  func(*gin.Context, string, string, int)
-	markFailure func(*gin.Context, string, string, string, int)
-	metadata    func(*gin.Context) (string, string)
 }
 
 // DefaultOpenAIErrorOutput 为 HTTP、WS 和媒体适配提供错误输出与观测。

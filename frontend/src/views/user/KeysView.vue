@@ -68,8 +68,10 @@
               </button>
             </div>
           </div>
+          <!-- 端点条和上方工具栏是一组，-mb-2 把它到表格的间距从布局默认的 16px 收到 8px，上下间距一致。 -->
           <EndpointPopover
             v-if="publicSettings?.api_base_url || (publicSettings?.custom_endpoints?.length ?? 0) > 0"
+            class="-mb-2"
             :api-base-url="publicSettings?.api_base_url || ''"
             :custom-endpoints="publicSettings?.custom_endpoints || []"
           />
@@ -371,7 +373,8 @@
               'badge-gray'
             ]">
               <Icon v-if="row.team_owner_disabled" name="lock" size="xs" />
-              {{ row.team_owner_disabled ? t('keys.status.team_owner_disabled') : t('keys.status.' + value) }}
+              <!-- 状态文字加 self-baseline，前面有锁图标时，移动卡片的标签仍对齐文字。 -->
+              <span class="self-baseline">{{ row.team_owner_disabled ? t('keys.status.team_owner_disabled') : t('keys.status.' + value) }}</span>
             </span>
           </template>
 
@@ -1082,7 +1085,7 @@
     <ConfirmDialog
       :show="showResetQuotaDialog"
       :title="t('keys.resetQuotaTitle')"
-      :message="t('keys.resetQuotaConfirmMessage', { name: selectedKey?.name, used: selectedKey?.quota_used?.toFixed(4) })"
+      :message="t('keys.resetQuotaConfirmMessage', { name: selectedKey?.name, used: formatBalanceAmount(selectedKey?.quota_used, { fractionDigits: 4 }) })"
       :confirm-text="t('keys.reset')"
       :cancel-text="t('common.cancel')"
       :danger="true"

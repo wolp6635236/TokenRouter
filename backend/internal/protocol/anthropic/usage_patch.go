@@ -8,21 +8,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
-func ParseSSEUsage(data string, usage *protocol.TokenUsage) {
-	if usage == nil {
-		return
-	}
-
-	var event map[string]any
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		return
-	}
-
-	if patch := ExtractSSEUsagePatch(event); patch != nil {
-		MergeSSEUsagePatch(usage, patch)
-	}
-}
-
 type SseUsagePatch struct {
 	InputTokens              int
 	HasInputTokens           bool
@@ -38,6 +23,21 @@ type SseUsagePatch struct {
 	HasCacheCreation1h       bool
 	Speed                    string
 	HasSpeed                 bool
+}
+
+func ParseSSEUsage(data string, usage *protocol.TokenUsage) {
+	if usage == nil {
+		return
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return
+	}
+
+	if patch := ExtractSSEUsagePatch(event); patch != nil {
+		MergeSSEUsagePatch(usage, patch)
+	}
 }
 
 func ExtractSSEUsagePatch(event map[string]any) *SseUsagePatch {

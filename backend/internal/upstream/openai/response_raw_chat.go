@@ -10,13 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 // RawResponseOptions 配置当前端点的响应读取、输出和观测回调。

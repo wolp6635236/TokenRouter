@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"entgo.io/ent/dialect"
+	"github.com/stretchr/testify/require"
+
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/payment"
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
 	paymenttestkit "github.com/TokenFlux/TokenRouter/internal/payment/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"entgo.io/ent/dialect"
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/internal/payment"
-	"github.com/stretchr/testify/require"
 )
 
 // 测试驱动返回预设结果，供生命周期用例控制执行进度。
@@ -23,6 +23,11 @@ type paymentDriver struct {
 	calls   atomic.Int32
 	entered chan context.Context
 	release chan struct{}
+}
+
+type paymentLeader struct {
+	calls   atomic.Int32
+	entered chan struct{}
 }
 
 func (d *paymentDriver) Dialect() string { return dialect.SQLite }
@@ -37,11 +42,6 @@ func (d *paymentDriver) Query(ctx context.Context, query string, args, result an
 		}
 	}
 	return errors.New("fixture database unavailable")
-}
-
-type paymentLeader struct {
-	calls   atomic.Int32
-	entered chan struct{}
 }
 
 func (l *paymentLeader) TryAcquireLeaderLock(context.Context, string, string, time.Duration) (bool, error) {

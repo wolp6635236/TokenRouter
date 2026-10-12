@@ -11,9 +11,7 @@ import (
 	"time"
 
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
@@ -191,8 +189,7 @@ func buildQoderDegradedUsageAt(err error, provider *providercore.Record, now tim
 		Error:     fmt.Sprintf("usage API error: %v", err),
 	}
 	if err != nil {
-		var apiErr *qoder.APIError
-		if errors.As(err, &apiErr) {
+		if apiErr, ok := errors.AsType[*qoder.APIError](err); ok {
 			switch apiErr.StatusCode {
 			case http.StatusUnauthorized, http.StatusForbidden:
 				info.ErrorCode = providercore.ErrorCodeUnauthenticated

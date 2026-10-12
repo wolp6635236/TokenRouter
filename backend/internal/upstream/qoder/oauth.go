@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
-
 	"github.com/google/uuid"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
 )
 
 const (
@@ -55,6 +55,55 @@ type DeviceAuthRequest struct {
 // FlexibleInt64 兼容 Qoder API 中以 JSON 数字或字符串返回的整数。
 type FlexibleInt64 int64
 
+// DeviceTokenResponse 兼容国际设备授权和国内 QoderCN20 token 响应。
+type DeviceTokenResponse struct {
+	ID           string        `json:"id"`
+	Token        string        `json:"token"`
+	AccessToken  string        `json:"access_token"`
+	RefreshToken string        `json:"refresh_token"`
+	UserID       string        `json:"user_id"`
+	UserName     string        `json:"user_name"`
+	Email        string        `json:"email"`
+	AvatarURL    string        `json:"avatar_url"`
+	ExpiresAt    FlexibleInt64 `json:"expires_at"`
+	ExpiresIn    FlexibleInt64 `json:"expires_in"`
+	Scope        string        `json:"scope"`
+	TokenType    string        `json:"token_type"`
+	Nonce        string        `json:"nonce"`
+}
+
+// UserInfo 兼容两站 userinfo 的 snake_case 与 camelCase 字段。
+type UserInfo struct {
+	ID               string `json:"id"`
+	UserID           string `json:"user_id"`
+	Name             string `json:"name"`
+	UserName         string `json:"user_name"`
+	UserType         string `json:"userType"`
+	Email            string `json:"email"`
+	AvatarURL        string `json:"avatar_url"`
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name"`
+}
+
+type OrganizationTags struct {
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name"`
+}
+
+type OAuthClient struct {
+	BaseURL    string
+	HTTPClient *http.Client
+	Profile    Profile
+	Doer       RequestDoer
+}
+
+// OpenAPIError 表示 OpenAPI 返回的脱敏 HTTP 错误。
+type OpenAPIError struct {
+	Operation  string
+	StatusCode int
+	Message    string
+}
+
 // UnmarshalJSON 容错解析 JSON 数字、整数样式浮点数和数字字符串。
 func (v *FlexibleInt64) UnmarshalJSON(data []byte) error {
 	parsed, err := parseFlexibleInt64(data)
@@ -87,23 +136,6 @@ func parseFlexibleInt64(data []byte) (FlexibleInt64, error) {
 		parsed = int64(floatValue)
 	}
 	return FlexibleInt64(parsed), nil
-}
-
-// DeviceTokenResponse 兼容国际设备授权和国内 QoderCN20 token 响应。
-type DeviceTokenResponse struct {
-	ID           string        `json:"id"`
-	Token        string        `json:"token"`
-	AccessToken  string        `json:"access_token"`
-	RefreshToken string        `json:"refresh_token"`
-	UserID       string        `json:"user_id"`
-	UserName     string        `json:"user_name"`
-	Email        string        `json:"email"`
-	AvatarURL    string        `json:"avatar_url"`
-	ExpiresAt    FlexibleInt64 `json:"expires_at"`
-	ExpiresIn    FlexibleInt64 `json:"expires_in"`
-	Scope        string        `json:"scope"`
-	TokenType    string        `json:"token_type"`
-	Nonce        string        `json:"nonce"`
 }
 
 // UnmarshalJSON 单独兼容 expires_at 的日期格式，并允许由有效 expires_in 回退。
@@ -173,24 +205,6 @@ func parseFlexibleExpiresAt(data []byte) (FlexibleInt64, error) {
 	return 0, fmt.Errorf("qoder: invalid expiry %q", text)
 }
 
-// UserInfo 兼容两站 userinfo 的 snake_case 与 camelCase 字段。
-type UserInfo struct {
-	ID               string `json:"id"`
-	UserID           string `json:"user_id"`
-	Name             string `json:"name"`
-	UserName         string `json:"user_name"`
-	UserType         string `json:"userType"`
-	Email            string `json:"email"`
-	AvatarURL        string `json:"avatar_url"`
-	OrganizationID   string `json:"organization_id"`
-	OrganizationName string `json:"organization_name"`
-}
-
-type OrganizationTags struct {
-	OrganizationID   string `json:"organization_id"`
-	OrganizationName string `json:"organization_name"`
-}
-
 func (u *UserInfo) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		ID                    string `json:"id"`
@@ -244,13 +258,6 @@ func (o *OrganizationTags) UnmarshalJSON(data []byte) error {
 		o.OrganizationName = firstNonEmpty(raw.OrganizationNameCamel, raw.Name)
 	}
 	return nil
-}
-
-type OAuthClient struct {
-	BaseURL    string
-	HTTPClient *http.Client
-	Profile    Profile
-	Doer       RequestDoer
 }
 
 func NewOAuthClient(baseURL string, httpClient *http.Client) *OAuthClient {
@@ -526,13 +533,6 @@ func (c *OAuthClient) postTokenRequest(ctx context.Context, path string, body []
 		return nil, fmt.Errorf("qoder: invalid %s response: %w", operation, err)
 	}
 	return &token, nil
-}
-
-// OpenAPIError 表示 OpenAPI 返回的脱敏 HTTP 错误。
-type OpenAPIError struct {
-	Operation  string
-	StatusCode int
-	Message    string
 }
 
 // Error 返回不包含原始凭据的错误文本。

@@ -7,17 +7,46 @@ import (
 	purepricing "github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 )
 
-const PricingSourceCatalog = purepricing.PricingSourceCatalog
-
-const PricingSourceUnpriced = purepricing.PricingSourceUnpriced
+const (
+	PricingSourceCatalog  = purepricing.PricingSourceCatalog
+	PricingSourceUnpriced = purepricing.PricingSourceUnpriced
+)
 
 // ResolvedPricing 保留旧解析结果入口，由纯定价包唯一拥有。
 type ResolvedPricing = purepricing.ResolvedPricing
 
-// PricingInput 定价解析输入
+// PricingInput 定价解析输入。
 type PricingInput struct {
 	Model   string
 	GroupID *int64 // nil 表示不检查共享价格配置
+}
+
+type ConfigPrices interface {
+	GetEffectiveConfigModelPricing(context.Context, int64, string) *ModelPricingEntry
+}
+type ModelIdentity struct {
+	Candidates []string
+}
+type ModelCandidates func(string) ModelIdentity
+
+// PriceResolver 按分组关联读取共享价格配置，并按需查询模型目录。
+type PriceResolver struct {
+	pricingConfigs ConfigPrices
+	calculator     *Calculator
+	lookup         ModelCandidates
+	observe        func(string, error)
+	providerStats  ProviderStatsSource
+}
+
+func NewPriceResolver(pricingConfigs ConfigPrices, calculator *Calculator, lookup ModelCandidates, observe func(string, error), stats ...ProviderStatsSource) *PriceResolver {
+	if observe == nil {
+		observe = func(string, error) {}
+	}
+	var providerStats ProviderStatsSource
+	if len(stats) > 0 {
+		providerStats = stats[0]
+	}
+	return &PriceResolver{pricingConfigs: pricingConfigs, calculator: calculator, lookup: lookup, observe: observe, providerStats: providerStats}
 }
 
 // Resolve 按关联价格配置与内置价格解析价卡及计费设置。
@@ -77,34 +106,6 @@ func LookupPricingForModel(model string, lookup func(string) *ModelPricingEntry,
 		}
 	}
 	return nil
-}
-
-type ConfigPrices interface {
-	GetEffectiveConfigModelPricing(context.Context, int64, string) *ModelPricingEntry
-}
-type ModelIdentity struct {
-	Candidates []string
-}
-type ModelCandidates func(string) ModelIdentity
-
-// PriceResolver 按分组关联读取共享价格配置，并按需查询模型目录。
-type PriceResolver struct {
-	pricingConfigs ConfigPrices
-	calculator     *Calculator
-	lookup         ModelCandidates
-	observe        func(string, error)
-	providerStats  ProviderStatsSource
-}
-
-func NewPriceResolver(pricingConfigs ConfigPrices, calculator *Calculator, lookup ModelCandidates, observe func(string, error), stats ...ProviderStatsSource) *PriceResolver {
-	if observe == nil {
-		observe = func(string, error) {}
-	}
-	var providerStats ProviderStatsSource
-	if len(stats) > 0 {
-		providerStats = stats[0]
-	}
-	return &PriceResolver{pricingConfigs: pricingConfigs, calculator: calculator, lookup: lookup, observe: observe, providerStats: providerStats}
 }
 
 // BillingSettings 读取分组关联的有效配置，无关联时使用统一默认值。

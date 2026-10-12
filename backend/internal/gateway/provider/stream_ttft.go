@@ -2,10 +2,8 @@ package provider
 
 import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 // OpenAIStreamDataStartsTTFT 按管理员设置选择事件类型或可见内容作为 TTFT 起点。

@@ -6,12 +6,151 @@ import (
 	"strings"
 	"testing"
 
-	mailtest "github.com/TokenFlux/TokenRouter/internal/notification/testkit"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/notification/smtp"
-
-	"github.com/stretchr/testify/require"
+	mailtest "github.com/TokenFlux/TokenRouter/internal/notification/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
+
+type localeDelivery struct {
+	language, subject, body string
+	count                   int
+}
+
+func TestBuildVerifyCodeEmailBody_EscapesSiteName(t *testing.T) {
+	t.Run("escapes_script_injection", func(t *testing.T) {
+		body := renderIdentityBody(t, NotificationEmailEventAuthVerifyCode, "123456", `</h1><script>alert(1)</script><h1>`)
+
+		assert.NotContains(t, body, "<script>")
+		assert.Contains(t, body, "&lt;script&gt;")
+	})
+
+	t.Run("escapes_html_entities", func(t *testing.T) {
+		body := renderIdentityBody(t, NotificationEmailEventAuthVerifyCode, "123456", `A&B<C>"D`)
+
+		assert.Contains(t, body, "A&amp;B&lt;C&gt;&#34;D")
+	})
+
+	t.Run("keeps_normal_site_name", func(t *testing.T) {
+		body := renderIdentityBody(t, NotificationEmailEventAuthVerifyCode, "654321", "My Site")
+
+		assert.Contains(t, body, "My Site")
+		assert.Contains(t, body, "654321")
+	})
+}
+
+func TestBuildPasswordResetEmailBody_EscapesHTMLValues(t *testing.T) {
+	t.Run("escapes_html_tags_in_site_name", func(t *testing.T) {
+		body := renderIdentityBody(t, NotificationEmailEventAuthPasswordReset, "https://example.com/reset?token=abc", `</h1><img src=x onerror=alert(1)>`)
+
+		assert.NotContains(t, body, "<img src=x")
+		assert.Contains(t, body, "&lt;img")
+	})
+
+	t.Run("escapes_html_entities", func(t *testing.T) {
+		body := renderIdentityBody(t, NotificationEmailEventAuthPasswordReset, "https://example.com/reset", `A&B<C>`)
+
+		assert.Contains(t, body, "A&amp;B&lt;C&gt;")
+	})
+
+	t.Run("keeps_normal_site_name_and_url", func(t *testing.T) {
+		resetURL := "https://example.com/reset?token=xyz"
+		body := renderIdentityBody(t, NotificationEmailEventAuthPasswordReset, resetURL, "TokenRouter")
+
+		assert.Contains(t, body, "TokenRouter")
+		assert.Contains(t, body, resetURL)
+	})
+
+	t.Run("escapes_ampersand_in_reset_url", func(t *testing.T) {
+		resetURL := "https://example.com/reset?a=1&b=2"
+		body := renderIdentityBody(t, NotificationEmailEventAuthPasswordReset, resetURL, "Site")
+
+		assert.NotContains(t, body, `href="https://example.com/reset?a=1&b=2"`)
+		assert.Contains(t, body, `href="https://example.com/reset?a=1&amp;b=2"`)
+	})
+}
+
+// TestConcurrentNotificationDelivery 检查同一投递请求并发到达时发送一封邮件，并回收协调锁。
+func TestConcurrentNotificationDelivery(t *testing.T) {
+	repo := mailtest.NewMemorySettings()
+	server := mailtest.StartSMTPServer(t)
+	require.NoError(t, repo.SetMultiple(context.Background(), server.Settings()))
+	n := NewNotificationEmailService(repo, NewMailer(repo, smtp.New()))
+	input := SendRequest{Event: NotificationEmailEventSubscriptionExpiryReminder, RecipientEmail: "fixture@example.com", SourceType: "subscription", SourceID: "1", ReminderKey: "7d"}
+	start := make(chan struct{})
+	errs := make(chan error, 16)
+	for range 16 {
+		go func() { <-start; errs <- n.Send(context.Background(), input) }()
+	}
+	close(start)
+	for range 16 {
+		require.NoError(t, <-errs)
+	}
+	require.Equal(t, int64(1), server.MessageCount())
+	require.Empty(t, n.locks.entries)
+}
+
+func TestConcurrentFirstUnsubscribeSecret(t *testing.T) {
+	n := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
+	start := make(chan struct{})
+	tokens := make(chan string, 16)
+	errs := make(chan error, 16)
+	for range 16 {
+		go func() {
+			<-start
+			token, err := n.createUnsubscribeToken(context.Background(), "fixture@example.com", NotificationEmailEventBalanceLow)
+			tokens <- token
+			errs <- err
+		}()
+	}
+	close(start)
+	for range 16 {
+		token := <-tokens
+		require.NoError(t, <-errs)
+		_, err := n.parseUnsubscribeToken(context.Background(), token)
+		require.NoError(t, err)
+	}
+	require.Empty(t, n.locks.entries)
+}
+
+// TestUserNotificationLocales 覆盖用户事件、非法自定义模板回退和事件语言优先级。
+func TestUserNotificationLocales(t *testing.T) {
+	events := []string{NotificationEmailEventAuthVerifyCode, NotificationEmailEventAuthPasswordReset, NotificationEmailEventNotificationEmailVerifyCode, NotificationEmailEventTeamInvitation, NotificationEmailEventTeamOwnershipTransfer, NotificationEmailEventSubscriptionPurchaseSuccess, NotificationEmailEventSubscriptionExpiryReminder, NotificationEmailEventBalanceLow, NotificationEmailEventBalanceRechargeSuccess, NotificationEmailEventContentModerationViolation, NotificationEmailEventContentModerationDisabled}
+	for _, event := range events {
+		t.Run(event, func(t *testing.T) {
+			ctx := context.Background()
+			repo := mailtest.NewMemorySettings()
+			sender := &localeDelivery{}
+			service := NewNotificationEmailService(repo, sender)
+			service.SetRecipientLocaleReader(func(context.Context, int64, string) string { return "zh" })
+			require.NoError(t, repo.Set(ctx, notificationEmailTemplateKey(event, "zh-Hans"), `{"subject":"broken","html":"{{invalid_placeholder}}"}`))
+			input := SendRequest{Event: event, RecipientEmail: "user@example.com", RecipientName: "User", UserID: 12}
+			require.NoError(t, service.Send(ctx, input))
+			require.Equal(t, "zh-Hans", sender.language)
+			require.NotContains(t, sender.body, "invalid_placeholder")
+			require.NotEqual(t, "broken", sender.subject)
+			input.Locale = "en"
+			require.NoError(t, service.Send(ctx, input))
+			require.Equal(t, "en", sender.language)
+			require.Equal(t, 2, sender.count)
+		})
+	}
+}
+
+// TestRecipientLocalePriority 检查账户、邮箱和站点默认语言的次序。
+func TestRecipientLocalePriority(t *testing.T) {
+	ctx := context.Background()
+	repo := mailtest.NewMemorySettings()
+	service := NewNotificationEmailService(repo, nil)
+	require.NoError(t, repo.Set(ctx, "default_locale", "zh-Hans"))
+	require.Equal(t, "zh-Hans", service.ResolveRecipientLocale(ctx, 5, "u@example.com"))
+	service.RememberRecipientLocale(ctx, 5, "u@example.com", "en")
+	require.Equal(t, "en", service.ResolveRecipientLocale(ctx, 5, "u@example.com"))
+	service.SetRecipientLocaleReader(func(context.Context, int64, string) string { return "zh-Hans" })
+	require.Equal(t, "zh-Hans", service.ResolveRecipientLocale(ctx, 5, "u@example.com"))
+}
 
 func TestNotificationEmailPreviewEscapesHTMLAndSanitizesSubject(t *testing.T) {
 	ctx := context.Background()
@@ -120,6 +259,53 @@ func TestNotificationEmailAuthTemplatesAreListedAndPreviewable(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, resetPreview.Subject, "Password reset")
 	require.Contains(t, resetPreview.HTML, "https://example.com/reset?token=abc")
+}
+
+func TestNotificationEmailEventOrderAndCopies(t *testing.T) {
+	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
+	want := []string{
+		NotificationEmailEventAuthVerifyCode,
+		NotificationEmailEventAuthPasswordReset,
+		NotificationEmailEventNotificationEmailVerifyCode,
+		NotificationEmailEventTeamInvitation,
+		NotificationEmailEventTeamOwnershipTransfer,
+		NotificationEmailEventSubscriptionPurchaseSuccess,
+		NotificationEmailEventSubscriptionExpiryReminder,
+		NotificationEmailEventBalanceLow,
+		NotificationEmailEventBalanceRechargeSuccess,
+		NotificationEmailEventProviderQuotaAlert,
+		NotificationEmailEventContentModerationViolation,
+		NotificationEmailEventContentModerationDisabled,
+		NotificationEmailEventOpsAlert,
+		NotificationEmailEventOpsScheduledReport,
+	}
+	infos := svc.ListEventInfos()
+	events := make([]string, 0, len(infos))
+	seen := make(map[string]bool, len(infos))
+	for _, info := range infos {
+		require.False(t, seen[info.Event], "重复事件：%s", info.Event)
+		seen[info.Event] = true
+		events = append(events, info.Event)
+	}
+	require.Equal(t, want, events)
+
+	infos[0].Event = "changed"
+	infos[0].Placeholders[0] = "changed"
+	again := svc.ListEventInfos()
+	require.Equal(t, want[0], again[0].Event)
+	require.Equal(t, "site_name", again[0].Placeholders[0])
+
+	templates, err := svc.ListTemplates(context.Background())
+	require.NoError(t, err)
+	locales := svc.SupportedLocales()
+	require.Len(t, templates, len(want)*len(locales))
+	for eventIndex, event := range want {
+		for localeIndex, language := range locales {
+			template := templates[eventIndex*len(locales)+localeIndex]
+			require.Equal(t, event, template.Event)
+			require.Equal(t, language, template.Locale)
+		}
+	}
 }
 
 func TestNotificationEmailAdditionalEventsAreListedAndPreviewable(t *testing.T) {
@@ -483,4 +669,19 @@ func TestNotificationAccountPreference(t *testing.T) {
 	svc.SetRecipientLocaleReader(func(context.Context, int64, string) string { return "en" })
 	svc.RememberRecipientLocale(ctx, 42, "user@example.com", "zh-CN")
 	require.Equal(t, "en", svc.ResolveRecipientLocale(ctx, 42, "user@example.com"))
+}
+
+// renderIdentityBody 使用实际发送的内置模板检查变量转义。
+func renderIdentityBody(t *testing.T, event, value, siteName string) string {
+	t.Helper()
+	template := notificationEmailOfficialTemplates[event][notificationEmailLocaleChinese]
+	rendered, err := RenderNotificationEmail(event, template.Subject, template.HTML, map[string]string{"site_name": siteName, "verification_code": value, "reset_url": value, "expires_in_minutes": "15"}, nil)
+	assert.NoError(t, err)
+	return rendered.HTML
+}
+
+func (s *localeDelivery) SendEmail(ctx context.Context, _, subject, body string) error {
+	s.language, s.subject, s.body = locale.FromContext(ctx), subject, body
+	s.count++
+	return nil
 }

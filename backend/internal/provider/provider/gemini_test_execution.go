@@ -12,16 +12,22 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
-
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/vertex"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
 	geminicli "github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/vertex"
 )
+
+// GeminiProviderTest 为平台测试绑定提供商凭据和共享客户端。
+type GeminiProviderTest struct {
+	Tokens      *providercore.GeminiTokenSource
+	Transport   QoderTransport
+	Profiles    *egressprovider.TLSProfiles
+	ValidateURL func(string) (string, error)
+	UserAgent   string
+}
 
 // Execute 按原提供商类型构造一次 Gemini 测试请求并同步输出事件。
 func (s *GeminiProviderTest) Execute(c *TestRun, value *providercore.Record, modelID string, prompt string, testTypes ...string) error {
@@ -114,7 +120,7 @@ func (s *GeminiProviderTest) buildGeminiAPIKeyRequest(ctx context.Context, value
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +216,7 @@ func (s *GeminiProviderTest) buildCodeAssistRequest(ctx context.Context, accessT
 	}
 	fullURL := fmt.Sprintf("%s/v1internal:streamGenerateContent?alt=sse", normalizedBaseURL)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(wrappedBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(wrappedBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -277,15 +283,6 @@ func geminiTestPayload(modelID string, prompt string, testTypes ...string) []byt
 	}
 	bytes, _ := json.Marshal(payload)
 	return bytes
-}
-
-// GeminiProviderTest 为平台测试绑定提供商凭据和共享客户端。
-type GeminiProviderTest struct {
-	Tokens      *providercore.GeminiTokenSource
-	Transport   QoderTransport
-	Profiles    *egressprovider.TLSProfiles
-	ValidateURL func(string) (string, error)
-	UserAgent   string
 }
 
 func (s *GeminiProviderTest) applyUserAgent(req *http.Request) {

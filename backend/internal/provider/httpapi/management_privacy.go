@@ -3,9 +3,10 @@ package httpapi
 import (
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth provider

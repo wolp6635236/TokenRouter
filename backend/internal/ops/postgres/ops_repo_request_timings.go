@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
 // ListRequestTimings 批量读取 http.access 的阶段字段，按 client_request_id 返回最新一条记录。
@@ -37,14 +38,14 @@ func (r *Store) ListRequestTimings(ctx context.Context, clientRequestIDs []strin
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-SELECT DISTINCT ON (l.client_request_id)
-  l.client_request_id,
+SELECT DISTINCT ON (COALESCE(NULLIF(l.client_request_id,''), l.request_id))
+  COALESCE(NULLIF(l.client_request_id,''), l.request_id),
   COALESCE(l.extra::text, '{}')
 FROM ops_system_logs l
 WHERE l.component = 'http.access'
   AND l.message = 'http request completed'
-  AND l.client_request_id = ANY($1)
-ORDER BY l.client_request_id, l.created_at DESC, l.id DESC
+  AND (l.client_request_id = ANY($1) OR l.request_id = ANY($1))
+ORDER BY COALESCE(NULLIF(l.client_request_id,''), l.request_id), l.created_at DESC, l.id DESC
 `, pq.Array(ids))
 	if err != nil {
 		return nil, err

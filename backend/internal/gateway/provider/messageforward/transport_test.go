@@ -12,9 +12,13 @@ import (
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
+
+// 测试使用固定的冷却时长和错误报文作为期望值。
+const gatewayTransportErrorTempUnschedDuration = 10 * time.Minute
+
+var gatewayTransportFailoverBody = []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
 
 type transportTempUnschedRepoStub struct {
 	gatewayprovider.ExecutionProviderStore
@@ -88,8 +92,7 @@ func TestHandleUpstreamTransportError_PersistentEvictsProvider(t *testing.T) {
 	err := s.transportError(context.Background(), c, provider,
 		errors.New(`dial tcp 1.2.3.4:443: connect: connection refused`), forwardcore.Notice{})
 
-	var failoverErr *forwardcore.UpstreamFailoverError
-	if !errors.As(err, &failoverErr) {
+	if _, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); !ok {
 		t.Fatalf("expected *UpstreamFailoverError, got %T: %v", err, err)
 	}
 	if repo.calls != 1 {
@@ -119,8 +122,7 @@ func TestHandleUpstreamTransportError_ClientCanceledNoFailover(t *testing.T) {
 	inErr := context.Canceled
 	err := s.transportError(context.Background(), c, provider, inErr, forwardcore.Notice{})
 
-	var failoverErr *forwardcore.UpstreamFailoverError
-	if errors.As(err, &failoverErr) {
+	if _, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		t.Fatal("canceled client must not fail over to another provider")
 	}
 	if !errors.Is(err, context.Canceled) {
@@ -143,16 +145,10 @@ func TestHandleUpstreamTransportError_UpstreamDeadlineStillFailsOver(t *testing.
 	err := s.transportError(context.Background(), c, provider,
 		context.DeadlineExceeded, forwardcore.Notice{})
 
-	var failoverErr *forwardcore.UpstreamFailoverError
-	if !errors.As(err, &failoverErr) {
+	if _, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); !ok {
 		t.Fatalf("upstream deadline with live request context must fail over, got %T: %v", err, err)
 	}
 	if repo.calls != 0 {
 		t.Fatalf("SetTempUnschedulable called %d times for upstream deadline, want 0", repo.calls)
 	}
 }
-
-// 测试使用固定的冷却时长和错误报文作为期望值。
-const gatewayTransportErrorTempUnschedDuration = 10 * time.Minute
-
-var gatewayTransportFailoverBody = []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)

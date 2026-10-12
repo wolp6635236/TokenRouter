@@ -5,8 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 type embeddingPortsStub struct {

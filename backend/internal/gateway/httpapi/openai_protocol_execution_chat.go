@@ -3,18 +3,35 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"time"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
+
+// OpenAITextExecutor 绑定文本协议执行、请求构造和会话状态。
+type OpenAITextExecutor struct {
+	Compact        *CompactExecutor
+	Requests       *OpenAIRequests
+	Output         *OpenAIResponseOutput
+	Grok           *GrokExecutor
+	Credentials    *gatewayprovider.RequestCredentials
+	FastPolicy     *gatewayprovider.ExecutionFastPolicy
+	Continuation   *session.CompatResponses
+	PromptCache    *session.AnthropicPromptCache
+	CodexUsage     *provideradapter.CodexUsageObserver
+	ForcedTemplate string
+	ResponseTTL    func() time.Duration
+}
 
 // Chat 接收 Chat Completions 请求，按客户端首选协议、提供商协议配置和 Responses 探测结果选择上游协议。
 // Responses 路径转换请求与响应，Chat 路径调用 Chat Completions 端点。OAuth 的 ChatGPT 内部 API 使用 Responses，DeepSeek、Kimi、GLM 等兼容上游可使用 Chat。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,6 +12,15 @@ import (
 
 	geminiwire "github.com/TokenFlux/TokenRouter/internal/protocol/gemini"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
+)
+
+const (
+	GB = 1024 * 1024 * 1024
+	TB = 1024 * GB
+
+	StorageTierUnlimited = 100 * TB // 100TB
+	StorageTierAIPremium = 2 * TB   // 2TB
+	StorageTierFree      = 15 * GB  // 15GB
 )
 
 type GeminiOAuthClient interface {
@@ -46,6 +56,40 @@ type GeminiAuthorization struct {
 	activity   operationActivity
 }
 
+type GeminiOAuthCapabilities struct {
+	AIStudioOAuthEnabled bool     `json:"ai_studio_oauth_enabled"`
+	RequiredRedirectURIs []string `json:"required_redirect_uris"`
+}
+
+type GeminiAuthURLResult struct {
+	AuthURL   string `json:"auth_url"`
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+}
+
+type GeminiExchangeCodeInput struct {
+	SessionID string
+	State     string
+	Code      string
+	ProxyID   *int64
+	OAuthType string // "code_assist" 或 "ai_studio"
+	// TierID is a user-selected tier to be used when auto detection is unavailable or fails.
+	// If empty, the service will fall back to the tier stored in the OAuth session (if any).
+	TierID string
+}
+type GeminiTokenInfo struct {
+	AccessToken  string         `json:"access_token"`
+	RefreshToken string         `json:"refresh_token"`
+	ExpiresIn    int64          `json:"expires_in"`
+	ExpiresAt    int64          `json:"expires_at"`
+	TokenType    string         `json:"token_type"`
+	Scope        string         `json:"scope,omitempty"`
+	ProjectID    string         `json:"project_id,omitempty"`
+	OAuthType    string         `json:"oauth_type,omitempty"` // "code_assist" 或 "ai_studio"
+	TierID       string         `json:"tier_id,omitempty"`    // Canonical tier id (e.g. google_one_free, gcp_standard, aistudio_free)
+	Extra        map[string]any `json:"extra,omitempty"`      // Drive metadata
+}
+
 func NewGeminiAuthorization(client GeminiOAuthClient, codeassist GeminiCodeAssistClient, drive GeminiDriveClient, options GeminiAuthorizationOptions) *GeminiAuthorization {
 	return &GeminiAuthorization{Store: NewGeminiAuthorizationSessions(), Client: client, CodeAssist: codeassist, Drive: drive, Options: options}
 }
@@ -53,20 +97,6 @@ func (s *GeminiAuthorization) Start() { s.Store.Start() }
 func (s *GeminiAuthorization) StopContext(ctx context.Context) error {
 	s.Store.Stop()
 	return s.activity.stop(ctx, "gemini authorization")
-}
-
-const (
-	GB = 1024 * 1024 * 1024
-	TB = 1024 * GB
-
-	StorageTierUnlimited = 100 * TB // 100TB
-	StorageTierAIPremium = 2 * TB   // 2TB
-	StorageTierFree      = 15 * GB  // 15GB
-)
-
-type GeminiOAuthCapabilities struct {
-	AIStudioOAuthEnabled bool     `json:"ai_studio_oauth_enabled"`
-	RequiredRedirectURIs []string `json:"required_redirect_uris"`
 }
 
 func (s *GeminiAuthorization) GetOAuthConfig() *GeminiOAuthCapabilities {
@@ -79,12 +109,6 @@ func (s *GeminiAuthorization) GetOAuthConfig() *GeminiOAuthCapabilities {
 		AIStudioOAuthEnabled: enabled,
 		RequiredRedirectURIs: []string{s.Options.AIStudioRedirectURI},
 	}
-}
-
-type GeminiAuthURLResult struct {
-	AuthURL   string `json:"auth_url"`
-	SessionID string `json:"session_id"`
-	State     string `json:"state"`
 }
 
 func (s *GeminiAuthorization) GenerateAuthURL(ctx context.Context, proxyID *int64, redirectURI, projectID, oauthType, tierID string) (*GeminiAuthURLResult, error) {
@@ -174,30 +198,7 @@ func (s *GeminiAuthorization) GenerateAuthURL(ctx context.Context, proxyID *int6
 	}, nil
 }
 
-type GeminiExchangeCodeInput struct {
-	SessionID string
-	State     string
-	Code      string
-	ProxyID   *int64
-	OAuthType string // "code_assist" 或 "ai_studio"
-	// TierID is a user-selected tier to be used when auto detection is unavailable or fails.
-	// If empty, the service will fall back to the tier stored in the OAuth session (if any).
-	TierID string
-}
-type GeminiTokenInfo struct {
-	AccessToken  string         `json:"access_token"`
-	RefreshToken string         `json:"refresh_token"`
-	ExpiresIn    int64          `json:"expires_in"`
-	ExpiresAt    int64          `json:"expires_at"`
-	TokenType    string         `json:"token_type"`
-	Scope        string         `json:"scope,omitempty"`
-	ProjectID    string         `json:"project_id,omitempty"`
-	OAuthType    string         `json:"oauth_type,omitempty"` // "code_assist" 或 "ai_studio"
-	TierID       string         `json:"tier_id,omitempty"`    // Canonical tier id (e.g. google_one_free, gcp_standard, aistudio_free)
-	Extra        map[string]any `json:"extra,omitempty"`      // Drive metadata
-}
-
-// ValidateTierID validates tier_id format and length
+// ValidateTierID validates tier_id format and length.
 func ValidateTierID(tierID string) error {
 	if tierID == "" {
 		return nil // Empty is allowed
@@ -213,7 +214,7 @@ func ValidateTierID(tierID string) error {
 }
 
 // ExtractTierIDFromAllowedTiers extracts tierID from LoadCodeAssist response
-// Prioritizes IsDefault tier, falls back to first non-empty tier
+// Prioritizes IsDefault tier, falls back to first non-empty tier.
 func ExtractTierIDFromAllowedTiers(allowedTiers []geminiwire.AllowedTier) string {
 	tierID := "LEGACY"
 	// First pass: look for default tier
@@ -527,12 +528,9 @@ func (s *GeminiAuthorization) ExchangeCode(ctx context.Context, input *GeminiExc
 func (s *GeminiAuthorization) refreshToken(ctx context.Context, oauthType, refreshToken, proxyURL string) (*GeminiTokenInfo, error) {
 	var lastErr error
 
-	for attempt := 0; attempt <= 3; attempt++ {
+	for attempt := range 4 {
 		if attempt > 0 {
-			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
+			backoff := min(time.Duration(1<<uint(attempt-1))*time.Second, 30*time.Second)
 			time.Sleep(backoff)
 		}
 
@@ -766,9 +764,7 @@ func (s *GeminiAuthorization) BuildProviderCredentials(tokenInfo *GeminiTokenInf
 	}
 	// Store extra metadata (Drive info) if present
 	if len(tokenInfo.Extra) > 0 {
-		for k, v := range tokenInfo.Extra {
-			creds[k] = v
-		}
+		maps.Copy(creds, tokenInfo.Extra)
 	}
 	return creds
 }

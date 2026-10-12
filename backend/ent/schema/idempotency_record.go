@@ -1,13 +1,13 @@
 package schema
 
 import (
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 // IdempotencyRecord 幂等请求记录表。

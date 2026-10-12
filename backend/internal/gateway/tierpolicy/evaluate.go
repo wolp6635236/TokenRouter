@@ -1,6 +1,7 @@
 package tierpolicy
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -45,10 +46,5 @@ func userMatches(ruleUserIDs []int64, userID int64) bool {
 	if len(ruleUserIDs) == 0 {
 		return true
 	}
-	for _, ruleUserID := range ruleUserIDs {
-		if ruleUserID == userID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ruleUserIDs, userID)
 }

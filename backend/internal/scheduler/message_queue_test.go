@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var _ UserMsgQueueCache = (*cleanupWorkerUserMsgQueueCache)(nil)
+
 type cleanupWorkerUserMsgQueueCache struct {
 	reconcileCalls atomic.Int64
 	maxCount       atomic.Int64
 }
-
-var _ UserMsgQueueCache = (*cleanupWorkerUserMsgQueueCache)(nil)
 
 func (c *cleanupWorkerUserMsgQueueCache) AcquireLock(context.Context, int64, string, int) (bool, error) {
 	return true, nil

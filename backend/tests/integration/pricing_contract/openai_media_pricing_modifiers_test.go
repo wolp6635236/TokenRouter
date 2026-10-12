@@ -5,18 +5,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	completion "github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 // TestOpenAIMediaPricingUsesModifierOnlyCards 验证图片和视频的 token 价卡必须保留全部倍率，不能因为继承内置来源而改走按次计费。

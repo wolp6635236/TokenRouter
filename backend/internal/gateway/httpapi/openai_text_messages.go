@@ -6,19 +6,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 func (h *OpenAITextHandler) Messages(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "anthropic")
+	done, accepted := h.BeginRequest(c, "anthropic")
 	if !accepted {
 		return
 	}

@@ -10,10 +10,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
+)
+
+const (
+	BatchImageSettlementRetryDelay = time.Minute
+	BatchImageSettlementMaxRetries = 5
+	BatchImageCostEpsilon          = 0.00000001
 )
 
 type Settlement struct {
@@ -27,12 +33,6 @@ type Settlement struct {
 	Observe        func(string, ...any)
 }
 
-func (s *Settlement) warn(event string, values ...any) {
-	if s.Observe != nil {
-		s.Observe(event, values...)
-	}
-}
-
 type BatchImageSettlementResult struct {
 	BatchID               string
 	SuccessCount          int
@@ -44,6 +44,12 @@ type BatchImageSettlementResult struct {
 	BalanceAmountUSD      float64
 	BillingAllocations    []billing.BillingAllocation
 	AlreadySettled        bool
+}
+
+func (s *Settlement) warn(event string, values ...any) {
+	if s.Observe != nil {
+		s.Observe(event, values...)
+	}
 }
 
 func (s *Settlement) Settle(ctx context.Context, batchID string) (*BatchImageSettlementResult, error) {
@@ -276,7 +282,8 @@ func (s *Settlement) RecordUsageLog(ctx context.Context, job *BatchImageJob, act
 		APIKeyID:               *job.APIKeyID,
 		ProviderID:             *job.ProviderID,
 		Platform:               BatchImageProviderPlatform(job.Platform),
-		RequestID:              strings.TrimSpace(requestID),
+		RequestID:              telemetry.StableRequestID(BatchImageCaptureRequestID(job.BatchID)),
+		BillingKey:             strings.TrimSpace(requestID),
 		Model:                  internalModel,
 		RequestedModel:         requestedModel,
 		UpstreamModel:          optionalTrimmedStringPtr(job.Model),
@@ -355,12 +362,6 @@ func (r *BatchImageSettlementResult) String() string {
 	return fmt.Sprintf("batch_id=%s success=%d fail=%d actual_cost=%0.10f already_settled=%t",
 		r.BatchID, r.SuccessCount, r.FailCount, r.ActualCost, r.AlreadySettled)
 }
-
-const (
-	BatchImageSettlementRetryDelay = time.Minute
-	BatchImageSettlementMaxRetries = 5
-	BatchImageCostEpsilon          = 0.00000001
-)
 
 func optionalTrimmedStringPtr(raw string) *string {
 	v := strings.TrimSpace(raw)

@@ -9,18 +9,15 @@ import (
 	"testing"
 	"time"
 
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-
-	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	authctx "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
 // stubJWTUserRepo 实现 UserRepository 的最小子集，仅支持 GetByID。
@@ -28,6 +25,10 @@ type stubJWTUserRepo struct {
 	identity.
 		UserRepository
 	users map[int64]*identity.User
+}
+
+type recordingActivityToucher struct {
+	userIDs []int64
 }
 
 func (r *stubJWTUserRepo) GetByID(_ context.Context, id int64) (*identity.User, error) {
@@ -44,10 +45,6 @@ func (r *stubJWTUserRepo) GetUserAvatar(_ context.Context, _ int64) (*identity.U
 
 func (r *stubJWTUserRepo) UpdateUserLastActiveAt(_ context.Context, _ int64, _ time.Time) error {
 	return nil
-}
-
-type recordingActivityToucher struct {
-	userIDs []int64
 }
 
 func (r *recordingActivityToucher) TouchLastActiveForUser(_ context.Context, user *identity.User) {
@@ -70,7 +67,7 @@ func newJWTTestEnv(users map[int64]*identity.User) (*gin.Engine, *identity.Sessi
 	mw := identityhttp.JWTAuth(authSvc, userSvc, userSvc, nil, nil)
 
 	r := gin.New()
-	r.Use(gin.HandlerFunc(mw))
+	r.Use(mw)
 	r.GET("/protected", func(c *gin.Context) {
 		subject, _ := authctx.GetAuthSubjectFromContext(c)
 		role, _ := authctx.GetUserRoleFromContext(c)

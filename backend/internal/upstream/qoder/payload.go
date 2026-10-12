@@ -7,19 +7,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
 
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/google/uuid"
-	"github.com/tidwall/gjson"
 )
 
-var QoderClaudeBillingCCHRe = regexp.MustCompile(`(x-anthropic-billing-header:[^\n\r;]*?(?:;[^\n\r;]*?)*\bcch=)[0-9a-fA-F]{5}(;)`)
+var (
+	QoderClaudeBillingCCHRe = regexp.MustCompile(`(x-anthropic-billing-header:[^\n\r;]*?(?:;[^\n\r;]*?)*\bcch=)[0-9a-fA-F]{5}(;)`)
+
+	QoderBlankResponseMeta = map[string]any{
+		"id": "",
+		"usage": map[string]any{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
+			"completion_tokens_details": map[string]any{
+				"reasoning_tokens": 0,
+			},
+			"prompt_tokens_details": map[string]any{
+				"cached_tokens": 0,
+			},
+		},
+	}
+)
 
 // QoderThinkingDirective 表示下游思考参数归一化后的开关和等级。
 type QoderThinkingDirective struct {
@@ -482,14 +501,14 @@ func QoderThinkingEffortForCapability(capability ThinkingCapability, requested s
 }
 
 func AddQoderEphemeralCacheControl(messages []any) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, ok := messages[i].(map[string]any)
+	for _, message := range slices.Backward(messages) {
+		message, ok := message.(map[string]any)
 		if !ok {
 			continue
 		}
 		contents, _ := message["contents"].([]any)
-		for j := len(contents) - 1; j >= 0; j-- {
-			block, ok := contents[j].(map[string]any)
+		for _, content := range slices.Backward(contents) {
+			block, ok := content.(map[string]any)
 			if !ok || block["type"] != "text" {
 				continue
 			}
@@ -552,21 +571,6 @@ func QoderBasePayload() map[string]any {
 		"messages": []any{},
 		"tools":    []any{},
 	}
-}
-
-var QoderBlankResponseMeta = map[string]any{
-	"id": "",
-	"usage": map[string]any{
-		"prompt_tokens":     0,
-		"completion_tokens": 0,
-		"total_tokens":      0,
-		"completion_tokens_details": map[string]any{
-			"reasoning_tokens": 0,
-		},
-		"prompt_tokens_details": map[string]any{
-			"cached_tokens": 0,
-		},
-	},
 }
 
 func QoderPayloadMessage(role, text string) map[string]any {
@@ -909,9 +913,7 @@ func QoderCopyRawMap(raw map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	copied := make(map[string]any, len(raw))
-	for key, value := range raw {
-		copied[key] = value
-	}
+	maps.Copy(copied, raw)
 	return copied
 }
 

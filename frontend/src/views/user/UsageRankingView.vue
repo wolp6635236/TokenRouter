@@ -76,7 +76,7 @@
           </div>
         </section>
 
-        <section v-else class="flex min-h-[360px] items-center justify-center rounded-surface border border-dashed border-gray-300 bg-white p-8 text-center dark:border-dark-600 dark:bg-dark-800">
+        <section v-else class="flex min-h-[360px] items-center justify-center rounded-surface border border-dashed border-gray-300 bg-white p-8 text-center dark:border-dark-600 dark:bg-dark-900">
           <div>
             <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-control bg-gray-100 text-gray-400 dark:bg-dark-700 dark:text-dark-300">
               <Icon name="chart" size="lg" />

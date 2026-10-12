@@ -10,11 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"go.uber.org/zap"
 )
 
 // MessagesResponseOptions 在通用读取选项上补充 Messages 的失败和用量处理。

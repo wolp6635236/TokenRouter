@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-// ClassifyForbiddenType 根据 403 响应体判断禁止类型
+// urlPattern 用于从 403 响应体中提取 URL（降级方案）。
+var urlPattern = regexp.MustCompile(`https://[^\s"'\\]+`)
+
+// ClassifyForbiddenType 根据 403 响应体判断禁止类型。
 func ClassifyForbiddenType(body string) string {
 	lower := strings.ToLower(body)
 	switch {
@@ -22,10 +25,7 @@ func ClassifyForbiddenType(body string) string {
 	}
 }
 
-// urlPattern 用于从 403 响应体中提取 URL（降级方案）
-var urlPattern = regexp.MustCompile(`https://[^\s"'\\]+`)
-
-// ExtractValidationURL 从 403 响应 JSON 中提取验证/申诉链接
+// ExtractValidationURL 从 403 响应 JSON 中提取验证/申诉链接。
 func ExtractValidationURL(body string) string {
 	// 1. 尝试结构化 JSON 提取: /error/details[*]/metadata/validation_url 或 appeal_url
 	var parsed struct {

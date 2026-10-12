@@ -11,11 +11,12 @@ import (
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
 )
 
 // TestPendingTransactionConsumesOnce 两个独立 PostgreSQL 事务读到未消费会话后竞争提交。
@@ -53,9 +54,7 @@ func TestPendingTransactionConsumesOnce(t *testing.T) {
 	results := make(chan error, 2)
 	var workers sync.WaitGroup
 	for range 2 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			tx, e := client.Tx(ctx)
 			if e != nil {
 				results <- e
@@ -67,7 +66,7 @@ func TestPendingTransactionConsumesOnce(t *testing.T) {
 				e = tx.Commit()
 			}
 			results <- e
-		}()
+		})
 	}
 	for range 2 {
 		select {

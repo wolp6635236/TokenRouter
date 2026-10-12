@@ -136,9 +136,12 @@ export default {
         }
       },
       fontFamily: {
-        // 英文使用 OpenRouter 的开源字体，中文继续按现有系统字体顺序回退。
+        // 英文用 OpenRouter 的开源字体 Plus Jakarta Sans。
+        // 中文在苹果设备上用系统自带的苹方，其他设备用字形接近的思源黑体网页字体。
         sans: [
           '"Plus Jakarta Sans Variable"',
+          '"PingFang SC"',
+          '"Noto Sans SC Variable"',
           'system-ui',
           '-apple-system',
           'BlinkMacSystemFont',
@@ -146,7 +149,6 @@ export default {
           'Roboto',
           'Helvetica Neue',
           'Arial',
-          'PingFang SC',
           'Hiragino Sans GB',
           'Microsoft YaHei',
           'sans-serif'

@@ -6,15 +6,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // TestFixedMessagesOpenUsesBoundDependenciesAndExplicitState 验证请求会话使用构造时绑定的依赖和传入状态。

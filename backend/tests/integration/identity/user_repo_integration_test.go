@@ -4,93 +4,24 @@ package identity_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
-	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/stretchr/testify/suite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/ent/authidentitychannel"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-
-	"github.com/stretchr/testify/suite"
 )
-
-type UserRepoSuite struct {
-	db *sql.DB
-	suite.Suite
-	ctx    context.Context
-	client *dbent.Client
-	repo   *postgres.UserStore
-}
-
-// SetupSuite 套件共用隔离数据库，提交型断言保持逐项清理边界。
-func (s *UserRepoSuite) SetupSuite() {
-	s.db, s.client = identityDatabase(s.T())
-}
-
-func (s *UserRepoSuite) SetupTest() {
-	s.ctx = context.Background()
-	s.T().Cleanup(func() {
-		_, err := s.db.ExecContext(context.Background(), "TRUNCATE users RESTART IDENTITY CASCADE")
-		s.Require().NoError(err)
-	})
-	s.repo = postgres.NewUserStoreWithSQL(s.client, s.db)
-
-	// 清理测试数据，确保每个测试从干净状态开始
-	_, _ = s.db.ExecContext(s.ctx, "DELETE FROM auth_identity_channels")
-	_, _ = s.db.ExecContext(s.ctx, "DELETE FROM auth_identities")
-	_, _ = s.db.ExecContext(s.ctx, "DELETE FROM user_subscriptions")
-	_, _ = s.db.ExecContext(s.ctx, "DELETE FROM user_allowed_groups")
-	_, _ = s.db.ExecContext(s.ctx, "DELETE FROM users")
-}
 
 func TestUserRepoSuite(t *testing.T) {
 	suite.Run(t, new(UserRepoSuite))
-}
-
-func (s *UserRepoSuite) mustCreateUser(u *identitycore.User) *identitycore.User {
-	s.T().Helper()
-
-	if u.Email == "" {
-		u.Email = "user-" + time.Now().Format(time.RFC3339Nano) + "@example.com"
-	}
-	if u.PasswordHash == "" {
-		u.PasswordHash = "test-password-hash"
-	}
-	if u.Role == "" {
-		u.Role = identitycore.RoleUser
-	}
-	if u.Status == "" {
-		u.Status = billing.StatusActive
-	}
-	if u.Concurrency == 0 {
-		u.Concurrency = 5
-	}
-
-	s.Require().NoError(s.repo.Create(s.ctx, u), "create user")
-	return u
-}
-
-func (s *UserRepoSuite) mustCreateGroup(name string) *routing.Group {
-	s.T().Helper()
-
-	g, err := s.client.Group.Create().
-		SetName(name).
-		SetStatus(billing.StatusActive).
-		Save(s.ctx)
-	s.Require().NoError(err, "create group")
-	return routingpostgres.GroupFromEnt(g)
 }
 
 func (s *UserRepoSuite) TestUpdateForkSpecificFields() {
@@ -102,7 +33,7 @@ func (s *UserRepoSuite) TestUpdateForkSpecificFields() {
 	loaded.APIKeyLimit = 7
 	loaded.DisabledPublicGroups = []int64{group.ID}
 
-	// fork 的数量上限与公共分组禁用关系必须独立受掩码控制。
+	// 数量上限与公共分组禁用关系分别由字段掩码控制。
 	s.Require().NoError(s.repo.Update(s.ctx, loaded, identitycore.UserUpdateFields{
 		APIKeyLimit:          true,
 		DisabledPublicGroups: true,
@@ -153,8 +84,6 @@ func (s *UserRepoSuite) mustCreateSubscription(userID, planID int64, mutate func
 	s.Require().NoError(err, "create subscription")
 	return sub
 }
-
-// --- Create / GetByID / GetByEmail / Update / Delete ---
 
 func (s *UserRepoSuite) TestCreate() {
 	user := s.mustCreateUser(&identitycore.User{
@@ -332,8 +261,6 @@ func (s *UserRepoSuite) TestDeleteRemovesAuthIdentitiesAndChannels() {
 	s.Require().Zero(channelCount)
 }
 
-// --- List / ListWithFilters ---
-
 func (s *UserRepoSuite) TestList() {
 	s.mustCreateUser(&identitycore.User{Email: "list1@test.com"})
 	s.mustCreateUser(&identitycore.User{Email: "list2@test.com"})
@@ -434,8 +361,6 @@ func (s *UserRepoSuite) TestListWithFilters_CombinedFilters() {
 	s.Require().Equal(target.ID, users[0].ID, "ListWithFilters result mismatch")
 }
 
-// --- Balance operations ---
-
 func (s *UserRepoSuite) TestUpdateBalance() {
 	user := s.mustCreateUser(&identitycore.User{Email: "bal@test.com", Balance: 10})
 
@@ -463,12 +388,10 @@ func (s *UserRepoSuite) TestApplyRedeemBalanceAdjustment_ConcurrentNeverNegative
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			errs <- s.repo.ApplyRedeemBalanceAdjustment(context.Background(), user.ID, -7)
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -529,8 +452,6 @@ func (s *UserRepoSuite) TestDeductBalance_LeavesLegacyNegativeBalanceUnchanged()
 	s.Require().InDelta(-5.0, got.Balance, 1e-6, "Existing negative balance should remain unchanged")
 }
 
-// --- Concurrency ---
-
 func (s *UserRepoSuite) TestUpdateConcurrency() {
 	user := s.mustCreateUser(&identitycore.User{Email: "conc@test.com", Concurrency: 5})
 
@@ -558,12 +479,10 @@ func (s *UserRepoSuite) TestApplyRedeemConcurrencyAdjustment_ConcurrentNeverNega
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			errs <- s.repo.ApplyRedeemConcurrencyAdjustment(context.Background(), user.ID, -7)
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -575,8 +494,6 @@ func (s *UserRepoSuite) TestApplyRedeemConcurrencyAdjustment_ConcurrentNeverNega
 	s.Require().NoError(err)
 	s.Require().Equal(0, got.Concurrency)
 }
-
-// --- ExistsByEmail ---
 
 func (s *UserRepoSuite) TestExistsByEmail() {
 	s.mustCreateUser(&identitycore.User{Email: "exists@test.com"})
@@ -633,16 +550,13 @@ func (s *UserRepoSuite) TestCreateWithNormalizedEmailGuardSerializesProviderAlia
 	errs := make(chan error, len(candidates))
 	var wg sync.WaitGroup
 	for _, candidate := range candidates {
-		candidate := candidate
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs <- s.repo.CreateWithNormalizedEmailGuard(
 				s.ctx,
 				candidate,
 				identitycore.NormalizeRegistrationEmailAddress(candidate.Email),
 			)
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -697,8 +611,6 @@ func (s *UserRepoSuite) TestUpdateWithNormalizedEmailGuard_AllowsSameUser() {
 	s.Require().Equal("yourname@gmail.com", reloaded.Email)
 }
 
-// --- RemoveGroupFromAllowedGroups ---
-
 func (s *UserRepoSuite) TestRemoveGroupFromAllowedGroups() {
 	target := s.mustCreateGroup("target-42")
 	other := s.mustCreateGroup("other-7")
@@ -735,8 +647,6 @@ func (s *UserRepoSuite) TestRemoveGroupFromAllowedGroups_NoMatch() {
 	s.Require().NoError(err)
 	s.Require().Zero(affected, "expected no affected rows")
 }
-
-// --- GetFirstAdmin ---
 
 func (s *UserRepoSuite) TestGetFirstAdmin() {
 	admin1 := s.mustCreateUser(&identitycore.User{
@@ -782,8 +692,6 @@ func (s *UserRepoSuite) TestGetFirstAdmin_DisabledAdminIgnored() {
 	s.Require().NoError(err, "GetFirstAdmin")
 	s.Require().Equal(activeAdmin.ID, got.ID, "should return only active admin")
 }
-
-// --- Combined ---
 
 func (s *UserRepoSuite) TestCRUD_And_Filters_And_AtomicUpdates() {
 	user1 := s.mustCreateUser(&identitycore.User{
@@ -851,8 +759,6 @@ func (s *UserRepoSuite) TestCRUD_And_Filters_And_AtomicUpdates() {
 	s.Require().Len(users, 1, "ListWithFilters len mismatch")
 	s.Require().Equal(user2.ID, users[0].ID, "ListWithFilters result mismatch")
 }
-
-// --- UpdateBalance/UpdateConcurrency 影响行数校验测试 ---
 
 func (s *UserRepoSuite) TestUpdateBalance_NotFound() {
 	err := s.repo.UpdateBalance(s.ctx, 999999, 10.0)

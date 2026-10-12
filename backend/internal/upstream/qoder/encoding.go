@@ -22,7 +22,7 @@ func init() {
 		toCustom[i] = byte(i)
 		toStd[i] = byte(i)
 	}
-	for i := 0; i < len(stdAlphabet); i++ {
+	for i := range len(stdAlphabet) {
 		toCustom[stdAlphabet[i]] = customAlphabet[i]
 		toStd[customAlphabet[i]] = stdAlphabet[i]
 	}

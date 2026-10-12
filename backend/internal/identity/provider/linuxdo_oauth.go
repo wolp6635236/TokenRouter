@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/imroc/req/v3"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 type (
@@ -19,8 +20,11 @@ type (
 	LinuxDoTokenExchangeError = identity.LinuxDoTokenExchangeError
 )
 
-// LinuxDoClient 接入身份端口，复用原 HTTP 与解析实现。
+// LinuxDoClient 交换 LinuxDo 授权码并读取用户资料。
 type LinuxDoClient struct{}
+
+// LinuxDoOptions 是 identity.LinuxDoOAuthOptions 的类型别名。
+type LinuxDoOptions = identity.LinuxDoOAuthOptions
 
 func (LinuxDoClient) ExchangeCode(ctx context.Context, o LinuxDoOptions, code, redirect, verifier string) (*LinuxDoTokenResponse, error) {
 	return LinuxDoExchangeCode(ctx, o, code, redirect, verifier)

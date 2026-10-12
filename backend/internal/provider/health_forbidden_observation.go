@@ -7,9 +7,19 @@ import (
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
+
+// ForbiddenObservation 将平台分类与提供商处罚权限分开。
+type ForbiddenObservation struct {
+	Message                  string
+	Body                     []byte
+	HTML                     bool
+	Kind                     string
+	ValidationURL            string
+	ConcurrentRequestLimited bool
+	ConcurrencyReason        string
+}
 
 func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody []byte, fallback string) string {
 	prefix = strings.TrimSpace(prefix)
@@ -89,7 +99,7 @@ func (s *HealthService) handleOpenAI403(ctx context.Context, provider *Record, o
 // handleAntigravity403 处理 Antigravity 平台的 403 错误
 // validation（需要验证）→ 永久 SetError（需人工去 Google 验证后恢复）
 // violation（违规封号）→ 永久 SetError（需人工处理）
-// generic（通用禁止）→ 永久 SetError
+// generic（通用禁止）→ 永久 SetError。
 func (s *HealthService) handleAntigravity403(ctx context.Context, provider *Record, observation ForbiddenObservation) (shouldDisable bool) {
 	fbType := observation.Kind
 
@@ -130,15 +140,4 @@ func (s *HealthService) handleAntigravity403(ctx context.Context, provider *Reco
 		s.ApplyAuthenticationFailure(ctx, provider, msg)
 		return true
 	}
-}
-
-// ForbiddenObservation 将平台分类与提供商处罚权限分开。
-type ForbiddenObservation struct {
-	Message                  string
-	Body                     []byte
-	HTML                     bool
-	Kind                     string
-	ValidationURL            string
-	ConcurrentRequestLimited bool
-	ConcurrencyReason        string
 }

@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/stretchr/testify/require"
 )
 
 func mustRawJSON(t *testing.T, s string) json.RawMessage {

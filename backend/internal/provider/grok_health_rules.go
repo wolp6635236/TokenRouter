@@ -184,10 +184,7 @@ func GrokSnapshotUtilization(snapshot *usageview.QuotaSnapshot) (float64, *time.
 		if window == nil || window.Limit == nil || *window.Limit <= 0 || window.Remaining == nil {
 			return
 		}
-		remaining := *window.Remaining
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining := max(*window.Remaining, 0)
 		util := (1 - float64(remaining)/float64(*window.Limit)) * 100
 		if util < 0 {
 			util = 0

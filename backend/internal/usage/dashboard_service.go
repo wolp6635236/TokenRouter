@@ -68,6 +68,12 @@ type DashboardService struct {
 	preAggregation AggregationSettings
 }
 
+// DashboardReaders 提供按时间范围查询和公开统计查询。
+type DashboardReaders struct {
+	Range  dashboardStatsRangeFetcher
+	Public dashboardPublicStatsFetcher
+}
+
 func NewDashboardService(usageRepo UsageLogRepository, aggRepo DashboardAggregationRepository, cache DashboardStatsCache, cfg *Options, readers ...DashboardReaders) *DashboardService {
 	calendar := timezone.NewCalendar(time.Local)
 	background := func(_ string, fn func()) bool { go fn(); return true }
@@ -514,12 +520,6 @@ func (s *DashboardService) GetBatchAPIKeyUsageStats(ctx context.Context, apiKeyI
 		return nil, fmt.Errorf("get batch api key usage stats: %w", err)
 	}
 	return stats, nil
-}
-
-// DashboardReaders 提供按时间范围查询和公开统计查询。
-type DashboardReaders struct {
-	Range  dashboardStatsRangeFetcher
-	Public dashboardPublicStatsFetcher
 }
 
 // SetBackgroundRunner 只在构造期绑定现有任务拥有者。

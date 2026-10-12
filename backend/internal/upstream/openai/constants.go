@@ -5,66 +5,34 @@ import (
 	"strings"
 )
 
-// Model 表示一个 OpenAI 模型。
-type Model struct {
-	ID          string `json:"id"`
-	Object      string `json:"object"`
-	Created     int64  `json:"created"`
-	OwnedBy     string `json:"owned_by"`
-	Type        string `json:"type"`
-	DisplayName string `json:"display_name"`
-}
+const (
+	// DefaultTestModel 是测试 OpenAI 提供商时使用的默认模型。
+	DefaultTestModel = "gpt-5.4"
 
-// DefaultModels 是默认 OpenAI 模型列表。
-var DefaultModels = []Model{
-	{ID: "gpt-5.6-sol", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Sol"},
-	{ID: "gpt-5.6-terra", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Terra"},
-	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
-	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
-	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
-	{ID: "gpt-5.4", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4"},
-	{ID: "gpt-5.4-mini", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Mini"},
-	{ID: "gpt-5.3-codex-spark", Object: "model", Created: 1735689600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.3 Codex Spark"},
-	{ID: "codex-auto-review", Object: "model", Created: 1776902400, OwnedBy: "openai", Type: "model", DisplayName: "Codex Auto Review"},
-	{ID: "gpt-5.2", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.2"},
-	{ID: "gpt-image-1", Object: "model", Created: 1733875200, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 1"},
-	{ID: "gpt-image-1.5", Object: "model", Created: 1735689600, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 1.5"},
-	{ID: "gpt-image-2", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2"},
-}
+	// CodexUsageProbeModel 是 OAuth Codex 额度探针使用的兼容模型。
+	CodexUsageProbeModel = "codex-auto-review"
+)
 
-// DefaultModelIDs 返回默认模型 ID 列表。
-func DefaultModelIDs() []string {
-	ids := make([]string, len(DefaultModels))
-	for i, m := range DefaultModels {
-		ids[i] = m.ID
-	}
-	return ids
-}
+var (
+	// DefaultInstructions 是非 Codex CLI 请求的默认 instructions。
+	// 内容为真实 Codex CLI 的 GPT-5-Codex base prompt（codex 系模型默认）。
+	//
+	//go:embed instructions.txt
+	DefaultInstructions string
 
-// DefaultTestModel 是测试 OpenAI 提供商时使用的默认模型。
-const DefaultTestModel = "gpt-5.4"
+	// instructionsGPT51 / instructionsGPT52 / instructionsGPT55 为 gpt-5.1 / gpt-5.2 / gpt-5.5
+	// 非 codex 模型对应的真实 Codex 编码 agent base prompt，用于模型感知的 instructions 选择。
+	// GPT-5.5 同时作为最新版本的 fallback（覆盖 5.3 / 5.4 等未单独维护 prompt 的版本）。
+	//
+	//go:embed instructions_gpt5_1.txt
+	instructionsGPT51 string
 
-// CodexUsageProbeModel 是 OAuth Codex 额度探针使用的兼容模型。
-const CodexUsageProbeModel = "codex-auto-review"
+	//go:embed instructions_gpt5_2.txt
+	instructionsGPT52 string
 
-// DefaultInstructions 是非 Codex CLI 请求的默认 instructions。
-// 内容为真实 Codex CLI 的 GPT-5-Codex base prompt（codex 系模型默认）。
-//
-//go:embed instructions.txt
-var DefaultInstructions string
-
-// instructionsGPT51 / instructionsGPT52 / instructionsGPT55 为 gpt-5.1 / gpt-5.2 / gpt-5.5
-// 非 codex 模型对应的真实 Codex 编码 agent base prompt，用于模型感知的 instructions 选择。
-// GPT-5.5 同时作为最新版本的 fallback（覆盖 5.3 / 5.4 等未单独维护 prompt 的版本）。
-//
-//go:embed instructions_gpt5_1.txt
-var instructionsGPT51 string
-
-//go:embed instructions_gpt5_2.txt
-var instructionsGPT52 string
-
-//go:embed instructions_gpt5_5.txt
-var instructionsGPT55 string
+	//go:embed instructions_gpt5_5.txt
+	instructionsGPT55 string
+)
 
 // latestCodexInstructions 返回当前已知最新版本的 Codex base instructions，
 // 当前为 GPT-5.5；若 5.5 prompt 意外为空则回退到 DefaultInstructions 保证非空。

@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
 const (

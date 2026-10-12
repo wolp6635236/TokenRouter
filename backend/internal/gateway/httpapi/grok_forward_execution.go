@@ -7,26 +7,21 @@ import (
 	"strings"
 	"time"
 
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
-
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/grokforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/gin-gonic/gin"
-
-	"github.com/google/uuid"
 )
 
 // grokForwardAdapter 保存本次请求的凭据和执行接口引用。
@@ -37,8 +32,13 @@ type grokForwardAdapter struct {
 	token, proxyURL string
 }
 
+// WriteGrokForwardInvalidRequest 按 OpenAI 格式写出端点或工具参数错误。
+func WriteGrokForwardInvalidRequest(c *gin.Context, message, param string) {
+	c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": message, "param": param}})
+}
+
 func (a *grokForwardAdapter) options() grokforward.Options {
-	maxLine := openAIResponseDefaultMaxLineSize
+	maxLine := OpenAIResponseDefaultMaxLineSize
 	if a.s.Output.Options.MaxLineSize > 0 {
 		maxLine = a.s.Output.Options.MaxLineSize
 	}

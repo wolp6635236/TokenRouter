@@ -9,7 +9,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 )
+
+// WriteFastPolicyBlockedResponse 记录策略拒绝，并按当前响应状态写出 JSON 或 SSE 错误。
+func WriteFastPolicyBlockedResponse(c *gin.Context, err *tierpolicy.BlockedError) {
+	if c == nil || err == nil {
+		return
+	}
+	MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+	WriteForwardFastPolicyBlocked(c, err.Message, StopOpenAICompactSSEKeepaliveCommitted, func(c *gin.Context, status int, kind, message string) {
+		WriteOpenAICompactSSEFailureMessage(c, status, kind, message, MarkOpsStreamError)
+	})
+}
 
 // WriteForwardAnthropicError 写出 Anthropic JSON 错误。
 func WriteForwardAnthropicError(c *gin.Context, statusCode int, errType, message string) {
@@ -114,7 +127,7 @@ func ValidForwardPassthroughRetryAfter(raw string, now time.Time) bool {
 		return false
 	}
 	delaySeconds := true
-	for i := 0; i < len(raw); i++ {
+	for i := range len(raw) {
 		if raw[i] < '0' || raw[i] > '9' {
 			delaySeconds = false
 			break
@@ -172,4 +185,16 @@ func WriteForwardFastPolicyBlocked(c *gin.Context, message string, stop func(*gi
 		return
 	}
 	c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": message}})
+}
+
+// WriteOpenAIForwardRejection 按 OpenAI 错误格式写出拒绝原因及可选参数名。
+func WriteOpenAIForwardRejection(c *gin.Context, status int, kind, message, param string) {
+	if c == nil {
+		return
+	}
+	payload := gin.H{"type": kind, "message": message}
+	if param != "" {
+		payload["param"] = param
+	}
+	c.JSON(status, gin.H{"error": payload})
 }

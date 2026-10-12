@@ -1,11 +1,8 @@
 package routing
 
 import (
-	"slices"
+	"sort"
 )
-
-// AdminCatalogKind 标识管理目录的数据来源。
-type AdminCatalogKind string
 
 const (
 	CatalogClaude      AdminCatalogKind = "claude"
@@ -17,6 +14,9 @@ const (
 	CatalogGrok        AdminCatalogKind = "grok"
 )
 
+// AdminCatalogKind 标识管理目录的数据来源。
+type AdminCatalogKind string
+
 // AdminCatalogModel 保留各目录的值，HTTP 按原 wire 变体输出。
 type AdminCatalogModel struct {
 	ID, Object, Type, OwnedBy, DisplayName, CreatedAt string
@@ -25,26 +25,25 @@ type AdminCatalogModel struct {
 type AdminCatalogInput struct {
 	Platform, Site                string
 	OAuth, GoogleOne, Passthrough bool
+	Accept                        func(string) bool
 }
 type AdminCatalogResult struct {
 	Kind   AdminCatalogKind
 	Models []AdminCatalogModel
 }
 type AdminCatalogOptions struct {
-	Defaults func(AdminCatalogKind, string) ([]AdminCatalogModel, error)
+	Lookup func(AdminCatalogKind, string) AdminCatalogModel
 }
 
-// AdminCatalog 不安装缓存；动态目录每次按原顺序读取一次。
+// AdminCatalog 校验提供商声明的具体型号，并查询这些型号的展示信息。
 type AdminCatalog struct{ options AdminCatalogOptions }
 
 func NewAdminCatalog(options AdminCatalogOptions) *AdminCatalog { return &AdminCatalog{options} }
 func (s *AdminCatalog) Available(input AdminCatalogInput, configured func() []string) (AdminCatalogResult, error) {
 	kind := CatalogClaude
-	ignore := input.OAuth
 	switch input.Platform {
 	case "openai":
 		kind = CatalogOpenAI
-		ignore = input.Passthrough
 	case "gemini":
 		kind = CatalogGemini
 		if input.GoogleOne && input.OAuth {
@@ -52,50 +51,30 @@ func (s *AdminCatalog) Available(input AdminCatalogInput, configured func() []st
 		}
 	case "antigravity":
 		kind = CatalogAntigravity
-		ignore = true
 	case "qoder":
 		kind = CatalogQoder
-		ignore = false
 	case "grok":
 		kind = CatalogGrok
-		ignore = false
 	}
-	var requested []string
-	// Qoder 与 Grok 先读取目录；其它分支保留先解析当前配置的时机。
-	if !ignore && kind != CatalogQoder && kind != CatalogGrok {
-		requested = configured()
-	}
-	defaults, err := s.options.Defaults(kind, input.Site)
-	if err != nil {
-		return AdminCatalogResult{}, err
-	}
-	if !ignore && (kind == CatalogQoder || kind == CatalogGrok) {
-		requested = configured()
-	}
-	if ignore || len(requested) == 0 {
-		return AdminCatalogResult{Kind: kind, Models: slices.Clone(defaults)}, nil
-	}
-	byID := make(map[string]AdminCatalogModel, len(defaults))
-	for _, m := range defaults {
-		if _, ok := byID[m.ID]; ok && kind != CatalogGrok {
-			continue
-		}
-		byID[m.ID] = m
-	}
-	var models []AdminCatalogModel
+	requested := configured()
+	sort.Strings(requested)
+	models := make([]AdminCatalogModel, 0, len(requested))
+	seen := make(map[string]bool)
 	for _, id := range requested {
-		if m, ok := byID[id]; ok {
-			models = append(models, m)
+		if seen[id] || (input.Accept != nil && !input.Accept(id)) {
 			continue
 		}
+		seen[id] = true
 		m := AdminCatalogModel{ID: id, Type: "model", DisplayName: id}
-		if kind == CatalogOpenAI {
+		if kind == CatalogOpenAI || kind == CatalogGrok {
 			m.Object = "model"
 		}
 		if kind == CatalogGrok {
-			m.Object = "model"
 			m.Type = ""
 			m.OwnedBy = "xai"
+		}
+		if s.options.Lookup != nil {
+			m = s.options.Lookup(kind, id)
 		}
 		models = append(models, m)
 	}

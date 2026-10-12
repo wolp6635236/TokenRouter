@@ -10,14 +10,13 @@ import (
 	"testing"
 	"time"
 
-	apikey "github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 func TestAuthCacheInvalidationTriggers_CoverSecurityMutationsOnly(t *testing.T) {

@@ -1,27 +1,28 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
-// RedeemHandler handles redeem code-related requests
+// RedeemHandler handles redeem code-related requests.
 type RedeemHandler struct {
 	redeemService *billing.RedeemService
 }
 
-// NewRedeemHandler creates a new RedeemHandler
+// RedeemRequest represents the redeem code request payload.
+type RedeemRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+// NewRedeemHandler creates a new RedeemHandler.
 func NewRedeemHandler(redeemService *billing.RedeemService) *RedeemHandler {
 	return &RedeemHandler{
 		redeemService: redeemService,
 	}
-}
-
-// RedeemRequest represents the redeem code request payload
-type RedeemRequest struct {
-	Code string `json:"code" binding:"required"`
 }
 
 // Redeem handles redeeming a code

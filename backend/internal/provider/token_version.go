@@ -31,7 +31,7 @@ func CheckTokenVersion(ctx context.Context, provider *Record, repo RefreshReposi
 
 	latestVersion := latestProvider.GetCredentialAsInt64("_token_version")
 
-	// 情况1: 当前 provider 没有版本号，但 DB 中已有版本号
+	// 情况 1: 当前 provider 没有版本号，但 DB 中已有版本号
 	// 说明异步刷新任务已更新 token，当前 provider 已过时
 	if currentVersion == 0 && latestVersion > 0 {
 		debug("token_version_stale_no_current_version",
@@ -40,12 +40,12 @@ func CheckTokenVersion(ctx context.Context, provider *Record, repo RefreshReposi
 		return latestProvider, true
 	}
 
-	// 情况2: 两边都没有版本号，说明从未被异步刷新过，允许缓存
+	// 情况 2: 两边都没有版本号，说明从未被异步刷新过，允许缓存
 	if currentVersion == 0 && latestVersion == 0 {
 		return latestProvider, false
 	}
 
-	// 情况3: 比较版本号，如果 DB 中的版本更新，当前 provider 已过时
+	// 情况 3: 比较版本号，如果 DB 中的版本更新，当前 provider 已过时
 	if latestVersion > currentVersion {
 		debug("token_version_stale",
 			"provider_id", provider.ID,

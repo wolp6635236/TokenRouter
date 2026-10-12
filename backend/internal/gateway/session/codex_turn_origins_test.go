@@ -23,11 +23,12 @@ func TestCodexTurnOriginsExpiryBoundary(t *testing.T) {
 	_, retained := origins.origins.Load("key-session")
 	require.False(t, retained, "读侧清除已过期来源")
 }
+
 func TestCodexTurnOriginsSweepsOn256thWrite(t *testing.T) {
 	now := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
 	origins := NewCodexTurnOrigins(func() time.Time { return now })
 	origins.Record("expired", 1, -time.Second)
-	for i := 0; i < 254; i++ {
+	for i := range 254 {
 		origins.Record(fmt.Sprint(i), 2, time.Hour)
 	}
 	_, exists := origins.origins.Load("expired")
@@ -39,13 +40,14 @@ func TestCodexTurnOriginsSweepsOn256thWrite(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int64(3), id)
 }
+
 func TestCodexTurnOriginsConcurrentRequestsStayIsolated(t *testing.T) {
 	origins := NewCodexTurnOrigins(time.Now)
 	var wg sync.WaitGroup
 	for i := int64(1); i <= 32; i++ {
 		wg.Go(func() {
 			seed := fmt.Sprintf("%d\x00same-session", i)
-			for n := 0; n < 16; n++ {
+			for range 16 {
 				origins.Record(seed, i, time.Hour)
 				id, ok := origins.Owner(seed)
 				if !ok || id != i {

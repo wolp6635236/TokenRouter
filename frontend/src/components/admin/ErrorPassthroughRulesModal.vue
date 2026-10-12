@@ -19,17 +19,15 @@
 
       <!-- Rules Table -->
 
-      <div v-if="!loading && rules.length === 0" class="py-8 text-center">
-        <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 dark:bg-dark-700">
-          <Icon name="shield" size="lg" class="text-gray-400" />
-        </div>
-        <h4 class="mb-1 text-sm font-medium text-gray-900 dark:text-white">
-          {{ t('admin.errorPassthrough.noRules') }}
-        </h4>
-        <p class="text-sm text-gray-500 dark:text-gray-400">
-          {{ t('admin.errorPassthrough.createFirstRule') }}
-        </p>
-      </div>
+      <EmptyState
+        v-if="!loading && rules.length === 0"
+        :title="t('admin.errorPassthrough.noRules')"
+        :description="t('admin.errorPassthrough.createFirstRule')"
+      >
+        <template #icon>
+          <Icon name="shield" class="empty-state-icon h-10 w-10" />
+        </template>
+      </EmptyState>
 
       <div v-else class="max-h-96 overflow-auto rounded-control border border-gray-200 dark:border-dark-600">
         <table :aria-busy="loading" class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
@@ -160,20 +158,13 @@
                 </div>
               </td>
               <td class="px-3 py-2">
-                <button
-                  @click="toggleEnabled(rule)"
-                  :class="[
-                    'relative inline-flex h-4 w-7 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-normal ease-standard focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-                    rule.enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-                  ]"
-                >
-                  <span
-                    :class="[
-                      'pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-normal ease-standard',
-                      rule.enabled ? 'translate-x-3' : 'translate-x-0'
-                    ]"
-                  />
-                </button>
+                <!-- 异步保存，值由 toggleEnabled 写回规则。 -->
+                <Toggle
+                  :model-value="rule.enabled"
+                  size="sm"
+                  off-tone="soft"
+                  @update:model-value="toggleEnabled(rule)"
+                />
               </td>
               <td class="px-3 py-2">
                 <div class="flex items-center gap-1">
@@ -445,6 +436,8 @@ import type { ErrorPassthroughRule } from '@/api/admin/errorPassthrough'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
+import Toggle from '@/components/common/Toggle.vue'
 
 const props = defineProps<{
   show: boolean

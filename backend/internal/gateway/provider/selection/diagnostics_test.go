@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
@@ -15,9 +17,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
-	"github.com/stretchr/testify/require"
 )
 
 type advancedSchedulerDiagnosticSourceStub struct {
@@ -28,15 +29,23 @@ type advancedSchedulerDiagnosticSourceStub struct {
 }
 
 type advancedSchedulerDiagnosticConcurrencyCache struct {
-	scheduler.ConcurrencyCache
-	requests [][]scheduler.ProviderWithConcurrency
+	schedulercore.ConcurrencyCache
+	requests [][]schedulercore.ProviderWithConcurrency
 }
 
-func (c *advancedSchedulerDiagnosticConcurrencyCache) GetProvidersLoadBatch(_ context.Context, providers []scheduler.ProviderWithConcurrency) (map[int64]*scheduler.ProviderLoadInfo, error) {
-	c.requests = append(c.requests, append([]scheduler.ProviderWithConcurrency(nil), providers...))
-	result := make(map[int64]*scheduler.ProviderLoadInfo, len(providers))
+// diagnosticWindowCache 的批量读取返回测试用量，单条读取返回错误。
+type diagnosticWindowCache struct {
+	billing.WindowCostCache
+	costs map[int64]float64
+}
+
+type diagnosticWindowSource struct{}
+
+func (c *advancedSchedulerDiagnosticConcurrencyCache) GetProvidersLoadBatch(_ context.Context, providers []schedulercore.ProviderWithConcurrency) (map[int64]*schedulercore.ProviderLoadInfo, error) {
+	c.requests = append(c.requests, append([]schedulercore.ProviderWithConcurrency(nil), providers...))
+	result := make(map[int64]*schedulercore.ProviderLoadInfo, len(providers))
 	for _, provider := range providers {
-		result[provider.ID] = &scheduler.ProviderLoadInfo{ProviderID: provider.ID}
+		result[provider.ID] = &schedulercore.ProviderLoadInfo{ProviderID: provider.ID}
 	}
 	return result, nil
 }
@@ -340,7 +349,7 @@ func TestAdvancedSchedulerScoreDiagnosticService_CountsMoreThanOneThousandExclud
 	}
 	allProviders := make([]gatewayprovider.ExecutionProvider, 0, 1002)
 	allProviders = append(allProviders, *target)
-	for index := 0; index < 1001; index++ {
+	for index := range 1001 {
 		allProviders = append(allProviders, gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, ID: int64(9100 + index), Platform: capability.PlatformGemini, Status: billing.StatusDisabled}})
 	}
 	source := &advancedSchedulerDiagnosticSourceStub{provider: target, group: group, providers: allProviders, pool: []gatewayprovider.ExecutionProvider{*target}}
@@ -396,7 +405,7 @@ func TestAdvancedSchedulerScoreDiagnosticService_StableSortsLargeCandidatePool(t
 
 func TestAdvancedSchedulerScoreDiagnosticService_LoadUsesEffectiveLoadFactor(t *testing.T) {
 	cache := &advancedSchedulerDiagnosticConcurrencyCache{}
-	diagnostics := withDiagnosticParameters(newDiagnosticsForTest(nil, scheduler.NewConcurrencyService(cache, scheduler.Diagnostics{
+	diagnostics := withDiagnosticParameters(newDiagnosticsForTest(nil, schedulercore.NewConcurrencyService(cache, schedulercore.Diagnostics{
 		Logf:  logging.LegacyPrintf,
 		Event: logging.Event,
 	},
@@ -407,7 +416,7 @@ func TestAdvancedSchedulerScoreDiagnosticService_LoadUsesEffectiveLoadFactor(t *
 	core.LoadMap(context.Background(), scope.providers([]*gatewayprovider.ExecutionProvider{provider}))
 
 	require.Len(t, cache.requests, 1)
-	require.Equal(t, []scheduler.ProviderWithConcurrency{{ID: provider.Record.ID, MaxConcurrency: 7}}, cache.requests[0])
+	require.Equal(t, []schedulercore.ProviderWithConcurrency{{ID: provider.Record.ID, MaxConcurrency: 7}}, cache.requests[0])
 }
 
 func TestAdvancedSchedulerScoreDiagnosticService_FiltersModelRuntimeBlock(t *testing.T) {
@@ -453,13 +462,13 @@ func TestAdvancedSchedulerScoreDiagnosticService_EscapedStickyUsesRegularWindowC
 		StickyEscapeEnabled: true, StickyEscapeTTFTMs: 15000, StickyEscapeErrorRate: 0.55,
 	}}}
 
-	feedback := scheduler.NewRuntimeStats(time.Now)
+	feedback := schedulercore.NewRuntimeStats(time.Now)
 	for range 4 {
 		feedback.Report(target.Record.ID, false, nil)
 	}
 	diagnostics := withDiagnosticParameters(newDiagnosticsForTest(source, nil))
 	diagnostics.feedback = feedback
-	diagnostics.schedulerParameters = scheduler.NewParameters(scheduler.NewSettingsRuntime(scheduler.Diagnostics{}), nil, diagnosticParameterDefaults(cfg))
+	diagnostics.schedulerParameters = schedulercore.NewParameters(schedulercore.NewSettingsRuntime(schedulercore.Diagnostics{}), nil, diagnosticParameterDefaults(cfg))
 	window := billing.NewWindowCostGuard(&diagnosticWindowCache{costs: map[int64]float64{target.Record.ID: 11}}, diagnosticWindowSource{}, billing.WindowCostGuardOptions{Now: time.Now, Stats: &billing.WindowCostMetrics{}, Log: func(string, ...any) {}, Debug: func(string, ...any) {}})
 	diagnostics.gatewayService = NewGeneric(GenericDependencies{Window: window, WindowPrefetchAvailable: true}, DefaultOptions())
 
@@ -475,25 +484,8 @@ func TestAdvancedSchedulerScoreDiagnosticService_EscapedStickyUsesRegularWindowC
 	require.Equal(t, "escaped", signal.State)
 }
 
-func diagnosticParameterDefaults(cfg *config.Config) scheduler.ParameterDefaults {
-	defaults := scheduler.DefaultParameters()
-	if cfg == nil {
-		return defaults
-	}
-	value := cfg.Gateway.AdvancedScheduler
-	if value.LBTopK > 0 {
-		defaults.TopK = value.LBTopK
-	}
-	weights := value.ScoreWeights
-	defaults.Weights = policy.ScoreWeights{Priority: weights.Priority, Load: weights.Load, Queue: weights.Queue, ErrorRate: weights.ErrorRate, TTFT: weights.TTFT, Reset: weights.Reset, QuotaHeadroom: weights.QuotaHeadroom, Previous: weights.PreviousResponse, SessionSticky: weights.SessionSticky}
-	defaults.Runtime.EwmaErrorRateAlpha = value.EWMAErrorRateAlpha
-	defaults.Runtime.EwmaTTFTAlpha = value.EWMATTFTAlpha
-	defaults.Runtime.StickyEscape = policy.NormalizeStickyEscape(policy.StickyEscapeConfig{Enabled: value.StickyEscapeEnabled, TtftMs: float64(value.StickyEscapeTTFTMs), ErrorRate: value.StickyEscapeErrorRate})
-	return defaults
-}
-
 // newDiagnosticsForTest 为诊断测试构造参数和只读诊断服务。
-func newDiagnosticsForTest(source DiagnosticSource, concurrency *scheduler.ConcurrencyService) *Diagnostics {
+func newDiagnosticsForTest(source DiagnosticSource, concurrency *schedulercore.ConcurrencyService) *Diagnostics {
 	return NewDiagnostics(source, Shared{Concurrency: concurrency}, nil, nil)
 }
 
@@ -502,14 +494,8 @@ func withDiagnosticParameters(value *Diagnostics, configs ...*config.Config) *Di
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
-	value.schedulerParameters = scheduler.NewParameters(scheduler.NewSettingsRuntime(scheduler.Diagnostics{}), nil, diagnosticParameterDefaults(cfg))
+	value.schedulerParameters = schedulercore.NewParameters(schedulercore.NewSettingsRuntime(schedulercore.Diagnostics{}), nil, diagnosticParameterDefaults(cfg))
 	return value
-}
-
-// 原窗口合同只配置批量命中；意外走单条缓存入口继续失败。
-type diagnosticWindowCache struct {
-	billing.WindowCostCache
-	costs map[int64]float64
 }
 
 func (c *diagnosticWindowCache) GetWindowCostBatch(_ context.Context, ids []int64) (map[int64]float64, error) {
@@ -522,7 +508,17 @@ func (c *diagnosticWindowCache) GetWindowCostBatch(_ context.Context, ids []int6
 	return out, nil
 }
 
-type diagnosticWindowSource struct{}
+// providers 将测试候选转换为诊断列表，输入为 nil 时返回 nil。
+func (s *diagnosticScope) providers(values []*gatewayprovider.ExecutionProvider) []*schedulercore.DiagnosticProvider {
+	if values == nil {
+		return nil
+	}
+	out := make([]*schedulercore.DiagnosticProvider, len(values))
+	for i, v := range values {
+		out[i] = s.provider(v)
+	}
+	return out
+}
 
 func (diagnosticWindowSource) GetWindow(context.Context, int64, time.Time) (*billing.WindowCostStats, error) {
 	return &billing.WindowCostStats{}, nil

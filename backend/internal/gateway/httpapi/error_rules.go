@@ -3,22 +3,18 @@ package httpapi
 import (
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
-// ErrorPassthroughHandler 处理错误透传规则的 HTTP 请求
+// ErrorPassthroughHandler 处理错误透传规则的 HTTP 请求。
 type ErrorPassthroughHandler struct {
 	service *errorpolicy.ErrorPassthroughService
 }
 
-// NewErrorPassthroughHandler 创建错误透传规则处理器
-func NewErrorPassthroughHandler(service *errorpolicy.ErrorPassthroughService) *ErrorPassthroughHandler {
-	return &ErrorPassthroughHandler{service: service}
-}
-
-// CreateErrorPassthroughRuleRequest 创建规则请求
+// CreateErrorPassthroughRuleRequest 创建规则请求。
 type CreateErrorPassthroughRuleRequest struct {
 	Name            string   `json:"name" binding:"required"`
 	Enabled         *bool    `json:"enabled"`
@@ -35,7 +31,7 @@ type CreateErrorPassthroughRuleRequest struct {
 	Description     *string  `json:"description"`
 }
 
-// UpdateErrorPassthroughRuleRequest 更新规则请求（部分更新，所有字段可选）
+// UpdateErrorPassthroughRuleRequest 更新规则请求（部分更新，所有字段可选）。
 type UpdateErrorPassthroughRuleRequest struct {
 	Name            *string  `json:"name"`
 	Enabled         *bool    `json:"enabled"`
@@ -50,6 +46,11 @@ type UpdateErrorPassthroughRuleRequest struct {
 	CustomMessage   *string  `json:"custom_message"`
 	SkipMonitoring  *bool    `json:"skip_monitoring"`
 	Description     *string  `json:"description"`
+}
+
+// NewErrorPassthroughHandler 创建错误透传规则处理器。
+func NewErrorPassthroughHandler(service *errorpolicy.ErrorPassthroughService) *ErrorPassthroughHandler {
+	return &ErrorPassthroughHandler{service: service}
 }
 
 // List 获取所有规则
@@ -278,4 +279,16 @@ func (h *ErrorPassthroughHandler) Delete(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "Rule deleted successfully"})
+}
+
+// RegisterErrorPassthroughRoutes 注册所属管理路由；组鉴权、限流和审计由 app 预先安装。
+func RegisterErrorPassthroughRoutes(admin *gin.RouterGroup, endpoint *ErrorPassthroughHandler) {
+	rules := admin.Group("/error-passthrough-rules")
+	{
+		rules.GET("", endpoint.List)
+		rules.GET("/:id", endpoint.GetByID)
+		rules.POST("", endpoint.Create)
+		rules.PUT("/:id", endpoint.Update)
+		rules.DELETE("/:id", endpoint.Delete)
+	}
 }

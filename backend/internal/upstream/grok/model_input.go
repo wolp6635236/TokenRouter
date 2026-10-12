@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
-
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson" // sanitizeGrokResponsesModelInput converts replay items from OpenAI and Chat
-	// shapes into the subset accepted by xAI's ModelInput decoder. Call IDs are
-	// assigned in a separate pass so an output can safely appear before its call.
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
+
+type GrokToolOutputImage struct {
+	callID string
+	url    string
+}
 
 func (m BodyCodec) SanitizeGrokResponsesModelInput(body []byte) ([]byte, error) {
 	input := gjson.GetBytes(body, "input")
@@ -162,11 +166,6 @@ func (m BodyCodec) SanitizeGrokResponsesModelInput(body []byte) ([]byte, error) 
 	return updated, nil
 }
 
-type GrokToolOutputImage struct {
-	callID string
-	url    string
-}
-
 // NormalizeGrokToolOutput 提取工具输出中的图片，并将其余内容转成字符串。
 // Grok 1.0.5 的 read_file 将媒体放在结构化输出分片中，xAI 则要求 function_call_output.output 为字符串。
 func (m BodyCodec) NormalizeGrokToolOutput(value any, callID string) (string, []GrokToolOutputImage) {
@@ -204,9 +203,7 @@ func (m BodyCodec) StripGrokToolOutputImages(value any, callID string) (any, []G
 		}
 
 		filtered := make(map[string]any, len(typed))
-		for key, item := range typed {
-			filtered[key] = item
-		}
+		maps.Copy(filtered, typed)
 		images := make([]GrokToolOutputImage, 0)
 		if rawImages, exists := filtered["images"]; exists {
 			if values, ok := rawImages.([]any); ok {

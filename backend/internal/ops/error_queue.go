@@ -8,6 +8,22 @@ import (
 	"time"
 )
 
+const (
+	opsErrorLogTimeout      = 5 * time.Second
+	opsErrorLogDrainTimeout = 10 * time.Second
+	opsErrorLogBatchWindow  = 200 * time.Millisecond
+
+	opsErrorLogMinWorkerCount = 4
+	opsErrorLogMaxWorkerCount = 32
+
+	opsErrorLogQueueSizePerWorker = 128
+	opsErrorLogMinQueueSize       = 256
+	opsErrorLogMaxQueueSize       = 8192
+	opsErrorLogBatchSize          = 32
+	opsErrorLogMaxQueueBytes      = 32 * 1024 * 1024
+	opsErrorLogMaxUserAgentBytes  = 512
+)
+
 type ErrorLogQueueOptions struct {
 	Processors func() int
 	Logf       func(string, ...any)
@@ -26,6 +42,18 @@ type ErrorLogQueue struct {
 	opsErrorLogShutdownCh                                                                                                                                     chan struct{}
 	opsErrorLogShutdownOnce                                                                                                                                   sync.Once
 	opsErrorLogDrained                                                                                                                                        atomic.Bool
+}
+
+type ErrorLogQueueHealth struct {
+	Length, Bytes, BytesCapacity            int64
+	Capacity                                int
+	Dropped, Enqueued, Processed, Sanitized int64
+}
+
+type opsErrorLogJob struct {
+	ops         *OpsService
+	entry       *OpsInsertErrorLogInput
+	queuedBytes int64
 }
 
 func NewErrorLogQueue(options ErrorLogQueueOptions) *ErrorLogQueue {
@@ -52,12 +80,6 @@ func (q *ErrorLogQueue) processors() int {
 	return 1
 }
 
-type ErrorLogQueueHealth struct {
-	Length, Bytes, BytesCapacity            int64
-	Capacity                                int
-	Dropped, Enqueued, Processed, Sanitized int64
-}
-
 func (q *ErrorLogQueue) Health() ErrorLogQueueHealth {
 	return ErrorLogQueueHealth{q.OpsErrorLogQueueLength(), q.OpsErrorLogQueueBytes(), q.OpsErrorLogQueueBytesCapacity(), q.OpsErrorLogQueueCapacity(), q.OpsErrorLogDroppedTotal(), q.OpsErrorLogEnqueuedTotal(), q.OpsErrorLogProcessedTotal(), q.OpsErrorLogSanitizedTotal()}
 }
@@ -76,21 +98,9 @@ func PrepareErrorLogInput(entry *OpsInsertErrorLogInput) (bool, error) {
 }
 
 func opsErrorLogConfig(processors int) (workerCount int, queueSize int) {
-	workerCount = processors * 2
-	if workerCount < opsErrorLogMinWorkerCount {
-		workerCount = opsErrorLogMinWorkerCount
-	}
-	if workerCount > opsErrorLogMaxWorkerCount {
-		workerCount = opsErrorLogMaxWorkerCount
-	}
+	workerCount = min(max(processors*2, opsErrorLogMinWorkerCount), opsErrorLogMaxWorkerCount)
 
-	queueSize = workerCount * opsErrorLogQueueSizePerWorker
-	if queueSize < opsErrorLogMinQueueSize {
-		queueSize = opsErrorLogMinQueueSize
-	}
-	if queueSize > opsErrorLogMaxQueueSize {
-		queueSize = opsErrorLogMaxQueueSize
-	}
+	queueSize = min(max(workerCount*opsErrorLogQueueSizePerWorker, opsErrorLogMinQueueSize), opsErrorLogMaxQueueSize)
 
 	return workerCount, queueSize
 }
@@ -346,7 +356,7 @@ func (q *ErrorLogQueue) startOpsErrorLogWorkers() {
 
 	queue := q.opsErrorLogQueue
 	q.opsErrorLogWorkersWg.Add(workerCount)
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		go func() {
 			defer q.opsErrorLogWorkersWg.Done()
 			for {
@@ -392,25 +402,3 @@ func (q *ErrorLogQueue) startOpsErrorLogWorkers() {
 		}()
 	}
 }
-
-type opsErrorLogJob struct {
-	ops         *OpsService
-	entry       *OpsInsertErrorLogInput
-	queuedBytes int64
-}
-
-const (
-	opsErrorLogTimeout      = 5 * time.Second
-	opsErrorLogDrainTimeout = 10 * time.Second
-	opsErrorLogBatchWindow  = 200 * time.Millisecond
-
-	opsErrorLogMinWorkerCount = 4
-	opsErrorLogMaxWorkerCount = 32
-
-	opsErrorLogQueueSizePerWorker = 128
-	opsErrorLogMinQueueSize       = 256
-	opsErrorLogMaxQueueSize       = 8192
-	opsErrorLogBatchSize          = 32
-	opsErrorLogMaxQueueBytes      = 32 * 1024 * 1024
-	opsErrorLogMaxUserAgentBytes  = 512
-)

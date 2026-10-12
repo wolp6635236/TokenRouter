@@ -9,18 +9,16 @@ import (
 	"strings"
 	"testing"
 
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/stretchr/testify/suite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/stretchr/testify/suite"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 )
 
 type GroupRepoSuite struct {
@@ -55,8 +53,6 @@ func (s *GroupRepoSuite) SetupTest() {
 func TestGroupRepoSuite(t *testing.T) {
 	suite.Run(t, new(GroupRepoSuite))
 }
-
-// --- Create / GetByID / Update / Delete ---
 
 func (s *GroupRepoSuite) TestCreate() {
 	group := &routing.Group{
@@ -238,8 +234,6 @@ func (s *GroupRepoSuite) TestDelete() {
 	s.Require().Error(err, "expected error after delete")
 	s.Require().ErrorIs(err, routing.ErrGroupNotFound)
 }
-
-// --- List / ListWithFilters ---
 
 func (s *GroupRepoSuite) TestList() {
 	baseGroups, basePage, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10})
@@ -617,8 +611,6 @@ func (s *GroupRepoSuite) TestListWithFilters_ProviderCount() {
 	s.Require().Equal(int64(1), groups[0].ProviderCount, "ProviderCount mismatch")
 }
 
-// --- ListActive / ListActiveByPlatform ---
-
 func (s *GroupRepoSuite) TestListActive() {
 	baseGroups, err := s.repo.ListActive(s.ctx)
 	s.Require().NoError(err, "ListActive base")
@@ -712,8 +704,6 @@ func (s *GroupRepoSuite) TestListActiveDoesNotPartitionGroups() {
 	s.Require().True(found, "g1 group should be in results")
 }
 
-// --- ExistsByName ---
-
 func (s *GroupRepoSuite) TestExistsByName() {
 	s.Require().NoError(s.repo.Create(s.ctx, &routing.Group{
 		Name: "existing-group",
@@ -735,8 +725,6 @@ func (s *GroupRepoSuite) TestExistsByName() {
 	s.Require().NoError(err)
 	s.Require().False(notExists)
 }
-
-// --- GetProviderCount ---
 
 func (s *GroupRepoSuite) TestGetProviderCount() {
 	group := &routing.Group{
@@ -839,7 +827,7 @@ func (s *GroupRepoSuite) TestListWithFilters_ActiveProviderCount_LessThanTotal()
 	// 提供商 3：active 但不可调度，仅计入 total。
 	link(insertProvider("acc-unschedulable", billing.StatusActive, false))
 
-	// --- ListWithFilters 路径 ---
+	// 通过筛选列表读取提供商数量。
 	isExclusive := false
 	groups, _, err := s.repo.ListWithFilters(s.ctx,
 		pagination.PaginationParams{Page: 1, PageSize: 100},
@@ -857,7 +845,7 @@ func (s *GroupRepoSuite) TestListWithFilters_ActiveProviderCount_LessThanTotal()
 	s.Assert().Equal(int64(3), found.ProviderCount, "ProviderCount must count all 3 providers")
 	s.Assert().Equal(int64(1), found.ActiveProviderCount, "ActiveProviderCount must count only the active+schedulable provider")
 
-	// --- GetProviderCount 必须返回相同统计口径 ---
+	// GetProviderCount 返回相同的总数和可用数量。
 	total, active, err := s.repo.GetProviderCount(s.ctx, g.ID)
 	s.Require().NoError(err)
 	s.Assert().Equal(found.ProviderCount, total, "GetProviderCount total must match ListWithFilters ProviderCount")
@@ -866,7 +854,7 @@ func (s *GroupRepoSuite) TestListWithFilters_ActiveProviderCount_LessThanTotal()
 
 // TestListWithFilters_RateLimitedProviderCount 验证临时受限提供商不会计入可用提供商数。
 // rate_limit / overload / temp_unschedulable 都会让提供商退出当前调度池，
-// 因此 ActiveProviderCount 必须与真实调度查询口径一致。
+// ActiveProviderCount 按当前调度条件统计。
 func (s *GroupRepoSuite) TestListWithFilters_RateLimitedProviderCount() {
 	g := &routing.Group{
 		Name: "g-rate-limited",
@@ -962,8 +950,6 @@ func (s *GroupRepoSuite) TestListWithFilters_RateLimitedProviderCount() {
 	s.Assert().Equal(found.RateLimitedProviderCount, detail.RateLimitedProviderCount, "GetByID RateLimitedProviderCount must match ListWithFilters")
 }
 
-// --- DeleteProviderGroupsByGroupID ---
-
 func (s *GroupRepoSuite) TestDeleteProviderGroupsByGroupID() {
 	g := &routing.Group{
 		Name: "g-del",
@@ -1040,8 +1026,6 @@ func (s *GroupRepoSuite) TestDeleteProviderGroupsByGroupID_MultipleProviders() {
 	s.Require().Zero(count)
 }
 
-// --- 软删除过滤测试 ---
-
 func (s *GroupRepoSuite) TestDelete_SoftDelete_NotVisibleInList() {
 	group := &routing.Group{
 		Name: "to-soft-delete",
@@ -1065,12 +1049,12 @@ func (s *GroupRepoSuite) TestDelete_SoftDelete_NotVisibleInList() {
 	err = s.repo.Delete(s.ctx, group.ID)
 	s.Require().NoError(err, "Delete (soft delete)")
 
-	// 验证列表中不再包含软删除的 group
+	// 软删除的分组从查询列表中排除。
 	listAfter, _, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 100})
 	s.Require().NoError(err)
 	s.Require().Len(listAfter, beforeCount-1, "soft deleted group should not appear in list")
 
-	// 验证 GetByID 也无法找到
+	// GetByID 对软删除的分组返回未找到。
 	_, err = s.repo.GetByID(s.ctx, group.ID)
 	s.Require().Error(err)
 	s.Require().ErrorIs(err, routing.ErrGroupNotFound)
@@ -1094,8 +1078,7 @@ func (s *GroupRepoSuite) TestDelete_SoftDeletedGroup_lockForUpdate() {
 	err := s.repo.Delete(s.ctx, group.ID)
 	s.Require().NoError(err)
 
-	// 验证软删除的 group 在 GetByID 时返回 ErrGroupNotFound
-	// 这证明 lockForUpdate 的 deleted_at IS NULL 过滤正在工作
+	// GetByID 通过 deleted_at IS NULL 排除软删除的分组并返回 ErrGroupNotFound。
 	_, err = s.repo.GetByID(s.ctx, group.ID)
 	s.Require().Error(err, "should fail to get soft-deleted group")
 	s.Require().ErrorIs(err, routing.ErrGroupNotFound)
@@ -1109,4 +1092,157 @@ func (s *GroupRepoSuite) transaction(t *testing.T) *dbent.Tx {
 	s.Require().NoError(err)
 	t.Cleanup(func() { _ = tx.Rollback() })
 	return tx
+}
+
+// TestListWithProviderCountSort_AttachesActiveCount 验证通过 provider_count 排序时，
+// ActiveProviderCount 与 ProviderCount 都被正确附加到返回结果中，
+// 排序按提供商总数计算。
+func (s *GroupRepoSuite) TestListWithProviderCountSort_AttachesActiveCount() {
+	// 分组 A：total=2，active=1（包含 1 个 disabled 提供商）。
+	gA := &routing.Group{
+		Name: "sort-count-a", RateMultiplier: 1, Status: billing.StatusActive,
+		AllowedProtocols:     capability.DefaultGroupClientProtocols(capability.PlatformAnthropic),
+		ProtocolFallbacks:    capability.DefaultProtocolFallbacks(capability.PlatformAnthropic),
+		ResponsesImagePolicy: "inherit",
+	}
+	// 分组 B：total=1，active=1。
+	gB := &routing.Group{
+		Name: "sort-count-b", RateMultiplier: 1, Status: billing.StatusActive,
+		AllowedProtocols:     capability.DefaultGroupClientProtocols(capability.PlatformAnthropic),
+		ProtocolFallbacks:    capability.DefaultProtocolFallbacks(capability.PlatformAnthropic),
+		ResponsesImagePolicy: "inherit",
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, gA))
+	s.Require().NoError(s.repo.Create(s.ctx, gB))
+
+	insertProvider := func(name, status string) int64 {
+		var id int64
+		s.Require().NoError(postgresinfra.ScanSingleRow(s.ctx, s.tx,
+			"INSERT INTO providers (name, platform, type, status) VALUES ($1, $2, $3, $4) RETURNING id",
+			[]any{name, capability.PlatformAnthropic, capability.ProviderTypeOAuth, status},
+			&id))
+		return id
+	}
+	link := func(providerID, groupID int64) {
+		_, err := s.tx.ExecContext(s.ctx,
+			"INSERT INTO provider_groups (provider_id, group_id, created_at) VALUES ($1, $2, NOW())",
+			providerID, groupID)
+		s.Require().NoError(err)
+	}
+
+	// gA：1 active + 1 disabled，因此 total=2，active=1。
+	link(insertProvider("sa-active", billing.StatusActive), gA.ID)
+	link(insertProvider("sa-disabled", billing.StatusDisabled), gA.ID)
+	// gB：1 active，因此 total=1，active=1。
+	link(insertProvider("sb-active", billing.StatusActive), gB.ID)
+
+	groups, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{
+		Page: 1, PageSize: 100, SortBy: "provider_count", SortOrder: "desc",
+	}, capability.PlatformAnthropic, billing.StatusActive, "", nil)
+	s.Require().NoError(err)
+
+	byID := make(map[int64]routing.Group, len(groups))
+	for _, g := range groups {
+		byID[g.ID] = g
+	}
+
+	s.Require().Contains(byID, gA.ID, "gA must appear in results")
+	s.Require().Contains(byID, gB.ID, "gB must appear in results")
+
+	cA := byID[gA.ID]
+	s.Assert().Equal(int64(2), cA.ProviderCount, "gA ProviderCount must be 2")
+	s.Assert().Equal(int64(1), cA.ActiveProviderCount, "gA ActiveProviderCount must be 1")
+
+	cB := byID[gB.ID]
+	s.Assert().Equal(int64(1), cB.ProviderCount, "gB ProviderCount must be 1")
+	s.Assert().Equal(int64(1), cB.ActiveProviderCount, "gB ActiveProviderCount must be 1")
+
+	// 按 total 降序排列时，gA（total=2）排在 gB（total=1）前面。
+	indexByID := make(map[int64]int, len(groups))
+	for i, g := range groups {
+		indexByID[g.ID] = i
+	}
+	s.Assert().Less(indexByID[gA.ID], indexByID[gB.ID], "gA (total=2) must rank above gB (total=1) with provider_count desc")
+}
+
+func (s *GroupRepoSuite) TestList_DefaultSortBySortOrderAsc() {
+	g1 := &routing.Group{
+		Name: "g1", RateMultiplier: 1, Status: billing.StatusActive, SortOrder: 20,
+		AllowedProtocols:     capability.DefaultGroupClientProtocols(capability.PlatformAnthropic),
+		ProtocolFallbacks:    capability.DefaultProtocolFallbacks(capability.PlatformAnthropic),
+		ResponsesImagePolicy: "inherit",
+	}
+	g2 := &routing.Group{
+		Name: "g2", RateMultiplier: 1, Status: billing.StatusActive, SortOrder: 10,
+		AllowedProtocols:     capability.DefaultGroupClientProtocols(capability.PlatformAnthropic),
+		ProtocolFallbacks:    capability.DefaultProtocolFallbacks(capability.PlatformAnthropic),
+		ResponsesImagePolicy: "inherit",
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, g1))
+	s.Require().NoError(s.repo.Create(s.ctx, g2))
+
+	groups, _, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 100})
+	s.Require().NoError(err)
+	s.Require().GreaterOrEqual(len(groups), 2)
+	indexByID := make(map[int64]int, len(groups))
+	for i, g := range groups {
+		indexByID[g.ID] = i
+	}
+	s.Require().Contains(indexByID, g1.ID)
+	s.Require().Contains(indexByID, g2.ID)
+	// g2 has SortOrder=10, g1 has SortOrder=20; ascending means g2 comes first
+	s.Require().Less(indexByID[g2.ID], indexByID[g1.ID])
+}
+
+func (s *GroupRepoSuite) TestList_SortBySortOrderDesc() {
+	g1 := &routing.Group{
+		Name: "g1", RateMultiplier: 1, Status: billing.StatusActive, SortOrder: 40,
+		AllowedProtocols:     capability.DefaultGroupClientProtocols(capability.PlatformAnthropic),
+		ProtocolFallbacks:    capability.DefaultProtocolFallbacks(capability.PlatformAnthropic),
+		ResponsesImagePolicy: "inherit",
+	}
+	g2 := &routing.Group{
+		Name: "g2", RateMultiplier: 1, Status: billing.StatusActive, SortOrder: 50,
+		AllowedProtocols:     capability.DefaultGroupClientProtocols(capability.PlatformAnthropic),
+		ProtocolFallbacks:    capability.DefaultProtocolFallbacks(capability.PlatformAnthropic),
+		ResponsesImagePolicy: "inherit",
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, g1))
+	s.Require().NoError(s.repo.Create(s.ctx, g2))
+
+	groups, _, err := s.repo.List(s.ctx, pagination.PaginationParams{
+		Page:      1,
+		PageSize:  10,
+		SortBy:    "sort_order",
+		SortOrder: "desc",
+	})
+	s.Require().NoError(err)
+	s.Require().GreaterOrEqual(len(groups), 2)
+	indexByID := make(map[int64]int, len(groups))
+	for i, group := range groups {
+		indexByID[group.ID] = i
+	}
+	s.Require().Contains(indexByID, g1.ID)
+	s.Require().Contains(indexByID, g2.ID)
+	s.Require().Less(indexByID[g2.ID], indexByID[g1.ID])
+}
+
+// TestUnifiedProtocolRoundTrip 检查分组协议设置的保存和回读。
+func (s *GroupRepoSuite) TestUnifiedProtocolRoundTrip() {
+	original := &routing.Group{Name: "protocol-group", Status: billing.StatusActive, RateMultiplier: 1, AllowedProtocols: []protocol.ProtocolID{protocol.ProtocolAnthropicMessages}, ProtocolFallbacks: map[protocol.ProtocolID][]protocol.ProtocolID{protocol.ProtocolAnthropicMessages: {protocol.ProtocolOpenAIResponses}}, ResponsesImagePolicy: "disabled"}
+	s.Require().NoError(s.repo.Create(s.ctx, original))
+	got, err := s.repo.GetByIDLite(s.ctx, original.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(original.AllowedProtocols, got.AllowedProtocols)
+	s.Require().Equal(original.ProtocolFallbacks, got.ProtocolFallbacks)
+	s.Require().Equal("disabled", got.ResponsesImagePolicy)
+	got.AllowedProtocols = []protocol.ProtocolID{}
+	got.ProtocolFallbacks = map[protocol.ProtocolID][]protocol.ProtocolID{}
+	got.ResponsesImagePolicy = "block"
+	s.Require().NoError(s.repo.Update(s.ctx, got))
+	got, err = s.repo.GetByID(s.ctx, original.ID)
+	s.Require().NoError(err)
+	s.Require().Empty(got.AllowedProtocols)
+	s.Require().Empty(got.ProtocolFallbacks)
+	s.Require().Equal("block", got.ResponsesImagePolicy)
 }

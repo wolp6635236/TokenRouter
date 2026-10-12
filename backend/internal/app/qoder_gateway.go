@@ -4,35 +4,37 @@ import (
 	"log/slog"
 	"time"
 
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
-
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
-
-	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-
-	"github.com/gin-gonic/gin"
 )
+
+// qoderHTTPObservation 同步记录请求观测数据，数据在请求内使用。
+type qoderHTTPObservation struct {
+	c               *gin.Context
+	stream, started bool
+}
+
+// qoderRequestActivity 统一跟踪 Chat、兼容入口和平台执行的结束状态。
+type qoderRequestActivity struct{ *lifecycle.Operations }
 
 // provideQoderChat 在 app 中为 Qoder Chat 入口绑定业务回调。
 func provideQoderChat(planner *gatewayprovider.RoutePlanner, q *gatewayprovider.QoderRuntime, refresh *provideradapter.QoderRequestRefresh, c *scheduler.ConcurrencyService, b *admission.FundingAdmission, k *apikey.APIKeyService, r *errorpolicy.ErrorPassthroughService, pool *completion.UsageRecordWorkerPool, recorders GatewayCompletionRecorders, activity *qoderRequestActivity, requests *gatewayRequestActivity, choices *selection.Generic) *gatewayhttp.QoderChatHandler {
@@ -94,12 +96,6 @@ func qoderPreflight(c *gin.Context) error {
 	return nil
 }
 
-// qoderHTTPObservation 同步记录请求观测数据，数据在请求内使用。
-type qoderHTTPObservation struct {
-	c               *gin.Context
-	stream, started bool
-}
-
 func (o *qoderHTTPObservation) Prepared(request gateway.Request) {
 	o.c.Request = o.c.Request.WithContext(requeststate.WithRoutePlan(o.c.Request.Context(), request.Route))
 	gatewayhttp.SetOpsLatencyMs(o.c, gatewayhttp.OpsAuthLatencyMsKey, time.Since(request.Metadata.StartedAt).Milliseconds())
@@ -112,9 +108,6 @@ func (o *qoderHTTPObservation) Selected(snapshot provider.ProviderSnapshot) {
 func (o *qoderHTTPObservation) Waiting(string) scheduler.WaitObserver {
 	return gatewayhttp.WaitObserver(o.c, gatewayhttp.SSEPingFormatComment, 10*time.Second, o.stream, &o.started, true)
 }
-
-// qoderRequestActivity 统一跟踪 Chat、兼容入口和平台执行的结束状态。
-type qoderRequestActivity struct{ *lifecycle.Operations }
 
 func provideQoderRequestActivity(manager *lifecycle.Manager, runtime *gatewayprovider.QoderRuntime) *qoderRequestActivity {
 	activity := lifecycle.NewOperations("QoderRequestsAndAttempts")

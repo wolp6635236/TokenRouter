@@ -5,7 +5,7 @@
       <div class="flex min-h-full items-center justify-center p-4">
         <div class="fixed inset-0 bg-[var(--overlay-bg)]" @click="handleOverlay"></div>
 
-        <div ref="dialogRef" tabindex="-1" class="auth-dialog-content relative w-full max-w-md transform rounded-surface bg-white p-6 shadow-xl dark:bg-dark-800 sm:rounded-dialog">
+        <div ref="dialogRef" tabindex="-1" class="auth-dialog-content relative w-full max-w-md transform rounded-surface bg-white p-6 shadow-xl dark:bg-dark-900 sm:rounded-dialog">
           <slot />
         </div>
       </div>

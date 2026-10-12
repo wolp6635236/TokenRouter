@@ -2,6 +2,7 @@ package identity
 
 import (
 	"errors"
+	"maps"
 	"strings"
 
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
@@ -163,9 +164,7 @@ func CloneOAuthMetadata(values map[string]any) map[string]any { return CopyPendi
 
 func MergeOAuthMetadata(base map[string]any, overlay map[string]any) map[string]any {
 	merged := CloneOAuthMetadata(base)
-	for key, value := range overlay {
-		merged[key] = value
-	}
+	maps.Copy(merged, overlay)
 	return merged
 }
 

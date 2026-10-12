@@ -4,9 +4,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	wireprotocol "github.com/TokenFlux/TokenRouter/internal/protocol"
-	"github.com/gin-gonic/gin"
 )
 
 // RouteEndpoints 汇总网关 HTTP 处理器和外部处理接口。
@@ -17,7 +18,7 @@ type RouteEndpoints struct {
 	GeminiNative           *GeminiNativeHandler
 	OpenAIText             *OpenAITextHandler
 	OpenAITokens           *OpenAITokensHandler
-	ResponsesWS            *ResponsesWSHandler
+	ResponsesWS            gin.HandlerFunc
 	Models                 *ModelsHandler
 	Messages               *MessagesHandler
 	Media                  *MediaHandler
@@ -73,7 +74,7 @@ func RegisterGatewayRoutes(engine *gin.Engine, endpoints RouteEndpoints, options
 	videoEditHandler := func(c *gin.Context) { mediaHTTP.GrokVideoEdit(c) }
 	videoExtensionHandler := func(c *gin.Context) { mediaHTTP.GrokVideoExtension(c) }
 
-	responsesWebSocketHandler := func(c *gin.Context) { responsesWSHTTP.ResponsesWebSocket(c) }
+	responsesWebSocketHandler := func(c *gin.Context) { responsesWSHTTP(c) }
 	// Sideband 动态段不能吞掉 fork 已明确移除的旧 Codex models 路由。
 	rejectRemovedCodexRoute := func(c *gin.Context) {
 		if c.Param("call_id") == "models" {
@@ -84,7 +85,7 @@ func RegisterGatewayRoutes(engine *gin.Engine, endpoints RouteEndpoints, options
 	}
 	// /responses/*subpath 的子路径会被转发到上游同名端点之后，因此在入口就拒掉
 	// 不可转发的子路径，不让它进入调度与转发流程。可转发的判定见
-	// IsForwardableOpenAIResponsesRequestPath 及 upstream_path_guard.go。
+	// IsForwardableOpenAIResponsesRequestPath 及 responses_path.go。
 	guardResponsesSubpath := func(next gin.HandlerFunc) gin.HandlerFunc {
 		return func(c *gin.Context) {
 			if !IsForwardableOpenAIResponsesRequestPath(c) {
@@ -101,7 +102,7 @@ func RegisterGatewayRoutes(engine *gin.Engine, endpoints RouteEndpoints, options
 		}
 	}
 
-	// API网关（Claude API兼容）
+	// API 网关（Claude API 兼容）
 	gateway := r.Group("/v1")
 	gateway.Use(bodyLimit)
 	gateway.Use(clientRequestID)
@@ -138,6 +139,7 @@ func RegisterGatewayRoutes(engine *gin.Engine, endpoints RouteEndpoints, options
 		gateway.GET("/responses", responsesWebSocketHandler)
 		// OpenAI Chat Completions API: 提供商选定后按实际能力执行
 		gateway.POST("/chat/completions", chatCompletionsProtocolGate, func(c *gin.Context) { openAITextHTTP.ChatCompletions(c) })
+		gateway.POST("/systemone", textBodyLimit, func(c *gin.Context) { auxiliaryHTTP.SystemOne(c) })
 		gateway.POST("/embeddings", textBodyLimit, func(c *gin.Context) { auxiliaryHTTP.Embeddings(c) })
 		gateway.POST("/images/generations", imagesHandler)
 		gateway.POST("/images/edits", imagesHandler)

@@ -4,10 +4,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
@@ -38,8 +36,8 @@ func IsAmbiguousGrokEntitlementRefreshError(value *provider.Record, err error) b
 			return false
 		}
 	}
-	if bodyIndex := strings.Index(msg, "body:"); bodyIndex >= 0 {
-		body := msg[bodyIndex+len("body:"):]
+	if _, after, ok := strings.Cut(msg, "body:"); ok {
+		body := after
 		for _, evidence := range []string{
 			"entitlement_denied",
 			"entitlement denied",
@@ -78,7 +76,7 @@ func IsSharedProviderRefreshError(err error) bool {
 
 // IsNonRetryableRefreshError 判断是否为不可重试的刷新错误
 // 这些错误通常表示凭证已失效或配置确实缺失，需要用户重新授权
-// 注意：missing_project_id 错误只在真正缺失（从未获取过）时返回，临时获取失败不会返回此错误
+// 注意：missing_project_id 错误只在真正缺失（从未获取过）时返回，临时获取失败不会返回此错误。
 func IsNonRetryableRefreshError(err error) bool {
 	if err == nil {
 		return false

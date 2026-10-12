@@ -3,8 +3,9 @@
 package app
 
 import (
-	teamhttp "github.com/TokenFlux/TokenRouter/internal/team/httpapi"
 	"github.com/google/wire"
+
+	teamhttp "github.com/TokenFlux/TokenRouter/internal/team/httpapi"
 )
 
 // teamHTTPProviders 汇总团队用户端和管理端 HTTP 构造函数。

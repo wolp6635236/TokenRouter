@@ -1,29 +1,67 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
-// TotpHandler handles TOTP-related requests
+// TotpHandler handles TOTP-related requests.
 type TotpHandler struct {
 	totpService *identity.TotpService
 }
 
-// NewTotpHandler creates a new TotpHandler
-func NewTotpHandler(totpService *identity.TotpService) *TotpHandler {
-	return &TotpHandler{
-		totpService: totpService,
-	}
-}
-
-// TotpStatusResponse represents the TOTP status response
+// TotpStatusResponse represents the TOTP status response.
 type TotpStatusResponse struct {
 	Enabled        bool   `json:"enabled"`
 	EnabledAt      *int64 `json:"enabled_at,omitempty"` // Unix timestamp
 	FeatureEnabled bool   `json:"feature_enabled"`
+}
+
+// TotpSetupRequest represents the request to initiate TOTP setup.
+type TotpSetupRequest struct {
+	EmailCode string `json:"email_code"`
+	Password  string `json:"password"`
+}
+
+// TotpSetupResponse represents the TOTP setup response.
+type TotpSetupResponse struct {
+	Secret     string `json:"secret"`
+	QRCodeURL  string `json:"qr_code_url"`
+	SetupToken string `json:"setup_token"`
+	Countdown  int    `json:"countdown"`
+}
+
+// TotpEnableRequest represents the request to enable TOTP.
+type TotpEnableRequest struct {
+	TotpCode   string `json:"totp_code" binding:"required,len=6"`
+	SetupToken string `json:"setup_token" binding:"required"`
+}
+
+// TotpDisableRequest represents the request to disable TOTP.
+type TotpDisableRequest struct {
+	EmailCode string `json:"email_code"`
+	Password  string `json:"password"`
+}
+
+// TotpStepUpRequest 表示敏感操作二次验证请求。
+type TotpStepUpRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+// TotpStepUpResponse 表示敏感操作二次验证响应。
+type TotpStepUpResponse struct {
+	Verified  bool  `json:"verified"`
+	ExpiresIn int64 `json:"expires_in"` // 授权剩余有效期（秒）
+}
+
+// NewTotpHandler creates a new TotpHandler.
+func NewTotpHandler(totpService *identity.TotpService) *TotpHandler {
+	return &TotpHandler{
+		totpService: totpService,
+	}
 }
 
 // GetStatus returns the TOTP status for the current user
@@ -52,20 +90,6 @@ func (h *TotpHandler) GetStatus(c *gin.Context) {
 	}
 
 	response.Success(c, resp)
-}
-
-// TotpSetupRequest represents the request to initiate TOTP setup
-type TotpSetupRequest struct {
-	EmailCode string `json:"email_code"`
-	Password  string `json:"password"`
-}
-
-// TotpSetupResponse represents the TOTP setup response
-type TotpSetupResponse struct {
-	Secret     string `json:"secret"`
-	QRCodeURL  string `json:"qr_code_url"`
-	SetupToken string `json:"setup_token"`
-	Countdown  int    `json:"countdown"`
 }
 
 // InitiateSetup starts the TOTP setup process
@@ -97,12 +121,6 @@ func (h *TotpHandler) InitiateSetup(c *gin.Context) {
 	})
 }
 
-// TotpEnableRequest represents the request to enable TOTP
-type TotpEnableRequest struct {
-	TotpCode   string `json:"totp_code" binding:"required,len=6"`
-	SetupToken string `json:"setup_token" binding:"required"`
-}
-
 // Enable completes the TOTP setup
 // POST /api/v1/user/totp/enable
 func (h *TotpHandler) Enable(c *gin.Context) {
@@ -124,12 +142,6 @@ func (h *TotpHandler) Enable(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"success": true})
-}
-
-// TotpDisableRequest represents the request to disable TOTP
-type TotpDisableRequest struct {
-	EmailCode string `json:"email_code"`
-	Password  string `json:"password"`
 }
 
 // Disable disables TOTP for the current user
@@ -187,17 +199,6 @@ func (h *TotpHandler) SendVerifyCode(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"success": true})
-}
-
-// TotpStepUpRequest 表示敏感操作二次验证请求。
-type TotpStepUpRequest struct {
-	Code string `json:"code" binding:"required"`
-}
-
-// TotpStepUpResponse 表示敏感操作二次验证响应。
-type TotpStepUpResponse struct {
-	Verified  bool  `json:"verified"`
-	ExpiresIn int64 `json:"expires_in"` // 授权剩余有效期（秒）
 }
 
 // StepUp 敏感操作二次验证：校验 TOTP 码并为当前会话授予一段时间的 step-up 权限。

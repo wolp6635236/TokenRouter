@@ -29,6 +29,7 @@ export interface AuditLog {
 }
 
 export interface AuditLogQuery {
+  request_id?: string
   page?: number
   page_size?: number
   start_time?: string

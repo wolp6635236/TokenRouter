@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
 )
 
 // countFixture 检查计数循环中的无槽尝试、提供商排除和资源释放次数。

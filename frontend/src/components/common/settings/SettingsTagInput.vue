@@ -11,7 +11,7 @@
       <span>{{ tag }}</span>
       <button
         type="button"
-        class="rounded-full text-gray-500 hover:bg-gray-200 hover:text-gray-700 dark:text-dark-300 dark:hover:bg-dark-600 dark:hover:text-white"
+        class="rounded-full text-gray-500 hover:bg-gray-200 hover:text-gray-700 dark:text-dark-300 dark:hover:bg-dark-700 dark:hover:text-white"
         :aria-label="removeLabel?.(tag)"
         @click="emit('remove', tag)"
       >

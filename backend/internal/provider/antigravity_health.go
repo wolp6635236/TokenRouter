@@ -6,12 +6,25 @@ import (
 	"time"
 )
 
+const (
+	// INTERNAL 500 渐进惩罚：连续多轮全部返回特定 500 错误时的惩罚时长。
+	Internal500PenaltyTier1Duration  = 30 * time.Minute // 第 1 轮：临时不可调度 30 分钟
+	Internal500PenaltyTier2Duration  = 2 * time.Hour    // 第 2 轮：临时不可调度 2 小时
+	Internal500PenaltyTier3Threshold = 3                // 第 3+ 轮：永久禁用
+
+	// CreditsExhaustedKey 是 model_rate_limits 中标记积分耗尽的特殊 key。
+	// 与普通模型限流完全同构：通过 SetModelRateLimit / isRateLimitActiveForKey 读写。
+	CreditsExhaustedKey      = "AICredits"
+	CreditsExhaustedDuration = 5 * time.Hour
+)
+
 type AntigravityHealthStore interface {
 	SetError(context.Context, int64, string) error
 	SetTempUnschedulable(context.Context, int64, time.Time, string) error
 	SetModelRateLimit(context.Context, int64, string, time.Time, ...string) error
 	UpdateExtra(context.Context, int64, map[string]any) error
 }
+
 type AntigravityHealth struct {
 	Store             AntigravityHealthStore
 	Counter           Internal500CounterCache
@@ -21,17 +34,18 @@ type AntigravityHealth struct {
 	Logf              func(string, ...any)
 }
 
-// INTERNAL 500 渐进惩罚：连续多轮全部返回特定 500 错误时的惩罚时长
-const (
-	Internal500PenaltyTier1Duration  = 30 * time.Minute // 第 1 轮：临时不可调度 30 分钟
-	Internal500PenaltyTier2Duration  = 2 * time.Hour    // 第 2 轮：临时不可调度 2 小时
-	Internal500PenaltyTier3Threshold = 3                // 第 3+ 轮：永久禁用
-)
+// Internal500CounterCache 追踪 Antigravity 提供商连续 INTERNAL 500 失败轮数。
+type Internal500CounterCache interface {
+	// IncrementInternal500Count 原子递增计数并返回当前值
+	IncrementInternal500Count(ctx context.Context, providerID int64) (int64, error)
+	// ResetInternal500Count 清零计数器（成功响应时调用）
+	ResetInternal500Count(ctx context.Context, providerID int64) error
+}
 
 // ApplyInternal500Penalty 根据连续 INTERNAL 500 轮次数应用渐进惩罚
 // count=1: temp_unschedulable 30 分钟
 // count=2: temp_unschedulable 2 小时
-// count>=3: SetError 永久禁用
+// count>=3: SetError 永久禁用。
 func (s *AntigravityHealth) ApplyInternal500Penalty(
 	ctx context.Context, prefix string, provider *Record, count int64,
 ) {
@@ -67,7 +81,7 @@ func (s *AntigravityHealth) ApplyInternal500Penalty(
 	}
 }
 
-// HandleInternal500RetryExhausted 处理 INTERNAL 500 重试耗尽：递增计数器并应用惩罚
+// HandleInternal500RetryExhausted 处理 INTERNAL 500 重试耗尽：递增计数器并应用惩罚。
 func (s *AntigravityHealth) HandleInternal500RetryExhausted(
 	ctx context.Context, prefix string, provider *Record,
 ) {
@@ -83,7 +97,7 @@ func (s *AntigravityHealth) HandleInternal500RetryExhausted(
 	s.ApplyInternal500Penalty(ctx, prefix, provider, count)
 }
 
-// ResetInternal500Counter 成功响应时清零 INTERNAL 500 计数器
+// ResetInternal500Counter 成功响应时清零 INTERNAL 500 计数器。
 func (s *AntigravityHealth) ResetInternal500Counter(
 	ctx context.Context, prefix string, providerID int64,
 ) {
@@ -95,13 +109,6 @@ func (s *AntigravityHealth) ResetInternal500Counter(
 			"prefix", prefix, "provider_id", providerID, "error", err)
 	}
 }
-
-const (
-	// CreditsExhaustedKey 是 model_rate_limits 中标记积分耗尽的特殊 key。
-	// 与普通模型限流完全同构：通过 SetModelRateLimit / isRateLimitActiveForKey 读写。
-	CreditsExhaustedKey      = "AICredits"
-	CreditsExhaustedDuration = 5 * time.Hour
-)
 
 // SetCreditsExhausted 标记提供商积分耗尽：写入 model_rate_limits["AICredits"] + 更新缓存。
 func (s *AntigravityHealth) SetCreditsExhausted(ctx context.Context, provider *Record) {
@@ -141,7 +148,7 @@ func (s *AntigravityHealth) ClearCreditsExhausted(ctx context.Context, provider 
 
 // SetModelRateLimitByModelName 使用官方模型 ID 设置模型级限流
 // 直接使用上游返回的模型 ID（如 claude-sonnet-4-5）作为限流 key
-// 返回是否已成功设置（若模型名为空或 repo 为 nil 将返回 false）
+// 返回是否已成功设置（若模型名为空或 repo 为 nil 将返回 false）。
 func SetModelRateLimitByModelName(ctx context.Context, repo AntigravityHealthStore, providerID int64, modelName, prefix string, statusCode int, resetAt time.Time, afterSmartRetry bool, logf func(string, ...any)) bool {
 	if repo == nil || modelName == "" {
 		return false
@@ -178,7 +185,7 @@ func (s *AntigravityHealth) SetAntigravityModelRateLimits(ctx context.Context, r
 	return success
 }
 
-// UpdateProviderModelRateLimitInCache 立即更新 Redis 中提供商的模型限流状态
+// UpdateProviderModelRateLimitInCache 立即更新 Redis 中提供商的模型限流状态。
 func (s *AntigravityHealth) UpdateProviderModelRateLimitInCache(ctx context.Context, provider *Record, modelKey string, resetAt time.Time) {
 	if s.Publish == nil || provider == nil || modelKey == "" {
 		return

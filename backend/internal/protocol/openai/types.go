@@ -5,6 +5,11 @@ import (
 	"encoding/json"
 )
 
+const (
+	TextProtocolChatCompletions TextProtocol = "chat_completions"
+	TextProtocolResponses       TextProtocol = "responses"
+)
+
 // ResponsesRequest is the request body for POST /v1/responses.
 type ResponsesRequest struct {
 	Model              string              `json:"model"`
@@ -62,38 +67,6 @@ type ResponsesInputItem struct {
 	outputRaw json.RawMessage
 }
 
-// RawOutput 返回反序列化时保留的工具结果原文，转换器只读此值。
-func (i *ResponsesInputItem) RawOutput() json.RawMessage {
-	return i.outputRaw
-}
-
-// UnmarshalJSON 保留数组或对象形式的工具输出，供协议转换时还原多模态内容。
-func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
-	type alias ResponsesInputItem
-	var wire struct {
-		*alias
-		Output json.RawMessage `json:"output"`
-	}
-
-	*i = ResponsesInputItem{}
-	wire.alias = (*alias)(i)
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return err
-	}
-
-	output := bytes.TrimSpace(wire.Output)
-	if len(output) == 0 || bytes.Equal(output, []byte("null")) {
-		return nil
-	}
-	if err := json.Unmarshal(output, &i.Output); err == nil {
-		return nil
-	}
-
-	i.outputRaw = append(i.outputRaw[:0], output...)
-	i.Output = string(output)
-	return nil
-}
-
 // ResponsesContentPart is a typed content part in a Responses message.
 type ResponsesContentPart struct {
 	Type     string `json:"type"` // input_text、output_text、input_image 或 input_file
@@ -125,22 +98,6 @@ type ResponsesTool struct {
 	ToDate                   string   `json:"to_date,omitempty"`
 	EnableImageUnderstanding *bool    `json:"enable_image_understanding,omitempty"`
 	EnableVideoUnderstanding *bool    `json:"enable_video_understanding,omitempty"`
-}
-
-// UnmarshalJSON 容忍字符串形式的工具声明：codex 会以 "name" 简写声明 custom 工具，
-func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
-	var name string
-	if err := json.Unmarshal(data, &name); err == nil {
-		*t = ResponsesTool{Type: "custom", Name: name}
-		return nil
-	}
-	type alias ResponsesTool
-	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
-		return err
-	}
-	*t = ResponsesTool(a)
-	return nil
 }
 
 // ResponsesResponse is the non-streaming response from POST /v1/responses.
@@ -204,76 +161,6 @@ type ResponsesOutput struct {
 	Action *WebSearchAction `json:"action,omitempty"`
 }
 
-// MarshalJSON 处理 tool_search_call 项的线上形态（复用 CallID/Arguments 字段）：
-// execution 固定为 "client"（codex 的必填字段，非 client 的调用会被静默忽略），
-// arguments 编码为 JSON 对象。其余类型使用默认结构体序列化。
-func (o ResponsesOutput) MarshalJSON() ([]byte, error) {
-	type responsesOutputAlias ResponsesOutput
-	if o.Type != "tool_search_call" {
-		return json.Marshal(responsesOutputAlias(o))
-	}
-	m := map[string]any{
-		"type":      o.Type,
-		"id":        o.ID,
-		"call_id":   o.CallID,
-		"execution": "client",
-		"arguments": ToolSearchCallArgumentsJSON(o.Arguments),
-	}
-	if o.Status != "" {
-		m["status"] = o.Status
-	}
-	return json.Marshal(m)
-}
-
-// UnmarshalJSON 同时接受普通 function call 的字符串参数和 tool_search_call 的
-// 对象参数。桥接层内部统一存储字符串，因此对象参数会保留为原始 JSON 文本。
-func (o *ResponsesOutput) UnmarshalJSON(data []byte) error {
-	type responsesOutputAlias ResponsesOutput
-
-	var kind struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &kind); err != nil {
-		return err
-	}
-	if kind.Type != "tool_search_call" {
-		var decoded responsesOutputAlias
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			return err
-		}
-		*o = ResponsesOutput(decoded)
-		return nil
-	}
-
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	arguments, hasArguments := fields["arguments"]
-	delete(fields, "arguments")
-	normalized, err := json.Marshal(fields)
-	if err != nil {
-		return err
-	}
-
-	var decoded responsesOutputAlias
-	if err := json.Unmarshal(normalized, &decoded); err != nil {
-		return err
-	}
-	*o = ResponsesOutput(decoded)
-	if !hasArguments || string(arguments) == "null" {
-		return nil
-	}
-
-	var argumentString string
-	if err := json.Unmarshal(arguments, &argumentString); err == nil {
-		o.Arguments = argumentString
-	} else {
-		o.Arguments = string(arguments)
-	}
-	return nil
-}
-
 // WebSearchAction describes the search action in a web_search_call output item.
 type WebSearchAction struct {
 	Type  string `json:"type,omitempty"`  // "search"
@@ -296,76 +183,6 @@ type ResponsesUsage struct {
 	// Optional detailed breakdown
 	InputTokensDetails  *ResponsesInputTokensDetails  `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *ResponsesOutputTokensDetails `json:"output_tokens_details,omitempty"`
-}
-
-// UnmarshalJSON 兼容 OpenAI Responses 与 Chat Completions 两种 usage 字段命名。
-func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
-	type responsesUsageAlias ResponsesUsage
-	type cacheTokenPresence struct {
-		CacheCreationTokens *int `json:"cache_creation_tokens"`
-		CacheWriteTokens    *int `json:"cache_write_tokens"`
-	}
-	var aux struct {
-		responsesUsageAlias
-		PromptTokens            int                           `json:"prompt_tokens"`
-		CompletionTokens        int                           `json:"completion_tokens"`
-		CacheCreationTokens     int                           `json:"cache_creation_tokens"`
-		CacheWriteInputTokens   int                           `json:"cache_write_input_tokens"`
-		CacheWriteTokens        int                           `json:"cache_write_tokens"`
-		PromptTokensDetails     *ResponsesInputTokensDetails  `json:"prompt_tokens_details,omitempty"`
-		CompletionTokensDetails *ResponsesOutputTokensDetails `json:"completion_tokens_details,omitempty"`
-	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	var nestedPresence struct {
-		InputTokensDetails  *cacheTokenPresence `json:"input_tokens_details"`
-		PromptTokensDetails *cacheTokenPresence `json:"prompt_tokens_details"`
-	}
-	if err := json.Unmarshal(data, &nestedPresence); err != nil {
-		return err
-	}
-	*u = ResponsesUsage(aux.responsesUsageAlias)
-	if u.InputTokens == 0 && aux.PromptTokens != 0 {
-		u.InputTokens = aux.PromptTokens
-	}
-	if u.OutputTokens == 0 && aux.CompletionTokens != 0 {
-		u.OutputTokens = aux.CompletionTokens
-	}
-	if u.CacheCreationInputTokens == 0 {
-		switch {
-		case aux.CacheWriteInputTokens > 0:
-			u.CacheCreationInputTokens = aux.CacheWriteInputTokens
-		case aux.CacheCreationTokens > 0:
-			u.CacheCreationInputTokens = aux.CacheCreationTokens
-		case aux.CacheWriteTokens > 0:
-			u.CacheCreationInputTokens = aux.CacheWriteTokens
-		}
-	}
-	if u.InputTokensDetails == nil && aux.PromptTokensDetails != nil {
-		u.InputTokensDetails = aux.PromptTokensDetails
-	}
-	if u.OutputTokensDetails == nil && aux.CompletionTokensDetails != nil {
-		u.OutputTokensDetails = aux.CompletionTokensDetails
-	}
-	var canonicalCacheCreationTokens *int
-	switch {
-	case nestedPresence.InputTokensDetails != nil && nestedPresence.InputTokensDetails.CacheWriteTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.InputTokensDetails.CacheWriteTokens
-	case nestedPresence.PromptTokensDetails != nil && nestedPresence.PromptTokensDetails.CacheWriteTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.PromptTokensDetails.CacheWriteTokens
-	case nestedPresence.InputTokensDetails != nil && nestedPresence.InputTokensDetails.CacheCreationTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.InputTokensDetails.CacheCreationTokens
-	case nestedPresence.PromptTokensDetails != nil && nestedPresence.PromptTokensDetails.CacheCreationTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.PromptTokensDetails.CacheCreationTokens
-	}
-	if canonicalCacheCreationTokens != nil {
-		u.CacheCreationInputTokens = max(*canonicalCacheCreationTokens, 0)
-	}
-	if u.TotalTokens == 0 && (u.InputTokens != 0 || u.OutputTokens != 0) {
-		u.TotalTokens = u.InputTokens + u.OutputTokens
-	}
-	return nil
 }
 
 // ResponsesInputTokensDetails breaks down input token usage.
@@ -531,30 +348,6 @@ type ChatFunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
-// UnmarshalJSON 同时兼容官方字符串参数，以及部分 OpenAI 兼容历史回放里的对象参数。
-func (c *ChatFunctionCall) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	c.Name = raw.Name
-	arguments := bytes.TrimSpace(raw.Arguments)
-	if len(arguments) == 0 || string(arguments) == "null" {
-		c.Arguments = ""
-		return nil
-	}
-	var text string
-	if err := json.Unmarshal(arguments, &text); err == nil {
-		c.Arguments = text
-		return nil
-	}
-	c.Arguments = string(arguments)
-	return nil
-}
-
 // ChatCompletionsResponse is the non-streaming response from POST /v1/chat/completions.
 type ChatCompletionsResponse struct {
 	ID                string       `json:"id"`
@@ -626,6 +419,221 @@ type ChatDelta struct {
 	ReasoningContent *string        `json:"reasoning_content,omitempty"`
 	Reasoning        *string        `json:"reasoning,omitempty"`
 	ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
+}
+
+// TextProtocol 描述普通文本请求发往上游时使用的协议。
+type TextProtocol string
+
+// RawOutput 返回反序列化时保留的工具结果原文，转换器只读此值。
+func (i *ResponsesInputItem) RawOutput() json.RawMessage {
+	return i.outputRaw
+}
+
+// UnmarshalJSON 保留数组或对象形式的工具输出，供协议转换时还原多模态内容。
+func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+	type alias ResponsesInputItem
+	var wire struct {
+		*alias
+		Output json.RawMessage `json:"output"`
+	}
+
+	*i = ResponsesInputItem{}
+	wire.alias = (*alias)(i)
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	output := bytes.TrimSpace(wire.Output)
+	if len(output) == 0 || bytes.Equal(output, []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(output, &i.Output); err == nil {
+		return nil
+	}
+
+	i.outputRaw = append(i.outputRaw[:0], output...)
+	i.Output = string(output)
+	return nil
+}
+
+// UnmarshalJSON 容忍字符串形式的工具声明：codex 会以 "name" 简写声明 custom 工具。
+func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		*t = ResponsesTool{Type: "custom", Name: name}
+		return nil
+	}
+	type alias ResponsesTool
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*t = ResponsesTool(a)
+	return nil
+}
+
+// MarshalJSON 处理 tool_search_call 项的线上形态（复用 CallID/Arguments 字段）：
+// execution 固定为 "client"（codex 的必填字段，非 client 的调用会被静默忽略），
+// arguments 编码为 JSON 对象。其余类型使用默认结构体序列化。
+func (o ResponsesOutput) MarshalJSON() ([]byte, error) {
+	type responsesOutputAlias ResponsesOutput
+	if o.Type != "tool_search_call" {
+		return json.Marshal(responsesOutputAlias(o))
+	}
+	m := map[string]any{
+		"type":      o.Type,
+		"id":        o.ID,
+		"call_id":   o.CallID,
+		"execution": "client",
+		"arguments": ToolSearchCallArgumentsJSON(o.Arguments),
+	}
+	if o.Status != "" {
+		m["status"] = o.Status
+	}
+	return json.Marshal(m)
+}
+
+// UnmarshalJSON 同时接受普通 function call 的字符串参数和 tool_search_call 的
+// 对象参数。桥接层内部统一存储字符串，因此对象参数会保留为原始 JSON 文本。
+func (o *ResponsesOutput) UnmarshalJSON(data []byte) error {
+	type responsesOutputAlias ResponsesOutput
+
+	var kind struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &kind); err != nil {
+		return err
+	}
+	if kind.Type != "tool_search_call" {
+		var decoded responsesOutputAlias
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return err
+		}
+		*o = ResponsesOutput(decoded)
+		return nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	arguments, hasArguments := fields["arguments"]
+	delete(fields, "arguments")
+	normalized, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+
+	var decoded responsesOutputAlias
+	if err := json.Unmarshal(normalized, &decoded); err != nil {
+		return err
+	}
+	*o = ResponsesOutput(decoded)
+	if !hasArguments || string(arguments) == "null" {
+		return nil
+	}
+
+	var argumentString string
+	if err := json.Unmarshal(arguments, &argumentString); err == nil {
+		o.Arguments = argumentString
+	} else {
+		o.Arguments = string(arguments)
+	}
+	return nil
+}
+
+// UnmarshalJSON 兼容 OpenAI Responses 与 Chat Completions 两种 usage 字段命名。
+func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
+	type responsesUsageAlias ResponsesUsage
+	type cacheTokenPresence struct {
+		CacheCreationTokens *int `json:"cache_creation_tokens"`
+		CacheWriteTokens    *int `json:"cache_write_tokens"`
+	}
+	var aux struct {
+		responsesUsageAlias
+		PromptTokens            int                           `json:"prompt_tokens"`
+		CompletionTokens        int                           `json:"completion_tokens"`
+		CacheCreationTokens     int                           `json:"cache_creation_tokens"`
+		CacheWriteInputTokens   int                           `json:"cache_write_input_tokens"`
+		CacheWriteTokens        int                           `json:"cache_write_tokens"`
+		PromptTokensDetails     *ResponsesInputTokensDetails  `json:"prompt_tokens_details,omitempty"`
+		CompletionTokensDetails *ResponsesOutputTokensDetails `json:"completion_tokens_details,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	var nestedPresence struct {
+		InputTokensDetails  *cacheTokenPresence `json:"input_tokens_details"`
+		PromptTokensDetails *cacheTokenPresence `json:"prompt_tokens_details"`
+	}
+	if err := json.Unmarshal(data, &nestedPresence); err != nil {
+		return err
+	}
+	*u = ResponsesUsage(aux.responsesUsageAlias)
+	if u.InputTokens == 0 && aux.PromptTokens != 0 {
+		u.InputTokens = aux.PromptTokens
+	}
+	if u.OutputTokens == 0 && aux.CompletionTokens != 0 {
+		u.OutputTokens = aux.CompletionTokens
+	}
+	if u.CacheCreationInputTokens == 0 {
+		switch {
+		case aux.CacheWriteInputTokens > 0:
+			u.CacheCreationInputTokens = aux.CacheWriteInputTokens
+		case aux.CacheCreationTokens > 0:
+			u.CacheCreationInputTokens = aux.CacheCreationTokens
+		case aux.CacheWriteTokens > 0:
+			u.CacheCreationInputTokens = aux.CacheWriteTokens
+		}
+	}
+	if u.InputTokensDetails == nil && aux.PromptTokensDetails != nil {
+		u.InputTokensDetails = aux.PromptTokensDetails
+	}
+	if u.OutputTokensDetails == nil && aux.CompletionTokensDetails != nil {
+		u.OutputTokensDetails = aux.CompletionTokensDetails
+	}
+	var canonicalCacheCreationTokens *int
+	switch {
+	case nestedPresence.InputTokensDetails != nil && nestedPresence.InputTokensDetails.CacheWriteTokens != nil:
+		canonicalCacheCreationTokens = nestedPresence.InputTokensDetails.CacheWriteTokens
+	case nestedPresence.PromptTokensDetails != nil && nestedPresence.PromptTokensDetails.CacheWriteTokens != nil:
+		canonicalCacheCreationTokens = nestedPresence.PromptTokensDetails.CacheWriteTokens
+	case nestedPresence.InputTokensDetails != nil && nestedPresence.InputTokensDetails.CacheCreationTokens != nil:
+		canonicalCacheCreationTokens = nestedPresence.InputTokensDetails.CacheCreationTokens
+	case nestedPresence.PromptTokensDetails != nil && nestedPresence.PromptTokensDetails.CacheCreationTokens != nil:
+		canonicalCacheCreationTokens = nestedPresence.PromptTokensDetails.CacheCreationTokens
+	}
+	if canonicalCacheCreationTokens != nil {
+		u.CacheCreationInputTokens = max(*canonicalCacheCreationTokens, 0)
+	}
+	if u.TotalTokens == 0 && (u.InputTokens != 0 || u.OutputTokens != 0) {
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	}
+	return nil
+}
+
+// UnmarshalJSON 同时兼容官方字符串参数，以及部分 OpenAI 兼容历史回放里的对象参数。
+func (c *ChatFunctionCall) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Name = raw.Name
+	arguments := bytes.TrimSpace(raw.Arguments)
+	if len(arguments) == 0 || string(arguments) == "null" {
+		c.Arguments = ""
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(arguments, &text); err == nil {
+		c.Arguments = text
+		return nil
+	}
+	c.Arguments = string(arguments)
+	return nil
 }
 
 // ReasoningText 返回消息中的推理文本；正式字段有内容时优先于兼容别名。

@@ -5,9 +5,10 @@ import (
 	"slices"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
-// CloneGroupConfig 复制跨缓存/模块边界的可变值，保留省略与显式空集合。
+// CloneGroupConfig 深拷贝分组配置，保留 nil 和空集合的区别。
 func CloneGroupConfig(g *GroupConfig) *GroupConfig {
 	if g == nil {
 		return nil
@@ -45,4 +46,9 @@ func cloneGroupPointer[T any](value *T) *T {
 	}
 	out := *value
 	return &out
+}
+
+// CloneGroupAdvancedSchedulerOverrides 调用 policy 包复制高级调度配置。
+func CloneGroupAdvancedSchedulerOverrides(overrides GroupAdvancedSchedulerOverrides) GroupAdvancedSchedulerOverrides {
+	return policy.CloneGroupAdvancedSchedulerOverrides(overrides)
 }

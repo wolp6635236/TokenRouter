@@ -19,13 +19,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-type StreamTime string
-
 const (
 	StreamTimeFlush   StreamTime = "first_downstream_flush"
 	StreamTimeVisible StreamTime = "first_visible_output"
 	StreamTimeData    StreamTime = "first_sse_data"
 )
+
+type StreamTime string
 
 type CyberObservation struct {
 	Code           string
@@ -79,7 +79,7 @@ type StreamOptions struct {
 	OpenAIStreamEventIsTerminalWithType                                  func(string, string) bool
 }
 
-// StreamingResult streaming response result
+// StreamingResult streaming response result.
 type StreamingResult struct {
 	// 分别记录内容输出、用量是否存在、HTTP 提交和重试窗口关闭状态。
 	Served, HasUsage, HttpCommitted, RetryCommitted, ClientDisconnected, ObservedOnly bool

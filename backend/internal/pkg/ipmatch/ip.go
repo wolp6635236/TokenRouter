@@ -2,6 +2,7 @@ package ipmatch
 
 import (
 	"net"
+	"slices"
 	"strings"
 )
 
@@ -52,18 +53,13 @@ func MatchesCompiledRules(parsedIP net.IP, rules *CompiledIPRules) bool {
 			return true
 		}
 	}
-	for _, ruleIP := range rules.IPs {
-		if parsedIP.Equal(ruleIP) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(rules.IPs, parsedIP.Equal)
 }
 
 // MatchesPattern 检查 IP 是否匹配指定的模式（支持单个 IP 或 CIDR）。
 // pattern 可以是：
 // - 单个 IP: "192.168.1.100"
-// - CIDR 范围: "192.168.1.0/24"
+// - CIDR 范围: "192.168.1.0/24"。
 func MatchesPattern(clientIP, pattern string) bool {
 	ip := net.ParseIP(clientIP)
 	if ip == nil {

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	utls "github.com/refraction-networking/utls"
+	utls "github.com/refraction-networking/utls" //nolint:revive // 包名是 tls，别名用来和 crypto/tls 区分。
 	"golang.org/x/net/proxy"
 )
 
@@ -25,12 +25,88 @@ const (
 	defaultTLSFingerprintHandshakeTimeout = 10 * time.Second
 )
 
-func newTLSFingerprintNetworkDialer() *net.Dialer {
-	return &net.Dialer{
-		Timeout:   defaultTLSFingerprintDialTimeout,
-		KeepAlive: defaultTLSFingerprintDialKeepAlive,
+var (
+	// Default TLS fingerprint values captured from Claude Code (Node.js 24.x)
+	// Captured via tls-fingerprint-web capture server
+	// JA3 Hash: 44f88fca027f27bab4bb08d4af15f23e
+	// JA4:      t13d1714h1_5b57614c22b0_7baf387fc6ff
+	// defaultCipherSuites contains the 17 cipher suites from Node.js 24.x
+	// Order is critical for JA3 fingerprint matching.
+	defaultCipherSuites = []uint16{
+		// TLS 1.3 cipher suites
+		0x1301, // TLS_AES_128_GCM_SHA256
+		0x1302, // TLS_AES_256_GCM_SHA384
+		0x1303, // TLS_CHACHA20_POLY1305_SHA256
+
+		// ECDHE + AES-GCM
+		0xc02b, // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+		0xc02f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		0xc02c, // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+		0xc030, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+
+		// ECDHE + ChaCha20-Poly1305
+		0xcca9, // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+		0xcca8, // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+
+		// ECDHE + AES-CBC-SHA (legacy fallback)
+		0xc009, // TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA
+		0xc013, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+		0xc00a, // TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA
+		0xc014, // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+
+		// RSA + AES-GCM (non-PFS)
+		0x009c, // TLS_RSA_WITH_AES_128_GCM_SHA256
+		0x009d, // TLS_RSA_WITH_AES_256_GCM_SHA384
+
+		// RSA + AES-CBC-SHA (non-PFS, legacy)
+		0x002f, // TLS_RSA_WITH_AES_128_CBC_SHA
+		0x0035, // TLS_RSA_WITH_AES_256_CBC_SHA
 	}
-}
+
+	// defaultCurves contains the 3 supported groups from Node.js 24.x.
+	defaultCurves = []utls.CurveID{
+		utls.X25519,    // 0x001d
+		utls.CurveP256, // 0x0017 (secp256r1)
+		utls.CurveP384, // 0x0018 (secp384r1)
+	}
+
+	// defaultPointFormats contains point formats from Node.js 24.x.
+	defaultPointFormats = []uint16{
+		0, // uncompressed
+	}
+
+	// defaultSignatureAlgorithms contains the 9 signature algorithms from Node.js 24.x.
+	defaultSignatureAlgorithms = []utls.SignatureScheme{
+		0x0403, // ecdsa_secp256r1_sha256
+		0x0804, // rsa_pss_rsae_sha256
+		0x0401, // rsa_pkcs1_sha256
+		0x0503, // ecdsa_secp384r1_sha384
+		0x0805, // rsa_pss_rsae_sha384
+		0x0501, // rsa_pkcs1_sha384
+		0x0806, // rsa_pss_rsae_sha512
+		0x0601, // rsa_pkcs1_sha512
+		0x0201, // rsa_pkcs1_sha1
+	}
+
+	// defaultExtensionOrder is the Node.js 24.x extension order.
+	// Used when Profile.Extensions is empty.
+	defaultExtensionOrder = []uint16{
+		0,     // server_name
+		65037, // encrypted_client_hello
+		23,    // extended_master_secret
+		65281, // renegotiation_info
+		10,    // supported_groups
+		11,    // ec_point_formats
+		35,    // session_ticket
+		16,    // alpn
+		5,     // status_request
+		13,    // signature_algorithms
+		18,    // signed_certificate_timestamp
+		51,    // key_share
+		45,    // psk_key_exchange_modes
+		43,    // supported_versions
+	}
+)
 
 // Profile contains TLS fingerprint configuration.
 // All slice fields use built-in defaults when empty.
@@ -69,69 +145,12 @@ type SOCKS5ProxyDialer struct {
 	proxyURL *url.URL
 }
 
-// Default TLS fingerprint values captured from Claude Code (Node.js 24.x)
-// Captured via tls-fingerprint-web capture server
-// JA3 Hash: 44f88fca027f27bab4bb08d4af15f23e
-// JA4:      t13d1714h1_5b57614c22b0_7baf387fc6ff
-var (
-	// defaultCipherSuites contains the 17 cipher suites from Node.js 24.x
-	// Order is critical for JA3 fingerprint matching
-	defaultCipherSuites = []uint16{
-		// TLS 1.3 cipher suites
-		0x1301, // TLS_AES_128_GCM_SHA256
-		0x1302, // TLS_AES_256_GCM_SHA384
-		0x1303, // TLS_CHACHA20_POLY1305_SHA256
-
-		// ECDHE + AES-GCM
-		0xc02b, // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		0xc02f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		0xc02c, // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-		0xc030, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-
-		// ECDHE + ChaCha20-Poly1305
-		0xcca9, // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-		0xcca8, // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-
-		// ECDHE + AES-CBC-SHA (legacy fallback)
-		0xc009, // TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA
-		0xc013, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-		0xc00a, // TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA
-		0xc014, // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
-
-		// RSA + AES-GCM (non-PFS)
-		0x009c, // TLS_RSA_WITH_AES_128_GCM_SHA256
-		0x009d, // TLS_RSA_WITH_AES_256_GCM_SHA384
-
-		// RSA + AES-CBC-SHA (non-PFS, legacy)
-		0x002f, // TLS_RSA_WITH_AES_128_CBC_SHA
-		0x0035, // TLS_RSA_WITH_AES_256_CBC_SHA
+func newTLSFingerprintNetworkDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout:   defaultTLSFingerprintDialTimeout,
+		KeepAlive: defaultTLSFingerprintDialKeepAlive,
 	}
-
-	// defaultCurves contains the 3 supported groups from Node.js 24.x
-	defaultCurves = []utls.CurveID{
-		utls.X25519,    // 0x001d
-		utls.CurveP256, // 0x0017 (secp256r1)
-		utls.CurveP384, // 0x0018 (secp384r1)
-	}
-
-	// defaultPointFormats contains point formats from Node.js 24.x
-	defaultPointFormats = []uint16{
-		0, // uncompressed
-	}
-
-	// defaultSignatureAlgorithms contains the 9 signature algorithms from Node.js 24.x
-	defaultSignatureAlgorithms = []utls.SignatureScheme{
-		0x0403, // ecdsa_secp256r1_sha256
-		0x0804, // rsa_pss_rsae_sha256
-		0x0401, // rsa_pkcs1_sha256
-		0x0503, // ecdsa_secp384r1_sha384
-		0x0805, // rsa_pss_rsae_sha384
-		0x0501, // rsa_pkcs1_sha384
-		0x0806, // rsa_pss_rsae_sha512
-		0x0601, // rsa_pkcs1_sha512
-		0x0201, // rsa_pkcs1_sha1
-	}
-)
+}
 
 // NewDialer creates a new TLS fingerprint dialer.
 // baseDialer is used for TCP connection establishment (supports proxy scenarios).
@@ -156,7 +175,7 @@ func NewSOCKS5ProxyDialer(profile *Profile, proxyURL *url.URL) *SOCKS5ProxyDiale
 }
 
 // DialTLSContext establishes a TLS connection through SOCKS5 proxy with the configured fingerprint.
-// Flow: SOCKS5 CONNECT to target -> TLS handshake with utls on the tunnel
+// Flow: SOCKS5 CONNECT to target -> TLS handshake with utls on the tunnel.
 func (d *SOCKS5ProxyDialer) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	slog.Debug("tls_fingerprint_socks5_connecting", "proxy", d.proxyURL.Host, "target", addr)
 
@@ -202,7 +221,7 @@ func (d *SOCKS5ProxyDialer) DialTLSContext(ctx context.Context, network, addr st
 }
 
 // DialTLSContext establishes a TLS connection through HTTP proxy with the configured fingerprint.
-// Flow: TCP connect to proxy -> CONNECT tunnel -> TLS handshake with utls
+// Flow: TCP connect to proxy -> CONNECT tunnel -> TLS handshake with utls.
 func (d *HTTPProxyDialer) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	if d == nil || d.proxyURL == nil {
 		return nil, errors.New("HTTP proxy dialer missing proxy URL")
@@ -253,7 +272,7 @@ func (d *HTTPProxyDialer) DialTLSContext(ctx context.Context, network, addr stri
 
 	// Step 2: Send CONNECT request to establish tunnel
 	req := &http.Request{
-		Method: "CONNECT",
+		Method: http.MethodConnect,
 		URL:    &url.URL{Opaque: addr},
 		Host:   addr,
 		Header: make(http.Header),
@@ -353,25 +372,6 @@ func toUTLSCurves(curves []uint16) []utls.CurveID {
 		result[i] = utls.CurveID(c)
 	}
 	return result
-}
-
-// defaultExtensionOrder is the Node.js 24.x extension order.
-// Used when Profile.Extensions is empty.
-var defaultExtensionOrder = []uint16{
-	0,     // server_name
-	65037, // encrypted_client_hello
-	23,    // extended_master_secret
-	65281, // renegotiation_info
-	10,    // supported_groups
-	11,    // ec_point_formats
-	35,    // session_ticket
-	16,    // alpn
-	5,     // status_request
-	13,    // signature_algorithms
-	18,    // signed_certificate_timestamp
-	51,    // key_share
-	45,    // psk_key_exchange_modes
-	43,    // supported_versions
 }
 
 // isGREASEValue checks if a uint16 value matches the TLS GREASE pattern (0x?a?a).

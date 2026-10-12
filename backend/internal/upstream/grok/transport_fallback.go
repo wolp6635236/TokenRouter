@@ -28,6 +28,12 @@ type AccessDeniedFallbackTransport struct {
 	Base http.RoundTripper
 }
 
+// prefixedReadCloser 拼接已读取的前缀与剩余响应体，关闭时调用响应体的 Close。
+type prefixedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
 // ClientWithAccessDeniedFallback 复制客户端并在单次请求外层增加窄范围回退。
 func ClientWithAccessDeniedFallback(client *http.Client) *http.Client {
 	if client == nil {
@@ -157,12 +163,6 @@ func bufferSmallResponseBody(resp *http.Response, limit int64) ([]byte, bool) {
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	return body, true
-}
-
-// prefixedReadCloser 拼接已读取的前缀与剩余响应体，关闭时调用响应体的 Close。
-type prefixedReadCloser struct {
-	io.Reader
-	io.Closer
 }
 
 // ApplyTransportCLIHeaders 在共享 transport 发送请求前写入官方 Grok Build 客户端身份。

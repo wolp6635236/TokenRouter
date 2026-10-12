@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/tidwall/gjson"
 
 	protocolcore "github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/tidwall/gjson"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // AsResponses 依次转换请求、取得凭据、调用上游并输出 Responses 响应。
@@ -286,4 +286,39 @@ func LiftResponsesAdditionalTools(requestBody map[string]any) (bool, error) {
 	requestBody["tools"] = tools
 	requestBody["input"] = kept
 	return true, nil
+}
+
+// ConversionOptionsForModel 根据模型策略生成协议转换选项。
+func ConversionOptionsForModel(model string) bridge.RequestOptions {
+	return bridge.RequestOptions{
+		DropSampling:      capability.ResponsesBridgeDropsSampling(model),
+		SupportsMaxEffort: capability.ResponsesBridgeSupportsMaxEffort(model),
+	}
+}
+
+// ExtractEffort 优先读取 reasoning.effort，Chat 请求缺少该字段时读取 reasoning_effort。
+// 模型和档位由调用方提供的 normalize 函数规范化。
+func ExtractEffort(body []byte, chat bool, normalize func(string, string) string, models ...string) *string {
+	raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
+	if raw == "" && chat {
+		raw = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
+	}
+	if raw == "" {
+		return nil
+	}
+	model := ""
+	for _, candidate := range models {
+		if value := strings.TrimSpace(candidate); value != "" {
+			model = value
+			break
+		}
+	}
+	if model == "" {
+		model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	}
+	value := normalize(raw, model)
+	if value == "" {
+		return nil
+	}
+	return &value
 }

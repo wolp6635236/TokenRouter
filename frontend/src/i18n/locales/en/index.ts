@@ -6,8 +6,10 @@ import creative from './creative'
 import admin from './admin'
 import misc from './misc'
 import team from './team'
+import requests from './requests'
 
 export default {
+  requests,
   legal: {
     "login": "Log in",
     "loadFailed": "Could not load document",

@@ -2,14 +2,17 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/stretchr/testify/require"
+
+	identitypg "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/moderation"
 )
 
 func TestBuildContentModerationLogWhere_BlockFiltersStandardBlocksOnly(t *testing.T) {
@@ -517,4 +520,18 @@ func TestContentModerationRepositoryMarkCyberWarningEmailSent(t *testing.T) {
 
 	require.NoError(t, repo.MarkCyberWarningEmailSent(context.Background(), 99))
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// newSQLMock 创建 SQL 替身并在测试结束时关闭连接。
+func newSQLMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+	t.Helper()
+	db, m, e := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, e)
+	t.Cleanup(func() { _ = db.Close() })
+	return db, m
+}
+
+// newTestModerationRepository 将用户状态事务操作接入审核仓库。
+func newTestModerationRepository(db *sql.DB) *Store {
+	return NewContentModerationRepository(db, func(tx *sql.Tx) UserStatusTx { return identitypg.NewRiskStatusParticipant(tx) })
 }

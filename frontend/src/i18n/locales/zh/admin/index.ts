@@ -9,6 +9,9 @@ import audit from './audit'
 
 export default {
     protocols: {
+      responsesWebSocketHTTPHint: '允许转换时，客户端继续使用长连接，上游通过普通 HTTP Responses 接收请求。',
+      responsesWebSocket: '长连接对话（WebSocket）',
+      responsesWebSocketHTTP: '转成普通 Responses 请求',
       nativeTitle: '原生支持协议',
       nativeHint: '仅列出此提供商类型原生支持的协议。全部关闭后不承接新调用。',
       loadError: '协议目录加载失败，请重新打开表单。',

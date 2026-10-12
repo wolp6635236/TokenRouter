@@ -50,7 +50,7 @@ func (c opsCleanupDeletedCounts) String() string {
 // opsCleanupPlan 把"保留天数"翻译成具体的清理动作。
 //   - days < 0  → 跳过该项清理（ok=false），保留兼容老数据
 //   - days == 0 → TRUNCATE TABLE（O(1) 全清），truncate=true
-//   - days > 0  → 批量 DELETE 早于 now-N天 的行，cutoff = now - N 天
+//   - days > 0  → 批量 DELETE 早于 now-N 天 的行，cutoff = now - N 天
 func opsCleanupPlan(now time.Time, days int) (cutoff time.Time, truncate, ok bool) {
 	if days < 0 {
 		return time.Time{}, false, false

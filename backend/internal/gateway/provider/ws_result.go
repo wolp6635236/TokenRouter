@@ -3,10 +3,9 @@ package provider
 import (
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayws "github.com/TokenFlux/TokenRouter/internal/gateway/ws"
+	openaiws "github.com/TokenFlux/TokenRouter/internal/upstream/openai/ws"
 )
 
 // ProjectWSResult 整理本次 WS turn 的观测结果和恢复输入。
@@ -16,6 +15,7 @@ func ProjectWSResult(r *forwardcore.OpenAIResult) *gatewayws.ForwardResult {
 	}
 	replay, replayExists := r.WSReplayInput()
 	out := &gatewayws.ForwardResult{
+		LocalWarmup:                 r.LocalWarmup,
 		RequestID:                   r.RequestID,
 		ResponseID:                  r.ResponseID,
 		UpstreamHeaders:             r.UpstreamHeaders,
@@ -50,7 +50,7 @@ func ProjectWSResult(r *forwardcore.OpenAIResult) *gatewayws.ForwardResult {
 		SearchCount:                 r.SearchCount,
 		AudioUsage:                  r.AudioUsage,
 		WSReplayInput:               replay, WSReplayInputExists: replayExists, WSProviderFailoverReplayInput: r.WSProviderFailoverReplayInput(),
-		ResponseTurnState: http.Header(r.ResponseHeaders).Get(openai.WSTurnStateHeader),
+		ResponseTurnState: http.Header(r.ResponseHeaders).Get(openaiws.WSTurnStateHeader),
 	}
 	if r.UpstreamWarning != nil {
 		out.UpstreamWarning = &forwardcore.UpstreamWarning{StatusCode: r.UpstreamWarning.StatusCode, ResponseBody: r.UpstreamWarning.ResponseBody, Message: r.UpstreamWarning.Message}
@@ -64,6 +64,7 @@ func ForwardResultFromWS(r *gatewayws.ForwardResult) *forwardcore.OpenAIResult {
 		return nil
 	}
 	out := &forwardcore.OpenAIResult{
+		LocalWarmup:                 r.LocalWarmup,
 		RequestID:                   r.RequestID,
 		ResponseID:                  r.ResponseID,
 		UpstreamHeaders:             r.UpstreamHeaders,

@@ -71,7 +71,7 @@
 - 客户端协议准入使用普通 Key 绑定的分组，或者复合 Key 最终选中的分组。被拒绝的请求在协议 handler、提供商选择和计费之前就结束。
 - 等待用户并发槽的过程中，余额、订阅或额度可能变化，所以拿到用户槽后要通过 BillingCache 再检查一次权益。
 - 模型权限、分组白名单和提供商资格，都用逐层解析后对应那一层的模型名判断；客户端别名和最终路由模型是两个不同的名字。
-- 统一文本入口在提供商确定后检查计费模型是否有价格，Responses WebSocket 每轮执行相同检查。缺价时返回本地错误，手动零价可以放行；适用范围和配置方式见[缺价处理](../domains/routing_and_billing.md#missing_model_pricing)。
+- 统一文本入口和 Gemini 的生成动作在提供商确定后检查计费模型是否有价格，每次换号都重新检查。Responses WebSocket 每轮执行相同检查。缺价时返回本地错误，手动零价可以放行；适用范围和配置方式见[缺价处理](../domains/routing_and_billing.md#missing_model_pricing)。
 - 上游成功后才增加 RPM 软计数，并安排正常的用量结算。本地拦截、内容拒绝和上游失败分别写各自的审计和运维记录。
 - HTTP 200 里出现的失败事件，按事件表达的实际状态执行提供商策略。WS 桥已经执行过的副作用，通过本请求的 `ResponseFailureEffects` 交给输出端，输出端只处理一次。HTTP 提交、重试窗口和实际输出三者分开记录。
 - 响应里的模型别名恢复只修改协议的元数据字段，正文里恰好相同的字符串保持原样。工具恢复状态由 `requeststate.ResponseTools` 按请求和 turn 持有，WS 会话更新时，还在输出的 turn 保持自己的状态。协议算法在 `protocol/bridge`，HTTP 输出适配在 `gateway/httpapi`。
@@ -81,7 +81,7 @@
 HTTP 入口由 app 构造，执行器、会话和资源都由 app 提供，路由直接拿到需要的接口实现。
 
 - 文本：OpenAI Responses、Chat 和 Messages 的 HTTP 绑定直接接收用户槽和图片槽资源（各一份）、Cyber、审核、归属读取和资金接口。`gateway/httpapi/openaiattempt.Runtime` 绑定平台单次执行能力、调度反馈、槽位和完成器，每次 `Open` 创建一份独立的尝试状态。三个文本入口通过 `UnifiedTextExecutor` 调用所选提供商的单次执行器。强制 Antigravity 和 Gemini 原生入口使用 `textattempt.Runtime`，同样是 app 绑定平台调用、选择反馈和资源，每次 `Open` 只创建请求和尝试状态。
-- WS：入站和每轮单步执行的接口由 `gateway/httpapi/wsentry` 装配，和文本运行时共用同一套尝试绑定。
+- WS：入站和每轮单步执行的接口由 `gateway/ws/httpapi` 装配，和文本运行时共用同一套尝试绑定。
 - 媒体：图片、视频、音频、Embeddings 和 Alpha Search 的请求适配和完成捕获由 `gateway/httpapi/mediaentry` 装配，失败输出和资源释放与文本共用。
 - Wire 手动绑定执行器和完成器，接口测试使用相同的绑定和函数句柄夹具。平台单次交换和 WS relay 直接绑定执行器。
 - 图片：单次执行绑定 `OpenAIImagesExecutor`，和文本共用 `OpenAIRequests`、`OpenAIResponseOutput` 和应用活动屏障；图片工具冷却通过提供商接口写入。图片意图提示由 HTTP 按每次尝试保存，分组改写后重新判断，所以上一次尝试的提示不会带到下一个提供商。
@@ -94,7 +94,7 @@ HTTP 入口由 app 构造，执行器、会话和资源都由 app 提供，路�
 - OpenAI HTTP 的并发辅助和本地图片限制器由 app 构造成一个 `OpenAIHTTPResources`，文本、媒体、WS 和其余兼容入口共用。这个资源对象只接收静态的图片限制参数；用户槽绑定进入等待前的请求 context，context 取消时释放；图片的等待、拒绝和独立作用域各自保留。
 - `gateway/searchtools` 组织工具模拟，`gateway/moderationflow` 准备审核完成所需的输入，`completion.Recorder` 读取资金和用量的独立快照。`ws` 和 `live` 各自管理连接和 turn 状态；摘要、隔离和归属值由 `session` 提供，Redis 协议由 `rediscache` 适配。错误规则和发布后不可变的快照在 `errorpolicy`，调度健康和重试由其他模块决定。
 
-WS 执行使用静态选项，以及请求、输出、会话和选择接口，核心代码读取的是这些参数，完整应用配置留在 app。连接池在第一次使用时启动，关闭屏障保证退出后连接池无法重建。Grok、Live 和 WS 共用拨号器，Agent Identity 凭据失效也作用于这个池。入站、池化、透传和 HTTP 桥接各有自己的恢复和取消规则，测试直接验证帧执行和共享状态。
+WS 每轮读取在线参数快照，并通过请求、输出、会话和选择接口执行。部署默认值由 app 提供，管理端可以覆盖。连接池在第一次使用时启动，关闭屏障保证退出后连接池无法重建。Grok、Live 和 WS 共用拨号器，Agent Identity 凭据失效也作用于这个池。入站、池化、透传和 HTTP 桥接各有自己的恢复和取消规则，测试直接验证帧执行和共享状态。
 
 <a id="apikey_authentication"></a>
 ## 认证与准入
@@ -114,7 +114,7 @@ WS 执行使用静态选项，以及请求、输出、会话和选择接口，�
 5. 鉴权要求分组和提供商成员关系都已明确。按 Key 的 `auto`、`subscription` 或 `balance` 策略确定资金来源，消费类入口还要检查 Key 的过期和配额、订阅窗口限额或余额。指定的订阅不可用、额度不足或不覆盖最终分组时，直接拒绝。
 6. 写入 API Key、认证主体、角色、分组和可选的订阅上下文。路由随后按最终分组的 `allowed_protocols` 做协议准入，再进入 handler。`last_used_at` 更新失败时，已认证的请求照常继续。
 
-Responses WebSocket 的后续轮次，在拿到用户槽之后、转发上游之前，直接回源复核 Key、用户、团队、成员限额和 IP 规则，检查 Key 是否过期和总配额，并重新解析当前订阅、检查余额和滚动限额。回源失败或资格失效时，释放用户槽并关闭连接；旧的认证缓存和 Fast 策略刷新失败时的默认值都不能用来放行。连接固定原来的 Key ID、所有者、付款主体、团队和结算来源；同一凭据重建、付款主体或结算来源变化时要求客户端重连。复核使用独立快照，已放行轮次的计费归属保持不变；已经产生用量的轮次照常完成结算。
+Responses WebSocket 的后续轮次，在拿到用户槽之后、转发上游之前，直接回源复核 Key、用户、团队、成员限额、IP 规则和分组的 WS 协议许可，检查 Key 是否过期和总配额，并重新解析当前订阅、检查余额和滚动限额。回源失败或资格失效时，释放用户槽并关闭连接；旧的认证缓存和 Fast 策略刷新失败时的默认值都不能用来放行。连接固定原来的 Key ID、所有者、付款主体、团队和结算来源；同一凭据重建、付款主体或结算来源变化时要求客户端重连。复核使用独立快照，已放行轮次的计费归属保持不变；已经产生用量的轮次照常完成结算。
 
 `/v1/usage` 和部分批量任务管理接口跳过消费准入，这样额度用完或 Key 过期后，用户仍能取回或清理自己的数据；身份、用户、团队、IP 和资源归属检查照常执行。用量查询对指定订阅保留它的失效状态，显示来源仍是该订阅。模型列表对复合 Key 无需选中某个分组，但仍要做适用的 Key 额度、余额和订阅检查。
 
@@ -273,6 +273,12 @@ Brave 和 Tavily 搜索由 search 选择供应商并预占额度。失败时释�
 `gateway/searchtools` 负责工具识别、提供商和分组的启用裁决、协议事件和合成 usage。app 通过 gateway/provider 绑定同一个 `search.ConfigService`、Registry 和分组策略读取实例，配置更换时发布到这个注册表。重试和完成处理由请求编排负责。Grok 原生搜索和 OpenAI AlphaSearch 由对应的 upstream 处理。资金是否提交以资金事务为准，通知成功、搜索配额和审核记录都不能作为证明。
 
 独立的 Web 和 X 搜索由 app 直接构造 `gateway/httpapi.SearchHandler` 和固定的 `SearchPorts`。HTTP 按解析、认证、资金、审核、选号的顺序执行；平台报文和单次交换由 `gateway/provider` 组合 Grok 的底层调用和共享传输完成。选择接口只返回当前请求的受控目标，完成前同步取得提供商快照，异步记录读取快照，Gin Context 留在请求内。相同查询的每次调用都生成独立的资金请求 ID，完成快照提交后才释放提供商资源。
+
+## SystemOne 决策请求
+
+`POST /v1/systemone` 使用共同鉴权和模型映射，`gateway/systemone` 管理同步请求的提供商尝试。每次尝试经过资金复查和价格预检，`upstream/jev` 完成单次交换。答案有效时按用量状态提交完成记录或用量告警，捕获完成快照后释放提供商槽。请求格式与告警规则见 [Jev 与 SystemOne](../interfaces/jev_upstream.md)。
+
+SystemOne 执行器由 app 独立构造，注入传输、地址策略、价格检查、响应头过滤和通用提供商健康组件。复合 Key 的端点识别和错误输出按 SystemOne 处理。429、529 的 Retry-After 由 Jev 解析器解释，通用健康组件按提供商配置应用冷却。
 
 ## 新增入口检查清单
 

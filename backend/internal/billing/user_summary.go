@@ -33,3 +33,6 @@ type UserSummary struct {
 
 // NotifyEmailSummary 是身份联系邮箱记录。
 type NotifyEmailSummary = contact.Entry
+
+// ParseNotifyEmails 解析字符串数组或邮箱记录数组格式的通知邮箱。
+func ParseNotifyEmails(raw string) []NotifyEmailSummary { return contact.ParseNotifyEmails(raw) }

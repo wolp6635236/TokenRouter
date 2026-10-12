@@ -3,9 +3,10 @@ package httpapi
 import (
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // OllamaUsageHandler 只适配管理员输入与响应，查询/会话/设置都调用提供商用例。
@@ -13,15 +14,15 @@ type OllamaUsageHandler struct {
 	ollamaCloudUsage *provider.OllamaCloudUsageService
 }
 
-func NewOllamaUsageHandler(core *provider.OllamaCloudUsageService) *OllamaUsageHandler {
-	return &OllamaUsageHandler{ollamaCloudUsage: core}
-}
-
 type ollamaCloudUsageSessionRequest struct {
 	Session string `json:"session" binding:"required"`
 }
 type ollamaCloudUsageAutoRefreshRequest struct {
 	Enabled *bool `json:"enabled" binding:"required"`
+}
+
+func NewOllamaUsageHandler(core *provider.OllamaCloudUsageService) *OllamaUsageHandler {
+	return &OllamaUsageHandler{ollamaCloudUsage: core}
 }
 
 func (h *OllamaUsageHandler) GetOllamaCloudUsageSettings(c *gin.Context) {

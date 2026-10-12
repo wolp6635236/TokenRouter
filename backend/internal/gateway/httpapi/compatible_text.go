@@ -8,6 +8,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
@@ -20,9 +24,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 type CompatibleTextCall struct {
@@ -52,7 +53,7 @@ type CompatibleTextBackend interface {
 }
 type CompatibleTextHandler struct {
 	executor execution.Executor
-	requestLifetime
+	RequestLifetime
 
 	options     MessagesHTTPOptions
 	backend     CompatibleTextBackend
@@ -92,7 +93,7 @@ func (h *CompatibleTextHandler) concurrencyError(c *gin.Context, err error, slot
 }
 
 func (h *CompatibleTextHandler) Responses(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -162,13 +163,13 @@ func (h *CompatibleTextHandler) Responses(c *gin.Context) {
 	}
 
 	// 在协议转换前应用客户端指定档位的策略，审计保存改写前的值。
-	if policyBody, _, policyErr := h.backend.Reasoning(c, apiKey, body); policyErr != nil {
+	policyBody, _, policyErr := h.backend.Reasoning(c, apiKey, body)
+	if policyErr != nil {
 		h.backend.PolicyDenied(c)
 		h.responsesErrorResponse(c, http.StatusForbidden, "permission_error", policyErr.Error())
 		return
-	} else {
-		body = policyBody
 	}
+	body = policyBody
 	reqStream, ok := ParseOpenAICompatibleStream(body)
 	if !ok {
 		h.responsesErrorResponse(c, http.StatusBadRequest, "invalid_request_error", InvalidStreamFieldTypeMessage)
@@ -273,7 +274,7 @@ func (h *CompatibleTextHandler) Responses(c *gin.Context) {
 }
 
 func (h *CompatibleTextHandler) ChatCompletions(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -344,13 +345,13 @@ func (h *CompatibleTextHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	// 兼容入口按 Messages/Responses 的策略检查分组上限。
-	if policyBody, _, policyErr := h.backend.Reasoning(c, apiKey, body); policyErr != nil {
+	policyBody, _, policyErr := h.backend.Reasoning(c, apiKey, body)
+	if policyErr != nil {
 		h.backend.PolicyDenied(c)
 		h.chatCompletionsErrorResponse(c, http.StatusForbidden, "permission_error", policyErr.Error())
 		return
-	} else {
-		body = policyBody
 	}
+	body = policyBody
 	reqStream, ok := ParseOpenAICompatibleStream(body)
 	if !ok {
 		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", InvalidStreamFieldTypeMessage)

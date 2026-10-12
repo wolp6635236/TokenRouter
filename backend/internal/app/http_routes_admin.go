@@ -1,6 +1,8 @@
 package app
 
 import (
+	"github.com/gin-gonic/gin"
+
 	routeapikey "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/apikey/httpapi/dto"
 	routeaudit "github.com/TokenFlux/TokenRouter/internal/audit/httpapi"
@@ -26,7 +28,6 @@ import (
 	routesite "github.com/TokenFlux/TokenRouter/internal/site/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/team/httpapi"
 	routeusageadmin "github.com/TokenFlux/TokenRouter/internal/usage/httpapi/admin"
-	"github.com/gin-gonic/gin"
 )
 
 // provideAdminRouteMount 将管理员 HTTP 处理器和跨模块读取函数绑定到路由注册函数。

@@ -340,14 +340,11 @@
             v-model:mappings="modelMappings"
             :platform="provider.type === 'bedrock' ? 'anthropic' : provider.platform"
             :provider-id="provider.type === 'bedrock' ? undefined : provider.id"
-            :models="isQoderCosyProvider ? qoderAvailableModels : undefined"
-            :presets="provider.type === 'bedrock' ? bedrockPresets : presetMappings"
             :source-placeholder="provider.type === 'bedrock' ? t('admin.providers.fromModel') : undefined"
             :target-placeholder="provider.type === 'bedrock' ? t('admin.providers.toModel') : undefined"
             @update:allowed-models="setAllowedModels"
             @add="touchQoderModelRestriction"
             @remove="touchQoderModelRestriction"
-            @preset="addPresetMapping"
           />
 
           <!-- Antigravity 白名单与映射分别控制最终范围和请求改写。 -->
@@ -359,9 +356,7 @@
             <ModelWhitelistSelector v-model="antigravityWhitelistModels" platform="antigravity" />
             <ProviderModelMappingEditor
               v-model="antigravityModelMappings"
-              :presets="antigravityPresetMappings"
               wildcard-validation
-              @preset="addAntigravityPresetMapping"
             >
               <template #header-actions>
                 <button
@@ -674,18 +669,6 @@
                   testid="edit-openai-images-url-to-b64-json"
                 />
               </template>
-              <SettingRow
-                id="edit-openai-ws-mode"
-                label-for="edit-openai-ws-mode-select"
-                :label="t('admin.providers.openai.wsMode')"
-                :hint="t('admin.providers.openai.wsModeDesc')"
-                field
-              >
-                <Select id="edit-openai-ws-mode-select" v-model="openaiResponsesWebSocketV2Mode" :options="openAIWSModeOptions" />
-                <template #hint>
-                  <p class="input-hint">{{ t(openAIWSModeConcurrencyHintKey) }}</p>
-                </template>
-              </SettingRow>
             </SettingsSection>
 
             <SettingsSection v-if="provider.type === 'oauth'" :title="t('admin.providers.sections.openaiClient')">
@@ -741,6 +724,12 @@
             </SettingsSection>
 
             <CodexImageToolModeSelector v-model="codexImageToolMode" />
+
+            <ResponsesWSConnectionModeSelector
+              v-if="upstreamProtocols?.includes('openai_responses_websocket')"
+              v-model="responsesWSConnectionMode"
+              test-id-prefix="edit-openai-ws-connection"
+            />
 
             <SettingsSection :title="t('admin.providers.sections.compaction')">
               <OpenAICompactionToggle
@@ -883,6 +872,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import CodexImageToolModeSelector from '@/components/provider/CodexImageToolModeSelector.vue'
 import ModelWhitelistSelector from '@/components/provider/ModelWhitelistSelector.vue'
+import ResponsesWSConnectionModeSelector from '@/components/provider/ResponsesWSConnectionModeSelector.vue'
 import GrokBaseUrlPresets from '@/components/provider/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/provider/CnBaseUrlPresets.vue'
 import OllamaCloudUsageSettings from '@/components/provider/OllamaCloudUsageSettings.vue'
@@ -914,7 +904,6 @@ import {
   useAnthropicAPIKeyAuthSchemeOptions,
   useCodexFingerprintModeOptions,
   useOpenAIOAuthClientPolicyOptions,
-  useOpenAIWSModeOptions,
   useWebSearchEmulationOptions,
   type AnthropicAPIKeyAuthScheme,
   type CodexFingerprintMode,
@@ -953,15 +942,12 @@ import {
   groupedProviderSelectOptions
 } from '@/constants/provider'
 import {
-  OPENAI_WS_MODE_OFF,
-  isOpenAIWSModeEnabled,
-  resolveOpenAIWSModeConcurrencyHintKey,
-  type OpenAIWSMode,
-  resolveOpenAIWSModeFromExtra
-} from '@/utils/openaiWsMode'
+  clearLegacyResponsesWSSettings,
+  RESPONSES_WS_POOLED,
+  type ResponsesWSConnectionMode,
+  readResponsesWSConnectionMode
+} from '@/utils/responsesWsConnection'
 import {
-  getPresetMappingsByPlatform,
-  getModelsByPlatform,
   buildModelMappingObject,
   buildPersistedModelRestriction,
   splitQoderPersistedModelRestriction,
@@ -1004,9 +990,6 @@ const baseUrlHint = computed(() => {
   if (props.provider.platform === 'grok') return ''
   return t('admin.providers.baseUrlHint')
 })
-
-const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
-const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
 
 // Model mapping type
 // State
@@ -1252,8 +1235,7 @@ const openAINativeCompactionV2Mode = ref<OpenAICompactMode>('force_on')
 const openAIResponsesContinuationSupported = ref(false)
 // 图片回填默认关闭，只对 OpenAI API Key 提供商生效。
 const openAIImagesURLToB64JSON = ref(false)
-const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
-const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const responsesWSConnectionMode = ref<ResponsesWSConnectionMode>(RESPONSES_WS_POOLED)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAIOAuthClientPolicy = ref<OpenAIOAuthClientPolicy>('any')
 const codexFingerprintMode = ref<CodexFingerprintMode>('off')
@@ -1291,7 +1273,7 @@ const originalQoderSite = computed<QoderSite>(() => {
   return credentials?.site === 'cn' ? 'cn' : 'global'
 })
 const qoderSiteChanged = computed(() => isQoderCosyProvider.value && qoderSite.value !== originalQoderSite.value)
-const qoderAvailableModels = computed(() => getModelsByPlatform('qoder', qoderSite.value))
+
 const supportsOAuthLikeModelRestriction = computed(() =>
   (props.provider?.platform === 'openai' && props.provider?.type === 'oauth') ||
   (props.provider?.platform === 'grok' && props.provider?.type === 'oauth') ||
@@ -1334,6 +1316,7 @@ const showGeminiTier = computed(() =>
 )
 const apiKeyBaseUrlPlaceholder = computed(() => {
   switch (props.provider?.platform) {
+    case 'jev': return 'https://api.typesafe.ai'
     case 'openai': return 'https://api.openai.com'
     case 'gemini': return 'https://generativelanguage.googleapis.com'
     case 'antigravity': return 'https://cloudcode-pa.googleapis.com'
@@ -1343,6 +1326,7 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
 })
 const apiKeyPlaceholder = computed(() => {
   switch (props.provider?.platform) {
+    case 'jev': return 'api-key-...'
     case 'openai': return 'sk-proj-...'
     case 'gemini': return geminiProviderType.value === 'third_party' ? 'api-key-...' : 'AIza...'
     case 'antigravity': return 'sk-...'
@@ -1408,42 +1392,15 @@ const { limits: quotaLimits, setLimit: setQuotaLimit } = bindQuotaLimits({
   resetTimezone: editResetTimezone
 })
 const codexFingerprintModeOptions = useCodexFingerprintModeOptions()
-const openAIWSModeOptions = useOpenAIWSModeOptions()
-const openaiResponsesWebSocketV2Mode = computed({
-  get: () => {
-    if (props.provider?.type === 'apikey') {
-      return openaiAPIKeyResponsesWebSocketV2Mode.value
-    }
-    return openaiOAuthResponsesWebSocketV2Mode.value
-  },
-  set: (mode: OpenAIWSMode) => {
-    if (props.provider?.type === 'apikey') {
-      openaiAPIKeyResponsesWebSocketV2Mode.value = mode
-      return
-    }
-    openaiOAuthResponsesWebSocketV2Mode.value = mode
-  }
-})
-const openAIWSModeConcurrencyHintKey = computed(() =>
-  resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2Mode.value)
-)
-
 // OpenAI 订阅档位手动覆盖选项(清空 + Plus/Pro/Free;别名/自定义值友好显示且保留 canonical)
 const planTypeOptions = computed(() =>
   buildPlanTypeOptions(editPlanType.value, t('admin.providers.openai.planTypeClear'))
 )
 const openAIOAuthClientPolicyOptions = useOpenAIOAuthClientPolicyOptions()
 
-// Computed: current preset mappings based on platform
-const presetMappings = computed(() =>
-  getPresetMappingsByPlatform(
-    props.provider?.platform || 'anthropic',
-    isQoderCosyProvider.value ? qoderSite.value : undefined
-  )
-)
-
-// Computed: default base URL based on platform
+// 缺省上游地址由平台及当前模式决定。
 const defaultBaseUrl = computed(() => {
+  if (props.provider?.platform === 'jev') return 'https://api.typesafe.ai'
   if (props.provider?.platform === 'openai') return 'https://api.openai.com'
   if (props.provider?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
   if (props.provider?.platform === 'grok') return 'https://api.x.ai/v1'
@@ -1644,7 +1601,7 @@ const syncFormFromProvider = (newProvider: Provider | null) => {
   // Load mixed scheduling setting (only for antigravity providers)
   allowOverages.value = false
   const extra = newProvider.extra as Record<string, unknown> | undefined
-  upstreamUsageEnabled.value = true
+  upstreamUsageEnabled.value = newProvider.platform !== 'jev'
   upstreamUsageAdapter.value = 'sub2api'
   upstreamUsageBaseUrl.value = ''
   upstreamUsageWalletAccessToken.value = ''
@@ -1652,7 +1609,7 @@ const syncFormFromProvider = (newProvider: Provider | null) => {
   if (newProvider.type === 'apikey') {
     const rawUsageConfig = extra?.upstream_usage_query as Record<string, unknown> | undefined
     if (rawUsageConfig && typeof rawUsageConfig === 'object') {
-      upstreamUsageEnabled.value = rawUsageConfig.enabled !== false
+      upstreamUsageEnabled.value = typeof rawUsageConfig.enabled === 'boolean' ? rawUsageConfig.enabled : newProvider.platform !== 'jev'
       if (rawUsageConfig.adapter === 'new_api' || rawUsageConfig.adapter === 'zivv') {
         upstreamUsageAdapter.value = rawUsageConfig.adapter
       }
@@ -1678,8 +1635,7 @@ const syncFormFromProvider = (newProvider: Provider | null) => {
   openAIResponsesContinuationSupported.value = false
   openAIImagesURLToB64JSON.value = false
   openAICompactModelMappings.value = []
-  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
-  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  responsesWSConnectionMode.value = RESPONSES_WS_POOLED
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   openAIOAuthClientPolicy.value = 'any'
   codexFingerprintMode.value = 'off'
@@ -1702,18 +1658,7 @@ const syncFormFromProvider = (newProvider: Provider | null) => {
       openAIImagesURLToB64JSON.value = extra?.images_url_to_b64_json === true
     }
     codexImageToolMode.value = readCodexImageToolMode(extra)
-    openaiOAuthResponsesWebSocketV2Mode.value = resolveOpenAIWSModeFromExtra(extra, {
-      modeKey: 'openai_oauth_responses_websockets_v2_mode',
-      enabledKey: 'openai_oauth_responses_websockets_v2_enabled',
-      fallbackEnabledKeys: ['responses_websockets_v2_enabled', 'openai_ws_enabled'],
-      defaultMode: OPENAI_WS_MODE_OFF
-    })
-    openaiAPIKeyResponsesWebSocketV2Mode.value = resolveOpenAIWSModeFromExtra(extra, {
-      modeKey: 'openai_apikey_responses_websockets_v2_mode',
-      enabledKey: 'openai_apikey_responses_websockets_v2_enabled',
-      fallbackEnabledKeys: ['responses_websockets_v2_enabled', 'openai_ws_enabled'],
-      defaultMode: OPENAI_WS_MODE_OFF
-    })
+    responsesWSConnectionMode.value = readResponsesWSConnectionMode(extra)
     if (newProvider.type === 'oauth') {
       openAIOAuthClientPolicy.value = normalizeOpenAIOAuthClientPolicy(extra?.openai_oauth_client_policy, extra?.codex_cli_only)
       codexCLIOnlyAllowClaudeCodeEnabled.value =
@@ -1908,17 +1853,19 @@ const syncFormFromProvider = (newProvider: Provider | null) => {
       }
     }
     const platformDefaultUrl =
-      newProvider.platform === 'openai'
-        ? 'https://api.openai.com'
-        : newProvider.platform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : newProvider.platform === 'grok'
-            ? 'https://api.x.ai/v1'
-            : newProvider.platform === 'kimi' ||
-                newProvider.platform === 'zhipu' ||
-                newProvider.platform === 'deepseek'
-              ? defaultCNBaseUrl(newProvider.platform, editProviderMode.value, editApiProtocol.value)
-              : 'https://api.anthropic.com'
+      newProvider.platform === 'jev'
+        ? 'https://api.typesafe.ai'
+        : newProvider.platform === 'openai'
+          ? 'https://api.openai.com'
+          : newProvider.platform === 'gemini'
+            ? 'https://generativelanguage.googleapis.com'
+            : newProvider.platform === 'grok'
+              ? 'https://api.x.ai/v1'
+              : newProvider.platform === 'kimi' ||
+                  newProvider.platform === 'zhipu' ||
+                  newProvider.platform === 'deepseek'
+                ? defaultCNBaseUrl(newProvider.platform, editProviderMode.value, editApiProtocol.value)
+                : 'https://api.anthropic.com'
     editBaseUrl.value = isCNApiKeyProvider.value && editApiProtocol.value === 'adaptive'
       ? editAdaptiveBaseUrls.value.chat_completions
       : (credentials.base_url as string) || platformDefaultUrl
@@ -2074,25 +2021,6 @@ const setAllowedModels = (models: string[]) => {
     qoderModelWhitelistTouched.value = true
   }
   allowedModels.value = models
-}
-
-const addPresetMapping = (from: string, to: string) => {
-  touchQoderModelRestriction()
-  const exists = modelMappings.value.some((m) => m.from === from)
-  if (exists) {
-    appStore.showInfo(t('admin.providers.mappingExists', { model: from }))
-    return
-  }
-  modelMappings.value.push({ from, to })
-}
-
-const addAntigravityPresetMapping = (from: string, to: string) => {
-  const exists = antigravityModelMappings.value.some((m) => m.from === from)
-  if (exists) {
-    appStore.showInfo(t('admin.providers.mappingExists', { model: from }))
-    return
-  }
-  antigravityModelMappings.value.push({ from, to })
 }
 
 const syncAntigravityUpstreamModels = async () => {
@@ -2962,14 +2890,8 @@ const handleSubmit = async () => {
       const currentExtra = (props.provider.extra as Record<string, unknown>) || {}
       const newExtra = normalizeLegacyOpenAIExtra(currentExtra)
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
-      if (props.provider.type === 'oauth' || props.provider.type === 'setup-token') {
-        newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
-        newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
-      } else if (props.provider.type === 'apikey') {
-        newExtra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
-        newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
-      }
-      delete newExtra.responses_websockets_v2_enabled
+      newExtra.responses_ws_connection_mode = responsesWSConnectionMode.value
+      clearLegacyResponsesWSSettings(newExtra)
       delete newExtra.openai_ws_enabled
       delete newExtra.openai_long_context_billing_enabled
       if (openaiPassthroughEnabled.value) {

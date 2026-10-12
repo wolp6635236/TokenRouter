@@ -9,21 +9,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 type upstreamUsageHandlerRepo struct {
 	providers map[int64]*providercore.Record
+}
+
+type upstreamUsageHandlerHTTP struct {
+	body string
 }
 
 func (r *upstreamUsageHandlerRepo) GetByID(_ context.Context, id int64) (*providercore.Record, error) {
@@ -33,10 +35,6 @@ func (r *upstreamUsageHandlerRepo) GetByID(_ context.Context, id int64) (*provid
 	}
 	copy := *provider
 	return &copy, nil
-}
-
-type upstreamUsageHandlerHTTP struct {
-	body string
 }
 
 func (u *upstreamUsageHandlerHTTP) Do(req *http.Request, proxyURL string, providerID int64, concurrency int) (*http.Response, error) {

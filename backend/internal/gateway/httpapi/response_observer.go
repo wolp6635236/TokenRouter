@@ -3,10 +3,10 @@ package httpapi
 import (
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	rawwire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/gin-gonic/gin"
 )
 
 const (

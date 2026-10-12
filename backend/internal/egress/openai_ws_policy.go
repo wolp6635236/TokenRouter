@@ -1,116 +1,20 @@
 package egress
 
-// OpenAIUpstreamTransport 表示 OpenAI 上游传输协议。
-type OpenAIUpstreamTransport string
-
 const (
 	OpenAIUpstreamTransportAny                  OpenAIUpstreamTransport = ""
 	OpenAIUpstreamTransportHTTPSSE              OpenAIUpstreamTransport = "http_sse"
-	OpenAIUpstreamTransportResponsesWebsocket   OpenAIUpstreamTransport = "responses_websockets"
 	OpenAIUpstreamTransportResponsesWebsocketV2 OpenAIUpstreamTransport = "responses_websockets_v2"
 	// OpenAIUpstreamTransportResponsesWebsocketV2Ingress 仅用于 WS ingress 选号，允许 ctx_pool/passthrough/http_bridge。
 	OpenAIUpstreamTransportResponsesWebsocketV2Ingress OpenAIUpstreamTransport = "responses_websockets_v2_ingress"
 )
 
+// OpenAIUpstreamTransport 表示 OpenAI 上游传输协议。
+type OpenAIUpstreamTransport string
+
 // OpenAIWSProtocolDecision 表示协议决策结果。
 type OpenAIWSProtocolDecision struct {
 	Transport OpenAIUpstreamTransport
 	Reason    string
-}
-
-// OpenAIWSProvider 不含凭据，只提供协议资格与选定模式。
-type OpenAIWSProvider struct {
-	Present, OpenAI, ForceHTTP, OAuthLike, APIKey, WSEnabled bool
-	Mode                                                     string
-	Concurrency                                              int
-}
-
-// OpenAIWSOptions 只保存协议选择所需开关；nil 仍表示配置缺失。
-type OpenAIWSOptions struct {
-	Enabled, ForceHTTP, OAuthEnabled, APIKeyEnabled                 bool
-	ModeRouterV2Enabled, ResponsesWebsockets, ResponsesWebsocketsV2 bool
-}
-
-// ResolveOpenAIWSTransport 根据认证方式和运行参数选择出站协议。
-func ResolveOpenAIWSTransport(provider OpenAIWSProvider, wsCfg *OpenAIWSOptions) OpenAIWSProtocolDecision {
-	if !provider.Present {
-		return OpenAIWSHTTPDecision("provider_missing")
-	}
-	if !provider.OpenAI {
-		return OpenAIWSHTTPDecision("platform_not_openai")
-	}
-	if provider.ForceHTTP {
-		return OpenAIWSHTTPDecision("provider_force_http")
-	}
-	if wsCfg == nil {
-		return OpenAIWSHTTPDecision("config_missing")
-	}
-
-	if wsCfg.ForceHTTP {
-		return OpenAIWSHTTPDecision("global_force_http")
-	}
-	if !wsCfg.Enabled {
-		return OpenAIWSHTTPDecision("global_disabled")
-	}
-	if provider.OAuthLike {
-		if !wsCfg.OAuthEnabled {
-			return OpenAIWSHTTPDecision("oauth_disabled")
-		}
-	} else if provider.APIKey {
-		if !wsCfg.APIKeyEnabled {
-			return OpenAIWSHTTPDecision("apikey_disabled")
-		}
-	} else {
-		return OpenAIWSHTTPDecision("unknown_auth_type")
-	}
-	if wsCfg.ModeRouterV2Enabled {
-		mode := provider.Mode
-		switch mode {
-		case "off":
-			return OpenAIWSHTTPDecision("provider_mode_off")
-		case "ctx_pool", "passthrough":
-			// continue
-		case "http_bridge":
-			return OpenAIWSHTTPDecision("ws_v2_mode_http_bridge")
-		case "shared", "dedicated":
-			// 历史值兼容：按 ctx_pool 处理。
-			mode = "ctx_pool"
-		default:
-			return OpenAIWSHTTPDecision("provider_mode_off")
-		}
-		if provider.Concurrency <= 0 {
-			return OpenAIWSHTTPDecision("provider_concurrency_invalid")
-		}
-		if wsCfg.ResponsesWebsocketsV2 {
-			return OpenAIWSProtocolDecision{
-				Transport: OpenAIUpstreamTransportResponsesWebsocketV2,
-				Reason:    "ws_v2_mode_" + mode,
-			}
-		}
-		if wsCfg.ResponsesWebsockets {
-			return OpenAIWSProtocolDecision{
-				Transport: OpenAIUpstreamTransportResponsesWebsocket,
-				Reason:    "ws_v1_mode_" + mode,
-			}
-		}
-		return OpenAIWSHTTPDecision("feature_disabled")
-	}
-	if !provider.WSEnabled {
-		return OpenAIWSHTTPDecision("provider_disabled")
-	}
-	if wsCfg.ResponsesWebsocketsV2 {
-		return OpenAIWSProtocolDecision{
-			Transport: OpenAIUpstreamTransportResponsesWebsocketV2,
-			Reason:    "ws_v2_enabled",
-		}
-	}
-	if wsCfg.ResponsesWebsockets {
-		return OpenAIWSProtocolDecision{
-			Transport: OpenAIUpstreamTransportResponsesWebsocket,
-			Reason:    "ws_v1_enabled",
-		}
-	}
-	return OpenAIWSHTTPDecision("feature_disabled")
 }
 
 // OpenAIWSHTTPDecision 保留回退原因与 HTTP/SSE 传输值。

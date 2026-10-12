@@ -74,32 +74,6 @@ type AnthropicContentBlock struct {
 	IsError   bool            `json:"is_error,omitempty"`
 }
 
-// MarshalJSON 输出 text/thinking 块中的空字符串字段，content_block_start 要求这些键存在。
-func (b AnthropicContentBlock) MarshalJSON() ([]byte, error) {
-	type anthropicContentBlock AnthropicContentBlock
-
-	switch b.Type {
-	case "text":
-		return json.Marshal(struct {
-			Text string `json:"text"`
-			anthropicContentBlock
-		}{
-			Text:                  b.Text,
-			anthropicContentBlock: anthropicContentBlock(b),
-		})
-	case "thinking":
-		return json.Marshal(struct {
-			Thinking string `json:"thinking"`
-			anthropicContentBlock
-		}{
-			Thinking:              b.Thinking,
-			anthropicContentBlock: anthropicContentBlock(b),
-		})
-	default:
-		return json.Marshal(anthropicContentBlock(b))
-	}
-}
-
 // AnthropicImageSource describes the source data for an image content block.
 type AnthropicImageSource struct {
 	Type      string `json:"type"` // "base64"
@@ -136,19 +110,6 @@ type AnthropicResponse struct {
 	StopReason   *string                 `json:"stop_reason"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        AnthropicUsage          `json:"usage"`
-}
-
-// AnthropicStopReasonPtr 为最终停止原因返回非空字符串指针。
-func AnthropicStopReasonPtr(s string) *string {
-	return &s
-}
-
-// AnthropicStopReasonString 返回停止原因；未设置或为 null 时返回空字符串。
-func AnthropicStopReasonString(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
 }
 
 // AnthropicPromptTokensDetails 保存兼容 Anthropic 的 provider 偶尔附带的
@@ -211,4 +172,43 @@ type AnthropicDelta struct {
 	// message_delta fields
 	StopReason   string  `json:"stop_reason,omitempty"`
 	StopSequence *string `json:"stop_sequence,omitempty"`
+}
+
+// MarshalJSON 输出 text/thinking 块中的空字符串字段，content_block_start 要求这些键存在。
+func (b AnthropicContentBlock) MarshalJSON() ([]byte, error) {
+	type anthropicContentBlock AnthropicContentBlock
+
+	switch b.Type {
+	case "text":
+		return json.Marshal(struct {
+			Text string `json:"text"`
+			anthropicContentBlock
+		}{
+			Text:                  b.Text,
+			anthropicContentBlock: anthropicContentBlock(b),
+		})
+	case "thinking":
+		return json.Marshal(struct {
+			Thinking string `json:"thinking"`
+			anthropicContentBlock
+		}{
+			Thinking:              b.Thinking,
+			anthropicContentBlock: anthropicContentBlock(b),
+		})
+	default:
+		return json.Marshal(anthropicContentBlock(b))
+	}
+}
+
+// AnthropicStopReasonPtr 为最终停止原因返回非空字符串指针。
+func AnthropicStopReasonPtr(s string) *string {
+	return &s
+}
+
+// AnthropicStopReasonString 返回停止原因；未设置或为 null 时返回空字符串。
+func AnthropicStopReasonString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

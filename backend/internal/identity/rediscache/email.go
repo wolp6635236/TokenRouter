@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 const (
@@ -18,6 +19,10 @@ const (
 	passwordResetSentAtKeyPrefix = "password_reset_sent:"
 	notifyCodeUserRateKeyPrefix  = "notify_code_user_rate:"
 )
+
+type emailCache struct {
+	rdb *redis.Client
+}
 
 // verifyCodeKey generates the Redis key for email verification code.
 // Email is lowercased for case-insensitive consistency.
@@ -40,10 +45,6 @@ func passwordResetKey(email string) string {
 // passwordResetSentAtKey generates the Redis key for password reset email sent timestamp.
 func passwordResetSentAtKey(email string) string {
 	return passwordResetSentAtKeyPrefix + strings.ToLower(email)
-}
-
-type emailCache struct {
-	rdb *redis.Client
 }
 
 func NewEmailCache(rdb *redis.Client) identity.EmailCache {

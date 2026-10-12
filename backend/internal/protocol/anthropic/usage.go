@@ -1,12 +1,12 @@
 package anthropic
 
-// ClaudeUsageWindow Anthropic /api/oauth/usage 返回的单个用量窗口
+// ClaudeUsageWindow Anthropic /api/oauth/usage 返回的单个用量窗口。
 type ClaudeUsageWindow struct {
 	Utilization float64 `json:"utilization"`
 	ResetsAt    string  `json:"resets_at"`
 }
 
-// ClaudeUsageResponse Anthropic API返回的usage结构
+// ClaudeUsageResponse Anthropic API 返回的 usage 结构。
 type ClaudeUsageResponse struct {
 	FiveHour struct {
 		Utilization float64 `json:"utilization"`

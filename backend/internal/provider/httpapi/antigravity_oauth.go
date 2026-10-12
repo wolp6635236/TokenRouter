@@ -3,21 +3,42 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 type AntigravityOAuthHandler struct {
 	antigravityOAuthService AntigravityAuthorizationUseCase
 }
 
-func NewAntigravityOAuthHandler(antigravityOAuthService AntigravityAuthorizationUseCase) *AntigravityOAuthHandler {
-	return &AntigravityOAuthHandler{antigravityOAuthService: antigravityOAuthService}
-}
-
 type AntigravityGenerateAuthURLRequest struct {
 	ProxyID *int64 `json:"proxy_id"`
+}
+
+type AntigravityExchangeCodeRequest struct {
+	SessionID string `json:"session_id" binding:"required"`
+	State     string `json:"state" binding:"required"`
+	Code      string `json:"code" binding:"required"`
+	ProxyID   *int64 `json:"proxy_id"`
+}
+
+// AntigravityRefreshTokenRequest represents the request for validating Antigravity refresh token.
+type AntigravityRefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+	ProxyID      *int64 `json:"proxy_id"`
+}
+
+// AntigravityAuthorizationUseCase 只暴露管理授权所需的三个操作。
+type AntigravityAuthorizationUseCase interface {
+	GenerateAuthURL(context.Context, *int64) (*provider.AntigravityAuthURLResult, error)
+	ExchangeCode(context.Context, *provider.AntigravityExchangeCodeInput) (*provider.AntigravityTokenInfo, error)
+	ValidateRefreshToken(context.Context, string, *int64) (*provider.AntigravityTokenInfo, error)
+}
+
+func NewAntigravityOAuthHandler(antigravityOAuthService AntigravityAuthorizationUseCase) *AntigravityOAuthHandler {
+	return &AntigravityOAuthHandler{antigravityOAuthService: antigravityOAuthService}
 }
 
 // GenerateAuthURL generates Google OAuth authorization URL
@@ -36,13 +57,6 @@ func (h *AntigravityOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	}
 
 	response.Success(c, result)
-}
-
-type AntigravityExchangeCodeRequest struct {
-	SessionID string `json:"session_id" binding:"required"`
-	State     string `json:"state" binding:"required"`
-	Code      string `json:"code" binding:"required"`
-	ProxyID   *int64 `json:"proxy_id"`
 }
 
 // ExchangeCode 用 authorization code 交换 token
@@ -68,12 +82,6 @@ func (h *AntigravityOAuthHandler) ExchangeCode(c *gin.Context) {
 	response.Success(c, tokenInfo)
 }
 
-// AntigravityRefreshTokenRequest represents the request for validating Antigravity refresh token
-type AntigravityRefreshTokenRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
-	ProxyID      *int64 `json:"proxy_id"`
-}
-
 // RefreshToken validates an Antigravity refresh token and returns full token info
 // POST /api/v1/admin/antigravity/oauth/refresh-token
 func (h *AntigravityOAuthHandler) RefreshToken(c *gin.Context) {
@@ -90,11 +98,4 @@ func (h *AntigravityOAuthHandler) RefreshToken(c *gin.Context) {
 	}
 
 	response.Success(c, tokenInfo)
-}
-
-// AntigravityAuthorizationUseCase 只暴露管理授权所需的三个操作。
-type AntigravityAuthorizationUseCase interface {
-	GenerateAuthURL(context.Context, *int64) (*provider.AntigravityAuthURLResult, error)
-	ExchangeCode(context.Context, *provider.AntigravityExchangeCodeInput) (*provider.AntigravityTokenInfo, error)
-	ValidateRefreshToken(context.Context, string, *int64) (*provider.AntigravityTokenInfo, error)
 }

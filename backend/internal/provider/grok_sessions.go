@@ -31,20 +31,6 @@ type GrokOAuthSession struct {
 	consumed bool
 }
 
-// TryConsume 保证进程内回退会话也只能被消费一次。
-func (s *GrokOAuthSession) TryConsume() bool {
-	if s == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.consumed {
-		return false
-	}
-	s.consumed = true
-	return true
-}
-
 // GrokSessionStore 以 Redis 共享 xAI OAuth 会话，并在 Redis 写入失败时使用进程内回退。
 type GrokSessionStore struct {
 	runtimeMu      sync.Mutex
@@ -68,6 +54,20 @@ type grokSessionDTO struct {
 	ProxyURL      string    `json:"proxy_url,omitempty"`
 	RedirectURI   string    `json:"redirect_uri"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+// TryConsume 保证进程内回退会话也只能被消费一次。
+func (s *GrokOAuthSession) TryConsume() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.consumed {
+		return false
+	}
+	s.consumed = true
+	return true
 }
 
 func NewGrokSessionStore(remote GrokSessionBackend) *GrokSessionStore {
@@ -201,8 +201,7 @@ func (s *GrokSessionStore) Start() {
 		return
 	}
 	s.runtimeStarted = true
-	s.runtimeWG.Add(1)
-	go func() { defer s.runtimeWG.Done(); s.cleanup() }()
+	s.runtimeWG.Go(func() { ; s.cleanup() })
 }
 
 // Stop 幂等停止并等待清理循环，未启动实例也可安全关闭。

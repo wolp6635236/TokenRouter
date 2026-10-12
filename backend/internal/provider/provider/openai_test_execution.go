@@ -7,21 +7,41 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
-
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+// OpenAIProviderTest 绑定提供商存储、共享传输和请求策略，TestRun 保存单次状态。
+type OpenAIProviderTest struct {
+	Store        OpenAIProviderTestStore
+	Transport    QoderTransport
+	ValidateURL  func(string) (string, error)
+	ApplyRouting func(*TestRun, *providercore.Record, *http.Request, bool)
+	ResolveTLS   func(*TestRun, *providercore.Record) *tlsfingerprint.Profile
+	EnsureTask   func(context.Context, *providercore.Record, string) error
+
+	Prepare func(*TestRun, *providercore.Record) error
+}
+
+// OpenAIProviderTestStore 只暴露测试路径原本使用的字段操作。
+type OpenAIProviderTestStore interface {
+	GetByID(context.Context, int64) (*providercore.Record, error)
+	UpdateExtra(context.Context, int64, map[string]any) error
+	SetError(context.Context, int64, string) error
+	ClearError(context.Context, int64) error
+	SetRateLimited(context.Context, int64, time.Time) error
+	providercore.OpenAIPlanWriter
+}
 
 // Execute 按提供商凭据、模式和测试类型执行 OpenAI 测试。
 func (s *OpenAIProviderTest) Execute(c *TestRun, value *providercore.Record, modelID string, prompt string, mode string, testTypes ...string) error {
@@ -128,7 +148,7 @@ func (s *OpenAIProviderTest) Execute(c *TestRun, value *providercore.Record, mod
 		(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{Type: "test_start", Model: testModelID})
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return (TestStreamOutput{}).Error(c, "Failed to create request")
 	}
@@ -429,7 +449,7 @@ func (s *OpenAIProviderTest) executeNativeCompaction(c *TestRun, value *provider
 	return nil
 }
 
-// executeLegacyCompact 仅测试旧版 /responses/compact 连接。
+// executeLegacyCompact 测试 /responses/compact 连接。
 // 本次结果不写入能力状态或管理员开关，认证错误和限流仍按提供商测试流程处理。
 func (s *OpenAIProviderTest) executeLegacyCompact(c *TestRun, value *providercore.Record, testModelID string) error {
 	ctx := c.Context
@@ -481,7 +501,7 @@ func (s *OpenAIProviderTest) executeLegacyCompact(c *TestRun, value *providercor
 		(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{Type: "test_start", Model: testModelID})
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return (TestStreamOutput{}).Error(c, "Failed to create request")
 	}
@@ -638,7 +658,7 @@ func (s *OpenAIProviderTest) ExecuteImageAPIKey(c *TestRun, ctx context.Context,
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return (TestStreamOutput{}).Error(c, "Failed to create request")
 	}
@@ -835,28 +855,6 @@ func (s *OpenAIProviderTest) ExecuteImageOAuth(c *TestRun, ctx context.Context, 
 	return nil
 }
 
-// OpenAIProviderTest 绑定提供商存储、共享传输和请求策略，TestRun 保存单次状态。
-type OpenAIProviderTest struct {
-	Store        OpenAIProviderTestStore
-	Transport    QoderTransport
-	ValidateURL  func(string) (string, error)
-	ApplyRouting func(*TestRun, *providercore.Record, *http.Request, bool)
-	ResolveTLS   func(*TestRun, *providercore.Record) *tlsfingerprint.Profile
-	EnsureTask   func(context.Context, *providercore.Record, string) error
-
-	Prepare func(*TestRun, *providercore.Record) error
-}
-
-// OpenAIProviderTestStore 只暴露测试路径原本使用的字段操作。
-type OpenAIProviderTestStore interface {
-	GetByID(context.Context, int64) (*providercore.Record, error)
-	UpdateExtra(context.Context, int64, map[string]any) error
-	SetError(context.Context, int64, string) error
-	ClearError(context.Context, int64) error
-	SetRateLimited(context.Context, int64, time.Time) error
-	providercore.OpenAIPlanWriter
-}
-
 func (s *OpenAIProviderTest) read(ctx context.Context, id int64) (*providercore.Record, error) {
 	return s.Store.GetByID(ctx, id)
 }
@@ -878,12 +876,8 @@ func mergeTestExtraUpdates(base, more map[string]any) map[string]any {
 		return nil
 	}
 	result := make(map[string]any, len(base)+len(more))
-	for key, value := range base {
-		result[key] = value
-	}
-	for key, value := range more {
-		result[key] = value
-	}
+	maps.Copy(result, base)
+	maps.Copy(result, more)
 	return result
 }
 

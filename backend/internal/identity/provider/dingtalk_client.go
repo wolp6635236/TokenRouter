@@ -16,7 +16,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
-// DingTalkClientConfig 是 DingTalkClient 需要的最小配置子集
+// DingTalkClientConfig 是 DingTalkClient 需要的最小配置子集。
 type DingTalkClientConfig struct {
 	ClientID     string
 	ClientSecret string
@@ -34,6 +34,23 @@ type DingTalkClient struct {
 }
 
 type DingTalkUserTokenResp = identity.DingTalkUserTokenResp
+
+type DingTalkAPIError = identity.DingTalkAPIError
+
+type DingTalkStaffInfo = identity.DingTalkProfileSnapshot
+
+// DingTalkDeptInfo 部门信息（topapi/v2/department/get 返回子集）。
+type DingTalkDeptInfo struct {
+	DeptID   int64
+	Name     string
+	ParentID int64
+}
+
+// DingTalkClients 持有唯一配置对应的 client/token 缓存，配置变更时按原规则替换。
+type DingTalkClients struct {
+	mu     sync.Mutex
+	client *DingTalkClient
+}
 
 func (c *DingTalkClient) ExchangeCodeForUserToken(ctx context.Context, code string) (*DingTalkUserTokenResp, error) {
 	body := map[string]string{
@@ -66,8 +83,6 @@ func (c *DingTalkClient) ExchangeCodeForUserToken(ctx context.Context, code stri
 	}
 	return &out, nil
 }
-
-type DingTalkAPIError = identity.DingTalkAPIError
 
 func ParseDingTalkErr(raw []byte, status int) error {
 	var v struct {
@@ -118,8 +133,6 @@ func (c *DingTalkClient) GetUnionIdByUserToken(ctx context.Context, userToken st
 	return v.UnionID, v.Nick, nil
 }
 
-type DingTalkStaffInfo = identity.DingTalkProfileSnapshot
-
 // DingTalkOAPIBase 推导钉钉旧版 OAPI base URL（host: api.dingtalk.com → oapi.dingtalk.com）。
 // getbyunionid 与 topapi/v2/user/get 使用 OAPI。
 func (c *DingTalkClient) DingTalkOAPIBase() string {
@@ -128,8 +141,8 @@ func (c *DingTalkClient) DingTalkOAPIBase() string {
 		return "https://oapi.dingtalk.com"
 	}
 	host := u.Host
-	if strings.HasPrefix(host, "api.") {
-		host = "oapi." + strings.TrimPrefix(host, "api.")
+	if after, ok := strings.CutPrefix(host, "api."); ok {
+		host = "oapi." + after
 	}
 	return u.Scheme + "://" + host
 }
@@ -229,15 +242,8 @@ func (c *DingTalkClient) GetUserIdByUnionId(ctx context.Context, unionID string)
 	return v.Result.UserID, nil
 }
 
-// DingTalkDeptInfo 部门信息（topapi/v2/department/get 返回子集）
-type DingTalkDeptInfo struct {
-	DeptID   int64
-	Name     string
-	ParentID int64
-}
-
 // GetDeptInfo 查询单个部门信息（用于递归拼部门路径）。
-// 调用钉钉旧版 OAPI: POST /topapi/v2/department/get?access_token=XXX
+// 调用钉钉旧版 OAPI: POST /topapi/v2/department/get?access_token=XXX。
 func (c *DingTalkClient) GetDeptInfo(ctx context.Context, deptID int64) (*DingTalkDeptInfo, error) {
 	appToken, err := c.GetAppToken(ctx)
 	if err != nil {
@@ -377,12 +383,6 @@ func (c *DingTalkClient) GetStaffInfoByUserId(ctx context.Context, userID string
 		Email:    email,
 		DeptIDs:  v.Result.DeptID,
 	}, nil
-}
-
-// DingTalkClients 持有唯一配置对应的 client/token 缓存，配置变更时按原规则替换。
-type DingTalkClients struct {
-	mu     sync.Mutex
-	client *DingTalkClient
 }
 
 func (s *DingTalkClients) ForConfig(cfg DingTalkClientConfig) *DingTalkClient {

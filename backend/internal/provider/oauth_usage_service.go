@@ -10,6 +10,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+var ErrOAuthUsageStopped = errors.New("oauth provider usage is stopped")
+
 type OAuthUsageReader interface {
 	GetByID(context.Context, int64) (*Record, error)
 	GetByIDs(context.Context, []int64) ([]*Record, error)
@@ -39,7 +41,17 @@ type OAuthUsageService struct {
 	activity     operationActivity
 }
 
-var ErrOAuthUsageStopped = errors.New("oauth provider usage is stopped")
+// oauthAPIFlightResult 连同负缓存保存来源，原提供商 key 的等待者不能消费另一身份结果。
+type oauthAPIFlightResult struct {
+	Response *ClaudeUsageResponse
+	Err      error
+	Identity string
+}
+
+// UsageSessionWindowWriter 保留窗口列的独立提交，并比较查询前身份及原窗口。
+type UsageSessionWindowWriter interface {
+	UpdateUsageSessionWindowEndIfUnchanged(context.Context, UsageObservationVersion, *time.Time, time.Time) (bool, error)
+}
 
 func NewOAuthUsageService(reader OAuthUsageReader, cache *OAuthUsageCache, stats *LocalUsageStatistics, options OAuthUsageOptions) *OAuthUsageService {
 	if options.Now == nil {
@@ -147,21 +159,19 @@ func (s *OAuthUsageService) GetUsageForProvider(ctx context.Context, provider *R
 		return usage, err
 	}
 
-	// 只有oauth类型提供商可以通过API获取usage（有profile scope）
+	// 只有 oauth 类型提供商可以通过 API 获取 usage（有 profile scope）
 	if provider.CanGetUsage() {
 		var apiResp *ClaudeUsageResponse
 
 		// 1. 检查缓存（成功响应 3 分钟 / 错误响应 1 分钟）
-		if cached, ok := s.cache.LoadAPI(providerID); ok {
-			if cache, ok := cached.(*OAuthAPIUsageCache); ok && cache != nil && cache.Identity == identity {
-				age := s.options.Now().Sub(cache.Timestamp)
-				if cache.Err != nil && age < OAuthUsageAPIErrorCacheTTL {
-					// 负缓存命中时返回缓存的错误。
-					return nil, cache.Err
-				}
-				if cache.Response != nil && age < OAuthUsageAPICacheTTL {
-					apiResp = cache.Response
-				}
+		if cache, ok := s.cache.LoadAPI(providerID); ok && cache.Identity == identity {
+			age := s.options.Now().Sub(cache.Timestamp)
+			if cache.Err != nil && age < OAuthUsageAPIErrorCacheTTL {
+				// 负缓存命中时返回缓存的错误。
+				return nil, cache.Err
+			}
+			if cache.Response != nil && age < OAuthUsageAPICacheTTL {
+				apiResp = cache.Response
 			}
 		}
 
@@ -179,15 +189,13 @@ func (s *OAuthUsageService) GetUsageForProvider(ctx context.Context, provider *R
 			flightKey := fmt.Sprintf("usage:%d", providerID)
 			result, flightErr, _ := s.cache.DoAPI(flightKey, func() (any, error) {
 				// 再次检查缓存（可能在等待 singleflight 期间被其他请求填充）
-				if cached, ok := s.cache.LoadAPI(providerID); ok {
-					if cache, ok := cached.(*OAuthAPIUsageCache); ok && cache != nil && cache.Identity == identity {
-						age := s.options.Now().Sub(cache.Timestamp)
-						if cache.Err != nil && age < OAuthUsageAPIErrorCacheTTL {
-							return oauthAPIFlightResult{Err: cache.Err, Identity: identity}, nil
-						}
-						if cache.Response != nil && age < OAuthUsageAPICacheTTL {
-							return oauthAPIFlightResult{Response: cache.Response, Identity: identity}, nil
-						}
+				if cache, ok := s.cache.LoadAPI(providerID); ok && cache.Identity == identity {
+					age := s.options.Now().Sub(cache.Timestamp)
+					if cache.Err != nil && age < OAuthUsageAPIErrorCacheTTL {
+						return oauthAPIFlightResult{Err: cache.Err, Identity: identity}, nil
+					}
+					if cache.Response != nil && age < OAuthUsageAPICacheTTL {
+						return oauthAPIFlightResult{Response: cache.Response, Identity: identity}, nil
 					}
 				}
 				resp, fetchErr := s.options.Anthropic(ctx, provider)
@@ -241,7 +249,7 @@ func (s *OAuthUsageService) GetUsageForProvider(ctx context.Context, provider *R
 		return usage, nil
 	}
 
-	// Setup Token提供商：根据session_window推算（没有profile scope，无法调用usage API）
+	// Setup Token 提供商：根据 session_window 推算（没有 profile scope，无法调用 usage API）
 	if provider.Type == ProviderTypeSetupToken {
 		usage := EstimateSetupTokenUsage(provider, s.options.Now)
 		// 添加窗口统计
@@ -249,14 +257,14 @@ func (s *OAuthUsageService) GetUsageForProvider(ctx context.Context, provider *R
 		return usage, nil
 	}
 
-	// API Key提供商不支持usage查询
+	// API Key 提供商不支持 usage 查询
 	return nil, fmt.Errorf("provider type %s does not support usage query", provider.Type)
 }
 
 // GetUsage 获取提供商使用量
 // OAuth 提供商通过 Anthropic API 查询用量（需要 profile scope），API 响应缓存十分钟，窗口统计缓存一分钟。
-// Setup Token提供商: 根据session_window推算5h窗口，7d数据不可用（没有profile scope）
-// API Key提供商: 不支持usage查询
+// Setup Token 提供商: 根据 session_window 推算 5h 窗口，7d 数据不可用（没有 profile scope）
+// API Key 提供商: 不支持 usage 查询。
 func (s *OAuthUsageService) GetUsage(ctx context.Context, providerID int64, force ...bool) (*UsageInfo, error) {
 	ctx, finish, err := s.activity.begin(ctx, ErrOAuthUsageStopped)
 	if err != nil {
@@ -477,16 +485,4 @@ func (s *OAuthUsageService) recoverProviderError(ctx context.Context, value *Rec
 		value.Status = StatusActive
 		value.ErrorMessage = ""
 	}
-}
-
-// oauthAPIFlightResult 连同负缓存保存来源，原提供商 key 的等待者不能消费另一身份结果。
-type oauthAPIFlightResult struct {
-	Response *ClaudeUsageResponse
-	Err      error
-	Identity string
-}
-
-// UsageSessionWindowWriter 保留窗口列的独立提交，并比较查询前身份及原窗口。
-type UsageSessionWindowWriter interface {
-	UpdateUsageSessionWindowEndIfUnchanged(context.Context, UsageObservationVersion, *time.Time, time.Time) (bool, error)
 }

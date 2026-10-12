@@ -42,7 +42,7 @@ RequestLogger
   -> embedded frontend and API routes
 ```
 
-`X-Request-ID` 是服务端的请求关联 ID：客户端传来的值长度和字符合法时直接使用，否则生成 UUID，并写回响应和 request context。网关路由另外安装 `ClientRequestID`，它总是为本服务生成内部请求 ID。合法的 `X-Client-Request-ID` 只作为调用方的关联 ID 保存和回显，和权限、结算幂等都无关；缺失或不安全时，响应里的 `X-Client-Request-ID` 使用内部 ID。内部 ID 另外通过 `X-TokenRouter-Request-ID` 返回。服务生成的关联 ID 不会加进上游请求，网关的内部头因此不会发给供应商。
+`X-Request-ID` 由全局入口生成，网关复用这个 ID。`X-TokenRouter-Request-ID` 和兼容头返回同一个值，响应提交时固定为本地 ID。调用方传入的 ID 和供应商 ID 保存为可查询的外部别名。合法的 `X-Client-Request-ID` 继续回显，缺失时使用本地 ID。完整的生成、计费关联、留存和查询规则见[请求 ID 与请求查询](../operations/request_lookup.md)。
 
 请求体大小限制和错误采集按路由族分别设置。网关在读取 JSON 或 multipart 之前，依次应用通用或文本的 body limit、client request ID、Ops error logger、endpoint 归一化和 API Key 认证。面板接口使用全局限流、重查询限流和审计；高风险的公开认证接口使用单独的 Redis 限流，依赖故障时拒绝请求（fail-close）。
 
@@ -50,12 +50,12 @@ RequestLogger
 
 | 路由族 | 认证 | 负责的模块和用途 |
 | --- | --- | --- |
-| `/health`、`/setup/status` | 无 | `server/common.go`；进程健康检查和正常模式下的 setup 状态 |
+| `/health`、`/setup/status` | 无 | `server/router.go`；进程健康检查和正常模式下的 setup 状态 |
 | `/api/event_logging/batch` | 无 | 兼容 Claude Code 遥测的空接收端，固定返回成功 |
-| `/api/v1/auth/*` | 大多公开，账户管理的子流程按路由加 JWT 或短期状态 | `app/http_routes_auth.go`；注册、登录、刷新、找回密码、OAuth、Passkey 登录和身份补全 |
-| `/api/v1/user/*`、`/keys`、`/team`、`/groups`、`/subscriptions`、`/redeem` 等 | 用户 JWT | `app/http_routes_user.go`；用户面板的资源、团队、Key、用量和权益查询 |
+| `/api/v1/auth/*` | 大多公开，账户管理的子流程按路由加 JWT 或短期状态 | `app/http_routes.go`；注册、登录、刷新、找回密码、OAuth、Passkey 登录和身份补全 |
+| `/api/v1/user/*`、`/keys`、`/team`、`/groups`、`/subscriptions`、`/redeem` 等 | 用户 JWT | `app/http_routes.go`；用户面板的资源、团队、Key、用量和权益查询 |
 | `/api/v1/admin/*` | 管理员 JWT 或受限的管理密钥；部分操作还需要 step-up | `app/http_routes_admin.go`；用户、分组、提供商、价格配置、设置、运维、备份、支付和安全管理 |
-| `/api/v1/payment/*` | 用户 JWT | `app/http_routes_payment.go`；读取配置和套餐、下单、查单、取消、invoice 和申请退款 |
+| `/api/v1/payment/*` | 用户 JWT | `app/http_routes.go`；读取配置和套餐、下单、查单、取消、invoice 和申请退款 |
 | `/api/v1/payment/public/*` | 签名的 resume token，或旧订单的验证约束 | 恢复支付结果；这组接口只服务已知订单，匿名列举订单是不允许的 |
 | `/api/v1/payment/webhook/*` | 提供商验签 | EasyPay、Alipay、WeChat Pay、Stripe、Airwallex 的通知 |
 | `/v1/*` 和兼容的裸路径别名 | TokenRouter API Key | Anthropic 和 OpenAI 兼容的消息、Responses、Chat、图片、视频、模型、用量和批任务 |
@@ -124,7 +124,7 @@ One Tap 设置或 Google OAuth 配置无效、backend mode、启用了腾讯或�
 
 ## 创作台接口
 
-创作台（Creative Studio）使用 `/api/v1/creative/*` 路由族，需要用户 JWT（在 `app/http_routes_user.go` 注册，返回统一 envelope），用于个人的图片生成、编辑和局部重绘任务：
+创作台（Creative Studio）使用 `/api/v1/creative/*` 路由族，需要用户 JWT（在 `app/http_routes.go` 注册，返回统一 envelope），用于个人的图片生成、编辑和局部重绘任务：
 
 ```text
 GET  /api/v1/creative/models
@@ -214,7 +214,7 @@ Ollama Cloud 的设置、状态、会话、自动刷新和主动刷新路由绑�
 
 创建和更新 API Key 时，`quota`、`rate_limit_5h`、`rate_limit_1d`、`rate_limit_7d` 要求是有限的、非负的、小于 `1e12` 的 USD 数值，以适配数据库的 `DECIMAL(20,8)`；`0` 表示不限额。创建时省略 `expires_in_days` 表示永不过期，提供时要大于 0；更新时用空的 `expires_at` 清除到期时间，用合法的 RFC3339 时间设置到期点。handler 的早期校验和 service 的最终校验使用同一套规则，内部调用同样要经过校验。
 
-`GET /api/v1/keys/billing-options?scope=personal|team` 返回当前作用域下可以指定的有效订阅摘要，包括 `id`、`plan_id`、`plan_name`、`expires_at`、`groups_restricted` 和 `applicable_groups`。`GET /api/v1/groups/available?scope=personal|team&subscription_id={id}` 带 `subscription_id` 时，返回付款主体已有的分组权限和这个订阅套餐分组的交集；不带时返回普通的可用分组列表。两个接口在团队作用域下都不会返回成员自己的订阅。可见分组的 `models` 和 `model_protocols` 来自组内可以请求的能力，供客户端配置时选择实际的模型；它们只用于展示，权限仍以分组策略为准。
+`GET /api/v1/keys/billing-options?scope=personal|team` 返回当前作用域下可以指定的有效订阅摘要，包括 `id`、`plan_id`、`plan_name`、`expires_at`、`groups_restricted` 和 `applicable_groups`。`GET /api/v1/groups/available?scope=personal|team&subscription_id={id}` 带 `subscription_id` 时，返回付款主体已有的分组权限和这个订阅套餐分组的交集；不带时返回普通的可用分组列表。两个接口在团队作用域下都不会返回成员自己的订阅。可见分组的 `models` 和 `model_protocols` 来自有限模型目录，供客户端配置时选择型号，权限由请求时的分组策略校验。`include_models` 默认为 `true`；传 `false` 时保留作用域、套餐和分组权限过滤，跳过模型、协议和模型属性计算。使用记录及仪表盘的筛选项使用轻量查询，Key 配置导出使用完整查询。非法的 `include_models` 值返回 400。
 
 网关的 `GET /v1/usage` 除了 Key 配额、订阅或余额字段，总是返回一个 `billing` 对象，至少包含 `mode`、`source`、`preferred_subscription_id`、`available` 和 `unit`：
 
@@ -328,13 +328,11 @@ app 为所有需要幂等的用户和管理员 HTTP 处理器绑定同一个协�
 
 ## 请求关联
 
-- `X-Request-ID` 用于关联一次 HTTP 调用的日志和审计，持久化时有最大长度。
-- `X-Client-Request-ID` 是调用方提供的跨服务关联 ID。服务把它限制为安全的 ASCII 标识，并保留在日志链路里；它不是内部结算的幂等 ID。缺失或不安全时，响应里的这个头使用服务生成的内部 ID。
-- `X-TokenRouter-Request-ID` 是服务生成的内部请求 ID，用于本服务的日志、结算幂等和下游诊断；它只写进响应，上游请求里没有它。
-- 上游的 request ID 是供应商的观测字段，单独保存，和本地 ID 互不替代。
-- 后台 worker 从请求里取出需要的 metadata 后，使用一个有超时的新 Context；已经取消的请求的 body 和 Gin context 不再被持有。
+本地请求 ID 贯穿 HTTP 响应、日志、使用记录、错误、审核和审计。`usage_logs.billing_key` 保存资金去重值，账本和资金去重表的既有字段继续保存历史动作键。客户端重试会生成新的调用 ID；任务重放通过业务动作键去重。
 
-客户端允许重试时，应保留同一个业务 request ID，服务端结合 API Key 和请求指纹识别冲突。只按请求 ID 字符串判断"重复"，会把不同用户或不同 payload 的请求混在一起。
+管理员通过 `/api/v1/admin/requests` 按 `request_id` 查询诊断详情，写入状态接口同样要求管理员身份。调用方与供应商的 ID 可以作为搜索别名。普通用户在使用记录里筛选和复制请求 ID。后台完成任务携带请求快照，在独立超时内写入用量和请求摘要。
+
+协议、兼容响应头和查询权限见[请求 ID 与请求查询](../operations/request_lookup.md)。
 
 ## 已移除的接口
 
@@ -342,6 +340,7 @@ app 为所有需要幂等的用户和管理员 HTTP 处理器绑定同一个协�
 
 | 路径或字段 | 返回 | 替代 |
 | --- | --- | --- |
+| `GET /api/v1/requests`、`GET /api/v1/requests/:request_id` | `404` | 管理员使用 `/api/v1/admin/requests`，普通用户通过使用记录查看用量 |
 | `GET`、`PUT /api/v1/admin/settings/openai-oauth-import-defaults` | `404` | 在提供商创建表单或导入文件中填写配置 |
 | `GET /v1/sub2api/billing` | `404` | 无；这个路径不再享有 API Key 非消费请求的豁免 |
 | `GET`、`PUT /api/v1/admin/providers/upstream-billing-probe/settings`、`POST .../upstream-billing-probe/batch`、`PUT`、`POST /api/v1/admin/providers/:id/upstream-billing-probe` | `404` | 无 |
@@ -380,3 +379,7 @@ Grok 请求缓存开关使用 `X-TokenRouter-Grok-Client-Tool-Cache`，没有新
 浏览器的语言设置和登录协议确认使用 `tokenrouter_` 开头的存储键；新键没有值时，复制旧键的值，协议仍然按 revision 判断。新键已经有值或撤回记录时，以新键为准；可以重建的缓存使用新名称，旧缓存留在浏览器里，等它自然失效。
 
 相关文档：[上游提供商能力矩阵](upstream_provider_matrix.md)、[网关错误响应策略](gateway_error_policy.md)、[身份与租户](../domains/identity_and_tenancy.md)、[网关请求生命周期](../architecture/gateway_request_lifecycle.md)、[支付与权益](../domains/payments_and_entitlements.md)、[接口目录](index.md)。
+
+## SystemOne
+
+`POST /v1/systemone` 使用网关 API Key 认证，支持普通 Key 和复合 Key。分组开放 `systemone` 后，调度到已启用该协议的 Jev API Key 提供商。请求字段、成功响应和用量异常处理见 [Jev 与 SystemOne](jev_upstream.md)。

@@ -10,12 +10,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
 )
 
-// CloneValues 保留 JSON 值的实际数值类型、nil 与空集合，并隔离可变容器。
-// 对非法循环输入保留其循环形状，后续 JSON 校验仍按原错误路径拒绝。
-func CloneValues(values map[string]any) map[string]any {
-	return cloneValues(values, &valueCopyState{})
-}
-
 type sliceIdentity struct {
 	ptr    uintptr
 	length int
@@ -23,6 +17,12 @@ type sliceIdentity struct {
 type valueCopyState struct {
 	maps   map[uintptr]map[string]any
 	slices map[sliceIdentity][]any
+}
+
+// CloneValues 保留 JSON 值的实际数值类型、nil 与空集合，并隔离可变容器。
+// 对非法循环输入保留其循环形状，后续 JSON 校验仍按原错误路径拒绝。
+func CloneValues(values map[string]any) map[string]any {
+	return cloneValues(values, &valueCopyState{})
 }
 
 func cloneValues(values map[string]any, state *valueCopyState) map[string]any {

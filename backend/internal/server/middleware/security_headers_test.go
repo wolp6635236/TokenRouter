@@ -8,14 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-)
 
-func init() {
-}
+	"github.com/TokenFlux/TokenRouter/internal/config"
+)
 
 func TestGenerateNonce(t *testing.T) {
 	t.Run("generates_valid_base64_string", func(t *testing.T) {
@@ -32,7 +30,7 @@ func TestGenerateNonce(t *testing.T) {
 
 	t.Run("generates_unique_nonces", func(t *testing.T) {
 		nonces := make(map[string]bool)
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			nonce, err := GenerateNonce()
 			require.NoError(t, err)
 			assert.False(t, nonces[nonce], "nonce should be unique")
@@ -263,7 +261,7 @@ func TestSecurityHeaders(t *testing.T) {
 		middleware := SecurityHeaders(cfg, nil)
 
 		nonces := make(map[string]bool)
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -423,23 +421,6 @@ func TestEnhanceCSPPolicy(t *testing.T) {
 	})
 }
 
-func countDirectiveValue(policy, directive, value string) int {
-	for _, rawDirective := range strings.Split(policy, ";") {
-		fields := strings.Fields(strings.TrimSpace(rawDirective))
-		if len(fields) == 0 || fields[0] != directive {
-			continue
-		}
-		count := 0
-		for _, field := range fields[1:] {
-			if field == value {
-				count++
-			}
-		}
-		return count
-	}
-	return 0
-}
-
 func TestAddToDirective(t *testing.T) {
 	t.Run("adds_to_existing_directive", func(t *testing.T) {
 		policy := "script-src 'self'; style-src 'self'"
@@ -474,7 +455,7 @@ func TestAddToDirective(t *testing.T) {
 
 // BenchmarkGenerateNonce 测量 nonce 生成的开销。
 func BenchmarkGenerateNonce(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = GenerateNonce()
 	}
 }
@@ -487,7 +468,7 @@ func BenchmarkSecurityHeadersMiddleware(b *testing.B) {
 	middleware := SecurityHeaders(cfg, nil)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -495,7 +476,7 @@ func BenchmarkSecurityHeadersMiddleware(b *testing.B) {
 	}
 }
 
-// TestGoogleIdentityCSPPreservesOfficialAccountsOrigins 验证Google SDK 的域名是外部契约，默认和旧自定义策略都必须允许真实来源。
+// TestGoogleIdentityCSPPreservesOfficialAccountsOrigins 验证 Google SDK 的域名是外部契约，默认和旧自定义策略都必须允许真实来源。
 func TestGoogleIdentityCSPPreservesOfficialAccountsOrigins(t *testing.T) {
 	expected := map[string]string{
 		"script-src":  "https://accounts.google.com/gsi/client",
@@ -505,7 +486,7 @@ func TestGoogleIdentityCSPPreservesOfficialAccountsOrigins(t *testing.T) {
 	}
 	for _, policy := range []string{config.DefaultCSPPolicy, enhanceCSPPolicy("default-src 'self'; script-src 'self'")} {
 		directives := map[string][]string{}
-		for _, part := range strings.Split(policy, ";") {
+		for part := range strings.SplitSeq(policy, ";") {
 			fields := strings.Fields(part)
 			if len(fields) > 0 {
 				directives[fields[0]] = fields[1:]
@@ -516,4 +497,21 @@ func TestGoogleIdentityCSPPreservesOfficialAccountsOrigins(t *testing.T) {
 		}
 		require.NotContains(t, policy, "providers.google.com")
 	}
+}
+
+func countDirectiveValue(policy, directive, value string) int {
+	for rawDirective := range strings.SplitSeq(policy, ";") {
+		fields := strings.Fields(strings.TrimSpace(rawDirective))
+		if len(fields) == 0 || fields[0] != directive {
+			continue
+		}
+		count := 0
+		for _, field := range fields[1:] {
+			if field == value {
+				count++
+			}
+		}
+		return count
+	}
+	return 0
 }

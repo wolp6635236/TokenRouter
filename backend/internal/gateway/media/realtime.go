@@ -9,6 +9,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// DefaultRealtimeDialTimeout 设置下游升级前的上游握手超时，会话时长由连接生命周期控制。
+const DefaultRealtimeDialTimeout = 12 * time.Second
+
 // RealtimePorts 仅在下游升级前取得凭据和连接，保持四次候选预算。
 type RealtimePorts interface {
 	SelectRealtime(context.Context, map[int64]struct{}) (provider.ProviderSnapshot, bool, error)
@@ -27,6 +30,13 @@ type RealtimeLease struct {
 	err      error
 }
 
+// RealtimeAdmission 区分没有候选、上游不可用与等待层已经输出错误。
+type RealtimeAdmission struct {
+	Lease         *RealtimeLease
+	CandidateSeen bool
+	WaitRejected  bool
+}
+
 func (l *RealtimeLease) Close() error {
 	l.once.Do(func() {
 		if l.Conn != nil {
@@ -37,13 +47,6 @@ func (l *RealtimeLease) Close() error {
 		}
 	})
 	return l.err
-}
-
-// RealtimeAdmission 区分没有候选、上游不可用与等待层已经输出错误。
-type RealtimeAdmission struct {
-	Lease         *RealtimeLease
-	CandidateSeen bool
-	WaitRejected  bool
 }
 
 func OpenRealtime(ctx context.Context, model string, dialTimeout time.Duration, ports RealtimePorts) RealtimeAdmission {

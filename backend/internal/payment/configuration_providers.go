@@ -8,22 +8,44 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
-// ConfigValidateProviderConfig runs the provider's constructor to surface config-level
-// errors at save time (e.g. wxpay missing certSerial), instead of only failing
-// when an order is created. Returns the structured ApplicationError from the
-// constructor so the frontend i18n layer can localize it.
-//
-// Only validates enabled instances — a disabled instance may be a half-filled
-// draft the admin will complete later.
-func (s *ConfigService) ConfigValidateProviderConfig(providerKey string, config map[string]string) error {
-	_, err := s.runtime.CreateProvider(providerKey, "_validate_", config)
-	return err
-}
+var (
+	// ConfigProviderSensitiveConfigFields is the authoritative list of config keys that
+	// are treated as secrets per provider. Must stay in sync with the frontend
+	// definition at frontend/src/components/payment/providerConfig.ts
+	// (PROVIDER_CONFIG_FIELDS, fields with sensitive: true).
+	//
+	// Key matching is case-insensitive. Non-listed keys (e.g. appId, notifyUrl,
+	// stripe publishableKey) are returned in plaintext by the admin GET API.
+	ConfigProviderSensitiveConfigFields = map[string]map[string]struct{}{
+		TypeEasyPay:   {"pkey": {}},
+		TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}},
+		TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}},
+		TypeStripe:    {"secretkey": {}, "webhooksecret": {}},
+		TypeAirwallex: {"apikey": {}, "webhooksecret": {}},
+	}
+
+	// ConfigProviderPendingOrderProtectedConfigFields lists config keys that cannot be
+	// changed while the instance has in-progress orders. This includes secrets plus
+	// all provider identity fields that are snapshotted into orders or used by
+	// webhook/refund verification.
+	ConfigProviderPendingOrderProtectedConfigFields = map[string]map[string]struct{}{
+		TypeEasyPay:   {"pkey": {}, "pid": {}},
+		TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}, "appid": {}},
+		TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}, "appid": {}, "mpappid": {}, "mchid": {}, "publickeyid": {}, "certserial": {}},
+		TypeStripe:    {"secretkey": {}, "webhooksecret": {}, "currency": {}},
+		TypeAirwallex: {"clientid": {}, "apikey": {}, "webhooksecret": {}, "apibase": {}, "accountid": {}, "currency": {}},
+	}
+
+	ConfigValidProviderKeys = map[string]bool{
+		TypeEasyPay: true, TypeAlipay: true, TypeWxpay: true, TypeStripe: true, TypeAirwallex: true,
+	}
+
+	ConfigEasyPayCustomMethodCodePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+)
 
 // ProviderInstanceResponse is the API response for a provider instance.
 type ProviderInstanceResponse struct {
@@ -40,6 +62,26 @@ type ProviderInstanceResponse struct {
 	PaymentMode     string            `json:"payment_mode"`
 }
 
+type ConfigEasyPayCustomMethodConfig struct {
+	ID                      string                 `json:"id,omitempty"`
+	DisplayNameLocalization *locale.Update[string] `json:"displayNameLocalization,omitempty"`
+	Type                    string                 `json:"type"`
+	UpstreamType            string                 `json:"upstreamType"`
+	DisplayName             string                 `json:"displayName"`
+}
+
+// ConfigValidateProviderConfig runs the provider's constructor to surface config-level
+// errors at save time (e.g. wxpay missing certSerial), instead of only failing
+// when an order is created. Returns the structured ApplicationError from the
+// constructor so the frontend i18n layer can localize it.
+//
+// Only validates enabled instances — a disabled instance may be a half-filled
+// draft the admin will complete later.
+func (s *ConfigService) ConfigValidateProviderConfig(providerKey string, config map[string]string) error {
+	_, err := s.runtime.CreateProvider(providerKey, "_validate_", config)
+	return err
+}
+
 // ListProviderInstancesWithConfig returns provider instances with decrypted config.
 func (s *ConfigService) ListProviderInstancesWithConfig(ctx context.Context) ([]ProviderInstanceResponse, error) {
 	instances, err := s.store.ListInstances(ctx, InstanceFilter{SortByOrder: true})
@@ -49,7 +91,7 @@ func (s *ConfigService) ListProviderInstancesWithConfig(ctx context.Context) ([]
 	result := make([]ProviderInstanceResponse, 0, len(instances))
 	for _, inst := range instances {
 		resp := ProviderInstanceResponse{
-			ID: int64(inst.ID), ProviderKey: inst.ProviderKey, Name: inst.Name,
+			ID: inst.ID, ProviderKey: inst.ProviderKey, Name: inst.Name,
 			SupportedTypes: ConfigSplitTypes(inst.SupportedTypes), Limits: inst.Limits,
 			Enabled: inst.Enabled, RefundEnabled: inst.RefundEnabled, AllowUserRefund: inst.AllowUserRefund,
 			SortOrder: inst.SortOrder, PaymentMode: inst.PaymentMode,
@@ -74,33 +116,6 @@ func (s *ConfigService) ConfigDecryptAndMaskConfig(providerKey, stored string) m
 		masked[k] = v
 	}
 	return masked
-}
-
-// ConfigProviderSensitiveConfigFields is the authoritative list of config keys that
-// are treated as secrets per provider. Must stay in sync with the frontend
-// definition at frontend/src/components/payment/providerConfig.ts
-// (PROVIDER_CONFIG_FIELDS, fields with sensitive: true).
-//
-// Key matching is case-insensitive. Non-listed keys (e.g. appId, notifyUrl,
-// stripe publishableKey) are returned in plaintext by the admin GET API.
-var ConfigProviderSensitiveConfigFields = map[string]map[string]struct{}{
-	TypeEasyPay:   {"pkey": {}},
-	TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}},
-	TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}},
-	TypeStripe:    {"secretkey": {}, "webhooksecret": {}},
-	TypeAirwallex: {"apikey": {}, "webhooksecret": {}},
-}
-
-// ConfigProviderPendingOrderProtectedConfigFields lists config keys that cannot be
-// changed while the instance has in-progress orders. This includes secrets plus
-// all provider identity fields that are snapshotted into orders or used by
-// webhook/refund verification.
-var ConfigProviderPendingOrderProtectedConfigFields = map[string]map[string]struct{}{
-	TypeEasyPay:   {"pkey": {}, "pid": {}},
-	TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}, "appid": {}},
-	TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}, "appid": {}, "mpappid": {}, "mchid": {}, "publickeyid": {}, "certserial": {}},
-	TypeStripe:    {"secretkey": {}, "webhooksecret": {}, "currency": {}},
-	TypeAirwallex: {"clientid": {}, "apikey": {}, "webhooksecret": {}, "apibase": {}, "accountid": {}, "currency": {}},
 }
 
 func ConfigIsSensitiveProviderConfigField(providerKey, fieldName string) bool {
@@ -136,10 +151,6 @@ func ConfigProviderConfigFieldValue(config map[string]string, fieldName string) 
 
 func (s *ConfigService) ConfigCountPendingOrders(ctx context.Context, providerInstanceID int64) (int, error) {
 	return s.store.CountInProgressByProvider(ctx, providerInstanceID)
-}
-
-var ConfigValidProviderKeys = map[string]bool{
-	TypeEasyPay: true, TypeAlipay: true, TypeWxpay: true, TypeStripe: true, TypeAirwallex: true,
 }
 
 func (s *ConfigService) CreateProviderInstance(ctx context.Context, req CreateProviderInstanceRequest) (*ProviderInstance, error) {
@@ -231,16 +242,6 @@ func ConfigValidateProviderRequest(providerKey, name, supportedTypes string) err
 	}
 	// supported_types can be empty (provider accepts no payment types until configured)
 	return nil
-}
-
-var ConfigEasyPayCustomMethodCodePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
-
-type ConfigEasyPayCustomMethodConfig struct {
-	ID                      string                 `json:"id,omitempty"`
-	DisplayNameLocalization *locale.Update[string] `json:"displayNameLocalization,omitempty"`
-	Type                    string                 `json:"type"`
-	UpstreamType            string                 `json:"upstreamType"`
-	DisplayName             string                 `json:"displayName"`
 }
 
 func ConfigValidateEasyPayCustomMethods(config map[string]string, supportedTypes string) error {
@@ -471,7 +472,7 @@ func (s *ConfigService) GetUserRefundEligibleInstanceIDs(ctx context.Context) ([
 	}
 	ids := make([]string, 0, len(instances))
 	for _, inst := range instances {
-		ids = append(ids, strconv.FormatInt(int64(inst.ID), 10))
+		ids = append(ids, strconv.FormatInt(inst.ID, 10))
 	}
 	return ids, nil
 }

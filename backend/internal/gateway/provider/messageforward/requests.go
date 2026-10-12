@@ -7,13 +7,14 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/vertex"
-	"github.com/tidwall/gjson"
 )
 
 // buildRequest 根据已选提供商类型调用请求构造器。
@@ -131,6 +132,7 @@ func (r *Runtime) requestOptions(ctx context.Context, output HTTPBoundary, state
 		return provideradapter.HeaderOverrideValue(gatewayadapter.ExecutionProtocolRecord(target), "anthropic-beta")
 	}
 	options.CheckFastBeta = func(ctx context.Context) error {
+		//nolint:revive // checkBetaTokens 返回具体指针类型，直接 return 会把 nil 指针包成非 nil 的 error。
 		if err := r.checkBetaTokens(ctx, []string{anthropic.BetaFastMode}, target, model); err != nil {
 			return err
 		}

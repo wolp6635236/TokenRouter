@@ -3,23 +3,40 @@ package httpapi
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	coderws "github.com/coder/websocket"
 
 	gatewaylive "github.com/TokenFlux/TokenRouter/internal/gateway/live"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-
-	coderws "github.com/coder/websocket"
 )
 
 // livePorts 为 Live 请求流程提供依赖和展示值。
 type livePorts struct{ service *OpenAILiveExecutor }
+
+// liveTarget 管理提供商凭据和平台拨号，向 Live 流程提供帧接口。
+type liveTarget struct {
+	service  *OpenAILiveExecutor
+	record   *session.LiveCallRecord
+	provider *gatewayprovider.ExecutionProvider
+}
+
+// liveUpstreamFrames 转换帧枚举和正常关闭错误，连接由 Live 流程关闭。
+type liveUpstreamFrames struct{ openai.LiveFrameConn }
+
+// liveDownstreamFrames 不接管 HTTP 层的关闭帧和升级责任。
+type liveDownstreamFrames struct{ conn *coderws.Conn }
+
+// liveModelResolver 适配当前提供商能力与路由结果，不实施报文改写。
+type liveModelResolver struct {
+	service  *OpenAILiveExecutor
+	provider *gatewayprovider.ExecutionProvider
+}
 
 func (p livePorts) Store() (session.LiveCallStore, error) { return p.service.liveStore() }
 func (p livePorts) Leases() (scheduler.LiveConcurrencyCache, error) {
@@ -46,7 +63,7 @@ func (p livePorts) RecordZeroUsage(ctx context.Context, record *session.LiveCall
 	upstreamEndpoint := "/backend-api/codex/realtime/calls"
 	userAgent := record.UserAgent
 	ipAddress := record.IPAddress
-	billingType := int8(usage.BillingTypeBalance)
+	billingType := usage.BillingTypeBalance
 	if record.SubscriptionID > 0 {
 		billingType = usage.BillingTypeSubscription
 	}
@@ -63,7 +80,8 @@ func (p livePorts) RecordZeroUsage(ctx context.Context, record *session.LiveCall
 		TeamID:            liveOptionalID(record.TeamID),
 		APIKeyID:          record.APIKeyID,
 		ProviderID:        record.ProviderID,
-		RequestID:         record.CallHash,
+		RequestID:         telemetry.StableRequestID("live/" + record.CallHash),
+		BillingKey:        record.CallHash,
 		Model:             record.Model,
 		RequestedModel:    requeststate.FirstNonEmpty(record.RequestedModel, record.Model),
 		UpstreamModel:     liveOptionalString(record.UpstreamModel),
@@ -82,13 +100,6 @@ func (p livePorts) RecordZeroUsage(ctx context.Context, record *session.LiveCall
 	}, "service.openai_live")
 }
 
-// liveTarget 管理提供商凭据和平台拨号，向 Live 流程提供帧接口。
-type liveTarget struct {
-	service  *OpenAILiveExecutor
-	record   *session.LiveCallRecord
-	provider *gatewayprovider.ExecutionProvider
-}
-
 func (t liveTarget) Dial(ctx context.Context) (gatewaylive.FrameConn, error) {
 	conn, err := t.service.dialLiveSidebandForProvider(ctx, t.record, t.provider)
 	if err != nil {
@@ -101,9 +112,6 @@ func (t liveTarget) Rewrite(ctx context.Context, payload []byte) ([]byte, string
 	return t.service.rewriteLiveSidebandClientPayload(ctx, t.record, t.provider, payload)
 }
 
-// liveUpstreamFrames 转换帧枚举和正常关闭错误，连接由 Live 流程关闭。
-type liveUpstreamFrames struct{ openai.LiveFrameConn }
-
 func (c liveUpstreamFrames) ReadFrame(ctx context.Context) (int, []byte, error) {
 	typ, body, err := c.LiveFrameConn.ReadFrame(ctx)
 	return int(typ), body, liveSidebandReadError(err)
@@ -113,9 +121,6 @@ func (c liveUpstreamFrames) WriteFrame(ctx context.Context, typ int, body []byte
 	return c.LiveFrameConn.WriteFrame(ctx, coderws.MessageType(typ), body)
 }
 func (c liveUpstreamFrames) SetReadLimit(limit int64) {}
-
-// liveDownstreamFrames 不接管 HTTP 层的关闭帧和升级责任。
-type liveDownstreamFrames struct{ conn *coderws.Conn }
 
 func (c liveDownstreamFrames) ReadFrame(ctx context.Context) (int, []byte, error) {
 	typ, body, err := c.conn.Read(ctx)
@@ -127,12 +132,6 @@ func (c liveDownstreamFrames) WriteFrame(ctx context.Context, typ int, body []by
 }
 func (c liveDownstreamFrames) SetReadLimit(limit int64) { c.conn.SetReadLimit(limit) }
 func (c liveDownstreamFrames) Close() error             { return c.conn.CloseNow() }
-
-// liveModelResolver 适配当前提供商能力与路由结果，不实施报文改写。
-type liveModelResolver struct {
-	service  *OpenAILiveExecutor
-	provider *gatewayprovider.ExecutionProvider
-}
 
 func (r liveModelResolver) ResolveModel(ctx context.Context, groupID *int64, model string) (string, string, error) {
 	routing, err := r.service.Selection.ResolveOpenAIWSRoutingModelForProvider(ctx, groupID, r.provider, model, providercore.OpenAIEndpointCapabilityLive)

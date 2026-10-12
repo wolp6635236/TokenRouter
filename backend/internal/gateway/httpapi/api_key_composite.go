@@ -11,18 +11,26 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const CompositeKeyNoGroupContextKey = "composite_key_no_group"
+
+// CompositeModelResponseWriter 将常见协议响应中的内部模型恢复为客户端复合模型。
+type CompositeModelResponseWriter struct {
+	gin.ResponseWriter
+	clientModel string
+	actualModel string
+}
 
 // ResolveCompositeAPIKeyRequest 根据客户端模型选择复合 Key 分组，并改写为去除分组前缀的模型。
 // @project-doc docs/domains/composite_api_keys.md#group_selection
@@ -90,13 +98,6 @@ func SetCompositeModelContext(c *gin.Context, clientModel, actualModel string) {
 		ctx := context.WithValue(c.Request.Context(), telemetry.ClientModel, clientModel)
 		c.Request = c.Request.WithContext(ctx)
 	}
-}
-
-// CompositeModelResponseWriter 将常见协议响应中的内部模型恢复为客户端复合模型。
-type CompositeModelResponseWriter struct {
-	gin.ResponseWriter
-	clientModel string
-	actualModel string
 }
 
 func (w *CompositeModelResponseWriter) Write(data []byte) (int, error) {
@@ -409,6 +410,11 @@ func AbortCompositeKeyError(c *gin.Context, err error) {
 	status := httpx.ErrorCode(err)
 	code := infraerrors.Reason(err)
 	message := infraerrors.Message(err)
+	if IsSystemOneEndpoint(c.Request.URL.Path) {
+		WriteSystemOneError(c, status, "invalid_request_error", code, "model", message)
+		c.Abort()
+		return
+	}
 	if IsOpenAICompositeEndpoint(c.Request.URL.Path) {
 		c.JSON(status, gin.H{"error": gin.H{
 			"message": message, "type": "invalid_request_error", "param": "model", "code": code,

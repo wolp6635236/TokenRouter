@@ -31,7 +31,7 @@ func CleanNativeThoughtSignatures(body []byte, placeholder string) []byte {
 	return result
 }
 
-// replaceThoughtSignaturesRecursive 递归遍历数据结构，将所有 thoughtSignature 字段替换为 dummy 签名
+// replaceThoughtSignaturesRecursive 递归遍历数据结构，将所有 thoughtSignature 字段替换为 dummy 签名。
 func replaceThoughtSignaturesRecursive(data any, placeholder string) any {
 	switch v := data.(type) {
 	case map[string]any:

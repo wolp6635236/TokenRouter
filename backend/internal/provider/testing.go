@@ -13,7 +13,28 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestEvent represents a SSE event for provider testing
+const (
+	TestRouteClaude TestRoute = iota
+	TestRouteCNAdaptive
+	TestRouteCNResponses
+	TestRouteCNChat
+	TestRouteCNAnthropic
+	TestRouteOpenAI
+	TestRouteGemini
+	TestRouteGrok
+	TestRouteAntigravity
+	TestRouteQoder
+	TestRouteJev
+
+	ProviderTestTypeDecision      = "decision"
+	ProviderTestTypeText          = "text"
+	ProviderTestTypeImage         = "image"
+	ProviderTestModeDefault       = "default"
+	ProviderTestModeCompact       = "compact"
+	ProviderTestModeLegacyCompact = "legacy_compact"
+)
+
+// TestEvent represents a SSE event for provider testing.
 type TestEvent struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
@@ -27,9 +48,75 @@ type TestEvent struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// TestRequest 表达测试意图；Type 为 nil 时保留历史模型名推断，客户端元数据不包含凭据。
+type TestRequest struct {
+	// SystemOne 保存本次决策测试的 state 和 questions。
+	SystemOne json.RawMessage
+
+	ProviderID            int64
+	Model, Prompt, Mode   string
+	Type                  *string
+	Protocol              string
+	UserAgent, Originator string
+	Automatic             bool
+}
+type TestRoute uint8
+
+type PreparedTestRequest struct {
+	TestRequest
+	TestType     string
+	ExplicitType bool
+	Route        TestRoute
+}
+type TestTargetInfo struct {
+	ProviderSnapshot
+	APIProtocol string
+}
+
+// TestTarget 提供单次测试执行和脱敏的提供商快照。
+type TestTarget interface {
+	Information() TestTargetInfo
+	Execute(context.Context, PreparedTestRequest, TestEventSink) error
+}
+type TestLoader interface {
+	LoadTestTarget(context.Context, TestRequest) (TestTarget, error)
+}
+
+// Begin 的 commit 区分仅准备元数据与立即提交；HTTP Header/Flush 的实现由 Adapter 拥有。
+type TestEventSink interface {
+	Begin(context.Context, bool) error
+	Emit(context.Context, TestEvent) error
+}
+type TestOptions struct {
+	Now        func() time.Time
+	Error      func(string)
+	WriteError func(error)
+}
+type TestService struct {
+	loader  TestLoader
+	options TestOptions
+}
+
+// 首次输出失败立即取消执行上下文，后续写出复用相同错误。
+type testGuardedSink struct {
+	mu     sync.Mutex
+	next   TestEventSink
+	cancel context.CancelFunc
+	err    error
+}
+
+// 后台直接收集事件，通过 JSON 编码处理非法 UTF-8，编码失败的 Data 被丢弃。
+type testResultSink struct {
+	mu    sync.Mutex
+	texts []string
+	err   string
+}
+
 // NormalizeProviderTestType 统一管理端传入的测试类型，空值由调用方按兼容方式处理。
 func NormalizeProviderTestType(testType string) string {
 	switch strings.ToLower(strings.TrimSpace(testType)) {
+	case ProviderTestTypeDecision:
+		return ProviderTestTypeDecision
 	case ProviderTestTypeImage:
 		return ProviderTestTypeImage
 	case ProviderTestTypeText:
@@ -40,7 +127,7 @@ func NormalizeProviderTestType(testType string) string {
 }
 
 // ProviderTestTypeFromArgs 返回类型以及是否由调用方明确指定。
-// 省略类型时按模型名判断，管理端请求传入 text 或 image。
+// 省略类型时按模型名判断，管理端请求传入 text、image 或 decision。
 func ProviderTestTypeFromArgs(testTypes ...string) (string, bool) {
 	if len(testTypes) == 0 || strings.TrimSpace(testTypes[0]) == "" {
 		return ProviderTestTypeText, false
@@ -84,73 +171,6 @@ func NormalizeProviderTestMode(mode string) string {
 	}
 }
 
-const (
-	ProviderTestTypeText          = "text"
-	ProviderTestTypeImage         = "image"
-	ProviderTestModeDefault       = "default"
-	ProviderTestModeCompact       = "compact"
-	ProviderTestModeLegacyCompact = "legacy_compact"
-)
-
-// TestRequest 表达测试意图；Type 为 nil 时保留历史模型名推断，客户端元数据不包含凭据。
-type TestRequest struct {
-	ProviderID            int64
-	Model, Prompt, Mode   string
-	Type                  *string
-	Protocol              string
-	UserAgent, Originator string
-	Automatic             bool
-}
-type TestRoute uint8
-
-const (
-	TestRouteClaude TestRoute = iota
-	TestRouteCNAdaptive
-	TestRouteCNResponses
-	TestRouteCNChat
-	TestRouteCNAnthropic
-	TestRouteOpenAI
-	TestRouteGemini
-	TestRouteGrok
-	TestRouteAntigravity
-	TestRouteQoder
-)
-
-type PreparedTestRequest struct {
-	TestRequest
-	TestType     string
-	ExplicitType bool
-	Route        TestRoute
-}
-type TestTargetInfo struct {
-	ProviderSnapshot
-	APIProtocol string
-}
-
-// TestTarget 提供单次测试执行和脱敏的提供商快照。
-type TestTarget interface {
-	Information() TestTargetInfo
-	Execute(context.Context, PreparedTestRequest, TestEventSink) error
-}
-type TestLoader interface {
-	LoadTestTarget(context.Context, TestRequest) (TestTarget, error)
-}
-
-// Begin 的 commit 区分仅准备元数据与立即提交；HTTP Header/Flush 的实现由 Adapter 拥有。
-type TestEventSink interface {
-	Begin(context.Context, bool) error
-	Emit(context.Context, TestEvent) error
-}
-type TestOptions struct {
-	Now        func() time.Time
-	Error      func(string)
-	WriteError func(error)
-}
-type TestService struct {
-	loader  TestLoader
-	options TestOptions
-}
-
 func NewTestService(loader TestLoader, options TestOptions) *TestService {
 	return &TestService{loader: loader, options: options}
 }
@@ -183,6 +203,9 @@ func (s *TestService) execute(ctx context.Context, request TestRequest, sink Tes
 		return s.fail(ctx, sink, "Provider not found")
 	}
 	info := target.Information()
+	if (kind == ProviderTestTypeDecision || len(request.SystemOne) > 0) && info.Platform != PlatformJev {
+		return s.fail(ctx, sink, "Decision tests require a Jev provider")
+	}
 	if explicit && kind == ProviderTestTypeImage && info.Platform != PlatformOpenAI && info.Platform != PlatformGemini && info.Platform != PlatformGrok {
 		return s.fail(ctx, sink, fmt.Sprintf("Image tests are not supported for platform %s", info.Platform))
 	}
@@ -211,6 +234,8 @@ func (s *TestService) execute(ctx context.Context, request TestRequest, sink Tes
 		prepared.Route = TestRouteGrok
 	case PlatformAntigravity:
 		prepared.Route = TestRouteAntigravity
+	case PlatformJev:
+		prepared.Route = TestRouteJev
 	case PlatformQoder:
 		prepared.Route = TestRouteQoder
 	default:
@@ -222,6 +247,8 @@ func (s *TestService) execute(ctx context.Context, request TestRequest, sink Tes
 // TestProtocolID 把管理端传入的测试协议转换为原生协议 ID，未知值返回空字符串。
 func TestProtocolID(protocol string) capability.ProtocolID {
 	switch protocol {
+	case APIProtocolSystemOne:
+		return capability.ProtocolSystemOne
 	case APIProtocolAnthropic:
 		return capability.ProtocolAnthropicMessages
 	case APIProtocolResponses:
@@ -233,14 +260,16 @@ func TestProtocolID(protocol string) capability.ProtocolID {
 	}
 }
 
-// testProtocolAllowed 判断本次文字测试能否直连所选协议。
+// testProtocolAllowed 判断本次测试能否直连所选协议。
 // OpenAI API Key 可在 Responses 与 Chat 之间任选，OAuth 只有 Responses；
 // 国产平台可测试已启用的协议，其他平台使用各自固定的测试端点。
 func testProtocolAllowed(info TestTargetInfo, protocol string) bool {
 	switch info.Platform {
+	case PlatformJev:
+		return protocol == APIProtocolSystemOne && slices.Contains(info.EnabledProtocols, capability.ProtocolSystemOne)
 	case PlatformOpenAI:
 		if info.Type == ProviderTypeAPIKey {
-			return protocol != APIProtocolAnthropic
+			return protocol == APIProtocolResponses || protocol == APIProtocolChatCompletions
 		}
 		return protocol == APIProtocolResponses
 	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
@@ -258,14 +287,6 @@ func (s *TestService) fail(ctx context.Context, sink TestEventSink, message stri
 		s.options.WriteError(err)
 	}
 	return errors.New(message)
-}
-
-// 首次输出失败立即取消执行上下文，后续写出复用相同错误。
-type testGuardedSink struct {
-	mu     sync.Mutex
-	next   TestEventSink
-	cancel context.CancelFunc
-	err    error
 }
 
 func (s *testGuardedSink) apply(write func() error) error {
@@ -307,13 +328,6 @@ func (s *TestService) RunTestBackgroundWithPromptAndUserAgent(ctx context.Contex
 		}
 	}
 	return &ScheduledTestResult{Status: status, ResponseText: text, ErrorMessage: message, LatencyMs: finished.Sub(started).Milliseconds(), StartedAt: started, FinishedAt: finished}, nil
-}
-
-// 后台直接收集事件，通过 JSON 编码处理非法 UTF-8，编码失败的 Data 被丢弃。
-type testResultSink struct {
-	mu    sync.Mutex
-	texts []string
-	err   string
 }
 
 func (*testResultSink) Begin(context.Context, bool) error { return nil }

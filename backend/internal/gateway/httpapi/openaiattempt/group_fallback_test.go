@@ -6,6 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
@@ -13,9 +17,6 @@ import (
 	openaiwire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 // TestGroupFallbackRebuildsPlanAndKeepsForcedPlatform 验证回退重建目标分组的模型和粘性计划，原 Key 与映射保持原样。

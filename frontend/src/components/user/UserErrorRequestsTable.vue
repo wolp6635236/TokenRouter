@@ -16,6 +16,9 @@
         @sort="onSort"
         @rowClick="(row) => openDetail(row.id)"
       >
+        <template #cell-request_id="{ row }">
+          <RequestIdLink :value="row.request_id" />
+        </template>
         <template #cell-model="{ row }">
           <span v-if="row.model" class="text-sm font-medium text-gray-900 dark:text-white">{{ row.model }}</span>
           <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
@@ -121,6 +124,7 @@
 </template>
 
 <script setup lang="ts">
+import RequestIdLink from '@/components/common/RequestIdLink.vue'
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import DataTable from '@/components/common/DataTable.vue'
@@ -164,7 +168,7 @@ function onSort(key: string, order: 'asc' | 'desc') {
 const { t } = useI18n()
 
 // 列序对齐用户端用量明细:Key → 模型 → 端点 → IP → 分组 → 类型 → 平台 → 分类
-// → 结果(状态→消息)→ 时间 → UA(用量明细 UA 同在时间之后的尾部)
+// → 结果(状态→消息)→ 时间 → 请求 ID → UA(用量明细的请求 ID 和 UA 同在时间之后的尾部)
 const allColumns = computed<Column[]>(() => [
   { key: 'key_name', label: t('usage.errors.keyName') },
   { key: 'model', label: t('usage.errors.model'), sortable: true },
@@ -177,6 +181,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'status', label: t('usage.errors.status'), sortable: true },
   { key: 'message', label: t('usage.errors.message') },
   { key: 'created_at', label: t('usage.errors.time'), sortable: true },
+  { key: 'request_id', label: t('requests.id') },
   { key: 'user_agent', label: t('usage.userAgent') },
 ])
 

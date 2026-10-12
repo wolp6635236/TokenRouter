@@ -3,13 +3,14 @@
 package app
 
 import (
+	"github.com/google/wire"
+
 	gatewaytransport "github.com/TokenFlux/TokenRouter/internal/gateway/provider/transport"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/google/wire"
 )
 
 // upstreamClientProviders 绑定平台客户端与唯一传输适配器。

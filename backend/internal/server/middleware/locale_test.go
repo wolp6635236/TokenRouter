@@ -5,9 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 // TestLocaleSelection 检查 HTML Cookie、API 请求权重与管理员查询范围。

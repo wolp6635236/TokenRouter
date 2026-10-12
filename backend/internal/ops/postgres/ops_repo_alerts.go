@@ -11,6 +11,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
+type opsAlertEventRow interface {
+	Scan(dest ...any) error
+}
+
 func (r *Store) ListAlertRules(ctx context.Context) ([]*ops.OpsAlertRule, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("nil ops repository")
@@ -622,10 +626,6 @@ func (r *Store) UpdateAlertEventEmailSent(ctx context.Context, eventID int64, em
 
 	_, err := r.db.ExecContext(ctx, "UPDATE ops_alert_events SET email_sent = $2 WHERE id = $1", eventID, emailSent)
 	return err
-}
-
-type opsAlertEventRow interface {
-	Scan(dest ...any) error
 }
 
 func (r *Store) CreateAlertSilence(ctx context.Context, input *ops.OpsAlertSilence) (*ops.OpsAlertSilence, error) {

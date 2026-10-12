@@ -8,16 +8,13 @@ import (
 	"strconv"
 	"time"
 
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-
-	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/server/runtimeconfig"
-
-	"github.com/gin-gonic/gin"
 )
 
 // panelRateLimitWindow 面板限流固定窗口时长（所有档位均按每分钟计数）。

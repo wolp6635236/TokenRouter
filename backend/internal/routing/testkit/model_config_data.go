@@ -11,26 +11,26 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// ModelKey 模型配置测试输入复合键（显式包含 Platform 防止跨平台同名模型冲突）
+// ModelKey 模型配置测试输入复合键（显式包含 Platform 防止跨平台同名模型冲突）。
 type ModelKey struct {
 	GroupID  int64
 	Platform string // 平台标识
 	Model    string // lowercase
 }
 
-// GroupPlatform 通配符定价输入键
+// GroupPlatform 通配符定价输入键。
 type GroupPlatform struct {
 	GroupID  int64
 	Platform string
 }
 
-// PricePattern 通配符定价条目
+// PricePattern 通配符定价条目。
 type PricePattern struct {
 	Prefix  string
 	Pricing *routing.ModelPricingEntry
 }
 
-// ModelPattern 通配符映射条目
+// ModelPattern 通配符映射条目。
 type ModelPattern struct {
 	Prefix string
 	Target string
@@ -54,7 +54,7 @@ type ModelConfigData struct {
 	LoadedAt time.Time
 }
 
-// NewModelConfigData 创建空的组合配置输入（所有 map 已初始化）
+// NewModelConfigData 创建空的组合配置输入（所有 map 已初始化）。
 func NewModelConfigData() *ModelConfigData {
 	return &ModelConfigData{
 		Prices:        make(map[ModelKey]*routing.ModelPricingEntry),

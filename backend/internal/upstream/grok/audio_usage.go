@@ -5,8 +5,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 // AwaitGrokRealtimeAudioObserved 在任一中继方向结束时返回本次会话是否真正传输过音频。

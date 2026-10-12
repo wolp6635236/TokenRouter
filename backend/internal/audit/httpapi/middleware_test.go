@@ -11,17 +11,38 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/audit"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/audit"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 type partialErrorBody struct {
 	data  []byte
 	first bool
+}
+
+type auditCaptureRepository struct {
+	mu   sync.Mutex
+	logs []*audit.AuditLog
+}
+
+// clearHTTPRepository 只实现清空端口，避免 HTTP 测试把分步清空误当作闭合操作。
+type clearHTTPRepository struct {
+	audit.AuditLogRepository
+	trace *audit.AuditLog
+	err   error
+	order *[]string
+}
+
+// clearTOTPVerifier 记录此次操作是否重新验证 TOTP；不复用其他 step-up 凭据。
+type clearTOTPVerifier struct {
+	err   error
+	user  int64
+	code  string
+	order *[]string
 }
 
 func (b *partialErrorBody) Read(p []byte) (int, error) {
@@ -42,11 +63,6 @@ func (b *partialErrorBody) Read(p []byte) (int, error) {
 }
 
 func (b *partialErrorBody) Close() error { return nil }
-
-type auditCaptureRepository struct {
-	mu   sync.Mutex
-	logs []*audit.AuditLog
-}
 
 func (r *auditCaptureRepository) BatchInsert(_ context.Context, logs []*audit.AuditLog) (int64, error) {
 	r.mu.Lock()
@@ -139,7 +155,7 @@ func TestAuditMiddlewareRestoresPartialBodyAfterReadError(t *testing.T) {
 	}
 }
 
-// TestOllamaCloudUsageSessionRouteOmitsAuditBody 验证Ollama 会话保存的请求体整体就是浏览器 Cookie 明文，键级脱敏清单曾漏掉裸键
+// TestOllamaCloudUsageSessionRouteOmitsAuditBody 验证 Ollama 会话保存的请求体整体就是浏览器 Cookie 明文，键级脱敏清单曾漏掉裸键
 // "session"，必须走整体不入库路径，防止会话凭证长期留存在 audit_logs。
 func TestOllamaCloudUsageSessionRouteOmitsAuditBody(t *testing.T) {
 	require.Contains(t, auditBodyOmittedRoutes, "PUT /api/v1/admin/providers/:id/ollama-cloud-usage/session")
@@ -193,26 +209,10 @@ func (r *auditCaptureRepository) ClearWithTrace(_ context.Context, trace *audit.
 	return int64(n), nil
 }
 
-// clearHTTPRepository 只实现清空端口，避免 HTTP 测试把分步清空误当作闭合操作。
-type clearHTTPRepository struct {
-	audit.AuditLogRepository
-	trace *audit.AuditLog
-	err   error
-	order *[]string
-}
-
 func (r *clearHTTPRepository) ClearWithTrace(_ context.Context, trace *audit.AuditLog) (int64, error) {
 	*r.order = append(*r.order, "clear-with-trace")
 	r.trace = trace
 	return 7, r.err
-}
-
-// clearTOTPVerifier 记录此次操作是否重新验证 TOTP；不复用其他 step-up 凭据。
-type clearTOTPVerifier struct {
-	err   error
-	user  int64
-	code  string
-	order *[]string
 }
 
 func (v *clearTOTPVerifier) VerifyCode(_ context.Context, user int64, code string) error {

@@ -276,7 +276,6 @@
           <input
             v-model="generateForm.code"
             type="text"
-            maxlength="32"
             class="input"
             :placeholder="t('admin.redeem.customCodePlaceholder')"
           />
@@ -577,75 +576,48 @@
     </BaseDialog>
 
     <!-- 生成结果弹窗 -->
-    <Teleport to="body">
-      <div v-if="showResultDialog" class="fixed inset-0 z-modal flex items-center justify-center p-4">
-        <div class="fixed inset-0 bg-[var(--overlay-bg)]" @click="closeResultDialog"></div>
-        <div class="relative z-10 w-full max-w-lg rounded-surface bg-white shadow-xl dark:bg-dark-800 sm:rounded-dialog">
-          <!-- 头部 -->
-          <div
-            class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-dark-600"
+    <BaseDialog
+      :show="showResultDialog"
+      :title="t('admin.redeem.generatedSuccessfully')"
+      :subtitle="t('admin.redeem.codesCreated', { count: generatedCodes.length })"
+      @close="closeResultDialog"
+    >
+      <template #header-icon>
+        <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
+          <Icon
+            name="check"
+            size="md"
+            :animate-on-hover="false"
+            class="h-5 w-5 text-green-600 dark:text-green-400"
+          />
+        </span>
+      </template>
+      <textarea
+        readonly
+        :value="generatedCodesText"
+        :style="{ height: textareaHeight }"
+        class="input resize-none p-3 font-mono"
+      ></textarea>
+      <template #footer>
+        <div class="flex justify-end gap-3">
+          <button
+            @click="copyGeneratedCodes"
+            :class="[
+              'btn flex items-center gap-2 transition',
+              copiedAll ? 'btn-success' : 'btn-secondary'
+            ]"
           >
-            <div class="flex items-center gap-3">
-              <div
-                class="flex h-10 w-10 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30"
-              >
-                <Icon
-                  name="check"
-                  size="md"
-                  :animate-on-hover="false"
-                  class="h-5 w-5 text-green-600 dark:text-green-400"
-                />
-              </div>
-              <div>
-                <h2 class="text-base font-semibold text-gray-900 dark:text-white">
-                  {{ t('admin.redeem.generatedSuccessfully') }}
-                </h2>
-                <p class="text-sm text-gray-500 dark:text-gray-400">
-                  {{ t('admin.redeem.codesCreated', { count: generatedCodes.length }) }}
-                </p>
-              </div>
-            </div>
-            <button
-              @click="closeResultDialog"
-              class="rounded-control p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-dark-700 dark:hover:text-gray-300"
-            >
-              <Icon name="x" size="sm" :stroke-width="2" />
-            </button>
-          </div>
-          <!-- 内容 -->
-          <div class="p-5">
-            <div class="relative">
-              <textarea
-                readonly
-                :value="generatedCodesText"
-                :style="{ height: textareaHeight }"
-                class="w-full resize-none rounded-control border border-gray-200 bg-gray-50 p-3 font-mono text-sm text-gray-800 focus:outline-none dark:border-dark-600 dark:bg-dark-700 dark:text-gray-200"
-              ></textarea>
-            </div>
-          </div>
-          <!-- 底部 -->
-          <div
-            class="flex justify-end gap-2 rounded-b-surface border-t border-gray-200 bg-gray-50 px-5 py-4 dark:border-dark-600 dark:bg-dark-700/50"
-          >
-            <button
-              @click="copyGeneratedCodes"
-              :class="[
-                'btn flex items-center gap-2 transition',
-                copiedAll ? 'btn-success' : 'btn-secondary'
-              ]"
-            >
-              <Icon v-if="!copiedAll" name="copy" size="sm" :stroke-width="2" />
-              <Icon name="check" size="sm" :animate-on-hover="false" v-else class="h-4 w-4" />
-              {{ copiedAll ? t('admin.redeem.copied') : t('admin.redeem.copyAll') }}
-            </button>
-            <button @click="downloadGeneratedCodes" class="btn btn-primary flex items-center gap-2">
-              <Icon name="download" size="sm" :stroke-width="2" />
-              {{ t('admin.redeem.download') }}
-            </button>
-          </div>
+            <Icon v-if="!copiedAll" name="copy" size="sm" :stroke-width="2" />
+            <Icon name="check" size="sm" :animate-on-hover="false" v-else class="h-4 w-4" />
+            {{ copiedAll ? t('admin.redeem.copied') : t('admin.redeem.copyAll') }}
+          </button>
+          <button @click="downloadGeneratedCodes" class="btn btn-primary flex items-center gap-2">
+            <Icon name="download" size="sm" :stroke-width="2" />
+            {{ t('admin.redeem.download') }}
+          </button>
         </div>
-      </div>
-    </Teleport>
+      </template>
+    </BaseDialog>
   </AppLayout>
 </template>
 
@@ -1087,6 +1059,11 @@ const handleGenerateCodes = async () => {
   }
 
   const customCode = generateForm.code.trim()
+  // 按 Unicode 码点计数，与后端的 rune 长度校验一致。
+  if ([...customCode].length > 32) {
+    appStore.showError(t('admin.redeem.customCodeTooLong'))
+    return
+  }
   const expiresAt = parseDateTimeLocalInput(generateForm.expires_at_str)
 
   generating.value = true

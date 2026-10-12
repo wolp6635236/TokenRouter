@@ -16,7 +16,7 @@
           <Toggle
             v-model="notifyEnabled"
             variant="flush"
-            off-class="bg-gray-200 dark:bg-gray-700"
+            off-tone="soft"
             @update:model-value="handleToggle"
           />
         </label>
@@ -63,7 +63,7 @@
                   <Toggle
                     :model-value="!entry.disabled"
                     size="sm"
-                    off-class="bg-gray-200 dark:bg-gray-600"
+                    off-tone="soft"
                     @update:model-value="handleEmailToggle(entry)"
                   />
                 </label>
@@ -77,7 +77,7 @@
                       v-model="verifyCode"
                       type="text"
                       maxlength="6"
-                      class="w-20 rounded-compact border border-gray-300 px-2 py-1 text-xs dark:border-dark-500 dark:bg-dark-700"
+                      class="input min-h-0 w-20 rounded-compact px-2 py-1 text-xs"
                       :placeholder="t('profile.balanceNotify.codePlaceholder')"
                     />
                     <button @click="verifySavedEmail(entry.email)" :disabled="!verifyCode || verifyCode.length !== 6 || verifyingSaved" class="text-xs text-primary-600 hover:text-primary-700">
@@ -124,7 +124,7 @@
                   v-model="pe.code"
                   type="text"
                   maxlength="6"
-                  class="w-20 rounded-compact border border-gray-300 px-2 py-1 text-xs dark:border-dark-500 dark:bg-dark-700"
+                  class="input min-h-0 w-20 rounded-compact px-2 py-1 text-xs"
                   :placeholder="t('profile.balanceNotify.codePlaceholder')"
                 />
                 <button @click="verifyPending(idx)" :disabled="!pe.code || pe.code.length !== 6 || pe.verifying" class="text-xs text-primary-600 hover:text-primary-700">

@@ -11,21 +11,35 @@ import (
 	"testing"
 	"time"
 
-	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/messageforward"
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/messageforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
+
+// 记录发往本地测试服务的签名请求。
+type bedrockRoutingTransport struct {
+	lastReq      *http.Request
+	lastBody     []byte
+	lastProxyURL string
+	requests     []*http.Request
+	bodies       [][]byte
+
+	resp      *http.Response
+	responses []*http.Response
+	err       error
+
+	lastTLSProfile *tlsfingerprint.Profile
+}
 
 // newBedrockRoutingTestProvider 使用虚构凭据构造可调度提供商，测试不会访问真实 AWS。
 func newBedrockRoutingTestProvider(id int64, region string, forceGlobal bool) gatewayprovider.ExecutionProvider {
@@ -144,21 +158,6 @@ func TestBedrockRegionRouting_InvalidRouteStopsBeforeUpstream(t *testing.T) {
 			require.True(t, provider.Record.Schedulable)
 		})
 	}
-}
-
-// 记录发往本地测试服务的签名请求。
-type bedrockRoutingTransport struct {
-	lastReq      *http.Request
-	lastBody     []byte
-	lastProxyURL string
-	requests     []*http.Request
-	bodies       [][]byte
-
-	resp      *http.Response
-	responses []*http.Response
-	err       error
-
-	lastTLSProfile *tlsfingerprint.Profile
 }
 
 func (u *bedrockRoutingTransport) Do(req *http.Request, proxyURL string, providerID int64, providerConcurrency int) (*http.Response, error) {

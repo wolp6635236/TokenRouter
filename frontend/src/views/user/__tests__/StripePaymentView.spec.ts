@@ -195,7 +195,7 @@ describe('StripePaymentView', () => {
     expect(paymentStore.pollOrderStatus).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('payment.result.processing')
     expect(wrapper.find('[data-loading-skeleton]').exists()).toBe(false)
-    expect(wrapper.find('.animate-spin').exists()).toBe(true)
+    expect(wrapper.find('.spinner').exists()).toBe(true)
 
     await vi.advanceTimersByTimeAsync(14999)
     expect(paymentStore.pollOrderStatus).toHaveBeenCalledTimes(1)

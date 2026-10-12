@@ -7,8 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 const BackendModeKey = "backend_mode_enabled"

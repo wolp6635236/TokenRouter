@@ -5,12 +5,18 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
+)
+
+const (
+	oauthBindAccessTokenCookieName = "oauth_bind_access_token"
+	oauthBindAccessTokenCookiePath = "/api/v1/auth/oauth"
+	oauthBindAccessTokenCookieTTL  = 10 * 60
 )
 
 // OAuthBindHandler 负责临时绑定 cookie 的 HTTP 传递，安全身份仍来自会话验证。
@@ -22,12 +28,6 @@ type OAuthBindHandler struct {
 func NewOAuthBindHandler(session *SessionHandler, signer identity.OAuthBindingSigner) *OAuthBindHandler {
 	return &OAuthBindHandler{session, signer}
 }
-
-const (
-	oauthBindAccessTokenCookieName = "oauth_bind_access_token"
-	oauthBindAccessTokenCookiePath = "/api/v1/auth/oauth"
-	oauthBindAccessTokenCookieTTL  = 10 * 60
-)
 
 func (h *OAuthBindHandler) PrepareOAuthBindAccessTokenCookie(c *gin.Context) {
 	const bearerPrefix = "Bearer "

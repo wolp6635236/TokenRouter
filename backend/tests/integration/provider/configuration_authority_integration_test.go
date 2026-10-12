@@ -7,15 +7,14 @@ import (
 	"testing"
 	"time"
 
-	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
+	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // 读取后注入真实数据库变化，固定重现配置写入与刷新、消费、健康维护的交错。

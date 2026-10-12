@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
 // TestGrokSessionsRedisWireAndSingleConsumption 检查两个 Store 共用 Redis 会话 JSON、键和 TTL，并且会话只能消费一次。

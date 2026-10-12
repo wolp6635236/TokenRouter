@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/stretchr/testify/require"
 )
 
 // fixedExecutionRuntime 使用同一固定实例记录实际调用，验证请求状态不被实例复用污染。
@@ -21,6 +22,10 @@ type fixedExecutionRuntime struct {
 	released  atomic.Int64
 	execute   func(context.Context, upstream.AttemptInput, upstream.OutputSink) (upstream.AttemptResult, error)
 }
+
+type fixedExecutionFunc func(context.Context, upstream.AttemptInput, upstream.OutputSink) (upstream.AttemptResult, error)
+
+type discardExecutionOutput struct{}
 
 func (r *fixedExecutionRuntime) Prepare(_ context.Context, request Request) (Request, error) {
 	r.prepares.Add(1)
@@ -40,13 +45,9 @@ func (*fixedExecutionRuntime) CanFailover(error) bool     { return false }
 func (*fixedExecutionRuntime) RefreshPending(error) bool  { return false }
 func (*fixedExecutionRuntime) QueueFailure(string, error) {}
 
-type fixedExecutionFunc func(context.Context, upstream.AttemptInput, upstream.OutputSink) (upstream.AttemptResult, error)
-
 func (f fixedExecutionFunc) Execute(ctx context.Context, in upstream.AttemptInput, out upstream.OutputSink) (upstream.AttemptResult, error) {
 	return f(ctx, in, out)
 }
-
-type discardExecutionOutput struct{}
 
 func (discardExecutionOutput) Begin(upstream.OutputHead) error { return nil }
 func (discardExecutionOutput) Emit(upstream.OutputEvent) error { return nil }

@@ -6,8 +6,8 @@
       :class="triggerClass"
       :title="currentLocale?.name"
     >
-      <!-- 顶栏状态变体用地球图标与相邻图标按钮对齐，也避开国旗 emoji 在 Windows 上无法渲染的问题。 -->
-      <Icon v-if="variant === 'status'" name="globe" size="md" />
+      <!-- 顶栏状态变体用语言图标（文/A 字形）与相邻图标按钮对齐，也避开国旗 emoji 在 Windows 上无法渲染的问题。 -->
+      <Icon v-if="variant === 'status'" name="languages" size="md" />
       <span v-else class="text-base leading-none">{{ currentLocale?.flag }}</span>
       <span v-if="variant !== 'status'" class="hidden sm:inline">{{ currentLocale?.code.toUpperCase() }}</span>
       <Icon
@@ -20,32 +20,33 @@
       />
     </button>
 
+    <!-- 语言列表用顶栏的内缩菜单样式，当前语言文字转为品牌色并在行尾打勾。 -->
     <MotionTransition name="dropdown-fade">
       <div
         v-if="isOpen"
-        class="dropdown right-0 z-50 mt-1 w-32 overflow-hidden py-0"
+        class="dropdown right-0 z-50 mt-2 w-44 origin-top-right py-0"
       >
-        <button
-          v-for="locale in availableLocales"
-          :key="locale.code"
-          :disabled="switching"
-          @click="selectLocale(locale.code)"
-          class="dropdown-item-sm"
-          :class="{
-            'bg-primary-50 text-primary-600 dark:bg-primary-500/8 dark:text-primary-500':
-              locale.code === currentLocaleCode
-          }"
-        >
-          <span class="text-base">{{ locale.flag }}</span>
-          <span>{{ locale.name }}</span>
-          <Icon
-            v-if="locale.code === currentLocaleCode"
-            name="check"
-            size="sm"
-            class="ml-auto text-primary-500"
-            :animate-on-hover="false"
-          />
-        </button>
+        <div class="menu-section">
+          <button
+            v-for="locale in availableLocales"
+            :key="locale.code"
+            type="button"
+            :disabled="switching"
+            @click="selectLocale(locale.code)"
+            class="menu-item whitespace-nowrap"
+            :class="{ 'text-primary-700 dark:text-primary-500': locale.code === currentLocaleCode }"
+          >
+            <span class="text-base leading-none">{{ locale.flag }}</span>
+            <span class="min-w-0 truncate">{{ locale.name }}</span>
+            <Icon
+              v-if="locale.code === currentLocaleCode"
+              name="check"
+              size="sm"
+              class="ml-auto shrink-0"
+              :animate-on-hover="false"
+            />
+          </button>
+        </div>
       </div>
     </MotionTransition>
   </div>

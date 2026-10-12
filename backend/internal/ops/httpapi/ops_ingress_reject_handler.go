@@ -6,27 +6,32 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
-var ingressRejectReasons = map[string]struct{}{
-	"query_api_key_deprecated": {}, "api_key_required": {}, "invalid_api_key": {},
-	"invalid_auth_rate_limited": {},
-	"api_key_auth_overloaded":   {},
-	"api_key_disabled":          {}, "ip_restricted": {}, "user_inactive": {}, "group_deleted": {},
-	"group_disabled": {}, "group_not_allowed": {}, "group_unassigned": {}, "other": {},
-}
+var (
+	ingressRejectReasons = map[string]struct{}{
+		"query_api_key_deprecated": {}, "api_key_required": {}, "invalid_api_key": {},
+		"invalid_auth_rate_limited": {},
+		"api_key_auth_overloaded":   {},
+		"api_key_disabled":          {}, "ip_restricted": {}, "user_inactive": {}, "group_deleted": {},
+		"group_disabled": {}, "group_not_allowed": {}, "group_unassigned": {}, "other": {},
+	}
 
-var ingressRejectRouteFamilies = map[string]struct{}{
-	"antigravity": {}, "gemini": {}, "codex": {}, "messages": {}, "responses": {},
-	"chat_completions": {}, "images": {}, "videos": {}, "embeddings": {}, "models": {}, "other": {},
-}
+	ingressRejectRouteFamilies = map[string]struct{}{
+		"antigravity": {}, "gemini": {}, "codex": {}, "messages": {}, "responses": {},
+		"chat_completions": {}, "images": {}, "videos": {}, "embeddings": {}, "models": {}, "other": {},
+	}
 
-var ingressRejectProtocols = map[string]struct{}{
-	"google": {}, "anthropic": {}, "openai": {}, "gateway": {}, "other": {},
-}
+	ingressRejectProtocols = map[string]struct{}{
+		"google": {}, "anthropic": {}, "openai": {}, "gateway": {}, "other": {},
+	}
+)
+
+type ingressRejectQueryError struct{ message string }
 
 // ListIngressRejects 返回有界安全聚合结果，绝不包含原始凭据或请求体。
 func (h *OpsHandler) ListIngressRejects(c *gin.Context) {
@@ -125,7 +130,5 @@ func parseOptionalPositiveID(c *gin.Context, name string) (*int64, error) {
 	}
 	return &value, nil
 }
-
-type ingressRejectQueryError struct{ message string }
 
 func (e *ingressRejectQueryError) Error() string { return e.message }

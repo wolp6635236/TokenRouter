@@ -10,24 +10,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
-	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/ent/identityadoptiondecision"
 	"github.com/TokenFlux/TokenRouter/ent/pendingauthsession"
-
 	dbuser "github.com/TokenFlux/TokenRouter/ent/user"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
+	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 )
 
 func TestLinuxDoOAuthBindStartRedirectsAndSetsBindCookies(t *testing.T) {
@@ -894,9 +890,10 @@ func TestCompleteLinuxDoOAuthRegistrationRejectsAdoptExistingUserSession(t *test
 		SetUpstreamIdentityClaims(map[string]any{
 			"username": "linuxdo_user",
 		}).
-		SetLocalFlowState(map[string]any{identityhttp.OauthCompletionResponseKey: map[string]any{
-			"step": "bind_login_required",
-		},
+		SetLocalFlowState(map[string]any{
+			identityhttp.OauthCompletionResponseKey: map[string]any{
+				"step": "bind_login_required",
+			},
 		}).
 		SetExpiresAt(time.Now().UTC().Add(10 * time.Minute)).
 		Save(ctx)
@@ -935,13 +932,14 @@ func TestCompleteLinuxDoOAuthRegistrationReturnsPendingSessionWhenChoiceStillReq
 		SetUpstreamIdentityClaims(map[string]any{
 			"username": "linuxdo_user",
 		}).
-		SetLocalFlowState(map[string]any{identityhttp.OauthCompletionResponseKey: map[string]any{
-			"step":                  identityhttp.OauthPendingChoiceStep,
-			"redirect":              "/dashboard",
-			"email":                 "fresh@example.com",
-			"resolved_email":        "fresh@example.com",
-			"force_email_on_signup": true,
-		},
+		SetLocalFlowState(map[string]any{
+			identityhttp.OauthCompletionResponseKey: map[string]any{
+				"step":                  identityhttp.OauthPendingChoiceStep,
+				"redirect":              "/dashboard",
+				"email":                 "fresh@example.com",
+				"resolved_email":        "fresh@example.com",
+				"force_email_on_signup": true,
+			},
 		}).
 		SetExpiresAt(time.Now().UTC().Add(10 * time.Minute)).
 		Save(ctx)

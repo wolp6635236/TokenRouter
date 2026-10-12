@@ -13,6 +13,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+const (
+	MessagesBody BodyKind = iota
+	CountBody
+)
+
 // Options 保存启动时传入的传输参数，动态策略在请求处理中读取。
 type Options struct {
 	Configured           bool
@@ -42,11 +47,6 @@ type AttemptState struct {
 
 // BodyKind 固定不同入口的超限错误形状，不让 provider 决定 HTTP envelope。
 type BodyKind uint8
-
-const (
-	MessagesBody BodyKind = iota
-	CountBody
-)
 
 // HTTPBoundary 定义当前 HTTP 请求的交换与观测操作。
 // 实现由 HTTP Adapter 持有，provider 不获取 Gin Context 或通用 Get/Set 容器。

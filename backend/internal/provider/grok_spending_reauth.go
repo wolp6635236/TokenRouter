@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const grokSpendingLimitProbeCooldown = 10 * time.Minute
+
 // GrokReauthWriter 写入 Grok 软性消费上限的重新认证标记。
 type GrokReauthWriter interface {
 	UpdateExtra(context.Context, int64, map[string]any) error
@@ -28,8 +30,6 @@ func ClearGrokNeedsReauth(ctx context.Context, writer GrokReauthWriter, id int64
 		"grok_needs_reauth_at":     "",
 	})
 }
-
-const grokSpendingLimitProbeCooldown = 10 * time.Minute
 
 func GrokSpendingLimitResetAt(provider *Record, now time.Time) time.Time {
 	if provider != nil {

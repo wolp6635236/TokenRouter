@@ -20,6 +20,13 @@ type userRPMCacheStub struct {
 	userErr         error
 }
 
+// rpmOverrideRepoStub 提供 RPMAdmission.Check 测试中的分组覆盖值。
+type rpmOverrideRepoStub struct {
+	override *int
+	err      error
+	calls    int32
+}
+
 func (s *userRPMCacheStub) IncrementUserGroupRPM(_ context.Context, _, _ int64) (int, error) {
 	idx := int(atomic.AddInt32(&s.userGroupCalls, 1)) - 1
 	if s.userGroupErr != nil {
@@ -48,13 +55,6 @@ func (s *userRPMCacheStub) GetUserGroupRPM(_ context.Context, _, _ int64) (int, 
 
 func (s *userRPMCacheStub) GetUserRPM(_ context.Context, _ int64) (int, error) {
 	return 0, nil
-}
-
-// rpmOverrideRepoStub 提供 RPMAdmission.Check 测试中的分组覆盖值。
-type rpmOverrideRepoStub struct {
-	override *int
-	err      error
-	calls    int32
 }
 
 func (s *rpmOverrideRepoStub) GetRPMOverrideByUserAndGroup(_ context.Context, _, _ int64) (*int, error) {
@@ -117,7 +117,7 @@ func TestBillingCacheService_CheckRPM_OverrideZeroSkipsGroupButUserStillApplies(
 	group := &RPMGroup{ID: 10, RPMLimit: 100}
 
 	// override=0 跳过分组计数，但 user.RPMLimit=5 仍生效
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		require.NoError(t, svc.Check(context.Background(), user, group), "request %d should pass", i+1)
 	}
 	require.ErrorIs(t, svc.Check(context.Background(), user, group), ErrUserRPMExceeded,
@@ -135,7 +135,7 @@ func TestBillingCacheService_CheckRPM_OverrideZeroAndUserZeroIsFullyUnlimited(t 
 	user := &RPMUser{ID: 1, RPMLimit: 0} // user 也不限
 	group := &RPMGroup{ID: 10, RPMLimit: 100}
 
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		require.NoError(t, svc.Check(context.Background(), user, group))
 	}
 	require.EqualValues(t, 0, atomic.LoadInt32(&cache.userGroupCalls), "override=0 不触发分组计数")
@@ -197,7 +197,7 @@ func TestBillingCacheService_CheckRPM_NoLimitsConfiguredIsNoop(t *testing.T) {
 	user := &RPMUser{ID: 1, RPMLimit: 0}
 	group := &RPMGroup{ID: 10, RPMLimit: 0}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		require.NoError(t, svc.Check(context.Background(), user, group))
 	}
 	require.EqualValues(t, 0, atomic.LoadInt32(&cache.userGroupCalls))

@@ -4,9 +4,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) ImageStreamInterval() time.Duration {

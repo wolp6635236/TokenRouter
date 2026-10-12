@@ -8,11 +8,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
 	"github.com/TokenFlux/TokenRouter/migrations"
-	"github.com/stretchr/testify/require"
 )
 
 // TestModelAttributeBatchLookup 验证真实数据库中的共享、停用和未关联分组。
@@ -53,12 +54,10 @@ func TestModelAttributeMigrationAndConcurrentAssociation(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make(chan error, 2)
 	for _, name := range []string{"first", "second"} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			value := &routing.ModelAttributeConfig{Name: name, Status: "active", Rules: []routing.ModelAttributeRule{}, GroupIDs: []int64{groupID}}
 			errors <- store.Save(ctx, value)
-		}()
+		})
 	}
 	wg.Wait()
 	close(errors)

@@ -4,38 +4,20 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
-
-// toResponsePagination 将分页结果转换为统一响应分页结构。
-func toResponsePagination(p *pagination.PaginationResult) *response.PaginationResult {
-	if p == nil {
-		return nil
-	}
-	return &response.PaginationResult{
-		Total:    p.Total,
-		Page:     p.Page,
-		PageSize: p.PageSize,
-		Pages:    p.Pages,
-	}
-}
 
 // AdminSubscriptionHandler 处理管理员订阅管理请求。
 type AdminSubscriptionHandler struct {
 	idempotencyhttp.Executor
 
 	subscriptionService *billing.SubscriptionService
-}
-
-// NewAdminSubscriptionHandler 创建管理员订阅处理器。
-func NewAdminSubscriptionHandler(subscriptionService *billing.SubscriptionService) *AdminSubscriptionHandler {
-	return &AdminSubscriptionHandler{
-		subscriptionService: subscriptionService,
-	}
 }
 
 // AssignSubscriptionRequest 表示分配订阅请求。
@@ -57,6 +39,33 @@ type BulkAssignSubscriptionRequest struct {
 // AdjustSubscriptionRequest 表示要设置的目标订阅有效期。
 type AdjustSubscriptionRequest struct {
 	Days int `json:"days" binding:"required,min=1,max=36500"` // 从当前时间或待生效开始时间起算的目标有效天数
+}
+
+// ResetSubscriptionQuotaRequest 表示重置配额请求。
+type ResetSubscriptionQuotaRequest struct {
+	Daily   bool `json:"daily"`
+	Weekly  bool `json:"weekly"`
+	Monthly bool `json:"monthly"`
+}
+
+// toResponsePagination 将分页结果转换为统一响应分页结构。
+func toResponsePagination(p *pagination.PaginationResult) *response.PaginationResult {
+	if p == nil {
+		return nil
+	}
+	return &response.PaginationResult{
+		Total:    p.Total,
+		Page:     p.Page,
+		PageSize: p.PageSize,
+		Pages:    p.Pages,
+	}
+}
+
+// NewAdminSubscriptionHandler 创建管理员订阅处理器。
+func NewAdminSubscriptionHandler(subscriptionService *billing.SubscriptionService) *AdminSubscriptionHandler {
+	return &AdminSubscriptionHandler{
+		subscriptionService: subscriptionService,
+	}
 }
 
 // List 分页列出订阅并支持筛选。
@@ -217,13 +226,6 @@ func (h *AdminSubscriptionHandler) Extend(c *gin.Context) {
 	})
 }
 
-// ResetSubscriptionQuotaRequest 表示重置配额请求。
-type ResetSubscriptionQuotaRequest struct {
-	Daily   bool `json:"daily"`
-	Weekly  bool `json:"weekly"`
-	Monthly bool `json:"monthly"`
-}
-
 // ResetQuota 重置订阅的日、周、月用量。
 // POST /api/v1/admin/subscriptions/:id/reset-quota
 func (h *AdminSubscriptionHandler) ResetQuota(c *gin.Context) {
@@ -329,4 +331,13 @@ func (h *AdminSubscriptionHandler) ListByUser(c *gin.Context) {
 		out = append(out, *UserSubscriptionFromServiceAdmin(&subscriptions[i]))
 	}
 	response.Success(c, out)
+}
+
+// adminID 返回当前订阅管理操作的审计主体。
+func adminID(c *gin.Context) int64 {
+	subject, ok := authctx.GetAuthSubjectFromContext(c)
+	if !ok {
+		return 0
+	}
+	return subject.UserID
 }

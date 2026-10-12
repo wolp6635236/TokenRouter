@@ -18,7 +18,7 @@
           </div>
           <div v-else-if="isPending"
             class="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-yellow-100 dark:bg-yellow-900/30">
-            <div class="h-10 w-10 animate-spin rounded-full border-4 border-yellow-500 border-t-transparent"></div>
+            <div class="spinner h-10 w-10 text-yellow-500"></div>
           </div>
           <div v-else
             class="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
@@ -32,7 +32,7 @@
           </p>
         </div>
         <!-- Order Info -->
-        <div v-if="order" class="rounded-surface bg-white p-5 shadow-sm dark:bg-dark-800">
+        <div v-if="order" class="rounded-surface bg-white p-5 shadow-sm dark:bg-dark-900">
           <div class="space-y-3 text-sm">
             <div v-if="hasOrderId(order)" class="flex justify-between">
               <span class="text-gray-500 dark:text-gray-400">{{ t('payment.orders.orderId') }}</span>
@@ -77,7 +77,7 @@
           </div>
         </div>
         <!-- EasyPay return info (when no order loaded) -->
-        <div v-else-if="returnInfo" class="rounded-surface bg-white p-5 shadow-sm dark:bg-dark-800">
+        <div v-else-if="returnInfo" class="rounded-surface bg-white p-5 shadow-sm dark:bg-dark-900">
           <div class="space-y-3 text-sm">
             <div v-if="returnInfo.outTradeNo" class="flex justify-between">
               <span class="text-gray-500 dark:text-gray-400">{{ t('payment.orders.orderId') }}</span>

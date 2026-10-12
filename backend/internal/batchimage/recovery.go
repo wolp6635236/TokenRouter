@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+const (
+	defaultBatchImageBillingRecoveryStaleAfter = 10 * time.Minute
+	defaultBatchImageBillingRecoveryLimit      = 100
+)
+
 type BillingRecovery struct {
 	Now            func() time.Time
 	Repo           BatchImageRepository
@@ -22,11 +27,6 @@ func (s *BillingRecovery) warn(event string, values ...any) {
 		s.Observe(event, values...)
 	}
 }
-
-const (
-	defaultBatchImageBillingRecoveryStaleAfter = 10 * time.Minute
-	defaultBatchImageBillingRecoveryLimit      = 100
-)
 
 func (s *BillingRecovery) ReleaseStaleUnsubmittedOnce(ctx context.Context) (int, error) {
 	if s == nil || s.Repo == nil || s.Funding.Store == nil {

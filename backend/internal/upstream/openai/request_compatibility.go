@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
 // SanitizeOpenAICrossModeFailoverReasoning 从 canonical 请求体派生跨模式重试请求，
@@ -416,7 +417,7 @@ func NormalizeOpenAIResponseFormatSchemasBody(body []byte) ([]byte, bool, error)
 
 // NormalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
 // 1) 删除 ChatGPT internal API 不支持的顶层 Responses 参数
-// 2) store=false 3) 非 compact 保持 stream=true；compact 强制 stream=false
+// 2) store=false 3) 非 compact 保持 stream=true；compact 强制 stream=false。
 func NormalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
-
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 )
 
 // ApplyServiceTierFrame 对发往上游的 response.create 帧应用与 HTTP 相同的 OpenAI Fast 策略。

@@ -46,10 +46,7 @@ func AnthropicToResponses(req *AnthropicRequest, options RequestOptions) (*Respo
 	out.Text = &ResponsesText{Verbosity: "medium"}
 
 	if req.MaxTokens > 0 {
-		v := req.MaxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
-		}
+		v := max(req.MaxTokens, minMaxOutputTokens)
 		out.MaxOutputTokens = &v
 	}
 
@@ -492,4 +489,9 @@ func normalizeToolParameters(schema json.RawMessage) json.RawMessage {
 		return schema
 	}
 	return out
+}
+
+// isUltraReasoningEffort 识别 Codex 客户端专用的 Ultra 模式。
+func isUltraReasoningEffort(effort string) bool {
+	return strings.EqualFold(strings.TrimSpace(effort), "ultra")
 }

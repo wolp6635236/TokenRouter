@@ -3,12 +3,16 @@ package text
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+)
+
+const (
+	FailureOther FailureKind = iota
+	FailurePolicy
+	FailurePromptTooLong
 )
 
 // AttemptFailure 传递原始错误和重试参数，供应商报文由平台适配器解析。
@@ -17,22 +21,7 @@ type AttemptFailure struct {
 	Policy *failover.FailureInfo
 }
 
-func (e *AttemptFailure) Error() string { return e.Cause.Error() }
-func (e *AttemptFailure) Unwrap() error { return e.Cause }
-func (e *AttemptFailure) RetryFailure() *failover.FailureInfo {
-	if e == nil {
-		return nil
-	}
-	return e.Policy
-}
-
 type FailureKind uint8
-
-const (
-	FailureOther FailureKind = iota
-	FailurePolicy
-	FailurePromptTooLong
-)
 
 // Selection 保存本次尝试的提供商信息和重试上限。
 type Selection struct {
@@ -87,6 +76,15 @@ type MessagePorts interface {
 	Switched()
 	Abandon(int64)
 	TempUnscheduleRetryableError(context.Context, int64, *AttemptFailure)
+}
+
+func (e *AttemptFailure) Error() string { return e.Cause.Error() }
+func (e *AttemptFailure) Unwrap() error { return e.Cause }
+func (e *AttemptFailure) RetryFailure() *failover.FailureInfo {
+	if e == nil {
+		return nil
+	}
+	return e.Policy
 }
 
 // RunMessages 允许请求回退一次分组，并在每个分组内执行提供商尝试循环。

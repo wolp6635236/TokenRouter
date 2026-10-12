@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+const (
+	ModelNotFoundCooldown       = 30 * time.Minute
+	ModelNotFoundReason         = "upstream_404_model_not_found"
+	CodexPlanGatedModelCooldown = 30 * time.Minute
+	CodexPlanGatedModelReason   = "upstream_400_codex_plan_gated_model"
+)
+
 // ModelFailureObservation 保存当前尝试的端点和最终模型。
 type ModelFailureObservation struct {
 	NotFound       bool
@@ -13,13 +20,6 @@ type ModelFailureObservation struct {
 	ImageModel     bool
 	ImagesEndpoint bool
 }
-
-const (
-	ModelNotFoundCooldown       = 30 * time.Minute
-	ModelNotFoundReason         = "upstream_404_model_not_found"
-	CodexPlanGatedModelCooldown = 30 * time.Minute
-	CodexPlanGatedModelReason   = "upstream_400_codex_plan_gated_model"
-)
 
 // ApplyModelUnavailable 按池模式和错误码规则暂停当前提供商与模型组合。
 func (s *HealthService) ApplyModelUnavailable(ctx context.Context, value *Record, status int, observation ModelFailureObservation) bool {

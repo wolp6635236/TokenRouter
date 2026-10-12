@@ -25,6 +25,19 @@ type opsWSQPSCache struct {
 	closed  bool
 }
 
+// RealtimeRuntime 持有按需采样和订阅统计，HTTP 只负责握手与帧。
+type RealtimeRuntime struct {
+	cache              *opsWSQPSCache
+	wsConnCount        atomic.Int32
+	wsConnCountByIPMu  sync.Mutex
+	wsConnCountByIP    map[string]int32
+	qpsWSIdleStopMu    sync.Mutex
+	qpsWSIdleStopTimer *time.Timer
+	qpsWSIdleStopWG    sync.WaitGroup
+	qpsWSRuntimeClosed bool
+	idleDelay          time.Duration
+}
+
 func (c *opsWSQPSCache) start(opsService *OpsService) {
 	if c == nil || opsService == nil {
 		return
@@ -183,19 +196,6 @@ func (c *opsWSQPSCache) getPayload() []byte {
 		return append([]byte(nil), cached...)
 	}
 	return nil
-}
-
-// RealtimeRuntime 持有按需采样和订阅统计，HTTP 只负责握手与帧。
-type RealtimeRuntime struct {
-	cache              *opsWSQPSCache
-	wsConnCount        atomic.Int32
-	wsConnCountByIPMu  sync.Mutex
-	wsConnCountByIP    map[string]int32
-	qpsWSIdleStopMu    sync.Mutex
-	qpsWSIdleStopTimer *time.Timer
-	qpsWSIdleStopWG    sync.WaitGroup
-	qpsWSRuntimeClosed bool
-	idleDelay          time.Duration
 }
 
 func NewRealtimeRuntime() *RealtimeRuntime {

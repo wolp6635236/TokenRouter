@@ -20,6 +20,7 @@ func (p MonitorHostPolicy) Clone() MonitorHostPolicy {
 	p.AllowedHosts = slices.Clone(p.AllowedHosts)
 	return p
 }
+
 func (p MonitorHostPolicy) Validate(raw string, official func(string) bool) error {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Hostname() == "" {

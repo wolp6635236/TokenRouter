@@ -5,32 +5,45 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// modelRejectionSources 将候选提供商转换为 routing 的模型拒绝判断输入。
+func modelRejectionSources(providers []gatewayprovider.ExecutionProvider) []routing.ModelRejectionSource {
+	sources := make([]routing.ModelRejectionSource, len(providers))
+	for i := range providers {
+		value := &providers[i]
+		sources[i] = gatewayprovider.ModelRejectionProvider(gatewayprovider.ExecutionRecord(value))
+	}
+	return sources
+}
+
 // readSnapshotProvider 从已绑定的快照读取器取得提供商。
-func readSnapshotProvider(ctx context.Context, source Snapshots, id int64) (*gatewayadapter.ExecutionProvider, error) {
+func readSnapshotProvider(ctx context.Context, source Snapshots, id int64) (*gatewayprovider.ExecutionProvider, error) {
 	value, err := source.GetProvider(ctx, id)
-	return gatewayadapter.NewExecutionProvider(value), err
+	return gatewayprovider.NewExecutionProvider(value), err
 }
 
-func readSnapshotProviders(ctx context.Context, source Snapshots, group *int64, platform string, forced bool) ([]gatewayadapter.ExecutionProvider, bool, error) {
+func readSnapshotProviders(ctx context.Context, source Snapshots, group *int64, platform string, forced bool) ([]gatewayprovider.ExecutionProvider, bool, error) {
 	values, mixed, err := source.ListProviders(ctx, group, platform, forced)
-	return gatewayadapter.ExecutionProviders(values), mixed, err
+	return gatewayprovider.ExecutionProviders(values), mixed, err
 }
 
-func (s *Generic) debugModelRoutingEnabled() bool                    { return s != nil && s.options.DebugRouting }
-func (s *Generic) windowCostGuard() *billing.WindowCostGuard         { return s.window }
-func (s *Compatible) runtimeBlockState() *provider.RuntimeBlockState { return s.runtime }
-func (s *Compatible) getOpenAIProviderModelTransientState() *provider.ModelTransientState {
+func (s *Generic) debugModelRoutingEnabled() bool { return s != nil && s.options.DebugRouting }
+
+func (s *Generic) windowCostGuard() *billing.WindowCostGuard { return s.window }
+
+func (s *Compatible) runtimeBlockState() *providercore.RuntimeBlockState { return s.runtime }
+
+func (s *Compatible) getOpenAIProviderModelTransientState() *providercore.ModelTransientState {
 	if s == nil {
 		return nil
 	}
@@ -58,19 +71,19 @@ func (s *Compatible) OpenAIHTTPResponseStickyTTL() time.Duration {
 	return time.Hour
 }
 
-func (s *Compatible) stickyStats() *scheduler.StickyStats {
+func (s *Compatible) stickyStats() *schedulercore.StickyStats {
 	if s == nil {
-		return &scheduler.StickyStats{}
+		return &schedulercore.StickyStats{}
 	}
 	return s.stickyMetrics
 }
 
-func resolveProviderUpstreamModel(ctx context.Context, value *gatewayadapter.ExecutionProvider, model string) string {
-	return gatewayadapter.ExecutionModelPolicy(value).UpstreamModel(ctx, model)
+func resolveProviderUpstreamModel(ctx context.Context, value *gatewayprovider.ExecutionProvider, model string) string {
+	return gatewayprovider.ExecutionModelPolicy(value).UpstreamModel(ctx, model)
 }
 
-func mapAntigravityModel(value *gatewayadapter.ExecutionProvider, model string) string {
-	return provideradapter.MapAntigravityModel(gatewayadapter.ExecutionRecord(value), model)
+func mapAntigravityModel(value *gatewayprovider.ExecutionProvider, model string) string {
+	return provideradapter.MapAntigravityModel(gatewayprovider.ExecutionRecord(value), model)
 }
 
 // defaultWindowCostGuard 返回使用默认参数的窗口费用检查器。

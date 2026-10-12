@@ -2,18 +2,20 @@ package httpapi
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/gin-gonic/gin"
 )
 
-// Gin context keys used by Ops error logger for capturing upstream error details.
-// These keys are set by gateway services and consumed by handler/ops_error_logger.go.
 const (
+	// Gin context keys used by Ops error logger for capturing upstream error details.
+	// These keys are set by gateway services and consumed by handler/ops_error_logger.go.
 	OpsUpstreamStatusCodeKey   = "ops_upstream_status_code"
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
@@ -26,7 +28,7 @@ const (
 	OpsUpstreamLatencyMsKey  = "ops_upstream_latency_ms"
 	OpsResponseLatencyMsKey  = "ops_response_latency_ms"
 	OpsTimeToFirstTokenMsKey = "ops_time_to_first_token_ms"
-	// OpenAI WS 关键观测字段
+	// OpenAI WS 关键观测字段。
 	OpsOpenAIWSQueueWaitMsKey = "ops_openai_ws_queue_wait_ms"
 	OpsOpenAIWSConnPickMsKey  = "ops_openai_ws_conn_pick_ms"
 	OpsOpenAIWSConnReusedKey  = "ops_openai_ws_conn_reused"
@@ -39,7 +41,7 @@ const (
 	// OpsStreamErrorKey 保存 handleStreamingAwareError 在「响应已固化为 HTTP 200 的 SSE 流」
 	// 上就地补发错误帧时记录的 OpsStreamError。因为实际状态码停留在 200，
 	// ops_error_logger 的 status>=400 采集路径永远不会触发，这类流内失败
-	//（例如等待并发槽位超时后回退的限流、Wait 后二次计费校验失败）本会在错误看板里隐形。
+	// （例如等待并发槽位超时后回退的限流、Wait 后二次计费校验失败）本会在错误看板里隐形。
 	OpsStreamErrorKey  = "ops_stream_error"
 	OpsStreamErrorsKey = "ops_stream_errors"
 	OpsStreamTurnKey   = "ops_stream_turn"
@@ -56,7 +58,40 @@ const (
 	OpsClientBusinessLimitedReasonLocalFeatureGate        = "local_feature_gate"
 	OpsClientBusinessLimitedReasonLocalPolicyDenied       = "local_policy_denied"
 	OpsClientBusinessLimitedReasonLocalModelConfiguration = "local_model_configuration"
+
+	maxOpsStreamErrorsPerRequest = 64
 )
+
+// OpsStreamError 描述网关在「响应状态已固化为 200」之后（keepalive ping 或部分数据
+// 已 flush）就地以 SSE error 帧形式返回的错误。由于 HTTP 状态码停留在 200，
+// 而 ops_error_logger 以 status>=400 为采集触发条件，这类流内失败
+// （并发限流回退、Wait 后二次计费校验失败、流开始后才无可用提供商等）本会在错误看板里
+// 完全隐形。handler.handleStreamingAwareError 负责标记，ops_error_logger 中间件在
+// status<400 分支消费它并补记一条错误日志。
+type OpsStreamError struct {
+	// ErrType 是写入 SSE 帧的对客错误类型（如 rate_limit_error / upstream_error / api_error）。
+	ErrType string
+	// Code 是可选的稳定错误分类；用于既保留通用 OpenAI error.type，又向客户端和 Ops
+	// 暴露可编程判断的细分类（如 upstream_http2_stream_error）。
+	Code string
+	// Message 是写入 SSE 帧的对客错误消息。
+	Message string
+	// IntendedStatus 是流若未固化本应返回的 HTTP 状态码（如并发限流的 429）。
+	// 默认仅用于错误分级；CountTowardsSLA=true 时也作为 Ops 的逻辑状态码。
+	IntendedStatus int
+	// CountTowardsSLA 表示 HTTP 状态已提交为 200 后发生请求失败，Ops 按 IntendedStatus 统计错误率和 SLA。
+	CountTowardsSLA bool
+	// Turn identifies a WebSocket turn. HTTP/SSE requests leave it at zero.
+	Turn int
+	// SkipMonitoring snapshots the rule decision for this visible failure.
+	SkipMonitoring  bool
+	ProviderID      int64
+	UpstreamModel   string
+	UpstreamStatus  int
+	UpstreamMessage string
+	UpstreamDetail  string
+	UpstreamErrors  []*ops.OpsUpstreamErrorEvent
+}
 
 func MarkResponseCommitted(c *gin.Context) { c.Set(ResponseCommittedKey, true) }
 
@@ -149,39 +184,6 @@ func OpsClientBusinessLimitedReason(c *gin.Context) string {
 	return strings.TrimSpace(reason)
 }
 
-// OpsStreamError 描述网关在「响应状态已固化为 200」之后（keepalive ping 或部分数据
-// 已 flush）就地以 SSE error 帧形式返回的错误。由于 HTTP 状态码停留在 200，
-// 而 ops_error_logger 以 status>=400 为采集触发条件，这类流内失败
-// （并发限流回退、Wait 后二次计费校验失败、流开始后才无可用提供商等）本会在错误看板里
-// 完全隐形。handler.handleStreamingAwareError 负责标记，ops_error_logger 中间件在
-// status<400 分支消费它并补记一条错误日志。
-type OpsStreamError struct {
-	// ErrType 是写入 SSE 帧的对客错误类型（如 rate_limit_error / upstream_error / api_error）。
-	ErrType string
-	// Code 是可选的稳定错误分类；用于既保留通用 OpenAI error.type，又向客户端和 Ops
-	// 暴露可编程判断的细分类（如 upstream_http2_stream_error）。
-	Code string
-	// Message 是写入 SSE 帧的对客错误消息。
-	Message string
-	// IntendedStatus 是流若未固化本应返回的 HTTP 状态码（如并发限流的 429）。
-	// 默认仅用于错误分级；CountTowardsSLA=true 时也作为 Ops 的逻辑状态码。
-	IntendedStatus int
-	// CountTowardsSLA 表示 HTTP 状态已提交为 200 后发生请求失败，Ops 按 IntendedStatus 统计错误率和 SLA。
-	CountTowardsSLA bool
-	// Turn identifies a WebSocket turn. HTTP/SSE requests leave it at zero.
-	Turn int
-	// SkipMonitoring snapshots the rule decision for this visible failure.
-	SkipMonitoring  bool
-	ProviderID      int64
-	UpstreamModel   string
-	UpstreamStatus  int
-	UpstreamMessage string
-	UpstreamDetail  string
-	UpstreamErrors  []*ops.OpsUpstreamErrorEvent
-}
-
-const maxOpsStreamErrorsPerRequest = 64
-
 // BeginOpsStreamTurn scopes first-wins deduplication to one WebSocket turn.
 func BeginOpsStreamTurn(c *gin.Context, turn int) {
 	if c == nil || turn <= 0 {
@@ -220,6 +222,9 @@ func MarkOpsStreamFailure(c *gin.Context, errType, code, message string, intende
 func markOpsStreamError(c *gin.Context, streamErr OpsStreamError) {
 	if c == nil {
 		return
+	}
+	if streamErr.CountTowardsSLA && c.Request != nil {
+		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) { record.State = "failed"; record.ErrorCode = "stream_error" })
 	}
 	streamErr.ErrType = strings.TrimSpace(streamErr.ErrType)
 	streamErr.Code = strings.TrimSpace(streamErr.Code)
@@ -306,9 +311,9 @@ func currentOpsFailureSkipMonitoring(c *gin.Context) bool {
 	}
 	if value, ok := c.Get(OpsUpstreamErrorsKey); ok {
 		if events, ok := value.([]*ops.OpsUpstreamErrorEvent); ok {
-			for i := len(events) - 1; i >= 0; i-- {
-				if events[i] != nil {
-					return events[i].SkipMonitoring
+			for _, event := range slices.Backward(events) {
+				if event != nil {
+					return event.SkipMonitoring
 				}
 			}
 		}
@@ -389,6 +394,18 @@ func AppendOpsUpstreamError(c *gin.Context, ev ops.OpsUpstreamErrorEvent) {
 		}
 	}
 
+	if c.Request != nil {
+		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) {
+			if len(record.Attempts) < 256 {
+				outcome := "failed"
+				if ev.Kind == "usage_invalid" {
+					outcome = "usage_unknown"
+				}
+				record.Attempts = append(record.Attempts, telemetry.RequestAttempt{Number: len(record.Attempts) + 1, ProviderID: ev.ProviderID, RequestID: ev.UpstreamRequestID, Status: ev.UpstreamStatusCode, Outcome: outcome})
+			}
+		})
+		telemetry.AddRequestAlias(c.Request.Context(), "upstream", ev.UpstreamRequestID)
+	}
 	evCopy := ev
 	existing = append(existing, &evCopy)
 	c.Set(OpsUpstreamErrorsKey, existing)

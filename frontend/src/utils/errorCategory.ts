@@ -1,7 +1,7 @@
 /**
- * 错误请求"分类"虚拟维度:phase + error type → 用户侧粗分类码。
- * 镜像后端 service.MapUserErrorCategory(backend/internal/service/ops_user_error.go),
- * 两处修改须同步。返回稳定分类码,展示文案走 i18n `usage.errors.categories.*`。
+ * mapErrorCategory 按错误阶段和类型返回用户侧分类码。
+ * 后端对应实现是 `backend/internal/ops/user_error.go` 中的 `ops.MapUserErrorCategory`。
+ * 修改分类时同步两处实现，展示文案使用 i18n `usage.errors.categories.*`。
  */
 export function mapErrorCategory(phase?: string | null, errType?: string | null): string {
   switch ((phase || '').toLowerCase()) {

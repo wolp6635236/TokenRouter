@@ -15,9 +15,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/backup"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/backup"
 )
+
+type generatedBackupReader struct {
+	remaining int64
+	readBytes atomic.Int64
+}
+
+type failingBackupReader struct{}
 
 func TestS3BackupStoreUploadFileWithProgressUsesConcurrentMultipart(t *testing.T) {
 	var activeParts atomic.Int64
@@ -304,13 +312,6 @@ func TestS3BackupStoreUploadSpooledPutRemovesTemporaryFileOnReadError(t *testing
 	require.Empty(t, tempFiles)
 }
 
-type generatedBackupReader struct {
-	remaining int64
-	readBytes atomic.Int64
-}
-
-type failingBackupReader struct{}
-
 // Read 模拟备份流在落盘过程中读取失败。
 func (failingBackupReader) Read([]byte) (int, error) {
 	return 0, errors.New("read backup failed")
@@ -325,7 +326,7 @@ func (r *generatedBackupReader) Read(p []byte) (int, error) {
 	if int64(n) > r.remaining {
 		n = int(r.remaining)
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		p[i] = 'x'
 	}
 	r.remaining -= int64(n)

@@ -30,7 +30,7 @@ type ResponsesRequestOptions struct {
 
 // BuildResponsesRequest 根据请求选项构造 Responses HTTP 请求。
 func BuildResponsesRequest(ctx context.Context, body []byte, promptCacheKey string, options ResponsesRequestOptions) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", options.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -146,5 +146,39 @@ func BuildResponsesRequest(ctx context.Context, body []byte, promptCacheKey stri
 }
 
 // String 避免调试输出展开客户端透传 Header。
-func (ResponsesRequestOptions) String() string     { return "openai responses request options" }
+func (ResponsesRequestOptions) String() string { return "openai responses request options" }
+
 func (o ResponsesRequestOptions) GoString() string { return o.String() }
+
+// EnsureRemoteCompactionV2Header 向协商头补充 V2 能力，并合并客户端声明的其他能力。
+func EnsureRemoteCompactionV2Header(h http.Header) {
+	if h == nil {
+		return
+	}
+	tokens := make([]string, 0, 4)
+	for _, value := range h.Values("x-codex-beta-features") {
+		for token := range strings.SplitSeq(value, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			if token == "remote_compaction_v2" {
+				return
+			}
+			tokens = append(tokens, token)
+		}
+	}
+	tokens = append(tokens, "remote_compaction_v2")
+	h.Set("x-codex-beta-features", strings.Join(tokens, ","))
+}
+
+// AppendResponsesPathSuffix 校验路径后缀并追加到 Responses 地址。
+func AppendResponsesPathSuffix(baseURL, suffix string) string {
+	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	// 路径后缀通过校验后才能拼入上游 URL。
+	trimmedSuffix, ok := upstream.SanitizedUpstreamPathSuffix(suffix)
+	if !ok || trimmedBase == "" || trimmedSuffix == "" {
+		return trimmedBase
+	}
+	return trimmedBase + trimmedSuffix
+}

@@ -7,13 +7,13 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/stretchr/testify/suite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/stretchr/testify/suite"
 )
 
 type UserRepoAPIKeyGroupFilterSuite struct {

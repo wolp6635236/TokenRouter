@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
 )
 
 // responseFixture 记录尝试、同提供商等待和最终完成的次数。

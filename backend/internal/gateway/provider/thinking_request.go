@@ -5,7 +5,6 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
@@ -62,9 +61,7 @@ func NormalizeGLM53AnthropicThinking(body []byte, mappedModel string) ([]byte, b
 	return requeststate.NormalizeGLM53AnthropicThinking(body, isGLM53Model(mappedModel))
 }
 
-// =========================
 // Thinking Budget Rectifier
-// =========================
 
 // NormalizeChineseLLMThinking 修正国产 Anthropic 兼容上游的 thinking.type 差异。
 // 当前仅 MiniMax M 系列需要把 Anthropic SDK 默认的 enabled 改成 adaptive。

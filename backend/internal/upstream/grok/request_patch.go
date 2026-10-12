@@ -8,12 +8,51 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
+
+const (
+	ComposerImageBridgeVisionModel     = "grok-build-0.1"
+	ComposerImageBridgeMaxOutputTokens = 512
+
+	GrokSafeFunctionParameters = `{"type":"object","properties":{},"additionalProperties":true}`
+)
+
+var (
+	grokResponsesUnsupportedRecursiveFields = map[string]struct{}{
+		"external_web_access": {},
+	}
+
+	grokResponsesSupportedToolTypes = map[string]struct{}{
+		"code_execution": {},
+
+		"code_interpreter": {},
+
+		"collections_search": {},
+
+		"file_search": {},
+
+		"function": {},
+
+		"mcp": {},
+
+		"shell": {},
+
+		"web_search": {},
+
+		"x_search": {},
+	}
+)
+
+// BodyCodec 调整 Grok 请求体，并通过 NewID 为工具调用生成标识符。
+type BodyCodec struct{ NewID func() string }
+
+type GrokEncryptedContentStripRetriedKey struct{}
 
 func (m BodyCodec) IsGrokInvalidEncryptedContentResponse(statusCode int, body []byte) bool {
 	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
@@ -156,8 +195,6 @@ func (m BodyCodec) RequestHasGrokEncryptedReasoning(body []byte) bool {
 	}
 	return false
 }
-
-type GrokEncryptedContentStripRetriedKey struct{}
 
 func (m BodyCodec) MarkGrokEncryptedContentStripRetried(ctx context.Context) context.Context {
 	return context.WithValue(ctx, GrokEncryptedContentStripRetriedKey{}, true)
@@ -452,10 +489,6 @@ func (m BodyCodec) GrokSupportsReasoningEffort(model string) bool {
 	}
 }
 
-var grokResponsesUnsupportedRecursiveFields = map[string]struct{}{
-	"external_web_access": {},
-}
-
 func (m BodyCodec) SanitizeGrokResponsesUnsupportedFields(body []byte) ([]byte, error) {
 	if !bytes.Contains(body, []byte(`"external_web_access"`)) {
 		return body, nil
@@ -731,28 +764,6 @@ func (m BodyCodec) StripExplicitNullsFromGrokObject(node map[string]any) (map[st
 	}
 	return node, changed
 }
-
-var grokResponsesSupportedToolTypes = map[string]struct{}{
-	"code_execution": {},
-
-	"code_interpreter": {},
-
-	"collections_search": {},
-
-	"file_search": {},
-
-	"function": {},
-
-	"mcp": {},
-
-	"shell": {},
-
-	"web_search": {},
-
-	"x_search": {},
-}
-
-const GrokSafeFunctionParameters = `{"type":"object","properties":{},"additionalProperties":true}`
 
 func (m BodyCodec) SanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 	tools := gjson.GetBytes(body, "tools")

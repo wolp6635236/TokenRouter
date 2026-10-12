@@ -14,6 +14,12 @@ type responsesDiscoveredToolIdentity struct {
 	ambiguous bool
 }
 
+type responsesNamespaceToolCandidate struct {
+	flat     string
+	child    map[string]any
+	identity responsesDiscoveredToolIdentity
+}
+
 // promoteResponsesToolSearchDiscoveries 将已成功发现的客户端工具提升为
 // 仅支持 function 的上游可调用声明。原始 tool_search_output 仍保留在请求历史中，
 // 由独立逻辑规范化；新声明追加在静态工具之后，保持客户端声明顺序稳定。
@@ -229,12 +235,6 @@ func restoreInheritedResponsesClientToolDeclarations(lowered []any, mapping Resp
 		}
 	}
 	return restored
-}
-
-type responsesNamespaceToolCandidate struct {
-	flat     string
-	child    map[string]any
-	identity responsesDiscoveredToolIdentity
 }
 
 func responsesNamespaceToolDiscovery(tool map[string]any) (map[string]any, []responsesNamespaceToolCandidate, bool) {

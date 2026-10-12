@@ -4,9 +4,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 )
 
 type mediaFailureProbe struct {

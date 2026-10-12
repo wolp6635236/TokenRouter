@@ -7,14 +7,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// Target 只公开测试资格，凭据留在本次平台执行句柄中。
-func (s *AnthropicProviderTest) Target(value *provider.Record) provider.TestTarget {
-	return anthropicTestTarget{executor: s, record: value}
-}
-
 type anthropicTestTarget struct {
 	executor *AnthropicProviderTest
 	record   *provider.Record
+}
+
+// Target 只公开测试资格，凭据留在本次平台执行句柄中。
+func (s *AnthropicProviderTest) Target(value *provider.Record) provider.TestTarget {
+	return anthropicTestTarget{executor: s, record: value}
 }
 
 func (t anthropicTestTarget) Information() provider.TestTargetInfo {

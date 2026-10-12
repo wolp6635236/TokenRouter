@@ -28,7 +28,7 @@ func FetchBilling(ctx context.Context, options BillingFetchOptions) (*BillingSum
 	billingURL := options.URL
 	token := options.Token
 
-	for attempt := 0; attempt < options.MaxAttempts; attempt++ {
+	for attempt := range options.MaxAttempts {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, billingURL, nil)
 		if err != nil {
 			return nil, 0, infraerrors.Newf(infraerrors.Category(http.StatusInternalServerError), "GROK_QUOTA_PROBE_REQUEST_BUILD_FAILED", "failed to build billing request: %v", err)

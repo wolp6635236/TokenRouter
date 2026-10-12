@@ -53,28 +53,6 @@ export function formatNumber(num: number | null | undefined): string {
 }
 
 /**
- * 格式化货币金额
- * @param amount 金额
- * @param currency 货币代码，默认 USD
- * @returns 格式化后的字符串，如 "$1.25"
- */
-export function formatCurrency(amount: number | null | undefined, currency: string = 'USD'): string {
-  amount = amount ?? 0
-
-  const locale = getLocale()
-
-  // For very small amounts, show more decimals
-  const fractionDigits = amount > 0 && amount < 0.01 ? 6 : 2
-
-  return new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency: currency,
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits
-  }).format(amount)
-}
-
-/**
  * 格式化字节大小
  * @param bytes 字节数
  * @param decimals 小数位数
@@ -339,16 +317,6 @@ export function formatTime(date: string | Date | null | undefined): string {
  */
 export function formatNumberLocaleString(num: number): string {
   return num.toLocaleString(getLocale())
-}
-
-/**
- * 格式化金额（固定小数位，不带货币符号）
- * @param amount 金额
- * @param fractionDigits 小数位数，默认 4
- * @returns 格式化后的字符串，如 "1.2345"
- */
-export function formatCostFixed(amount: number, fractionDigits: number = 4): string {
-  return amount.toFixed(fractionDigits)
 }
 
 /**

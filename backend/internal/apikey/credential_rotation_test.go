@@ -18,6 +18,13 @@ type rotationRepository struct {
 	calls    int
 }
 
+type rotationCache struct {
+	APIKeyCache
+	entries   map[string]*APIKeyAuthCacheEntry
+	deleted   []string
+	published []string
+}
+
 func (r *rotationRepository) GetByID(context.Context, int64) (*APIKey, error) {
 	if r.key == nil {
 		return nil, ErrAPIKeyNotFound
@@ -49,13 +56,6 @@ func (r *rotationRepository) RotateCredential(_ context.Context, key *APIKey, ol
 		r.onRotate(key)
 	}
 	return nil
-}
-
-type rotationCache struct {
-	APIKeyCache
-	entries   map[string]*APIKeyAuthCacheEntry
-	deleted   []string
-	published []string
 }
 
 func (c *rotationCache) GetAuthCache(_ context.Context, key string) (*APIKeyAuthCacheEntry, error) {

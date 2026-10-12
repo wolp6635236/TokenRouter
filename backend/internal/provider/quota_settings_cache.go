@@ -9,6 +9,16 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+const (
+	// SettingKeyOpsAdvancedSettings 是提供商缓存读取 Ops 设置时使用的键。
+	SettingKeyOpsAdvancedSettings = "ops_advanced_settings"
+
+	openAIQuotaAutoPauseSettingsCacheTTL   = 60 * time.Second
+	openAIQuotaAutoPauseSettingsErrorTTL   = 5 * time.Second
+	openAIQuotaAutoPauseSettingsDBTimeout  = 5 * time.Second
+	openAIQuotaAutoPauseSettingsRefreshKey = "openai_quota_auto_pause_settings"
+)
+
 // QuotaSettingsCache 保存提供商阈值快照，共享 Ops JSON 通过读取接口解析。
 type QuotaSettingsCache struct {
 	settingRepo interface {
@@ -20,6 +30,11 @@ type QuotaSettingsCache struct {
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 }
 
+type cachedOpenAIQuotaAutoPauseSettings struct {
+	settings  QuotaAutoPauseSettings
+	expiresAt int64
+}
+
 // NewQuotaSettingsCache 创建阈值缓存，调用方可同步预热，读取缺失或过期条目时触发异步刷新。
 func NewQuotaSettingsCache(repo interface {
 	GetValue(context.Context, string) (string, error)
@@ -27,22 +42,6 @@ func NewQuotaSettingsCache(repo interface {
 ) *QuotaSettingsCache {
 	return &QuotaSettingsCache{settingRepo: repo, notFound: notFound, decode: decode}
 }
-
-// SettingKeyOpsAdvancedSettings 是提供商缓存读取 Ops 设置时使用的键。
-const SettingKeyOpsAdvancedSettings = "ops_advanced_settings"
-
-type cachedOpenAIQuotaAutoPauseSettings struct {
-	settings  QuotaAutoPauseSettings
-	expiresAt int64
-}
-
-const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
-
-const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
-
-const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second
-
-const openAIQuotaAutoPauseSettingsRefreshKey = "openai_quota_auto_pause_settings"
 
 func (s *QuotaSettingsCache) GetOpenAIQuotaAutoPauseSettings(ctx context.Context) QuotaAutoPauseSettings {
 	if s == nil {

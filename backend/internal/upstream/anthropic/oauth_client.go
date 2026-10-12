@@ -9,14 +9,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imroc/req/v3"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	proxyurl "github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic/oauth"
-
-	"github.com/imroc/req/v3"
 )
+
+type OAuthClient struct {
+	BaseURL       string
+	TokenURL      string
+	ClientFactory func(proxyURL string) (*req.Client, error)
+}
 
 func NewOAuthClient() *OAuthClient {
 	return &OAuthClient{
@@ -24,12 +30,6 @@ func NewOAuthClient() *OAuthClient {
 		TokenURL:      oauth.TokenURL,
 		ClientFactory: createReqClient,
 	}
-}
-
-type OAuthClient struct {
-	BaseURL       string
-	TokenURL      string
-	ClientFactory func(proxyURL string) (*req.Client, error)
 }
 
 func (s *OAuthClient) GetOrganizationUUID(ctx context.Context, sessionKey, proxyURL string) (string, error) {
@@ -55,7 +55,6 @@ func (s *OAuthClient) GetOrganizationUUID(ctx context.Context, sessionKey, proxy
 		}).
 		SetSuccessResult(&orgs).
 		Get(targetURL)
-
 	if err != nil {
 		logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 1 FAILED - Request error: %v", err)
 		return "", fmt.Errorf("request failed: %w", err)
@@ -133,7 +132,6 @@ func (s *OAuthClient) GetAuthorizationCode(ctx context.Context, sessionKey, orgU
 		SetBody(reqBody).
 		SetSuccessResult(&result).
 		Post(authURL)
-
 	if err != nil {
 		logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 2 FAILED - Request error: %v", err)
 		return "", fmt.Errorf("request failed: %w", err)
@@ -180,9 +178,9 @@ func (s *OAuthClient) ExchangeCodeForToken(ctx context.Context, code, codeVerifi
 	// Parse code which may contain state in format "authCode#state"
 	authCode := code
 	codeState := ""
-	if idx := strings.Index(code, "#"); idx != -1 {
-		authCode = code[:idx]
-		codeState = code[idx+1:]
+	if before, after, ok := strings.Cut(code, "#"); ok {
+		authCode = before
+		codeState = after
 	}
 
 	reqBody := map[string]any{
@@ -211,7 +209,6 @@ func (s *OAuthClient) ExchangeCodeForToken(ctx context.Context, code, codeVerifi
 		SetBody(reqBody).
 		SetSuccessResult(&tokenResp).
 		Post(s.TokenURL)
-
 	if err != nil {
 		logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 3 FAILED - Request error: %v", err)
 		return nil, fmt.Errorf("request failed: %w", err)
@@ -249,7 +246,6 @@ func (s *OAuthClient) RefreshToken(ctx context.Context, refreshToken, proxyURL s
 		SetBody(reqBody).
 		SetSuccessResult(&tokenResp).
 		Post(s.TokenURL)
-
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

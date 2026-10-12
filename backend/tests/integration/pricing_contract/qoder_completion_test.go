@@ -2,10 +2,13 @@ package pricingcontract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
@@ -13,11 +16,10 @@ import (
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/stretchr/testify/require"
 )
 
 func TestQoderNativeChainCompletionFailures(t *testing.T) {
@@ -39,7 +41,7 @@ func TestQoderNativeChainCompletionFailures(t *testing.T) {
 			completion := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &gatewaytestkit.UserStore{}, &gatewaytestkit.SubscriptionStore{})
 			rec := httptest.NewRecorder()
 			body := []byte(`{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-			// 与生产桥接使用相同目标投影和结果转换，实际调用保留的完成用例。
+			// 将提供商记录和上游结果传入网关完成流程，检查用量记录。
 			executor, input := platform.Runtime.PrepareQoderTarget(gatewayhttp.QoderRequestMetadata(nil), provider, body, protocol.ProtocolOpenAIChatCompletions, "auto")
 			completed, released, bound := 0, 0, 0
 			var completionErr error
@@ -68,4 +70,25 @@ func TestQoderNativeChainCompletionFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func qoderWrappedSSELineForTest(t *testing.T, inner map[string]any) string {
+	t.Helper()
+	body, err := json.Marshal(inner)
+	require.NoError(t, err)
+	wrapper, err := json.Marshal(map[string]string{"body": string(body)})
+	require.NoError(t, err)
+	return "data: " + string(wrapper) + "\n\n"
+}
+
+func qoderWrappedErrorSSELineForTest(t *testing.T, statusCode int, inner map[string]any) string {
+	t.Helper()
+	body, err := json.Marshal(inner)
+	require.NoError(t, err)
+	wrapper, err := json.Marshal(map[string]any{
+		"body":            string(body),
+		"statusCodeValue": statusCode,
+	})
+	require.NoError(t, err)
+	return "data: " + string(wrapper) + "\n\n"
 }

@@ -3,16 +3,14 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
-	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/compact"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 // CompactExecutor 绑定固定模型配置与 HTTP 观测；一次恢复仍由 compact.Recovery 决定。

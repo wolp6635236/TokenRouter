@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	captcha "github.com/alibabacloud-go/captcha-20230305/client"
 	openapiutil "github.com/alibabacloud-go/darabonba-openapi/v2/utils"
 	"github.com/alibabacloud-go/tea/dara"
 	"github.com/alibabacloud-go/tea/tea"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 const aliyunCaptchaTimeoutMillis = 10_000
@@ -62,15 +63,13 @@ func (v *aliyunCaptchaVerifier) VerifyCaptcha(ctx context.Context, cred identity
 // normalizeAliyunCaptchaError 把 SDK 的两种错误类型归一化为 identity.AliyunCaptchaAPIError，
 // 其余错误（网络/超时等）原样返回。
 func normalizeAliyunCaptchaError(err error) error {
-	var teaErr *tea.SDKError
-	if errors.As(err, &teaErr) {
+	if teaErr, ok := errors.AsType[*tea.SDKError](err); ok {
 		return &identity.AliyunCaptchaAPIError{
 			Code:    tea.StringValue(teaErr.Code),
 			Message: tea.StringValue(teaErr.Message),
 		}
 	}
-	var daraErr *dara.SDKError
-	if errors.As(err, &daraErr) {
+	if daraErr, ok := errors.AsType[*dara.SDKError](err); ok {
 		return &identity.AliyunCaptchaAPIError{
 			Code:    dara.StringValue(daraErr.Code),
 			Message: dara.StringValue(daraErr.Message),

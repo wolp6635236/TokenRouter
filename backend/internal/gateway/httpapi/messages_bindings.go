@@ -3,25 +3,21 @@ package httpapi
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
-
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
-
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // MessagesBindings 绑定路由、资金、隔离和审核接口，HTTP 状态由本模块处理。

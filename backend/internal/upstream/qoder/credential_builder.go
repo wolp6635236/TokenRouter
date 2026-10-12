@@ -31,6 +31,20 @@ type CredentialInput struct {
 	OrganizationName   string
 }
 
+type (
+	PATExchanger           func(context.Context, string, *MachineIdentity) (*AuthIdentity, error)
+	CNPATExchanger         func(context.Context, string, *MachineIdentity) (*AuthIdentity, time.Time, error)
+	OrganizationTagsGetter func(context.Context, string, string) (*OrganizationTags, error)
+)
+
+// SessionBuilder 通过凭据交换构建会话，Doer 使用本次提供商的传输配置。
+type SessionBuilder struct {
+	ExchangePAT   PATExchanger
+	ExchangeCNPAT CNPATExchanger
+	GetOrgTags    OrganizationTagsGetter
+	Doer          RequestDoer
+}
+
 func (v *CredentialInput) String() string { return "qoder credentials [redacted]" }
 func (v *CredentialInput) GetCredential(key string) string {
 	switch key {
@@ -64,20 +78,6 @@ func (v *CredentialInput) GetCredential(key string) string {
 		return v.OrganizationName
 	}
 	return ""
-}
-
-type (
-	PATExchanger           func(context.Context, string, *MachineIdentity) (*AuthIdentity, error)
-	CNPATExchanger         func(context.Context, string, *MachineIdentity) (*AuthIdentity, time.Time, error)
-	OrganizationTagsGetter func(context.Context, string, string) (*OrganizationTags, error)
-)
-
-// SessionBuilder 通过凭据交换构建会话，Doer 使用本次提供商的传输配置。
-type SessionBuilder struct {
-	ExchangePAT   PATExchanger
-	ExchangeCNPAT CNPATExchanger
-	GetOrgTags    OrganizationTagsGetter
-	Doer          RequestDoer
 }
 
 func credentialSite(v *CredentialInput) (Site, error) {

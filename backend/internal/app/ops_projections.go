@@ -16,6 +16,8 @@ type opsProviderReader struct {
 	store *providerpostgres.ProviderStore
 }
 
+type opsUsers struct{ store *identitypostgres.UserStore }
+
 func (a opsProviderReader) ListPage(ctx context.Context, p pagination.PaginationParams, platform string, group int64) ([]ops.ProviderObservation, *pagination.PaginationResult, error) {
 	v, pg, e := a.store.ListWithFilters(ctx, p, platform, "", "", "", group, "")
 	return opsProviderViews(v), pg, e
@@ -58,8 +60,6 @@ func opsProviderViews(a []provider.Record) []ops.ProviderObservation {
 	}
 	return querycache.Clone(out)
 }
-
-type opsUsers struct{ store *identitypostgres.UserStore }
 
 func (a opsUsers) ListActivePage(ctx context.Context, p pagination.PaginationParams) ([]ops.UserObservation, *pagination.PaginationResult, error) {
 	v, pg, e := a.store.ListWithFilters(ctx, p, identity.UserListFilters{Status: "active"})

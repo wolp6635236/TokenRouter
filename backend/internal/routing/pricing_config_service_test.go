@@ -1,13 +1,15 @@
 package routing
 
 import (
-	context "context"
-	errors "errors"
-	testing "testing"
-	time "time"
+	"context"
+	"errors"
+	"slices"
+	"testing"
+	"time"
 
-	pagination "github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
 type mockPricingConfigRepository struct {
@@ -32,169 +34,21 @@ type mockPricingConfigRepository struct {
 	replaceModelPricingFn            func(ctx context.Context, pricingConfigID int64, pricingList []ModelPricingEntry) error
 }
 
-func (m *mockPricingConfigRepository) Create(ctx context.Context, pricingConfig *PricingConfig) error {
-	if m.createFn != nil {
-		return m.createFn(ctx, pricingConfig)
-	}
-	return nil
-}
-
-func (m *mockPricingConfigRepository) GetByID(ctx context.Context, id int64) (*PricingConfig, error) {
-	if m.getByIDFn != nil {
-		return m.getByIDFn(ctx, id)
-	}
-	return nil, ErrPricingConfigNotFound
-}
-
-func (m *mockPricingConfigRepository) Update(ctx context.Context, pricingConfig *PricingConfig) error {
-	if m.updateFn != nil {
-		return m.updateFn(ctx, pricingConfig)
-	}
-	return nil
-}
-
-func (m *mockPricingConfigRepository) Delete(ctx context.Context, id int64) error {
-	if m.deleteFn != nil {
-		return m.deleteFn(ctx, id)
-	}
-	return nil
-}
-
-func (m *mockPricingConfigRepository) List(ctx context.Context, params pagination.PaginationParams, status, search string) ([]PricingConfig, *pagination.PaginationResult, error) {
-	if m.listFn != nil {
-		return m.listFn(ctx, params, status, search)
-	}
-	return nil, nil, nil
-}
-
-func (m *mockPricingConfigRepository) ListAll(ctx context.Context) ([]PricingConfig, error) {
-	if m.listAllFn != nil {
-		return m.listAllFn(ctx)
-	}
-	return nil, nil
-}
-
-func (m *mockPricingConfigRepository) ExistsByName(ctx context.Context, name string) (bool, error) {
-	if m.existsByNameFn != nil {
-		return m.existsByNameFn(ctx, name)
-	}
-	return false, nil
-}
-
-func (m *mockPricingConfigRepository) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
-	if m.existsByNameExcludingFn != nil {
-		return m.existsByNameExcludingFn(ctx, name, excludeID)
-	}
-	return false, nil
-}
-
-func (m *mockPricingConfigRepository) GetGroupIDs(ctx context.Context, pricingConfigID int64) ([]int64, error) {
-	if m.getGroupIDsFn != nil {
-		return m.getGroupIDsFn(ctx, pricingConfigID)
-	}
-	return nil, nil
-}
-
-func (m *mockPricingConfigRepository) SetGroupIDs(ctx context.Context, pricingConfigID int64, groupIDs []int64) error {
-	if m.setGroupIDsFn != nil {
-		return m.setGroupIDsFn(ctx, pricingConfigID, groupIDs)
-	}
-	return nil
-}
-
-func (m *mockPricingConfigRepository) GetPricingConfigIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
-	if m.getPricingConfigIDByGroupIDFn != nil {
-		return m.getPricingConfigIDByGroupIDFn(ctx, groupID)
-	}
-	return 0, nil
-}
-
-func (m *mockPricingConfigRepository) GetGroupsInOtherPricingConfigs(ctx context.Context, pricingConfigID int64, groupIDs []int64) ([]int64, error) {
-	if m.getGroupsInOtherPricingConfigsFn != nil {
-		return m.getGroupsInOtherPricingConfigsFn(ctx, pricingConfigID, groupIDs)
-	}
-	return nil, nil
-}
-
-func (m *mockPricingConfigRepository) GetGroupPlatforms(ctx context.Context, groupIDs []int64) (map[int64]string, error) {
-	if m.getGroupPlatformsFn != nil {
-		return m.getGroupPlatformsFn(ctx, groupIDs)
-	}
-	return nil, nil
-}
-
-func (m *mockPricingConfigRepository) ListModelPricing(ctx context.Context, pricingConfigID int64) ([]ModelPricingEntry, error) {
-	if m.listModelPricingFn != nil {
-		return m.listModelPricingFn(ctx, pricingConfigID)
-	}
-	return nil, nil
-}
-
-func (m *mockPricingConfigRepository) CreateModelPricing(ctx context.Context, pricing *ModelPricingEntry) error {
-	if m.createModelPricingFn != nil {
-		return m.createModelPricingFn(ctx, pricing)
-	}
-	return nil
-}
-
-func (m *mockPricingConfigRepository) UpdateModelPricing(ctx context.Context, pricing *ModelPricingEntry) error {
-	if m.updateModelPricingFn != nil {
-		return m.updateModelPricingFn(ctx, pricing)
-	}
-	return nil
-}
-
-func (m *mockPricingConfigRepository) DeleteModelPricing(ctx context.Context, id int64) error {
-	if m.deleteModelPricingFn != nil {
-		return m.deleteModelPricingFn(ctx, id)
-	}
-	return nil
-}
-
-func (m *mockPricingConfigRepository) ReplaceModelPricing(ctx context.Context, pricingConfigID int64, pricingList []ModelPricingEntry) error {
-	if m.replaceModelPricingFn != nil {
-		return m.replaceModelPricingFn(ctx, pricingConfigID, pricingList)
-	}
-	return nil
-}
-
 type mockPricingConfigAuthCacheInvalidator struct {
 	invalidatedGroupIDs []int64
 	invalidatedKeys     []string
 	invalidatedUserIDs  []int64
 }
 
-func (m *mockPricingConfigAuthCacheInvalidator) InvalidateAuthCacheByKey(_ context.Context, key string) {
-	m.invalidatedKeys = append(m.invalidatedKeys, key)
-}
+// TestPricingConfigPublicationOwnsSnapshot 检查修改输入后缓存中的价格配置和分组关联。
+func TestPricingConfigPublicationOwnsSnapshot(t *testing.T) {
+	pricingConfigs := []PricingConfig{{ID: 1, Status: StatusActive, GroupIDs: []int64{9}}}
 
-func (m *mockPricingConfigAuthCacheInvalidator) InvalidateAuthCacheByUserID(_ context.Context, userID int64) {
-	m.invalidatedUserIDs = append(m.invalidatedUserIDs, userID)
-}
+	cache := populatePricingConfigCache(pricingConfigs)
+	pricingConfigs[0].Status = "disabled"
 
-func (m *mockPricingConfigAuthCacheInvalidator) InvalidateAuthCacheByGroupID(_ context.Context, groupID int64) {
-	m.invalidatedGroupIDs = append(m.invalidatedGroupIDs, groupID)
-}
-
-func newTestPricingConfigService(repo *mockPricingConfigRepository) *PricingConfigService {
-	return NewPricingConfigService(repo, nil, PricingConfigOptions{LoadLocation: time.LoadLocation, ReadGroup: repo.readGroup})
-}
-
-func newTestPricingConfigServiceWithAuth(repo *mockPricingConfigRepository, auth *mockPricingConfigAuthCacheInvalidator) *PricingConfigService {
-	return NewPricingConfigService(repo, auth, PricingConfigOptions{LoadLocation: time.LoadLocation, ReadGroup: repo.readGroup})
-}
-
-// makeStandardRepo returns a repo that serves one active channel with anthropic pricing
-// for group 1, with the given model pricing and model mapping.
-func makeStandardRepo(ch PricingConfig, groupPlatforms map[int64]string) *mockPricingConfigRepository {
-	return &mockPricingConfigRepository{
-		listAllFn: func(_ context.Context) ([]PricingConfig, error) {
-			return []PricingConfig{ch}, nil
-		},
-		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
-			return groupPlatforms, nil
-		},
-	}
+	require.Equal(t, StatusActive, cache.byID[1].Status)
+	require.Equal(t, int64(1), cache.pricingConfigByGroupID[9].ID)
 }
 
 func TestBuildModelMappingChain(t *testing.T) {
@@ -721,12 +575,11 @@ func TestGetConfigModelPricing_ReturnsCopy(t *testing.T) {
 	result := svc.GetConfigModelPricing(context.Background(), 10, "claude-opus-4")
 	require.NotNil(t, result)
 
-	// Mutate the returned pricing's slice fields — original cache should not be affected
-	// (Clone copies slices independently, pointer fields are shared per design)
+	// 修改返回值的切片，检查缓存与副本的隔离。
 	result.Models = append(result.Models, "hacked")
 	result.ID = 999
 
-	// Original cache should not be affected (slice independence + struct copy)
+	// 缓存中保存的模型列表应保持为初始值。
 	result2 := svc.GetConfigModelPricing(context.Background(), 10, "claude-opus-4")
 	require.NotNil(t, result2)
 	require.Equal(t, 1, len(result2.Models))
@@ -1092,14 +945,7 @@ func TestBuildCache_DBError(t *testing.T) {
 	require.Contains(t, err.Error(), "database down")
 	require.Equal(t, 1, callCount)
 
-	// Second call within error-TTL should use error cache, but still return error
-	// Because buildCache stores error-TTL cache and returns error, the cached value
-	// is still within TTL and loadCache returns it (which is an empty cache).
-	// Actually, re-reading the code: buildCache returns nil, err, and the error cache
-	// only serves as a "don't retry immediately" mechanism. The singleflight.Do
-	// returns the error. On next call within error-TTL, the cache has an empty but
-	// valid entry, so loadCache returns it (with empty maps). GetPricingConfigForGroup
-	// will find nothing and return nil, nil.
+	// 失败后的短 TTL 缓存包含空映射，再次查询返回 nil 且错误为空。
 	result, err := svc.GetPricingConfigForGroup(context.Background(), 10)
 	require.NoError(t, err)
 	require.Nil(t, result)
@@ -1126,7 +972,7 @@ func TestBuildCacheDoesNotReadRetiredGroupPlatform(t *testing.T) {
 	}
 	svc := newTestPricingConfigService(repo)
 
-	// 平台查询已经退出价格解析，即使旧端口报错也不会访问。
+	// 价格解析按配置关联分组，测试检查平台查询的调用次数。
 	result, err := svc.GetPricingConfigForGroup(context.Background(), 10)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -2173,26 +2019,6 @@ func TestGroupRoutingPolicyUpdateMappingConflict(t *testing.T) {
 	require.Contains(t, err.Error(), "MAPPING_PATTERN_CONFLICT")
 }
 
-// makePolicyRepo 将迁移用例的策略独立装配到分组读取端口。
-func makePolicyRepo(policy GroupRoutingPolicy, config PricingConfig, platforms map[int64]string) *mockPricingConfigRepository {
-	repo := makeStandardRepo(config, platforms)
-	policy.Enabled = config.IsActive()
-	policy.RestrictionModelSource = config.BillingModelSource
-	policy.AllowedModels = []string{}
-	for _, price := range config.ModelPricing {
-		policy.AllowedModels = append(policy.AllowedModels, price.Models...)
-	}
-	repo.readGroup = func(_ context.Context, id int64) (*Group, error) {
-		for _, groupID := range config.GroupIDs {
-			if groupID == id {
-				return &Group{ID: id, RoutingPolicy: policy.Clone()}, nil
-			}
-		}
-		return nil, nil
-	}
-	return repo
-}
-
 // TestPricingConfigModelLookupIndependentOfGroupPlatform 检查价格按配置关联关系查找。
 func TestPricingConfigModelLookupIndependentOfGroupPlatform(t *testing.T) {
 	config := PricingConfig{ID: 1, Status: StatusActive, GroupIDs: []int64{10, 20}, ModelPricing: []ModelPricingEntry{{Models: []string{"claude-x"}, InputPrice: testPtrFloat64(3)}, {Models: []string{"gpt-*"}, InputPrice: testPtrFloat64(5)}}}
@@ -2205,3 +2031,186 @@ func TestPricingConfigModelLookupIndependentOfGroupPlatform(t *testing.T) {
 		require.Equal(t, 5.0, *service.GetConfigModelPricing(context.Background(), id, "gpt-x").InputPrice)
 	}
 }
+
+func (m *mockPricingConfigRepository) Create(ctx context.Context, pricingConfig *PricingConfig) error {
+	if m.createFn != nil {
+		return m.createFn(ctx, pricingConfig)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigRepository) GetByID(ctx context.Context, id int64) (*PricingConfig, error) {
+	if m.getByIDFn != nil {
+		return m.getByIDFn(ctx, id)
+	}
+	return nil, ErrPricingConfigNotFound
+}
+
+func (m *mockPricingConfigRepository) Update(ctx context.Context, pricingConfig *PricingConfig) error {
+	if m.updateFn != nil {
+		return m.updateFn(ctx, pricingConfig)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigRepository) Delete(ctx context.Context, id int64) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigRepository) List(ctx context.Context, params pagination.PaginationParams, status, search string) ([]PricingConfig, *pagination.PaginationResult, error) {
+	if m.listFn != nil {
+		return m.listFn(ctx, params, status, search)
+	}
+	return nil, nil, nil
+}
+
+func (m *mockPricingConfigRepository) ListAll(ctx context.Context) ([]PricingConfig, error) {
+	if m.listAllFn != nil {
+		return m.listAllFn(ctx)
+	}
+	return nil, nil
+}
+
+func (m *mockPricingConfigRepository) ExistsByName(ctx context.Context, name string) (bool, error) {
+	if m.existsByNameFn != nil {
+		return m.existsByNameFn(ctx, name)
+	}
+	return false, nil
+}
+
+func (m *mockPricingConfigRepository) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	if m.existsByNameExcludingFn != nil {
+		return m.existsByNameExcludingFn(ctx, name, excludeID)
+	}
+	return false, nil
+}
+
+func (m *mockPricingConfigRepository) GetGroupIDs(ctx context.Context, pricingConfigID int64) ([]int64, error) {
+	if m.getGroupIDsFn != nil {
+		return m.getGroupIDsFn(ctx, pricingConfigID)
+	}
+	return nil, nil
+}
+
+func (m *mockPricingConfigRepository) SetGroupIDs(ctx context.Context, pricingConfigID int64, groupIDs []int64) error {
+	if m.setGroupIDsFn != nil {
+		return m.setGroupIDsFn(ctx, pricingConfigID, groupIDs)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigRepository) GetPricingConfigIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	if m.getPricingConfigIDByGroupIDFn != nil {
+		return m.getPricingConfigIDByGroupIDFn(ctx, groupID)
+	}
+	return 0, nil
+}
+
+func (m *mockPricingConfigRepository) GetGroupsInOtherPricingConfigs(ctx context.Context, pricingConfigID int64, groupIDs []int64) ([]int64, error) {
+	if m.getGroupsInOtherPricingConfigsFn != nil {
+		return m.getGroupsInOtherPricingConfigsFn(ctx, pricingConfigID, groupIDs)
+	}
+	return nil, nil
+}
+
+func (m *mockPricingConfigRepository) GetGroupPlatforms(ctx context.Context, groupIDs []int64) (map[int64]string, error) {
+	if m.getGroupPlatformsFn != nil {
+		return m.getGroupPlatformsFn(ctx, groupIDs)
+	}
+	return nil, nil
+}
+
+func (m *mockPricingConfigRepository) ListModelPricing(ctx context.Context, pricingConfigID int64) ([]ModelPricingEntry, error) {
+	if m.listModelPricingFn != nil {
+		return m.listModelPricingFn(ctx, pricingConfigID)
+	}
+	return nil, nil
+}
+
+func (m *mockPricingConfigRepository) CreateModelPricing(ctx context.Context, pricing *ModelPricingEntry) error {
+	if m.createModelPricingFn != nil {
+		return m.createModelPricingFn(ctx, pricing)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigRepository) UpdateModelPricing(ctx context.Context, pricing *ModelPricingEntry) error {
+	if m.updateModelPricingFn != nil {
+		return m.updateModelPricingFn(ctx, pricing)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigRepository) DeleteModelPricing(ctx context.Context, id int64) error {
+	if m.deleteModelPricingFn != nil {
+		return m.deleteModelPricingFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigRepository) ReplaceModelPricing(ctx context.Context, pricingConfigID int64, pricingList []ModelPricingEntry) error {
+	if m.replaceModelPricingFn != nil {
+		return m.replaceModelPricingFn(ctx, pricingConfigID, pricingList)
+	}
+	return nil
+}
+
+func (m *mockPricingConfigAuthCacheInvalidator) InvalidateAuthCacheByKey(_ context.Context, key string) {
+	m.invalidatedKeys = append(m.invalidatedKeys, key)
+}
+
+func (m *mockPricingConfigAuthCacheInvalidator) InvalidateAuthCacheByUserID(_ context.Context, userID int64) {
+	m.invalidatedUserIDs = append(m.invalidatedUserIDs, userID)
+}
+
+func (m *mockPricingConfigAuthCacheInvalidator) InvalidateAuthCacheByGroupID(_ context.Context, groupID int64) {
+	m.invalidatedGroupIDs = append(m.invalidatedGroupIDs, groupID)
+}
+
+func newTestPricingConfigService(repo *mockPricingConfigRepository) *PricingConfigService {
+	return NewPricingConfigService(repo, nil, PricingConfigOptions{LoadLocation: time.LoadLocation, ReadGroup: repo.readGroup})
+}
+
+func newTestPricingConfigServiceWithAuth(repo *mockPricingConfigRepository, auth *mockPricingConfigAuthCacheInvalidator) *PricingConfigService {
+	return NewPricingConfigService(repo, auth, PricingConfigOptions{LoadLocation: time.LoadLocation, ReadGroup: repo.readGroup})
+}
+
+// makeStandardRepo 为分组 1 设置活跃价格配置，使用传入的模型价格和映射。
+func makeStandardRepo(ch PricingConfig, groupPlatforms map[int64]string) *mockPricingConfigRepository {
+	return &mockPricingConfigRepository{
+		listAllFn: func(_ context.Context) ([]PricingConfig, error) {
+			return []PricingConfig{ch}, nil
+		},
+		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			return groupPlatforms, nil
+		},
+	}
+}
+
+// makePolicyRepo 为分组读取函数设置测试所需的路由策略。
+func makePolicyRepo(policy GroupRoutingPolicy, config PricingConfig, platforms map[int64]string) *mockPricingConfigRepository {
+	repo := makeStandardRepo(config, platforms)
+	policy.Enabled = config.IsActive()
+	policy.RestrictionModelSource = config.BillingModelSource
+	policy.AllowedModels = []string{}
+	for _, price := range config.ModelPricing {
+		policy.AllowedModels = append(policy.AllowedModels, price.Models...)
+	}
+	repo.readGroup = func(_ context.Context, id int64) (*Group, error) {
+		if slices.Contains(config.GroupIDs, id) {
+			return &Group{ID: id, RoutingPolicy: policy.Clone()}, nil
+		}
+		return nil, nil
+	}
+	return repo
+}
+
+// testPtrFloat64 为测试价卡生成可空金额指针。
+func testPtrFloat64(value float64) *float64 { return &value }
+
+func testPtrInt(value int) *int { return &value }
+
+func testPtrString(value string) *string { return &value }

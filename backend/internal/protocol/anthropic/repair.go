@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"unsafe"
 
 	"github.com/tidwall/gjson"
@@ -77,9 +78,7 @@ func StripEmptyTextBlocksFromSlice(blocks []any) ([]any, bool) {
 					}
 					changed = true
 					blockCopy := make(map[string]any, len(blockMap))
-					for k, v := range blockMap {
-						blockCopy[k] = v
-					}
+					maps.Copy(blockCopy, blockMap)
 					blockCopy["content"] = cleaned
 					result = append(result, blockCopy)
 					continue
@@ -231,7 +230,7 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 	// Disable top-level thinking mode for retry to avoid structural/signature constraints upstream.
 	deleteTopLevelThinking := gjson.Get(jsonStr, "thinking").Exists()
 
-	for i := 0; i < len(messages); i++ {
+	for i := range messages {
 		msgMap, ok := messages[i].(map[string]any)
 		if !ok {
 			continue
@@ -258,7 +257,7 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 			}
 		}
 
-		for bi := 0; bi < len(content); bi++ {
+		for bi := range content {
 			block := content[bi]
 			blockMap, ok := block.(map[string]any)
 			if !ok {
@@ -322,9 +321,7 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 						modifiedThisMsg = true
 						ensureNewContent(bi)
 						blockCopy := make(map[string]any, len(blockMap))
-						for k, v := range blockMap {
-							blockCopy[k] = v
-						}
+						maps.Copy(blockCopy, blockMap)
 						blockCopy["content"] = cleaned
 						newContent = append(newContent, blockCopy)
 						continue

@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"slices"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 // LocalizedTextExpression 为聚合查询生成与内容解析器相同的原文和有效译文选择。
@@ -26,8 +28,8 @@ func LocalizedTextExpression(ctx context.Context, column, field, original string
 	fallback := "COALESCE(" + source + ", " + original + ")"
 	expression := fallback
 	candidates := locale.Candidates(locale.FromContext(ctx))
-	for index := len(candidates) - 1; index >= 0; index-- {
-		language := pq.QuoteLiteral(candidates[index])
+	for _, candidate := range slices.Backward(candidates) {
+		language := pq.QuoteLiteral(candidate)
 		translation := content + "->'translations'->" + language
 		value := translation + "->>'value'"
 		if field != "" {

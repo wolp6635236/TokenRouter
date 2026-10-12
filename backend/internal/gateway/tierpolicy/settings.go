@@ -24,7 +24,7 @@ const (
 	OpenAIFastPolicyActionForceUltrafast = "force_ultrafast"
 )
 
-// OpenAIFastPolicyRule 单条 OpenAI fast/flex 策略规则
+// OpenAIFastPolicyRule 单条 OpenAI fast/flex 策略规则。
 type OpenAIFastPolicyRule struct {
 	ServiceTier          string   `json:"service_tier"`                     // "priority" | "ultrafast" | "flex" | "auto" | "default" | "scale" | "all"
 	Action               string   `json:"action"`                           // "pass" | "filter" | "block" | "force_priority"
@@ -36,7 +36,7 @@ type OpenAIFastPolicyRule struct {
 	FallbackErrorMessage string   `json:"fallback_error_message,omitempty"` // 未匹配白名单时的自定义错误消息 (fallback_action=block 时生效)
 }
 
-// OpenAIFastPolicySettings OpenAI fast 策略配置
+// OpenAIFastPolicySettings OpenAI fast 策略配置。
 type OpenAIFastPolicySettings struct {
 	Rules []OpenAIFastPolicyRule `json:"rules"`
 }

@@ -47,7 +47,7 @@
             />
           </div>
           <div v-if="verifying" class="mt-3 flex items-center justify-center gap-2 text-sm text-gray-500">
-            <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-500"></div>
+            <div class="spinner h-4 w-4 text-primary-500"></div>
             {{ t('common.verifying') }}
           </div>
         </div>

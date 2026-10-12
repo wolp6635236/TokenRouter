@@ -5,20 +5,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/robfig/cron/v3"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // 解析器接受分钟、小时、日、月和星期字段。
 var scheduledTestParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-
-func NextScheduledTestRun(expression string, from time.Time) (time.Time, error) {
-	schedule, err := scheduledTestParser.Parse(expression)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return schedule.Next(from), nil
-}
 
 // ScheduledCron 只在 Start 注册和启动原分钟 cron；Stop 永久禁止再次启动。
 type ScheduledCron struct {
@@ -26,6 +19,14 @@ type ScheduledCron struct {
 	cron             *cron.Cron
 	started, stopped bool
 	done             context.Context
+}
+
+func NextScheduledTestRun(expression string, from time.Time) (time.Time, error) {
+	schedule, err := scheduledTestParser.Parse(expression)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return schedule.Next(from), nil
 }
 
 func NewScheduledCron(location *time.Location) provider.ScheduledTestSchedule {

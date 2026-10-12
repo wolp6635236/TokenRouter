@@ -21,11 +21,11 @@ func ProtocolAuthMode(provider *Record) string {
 }
 
 // NativeProtocolOptions 复用认证模式判定，目录接口不接收任何实际凭据。
-func (a *Record) NativeProtocolOptions() []capability.ProtocolID {
-	if a == nil {
+func (r *Record) NativeProtocolOptions() []capability.ProtocolID {
+	if r == nil {
 		return []capability.ProtocolID{}
 	}
-	return capability.NativeProtocolOptions(a.Platform, a.Type, ProtocolAuthMode(a))
+	return capability.NativeProtocolOptions(r.Platform, r.Type, ProtocolAuthMode(r))
 }
 
 func ParseProtocolSet(raw any) ([]capability.ProtocolID, error) {
@@ -52,23 +52,23 @@ func ParseProtocolSet(raw any) ([]capability.ProtocolID, error) {
 }
 
 // UpstreamProtocols 读取协议集合，历史记录缺少该字段时推导默认值。
-func (a *Record) UpstreamProtocols() []capability.ProtocolID {
-	return a.UpstreamProtocolsForLegacy(a.ConfiguredAPIProtocol())
+func (r *Record) UpstreamProtocols() []capability.ProtocolID {
+	return r.UpstreamProtocolsForLegacy(r.ConfiguredAPIProtocol())
 }
 
 // UpstreamProtocolsForLegacy 读取配置的协议集合，缺失时按传入的协议变体推导默认值。
-func (a *Record) UpstreamProtocolsForLegacy(legacyMode string) []capability.ProtocolID {
-	if a == nil {
+func (r *Record) UpstreamProtocolsForLegacy(legacyMode string) []capability.ProtocolID {
+	if r == nil {
 		return []capability.ProtocolID{}
 	}
-	if raw, exists := a.Credentials[UpstreamProtocolsKey]; exists {
+	if raw, exists := r.Credentials[UpstreamProtocolsKey]; exists {
 		protocols, err := ParseProtocolSet(raw)
 		if err != nil {
 			return []capability.ProtocolID{}
 		}
 		return protocols
 	}
-	return a.LegacyUpstreamProtocols(legacyMode)
+	return r.LegacyUpstreamProtocols(legacyMode)
 }
 
 // NormalizeProviderProtocols 是创建、编辑和导入的统一保存校验；空数组明确关闭新调用。
@@ -76,6 +76,9 @@ func (a *Record) UpstreamProtocolsForLegacy(legacyMode string) []capability.Prot
 func NormalizeProviderProtocols(provider *Record) error {
 	if provider == nil || provider.IsCredentialShadow() {
 		return nil
+	}
+	if err := ValidateJevCredentials(provider); err != nil {
+		return err
 	}
 	protocols := provider.UpstreamProtocols()
 	if raw, exists := provider.Credentials[UpstreamProtocolsKey]; exists {
@@ -94,6 +97,9 @@ func NormalizeProviderProtocols(provider *Record) error {
 		provider.Credentials = map[string]any{}
 	}
 	provider.Credentials[UpstreamProtocolsKey] = normalized
+	if err := normalizeResponsesWS(provider); err != nil {
+		return err
+	}
 	MigrateLegacyProtocolCredentials(provider)
 	return nil
 }

@@ -10,12 +10,22 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// SettingKeyPanelRateLimitSettings 保留已有存储键。
-const SettingKeyPanelRateLimitSettings = "panel_rate_limit_settings"
+const (
+	// SettingKeyPanelRateLimitSettings 保留已有存储键。
+	SettingKeyPanelRateLimitSettings = "panel_rate_limit_settings"
+
+	// 面板限流 RPM 的取值上限，防止配置异常大的值失去意义。
+	panelRateLimitRPMMax = 100000
+
+	panelRateLimitCacheTTL  = 60 * time.Second
+	panelRateLimitErrorTTL  = 5 * time.Second
+	panelRateLimitDBTimeout = 5 * time.Second
+)
 
 // PanelSettingsRepository 只提供面板限流配置需要的存取能力。
 type PanelSettingsRepository interface {
@@ -28,11 +38,6 @@ type PanelSettings struct {
 	settingRepo         PanelSettingsRepository
 	panelRateLimitCache atomic.Value
 	panelRateLimitSF    singleflight.Group
-}
-
-// NewPanelSettings 构造配置读取器，不执行回源或启动后台任务。
-func NewPanelSettings(repo PanelSettingsRepository) *PanelSettings {
-	return &PanelSettings{settingRepo: repo}
 }
 
 // PanelRateLimitSettings 面板 API 限流配置。
@@ -51,19 +56,15 @@ type PanelRateLimitSettings struct {
 	PublicIPRPM int `json:"public_ip_rpm"`
 }
 
-// 面板限流 RPM 的取值上限，防止配置异常大的值失去意义。
-const panelRateLimitRPMMax = 100000
-
-const (
-	panelRateLimitCacheTTL  = 60 * time.Second
-	panelRateLimitErrorTTL  = 5 * time.Second
-	panelRateLimitDBTimeout = 5 * time.Second
-)
-
 // cachedPanelRateLimitSettings 进程内缓存条目（60s TTL）。
 type cachedPanelRateLimitSettings struct {
 	settings  PanelRateLimitSettings
 	expiresAt int64 // unix nano
+}
+
+// NewPanelSettings 构造配置读取器，不执行回源或启动后台任务。
+func NewPanelSettings(repo PanelSettingsRepository) *PanelSettings {
+	return &PanelSettings{settingRepo: repo}
 }
 
 // DefaultPanelRateLimitSettings 返回默认面板限流配置。

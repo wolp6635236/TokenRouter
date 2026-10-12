@@ -6,12 +6,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-
 	"github.com/TokenFlux/TokenRouter/migrations"
-	"github.com/stretchr/testify/require"
 )
 
 // TestMigration281MovesSettingsWithoutCopyingGroupValues 验证新配置字段采用默认值，旧分组价格不搬迁；价卡和关联保持原样。

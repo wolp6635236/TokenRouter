@@ -7,15 +7,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
+)
+
+const (
+	opsListViewErrors   = "errors"
+	opsListViewExcluded = "excluded"
+	opsListViewAll      = "all"
 )
 
 type OpsHandler struct {
 	opsService *ops.OpsService
+}
+
+type opsResolveRequest struct {
+	Resolved bool `json:"resolved"`
+}
+
+func NewOpsHandler(opsService *ops.OpsService) *OpsHandler {
+	return &OpsHandler{opsService: opsService}
 }
 
 // GetErrorLogByID returns ops error log detail.
@@ -46,12 +60,6 @@ func (h *OpsHandler) GetErrorLogByID(c *gin.Context) {
 	response.Success(c, detail)
 }
 
-const (
-	opsListViewErrors   = "errors"
-	opsListViewExcluded = "excluded"
-	opsListViewAll      = "all"
-)
-
 func parseOpsViewParam(c *gin.Context) string {
 	if c == nil {
 		return ""
@@ -67,10 +75,6 @@ func parseOpsViewParam(c *gin.Context) string {
 	default:
 		return opsListViewErrors
 	}
-}
-
-func NewOpsHandler(opsService *ops.OpsService) *OpsHandler {
-	return &OpsHandler{opsService: opsService}
 }
 
 // applyOpsErrorSortParams 将 sort_by 和 sort_order 查询参数写入过滤器。
@@ -115,6 +119,7 @@ func (h *OpsHandler) GetErrorLogs(c *gin.Context) {
 	filter.Phase = strings.TrimSpace(c.Query("phase"))
 	filter.Owner = strings.TrimSpace(c.Query("error_owner"))
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 	filter.UserQuery = strings.TrimSpace(c.Query("user_query"))
 	// Model 过滤：admin 走精确匹配（ModelFuzzy 默认 false，保持管理端语义）。
@@ -242,6 +247,7 @@ func (h *OpsHandler) ListRequestErrors(c *gin.Context) {
 	filter.Phase = strings.TrimSpace(c.Query("phase"))
 	filter.Owner = strings.TrimSpace(c.Query("error_owner"))
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 	filter.UserQuery = strings.TrimSpace(c.Query("user_query"))
 	// Model 过滤：admin 走精确匹配（ModelFuzzy 默认 false，保持管理端语义）。
@@ -387,6 +393,7 @@ func (h *OpsHandler) ListRequestErrorUpstreamErrors(c *gin.Context) {
 	filter.IncludeRecoveredUpstream = true
 	filter.Owner = "provider"
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 
 	if platform := strings.TrimSpace(c.Query("platform")); platform != "" {
@@ -471,6 +478,7 @@ func (h *OpsHandler) ListUpstreamErrors(c *gin.Context) {
 	filter.IncludeRecoveredUpstream = true
 	filter.Owner = "provider"
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 
 	if platform := strings.TrimSpace(c.Query("platform")); platform != "" {
@@ -546,8 +554,6 @@ func (h *OpsHandler) ResolveUpstreamError(c *gin.Context) {
 	h.UpdateErrorResolution(c)
 }
 
-// ==================== Existing endpoints ====================
-
 // ListRequestDetails returns a request-level list (success + error) for drill-down.
 // GET /api/v1/admin/ops/requests
 func (h *OpsHandler) ListRequestDetails(c *gin.Context) {
@@ -581,6 +587,7 @@ func (h *OpsHandler) ListRequestDetails(c *gin.Context) {
 	filter.Kind = strings.TrimSpace(c.Query("kind"))
 	filter.Platform = strings.TrimSpace(c.Query("platform"))
 	filter.Model = strings.TrimSpace(c.Query("model"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
 	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 	filter.Sort = strings.TrimSpace(c.Query("sort"))
@@ -650,10 +657,6 @@ func (h *OpsHandler) ListRequestDetails(c *gin.Context) {
 	}
 
 	response.Paginated(c, out.Items, out.Total, out.Page, out.PageSize)
-}
-
-type opsResolveRequest struct {
-	Resolved bool `json:"resolved"`
 }
 
 // UpdateErrorResolution allows manual resolve/unresolve.
@@ -735,6 +738,10 @@ func parseOpsTimeRange(c *gin.Context, defaultRange string) (time.Time, time.Tim
 		return start, end, nil
 	}
 
+	// 按 ID 查询时，省略时间参数表示查询当前仍保留的全部明细。
+	if strings.TrimSpace(c.Query("request_id")) != "" && c.Query("time_range") == "" {
+		return time.Unix(0, 0).UTC(), time.Now().UTC(), nil
+	}
 	// time_range fallback
 	tr := strings.TrimSpace(c.Query("time_range"))
 	if tr == "" {

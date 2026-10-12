@@ -51,6 +51,35 @@ type Service struct {
 	stopOnce  sync.Once
 }
 
+// 目录值属于纯定价包，provider 只持有一个可替换的缓存实例。
+type (
+	CatalogModelPricing = purepricing.CatalogModelPricing
+)
+
+// Options 包含 app 在启动时读取的模型目录配置。
+type Options struct {
+	DataDir              string
+	RemoteURL            string
+	FallbackFile         string
+	CheckIntervalMinutes int
+	URLAllowlistEnabled  bool
+	AllowInsecureHTTP    bool
+	AllowPrivateHosts    bool
+	PricingHosts         []string
+	// 每次查询取得一次完整模型身份候选生成器。
+	ModelLookupCandidates func() func(string) []string
+}
+
+// Snapshot 是可交给纯查询或测试消费者的独立目录快照。
+type Snapshot struct {
+	BillingDefaults            purepricing.OperationPrices
+	catalogIdentity            *modelcatalog.Catalog
+	Data                       map[string]*CatalogModelPricing
+	LastUpdated                time.Time
+	LocalHash, CustomFilesHash string
+	LastError                  string
+}
+
 // NewService 构造目录运行时；初始化及后台同步由应用生命周期显式启动。
 func NewService(options Options, remoteClient RemoteClient) *Service {
 	s := &Service{
@@ -62,7 +91,20 @@ func NewService(options Options, remoteClient RemoteClient) *Service {
 	return s
 }
 
-// Initialize 初始化价格服务
+// NewServiceFromSnapshot 支持以已经解析的数据初始化，无后台启动或加载 I/O。
+func NewServiceFromSnapshot(options Options, remote RemoteClient, snapshot Snapshot) *Service {
+	s := NewService(options, remote)
+	s.pricingData = snapshot.Data
+	s.billingDefaults = snapshot.BillingDefaults.Clone()
+	s.modelCatalog = snapshot.catalogIdentity
+	s.lastCatalogError = snapshot.LastError
+	s.lastUpdated = snapshot.LastUpdated
+	s.localHash = snapshot.LocalHash
+	s.customFilesHash = snapshot.CustomFilesHash
+	return s
+}
+
+// Initialize 初始化价格服务。
 func (s *Service) Initialize() error {
 	// 确保数据目录存在
 	if err := os.MkdirAll(s.currentOptions().DataDir, 0o755); err != nil {
@@ -78,7 +120,7 @@ func (s *Service) Initialize() error {
 	return nil
 }
 
-// Stop 停止价格服务
+// Stop 停止价格服务。
 func (s *Service) Stop() {
 	s.stopOnce.Do(func() { close(s.stopCh) })
 	s.Wait()
@@ -105,9 +147,7 @@ func (s *Service) startUpdateScheduler() {
 		checkInterval = 10 * time.Minute
 	}
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		if remoteEnabled {
 			_ = s.syncWithRemote()
 		}
@@ -129,7 +169,7 @@ func (s *Service) startUpdateScheduler() {
 				return
 			}
 		}
-	}()
+	})
 
 	logging.LegacyPrintf("service.modelcatalog", "[ModelCatalog] Update scheduler started (check every %v, remote sync=%t, custom file watch=%t)", checkInterval, remoteEnabled, watchCustom)
 }
@@ -180,11 +220,11 @@ func loadLocalPricingEntries(path string) (map[string]json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodePricingSupplement(body, path)
+	return decodeModelSupplement(body, path)
 }
 
-// decodePricingSupplement 对内嵌和外部补充使用相同的完整校验。
-func decodePricingSupplement(body []byte, source string) (map[string]json.RawMessage, error) {
+// decodeModelSupplement 对内嵌和外部补充使用相同的完整校验。
+func decodeModelSupplement(body []byte, source string) (map[string]json.RawMessage, error) {
 	entries, err := purepricing.DecodeCatalogEntries(body)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", source, err)
@@ -323,7 +363,7 @@ func (s *Service) GetModelModalities(modelName string) ([]string, []string) {
 	return query.GetModelModalities(modelName)
 }
 
-// GetStatus 获取服务状态
+// GetStatus 获取服务状态。
 func (s *Service) GetStatus() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -356,7 +396,7 @@ func (s *Service) ListModelNamesByProvider(provider string) []string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	names := make([]string, 0)
 	for name, p := range s.pricingData {
-		if strings.ToLower(p.Provider) == provider {
+		if strings.EqualFold(p.Provider, provider) {
 			names = append(names, name)
 		}
 	}
@@ -369,40 +409,11 @@ func (s *Service) Start() {
 	s.startOnce.Do(s.startUpdateScheduler)
 }
 
-// 目录值属于纯定价包，provider 只持有一个可替换的缓存实例。
-type (
-	CatalogModelPricing = purepricing.CatalogModelPricing
-)
-
-// Options 包含 app 在启动时读取的模型目录配置。
-type Options struct {
-	DataDir              string
-	RemoteURL            string
-	FallbackFile         string
-	CheckIntervalMinutes int
-	URLAllowlistEnabled  bool
-	AllowInsecureHTTP    bool
-	AllowPrivateHosts    bool
-	PricingHosts         []string
-	// 每次查询取得一次完整模型身份候选生成器。
-	ModelLookupCandidates func() func(string) []string
-}
-
 func (s *Service) currentOptions() Options {
 	if s.options == nil {
 		return Options{}
 	}
 	return *s.options
-}
-
-// Snapshot 是可交给纯查询或测试消费者的独立目录快照。
-type Snapshot struct {
-	BillingDefaults            purepricing.OperationPrices
-	catalogIdentity            *modelcatalog.Catalog
-	Data                       map[string]*CatalogModelPricing
-	LastUpdated                time.Time
-	LocalHash, CustomFilesHash string
-	LastError                  string
 }
 
 // Snapshot 返回独立的 map、条目与切片，调用者不能改写运行目录。
@@ -421,19 +432,6 @@ func (s *Service) Snapshot() Snapshot {
 		out.Data[key] = purepricing.CloneCatalogPrice(value)
 	}
 	return out
-}
-
-// NewServiceFromSnapshot 支持以已经解析的数据初始化，无后台启动或加载 I/O。
-func NewServiceFromSnapshot(options Options, remote RemoteClient, snapshot Snapshot) *Service {
-	s := NewService(options, remote)
-	s.pricingData = snapshot.Data
-	s.billingDefaults = snapshot.BillingDefaults.Clone()
-	s.modelCatalog = snapshot.catalogIdentity
-	s.lastCatalogError = snapshot.LastError
-	s.lastUpdated = snapshot.LastUpdated
-	s.localHash = snapshot.LocalHash
-	s.customFilesHash = snapshot.CustomFilesHash
-	return s
 }
 
 // Wait 等待已启动的更新任务退出。Stop 发送停止信号后也使用该等待方法。

@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/stretchr/testify/suite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/ent/authidentitychannel"
-	"github.com/stretchr/testify/suite"
+	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 )
 
 type UserProfileIdentityRepoSuite struct {
@@ -25,6 +25,11 @@ type UserProfileIdentityRepoSuite struct {
 	ctx    context.Context
 	client *dbent.Client
 	repo   *postgres.UserStore
+}
+
+type sqlNullTime struct {
+	Time  time.Time
+	Valid bool
 }
 
 func TestUserProfileIdentityRepoSuite(t *testing.T) {
@@ -564,11 +569,6 @@ WHERE id = $1`,
 	s.Require().True(storedActiveAt.Valid)
 	s.Require().True(storedLoginAt.Time.Equal(loginAt))
 	s.Require().True(storedActiveAt.Time.Equal(activeAt))
-}
-
-type sqlNullTime struct {
-	Time  time.Time
-	Valid bool
 }
 
 func (t *sqlNullTime) Scan(value any) error {

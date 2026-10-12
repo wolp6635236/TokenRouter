@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/search"
 	"github.com/TokenFlux/TokenRouter/internal/search/contract"
-	"github.com/stretchr/testify/require"
 )
 
 type searchStub struct {
@@ -17,6 +18,27 @@ type searchStub struct {
 	request contract.SearchRequest
 	err     error
 	events  *[]string
+}
+
+type sourceStub struct{ searcher Searcher }
+
+type settingStub struct {
+	enabled bool
+	calls   int
+}
+
+type pricingConfigStub struct {
+	calls   int
+	enabled bool
+}
+
+type outputStub struct {
+	events  []string
+	bodies  [][]byte
+	json    []byte
+	failAt  int
+	flushes int
+	started bool
 }
 
 func (s *searchStub) SearchWithBestProvider(_ context.Context, r contract.SearchRequest) (*contract.SearchResponse, string, error) {
@@ -28,34 +50,13 @@ func (s *searchStub) SearchWithBestProvider(_ context.Context, r contract.Search
 	return &contract.SearchResponse{Query: r.Query, Results: []contract.SearchResult{{URL: "https://example.test/page", Title: "title", Snippet: "snippet"}}}, "brave", s.err
 }
 
-type sourceStub struct{ searcher Searcher }
-
 func (s sourceStub) Current() Searcher { return s.searcher }
 
-type settingStub struct {
-	enabled bool
-	calls   int
-}
-
 func (s *settingStub) IsWebSearchEmulationEnabled(context.Context) bool { s.calls++; return s.enabled }
-
-type pricingConfigStub struct {
-	calls   int
-	enabled bool
-}
 
 func (s *pricingConfigStub) Enabled(context.Context, int64, string) (bool, error) {
 	s.calls++
 	return s.enabled, nil
-}
-
-type outputStub struct {
-	events  []string
-	bodies  [][]byte
-	json    []byte
-	failAt  int
-	flushes int
-	started bool
 }
 
 func (o *outputStub) StartStream() { o.started = true }

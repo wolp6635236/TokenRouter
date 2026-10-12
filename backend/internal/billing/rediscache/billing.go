@@ -9,8 +9,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
 const (
@@ -24,29 +25,7 @@ const (
 	rateLimitWindow5h = 5 * time.Hour
 	rateLimitWindow1d = 24 * time.Hour
 	rateLimitWindow7d = 7 * 24 * time.Hour
-)
 
-// jitteredTTL 返回带随机抖动的 TTL，防止缓存雪崩
-func jitteredTTL() time.Duration {
-	// 只做“减法抖动”，确保实际 TTL 不会超过 billingCacheTTL（避免上界预期被打破）。
-	if billingCacheJitter <= 0 {
-		return billingCacheTTL
-	}
-	jitter := time.Duration(rand.IntN(int(billingCacheJitter)))
-	return billingCacheTTL - jitter
-}
-
-// billingBalanceKey generates the Redis key for user balance cache.
-func billingBalanceKey(userID int64) string {
-	return fmt.Sprintf("%s%d", billingBalanceKeyPrefix, userID)
-}
-
-// billingRateLimitKey generates the Redis key for API key rate limit cache.
-func billingRateLimitKey(keyID int64) string {
-	return fmt.Sprintf("%s%d", billingRateLimitKeyPrefix, keyID)
-}
-
-const (
 	rateLimitFieldUsage5h  = "usage_5h"
 	rateLimitFieldUsage1d  = "usage_1d"
 	rateLimitFieldUsage7d  = "usage_7d"
@@ -72,7 +51,7 @@ var (
 	// (instead of accumulated) and the window timestamp is updated, matching the DB-side
 	// IncrementRateLimitUsage semantics.
 	//
-	// ARGV: [1]=cost, [2]=ttl_seconds, [3]=now_unix, [4]=window_5h_seconds, [5]=window_1d_seconds, [6]=window_7d_seconds
+	// ARGV: [1]=cost, [2]=ttl_seconds, [3]=now_unix, [4]=window_5h_seconds, [5]=window_1d_seconds, [6]=window_7d_seconds.
 	updateRateLimitUsageScript = redis.NewScript(`
 		local exists = redis.call('EXISTS', KEYS[1])
 		if exists == 0 then
@@ -108,6 +87,26 @@ var (
 
 type Cache struct {
 	rdb *redis.Client
+}
+
+// jitteredTTL 返回带随机抖动的 TTL，防止缓存雪崩。
+func jitteredTTL() time.Duration {
+	// 只做“减法抖动”，确保实际 TTL 不会超过 billingCacheTTL（避免上界预期被打破）。
+	if billingCacheJitter <= 0 {
+		return billingCacheTTL
+	}
+	jitter := time.Duration(rand.IntN(int(billingCacheJitter)))
+	return billingCacheTTL - jitter
+}
+
+// billingBalanceKey generates the Redis key for user balance cache.
+func billingBalanceKey(userID int64) string {
+	return fmt.Sprintf("%s%d", billingBalanceKeyPrefix, userID)
+}
+
+// billingRateLimitKey generates the Redis key for API key rate limit cache.
+func billingRateLimitKey(keyID int64) string {
+	return fmt.Sprintf("%s%d", billingRateLimitKeyPrefix, keyID)
 }
 
 func NewBillingCache(rdb *redis.Client) *Cache {

@@ -5,14 +5,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	billingdto "github.com/TokenFlux/TokenRouter/internal/billing/httpapi/dto"
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // UserAdministration 是管理员 HTTP 实际消费的身份用例接口。
@@ -43,29 +43,13 @@ type AdminUserHandler[K any] struct {
 	stepUp       func(*gin.Context) bool
 }
 
-func NewAdminUserHandler[K any](users UserAdministration, keys func(context.Context, int64, int, int, string, string) ([]K, int64, error), concurrency func(context.Context, []identity.User) (map[int64]int, error), stepUp func(*gin.Context) bool) *AdminUserHandler[K] {
-	return &AdminUserHandler[K]{adminService: users, listKeys: keys, concurrency: concurrency, stepUp: stepUp}
-}
-
-func (h *AdminUserHandler[K]) userResponse(u *identity.User) *dto.AdminUser[K] {
-	return dto.AdminUserFromIdentity[K](u, nil)
-}
-
-func adminID(c *gin.Context) int64 {
-	s, ok := authctx.GetAuthSubjectFromContext(c)
-	if !ok {
-		return 0
-	}
-	return s.UserID
-}
-
-// UserWithConcurrency wraps AdminUser with current concurrency info
+// UserWithConcurrency wraps AdminUser with current concurrency info.
 type UserWithConcurrency[K any] struct {
 	dto.AdminUser[K]
 	CurrentConcurrency int `json:"current_concurrency"`
 }
 
-// CreateUserRequest represents admin create user request
+// CreateUserRequest represents admin create user request.
 type CreateUserRequest struct {
 	Email         string   `json:"email" binding:"required,email"`
 	Password      string   `json:"password" binding:"required,min=6"`
@@ -82,7 +66,7 @@ type CreateUserRequest struct {
 }
 
 // UpdateUserRequest represents admin update user request
-// 使用指针类型来区分"未提供"和"设置为0"
+// 使用指针类型来区分"未提供"和"设置为 0"。
 type UpdateUserRequest struct {
 	Email         string   `json:"email" binding:"omitempty,email"`
 	Password      string   `json:"password" binding:"omitempty,min=6"`
@@ -102,7 +86,7 @@ type UpdateUserRequest struct {
 	GroupRates map[int64]*float64 `json:"group_rates"`
 }
 
-// UpdateBalanceRequest represents balance update request
+// UpdateBalanceRequest represents balance update request.
 type UpdateBalanceRequest struct {
 	Balance   float64 `json:"balance" binding:"required,gt=0"`
 	Operation string  `json:"operation" binding:"required,oneof=set add subtract"`
@@ -131,6 +115,36 @@ type BindUserAuthIdentityChannelRequest struct {
 	ChannelAppID   string         `json:"channel_app_id"`
 	ChannelSubject string         `json:"channel_subject"`
 	Metadata       map[string]any `json:"metadata"`
+}
+
+// ReplaceGroupRequest represents the request to replace a user's exclusive group.
+type ReplaceGroupRequest struct {
+	OldGroupID int64 `json:"old_group_id" binding:"required,gt=0"`
+	NewGroupID int64 `json:"new_group_id" binding:"required,gt=0"`
+}
+
+// BatchUpdateLimitsRequest 表示管理员批量覆盖用户限制的请求。
+type BatchUpdateLimitsRequest struct {
+	UserIDs     []int64 `json:"user_ids"`
+	All         bool    `json:"all"`
+	Concurrency *int    `json:"concurrency" binding:"omitempty,min=0"`
+	RPMLimit    *int    `json:"rpm_limit" binding:"omitempty,min=0"`
+}
+
+func NewAdminUserHandler[K any](users UserAdministration, keys func(context.Context, int64, int, int, string, string) ([]K, int64, error), concurrency func(context.Context, []identity.User) (map[int64]int, error), stepUp func(*gin.Context) bool) *AdminUserHandler[K] {
+	return &AdminUserHandler[K]{adminService: users, listKeys: keys, concurrency: concurrency, stepUp: stepUp}
+}
+
+func (h *AdminUserHandler[K]) userResponse(u *identity.User) *dto.AdminUser[K] {
+	return dto.AdminUserFromIdentity[K](u, nil)
+}
+
+func adminID(c *gin.Context) int64 {
+	s, ok := authctx.GetAuthSubjectFromContext(c)
+	if !ok {
+		return 0
+	}
+	return s.UserID
 }
 
 // List handles listing all users with pagination
@@ -196,7 +210,7 @@ func (h *AdminUserHandler[K]) List(c *gin.Context) {
 }
 
 // ParseAttributeFilters extracts attribute filters from query params
-// Format: attr[{attributeID}]=value, e.g. attr[1]=company&attr[2]=developer
+// Format: attr[{attributeID}]=value, e.g. attr[1]=company&attr[2]=developer.
 func ParseAttributeFilters(c *gin.Context) map[int64]string {
 	result := make(map[int64]string)
 
@@ -543,10 +557,7 @@ func (h *AdminUserHandler[K]) GetBalanceHistory(c *gin.Context) {
 	}
 
 	// Custom response with total_recharged alongside pagination
-	pages := int((total + int64(pageSize) - 1) / int64(pageSize))
-	if pages < 1 {
-		pages = 1
-	}
+	pages := max(int((total+int64(pageSize)-1)/int64(pageSize)), 1)
 	response.Success(c, gin.H{
 		"items":           out,
 		"total":           total,
@@ -555,12 +566,6 @@ func (h *AdminUserHandler[K]) GetBalanceHistory(c *gin.Context) {
 		"pages":           pages,
 		"total_recharged": totalRecharged,
 	})
-}
-
-// ReplaceGroupRequest represents the request to replace a user's exclusive group
-type ReplaceGroupRequest struct {
-	OldGroupID int64 `json:"old_group_id" binding:"required,gt=0"`
-	NewGroupID int64 `json:"new_group_id" binding:"required,gt=0"`
 }
 
 // ReplaceGroup handles replacing a user's exclusive group
@@ -605,14 +610,6 @@ func (h *AdminUserHandler[K]) GetUserRPMStatus(c *gin.Context) {
 	}
 
 	response.Success(c, status)
-}
-
-// BatchUpdateLimitsRequest 表示管理员批量覆盖用户限制的请求。
-type BatchUpdateLimitsRequest struct {
-	UserIDs     []int64 `json:"user_ids"`
-	All         bool    `json:"all"`
-	Concurrency *int    `json:"concurrency" binding:"omitempty,min=0"`
-	RPMLimit    *int    `json:"rpm_limit" binding:"omitempty,min=0"`
 }
 
 // BatchUpdateLimits 批量覆盖多个用户的并发数和/或 RPM 上限。

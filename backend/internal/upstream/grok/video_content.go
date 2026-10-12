@@ -24,9 +24,6 @@ type VideoContentOptions struct {
 	Enter                       func() (func(), error)
 }
 
-func (VideoContentOptions) String() string     { return "grok video content options" }
-func (o VideoContentOptions) GoString() string { return o.String() }
-
 type VideoContent struct {
 	StatusBody    []byte      `json:"-"`
 	Headers       http.Header `json:"-"`
@@ -38,6 +35,9 @@ type VideoContent struct {
 	once          sync.Once
 	closeErr      error
 }
+
+func (VideoContentOptions) String() string     { return "grok video content options" }
+func (o VideoContentOptions) GoString() string { return o.String() }
 
 func (v *VideoContent) Read(data []byte) (int, error) { return v.body.Read(data) }
 func (v *VideoContent) Close() error {

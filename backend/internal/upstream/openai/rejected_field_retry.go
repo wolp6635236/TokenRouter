@@ -9,10 +9,11 @@ import (
 	"strings"
 	"sync"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // 单次转发最多执行六次字段降级，避免异常上游持续诱导请求变形。

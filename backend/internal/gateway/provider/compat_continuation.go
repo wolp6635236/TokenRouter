@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	"github.com/tidwall/gjson"
 )
 
 func CompatContinuationEnabled(provider *ExecutionProvider, model string) bool {

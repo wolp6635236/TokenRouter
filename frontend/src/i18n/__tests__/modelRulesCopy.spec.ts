@@ -10,14 +10,14 @@ describe('model routing copy', () => {
     expect(zhProviders.providers.modelRestriction).toBe('提供商模型规则（可选）')
     expect(zhProviders.providers.modelWhitelist).toBe('最终模型白名单')
     expect(zhProviders.providers.modelMapping).toBe('提供商模型映射')
-    expect(zhProviders.providers.supportsAllModels).toBe('使用默认模型目录')
-    expect(zhProviders.providers.modelRestrictionCombinedHint).toContain('默认目录')
+    expect(zhProviders.providers.supportsAllModels).toBe('留空不限制模型')
+    expect(zhProviders.providers.modelRestrictionCombinedHint).toContain('留空不限制模型')
     expect(zhProviders.providers.syncUpstreamModelsNoChanges).toContain('最终模型白名单')
 
     expect(enProviders.providers.modelRestriction).toBe('Provider Model Rules (Optional)')
     expect(enProviders.providers.modelWhitelist).toBe('Final Model Whitelist')
     expect(enProviders.providers.modelMapping).toBe('Provider Model Mapping')
-    expect(enProviders.providers.supportsAllModels).toBe('Use default model catalog')
+    expect(enProviders.providers.supportsAllModels).toBe('An empty whitelist allows any model ID')
     expect(enProviders.providers.syncUpstreamModelsNoChanges).toContain('final model whitelist')
   })
 

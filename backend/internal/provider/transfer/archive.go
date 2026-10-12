@@ -50,6 +50,18 @@ type DataProvider struct {
 	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired,omitempty"`
 }
 
+type DataImportRequest struct {
+	Data DataPayload `json:"data"`
+}
+type DataImportResult struct {
+	ProxyCreated    int               `json:"proxy_created"`
+	ProxyReused     int               `json:"proxy_reused"`
+	ProxyFailed     int               `json:"proxy_failed"`
+	ProviderCreated int               `json:"provider_created"`
+	ProviderFailed  int               `json:"provider_failed"`
+	Errors          []DataImportError `json:"errors,omitempty"`
+}
+
 // UnmarshalJSON 接受导入条目中的扩展字段。
 func (a *DataProvider) UnmarshalJSON(data []byte) error {
 	type dataProviderAlias DataProvider
@@ -61,18 +73,6 @@ func (a *DataProvider) UnmarshalJSON(data []byte) error {
 
 	*a = DataProvider(decoded)
 	return nil
-}
-
-type DataImportRequest struct {
-	Data DataPayload `json:"data"`
-}
-type DataImportResult struct {
-	ProxyCreated    int               `json:"proxy_created"`
-	ProxyReused     int               `json:"proxy_reused"`
-	ProxyFailed     int               `json:"proxy_failed"`
-	ProviderCreated int               `json:"provider_created"`
-	ProviderFailed  int               `json:"provider_failed"`
-	Errors          []DataImportError `json:"errors,omitempty"`
 }
 
 // ValidateHeader 校验导入的类型、版本和字段，接受兼容的品牌名称。

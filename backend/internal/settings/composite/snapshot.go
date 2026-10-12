@@ -1,9 +1,12 @@
 package composite
 
 import (
+	"encoding/json"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/ws"
 	"github.com/TokenFlux/TokenRouter/internal/identity/contact"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
@@ -12,6 +15,8 @@ import (
 
 // Snapshot 保留综合读取、部分写入合并和旧消费者需要的字段形状。
 type Snapshot struct {
+	ResponsesWS          json.RawMessage
+	ResponsesWSEffective ws.Parameters
 	// StoredValues 保存本次读取的数据库值，供内容版本检查和部分更新使用。
 	StoredValues map[string]string `json:"-"`
 

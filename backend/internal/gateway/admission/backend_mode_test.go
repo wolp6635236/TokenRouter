@@ -5,8 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 // bmRepoStub 仅提供准入开关读取，并记录原回源次数。

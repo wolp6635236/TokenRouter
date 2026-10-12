@@ -12,14 +12,24 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// 提供商运行设置使用既有键，由提供商模块维护解释权。
 const (
+	// SettingKeyOllamaCloudUsageSettings 保留已发布的配置键。
+	SettingKeyOllamaCloudUsageSettings = "ollama_cloud_usage_settings"
+
+	// 提供商运行设置使用既有键，由提供商模块维护解释权。
 	SettingKeyOpenAI403CooldownSettings                    = "openai_oauth_403_cooldown_settings"
 	SettingKeyOpenAIAPIKeyHealthBreakerSettings            = "openai_apikey_health_breaker_settings"
 	SettingKeyOpenAIImagesOAuthUnavailableCooldownSettings = "openai_images_oauth_unavailable_cooldown_settings"
 	SettingKeyOverloadCooldownSettings                     = "overload_cooldown_settings"
 	SettingKeyRateLimit429CooldownSettings                 = "rate_limit_429_cooldown_settings"
 	SettingKeyStreamTimeoutSettings                        = "stream_timeout_settings"
+
+	// OpenAIImagesOAuthUnavailableDefaultCooldownMinutes 是默认冷却分钟数。
+	OpenAIImagesOAuthUnavailableDefaultCooldownMinutes = 30
+
+	// OpenAIImagesOAuthUnavailableMaxCooldownMinutes 是最大冷却分钟数。
+	OpenAIImagesOAuthUnavailableMaxCooldownMinutes = 120
+	openAIAPIKeyHealthBreakerSettingsCacheTTL      = 30 * time.Second
 )
 
 // RuntimeSettingsStore 提供提供商配置的键值读写操作。
@@ -37,11 +47,6 @@ type RuntimeSettings struct {
 	openAIAPIKeyHealthBreakerCache    atomic.Value
 }
 
-// NewRuntimeSettings 构造无 I/O 的提供商配置实例。
-func NewRuntimeSettings(repo RuntimeSettingsStore, notFound error) *RuntimeSettings {
-	return &RuntimeSettings{settingRepo: repo, notFound: notFound}
-}
-
 // OpenAIImagesOAuthUnavailableCooldownSettings 保存 OAuth 图片不可用时的冷却设置。
 type OpenAIImagesOAuthUnavailableCooldownSettings struct {
 	CooldownMinutes int `json:"cooldown_minutes"`
@@ -53,6 +58,44 @@ type OpenAIAPIKeyHealthBreakerSettings struct {
 	WindowMinutes    int  `json:"window_minutes"`
 	FailureThreshold int  `json:"failure_threshold"`
 	CooldownMinutes  int  `json:"cooldown_minutes"`
+}
+
+type cachedOpenAIAPIKeyHealthBreakerSettings struct {
+	settings  OpenAIAPIKeyHealthBreakerSettings
+	expiresAt time.Time
+}
+
+// NewRuntimeSettings 构造无 I/O 的提供商配置实例。
+func NewRuntimeSettings(repo RuntimeSettingsStore, notFound error) *RuntimeSettings {
+	return &RuntimeSettings{settingRepo: repo, notFound: notFound}
+}
+
+// GetOllamaCloudUsageSettings 在设置缺失时返回默认关闭的配置。
+func (s *RuntimeSettings) GetOllamaCloudUsageSettings(ctx context.Context) (*OllamaCloudUsageSettings, error) {
+	defaults := DefaultOllamaCloudUsageSettings()
+	if s == nil || s.settingRepo == nil {
+		return defaults, nil
+	}
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyOllamaCloudUsageSettings)
+	if err != nil {
+		if errors.Is(err, s.notFound) {
+			return defaults, nil
+		}
+		return nil, fmt.Errorf("get Ollama Cloud usage settings: %w", err)
+	}
+	return DecodeOllamaCloudUsageSettings(raw)
+}
+
+// SetOllamaCloudUsageSettings 先完成原校验和编码，再持久化单键配置。
+func (s *RuntimeSettings) SetOllamaCloudUsageSettings(ctx context.Context, settings *OllamaCloudUsageSettings) error {
+	if s == nil || s.settingRepo == nil {
+		return ErrOllamaCloudUsageUnavailable
+	}
+	data, err := EncodeOllamaCloudUsageSettings(settings)
+	if err != nil {
+		return err
+	}
+	return s.settingRepo.Set(ctx, SettingKeyOllamaCloudUsageSettings, data)
 }
 
 // DefaultStreamTimeoutSettings 返回内置的流超时设置。
@@ -87,20 +130,6 @@ func DefaultOpenAIAPIKeyHealthBreakerSettings() *OpenAIAPIKeyHealthBreakerSettin
 		FailureThreshold: 10,
 		CooldownMinutes:  5,
 	}
-}
-
-// OpenAIImagesOAuthUnavailableDefaultCooldownMinutes 是默认冷却分钟数。
-const OpenAIImagesOAuthUnavailableDefaultCooldownMinutes = 30
-
-// OpenAIImagesOAuthUnavailableMaxCooldownMinutes 是最大冷却分钟数。
-const (
-	OpenAIImagesOAuthUnavailableMaxCooldownMinutes = 120
-	openAIAPIKeyHealthBreakerSettingsCacheTTL      = 30 * time.Second
-)
-
-type cachedOpenAIAPIKeyHealthBreakerSettings struct {
-	settings  OpenAIAPIKeyHealthBreakerSettings
-	expiresAt time.Time
 }
 
 func normalizeOpenAIAPIKeyHealthBreakerSettings(settings *OpenAIAPIKeyHealthBreakerSettings) *OpenAIAPIKeyHealthBreakerSettings {

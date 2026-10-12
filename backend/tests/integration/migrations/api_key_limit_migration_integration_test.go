@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 func TestMigration213_AddsUserAPIKeyLimitWithDataAndConstraints(t *testing.T) {

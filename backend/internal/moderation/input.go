@@ -2,11 +2,20 @@ package moderation
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 )
+
+type contentModerationInputBuilder struct {
+	items      []ContentModerationInputItem
+	textParts  []string
+	images     []string
+	imageItems []ContentModerationImage
+	seenImages map[string]struct{}
+}
 
 // contentModerationAuditInput 根据配置生成仅供上游审核的副本，完整原文仍保留在原输入中。
 func contentModerationAuditInput(input ContentModerationInput, cfg *ContentModerationConfig) ContentModerationInput {
@@ -114,14 +123,6 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
 		collectGeminiCurrentTurn(gjson.GetBytes(body, "contents"), builder)
 	}
 	return builder.build()
-}
-
-type contentModerationInputBuilder struct {
-	items      []ContentModerationInputItem
-	textParts  []string
-	images     []string
-	imageItems []ContentModerationImage
-	seenImages map[string]struct{}
 }
 
 func newContentModerationInputBuilder() *contentModerationInputBuilder {
@@ -247,9 +248,9 @@ func collectResponsesCurrentInput(input gjson.Result, builder *contentModeration
 }
 
 func indexAfterLastResponsesModelItem(items []gjson.Result) int {
-	for index := len(items) - 1; index >= 0; index-- {
-		role := strings.ToLower(strings.TrimSpace(items[index].Get("role").String()))
-		typ := strings.ToLower(strings.TrimSpace(items[index].Get("type").String()))
+	for index, item := range slices.Backward(items) {
+		role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+		typ := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
 		if role == "assistant" || isResponsesModelToolCallType(typ) {
 			return index + 1
 		}
@@ -337,8 +338,8 @@ func collectGeminiCurrentTurn(contents gjson.Result, builder *contentModerationI
 }
 
 func indexAfterLastRole(items []gjson.Result, role string) int {
-	for i := len(items) - 1; i >= 0; i-- {
-		if strings.EqualFold(strings.TrimSpace(items[i].Get("role").String()), role) {
+	for i, item := range slices.Backward(items) {
+		if strings.EqualFold(strings.TrimSpace(item.Get("role").String()), role) {
 			return i + 1
 		}
 	}

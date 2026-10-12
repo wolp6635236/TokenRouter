@@ -4,7 +4,7 @@ package identity_test
 
 import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 // 这一组用例覆盖用户行上的 lost update：调用方手里的快照可能早于并发发生的
@@ -102,7 +102,7 @@ func (s *UserRepoSuite) TestUpdate_DoesNotRevertConcurrentLimitChanges() {
 	s.Require().Equal(90, got.RPMLimit, "rpm limit must not be reverted")
 }
 
-// TestUpdate_DoesNotRevertConcurrentAllowedGroupGrant 验证AllowedGroups 只在显式声明时才同步，否则并发授予的分组权限会被旧快照删掉。
+// TestUpdate_DoesNotRevertConcurrentAllowedGroupGrant 验证 AllowedGroups 只在显式声明时才同步，否则并发授予的分组权限会被旧快照删掉。
 func (s *UserRepoSuite) TestUpdate_DoesNotRevertConcurrentAllowedGroupGrant() {
 	group := s.mustCreateGroup("lost-update-group")
 	user := s.mustCreateUser(&identity.User{

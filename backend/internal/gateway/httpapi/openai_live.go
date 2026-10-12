@@ -6,35 +6,66 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	gatewaylive "github.com/TokenFlux/TokenRouter/internal/gateway/live"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewaylive "github.com/TokenFlux/TokenRouter/internal/gateway/live"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai/liveattestation"
 )
 
 const (
 	defaultLiveMaxSessionDuration = time.Hour
-)
 
-const (
 	chatGPTLiveCallsURL        = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
 	chatGPTLiveSidebandBaseURL = "wss://chatgpt.com/backend-api/codex"
 )
+
+// OpenAILiveOptions 保存构造时的会话预算及观察重试间隔。
+type OpenAILiveOptions struct {
+	MaxSessionDuration    time.Duration
+	ObserverRetryInterval time.Duration
+}
+
+// LiveProviderSelection 提供创建会话时的提供商选择和每轮资格复核。
+type LiveProviderSelection interface {
+	SelectProviderWithSchedulerForCapability(context.Context, *int64, string, string, string, map[int64]struct{}, egress.OpenAIUpstreamTransport, providercore.OpenAIEndpointCapability, bool, bool, ...string) (*gatewayprovider.SelectionResult, scheduler.PlatformDecision, error)
+	ResolveOpenAIWSRoutingModelForProvider(context.Context, *int64, *gatewayprovider.ExecutionProvider, string, providercore.OpenAIEndpointCapability) (string, error)
+}
+
+// OpenAILiveExecutor 管理 Live 依赖和观察者登记，共用会话、租约与传输。
+type OpenAILiveExecutor struct {
+	Options             OpenAILiveOptions
+	Requests            *OpenAIRequests
+	Selection           LiveProviderSelection
+	Routes              *gatewayprovider.RoutePlanner
+	Store               session.LiveCallStore
+	Leases              scheduler.LiveConcurrencyCache
+	Usage               *completion.Recorder
+	Dialer              openai.WSClientDialer
+	Attestation         liveattestation.Provider
+	AttestationCipher   identity.SecretEncryptor
+	Background          func(string, func()) bool
+	liveObserverMu      sync.Mutex
+	liveObserverStopped bool
+	liveObserverCancels map[string]context.CancelFunc
+	liveObserverWG      sync.WaitGroup
+}
 
 func liveSidebandReadError(err error) error {
 	if coderws.CloseStatus(err) == coderws.StatusNormalClosure {

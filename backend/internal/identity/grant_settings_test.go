@@ -5,57 +5,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
-
-type authSourceDefaultsRepoStub struct {
-	values  map[string]string
-	updates map[string]string
-}
-
-func (s *authSourceDefaultsRepoStub) Get(ctx context.Context, key string) (*settingscore.Setting, error) {
-	panic("unexpected Get call")
-}
-
-func (s *authSourceDefaultsRepoStub) GetValue(ctx context.Context, key string) (string, error) {
-	panic("unexpected GetValue call")
-}
-
-func (s *authSourceDefaultsRepoStub) Set(ctx context.Context, key, value string) error {
-	panic("unexpected Set call")
-}
-
-func (s *authSourceDefaultsRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
-	out := make(map[string]string, len(keys))
-	for _, key := range keys {
-		if value, ok := s.values[key]; ok {
-			out[key] = value
-		}
-	}
-	return out, nil
-}
-
-func (s *authSourceDefaultsRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
-	s.updates = make(map[string]string, len(settings))
-	for key, value := range settings {
-		s.updates[key] = value
-		if s.values == nil {
-			s.values = map[string]string{}
-		}
-		s.values[key] = value
-	}
-	return nil
-}
-
-func (s *authSourceDefaultsRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
-	panic("unexpected GetAll call")
-}
-
-func (s *authSourceDefaultsRepoStub) Delete(ctx context.Context, key string) error {
-	panic("unexpected Delete call")
-}
 
 func TestSettingService_GetAuthSourceDefaultSettings_ParsesValuesAndDefaults(t *testing.T) {
 	repo := &authSourceDefaultsRepoStub{

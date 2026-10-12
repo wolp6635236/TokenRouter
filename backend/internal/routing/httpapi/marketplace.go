@@ -4,17 +4,19 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // MarketplaceStatsReader 查询首页公开统计。
 type MarketplaceStatsReader interface {
 	PublicStats(context.Context) (dto.ModelMarketplaceStats, error)
 }
+
 type MarketplaceHandler struct {
 	marketplace *routing.Marketplace
 	stats       MarketplaceStatsReader
@@ -39,7 +41,7 @@ func (h *MarketplaceHandler) ListPublic(c *gin.Context) {
 	httpx.Success(c, dto.ModelMarketplaceGroupsFromRouting(groups))
 }
 
-// StatsPublic 仅返回原公开 Token/用户计数。
+// StatsPublic 返回公开的 Token 和用户计数。
 func (h *MarketplaceHandler) StatsPublic(c *gin.Context) {
 	stats, err := h.stats.PublicStats(c.Request.Context())
 	if err != nil {
@@ -47,4 +49,11 @@ func (h *MarketplaceHandler) StatsPublic(c *gin.Context) {
 		return
 	}
 	httpx.Success(c, stats)
+}
+
+// RegisterPublicMarketplaceRoutes 注册公开市场模型和统计查询路由。
+func RegisterPublicMarketplaceRoutes(v1 *gin.RouterGroup, endpoint *MarketplaceHandler) {
+	marketplace := v1.Group("/marketplace")
+	marketplace.GET("/models", endpoint.ListPublic)
+	marketplace.GET("/stats", endpoint.StatsPublic)
 }

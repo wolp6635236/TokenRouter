@@ -12,6 +12,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+const SessionBlockedClientMessage = "This session is blocked by the security policy. Start a new session."
+
 type Mark struct {
 	Code, Message, Body                           string
 	UpstreamStatus, UpstreamInTok, UpstreamOutTok int
@@ -19,16 +21,6 @@ type Mark struct {
 type Provider struct {
 	ID             int64
 	Name, Platform string
-}
-
-const SessionBlockedClientMessage = "This session is blocked by the security policy. Start a new session."
-
-func cloneID(in *int64) *int64 {
-	if in == nil {
-		return nil
-	}
-	v := *in
-	return &v
 }
 
 type BlockWriter interface {
@@ -53,6 +45,40 @@ type PolicyCompletion struct {
 	Mark           Mark
 	ForwardErrored bool
 	BlockKey       string
+}
+
+// BlockPlan 只携带已解析的会话键，解析与 Redis 的既有实现继续各自复用。
+type BlockPlan struct {
+	ScopeKey string
+	Keys     []string
+}
+
+type OpsMeta struct {
+	RequestID        string
+	ClientRequestID  string
+	Platform         string
+	Model            string
+	RequestPath      string
+	Stream           bool
+	InboundEndpoint  string
+	UpstreamEndpoint string
+	UserAgent        string
+	APIKeyPrefix     string
+	UserID           int64
+	APIKeyID         int64
+	ProviderID       int64
+	GroupID          *int64
+	ClientIP         string
+	CreatedAt        time.Time
+	SessionBlockKey  string
+}
+
+func cloneID(in *int64) *int64 {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
 }
 
 // Dispatch 在提交屏障前拍快照，闭包只持有独立输入和固定依赖。
@@ -83,12 +109,6 @@ func SnapshotContent(in moderation.ContentModerationInput) moderation.ContentMod
 	return in
 }
 
-// BlockPlan 只携带已解析的会话键，解析与 Redis 的既有实现继续各自复用。
-type BlockPlan struct {
-	ScopeKey string
-	Keys     []string
-}
-
 func BuildBlockPlan(explicit string, transcript []string, scope string) BlockPlan {
 	p := BlockPlan{}
 	if explicit != "" {
@@ -112,26 +132,6 @@ func (r Runtime) MarkBeforeScope(plan BlockPlan) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	r.Blocks.MarkCyberSessionBlocked(ctx, plan.ScopeKey, slices.Clone(plan.Keys))
-}
-
-type OpsMeta struct {
-	RequestID        string
-	ClientRequestID  string
-	Platform         string
-	Model            string
-	RequestPath      string
-	Stream           bool
-	InboundEndpoint  string
-	UpstreamEndpoint string
-	UserAgent        string
-	APIKeyPrefix     string
-	UserID           int64
-	APIKeyID         int64
-	ProviderID       int64
-	GroupID          *int64
-	ClientIP         string
-	CreatedAt        time.Time
-	SessionBlockKey  string
 }
 
 func BuildPolicyOpsEntry(meta OpsMeta, mark *Mark) *ops.OpsInsertErrorLogInput {

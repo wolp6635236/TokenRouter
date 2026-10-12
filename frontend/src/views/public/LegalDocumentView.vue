@@ -18,7 +18,7 @@
         </RouterLink>
         <RouterLink
           to="/login"
-          class="inline-flex flex-shrink-0 items-center justify-center rounded-control bg-primary-600 px-4 py-2 text-sm font-semibold text-white shadow-none transition hover:bg-primary-700"
+          class="btn btn-primary shrink-0"
         >
           {{ t('legal.login') }}
         </RouterLink>

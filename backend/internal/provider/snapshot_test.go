@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // TestProviderRoutingSnapshotExcludesCredentialsAndCopies 验证候选快照只输出声明字段，修改快照不会反向污染持久配置或关联指针。

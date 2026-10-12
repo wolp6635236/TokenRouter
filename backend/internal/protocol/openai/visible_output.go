@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -53,10 +54,8 @@ func StreamDataStartsVisibleOutput(data, eventType string) bool {
 	case "response.output_item.added", "response.output_item.done":
 		return StreamItemHasVisibleOutput(gjson.Get(trimmed, "item"))
 	case "response.completed", "response.done":
-		for _, item := range gjson.Get(trimmed, "response.output").Array() {
-			if StreamItemHasVisibleOutput(item) {
-				return true
-			}
+		if slices.ContainsFunc(gjson.Get(trimmed, "response.output").Array(), StreamItemHasVisibleOutput) {
+			return true
 		}
 	}
 	return false
@@ -64,10 +63,5 @@ func StreamDataStartsVisibleOutput(data, eventType string) bool {
 
 // ResponseBodyHasVisibleOutput 检查 output 项中的文本、推理和工具输出。
 func ResponseBodyHasVisibleOutput(body []byte) bool {
-	for _, item := range gjson.GetBytes(body, "output").Array() {
-		if StreamItemHasVisibleOutput(item) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(gjson.GetBytes(body, "output").Array(), StreamItemHasVisibleOutput)
 }

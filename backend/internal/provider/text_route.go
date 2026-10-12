@@ -4,9 +4,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// TextRouteMode 描述普通文本请求的上游协议路由策略。
-type TextRouteMode string
-
 const (
 	// TextRouteModePreserveClientProtocol 优先保留客户端协议。
 	TextRouteModePreserveClientProtocol TextRouteMode = "preserve_client_protocol"
@@ -14,21 +11,21 @@ const (
 	TextRouteModeForceResponses TextRouteMode = "force_responses"
 	// TextRouteModeForceChatCompletions 强制使用 Chat Completions 协议。
 	TextRouteModeForceChatCompletions TextRouteMode = "force_chat_completions"
-)
 
-// TextProtocol 复用 protocol/openai 定义的文本协议标识。
-type TextProtocol = openai.TextProtocol
+	TextProtocolChatCompletions = openai.TextProtocolChatCompletions
+	TextProtocolResponses       = openai.TextProtocolResponses
 
-const TextProtocolChatCompletions = openai.TextProtocolChatCompletions
-
-const TextProtocolResponses = openai.TextProtocolResponses
-
-const (
 	// ExtraKeyTextRouteMode 是管理员控制的文本协议路由配置。
 	ExtraKeyTextRouteMode = "openai_text_route_mode"
 	// ExtraKeyResponsesContinuationSupported 是管理员控制的 HTTP continuation 能力开关。
 	ExtraKeyResponsesContinuationSupported = "openai_responses_continuation_supported"
 )
+
+// TextRouteMode 描述普通文本请求的上游协议路由策略。
+type TextRouteMode string
+
+// TextProtocol 复用 protocol/openai 定义的文本协议标识。
+type TextProtocol = openai.TextProtocol
 
 // NormalizeTextRouteMode 将缺失或非法模式归一化为保留客户端协议。
 func NormalizeTextRouteMode(mode string) TextRouteMode {

@@ -9,6 +9,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// ErrExecutionRejected 表示前置之后的同步操作已拒绝请求，具体 HTTP 错误已由输出适配器写出。
+var ErrExecutionRejected = errors.New("text execution rejected by request operation")
+
 // MessageRuntime 在构造时绑定执行依赖，Open 创建本次请求状态。
 // 适配会话实现 MessagePorts，RunMessages 执行提供商尝试循环。
 type MessageRuntime interface {
@@ -17,6 +20,13 @@ type MessageRuntime interface {
 type MessagesExecutor struct {
 	runtime          MessageRuntime
 	messages, gemini MessageOptions
+}
+
+type messageExecutionObservation struct {
+	selected Selection
+	MessagePorts
+	result execution.ExecutionResult
+	err    error
 }
 
 func NewMessagesExecutor(runtime MessageRuntime, messages, gemini MessageOptions) *MessagesExecutor {
@@ -39,16 +49,6 @@ func (e *MessagesExecutor) Execute(ctx context.Context, in execution.Request, si
 	observed := &messageExecutionObservation{MessagePorts: session}
 	RunMessages(options, observed)
 	return observed.result, observed.err
-}
-
-// ErrExecutionRejected 表示前置之后的同步操作已拒绝请求，具体 HTTP 错误已由输出适配器写出。
-var ErrExecutionRejected = errors.New("text execution rejected by request operation")
-
-type messageExecutionObservation struct {
-	selected Selection
-	MessagePorts
-	result execution.ExecutionResult
-	err    error
 }
 
 func (o *messageExecutionObservation) PrepareAttempt() bool {

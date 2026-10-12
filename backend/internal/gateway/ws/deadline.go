@@ -10,8 +10,18 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TextFrame 是 WebSocket 文本帧的类型编号。
-const TextFrame = 1
+const (
+	deadlinePhaseFirstSemantic deadlinePhase = iota + 1
+	deadlinePhaseActiveRead
+
+	// TextFrame 是 WebSocket 文本帧的类型编号。
+	TextFrame = 1
+)
+
+var (
+	ErrFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
+	ErrActiveTurnTimeout  = errors.New("openai websocket passthrough active turn read timeout")
+)
 
 // FrameConn 提供同步读写和关闭，具体协议连接属于 Adapter。
 type FrameConn interface {
@@ -20,47 +30,22 @@ type FrameConn interface {
 	Close() error
 }
 
-var (
-	ErrFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
-	ErrActiveTurnTimeout  = errors.New("openai websocket passthrough active turn read timeout")
-)
-
 type deadlinePhase uint8
 
-const (
-	deadlinePhaseFirstSemantic deadlinePhase = iota + 1
-	deadlinePhaseActiveRead
-)
-
 type Deadline struct {
-	Timeout         time.Duration
-	StartedAt       time.Time
-	RequestModel    string
-	ReasoningEffort string
-	phase           deadlinePhase
+	Timeout           time.Duration
+	ActiveReadTimeout time.Duration
+	StartedAt         time.Time
+	RequestModel      string
+	ReasoningEffort   string
+	phase             deadlinePhase
 }
 
 type FirstOutputTimeoutError struct {
 	Deadline Deadline
 }
 
-func (e *FirstOutputTimeoutError) Error() string {
-	return ErrFirstOutputTimeout.Error()
-}
-
-func (e *FirstOutputTimeoutError) Unwrap() error {
-	return ErrFirstOutputTimeout
-}
-
 type ActiveTurnTimeoutError struct{}
-
-func (e *ActiveTurnTimeoutError) Error() string {
-	return ErrActiveTurnTimeout.Error()
-}
-
-func (e *ActiveTurnTimeoutError) Unwrap() error {
-	return ErrActiveTurnTimeout
-}
 
 type firstOutputDeadlineState struct {
 	armed      bool
@@ -77,6 +62,27 @@ type DeadlineConn struct {
 	mu              sync.Mutex
 	state           firstOutputDeadlineState
 	deadlineChanged chan struct{}
+}
+
+func (e *FirstOutputTimeoutError) Error() string {
+	return ErrFirstOutputTimeout.Error()
+}
+
+func (e *FirstOutputTimeoutError) Unwrap() error {
+	return ErrFirstOutputTimeout
+}
+
+func (e *ActiveTurnTimeoutError) Error() string {
+	return ErrActiveTurnTimeout.Error()
+}
+
+func (e *ActiveTurnTimeoutError) Unwrap() error {
+	return ErrActiveTurnTimeout
+}
+
+// NewDeadlineConn 为会话设置首内容输出和活跃读取超时，turn 空闲时暂停计时。
+func NewDeadlineConn(inner FrameConn, activeReadTimeout time.Duration, resolve func([]byte) Deadline, closedError error) *DeadlineConn {
+	return &DeadlineConn{inner: inner, activeReadTimeout: activeReadTimeout, resolveDeadline: resolve, closedError: closedError, deadlineChanged: make(chan struct{}, 1)}
 }
 
 func (c *DeadlineConn) ReadFrame(ctx context.Context) (int, []byte, error) {
@@ -115,10 +121,7 @@ func (c *DeadlineConn) ReadFrame(ctx context.Context) (int, []byte, error) {
 			timerCh = nil
 			return
 		}
-		remaining := time.Until(state.deadline.StartedAt.Add(state.deadline.Timeout))
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining := max(time.Until(state.deadline.StartedAt.Add(state.deadline.Timeout)), 0)
 		if timer == nil {
 			timer = time.NewTimer(remaining)
 		} else {
@@ -234,7 +237,11 @@ func (c *DeadlineConn) armActiveReadDeadline() {
 	if c == nil {
 		return
 	}
-	if c.activeReadTimeout <= 0 {
+	activeReadTimeout := c.deadlineState().deadline.ActiveReadTimeout
+	if activeReadTimeout <= 0 {
+		activeReadTimeout = c.activeReadTimeout
+	}
+	if activeReadTimeout <= 0 {
 		c.disarmDeadline(0)
 		return
 	}
@@ -242,9 +249,10 @@ func (c *DeadlineConn) armActiveReadDeadline() {
 	c.state.generation++
 	c.state.armed = true
 	c.state.deadline = Deadline{
-		Timeout:   c.activeReadTimeout,
-		StartedAt: time.Now(),
-		phase:     deadlinePhaseActiveRead,
+		Timeout:           activeReadTimeout,
+		ActiveReadTimeout: activeReadTimeout,
+		StartedAt:         time.Now(),
+		phase:             deadlinePhaseActiveRead,
 	}
 	c.mu.Unlock()
 	c.notifyDeadlineChanged()
@@ -303,11 +311,6 @@ func IsTerminalOutput(payload []byte) bool {
 	default:
 		return false
 	}
-}
-
-// NewDeadlineConn 为会话设置首内容输出和活跃读取超时，turn 空闲时暂停计时。
-func NewDeadlineConn(inner FrameConn, activeReadTimeout time.Duration, resolve func([]byte) Deadline, closedError error) *DeadlineConn {
-	return &DeadlineConn{inner: inner, activeReadTimeout: activeReadTimeout, resolveDeadline: resolve, closedError: closedError, deadlineChanged: make(chan struct{}, 1)}
 }
 
 // connectionClosedError 保持空连接也返回错误，旧调用方注入原错误身份。

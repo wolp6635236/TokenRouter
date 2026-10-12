@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 func TestCreateWithProviderGroupsPersistsPausedCopyAtomically(t *testing.T) {

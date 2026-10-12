@@ -13,10 +13,6 @@ const (
 	proxyUnavailableKey = "websearch:proxy_unavailable:%d"
 )
 
-type State struct{ rdb *redis.Client }
-
-func New(r *redis.Client) *State { return &State{rdb: r} }
-
 // quotaIncrScript atomically increments the counter and sets TTL on first creation.
 var quotaIncrScript = redis.NewScript(`
 local val = redis.call('INCR', KEYS[1])
@@ -30,6 +26,10 @@ else
 end
 return val
 `)
+
+type State struct{ rdb *redis.Client }
+
+func New(r *redis.Client) *State { return &State{rdb: r} }
 
 func quotaRedisKey(provider string) string { return quotaKeyPrefix + provider }
 func (s *State) Increment(ctx context.Context, provider string, ttl time.Duration) (int64, error) {

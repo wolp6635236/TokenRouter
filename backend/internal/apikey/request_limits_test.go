@@ -6,9 +6,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
-
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
 )
 
 // requestLimitCacheStub 记录租约释放次数，缓存的其余能力由嵌入接口提供。

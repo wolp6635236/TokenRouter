@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,9 +17,9 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-const ResumePaymentResultReturnPath = "/payment/result"
-
 const (
+	ResumePaymentResultReturnPath = "/payment/result"
+
 	PaymentSourceHostedRedirect    = "hosted_redirect"
 	PaymentSourceWechatInAppResume = "wechat_in_app_resume"
 
@@ -450,4 +451,33 @@ func ResumeSignPaymentResumePayload(payload string, key []byte) string {
 	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write([]byte(payload))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// ResolvePaymentResumeSigningKeys 选择恢复令牌的签名密钥，并返回可用于验签的历史密钥。
+func ResolvePaymentResumeSigningKeys(raw string, legacyKey []byte) ([]byte, [][]byte) {
+	signingKey := ParsePaymentResumeSigningKey(raw)
+	if len(signingKey) == 0 {
+		if len(legacyKey) == 0 {
+			return nil, nil
+		}
+		return legacyKey, nil
+	}
+	if len(legacyKey) == 0 || bytes.Equal(legacyKey, signingKey) {
+		return signingKey, nil
+	}
+	return signingKey, [][]byte{legacyKey}
+}
+
+// ParsePaymentResumeSigningKey 解码十六进制密钥，其他非空输入按文本字节读取。
+func ParsePaymentResumeSigningKey(raw string) []byte {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if len(raw) >= 64 && len(raw)%2 == 0 {
+		if decoded, err := hex.DecodeString(raw); err == nil && len(decoded) > 0 {
+			return decoded
+		}
+	}
+	return []byte(raw)
 }

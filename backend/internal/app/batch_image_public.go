@@ -13,13 +13,31 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	catalogprovider "github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 // provideBatchPublic 装配批量图片提交用例，共享任务、提供商、资金和模型配置读取实例。
-func provideBatchPublic(repo batchimage.BatchImageRepository, providers *providerpostgres.ProviderStore, modelConfigs *routing.PricingConfigService, groups routing.GroupRepository, rates billing.UserGroupRateRepository, queue batchimage.BatchImageQueue, pricing *batchimage.Pricing, funds *billing.Funds, subscriptions *billingpostgres.SettlementStore, auth apikey.APIKeyAuthCacheInvalidator, cfg *config.Config, registry *batchimage.Registry[batchprovider.BatchImageProvider]) *batchimage.Public {
-	core := &batchimage.Public{Now: time.Now, Repo: repo, ProviderRepo: &batchprovider.Candidates{Source: providers, Registry: registry, ObserveModel: modeltrace.RegisterStage}, GroupRepo: batchPricingGroups{groups, modelConfigs}, UserGroupRateRepo: rates, Queue: queue, Pricing: pricing, Funding: batchimage.Funding{Store: funds, Observe: creativeObserve}, Observe: creativeObserve}
+func provideBatchPublic(catalog *catalogprovider.Service, repo batchimage.BatchImageRepository, providers *providerpostgres.ProviderStore, modelConfigs *routing.PricingConfigService, groups routing.GroupRepository, rates billing.UserGroupRateRepository, queue batchimage.BatchImageQueue, pricing *batchimage.Pricing, funds *billing.Funds, subscriptions *billingpostgres.SettlementStore, auth apikey.APIKeyAuthCacheInvalidator, cfg *config.Config, registry *batchimage.Registry[batchprovider.BatchImageProvider]) *batchimage.Public {
+	core := &batchimage.Public{
+		ModelOutputModalities: func(model string) *[]string {
+			return catalog.ModelEntry(model).Attributes.OutputModalities
+		},
+		Now:  time.Now,
+		Repo: repo,
+		ProviderRepo: &batchprovider.Candidates{
+			Source:       providers,
+			Registry:     registry,
+			ObserveModel: modeltrace.RegisterStage,
+		},
+		GroupRepo:         batchPricingGroups{groups, modelConfigs},
+		UserGroupRateRepo: rates,
+		Queue:             queue,
+		Pricing:           pricing,
+		Funding:           batchimage.Funding{Store: funds, Observe: creativeObserve},
+		Observe:           creativeObserve,
+	}
 	if modelConfigs != nil {
 		core.PricingConfigService = modelConfigs
 	}

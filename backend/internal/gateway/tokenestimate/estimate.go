@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tiktoken-go/tokenizer"
+
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/tiktoken-go/tokenizer"
 )
 
 const (

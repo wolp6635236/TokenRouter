@@ -6,14 +6,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
-
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 )
 
 func TestSendMockInterceptResponse_MaxTokensOneHaiku(t *testing.T) {
-
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 
@@ -46,7 +45,6 @@ func TestSendMockInterceptResponse_MaxTokensOneHaiku(t *testing.T) {
 }
 
 func TestSendMockInterceptStream_UsesAnthropicSchema(t *testing.T) {
-
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 

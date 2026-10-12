@@ -7,14 +7,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
-const ImagesVerbatimPromptInstructions = "When invoking the image_generation tool, use the user's image prompt verbatim. Do not rewrite, expand, summarize, embellish, translate, normalize punctuation, or add or remove visual details or constraints. Preserve the original language, wording, capitalization, quotes, and punctuation exactly."
+const (
+	ImagesVerbatimPromptInstructions = "When invoking the image_generation tool, use the user's image prompt verbatim. Do not rewrite, expand, summarize, embellish, translate, normalize punctuation, or add or remove visual details or constraints. Preserve the original language, wording, capitalization, quotes, and punctuation exactly."
+
+	OpenAIImagesOAuthUnavailableDefaultCooldown = 30 * time.Minute
+	OpenAIImagesOAuthUnavailableReason          = "openai_images_oauth_tool_unavailable"
+)
 
 type OpenAIResponsesImageResult struct {
 	Result        string
@@ -38,6 +44,10 @@ type OpenAIImagesUpstreamError struct {
 	// 提供商能力冷却另由 shouldCoolOpenAIImagesToolForError 判断。
 	SynthesizedFromModelText bool
 }
+
+// OpenAIImagesSelfBuiltRequestContextKey 标记由 BuildOpenAIImagesResponsesRequest 完整构造上游请求体的请求，
+// 其中 tool_choice 与匹配的 image_generation 工具始终存在，且不受客户端控制。
+type OpenAIImagesSelfBuiltRequestContextKey struct{}
 
 func (e *OpenAIImagesUpstreamError) Error() string {
 	if e == nil {
@@ -321,10 +331,6 @@ func OpenAIImageOutputMIMEType(outputFormat string) string {
 func OpenAIImageUploadToDataURL(upload upstream.ImageUpload) (string, error) {
 	return upstream.ImageUploadToDataURL(upload)
 }
-
-// OpenAIImagesSelfBuiltRequestContextKey 标记由 BuildOpenAIImagesResponsesRequest 完整构造上游请求体的请求，
-// 其中 tool_choice 与匹配的 image_generation 工具始终存在，且不受客户端控制。
-type OpenAIImagesSelfBuiltRequestContextKey struct{}
 
 func WithOpenAIImagesSelfBuiltRequest(ctx context.Context) context.Context {
 	if ctx == nil {
@@ -994,8 +1000,3 @@ func OpenAIImagesToolUsageFromGJSON(value gjson.Result) (wire.ForwardUsage, bool
 		ImageOutputTokens: imageOutputTokens,
 	}, true
 }
-
-const (
-	OpenAIImagesOAuthUnavailableDefaultCooldown = 30 * time.Minute
-	OpenAIImagesOAuthUnavailableReason          = "openai_images_oauth_tool_unavailable"
-)

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"unsafe"
+
+	"github.com/tidwall/gjson"
 )
 
 func DecodeUseNumber(data []byte, dst any) error {
@@ -35,4 +38,13 @@ func Marshal(v any) ([]byte, error) {
 		out = out[:len(out)-1]
 	}
 	return out, nil
+}
+
+// ParseView 直接引用 raw 的内容并解析 JSON。
+func ParseView(raw []byte) gjson.Result {
+	if len(raw) == 0 {
+		return gjson.Result{}
+	}
+	// 同步解析直接引用 raw，适用于较大的 messages 和 contents。
+	return gjson.Parse(*(*string)(unsafe.Pointer(&raw)))
 }

@@ -165,8 +165,8 @@ func (s *OpenAIAuthorization) exchangeCode(ctx context.Context, input *OpenAIExc
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		IDToken:      tokenResp.IDToken,
-		ExpiresIn:    int64(tokenResp.ExpiresIn),
-		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ExpiresIn:    tokenResp.ExpiresIn,
+		ExpiresAt:    time.Now().Unix() + tokenResp.ExpiresIn,
 		ClientID:     clientID,
 	}
 
@@ -212,8 +212,8 @@ func (s *OpenAIAuthorization) refreshTokenWithParameters(ctx context.Context, re
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		IDToken:      tokenResp.IDToken,
-		ExpiresIn:    int64(tokenResp.ExpiresIn),
-		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ExpiresIn:    tokenResp.ExpiresIn,
+		ExpiresAt:    time.Now().Unix() + tokenResp.ExpiresIn,
 	}
 	if trimmed := strings.TrimSpace(clientID); trimmed != "" {
 		tokenInfo.ClientID = trimmed

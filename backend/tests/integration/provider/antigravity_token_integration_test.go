@@ -17,16 +17,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
-
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/stretchr/testify/require"
 
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/rediscache"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"github.com/stretchr/testify/require"
 )
 
 type antigravityFixtureTransport struct {

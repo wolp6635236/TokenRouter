@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// ErrReasoningContentNotFound 表示按 reasoning item id 查询缓存时未命中。
+var ErrReasoningContentNotFound = errors.New("reasoning content not found")
+
 // OpenAIWSSessionPreemptionCache is an optional GatewayCache capability. The
 // production Redis cache implements all operations atomically; cache stubs do
 // not need to implement it for ordinary gateway tests.
@@ -22,9 +25,6 @@ type CyberSessionBlockStore interface {
 	IsCyberSessionScopeActive(ctx context.Context, scopeKey string) (bool, error)
 	FindCyberSessionBlocked(ctx context.Context, keys []string) (string, error)
 }
-
-// ErrReasoningContentNotFound 表示按 reasoning item id 查询缓存时未命中。
-var ErrReasoningContentNotFound = errors.New("reasoning content not found")
 
 // GatewayCache 定义网关服务的缓存操作接口。
 // 提供粘性会话（Sticky Session）的存储、查询、刷新和删除功能。

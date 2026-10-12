@@ -7,17 +7,39 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/compact"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // openAICompactClientStreamKey 标记 body-signal Compact 原始正文中的 stream:true（Codex remote compact v2，#3777）。
 // 规范化删除 stream 后，上游使用 unary /responses/compact JSON。客户端需要 SSE 中恰好一个 compaction 类型的 output_item.done 和 response.completed。
 // 缺少事件时 Codex 报 stream closed before response.completed 并重连（#3875）。
 const openAICompactClientStreamKey = "openai_compact_client_stream"
+
+// CompactStreamErrorObserver 保留客户端流错误的原观测时点和分类。
+type CompactStreamErrorObserver func(*gin.Context, string, string, int)
+
+// 明确的终止帧字段保留 created_at、空 output 及原 JSON 键顺序。
+type compactFailedEvent struct {
+	Response compactFailedResponse `json:"response"`
+	Type     string                `json:"type"`
+}
+type compactFailedResponse struct {
+	CreatedAt int64              `json:"created_at"`
+	Error     compactFailedError `json:"error"`
+	ID        string             `json:"id"`
+	Object    string             `json:"object"`
+	Output    []json.RawMessage  `json:"output"`
+	Status    string             `json:"status"`
+}
+type compactFailedError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
 
 // MarkOpenAICompactClientStream 由 handler 在 body-signal 提升时调用，记录
 // 客户端的原始 stream 意图，供响应写回阶段决定是否合成 SSE。
@@ -122,27 +144,6 @@ func WriteOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 	_, _ = c.Writer.Write(payload)
 	_, _ = c.Writer.Write([]byte("\n\n"))
 	c.Writer.Flush()
-}
-
-// CompactStreamErrorObserver 保留客户端流错误的原观测时点和分类。
-type CompactStreamErrorObserver func(*gin.Context, string, string, int)
-
-// 明确的终止帧字段保留 created_at、空 output 及原 JSON 键顺序。
-type compactFailedEvent struct {
-	Response compactFailedResponse `json:"response"`
-	Type     string                `json:"type"`
-}
-type compactFailedResponse struct {
-	CreatedAt int64              `json:"created_at"`
-	Error     compactFailedError `json:"error"`
-	ID        string             `json:"id"`
-	Object    string             `json:"object"`
-	Output    []json.RawMessage  `json:"output"`
-	Status    string             `json:"status"`
-}
-type compactFailedError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
 }
 
 func newCompactResponseID() string {

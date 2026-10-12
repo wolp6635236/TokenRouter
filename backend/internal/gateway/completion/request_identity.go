@@ -10,8 +10,9 @@ func ForcedRequestID(id string) bool {
 	return strings.HasPrefix(id, "web_search:") || strings.HasPrefix(id, "grok-video:") || strings.HasPrefix(id, "grok_audio:") || strings.HasPrefix(id, "grok_realtime:")
 }
 
-// ResolveRequestID 保持任务标识、客户端标识、本地标识、上游标识的既有优先级。
-func ResolveRequestID(in RequestIdentity, generate func() string) string {
+// ResolveBillingKey 解析与历史结算记录兼容的资金去重键。
+// @project-doc docs/operations/request_lookup.md#billing_identity
+func ResolveBillingKey(in RequestIdentity, generate func() string) string {
 	upstream := strings.TrimSpace(in.Upstream)
 	if upstream != "" && ForcedRequestID(upstream) {
 		return upstream
@@ -58,4 +59,25 @@ func stableRequestID(prefix, id string, generate func() string) string {
 		id = generate()
 	}
 	return prefix + id
+}
+
+// SettlementKey 返回本次资金操作使用的稳定标识。
+func (in *Input) SettlementKey() string {
+	key := in.BillingKey
+	if key == "" {
+		key = in.RequestID
+	}
+	if in.Result == nil {
+		return key
+	}
+	result := in.Result
+	if result.OpenAIWSMode && strings.TrimSpace(result.RequestID) != "" {
+		key = strings.TrimSpace(result.RequestID)
+	}
+	if result.VideoCount > 0 {
+		if stable := stableVideoRequestID(firstNonEmpty(strings.TrimPrefix(strings.TrimSpace(result.RequestID), "grok-video:"), strings.TrimSpace(result.ResponseID), strings.TrimPrefix(strings.TrimSpace(key), "grok-video:"))); stable != "" {
+			key = stable
+		}
+	}
+	return key
 }

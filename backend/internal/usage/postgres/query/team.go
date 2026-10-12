@@ -11,6 +11,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/team"
 )
 
+// TeamReportSource 保存已按团队权限过滤的统计数据源，参数均通过占位符传入。
+type TeamReportSource struct {
+	CTE  string
+	Args []any
+}
+
+// TeamExecutor 直接复用团队调用方的 SQL 连接。
+type TeamExecutor interface {
+	infra.Executor
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func ListUsageLogs(ctx context.Context, db TeamExecutor, teamID int64, query team.TeamUsageQuery) ([]team.TeamUsageLogItem, int64, error) {
 	where, args := TeamUsageWhere(teamID, query)
 	var total int64
@@ -45,12 +57,6 @@ func ListUsageLogs(ctx context.Context, db TeamExecutor, teamID int64, query tea
 		return nil, 0, err
 	}
 	return items, total, nil
-}
-
-// TeamReportSource 保存已按团队权限过滤的统计数据源，参数均通过占位符传入。
-type TeamReportSource struct {
-	CTE  string
-	Args []any
 }
 
 // RawTeamReportSource 为未启用预聚合的报表提供一次原始记录扫描。
@@ -170,10 +176,4 @@ func TeamUsageWhere(teamID int64, query team.TeamUsageQuery) (string, []any) {
 		conditions = append(conditions, fmt.Sprintf("ul.api_key_id = $%d", len(args)))
 	}
 	return strings.Join(conditions, " AND "), args
-}
-
-// TeamExecutor 直接复用团队调用方的 SQL 连接。
-type TeamExecutor interface {
-	infra.Executor
-	QueryRowContext(context.Context, string, ...any) *sql.Row
 }

@@ -6,18 +6,45 @@ import (
 	"strings"
 	"time"
 
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	openaierrors "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	openaierrors "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// OpenAICompactSessionSeedKey 是 HTTP 请求中存放会话种子的键。
+const OpenAICompactSessionSeedKey = "openai_compact_session_seed"
+
+// IsOpenAIResponsesCompactPath 识别旧 compact 端点及其允许转发的子路径。
+func IsOpenAIResponsesCompactPath(c *gin.Context) bool {
+	suffix := strings.TrimSpace(OpenAIResponsesRequestPathSuffix(c))
+	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
+}
+
+// ResolveOpenAICompactSessionID 依次读取会话头、会话种子，缺失时生成随机标识。
+func ResolveOpenAICompactSessionID(c *gin.Context) string {
+	if c != nil {
+		if sessionID := strings.TrimSpace(c.GetHeader("session_id")); sessionID != "" {
+			return sessionID
+		}
+		if conversationID := strings.TrimSpace(c.GetHeader("conversation_id")); conversationID != "" {
+			return conversationID
+		}
+		if seed, ok := c.Get(OpenAICompactSessionSeedKey); ok {
+			if seedStr, ok := seed.(string); ok && strings.TrimSpace(seedStr) != "" {
+				return strings.TrimSpace(seedStr)
+			}
+		}
+	}
+	return uuid.NewString()
+}
+
 // IsBareOpenAIResponsesPath 仅匹配裸 /responses 端点（无 /compact 等子路径），
-// body-signal 提升只允许发生在这里，避免误伤 /responses/{id}/... 形态的请求。
+// body-signal 提升在裸 Responses 路径上执行，/responses/{id}/... 子路径按自身类型处理。
 func IsBareOpenAIResponsesPath(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
@@ -109,10 +136,7 @@ func (h *OpenAITextHandler) LogRemoteCompactOutcome(c *gin.Context, startedAt ti
 			outcome = "failed"
 		}
 	}
-	latencyMs := time.Since(startedAt).Milliseconds()
-	if latencyMs < 0 {
-		latencyMs = 0
-	}
+	latencyMs := max(time.Since(startedAt).Milliseconds(), 0)
 
 	fields := []zap.Field{
 		zap.String("component", "handler.openai_gateway.responses"),

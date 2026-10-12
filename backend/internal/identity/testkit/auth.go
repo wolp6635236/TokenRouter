@@ -12,6 +12,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
 )
 
+type affiliate struct{ source *promotion.AffiliateService }
+
 // AuthOptions 为认证测试提供启动参数，不读取环境或运行设置。
 func AuthOptions(cfg *config.Config) *identity.AuthOptions {
 	if cfg == nil {
@@ -83,8 +85,6 @@ func Affiliate(value *promotion.AffiliateService) identity.AuthAffiliate {
 	}
 	return affiliate{value}
 }
-
-type affiliate struct{ source *promotion.AffiliateService }
 
 func (a affiliate) EnsureUserAffiliate(ctx context.Context, id int64) error {
 	_, err := a.source.EnsureUserAffiliate(ctx, id)

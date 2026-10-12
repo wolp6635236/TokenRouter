@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+var (
+	ErrUsageObservationChanged       = errors.New("provider identity changed during usage query")
+	ErrUsageObservationWriterMissing = errors.New("usage observation conditional writer is not configured")
+)
+
 // UsageObservationVersion 限定上游观测可以写入的提供商身份与原健康窗口，不进入公开输出。
 type UsageObservationVersion struct {
 	CredentialVersion
@@ -24,11 +29,6 @@ type UsageObservationWriter interface {
 	SetUsageRateLimitIfUnchanged(context.Context, UsageObservationVersion, time.Time) (bool, error)
 	ClearUsageRateLimitIfUnchanged(context.Context, UsageObservationVersion) (bool, error)
 }
-
-var (
-	ErrUsageObservationChanged       = errors.New("provider identity changed during usage query")
-	ErrUsageObservationWriterMissing = errors.New("usage observation conditional writer is not configured")
-)
 
 func ObserveUsageVersion(value *Record) UsageObservationVersion {
 	if value == nil {

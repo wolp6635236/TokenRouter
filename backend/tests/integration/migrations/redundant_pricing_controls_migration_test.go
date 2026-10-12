@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestMigration275RemovesRedundantPricingControls 验证迁移只清除退役配置，分组协议、其他功能和价格规则保持原值；重复执行安全。

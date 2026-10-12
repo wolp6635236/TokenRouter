@@ -1,9 +1,8 @@
-package bridge_test
+package bridge
 
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -15,7 +14,7 @@ func TestAdaptOpenAIResponsesClientToolsLeavesNamespaceOnlyBodyUnchanged(t *test
 		"tool_choice": "auto"
 	}`)
 
-	adapted, mapping, err := bridge.AdaptOpenAIResponsesClientTools(body)
+	adapted, mapping, err := AdaptOpenAIResponsesClientTools(body)
 
 	require.NoError(t, err)
 	require.Equal(t, body, adapted)
@@ -32,7 +31,7 @@ func TestAdaptOpenAIResponsesClientToolsRejectsTrailingData(t *testing.T) {
 
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
-			adapted, mapping, err := bridge.AdaptOpenAIResponsesClientTools(body)
+			adapted, mapping, err := AdaptOpenAIResponsesClientTools(body)
 
 			require.ErrorContains(t, err, "decode OpenAI Responses client tools trailing data")
 			require.Equal(t, body, adapted)
@@ -43,10 +42,10 @@ func TestAdaptOpenAIResponsesClientToolsRejectsTrailingData(t *testing.T) {
 
 func TestResponsesFunctionUpstreamsLowerToolSearchDiscoveryOutput(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"tool_search"}],"input":[{"type":"tool_search_output","call_id":"search_1","tools":[{"type":"namespace","name":"github"}],"status":"completed","execution":"client"}]}`)
-	adapters := map[string]func([]byte) ([]byte, bridge.ResponsesClientToolMapping, error){
-		"OpenAI API-key": bridge.AdaptOpenAIResponsesClientTools,
-		"Grok": func(body []byte) ([]byte, bridge.ResponsesClientToolMapping, error) {
-			return bridge.AdaptResponsesClientToolsJSON(body, "Grok")
+	adapters := map[string]func([]byte) ([]byte, ResponsesClientToolMapping, error){
+		"OpenAI API-key": AdaptOpenAIResponsesClientTools,
+		"Grok": func(body []byte) ([]byte, ResponsesClientToolMapping, error) {
+			return AdaptResponsesClientToolsJSON(body, "Grok")
 		},
 	}
 	for name, adapt := range adapters {

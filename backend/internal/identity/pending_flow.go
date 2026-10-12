@@ -53,14 +53,7 @@ type PendingWriteError struct {
 	Cause error
 }
 
-func (e *PendingWriteError) Error() string { return e.Cause.Error() }
-func (e *PendingWriteError) Unwrap() error { return e.Cause }
-
 type OAuthAdoptionChoice struct{ AdoptDisplayName, AdoptAvatar *bool }
-
-func (c OAuthAdoptionChoice) HasDecision() bool {
-	return c.AdoptDisplayName != nil || c.AdoptAvatar != nil
-}
 
 // PendingFlow 拥有接纳选择及创建失败补偿，数据库和会话能力由 app 注入。
 type PendingFlow struct {
@@ -68,6 +61,16 @@ type PendingFlow struct {
 	Database PendingDatabase
 	Auth     *AuthService
 	Profiles *UserService
+}
+
+// WeChatIdentityChannel 仅表达已有身份通道复合键。
+type WeChatIdentityChannel struct{ Mode, AppID string }
+
+func (e *PendingWriteError) Error() string { return e.Cause.Error() }
+func (e *PendingWriteError) Unwrap() error { return e.Cause }
+
+func (c OAuthAdoptionChoice) HasDecision() bool {
+	return c.AdoptDisplayName != nil || c.AdoptAvatar != nil
 }
 
 func (f *PendingFlow) Available() bool {
@@ -113,9 +116,6 @@ func (f *PendingFlow) FinalizeCreatedAccount(ctx context.Context, p PendingAccou
 	}
 	return nil
 }
-
-// WeChatIdentityChannel 仅表达已有身份通道复合键。
-type WeChatIdentityChannel struct{ Mode, AppID string }
 
 // CompleteSecondFactorBinding 先提交身份绑定，再消费浏览器会话。
 func (f *PendingFlow) CompleteSecondFactorBinding(ctx context.Context, b *PendingOAuthBindLoginSession, userID int64) error {

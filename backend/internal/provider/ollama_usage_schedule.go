@@ -141,10 +141,7 @@ func MaxOllamaCloudUsageGroupLastUsed(providers []Record) *time.Time {
 
 func NextOllamaCloudUsageDelay(intervalMinutes, failureCount int, retryAfterDuration time.Duration, jitter func(int64) int64) time.Duration {
 	minimumDelay := retryAfterDuration
-	base := time.Duration(intervalMinutes) * time.Minute
-	if base < OllamaCloudUsageMinIntervalMinutes*time.Minute {
-		base = OllamaCloudUsageMinIntervalMinutes * time.Minute
-	}
+	base := max(time.Duration(intervalMinutes)*time.Minute, OllamaCloudUsageMinIntervalMinutes*time.Minute)
 	if failureCount > 0 {
 		shift := min(failureCount-1, 6)
 		base *= time.Duration(1 << shift)
@@ -155,10 +152,7 @@ func NextOllamaCloudUsageDelay(intervalMinutes, failureCount int, retryAfterDura
 	if retryAfterDuration > base {
 		base = retryAfterDuration
 	}
-	jitterRange := base / 10
-	if jitterRange > 5*time.Minute {
-		jitterRange = 5 * time.Minute
-	}
+	jitterRange := min(base/10, 5*time.Minute)
 	if jitterRange > 0 {
 		base += time.Duration(jitter(int64(jitterRange)*2+1)) - jitterRange
 	}

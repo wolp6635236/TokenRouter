@@ -2,26 +2,26 @@ package pricingcontract
 
 import (
 	"context"
+	"log/slog"
 	"testing"
-	time "time"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/batchimage"
-	completion "github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	"github.com/TokenFlux/TokenRouter/internal/creative"
-
 	billingcore "github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/creative"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/stretchr/testify/require"
 )
 
-// TestMediaPricingCardsHaveSameGroupAndPricingConfigSemantics 验证共享价格配置的价卡，图片按张、视频按秒和按次模式必须得到相同结果。
+// TestMediaPricingCardsHaveSameGroupAndPricingConfigSemantics 检查媒体价卡在分组和共享价格配置中得到相同金额。
 func TestMediaPricingCardsHaveSameGroupAndPricingConfigSemantics(t *testing.T) {
 	for _, media := range []string{"image", "video"} {
 		for _, perRequest := range []bool{false, true} {
@@ -66,7 +66,7 @@ func TestMediaPricingCardsHaveSameGroupAndPricingConfigSemantics(t *testing.T) {
 	}
 }
 
-// TestAsyncImageUnitPricingUsesCardsAndPerImageFallback 验证新异步任务读取模型价卡和尺寸；token 单价不可冒充每张费用。
+// TestAsyncImageUnitPricingUsesCardsAndPerImageFallback 检查异步图片任务按模型价卡和尺寸读取每张费用。
 func TestAsyncImageUnitPricingUsesCardsAndPerImageFallback(t *testing.T) {
 	ctx := context.Background()
 	model := "gemini-3.1-flash-image"
@@ -103,4 +103,28 @@ func TestAsyncImageUnitPricingUsesCardsAndPerImageFallback(t *testing.T) {
 	price, err = resolver.ResolveImageUnitPrice(ctx, billingcore.PricingInput{Model: model, GroupID: &group.ID}, "2K")
 	require.NoError(t, err)
 	require.InDelta(t, 0.2, price, 1e-12)
+}
+
+func creativeGroupProjection(value *routing.Group) *creative.GroupView {
+	if value == nil {
+		return nil
+	}
+	return &creative.GroupView{ID: value.ID, Name: value.Name, IsExclusive: value.IsExclusive, AllowImageGeneration: value.AllowImageGeneration, Active: value.IsActive(), RateMultiplier: value.RateMultiplier, Operations: creative.OperationsForGroup(value.ResponsesImagePolicy != "" || value.ProtocolFallbacks != nil, value.AllowsClientProtocol)}
+}
+
+// creativePriceFixture 将目录和解析器接入测试，使用 billing 计算价格并处理缺价回退。
+func creativePriceFixture(calculator *billingcore.Calculator, resolver *billingcore.PriceResolver) func(context.Context, *creative.GroupView, string, string) (float64, bool) {
+	return func(ctx context.Context, group *creative.GroupView, model, size string) (float64, bool) {
+		if group == nil {
+			return 0, false
+		}
+		selected := resolver
+		if selected == nil && calculator != nil {
+			selected = billingcore.NewPriceResolver(nil, calculator, modelidentity.Identity, func(model string, err error) {
+				slog.Debug("failed to get model pricing from model catalog, using fallback", "model", model, "error", err)
+			})
+		}
+		value, err := selected.ResolveImageUnitPrice(ctx, billingcore.PricingInput{Model: model, GroupID: &group.ID}, size)
+		return value, err == nil
+	}
 }

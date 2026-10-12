@@ -15,6 +15,32 @@ type Queries struct {
 	Observe        func(string, ...any)
 }
 
+// CreativeOutputContent 是输出内容的返回结构。
+type CreativeOutputContent struct {
+	Content     []byte
+	ContentType string
+}
+
+func (s *Public) queries() *Queries {
+	return &Queries{Now: s.Now, Repo: s.Repo, TransientStore: s.TransientStore, Enabled: s.Enabled, Observe: s.Observe}
+}
+
+func (s *Public) GetRun(ctx context.Context, scope CreativeRunScope, id string) (*CreativeRunPublic, error) {
+	return s.queries().GetRun(ctx, scope, id)
+}
+
+func (s *Public) ListRuns(ctx context.Context, scope CreativeRunScope, filter CreativeRunFilter) (*CreativeListRunsResponse, error) {
+	return s.queries().ListRuns(ctx, scope, filter)
+}
+
+func (s *Public) GetOutputContent(ctx context.Context, scope CreativeRunScope, id string, index int) (*CreativeOutputContent, error) {
+	return s.queries().GetOutputContent(ctx, scope, id, index)
+}
+
+func (s *Public) AckOutput(ctx context.Context, scope CreativeRunScope, id string, index int) error {
+	return s.queries().AckOutput(ctx, scope, id, index)
+}
+
 func (s *Queries) warn(event string, values ...any) {
 	if s.Observe != nil {
 		s.Observe(event, values...)
@@ -92,14 +118,8 @@ func (s *Queries) ListRuns(ctx context.Context, scope CreativeRunScope, filter C
 	return &CreativeListRunsResponse{Data: data, HasMore: len(data) == filter.Limit}, nil
 }
 
-// CreativeOutputContent 是输出内容的返回结构。
-type CreativeOutputContent struct {
-	Content     []byte
-	ContentType string
-}
-
 // GetOutputContent 校验所有权与输出状态后从临时存储读取图片字节。
-// 过期或缺失时：任务为 succeeded 则转 result_lost，并返回明确错误，绝不明示成功。
+// 输出过期或缺失时，将 succeeded 任务转为 result_lost 并返回错误。
 func (s *Queries) GetOutputContent(ctx context.Context, scope CreativeRunScope, runID string, outputIndex int) (*CreativeOutputContent, error) {
 	normalizedScope, err := NormalizeCreativeRunScope(scope)
 	if err != nil {
@@ -164,13 +184,10 @@ func (s *Queries) MarkRunResultLost(ctx context.Context, run *CreativeRun) error
 	if run == nil || run.Status != CreativeRunStatusSucceeded {
 		return nil
 	}
-	if err := s.Repo.TransitionCreativeRunStatus(ctx, run.RunID, CreativeRunStatusResultLost, CreativeRunTransitionOptions{
+	return s.Repo.TransitionCreativeRunStatus(ctx, run.RunID, CreativeRunStatusResultLost, CreativeRunTransitionOptions{
 		ErrorCode:    CreativeStringPtr("RESULT_EXPIRED"),
 		ErrorMessage: CreativeStringPtr("transient output expired before client acknowledgment"),
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // AckOutput 在客户端确认保存后删除临时输出并标记 acked，幂等。
@@ -220,7 +237,7 @@ func (s *Queries) AckOutput(ctx context.Context, scope CreativeRunScope, runID s
 	return nil
 }
 
-// now 保持各原取时点，构造时可注入同一时钟来源。
+// now 返回注入时钟的时间，缺省时使用系统时间。
 func (s *Queries) now() time.Time {
 	if s.Now != nil {
 		return s.Now()

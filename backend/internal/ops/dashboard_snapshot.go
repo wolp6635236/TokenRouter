@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
 )
 
 type DashboardSnapshot struct {

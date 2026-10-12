@@ -5,18 +5,25 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/googleforward"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
 )
 
 // GoogleOutput 接收平台准备器的同步写入并输出 HTTP 响应。
 type GoogleOutput struct{ Context *gin.Context }
+
+// GoogleBoundary 保留两个平台的错误形状，平台选择对应方法，不共享可变业务状态。
+type GoogleBoundary struct {
+	*GeminiOutput
+	Antigravity    *AntigravityOutput
+	UseAntigravity bool
+}
 
 func (o GoogleOutput) RequestContext() context.Context { return o.Context.Request.Context() }
 func (o GoogleOutput) GetHeader(key string) string {
@@ -62,11 +69,13 @@ func (o GoogleOutput) FeatureDenied() {
 	MarkOpsClientBusinessLimited(o.Context, OpsClientBusinessLimitedReasonLocalFeatureGate)
 }
 
-// GoogleBoundary 保留两个平台的错误形状，平台选择对应方法，不共享可变业务状态。
-type GoogleBoundary struct {
-	*GeminiOutput
-	Antigravity    *AntigravityOutput
-	UseAntigravity bool
+func NewGoogleBoundary(c *gin.Context, options googleforward.Options, antigravity bool) GoogleBoundary {
+	common := GoogleOutput{Context: c}
+	return GoogleBoundary{
+		GeminiOutput:   &GeminiOutput{GoogleOutput: common, Options: options},
+		Antigravity:    &AntigravityOutput{GoogleOutput: common, Options: options},
+		UseAntigravity: antigravity,
+	}
 }
 
 func (o GoogleBoundary) ClaudeError(status int, kind, message string) error {
@@ -97,13 +106,4 @@ func (o GoogleBoundary) MappedClaudeError(a *gatewayadapter.ExecutionProvider, s
 
 func (o GoogleBoundary) MapAntigravityCollectionError(err error) error {
 	return o.Antigravity.MapAntigravityCollectionError(err)
-}
-
-func NewGoogleBoundary(c *gin.Context, options googleforward.Options, antigravity bool) GoogleBoundary {
-	common := GoogleOutput{Context: c}
-	return GoogleBoundary{
-		GeminiOutput:   &GeminiOutput{GoogleOutput: common, Options: options},
-		Antigravity:    &AntigravityOutput{GoogleOutput: common, Options: options},
-		UseAntigravity: antigravity,
-	}
 }

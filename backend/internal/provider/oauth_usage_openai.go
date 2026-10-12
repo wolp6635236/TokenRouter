@@ -98,10 +98,10 @@ func isOpenAICodexSnapshotStale(provider *Record, now time.Time) bool {
 	if provider == nil || !provider.IsOpenAIOAuth() {
 		return false
 	}
-	// 普通提供商从 /responses 响应头刷新 Codex 用量，要求启用 WSv2。
+	// 普通提供商通过 Responses WS 刷新 Codex 用量，资格取自上游协议集合。
 	// Spark 影子从 /wham/usage 的 codex_bengalfox 读取用量，以 codex_usage_updated_at TTL 判断过期，
 	// 不受 WSv2 开关限制。实际查询频率仍由 ShouldProbeOpenAICodexSnapshot 的缓存 TTL 控制。
-	if !provider.IsShadow() && !provider.IsOpenAIResponsesWebSocketV2Enabled() {
+	if !provider.IsShadow() && !provider.SupportsResponsesWS() {
 		return false
 	}
 	if provider.Extra == nil {

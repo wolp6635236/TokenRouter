@@ -11,19 +11,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/tidwall/gjson"
 
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/tidwall/gjson"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 const (
@@ -107,6 +108,16 @@ const (
 
 	contentModerationRuntimeCacheTTL       = time.Second
 	contentModerationRuntimeRefreshTimeout = 5 * time.Second
+
+	ContentModerationSourceUser  = "user"
+	ContentModerationSourceTool  = "tool"
+	ContentModerationSourceMixed = "mixed"
+
+	ContentModerationItemTypeText    = "text"
+	ContentModerationItemTypeImage   = "image"
+	ContentModerationItemTypeRequest = "request"
+
+	contentModerationProxyURLCacheTTL = time.Minute
 )
 
 var contentModerationCategoryOrder = []string{
@@ -123,24 +134,6 @@ var contentModerationCategoryOrder = []string{
 	"sexual/minors",
 	"violence",
 	"violence/graphic",
-}
-
-func ContentModerationDefaultThresholds() map[string]float64 {
-	return map[string]float64{
-		"harassment":             0.98,
-		"harassment/threatening": 0.90,
-		"hate":                   0.65,
-		"hate/threatening":       0.65,
-		"illicit":                0.95,
-		"illicit/violent":        0.95,
-		"self-harm":              0.65,
-		"self-harm/intent":       0.85,
-		"self-harm/instructions": 0.65,
-		"sexual":                 0.65,
-		"sexual/minors":          0.65,
-		"violence":               0.95,
-		"violence/graphic":       0.95,
-	}
 }
 
 type ContentModerationConfig struct {
@@ -371,16 +364,6 @@ type ContentModerationCheckInput struct {
 	NoMediaRetention bool
 }
 
-const (
-	ContentModerationSourceUser  = "user"
-	ContentModerationSourceTool  = "tool"
-	ContentModerationSourceMixed = "mixed"
-
-	ContentModerationItemTypeText    = "text"
-	ContentModerationItemTypeImage   = "image"
-	ContentModerationItemTypeRequest = "request"
-)
-
 // ContentModerationInputItem 是管理员复审时展示的完整当前轮内容单元。
 type ContentModerationInputItem struct {
 	Index    int    `json:"index"`
@@ -403,87 +386,6 @@ type ContentModerationInput struct {
 	Items      []ContentModerationInputItem
 	ImageItems []ContentModerationImage
 	Source     string
-}
-
-func (in *ContentModerationInput) Normalize() {
-	if in == nil {
-		return
-	}
-	// 完整原文用于分块审核和管理员复审，不能在这里截断或折叠空白。
-	in.Images = normalizeModerationImages(in.Images)
-	if len(in.Items) == 0 {
-		if strings.TrimSpace(in.Text) != "" {
-			in.Items = append(in.Items, ContentModerationInputItem{Index: len(in.Items), Source: ContentModerationSourceUser, Type: ContentModerationItemTypeText, Text: in.Text})
-		}
-		for _, image := range in.Images {
-			item := ContentModerationInputItem{Index: len(in.Items), Source: ContentModerationSourceUser, Type: ContentModerationItemTypeImage, ImageRef: image}
-			in.Items = append(in.Items, item)
-			in.ImageItems = append(in.ImageItems, ContentModerationImage{SourceIndex: item.Index, Source: item.Source, Reference: image})
-		}
-	}
-	if in.Source == "" {
-		in.Source = contentModerationInputSource(in.Items)
-	}
-}
-
-func (in ContentModerationInput) IsEmpty() bool {
-	return strings.TrimSpace(in.Text) == "" && len(in.Images) == 0
-}
-
-func (in ContentModerationInput) ModerationInput() any {
-	if len(in.Images) == 0 {
-		return in.Text
-	}
-	parts := make([]moderationAPIInputPart, 0, len(in.Images)+1)
-	if strings.TrimSpace(in.Text) != "" {
-		parts = append(parts, moderationAPIInputPart{Type: "text", Text: in.Text})
-	}
-	for _, image := range in.Images {
-		parts = append(parts, moderationAPIInputPart{
-			Type:     "image_url",
-			ImageURL: &moderationAPIImageURLRef{URL: image},
-		})
-	}
-	return parts
-}
-
-func normalizeContentModerationSource(source string) string {
-	if strings.EqualFold(strings.TrimSpace(source), ContentModerationSourceTool) {
-		return ContentModerationSourceTool
-	}
-	return ContentModerationSourceUser
-}
-
-func contentModerationInputSource(items []ContentModerationInputItem) string {
-	hasUser := false
-	hasTool := false
-	for _, item := range items {
-		switch normalizeContentModerationSource(item.Source) {
-		case ContentModerationSourceTool:
-			hasTool = true
-		default:
-			hasUser = true
-		}
-	}
-	if hasUser && hasTool {
-		return ContentModerationSourceMixed
-	}
-	if hasTool {
-		return ContentModerationSourceTool
-	}
-	return ContentModerationSourceUser
-}
-
-func (in ContentModerationInput) Hash() string {
-	h := sha256.New()
-	_, _ = h.Write([]byte("text:"))
-	_, _ = h.Write([]byte(in.Text))
-	for _, image := range in.Images {
-		imageHash := sha256.Sum256([]byte(image))
-		_, _ = h.Write([]byte("\nimage:"))
-		_, _ = h.Write([]byte(hex.EncodeToString(imageHash[:])))
-	}
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 type ContentModerationDecision struct {
@@ -615,6 +517,7 @@ type ContentModerationCyberWarningInput struct {
 }
 
 type ContentModerationLogFilter struct {
+	RequestID  string
 	Pagination pagination.PaginationParams
 	Result     string
 	GroupID    *int64
@@ -626,6 +529,7 @@ type ContentModerationLogFilter struct {
 
 // ContentModerationCyberWarningFilter 描述 cyber 警告列表和统计的筛选条件。
 type ContentModerationCyberWarningFilter struct {
+	RequestID  string
 	Pagination pagination.PaginationParams
 	UserID     *int64
 	ProviderID *int64
@@ -825,6 +729,166 @@ type contentModerationKeyHealth struct {
 	SyncSuccess    int64
 	SyncErrors     int64
 	SyncLatencyMS  int64
+}
+
+type contentModerationAuditResult struct {
+	CategoryScores      map[string]float64
+	FailedUnits         []ContentModerationFailedUnit
+	FlaggedImageIndexes []int
+	TextUnitCount       int
+	ImageUnitCount      int
+	SuccessfulUnits     int
+	AuditComplete       bool
+}
+
+type contentModerationUnitResult struct {
+	unitType    string
+	index       int
+	sourceIndex int
+	result      *moderationAPIResult
+	err         error
+}
+
+type contentModerationAPIError struct {
+	StatusCode int
+	Message    string
+}
+
+// moderationProxyURLCacheEntry 缓存代理 ID 到 URL 的解析，避免审核热路径逐请求查库。
+type moderationProxyURLCacheEntry struct {
+	proxyID   int64
+	url       string
+	expiresAt time.Time
+}
+
+type contentModerationAPIKeyRuntimeEntry struct {
+	Key      string
+	KeyHash  string
+	Priority int
+	Note     string
+}
+
+type moderationAPIRequest struct {
+	Model string `json:"model"`
+	Input any    `json:"input"`
+}
+
+type moderationAPIInputPart struct {
+	Type     string                    `json:"type"`
+	Text     string                    `json:"text,omitempty"`
+	ImageURL *moderationAPIImageURLRef `json:"image_url,omitempty"`
+}
+
+type moderationAPIImageURLRef struct {
+	URL string `json:"url"`
+}
+
+type moderationAPIResponse struct {
+	Results []moderationAPIResult `json:"results"`
+}
+
+type moderationAPIResult struct {
+	Flagged        bool               `json:"flagged"`
+	CategoryScores map[string]float64 `json:"category_scores"`
+}
+
+func ContentModerationDefaultThresholds() map[string]float64 {
+	return map[string]float64{
+		"harassment":             0.98,
+		"harassment/threatening": 0.90,
+		"hate":                   0.65,
+		"hate/threatening":       0.65,
+		"illicit":                0.95,
+		"illicit/violent":        0.95,
+		"self-harm":              0.65,
+		"self-harm/intent":       0.85,
+		"self-harm/instructions": 0.65,
+		"sexual":                 0.65,
+		"sexual/minors":          0.65,
+		"violence":               0.95,
+		"violence/graphic":       0.95,
+	}
+}
+
+func (in *ContentModerationInput) Normalize() {
+	if in == nil {
+		return
+	}
+	// 完整原文用于分块审核和管理员复审，不能在这里截断或折叠空白。
+	in.Images = normalizeModerationImages(in.Images)
+	if len(in.Items) == 0 {
+		if strings.TrimSpace(in.Text) != "" {
+			in.Items = append(in.Items, ContentModerationInputItem{Index: len(in.Items), Source: ContentModerationSourceUser, Type: ContentModerationItemTypeText, Text: in.Text})
+		}
+		for _, image := range in.Images {
+			item := ContentModerationInputItem{Index: len(in.Items), Source: ContentModerationSourceUser, Type: ContentModerationItemTypeImage, ImageRef: image}
+			in.Items = append(in.Items, item)
+			in.ImageItems = append(in.ImageItems, ContentModerationImage{SourceIndex: item.Index, Source: item.Source, Reference: image})
+		}
+	}
+	if in.Source == "" {
+		in.Source = contentModerationInputSource(in.Items)
+	}
+}
+
+func (in ContentModerationInput) IsEmpty() bool {
+	return strings.TrimSpace(in.Text) == "" && len(in.Images) == 0
+}
+
+func (in ContentModerationInput) ModerationInput() any {
+	if len(in.Images) == 0 {
+		return in.Text
+	}
+	parts := make([]moderationAPIInputPart, 0, len(in.Images)+1)
+	if strings.TrimSpace(in.Text) != "" {
+		parts = append(parts, moderationAPIInputPart{Type: "text", Text: in.Text})
+	}
+	for _, image := range in.Images {
+		parts = append(parts, moderationAPIInputPart{
+			Type:     "image_url",
+			ImageURL: &moderationAPIImageURLRef{URL: image},
+		})
+	}
+	return parts
+}
+
+func normalizeContentModerationSource(source string) string {
+	if strings.EqualFold(strings.TrimSpace(source), ContentModerationSourceTool) {
+		return ContentModerationSourceTool
+	}
+	return ContentModerationSourceUser
+}
+
+func contentModerationInputSource(items []ContentModerationInputItem) string {
+	hasUser := false
+	hasTool := false
+	for _, item := range items {
+		switch normalizeContentModerationSource(item.Source) {
+		case ContentModerationSourceTool:
+			hasTool = true
+		default:
+			hasUser = true
+		}
+	}
+	if hasUser && hasTool {
+		return ContentModerationSourceMixed
+	}
+	if hasTool {
+		return ContentModerationSourceTool
+	}
+	return ContentModerationSourceUser
+}
+
+func (in ContentModerationInput) Hash() string {
+	h := sha256.New()
+	_, _ = h.Write([]byte("text:"))
+	_, _ = h.Write([]byte(in.Text))
+	for _, image := range in.Images {
+		imageHash := sha256.Sum256([]byte(image))
+		_, _ = h.Write([]byte("\nimage:"))
+		_, _ = h.Write([]byte(hex.EncodeToString(imageHash[:])))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func NewContentModerationService(
@@ -1485,16 +1549,6 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 	}
 }
 
-type contentModerationAuditResult struct {
-	CategoryScores      map[string]float64
-	FailedUnits         []ContentModerationFailedUnit
-	FlaggedImageIndexes []int
-	TextUnitCount       int
-	ImageUnitCount      int
-	SuccessfulUnits     int
-	AuditComplete       bool
-}
-
 func (r *contentModerationAuditResult) ErrorText() string {
 	if r == nil || len(r.FailedUnits) == 0 {
 		return ""
@@ -1504,19 +1558,6 @@ func (r *contentModerationAuditResult) ErrorText() string {
 		parts = append(parts, fmt.Sprintf("%s[%d]: %s", unit.Type, unit.Index, unit.Error))
 	}
 	return strings.Join(parts, "; ")
-}
-
-type contentModerationUnitResult struct {
-	unitType    string
-	index       int
-	sourceIndex int
-	result      *moderationAPIResult
-	err         error
-}
-
-type contentModerationAPIError struct {
-	StatusCode int
-	Message    string
 }
 
 func (e *contentModerationAPIError) Error() string {
@@ -1545,10 +1586,8 @@ func (s *ContentModerationService) auditContentModerationInput(ctx context.Conte
 		results := make(chan contentModerationUnitResult, workerCount)
 		jobs := make(chan int)
 		var wg sync.WaitGroup
-		for worker := 0; worker < workerCount; worker++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range workerCount {
+			wg.Go(func() {
 				for index := range jobs {
 					image := content.ImageItems[index]
 					if err := ctx.Err(); err != nil {
@@ -1559,7 +1598,7 @@ func (s *ContentModerationService) auditContentModerationInput(ctx context.Conte
 					apiResult, err := s.callModeration(ctx, cfg, parts, trackKeyLoad)
 					results <- contentModerationUnitResult{unitType: ContentModerationItemTypeImage, index: index, sourceIndex: image.SourceIndex, result: apiResult, err: err}
 				}
-			}()
+			})
 		}
 		go func() {
 			for index := range content.ImageItems {
@@ -1657,8 +1696,7 @@ func mergeContentModerationUnitResult(target *contentModerationAuditResult, unit
 
 // publicContentModerationError 不把审核供应商响应体写入审计记录，避免回显输入或凭据。
 func publicContentModerationError(err error) string {
-	var apiErr *contentModerationAPIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*contentModerationAPIError](err); ok {
 		switch {
 		case apiErr.StatusCode == 429:
 			return "moderation provider rate limited"
@@ -2315,17 +2353,8 @@ func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModer
 		return nil, err
 	}
 	riskEnabled := s.isRiskControlEnabled(ctx)
-	active := int(s.asyncActive.Load())
-	if active < 0 {
-		active = 0
-	}
-	if active > cfg.WorkerCount {
-		active = cfg.WorkerCount
-	}
-	preBlockActive := int(s.preBlockActive.Load())
-	if preBlockActive < 0 {
-		preBlockActive = 0
-	}
+	active := min(max(int(s.asyncActive.Load()), 0), cfg.WorkerCount)
+	preBlockActive := max(int(s.preBlockActive.Load()), 0)
 	preBlockChecked := s.preBlockChecked.Load()
 	preBlockAvgLatency := int64(0)
 	if preBlockChecked > 0 {
@@ -2653,7 +2682,7 @@ func (s *ContentModerationService) callModerationBatch(ctx context.Context, cfg 
 	}
 	trackLoad := len(trackKeyLoad) > 0 && trackKeyLoad[0]
 	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
+	for attempt := range attempts {
 		key, ok := s.nextUsableAPIKey(cfg)
 		if !ok {
 			lastErr = errors.New("no moderation api key available")
@@ -2727,15 +2756,6 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 	}
 	return out.Results, nil
 }
-
-// moderationProxyURLCacheEntry 缓存代理 ID 到 URL 的解析，避免审核热路径逐请求查库。
-type moderationProxyURLCacheEntry struct {
-	proxyID   int64
-	url       string
-	expiresAt time.Time
-}
-
-const contentModerationProxyURLCacheTTL = time.Minute
 
 func (s *ContentModerationService) resolveModerationProxyURL(ctx context.Context, proxyID int64) (string, error) {
 	now := time.Now()
@@ -3180,12 +3200,7 @@ func (cfg *ContentModerationConfig) includesGroup(groupID *int64) bool {
 	if groupID == nil {
 		return false
 	}
-	for _, id := range cfg.GroupIDs {
-		if id == *groupID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(cfg.GroupIDs, *groupID)
 }
 
 func (cfg *ContentModerationConfig) includesModel(model string) bool {
@@ -3229,13 +3244,6 @@ func (cfg *ContentModerationConfig) apiKeys() []string {
 		return nil
 	}
 	return normalizeModerationAPIKeys(cfg.APIKeys)
-}
-
-type contentModerationAPIKeyRuntimeEntry struct {
-	Key      string
-	KeyHash  string
-	Priority int
-	Note     string
 }
 
 func (cfg *ContentModerationConfig) apiKeyEntries() []contentModerationAPIKeyRuntimeEntry {
@@ -3668,9 +3676,7 @@ func buildContentModerationTestAuditResult(result *moderationAPIResult, threshol
 		return nil
 	}
 	scores := make(map[string]float64, len(result.CategoryScores))
-	for category, score := range result.CategoryScores {
-		scores[category] = score
-	}
+	maps.Copy(scores, result.CategoryScores)
 	thresholdSnapshot := mergeContentModerationThresholds(ContentModerationDefaultThresholds(), thresholds)
 	flagged, highestCategory, highestScore := evaluateModerationScores(scores, thresholdSnapshot)
 	compositeScore := highestScore
@@ -3682,30 +3688,6 @@ func buildContentModerationTestAuditResult(result *moderationAPIResult, threshol
 		CategoryScores:  scores,
 		Thresholds:      thresholdSnapshot,
 	}
-}
-
-type moderationAPIRequest struct {
-	Model string `json:"model"`
-	Input any    `json:"input"`
-}
-
-type moderationAPIInputPart struct {
-	Type     string                    `json:"type"`
-	Text     string                    `json:"text,omitempty"`
-	ImageURL *moderationAPIImageURLRef `json:"image_url,omitempty"`
-}
-
-type moderationAPIImageURLRef struct {
-	URL string `json:"url"`
-}
-
-type moderationAPIResponse struct {
-	Results []moderationAPIResult `json:"results"`
-}
-
-type moderationAPIResult struct {
-	Flagged        bool               `json:"flagged"`
-	CategoryScores map[string]float64 `json:"category_scores"`
 }
 
 func evaluateModerationScores(scores map[string]float64, thresholds map[string]float64) (bool, string, float64) {
@@ -3780,7 +3762,7 @@ func normalizeInt64IDs(ids []int64) []int64 {
 		seen[id] = struct{}{}
 		out = append(out, id)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 
@@ -4129,9 +4111,7 @@ func cloneFloatMap(in map[string]float64) map[string]float64 {
 		return map[string]float64{}
 	}
 	out := make(map[string]float64, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -4183,12 +4163,10 @@ func (s *ContentModerationService) Start() {
 	}
 	s.runtimeStarted = true
 	s.runtimeDone = make(chan struct{})
-	for i := 0; i < s.workerCount; i++ {
-		s.runtimeWG.Add(1)
-		go func() { defer s.runtimeWG.Done(); s.worker(i) }()
+	for i := range s.workerCount {
+		s.runtimeWG.Go(func() { ; s.worker(i) })
 	}
-	s.runtimeWG.Add(1)
-	go func() { defer s.runtimeWG.Done(); s.cleanupWorker() }()
+	s.runtimeWG.Go(func() { ; s.cleanupWorker() })
 }
 
 // Stop 返回未排空任务的数量，不能把读取配置失败造成的剩余任务当作成功。

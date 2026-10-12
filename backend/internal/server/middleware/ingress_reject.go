@@ -5,15 +5,11 @@ import (
 	"strings"
 	"sync/atomic"
 
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/gin-gonic/gin"
 
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-
-	"github.com/gin-gonic/gin"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
 )
-
-// IngressRejectReason 标识预期的网关准入失败，此类失败不能视为运维请求错误。
-type IngressRejectReason string
 
 const (
 	IngressRejectQueryAPIKeyDeprecated  IngressRejectReason = "query_api_key_deprecated"
@@ -28,22 +24,25 @@ const (
 	IngressRejectGroupUnassigned        IngressRejectReason = "group_unassigned"
 	IngressRejectInvalidAuthRateLimited IngressRejectReason = "invalid_auth_rate_limited"
 	IngressRejectAPIKeyAuthOverloaded   IngressRejectReason = "api_key_auth_overloaded"
+
+	ingressRejectReasonContextKey = "ingress_reject_reason"
 )
 
-const ingressRejectReasonContextKey = "ingress_reject_reason"
+var activeIngressRejectRecorder atomic.Pointer[ingressRejectRecorderHolder]
+
+// IngressRejectReason 标识预期的网关准入失败，此类失败不能视为运维请求错误。
+type IngressRejectReason string
 
 type IngressRejectRecorder interface {
 	RecordIngressReject(reason, routeFamily, protocol, clientIP string, userID, apiKeyID int64)
 }
 
+type ingressRejectRecorderHolder struct{ recorder IngressRejectRecorder }
+
 // InvalidAuthClientKey 供装配复用相同的地址归一化，不改变无效认证分桶。
 func InvalidAuthClientKey(c *gin.Context) string {
 	return normalizeIngressRejectIP(identityhttp.SecurityClientIP(c))
 }
-
-type ingressRejectRecorderHolder struct{ recorder IngressRejectRecorder }
-
-var activeIngressRejectRecorder atomic.Pointer[ingressRejectRecorderHolder]
 
 func SetIngressRejectRecorder(recorder IngressRejectRecorder) {
 	if recorder == nil {

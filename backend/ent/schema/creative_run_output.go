@@ -1,14 +1,14 @@
 package schema
 
 import (
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 // CreativeRunOutput 保存创作台任务单个输出的元数据。

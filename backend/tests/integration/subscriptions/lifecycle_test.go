@@ -7,14 +7,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 
 	egressredis "github.com/TokenFlux/TokenRouter/internal/egress/rediscache"
 	gatewayredis "github.com/TokenFlux/TokenRouter/internal/gateway/rediscache"
-
-	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
+
+// 订阅停止能力由缓存公开实现提供，不绑定旧包的私有类型。
+type stoppableTLSFingerprintCache interface {
+	SubscribeUpdates(context.Context, func())
+	StopSubscription()
+}
 
 // TestSubscriptionsWaitForInFlightCallback 验证真实 Redis 订阅的最后一个回调返回前，Stop 不得允许关闭共享连接。
 func TestSubscriptionsWaitForInFlightCallback(t *testing.T) {
@@ -74,10 +79,4 @@ func TestSubscriptionsWaitForInFlightCallback(t *testing.T) {
 			cache.StopSubscription()
 		})
 	}
-}
-
-// 订阅停止能力由缓存公开实现提供，不绑定旧包的私有类型。
-type stoppableTLSFingerprintCache interface {
-	SubscribeUpdates(context.Context, func())
-	StopSubscription()
 }

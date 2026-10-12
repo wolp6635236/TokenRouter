@@ -6,20 +6,30 @@ import (
 	"os"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
-
 	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache/codec"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
+
+func provideAntigravityAuthorization(proxies egress.ProxyRepository) *provider.AntigravityAuthorization {
+	options := provideradapter.AntigravityAuthorizationOptions(func(ctx context.Context, id int64) (string, bool) {
+		proxy, err := proxies.GetByID(ctx, id)
+		if err != nil || proxy == nil {
+			return "", false
+		}
+		return proxy.URL(), true
+	})
+	return provider.NewAntigravityAuthorization(options)
+}
 
 // provideAntigravityRetry 在健康配置绑定完成后构造平台重试组件，网关共用该实例。
 func provideAntigravityRetry(store *providerpostgres.ProviderStore, counter provider.Internal500CounterCache, runtime *providerHealthRuntime, snapshots *scheduler.SnapshotService, transport httpclient.UpstreamTransport, cfg *config.Config) *provideradapter.AntigravityRetry {
@@ -98,4 +108,20 @@ func provideAntigravityErrorObserver(core *provideradapter.AntigravityRetry, sto
 		SetRateLimited: store.SetRateLimited,
 		Other:          runtime.Observer,
 	}
+}
+
+// provideAntigravityQuota 为额度查询绑定模型响应读取上限和代理查询，代理缺失或读取失败时返回空地址与 false。
+func provideAntigravityQuota(cfg *config.Config, proxies egress.ProxyRepository) *provider.AntigravityQuota {
+	limit := resolveModelsListReadLimit(cfg)
+	options := provideradapter.AntigravityQuotaOptions(limit, func(ctx context.Context, id int64) (string, bool) {
+		if proxies == nil {
+			return "", false
+		}
+		proxy, err := proxies.GetByID(ctx, id)
+		if err != nil || proxy == nil {
+			return "", false
+		}
+		return proxy.URL(), true
+	})
+	return &provider.AntigravityQuota{Options: options}
 }

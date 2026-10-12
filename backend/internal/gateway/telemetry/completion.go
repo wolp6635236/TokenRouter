@@ -3,10 +3,10 @@ package telemetry
 import (
 	"log/slog"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
 func ObserveCompletion(component, message string) {

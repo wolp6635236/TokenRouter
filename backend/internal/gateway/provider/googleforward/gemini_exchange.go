@@ -12,13 +12,13 @@ import (
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
-type geminiExchangeMode int
-
 const (
 	geminiExchangeMessages geminiExchangeMode = iota
 	geminiExchangeNative
 	geminiExchangeOpenAI
 )
+
+type geminiExchangeMode int
 
 func (s *Gemini) geminiExchangeOptions(c *attempt, ctx context.Context, provider *gatewayprovider.ExecutionProvider, model string, mode geminiExchangeMode, protocol gemininative.OpenAICompatProtocol) gemininative.ExchangeOptions {
 	options := gemininative.ExchangeOptions{

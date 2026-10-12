@@ -9,11 +9,12 @@ import (
 	"testing"
 	"testing/fstest"
 
-	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/TokenFlux/TokenRouter/migrations"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestPlatformIndependentGroupsMigration 用真实 PostgreSQL 验证旧数据快照、重放和失败回滚。

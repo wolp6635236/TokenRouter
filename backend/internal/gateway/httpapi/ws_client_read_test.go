@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 func TestReadOpenAIWSClientMessage_ControlCloseFrames(t *testing.T) {

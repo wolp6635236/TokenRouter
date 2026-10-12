@@ -92,3 +92,5 @@ Batch 客户端和 JSONL 编码、创作台的 generateContent 调用和图片�
 Claude 和 Gemini 的单次执行复用各自的协议输出链，Vertex 通过调用方传入的参数接入，平台之间没有 import，也没有新的提供商切换循环。Batch 的提交、读取、取消，以及 GCS 的上传、分页、删除和对象流，只有一份技术实现；对象流由接收方关闭。任务归属、结果状态转换、受控的清理和资金捕获，由 batchimage 和 creative 的任务用例负责。
 
 相关文档：[网关请求生命周期](../architecture/gateway_request_lifecycle.md)、[提供商调度与缓存一致性](../architecture/provider_scheduling_and_cache.md)、[提供商维护](../operations/provider_maintenance.md)。
+
+模型名称与通用候选来自[统一模型目录](model_catalog_and_marketplace.md#model_catalog_resolution)。提供商空白名单允许任意型号，平台的请求格式、认证和协议规则分别检查；默认测试型号用于探测请求。

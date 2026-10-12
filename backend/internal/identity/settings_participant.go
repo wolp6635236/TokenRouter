@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"maps"
 
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
@@ -33,9 +34,7 @@ func SettingsParticipant(grants *GrantSettings) settings.Participant {
 		if err != nil {
 			return settings.PreparedChange{}, err
 		}
-		for key, value := range grantValues {
-			values[key] = value
-		}
+		maps.Copy(values, grantValues)
 		for i, field := range fields {
 			if _, ok := input[field]; !ok {
 				delete(values, keys[i])

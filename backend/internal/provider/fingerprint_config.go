@@ -4,12 +4,6 @@ import (
 	"strings"
 )
 
-// CodexFingerprintMode 控制 OAuth 提供商出站请求的设备指纹收敛强度。
-// 多人共享同一 OAuth 提供商时，每个用户的 Codex 客户端会携带各自不同的
-// installation_id / session_id / thread_id，上游据此判定设备数和会话数。
-// 收敛模式将这些标识改写为提供商级恒定值，减少上游可见的设备/会话指纹。
-type CodexFingerprintMode string
-
 const (
 	// CodexFingerprintOff 不做任何收敛，原样透传客户端标识。
 	// 指纹模式默认关闭，管理员开启后生效。
@@ -24,12 +18,16 @@ const (
 	// CodexFingerprintFull 收敛所有标识：installation_id + session_id + thread_id。
 	// 上游看到 1 台设备 + 1 会话 + 1 线程，最激进。
 	CodexFingerprintFull CodexFingerprintMode = "full"
-)
 
-const (
 	CodexFingerprintModeExtraKey = "codex_fingerprint_mode"
 	CodexFingerprintSeedExtraKey = "codex_fingerprint_seed"
 )
+
+// CodexFingerprintMode 控制 OAuth 提供商出站请求的设备指纹收敛强度。
+// 多人共享同一 OAuth 提供商时，每个用户的 Codex 客户端会携带各自不同的
+// installation_id / session_id / thread_id，上游据此判定设备数和会话数。
+// 收敛模式将这些标识改写为提供商级恒定值，减少上游可见的设备/会话指纹。
+type CodexFingerprintMode string
 
 func CodexFingerprintModeFromExtra(extra map[string]any) CodexFingerprintMode {
 	if extra == nil {
@@ -63,9 +61,9 @@ func ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates map[string]any) boo
 }
 
 // GetCodexFingerprintMode 返回 OAuth 提供商的指纹模式，其他类型返回关闭。
-func (a *Record) GetCodexFingerprintMode() CodexFingerprintMode {
-	if a == nil || !a.IsOpenAIOAuthLike() {
+func (r *Record) GetCodexFingerprintMode() CodexFingerprintMode {
+	if r == nil || !r.IsOpenAIOAuthLike() {
 		return CodexFingerprintOff
 	}
-	return CodexFingerprintModeFromExtra(a.Extra)
+	return CodexFingerprintModeFromExtra(r.Extra)
 }

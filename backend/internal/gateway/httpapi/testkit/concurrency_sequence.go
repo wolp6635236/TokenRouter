@@ -27,6 +27,11 @@ type ConcurrencySequence struct {
 	APIKeyTrackIDs       []int64
 }
 
+type ConcurrencySequenceWithError struct {
+	ConcurrencySequence
+	Err error
+}
+
 func (s *ConcurrencySequence) AcquireProviderSlot(ctx context.Context, providerID int64, maxConcurrency int, requestID string) (bool, error) {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
@@ -166,11 +171,6 @@ func (s *ConcurrencySequence) CleanupExpiredProviderSlotKeys(ctx context.Context
 
 func (s *ConcurrencySequence) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
 	return nil
-}
-
-type ConcurrencySequenceWithError struct {
-	ConcurrencySequence
-	Err error
 }
 
 func (s *ConcurrencySequenceWithError) AcquireProviderSlot(ctx context.Context, providerID int64, maxConcurrency int, requestID string) (bool, error) {

@@ -6,6 +6,20 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// CNResponseIndicatesInsufficientBalance 通过响应体文案识别余额不足
+// （智谱 payg 无独立余额端点，仅能靠响应文案识别）。
+func CNResponseIndicatesInsufficientBalance(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "余额不足") ||
+		strings.Contains(s, "insufficient balance") ||
+		strings.Contains(s, "insufficient_credit") ||
+		strings.Contains(s, "balance is not enough") ||
+		strings.Contains(s, "no enough balance")
+}
+
 func ExtractErrorMessage(body []byte) string {
 	// Claude 风格：{"type":"error","error":{"type":"...","message":"..."}}
 	if m := gjson.GetBytes(body, "error.message").String(); strings.TrimSpace(m) != "" {
@@ -24,7 +38,7 @@ func ExtractErrorMessage(body []byte) string {
 		return d
 	}
 
-	// 兜底：尝试顶层 message
+	// 最后读取顶层 message。
 	return gjson.GetBytes(body, "message").String()
 }
 
@@ -49,4 +63,19 @@ func ExtractErrorCode(body []byte) string {
 	}
 
 	return ""
+}
+
+// IsGoogleProjectConfigError 判断（已提取的小写）错误消息是否属于 Google 服务端配置类问题。
+// 匹配已知的服务端配置错误，供调用方判断重试条件。
+// 适用于所有走 Google 后端的平台（Antigravity、Gemini）。
+func IsGoogleProjectConfigError(lowerMsg string) bool {
+	// Google 间歇性 Bug：Project ID 有效但被临时识别失败
+	return strings.Contains(lowerMsg, "invalid project resource name")
+}
+
+// IsHTMLResponse 按 doctype 或 html 标签前缀识别 HTML 响应。
+func IsHTMLResponse(body []byte) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(string(body)))
+	return strings.HasPrefix(trimmed, "<!doctype html") ||
+		strings.HasPrefix(trimmed, "<html")
 }

@@ -25,6 +25,22 @@ type usageRepoStub struct {
 	onCall     chan struct{}
 }
 
+type dashboardCacheStub struct {
+	get       func(ctx context.Context) (string, error)
+	set       func(ctx context.Context, data string, ttl time.Duration) error
+	del       func(ctx context.Context) error
+	getCalls  int32
+	setCalls  int32
+	delCalls  int32
+	lastSetMu sync.Mutex
+	lastSet   string
+}
+
+type dashboardAggregationRepoStub struct {
+	watermark time.Time
+	err       error
+}
+
 func (s *usageRepoStub) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
 	atomic.AddInt32(&s.calls, 1)
 	if s.onCall != nil {
@@ -52,17 +68,6 @@ func (s *usageRepoStub) GetDashboardStatsWithRange(ctx context.Context, start, e
 	return s.stats, nil
 }
 
-type dashboardCacheStub struct {
-	get       func(ctx context.Context) (string, error)
-	set       func(ctx context.Context, data string, ttl time.Duration) error
-	del       func(ctx context.Context) error
-	getCalls  int32
-	setCalls  int32
-	delCalls  int32
-	lastSetMu sync.Mutex
-	lastSet   string
-}
-
 func (c *dashboardCacheStub) GetDashboardStats(ctx context.Context) (string, error) {
 	atomic.AddInt32(&c.getCalls, 1)
 	if c.get != nil {
@@ -88,11 +93,6 @@ func (c *dashboardCacheStub) DeleteDashboardStats(ctx context.Context) error {
 		return c.del(ctx)
 	}
 	return nil
-}
-
-type dashboardAggregationRepoStub struct {
-	watermark time.Time
-	err       error
 }
 
 func (s *dashboardAggregationRepoStub) AggregateRange(ctx context.Context, start, end time.Time) error {

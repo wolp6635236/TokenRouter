@@ -16,6 +16,7 @@ type SnapshotCacheEntry struct {
 	Payload   any
 	ExpiresAt time.Time
 }
+
 type SnapshotCache struct{ cache *querycache.Cache }
 
 func NewSnapshotCache(ttl time.Duration) *SnapshotCache {
@@ -97,4 +98,24 @@ func ParseBoolQueryWithDefault(raw string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// IfNoneMatchMatched 检查 ETag 是否匹配逗号分隔的条件列表，支持通配符和弱标签。
+func IfNoneMatchMatched(ifNoneMatch, etag string) bool {
+	if etag == "" || ifNoneMatch == "" {
+		return false
+	}
+	for token := range strings.SplitSeq(ifNoneMatch, ",") {
+		candidate := strings.TrimSpace(token)
+		if candidate == "*" {
+			return true
+		}
+		if candidate == etag {
+			return true
+		}
+		if strings.HasPrefix(candidate, "W/") && strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }

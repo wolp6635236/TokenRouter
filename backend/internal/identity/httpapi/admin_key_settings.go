@@ -1,9 +1,10 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // AdminKeySettingsHandler 处理管理员凭据设置。

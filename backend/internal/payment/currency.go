@@ -9,43 +9,43 @@ import (
 
 const DefaultPaymentCurrency = "CNY"
 
-type paymentCurrencyAmountUnit struct {
-	apiMinorUnit      int
-	maxFractionDigits int
-}
-
 var (
 	zeroDecimalAmountUnit  = paymentCurrencyAmountUnit{apiMinorUnit: 0, maxFractionDigits: 0}
 	twoDecimalAmountUnit   = paymentCurrencyAmountUnit{apiMinorUnit: 2, maxFractionDigits: 2}
 	threeDecimalAmountUnit = paymentCurrencyAmountUnit{apiMinorUnit: 3, maxFractionDigits: 3}
 	stripeLegacyZeroAmount = paymentCurrencyAmountUnit{apiMinorUnit: 2, maxFractionDigits: 0}
+
+	paymentCurrencyAmountUnits = map[string]paymentCurrencyAmountUnit{
+		"BIF": zeroDecimalAmountUnit,
+		"CLP": zeroDecimalAmountUnit,
+		"DJF": zeroDecimalAmountUnit,
+		"GNF": zeroDecimalAmountUnit,
+		"JPY": zeroDecimalAmountUnit,
+		"KMF": zeroDecimalAmountUnit,
+		"KRW": zeroDecimalAmountUnit,
+		"MGA": zeroDecimalAmountUnit,
+		"PYG": zeroDecimalAmountUnit,
+		"RWF": zeroDecimalAmountUnit,
+		"VND": zeroDecimalAmountUnit,
+		"VUV": zeroDecimalAmountUnit,
+		"XAF": zeroDecimalAmountUnit,
+		"XOF": zeroDecimalAmountUnit,
+		"XPF": zeroDecimalAmountUnit,
+		"ISK": stripeLegacyZeroAmount,
+		"UGX": stripeLegacyZeroAmount,
+		"BHD": threeDecimalAmountUnit,
+		"IQD": threeDecimalAmountUnit,
+		"JOD": threeDecimalAmountUnit,
+		"KWD": threeDecimalAmountUnit,
+		"LYD": threeDecimalAmountUnit,
+		"OMR": threeDecimalAmountUnit,
+		"TND": threeDecimalAmountUnit,
+	}
 )
 
-var paymentCurrencyAmountUnits = map[string]paymentCurrencyAmountUnit{
-	"BIF": zeroDecimalAmountUnit,
-	"CLP": zeroDecimalAmountUnit,
-	"DJF": zeroDecimalAmountUnit,
-	"GNF": zeroDecimalAmountUnit,
-	"JPY": zeroDecimalAmountUnit,
-	"KMF": zeroDecimalAmountUnit,
-	"KRW": zeroDecimalAmountUnit,
-	"MGA": zeroDecimalAmountUnit,
-	"PYG": zeroDecimalAmountUnit,
-	"RWF": zeroDecimalAmountUnit,
-	"VND": zeroDecimalAmountUnit,
-	"VUV": zeroDecimalAmountUnit,
-	"XAF": zeroDecimalAmountUnit,
-	"XOF": zeroDecimalAmountUnit,
-	"XPF": zeroDecimalAmountUnit,
-	"ISK": stripeLegacyZeroAmount,
-	"UGX": stripeLegacyZeroAmount,
-	"BHD": threeDecimalAmountUnit,
-	"IQD": threeDecimalAmountUnit,
-	"JOD": threeDecimalAmountUnit,
-	"KWD": threeDecimalAmountUnit,
-	"LYD": threeDecimalAmountUnit,
-	"OMR": threeDecimalAmountUnit,
-	"TND": threeDecimalAmountUnit,
+type paymentCurrencyAmountUnit struct {
+	apiMinorUnit      int
+	maxFractionDigits int
 }
 
 func NormalizePaymentCurrency(raw string) (string, error) {
@@ -115,4 +115,26 @@ func AmountToMinorUnit(amountStr, currency string) (int64, error) {
 func MinorUnitToAmount(value int64, currency string) float64 {
 	factor := decimal.New(1, int32(CurrencyMinorUnit(currency)))
 	return decimal.NewFromInt(value).Div(factor).InexactFloat64()
+}
+
+// YuanToFen 将人民币金额字符串换算为分。
+func YuanToFen(yuanStr string) (int64, error) {
+	return AmountToMinorUnit(yuanStr, DefaultPaymentCurrency)
+}
+
+// FenToYuan 将人民币分值换算为元。
+func FenToYuan(fen int64) float64 {
+	return MinorUnitToAmount(fen, DefaultPaymentCurrency)
+}
+
+// ProviderConfigCurrency 读取 Stripe 和 Airwallex 的配置币种，其他渠道或无效配置使用 CNY。
+func ProviderConfigCurrency(providerKey string, cfg map[string]string) string {
+	switch strings.TrimSpace(providerKey) {
+	case TypeStripe, TypeAirwallex:
+		currency, err := NormalizePaymentCurrency(cfg["currency"])
+		if err == nil {
+			return currency
+		}
+	}
+	return DefaultPaymentCurrency
 }

@@ -184,6 +184,14 @@ type EntryField struct {
 	Kind    uint8
 }
 
+type EntryLogger interface {
+	With(...EntryField) EntryLogger
+	Info(string, ...EntryField)
+	Warn(string, ...EntryField)
+	Debug(string, ...EntryField)
+	Error(string, ...EntryField)
+}
+
 func EntryString(key, value string) EntryField { return EntryField{Key: key, Text: value, Kind: 1} }
 func EntryInt(key string, value int) EntryField {
 	return EntryField{Key: key, Integer: int64(value), Kind: 2}
@@ -196,11 +204,3 @@ func EntryInt64(key string, value int64) EntryField {
 func EntryBool(key string, value bool) EntryField { return EntryField{Key: key, Flag: value, Kind: 3} }
 
 func EntryError(err error) EntryField { return EntryField{Key: "error", Err: err, Kind: 4} }
-
-type EntryLogger interface {
-	With(...EntryField) EntryLogger
-	Info(string, ...EntryField)
-	Warn(string, ...EntryField)
-	Debug(string, ...EntryField)
-	Error(string, ...EntryField)
-}

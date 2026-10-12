@@ -7,11 +7,15 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-type Asset = ops.Asset
-type GitHubRelease = ops.GitHubRelease
+var (
+	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
+	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
+)
 
-var ErrNoUpdateAvailable = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
-var ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
+type (
+	Asset         = ops.Asset
+	GitHubRelease = ops.GitHubRelease
+)
 
 type ReleaseQueries interface {
 	CheckUpdate(context.Context, bool) (*ops.UpdateInfo, error)

@@ -89,6 +89,20 @@ func (_c *UsageLogCreate) SetNillablePlatform(v *string) *UsageLogCreate {
 	return _c
 }
 
+// SetBillingKey sets the "billing_key" field.
+func (_c *UsageLogCreate) SetBillingKey(v string) *UsageLogCreate {
+	_c.mutation.SetBillingKey(v)
+	return _c
+}
+
+// SetNillableBillingKey sets the "billing_key" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableBillingKey(v *string) *UsageLogCreate {
+	if v != nil {
+		_c.SetBillingKey(*v)
+	}
+	return _c
+}
+
 // SetRequestID sets the "request_id" field.
 func (_c *UsageLogCreate) SetRequestID(v string) *UsageLogCreate {
 	_c.mutation.SetRequestID(v)
@@ -893,6 +907,11 @@ func (_c *UsageLogCreate) check() error {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "UsageLog.platform": %w`, err)}
 		}
 	}
+	if v, ok := _c.mutation.BillingKey(); ok {
+		if err := usagelog.BillingKeyValidator(v); err != nil {
+			return &ValidationError{Name: "billing_key", err: fmt.Errorf(`ent: validator failed for field "UsageLog.billing_key": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.RequestID(); !ok {
 		return &ValidationError{Name: "request_id", err: errors.New(`ent: missing required field "UsageLog.request_id"`)}
 	}
@@ -1083,6 +1102,10 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Platform(); ok {
 		_spec.SetField(usagelog.FieldPlatform, field.TypeString, value)
 		_node.Platform = value
+	}
+	if value, ok := _c.mutation.BillingKey(); ok {
+		_spec.SetField(usagelog.FieldBillingKey, field.TypeString, value)
+		_node.BillingKey = &value
 	}
 	if value, ok := _c.mutation.RequestID(); ok {
 		_spec.SetField(usagelog.FieldRequestID, field.TypeString, value)
@@ -1505,6 +1528,24 @@ func (u *UsageLogUpsert) SetPlatform(v string) *UsageLogUpsert {
 // UpdatePlatform sets the "platform" field to the value that was provided on create.
 func (u *UsageLogUpsert) UpdatePlatform() *UsageLogUpsert {
 	u.SetExcluded(usagelog.FieldPlatform)
+	return u
+}
+
+// SetBillingKey sets the "billing_key" field.
+func (u *UsageLogUpsert) SetBillingKey(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldBillingKey, v)
+	return u
+}
+
+// UpdateBillingKey sets the "billing_key" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateBillingKey() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldBillingKey)
+	return u
+}
+
+// ClearBillingKey clears the value of the "billing_key" field.
+func (u *UsageLogUpsert) ClearBillingKey() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldBillingKey)
 	return u
 }
 
@@ -2483,6 +2524,27 @@ func (u *UsageLogUpsertOne) SetPlatform(v string) *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) UpdatePlatform() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdatePlatform()
+	})
+}
+
+// SetBillingKey sets the "billing_key" field.
+func (u *UsageLogUpsertOne) SetBillingKey(v string) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetBillingKey(v)
+	})
+}
+
+// UpdateBillingKey sets the "billing_key" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateBillingKey() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateBillingKey()
+	})
+}
+
+// ClearBillingKey clears the value of the "billing_key" field.
+func (u *UsageLogUpsertOne) ClearBillingKey() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearBillingKey()
 	})
 }
 
@@ -3765,6 +3827,27 @@ func (u *UsageLogUpsertBulk) SetPlatform(v string) *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) UpdatePlatform() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdatePlatform()
+	})
+}
+
+// SetBillingKey sets the "billing_key" field.
+func (u *UsageLogUpsertBulk) SetBillingKey(v string) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetBillingKey(v)
+	})
+}
+
+// UpdateBillingKey sets the "billing_key" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateBillingKey() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateBillingKey()
+	})
+}
+
+// ClearBillingKey clears the value of the "billing_key" field.
+func (u *UsageLogUpsertBulk) ClearBillingKey() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearBillingKey()
 	})
 }
 

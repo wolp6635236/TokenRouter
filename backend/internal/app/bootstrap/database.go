@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"time"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+
 	"github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/migrations"
-
-	"entgo.io/ent/dialect"
-	entsql "entgo.io/ent/dialect/sql"
 )
 
 // InitEnt 初始化 Ent ORM 客户端并返回客户端实例和底层的 *sql.DB。
@@ -69,4 +69,24 @@ func InitEnt(ctx context.Context, cfg *config.Config) (_ *ent.Client, _ *sql.DB,
 	}
 
 	return client, drv.DB(), nil
+}
+
+// postgresPoolOptions 将数据库配置转换为连接池选项。
+func postgresPoolOptions(cfg *config.Config) postgresinfra.PoolOptions {
+	return postgresinfra.PoolOptions{
+		MaxOpenConns:           cfg.Database.MaxOpenConns,
+		MaxIdleConns:           cfg.Database.MaxIdleConns,
+		ConnMaxLifetimeMinutes: cfg.Database.ConnMaxLifetimeMinutes,
+		ConnMaxIdleTimeMinutes: cfg.Database.ConnMaxIdleTimeMinutes,
+	}
+}
+
+// applyDBPoolSettings 设置数据库连接池。
+func applyDBPoolSettings(db *sql.DB, cfg *config.Config) {
+	postgresinfra.ApplyPoolSettings(db, postgresPoolOptions(cfg))
+}
+
+// ApplyMigrations 执行数据库迁移。
+func ApplyMigrations(ctx context.Context, db *sql.DB) error {
+	return postgresinfra.ApplyMigrations(ctx, db, migrations.FS)
 }

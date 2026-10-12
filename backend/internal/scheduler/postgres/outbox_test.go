@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 func TestSchedulerOutboxRepositoryFirstCreatedAtAfter(t *testing.T) {

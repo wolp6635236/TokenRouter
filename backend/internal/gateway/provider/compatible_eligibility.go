@@ -45,7 +45,6 @@ func CompatibleEligibilityReason(ctx context.Context, provider *ExecutionProvide
 	}
 	if provider.View().IsOpenAI() {
 		if paused, reason := OpenAIQuotaPause(ctx, provider); paused {
-
 			slog.Debug("provider_auto_paused_by_quota",
 				"provider_id", provider.Record.ID,
 				"window", reason.Window,

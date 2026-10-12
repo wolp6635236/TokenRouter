@@ -6,15 +6,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 type InputTokensCall struct {
@@ -26,7 +26,7 @@ type InputTokensCall struct {
 
 // ResponsesInputTokens 处理 Codex 的 Responses 输入 token 预检，使用无并发槽、免用量记录的计数流程。
 func (h *OpenAITokensHandler) ResponsesInputTokens(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}

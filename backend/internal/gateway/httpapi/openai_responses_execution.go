@@ -6,21 +6,26 @@ import (
 	"net/http"
 	"time"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
-
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/gin-gonic/gin"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
+
+// OpenAIResponsesExecutor 绑定 Responses 请求构造、协议执行和响应输出。
+type OpenAIResponsesExecutor struct {
+	Requests    *OpenAIRequests
+	Output      *OpenAIResponseOutput
+	Text        *OpenAITextExecutor
+	Grok        *GrokExecutor
+	Lineage     *OpenAIEncryptedLineage
+	ImageBridge *gatewayprovider.ResponseImagePolicy
+}
 
 // Forward 保持单次 Responses 的准备、协议分派和执行顺序。
 func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, body []byte) (out *forwardcore.OpenAIResult, failure error) {
@@ -39,7 +44,6 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 	startTime := prepared.StartedAt
 	canonicalImageIntentBody := prepared.CanonicalImageIntentBody
 	tlsRouterMatch := prepared.TLS
-	wsDecision := egress.OpenAIWSProtocolDecision{Transport: egress.OpenAIUpstreamTransport(prepared.Transport.Transport), Reason: prepared.Transport.Reason}
 	originalBody := prepared.OriginalBody
 	requestView := prepared.View
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
@@ -64,7 +68,6 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 	requestView = transformed.View
 	reqModel = transformed.Model
 	promptCacheKey = transformed.PromptCacheKey
-	clientPromptCacheKey := transformed.ClientPromptCacheKey
 	requestedModel, billingModel, upstreamModel := transformed.RequestedModel, transformed.BillingModel, transformed.UpstreamModel
 	imageIntent := transformed.ImageIntent
 	fingerprintIDs := transformed.Fingerprint
@@ -135,21 +138,6 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 		return nil, err
 	}
 	SetOpsUpstreamModel(c, upstreamModel)
-
-	if wsDecision.Transport == egress.OpenAIUpstreamTransportResponsesWebsocketV2 {
-		wsReqBody, err := ensureReqBody()
-		if err != nil {
-			return nil, err
-		}
-		return s.WebSocket(ctx, c, provider, wsReqBody, OpenAIHTTPWSAttempt{
-			ClientPromptCacheKey: clientPromptCacheKey, Token: token, Decision: wsDecision,
-			CodexCLI: isCodexCLI, Stream: reqStream, OriginalModel: originalModel,
-			UpstreamModel: upstreamModel, StartedAt: startTime, TLS: tlsRouterMatch,
-			LineageGroupID: lineageGroupID, LineageSessionHash: lineageSessionHash,
-			BillingModel: billingModel, ImageBillingModel: imageBillingModel,
-			ImageSizeTier: imageSizeTier, ImageInputSize: imageInputSize, LineageEntryBody: lineageEntryBody,
-		})
-	}
 
 	reasoningEffort := requeststate.ExtractOpenAIReasoningEffortFromBody(body)
 	// 国产模型默认 effort 补充：此处 reqModel 已被 mapping 重写为 billingModel。

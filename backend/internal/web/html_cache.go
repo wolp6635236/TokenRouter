@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// HTMLCache manages the cached index.html with injected settings
+// HTMLCache manages the cached index.html with injected settings.
 type HTMLCache struct {
 	mu              sync.RWMutex
 	entries         map[string]CachedHTML
@@ -16,18 +16,18 @@ type HTMLCache struct {
 	settingsVersion uint64 // Incremented when settings change
 }
 
-// CachedHTML represents the cache state
+// CachedHTML represents the cache state.
 type CachedHTML struct {
 	Content []byte
 	ETag    string
 }
 
-// NewHTMLCache creates a new HTML cache instance
+// NewHTMLCache creates a new HTML cache instance.
 func NewHTMLCache() *HTMLCache {
 	return &HTMLCache{}
 }
 
-// SetBaseHTML initializes the cache with the base HTML template
+// SetBaseHTML initializes the cache with the base HTML template.
 func (c *HTMLCache) SetBaseHTML(baseHTML []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -36,7 +36,7 @@ func (c *HTMLCache) SetBaseHTML(baseHTML []byte) {
 	c.baseHTMLHash = hex.EncodeToString(hash[:8]) // First 8 bytes for brevity
 }
 
-// Invalidate marks the cache as stale
+// Invalidate marks the cache as stale.
 func (c *HTMLCache) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -71,7 +71,7 @@ func (c *HTMLCache) Publish(code string, version uint64, html, settingsJSON []by
 	return rendered
 }
 
-// generateETag creates an ETag from base HTML hash + settings hash
+// generateETag creates an ETag from base HTML hash + settings hash.
 func (c *HTMLCache) generateETag(settingsJSON []byte) string {
 	settingsHash := sha256.Sum256(settingsJSON)
 	return `"` + c.baseHTMLHash + "-" + hex.EncodeToString(settingsHash[:8]) + `"`

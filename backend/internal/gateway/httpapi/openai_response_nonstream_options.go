@@ -7,18 +7,15 @@ import (
 	"net/http"
 	"strings"
 
-	responseprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	responseprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) failedResponseTerminal(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, resp *http.Response, mappedModel string, terminalPayload []byte, msg string) error {
@@ -70,6 +67,7 @@ func (p *OpenAIResponseOutput) NonStreamOptions(ctx context.Context, c *gin.Cont
 		ExtractError:    openai.ExtractOpenAISSEErrorMessage,
 		CompactFallback: func(body []byte, message string) error { return NewOpenAICompactFailure(c, body, message) },
 		TerminalFailover: func(resp *http.Response, event string, body []byte, message, model string) error {
+			//nolint:revive // 函数返回具体指针类型，直接 return 会把 nil 指针包成非 nil 的 error。
 			if failure := p.nonStreamingTerminalFailure(c, resp, provider, false, event, body, message, model); failure != nil {
 				return failure
 			}

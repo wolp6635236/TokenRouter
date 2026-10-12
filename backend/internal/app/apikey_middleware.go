@@ -3,17 +3,17 @@ package app
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 )
 
 // newGatewayAuthorization 为网关认证绑定共享的 Key 和订阅实例。

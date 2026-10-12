@@ -4,26 +4,43 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	openaierrors "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
-// OpenAIProviderScheduleModel 保留实际输出模型、请求观测和提供商规则的原优先级。
+type cyberSessionBlockWritePlan struct {
+	scopeKey string
+	keys     []string
+}
+
+// Support 为文本、WS 和媒体适配提供共享的请求资源和用例接口。
+type Support struct {
+	Concurrency *gatewayhttp.ConcurrencyHelper
+	Sticky      gatewayhttp.SlotStickyBinder
+	Rules       *errorpolicy.ErrorPassthroughService
+	Cyber       *gatewayhttp.CyberHandler
+	Quota       gatewayprovider.QuotaUpdater
+	Moderation  gatewayhttp.ModerationPort
+	Submission  gatewayhttp.CompletionSubmission
+}
+
+// OpenAIProviderScheduleModel 依次读取输出模型、请求观测模型和提供商配置的上游模型。
 func OpenAIProviderScheduleModel(c *gin.Context, provider *gatewayprovider.ExecutionProvider, forwardModel string, requireCompact bool, result *forwardcore.OpenAIResult) string {
 	if result != nil {
 		if actual := strings.TrimSpace(result.UpstreamModel); actual != "" {
@@ -99,7 +116,7 @@ func (h *Support) HandleAnthropicFailoverExhausted(c *gin.Context, failoverErr *
 	gatewayhttp.DefaultOpenAIErrorOutput().WriteAnthropicStreamingError(c, status, errType, errMsg, streamStarted)
 }
 
-// EnsureAnthropicErrorResponse 只在尚未写出响应时补充原 Anthropic 错误。
+// EnsureAnthropicErrorResponse 在尚未写出响应时补充 Anthropic 错误。
 func (h *Support) EnsureAnthropicErrorResponse(c *gin.Context, streamStarted bool) bool {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
@@ -121,9 +138,8 @@ func (h *Support) AcquireResponsesProviderSlot(
 	return release, result
 }
 
-// AcquireOpenAIProviderSlot centralizes scheduler selection admission. The
-// optional error writer lets non-Responses endpoints retain their wire format
-// while sharing the same WaitPlan, cancellation, and release semantics.
+// AcquireOpenAIProviderSlot 申请调度选中的提供商槽位，处理等待、取消和释放。
+// 调用方可传入错误写入函数，以输出对应协议的错误格式。
 func (h *Support) AcquireOpenAIProviderSlot(
 	c *gin.Context,
 	groupID *int64,
@@ -150,7 +166,7 @@ func (h *Support) AcquireOpenAIProviderSlot(
 	return release, true
 }
 
-// GetContextInt64 保留历史 HTTP 观测数值类型的兼容读取。
+// GetContextInt64 将 HTTP 观测值中的 int、int32、int64 和 float64 转为 int64。
 func GetContextInt64(c *gin.Context, key string) (int64, bool) {
 	if c == nil || key == "" {
 		return 0, false
@@ -183,7 +199,7 @@ func (h *Support) HandleFailoverExhausted(c *gin.Context, failoverErr *forwardco
 	}, SkipMonitoring: func(c *gin.Context) { c.Set(gatewayhttp.OpsSkipPassthroughKey, true) }})
 }
 
-// HandleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
+// HandleFailoverExhaustedSimple 根据上游状态码写出重试耗尽的错误。
 func (h *Support) HandleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
 	status, errType, errMsg := gatewayhttp.MapOpenAIUpstreamError(statusCode)
 	gatewayhttp.SetOpsUpstreamError(c, statusCode, errMsg, "")
@@ -228,7 +244,7 @@ func (h *Support) RecordCyberPolicyIfMarked(c *gin.Context, apiKey *apikey.APIKe
 			call.HasPlan = true
 		}
 	}
-	// 所有旧实体在提交前转为独立完成快照；后台闭包不持有 Gin 或后续可变的 turn 数据。
+	// 后台任务使用此处捕获的请求和用量快照。
 	compaction := gatewayhttp.IsOpenAINativeCompactionV2(c)
 	if len(nativeCompaction) > 0 {
 		compaction = nativeCompaction[0]
@@ -241,7 +257,7 @@ func (h *Support) RecordCyberPolicyIfMarked(c *gin.Context, apiKey *apikey.APIKe
 		APIKey:             apiKey,
 		Provider:           gatewayprovider.ExecutionCompletionRecord(provider),
 		Subscription:       subscription,
-		RequestID:          c.Writer.Header().Get("X-Request-Id"),
+		RequestID:          telemetry.RequestIDValue(c.Request.Context()),
 		Model:              model,
 		Stream:             requestIsStream(c),
 		InputTokens:        mark.UpstreamInTok,
@@ -297,11 +313,6 @@ func EnsureOpenAIPoolModeSessionHash(sessionHash string, provider *gatewayprovid
 	return "openai-pool-retry-" + uuid.NewString()
 }
 
-type cyberSessionBlockWritePlan struct {
-	scopeKey string
-	keys     []string
-}
-
 func buildCyberSessionBlockWritePlan(apiKeyID int64, c *gin.Context, body []byte) cyberSessionBlockWritePlan {
 	explicit := gatewayhttp.CyberSessionExplicitBlockKey(apiKeyID, c, body)
 	transcript := gatewaysession.CyberSessionTranscriptBlockKeys(apiKeyID, body)
@@ -325,13 +336,16 @@ func handleGroupSelectionBusinessError(c *gin.Context, err error, started bool, 
 	return gatewayhttp.WriteGroupSelectionBusinessError(c, err, started, keyhttp.GetAPIKeyFromContext, gatewayprovider.ModelDisplayCatalogue{}, write)
 }
 
-// Support 为文本、WS 和媒体适配提供共享的请求资源和用例接口。
-type Support struct {
-	Concurrency *gatewayhttp.ConcurrencyHelper
-	Sticky      gatewayhttp.SlotStickyBinder
-	Rules       *errorpolicy.ErrorPassthroughService
-	Cyber       *gatewayhttp.CyberHandler
-	Quota       gatewayprovider.QuotaUpdater
-	Moderation  gatewayhttp.ModerationPort
-	Submission  gatewayhttp.CompletionSubmission
+// ResolveOpenAIUpstreamEndpoint 返回 OpenAI 兼容提供商实际使用的上游端点。
+// 同一入站可选择 Chat 或 Responses，因此优先读取转发结果，缺失时读取当前尝试上下文，再使用平台规范端点。
+func ResolveOpenAIUpstreamEndpoint(c *gin.Context, provider *gatewayprovider.ExecutionProvider, result *forwardcore.OpenAIResult) string {
+	if result != nil {
+		if endpoint := strings.TrimSpace(result.UpstreamEndpoint); endpoint != "" {
+			return endpoint
+		}
+	}
+	if endpoint := gatewayhttp.GetActualOpenAIUpstreamEndpoint(c); endpoint != "" {
+		return endpoint
+	}
+	return gatewayhttp.GetUpstreamEndpoint(c, provider.Record.Platform)
 }

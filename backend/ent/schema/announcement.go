@@ -10,12 +10,13 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
 
 // Announcement holds the schema definition for the Announcement entity.
 //
-// 删除策略：硬删除（已读记录通过外键级联删除）
+// 删除策略：硬删除（已读记录通过外键级联删除）。
 type Announcement struct {
 	ent.Schema
 }

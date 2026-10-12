@@ -9,44 +9,14 @@ import (
 	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-type ImageCapability = providercore.OpenAIImagesCapability
-
 const (
 	ImageCapabilityBasic  ImageCapability = "images-basic"
 	ImageCapabilityNative ImageCapability = "images-native"
 )
 
+type ImageCapability = providercore.OpenAIImagesCapability
+
 type ImageUpload = upstreamcore.ImageUpload
-
-// ParseImageRequest 保留结构解析与分组映射后模型校验的不同阶段。
-func ParseImageRequest(endpoint, contentType string, body []byte, validateModel bool) (*ImageRequest, error) {
-	value, err := upstreamcore.ParseImageRequest(endpoint, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req := &ImageRequest{}
-	ApplyNativeImageRequest(req, value)
-	req.SizeTier = NormalizeImageSizeTier(req.Size)
-	req.RequiredCapability = ClassifyImageCapability(req)
-	if validateModel {
-		if err := req.ValidateRoutingModel(req.Model); err != nil {
-			return nil, err
-		}
-	}
-	return req, nil
-}
-
-// ImageExecutionPath 保留 API Key 与 OAuth 的执行分支，不放宽提供商类型。
-func ImageExecutionPath(providerType string) (bool, error) {
-	switch providerType {
-	case "apikey":
-		return false, nil
-	case "oauth", "setup-token":
-		return true, nil
-	default:
-		return false, fmt.Errorf("unsupported provider type: %s", providerType)
-	}
-}
 
 type ImageRequest struct {
 	Endpoint           string
@@ -80,12 +50,40 @@ type ImageRequest struct {
 	BodyHash           string `json:"-"`
 }
 
+// ParseImageRequest 解析图片请求，validateModel 决定是否同时校验模型。
+func ParseImageRequest(endpoint, contentType string, body []byte, validateModel bool) (*ImageRequest, error) {
+	value, err := upstreamcore.ParseImageRequest(endpoint, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req := &ImageRequest{}
+	ApplyNativeImageRequest(req, value)
+	req.SizeTier = NormalizeImageSizeTier(req.Size)
+	req.RequiredCapability = ClassifyImageCapability(req)
+	if validateModel {
+		if err := req.ValidateRoutingModel(req.Model); err != nil {
+			return nil, err
+		}
+	}
+	return req, nil
+}
+
+// ImageExecutionPath 根据提供商类型选择 API Key 或 OAuth 执行方式。
+func ImageExecutionPath(providerType string) (bool, error) {
+	switch providerType {
+	case "apikey":
+		return false, nil
+	case "oauth", "setup-token":
+		return true, nil
+	default:
+		return false, fmt.Errorf("unsupported provider type: %s", providerType)
+	}
+}
+
 func (r *ImageRequest) ModerationBody() []byte {
 	return NativeImageRequest(r).ModerationBody()
 }
-
 func (r *ImageRequest) IsEdits() bool { return NativeImageRequest(r).IsEdits() }
-
 func (r *ImageRequest) StickySessionSeed() string {
 	return NativeImageRequest(r).StickySessionSeed()
 }
@@ -241,4 +239,17 @@ func ResolveImageModels(requested, groupMapped, fallback string, resolve func(st
 		return "", "", err
 	}
 	return model, upstream, nil
+}
+
+// ImageOutcome 决定已观测图片是否足以保留失败结果，并维持不同传输的计数回退。
+// OAuth 已完成的正常响应允许使用请求张数；API Key 的 SSE 则必须有实际产出。
+func ImageOutcome(stream, oauth, eventStream bool, requested, observed int, failure error) (int, bool) {
+	if failure != nil && (!stream || observed <= 0) {
+		return 0, false
+	}
+	count := observed
+	if failure == nil && count <= 0 && (oauth || !stream || !eventStream) {
+		count = requested
+	}
+	return count, true
 }

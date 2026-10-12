@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
-
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
@@ -18,6 +17,14 @@ type (
 	candidatePolicy       struct {
 		groupID  *int64
 		stickyID int64
+	}
+)
+
+type (
+	selectionRequestKey struct{}
+	selectionRequest    struct {
+		groupID *int64
+		model   string
 	}
 )
 
@@ -70,14 +77,6 @@ func (s *Compatible) candidateEligibilityReason(ctx context.Context, value *gate
 	}
 	return ""
 }
-
-type (
-	selectionRequestKey struct{}
-	selectionRequest    struct {
-		groupID *int64
-		model   string
-	}
-)
 
 // withSelectionRequest 固定模型和分组，补全凭据时可用最新提供商再次核对资格。
 func withSelectionRequest(ctx context.Context, groupID *int64, model string) context.Context {

@@ -7,7 +7,6 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
 )
 

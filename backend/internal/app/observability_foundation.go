@@ -7,18 +7,24 @@ import (
 	"os"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-
 	"github.com/TokenFlux/TokenRouter/internal/audit"
 	auditHTTP "github.com/TokenFlux/TokenRouter/internal/audit/httpapi"
 	auditpostgres "github.com/TokenFlux/TokenRouter/internal/audit/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
+	settingshttp "github.com/TokenFlux/TokenRouter/internal/settings/httpapi"
 	p "github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
+
+// providePreAggregationHTTP 为预聚合管理入口注入任务实例。
+func providePreAggregationHTTP(settings *p.PreAggregationSettingsService, usage *usage.DashboardAggregationService, ops *ops.OpsAggregationService) *settingshttp.PreAggregationHandler {
+	return settingshttp.NewPreAggregationHandler(settings, usage, ops)
+}
 
 func provideAuditRepository(db *sql.DB) audit.AuditLogRepository {
 	return auditpostgres.NewAuditLogRepository(db)

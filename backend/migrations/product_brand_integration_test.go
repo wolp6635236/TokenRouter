@@ -7,11 +7,12 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/TokenFlux/TokenRouter/migrations"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestProductBrandMigration 验证空库、精确匹配、自定义品牌和重复执行的真实 PostgreSQL 行为。

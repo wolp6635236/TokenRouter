@@ -3,6 +3,7 @@ package grok
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -48,10 +49,8 @@ func GrokStructuredProviderAccessMarker(value any) bool {
 			}
 		}
 	case []any:
-		for _, child := range node {
-			if GrokStructuredProviderAccessMarker(child) {
-				return true
-			}
+		if slices.ContainsFunc(node, GrokStructuredProviderAccessMarker) {
+			return true
 		}
 	}
 	return false
@@ -73,10 +72,8 @@ func GrokStructuredContentPolicyMarker(value any) bool {
 			}
 		}
 	case []any:
-		for _, child := range node {
-			if GrokStructuredContentPolicyMarker(child) {
-				return true
-			}
+		if slices.ContainsFunc(node, GrokStructuredContentPolicyMarker) {
+			return true
 		}
 	}
 	return false
@@ -236,4 +233,24 @@ func GrokStructuredErrorMessageCandidates(body []byte) []string {
 		}
 	}
 	return candidates
+}
+
+// IsSpendingLimitError 判断响应体是否表示 xAI 消费限额或余额耗尽。
+func IsSpendingLimitError(responseBody []byte) bool {
+	if len(responseBody) == 0 {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(firstNonEmpty(
+		gjson.GetBytes(responseBody, "code").String(),
+		gjson.GetBytes(responseBody, "error.code").String(),
+	)))
+	if code == "personal-team-blocked:spending-limit" {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(firstNonEmpty(
+		gjson.GetBytes(responseBody, "error").String(),
+		gjson.GetBytes(responseBody, "error.message").String(),
+		gjson.GetBytes(responseBody, "message").String(),
+	)))
+	return strings.Contains(message, "spending limit") || strings.Contains(message, "run out of credits")
 }

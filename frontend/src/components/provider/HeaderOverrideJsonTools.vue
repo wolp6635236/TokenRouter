@@ -26,14 +26,14 @@
     <div class="flex gap-2">
       <button
         type="button"
-        class="rounded-control bg-primary-600 px-3 py-1 text-xs text-white transition-colors hover:bg-primary-700"
+        class="btn btn-primary btn-sm"
         @click="applyImport"
       >
         {{ t('admin.providers.headerOverride.importJsonApply') }}
       </button>
       <button
         type="button"
-        class="rounded-control bg-gray-100 px-3 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500"
+        class="btn btn-secondary btn-sm"
         @click="closeImportPanel"
       >
         {{ t('admin.providers.headerOverride.importJsonCancel') }}

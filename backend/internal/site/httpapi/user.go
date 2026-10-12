@@ -4,20 +4,19 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/site"
-
-	"github.com/gin-gonic/gin"
 )
 
-// AnnouncementHandler handles user announcement operations
+// AnnouncementHandler handles user announcement operations.
 type AnnouncementHandler struct {
 	announcementService *site.AnnouncementService
 }
 
-// NewAnnouncementHandler creates a new user announcement handler
+// NewAnnouncementHandler creates a new user announcement handler.
 func NewAnnouncementHandler(announcementService *site.AnnouncementService) *AnnouncementHandler {
 	return &AnnouncementHandler{
 		announcementService: announcementService,

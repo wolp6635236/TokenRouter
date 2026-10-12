@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"testing"
 
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/stretchr/testify/require"
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func TestClassifyOpenAIWSDialError(t *testing.T) {

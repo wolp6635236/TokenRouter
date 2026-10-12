@@ -26,15 +26,18 @@ func NewSubscriptionMutations(client *dbent.Client) *SubscriptionMutations {
 func SubscriptionMutationsInTx(tx *dbent.Tx) *SubscriptionMutations {
 	return &SubscriptionMutations{bound: tx, client: tx.Client()}
 }
+
 func (m *SubscriptionMutations) transaction(ctx context.Context) *dbent.Tx {
 	if m.bound != nil {
 		return m.bound
 	}
 	return dbent.TxFromContext(ctx)
 }
+
 func (m *SubscriptionMutations) HasPersistence(ctx context.Context) bool {
 	return m.transaction(ctx) != nil || m.client != nil
 }
+
 func (m *SubscriptionMutations) Within(ctx context.Context, fn func(context.Context) error) error {
 	if tx := m.transaction(ctx); tx != nil {
 		return fn(dbent.NewTxContext(ctx, tx))
@@ -55,6 +58,7 @@ func (m *SubscriptionMutations) Within(ctx context.Context, fn func(context.Cont
 	}
 	return nil
 }
+
 func (m *SubscriptionMutations) GetPlan(ctx context.Context, id int64) (*billing.SubscriptionPlan, error) {
 	client := m.client
 	if tx := m.transaction(ctx); tx != nil {
@@ -69,6 +73,7 @@ func (m *SubscriptionMutations) GetPlan(ctx context.Context, id int64) (*billing
 	}
 	return PlanFromEntity(plan), nil
 }
+
 func (m *SubscriptionMutations) LockGrantUser(ctx context.Context, id int64) error {
 	tx := m.transaction(ctx)
 	if tx == nil {
@@ -79,6 +84,7 @@ func (m *SubscriptionMutations) LockGrantUser(ctx context.Context, id int64) err
 	}
 	return nil
 }
+
 func (m *SubscriptionMutations) LockSelfRevoke(ctx context.Context, userID, subscriptionID int64) error {
 	tx := m.transaction(ctx)
 	if tx == nil {
@@ -92,6 +98,7 @@ func (m *SubscriptionMutations) LockSelfRevoke(ctx context.Context, userID, subs
 	}
 	return nil
 }
+
 func (m *SubscriptionMutations) RebindKeys(ctx context.Context, oldID, newID int64) (int, error) {
 	if m.client == nil || oldID <= 0 || newID <= 0 {
 		return 0, nil

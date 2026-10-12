@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import OpsErrorLogTable from '../OpsErrorLogTable.vue'
 import zhLocale from '@/i18n/locales/zh'
@@ -88,3 +89,5 @@ describe('OpsErrorLogTable i18n keys exist in the errorLog namespace', () => {
     })
   }
 })
+
+beforeEach(() => setActivePinia(createPinia()))

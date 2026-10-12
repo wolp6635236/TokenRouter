@@ -5,14 +5,18 @@ import (
 	"strings"
 	"time"
 
-	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// OpenAIPlanWriter 按字段更新本次观测的套餐信息，其余字段保持当前值。
+type OpenAIPlanWriter interface {
+	BulkUpdate(context.Context, []int64, ProviderBulkUpdate) (int64, error)
+}
+
 // OpenAI429ResetTime 从观测到的窗口选择原提供商恢复时间。
-// 返回 nil 表示无法从响应头中确定重置时间
-func OpenAI429ResetTime(snapshot *openaiprotocol.OpenAICodexUsageSnapshot, clock func() time.Time, info func(string, ...any)) *time.Time {
+// 返回 nil 表示无法从响应头中确定重置时间。
+func OpenAI429ResetTime(snapshot *openai.OpenAICodexUsageSnapshot, clock func() time.Time, info func(string, ...any)) *time.Time {
 	if snapshot == nil {
 		return nil
 	}
@@ -40,7 +44,7 @@ func OpenAI429ResetTime(snapshot *openaiprotocol.OpenAICodexUsageSnapshot, clock
 		return &resetAt
 	}
 
-	// 都未达到100%但收到429，使用较长的重置时间
+	// 都未达到 100%但收到 429，使用较长的重置时间
 	var maxResetSecs int
 	if normalized.Reset7dSeconds != nil && *normalized.Reset7dSeconds > maxResetSecs {
 		maxResetSecs = *normalized.Reset7dSeconds
@@ -89,9 +93,4 @@ func PersistOpenAIObservedPlan(ctx context.Context, repo OpenAIPlanWriter, provi
 	}
 	provider.Credentials["plan_type"] = planType
 	info("openai_429_plan_type_synced", "provider_id", provider.ID, "previous_plan_type", current, "plan_type", planType)
-}
-
-// OpenAIPlanWriter 按字段更新本次观测的套餐信息，其余字段保持当前值。
-type OpenAIPlanWriter interface {
-	BulkUpdate(context.Context, []int64, ProviderBulkUpdate) (int64, error)
 }

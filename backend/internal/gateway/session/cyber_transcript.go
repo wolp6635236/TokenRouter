@@ -7,18 +7,19 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
+
+// 限制单请求的 Redis 查询工作量，保留最可能匹配续接的近期转录前缀。
+const maxOpenAICyberTranscriptLookupKeys = 256
 
 type openAICyberTranscriptBlockKeys struct {
 	lookupKeys          []string
 	preLatestUserKey    string
 	lookupKeysTruncated bool
 }
-
-// 限制单请求的 Redis 查询工作量，保留最可能匹配续接的近期转录前缀。
-const maxOpenAICyberTranscriptLookupKeys = 256
 
 // deriveOpenAICyberTranscriptBlockKeys 返回累计对话内容哈希和最新用户轮次前的上下文键。
 // 上下文键需要包含模型生成历史，共享的首轮模板跳过该匹配。

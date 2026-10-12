@@ -3,10 +3,11 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	serverdto "github.com/TokenFlux/TokenRouter/internal/server/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/server/runtimeconfig"
-	"github.com/gin-gonic/gin"
 )
 
 // PanelSettingsStore 读取和保存面板限流设置。
@@ -17,6 +18,15 @@ type PanelSettingsStore interface {
 
 // PanelSettingsHandler 处理面板限流设置的管理请求。
 type PanelSettingsHandler struct{ settingService PanelSettingsStore }
+
+// UpdatePanelRateLimitSettingsRequest 更新面板 API 限流配置请求。
+type UpdatePanelRateLimitSettingsRequest struct {
+	Enabled     bool `json:"enabled"`
+	UserRPM     int  `json:"user_rpm"`
+	HeavyRPM    int  `json:"heavy_rpm"`
+	ExemptAdmin bool `json:"exempt_admin"`
+	PublicIPRPM int  `json:"public_ip_rpm"`
+}
 
 // NewPanelSettingsHandler 注入同一个面板配置实例。
 func NewPanelSettingsHandler(service *runtimeconfig.PanelSettings) *PanelSettingsHandler {
@@ -39,15 +49,6 @@ func (h *PanelSettingsHandler) GetPanelRateLimitSettings(c *gin.Context) {
 		ExemptAdmin: settings.ExemptAdmin,
 		PublicIPRPM: settings.PublicIPRPM,
 	})
-}
-
-// UpdatePanelRateLimitSettingsRequest 更新面板 API 限流配置请求
-type UpdatePanelRateLimitSettingsRequest struct {
-	Enabled     bool `json:"enabled"`
-	UserRPM     int  `json:"user_rpm"`
-	HeavyRPM    int  `json:"heavy_rpm"`
-	ExemptAdmin bool `json:"exempt_admin"`
-	PublicIPRPM int  `json:"public_ip_rpm"`
 }
 
 // UpdatePanelRateLimitSettings 更新面板 API 限流配置

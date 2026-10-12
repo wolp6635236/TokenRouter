@@ -44,6 +44,6 @@ func FirstOutputExhausted(eligible bool, switches *int) bool {
 	if *switches >= FirstOutputTimeoutMaxSwitches {
 		return true
 	}
-	*switches = *switches + 1
+	*switches++
 	return false
 }

@@ -2,7 +2,7 @@ package testkit
 
 import "fmt"
 
-// ClientToolsRequest 提供跨平台解析与HTTP转发共用的原始工具报文。
+// ClientToolsRequest 提供跨平台解析与 HTTP 转发共用的原始工具报文。
 func ClientToolsRequest(stream bool) []byte {
 	return []byte(fmt.Sprintf(`{
 		"model":"grok","stream":%t,

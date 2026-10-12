@@ -23,7 +23,8 @@
           </div>
         </div>
 
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <!-- 按请求 ID 筛选时只看统计卡和表格，分布图和趋势图隐藏，也不请求图表数据 -->
+        <div v-if="!filters.request_id" class="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <ModelDistributionChart
             v-model:metric="modelDistributionMetric"
             :model-stats="requestedModelStats"
@@ -50,7 +51,7 @@
           />
         </div>
 
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div v-if="!filters.request_id" class="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <EndpointDistributionChart
             v-model:source="endpointDistributionSource"
             v-model:metric="endpointDistributionMetric"
@@ -70,7 +71,7 @@
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" :granularity="granularity" :show-standard-cost="false" />
         </div>
 
-        <div v-if="isTeamOwner" data-tour="team-member-usage-charts">
+        <div v-if="isTeamOwner && !filters.request_id" data-tour="team-member-usage-charts">
           <TeamMemberUsageCharts
             :series="teamMemberSeries"
             :loading="teamChartsLoading"
@@ -81,6 +82,8 @@
       <div class="card p-4">
         <div class="flex items-center justify-between gap-2">
           <FilterDropdown :active-count="activeFilterCount" :columns="3" keep-mounted @reset="resetCurrentFilters">
+            <!-- 请求 ID 同时筛选使用记录和错误请求，生效后查询不限日期范围 -->
+            <RequestIdFilterField v-model="filters.request_id" @search="applyFilters" />
             <template v-if="activeTab === 'errors'">
               <FilterField :label="t('usage.errors.keyName')">
                 <Select v-model="errorFilter.api_key_id" :options="errorKeyOptions" @change="applyErrorFilters" />
@@ -241,6 +244,7 @@
 </template>
 
 <script setup lang="ts">
+import RequestIdFilterField from '@/components/common/RequestIdFilterField.vue'
 import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import MotionTransition from '@/components/common/MotionTransition.vue'
 import { vContentReveal } from '@/directives/contentReveal'
@@ -270,6 +274,7 @@ import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffortMapping } from '@/utils/format'
 import { getBillingModeLabel, getDisplayBillingMode as resolveDisplayBillingMode } from '@/utils/billingMode'
 import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
+import { calculateUsageTps } from '@/utils/usageTps'
 import type {
   EndpointStat,
   GroupStat,
@@ -321,9 +326,11 @@ const errorFilter = ref<{ model: string | null; category: string; api_key_id: nu
   api_key_id: null,
   status_code: null,
 })
+// 请求 ID 两个标签页共用，错误请求标签页另外加上它。
 const activeFilterCount = computed(() => {
   const source = activeTab.value === 'errors' ? errorFilter.value : filters.value
-  return Object.entries(source).filter(([key, value]) => !['start_date', 'end_date'].includes(key) && value !== null && value !== undefined && String(value) !== '').length
+  const count = Object.entries(source).filter(([key, value]) => !['start_date', 'end_date'].includes(key) && value !== null && value !== undefined && String(value) !== '').length
+  return activeTab.value === 'errors' && filters.value.request_id ? count + 1 : count
 })
 
 const errorKeyOptions = computed<SelectOption[]>(() => [
@@ -484,8 +491,8 @@ const normalizedFilters = computed<UsageQueryParams>(() => {
     group_id: filters.value.group_id ?? undefined,
     model: filters.value.model || undefined,
     request_type: requestType ?? undefined,
-    start_date: startDate.value,
-    end_date: endDate.value,
+    start_date: filters.value.request_id ? undefined : startDate.value,
+    end_date: filters.value.request_id ? undefined : endDate.value,
     stream: legacyStream === null ? undefined : legacyStream,
   }
 })
@@ -542,6 +549,7 @@ const loadStats = async () => {
 }
 
 const loadModelStats = async () => {
+  if (filters.value.request_id?.trim()) return
   const seq = ++modelStatsReqSeq
   modelStatsLoading.value = true
   try {
@@ -562,6 +570,7 @@ const loadModelStats = async () => {
 }
 
 const loadChartData = async () => {
+  if (filters.value.request_id?.trim()) return
   const seq = ++chartReqSeq
   chartsLoading.value = true
   try {
@@ -609,11 +618,17 @@ const applyFilters = () => {
 const resetCurrentFilters = () => {
   if (activeTab.value === 'errors') {
     errorFilter.value = { model: '', category: '', api_key_id: null, status_code: null }
+    if (filters.value.request_id) {
+      filters.value.request_id = undefined
+      applyFilters()
+      return
+    }
     applyErrorFilters()
     return
   }
   filters.value = {
     ...filters.value,
+    request_id: undefined,
     api_key_id: null,
     group_id: null,
     model: null,
@@ -725,6 +740,7 @@ const exportToCSV = async () => {
       t('usage.original'),
       t('usage.firstToken'),
       t('usage.duration'),
+      t('usage.tpsExport'),
     ]
     const rows = allLogs.map((log) => [
       log.created_at,
@@ -744,6 +760,7 @@ const exportToCSV = async () => {
       log.total_cost.toFixed(8),
       log.first_token_ms ?? '',
       log.duration_ms ?? '',
+      calculateUsageTps(log)?.toFixed(1) ?? '',
     ].map(escapeCSVValue))
     const csvContent = [
       headers.map(escapeCSVValue).join(','),
@@ -782,7 +799,9 @@ const allColumns = computed<Column[]>(() => [
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
   { key: 'latency', label: t('usage.latency'), sortable: false },
+  { key: 'tps', label: t('usage.tps'), sortable: false },
   { key: 'created_at', label: t('usage.time'), sortable: true },
+  { key: 'request_id', label: t('requests.id'), sortable: false },
   { key: 'user_agent', label: t('usage.userAgent'), sortable: false },
 ])
 
@@ -825,6 +844,7 @@ const errAllColumns = computed<Column[]>(() => [
   { key: 'status', label: t('usage.errors.status') },
   { key: 'message', label: t('usage.errors.message') },
   { key: 'created_at', label: t('usage.errors.time') },
+  { key: 'request_id', label: t('requests.id') },
   { key: 'user_agent', label: t('usage.userAgent') },
 ])
 
@@ -876,7 +896,7 @@ const loadFilterOptions = async () => {
   try {
     const [personalKeys, availableGroups] = await Promise.all([
       keysAPI.list(1, 100, { scope: 'personal' }),
-      userGroupsAPI.getAvailable(),
+      userGroupsAPI.getAvailable('personal', undefined, false),
     ])
     let teamKeys: TeamAPIKey[] = []
     try {
@@ -912,6 +932,7 @@ const loadFilterOptions = async () => {
 
 // Owner 通过聚合接口读取当前和历史成员，图表总额包含离队成员的用量。
 const loadTeamMemberUsage = async () => {
+  if (filters.value.request_id?.trim()) return
   if (!isTeamOwner.value) {
     teamMemberSeries.value = []
     return
@@ -954,8 +975,9 @@ const loadErrors = async () => {
     const resp = await usageAPI.listMyErrorRequests({
       page: errorPage.value,
       page_size: errorPageSize.value,
-      start_date: startDate.value,
-      end_date: endDate.value,
+      request_id: filters.value.request_id?.trim() || undefined,
+      start_date: filters.value.request_id ? undefined : startDate.value,
+      end_date: filters.value.request_id ? undefined : endDate.value,
       model: (errorFilter.value.model ?? '').trim() || undefined,
       category: errorFilter.value.category || undefined,
       api_key_id: errorFilter.value.api_key_id ?? undefined,

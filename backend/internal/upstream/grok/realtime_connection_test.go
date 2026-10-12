@@ -10,16 +10,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // testWSFrames 将本地 WebSocket 连接适配为帧读写接口。
 type testWSFrames struct {
 	conn   *websocket.Conn
 	closed *atomic.Int64
+}
+
+type testDownFrames struct {
+	input  chan []byte
+	output chan []byte
 }
 
 func (f testWSFrames) ReadFrame(ctx context.Context) (upstream.FrameKind, []byte, error) {
@@ -31,11 +37,6 @@ func (f testWSFrames) WriteFrame(ctx context.Context, kind upstream.FrameKind, d
 	return f.conn.Write(ctx, websocket.MessageType(kind), data)
 }
 func (f testWSFrames) Close() error { f.closed.Add(1); return f.conn.CloseNow() }
-
-type testDownFrames struct {
-	input  chan []byte
-	output chan []byte
-}
 
 func (f testDownFrames) ReadFrame(ctx context.Context) (upstream.FrameKind, []byte, error) {
 	select {
@@ -130,8 +131,7 @@ func TestRealtimeNativeLocalWebSocket(t *testing.T) {
 	require.Error(t, got.err)
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() { defer wg.Done(); _ = session.Close() }()
+		wg.Go(func() { ; _ = session.Close() })
 	}
 	wg.Wait()
 	require.EqualValues(t, 1, closed.Load())

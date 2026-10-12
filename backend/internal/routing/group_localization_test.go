@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/stretchr/testify/require"
 )
 
 // TestGroupLocalizationWithoutCopy 覆盖新建时省略文案，以及零版本记录的后续编辑。

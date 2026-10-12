@@ -12,6 +12,12 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+const (
+	cyberSessionBlockRuntimeCacheTTL  = 60 * time.Second
+	cyberSessionBlockRuntimeErrorTTL  = 5 * time.Second
+	cyberSessionBlockRuntimeDBTimeout = 5 * time.Second
+)
+
 // RuntimeSettings 缓存审核开关。
 type RuntimeSettings struct {
 	settingRepo            RuntimeSettingsStore
@@ -23,22 +29,16 @@ type RuntimeSettingsStore interface {
 	GetValue(context.Context, string) (string, error)
 }
 
-// NewRuntimeSettings 构造不回源，保持原请求读取时点。
-func NewRuntimeSettings(repo RuntimeSettingsStore, notFound error) *RuntimeSettings {
-	return &RuntimeSettings{settingRepo: repo, notFound: notFound}
-}
-
 type cachedCyberSessionBlockRuntime struct {
 	enabled   bool
 	ttl       time.Duration
 	expiresAt int64 // unix nano
 }
 
-const cyberSessionBlockRuntimeCacheTTL = 60 * time.Second
-
-const cyberSessionBlockRuntimeErrorTTL = 5 * time.Second
-
-const cyberSessionBlockRuntimeDBTimeout = 5 * time.Second
+// NewRuntimeSettings 构造不回源，保持原请求读取时点。
+func NewRuntimeSettings(repo RuntimeSettingsStore, notFound error) *RuntimeSettings {
+	return &RuntimeSettings{settingRepo: repo, notFound: notFound}
+}
 
 func (s *RuntimeSettings) GetCyberSessionBlockRuntime(ctx context.Context) (bool, time.Duration) {
 	if s == nil || s.settingRepo == nil {

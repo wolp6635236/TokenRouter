@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 const (
@@ -28,6 +29,8 @@ var (
 	ErrPasskeyExists    = infraerrors.Conflict("PASSKEY_ALREADY_EXISTS", "this passkey is already registered")
 	ErrPasskeySession   = infraerrors.BadRequest("PASSKEY_SESSION_INVALID", "passkey session is invalid or expired")
 	ErrPasskeyVerify    = infraerrors.Unauthorized("PASSKEY_VERIFICATION_FAILED", "passkey verification failed")
+
+	_ webauthn.User = (*passkeyUser)(nil)
 )
 
 // PasskeyCredentialRecord 是 WebAuthn 服务使用的凭据持久化结构。
@@ -83,6 +86,24 @@ type passkeyUser struct {
 	credentials []webauthn.Credential
 }
 
+// PasskeyService 负责 Passkey 注册、登录与用户凭据管理。
+type PasskeyService struct {
+	operationClock
+	enabled  bool
+	webAuthn PasskeyVerifier
+	repo     PasskeyRepository
+	sessions PasskeySessionStore
+	userRepo SessionUserReader
+}
+
+// PasskeyVerifier 把 ceremony 验证与 HTTP 请求类型隔离；解析发生在会话消费之后。
+type PasskeyVerifier interface {
+	BeginRegistration(webauthn.User, ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error)
+	BeginDiscoverableLogin(...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error)
+	FinishRegistration(webauthn.User, webauthn.SessionData, io.Reader) (*webauthn.Credential, error)
+	FinishPasskeyLogin(webauthn.DiscoverableUserHandler, webauthn.SessionData, io.Reader) (webauthn.User, *webauthn.Credential, error)
+}
+
 func (u *passkeyUser) WebAuthnID() []byte {
 	return u.handle
 }
@@ -102,14 +123,9 @@ func (u *passkeyUser) WebAuthnCredentials() []webauthn.Credential {
 	return u.credentials
 }
 
-// PasskeyService 负责 Passkey 注册、登录与用户凭据管理。
-type PasskeyService struct {
-	operationClock
-	enabled  bool
-	webAuthn PasskeyVerifier
-	repo     PasskeyRepository
-	sessions PasskeySessionStore
-	userRepo SessionUserReader
+// NewPasskeyService 只接收已装配的验证器，关闭功能时不构造外部运行资源。
+func NewPasskeyService(enabled bool, verifier PasskeyVerifier, repo PasskeyRepository, sessions PasskeySessionStore, users SessionUserReader, clocks ...func() time.Time) *PasskeyService {
+	return &PasskeyService{operationClock: clockFromOptional(clocks), enabled: enabled, webAuthn: verifier, repo: repo, sessions: sessions, userRepo: users}
 }
 
 func (s *PasskeyService) Enabled() bool {
@@ -345,19 +361,4 @@ func passkeySummary(record *PasskeyCredentialRecord) *PasskeyCredentialSummary {
 		LastUsedAt: record.LastUsedAt,
 		Backup:     record.Credential.Flags.BackupEligible,
 	}
-}
-
-var _ webauthn.User = (*passkeyUser)(nil)
-
-// PasskeyVerifier 把 ceremony 验证与 HTTP 请求类型隔离；解析发生在会话消费之后。
-type PasskeyVerifier interface {
-	BeginRegistration(webauthn.User, ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error)
-	BeginDiscoverableLogin(...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error)
-	FinishRegistration(webauthn.User, webauthn.SessionData, io.Reader) (*webauthn.Credential, error)
-	FinishPasskeyLogin(webauthn.DiscoverableUserHandler, webauthn.SessionData, io.Reader) (webauthn.User, *webauthn.Credential, error)
-}
-
-// NewPasskeyService 只接收已装配的验证器，关闭功能时不构造外部运行资源。
-func NewPasskeyService(enabled bool, verifier PasskeyVerifier, repo PasskeyRepository, sessions PasskeySessionStore, users SessionUserReader, clocks ...func() time.Time) *PasskeyService {
-	return &PasskeyService{operationClock: clockFromOptional(clocks), enabled: enabled, webAuthn: verifier, repo: repo, sessions: sessions, userRepo: users}
 }

@@ -8,24 +8,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 // 传输替身记录原隔离参数；响应拥有者必须在成功和错误分支都关闭同一响应体。
 type searchTransportFunc func(*http.Request, string, int64, int) (*http.Response, error)
 
-func (f searchTransportFunc) Do(r *http.Request, p string, id int64, n int) (*http.Response, error) {
-	return f(r, p, id, n)
-}
-
 type searchReadCloser struct {
 	io.Reader
 	closed bool
+}
+
+func (f searchTransportFunc) Do(r *http.Request, p string, id int64, n int) (*http.Response, error) {
+	return f(r, p, id, n)
 }
 
 func (r *searchReadCloser) Close() error { r.closed = true; return nil }
@@ -52,7 +53,7 @@ func TestGrokSearchExecutorPreservesRequestAndRelease(t *testing.T) {
 				body, err := io.ReadAll(r.Body)
 				require.NoError(t, err)
 				require.NotEmpty(t, gjson.GetBytes(body, "model").String(), "原缺省模型补齐保持")
-				return &http.Response{StatusCode: 200, Body: response}, nil
+				return &http.Response{StatusCode: http.StatusOK, Body: response}, nil
 			})}
 			result, err := executor.Execute(context.Background(), value, []byte(`{"input":"query"}`))
 			require.NoError(t, err)

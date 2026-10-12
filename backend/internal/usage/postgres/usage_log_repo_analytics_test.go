@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
-
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // TestResolveUsageAnalyticsWindowUsesCoveredMiddle 验证未完成回填时只让未覆盖头部读取原始表。

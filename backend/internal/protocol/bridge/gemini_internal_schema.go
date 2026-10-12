@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -26,25 +28,21 @@ func CleanJSONSchema(schema map[string]any) map[string]any {
 	return result
 }
 
-// extractDefs 提取并移除定义的 helper
+// extractDefs 提取并移除定义的 helper。
 func extractDefs(schema map[string]any) map[string]any {
 	defs := make(map[string]any)
 	if d, ok := schema["$defs"].(map[string]any); ok {
-		for k, v := range d {
-			defs[k] = v
-		}
+		maps.Copy(defs, d)
 		delete(schema, "$defs")
 	}
 	if d, ok := schema["definitions"].(map[string]any); ok {
-		for k, v := range d {
-			defs[k] = v
-		}
+		maps.Copy(defs, d)
 		delete(schema, "definitions")
 	}
 	return defs
 }
 
-// flattenRefs 递归展开 $ref
+// flattenRefs 递归展开 $ref。
 func flattenRefs(schema map[string]any, defs map[string]any) {
 	if len(defs) == 0 {
 		return // 无需展开
@@ -85,7 +83,7 @@ func flattenRefs(schema map[string]any, defs map[string]any) {
 	}
 }
 
-// deepCopy 深拷贝 (简单实现，仅针对 JSON 类型)
+// deepCopy 深拷贝 (简单实现，仅针对 JSON 类型)。
 func deepCopy(src any) any {
 	if src == nil {
 		return nil
@@ -109,7 +107,7 @@ func deepCopy(src any) any {
 }
 
 // cleanJSONSchemaRecursive 递归清理 JSON Schema。
-// 返回处理后的值 (通常是 input map，但可能修改内部结构)
+// 返回处理后的值 (通常是 input map，但可能修改内部结构)。
 func cleanJSONSchemaRecursive(value any) any {
 	schemaMap, ok := value.(map[string]any)
 	if !ok {
@@ -187,13 +185,7 @@ func cleanJSONSchemaRecursive(value any) any {
 						if sourceReq, ok := v.([]any); ok {
 							for _, rv := range sourceReq {
 								// 简单的去重添加
-								exists := false
-								for _, tr := range targetReq {
-									if tr == rv {
-										exists = true
-										break
-									}
-								}
+								exists := slices.Contains(targetReq, rv)
 								if !exists {
 									targetReq = append(targetReq, rv)
 								}
@@ -304,14 +296,8 @@ func cleanJSONSchemaRecursive(value any) any {
 			}
 			schemaMap["type"] = selectedType
 		} else {
-			// 默认 object 如果有 properties (虽然上面白名单过滤可能删了 type 如果它不在... 但 type 必在 allowlist)
-			// 如果没有 type，但有 properties，补一个
-			if hasKey(schemaMap, "properties") {
-				schemaMap["type"] = "object"
-			} else {
-				// 默认为 string ? or object? Gemini 通常需要明确 type
-				schemaMap["type"] = "object"
-			}
+			// Gemini 需要明确的 type，没有 type 的 schema 按 object 处理。
+			schemaMap["type"] = "object"
 		}
 
 		if isEffectivelyNullable {
@@ -388,7 +374,7 @@ func migrateConstraints(m map[string]any) {
 	}
 }
 
-// mergeAllOf 合并 allOf
+// mergeAllOf 合并 allOf。
 func mergeAllOf(m map[string]any) {
 	allOf, ok := m["allOf"].([]any)
 	if !ok {
@@ -404,9 +390,7 @@ func mergeAllOf(m map[string]any) {
 		if subMap, ok := sub.(map[string]any); ok {
 			// Props
 			if props, ok := subMap["properties"].(map[string]any); ok {
-				for k, v := range props {
-					mergedProps[k] = v
-				}
+				maps.Copy(mergedProps, props)
 			}
 			// Required
 			if reqs, ok := subMap["required"].([]any); ok {
@@ -462,7 +446,7 @@ func mergeAllOf(m map[string]any) {
 	}
 }
 
-// extractBestSchemaFromUnion 从 anyOf/oneOf 中选取最佳分支
+// extractBestSchemaFromUnion 从 anyOf/oneOf 中选取最佳分支。
 func extractBestSchemaFromUnion(unionArray []any) any {
 	var bestOption any
 	bestScore := -1
@@ -496,7 +480,7 @@ func scoreSchemaOption(val any) int {
 	return 0
 }
 
-// DeepCleanUndefined 深度清理值为 "[undefined]" 的字段
+// DeepCleanUndefined 深度清理值为 "[undefined]" 的字段。
 func DeepCleanUndefined(value any) {
 	if value == nil {
 		return

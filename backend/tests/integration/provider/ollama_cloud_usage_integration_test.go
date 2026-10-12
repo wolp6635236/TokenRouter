@@ -9,12 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	"github.com/stretchr/testify/require"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 func TestListDueOllamaCloudUsageProvidersOrderingLimitAndProxyHydration(t *testing.T) {
@@ -591,7 +590,7 @@ func TestListDueOllamaCloudUsageProvidersSQLDueRulesMatchService(t *testing.T) {
 	// 21 个分组在刷新后有活动但尚未经过防抖期；旧实现中它们会每分钟占满 20 个名额，
 	// 使真正到期的分组无法刷新。
 	notDueIDs := make(map[int64]struct{}, 21)
-	for i := 0; i < 21; i++ {
+	for i := range 21 {
 		// 10 分钟前刷新、10 秒前使用，due_at = lastUsed+debounce = now+50s，尚未到期。
 		acc := createOK(fmt.Sprintf("ollama-not-due-debounce-%02d", i), now.Add(-10*time.Minute), now.Add(-10*time.Second))
 		notDueIDs[acc.ID] = struct{}{}

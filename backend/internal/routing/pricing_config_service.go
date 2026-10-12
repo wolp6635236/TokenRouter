@@ -8,10 +8,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"golang.org/x/sync/singleflight"
+)
+
+const (
+	pricingConfigCacheTTL       = 10 * time.Minute
+	pricingConfigErrorTTL       = 5 * time.Second // DB 错误时的短缓存
+	pricingConfigCacheDBTimeout = 10 * time.Second
 )
 
 var (
@@ -23,7 +30,24 @@ var (
 	)
 )
 
-// PricingConfigRepository 价格配置数据访问接口
+// GroupAuthInvalidator 在分组提交后失效认证缓存。
+type (
+	GroupAuthInvalidator interface{ InvalidateAuthCacheByGroupID(context.Context, int64) }
+	PricingConfigOptions struct {
+		ReadGroup func(context.Context, int64) (*Group, error)
+		// Warn 接收读取失败诊断，日志后端由外层装配。
+		Warn         func(string, ...any)
+		Now          func() time.Time
+		LoadLocation func(string) (*time.Location, error)
+	}
+)
+
+// PricingConfigValidation 提供价格条目、冲突和时间规则校验。
+type PricingConfigValidation struct {
+	LoadLocation func(string) (*time.Location, error)
+}
+
+// PricingConfigRepository 价格配置数据访问接口。
 type PricingConfigRepository interface {
 	Create(ctx context.Context, pricingConfig *PricingConfig) error
 	GetByID(ctx context.Context, id int64) (*PricingConfig, error)
@@ -54,18 +78,13 @@ type pricingModelKey struct {
 	model   string // lowercase
 }
 
-// normalizePriceModelName 委托纯价卡匹配规则。
-func normalizePriceModelName(model string) string {
-	return pricing.NormalizePriceModelName(model)
-}
-
-// wildcardPricingEntry 通配符定价条目
+// wildcardPricingEntry 通配符定价条目。
 type wildcardPricingEntry struct {
 	prefix  string
 	pricing *ModelPricingEntry
 }
 
-// pricingConfigCache 价格配置缓存快照（扁平化哈希结构，热路径 O(1) 查找）
+// pricingConfigCache 价格配置缓存快照（扁平化哈希结构，热路径 O(1) 查找）。
 type pricingConfigCache struct {
 	// 热路径查找
 	pricingByGroupModel map[pricingModelKey]*ModelPricingEntry // (groupID, model) → 定价
@@ -86,9 +105,65 @@ type GroupMappingResult struct {
 	PricingConfigID        int64  // 价格配置 ID（0 = 无价格配置关联）
 	Mapped                 bool   // 是否发生了映射
 	BillingModelSource     string // 计费模型来源（"requested" / "upstream" / "group_mapped"）
-	// ClientModel 仅用于展示和映射链；计费仍以调用方传入的 reqModel 为准。
+	// ClientModel 用于展示和模型映射记录。计费使用调用方传入的 reqModel。
 	ClientModel      string
 	APIKeyRedirected bool
+}
+
+// PricingConfigService 价格配置管理服务。
+type PricingConfigService struct {
+	options              PricingConfigOptions
+	validation           PricingConfigValidation
+	repo                 PricingConfigRepository
+	authCacheInvalidator GroupAuthInvalidator
+
+	cache   atomic.Value // *pricingConfigCache
+	cacheSF singleflight.Group
+}
+
+// pricingConfigLookup 热路径公共查找结果。
+type pricingConfigLookup struct {
+	cache         *pricingConfigCache
+	pricingConfig *PricingConfig
+}
+
+// modelEntry 表示一个模型模式条目（用于冲突检测）。
+type modelEntry struct {
+	pattern  string // 原始模式（如 "claude-*" 或 "claude-opus-4"）
+	prefix   string // lowercase 前缀（通配符去掉 *，精确名保持原样）
+	wildcard bool
+}
+
+// CreatePricingConfigInput 创建价格配置输入。
+type CreatePricingConfigInput struct {
+	BillingSettingsPatch
+	Name         string
+	Description  string
+	GroupIDs     []int64
+	ModelPricing []ModelPricingEntry
+
+	BillingModelSource string
+
+	ProviderStatsPricingRules []ProviderStatsPricingRule
+}
+
+// UpdatePricingConfigInput 更新价格配置输入。
+type UpdatePricingConfigInput struct {
+	BillingSettingsPatch
+	Name         string
+	Description  *string
+	Status       string
+	GroupIDs     *[]int64
+	ModelPricing *[]ModelPricingEntry
+
+	BillingModelSource string
+
+	ProviderStatsPricingRules *[]ProviderStatsPricingRule
+}
+
+// normalizePriceModelName 委托纯价卡匹配规则。
+func normalizePriceModelName(model string) string {
+	return pricing.NormalizePriceModelName(model)
 }
 
 // BuildModelMappingChain 根据映射结果和上游实际模型构建映射链描述。
@@ -123,24 +198,7 @@ func (r GroupMappingResult) ToUsageFields(reqModel, upstreamModel string) Pricin
 	}
 }
 
-const (
-	pricingConfigCacheTTL       = 10 * time.Minute
-	pricingConfigErrorTTL       = 5 * time.Second // DB 错误时的短缓存
-	pricingConfigCacheDBTimeout = 10 * time.Second
-)
-
-// PricingConfigService 价格配置管理服务
-type PricingConfigService struct {
-	options              PricingConfigOptions
-	validation           PricingConfigValidation
-	repo                 PricingConfigRepository
-	authCacheInvalidator GroupAuthInvalidator
-
-	cache   atomic.Value // *pricingConfigCache
-	cacheSF singleflight.Group
-}
-
-// NewPricingConfigService 创建价格配置服务实例
+// NewPricingConfigService 创建价格配置服务实例。
 func NewPricingConfigService(repo PricingConfigRepository, authCacheInvalidator GroupAuthInvalidator, options ...PricingConfigOptions) *PricingConfigService {
 	optionsValue := PricingConfigOptions{Now: time.Now}
 	if len(options) > 0 {
@@ -157,7 +215,7 @@ func NewPricingConfigService(repo PricingConfigRepository, authCacheInvalidator 
 	return s
 }
 
-// loadCache 加载或返回缓存的价格配置数据
+// loadCache 加载或返回缓存的价格配置数据。
 func (s *PricingConfigService) loadCache(ctx context.Context) (*pricingConfigCache, error) {
 	if cached, ok := s.cache.Load().(*pricingConfigCache); ok && cached != nil {
 		if s.options.Now().Sub(cached.loadedAt) < pricingConfigCacheTTL {
@@ -184,7 +242,7 @@ func (s *PricingConfigService) loadCache(ctx context.Context) (*pricingConfigCac
 	return cache, nil
 }
 
-// newEmptyPricingConfigCache 创建空的价格配置缓存（所有 map 已初始化）
+// newEmptyPricingConfigCache 创建空的价格配置缓存（所有 map 已初始化）。
 func newEmptyPricingConfigCache() *pricingConfigCache {
 	return &pricingConfigCache{
 		pricingByGroupModel: make(map[pricingModelKey]*ModelPricingEntry),
@@ -195,13 +253,13 @@ func newEmptyPricingConfigCache() *pricingConfigCache {
 	}
 }
 
-// expandPricingToCache 以分组和模型建立精确及通配符索引，不读取提供商平台。
+// expandPricingToCache 按分组和模型建立精确及通配符索引。
 func expandPricingToCache(cache *pricingConfigCache, config *PricingConfig, groupID int64) {
 	for i := range config.ModelPricing {
 		entry := &config.ModelPricing[i]
 		for _, model := range entry.Models {
-			if strings.HasSuffix(model, "*") {
-				cache.wildcardByGroup[groupID] = append(cache.wildcardByGroup[groupID], &wildcardPricingEntry{prefix: normalizePriceModelName(strings.TrimSuffix(model, "*")), pricing: entry})
+			if before, ok := strings.CutSuffix(model, "*"); ok {
+				cache.wildcardByGroup[groupID] = append(cache.wildcardByGroup[groupID], &wildcardPricingEntry{prefix: normalizePriceModelName(before), pricing: entry})
 			} else {
 				cache.pricingByGroupModel[pricingModelKey{groupID: groupID, model: normalizePriceModelName(model)}] = entry
 			}
@@ -234,7 +292,7 @@ func (s *PricingConfigService) buildCache(ctx context.Context) (*pricingConfigCa
 	return cache, nil
 }
 
-// fetchPricingConfigData 一次读取价格配置及关联分组，不查询分组平台。
+// fetchPricingConfigData 一次读取价格配置及关联分组。
 func (s *PricingConfigService) fetchPricingConfigData(ctx context.Context) ([]PricingConfig, error) {
 	configs, err := s.repo.ListAll(ctx)
 	if err != nil {
@@ -245,7 +303,7 @@ func (s *PricingConfigService) fetchPricingConfigData(ctx context.Context) ([]Pr
 	return configs, nil
 }
 
-// populatePricingConfigCache 发布独立副本，避免管理输入修改热路径价卡。
+// populatePricingConfigCache 复制价格配置并建立查询缓存。
 func populatePricingConfigCache(configs []PricingConfig) *pricingConfigCache {
 	cache := newEmptyPricingConfigCache()
 	cache.loadedAt = time.Now()
@@ -271,7 +329,7 @@ func (s *PricingConfigService) invalidateCache() {
 	s.cache.Store((*pricingConfigCache)(nil))
 	s.cacheSF.Forget("pricing_config_cache")
 
-	// 主动重建缓存，确保 CRUD 后立即生效
+	// 写入完成后重建缓存。
 	if _, err := s.buildCache(context.Background()); err != nil {
 		s.warn("failed to rebuild pricing configuration cache after invalidation", "error", err)
 	}
@@ -294,7 +352,7 @@ func lookupPricing(cache *pricingConfigCache, groupID int64, model string, effec
 	return nil
 }
 
-// GetPricingConfigForGroup 获取分组关联的价格配置（热路径 O(1)）
+// GetPricingConfigForGroup 获取分组关联的价格配置（热路径 O(1)）。
 func (s *PricingConfigService) GetPricingConfigForGroup(ctx context.Context, groupID int64) (*PricingConfig, error) {
 	cache, err := s.loadCache(ctx)
 	if err != nil {
@@ -307,12 +365,6 @@ func (s *PricingConfigService) GetPricingConfigForGroup(ctx context.Context, gro
 	}
 
 	return ch.Clone(), nil
-}
-
-// pricingConfigLookup 热路径公共查找结果
-type pricingConfigLookup struct {
-	cache         *pricingConfigCache
-	pricingConfig *PricingConfig
 }
 
 // lookupGroupPricingConfig 加载缓存并查找分组对应的价格配置信息（公共热路径前置逻辑）。
@@ -399,7 +451,7 @@ func (s *PricingConfigService) ResolveGroupMapping(ctx context.Context, groupID 
 	return result
 }
 
-// IsModelRestricted 只检查分组白名单，策略读取失败时保持拒绝。
+// IsModelRestricted 检查分组白名单，策略读取失败时拒绝请求。
 func (s *PricingConfigService) IsModelRestricted(ctx context.Context, groupID int64, model string) bool {
 	policy, err := s.GetGroupPolicy(ctx, groupID)
 	if err != nil {
@@ -608,7 +660,7 @@ func formatMaxTokens(max *int) string {
 	return fmt.Sprintf("%d", *max)
 }
 
-// Create 创建价格配置
+// Create 创建价格配置。
 func (s *PricingConfigService) Create(ctx context.Context, input *CreatePricingConfigInput) (*PricingConfig, error) {
 	exists, err := s.repo.ExistsByName(ctx, input.Name)
 	if err != nil {
@@ -659,12 +711,12 @@ func (s *PricingConfigService) Create(ctx context.Context, input *CreatePricingC
 	return s.repo.GetByID(ctx, pricingConfig.ID)
 }
 
-// GetByID 获取价格配置详情
+// GetByID 获取价格配置详情。
 func (s *PricingConfigService) GetByID(ctx context.Context, id int64) (*PricingConfig, error) {
 	return s.repo.GetByID(ctx, id)
 }
 
-// Update 更新价格配置
+// Update 更新价格配置。
 func (s *PricingConfigService) Update(ctx context.Context, id int64, input *UpdatePricingConfigInput) (*PricingConfig, error) {
 	pricingConfig, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -783,7 +835,7 @@ func (s *PricingConfigService) invalidateAuthCacheForGroups(ctx context.Context,
 	}
 }
 
-// Delete 删除价格配置
+// Delete 删除价格配置。
 func (s *PricingConfigService) Delete(ctx context.Context, id int64) error {
 	groupIDs, err := s.repo.GetGroupIDs(ctx, id)
 	if err != nil {
@@ -800,19 +852,12 @@ func (s *PricingConfigService) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// List 获取价格配置列表
+// List 获取价格配置列表。
 func (s *PricingConfigService) List(ctx context.Context, params pagination.PaginationParams, status, search string) ([]PricingConfig, *pagination.PaginationResult, error) {
 	return s.repo.List(ctx, params, status, search)
 }
 
-// modelEntry 表示一个模型模式条目（用于冲突检测）
-type modelEntry struct {
-	pattern  string // 原始模式（如 "claude-*" 或 "claude-opus-4"）
-	prefix   string // lowercase 前缀（通配符去掉 *，精确名保持原样）
-	wildcard bool
-}
-
-// conflictsBetween 检查两个模型模式是否冲突
+// conflictsBetween 检查两个模型模式是否冲突。
 func conflictsBetween(a, b modelEntry) bool {
 	switch {
 	case !a.wildcard && !b.wildcard:
@@ -889,9 +934,9 @@ func validatePricingIntervals(pricingList []ModelPricingEntry) error {
 	return nil
 }
 
-// detectConflicts 在一组 modelEntry 中检测冲突，返回带有 errCode 和 label 的错误
+// detectConflicts 在一组 modelEntry 中检测冲突，返回带有 errCode 和 label 的错误。
 func detectConflicts(entries []modelEntry, errCode, label string) error {
-	for i := 0; i < len(entries); i++ {
+	for i := range entries {
 		for j := i + 1; j < len(entries); j++ {
 			if conflictsBetween(entries[i], entries[j]) {
 				return infraerrors.BadRequest(errCode,
@@ -902,33 +947,6 @@ func detectConflicts(entries []modelEntry, errCode, label string) error {
 		}
 	}
 	return nil
-}
-
-// CreatePricingConfigInput 创建价格配置输入
-type CreatePricingConfigInput struct {
-	BillingSettingsPatch
-	Name         string
-	Description  string
-	GroupIDs     []int64
-	ModelPricing []ModelPricingEntry
-
-	BillingModelSource string
-
-	ProviderStatsPricingRules []ProviderStatsPricingRule
-}
-
-// UpdatePricingConfigInput 更新价格配置输入
-type UpdatePricingConfigInput struct {
-	BillingSettingsPatch
-	Name         string
-	Description  *string
-	Status       string
-	GroupIDs     *[]int64
-	ModelPricing *[]ModelPricingEntry
-
-	BillingModelSource string
-
-	ProviderStatsPricingRules *[]ProviderStatsPricingRule
 }
 
 // BuildModelMappingChain 按首次出现顺序生成去重后的模型映射链。
@@ -987,11 +1005,25 @@ func (s *PricingConfigService) ResolveRoutingModel(ctx context.Context, groupID 
 	return requestedModel
 }
 
-// GetEffectiveBillingSettings 不依赖模型条目，只有配置级开关的价表也能生效。
+// GetEffectiveBillingSettings 返回价格配置中的计费设置。
 func (s *PricingConfigService) GetEffectiveBillingSettings(ctx context.Context, groupID int64) pricing.BillingSettings {
 	config, err := s.GetPricingConfigForGroup(ctx, groupID)
 	if err != nil || config == nil {
 		return pricing.DefaultBillingSettings()
 	}
 	return config.BillingSettings.Clone()
+}
+
+// BillingModelForPrice 按价格配置的计费模型来源选择价格模型，且最早只从 Key 重定向目标开始。
+func BillingModelForPrice(mapping GroupMappingResult, requestedModel, groupMappedModel, upstreamModel string) string {
+	switch mapping.BillingModelSource {
+	case BillingModelSourceRequested:
+		return strings.TrimSpace(requestedModel)
+	case BillingModelSourceUpstream:
+		return strings.TrimSpace(upstreamModel)
+	case BillingModelSourceGroupMapped:
+		return strings.TrimSpace(groupMappedModel)
+	default:
+		return strings.TrimSpace(groupMappedModel)
+	}
 }

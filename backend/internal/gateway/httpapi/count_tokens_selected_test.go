@@ -8,13 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/googleforward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 // TestSelectedCountDispatchPreservesLocalAndUnsupportedPaths 不支持的提供商不会发出生成或计数网络请求。
@@ -51,7 +52,7 @@ func TestSelectedGeminiCountUsesNativeCountProtocol(t *testing.T) {
 	parsed, err := requeststate.ParseGatewayRequest(requeststate.NewRequestBodyRef(body), "anthropic")
 	require.NoError(t, err)
 	target := gatewayadapter.NewExecutionProvider(&provider.Record{ID: 1, Platform: "gemini", Type: "apikey", Credentials: map[string]any{"api_key": "test-key", "model_mapping": map[string]any{"draw-alias": "gemini-2.5-flash"}}})
-	transport := &auxiliaryHTTPRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"totalTokens":37}`))}}
+	transport := &auxiliaryHTTPRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"totalTokens":37}`))}}
 	executor := &GeminiExecutor{Runtime: &googleforward.Gemini{Transport: transport, Options: googleforward.Options{Configured: true, ResponseReadLimit: 1 << 20}}}
 	require.NoError(t, ForwardSelectedCountTokens(context.Background(), c, target, parsed, nil, nil, executor))
 	require.Equal(t, http.StatusOK, rec.Code)

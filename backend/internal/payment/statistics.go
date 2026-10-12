@@ -286,12 +286,9 @@ func StatsBuildTopUsers(orders []*Order) TopUsersByCurrency {
 		sort.Slice(userList, func(i, j int) bool {
 			return userList[i].Amount > userList[j].Amount
 		})
-		limit := 10
-		if len(userList) < limit {
-			limit = len(userList)
-		}
+		limit := min(len(userList), 10)
 		result[currency] = make([]TopUserStat, 0, limit)
-		for i := 0; i < limit; i++ {
+		for i := range limit {
 			result[currency] = append(result[currency], *userList[i])
 		}
 	}

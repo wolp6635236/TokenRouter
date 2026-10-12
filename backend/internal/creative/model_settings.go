@@ -4,8 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
+
+// CreativeOperationOrder 保证设置、候选和公开目录中的能力顺序稳定。
+var CreativeOperationOrder = []string{
+	CreativeOperationGenerate,
+	CreativeOperationEdit,
+	CreativeOperationInpaint,
+}
 
 // CreativeModelSetting 是管理员配置的创作台分组、模型和能力白名单项。
 type CreativeModelSetting struct {
@@ -30,29 +38,28 @@ func (s *Public) NormalizeCreativeModelSettingsForSave(ctx context.Context, inpu
 		return normalized, err
 	}
 	out := make([]CreativeModelSetting, 0, len(normalized))
+	queries := make(map[int64]*creativeModelQuery)
 	for _, item := range normalized {
-		group, lookupErr := s.GroupRepo.GetByIDLite(ctx, item.GroupID)
-		if lookupErr == nil && group != nil {
-			routes, routeErr := s.creativeModelRoutes(ctx, group)
-			if routeErr != nil {
-				return nil, routeErr
+		query, loaded := queries[item.GroupID]
+		if !loaded {
+			group, lookupErr := s.GroupRepo.GetByIDLite(ctx, item.GroupID)
+			if lookupErr == nil && group != nil {
+				var routeErr error
+				query, routeErr = s.prepareCreativeModels(ctx, group)
+				if routeErr != nil {
+					return nil, routeErr
+				}
 			}
-			if route, ok := routes[item.Model]; ok {
-				item.Operations = intersectCreativeOperations(item.Operations, route.Operations)
-			}
+			queries[item.GroupID] = query
+		}
+		if route, ok := query.resolve(ctx, item.Model); ok {
+			item.Operations = intersectCreativeOperations(item.Operations, route.Operations)
 		}
 		if len(item.Operations) > 0 {
 			out = append(out, item)
 		}
 	}
 	return out, nil
-}
-
-// CreativeOperationOrder 保证设置、候选和公开目录中的能力顺序稳定。
-var CreativeOperationOrder = []string{
-	CreativeOperationGenerate,
-	CreativeOperationEdit,
-	CreativeOperationInpaint,
 }
 
 // NormalizeCreativeModelSettings 校验并规范化管理员配置。
@@ -148,10 +155,5 @@ func CreativeOperationsForModel(settings map[string][]string, groupID int64, mod
 }
 
 func ContainsCreativeOperation(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, target)
 }

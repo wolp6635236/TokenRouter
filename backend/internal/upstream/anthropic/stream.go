@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
@@ -40,6 +42,14 @@ type StreamOptions struct {
 	Failover            func([]byte) error
 }
 
+type StreamReadFailure struct{ Body []byte }
+
+// StreamErrorEventError 表示上游 SSE 流体内出现 event:error 帧。
+// RawData 保留该事件 data: 行的原始内容，供上层写入 failover body 和 Ops 日志。
+type StreamErrorEventError struct {
+	RawData string
+}
+
 func (o StreamOptions) override(ctx context.Context) (string, bool) {
 	if o.OverrideCache == nil {
 		return "", false
@@ -54,11 +64,9 @@ func (o StreamOptions) failover(body []byte) error {
 	return &StreamReadFailure{Body: body}
 }
 
-type StreamReadFailure struct{ Body []byte }
-
 func (e *StreamReadFailure) Error() string { return "upstream error: 502 (failover)" }
 func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.OutputContext, options StreamOptions, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool) (*StreamResult, error) {
-	// 更新5h窗口状态
+	// 更新 5h 窗口状态
 	if options.UpdateWindow != nil {
 		options.UpdateWindow(ctx, resp.Header)
 	}
@@ -67,7 +75,7 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		options.WriteHeaders(c.Writer.Header(), resp.Header)
 	}
 
-	// 设置SSE响应头
+	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -87,7 +95,7 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 	usage := &upstream.TokenUsage{}
 	var firstTokenMs *int
 	scanner := bufio.NewScanner(resp.Body)
-	// 设置更大的buffer以处理长行
+	// 设置更大的 buffer 以处理长行
 	maxLineSize := options.MaxLineSize
 	if maxLineSize <= 0 {
 		maxLineSize = upstream.DefaultSSELineLimit
@@ -99,7 +107,7 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		line string
 		err  error
 	}
-	// 独立 goroutine 读取上游，避免读取阻塞导致超时/keepalive无法处理
+	// 独立 goroutine 读取上游，避免读取阻塞导致超时/keepalive 无法处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
 	sendEvent := func(ev scanEvent) bool {
@@ -210,8 +218,8 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		dataLine := ""
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "event:") {
-				eventName = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+			if after, ok0 := strings.CutPrefix(trimmed, "event:"); ok0 {
+				eventName = strings.TrimSpace(after)
 				continue
 			}
 			if dataLine == "" && sseDataPattern.MatchString(trimmed) {
@@ -505,3 +513,20 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		}
 	}
 }
+
+// StreamEventIsTerminal 根据 SSE 事件名和数据判断响应是否结束。
+func StreamEventIsTerminal(eventName, data string) bool {
+	if strings.EqualFold(strings.TrimSpace(eventName), "message_stop") {
+		return true
+	}
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" {
+		return false
+	}
+	if trimmed == "[DONE]" {
+		return true
+	}
+	return gjson.Get(trimmed, "type").String() == "message_stop"
+}
+
+func (e *StreamErrorEventError) Error() string { return "have error in stream" }

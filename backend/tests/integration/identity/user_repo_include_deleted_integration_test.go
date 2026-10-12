@@ -6,10 +6,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/stretchr/testify/require"
 )
 
 func TestUserRepo_ListWithFilters_IncludeDeleted(t *testing.T) {

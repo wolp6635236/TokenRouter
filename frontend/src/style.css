@@ -838,7 +838,7 @@
   }
 
   /* 内缩菜单:面板配 .dropdown py-0,内容按 .menu-section 分区,相邻分区自动加分隔线。
-     菜单项四周留白、悬停显示圆角底色,用于顶栏用户菜单、联系客服这类导航型浮层。 */
+     菜单项四周留白、悬停显示圆角底色,用于顶栏用户菜单、联系客服、语言切换这类导航型浮层。 */
   .menu-section {
     @apply p-1.5;
   }
@@ -1204,8 +1204,8 @@
     @apply text-center;
   }
 
+  /* 空状态图标放在 EmptyState 的居中方框里，尺寸由组件设定，这里只给颜色。 */
   .empty-state-icon {
-    @apply mb-4 h-16 w-16;
     @apply text-primary-300 dark:text-dark-500;
   }
 

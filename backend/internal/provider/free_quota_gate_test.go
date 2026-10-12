@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 type grokFreeQuotaUsageRepoStub struct {
@@ -19,6 +20,11 @@ type grokFreeQuotaUsageRepoStub struct {
 	lastIDs []int64
 	start   time.Time
 }
+
+type quotaTestStats struct{ Tokens int64 }
+
+// 夹具将提供商资格传给免费额度检查器，并按输入顺序返回结果。
+type quotaTestRuntime struct{ gate *FreeQuotaGate }
 
 func (r *grokFreeQuotaUsageRepoStub) GetProviderWindowStatsBatch(_ context.Context, providerIDs []int64, start time.Time) (map[int64]*quotaTestStats, error) {
 	r.mu.Lock()
@@ -38,8 +44,6 @@ func (r *grokFreeQuotaUsageRepoStub) GetProviderWindowStatsBatch(_ context.Conte
 	}
 	return result, nil
 }
-
-type quotaTestStats struct{ Tokens int64 }
 
 func grokFreeQuotaTestConfig() FreeQuotaOptions {
 	return FreeQuotaOptions{Enabled: true, TokenLimit: 500_000, Percent: 95, WindowHours: 24, CacheSeconds: 60}
@@ -260,9 +264,6 @@ func providerIDs(providers []Record) []int64 {
 	}
 	return ids
 }
-
-// 夹具将提供商资格传给免费额度检查器，并按输入顺序返回结果。
-type quotaTestRuntime struct{ gate *FreeQuotaGate }
 
 func newQuotaTestRuntime(repo *grokFreeQuotaUsageRepoStub) *quotaTestRuntime {
 	return &quotaTestRuntime{gate: NewFreeQuotaGate(grokFreeQuotaTestConfig, func(ctx context.Context, ids []int64, start time.Time) (map[int64]int64, error) {

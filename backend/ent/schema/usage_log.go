@@ -10,6 +10,7 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
@@ -40,6 +41,8 @@ func (UsageLog) Fields() []ent.Field {
 		field.Int64("provider_id"),
 		// 平台随使用事实保存，提供商或分组变动不会改变历史统计。
 		field.String("platform").MaxLen(64).Default("unknown"),
+		// billing_key 保存资金操作的稳定去重值，旧记录为空时使用 request_id。
+		field.String("billing_key").MaxLen(255).Optional().Nillable(),
 		field.String("request_id").
 			MaxLen(64).
 			NotEmpty(),

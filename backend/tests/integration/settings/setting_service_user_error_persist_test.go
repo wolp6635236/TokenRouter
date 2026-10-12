@@ -4,19 +4,19 @@ import (
 	"context"
 	"testing"
 
-	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
+	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/stretchr/testify/require"
 )
 
 // TestAllowUserViewErrorRequests_PersistsToDB 验证 buildSystemSettingsUpdates 会将
 // AllowUserViewErrorRequests 写入 updates map（即最终落库），这是对 bug 的回归测试：
 // 该字段曾因漏写而永远无法持久化。
 func TestAllowUserViewErrorRequests_PersistsToDB(t *testing.T) {
-	// bmUpdateRepoStub 已在 setting_service_backend_mode_test.go 中定义（同 package）。
+	// bmUpdateRepoStub 定义在 helpers_test.go。
 	// 本测试不触及需要 GetValue 的设置项，getValueFn 设为 nil 即可，无需 stub。
 	repo := &bmUpdateRepoStub{}
 	svc := settingskit.NewComposite(repo, &config.Config{})

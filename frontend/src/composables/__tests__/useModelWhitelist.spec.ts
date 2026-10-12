@@ -8,182 +8,17 @@ import {
   buildCombinedModelMappingObject,
   buildModelMappingObject,
   buildPersistedModelRestriction,
-  qoderModelKeyByPublicAlias,
-  getPresetMappingsByPlatform,
-  getModelsByPlatform,
   splitQoderPersistedModelRestriction,
   splitModelMappingObject
 } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
-  it('openai 模型列表使用当前默认白名单', () => {
-    const models = getModelsByPlatform('openai')
-
-		expect(models).toEqual([
-			'gpt-5.2',
-			'gpt-5.3',
-			'gpt-5.3-spark',
-			'codex-auto-review',
-			'gpt-5.6-sol',
-			'gpt-5.6-terra',
-			'gpt-5.6-luna',
-			'gpt-6-astra',
-			'gpt-5.4',
-			'gpt-5.4-mini',
-			'gpt-5.5'
-		])
-  })
-
-  it('openai 预设映射包含 GPT-6 Astra', () => {
-    // 快捷映射使用具体产品名称。
-    expect(getPresetMappingsByPlatform('openai').some((mapping) => mapping.from === 'gpt-5.6' || mapping.to === 'gpt-5.6')).toBe(false)
-    expect(getPresetMappingsByPlatform('openai')).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        label: 'GPT-6 Astra',
-        from: 'gpt-6-astra',
-        to: 'gpt-6-astra'
-      })
-    ]))
-  })
-
-  it('openai 模型列表不再暴露旧快照、Codex、音频和图片模型', () => {
-    const models = getModelsByPlatform('openai')
-
-    expect(models).not.toContain('gpt-5')
-    expect(models).not.toContain('gpt-5.1')
-    expect(models).not.toContain('gpt-5.1-codex')
-    expect(models).not.toContain('gpt-5.1-codex-max')
-    expect(models).not.toContain('gpt-5.1-codex-mini')
-    expect(models).not.toContain('gpt-5.2-codex')
-    expect(models).not.toContain('gpt-5.3-codex')
-    expect(models).not.toContain('gpt-5.3-codex-spark')
-    expect(models).not.toContain('gpt-5.4-2026-03-05')
-    expect(models).not.toContain('gpt-4o-audio-preview')
-    expect(models).not.toContain('gpt-image-1')
-  })
-
-  it('antigravity 模型列表包含图片模型兼容项', () => {
-    const models = getModelsByPlatform('antigravity')
-
-    expect(models).toContain('gemini-2.5-flash-image')
-    expect(models).toContain('gemini-3.1-flash-image')
-    expect(models).toContain('gemini-3-pro-image')
-  })
-
-  it('qoder 模型列表提供创建提供商快捷候选且不暴露旧 route key', () => {
-    const models = getModelsByPlatform('qoder')
-
-    expect(models).toEqual([
-      'claude-opus-4-6',
-      'auto',
-      'performance',
-      'efficient',
-      'lite',
-      'qwen3.8-max',
-      'qwen3.7-max',
-      'qwen3.7-plus',
-      // 新旧 Kimi 模型应同时作为创建提供商的快捷候选。
-      'kimi-k3',
-      'kimi-k2.7-code',
-      'glm-5.3',
-      'glm-5.2',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
-      'minimax-m3',
-      'qwen3.6-flash',
-      'minimax-m2.7'
-    ])
-    expect(models).not.toContain('ultimate')
-    expect(models).not.toContain('qmodel_latest')
-    expect(models).not.toContain('mmodel')
-    expect(models).not.toContain('quest-ultimate')
-    expect(models).not.toContain('qwen3.5-plus')
-    expect(models).not.toContain('qwen3.8-max-preview')
-    expect(models).not.toContain('glm-5')
-    expect(models).not.toContain('glm-5.1')
-  })
 
   it('qoder 默认提供商未触碰模型限制时不会生成限制配置', () => {
     expect(buildPersistedModelRestriction([], [])).toEqual({
       modelMapping: null,
       modelWhitelist: []
     })
-  })
-
-  it('qoder 预设映射跟随当前 Qoder CLI 可见模型', () => {
-    const presets = getPresetMappingsByPlatform('qoder')
-
-    expect(presets.map(preset => [preset.from, preset.to])).toEqual([
-      ['claude-opus-4-6', 'ultimate'],
-      ['auto', 'auto'],
-      ['performance', 'performance'],
-      ['efficient', 'efficient'],
-      ['lite', 'lite'],
-      ['qwen3.8-max', 'qmodel_38max'],
-      ['qwen3.7-max', 'qmodel_latest'],
-      ['qwen3.7-plus', 'qmodel'],
-      // Kimi-K3 使用新增的独立 latest 路由。
-      ['kimi-k3', 'kmodel_latest'],
-      ['kimi-k2.7-code', 'kmodel'],
-      ['glm-5.3', 'gmodel'],
-      ['glm-5.2', 'gm51model'],
-      ['deepseek-v4-pro', 'dmodel'],
-      ['deepseek-v4-flash', 'dfmodel'],
-      ['minimax-m3', 'mmodel'],
-      ['qwen3.6-flash', 'q36fmodel'],
-      ['minimax-m2.7', 'mmodel']
-    ])
-    expect(presets.map(preset => preset.from)).not.toContain('qwen3.5-plus')
-    expect(presets.map(preset => preset.from)).not.toContain('qwen3.8-max-preview')
-    expect(presets.map(preset => preset.from)).not.toContain('glm-5')
-  })
-
-  it('qoder 站点模型与预设分别匹配国际站和国内站', () => {
-    expect(getModelsByPlatform('qoder', 'global')).toEqual([
-      'claude-opus-4-6',
-      'auto',
-      'performance',
-      'efficient',
-      'lite',
-      'qwen3.8-max',
-      'qwen3.7-max',
-      'qwen3.7-plus',
-      'kimi-k3',
-      'kimi-k2.7-code',
-      'glm-5.3',
-      'glm-5.2',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
-      'minimax-m3'
-    ])
-    expect(getModelsByPlatform('qoder', 'cn')).toEqual([
-      'auto',
-      'qwen3.8-max',
-      'qwen3.7-max',
-      'qwen3.7-plus',
-      'qwen3.6-flash',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
-      'glm-5.3',
-      'glm-5.2',
-      'kimi-k2.7-code',
-      'minimax-m2.7'
-    ])
-    expect(qoderModelKeyByPublicAlias('minimax-m2.7', 'cn')).toBe('mmodel')
-    expect(qoderModelKeyByPublicAlias('minimax-m2.7', 'global')).toBeUndefined()
-    expect(qoderModelKeyByPublicAlias('qwen3.8-max', 'global')).toBe('qmodel_38max')
-    expect(qoderModelKeyByPublicAlias('qwen3.8-max', 'cn')).toBe('qmodel_38max')
-    expect(qoderModelKeyByPublicAlias('qwen3.8-max-preview')).toBeUndefined()
-  })
-
-  it('qoder 公开别名到上游 route key 仅用于创建提供商快捷填充', () => {
-    expect(qoderModelKeyByPublicAlias('claude-opus-4-6')).toBe('ultimate')
-    expect(qoderModelKeyByPublicAlias('glm-5.3')).toBe('gmodel')
-    expect(qoderModelKeyByPublicAlias('glm-5.2')).toBe('gm51model')
-    expect(qoderModelKeyByPublicAlias('kimi-k3')).toBe('kmodel_latest')
-    expect(qoderModelKeyByPublicAlias('minimax-m3')).toBe('mmodel')
-    expect(qoderModelKeyByPublicAlias('qwen3.5-plus')).toBeUndefined()
-    expect(qoderModelKeyByPublicAlias('custom-model')).toBeUndefined()
   })
 
   it('qoder legacy 映射会保留为显式映射规则', () => {
@@ -214,46 +49,6 @@ describe('useModelWhitelist', () => {
     })
   })
 
-  it('Claude 模型列表包含新发布的 Claude 模型', () => {
-    expect(getModelsByPlatform('claude')).toContain('claude-fable-5-1')
-    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5-1')
-    expect(getModelsByPlatform('claude')).toContain('claude-fable-5')
-    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
-    expect(getModelsByPlatform('claude')).toContain('claude-opus-4-8')
-    expect(getModelsByPlatform('claude')).toContain('claude-opus-5')
-    expect(getModelsByPlatform('antigravity')).toContain('claude-opus-4-8')
-  })
-
-  it('Bedrock 预设使用官方模型 ID 并保留旧型号合法的版本后缀', () => {
-    const presets = getPresetMappingsByPlatform('bedrock')
-    const expected = {
-      'claude-opus-5': 'us.anthropic.claude-opus-5',
-      'claude-opus-4-8': 'us.anthropic.claude-opus-4-8',
-      'claude-opus-4-7': 'us.anthropic.claude-opus-4-7',
-      'claude-sonnet-5': 'us.anthropic.claude-sonnet-5',
-      'claude-opus-4-6': 'us.anthropic.claude-opus-4-6-v1',
-      'claude-opus-4-5-thinking': 'us.anthropic.claude-opus-4-5-20251101-v1:0'
-    }
-
-    // 预设会直接写入提供商配置，逐项核对实际保存的目标 ID。
-    for (const [from, to] of Object.entries(expected)) {
-      expect(presets.find(preset => preset.from === from)?.to).toBe(to)
-    }
-  })
-
-  it('xAI 模型列表仅包含原生完整型号', () => {
-    const models = getModelsByPlatform('grok')
-
-    expect(models).toContain('grok-4.6')
-    expect(models).not.toContain('grok-4.6-latest')
-    expect(models).toContain('grok-4.5')
-    expect(models).not.toContain('grok-4.5-latest')
-    expect(models).not.toContain('grok-build-latest')
-    expect(models).not.toContain('grok-imagine-edit')
-    expect(models).toContain('grok-imagine-image-2.0')
-    expect(models).toContain('grok-imagine-video-1.5')
-  })
-
   it('combined 模式支持 Grok 4.5 官方别名映射', () => {
     const mapping = buildCombinedModelMappingObject(
       ['grok-4.5'],
@@ -270,48 +65,6 @@ describe('useModelWhitelist', () => {
       'grok-4.5-latest': 'grok-4.5',
       'grok-build-latest': 'grok-4.5'
     })
-  })
-
-  it('grok 模型列表包含 Composer 原生型号', () => {
-    const models = getModelsByPlatform('grok')
-
-    expect(models).toContain('grok-composer-2.5-fast')
-    expect(models).not.toContain('grok-composer')
-    expect(models).not.toContain('composer-2.5')
-  })
-
-  it('gemini 模型列表包含原生生图模型', () => {
-    const models = getModelsByPlatform('gemini')
-
-    expect(models).toContain('gemini-2.5-flash-image')
-    expect(models).toContain('gemini-3.1-flash-image')
-    expect(models.indexOf('gemini-3.1-flash-image')).toBeLessThan(models.indexOf('gemini-2.0-flash'))
-    expect(models.indexOf('gemini-2.5-flash-image')).toBeLessThan(models.indexOf('gemini-2.5-flash'))
-  })
-
-  it('antigravity 模型列表会把新的 Gemini 图片模型排在前面', () => {
-    const models = getModelsByPlatform('antigravity')
-
-    expect(models.indexOf('gemini-3.1-flash-image')).toBeLessThan(models.indexOf('gemini-2.5-flash'))
-    expect(models.indexOf('gemini-2.5-flash-image')).toBeLessThan(models.indexOf('gemini-2.5-flash-lite'))
-  })
-
-  it('antigravity 模型列表包含 Gemini 3.1 Pro 通用别名', () => {
-    const models = getModelsByPlatform('antigravity')
-
-    expect(models).toContain('gemini-3.1-pro')
-  })
-
-  it('antigravity 模型列表包含 Gemini 3.6 Flash 分档模型', () => {
-    const models = getModelsByPlatform('antigravity')
-
-    expect(models).toEqual(expect.arrayContaining([
-      'gemini-3.6-flash',
-      'gemini-3.6-flash-high',
-      'gemini-3.6-flash-low',
-      'gemini-3.6-flash-medium',
-      'gemini-3.6-flash-tiered'
-    ]))
   })
 
   it('whitelist 模式会忽略通配符条目', () => {

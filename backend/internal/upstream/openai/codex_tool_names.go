@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
@@ -204,12 +205,8 @@ func ContainsASCIIFold(haystack, needle []byte) bool {
 
 func MergeCodexToolNameReverseMaps(base, overlay map[string]string) map[string]string {
 	merged := make(map[string]string, len(base)+len(overlay))
-	for aliased, original := range base {
-		merged[aliased] = original
-	}
-	for aliased, original := range overlay {
-		merged[aliased] = original
-	}
+	maps.Copy(merged, base)
+	maps.Copy(merged, overlay)
 	return merged
 }
 

@@ -3,13 +3,14 @@
 package app
 
 import (
+	"github.com/google/wire"
+
 	batchpostgres "github.com/TokenFlux/TokenRouter/internal/batchimage/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 	billingredis "github.com/TokenFlux/TokenRouter/internal/billing/rediscache"
 	creativepostgres "github.com/TokenFlux/TokenRouter/internal/creative/postgres"
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-	"github.com/google/wire"
 )
 
 // moduleStorageProviders 按模块构造存储，事务参与者使用同一个数据库连接。

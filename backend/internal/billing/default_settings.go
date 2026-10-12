@@ -10,6 +10,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+var (
+	ErrDefaultSubPlanInvalid = apperror.BadRequest(
+		"DEFAULT_SUBSCRIPTION_PLAN_INVALID",
+		"default subscription plan must exist",
+	)
+
+	ErrDefaultSubPlanDuplicate = apperror.BadRequest(
+		"DEFAULT_SUBSCRIPTION_PLAN_DUPLICATE",
+		"default subscription plan cannot be duplicated",
+	)
+)
+
 // DefaultSubscriptionSetting 是默认权益配置的纯值，原 JSON 形状保持不变。
 type DefaultSubscriptionSetting struct {
 	PlanID int64 `json:"plan_id"`
@@ -53,16 +65,6 @@ func ValidateDefaultSubscriptionPlans(ctx context.Context, items []DefaultSubscr
 
 	return nil
 }
-
-var ErrDefaultSubPlanInvalid = apperror.BadRequest(
-	"DEFAULT_SUBSCRIPTION_PLAN_INVALID",
-	"default subscription plan must exist",
-)
-
-var ErrDefaultSubPlanDuplicate = apperror.BadRequest(
-	"DEFAULT_SUBSCRIPTION_PLAN_DUPLICATE",
-	"default subscription plan cannot be duplicated",
-)
 
 // ParseDefaultSubscriptions 保持无效载荷与无效套餐 ID 的原过滤语义。
 func ParseDefaultSubscriptions(raw string) []DefaultSubscriptionSetting {

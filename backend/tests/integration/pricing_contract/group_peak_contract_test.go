@@ -15,7 +15,7 @@ import (
 func TestPeakMultiplier_GatewayBillingSequence(t *testing.T) {
 	const baseMultiplier = 0.8
 	keySnapshot := &completion.KeySnapshot{Group: newPeakGroup(true, "14:00", "18:00", 3.0)}
-	// 原合同在UTC运行，显式指定快照时区，避免改变同进程其他测试。
+	// 原合同在 UTC 运行，显式指定快照时区，避免改变同进程其他测试。
 	keySnapshot.Group.Location = time.UTC
 	approxEq := func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 

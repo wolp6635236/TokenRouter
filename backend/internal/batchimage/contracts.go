@@ -5,6 +5,19 @@ import (
 	"time"
 )
 
+const (
+	BatchProviderStateQueued    BatchProviderInternalState = "queued"
+	BatchProviderStateRunning   BatchProviderInternalState = "running"
+	BatchProviderStateSucceeded BatchProviderInternalState = "succeeded"
+	BatchProviderStateFailed    BatchProviderInternalState = "failed"
+	BatchProviderStateCancelled BatchProviderInternalState = "cancelled"
+	BatchProviderStateExpired   BatchProviderInternalState = "expired"
+
+	CleanupTargetInput  CleanupTarget = "input"
+	CleanupTargetOutput CleanupTarget = "output"
+	CleanupTargetAll    CleanupTarget = "all"
+)
+
 type BatchImageInput struct {
 	BatchID     string
 	Model       string
@@ -38,15 +51,6 @@ type BatchProviderJob struct {
 }
 type BatchProviderInternalState string
 
-const (
-	BatchProviderStateQueued    BatchProviderInternalState = "queued"
-	BatchProviderStateRunning   BatchProviderInternalState = "running"
-	BatchProviderStateSucceeded BatchProviderInternalState = "succeeded"
-	BatchProviderStateFailed    BatchProviderInternalState = "failed"
-	BatchProviderStateCancelled BatchProviderInternalState = "cancelled"
-	BatchProviderStateExpired   BatchProviderInternalState = "expired"
-)
-
 type BatchProviderStatus struct {
 	RawState string
 
@@ -61,12 +65,6 @@ type BatchProviderStatus struct {
 	SuggestedRequeueAfter time.Duration
 }
 type CleanupTarget string
-
-const (
-	CleanupTargetInput  CleanupTarget = "input"
-	CleanupTargetOutput CleanupTarget = "output"
-	CleanupTargetAll    CleanupTarget = "all"
-)
 
 type BatchImageUserGroupRateRepository interface {
 	GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error)
@@ -104,14 +102,6 @@ type BatchImageOwner struct {
 	GroupID                 *int64
 	BillingMode             string
 	PreferredSubscriptionID *int64
-}
-
-// EffectiveBillingUserID 兼容个人 Key 和迁移前创建的批量任务调用参数。
-func (o BatchImageOwner) EffectiveBillingUserID() int64 {
-	if o.BillingUserID > 0 {
-		return o.BillingUserID
-	}
-	return o.UserID
 }
 
 type BatchImagePricingSnapshot struct {
@@ -194,4 +184,12 @@ type BatchImageItemsQuery struct {
 	Status string
 	Limit  int
 	Cursor string
+}
+
+// EffectiveBillingUserID 兼容个人 Key 和迁移前创建的批量任务调用参数。
+func (o BatchImageOwner) EffectiveBillingUserID() int64 {
+	if o.BillingUserID > 0 {
+		return o.BillingUserID
+	}
+	return o.UserID
 }

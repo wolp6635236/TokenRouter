@@ -95,7 +95,7 @@ func (_m *AnnouncementRead) assignValues(columns []string, values []any) error {
 			if !ok {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
-			_m.ID = int64(value.Int64)
+			_m.ID = value.Int64
 		case announcementread.FieldAnnouncementID:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for field announcement_id", values[i])

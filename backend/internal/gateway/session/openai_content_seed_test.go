@@ -6,10 +6,34 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
+
+var benchmarkOpenAIContentSessionSeed string
+
+func BenchmarkDeriveOpenAIContentSessionSeedLargeBody(b *testing.B) {
+	largeHistory := strings.Repeat("payload", 1<<17)
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "ChatCompletions", body: []byte(`{"model":"gpt-5.4","tools":[{"type":"function","function":{"name":"lookup"}}],"messages":[{"role":"system","content":"Be concise."},{"role":"user","content":"Hello"},{"role":"assistant","content":"` + largeHistory + `"},{"role":"user","content":"Follow-up"}]}`)},
+		{name: "Responses", body: []byte(`{"model":"gpt-5.4","instructions":"Be concise.","tools":[{"type":"function","name":"lookup"}],"input":[{"role":"system","content":"System prompt"},{"role":"user","content":"Hello"},{"role":"assistant","content":"` + largeHistory + `"}]}`)},
+	}
+
+	for _, test := range tests {
+		b.Run(test.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(test.body)))
+			for range b.N {
+				benchmarkOpenAIContentSessionSeed = OpenAIContentSeed(test.body)
+			}
+		})
+	}
+}
 
 func TestDeriveOpenAIContentSessionSeed_EmptyInputs(t *testing.T) {
 	require.Empty(t, OpenAIContentSeed(nil))
@@ -357,7 +381,7 @@ func TestDeriveOpenAIContentSessionSeed_DeterministicMalformedCorpusMatchesLegac
 	// 用固定随机种子生成畸形 JSON，检查 gjson 的宽容解析结果。
 	rng := rand.New(rand.NewSource(4274))
 	alphabet := []byte(`{}[]":,modeltfsuinpcr0123456789 \\`)
-	for caseIndex := 0; caseIndex < 5000; caseIndex++ {
+	for caseIndex := range 5000 {
 		body := make([]byte, rng.Intn(256))
 		for i := range body {
 			body[i] = alphabet[rng.Intn(len(alphabet))]
@@ -369,102 +393,6 @@ func TestDeriveOpenAIContentSessionSeed_DeterministicMalformedCorpusMatchesLegac
 			body,
 		)
 	}
-}
-
-func referenceDeriveOpenAIContentSessionSeed(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-
-	if model := gjson.GetBytes(body, "model").String(); model != "" {
-		_, _ = b.WriteString("model=")
-		_, _ = b.WriteString(model)
-	}
-
-	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() && tools.Raw != "[]" {
-		_, _ = b.WriteString("|tools=")
-		_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(tools.Raw)))
-	}
-
-	if funcs := gjson.GetBytes(body, "functions"); funcs.Exists() && funcs.IsArray() && funcs.Raw != "[]" {
-		_, _ = b.WriteString("|functions=")
-		_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(funcs.Raw)))
-	}
-
-	if instr := gjson.GetBytes(body, "instructions").String(); instr != "" {
-		_, _ = b.WriteString("|instructions=")
-		_, _ = b.WriteString(instr)
-	}
-
-	firstUserCaptured := false
-
-	msgs := gjson.GetBytes(body, "messages")
-	if msgs.Exists() && msgs.IsArray() {
-		systemPrefixOpen := true
-		msgs.ForEach(func(_, msg gjson.Result) bool {
-			role := msg.Get("role").String()
-			switch role {
-			case "system", "developer":
-				if systemPrefixOpen {
-					_, _ = b.WriteString("|system=")
-					if c := msg.Get("content"); c.Exists() {
-						_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
-					}
-				}
-			case "user":
-				systemPrefixOpen = false
-				if !firstUserCaptured {
-					_, _ = b.WriteString("|first_user=")
-					if c := msg.Get("content"); c.Exists() {
-						_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
-					}
-					firstUserCaptured = true
-				}
-			default:
-				systemPrefixOpen = false
-			}
-			return true
-		})
-	} else if inp := gjson.GetBytes(body, "input"); inp.Exists() {
-		if inp.Type == gjson.String {
-			_, _ = b.WriteString("|input=")
-			_, _ = b.WriteString(inp.String())
-		} else if inp.IsArray() {
-			inp.ForEach(func(_, item gjson.Result) bool {
-				role := item.Get("role").String()
-				switch role {
-				case "system", "developer":
-					_, _ = b.WriteString("|system=")
-					if c := item.Get("content"); c.Exists() {
-						_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
-					}
-				case "user":
-					if !firstUserCaptured {
-						_, _ = b.WriteString("|first_user=")
-						if c := item.Get("content"); c.Exists() {
-							_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
-						}
-						firstUserCaptured = true
-					}
-				}
-				if !firstUserCaptured && item.Get("type").String() == "input_text" {
-					_, _ = b.WriteString("|first_user=")
-					if text := item.Get("text").String(); text != "" {
-						_, _ = b.WriteString(text)
-					}
-					firstUserCaptured = true
-				}
-				return true
-			})
-		}
-	}
-
-	if b.Len() == 0 {
-		return ""
-	}
-	return contentSessionSeedPrefix + b.String()
 }
 
 func TestDeriveOpenAIContentSessionSeed_ResponsesAPI_InputTextTypedItem(t *testing.T) {
@@ -636,4 +564,100 @@ func TestDeriveOpenAIStablePrefixSessionSeed_RequiresMeaningfulPrefix(t *testing
 	for _, body := range tests {
 		require.Empty(t, OpenAIStablePrefixSeed(body))
 	}
+}
+
+func referenceDeriveOpenAIContentSessionSeed(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+
+	if model := gjson.GetBytes(body, "model").String(); model != "" {
+		_, _ = b.WriteString("model=")
+		_, _ = b.WriteString(model)
+	}
+
+	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() && tools.Raw != "[]" {
+		_, _ = b.WriteString("|tools=")
+		_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(tools.Raw)))
+	}
+
+	if funcs := gjson.GetBytes(body, "functions"); funcs.Exists() && funcs.IsArray() && funcs.Raw != "[]" {
+		_, _ = b.WriteString("|functions=")
+		_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(funcs.Raw)))
+	}
+
+	if instr := gjson.GetBytes(body, "instructions").String(); instr != "" {
+		_, _ = b.WriteString("|instructions=")
+		_, _ = b.WriteString(instr)
+	}
+
+	firstUserCaptured := false
+
+	msgs := gjson.GetBytes(body, "messages")
+	if msgs.Exists() && msgs.IsArray() {
+		systemPrefixOpen := true
+		msgs.ForEach(func(_, msg gjson.Result) bool {
+			role := msg.Get("role").String()
+			switch role {
+			case "system", "developer":
+				if systemPrefixOpen {
+					_, _ = b.WriteString("|system=")
+					if c := msg.Get("content"); c.Exists() {
+						_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+					}
+				}
+			case "user":
+				systemPrefixOpen = false
+				if !firstUserCaptured {
+					_, _ = b.WriteString("|first_user=")
+					if c := msg.Get("content"); c.Exists() {
+						_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+					}
+					firstUserCaptured = true
+				}
+			default:
+				systemPrefixOpen = false
+			}
+			return true
+		})
+	} else if inp := gjson.GetBytes(body, "input"); inp.Exists() {
+		if inp.Type == gjson.String {
+			_, _ = b.WriteString("|input=")
+			_, _ = b.WriteString(inp.String())
+		} else if inp.IsArray() {
+			inp.ForEach(func(_, item gjson.Result) bool {
+				role := item.Get("role").String()
+				switch role {
+				case "system", "developer":
+					_, _ = b.WriteString("|system=")
+					if c := item.Get("content"); c.Exists() {
+						_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+					}
+				case "user":
+					if !firstUserCaptured {
+						_, _ = b.WriteString("|first_user=")
+						if c := item.Get("content"); c.Exists() {
+							_, _ = b.WriteString(openai.NormalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+						}
+						firstUserCaptured = true
+					}
+				}
+				if !firstUserCaptured && item.Get("type").String() == "input_text" {
+					_, _ = b.WriteString("|first_user=")
+					if text := item.Get("text").String(); text != "" {
+						_, _ = b.WriteString(text)
+					}
+					firstUserCaptured = true
+				}
+				return true
+			})
+		}
+	}
+
+	if b.Len() == 0 {
+		return ""
+	}
+	return contentSessionSeedPrefix + b.String()
 }

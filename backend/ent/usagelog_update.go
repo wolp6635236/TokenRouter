@@ -138,6 +138,26 @@ func (_u *UsageLogUpdate) SetNillablePlatform(v *string) *UsageLogUpdate {
 	return _u
 }
 
+// SetBillingKey sets the "billing_key" field.
+func (_u *UsageLogUpdate) SetBillingKey(v string) *UsageLogUpdate {
+	_u.mutation.SetBillingKey(v)
+	return _u
+}
+
+// SetNillableBillingKey sets the "billing_key" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableBillingKey(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetBillingKey(*v)
+	}
+	return _u
+}
+
+// ClearBillingKey clears the value of the "billing_key" field.
+func (_u *UsageLogUpdate) ClearBillingKey() *UsageLogUpdate {
+	_u.mutation.ClearBillingKey()
+	return _u
+}
+
 // SetRequestID sets the "request_id" field.
 func (_u *UsageLogUpdate) SetRequestID(v string) *UsageLogUpdate {
 	_u.mutation.SetRequestID(v)
@@ -1176,6 +1196,11 @@ func (_u *UsageLogUpdate) check() error {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "UsageLog.platform": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.BillingKey(); ok {
+		if err := usagelog.BillingKeyValidator(v); err != nil {
+			return &ValidationError{Name: "billing_key", err: fmt.Errorf(`ent: validator failed for field "UsageLog.billing_key": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.RequestID(); ok {
 		if err := usagelog.RequestIDValidator(v); err != nil {
 			return &ValidationError{Name: "request_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.request_id": %w`, err)}
@@ -1286,6 +1311,12 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.Platform(); ok {
 		_spec.SetField(usagelog.FieldPlatform, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BillingKey(); ok {
+		_spec.SetField(usagelog.FieldBillingKey, field.TypeString, value)
+	}
+	if _u.mutation.BillingKeyCleared() {
+		_spec.ClearField(usagelog.FieldBillingKey, field.TypeString)
 	}
 	if value, ok := _u.mutation.RequestID(); ok {
 		_spec.SetField(usagelog.FieldRequestID, field.TypeString, value)
@@ -1850,6 +1881,26 @@ func (_u *UsageLogUpdateOne) SetNillablePlatform(v *string) *UsageLogUpdateOne {
 	if v != nil {
 		_u.SetPlatform(*v)
 	}
+	return _u
+}
+
+// SetBillingKey sets the "billing_key" field.
+func (_u *UsageLogUpdateOne) SetBillingKey(v string) *UsageLogUpdateOne {
+	_u.mutation.SetBillingKey(v)
+	return _u
+}
+
+// SetNillableBillingKey sets the "billing_key" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableBillingKey(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetBillingKey(*v)
+	}
+	return _u
+}
+
+// ClearBillingKey clears the value of the "billing_key" field.
+func (_u *UsageLogUpdateOne) ClearBillingKey() *UsageLogUpdateOne {
+	_u.mutation.ClearBillingKey()
 	return _u
 }
 
@@ -2904,6 +2955,11 @@ func (_u *UsageLogUpdateOne) check() error {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "UsageLog.platform": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.BillingKey(); ok {
+		if err := usagelog.BillingKeyValidator(v); err != nil {
+			return &ValidationError{Name: "billing_key", err: fmt.Errorf(`ent: validator failed for field "UsageLog.billing_key": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.RequestID(); ok {
 		if err := usagelog.RequestIDValidator(v); err != nil {
 			return &ValidationError{Name: "request_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.request_id": %w`, err)}
@@ -3031,6 +3087,12 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if value, ok := _u.mutation.Platform(); ok {
 		_spec.SetField(usagelog.FieldPlatform, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.BillingKey(); ok {
+		_spec.SetField(usagelog.FieldBillingKey, field.TypeString, value)
+	}
+	if _u.mutation.BillingKeyCleared() {
+		_spec.ClearField(usagelog.FieldBillingKey, field.TypeString)
 	}
 	if value, ok := _u.mutation.RequestID(); ok {
 		_spec.SetField(usagelog.FieldRequestID, field.TypeString, value)

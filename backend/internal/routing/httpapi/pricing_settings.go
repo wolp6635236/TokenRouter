@@ -9,11 +9,6 @@ import (
 // optionalBillingPrice 保留省略、null 和零值的区别。
 type optionalBillingPrice struct{ routing.PriceUpdate }
 
-func (p *optionalBillingPrice) UnmarshalJSON(data []byte) error {
-	p.Set = true
-	return json.Unmarshal(data, &p.Value)
-}
-
 type billingSettingsRequest struct {
 	PeakRateEnabled              *bool                `json:"peak_rate_enabled"`
 	PeakStart                    *string              `json:"peak_start"`
@@ -28,6 +23,11 @@ type billingSettingsRequest struct {
 	AudioRealtimePricePerMin     optionalBillingPrice `json:"audio_realtime_price_per_min"`
 	AudioTTSPricePerMillionChars optionalBillingPrice `json:"audio_tts_price_per_million_chars"`
 	AudioSTTPricePerHour         optionalBillingPrice `json:"audio_stt_price_per_hour"`
+}
+
+func (p *optionalBillingPrice) UnmarshalJSON(data []byte) error {
+	p.Set = true
+	return json.Unmarshal(data, &p.Value)
 }
 
 func (r billingSettingsRequest) patch() routing.BillingSettingsPatch {

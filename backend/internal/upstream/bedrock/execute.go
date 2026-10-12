@@ -25,6 +25,9 @@ type Target struct {
 	HTTPError  func(context.Context, *http.Response) (upstream.AttemptResult, error)
 }
 
+// Executor 执行 Bedrock 请求，请求体由调用方按本次 beta 选项准备。
+type Executor struct{}
+
 func (t *Target) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -34,9 +37,6 @@ func (t *Target) TargetID() int64 {
 
 func (t *Target) String() string   { return fmt.Sprintf("bedrock target provider=%d", t.TargetID()) }
 func (t *Target) GoString() string { return t.String() }
-
-// Executor 执行 Bedrock 请求，请求体由调用方按本次 beta 选项准备。
-type Executor struct{}
 
 func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
 	// 失败路径也返回取消与耗时分类；未发生服务时不生成用量或成功结果。

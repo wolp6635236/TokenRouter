@@ -2,11 +2,13 @@ package runtimeconfig
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 type panelRateLimitSettingRepo struct {
@@ -68,9 +70,7 @@ func (r *panelRateLimitSettingRepo) SetMultiple(_ context.Context, settings map[
 	if r.values == nil {
 		r.values = make(map[string]string)
 	}
-	for key, value := range settings {
-		r.values[key] = value
-	}
+	maps.Copy(r.values, settings)
 	return nil
 }
 
@@ -78,9 +78,7 @@ func (r *panelRateLimitSettingRepo) GetAll(_ context.Context) (map[string]string
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make(map[string]string, len(r.values))
-	for key, value := range r.values {
-		out[key] = value
-	}
+	maps.Copy(out, r.values)
 	return out, nil
 }
 
@@ -170,7 +168,7 @@ func TestGetPanelRateLimitSettingsCachedAvoidsRepeatedDBReads(t *testing.T) {
 	}}
 	svc := newPanelRateLimitTestService(repo)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		settings := svc.GetPanelRateLimitSettingsCached(context.Background())
 		require.Equal(t, 100, settings.UserRPM)
 	}

@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 )
 
 // OpenAIFailoverError 保存错误展示数据，规则匹配使用原始响应，公开 JSON 使用展示字段。

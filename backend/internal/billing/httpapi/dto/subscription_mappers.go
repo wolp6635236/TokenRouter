@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"maps"
 	"strconv"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -118,9 +119,7 @@ func CloneInt64Float64Map(in map[int64]float64) map[int64]float64 {
 		return map[int64]float64{}
 	}
 	out := make(map[int64]float64, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 

@@ -1,88 +1,27 @@
 package httpapi
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 // 模型查询测试在读取正文、取得槽位或检查资金时失败。
 type modelForbiddenBody struct{}
 
 func (modelForbiddenBody) Read([]byte) (int, error) { panic("models endpoint read request body") }
-func (modelForbiddenBody) Close() error             { return nil }
 
-type modelsBackendStub struct {
-	ModelsBackend
-	key               *apikey.APIKey
-	result            routing.RequestableModelsResult
-	byGroup           map[int64]routing.RequestableModelsResult
-	forced            string
-	resolvedPlatforms []string
-	response          *ModelHTTPResponse
-	selectErr         error
-	antigravity       bool
-	paths             []string
-	observations      int
-}
+func (modelForbiddenBody) Close() error { return nil }
 
-func (p *modelsBackendStub) Access(*gin.Context) (*apikey.APIKey, bool) { return p.key, p.key != nil }
-
-func (p *modelsBackendStub) ForcedPlatform(*gin.Context) (string, bool) {
-	return p.forced, p.forced != ""
-}
-func (p *modelsBackendStub) Available() bool { return true }
-func (p *modelsBackendStub) Resolve(_ context.Context, id *int64, platform string) routing.RequestableModelsResult {
-	p.resolvedPlatforms = append(p.resolvedPlatforms, platform)
-	if id != nil && p.byGroup != nil {
-		return p.byGroup[*id]
-	}
-	return p.result
-}
-
-func (p *modelsBackendStub) SelectGemini(context.Context, *int64) (GeminiModelReader, error) {
-	if p.selectErr != nil {
-		return nil, p.selectErr
-	}
-	return p, nil
-}
-
-func (p *modelsBackendStub) Read(_ context.Context, path string) (*ModelHTTPResponse, error) {
-	p.paths = append(p.paths, path)
-	return p.response, nil
-}
-
-func (p *modelsBackendStub) HasAntigravity(context.Context, *int64) (bool, error) {
-	return p.antigravity, nil
-}
-func (p *modelsBackendStub) CapacityLimited(*gin.Context, error) { p.observations++ }
-func (p *modelsBackendStub) SafeModelSegment(m string) bool      { return m != "bad/model" }
-
-// 回退分支调用未实现的目录方法时测试失败，空结果会掩盖默认列表恢复错误。
-type modelsCatalogStub struct {
-	ModelsCatalog
-	fallbacks int
-}
-
-func (p *modelsCatalogStub) GeminiList(bool) GeminiModelsList {
-	p.fallbacks++
-	return GeminiModelsList{Models: []GeminiModel{{Name: "models/fallback"}}}
-}
-
-func (p *modelsCatalogStub) GeminiModel(name string, _ bool) GeminiModel {
-	p.fallbacks++
-	return GeminiModel{Name: "models/" + name}
-}
-func (p *modelsCatalogStub) HasGeminiFallback(name string) bool { return name == "known" }
 func modelsContext() (*gin.Context, *httptest.ResponseRecorder) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

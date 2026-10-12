@@ -9,19 +9,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// AdminSettings 只包含本模块的管理开关与运行参数。
-type AdminSettings struct {
-	CreativeEnabled       bool                   `json:"creative_enabled"`
-	CreativeWorkerCount   int                    `json:"creative_worker_count"`
-	CreativeModelSettings []CreativeModelSetting `json:"creative_model_settings"`
-}
-
 // 本模块继续使用现有设置键。
 const (
 	SettingKeyCreativeEnabled       = "creative_enabled"
 	SettingKeyCreativeWorkerCount   = "creative_worker_count"
 	SettingKeyCreativeModelSettings = "creative_model_settings"
 )
+
+// AdminSettings 只包含本模块的管理开关与运行参数。
+type AdminSettings struct {
+	CreativeEnabled       bool                   `json:"creative_enabled"`
+	CreativeWorkerCount   int                    `json:"creative_worker_count"`
+	CreativeModelSettings []CreativeModelSetting `json:"creative_model_settings"`
+}
 
 // PrepareAdminSettings 保留既有编码和合法范围，不启动任务或发布成功通知。
 func PrepareAdminSettings(value AdminSettings) (AdminSettings, map[string]string, error) {

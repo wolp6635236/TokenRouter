@@ -19,6 +19,11 @@ type QoderRequestRefresh struct {
 	Profiles     *egressprovider.TLSProfiles
 }
 
+type qoderFailedRefreshExecutor struct {
+	*QoderTokenRefresher
+	failedCredentials string
+}
+
 func (s *QoderRequestRefresh) RefreshProviderSession(ctx context.Context, value *provider.Record) (*provider.Record, error) {
 	if s == nil {
 		return nil, errors.New("qoder gateway service is not configured")
@@ -102,11 +107,6 @@ func (s *QoderRequestRefresh) waitForQoderLockedRefresh(ctx context.Context, val
 		return false, nil
 	})
 	return result, err
-}
-
-type qoderFailedRefreshExecutor struct {
-	*QoderTokenRefresher
-	failedCredentials string
 }
 
 func (e qoderFailedRefreshExecutor) NeedsRefresh(value *provider.Record, ttl time.Duration) bool {

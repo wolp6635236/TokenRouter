@@ -1,9 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
 
 const {
+  catalogDefaults,
   syncUpstreamModels,
   syncUpstreamModelsPreview,
   showError,
@@ -11,6 +12,7 @@ const {
   showSuccess,
   copyToClipboard
 } = vi.hoisted(() => ({
+  catalogDefaults: vi.fn(),
   syncUpstreamModels: vi.fn(),
   syncUpstreamModelsPreview: vi.fn(),
   showError: vi.fn(),
@@ -25,6 +27,8 @@ vi.mock('@/api/admin/providers', () => ({
     syncUpstreamModelsPreview
   }
 }))
+
+vi.mock('@/api/admin/modelAttributes', () => ({ modelAttributesAPI: { defaults: catalogDefaults } }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
@@ -53,6 +57,7 @@ function mountSelector(props: Record<string, unknown> = {}) {
     props: {
       modelValue: [],
       platform: 'openai',
+      models: ['gpt-5.6-sol'],
       ...props
     },
     global: {
@@ -65,7 +70,9 @@ function mountSelector(props: Record<string, unknown> = {}) {
 }
 
 describe('ModelWhitelistSelector', () => {
+  afterEach(() => { vi.useRealTimers() })
   beforeEach(() => {
+    catalogDefaults.mockReset()
     syncUpstreamModels.mockReset()
     syncUpstreamModelsPreview.mockReset()
     showError.mockReset()
@@ -147,4 +154,56 @@ describe('ModelWhitelistSelector', () => {
     expect(syncUpstreamModelsPreview).not.toHaveBeenCalled()
     expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual(['claude-sonnet-4-5'])
   })
+
+  it('显式候选包含目录未知型号，空候选保持为空', async () => {
+    const wrapper = mountSelector({ models: ['custom/unknown-model'] })
+    await wrapper.get('div.cursor-pointer').trigger('click')
+    expect(wrapper.get('[data-testid="model-option"]').text()).toContain('custom/unknown-model')
+    expect(catalogDefaults).not.toHaveBeenCalled()
+    await wrapper.setProps({ models: [] })
+    expect(wrapper.findAll('[data-testid="model-option"]')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('目录分页只加载候选，搜索以最新响应为准', async () => {
+    vi.useFakeTimers()
+    let resolveOld!: (value: unknown) => void
+    catalogDefaults.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve }))
+    const wrapper = mountSelector({ models: undefined, modelValue: ['saved-custom'] })
+    await wrapper.get('div.cursor-pointer').trigger('click')
+    await vi.advanceTimersByTimeAsync(300)
+    catalogDefaults.mockResolvedValueOnce({ items: [{ model: 'new-model' }], total: 2 })
+    await wrapper.get('input[placeholder="admin.providers.searchModels"]').setValue('new')
+    await vi.advanceTimersByTimeAsync(300)
+    resolveOld({ items: [{ model: 'stale-model' }], total: 1 })
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="model-option"]').map(row => row.text())).toEqual(['new-model'])
+    catalogDefaults.mockResolvedValueOnce({ items: [{ model: 'new-second' }], total: 2 })
+    await wrapper.findAll('button').find(button => button.text() === 'admin.providers.loadMoreModels')!.trigger('click')
+    await flushPromises()
+    expect(catalogDefaults).toHaveBeenLastCalledWith({ search: 'new', page: 2, page_size: 50 })
+    expect(wrapper.findAll('[data-testid="model-option"]')).toHaveLength(2)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(wrapper.text()).toContain('saved-custom')
+    wrapper.unmount()
+  })
+
+  it('目录失败可以重试，仍可手动添加型号', async () => {
+    vi.useFakeTimers()
+    catalogDefaults.mockRejectedValueOnce(new Error('unavailable'))
+    const wrapper = mountSelector({ models: undefined })
+    await wrapper.get('div.cursor-pointer').trigger('click')
+    await vi.advanceTimersByTimeAsync(300)
+    const retry = wrapper.findAll('button').find(button => button.text() === 'common.retry')
+    expect(retry).toBeTruthy()
+    await wrapper.get('input[placeholder="admin.providers.enterCustomModelName"]').setValue('custom-model')
+    await wrapper.findAll('button').find(button => button.text() === 'admin.providers.addModel')!.trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual(['custom-model'])
+    catalogDefaults.mockResolvedValueOnce({ items: [{ model: 'recovered' }], total: 1 })
+    await retry!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="model-option"]').text()).toContain('recovered')
+    wrapper.unmount()
+  })
+
 })

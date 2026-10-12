@@ -2,7 +2,7 @@
 
 > 上级目录：[架构文档目录](index.md)
 
-本文记录前端设计 token 和组件样式的约定：圆角层级、间距网格、控件尺寸、菜单与浮层、弹窗与设置表单、层级、断点、加载反馈、图标与动画时长、行列表编辑器、表格密度、深色配色、图表主题和字号下限。适用范围是 `frontend/tailwind.config.js`、`frontend/src/style.css` 和全部 Vue 组件；浅色配色主题和业务组件内部的局部布局由各组件自行决定。修改前端组件、样式或这两个文件前，先读本文。
+本文记录前端设计 token 和组件样式的约定：圆角层级、间距网格、控件尺寸、菜单与浮层、弹窗与设置表单、层级、断点、加载反馈、图标与动画时长、行列表编辑器、表格密度、深色配色、图表主题、字体栈和字号下限。适用范围是 `frontend/tailwind.config.js`、`frontend/src/style.css` 和全部 Vue 组件；浅色配色主题和业务组件内部的局部布局由各组件自行决定。修改前端组件、样式或这两个文件前，先读本文。
 
 ## 章节导航
 
@@ -12,7 +12,7 @@
 - [通用图标](#通用图标)：选择图标、调整悬停动画、迁移内联 SVG 时读取。
 - [断点](#断点)、[加载反馈](#loading_feedback)、[动画与时长](#动画与时长)、[表格密度](#表格密度)：调整响应式布局和交互时读取。
 - [行列表编辑器](#rule_list_editor)：新增或修改逐条添加的映射、规则列表时读取。
-- [深色配色](#dark_colors)、[图表主题](#图表主题)、[字号](#字号)：调整颜色和文字时读取。
+- [深色配色](#dark_colors)、[图表主题](#图表主题)、[字体和字号](#typography)：调整颜色、字体和文字时读取。
 - [合法例外](#合法例外)、[校验](#校验)：确认局部例外和验证命令时读取。
 
 ## 圆角层级
@@ -37,7 +37,7 @@
 ## 间距约定
 
 - 所有间距都落在 Tailwind 的 4px 网格上。`mt-[2px]`、`padding-left: 17px` 这类任意值会被门禁拦截。
-- 页面布局有两档间距。独立大卡片、统计卡、图表卡、移动端数据卡之间，以及工具栏、控件组和卡片之间，用 16px（`gap-4` / `space-y-4`）；工具栏和控件组内部用 8px（`gap-2` / `space-y-2`）。横向网格和纵向堆叠用同样的档位，加载骨架和实际内容的间距一致。`TablePageLayout` 里相邻的工具组之间 8px，最后一组工具到表格 16px；移动端数据卡和分页器之间也是 16px。`RuleListEditor` 的标题操作区到卡片列表 16px，卡片行之间 16px，线形行和它的标题操作区之间 8px。
+- 页面布局有两档间距。独立大卡片、统计卡、图表卡、移动端数据卡之间，以及工具栏、控件组和卡片之间，用 16px（`gap-4` / `space-y-4`）；工具栏和控件组内部用 8px（`gap-2` / `space-y-2`）。横向网格和纵向堆叠用同样的档位，加载骨架和实际内容的间距一致。`TablePageLayout` 里相邻的工具组之间 8px，最后一组工具到表格 16px。API 密钥页的端点条例外，它到表格也是 8px，和它到上方工具栏的间距相同。移动端数据卡和分页器之间也是 16px。`RuleListEditor` 的标题操作区到卡片列表 16px，卡片行之间 16px，线形行和它的标题操作区之间 8px。
 - 列表的搜索、筛选、刷新和批量操作工具栏都用 `gap-2`（8px），包括工具栏外层、左侧筛选组和右侧操作组；共用组件和加载骨架也用这个间距。窄屏换行时行间距同样是 8px。筛选弹层里带标签的字段按表单间距排列；分页摘要、正文信息组和卡片区块各用自己的间距。
 - 页面或卡片的标题带说明文字时，同一行的操作区和整块标题说明的底部对齐。`AppLayout` 页头用 `items-end`，自绘页头和带说明的卡片标题行也这样对齐。页头的补充信息放在可选的 `page-heading-meta` 插槽，位于说明下方 8px，参与同一个底部对齐，例如用户仪表盘的实时状态条。先纵向堆叠、宽屏再横排的布局，只在横排断点开启底部对齐，窄屏的控件正常换行。
 - 卡片 padding 有两档：独立卡片 `p-6`，嵌套面板、网格卡和统计卡 `p-4`。
@@ -75,7 +75,7 @@
 
 - 菜单和搜索建议列表用 `.dropdown` 容器样式，圆角、边框、阴影和深色背景都包含在内。默认绝对定位，上下留白 `py-1`；需要固定定位时补 `fixed`，内容自带留白时补 `py-0`。定位偏移、尺寸和箭头由调用处维护，展开和收起使用公共动效。
 - 深底的信息提示（`HelpTooltip`、表格悬停明细、状态说明等）用 `.tooltip-panel`：浅色模式是 `gray-900` 深底白字；深色模式是 `dark-900` 底色、`dark-100` 文字和 `dark-600` 描边。箭头用 `.tooltip-caret` 旋转方块，一半嵌进面板边缘；调用处补定位和朝外的两条边（向下 `border-b border-r`，向上 `border-l border-t`，向左 `border-b border-l`，向右 `border-r border-t`）。手写的 `dark:bg-gray-*` 面板和边框三角箭头，在深色配色调整时容易漏改，统一用这两个类。浮层内的分隔线在深色模式下用 `dark-600`。
-- 菜单项有两档：`.dropdown-item`（px-4）和紧凑档 `.dropdown-item-sm`（px-3）。配色、hover 和过渡都已包含，调用处只补 `gap-*`、`rounded-control` 这类布局类。基础配色是中性色。顶栏用户菜单、联系客服这类导航型浮层，用内缩菜单样式：面板 `.dropdown py-0`，内容按 `.menu-section` 分区（`p-1.5` 留白，相邻分区之间自动加分隔线），分区标题 `.menu-heading`，菜单项 `.menu-item` 内缩并带 `rounded-control` 的悬停底色，悬停配色和 `.sidebar-link` 一致，图标继承文字颜色；危险操作再加 `.menu-item-danger`。顶栏工具区的图标按钮用全局的 `.header-status-icon-button`。
+- 菜单项有两档：`.dropdown-item`（px-4）和紧凑档 `.dropdown-item-sm`（px-3）。配色、hover 和过渡都已包含，调用处只补 `gap-*`、`rounded-control` 这类布局类。基础配色是中性色。顶栏用户菜单、联系客服、语言切换这类导航型浮层，用内缩菜单样式：面板 `.dropdown py-0`，内容按 `.menu-section` 分区（`p-1.5` 留白，相邻分区之间自动加分隔线），分区标题 `.menu-heading`，菜单项 `.menu-item` 内缩并带 `rounded-control` 的悬停底色，悬停配色和 `.sidebar-link` 一致，图标继承文字颜色；危险操作再加 `.menu-item-danger`。顶栏工具区的图标按钮用全局的 `.header-status-icon-button`。
 - 列表工具栏的漏斗筛选用 `FilterDropdown`，每个字段用 `FilterField` 包裹；按钮、面板和点击外部关闭的逻辑都由组件提供。
   - 面板外观和 `DateRangePicker` 一致：`rounded-surface`、淡描边和柔和阴影。头部、已选条件和字段区之间靠留白分层，中间没有分割线。
   - 头部是标题、条件数和「重置」，没有生效的条件时「重置」置灰。有生效条件时，头部下方列出已选条件标签（字段名、当前取值和 ×），顺序和字段一致，点 × 只移除这一项。再往下是可滚动的字段栅格。
@@ -123,6 +123,7 @@
 - 默认使用 `BaseDialog`：宽度档位有 narrow、normal、wide、extra-wide、full；Escape 关闭、点击外部关闭、焦点管理和背景滚动锁定都已内置。新弹窗直接用它，手写 `fixed inset-0` 外壳会缺少这些行为。
 - 标题需要说明或图标时，用 `subtitle` 在标题下加一行 `text-xs` 说明，用 `header-icon` 插槽在标题左侧放图标块。标题右侧的模式切换等控件放进 `header-actions` 插槽，排在关闭按钮之前。头部结构由这些插槽组成。
 - 贴边分栏的工作区弹窗：传 `flush` 去掉内容区内边距，再配合 `bodyScroll=false`，由各栏自己滚动。侧栏用浅底（浅色 `gray-50/70`，深色 `dark-950`）和单侧分隔线贴住弹窗边缘，外面不再包卡片。底部操作区放在内容里，用同样的浅底和 `rounded-b-surface sm:rounded-b-dialog`，这样不会盖住弹窗的圆角。窄屏下分栏改成上下堆叠、由外层整体滚动时，各栏按内容撑高，`min-h-0 flex-1` 只在分栏断点（`md:`）生效；否则栏会被压缩，内容溢出后底部留白消失，内容贴住底栏。提供商连接测试弹窗是这种布局的参考实现。
+- 提供商测试共用标题、侧栏宽度、三列指标和结果面板。`ProviderTestResultView` 管理复制、日志和外层滚动，决策测试的空态与答案由 `SystemOneTestAnswers` 按问题类型展示。测试类型决定输入字段和指标内容；决策输入的格式选择放在字段标签旁，问题标识及补充条件折叠显示。批量测试详情使用同一个结果组件。
 - 分页表单可以设置 `BaseDialog` 的 `bodyScroll=false`，由表单内部管理滚动，标题、页签和底部操作区始终可见。默认由弹窗内容区滚动。分组的创建和编辑（`GroupSettingsForm`）、提供商的创建、编辑和批量编辑，都按[设置表单](#settings_form)的约定分页。
 - 安全凭证流程（TOTP 设置、禁用、登录验证、提权）使用 `AuthCardDialog`：居中的图标头，右上角没有关闭按钮，整张卡片 p-6，是和 BaseDialog 并存的另一种风格。它不 teleport，在原位置渲染，嵌套时的层级由 `z-index` prop 决定。
 - 手写弹窗的处理方式：结构是"标题头、内容、按钮行"的，迁移到 BaseDialog；有特殊视觉结构的继续手写，并登记在下面的[合法例外](#合法例外)里。
@@ -263,10 +264,10 @@
 <a id="rule_list_editor"></a>
 ## 行列表编辑器
 
-逐条添加的映射和规则列表使用 `components/common/RuleListEditor.vue`。从来源模型到目标模型的映射使用基于它的 `ModelMappingEditor.vue`，提供商弹窗再包一层 `components/provider/ProviderModelMappingEditor.vue`，默认带上提供商映射的说明、占位和预设。
+逐条添加的映射和规则列表使用 `components/common/RuleListEditor.vue`。从来源模型到目标模型的映射使用基于它的 `ModelMappingEditor.vue`，提供商弹窗再包一层 `components/provider/ProviderModelMappingEditor.vue`，默认带上提供商映射的说明和占位。
 
 - 外壳只负责展示。增删和排序通过 `add`、`remove(index)`、`move(from, to)` 事件交给父级执行，所以既能接入向上 emit 的组件，也能接入用不可变更新的组件。
-- 头部左侧是标题和说明，右侧是带加号的 `btn btn-secondary` 添加按钮，行数达到 `max` 时按钮禁用。列表没有自己的标题（标题和开关在外层）时，使用 `add-placement="footer"`，按钮放到列表下方。
+- 头部标题和右侧操作按钮垂直居中，说明文字另起一行。添加按钮使用带加号的 `btn btn-secondary`，行数达到 `max` 时禁用。列表没有自己的标题（标题和开关在外层）时，使用 `add-placement="footer"`，按钮放到列表下方。
 - 标题旁的帮助入口放进 `title-suffix` 插槽，`ModelMappingEditor` 会透传这个插槽。Key 模型重定向用点击展开的 `HelpTooltip`：请求卡片横向依次经过客户端、密钥规则和后续路由，在密钥节点展示模型名的替换。关闭时卸载演示，减少动态效果时直接显示最终结果。
 - 空态是 `rounded-control` 的虚线框加居中说明，只在传入 `empty-text` 时显示。
 - `line` 形态用分隔线分隔各行，适合一两个字段的短行，操作按钮用 `btn-icon`，和 36px 的输入框对齐。`card` 形态是 `rounded-surface` 的浅底卡片，适合多字段的规则；传入 `item-label` 时，卡片头显示"规则 #n"和紧凑的 `btn-icon-sm` 操作按钮。
@@ -294,7 +295,12 @@
 
 分页表格的表体和 `Pagination` 共用一个 `rounded-surface` 外框，外框用 `overflow-hidden` 裁出底部圆角。分页放在表体的滚动区域之外，两者之间直接相接，没有 `space-y-*` 或外边距；固定高度的表格用 flex 分配表体高度，分页不收缩。`TablePageLayout` 已经包含这个结构；独立卡片和弹窗也按这个约定，嵌入 `UsageTable` 时传 `flat`，表格只保留外框这一层边框。桌面分页上下留白 8px，浅色底 `gray-50/80`，深色底 `dark-900`，控件高 36px；窄屏显示上一页、下一页和当前页数。
 
-移动端卡片里，`DataTable` 的每一行左边是 `text-xs` 标签，右边是单元格内容，两边用 `items-baseline` 按首行文字对齐。单元格的首个元素是图标、头像或色条时，flex 容器会拿这个元素的底边当基线，标签就会偏下。这类单元格给第一行文字加 `self-baseline`，参考 `GroupBadge` 的分组名和 `UsageTable` 的 Token、延迟列。
+移动端卡片里，`DataTable` 的每一行左边是 `text-xs` 标签，右边是单元格内容，两边用 `items-baseline` 按首行文字对齐。单元格的首个元素是图标、头像或色条时，flex 容器会拿这个元素的底边当基线，标签就会偏下。这类单元格给第一行文字加 `self-baseline`，参考 `GroupBadge` 的分组名和 `UsageTable` 的 Token、延迟列。徽章组件也照这样处理，例如 `PlatformBadge`、`CapacityBadge`。文字是裸文本节点时，先包一层 `<span>`。
+
+按基线对齐的元素会贴到 flex 容器顶部，由此有两条补充：
+
+- 同一行比它高的文字元素（例如带内边距的倍率标签）也加 `self-baseline`，文字才在同一高度。
+- 开头的图形比文字高时（例如 32px 头像），文字再加和图形等高的行高（`leading-8`），文字仍在图形的中线上。参考 `UsersView` 的邮箱列。
 
 两个合法例外：
 
@@ -307,8 +313,13 @@
 
 选择列和操作列的位置固定，其余数据列都可以调整，左侧固定区域跟随调整后的第一个数据列。表头、单元格、加载占位和移动端卡片使用同一个列顺序。顺序保存在当前浏览器里，隐藏的列保留位置，新增的列追加到数据列末尾；浏览器存储不可用时，仍然可以在当前页面调整。拖拽手柄、升降序排序和表头里的筛选按钮各自处理自己的事件。
 
-## 字号
+<a id="typography"></a>
+## 字体和字号
 
+- 正文字体栈在 `tailwind.config.js` 的 `fontFamily.sans`：英文用 Plus Jakarta Sans，中文先用苹方（`"PingFang SC"`），没有苹方的设备用思源黑体网页字体（`"Noto Sans SC Variable"`），再往后是系统字体。等宽字体用 Geist Mono。网页字体都自托管，在 `main.ts` 里先于 `style.css` 引入，`fontTheme.spec.js` 检查字体栈、引入顺序和下面的 PostCSS 改写。
+- 苹方随苹果系统安装，许可限定在苹果设备上使用。思源黑体的字形和苹方接近，Windows 和 Android 上由它显示中文，各平台的中文看起来基本一致。思源黑体按字符切成约 100 个 woff2 文件，字体栈前面的字体缺少某个字符时，浏览器才下载这个字符所在的文件。苹果设备上苹方覆盖了常用汉字，通常一个文件也用不到。
+- `postcss.config.js` 的 `adjust-noto-sans-sc-font-face` 插件改写思源黑体的 `@font-face`。字重范围上限改成 600，因为苹方最粗是 Semibold（600），`font-bold` 在两边一样粗。`unicode-range` 去掉默认按彩色显示的 emoji 码位，🍥 这类字符由系统的彩色 emoji 字体显示。
+- emoji 由浏览器的系统回退显示，字体栈里没有 emoji 字体。加入 `"Apple Color Emoji"` 后，Jakarta 还没加载完或加载失败时，Chrome 会用它渲染数字和空格，数字明显变宽。
 - 最小字号是 `text-xs`（12px），徽章和辅助数字也一样；`text-[9px]`、`text-[10px]`、`text-[11px]` 会被门禁拦截。
 - 正文和表格用 `text-sm`，说明文字用 `text-xs`，页面标题用 `.page-title`（`text-2xl font-bold`），`h1` 不单独设字号。
 
@@ -331,3 +342,5 @@
 
 - [系统架构](system_architecture.md)：前端在整体部署中的位置和静态资源的交付方式。
 - [开发、验证与上游同步](../operations/development_workflow.md)：前端工具链和验证分层。
+
+模型测试、定时测试、白名单及配置选择器显示实际 ID；模型广场和首页推荐卡片使用展示名称，并提供 ID 和复制操作。白名单候选通过统一属性目录分页搜索，保留已选项和手动输入；明确传入的候选范围直接使用。真实上游同步合并提供商返回的 ID，由管理员保存后生效。

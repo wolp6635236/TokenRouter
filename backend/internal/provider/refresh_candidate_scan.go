@@ -25,9 +25,6 @@ type RefreshCandidateScan struct {
 	afterID int64
 }
 
-func (s *RefreshCandidateScan) Position() int64      { s.mu.Lock(); defer s.mu.Unlock(); return s.afterID }
-func (s *RefreshCandidateScan) SetPosition(id int64) { s.mu.Lock(); s.afterID = id; s.mu.Unlock() }
-
 type RefreshPageStats struct {
 	Total        int
 	OAuth        int
@@ -36,6 +33,9 @@ type RefreshPageStats struct {
 	Skipped      int
 	Failed       int
 }
+
+func (s *RefreshCandidateScan) Position() int64      { s.mu.Lock(); defer s.mu.Unlock(); return s.afterID }
+func (s *RefreshCandidateScan) SetPosition(id int64) { s.mu.Lock(); s.afterID = id; s.mu.Unlock() }
 
 // Run 执行一次有界且可从游标恢复的刷新周期。
 func (s *RefreshCandidateScan) Run(parent context.Context, pager OAuthRefreshCandidatePager, options RefreshScanOptions, process func(context.Context, []Record) RefreshPageStats) {

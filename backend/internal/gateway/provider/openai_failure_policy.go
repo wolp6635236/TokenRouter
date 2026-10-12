@@ -1,21 +1,19 @@
 package provider
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/tidwall/gjson"
 )
-
-// OpenAIFailoverPolicy 计算当前提供商的恢复资格与截止时间。
-type OpenAIFailoverPolicy struct {
-	Health *provideradapter.OpenAIResponseHealth
-}
 
 const (
 	openAIRequestBodyTooLargeReason              = forwardcore.GatewayFailureReason("openai_request_body_too_large")
@@ -23,6 +21,50 @@ const (
 	openAIOAuth429RetryDelay                     = 500 * time.Millisecond
 	openAIOAuth429MaxRetryDelay                  = 8 * time.Second
 )
+
+// OpenAIFailoverPolicy 计算当前提供商的恢复资格与截止时间。
+type OpenAIFailoverPolicy struct {
+	Health *provideradapter.OpenAIResponseHealth
+}
+
+// ClassifyOpenAIAPIKeyHealthFailure 区分请求取消、平台故障和提供商故障。
+func ClassifyOpenAIAPIKeyHealthFailure(err error) (int, []byte, bool) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return 0, nil, false
+	}
+
+	if failoverErr, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
+		// 已有独立恢复、同提供商重试或非提供商归因的错误，不进入健康计数。
+		if failoverErr.IsCredentialFailure() ||
+			failoverErr.RequestScopedTransient ||
+			failoverErr.RetryableOnSameProvider ||
+			failoverErr.Scope == forwardcore.GatewayFailureScopeRequest ||
+			failoverErr.Scope == forwardcore.GatewayFailureScopeShared {
+			return failoverErr.StatusCode, failoverErr.ResponseBody, false
+		}
+		if failoverErr.StatusCode == http.StatusTooManyRequests || failoverErr.StatusCode >= http.StatusInternalServerError {
+			return failoverErr.StatusCode, failoverErr.ResponseBody, true
+		}
+		return failoverErr.StatusCode, failoverErr.ResponseBody, false
+	}
+
+	if imageErr, ok := errors.AsType[*openai.OpenAIImagesUpstreamError](err); ok {
+		if imageErr.StatusCode == http.StatusTooManyRequests || imageErr.StatusCode >= http.StatusInternalServerError {
+			return imageErr.StatusCode, []byte(strings.TrimSpace(imageErr.Message)), true
+		}
+	}
+	return 0, nil, false
+}
+
+// IsOpenAIRequestBodyTooLarge 判断当前失败是否仍可通过更换提供商发送相同报文。
+func IsOpenAIRequestBodyTooLarge(e *forwardcore.UpstreamFailoverError) bool {
+	return e != nil && e.Reason == "openai_request_body_too_large"
+}
+
+// IsOpenAICapacityShed 保留请求级瞬态标记与平台报文识别的共同条件。
+func IsOpenAICapacityShed(e *forwardcore.UpstreamFailoverError) bool {
+	return e != nil && e.RequestScopedTransient && openai.IsOpenAIRequestScopedCapacityShed("", e.ResponseBody)
+}
 
 func OpenAI429RetryDelay(headers http.Header, deadline time.Time) time.Duration {
 	delay := openAIOAuth429RetryDelay
@@ -190,7 +232,7 @@ func OpenAIStreamFailureRetryable(provider *ExecutionProvider, payload []byte, m
 		return false
 	}
 	// 容量降载由客户端身份或模型容量触发，与当前提供商健康无关；非池提供商也应先
-	// 做有界同提供商重试，避免无意义地轮换并冷却整组提供商。
+	// 在同一提供商上按重试预算恢复请求。
 	if openai.IsOpenAIUpstreamCapacityShedEvent(payload) {
 		return true
 	}

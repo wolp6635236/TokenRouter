@@ -3,8 +3,9 @@ package middleware
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 // Locale 将浏览器或 API 指定的语言传入业务上下文。

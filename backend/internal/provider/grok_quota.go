@@ -42,10 +42,6 @@ type GrokQuotaService struct {
 	Runtime *ProbeRuntime
 }
 
-func NewGrokQuotaService(options GrokQuotaOptions, runtime *ProbeRuntime) *GrokQuotaService {
-	return &GrokQuotaService{Options: options, Runtime: runtime}
-}
-
 type GrokQuotaProbeResult struct {
 	Source            string                    `json:"source"`
 	Model             string                    `json:"model,omitempty"`
@@ -65,6 +61,10 @@ type GrokQuotaResetResult struct {
 	Supported bool   `json:"supported"`
 	Code      string `json:"code"`
 	Message   string `json:"message"`
+}
+
+func NewGrokQuotaService(options GrokQuotaOptions, runtime *ProbeRuntime) *GrokQuotaService {
+	return &GrokQuotaService{Options: options, Runtime: runtime}
 }
 
 // QueryQuota 合并 xAI billing 数据与主动额度响应头探测；Free 提供商的 billing 响应不含 usage_percent。

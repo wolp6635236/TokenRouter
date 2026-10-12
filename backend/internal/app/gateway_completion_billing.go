@@ -17,6 +17,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/requestlog"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
@@ -24,8 +25,16 @@ import (
 // GatewayCompletionRecorders 包含两种完成记录器，各自使用独立的倍率缓存。
 type GatewayCompletionRecorders struct{ Forward, OpenAI *completion.Recorder }
 
+// completionProviders 在统计影子提供商用量时读取母提供商，并返回完成记录需要的统计字段。
+type completionProviders struct {
+	store *providerpostgres.ProviderStore
+}
+
+type completionHealth struct{ core *provider.HealthService }
+
 // ProvideGatewayCompletionRecorders 为完成记录器组合价格、资金、统计和提交后操作。
 func ProvideGatewayCompletionRecorders(
+	requests *requestlog.Service,
 	rates *gatewayBillingRates,
 	calculator *billing.Calculator,
 	prices *billing.PriceResolver,
@@ -59,17 +68,18 @@ func ProvideGatewayCompletionRecorders(
 	}
 	common := func(rate completion.RateReader) completion.Dependencies {
 		return completion.Dependencies{
-			Emit:          gatewaytelemetry.CompletionBillingEvent,
-			Calculator:    calculator,
-			Prices:        prices,
-			ProviderStats: stats(),
-			Funds:         funds,
-			Subscriptions: subscriptions,
-			Rates:         rate,
-			Models:        gatewayprovider.CompletionModels{},
-			Logs:          completion.SnapshotLogWriter(logs),
-			Effects:       effects(),
-			Observe:       gatewaytelemetry.ObserveCompletion,
+			RequestRecords: requests.Observe,
+			Emit:           gatewaytelemetry.CompletionBillingEvent,
+			Calculator:     calculator,
+			Prices:         prices,
+			ProviderStats:  stats(),
+			Funds:          funds,
+			Subscriptions:  subscriptions,
+			Rates:          rate,
+			Models:         gatewayprovider.CompletionModels{},
+			Logs:           completion.SnapshotLogWriter(logs),
+			Effects:        effects(),
+			Observe:        gatewaytelemetry.ObserveCompletion,
 		}
 	}
 	forward := common(rates.Forward)
@@ -80,11 +90,6 @@ func ProvideGatewayCompletionRecorders(
 	openai.Providers = completionProviders{store: providers}
 	openai.Health = completionHealth{core: health.Health}
 	return GatewayCompletionRecorders{Forward: completion.NewRecorder(forward, options), OpenAI: completion.NewRecorder(openai, options)}
-}
-
-// completionProviders 在统计影子提供商用量时读取母提供商，并返回完成记录需要的统计字段。
-type completionProviders struct {
-	store *providerpostgres.ProviderStore
 }
 
 func (p completionProviders) CredentialProvider(ctx context.Context, in completion.ProviderSnapshot) (*completion.ProviderSnapshot, error) {
@@ -98,8 +103,6 @@ func (p completionProviders) CredentialProvider(ctx context.Context, in completi
 	}
 	return gatewayprovider.ProjectCompletionProvider(value), nil
 }
-
-type completionHealth struct{ core *provider.HealthService }
 
 func (p completionHealth) ResetOpenAI403Counter(ctx context.Context, id int64) {
 	p.core.ResetForbiddenCounter(ctx, id)

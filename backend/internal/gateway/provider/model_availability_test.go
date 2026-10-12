@@ -1,4 +1,4 @@
-package provider_test
+package provider
 
 import (
 	"context"
@@ -6,20 +6,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
+// availabilityProviderStore 按测试提供商的持久配置筛选候选。
+type availabilityProviderStore struct {
+	providers      []ExecutionProvider
+	providersByID  map[int64]*ExecutionProvider
+	calls          int
+	includeGrouped bool
+	platforms      []string
+}
+
 func TestDiagnoseModelAvailabilityForPlatform_NoModel_AlwaysAvailable(t *testing.T) {
-	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*gatewayprovider.ExecutionProvider{}}
+	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*ExecutionProvider{}}
 	svc := newAvailabilityForTest(repo, nil, false)
 
 	diag := svc.DiagnoseGeneral(context.Background(), availabilityFixtureGroupID(), "", capability.PlatformOpenAI)
@@ -29,7 +38,7 @@ func TestDiagnoseModelAvailabilityForPlatform_NoModel_AlwaysAvailable(t *testing
 }
 
 func TestDiagnoseModelAvailabilityForPlatform_EmptyPlatformKeepsEmptyGroupEmpty(t *testing.T) {
-	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*gatewayprovider.ExecutionProvider{}}
+	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*ExecutionProvider{}}
 	svc := newAvailabilityForTest(repo, nil, false)
 
 	diag := svc.DiagnoseGeneral(context.Background(), availabilityFixtureGroupID(), "gpt-5", "")
@@ -48,7 +57,7 @@ func TestDiagnoseModelAvailabilityForPlatform_NilReceiver(t *testing.T) {
 }
 
 func TestDiagnoseModelAvailabilityForPlatform_NoProvidersInPool(t *testing.T) {
-	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*gatewayprovider.ExecutionProvider{}}
+	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*ExecutionProvider{}}
 	svc := newAvailabilityForTest(repo, nil, false)
 
 	diag := svc.DiagnoseGeneral(context.Background(), availabilityFixtureGroupID(), "gpt-5", capability.PlatformOpenAI)
@@ -59,7 +68,7 @@ func TestDiagnoseModelAvailabilityForPlatform_NoProvidersInPool(t *testing.T) {
 
 func TestDiagnoseModelAvailabilityForPlatform_ExplicitMappingMatches(t *testing.T) {
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
+		providers: []ExecutionProvider{
 			{
 				Record: providercore.Record{
 					LoadLocation: time.LoadLocation, ID: 1,
@@ -72,7 +81,7 @@ func TestDiagnoseModelAvailabilityForPlatform_ExplicitMappingMatches(t *testing.
 				},
 			},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	for i := range repo.providers {
 		repo.providersByID[repo.providers[i].Record.ID] = &repo.providers[i]
@@ -85,12 +94,12 @@ func TestDiagnoseModelAvailabilityForPlatform_ExplicitMappingMatches(t *testing.
 	require.True(t, diag.HasModelSupport)
 }
 
-func TestDiagnoseModelAvailabilityUsesDefaultCatalogForEmptyScope(t *testing.T) {
+func TestDiagnoseModelAvailabilityAllowsUnknownModelForEmptyScope(t *testing.T) {
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
-			{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI, Status: billing.StatusActive, Schedulable: true} /* 未配置范围时使用提供商默认目录 */},
+		providers: []ExecutionProvider{
+			{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI, Status: billing.StatusActive, Schedulable: true} /* 空白名单允许目录未知型号 */},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	for i := range repo.providers {
 		repo.providersByID[repo.providers[i].Record.ID] = &repo.providers[i]
@@ -99,14 +108,14 @@ func TestDiagnoseModelAvailabilityUsesDefaultCatalogForEmptyScope(t *testing.T) 
 
 	diag := svc.DiagnoseGeneral(context.Background(), availabilityFixtureGroupID(), "gpt-5.1-codex-mini", capability.PlatformOpenAI)
 
-	require.False(t, diag.HasModelSupport, "默认目录外的模型不能隐式放行")
+	require.True(t, diag.HasModelSupport, "空白名单允许未知型号")
 	diag = svc.DiagnoseGeneral(context.Background(), availabilityFixtureGroupID(), "gpt-5.6-sol", capability.PlatformOpenAI)
 	require.True(t, diag.HasModelSupport)
 }
 
 func TestDiagnoseModelAvailabilityForPlatform_WildcardMappingMatches(t *testing.T) {
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
+		providers: []ExecutionProvider{
 			{
 				Record: providercore.Record{
 					LoadLocation: time.LoadLocation, ID: 1,
@@ -119,7 +128,7 @@ func TestDiagnoseModelAvailabilityForPlatform_WildcardMappingMatches(t *testing.
 				},
 			},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	for i := range repo.providers {
 		repo.providersByID[repo.providers[i].Record.ID] = &repo.providers[i]
@@ -134,7 +143,7 @@ func TestDiagnoseModelAvailabilityForPlatform_WildcardMappingMatches(t *testing.
 func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSignal(t *testing.T) {
 	groupID := int64(42)
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
+		providers: []ExecutionProvider{
 			{
 				Record: providercore.Record{
 					LoadLocation: time.LoadLocation, ID: 1,
@@ -144,7 +153,7 @@ func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSig
 					ProviderGroups: []providercore.GroupMembership{
 						{GroupID: groupID},
 					},
-					Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5": "gpt-5"}},
+					Credentials: map[string]any{"model_whitelist": []string{"gpt-5"}},
 				},
 			},
 			{
@@ -156,11 +165,11 @@ func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSig
 					ProviderGroups: []providercore.GroupMembership{
 						{GroupID: groupID},
 					},
-					Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5-mini": "gpt-5-mini"}},
+					Credentials: map[string]any{"model_whitelist": []string{"gpt-5-mini"}},
 				},
 			},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	for i := range repo.providers {
 		repo.providersByID[repo.providers[i].Record.ID] = &repo.providers[i]
@@ -170,14 +179,14 @@ func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSig
 	diag := svc.DiagnoseGeneral(context.Background(), &groupID, "gpt-5.1-codex-mini", capability.PlatformOpenAI)
 
 	require.True(t, diag.HasProvidersInPool, "分组内存在 OpenAI 提供商")
-	require.False(t, diag.HasModelSupport, "没有提供商映射允许该模型时 handler 应返回 404")
+	require.False(t, diag.HasModelSupport, "没有提供商白名单允许该模型时 handler 应返回 404")
 }
 
 func TestDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemainsConfigured(t *testing.T) {
 	groupID := int64(42)
 	cooldownUntil := time.Now().Add(time.Hour)
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
+		providers: []ExecutionProvider{
 			{
 				Record: providercore.Record{
 					LoadLocation: time.LoadLocation, ID: 1,
@@ -194,7 +203,7 @@ func TestDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemai
 				},
 			},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	require.False(t, repo.providers[0].View().IsSchedulable(), "test provider must be excluded from normal scheduling while cooling down")
 	svc := newAvailabilityForTest(repo, nil, false)
@@ -211,7 +220,7 @@ func TestOpenAIDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProvide
 	groupID := int64(43)
 	cooldownUntil := time.Now().Add(time.Hour)
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
+		providers: []ExecutionProvider{
 			{
 				Record: providercore.Record{
 					LoadLocation: time.LoadLocation, ID: 2,
@@ -228,7 +237,7 @@ func TestOpenAIDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProvide
 				},
 			},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	require.False(t, repo.providers[0].View().IsSchedulable(), "test provider must be excluded from normal scheduling while cooling down")
 	svc := newAvailabilityForTest(repo, nil, true)
@@ -245,7 +254,7 @@ func TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut(t *testing
 	// 分组里只有 Anthropic 提供商，但用户路由到 OpenAI 网关。
 	// 诊断必须按平台过滤掉 Anthropic 提供商，因此 HasProvidersInPool=false，调用方保留 503。
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
+		providers: []ExecutionProvider{
 			{
 				Record: providercore.Record{
 					LoadLocation: time.LoadLocation, ID: 1,
@@ -256,7 +265,7 @@ func TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut(t *testing
 				},
 			},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	for i := range repo.providers {
 		repo.providersByID[repo.providers[i].Record.ID] = &repo.providers[i]
@@ -271,7 +280,7 @@ func TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut(t *testing
 
 func TestOpenAIGatewayDiagnoseModelAvailabilityForPlatform_GrokPlatformFiltersOpenAIProviders(t *testing.T) {
 	repo := &availabilityProviderStore{
-		providers: []gatewayprovider.ExecutionProvider{
+		providers: []ExecutionProvider{
 			{
 				Record: providercore.Record{
 					LoadLocation: time.LoadLocation, ID: 1,
@@ -282,7 +291,7 @@ func TestOpenAIGatewayDiagnoseModelAvailabilityForPlatform_GrokPlatformFiltersOp
 				},
 			},
 		},
-		providersByID: map[int64]*gatewayprovider.ExecutionProvider{},
+		providersByID: map[int64]*ExecutionProvider{},
 	}
 	for i := range repo.providers {
 		repo.providersByID[repo.providers[i].Record.ID] = &repo.providers[i]
@@ -293,15 +302,6 @@ func TestOpenAIGatewayDiagnoseModelAvailabilityForPlatform_GrokPlatformFiltersOp
 
 	require.False(t, diag.HasProvidersInPool, "Grok 诊断不能把 OpenAI 提供商算进提供商池")
 	require.False(t, diag.HasModelSupport)
-}
-
-// availabilityProviderStore 按测试提供商的持久配置筛选候选。
-type availabilityProviderStore struct {
-	providers      []gatewayprovider.ExecutionProvider
-	providersByID  map[int64]*gatewayprovider.ExecutionProvider
-	calls          int
-	includeGrouped bool
-	platforms      []string
 }
 
 func (m *availabilityProviderStore) ListModelAvailabilityCandidates(_ context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]providercore.Record, error) {
@@ -331,7 +331,7 @@ func (m *availabilityProviderStore) ListModelAvailabilityCandidates(_ context.Co
 		} else if !includeGrouped && (len(value.Record.ProviderGroups) > 0 || len(value.Record.GroupIDs) > 0) {
 			continue
 		}
-		result = append(result, *gatewayprovider.ExecutionRecord(&value))
+		result = append(result, *ExecutionRecord(&value))
 	}
 	return result, nil
 }
@@ -349,7 +349,7 @@ func newAvailabilityForTest(repo *availabilityProviderStore, policies *routing.P
 			value.Type = capability.ProviderTypeAPIKey
 		}
 	}
-	return gatewayprovider.NewModelAvailability(repo, policies, compatible)
+	return NewModelAvailability(repo, policies, compatible)
 }
 
 // TestModelAvailabilityUsesExplicitGroupAcrossPlatforms 验证模型可用性只诊断明确分组的提供商，空平台聚合各提供商平台。
@@ -358,12 +358,12 @@ func TestModelAvailabilityUsesExplicitGroupAcrossPlatforms(t *testing.T) {
 	otherGroup := int64(72)
 
 	for _, compatible := range []bool{false, true} {
-		repo := &availabilityProviderStore{providers: []gatewayprovider.ExecutionProvider{
+		repo := &availabilityProviderStore{providers: []ExecutionProvider{
 			{Record: providercore.Record{ID: 1, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeAPIKey, Status: billing.StatusActive, Schedulable: true, GroupIDs: []int64{groupID}, Credentials: map[string]any{"model_whitelist": []string{"claude-test"}}}},
 			{Record: providercore.Record{ID: 2, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Status: billing.StatusActive, Schedulable: true, GroupIDs: []int64{groupID}, Credentials: map[string]any{"model_whitelist": []string{"gpt-test"}}}},
 			{Record: providercore.Record{ID: 3, Platform: capability.PlatformGemini, Type: capability.ProviderTypeAPIKey, Status: billing.StatusActive, Schedulable: true, GroupIDs: []int64{otherGroup}, Credentials: map[string]any{"model_whitelist": []string{"gemini-test"}}}},
 		}}
-		service := gatewayprovider.NewModelAvailability(repo, nil, compatible)
+		service := NewModelAvailability(repo, nil, compatible)
 		for _, model := range []string{"claude-test", "gpt-test"} {
 			result := service.DiagnoseGeneral(context.Background(), &groupID, model, "")
 			require.True(t, result.HasModelSupport)
@@ -389,8 +389,8 @@ func TestModelAvailabilityUsesExplicitGroupAcrossPlatforms(t *testing.T) {
 func TestModelAvailabilityChecksProtocolWithoutTreatingCooldownAsMissingModel(t *testing.T) {
 	group := &routing.Group{ID: 71, Hydrated: true, Status: routing.StatusActive, ProtocolFallbacks: map[protocol.ProtocolID][]protocol.ProtocolID{protocol.ProtocolAnthropicMessages: {}}}
 	until := time.Now().Add(time.Hour)
-	repo := &availabilityProviderStore{providers: []gatewayprovider.ExecutionProvider{{Record: providercore.Record{ID: 2, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Status: billing.StatusActive, Schedulable: true, GroupIDs: []int64{group.ID}, RateLimitResetAt: &until, Credentials: map[string]any{"model_whitelist": []string{"gpt-test"}}}}}}
-	service := gatewayprovider.NewModelAvailability(repo, nil, true)
+	repo := &availabilityProviderStore{providers: []ExecutionProvider{{Record: providercore.Record{ID: 2, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Status: billing.StatusActive, Schedulable: true, GroupIDs: []int64{group.ID}, RateLimitResetAt: &until, Credentials: map[string]any{"model_whitelist": []string{"gpt-test"}}}}}}
+	service := NewModelAvailability(repo, nil, true)
 	ctx := requeststate.WithClientProtocol(requeststate.WithGroup(context.Background(), group), protocol.ProtocolAnthropicMessages)
 	denied := service.DiagnoseCompatible(ctx, &group.ID, "gpt-test", "")
 	require.True(t, denied.HasProvidersInPool)
@@ -398,4 +398,68 @@ func TestModelAvailabilityChecksProtocolWithoutTreatingCooldownAsMissingModel(t 
 	group.ProtocolFallbacks = nil
 	ctx = requeststate.WithClientProtocol(requeststate.WithGroup(context.Background(), group), protocol.ProtocolAnthropicMessages)
 	require.True(t, service.DiagnoseCompatible(ctx, &group.ID, "gpt-test", "").HasModelSupport)
+}
+
+func TestAvailableRequestModelsFromProvidersUsesQoderProviderSite(t *testing.T) {
+	newProvider := func(id int64, site string) providercore.Record {
+		return providercore.Record{
+			ID:          id,
+			Platform:    capability.PlatformQoder,
+			Status:      providercore.StatusActive,
+			Schedulable: true,
+			Credentials: map[string]any{"site": site},
+		}
+	}
+
+	cnModels := rejectedModelsForContract([]providercore.Record{newProvider(1, "cn")}, capability.PlatformQoder)
+	require.ElementsMatch(t, qoder.DefaultRequestModelIDsForSite(qoder.SiteCN), cnModels)
+	require.NotContains(t, cnModels, "claude-opus-4-6")
+
+	globalModels := rejectedModelsForContract([]providercore.Record{newProvider(2, "global")}, capability.PlatformQoder)
+	require.ElementsMatch(t, qoder.DefaultRequestModelIDsForSite(qoder.SiteGlobal), globalModels)
+	require.NotContains(t, globalModels, "minimax-m2.7")
+
+	mixedModels := rejectedModelsForContract([]providercore.Record{newProvider(3, "global"), newProvider(4, "cn")}, capability.PlatformQoder)
+	require.ElementsMatch(t, qoder.DefaultRequestModelIDs(), mixedModels)
+}
+
+func TestAvailableRequestModelsFromProvidersFiltersConfiguredQoderModels(t *testing.T) {
+	newProvider := func(id int64, site string, credentials map[string]any) providercore.Record {
+		credentials["site"] = site
+		return providercore.Record{
+			ID:          id,
+			Platform:    capability.PlatformQoder,
+			Status:      providercore.StatusActive,
+			Schedulable: true,
+			Credentials: credentials,
+		}
+	}
+
+	cnWhitelist := newProvider(11, "cn", map[string]any{
+		"model_whitelist": []any{"claude-opus-4-6", "qwen3.6-flash"},
+	})
+	cnModels := rejectedModelsForContract([]providercore.Record{cnWhitelist}, capability.PlatformQoder)
+	require.Equal(t, []string{"qwen3.6-flash"}, cnModels)
+
+	cnMappingOverride := newProvider(12, "cn", map[string]any{
+		"model_mapping": map[string]any{"claude-opus-4-6": "ultimate"},
+	})
+	overrideModels := rejectedModelsForContract([]providercore.Record{cnMappingOverride}, capability.PlatformQoder)
+	require.ElementsMatch(t, qoder.DefaultRequestModelIDsForSite(qoder.SiteCN), overrideModels)
+	require.NotContains(t, overrideModels, "claude-opus-4-6", "显式映射不能突破站点能力")
+
+	globalWhitelist := newProvider(13, "global", map[string]any{
+		"model_whitelist": []any{"claude-opus-4-6", "qwen3.6-flash"},
+	})
+	mixedModels := rejectedModelsForContract([]providercore.Record{cnWhitelist, globalWhitelist}, capability.PlatformQoder)
+	require.ElementsMatch(t, []string{"claude-opus-4-6", "qwen3.6-flash"}, mixedModels)
+}
+
+// rejectedModelsForContract 根据测试记录调用 routing 的模型拒绝规则。
+func rejectedModelsForContract(values []providercore.Record, platform string) []string {
+	sources := make([]routing.ModelRejectionSource, len(values))
+	for i := range values {
+		sources[i] = ModelRejectionProvider(&values[i])
+	}
+	return routing.AvailableModelsForRejection(sources, platform)
 }

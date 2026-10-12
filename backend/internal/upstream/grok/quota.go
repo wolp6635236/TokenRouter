@@ -13,53 +13,55 @@ import (
 // 上游请求头仍可能返回历史版本的 100 万或 200 万额度快照。
 const GrokFreeRolling24hTokenLimit int64 = 500_000
 
-var grokFreeRolling24hTokenLimits = map[int64]struct{}{
-	GrokFreeRolling24hTokenLimit: {},
+var (
+	grokFreeRolling24hTokenLimits = map[int64]struct{}{
+		GrokFreeRolling24hTokenLimit: {},
 
-	1_000_000: {},
-	// 上游观测到的 Free 限额变体。
-	2_000_000: {},
-	// 2026 年 7 月前观测到的旧版 Free 限额。
-}
+		1_000_000: {},
+		// 上游观测到的 Free 限额变体。
+		2_000_000: {},
+		// 2026 年 7 月前观测到的旧版 Free 限额。
+	}
 
-func IsGrokFreeRolling24hTokenLimit(limit int64) bool {
-	_, ok := grokFreeRolling24hTokenLimits[limit]
-	return ok
-}
+	quotaHeaderAllowlist = []string{
+		"x-ratelimit-limit-requests",
+		"x-ratelimit-remaining-requests",
+		"x-ratelimit-reset-requests",
+		"x-ratelimit-limit-tokens",
+		"x-ratelimit-remaining-tokens",
+		"x-ratelimit-reset-tokens",
+		"x-rate-limit-limit-requests",
+		"x-rate-limit-remaining-requests",
+		"x-rate-limit-reset-requests",
+		"x-rate-limit-limit-tokens",
+		"x-rate-limit-remaining-tokens",
+		"x-rate-limit-reset-tokens",
+		"retry-after",
+		"x-subscription-tier",
+		"xai-subscription-tier",
+		"x-xai-subscription-tier",
+		"x-xai-user-tier",
+		"xai-user-tier",
+		"xai-tier",
+		"x-user-tier",
+		"x-plan-tier",
+		"x-subscription-plan",
+		"x-entitlement-status",
+		"xai-entitlement-status",
+		"x-xai-entitlement-status",
+		"x-xai-user-entitlement-status",
+		"x-user-entitlement-status",
+	}
+)
 
 // QuotaWindow 复用提供商展示叶子值；供应商解析仍由本包拥有。
 type QuotaWindow = usageview.QuotaWindow
 
 type QuotaSnapshot = usageview.QuotaSnapshot
 
-var quotaHeaderAllowlist = []string{
-	"x-ratelimit-limit-requests",
-	"x-ratelimit-remaining-requests",
-	"x-ratelimit-reset-requests",
-	"x-ratelimit-limit-tokens",
-	"x-ratelimit-remaining-tokens",
-	"x-ratelimit-reset-tokens",
-	"x-rate-limit-limit-requests",
-	"x-rate-limit-remaining-requests",
-	"x-rate-limit-reset-requests",
-	"x-rate-limit-limit-tokens",
-	"x-rate-limit-remaining-tokens",
-	"x-rate-limit-reset-tokens",
-	"retry-after",
-	"x-subscription-tier",
-	"xai-subscription-tier",
-	"x-xai-subscription-tier",
-	"x-xai-user-tier",
-	"xai-user-tier",
-	"xai-tier",
-	"x-user-tier",
-	"x-plan-tier",
-	"x-subscription-plan",
-	"x-entitlement-status",
-	"xai-entitlement-status",
-	"x-xai-entitlement-status",
-	"x-xai-user-entitlement-status",
-	"x-user-entitlement-status",
+func IsGrokFreeRolling24hTokenLimit(limit int64) bool {
+	_, ok := grokFreeRolling24hTokenLimits[limit]
+	return ok
 }
 
 func ParseQuotaHeaders(headers http.Header, statusCode int) *QuotaSnapshot {
@@ -172,7 +174,7 @@ func parseResetHeader(raw string) *int64 {
 		// 因此按数量级区分，避免把相对值 60 误解为 1970 年的时间戳。
 		switch {
 		case value >= 1_000_000_000_000: // milliseconds epoch → seconds
-			value = value / 1000
+			value /= 1000
 		case value >= 1_000_000_000: // already a plausible unix-seconds epoch (>= 2001-09)
 			// 已是合理的 Unix 秒时间戳，保持原值。
 		default: // relative seconds from now
@@ -203,10 +205,7 @@ func parseRetryAfter(raw string) *int {
 		return &value
 	}
 	if t, err := http.ParseTime(raw); err == nil {
-		seconds := int(time.Until(t).Seconds())
-		if seconds < 0 {
-			seconds = 0
-		}
+		seconds := max(int(time.Until(t).Seconds()), 0)
 		return &seconds
 	}
 	return nil
@@ -231,4 +230,13 @@ func firstHeader(headers http.Header, names ...string) string {
 		}
 	}
 	return ""
+}
+
+// ParseQuotaObservation 解析额度响应头，缺少额度头的 429 响应记录状态码和观测时间。
+func ParseQuotaObservation(headers http.Header, status int, now time.Time) *QuotaSnapshot {
+	snapshot := ParseQuotaHeaders(headers, status)
+	if snapshot == nil && status == http.StatusTooManyRequests {
+		return &QuotaSnapshot{StatusCode: status, UpdatedAt: now.UTC().Format(time.RFC3339)}
+	}
+	return snapshot
 }

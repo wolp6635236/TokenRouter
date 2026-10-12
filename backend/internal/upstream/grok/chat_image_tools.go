@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 // StripRedundantGrokChatViewImageTool 当前轮的内联 image_url 已可由 Grok 直接读取；若同时保留本地 view_image，

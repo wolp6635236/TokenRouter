@@ -3,18 +3,14 @@
 package app
 
 import (
-	provider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-
-	egress "github.com/TokenFlux/TokenRouter/internal/egress"
-
-	egresshttp "github.com/TokenFlux/TokenRouter/internal/egress/httpapi"
-
-	egresspostgres "github.com/TokenFlux/TokenRouter/internal/egress/postgres"
-
-	egressredis "github.com/TokenFlux/TokenRouter/internal/egress/rediscache"
-
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/google/wire"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	egresshttp "github.com/TokenFlux/TokenRouter/internal/egress/httpapi"
+	egresspostgres "github.com/TokenFlux/TokenRouter/internal/egress/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/egress/provider"
+	egressredis "github.com/TokenFlux/TokenRouter/internal/egress/rediscache"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
 // egressAssemblyProviders 汇总 egress 模块的 Wire provider。

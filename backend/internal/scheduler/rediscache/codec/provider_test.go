@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
-	"github.com/stretchr/testify/require"
 )
 
 func TestProviderWirePreservesHistoricalFields(t *testing.T) {

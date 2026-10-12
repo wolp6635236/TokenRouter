@@ -6,12 +6,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 // TestOpenAITokenAssemblyKeepsReadAndStopBoundaries 检查 token 计数入口在读取报文前拒绝缺失依赖或已停止的请求。

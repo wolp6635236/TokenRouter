@@ -111,6 +111,10 @@
               </div>
             </div>
 
+            <SettingsNotice v-if="form.platform === 'jev'" data-testid="jev-provider-type-api-key">
+              {{ t('admin.providers.jev.description') }}
+            </SettingsNotice>
+
             <!-- 账号类型（Anthropic） -->
             <div v-if="form.platform === 'anthropic'" v-content-reveal class="space-y-2">
               <span class="input-label">{{ t('admin.providers.providerType') }}</span>
@@ -830,15 +834,12 @@
             :allowed-models="allowedModels"
             v-model:mappings="modelMappings"
             :platform="isBedrockCategory ? 'anthropic' : form.platform"
-            :models="form.platform === 'qoder' ? qoderAvailableModels : undefined"
             :sync-credentials="form.platform === 'qoder' ? undefined : syncPreviewCredentials"
-            :presets="isBedrockCategory ? bedrockPresets : presetMappings"
             :source-placeholder="isBedrockCategory ? t('admin.providers.fromModel') : undefined"
             :target-placeholder="isBedrockCategory ? t('admin.providers.toModel') : undefined"
             @update:allowed-models="setAllowedModels"
             @add="touchQoderModelRestriction"
             @remove="touchQoderModelRestriction"
-            @preset="addPresetMapping"
           />
 
           <!-- Antigravity 白名单与映射分别控制最终范围和请求改写。 -->
@@ -850,9 +851,7 @@
             <ModelWhitelistSelector v-model="antigravityWhitelistModels" platform="antigravity" />
             <ProviderModelMappingEditor
               v-model="antigravityModelMappings"
-              :presets="antigravityPresetMappings"
               wildcard-validation
-              @preset="addAntigravityPresetMapping"
             />
           </SettingsSection>
         </template>
@@ -1112,19 +1111,6 @@
                   testid="create-openai-images-url-to-b64-json"
                 />
               </template>
-              <SettingRow
-                v-if="isOpenAIOAuthCategory || providerCategory === 'apikey'"
-                id="create-openai-ws-mode"
-                label-for="create-openai-ws-mode-select"
-                :label="t('admin.providers.openai.wsMode')"
-                :hint="t('admin.providers.openai.wsModeDesc')"
-                field
-              >
-                <Select id="create-openai-ws-mode-select" v-model="openaiResponsesWebSocketV2Mode" :options="openAIWSModeOptions" />
-                <template #hint>
-                  <p class="input-hint">{{ t(openAIWSModeConcurrencyHintKey) }}</p>
-                </template>
-              </SettingRow>
             </SettingsSection>
 
             <SettingsSection v-if="isOpenAIOAuthCategory" :title="t('admin.providers.sections.openaiClient')">
@@ -1162,6 +1148,12 @@
                 />
               </SettingRow>
             </SettingsSection>
+
+            <ResponsesWSConnectionModeSelector
+              v-if="upstreamProtocols?.includes('openai_responses_websocket')"
+              v-model="responsesWSConnectionMode"
+              test-id-prefix="create-openai-ws-connection"
+            />
 
             <SettingsSection
               v-if="isOpenAIOAuthCategory || providerCategory === 'apikey'"
@@ -1578,9 +1570,6 @@ import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import {
-  claudeModels,
-  getPresetMappingsByPlatform,
-  getModelsByPlatform,
   buildModelMappingObject,
   buildPersistedModelRestriction,
   fetchAntigravityDefaultMappings
@@ -1625,6 +1614,7 @@ import type { ModelMappingRow } from '@/utils/modelMappingRules'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/provider/ModelWhitelistSelector.vue'
+import ResponsesWSConnectionModeSelector from '@/components/provider/ResponsesWSConnectionModeSelector.vue'
 import GrokBaseUrlPresets from '@/components/provider/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/provider/CnBaseUrlPresets.vue'
 import UpstreamUsageConfigEditor from '@/components/provider/UpstreamUsageConfigEditor.vue'
@@ -1655,7 +1645,6 @@ import {
   useAnthropicAPIKeyAuthSchemeOptions,
   useCodexFingerprintModeOptions,
   useOpenAIOAuthClientPolicyOptions,
-  useOpenAIWSModeOptions,
   useWebSearchEmulationOptions,
   type AnthropicAPIKeyAuthScheme,
   type CodexFingerprintMode,
@@ -1684,11 +1673,10 @@ import {
   groupedProviderSelectOptions
 } from '@/constants/provider'
 import {
-  OPENAI_WS_MODE_OFF,
-  isOpenAIWSModeEnabled,
-  resolveOpenAIWSModeConcurrencyHintKey,
-  type OpenAIWSMode
-} from '@/utils/openaiWsMode'
+  clearLegacyResponsesWSSettings,
+  RESPONSES_WS_POOLED,
+  type ResponsesWSConnectionMode
+} from '@/utils/responsesWsConnection'
 import OAuthAuthorizationFlow from './OAuthAuthorizationFlow.vue'
 
 // Type for exposed OAuthAuthorizationFlow component
@@ -2075,8 +2063,7 @@ const openAINativeCompactionV2Mode = ref<OpenAICompactMode>('force_on')
 const openAIResponsesContinuationSupported = ref(false)
 // 图片回填默认关闭，只对 OpenAI API Key 提供商生效。
 const openAIImagesURLToB64JSON = ref(false)
-const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
-const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const responsesWSConnectionMode = ref<ResponsesWSConnectionMode>(RESPONSES_WS_POOLED)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAIOAuthClientPolicy = ref<OpenAIOAuthClientPolicy>('any')
 const codexFingerprintMode = ref<CodexFingerprintMode>('off')
@@ -2113,8 +2100,6 @@ const antigravityProjectId = ref('')
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMappingRow[]>([])
-const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
-const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
 
 // Bedrock credentials
 const bedrockAuthMode = ref<'sigv4' | 'apikey'>('sigv4')
@@ -2206,28 +2191,6 @@ const geminiSelectedTier = computed(() => {
   }
 })
 
-const openAIWSModeOptions = useOpenAIWSModeOptions()
-
-const openaiResponsesWebSocketV2Mode = computed({
-  get: () => {
-    if (form.platform === 'openai' && providerCategory.value === 'apikey') {
-      return openaiAPIKeyResponsesWebSocketV2Mode.value
-    }
-    return openaiOAuthResponsesWebSocketV2Mode.value
-  },
-  set: (mode: OpenAIWSMode) => {
-    if (form.platform === 'openai' && providerCategory.value === 'apikey') {
-      openaiAPIKeyResponsesWebSocketV2Mode.value = mode
-      return
-    }
-    openaiOAuthResponsesWebSocketV2Mode.value = mode
-  }
-})
-
-const openAIWSModeConcurrencyHintKey = computed(() =>
-  resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2Mode.value)
-)
-
 const geminiQuotaDocs = {
   codeAssist: 'https://developers.google.com/gemini-code-assist/resources/quotas',
   aiStudio: 'https://ai.google.dev/pricing',
@@ -2242,12 +2205,6 @@ const geminiHelpLinks = {
   countryCheck: 'https://policies.google.com/terms',
   countryChange: 'https://policies.google.com/country-association-form'
 }
-
-// Computed: current preset mappings based on platform
-const presetMappings = computed(() =>
-  getPresetMappingsByPlatform(form.platform, form.platform === 'qoder' ? qoderSite.value : undefined)
-)
-const qoderAvailableModels = computed(() => getModelsByPlatform('qoder', qoderSite.value))
 
 const form = reactive({
   name: '',
@@ -2290,7 +2247,8 @@ const platformRows: Array<Array<{ value: ProviderPlatform; label: string; testid
     { value: 'gemini', label: 'Gemini', testid: 'create-provider-platform-gemini' },
     { value: 'antigravity', label: 'Antigravity' },
     { value: 'qoder', label: 'Qoder', testid: 'create-provider-platform-qoder' },
-    { value: 'grok', label: 'Grok' }
+    { value: 'grok', label: 'Grok' },
+    { value: 'jev', label: 'Jev', testid: 'create-provider-platform-jev' }
   ],
   [
     { value: 'kimi', label: 'Kimi' },
@@ -2354,6 +2312,7 @@ const tlsFingerprintTestIdPrefix = computed<string | null>(() => {
 })
 const apiKeyBaseUrlPlaceholder = computed(() => {
   switch (form.platform) {
+    case 'jev': return 'https://api.typesafe.ai'
     case 'openai': return 'https://api.openai.com'
     case 'gemini': return geminiProviderType.value === 'third_party' ? 'https://' : 'https://generativelanguage.googleapis.com'
     case 'grok': return 'https://api.x.ai/v1'
@@ -2362,6 +2321,7 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
 })
 const apiKeyPlaceholder = computed(() => {
   switch (form.platform) {
+    case 'jev': return 'api-key-...'
     case 'openai': return 'sk-proj-...'
     case 'gemini': return geminiProviderType.value === 'third_party' ? 'api-key-...' : 'AIza...'
     case 'grok': return 'xai-...'
@@ -2456,6 +2416,10 @@ watch(
 watch(
   [providerCategory, addMethod, qoderProviderType, () => form.platform],
   ([category, method]) => {
+    if (form.platform === 'jev') {
+      form.type = 'apikey'
+      return
+    }
     if (form.platform === 'qoder') {
       form.type = 'cosy'
       return
@@ -2495,9 +2459,8 @@ watch(
           : newPlatform === 'grok'
             ? 'https://api.x.ai/v1'
             : 'https://api.anthropic.com'
-    // 切换平台时旧平台模型不再适用。Qoder 由提供商 model_mapping
-    // 配置展示/请求模型，默认不填充会过期的前端硬编码白名单。
-    allowedModels.value = newPlatform === 'qoder' ? [] : [...getModelsByPlatform(newPlatform)]
+    // 切换平台后清空表单中的模型限制，由管理员选择或同步上游型号。
+    allowedModels.value = []
     modelMappings.value = []
     modelRestrictionMode.value = (newPlatform === 'qoder' || newPlatform === 'grok') ? 'mapping' : 'whitelist'
     qoderModelRestrictionTouched.value = false
@@ -2542,6 +2505,11 @@ watch(
     if (newPlatform !== 'anthropic' && providerCategory.value === 'bedrock') {
       providerCategory.value = 'oauth-based'
     }
+    if (newPlatform === 'jev') {
+      providerCategory.value = 'apikey'
+      apiKeyBaseUrl.value = 'https://api.typesafe.ai'
+    }
+    upstreamUsageEnabled.value = newPlatform !== 'jev'
     // Reset Bedrock fields when switching platforms
     bedrockAccessKeyId.value = ''
     bedrockSecretAccessKey.value = ''
@@ -2563,8 +2531,7 @@ watch(
       openaiFlattenNamespacesEnabled.value = false
       openAIResponsesContinuationSupported.value = false
       openAIImagesURLToB64JSON.value = false
-      openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
-      openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+      responsesWSConnectionMode.value = RESPONSES_WS_POOLED
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
       openAIOAuthClientPolicy.value = 'any'
     }
@@ -2700,23 +2667,6 @@ const applyQoderModelRestriction = (credentials: Record<string, unknown>) => {
     delete credentials.model_mapping
   }
   credentials.model_whitelist = persisted.modelWhitelist
-}
-
-const addPresetMapping = (from: string, to: string) => {
-  touchQoderModelRestriction()
-  if (modelMappings.value.some((m) => m.from === from)) {
-    appStore.showInfo(t('admin.providers.mappingExists', { model: from }))
-    return
-  }
-  modelMappings.value.push({ from, to })
-}
-
-const addAntigravityPresetMapping = (from: string, to: string) => {
-  if (antigravityModelMappings.value.some((m) => m.from === from)) {
-    appStore.showInfo(t('admin.providers.mappingExists', { model: from }))
-    return
-  }
-  antigravityModelMappings.value.push({ from, to })
 }
 
 const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
@@ -2864,7 +2814,7 @@ const resetForm = () => {
   modelMappings.value = []
   openAICompactModelMappings.value = []
   modelRestrictionMode.value = 'whitelist'
-  allowedModels.value = [...claudeModels] // Default fill related models
+  allowedModels.value = []
   qoderModelRestrictionTouched.value = false
   qoderModelWhitelistTouched.value = false
 
@@ -2895,8 +2845,7 @@ const resetForm = () => {
   openAINativeCompactionV2Mode.value = 'force_on'
   openAIResponsesContinuationSupported.value = false
   openAIImagesURLToB64JSON.value = false
-  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
-  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  responsesWSConnectionMode.value = RESPONSES_WS_POOLED
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   openAIOAuthClientPolicy.value = 'any'
   codexFingerprintMode.value = 'off'
@@ -2972,15 +2921,9 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   const extra: Record<string, unknown> = { ...base }
-  if (providerCategory.value === 'oauth-based') {
-    extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
-    extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
-  } else if (providerCategory.value === 'apikey') {
-    extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
-    extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
-  }
-  // 清理兼容旧键，统一改用分类型开关。
-  delete extra.responses_websockets_v2_enabled
+  extra.responses_ws_connection_mode = responsesWSConnectionMode.value
+  // 保存统一的连接方式。
+  clearLegacyResponsesWSSettings(extra)
   delete extra.openai_ws_enabled
   delete extra.openai_long_context_billing_enabled
   if (openaiPassthroughEnabled.value) {
@@ -3328,7 +3271,9 @@ const handleSubmit = async () => {
 
   // Determine default base URL based on platform
   const defaultBaseUrl =
-    form.platform === 'openai'
+    form.platform === 'jev'
+      ? 'https://api.typesafe.ai'
+      : form.platform === 'openai'
       ? 'https://api.openai.com'
       : form.platform === 'gemini'
         ? 'https://generativelanguage.googleapis.com'

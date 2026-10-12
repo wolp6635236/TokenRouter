@@ -9,8 +9,22 @@ import (
 	"unicode/utf8"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
+)
+
+const (
+	creativeOutboxClaimLimit = 50
+	creativeOutboxLease      = 2 * time.Minute
+	creativeOutboxPoll       = 5 * time.Second
+	creativeOutboxRetry      = 15 * time.Second
+
+	creativeTransientCleanupInterval = 5 * time.Minute
+	creativeTransientCleanupAge      = 10 * time.Minute
+	creativeTransientCleanupLimit    = 100
+
+	maxCreativeErrorMessageChars = 500
 )
 
 var ErrCreativeSettlementProviderMissing = apperror.BadRequest("BATCH_IMAGE_SETTLEMENT_MISSING_PROVIDER_ID", "batch image settlement provider id is missing")
@@ -184,10 +198,7 @@ func (s *Results) ReconcileCreativeProvision(ctx context.Context, run *CreativeR
 	if err := s.Queue.Enqueue(ctx, run.RunID); err != nil && !errors.Is(err, ErrCreativeAlreadyQueued) {
 		return err
 	}
-	if err := s.Repo.SetCreativeRunProvisioningPhase(ctx, run.RunID, CreativeProvisioningPhaseEnqueued); err != nil {
-		return err
-	}
-	return nil
+	return s.Repo.SetCreativeRunProvisioningPhase(ctx, run.RunID, CreativeProvisioningPhaseEnqueued)
 }
 
 // RunCreativeOutboxReconciler 启动创作台 outbox 周期恢复循环。
@@ -461,10 +472,7 @@ func (s *Results) CancelRunByWorker(ctx context.Context, runID string) error {
 	if err := s.EnsureCreativeOutbox(ctx, runID, CreativeRunOutboxRelease); err != nil {
 		return err
 	}
-	if err := s.ReleaseRun(ctx, runID); err != nil {
-		return err
-	}
-	return nil
+	return s.ReleaseRun(ctx, runID)
 }
 
 // MarkResultLost 把任务标记为 result_lost。
@@ -501,7 +509,7 @@ func (s *Results) MarkResultLost(ctx context.Context, runID string, providerSucc
 	return s.ReleaseRun(ctx, runID)
 }
 
-// RecordCreativeUsageLog 按成功输出数写图片用量日志（request_id = creative_settle:{runID}）。
+// RecordCreativeUsageLog 按成功输出数写入任务用量，并保存计费关联。
 func (s *Results) RecordCreativeUsageLog(ctx context.Context, run *CreativeRun, actualCost float64, successCount int, billingResult *billing.TaskFundsResult, createdAt time.Time) {
 	if s == nil || s.RecordUsage == nil || run == nil || run.ProviderID == nil || successCount <= 0 {
 		return
@@ -535,7 +543,8 @@ func (s *Results) RecordCreativeUsageLog(ctx context.Context, run *CreativeRun, 
 		APIKeyID:              run.APIKeyID,
 		ProviderID:            *run.ProviderID,
 		Platform:              run.Platform,
-		RequestID:             CreativeSettlementRequestID(run.RunID),
+		RequestID:             telemetry.StableRequestID(CreativeSettlementRequestID(run.RunID)),
+		BillingKey:            CreativeSettlementRequestID(run.RunID),
 		Model:                 run.Model,
 		RequestedModel:        run.RequestedModel,
 		InboundEndpoint:       &inboundEndpoint,
@@ -558,21 +567,6 @@ func (s *Results) RecordCreativeUsageLog(ctx context.Context, run *CreativeRun, 
 	}
 	s.RecordUsage(ctx, usageLog)
 }
-
-const (
-	creativeOutboxClaimLimit = 50
-	creativeOutboxLease      = 2 * time.Minute
-	creativeOutboxPoll       = 5 * time.Second
-	creativeOutboxRetry      = 15 * time.Second
-)
-
-const (
-	creativeTransientCleanupInterval = 5 * time.Minute
-	creativeTransientCleanupAge      = 10 * time.Minute
-	creativeTransientCleanupLimit    = 100
-)
-
-const maxCreativeErrorMessageChars = 500
 
 // now 保持各原取时点，构造时可注入同一时钟来源。
 func (s *Results) now() time.Time {

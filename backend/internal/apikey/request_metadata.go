@@ -11,6 +11,7 @@ type RequestMetadata struct {
 	InboundEndpoint    string
 	InboundEndpointSet bool
 }
+
 type requestMetadataKey struct{}
 
 func WithRequestMetadata(ctx context.Context, value RequestMetadata) context.Context {

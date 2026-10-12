@@ -3,10 +3,11 @@ package httpapi
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
 // CompletionSubmission 在 HTTP 请求线程中捕获完成任务的数据。

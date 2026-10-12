@@ -5,8 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 const dashboardStatsCacheKey = "dashboard:stats:v2"

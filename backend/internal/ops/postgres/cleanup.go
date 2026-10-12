@@ -17,6 +17,12 @@ const (
 	opsCleanupDefaultBatchPause = ops.OpsCleanupDefaultBatchPause
 )
 
+// CleanupStore 使用连接池执行清理，每批单独提交事务并节流。
+type CleanupStore struct {
+	*Advisory
+	db *sql.DB
+}
+
 func opsCleanupRunOne(
 	ctx context.Context,
 	db *sql.DB,
@@ -155,12 +161,6 @@ func isMissingRelationError(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "does not exist") && strings.Contains(s, "relation")
-}
-
-// CleanupStore 使用连接池执行清理，每批单独提交事务并节流。
-type CleanupStore struct {
-	*Advisory
-	db *sql.DB
 }
 
 func NewCleanupStore(db *sql.DB) ops.CleanupBackend {

@@ -4,27 +4,19 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
-// TLSFingerprintProfileHandler 处理 TLS 指纹模板的 HTTP 请求
+// TLSFingerprintProfileHandler 处理 TLS 指纹模板的 HTTP 请求。
 type TLSFingerprintProfileHandler struct {
 	service   *egress.TLSFingerprintProfileService
 	collector egress.Collector
 }
 
-// NewTLSFingerprintProfileHandler 创建 TLS 指纹模板处理器
-func NewTLSFingerprintProfileHandler(profileService *egress.TLSFingerprintProfileService, collectors ...egress.Collector) *TLSFingerprintProfileHandler {
-	h := &TLSFingerprintProfileHandler{service: profileService}
-	if len(collectors) > 0 {
-		h.collector = collectors[0]
-	}
-	return h
-}
-
-// CreateTLSFingerprintProfileRequest 创建模板请求
+// CreateTLSFingerprintProfileRequest 创建模板请求。
 type CreateTLSFingerprintProfileRequest struct {
 	Name                string   `json:"name" binding:"required"`
 	Description         *string  `json:"description"`
@@ -40,7 +32,7 @@ type CreateTLSFingerprintProfileRequest struct {
 	Extensions          []uint16 `json:"extensions"`
 }
 
-// UpdateTLSFingerprintProfileRequest 更新模板请求（部分更新）
+// UpdateTLSFingerprintProfileRequest 更新模板请求（部分更新）。
 type UpdateTLSFingerprintProfileRequest struct {
 	Name                *string  `json:"name"`
 	Description         *string  `json:"description"`
@@ -54,6 +46,15 @@ type UpdateTLSFingerprintProfileRequest struct {
 	KeyShareGroups      []uint16 `json:"key_share_groups"`
 	PSKModes            []uint16 `json:"psk_modes"`
 	Extensions          []uint16 `json:"extensions"`
+}
+
+// NewTLSFingerprintProfileHandler 创建 TLS 指纹模板处理器。
+func NewTLSFingerprintProfileHandler(profileService *egress.TLSFingerprintProfileService, collectors ...egress.Collector) *TLSFingerprintProfileHandler {
+	h := &TLSFingerprintProfileHandler{service: profileService}
+	if len(collectors) > 0 {
+		h.collector = collectors[0]
+	}
+	return h
 }
 
 // List 获取所有模板

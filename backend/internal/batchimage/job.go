@@ -7,16 +7,13 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 const (
 	BatchImageProviderGeminiAPI = "gemini_api"
 	BatchImageProviderVertex    = "vertex"
-)
 
-const (
 	BatchImageJobStatusCreated       = "created"
 	BatchImageJobStatusUploading     = "uploading"
 	BatchImageJobStatusSubmitted     = "submitted"
@@ -27,9 +24,7 @@ const (
 	BatchImageJobStatusFailed        = "failed"
 	BatchImageJobStatusCancelled     = "cancelled"
 	BatchImageJobStatusOutputDeleted = "output_deleted"
-)
 
-const (
 	BatchImageItemStatusPending   = "pending"
 	BatchImageItemStatusSuccess   = "success"
 	BatchImageItemStatusFailed    = "failed"

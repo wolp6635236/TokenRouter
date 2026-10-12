@@ -17,8 +17,6 @@ var ErrGrokSSOInput = errors.New("sso_tokens is required")
 
 type GrokImportInputError struct{ Message string }
 
-func (e *GrokImportInputError) Error() string { return e.Message }
-
 type GrokProviderImportOptions struct {
 	Get            func(context.Context, int64) (*Record, error)
 	Create         func(context.Context, *CreateProviderInput) (*Record, error)
@@ -31,10 +29,6 @@ type GrokProviderImportOptions struct {
 type GrokProviderImport struct {
 	Authorization *GrokAuthorization
 	Options       GrokProviderImportOptions
-}
-
-func NewGrokProviderImport(auth *GrokAuthorization, options GrokProviderImportOptions) *GrokProviderImport {
-	return &GrokProviderImport{Authorization: auth, Options: options}
 }
 
 type GrokOAuthProviderCreateInput struct {
@@ -77,6 +71,12 @@ type grokSSOImportJob struct {
 type grokSSOImportWorkerResult struct {
 	created bool
 	item    GrokSSOToOAuthItemResult
+}
+
+func (e *GrokImportInputError) Error() string { return e.Message }
+
+func NewGrokProviderImport(auth *GrokAuthorization, options GrokProviderImportOptions) *GrokProviderImport {
+	return &GrokProviderImport{Authorization: auth, Options: options}
 }
 
 func (h *GrokProviderImport) safeCreateProviderFromSSOToken(ctx context.Context, req GrokSSOToOAuthRequest, token string, index, total int) (result grokSSOImportWorkerResult) {
@@ -237,8 +237,8 @@ func (h *GrokProviderImport) normalizeSSOImportTokens(tokens []string, single st
 	seen := make(map[string]struct{}, len(items))
 	result := make([]string, 0, len(items))
 	for _, item := range items {
-		parts := strings.Split(strings.NewReplacer(",", "\n", "\r", "\n").Replace(item), "\n")
-		for _, token := range parts {
+		parts := strings.SplitSeq(strings.NewReplacer(",", "\n", "\r", "\n").Replace(item), "\n")
+		for token := range parts {
 			if token = h.Options.NormalizeToken(token); token == "" {
 				continue
 			}
@@ -283,14 +283,11 @@ func (h *GrokProviderImport) CreateFromSSO(ctx context.Context, req GrokSSOToOAu
 		return nil, ErrGrokSSOInput
 	}
 
-	workerCount := grokSSOImportConcurrency
-	if len(tokens) < workerCount {
-		workerCount = len(tokens)
-	}
+	workerCount := min(len(tokens), grokSSOImportConcurrency)
 	jobs := make(chan grokSSOImportJob)
 	items := make([]grokSSOImportWorkerResult, len(tokens))
 	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		wg.Add(1)
 		h.Options.RunTask("handler/admin/grok_oauth_handler.go:CreateProvidersFromSSO", func() {
 			defer wg.Done()

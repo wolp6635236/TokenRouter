@@ -2,6 +2,7 @@ package completion
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,7 +212,7 @@ func TestUsageRecordWorkerPool_AutoScaleUpAndDown(t *testing.T) {
 	block := make(chan struct{})
 
 	// 填满运行槽位 + 队列，触发扩容阈值。
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(ctx context.Context) {
 			<-block
 		}))
@@ -253,7 +254,7 @@ func TestUsageRecordWorkerPool_AutoScaleDownRequiresLowRunningUtilization(t *tes
 	t.Cleanup(pool.Stop)
 
 	block := make(chan struct{})
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(ctx context.Context) {
 			<-block
 		}))
@@ -310,7 +311,7 @@ func TestUsageRecordWorkerPool_AutoScaleDisabledKeepsFixedConcurrency(t *testing
 	require.Equal(t, 2, pool.Stats().MaxConcurrency)
 
 	block := make(chan struct{})
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(ctx context.Context) {
 			<-block
 		}))
@@ -452,4 +453,39 @@ func TestUsageRecordWorkerPool_ResizeAndLogDropBranches(t *testing.T) {
 	require.NotPanics(t, func() {
 		pool.logDrop("full")
 	})
+}
+
+// TestStopWaitsForSynchronousOverflow 检查停止同时等待 pond 队列和已转为同步执行的溢出任务。
+func TestStopWaitsForSynchronousOverflow(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1, TaskTimeout: time.Second, OverflowPolicy: "sync"})
+	first, releaseQueue := make(chan struct{}), make(chan struct{})
+	inline, releaseInline := make(chan struct{}), make(chan struct{})
+	submitted := make(chan UsageRecordSubmitMode, 1)
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) { close(first); <-releaseQueue }))
+	<-first
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) { <-releaseQueue }))
+	go func() { submitted <- pool.Submit(func(context.Context) { close(inline); <-releaseInline }) }()
+	<-inline
+	close(releaseQueue)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := pool.StopContext(ctx)
+	close(releaseInline)
+	require.Equal(t, UsageRecordSubmitModeSync, <-submitted)
+	require.NoError(t, pool.StopContext(context.Background()))
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Contains(t, err.Error(), "unfinished tasks")
+}
+
+// TestStartAfterStopDoesNotCreateWorker 验证停止是不可逆屏障，顺序与并发的重复调用都不能重开 worker。
+func TestStartAfterStopDoesNotCreateWorker(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1, AutoScaleEnabled: true, AutoScaleMinWorkers: 1, AutoScaleMaxWorkers: 2})
+	pool.Stop()
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() { ; pool.Start(); pool.Stop() })
+	}
+	wg.Wait()
+	require.Nil(t, pool.autoScaleCancel)
+	require.Equal(t, UsageRecordSubmitModeDroppedStopped, pool.Submit(func(context.Context) { t.Error("停止后任务不应执行") }))
 }

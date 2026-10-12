@@ -5,14 +5,14 @@ import (
 	"html"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/notification/httpapi/dto"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
 )
 
-// TestSMTPRequest 测试SMTP连接请求
+// TestSMTPRequest 测试 SMTP 连接请求。
 type TestSMTPRequest struct {
 	SMTPHost     string `json:"smtp_host"`
 	SMTPPort     int    `json:"smtp_port"`
@@ -21,6 +21,28 @@ type TestSMTPRequest struct {
 	SMTPUseTLS   *bool  `json:"smtp_use_tls"`
 }
 
+// SendTestEmailRequest 发送测试邮件请求。
+type SendTestEmailRequest struct {
+	Email        string `json:"email" binding:"required,email"`
+	SMTPHost     string `json:"smtp_host"`
+	SMTPPort     int    `json:"smtp_port"`
+	SMTPUsername string `json:"smtp_username"`
+	SMTPPassword string `json:"smtp_password"`
+	SMTPFrom     string `json:"smtp_from_email"`
+	SMTPFromName string `json:"smtp_from_name"`
+	SMTPUseTLS   *bool  `json:"smtp_use_tls"`
+}
+
+// SiteNameReader 只读取公开站点名称。
+type (
+	SiteNameReader interface{ GetSiteName(context.Context) string }
+	Handler        struct {
+		emailService             *notification.Mailer
+		notificationEmailService *notification.NotificationEmailService
+		settingService           SiteNameReader
+	}
+)
+
 func ResolveSMTPUseTLS(requested *bool, savedConfig *notification.SMTPConfig) bool {
 	if requested != nil {
 		return *requested
@@ -28,7 +50,7 @@ func ResolveSMTPUseTLS(requested *bool, savedConfig *notification.SMTPConfig) bo
 	return savedConfig != nil && savedConfig.UseTLS
 }
 
-// TestSMTPConnection 测试SMTP连接
+// TestSMTPConnection 测试 SMTP 连接
 // POST /api/v1/admin/settings/test-smtp
 func (h *Handler) TestSMTPConnection(c *gin.Context) {
 	var req TestSMTPRequest
@@ -82,18 +104,6 @@ func (h *Handler) TestSMTPConnection(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "SMTP connection successful"})
-}
-
-// SendTestEmailRequest 发送测试邮件请求
-type SendTestEmailRequest struct {
-	Email        string `json:"email" binding:"required,email"`
-	SMTPHost     string `json:"smtp_host"`
-	SMTPPort     int    `json:"smtp_port"`
-	SMTPUsername string `json:"smtp_username"`
-	SMTPPassword string `json:"smtp_password"`
-	SMTPFrom     string `json:"smtp_from_email"`
-	SMTPFromName string `json:"smtp_from_name"`
-	SMTPUseTLS   *bool  `json:"smtp_use_tls"`
 }
 
 // SendTestEmail 发送测试邮件
@@ -354,16 +364,17 @@ func emailTemplatePlaceholderUnion(events []notification.NotificationEmailEventI
 	return placeholders
 }
 
-// SiteNameReader 只读取公开站点名称。
-type (
-	SiteNameReader interface{ GetSiteName(context.Context) string }
-	Handler        struct {
-		emailService             *notification.Mailer
-		notificationEmailService *notification.NotificationEmailService
-		settingService           SiteNameReader
-	}
-)
-
 func New(email *notification.Mailer, n *notification.NotificationEmailService, site SiteNameReader) *Handler {
 	return &Handler{emailService: email, notificationEmailService: n, settingService: site}
+}
+
+// RegisterSettingsRoutes 登记 SMTP 测试和通知模板管理路由。
+func RegisterSettingsRoutes(adminSettings *gin.RouterGroup, endpoint *Handler) {
+	adminSettings.POST("/test-smtp", endpoint.TestSMTPConnection)
+	adminSettings.POST("/send-test-email", endpoint.SendTestEmail)
+	adminSettings.GET("/email-templates", endpoint.ListEmailTemplates)
+	adminSettings.POST("/email-template-preview", endpoint.PreviewEmailTemplate)
+	adminSettings.GET("/email-templates/:event/:locale", endpoint.GetEmailTemplate)
+	adminSettings.PUT("/email-templates/:event/:locale", endpoint.UpdateEmailTemplate)
+	adminSettings.POST("/email-templates/:event/:locale/restore-official", endpoint.RestoreOfficialEmailTemplate)
 }

@@ -6,6 +6,7 @@ import (
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/announcementread"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
 
@@ -85,3 +86,6 @@ func (r *announcementReadRepository) CountByAnnouncementID(ctx context.Context, 
 	}
 	return int64(count), nil
 }
+
+// isSQLNoRowsError 判断查询是否没有匹配行。
+func isSQLNoRowsError(err error) bool { return postgresinfra.IsNoRows(err) }

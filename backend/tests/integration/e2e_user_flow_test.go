@@ -22,7 +22,7 @@ var (
 	testUserName     = "e2e-test-user"
 )
 
-// TestUserRegistrationAndLogin 测试用户注册和登录流程
+// TestUserRegistrationAndLogin 测试用户注册和登录流程。
 func TestUserRegistrationAndLogin(t *testing.T) {
 	// 步骤 1: 注册新用户
 	t.Run("注册新用户", func(t *testing.T) {
@@ -126,7 +126,7 @@ func TestUserRegistrationAndLogin(t *testing.T) {
 	})
 }
 
-// TestAPIKeyLifecycle 测试 API Key 的创建和使用
+// TestAPIKeyLifecycle 测试 API Key 的创建和使用。
 func TestAPIKeyLifecycle(t *testing.T) {
 	// 先登录获取 JWT
 	accessToken := loginTestUser(t)
@@ -231,9 +231,7 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // 辅助函数
-// =============================================================================
 
 func doRequest(t *testing.T, method, path string, body []byte, token string) (*http.Response, error) {
 	t.Helper()
@@ -307,7 +305,7 @@ func loginTestUser(t *testing.T) string {
 	return ""
 }
 
-// redactAPIKey API Key 脱敏，只显示前 8 位
+// redactAPIKey API Key 脱敏，只显示前 8 位。
 func redactAPIKey(key string) string {
 	key = strings.TrimSpace(key)
 	if len(key) <= 8 {

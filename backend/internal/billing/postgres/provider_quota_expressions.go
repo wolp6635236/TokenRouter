@@ -1,11 +1,12 @@
 package postgres
 
-// NowUTC is a SQL expression to generate a UTC RFC3339 timestamp string.
-const NowUTC = `to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
+const (
+	// NowUTC is a SQL expression to generate a UTC RFC3339 timestamp string.
+	NowUTC = `to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
 
-// DailyExpiredExpr is a SQL expression that evaluates to TRUE when daily quota period has expired.
-// Supports both rolling (24h from start) and fixed (pre-computed reset_at) modes.
-const DailyExpiredExpr = `(
+	// DailyExpiredExpr is a SQL expression that evaluates to TRUE when daily quota period has expired.
+	// Supports both rolling (24h from start) and fixed (pre-computed reset_at) modes.
+	DailyExpiredExpr = `(
 	CASE WHEN COALESCE(extra->>'quota_daily_reset_mode', 'rolling') = 'fixed'
 	THEN NOW() >= COALESCE((extra->>'quota_daily_reset_at')::timestamptz, '1970-01-01'::timestamptz)
 	ELSE COALESCE((extra->>'quota_daily_start')::timestamptz, '1970-01-01'::timestamptz)
@@ -13,8 +14,8 @@ const DailyExpiredExpr = `(
 	END
 )`
 
-// WeeklyExpiredExpr is a SQL expression that evaluates to TRUE when weekly quota period has expired.
-const WeeklyExpiredExpr = `(
+	// WeeklyExpiredExpr is a SQL expression that evaluates to TRUE when weekly quota period has expired.
+	WeeklyExpiredExpr = `(
 	CASE WHEN COALESCE(extra->>'quota_weekly_reset_mode', 'rolling') = 'fixed'
 	THEN NOW() >= COALESCE((extra->>'quota_weekly_reset_at')::timestamptz, '1970-01-01'::timestamptz)
 	ELSE COALESCE((extra->>'quota_weekly_start')::timestamptz, '1970-01-01'::timestamptz)
@@ -22,10 +23,10 @@ const WeeklyExpiredExpr = `(
 	END
 )`
 
-// NextDailyResetAtExpr is a SQL expression to compute the next daily reset_at when a reset occurs.
-// For fixed mode: computes the next future reset time based on NOW(), timezone, and configured hour.
-// This correctly handles long-inactive providers by jumping directly to the next valid reset point.
-const NextDailyResetAtExpr = `(
+	// NextDailyResetAtExpr is a SQL expression to compute the next daily reset_at when a reset occurs.
+	// For fixed mode: computes the next future reset time based on NOW(), timezone, and configured hour.
+	// This correctly handles long-inactive providers by jumping directly to the next valid reset point.
+	NextDailyResetAtExpr = `(
 	CASE WHEN COALESCE(extra->>'quota_daily_reset_mode', 'rolling') = 'fixed'
 	THEN to_char((
 		-- Compute today's reset point in the configured timezone, then pick next future one
@@ -49,10 +50,10 @@ const NextDailyResetAtExpr = `(
 	ELSE NULL END
 )`
 
-// NextWeeklyResetAtExpr is a SQL expression to compute the next weekly reset_at when a reset occurs.
-// For fixed mode: computes the next future reset time based on NOW(), timezone, configured day and hour.
-// This correctly handles long-inactive providers by jumping directly to the next valid reset point.
-const NextWeeklyResetAtExpr = `(
+	// NextWeeklyResetAtExpr is a SQL expression to compute the next weekly reset_at when a reset occurs.
+	// For fixed mode: computes the next future reset time based on NOW(), timezone, configured day and hour.
+	// This correctly handles long-inactive providers by jumping directly to the next valid reset point.
+	NextWeeklyResetAtExpr = `(
 	CASE WHEN COALESCE(extra->>'quota_weekly_reset_mode', 'rolling') = 'fixed'
 	THEN to_char((
 		-- Compute this week's reset point in the configured timezone
@@ -89,3 +90,4 @@ const NextWeeklyResetAtExpr = `(
 	) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 	ELSE NULL END
 )`
+)

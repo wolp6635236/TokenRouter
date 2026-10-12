@@ -5,11 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-	opsprovider "github.com/TokenFlux/TokenRouter/internal/ops/provider"
-
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	opsprovider "github.com/TokenFlux/TokenRouter/internal/ops/provider"
 )
 
 func newIngressRejectHandlerForTest() *OpsHandler {
@@ -17,7 +17,6 @@ func newIngressRejectHandlerForTest() *OpsHandler {
 }
 
 func TestListIngressRejectsValidatesFilters(t *testing.T) {
-
 	for _, path := range []string{
 		"/api/v1/admin/ops/ingress-rejections?reason=not-valid",
 		"/api/v1/admin/ops/ingress-rejections?client_ip=not-an-ip",

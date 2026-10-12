@@ -11,6 +11,12 @@ const (
 	ingressRejectDroppedSummaryPeriod = 30 * time.Second
 )
 
+var globalIngressRejectAccessSampler = newIngressRejectAccessSampler(
+	ingressRejectAccessLogLimit,
+	ingressRejectAccessLogWindow,
+	ingressRejectDroppedSummaryPeriod,
+)
+
 type ingressRejectAccessSampler struct {
 	mu            sync.Mutex
 	limit         int
@@ -49,9 +55,3 @@ func (s *ingressRejectAccessSampler) allow(now time.Time) (allowed bool, dropped
 	}
 	return false, droppedSummary
 }
-
-var globalIngressRejectAccessSampler = newIngressRejectAccessSampler(
-	ingressRejectAccessLogLimit,
-	ingressRejectAccessLogWindow,
-	ingressRejectDroppedSummaryPeriod,
-)

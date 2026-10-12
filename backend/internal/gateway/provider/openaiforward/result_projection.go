@@ -2,6 +2,7 @@ package openaiforward
 
 import (
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func ToForwardResult(result *Result) *forwardcore.OpenAIResult {
@@ -49,7 +50,7 @@ func ToForwardResult(result *Result) *forwardcore.OpenAIResult {
 	return value
 }
 
-// FromForwardResult HTTP 子协议尚未改签名前，只在 Adapter 往返当前文本完成字段。
+// FromForwardResult 将网关完成结果转换为本包的转发结果。
 func FromForwardResult(r *forwardcore.OpenAIResult) *Result {
 	if r == nil {
 		return nil
@@ -93,4 +94,12 @@ func FromForwardResult(r *forwardcore.OpenAIResult) *Result {
 		value.UpstreamWarning = &forwardcore.UpstreamWarning{StatusCode: r.UpstreamWarning.StatusCode, ResponseBody: r.UpstreamWarning.ResponseBody, Message: r.UpstreamWarning.Message}
 	}
 	return value
+}
+
+// FromCompatResult 将兼容响应结果转换为转发结果并附加计费模型。
+func FromCompatResult(r *openai.CompatResponseResult, billing string) *Result {
+	if r == nil {
+		return nil
+	}
+	return &Result{RequestID: r.RequestID, ResponseID: r.ResponseID, Headers: r.UpstreamHeaders, Usage: r.Usage, Model: r.Model, BillingModel: billing, UpstreamModel: r.UpstreamModel, UpstreamResponseServiceTier: r.ServiceTier, ServiceTier: r.ResolvedTier, ReasoningEffort: r.ReasoningEffort, Stream: r.Stream, Duration: r.Duration, FirstTokenMs: r.FirstTokenMs, ClientDisconnect: r.ClientDisconnect, SearchCount: r.SearchCount}
 }

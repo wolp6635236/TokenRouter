@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 const (
@@ -15,6 +16,10 @@ const (
 	userRefreshTokensPrefix = "user_refresh_tokens:"
 	tokenFamilyPrefix       = "token_family:"
 )
+
+type refreshTokenCache struct {
+	rdb *redis.Client
+}
 
 // refreshTokenKey generates the Redis key for a refresh token.
 func refreshTokenKey(tokenHash string) string {
@@ -29,10 +34,6 @@ func userRefreshTokensKey(userID int64) string {
 // tokenFamilyKey generates the Redis key for token family set.
 func tokenFamilyKey(familyID string) string {
 	return tokenFamilyPrefix + familyID
-}
-
-type refreshTokenCache struct {
-	rdb *redis.Client
 }
 
 // NewRefreshTokenCache creates a new RefreshTokenCache implementation.

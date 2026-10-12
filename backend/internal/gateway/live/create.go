@@ -9,10 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 // Created 保存公共响应和选中提供商的标识。
@@ -103,7 +105,7 @@ func (s *Creator) Create(
 
 	excluded := make(map[int64]struct{})
 	var lastErr error
-	for attempt := 0; attempt <= 3; attempt++ {
+	for range 4 {
 		selection, selectErr := s.ports.Select(ctx, identity.GroupID, model, excluded)
 
 		if selectErr != nil {
@@ -206,6 +208,7 @@ func (s *Creator) Create(
 			s.runtime.ReleaseLease(provider.ID, identity.UserID, identity.APIKeyID, leaseID)
 			return nil, fmt.Errorf("save live call mapping: %w", saveErr)
 		}
+		telemetry.RecordRelatedRequest(ctx, telemetry.RequestRecord{RequestID: telemetry.StableRequestID("live/" + record.CallHash), State: "running", StartedAt: now, UserID: record.ActorUserID, APIKeyID: record.APIKeyID, ProviderID: record.ProviderID, Model: record.RequestedModel, Aliases: []telemetry.RequestAlias{{Kind: "billing", Value: record.CallHash}}})
 		created.ProviderID = provider.ID
 		s.ports.Observe(record)
 		return created, nil

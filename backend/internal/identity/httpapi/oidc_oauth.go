@@ -9,24 +9,14 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
-
-type OIDCHandler struct {
-	*PendingHandler
-	binding    *OAuthBindHandler
-	client     identity.OIDCOAuthClient
-	loadConfig func(context.Context) (identity.OIDCOAuthOptions, error)
-}
-
-func NewOIDCHandler(p *PendingHandler, b *OAuthBindHandler, client identity.OIDCOAuthClient, load func(context.Context) (identity.OIDCOAuthOptions, error)) *OIDCHandler {
-	return &OIDCHandler{p, b, client, load}
-}
 
 const (
 	OidcOAuthCookiePath         = "/api/v1/auth/oauth/oidc"
@@ -40,6 +30,24 @@ const (
 	OidcOAuthDefaultRedirectTo  = "/dashboard"
 	OidcOAuthDefaultFrontendCB  = "/auth/oidc/callback"
 )
+
+type OIDCHandler struct {
+	*PendingHandler
+	binding    *OAuthBindHandler
+	client     identity.OIDCOAuthClient
+	loadConfig func(context.Context) (identity.OIDCOAuthOptions, error)
+}
+
+type CompleteOIDCOAuthRequest struct {
+	InvitationCode   string `json:"invitation_code" binding:"required"`
+	AffCode          string `json:"aff_code,omitempty"` // 邀请返利码，仅注册新用户时绑定邀请关系。
+	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
+	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
+}
+
+func NewOIDCHandler(p *PendingHandler, b *OAuthBindHandler, client identity.OIDCOAuthClient, load func(context.Context) (identity.OIDCOAuthOptions, error)) *OIDCHandler {
+	return &OIDCHandler{p, b, client, load}
+}
 
 // OIDCOAuthStart 启动通用 OIDC OAuth 登录流程。
 // GET /api/v1/auth/oauth/oidc/start?redirect=/dashboard
@@ -485,15 +493,15 @@ func (h *OIDCHandler) CompleteOIDCOAuthRegistration(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if updatedSession, handled, err := h.flow.LegacyRegistrationStatus(c.Request.Context(), session, h.authService != nil && h.authService.IsEmailVerifyEnabled(c.Request.Context()), h.isForceEmailOnThirdPartySignup(c.Request.Context())); err != nil {
+	updatedSession, handled, err := h.flow.LegacyRegistrationStatus(c.Request.Context(), session, h.authService != nil && h.authService.IsEmailVerifyEnabled(c.Request.Context()), h.isForceEmailOnThirdPartySignup(c.Request.Context()))
+	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	} else if handled {
 		c.JSON(http.StatusOK, BuildPendingOAuthSessionStatusPayload(updatedSession))
 		return
-	} else {
-		session = updatedSession
 	}
+	session = updatedSession
 	if err := h.ensureBackendModeAllowsNewUserLogin(c.Request.Context()); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -541,13 +549,6 @@ func (h *OIDCHandler) CompleteOIDCOAuthRegistration(c *gin.Context) {
 		"expires_in":    tokenPair.ExpiresIn,
 		"token_type":    "Bearer",
 	})
-}
-
-type CompleteOIDCOAuthRequest struct {
-	InvitationCode   string `json:"invitation_code" binding:"required"`
-	AffCode          string `json:"aff_code,omitempty"` // 邀请返利码，仅注册新用户时绑定邀请关系。
-	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
-	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
 }
 
 func BuildOIDCAuthorizeURL(cfg identity.OIDCOAuthOptions, state, nonce, codeChallenge, redirectURI string) (string, error) {

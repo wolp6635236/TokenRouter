@@ -29,6 +29,8 @@ type ClientPayload struct {
 
 // ForwardResult 保存一次 WS turn 的可观测结果和恢复输入。
 type ForwardResult struct {
+	// LocalWarmup 表示该轮预热在网关本地完成。
+	LocalWarmup bool `json:"-"`
 	// UpstreamResponseModel 保存当前 turn 的原始上游模型声明。
 	UpstreamResponseModel string
 	VideoCount            int
@@ -185,6 +187,7 @@ type IngressOptions struct {
 
 // IngressSession 管理 bridge 和 ctx_pool 的逐轮循环及恢复状态。
 type IngressSession struct {
+	Refresh func() Parameters
 	State   *IngressState
 	Store   session.OpenAIWSStateStore
 	Options IngressOptions

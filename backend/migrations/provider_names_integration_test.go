@@ -10,11 +10,12 @@ import (
 	"testing/fstest"
 	"time"
 
-	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/TokenFlux/TokenRouter/migrations"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestProviderNamesMigration 使用历史 schema 验证锁失败回滚、数据保留和物理文件不变。

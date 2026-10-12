@@ -9,12 +9,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	opsprovider "github.com/TokenFlux/TokenRouter/internal/ops/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	opsprovider "github.com/TokenFlux/TokenRouter/internal/ops/provider"
 )
 
 type responseEnvelope struct {

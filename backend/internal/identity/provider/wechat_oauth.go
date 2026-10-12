@@ -13,18 +13,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
-// WeChatOptions 只包含客户端所需凭据与请求目标。
-type WeChatOptions struct{ AppID, AppSecret, TokenURL, UserInfoURL string }
-
 const (
 	DefaultWeChatTokenURL    = "https://api.weixin.qq.com/sns/oauth2/access_token"
 	DefaultWeChatUserInfoURL = "https://api.weixin.qq.com/sns/userinfo"
 )
 
+// WeChatOptions 只包含客户端所需凭据与请求目标。
+type WeChatOptions struct{ AppID, AppSecret, TokenURL, UserInfoURL string }
+
 type (
 	WechatOAuthTokenResponse    = identity.WeChatOAuthTokenResponse
 	WechatOAuthUserInfoResponse = identity.WeChatOAuthUserInfoResponse
 )
+
+// WeChatClient 复用原授权/资料 HTTP，实现身份端口；地址可由本地测试显式注入。
+type WeChatClient struct{ TokenURL, UserInfoURL string }
 
 func FetchWeChatOAuthIdentity(ctx context.Context, cfg WeChatOptions, code string) (*WechatOAuthTokenResponse, *WechatOAuthUserInfoResponse, error) {
 	tokenResp, err := ExchangeWeChatOAuthCode(ctx, cfg, code)
@@ -128,9 +131,6 @@ func FetchWeChatUserInfo(ctx context.Context, userInfoURL string, tokenResp *Wec
 	}
 	return &userInfo, nil
 }
-
-// WeChatClient 复用原授权/资料 HTTP，实现身份端口；地址可由本地测试显式注入。
-type WeChatClient struct{ TokenURL, UserInfoURL string }
 
 func (c WeChatClient) FetchIdentity(ctx context.Context, o identity.WeChatOAuthOptions, code string) (*WechatOAuthTokenResponse, *WechatOAuthUserInfoResponse, error) {
 	return FetchWeChatOAuthIdentity(ctx, WeChatOptions{AppID: o.AppID, AppSecret: o.AppSecret, TokenURL: c.TokenURL, UserInfoURL: c.UserInfoURL}, code)

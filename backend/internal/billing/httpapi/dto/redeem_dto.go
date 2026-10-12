@@ -43,20 +43,6 @@ type NullableTimeField struct {
 	Value *time.Time
 }
 
-func (f *NullableTimeField) UnmarshalJSON(data []byte) error {
-	f.Set = true
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		f.Value = nil
-		return nil
-	}
-	var value time.Time
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	f.Value = &value
-	return nil
-}
-
 type BatchUpdateRedeemCodeFields struct {
 	Status    *string           `json:"status,omitempty"`
 	ExpiresAt NullableTimeField `json:"expires_at,omitempty"`
@@ -71,4 +57,18 @@ type BatchUpdateRedeemCodeFields struct {
 type BatchUpdateRedeemCodesRequest struct {
 	IDs    []int64                     `json:"ids" binding:"required,min=1"`
 	Fields BatchUpdateRedeemCodeFields `json:"fields" binding:"required"`
+}
+
+func (f *NullableTimeField) UnmarshalJSON(data []byte) error {
+	f.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		f.Value = nil
+		return nil
+	}
+	var value time.Time
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	f.Value = &value
+	return nil
 }

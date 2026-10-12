@@ -9,13 +9,15 @@ import (
 	"time"
 )
 
-// Strategy represents a load balancing strategy for provider instance selection.
-type Strategy string
-
 const (
 	StrategyRoundRobin  Strategy = "round-robin"
 	StrategyLeastAmount Strategy = "least-amount"
+
+	wxpayJSAPIAppIDContextKey contextKey = "payment.wxpay.jsapi_app_id"
 )
+
+// Strategy represents a load balancing strategy for provider instance selection.
+type Strategy string
 
 // ChannelLimits holds limits for a single payment channel within a provider instance.
 type ChannelLimits struct {
@@ -43,7 +45,29 @@ type DefaultLoadBalancer struct {
 
 type contextKey string
 
-const wxpayJSAPIAppIDContextKey contextKey = "payment.wxpay.jsapi_app_id"
+// instanceCandidate pairs an instance with its pre-fetched daily usage.
+type instanceCandidate struct {
+	inst      *ProviderInstance
+	dailyUsed float64 // 包含待支付和渠道处理中的订单
+}
+
+// InstanceSource 查询支付实例及其当日用量。
+type InstanceSource interface {
+	EnabledInstances(context.Context, string) ([]*ProviderInstance, error)
+	Instance(context.Context, int64) (*ProviderInstance, error)
+	DailyUsage(context.Context, []string, time.Time) (map[string]float64, error)
+	PaidDailyAmount(context.Context, string, time.Time) (float64, error)
+}
+
+type (
+	// SelectionObserver 接收渠道选择过程中的日志。
+	SelectionObserver func(string, string, ...any)
+	// SelectionRuntime 提供渠道选择使用的时钟和日志函数。
+	SelectionRuntime struct {
+		Now     func() time.Time
+		Observe SelectionObserver
+	}
+)
 
 // NewDefaultLoadBalancer creates a new load balancer.
 func NewDefaultLoadBalancer(source InstanceSource, encryptionKey []byte, runtime ...SelectionRuntime) *DefaultLoadBalancer {
@@ -71,12 +95,6 @@ func wxpayJSAPIAppIDFromContext(ctx context.Context) string {
 	}
 	appID, _ := ctx.Value(wxpayJSAPIAppIDContextKey).(string)
 	return strings.TrimSpace(appID)
-}
-
-// instanceCandidate pairs an instance with its pre-fetched daily usage.
-type instanceCandidate struct {
-	inst      *ProviderInstance
-	dailyUsed float64 // 包含待支付和渠道处理中的订单
 }
 
 // SelectInstance picks an enabled instance for the given provider key and payment type.
@@ -156,7 +174,7 @@ func (lb *DefaultLoadBalancer) queryEnabledInstances(
 }
 
 // attachDailyUsage queries daily usage for each instance in a single pass.
-// 占用量包含待支付和渠道处理中的订单，避免实例容量被超额分配。
+// 占用量包含待支付和渠道处理中的订单。
 func (lb *DefaultLoadBalancer) attachDailyUsage(
 	ctx context.Context,
 	instances []*ProviderInstance,
@@ -251,7 +269,7 @@ func (lb *DefaultLoadBalancer) pickByStrategy(candidates []instanceCandidate, st
 }
 
 // pickLeastAmount selects the instance with the lowest daily usage.
-// No extra DB queries — usage was pre-fetched in attachDailyUsage.
+// 当日用量由 attachDailyUsage 预先读取。
 func pickLeastAmount(candidates []instanceCandidate) instanceCandidate {
 	best := candidates[0]
 	for _, c := range candidates[1:] {
@@ -303,7 +321,7 @@ func InstanceSupportsType(supportedTypes string, target PaymentType) bool {
 		return true
 	}
 	normalizedTarget := normalizeVisibleMethodSupportType(target)
-	for _, t := range strings.Split(supportedTypes, ",") {
+	for t := range strings.SplitSeq(supportedTypes, ",") {
 		supported := strings.TrimSpace(t)
 		if supported == target || normalizeVisibleMethodSupportType(supported) == normalizedTarget {
 			return true

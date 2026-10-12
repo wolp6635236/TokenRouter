@@ -2,16 +2,17 @@ package scheduler
 
 import (
 	"context"
+	"slices"
 	"sync"
 )
-
-// ReleaseMode 由执行入口选择。ReleaseOnCompletion 在上游执行完成后归还容量。
-type ReleaseMode uint8
 
 const (
 	ReleaseOnCompletion ReleaseMode = iota
 	ReleaseOnCancel
 )
+
+// ReleaseMode 由执行入口选择。ReleaseOnCompletion 在上游执行完成后归还容量。
+type ReleaseMode uint8
 
 // Lease 持有本次请求实际取得的资源，按取得顺序的逆序清理。
 // @project-doc docs/architecture/gateway_request_lifecycle.md#account_selection_and_failover
@@ -22,6 +23,21 @@ type Lease struct {
 	stop      func() bool
 	once      sync.Once
 }
+
+// AttemptOutcome 中 Served 包括可结算的部分结果，决定空闲会话是否继续保留。
+type AttemptOutcome struct {
+	Served bool
+}
+
+// AttemptLease 管理本次提供商尝试的资源，父请求可在其结束后继续尝试其他提供商。
+type AttemptLease struct {
+	resources *Lease
+	finish    func(AttemptOutcome)
+	once      sync.Once
+}
+
+// requestLeaseKey 标识 context 中管理当前请求资源的 Lease。
+type requestLeaseKey struct{}
 
 // NewLease 先登记资源再关联取消，传入已取消的 context 时也会释放刚取得的资源。
 func NewLease(ctx context.Context, mode ReleaseMode, resources ...func()) *Lease {
@@ -73,8 +89,8 @@ func (l *Lease) Release() {
 		if stop != nil {
 			stop()
 		}
-		for i := len(resources) - 1; i >= 0; i-- {
-			resources[i]()
+		for _, resource := range slices.Backward(resources) {
+			resource()
 		}
 	})
 }
@@ -85,18 +101,6 @@ func WrapRelease(ctx context.Context, mode ReleaseMode, release func()) func() {
 		return nil
 	}
 	return NewLease(ctx, mode, release).Release
-}
-
-// AttemptOutcome 中 Served 包括既有可结算部分结果；它决定空闲会话是否继续保留。
-type AttemptOutcome struct {
-	Served bool
-}
-
-// AttemptLease 独立管理本次提供商尝试，父请求仍可在其结束后按旧规则尝试其他提供商。
-type AttemptLease struct {
-	resources *Lease
-	finish    func(AttemptOutcome)
-	once      sync.Once
 }
 
 // NewAttemptLease 注册到请求拥有者；没有完成结果的异常退出按失败清理。
@@ -123,3 +127,23 @@ func (a *AttemptLease) Finish(outcome AttemptOutcome) {
 
 // Release 将尚未完成的尝试按失败结果结束。
 func (a *AttemptLease) Release() { a.Finish(AttemptOutcome{}) }
+
+// WithRequestLease 将已经取得的用户租约传递给后续提供商尝试，执行层继续决定释放时机。
+func WithRequestLease(ctx context.Context, lease *Lease) context.Context {
+	return context.WithValue(ctx, requestLeaseKey{}, lease)
+}
+
+func RequestLease(ctx context.Context) *Lease {
+	if ctx == nil {
+		return nil
+	}
+	lease, _ := ctx.Value(requestLeaseKey{}).(*Lease)
+	return lease
+}
+
+// ownRequestResource 登记请求异常返回时的清理函数，attempt 完成和请求清理共用一次释放。
+func ownRequestResource(ctx context.Context, release func()) {
+	if owner := RequestLease(ctx); owner != nil {
+		owner.Own(release)
+	}
+}

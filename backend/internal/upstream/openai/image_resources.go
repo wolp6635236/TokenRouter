@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/imroc/req/v3"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 const (
@@ -30,6 +31,15 @@ type ImagePointerInfo struct {
 	B64JSON     string
 	MimeType    string
 	Prompt      string
+}
+
+type ImageStatusError struct {
+	StatusCode      int
+	Message         string
+	ResponseBody    []byte
+	ResponseHeaders http.Header
+	RequestID       string
+	URL             string
 }
 
 func CollectOpenAIImagePointers(body []byte) []ImagePointerInfo {
@@ -300,7 +310,7 @@ func FetchOpenAIImageDownloadURL(
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := range 8 {
 		var result struct {
 			DownloadURL string `json:"download_url"`
 		}
@@ -370,15 +380,6 @@ func DownloadOpenAIImageBytes(ctx context.Context, client *req.Client, headers h
 		return nil, NewOpenAIImageStatusError(resp, "download image bytes failed", errorBodyReadLimit)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, OpenAIImageMaxDownloadBytes))
-}
-
-type ImageStatusError struct {
-	StatusCode      int
-	Message         string
-	ResponseBody    []byte
-	ResponseHeaders http.Header
-	RequestID       string
-	URL             string
 }
 
 func (e *ImageStatusError) Error() string {

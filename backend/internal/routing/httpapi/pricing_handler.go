@@ -5,20 +5,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/gin-gonic/gin"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
-func NewPricingHandler(pricingConfigs *routing.PricingConfigService, catalog *routing.PricingCatalog) *PricingHandler {
-	return &PricingHandler{pricingConfigs: pricingConfigs, catalog: catalog}
-}
-
-// PricingHandler 处理管理员价格配置管理请求
+// PricingHandler 处理管理员价格配置管理请求。
 type PricingHandler struct {
 	pricingConfigs *routing.PricingConfigService
 	catalog        *routing.PricingCatalog
@@ -179,6 +175,10 @@ type providerStatsPricingRuleResponse struct {
 	GroupIDs    []int64                `json:"group_ids"`
 	ProviderIDs []int64                `json:"provider_ids"`
 	Pricing     []modelPricingResponse `json:"pricing"`
+}
+
+func NewPricingHandler(pricingConfigs *routing.PricingConfigService, catalog *routing.PricingCatalog) *PricingHandler {
+	return &PricingHandler{pricingConfigs: pricingConfigs, catalog: catalog}
 }
 
 // firstNonNilFloat 兼容旧版 fast_mode_multiplier 与新版 fast_multiplier。

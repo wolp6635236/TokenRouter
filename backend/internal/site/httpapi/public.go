@@ -1,10 +1,11 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/site"
 	"github.com/TokenFlux/TokenRouter/internal/site/httpapi/dto"
-	"github.com/gin-gonic/gin"
 )
 
 type PublicHandler struct {

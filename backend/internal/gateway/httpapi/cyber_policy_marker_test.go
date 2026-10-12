@@ -5,10 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 // TestCyberPolicyMarkerFirstEventAndTurnReset 验证首个上游证据保留到当前 turn 收尾，下一 turn 清除后才能登记新证据。

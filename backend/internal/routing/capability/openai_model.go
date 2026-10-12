@@ -3,9 +3,11 @@ package capability
 import (
 	"strconv"
 	"strings"
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// LastOpenAIModelSegment 为能力分类读取路径尾段，不参与模型改写或价格候选。
+// LastOpenAIModelSegment 返回能力分类使用的模型路径尾段。
 func LastOpenAIModelSegment(model string) string {
 	model = strings.TrimSpace(model)
 	if index := strings.LastIndexByte(model, '/'); index >= 0 {
@@ -41,7 +43,7 @@ func OpenAIModelSupportsMaxReasoningEffort(model string) bool {
 		return true
 	}
 
-	// 国产模型的原生 max 档位与 GPT-5.6 使用同一 usage 语义。
+	// 国产模型与 GPT-5.6 的 max 档位使用相同的用量记录值。
 	normalized := strings.ToLower(LastOpenAIModelSegment(model))
 	normalized = strings.ReplaceAll(normalized, "_", "-")
 	switch {
@@ -107,4 +109,13 @@ func ParseOpenAIModelVersion(model string) (major int, minor int, ok bool) {
 	}
 
 	return major, minor, true
+}
+
+// NormalizeRecordedOpenAIEffortForModel 按实际模型的 max 支持情况归一化记录值。
+func NormalizeRecordedOpenAIEffortForModel(raw string, model string) string {
+	value := protocolopenai.NormalizeRecordedReasoningEffort(raw)
+	if value == "max" && !OpenAIModelSupportsReasoningEffort(model, value) {
+		return ""
+	}
+	return value
 }

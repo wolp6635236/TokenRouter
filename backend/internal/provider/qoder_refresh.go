@@ -37,7 +37,7 @@ func QoderTokenCacheKey(provider *Record) string {
 
 func MergeQoderRefreshCredentials(oldCredentials, newCredentials map[string]any, site, refreshMode string, expiresAt time.Time) map[string]any {
 	newCredentials = MergeCredentials(oldCredentials, newCredentials)
-	newCredentials["site"] = string(site)
+	newCredentials["site"] = site
 	newCredentials["refresh_mode"] = refreshMode
 	if site == "cn" {
 		// 合并凭据后再次清理历史随机机器字段，使国内提供商使用对应站点的身份字段。
@@ -88,4 +88,34 @@ func NeedsRefreshQoderAfterFailure(value *Record, failedCredentials string, ttl 
 		return QoderRefreshCredentialsHash(value.Credentials) == failedCredentials
 	}
 	return NeedsRefreshQoder(value, ttl)
+}
+
+// QoderRefreshCredentialsHash 计算刷新身份字段的哈希，供凭据竞争检查使用。
+func QoderRefreshCredentialsHash(credentials map[string]any) string {
+	if len(credentials) == 0 {
+		return QoderCredentialsHash(nil)
+	}
+	keys := []string{
+		"pat",
+		"security_oauth_token",
+		"refresh_token",
+		"machine_id",
+		"machine_token",
+		"machine_type",
+		"uid",
+		"aid",
+		"organization_id",
+		"organization_name",
+		"name",
+		"user_type",
+		"site",
+		"refresh_mode",
+	}
+	auth := make(map[string]any, len(keys))
+	for _, key := range keys {
+		if value, ok := credentials[key]; ok {
+			auth[key] = value
+		}
+	}
+	return QoderCredentialsHash(auth)
 }

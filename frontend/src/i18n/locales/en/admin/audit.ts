@@ -34,7 +34,6 @@ export default {
       actorRole: 'Role',
       methodPath: 'Method / Path',
       latency: 'Latency',
-      requestId: 'Request ID',
       credential: 'Credential (masked)',
       userAgent: 'User-Agent',
       requestBody: 'Request Body (redacted)',

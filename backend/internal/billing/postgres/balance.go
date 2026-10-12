@@ -183,3 +183,8 @@ func (r *BalanceStore) CreditAffiliateTransfer(ctx context.Context, id int64, am
 func (r *BalanceStore) CreditRegistrationPromo(ctx context.Context, id int64, amount float64) error {
 	return r.UpdateBalance(ctx, id, amount)
 }
+
+// ApplyInitialUserFunds 将初始余额写入用户创建语句。
+func ApplyInitialUserFunds(create *dbent.UserCreate, funds billing.InitialUserFunds) {
+	create.SetBalance(funds.Balance)
+}

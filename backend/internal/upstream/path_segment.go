@@ -39,7 +39,7 @@ func IsSafeUpstreamPathSegment(segment string) bool {
 		return false
 	}
 	dotsOnly := true
-	for i := 0; i < len(segment); i++ {
+	for i := range len(segment) {
 		if !IsSafeUpstreamPathSegmentByte(segment[i]) {
 			return false
 		}

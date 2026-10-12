@@ -75,31 +75,26 @@ func (p *RefreshProviderState) RecordResult(err error) {
 		return
 	}
 	if errors.Is(err, ErrRefreshSkipped) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		var attemptTimeoutErr *RefreshAttemptTimeoutError
-		if !errors.As(err, &attemptTimeoutErr) {
+		if _, ok := errors.AsType[*RefreshAttemptTimeoutError](err); !ok {
 			return
 		}
 	}
-	var attemptTimeoutErr *RefreshAttemptTimeoutError
-	if errors.As(err, &attemptTimeoutErr) {
+	if _, ok := errors.AsType[*RefreshAttemptTimeoutError](err); ok {
 		p.consecutiveFailures++
 		if p.consecutiveFailures >= p.failureThreshold {
 			p.tripped = true
 		}
 		return
 	}
-	var providerErr *ProviderConfigurationRefreshError
-	if errors.As(err, &providerErr) {
+	if _, ok := errors.AsType[*ProviderConfigurationRefreshError](err); ok {
 		p.tripped = true
 		return
 	}
-	var containmentErr *ProviderCycleContainmentRefreshError
-	if errors.As(err, &containmentErr) {
+	if _, ok := errors.AsType[*ProviderCycleContainmentRefreshError](err); ok {
 		p.tripped = true
 		return
 	}
-	var permanentErr *ProviderPermanentRefreshError
-	if errors.As(err, &permanentErr) {
+	if _, ok := errors.AsType[*ProviderPermanentRefreshError](err); ok {
 		p.consecutiveFailures = 0
 		return
 	}

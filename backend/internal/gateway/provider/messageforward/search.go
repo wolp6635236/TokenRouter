@@ -32,8 +32,7 @@ func (r *Runtime) emulate(ctx context.Context, output HTTPBoundary, target *gate
 		ProxyURL: proxyURL, OnAccepted: parsed.OnUpstreamAccepted,
 	}, output.SearchOutput())
 	if err != nil {
-		var proxy *searchtools.ProxyFailure
-		if errors.As(err, &proxy) {
+		if _, ok := errors.AsType[*searchtools.ProxyFailure](err); ok {
 			return nil, &forward.UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(err.Error())}
 		}
 		return nil, err

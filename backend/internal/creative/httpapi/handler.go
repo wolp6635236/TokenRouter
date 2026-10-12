@@ -11,25 +11,54 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	middleware2 "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
 )
 
-// 创作台 multipart 单字段大小上限：配置值通过 limit+1 读取检测，避免静默截断。
-const creativeMaxUploadPartSize = 40 << 20
+const (
+	// 创作台 multipart 单字段大小上限：配置值通过 limit+1 读取检测，避免静默截断。
+	creativeMaxUploadPartSize = 40 << 20
 
-// multipart 请求体除图片外还包含字段与边界，预留少量空间后再套用总输入上限。
-const creativeMultipartOverheadBytes = 1 << 20
+	// multipart 请求体除图片外还包含字段与边界，预留少量空间后再套用总输入上限。
+	creativeMultipartOverheadBytes = 1 << 20
+)
 
 // CreativeHandler 处理创作台用户侧请求。
 type CreativeHandler struct {
 	enter   func() (func(), error)
 	service CreativeUseCases
+}
+
+// creativeCreateRunRequest 是创建任务 multipart 报文的解析结果。
+type creativeCreateRunRequest struct {
+	GroupID       int64
+	Model         string
+	Operation     string
+	Prompt        string
+	SourceImages  []creative.CreativeInputImage
+	Mask          *creative.CreativeInputImage
+	ImageSize     string
+	AspectRatio   string
+	Quality       string
+	Background    string
+	ThinkingLevel string
+}
+
+// CreativeUseCases 提供创作台 HTTP 处理器调用的任务操作。
+type CreativeUseCases interface {
+	ListModels(context.Context, int64) (*creative.CreativeModelsResponse, error)
+	GetCapabilities(context.Context) *creative.CreativeCapabilitiesResponse
+	MaxAssetBytes() int64
+	MaxTotalInputBytes() int64
+	CreateRun(context.Context, creative.CreativeRunScope, creative.CreateCreativeRunParamsPublic, string) (*creative.CreativeRunPublic, error)
+	ListRuns(context.Context, creative.CreativeRunScope, creative.CreativeRunFilter) (*creative.CreativeListRunsResponse, error)
+	GetRun(context.Context, creative.CreativeRunScope, string) (*creative.CreativeRunPublic, error)
+	GetOutputContent(context.Context, creative.CreativeRunScope, string, int) (*creative.CreativeOutputContent, error)
+	AckOutput(context.Context, creative.CreativeRunScope, string, int) error
 }
 
 // NewCreativeHandler 创建创作台 handler。
@@ -89,21 +118,6 @@ func (h *CreativeHandler) ListCapabilities(c *gin.Context) {
 		return
 	}
 	response.Success(c, h.service.GetCapabilities(c.Request.Context()))
-}
-
-// creativeCreateRunRequest 是创建任务 multipart 报文的解析结果。
-type creativeCreateRunRequest struct {
-	GroupID       int64
-	Model         string
-	Operation     string
-	Prompt        string
-	SourceImages  []creative.CreativeInputImage
-	Mask          *creative.CreativeInputImage
-	ImageSize     string
-	AspectRatio   string
-	Quality       string
-	Background    string
-	ThinkingLevel string
 }
 
 // CreateRun 解析 multipart/form-data 并创建创作台任务。
@@ -210,15 +224,11 @@ func parseCreativeCreateRunMultipart(c *gin.Context, partLimit, totalInputLimit 
 				_ = part.Close()
 				return nil, creative.ErrCreativeInputTooLarge
 			}
-			readLimit := partLimit
-			if remaining < readLimit {
-				readLimit = remaining
-			}
+			readLimit := min(remaining, partLimit)
 			data, readErr := io.ReadAll(io.LimitReader(part, readLimit+1))
 			_ = part.Close()
 			if readErr != nil {
-				var maxBytesErr *http.MaxBytesError
-				if errors.As(readErr, &maxBytesErr) {
+				if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
 					return nil, creative.ErrCreativeInputTooLarge
 				}
 				return nil, readErr
@@ -499,19 +509,6 @@ func (h *CreativeHandler) AckOutput(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"acked": true})
-}
-
-// CreativeUseCases 提供创作台 HTTP 处理器调用的任务操作。
-type CreativeUseCases interface {
-	ListModels(context.Context, int64) (*creative.CreativeModelsResponse, error)
-	GetCapabilities(context.Context) *creative.CreativeCapabilitiesResponse
-	MaxAssetBytes() int64
-	MaxTotalInputBytes() int64
-	CreateRun(context.Context, creative.CreativeRunScope, creative.CreateCreativeRunParamsPublic, string) (*creative.CreativeRunPublic, error)
-	ListRuns(context.Context, creative.CreativeRunScope, creative.CreativeRunFilter) (*creative.CreativeListRunsResponse, error)
-	GetRun(context.Context, creative.CreativeRunScope, string) (*creative.CreativeRunPublic, error)
-	GetOutputContent(context.Context, creative.CreativeRunScope, string, int) (*creative.CreativeOutputContent, error)
-	AckOutput(context.Context, creative.CreativeRunScope, string, int) error
 }
 
 // BindActivity 在构造阶段绑定任务入口关闭屏障，释放覆盖完整 HTTP 流式输出。

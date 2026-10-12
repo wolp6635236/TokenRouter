@@ -4,14 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
+
+const (
+	upstreamUsageTimeout     = 60 * time.Second
+	upstreamUsageBatchLimit  = 100
+	upstreamUsageConcurrency = 4
+)
+
+var ErrUpstreamUsageStopped = errors.New("upstream usage queries are stopped")
 
 // UpstreamUsageReader 读取当前提供商身份。
 type UpstreamUsageReader interface {
@@ -39,14 +49,6 @@ type UpstreamUsageService struct {
 	metrics      map[string]int64
 	activity     operationActivity
 }
-
-const (
-	upstreamUsageTimeout     = 60 * time.Second
-	upstreamUsageBatchLimit  = 100
-	upstreamUsageConcurrency = 4
-)
-
-var ErrUpstreamUsageStopped = errors.New("upstream usage queries are stopped")
 
 func NewUpstreamUsageService(reader UpstreamUsageReader, execution UpstreamUsageExecution, options UpstreamUsageOptions) *UpstreamUsageService {
 	return &UpstreamUsageService{providerRepo: reader, execution: execution, now: options.Now, querySlots: make(chan struct{}, upstreamUsageConcurrency), metrics: make(map[string]int64)}
@@ -88,9 +90,7 @@ func (s *UpstreamUsageService) SnapshotMetrics() UpstreamUsageMetrics {
 	}
 	s.metricsMu.Lock()
 	defer s.metricsMu.Unlock()
-	for key, value := range s.metrics {
-		result.Counts[key] = value
-	}
+	maps.Copy(result.Counts, s.metrics)
 	return result
 }
 
@@ -199,7 +199,6 @@ func (s *UpstreamUsageService) QueryBatch(ctx context.Context, providerIDs []int
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(upstreamUsageConcurrency)
 	for _, id := range unique {
-		id := id
 		group.Go(func() error {
 			result, err := s.QueryProvider(groupCtx, id)
 			mu.Lock()
@@ -222,7 +221,7 @@ func (s *UpstreamUsageService) queryProvider(ctx context.Context, providerID int
 	defer func() {
 		outcome := "success"
 		if err != nil {
-			outcome = infraerrors.Reason(err)
+			outcome = apperror.Reason(err)
 			if outcome == "" {
 				outcome = "error"
 			}

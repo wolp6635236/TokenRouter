@@ -7,11 +7,13 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-const maxUpstreamRequestIDHeaderNameLen = 64
+const (
+	maxUpstreamRequestIDHeaderNameLen = 64
 
-// ProviderExtraUpstreamRequestIDHeader 是提供商 extra 中的键，值为直接上游声明请求标识的响应头名。
-// 未指定时不记录上游请求标识。
-const ProviderExtraUpstreamRequestIDHeader = "upstream_request_id_header"
+	// ProviderExtraUpstreamRequestIDHeader 是提供商 extra 中的键，值为直接上游声明请求标识的响应头名。
+	// 未指定时不记录上游请求标识。
+	ProviderExtraUpstreamRequestIDHeader = "upstream_request_id_header"
+)
 
 // UpstreamRequestIDHeaderName 返回提供商指定的上游请求标识头名，未指定时为空串。
 func UpstreamRequestIDHeaderName(provider *Record) string {

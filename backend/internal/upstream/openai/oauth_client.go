@@ -10,21 +10,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imroc/req/v3"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/imroc/req/v3"
 )
-
-// NewOAuthClient creates a new OpenAI OAuth client
-func NewOAuthClient(httpUpstream OAuthHTTPUpstream) *OAuthClient {
-	return &OAuthClient{tokenURL: TokenURL, httpUpstream: httpUpstream}
-}
 
 type OAuthClient struct {
 	tokenURL     string
 	httpUpstream OAuthHTTPUpstream
+}
+
+// OAuthTokenRequestOptions 只描述本次交换的技术身份及 TLS 快照。
+type OAuthTokenRequestOptions struct {
+	UserAgent           string
+	TLSProfile          *tlsfingerprint.Profile
+	ProviderID          int64
+	ProviderConcurrency int
+}
+
+// OAuthHTTPUpstream 复用应用唯一 HTTP 池，不读取提供商实体或配置。
+type OAuthHTTPUpstream interface {
+	DoWithTLS(*http.Request, string, int64, int, *tlsfingerprint.Profile) (*http.Response, error)
+}
+
+// NewOAuthClient creates a new OpenAI OAuth client.
+func NewOAuthClient(httpUpstream OAuthHTTPUpstream) *OAuthClient {
+	return &OAuthClient{tokenURL: TokenURL, httpUpstream: httpUpstream}
 }
 
 func (s *OAuthClient) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string, options ...OAuthTokenRequestOptions) (*TokenResponse, error) {
@@ -184,17 +198,4 @@ func newOpenAINoProxyHintError(cause error) error {
 		"OPENAI_OAUTH_PROXY_REQUIRED",
 		"OpenAI OAuth request failed: no proxy is configured and this server could not reach OpenAI directly. Select a proxy that can access OpenAI, then retry; if the authorization code has expired, regenerate the authorization URL.",
 	).WithCause(cause)
-}
-
-// OAuthTokenRequestOptions 只描述本次交换的技术身份及 TLS 快照。
-type OAuthTokenRequestOptions struct {
-	UserAgent           string
-	TLSProfile          *tlsfingerprint.Profile
-	ProviderID          int64
-	ProviderConcurrency int
-}
-
-// OAuthHTTPUpstream 复用应用唯一 HTTP 池，不读取提供商实体或配置。
-type OAuthHTTPUpstream interface {
-	DoWithTLS(*http.Request, string, int64, int, *tlsfingerprint.Profile) (*http.Response, error)
 }

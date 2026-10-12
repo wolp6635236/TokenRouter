@@ -8,15 +8,20 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/httpapi/dto"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
 )
 
-// OpenAIOAuthHandler handles OpenAI OAuth-related operations
+const (
+	OpenAIQuotaResetWarningCacheRefreshFailed     = providercore.OpenAIQuotaResetWarningCacheRefreshFailed
+	OpenAIQuotaResetWarningProviderRecoveryFailed = providercore.OpenAIQuotaResetWarningProviderRecoveryFailed
+)
+
+// OpenAIOAuthHandler handles OpenAI OAuth-related operations.
 type OpenAIOAuthHandler struct {
 	QuotaActions  *providercore.OpenAIQuotaActions
 	Import        *providercore.OpenAIProviderImport
@@ -38,11 +43,6 @@ type OpenAIProviderStateRecoverer interface {
 	RecoverProviderState(ctx context.Context, providerID int64, options providercore.ProviderRecoveryOptions) (*providercore.SuccessfulTestRecovery, error)
 }
 
-const (
-	OpenAIQuotaResetWarningCacheRefreshFailed     = providercore.OpenAIQuotaResetWarningCacheRefreshFailed
-	OpenAIQuotaResetWarningProviderRecoveryFailed = providercore.OpenAIQuotaResetWarningProviderRecoveryFailed
-)
-
 type OpenAIQuotaResetResponse struct {
 	wire.OpenAIQuotaResetResult
 	Quota                  *wire.OpenAIQuotaUsage `json:"quota,omitempty"`
@@ -57,14 +57,80 @@ type OpenAIQuotaRefreshResponse struct {
 	CachePersisted bool `json:"cache_persisted"`
 }
 
+// OpenAIGenerateAuthURLRequest represents the request for generating OpenAI auth URL.
+type OpenAIGenerateAuthURLRequest struct {
+	ProxyID     *int64 `json:"proxy_id"`
+	RedirectURI string `json:"redirect_uri"`
+}
+
+// OpenAIExchangeCodeRequest represents the request for exchanging OpenAI auth code.
+type OpenAIExchangeCodeRequest struct {
+	SessionID              string `json:"session_id" binding:"required"`
+	Code                   string `json:"code" binding:"required"`
+	State                  string `json:"state" binding:"required"`
+	RedirectURI            string `json:"redirect_uri"`
+	ProxyID                *int64 `json:"proxy_id"`
+	TLSFingerprintRouterID *int64 `json:"tls_fingerprint_router_id"`
+}
+
+// OpenAIRefreshTokenRequest represents the request for refreshing OpenAI token.
+type OpenAIRefreshTokenRequest struct {
+	RefreshToken           string `json:"refresh_token"`
+	RT                     string `json:"rt"`
+	ClientID               string `json:"client_id"`
+	ProxyID                *int64 `json:"proxy_id"`
+	TLSFingerprintRouterID *int64 `json:"tls_fingerprint_router_id"`
+}
+
+type OpenAICodexPATCreateRequest struct {
+	AccessToken        string         `json:"access_token" binding:"required"`
+	Name               string         `json:"name"`
+	Notes              *string        `json:"notes"`
+	GroupIDs           []int64        `json:"group_ids"`
+	ProxyID            *int64         `json:"proxy_id"`
+	Concurrency        *int           `json:"concurrency"`
+	Priority           *int           `json:"priority"`
+	RateMultiplier     *float64       `json:"rate_multiplier"`
+	LoadFactor         *int           `json:"load_factor"`
+	ExpiresAt          *int64         `json:"expires_at"`
+	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
+	CredentialExtras   map[string]any `json:"credential_extras"`
+	Extra              map[string]any `json:"extra"`
+}
+
+// CreateShadowRequest 是创建 Spark 影子提供商的请求体。
+type CreateShadowRequest struct {
+	Name        string  `json:"name"`
+	Priority    int     `json:"priority"`
+	Concurrency int     `json:"concurrency"`
+	GroupIDs    []int64 `json:"group_ids"`
+}
+
+type OpenAIAdminOperations interface {
+	GetProvider(context.Context, int64) (*providercore.Record, error)
+	CreateProvider(context.Context, *providercore.CreateProviderInput) (*providercore.Record, error)
+	UpdateProvider(context.Context, int64, *providercore.UpdateProviderInput) (*providercore.Record, error)
+	CreateShadow(context.Context, int64, providercore.ShadowOptions) (*providercore.Record, error)
+}
+type OpenAIHTTPOptions struct {
+	ProxyURL func(context.Context, int64) (string, bool, error)
+	ClientID func(string) (string, bool)
+}
+
 func oauthPlatformFromPath(c *gin.Context) string {
 	return "openai"
 }
 
-// OpenAIGenerateAuthURLRequest represents the request for generating OpenAI auth URL
-type OpenAIGenerateAuthURLRequest struct {
-	ProxyID     *int64 `json:"proxy_id"`
-	RedirectURI string `json:"redirect_uri"`
+func NewOpenAIOAuthHandler(auth *providercore.OpenAIAuthorization, admin OpenAIAdminOperations, quota OpenAIQuotaService, recovery OpenAIProviderStateRecoverer, options OpenAIHTTPOptions) *OpenAIOAuthHandler {
+	return &OpenAIOAuthHandler{
+		Authorization: auth,
+		Admin:         admin,
+		Quota:         quota,
+		Recovery:      recovery,
+		Options:       options,
+		Import:        providercore.NewOpenAIProviderImport(auth, admin, options.ProxyURL),
+		QuotaActions:  providercore.NewOpenAIQuotaActions(quota, recovery, admin, slog.Warn),
+	}
 }
 
 // GenerateAuthURL generates OpenAI OAuth authorization URL
@@ -88,16 +154,6 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	}
 
 	response.Success(c, result)
-}
-
-// OpenAIExchangeCodeRequest represents the request for exchanging OpenAI auth code
-type OpenAIExchangeCodeRequest struct {
-	SessionID              string `json:"session_id" binding:"required"`
-	Code                   string `json:"code" binding:"required"`
-	State                  string `json:"state" binding:"required"`
-	RedirectURI            string `json:"redirect_uri"`
-	ProxyID                *int64 `json:"proxy_id"`
-	TLSFingerprintRouterID *int64 `json:"tls_fingerprint_router_id"`
 }
 
 // ExchangeCode exchanges OpenAI authorization code for tokens
@@ -128,31 +184,6 @@ func (h *OpenAIOAuthHandler) ExchangeCode(c *gin.Context) {
 	}
 
 	response.Success(c, tokenInfo)
-}
-
-// OpenAIRefreshTokenRequest represents the request for refreshing OpenAI token
-type OpenAIRefreshTokenRequest struct {
-	RefreshToken           string `json:"refresh_token"`
-	RT                     string `json:"rt"`
-	ClientID               string `json:"client_id"`
-	ProxyID                *int64 `json:"proxy_id"`
-	TLSFingerprintRouterID *int64 `json:"tls_fingerprint_router_id"`
-}
-
-type OpenAICodexPATCreateRequest struct {
-	AccessToken        string         `json:"access_token" binding:"required"`
-	Name               string         `json:"name"`
-	Notes              *string        `json:"notes"`
-	GroupIDs           []int64        `json:"group_ids"`
-	ProxyID            *int64         `json:"proxy_id"`
-	Concurrency        *int           `json:"concurrency"`
-	Priority           *int           `json:"priority"`
-	RateMultiplier     *float64       `json:"rate_multiplier"`
-	LoadFactor         *int           `json:"load_factor"`
-	ExpiresAt          *int64         `json:"expires_at"`
-	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
-	CredentialExtras   map[string]any `json:"credential_extras"`
-	Extra              map[string]any `json:"extra"`
 }
 
 // RefreshToken refreshes an OpenAI OAuth token
@@ -312,8 +343,7 @@ func (h *OpenAIOAuthHandler) RefreshQuota(c *gin.Context) {
 
 	value, err := h.quotaActions().Refresh(c.Request.Context(), providerID)
 	if err != nil {
-		var missing *providercore.OpenAIQuotaOutcomeError
-		if errors.As(err, &missing) {
+		if missing, ok := errors.AsType[*providercore.OpenAIQuotaOutcomeError](err); ok {
 			response.Error(c, http.StatusInternalServerError, missing.Message)
 		} else {
 			response.ErrorFrom(c, err)
@@ -322,14 +352,6 @@ func (h *OpenAIOAuthHandler) RefreshQuota(c *gin.Context) {
 	}
 	output := OpenAIQuotaRefreshResponse{OpenAIQuotaUsage: value.OpenAIQuotaUsage, CachePersisted: value.CachePersisted}
 	response.Success(c, output)
-}
-
-// CreateShadowRequest 是创建 Spark 影子提供商的请求体。
-type CreateShadowRequest struct {
-	Name        string  `json:"name"`
-	Priority    int     `json:"priority"`
-	Concurrency int     `json:"concurrency"`
-	GroupIDs    []int64 `json:"group_ids"`
 }
 
 // CreateShadow 为母 OpenAI OAuth 提供商创建 spark 维度影子提供商。
@@ -375,8 +397,7 @@ func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 	}
 	value, err := h.quotaActions().Reset(c.Request.Context(), providerID)
 	if err != nil {
-		var missing *providercore.OpenAIQuotaOutcomeError
-		if errors.As(err, &missing) {
+		if missing, ok := errors.AsType[*providercore.OpenAIQuotaOutcomeError](err); ok {
 			response.Error(c, http.StatusInternalServerError, missing.Message)
 		} else {
 			response.ErrorFrom(c, err)
@@ -394,29 +415,6 @@ func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 	response.Success(c, output)
 }
 
-type OpenAIAdminOperations interface {
-	GetProvider(context.Context, int64) (*providercore.Record, error)
-	CreateProvider(context.Context, *providercore.CreateProviderInput) (*providercore.Record, error)
-	UpdateProvider(context.Context, int64, *providercore.UpdateProviderInput) (*providercore.Record, error)
-	CreateShadow(context.Context, int64, providercore.ShadowOptions) (*providercore.Record, error)
-}
-type OpenAIHTTPOptions struct {
-	ProxyURL func(context.Context, int64) (string, bool, error)
-	ClientID func(string) (string, bool)
-}
-
-func NewOpenAIOAuthHandler(auth *providercore.OpenAIAuthorization, admin OpenAIAdminOperations, quota OpenAIQuotaService, recovery OpenAIProviderStateRecoverer, options OpenAIHTTPOptions) *OpenAIOAuthHandler {
-	return &OpenAIOAuthHandler{
-		Authorization: auth,
-		Admin:         admin,
-		Quota:         quota,
-		Recovery:      recovery,
-		Options:       options,
-		Import:        providercore.NewOpenAIProviderImport(auth, admin, options.ProxyURL),
-		QuotaActions:  providercore.NewOpenAIQuotaActions(quota, recovery, admin, slog.Warn),
-	}
-}
-
 // providerImport 无缓存用例只复用 handler 已持有的唯一提供商/授权依赖。
 func (h *OpenAIOAuthHandler) providerImport() *providercore.OpenAIProviderImport {
 	if h.Import != nil {
@@ -427,8 +425,7 @@ func (h *OpenAIOAuthHandler) providerImport() *providercore.OpenAIProviderImport
 }
 
 func writeOpenAIProviderImportError(c *gin.Context, err error) {
-	var inputError *providercore.OpenAIProviderInputError
-	if errors.As(err, &inputError) {
+	if inputError, ok := errors.AsType[*providercore.OpenAIProviderInputError](err); ok {
 		response.BadRequest(c, inputError.Message)
 		return
 	}

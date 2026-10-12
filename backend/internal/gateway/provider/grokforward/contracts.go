@@ -13,6 +13,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+const ComposerVisionModel = "grok-build-0.1"
+
 // Input 包含已选提供商和本次请求参数。
 type Input struct {
 	ProviderID                           int64
@@ -30,8 +32,6 @@ type Options struct {
 	MaxLineSize int
 	Enter       func() (func(), error)
 }
-
-const ComposerVisionModel = "grok-build-0.1"
 
 type (
 	Decision struct{ Generic, Failover, RetrySameProvider bool }

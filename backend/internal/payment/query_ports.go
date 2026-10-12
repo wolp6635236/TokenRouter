@@ -35,9 +35,6 @@ func QueryPagination(pageSize, page int) (size, pg int) {
 	if size > 100 {
 		size = 100
 	}
-	pg = page
-	if pg < 1 {
-		pg = 1
-	}
+	pg = max(page, 1)
 	return
 }

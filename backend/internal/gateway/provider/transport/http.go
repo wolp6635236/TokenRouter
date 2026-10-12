@@ -19,29 +19,29 @@ import (
 	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
-// 默认配置常量
-// 这些值在配置文件未指定时作为回退默认值使用
 const (
+	// 默认配置常量
+	// 这些值在配置文件未指定时作为回退默认值使用
 	// defaultMaxIdleConns: 默认最大空闲连接总数
-	// HTTP/2 场景下，单连接可多路复用，240 足以支撑高并发
+	// HTTP/2 场景下，单连接可多路复用，240 足以支撑高并发。
 	defaultMaxIdleConns = 240
-	// defaultMaxIdleConnsPerHost: 默认每主机最大空闲连接数
+	// defaultMaxIdleConnsPerHost: 默认每主机最大空闲连接数。
 	defaultMaxIdleConnsPerHost = 120
 	// defaultMaxConnsPerHost: 默认每主机最大连接数（含活跃连接）
 	// 达到连接上限后，新请求等待空闲连接。
 	defaultMaxConnsPerHost = 240
-	// defaultIdleConnTimeout: 默认空闲连接超时时间（90秒）
-	// 超时后连接会被关闭，释放系统资源（建议小于上游 LB 超时）
+	// defaultIdleConnTimeout: 默认空闲连接超时时间（90 秒）
+	// 超时后连接会被关闭，释放系统资源（建议小于上游 LB 超时）。
 	defaultIdleConnTimeout = 90 * time.Second
-	// defaultResponseHeaderTimeout: 默认等待响应头超时时间（5分钟）
-	// LLM 请求可能排队较久，需要较长超时
+	// defaultResponseHeaderTimeout: 默认等待响应头超时时间（5 分钟）
+	// LLM 请求可能排队较久，需要较长超时。
 	defaultResponseHeaderTimeout = 300 * time.Second
 	// defaultMaxUpstreamClients: 默认最大客户端缓存数量
-	// 超出后会淘汰最久未使用的客户端
+	// 超出后会淘汰最久未使用的客户端。
 	defaultMaxUpstreamClients = 5000
-	// defaultClientIdleTTLSeconds: 默认客户端空闲回收阈值（15分钟）
+	// defaultClientIdleTTLSeconds: 默认客户端空闲回收阈值（15 分钟）。
 	defaultClientIdleTTLSeconds = 900
-	// OpenAI HTTP/2 代理回退策略默认值
+	// OpenAI HTTP/2 代理回退策略默认值。
 	defaultOpenAIHTTP2FallbackErrorThreshold = 2
 	defaultOpenAIHTTP2FallbackWindow         = 60 * time.Second
 	defaultOpenAIHTTP2FallbackTTL            = 10 * time.Minute
@@ -50,11 +50,8 @@ const (
 	// 同时允许运维人员通过环境变量升级，无需等待 TokenRouter 发版。
 	grokCLIProxyHost    = "cli-chat-proxy.grok.com"
 	grokOfficialAPIHost = "api.x.ai"
-	// preferred pin (not the minimum floor)
+	// preferred pin (not the minimum floor).
 
-)
-
-const (
 	upstreamProtocolModeDefault          = "default"
 	upstreamProtocolModeOpenAIH1         = "openai_h1"
 	upstreamProtocolModeOpenAIH2         = "openai_h2"
@@ -67,6 +64,19 @@ type openAIHTTP2Settings struct {
 	fallbackErrorThreshold    int
 	fallbackWindow            time.Duration
 	fallbackTTL               time.Duration
+}
+
+// poolSettings 是连接池参数类型，app 提供配置值。
+type poolSettings = httpclient.UpstreamSettings
+
+// upstreamPool 定义平台调用连接池的接口，测试可替换其传输实现。
+type upstreamPool interface {
+	Do(*http.Request, httpclient.UpstreamRequestOptions) (*http.Response, error)
+}
+type Client struct {
+	source          func() *Options
+	pool            upstreamPool
+	transportPolicy egress.TransportPolicy
 }
 
 // httpClientForEgressPolicy 根据请求的出口策略派生客户端并设置重定向检查。
@@ -124,10 +134,7 @@ func (s *Client) validateRequestHost(req *http.Request) error {
 	if host == "" {
 		return errors.New("request host is empty")
 	}
-	if err := httpclient.ValidateResolvedIP(host); err != nil {
-		return err
-	}
-	return nil
+	return httpclient.ValidateResolvedIP(host)
 }
 
 func (s *Client) redirectChecker(req *http.Request, via []*http.Request) error {
@@ -159,7 +166,7 @@ func (s *Client) getIsolationMode() string {
 }
 
 // maxUpstreamClients 获取最大客户端缓存数量
-// 从配置中读取，无效值使用默认值
+// 从配置中读取，无效值使用默认值。
 func (s *Client) maxUpstreamClients() int {
 	if s.options() == nil {
 		return defaultMaxUpstreamClients
@@ -171,7 +178,7 @@ func (s *Client) maxUpstreamClients() int {
 }
 
 // clientIdleTTL 获取客户端空闲回收阈值
-// 从配置中读取，无效值使用默认值
+// 从配置中读取，无效值使用默认值。
 func (s *Client) clientIdleTTL() time.Duration {
 	if s.options() == nil {
 		return time.Duration(defaultClientIdleTTLSeconds) * time.Second
@@ -379,19 +386,6 @@ func defaultPoolSettings(cfg *Options) poolSettings {
 		IdleConnTimeout:       idleConnTimeout,
 		ResponseHeaderTimeout: responseHeaderTimeout,
 	}
-}
-
-// poolSettings 是连接池参数类型，app 提供配置值。
-type poolSettings = httpclient.UpstreamSettings
-
-// upstreamPool 定义平台调用连接池的接口，测试可替换其传输实现。
-type upstreamPool interface {
-	Do(*http.Request, httpclient.UpstreamRequestOptions) (*http.Response, error)
-}
-type Client struct {
-	source          func() *Options
-	pool            upstreamPool
-	transportPolicy egress.TransportPolicy
 }
 
 // New 创建唯一传输适配器，参数读取和底层连接池各自保持原作用域。

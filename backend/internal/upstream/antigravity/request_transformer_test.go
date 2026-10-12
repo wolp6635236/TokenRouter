@@ -5,11 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 )
 
-// TestBuildParts_ThinkingBlockWithoutSignature 测试thinking block无signature时的处理
+// TestBuildParts_ThinkingBlockWithoutSignature 测试 thinking block 无 signature 时的处理。
 func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -150,7 +151,7 @@ func TestBuildParts_ToolUseSignatureHandling(t *testing.T) {
 	})
 }
 
-// TestBuildTools_CustomTypeTools 测试custom类型工具转换
+// TestBuildTools_CustomTypeTools 测试 custom 类型工具转换。
 func TestBuildTools_CustomTypeTools(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -252,7 +253,7 @@ func TestBuildTools_CustomTypeTools(t *testing.T) {
 				t.Errorf("%s: got %d tool declarations, want %d", tt.description, len(result), tt.expectedLen)
 			}
 
-			// 验证function declarations存在
+			// 验证 function declarations 存在
 			if len(result) > 0 && result[0].FunctionDeclarations != nil {
 				if len(result[0].FunctionDeclarations) != len(tt.tools) {
 					t.Errorf("%s: got %d function declarations, want %d",
@@ -679,5 +680,28 @@ func TestWebSearchPreservesSelectedModel(t *testing.T) {
 		var wrapped V1InternalRequest
 		require.NoError(t, json.Unmarshal(body, &wrapped))
 		require.Equal(t, model, wrapped.Model)
+	}
+}
+
+// TestIdentityPatchOmitsModelDeclaration 通用补丁继续发送，型号身份声明已移除。
+func TestIdentityPatchOmitsModelDeclaration(t *testing.T) {
+	var request ClaudeRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"model":"claude-sonnet-4-6","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`), &request))
+	body, err := TransformClaudeToGemini(&request, "project", "claude-sonnet-4-6")
+	require.NoError(t, err)
+	require.Contains(t, string(body), "You are Antigravity")
+	require.NotContains(t, string(body), "You are Model")
+	require.NotContains(t, string(body), "ModelId is")
+}
+
+// TestReasoningRequestRules 覆盖需要特殊参数处理的完整型号。
+func TestReasoningRequestRules(t *testing.T) {
+	for _, id := range []string{"gemini-2.5-flash-thinking", "gemini-3-pro-high", "gemini-3.1-pro-high", "gemini-3.6-flash-high", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"} {
+		if !IsGeminiReasoningModel(id) {
+			t.Errorf("missing request rule for %s", id)
+		}
+	}
+	if IsGeminiReasoningModel("unknown-model") {
+		t.Fatal("unknown model acquired reasoning rules")
 	}
 }

@@ -12,21 +12,6 @@ type NullableFloat64Patch struct {
 	Value   *float64 `json:"-"`
 }
 
-func (p *NullableFloat64Patch) UnmarshalJSON(data []byte) error {
-	p.Present = true
-	p.Value = nil
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return nil
-	}
-
-	var value float64
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	p.Value = &value
-	return nil
-}
-
 type CreatePlanRequest struct {
 	Localization         *locale.Update[PlanCopy] `json:"localization"`
 	GroupID              int64                    `json:"group_id"`
@@ -67,4 +52,19 @@ type UpdatePlanRequest struct {
 	ProductName          *string                  `json:"product_name"`
 	ForSale              *bool                    `json:"for_sale"`
 	SortOrder            *int                     `json:"sort_order"`
+}
+
+func (p *NullableFloat64Patch) UnmarshalJSON(data []byte) error {
+	p.Present = true
+	p.Value = nil
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+
+	var value float64
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	p.Value = &value
+	return nil
 }

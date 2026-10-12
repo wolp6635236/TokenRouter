@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
@@ -26,6 +27,14 @@ type Attributes struct {
 	Attachment              *bool                  `json:"attachment,omitempty"`
 }
 
+// Presentation 是模型信息的展示值，不表达网关准入决策。
+type Presentation struct {
+	SearchTerms            []string           `json:"search_terms,omitempty"`
+	LocalizationResolution *locale.Resolution `json:"localization_resolution,omitempty"`
+	Attributes
+	RouteDifferences bool `json:"route_differences,omitempty"`
+}
+
 // fields 通过值编码复制所有可选字段，避免展示消费者改写目录快照。
 func (a Attributes) fields() map[string]json.RawMessage {
 	body, _ := json.Marshal(a)
@@ -37,13 +46,40 @@ func (a Attributes) fields() map[string]json.RawMessage {
 // Merge 按字段覆盖，未填写的字段继续继承，数组整体替换。
 func Merge(base, patch Attributes) Attributes {
 	fields := base.fields()
-	for key, value := range patch.fields() {
-		fields[key] = value
-	}
+	maps.Copy(fields, patch.fields())
 	body, _ := json.Marshal(fields)
 	var result Attributes
 	_ = json.Unmarshal(body, &result)
 	return result
+}
+
+// ApplyAttributeSupplement 从模型补充条目的 attributes 中填入缺失字段。
+// 目录中的 false 和空数组优先，同名中继继续使用各自的属性。
+func (c *Catalog) ApplyAttributeSupplement(model string, body json.RawMessage) error {
+	var supplement struct {
+		Provider   string      `json:"provider"`
+		Attributes *Attributes `json:"attributes"`
+	}
+	if err := json.Unmarshal(body, &supplement); err != nil {
+		return fmt.Errorf("invalid model supplement %s: %w", model, err)
+	}
+	if supplement.Attributes == nil {
+		return nil
+	}
+	if err := supplement.Attributes.Validate(); err != nil {
+		return fmt.Errorf("invalid model attributes %s: %w", model, err)
+	}
+	key := normalize(model)
+	entry, exists := c.Entries[key]
+	if c.Ambiguous[key] || (exists && supplement.Provider != "" && entry.Provider != supplement.Provider) {
+		return nil
+	}
+	if !exists {
+		entry = Entry{Model: model, Provider: supplement.Provider, Source: "local_supplement"}
+	}
+	entry.Attributes = Merge(*supplement.Attributes, entry.Attributes)
+	c.Entries[key] = entry
+	return nil
 }
 
 // Validate 校验管理员编辑值；目录中的零长度由解析器转换为未知。
@@ -128,12 +164,4 @@ func intersection(a, b *[]string) *[]string {
 		}
 	}
 	return &result
-}
-
-// Presentation 是模型信息的展示值，不表达网关准入决策。
-type Presentation struct {
-	SearchTerms            []string           `json:"search_terms,omitempty"`
-	LocalizationResolution *locale.Resolution `json:"localization_resolution,omitempty"`
-	Attributes
-	RouteDifferences bool `json:"route_differences,omitempty"`
 }

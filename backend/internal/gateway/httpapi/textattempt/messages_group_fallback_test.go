@@ -7,6 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -23,9 +27,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 )
 
 // newFallbackMessageBridge 调用 Open 和 Begin 建立入口快照，并提供远端授权和缓存替身。

@@ -120,7 +120,8 @@ def plan(files, base, go_packages=go_test_packages):
 
     if any(f.startswith('deploy/') or f.startswith('tools/goreleaser') for f in files):
         commands.append(('.', ['make', 'test-scripts']))
-    if any((f.startswith('tools/') and f.endswith('.py')) or f.startswith('.githooks/') for f in files):
+    if any((f.startswith('tools/') and f.endswith('.py')) or f.startswith(('tools/declorder/', '.githooks/'))
+           for f in files):
         commands.append(('.', ['make', 'test-tools']))
     return commands
 

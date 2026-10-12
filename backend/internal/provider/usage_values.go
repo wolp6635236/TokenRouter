@@ -3,7 +3,40 @@ package provider
 import (
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
+)
+
+var (
+	ErrUpstreamUsageUnavailable = apperror.ServiceUnavailable(
+		"UPSTREAM_USAGE_UNAVAILABLE", "upstream usage query service is unavailable",
+	)
+	ErrUpstreamUsageProviderInvalid = apperror.BadRequest(
+		"UPSTREAM_USAGE_PROVIDER_INVALID", "provider is not a supported API key provider",
+	)
+	ErrUpstreamUsageProviderDisabled = apperror.New(apperror.Category(422),
+		"UPSTREAM_USAGE_PROVIDER_DISABLED", "provider is disabled",
+	)
+	ErrUpstreamUsageDisabled = apperror.New(apperror.Category(422),
+		"UPSTREAM_USAGE_DISABLED", "upstream usage query is disabled for this provider",
+	)
+	ErrUpstreamUsageUnsupported = usageview.ErrUpstreamUsageUnsupported
+
+	ErrUpstreamUsageWalletUnavailable = usageview.ErrUpstreamUsageWalletUnavailable
+
+	ErrUpstreamUsageTimeout         = usageview.ErrUpstreamUsageTimeout
+	ErrUpstreamUsageInvalidResponse = usageview.ErrUpstreamUsageInvalidResponse
+	ErrUpstreamUsageRequestFailed   = usageview.ErrUpstreamUsageRequestFailed
+	ErrUpstreamUsageIdentityChanged = apperror.Conflict(
+		"UPSTREAM_USAGE_IDENTITY_CHANGED", "provider credentials or connection settings changed during the query",
+	)
+	ErrUpstreamUsageConfigInvalid = usageview.ErrUpstreamUsageConfigInvalid
+	ErrUpstreamUsageBatchInvalid  = apperror.BadRequest(
+		"UPSTREAM_USAGE_BATCH_INVALID", "upstream usage batch request is invalid",
+	)
+	ErrUpstreamUsageBatchTooLarge = apperror.BadRequest(
+		"UPSTREAM_USAGE_BATCH_TOO_LARGE", "too many providers in one upstream usage query",
+	)
 )
 
 // UpstreamUsageQueryConfig 是提供商 Extra 中公开给管理员的非敏感查询配置。

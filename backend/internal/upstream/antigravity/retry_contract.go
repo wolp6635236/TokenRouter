@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"time" // 限流相关常量
-	// AntigravityRateLimitThreshold 限流等待/切换阈值
-	// - 智能重试：retryDelay < 此阈值时等待后重试，>= 此阈值时直接限流模型
-	// - 预检查：剩余限流时间 < 此阈值时等待，>= 此阈值时切换提供商
 )
 
 const (
@@ -21,11 +18,11 @@ const (
 
 	// MODEL_CAPACITY_EXHAUSTED 专用重试参数
 	// 模型容量不足时，所有提供商共享同一容量池，切换提供商无意义
-	// 使用固定 1s 间隔重试，最多重试 60 次
+	// 使用固定 1s 间隔重试，最多重试 60 次。
 	AntigravityModelCapacityRetryMaxAttempts = 60
 	AntigravityModelCapacityRetryWait        = 1 * time.Second
 
-	// Google RPC 状态和类型常量
+	// Google RPC 状态和类型常量。
 	GoogleRPCStatusResourceExhausted      = "RESOURCE_EXHAUSTED"
 	GoogleRPCStatusUnavailable            = "UNAVAILABLE"
 	GoogleRPCTypeRetryInfo                = "type.googleapis.com/google.rpc.RetryInfo"
@@ -39,25 +36,25 @@ const (
 	AntigravitySingleProviderSmartRetryMaxAttempts = 3
 
 	// 单提供商 503 退避重试：原地重试时单次最大等待时间
-	// 防止上游返回过长的 retryDelay 导致请求卡住太久
+	// 防止上游返回过长的 retryDelay 导致请求卡住太久。
 	AntigravitySingleProviderSmartRetryMaxWait = 15 * time.Second
 
 	// 单提供商 503 退避重试：原地重试的总累计等待时间上限
-	// 超过此上限将不再重试，直接返回 503
+	// 超过此上限将不再重试，直接返回 503。
 	AntigravitySingleProviderSmartRetryTotalMaxWait = 30 * time.Second
 
-	// MODEL_CAPACITY_EXHAUSTED 全局去重：重试全部失败后的 cooldown 时间
+	// MODEL_CAPACITY_EXHAUSTED 全局去重：重试全部失败后的 cooldown 时间。
 	AntigravityModelCapacityCooldown = 10 * time.Second
 )
 
-// MODEL_CAPACITY_EXHAUSTED 全局去重：避免多个并发请求同时对同一模型进行容量耗尽重试
+// MODEL_CAPACITY_EXHAUSTED 全局去重：避免多个并发请求同时对同一模型进行容量耗尽重试。
 var (
 	modelCapacityExhaustedMu    sync.RWMutex
 	modelCapacityExhaustedUntil = make(map[string]time.Time) // modelName -> cooldown until
 )
 
 // AntigravityProviderSwitchError 提供商切换信号
-// 当提供商限流时间超过阈值时，通知上层切换提供商
+// 当提供商限流时间超过阈值时，通知上层切换提供商。
 type AntigravityProviderSwitchError struct {
 	OriginalProviderID int64
 	RateLimitedModel   string
@@ -69,10 +66,9 @@ func (e *AntigravityProviderSwitchError) Error() string {
 		e.OriginalProviderID, e.RateLimitedModel)
 }
 
-// IsAntigravityProviderSwitchError 检查错误是否为提供商切换信号
+// IsAntigravityProviderSwitchError 检查错误是否为提供商切换信号。
 func IsAntigravityProviderSwitchError(err error) (*AntigravityProviderSwitchError, bool) {
-	var switchErr *AntigravityProviderSwitchError
-	if errors.As(err, &switchErr) {
+	if switchErr, ok := errors.AsType[*AntigravityProviderSwitchError](err); ok {
 		return switchErr, true
 	}
 	return nil, false

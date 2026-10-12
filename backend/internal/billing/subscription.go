@@ -2,16 +2,31 @@ package billing
 
 import (
 	"math"
+	"slices"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
 
 const (
+	// Subscription status constants.
+	SubscriptionStatusActive    = "active"
+	SubscriptionStatusPending   = "pending"
+	SubscriptionStatusExpired   = "expired"
+	SubscriptionStatusSuspended = "suspended"
+
+	SubscriptionStatusRevoked = "revoked"
+
 	SubscriptionDailyWindow   = 24 * time.Hour
 	SubscriptionWeeklyWindow  = 7 * 24 * time.Hour
 	SubscriptionMonthlyWindow = 30 * 24 * time.Hour
 )
+
+type APIKeyBillingContext struct {
+	Mode, Source string
+	Subscription *UserSubscription
+	Available    bool
+}
 
 type UserSubscription struct {
 	ID     int64
@@ -53,6 +68,17 @@ type SubscriptionWindowActivation struct {
 	Daily   bool
 	Weekly  bool
 	Monthly bool
+}
+
+// SubscriptionRemainingForDisplay 返回展示用剩余额度，无上限时返回 -1。
+func SubscriptionRemainingForDisplay(sub *UserSubscription) float64 {
+	if sub == nil {
+		return 0
+	}
+	if (sub.DailyLimitUSD == nil || *sub.DailyLimitUSD <= 0) && (sub.WeeklyLimitUSD == nil || *sub.WeeklyLimitUSD <= 0) && (sub.MonthlyLimitUSD == nil || *sub.MonthlyLimitUSD <= 0) {
+		return -1
+	}
+	return sub.AvailableQuotaUSD()
 }
 
 func (a SubscriptionWindowActivation) Any() bool {
@@ -376,4 +402,23 @@ func PositiveSubscriptionLimit(limit *float64) bool {
 // startOfDay 保留传入时间自身的时区；订阅与平台窗口不能混用日界。
 func startOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+func subscriptionPlanIncludesGroup(plan *SubscriptionPlan, groupID int64) bool {
+	if plan == nil || groupID <= 0 {
+		return false
+	}
+	if len(plan.GroupIDs) == 0 {
+		return true
+	}
+	return slices.Contains(plan.GroupIDs, groupID)
+}
+
+// SubscriptionAllowsGroup 返回订阅套餐是否覆盖目标分组。
+// 未配置套餐分组代表套餐不限制分组；缺失套餐或未知分组不应被指定订阅模式放行。
+func SubscriptionAllowsGroup(subscription *UserSubscription, groupID int64) bool {
+	if subscription == nil || subscription.Plan == nil || groupID <= 0 {
+		return false
+	}
+	return subscriptionPlanIncludesGroup(subscription.Plan, groupID)
 }

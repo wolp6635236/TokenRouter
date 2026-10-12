@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/backup"
 	bh "github.com/TokenFlux/TokenRouter/internal/backup/httpapi"
@@ -15,9 +13,9 @@ import (
 	ip "github.com/TokenFlux/TokenRouter/internal/idempotency/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	pg "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	oh "github.com/TokenFlux/TokenRouter/internal/ops/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/ops/maintenance"
-
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
@@ -54,9 +52,11 @@ func provideBackupHTTP(core *backup.BackupService, users *identity.UserService) 
 		return user.CheckPassword(password), nil
 	})
 }
+
 func provideDataManagementHTTP() *bh.DataManagementHandler {
 	return bh.NewDataManagementHandler(backup.NewDataManagementService())
 }
+
 func provideSystemLock(db *sql.DB, cfg *config.Config) *maintenance.SystemOperationLockService {
 	store := ip.NewOperationLeaseStore(db)
 	return maintenance.NewSystemOperationLockService(store, maintenance.Options{
@@ -65,12 +65,14 @@ func provideSystemLock(db *sql.DB, cfg *config.Config) *maintenance.SystemOperat
 		SystemOperationTTL: time.Duration(cfg.Idempotency.SystemOperationTTLSeconds) * time.Second,
 	})
 }
+
 func provideSystemOperations(update *maintenance.UpdateService, lock *maintenance.SystemOperationLockService, restart *lifecycle.Restarter, manager *lifecycle.Manager) *maintenance.Operations {
 	core := maintenance.NewOperations(update, lock, restart)
 	manager.Register(lifecycle.Hook{Name: "SystemMaintenanceAdmission", StartOrder: 980, StopOrder: 14, Stop: func(ctx context.Context) error { core.BeginStop(); return nil }})
 	manager.Register(lifecycle.Hook{Name: "SystemMaintenanceOperations", StartOrder: 980, StopOrder: 17, Stop: core.StopContext})
 	return core
 }
+
 func provideSystemHTTP(update *maintenance.UpdateService, core *maintenance.Operations) *oh.SystemHandler {
 	return oh.NewSystemRuntimeHandler(update, core)
 }

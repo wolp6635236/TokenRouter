@@ -3,9 +3,10 @@ package routing
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 // TestRoutePlanCandidateRecalculationAndIsolation 验证每个候选独立验证启用集合，旧计划不受之后的配置或返回切片修改影响。

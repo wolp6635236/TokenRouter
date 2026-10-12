@@ -4,13 +4,22 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"maps"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
+
+type importProbeLifecyclePort struct {
+	calls                       atomic.Int32
+	started, cancelled, release chan struct{}
+	ignore                      bool
+}
 
 type grokImportProbeStub struct {
 	mu           sync.Mutex
@@ -27,6 +36,66 @@ type grokImportProbeStub struct {
 type grokImportProbeLogBuffer struct {
 	mu     sync.Mutex
 	buffer bytes.Buffer
+}
+
+type grokImportProbeSchedulerTestSnapshot struct {
+	queued     int
+	workers    int
+	maxWorkers int
+}
+
+// 测试注入日志记录函数。
+type grokImportProbeScheduler = GrokImportProbeScheduler
+
+func (p *importProbeLifecyclePort) QueryQuota(ctx context.Context, _ int64) (*GrokImportProbeResult, error) {
+	p.calls.Add(1)
+	close(p.started)
+	<-ctx.Done()
+	close(p.cancelled)
+	if p.ignore {
+		<-p.release
+	}
+	return nil, ctx.Err()
+}
+
+// TestImportProbesStopCancelsPendingAndWaits 验证待执行探测属于尽力工作；停止取消队列并等待已领取项，不能继续认领或宣称探测成功。
+func TestImportProbesStopCancelsPendingAndWaits(t *testing.T) {
+	p := &importProbeLifecyclePort{started: make(chan struct{}), cancelled: make(chan struct{})}
+	queue := NewGrokImportProbeScheduler(GrokImportProbeOptions{Concurrency: 1})
+	require.Zero(t, queue.workers)
+	require.Zero(t, p.calls.Load())
+	value := ProviderSnapshot{ID: 1, Platform: PlatformGrok, Type: ProviderTypeOAuth}
+	queue.Schedule(p, &value)
+	waitUsageSignal(t, p.started)
+	value.ID = 2
+	queue.Schedule(p, &value)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, queue.StopContext(ctx))
+	waitUsageSignal(t, p.cancelled)
+	require.NoError(t, queue.StopContext(ctx))
+	queue.Schedule(p, &value)
+	require.Equal(t, int32(1), p.calls.Load())
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	require.Zero(t, queue.workers)
+	require.Empty(t, queue.queue)
+	require.Empty(t, queue.pending)
+	require.Empty(t, queue.inFlight)
+}
+
+func TestImportProbesStopReportsNonCooperativeExecution(t *testing.T) {
+	p := &importProbeLifecyclePort{started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{}), ignore: true}
+	queue := NewGrokImportProbeScheduler(GrokImportProbeOptions{Concurrency: 1})
+	queue.Schedule(p, &ProviderSnapshot{ID: 1, Platform: PlatformGrok, Type: ProviderTypeOAuth})
+	waitUsageSignal(t, p.started)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := queue.StopContext(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Contains(t, err.Error(), "provider import probes")
+	close(p.release)
+	require.Same(t, err, queue.StopContext(context.Background()))
 }
 
 func (b *grokImportProbeLogBuffer) Write(data []byte) (int, error) {
@@ -98,16 +167,8 @@ func (s *grokImportProbeStub) snapshot() (map[int64]int, int, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	calls := make(map[int64]int, len(s.calls))
-	for id, count := range s.calls {
-		calls[id] = count
-	}
+	maps.Copy(calls, s.calls)
 	return calls, s.maxActive, s.deadlineSeen
-}
-
-type grokImportProbeSchedulerTestSnapshot struct {
-	queued     int
-	workers    int
-	maxWorkers int
 }
 
 func snapshotGrokImportProbeScheduler(s *grokImportProbeScheduler) grokImportProbeSchedulerTestSnapshot {
@@ -165,12 +226,12 @@ func TestGrokImportProbeSchedulerQueuesBatchWithoutPerTaskGoroutines(t *testing.
 	scheduler := newGrokImportProbeScheduler(3, time.Second)
 	prober := newGrokImportProbeStub(taskCount)
 	prober.block = release
-	prober.failures[150] = infraerrors.New(502, "GROK_TEST_PROBE_FAILED", "sensitive-upstream-body")
+	prober.failures[150] = apperror.New(502, "GROK_TEST_PROBE_FAILED", "sensitive-upstream-body")
 
 	for id := int64(101); id < 101+taskCount; id++ {
 		scheduler.Schedule(prober, newGrokOAuthImportProvider(id))
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		awaitGrokProbeSignal(t, prober.started)
 	}
 	snapshot := snapshotGrokImportProbeScheduler(scheduler)
@@ -183,7 +244,7 @@ func TestGrokImportProbeSchedulerQueuesBatchWithoutPerTaskGoroutines(t *testing.
 	case <-time.After(75 * time.Millisecond):
 	}
 	close(release)
-	for i := 0; i < taskCount; i++ {
+	for range taskCount {
 		awaitGrokProbeSignal(t, prober.done)
 	}
 
@@ -244,7 +305,7 @@ func TestGrokImportProbeSchedulerBoundsPendingQueue(t *testing.T) {
 	scheduler.mu.Unlock()
 
 	close(release)
-	for i := 0; i < grokImportProbeQueueLimit+1; i++ {
+	for range grokImportProbeQueueLimit + 1 {
 		awaitGrokProbeSignal(t, prober.done)
 	}
 }
@@ -287,7 +348,7 @@ func TestGrokImportProbeFailureLogDoesNotIncludeErrorMessage(t *testing.T) {
 
 	scheduler := newGrokImportProbeScheduler(1, time.Second)
 	prober := newGrokImportProbeStub(1)
-	prober.failures[401] = infraerrors.New(502, "GROK_TEST_PROBE_FAILED", "refresh-token-secret")
+	prober.failures[401] = apperror.New(502, "GROK_TEST_PROBE_FAILED", "refresh-token-secret")
 	scheduler.Schedule(prober, newGrokOAuthImportProvider(401))
 	awaitGrokProbeSignal(t, prober.done)
 
@@ -297,9 +358,6 @@ func TestGrokImportProbeFailureLogDoesNotIncludeErrorMessage(t *testing.T) {
 	require.Contains(t, logs.String(), "GROK_TEST_PROBE_FAILED")
 	require.NotContains(t, logs.String(), "refresh-token-secret")
 }
-
-// 测试注入日志记录函数。
-type grokImportProbeScheduler = GrokImportProbeScheduler
 
 func newGrokImportProbeScheduler(concurrency int, timeout time.Duration) *GrokImportProbeScheduler {
 	return NewGrokImportProbeScheduler(GrokImportProbeOptions{Concurrency: concurrency, Timeout: timeout, Debug: slog.Debug, Info: slog.Info, Warn: slog.Warn, Error: slog.Error})

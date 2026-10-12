@@ -9,27 +9,38 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/gin-gonic/gin"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
+	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	mediaprovider "github.com/TokenFlux/TokenRouter/internal/gateway/media/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/gin-gonic/gin"
 )
+
+type grokMediaUsageMetadata struct {
+	ResponseID           string
+	Usage                openai.ForwardUsage
+	Model                string
+	BillingModel         string
+	ImageCount           int
+	ImageSize            string
+	ImageInputSize       string
+	ImageOutputSizes     []string
+	VideoCount           int
+	VideoResolution      string
+	VideoDurationSeconds int
+	VideoState           string
+}
 
 // xAI 异步视频状态的官方成功结构如下（docs.x.ai Video Generation）：
 //
@@ -177,8 +188,7 @@ func (s *GrokExecutor) ForwardGrokMedia(
 		return handledResult, err
 	}
 	if err != nil {
-		var missing *grok.MissingImageOutput
-		if errors.As(err, &missing) {
+		if missing, ok := errors.AsType[*grok.MissingImageOutput](err); ok {
 			SetOpsUpstreamError(c, http.StatusBadGateway, missing.Error(), logredact.TruncateUTF8(string(missing.Body), 512))
 			return nil, &forwardcore.UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: missing.Body, ResponseHeaders: missing.Headers}
 		}
@@ -226,6 +236,7 @@ func (s *GrokExecutor) ForwardGrokMedia(
 		ImageOutputSizes: usage.ImageOutputSizes,
 
 		VideoCount: usage.VideoCount,
+		VideoState: usage.VideoState,
 
 		VideoResolution: usage.VideoResolution,
 
@@ -308,7 +319,8 @@ func (s *GrokExecutor) forwardGrokMediaVideoContent(
 	// 内容下载也是完成观测入口：状态体满足官方 done 和 video.url 条件时附加计费单位，
 	// 使处理器能够按与状态轮询相同的路径领取一次计费；待计费快照由处理器合并。
 	result := &forwardcore.OpenAIResult{
-		RequestID: contentRequestID,
+		RequestID:  contentRequestID,
+		VideoState: gatewaymedia.GrokVideoRequestState(statusBody),
 
 		UpstreamHeaders: contentResp.Header,
 
@@ -344,20 +356,6 @@ func sanitizeGrokMediaForwardBody(endpoint grok.GrokMediaEndpoint, body []byte, 
 	return gatewayprovider.GrokMediaCodec().SanitizeGrokMediaForwardBody(endpoint, body, contentType)
 }
 
-type grokMediaUsageMetadata struct {
-	ResponseID           string
-	Usage                openai.ForwardUsage
-	Model                string
-	BillingModel         string
-	ImageCount           int
-	ImageSize            string
-	ImageInputSize       string
-	ImageOutputSizes     []string
-	VideoCount           int
-	VideoResolution      string
-	VideoDurationSeconds int
-}
-
 func grokMediaUsageFromResponse(endpoint grok.GrokMediaEndpoint, requestInfo grok.GrokMediaRequestInfo, responseBody []byte) grokMediaUsageMetadata {
 	usage, _ := openai.ExtractOpenAIUsageFromJSONBytes(responseBody)
 	meta := grokMediaUsageMetadata{Usage: usage}
@@ -373,6 +371,7 @@ func grokMediaUsageFromResponse(endpoint grok.GrokMediaEndpoint, requestInfo gro
 		meta.VideoResolution = requestInfo.Resolution
 		meta.VideoDurationSeconds = requestInfo.DurationSeconds
 	case grok.GrokMediaEndpointVideoStatus:
+		meta.VideoState = gatewaymedia.GrokVideoRequestState(responseBody)
 		// 只有官方完成状态且返回视频地址时，才生成待结算的视频用量。
 		if billed := ExtractGrokVideoBillingFromStatusBody(responseBody, nil, ""); billed != nil {
 			meta.ResponseID = billed.ResponseID

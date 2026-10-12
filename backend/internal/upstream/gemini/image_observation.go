@@ -3,8 +3,9 @@ package gemini
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 )
 
 // CountGeminiInlineImageOutputs 统计一段 Gemini 响应 JSON 里的内联图片 part。

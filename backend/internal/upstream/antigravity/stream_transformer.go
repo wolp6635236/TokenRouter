@@ -18,7 +18,7 @@ func NewStreamingProcessor(model string) *StreamingProcessor {
 	return &StreamingProcessor{bridge.NewGeminiToAnthropicStreamProcessor(model, geminiConversionRuntime())}
 }
 
-// ProcessLine 处理 SSE 行，返回 Claude SSE 事件
+// ProcessLine 处理 SSE 行，返回 Claude SSE 事件。
 func (p *StreamingProcessor) ProcessLine(line string) []byte {
 	line = strings.TrimSpace(line)
 	if line == "" || !strings.HasPrefix(line, "data:") {

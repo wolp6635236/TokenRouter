@@ -5,6 +5,9 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
@@ -18,8 +21,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 type mediaHTTPAdapter struct{ h *Runtime }
@@ -60,6 +61,10 @@ func (p mediaHTTPAdapter) Dependencies(c *gin.Context, log *zap.Logger) bool {
 }
 
 func (p mediaHTTPAdapter) Error(c *gin.Context, status int, code, message string) {
+	if gatewayhttp.IsSystemOneEndpoint(c.Request.URL.Path) {
+		gatewayhttp.WriteSystemOneError(c, status, code, "", "", message)
+		return
+	}
 	gatewayhttp.DefaultOpenAIErrorOutput().WriteError(c, status, code, message)
 }
 
@@ -130,9 +135,14 @@ func (p mediaHTTPAdapter) BindErrors(c *gin.Context) {
 }
 
 func (p mediaHTTPAdapter) Billing(c *gin.Context) *gatewayhttp.MediaHTTPFailure {
+	return p.checkFunding(c, false)
+}
+
+// checkFunding 在等待后复查资金，RPM 在首次准入时累计。
+func (p mediaHTTPAdapter) checkFunding(c *gin.Context, afterWait bool) *gatewayhttp.MediaHTTPFailure {
 	key, _ := keyhttp.GetAPIKeyFromContext(c)
 	subscription, _ := gatewayhttp.SubscriptionFromContext(c)
-	err := p.h.bindings.CheckFunding(c.Request.Context(), key, subscription, "", false)
+	err := p.h.bindings.CheckFunding(c.Request.Context(), key, subscription, "", afterWait)
 	if err == nil {
 		return nil
 	}
@@ -158,7 +168,7 @@ func (p mediaHTTPAdapter) NewGenerationPorts(c *gin.Context, in gatewayhttp.Gene
 	key, _ := keyhttp.GetAPIKeyFromContext(c)
 	subject, _ := authctx.GetAuthSubjectFromContext(c)
 	subscription, _ := gatewayhttp.SubscriptionFromContext(c)
-	return &generationRequestAdapter{grok: in.Grok, h: p.h, c: c, apiKey: key, subject: subject, subscription: subscription, reqLog: log, streamStarted: stream, parsed: in.Parsed, body: in.Body, requestModel: in.RequestModel, routingModel: in.RoutingModel, sessionHash: in.SessionHash, groupMapping: routing.GroupMappingResult(in.Mapping), endpoint: grok.GrokMediaEndpoint(in.Endpoint), requestID: in.RequestID, contentType: in.ContentType, boundProviderID: in.BoundProviderID, videoCreated: in.VideoCreated}
+	return &generationRequestAdapter{grok: in.Grok, h: p.h, c: c, apiKey: key, subject: subject, subscription: subscription, reqLog: log, streamStarted: stream, parsed: in.Parsed, body: in.Body, requestModel: in.RequestModel, routingModel: in.RoutingModel, sessionHash: in.SessionHash, groupMapping: in.Mapping, endpoint: grok.GrokMediaEndpoint(in.Endpoint), requestID: in.RequestID, contentType: in.ContentType, boundProviderID: in.BoundProviderID, videoCreated: in.VideoCreated}
 }
 func (p mediaHTTPAdapter) MaxSwitches() int { return p.h.bindings.Options.MaxSwitches }
 func (p mediaHTTPAdapter) ParseGrok(contentType string, body []byte) gatewayhttp.GrokMediaInput {
@@ -210,7 +220,7 @@ func (p mediaHTTPAdapter) FallbackSession(c *gin.Context, id string) string {
 func (p mediaHTTPAdapter) NewEmbeddings(c *gin.Context, in gatewayhttp.AuxiliaryHTTPInput, log *zap.Logger, stream *bool) gatewayhttp.EmbeddingHTTPExecution {
 	key, _ := keyhttp.GetAPIKeyFromContext(c)
 	subscription, _ := gatewayhttp.SubscriptionFromContext(c)
-	return &embeddingRequestAdapter{h: p.h, c: c, apiKey: key, userID: in.Subject.UserID, subscription: subscription, reqModel: in.Model, groupMapping: routing.GroupMappingResult(in.Mapping), reqLog: log, streamStarted: stream}
+	return &embeddingRequestAdapter{h: p.h, c: c, apiKey: key, userID: in.Subject.UserID, subscription: subscription, reqModel: in.Model, groupMapping: in.Mapping, reqLog: log, streamStarted: stream}
 }
 
 func (p *embeddingRequestAdapter) EndEmbeddingFailure(f *media.EmbeddingFailure) { p.renderFailure(f) }
@@ -218,7 +228,7 @@ func (p *embeddingRequestAdapter) EndEmbeddingFailure(f *media.EmbeddingFailure)
 func (p mediaHTTPAdapter) NewAlphaSearch(c *gin.Context, in gatewayhttp.AuxiliaryHTTPInput, log *zap.Logger, stream *bool) gatewayhttp.AlphaHTTPExecution {
 	key, _ := keyhttp.GetAPIKeyFromContext(c)
 	subscription, _ := gatewayhttp.SubscriptionFromContext(c)
-	return &alphaRequestAdapter{h: p.h, c: c, apiKey: key, subscription: subscription, groupMapping: routing.GroupMappingResult(in.Mapping), requestedModel: in.Model, originalBody: in.Body, userID: in.Subject.UserID, sessionHash: in.SessionHash, reqLog: log, streamStarted: stream}
+	return &alphaRequestAdapter{h: p.h, c: c, apiKey: key, subscription: subscription, groupMapping: in.Mapping, requestedModel: in.Model, originalBody: in.Body, userID: in.Subject.UserID, sessionHash: in.SessionHash, reqLog: log, streamStarted: stream}
 }
 func (p *alphaRequestAdapter) EndAlphaFailure(f *media.AlphaFailure) { p.renderFailure(f) }
 func (p mediaHTTPAdapter) ModerateVoice(c *gin.Context, log *zap.Logger, _ gatewayhttp.MediaSubject, body []byte) bool {
@@ -242,8 +252,7 @@ func (p mediaHTTPAdapter) EndVoice(c *gin.Context, f *media.VoiceFailure) {
 	if f == nil {
 		return
 	}
-	var last *forwardcore.UpstreamFailoverError
-	if errors.As(f.Last, &last) {
+	if last, ok := errors.AsType[*forwardcore.UpstreamFailoverError](f.Last); ok {
 		p.h.bindings.Common.Support.HandleFailoverExhausted(c, last, false)
 	} else if f.NoProviders {
 		gatewayhttp.DefaultOpenAIErrorOutput().WriteError(c, 503, "api_error", "No available Grok providers")

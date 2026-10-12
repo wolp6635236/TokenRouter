@@ -9,72 +9,25 @@ import (
 	"testing"
 	"time"
 
-	apikey "github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
-
-	teamcore "github.com/TokenFlux/TokenRouter/internal/team"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/google/uuid"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
+	teamcore "github.com/TokenFlux/TokenRouter/internal/team"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
-
-type UsageLogRepoSuite struct {
-	suite.Suite
-	ctx    context.Context
-	tx     *dbent.Tx
-	client *dbent.Client
-	repo   *Store
-}
-
-func (s *UsageLogRepoSuite) SetupTest() {
-	s.ctx = context.Background()
-	tx := testEntTx(s.T())
-	s.tx = tx
-	s.client = tx.Client()
-	s.repo = NewUsageLogRepositoryWithSQL(s.client, tx, timezone.NewCalendar(time.Local))
-}
 
 func TestUsageLogRepoSuite(t *testing.T) {
 	suite.Run(t, new(UsageLogRepoSuite))
 }
-
-// truncateToDayUTC 截断到 UTC 日期边界（测试辅助函数）
-func truncateToDayUTC(t time.Time) time.Time {
-	t = t.UTC()
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-}
-
-func (s *UsageLogRepoSuite) createUsageLog(user *identity.User, apiKey *apikey.APIKey, provider *providercore.Record, inputTokens, outputTokens int, cost float64, createdAt time.Time) *usage.UsageLog {
-	log := &usage.UsageLog{
-		UserID:       user.ID,
-		APIKeyID:     apiKey.ID,
-		ProviderID:   provider.ID,
-		RequestID:    uuid.New().String(), // Generate unique RequestID for each log
-		Model:        "claude-3",
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		TotalCost:    cost,
-		ActualCost:   cost,
-		CreatedAt:    createdAt,
-	}
-	_, err := s.repo.Create(s.ctx, log)
-	s.Require().NoError(err)
-	return log
-}
-
-// --- Create / GetByID ---
 
 func (s *UsageLogRepoSuite) TestCreate() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "create@test.com"})
@@ -113,8 +66,7 @@ func TestUsageLogRepositoryCreate_BatchPathConcurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(total)
-	for i := 0; i < total; i++ {
-		i := i
+	for i := range total {
 		logs[i] = &usage.UsageLog{
 			UserID:       user.ID,
 			APIKeyID:     apiKey.ID,
@@ -134,7 +86,7 @@ func TestUsageLogRepositoryCreate_BatchPathConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	for i := 0; i < total; i++ {
+	for i := range total {
 		require.NoError(t, errs[i])
 		require.True(t, results[i])
 		require.NotZero(t, logs[i].ID)
@@ -207,7 +159,7 @@ func TestUsageLogRepositoryFlushCreateBatch_DeduplicatesSameKeyInMemory(t *testi
 	batch := make([]usageLogCreateRequest, 0, total)
 	logs := make([]*usage.UsageLog, 0, total)
 
-	for i := 0; i < total; i++ {
+	for i := range total {
 		log := &usage.UsageLog{
 			UserID:       user.ID,
 			APIKeyID:     apiKey.ID,
@@ -602,8 +554,6 @@ func (s *UsageLogRepoSuite) TestGetByID_ReturnsRequestTypeAndLegacyFallback() {
 	s.Require().True(got.OpenAIWSMode)
 }
 
-// --- Delete ---
-
 func (s *UsageLogRepoSuite) TestDelete() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "delete@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-delete", Name: "k"})
@@ -617,8 +567,6 @@ func (s *UsageLogRepoSuite) TestDelete() {
 	_, err = s.repo.GetByID(s.ctx, log.ID)
 	s.Require().Error(err, "expected error after delete")
 }
-
-// --- ListByUser ---
 
 func (s *UsageLogRepoSuite) TestListByUser() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "listbyuser@test.com"})
@@ -634,8 +582,6 @@ func (s *UsageLogRepoSuite) TestListByUser() {
 	s.Require().Equal(int64(2), page.Total)
 }
 
-// --- ListByAPIKey ---
-
 func (s *UsageLogRepoSuite) TestListByAPIKey() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "listbyapikey@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-listbyapikey", Name: "k"})
@@ -650,8 +596,6 @@ func (s *UsageLogRepoSuite) TestListByAPIKey() {
 	s.Require().Equal(int64(2), page.Total)
 }
 
-// --- ListByProvider ---
-
 func (s *UsageLogRepoSuite) TestListByProvider() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "listbyprovider@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-listbyprovider", Name: "k"})
@@ -664,8 +608,6 @@ func (s *UsageLogRepoSuite) TestListByProvider() {
 	s.Require().Len(logs, 1)
 	s.Require().Equal(int64(1), page.Total)
 }
-
-// --- GetUserStats ---
 
 func (s *UsageLogRepoSuite) TestGetUserStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "userstats@test.com"})
@@ -685,8 +627,6 @@ func (s *UsageLogRepoSuite) TestGetUserStats() {
 	s.Require().Equal(int64(45), stats.OutputTokens)
 }
 
-// --- ListWithFilters ---
-
 func (s *UsageLogRepoSuite) TestListWithFilters() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "filters@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-filters", Name: "k"})
@@ -700,8 +640,6 @@ func (s *UsageLogRepoSuite) TestListWithFilters() {
 	s.Require().Len(logs, 1)
 	s.Require().Equal(int64(1), page.Total)
 }
-
-// --- GetDashboardStats ---
 
 func (s *UsageLogRepoSuite) TestDashboardStats_TodayTotalsAndPerformance() {
 	now := time.Now().UTC()
@@ -893,8 +831,6 @@ func (s *UsageLogRepoSuite) TestDashboardStatsWithRange_Fallback() {
 	s.Require().InEpsilon(150.0, stats.AverageDurationMs, 0.0001)
 }
 
-// --- GetUserDashboardStats ---
-
 func (s *UsageLogRepoSuite) TestGetUserDashboardStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "userdash@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-userdash", Name: "k"})
@@ -939,7 +875,7 @@ func (s *UsageLogRepoSuite) TestGetUserDashboardStatsIncludesOwnedTeamWithoutDup
 	memberTeamKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: member.ID, TeamID: &teamID, Key: "sk-userdash-member-team"})
 	memberPersonalKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: member.ID, Key: "sk-userdash-member-personal"})
 
-	// 使用固定时间只验证累计范围，避免测试跨日期边界时产生不稳定的今日统计。
+	// 固定时间用于检查累计范围，今日统计取决于测试运行日期。
 	createdAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	// 四条记录分别覆盖 Owner 本人、成员团队、Owner 团队 Key 和成员个人用量。
 	logs := []*usage.UsageLog{
@@ -986,8 +922,6 @@ func (s *UsageLogRepoSuite) TestGetUserDashboardStatsIncludesOwnedTeamWithoutDup
 	s.Require().Equal(int64(60), memberStats.TotalInputTokens)
 	s.Require().Equal(int64(6), memberStats.TotalOutputTokens)
 }
-
-// --- GetProviderTodayStats ---
 
 func (s *UsageLogRepoSuite) TestGetProviderTodayStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "acctoday@test.com"})
@@ -1311,8 +1245,6 @@ func (s *UsageLogRepoSuite) TestUsageAnalyticsQueriesExecuteOnPostgreSQL() {
 	s.Require().True(foundGroup)
 }
 
-// --- GetBatchUserUsageStats ---
-
 func (s *UsageLogRepoSuite) TestGetBatchUserUsageStats() {
 	user1 := mustCreateUser(s.T(), s.client, &identity.User{Email: "batch1@test.com"})
 	user2 := mustCreateUser(s.T(), s.client, &identity.User{Email: "batch2@test.com"})
@@ -1336,8 +1268,6 @@ func (s *UsageLogRepoSuite) TestGetBatchUserUsageStats_Empty() {
 	s.Require().Empty(stats)
 }
 
-// --- GetBatchAPIKeyUsageStats ---
-
 func (s *UsageLogRepoSuite) TestGetBatchApiKeyUsageStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "batchkey@test.com"})
 	apiKey1 := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-batchkey1", Name: "k1"})
@@ -1358,8 +1288,6 @@ func (s *UsageLogRepoSuite) TestGetBatchApiKeyUsageStats_Empty() {
 	s.Require().Empty(stats)
 }
 
-// --- GetGlobalStats ---
-
 func (s *UsageLogRepoSuite) TestGetGlobalStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "global@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-global", Name: "k"})
@@ -1375,15 +1303,6 @@ func (s *UsageLogRepoSuite) TestGetGlobalStats() {
 	s.Require().Equal(int64(25), stats.TotalInputTokens)
 	s.Require().Equal(int64(45), stats.TotalOutputTokens)
 }
-
-func testMaxTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
-}
-
-// --- ListByUserAndTimeRange ---
 
 func (s *UsageLogRepoSuite) TestListByUserAndTimeRange() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "timerange@test.com"})
@@ -1402,8 +1321,6 @@ func (s *UsageLogRepoSuite) TestListByUserAndTimeRange() {
 	s.Require().Len(logs, 2)
 }
 
-// --- ListByAPIKeyAndTimeRange ---
-
 func (s *UsageLogRepoSuite) TestListByAPIKeyAndTimeRange() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "keytimerange@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-keytimerange", Name: "k"})
@@ -1421,8 +1338,6 @@ func (s *UsageLogRepoSuite) TestListByAPIKeyAndTimeRange() {
 	s.Require().Len(logs, 2)
 }
 
-// --- ListByProviderAndTimeRange ---
-
 func (s *UsageLogRepoSuite) TestListByProviderAndTimeRange() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "acctimerange@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-acctimerange", Name: "k"})
@@ -1439,8 +1354,6 @@ func (s *UsageLogRepoSuite) TestListByProviderAndTimeRange() {
 	s.Require().NoError(err, "ListByProviderAndTimeRange")
 	s.Require().Len(logs, 2)
 }
-
-// --- ListByModelAndTimeRange ---
 
 func (s *UsageLogRepoSuite) TestListByModelAndTimeRange() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "modeltimerange@test.com"})
@@ -1499,8 +1412,6 @@ func (s *UsageLogRepoSuite) TestListByModelAndTimeRange() {
 	s.Require().Len(logs, 2)
 }
 
-// --- GetProviderWindowStats ---
-
 func (s *UsageLogRepoSuite) TestGetProviderWindowStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "windowstats@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-windowstats", Name: "k"})
@@ -1518,8 +1429,6 @@ func (s *UsageLogRepoSuite) TestGetProviderWindowStats() {
 	s.Require().Equal(int64(2), stats.Requests)
 	s.Require().Equal(int64(70), stats.Tokens) // (10+20) + (15+25)
 }
-
-// --- GetUserUsageTrendByUserID ---
 
 func (s *UsageLogRepoSuite) TestGetUserUsageTrendByUserID() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "usertrend@test.com"})
@@ -1554,8 +1463,6 @@ func (s *UsageLogRepoSuite) TestGetUserUsageTrendByUserID_HourlyGranularity() {
 	s.Require().NoError(err, "GetUserUsageTrendByUserID hourly")
 	s.Require().Len(trend, 3) // 3 different hours
 }
-
-// --- GetUserModelStats ---
 
 func (s *UsageLogRepoSuite) TestGetUserModelStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "modelstats@test.com"})
@@ -1604,8 +1511,6 @@ func (s *UsageLogRepoSuite) TestGetUserModelStats() {
 	s.Require().Equal(int64(300), stats[0].TotalTokens)
 }
 
-// --- GetUsageTrendWithFilters ---
-
 func (s *UsageLogRepoSuite) TestGetUsageTrendWithFilters() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "trendfilters@test.com"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: user.ID, Key: "sk-trendfilters", Name: "k"})
@@ -1650,8 +1555,6 @@ func (s *UsageLogRepoSuite) TestGetUsageTrendWithFilters_HourlyGranularity() {
 	s.Require().NoError(err, "GetUsageTrendWithFilters hourly")
 	s.Require().Len(trend, 2)
 }
-
-// --- GetModelStatsWithFilters ---
 
 func (s *UsageLogRepoSuite) TestGetModelStatsWithFilters() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "modelfilters@test.com"})
@@ -1724,7 +1627,7 @@ func (s *UsageLogRepoSuite) TestGetGeminiUsageTotalsBatchUsesProviderCost() {
 	proRate, proStatsCost := 2.0, 0.4
 	flashRate, flashStatsCost := 1.5, 0.1
 
-	// 两条记录的用户扣费远高于提供商成本，用于锁定批量聚合口径。
+	// 两条记录的用户扣费远高于提供商成本，批量聚合需要分别返回两者。
 	logs := []*usage.UsageLog{
 		{
 			UserID:                 user.ID,
@@ -1766,8 +1669,6 @@ func (s *UsageLogRepoSuite) TestGetGeminiUsageTotalsBatchUsesProviderCost() {
 	s.Require().Equal(int64(1), totals[provider.ID].ProRequests)
 	s.Require().Equal(int64(1), totals[provider.ID].FlashRequests)
 }
-
-// --- GetProviderUsageStats ---
 
 func (s *UsageLogRepoSuite) TestGetProviderUsageStats() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "accstats@test.com"})
@@ -1831,8 +1732,6 @@ func (s *UsageLogRepoSuite) TestGetProviderUsageStats_EmptyRange() {
 	s.Require().Equal(int64(0), resp.Summary.TotalRequests)
 }
 
-// --- GetUserUsageTrend ---
-
 func (s *UsageLogRepoSuite) TestGetUserUsageTrend() {
 	user1 := mustCreateUser(s.T(), s.client, &identity.User{Email: "usertrend1@test.com"})
 	user2 := mustCreateUser(s.T(), s.client, &identity.User{Email: "usertrend2@test.com"})
@@ -1852,8 +1751,6 @@ func (s *UsageLogRepoSuite) TestGetUserUsageTrend() {
 	s.Require().NoError(err, "GetUserUsageTrend")
 	s.Require().GreaterOrEqual(len(trend), 2)
 }
-
-// --- GetAPIKeyUsageTrend ---
 
 func (s *UsageLogRepoSuite) TestGetAPIKeyUsageTrend() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "keytrend@test.com"})
@@ -1890,8 +1787,6 @@ func (s *UsageLogRepoSuite) TestGetAPIKeyUsageTrend_HourlyGranularity() {
 	s.Require().NoError(err, "GetAPIKeyUsageTrend hourly")
 	s.Require().Len(trend, 2)
 }
-
-// --- ListWithFilters (additional filter tests) ---
 
 func (s *UsageLogRepoSuite) TestListWithFilters_ApiKeyFilter() {
 	user := mustCreateUser(s.T(), s.client, &identity.User{Email: "filterskey@test.com"})
@@ -1972,4 +1867,17 @@ func (s *UsageLogRepoSuite) TestResponseModelRoundTrip() {
 		s.Equal(log.UpstreamResponseModel, loaded.UpstreamResponseModel)
 		s.Equal(log.UpstreamModelMismatch, loaded.UpstreamModelMismatch)
 	}
+}
+
+// truncateToDayUTC 返回 UTC 日期的起始时间。
+func truncateToDayUTC(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func testMaxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }

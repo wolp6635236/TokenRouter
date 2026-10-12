@@ -240,6 +240,36 @@ type TeamService struct {
 	options        *Options
 }
 
+// Options 保留启动团队开关与默认值，动态前端地址单独读取。
+type Options struct {
+	// Now 保持原取时点，生产由 app 注入；旧构造器未指定时使用系统时钟。
+	Now func() time.Time
+
+	Enabled, SelfServiceEnabled bool
+	DefaultMemberLimit          int
+	FrontendURL                 string
+}
+type UserSnapshot struct {
+	ID              int64
+	Email, Username string
+}
+type UserReader interface {
+	GetByID(context.Context, int64) (*UserSnapshot, error)
+	GetByEmail(context.Context, string) (*UserSnapshot, error)
+}
+type (
+	Settings       interface{ GetFrontendURL(context.Context) string }
+	KeyInvalidator interface{ InvalidateAuthCacheByKey(context.Context, string) }
+	Notifier       interface {
+		SendInvitation(context.Context, string, string, string, time.Time) error
+		SendOwnershipTransfer(context.Context, string, string, string) error
+	}
+)
+
+func NewTeamService(repo TeamRepository, users UserReader, notifier Notifier, keys KeyInvalidator, limiter TeamInvitationLimiter, settings Settings, options *Options) *TeamService {
+	return &TeamService{repo: repo, userRepo: users, emailService: notifier, apiKeyCache: keys, inviteLimiter: limiter, settingService: settings, options: options}
+}
+
 func (s *TeamService) ensureEnabled() error {
 	if s.options != nil && !s.options.Enabled {
 		return ErrTeamFeatureDisabled
@@ -579,10 +609,7 @@ func (s *TeamService) CheckInvitationRate(ctx context.Context, teamID int64, ema
 	if allowed {
 		return nil
 	}
-	retrySeconds := int64((retryAfter + time.Second - 1) / time.Second)
-	if retrySeconds < 1 {
-		retrySeconds = 1
-	}
+	retrySeconds := max(int64((retryAfter+time.Second-1)/time.Second), 1)
 	return ErrTeamInvitationRateLimited.WithMetadata(map[string]string{"retry_after": strconv.FormatInt(retrySeconds, 10)})
 }
 
@@ -942,36 +969,6 @@ func NewTeamToken() (string, string, error) {
 func HashTeamToken(token string) string {
 	hash := sha256.Sum256([]byte(strings.TrimSpace(token)))
 	return hex.EncodeToString(hash[:])
-}
-
-// Options 保留启动团队开关与默认值，动态前端地址单独读取。
-type Options struct {
-	// Now 保持原取时点，生产由 app 注入；旧构造器未指定时使用系统时钟。
-	Now func() time.Time
-
-	Enabled, SelfServiceEnabled bool
-	DefaultMemberLimit          int
-	FrontendURL                 string
-}
-type UserSnapshot struct {
-	ID              int64
-	Email, Username string
-}
-type UserReader interface {
-	GetByID(context.Context, int64) (*UserSnapshot, error)
-	GetByEmail(context.Context, string) (*UserSnapshot, error)
-}
-type (
-	Settings       interface{ GetFrontendURL(context.Context) string }
-	KeyInvalidator interface{ InvalidateAuthCacheByKey(context.Context, string) }
-	Notifier       interface {
-		SendInvitation(context.Context, string, string, string, time.Time) error
-		SendOwnershipTransfer(context.Context, string, string, string) error
-	}
-)
-
-func NewTeamService(repo TeamRepository, users UserReader, notifier Notifier, keys KeyInvalidator, limiter TeamInvitationLimiter, settings Settings, options *Options) *TeamService {
-	return &TeamService{repo: repo, userRepo: users, emailService: notifier, apiKeyCache: keys, inviteLimiter: limiter, settingService: settings, options: options}
 }
 
 func (s *TeamService) SendInvitationEmail(ctx context.Context, email, teamName, link string, expiresAt time.Time) error {

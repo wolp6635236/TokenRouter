@@ -15,9 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/payment"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+
+	"github.com/TokenFlux/TokenRouter/internal/payment"
 )
 
 const (
@@ -41,6 +42,14 @@ const (
 	airwallexRefundStatusFailed     = "FAILED"
 )
 
+var (
+	airwallexAccessTokens sync.Map
+
+	_ payment.Provider                 = (*Airwallex)(nil)
+	_ payment.CancelableProvider       = (*Airwallex)(nil)
+	_ payment.MerchantIdentityProvider = (*Airwallex)(nil)
+)
+
 type Airwallex struct {
 	instanceID string
 	config     map[string]string
@@ -53,7 +62,61 @@ type airwallexTokenState struct {
 	expiresAt time.Time
 }
 
-var airwallexAccessTokens sync.Map
+type airwallexAuthResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+type airwallexCreatePaymentIntentRequest struct {
+	RequestID       string                 `json:"request_id"`
+	Amount          airwallexRequestAmount `json:"amount"`
+	Currency        string                 `json:"currency"`
+	MerchantOrderID string                 `json:"merchant_order_id"`
+	ReturnURL       string                 `json:"return_url,omitempty"`
+	Descriptor      string                 `json:"descriptor,omitempty"`
+	Metadata        map[string]string      `json:"metadata,omitempty"`
+}
+
+type airwallexCreateRefundRequest struct {
+	RequestID       string                 `json:"request_id"`
+	PaymentIntentID string                 `json:"payment_intent_id"`
+	Amount          airwallexRequestAmount `json:"amount,omitempty"`
+	Reason          string                 `json:"reason,omitempty"`
+}
+
+type airwallexRequestAmount struct {
+	decimal.Decimal
+}
+
+type airwallexPaymentIntent struct {
+	ID              string            `json:"id"`
+	RequestID       string            `json:"request_id"`
+	ClientSecret    string            `json:"client_secret"`
+	MerchantOrderID string            `json:"merchant_order_id"`
+	Amount          decimal.Decimal   `json:"amount"`
+	Currency        string            `json:"currency"`
+	Status          string            `json:"status"`
+	Metadata        map[string]string `json:"metadata"`
+}
+
+type airwallexRefund struct {
+	ID              string          `json:"id"`
+	RequestID       string          `json:"request_id"`
+	PaymentIntentID string          `json:"payment_intent_id"`
+	Amount          decimal.Decimal `json:"amount"`
+	Currency        string          `json:"currency"`
+	Status          string          `json:"status"`
+}
+
+type airwallexWebhookEvent struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	AccountID      string `json:"accountId"`
+	AccountIDSnake string `json:"account_id"`
+	Data           struct {
+		Object json.RawMessage `json:"object"`
+	} `json:"data"`
+}
 
 func NewAirwallex(instanceID string, config map[string]string) (*Airwallex, error) {
 	for _, k := range []string{"clientId", "apiKey", "webhookSecret", "apiBase"} {
@@ -572,32 +635,6 @@ func summarizeAirwallexResponse(body []byte) string {
 	return summary
 }
 
-type airwallexAuthResponse struct {
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at"`
-}
-
-type airwallexCreatePaymentIntentRequest struct {
-	RequestID       string                 `json:"request_id"`
-	Amount          airwallexRequestAmount `json:"amount"`
-	Currency        string                 `json:"currency"`
-	MerchantOrderID string                 `json:"merchant_order_id"`
-	ReturnURL       string                 `json:"return_url,omitempty"`
-	Descriptor      string                 `json:"descriptor,omitempty"`
-	Metadata        map[string]string      `json:"metadata,omitempty"`
-}
-
-type airwallexCreateRefundRequest struct {
-	RequestID       string                 `json:"request_id"`
-	PaymentIntentID string                 `json:"payment_intent_id"`
-	Amount          airwallexRequestAmount `json:"amount,omitempty"`
-	Reason          string                 `json:"reason,omitempty"`
-}
-
-type airwallexRequestAmount struct {
-	decimal.Decimal
-}
-
 func newAirwallexRequestAmount(amount decimal.Decimal) airwallexRequestAmount {
 	return airwallexRequestAmount{Decimal: amount}
 }
@@ -615,45 +652,9 @@ func (a *airwallexRequestAmount) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type airwallexPaymentIntent struct {
-	ID              string            `json:"id"`
-	RequestID       string            `json:"request_id"`
-	ClientSecret    string            `json:"client_secret"`
-	MerchantOrderID string            `json:"merchant_order_id"`
-	Amount          decimal.Decimal   `json:"amount"`
-	Currency        string            `json:"currency"`
-	Status          string            `json:"status"`
-	Metadata        map[string]string `json:"metadata"`
-}
-
-type airwallexRefund struct {
-	ID              string          `json:"id"`
-	RequestID       string          `json:"request_id"`
-	PaymentIntentID string          `json:"payment_intent_id"`
-	Amount          decimal.Decimal `json:"amount"`
-	Currency        string          `json:"currency"`
-	Status          string          `json:"status"`
-}
-
-type airwallexWebhookEvent struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	AccountID      string `json:"accountId"`
-	AccountIDSnake string `json:"account_id"`
-	Data           struct {
-		Object json.RawMessage `json:"object"`
-	} `json:"data"`
-}
-
 func (e airwallexWebhookEvent) accountID() string {
 	if accountID := strings.TrimSpace(e.AccountID); accountID != "" {
 		return accountID
 	}
 	return strings.TrimSpace(e.AccountIDSnake)
 }
-
-var (
-	_ payment.Provider                 = (*Airwallex)(nil)
-	_ payment.CancelableProvider       = (*Airwallex)(nil)
-	_ payment.MerchantIdentityProvider = (*Airwallex)(nil)
-)

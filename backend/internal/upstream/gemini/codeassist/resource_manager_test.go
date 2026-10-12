@@ -7,8 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 )
 
 func TestResourceManagerProjectSelectionLocal(t *testing.T) {

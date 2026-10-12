@@ -6,15 +6,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
+
+var providerTodayStatsBatchCache = response.NewSnapshotCache(30 * time.Second)
 
 // OAuthUsageHandler 提供主动和被动用量查询、批量查询、统计及 ETag 响应。
 type OAuthUsageHandler struct {
 	core  *provider.OAuthUsageService
 	stats *provider.LocalUsageStatistics
+}
+
+// BatchTodayStatsRequest 批量今日统计请求体。
+type BatchTodayStatsRequest struct {
+	ProviderIDs []int64 `json:"provider_ids" binding:"required"`
+}
+type BatchUsageRequest struct {
+	ProviderIDs []int64 `json:"provider_ids" binding:"required"`
+	Force       bool    `json:"force"`
 }
 
 func NewOAuthUsageHandler(core *provider.OAuthUsageService, stats *provider.LocalUsageStatistics) *OAuthUsageHandler {
@@ -63,15 +75,6 @@ func (h *OAuthUsageHandler) GetTodayStats(c *gin.Context) {
 	}
 
 	response.Success(c, stats)
-}
-
-// BatchTodayStatsRequest 批量今日统计请求体。
-type BatchTodayStatsRequest struct {
-	ProviderIDs []int64 `json:"provider_ids" binding:"required"`
-}
-type BatchUsageRequest struct {
-	ProviderIDs []int64 `json:"provider_ids" binding:"required"`
-	Force       bool    `json:"force"`
 }
 
 // GetBatchTodayStats 批量获取多个提供商的今日统计。
@@ -149,8 +152,6 @@ func (h *OAuthUsageHandler) GetBatchUsage(c *gin.Context) {
 		"errors": errorsByProvider,
 	})
 }
-
-var providerTodayStatsBatchCache = response.NewSnapshotCache(30 * time.Second)
 
 func BuildProviderTodayStatsBatchCacheKey(providerIDs []int64) string {
 	if len(providerIDs) == 0 {

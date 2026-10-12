@@ -5,6 +5,12 @@ import "context"
 // abortKey 保存由 WithAbort 返回的函数触发的服务端终止信号。
 type abortKey struct{}
 
+// detachedContext 用服务端信号决定取消状态，请求值由 Context 提供。
+type detachedContext struct {
+	context.Context
+	signal context.Context
+}
+
 // WithAbort 返回请求 context 和内部终止函数，内部终止会传递给 Detach 的结果。
 func WithAbort(ctx context.Context) (context.Context, context.CancelFunc) {
 	signal, abort := context.WithCancel(context.Background())
@@ -36,12 +42,6 @@ func Detach(ctx context.Context) context.Context {
 		return base
 	}
 	return detachedContext{Context: base, signal: signal}
-}
-
-// detachedContext 用服务端信号决定取消状态，请求值由 Context 提供。
-type detachedContext struct {
-	context.Context
-	signal context.Context
 }
 
 func (c detachedContext) Done() <-chan struct{} { return c.signal.Done() }

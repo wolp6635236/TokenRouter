@@ -2,21 +2,13 @@ package modeldisplay
 
 import (
 	"strings"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// Catalog 按请求 ID 查询统一目录，协议适配器决定响应字段。
 type Catalog interface {
-	OpenAIModels() []OpenAIModel
-	OpenAIModelIDs() []string
-	GrokModels() []GrokModel
-	GrokModelIDs() []string
+	Model(string) OpenAIModel
 	GrokSupportsXHigh(string) bool
-	ClaudeModels(string) []ClaudeModel
-	QoderModelIDs() []string
-	GeminiList(bool) GeminiModelsList
 	GeminiModel(string, bool) GeminiModel
-	HasGeminiFallback(string) bool
 }
 
 type ClaudeModel struct {
@@ -53,45 +45,6 @@ type GeminiModel struct {
 
 type GeminiModelsList struct {
 	Models []GeminiModel `json:"models"`
-}
-
-func DefaultModelIDs(catalog Catalog, platform string) []string {
-	switch platform {
-	case capability.PlatformOpenAI:
-		return catalog.OpenAIModelIDs()
-	case capability.PlatformGemini:
-		ids := make([]string, 0, len(catalog.ClaudeModels(capability.PlatformGemini)))
-		for _, model := range catalog.ClaudeModels(capability.PlatformGemini) {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	case capability.PlatformAntigravity:
-		models := catalog.ClaudeModels(capability.PlatformAntigravity)
-		ids := make([]string, 0, len(models))
-		for _, model := range models {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	case capability.PlatformQoder:
-		return catalog.QoderModelIDs()
-	case capability.PlatformAnthropic:
-		ids := make([]string, 0, len(catalog.ClaudeModels(capability.PlatformAnthropic))+len(catalog.ClaudeModels(capability.PlatformAntigravity)))
-		for _, model := range catalog.ClaudeModels(capability.PlatformAnthropic) {
-			ids = append(ids, model.ID)
-		}
-		for _, model := range catalog.ClaudeModels(capability.PlatformAntigravity) {
-			ids = append(ids, model.ID)
-		}
-		return MergeModelIDs(ids, nil)
-	case capability.PlatformGrok:
-		return catalog.GrokModelIDs()
-	default:
-		ids := make([]string, 0, len(catalog.ClaudeModels(capability.PlatformAnthropic)))
-		for _, model := range catalog.ClaudeModels(capability.PlatformAnthropic) {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	}
 }
 
 func MergeModelIDs(primary, secondary []string) []string {

@@ -62,6 +62,7 @@ import ImagesIcon from './artwork/images'
 import InboxIcon from './artwork/inbox'
 import InfoIcon from './artwork/info'
 import KeyIcon from './artwork/key'
+import LanguagesIcon from './artwork/languages'
 import LayersIcon from './artwork/layers'
 import LayoutDashboardIcon from './artwork/layout-dashboard'
 import LightbulbIcon from './artwork/lightbulb'
@@ -176,6 +177,7 @@ export const icons = {
   upload: UploadIcon,
   filter: FunnelIcon,
   globe: GlobeIcon,
+  languages: LanguagesIcon,
   sort: ChevronsUpDownIcon,
   key: KeyIcon,
   lock: LockKeyholeIcon,

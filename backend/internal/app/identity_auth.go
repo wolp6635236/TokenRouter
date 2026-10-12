@@ -4,24 +4,18 @@ import (
 	"context"
 	"time"
 
+	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
 	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/site"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-
-	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
-
-	"github.com/TokenFlux/TokenRouter/internal/config"
-
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-
-	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
 // identityAuthSettings 组合各模块的身份设置读取接口。
@@ -31,6 +25,13 @@ type identityAuthSettings struct {
 	*site.DisplaySettings
 	oauth     *identity.OAuthSettings
 	promotion *promotion.RuntimeSettings
+}
+
+// identityAuthGraph 保存各认证入口共享的身份用例和事务适配器。
+type identityAuthGraph struct {
+	Core   *identity.AuthService
+	State  *identitypostgres.AuthState
+	Client *dbent.Client
 }
 
 func provideIdentityAuthSettings(runtime *identity.RuntimeSettings, grants *identity.GrantSettings, display *site.DisplaySettings, oauth *identity.OAuthSettings, promotion *promotion.RuntimeSettings) *identityAuthSettings {
@@ -52,13 +53,6 @@ func (s identityAuthSettings) IsAffiliateAdminRechargeEnabled(ctx context.Contex
 func (s identityAuthSettings) GetDingTalkConnectOAuthConfig(ctx context.Context) (identity.DingTalkRegistrationPolicy, error) {
 	value, err := s.oauth.GetDingTalkConnectOAuthConfig(ctx)
 	return identity.DingTalkRegistrationPolicy{Enabled: value.Enabled, BypassRegistration: value.BypassRegistration, CorpRestrictionPolicy: value.CorpRestrictionPolicy}, err
-}
-
-// identityAuthGraph 保存各认证入口共享的身份用例和事务适配器。
-type identityAuthGraph struct {
-	Core   *identity.AuthService
-	State  *identitypostgres.AuthState
-	Client *dbent.Client
 }
 
 func provideIdentityAuthGraph(

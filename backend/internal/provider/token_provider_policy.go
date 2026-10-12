@@ -1,9 +1,8 @@
 package provider
 
-import "time"
-
-// ProviderRefreshErrorAction 定义 provider 在刷新失败时的处理动作。
-type ProviderRefreshErrorAction int
+import (
+	"time"
+)
 
 const (
 	// ProviderRefreshErrorReturn 在刷新失败时返回错误。
@@ -12,9 +11,7 @@ const (
 	ProviderRefreshErrorUseExistingToken
 )
 
-// ProviderLockHeldAction 定义 provider 在刷新锁被占用时的处理动作。
-type ProviderLockHeldAction int
-
+//nolint:decorder // iota 按块内序号计数，每个枚举需要独立的 const 块。
 const (
 	// ProviderLockHeldUseExistingToken 直接使用现有 token。
 	ProviderLockHeldUseExistingToken ProviderLockHeldAction = iota
@@ -22,11 +19,34 @@ const (
 	ProviderLockHeldWaitForCache
 )
 
+// ProviderRefreshErrorAction 定义 provider 在刷新失败时的处理动作。
+type ProviderRefreshErrorAction int
+
+// ProviderLockHeldAction 定义 provider 在刷新锁被占用时的处理动作。
+type ProviderLockHeldAction int
+
 // ProviderRefreshPolicy 描述 provider 的平台差异策略。
 type ProviderRefreshPolicy struct {
 	OnRefreshError ProviderRefreshErrorAction
 	OnLockHeld     ProviderLockHeldAction
 	FailureTTL     time.Duration
+}
+
+// ProviderRefreshPlatformPolicy 组合刷新资格判断和错误快照。
+func ProviderRefreshPlatformPolicy() RefreshPlatformPolicy {
+	return RefreshPlatformPolicy{
+		Eligibility: GrokOAuthRequestProviderEligibilityError,
+		MissingRefreshToken: func() error {
+			return ErrGrokOAuthRefreshTokenMissing
+		},
+		SnapshotError: WithGrokCredentialFailureSnapshot,
+		ConfigurationError: func(err error) error {
+			return &ProviderConfigurationRefreshError{Cause: err}
+		},
+		ContainmentError: func(err error) error {
+			return &ProviderCycleContainmentRefreshError{Cause: err}
+		},
+	}
 }
 
 func ClaudeProviderRefreshPolicy() ProviderRefreshPolicy {

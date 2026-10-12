@@ -21,8 +21,7 @@ func ReadLenientJSONRequestBodyWithPrealloc(req *http.Request, maxNormalizedByte
 // NormalizeLenientJSONRequestBody 保留既有 HTTP 错误类型及其 Limit 字段。
 func NormalizeLenientJSONRequestBody(body []byte, limit int64) ([]byte, error) {
 	result, err := openai.NormalizeLenientJSONRequestBody(body, limit)
-	var exceeded *openai.BodyLimitError
-	if errors.As(err, &exceeded) {
+	if exceeded, ok := errors.AsType[*openai.BodyLimitError](err); ok {
 		return nil, &http.MaxBytesError{Limit: exceeded.Limit}
 	}
 	return result, err

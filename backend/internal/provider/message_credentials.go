@@ -69,6 +69,6 @@ func (s *MessageCredentialSource) oauth(ctx context.Context, provider *Record) (
 	if accessToken == "" {
 		return "", "", errors.New("access_token not found in credentials")
 	}
-	// Token刷新由后台 TokenRefreshService 处理，此处只返回当前token
+	// Token 刷新由后台 TokenRefreshService 处理，此处只返回当前 token
 	return accessToken, "oauth", nil
 }

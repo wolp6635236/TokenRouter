@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // TestRefreshFailureVersionCAS 验证真实 PostgreSQL 检验旧交换版本的写权限，普通改名不干扰失败处理，其它身份更改必须拒绝。

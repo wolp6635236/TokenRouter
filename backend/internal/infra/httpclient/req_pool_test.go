@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
-
 	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
+
+	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 )
 
 func TestGetSharedReqClient_ForceHTTP2SeparatesCache(t *testing.T) {

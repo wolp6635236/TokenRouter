@@ -4,9 +4,10 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 // SelectedProviderSlot 不携带凭据或可变提供商实体。

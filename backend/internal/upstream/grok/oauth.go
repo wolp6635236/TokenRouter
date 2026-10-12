@@ -8,11 +8,10 @@ import (
 	"os"
 	"strings"
 
-	wiregrok "github.com/TokenFlux/TokenRouter/internal/protocol/grok"
-
 	urlvalidator "github.com/TokenFlux/TokenRouter/internal/egress/urlpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
+	wiregrok "github.com/TokenFlux/TokenRouter/internal/protocol/grok"
 )
 
 const (
@@ -45,6 +44,32 @@ var (
 	// 运营方可在端点间手动切换以规避单点不可用。
 	baseURLAllowedHosts = []string{"api.x.ai", "*.api.x.ai", "cli-chat-proxy.grok.com"}
 )
+
+// BaseURLValidator 在拼接 xAI 端点路径前应用调用方的上游 URL 安全策略。
+// API-key 提供商由服务层注入全局 security.url_allowlist 策略，OAuth 提供商仍使用可信主机校验。
+type BaseURLValidator func(string) (string, error)
+
+type RuntimeSanityCheck struct {
+	Value     string `json:"value"`
+	Valid     bool   `json:"valid"`
+	Error     string `json:"error,omitempty"`
+	IsDefault bool   `json:"is_default,omitempty"`
+}
+
+type RuntimeSanityReport struct {
+	BaseURL               RuntimeSanityCheck `json:"base_url"`
+	OAuthAuthorizeURL     RuntimeSanityCheck `json:"oauth_authorize_url"`
+	OAuthTokenURL         RuntimeSanityCheck `json:"oauth_token_url"`
+	OAuthRedirectURI      RuntimeSanityCheck `json:"oauth_redirect_uri"`
+	UnsafeURLOverrides    bool               `json:"unsafe_url_overrides"`
+	UnsafeHighConcurrency bool               `json:"unsafe_high_concurrency"`
+	PublicGatewayScope    string             `json:"public_gateway_scope"`
+	ProxyPolicy           string             `json:"proxy_policy"`
+}
+
+type AuthorizationInput = wiregrok.AuthorizationInput
+
+type TokenResponse = wiregrok.TokenResponse
 
 func EffectiveAuthorizeURL() string {
 	return envOrDefault(EnvAuthorizeURL, DefaultAuthorizeURL)
@@ -88,10 +113,6 @@ func ValidatedBaseURL(override string) (string, error) {
 	return ValidateBaseURL(EffectiveBaseURL(override))
 }
 
-// BaseURLValidator 在拼接 xAI 端点路径前应用调用方的上游 URL 安全策略。
-// API-key 提供商由服务层注入全局 security.url_allowlist 策略，OAuth 提供商仍使用可信主机校验。
-type BaseURLValidator func(string) (string, error)
-
 func validatedBaseURLWithValidator(override string, validator BaseURLValidator) (string, error) {
 	if validator == nil {
 		return ValidatedBaseURL(override)
@@ -102,24 +123,6 @@ func validatedBaseURLWithValidator(override string, validator BaseURLValidator) 
 		return "", err
 	}
 	return normalizeKnownBaseURLPath(validated)
-}
-
-type RuntimeSanityCheck struct {
-	Value     string `json:"value"`
-	Valid     bool   `json:"valid"`
-	Error     string `json:"error,omitempty"`
-	IsDefault bool   `json:"is_default,omitempty"`
-}
-
-type RuntimeSanityReport struct {
-	BaseURL               RuntimeSanityCheck `json:"base_url"`
-	OAuthAuthorizeURL     RuntimeSanityCheck `json:"oauth_authorize_url"`
-	OAuthTokenURL         RuntimeSanityCheck `json:"oauth_token_url"`
-	OAuthRedirectURI      RuntimeSanityCheck `json:"oauth_redirect_uri"`
-	UnsafeURLOverrides    bool               `json:"unsafe_url_overrides"`
-	UnsafeHighConcurrency bool               `json:"unsafe_high_concurrency"`
-	PublicGatewayScope    string             `json:"public_gateway_scope"`
-	ProxyPolicy           string             `json:"proxy_policy"`
 }
 
 func RuntimeSanity() RuntimeSanityReport {
@@ -268,8 +271,8 @@ func normalizeKnownBaseURLPath(raw string) (string, error) {
 func IsOfficialBaseURLHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	for _, allowed := range baseURLAllowedHosts {
-		if strings.HasPrefix(allowed, "*.") {
-			suffix := strings.TrimPrefix(allowed, "*.")
+		if after, ok := strings.CutPrefix(allowed, "*."); ok {
+			suffix := after
 			if host == suffix || strings.HasSuffix(host, "."+suffix) {
 				return true
 			}
@@ -379,8 +382,6 @@ func BuildAuthorizationURL(state, codeChallenge, redirectURI, nonce string) (str
 	return fmt.Sprintf("%s?%s", authorizeURL, params.Encode()), nil
 }
 
-type AuthorizationInput = wiregrok.AuthorizationInput
-
 // ParseAuthorizationInput 支持完整回调 URL、查询字符串或纯授权码。
 func ParseAuthorizationInput(raw string) AuthorizationInput {
 	trimmed := strings.TrimSpace(raw)
@@ -487,5 +488,3 @@ func BuildVideoURLWithValidator(baseURL, requestID string, validator BaseURLVali
 	}
 	return validatedBaseURL + "/videos/" + url.PathEscape(requestID), nil
 }
-
-type TokenResponse = wiregrok.TokenResponse

@@ -9,9 +9,10 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 )
 
 func TestReadUpstreamResponseBody(t *testing.T) {

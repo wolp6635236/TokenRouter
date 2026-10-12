@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	idemhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
@@ -17,11 +18,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/TokenFlux/TokenRouter/internal/usage/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/usage/httpapi/ports"
-
-	"github.com/gin-gonic/gin"
 )
 
-// UsageHandler handles admin usage-related requests
+// UsageHandler handles admin usage-related requests.
 type UsageHandler struct {
 	idemhttp.Executor
 
@@ -33,7 +32,23 @@ type UsageHandler struct {
 	opsService     ports.Timings
 }
 
-// NewUsageHandler creates a new admin usage handler
+// CreateUsageCleanupTaskRequest represents cleanup task creation request.
+type CreateUsageCleanupTaskRequest struct {
+	StartDate   string  `json:"start_date"`
+	EndDate     string  `json:"end_date"`
+	UserID      *int64  `json:"user_id"`
+	APIKeyID    *int64  `json:"api_key_id"`
+	ProviderID  *int64  `json:"provider_id"`
+	GroupID     *int64  `json:"group_id"`
+	TeamID      *int64  `json:"team_id"`
+	Model       *string `json:"model"`
+	RequestType *string `json:"request_type"`
+	Stream      *bool   `json:"stream"`
+	BillingType *int8   `json:"billing_type"`
+	Timezone    string  `json:"timezone"`
+}
+
+// NewUsageHandler creates a new admin usage handler.
 func NewUsageHandler(
 	usageService *usage.UsageService,
 	apiKeyService ports.KeyReader,
@@ -50,22 +65,6 @@ func NewUsageHandler(
 		cleanupService: cleanupService,
 		opsService:     opsService,
 	}
-}
-
-// CreateUsageCleanupTaskRequest represents cleanup task creation request
-type CreateUsageCleanupTaskRequest struct {
-	StartDate   string  `json:"start_date"`
-	EndDate     string  `json:"end_date"`
-	UserID      *int64  `json:"user_id"`
-	APIKeyID    *int64  `json:"api_key_id"`
-	ProviderID  *int64  `json:"provider_id"`
-	GroupID     *int64  `json:"group_id"`
-	TeamID      *int64  `json:"team_id"`
-	Model       *string `json:"model"`
-	RequestType *string `json:"request_type"`
-	Stream      *bool   `json:"stream"`
-	BillingType *int8   `json:"billing_type"`
-	Timezone    string  `json:"timezone"`
 }
 
 // List handles listing all usage records with filters
@@ -236,7 +235,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 }
 
 // enrichDetailedTimings 将已落库的 usage log 与同一内部请求 ID 的 http.access 日志批量关联。
-// 观测数据缺失或查询失败时保留主列表结果，不影响管理员查看使用记录。
+// 观测数据缺失或查询失败时返回未补充阶段耗时的使用记录列表。
 func (h *UsageHandler) enrichDetailedTimings(ctx context.Context, records []usage.UsageLog, out []dto.AdminUsageLog) {
 	if h == nil || h.opsService == nil || len(records) == 0 || len(records) != len(out) {
 		return
@@ -265,7 +264,7 @@ func (h *UsageHandler) enrichDetailedTimings(ctx context.Context, records []usag
 func usageLogClientRequestID(requestID string) string {
 	id := strings.TrimSpace(requestID)
 	if !strings.HasPrefix(id, "client:") {
-		return ""
+		return id
 	}
 	return strings.TrimSpace(strings.TrimPrefix(id, "client:"))
 }
@@ -413,6 +412,7 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	}
 	filters := usage.UsageLogFilters{
 		EndpointSource:     endpointSource,
+		RequestID:          strings.TrimSpace(c.Query("request_id")),
 		UserID:             userID,
 		APIKeyID:           apiKeyID,
 		ProviderID:         providerID,
@@ -429,8 +429,13 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		EndTime:            &endTime,
 	}
 
+	if filters.RequestID != "" && startDateStr == "" && endDateStr == "" && c.Query("period") == "" {
+		filters.StartTime = nil
+		filters.EndTime = nil
+	}
+
 	var stats *usage.UsageStats
-	// nocache: 绕过缓存直接回源,刷新者本人拿最新;不回写缓存(管理台"我刷新我自己拿最新"语义,非全局失效)。
+	// nocache 直接查询数据库，最新结果返回当前请求，已有缓存保持到期时间。
 	if parseBoolQueryWithDefault(c.Query("nocache"), false) {
 		s, err := h.usageService.GetStatsWithFilters(c.Request.Context(), filters)
 		if err != nil {
@@ -461,7 +466,7 @@ func (h *UsageHandler) SearchUsers(c *gin.Context) {
 		return
 	}
 
-	// 搜索下拉仅返回最多 30 条，避免一次性加载过多用户。
+	// 搜索下拉最多返回 30 个用户。
 	users, _, err := h.adminService.ListUsers(c.Request.Context(), 1, 30, ports.UserListFilters{Search: keyword, IncludeDeleted: true}, "email", "asc")
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -712,4 +717,9 @@ func (h *UsageHandler) CancelCleanupTask(c *gin.Context) {
 	}
 	logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 清理任务已取消: task=%d operator=%d", taskID, subject.UserID)
 	response.Success(c, gin.H{"id": taskID, "status": usage.UsageCleanupStatusCanceled})
+}
+
+// getStatsCached 查询用量统计并返回缓存命中状态。
+func (h *UsageHandler) getStatsCached(ctx context.Context, f usage.UsageLogFilters) (*usage.UsageStats, bool, error) {
+	return h.usageService.GetStatsCached(ctx, f)
 }

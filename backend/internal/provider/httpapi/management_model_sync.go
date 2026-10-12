@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // SyncUpstreamModels 从提供商上游同步实时支持模型列表。
@@ -33,8 +34,7 @@ func (h *ManagementHandler) SyncUpstreamModels(c *gin.Context) {
 
 	models, err := h.models.Fetch(c.Request.Context(), provider)
 	if err != nil {
-		var syncErr *providercore.UpstreamModelSyncError
-		if errors.As(err, &syncErr) {
+		if syncErr, ok := errors.AsType[*providercore.UpstreamModelSyncError](err); ok {
 			switch syncErr.Kind {
 			case providercore.UpstreamModelSyncErrorConfiguration, providercore.UpstreamModelSyncErrorUnsupported:
 				response.BadRequest(c, syncErr.SafeMessage())
@@ -83,8 +83,7 @@ func (h *ManagementHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 
 	models, err := h.models.Fetch(c.Request.Context(), tempProvider)
 	if err != nil {
-		var syncErr *providercore.UpstreamModelSyncError
-		if errors.As(err, &syncErr) {
+		if syncErr, ok := errors.AsType[*providercore.UpstreamModelSyncError](err); ok {
 			switch syncErr.Kind {
 			case providercore.UpstreamModelSyncErrorConfiguration, providercore.UpstreamModelSyncErrorUnsupported:
 				response.BadRequest(c, syncErr.SafeMessage())

@@ -6,8 +6,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
+const (
+	// MatchModeAny 表示任一条件匹配即可。
+	MatchModeAny = "any"
+
+	// MatchModeAll 表示所有条件都必须匹配。
+	MatchModeAll = "all"
+)
+
 // ErrorPassthroughRule 全局错误透传规则
-// 用于控制上游错误如何返回给客户端
+// 用于控制上游错误如何返回给客户端。
 type ErrorPassthroughRule struct {
 	ID              int64     `json:"id"`
 	Name            string    `json:"name"`             // 规则名称
@@ -27,15 +35,11 @@ type ErrorPassthroughRule struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// MatchModeAny 表示任一条件匹配即可
-const MatchModeAny = "any"
-
-// MatchModeAll 表示所有条件都必须匹配
-const MatchModeAll = "all"
+type ValidationError = egress.ValidationError
 
 // 支持的平台常量
 
-// Validate 验证规则配置的有效性
+// Validate 验证规则配置的有效性。
 func (r *ErrorPassthroughRule) Validate() error {
 	if r.Name == "" {
 		return &ValidationError{Field: "name", Message: "name is required"}
@@ -55,5 +59,3 @@ func (r *ErrorPassthroughRule) Validate() error {
 	}
 	return nil
 }
-
-type ValidationError = egress.ValidationError

@@ -31,6 +31,15 @@ type ImagesTarget struct {
 	ResponseError                       func(*http.Response, int, error) error
 }
 
+// ImagesExecutor 对已选提供商执行一次图片请求。
+type ImagesExecutor struct{}
+
+// imagesObservedSink 记录同步输出的提交状态、内容标记和写入失败。
+type imagesObservedSink struct {
+	upstream.OutputSink
+	committed, retryCommitted, semantic, failed bool
+}
+
 func (t *ImagesTarget) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -42,9 +51,6 @@ func (t *ImagesTarget) String() string {
 	return fmt.Sprintf("openai images target provider=%d", t.TargetID())
 }
 func (t *ImagesTarget) GoString() string { return t.String() }
-
-// ImagesExecutor 对已选提供商执行一次图片请求。
-type ImagesExecutor struct{}
 
 func (ImagesExecutor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
 	t, ok := input.Target.(*ImagesTarget)
@@ -138,12 +144,6 @@ func (ImagesExecutor) Execute(ctx context.Context, input upstream.AttemptInput, 
 		err = t.ResponseError(resp, before, err)
 	}
 	return result, err
-}
-
-// imagesObservedSink 记录同步输出的提交状态、内容标记和写入失败。
-type imagesObservedSink struct {
-	upstream.OutputSink
-	committed, retryCommitted, semantic, failed bool
 }
 
 func (s *imagesObservedSink) InitialOutput() upstream.OutputHead {

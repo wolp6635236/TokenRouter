@@ -45,7 +45,7 @@ func MatchWildcard(mapping map[string]string, requestedModel string) (string, bo
 }
 
 // Matches 通用通配符匹配（仅支持末尾 *）
-// 复用 Antigravity 的通配符逻辑，供其他平台使用
+// 复用 Antigravity 的通配符逻辑，供其他平台使用。
 func Matches(pattern, str string) bool {
 	if strings.HasSuffix(pattern, "*") {
 		prefix := pattern[:len(pattern)-1]

@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+const (
+	WaitNotCounted WaitOwnership = iota
+	WaitCounted
+	WaitUncertain
+)
+
 // WaitCounters 读写用户和提供商的等待计数。
 type WaitCounters interface {
 	IncrementWaitCount(context.Context, int64, int) (bool, error)
@@ -15,12 +21,6 @@ type WaitCounters interface {
 
 // WaitOwnership 区分未写入、确认取得和写入结果不明；只有确认取得才拥有补偿责任。
 type WaitOwnership uint8
-
-const (
-	WaitNotCounted WaitOwnership = iota
-	WaitCounted
-	WaitUncertain
-)
 
 // WaitResult 的副本共用一次释放。故障放行时 Ownership 为 WaitUncertain，释放时跳过计数扣减。
 type WaitResult struct {

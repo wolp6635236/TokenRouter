@@ -10,6 +10,14 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// DefaultGroupRateCacheTTL 保留网关隔离缓存的原有效期。
+const (
+	defaultUserGroupRateCacheTTL = 30 * time.Second
+	DefaultGroupRateCacheTTL     = defaultUserGroupRateCacheTTL
+)
+
+var groupRateMetrics GroupRateMetrics
+
 type GroupRateResolver struct {
 	repo         UserGroupRateRepository
 	cache        *gocache.Cache
@@ -18,6 +26,9 @@ type GroupRateResolver struct {
 	logComponent string
 	observe      func(string, string, ...any)
 }
+
+// GroupRateMetrics 共用一份统计状态；各网关的缓存和 singleflight 保持隔离。
+type GroupRateMetrics struct{ Hit, Miss, Load, Shared, Fallback atomic.Int64 }
 
 func NewGroupRateResolver(repo UserGroupRateRepository, cache *gocache.Cache, cacheTTL time.Duration, sf *singleflight.Group, logComponent string, observe func(string, string, ...any)) *GroupRateResolver {
 	if observe == nil {
@@ -106,17 +117,6 @@ func (r *GroupRateResolver) Resolve(ctx context.Context, userID, groupID int64, 
 	}
 	return multiplier
 }
-
-// DefaultGroupRateCacheTTL 保留网关隔离缓存的原有效期。
-const (
-	defaultUserGroupRateCacheTTL = 30 * time.Second
-	DefaultGroupRateCacheTTL     = defaultUserGroupRateCacheTTL
-)
-
-// GroupRateMetrics 共用一份统计状态；各网关的缓存和 singleflight 保持隔离。
-type GroupRateMetrics struct{ Hit, Miss, Load, Shared, Fallback atomic.Int64 }
-
-var groupRateMetrics GroupRateMetrics
 
 func SharedGroupRateMetrics() *GroupRateMetrics { return &groupRateMetrics }
 func (r *GroupRateResolver) DeleteExpired() {

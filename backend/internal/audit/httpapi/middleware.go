@@ -3,20 +3,17 @@ package httpapi
 import (
 	"bytes"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/audit"
 	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-
-	"github.com/gin-gonic/gin"
 )
-
-// AuditLogMiddleware 管理面操作审计中间件类型（用于 wire 注入区分）。
-type AuditLogMiddleware gin.HandlerFunc
 
 // 审计相关 gin context 覆写键：handler / 认证中间件可通过这些键补充审计信息。
 const (
@@ -27,6 +24,62 @@ const (
 	// ContextKeyAuthEmail 认证中间件写入的用户邮箱（审计用）。
 	ContextKeyAuthEmail = "auth_email"
 )
+
+var (
+	// auditSensitiveReads 需要审计的敏感 GET 读取（method+FullPath → 动作名）。
+	auditSensitiveReads = map[string]string{
+		"GET /api/v1/admin/providers/data":            "admin.providers.export",
+		"GET /api/v1/admin/proxies/data":              "admin.proxies.export",
+		"GET /api/v1/admin/redeem-codes/export":       "admin.redeem_codes.export",
+		"GET /api/v1/admin/backups/:id/download-url":  "admin.backups.download",
+		"GET /api/v1/admin/backups/:id/download":      "admin.backups.download",
+		"GET /api/v1/admin/settings/admin-api-key":    "admin.admin_api_key.read",
+		"GET /api/v1/admin/users/:id/api-keys":        "admin.users.api_keys.read",
+		"GET /api/v1/admin/groups/:id/api-keys":       "admin.groups.api_keys.read",
+		"GET /api/v1/admin/backups/s3-config":         "admin.backups.s3_config.read",
+		"GET /api/v1/admin/backups/storage-config":    "admin.backups.storage_config.read",
+		"GET /api/v1/admin/data-management/s3/config": "admin.data_management.s3_config.read",
+	}
+
+	// auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
+	auditActionOverrides = map[string]string{
+		"POST /api/v1/auth/login":                                 audit.AuditActionLogin,
+		"POST /api/v1/auth/login/2fa":                             audit.AuditActionLogin2FA,
+		"POST /api/v1/auth/register":                              audit.AuditActionRegister,
+		"POST /api/v1/auth/refresh":                               audit.AuditActionTokenRefresh,
+		"POST /api/v1/user/totp/step-up":                          audit.AuditActionStepUpVerify,
+		"POST /api/v1/admin/audit-logs/clear":                     audit.AuditActionAuditLogClear,
+		"POST /api/v1/admin/providers/data":                       "admin.providers.import",
+		"POST /api/v1/admin/providers/:id/upstream-usage/query":   "admin.providers.upstream_usage.query",
+		"POST /api/v1/admin/providers/upstream-usage/query/batch": "admin.providers.upstream_usage.query_batch",
+		"POST /api/v1/admin/backups":                              "admin.backups.create",
+		"POST /api/v1/admin/backups/:id/restore":                  "admin.backups.restore",
+		"DELETE /api/v1/admin/backups/:id":                        "admin.backups.delete",
+		"PUT /api/v1/admin/backups/s3-config":                     "admin.backups.s3_config.update",
+		"POST /api/v1/admin/settings/admin-api-key/regenerate":    "admin.admin_api_key.regenerate",
+		"DELETE /api/v1/admin/settings/admin-api-key":             "admin.admin_api_key.delete",
+		"POST /api/v1/subscriptions/:id/revoke":                   audit.AuditActionUserSubscriptionRevoke,
+	}
+
+	// auditBodyOmittedRoutes 请求体几乎整体由凭证构成的路由（如整块粘贴 auth JSON 的导入接口）。
+	// 这类 body 的凭证内嵌在普通字符串值里，键级脱敏无法覆盖，整体不入库。
+	auditBodyOmittedRoutes = map[string]struct{}{
+		"POST /api/v1/auth/passkey/login/finish":                     {},
+		"POST /api/v1/user/passkeys/register/finish":                 {},
+		"POST /api/v1/admin/providers/import/codex-session":          {},
+		"PUT /api/v1/admin/providers/:id/ollama-cloud-usage/session": {},
+	}
+)
+
+// AuditLogMiddleware 管理面操作审计中间件类型（用于 wire 注入区分）。
+type AuditLogMiddleware gin.HandlerFunc
+
+// restoredBody 把审计中间件按上限读出的前缀与未读完的原始 body 拼接回填，
+// 保证 handler 读到完整请求体；Close 委托给原始 body。
+type restoredBody struct {
+	io.Reader
+	closer io.Closer
+}
 
 // SetAuditAction 允许 handler / 中间件为当前请求指定审计动作名（覆盖自动推导）。
 func SetAuditAction(c *gin.Context, action string) {
@@ -48,50 +101,6 @@ func SkipAudit(c *gin.Context) {
 	c.Set(auditCtxKeySkip, true)
 }
 
-// auditSensitiveReads 需要审计的敏感 GET 读取（method+FullPath → 动作名）。
-var auditSensitiveReads = map[string]string{
-	"GET /api/v1/admin/providers/data":            "admin.providers.export",
-	"GET /api/v1/admin/proxies/data":              "admin.proxies.export",
-	"GET /api/v1/admin/redeem-codes/export":       "admin.redeem_codes.export",
-	"GET /api/v1/admin/backups/:id/download-url":  "admin.backups.download",
-	"GET /api/v1/admin/backups/:id/download":      "admin.backups.download",
-	"GET /api/v1/admin/settings/admin-api-key":    "admin.admin_api_key.read",
-	"GET /api/v1/admin/users/:id/api-keys":        "admin.users.api_keys.read",
-	"GET /api/v1/admin/groups/:id/api-keys":       "admin.groups.api_keys.read",
-	"GET /api/v1/admin/backups/s3-config":         "admin.backups.s3_config.read",
-	"GET /api/v1/admin/backups/storage-config":    "admin.backups.storage_config.read",
-	"GET /api/v1/admin/data-management/s3/config": "admin.data_management.s3_config.read",
-}
-
-// auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
-var auditActionOverrides = map[string]string{
-	"POST /api/v1/auth/login":                                 audit.AuditActionLogin,
-	"POST /api/v1/auth/login/2fa":                             audit.AuditActionLogin2FA,
-	"POST /api/v1/auth/register":                              audit.AuditActionRegister,
-	"POST /api/v1/auth/refresh":                               audit.AuditActionTokenRefresh,
-	"POST /api/v1/user/totp/step-up":                          audit.AuditActionStepUpVerify,
-	"POST /api/v1/admin/audit-logs/clear":                     audit.AuditActionAuditLogClear,
-	"POST /api/v1/admin/providers/data":                       "admin.providers.import",
-	"POST /api/v1/admin/providers/:id/upstream-usage/query":   "admin.providers.upstream_usage.query",
-	"POST /api/v1/admin/providers/upstream-usage/query/batch": "admin.providers.upstream_usage.query_batch",
-	"POST /api/v1/admin/backups":                              "admin.backups.create",
-	"POST /api/v1/admin/backups/:id/restore":                  "admin.backups.restore",
-	"DELETE /api/v1/admin/backups/:id":                        "admin.backups.delete",
-	"PUT /api/v1/admin/backups/s3-config":                     "admin.backups.s3_config.update",
-	"POST /api/v1/admin/settings/admin-api-key/regenerate":    "admin.admin_api_key.regenerate",
-	"DELETE /api/v1/admin/settings/admin-api-key":             "admin.admin_api_key.delete",
-	"POST /api/v1/subscriptions/:id/revoke":                   audit.AuditActionUserSubscriptionRevoke,
-}
-
-// auditBodyOmittedRoutes 请求体几乎整体由凭证构成的路由（如整块粘贴 auth JSON 的导入接口）。
-// 这类 body 的凭证内嵌在普通字符串值里，键级脱敏无法覆盖，整体不入库。
-var auditBodyOmittedRoutes = map[string]struct{}{
-	"POST /api/v1/auth/passkey/login/finish":                     {},
-	"POST /api/v1/user/passkeys/register/finish":                 {},
-	"POST /api/v1/admin/providers/import/codex-session":          {},
-	"PUT /api/v1/admin/providers/:id/ollama-cloud-usage/session": {},
-}
-
 // NewAuditLogMiddleware 创建审计中间件。
 // 记录范围：变更类请求（POST/PUT/PATCH/DELETE）+ 白名单内的敏感 GET 读取。
 // 挂载位置：admin / user / admin-payment 组挂在各自认证中间件之后（只审计已认证请求，
@@ -103,12 +112,12 @@ func NewAuditLogMiddleware(auditService *audit.AuditLogService, redactor *audit.
 		record := false
 		action := ""
 		switch c.Request.Method {
-		case "POST", "PUT", "PATCH", "DELETE":
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 			record = true
 			if v, ok := auditActionOverrides[routeKey]; ok {
 				action = v
 			}
-		case "GET":
+		case http.MethodGet:
 			if v, ok := auditSensitiveReads[routeKey]; ok {
 				record = true
 				action = v
@@ -125,7 +134,7 @@ func NewAuditLogMiddleware(auditService *audit.AuditLogService, redactor *audit.
 		var bodyRedacted string
 		if _, omit := auditBodyOmittedRoutes[routeKey]; omit {
 			bodyRedacted = "<credential-bearing body omitted>"
-		} else if c.Request.Body != nil && c.Request.Method != "GET" {
+		} else if c.Request.Body != nil && c.Request.Method != http.MethodGet {
 			orig := c.Request.Body
 			raw, err := io.ReadAll(io.LimitReader(orig, audit.AuditRequestBodyCaptureLimit+1))
 			c.Request.Body = &restoredBody{
@@ -222,13 +231,6 @@ func NewAuditLogMiddleware(auditService *audit.AuditLogService, redactor *audit.
 	})
 }
 
-// restoredBody 把审计中间件按上限读出的前缀与未读完的原始 body 拼接回填，
-// 保证 handler 读到完整请求体；Close 委托给原始 body。
-type restoredBody struct {
-	io.Reader
-	closer io.Closer
-}
-
 func (b *restoredBody) Close() error { return b.closer.Close() }
 
 // MaskedRequestCredential 提取请求头中的凭证并做首尾掩码。
@@ -248,7 +250,7 @@ func MaskedRequestCredential(c *gin.Context) string {
 }
 
 // deriveAuditAction 由 method + 路由模板自动推导动作名，
-// 例：PUT /api/v1/admin/providers/:id → admin.providers.update
+// 例：PUT /api/v1/admin/providers/:id → admin.providers.update。
 func deriveAuditAction(method, fullPath string) string {
 	path := strings.TrimPrefix(fullPath, "/api/v1/")
 	path = strings.Trim(path, "/")

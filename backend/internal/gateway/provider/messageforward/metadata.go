@@ -5,11 +5,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/tidwall/gjson"
 )
 
 // metadataUserID 保留提供商与客户端会话共同派生的 OAuth 身份。

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// UserMsgQueueCache 用户消息串行队列 Redis 缓存接口
+// UserMsgQueueCache 用户消息串行队列 Redis 缓存接口。
 type UserMsgQueueCache interface {
 	// AcquireLock 尝试获取提供商级串行锁
 	AcquireLock(ctx context.Context, providerID int64, requestID string, lockTtlMs int) (acquired bool, err error)
@@ -24,7 +24,7 @@ type UserMsgQueueCache interface {
 	ReconcileExpiredLockCandidates(ctx context.Context, maxCount int) (cleaned int, err error)
 }
 
-// QueueLockResult 锁获取结果
+// QueueLockResult 锁获取结果。
 type QueueLockResult struct {
 	Acquired  bool
 	RequestID string
@@ -40,7 +40,14 @@ type UserMessageQueueService struct {
 	cfg         *MessageQueueOptions
 }
 
-// NewUserMessageQueueService 创建用户消息串行队列服务
+// MessageQueueOptions 保存消息队列的静态时间参数。
+type MessageQueueOptions struct {
+	LockTTLMs  int
+	MinDelayMs int
+	MaxDelayMs int
+}
+
+// NewUserMessageQueueService 创建用户消息串行队列服务。
 func NewUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, cfg *MessageQueueOptions, options ...Diagnostics) *UserMessageQueueService {
 	var diagnostics Diagnostics
 	if len(options) > 0 {
@@ -54,7 +61,7 @@ func NewUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, cfg 
 	}
 }
 
-// TryAcquire 尝试立即获取串行锁
+// TryAcquire 尝试立即获取串行锁。
 func (s *UserMessageQueueService) TryAcquire(ctx context.Context, providerID int64) (*QueueLockResult, error) {
 	operation, done, err := s.runtime.Enter(ctx, "TryAcquire")
 	if err != nil {
@@ -84,7 +91,7 @@ func (s *UserMessageQueueService) TryAcquire(ctx context.Context, providerID int
 	}, nil
 }
 
-// Release 释放串行锁
+// Release 释放串行锁。
 func (s *UserMessageQueueService) Release(ctx context.Context, providerID int64, requestID string) error {
 	if s.cache == nil || requestID == "" {
 		return nil
@@ -246,18 +253,11 @@ func applyJitter(d time.Duration, jitterPct float64) time.Duration {
 	return time.Duration(float64(d) * (1 + jitter))
 }
 
-// generateUMQRequestID 生成唯一请求 ID（与 generateRequestID 一致的 fallback 模式）
+// generateUMQRequestID 生成唯一请求 ID（与 generateRequestID 一致的 fallback 模式）。
 func generateUMQRequestID() string {
 	b := make([]byte, 16)
 	if _, err := cryptorand.Read(b); err != nil {
 		return fmt.Sprintf("%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
-}
-
-// MessageQueueOptions 保存消息队列的静态时间参数。
-type MessageQueueOptions struct {
-	LockTTLMs  int
-	MinDelayMs int
-	MaxDelayMs int
 }

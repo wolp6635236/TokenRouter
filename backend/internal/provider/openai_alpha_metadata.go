@@ -31,9 +31,7 @@ func (s *OpenAIAuthorization) EnsureAlphaSearchMetadata(ctx context.Context, rec
 	if credentials == nil {
 		credentials = make(map[string]any)
 	}
-	for key, value := range BuildOpenAIProviderCredentials(info) {
-		credentials[key] = value
-	}
+	maps.Copy(credentials, BuildOpenAIProviderCredentials(info))
 	credentials = NormalizeOpenAIPersonalAccessTokenCredentials(record, info, credentials)
 	record.Credentials = maps.Clone(credentials)
 	ports.Apply(maps.Clone(credentials))

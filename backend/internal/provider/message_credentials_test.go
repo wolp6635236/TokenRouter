@@ -5,8 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // TestMessageCredentialsPreserveStoredTypes 按矩阵检查 Messages 与 OpenAI 入口支持的提供商类型及错误。

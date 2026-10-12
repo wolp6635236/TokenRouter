@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 )
-
-// BlockType 内容块类型
-type BlockType int
 
 const (
 	BlockTypeNone BlockType = iota
@@ -16,7 +14,10 @@ const (
 	BlockTypeFunction
 )
 
-// GeminiToAnthropicStreamProcessor 流式响应处理器
+// BlockType 内容块类型。
+type BlockType int
+
+// GeminiToAnthropicStreamProcessor 流式响应处理器。
 type GeminiToAnthropicStreamProcessor struct {
 	runtime           GeminiConversionRuntime
 	diagnostics       []string
@@ -38,7 +39,13 @@ type GeminiToAnthropicStreamProcessor struct {
 	imageOutputTokens int
 }
 
-// NewGeminiToAnthropicStreamProcessor 创建流式响应处理器
+// GeminiResponseInput 是解包后的协议输入，和平台 v1internal 包装无类型依赖。
+type GeminiResponseInput struct {
+	Response                 GeminiResponse
+	ResponseID, ModelVersion string
+}
+
+// NewGeminiToAnthropicStreamProcessor 创建流式响应处理器。
 func NewGeminiToAnthropicStreamProcessor(originalModel string, runtime GeminiConversionRuntime) *GeminiToAnthropicStreamProcessor {
 	return &GeminiToAnthropicStreamProcessor{
 		runtime:       runtime,
@@ -122,12 +129,12 @@ func (p *GeminiToAnthropicStreamProcessor) Finish() ([]byte, *ClaudeUsage) {
 	return result.Bytes(), usage
 }
 
-// MessageStartSent 报告流中是否已发出过 message_start 事件（即是否收到过有效的上游数据）
+// MessageStartSent 报告流中是否已发出过 message_start 事件（即是否收到过有效的上游数据）。
 func (p *GeminiToAnthropicStreamProcessor) MessageStartSent() bool {
 	return p.messageStartSent
 }
 
-// emitMessageStart 发送 message_start 事件
+// emitMessageStart 发送 message_start 事件。
 func (p *GeminiToAnthropicStreamProcessor) emitMessageStart(v1Resp *GeminiResponseInput) []byte {
 	if p.messageStartSent {
 		return nil
@@ -170,7 +177,7 @@ func (p *GeminiToAnthropicStreamProcessor) emitMessageStart(v1Resp *GeminiRespon
 	return p.formatSSE("message_start", event)
 }
 
-// processPart 处理单个 part
+// processPart 处理单个 part。
 func (p *GeminiToAnthropicStreamProcessor) processPart(part *GeminiPart) []byte {
 	var result bytes.Buffer
 	signature := part.ThoughtSignature
@@ -221,7 +228,7 @@ func (p *GeminiToAnthropicStreamProcessor) captureGrounding(grounding *GeminiGro
 	}
 }
 
-// processThinking 处理 thinking
+// processThinking 处理 thinking。
 func (p *GeminiToAnthropicStreamProcessor) processThinking(text, signature string) []byte {
 	var result bytes.Buffer
 
@@ -254,7 +261,7 @@ func (p *GeminiToAnthropicStreamProcessor) processThinking(text, signature strin
 	return result.Bytes()
 }
 
-// processText 处理普通 text
+// processText 处理普通 text。
 func (p *GeminiToAnthropicStreamProcessor) processText(text, signature string) []byte {
 	var result bytes.Buffer
 
@@ -302,7 +309,7 @@ func (p *GeminiToAnthropicStreamProcessor) processText(text, signature string) [
 	return result.Bytes()
 }
 
-// processFunctionCall 处理 function call
+// processFunctionCall 处理 function call。
 func (p *GeminiToAnthropicStreamProcessor) processFunctionCall(fc *GeminiFunctionCall, signature string) []byte {
 	var result bytes.Buffer
 
@@ -339,7 +346,7 @@ func (p *GeminiToAnthropicStreamProcessor) processFunctionCall(fc *GeminiFunctio
 	return result.Bytes()
 }
 
-// startBlock 开始新的内容块
+// startBlock 开始新的内容块。
 func (p *GeminiToAnthropicStreamProcessor) startBlock(blockType BlockType, contentBlock map[string]any) []byte {
 	var result bytes.Buffer
 
@@ -359,7 +366,7 @@ func (p *GeminiToAnthropicStreamProcessor) startBlock(blockType BlockType, conte
 	return result.Bytes()
 }
 
-// endBlock 结束当前内容块
+// endBlock 结束当前内容块。
 func (p *GeminiToAnthropicStreamProcessor) endBlock() []byte {
 	if p.blockType == BlockTypeNone {
 		return nil
@@ -388,14 +395,12 @@ func (p *GeminiToAnthropicStreamProcessor) endBlock() []byte {
 	return result.Bytes()
 }
 
-// emitDelta 发送 delta 事件
+// emitDelta 发送 delta 事件。
 func (p *GeminiToAnthropicStreamProcessor) emitDelta(deltaType string, deltaContent map[string]any) []byte {
 	delta := map[string]any{
 		"type": deltaType,
 	}
-	for k, v := range deltaContent {
-		delta[k] = v
-	}
+	maps.Copy(delta, deltaContent)
 
 	event := map[string]any{
 		"type":  "content_block_delta",
@@ -425,7 +430,7 @@ func (p *GeminiToAnthropicStreamProcessor) emitEmptyThinkingWithSignature(signat
 	return result.Bytes()
 }
 
-// emitFinish 发送结束事件
+// emitFinish 发送结束事件。
 func (p *GeminiToAnthropicStreamProcessor) emitFinish(finishReason string) []byte {
 	var result bytes.Buffer
 
@@ -492,7 +497,7 @@ func (p *GeminiToAnthropicStreamProcessor) emitFinish(finishReason string) []byt
 	return result.Bytes()
 }
 
-// formatSSE 格式化 SSE 事件
+// formatSSE 格式化 SSE 事件。
 func (p *GeminiToAnthropicStreamProcessor) formatSSE(eventType string, data any) []byte {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -500,12 +505,6 @@ func (p *GeminiToAnthropicStreamProcessor) formatSSE(eventType string, data any)
 	}
 
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(jsonData)))
-}
-
-// GeminiResponseInput 是解包后的协议输入，和平台 v1internal 包装无类型依赖。
-type GeminiResponseInput struct {
-	Response                 GeminiResponse
-	ResponseID, ModelVersion string
 }
 
 // TakeDiagnostics 返回本轮转换诊断并释放暂存切片。

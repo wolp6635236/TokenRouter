@@ -2,11 +2,14 @@ package completion
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 func OptionalTrimmedStringPtr(raw string) *string {
@@ -108,12 +111,7 @@ func SubscriptionPlanIncludesGroup(plan *billing.SubscriptionPlan, groupID int64
 	if len(plan.GroupIDs) == 0 {
 		return true
 	}
-	for _, id := range plan.GroupIDs {
-		if id == groupID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(plan.GroupIDs, groupID)
 }
 
 func SubscriptionPlanGroupRateMultiplier(plan *billing.SubscriptionPlan, groupID int64) (float64, bool) {
@@ -264,7 +262,9 @@ func NormalizeVideoBillingResolutionOrDefault(v string) string {
 func NormalizeVideoBillingDurationSecondsOrDefault(v int) int {
 	return pricing.NormalizeVideoBillingDurationSecondsOrDefault(v)
 }
+
 func normalizeBillingServiceTier(v string) string { return pricing.NormalizeBillingServiceTier(v) }
+
 func applyCostBreakdownMultiplier(v *CostBreakdown, m float64) {
 	pricing.ApplyCostBreakdownMultiplier(v, m)
 }
@@ -324,4 +324,27 @@ func (s *Recorder) keyWithBillingSettings(ctx context.Context, key *KeySnapshot)
 	g.WebSearchPricePerCall, g.SearchPricePer1k = settings.WebSearchPricePerCall, settings.SearchPricePer1k
 	g.AudioPrice = &pricing.AudioPriceConfig{RealtimePerMin: settings.AudioRealtimePricePerMin, TTSPerMChars: settings.AudioTTSPricePerMillionChars, STTPerHour: settings.AudioSTTPricePerHour}
 	return key
+}
+
+// applyClientModel 将客户端声明的模型名写入用量日志的请求模型字段。
+func applyClientModel(ctx context.Context, log *usage.UsageLog) {
+	if ctx == nil || log == nil {
+		return
+	}
+	if clientModel, ok := ctx.Value(telemetry.ClientModel).(string); ok && strings.TrimSpace(clientModel) != "" {
+		log.RequestedModel = strings.TrimSpace(clientModel)
+	}
+}
+
+// responseModelMismatch 比较最终出站模型和上游原始响应中的模型声明。
+func responseModelMismatch(result *Result) *bool {
+	if result == nil || strings.TrimSpace(result.UpstreamResponseModel) == "" {
+		return nil
+	}
+	sent := strings.TrimSpace(result.UpstreamModel)
+	if sent == "" {
+		sent = strings.TrimSpace(result.Model)
+	}
+	mismatch := !strings.EqualFold(sent, strings.TrimSpace(result.UpstreamResponseModel))
+	return &mismatch
 }

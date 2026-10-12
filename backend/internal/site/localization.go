@@ -2,6 +2,7 @@ package site
 
 import (
 	"encoding/json"
+	"maps"
 	"net/url"
 	"reflect"
 	"strings"
@@ -16,10 +17,10 @@ const (
 	SettingKeyDefaultLocale = "default_locale"
 )
 
+var siteTextKeys = []string{"site_name", "site_title", "site_subtitle", "contact_info", "doc_url", "home_content", "purchase_subscription_url", "footer_text"}
+
 // LocalizedTexts 按独立字段保存站点文案，译文缺失时各自选择原文。
 type LocalizedTexts = locale.TextUpdates
-
-var siteTextKeys = []string{"site_name", "site_title", "site_subtitle", "contact_info", "doc_url", "home_content", "purchase_subscription_url", "footer_text"}
 
 // ParseLocalizedTexts 从已保存内容构建编辑值，缺少的字段取现有原文。
 func ParseLocalizedTexts(values map[string]string) LocalizedTexts {
@@ -78,9 +79,7 @@ func PrepareLocalizedTexts(values map[string]string, input LocalizedTexts) (Loca
 // ResolveSiteTexts 返回独立的设置副本，权限、菜单结构和内容原文保持在持久数据中。
 func ResolveSiteTexts(values map[string]string, code string) map[string]string {
 	result := make(map[string]string, len(values))
-	for key, value := range values {
-		result[key] = value
-	}
+	maps.Copy(result, values)
 	for key, content := range ConfiguredSiteTexts(values) {
 		result[key], _ = content.Resolve(code)
 	}

@@ -15,10 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/lib/pq"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // Suite 在测试进程内复用容器，每次 New 都从迁移模板创建独立数据库。

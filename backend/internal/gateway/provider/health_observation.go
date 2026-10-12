@@ -7,7 +7,48 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+// ApplyExecutionSchedulingThreshold 按健康策略更新执行目标的临时调度状态和附加字段。
+func ApplyExecutionSchedulingThreshold(ctx context.Context, observer *provideradapter.UpstreamHealth, value *ExecutionProvider) bool {
+	if observer == nil {
+		return false
+	}
+	record := ExecutionRecord(value)
+	paused := observer.Core.ApplyProviderSchedulingThreshold(ctx, record)
+	if value != nil && record != nil {
+		value.Record.TempUnschedulableUntil = record.TempUnschedulableUntil
+		value.Record.TempUnschedulableReason = record.TempUnschedulableReason
+		value.Record.Extra = record.Extra
+	}
+	return paused
+}
+
+// ObserveExecutionSessionWindow 在空观测时先短路，不触碰可选健康依赖。
+func ObserveExecutionSessionWindow(ctx context.Context, observer *provideradapter.UpstreamHealth, value *ExecutionProvider, headers http.Header) {
+	observation := provideradapter.SessionWindowObservation(headers)
+	if observation.Status == "" {
+		return
+	}
+	observer.Core.UpdateSessionWindow(ctx, ExecutionRecord(value), observation)
+}
+
+// ApplyGrokExecutionHealth 将本次尝试和提供商记录交给提供商模块更新健康状态。
+func ApplyGrokExecutionHealth(ctx context.Context, health *provideradapter.GrokHealth, target *ExecutionProvider, status int, headers http.Header, body []byte, teamModel string, models ...string) provider.UpstreamErrorDecision {
+	if health == nil || target == nil {
+		return provider.UpstreamErrorDecision{Policy: provider.ErrorPolicyNone}
+	}
+	return health.ObserveError(ctx, target.View(), provideradapter.GrokHealthInput{
+		Observation:     HealthObservationFromContext(ctx, status, headers, body, models),
+		Models:          models,
+		QuotaModel:      teamModel,
+		TeamModel:       teamModel,
+		RequestScoped:   IsRequestScopedProviderFailure(target, status, body),
+		ServerTransient: IsTransientProviderFailure(status, body),
+	})
+}
 
 // HealthObservationFromContext 读取模型、thinking 和端点信息，生成健康观测输入。
 func HealthObservationFromContext(ctx context.Context, status int, headers http.Header, body []byte, models []string) provideradapter.HealthObservation {
@@ -34,4 +75,17 @@ func ExecutionErrorPolicy(value *ExecutionProvider) *provider.Record {
 		return nil
 	}
 	return &provider.Record{ID: value.Record.ID, Platform: value.Record.Platform, Type: value.Record.Type, Credentials: value.Record.Credentials}
+}
+
+// ApplyOpenAIResponseHealth 汇总请求类型、模型和响应信息，交给提供商健康策略处理。
+func ApplyOpenAIResponseHealth(ctx context.Context, health *provideradapter.OpenAIResponseHealth, target *ExecutionProvider, status int, headers http.Header, body []byte, suppressDefaultRateLimit bool, models ...string) provider.UpstreamErrorDecision {
+	return health.Apply(ctx, target.View(), provideradapter.OpenAIResponseHealthInput{
+		Observation:              HealthObservationFromContext(ctx, status, headers, body, models),
+		Models:                   models,
+		SuppressDefaultRateLimit: suppressDefaultRateLimit,
+		ContentRejected:          IsContentPolicyRejection(body) || IsOpenAICyberWarningPayload(body, upstream.ExtractErrorMessage(body)),
+		RequestScoped:            IsRequestScopedProviderFailure(target, status, body),
+		SelfBuiltImage:           openai.IsOpenAIImagesSelfBuiltRequest(ctx),
+		Transient:                IsTransientProviderFailure(status, body),
+	})
 }

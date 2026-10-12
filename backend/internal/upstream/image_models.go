@@ -3,7 +3,7 @@ package upstream
 import "strings"
 
 // IsGeminiImageGenerationModel 判断模型是否为图片生成模型
-// 支持的模型：gemini-3.1-flash-image, gemini-3-pro-image, gemini-2.5-flash-image 等
+// 支持的模型：gemini-3.1-flash-image, gemini-3-pro-image, gemini-2.5-flash-image 等。
 func IsGeminiImageGenerationModel(model string) bool {
 	modelLower := strings.ToLower(model)
 	// 移除 models/ 前缀
@@ -32,17 +32,4 @@ func IsGrokImageGenerationModel(model string) bool {
 	return model == "grok-imagine" ||
 		model == "grok-imagine-edit" ||
 		strings.HasPrefix(model, "grok-imagine-image")
-}
-
-// DefaultImageTaskGeminiModels 保留创作与批量图片的默认候选及顺序。
-func DefaultImageTaskGeminiModels() []string {
-	return []string{
-		"gemini-2.0-flash-exp-image-generation",
-		"gemini-2.5-flash-image",
-		"gemini-3-pro-image",
-		"gemini-3-pro-image-preview",
-		"gemini-3.1-flash-image",
-		"gemini-3.1-flash-image-preview",
-		"gemini-3.1-flash-lite-image",
-	}
 }

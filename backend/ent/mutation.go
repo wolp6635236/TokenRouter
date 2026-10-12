@@ -51612,6 +51612,7 @@ type UsageLogMutation struct {
 	billing_user_id              *int64
 	addbilling_user_id           *int64
 	platform                     *string
+	billing_key                  *string
 	request_id                   *string
 	model                        *string
 	requested_model              *string
@@ -52058,6 +52059,55 @@ func (m *UsageLogMutation) OldPlatform(ctx context.Context) (v string, err error
 // ResetPlatform resets all changes to the "platform" field.
 func (m *UsageLogMutation) ResetPlatform() {
 	m.platform = nil
+}
+
+// SetBillingKey sets the "billing_key" field.
+func (m *UsageLogMutation) SetBillingKey(s string) {
+	m.billing_key = &s
+}
+
+// BillingKey returns the value of the "billing_key" field in the mutation.
+func (m *UsageLogMutation) BillingKey() (r string, exists bool) {
+	v := m.billing_key
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBillingKey returns the old "billing_key" field's value of the UsageLog entity.
+// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageLogMutation) OldBillingKey(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBillingKey is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBillingKey requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBillingKey: %w", err)
+	}
+	return oldValue.BillingKey, nil
+}
+
+// ClearBillingKey clears the value of the "billing_key" field.
+func (m *UsageLogMutation) ClearBillingKey() {
+	m.billing_key = nil
+	m.clearedFields[usagelog.FieldBillingKey] = struct{}{}
+}
+
+// BillingKeyCleared returns if the "billing_key" field was cleared in this mutation.
+func (m *UsageLogMutation) BillingKeyCleared() bool {
+	_, ok := m.clearedFields[usagelog.FieldBillingKey]
+	return ok
+}
+
+// ResetBillingKey resets all changes to the "billing_key" field.
+func (m *UsageLogMutation) ResetBillingKey() {
+	m.billing_key = nil
+	delete(m.clearedFields, usagelog.FieldBillingKey)
 }
 
 // SetRequestID sets the "request_id" field.
@@ -54728,7 +54778,7 @@ func (m *UsageLogMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UsageLogMutation) Fields() []string {
-	fields := make([]string, 0, 53)
+	fields := make([]string, 0, 54)
 	if m.user != nil {
 		fields = append(fields, usagelog.FieldUserID)
 	}
@@ -54746,6 +54796,9 @@ func (m *UsageLogMutation) Fields() []string {
 	}
 	if m.platform != nil {
 		fields = append(fields, usagelog.FieldPlatform)
+	}
+	if m.billing_key != nil {
+		fields = append(fields, usagelog.FieldBillingKey)
 	}
 	if m.request_id != nil {
 		fields = append(fields, usagelog.FieldRequestID)
@@ -54908,6 +54961,8 @@ func (m *UsageLogMutation) Field(name string) (ent.Value, bool) {
 		return m.ProviderID()
 	case usagelog.FieldPlatform:
 		return m.Platform()
+	case usagelog.FieldBillingKey:
+		return m.BillingKey()
 	case usagelog.FieldRequestID:
 		return m.RequestID()
 	case usagelog.FieldModel:
@@ -55023,6 +55078,8 @@ func (m *UsageLogMutation) OldField(ctx context.Context, name string) (ent.Value
 		return m.OldProviderID(ctx)
 	case usagelog.FieldPlatform:
 		return m.OldPlatform(ctx)
+	case usagelog.FieldBillingKey:
+		return m.OldBillingKey(ctx)
 	case usagelog.FieldRequestID:
 		return m.OldRequestID(ctx)
 	case usagelog.FieldModel:
@@ -55167,6 +55224,13 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetPlatform(v)
+		return nil
+	case usagelog.FieldBillingKey:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBillingKey(v)
 		return nil
 	case usagelog.FieldRequestID:
 		v, ok := value.(string)
@@ -55824,6 +55888,9 @@ func (m *UsageLogMutation) ClearedFields() []string {
 	if m.FieldCleared(usagelog.FieldTeamID) {
 		fields = append(fields, usagelog.FieldTeamID)
 	}
+	if m.FieldCleared(usagelog.FieldBillingKey) {
+		fields = append(fields, usagelog.FieldBillingKey)
+	}
 	if m.FieldCleared(usagelog.FieldRequestedModel) {
 		fields = append(fields, usagelog.FieldRequestedModel)
 	}
@@ -55912,6 +55979,9 @@ func (m *UsageLogMutation) ClearField(name string) error {
 		return nil
 	case usagelog.FieldTeamID:
 		m.ClearTeamID()
+		return nil
+	case usagelog.FieldBillingKey:
+		m.ClearBillingKey()
 		return nil
 	case usagelog.FieldRequestedModel:
 		m.ClearRequestedModel()
@@ -56007,6 +56077,9 @@ func (m *UsageLogMutation) ResetField(name string) error {
 		return nil
 	case usagelog.FieldPlatform:
 		m.ResetPlatform()
+		return nil
+	case usagelog.FieldBillingKey:
+		m.ResetBillingKey()
 		return nil
 	case usagelog.FieldRequestID:
 		m.ResetRequestID()

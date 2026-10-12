@@ -11,20 +11,20 @@
       <div v-if="loading" class="space-y-1.5">
         <!-- OAuth: 3 rows, Setup Token: 1 row -->
         <div class="flex items-center gap-1">
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
+          <div class="skeleton h-1.5 w-8 rounded-full"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
         </div>
         <template v-if="provider.type === 'oauth'">
           <div class="flex items-center gap-1">
-            <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-            <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-            <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+            <div class="skeleton h-3 w-[32px]"></div>
+            <div class="skeleton h-1.5 w-8 rounded-full"></div>
+            <div class="skeleton h-3 w-[32px]"></div>
           </div>
           <div class="flex items-center gap-1">
-            <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-            <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-            <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+            <div class="skeleton h-3 w-[32px]"></div>
+            <div class="skeleton h-1.5 w-8 rounded-full"></div>
+            <div class="skeleton h-3 w-[32px]"></div>
           </div>
         </template>
       </div>
@@ -158,14 +158,14 @@
       </div>
       <div v-else-if="loading" class="space-y-1.5">
         <div class="flex items-center gap-1">
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
+          <div class="skeleton h-1.5 w-8 rounded-full"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
         </div>
         <div class="flex items-center gap-1">
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
+          <div class="skeleton h-1.5 w-8 rounded-full"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
         </div>
       </div>
       <div v-else>
@@ -248,9 +248,9 @@
       <!-- Loading state -->
       <div v-else-if="loading" class="space-y-1.5">
         <div class="flex items-center gap-1">
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
+          <div class="skeleton h-1.5 w-8 rounded-full"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
         </div>
       </div>
 
@@ -297,12 +297,14 @@
           color="amber"
         />
 
-        <div v-if="aiCreditsDisplay" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          💳 {{ t('admin.providers.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
+        <div v-if="aiCreditsDisplay" class="mt-1 flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+          <Icon name="creditCard" size="xs" />
+          {{ t('admin.providers.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
         </div>
       </div>
-      <div v-else-if="aiCreditsDisplay" class="text-xs text-gray-500 dark:text-gray-400">
-        💳 {{ t('admin.providers.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
+      <div v-else-if="aiCreditsDisplay" class="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+        <Icon name="creditCard" size="xs" />
+        {{ t('admin.providers.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
       </div>
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
@@ -311,9 +313,9 @@
     <template v-else-if="provider.platform === 'grok' && provider.type === 'oauth'">
       <div v-if="loading" class="space-y-1.5">
         <div class="flex items-center gap-1">
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
+          <div class="skeleton h-1.5 w-8 rounded-full"></div>
+          <div class="skeleton h-3 w-[32px]"></div>
         </div>
       </div>
       <div v-else-if="error" class="text-xs text-red-500">
@@ -405,9 +407,9 @@
     <template v-else-if="provider.platform === 'qoder'">
       <div v-if="loading" class="space-y-1.5">
         <div class="flex items-center gap-1">
-          <div class="h-3 w-[48px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-[40px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+          <div class="skeleton h-3 w-[48px]"></div>
+          <div class="skeleton h-1.5 w-8 rounded-full"></div>
+          <div class="skeleton h-3 w-[40px]"></div>
         </div>
       </div>
       <div v-else-if="error" class="text-xs text-red-500">
@@ -425,7 +427,7 @@
           color="indigo"
         />
         <div class="flex flex-wrap items-center justify-end gap-1.5 text-xs text-gray-500 dark:text-gray-400 lg:justify-start">
-          <span class="whitespace-nowrap rounded-compact bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+          <span class="whitespace-nowrap rounded-compact bg-gray-100 px-1.5 py-0.5 dark:bg-dark-700">
             {{ qoderQuotaCreditsLabel }}
           </span>
           <span
@@ -436,7 +438,7 @@
           </span>
           <span
             v-if="usageInfo.qoder_quota.snapshot_from_provider"
-            class="whitespace-nowrap rounded-compact bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
+            class="whitespace-nowrap rounded-compact bg-gray-100 px-1.5 py-0.5 dark:bg-dark-700"
           >
             cached
           </span>
@@ -533,15 +535,15 @@
           v-else-if="showGeminiTodayStats && todayStatsLoading"
           class="mb-0.5 flex items-center justify-end gap-1 lg:justify-start"
         >
-          <div class="h-3 w-10 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-8 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-          <div class="h-3 w-12 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+          <div class="skeleton h-3 w-10"></div>
+          <div class="skeleton h-3 w-8"></div>
+          <div class="skeleton h-3 w-12"></div>
         </div>
         <div v-if="loading" class="space-y-1">
           <div class="flex items-center gap-1">
-            <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-            <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
-            <div class="h-3 w-[32px] animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+            <div class="skeleton h-3 w-[32px]"></div>
+            <div class="skeleton h-1.5 w-8 rounded-full"></div>
+            <div class="skeleton h-3 w-[32px]"></div>
           </div>
         </div>
         <div v-else-if="error" class="text-xs text-red-500">
@@ -592,9 +594,9 @@
       />
       <ProviderUsageStatsChips v-if="showGeminiTodayStats && todayStats" :stats="todayStats" scope="today" />
       <div v-else-if="showGeminiTodayStats && todayStatsLoading" class="mb-0.5 flex items-center justify-end gap-1 lg:justify-start">
-        <div class="h-3 w-10 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-        <div class="h-3 w-8 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-        <div class="h-3 w-12 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+        <div class="skeleton h-3 w-10"></div>
+        <div class="skeleton h-3 w-8"></div>
+        <div class="skeleton h-3 w-12"></div>
       </div>
       <div
         v-else-if="provider.type !== 'apikey'"
@@ -633,9 +635,9 @@
         v-else-if="todayStatsLoading"
         class="mb-0.5 flex items-center justify-end gap-1 lg:justify-start"
       >
-        <div class="h-3 w-10 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-        <div class="h-3 w-8 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
-        <div class="h-3 w-12 animate-pulse rounded-compact bg-gray-200 dark:bg-gray-700"></div>
+        <div class="skeleton h-3 w-10"></div>
+        <div class="skeleton h-3 w-8"></div>
+        <div class="skeleton h-3 w-12"></div>
       </div>
 
       <!-- API Key providers with quota limits: show progress bars -->
@@ -1053,7 +1055,7 @@ const geminiTierClass = computed(() => {
   if (channel === 'google one') {
     if (level === 'ultra') return 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300'
     if (level === 'pro') return 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300'
-    return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+    return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-dark-200'
   }
 
   if (channel === 'gcp') {
@@ -1383,7 +1385,7 @@ const antigravityTierLabel = computed(() => {
 const antigravityTierClass = computed(() => {
   switch (antigravityTier.value) {
     case 'free-tier':
-      return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+      return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-dark-200'
     case 'g1-pro-tier':
       return 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300'
     case 'g1-ultra-tier':

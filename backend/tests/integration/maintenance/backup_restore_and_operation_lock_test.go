@@ -10,21 +10,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/idempotency"
+	_ "github.com/lib/pq"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/TokenFlux/TokenRouter/internal/backup"
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-
 	bp "github.com/TokenFlux/TokenRouter/internal/backup/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/idempotency"
 	idempotencypg "github.com/TokenFlux/TokenRouter/internal/idempotency/postgres"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops/maintenance"
 	"github.com/TokenFlux/TokenRouter/migrations"
-	_ "github.com/lib/pq"
-
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
+
+// brokenSQLReader 在有效 SQL 后返回读取错误，模拟 gzip 尾部损坏。
+type brokenSQLReader struct{ sent bool }
+
+// 测试设置仅隔离归档元数据，归档数据始终来自真实 PostgreSQL。
+type backupSettings struct{ values map[string]string }
 
 // TestSystemLockOwnership 使用测试框架的隔离数据库检查锁所有权。
 func TestSystemLockOwnership(t *testing.T) {
@@ -176,9 +179,6 @@ func TestRestoreSQLFailure(t *testing.T) {
 	}
 }
 
-// brokenSQLReader 在有效 SQL 后返回读取错误，模拟 gzip 尾部损坏。
-type brokenSQLReader struct{ sent bool }
-
 func (r *brokenSQLReader) Read(p []byte) (int, error) {
 	if r.sent {
 		return 0, io.ErrUnexpectedEOF
@@ -186,9 +186,6 @@ func (r *brokenSQLReader) Read(p []byte) (int, error) {
 	r.sent = true
 	return copy(p, "DELETE FROM fixture; INSERT INTO fixture VALUES(4);"), nil
 }
-
-// 测试设置仅隔离归档元数据，归档数据始终来自真实 PostgreSQL。
-type backupSettings struct{ values map[string]string }
 
 func (s *backupSettings) GetValue(_ context.Context, key string) (string, error) {
 	return s.values[key], nil

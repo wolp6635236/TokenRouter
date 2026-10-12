@@ -59,7 +59,7 @@
       </div>
 
       <!-- Step Content -->
-      <div class="rounded-surface bg-white p-8 shadow-xl dark:bg-dark-800">
+      <div class="rounded-surface bg-white p-8 shadow-xl dark:bg-dark-900">
         <!-- Step 1: Database -->
         <div v-if="currentStep === 0" v-content-reveal class="space-y-6">
           <div class="mb-6 text-center">
@@ -343,7 +343,7 @@
           </div>
 
           <div class="space-y-4">
-            <div class="rounded-surface bg-gray-50 p-4 dark:bg-dark-700">
+            <div class="rounded-surface bg-gray-50 p-4 dark:bg-dark-800">
               <h3 class="mb-2 text-sm font-medium text-gray-500 dark:text-dark-400">
                 {{ t('setup.ready.database') }}
               </h3>

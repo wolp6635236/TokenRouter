@@ -5,9 +5,10 @@ import (
 	"sort"
 	"strings"
 
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 // ResponsesStreamOutputItems 按 output_index 保存 response.output_item.done 中的原始 item。

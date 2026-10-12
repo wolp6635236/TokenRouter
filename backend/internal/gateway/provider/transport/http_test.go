@@ -14,15 +14,38 @@ import (
 	"testing"
 	"time"
 
-	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
-
-	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/net/http2"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
+	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
+
+// HTTPUpstreamSuite HTTP 上游服务测试套件
+// 使用 testify/suite 组织测试，支持 SetupTest 初始化。
+type HTTPUpstreamSuite struct {
+	suite.Suite
+	cfg *Options // 测试用配置
+}
+
+// roundTripFunc 用测试函数处理 HTTP 请求。
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+// testUpstreamPool 执行请求的客户端适配与结果通知。
+type testUpstreamPool struct {
+	transport http.RoundTripper
+}
+
+// upstreamClientView 记录执行请求时使用的客户端、代理和 TLS 配置。
+type upstreamClientView struct {
+	tlsProfile   *tlsfingerprint.Profile
+	client       *http.Client
+	proxyKey     string
+	protocolMode string
+}
 
 func TestHTTPUpstreamDoCanDisableRedirectsPerRequest(t *testing.T) {
 	var redirectedCalls atomic.Int64
@@ -515,21 +538,14 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	})
 }
 
-// HTTPUpstreamSuite HTTP 上游服务测试套件
-// 使用 testify/suite 组织测试，支持 SetupTest 初始化
-type HTTPUpstreamSuite struct {
-	suite.Suite
-	cfg *Options // 测试用配置
-}
-
 // SetupTest 每个测试用例执行前的初始化
-// 创建空配置，各测试用例可按需覆盖
+// 创建空配置，各测试用例可按需覆盖。
 func (s *HTTPUpstreamSuite) SetupTest() {
 	s.cfg = &Options{}
 }
 
 // newService 创建测试用的 Client 实例
-// 返回具体类型以便访问内部状态进行断言
+// 返回具体类型以便访问内部状态进行断言。
 func (s *HTTPUpstreamSuite) newService() *Client {
 	up := New(func() *Options { return s.cfg })
 	svc := up
@@ -557,7 +573,7 @@ func (s *HTTPUpstreamSuite) TestNilConfigResponseHeaderTimeoutFallback() {
 }
 
 // TestCustomResponseHeaderTimeout 测试自定义响应头超时配置
-// 验证配置值能正确应用到 Transport
+// 验证配置值能正确应用到 Transport。
 func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 	*s.cfg = Options{ResponseHeaderTimeout: 7}
 	svc := s.newService()
@@ -568,7 +584,7 @@ func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 }
 
 // TestGetOrCreateClient_InvalidURLReturnsError 测试无效代理 URL 返回错误
-// 验证解析失败时拒绝回退到直连模式
+// 验证解析失败时拒绝回退到直连模式。
 func (s *HTTPUpstreamSuite) TestGetOrCreateClient_InvalidURLReturnsError() {
 	svc := s.newService()
 	_, err := svc.getClientEntry("://bad-proxy-url", 1, 1, upstreamcore.HTTPUpstreamProfileDefault, false, false)
@@ -625,6 +641,7 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGeneric
 	require.Equal(s.T(), upstreamProtocolModeOpenAIH1, entry.protocolMode, "未声明 h2 的 TLS 模板应保持 HTTP/1.1")
 }
 
+//nolint:staticcheck // 此测试检查 uTLS 裸连接适配所需的 x/net/http2 Transport 和 PING 设置。
 func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintUsesHTTP2WhenALPNAllowsH2() {
 	*s.cfg = Options{
 		OpenAIHTTP2: HTTP2Options{
@@ -785,7 +802,7 @@ func (s *HTTPUpstreamSuite) TestOpenAIHTTP2ProxyCompatibilityErrorActivatesFallb
 }
 
 // TestNormalizeProxyURL_Canonicalizes 测试代理 URL 规范化
-// 验证等价地址能够映射到同一缓存键
+// 验证等价地址能够映射到同一缓存键。
 func (s *HTTPUpstreamSuite) TestNormalizeProxyURL_Canonicalizes() {
 	key1, _, err1 := normalizeProxyURL("http://proxy.local:8080")
 	require.NoError(s.T(), err1)
@@ -798,7 +815,7 @@ func (s *HTTPUpstreamSuite) TestNormalizeProxyURL_Canonicalizes() {
 // 验证超限且无可淘汰条目时返回错误
 
 // TestDo_WithoutProxy_GoesDirect 测试无代理时直连
-// 验证空代理 URL 时请求直接发送到目标服务器
+// 验证空代理 URL 时请求直接发送到目标服务器。
 func (s *HTTPUpstreamSuite) TestDo_WithoutProxy_GoesDirect() {
 	// 创建模拟上游服务器
 	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -820,7 +837,7 @@ func (s *HTTPUpstreamSuite) TestDo_WithoutProxy_GoesDirect() {
 }
 
 // TestDo_WithHTTPProxy_UsesProxy 测试 HTTP 代理功能
-// 验证请求通过代理服务器转发，使用绝对 URI 格式
+// 验证请求通过代理服务器转发，使用绝对 URI 格式。
 func (s *HTTPUpstreamSuite) TestDo_WithHTTPProxy_UsesProxy() {
 	// 用于接收代理请求的通道
 	seen := make(chan string, 1)
@@ -855,7 +872,7 @@ func (s *HTTPUpstreamSuite) TestDo_WithHTTPProxy_UsesProxy() {
 }
 
 // TestDo_EmptyProxy_UsesDirect 测试空代理字符串
-// 验证空字符串代理等同于直连
+// 验证空字符串代理等同于直连。
 func (s *HTTPUpstreamSuite) TestDo_EmptyProxy_UsesDirect() {
 	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "direct-empty")
@@ -875,7 +892,7 @@ func (s *HTTPUpstreamSuite) TestDo_EmptyProxy_UsesDirect() {
 }
 
 // TestProviderIsolation_DifferentProviders 测试提供商隔离模式
-// 验证不同提供商使用独立的连接池
+// 验证不同提供商使用独立的连接池。
 func (s *HTTPUpstreamSuite) TestProviderIsolation_DifferentProviders() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider"}
 	svc := s.newService()
@@ -886,7 +903,7 @@ func (s *HTTPUpstreamSuite) TestProviderIsolation_DifferentProviders() {
 }
 
 // TestProviderProxyIsolation_DifferentProxy 测试提供商+代理组合隔离模式
-// 验证同一提供商使用不同代理时创建独立连接池
+// 验证同一提供商使用不同代理时创建独立连接池。
 func (s *HTTPUpstreamSuite) TestProviderProxyIsolation_DifferentProxy() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider_proxy"}
 	svc := s.newService()
@@ -897,7 +914,7 @@ func (s *HTTPUpstreamSuite) TestProviderProxyIsolation_DifferentProxy() {
 }
 
 // TestProviderModeProxyChangeClearsPool 测试提供商模式下代理变更
-// 验证提供商切换代理时清理旧连接池，避免复用错误代理
+// TestProviderModeProxyChangeClearsPool 检查提供商切换代理时清理旧连接池。
 func (s *HTTPUpstreamSuite) TestProviderModeProxyChangeClearsPool() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider"}
 	svc := s.newService()
@@ -908,7 +925,7 @@ func (s *HTTPUpstreamSuite) TestProviderModeProxyChangeClearsPool() {
 }
 
 // TestProviderConcurrencyOverridesPoolSettings 测试提供商并发数覆盖连接池配置
-// 验证提供商隔离模式下，连接池大小与提供商并发数对应
+// 验证提供商隔离模式下，连接池大小与提供商并发数对应。
 func (s *HTTPUpstreamSuite) TestProviderConcurrencyOverridesPoolSettings() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider"}
 	svc := s.newService()
@@ -923,7 +940,7 @@ func (s *HTTPUpstreamSuite) TestProviderConcurrencyOverridesPoolSettings() {
 }
 
 // TestProviderConcurrencyFallbackToDefault 测试提供商并发数为 0 时回退到默认配置
-// 验证未指定并发数时使用全局配置值
+// 验证未指定并发数时使用全局配置值。
 func (s *HTTPUpstreamSuite) TestProviderConcurrencyFallbackToDefault() {
 	*s.cfg = Options{
 		ConnectionPoolIsolation: "provider",
@@ -947,7 +964,7 @@ func (s *HTTPUpstreamSuite) TestProviderConcurrencyFallbackToDefault() {
 // TestIdleTTLDoesNotEvictActive 测试活跃请求保护
 // 验证有进行中请求的客户端不会被空闲超时淘汰
 
-// TestHTTPUpstreamSuite 运行测试套件
+// TestHTTPUpstreamSuite 运行测试套件。
 func TestHTTPUpstreamSuite(t *testing.T) {
 	suite.Run(t, new(HTTPUpstreamSuite))
 }
@@ -1034,4 +1051,89 @@ func TestHTTPUpstreamPublicHostsOnlyPreservesExistingRedirectPolicy(t *testing.T
 	require.ErrorIs(t, client.CheckRedirect(guarded, []*http.Request{guarded}), http.ErrUseLastResponse)
 	require.True(t, called)
 	require.NotSame(t, base, client)
+}
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// newLocalTestServer 在环境无法监听时跳过测试。
+func newLocalTestServer(tb testing.TB, handler http.Handler) *httptest.Server {
+	tb.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Skipf("local listeners are not permitted in this environment: %v", err)
+	}
+	require.NoError(tb, listener.Close())
+	return httptest.NewServer(handler)
+}
+
+func (p testUpstreamPool) Do(req *http.Request, opts httpclient.UpstreamRequestOptions) (*http.Response, error) {
+	client := &http.Client{Transport: p.transport, CheckRedirect: opts.CheckRedirect}
+	if opts.PrepareClient != nil {
+		client = opts.PrepareClient(client)
+	}
+	resp, err := client.Do(req)
+	if opts.ObserveResult != nil {
+		opts.ObserveResult(err)
+	}
+	return resp, err
+}
+
+func (s *Client) getClientEntry(proxyURL string, providerID int64, concurrency int, profile upstreamcore.HTTPUpstreamProfile, _, _ bool) (*upstreamClientView, error) {
+	return s.inspectClient(proxyURL, providerID, concurrency, profile, nil)
+}
+
+func (s *Client) getClientEntryWithTLS(
+	proxyURL string,
+	providerID int64,
+	concurrency int,
+	tlsProfile *tlsfingerprint.Profile,
+	profile upstreamcore.HTTPUpstreamProfile,
+	_, _ bool,
+) (*upstreamClientView, error) {
+	return s.inspectClient(proxyURL, providerID, concurrency, profile, tlsProfile)
+}
+
+func (s *Client) inspectClient(
+	proxyURL string,
+	providerID int64,
+	concurrency int,
+	profile upstreamcore.HTTPUpstreamProfile,
+	tlsProfile *tlsfingerprint.Profile,
+) (*upstreamClientView, error) {
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	req = req.WithContext(upstreamcore.WithHTTPUpstreamProfile(req.Context(), profile))
+	opts, err := s.transportOptions(req, proxyURL, providerID, concurrency, tlsProfile)
+	if err != nil {
+		return nil, err
+	}
+	key, _, err := normalizeProxyURL(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	view := &upstreamClientView{proxyKey: key, protocolMode: opts.Protocol.CacheVariant, tlsProfile: opts.TLSProfile}
+	opts.PrepareClient = func(client *http.Client) *http.Client {
+		view.client = client
+		clone := *client
+		clone.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: req}, nil
+		})
+		return &clone
+	}
+	resp, err := s.pool.Do(req, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err = resp.Body.Close(); err != nil {
+		return nil, err
+	}
+	return view, nil
+}
+
+func mustGetOrCreateClient(t *testing.T, svc *Client, proxyURL string, providerID int64, concurrency int) *upstreamClientView {
+	t.Helper()
+	entry, err := svc.inspectClient(proxyURL, providerID, concurrency, upstreamcore.HTTPUpstreamProfileDefault, nil)
+	require.NoError(t, err)
+	return entry
 }

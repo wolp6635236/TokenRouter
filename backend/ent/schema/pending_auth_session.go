@@ -3,8 +3,6 @@ package schema
 import (
 	"fmt"
 
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
@@ -12,6 +10,8 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 var pendingAuthIntents = map[string]struct{}{
@@ -20,16 +20,16 @@ var pendingAuthIntents = map[string]struct{}{
 	"adopt_existing_user_by_email": {},
 }
 
+// PendingAuthSession stores a short-lived post-auth decision session.
+type PendingAuthSession struct {
+	ent.Schema
+}
+
 func validatePendingAuthIntent(value string) error {
 	if _, ok := pendingAuthIntents[value]; ok {
 		return nil
 	}
 	return fmt.Errorf("invalid pending auth intent %q", value)
-}
-
-// PendingAuthSession stores a short-lived post-auth decision session.
-type PendingAuthSession struct {
-	ent.Schema
 }
 
 func (PendingAuthSession) Annotations() []schema.Annotation {

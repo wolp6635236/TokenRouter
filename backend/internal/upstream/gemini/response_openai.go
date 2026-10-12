@@ -11,19 +11,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
-
-type OpenAICompatProtocol int
 
 const (
 	OpenAICompatChatCompletions OpenAICompatProtocol = iota
 	OpenAICompatResponses
 )
+
+type OpenAICompatProtocol int
 
 func (s *ResponseAdapter) HandleChatCompletionsNonStreamingResponseFromGemini(
 	c *upstream.OutputContext,
@@ -253,10 +254,10 @@ func (s *ResponseAdapter) HandleOpenAICompatStreamingResponseFromGemini(
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
+		if line != "" {
 			trimmed := strings.TrimRight(line, "\r\n")
-			if strings.HasPrefix(trimmed, "data:") {
-				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if after, ok0 := strings.CutPrefix(trimmed, "data:"); ok0 {
+				payload := strings.TrimSpace(after)
 				if payload != "" && payload != "[DONE]" {
 					rawBytes := []byte(payload)
 					if isOAuth {

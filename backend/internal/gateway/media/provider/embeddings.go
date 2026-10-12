@@ -29,13 +29,13 @@ type EmbeddingsOptions struct {
 	WriteHeaders          func(http.Header, http.Header)
 }
 
+type Embeddings struct{ Options EmbeddingsOptions }
+
 // String 防止技术参数中的令牌或请求被默认日志展开。
 func (o EmbeddingsOptions) String() string {
 	return fmt.Sprintf("media Embeddings provider=%d", o.ProviderID)
 }
 func (o EmbeddingsOptions) GoString() string { return o.String() }
-
-type Embeddings struct{ Options EmbeddingsOptions }
 
 func (e Embeddings) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (upstream.AttemptResult, error) {
 	o := e.Options

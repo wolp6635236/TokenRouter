@@ -10,19 +10,22 @@ import (
 	"strings"
 	"time"
 
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
 	core "github.com/TokenFlux/TokenRouter/internal/batchimage"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/vertex"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/vertex"
 )
 
 const (
 	DefaultVertexBatchRequeueAfter = 30 * time.Second
 	DefaultVertexBatchLocation     = "global"
 	DefaultVertexManagedGCSPrefix  = "batch-image/{env}/{batch_id}"
+)
+
+var (
+	_ BatchImageProvider     = (*VertexBatchImageProvider)(nil)
+	_ VertexBatchClient      = (*VertexBatchHTTPClient)(nil)
+	_ VertexBatchObjectStore = (*VertexGCSObjectStore)(nil)
 )
 
 type VertexBatchImageProviderOptions struct {
@@ -44,6 +47,38 @@ type VertexBatchImageProvider struct {
 	objectStore VertexBatchObjectStore
 	tokenCache  GeminiTokenCache
 }
+
+type VertexManagedRefs struct {
+	Prefix          string
+	InputURI        string
+	OutputPrefixURI string
+}
+
+type VertexBatchClient = vertex.VertexBatchClient
+
+type VertexBatchObjectStore = vertex.VertexBatchObjectStore
+
+type VertexCreateBatchPredictionJobRequest = vertex.VertexCreateBatchPredictionJobRequest
+
+type VertexBatchInputConfig = vertex.VertexBatchInputConfig
+
+type VertexBatchGCSSource = vertex.VertexBatchGCSSource
+
+type VertexBatchOutputConfig = vertex.VertexBatchOutputConfig
+
+type VertexBatchGCSDestination = vertex.VertexBatchGCSDestination
+
+type VertexBatchInstanceConfig = vertex.VertexBatchInstanceConfig
+
+type VertexBatchPredictionJob = vertex.VertexBatchPredictionJob
+
+type VertexBatchJobError = vertex.VertexBatchJobError
+
+type VertexBatchHTTPClient = vertex.VertexBatchHTTPClient
+
+type VertexGCSObjectStore = vertex.VertexGCSObjectStore
+
+type VertexAPIError = vertex.VertexAPIError
 
 func NewVertexBatchImageProvider(opts VertexBatchImageProviderOptions, client VertexBatchClient, objectStore VertexBatchObjectStore, tokenCache GeminiTokenCache) *VertexBatchImageProvider {
 	opts = NormalizeVertexBatchImageProviderOptions(opts)
@@ -283,24 +318,24 @@ func (p *VertexBatchImageProvider) AccessToken(ctx context.Context, provider *Pr
 	return provideradapter.VertexServiceAccountAccessToken(ctx, p.tokenCache, provider)
 }
 
-func (p *VertexBatchImageProvider) DeleteManagedInput(ctx context.Context, AccessToken string, job *core.BatchImageJob, uri string) error {
+func (p *VertexBatchImageProvider) DeleteManagedInput(ctx context.Context, accessToken string, job *core.BatchImageJob, uri string) error {
 	if strings.TrimSpace(uri) == "" {
 		return nil
 	}
 	if !p.IsSafeManagedInput(job, uri) {
 		return core.ErrBatchImageProviderUnsafeCleanupPath
 	}
-	return MapVertexClientError(p.objectStore.DeleteObject(ctx, AccessToken, uri))
+	return MapVertexClientError(p.objectStore.DeleteObject(ctx, accessToken, uri))
 }
 
-func (p *VertexBatchImageProvider) DeleteManagedOutput(ctx context.Context, AccessToken string, job *core.BatchImageJob, uri string) error {
+func (p *VertexBatchImageProvider) DeleteManagedOutput(ctx context.Context, accessToken string, job *core.BatchImageJob, uri string) error {
 	if strings.TrimSpace(uri) == "" {
 		return nil
 	}
 	if !p.IsSafeManagedOutput(job, uri) {
 		return core.ErrBatchImageProviderUnsafeCleanupPath
 	}
-	return MapVertexClientError(p.objectStore.DeletePrefix(ctx, AccessToken, uri))
+	return MapVertexClientError(p.objectStore.DeletePrefix(ctx, accessToken, uri))
 }
 
 func (p *VertexBatchImageProvider) IsSafeManagedInput(job *core.BatchImageJob, uri string) bool {
@@ -317,12 +352,6 @@ func (p *VertexBatchImageProvider) IsSafeManagedOutput(job *core.BatchImageJob, 
 	}
 	refs, err := p.ManagedRefs(job.BatchID)
 	return err == nil && strings.HasPrefix(strings.TrimSpace(uri), refs.OutputPrefixURI)
-}
-
-type VertexManagedRefs struct {
-	Prefix          string
-	InputURI        string
-	OutputPrefixURI string
 }
 
 func (p *VertexBatchImageProvider) ManagedRefs(batchID string) (VertexManagedRefs, error) {
@@ -454,8 +483,7 @@ func MapVertexClientError(err error) error {
 		errors.Is(err, core.ErrUnsupportedCleanupTarget) {
 		return err
 	}
-	var apiErr *VertexAPIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*VertexAPIError](err); ok {
 		switch apiErr.StatusCode {
 		case http.StatusUnauthorized:
 			return VertexProviderError("VERTEX_AUTH_FAILED", "Vertex authentication failed", nil)
@@ -472,41 +500,9 @@ func MapVertexClientError(err error) error {
 	return VertexProviderError("VERTEX_INVALID_RESPONSE", "Vertex API request failed", err)
 }
 
-var (
-	_ BatchImageProvider     = (*VertexBatchImageProvider)(nil)
-	_ VertexBatchClient      = (*VertexBatchHTTPClient)(nil)
-	_ VertexBatchObjectStore = (*VertexGCSObjectStore)(nil)
-)
-
-type VertexBatchClient = vertex.VertexBatchClient
-
-type VertexBatchObjectStore = vertex.VertexBatchObjectStore
-
-type VertexCreateBatchPredictionJobRequest = vertex.VertexCreateBatchPredictionJobRequest
-
-type VertexBatchInputConfig = vertex.VertexBatchInputConfig
-
-type VertexBatchGCSSource = vertex.VertexBatchGCSSource
-
-type VertexBatchOutputConfig = vertex.VertexBatchOutputConfig
-
-type VertexBatchGCSDestination = vertex.VertexBatchGCSDestination
-
-type VertexBatchInstanceConfig = vertex.VertexBatchInstanceConfig
-
-type VertexBatchPredictionJob = vertex.VertexBatchPredictionJob
-
-type VertexBatchJobError = vertex.VertexBatchJobError
-
 func NormalizeVertexBatchModelPath(model string) string {
 	return vertex.NormalizeVertexBatchModelPath(model)
 }
-
-type VertexBatchHTTPClient = vertex.VertexBatchHTTPClient
-
-type VertexGCSObjectStore = vertex.VertexGCSObjectStore
-
-type VertexAPIError = vertex.VertexAPIError
 
 func NewVertexBatchHTTPClient(baseURL string, client *http.Client) *VertexBatchHTTPClient {
 	return vertex.NewVertexBatchHTTPClient(baseURL, client)

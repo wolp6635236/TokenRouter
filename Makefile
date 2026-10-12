@@ -80,9 +80,10 @@ test-scripts:
 test-installer:
 	@if [ "$$(uname -s)" = Linux ]; then bash deploy/tests/install-brand-test.sh; else docker run --rm -v "$(CURDIR):/source:ro" -w /source ubuntu:24.04 bash deploy/tests/install-brand-test.sh; fi
 
-# 仓库 Python 工具的单元测试，格式化测试需要 golangci-lint。
+# 仓库工具的单元测试，格式化测试需要 golangci-lint。
 test-tools:
 	python3 -m unittest discover -s tools -p 'test_*.py'
+	cd tools/declorder && GOWORK=off go test ./...
 
 # 外部 E2E 测试连接已运行的服务，地址和凭据从环境变量读取。
 test-e2e:

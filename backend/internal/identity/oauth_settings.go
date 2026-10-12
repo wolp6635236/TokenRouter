@@ -12,39 +12,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// OAuthSettingsDefaults 包含启动时提供的身份认证默认值。
-type OAuthSettingsDefaults struct {
-	LinuxDo     authconfig.LinuxDoConnectConfig
-	DingTalk    authconfig.DingTalkConnectConfig
-	OIDC        authconfig.OIDCConnectConfig
-	WeChat      authconfig.WeChatConnectConfig
-	GitHubOAuth authconfig.EmailOAuthProviderConfig
-	GoogleOAuth authconfig.EmailOAuthProviderConfig
-}
-
-// OAuthSettingsStore 提供 OAuth 配置的批量读取。
-type OAuthSettingsStore interface {
-	GetMultiple(context.Context, []string) (map[string]string, error)
-}
-
-// OAuthSettings 解释动态覆盖及兼容安全默认，发现文档通过外部端口读取。
-type OAuthSettings struct {
-	settingRepo     OAuthSettingsStore
-	defaults        *OAuthSettingsDefaults
-	resolveMetadata func(context.Context, string) (*OAuthProviderMetadata, error)
-}
-
-// NewOAuthSettings 构造没有 I/O；接收默认值副本，防止输出污染启动配置。
-func NewOAuthSettings(repo OAuthSettingsStore, defaults *OAuthSettingsDefaults, resolver func(context.Context, string) (*OAuthProviderMetadata, error)) *OAuthSettings {
-	var snapshot *OAuthSettingsDefaults
-	if defaults != nil {
-		value := *defaults
-		value.DingTalk.AttributeSyncFields = slices.Clone(value.DingTalk.AttributeSyncFields)
-		snapshot = &value
-	}
-	return &OAuthSettings{settingRepo: repo, defaults: snapshot, resolveMetadata: resolver}
-}
-
 // 身份模块拥有动态键和默认值，旧格式保持不变。
 const (
 	SettingKeyDingTalkConnectBypassRegistration     = "dingtalk_connect_bypass_registration"
@@ -120,12 +87,64 @@ const (
 	OAuthDefaultWeChatConnectScopes                 = "snsapi_login"
 )
 
+// OAuthSettingsDefaults 包含启动时提供的身份认证默认值。
+type OAuthSettingsDefaults struct {
+	LinuxDo     authconfig.LinuxDoConnectConfig
+	DingTalk    authconfig.DingTalkConnectConfig
+	OIDC        authconfig.OIDCConnectConfig
+	WeChat      authconfig.WeChatConnectConfig
+	GitHubOAuth authconfig.EmailOAuthProviderConfig
+	GoogleOAuth authconfig.EmailOAuthProviderConfig
+}
+
+// OAuthSettingsStore 提供 OAuth 配置的批量读取。
+type OAuthSettingsStore interface {
+	GetMultiple(context.Context, []string) (map[string]string, error)
+}
+
+// OAuthSettings 解释动态覆盖及兼容安全默认，发现文档通过外部端口读取。
+type OAuthSettings struct {
+	settingRepo     OAuthSettingsStore
+	defaults        *OAuthSettingsDefaults
+	resolveMetadata func(context.Context, string) (*OAuthProviderMetadata, error)
+}
+
 // OAuthProviderMetadata 是发现文档返回的纯值。
 type OAuthProviderMetadata struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	UserInfoEndpoint      string `json:"userinfo_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
+}
+
+type WeChatConnectOAuthConfig struct {
+	Enabled             bool
+	LegacyAppID         string
+	LegacyAppSecret     string
+	OpenAppID           string
+	OpenAppSecret       string
+	MPAppID             string
+	MPAppSecret         string
+	MobileAppID         string
+	MobileAppSecret     string
+	OpenEnabled         bool
+	MPEnabled           bool
+	MobileEnabled       bool
+	Mode                string
+	Scopes              string
+	RedirectURL         string
+	FrontendRedirectURL string
+}
+
+// NewOAuthSettings 构造没有 I/O；接收默认值副本，防止输出污染启动配置。
+func NewOAuthSettings(repo OAuthSettingsStore, defaults *OAuthSettingsDefaults, resolver func(context.Context, string) (*OAuthProviderMetadata, error)) *OAuthSettings {
+	var snapshot *OAuthSettingsDefaults
+	if defaults != nil {
+		value := *defaults
+		value.DingTalk.AttributeSyncFields = slices.Clone(value.DingTalk.AttributeSyncFields)
+		snapshot = &value
+	}
+	return &OAuthSettings{settingRepo: repo, defaults: snapshot, resolveMetadata: resolver}
 }
 
 func SettingsCoerceDingTalkCorpPolicyForWrite(policy string) string {
@@ -1015,12 +1034,7 @@ func (s *OAuthSettings) GetOIDCConnectOAuthConfig(ctx context.Context) (authconf
 }
 
 func SettingsScopesContainOpenID(scopes string) bool {
-	for _, scope := range strings.Fields(strings.ToLower(strings.TrimSpace(scopes))) {
-		if scope == "openid" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Fields(strings.ToLower(strings.TrimSpace(scopes))), "openid")
 }
 
 func SettingsOidcDefaultDiscoveryURL(issuerURL string) string {
@@ -1080,25 +1094,6 @@ func SettingsEmailOAuthSettingKeys(provider string) (enabled, clientID, clientSe
 	default:
 		return "", "", "", "", ""
 	}
-}
-
-type WeChatConnectOAuthConfig struct {
-	Enabled             bool
-	LegacyAppID         string
-	LegacyAppSecret     string
-	OpenAppID           string
-	OpenAppSecret       string
-	MPAppID             string
-	MPAppSecret         string
-	MobileAppID         string
-	MobileAppSecret     string
-	OpenEnabled         bool
-	MPEnabled           bool
-	MobileEnabled       bool
-	Mode                string
-	Scopes              string
-	RedirectURL         string
-	FrontendRedirectURL string
 }
 
 func (cfg WeChatConnectOAuthConfig) SupportsMode(mode string) bool {

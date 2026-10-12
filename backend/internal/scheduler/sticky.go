@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
 // StickyCache 保存调度粘性绑定和会话所属分组。
@@ -27,10 +29,6 @@ type StickyStats struct {
 	dualWriteTotal    atomic.Int64
 }
 
-func (s *StickyStats) Snapshot() (int64, int64, int64) {
-	return s.readFallbackTotal.Load(), s.readFallbackHit.Load(), s.dualWriteTotal.Load()
-}
-
 type StickyOptions struct {
 	Prefix          string
 	ReadLegacy      bool
@@ -43,6 +41,10 @@ type StickySession struct {
 	cache   StickyCache
 	options StickyOptions
 	stats   *StickyStats
+}
+
+func (s *StickyStats) Snapshot() (int64, int64, int64) {
+	return s.readFallbackTotal.Load(), s.readFallbackHit.Load(), s.dualWriteTotal.Load()
 }
 
 func NewStickySession(cache StickyCache, options StickyOptions, stats *StickyStats) *StickySession {
@@ -190,4 +192,19 @@ func (s *StickySession) Delete(ctx context.Context, groupID int64, sessionHash, 
 		_ = s.cache.DeleteSessionProviderID(ctx, groupID, legacyKey)
 	}
 	return err
+}
+
+// ShouldEscapeSticky 使用本次请求的策略和共享反馈，先检查 TTFT。
+func ShouldEscapeSticky(stats *RuntimeStats, providerID int64, cfg policy.StickyEscapeConfig) (reason string, errorRate float64, ttft float64, shouldEscape bool) {
+	if !cfg.Enabled || stats == nil || providerID <= 0 {
+		return "", 0, 0, false
+	}
+	errorRate, ttft, hasTTFT := stats.Snapshot(providerID)
+	if hasTTFT && ttft > cfg.TtftMs {
+		return "ttft", errorRate, ttft, true
+	}
+	if errorRate > cfg.ErrorRate {
+		return "error_rate", errorRate, ttft, true
+	}
+	return "", errorRate, ttft, false
 }

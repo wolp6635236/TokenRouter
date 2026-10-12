@@ -10,9 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
-	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -22,6 +23,8 @@ const (
 	webSearchEmulationDBTimeout        = 5 * time.Second
 	sfKeyWebSearchConfig               = "web_search_emulation_config"
 	maxWebSearchProviders              = 10
+
+	testSearchTimeout = 15 * time.Second
 )
 
 var validProviderTypes = map[string]bool{ProviderTypeBrave: true, ProviderTypeTavily: true}
@@ -52,6 +55,34 @@ type ConfigService struct {
 	publishMu sync.Mutex
 	saveMu    sync.Mutex
 	revision  uint64
+}
+
+// Registry 保存当前 Manager，各调用方通过同一注册表获取实例。
+type Registry struct{ current atomic.Pointer[Manager] }
+
+// WebSearchEmulationConfig holds the global web search emulation configuration.
+type WebSearchEmulationConfig struct {
+	Enabled   bool                      `json:"enabled"`
+	Providers []WebSearchProviderConfig `json:"providers"`
+}
+
+// WebSearchProviderConfig describes a single search provider (Brave or Tavily).
+type WebSearchProviderConfig struct {
+	Type             string `json:"type"`                    // ProviderTypeBrave | Tavily
+	APIKey           string `json:"api_key,omitempty"`       // secret — omitted in API responses
+	APIKeyConfigured bool   `json:"api_key_configured"`      // read-only mask
+	QuotaLimit       *int64 `json:"quota_limit"`             // nil = unlimited, >0 = limited
+	SubscribedAt     *int64 `json:"subscribed_at,omitempty"` // subscription start (unix seconds); quota resets monthly
+	QuotaUsed        int64  `json:"quota_used,omitempty"`    // read-only: current usage from Redis
+	ProxyID          *int64 `json:"proxy_id"`                // optional proxy association
+	ExpiresAt        *int64 `json:"expires_at,omitempty"`    // optional expiration timestamp
+}
+
+// WebSearchTestResult holds the result of a search test.
+type WebSearchTestResult struct {
+	Provider string         `json:"provider"`
+	Results  []SearchResult `json:"results"`
+	Query    string         `json:"query"`
 }
 
 func NewConfigService(repo ConfigRepository, proxies ProxyResolver, factory ManagerFactory, registry *Registry) *ConfigService {
@@ -231,9 +262,6 @@ func (s *ConfigService) StopContext(ctx context.Context) error {
 }
 func (s *ConfigService) Registry() *Registry { return s.registry }
 
-// Registry 保存当前 Manager，各调用方通过同一注册表获取实例。
-type Registry struct{ current atomic.Pointer[Manager] }
-
 func NewRegistry() *Registry      { return &Registry{} }
 func (r *Registry) Get() *Manager { return r.current.Load() }
 func (r *Registry) Set(m *Manager) {
@@ -260,31 +288,6 @@ func CloneConfig(in *WebSearchEmulationConfig) *WebSearchEmulationConfig {
 		}
 	}
 	return &out
-}
-
-// WebSearchEmulationConfig holds the global web search emulation configuration.
-type WebSearchEmulationConfig struct {
-	Enabled   bool                      `json:"enabled"`
-	Providers []WebSearchProviderConfig `json:"providers"`
-}
-
-// WebSearchProviderConfig describes a single search provider (Brave or Tavily).
-type WebSearchProviderConfig struct {
-	Type             string `json:"type"`                    // ProviderTypeBrave | Tavily
-	APIKey           string `json:"api_key,omitempty"`       // secret — omitted in API responses
-	APIKeyConfigured bool   `json:"api_key_configured"`      // read-only mask
-	QuotaLimit       *int64 `json:"quota_limit"`             // nil = unlimited, >0 = limited
-	SubscribedAt     *int64 `json:"subscribed_at,omitempty"` // subscription start (unix seconds); quota resets monthly
-	QuotaUsed        int64  `json:"quota_used,omitempty"`    // read-only: current usage from Redis
-	ProxyID          *int64 `json:"proxy_id"`                // optional proxy association
-	ExpiresAt        *int64 `json:"expires_at,omitempty"`    // optional expiration timestamp
-}
-
-// WebSearchTestResult holds the result of a search test.
-type WebSearchTestResult struct {
-	Provider string         `json:"provider"`
-	Results  []SearchResult `json:"results"`
-	Query    string         `json:"query"`
 }
 
 func ValidateConfig(cfg *WebSearchEmulationConfig) error {
@@ -427,5 +430,3 @@ func TestWebSearch(ctx context.Context, query string, registry *Registry) (*WebS
 		Query:    resp.Query,
 	}, nil
 }
-
-const testSearchTimeout = 15 * time.Second

@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// BillingMode 计费模式
-type BillingMode string
-
 const (
 	BillingModeToken      BillingMode = "token"       // 按 token 区间计费
 	BillingModePerRequest BillingMode = "per_request" // 按次计费（支持上下文窗口分层）
@@ -18,23 +15,8 @@ const (
 	BillingModeVideo      BillingMode = "video"       // 视频生成计费（按输出秒数）
 )
 
-// IsValid 检查 BillingMode 是否为合法值
-func (m BillingMode) IsValid() bool {
-	switch m {
-	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
-		return true
-	}
-	return false
-}
-
-// IsValidUsageFilter 检查 BillingMode 是否可用于使用记录筛选。
-func (m BillingMode) IsValidUsageFilter() bool {
-	switch m {
-	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
-		return true
-	}
-	return false
-}
+// BillingMode 计费模式。
+type BillingMode string
 
 // ProviderStatsPricingRule 提供商统计定价规则
 // 每条规则包含匹配条件（分组/提供商）和独立的模型定价。
@@ -51,7 +33,7 @@ type ProviderStatsPricingRule struct {
 	UpdatedAt       time.Time
 }
 
-// ModelPricingEntry 价卡模型定价条目
+// ModelPricingEntry 价卡模型定价条目。
 type ModelPricingEntry struct {
 	ID                 int64       `json:"id,omitempty"`
 	PricingConfigID    int64       `json:"pricing_config_id,omitempty"`
@@ -94,7 +76,7 @@ type TimePricingPeriod struct {
 	Multiplier float64 `json:"multiplier"`
 }
 
-// PricingInterval 定价区间（token 区间 / 按次分层 / 图片分辨率分层）
+// PricingInterval 定价区间（token 区间 / 按次分层 / 图片分辨率分层）。
 type PricingInterval struct {
 	ID              int64    `json:"id,omitempty"`
 	PricingID       int64    `json:"pricing_id,omitempty"`
@@ -117,6 +99,24 @@ type PricingInterval struct {
 	UpdatedAt            time.Time `json:"updated_at,omitempty"`
 }
 
+// IsValid 检查 BillingMode 是否为合法值。
+func (m BillingMode) IsValid() bool {
+	switch m {
+	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
+		return true
+	}
+	return false
+}
+
+// IsValidUsageFilter 检查 BillingMode 是否可用于使用记录筛选。
+func (m BillingMode) IsValidUsageFilter() bool {
+	switch m {
+	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
+		return true
+	}
+	return false
+}
+
 // FindMatchingInterval 在区间列表中查找匹配 totalTokens 的区间。
 // 区间为左开右闭 (min, max]：min 不含，max 包含。
 // 第一个区间 min=0 时，0 token 不匹配任何区间（回退到默认价格）。
@@ -130,11 +130,11 @@ func FindMatchingInterval(intervals []PricingInterval, totalTokens int) *Pricing
 	return nil
 }
 
-// GetTierByLabel 根据标签查找层级（用于 per_request / image 模式）
+// GetTierByLabel 根据标签查找层级（用于 per_request / image 模式）。
 func (p *ModelPricingEntry) GetTierByLabel(label string) *PricingInterval {
 	labelLower := strings.ToLower(label)
 	for i := range p.Intervals {
-		if strings.ToLower(p.Intervals[i].TierLabel) == labelLower {
+		if strings.EqualFold(p.Intervals[i].TierLabel, labelLower) {
 			return &p.Intervals[i]
 		}
 	}
@@ -275,7 +275,7 @@ func ValidateIntervals(intervals []PricingInterval, mode BillingMode) error {
 	return ValidateIntervalOverlap(sorted)
 }
 
-// ValidateSingleInterval 校验单个区间的字段合法性
+// ValidateSingleInterval 校验单个区间的字段合法性。
 func ValidateSingleInterval(iv *PricingInterval, idx int) error {
 	if iv.MinTokens < 0 {
 		return fmt.Errorf("interval #%d: min_tokens (%d) must be >= 0", idx+1, iv.MinTokens)
@@ -292,7 +292,7 @@ func ValidateSingleInterval(iv *PricingInterval, idx int) error {
 	return ValidateIntervalPrices(iv, idx)
 }
 
-// ValidateIntervalPrices 校验区间内所有价格字段 >= 0
+// ValidateIntervalPrices 校验区间内所有价格字段 >= 0。
 func ValidateIntervalPrices(iv *PricingInterval, idx int) error {
 	prices := []struct {
 		name string
@@ -327,7 +327,7 @@ func ValidateIntervalPrices(iv *PricingInterval, idx int) error {
 	return nil
 }
 
-// ValidateIntervalOverlap 校验排序后的区间列表无重叠，且无界区间在最后
+// ValidateIntervalOverlap 校验排序后的区间列表无重叠，且无界区间在最后。
 func ValidateIntervalOverlap(sorted []PricingInterval) error {
 	for i, iv := range sorted {
 		// 无界区间必须是最后一个
@@ -354,4 +354,28 @@ func FormatMaxTokensLabel(max *int) string {
 		return "∞"
 	}
 	return fmt.Sprintf("%d", *max)
+}
+
+// MatchPriceCard 优先精确匹配模型名，再使用首个匹配的通配规则。
+func MatchPriceCard(cards []ModelPricingEntry, candidate string) *ModelPricingEntry {
+	candidate = NormalizePriceModelName(candidate)
+	var wildcard *ModelPricingEntry
+	for i := range cards {
+		entry := &cards[i]
+		if !entry.HasEffectivePricing() {
+			continue
+		}
+		for _, pattern := range entry.Models {
+			normalized := NormalizePriceModelName(pattern)
+			if normalized == candidate {
+				cp := entry.Clone()
+				return &cp
+			}
+			if strings.HasSuffix(normalized, "*") && strings.HasPrefix(candidate, strings.TrimSuffix(normalized, "*")) && wildcard == nil {
+				cp := entry.Clone()
+				wildcard = &cp
+			}
+		}
+	}
+	return wildcard
 }

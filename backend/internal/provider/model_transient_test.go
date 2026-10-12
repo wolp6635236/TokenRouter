@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// size 在锁内读取暂存条目数，供缓存生命周期测试核对。
+func (s *ModelTransientState) size() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.entries)
+}
+
 func TestOpenAIModelTransient_FirstFailureDoesNotCreateLongBlock(t *testing.T) {
 	state := NewModelTransientState(128)
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
@@ -153,7 +163,7 @@ func TestOpenAIModelTransient_StateIsBoundedAndConcurrencySafe(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	var wg sync.WaitGroup
 
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

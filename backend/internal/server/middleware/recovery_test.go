@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
 func TestRecovery_PanicLogContainsInfo(t *testing.T) {

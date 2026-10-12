@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-	"github.com/stretchr/testify/require"
 )
 
 // TestScheduledPlanStorageContract 在隔离 PostgreSQL 中检查计划限制、结果保留数和级联删除。
@@ -41,7 +42,7 @@ func TestScheduledPlanStorageContract(t *testing.T) {
 		found = found || p.ID == plan.ID
 	}
 	require.True(t, found)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err = svc.SaveResult(ctx, plan.ID, 2, &provider.ScheduledTestResult{Status: "success", ResponseText: "fixture", StartedAt: now, FinishedAt: now.Add(time.Second), LatencyMs: 1000})
 		require.NoError(t, err)
 	}

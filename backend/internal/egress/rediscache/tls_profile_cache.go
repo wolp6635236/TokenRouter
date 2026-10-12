@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
 const (
@@ -29,14 +30,14 @@ type tlsFingerprintProfileCache struct {
 	subscriptionStopped bool
 }
 
-// NewTLSFingerprintProfileCache 创建 TLS 指纹模板缓存
+// NewTLSFingerprintProfileCache 创建 TLS 指纹模板缓存。
 func NewTLSFingerprintProfileCache(rdb *redis.Client) egress.TLSFingerprintProfileCache {
 	return &tlsFingerprintProfileCache{
 		rdb: rdb,
 	}
 }
 
-// Get 从缓存获取模板列表
+// Get 从缓存获取模板列表。
 func (c *tlsFingerprintProfileCache) Get(ctx context.Context) ([]*egress.TLSFingerprintProfile, bool) {
 	c.localMu.RLock()
 	if c.localCache != nil {
@@ -67,7 +68,7 @@ func (c *tlsFingerprintProfileCache) Get(ctx context.Context) ([]*egress.TLSFing
 	return profiles, true
 }
 
-// Set 设置缓存
+// Set 设置缓存。
 func (c *tlsFingerprintProfileCache) Set(ctx context.Context, profiles []*egress.TLSFingerprintProfile) error {
 	data, err := json.Marshal(profiles)
 	if err != nil {
@@ -85,7 +86,7 @@ func (c *tlsFingerprintProfileCache) Set(ctx context.Context, profiles []*egress
 	return nil
 }
 
-// Invalidate 使缓存失效
+// Invalidate 使缓存失效。
 func (c *tlsFingerprintProfileCache) Invalidate(ctx context.Context) error {
 	c.localMu.Lock()
 	c.localCache = nil
@@ -94,12 +95,12 @@ func (c *tlsFingerprintProfileCache) Invalidate(ctx context.Context) error {
 	return c.rdb.Del(ctx, tlsFPProfileCacheKey).Err()
 }
 
-// NotifyUpdate 通知其他实例刷新缓存
+// NotifyUpdate 通知其他实例刷新缓存。
 func (c *tlsFingerprintProfileCache) NotifyUpdate(ctx context.Context) error {
 	return c.rdb.Publish(ctx, tlsFPProfilePubSubKey, "refresh").Err()
 }
 
-// SubscribeUpdates 订阅缓存更新通知
+// SubscribeUpdates 订阅缓存更新通知。
 func (c *tlsFingerprintProfileCache) SubscribeUpdates(ctx context.Context, handler func()) {
 	subscriberCtx, cancel := context.WithCancel(ctx)
 	c.subscriptionMu.Lock()

@@ -27,11 +27,11 @@ type ImagesOptions struct {
 	ResponseError                       func(*http.Response, int, error) error
 }
 
+type Images struct{ Options ImagesOptions }
+
 // String 防止技术参数中的令牌或请求被默认日志展开。
 func (o ImagesOptions) String() string   { return fmt.Sprintf("media Images provider=%d", o.ProviderID) }
 func (o ImagesOptions) GoString() string { return o.String() }
-
-type Images struct{ Options ImagesOptions }
 
 func (e Images) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (upstream.AttemptResult, error) {
 	o := e.Options

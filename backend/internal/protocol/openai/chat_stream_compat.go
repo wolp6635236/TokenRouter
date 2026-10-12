@@ -9,6 +9,23 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// RawStreamTerminalState 记录 raw Chat Completions SSE 流是否收到终止信号。
+// HTTP 200 的流也可能中途断开，需要通过终止信号判断是否完成，以便报告截断错误并计入 SLA。
+// 下列任一信号都表示生成已结束：
+//   - [DONE]：OpenAI Chat Completions 的结束标记。
+//   - usage chunk：include_usage 开启后的末尾用量帧，网关会开启该选项。
+//   - finish_reason：stop、length、tool_calls 等生成结束原因。
+//
+// 三类信号同时支持最后一帧后直接 EOF 和缺少 include_usage 的兼容上游。
+type RawStreamTerminalState struct {
+	// sawDataLine 表示上游至少发送过一行 data:，据此启用 SSE 截断检查。
+	// 上游返回裸 JSON 时直接透传。
+	sawDataLine     bool
+	sawDone         bool
+	sawUsage        bool
+	sawFinishReason bool
+}
+
 // EnsureOpenAIChatStreamUsage 为 raw Chat Completions 流式请求开启 usage 返回。
 // usage 也会继续向下游透传，支持级联代理和下游计费系统。
 func EnsureOpenAIChatStreamUsage(body []byte) ([]byte, error) {
@@ -177,23 +194,6 @@ func StripEmptyChatToolCallIdentity(payload []byte) ([]byte, bool) {
 		return payload, false
 	}
 	return updated, true
-}
-
-// RawStreamTerminalState 记录 raw Chat Completions SSE 流是否收到终止信号。
-// HTTP 200 的流也可能中途断开，需要通过终止信号判断是否完成，以便报告截断错误并计入 SLA。
-// 下列任一信号都表示生成已结束：
-//   - [DONE]：OpenAI Chat Completions 的结束标记。
-//   - usage chunk：include_usage 开启后的末尾用量帧，网关会开启该选项。
-//   - finish_reason：stop、length、tool_calls 等生成结束原因。
-//
-// 三类信号同时支持最后一帧后直接 EOF 和缺少 include_usage 的兼容上游。
-type RawStreamTerminalState struct {
-	// sawDataLine 表示上游至少发送过一行 data:，据此启用 SSE 截断检查。
-	// 上游返回裸 JSON 时直接透传。
-	sawDataLine     bool
-	sawDone         bool
-	sawUsage        bool
-	sawFinishReason bool
 }
 
 // ObserveDataLine 从单行 SSE `data:` 载荷中提取终止信号。payload 需已 TrimSpace。

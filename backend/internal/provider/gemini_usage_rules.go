@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	GeminiModelPro   GeminiModelClass = "pro"
+	GeminiModelFlash GeminiModelClass = "flash"
+)
+
 // GeminiQuota 保留共享池与按模型限额；-1 仍表示原按量付费无限额。
 type GeminiQuota struct {
 	SharedRPD int64 `json:"shared_rpd,omitempty"`
@@ -24,11 +29,6 @@ type GeminiModelUsage struct {
 	ProviderCost          float64
 }
 type GeminiModelClass string
-
-const (
-	GeminiModelPro   GeminiModelClass = "pro"
-	GeminiModelFlash GeminiModelClass = "flash"
-)
 
 func GeminiModelClassFromName(model string) GeminiModelClass {
 	name := strings.ToLower(strings.TrimSpace(model))

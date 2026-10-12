@@ -3,15 +3,23 @@ package testkit
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	usagecore "github.com/TokenFlux/TokenRouter/internal/usage"
 )
+
+type BestEffortUsageLogStore struct {
+	usagecore.UsageLogRepository
+
+	BestEffortErr   error
+	CreateErr       error
+	BestEffortCalls int
+	CreateCalls     int
+	LastLog         *usagecore.UsageLog
+	LastCtxErr      error
+}
 
 type UsageLogStore struct {
 	usagecore.UsageLogRepository
@@ -21,13 +29,6 @@ type UsageLogStore struct {
 	Calls      int
 	LastLog    *usagecore.UsageLog
 	LastCtxErr error
-}
-
-func (s *UsageLogStore) Create(ctx context.Context, log *usagecore.UsageLog) (bool, error) {
-	s.Calls++
-	s.LastLog = log
-	s.LastCtxErr = ctx.Err()
-	return s.Inserted, s.Err
 }
 
 type SettlementStore struct {
@@ -44,6 +45,61 @@ type SettlementStore struct {
 type ProviderLookup struct {
 	Provider *providercore.Record
 	Calls    int
+}
+
+type UserStore struct {
+	identity.UserRepository
+
+	DeductCalls int
+	DeductErr   error
+	LastAmount  float64
+	LastCtxErr  error
+}
+
+type SubscriptionStore struct {
+	billing.UserSubscriptionRepository
+
+	IncrementCalls int
+	IncrementErr   error
+	LastCtxErr     error
+}
+
+type KeyQuotaUpdater struct {
+	QuotaCalls          int
+	RateLimitCalls      int
+	Err                 error
+	LastAmount          float64
+	LastQuotaCtxErr     error
+	LastRateLimitCtxErr error
+}
+
+type GroupRateStore struct {
+	billing.UserGroupRateRepository
+
+	Rate  *float64
+	Err   error
+	Calls int
+}
+
+func (s *BestEffortUsageLogStore) CreateBestEffort(ctx context.Context, log *usagecore.UsageLog) error {
+	s.BestEffortCalls++
+	s.LastLog = log
+	s.LastCtxErr = ctx.Err()
+	return s.BestEffortErr
+}
+
+func (s *BestEffortUsageLogStore) Create(ctx context.Context, log *usagecore.UsageLog) (bool, error) {
+	s.CreateCalls++
+	s.LastLog = log
+	s.LastCtxErr = ctx.Err()
+	return false, s.CreateErr
+}
+
+func (s *UsageLogStore) Create(ctx context.Context, log *usagecore.UsageLog) (bool, error) {
+	s.Calls++
+	s.LastLog = log
+	s.LastCtxErr = ctx.Err()
+	return s.Inserted, s.Err
 }
 
 func (s *ProviderLookup) GetByID(_ context.Context, _ int64) (*providercore.Record, error) {
@@ -78,15 +134,6 @@ func (s *SettlementStore) ResolveUsableSubscriptionForGroup(ctx context.Context,
 	return s.ResolveSub, nil
 }
 
-type UserStore struct {
-	identity.UserRepository
-
-	DeductCalls int
-	DeductErr   error
-	LastAmount  float64
-	LastCtxErr  error
-}
-
 func (s *UserStore) DeductBalance(ctx context.Context, id int64, amount float64) (float64, error) {
 	s.DeductCalls++
 	s.LastAmount = amount
@@ -105,27 +152,10 @@ func (s *UserStore) SetBalance(ctx context.Context, id int64, value float64) (id
 	panic("unexpected SetBalance call")
 }
 
-type SubscriptionStore struct {
-	billing.UserSubscriptionRepository
-
-	IncrementCalls int
-	IncrementErr   error
-	LastCtxErr     error
-}
-
 func (s *SubscriptionStore) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {
 	s.IncrementCalls++
 	s.LastCtxErr = ctx.Err()
 	return s.IncrementErr
-}
-
-type KeyQuotaUpdater struct {
-	QuotaCalls          int
-	RateLimitCalls      int
-	Err                 error
-	LastAmount          float64
-	LastQuotaCtxErr     error
-	LastRateLimitCtxErr error
 }
 
 func (s *KeyQuotaUpdater) UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error {
@@ -140,14 +170,6 @@ func (s *KeyQuotaUpdater) UpdateRateLimitUsage(ctx context.Context, apiKeyID int
 	s.LastAmount = cost
 	s.LastRateLimitCtxErr = ctx.Err()
 	return s.Err
-}
-
-type GroupRateStore struct {
-	billing.UserGroupRateRepository
-
-	Rate  *float64
-	Err   error
-	Calls int
 }
 
 func (s *GroupRateStore) GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error) {

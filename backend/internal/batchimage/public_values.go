@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const maxBatchImagePublicErrorChars = 500
+
 func BatchImageJobToPublic(job *BatchImageJob) *BatchImagePublicBatch {
 	if job == nil {
 		return nil
@@ -139,5 +141,3 @@ func SanitizeBatchImagePublicMessage(message string) string {
 	}
 	return message
 }
-
-const maxBatchImagePublicErrorChars = 500

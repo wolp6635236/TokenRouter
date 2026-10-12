@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/imroc/req/v3"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 // ResolveSettingsOIDCMetadata 只执行发现文档读取，配置与安全决策留身份核心。

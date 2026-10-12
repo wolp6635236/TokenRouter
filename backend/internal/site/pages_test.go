@@ -9,19 +9,22 @@ import (
 
 type pageMenus string
 
-func (m pageMenus) GetCustomMenuItemsRaw(context.Context) string { return string(m) }
-
 type pageFixtureFiles struct{}
+
+func (m pageMenus) GetCustomMenuItemsRaw(context.Context) string { return string(m) }
 
 func (pageFixtureFiles) ReadMarkdown(context.Context, string) ([]byte, error) {
 	return []byte("body"), nil
 }
+
 func (pageFixtureFiles) ListPages(context.Context) ([]string, error) {
 	return []string{"user", "admin"}, nil
 }
+
 func (pageFixtureFiles) ImagePath(context.Context, string, string) (string, error) {
 	return "image", nil
 }
+
 func TestPageVisibilityContracts(t *testing.T) {
 	service := NewPages(pageFixtureFiles{}, pageMenus(`[{"url":"md:user","visibility":"user"},{"page_slug":"admin","visibility":"admin"}]`))
 	ctx := context.Background()

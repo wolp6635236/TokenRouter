@@ -5,19 +5,24 @@ version: "2"
 linters:
   default: none
   enable:
+    - copyloopvar
+    - decorder
     - errcheck
+    - funcorder
+    - gocritic
+    - godot
     - gosec
     - govet
     - ineffassign
+    - intrange
+    - modernize
+    - nolintlint
+    - revive
     - staticcheck
+    - unconvert
     - unused
-
-  exclusions:
-    rules:
-      # gofumpt 由改动文件格式检查负责，避免全量 lint 要求历史文件重新排版。
-      - linters:
-          - gofumpt
-        path: '.*'
+    - usestdlibvars
+    - whitespace
 
   settings:
     gosec:
@@ -68,6 +73,68 @@ linters:
       # Display function signature instead of selector.
       # Default: false
       verbose: true
+    decorder:
+      # 文件内依次是 const、var、type、func，const 和 var 各用一个括号块，init 排在函数最前。
+      # 新代码由 make fmt 调用 tools/declorder 自动调整。
+      dec-order: [const, var, type, func]
+      disable-dec-order-check: false
+      disable-init-func-first-check: false
+      disable-dec-num-check: false
+      disable-type-dec-num-check: true
+    funcorder:
+      # 构造函数放在所属类型的方法前面，方法之间按调用关系排列。
+      constructor: true
+      struct-method: false
+    revive:
+      # 只开命名和控制流写法上的规则，其余 revive 默认规则不启用。
+      rules:
+        - name: comment-spacings
+        - name: identical-branches
+        - name: if-return
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: receiver-naming
+        - name: redundant-import-alias
+        - name: redundant-test-main-exit
+        - name: superfluous-else
+        - name: unnecessary-stmt
+        - name: var-declaration
+    usestdlibvars:
+      # 架构规则禁止部分核心包引用 net/http，状态码在这些包里写成数字。
+      http-status-code: false
+    gocritic:
+      # 只开影响可读性、又有明确改法的检查。
+      disable-all: true
+      enabled-checks:
+        - assignOp
+        - captLocal
+        - emptyStringTest
+        - equalFold
+        - redundantSprint
+        - stringConcatSimplify
+        - unslice
+    godot:
+      # 顶层声明的文档注释以句号结尾，中文用“。”，英文用“.”。
+      scope: declarations
+      exclude:
+        # Project Doc 锚点是路径，句号会让路径失效。
+        - '^\s*@project-doc'
+        # 路由注释写的是请求方法和路径。
+        - '^\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ANY) /'
+    modernize:
+      disable:
+        # 用到 Go 1.26 以后的新写法，读者和工具还不熟悉。
+        - embedlit
+        - newexpr
+        # 会改变 JSON 输出或字段类型。
+        - omitzero
+        - atomictypes
+        # t.Context() 在 t.Cleanup 之前取消，清理函数里继续使用会出错。
+        - testingcontext
+    nolintlint:
+      # 每条 nolint 写明被关闭的 linter 和原因。
+      require-specific: true
+      require-explanation: true
     ineffassign:
       # Check escaping variables of type error, may cause false positives.
       # Default: false
@@ -107,9 +174,15 @@ formatters:
     - gofmt
     # 使用内置 gofumpt 默认规则，不开启 extra；版本随 golangci-lint 固定。
     - gofumpt
+    - gci
   exclusions:
     generated: strict
   settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/TokenFlux/TokenRouter)
     gofmt:
       # Simplify code: gofmt with `-s` option.
       # Default: true

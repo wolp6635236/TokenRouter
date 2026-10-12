@@ -13,7 +13,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/team"
 )
 
-// APIKeyAuthCacheConfig API Key 认证缓存配置
+const (
+	StatusActive = "active"
+
+	TeamStatusActive = team.TeamStatusActive
+	TeamRoleOwner    = team.TeamRoleOwner
+)
+
+var (
+	ErrUserNotFound = identity.ErrUserNotFound
+
+	ErrInsufficientPerms         = identity.ErrInsufficientPerms
+	ErrTeamFeatureDisabled       = team.ErrTeamFeatureDisabled
+	ErrTeamMembershipRequired    = team.ErrTeamMembershipRequired
+	ErrTeamNotFound              = team.ErrTeamNotFound
+	ErrTeamSuspended             = team.ErrTeamSuspended
+	ErrTeamMemberDailyExceeded   = billing.ErrTeamMemberDailyExceeded
+	ErrTeamMemberWeeklyExceeded  = billing.ErrTeamMemberWeeklyExceeded
+	ErrTeamMemberMonthlyExceeded = billing.ErrTeamMemberMonthlyExceeded
+)
+
+// APIKeyAuthCacheConfig API Key 认证缓存配置。
 type APIKeyAuthCacheConfig struct {
 	L1Size             int                    `mapstructure:"l1_size"`
 	L1TTLSeconds       int                    `mapstructure:"l1_ttl_seconds"`
@@ -42,6 +62,7 @@ type Options struct {
 	Team            struct{ Enabled bool }
 	GroupFastPolicy func(string, bool) string
 }
+
 type (
 	User                       = identity.User
 	NotifyEmailEntry           = contact.Entry
@@ -66,32 +87,14 @@ type GroupRepository interface {
 	GetByIDLite(context.Context, int64) (*routing.Group, error)
 	ListActive(context.Context) ([]routing.Group, error)
 }
+
 type TeamRepository interface {
 	GetContextByUserID(context.Context, int64) (*team.TeamContext, error)
 }
+
 type ConcurrencyReader interface {
 	GetAPIKeyConcurrencyBatch(context.Context, []int64) (map[int64]int, error)
 }
-
-const (
-	StatusActive = "active"
-
-	TeamStatusActive = team.TeamStatusActive
-	TeamRoleOwner    = team.TeamRoleOwner
-)
-
-var (
-	ErrUserNotFound = identity.ErrUserNotFound
-
-	ErrInsufficientPerms         = identity.ErrInsufficientPerms
-	ErrTeamFeatureDisabled       = team.ErrTeamFeatureDisabled
-	ErrTeamMembershipRequired    = team.ErrTeamMembershipRequired
-	ErrTeamNotFound              = team.ErrTeamNotFound
-	ErrTeamSuspended             = team.ErrTeamSuspended
-	ErrTeamMemberDailyExceeded   = billing.ErrTeamMemberDailyExceeded
-	ErrTeamMemberWeeklyExceeded  = billing.ErrTeamMemberWeeklyExceeded
-	ErrTeamMemberMonthlyExceeded = billing.ErrTeamMemberMonthlyExceeded
-)
 
 func cloneGroupClientProtocols(values []protocol.ProtocolID) []protocol.ProtocolID {
 	if values == nil {

@@ -22,6 +22,13 @@ type SettlementSubscription struct {
 	PlanGroupRateMultipliers map[int64]float64
 }
 
+// SubscriptionAllocationPlan 按锁定后的稳定顺序给出更新和资金分配，不执行 I/O。
+type SubscriptionAllocationPlan struct {
+	Remaining, SubscriptionAmount float64
+	Allocations                   []BillingAllocation
+	Updates                       []SettlementSubscription
+}
+
 func UsesBaseAmount(cmd *UsageBillingCommand) bool {
 	return cmd != nil && cmd.BaseAmountUSD > 0
 }
@@ -167,13 +174,6 @@ func SubscriptionAllocationRequest(cmd *UsageBillingCommand) (amountUSD float64,
 	}
 
 	return amountUSD, true, nil
-}
-
-// SubscriptionAllocationPlan 按锁定后的稳定顺序给出更新和资金分配，不执行 I/O。
-type SubscriptionAllocationPlan struct {
-	Remaining, SubscriptionAmount float64
-	Allocations                   []BillingAllocation
-	Updates                       []SettlementSubscription
 }
 
 func AllocateSubscriptions(cmd *UsageBillingCommand, subscriptions []SettlementSubscription, now time.Time) (SubscriptionAllocationPlan, error) {

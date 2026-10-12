@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // TestUsageObservationDatabaseIdentity 验证条件语句使用真实 PostgreSQL JSONB/NULL 比较，不将模拟存储当作竞争证据。

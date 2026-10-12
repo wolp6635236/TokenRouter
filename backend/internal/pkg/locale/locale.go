@@ -9,10 +9,15 @@ import (
 	"golang.org/x/text/language"
 )
 
-// manifestJSON 是前后端共用的语言目录。
-//
-//go:embed manifest.json
-var manifestJSON []byte
+var (
+	// manifestJSON 是前后端共用的语言目录。
+	//
+	//go:embed manifest.json
+	manifestJSON []byte
+
+	// catalog 是解析后的语言目录。
+	catalog = loadCatalog()
+)
 
 // Definition 包含界面名称、文字方向和兼容语言代码。
 type Definition struct {
@@ -30,15 +35,18 @@ type Catalog struct {
 	Locales []Definition `json:"locales"`
 }
 
-var catalog = func() Catalog {
+type contextKey struct{}
+
+type presentationKey struct{}
+
+// loadCatalog 解析内嵌的语言目录，文件格式错误时 panic。
+func loadCatalog() Catalog {
 	var result Catalog
 	if err := json.Unmarshal(manifestJSON, &result); err != nil {
 		panic(err)
 	}
 	return result
-}()
-
-type contextKey struct{}
+}
 
 // Default 返回站点未配置语言时使用的语言。
 func Default() string { return catalog.Default }
@@ -56,7 +64,7 @@ func Normalize(raw string) string {
 	if len(raw) > 35 || strings.ContainsAny(raw, ",; \t\r\n") {
 		return ""
 	}
-	for _, segment := range strings.Split(raw, "-") {
+	for segment := range strings.SplitSeq(raw, "-") {
 		if segment == "" {
 			return ""
 		}
@@ -146,8 +154,6 @@ func Explicit(ctx context.Context) (string, bool) {
 func WithoutLanguage(ctx context.Context) context.Context {
 	return context.WithValue(ctx, contextKey{}, "")
 }
-
-type presentationKey struct{}
 
 // WithUserPresentation 标记普通用户展示查询，内部管理查询继续读取业务名称。
 func WithUserPresentation(ctx context.Context, enabled bool) context.Context {

@@ -1,0 +1,134 @@
+package localauth
+
+// 本文件覆盖 local_auth.go 的认证读取、qoder/session.go 的会话建立与 qoder/client.go 的流式请求。
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
+)
+
+// TestRealAPI 使用本地认证调用 Qoder 流式 API。
+func TestRealAPI(t *testing.T) {
+	if os.Getenv("QODER_RUN_REAL_API_TESTS") != "1" {
+		t.Skip("set QODER_RUN_REAL_API_TESTS=1 to run real Qoder API integration test")
+	}
+	authDir := DefaultAuthDir()
+	if authDir == "" {
+		t.Skip("no home directory")
+	}
+	if _, err := os.Stat(filepath.Join(authDir, "machine_id")); os.IsNotExist(err) {
+		t.Skip("local Qoder auth not found")
+	}
+
+	info, err := ReadLocalAuth(authDir)
+	if err != nil {
+		t.Fatalf("ReadLocalAuth: %v", err)
+	}
+	t.Log("Loaded local Qoder auth metadata")
+
+	identity := info.ToAuthIdentity()
+	machine := &qoder.MachineIdentity{
+		MachineID:    info.MachineID,
+		MachineToken: qoder.RandomToken(50),
+		MachineType:  qoder.RandomHex(18),
+	}
+
+	session, err := qoder.NewSessionForSite(identity, machine, qoder.SiteGlobal)
+	if err != nil {
+		t.Fatalf("qoder.NewSession: %v", err)
+	}
+	t.Logf("Session cosy_key length: %d", len(session.CosyKey))
+
+	payload := map[string]any{
+		"stream":           true,
+		"session_id":       qoder.GenerateRequestID(),
+		"request_id":       qoder.GenerateRequestID(),
+		"chat_record_id":   qoder.GenerateRequestID(),
+		"request_set_id":   qoder.GenerateRequestID(),
+		"agent_id":         "agent_common",
+		"task_id":          "common",
+		"session_type":     "qodercli",
+		"aliyun_user_type": identity.UserType,
+		"model_config": map[string]any{
+			"key":    "auto",
+			"source": "system",
+			"format": "openai",
+		},
+		"messages": []map[string]any{
+			{
+				"role":     "user",
+				"content":  "Say hi.",
+				"contents": []map[string]any{{"type": "text", "text": "Say hi."}},
+			},
+		},
+		"parameters": map[string]any{"max_tokens": 10},
+		"chat_context": map[string]any{
+			"text": map[string]any{"type": "text", "text": "Say hi."},
+			"extra": map[string]any{
+				"modelConfig":     map[string]any{"key": "auto"},
+				"originalContent": map[string]any{"type": "text", "text": "Say hi."},
+			},
+		},
+	}
+
+	bodyJSON, _ := json.Marshal(payload)
+	client := qoder.NewClient(qoder.APIBaseURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	resp, err := client.StreamRequestContext(context.Background(), session, "", bodyJSON, map[string]string{
+		"x-model-key":    "auto",
+		"x-model-source": "system",
+	})
+	if err != nil {
+		t.Fatalf("StreamRequest: %v", err)
+	}
+	t.Logf("Response status: %d", resp.StatusCode)
+
+	textParts, done := collectStream(ctx, resp, t)
+	result := strings.TrimSpace(strings.Join(textParts, ""))
+	t.Logf("Result: %q (done=%v)", result, done)
+
+	if result == "" {
+		t.Error("Expected non-empty response")
+	} else {
+		fmt.Printf("✓ SUCCESS: %q\n", result)
+	}
+}
+
+// collectStream 在请求结束或超时前收集文本事件。
+func collectStream(ctx context.Context, resp *http.Response, t *testing.T) ([]string, bool) {
+	t.Helper()
+	var textParts []string
+
+	go func() {
+		<-ctx.Done()
+		_ = resp.Body.Close()
+	}()
+
+	for event := range qoder.StreamEvents(resp) {
+		select {
+		case <-ctx.Done():
+			return textParts, false
+		default:
+		}
+		if event.Type == "text_delta" && event.Text != "" {
+			textParts = append(textParts, event.Text)
+		} else if event.Type == "error" {
+			t.Logf("SSE error: %s", event.Text)
+		} else if event.IsDone {
+			return textParts, true
+		}
+	}
+	return textParts, true
+}

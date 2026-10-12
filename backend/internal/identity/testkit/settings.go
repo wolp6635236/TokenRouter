@@ -3,9 +3,8 @@ package testkit
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
-
 	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"

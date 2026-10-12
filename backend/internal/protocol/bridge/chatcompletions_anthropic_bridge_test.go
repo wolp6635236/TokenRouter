@@ -8,40 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ---------------------------------------------------------------------------
-// 测试辅助函数
-// ---------------------------------------------------------------------------
-
-// collectAnthropicStreamEvents 把 CC chunks 输入直连桥并追加收尾事件。
-func collectAnthropicStreamEvents(t *testing.T, chunks []string) []AnthropicStreamEvent {
-	t.Helper()
-	state := NewChatCompletionsToAnthropicStreamState(testRuntime(), "deepseek-v4-pro")
-	var events []AnthropicStreamEvent
-	for _, payload := range chunks {
-		var chunk ChatCompletionsChunk
-		require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
-		events = append(events, ChatCompletionsChunkToAnthropicEvents(testRuntime(), &chunk, state)...)
-	}
-	events = append(events, FinalizeChatCompletionsAnthropicStream(testRuntime(), state)...)
-	return events
+// assembledToolUse 保存重建后的工具调用 ID、名称和参数。
+type assembledToolUse struct {
+	ID    string
+	Name  string
+	Input string
 }
-
-// anthropicEventTypes 提取事件类型序列，便于断言流生命周期。
-func anthropicEventTypes(events []AnthropicStreamEvent) []string {
-	out := make([]string, 0, len(events))
-	for _, e := range events {
-		out = append(out, e.Type)
-	}
-	return out
-}
-
-// ---------------------------------------------------------------------------
-// 请求转换
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// 非流式响应转换
-// ---------------------------------------------------------------------------
 
 func TestChatCompletionsResponseToAnthropic_TextOnly(t *testing.T) {
 	resp := &ChatCompletionsResponse{
@@ -183,10 +155,6 @@ func TestChatCompletionsResponseToAnthropic_NilResponse(t *testing.T) {
 	require.Equal(t, "end_turn", AnthropicStopReasonString(out.StopReason), "nil response must not produce an empty stop_reason")
 	require.NotEmpty(t, out.ID)
 }
-
-// ---------------------------------------------------------------------------
-// 流式响应转换
-// ---------------------------------------------------------------------------
 
 func TestChatCompletionsChunkToAnthropicEvents_TextOnly(t *testing.T) {
 	events := collectAnthropicStreamEvents(t, []string{
@@ -397,7 +365,7 @@ func TestChatCompletionsChunkToAnthropicEvents_BuffersToolArgumentFragments(t *t
 		}},
 	}, state)
 	const fragmentCount = 1024
-	for i := 0; i < fragmentCount; i++ {
+	for range fragmentCount {
 		ChatCompletionsChunkToAnthropicEvents(testRuntime(), &ChatCompletionsChunk{
 			Choices: []ChatChunkChoice{{
 				Delta: ChatDelta{ToolCalls: []ChatToolCall{{
@@ -442,11 +410,7 @@ func TestFinalizeChatCompletionsAnthropicStream_EmitsMessageStartIfMissing(t *te
 	require.Contains(t, types, "message_stop")
 }
 
-// ---------------------------------------------------------------------------
-// 直连桥与旧双转换桥的等价性
-// ---------------------------------------------------------------------------
-
-// TestDirectBridge_NonStreamingMatchesDoubleConversion 验证非流式直连响应与旧双转换链一致。
+// TestDirectBridge_NonStreamingMatchesDoubleConversion 检查直接转换与经过 Responses 的两步转换生成相同的非流响应。
 func TestDirectBridge_NonStreamingMatchesDoubleConversion(t *testing.T) {
 	resp := &ChatCompletionsResponse{
 		ID:    "chatcmpl-eq",
@@ -476,10 +440,10 @@ func TestDirectBridge_NonStreamingMatchesDoubleConversion(t *testing.T) {
 		},
 	}
 
-	// 直连桥结果。
+	// 直接转换结果。
 	direct := ChatCompletionsResponseToAnthropic(testRuntime(), resp, "claude-sonnet-4-20250514")
 
-	// 旧双转换桥结果。
+	// 经过 Responses 的两步转换结果。
 	responsesResp := ChatCompletionsResponseToResponses(testRuntime(), resp, "claude-sonnet-4-20250514", nil, nil, false, nil)
 	double := ResponsesToAnthropic(responsesResp, "claude-sonnet-4-20250514")
 
@@ -500,10 +464,6 @@ func TestDirectBridge_NonStreamingMatchesDoubleConversion(t *testing.T) {
 	require.Equal(t, double.Usage.CacheReadInputTokens, direct.Usage.CacheReadInputTokens)
 	require.Equal(t, double.Usage.CacheCreationInputTokens, direct.Usage.CacheCreationInputTokens)
 }
-
-// ---------------------------------------------------------------------------
-// 空输入和分片交错场景。
-// ---------------------------------------------------------------------------
 
 func TestChatCompletionsToAnthropicStreamState_ToolCallNameArrivesLate(t *testing.T) {
 	// 部分上游会先发送 tool_call index 与参数，再发送工具名。
@@ -538,35 +498,6 @@ func TestChatCompletionsToAnthropicStreamState_ToolCallIDAndNameArriveLate(t *te
 	require.Equal(t, "call_late", tools[0].ID)
 	require.Equal(t, "Read", tools[0].Name)
 	require.JSONEq(t, `{"path":"README.md"}`, tools[0].Input)
-}
-
-// assembledToolUse 保存重建后的工具调用 ID、名称和参数。
-type assembledToolUse struct {
-	ID    string
-	Name  string
-	Input string
-}
-
-// assembleToolUseBlocks 从 start 读取 ID 和名称并拼接参数 delta，模拟 Anthropic 客户端处理。
-func assembleToolUseBlocks(events []AnthropicStreamEvent) []assembledToolUse {
-	blockByIdx := map[int]int{} // Anthropic block index 到输出位置的映射。
-	var out []assembledToolUse
-	for _, e := range events {
-		switch e.Type {
-		case "content_block_start":
-			if e.ContentBlock != nil && e.ContentBlock.Type == "tool_use" && e.Index != nil {
-				blockByIdx[*e.Index] = len(out)
-				out = append(out, assembledToolUse{ID: e.ContentBlock.ID, Name: e.ContentBlock.Name})
-			}
-		case "content_block_delta":
-			if e.Delta != nil && e.Delta.Type == "input_json_delta" && e.Index != nil {
-				if pos, ok := blockByIdx[*e.Index]; ok {
-					out[pos].Input += e.Delta.PartialJSON
-				}
-			}
-		}
-	}
-	return out
 }
 
 func TestChatCompletionsToAnthropicStreamState_ToolCallArgsArriveBeforeName(t *testing.T) {
@@ -714,4 +645,158 @@ func TestChatCompletionsResponseToAnthropic_ContentFilterWithToolUse(t *testing.
 
 	out := ChatCompletionsResponseToAnthropic(testRuntime(), resp, "claude-sonnet-4-20250514")
 	require.Equal(t, "tool_use", AnthropicStopReasonString(out.StopReason))
+}
+
+// TestAnthropicChatBridge_ReasoningSurvivesOutboundInboundRoundTrip 检查 reasoning_content 转成 Anthropic thinking 块后，可以在下一轮请求中还原。
+func TestAnthropicChatBridge_ReasoningSurvivesOutboundInboundRoundTrip(t *testing.T) {
+	upstream := ChatMessage{
+		Role:             "assistant",
+		ReasoningContent: "step 1: need the weather tool",
+		Content:          json.RawMessage(`"checking"`),
+		ToolCalls: []ChatToolCall{{
+			ID:       "call_1",
+			Type:     "function",
+			Function: ChatFunctionCall{Name: "get_weather", Arguments: `{"city":"SF"}`},
+		}},
+	}
+
+	// 出站：Chat 响应 → Anthropic content blocks
+	blocks := chatMessageToAnthropicBlocks(upstream)
+	require.Equal(t, "thinking", blocks[0].Type)
+	require.Equal(t, upstream.ReasoningContent, blocks[0].Thinking)
+
+	// 客户端下一轮把同一组 blocks 原样回传
+	raw, err := json.Marshal(blocks)
+	require.NoError(t, err)
+
+	// 入站：Anthropic content blocks → Chat 请求
+	back, err := anthropicAssistantToChatMessages(raw)
+	require.NoError(t, err)
+	require.Len(t, back, 1)
+	require.Equal(t, upstream.ReasoningContent, back[0].ReasoningContent,
+		"出站生成的 thinking 必须能原样还原回 reasoning_content")
+	require.Len(t, back[0].ToolCalls, 1)
+}
+
+func TestAnthropicThinkingToReasoningContent(t *testing.T) {
+	blocksOf := func(t *testing.T, raw string) []AnthropicContentBlock {
+		t.Helper()
+		var blocks []AnthropicContentBlock
+		require.NoError(t, json.Unmarshal([]byte(raw), &blocks))
+		return blocks
+	}
+
+	cases := []struct {
+		name         string
+		raw          string
+		hasToolCalls bool
+		want         string
+	}{
+		{
+			name:         "single_thinking_block",
+			raw:          `[{"type":"thinking","thinking":"a"}]`,
+			hasToolCalls: true,
+			want:         "a",
+		},
+		{
+			// 多个 thinking 块用 "\n" 连接，与 extractResponsesReasoningText 一致。
+			name:         "multiple_blocks_join_with_newline",
+			raw:          `[{"type":"thinking","thinking":"a"},{"type":"text","text":"x"},{"type":"thinking","thinking":"b"}]`,
+			hasToolCalls: true,
+			want:         "a\nb",
+		},
+		{
+			// redacted_thinking 没有明文可回传。
+			name:         "redacted_thinking_has_no_plaintext",
+			raw:          `[{"type":"redacted_thinking","signature":"abc"}]`,
+			hasToolCalls: true,
+			want:         "",
+		},
+		{
+			// 只带 signature 的 thinking 占位块(xAI/Codex 密文回放形态)同样无明文。
+			name:         "signature_only_thinking",
+			raw:          `[{"type":"thinking","thinking":"","signature":"gAAAAxxx"}]`,
+			hasToolCalls: true,
+			want:         "",
+		},
+		{
+			name:         "no_tool_calls_returns_empty",
+			raw:          `[{"type":"thinking","thinking":"a"}]`,
+			hasToolCalls: false,
+			want:         "",
+		},
+		{
+			name:         "no_thinking_blocks",
+			raw:          `[{"type":"text","text":"x"}]`,
+			hasToolCalls: true,
+			want:         "",
+		},
+		{
+			name:         "empty_blocks",
+			raw:          `[]`,
+			hasToolCalls: true,
+			want:         "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want,
+				anthropicThinkingToReasoningContent(blocksOf(t, tc.raw), tc.hasToolCalls))
+		})
+	}
+}
+
+// TestAnthropicAssistantToChatMessages_PlainStringContentUnaffected 检查字符串形式的 assistant content 直接返回文本消息。
+func TestAnthropicAssistantToChatMessages_PlainStringContentUnaffected(t *testing.T) {
+	msgs, err := anthropicAssistantToChatMessages(json.RawMessage(`"just text"`))
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	require.Empty(t, msgs[0].ReasoningContent)
+	require.Equal(t, `"just text"`, string(msgs[0].Content))
+}
+
+// collectAnthropicStreamEvents 把 CC chunks 输入直连桥并追加收尾事件。
+func collectAnthropicStreamEvents(t *testing.T, chunks []string) []AnthropicStreamEvent {
+	t.Helper()
+	state := NewChatCompletionsToAnthropicStreamState(testRuntime(), "deepseek-v4-pro")
+	var events []AnthropicStreamEvent
+	for _, payload := range chunks {
+		var chunk ChatCompletionsChunk
+		require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
+		events = append(events, ChatCompletionsChunkToAnthropicEvents(testRuntime(), &chunk, state)...)
+	}
+	events = append(events, FinalizeChatCompletionsAnthropicStream(testRuntime(), state)...)
+	return events
+}
+
+// anthropicEventTypes 提取事件类型序列，便于断言流生命周期。
+func anthropicEventTypes(events []AnthropicStreamEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.Type)
+	}
+	return out
+}
+
+// assembleToolUseBlocks 从 start 读取 ID 和名称并拼接参数 delta，模拟 Anthropic 客户端处理。
+func assembleToolUseBlocks(events []AnthropicStreamEvent) []assembledToolUse {
+	blockByIdx := map[int]int{} // Anthropic block index 到输出位置的映射。
+	var out []assembledToolUse
+	for _, e := range events {
+		switch e.Type {
+		case "content_block_start":
+			if e.ContentBlock != nil && e.ContentBlock.Type == "tool_use" && e.Index != nil {
+				blockByIdx[*e.Index] = len(out)
+				out = append(out, assembledToolUse{ID: e.ContentBlock.ID, Name: e.ContentBlock.Name})
+			}
+		case "content_block_delta":
+			if e.Delta != nil && e.Delta.Type == "input_json_delta" && e.Index != nil {
+				if pos, ok := blockByIdx[*e.Index]; ok {
+					out[pos].Input += e.Delta.PartialJSON
+				}
+			}
+		}
+	}
+	return out
 }

@@ -5,17 +5,26 @@ import (
 	"os"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	paymentadapter "github.com/TokenFlux/TokenRouter/internal/payment/provider"
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
-
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
-
+	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
+	paymentadapter "github.com/TokenFlux/TokenRouter/internal/payment/provider"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// payment.EncryptionKey 是 AES-256 支付密钥类型，长度为 32 字节。
-// 独立类型供 Wire 区分其他 []byte 参数。
+func providePaymentHTTP(runtime *payment.Runtime, cfg *payment.ConfigService, plans *billing.Plans) *paymenthttp.PaymentHandler {
+	return paymenthttp.NewPaymentHandler(runtime, cfg, plans)
+}
+
+func providePaymentAdminHTTP(runtime *payment.Runtime, cfg *payment.ConfigService, plans *billing.Plans, calendar timezone.Calendar) *paymenthttp.AdminHandler {
+	return paymenthttp.NewAdminHandler(runtime, cfg, plans, calendar)
+}
+
+func providePaymentWebhookHTTP(runtime *payment.Runtime, registry *payment.Registry) *paymenthttp.PaymentWebhookHandler {
+	return paymenthttp.NewPaymentWebhookHandler(runtime, registry)
+}
 
 // providePaymentEncryptionKey 从配置中的 TOTP 加密密钥派生支付密钥。
 // 密钥为空时返回 nil，依赖加密的支付功能关闭。

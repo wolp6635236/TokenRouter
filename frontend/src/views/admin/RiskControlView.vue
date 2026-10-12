@@ -285,10 +285,11 @@
               </div>
             </div>
 
-            <div class="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
+            <div class="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-7">
               <Select v-if="activeRecordTab === 'moderation'" v-model="filters.result" :options="resultOptions" @change="reloadLogsFromFirstPage" />
               <Select v-if="activeRecordTab === 'moderation'" v-model="filters.group_id" :options="groupFilterOptions" @change="reloadLogsFromFirstPage" />
               <Select v-if="activeRecordTab === 'moderation'" v-model="filters.endpoint" :options="endpointOptions" @change="reloadLogsFromFirstPage" />
+              <input v-model.trim="filters.request_id" type="search" class="input font-mono" spellcheck="false" maxlength="255" :aria-label="t('requests.id')" :placeholder="t('requests.id')" @keyup.enter="reloadLogsFromFirstPage" />
               <input v-model.trim="filters.search" type="search" class="input" :placeholder="t('admin.riskControl.filters.search')" @keyup.enter="reloadLogsFromFirstPage" />
               <input v-model="filters.from" type="datetime-local" class="input" :title="t('admin.riskControl.filters.from')" @change="reloadLogsFromFirstPage" />
               <input v-model="filters.to" type="datetime-local" class="input" :title="t('admin.riskControl.filters.to')" @change="reloadLogsFromFirstPage" />
@@ -622,11 +623,11 @@
                       <span class="font-medium text-gray-700 dark:text-gray-200">{{ t('admin.riskControl.apiKeysWriteMode') }}</span>
                       <span class="ml-2">{{ apiKeysModeHint }}</span>
                     </div>
-                    <div class="inline-flex rounded-control bg-white p-1 shadow-sm dark:bg-dark-800">
+                    <div v-segmented class="segmented">
                       <button
                         type="button"
-                        class="rounded-control px-3 py-1.5 text-xs font-medium transition-colors"
-                        :class="configForm.api_keys_mode === 'append' ? 'bg-primary-500 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700'"
+                        class="segmented-item px-3 py-1.5 text-xs"
+                        :class="{ 'segmented-item-active': configForm.api_keys_mode === 'append' }"
                         :disabled="configForm.clear_api_key"
                         @click="setAPIKeysMode('append')"
                       >
@@ -634,8 +635,8 @@
                       </button>
                       <button
                         type="button"
-                        class="rounded-control px-3 py-1.5 text-xs font-medium transition-colors"
-                        :class="configForm.api_keys_mode === 'replace' ? 'bg-amber-500 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700'"
+                        class="segmented-item px-3 py-1.5 text-xs"
+                        :class="{ 'segmented-item-active': configForm.api_keys_mode === 'replace' }"
                         :disabled="configForm.clear_api_key"
                         @click="setAPIKeysMode('replace')"
                       >
@@ -921,7 +922,7 @@
                   </span>
                   <span
                     class="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border"
-                    :class="isGroupSelected(group.id) ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-300 text-transparent dark:border-dark-500'"
+                    :class="isGroupSelected(group.id) ? 'border-primary-700 bg-primary-700 text-white dark:border-primary-600 dark:bg-primary-600' : 'border-gray-300 text-transparent dark:border-dark-500'"
                   >
                     <Icon name="check" size="xs" :stroke-width="2" :animate-on-hover="false" />
                   </span>
@@ -957,7 +958,7 @@
                     <span
                       class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
                       :class="configForm.model_filter_type === option.value
-                        ? 'border-primary-500 bg-primary-500 text-white'
+                        ? 'border-primary-700 bg-primary-700 text-white dark:border-primary-600 dark:bg-primary-600'
                         : 'border-gray-300 text-transparent dark:border-dark-500'"
                     >
                       <Icon name="check" size="xs" :stroke-width="2" :animate-on-hover="false" />
@@ -1222,7 +1223,7 @@
                     <span
                       class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
                       :class="configForm.keyword_blocking_mode === option.value
-                        ? 'border-primary-500 bg-primary-500 text-white'
+                        ? 'border-primary-700 bg-primary-700 text-white dark:border-primary-600 dark:bg-primary-600'
                         : 'border-gray-300 text-transparent dark:border-dark-500'"
                     >
                       <Icon name="check" size="xs" :stroke-width="2" :animate-on-hover="false" />
@@ -1328,6 +1329,7 @@
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   {{ inputDetailRow.endpoint || '-' }} · {{ inputDetailRow.provider || '-' }} / {{ inputDetailRow.model || '-' }}
                 </p>
+                <RequestIdLink v-if="inputDetailRow.request_id" :value="inputDetailRow.request_id" class="mt-1.5" />
               </div>
               <span v-if="inputDetailRow.group_name" class="inline-flex rounded-compact bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 dark:bg-sky-900/20 dark:text-sky-300">
                 {{ inputDetailRow.group_name }}
@@ -1419,6 +1421,7 @@
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   {{ cyberDetailRow.endpoint || '-' }} · openai / {{ cyberDetailRow.model || '-' }}
                 </p>
+                <RequestIdLink v-if="cyberDetailRow.request_id" :value="cyberDetailRow.request_id" class="mt-1.5" />
               </div>
               <span v-if="cyberDetailRow.group_name" class="inline-flex rounded-compact bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 dark:bg-sky-900/20 dark:text-sky-300">
                 {{ cyberDetailRow.group_name }}
@@ -1479,6 +1482,7 @@
 </template>
 
 <script setup lang="ts">
+import RequestIdLink from '@/components/common/RequestIdLink.vue'
 import { vSegmented } from '@/directives/segmented'
 import Skeleton from '@/components/common/Skeleton.vue'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
@@ -1667,6 +1671,7 @@ const pagination = reactive({
 })
 
 const filters = reactive({
+  request_id: '',
   result: '',
   group_id: 0,
   endpoint: '',
@@ -2297,6 +2302,7 @@ async function loadLogs() {
       result: filters.result || undefined,
       group_id: filters.group_id || undefined,
       endpoint: filters.endpoint || undefined,
+      request_id: filters.request_id || undefined,
       search: filters.search || undefined,
       from: normalizeDateTimeLocal(filters.from),
       to: normalizeDateTimeLocal(filters.to),
@@ -2320,6 +2326,7 @@ async function loadCyberWarnings() {
     const params = {
       page: pagination.page,
       page_size: pagination.page_size,
+      request_id: filters.request_id || undefined,
       search: filters.search || undefined,
       from: normalizeDateTimeLocal(filters.from),
       to: normalizeDateTimeLocal(filters.to),

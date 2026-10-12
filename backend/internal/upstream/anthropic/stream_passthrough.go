@@ -219,7 +219,6 @@ func StreamResponsePassthrough(
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", options.ProviderID)
 				} else if line == "" {
-
 					flusher.Flush()
 					lastDataAt = time.Now()
 					resetKeepaliveTimer()

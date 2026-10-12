@@ -1,23 +1,37 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 
-	"context"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/backup"
 	middleware "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // PasswordVerifier 不向备份暴露身份实体。
-type PasswordVerifier func(context.Context, int64, string) (bool, error)
-type BackupHandler struct {
-	backupService *backup.BackupService
-	userService   PasswordVerifier
+type (
+	PasswordVerifier func(context.Context, int64, string) (bool, error)
+	BackupHandler    struct {
+		backupService *backup.BackupService
+		userService   PasswordVerifier
+	}
+)
+
+// 备份操作
+
+type CreateBackupRequest struct {
+	ExpireDays *int `json:"expire_days"` // nil=使用默认值14，0=永不过期
+}
+
+// 恢复操作（需要重新输入管理员密码）
+
+type RestoreBackupRequest struct {
+	Password string `json:"password" binding:"required"`
 }
 
 func NewBackupHandler(backupService *backup.BackupService, userService PasswordVerifier) *BackupHandler {
@@ -27,7 +41,7 @@ func NewBackupHandler(backupService *backup.BackupService, userService PasswordV
 	}
 }
 
-// ─── 存储配置 ───
+// 存储配置
 
 func (h *BackupHandler) GetStorageConfig(c *gin.Context) {
 	cfg, err := h.backupService.GetStorageConfig(c.Request.Context())
@@ -66,7 +80,7 @@ func (h *BackupHandler) TestStorageConnection(c *gin.Context) {
 	response.Success(c, gin.H{"ok": true, "message": "connection successful"})
 }
 
-// ─── 内容配置 ───
+// 内容配置
 
 func (h *BackupHandler) GetContentConfig(c *gin.Context) {
 	cfg, err := h.backupService.GetContentConfig(c.Request.Context())
@@ -91,7 +105,7 @@ func (h *BackupHandler) UpdateContentConfig(c *gin.Context) {
 	response.Success(c, cfg)
 }
 
-// ─── S3 配置（兼容旧接口） ───
+// S3 配置（兼容旧接口）
 
 func (h *BackupHandler) GetS3Config(c *gin.Context) {
 	cfg, err := h.backupService.GetS3Config(c.Request.Context())
@@ -130,7 +144,7 @@ func (h *BackupHandler) TestS3Connection(c *gin.Context) {
 	response.Success(c, gin.H{"ok": true, "message": "connection successful"})
 }
 
-// ─── 定时备份 ───
+// 定时备份
 
 func (h *BackupHandler) GetSchedule(c *gin.Context) {
 	cfg, err := h.backupService.GetSchedule(c.Request.Context())
@@ -153,12 +167,6 @@ func (h *BackupHandler) UpdateSchedule(c *gin.Context) {
 		return
 	}
 	response.Success(c, cfg)
-}
-
-// ─── 备份操作 ───
-
-type CreateBackupRequest struct {
-	ExpireDays *int `json:"expire_days"` // nil=使用默认值14，0=永不过期
 }
 
 func (h *BackupHandler) CreateBackup(c *gin.Context) {
@@ -259,12 +267,6 @@ func (h *BackupHandler) DownloadBackup(c *gin.Context) {
 	}
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
 	c.DataFromReader(http.StatusOK, record.SizeBytes, "application/gzip", body, nil)
-}
-
-// ─── 恢复操作（需要重新输入管理员密码） ───
-
-type RestoreBackupRequest struct {
-	Password string `json:"password" binding:"required"`
 }
 
 func (h *BackupHandler) RestoreBackup(c *gin.Context) {

@@ -36,6 +36,7 @@ func (r *idempotencyRepository) ClaimOperation(ctx context.Context, c idempotenc
 		ExpiresAt:          c.ExpiresAt,
 	}, true, nil
 }
+
 func (r *idempotencyRepository) RenewOperation(ctx context.Context, id int64, operationID, ownership string, until, expires time.Time) (bool, error) {
 	result, err := r.sql.ExecContext(ctx, `UPDATE idempotency_records SET locked_until=$4,expires_at=$5,updated_at=NOW() WHERE id=$1 AND request_fingerprint=$2 AND response_body=$3 AND status='processing'`, id, operationID, ownership, until, expires)
 	if err != nil {
@@ -44,6 +45,7 @@ func (r *idempotencyRepository) RenewOperation(ctx context.Context, id int64, op
 	n, err := result.RowsAffected()
 	return n == 1, err
 }
+
 func (r *idempotencyRepository) FinishOperation(ctx context.Context, id int64, operationID, ownership string, success bool, reason string, expires time.Time) (bool, error) {
 	status := idempotency.IdempotencyStatusFailedRetryable
 	var code any

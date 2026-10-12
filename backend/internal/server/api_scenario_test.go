@@ -1,0 +1,3421 @@
+package server
+
+// 本文件覆盖 identity/httpapi/session_handler.go、apikey/httpapi/key_handler.go 和 usage/httpapi/usage_handler.go 的 API 响应。
+// 订阅和兑换请求覆盖 billing/httpapi/subscription_handler.go、admin_subscription_handler.go 与 redeem_handler.go。
+// 管理请求覆盖 settings/httpapi/composite_get.go 与 provider/httpapi/management_bulk.go。
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"maps"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/apikey/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/config"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	identitytestkit "github.com/TokenFlux/TokenRouter/internal/identity/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/notification"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	"github.com/TokenFlux/TokenRouter/internal/payment"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	"github.com/TokenFlux/TokenRouter/internal/promotion"
+	protocolcore "github.com/TokenFlux/TokenRouter/internal/protocol"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
+	routingdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
+	settingshttp "github.com/TokenFlux/TokenRouter/internal/settings/httpapi"
+	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/site"
+	usagecore "github.com/TokenFlux/TokenRouter/internal/usage"
+	usagehttp "github.com/TokenFlux/TokenRouter/internal/usage/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/usage/httpapi/ports"
+)
+
+// 编译期检查测试存储是否实现业务仓储接口。
+var (
+	_ identity.UserRepository            = (*stubUserRepo)(nil)
+	_ apikey.APIKeyRepository            = (*stubApiKeyRepo)(nil)
+	_ apikey.APIKeyCache                 = (*stubApiKeyCache)(nil)
+	_ routing.GroupRepository            = (*stubGroupRepo)(nil)
+	_ billing.UserSubscriptionRepository = (*stubUserSubscriptionRepo)(nil)
+	_ usagecore.UsageLogRepository       = (*stubUsageLogRepo)(nil)
+	_ settingscore.Repository            = (*stubSettingRepo)(nil)
+)
+
+type contractDeps struct {
+	now         time.Time
+	router      http.Handler
+	cfg         *config.Config
+	apiKeyRepo  *stubApiKeyRepo
+	groupRepo   *stubGroupRepo
+	userSubRepo *stubUserSubscriptionRepo
+	usageRepo   *stubUsageLogRepo
+	settingRepo *stubSettingRepo
+	redeemRepo  *stubRedeemCodeRepo
+}
+
+type stubUserRepo struct {
+	users map[int64]*identity.User
+}
+
+type stubApiKeyCache struct{}
+
+type stubGroupRepo struct {
+	active []routing.Group
+}
+
+type stubProviderRepo struct {
+	bulkUpdateIDs []int64
+}
+
+type stubRedeemCodeRepo struct {
+	byUser map[int64][]billing.RedeemCode
+}
+
+type stubUserSubscriptionRepo struct {
+	byUser       map[int64][]billing.UserSubscription
+	activeByUser map[int64][]billing.UserSubscription
+	byID         map[int64]billing.UserSubscription
+}
+
+type stubApiKeyRepo struct {
+	now time.Time
+
+	nextID    int64
+	byID      map[int64]*apikey.APIKey
+	byKey     map[string]*apikey.APIKey
+	createErr error
+}
+
+type stubUsageLogRepo struct {
+	userLogs map[int64][]usagecore.UsageLog
+}
+
+type stubSettingRepo struct {
+	all map[string]string
+}
+
+// contractProviderBulkStore 将批量写入转交测试存储，提供商规则由 Admin 执行。
+type contractProviderBulkStore struct {
+	providercore.AdminStore
+	source *stubProviderRepo
+}
+
+// contractSubscriptionGroups 读取分组并返回订阅套餐需要的分组名称。
+type contractSubscriptionGroups struct{ source routing.GroupRepository }
+
+// contractRedeemUsers 为兑换接口测试提供用户资料和余额。
+type contractRedeemUsers struct{ source identity.UserRepository }
+
+func TestAPIContracts(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, deps *contractDeps)
+		method     string
+		path       string
+		body       string
+		headers    map[string]string
+		wantStatus int
+		wantJSON   string
+	}{
+		{
+			name:       "GET /api/v1/auth/me",
+			method:     http.MethodGet,
+			path:       "/api/v1/auth/me",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"id": 1,
+					"email": "alice@example.com",
+					"email_bound": true,
+					"username": "alice",
+ "preferred_locale": null,
+						"role": "user",
+						"balance": 12.5,
+						"frozen_balance": 0,
+					"concurrency": 5,
+					"api_key_limit": 100,
+					"rpm_limit": 0,
+					"status": "active",
+					"allowed_groups": null,
+					"disabled_public_groups": null,
+					"created_at": "2025-01-02T03:04:05Z",
+					"updated_at": "2025-01-02T03:04:05Z",
+					"balance_notify_enabled": false,
+					"balance_notify_threshold_type": "",
+					"balance_notify_threshold": null,
+					"balance_notify_extra_emails": null,
+					"total_recharged": 0,
+					"linuxdo_bound": false,
+					"oidc_bound": false,
+					"wechat_bound": false,
+					"dingtalk_bound": false,
+					"identities": {
+						"email": {
+							"provider": "email",
+							"provider_key": "email",
+							"bound": true,
+							"bound_count": 1,
+							"can_bind": false,
+							"can_unbind": false,
+							"display_name": "alice@example.com",
+							"subject_hint": "a***e@example.com",
+							"note_key": "profile.authBindings.notes.emailManagedByBinding",
+							"note": "Primary account email is managed through verified email binding."
+						},
+						"linuxdo": {
+							"provider": "linuxdo",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/linuxdo/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"oidc": {
+							"provider": "oidc",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/oidc/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"wechat": {
+							"provider": "wechat",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/wechat/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"dingtalk": {
+							"provider": "dingtalk",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/dingtalk/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						}
+					},
+					"identity_bindings": {
+						"email": {
+							"provider": "email",
+							"provider_key": "email",
+							"bound": true,
+							"bound_count": 1,
+							"can_bind": false,
+							"can_unbind": false,
+							"display_name": "alice@example.com",
+							"subject_hint": "a***e@example.com",
+							"note_key": "profile.authBindings.notes.emailManagedByBinding",
+							"note": "Primary account email is managed through verified email binding."
+						},
+						"linuxdo": {
+							"provider": "linuxdo",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/linuxdo/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"oidc": {
+							"provider": "oidc",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/oidc/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"wechat": {
+							"provider": "wechat",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/wechat/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"dingtalk": {
+							"provider": "dingtalk",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/dingtalk/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						}
+					},
+					"auth_bindings": {
+						"email": {
+							"provider": "email",
+							"provider_key": "email",
+							"bound": true,
+							"bound_count": 1,
+							"can_bind": false,
+							"can_unbind": false,
+							"display_name": "alice@example.com",
+							"subject_hint": "a***e@example.com",
+							"note_key": "profile.authBindings.notes.emailManagedByBinding",
+							"note": "Primary account email is managed through verified email binding."
+						},
+						"linuxdo": {
+							"provider": "linuxdo",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/linuxdo/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"oidc": {
+							"provider": "oidc",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/oidc/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"wechat": {
+							"provider": "wechat",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/wechat/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"dingtalk": {
+							"provider": "dingtalk",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/dingtalk/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						}
+					}
+				}
+			}`,
+		},
+		{
+			name: "POST /api/v1/keys",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.groupRepo.SetActive([]routing.Group{{ID: 10, Status: "active"}})
+			},
+			method: http.MethodPost,
+			path:   "/api/v1/keys",
+			body:   `{"name":"Key One","custom_key":"sk_custom_1234567890","group_id":10}`,
+			headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"id": 100,
+					"user_id": 1,
+					"team_id": null,
+					"team_owner_disabled": false,
+					"scope": "personal",
+					"key": "sk_custom_1234567890",
+					"name": "Key One",
+					"group_id": 10,
+					"is_composite": false,
+					"composite_groups": [],
+					"status": "active",
+					"fast_mode_policy": "follow_request",
+					"billing_mode": "auto",
+					"preferred_subscription_id": null,
+					"model_mapping": {},
+					"ip_whitelist": null,
+					"ip_blacklist": null,
+					"last_used_at": null,
+					"last_used_ip": null,
+					"current_concurrency": 0,
+					"concurrency_limit": 0,
+					"rpm_limit": 0,
+					"quota": 0,
+					"quota_used": 0,
+					"rate_limit_5h": 0,
+					"rate_limit_1d": 0,
+					"rate_limit_7d": 0,
+					"usage_5h": 0,
+					"usage_1d": 0,
+					"usage_7d": 0,
+					"window_5h_start": null,
+					"window_1d_start": null,
+					"window_7d_start": null,
+					"fallback_when_group_unavailable": true,
+					"expires_at": null,
+					"created_at": "2025-01-02T03:04:05Z",
+					"updated_at": "2025-01-02T03:04:05Z"
+				}
+			}`,
+		},
+		{
+			name: "POST /api/v1/keys returns API key limit conflict",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.apiKeyRepo.createErr = apikey.NewAPIKeyLimitReachedError(100, 100)
+				deps.groupRepo.SetActive([]routing.Group{{ID: 10, Status: "active"}})
+			},
+			method: http.MethodPost,
+			path:   "/api/v1/keys",
+			body:   `{"name":"Blocked Key","custom_key":"sk_blocked_1234567890","group_id":10}`,
+			headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+			wantStatus: http.StatusConflict,
+			wantJSON: `{
+				"code": 409,
+				"message": "api key limit reached",
+				"reason": "API_KEY_LIMIT_REACHED",
+				"metadata": {
+					"current": "100",
+					"limit": "100"
+				}
+			}`,
+		},
+		{
+			name: "GET /api/v1/keys (paginated)",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.apiKeyRepo.MustSeed(&apikey.APIKey{
+					ID:                           100,
+					UserID:                       1,
+					Key:                          "sk_custom_1234567890",
+					Name:                         "Key One",
+					Status:                       billing.StatusActive,
+					BillingMode:                  apikey.APIKeyBillingModeAuto,
+					FallbackWhenGroupUnavailable: true,
+					CreatedAt:                    deps.now,
+					UpdatedAt:                    deps.now,
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/keys?page=1&page_size=10",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"items": [
+						{
+							"id": 100,
+							"user_id": 1,
+							"team_id": null,
+							"team_owner_disabled": false,
+							"scope": "personal",
+							"key": "sk_custom_1234567890",
+							"name": "Key One",
+							"group_id": null,
+							"is_composite": false,
+							"composite_groups": [],
+							"status": "active",
+							"fast_mode_policy": "follow_request",
+							"billing_mode": "auto",
+							"preferred_subscription_id": null,
+							"model_mapping": {},
+							"ip_whitelist": null,
+							"ip_blacklist": null,
+							"last_used_at": null,
+							"last_used_ip": null,
+							"current_concurrency": 0,
+							"concurrency_limit": 0,
+							"rpm_limit": 0,
+							"quota": 0,
+							"quota_used": 0,
+							"rate_limit_5h": 0,
+							"rate_limit_1d": 0,
+							"rate_limit_7d": 0,
+							"usage_5h": 0,
+							"usage_1d": 0,
+							"usage_7d": 0,
+							"window_5h_start": null,
+							"window_1d_start": null,
+							"window_7d_start": null,
+							"fallback_when_group_unavailable": true,
+							"expires_at": null,
+							"created_at": "2025-01-02T03:04:05Z",
+							"updated_at": "2025-01-02T03:04:05Z"
+						}
+					],
+					"total": 1,
+					"page": 1,
+					"page_size": 10,
+					"pages": 1
+				}
+			}`,
+		},
+		{
+			name: "GET /api/v1/groups/available",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				// 用户分组列表返回公开字段和会话隔离开关。
+				deps.groupRepo.SetActive([]routing.Group{
+					{
+						ID:             10,
+						Name:           "Group One",
+						Description:    "desc",
+						RateMultiplier: 1.5,
+						AllowedProtocols: []protocolcore.ProtocolID{
+							protocolcore.ProtocolAnthropicMessages,
+							protocolcore.ProtocolOpenAIResponses,
+							protocolcore.ProtocolOpenAIChatCompletions,
+						},
+						IsExclusive:         false,
+						Status:              billing.StatusActive,
+						ModelRoutingEnabled: true,
+						ModelRouting: map[string][]int64{
+							"claude-3-*": {101, 102},
+						},
+						ProviderCount: 2,
+						CreatedAt:     deps.now,
+						UpdatedAt:     deps.now,
+					},
+				})
+				deps.userSubRepo.SetActiveByUserID(1, nil)
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/groups/available",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": [
+					{
+						"id": 10,
+						"name": "Group One",
+						"models": [],
+						"description": "desc",
+						"display_brand": "",
+						"rate_multiplier": 1.5,
+						"is_exclusive": false,
+						"status": "active",
+						"claude_code_only": false,
+						"protocol_fallbacks": null, "responses_image_policy": "", "allowed_protocols": [
+							"anthropic_messages",
+							"openai_responses",
+							"openai_chat_completions"
+						],
+						"session_isolation_enabled": false,
+						"fallback_group_id": null,
+						"fallback_group_id_on_invalid_request": null,
+						"unavailable_fallback_group_id": null,
+						"require_oauth_only": false,
+						"require_privacy_set": false,
+						"max_reasoning_effort": "",
+						"max_reasoning_effort_over_limit": "",
+						"reasoning_effort_mappings": null,
+						"rpm_limit": 0,
+						"created_at": "2025-01-02T03:04:05Z",
+						"updated_at": "2025-01-02T03:04:05Z"
+					}
+				]
+			}`,
+		},
+		{
+			name: "GET /api/v1/subscriptions",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				// 用户订阅接口返回用户可见字段。
+				deps.userSubRepo.SetByUserID(1, []billing.UserSubscription{
+					{
+						ID:              501,
+						UserID:          1,
+						PlanID:          10,
+						StartsAt:        deps.now,
+						ExpiresAt:       time.Date(2099, 1, 2, 3, 4, 5, 0, time.UTC), // 使用未来日期避免 normalizeSubscriptionStatus 标记为过期
+						Status:          billing.SubscriptionStatusActive,
+						DailyUsageUSD:   1.23,
+						WeeklyUsageUSD:  2.34,
+						MonthlyUsageUSD: 3.45,
+						AssignedBy:      ptr(int64(999)),
+						AssignedAt:      deps.now,
+						Notes:           "admin-note",
+						CreatedAt:       deps.now,
+						UpdatedAt:       deps.now,
+					},
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/subscriptions",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": [
+					{
+						"id": 501,
+						"user_id": 1,
+						"plan_id": 10,
+						"starts_at": "2025-01-02T03:04:05Z",
+						"expires_at": "2099-01-02T03:04:05Z",
+						"status": "active",
+						"daily_window_start": null,
+						"weekly_window_start": null,
+						"monthly_window_start": null,
+						"daily_limit_usd": null,
+						"weekly_limit_usd": null,
+						"monthly_limit_usd": null,
+						"daily_usage_usd": 1.23,
+						"weekly_usage_usd": 2.34,
+						"monthly_usage_usd": 3.45,
+						"created_at": "2025-01-02T03:04:05Z",
+						"updated_at": "2025-01-02T03:04:05Z"
+					}
+				]
+			}`,
+		},
+		{
+			name: "GET /api/v1/redeem/history",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				// 用户兑换历史返回用户可见字段。
+				deps.redeemRepo.SetByUser(1, []billing.RedeemCode{
+					{
+						ID:        900,
+						Code:      "CODE-123",
+						Type:      billing.RedeemTypeBalance,
+						Value:     1.25,
+						Status:    billing.StatusUsed,
+						UsedBy:    ptr(int64(1)),
+						UsedAt:    ptr(deps.now),
+						Notes:     "internal-note",
+						CreatedAt: deps.now,
+					},
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/redeem/history",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"items": [
+						{
+							"id": 900,
+							"code": "CODE-123",
+							"requires_payment": false,
+							"type": "balance",
+							"value": 1.25,
+							"max_uses": 0,
+							"used_count": 0,
+							"status": "used",
+							"used_by": 1,
+							"used_at": "2025-01-02T03:04:05Z",
+							"created_at": "2025-01-02T03:04:05Z",
+							"expires_at": null,
+							"plan_id": null
+						}
+					],
+					"total": 1,
+					"page": 1,
+					"page_size": 20,
+					"pages": 1
+				}
+			}`,
+		},
+		{
+			name: "POST /api/v1/subscriptions/501/revoke",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				limit := 10.0
+				deps.userSubRepo.SetByID(501, billing.UserSubscription{
+					ID:                 501,
+					UserID:             1,
+					PlanID:             10,
+					StartsAt:           time.Now().Add(-time.Hour),
+					ExpiresAt:          time.Date(2099, 1, 2, 3, 4, 5, 0, time.UTC),
+					Status:             billing.SubscriptionStatusActive,
+					MonthlyLimitUSD:    &limit,
+					MonthlyUsageUSD:    limit,
+					MonthlyWindowStart: ptr(time.Now().Add(-time.Hour)),
+					CreatedAt:          deps.now,
+					UpdatedAt:          deps.now,
+				})
+			},
+			method:     http.MethodPost,
+			path:       "/api/v1/subscriptions/501/revoke",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"revoked_subscription_id": 501,
+					"replacement_subscription_id": null,
+					"rebound_api_key_count": 0
+				}
+			}`,
+		},
+		{
+			name: "POST /api/v1/subscriptions/501/revoke quota available",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				limit := 10.0
+				deps.userSubRepo.SetByID(501, billing.UserSubscription{
+					ID:                 501,
+					UserID:             1,
+					PlanID:             10,
+					StartsAt:           time.Now().Add(-time.Hour),
+					ExpiresAt:          time.Date(2099, 1, 2, 3, 4, 5, 0, time.UTC),
+					Status:             billing.SubscriptionStatusActive,
+					MonthlyLimitUSD:    &limit,
+					MonthlyUsageUSD:    9,
+					MonthlyWindowStart: ptr(time.Now().Add(-time.Hour)),
+					CreatedAt:          deps.now,
+					UpdatedAt:          deps.now,
+				})
+			},
+			method:     http.MethodPost,
+			path:       "/api/v1/subscriptions/501/revoke",
+			wantStatus: http.StatusConflict,
+			wantJSON: `{
+				"code": 409,
+				"message": "subscription still has available quota",
+				"reason": "SUBSCRIPTION_QUOTA_NOT_EXHAUSTED"
+			}`,
+		},
+		{
+			name: "POST /api/v1/subscriptions/501/revoke foreign subscription",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.userSubRepo.SetByID(501, billing.UserSubscription{
+					ID:        501,
+					UserID:    2,
+					PlanID:    10,
+					StartsAt:  time.Now().Add(-time.Hour),
+					ExpiresAt: time.Date(2099, 1, 2, 3, 4, 5, 0, time.UTC),
+					Status:    billing.SubscriptionStatusActive,
+				})
+			},
+			method:     http.MethodPost,
+			path:       "/api/v1/subscriptions/501/revoke",
+			wantStatus: http.StatusNotFound,
+			wantJSON: `{
+				"code": 404,
+				"message": "subscription not found",
+				"reason": "SUBSCRIPTION_NOT_FOUND"
+			}`,
+		},
+		{
+			name: "POST /api/v1/admin/subscriptions/501/restore",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deletedAt := deps.now.Add(-time.Hour)
+				deps.userSubRepo.SetByID(501, billing.UserSubscription{
+					ID:         501,
+					UserID:     1,
+					PlanID:     10,
+					StartsAt:   deps.now.Add(-24 * time.Hour),
+					ExpiresAt:  time.Date(2099, 1, 2, 3, 4, 5, 0, time.UTC),
+					Status:     billing.SubscriptionStatusActive,
+					AssignedBy: ptr(int64(1)),
+					AssignedAt: deps.now,
+					Notes:      "restore-note",
+					CreatedAt:  deps.now.Add(-24 * time.Hour),
+					UpdatedAt:  deps.now.Add(-time.Hour),
+					DeletedAt:  &deletedAt,
+					User: &billing.UserSummary{
+						ID:          1,
+						Email:       "alice@example.com",
+						Username:    "alice",
+						Role:        identity.RoleUser,
+						APIKeyLimit: identity.DefaultUserAPIKeyLimit,
+						Status:      billing.StatusActive,
+					},
+					Plan: &billing.SubscriptionPlan{
+						ID:   10,
+						Name: "Pro",
+					},
+				})
+			},
+			method:     http.MethodPost,
+			path:       "/api/v1/admin/subscriptions/501/restore",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"id": 501,
+					"user_id": 1,
+					"plan_id": 10,
+					"starts_at": "2025-01-01T03:04:05Z",
+					"expires_at": "2099-01-02T03:04:05Z",
+					"status": "active",
+					"daily_window_start": null,
+					"weekly_window_start": null,
+					"monthly_window_start": null,
+					"daily_limit_usd": null,
+					"weekly_limit_usd": null,
+					"monthly_limit_usd": null,
+					"daily_usage_usd": 0,
+					"weekly_usage_usd": 0,
+					"monthly_usage_usd": 0,
+					"created_at": "2025-01-01T03:04:05Z",
+					"updated_at": "2025-01-02T03:04:05Z",
+					"user": {
+						"id": 1,
+						"email": "alice@example.com",
+						"username": "alice",
+						"role": "user",
+						"balance": 0,
+						"frozen_balance": 0,
+						"concurrency": 0,
+						"api_key_limit": 100,
+						"rpm_limit": 0,
+						"status": "active",
+						"allowed_groups": null,
+						"disabled_public_groups": null,
+						"created_at": "0001-01-01T00:00:00Z",
+						"updated_at": "0001-01-01T00:00:00Z",
+						"balance_notify_enabled": false,
+						"balance_notify_threshold_type": "",
+						"balance_notify_threshold": null,
+						"balance_notify_extra_emails": null,
+						"total_recharged": 0
+					},
+					"plan": {
+						"id": 10,
+						"name": "Pro",
+						"description": "",
+						"price": 0,
+						"daily_limit_usd": null,
+						"weekly_limit_usd": null,
+						"monthly_limit_usd": null,
+						"validity_days": 0,
+						"validity_unit": "",
+						"features": "",
+						"product_name": "",
+						"group_ids": null,
+						"group_rate_multipliers": {},
+						"groups_restricted": false,
+						"applicable_groups": [],
+						"for_sale": false,
+						"sort_order": 0,
+						"created_at": "0001-01-01T00:00:00Z",
+						"updated_at": "0001-01-01T00:00:00Z"
+					},
+					"assigned_by": 1,
+					"assigned_at": "2025-01-02T03:04:05Z",
+					"notes": "restore-note"
+				}
+			}`,
+		},
+		{
+			name: "GET /api/v1/usage/stats",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.usageRepo.SetUserLogs(1, []usagecore.UsageLog{
+					{
+						ID:                  1,
+						UserID:              1,
+						APIKeyID:            100,
+						ProviderID:          200,
+						Model:               "claude-3",
+						InputTokens:         10,
+						OutputTokens:        20,
+						CacheCreationTokens: 1,
+						CacheReadTokens:     2,
+						TotalCost:           0.5,
+						ActualCost:          0.5,
+						DurationMs:          ptr(100),
+						CreatedAt:           deps.now,
+					},
+					{
+						ID:           2,
+						UserID:       1,
+						APIKeyID:     100,
+						ProviderID:   200,
+						Model:        "claude-3",
+						InputTokens:  5,
+						OutputTokens: 15,
+						TotalCost:    0.25,
+						ActualCost:   0.25,
+						DurationMs:   ptr(300),
+						CreatedAt:    deps.now,
+					},
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/usage/stats?start_date=2025-01-01&end_date=2025-01-02",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"total_requests": 2,
+					"total_input_tokens": 15,
+					"total_output_tokens": 35,
+					"total_cache_tokens": 3,
+					"total_cache_creation_tokens": 1,
+					"total_cache_read_tokens": 2,
+					"total_tokens": 53,
+					"total_cost": 0.75,
+					"total_actual_cost": 0.75,
+					"average_duration_ms": 200
+				}
+			}`,
+		},
+		{
+			name: "GET /api/v1/usage (paginated)",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.usageRepo.SetUserLogs(1, []usagecore.UsageLog{
+					{
+						ID:                     1,
+						UserID:                 1,
+						APIKeyID:               100,
+						ProviderID:             200,
+						ProviderRateMultiplier: ptr(0.5),
+						RequestID:              "req_123",
+						Model:                  "claude-3",
+						InputTokens:            10,
+						OutputTokens:           20,
+						CacheCreationTokens:    1,
+						CacheReadTokens:        2,
+						TotalCost:              0.5,
+						ActualCost:             0.5,
+						RateMultiplier:         1,
+						BillingType:            usagecore.BillingTypeBalance,
+						Stream:                 true,
+						DurationMs:             ptr(100),
+						FirstTokenMs:           ptr(50),
+						CreatedAt:              deps.now,
+					},
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/usage?page=1&page_size=10",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"items": [
+						{
+							"id": 1,
+							"user_id": 1,
+							"api_key_id": 100,
+							"provider_id": 200,
+								"request_id": "req_123",
+							"platform": "",
+								"model": "claude-3",
+								"request_type": "stream",
+								"openai_ws_mode": false,
+								"native_compaction_v2": false,
+								"group_id": null,
+								"subscription_id": null,
+							"input_tokens": 10,
+							"long_context_billing_applied": false,
+							"output_tokens": 20,
+							"cache_creation_tokens": 1,
+							"cache_read_tokens": 2,
+							"cache_creation_5m_tokens": 0,
+							"cache_creation_1h_tokens": 0,
+							"input_cost": 0,
+							"output_cost": 0,
+							"cache_creation_cost": 0,
+						"cache_read_cost": 0,
+						"total_cost": 0.5,
+						"actual_cost": 0.5,
+						"subscription_amount_usd": 0,
+						"balance_amount_usd": 0,
+						"rate_multiplier": 1,
+						"billing_type": 0,
+							"stream": true,
+							"duration_ms": 100,
+							"first_token_ms": 50,
+							"image_count": 0,
+							"image_size": null,
+							"image_input_size": null,
+							"image_output_size": null,
+							"image_input_tokens": 0,
+							"image_input_cost": 0,
+							"image_output_tokens": 0,
+							"image_output_cost": 0,
+							"image_size_source": null,
+							"image_size_breakdown": null,
+							"media_type": null,
+							"cache_ttl_overridden": false,
+							"created_at": "2025-01-02T03:04:05Z",
+							"user_agent": null
+						}
+					],
+					"total": 1,
+					"page": 1,
+					"page_size": 10,
+					"pages": 1
+				}
+			}`,
+		},
+		{
+			name: "GET /api/v1/admin/settings",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.settingRepo.SetAll(map[string]string{
+					identity.SettingKeyRegistrationEnabled:              "true",
+					identity.SettingKeyEmailVerifyEnabled:               "false",
+					identity.SettingKeyRegistrationEmailNormalization:   "false",
+					identity.SettingKeyRegistrationEmailSuffixWhitelist: "[]",
+					promotion.SettingKeyPromoCodeEnabled:                "true", notification.SettingKeySMTPHost: "smtp.example.com", notification.SettingKeySMTPPort: "587", notification.SettingKeySMTPUsername: "user", notification.SettingKeySMTPPassword: "secret", notification.SettingKeySMTPFrom: "no-reply@example.com", notification.SettingKeySMTPFromName: "TokenRouter", notification.SettingKeySMTPUseTLS: "true", identity.SettingKeyTurnstileEnabled: "true",
+					identity.SettingKeyTurnstileSiteKey:   "site-key",
+					identity.SettingKeyTurnstileSecretKey: "secret-key",
+
+					identity.SettingKeyOIDCConnectEnabled:              "false",
+					identity.SettingKeyOIDCConnectProviderName:         "OIDC",
+					identity.SettingKeyOIDCConnectClientID:             "",
+					identity.SettingKeyOIDCConnectIssuerURL:            "",
+					identity.SettingKeyOIDCConnectDiscoveryURL:         "",
+					identity.SettingKeyOIDCConnectAuthorizeURL:         "",
+					identity.SettingKeyOIDCConnectTokenURL:             "",
+					identity.SettingKeyOIDCConnectUserInfoURL:          "",
+					identity.SettingKeyOIDCConnectJWKSURL:              "",
+					identity.SettingKeyOIDCConnectScopes:               "openid email profile",
+					identity.SettingKeyOIDCConnectRedirectURL:          "",
+					identity.SettingKeyOIDCConnectFrontendRedirectURL:  "/auth/oidc/callback",
+					identity.SettingKeyOIDCConnectTokenAuthMethod:      "client_secret_post",
+					identity.SettingKeyOIDCConnectUsePKCE:              "true",
+					identity.SettingKeyOIDCConnectValidateIDToken:      "true",
+					identity.SettingKeyOIDCConnectAllowedSigningAlgs:   "RS256,ES256,PS256",
+					identity.SettingKeyOIDCConnectClockSkewSeconds:     "120",
+					identity.SettingKeyOIDCConnectRequireEmailVerified: "false",
+					identity.SettingKeyOIDCConnectUserInfoEmailPath:    "",
+					identity.SettingKeyOIDCConnectUserInfoIDPath:       "",
+					identity.SettingKeyOIDCConnectUserInfoUsernamePath: "",
+
+					site.SettingKeySiteName:     "TokenRouter",
+					site.SettingKeySiteLogo:     "",
+					site.SettingKeySiteSubtitle: "Subtitle",
+					site.SettingKeyAPIBaseURL:   "https://api.example.com",
+					site.SettingKeyContactInfo:  "support",
+					site.SettingKeyDocURL:       "https://docs.example.com",
+
+					identity.SettingKeyDefaultConcurrency: "5",
+					billing.SettingKeyDefaultBalance:      "1.25",
+					site.SettingKeyTableDefaultPageSize:   "20",
+					site.SettingKeyTablePageSizeOptions:   "[10,20,50,100]",
+
+					ops.SettingKeyOpsMonitoringEnabled:                               "false",
+					ops.SettingKeyOpsRealtimeMonitoringEnabled:                       "true",
+					ops.SettingKeyOpsMetricsIntervalSeconds:                          "60",
+					payment.SettingPaymentVisibleMethodAlipaySource:                  payment.VisibleMethodSourceEasyPayAlipay,
+					payment.SettingPaymentVisibleMethodWxpaySource:                   payment.VisibleMethodSourceOfficialWechat,
+					payment.SettingPaymentVisibleMethodAlipayEnabled:                 "true",
+					payment.SettingPaymentVisibleMethodWxpayEnabled:                  "false",
+					scheduler.SettingKeyAdvancedSchedulerStickyWeightedEnabled:       "false",
+					scheduler.SettingKeyAdvancedSchedulerSubscriptionPriorityEnabled: "false",
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/admin/settings",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"registration_enabled": true,
+					"email_verify_enabled": false,
+					"registration_email_normalization": false,
+					"registration_email_suffix_whitelist": [],
+					"registration_email_domain_quota_enabled": false,
+					"user_email_change_enabled": false,
+					"promo_code_enabled": true,
+					"password_reset_enabled": false,
+					"frontend_url": "",
+					"totp_enabled": false,
+					"totp_encryption_key_configured": false,
+					"session_binding_enabled": false,
+					"step_up_enabled": false,
+					"audit_log_retention_days": 180,
+					"login_agreement_enabled": false,
+					"login_agreement_mode": "modal",
+					"login_agreement_updated_at": "2026-03-31",
+					"login_agreement_documents": [
+						{"id": "terms", "title": "服务条款", "content_md": ""},
+						{"id": "usage-policy", "title": "使用政策", "content_md": ""},
+						{"id": "supported-regions", "title": "支持的国家和地区", "content_md": ""},
+						{"id": "service-specific-terms", "title": "服务特定条款", "content_md": ""}
+					],
+					"smtp_host": "smtp.example.com",
+					"smtp_port": 587,
+					"smtp_username": "user",
+					"smtp_password_configured": true,
+					"smtp_from_email": "no-reply@example.com",
+					"smtp_from_name": "TokenRouter",
+					"smtp_use_tls": true,
+					"turnstile_enabled": true,
+					"turnstile_site_key": "site-key",
+					"turnstile_secret_key_configured": true,
+					"tencent_captcha_enabled": false,
+					"tencent_captcha_app_id": "",
+					"tencent_captcha_app_secret_key_configured": false,
+					"tencent_captcha_cloud_secret_id_configured": false,
+					"tencent_captcha_cloud_secret_key_configured": false,
+					"tencent_captcha_region": "cn",
+					"aliyun_captcha_enabled": false,
+					"aliyun_captcha_access_key_id": "",
+					"aliyun_captcha_access_key_secret_configured": false,
+					"aliyun_captcha_scene_id": "",
+					"aliyun_captcha_prefix": "",
+					"aliyun_captcha_region": "cn",
+						"linuxdo_connect_enabled": false,
+						"linuxdo_connect_client_id": "",
+						"linuxdo_connect_client_secret_configured": false,
+						"linuxdo_connect_redirect_url": "",
+						"dingtalk_connect_enabled": false,
+						"dingtalk_connect_bypass_registration": false,
+						"dingtalk_connect_client_id": "",
+						"dingtalk_connect_client_secret_configured": false,
+						"dingtalk_connect_redirect_url": "",
+						"dingtalk_connect_internal_corp_id": "",
+						"dingtalk_connect_corp_restriction_policy": "",
+						"dingtalk_connect_sync_corp_email": false,
+						"dingtalk_connect_sync_corp_email_attr_key": "dingtalk_email",
+						"dingtalk_connect_sync_corp_email_attr_name": "钉钉企业邮箱",
+						"dingtalk_connect_sync_dept": false,
+						"dingtalk_connect_sync_dept_attr_key": "dingtalk_department",
+						"dingtalk_connect_sync_dept_attr_name": "钉钉部门",
+						"dingtalk_connect_sync_display_name": false,
+						"dingtalk_connect_sync_display_name_attr_key": "dingtalk_name",
+						"dingtalk_connect_sync_display_name_attr_name": "钉钉姓名",
+						"oidc_connect_enabled": false,
+						"oidc_connect_provider_name": "OIDC",
+						"oidc_connect_client_id": "",
+						"oidc_connect_client_secret_configured": false,
+						"oidc_connect_issuer_url": "",
+						"oidc_connect_discovery_url": "",
+						"oidc_connect_authorize_url": "",
+						"oidc_connect_token_url": "",
+						"oidc_connect_userinfo_url": "",
+						"oidc_connect_jwks_url": "",
+						"oidc_connect_scopes": "openid email profile",
+						"oidc_connect_redirect_url": "",
+						"oidc_connect_frontend_redirect_url": "/auth/oidc/callback",
+						"oidc_connect_token_auth_method": "client_secret_post",
+						"oidc_connect_use_pkce": true,
+						"oidc_connect_validate_id_token": true,
+						"oidc_connect_allowed_signing_algs": "RS256,ES256,PS256",
+						"oidc_connect_clock_skew_seconds": 120,
+						"oidc_connect_require_email_verified": false,
+						"oidc_connect_userinfo_email_path": "",
+						"oidc_connect_userinfo_id_path": "",
+						"oidc_connect_userinfo_username_path": "",
+						"github_oauth_enabled": false,
+						"github_oauth_client_id": "",
+						"github_oauth_client_secret_configured": false,
+						"github_oauth_redirect_url": "",
+						"github_oauth_frontend_redirect_url": "/auth/oauth/callback",
+						"google_oauth_enabled": false,
+						"google_one_tap_enabled": false,
+						"google_oauth_client_id": "",
+						"google_oauth_client_secret_configured": false,
+						"google_oauth_redirect_url": "",
+						"google_oauth_frontend_redirect_url": "/auth/oauth/callback",
+						"ops_monitoring_enabled": false,
+						"ops_realtime_monitoring_enabled": true,
+						"ops_metrics_interval_seconds": 60,
+						"default_locale": "en",
+ "site_texts": {"site_name": {"source_locale": null, "source": "TokenRouter", "translations": {}, "revision": 0, "source_revision": 0}, "site_title": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "site_subtitle": {"source_locale": null, "source": "Subtitle", "translations": {}, "revision": 0, "source_revision": 0}, "contact_info": {"source_locale": null, "source": "support", "translations": {}, "revision": 0, "source_revision": 0}, "doc_url": {"source_locale": null, "source": "https://docs.example.com", "translations": {}, "revision": 0, "source_revision": 0}, "home_content": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "purchase_subscription_url": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "footer_text": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}},
+ "localized_settings": {"balance_unit_name": {"source_locale": null, "source": "USD", "translations": {}, "revision": 0, "source_revision": 0}, "balance_low_notify_recharge_url": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "oidc_connect_provider_name": {"source_locale": null, "source": "OIDC", "translations": {}, "revision": 0, "source_revision": 0}, "payment_help_text": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "payment_help_image_url": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "payment_product_name_prefix": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "payment_product_name_suffix": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "smtp_from_name": {"source_locale": null, "source": "TokenRouter", "translations": {}, "revision": 0, "source_revision": 0}},
+"site_name": "TokenRouter",
+						"site_logo": "",
+						"site_subtitle": "Subtitle",
+						"api_base_url": "https://api.example.com",
+						"api_key_acl_trust_forwarded_ip": false,
+					"forwarded_client_ip_headers": [],
+					"contact_info": "support",
+					"doc_url": "https://docs.example.com",
+					"auth_source_default_email_balance": 0,
+					"auth_source_default_email_concurrency": 5,
+					"auth_source_default_email_subscriptions": [],
+					"auth_source_default_email_grant_on_signup": false,
+					"auth_source_default_email_grant_on_first_bind": false,
+					"auth_source_default_github_balance": 0,
+					"auth_source_default_github_concurrency": 5,
+					"auth_source_default_github_subscriptions": [],
+					"auth_source_default_github_grant_on_signup": false,
+					"auth_source_default_github_grant_on_first_bind": false,
+					"auth_source_default_google_balance": 0,
+					"auth_source_default_google_concurrency": 5,
+					"auth_source_default_google_subscriptions": [],
+					"auth_source_default_google_grant_on_signup": false,
+					"auth_source_default_google_grant_on_first_bind": false,
+					"auth_source_default_linuxdo_balance": 0,
+					"auth_source_default_linuxdo_concurrency": 5,
+					"auth_source_default_linuxdo_subscriptions": [],
+					"auth_source_default_linuxdo_grant_on_signup": false,
+					"auth_source_default_linuxdo_grant_on_first_bind": false,
+					"auth_source_default_oidc_balance": 0,
+					"auth_source_default_oidc_concurrency": 5,
+					"auth_source_default_oidc_subscriptions": [],
+					"auth_source_default_oidc_grant_on_signup": false,
+					"auth_source_default_oidc_grant_on_first_bind": false,
+					"auth_source_default_wechat_balance": 0,
+					"auth_source_default_wechat_concurrency": 5,
+					"auth_source_default_wechat_subscriptions": [],
+					"auth_source_default_wechat_grant_on_signup": false,
+					"auth_source_default_wechat_grant_on_first_bind": false,
+					"auth_source_default_dingtalk_balance": 0,
+					"auth_source_default_dingtalk_concurrency": 5,
+					"auth_source_default_dingtalk_subscriptions": [],
+					"auth_source_default_dingtalk_grant_on_signup": false,
+					"auth_source_default_dingtalk_grant_on_first_bind": false,
+					"force_email_on_third_party_signup": false,
+					"default_concurrency": 5,
+					"default_balance": 1.25,
+					"default_user_api_key_limit": 100,
+					"default_user_rpm_limit": 0,
+					"default_subscriptions": [],
+					"enable_model_fallback": false,
+					"fallback_model_anthropic": "claude-3-5-sonnet-20241022",
+					"fallback_model_antigravity": "gemini-2.5-pro",
+					"fallback_model_gemini": "gemini-2.5-pro",
+						"fallback_model_openai": "gpt-4o",
+						"footer_links": [],
+						"footer_text": "",
+						"home_featured_models": [],
+						"creative_enabled": true,
+						"creative_model_settings": [],
+						"creative_worker_count": 128,
+						"enable_identity_patch": true,
+						"identity_patch_prompt": "",
+						"invitation_code_enabled": false,
+						"home_content": "",
+					"hide_ccs_import_button": false,
+					"grok_default_text_model": "grok-4.6",
+					"grok_default_base_url_mode": "cli",
+					"purchase_subscription_enabled": false,
+					"purchase_subscription_url": "",
+					"reasoning_point_rmb_unit_price": 0,
+					"affiliate_enabled": false,
+					"affiliate_rebate_rate": 20,
+					"affiliate_rebate_freeze_hours": 0,
+					"affiliate_rebate_duration_days": 0,
+					"affiliate_rebate_per_invitee_cap": 0,
+					"affiliate_admin_recharge_enabled": false,
+					"usd_exchange_rate": 0,
+					"marketplace_availability_bucket_minutes": 120,
+					"marketplace_availability_window_days": 7,
+					"table_default_page_size": 20,
+						"table_page_size_options": [10, 20, 50, 100],
+					"usage_ranking_limit": 20,
+					"usage_ranking_enabled": true,
+					"usage_ranking_sort_by": "total_tokens",
+					"usage_ranking_show_total_tokens": true,
+					"usage_ranking_show_requests": true,
+					"usage_ranking_show_actual_cost": true,
+					"min_claude_code_version": "",
+					"max_claude_code_version": "",
+					"backend_mode_enabled": false,
+					"enable_cch_signing": false,
+					"enable_claude_oauth_system_prompt_injection": true,
+					"claude_oauth_system_prompt": "",
+					"claude_oauth_system_prompt_blocks": "",
+					"enable_anthropic_cache_ttl_1h_injection": false,
+					"rewrite_message_cache_control": false,
+					"enable_client_dateline_normalization": true,
+					"antigravity_user_agent_version": "",
+					"openai_codex_user_agent": "",
+					"enable_fingerprint_unification": true,
+					"enable_metadata_passthrough": false,
+					"web_search_emulation_enabled": false,
+					"payment_visible_method_alipay_source": "easypay_alipay",
+					"payment_visible_method_wxpay_source": "official_wxpay",
+							"payment_visible_method_alipay_enabled": true,
+							"payment_visible_method_wxpay_enabled": false,
+							"advanced_scheduler_sticky_weighted_enabled": false,
+							"advanced_scheduler_subscription_priority_enabled": false,
+							"advanced_scheduler_ewma_error_rate_alpha": "",
+							"advanced_scheduler_ewma_ttft_alpha": "",
+							"advanced_scheduler_sticky_escape_enabled": true,
+							"advanced_scheduler_sticky_escape_ttft_ms": "",
+							"advanced_scheduler_sticky_escape_error_rate": "",
+							"advanced_scheduler_lb_top_k": "",
+							"advanced_scheduler_weight_priority": "",
+							"advanced_scheduler_weight_load": "",
+							"advanced_scheduler_weight_queue": "",
+							"advanced_scheduler_weight_error_rate": "",
+							"advanced_scheduler_weight_ttft": "",
+							"advanced_scheduler_weight_reset": "",
+							"advanced_scheduler_weight_quota_headroom": "",
+							"advanced_scheduler_weight_previous_response": "",
+							"advanced_scheduler_weight_session_sticky": "",
+							"advanced_scheduler_effective_lb_top_k": "7",
+							"advanced_scheduler_effective_weight_priority": "1",
+							"advanced_scheduler_effective_weight_load": "1",
+							"advanced_scheduler_effective_weight_queue": "0.7",
+							"advanced_scheduler_effective_weight_error_rate": "0.8",
+							"advanced_scheduler_effective_weight_ttft": "0.5",
+							"advanced_scheduler_effective_weight_reset": "0",
+							"advanced_scheduler_effective_weight_quota_headroom": "0",
+							"advanced_scheduler_effective_weight_previous_response": "5",
+							"advanced_scheduler_effective_weight_session_sticky": "3",
+							"advanced_scheduler_effective_ewma_error_rate_alpha": "0.2",
+							"advanced_scheduler_effective_ewma_ttft_alpha": "0.2",
+							"advanced_scheduler_effective_sticky_escape_enabled": true,
+							"advanced_scheduler_effective_sticky_escape_ttft_ms": "15000",
+							"advanced_scheduler_effective_sticky_escape_error_rate": "0.5",
+							"openai_provider_quota_auto_pause": {
+								"default_threshold_5h": 0,
+								"default_threshold_7d": 0
+							},
+								"openai_allow_claude_code_codex_plugin": false,
+								"openai_fast_policy_settings": {
+									"rules": []
+								},
+								"openai_ttft_mode": "semantic",
+								"responses_ws": {},
+								"responses_ws_effective": {
+									"max_conns_per_provider": 128,
+									"min_idle_per_provider": 4,
+									"max_idle_per_provider": 12,
+									"dynamic_max_conns_by_provider_concurrency_enabled": true,
+									"oauth_max_conns_factor": 1,
+									"apikey_max_conns_factor": 1,
+									"queue_limit_per_conn": 64,
+									"pool_target_utilization": 0.7,
+									"prewarm_cooldown_ms": 300,
+									"client_first_message_timeout_seconds": 30,
+									"ingress_inter_turn_idle_timeout_seconds": 300,
+									"max_ingress_connections_per_api_key": 64,
+									"client_read_limit_bytes": 67108864,
+									"http_bridge_threshold_bytes": 15728640,
+									"dial_timeout_seconds": 10,
+									"read_timeout_seconds": 900,
+									"write_timeout_seconds": 120,
+									"ingress_previous_response_recovery_enabled": true,
+									"sticky_session_ttl_seconds": 3600,
+									"sticky_response_id_ttl_seconds": 3600
+								},
+								"user_prompt_replacement_config": {
+									"enabled": true,
+									"rules": [
+										{
+											"id": "environment-context-timezone-japan",
+											"name": "environment_context timezone -> Asia/Tokyo",
+											"enabled": true,
+											"pattern": "(?s)(<environment_context\\b[^>]*>.*?<timezone>)([^<]*)(</timezone>.*?</environment_context>)",
+											"target_group": 2,
+											"replacement_type": "timezone_name",
+											"scope": "environment_context",
+											"timezone": "Asia/Tokyo"
+										},
+										{
+											"id": "environment-context-current-date-japan",
+											"name": "environment_context current_date -> Asia/Tokyo today",
+											"enabled": true,
+											"pattern": "(?s)(<environment_context\\b[^>]*>.*?<current_date>)([^<]*)(</current_date>.*?</environment_context>)",
+											"target_group": 2,
+											"replacement_type": "current_time",
+											"scope": "environment_context",
+											"timezone": "Asia/Tokyo",
+											"time_format": "2006-01-02"
+										}
+									]
+								},
+						"custom_menu_items": [],
+						"cyber_session_block_enabled": false,
+						"cyber_session_block_ttl_seconds": 3600,
+					"custom_endpoints": [],
+					"payment_enabled": false,
+					"payment_min_amount": 0,
+					"payment_max_amount": 0,
+					"payment_daily_limit": 0,
+					"payment_order_timeout_minutes": 0,
+					"payment_max_pending_orders": 0,
+					"payment_balance_disabled": false,
+					"payment_balance_recharge_multiplier": 0,
+					"payment_subscription_usd_to_cny_rate": 0,
+					"payment_recharge_fee_rate": 0,
+					"payment_method_fees": {},
+					"payment_load_balance_strategy": "",
+					"payment_product_name_prefix": "",
+					"payment_product_name_suffix": "",
+					"payment_help_image_url": "",
+					"payment_help_text": "",
+					"payment_enabled_types": null,
+					"payment_cancel_rate_limit_enabled": false,
+					"payment_cancel_rate_limit_max": 0,
+					"payment_cancel_rate_limit_window": 0,
+					"payment_cancel_rate_limit_unit": "",
+					"payment_cancel_rate_limit_window_mode": "",
+					"payment_alipay_force_qrcode": false,
+					"payment_alipay_mobile_precreate_deep_link": false,
+					"balance_low_notify_enabled": false,
+					"provider_quota_notify_enabled": false,
+					"provider_scheduling_thresholds": {"anthropic":100,"grok":100,"openai":100},
+					"subscription_expiry_notify_enabled": true,
+					"team_enabled": true,
+					"risk_control_enabled": false,
+					"balance_unit_name": "USD",
+					"balance_unit_symbol": "$",
+					"balance_icon_svg": "",
+					"balance_low_notify_threshold": 0,
+					"balance_low_notify_recharge_url": "",
+					"provider_quota_notify_emails": [],
+					"wechat_connect_enabled": false,
+					"wechat_connect_app_id": "",
+					"wechat_connect_app_secret_configured": false,
+					"wechat_connect_mode": "open",
+					"wechat_connect_open_enabled": false,
+					"wechat_connect_open_app_id": "",
+					"wechat_connect_open_app_secret_configured": false,
+					"wechat_connect_mp_enabled": false,
+					"wechat_connect_mp_app_id": "",
+					"wechat_connect_mp_app_secret_configured": false,
+					"wechat_connect_mobile_enabled": false,
+					"wechat_connect_mobile_app_id": "",
+					"wechat_connect_mobile_app_secret_configured": false,
+					"wechat_connect_redirect_url": "",
+					"wechat_connect_frontend_redirect_url": "/auth/wechat/callback",
+					"wechat_connect_scopes": "snsapi_login",
+					"allow_user_view_error_requests": false
+				}
+			}`,
+		},
+		{
+			name: "GET /api/v1/admin/settings falls back to config oauth defaults",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.cfg.OIDC = config.OIDCConnectConfig{
+					Enabled:             true,
+					ProviderName:        "ConfigOIDC",
+					ClientID:            "oidc-config-client",
+					ClientSecret:        "oidc-config-secret",
+					IssuerURL:           "https://issuer.example.com",
+					RedirectURL:         "https://api.example.com/api/v1/auth/oauth/oidc/callback",
+					FrontendRedirectURL: "/auth/oidc/callback",
+					Scopes:              "openid email profile",
+					TokenAuthMethod:     "client_secret_post",
+					UsePKCE:             true,
+					ValidateIDToken:     true,
+					AllowedSigningAlgs:  "RS256,ES256,PS256",
+					ClockSkewSeconds:    120,
+				}
+				deps.cfg.WeChat = config.WeChatConnectConfig{
+					Enabled:             true,
+					OpenEnabled:         true,
+					OpenAppID:           "wx-open-config",
+					OpenAppSecret:       "wx-open-secret",
+					Mode:                "open",
+					Scopes:              "snsapi_login",
+					FrontendRedirectURL: "/auth/wechat/callback",
+				}
+				deps.settingRepo.SetAll(map[string]string{
+					identity.SettingKeyRegistrationEnabled:              "true",
+					identity.SettingKeyEmailVerifyEnabled:               "false",
+					identity.SettingKeyRegistrationEmailSuffixWhitelist: "[]",
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/admin/settings",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"registration_enabled": true,
+					"email_verify_enabled": false,
+					"registration_email_normalization": false,
+					"registration_email_suffix_whitelist": [],
+					"registration_email_domain_quota_enabled": false,
+					"user_email_change_enabled": false,
+					"promo_code_enabled": true,
+					"password_reset_enabled": false,
+					"frontend_url": "",
+					"invitation_code_enabled": false,
+					"totp_enabled": false,
+					"totp_encryption_key_configured": false,
+					"session_binding_enabled": false,
+					"step_up_enabled": false,
+					"audit_log_retention_days": 180,
+					"login_agreement_enabled": false,
+					"login_agreement_mode": "modal",
+					"login_agreement_updated_at": "2026-03-31",
+					"login_agreement_documents": [
+						{"id": "terms", "title": "服务条款", "content_md": ""},
+						{"id": "usage-policy", "title": "使用政策", "content_md": ""},
+						{"id": "supported-regions", "title": "支持的国家和地区", "content_md": ""},
+						{"id": "service-specific-terms", "title": "服务特定条款", "content_md": ""}
+					],
+					"smtp_host": "",
+					"smtp_port": 587,
+					"smtp_username": "",
+					"smtp_password_configured": false,
+					"smtp_from_email": "",
+					"smtp_from_name": "",
+					"smtp_use_tls": false,
+					"turnstile_enabled": false,
+					"turnstile_site_key": "",
+					"turnstile_secret_key_configured": false,
+					"tencent_captcha_enabled": false,
+					"tencent_captcha_app_id": "",
+					"tencent_captcha_app_secret_key_configured": false,
+					"tencent_captcha_cloud_secret_id_configured": false,
+					"tencent_captcha_cloud_secret_key_configured": false,
+					"tencent_captcha_region": "cn",
+					"aliyun_captcha_enabled": false,
+					"aliyun_captcha_access_key_id": "",
+					"aliyun_captcha_access_key_secret_configured": false,
+					"aliyun_captcha_scene_id": "",
+					"aliyun_captcha_prefix": "",
+					"aliyun_captcha_region": "cn",
+					"linuxdo_connect_enabled": false,
+					"linuxdo_connect_client_id": "",
+					"linuxdo_connect_client_secret_configured": false,
+					"linuxdo_connect_redirect_url": "",
+					"dingtalk_connect_enabled": false,
+					"dingtalk_connect_bypass_registration": false,
+					"dingtalk_connect_client_id": "",
+					"dingtalk_connect_client_secret_configured": false,
+					"dingtalk_connect_redirect_url": "",
+					"dingtalk_connect_internal_corp_id": "",
+					"dingtalk_connect_corp_restriction_policy": "",
+					"dingtalk_connect_sync_corp_email": false,
+					"dingtalk_connect_sync_corp_email_attr_key": "dingtalk_email",
+					"dingtalk_connect_sync_corp_email_attr_name": "钉钉企业邮箱",
+					"dingtalk_connect_sync_dept": false,
+					"dingtalk_connect_sync_dept_attr_key": "dingtalk_department",
+					"dingtalk_connect_sync_dept_attr_name": "钉钉部门",
+					"dingtalk_connect_sync_display_name": false,
+					"dingtalk_connect_sync_display_name_attr_key": "dingtalk_name",
+					"dingtalk_connect_sync_display_name_attr_name": "钉钉姓名",
+					"oidc_connect_enabled": true,
+					"oidc_connect_provider_name": "ConfigOIDC",
+					"oidc_connect_client_id": "oidc-config-client",
+					"oidc_connect_client_secret_configured": true,
+					"oidc_connect_issuer_url": "https://issuer.example.com",
+					"oidc_connect_discovery_url": "",
+					"oidc_connect_authorize_url": "",
+					"oidc_connect_token_url": "",
+					"oidc_connect_userinfo_url": "",
+					"oidc_connect_jwks_url": "",
+					"oidc_connect_scopes": "openid email profile",
+					"oidc_connect_redirect_url": "https://api.example.com/api/v1/auth/oauth/oidc/callback",
+					"oidc_connect_frontend_redirect_url": "/auth/oidc/callback",
+					"oidc_connect_token_auth_method": "client_secret_post",
+					"oidc_connect_use_pkce": true,
+					"oidc_connect_validate_id_token": true,
+					"oidc_connect_allowed_signing_algs": "RS256,ES256,PS256",
+					"oidc_connect_clock_skew_seconds": 120,
+						"oidc_connect_require_email_verified": false,
+						"oidc_connect_userinfo_email_path": "",
+						"oidc_connect_userinfo_id_path": "",
+						"oidc_connect_userinfo_username_path": "",
+						"github_oauth_enabled": false,
+						"github_oauth_client_id": "",
+						"github_oauth_client_secret_configured": false,
+						"github_oauth_redirect_url": "",
+						"github_oauth_frontend_redirect_url": "/auth/oauth/callback",
+						"google_oauth_enabled": false,
+						"google_one_tap_enabled": false,
+						"google_oauth_client_id": "",
+						"google_oauth_client_secret_configured": false,
+						"google_oauth_redirect_url": "",
+						"google_oauth_frontend_redirect_url": "/auth/oauth/callback",
+						"default_locale": "en",
+ "site_texts": {"site_name": {"source_locale": null, "source": "TokenRouter", "translations": {}, "revision": 0, "source_revision": 0}, "site_title": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "site_subtitle": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "contact_info": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "doc_url": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "home_content": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "purchase_subscription_url": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "footer_text": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}},
+ "localized_settings": {"balance_unit_name": {"source_locale": null, "source": "USD", "translations": {}, "revision": 0, "source_revision": 0}, "balance_low_notify_recharge_url": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "oidc_connect_provider_name": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "payment_help_text": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "payment_help_image_url": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "payment_product_name_prefix": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "payment_product_name_suffix": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}, "smtp_from_name": {"source_locale": null, "source": "", "translations": {}, "revision": 0, "source_revision": 0}},
+"site_name": "TokenRouter",
+						"site_logo": "",
+						"site_subtitle": "Subscription to API Conversion Platform",
+					"api_base_url": "",
+					"api_key_acl_trust_forwarded_ip": false,
+					"forwarded_client_ip_headers": [],
+					"contact_info": "",
+					"doc_url": "",
+					"home_content": "",
+					"hide_ccs_import_button": false,
+					"grok_default_text_model": "grok-4.6",
+					"grok_default_base_url_mode": "cli",
+					"purchase_subscription_enabled": false,
+					"purchase_subscription_url": "",
+					"reasoning_point_rmb_unit_price": 0,
+					"affiliate_enabled": false,
+					"affiliate_rebate_rate": 20,
+					"affiliate_rebate_freeze_hours": 0,
+					"affiliate_rebate_duration_days": 0,
+					"affiliate_rebate_per_invitee_cap": 0,
+					"affiliate_admin_recharge_enabled": false,
+					"usd_exchange_rate": 0,
+					"marketplace_availability_bucket_minutes": 120,
+					"marketplace_availability_window_days": 7,
+					"table_default_page_size": 20,
+					"table_page_size_options": [10, 20, 50],
+					"usage_ranking_limit": 20,
+					"usage_ranking_enabled": true,
+					"usage_ranking_sort_by": "total_tokens",
+					"usage_ranking_show_total_tokens": true,
+					"usage_ranking_show_requests": true,
+					"usage_ranking_show_actual_cost": true,
+					"custom_menu_items": [],
+					"cyber_session_block_enabled": false,
+					"cyber_session_block_ttl_seconds": 3600,
+					"custom_endpoints": [],
+					"default_concurrency": 0,
+					"default_balance": 0,
+					"default_user_api_key_limit": 100,
+					"default_user_rpm_limit": 0,
+					"default_subscriptions": [],
+					"enable_model_fallback": false,
+					"fallback_model_anthropic": "claude-3-5-sonnet-20241022",
+					"fallback_model_openai": "gpt-4o",
+					"fallback_model_gemini": "gemini-2.5-pro",
+					"fallback_model_antigravity": "gemini-2.5-pro",
+					"footer_links": [],
+					"footer_text": "",
+						"home_featured_models": [],
+						"creative_enabled": true,
+						"creative_model_settings": [],
+						"creative_worker_count": 128,
+					"enable_identity_patch": true,
+					"identity_patch_prompt": "",
+					"ops_monitoring_enabled": false,
+					"ops_realtime_monitoring_enabled": true,
+					"ops_metrics_interval_seconds": 60,
+					"min_claude_code_version": "",
+					"max_claude_code_version": "",
+					"backend_mode_enabled": false,
+					"enable_fingerprint_unification": true,
+					"enable_metadata_passthrough": false,
+					"enable_cch_signing": false,
+					"enable_claude_oauth_system_prompt_injection": true,
+					"claude_oauth_system_prompt": "",
+					"claude_oauth_system_prompt_blocks": "",
+					"enable_anthropic_cache_ttl_1h_injection": false,
+					"rewrite_message_cache_control": false,
+					"enable_client_dateline_normalization": true,
+					"antigravity_user_agent_version": "",
+					"openai_codex_user_agent": "",
+					"web_search_emulation_enabled": false,
+					"payment_visible_method_alipay_source": "",
+					"payment_visible_method_wxpay_source": "",
+							"payment_visible_method_alipay_enabled": false,
+							"payment_visible_method_wxpay_enabled": false,
+							"advanced_scheduler_sticky_weighted_enabled": false,
+							"advanced_scheduler_subscription_priority_enabled": false,
+							"advanced_scheduler_ewma_error_rate_alpha": "",
+							"advanced_scheduler_ewma_ttft_alpha": "",
+							"advanced_scheduler_sticky_escape_enabled": true,
+							"advanced_scheduler_sticky_escape_ttft_ms": "",
+							"advanced_scheduler_sticky_escape_error_rate": "",
+							"advanced_scheduler_lb_top_k": "",
+							"advanced_scheduler_weight_priority": "",
+							"advanced_scheduler_weight_load": "",
+							"advanced_scheduler_weight_queue": "",
+							"advanced_scheduler_weight_error_rate": "",
+							"advanced_scheduler_weight_ttft": "",
+							"advanced_scheduler_weight_reset": "",
+							"advanced_scheduler_weight_quota_headroom": "",
+							"advanced_scheduler_weight_previous_response": "",
+							"advanced_scheduler_weight_session_sticky": "",
+							"advanced_scheduler_effective_lb_top_k": "7",
+							"advanced_scheduler_effective_weight_priority": "1",
+							"advanced_scheduler_effective_weight_load": "1",
+							"advanced_scheduler_effective_weight_queue": "0.7",
+							"advanced_scheduler_effective_weight_error_rate": "0.8",
+							"advanced_scheduler_effective_weight_ttft": "0.5",
+							"advanced_scheduler_effective_weight_reset": "0",
+							"advanced_scheduler_effective_weight_quota_headroom": "0",
+							"advanced_scheduler_effective_weight_previous_response": "5",
+							"advanced_scheduler_effective_weight_session_sticky": "3",
+							"advanced_scheduler_effective_ewma_error_rate_alpha": "0.2",
+							"advanced_scheduler_effective_ewma_ttft_alpha": "0.2",
+							"advanced_scheduler_effective_sticky_escape_enabled": true,
+							"advanced_scheduler_effective_sticky_escape_ttft_ms": "15000",
+							"advanced_scheduler_effective_sticky_escape_error_rate": "0.5",
+							"openai_provider_quota_auto_pause": {
+								"default_threshold_5h": 0,
+								"default_threshold_7d": 0
+							},
+								"openai_allow_claude_code_codex_plugin": false,
+								"openai_fast_policy_settings": {
+									"rules": []
+								},
+								"openai_ttft_mode": "semantic",
+								"responses_ws": {},
+								"responses_ws_effective": {
+									"max_conns_per_provider": 128,
+									"min_idle_per_provider": 4,
+									"max_idle_per_provider": 12,
+									"dynamic_max_conns_by_provider_concurrency_enabled": true,
+									"oauth_max_conns_factor": 1,
+									"apikey_max_conns_factor": 1,
+									"queue_limit_per_conn": 64,
+									"pool_target_utilization": 0.7,
+									"prewarm_cooldown_ms": 300,
+									"client_first_message_timeout_seconds": 30,
+									"ingress_inter_turn_idle_timeout_seconds": 300,
+									"max_ingress_connections_per_api_key": 64,
+									"client_read_limit_bytes": 67108864,
+									"http_bridge_threshold_bytes": 15728640,
+									"dial_timeout_seconds": 10,
+									"read_timeout_seconds": 900,
+									"write_timeout_seconds": 120,
+									"ingress_previous_response_recovery_enabled": true,
+									"sticky_session_ttl_seconds": 3600,
+									"sticky_response_id_ttl_seconds": 3600
+								},
+								"user_prompt_replacement_config": {
+									"enabled": true,
+									"rules": [
+										{
+											"id": "environment-context-timezone-japan",
+											"name": "environment_context timezone -> Asia/Tokyo",
+											"enabled": true,
+											"pattern": "(?s)(<environment_context\\b[^>]*>.*?<timezone>)([^<]*)(</timezone>.*?</environment_context>)",
+											"target_group": 2,
+											"replacement_type": "timezone_name",
+											"scope": "environment_context",
+											"timezone": "Asia/Tokyo"
+										},
+										{
+											"id": "environment-context-current-date-japan",
+											"name": "environment_context current_date -> Asia/Tokyo today",
+											"enabled": true,
+											"pattern": "(?s)(<environment_context\\b[^>]*>.*?<current_date>)([^<]*)(</current_date>.*?</environment_context>)",
+											"target_group": 2,
+											"replacement_type": "current_time",
+											"scope": "environment_context",
+											"timezone": "Asia/Tokyo",
+											"time_format": "2006-01-02"
+										}
+									]
+								},
+						"payment_enabled": false,
+						"payment_min_amount": 0,
+						"payment_max_amount": 0,
+					"payment_daily_limit": 0,
+					"payment_order_timeout_minutes": 0,
+					"payment_max_pending_orders": 0,
+					"payment_enabled_types": null,
+					"payment_balance_disabled": false,
+					"payment_balance_recharge_multiplier": 0,
+					"payment_subscription_usd_to_cny_rate": 0,
+					"payment_recharge_fee_rate": 0,
+					"payment_method_fees": {},
+					"payment_load_balance_strategy": "",
+					"payment_product_name_prefix": "",
+					"payment_product_name_suffix": "",
+					"payment_help_image_url": "",
+					"payment_help_text": "",
+					"payment_cancel_rate_limit_enabled": false,
+					"payment_cancel_rate_limit_max": 0,
+					"payment_cancel_rate_limit_window": 0,
+					"payment_cancel_rate_limit_unit": "",
+					"payment_cancel_rate_limit_window_mode": "",
+					"payment_alipay_force_qrcode": false,
+					"payment_alipay_mobile_precreate_deep_link": false,
+					"balance_low_notify_enabled": false,
+					"provider_quota_notify_enabled": false,
+					"provider_scheduling_thresholds": {"anthropic":100,"grok":100,"openai":100},
+					"subscription_expiry_notify_enabled": true,
+					"team_enabled": true,
+					"risk_control_enabled": false,
+					"balance_unit_name": "USD",
+					"balance_unit_symbol": "$",
+					"balance_icon_svg": "",
+					"balance_low_notify_threshold": 0,
+					"balance_low_notify_recharge_url": "",
+					"provider_quota_notify_emails": [],
+					"wechat_connect_enabled": true,
+					"wechat_connect_app_id": "wx-open-config",
+					"wechat_connect_app_secret_configured": true,
+					"wechat_connect_mode": "open",
+					"wechat_connect_open_enabled": true,
+					"wechat_connect_open_app_id": "wx-open-config",
+					"wechat_connect_open_app_secret_configured": true,
+					"wechat_connect_mp_enabled": false,
+					"wechat_connect_mp_app_id": "wx-open-config",
+					"wechat_connect_mp_app_secret_configured": true,
+					"wechat_connect_mobile_enabled": false,
+					"wechat_connect_mobile_app_id": "wx-open-config",
+					"wechat_connect_mobile_app_secret_configured": true,
+					"wechat_connect_redirect_url": "",
+					"wechat_connect_frontend_redirect_url": "/auth/wechat/callback",
+					"wechat_connect_scopes": "snsapi_login",
+					"auth_source_default_email_balance": 0,
+					"auth_source_default_email_concurrency": 5,
+						"auth_source_default_email_subscriptions": [],
+						"auth_source_default_email_grant_on_signup": false,
+						"auth_source_default_email_grant_on_first_bind": false,
+						"auth_source_default_github_balance": 0,
+						"auth_source_default_github_concurrency": 5,
+						"auth_source_default_github_subscriptions": [],
+						"auth_source_default_github_grant_on_signup": false,
+						"auth_source_default_github_grant_on_first_bind": false,
+						"auth_source_default_google_balance": 0,
+						"auth_source_default_google_concurrency": 5,
+						"auth_source_default_google_subscriptions": [],
+						"auth_source_default_google_grant_on_signup": false,
+						"auth_source_default_google_grant_on_first_bind": false,
+						"auth_source_default_linuxdo_balance": 0,
+						"auth_source_default_linuxdo_concurrency": 5,
+						"auth_source_default_linuxdo_subscriptions": [],
+					"auth_source_default_linuxdo_grant_on_signup": false,
+					"auth_source_default_linuxdo_grant_on_first_bind": false,
+					"auth_source_default_oidc_balance": 0,
+					"auth_source_default_oidc_concurrency": 5,
+					"auth_source_default_oidc_subscriptions": [],
+					"auth_source_default_oidc_grant_on_signup": false,
+					"auth_source_default_oidc_grant_on_first_bind": false,
+					"auth_source_default_wechat_balance": 0,
+					"auth_source_default_wechat_concurrency": 5,
+					"auth_source_default_wechat_subscriptions": [],
+					"auth_source_default_wechat_grant_on_signup": false,
+					"auth_source_default_wechat_grant_on_first_bind": false,
+					"auth_source_default_dingtalk_balance": 0,
+					"auth_source_default_dingtalk_concurrency": 5,
+					"auth_source_default_dingtalk_subscriptions": [],
+					"auth_source_default_dingtalk_grant_on_signup": false,
+					"auth_source_default_dingtalk_grant_on_first_bind": false,
+					"force_email_on_third_party_signup": false,
+					"allow_user_view_error_requests": false
+				}
+			}`,
+		},
+		{
+			name:   "POST /api/v1/admin/providers/bulk-update",
+			method: http.MethodPost,
+			path:   "/api/v1/admin/providers/bulk-update",
+			body:   `{"provider_ids":[101,102],"schedulable":false}`,
+			headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"success": 2,
+					"failed": 0,
+					"success_ids": [101, 102],
+					"failed_ids": [],
+					"results": [
+						{"provider_id": 101, "success": true},
+						{"provider_id": 102, "success": true}
+					]
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := newContractDeps(t, tt.setup)
+
+			status, body := doRequest(t, deps.router, tt.method, tt.path, tt.body, tt.headers)
+			require.Equal(t, tt.wantStatus, status)
+			require.JSONEq(t, tt.wantJSON, body)
+		})
+	}
+}
+
+func newContractDeps(t *testing.T, setup func(*testing.T, *contractDeps)) *contractDeps {
+	t.Helper()
+
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	userRepo := &stubUserRepo{
+		users: map[int64]*identity.User{
+			1: {
+				ID:            1,
+				Email:         "alice@example.com",
+				Username:      "alice",
+				Notes:         "hello",
+				Role:          identity.RoleUser,
+				Balance:       12.5,
+				Concurrency:   5,
+				APIKeyLimit:   identity.DefaultUserAPIKeyLimit,
+				Status:        billing.StatusActive,
+				AllowedGroups: nil,
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			},
+		},
+	}
+
+	apiKeyRepo := newStubApiKeyRepo(now)
+	apiKeyCache := stubApiKeyCache{}
+	groupRepo := &stubGroupRepo{}
+	userSubRepo := &stubUserSubscriptionRepo{}
+	providerRepo := stubProviderRepo{}
+	redeemRepo := &stubRedeemCodeRepo{}
+
+	cfg := &config.Config{
+		Default: config.DefaultConfig{
+			APIKeyPrefix: "sk-",
+		},
+	}
+
+	usageRepo := newStubUsageLogRepo()
+	settingRepo := newStubSettingRepo()
+	deps := &contractDeps{
+		now:         now,
+		cfg:         cfg,
+		apiKeyRepo:  apiKeyRepo,
+		groupRepo:   groupRepo,
+		userSubRepo: userSubRepo,
+		usageRepo:   usageRepo,
+		settingRepo: settingRepo,
+		redeemRepo:  redeemRepo,
+	}
+	// 先准备启动配置，再构造持有配置快照的读取器。
+	if setup != nil {
+		setup(t, deps)
+	}
+
+	userService := identity.NewUserService(userRepo, nil, nil, nil, func(_ string, fn func()) bool { go fn(); return true })
+	apiKeyService := testkit.NewService(apiKeyRepo, userRepo, groupRepo, userSubRepo, nil, apiKeyCache, cfg)
+	apiKeyService.Start()
+
+	usageService := usagecore.NewUsageService(usageRepo)
+
+	subscriptionService := billing.NewSubscriptionService(contractSubscriptionGroups{groupRepo}, userSubRepo, billingpostgres.NewSubscriptionMutations(nil))
+	subscriptionHandler := billinghttp.NewSubscriptionHandler(subscriptionService)
+	adminSubscriptionHandler := billinghttp.NewAdminSubscriptionHandler(subscriptionService)
+
+	redeemService := billing.NewRedeemService(redeemRepo, contractRedeemUsers{userRepo}, subscriptionService, nil, nil, billingpostgres.NewRedeemMutations(nil, userRepo), nil, nil, billing.RedeemRuntime{Now: time.Now, Observe: logging.LegacyPrintf, Background: func(name string, fn func()) { go fn() }})
+	redeemHandler := billinghttp.NewRedeemHandler(redeemService)
+
+	settingFixture := settingskit.NewComposite(settingRepo, cfg)
+	settingService := settingFixture.Runtime
+	authSettings := identitytestkit.Settings(settingRepo, cfg)
+
+	authHandler := identityhttp.NewSessionHandler(nil, userService, authSettings, redeemService, nil, nil, identityhttp.SessionHTTPOptions{})
+	apiKeyHandler := keyhttp.NewAPIKeyHandler(apiKeyService, func(group *routing.Group, capacity *accessview.GroupCapacitySummary) *routingdto.Group {
+		result := routingdto.GroupFromRouting(apikey.RoutingGroup(group))
+		if result != nil && capacity != nil {
+			result.Capacity = routingdto.GroupCapacityFromSummary(capacity)
+		}
+		return result
+	})
+	usageHandler := usagehttp.NewUsageHandler(usageService, contractUsageKeys(apiKeyService), nil, usagecore.NewRuntimeSettings(settingRepo), timezone.NewCalendar(time.Local))
+	adminSettingHandler := settingshttp.NewHandler(settingshttp.HandlerOptions{Settings: settingService})
+	adminProviderHandler := providerhttp.NewManagementHandler(providercore.NewAdmin(contractProviderBulkStore{source: &providerRepo}, providercore.AdminOptions{}), providerhttp.ManagementOptions{})
+
+	jwtAuth := func(c *gin.Context) {
+		c.Set(string(authctx.ContextKeyUser), authctx.AuthSubject{
+			UserID:      1,
+			Concurrency: 5,
+		})
+		c.Set(string(authctx.ContextKeyUserRole), identity.RoleUser)
+		c.Next()
+	}
+	adminAuth := func(c *gin.Context) {
+		c.Set(string(authctx.ContextKeyUser), authctx.AuthSubject{
+			UserID:      1,
+			Concurrency: 5,
+		})
+		c.Set(string(authctx.ContextKeyUserRole), identity.RoleAdmin)
+		c.Next()
+	}
+
+	r := gin.New()
+
+	v1 := r.Group("/api/v1")
+
+	v1Auth := v1.Group("")
+	v1Auth.Use(jwtAuth)
+	v1Auth.GET("/auth/me", authHandler.GetCurrentUser)
+
+	v1Keys := v1.Group("")
+	v1Keys.Use(jwtAuth)
+	v1Keys.GET("/keys", apiKeyHandler.List)
+	v1Keys.POST("/keys", apiKeyHandler.Create)
+	v1Keys.GET("/groups/available", apiKeyHandler.GetAvailableGroups)
+
+	v1Usage := v1.Group("")
+	v1Usage.Use(jwtAuth)
+	v1Usage.GET("/usage", usageHandler.List)
+	v1Usage.GET("/usage/stats", usageHandler.Stats)
+
+	v1Subs := v1.Group("")
+	v1Subs.Use(jwtAuth)
+	v1Subs.GET("/subscriptions", subscriptionHandler.List)
+	v1Subs.POST("/subscriptions/:id/revoke", subscriptionHandler.Revoke)
+
+	v1Redeem := v1.Group("")
+	v1Redeem.Use(jwtAuth)
+	v1Redeem.GET("/redeem/history", redeemHandler.GetHistory)
+
+	v1Admin := v1.Group("/admin")
+	v1Admin.Use(adminAuth)
+	v1Admin.GET("/settings", adminSettingHandler.GetSettings)
+	v1Admin.POST("/providers/bulk-update", adminProviderHandler.BulkUpdate)
+	v1Admin.POST("/subscriptions/:id/restore", adminSubscriptionHandler.Restore)
+
+	deps.router = r
+	return deps
+}
+
+func doRequest(t *testing.T, router http.Handler, method, path, body string, headers map[string]string) (int, string) {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	respBody, err := io.ReadAll(w.Result().Body)
+	require.NoError(t, err)
+
+	return w.Result().StatusCode, string(respBody)
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func (r *stubUserRepo) Create(ctx context.Context, user *identity.User) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) CreateWithNormalizedEmailGuard(ctx context.Context, user *identity.User, normalizedEmail string) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) GetByID(ctx context.Context, id int64) (*identity.User, error) {
+	user, ok := r.users[id]
+	if !ok {
+		return nil, identity.ErrUserNotFound
+	}
+	clone := *user
+	return &clone, nil
+}
+
+func (r *stubUserRepo) GetByEmail(ctx context.Context, email string) (*identity.User, error) {
+	for _, user := range r.users {
+		if user.Email == email {
+			clone := *user
+			return &clone, nil
+		}
+	}
+	return nil, identity.ErrUserNotFound
+}
+
+func (r *stubUserRepo) GetFirstAdmin(ctx context.Context) (*identity.User, error) {
+	for _, user := range r.users {
+		if user.Role == identity.RoleAdmin && user.Status == billing.StatusActive {
+			clone := *user
+			return &clone, nil
+		}
+	}
+	return nil, identity.ErrUserNotFound
+}
+
+func (r *stubUserRepo) Update(ctx context.Context, user *identity.User, fields identity.UserUpdateFields) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) UpdateWithNormalizedEmailGuard(ctx context.Context, user *identity.User, normalizedEmail string, fields identity.UserUpdateFields) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) Delete(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) GetUserAvatar(ctx context.Context, userID int64) (*identity.UserAvatar, error) {
+	return nil, nil
+}
+
+func (r *stubUserRepo) UpsertUserAvatar(ctx context.Context, userID int64, input identity.UpsertUserAvatarInput) (*identity.UserAvatar, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) DeleteUserAvatar(ctx context.Context, userID int64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) List(ctx context.Context, params pagination.PaginationParams) ([]identity.User, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters identity.UserListFilters) ([]identity.User, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) UpdateBalance(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) AddBalance(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) DeductBalance(ctx context.Context, id int64, amount float64) (float64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) AdjustBalance(ctx context.Context, id int64, delta float64) (identity.BalanceChange, error) {
+	return identity.BalanceChange{}, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) SetBalance(ctx context.Context, id int64, value float64) (identity.BalanceChange, error) {
+	return identity.BalanceChange{}, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) UpdateConcurrency(ctx context.Context, id int64, amount int) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) BatchSetConcurrency(ctx context.Context, userIDs []int64, value int) (int, error) {
+	return 0, nil
+}
+
+func (r *stubUserRepo) BatchAddConcurrency(ctx context.Context, userIDs []int64, delta int) (int, error) {
+	return 0, nil
+}
+
+func (r *stubUserRepo) BatchUpdateLimits(context.Context, []int64, *int, *int) (int, error) {
+	return 0, nil
+}
+
+func (r *stubUserRepo) ExistsByEmail(ctx context.Context, email string) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) ExistsByNormalizedEmail(ctx context.Context, normalizedEmail string) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) LockRegistrationEmail(ctx context.Context, normalizedEmail string) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) RemoveGroupFromAllowedGroups(ctx context.Context, groupID int64) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (r *stubUserRepo) RemoveGroupFromUserAllowedGroups(ctx context.Context, userID int64, groupID int64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) AddGroupToAllowedGroups(ctx context.Context, userID int64, groupID int64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) ListUserAuthIdentities(ctx context.Context, userID int64) ([]identity.UserAuthIdentityRecord, error) {
+	return nil, nil
+}
+
+func (r *stubUserRepo) UnbindUserAuthProvider(context.Context, int64, string) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) GetLatestUsedAtByUserIDs(ctx context.Context, userIDs []int64) (map[int64]*time.Time, error) {
+	return map[int64]*time.Time{}, nil
+}
+
+func (r *stubUserRepo) GetLatestUsedAtByUserID(ctx context.Context, userID int64) (*time.Time, error) {
+	return nil, nil
+}
+
+func (r *stubUserRepo) UpdateUserLastActiveAt(ctx context.Context, userID int64, activeAt time.Time) error {
+	return nil
+}
+
+func (r *stubUserRepo) UpdateTotpSecret(ctx context.Context, userID int64, encryptedSecret *string) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) EnableTotp(ctx context.Context, userID int64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) DisableTotp(ctx context.Context, userID int64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*identity.User, error) {
+	panic("unexpected GetByIDIncludeDeleted call")
+}
+
+func (stubApiKeyCache) GetCreateAttemptCount(ctx context.Context, userID int64) (int, error) {
+	return 0, nil
+}
+
+func (stubApiKeyCache) IncrementCreateAttemptCount(ctx context.Context, userID int64) error {
+	return nil
+}
+
+func (stubApiKeyCache) DeleteCreateAttemptCount(ctx context.Context, userID int64) error {
+	return nil
+}
+
+func (stubApiKeyCache) IncrementDailyUsage(ctx context.Context, apiKey string) error {
+	return nil
+}
+
+func (stubApiKeyCache) SetDailyUsageExpiry(ctx context.Context, apiKey string, ttl time.Duration) error {
+	return nil
+}
+
+func (stubApiKeyCache) GetAuthCache(ctx context.Context, key string) (*apikey.APIKeyAuthCacheEntry, error) {
+	return nil, nil
+}
+
+func (stubApiKeyCache) SetAuthCache(ctx context.Context, key string, entry *apikey.APIKeyAuthCacheEntry, ttl time.Duration) error {
+	return nil
+}
+
+func (stubApiKeyCache) DeleteAuthCache(ctx context.Context, key string) error {
+	return nil
+}
+
+func (stubApiKeyCache) PublishAuthCacheInvalidation(ctx context.Context, cacheKey string) error {
+	return nil
+}
+
+func (stubApiKeyCache) SubscribeAuthCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
+	return nil
+}
+
+func (r *stubGroupRepo) SetActive(groups []routing.Group) {
+	r.active = append([]routing.Group(nil), groups...)
+}
+
+func (stubGroupRepo) Create(ctx context.Context, group *routing.Group) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubGroupRepo) GetByID(ctx context.Context, id int64) (*routing.Group, error) {
+	for i := range r.active {
+		if r.active[i].ID == id {
+			group := r.active[i]
+			return &group, nil
+		}
+	}
+	return nil, routing.ErrGroupNotFound
+}
+
+func (r *stubGroupRepo) GetByIDLite(ctx context.Context, id int64) (*routing.Group, error) {
+	return r.GetByID(ctx, id)
+}
+
+func (stubGroupRepo) Update(ctx context.Context, group *routing.Group) error {
+	return errors.New("not implemented")
+}
+
+func (stubGroupRepo) Delete(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (stubGroupRepo) DeleteCascade(ctx context.Context, id int64) ([]int64, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubGroupRepo) List(ctx context.Context, params pagination.PaginationParams) ([]routing.Group, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (stubGroupRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, status, search string, isExclusive *bool) ([]routing.Group, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubGroupRepo) ListActive(ctx context.Context) ([]routing.Group, error) {
+	return append([]routing.Group(nil), r.active...), nil
+}
+
+func (stubGroupRepo) ExistsByName(ctx context.Context, name string) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (stubGroupRepo) GetProviderCount(ctx context.Context, groupID int64) (int64, int64, error) {
+	return 0, 0, errors.New("not implemented")
+}
+
+func (stubGroupRepo) DeleteProviderGroupsByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (stubGroupRepo) BindProvidersToGroup(ctx context.Context, groupID int64, providerIDs []int64) error {
+	return errors.New("not implemented")
+}
+
+func (stubGroupRepo) GetProviderIDsByGroupIDs(ctx context.Context, groupIDs []int64) ([]int64, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubGroupRepo) UpdateSortOrders(ctx context.Context, updates []routing.GroupSortOrderUpdate) error {
+	return nil
+}
+
+// LockGroupSortOrder 为 API 响应测试提供排序锁的成功结果。
+func (stubGroupRepo) LockGroupSortOrder(ctx context.Context) error {
+	return nil
+}
+
+func (stubGroupRepo) FindByDuplicateOperationID(ctx context.Context, operationID string) (*routing.Group, error) {
+	return nil, nil
+}
+
+func (stubGroupRepo) CreateFromSource(ctx context.Context, group *routing.Group, sourceGroupID int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) Create(ctx context.Context, provider *gatewayprovider.ExecutionProvider) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) CreateWithProviderGroups(ctx context.Context, provider *gatewayprovider.ExecutionProvider, groups []providercore.GroupMembership) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) GetByID(ctx context.Context, id int64) (*gatewayprovider.ExecutionProvider, error) {
+	return nil, providercore.ErrProviderNotFound
+}
+
+func (s *stubProviderRepo) GetByIDs(ctx context.Context, ids []int64) ([]*gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ExistsByID(ctx context.Context, id int64) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) GetByCRSAccountID(ctx context.Context, crsProviderID string) (*gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) FindByExtraField(ctx context.Context, key string, value any) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) Update(ctx context.Context, provider *gatewayprovider.ExecutionProvider) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) Delete(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) List(ctx context.Context, params pagination.PaginationParams) ([]gatewayprovider.ExecutionProvider, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, nil
+}
+
+func (s *stubProviderRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, providerType, status, search string, groupID int64, privacyMode string) ([]gatewayprovider.ExecutionProvider, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListByGroup(ctx context.Context, groupID int64) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListActive(ctx context.Context) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListOAuthRefreshCandidates(ctx context.Context) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListByPlatform(ctx context.Context, platform string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) UpdateLastUsed(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) BatchUpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ClearError(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) SetSchedulable(ctx context.Context, id int64, schedulable bool) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) AutoPauseExpiredProviders(ctx context.Context, now time.Time) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) BindGroups(ctx context.Context, providerID int64, groupIDs []int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListShadowsByParent(ctx context.Context, parentID int64) ([]*gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulable(ctx context.Context) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulableByPlatform(ctx context.Context, platform string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulableByGroupIDAndPlatforms(ctx context.Context, groupID int64, platforms []string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]gatewayprovider.ExecutionProvider, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) SetOverloaded(ctx context.Context, id int64, until time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ClearTempUnschedulable(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ClearRateLimit(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ClearModelRateLimits(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) UpdateSessionWindow(ctx context.Context, id int64, start, end *time.Time, status string) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) UpdateSessionWindowEnd(ctx context.Context, id int64, end time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) ResetQuotaUsedAndClearRateLimitCooldown(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) BulkUpdate(ctx context.Context, ids []int64, updates providercore.ProviderBulkUpdate) (int64, error) {
+	s.bulkUpdateIDs = append([]int64{}, ids...)
+	return int64(len(ids)), nil
+}
+
+func (s *stubProviderRepo) ListCRSAccountIDs(ctx context.Context) (map[string]int64, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubProviderRepo) RevertProxyFallback(ctx context.Context, providerID int64) error {
+	return nil
+}
+
+func (r *stubRedeemCodeRepo) SetByUser(userID int64, codes []billing.RedeemCode) {
+	if r.byUser == nil {
+		r.byUser = make(map[int64][]billing.RedeemCode)
+	}
+	r.byUser[userID] = append([]billing.RedeemCode(nil), codes...)
+}
+
+func (stubRedeemCodeRepo) Create(ctx context.Context, code *billing.RedeemCode) error {
+	return errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) CreateBatch(ctx context.Context, codes []billing.RedeemCode) error {
+	return errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) GetByID(ctx context.Context, id int64) (*billing.RedeemCode, error) {
+	return nil, billing.ErrRedeemCodeNotFound
+}
+
+func (stubRedeemCodeRepo) GetByIDForUpdate(ctx context.Context, id int64) (*billing.RedeemCode, error) {
+	return nil, billing.ErrRedeemCodeNotFound
+}
+
+func (stubRedeemCodeRepo) GetByCode(ctx context.Context, code string) (*billing.RedeemCode, error) {
+	return nil, billing.ErrRedeemCodeNotFound
+}
+
+func (stubRedeemCodeRepo) GetByCodeForUpdate(ctx context.Context, code string) (*billing.RedeemCode, error) {
+	return nil, billing.ErrRedeemCodeNotFound
+}
+
+func (stubRedeemCodeRepo) Update(ctx context.Context, code *billing.RedeemCode) error {
+	return errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) BatchUpdate(ctx context.Context, ids []int64, fields billing.RedeemCodeBatchUpdateFields) (int64, error) {
+	return int64(len(ids)), nil
+}
+
+func (stubRedeemCodeRepo) Delete(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) Use(ctx context.Context, id, userID int64) error {
+	return errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) CreateUsage(ctx context.Context, usage *billing.RedeemCodeUsage) error {
+	return errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) GetUsageByRedeemCodeAndUser(ctx context.Context, redeemCodeID, userID int64) (*billing.RedeemCodeUsage, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) List(ctx context.Context, params pagination.PaginationParams) ([]billing.RedeemCode, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, codeType, status, search string) ([]billing.RedeemCode, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubRedeemCodeRepo) ListByUserPaginated(ctx context.Context, userID int64, params pagination.PaginationParams, codeType string) ([]billing.RedeemCode, *pagination.PaginationResult, error) {
+	codes := r.byUser[userID]
+	total := len(codes)
+	start := min(params.Offset(), total)
+	end := min(start+params.Limit(), total)
+	page := append([]billing.RedeemCode(nil), codes[start:end]...)
+	return page, &pagination.PaginationResult{Total: int64(total), Page: params.Page, PageSize: params.Limit()}, nil
+}
+
+func (stubRedeemCodeRepo) SumPositiveBalanceByUser(ctx context.Context, userID int64) (float64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (r *stubUserSubscriptionRepo) SetByUserID(userID int64, subs []billing.UserSubscription) {
+	if r.byUser == nil {
+		r.byUser = make(map[int64][]billing.UserSubscription)
+	}
+	r.byUser[userID] = append([]billing.UserSubscription(nil), subs...)
+}
+
+func (r *stubUserSubscriptionRepo) SetActiveByUserID(userID int64, subs []billing.UserSubscription) {
+	if r.activeByUser == nil {
+		r.activeByUser = make(map[int64][]billing.UserSubscription)
+	}
+	r.activeByUser[userID] = append([]billing.UserSubscription(nil), subs...)
+}
+
+func (r *stubUserSubscriptionRepo) SetByID(id int64, sub billing.UserSubscription) {
+	if r.byID == nil {
+		r.byID = make(map[int64]billing.UserSubscription)
+	}
+	r.byID[id] = sub
+}
+
+func (stubUserSubscriptionRepo) Create(ctx context.Context, sub *billing.UserSubscription) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserSubscriptionRepo) GetByID(ctx context.Context, id int64) (*billing.UserSubscription, error) {
+	if r.byID == nil {
+		return nil, errors.New("not implemented")
+	}
+	sub, ok := r.byID[id]
+	if !ok || sub.DeletedAt != nil {
+		return nil, billing.ErrSubscriptionNotFound
+	}
+	return &sub, nil
+}
+
+func (r *stubUserSubscriptionRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*billing.UserSubscription, error) {
+	if r.byID == nil {
+		return nil, errors.New("not implemented")
+	}
+	sub, ok := r.byID[id]
+	if !ok {
+		return nil, billing.ErrSubscriptionNotFound
+	}
+	return &sub, nil
+}
+
+func (stubUserSubscriptionRepo) GetByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*billing.UserSubscription, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) GetActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*billing.UserSubscription, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) GetLatestByUserIDAndPlanID(ctx context.Context, userID, planID int64) (*billing.UserSubscription, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) Update(ctx context.Context, sub *billing.UserSubscription) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserSubscriptionRepo) Delete(ctx context.Context, id int64) error {
+	if r.byID == nil {
+		return errors.New("not implemented")
+	}
+	if _, ok := r.byID[id]; !ok {
+		return billing.ErrSubscriptionNotFound
+	}
+	delete(r.byID, id)
+	return nil
+}
+
+func (r *stubUserSubscriptionRepo) Restore(ctx context.Context, subscriptionID int64, restoredStatus string) (*billing.UserSubscription, error) {
+	if r.byID == nil {
+		return nil, errors.New("not implemented")
+	}
+	sub, ok := r.byID[subscriptionID]
+	if !ok {
+		return nil, billing.ErrSubscriptionNotFound
+	}
+	sub.Status = restoredStatus
+	sub.DeletedAt = nil
+	sub.UpdatedAt = time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	r.byID[subscriptionID] = sub
+	return &sub, nil
+}
+
+func (r *stubUserSubscriptionRepo) ListByUserID(ctx context.Context, userID int64) ([]billing.UserSubscription, error) {
+	if r.byUser == nil {
+		return nil, nil
+	}
+	return append([]billing.UserSubscription(nil), r.byUser[userID]...), nil
+}
+
+func (r *stubUserSubscriptionRepo) ListActiveByUserID(ctx context.Context, userID int64) ([]billing.UserSubscription, error) {
+	if r.activeByUser == nil {
+		return nil, nil
+	}
+	return append([]billing.UserSubscription(nil), r.activeByUser[userID]...), nil
+}
+
+func (r *stubUserSubscriptionRepo) ListByUserIDAndPlanID(ctx context.Context, userID, planID int64) ([]billing.UserSubscription, error) {
+	if r.byID == nil {
+		return nil, errors.New("not implemented")
+	}
+	out := make([]billing.UserSubscription, 0)
+	for _, sub := range r.byID {
+		if sub.UserID == userID && sub.PlanID == planID {
+			out = append(out, sub)
+		}
+	}
+	return out, nil
+}
+
+func (stubUserSubscriptionRepo) ListByGroupID(ctx context.Context, groupID int64, params pagination.PaginationParams) ([]billing.UserSubscription, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ListByPlanID(ctx context.Context, planID int64, params pagination.PaginationParams) ([]billing.UserSubscription, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) List(ctx context.Context, params pagination.PaginationParams, userID, groupID *int64, status, platform, sortBy, sortOrder string) ([]billing.UserSubscription, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ListBySourceOrderID(ctx context.Context, sourceOrderID int64) ([]billing.UserSubscription, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ExistsByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) UpdateStatus(ctx context.Context, subscriptionID int64, status string) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ActivateWindows(ctx context.Context, id int64, start time.Time, activation billing.SubscriptionWindowActivation) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ResetUsageWindows(ctx context.Context, id int64, resetDaily, resetWeekly, resetMonthly bool, newWindowStart time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ResetDailyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ResetWeeklyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) ResetMonthlyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {
+	return errors.New("not implemented")
+}
+
+func (stubUserSubscriptionRepo) BatchUpdateExpiredStatus(ctx context.Context) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func newStubApiKeyRepo(now time.Time) *stubApiKeyRepo {
+	return &stubApiKeyRepo{
+		now:    now,
+		nextID: 100,
+		byID:   make(map[int64]*apikey.APIKey),
+		byKey:  make(map[string]*apikey.APIKey),
+	}
+}
+
+func (r *stubApiKeyRepo) MustSeed(key *apikey.APIKey) {
+	if key == nil {
+		return
+	}
+	clone := *key
+	// API 测试夹具使用数据库默认策略。
+	if clone.FastModePolicy == "" {
+		clone.FastModePolicy = apikey.APIKeyFastModePolicyFollowRequest
+	}
+	r.byID[clone.ID] = &clone
+	r.byKey[clone.Key] = &clone
+}
+
+func (r *stubApiKeyRepo) Create(ctx context.Context, key *apikey.APIKey) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
+	if key == nil {
+		return errors.New("nil key")
+	}
+	if key.ID == 0 {
+		key.ID = r.nextID
+		r.nextID++
+	}
+	if key.CreatedAt.IsZero() {
+		key.CreatedAt = r.now
+	}
+	if key.UpdatedAt.IsZero() {
+		key.UpdatedAt = r.now
+	}
+	clone := *key
+	r.byID[clone.ID] = &clone
+	r.byKey[clone.Key] = &clone
+	return nil
+}
+
+func (r *stubApiKeyRepo) GetByID(ctx context.Context, id int64) (*apikey.APIKey, error) {
+	key, ok := r.byID[id]
+	if !ok {
+		return nil, apikey.ErrAPIKeyNotFound
+	}
+	clone := *key
+	return &clone, nil
+}
+
+func (r *stubApiKeyRepo) GetKeyAndOwnerID(ctx context.Context, id int64) (string, int64, error) {
+	key, ok := r.byID[id]
+	if !ok {
+		return "", 0, apikey.ErrAPIKeyNotFound
+	}
+	return key.Key, key.UserID, nil
+}
+
+func (r *stubApiKeyRepo) GetByKey(ctx context.Context, key string) (*apikey.APIKey, error) {
+	found, ok := r.byKey[key]
+	if !ok {
+		return nil, apikey.ErrAPIKeyNotFound
+	}
+	clone := *found
+	return &clone, nil
+}
+
+func (r *stubApiKeyRepo) GetByKeyForAuth(ctx context.Context, key string) (*apikey.APIKey, error) {
+	return r.GetByKey(ctx, key)
+}
+
+func (r *stubApiKeyRepo) RotateCredential(context.Context, *apikey.APIKey, string) error {
+	panic("unexpected RotateCredential call")
+}
+
+func (r *stubApiKeyRepo) Update(ctx context.Context, key *apikey.APIKey, _ apikey.APIKeyUpdateFields) error {
+	if key == nil {
+		return errors.New("nil key")
+	}
+	if _, ok := r.byID[key.ID]; !ok {
+		return apikey.ErrAPIKeyNotFound
+	}
+	if key.UpdatedAt.IsZero() {
+		key.UpdatedAt = r.now
+	}
+	clone := *key
+	r.byID[clone.ID] = &clone
+	r.byKey[clone.Key] = &clone
+	return nil
+}
+
+func (r *stubApiKeyRepo) Delete(ctx context.Context, id int64) error {
+	key, ok := r.byID[id]
+	if !ok {
+		return apikey.ErrAPIKeyNotFound
+	}
+	delete(r.byID, id)
+	delete(r.byKey, key.Key)
+	return nil
+}
+
+func (r *stubApiKeyRepo) DeleteWithAudit(ctx context.Context, id int64) error {
+	return r.Delete(ctx, id)
+}
+
+func (r *stubApiKeyRepo) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams, _ apikey.APIKeyListFilters) ([]apikey.APIKey, *pagination.PaginationResult, error) {
+	ids := make([]int64, 0, len(r.byID))
+	for id := range r.byID {
+		if r.byID[id].UserID == userID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] > ids[j] })
+
+	start := min(params.Offset(), len(ids))
+	end := min(start+params.Limit(), len(ids))
+
+	out := make([]apikey.APIKey, 0, end-start)
+	for _, id := range ids[start:end] {
+		clone := *r.byID[id]
+		out = append(out, clone)
+	}
+
+	total := int64(len(ids))
+	pageSize := params.Limit()
+	pages := max(int(math.Ceil(float64(total)/float64(pageSize))), 1)
+	return out, &pagination.PaginationResult{
+		Total:    total,
+		Page:     params.Page,
+		PageSize: pageSize,
+		Pages:    pages,
+	}, nil
+}
+
+func (r *stubApiKeyRepo) VerifyOwnership(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error) {
+	if len(apiKeyIDs) == 0 {
+		return []int64{}, nil
+	}
+	seen := make(map[int64]struct{}, len(apiKeyIDs))
+	out := make([]int64, 0, len(apiKeyIDs))
+	for _, id := range apiKeyIDs {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		key, ok := r.byID[id]
+		if ok && key.UserID == userID {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func (r *stubApiKeyRepo) CountByUserID(ctx context.Context, userID int64) (int64, error) {
+	var count int64
+	for _, key := range r.byID {
+		if key.UserID == userID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *stubApiKeyRepo) ExistsByKey(ctx context.Context, key string) (bool, error) {
+	_, ok := r.byKey[key]
+	return ok, nil
+}
+
+func (r *stubApiKeyRepo) ListByGroupID(ctx context.Context, groupID int64, params pagination.PaginationParams) ([]apikey.APIKey, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) SearchAPIKeys(ctx context.Context, userID int64, keyword string, limit int) ([]apikey.APIKey, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) ClearGroupIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) UpdateGroupIDByUserAndGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (int64, error) {
+	var updated int64
+	for id, key := range r.byID {
+		if key.UserID != userID || key.GroupID == nil || *key.GroupID != oldGroupID {
+			continue
+		}
+		clone := *key
+		gid := newGroupID
+		clone.GroupID = &gid
+		r.byID[id] = &clone
+		r.byKey[clone.Key] = &clone
+		updated++
+	}
+	return updated, nil
+}
+
+func (r *stubApiKeyRepo) CountByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) ListKeysByUserID(ctx context.Context, userID int64) ([]string, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) (float64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (r *stubApiKeyRepo) UpdateLastUsed(ctx context.Context, id int64, usedAt time.Time) error {
+	key, ok := r.byID[id]
+	if !ok {
+		return apikey.ErrAPIKeyNotFound
+	}
+	ts := usedAt
+	key.LastUsedAt = &ts
+	key.UpdatedAt = usedAt
+	clone := *key
+	r.byID[id] = &clone
+	r.byKey[clone.Key] = &clone
+	return nil
+}
+
+func (r *stubApiKeyRepo) IncrementRateLimitUsage(ctx context.Context, id int64, cost float64) error {
+	return nil
+}
+
+func (r *stubApiKeyRepo) ResetRateLimitWindows(ctx context.Context, id int64) error {
+	return nil
+}
+
+func (r *stubApiKeyRepo) GetRateLimitData(ctx context.Context, id int64) (*apikey.APIKeyRateLimitData, error) {
+	return nil, nil
+}
+
+func newStubUsageLogRepo() *stubUsageLogRepo {
+	return &stubUsageLogRepo{userLogs: make(map[int64][]usagecore.UsageLog)}
+}
+
+func (r *stubUsageLogRepo) SetUserLogs(userID int64, logs []usagecore.UsageLog) {
+	r.userLogs[userID] = logs
+}
+
+func (r *stubUsageLogRepo) Create(ctx context.Context, log *usagecore.UsageLog) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetByID(ctx context.Context, id int64) (*usagecore.UsageLog, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) Delete(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) ListByUser(ctx context.Context, userID int64, params pagination.PaginationParams) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	logs := r.userLogs[userID]
+	total := int64(len(logs))
+	out := paginateLogs(logs, params)
+	return out, paginationResult(total, params), nil
+}
+
+func (r *stubUsageLogRepo) ListByAPIKey(ctx context.Context, apiKeyID int64, params pagination.PaginationParams) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) ListByProvider(ctx context.Context, providerID int64, params pagination.PaginationParams) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) ListByUserAndTimeRange(ctx context.Context, userID int64, startTime, endTime time.Time) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	logs := r.userLogs[userID]
+	return logs, paginationResult(int64(len(logs)), pagination.PaginationParams{Page: 1, PageSize: 100}), nil
+}
+
+func (r *stubUsageLogRepo) ListByAPIKeyAndTimeRange(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) ListByProviderAndTimeRange(ctx context.Context, providerID int64, startTime, endTime time.Time) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) ListByModelAndTimeRange(ctx context.Context, modelName string, startTime, endTime time.Time) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetProviderWindowStats(ctx context.Context, providerID int64, startTime time.Time) (*usagecore.ProviderStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetProviderTodayStats(ctx context.Context, providerID int64) (*usagecore.ProviderStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetDashboardStats(ctx context.Context) (*usagecore.DashboardStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, providerID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagecore.TrendDataPoint, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID int64, requestType *int16, stream *bool, billingType *int8) ([]usagecore.ModelStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagecore.EndpointStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUpstreamEndpointStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagecore.EndpointStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID int64, requestType *int16, stream *bool, billingType *int8) ([]usagecore.GroupStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUserBreakdownStats(ctx context.Context, startTime, endTime time.Time, dim usagecore.UserBreakdownDimension, limit int) ([]usagecore.UserBreakdownItem, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagecore.APIKeyUsageTrendPoint, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]usagecore.UserUsageTrendPoint, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUserSpendingRanking(ctx context.Context, startTime, endTime time.Time, limit int) (*usagecore.UserSpendingRankingResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUsageRanking(ctx context.Context, startTime, endTime time.Time, limit int, sortBy usagecore.UsageRankingSortBy) (*usagecore.UsageRankingResponse, error) {
+	return &usagecore.UsageRankingResponse{Ranking: []usagecore.UsageRankingItem{}}, nil
+}
+
+func (r *stubUsageLogRepo) GetUserStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) (*usagecore.UsageStats, error) {
+	logs := r.userLogs[userID]
+	if len(logs) == 0 {
+		return &usagecore.UsageStats{}, nil
+	}
+
+	var totalRequests int64
+	var totalInputTokens int64
+	var totalOutputTokens int64
+	var totalCacheTokens int64
+	var totalCacheCreationTokens int64
+	var totalCacheReadTokens int64
+	var totalCost float64
+	var totalActualCost float64
+	var totalDuration int64
+	var durationCount int64
+
+	for _, log := range logs {
+		totalRequests++
+		totalInputTokens += int64(log.InputTokens)
+		totalOutputTokens += int64(log.OutputTokens)
+		totalCacheTokens += int64(log.CacheCreationTokens + log.CacheReadTokens)
+		totalCacheCreationTokens += int64(log.CacheCreationTokens)
+		totalCacheReadTokens += int64(log.CacheReadTokens)
+		totalCost += log.TotalCost
+		totalActualCost += log.ActualCost
+		if log.DurationMs != nil {
+			totalDuration += int64(*log.DurationMs)
+			durationCount++
+		}
+	}
+
+	var avgDuration float64
+	if durationCount > 0 {
+		avgDuration = float64(totalDuration) / float64(durationCount)
+	}
+
+	return &usagecore.UsageStats{
+		TotalRequests:            totalRequests,
+		TotalInputTokens:         totalInputTokens,
+		TotalOutputTokens:        totalOutputTokens,
+		TotalCacheTokens:         totalCacheTokens,
+		TotalCacheCreationTokens: totalCacheCreationTokens,
+		TotalCacheReadTokens:     totalCacheReadTokens,
+		TotalTokens:              totalInputTokens + totalOutputTokens + totalCacheTokens,
+		TotalCost:                totalCost,
+		TotalActualCost:          totalActualCost,
+		AverageDurationMs:        avgDuration,
+	}, nil
+}
+
+func (r *stubUsageLogRepo) GetAPIKeyStatsAggregated(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) (*usagecore.UsageStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetProviderStatsAggregated(ctx context.Context, providerID int64, startTime, endTime time.Time) (*usagecore.UsageStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetModelStatsAggregated(ctx context.Context, modelName string, startTime, endTime time.Time) (*usagecore.UsageStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetDailyStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) ([]map[string]any, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetBatchUserUsageStats(ctx context.Context, userIDs []int64, startTime, endTime time.Time) (map[int64]*usagecore.BatchUserUsageStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetBatchAPIKeyUsageStats(ctx context.Context, apiKeyIDs []int64, startTime, endTime time.Time) (map[int64]*usagecore.BatchAPIKeyUsageStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUserDashboardStats(ctx context.Context, userID int64) (*usagecore.UserDashboardStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetAPIKeyDashboardStats(ctx context.Context, apiKeyID int64) (*usagecore.UserDashboardStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUserUsageTrendByUserID(ctx context.Context, userID int64, startTime, endTime time.Time, granularity string) ([]usagecore.TrendDataPoint, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetUserModelStats(ctx context.Context, userID int64, startTime, endTime time.Time) ([]usagecore.ModelStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters usagecore.UsageLogFilters) ([]usagecore.UsageLog, *pagination.PaginationResult, error) {
+	logs := r.userLogs[filters.UserID]
+
+	// 用量查询按 Key、模型、流式标记、计费方式和时间范围筛选。
+	var filtered []usagecore.UsageLog
+	for _, log := range logs {
+		if filters.APIKeyID > 0 && log.APIKeyID != filters.APIKeyID {
+			continue
+		}
+		if filters.Model != "" && stubUsageLogFilterModel(log, filters.ModelFilterSource) != filters.Model {
+			continue
+		}
+		if filters.Stream != nil && log.Stream != *filters.Stream {
+			continue
+		}
+		if filters.BillingType != nil && log.BillingType != *filters.BillingType {
+			continue
+		}
+		if filters.StartTime != nil && log.CreatedAt.Before(*filters.StartTime) {
+			continue
+		}
+		if filters.EndTime != nil && log.CreatedAt.After(*filters.EndTime) {
+			continue
+		}
+		filtered = append(filtered, log)
+	}
+
+	total := int64(len(filtered))
+	out := paginateLogs(filtered, params)
+	return out, paginationResult(total, params), nil
+}
+
+func stubUsageLogFilterModel(log usagecore.UsageLog, source string) string {
+	if source == usagecore.ModelSourceRequested && log.RequestedModel != "" {
+		return log.RequestedModel
+	}
+	return log.Model
+}
+
+func (r *stubUsageLogRepo) GetGlobalStats(ctx context.Context, startTime, endTime time.Time) (*usagecore.UsageStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetProviderUsageStats(ctx context.Context, providerID int64, startTime, endTime time.Time) (*usagecore.ProviderUsageStatsResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubUsageLogRepo) GetStatsWithFilters(ctx context.Context, filters usagecore.UsageLogFilters) (*usagecore.UsageStats, error) {
+	logs, _, err := r.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 100000}, filters)
+	if err != nil {
+		return nil, err
+	}
+
+	var totalRequests int64
+	var totalInputTokens int64
+	var totalOutputTokens int64
+	var totalCacheTokens int64
+	var totalCacheCreationTokens int64
+	var totalCacheReadTokens int64
+	var totalCost float64
+	var totalActualCost float64
+	var totalDuration int64
+	var durationCount int64
+
+	for _, log := range logs {
+		totalRequests++
+		totalInputTokens += int64(log.InputTokens)
+		totalOutputTokens += int64(log.OutputTokens)
+		totalCacheTokens += int64(log.CacheCreationTokens + log.CacheReadTokens)
+		totalCacheCreationTokens += int64(log.CacheCreationTokens)
+		totalCacheReadTokens += int64(log.CacheReadTokens)
+		totalCost += log.TotalCost
+		totalActualCost += log.ActualCost
+		if log.DurationMs != nil {
+			totalDuration += int64(*log.DurationMs)
+			durationCount++
+		}
+	}
+
+	var avgDuration float64
+	if durationCount > 0 {
+		avgDuration = float64(totalDuration) / float64(durationCount)
+	}
+
+	return &usagecore.UsageStats{
+		TotalRequests:            totalRequests,
+		TotalInputTokens:         totalInputTokens,
+		TotalOutputTokens:        totalOutputTokens,
+		TotalCacheTokens:         totalCacheTokens,
+		TotalCacheCreationTokens: totalCacheCreationTokens,
+		TotalCacheReadTokens:     totalCacheReadTokens,
+		TotalTokens:              totalInputTokens + totalOutputTokens + totalCacheTokens,
+		TotalCost:                totalCost,
+		TotalActualCost:          totalActualCost,
+		AverageDurationMs:        avgDuration,
+		Endpoints:                []usagecore.EndpointStat{},
+	}, nil
+}
+
+func (r *stubUsageLogRepo) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagecore.GroupUsageSummary, error) {
+	return nil, errors.New("not implemented")
+}
+
+func newStubSettingRepo() *stubSettingRepo {
+	return &stubSettingRepo{all: make(map[string]string)}
+}
+
+func (r *stubSettingRepo) SetAll(values map[string]string) {
+	r.all = make(map[string]string, len(values))
+	maps.Copy(r.all, values)
+}
+
+func (r *stubSettingRepo) Get(ctx context.Context, key string) (*settingscore.Setting, error) {
+	value, ok := r.all[key]
+	if !ok {
+		return nil, settingscore.ErrSettingNotFound
+	}
+	return &settingscore.Setting{Key: key, Value: value}, nil
+}
+
+func (r *stubSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
+	value, ok := r.all[key]
+	if !ok {
+		return "", settingscore.ErrSettingNotFound
+	}
+	return value, nil
+}
+
+func (r *stubSettingRepo) Set(ctx context.Context, key, value string) error {
+	r.all[key] = value
+	return nil
+}
+
+func (r *stubSettingRepo) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		out[key] = r.all[key]
+	}
+	return out, nil
+}
+
+func (r *stubSettingRepo) SetMultiple(ctx context.Context, settings map[string]string) error {
+	maps.Copy(r.all, settings)
+	return nil
+}
+
+func (r *stubSettingRepo) GetAll(ctx context.Context) (map[string]string, error) {
+	out := make(map[string]string, len(r.all))
+	maps.Copy(out, r.all)
+	return out, nil
+}
+
+func (r *stubSettingRepo) Delete(ctx context.Context, key string) error {
+	delete(r.all, key)
+	return nil
+}
+
+func paginateLogs(logs []usagecore.UsageLog, params pagination.PaginationParams) []usagecore.UsageLog {
+	start := min(params.Offset(), len(logs))
+	end := min(start+params.Limit(), len(logs))
+	out := make([]usagecore.UsageLog, 0, end-start)
+	out = append(out, logs[start:end]...)
+	return out
+}
+
+func paginationResult(total int64, params pagination.PaginationParams) *pagination.PaginationResult {
+	pageSize := params.Limit()
+	pages := max(int(math.Ceil(float64(total)/float64(pageSize))), 1)
+	return &pagination.PaginationResult{
+		Total:    total,
+		Page:     params.Page,
+		PageSize: pageSize,
+		Pages:    pages,
+	}
+}
+
+func (s contractProviderBulkStore) BulkUpdate(ctx context.Context, ids []int64, updates providercore.ProviderBulkUpdate) (int64, error) {
+	return s.source.BulkUpdate(ctx, ids, updates)
+}
+
+func (p contractSubscriptionGroups) GetByIDLite(ctx context.Context, id int64) (*billing.SubscriptionPlanGroup, error) {
+	if p.source == nil {
+		return nil, nil
+	}
+	v, err := p.source.GetByIDLite(ctx, id)
+	if v == nil || err != nil {
+		return nil, err
+	}
+	return &billing.SubscriptionPlanGroup{ID: v.ID, Name: v.Name}, nil
+}
+
+func (p contractRedeemUsers) GetByID(ctx context.Context, id int64) (*billing.UserSummary, error) {
+	v, err := p.source.GetByID(ctx, id)
+	return contractBillingUserSummary(v), err
+}
+
+// contractBillingUserSummary 复制资金测试需要的用户字段和通知邮箱列表。
+func contractBillingUserSummary(u *identity.User) *billing.UserSummary {
+	if u == nil {
+		return nil
+	}
+	out := &billing.UserSummary{
+		ID:                         u.ID,
+		Email:                      u.Email,
+		Username:                   u.Username,
+		Role:                       u.Role,
+		Balance:                    u.Balance,
+		FrozenBalance:              u.FrozenBalance,
+		Concurrency:                u.Concurrency,
+		Status:                     u.Status,
+		AllowedGroups:              u.AllowedGroups,
+		DisabledPublicGroups:       u.DisabledPublicGroups,
+		LastActiveAt:               u.LastActiveAt,
+		CreatedAt:                  u.CreatedAt,
+		UpdatedAt:                  u.UpdatedAt,
+		BalanceNotifyEnabled:       u.BalanceNotifyEnabled,
+		BalanceNotifyThresholdType: u.BalanceNotifyThresholdType,
+		BalanceNotifyThreshold:     u.BalanceNotifyThreshold,
+		TotalRecharged:             u.TotalRecharged,
+		RPMLimit:                   u.RPMLimit,
+		APIKeyLimit:                u.APIKeyLimit,
+		DeletedAt:                  u.DeletedAt,
+	}
+	if u.BalanceNotifyExtraEmails != nil {
+		out.BalanceNotifyExtraEmails = make([]billing.NotifyEmailSummary, len(u.BalanceNotifyExtraEmails))
+		copy(out.BalanceNotifyExtraEmails, u.BalanceNotifyExtraEmails)
+	}
+	return out
+}
+
+// contractUsageKeys 将 APIKeyService 的查询和所有权检查接入用量接口测试。
+func contractUsageKeys(keys *apikey.APIKeyService) ports.KeyReader {
+	if keys == nil {
+		return nil
+	}
+	return ports.KeyQueries{Lookup: func(ctx context.Context, id int64) (*ports.KeyReference, error) {
+		v, e := keys.GetByID(ctx, id)
+		if v == nil {
+			return nil, e
+		}
+		return &ports.KeyReference{ID: v.ID, UserID: v.UserID, Name: v.Name}, e
+	}, Ownership: keys.VerifyOwnership, Search: func(ctx context.Context, id int64, q string, n int) ([]ports.KeyReference, error) {
+		rows, e := keys.SearchAPIKeys(ctx, id, q, n)
+		if e != nil {
+			return nil, e
+		}
+		out := make([]ports.KeyReference, len(rows))
+		for i, v := range rows {
+			out[i] = ports.KeyReference{ID: v.ID, UserID: v.UserID, Name: v.Name}
+		}
+		return out, nil
+	}}
+}

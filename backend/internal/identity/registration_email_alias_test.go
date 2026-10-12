@@ -3,8 +3,9 @@ package identity_test
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 func TestNormalizeEmailForAliasDedup(t *testing.T) {

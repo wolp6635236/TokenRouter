@@ -97,8 +97,6 @@ type Options struct {
 	ResponseTTL       time.Duration
 	ReadLegacySticky  bool
 	WriteLegacySticky bool
-	WS                *egress.OpenAIWSOptions
-	WSIngressMode     string
 }
 
 // DefaultOptions 返回未提供进程配置时的默认值。

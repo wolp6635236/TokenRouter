@@ -17,12 +17,23 @@ const fakeDriverDelay = 2 * time.Millisecond
 
 type timingFakeDriver struct{}
 
-func (timingFakeDriver) Open(string) (driver.Conn, error) {
-	return newTimingFakeConn(), nil
-}
-
 type timingFakeConnector struct {
 	conn driver.Conn
+}
+
+type timingFakeConn struct{}
+
+type timingFakeStmt struct{}
+
+type timingFakeRows struct {
+	values [][]driver.Value
+	index  int
+}
+
+type timingFakeTx struct{}
+
+func (timingFakeDriver) Open(string) (driver.Conn, error) {
+	return newTimingFakeConn(), nil
 }
 
 func (c timingFakeConnector) Connect(context.Context) (driver.Conn, error) {
@@ -33,8 +44,6 @@ func (c timingFakeConnector) Connect(context.Context) (driver.Conn, error) {
 func (timingFakeConnector) Driver() driver.Driver {
 	return timingFakeDriver{}
 }
-
-type timingFakeConn struct{}
 
 func newTimingFakeConn() *timingFakeConn {
 	return &timingFakeConn{}
@@ -84,11 +93,10 @@ func (c *timingFakeConn) ResetSession(context.Context) error {
 	return nil
 }
 
-type timingFakeStmt struct{}
-
 func (s *timingFakeStmt) Close() error {
 	return nil
 }
+
 func (s *timingFakeStmt) NumInput() int {
 	return -1
 }
@@ -113,11 +121,6 @@ func (s *timingFakeStmt) QueryContext(context.Context, []driver.NamedValue) (dri
 	return &timingFakeRows{values: [][]driver.Value{{"value"}}}, nil
 }
 
-type timingFakeRows struct {
-	values [][]driver.Value
-	index  int
-}
-
 func (r *timingFakeRows) Columns() []string {
 	return []string{"value"}
 }
@@ -136,8 +139,6 @@ func (r *timingFakeRows) Next(dest []driver.Value) error {
 	r.index++
 	return nil
 }
-
-type timingFakeTx struct{}
 
 func (t *timingFakeTx) Commit() error {
 	time.Sleep(fakeDriverDelay)

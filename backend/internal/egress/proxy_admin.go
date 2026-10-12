@@ -21,6 +21,7 @@ type ProxyAdminOptions struct {
 	Tasks       ProxyTasks
 	Diagnostics Diagnostics
 }
+
 type ProxyAdmin struct {
 	proxyRepo         ProxyRepository
 	proxyProber       ProxyExitInfoProber
@@ -29,6 +30,24 @@ type ProxyAdmin struct {
 	tasks             ProxyTasks
 	diagnostics       Diagnostics
 	now               func() time.Time
+}
+
+// ProxyAdministrator 提供代理管理、连通性测试和质量检查。
+type ProxyAdministrator interface {
+	ListProxies(ctx context.Context, page, pageSize int, protocol, status, search string, sortBy, sortOrder string) ([]Proxy, int64, error)
+	ListProxiesWithProviderCount(ctx context.Context, page, pageSize int, protocol, status, search string, sortBy, sortOrder string) ([]ProxyWithProviderCount, int64, error)
+	GetAllProxies(ctx context.Context) ([]Proxy, error)
+	GetAllProxiesWithProviderCount(ctx context.Context) ([]ProxyWithProviderCount, error)
+	GetProxy(ctx context.Context, id int64) (*Proxy, error)
+	GetProxiesByIDs(ctx context.Context, ids []int64) ([]Proxy, error)
+	CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error)
+	UpdateProxy(ctx context.Context, id int64, input *UpdateProxyInput) (*Proxy, error)
+	DeleteProxy(ctx context.Context, id int64) error
+	BatchDeleteProxies(ctx context.Context, ids []int64) (*ProxyBatchDeleteResult, error)
+	GetProxyProviders(ctx context.Context, proxyID int64) ([]ProxyProviderSummary, error)
+	CheckProxyExists(ctx context.Context, host string, port int, username, password string) (bool, error)
+	TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error)
+	CheckProxyQuality(ctx context.Context, id int64) (*ProxyQualityCheckResult, error)
 }
 
 func NewProxyAdmin(repo ProxyRepository, prober ProxyExitInfoProber, cache ProxyLatencyCache, quality ProxyQualityProbe, options ProxyAdminOptions) *ProxyAdmin {
@@ -359,10 +378,7 @@ func finalizeProxyQualityResult(result *ProxyQualityCheckResult) {
 	if result == nil {
 		return
 	}
-	score := 100 - result.WarnCount*10 - result.FailedCount*22 - result.ChallengeCount*30
-	if score < 0 {
-		score = 0
-	}
+	score := max(100-result.WarnCount*10-result.FailedCount*22-result.ChallengeCount*30, 0)
 	result.Score = score
 	result.Grade = proxyQualityGrade(score)
 	result.Summary = fmt.Sprintf(

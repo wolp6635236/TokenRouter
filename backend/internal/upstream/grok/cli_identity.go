@@ -70,3 +70,33 @@ func ApplyCLIProxyHeaders(req *http.Request) {
 	req.Header.Set("x-grok-client-identifier", CLIClientIdentifier)
 	req.Header.Set("User-Agent", CLIUserAgent(version))
 }
+
+// DefaultGrokUpstreamUserAgent 返回固定的 Grok CLI 或工作区用户代理。
+// 请求头使用此身份覆盖入站客户端的 User-Agent。
+func DefaultGrokUpstreamUserAgent() string {
+	return CLIUserAgent(ResolveCLIVersion())
+}
+
+// ApplyDefaultGrokUpstreamHeaders 设置 Grok CLI 请求身份。
+func ApplyDefaultGrokUpstreamHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	// xAI 对话与 CLI 接口识别客户端字符串，因此请求头使用 Grok CLI 身份。
+	req.Header.Set("User-Agent", DefaultGrokUpstreamUserAgent())
+	req.Header.Set("x-grok-client-version", ResolveCLIVersion())
+	req.Header.Set("x-grok-client-identifier", CLIClientIdentifier)
+}
+
+// ApplyGrokRuntimeHeaders 设置运行时 Originator 和 Grok CLI 请求身份。
+func ApplyGrokRuntimeHeaders(req *http.Request, runtimeOriginator string) {
+	ApplyDefaultGrokUpstreamHeaders(req)
+	if req == nil {
+		return
+	}
+	// Originator 使用运行时配置，User-Agent 使用 Grok CLI 身份。
+	if originator := strings.TrimSpace(runtimeOriginator); originator != "" {
+		req.Header.Set("Originator", originator)
+	}
+	req.Header.Set("User-Agent", DefaultGrokUpstreamUserAgent())
+}

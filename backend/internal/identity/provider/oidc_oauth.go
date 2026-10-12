@@ -15,10 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/imroc/req/v3"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 type (
@@ -55,6 +56,12 @@ type OidcJWK struct {
 	X   string `json:"x"`
 	Y   string `json:"y"`
 }
+
+// OIDCClient 交换授权码、读取用户资料，并按配置的算法列表校验 ID Token。
+type OIDCClient struct{}
+
+// OIDCOptions 是 identity.OIDCOAuthOptions 的类型别名。
+type OIDCOptions = identity.OIDCOAuthOptions
 
 func OidcExchangeCode(
 	ctx context.Context,
@@ -319,7 +326,7 @@ func OidcAllowedSigningAlgs(raw string) []string {
 	}
 	seen := make(map[string]struct{})
 	out := make([]string, 0, 4)
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		alg := strings.ToUpper(strings.TrimSpace(part))
 		if alg == "" {
 			continue
@@ -472,9 +479,6 @@ func ContainsString(values []string, target string) bool {
 	}
 	return false
 }
-
-// OIDCClient 复用原 HTTP、JWK 与声明校验，不改变验证顺序或算法白名单。
-type OIDCClient struct{}
 
 func (OIDCClient) ExchangeCode(ctx context.Context, c OIDCOptions, code, redirect, verifier string) (*OidcTokenResponse, error) {
 	return OidcExchangeCode(ctx, c, code, redirect, verifier)

@@ -11,6 +11,8 @@ import (
 	wiregrok "github.com/TokenFlux/TokenRouter/internal/protocol/grok"
 )
 
+const grokDefaultAccessTokenTTL = 6 * time.Hour
+
 type GrokAuthorizationClient interface {
 	ExchangeCode(context.Context, string, string, string, string, string) (*wiregrok.TokenResponse, error)
 	RefreshToken(context.Context, string, string, string) (*wiregrok.TokenResponse, error)
@@ -36,6 +38,40 @@ type GrokAuthorization struct {
 	Options  GrokAuthorizationOptions
 	activity operationActivity
 }
+
+type GrokOAuthCapabilities struct {
+	PasswordAuthEnabled bool `json:"password_auth_enabled"`
+}
+
+type GrokAuthURLResult struct {
+	AuthURL   string `json:"auth_url"`
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+}
+
+type GrokExchangeCodeInput struct {
+	SessionID   string
+	Code        string
+	State       string
+	RedirectURI string
+	ProxyID     *int64
+}
+type GrokTokenInfo struct {
+	AccessToken       string `json:"access_token"`
+	RefreshToken      string `json:"refresh_token,omitempty"`
+	IDToken           string `json:"id_token,omitempty"`
+	TokenType         string `json:"token_type,omitempty"`
+	ExpiresIn         int64  `json:"expires_in"`
+	ExpiresAt         int64  `json:"expires_at"`
+	ClientID          string `json:"client_id,omitempty"`
+	Scope             string `json:"scope,omitempty"`
+	Email             string `json:"email,omitempty"`
+	Subject           string `json:"sub,omitempty"`
+	TeamID            string `json:"team_id,omitempty"`
+	SubscriptionTier  string `json:"subscription_tier,omitempty"`
+	EntitlementStatus string `json:"entitlement_status,omitempty"`
+}
+type GrokPasswordLoginResult = wiregrok.PasswordLoginResult
 
 func NewGrokAuthorization(client GrokAuthorizationClient, options GrokAuthorizationOptions) *GrokAuthorization {
 	return &GrokAuthorization{Store: NewGrokSessionStore(nil), Client: client, Options: options}
@@ -63,20 +99,8 @@ func (s *GrokAuthorization) proxyURL(ctx context.Context, id *int64) (string, er
 	return value, nil
 }
 
-const grokDefaultAccessTokenTTL = 6 * time.Hour
-
-type GrokOAuthCapabilities struct {
-	PasswordAuthEnabled bool `json:"password_auth_enabled"`
-}
-
 func (s *GrokAuthorization) GetCapabilities() GrokOAuthCapabilities {
 	return GrokOAuthCapabilities{PasswordAuthEnabled: s.Options.PasswordAuthEnabled()}
-}
-
-type GrokAuthURLResult struct {
-	AuthURL   string `json:"auth_url"`
-	SessionID string `json:"session_id"`
-	State     string `json:"state"`
 }
 
 func (s *GrokAuthorization) generateAuthURL(ctx context.Context, proxyID *int64, redirectURI string) (*GrokAuthURLResult, error) {
@@ -133,30 +157,6 @@ func (s *GrokAuthorization) generateAuthURL(ctx context.Context, proxyID *int64,
 		State:     state,
 	}, nil
 }
-
-type GrokExchangeCodeInput struct {
-	SessionID   string
-	Code        string
-	State       string
-	RedirectURI string
-	ProxyID     *int64
-}
-type GrokTokenInfo struct {
-	AccessToken       string `json:"access_token"`
-	RefreshToken      string `json:"refresh_token,omitempty"`
-	IDToken           string `json:"id_token,omitempty"`
-	TokenType         string `json:"token_type,omitempty"`
-	ExpiresIn         int64  `json:"expires_in"`
-	ExpiresAt         int64  `json:"expires_at"`
-	ClientID          string `json:"client_id,omitempty"`
-	Scope             string `json:"scope,omitempty"`
-	Email             string `json:"email,omitempty"`
-	Subject           string `json:"sub,omitempty"`
-	TeamID            string `json:"team_id,omitempty"`
-	SubscriptionTier  string `json:"subscription_tier,omitempty"`
-	EntitlementStatus string `json:"entitlement_status,omitempty"`
-}
-type GrokPasswordLoginResult = wiregrok.PasswordLoginResult
 
 func (s *GrokAuthorization) exchangeCode(ctx context.Context, input *GrokExchangeCodeInput) (*GrokTokenInfo, error) {
 	if input == nil {

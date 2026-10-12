@@ -6,16 +6,12 @@ import (
 	"testing"
 	"time"
 
-	identitytestkit "github.com/TokenFlux/TokenRouter/internal/identity/testkit"
-	"github.com/TokenFlux/TokenRouter/internal/notification"
-	"github.com/TokenFlux/TokenRouter/internal/notification/smtp"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
-	"github.com/stretchr/testify/require"
 )
 
 type redeemCodeRepoStub struct {
@@ -126,34 +122,6 @@ func (s *redeemCodeRepoStub) CreateUsage(context.Context, *billing.RedeemCodeUsa
 
 func (s *redeemCodeRepoStub) GetUsageByRedeemCodeAndUser(context.Context, int64, int64) (*billing.RedeemCodeUsage, error) {
 	return nil, nil
-}
-
-func newOAuthEmailFlowAuthService(
-	userRepo identity.UserRepository,
-	redeemRepo billing.RedeemCodeRepository,
-	refreshTokenCache identity.RefreshTokenCache,
-	settings map[string]string,
-	emailCache identity.EmailCache,
-) *identity.AuthService {
-	cfg := &config.Config{
-		JWT: config.JWTConfig{
-			Secret:                   "test-secret",
-			ExpireHour:               1,
-			AccessTokenExpireMinutes: 60,
-			RefreshTokenExpireDays:   7,
-		},
-		Default: config.DefaultConfig{
-			UserBalance:     3.5,
-			UserConcurrency: 2,
-		},
-	}
-
-	settingService := newAuthSettingsFixture(&settingRepoStub{values: settings}, cfg)
-	emailService := identity.NewEmailChallenges(emailCache, notification.NewMailer(&settingRepoStub{values: settings}, smtp.New()))
-
-	return identitytestkit.Auth(
-		nil, &identity.AuthDependencies{Users: userRepo, Redeem: redeemRepo, RefreshTokens: refreshTokenCache, Options: identitytestkit.AuthOptions(cfg), Settings: authSettingsPort(settingService), Email: identitytestkit.Email(emailService)}, // 替换原来的 nil
-	)
 }
 
 func TestRegisterOAuthEmailAccountRollsBackCreatedUserWhenTokenPairGenerationFails(t *testing.T) {

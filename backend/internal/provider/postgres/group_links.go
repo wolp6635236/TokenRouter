@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/lib/pq"
+
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 )
 
 // GroupLinks 在调用方连接中维护提供商关联，调用方负责提交和缓存失效。

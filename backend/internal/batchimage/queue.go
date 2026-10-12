@@ -38,11 +38,11 @@ type BatchImageQueue interface {
 	TryAcquireJobLock(ctx context.Context, batchID string, ttl time.Duration) (BatchImageJobLock, bool, error)
 }
 
-func IsValidBatchImageID(batchID string) bool {
-	return strings.HasPrefix(batchID, "imgbatch_") && len(batchID) > len("imgbatch_")
-}
-
 // BatchImageJobLockRefresher 明确报告续期时失去所有权。
 type BatchImageJobLockRefresher interface {
 	Refresh(context.Context, time.Duration) error
+}
+
+func IsValidBatchImageID(batchID string) bool {
+	return strings.HasPrefix(batchID, "imgbatch_") && len(batchID) > len("imgbatch_")
 }

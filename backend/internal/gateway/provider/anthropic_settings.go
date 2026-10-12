@@ -3,9 +3,8 @@ package provider
 import (
 	"slices"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
 // GatewayBetaPolicy 返回平台的 Beta 过滤规则。

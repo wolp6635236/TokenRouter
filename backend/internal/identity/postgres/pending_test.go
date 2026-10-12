@@ -7,16 +7,15 @@ import (
 	"testing"
 	"time"
 
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/enttest"
 	"github.com/TokenFlux/TokenRouter/ent/identityadoptiondecision"
-	"github.com/stretchr/testify/require"
-
-	"entgo.io/ent/dialect"
-	entsql "entgo.io/ent/dialect/sql"
-	_ "modernc.org/sqlite"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 func newAuthPendingIdentityServiceTestClient(t *testing.T) (*AuthPendingIdentityService, *dbent.Client) {

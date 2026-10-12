@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
@@ -39,15 +40,15 @@ type ForwardedSettings struct {
 	options     ForwardedSettingsOptions
 }
 
-// NewForwardedSettings 构造不回源，启动时由 app 显式加载。
-func NewForwardedSettings(repo ForwardedSettingsRepository, options ForwardedSettingsOptions) *ForwardedSettings {
-	return &ForwardedSettings{settingRepo: repo, options: options}
-}
-
 // ForwardedInput 只保存客户端地址管理字段。
 type ForwardedInput struct {
 	APIKeyACLTrustForwardedIP bool     `json:"api_key_acl_trust_forwarded_ip"`
 	ForwardedClientIPHeaders  []string `json:"forwarded_client_ip_headers"`
+}
+
+// NewForwardedSettings 构造不回源，启动时由 app 显式加载。
+func NewForwardedSettings(repo ForwardedSettingsRepository, options ForwardedSettingsOptions) *ForwardedSettings {
+	return &ForwardedSettings{settingRepo: repo, options: options}
 }
 
 // PrepareForwardedSettings 使用同一名称校验和 JSON 编码，不发布运行状态。
@@ -172,4 +173,25 @@ func (s *ForwardedSettings) LoadForwardedClientIPSettings(ctx context.Context) e
 
 	s.options.Publish(enabled, headers)
 	return headersErr
+}
+
+// ReadForwardedSettings 用持久化设置覆盖当前值，Header 解析失败时关闭转发 IP 信任。
+func ReadForwardedSettings(settings map[string]string, prior ForwardedInput) ForwardedInput {
+	apiKeyACLTrustForwardedIP := prior.APIKeyACLTrustForwardedIP
+	forwardedClientIPHeaders := prior.ForwardedClientIPHeaders
+	if value, ok := settings[SettingKeyAPIKeyACLTrustForwardedIP]; ok {
+		apiKeyACLTrustForwardedIP = value == "true"
+	}
+	if value, ok := settings[SettingKeyForwardedClientIPHeaders]; ok {
+		parsed, err := ParseForwardedHeaders(value)
+		if err != nil {
+			slog.Error("invalid persisted forwarded client IP headers; forwarded trust disabled", "error", err)
+			apiKeyACLTrustForwardedIP = false
+			forwardedClientIPHeaders = []string{}
+		} else {
+			forwardedClientIPHeaders = parsed
+		}
+	}
+
+	return ForwardedInput{APIKeyACLTrustForwardedIP: apiKeyACLTrustForwardedIP, ForwardedClientIPHeaders: forwardedClientIPHeaders}
 }

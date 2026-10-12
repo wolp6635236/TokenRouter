@@ -7,10 +7,10 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
-
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
 // ResponsesLiteValidationError 记录 Responses Lite 校验失败对应的请求字段。

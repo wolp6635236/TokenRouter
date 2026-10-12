@@ -3,8 +3,9 @@ package provider
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
 )
 
 // TestArchiveIdentityHintsDoNotReplaceExplicitValues 检查 ID Token 补齐导入提示时保持平台、类型和已有非空值。

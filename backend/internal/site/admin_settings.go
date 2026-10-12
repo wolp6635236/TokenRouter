@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// 站点管理和公开设置共用以下存储键。
+const (
+	SettingKeyFrontendURL = "frontend_url"
+)
+
 // AdminSettings 包含站点展示和登录协议设置。
 type AdminSettings struct {
 	APIBaseURL                  string                   `json:"api_base_url"`
@@ -34,11 +39,6 @@ type AdminSettings struct {
 	TableDefaultPageSize        int                      `json:"table_default_page_size"`
 	TablePageSizeOptions        []int                    `json:"table_page_size_options"`
 }
-
-// 站点管理和公开设置共用以下存储键。
-const (
-	SettingKeyFrontendURL = "frontend_url"
-)
 
 // PrepareAdminSettings 规范化登录协议和表格配置，生成站点待保存值。
 func PrepareAdminSettings(settings *AdminSettings) (map[string]string, error) {

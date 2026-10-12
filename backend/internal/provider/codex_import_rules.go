@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -64,7 +65,7 @@ func parseCodexSessionImportContent(content string) ([]any, error) {
 
 func parseCodexSessionImportLines(content string) ([]any, error) {
 	values := make([]any, 0)
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -544,12 +545,8 @@ func BuildCodexAgentIdentityKeys(providerID string) []string {
 
 func MergeCodexImportMap(existing, incoming map[string]any) map[string]any {
 	out := make(map[string]any, len(existing)+len(incoming))
-	for k, v := range existing {
-		out[k] = v
-	}
-	for k, v := range incoming {
-		out[k] = v
-	}
+	maps.Copy(out, existing)
+	maps.Copy(out, incoming)
 	return CloneValues(out)
 }
 

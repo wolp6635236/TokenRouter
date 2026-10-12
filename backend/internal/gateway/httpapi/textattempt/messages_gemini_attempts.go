@@ -5,22 +5,20 @@ import (
 	"errors"
 	"net/http"
 
+	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-
-	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
-	"go.uber.org/zap"
 )
 
 // geminiMessageAttemptBridge 不注册 Anthropic 空闲会话，不扩大部分失败完成资格。
@@ -165,8 +163,7 @@ func (b *geminiMessageAttemptBridge) Forward(state textflow.AttemptState) textfl
 	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: b.c.Writer.Size() != b.writerSizeBeforeForward}
 	out.Attempt.HTTPCommitted = b.c.Writer.Written()
 	out.Attempt.RetryCommitted = out.OutputChanged
-	var retry *forwardcore.UpstreamFailoverError
-	if errors.As(err, &retry) {
+	if retry, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		out.Failure = &textflow.AttemptFailure{Cause: retry, Policy: retry.RetryFailure()}
 	}
 	return out

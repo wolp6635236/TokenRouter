@@ -4,16 +4,50 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	"github.com/TokenFlux/TokenRouter/internal/batchimage"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
+
+const (
+	batchImageJobColumns = `
+id, batch_id, user_id, billing_user_id, team_id, api_key_id, provider_id, group_id, platform, model, requested_model, internal_model, task_name, parent_batch_id, status,
+provider_job_name, provider_input_ref, provider_output_ref, gcs_input_uri, gcs_output_uri,
+item_count, success_count, fail_count, cancelled_count,
+estimated_cost, hold_amount, actual_cost, allowance_reserved,
+balance_hold_amount, subscription_hold_allocations,
+subscription_rate_multiplier, balance_rate_multiplier, plan_group_rate_multiplier_enabled,
+base_unit_price, group_rate_multiplier, provider_rate_multiplier,
+batch_discount_multiplier, hold_multiplier, billable_unit_price, hold_unit_price,
+pricing_snapshot_version,
+currency, hold_id,
+idempotency_key, request_hash, manifest_hash,
+retry_count, version, session_id, output_expires_at, input_deleted_at, output_deleted_at, downloaded_at, user_deleted_at,
+last_error_code, last_error_message,
+billing_mode, preferred_subscription_id,
+created_at, updated_at, submitted_at, started_at, finished_at, settled_at`
+
+	batchImageJobSelectSQL = `SELECT ` + batchImageJobColumns + ` FROM batch_image_jobs`
+
+	batchImageItemColumns = `
+id, job_id, custom_id, status, request_hash, prompt_preview, provider_source_object,
+source_line_number, source_byte_offset, source_byte_length,
+mime_type, file_extension, image_count,
+error_code, error_message, billed_amount,
+created_at, indexed_at`
+
+	batchImageItemSelectSQL = `SELECT ` + batchImageItemColumns + ` FROM batch_image_items`
+)
+
+var _ batchimage.BatchImageRepository = (*Repository)(nil)
 
 type SQLExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -26,9 +60,30 @@ type Repository struct {
 	sql SQLExecutor
 }
 
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// translatePersistenceError 将数据库的缺失记录和唯一键冲突转换为应用错误。
+func translatePersistenceError(err error, notFound, conflict *apperror.ApplicationError) error {
+	if err == nil {
+		return nil
+	}
+	if notFound != nil && (errors.Is(err, sql.ErrNoRows) || ent.IsNotFound(err)) {
+		return notFound.WithCause(err)
+	}
+	if conflict != nil && postgres.IsUniqueConstraintViolation(err) {
+		return conflict.WithCause(err)
+	}
+	return err
+}
+
 func NewBatchImageRepository(db *sql.DB) batchimage.BatchImageRepository {
 	return &Repository{db: db, sql: db}
 }
+
+// NewRepositoryWithSQL 参与已有 SQL 执行器；不会在构造时获取连接或启动任务。
+func NewRepositoryWithSQL(sqlq SQLExecutor) *Repository { return &Repository{sql: sqlq} }
 
 func (r *Repository) CreateBatchImageJob(ctx context.Context, params batchimage.CreateBatchImageJobParams) (*batchimage.BatchImageJob, error) {
 	if !batchimage.IsSupportedBatchImageProvider(params.Platform) {
@@ -848,29 +903,6 @@ VALUES ($1, $2, $3)`, batchID, eventType, payloadArg)
 	return err
 }
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-const batchImageJobColumns = `
-id, batch_id, user_id, billing_user_id, team_id, api_key_id, provider_id, group_id, platform, model, requested_model, internal_model, task_name, parent_batch_id, status,
-provider_job_name, provider_input_ref, provider_output_ref, gcs_input_uri, gcs_output_uri,
-item_count, success_count, fail_count, cancelled_count,
-estimated_cost, hold_amount, actual_cost, allowance_reserved,
-balance_hold_amount, subscription_hold_allocations,
-subscription_rate_multiplier, balance_rate_multiplier, plan_group_rate_multiplier_enabled,
-base_unit_price, group_rate_multiplier, provider_rate_multiplier,
-batch_discount_multiplier, hold_multiplier, billable_unit_price, hold_unit_price,
-pricing_snapshot_version,
-currency, hold_id,
-idempotency_key, request_hash, manifest_hash,
-retry_count, version, session_id, output_expires_at, input_deleted_at, output_deleted_at, downloaded_at, user_deleted_at,
-last_error_code, last_error_message,
-billing_mode, preferred_subscription_id,
-created_at, updated_at, submitted_at, started_at, finished_at, settled_at`
-
-const batchImageJobSelectSQL = `SELECT ` + batchImageJobColumns + ` FROM batch_image_jobs`
-
 func scanBatchImageJob(row rowScanner) (*batchimage.BatchImageJob, error) {
 	var job batchimage.BatchImageJob
 	var teamID, apiKeyID, providerID, groupID sql.NullInt64
@@ -958,15 +990,6 @@ func scanBatchImageJobs(rows *sql.Rows) ([]*batchimage.BatchImageJob, error) {
 	return jobs, nil
 }
 
-const batchImageItemColumns = `
-id, job_id, custom_id, status, request_hash, prompt_preview, provider_source_object,
-source_line_number, source_byte_offset, source_byte_length,
-mime_type, file_extension, image_count,
-error_code, error_message, billed_amount,
-created_at, indexed_at`
-
-const batchImageItemSelectSQL = `SELECT ` + batchImageItemColumns + ` FROM batch_image_items`
-
 func scanBatchImageItem(row rowScanner) (*batchimage.BatchImageItem, error) {
 	var item batchimage.BatchImageItem
 	var requestHash, promptPreview, providerSourceObject sql.NullString
@@ -1037,8 +1060,3 @@ func batchImageNullTimePtr(v sql.NullTime) *time.Time {
 	}
 	return &v.Time
 }
-
-var _ batchimage.BatchImageRepository = (*Repository)(nil)
-
-// NewRepositoryWithSQL 参与已有 SQL 执行器；不会在构造时获取连接或启动任务。
-func NewRepositoryWithSQL(sqlq SQLExecutor) *Repository { return &Repository{sql: sqlq} }

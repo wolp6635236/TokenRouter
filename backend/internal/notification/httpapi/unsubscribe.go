@@ -5,9 +5,15 @@ import (
 	"net/http"
 	"strings"
 
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
+
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
+
+// RegisterUnsubscribeRoute 在公开设置路由组登记邮件退订处理器。
+func RegisterUnsubscribeRoute(group *gin.RouterGroup, endpoint *Handler) {
+	group.GET("/email-unsubscribe", endpoint.UnsubscribeNotificationEmail)
+}
 
 // UnsubscribeNotificationEmail 处理可选通知邮件的退订请求。
 // GET /api/v1/settings/email-unsubscribe?token=...

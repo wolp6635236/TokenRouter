@@ -5,13 +5,51 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	keydto "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	groupdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
+
+// BatchSetGroupRateMultipliersRequest represents batch set rate multipliers request.
+type BatchSetGroupRateMultipliersRequest struct {
+	Entries []billing.GroupRateMultiplierInput `json:"entries" binding:"required"`
+}
+
+// BatchSetGroupRPMOverridesRequest represents batch set rpm_override request.
+type BatchSetGroupRPMOverridesRequest struct {
+	Entries []billing.GroupRPMOverrideInput `json:"entries" binding:"required"`
+}
+
+// GroupUsageSummary 只表达现有管理响应，聚合查询仍由用量能力提供。
+type GroupUsageSummary struct {
+	GroupID       int64   `json:"group_id"`
+	TodayCost     float64 `json:"today_cost"`
+	YesterdayCost float64 `json:"yesterday_cost"`
+	TotalCost     float64 `json:"total_cost"`
+}
+type GroupRateAdministration interface {
+	GetGroupRateMultipliers(context.Context, int64) ([]billing.UserGroupRateEntry, error)
+	ClearGroupRateMultipliers(context.Context, int64) error
+	BatchSetGroupRateMultipliers(context.Context, int64, []billing.GroupRateMultiplierInput) error
+	BatchSetGroupRPMOverrides(context.Context, int64, []billing.GroupRPMOverrideInput) error
+	ClearGroupRPMOverrides(context.Context, int64) error
+}
+
+// GroupResources 提供分组容量和关联资源的查询接口。
+type GroupResources struct {
+	Capacity interface {
+		GetAllGroupCapacity(context.Context) ([]routing.GroupCapacitySummary, error)
+	}
+	Keys           func(context.Context, int64, int, int) ([]keydto.APIKey[groupdto.Group], int64, error)
+	Rates          GroupRateAdministration
+	UsageSummary   func(context.Context, time.Time) ([]GroupUsageSummary, error)
+	Today          func() time.Time
+	LiveCapability func(context.Context) error
+}
 
 // GetLiveCapability 返回当前服务端是否具备生成 Live attestation 的运行环境。
 func (h *GroupHandler) GetLiveCapability(c *gin.Context) {
@@ -106,11 +144,6 @@ func (h *GroupHandler) ClearGroupRateMultipliers(c *gin.Context) {
 	response.Success(c, gin.H{"message": "Rate multipliers cleared successfully"})
 }
 
-// BatchSetGroupRateMultipliersRequest represents batch set rate multipliers request
-type BatchSetGroupRateMultipliersRequest struct {
-	Entries []billing.GroupRateMultiplierInput `json:"entries" binding:"required"`
-}
-
 // BatchSetGroupRateMultipliers handles batch setting rate multipliers for a group
 // PUT /api/v1/admin/groups/:id/rate-multipliers
 func (h *GroupHandler) BatchSetGroupRateMultipliers(c *gin.Context) {
@@ -132,11 +165,6 @@ func (h *GroupHandler) BatchSetGroupRateMultipliers(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "Rate multipliers updated successfully"})
-}
-
-// BatchSetGroupRPMOverridesRequest represents batch set rpm_override request
-type BatchSetGroupRPMOverridesRequest struct {
-	Entries []billing.GroupRPMOverrideInput `json:"entries" binding:"required"`
 }
 
 // BatchSetGroupRPMOverrides handles batch setting rpm_override for users in a group
@@ -177,31 +205,4 @@ func (h *GroupHandler) ClearGroupRPMOverrides(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "RPM overrides cleared successfully"})
-}
-
-// GroupUsageSummary 只表达现有管理响应，聚合查询仍由用量能力提供。
-type GroupUsageSummary struct {
-	GroupID       int64   `json:"group_id"`
-	TodayCost     float64 `json:"today_cost"`
-	YesterdayCost float64 `json:"yesterday_cost"`
-	TotalCost     float64 `json:"total_cost"`
-}
-type GroupRateAdministration interface {
-	GetGroupRateMultipliers(context.Context, int64) ([]billing.UserGroupRateEntry, error)
-	ClearGroupRateMultipliers(context.Context, int64) error
-	BatchSetGroupRateMultipliers(context.Context, int64, []billing.GroupRateMultiplierInput) error
-	BatchSetGroupRPMOverrides(context.Context, int64, []billing.GroupRPMOverrideInput) error
-	ClearGroupRPMOverrides(context.Context, int64) error
-}
-
-// GroupResources 提供分组容量和关联资源的查询接口。
-type GroupResources struct {
-	Capacity interface {
-		GetAllGroupCapacity(context.Context) ([]routing.GroupCapacitySummary, error)
-	}
-	Keys           func(context.Context, int64, int, int) ([]keydto.APIKey[groupdto.Group], int64, error)
-	Rates          GroupRateAdministration
-	UsageSummary   func(context.Context, time.Time) ([]GroupUsageSummary, error)
-	Today          func() time.Time
-	LiveCapability func(context.Context) error
 }

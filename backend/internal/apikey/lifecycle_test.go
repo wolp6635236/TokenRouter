@@ -16,15 +16,21 @@ type lifecycleLookup struct {
 	entered, release chan struct{}
 }
 
+type lifecycleSubscription struct {
+	APIKeyCache
+	entered, cancelled chan struct{}
+}
+
+type lifecycleOutbox struct {
+	AuthCacheInvalidationOutboxRepository
+	entered, release chan struct{}
+	claims           atomic.Int64
+}
+
 func (r *lifecycleLookup) GetByKeyForAuth(context.Context, string) (*APIKey, error) {
 	close(r.entered)
 	<-r.release
 	return nil, ErrAPIKeyNotFound
-}
-
-type lifecycleSubscription struct {
-	APIKeyCache
-	entered, cancelled chan struct{}
 }
 
 func (c *lifecycleSubscription) SubscribeAuthCacheInvalidation(ctx context.Context, _ func(string)) error {
@@ -110,18 +116,11 @@ func TestAuthenticationConcurrentStartStop(t *testing.T) {
 		service := NewAPIKeyService(nil, nil, nil, nil, nil, nil, nil)
 		var callers sync.WaitGroup
 		for range 4 {
-			callers.Add(1)
-			go func() { defer callers.Done(); service.Start(); service.Stop() }()
+			callers.Go(func() { ; service.Start(); service.Stop() })
 		}
 		callers.Wait()
 		require.True(t, service.operations.isStopping())
 	}
-}
-
-type lifecycleOutbox struct {
-	AuthCacheInvalidationOutboxRepository
-	entered, release chan struct{}
-	claims           atomic.Int64
 }
 
 func (r *lifecycleOutbox) Claim(ctx context.Context, _ string, _ int, _ time.Duration) ([]AuthCacheInvalidationEvent, error) {

@@ -11,9 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/stretchr/testify/require"
 )
 
 type executionSink struct {
@@ -21,6 +22,14 @@ type executionSink struct {
 	events []upstream.OutputEvent
 	fail   bool
 }
+
+type executionBody struct {
+	io.ReadCloser
+	closes *atomic.Int32
+}
+
+// failedAfterPayload 在读完载荷后模拟连接中断。
+type failedAfterPayload struct{ io.Reader }
 
 func (s *executionSink) Begin(upstream.OutputHead) error { return nil }
 func (s *executionSink) Emit(e upstream.OutputEvent) error {
@@ -30,11 +39,6 @@ func (s *executionSink) Emit(e upstream.OutputEvent) error {
 	}
 	_, _ = s.body.Write(e.Data)
 	return nil
-}
-
-type executionBody struct {
-	io.ReadCloser
-	closes *atomic.Int32
 }
 
 func (b *executionBody) Close() error { b.closes.Add(1); return b.ReadCloser.Close() }
@@ -98,7 +102,7 @@ func TestExecuteDisconnectedStreamStillObservesTailUsage(t *testing.T) {
 	body := "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]}}]}}\n\ndata: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":4}}}\n\n"
 	var closes, releases atomic.Int32
 	target := &Target{Mode: ModeClaudeResponse, Response: executionResponseOptions(), Enter: func() (func(), error) { return func() { releases.Add(1) }, nil }, Exchange: func(context.Context) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: &executionBody{ReadCloser: io.NopCloser(strings.NewReader(body)), closes: &closes}}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: &executionBody{ReadCloser: io.NopCloser(strings.NewReader(body)), closes: &closes}}, nil
 	}}
 	result, err := (Executor{}).Execute(context.Background(), upstream.AttemptInput{Protocol: protocol.ProtocolAnthropicMessages, ResponseModel: "fixture", Stream: true, Target: target}, &executionSink{fail: true})
 	require.NoError(t, err)
@@ -114,7 +118,7 @@ func TestExecuteFailedBeforeResponseReleasesOwnedBody(t *testing.T) {
 	var closes, releases atomic.Int32
 	want := errors.New("policy rejected")
 	target := &Target{Response: executionResponseOptions(), Enter: func() (func(), error) { return func() { releases.Add(1) }, nil }, Exchange: func(context.Context) (*http.Response, error) {
-		return &http.Response{StatusCode: 403, Header: http.Header{}, Body: &executionBody{ReadCloser: io.NopCloser(strings.NewReader("denied")), closes: &closes}}, nil
+		return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}, Body: &executionBody{ReadCloser: io.NopCloser(strings.NewReader("denied")), closes: &closes}}, nil
 	}, BeforeResponse: func(context.Context, *http.Response) (bool, error) { return true, want }}
 	result, err := (Executor{}).Execute(context.Background(), upstream.AttemptInput{Protocol: protocol.ProtocolAnthropicMessages, Target: target}, &executionSink{})
 	require.ErrorIs(t, err, want)
@@ -123,9 +127,6 @@ func TestExecuteFailedBeforeResponseReleasesOwnedBody(t *testing.T) {
 	require.EqualValues(t, 1, closes.Load())
 	require.EqualValues(t, 1, releases.Load())
 }
-
-// failedAfterPayload 在读完载荷后模拟连接中断。
-type failedAfterPayload struct{ io.Reader }
 
 func (r failedAfterPayload) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
@@ -138,7 +139,7 @@ func (r failedAfterPayload) Read(p []byte) (int, error) {
 func TestExecutePartialUsageSurvivesReadFailure(t *testing.T) {
 	body := "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":9}}}\n\ndata: {\"response\":{\"usageMetadata\":{\"candidatesTokenCount\":4}}}\n\n"
 	target := &Target{Mode: ModeClaudeResponse, Response: executionResponseOptions(), Exchange: func(context.Context) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(failedAfterPayload{Reader: strings.NewReader(body)})}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(failedAfterPayload{Reader: strings.NewReader(body)})}, nil
 	}}
 	result, err := (Executor{}).Execute(context.Background(), upstream.AttemptInput{Protocol: protocol.ProtocolAnthropicMessages, Stream: true, ResponseModel: "fixture", Target: target}, &executionSink{})
 	require.ErrorIs(t, err, io.ErrUnexpectedEOF)

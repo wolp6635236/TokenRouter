@@ -4,9 +4,10 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // CodexInviteResetCommands 是管理 HTTP 对提供商用例的窄操作接口。
@@ -21,11 +22,6 @@ type CodexInviteResetHandler struct {
 	service CodexInviteResetCommands
 }
 
-// NewCodexInviteResetHandler 创建 Codex 邀请重置管理处理器。
-func NewCodexInviteResetHandler(service CodexInviteResetCommands) *CodexInviteResetHandler {
-	return &CodexInviteResetHandler{service: service}
-}
-
 type codexInviteResetInviteRequest struct {
 	Emails []string `json:"emails" binding:"required"`
 }
@@ -33,6 +29,11 @@ type codexInviteResetInviteRequest struct {
 type codexInviteResetConsumeRequest struct {
 	// CreditID 可选；没有 credit 明细时由上游自动选择可用的重置机会。
 	CreditID string `json:"credit_id"`
+}
+
+// NewCodexInviteResetHandler 创建 Codex 邀请重置管理处理器。
+func NewCodexInviteResetHandler(service CodexInviteResetCommands) *CodexInviteResetHandler {
+	return &CodexInviteResetHandler{service: service}
 }
 
 // GetStatus 查询当前提供商的邀请资格和可用重置次数。

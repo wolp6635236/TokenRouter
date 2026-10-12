@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+var (
+	openCodeGoUsageLimitResetPattern        = regexp.MustCompile(`(?i)\bresets\s+in\s+`)
+	openCodeGoUsageLimitDurationPartPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\b`)
+)
+
 // ParseUsageLimitResetTime 解析 OpenAI 兼容格式的 429 响应，返回重置时间的 Unix 时间戳
 // OpenAI 的 usage_limit_reached 错误格式：
 //
@@ -149,8 +154,3 @@ func ParseUsageLimitPlanType(body []byte) string {
 	planType, _ := errObj["plan_type"].(string)
 	return strings.ToLower(strings.TrimSpace(planType))
 }
-
-var (
-	openCodeGoUsageLimitResetPattern        = regexp.MustCompile(`(?i)\bresets\s+in\s+`)
-	openCodeGoUsageLimitDurationPartPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\b`)
-)

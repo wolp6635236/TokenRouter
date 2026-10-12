@@ -1,12 +1,38 @@
 package httpapi
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/compact"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+const (
+	openAINativeCompactionV2Key     = "openai_native_compaction_v2"
+	openAIRemoteCompactionV2Feature = "remote_compaction_v2"
+)
+
+// CompactFallbackErrorResponse 将压缩恢复信号转换为 HTTP 错误。
+func CompactFallbackErrorResponse(resp *http.Response, signal *compact.Failure) (*http.Response, []byte) {
+	headers := make(http.Header)
+	if resp != nil {
+		headers = resp.Header.Clone()
+	}
+	if headers.Get("Content-Type") == "" {
+		headers.Set("Content-Type", "application/json")
+	}
+	payload := compact.NormalizeHTTPErrorPayload(signal)
+	return &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     headers,
+		Body:       io.NopCloser(bytes.NewReader(payload)),
+	}, payload
+}
 
 // MarkOpenAINativeCompactionV2 标记当前请求为原生 V2 压缩协议。
 func MarkOpenAINativeCompactionV2(c *gin.Context) {
@@ -51,6 +77,3 @@ func ApplyOpenAICodexBetaFeatures(c *gin.Context, oauthLike bool, h http.Header)
 	}
 	h.Set("x-codex-beta-features", openAIRemoteCompactionV2Feature)
 }
-
-const openAINativeCompactionV2Key = "openai_native_compaction_v2"
-const openAIRemoteCompactionV2Feature = "remote_compaction_v2"

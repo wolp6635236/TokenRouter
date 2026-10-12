@@ -3,12 +3,11 @@ package app
 import (
 	"context"
 
-	moderationcore "github.com/TokenFlux/TokenRouter/internal/moderation"
-
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/audit"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	moderationcore "github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )

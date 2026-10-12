@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"maps"
 	"time"
+
+	"github.com/lib/pq"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
@@ -11,8 +14,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/usersubscription"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/lib/pq"
 )
+
+var _ billing.UserSubscriptionRepository = (*SubscriptionStore)(nil)
 
 type SubscriptionStore struct {
 	client *dbent.Client
@@ -739,10 +743,6 @@ func cloneInt64Float64Map(in map[int64]float64) map[int64]float64 {
 		return map[int64]float64{}
 	}
 	out := make(map[int64]float64, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
-
-var _ billing.UserSubscriptionRepository = (*SubscriptionStore)(nil)

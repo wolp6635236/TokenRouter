@@ -36,8 +36,7 @@ func SanitizeStreamError(err error) string {
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return "connection refused"
 	}
-	var netErr *net.OpError
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[*net.OpError](err); ok {
 		if netErr.Timeout() {
 			if netErr.Op != "" {
 				return netErr.Op + " timeout"

@@ -25,6 +25,8 @@ class FormatGoTest(unittest.TestCase):
         for name in (
             "tools/format_go.py", "tools/golangci-lint.sh",
             "backend/.golangci.yml", ".golangci-version",
+            "tools/declorder/go.mod", "tools/declorder/go.sum",
+            "tools/declorder/main.go", "tools/declorder/reorder.go",
         ):
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +125,35 @@ func names(first string, second string) {}
         result = self.run_formatter("--check")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_reorders_top_level_declarations(self):
+        self.write("order.go", """package sample
+
+func Read() int { return limit }
+
+const limit = 1
+
+var first = 1
+
+var second = 2
+""")
+        result = self.run_formatter("--check")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        result = self.run_formatter()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / "order.go").read_text(), """package sample
+
+const limit = 1
+
+var (
+	first  = 1
+	second = 2
+)
+
+func Read() int { return limit }
+""")
+        result = self.run_formatter("--check")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_invalid_base_and_wrong_tool_version_fail(self):
         result = self.run_formatter("--check", "--base", "missing-ref")
         self.assertNotEqual(result.returncode, 0)
@@ -132,8 +163,8 @@ func names(first string, second string) {}
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.root / "new.go").read_text(), SOURCE)
 
-    def test_full_lint_exclusion_keeps_incremental_format_check(self):
-        # 全量 lint 可以接受历史空行，但改动文件的格式检查必须仍然报错。
+    def test_full_lint_reports_format_issues(self):
+        # 全量 lint 和改动文件的格式检查都报告多余的空行。
         self.write("lintfixture/go.mod", "module example.com/formatfixture\n\ngo 1.27.0\n")
         self.write("lintfixture/value.go", "package sample\n\nfunc Read() int {\n\n\treturn 1\n\n}\n")
         result = subprocess.run(
@@ -141,7 +172,8 @@ func names(first string, second string) {}
              "--config", str(self.root / "backend/.golangci.yml"), "--timeout=2m", "./..."],
             cwd=self.root / "lintfixture", capture_output=True, text=True,
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("(gofumpt)", result.stdout)
         result = self.run_formatter("--check")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 

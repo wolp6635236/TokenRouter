@@ -3,13 +3,14 @@ package httpapi
 import (
 	"errors"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeldisplay"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
 )
 
 // QoderErrorPresenter 使用错误展示函数，并接收供应商识别和目录读取接口。
@@ -51,8 +52,7 @@ func (p QoderErrorPresenter) Details(c *gin.Context, err error) (int, string, st
 
 // Failure 映射原 Chat 完整链的失败阶段与 Retry-After。
 func (p QoderErrorPresenter) Failure(c *gin.Context, err error) *HTTPFailure {
-	var direct *HTTPFailure
-	if errors.As(err, &direct) {
+	if direct, ok := errors.AsType[*HTTPFailure](err); ok {
 		return direct
 	}
 	result := &HTTPFailure{Status: 502, Type: "upstream_error", Message: "Upstream request failed"}

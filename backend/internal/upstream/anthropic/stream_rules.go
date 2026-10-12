@@ -97,7 +97,7 @@ func RewriteCacheCreationJSON(usageObj map[string]any, target string) bool {
 }
 
 // ReconcileCachedTokens 兼容 Kimi 等上游：
-// 将 OpenAI 风格的 cached_tokens 映射到 Claude 标准的 cache_read_input_tokens
+// 将 OpenAI 风格的 cached_tokens 映射到 Claude 标准的 cache_read_input_tokens。
 func ReconcileCachedTokens(usage map[string]any) bool {
 	if usage == nil {
 		return false

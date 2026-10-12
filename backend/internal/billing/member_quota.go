@@ -3,7 +3,15 @@ package billing
 import (
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+)
+
+var (
+	ErrTeamMemberDailyExceeded   = apperror.TooManyRequests("TEAM_MEMBER_DAILY_LIMIT_EXCEEDED", "The team member daily limit has been reached")
+	ErrTeamMemberMonthlyExceeded = apperror.TooManyRequests("TEAM_MEMBER_MONTHLY_LIMIT_EXCEEDED", "The team member monthly limit has been reached")
+	ErrTeamMemberWeeklyExceeded  = apperror.TooManyRequests("TEAM_MEMBER_WEEKLY_LIMIT_EXCEEDED", "The team member weekly limit has been reached")
+	ErrTeamMembershipRequired    = apperror.Forbidden("TEAM_MEMBERSHIP_REQUIRED", "Team membership is required")
 )
 
 // MemberQuotaSnapshot 只描述成员资金窗口，团队角色和是否检查由调用用例决定。

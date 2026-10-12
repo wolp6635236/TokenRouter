@@ -3,13 +3,14 @@
 package app
 
 import (
+	"github.com/google/wire"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billinghttpapi "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 	billingredis "github.com/TokenFlux/TokenRouter/internal/billing/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/google/wire"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 // billingAssemblyProviders 汇总 billing 模块的 Wire provider。

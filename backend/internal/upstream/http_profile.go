@@ -2,18 +2,20 @@ package upstream
 
 import "context"
 
-// HTTPUpstreamProfile 标记需要 provider 专用传输策略的 HTTP 上游请求。
-type HTTPUpstreamProfile string
-
 const (
 	HTTPUpstreamProfileDefault HTTPUpstreamProfile = ""
 	HTTPUpstreamProfileOpenAI  HTTPUpstreamProfile = "openai"
 	HTTPUpstreamProfileGrok    HTTPUpstreamProfile = "grok"
 )
 
-type httpUpstreamProfileContextKey struct{}
-type httpUpstreamDisableRedirectsContextKey struct{}
-type httpUpstreamPublicHostsOnlyContextKey struct{}
+// HTTPUpstreamProfile 标记需要 provider 专用传输策略的 HTTP 上游请求。
+type HTTPUpstreamProfile string
+
+type (
+	httpUpstreamProfileContextKey          struct{}
+	httpUpstreamDisableRedirectsContextKey struct{}
+	httpUpstreamPublicHostsOnlyContextKey  struct{}
+)
 
 // WithHTTPUpstreamProfile 将上游传输 profile 写入 context。
 func WithHTTPUpstreamProfile(ctx context.Context, profile HTTPUpstreamProfile) context.Context {

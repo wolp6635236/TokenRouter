@@ -7,28 +7,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	mediaprovider "github.com/TokenFlux/TokenRouter/internal/gateway/media/provider"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	mediaprovider "github.com/TokenFlux/TokenRouter/internal/gateway/media/provider"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 const (
 	openAIImagesGenerationsURL = "https://api.openai.com/v1/images/generations"
 	openAIImagesEditsURL       = "https://api.openai.com/v1/images/edits"
 )
+
+// OpenAIImagesExecutor 执行单次图片请求，绑定请求构造、响应输出和工具冷却。
+type OpenAIImagesExecutor struct {
+	Requests *OpenAIRequests
+	Output   *OpenAIResponseOutput
+	Cooldown *provideradapter.ImageToolCooldown
+	Enter    func() (func(), error)
+}
 
 func (s *OpenAIImagesExecutor) ForwardImages(
 	ctx context.Context,
@@ -225,6 +231,6 @@ func (s *OpenAIImagesExecutor) buildOpenAIImagesRequest(
 	}
 
 	options := s.Requests.ResponseOptions(ctx, c, provider, token, targetURL, false, tlsRouterMatch...)
-	options.AllowHeader = func(name string) bool { return AllowOpenAIPassthroughHeader(name) }
+	options.AllowHeader = AllowOpenAIPassthroughHeader
 	return upstreamopenai.BuildImagesRequest(ctx, body, contentType, options)
 }

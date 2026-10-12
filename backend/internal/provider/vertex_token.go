@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+const VertexLockWaitTime = 200 * time.Millisecond
+
+// VertexTokenOptions 提供本次请求的身份和 token 交换接口。
+type VertexTokenOptions struct {
+	ProviderID int64
+	CacheKey   string
+	Cache      AccessTokenCache
+	Exchange   func(context.Context) (string, time.Duration, error)
+	Warn       func(string, ...any)
+}
+
 func VertexServiceAccountCacheKey(providerID int64, email, keyID string, hasKey bool) string {
 	fingerprint := ""
 	if hasKey {
@@ -19,17 +30,6 @@ func VertexServiceAccountCacheKey(providerID int64, email, keyID string, hasKey 
 		fingerprint = fmt.Sprintf("provider:%d", providerID)
 	}
 	return "vertex:service_account:" + fingerprint
-}
-
-const VertexLockWaitTime = 200 * time.Millisecond
-
-// VertexTokenOptions 提供本次请求的身份和 token 交换接口。
-type VertexTokenOptions struct {
-	ProviderID int64
-	CacheKey   string
-	Cache      AccessTokenCache
-	Exchange   func(context.Context) (string, time.Duration, error)
-	Warn       func(string, ...any)
 }
 
 // GetVertexServiceAccountAccessToken 管理凭据缓存、刷新锁与故障降级，等锁响应 context 取消。

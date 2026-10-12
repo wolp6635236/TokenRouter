@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 type trackedBody struct {
@@ -38,7 +39,7 @@ func TestRunHTTPRecoveryBoundaries(t *testing.T) {
 						requests++
 						b := &trackedBody{Reader: strings.NewReader(`{"error":{"message":"rejected"}}`)}
 						bodies = append(bodies, b)
-						return &http.Response{StatusCode: 400, Header: make(http.Header), Body: b}, nil
+						return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: b}, nil
 					},
 				},
 				ReadErrorBody:    func(resp *http.Response) []byte { b, _ := io.ReadAll(resp.Body); return b },

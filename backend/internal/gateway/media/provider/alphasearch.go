@@ -27,13 +27,13 @@ type AlphaSearchOptions struct {
 	Headers           func(http.Header, http.Header)
 }
 
+type AlphaSearch struct{ Options AlphaSearchOptions }
+
 // String 防止技术参数中的令牌或请求被默认日志展开。
 func (o AlphaSearchOptions) String() string {
 	return fmt.Sprintf("media AlphaSearch provider=%d", o.ProviderID)
 }
 func (o AlphaSearchOptions) GoString() string { return o.String() }
-
-type AlphaSearch struct{ Options AlphaSearchOptions }
 
 func (e AlphaSearch) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (upstream.AttemptResult, error) {
 	o := e.Options

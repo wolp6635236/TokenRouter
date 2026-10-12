@@ -36,7 +36,7 @@
         <label class="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300">
           <input
             type="checkbox"
-            class="h-4 w-4 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
+            class="h-4 w-4"
             :checked="allVisibleSelected"
             :indeterminate="someVisibleSelected"
             data-test="select-all-mobile"
@@ -59,7 +59,7 @@
           <div v-if="selectable" class="flex justify-end">
             <input
               type="checkbox"
-              class="h-4 w-4 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
+              class="h-4 w-4"
               :checked="isRowSelected(row, index)"
               :aria-label="getRowSelectionLabel(row, index)"
               data-test="select-row"
@@ -114,7 +114,7 @@
           >
             <input
               type="checkbox"
-              class="h-4 w-4 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
+              class="h-4 w-4"
               :checked="allVisibleSelected"
               :indeterminate="someVisibleSelected"
               :aria-label="t('common.selectAll')"
@@ -253,7 +253,7 @@
             <td v-if="selectable" class="table-selection-cell py-3">
               <input
                 type="checkbox"
-                class="h-4 w-4 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
+                class="h-4 w-4"
                 :checked="isRowSelected(item.row, item.index)"
                 :aria-label="getRowSelectionLabel(item.row, item.index)"
                 data-test="select-row"

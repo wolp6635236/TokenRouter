@@ -6,10 +6,11 @@ import (
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/lib/pq"
+
 	dbuser "github.com/TokenFlux/TokenRouter/ent/user"
 	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/lib/pq"
 )
 
 // IdentityUserLastUsedAtOrder 按事务内维护的用户活动时间排序，无记录用户按空值排序。

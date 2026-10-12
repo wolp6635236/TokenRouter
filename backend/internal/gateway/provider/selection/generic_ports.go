@@ -10,7 +10,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 

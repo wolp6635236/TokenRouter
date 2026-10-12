@@ -8,6 +8,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+type providerGeminiUsageReader struct{ source usage.UsageLogRepository }
+
+type providerGeminiUsageBatchReader struct {
+	providerGeminiUsageReader
+	provider.GeminiUsageTotalsBatchReader
+}
+
 // projectGeminiModelUsage 读取提供商成本字段。
 func projectGeminiModelUsage(rows []usage.ModelStat) []provider.GeminiModelUsage {
 	if rows == nil {
@@ -20,16 +27,9 @@ func projectGeminiModelUsage(rows []usage.ModelStat) []provider.GeminiModelUsage
 	return values
 }
 
-type providerGeminiUsageReader struct{ source usage.UsageLogRepository }
-
 func (s providerGeminiUsageReader) GetModelUsage(ctx context.Context, id int64, start, end time.Time) ([]provider.GeminiModelUsage, error) {
 	rows, err := s.source.GetModelStatsWithFilters(ctx, start, end, 0, 0, id, 0, nil, nil, nil)
 	return projectGeminiModelUsage(rows), err
-}
-
-type providerGeminiUsageBatchReader struct {
-	providerGeminiUsageReader
-	provider.GeminiUsageTotalsBatchReader
 }
 
 // newProviderGeminiUsageReader 绑定批量用量查询及查询参数。

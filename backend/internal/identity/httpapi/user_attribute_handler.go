@@ -5,23 +5,20 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// UserAttributeHandler handles user attribute management
+var UserAttributesBatchCache = response.NewSnapshotCache(30 * time.Second)
+
+// UserAttributeHandler handles user attribute management.
 type UserAttributeHandler struct {
 	attrService *identity.UserAttributeService
 }
 
-// NewUserAttributeHandler creates a new handler
-func NewUserAttributeHandler(attrService *identity.UserAttributeService) *UserAttributeHandler {
-	return &UserAttributeHandler{attrService: attrService}
-}
-
-// CreateAttributeDefinitionRequest represents create attribute definition request
+// CreateAttributeDefinitionRequest represents create attribute definition request.
 type CreateAttributeDefinitionRequest struct {
 	Key         string                           `json:"key" binding:"required,min=1,max=100"`
 	Name        string                           `json:"name" binding:"required,min=1,max=255"`
@@ -34,7 +31,7 @@ type CreateAttributeDefinitionRequest struct {
 	Enabled     bool                             `json:"enabled"`
 }
 
-// UpdateAttributeDefinitionRequest represents update attribute definition request
+// UpdateAttributeDefinitionRequest represents update attribute definition request.
 type UpdateAttributeDefinitionRequest struct {
 	Name        *string                           `json:"name"`
 	Description *string                           `json:"description"`
@@ -46,30 +43,28 @@ type UpdateAttributeDefinitionRequest struct {
 	Enabled     *bool                             `json:"enabled"`
 }
 
-// ReorderRequest represents reorder attribute definitions request
+// ReorderRequest represents reorder attribute definitions request.
 type ReorderRequest struct {
 	IDs []int64 `json:"ids" binding:"required"`
 }
 
-// UpdateUserAttributesRequest represents update user attributes request
+// UpdateUserAttributesRequest represents update user attributes request.
 type UpdateUserAttributesRequest struct {
 	Values map[int64]string `json:"values" binding:"required"`
 }
 
-// BatchGetUserAttributesRequest represents batch get user attributes request
+// BatchGetUserAttributesRequest represents batch get user attributes request.
 type BatchGetUserAttributesRequest struct {
 	UserIDs []int64 `json:"user_ids" binding:"required"`
 }
 
-// BatchUserAttributesResponse represents batch user attributes response
+// BatchUserAttributesResponse represents batch user attributes response.
 type BatchUserAttributesResponse struct {
 	// Map of userID -> map of attributeID -> value
 	Attributes map[int64]map[int64]string `json:"attributes"`
 }
 
-var UserAttributesBatchCache = response.NewSnapshotCache(30 * time.Second)
-
-// AttributeDefinitionResponse represents attribute definition response
+// AttributeDefinitionResponse represents attribute definition response.
 type AttributeDefinitionResponse struct {
 	ID           int64                            `json:"id"`
 	Key          string                           `json:"key"`
@@ -86,7 +81,7 @@ type AttributeDefinitionResponse struct {
 	UpdatedAt    string                           `json:"updated_at"`
 }
 
-// AttributeValueResponse represents attribute value response
+// AttributeValueResponse represents attribute value response.
 type AttributeValueResponse struct {
 	ID          int64  `json:"id"`
 	UserID      int64  `json:"user_id"`
@@ -94,6 +89,11 @@ type AttributeValueResponse struct {
 	Value       string `json:"value"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
+}
+
+// NewUserAttributeHandler creates a new handler.
+func NewUserAttributeHandler(attrService *identity.UserAttributeService) *UserAttributeHandler {
+	return &UserAttributeHandler{attrService: attrService}
 }
 
 func DefToResponse(def *identity.UserAttributeDefinition) *AttributeDefinitionResponse {

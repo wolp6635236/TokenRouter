@@ -7,11 +7,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 )
 
-// WriteInterceptStream 发送流式 mock 响应（用于请求拦截）
+// WriteInterceptStream 发送流式 mock 响应（用于请求拦截）。
 func WriteInterceptStream(c *gin.Context, model string, interceptType clientmeta.InterceptType) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -39,14 +40,14 @@ func WriteInterceptStream(c *gin.Context, model string, interceptType clientmeta
 
 	// 构造内容块事件。
 	events := []string{
-		`event: message_start` + "\n" + `data: ` + string(messageStartJSON),
+		`event: message_start` + "\n" + `data: ` + messageStartJSON,
 		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 	}
 
 	// 按原顺序追加文本增量。
 	for _, text := range textDeltas {
 		deltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + strconv.Quote(text) + `}}`
-		events = append(events, `event: content_block_delta`+"\n"+`data: `+string(deltaJSON))
+		events = append(events, `event: content_block_delta`+"\n"+`data: `+deltaJSON)
 	}
 
 	// message_delta 的 usage 只包含本次增量的输出 token。
@@ -54,7 +55,7 @@ func WriteInterceptStream(c *gin.Context, model string, interceptType clientmeta
 
 	events = append(events,
 		`event: content_block_stop`+"\n"+`data: {"index":0,"type":"content_block_stop"}`,
-		`event: message_delta`+"\n"+`data: `+string(messageDeltaJSON),
+		`event: message_delta`+"\n"+`data: `+messageDeltaJSON,
 		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
 	)
 
@@ -81,7 +82,7 @@ func GenerateInterceptMessageID() string {
 	return "msg_01" + string(b)
 }
 
-// WriteInterceptResponse 发送非流式 mock 响应（用于请求拦截）
+// WriteInterceptResponse 发送非流式 mock 响应（用于请求拦截）。
 func WriteInterceptResponse(c *gin.Context, model string, interceptType clientmeta.InterceptType) {
 	var msgID, text, stopReason string
 	var outputTokens int

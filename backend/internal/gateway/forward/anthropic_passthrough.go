@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
 
 // APIKeyPassthrough 处理已选提供商的响应和部分用量，upstream 执行网络交换和协议流读取。

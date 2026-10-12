@@ -51,7 +51,6 @@ func TestApplyStaticAssetCacheHeaders(t *testing.T) {
 	})
 
 	for _, path := range []string{"assets/index.js", "logo.png", "favicon.ico", "index.html"} {
-		path := path
 		t.Run("skips_"+path, func(t *testing.T) {
 			t.Parallel()
 			header := make(http.Header)

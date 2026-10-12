@@ -38,23 +38,6 @@ type Options struct {
 	AllowPrivateHosts    bool
 }
 
-// LogConfig 保留错误日志的缺省截断长度。
-func (o Options) LogConfig() (bool, int) {
-	n := 2048
-	if o.LogErrorBodyMaxBytes > 0 {
-		n = o.LogErrorBodyMaxBytes
-	}
-	return o.Configured && o.LogErrorBody, n
-}
-
-func (o Options) ErrorDetail(body []byte) string {
-	enabled, n := o.LogConfig()
-	if !enabled {
-		return ""
-	}
-	return logredact.TruncateUTF8(string(body), n)
-}
-
 // Output 定义同步 HTTP 交换与错误观测操作。
 type Output interface {
 	RequestContext() context.Context
@@ -114,6 +97,23 @@ type attempt struct {
 	Output
 	ToolNames *anthropic.ToolNameRewrite
 	Images    int
+}
+
+// LogConfig 保留错误日志的缺省截断长度。
+func (o Options) LogConfig() (bool, int) {
+	n := 2048
+	if o.LogErrorBodyMaxBytes > 0 {
+		n = o.LogErrorBodyMaxBytes
+	}
+	return o.Configured && o.LogErrorBody, n
+}
+
+func (o Options) ErrorDetail(body []byte) string {
+	enabled, n := o.LogConfig()
+	if !enabled {
+		return ""
+	}
+	return logredact.TruncateUTF8(string(body), n)
 }
 
 func (a *attempt) reverseTools(body []byte) []byte {

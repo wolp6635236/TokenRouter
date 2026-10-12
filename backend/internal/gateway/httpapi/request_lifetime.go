@@ -6,14 +6,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// requestLifetime 引用应用的请求活动屏障。
-type requestLifetime struct{ enter func() (func(), error) }
+// RequestLifetime 引用应用的请求活动屏障。
+type RequestLifetime struct{ enter func() (func(), error) }
 
 // BindRequestActivity 只在构造图完成、开放 HTTP 之前调用。
-func (r *requestLifetime) BindRequestActivity(enter func() (func(), error)) { r.enter = enter }
+func (r *RequestLifetime) BindRequestActivity(enter func() (func(), error)) { r.enter = enter }
 
-// beginRequest 登记请求活动，应用停止后拒绝请求。
-func (r *requestLifetime) beginRequest(c *gin.Context, format string) (func(), bool) {
+// BeginRequest 登记请求活动，应用停止后拒绝请求。
+func (r *RequestLifetime) BeginRequest(c *gin.Context, format string) (func(), bool) {
 	if r.enter == nil {
 		return func() {}, true
 	}
@@ -23,6 +23,8 @@ func (r *requestLifetime) beginRequest(c *gin.Context, format string) (func(), b
 	}
 	const message = "Service is shutting down"
 	switch format {
+	case "systemone":
+		WriteSystemOneError(c, http.StatusServiceUnavailable, "api_error", "", "", message)
 	case "google":
 		WriteGoogleError(c, http.StatusServiceUnavailable, message)
 	case "anthropic":

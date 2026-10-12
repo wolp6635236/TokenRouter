@@ -27,24 +27,24 @@ type SchedulerBucketWriteToken struct {
 	Epoch  int64
 }
 
-func (t SchedulerBucketWriteToken) ValidFor(bucket SchedulerBucket) bool {
-	return t.Epoch > 0 && t.Bucket == bucket
-}
-
 // SchedulerGroupLifecycleLease 标识分组短期退休/重开临界区的持有者。
 type SchedulerGroupLifecycleLease struct {
 	GroupID    int64
 	OwnerToken string
 }
 
-func (l SchedulerGroupLifecycleLease) ValidFor(groupID int64) bool {
-	return groupID > 0 && l.GroupID == groupID && l.OwnerToken != ""
-}
-
 type SchedulerBucket struct {
 	GroupID  int64
 	Platform string
 	Mode     string
+}
+
+func (t SchedulerBucketWriteToken) ValidFor(bucket SchedulerBucket) bool {
+	return t.Epoch > 0 && t.Bucket == bucket
+}
+
+func (l SchedulerGroupLifecycleLease) ValidFor(groupID int64) bool {
+	return groupID > 0 && l.GroupID == groupID && l.OwnerToken != ""
 }
 
 func (b SchedulerBucket) String() string {

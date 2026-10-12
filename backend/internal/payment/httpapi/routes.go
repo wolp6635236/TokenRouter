@@ -13,13 +13,18 @@ type PlanEndpoints interface {
 	DeletePlan(*gin.Context)
 }
 
-// RouteMiddleware 由 app 提供现有鉴权与限流，不在注册时构造业务服务。
+// RouteMiddleware 提供支付路由使用的鉴权、限流和审计处理器。
 type RouteMiddleware struct {
 	JWT, BackendMode, Panel, Admin, Audit gin.HandlerFunc
 }
 
-// RegisterRoutes registers all payment-related routes:
-// user-facing endpoints, webhook endpoints, and admin endpoints.
+// WeChatAuthEndpoints 提供支付 OAuth 的发起与回调处理方法。
+type WeChatAuthEndpoints interface {
+	WeChatPaymentOAuthStart(*gin.Context)
+	WeChatPaymentOAuthCallback(*gin.Context)
+}
+
+// RegisterRoutes 注册用户支付、公开查询、渠道回调和管理接口。
 func RegisterRoutes(
 	v1 *gin.RouterGroup,
 	paymentHandler *PaymentHandler,
@@ -28,7 +33,7 @@ func RegisterRoutes(
 	planHandler PlanEndpoints,
 	guards RouteMiddleware,
 ) {
-	// --- User-facing payment endpoints (authenticated) ---
+	// 用户支付接口使用 JWT 鉴权。
 	authenticated := v1.Group("/payment")
 	authenticated.Use(guards.JWT)
 	authenticated.Use(guards.BackendMode)
@@ -53,20 +58,17 @@ func RegisterRoutes(
 		}
 	}
 
-	// --- Public payment endpoints (no auth) ---
-	// Signed resume-token recovery is the preferred public lookup path.
-	// The legacy anonymous out_trade_no verify endpoint remains available as a
-	// persisted-state compatibility path for staggered upgrades.
+	// 公开查单优先使用签名恢复令牌。匿名订单号查单返回已保存的状态，供分批升级期间的客户端查询。
 	public := v1.Group("/payment/public")
 	{
 		public.POST("/orders/verify", paymentHandler.VerifyOrderPublic)
 		public.POST("/orders/resolve", paymentHandler.ResolveOrderPublicByResumeToken)
 	}
 
-	// --- Webhook endpoints (no auth) ---
+	// 渠道回调通过支付提供商的签名鉴权。
 	webhook := v1.Group("/payment/webhook")
 	{
-		// EasyPay sends GET callbacks with query params
+		// EasyPay 的 GET 回调从查询参数读取通知。
 		webhook.GET("/easypay", webhookHandler.EasyPayNotify)
 		webhook.POST("/easypay", webhookHandler.EasyPayNotify)
 		webhook.POST("/alipay", webhookHandler.AlipayNotify)
@@ -75,7 +77,7 @@ func RegisterRoutes(
 		webhook.POST("/airwallex", webhookHandler.AirwallexWebhook)
 	}
 
-	// --- Admin payment endpoints (admin auth) ---
+	// 支付管理接口使用管理员鉴权。
 	adminGroup := v1.Group("/admin/payment")
 	adminGroup.Use(guards.Admin)
 	// 支付管理路由独立注册，因此需要单独接入管理员面板限流。
@@ -121,4 +123,10 @@ func RegisterRoutes(
 			providers.DELETE("/:id", adminPaymentHandler.DeleteProvider)
 		}
 	}
+}
+
+// RegisterWeChatAuthRoutes 在身份路由组上注册支付 OAuth 的发起与回调接口。
+func RegisterWeChatAuthRoutes(auth *gin.RouterGroup, endpoint WeChatAuthEndpoints) {
+	auth.GET("/oauth/wechat/payment/start", endpoint.WeChatPaymentOAuthStart)
+	auth.GET("/oauth/wechat/payment/callback", endpoint.WeChatPaymentOAuthCallback)
 }

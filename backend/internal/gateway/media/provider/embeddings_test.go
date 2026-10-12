@@ -10,9 +10,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/stretchr/testify/require"
 )
 
 type providerOutput struct {
@@ -20,16 +21,16 @@ type providerOutput struct {
 	data   []byte
 }
 
+type trackedMediaBody struct {
+	io.ReadCloser
+	closed *atomic.Bool
+}
+
 func (s *providerOutput) Begin(head upstream.OutputHead) error { s.status = head.Status; return nil }
 
 func (s *providerOutput) Emit(event upstream.OutputEvent) error {
 	s.data = append(s.data, event.Data...)
 	return nil
-}
-
-type trackedMediaBody struct {
-	io.ReadCloser
-	closed *atomic.Bool
 }
 
 func (b trackedMediaBody) Close() error { b.closed.Store(true); return b.ReadCloser.Close() }

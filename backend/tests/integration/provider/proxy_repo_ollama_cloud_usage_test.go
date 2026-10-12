@@ -2,23 +2,44 @@ package provider_test
 
 import (
 	"context"
+	"database/sql/driver"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"regexp"
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	"entgo.io/ent/dialect"
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 
-	entsql "entgo.io/ent/dialect/sql"
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
+
+// proxyProviderIDsPayloadMatcher 比较 outbox 数据中的提供商 ID 顺序。
+type proxyProviderIDsPayloadMatcher struct {
+	want []int64
+}
+
+// Match 解码 outbox 数据并比较提供商 ID 列表。
+func (m proxyProviderIDsPayloadMatcher) Match(value driver.Value) bool {
+	raw, ok := value.([]byte)
+	if !ok {
+		return false
+	}
+	var payload struct {
+		ProviderIDs []int64 `json:"provider_ids"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(m.want, payload.ProviderIDs)
+}
 
 func TestProxyUpdateInvalidatesOllamaSnapshotAndEnqueuesOutboxAtomically(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -140,10 +161,7 @@ func TestEnqueueProxyProviderChangesChunksLargePayloads(t *testing.T) {
 		providerIDs[i] = int64(i + 1)
 	}
 	for start := 0; start < len(providerIDs); start += 500 {
-		end := start + 500
-		if end > len(providerIDs) {
-			end = len(providerIDs)
-		}
+		end := min(start+500, len(providerIDs))
 		mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox (event_type, provider_id, group_id, payload)")).
 			WithArgs(scheduler.SchedulerOutboxEventProviderBulkChanged, nil, nil, proxyProviderIDsPayloadMatcher{want: providerIDs[start:end]}).
 			WillReturnResult(sqlmock.NewResult(1, 1))

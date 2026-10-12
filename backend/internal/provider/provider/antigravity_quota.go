@@ -16,8 +16,7 @@ func AntigravityQuotaOptions(limit int64, resolveProxy func(context.Context, int
 		ReadLimit:    func() int64 { return limit },
 		ResolveProxy: resolveProxy,
 		ForbiddenBody: func(err error) (string, bool) {
-			var forbidden *antigravity.ForbiddenError
-			if errors.As(err, &forbidden) {
+			if forbidden, ok := errors.AsType[*antigravity.ForbiddenError](err); ok {
 				return forbidden.Body, true
 			}
 			return "", false

@@ -1,0 +1,133 @@
+package app
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	routinghttp "github.com/TokenFlux/TokenRouter/internal/routing/httpapi"
+)
+
+// TestModelsCatalogMediaQuotes 使用实际离线目录和管理页装配，区分输出能力与计费单位。
+func TestModelsCatalogMediaQuotes(t *testing.T) {
+	service := provider.NewService(provider.Options{
+		DataDir: t.TempDir(),
+	}, nil)
+	require.NoError(t, service.Initialize())
+	calculator := billing.NewCalculator(service, billing.CalculatorOptions{})
+	snapshot := providePricingCatalog(calculator, service).Snapshot()
+	rows := map[string]pricing.DefaultModelPrice{}
+	for _, row := range snapshot.Prices {
+		rows[row.Model] = row
+	}
+	for _, model := range []string{"gemini-omni-flash-preview", "deep-research-preview-04-2026", "gpt-image-2"} {
+		t.Run(model, func(t *testing.T) {
+			row, found := rows[model]
+			require.True(t, found)
+			require.Equal(t, "token", row.BillingMode)
+			require.Equal(t, "priced", row.PriceStatus)
+			for _, price := range row.Prices {
+				require.NotEqual(t, "USD/s", price.Unit)
+				require.NotEqual(t, "USD/image", price.Unit)
+			}
+		})
+	}
+	// 检查专用媒体报价和 Gemini 图文 token 费率。
+	require.Equal(t, "video", rows["grok-imagine-video"].BillingMode)
+	require.Equal(t, "image", rows["gemini-3-pro-image"].BillingMode)
+	values := map[string]float64{}
+	for _, price := range rows["gemini-3-pro-image"].Prices {
+		if price.Value != nil {
+			values[price.Key] = *price.Value
+		}
+	}
+	require.InDelta(t, 12, values["output"], 1e-12)
+	require.InDelta(t, 120, values["image_output"], 1e-12)
+	require.InDelta(t, 0.134, values["1K"], 1e-12)
+	attrs := service.ModelAttributes("gemini-omni-flash-preview")
+	require.NotNil(t, attrs.OutputModalities)
+	require.Contains(t, *attrs.OutputModalities, "video")
+}
+
+func setupModelDefaultPricingRouter(billingSvc *billing.Calculator) *gin.Engine {
+	router := gin.New()
+	h := routinghttp.NewPricingHandler(nil, &routing.PricingCatalog{Prices: billingSvc})
+	router.GET("/pricing/defaults/model", h.GetModelDefaultPricing)
+	return router
+}
+
+// TestGetModelDefaultPricing_QoderMatchesOtherPlatforms 验证同一模型的默认价不受平台影响，Qoder 别名也可以读取内置价。
+func TestGetModelDefaultPricing_QoderMatchesOtherPlatforms(t *testing.T) {
+	router := setupModelDefaultPricingRouter(billingtestkit.Calculator(nil, nil))
+	for _, model := range []string{"claude-opus-4-6", "CLAUDE-OPUS-4-6", "qwen3.8-max", "qmodel"} {
+		t.Run(model, func(t *testing.T) {
+			var responses []string
+			for _, platform := range []string{"qoder", "anthropic"} {
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/pricing/defaults/model?platform="+platform+"&model="+model, nil))
+				require.Equal(t, http.StatusOK, w.Code)
+				responses = append(responses, w.Body.String())
+			}
+			require.JSONEq(t, responses[0], responses[1])
+			if strings.Contains(strings.ToLower(model), "claude-opus") {
+				require.Contains(t, responses[0], `"found":true`)
+			}
+		})
+	}
+}
+
+func TestGetModelDefaultPricing_Fable51ReturnsCacheTTLs(t *testing.T) {
+	billingSvc := billingtestkit.Calculator(nil, nil)
+	router := setupModelDefaultPricingRouter(billingSvc)
+	req := httptest.NewRequest(http.MethodGet, "/pricing/defaults/model?model=claude-fable-5-1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body struct {
+		Data struct {
+			Found             bool     `json:"found"`
+			CacheWritePrice   float64  `json:"cache_write_price"`
+			CacheWrite1hPrice *float64 `json:"cache_write_1h_price"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.True(t, body.Data.Found)
+	require.InDelta(t, 12.5e-6, body.Data.CacheWritePrice, 1e-12)
+	require.NotNil(t, body.Data.CacheWrite1hPrice)
+	require.InDelta(t, 20e-6, *body.Data.CacheWrite1hPrice, 1e-12)
+}
+
+func TestGetModelDefaultPricing_UnknownQoderRouteKeysRemainUnpriced(t *testing.T) {
+	billingSvc := billingtestkit.Calculator(nil, nil)
+	router := setupModelDefaultPricingRouter(billingSvc)
+
+	for _, model := range []string{"qmodel", "qmodel_38max", "ultimate", "q35model", "gmodel"} {
+		req := httptest.NewRequest(http.MethodGet, "/pricing/defaults/model?platform=qoder&model="+model, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var body struct {
+			Data struct {
+				Found      bool    `json:"found"`
+				InputPrice float64 `json:"input_price"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+		require.False(t, body.Data.Found, "model=%s", model)
+		require.Zero(t, body.Data.InputPrice, "model=%s", model)
+	}
+}

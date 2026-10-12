@@ -9,10 +9,12 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// CcVersionInBillingRe 匹配 cc_version 中的三段版本号。
-var CcVersionInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+`)
+var (
+	// CcVersionInBillingRe 匹配 cc_version 中的三段版本号。
+	CcVersionInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+`)
 
-var CcVersionWithFingerprintInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+\.[0-9a-fA-F]{3}\b`)
+	CcVersionWithFingerprintInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+\.[0-9a-fA-F]{3}\b`)
+)
 
 // EffectiveBillingUserAgent OAuth 伪装会在提供商指纹之后强制写入运行时 CLI User-Agent，计费标记必须与其一致。
 // @project-doc docs/interfaces/anthropic_upstream.md#claude_billing_fingerprint

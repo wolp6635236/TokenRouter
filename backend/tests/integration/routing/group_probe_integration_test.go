@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 // TestGroupProbeLeaseAndAtomicResult 验证真实 PostgreSQL 租约竞争、到期回收、最终结果与下次时间的原子保存。

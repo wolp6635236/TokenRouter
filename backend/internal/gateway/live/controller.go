@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 )
 
 const (
@@ -401,10 +402,7 @@ func (s *Service) Finalize(record *session.LiveCallRecord) {
 		return
 	}
 	s.ReleaseLease(record.ProviderID, record.UserID, record.APIKeyID, record.LeaseID)
-	duration := int(time.Since(record.CreatedAt).Milliseconds())
-	if duration < 0 {
-		duration = 0
-	}
+	duration := max(int(time.Since(record.CreatedAt).Milliseconds()), 0)
 	s.ports.RecordZeroUsage(context.Background(), record, duration)
 }
 
@@ -417,4 +415,23 @@ func waitLiveObserver(ctx context.Context, delay time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// Lookup 校验会话 ID、API Key、付款用户和分组绑定，已关闭的记录返回未找到。
+func (s *Service) Lookup(ctx context.Context, callID string, identity session.LiveCallIdentity) (*session.LiveCallRecord, error) {
+	store, err := s.ports.Store()
+	if err != nil {
+		return nil, err
+	}
+	record, err := store.GetLiveCall(ctx, HashCallID(callID))
+	if err != nil {
+		return nil, err
+	}
+	if record.CallID != callID || record.APIKeyID != identity.APIKeyID || record.UserID != identity.UserID || record.GroupID != liveGroupID(identity.GroupID) {
+		return nil, session.ErrLiveIdentityMismatch
+	}
+	if record.Controller == session.LiveControllerClosed {
+		return nil, session.ErrLiveCallNotFound
+	}
+	return record, nil
 }

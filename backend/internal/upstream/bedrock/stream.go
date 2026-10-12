@@ -12,13 +12,42 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
+
+// Crc32IEEETable is the CRC32 / IEEE table used by AWS EventStream.
+var Crc32IEEETable = crc32.MakeTable(crc32.IEEE)
+
+// BedrockEventStreamDecoder 解码 AWS EventStream 二进制帧
+// EventStream 帧格式：
+//
+//	[total_byte_length: 4 bytes]
+//	[headers_byte_length: 4 bytes]
+//	[prelude_crc: 4 bytes]
+//	[headers: variable]
+//	[payload: variable]
+//	[message_crc: 4 bytes]
+type BedrockEventStreamDecoder struct {
+	reader *bufio.Reader
+}
+
+// StreamOptions 配置流读取的提供商标识、间隔和观测回调。
+type StreamOptions struct {
+	Observe    func(anthropic.Observation)
+	ProviderID int64
+	Interval   time.Duration
+	OnTimeout  func(context.Context, string)
+}
+type StreamResult struct {
+	Usage            *upstream.TokenUsage
+	FirstTokenMs     *int
+	ClientDisconnect bool
+}
 
 // StreamResponse 处理 Bedrock InvokeModelWithResponseStream 的 EventStream 响应
 // Bedrock 返回 AWS EventStream 二进制格式，每个事件的 payload 中 chunk.bytes 是 base64 编码的
@@ -181,7 +210,7 @@ func StreamResponse(
 }
 
 // ExtractBedrockChunkData 从 Bedrock EventStream payload 中提取 Claude SSE 事件数据
-// Bedrock payload 格式：{"bytes":"<base64-encoded-json>"}
+// Bedrock payload 格式：{"bytes":"<base64-encoded-json>"}。
 func ExtractBedrockChunkData(payload []byte) []byte {
 	b64 := gjson.GetBytes(payload, "bytes").String()
 	if b64 == "" {
@@ -231,26 +260,13 @@ func TransformBedrockInvocationMetrics(data []byte) []byte {
 	return data
 }
 
-// BedrockEventStreamDecoder 解码 AWS EventStream 二进制帧
-// EventStream 帧格式：
-//
-//	[total_byte_length: 4 bytes]
-//	[headers_byte_length: 4 bytes]
-//	[prelude_crc: 4 bytes]
-//	[headers: variable]
-//	[payload: variable]
-//	[message_crc: 4 bytes]
-type BedrockEventStreamDecoder struct {
-	reader *bufio.Reader
-}
-
 func NewBedrockEventStreamDecoder(r io.Reader) *BedrockEventStreamDecoder {
 	return &BedrockEventStreamDecoder{
 		reader: bufio.NewReaderSize(r, 64*1024),
 	}
 }
 
-// Decode 读取下一个 EventStream 帧并返回 chunk 类型事件的 payload
+// Decode 读取下一个 EventStream 帧并返回 chunk 类型事件的 payload。
 func (d *BedrockEventStreamDecoder) Decode() ([]byte, error) {
 	for {
 		// 读取 prelude: total_length(4) + headers_length(4) + prelude_crc(4) = 12 bytes
@@ -324,7 +340,7 @@ func (d *BedrockEventStreamDecoder) Decode() ([]byte, error) {
 //
 //	[name_length: 1 byte][name: variable][value_type: 1 byte][value: variable]
 //
-// value_type = 7 表示 string 类型，前 2 bytes 为长度
+// value_type = 7 表示 string 类型，前 2 bytes 为长度。
 func ExtractEventStreamHeaderValue(headers []byte, targetName string) string {
 	pos := 0
 	for pos < len(headers) {
@@ -405,26 +421,10 @@ func ExtractEventStreamHeaderValue(headers []byte, targetName string) string {
 	return ""
 }
 
-// Crc32IEEETable is the CRC32 / IEEE table used by AWS EventStream.
-var Crc32IEEETable = crc32.MakeTable(crc32.IEEE)
-
 func BedrockReadUint32(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
 func BedrockReadUint16(b []byte) uint16 {
 	return uint16(b[0])<<8 | uint16(b[1])
-}
-
-// StreamOptions 配置流读取的提供商标识、间隔和观测回调。
-type StreamOptions struct {
-	Observe    func(anthropic.Observation)
-	ProviderID int64
-	Interval   time.Duration
-	OnTimeout  func(context.Context, string)
-}
-type StreamResult struct {
-	Usage            *upstream.TokenUsage
-	FirstTokenMs     *int
-	ClientDisconnect bool
 }

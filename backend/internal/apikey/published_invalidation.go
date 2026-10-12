@@ -1,6 +1,8 @@
 package apikey
 
-import "context"
+import (
+	"context"
+)
 
 // PublishedAuthCacheInvalidator 保留团队写入后的原缓存失效顺序，由 Key 模块拥有键格式。
 type PublishedAuthCacheInvalidator struct{ Cache APIKeyCache }

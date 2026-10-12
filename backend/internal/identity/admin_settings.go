@@ -9,6 +9,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+// 身份模块拥有这些已有持久键。
+const (
+	SettingKeyAliyunCaptchaPrefix                    = "aliyun_captcha_prefix"
+	SettingKeyDefaultConcurrency                     = "default_concurrency"
+	SettingKeyDingTalkConnectSyncCorpEmailAttrName   = "dingtalk_connect_sync_corp_email_attr_name"
+	SettingKeyDingTalkConnectSyncDeptAttrName        = "dingtalk_connect_sync_dept_attr_name"
+	SettingKeyDingTalkConnectSyncDisplayNameAttrName = "dingtalk_connect_sync_display_name_attr_name"
+	SettingKeyTurnstileSiteKey                       = "turnstile_site_key"
+)
+
 // AdminSettings 包含身份认证的管理配置。
 type AdminSettings struct {
 	AliyunCaptchaAccessKeyID               string   `json:"aliyun_captcha_access_key_id"`
@@ -109,16 +119,6 @@ type AdminSettings struct {
 	WeChatConnectRedirectURL               string   `json:"wechat_connect_redirect_url"`
 	WeChatConnectScopes                    string   `json:"wechat_connect_scopes"`
 }
-
-// 身份模块拥有这些已有持久键。
-const (
-	SettingKeyAliyunCaptchaPrefix                    = "aliyun_captcha_prefix"
-	SettingKeyDefaultConcurrency                     = "default_concurrency"
-	SettingKeyDingTalkConnectSyncCorpEmailAttrName   = "dingtalk_connect_sync_corp_email_attr_name"
-	SettingKeyDingTalkConnectSyncDeptAttrName        = "dingtalk_connect_sync_dept_attr_name"
-	SettingKeyDingTalkConnectSyncDisplayNameAttrName = "dingtalk_connect_sync_display_name_attr_name"
-	SettingKeyTurnstileSiteKey                       = "turnstile_site_key"
-)
 
 // PrepareAdminSettings 规范化身份设置并生成待保存值，空密钥按保留已存值处理。
 func PrepareAdminSettings(settings *AdminSettings) (map[string]string, error) {

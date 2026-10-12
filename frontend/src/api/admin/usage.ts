@@ -120,6 +120,7 @@ export async function list(
  * @returns Usage statistics
  */
 export async function getStats(params: {
+  request_id?: string
   endpoint_source?: 'all' | 'inbound' | 'upstream' | 'path'
   user_id?: number
   team_id?: number

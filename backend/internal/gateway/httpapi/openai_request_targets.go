@@ -6,20 +6,19 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 // ChatURL 解析提供商的（非 Grok）Chat Completions 上游端点。

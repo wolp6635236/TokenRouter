@@ -16,11 +16,11 @@ type Request struct {
 	Endpoint                                                           func(string, string) string                 `json:"-"`
 }
 
-func (r *Request) String() string   { return "upstream usage request" }
-func (r *Request) GoString() string { return r.String() }
-
 // Adapter 每次查询创建自己的请求读取器，不拥有提供商缓存或健康写入。
 type Adapter interface {
 	Name() string
 	Query(context.Context, *Request) (*usageview.UpstreamUsageInfo, error)
 }
+
+func (r *Request) String() string   { return "upstream usage request" }
+func (r *Request) GoString() string { return r.String() }

@@ -9,13 +9,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 type passkeyRepository struct {
 	db *sql.DB
+}
+
+type passkeyScanner interface {
+	Scan(dest ...any) error
 }
 
 // NewPasskeyRepository 创建 Passkey 凭据持久化仓库。
@@ -205,10 +210,6 @@ func (r *passkeyRepository) Delete(
 		return fmt.Errorf("delete passkey credential: %w", err)
 	}
 	return requirePasskeyAffected(result)
-}
-
-type passkeyScanner interface {
-	Scan(dest ...any) error
 }
 
 func scanPasskeyCredential(scanner passkeyScanner) (*identity.PasskeyCredentialRecord, error) {

@@ -15,17 +15,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/stretchr/testify/require"
 )
+
+// 测试传输将已构造的 token 请求发送到本地 TLS 夹具。
+type openAILocalTransport struct {
+	client *http.Client
+	target *url.URL
+}
+
+// 复用真实 OAuth 表单/响应解析；只指定现有可注入传输分支。
+type openAITLSClient struct{ *openai.OAuthClient }
 
 func TestOpenAITokenRefreshUsesOriginalCAS(t *testing.T) {
 	for _, adminChange := range []bool{false, true} {
@@ -121,21 +129,12 @@ func TestOpenAITokenRefreshUsesOriginalCAS(t *testing.T) {
 	}
 }
 
-// 测试传输将已构造的 token 请求发送到本地 TLS 夹具。
-type openAILocalTransport struct {
-	client *http.Client
-	target *url.URL
-}
-
 func (t openAILocalTransport) DoWithTLS(request *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	copyRequest := request.Clone(request.Context())
 	copyRequest.URL.Scheme = t.target.Scheme
 	copyRequest.URL.Host = t.target.Host
 	return t.client.Do(copyRequest)
 }
-
-// 复用真实 OAuth 表单/响应解析；只指定现有可注入传输分支。
-type openAITLSClient struct{ *openai.OAuthClient }
 
 func (c openAITLSClient) RefreshTokenWithClientID(ctx context.Context, token, proxy, clientID string, _ ...openai.OAuthTokenRequestOptions) (*openai.TokenResponse, error) {
 	return c.OAuthClient.RefreshTokenWithClientID(ctx, token, proxy, clientID, openai.OAuthTokenRequestOptions{TLSProfile: &tlsfingerprint.Profile{}})

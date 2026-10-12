@@ -2,10 +2,11 @@ package testkit
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
@@ -30,6 +31,15 @@ type Configuration struct {
 	ProviderStatsPricingRules []routing.ProviderStatsPricingRule
 }
 
+// configurationRows 将迁移夹具拆成生产服务的两个数据来源。
+type configurationRows struct {
+	routing.PricingConfigRepository
+	source interface {
+		ListAll(context.Context) ([]Configuration, error)
+		GetGroupPlatforms(context.Context, []int64) (map[int64]string, error)
+	}
+}
+
 func (c Configuration) Price() routing.PricingConfig {
 	settings := pricing.DefaultBillingSettings()
 	if c.BillingSettings != nil {
@@ -44,9 +54,7 @@ func (c Configuration) Policy() routing.GroupRoutingPolicy {
 		allowed = append(allowed, price.Models...)
 	}
 	mapping := make(map[string]string)
-	for source, target := range c.ModelMapping {
-		mapping[source] = target
-	}
+	maps.Copy(mapping, c.ModelMapping)
 	return routing.GroupRoutingPolicy{Enabled: c.Status == routing.StatusActive, ModelMapping: mapping, RestrictModels: c.RestrictModels, RestrictionModelSource: c.BillingModelSource, AllowedModels: allowed, Features: c.Features, FeaturesConfig: c.FeaturesConfig}
 }
 
@@ -85,15 +93,6 @@ func (c *Configuration) IsBedrockCCCompatEnabled(platform string) bool {
 	return p.IsBedrockCCCompatEnabled(platform)
 }
 
-// configurationRows 将迁移夹具拆成生产服务的两个数据来源。
-type configurationRows struct {
-	routing.PricingConfigRepository
-	source interface {
-		ListAll(context.Context) ([]Configuration, error)
-		GetGroupPlatforms(context.Context, []int64) (map[int64]string, error)
-	}
-}
-
 func (r configurationRows) ListAll(ctx context.Context) ([]routing.PricingConfig, error) {
 	rows, err := r.source.ListAll(ctx)
 	out := make([]routing.PricingConfig, 0, len(rows))
@@ -113,10 +112,8 @@ func (r configurationRows) ReadGroup(ctx context.Context, id int64) (*routing.Gr
 		return nil, err
 	}
 	for _, row := range rows {
-		for _, groupID := range row.GroupIDs {
-			if groupID == id {
-				return &routing.Group{ID: id, AllowedProtocols: capability.DefaultGroupClientProtocols(""), RoutingPolicy: row.Policy()}, nil
-			}
+		if slices.Contains(row.GroupIDs, id) {
+			return &routing.Group{ID: id, AllowedProtocols: capability.DefaultGroupClientProtocols(""), RoutingPolicy: row.Policy()}, nil
 		}
 	}
 	return &routing.Group{ID: id}, nil

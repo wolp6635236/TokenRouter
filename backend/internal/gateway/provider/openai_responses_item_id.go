@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func SanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {

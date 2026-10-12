@@ -3,20 +3,63 @@ package provider
 import (
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+// CompletionModels 提供用量结算时的候选型号。
+type CompletionModels struct{}
+
+// ChatForwardResult 将供应商用量和模型名称转换为网关完成处理所需的结果。
+func ChatForwardResult(result *openai.CompatResponseResult, billingModel string) *forwardcore.OpenAIResult {
+	if result == nil {
+		return nil
+	}
+	return &forwardcore.OpenAIResult{RequestID: result.RequestID, ReasoningEffort: result.ReasoningEffort, ServiceTier: result.ResolvedTier, ResponseID: result.ResponseID, ClientDisconnect: result.ClientDisconnect, UpstreamHeaders: result.UpstreamHeaders, Usage: result.Usage, Model: result.Model, BillingModel: billingModel, UpstreamModel: result.UpstreamModel, UpstreamResponseServiceTier: result.ServiceTier, Stream: result.Stream, Duration: result.Duration, FirstTokenMs: result.FirstTokenMs, SearchCount: result.SearchCount}
+}
+
+func (CompletionModels) Candidates(model string, alternates ...string) []string {
+	return modelidentity.UsageCandidates(model, alternates...)
+}
+
+func ProjectCompletionProvider(v *provider.Record) *completion.ProviderSnapshot {
+	if v == nil {
+		return nil
+	}
+	out := &completion.ProviderSnapshot{
+		ID:                         v.ID,
+		CacheTTLOverrideEnabled:    v.IsCacheTTLOverrideEnabled(),
+		CacheTTLOverrideTarget:     v.GetCacheTTLOverrideTarget(),
+		AnthropicOAuthOrSetupToken: v.IsAnthropicOAuthOrSetupToken(),
+		Type:                       v.Type,
+		Platform:                   v.Platform,
+		RateMultiplier:             v.BillingRateMultiplier(),
+		OpenAI:                     v.IsOpenAI(),
+		CNProvider:                 v.IsCNProvider(),
+		OAuthLike:                  v.IsOpenAIOAuthLike(),
+		QuotaEligible:              v.IsAPIKeyOrBedrock(),
+		HasQuotaLimit:              v.HasAnyQuotaLimit(),
+		CredentialProviderID:       v.ParentProviderID,
+		Notification:               provideradapter.QuotaNotification(&provider.Record{ID: v.ID, Name: v.Name, Platform: v.Platform, Type: v.Type, Extra: v.Extra}),
+	}
+	return completion.SnapshotProvider(out)
+}
 
 func ProjectCompletionKey(v *apikey.APIKey) *completion.KeySnapshot {
 	if v == nil {
 		return nil
 	}
-	// 只读判断直接使用必要字段，避免旧兼容方法回写并替换请求的分组引用。
+	// 图片权限通过字段判断，请求的分组引用由调用方管理。
 	policy := &apikey.APIKey{
 		BillingMode: v.BillingMode,
 		RateLimit5h: v.RateLimit5h,
@@ -183,4 +226,32 @@ func completionUserSummary(u *identity.User) *billing.UserSummary {
 		copy(out.BalanceNotifyExtraEmails, u.BalanceNotifyExtraEmails)
 	}
 	return out
+}
+
+// ImagesForwardResult 将图片结果转换为网关交付和计费需要的格式。
+func ImagesForwardResult(result upstream.AttemptResult, parsed *media.ImageRequest, imageCount int) *forwardcore.OpenAIResult {
+	return &forwardcore.OpenAIResult{
+		RequestID:       result.RequestID,
+		UpstreamHeaders: result.UpstreamHeaders,
+
+		Usage: protocolopenai.ForwardUsage{
+			InputTokens:              result.Usage.InputTokens,
+			OutputTokens:             result.Usage.OutputTokens,
+			CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
+			ImageInputTokens:         result.ImageInputTokens,
+			ImageOutputTokens:        result.Usage.ImageOutputTokens,
+		},
+
+		Model:            result.Model,
+		UpstreamModel:    result.UpstreamModel,
+		Stream:           result.Stream,
+		ResponseHeaders:  result.UpstreamHeaders.Clone(),
+		Duration:         result.Duration,
+		FirstTokenMs:     result.FirstTokenMs,
+		ImageCount:       imageCount,
+		ImageSize:        parsed.SizeTier,
+		ImageInputSize:   parsed.Size,
+		ImageOutputSizes: result.ImageOutputSizes,
+	}
 }

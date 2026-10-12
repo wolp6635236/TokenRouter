@@ -15,6 +15,8 @@ type schedulerProviderSource struct {
 	*providerpostgres.ProviderStore
 }
 
+type schedulerGroupSource struct{ *routingpostgres.GroupStore }
+
 func (r schedulerProviderSource) GetByID(ctx context.Context, id int64) (scheduler.SnapshotProvider, error) {
 	value, err := r.ProviderStore.GetByID(ctx, id)
 	return codec.WrapRecord(value), err
@@ -61,8 +63,6 @@ func schedulerSnapshotGroup(value *routing.Group) *scheduler.SnapshotGroup {
 	}
 	return &scheduler.SnapshotGroup{ID: value.ID, Name: value.Name, Status: value.Status, Hydrated: value.Hydrated}
 }
-
-type schedulerGroupSource struct{ *routingpostgres.GroupStore }
 
 func (r schedulerGroupSource) GetByID(ctx context.Context, id int64) (*scheduler.SnapshotGroup, error) {
 	value, err := r.GroupStore.GetByID(ctx, id)

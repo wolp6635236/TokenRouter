@@ -8,6 +8,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
+const (
+	KeyQuotaExceeded          ConsumptionFailureKind = "key_quota"
+	KeyExpired                ConsumptionFailureKind = "key_expired"
+	MaintenanceFailed         ConsumptionFailureKind = "maintenance"
+	SubscriptionInvalid       ConsumptionFailureKind = "subscription"
+	SubscriptionLimitExceeded ConsumptionFailureKind = "subscription_limit"
+	InsufficientBalance       ConsumptionFailureKind = "balance"
+)
+
 // KeyLimits 检查当前 Key 的有效期和额度。
 type KeyLimits interface {
 	IsExpired() bool
@@ -22,19 +31,17 @@ type SubscriptionValidator interface {
 
 type ConsumptionFailureKind string
 
-const (
-	KeyQuotaExceeded          ConsumptionFailureKind = "key_quota"
-	KeyExpired                ConsumptionFailureKind = "key_expired"
-	MaintenanceFailed         ConsumptionFailureKind = "maintenance"
-	SubscriptionInvalid       ConsumptionFailureKind = "subscription"
-	SubscriptionLimitExceeded ConsumptionFailureKind = "subscription_limit"
-	InsufficientBalance       ConsumptionFailureKind = "balance"
-)
-
 // ConsumptionFailure 只返回失败阶段；通用与 Google 的文本、状态码仍由 HTTP 决定。
 type ConsumptionFailure struct {
 	Kind  ConsumptionFailureKind
 	Cause error
+}
+
+type ConsumptionInput struct {
+	Status       string
+	Limits       KeyLimits
+	Balance      float64
+	Subscription *billing.UserSubscription
 }
 
 func (e *ConsumptionFailure) Error() string {
@@ -44,13 +51,6 @@ func (e *ConsumptionFailure) Error() string {
 	return string(e.Kind)
 }
 func (e *ConsumptionFailure) Unwrap() error { return e.Cause }
-
-type ConsumptionInput struct {
-	Status       string
-	Limits       KeyLimits
-	Balance      float64
-	Subscription *billing.UserSubscription
-}
 
 // CheckConsumption 在资金来源解析之后检查 Key 与权益；不读取请求体或累计 RPM。
 func CheckConsumption(ctx context.Context, input ConsumptionInput, subscriptions SubscriptionValidator) (*billing.UserSubscription, *ConsumptionFailure) {

@@ -9,12 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/tidwall/gjson"
 )
 
 // HTTPInput 包含完成分组和提供商处理后的请求快照。

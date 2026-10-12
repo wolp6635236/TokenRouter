@@ -12,7 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stubConcurrencyCacheForTest 用于并发服务单元测试的缓存桩
+var (
+	_ ConcurrencyCache          = (*stubConcurrencyCacheForTest)(nil)
+	_ OpenAIWSIngressLeaseCache = (*ingressLeaseCacheForTest)(nil)
+)
+
+type slotCleanupCache struct {
+	ConcurrencyCache
+	calls atomic.Int64
+}
+
+// stubConcurrencyCacheForTest 用于并发服务单元测试的缓存桩。
 type stubConcurrencyCacheForTest struct {
 	acquireResult        bool
 	acquireErr           error
@@ -58,144 +68,31 @@ type ingressLeaseCacheForTest struct {
 	releaseIngressCalls  int
 }
 
-func (c *ingressLeaseCacheForTest) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {
-	c.acquireIngressCalls++
-	if c.acquireIngressFn != nil {
-		return c.acquireIngressFn(ctx, apiKeyID, maxConnections, leaseID)
-	}
-	return c.acquireIngressResult, c.acquireIngressErr
-}
-
-func (c *ingressLeaseCacheForTest) RefreshOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, leaseID string) (bool, error) {
-	c.refreshIngressCalls++
-	if c.refreshIngressFn != nil {
-		return c.refreshIngressFn(ctx, apiKeyID, leaseID)
-	}
-	return c.refreshIngressResult, c.refreshIngressErr
-}
-
-func (c *ingressLeaseCacheForTest) ReleaseOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, leaseID string) error {
-	c.releaseIngressCalls++
-	if c.releaseIngressFn != nil {
-		return c.releaseIngressFn(ctx, apiKeyID, leaseID)
-	}
-	return c.releaseIngressErr
-}
-
-var (
-	_ ConcurrencyCache          = (*stubConcurrencyCacheForTest)(nil)
-	_ OpenAIWSIngressLeaseCache = (*ingressLeaseCacheForTest)(nil)
-)
-
-func (c *stubConcurrencyCacheForTest) AcquireProviderSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
-	return c.acquireResult, c.acquireErr
-}
-
-func (c *stubConcurrencyCacheForTest) ReleaseProviderSlot(_ context.Context, providerID int64, requestID string) error {
-	c.releasedProviderIDs = append(c.releasedProviderIDs, providerID)
-	c.releasedRequestIDs = append(c.releasedRequestIDs, requestID)
-	return c.releaseErr
-}
-
-func (c *stubConcurrencyCacheForTest) GetProviderConcurrency(_ context.Context, _ int64) (int, error) {
-	return c.concurrency, c.concurrencyErr
-}
-
-func (c *stubConcurrencyCacheForTest) GetProviderConcurrencyBatch(_ context.Context, providerIDs []int64) (map[int64]int, error) {
-	result := make(map[int64]int, len(providerIDs))
-	for _, providerID := range providerIDs {
-		if c.concurrencyErr != nil {
-			return nil, c.concurrencyErr
-		}
-		result[providerID] = c.concurrency
-	}
-	return result, nil
-}
-
-func (c *stubConcurrencyCacheForTest) IncrementProviderWaitCount(_ context.Context, _ int64, _ int) (bool, error) {
-	return c.waitAllowed, c.waitErr
-}
-
-func (c *stubConcurrencyCacheForTest) DecrementProviderWaitCount(_ context.Context, _ int64) error {
-	return nil
-}
-
-func (c *stubConcurrencyCacheForTest) GetProviderWaitingCount(_ context.Context, _ int64) (int, error) {
-	return c.waitCount, c.waitCountErr
-}
-
-func (c *stubConcurrencyCacheForTest) AcquireUserSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
-	return c.acquireResult, c.acquireErr
-}
-
-func (c *stubConcurrencyCacheForTest) ReleaseUserSlot(_ context.Context, _ int64, _ string) error {
-	return c.releaseErr
-}
-
-func (c *stubConcurrencyCacheForTest) GetUserConcurrency(_ context.Context, _ int64) (int, error) {
-	return c.concurrency, c.concurrencyErr
-}
-
-func (c *stubConcurrencyCacheForTest) TrackAPIKeySlot(_ context.Context, apiKeyID int64, requestID string) error {
-	c.trackedAPIKeyIDs = append(c.trackedAPIKeyIDs, apiKeyID)
-	c.trackedAPIKeyRequestIDs = append(c.trackedAPIKeyRequestIDs, requestID)
-	return c.apiKeyTrackErr
-}
-
-func (c *stubConcurrencyCacheForTest) ReleaseAPIKeySlot(_ context.Context, apiKeyID int64, requestID string) error {
-	c.releasedAPIKeyIDs = append(c.releasedAPIKeyIDs, apiKeyID)
-	c.releasedAPIKeyRequestIDs = append(c.releasedAPIKeyRequestIDs, requestID)
-	return c.apiKeyReleaseErr
-}
-
-func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Context, apiKeyIDs []int64) (map[int64]int, error) {
-	if c.apiKeyConcurrencyErr != nil {
-		return nil, c.apiKeyConcurrencyErr
-	}
-	result := make(map[int64]int, len(apiKeyIDs))
-	for _, apiKeyID := range apiKeyIDs {
-		result[apiKeyID] = c.apiKeyConcurrency[apiKeyID]
-	}
-	return result, nil
-}
-
-func (c *stubConcurrencyCacheForTest) IncrementWaitCount(_ context.Context, _ int64, _ int) (bool, error) {
-	return c.waitAllowed, c.waitErr
-}
-
-func (c *stubConcurrencyCacheForTest) DecrementWaitCount(_ context.Context, _ int64) error {
-	return nil
-}
-
-func (c *stubConcurrencyCacheForTest) GetProvidersLoadBatch(_ context.Context, _ []ProviderWithConcurrency) (map[int64]*ProviderLoadInfo, error) {
-	c.loadBatchCalls.Add(1)
-	return c.loadBatch, c.loadBatchErr
-}
-
-func (c *stubConcurrencyCacheForTest) GetUsersLoadBatch(_ context.Context, _ []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
-	return c.usersLoadBatch, c.usersLoadErr
-}
-
-func (c *stubConcurrencyCacheForTest) CleanupExpiredProviderSlots(_ context.Context, _ int64) error {
-	return c.cleanupErr
-}
-
-func (c *stubConcurrencyCacheForTest) CleanupExpiredProviderSlotKeys(_ context.Context) error {
-	return c.cleanupErr
-}
-
-func (c *stubConcurrencyCacheForTest) CleanupStaleProcessSlots(_ context.Context, _ string) error {
-	return c.cleanupErr
-}
-
 type trackingConcurrencyCache struct {
 	stubConcurrencyCacheForTest
 	cleanupPrefix string
 }
 
-func (c *trackingConcurrencyCache) CleanupStaleProcessSlots(_ context.Context, prefix string) error {
-	c.cleanupPrefix = prefix
-	return c.cleanupErr
+func TestStartSlotCleanupWorker_UsesCacheWideCleanupWithoutProviderRepo(t *testing.T) {
+	cache := &slotCleanupCache{}
+	svc := NewConcurrencyService(cache)
+	t.Cleanup(svc.Stop)
+
+	svc.StartSlotCleanupWorker(time.Hour)
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if cache.calls.Load() > 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("cleanup worker did not call cache-wide provider slot cleanup")
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestCleanupStaleProcessSlots_NilCache(t *testing.T) {
@@ -350,7 +247,7 @@ func TestAcquireOpenAIWSIngressLease(t *testing.T) {
 
 	t.Run("disabled", func(t *testing.T) {
 		cache := &ingressLeaseCacheForTest{}
-		// 保留未提供 context 的兼容输入，验证关闭限流时无需访问缓存。
+		// 未提供 context 且关闭限流时，请求直接放行。
 		var requestContext context.Context
 		lease, acquired, err := NewConcurrencyService(cache).AcquireOpenAIWSIngressLease(requestContext, 1, 0)
 		require.NoError(t, err)
@@ -636,4 +533,318 @@ func TestIncrementProviderWaitCount_NilCache(t *testing.T) {
 	allowed, err := svc.EnterProviderWait(context.Background(), 1, 10)
 	require.NoError(t, err)
 	require.True(t, allowed.Allowed)
+}
+
+// TestDecrementWaitCount_NilCache 检查缓存缺失时的释放调用。
+func TestDecrementWaitCount_NilCache(t *testing.T) {
+	svc := &ConcurrencyService{cache: nil}
+
+	wait, err := svc.EnterUserWait(context.Background(), 1, 25)
+	require.NoError(t, err)
+	wait.Release()
+}
+
+// TestDecrementWaitCount_CacheError 检查释放时的缓存错误处理。
+func TestDecrementWaitCount_CacheError(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{waitAllowed: true}
+	svc := NewConcurrencyService(cache)
+	// 等待结果的 Release 使用独立清理 context，释放错误写入日志。
+	wait, err := svc.EnterUserWait(context.Background(), 1, 25)
+	require.NoError(t, err)
+	wait.Release()
+}
+
+// TestDecrementProviderWaitCount_NilCache 检查提供商缓存缺失时的释放调用。
+func TestDecrementProviderWaitCount_NilCache(t *testing.T) {
+	svc := &ConcurrencyService{cache: nil}
+	wait, err := svc.EnterProviderWait(context.Background(), 1, 25)
+	require.NoError(t, err)
+	wait.Release()
+}
+
+// TestDecrementProviderWaitCount_CacheError 检查释放提供商等待计数时的缓存错误处理。
+func TestDecrementProviderWaitCount_CacheError(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{waitAllowed: true}
+	svc := NewConcurrencyService(cache)
+	wait, err := svc.EnterProviderWait(context.Background(), 1, 25)
+	require.NoError(t, err)
+	wait.Release()
+}
+
+// TestWaitingQueueFlow_IncrementThenDecrement 检查用户等待计数的登记和释放。
+func TestWaitingQueueFlow_IncrementThenDecrement(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{waitAllowed: true}
+	svc := NewConcurrencyService(cache)
+
+	allowed, err := svc.EnterUserWait(context.Background(), 1, 25)
+	require.NoError(t, err)
+	require.True(t, allowed.Allowed)
+
+	allowed.Release()
+}
+
+// TestWaitingQueueFlow_ProviderLevel 测试提供商级等待队列流程。
+func TestWaitingQueueFlow_ProviderLevel(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{waitAllowed: true}
+	svc := NewConcurrencyService(cache)
+
+	allowed, err := svc.EnterProviderWait(context.Background(), 42, 10)
+	require.NoError(t, err)
+	require.True(t, allowed.Allowed)
+
+	allowed.Release()
+}
+
+// TestWaitingQueueFull_Returns429Signal 测试等待队列满时返回 false。
+func TestWaitingQueueFull_Returns429Signal(t *testing.T) {
+	// waitAllowed=false 模拟队列已满
+	cache := &stubConcurrencyCacheForTest{waitAllowed: false}
+	svc := NewConcurrencyService(cache)
+
+	// 用户级等待队列满
+	allowed, err := svc.EnterUserWait(context.Background(), 1, 25)
+	require.NoError(t, err)
+	require.False(t, allowed.Allowed, "等待队列满时应返回 false（调用方根据此返回 429）")
+
+	// 提供商级等待队列满
+	allowed, err = svc.EnterProviderWait(context.Background(), 1, 10)
+	require.NoError(t, err)
+	require.False(t, allowed.Allowed, "提供商等待队列满时应返回 false")
+}
+
+// TestWaitingQueue_FailOpen_OnCacheError 测试 Redis 故障时 fail-open。
+func TestWaitingQueue_FailOpen_OnCacheError(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{waitErr: errors.New("redis connection refused")}
+	svc := NewConcurrencyService(cache)
+
+	// 用户级：Redis 错误时允许通过
+	allowed, err := svc.EnterUserWait(context.Background(), 1, 25)
+	require.NoError(t, err, "Redis 错误不应向调用方传播")
+	require.True(t, allowed.Allowed, "Redis 故障时应 fail-open 放行")
+
+	// 提供商级：同样 fail-open
+	allowed, err = svc.EnterProviderWait(context.Background(), 1, 10)
+	require.NoError(t, err, "Redis 错误不应向调用方传播")
+	require.True(t, allowed.Allowed, "Redis 故障时应 fail-open 放行")
+}
+
+// TestCalculateMaxWait_Scenarios 测试最大等待队列大小计算。
+func TestCalculateMaxWait_Scenarios(t *testing.T) {
+	tests := []struct {
+		concurrency int
+		expected    int
+	}{
+		{5, 25},    // 5 + 20
+		{10, 30},   // 10 + 20
+		{1, 21},    // 1 + 20
+		{0, 21},    // min(1) + 20
+		{-1, 21},   // min(1) + 20
+		{-10, 21},  // min(1) + 20
+		{100, 120}, // 100 + 20
+	}
+	for _, tt := range tests {
+		result := CalculateMaxWait(tt.concurrency)
+		require.Equal(t, tt.expected, result, "CalculateMaxWait(%d)", tt.concurrency)
+	}
+}
+
+func TestRequestLeaseStopWaitsForActualRelease(t *testing.T) {
+	cache := &runtimeSlotCache{acquired: true, releaseStarted: make(chan struct{}), releaseContinue: make(chan struct{})}
+	core := NewConcurrencyService(cache)
+	slot, err := core.AcquireProviderSlot(context.Background(), 7, 1)
+	require.NoError(t, err)
+	stopped := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() { stopped <- core.StopContext(ctx) }()
+	<-core.runtime.Context().Done()
+	select {
+	case err := <-stopped:
+		t.Fatalf("释放前停止已返回：%v", err)
+	default:
+	}
+	released := make(chan struct{})
+	go func() { slot.ReleaseFunc(); close(released) }()
+	<-cache.releaseStarted
+	select {
+	case err := <-stopped:
+		t.Fatalf("Redis 释放未完成即停止：%v", err)
+	default:
+	}
+	close(cache.releaseContinue)
+	<-released
+	require.NoError(t, <-stopped)
+	slot.ReleaseFunc()
+	require.Equal(t, int64(1), cache.releases.Load())
+	_, err = core.AcquireProviderSlot(context.Background(), 7, 1)
+	require.ErrorIs(t, err, ErrRuntimeStopped)
+}
+
+func TestRequestLeaseStopTimeoutRetainsFailure(t *testing.T) {
+	cache := &runtimeSlotCache{acquired: true}
+	core := NewConcurrencyService(cache)
+	slot, err := core.AcquireProviderSlot(context.Background(), 9, 1)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	stopErr := core.StopContext(ctx)
+	require.ErrorIs(t, stopErr, context.DeadlineExceeded)
+	require.ErrorContains(t, stopErr, "provider-slot:9")
+	slot.ReleaseFunc()
+	require.Equal(t, stopErr, core.StopContext(context.Background()))
+}
+
+// TestUnlimitedSlotPreservesCallerCancellation 检查无上限槽位立即放行，取消处理使用调用方的 ReleaseMode。
+func TestUnlimitedSlotPreservesCallerCancellation(t *testing.T) {
+	for _, user := range []bool{false, true} {
+		core := NewConcurrencyService(nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var slot *AcquireResult
+		var err error
+		if user {
+			slot, err = core.AcquireUserSlot(ctx, 4, 0)
+		} else {
+			slot, err = core.AcquireProviderSlot(ctx, 4, 0)
+		}
+		require.NoError(t, err)
+		require.True(t, slot.Acquired)
+		slot.ReleaseFunc()
+		require.NoError(t, core.StopContext(context.Background()))
+	}
+}
+
+func (c *slotCleanupCache) CleanupExpiredProviderSlotKeys(context.Context) error {
+	c.calls.Add(1)
+	return nil
+}
+
+func (c *ingressLeaseCacheForTest) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {
+	c.acquireIngressCalls++
+	if c.acquireIngressFn != nil {
+		return c.acquireIngressFn(ctx, apiKeyID, maxConnections, leaseID)
+	}
+	return c.acquireIngressResult, c.acquireIngressErr
+}
+
+func (c *ingressLeaseCacheForTest) RefreshOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, leaseID string) (bool, error) {
+	c.refreshIngressCalls++
+	if c.refreshIngressFn != nil {
+		return c.refreshIngressFn(ctx, apiKeyID, leaseID)
+	}
+	return c.refreshIngressResult, c.refreshIngressErr
+}
+
+func (c *ingressLeaseCacheForTest) ReleaseOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, leaseID string) error {
+	c.releaseIngressCalls++
+	if c.releaseIngressFn != nil {
+		return c.releaseIngressFn(ctx, apiKeyID, leaseID)
+	}
+	return c.releaseIngressErr
+}
+
+func (c *stubConcurrencyCacheForTest) AcquireProviderSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
+	return c.acquireResult, c.acquireErr
+}
+
+func (c *stubConcurrencyCacheForTest) ReleaseProviderSlot(_ context.Context, providerID int64, requestID string) error {
+	c.releasedProviderIDs = append(c.releasedProviderIDs, providerID)
+	c.releasedRequestIDs = append(c.releasedRequestIDs, requestID)
+	return c.releaseErr
+}
+
+func (c *stubConcurrencyCacheForTest) GetProviderConcurrency(_ context.Context, _ int64) (int, error) {
+	return c.concurrency, c.concurrencyErr
+}
+
+func (c *stubConcurrencyCacheForTest) GetProviderConcurrencyBatch(_ context.Context, providerIDs []int64) (map[int64]int, error) {
+	result := make(map[int64]int, len(providerIDs))
+	for _, providerID := range providerIDs {
+		if c.concurrencyErr != nil {
+			return nil, c.concurrencyErr
+		}
+		result[providerID] = c.concurrency
+	}
+	return result, nil
+}
+
+func (c *stubConcurrencyCacheForTest) IncrementProviderWaitCount(_ context.Context, _ int64, _ int) (bool, error) {
+	return c.waitAllowed, c.waitErr
+}
+
+func (c *stubConcurrencyCacheForTest) DecrementProviderWaitCount(_ context.Context, _ int64) error {
+	return nil
+}
+
+func (c *stubConcurrencyCacheForTest) GetProviderWaitingCount(_ context.Context, _ int64) (int, error) {
+	return c.waitCount, c.waitCountErr
+}
+
+func (c *stubConcurrencyCacheForTest) AcquireUserSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
+	return c.acquireResult, c.acquireErr
+}
+
+func (c *stubConcurrencyCacheForTest) ReleaseUserSlot(_ context.Context, _ int64, _ string) error {
+	return c.releaseErr
+}
+
+func (c *stubConcurrencyCacheForTest) GetUserConcurrency(_ context.Context, _ int64) (int, error) {
+	return c.concurrency, c.concurrencyErr
+}
+
+func (c *stubConcurrencyCacheForTest) TrackAPIKeySlot(_ context.Context, apiKeyID int64, requestID string) error {
+	c.trackedAPIKeyIDs = append(c.trackedAPIKeyIDs, apiKeyID)
+	c.trackedAPIKeyRequestIDs = append(c.trackedAPIKeyRequestIDs, requestID)
+	return c.apiKeyTrackErr
+}
+
+func (c *stubConcurrencyCacheForTest) ReleaseAPIKeySlot(_ context.Context, apiKeyID int64, requestID string) error {
+	c.releasedAPIKeyIDs = append(c.releasedAPIKeyIDs, apiKeyID)
+	c.releasedAPIKeyRequestIDs = append(c.releasedAPIKeyRequestIDs, requestID)
+	return c.apiKeyReleaseErr
+}
+
+func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Context, apiKeyIDs []int64) (map[int64]int, error) {
+	if c.apiKeyConcurrencyErr != nil {
+		return nil, c.apiKeyConcurrencyErr
+	}
+	result := make(map[int64]int, len(apiKeyIDs))
+	for _, apiKeyID := range apiKeyIDs {
+		result[apiKeyID] = c.apiKeyConcurrency[apiKeyID]
+	}
+	return result, nil
+}
+
+func (c *stubConcurrencyCacheForTest) IncrementWaitCount(_ context.Context, _ int64, _ int) (bool, error) {
+	return c.waitAllowed, c.waitErr
+}
+
+func (c *stubConcurrencyCacheForTest) DecrementWaitCount(_ context.Context, _ int64) error {
+	return nil
+}
+
+func (c *stubConcurrencyCacheForTest) GetProvidersLoadBatch(_ context.Context, _ []ProviderWithConcurrency) (map[int64]*ProviderLoadInfo, error) {
+	c.loadBatchCalls.Add(1)
+	return c.loadBatch, c.loadBatchErr
+}
+
+func (c *stubConcurrencyCacheForTest) GetUsersLoadBatch(_ context.Context, _ []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	return c.usersLoadBatch, c.usersLoadErr
+}
+
+func (c *stubConcurrencyCacheForTest) CleanupExpiredProviderSlots(_ context.Context, _ int64) error {
+	return c.cleanupErr
+}
+
+func (c *stubConcurrencyCacheForTest) CleanupExpiredProviderSlotKeys(_ context.Context) error {
+	return c.cleanupErr
+}
+
+func (c *stubConcurrencyCacheForTest) CleanupStaleProcessSlots(_ context.Context, _ string) error {
+	return c.cleanupErr
+}
+
+func (c *trackingConcurrencyCache) CleanupStaleProcessSlots(_ context.Context, prefix string) error {
+	c.cleanupPrefix = prefix
+	return c.cleanupErr
 }

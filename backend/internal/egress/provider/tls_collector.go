@@ -24,6 +24,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 )
 
+const (
+	tlsFingerprintCollectorDefaultTTL        = 30 * time.Minute
+	tlsFingerprintCollectorDefaultMaxRecords = 20
+	// TLS 记录长度字段最大为 65535，Peek 时还需要包含 5 字节记录头。
+	tlsFingerprintCollectorClientHelloBufferSize = 64*1024 + 5
+)
+
 type (
 	TLSFingerprintCollectorStatus  = egress.TLSFingerprintCollectorStatus
 	TLSFingerprintCollectorSession = egress.TLSFingerprintCollectorSession
@@ -42,23 +49,6 @@ type CollectorOptions struct {
 	Now                  func() time.Time
 	Diagnostics          egress.Diagnostics
 }
-
-func NewTLSFingerprintCollectorService(options CollectorOptions) *TLSFingerprintCollectorService {
-	now := options.Now
-	if now == nil {
-		now = time.Now
-	}
-	return &TLSFingerprintCollectorService{options: options, now: now, sessions: egress.NewCaptureSessions(now)}
-}
-
-func (s *TLSFingerprintCollectorService) collectorConfigLocked() CollectorOptions { return s.options }
-
-const (
-	tlsFingerprintCollectorDefaultTTL        = 30 * time.Minute
-	tlsFingerprintCollectorDefaultMaxRecords = 20
-	// TLS 记录长度字段最大为 65535，Peek 时还需要包含 5 字节记录头。
-	tlsFingerprintCollectorClientHelloBufferSize = 64*1024 + 5
-)
 
 // TLSFingerprintCollectorService 管理运行时 TLS 指纹收集器。
 type TLSFingerprintCollectorService struct {
@@ -85,6 +75,37 @@ type tlsFingerprintCaptureContext struct {
 	clientHello    *tlsfingerprint.CapturedClientHello
 	negotiatedALPN string
 }
+
+type tlsFingerprintCaptureListener struct {
+	net.Listener
+	cert *tls.Certificate
+}
+
+type tlsFingerprintCaptureConn struct {
+	net.Conn
+	cert           *tls.Certificate
+	reader         *bufio.Reader
+	captured       *tlsfingerprint.CapturedClientHello
+	negotiatedALPN string
+	handshakeOnce  sync.Once
+	handshakeErr   error
+	tlsConn        *tls.Conn
+}
+
+type readerConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func NewTLSFingerprintCollectorService(options CollectorOptions) *TLSFingerprintCollectorService {
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &TLSFingerprintCollectorService{options: options, now: now, sessions: egress.NewCaptureSessions(now)}
+}
+
+func (s *TLSFingerprintCollectorService) collectorConfigLocked() CollectorOptions { return s.options }
 
 // Status 返回收集器状态。
 func (s *TLSFingerprintCollectorService) Status() TLSFingerprintCollectorStatus {
@@ -396,11 +417,6 @@ func (s *TLSFingerprintCollectorService) maxRecordsLocked() int {
 	return maxRecords
 }
 
-type tlsFingerprintCaptureListener struct {
-	net.Listener
-	cert *tls.Certificate
-}
-
 func newTLSFingerprintCaptureListener(inner net.Listener, cert *tls.Certificate) net.Listener {
 	return &tlsFingerprintCaptureListener{Listener: inner, cert: cert}
 }
@@ -411,17 +427,6 @@ func (l *tlsFingerprintCaptureListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	return newTLSFingerprintCaptureConn(conn, l.cert), nil
-}
-
-type tlsFingerprintCaptureConn struct {
-	net.Conn
-	cert           *tls.Certificate
-	reader         *bufio.Reader
-	captured       *tlsfingerprint.CapturedClientHello
-	negotiatedALPN string
-	handshakeOnce  sync.Once
-	handshakeErr   error
-	tlsConn        *tls.Conn
 }
 
 func newTLSFingerprintCaptureConn(conn net.Conn, cert *tls.Certificate) *tlsFingerprintCaptureConn {
@@ -503,11 +508,6 @@ func (c *tlsFingerprintCaptureConn) captureContext() *tlsFingerprintCaptureConte
 		clientHello:    c.captured,
 		negotiatedALPN: c.negotiatedALPN,
 	}
-}
-
-type readerConn struct {
-	net.Conn
-	reader *bufio.Reader
 }
 
 func (c *readerConn) Read(p []byte) (int, error) {

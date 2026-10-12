@@ -25,7 +25,7 @@ func PassiveUsageFields(headers http.Header) map[string]any {
 	if resetStr := headers.Get("anthropic-ratelimit-unified-7d-reset"); resetStr != "" {
 		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
 			if ts > 1e11 {
-				ts = ts / 1000
+				ts /= 1000
 			}
 			extraUpdates["passive_usage_7d_reset"] = ts
 		}
@@ -40,7 +40,7 @@ func PassiveUsageFields(headers http.Header) map[string]any {
 	if resetStr := headers.Get("anthropic-ratelimit-unified-7d_oi-reset"); resetStr != "" {
 		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
 			if ts > 1e11 {
-				ts = ts / 1000
+				ts /= 1000
 			}
 			extraUpdates["passive_usage_7d_oi_reset"] = ts
 		}

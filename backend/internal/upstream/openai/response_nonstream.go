@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type NonStreamingResult struct {

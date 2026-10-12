@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"strings"
 
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/gin-gonic/gin"
 
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/gin-gonic/gin"
 )
 
 const (

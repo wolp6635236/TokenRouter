@@ -1,9 +1,10 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
 )
 
 const errorPassthroughServiceContextKey = "error_passthrough_service"

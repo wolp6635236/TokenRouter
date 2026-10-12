@@ -11,13 +11,13 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// UserAttributeService handles attribute management
+// UserAttributeService handles attribute management.
 type UserAttributeService struct {
 	defRepo   UserAttributeDefinitionRepository
 	valueRepo UserAttributeValueRepository
 }
 
-// NewUserAttributeService creates a new service instance
+// NewUserAttributeService creates a new service instance.
 func NewUserAttributeService(
 	defRepo UserAttributeDefinitionRepository,
 	valueRepo UserAttributeValueRepository,
@@ -28,7 +28,7 @@ func NewUserAttributeService(
 	}
 }
 
-// CreateDefinition creates a new attribute definition
+// CreateDefinition creates a new attribute definition.
 func (s *UserAttributeService) CreateDefinition(ctx context.Context, input CreateAttributeDefinitionInput) (*UserAttributeDefinition, error) {
 	// Validate type
 	if !IsValidAttributeType(input.Type) {
@@ -67,17 +67,17 @@ func (s *UserAttributeService) CreateDefinition(ctx context.Context, input Creat
 	return def, nil
 }
 
-// GetDefinitionByKey retrieves a definition by its unique key
+// GetDefinitionByKey retrieves a definition by its unique key.
 func (s *UserAttributeService) GetDefinitionByKey(ctx context.Context, key string) (*UserAttributeDefinition, error) {
 	return s.defRepo.GetByKey(ctx, key)
 }
 
-// ListDefinitions lists all definitions
+// ListDefinitions lists all definitions.
 func (s *UserAttributeService) ListDefinitions(ctx context.Context, enabledOnly bool) ([]UserAttributeDefinition, error) {
 	return s.defRepo.List(ctx, enabledOnly)
 }
 
-// UpdateDefinition updates an existing definition
+// UpdateDefinition updates an existing definition.
 func (s *UserAttributeService) UpdateDefinition(ctx context.Context, id int64, input UpdateAttributeDefinitionInput) (*UserAttributeDefinition, error) {
 	def, err := s.defRepo.GetByID(ctx, id)
 	if err != nil {
@@ -123,7 +123,7 @@ func (s *UserAttributeService) UpdateDefinition(ctx context.Context, id int64, i
 	return def, nil
 }
 
-// DeleteDefinition soft-deletes a definition and hard-deletes associated values
+// DeleteDefinition soft-deletes a definition and hard-deletes associated values.
 func (s *UserAttributeService) DeleteDefinition(ctx context.Context, id int64) error {
 	// Check if definition exists
 	_, err := s.defRepo.GetByID(ctx, id)
@@ -144,18 +144,18 @@ func (s *UserAttributeService) DeleteDefinition(ctx context.Context, id int64) e
 	return nil
 }
 
-// ReorderDefinitions updates display order for multiple definitions
+// ReorderDefinitions updates display order for multiple definitions.
 func (s *UserAttributeService) ReorderDefinitions(ctx context.Context, orders map[int64]int) error {
 	return s.defRepo.UpdateDisplayOrders(ctx, orders)
 }
 
-// GetUserAttributes retrieves all attribute values for a user
+// GetUserAttributes retrieves all attribute values for a user.
 func (s *UserAttributeService) GetUserAttributes(ctx context.Context, userID int64) ([]UserAttributeValue, error) {
 	return s.valueRepo.GetByUserID(ctx, userID)
 }
 
 // GetBatchUserAttributes retrieves attribute values for multiple users
-// Returns a map of userID -> map of attributeID -> value
+// Returns a map of userID -> map of attributeID -> value.
 func (s *UserAttributeService) GetBatchUserAttributes(ctx context.Context, userIDs []int64) (map[int64]map[int64]string, error) {
 	values, err := s.valueRepo.GetByUserIDs(ctx, userIDs)
 	if err != nil {
@@ -173,7 +173,7 @@ func (s *UserAttributeService) GetBatchUserAttributes(ctx context.Context, userI
 	return result, nil
 }
 
-// UpdateUserAttributes batch updates attribute values for a user
+// UpdateUserAttributes batch updates attribute values for a user.
 func (s *UserAttributeService) UpdateUserAttributes(ctx context.Context, userID int64, inputs []UpdateUserAttributeInput) error {
 	// Validate all values before updating
 	defs, err := s.defRepo.List(ctx, true)
@@ -200,7 +200,7 @@ func (s *UserAttributeService) UpdateUserAttributes(ctx context.Context, userID 
 	return s.valueRepo.UpsertBatch(ctx, userID, inputs)
 }
 
-// validateValue validates a value against its definition
+// validateValue validates a value against its definition.
 func (s *UserAttributeService) validateValue(def *UserAttributeDefinition, value string) error {
 	// Skip validation for empty non-required fields
 	if value == "" && !def.Required {
@@ -290,7 +290,7 @@ func (s *UserAttributeService) validateValue(def *UserAttributeDefinition, value
 	return nil
 }
 
-// ValidationError creates a validation error with a custom message
+// ValidationError creates a validation error with a custom message.
 func ValidationError(msg string) error {
 	return infraerrors.BadRequest("ATTRIBUTE_VALIDATION_FAILED", msg)
 }

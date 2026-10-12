@@ -10,9 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 const (
@@ -29,7 +30,11 @@ const (
 	defaultUserPromptReplacementTimeLayout = "2006-01-02"
 	defaultUserPromptReplacementCacheTTL   = 60 * time.Second
 	defaultUserPromptReplacementErrorTTL   = 5 * time.Second
+
+	SettingKeyUserPromptReplacementConfig = "user_prompt_replacement_config"
 )
+
+var userPromptReplacementCache atomic.Value // *CompiledConfig
 
 // UserPromptReplacementConfig 是管理员配置的用户提示词替换规则集合。
 type UserPromptReplacementConfig struct {
@@ -63,7 +68,18 @@ type CompiledConfig struct {
 	expiresAt int64
 }
 
-var userPromptReplacementCache atomic.Value // *CompiledConfig
+// Settings 提供提示词替换配置的读写。
+type Settings interface {
+	GetValue(context.Context, string) (string, error)
+	Set(context.Context, string, string) error
+}
+
+// Service 持有提示词替换规则的进程缓存，规则在读取时加载。
+type Service struct {
+	store    Settings
+	notFound error
+	warn     func(string, ...any)
+}
 
 // DefaultUserPromptReplacementConfig 返回用户提示词替换的内置默认规则。
 func DefaultUserPromptReplacementConfig() *UserPromptReplacementConfig {
@@ -483,19 +499,6 @@ func ConfigToRaw(cfg *UserPromptReplacementConfig) (string, error) {
 	return string(raw), nil
 }
 
-// Settings 提供提示词替换配置的读写。
-type Settings interface {
-	GetValue(context.Context, string) (string, error)
-	Set(context.Context, string, string) error
-}
-
-// Service 持有提示词替换规则的进程缓存，规则在读取时加载。
-type Service struct {
-	store    Settings
-	notFound error
-	warn     func(string, ...any)
-}
-
 func New(store Settings, notFound error, warn func(string, ...any)) *Service {
 	return &Service{store: store, notFound: notFound, warn: warn}
 }
@@ -508,5 +511,3 @@ func emit(warn func(string, ...any), name string, fields ...any) {
 
 // SharedCache 仅供旧批量设置失效转接；编译与命中逻辑仍在本包。
 func SharedCache() *atomic.Value { return &userPromptReplacementCache }
-
-const SettingKeyUserPromptReplacementConfig = "user_prompt_replacement_config"

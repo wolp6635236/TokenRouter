@@ -78,7 +78,7 @@
             <button
               type="button"
               data-testid="announcement-popup-dismiss"
-              class="shrink-0 rounded-control bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:bg-primary-500 dark:hover:bg-primary-600 dark:focus-visible:ring-offset-dark-900"
+              class="btn btn-primary shrink-0"
               @click="handleDismiss"
             >
               {{ t('common.close') }}

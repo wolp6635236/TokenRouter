@@ -3,55 +3,25 @@ package pricingcontract
 import (
 	"context"
 	"testing"
-	"time"
 
-	purepricing "github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/stretchr/testify/require"
 )
 
-// ---------------------------------------------------------------------------
-// matchProviderStatsRule
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// findPricingForModel
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// calculateStatsCost
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// tryCustomRules — 多规则顺序测试
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// tryModelFilePricing
-// ---------------------------------------------------------------------------
-
-// newTestBillingServiceWithPrices creates a BillingService with pre-populated
-// fallback prices for testing. No config or pricing service is needed.
-// The key must match what getFallbackPricing resolves to for a given model name.
-// E.g., model "claude-sonnet-4" resolves to key "claude-sonnet-4".
-func newTestBillingServiceWithPrices(prices map[string]*purepricing.ModelPricing) *billing.Calculator {
-	return newCalculatorWithPrices(nil, prices)
-}
-
 func TestTryModelFilePricing_Success(t *testing.T) {
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"claude-sonnet-4": {
 			InputPricePerToken:  0.001,
 			OutputPricePerToken: 0.002,
 		},
 	})
-	tokens := purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
+	tokens := pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
 	result := bs.ModelFileStatsCost("claude-sonnet-4", tokens, "", "")
 	require.NotNil(t, result)
 	// 100*0.001 + 50*0.002 = 0.1 + 0.1 = 0.2
@@ -59,7 +29,7 @@ func TestTryModelFilePricing_Success(t *testing.T) {
 }
 
 func TestTryModelFilePricing_AppliesLongContextPricing(t *testing.T) {
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"gpt-5.6-sol": {
 			InputPricePerToken:          0.001,
 			OutputPricePerToken:         0.002,
@@ -69,7 +39,7 @@ func TestTryModelFilePricing_AppliesLongContextPricing(t *testing.T) {
 			LongContextOutputMultiplier: 1.5,
 		},
 	})
-	tokens := purepricing.UsageTokens{InputTokens: 101, OutputTokens: 10, CacheReadTokens: 5}
+	tokens := pricing.UsageTokens{InputTokens: 101, OutputTokens: 10, CacheReadTokens: 5}
 
 	result := bs.ModelFileStatsCost("gpt-5.6-sol", tokens, "", "")
 
@@ -80,7 +50,7 @@ func TestTryModelFilePricing_AppliesLongContextPricing(t *testing.T) {
 
 func TestTryModelFilePricing_AppliesServiceTierPricing(t *testing.T) {
 	flex := 0.5
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"gpt-5.6-sol": {
 			FlexMultiplier:                     &flex,
 			InputPricePerToken:                 0.001,
@@ -93,7 +63,7 @@ func TestTryModelFilePricing_AppliesServiceTierPricing(t *testing.T) {
 			CacheReadPricePerTokenPriority:     0.001,
 		},
 	})
-	tokens := purepricing.UsageTokens{
+	tokens := pricing.UsageTokens{
 		InputTokens:         100,
 		OutputTokens:        50,
 		CacheCreationTokens: 20,
@@ -120,7 +90,7 @@ func TestTryModelFilePricing_AppliesServiceTierPricing(t *testing.T) {
 }
 
 func TestTryModelFilePricing_CombinesPriorityAndLongContextPricing(t *testing.T) {
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"gpt-5.6-sol": {
 			InputPricePerToken:                 0.001,
 			InputPricePerTokenPriority:         0.002,
@@ -135,7 +105,7 @@ func TestTryModelFilePricing_CombinesPriorityAndLongContextPricing(t *testing.T)
 			LongContextOutputMultiplier:        1.5,
 		},
 	})
-	tokens := purepricing.UsageTokens{
+	tokens := pricing.UsageTokens{
 		InputTokens:         101,
 		OutputTokens:        10,
 		CacheCreationTokens: 5,
@@ -151,43 +121,43 @@ func TestTryModelFilePricing_CombinesPriorityAndLongContextPricing(t *testing.T)
 
 func TestTryModelFilePricing_PricingNotFound(t *testing.T) {
 	// "nonexistent-model" does not match any fallback pattern
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{})
-	tokens := purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{})
+	tokens := pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
 	result := bs.ModelFileStatsCost("nonexistent-model", tokens, "", "")
 	require.Nil(t, result)
 }
 
 func TestTryModelFilePricing_NilFallback(t *testing.T) {
 	// getFallbackPricing returns nil when key maps to nil
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"claude-sonnet-4": nil,
 	})
-	tokens := purepricing.UsageTokens{InputTokens: 100}
+	tokens := pricing.UsageTokens{InputTokens: 100}
 	result := bs.ModelFileStatsCost("claude-sonnet-4", tokens, "", "")
 	require.Nil(t, result)
 }
 
 func TestTryModelFilePricing_ZeroCost(t *testing.T) {
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"claude-sonnet-4": {
 			InputPricePerToken:  0.001,
 			OutputPricePerToken: 0.002,
 		},
 	})
-	tokens := purepricing.UsageTokens{} // all zero tokens → cost = 0 → nil
+	tokens := pricing.UsageTokens{} // all zero tokens → cost = 0 → nil
 	result := bs.ModelFileStatsCost("claude-sonnet-4", tokens, "", "")
 	require.Nil(t, result)
 }
 
 func TestTryModelFilePricing_WithImageOutput(t *testing.T) {
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"claude-sonnet-4": {
 			InputPricePerToken:       0.001,
 			OutputPricePerToken:      0.002,
 			ImageOutputPricePerToken: 0.01,
 		},
 	})
-	tokens := purepricing.UsageTokens{
+	tokens := pricing.UsageTokens{
 		InputTokens:       100,
 		OutputTokens:      50,
 		ImageOutputTokens: 10,
@@ -200,7 +170,7 @@ func TestTryModelFilePricing_WithImageOutput(t *testing.T) {
 }
 
 func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"claude-sonnet-4": {
 			InputPricePerToken:         0.001,
 			OutputPricePerToken:        0.002,
@@ -208,7 +178,7 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
 			CacheReadPricePerToken:     0.0005,
 		},
 	})
-	tokens := purepricing.UsageTokens{
+	tokens := pricing.UsageTokens{
 		InputTokens:         100,
 		OutputTokens:        50,
 		CacheCreationTokens: 200,
@@ -221,17 +191,13 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
 	require.InDelta(t, 0.95, *result, 1e-12)
 }
 
-// ---------------------------------------------------------------------------
-// contractProviderStatsCost — integration tests covering the 4-level priority chain
-// ---------------------------------------------------------------------------
-
 func TestResolveProviderStatsCost_NilPricingConfigService(t *testing.T) {
 	result := contractProviderStatsCost(
 		context.Background(),
 		nil, // channelService is nil
-		newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{}),
+		newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{}),
 		"", 1, 1, "claude-sonnet-4", "",
-		purepricing.UsageTokens{InputTokens: 100}, 1, 0.5, "",
+		pricing.UsageTokens{InputTokens: 100}, 1, 0.5, "",
 	)
 	require.Nil(t, result)
 }
@@ -245,9 +211,9 @@ func TestResolveProviderStatsCost_EmptyUpstreamModel(t *testing.T) {
 	result := contractProviderStatsCost(
 		context.Background(),
 		cs,
-		newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{}),
+		newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{}),
 		"", 1, 1, "", "", // empty upstream model
-		purepricing.UsageTokens{InputTokens: 100}, 1, 0.5, "",
+		pricing.UsageTokens{InputTokens: 100}, 1, 0.5, "",
 	)
 	require.Nil(t, result)
 }
@@ -262,9 +228,9 @@ func TestResolveProviderStatsCost_GetPricingConfigForGroupReturnsNil(t *testing.
 	result := contractProviderStatsCost(
 		context.Background(),
 		cs,
-		newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{}),
+		newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{}),
 		"", 1, 99, "claude-sonnet-4", "", // groupID 99 has no channel
-		purepricing.UsageTokens{InputTokens: 100}, 1, 0.5, "",
+		pricing.UsageTokens{InputTokens: 100}, 1, 0.5, "",
 	)
 	require.Nil(t, result)
 }
@@ -289,7 +255,7 @@ func TestResolveProviderStatsCost_HitsCustomRule(t *testing.T) {
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, "anthropic")
 
-	tokens := purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
+	tokens := pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
 
 	result := contractProviderStatsCost(
 		context.Background(),
@@ -310,11 +276,11 @@ func TestResolveProviderStatsCost_DoesNotUseUserPrice(t *testing.T) {
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, "anthropic")
 
-	tokens := purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
+	tokens := pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
 
 	result := contractProviderStatsCost(
 		context.Background(),
-		cs, newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+		cs, newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 			"claude-sonnet-4": {InputPricePerToken: 0.001, OutputPricePerToken: 0.002},
 		}),
 		"", 1, 10, "claude-sonnet-4", "",
@@ -335,7 +301,7 @@ func TestResolveProviderStatsCost_NoCalculatorReturnsNil(t *testing.T) {
 		context.Background(),
 		cs, nil,
 		"", 1, 10, "claude-sonnet-4", "",
-		purepricing.UsageTokens{}, 1, 0.0, "", // totalCost = 0
+		pricing.UsageTokens{}, 1, 0.0, "", // totalCost = 0
 	)
 	require.Nil(t, result)
 }
@@ -348,14 +314,14 @@ func TestResolveProviderStatsCost_FallsBackTo模型目录(t *testing.T) {
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, "anthropic")
 
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"claude-sonnet-4": {
 			InputPricePerToken:  0.001,
 			OutputPricePerToken: 0.002,
 		},
 	})
 
-	tokens := purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
+	tokens := pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
 
 	result := contractProviderStatsCost(
 		context.Background(),
@@ -375,14 +341,14 @@ func TestResolveProviderStatsCost_QoderRouteKeyWithoutManualPricingReturnsNil(t 
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, capability.PlatformQoder)
 
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"claude-opus-4.8": {
 			InputPricePerToken:  0.005,
 			OutputPricePerToken: 0.025,
 		},
 	})
 
-	tokens := purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
+	tokens := pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
 
 	result := contractProviderStatsCost(
 		context.Background(),
@@ -399,7 +365,7 @@ func TestResolveProviderStatsCost_QoderAliasUsesStandardUpstreamPricing(t *testi
 		Status: billing.StatusActive,
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, capability.PlatformQoder)
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"gpt-5.4-mini": {
 			InputPricePerToken:  0.001,
 			OutputPricePerToken: 0.002,
@@ -410,7 +376,7 @@ func TestResolveProviderStatsCost_QoderAliasUsesStandardUpstreamPricing(t *testi
 		context.Background(),
 		cs, bs,
 		capability.PlatformQoder, 1, 10, "gpt-5.4-mini", "qwen3.7-plus",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 	require.NotNil(t, result)
 	require.InDelta(t, 0.2, *result, 1e-12)
@@ -440,7 +406,7 @@ func TestResolveProviderStatsCost_QoderCustomRuleCanMatchRequestedAliasAfterRout
 		context.Background(),
 		cs, nil,
 		capability.PlatformQoder, 1, 10, "qmodel", "qwen3.7-plus",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 
 	require.NotNil(t, result)
@@ -471,7 +437,7 @@ func TestResolveProviderStatsCost_QoderGroupMappedRuleMatchesBeforeDifferentUpst
 		context.Background(),
 		cs, nil,
 		capability.PlatformQoder, 1, 10, "ultimate", "qwen3.7-plus", "qmodel",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 
 	require.NotNil(t, result)
@@ -502,7 +468,7 @@ func TestResolveProviderStatsCost_QoderGroupMappedRuleMatchesWhenUpstreamFallsBa
 		context.Background(),
 		cs, nil,
 		capability.PlatformQoder, 1, 10, "qwen3.7-plus", "qwen3.7-plus", "qmodel",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 
 	require.NotNil(t, result)
@@ -539,7 +505,7 @@ func TestResolveProviderStatsCost_QoderRequestedAliasRuleOverridesRouteKeyRule(t
 		context.Background(),
 		cs, nil,
 		capability.PlatformQoder, 1, 10, "qmodel", "qwen3.7-plus",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 
 	require.NotNil(t, result)
@@ -579,7 +545,7 @@ func TestResolveProviderStatsCost_QoderBlankRuleDoesNotMaskLaterAliasRule(t *tes
 		context.Background(),
 		cs, nil,
 		capability.PlatformQoder, 1, 10, "qmodel", "qwen3.7-plus",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 
 	require.NotNil(t, result)
@@ -609,7 +575,7 @@ func TestResolveProviderStatsCost_CustomRuleExplicitZeroOverridesTotalCost(t *te
 		context.Background(),
 		cs, nil,
 		capability.PlatformQoder, 1, 10, "qmodel", "qwen3.7-plus",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 
 	require.NotNil(t, result)
@@ -622,7 +588,7 @@ func TestResolveProviderStatsCost_QoderUnknownUpstreamDoesNotUseRequestedPrice(t
 		Status: billing.StatusActive,
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, capability.PlatformQoder)
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"gpt-5.4": {
 			InputPricePerToken:  0.001,
 			OutputPricePerToken: 0.002,
@@ -633,7 +599,7 @@ func TestResolveProviderStatsCost_QoderUnknownUpstreamDoesNotUseRequestedPrice(t
 		context.Background(),
 		cs, bs,
 		capability.PlatformQoder, 1, 10, "ultimate", "gpt-5.4",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 1, 999.0, "",
 	)
 
 	require.Nil(t, result)
@@ -651,7 +617,7 @@ func TestResolveProviderStatsCost_Gemini36FlashTierUsesFallbackPricing(t *testin
 		context.Background(),
 		cs, bs,
 		"", 1, 10, "gemini-3.6-flash-low", "",
-		purepricing.UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadTokens: 1_000_000}, 1, 0, "",
+		pricing.UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadTokens: 1_000_000}, 1, 0, "",
 	)
 	require.Nil(t, result)
 }
@@ -665,9 +631,9 @@ func TestResolveProviderStatsCost_AllMiss_ReturnsNil(t *testing.T) {
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, "anthropic")
 
 	// BillingService with no pricing for the model
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{})
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{})
 
-	tokens := purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
+	tokens := pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}
 
 	result := contractProviderStatsCost(
 		context.Background(),
@@ -689,7 +655,7 @@ func TestResolveProviderStatsCost_NilBillingService_Skips模型目录(t *testing
 		context.Background(),
 		cs, nil, // billingService is nil
 		"", 1, 10, "claude-sonnet-4", "",
-		purepricing.UsageTokens{InputTokens: 100}, 1, 0.0, "",
+		pricing.UsageTokens{InputTokens: 100}, 1, 0.0, "",
 	)
 	require.Nil(t, result)
 }
@@ -714,7 +680,7 @@ func TestResolveProviderStatsCost_CustomRuleDoesNotUseUserPrice(t *testing.T) {
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, "anthropic")
 
-	tokens := purepricing.UsageTokens{InputTokens: 100}
+	tokens := pricing.UsageTokens{InputTokens: 100}
 
 	result := contractProviderStatsCost(
 		context.Background(),
@@ -723,7 +689,7 @@ func TestResolveProviderStatsCost_CustomRuleDoesNotUseUserPrice(t *testing.T) {
 		tokens, 1, 99.0, "", // 用户售价不参与提供商成本规则
 	)
 	require.NotNil(t, result)
-	// Custom rule: 100*0.05 = 5.0 (NOT 99.0 from totalCost)
+	// 自定义成本规则按 100*0.05 得到 5.0。
 	require.InDelta(t, 5.0, *result, 1e-12)
 }
 
@@ -733,7 +699,7 @@ func TestApplyProviderStatsCost_UsesUsageLogServiceTier(t *testing.T) {
 		Status: billing.StatusActive,
 	}
 	cs := newTestPricingConfigServiceForStats(t, pricingConfig, 10, "openai")
-	bs := newTestBillingServiceWithPrices(map[string]*purepricing.ModelPricing{
+	bs := newTestBillingServiceWithPrices(map[string]*pricing.ModelPricing{
 		"gpt-5.6-sol": {
 			InputPricePerToken:          0.001,
 			InputPricePerTokenPriority:  0.002,
@@ -747,26 +713,53 @@ func TestApplyProviderStatsCost_UsesUsageLogServiceTier(t *testing.T) {
 	applyContractProviderStatsCost(
 		context.Background(), usageLog, cs, bs,
 		1, 10, "gpt-5.6-sol", "gpt-5.6-sol", "",
-		purepricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 999,
+		pricing.UsageTokens{InputTokens: 100, OutputTokens: 50}, 999,
 	)
 
 	require.NotNil(t, usageLog.ProviderStatsCost)
 	require.InDelta(t, 0.4, *usageLog.ProviderStatsCost, 1e-12)
 }
 
-// ---------------------------------------------------------------------------
-// helpers for contractProviderStatsCost tests
-// ---------------------------------------------------------------------------
+// applyContractProviderStatsCost 为用量日志计算提供商成本。
+// 上游模型为空时使用请求模型，再通过定价解析器匹配成本规则。
+func applyContractProviderStatsCost(
+	ctx context.Context,
+	usageLog *usage.UsageLog,
+	cs *routing.PricingConfigService, bs *billing.Calculator,
+	providerID int64, groupID int64,
+	upstreamModel, requestedModel, groupMappedModel string,
+	tokens pricing.UsageTokens,
+	totalCost float64,
+	resolvers ...*billing.PriceResolver,
+) {
+	model := upstreamModel
+	if model == "" {
+		model = requestedModel
+	}
+	requestCount := 1
+	if usageLog != nil && usageLog.ImageCount > 0 {
+		requestCount = usageLog.ImageCount
+	}
+	serviceTier := ""
+	reasoningEffort := ""
+	if usageLog != nil && usageLog.ServiceTier != nil {
+		serviceTier = *usageLog.ServiceTier
+	}
+	if usageLog != nil && usageLog.ReasoningEffort != nil {
+		reasoningEffort = *usageLog.ReasoningEffort
+	}
+	if len(resolvers) > 0 && resolvers[0] != nil {
+		usageLog.ProviderStatsCost = resolvers[0].ResolveProviderStats(ctx, billing.ProviderStatsCostInput{PreferRequestedModel: usageLog.Platform == "qoder", ProviderID: providerID, GroupID: groupID, UpstreamModel: model, RequestedModel: requestedModel, MappedModel: groupMappedModel, Tokens: tokens, RequestCount: requestCount, ServiceTier: serviceTier, ReasoningEffort: reasoningEffort})
+		return
+	}
+	usageLog.ProviderStatsCost = contractProviderStatsWithMapping(
+		ctx, cs, bs, usageLog.Platform, providerID, groupID, model, requestedModel, groupMappedModel, tokens, requestCount, totalCost, serviceTier,
+		reasoningEffort,
+	)
+}
 
-// newTestPricingConfigServiceForStats creates a PricingConfigService with a single channel
-// mapped to the given groupID, suitable for contractProviderStatsCost tests.
-func newTestPricingConfigServiceForStats(t *testing.T, pricingConfig *routingtestkit.Configuration, groupID int64, platform string) *routing.PricingConfigService {
-	t.Helper()
-	cache := routingtestkit.NewModelConfigData()
-	cache.ByGroup[groupID] = pricingConfig
-	cache.Platforms[groupID] = platform
-
-	cache.LoadedAt = time.Now()
-	cs := routingtestkit.ModelConfigFromData(cache)
-	return cs
+// newTestBillingServiceWithPrices 使用给定的回退价格构造计价器。
+// 价格表的键使用模型匹配后的名称，例如 claude-sonnet-4。
+func newTestBillingServiceWithPrices(prices map[string]*pricing.ModelPricing) *billing.Calculator {
+	return newCalculatorWithPrices(nil, prices)
 }

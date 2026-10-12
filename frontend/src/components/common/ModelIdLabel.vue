@@ -1,9 +1,6 @@
 <template>
   <div class="flex items-center gap-1.5">
-    <!-- 徽标标明此处展示的是模型 ID。 -->
-    <span class="shrink-0 rounded-compact border border-gray-200 bg-gray-100 px-1 py-px font-mono text-xs font-semibold uppercase tracking-wide text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-400">
-      ID
-    </span>
+    <IdBadge />
     <p class="min-w-0 break-all font-mono text-xs text-gray-500 dark:text-dark-400">{{ modelId }}</p>
     <button
       type="button"
@@ -21,6 +18,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import IdBadge from '@/components/common/IdBadge.vue'
 import { useClipboard } from '@/composables/useClipboard'
 
 // 模型 ID 行：徽标 + 等宽 ID + 复制按钮，卡片和定价弹窗共用。

@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestUnifiedProtocolMigration 验证独立 schema 验证真实迁移与重放，包含自定义端点、空集合、禁用图片和异步绑定。

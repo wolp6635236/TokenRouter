@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import RequestIdLink from '@/components/common/RequestIdLink.vue'
+import RequestIdSearch from '@/components/common/RequestIdSearch.vue'
 import TableSkeletonBody from '@/components/common/TableSkeletonBody.vue'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import { computed, ref, watch } from 'vue'
@@ -7,7 +9,6 @@ import { TABLE_DESKTOP_MEDIA_QUERY } from '@/constants/layout'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
-import { useClipboard } from '@/composables/useClipboard'
 import { useAppStore } from '@/stores'
 import { opsAPI, type OpsRequestDetailsParams, type OpsRequestDetail } from '@/api/admin/ops'
 import { parseTimeRangeMinutes, formatDateTime } from '../utils/opsFormatters'
@@ -40,11 +41,12 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const appStore = useAppStore()
-const { copyToClipboard } = useClipboard()
 
 // 宽度小于 1024px 时使用卡片视图，与 DataTable 的断点一致。
 const isDesktopViewport = useMediaQuery(TABLE_DESKTOP_MEDIA_QUERY)
 
+// 已生效的请求 ID，非空时查询不带时间条件。
+const requestId = ref('')
 const loading = ref(false)
 const items = ref<OpsRequestDetail[]>([])
 const total = ref(0)
@@ -88,7 +90,8 @@ const fetchData = async () => {
   loading.value = true
   try {
     const params: OpsRequestDetailsParams = {
-      ...buildTimeParams(),
+      ...(requestId.value ? {} : buildTimeParams()),
+      request_id: requestId.value || undefined,
       page: page.value,
       page_size: pageSize.value,
       kind: props.preset.kind ?? 'all',
@@ -121,6 +124,7 @@ watch(
   (open) => {
     if (open) {
       if (props.resumeState) return
+      requestId.value = ''
       page.value = 1
       pageSize.value = 10
       fetchData()
@@ -148,6 +152,11 @@ watch(
   }
 )
 
+function searchRequests() {
+  page.value = 1
+  void fetchData()
+}
+
 function handlePageChange(next: number) {
   page.value = next
   fetchData()
@@ -157,13 +166,6 @@ function handlePageSizeChange(next: number) {
   pageSize.value = next
   page.value = 1
   fetchData()
-}
-
-async function handleCopyRequestId(requestId: string) {
-  const ok = await copyToClipboard(requestId, t('admin.ops.requestDetails.requestIdCopied'))
-  if (ok) return
-  // `useClipboard` already shows toast on failure; this keeps UX consistent with older ops modal.
-  appStore.showWarning(t('admin.ops.requestDetails.copyFailed'))
 }
 
 function openErrorDetail(errorId: number | null | undefined) {
@@ -181,17 +183,20 @@ const kindBadgeClass = (kind: string) => {
   <BaseDialog :show="modelValue" :title="props.preset.title || t('admin.ops.requestDetails.title')" width="full" @close="close">
     <template #default>
       <div class="flex h-full min-h-0 flex-col">
-        <div class="mb-4 flex flex-shrink-0 items-center justify-between gap-3">
+        <div class="mb-4 flex flex-shrink-0 flex-wrap items-center justify-between gap-2">
           <div class="min-w-0 text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.ops.requestDetails.rangeLabel', { range: rangeLabel }) }}
+            {{ requestId ? t('requests.allTimeRange') : t('admin.ops.requestDetails.rangeLabel', { range: rangeLabel }) }}
           </div>
-          <button
-            type="button"
-            class="btn btn-secondary btn-sm h-9 shrink-0"
-            @click="fetchData"
-          >
-            {{ t('common.refresh') }}
-          </button>
+          <div class="flex min-w-0 items-center gap-2">
+            <RequestIdSearch v-model="requestId" class="w-full sm:w-64" @search="searchRequests" />
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm h-9 shrink-0"
+              @click="fetchData"
+            >
+              {{ t('common.refresh') }}
+            </button>
+          </div>
         </div>
 
         <!-- Table -->
@@ -218,17 +223,7 @@ const kindBadgeClass = (kind: string) => {
                     <span>{{ typeof row.duration_ms === 'number' ? `${row.duration_ms} ms` : '-' }}</span>
                     <span>{{ row.status_code ?? '-' }}</span>
                   </div>
-                  <div v-if="row.request_id" class="flex items-center gap-2">
-                    <span class="min-w-0 flex-1 truncate font-mono text-xs text-gray-700 dark:text-gray-200" :title="row.request_id">
-                      {{ row.request_id }}
-                    </span>
-                    <button
-                      class="shrink-0 rounded-control bg-gray-100 px-2 py-1 text-xs font-bold text-gray-600 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600"
-                      @click="handleCopyRequestId(row.request_id)"
-                    >
-                      {{ t('admin.ops.requestDetails.copy') }}
-                    </button>
-                  </div>
+                  <RequestIdLink v-if="row.request_id" :value="row.request_id" />
                   <button
                     v-if="row.kind === 'error' && row.error_id"
                     class="w-full rounded-control bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-300 dark:hover:bg-red-900/30"
@@ -291,17 +286,7 @@ const kindBadgeClass = (kind: string) => {
                     {{ row.status_code ?? '-' }}
                   </td>
                   <td class="px-4 py-3">
-                    <div v-if="row.request_id" class="flex items-center gap-2">
-                      <span class="max-w-[220px] truncate font-mono text-xs text-gray-700 dark:text-gray-200" :title="row.request_id">
-                        {{ row.request_id }}
-                      </span>
-                      <button
-                        class="rounded-control bg-gray-100 px-2 py-1 text-xs font-bold text-gray-600 hover:bg-gray-200 dark:bg-dark-950 dark:text-gray-300 dark:hover:bg-dark-800"
-                        @click="handleCopyRequestId(row.request_id)"
-                      >
-                        {{ t('admin.ops.requestDetails.copy') }}
-                      </button>
-                    </div>
+                    <RequestIdLink v-if="row.request_id" :value="row.request_id" />
                     <span v-else class="text-xs text-gray-400">-</span>
                   </td>
                   <td class="whitespace-nowrap px-4 py-3 text-right">

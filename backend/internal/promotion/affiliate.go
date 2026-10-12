@@ -10,14 +10,6 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-var (
-	ErrAffiliateProfileNotFound = infraerrors.NotFound("AFFILIATE_PROFILE_NOT_FOUND", "affiliate profile not found")
-	ErrAffiliateCodeInvalid     = infraerrors.BadRequest("AFFILIATE_CODE_INVALID", "invalid affiliate code")
-	ErrAffiliateCodeTaken       = infraerrors.Conflict("AFFILIATE_CODE_TAKEN", "affiliate code already in use")
-	ErrAffiliateAlreadyBound    = infraerrors.Conflict("AFFILIATE_ALREADY_BOUND", "affiliate inviter already bound")
-	ErrAffiliateQuotaEmpty      = infraerrors.BadRequest("AFFILIATE_QUOTA_EMPTY", "no affiliate quota available to transfer")
-)
-
 const (
 	affiliateInviteesLimit = 100
 	// AffiliateCodeMinLength / AffiliateCodeMaxLength 同时限制系统生成码和管理员自定义码。
@@ -25,34 +17,17 @@ const (
 	AffiliateCodeMaxLength = 32
 )
 
-// affiliateCodeValidChar 允许大写字母、数字、下划线和短横线。
-// 调用方会先 ToUpper，因此用户输入的小写字符会先被归一化。
-var affiliateCodeValidChar = func() [256]bool {
-	var tbl [256]bool
-	for c := byte('A'); c <= 'Z'; c++ {
-		tbl[c] = true
-	}
-	for c := byte('0'); c <= '9'; c++ {
-		tbl[c] = true
-	}
-	tbl['_'] = true
-	tbl['-'] = true
-	return tbl
-}()
+var (
+	ErrAffiliateProfileNotFound = infraerrors.NotFound("AFFILIATE_PROFILE_NOT_FOUND", "affiliate profile not found")
+	ErrAffiliateCodeInvalid     = infraerrors.BadRequest("AFFILIATE_CODE_INVALID", "invalid affiliate code")
+	ErrAffiliateCodeTaken       = infraerrors.Conflict("AFFILIATE_CODE_TAKEN", "affiliate code already in use")
+	ErrAffiliateAlreadyBound    = infraerrors.Conflict("AFFILIATE_ALREADY_BOUND", "affiliate inviter already bound")
+	ErrAffiliateQuotaEmpty      = infraerrors.BadRequest("AFFILIATE_QUOTA_EMPTY", "no affiliate quota available to transfer")
 
-// isValidAffiliateCodeFormat 校验用户绑定和管理员更新的邀请码格式。
-// 调用方应在校验前先转大写。
-func isValidAffiliateCodeFormat(code string) bool {
-	if len(code) < AffiliateCodeMinLength || len(code) > AffiliateCodeMaxLength {
-		return false
-	}
-	for i := 0; i < len(code); i++ {
-		if !affiliateCodeValidChar[code[i]] {
-			return false
-		}
-	}
-	return true
-}
+	// affiliateCodeValidChar 允许大写字母、数字、下划线和短横线。
+	// 调用方会先 ToUpper，因此用户输入的小写字符会先被归一化。
+	affiliateCodeValidChar = buildAffiliateCodeValidChar()
+)
 
 type AffiliateSummary struct {
 	UserID               int64     `json:"user_id"`
@@ -115,14 +90,14 @@ type AffiliateRepository interface {
 	GetAffiliateUserOverview(ctx context.Context, userID int64) (*AffiliateUserOverview, error)
 }
 
-// AffiliateAdminFilter 列表筛选条件
+// AffiliateAdminFilter 列表筛选条件。
 type AffiliateAdminFilter struct {
 	Search   string
 	Page     int
 	PageSize int
 }
 
-// AffiliateAdminEntry 专属用户列表条目
+// AffiliateAdminEntry 专属用户列表条目。
 type AffiliateAdminEntry struct {
 	UserID               int64    `json:"user_id"`
 	Email                string   `json:"email"`
@@ -212,6 +187,34 @@ type AffiliateService struct {
 	authCacheInvalidator AuthCacheInvalidator
 	billingCacheService  BalanceCache
 	runtime              Runtime
+}
+
+// buildAffiliateCodeValidChar 生成 affiliateCodeValidChar 的字符表。
+func buildAffiliateCodeValidChar() [256]bool {
+	var tbl [256]bool
+	for c := byte('A'); c <= 'Z'; c++ {
+		tbl[c] = true
+	}
+	for c := byte('0'); c <= '9'; c++ {
+		tbl[c] = true
+	}
+	tbl['_'] = true
+	tbl['-'] = true
+	return tbl
+}
+
+// isValidAffiliateCodeFormat 校验用户绑定和管理员更新的邀请码格式。
+// 调用方应在校验前先转大写。
+func isValidAffiliateCodeFormat(code string) bool {
+	if len(code) < AffiliateCodeMinLength || len(code) > AffiliateCodeMaxLength {
+		return false
+	}
+	for i := range len(code) {
+		if !affiliateCodeValidChar[code[i]] {
+			return false
+		}
+	}
+	return true
 }
 
 // NewAffiliateService 使用传入的存储、设置、缓存和时钟构造推广服务。
@@ -503,9 +506,7 @@ func (s *AffiliateService) invalidateAffiliateCaches(ctx context.Context, userID
 	}
 }
 
-// =========================
 // Admin: 专属配置管理
-// =========================
 
 // validateExclusiveRate 校验用户专属比例必须是有限数值且位于允许范围内。
 // nil 表示清除专属配置并回退到全局比例。

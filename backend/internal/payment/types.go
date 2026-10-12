@@ -5,11 +5,8 @@ import (
 	"time"
 )
 
-// PaymentType represents a supported payment method.
-type PaymentType = string
-
-// Supported payment type constants.
 const (
+	// Supported payment type constants.
 	TypeAlipay       PaymentType = "alipay"
 	TypeWxpay        PaymentType = "wxpay"
 	TypeAlipayDirect PaymentType = "alipay_direct"
@@ -19,10 +16,8 @@ const (
 	TypeLink         PaymentType = "link"
 	TypeEasyPay      PaymentType = "easypay"
 	TypeAirwallex    PaymentType = "airwallex"
-)
 
-// Order status constants shared across payment and service layers.
-const (
+	// Order status constants shared across payment and service layers.
 	OrderStatusPending           = "PENDING"
 	OrderStatusProcessing        = "PROCESSING"
 	OrderStatusPaid              = "PAID"
@@ -37,68 +32,46 @@ const (
 	OrderStatusPartiallyRefunded = "PARTIALLY_REFUNDED"
 	OrderStatusRefunded          = "REFUNDED"
 	OrderStatusRefundFailed      = "REFUND_FAILED"
-)
 
-// Order types distinguish balance recharges from subscription purchases.
-const (
+	// Order types distinguish balance recharges from subscription purchases.
 	OrderTypeBalance      = "balance"
 	OrderTypeSubscription = "subscription"
-)
 
-// Entity statuses shared across users, groups, etc.
-const (
+	// Entity statuses shared across users, groups, etc.
 	EntityStatusActive = "active"
-)
 
-// Deduction types for refund flow.
-const (
+	// Deduction types for refund flow.
 	DeductionTypeBalance      = "balance"
 	DeductionTypeSubscription = "subscription"
 	DeductionTypeNone         = "none"
-)
 
-// Payment notification status values.
-const (
+	// Payment notification status values.
 	NotificationStatusSuccess = "success"
 	NotificationStatusPaid    = "paid"
-)
 
-// Provider-level status constants returned by provider implementations
-// to the service layer (lowercase, distinct from OrderStatus uppercase constants).
-const (
+	// Provider-level status constants returned by provider implementations
+	// to the service layer (lowercase, distinct from OrderStatus uppercase constants).
 	ProviderStatusPending    = "pending"
 	ProviderStatusProcessing = "processing"
 	ProviderStatusPaid       = "paid"
 	ProviderStatusSuccess    = "success"
 	ProviderStatusFailed     = "failed"
 	ProviderStatusRefunded   = "refunded"
+
+	// DefaultLoadBalanceStrategy is the default load-balancing strategy
+	// used when no strategy is configured.
+	DefaultLoadBalanceStrategy = "round-robin"
+
+	// ConfigKeyPublishableKey is the config map key for Stripe's publishable key.
+	ConfigKeyPublishableKey = "publishableKey"
+
+	CreatePaymentResultOrderCreated  CreatePaymentResultType = "order_created"
+	CreatePaymentResultOAuthRequired CreatePaymentResultType = "oauth_required"
+	CreatePaymentResultJSAPIReady    CreatePaymentResultType = "jsapi_ready"
 )
 
-// DefaultLoadBalanceStrategy is the default load-balancing strategy
-// used when no strategy is configured.
-const DefaultLoadBalanceStrategy = "round-robin"
-
-// ConfigKeyPublishableKey is the config map key for Stripe's publishable key.
-const ConfigKeyPublishableKey = "publishableKey"
-
-// GetBasePaymentType extracts the base payment method from a composite key.
-// For example, "alipay_direct" -> "alipay".
-func GetBasePaymentType(t string) string {
-	switch {
-	case t == TypeEasyPay:
-		return TypeEasyPay
-	case t == TypeAirwallex:
-		return TypeAirwallex
-	case t == TypeStripe || t == TypeCard || t == TypeLink:
-		return TypeStripe
-	case len(t) >= len(TypeAlipay) && t[:len(TypeAlipay)] == TypeAlipay:
-		return TypeAlipay
-	case len(t) >= len(TypeWxpay) && t[:len(TypeWxpay)] == TypeWxpay:
-		return TypeWxpay
-	default:
-		return t
-	}
-}
+// PaymentType represents a supported payment method.
+type PaymentType = string
 
 // CreatePaymentRequest 保存创建支付单时传给支付渠道的参数。
 type CreatePaymentRequest struct {
@@ -139,12 +112,6 @@ type BillingInfo struct {
 
 // CreatePaymentResultType describes the shape of the create-payment result.
 type CreatePaymentResultType = string
-
-const (
-	CreatePaymentResultOrderCreated  CreatePaymentResultType = "order_created"
-	CreatePaymentResultOAuthRequired CreatePaymentResultType = "oauth_required"
-	CreatePaymentResultJSAPIReady    CreatePaymentResultType = "jsapi_ready"
-)
 
 // WechatOAuthInfo describes the next step when WeChat OAuth is required before payment.
 type WechatOAuthInfo struct {
@@ -295,3 +262,22 @@ type MerchantIdentityProvider interface {
 
 // EncryptionKey 只区分装配参数；配置解码与验证由 app 拥有。
 type EncryptionKey []byte
+
+// GetBasePaymentType extracts the base payment method from a composite key.
+// For example, "alipay_direct" -> "alipay".
+func GetBasePaymentType(t string) string {
+	switch {
+	case t == TypeEasyPay:
+		return TypeEasyPay
+	case t == TypeAirwallex:
+		return TypeAirwallex
+	case t == TypeStripe || t == TypeCard || t == TypeLink:
+		return TypeStripe
+	case len(t) >= len(TypeAlipay) && t[:len(TypeAlipay)] == TypeAlipay:
+		return TypeAlipay
+	case len(t) >= len(TypeWxpay) && t[:len(TypeWxpay)] == TypeWxpay:
+		return TypeWxpay
+	default:
+		return t
+	}
+}

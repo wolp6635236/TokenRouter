@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/idempotency"
 	idemhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	middleware2 "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/ops/maintenance"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
 )
 
 // SystemHandler 处理系统版本查询、更新、回退和重启请求。
@@ -32,6 +32,11 @@ type systemUpdateService interface {
 	Rollback() error
 	ListRollbackVersions(ctx context.Context) ([]ops.RollbackVersion, error)
 	RollbackToVersion(ctx context.Context, version string) error
+}
+
+// NewSystemRuntimeHandler 使用 app 已登记生命周期的唯一维护实例。
+func NewSystemRuntimeHandler(update systemUpdateService, operations *maintenance.Operations) *SystemHandler {
+	return &SystemHandler{updateSvc: update, operations: operations}
 }
 
 // GetVersion returns the current version
@@ -130,9 +135,4 @@ func buildSystemOperationID(c *gin.Context, operation string) string {
 		hash = hash[:24]
 	}
 	return "sysop-" + hash
-}
-
-// NewSystemRuntimeHandler 使用 app 已登记生命周期的唯一维护实例。
-func NewSystemRuntimeHandler(update systemUpdateService, operations *maintenance.Operations) *SystemHandler {
-	return &SystemHandler{updateSvc: update, operations: operations}
 }

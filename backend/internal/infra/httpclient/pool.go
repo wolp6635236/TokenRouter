@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,11 +9,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/imroc/req/v3"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
 	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/ipmatch"
 )
 
-// Transport 连接池默认配置
+// Transport 连接池默认配置。
 const (
 	defaultMaxIdleConns        = 100              // 最大空闲连接数
 	defaultMaxIdleConnsPerHost = 10               // 每个主机最大空闲连接数
@@ -22,7 +26,15 @@ const (
 	validatedHostTTL           = 30 * time.Second // DNS Rebinding 校验缓存 TTL
 )
 
-// Options 定义共享 HTTP 客户端的构建参数
+var (
+	// sharedClients 存储按配置参数缓存的 http.Client 实例。
+	sharedClients sync.Map
+
+	// 允许测试替换校验函数，生产默认指向真实实现。
+	validateResolvedIP = ValidateResolvedIP
+)
+
+// Options 定义共享 HTTP 客户端的构建参数。
 type Options struct {
 	ProxyURL              string        // 代理 URL（支持 http/https/socks5/socks5h）
 	Timeout               time.Duration // 请求总超时时间
@@ -37,15 +49,15 @@ type Options struct {
 	MaxConnsPerHost     int // 每主机最大连接数（默认 0 无限制）
 }
 
-// sharedClients 存储按配置参数缓存的 http.Client 实例
-var sharedClients sync.Map
-
-// 允许测试替换校验函数，生产默认指向真实实现。
-var validateResolvedIP = ValidateResolvedIP
+type validatedTransport struct {
+	base           http.RoundTripper
+	validatedHosts sync.Map // map[string]time.Time, value 为过期时间
+	now            func() time.Time
+}
 
 // GetClient 返回共享的 HTTP 客户端实例
 // 性能优化：相同配置复用同一客户端，避免重复创建 Transport
-// 安全说明：代理配置失败时直接返回错误，不会回退到直连，避免 IP 关联风险
+// 安全说明：代理配置失败时直接返回错误，不会回退到直连，避免 IP 关联风险。
 func GetClient(opts Options) (*http.Client, error) {
 	key := buildClientKey(opts)
 	if cached, ok := sharedClients.Load(key); ok {
@@ -140,12 +152,6 @@ func buildClientKey(opts Options) string {
 	)
 }
 
-type validatedTransport struct {
-	base           http.RoundTripper
-	validatedHosts sync.Map // map[string]time.Time, value 为过期时间
-	now            func() time.Time
-}
-
 func newValidatedTransport(base http.RoundTripper) *validatedTransport {
 	return &validatedTransport{
 		base: base,
@@ -193,4 +199,51 @@ func (t *validatedTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, fmt.Errorf("validated transport base is nil")
 	}
 	return t.base.RoundTrip(req)
+}
+
+// DefaultBatchHTTPClient 返回带拨号、TLS 握手和响应头超时的共享客户端。
+// 批量上传和流式下载使用各阶段超时，整体 Timeout 为零。
+func DefaultBatchHTTPClient() *http.Client {
+	client, err := GetClient(Options{
+		ResponseHeaderTimeout: 60 * time.Second,
+	})
+	if err != nil {
+		return http.DefaultClient
+	}
+	return client
+}
+
+// CloseSharedIdleConnections 关闭共享 HTTP 客户端和 req 客户端的空闲连接。
+func CloseSharedIdleConnections() {
+	sharedClients.Range(func(_, value any) bool {
+		if client, ok := value.(*http.Client); ok {
+			client.CloseIdleConnections()
+		}
+		return true
+	})
+	sharedReqClients.Range(func(_, value any) bool {
+		if client, ok := value.(*req.Client); ok {
+			client.GetClient().CloseIdleConnections()
+		}
+		return true
+	})
+}
+
+// ValidateResolvedIP 解析主机的 IP 地址，解析失败或含非公网地址时返回错误。
+// DNS 查询超时为五秒，调用方在发送请求前执行校验。
+func ValidateResolvedIP(host string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return fmt.Errorf("dns resolution failed: %w", err)
+	}
+
+	for _, ip := range ips {
+		if ipmatch.IsNonPublic(ip) {
+			return fmt.Errorf("resolved ip %s is not allowed", ip.String())
+		}
+	}
+	return nil
 }

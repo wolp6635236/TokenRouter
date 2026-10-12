@@ -176,7 +176,7 @@ func (m *contentModerationKeywordMatcher) Match(text string) (string, bool) {
 	lower := strings.ToLower(text)
 	state := int32(0)
 	bestKeyword := int32(-1)
-	for index := 0; index < len(lower); index++ {
+	for index := range len(lower) {
 		label := lower[index]
 		for {
 			next := m.next(state, label)

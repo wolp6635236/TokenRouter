@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	protocolwire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
+	"github.com/tidwall/gjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	protocolwire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
 
 type Target struct {
@@ -31,6 +31,8 @@ type Target struct {
 	Accepted       func()
 }
 
+type Executor struct{}
+
 func (t *Target) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -40,8 +42,6 @@ func (t *Target) TargetID() int64 {
 
 func (t *Target) String() string   { return fmt.Sprintf("anthropic target provider=%d", t.TargetID()) }
 func (t *Target) GoString() string { return t.String() }
-
-type Executor struct{}
 
 func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
 	// 失败路径也返回取消与耗时分类；未发生服务时不生成用量或成功结果。

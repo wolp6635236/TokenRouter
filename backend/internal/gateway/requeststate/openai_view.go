@@ -2,11 +2,13 @@ package requeststate
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
 type OpenAIRequestView struct {
@@ -26,6 +28,15 @@ type openAIRequestPatch struct {
 	path   string
 	delete bool
 	value  any
+}
+
+// DecodeOpenAIRequestBody 解码请求体，保留数字精度并为错误添加解析前缀。
+func DecodeOpenAIRequestBody(body []byte) (map[string]any, error) {
+	var request map[string]any
+	if err := wirejson.DecodeUseNumber(body, &request); err != nil {
+		return nil, fmt.Errorf("parse request: %w", err)
+	}
+	return request, nil
 }
 
 func NewOpenAIRequestView(body []byte) OpenAIRequestView {
@@ -85,6 +96,17 @@ func NewOpenAIRequestView(body []byte) OpenAIRequestView {
 	return view
 }
 
+// Decode 在调用方确实需要完整对象时解码视图当前持有的报文。
+func (v OpenAIRequestView) Decode() (map[string]any, error) {
+	return DecodeOpenAIRequestBody(v.Bytes())
+}
+
+// OpenAIRequestMetaFromBody 通过字段视图提取模型、流式标记和缓存键。
+func OpenAIRequestMetaFromBody(body []byte) (model string, stream bool, promptCacheKey string) {
+	view := NewOpenAIRequestView(body)
+	return view.Model, view.Stream, view.PromptCacheKey
+}
+
 func (v *OpenAIRequestView) MarkPatchSet(path string, value any) {
 	if v == nil || v.patchesDisabled {
 		return
@@ -113,7 +135,7 @@ func isSimpleOpenAIRequestPatchPath(path string) bool {
 	if path == "" || strings.ContainsRune(path, '\\') {
 		return false
 	}
-	for _, part := range strings.Split(path, ".") {
+	for part := range strings.SplitSeq(path, ".") {
 		if strings.TrimSpace(part) == "" {
 			return false
 		}

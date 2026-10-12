@@ -4,29 +4,33 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// BindStickySession sets session -> provider binding with standard TTL.
+// openAINoAvailableSelectionError 提供错误消息，并支持 errors.Is 分类。
+type openAINoAvailableSelectionError struct {
+	message string
+}
+
+// BindStickySession 使用调度器默认期限绑定提供商会话。
 func (s *Compatible) BindStickySession(ctx context.Context, groupID *int64, sessionHash string, providerID int64) error {
-	if sessionHash == "" || providerID <= 0 {
+	return s.BindStickySessionWithTTL(ctx, groupID, sessionHash, providerID, s.SessionStickyTTL())
+}
+
+// BindStickySessionWithTTL 让 WS 请求按当前参数保存会话期限。
+func (s *Compatible) BindStickySessionWithTTL(ctx context.Context, groupID *int64, sessionHash string, providerID int64, ttl time.Duration) error {
+	if sessionHash == "" || providerID <= 0 || requeststate.PreserveGuardianParentBinding(ctx, sessionHash) {
 		return nil
 	}
-	if requeststate.PreserveGuardianParentBinding(ctx, sessionHash) {
-		return nil
-	}
-	ttl := s.SessionStickyTTL()
 	return s.setStickySessionProviderID(ctx, groupID, sessionHash, providerID, ttl)
 }
 
@@ -130,11 +134,6 @@ func noAvailableOpenAISelectionErrorForRoutingWithDetails(ctx context.Context, r
 		message += " (" + details + ")"
 	}
 	return openAINoAvailableSelectionError{message: message}
-}
-
-// openAINoAvailableSelectionError 提供错误消息，并支持 errors.Is 分类。
-type openAINoAvailableSelectionError struct {
-	message string
 }
 
 func (e openAINoAvailableSelectionError) Error() string {
@@ -452,4 +451,12 @@ func (s *Compatible) StickyProviderID(ctx context.Context, groupID *int64, sessi
 		return 0
 	}
 	return id
+}
+
+// readSchedulingGroup 通过配置的读取函数获取兼容请求的调度分组。
+func (s *Compatible) readSchedulingGroup(ctx context.Context, id int64) (*routing.Group, error) {
+	if s.schedulingGroups == nil {
+		return nil, nil
+	}
+	return s.schedulingGroups(ctx, id)
 }

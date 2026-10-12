@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 )
 
 func TestModelsDevContextPricesAndCacheTTL(t *testing.T) {

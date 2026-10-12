@@ -30,6 +30,12 @@ type Executor struct {
 	Timeout              time.Duration
 }
 
+type preparedExecution struct {
+	selection *Selection
+	model     string
+	timeout   time.Duration
+}
+
 // @project-doc docs/domains/creative_studio.md#creative_model_policy
 func (e *Executor) Prepare(ctx context.Context, run CreativeRun) (*CreativeExecution, error) {
 	if e == nil {
@@ -94,12 +100,6 @@ func (e *Executor) Prepare(ctx context.Context, run CreativeRun) (*CreativeExecu
 	return nil, CreativeNonRetryableError("no compatible creative provider available for group %d model %s", run.GroupID, run.Model)
 }
 func (e *Executor) IsRetryable(err error) bool { return IsRetryableCreativeError(err) }
-
-type preparedExecution struct {
-	selection *Selection
-	model     string
-	timeout   time.Duration
-}
 
 // NewExecutionTarget 将本次提供商、模型、反馈及预算固化，不再次选取提供商。
 func NewExecutionTarget(selection *Selection, model string, timeout time.Duration) ExecutionTarget {

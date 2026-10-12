@@ -1,0 +1,101 @@
+package app
+
+// 本文件检查 http_routes.go 与 http_routes_admin.go 的路由注册和中间件顺序。
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/server"
+	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
+)
+
+// TestNativeRouteInventory 对照已登记的路由快照，实际调用生产注册函数并由 Gin 检测重复注册。
+func TestNativeRouteInventory(t *testing.T) {
+	r := gin.New()
+	var chain []string
+	r.Use(func(c *gin.Context) { chain = c.HandlerNames(); c.Abort() })
+	v1 := r.Group("/api/v1")
+	noop := func(c *gin.Context) { c.Next() }
+	limiter := middleware.NewRateLimiter(nil)
+	security := httpRouteSecurity{JWT: inventoryJWT, Admin: inventoryAdmin, Audit: inventoryAudit, StepUp: inventoryStepUp, BackendAuth: inventoryBackendAuth, BackendUser: inventoryBackendUser, Panel: middleware.NewPanelRateLimiter(limiter, nil), AuthLimiter: limiter}
+	server.RegisterCommonRoutes(r)
+	routeInventoryMount[authRouteMount](t, provideAuthRouteMount)(v1, security)
+	routeInventoryMount[userRouteMount](t, provideUserRouteMount)(v1, security)
+	routeInventoryMount[adminRouteMount](t, provideAdminRouteMount)(v1, security, noop)
+	routeInventoryMount[gatewayRouteMount](t, provideGatewayRouteMount)(r)
+	routeInventoryMount[paymentRouteMount](t, providePaymentRouteMount)(v1, security)
+	raw, err := os.ReadFile("testdata/routes.json")
+	require.NoError(t, err)
+	var expected []string
+	require.NoError(t, json.Unmarshal(raw, &expected))
+	actual := make([]string, 0, len(r.Routes()))
+	for _, route := range r.Routes() {
+		actual = append(actual, route.Method+" "+route.Path)
+		path := route.Path
+		segments := strings.Split(path, "/")
+		for i, part := range segments {
+			if strings.HasPrefix(part, ":") || strings.HasPrefix(part, "*") {
+				segments[i] = "1"
+			}
+		}
+		path = strings.Join(segments, "/")
+		chain = nil
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(route.Method, path, nil))
+		require.NotEmpty(t, chain, route.Method+" "+route.Path)
+		position := func(suffix string) int {
+			for i, name := range chain {
+				if strings.HasSuffix(name, "."+suffix) {
+					return i
+				}
+			}
+			return -1
+		}
+		if strings.HasPrefix(route.Path, "/api/v1/admin/") {
+			require.GreaterOrEqual(t, position("inventoryAdmin"), 0, route.Path)
+			require.Greater(t, position("inventoryAudit"), position("inventoryAdmin"), route.Path)
+		}
+		for _, pair := range [][2]string{{"inventoryJWT", "inventoryBackendUser"}, {"inventoryBackendUser", "inventoryAudit"}, {"inventoryBackendAuth", "inventoryAudit"}, {"inventoryAdmin", "inventoryStepUp"}} {
+			before, after := position(pair[0]), position(pair[1])
+			if before >= 0 && after >= 0 {
+				require.Greater(t, after, before, route.Path)
+			}
+		}
+		encoded, err := json.Marshal(struct {
+			Method, Path string
+			Handlers     []string
+		}{route.Method, route.Path, append([]string(nil), chain...)})
+		require.NoError(t, err)
+		t.Logf("TEST_ROUTE_CHAIN %s", encoded)
+	}
+	sort.Strings(expected)
+	sort.Strings(actual)
+	require.Equal(t, expected, actual)
+	// 已下线的管理路由返回 404，调用脚本需要使用当前接口。
+	for _, legacy := range []string{"/api/v1/admin/accounts", "/api/v1/admin/accounts/1", "/api/v1/admin/openai/accounts/1/quota"} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, legacy, nil))
+		require.Equal(t, 404, rec.Code, legacy)
+	}
+}
+
+// inventoryJWT 标记 app 注入的认证中间件，收集处理顺序后中止请求。
+func inventoryJWT(c *gin.Context) { c.Next() }
+
+func inventoryAdmin(c *gin.Context) { c.Next() }
+
+func inventoryAudit(c *gin.Context) { c.Next() }
+
+func inventoryStepUp(c *gin.Context) { c.Next() }
+
+func inventoryBackendAuth(c *gin.Context) { c.Next() }
+
+func inventoryBackendUser(c *gin.Context) { c.Next() }

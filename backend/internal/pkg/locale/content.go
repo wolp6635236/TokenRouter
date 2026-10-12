@@ -40,6 +40,12 @@ type Resolution struct {
 	Fallback bool    `json:"fallback"`
 }
 
+// TextUpdates 是独立短文案的编辑集合。
+type TextUpdates map[string]Update[string]
+
+// TextContent 为 schema 生成器提供具名的字符串内容类型。
+type TextContent Content[string]
+
 // Original 将尚未标注语言的历史内容包装为原文。
 func Original[T any](value T) Content[T] {
 	return Content[T]{Source: value, Translations: map[string]Translation[T]{}}
@@ -147,12 +153,6 @@ func Prepare[T any](current Content[T], input Update[T], validate func(T) error)
 	}
 	return result, nil
 }
-
-// TextUpdates 是独立短文案的编辑集合。
-type TextUpdates map[string]Update[string]
-
-// TextContent 为 schema 生成器提供具名的字符串内容类型。
-type TextContent Content[string]
 
 // SearchTexts 收集原文和当前已核对译文，供用户搜索使用。
 func SearchTexts[T any](content Content[T], fields func(T) []string) []string {

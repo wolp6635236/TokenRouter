@@ -30,3 +30,33 @@ func (p *TLSProfiles) ResolveTokenTLSProfileByID(id int64) (*tlsfingerprint.Prof
 	profile, ok := p.core().ResolveTokenTLSProfileByID(id)
 	return ToTLSProfile(profile), ok
 }
+
+// ToTLSProfile 将 egress 的 TLS 模板转换为传输使用的指纹配置。
+// 拨号器对空切片字段使用内置默认值。
+func ToTLSProfile(p *egress.TLSFingerprintProfile) *tlsfingerprint.Profile {
+	if p == nil {
+		return nil
+	}
+	p = egress.CloneTLSFingerprintProfile(p)
+	return &tlsfingerprint.Profile{
+		Name:                p.Name,
+		EnableGREASE:        p.EnableGREASE,
+		CipherSuites:        p.CipherSuites,
+		Curves:              p.Curves,
+		PointFormats:        p.PointFormats,
+		SignatureAlgorithms: p.SignatureAlgorithms,
+		ALPNProtocols:       p.ALPNProtocols,
+		SupportedVersions:   p.SupportedVersions,
+		KeyShareGroups:      p.KeyShareGroups,
+		PSKModes:            p.PSKModes,
+		Extensions:          p.Extensions,
+	}
+}
+
+// FromTLSProfile 复制传输指纹的各字段，生成出站策略使用的 TLS 模板。
+func FromTLSProfile(p *tlsfingerprint.Profile) *egress.TLSFingerprintProfile {
+	if p == nil {
+		return nil
+	}
+	return egress.CloneTLSFingerprintProfile(&egress.TLSFingerprintProfile{Name: p.Name, EnableGREASE: p.EnableGREASE, CipherSuites: p.CipherSuites, Curves: p.Curves, PointFormats: p.PointFormats, SignatureAlgorithms: p.SignatureAlgorithms, ALPNProtocols: p.ALPNProtocols, SupportedVersions: p.SupportedVersions, KeyShareGroups: p.KeyShareGroups, PSKModes: p.PSKModes, Extensions: p.Extensions})
+}

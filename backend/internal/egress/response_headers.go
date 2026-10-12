@@ -4,6 +4,47 @@ import (
 	"strings"
 )
 
+var (
+	// defaultAllowed 定义允许透传的响应头白名单
+	// 注意：以下头部由 Go HTTP 包自动处理，不应手动设置：
+	//   - content-length: 由 ResponseWriter 根据实际写入数据自动设置
+	//   - transfer-encoding: 由 HTTP 库根据需要自动添加/移除
+	//   - connection: 由 HTTP 库管理连接复用
+	defaultAllowed = map[string]struct{}{
+		"content-type":                   {},
+		"content-encoding":               {},
+		"content-language":               {},
+		"cache-control":                  {},
+		"etag":                           {},
+		"last-modified":                  {},
+		"expires":                        {},
+		"vary":                           {},
+		"date":                           {},
+		"x-request-id":                   {},
+		"x-ratelimit-limit-requests":     {},
+		"x-ratelimit-limit-tokens":       {},
+		"x-ratelimit-remaining-requests": {},
+		"x-ratelimit-remaining-tokens":   {},
+		"x-ratelimit-reset-requests":     {},
+		"x-ratelimit-reset-tokens":       {},
+		"retry-after":                    {},
+		"location":                       {},
+		"www-authenticate":               {},
+		// Codex uses this response header to avoid estimating reasoning tokens a
+		// second time when upstream usage already includes them.
+		"x-reasoning-included": {},
+	}
+
+	// hopByHopHeaders 是跳过的 hop-by-hop 头部，这些头部由 HTTP 库自动处理。
+	hopByHopHeaders = map[string]struct{}{
+		"content-length":    {},
+		"transfer-encoding": {},
+		"connection":        {},
+	}
+
+	defaultCompiledHeaderFilter = CompileHeaderFilter(ResponseHeaderOptions{})
+)
+
 // ResponseHeaderOptions 配置响应头的放行和移除规则。
 type ResponseHeaderOptions struct {
 	Enabled           bool
@@ -11,49 +52,10 @@ type ResponseHeaderOptions struct {
 	ForceRemove       []string
 }
 
-// defaultAllowed 定义允许透传的响应头白名单
-// 注意：以下头部由 Go HTTP 包自动处理，不应手动设置：
-//   - content-length: 由 ResponseWriter 根据实际写入数据自动设置
-//   - transfer-encoding: 由 HTTP 库根据需要自动添加/移除
-//   - connection: 由 HTTP 库管理连接复用
-var defaultAllowed = map[string]struct{}{
-	"content-type":                   {},
-	"content-encoding":               {},
-	"content-language":               {},
-	"cache-control":                  {},
-	"etag":                           {},
-	"last-modified":                  {},
-	"expires":                        {},
-	"vary":                           {},
-	"date":                           {},
-	"x-request-id":                   {},
-	"x-ratelimit-limit-requests":     {},
-	"x-ratelimit-limit-tokens":       {},
-	"x-ratelimit-remaining-requests": {},
-	"x-ratelimit-remaining-tokens":   {},
-	"x-ratelimit-reset-requests":     {},
-	"x-ratelimit-reset-tokens":       {},
-	"retry-after":                    {},
-	"location":                       {},
-	"www-authenticate":               {},
-	// Codex uses this response header to avoid estimating reasoning tokens a
-	// second time when upstream usage already includes them.
-	"x-reasoning-included": {},
-}
-
-// hopByHopHeaders 是跳过的 hop-by-hop 头部，这些头部由 HTTP 库自动处理
-var hopByHopHeaders = map[string]struct{}{
-	"content-length":    {},
-	"transfer-encoding": {},
-	"connection":        {},
-}
-
 type CompiledHeaderFilter struct {
 	allowed     map[string]struct{}
 	forceRemove map[string]struct{}
 }
-
-var defaultCompiledHeaderFilter = CompileHeaderFilter(ResponseHeaderOptions{})
 
 func CompileHeaderFilter(cfg ResponseHeaderOptions) *CompiledHeaderFilter {
 	allowed := make(map[string]struct{}, len(defaultAllowed)+len(cfg.AdditionalAllowed))

@@ -9,6 +9,17 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+const (
+	// TencentCaptchaRegionCN 中国站（cloud.tencent.com）；TencentCaptchaRegionINTL 国际站（tencentcloud.com）。
+	// 该值同时决定前端加载的 SDK 脚本与服务端校验接入点，两端必须一致：
+	// 国际站 CaptchaAppId 配国内站 SDK 会被腾讯直接判为「appid 所属地域与实际使用地域不符」。
+	TencentCaptchaRegionCN   = "cn"
+	TencentCaptchaRegionINTL = "intl"
+
+	TencentCaptchaEndpointCN   = "captcha.tencentcloudapi.com"
+	TencentCaptchaEndpointINTL = "captcha.intl.tencentcloudapi.com"
+)
+
 var (
 	ErrTencentCaptchaVerificationFailed = infraerrors.BadRequest("TENCENT_CAPTCHA_VERIFICATION_FAILED", "tencent captcha verification failed")
 	ErrTencentCaptchaNotConfigured      = infraerrors.ServiceUnavailable("TENCENT_CAPTCHA_NOT_CONFIGURED", "tencent captcha not configured")
@@ -28,33 +39,6 @@ type TencentCaptchaCredentials struct {
 	Endpoint string
 }
 
-const (
-	// TencentCaptchaRegionCN 中国站（cloud.tencent.com）；TencentCaptchaRegionINTL 国际站（tencentcloud.com）。
-	// 该值同时决定前端加载的 SDK 脚本与服务端校验接入点，两端必须一致：
-	// 国际站 CaptchaAppId 配国内站 SDK 会被腾讯直接判为「appid 所属地域与实际使用地域不符」。
-	TencentCaptchaRegionCN   = "cn"
-	TencentCaptchaRegionINTL = "intl"
-
-	TencentCaptchaEndpointCN   = "captcha.tencentcloudapi.com"
-	TencentCaptchaEndpointINTL = "captcha.intl.tencentcloudapi.com"
-)
-
-// TencentCaptchaEndpoint 按后台配置的地域返回服务端接入点，未知值回退中国站
-func TencentCaptchaEndpoint(region string) string {
-	if region == TencentCaptchaRegionINTL {
-		return TencentCaptchaEndpointINTL
-	}
-	return TencentCaptchaEndpointCN
-}
-
-// NormalizeTencentCaptchaRegion 非法值一律视为中国站
-func NormalizeTencentCaptchaRegion(value string) string {
-	if value == TencentCaptchaRegionINTL {
-		return TencentCaptchaRegionINTL
-	}
-	return TencentCaptchaRegionCN
-}
-
 type TencentCaptchaVerifyResponse struct {
 	CaptchaCode int64
 	CaptchaMsg  string
@@ -69,6 +53,22 @@ type TencentCaptchaService struct {
 	observer       Observer
 	settingService CaptchaSettings
 	verifier       TencentCaptchaVerifier
+}
+
+// TencentCaptchaEndpoint 按后台配置的地域返回服务端接入点，未知值回退中国站。
+func TencentCaptchaEndpoint(region string) string {
+	if region == TencentCaptchaRegionINTL {
+		return TencentCaptchaEndpointINTL
+	}
+	return TencentCaptchaEndpointCN
+}
+
+// NormalizeTencentCaptchaRegion 非法值一律视为中国站。
+func NormalizeTencentCaptchaRegion(value string) string {
+	if value == TencentCaptchaRegionINTL {
+		return TencentCaptchaRegionINTL
+	}
+	return TencentCaptchaRegionCN
 }
 
 // NewTencentCaptchaService 创建使用运行时设置的腾讯验证码服务。

@@ -9,40 +9,41 @@ import (
 	"strings"
 	"time"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// OpenAI OAuth Constants (from CRS project - Codex CLI client)
 const (
-	// OAuth Client ID for OpenAI (Codex CLI official)
+	// OpenAI OAuth Constants (from CRS project - Codex CLI client)
+	// OAuth Client ID for OpenAI (Codex CLI official).
 	ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
-	// OAuth endpoints
+	// OAuth endpoints.
 	AuthorizeURL = "https://auth.openai.com/oauth/authorize"
 	TokenURL     = "https://auth.openai.com/oauth/token"
 
-	// Default redirect URI (can be customized)
+	// Default redirect URI (can be customized).
 	DefaultRedirectURI = "http://localhost:1455/auth/callback"
 
-	// Scopes
+	// Scopes.
 	DefaultScopes = "openid profile email offline_access"
-	// RefreshScopes - scope for token refresh (without offline_access, aligned with CRS project)
+	// RefreshScopes - scope for token refresh (without offline_access, aligned with CRS project).
 	RefreshScopes = "openid profile email"
-)
 
-const (
 	// OAuthPlatformOpenAI uses OpenAI Codex-compatible OAuth client.
 	OAuthPlatformOpenAI = "openai"
 )
 
-// GenerateRandomBytes generates cryptographically secure random bytes
+type TokenResponse = wire.OAuthTokenResponse
+
+type IDTokenClaims = wire.OAuthIDTokenClaims
+
+// GenerateRandomBytes generates cryptographically secure random bytes.
 func GenerateRandomBytes(n int) ([]byte, error) {
 	return oauthpkce.RandomBytes(n)
 }
 
-// GenerateState generates a random state string for OAuth
+// GenerateState generates a random state string for OAuth.
 func GenerateState() (string, error) {
 	bytes, err := GenerateRandomBytes(32)
 	if err != nil {
@@ -51,7 +52,7 @@ func GenerateState() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// GenerateSessionID generates a unique session ID
+// GenerateSessionID generates a unique session ID.
 func GenerateSessionID() (string, error) {
 	bytes, err := GenerateRandomBytes(16)
 	if err != nil {
@@ -61,13 +62,13 @@ func GenerateSessionID() (string, error) {
 }
 
 // GenerateCodeVerifier generates a PKCE code verifier (64 bytes -> hex for OpenAI)
-// OpenAI uses hex encoding instead of base64url
+// OpenAI uses hex encoding instead of base64url.
 func GenerateCodeVerifier() (string, error) {
 	return oauthpkce.HexVerifier()
 }
 
 // GenerateCodeChallenge generates a PKCE code challenge using S256 method
-// Uses base64url encoding as per RFC 7636
+// Uses base64url encoding as per RFC 7636.
 func GenerateCodeChallenge(verifier string) string {
 	return oauthpkce.Challenge(verifier)
 }
@@ -101,10 +102,6 @@ func BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, platfor
 func OAuthClientConfigByPlatform(platform string) (clientID string, codexFlow bool) {
 	return ClientID, true
 }
-
-type TokenResponse = wire.OAuthTokenResponse
-
-type IDTokenClaims = wire.OAuthIDTokenClaims
 
 // DecodeIDToken decodes the ID Token JWT payload without validating expiration.
 // Use this for best-effort extraction (e.g., during data import) where the token may be expired.

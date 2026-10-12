@@ -7,23 +7,25 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// emulatedWebSearchBody 模拟后续 /v1/messages 请求，其历史包含网关生成的
-// server_tool_use、web_search_tool_result 和文本摘要。
-const emulatedWebSearchBody = `{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[` +
-	`{"role":"user","content":[{"type":"text","text":"search the weather"}]},` +
-	`{"role":"assistant","content":[` +
-	`{"type":"server_tool_use","id":"srvtoolu_ws_0123456789abcdef","name":"web_search","input":{"query":"weather"}},` +
-	`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_ws_0123456789abcdef","content":[{"type":"web_search_result","url":"https://example.com","title":"Weather"}]},` +
-	`{"type":"text","text":"Here are the search results for \"weather\":"}]},` +
-	`{"role":"user","content":[{"type":"text","text":"thanks, continue"}]}]}`
+const (
+	// emulatedWebSearchBody 模拟后续 /v1/messages 请求，其历史包含网关生成的
+	// server_tool_use、web_search_tool_result 和文本摘要。
+	emulatedWebSearchBody = `{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"search the weather"}]},` +
+		`{"role":"assistant","content":[` +
+		`{"type":"server_tool_use","id":"srvtoolu_ws_0123456789abcdef","name":"web_search","input":{"query":"weather"}},` +
+		`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_ws_0123456789abcdef","content":[{"type":"web_search_result","url":"https://example.com","title":"Weather"}]},` +
+		`{"type":"text","text":"Here are the search results for \"weather\":"}]},` +
+		`{"role":"user","content":[{"type":"text","text":"thanks, continue"}]}]}`
 
-// genuineWebSearchBody 保存 Anthropic 上游 web search 块，其 ID 使用上游格式。
-const genuineWebSearchBody = `{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[` +
-	`{"role":"user","content":[{"type":"text","text":"search"}]},` +
-	`{"role":"assistant","content":[` +
-	`{"type":"server_tool_use","id":"srvtoolu_01ABCDEF","name":"web_search","input":{"query":"weather"}},` +
-	`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01ABCDEF","content":[{"type":"web_search_result","url":"https://example.com","title":"Weather"}]},` +
-	`{"type":"text","text":"summary with citations"}]}]}`
+	// genuineWebSearchBody 保存 Anthropic 上游 web search 块，其 ID 使用上游格式。
+	genuineWebSearchBody = `{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"search"}]},` +
+		`{"role":"assistant","content":[` +
+		`{"type":"server_tool_use","id":"srvtoolu_01ABCDEF","name":"web_search","input":{"query":"weather"}},` +
+		`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01ABCDEF","content":[{"type":"web_search_result","url":"https://example.com","title":"Weather"}]},` +
+		`{"type":"text","text":"summary with citations"}]}]}`
+)
 
 func collectContentTypes(t *testing.T, body []byte) []string {
 	t.Helper()

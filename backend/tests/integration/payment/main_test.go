@@ -3,7 +3,6 @@
 package payment_test
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -15,5 +14,5 @@ func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	// 测试进程使用 UTC，保证时间夹具不受本地时区影响。
 	time.Local = time.UTC
-	os.Exit(m.Run())
+	m.Run()
 }

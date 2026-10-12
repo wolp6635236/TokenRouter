@@ -3,24 +3,22 @@ package app
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
-
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // countExecution 连接提供商选择和 token 计数操作。
@@ -33,6 +31,15 @@ type countExecution struct {
 	cooldown  func(context.Context, int64, *forwardcore.UpstreamFailoverError)
 }
 
+// countTarget 保存单次计数使用的提供商，凭据在执行时传给上游。
+type countTarget struct {
+	choices   *selection.Generic
+	gateway   *gatewayhttp.MessagesExecutor
+	auxiliary *gatewayhttp.OpenAIAuxiliary
+	gemini    *gatewayhttp.GeminiExecutor
+	provider  *gatewayprovider.ExecutionProvider
+}
+
 func (p countExecution) SelectCountTarget(ctx context.Context, id *int64, hash, model string, excluded map[int64]struct{}) (gatewayhttp.CountTarget, error) {
 	value, err := p.choices.SelectProviderForModelWithExclusions(ctx, id, hash, model, excluded)
 	if err != nil {
@@ -43,15 +50,6 @@ func (p countExecution) SelectCountTarget(ctx context.Context, id *int64, hash, 
 
 func (p countExecution) PlanCountRoute(ctx context.Context, key *apikey.APIKey, model string) routing.RoutePlan {
 	return p.planner.PlanKey(ctx, key, model)
-}
-
-// countTarget 保存单次计数使用的提供商，凭据在执行时传给上游。
-type countTarget struct {
-	choices   *selection.Generic
-	gateway   *gatewayhttp.MessagesExecutor
-	auxiliary *gatewayhttp.OpenAIAuxiliary
-	gemini    *gatewayhttp.GeminiExecutor
-	provider  *gatewayprovider.ExecutionProvider
 }
 
 func (t countTarget) Snapshot() provider.ProviderSnapshot {

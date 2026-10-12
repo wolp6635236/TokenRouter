@@ -39,7 +39,7 @@ func ExchangePassthrough(ctx context.Context, body []byte, options ExchangeOptio
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && options.ShouldRetry(resp.StatusCode) {
+		if resp.StatusCode >= 400 && resp.StatusCode != http.StatusBadRequest && options.ShouldRetry(resp.StatusCode) {
 			if attempt < options.MaxAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= options.MaxElapsed {

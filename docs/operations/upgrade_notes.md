@@ -4,6 +4,60 @@
 
 各节里提到的认证缓存版本（v34 到 v46）、调度缓存命名空间，都是对应迁移发布时的值。当前代码的认证缓存版本是 46，调度缓存命名空间是 `sched:v4:`，以[提供商调度与缓存一致性](../architecture/provider_scheduling_and_cache.md)为准。后面的迁移可能取代前面的字段，所以不能只看某一节判断当前的接口；"当前状态"一列标出了已被取代的专题。
 
+<a id="finite_model_catalogue"></a>
+## 模型目录候选收窄（无需数据库迁移）
+
+模型列表使用已保存的白名单、映射、分组与创作台配置中的具体名称，以及平台执行规则能枚举的型号。models.dev 提供价格、属性和搜索建议，对外列表由这些有限配置生成。
+
+升级后，只有空白名单或通配规则、缺少具体型号的提供商可能返回空目录，相应分组也可能从模型广场隐藏。管理员可填写具体型号，或使用现有的同步上游操作并保存。空白名单仍允许尝试直接请求未知 ID，执行时继续检查分组、协议及平台资格。未知型号的价格规则保持原样。
+
+这次升级需要更新前后端。已有提供商白名单、映射和同步表单直接使用，数据库结构保持现状。`gateway.models_list_cache_ttl_seconds` 保留解析兼容，目录候选短缓存已停用。升级后核对模型列表、分组选择、创作台生成和设置保存；回退二进制及前端会恢复旧的目录枚举行为。
+
+<a id="request_lookup_performance"></a>
+## 请求查询分阶段执行与审计索引（迁移 295、296）
+
+迁移 295 替换 `request_lookup_ids`，先查本地请求 ID，再按需解析外部别名，并分阶段取得计费和子请求的关联 ID。它更新函数定义，复用用量表已有索引。历史用量无需回填。
+
+迁移 296 并发创建审计表的 `(request_id, created_at DESC)` 索引。它扫描审计表，耗时取决于表大小、磁盘负载和事务等待。建索引中断留下无效索引时，下一次启动会删除无效索引并重建。有效索引已经存在时，迁移复用它。
+
+应用在迁移结束后启动 HTTP 服务。需要缩短重启等待时，在旧实例运行期间执行 `296_audit_request_id_index_notx.sql` 中的建索引语句，确认 `pg_index.indisvalid` 为真后再升级。`usage_logs` 的统计信息维护单独安排，启动迁移中没有 `ANALYZE`。升级后抽查本地 ID、外部 ID 和父子请求，并分别记录迁移耗时与请求接口耗时。
+
+<a id="request_id_unification"></a>
+## 请求 ID 与使用记录去重（迁移 293、294）
+
+迁移 293 在同一事务中添加请求摘要表、使用记录的 `billing_key` 列和计费去重唯一索引，并创建按索引查找请求 ID 的函数。请求详情查询共用一次解析得到的候选 ID。
+
+迁移 294 更新请求 ID 查询函数，使父请求能够通过关联子记录的计费键找到升级前的费用记录。迁移使用 `CREATE OR REPLACE FUNCTION` 替换查询函数，历史记录保持现有 ID。
+
+升级后检查 `idx_usage_logs_billing_key_api_key` 有效，再验证普通请求的响应头与用量 ID 一致、历史 ID 可查，以及任务重放共用一笔费用和一条用量记录。请求 ID 响应头返回本地 ID，供应商 ID 从请求详情中的外部标识查询。
+
+完整规则见[请求 ID 与请求查询](request_lookup.md)。
+
+## Responses WS 设置与在线调参（迁移 292）
+
+本次升级需要一起更新前后端，停止旧实例后执行迁移。提供商的连接方式统一保存为 `responses_ws_connection_mode`，旧的透传选择转为 `per_session`，其他普通连接模式转为 `pooled`。之前受旧全局开关影响而未生效的透传选择，会在升级后生效。
+
+旧的 WS 关闭字段退出运行判断。需要关闭客户端 WS 的分组，应在升级前取消分组的 WebSocket 协议许可。提供商已保存的协议集合保持明确选择，空数组继续禁止提供商承接新调用。旧 HTTP 桥接或提供商强制 HTTP 会移除上游 WS 能力，之后根据已有的 HTTP 能力和分组转换规则选择提供商。
+
+升级前可查询旧 HTTP 桥接提供商所在分组，核对 HTTP 能力和转换许可；查询只返回标识和协议配置：
+
+```sql
+SELECT p.id AS provider_id, g.id AS group_id, g.name AS group_name,
+       p.credentials->'upstream_protocols' AS upstream_protocols,
+       g.allowed_protocols, g.protocol_fallbacks
+FROM providers p
+JOIN provider_groups pg ON pg.provider_id = p.id
+JOIN groups g ON g.id = pg.group_id
+WHERE p.platform = 'openai'
+  AND (p.extra->>'openai_oauth_responses_websockets_v2_mode' = 'http_bridge'
+    OR p.extra->>'openai_apikey_responses_websockets_v2_mode' = 'http_bridge'
+    OR p.extra->'openai_ws_force_http' = 'true'::jsonb);
+```
+
+提供商缺少 `openai_responses`，或分组的 `protocol_fallbacks.openai_responses_websocket` 为 `[]` 时，需要管理员调整配置后才能通过 HTTP 承接 WS。迁移保持分组限制。调度缓存命名空间更新为 `sched:v5`，新实例从已迁移数据重建缓存。
+
+在线设置首次没有覆盖值时继续使用环境变量、YAML 和代码默认值。上线后验证池化和单会话连接、HTTP 转换、分组禁用、参数保存与恢复默认，以及多实例刷新。回退需要恢复升级前的数据库备份，切换旧二进制不会撤销字段迁移。
+
 ## 总览
 
 | 迁移 | 专题 | 升级方式 | 当前状态 |

@@ -1,105 +1,105 @@
-package searchtools_test
+package searchtools
 
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 func TestGetWebSearchEmulationMode_Enabled(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
-		Extra:    map[string]any{searchtools.FeatureKey: "enabled"},
+		Extra:    map[string]any{FeatureKey: "enabled"},
 	}
-	require.Equal(t, searchtools.ModeEnabled, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeEnabled, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_Disabled(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
-		Extra:    map[string]any{searchtools.FeatureKey: "disabled"},
+		Extra:    map[string]any{FeatureKey: "disabled"},
 	}
-	require.Equal(t, searchtools.ModeDisabled, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDisabled, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_Default(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
-		Extra:    map[string]any{searchtools.FeatureKey: "default"},
+		Extra:    map[string]any{FeatureKey: "default"},
 	}
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_UnknownString(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
-		Extra:    map[string]any{searchtools.FeatureKey: "unknown"},
+		Extra:    map[string]any{FeatureKey: "unknown"},
 	}
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_OldBoolTrue(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
-		Extra:    map[string]any{searchtools.FeatureKey: true},
+		Extra:    map[string]any{FeatureKey: true},
 	}
 	// bool true → tolerant fallback → enabled (not default)
-	require.Equal(t, searchtools.ModeEnabled, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeEnabled, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_OldBoolFalse(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
-		Extra:    map[string]any{searchtools.FeatureKey: false},
+		Extra:    map[string]any{FeatureKey: false},
 	}
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_NilProvider(t *testing.T) {
-	var a *searchtools.ProviderPolicy
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	var a *ProviderPolicy
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_NilExtra(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
 		Extra:    nil,
 	}
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_MissingField(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeAPIKey,
 		Extra:    map[string]any{},
 	}
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_NonAnthropicPlatform(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformOpenAI,
 		Type:     capability.ProviderTypeAPIKey,
-		Extra:    map[string]any{searchtools.FeatureKey: "enabled"},
+		Extra:    map[string]any{FeatureKey: "enabled"},
 	}
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }
 
 func TestGetWebSearchEmulationMode_NonAPIKeyType(t *testing.T) {
-	a := &searchtools.ProviderPolicy{
+	a := &ProviderPolicy{
 		Platform: capability.PlatformAnthropic,
 		Type:     capability.ProviderTypeOAuth,
-		Extra:    map[string]any{searchtools.FeatureKey: "enabled"},
+		Extra:    map[string]any{FeatureKey: "enabled"},
 	}
-	require.Equal(t, searchtools.ModeDefault, searchtools.ProviderMode(a).Mode)
+	require.Equal(t, ModeDefault, ProviderMode(a).Mode)
 }

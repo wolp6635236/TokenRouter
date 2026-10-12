@@ -1,6 +1,6 @@
 //go:build integration
 
-package postgres_test
+package postgres
 
 import (
 	"context"
@@ -13,26 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/batchimage"
-
-	"github.com/TokenFlux/TokenRouter/internal/batchimage/postgres"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
 )
-
-func newBatchImageRepositoryWithSQL(t *testing.T, sqlq postgres.SQLExecutor) (*postgres.Repository, int64) {
-	t.Helper()
-	// 每个事务创建付款用户，满足 billing_user_id 的外键约束。
-	var userID int64
-	err := sqlq.QueryRowContext(context.Background(), `
-		INSERT INTO users (email, password_hash, role, status)
-		VALUES ($1, 'test-password-hash', 'user', 'active')
-		RETURNING id
-	`, batchImageTestID(t, "user")+"@example.com").Scan(&userID)
-	require.NoError(t, err)
-	return postgres.NewRepositoryWithSQL(sqlq), userID
-}
 
 func TestBatchImageRepository_CreateJobAndDuplicates(t *testing.T) {
 	ctx := context.Background()
@@ -375,6 +360,19 @@ func TestBatchImageRepository_AppendEvent(t *testing.T) {
 	require.Contains(t, payload, batchID)
 }
 
+func newBatchImageRepositoryWithSQL(t *testing.T, sqlq SQLExecutor) (*Repository, int64) {
+	t.Helper()
+	// 每个事务创建付款用户，满足 billing_user_id 的外键约束。
+	var userID int64
+	err := sqlq.QueryRowContext(context.Background(), `
+		INSERT INTO users (email, password_hash, role, status)
+		VALUES ($1, 'test-password-hash', 'user', 'active')
+		RETURNING id
+	`, batchImageTestID(t, "user")+"@example.com").Scan(&userID)
+	require.NoError(t, err)
+	return NewRepositoryWithSQL(sqlq), userID
+}
+
 func batchImageTestID(t *testing.T, prefix string) string {
 	t.Helper()
 	safePrefix := batchImageSafeTestIDSegment(prefix, 20)
@@ -410,7 +408,7 @@ func batchImageDerefTest(v *string) string {
 	return *v
 }
 
-// testTx 为原任务存储断言取得隔离数据库，测试结束回滚后才关闭连接。
+// testTx 为任务存储测试开启数据库事务，测试结束时先回滚再关闭连接。
 func testTx(t *testing.T) *sql.Tx {
 	t.Helper()
 	db := postgrescontainer.New(t)

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	ippkg "github.com/TokenFlux/TokenRouter/internal/server/clientip"
-
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	ippkg "github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
 // fakeFixedWindow 为 HTTP 限流测试提供可控的计数和错误。

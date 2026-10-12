@@ -11,22 +11,25 @@ import (
 	"testing"
 	"time"
 
-	apikey "github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
-	groupdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
-
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
-
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	groupdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
 )
+
+// adminResetGroupProjection 将分组读取转交注入的 GroupRepository。
+type adminResetGroupProjection struct {
+	apikey.GroupRepository
+	reader routing.GroupRepository
+}
 
 // TestAdminKeyResetAndInvalidGroupAreAtomic 验证同一管理请求失败时不保留消费重置。
 func TestAdminKeyResetAndInvalidGroupAreAtomic(t *testing.T) {
@@ -109,12 +112,6 @@ func TestAdminKeyCombinedWriteRollsBackOnDatabaseFailure(t *testing.T) {
 	require.Nil(t, stored.Window1dStart)
 	require.Nil(t, stored.Window7dStart)
 	require.Equal(t, group.ID, *stored.GroupID)
-}
-
-// adminResetGroupProjection 将分组读取转交注入的 GroupRepository。
-type adminResetGroupProjection struct {
-	apikey.GroupRepository
-	reader routing.GroupRepository
 }
 
 func (p adminResetGroupProjection) GetByID(ctx context.Context, id int64) (*routing.Group, error) {

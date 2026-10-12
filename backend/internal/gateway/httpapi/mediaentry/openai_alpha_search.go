@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
@@ -19,9 +22,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
+
+// alphaRequestAdapter 处理 HTTP 输出、平台恢复和观测，media 决定提供商尝试顺序。
+type alphaRequestAdapter struct {
+	h                           *Runtime
+	c                           *gin.Context
+	apiKey                      *apikey.APIKey
+	subscription                *billing.UserSubscription
+	groupMapping                routing.GroupMappingResult
+	requestedModel, sessionHash string
+	originalBody                []byte
+	userID                      int64
+	reqLog                      *zap.Logger
+	streamStarted               *bool
+	selection                   *gatewaycapture.SelectionResult
+	oauth429                    failover.OAuth429State
+}
 
 // recordAlphaSearchUsage 为成功的 alpha/search 记录一次 WebSearchCalls，按分组单价乘倍率计费。
 // 上游缺少 usage 字段。任务提交到 mandatory 池，池满时同步执行。
@@ -75,22 +92,6 @@ func (h *Runtime) recordAlphaSearchUsage(
 	})
 }
 
-// alphaRequestAdapter 处理 HTTP 输出、平台恢复和观测，media 决定提供商尝试顺序。
-type alphaRequestAdapter struct {
-	h                           *Runtime
-	c                           *gin.Context
-	apiKey                      *apikey.APIKey
-	subscription                *billing.UserSubscription
-	groupMapping                routing.GroupMappingResult
-	requestedModel, sessionHash string
-	originalBody                []byte
-	userID                      int64
-	reqLog                      *zap.Logger
-	streamStarted               *bool
-	selection                   *gatewaycapture.SelectionResult
-	oauth429                    failover.OAuth429State
-}
-
 func (p *alphaRequestAdapter) SelectAlpha(ctx context.Context, excluded map[int64]struct{}) (gatewaymedia.AlphaSelection, bool, error) {
 	selected, _, err := p.h.bindings.Common.Selection.SelectProviderWithSchedulerForCapability(ctx, p.apiKey.GroupID, "", p.sessionHash, p.requestedModel, excluded, egress.OpenAIUpstreamTransportHTTPSSE, providercore.OpenAIEndpointCapabilityAlphaSearch, false, false, capability.PlatformOpenAI)
 	p.selection = selected
@@ -114,8 +115,7 @@ func (p *alphaRequestAdapter) ForwardAlpha(ctx context.Context, _ gatewaymedia.A
 		result, err = p.h.bindings.Platform.AlphaSearch(ctx, p.c, provider, body, match)
 	}
 	outcome := gatewaymedia.AlphaOutcome{Result: alphaResultView(result), Err: err, OutputChanged: p.c.Writer.Size() != size}
-	var failure *forwardcore.UpstreamFailoverError
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		outcome.Failure = failure.RetryFailure()
 	}
 	return outcome
@@ -178,8 +178,7 @@ func (p *alphaRequestAdapter) renderFailure(f *gatewaymedia.AlphaFailure) {
 			gatewayhttp.DefaultOpenAIErrorOutput().WriteError(p.c, cls.Status, cls.ErrType, cls.Message)
 			return
 		}
-		var last *forwardcore.UpstreamFailoverError
-		if errors.As(f.Outcome.Err, &last) {
+		if last, ok := errors.AsType[*forwardcore.UpstreamFailoverError](f.Outcome.Err); ok {
 			p.h.bindings.Common.Support.HandleFailoverExhausted(p.c, last, false)
 		} else {
 			gatewayhttp.DefaultOpenAIErrorOutput().WriteError(p.c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
@@ -190,8 +189,7 @@ func (p *alphaRequestAdapter) renderFailure(f *gatewaymedia.AlphaFailure) {
 		}
 		p.reqLog.Warn("openai_alpha_search.forward_failed", zap.Int64("provider_id", p.selection.Provider.Record.ID), zap.Error(f.Err))
 	case "exhausted":
-		var last *forwardcore.UpstreamFailoverError
-		if errors.As(f.Outcome.Err, &last) {
+		if last, ok := errors.AsType[*forwardcore.UpstreamFailoverError](f.Outcome.Err); ok {
 			p.h.bindings.Common.Support.HandleFailoverExhausted(p.c, last, f.Outcome.OutputChanged)
 		}
 	}

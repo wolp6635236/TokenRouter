@@ -1,0 +1,25 @@
+package provider
+
+// 本文件检查 gateway/client_settings.go 与 upstream/openai/codex_identity.go 的 Codex 版本一致性，使用 clientmeta.CompareVersions 比较版本。
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+)
+
+func TestCodexVersionConstants_Consistency(t *testing.T) {
+	require.GreaterOrEqual(t, clientmeta.CompareVersions(openai.CodexCLIVersion, openai.CodexUpstreamMinVersion), 0,
+		"codexCLIVersion must not be below the upstream minimum")
+
+	require.True(t, strings.Contains(openai.CodexCLIUserAgent, openai.CodexDefaultOriginator+"/"+openai.CodexCLIVersion),
+		"codexCLIUserAgent must embed codexCLIVersion")
+
+	require.True(t, strings.Contains(gateway.DefaultOpenAICodexUserAgent, openai.CodexCLIVersion),
+		"DefaultOpenAICodexUserAgent must embed codexCLIVersion")
+}

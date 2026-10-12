@@ -3,6 +3,10 @@ package httpapi
 import (
 	"io"
 	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
@@ -14,14 +18,31 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
+
+var _ messageforward.HTTPBoundary = (*MessageForwardBoundary)(nil)
 
 // MessageForwardBoundary 独占当前 HTTP 写入和观察，不持有提供商、设置或重试规则。
 type MessageForwardBoundary struct {
 	context *gin.Context
 	filter  *egress.CompiledHeaderFilter
+}
+
+// WriteAnthropicPassthroughHeaders 使用传入的过滤器，缺省时透传 Content-Type 和 x-request-id。
+func WriteAnthropicPassthroughHeaders(dst, src http.Header, filter *egress.CompiledHeaderFilter) {
+	if dst == nil || src == nil {
+		return
+	}
+	if filter != nil {
+		egressprovider.WriteFilteredHeaders(dst, src, filter)
+		return
+	}
+	if value := strings.TrimSpace(src.Get("Content-Type")); value != "" {
+		dst.Set("Content-Type", value)
+	}
+	if value := strings.TrimSpace(src.Get("x-request-id")); value != "" {
+		dst.Set("x-request-id", value)
+	}
 }
 
 func NewMessageForwardBoundary(c *gin.Context, filter *egress.CompiledHeaderFilter) *MessageForwardBoundary {
@@ -86,9 +107,11 @@ func (b *MessageForwardBoundary) ReadResponseBody(reader io.Reader, limit int64,
 	return ReadUpstreamResponseBody(reader, limit, b.context, tooLarge)
 }
 
-func (b *MessageForwardBoundary) Size() int     { return b.context.Writer.Size() }
+func (b *MessageForwardBoundary) Size() int { return b.context.Writer.Size() }
+
 func (b *MessageForwardBoundary) Written() bool { return b.context.Writer.Written() }
-func (b *MessageForwardBoundary) Commit()       { MarkResponseCommitted(b.context) }
+
+func (b *MessageForwardBoundary) Commit() { MarkResponseCommitted(b.context) }
 
 func (b *MessageForwardBoundary) GenericError() {
 	WriteForwardMessageGenericError(b.context, b.Commit)
@@ -155,5 +178,3 @@ func (b *MessageForwardBoundary) WriteHeaders(dst, src http.Header, passthrough 
 	}
 	egressprovider.WriteFilteredHeaders(dst, src, b.filter)
 }
-
-var _ messageforward.HTTPBoundary = (*MessageForwardBoundary)(nil)

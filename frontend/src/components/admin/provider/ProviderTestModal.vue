@@ -62,15 +62,20 @@
           <label class="input-label" :for="modelFieldId">{{ t('admin.providers.testDialog.model') }}</label>
           <Select
             :id="modelFieldId"
+            data-testid="provider-test-model"
             v-model="selectedModelId"
             :options="availableModels"
             :disabled="loadingModels || busy"
             value-key="id"
-            label-key="display_name"
+            label-key="id"
             creatable
             :placeholder="loadingModels ? t('common.loading') : t('admin.providers.testDialog.modelPlaceholder')"
           />
         </div>
+
+        <p v-if="!loadingModels && availableModels.length === 0" class="input-hint" data-testid="provider-test-models-empty">
+          {{ t('admin.providers.testDialog.modelsEmpty') }}
+        </p>
 
         <div v-if="testType === 'text'" class="space-y-1.5">
           <label class="input-label" :for="protocolFieldId">{{ t('admin.providers.testDialog.protocol') }}</label>
@@ -106,8 +111,9 @@
           />
         </div>
 
+        <SystemOneTestForm v-if="isDecisionProvider" :key="`${provider?.id}-${show}`" :disabled="busy" @change="decisionPayload = $event" />
         <TextArea
-          v-if="!isCompactTestMode"
+          v-else-if="!isCompactTestMode"
           v-model="testPrompt"
           :label="promptInputLabel"
           :placeholder="promptInputPlaceholder"
@@ -122,8 +128,8 @@
         :aria-label="t('admin.providers.testDialog.results')"
         class="flex min-w-0 flex-col px-4 py-5 sm:px-6 md:min-h-0 md:flex-1"
       >
-        <ProviderTestResultView v-if="testScope === 'single'" :run="singleRun" />
-        <ProviderTestBatchPanel v-else :batch="batch" />
+        <ProviderTestResultView v-if="testScope === 'single'" :run="singleRun" :decision="isDecisionProvider" />
+        <ProviderTestBatchPanel v-else :batch="batch" :decision="isDecisionProvider" />
       </section>
     </div>
 
@@ -166,6 +172,7 @@
           type="button"
           class="btn btn-secondary"
           data-testid="provider-batch-retry"
+          :disabled="isDecisionProvider && !decisionPayload"
           @click="startBatch(batch.failedModels, true)"
         >
           {{ t('admin.providers.testDialog.batch.retry', { count: batch.failedModels.length }) }}
@@ -174,7 +181,7 @@
           type="button"
           class="btn btn-primary"
           data-testid="provider-batch-start"
-          :disabled="batch.selected.size === 0"
+          :disabled="batch.selected.size === 0 || (isDecisionProvider && !decisionPayload)"
           @click="startBatch(selectedBatchModels, false)"
         >
           <Icon name="play" size="sm" />
@@ -186,7 +193,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ProviderIcon from '@/components/common/ProviderIcon.vue'
@@ -201,6 +208,8 @@ import { resolveProviderBrand } from '@/utils/providerBrand'
 import type { Provider, ClaudeModel } from '@/types'
 import ProviderTestBatchPanel from './ProviderTestBatchPanel.vue'
 import ProviderTestResultView from './ProviderTestResultView.vue'
+import SystemOneTestForm from './SystemOneTestForm.vue'
+import type { SystemOneTestPayload } from './systemOneTest'
 import {
   defaultProviderTestProtocol,
   providerTestProtocolPlan,
@@ -251,6 +260,9 @@ let lastDefaultPrompt = ''
 
 // Antigravity、Qoder 等未配置品牌图形的平台使用 PlatformIcon。
 const hasProviderBrandIcon = computed(() => Boolean(resolveProviderBrand(props.provider?.platform).iconKey))
+
+const isDecisionProvider = computed(() => props.provider?.platform === 'jev')
+const decisionPayload = ref<SystemOneTestPayload | null>(null)
 
 const isOpenAIProvider = computed(() => props.provider?.platform === 'openai')
 const isCNProvider = computed(() => ['kimi', 'zhipu', 'deepseek'].includes(props.provider?.platform ?? ''))
@@ -305,8 +317,6 @@ const requestProtocol = computed<ProviderTestProtocol | undefined>(() => {
   return testProtocol.value
 })
 
-const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
-
 // 图片或文字请求类型由管理员选择。
 const imageTestAvailable = computed(() => {
   const platform = props.provider?.platform
@@ -329,7 +339,7 @@ const promptInputPlaceholder = computed(() =>
     : t('admin.providers.textPromptPlaceholder')
 )
 
-const canTestSingle = computed(() => !busy.value && !!selectedModelId.value)
+const canTestSingle = computed(() => !busy.value && !!selectedModelId.value && (!isDecisionProvider.value || !!decisionPayload.value))
 
 const singleButtonLabel = computed(() => {
   if (singleRunning.value) return t('admin.providers.testDialog.running')
@@ -340,38 +350,28 @@ const singleButtonLabel = computed(() => {
 // 批量测试按模型列表的顺序执行已选模型。
 const selectedBatchModels = computed(() => batch.models.filter((model) => batch.selected.has(model)))
 
-const sortTestModels = (models: ClaudeModel[]) => {
-  const priorityMap = new Map(prioritizedGeminiModels.map((id, index) => [id, index]))
-
-  return [...models].sort((a, b) => {
-    const aPriority = priorityMap.get(a.id) ?? Number.MAX_SAFE_INTEGER
-    const bPriority = priorityMap.get(b.id) ?? Number.MAX_SAFE_INTEGER
-    return aPriority - bPriority
-  })
-}
-
 // 打开弹窗时重置参数并加载可测试模型。
 watch(
-  () => props.show,
-  async (open) => {
+  () => [props.show, props.provider?.id] as const,
+  async ([open]) => {
+    abortAll()
     if (open && props.provider) {
       testScope.value = 'single'
       testPrompt.value = ''
       lastDefaultPrompt = ''
       testMode.value = 'default'
       testType.value = 'text'
+      updateDefaultPrompt()
       testProtocol.value = defaultProviderTestProtocol(props.provider, protocolPlan.value)
       resetProviderTestRun(singleRun)
       batch.reset([])
       await loadAvailableModels()
-    } else {
-      abortAll()
     }
   }
 )
 
 // 提示词未被手动修改时，跟随测试类型切换默认值。
-watch([selectedModelId, testType], () => {
+function updateDefaultPrompt() {
   const nextDefaultPrompt = testType.value === 'image'
     ? t('admin.providers.imagePromptDefault')
     : t('admin.providers.textPromptDefault')
@@ -379,7 +379,8 @@ watch([selectedModelId, testType], () => {
     testPrompt.value = nextDefaultPrompt
     lastDefaultPrompt = nextDefaultPrompt
   }
-})
+}
+watch([selectedModelId, testType], updateDefaultPrompt)
 
 watch(testType, (nextType) => {
   if (nextType === 'image') {
@@ -391,25 +392,15 @@ const loadAvailableModels = async () => {
   if (!props.provider) return
 
   loadingModels.value = true
-  selectedModelId.value = ''
+  // 测试型号由管理员从提供商目录选择，也可直接输入 ID。
+  selectedModelId.value = props.provider.platform === 'jev' ? 'jev-latest' : ''
   try {
     const models = await adminAPI.providers.getAvailableModels(props.provider.id)
-    availableModels.value = props.provider.platform === 'gemini' || props.provider.platform === 'antigravity'
-      ? sortTestModels(models)
-      : models
-    if (availableModels.value.length > 0) {
-      if (props.provider.platform === 'gemini') {
-        selectedModelId.value = availableModels.value[0].id
-      } else {
-        // 优先选中 Sonnet，没有时取第一个模型。
-        const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
-        selectedModelId.value = sonnetModel?.id || availableModels.value[0].id
-      }
-    }
+    availableModels.value = models
   } catch (error) {
     console.error('Failed to load available models:', error)
     availableModels.value = []
-    selectedModelId.value = ''
+    selectedModelId.value = props.provider.platform === 'jev' ? 'jev-latest' : ''
   } finally {
     loadingModels.value = false
     batch.reset(availableModels.value.map((model) => model.id))
@@ -418,6 +409,9 @@ const loadAvailableModels = async () => {
 
 // buildRequestBody 按当前左侧参数生成单次测试请求，批量测试每个模型共用同一套参数。
 const buildRequestBody = (model: string): ProviderTestRequestBody => {
+  if (isDecisionProvider.value && decisionPayload.value) {
+    return { model_id: model, test_type: 'decision', systemone: decisionPayload.value }
+  }
   const body: ProviderTestRequestBody = {
     model_id: model,
     prompt: isCompactTestMode.value ? '' : testPrompt.value.trim(),
@@ -458,7 +452,7 @@ const startTest = async () => {
 }
 
 const startBatch = (targets: string[], retry: boolean) => {
-  if (!props.provider || busy.value) return
+  if (!props.provider || busy.value || (isDecisionProvider.value && !decisionPayload.value)) return
   void batch.start({
     targets: [...targets],
     retry,
@@ -467,4 +461,5 @@ const startBatch = (targets: string[], retry: boolean) => {
     buildBody: buildRequestBody
   })
 }
+onBeforeUnmount(abortAll)
 </script>

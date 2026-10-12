@@ -8,15 +8,23 @@ import (
 	"sync"
 	"time"
 
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
 	acctcore "github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 type agentIdentityWSConnectionInvalidator interface {
 	InvalidateAgentIdentityWSConnections(providerID int64)
+}
+
+// ExecutionAgentIdentity 协调执行请求的身份注册和连接失效。
+type ExecutionAgentIdentity struct {
+	store       ExecutionProviderStore
+	coordinator *acctcore.OpenAITaskCoordinator
+	register    func(context.Context, *acctcore.Record) (string, error)
+	invalidate  func(int64)
+	taskMu      sync.Mutex
 }
 
 // ensureAgentIdentityTaskForProvider 兼容入口只转换记录和写回时机；锁、复查与登记规则由唯一提供商协调器执行。
@@ -57,6 +65,10 @@ func ensureAgentIdentityTaskForProvider(ctx context.Context, coordinator *acctco
 		value.Record.Credentials = input.Credentials
 	}
 	return err
+}
+
+func NewExecutionAgentIdentity(coordinator *acctcore.OpenAITaskCoordinator, store ExecutionProviderStore, register func(context.Context, *acctcore.Record) (string, error), invalidate func(int64)) *ExecutionAgentIdentity {
+	return &ExecutionAgentIdentity{store: store, coordinator: coordinator, register: register, invalidate: invalidate}
 }
 
 func (s *ExecutionAgentIdentity) Ensure(ctx context.Context, provider *ExecutionProvider, expectedTaskID string) error {
@@ -190,19 +202,6 @@ func (s *ExecutionAgentIdentity) Redact(ctx context.Context, provider *Execution
 		return body
 	}
 	return RedactExecutionAgentBody(ctx, s.store, provider, body)
-}
-
-// ExecutionAgentIdentity 协调执行请求的身份注册和连接失效。
-type ExecutionAgentIdentity struct {
-	store       ExecutionProviderStore
-	coordinator *acctcore.OpenAITaskCoordinator
-	register    func(context.Context, *acctcore.Record) (string, error)
-	invalidate  func(int64)
-	taskMu      sync.Mutex
-}
-
-func NewExecutionAgentIdentity(coordinator *acctcore.OpenAITaskCoordinator, store ExecutionProviderStore, register func(context.Context, *acctcore.Record) (string, error), invalidate func(int64)) *ExecutionAgentIdentity {
-	return &ExecutionAgentIdentity{store: store, coordinator: coordinator, register: register, invalidate: invalidate}
 }
 
 func (s *ExecutionAgentIdentity) InvalidateAgentIdentityWSConnections(id int64) {

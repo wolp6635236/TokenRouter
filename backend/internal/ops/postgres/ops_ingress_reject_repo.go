@@ -21,10 +21,7 @@ func (r *Store) BatchUpsertIngressRejects(ctx context.Context, items []*ops.OpsI
 	defer func() { _ = tx.Rollback() }()
 
 	for start := 0; start < len(items); start += ingressRejectUpsertChunkSize {
-		end := start + ingressRejectUpsertChunkSize
-		if end > len(items) {
-			end = len(items)
-		}
+		end := min(start+ingressRejectUpsertChunkSize, len(items))
 		valid := make([]*ops.OpsIngressRejectAggregate, 0, end-start)
 		for _, item := range items[start:end] {
 			if item != nil && item.RequestCount > 0 {

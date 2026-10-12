@@ -6,13 +6,13 @@ import (
 	"go.uber.org/zap"
 )
 
+var compatibilityLogCounter atomic.Uint64
+
 // CompatibilityLogSnapshot 接收兼容性统计计数。
 type CompatibilityLogSnapshot struct {
 	ReadTotal, ReadHit, DualWrite, MetadataTotal int64
 	ReadHitRate                                  float64
 }
-
-var compatibilityLogCounter atomic.Uint64
 
 // LogCompatibilityFallback 保留全部文本和计数入口共享的每 1024 次采样节奏。
 func LogCompatibilityFallback(log *zap.Logger, read func() CompatibilityLogSnapshot) {

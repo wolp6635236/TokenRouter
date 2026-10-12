@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"sort"
 	"strings"
 )
 
@@ -12,46 +11,51 @@ type ModelPlatformRules struct {
 	OpenAIOAuthServable func(string) bool
 }
 
-// IsModelSupported 在配置的白名单或默认目录中检查最终模型，提供商映射执行一次。
-func (a *Record) IsModelSupported(requestedModel string, defaults ModelMappingDefaults, rules ModelPlatformRules) bool {
-	if a == nil {
+// IsModelSupported 在提供商映射后检查白名单和平台执行资格。
+func (r *Record) IsModelSupported(requestedModel string, defaults ModelMappingDefaults, rules ModelPlatformRules) bool {
+	if r == nil {
 		return false
 	}
-	mapping := ResolveModelMapping(a, defaults)
+	mapping := ResolveModelMapping(r, defaults)
 	model, _ := ResolveMappedModel(mapping, requestedModel)
-	scope := a.effectiveModelScope(defaults, mapping)
-	if !ModelInFinalWhitelist(a.Platform, model, scope, rules.NormalizeQoder) {
+	scope := r.effectiveModelScope(defaults, mapping)
+	if !ModelInFinalWhitelist(r.Platform, model, scope, rules.NormalizeQoder) {
 		return false
 	}
-	if a.Platform == PlatformQoder && rules.QoderCompatible != nil && !rules.QoderCompatible(model) {
+	return r.modelPlatformAllows(model, rules)
+}
+
+// modelPlatformAllows 检查型号的站点和账号资格。
+func (r *Record) modelPlatformAllows(model string, rules ModelPlatformRules) bool {
+	if r.Platform == PlatformQoder && rules.QoderCompatible != nil && !rules.QoderCompatible(model) {
 		return false
 	}
-	if a.IsOpenAIOAuth() && rules.OpenAIOAuthServable != nil {
+	if r.IsOpenAIOAuth() && rules.OpenAIOAuthServable != nil {
 		return rules.OpenAIOAuthServable(model)
 	}
 	return true
 }
 
 // FinalModelWhitelisted 直接检查已映射的上游模型名是否在白名单中。
-func (a *Record) FinalModelWhitelisted(model string, defaults ModelMappingDefaults, rules ModelPlatformRules) bool {
-	if a == nil {
+func (r *Record) FinalModelWhitelisted(model string, defaults ModelMappingDefaults, rules ModelPlatformRules) bool {
+	if r == nil {
 		return false
 	}
-	if a.Platform == PlatformQoder && rules.QoderCompatible != nil && !rules.QoderCompatible(model) {
+	if r.Platform == PlatformQoder && rules.QoderCompatible != nil && !rules.QoderCompatible(model) {
 		return false
 	}
-	return ModelInFinalWhitelist(a.Platform, model, a.effectiveModelScope(defaults, ResolveModelMapping(a, defaults)), rules.NormalizeQoder)
+	return ModelInFinalWhitelist(r.Platform, model, r.effectiveModelScope(defaults, ResolveModelMapping(r, defaults)), rules.NormalizeQoder)
 }
 
-// effectiveModelScope 空配置使用默认目录，明确的非空白名单覆盖默认值。
-func (a *Record) effectiveModelScope(defaults ModelMappingDefaults, mapping map[string]string) map[string]struct{} {
-	whitelist, explicit := ResolveFinalModelWhitelist(a.Platform, a.Credentials, mapping)
+// effectiveModelScope 空白名单允许任意型号，Spark 影子使用独立的硬限制。
+func (r *Record) effectiveModelScope(defaults ModelMappingDefaults, mapping map[string]string) map[string]struct{} {
+	whitelist, explicit := ResolveFinalModelWhitelist(r.Platform, r.Credentials, mapping)
 	// Spark 影子只有独立模型配额，明确的通配符也不能扩大其硬能力。
-	if a.IsShadow() && a.Platform == PlatformOpenAI {
+	if r.IsShadow() && r.Platform == PlatformOpenAI {
 		scope := make(map[string]struct{})
 		if defaults.Models != nil {
-			for _, model := range defaults.Models(a) {
-				if len(whitelist) == 0 || ModelInFinalWhitelist(a.Platform, model, whitelist, nil) {
+			for _, model := range defaults.Models(r) {
+				if len(whitelist) == 0 || ModelInFinalWhitelist(r.Platform, model, whitelist, nil) {
 					scope[model] = struct{}{}
 				}
 			}
@@ -61,52 +65,21 @@ func (a *Record) effectiveModelScope(defaults ModelMappingDefaults, mapping map[
 	if explicit && len(whitelist) > 0 {
 		return whitelist
 	}
-	scope := make(map[string]struct{})
-	if defaults.Models != nil {
-		for _, model := range defaults.Models(a) {
-			scope[strings.TrimSpace(model)] = struct{}{}
-		}
-	}
-	// 明确映射的目标是管理员声明的能力；通配目标不能隐式放开全部模型。
-	for _, model := range mapping {
-		if model != "" && !strings.Contains(model, "*") {
-			scope[strings.TrimSpace(model)] = struct{}{}
-		}
-	}
-	return scope
+	return map[string]struct{}{"*": {}}
 }
 
-// GetConfiguredRequestModels 枚举默认目录和明确模型；通配符仅用于资格匹配。
-func (a *Record) GetConfiguredRequestModels(defaults ModelMappingDefaults) []string {
-	if a == nil {
+// GetConfiguredRequestModels 枚举配置中的具体型号和执行路由别名。
+func (r *Record) GetConfiguredRequestModels(defaults ModelMappingDefaults) []string {
+	if r == nil {
 		return nil
 	}
-	mapping := ResolveModelMapping(a, defaults)
-	scope := a.effectiveModelScope(defaults, mapping)
-	models := make(map[string]struct{})
-	for model := range scope {
-		if !strings.Contains(model, "*") {
-			models[model] = struct{}{}
-		}
-	}
+	mapping := ResolveModelMapping(r, defaults)
+	scope := r.effectiveModelScope(defaults, mapping)
+	var platformModels []string
 	if defaults.Models != nil {
-		for _, model := range defaults.Models(a) {
-			if ModelInFinalWhitelist(a.Platform, model, scope, nil) {
-				models[model] = struct{}{}
-			}
-		}
+		platformModels = defaults.Models(r)
 	}
-	for source, target := range mapping {
-		if !strings.Contains(source, "*") && ModelInFinalWhitelist(a.Platform, target, scope, nil) {
-			models[source] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(models))
-	for model := range models {
-		out = append(out, model)
-	}
-	sort.Strings(out)
-	return out
+	return configuredRequestModels(mapping, scope, platformModels, func(model string) bool { return ModelInFinalWhitelist(r.Platform, model, scope, nil) })
 }
 
 // ResolveMappedModel 获取映射后的模型名，并返回是否命中了提供商级映射。
@@ -145,11 +118,11 @@ func ModelInFinalWhitelist(platform, model string, whitelist map[string]struct{}
 	return false
 }
 
-// HasUnrestrictedModelScope 只有管理员明确配置全模型范围才返回真。
-func (a *Record) HasUnrestrictedModelScope(defaults ModelMappingDefaults) bool {
-	if a == nil {
+// HasUnrestrictedModelScope 判断当前提供商是否允许任意型号。
+func (r *Record) HasUnrestrictedModelScope(defaults ModelMappingDefaults) bool {
+	if r == nil {
 		return false
 	}
-	_, all := a.effectiveModelScope(defaults, ResolveModelMapping(a, defaults))["*"]
+	_, all := r.effectiveModelScope(defaults, ResolveModelMapping(r, defaults))["*"]
 	return all
 }

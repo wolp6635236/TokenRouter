@@ -6,19 +6,26 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/internal/usageclient" // CnZhipuWindow 标识智谱 TOKENS_LIMIT 条目所属窗口。
+	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/internal/usageclient"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usagecontract"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
-	"github.com/tidwall/gjson"
 )
-
-type CnZhipuWindow int
 
 const (
 	CnZhipuWindowUnknown CnZhipuWindow = iota
 	CnZhipuWindow5h
 	CnZhipuWindowWeekly
+
+	// DefaultTestModel 是智谱提供商的默认探测型号。
+	DefaultTestModel = "glm-4.7"
 )
+
+// CnZhipuWindow 标识智谱 TOKENS_LIMIT 条目所属窗口。
+type CnZhipuWindow int
+
+type ZhipuCodingUsageAdapter struct{}
 
 // ClassifyZhipuWindowUnit 按 unit 字段判定窗口类型（3=5h，6=7d）。
 // unit 缺失或未识别时返回 Unknown，由调用方走 reset 时间启发式兜底。
@@ -146,8 +153,6 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 	}
 	return tiers
 }
-
-type ZhipuCodingUsageAdapter struct{}
 
 func (*ZhipuCodingUsageAdapter) Name() string { return usageview.UpstreamUsageAdapterZhipuCoding }
 func (*ZhipuCodingUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {

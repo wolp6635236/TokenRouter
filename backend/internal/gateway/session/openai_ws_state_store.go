@@ -19,6 +19,13 @@ const (
 	openAIWSStateStoreCleanupMaxPerMap  = 512
 	openAIWSStateStoreMaxEntriesPerMap  = 65536
 	openAIWSStateStoreRedisTimeout      = 3 * time.Second
+
+	// openAIWSInvalidEncryptedDigestsPerSession 是单会话摘要集合的存储自保护上限。
+	// 达到上限后跳过新摘要，该密文下次被上游拒绝时再执行常规恢复。
+	openAIWSInvalidEncryptedDigestsPerSession = 512
+
+	// StateStoreRedisTimeout 保持会话读写及旧 preemption 的同一技术预算。
+	StateStoreRedisTimeout = openAIWSStateStoreRedisTimeout
 )
 
 type openAIWSProviderBinding struct {
@@ -53,10 +60,6 @@ type openAIWSInvalidEncryptedBinding struct {
 	digests   map[string]struct{}
 	expiresAt time.Time
 }
-
-// openAIWSInvalidEncryptedDigestsPerSession 是单会话摘要集合的存储自保护上限。
-// 达到上限后跳过新摘要，该密文下次被上游拒绝时再执行常规恢复。
-const openAIWSInvalidEncryptedDigestsPerSession = 512
 
 // OpenAIWSStateStore 保存 WebSocket 响应与提供商、连接的对应关系。
 // response_id 到 provider_id 优先读取 Redis，并维护本地缓存，用于续接选择。
@@ -662,9 +665,6 @@ func withOpenAIWSStateStoreRedisTimeout(ctx context.Context) (context.Context, c
 	}
 	return context.WithTimeout(ctx, openAIWSStateStoreRedisTimeout)
 }
-
-// StateStoreRedisTimeout 保持会话读写及旧 preemption 的同一技术预算。
-const StateStoreRedisTimeout = openAIWSStateStoreRedisTimeout
 
 func (s *defaultOpenAIWSStateStore) log(message string, args ...any) {
 	if s.observe != nil {

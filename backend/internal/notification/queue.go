@@ -11,13 +11,13 @@ import (
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
-// Task type constants
+// Task type constants.
 const (
 	TaskTypeVerifyCode    = "verify_code"
 	TaskTypePasswordReset = "password_reset"
 )
 
-// EmailTask 邮件发送任务
+// EmailTask 邮件发送任务。
 type EmailTask struct {
 	Email    string
 	SiteName string
@@ -26,7 +26,7 @@ type EmailTask struct {
 	Locale   string // Optional Accept-Language locale hint
 }
 
-// EmailQueueService 异步邮件队列服务
+// EmailQueueService 异步邮件队列服务。
 type EmailQueueService struct {
 	runCtx       context.Context
 	cancel       context.CancelFunc
@@ -43,7 +43,13 @@ type EmailQueueService struct {
 	stopped      bool
 }
 
-// NewEmailQueueService 创建邮件队列服务
+// TaskProcessor 在原 worker 时点准备身份邮件，不把令牌提前生成到入队时。
+type TaskProcessor interface {
+	SendVerifyCode(context.Context, string, string, ...string) error
+	SendPasswordResetEmailWithCooldown(context.Context, string, string, string, ...string) error
+}
+
+// NewEmailQueueService 创建邮件队列服务。
 func NewEmailQueueService(emailService TaskProcessor, workers int) *EmailQueueService {
 	if workers <= 0 {
 		workers = 3 // 默认3个工作协程
@@ -63,7 +69,7 @@ func NewEmailQueueService(emailService TaskProcessor, workers int) *EmailQueueSe
 	return service
 }
 
-// Start 启动工作协程
+// Start 启动工作协程。
 func (s *EmailQueueService) Start() {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -71,14 +77,14 @@ func (s *EmailQueueService) Start() {
 		return
 	}
 	s.started = true
-	for i := 0; i < s.workers; i++ {
+	for i := range s.workers {
 		s.wg.Add(1)
 		go s.worker(i)
 	}
 	logger.LegacyPrintf("service.email_queue", "[EmailQueue] Started %d workers", s.workers)
 }
 
-// worker 工作协程
+// worker 工作协程。
 func (s *EmailQueueService) worker(id int) {
 	defer s.wg.Done()
 
@@ -89,7 +95,7 @@ func (s *EmailQueueService) worker(id int) {
 	}
 }
 
-// processTask 处理任务
+// processTask 处理任务。
 func (s *EmailQueueService) processTask(workerID int, task EmailTask) {
 	ctx, cancel := context.WithTimeout(s.runCtx, 30*time.Second)
 	defer cancel()
@@ -112,7 +118,7 @@ func (s *EmailQueueService) processTask(workerID int, task EmailTask) {
 	}
 }
 
-// EnqueueVerifyCode 将验证码发送任务加入队列
+// EnqueueVerifyCode 将验证码发送任务加入队列。
 func (s *EmailQueueService) EnqueueVerifyCode(email, siteName string, locale ...string) error {
 	s.lifecycleMu.RLock()
 	defer s.lifecycleMu.RUnlock()
@@ -136,7 +142,7 @@ func (s *EmailQueueService) EnqueueVerifyCode(email, siteName string, locale ...
 	}
 }
 
-// EnqueuePasswordReset 将密码重置邮件任务加入队列
+// EnqueuePasswordReset 将密码重置邮件任务加入队列。
 func (s *EmailQueueService) EnqueuePasswordReset(email, siteName, resetURL string, locale ...string) error {
 	s.lifecycleMu.RLock()
 	defer s.lifecycleMu.RUnlock()
@@ -197,12 +203,6 @@ func (s *EmailQueueService) StopContext(ctx context.Context) error {
 	s.lifecycleMu.RLock()
 	defer s.lifecycleMu.RUnlock()
 	return s.stopErr
-}
-
-// TaskProcessor 在原 worker 时点准备身份邮件，不把令牌提前生成到入队时。
-type TaskProcessor interface {
-	SendVerifyCode(context.Context, string, string, ...string) error
-	SendPasswordResetEmailWithCooldown(context.Context, string, string, string, ...string) error
 }
 
 func firstEmailLocale(values []string) string {

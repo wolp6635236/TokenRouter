@@ -15,12 +15,6 @@ const (
 	UpstreamUsageDefaultAdapter         = UpstreamUsageAdapterSub2API
 )
 
-// UsageAdapterSpec 声明用量适配器的目录属性。
-type UsageAdapterSpec struct {
-	Name, Label string
-	Automatic   bool
-}
-
 var usageAdapterCatalog = []UsageAdapterSpec{
 	{Name: UpstreamUsageAdapterSub2API, Label: "Sub2API / TokenRouter", Automatic: false},
 	{Name: UpstreamUsageAdapterNewAPI, Label: "New API", Automatic: false},
@@ -29,6 +23,12 @@ var usageAdapterCatalog = []UsageAdapterSpec{
 	{Name: UpstreamUsageAdapterZhipuCoding, Label: "Zhipu Coding Plan", Automatic: true},
 	{Name: UpstreamUsageAdapterKimiBalance, Label: "Kimi Balance", Automatic: true},
 	{Name: UpstreamUsageAdapterDeepseekBalance, Label: "DeepSeek Balance", Automatic: true},
+}
+
+// UsageAdapterSpec 声明用量适配器的目录属性。
+type UsageAdapterSpec struct {
+	Name, Label string
+	Automatic   bool
 }
 
 // UpstreamUsageAdapterCatalog 返回独立列表，调用方不能改变配置校验目录。

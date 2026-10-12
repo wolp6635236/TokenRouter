@@ -4,9 +4,10 @@ import (
 	"context"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"go.uber.org/zap"
 )
 
 // TransportHealth 复用提供商运行阻断与存储，处理已经分类的持久传输故障。

@@ -4,12 +4,12 @@ import (
 	"context"
 	"strconv"
 
-	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
+	"github.com/gin-gonic/gin"
 
+	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // ProviderManagement 提供 HTTP 管理入口需要的业务操作。
@@ -31,10 +31,6 @@ type ProviderRuntimePresenter interface {
 }
 type ProviderRuntimePresenterFunc func(context.Context, *providercore.Record) ProviderWithConcurrency
 
-func (f ProviderRuntimePresenterFunc) Present(ctx context.Context, v *providercore.Record) ProviderWithConcurrency {
-	return f(ctx, v)
-}
-
 // ManagementHandler 处理管理员请求，通过绑定的接口读取运行状态和 Ollama 用量。
 type ManagementHandler struct {
 	idempotencyhttp.Executor
@@ -44,6 +40,7 @@ type ManagementHandler struct {
 	tier             *providercore.TierManagement
 	catalog          *routing.AdminCatalog
 	modelDefaults    providercore.ModelMappingDefaults
+	modelRules       func(*providercore.Record) routing.CatalogueRules
 	listing          *providercore.ManagementList
 	runtimePresenter *RuntimePresenter
 	recovery         *providercore.RecoveryService
@@ -66,6 +63,7 @@ type ManagementOptions struct {
 	Tier             *providercore.TierManagement
 	Catalog          *routing.AdminCatalog
 	ModelDefaults    providercore.ModelMappingDefaults
+	ModelRules       func(*providercore.Record) routing.CatalogueRules
 	List             *providercore.ManagementList
 	RuntimePresenter *RuntimePresenter
 	Recovery         *providercore.RecoveryService
@@ -77,8 +75,12 @@ type ManagementOptions struct {
 	AfterCreate      func(*providercore.Record)
 }
 
+func (f ProviderRuntimePresenterFunc) Present(ctx context.Context, v *providercore.Record) ProviderWithConcurrency {
+	return f(ctx, v)
+}
+
 func NewManagementHandler(admin ProviderManagement, options ManagementOptions) *ManagementHandler {
-	return &ManagementHandler{models: options.Models, reports: options.Reports, tier: options.Tier, catalog: options.Catalog, modelDefaults: options.ModelDefaults, listing: options.List, runtimePresenter: options.RuntimePresenter, recovery: options.Recovery, batch: options.Batch, managed: options.Managed, adminService: admin, presenter: options.Presenter, ollamaCloudUsage: options.Ollama, privacy: options.Privacy, afterCreate: options.AfterCreate}
+	return &ManagementHandler{models: options.Models, reports: options.Reports, tier: options.Tier, catalog: options.Catalog, modelDefaults: options.ModelDefaults, modelRules: options.ModelRules, listing: options.List, runtimePresenter: options.RuntimePresenter, recovery: options.Recovery, batch: options.Batch, managed: options.Managed, adminService: admin, presenter: options.Presenter, ollamaCloudUsage: options.Ollama, privacy: options.Privacy, afterCreate: options.AfterCreate}
 }
 
 // GetByID 按原状态码与展示流程查询提供商。

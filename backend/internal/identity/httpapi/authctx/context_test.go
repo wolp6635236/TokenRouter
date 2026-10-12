@@ -3,9 +3,10 @@ package authctx
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 // TestPrincipalOwnsLegacyProjection 检查认证主体与 Gin 展示字段使用独立数据。
@@ -26,7 +27,7 @@ func TestPrincipalOwnsLegacyProjection(t *testing.T) {
 	require.Equal(t, "user", role)
 }
 
-// TestAPIKeyPrincipalKeepsActorSeparateFromPayer 保留团队付款上下文，不赋予行为 Key 管理员身份。
+// TestAPIKeyPrincipalKeepsActorSeparateFromPayer 检查 API Key 主体与付款用户的上下文分别存储。
 func TestAPIKeyPrincipalKeepsActorSeparateFromPayer(t *testing.T) {
 	c, _ := gin.CreateTestContext(nil)
 	c.Set(ContextKeyUser, AuthSubject{UserID: 11, Concurrency: 4})
@@ -45,7 +46,7 @@ func TestAPIKeyPrincipalKeepsActorSeparateFromPayer(t *testing.T) {
 	require.Equal(t, "admin", role, "旧网关展示投影仍按原付款用户提供")
 }
 
-// TestLegacyOnlyContextRemainsReadable 兼容尚未切换新写入入口的消费者及 HTTP 测试替身。
+// TestLegacyOnlyContextRemainsReadable 检查通过 Gin 字段读取用户身份和角色。
 func TestLegacyOnlyContextRemainsReadable(t *testing.T) {
 	c, _ := gin.CreateTestContext(nil)
 	c.Set(ContextKeyUser, AuthSubject{UserID: 9})
@@ -58,4 +59,19 @@ func TestLegacyOnlyContextRemainsReadable(t *testing.T) {
 	role, ok := GetUserRoleFromContext(c)
 	require.True(t, ok)
 	require.Equal(t, "user", role)
+}
+
+func TestAuthSubjectHelpers_RoundTrip(t *testing.T) {
+	c := &gin.Context{}
+	c.Set(string(ContextKeyUser), AuthSubject{UserID: 1, Concurrency: 2})
+	c.Set(string(ContextKeyUserRole), "admin")
+
+	sub, ok := GetAuthSubjectFromContext(c)
+	require.True(t, ok)
+	require.Equal(t, int64(1), sub.UserID)
+	require.Equal(t, 2, sub.Concurrency)
+
+	role, ok := GetUserRoleFromContext(c)
+	require.True(t, ok)
+	require.Equal(t, "admin", role)
 }

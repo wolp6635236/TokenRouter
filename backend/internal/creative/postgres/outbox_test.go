@@ -6,8 +6,9 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/creative"
 )
 
 // TestCreativeRunOutboxClaimAndComplete 校验 outbox 领取带 lease 并可由同一 token 完成。

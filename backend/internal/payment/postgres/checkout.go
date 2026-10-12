@@ -99,7 +99,7 @@ func (s *OrderStore) CreateCheckout(ctx context.Context, draft payment.CheckoutD
 
 func allocateCheckoutTradeNumber(ctx context.Context, tx *dbent.Tx) (string, error) {
 	const maxAttempts = 5
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for range maxAttempts {
 		candidate := payment.GenerateOutTradeNo()
 		exists, err := tx.PaymentOrder.Query().Where(paymentorder.OutTradeNo(candidate)).Exist(ctx)
 		if err != nil {

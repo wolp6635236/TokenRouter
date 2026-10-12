@@ -3,10 +3,9 @@ package app
 import (
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/idempotency"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
 // idempotencyOptions 用正数配置覆盖默认值，并读取 ObserveOnly 开关。

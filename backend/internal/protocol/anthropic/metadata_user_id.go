@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// legacyMetadataUserIDRegex matches the legacy user_id format:
+//
+//	user_{64hex}_account_{optional_uuid}_session_{uuid}
+var legacyMetadataUserIDRegex = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account_([a-fA-F0-9-]*)_session_([a-fA-F0-9-]{36})$`)
+
 // ParsedMetadataUserID represents the components extracted from a metadata.user_id value.
 type ParsedMetadataUserID struct {
 	DeviceID    string // 64-char hex (or arbitrary client id)
@@ -13,11 +18,6 @@ type ParsedMetadataUserID struct {
 	SessionID   string // UUID
 	IsNewFormat bool   // true if the original was JSON format
 }
-
-// legacyMetadataUserIDRegex matches the legacy user_id format:
-//
-//	user_{64hex}_account_{optional_uuid}_session_{uuid}
-var legacyMetadataUserIDRegex = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account_([a-fA-F0-9-]*)_session_([a-fA-F0-9-]{36})$`)
 
 // MetadataUserID is the JSON structure for the new metadata.user_id format.
 type MetadataUserID struct {

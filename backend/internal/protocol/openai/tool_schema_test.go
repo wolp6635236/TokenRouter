@@ -9,7 +9,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_TopLevelFunctionTool 验证issue #5364 的最小复现体：Codex Desktop 内置 automation_update 带
+// TestSanitizeOpenAIResponsesToolParameterTypes_TopLevelFunctionTool 验证 issue #5364 的最小复现体：Codex Desktop 内置 automation_update 带
 // parameters.type = null，upstream 回 400 invalid_function_parameters。
 func TestSanitizeOpenAIResponsesToolParameterTypes_TopLevelFunctionTool(t *testing.T) {
 	body := []byte(`{
@@ -73,7 +73,7 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_ObjectOnlyRootUnion(t *testin
 
 	require.NoError(t, err)
 	require.True(t, changed)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.Equal(t, "object", gjson.GetBytes(sanitized, "tools."+strconv.Itoa(i)+".parameters.type").String())
 	}
 	require.Equal(t, "string", gjson.GetBytes(sanitized, "tools.0.parameters.oneOf.0.properties.id.type").String())
@@ -152,7 +152,7 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_NestedHistoryTools(t *testing
 	require.Equal(t, "hi", gjson.GetBytes(sanitized, "input.0.content").String())
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_ChatCompletionsShape 验证ChatCompletions 形态的工具（{type:"function", function:{...}}）同样可能出现在
+// TestSanitizeOpenAIResponsesToolParameterTypes_ChatCompletionsShape 验证 ChatCompletions 形态的工具（{type:"function", function:{...}}）同样可能出现在
 // Responses 请求里，见 normalizeCodexTools。
 func TestSanitizeOpenAIResponsesToolParameterTypes_ChatCompletionsShape(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"legacy","parameters":{"type":null}}}]}`)
@@ -288,7 +288,7 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_MalformedShapesAreNoOps(t *te
 // TestSanitizeOpenAIResponsesToolParameterTypes_DepthGuard 检查超深嵌套在深度上限处停止处理并成功返回。
 func TestSanitizeOpenAIResponsesToolParameterTypes_DepthGuard(t *testing.T) {
 	tool := map[string]any{"type": "function", "name": "deep", "parameters": map[string]any{"type": nil}}
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		tool = map[string]any{"type": "namespace", "tools": []any{tool}}
 	}
 	body, err := json.Marshal(map[string]any{"tools": []any{tool}})
@@ -436,11 +436,11 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_DuplicateKeysStayValid(t *tes
 
 func TestSanitizeOpenAIResponsesToolSchemas_DepthLimitReturnsOriginal(t *testing.T) {
 	body := []byte(`{"tools":[{"parameters":`)
-	for i := 0; i < openAIResponsesToolSchemaMaxDepth+2; i++ {
+	for range openAIResponsesToolSchemaMaxDepth + 2 {
 		body = append(body, []byte(`{"allOf":[`)...)
 	}
 	body = append(body, []byte(`{"pattern":"(?=too-deep)"}`)...)
-	for i := 0; i < openAIResponsesToolSchemaMaxDepth+2; i++ {
+	for range openAIResponsesToolSchemaMaxDepth + 2 {
 		body = append(body, []byte(`]}`)...)
 	}
 	body = append(body, []byte(`}]}`)...)
@@ -477,7 +477,7 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTraverseInstanceData(t
 func buildToolSchemaNullTypeBody(t *testing.T, hits int) []byte {
 	t.Helper()
 	tools := make([]any, 0, hits)
-	for i := 0; i < hits; i++ {
+	for range hits {
 		tools = append(tools, map[string]any{
 			"type":       "function",
 			"name":       "automation_update",
@@ -525,7 +525,7 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits
 
 func BenchmarkSanitizeOpenAIResponsesToolSchemaPatterns_ByteSpanPatch(b *testing.B) {
 	var tools []any
-	for i := 0; i < 2000; i++ {
+	for range 2000 {
 		tools = append(tools, map[string]any{
 			"type": "function",
 			"name": "search",
@@ -539,7 +539,7 @@ func BenchmarkSanitizeOpenAIResponsesToolSchemaPatterns_ByteSpanPatch(b *testing
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = SanitizeToolSchemaPatterns(body)
 	}
 }
@@ -547,7 +547,7 @@ func BenchmarkSanitizeOpenAIResponsesToolSchemaPatterns_ByteSpanPatch(b *testing
 func BenchmarkSanitizeOpenAIResponsesToolParameterTypes_ByteSpanPatch(b *testing.B) {
 	body := make([]byte, 0, 256*2000)
 	body = append(body, []byte(`{"tools":[`)...)
-	for i := 0; i < 2000; i++ {
+	for i := range 2000 {
 		if i > 0 {
 			body = append(body, ',')
 		}
@@ -557,7 +557,7 @@ func BenchmarkSanitizeOpenAIResponsesToolParameterTypes_ByteSpanPatch(b *testing
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = SanitizeToolParameterTypes(body)
 	}
 }

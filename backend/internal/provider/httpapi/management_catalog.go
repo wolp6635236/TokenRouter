@@ -4,9 +4,10 @@ import (
 	"maps"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // 保留三种管理目录 JSON 变体；零值字段和省略行为不做统一化。
@@ -45,7 +46,10 @@ func (h *ManagementHandler) GetAvailableModels(c *gin.Context) {
 		response.NotFound(c, "Provider not found")
 		return
 	}
-	result, err := h.catalog.Available(routing.AdminCatalogInput{Platform: v.Platform, Site: v.GetCredential("site"), OAuth: v.IsOAuth(), GoogleOne: v.IsGeminiGoogleOne(), Passthrough: v.IsOpenAIPassthroughEnabled()}, func() []string { return v.GetConfiguredRequestModels(h.modelDefaults) })
+	rules := h.modelRules(v)
+	result, err := h.catalog.Available(routing.AdminCatalogInput{Accept: func(id string) bool {
+		return rules.Supports(c.Request.Context(), id)
+	}, Platform: v.Platform, Site: v.GetCredential("site"), OAuth: v.IsOAuth(), GoogleOne: v.IsGeminiGoogleOne(), Passthrough: v.IsOpenAIPassthroughEnabled()}, rules.ConfiguredModels)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return

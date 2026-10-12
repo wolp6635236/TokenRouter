@@ -5,30 +5,24 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
-	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/search/contract"
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"go.uber.org/zap"
+	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
 // StandaloneSearchTarget 仅保留本次已选提供商的受控执行与完成快照能力。
@@ -51,6 +45,15 @@ type SearchPorts struct {
 	Keys        gatewaycapture.QuotaUpdater
 	Recorder    *completion.Recorder
 	Workers     *completion.UsageRecordWorkerPool
+}
+
+// 当前 HTTP Adapter 使用所选提供商执行请求，并同步捕获完成快照。
+type gatewayStandaloneSearchRun struct {
+	ports   SearchPorts
+	c       *gin.Context
+	groupID int64
+	isX     bool
+	target  StandaloneSearchTarget
 }
 
 func (p SearchPorts) DefaultModel() string { return gatewaycapture.GrokStandaloneSearchModel() }
@@ -97,15 +100,6 @@ func (p SearchPorts) Run(c *gin.Context, groupID int64, isX bool) SearchHTTPRun 
 func (p SearchPorts) ConcurrencyError(c *gin.Context, err error) {
 	status, kind, code, message := ConcurrencyErrorResponse(err, "provider")
 	WriteAnthropicStreamError(c, status, kind, code, message, false, MarkOpsStreamError)
-}
-
-// 当前 HTTP Adapter 使用所选提供商执行请求，并同步捕获完成快照。
-type gatewayStandaloneSearchRun struct {
-	ports   SearchPorts
-	c       *gin.Context
-	groupID int64
-	isX     bool
-	target  StandaloneSearchTarget
 }
 
 func (r *gatewayStandaloneSearchRun) Select(ctx context.Context, model string, excluded map[int64]struct{}) (searchtools.Selection, bool, error) {
@@ -176,12 +170,9 @@ func (r *gatewayStandaloneSearchRun) Complete(c *gin.Context, req searchtools.St
 	upstreamEndpoint := GetUpstreamEndpoint(c, provider.Platform)
 	requestPayloadHash := billing.HashUsageRequestPayload([]byte(req.Query))
 
-	// request ID 是每次调用独立的结算幂等键，查询、IP 或 UA 哈希会合并重复搜索。
-	searchRequestID := searchLabel + ":" + uuid.NewString()
 	// 入队前捕获资金和报文数据，worker 使用这份快照。
 	completionInput := gatewaycapture.CaptureMessages(CompletionContext(c), &gatewaycapture.MessagesCapture{
 		Result: &forwardcore.MessagesResult{
-			RequestID:   searchRequestID,
 			Model:       "grok-" + strings.ReplaceAll(searchLabel, "_", "-"),
 			SearchCount: 1,
 			Duration:    0,

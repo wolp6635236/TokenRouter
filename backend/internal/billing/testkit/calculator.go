@@ -3,6 +3,7 @@ package testkit
 import (
 	_ "embed"
 	"encoding/json"
+	"maps"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -12,15 +13,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
 
-// historicalPriceData 仅冻结清理前的测试输入，不参与应用装配或运行时查价。
-//
-//go:embed testdata/historical_prices.json
-var historicalPriceData []byte
+var (
+	// historicalPriceData 仅冻结清理前的测试输入，不参与应用装配或运行时查价。
+	//
+	//go:embed testdata/historical_prices.json
+	historicalPriceData []byte
 
-// mediaPriceData 是媒体计算测试的固定输入，不属于运行时补充。
-//
-//go:embed testdata/media_prices.json
-var mediaPriceData []byte
+	// mediaPriceData 是媒体计算测试的固定输入，不属于运行时补充。
+	//
+	//go:embed testdata/media_prices.json
+	mediaPriceData []byte
+)
 
 // HistoricalPrices 给回归测试提供显式目录夹具，调用方可以独立修改。
 func HistoricalPrices() map[string]*pricing.ModelPricing {
@@ -78,9 +81,7 @@ func Calculator(catalog *catalogprovider.Service, prices map[string]*pricing.Mod
 			if err != nil {
 				panic(err)
 			}
-			for name, price := range media {
-				data[name] = price
-			}
+			maps.Copy(data, media)
 		}
 		catalog = catalogprovider.NewServiceFromSnapshot(catalogprovider.Options{}, nil, catalogprovider.Snapshot{Data: data})
 	}

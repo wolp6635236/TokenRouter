@@ -10,13 +10,11 @@ import (
 	"slices"
 	"strings"
 
-	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )

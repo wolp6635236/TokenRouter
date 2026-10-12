@@ -11,13 +11,39 @@ import (
 	"sort"
 	"strings"
 
+	coderws "github.com/coder/websocket"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	coderws "github.com/coder/websocket"
-	"go.uber.org/zap"
 )
+
+// WebSocket 诊断日志的截断、采样和体积估计上限。
+const (
+	OpenAIWSLogValueMaxLen              = 160
+	OpenAIWSHeaderValueMaxLen           = 120
+	OpenAIWSIDValueMaxLen               = 64
+	openAIWSEventLogHeadLimit           = 20
+	openAIWSEventLogEveryN              = 50
+	openAIWSBufferLogHeadLimit          = 8
+	openAIWSBufferLogEveryN             = 20
+	openAIWSPayloadSizeEstimateDepth    = 3
+	openAIWSPayloadSizeEstimateMaxBytes = 64 * 1024
+	openAIWSPayloadSizeEstimateMaxItems = 16
+)
+
+var openAIWSLogValueReplacer = strings.NewReplacer(
+	"error", "err",
+	"fallback", "fb",
+	"warning", "warnx",
+	"failed", "fail",
+)
+
+// WarnReasoningCacheFailure 记录推理缓存失败的诊断字段。
+func WarnReasoningCacheFailure(itemID string, err error) {
+	logging.L().Warn("openai responses chat fallback: cache reasoning content failed", zap.Error(err), zap.String("item_id", itemID))
+}
 
 func NormalizeOpenAIWSLogValue(value string) string {
 	trimmed := strings.TrimSpace(value)
@@ -106,7 +132,7 @@ func SummarizeOpenAIWSPayloadKeySizes(payload map[string]any, topN int) string {
 		topN = len(sizes)
 	}
 	parts := make([]string, 0, topN)
-	for idx := 0; idx < topN; idx++ {
+	for idx := range topN {
 		item := sizes[idx]
 		parts = append(parts, fmt.Sprintf("%s:%d", item.Key, item.Size))
 	}
@@ -160,7 +186,7 @@ func estimateOpenAIWSPayloadValueSize(value any, depth int) int {
 		if limit > openAIWSPayloadSizeEstimateMaxItems {
 			return -1
 		}
-		for i := 0; i < limit; i++ {
+		for i := range limit {
 			itemSize := estimateOpenAIWSPayloadValueSize(v[i], depth-1)
 			if itemSize < 0 {
 				return -1
@@ -316,8 +342,7 @@ func SummarizeOpenAIWSReadCloseError(err error) (status string, reason string) {
 	}
 	closeStatus := fmt.Sprintf("%d(%s)", int(statusCode), statusCode.String())
 	closeReason := "-"
-	var closeErr coderws.CloseError
-	if errors.As(err, &closeErr) {
+	if closeErr, ok := errors.AsType[coderws.CloseError](err); ok {
 		reasonText := strings.TrimSpace(closeErr.Reason)
 		if reasonText != "" {
 			closeReason = NormalizeOpenAIWSLogValue(reasonText)
@@ -469,24 +494,3 @@ func SortedOpenAIWSPayloadKeys(m map[string]any) []string {
 	sort.Strings(keys)
 	return keys
 }
-
-// WebSocket 诊断日志的截断、采样和体积估计上限。
-const (
-	OpenAIWSLogValueMaxLen              = 160
-	OpenAIWSHeaderValueMaxLen           = 120
-	OpenAIWSIDValueMaxLen               = 64
-	openAIWSEventLogHeadLimit           = 20
-	openAIWSEventLogEveryN              = 50
-	openAIWSBufferLogHeadLimit          = 8
-	openAIWSBufferLogEveryN             = 20
-	openAIWSPayloadSizeEstimateDepth    = 3
-	openAIWSPayloadSizeEstimateMaxBytes = 64 * 1024
-	openAIWSPayloadSizeEstimateMaxItems = 16
-)
-
-var openAIWSLogValueReplacer = strings.NewReplacer(
-	"error", "err",
-	"fallback", "fb",
-	"warning", "warnx",
-	"failed", "fail",
-)

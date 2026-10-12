@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,7 +12,7 @@ import (
 
 var ErrSettingNotFound = apperror.NotFound("SETTING_NOT_FOUND", "setting not found")
 
-// Setting 是原 settings 表的稳定值类型。
+// Setting 是 settings 表中的设置值。
 type Setting struct {
 	ID        int64
 	Key       string
@@ -19,7 +20,7 @@ type Setting struct {
 	UpdatedAt time.Time
 }
 
-// Repository 仅负责设置读写；批量写入必须保持单次原子提交。
+// Repository 提供设置读写，批量写入在一次事务中提交。
 type Repository interface {
 	Get(context.Context, string) (*Setting, error)
 	GetValue(context.Context, string) (string, error)
@@ -136,3 +137,21 @@ func (s *Store) NotifyUpdated() {
 
 // Updates 返回与 Store 共用生命周期的综合更新协调器。
 func (s *Store) Updates() *Updates { return s.updates }
+
+// StringOrDefault 返回键对应的非空字符串，缺键或空串时返回 fallback，空白字符按输入保留。
+func StringOrDefault(values map[string]string, key, fallback string) string {
+	if value, ok := values[key]; ok && value != "" {
+		return value
+	}
+	return fallback
+}
+
+// IsExplicitFalse 识别 false、0、off 和 disabled 四种关闭表示。
+func IsExplicitFalse(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "false", "0", "off", "disabled":
+		return true
+	default:
+		return false
+	}
+}

@@ -125,7 +125,8 @@
           <template #cell-display_brand="{ value }">
             <span v-if="value" :class="displayBrandBadgeClass(value)">
               <ProviderIcon :brand="String(value)" size="14px" />
-              {{ displayBrandLabel(value) }}
+              <!-- 品牌名加 self-baseline，移动卡片的标签对齐品牌名。 -->
+              <span class="self-baseline">{{ displayBrandLabel(value) }}</span>
             </span>
             <span v-else class="text-sm text-gray-700 dark:text-gray-300">-</span>
           </template>

@@ -1,10 +1,13 @@
 package dto
 
 import (
+	"encoding/json"
+
 	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	gatewaydto "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/ws"
 	identitydto "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
@@ -14,6 +17,8 @@ import (
 
 // SystemSettings 是系统设置的 HTTP JSON 数据。
 type SystemSettings struct {
+	ResponsesWS                         json.RawMessage                  `json:"responses_ws"`
+	ResponsesWSEffective                ws.Parameters                    `json:"responses_ws_effective"`
 	RegistrationEnabled                 bool                             `json:"registration_enabled"`
 	EmailVerifyEnabled                  bool                             `json:"email_verify_enabled"`
 	RegistrationEmailSuffixWhitelist    []string                         `json:"registration_email_suffix_whitelist"`

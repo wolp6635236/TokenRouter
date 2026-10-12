@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 )
 
@@ -108,9 +109,7 @@ func CloneCatalogPrice(value *CatalogModelPricing) *CatalogModelPricing {
 	result.SupportedOutputModalities = slices.Clone(value.SupportedOutputModalities)
 	if value.PriceSources != nil {
 		result.PriceSources = make(map[string]string, len(value.PriceSources))
-		for key, source := range value.PriceSources {
-			result.PriceSources[key] = source
-		}
+		maps.Copy(result.PriceSources, value.PriceSources)
 	}
 	if value.ContextPrices != nil {
 		result.ContextPrices = make([]CatalogContextPrice, len(value.ContextPrices))

@@ -10,34 +10,35 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-	usagepg "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
-
-	usageerrors "github.com/TokenFlux/TokenRouter/internal/usage"
-
-	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
-
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-
-	routing "github.com/TokenFlux/TokenRouter/internal/routing"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	teampostgres "github.com/TokenFlux/TokenRouter/internal/team/postgres"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
+
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	dbprovider "github.com/TokenFlux/TokenRouter/ent/provider"
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	teampostgres "github.com/TokenFlux/TokenRouter/internal/team/postgres"
+	usageerrors "github.com/TokenFlux/TokenRouter/internal/usage"
+	usagepg "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
 
 type usageBillingApplyOutcome struct {
 	result *billing.UsageBillingApplyResult
 	err    error
 }
+
+// directUsageExecutor 通过 SQL 执行器同步写入用量，供锁顺序测试使用。
+type directUsageExecutor struct{ infra.Executor }
 
 func TestUsageBillingRepositoryApply_DeduplicatesBalanceBilling(t *testing.T) {
 	ctx := context.Background()
@@ -504,7 +505,7 @@ func TestUsageBillingRepositoryApply_DeadlockLockOrderAllowsConcurrentTeamUsageL
 	runUsageBillingConcurrentUsageLogInsert(t, true)
 }
 
-// runUsageBillingConcurrentUsageLogInsert 验证个人和团队日志都不会与计费事务形成用户、订阅锁环。
+// runUsageBillingConcurrentUsageLogInsert 检查个人和团队日志写入能与计费事务并发完成。
 func runUsageBillingConcurrentUsageLogInsert(t *testing.T, teamRequest bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -520,7 +521,7 @@ func runUsageBillingConcurrentUsageLogInsert(t *testing.T, teamRequest bool) {
 	actor := owner
 	var teamID *int64
 	if teamRequest {
-		teamRepo := teampostgres.NewTeamRepository(integrationDB, keypostgres.NewTeamKeys(integrationDB), billingpostgres.NewMemberUsageStore(integrationDB, nil))
+		teamRepo := teampostgres.NewTeamRepository(integrationDB, keypostgres.NewTeamKeys(integrationDB), postgres.NewMemberUsageStore(integrationDB, nil))
 		member := mustCreateUser(t, client, &identity.User{Email: uniqueTeamTestEmail("usage-billing-lock-member")})
 		teamCtx, err := teamRepo.Create(ctx, "计费锁序团队", owner.ID, 5)
 		require.NoError(t, err)
@@ -670,7 +671,7 @@ func runUsageBillingConcurrentUsageLogInsert(t *testing.T, teamRequest bool) {
 	require.Equal(t, 1, usageCount)
 }
 
-// assertUsageBillingUserLockAllowsKeyShare 验证付款用户锁不会阻塞 usage_logs 外键检查。
+// assertUsageBillingUserLockAllowsKeyShare 检查取得付款用户锁后仍能执行 usage_logs 外键检查。
 func assertUsageBillingUserLockAllowsKeyShare(t *testing.T, ctx context.Context, userID int64) {
 	t.Helper()
 	probeTx, err := integrationDB.BeginTx(ctx, nil)
@@ -682,7 +683,7 @@ func assertUsageBillingUserLockAllowsKeyShare(t *testing.T, ctx context.Context,
 	).Scan(&lockedUserID))
 }
 
-// waitForUsageBillingUserLock 等待计费事务取得用户行锁，确保测试稳定复现旧锁序的等待窗口。
+// waitForUsageBillingUserLock 等待计费事务取得用户行锁，再继续测试的并发操作。
 func waitForUsageBillingUserLock(ctx context.Context, userID int64, applyDone <-chan usageBillingApplyOutcome) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -1300,4 +1301,98 @@ func TestUsageBillingRepositoryApply_DeduplicatesAgainstArchivedKey(t *testing.T
 	var balance float64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = $1", user.ID).Scan(&balance))
 	require.InDelta(t, 98.75, balance, 0.000001)
+}
+
+func mustCreateProvider(t *testing.T, client *dbent.Client, a *providercore.Record) *providercore.Record {
+	t.Helper()
+	ctx := context.Background()
+
+	if a.Platform == "" {
+		a.Platform = capability.PlatformAnthropic
+	}
+	if a.Type == "" {
+		a.Type = capability.ProviderTypeOAuth
+	}
+	if a.Status == "" {
+		a.Status = providercore.StatusActive
+	}
+	if a.Concurrency == 0 {
+		a.Concurrency = 3
+	}
+	if a.Priority == 0 {
+		a.Priority = 50
+	}
+	if !a.Schedulable {
+		a.Schedulable = true
+	}
+	if a.Credentials == nil {
+		a.Credentials = map[string]any{}
+	}
+	if a.Extra == nil {
+		a.Extra = map[string]any{}
+	}
+
+	create := client.Provider.Create().
+		SetName(a.Name).
+		SetPlatform(a.Platform).
+		SetType(a.Type).
+		SetCredentials(a.Credentials).
+		SetExtra(a.Extra).
+		SetConcurrency(a.Concurrency).
+		SetPriority(a.Priority).
+		SetStatus(a.Status).
+		SetSchedulable(a.Schedulable).
+		SetErrorMessage(a.ErrorMessage)
+
+	if a.ProxyID != nil {
+		create.SetProxyID(*a.ProxyID)
+	}
+	if a.LastUsedAt != nil {
+		create.SetLastUsedAt(*a.LastUsedAt)
+	}
+	if a.RateLimitedAt != nil {
+		create.SetRateLimitedAt(*a.RateLimitedAt)
+	}
+	if a.RateLimitResetAt != nil {
+		create.SetRateLimitResetAt(*a.RateLimitResetAt)
+	}
+	if a.OverloadUntil != nil {
+		create.SetOverloadUntil(*a.OverloadUntil)
+	}
+	if a.SessionWindowStart != nil {
+		create.SetSessionWindowStart(*a.SessionWindowStart)
+	}
+	if a.SessionWindowEnd != nil {
+		create.SetSessionWindowEnd(*a.SessionWindowEnd)
+	}
+	if a.SessionWindowStatus != "" {
+		create.SetSessionWindowStatus(a.SessionWindowStatus)
+	}
+	if !a.CreatedAt.IsZero() {
+		create.SetCreatedAt(a.CreatedAt)
+	}
+	if !a.UpdatedAt.IsZero() {
+		create.SetUpdatedAt(a.UpdatedAt)
+	}
+	if a.ParentProviderID != nil {
+		create.SetParentProviderID(*a.ParentProviderID)
+	}
+	if a.QuotaDimension != "" {
+		create.SetQuotaDimension(dbprovider.QuotaDimension(a.QuotaDimension))
+	}
+
+	created, err := create.Save(ctx)
+	require.NoError(t, err, "create provider")
+
+	a.ID = created.ID
+	a.CreatedAt = created.CreatedAt
+	a.UpdatedAt = created.UpdatedAt
+	return a
+}
+
+// newAggregationFixture 为聚合存储配置资金去重记录的归档回调。
+func newAggregationFixture(q infra.Executor) *usagepg.AggregationStore {
+	return usagepg.NewAggregationStoreWithSQL(q, timezone.NewCalendar(time.Local), func(ctx context.Context, t time.Time) error {
+		return postgres.ArchiveUsageDedup(ctx, q, t)
+	})
 }

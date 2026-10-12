@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+var sharedWindowCostMetrics WindowCostMetrics
+
+type WindowCostCache interface {
+	// 缓存提供商当前 5 小时窗口的标准费用，减少数据库聚合查询。
+	// Key 格式为 window_cost:provider:{providerID}。
+
+	// GetWindowCost 获取缓存的窗口费用
+	// 返回 (cost, true, nil) 如果缓存命中
+	// 返回 (0, false, nil) 如果缓存未命中
+	// 返回 (0, false, err) 如果发生错误
+	GetWindowCost(ctx context.Context, providerID int64) (cost float64, hit bool, err error)
+
+	// SetWindowCost 设置窗口费用缓存
+	SetWindowCost(ctx context.Context, providerID int64, cost float64) error
+
+	// GetWindowCostBatch 批量获取窗口费用缓存
+	// 返回 map[providerID]cost，缓存未命中的提供商不在 map 中
+	GetWindowCostBatch(ctx context.Context, providerIDs []int64) (map[int64]float64, error)
+}
+
 // CostWindowInput 包含调度所需的费用窗口、额度和预留金额。
 type CostWindowInput struct {
 	ID             int64
@@ -14,6 +34,7 @@ type CostWindowInput struct {
 	Limit, Reserve float64
 	Start, End     *time.Time
 }
+
 type (
 	WindowCostStats  struct{ StandardCost float64 }
 	WindowCostSource interface {
@@ -24,11 +45,8 @@ type (
 type WindowCostBatchSource interface {
 	GetWindows(context.Context, []int64, time.Time) (map[int64]*WindowCostStats, error)
 }
+
 type WindowCostMetrics struct{ Hit, Miss, BatchSQL, Fallback, Errors atomic.Int64 }
-
-var sharedWindowCostMetrics WindowCostMetrics
-
-func SharedWindowCostMetrics() *WindowCostMetrics { return &sharedWindowCostMetrics }
 
 type WindowCostGuardOptions struct {
 	Now   func() time.Time
@@ -47,11 +65,13 @@ type WindowCostGuard struct {
 	stats  *WindowCostMetrics
 }
 
+type windowCostPrefetchKey struct{}
+
+func SharedWindowCostMetrics() *WindowCostMetrics { return &sharedWindowCostMetrics }
+
 func NewWindowCostGuard(cache WindowCostCache, source WindowCostSource, options WindowCostGuardOptions) *WindowCostGuard {
 	return &WindowCostGuard{cache: cache, source: source, now: options.Now, log: options.Log, debug: options.Debug, stats: options.Stats}
 }
-
-type windowCostPrefetchKey struct{}
 
 func WithPrefetchedWindowCosts(ctx context.Context, costs map[int64]float64) context.Context {
 	return context.WithValue(ctx, windowCostPrefetchKey{}, maps.Clone(costs))
@@ -94,18 +114,13 @@ func (s *WindowCostGuard) Prefetch(ctx context.Context, providers []CostWindowIn
 	costs := make(map[int64]float64, len(providerIDs))
 	cacheValues, err := s.cache.GetWindowCostBatch(ctx, providerIDs)
 	if err == nil {
-		for providerID, cost := range cacheValues {
-			costs[providerID] = cost
-		}
+		maps.Copy(costs, cacheValues)
 		s.stats.Hit.Add(int64(len(cacheValues)))
 	} else {
 		s.stats.Errors.Add(1)
 		s.log("window_cost batch cache read failed: %v", err)
 	}
-	cacheMissCount := len(providerIDs) - len(costs)
-	if cacheMissCount < 0 {
-		cacheMissCount = 0
-	}
+	cacheMissCount := max(len(providerIDs)-len(costs), 0)
 	s.stats.Miss.Add(int64(cacheMissCount))
 
 	missingByStart := make(map[int64][]int64)

@@ -8,17 +8,16 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
+
+const responsesReasoningCacheTTL = 7 * 24 * time.Hour
 
 // ReasoningHistory 通过传入的缓存存取推理历史，操作超时为两秒，缓存有效期为七天。
 type ReasoningHistory struct {
 	Cache ReasoningContentCache
 	Warn  func(string, error)
 }
-
-const responsesReasoningCacheTTL = 7 * 24 * time.Hour
 
 // Lookup 按 reasoning item ID 读取缓存，缓存不可用或未命中时返回空字符串。
 func (s *ReasoningHistory) Lookup(itemID string) string {

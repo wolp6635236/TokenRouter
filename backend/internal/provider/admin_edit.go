@@ -42,9 +42,7 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		if copy.Extra == nil {
 			copy.Extra = map[string]any{}
 		}
-		for key, value := range extraPatch {
-			copy.Extra[key] = value
-		}
+		maps.Copy(copy.Extra, extraPatch)
 		input = &copy
 	}
 	var computeResetAt, normalizeWindowAt *time.Time
@@ -94,15 +92,19 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		}
 	}
 	wasOveragesEnabled := provider.IsOveragesEnabled()
+	var change ConfigurationChange
 
 	if input.Name != "" {
 		provider.Name = input.Name
+		change.Fields |= ConfigName
 	}
 	if input.Type != "" {
 		provider.Type = input.Type
+		change.Fields |= ConfigType
 	}
 	if input.Notes != nil {
 		provider.Notes = NormalizeProviderNotes(input.Notes)
+		change.Fields |= ConfigNotes
 	}
 	if provider.IsCredentialShadow() && input.Credentials != nil {
 		provider.Credentials = SanitizeSparkShadowCredentials(input.Credentials)
@@ -234,16 +236,19 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	// 只在指针非 nil 时更新 Concurrency（支持设置为 0）
 	if input.Concurrency != nil {
 		provider.Concurrency = NormalizeProviderConcurrency(provider.Platform, provider.Type, *input.Concurrency)
+		change.Fields |= ConfigConcurrency
 	}
 	// 只在指针非 nil 时更新 Priority（支持设置为 0）
 	if input.Priority != nil {
 		provider.Priority = *input.Priority
+		change.Fields |= ConfigPriority
 	}
 	if input.RateMultiplier != nil {
 		if *input.RateMultiplier < 0 {
 			return nil, errors.New("rate_multiplier must be >= 0")
 		}
 		provider.RateMultiplier = input.RateMultiplier
+		change.Fields |= ConfigRateMultiplier
 	}
 	if input.LoadFactor != nil {
 		if *input.LoadFactor <= 0 {
@@ -253,9 +258,11 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		} else {
 			provider.LoadFactor = input.LoadFactor
 		}
+		change.Fields |= ConfigLoadFactor
 	}
 	if input.Status != "" {
 		provider.Status = input.Status
+		change.Fields |= ConfigStatus
 	}
 	if input.ExpiresAt != nil {
 		if *input.ExpiresAt <= 0 {
@@ -264,9 +271,11 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 			expiresAt := time.Unix(*input.ExpiresAt, 0)
 			provider.ExpiresAt = &expiresAt
 		}
+		change.Fields |= ConfigExpiresAt
 	}
 	if input.AutoPauseOnExpired != nil {
 		provider.AutoPauseOnExpired = *input.AutoPauseOnExpired
+		change.Fields |= ConfigAutoPauseOnExpired
 	}
 
 	// 先验证分组是否存在（在任何写操作之前）
@@ -289,39 +298,16 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	if err := s.options.Credentials.ValidateEdit(ctx, provider, deferQoderPATValidation); err != nil {
 		return nil, err
 	}
-	change := ConfigurationChange{ExtraPatch: extraPatch, ExpectedCredentials: expected, NormalizeProtocols: true, PreserveSensitive: !provider.IsCredentialShadow(), CredentialInput: credentialInput, ProtocolExtra: input.Extra, ComputeResetAt: computeResetAt, NormalizeWindowAt: normalizeWindowAt}
+	change.ExtraPatch = extraPatch
+	change.ExpectedCredentials = expected
+	change.NormalizeProtocols = true
+	change.PreserveSensitive = !provider.IsCredentialShadow()
+	change.CredentialInput = credentialInput
+	change.ProtocolExtra = input.Extra
+	change.ComputeResetAt = computeResetAt
+	change.NormalizeWindowAt = normalizeWindowAt
 	if input.PatchCredentials {
 		change.CredentialPatch = CloneValues(credentialInput)
-	}
-	if input.Name != "" {
-		change.Fields |= ConfigName
-	}
-	if input.Type != "" {
-		change.Fields |= ConfigType
-	}
-	if input.Status != "" {
-		change.Fields |= ConfigStatus
-	}
-	if input.Notes != nil {
-		change.Fields |= ConfigNotes
-	}
-	if input.Concurrency != nil {
-		change.Fields |= ConfigConcurrency
-	}
-	if input.Priority != nil {
-		change.Fields |= ConfigPriority
-	}
-	if input.RateMultiplier != nil {
-		change.Fields |= ConfigRateMultiplier
-	}
-	if input.LoadFactor != nil {
-		change.Fields |= ConfigLoadFactor
-	}
-	if input.ExpiresAt != nil {
-		change.Fields |= ConfigExpiresAt
-	}
-	if input.AutoPauseOnExpired != nil {
-		change.Fields |= ConfigAutoPauseOnExpired
 	}
 	if (provider.IsCredentialShadow() && input.Credentials != nil) || len(input.Credentials) > 0 {
 		change.Fields |= ConfigCredentials
@@ -367,6 +353,9 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 
 // UpdateProviderExtra 按键合并 Extra JSONB，其余运行状态和配置字段保持当前值。
 func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[string]any) error {
+	if err := validateResponsesWSConnectionModePatch(updates); err != nil {
+		return err
+	}
 	updates = SanitizedCodexFingerprintExtraUpdates(updates)
 	DiscardDeprecatedProviderExtra(updates)
 	if err := NormalizeUpstreamUsageExtra(updates); err != nil {
@@ -400,6 +389,9 @@ func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[s
 // BulkUpdateProviders 在单次请求中更新多个提供商。
 // 凭据和 extra 使用键级合并，不覆盖整个对象。
 func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvidersInput) (*BulkUpdateProvidersResult, error) {
+	if err := validateResponsesWSConnectionModePatch(input.Extra); err != nil {
+		return nil, err
+	}
 	// 受管会话状态只能通过专用类型接口更新，废弃提供商扩展字段直接丢弃。
 	input.Extra = SanitizedCodexFingerprintExtraUpdates(input.Extra)
 	DiscardDeprecatedProviderExtra(input.Extra)
@@ -521,9 +513,7 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 			if prospective.Credentials == nil {
 				prospective.Credentials = make(map[string]any, len(input.Credentials))
 			}
-			for key, value := range input.Credentials {
-				prospective.Credentials[key] = value
-			}
+			maps.Copy(prospective.Credentials, input.Credentials)
 			if err := NormalizeCNProviderCredentials(&prospective, false); err != nil {
 				return nil, err
 			}
@@ -531,9 +521,7 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 			if prospective.Extra == nil {
 				prospective.Extra = map[string]any{}
 			}
-			for key, value := range input.Extra {
-				prospective.Extra[key] = value
-			}
+			maps.Copy(prospective.Extra, input.Extra)
 			ApplyLegacyProtocolPatch(&prospective, input.Credentials, input.Extra)
 			if err := NormalizeProviderProtocols(&prospective); err != nil {
 				return nil, err

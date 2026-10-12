@@ -6,23 +6,19 @@ import (
 	"strings"
 	"time"
 
-	responseprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/gin-gonic/gin"
 
 	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	responseprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) StreamOptions(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, reasoningEffort string) openai.StreamOptions {
@@ -39,7 +35,7 @@ func (p *OpenAIResponseOutput) StreamOptions(ctx context.Context, c *gin.Context
 
 		GrokIdlePolicy: provider != nil && provider.Record.Platform == capability.PlatformGrok,
 
-		MaxLineSize: openAIResponseDefaultMaxLineSize,
+		MaxLineSize: OpenAIResponseDefaultMaxLineSize,
 
 		TTFTMode: func() string { return p.TTFTMode(ctx) },
 

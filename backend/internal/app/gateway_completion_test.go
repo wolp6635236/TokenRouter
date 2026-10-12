@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	"github.com/stretchr/testify/require"
 )
 
 func TestUsageRecordWorkerPool_OptionsFromConfig_AutoScaleDisabled(t *testing.T) {
@@ -27,6 +28,7 @@ func TestUsageRecordWorkerPool_OptionsFromConfig_AutoScaleDisabled(t *testing.T)
 	require.Equal(t, 64, opts.AutoScaleMaxWorkers)
 	require.Equal(t, 7*time.Second, opts.TaskTimeout)
 }
+
 func TestNewUsageRecordWorkerPool_FromConfig(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.UsageRecord.WorkerCount = 3
@@ -42,6 +44,7 @@ func TestNewUsageRecordWorkerPool_FromConfig(t *testing.T) {
 	stats := pool.Stats()
 	require.Equal(t, 3, stats.MaxConcurrency)
 }
+
 func TestUsageRecordWorkerPool_OptionsFromConfig_NilConfig(t *testing.T) {
 	opts := usageRecordPoolOptionsFromConfig(nil)
 	require.Equal(t, completion.DefaultOptions().WorkerCount, opts.WorkerCount)

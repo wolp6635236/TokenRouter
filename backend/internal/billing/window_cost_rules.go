@@ -2,14 +2,14 @@ package billing
 
 import "time"
 
-// WindowCostSchedulability 表示可调度、仅粘性可用和不可调度三种费用窗口状态。
-type WindowCostSchedulability int
-
 const (
 	WindowCostSchedulable WindowCostSchedulability = iota
 	WindowCostStickyOnly
 	WindowCostNotSchedulable
 )
+
+// WindowCostSchedulability 表示可调度、仅粘性可用和不可调度三种费用窗口状态。
+type WindowCostSchedulability int
 
 func CheckWindowCost(current, limit, reserve float64) WindowCostSchedulability {
 	if limit <= 0 || current < limit {

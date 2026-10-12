@@ -286,7 +286,7 @@
       <MotionTransition name="modal">
         <div v-if="showR2Guide" class="fixed inset-0 z-50 flex items-center justify-center p-4" @mousedown.self="showR2Guide = false">
           <div class="fixed inset-0 bg-[var(--overlay-bg)]" @click="showR2Guide = false"></div>
-          <div class="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-surface bg-white p-6 shadow-2xl dark:bg-dark-800 sm:rounded-dialog">
+          <div class="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-surface bg-white p-6 shadow-2xl dark:bg-dark-900 sm:rounded-dialog">
             <button type="button" class="absolute right-4 top-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" @click="showR2Guide = false">
               <Icon name="x" size="sm" />
             </button>
@@ -373,7 +373,7 @@
           @mousedown.self="closeDownloadParts"
         >
           <div class="fixed inset-0 bg-[var(--overlay-bg)]" @click="closeDownloadParts"></div>
-          <div class="relative max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-surface bg-white p-6 shadow-2xl dark:bg-dark-800 sm:rounded-dialog">
+          <div class="relative max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-surface bg-white p-6 shadow-2xl dark:bg-dark-900 sm:rounded-dialog">
             <button
               type="button"
               class="absolute right-4 top-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"

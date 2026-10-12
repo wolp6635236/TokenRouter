@@ -10,36 +10,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
-// GrantSettingsStore 提供赠送配置的单键读取和批量读写。
-type GrantSettingsStore interface {
-	GetValue(context.Context, string) (string, error)
-	GetMultiple(context.Context, []string) (map[string]string, error)
-	SetMultiple(context.Context, map[string]string) error
-}
-
-// GrantSettingsOptions 只包含启动默认值与只读套餐引用校验。
-type GrantSettingsOptions struct {
-	DefaultBalance     float64
-	DefaultConcurrency int
-	ValidatePlans      func(context.Context, []DefaultSubscriptionSetting) error
-}
-
-// GrantSettings 拥有注册和首次绑定的默认配置，实际资金变更仍由 billing 承担。
-type GrantSettings struct {
-	settingRepo GrantSettingsStore
-	options     GrantSettingsOptions
-}
-
-// NewGrantSettings 绑定赠送设置存储和套餐校验函数。
-func NewGrantSettings(repo GrantSettingsStore, options GrantSettingsOptions) *GrantSettings {
-	if options.ValidatePlans == nil {
-		options.ValidatePlans = func(ctx context.Context, items []DefaultSubscriptionSetting) error {
-			return ValidateDefaultSubscriptionPlans(ctx, items, nil)
-		}
-	}
-	return &GrantSettings{settingRepo: repo, options: options}
-}
-
 // 默认接纳值和存储键保持原格式。
 const (
 	defaultAuthSourceBalance                            = 0
@@ -83,16 +53,6 @@ const (
 	SettingKeyDefaultSubscriptions                      = "default_subscriptions"
 	SettingKeyForceEmailOnThirdPartySignup              = "force_email_on_third_party_signup"
 )
-
-type authSourceDefaultKeySet struct {
-	// source 标识认证来源。
-	source           string
-	balance          string
-	concurrency      string
-	subscriptions    string
-	grantOnSignup    string
-	grantOnFirstBind string
-}
 
 var (
 	emailAuthSourceDefaultKeys = authSourceDefaultKeySet{
@@ -152,6 +112,46 @@ var (
 		grantOnFirstBind: SettingKeyAuthSourceDefaultDingTalkGrantOnFirstBind,
 	}
 )
+
+// GrantSettingsStore 提供赠送配置的单键读取和批量读写。
+type GrantSettingsStore interface {
+	GetValue(context.Context, string) (string, error)
+	GetMultiple(context.Context, []string) (map[string]string, error)
+	SetMultiple(context.Context, map[string]string) error
+}
+
+// GrantSettingsOptions 只包含启动默认值与只读套餐引用校验。
+type GrantSettingsOptions struct {
+	DefaultBalance     float64
+	DefaultConcurrency int
+	ValidatePlans      func(context.Context, []DefaultSubscriptionSetting) error
+}
+
+// GrantSettings 拥有注册和首次绑定的默认配置，实际资金变更仍由 billing 承担。
+type GrantSettings struct {
+	settingRepo GrantSettingsStore
+	options     GrantSettingsOptions
+}
+
+type authSourceDefaultKeySet struct {
+	// source 标识认证来源。
+	source           string
+	balance          string
+	concurrency      string
+	subscriptions    string
+	grantOnSignup    string
+	grantOnFirstBind string
+}
+
+// NewGrantSettings 绑定赠送设置存储和套餐校验函数。
+func NewGrantSettings(repo GrantSettingsStore, options GrantSettingsOptions) *GrantSettings {
+	if options.ValidatePlans == nil {
+		options.ValidatePlans = func(ctx context.Context, items []DefaultSubscriptionSetting) error {
+			return ValidateDefaultSubscriptionPlans(ctx, items, nil)
+		}
+	}
+	return &GrantSettings{settingRepo: repo, options: options}
+}
 
 // GetDefaultConcurrency 读取默认并发数，读取失败或值非法时使用启动默认值。
 func (s *GrantSettings) GetDefaultConcurrency(ctx context.Context) int {

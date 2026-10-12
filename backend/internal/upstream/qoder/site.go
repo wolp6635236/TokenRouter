@@ -7,24 +7,17 @@ import (
 	"strings"
 )
 
-// Site 表示 Qoder 提供商所属站点。
-type Site string
-
 const (
 	// SiteGlobal 表示 Qoder 国际站，也是旧提供商的兼容默认值。
 	SiteGlobal Site = "global"
 	// SiteCN 表示 Qoder 国内站。
 	SiteCN Site = "cn"
-)
 
-const (
 	// RefreshModeCosy 表示凭据持有最终 COSY 身份。
 	RefreshModeCosy = "cosy"
 	// RefreshModeQoderCN20 表示凭据持有 QoderCN20 refresh token。
 	RefreshModeQoderCN20 = "qodercn20"
-)
 
-const (
 	// GlobalDeviceAuthorizationURL 是国际站浏览器授权地址。
 	GlobalDeviceAuthorizationURL = "https://qoder.com/device/selectAccounts"
 	// CNDeviceAuthorizationURL 是国内站浏览器授权地址。
@@ -52,6 +45,9 @@ const (
 	// CNOpenAPIProductName 是国内站客户端在 OpenAPI UA 中使用的产品名。
 	CNOpenAPIProductName = "Qoder CN"
 )
+
+// Site 表示 Qoder 提供商所属站点。
+type Site string
 
 // Profile 集中保存一个 Qoder 站点使用的协议端点和客户端标识。
 // 测试可以复制该结构并覆盖端点，生产调用只使用 ProfileForSite 返回的默认值。

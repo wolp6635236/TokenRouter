@@ -32,13 +32,15 @@ import (
 
 const (
 	geminiMaxRetries = 5
+
+	geminiAppliedTempPolicyHeader = "X-TokenRouter-Internal-Temp-Policy-Applied"
+
+	// Gemini 的 functionCall 需要 thoughtSignature；缺少时沿用既有占位签名。
+	// 协议说明：https://ai.google.dev/gemini-api/docs/thought-signatures
+	geminiDummyThoughtSignature = "skip_thought_signature_validator"
+
+	geminiCustomCodeSkippedClientMessage = "Upstream gateway error"
 )
-
-const geminiAppliedTempPolicyHeader = "X-TokenRouter-Internal-Temp-Policy-Applied"
-
-// Gemini 的 functionCall 需要 thoughtSignature；缺少时沿用既有占位签名。
-// 协议说明：https://ai.google.dev/gemini-api/docs/thought-signatures
-const geminiDummyThoughtSignature = "skip_thought_signature_validator"
 
 func (s *Gemini) readUpstreamErrorBody(resp *http.Response) []byte {
 	if resp == nil || resp.Body == nil {
@@ -612,8 +614,6 @@ func (s *Gemini) skippedErrorPolicyFailoverError(c *attempt, provider *gatewaypr
 	}
 }
 
-const geminiCustomCodeSkippedClientMessage = "Upstream gateway error"
-
 // upstreamErrorDetail 按配置截断上游错误体，用于运维日志。
 func (s *Gemini) upstreamErrorDetail(body []byte) string {
 	if s == nil || !s.Options.Configured || !s.Options.LogErrorBody {
@@ -717,4 +717,13 @@ func (s *Gemini) extractImageInputSize(body []byte) string {
 	}
 
 	return ""
+}
+
+// observeHealth 执行健康观测并将凭据和附加状态写回执行提供商。
+func (s *Gemini) observeHealth(ctx context.Context, target *gatewayprovider.ExecutionProvider, status int, headers http.Header, body []byte) {
+	record := gatewayprovider.ExecutionRecord(target)
+	updated := s.Errors.Observe(ctx, record, status, headers, body, gatewayprovider.HealthObservationFromContext(ctx, status, headers, body, nil))
+	if target != nil && updated != nil {
+		target.Record.Credentials, target.Record.Extra = updated.Credentials, updated.Extra
+	}
 }

@@ -7,8 +7,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 )
 
 func TestMigration236RemovesUpstreamBillingProbeDataIdempotently(t *testing.T) {

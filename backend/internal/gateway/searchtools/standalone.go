@@ -30,6 +30,22 @@ type StandaloneFailure struct {
 	Cause error
 }
 
+// noAvailableProvidersError 表示选择阶段没有可用提供商，HTTP 消息以大写字母开头。
+type noAvailableProvidersError struct{}
+
+// StandaloneRequest 保存独立搜索入口的请求字段，供平台构造器使用。
+type StandaloneRequest struct {
+	Query                    string   `json:"query"`
+	Input                    string   `json:"input"`
+	MaxResults               *int     `json:"max_results"`
+	AllowedXHandles          []string `json:"allowed_x_handles"`
+	ExcludedXHandles         []string `json:"excluded_x_handles"`
+	FromDate                 string   `json:"from_date"`
+	ToDate                   string   `json:"to_date"`
+	EnableImageUnderstanding *bool    `json:"enable_image_understanding"`
+	EnableVideoUnderstanding *bool    `json:"enable_video_understanding"`
+}
+
 func (e *StandaloneFailure) Error() string {
 	if e.Cause != nil {
 		return e.Cause.Error()
@@ -37,9 +53,6 @@ func (e *StandaloneFailure) Error() string {
 	return "web search failed"
 }
 func (e *StandaloneFailure) Unwrap() error { return e.Cause }
-
-// noAvailableProvidersError 表示选择阶段没有可用提供商，HTTP 消息以大写字母开头。
-type noAvailableProvidersError struct{}
 
 func (noAvailableProvidersError) Error() string { return "No available providers" }
 
@@ -50,7 +63,7 @@ func RunStandalone(ctx context.Context, request StandaloneRequest, model string,
 	var result StandaloneResult
 	hasProvider := false
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := range 4 {
 		selection, present, err := ports.Select(ctx, model, failed)
 		if err != nil {
 			if attempt == 0 {

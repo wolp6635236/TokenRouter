@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -9,12 +11,28 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/creativerun"
 	"github.com/TokenFlux/TokenRouter/ent/creativerunoutput"
 	"github.com/TokenFlux/TokenRouter/internal/creative"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 // creativeRunRepository 基于 Ent 实现创作台任务元数据仓储。
 // 状态转换统一走 version 乐观锁：WHERE run_id = ? AND version = ?，冲突即视为并发推进。
 type creativeRunRepository struct {
 	client *dbent.Client
+}
+
+// translatePersistenceError 将数据库的缺失和冲突错误转换为任务错误。
+func translatePersistenceError(err error, notFound, conflict *apperror.ApplicationError) error {
+	if err == nil {
+		return nil
+	}
+	if notFound != nil && (errors.Is(err, sql.ErrNoRows) || dbent.IsNotFound(err)) {
+		return notFound.WithCause(err)
+	}
+	if conflict != nil && postgresinfra.IsUniqueConstraintViolation(err) {
+		return conflict.WithCause(err)
+	}
+	return err
 }
 
 // NewCreativeRunRepository 创建创作台任务仓储。
@@ -71,7 +89,7 @@ func (r *creativeRunRepository) CreateCreativeRun(ctx context.Context, params cr
 	}
 	// 同事务创建全部 pending 输出行，保证任务与输出元数据原子出现。
 	outputBuilders := make([]*dbent.CreativeRunOutputCreate, 0, params.RequestedOutputCount)
-	for index := 0; index < params.RequestedOutputCount; index++ {
+	for index := range params.RequestedOutputCount {
 		outputBuilders = append(outputBuilders, tx.CreativeRunOutput.Create().
 			SetRunID(params.RunID).
 			SetOutputIndex(index).
@@ -82,7 +100,7 @@ func (r *creativeRunRepository) CreateCreativeRun(ctx context.Context, params cr
 			return nil, translatePersistenceError(err, nil, creative.ErrCreativeOutputExists)
 		}
 	}
-	// 创建任务与 provisioning outbox 在同一事务提交，避免数据库已有 queued 任务却没有入队意图。
+	// 创建任务与 provisioning outbox 在同一事务提交，queued 任务同时具有待入队记录。
 	if _, err := tx.CreativeRunOutbox.Create().
 		SetRunID(params.RunID).
 		SetOperation(string(creative.CreativeRunOutboxProvision)).
@@ -256,7 +274,7 @@ func (r *creativeRunRepository) MarkCreativeRunRunning(ctx context.Context, runI
 		return translatePersistenceError(err, creative.ErrCreativeRunNotFound, nil)
 	}
 	if current.Status == creative.CreativeRunStatusRunning {
-		// 重复执行（worker 重试）视为成功，但确保提供商已回填。
+		// 重复执行（worker 重试）视为成功，并回填提供商。
 		if providerID > 0 && (current.ProviderID == nil || *current.ProviderID != providerID) {
 			_, err := r.client.CreativeRun.Update().
 				Where(creativerun.RunIDEQ(runID)).
@@ -292,7 +310,7 @@ func (r *creativeRunRepository) MarkCreativeRunRunning(ctx context.Context, runI
 	return nil
 }
 
-// SetCreativeRunExecution 持久化执行器最终选中的真实上游提供商。
+// SetCreativeRunExecution 持久化执行器最终选中的上游提供商。
 func (r *creativeRunRepository) SetCreativeRunExecution(ctx context.Context, runID string, providerID int64, platform string, now time.Time) error {
 	if providerID <= 0 {
 		return nil
@@ -380,7 +398,7 @@ func (r *creativeRunRepository) UpdateCreativeRunOutput(ctx context.Context, run
 		Where(
 			creativerunoutput.RunIDEQ(runID),
 			creativerunoutput.OutputIndexEQ(outputIndex),
-			// acked 是客户端已确认接收的终态，任何后续更新都不得覆盖。
+			// acked 表示客户端已确认接收，更新操作在此结束。
 			creativerunoutput.StatusNEQ(creative.CreativeRunOutputStatusAcked),
 		).
 		SetStatus(status).
@@ -469,7 +487,7 @@ func (r *creativeRunRepository) ListCreativeRunOutputsForRuns(ctx context.Contex
 	return result, nil
 }
 
-// MarkCreativeRunOutputAcked 幂等标记 acked：只在 succeeded 上生效，重复 ack 无副作用。
+// MarkCreativeRunOutputAcked 将 succeeded 输出标记为 acked，重复确认时返回成功。
 func (r *creativeRunRepository) MarkCreativeRunOutputAcked(ctx context.Context, runID string, outputIndex int, now time.Time) error {
 	affected, err := r.client.CreativeRunOutput.Update().
 		Where(

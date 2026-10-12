@@ -8,6 +8,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider/usageview"
 )
 
+const GrokUsageBillingExtraKey = "grok_billing_snapshot"
+
 type GrokUsageProbe struct {
 	Billing                                        *usageview.BillingSummary
 	LocalUsage24h, LocalUsage7d, LocalUsageMonthly *WindowStats
@@ -21,8 +23,6 @@ type GrokUsageOptions struct {
 	Build          func(*Record) *UsageInfo
 	Enrich         func(*UsageInfo, *Record)
 }
-
-const GrokUsageBillingExtraKey = "grok_billing_snapshot"
 
 func (s *OAuthUsageService) GetGrokUsage(ctx context.Context, provider *Record, force bool) (*UsageInfo, error) {
 	if s.options.Grok.Available == nil || !s.options.Grok.Available() {

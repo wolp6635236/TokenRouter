@@ -3,8 +3,9 @@ package httpapi
 import (
 	"strconv"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 )
 
 // parseFailureSnippetLen 限制解析失败日志中的首尾片段；256 字节足以观察结构，

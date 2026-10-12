@@ -5,20 +5,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 // probePricingStore 为探针测试提供分组策略读取方法。
 type probePricingStore struct {
 	routing.PricingConfigRepository
-}
-
-func (probePricingStore) ListAll(context.Context) ([]routing.PricingConfig, error) {
-	return nil, nil
 }
 
 // TestProbeSelectPreservesGroupMappedModel 复现公开别名与提供商白名单不同的分组配置。
@@ -46,7 +43,7 @@ func TestProbeSelectPreservesGroupMappedModel(t *testing.T) {
 				if selector == "generic" {
 					platform = capability.PlatformAnthropic
 				}
-				reads := Reads{Providers: selectionProviderFixture{providers: []gatewayprovider.ExecutionProvider{{Record: provider.Record{
+				reads := Reads{Providers: selectionProviderFixture{providers: []gatewayprovider.ExecutionProvider{{Record: providercore.Record{
 					ID: 3678, Platform: platform, Type: capability.ProviderTypeAPIKey,
 					Status: "active", Schedulable: true, LoadLocation: time.LoadLocation,
 					Credentials: map[string]any{
@@ -71,4 +68,8 @@ func TestProbeSelectPreservesGroupMappedModel(t *testing.T) {
 			})
 		}
 	}
+}
+
+func (probePricingStore) ListAll(context.Context) ([]routing.PricingConfig, error) {
+	return nil, nil
 }

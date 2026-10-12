@@ -5,6 +5,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -108,4 +110,43 @@ func Decrypt(ciphertext string, key []byte) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+// ConfiguredEncryptionKey 校验配置中的十六进制 AES-256 密钥，并返回配置缺失时的警告。
+func ConfiguredEncryptionKey(raw string, configured bool) (EncryptionKey, string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, "payment encryption key not configured — encrypted payment config will be unavailable", nil
+	}
+	if !configured {
+		return nil, "payment encryption/signing key is not explicitly configured; set TOTP_ENCRYPTION_KEY to enable payment resume tokens", nil
+	}
+	key, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid payment encryption key (hex decode): %w", err)
+	}
+	if len(key) != 32 {
+		return nil, "", fmt.Errorf("payment encryption key must be 32 bytes, got %d", len(key))
+	}
+	return EncryptionKey(key), "", nil
+}
+
+// parseProviderConfig 读取 JSON 或 AES-256-GCM 密文，第二个返回值表示配置可读。
+func parseProviderConfig(stored string, encryptionKey []byte) (map[string]string, bool) {
+	if stored == "" {
+		return nil, true
+	}
+	var config map[string]string
+	if err := json.Unmarshal([]byte(stored), &config); err == nil {
+		return config, true
+	}
+	// 历史支付实例可能仍存有密文，需要使用部署时配置的密钥读取。
+	if len(encryptionKey) == AES256KeySize {
+		if plaintext, err := Decrypt(stored, encryptionKey); err == nil {
+			if err := json.Unmarshal([]byte(plaintext), &config); err == nil {
+				return config, true
+			}
+		}
+	}
+	return nil, false
 }

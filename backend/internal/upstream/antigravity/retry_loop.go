@@ -14,9 +14,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	googlewire "github.com/TokenFlux/TokenRouter/internal/protocol/google"
+)
+
+const (
+	SmartRetryActionContinue      SmartRetryAction = iota // 继续默认重试逻辑
+	SmartRetryActionBreakWithResp                         // 结束循环并返回 resp
+	SmartRetryActionContinueURL                           // 继续 URL fallback 循环
 )
 
 type RetryInput struct {
@@ -34,16 +42,13 @@ type RetryInput struct {
 	ModelRemaining                          func(context.Context, string) time.Duration
 }
 
-func (p RetryInput) String() string {
-	return fmt.Sprintf("antigravity retry provider=%d", p.ProviderID)
-}
-
 type RetryObservation struct {
 	ProviderID                                            int64
 	ProviderName                                          string
 	UpstreamStatusCode                                    int
 	UpstreamRequestID, UpstreamURL, Kind, Message, Detail string
 }
+
 type RetryOptions struct {
 	BaseURL              func() string
 	Do                   func(*http.Request) (*http.Response, error)
@@ -66,11 +71,34 @@ type RetryOptions struct {
 	Internal500Exhausted func()
 	ResetInternal500     func()
 }
+
 type RetryAdapter struct{ Options RetryOptions }
 
-// AntigravityRetryLoopResult 重试循环的结果
+// AntigravityRetryLoopResult 重试循环的结果。
 type AntigravityRetryLoopResult struct {
 	Resp *http.Response
+}
+
+// SmartRetryAction 智能重试的处理结果。
+type SmartRetryAction int
+
+// SmartRetryResult 智能重试的结果。
+type SmartRetryResult struct {
+	Action      SmartRetryAction
+	Resp        *http.Response
+	Err         error
+	SwitchError *AntigravityProviderSwitchError // 模型限流时返回提供商切换信号
+}
+
+// AntigravitySmartRetryInfo 智能重试所需的信息。
+type AntigravitySmartRetryInfo struct {
+	RetryDelay               time.Duration // 重试延迟时间
+	ModelName                string        // 限流的模型名称（如 "claude-sonnet-4-5"）
+	IsModelCapacityExhausted bool          // 是否为模型容量不足（MODEL_CAPACITY_EXHAUSTED）
+}
+
+func (p RetryInput) String() string {
+	return fmt.Sprintf("antigravity retry provider=%d", p.ProviderID)
 }
 
 // ResolveAntigravityForwardBaseURL 解析转发用 base URL。
@@ -97,25 +125,8 @@ func ResolveAntigravityForwardBaseURL(mode string, paid bool) string {
 	return baseURLs[0]
 }
 
-// SmartRetryAction 智能重试的处理结果
-type SmartRetryAction int
-
-const (
-	SmartRetryActionContinue      SmartRetryAction = iota // 继续默认重试逻辑
-	SmartRetryActionBreakWithResp                         // 结束循环并返回 resp
-	SmartRetryActionContinueURL                           // 继续 URL fallback 循环
-)
-
-// SmartRetryResult 智能重试的结果
-type SmartRetryResult struct {
-	Action      SmartRetryAction
-	Resp        *http.Response
-	Err         error
-	SwitchError *AntigravityProviderSwitchError // 模型限流时返回提供商切换信号
-}
-
 // HandleSmartRetry 处理 OAuth 提供商的智能重试逻辑
-// 将 429/503 限流处理逻辑抽取为独立函数，减少 AntigravityRetryLoop 的复杂度
+// 将 429/503 限流处理逻辑抽取为独立函数，减少 AntigravityRetryLoop 的复杂度。
 func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respBody []byte, baseURL string, urlIdx int, availableURLs []string) *SmartRetryResult {
 	// "Resource has been exhausted" 是 URL 级别限流，切换 URL（仅 429）
 	if resp.StatusCode == http.StatusTooManyRequests && IsURLLevelRateLimit(respBody) && urlIdx < len(availableURLs)-1 {
@@ -146,7 +157,7 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 		}
 	}
 
-	// 情况1: retryDelay >= 阈值，限流模型并切换提供商
+	// 情况 1: retryDelay >= 阈值，限流模型并切换提供商
 	if shouldRateLimitModel {
 		// 单提供商 503 退避重试模式：不设限流、不切换提供商，改为原地等待+重试
 		// 谷歌上游 503 (MODEL_CAPACITY_EXHAUSTED) 通常是暂时性的，等几秒就能恢复。
@@ -180,7 +191,7 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 		}
 	}
 
-	// 情况2: retryDelay < 阈值（或 MODEL_CAPACITY_EXHAUSTED），智能重试
+	// 情况 2: retryDelay < 阈值（或 MODEL_CAPACITY_EXHAUSTED），智能重试
 	if shouldSmartRetry {
 		var lastRetryResp *http.Response
 		var lastRetryBody []byte
@@ -446,13 +457,7 @@ func (s *RetryAdapter) HandleSingleProviderRetryInPlace(
 		if attempt < AntigravitySingleProviderSmartRetryMaxAttempts && lastRetryBody != nil {
 			_, _, newWaitDuration, _, _ := ShouldTriggerAntigravitySmartRetry(p.Native, lastRetryBody)
 			if newWaitDuration > 0 {
-				waitDuration = newWaitDuration
-				if waitDuration > AntigravitySingleProviderSmartRetryMaxWait {
-					waitDuration = AntigravitySingleProviderSmartRetryMaxWait
-				}
-				if waitDuration < AntigravitySmartRetryMinWait {
-					waitDuration = AntigravitySmartRetryMinWait
-				}
+				waitDuration = max(min(newWaitDuration, AntigravitySingleProviderSmartRetryMaxWait), AntigravitySmartRetryMinWait)
 			}
 		}
 	}
@@ -476,7 +481,7 @@ func (s *RetryAdapter) HandleSingleProviderRetryInPlace(
 	}
 }
 
-// AntigravityRetryLoop 执行带 URL fallback 的重试循环
+// AntigravityRetryLoop 执行带 URL fallback 的重试循环。
 func (s *RetryAdapter) AntigravityRetryLoop(p RetryInput) (*AntigravityRetryLoopResult, error) {
 	// 预检查：模型限流 + overages 启用 + 积分未耗尽 → 直接注入 AI Credits
 	overagesInjected := false
@@ -725,7 +730,7 @@ urlFallbackLoop:
 	return &AntigravityRetryLoopResult{Resp: resp}, nil
 }
 
-// ShouldRetryAntigravityError 判断是否应该重试
+// ShouldRetryAntigravityError 判断是否应该重试。
 func ShouldRetryAntigravityError(statusCode int) bool {
 	switch statusCode {
 	case 429, 500, 502, 503, 504, 529:
@@ -737,7 +742,7 @@ func ShouldRetryAntigravityError(statusCode int) bool {
 
 // IsURLLevelRateLimit 判断是否为 URL 级别的限流（应切换 URL 重试）
 // "Resource has been exhausted" 是 URL/节点级别限流，切换 URL 可能成功
-// "exhausted your capacity on this model" 是提供商/模型配额限流，切换 URL 无效
+// "exhausted your capacity on this model" 是提供商/模型配额限流，切换 URL 无效。
 func IsURLLevelRateLimit(body []byte) bool {
 	// 快速检查：包含 "Resource has been exhausted" 且不包含 "capacity on this model"
 	bodyStr := string(body)
@@ -745,7 +750,7 @@ func IsURLLevelRateLimit(body []byte) bool {
 		!strings.Contains(bodyStr, "capacity on this model")
 }
 
-// IsAntigravityConnectionError 判断是否为连接错误（网络超时、DNS 失败、连接拒绝）
+// IsAntigravityConnectionError 判断是否为连接错误（网络超时、DNS 失败、连接拒绝）。
 func IsAntigravityConnectionError(err error) bool {
 	if err == nil {
 		return false
@@ -763,7 +768,7 @@ func IsAntigravityConnectionError(err error) bool {
 }
 
 // ShouldAntigravityFallbackToNextURL 判断是否应切换到下一个 URL
-// 仅连接错误和 HTTP 429 触发 URL 降级
+// 仅连接错误和 HTTP 429 触发 URL 降级。
 func ShouldAntigravityFallbackToNextURL(err error, statusCode int) bool {
 	if IsAntigravityConnectionError(err) {
 		return true
@@ -772,20 +777,14 @@ func ShouldAntigravityFallbackToNextURL(err error, statusCode int) bool {
 }
 
 // SleepAntigravityBackoffWithContext 带 context 取消检查的退避等待
-// 返回 true 表示正常完成等待，false 表示 context 已取消
+// 返回 true 表示正常完成等待，false 表示 context 已取消。
 func SleepAntigravityBackoffWithContext(ctx context.Context, attempt int) bool {
-	delay := AntigravityRetryBaseDelay * time.Duration(1<<uint(attempt-1))
-	if delay > AntigravityRetryMaxDelay {
-		delay = AntigravityRetryMaxDelay
-	}
+	delay := min(AntigravityRetryBaseDelay*time.Duration(1<<uint(attempt-1)), AntigravityRetryMaxDelay)
 
 	// +/- 20% jitter
 	r := mathrand.New(mathrand.NewSource(time.Now().UnixNano()))
 	jitter := time.Duration(float64(delay) * 0.2 * (r.Float64()*2 - 1))
-	sleepFor := delay + jitter
-	if sleepFor < 0 {
-		sleepFor = 0
-	}
+	sleepFor := max(delay+jitter, 0)
 
 	timer := time.NewTimer(sleepFor)
 	select {
@@ -795,13 +794,6 @@ func SleepAntigravityBackoffWithContext(ctx context.Context, attempt int) bool {
 	case <-timer.C:
 		return true
 	}
-}
-
-// AntigravitySmartRetryInfo 智能重试所需的信息
-type AntigravitySmartRetryInfo struct {
-	RetryDelay               time.Duration // 重试延迟时间
-	ModelName                string        // 限流的模型名称（如 "claude-sonnet-4-5"）
-	IsModelCapacityExhausted bool          // 是否为模型容量不足（MODEL_CAPACITY_EXHAUSTED）
 }
 
 // ParseAntigravitySmartRetryInfo 解析 Google RPC RetryInfo 和 ErrorInfo 信息
@@ -818,7 +810,7 @@ type AntigravitySmartRetryInfo struct {
 //
 // 必须满足以下条件才会返回有效值：
 // - error.details[] 中存在 @type == "type.googleapis.com/google.rpc.RetryInfo" 的元素
-// - 该元素包含 retryDelay 字段，格式为 "数字s"（如 "0.201506475s"）
+// - 该元素包含 retryDelay 字段，格式为 "数字 s"（如 "0.201506475s"）。
 func ParseAntigravitySmartRetryInfo(body []byte) *AntigravitySmartRetryInfo {
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -831,8 +823,8 @@ func ParseAntigravitySmartRetryInfo(body []byte) *AntigravitySmartRetryInfo {
 	}
 
 	// 检查 status 是否符合条件
-	// 情况1: 429 RESOURCE_EXHAUSTED (需要进一步检查 reason == RATE_LIMIT_EXCEEDED)
-	// 情况2: 503 UNAVAILABLE (需要进一步检查 reason == MODEL_CAPACITY_EXHAUSTED)
+	// 情况 1: 429 RESOURCE_EXHAUSTED (需要进一步检查 reason == RATE_LIMIT_EXCEEDED)
+	// 情况 2: 503 UNAVAILABLE (需要进一步检查 reason == MODEL_CAPACITY_EXHAUSTED)
 	status, _ := errObj["status"].(string)
 	isResourceExhausted := status == GoogleRPCStatusResourceExhausted
 	isUnavailable := status == GoogleRPCStatusUnavailable
@@ -896,8 +888,8 @@ func ParseAntigravitySmartRetryInfo(body []byte) *AntigravitySmartRetryInfo {
 	}
 
 	// 验证条件
-	// 情况1: RESOURCE_EXHAUSTED 需要有 RATE_LIMIT_EXCEEDED reason
-	// 情况2: UNAVAILABLE 需要有 MODEL_CAPACITY_EXHAUSTED reason
+	// 情况 1: RESOURCE_EXHAUSTED 需要有 RATE_LIMIT_EXCEEDED reason
+	// 情况 2: UNAVAILABLE 需要有 MODEL_CAPACITY_EXHAUSTED reason
 	if isResourceExhausted && !hasRateLimitExceeded {
 		return nil
 	}
@@ -953,10 +945,34 @@ func ShouldTriggerAntigravitySmartRetry(native bool, respBody []byte) (shouldRet
 	}
 
 	// retryDelay < 阈值：智能重试
-	waitDuration = info.RetryDelay
-	if waitDuration < AntigravitySmartRetryMinWait {
-		waitDuration = AntigravitySmartRetryMinWait
-	}
+	waitDuration = max(info.RetryDelay, AntigravitySmartRetryMinWait)
 
 	return true, false, waitDuration, info.ModelName, false
+}
+
+// NormalizeAntigravityModelName 去掉资源路径前缀并返回小写模型名。
+func NormalizeAntigravityModelName(model string) string {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if idx := strings.LastIndex(normalized, "/publishers/google/models/"); idx != -1 {
+		normalized = normalized[idx+len("/publishers/google/models/"):]
+	} else if idx := strings.LastIndex(normalized, "/publishers/anthropic/models/"); idx != -1 {
+		normalized = normalized[idx+len("/publishers/anthropic/models/"):]
+	} else if idx := strings.LastIndex(normalized, "/models/"); idx != -1 {
+		normalized = normalized[idx+len("/models/"):]
+	} else {
+		normalized = strings.TrimPrefix(normalized, "publishers/google/models/")
+		normalized = strings.TrimPrefix(normalized, "publishers/anthropic/models/")
+		normalized = strings.TrimPrefix(normalized, "models/")
+	}
+	return normalized
+}
+
+// IsAntigravityInternalServerError 检查 HTTP 500 响应是否包含匹配的错误代码、消息和 INTERNAL 状态。
+func IsAntigravityInternalServerError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusInternalServerError {
+		return false
+	}
+	return gjson.GetBytes(body, "error.code").Int() == 500 &&
+		gjson.GetBytes(body, "error.message").String() == "Internal error encountered." &&
+		gjson.GetBytes(body, "error.status").String() == "INTERNAL"
 }

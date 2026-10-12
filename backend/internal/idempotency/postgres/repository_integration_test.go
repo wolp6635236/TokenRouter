@@ -1,31 +1,29 @@
 //go:build integration
 
-package postgres_test
+package postgres
 
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/idempotency"
-
-	idempotencypostgres "github.com/TokenFlux/TokenRouter/internal/idempotency/postgres"
-
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
-)
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-// hashedTestValue returns a unique SHA-256 hex string (64 chars) that fits VARCHAR(64) columns.
-func hashedTestValue(t *testing.T, prefix string) string {
-	t.Helper()
-	sum := sha256.Sum256([]byte(uniqueIdempotencyValue(t, prefix)))
-	return hex.EncodeToString(sum[:])
-}
+	"github.com/TokenFlux/TokenRouter/internal/idempotency"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/migrations"
+)
 
 func TestIdempotencyRepo_CreateProcessing_CompeteSameKey(t *testing.T) {
 	tx := idempotencyTestTx(t)
-	repo := idempotencypostgres.NewIdempotencyRepository(tx)
+	repo := NewIdempotencyRepository(tx)
 	ctx := context.Background()
 
 	now := time.Now().UTC()
@@ -57,7 +55,7 @@ func TestIdempotencyRepo_CreateProcessing_CompeteSameKey(t *testing.T) {
 
 func TestIdempotencyRepo_TryReclaim_StatusAndLockWindow(t *testing.T) {
 	tx := idempotencyTestTx(t)
-	repo := idempotencypostgres.NewIdempotencyRepository(tx)
+	repo := NewIdempotencyRepository(tx)
 	ctx := context.Background()
 
 	now := time.Now().UTC()
@@ -122,7 +120,7 @@ func TestIdempotencyRepo_TryReclaim_StatusAndLockWindow(t *testing.T) {
 
 func TestIdempotencyRepo_StatusTransition_ToSucceeded(t *testing.T) {
 	tx := idempotencyTestTx(t)
-	repo := idempotencypostgres.NewIdempotencyRepository(tx)
+	repo := NewIdempotencyRepository(tx)
 	ctx := context.Background()
 
 	now := time.Now().UTC()
@@ -151,5 +149,38 @@ func TestIdempotencyRepo_StatusTransition_ToSucceeded(t *testing.T) {
 	require.Nil(t, got.LockedUntil)
 }
 
-// ptrTime 保留此集成夹具原来共享的时间指针辅助。
+// idempotencyTestTx 在隔离 PostgreSQL 中应用迁移，并为每个测试创建结束时回滚的事务。
+func idempotencyTestTx(t *testing.T) *sql.Tx {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	container, err := tcpostgres.Run(ctx, "postgres:18.1-alpine3.23", tcpostgres.WithDatabase("idempotency_contracts"), tcpostgres.WithUsername("postgres"), tcpostgres.WithPassword("postgres"), tcpostgres.BasicWaitStrategies())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
+	dsn, err := container.ConnectionString(ctx, "sslmode=disable", "TimeZone=UTC")
+	require.NoError(t, err)
+	db, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	require.NoError(t, postgresinfra.ApplyMigrations(ctx, db, migrations.FS))
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, tx.Rollback()) })
+	return tx
+}
+
+func uniqueIdempotencyValue(t *testing.T, prefix string) string {
+	t.Helper()
+	safeName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	return fmt.Sprintf("%s-%s", prefix, safeName)
+}
+
+// hashedTestValue 根据测试名称生成包含 64 个字符的 SHA-256 十六进制字符串，用于 VARCHAR(64) 列。
+func hashedTestValue(t *testing.T, prefix string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(uniqueIdempotencyValue(t, prefix)))
+	return hex.EncodeToString(sum[:])
+}
+
+// ptrTime 返回时间值的指针。
 func ptrTime(t time.Time) *time.Time { return &t }

@@ -5,8 +5,9 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
 // HistoricalIngressCleanup 按主键分页清理截止时间前的分析记录。

@@ -11,9 +11,21 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/payment"
-
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/payment"
+)
+
+const (
+	// WebhookMaxWebhookBodySize is the maximum allowed webhook request body size (1 MB).
+	WebhookMaxWebhookBodySize = 1 << 20
+
+	// WebhookWebhookLogTruncateLen is the maximum length of raw body logged on verify failure.
+	WebhookWebhookLogTruncateLen = 200
+
+	// WeChat Pay webhook success response constants.
+	WebhookWxpaySuccessCode    = "SUCCESS"
+	WebhookWxpaySuccessMessage = "成功"
 )
 
 // PaymentWebhookHandler handles payment provider webhook callbacks.
@@ -22,11 +34,11 @@ type PaymentWebhookHandler struct {
 	registry       *payment.Registry
 }
 
-// WebhookMaxWebhookBodySize is the maximum allowed webhook request body size (1 MB).
-const WebhookMaxWebhookBodySize = 1 << 20
-
-// WebhookWebhookLogTruncateLen is the maximum length of raw body logged on verify failure.
-const WebhookWebhookLogTruncateLen = 200
+// WebhookWxpaySuccessResponse is the JSON response expected by WeChat Pay webhook.
+type WebhookWxpaySuccessResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
 
 // NewPaymentWebhookHandler creates a new PaymentWebhookHandler.
 func NewPaymentWebhookHandler(paymentService *payment.Runtime, registry *payment.Registry) *PaymentWebhookHandler {
@@ -206,18 +218,6 @@ func WebhookVerifyNotificationWithProviders(ctx context.Context, providers []pay
 	}
 	return "", nil, fmt.Errorf("no webhook provider could verify notification")
 }
-
-// WebhookWxpaySuccessResponse is the JSON response expected by WeChat Pay webhook.
-type WebhookWxpaySuccessResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-// WeChat Pay webhook success response constants.
-const (
-	WebhookWxpaySuccessCode    = "SUCCESS"
-	WebhookWxpaySuccessMessage = "成功"
-)
 
 // WebhookWriteSuccessResponse 返回各支付服务商要求的成功响应。
 // 微信支付需要 JSON {"code":"SUCCESS","message":"成功"}；

@@ -36,18 +36,14 @@
         <ToggleSwitch v-if="form.refund_enabled" :label="t('admin.settings.payment.allowUserRefund')" :checked="form.allow_user_refund" @toggle="form.allow_user_refund = !form.allow_user_refund" />
         <div v-if="supportsPaymentMode" class="flex items-center gap-2">
           <span class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.settings.payment.paymentMode') }}</span>
-          <div class="flex gap-1.5">
+          <div v-segmented class="segmented">
             <button
               v-for="mode in paymentModeOptions"
               :key="mode.value"
               type="button"
               @click="form.payment_mode = mode.value"
-              :class="[
-                'rounded-control border px-2.5 py-1 text-xs font-medium transition',
-                form.payment_mode === mode.value
-                  ? 'border-primary-500 bg-primary-500 text-white shadow-sm'
-                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400 hover:bg-gray-50 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300 dark:hover:border-dark-500',
-              ]"
+              class="segmented-item px-2.5 py-1 text-xs"
+              :class="{ 'segmented-item-active': form.payment_mode === mode.value }"
             >{{ mode.label }}</button>
           </div>
         </div>
@@ -62,8 +58,8 @@
               :class="[
                 'rounded-control border px-2.5 py-1 text-xs font-medium transition',
                 isTypeSelected(pt.value)
-                  ? 'border-primary-500 bg-primary-500 text-white shadow-sm'
-                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400 hover:bg-gray-50 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300 dark:hover:border-dark-500',
+                  ? 'border-primary-500/60 bg-primary-50 text-primary-700 dark:border-primary-500/15 dark:bg-primary-500/8 dark:text-primary-500'
+                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400 hover:bg-gray-50 dark:border-dark-600 dark:bg-dark-950 dark:text-gray-300 dark:hover:border-dark-500',
               ]"
             >{{ pt.label }}</button>
           </div>
@@ -110,11 +106,11 @@
             <template #trigger>
               <button
                 type="button"
-                class="inline-flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 text-xs font-semibold text-gray-400 transition-colors hover:border-primary-500 hover:text-primary-600 dark:border-dark-500 dark:text-gray-500 dark:hover:border-primary-400 dark:hover:text-primary-400"
+                class="inline-flex rounded-compact text-gray-400 transition-colors hover:text-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-gray-500 dark:hover:text-primary-400"
                 :aria-label="t('admin.settings.payment.paymentGuideTrigger')"
                 :title="t('admin.settings.payment.paymentGuideTrigger')"
               >
-                ?
+                <Icon name="questionCircle" size="sm" />
               </button>
             </template>
             <div class="space-y-3">
@@ -308,6 +304,7 @@
 
 <script setup lang="ts">
 import { getLocale } from '@/i18n'
+import { vSegmented } from '@/directives/segmented'
 import LocalizedEditor from '@/components/common/LocalizedEditor.vue'
 import { newContentID, originalContent } from '@/i18n/content'
 import Collapse from '@/components/common/Collapse.vue'

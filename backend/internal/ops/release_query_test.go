@@ -13,6 +13,13 @@ type updateServiceCacheStub struct {
 	data string
 }
 
+type updateServiceGitHubClientStub struct {
+	lastRepo       string
+	release        *GitHubRelease
+	recentReleases []*GitHubRelease
+	recentErr      error
+}
+
 func (s *updateServiceCacheStub) GetUpdateInfo(context.Context) (string, error) {
 	if s.data == "" {
 		return "", errors.New("cache miss")
@@ -23,13 +30,6 @@ func (s *updateServiceCacheStub) GetUpdateInfo(context.Context) (string, error) 
 func (s *updateServiceCacheStub) SetUpdateInfo(_ context.Context, data string, _ time.Duration) error {
 	s.data = data
 	return nil
-}
-
-type updateServiceGitHubClientStub struct {
-	lastRepo       string
-	release        *GitHubRelease
-	recentReleases []*GitHubRelease
-	recentErr      error
 }
 
 func (s *updateServiceGitHubClientStub) FetchLatestRelease(_ context.Context, repo string) (*GitHubRelease, error) {

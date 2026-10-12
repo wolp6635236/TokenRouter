@@ -9,19 +9,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/payment"
 	"github.com/smartwalle/alipay/v3"
+
+	"github.com/TokenFlux/TokenRouter/internal/payment"
 )
 
-// Alipay product codes.
 const (
+	// Alipay product codes.
 	alipayProductCodePreCreate = "FACE_TO_FACE_PAYMENT"
 	alipayProductCodeWapPay    = "QUICK_WAP_WAY"
 	alipayProductCodePagePay   = "FAST_INSTANT_TRADE_PAY"
-)
 
-// Alipay response constants.
-const (
+	// Alipay response constants.
 	alipayFundChangeYes    = "Y"
 	alipayErrTradeNotExist = "ACQ.TRADE_NOT_EXIST"
 	alipayRefundSuffix     = "-refund"
@@ -37,6 +36,11 @@ var (
 	alipayTradePagePay = func(client *alipay.Client, param alipay.TradePagePay) (*url.URL, error) {
 		return client.TradePagePay(param)
 	}
+
+	// Ensure interface compliance.
+	_ payment.Provider                 = (*Alipay)(nil)
+	_ payment.CancelableProvider       = (*Alipay)(nil)
+	_ payment.MerchantIdentityProvider = (*Alipay)(nil)
 )
 
 // Alipay implements payment.Provider and payment.CancelableProvider using the smartwalle/alipay SDK.
@@ -392,10 +396,3 @@ func parseAlipayAmount(values ...string) (float64, error) {
 	}
 	return 0, fmt.Errorf("no valid amount field")
 }
-
-// Ensure interface compliance.
-var (
-	_ payment.Provider                 = (*Alipay)(nil)
-	_ payment.CancelableProvider       = (*Alipay)(nil)
-	_ payment.MerchantIdentityProvider = (*Alipay)(nil)
-)

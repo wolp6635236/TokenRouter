@@ -423,10 +423,7 @@ func (r *CleanupStore) createTaskWithSQL(ctx context.Context, task *usage.UsageC
 		) VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at, updated_at
 	`
-	if err := scanSingleRow(ctx, r.sql, query, []any{task.Status, filtersJSON, task.CreatedBy, task.DeletedRows}, &task.ID, &task.CreatedAt, &task.UpdatedAt); err != nil {
-		return err
-	}
-	return nil
+	return scanSingleRow(ctx, r.sql, query, []any{task.Status, filtersJSON, task.CreatedBy, task.DeletedRows}, &task.ID, &task.CreatedAt, &task.UpdatedAt)
 }
 
 func (r *CleanupStore) listTasksWithEnt(ctx context.Context, params pagination.PaginationParams) ([]usage.UsageCleanupTask, *pagination.PaginationResult, error) {

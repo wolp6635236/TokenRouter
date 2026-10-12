@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
@@ -20,7 +21,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/bedrock"
 )
 
-// bedrock 转发请求到 AWS Bedrock
+// bedrock 转发请求到 AWS Bedrock。
 func (r *Runtime) bedrock(
 	ctx context.Context,
 	output HTTPBoundary, state *AttemptState,
@@ -115,7 +116,7 @@ func (r *Runtime) bedrock(
 	return converted, nil
 }
 
-// bedrockError 处理 Bedrock 上游 4xx/5xx 错误（failover + 错误响应）
+// bedrockError 处理 Bedrock 上游 4xx/5xx 错误（failover + 错误响应）。
 func (r *Runtime) bedrockError(
 	ctx context.Context,
 	resp *http.Response,
@@ -211,4 +212,27 @@ func (r *Runtime) bedrockBetaTokens(ctx context.Context, target *gatewayprovider
 		return nil, err
 	}
 	return anthropic.FilterBetaTokens(tokens, policy.FilterSet), nil
+}
+
+// PrepareBedrockCompatibility 在分组映射后清理请求体，并原地更新 Header。
+func (r *Runtime) PrepareBedrockCompatibility(ctx context.Context, headers http.Header, body []byte, model string, target *gatewayprovider.ExecutionProvider, groupID *int64) []byte {
+	if groupID == nil || r.dependencies.GroupPolicies == nil {
+		return body
+	}
+	policy, err := r.dependencies.GroupPolicies.GetGroupPolicy(ctx, *groupID)
+	if err != nil || policy == nil || !policy.IsBedrockCCCompatEnabled(target.Record.Platform) {
+		return body
+	}
+	body = bedrock.SanitizeBedrockCCFields(body)
+	body = bedrock.SanitizeBedrockThinking(body, model)
+	body = bedrock.SanitizeBedrockToolUseIDs(body)
+	body = bedrock.SanitizeBedrockCCBetaTokens(body, model)
+	if beta := headers.Get("anthropic-beta"); beta != "" {
+		if filtered := bedrock.ResolveBedrockBetaTokens(beta, body, model); len(filtered) > 0 {
+			headers.Set("anthropic-beta", strings.Join(filtered, ", "))
+		} else {
+			headers.Del("anthropic-beta")
+		}
+	}
+	return body
 }

@@ -6,15 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billinghttpapi "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
-
 	middleware2 "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
 )
 
 // PaymentHandler handles user-facing payment requests.
@@ -22,6 +21,139 @@ type PaymentHandler struct {
 	paymentService *payment.Runtime
 	configService  *payment.ConfigService
 	plans          *billing.Plans
+}
+
+type UserCheckoutInfoResponse struct {
+	Methods                       map[string]payment.MethodLimits `json:"methods"`
+	GlobalMin                     float64                         `json:"global_min"`
+	GlobalMax                     float64                         `json:"global_max"`
+	Plans                         []UserCheckoutPlan              `json:"plans"`
+	BalanceDisabled               bool                            `json:"balance_disabled"`
+	BalanceRechargeMultiplier     float64                         `json:"balance_recharge_multiplier"`
+	SubscriptionUSDToCNYRate      float64                         `json:"subscription_usd_to_cny_rate"`
+	RechargeFeeRate               float64                         `json:"recharge_fee_rate"`
+	MethodFees                    payment.MethodFeeSettings       `json:"method_fees"`
+	HelpText                      string                          `json:"help_text"`
+	HelpImageURL                  string                          `json:"help_image_url"`
+	StripePublishableKey          string                          `json:"stripe_publishable_key"`
+	AlipayForceQRCode             bool                            `json:"alipay_force_qrcode"`
+	AlipayMobilePrecreateDeepLink bool                            `json:"alipay_mobile_precreate_deep_link"`
+}
+
+type UserCheckoutPlan struct {
+	ID                   int64             `json:"id"`
+	GroupID              *int64            `json:"group_id,omitempty"`
+	GroupIDs             []int64           `json:"group_ids"`
+	GroupRateMultipliers map[int64]float64 `json:"group_rate_multipliers"`
+	GroupName            string            `json:"group_name,omitempty"`
+	DailyLimitUSD        *float64          `json:"daily_limit_usd"`
+	WeeklyLimitUSD       *float64          `json:"weekly_limit_usd"`
+	MonthlyLimitUSD      *float64          `json:"monthly_limit_usd"`
+	ModelScopes          []string          `json:"supported_model_scopes,omitempty"`
+	Name                 string            `json:"name"`
+	Description          string            `json:"description"`
+	Price                float64           `json:"price"`
+	OriginalPrice        *float64          `json:"original_price,omitempty"`
+	Currency             string            `json:"currency,omitempty"`
+	ValidityDays         int               `json:"validity_days"`
+	ValidityUnit         string            `json:"validity_unit"`
+	Features             []string          `json:"features"`
+	ProductName          string            `json:"product_name"`
+}
+
+// CreateOrderRequest is the request body for creating a payment order.
+type CreateOrderRequest struct {
+	Amount            float64              `json:"amount"`
+	PaymentType       string               `json:"payment_type" binding:"required"`
+	OpenID            string               `json:"openid"`
+	WechatResumeToken string               `json:"wechat_resume_token"`
+	ReturnURL         string               `json:"return_url"`
+	PaymentSource     string               `json:"payment_source"`
+	OrderType         string               `json:"order_type"`
+	PlanID            int64                `json:"plan_id"`
+	BillingInfo       *payment.BillingInfo `json:"billing_info"`
+	// IsMobile lets the frontend declare its mobile status directly. When
+	// nil we fall back to User-Agent heuristics (which miss iPadOS / some
+	// embedded browsers that strip the "Mobile" keyword).
+	IsMobile *bool `json:"is_mobile,omitempty"`
+}
+
+// RefundRequestBody is the request body for requesting a refund.
+type RefundRequestBody struct {
+	Reason string `json:"reason"`
+}
+
+// VerifyOrderRequest is the request body for verifying a payment order.
+type VerifyOrderRequest struct {
+	OutTradeNo string `json:"out_trade_no" binding:"required"`
+}
+
+type ResolveOrderByResumeTokenRequest struct {
+	ResumeToken string `json:"resume_token" binding:"required"`
+}
+
+// PublicOrderResult 是签名恢复 token 可读取的订单结果；token 已证明持有支付会话。
+type PublicOrderResult struct {
+	ID                  int64      `json:"id"`
+	OutTradeNo          string     `json:"out_trade_no"`
+	Amount              float64    `json:"amount"`
+	PayAmount           float64    `json:"pay_amount"`
+	FeeRate             float64    `json:"fee_rate"`
+	FeeFixed            float64    `json:"fee_fixed"`
+	FeeRateAmount       float64    `json:"fee_rate_amount"`
+	FeeAmount           float64    `json:"fee_amount"`
+	Currency            string     `json:"currency"`
+	PaymentType         string     `json:"payment_type"`
+	OrderType           string     `json:"order_type"`
+	Status              string     `json:"status"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ExpiresAt           time.Time  `json:"expires_at"`
+	PaidAt              *time.Time `json:"paid_at,omitempty"`
+	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+	RefundAmount        float64    `json:"refund_amount"`
+	RefundReason        *string    `json:"refund_reason,omitempty"`
+	RefundRequestedAt   *time.Time `json:"refund_requested_at,omitempty"`
+	RefundRequestedBy   *string    `json:"refund_requested_by,omitempty"`
+	RefundRequestReason *string    `json:"refund_request_reason,omitempty"`
+	PlanID              *int64     `json:"plan_id,omitempty"`
+}
+
+// PublicOrderVerifyResult 是匿名 out_trade_no 查单结果；out_trade_no 不是密钥，只返回最小状态信息。
+type PublicOrderVerifyResult struct {
+	OutTradeNo  string     `json:"out_trade_no"`
+	Status      string     `json:"status"`
+	Paid        bool       `json:"paid"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	PaidAt      *time.Time `json:"paid_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+type PaymentOrderResult struct {
+	ID                  int64      `json:"id"`
+	UserID              int64      `json:"user_id"`
+	Amount              float64    `json:"amount"`
+	PayAmount           float64    `json:"pay_amount"`
+	FeeRate             float64    `json:"fee_rate"`
+	FeeFixed            float64    `json:"fee_fixed"`
+	FeeRateAmount       float64    `json:"fee_rate_amount"`
+	FeeAmount           float64    `json:"fee_amount"`
+	Currency            string     `json:"currency"`
+	PaymentType         string     `json:"payment_type"`
+	OutTradeNo          string     `json:"out_trade_no"`
+	Status              string     `json:"status"`
+	OrderType           string     `json:"order_type"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ExpiresAt           time.Time  `json:"expires_at"`
+	PaidAt              *time.Time `json:"paid_at,omitempty"`
+	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+	RefundAmount        float64    `json:"refund_amount"`
+	RefundReason        *string    `json:"refund_reason,omitempty"`
+	RefundRequestedAt   *time.Time `json:"refund_requested_at,omitempty"`
+	RefundRequestedBy   *string    `json:"refund_requested_by,omitempty"`
+	RefundRequestReason *string    `json:"refund_request_reason,omitempty"`
+	PlanID              *int64     `json:"plan_id,omitempty"`
+	ProviderInstanceID  *string    `json:"provider_instance_id,omitempty"`
 }
 
 // NewPaymentHandler creates a new PaymentHandler.
@@ -81,7 +213,7 @@ func (h *PaymentHandler) GetCheckoutInfo(c *gin.Context) {
 	planList := make([]UserCheckoutPlan, 0, len(plans))
 	for _, p := range plans {
 		planList = append(planList, UserCheckoutPlan{
-			ID:                   int64(p.ID),
+			ID:                   p.ID,
 			DailyLimitUSD:        p.DailyLimitUSD,
 			WeeklyLimitUSD:       p.WeeklyLimitUSD,
 			MonthlyLimitUSD:      p.MonthlyLimitUSD,
@@ -117,44 +249,6 @@ func (h *PaymentHandler) GetCheckoutInfo(c *gin.Context) {
 	})
 }
 
-type UserCheckoutInfoResponse struct {
-	Methods                       map[string]payment.MethodLimits `json:"methods"`
-	GlobalMin                     float64                         `json:"global_min"`
-	GlobalMax                     float64                         `json:"global_max"`
-	Plans                         []UserCheckoutPlan              `json:"plans"`
-	BalanceDisabled               bool                            `json:"balance_disabled"`
-	BalanceRechargeMultiplier     float64                         `json:"balance_recharge_multiplier"`
-	SubscriptionUSDToCNYRate      float64                         `json:"subscription_usd_to_cny_rate"`
-	RechargeFeeRate               float64                         `json:"recharge_fee_rate"`
-	MethodFees                    payment.MethodFeeSettings       `json:"method_fees"`
-	HelpText                      string                          `json:"help_text"`
-	HelpImageURL                  string                          `json:"help_image_url"`
-	StripePublishableKey          string                          `json:"stripe_publishable_key"`
-	AlipayForceQRCode             bool                            `json:"alipay_force_qrcode"`
-	AlipayMobilePrecreateDeepLink bool                            `json:"alipay_mobile_precreate_deep_link"`
-}
-
-type UserCheckoutPlan struct {
-	ID                   int64             `json:"id"`
-	GroupID              *int64            `json:"group_id,omitempty"`
-	GroupIDs             []int64           `json:"group_ids"`
-	GroupRateMultipliers map[int64]float64 `json:"group_rate_multipliers"`
-	GroupName            string            `json:"group_name,omitempty"`
-	DailyLimitUSD        *float64          `json:"daily_limit_usd"`
-	WeeklyLimitUSD       *float64          `json:"weekly_limit_usd"`
-	MonthlyLimitUSD      *float64          `json:"monthly_limit_usd"`
-	ModelScopes          []string          `json:"supported_model_scopes,omitempty"`
-	Name                 string            `json:"name"`
-	Description          string            `json:"description"`
-	Price                float64           `json:"price"`
-	OriginalPrice        *float64          `json:"original_price,omitempty"`
-	Currency             string            `json:"currency,omitempty"`
-	ValidityDays         int               `json:"validity_days"`
-	ValidityUnit         string            `json:"validity_unit"`
-	Features             []string          `json:"features"`
-	ProductName          string            `json:"product_name"`
-}
-
 func UserParseFeatures(raw string) []string { return billinghttpapi.ParsePlanFeatures(raw) }
 
 func UserCloneInt64Float64Map(in map[int64]float64) map[int64]float64 {
@@ -170,23 +264,6 @@ func (h *PaymentHandler) GetLimits(c *gin.Context) {
 		return
 	}
 	response.Success(c, resp)
-}
-
-// CreateOrderRequest is the request body for creating a payment order.
-type CreateOrderRequest struct {
-	Amount            float64              `json:"amount"`
-	PaymentType       string               `json:"payment_type" binding:"required"`
-	OpenID            string               `json:"openid"`
-	WechatResumeToken string               `json:"wechat_resume_token"`
-	ReturnURL         string               `json:"return_url"`
-	PaymentSource     string               `json:"payment_source"`
-	OrderType         string               `json:"order_type"`
-	PlanID            int64                `json:"plan_id"`
-	BillingInfo       *payment.BillingInfo `json:"billing_info"`
-	// IsMobile lets the frontend declare its mobile status directly. When
-	// nil we fall back to User-Agent heuristics (which miss iPadOS / some
-	// embedded browsers that strip the "Mobile" keyword).
-	IsMobile *bool `json:"is_mobile,omitempty"`
 }
 
 // CreateOrder creates a new payment order.
@@ -369,11 +446,6 @@ func (h *PaymentHandler) CancelOrder(c *gin.Context) {
 	response.Success(c, gin.H{"message": msg})
 }
 
-// RefundRequestBody is the request body for requesting a refund.
-type RefundRequestBody struct {
-	Reason string `json:"reason"`
-}
-
 // RequestRefund submits a refund request for a completed order.
 // POST /api/v1/payment/orders/:id/refund-request
 func (h *PaymentHandler) RequestRefund(c *gin.Context) {
@@ -411,15 +483,6 @@ func (h *PaymentHandler) GetRefundEligibleProviders(c *gin.Context) {
 	response.Success(c, gin.H{"provider_instance_ids": ids})
 }
 
-// VerifyOrderRequest is the request body for verifying a payment order.
-type VerifyOrderRequest struct {
-	OutTradeNo string `json:"out_trade_no" binding:"required"`
-}
-
-type ResolveOrderByResumeTokenRequest struct {
-	ResumeToken string `json:"resume_token" binding:"required"`
-}
-
 // VerifyOrder actively queries the upstream payment provider to check
 // if payment was made, and processes it if so.
 // POST /api/v1/payment/orders/verify
@@ -441,43 +504,6 @@ func (h *PaymentHandler) VerifyOrder(c *gin.Context) {
 		return
 	}
 	response.Success(c, UserSanitizePaymentOrderForResponse(order))
-}
-
-// PublicOrderResult 是签名恢复 token 可读取的订单结果；token 已证明持有支付会话。
-type PublicOrderResult struct {
-	ID                  int64      `json:"id"`
-	OutTradeNo          string     `json:"out_trade_no"`
-	Amount              float64    `json:"amount"`
-	PayAmount           float64    `json:"pay_amount"`
-	FeeRate             float64    `json:"fee_rate"`
-	FeeFixed            float64    `json:"fee_fixed"`
-	FeeRateAmount       float64    `json:"fee_rate_amount"`
-	FeeAmount           float64    `json:"fee_amount"`
-	Currency            string     `json:"currency"`
-	PaymentType         string     `json:"payment_type"`
-	OrderType           string     `json:"order_type"`
-	Status              string     `json:"status"`
-	CreatedAt           time.Time  `json:"created_at"`
-	ExpiresAt           time.Time  `json:"expires_at"`
-	PaidAt              *time.Time `json:"paid_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
-	RefundAmount        float64    `json:"refund_amount"`
-	RefundReason        *string    `json:"refund_reason,omitempty"`
-	RefundRequestedAt   *time.Time `json:"refund_requested_at,omitempty"`
-	RefundRequestedBy   *string    `json:"refund_requested_by,omitempty"`
-	RefundRequestReason *string    `json:"refund_request_reason,omitempty"`
-	PlanID              *int64     `json:"plan_id,omitempty"`
-}
-
-// PublicOrderVerifyResult 是匿名 out_trade_no 查单结果；out_trade_no 不是密钥，只返回最小状态信息。
-type PublicOrderVerifyResult struct {
-	OutTradeNo  string     `json:"out_trade_no"`
-	Status      string     `json:"status"`
-	Paid        bool       `json:"paid"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	PaidAt      *time.Time `json:"paid_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 func UserBuildPublicOrderResult(order *payment.Order) PublicOrderResult {
@@ -591,33 +617,6 @@ func UserIsMobile(c *gin.Context) bool {
 		}
 	}
 	return false
-}
-
-type PaymentOrderResult struct {
-	ID                  int64      `json:"id"`
-	UserID              int64      `json:"user_id"`
-	Amount              float64    `json:"amount"`
-	PayAmount           float64    `json:"pay_amount"`
-	FeeRate             float64    `json:"fee_rate"`
-	FeeFixed            float64    `json:"fee_fixed"`
-	FeeRateAmount       float64    `json:"fee_rate_amount"`
-	FeeAmount           float64    `json:"fee_amount"`
-	Currency            string     `json:"currency"`
-	PaymentType         string     `json:"payment_type"`
-	OutTradeNo          string     `json:"out_trade_no"`
-	Status              string     `json:"status"`
-	OrderType           string     `json:"order_type"`
-	CreatedAt           time.Time  `json:"created_at"`
-	ExpiresAt           time.Time  `json:"expires_at"`
-	PaidAt              *time.Time `json:"paid_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
-	RefundAmount        float64    `json:"refund_amount"`
-	RefundReason        *string    `json:"refund_reason,omitempty"`
-	RefundRequestedAt   *time.Time `json:"refund_requested_at,omitempty"`
-	RefundRequestedBy   *string    `json:"refund_requested_by,omitempty"`
-	RefundRequestReason *string    `json:"refund_request_reason,omitempty"`
-	PlanID              *int64     `json:"plan_id,omitempty"`
-	ProviderInstanceID  *string    `json:"provider_instance_id,omitempty"`
 }
 
 func UserSanitizePaymentOrdersForResponse(orders []*payment.Order) []PaymentOrderResult {

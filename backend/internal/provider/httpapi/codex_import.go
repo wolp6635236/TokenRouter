@@ -3,10 +3,11 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // CodexImportHandler 只拥有管理 HTTP 和原幂等响应。

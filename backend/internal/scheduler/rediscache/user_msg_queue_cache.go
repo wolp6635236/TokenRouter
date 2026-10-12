@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/redis/go-redis/v9"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/redis/go-redis/v9"
 )
 
 // Redis key 使用 providerID 作为 hash tag，同一提供商的键落在同一个 Redis Cluster slot。
-// 格式: umq:{providerID}:lock / umq:{providerID}:last
+// 格式: umq:{providerID}:lock / umq:{providerID}:last。
 const (
 	umqKeyPrefix  = "umq:"
 	umqLockSuffix = ":lock" // STRING (requestID), PX lockTtlMs
@@ -24,11 +25,12 @@ const (
 	umqLockIndexCleanupBatchSize = 1000
 )
 
-// acquireLockScript 原子获取串行锁，支持同一请求重入。
-// 返回是否取得锁及 Redis 观测的到期毫秒数，获取失败时也返回到期时间，供 Go 侧回填索引。
-// 升级遗留、索引写失败或释放竞态造成的索引缺项，在下一次争锁时补回。
-// PTTL 为 -1 的锁返回当前时间，立即进入清理候选。
-var acquireLockScript = redis.NewScript(`
+var (
+	// acquireLockScript 原子获取串行锁，支持同一请求重入。
+	// 返回是否取得锁及 Redis 观测的到期毫秒数，获取失败时也返回到期时间，供 Go 侧回填索引。
+	// 升级遗留、索引写失败或释放竞态造成的索引缺项，在下一次争锁时补回。
+	// PTTL 为 -1 的锁返回当前时间，立即进入清理候选。
+	acquireLockScript = redis.NewScript(`
 redis.replicate_commands()
 local cur = redis.call('GET', KEYS[1])
 local ttl = tonumber(ARGV[2])
@@ -53,8 +55,8 @@ local ms = tonumber(t[1])*1000 + math.floor(tonumber(t[2])/1000)
 return {1, ms + ttl}
 `)
 
-// releaseLockScript 原子释放锁，并使用 Redis TIME 记录完成时间。
-var releaseLockScript = redis.NewScript(`
+	// releaseLockScript 原子释放锁，并使用 Redis TIME 记录完成时间。
+	releaseLockScript = redis.NewScript(`
 -- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 -- 5.0 及以上默认按效果复制；保留调用不改变行为。
 redis.replicate_commands()
@@ -69,9 +71,9 @@ end
 return 0
 `)
 
-// Lua 脚本：校验锁 TTL 状态，PTTL == -1 时原子删除异常锁。
-// 返回状态: -2=锁不存在，-1=无 TTL 的异常锁已删除，1=锁仍存活并返回剩余 PTTL。
-var reconcileLockScript = redis.NewScript(`
+	// Lua 脚本：校验锁 TTL 状态，PTTL == -1 时原子删除异常锁。
+	// 返回状态: -2=锁不存在，-1=无 TTL 的异常锁已删除，1=锁仍存活并返回剩余 PTTL。
+	reconcileLockScript = redis.NewScript(`
 local pttl = redis.call('PTTL', KEYS[1])
 if pttl == -2 then
     return {-2, 0}
@@ -82,12 +84,13 @@ if pttl == -1 then
 end
 return {1, pttl}
 `)
+)
 
 type userMsgQueueCache struct {
 	rdb *redis.Client
 }
 
-// NewUserMsgQueueCache 创建用户消息队列缓存
+// NewUserMsgQueueCache 创建用户消息队列缓存。
 func NewUserMsgQueueCache(rdb *redis.Client) scheduler.UserMsgQueueCache {
 	return &userMsgQueueCache{rdb: rdb}
 }
@@ -149,7 +152,7 @@ func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, providerID int64, r
 	return result == 1, nil
 }
 
-// GetLastCompletedMs 获取上次完成时间（毫秒时间戳）
+// GetLastCompletedMs 获取上次完成时间（毫秒时间戳）。
 func (c *userMsgQueueCache) GetLastCompletedMs(ctx context.Context, providerID int64) (int64, error) {
 	key := umqLastKey(providerID)
 	val, err := c.rdb.Get(ctx, key).Result()

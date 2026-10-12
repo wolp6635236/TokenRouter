@@ -51,7 +51,7 @@ func ExecuteUpstream(ctx context.Context, body []byte, options RequestOptions, p
 			return nil, err
 		}
 
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && policy.ShouldRetry != nil && policy.ShouldRetry(resp.StatusCode) {
+		if resp.StatusCode >= 400 && resp.StatusCode != http.StatusBadRequest && policy.ShouldRetry != nil && policy.ShouldRetry(resp.StatusCode) {
 			if attempt < policy.MaxAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= policy.MaxElapsed {

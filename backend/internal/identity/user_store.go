@@ -177,7 +177,7 @@ type StartUserIdentityBindingResult struct {
 	UseBrowserRedirect bool   `json:"use_browser_redirect"`
 }
 
-// UpdateProfileRequest 更新用户资料请求
+// UpdateProfileRequest 更新用户资料请求。
 type UpdateProfileRequest struct {
 	ClearPreferredLocale   bool     `json:"-"`
 	PreferredLocale        *string  `json:"preferred_locale"`
@@ -207,7 +207,7 @@ type UpsertUserAvatarInput struct {
 	SHA256          string
 }
 
-// ChangePasswordRequest 修改密码请求
+// ChangePasswordRequest 修改密码请求。
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`

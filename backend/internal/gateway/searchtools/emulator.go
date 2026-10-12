@@ -56,9 +56,6 @@ type Output interface {
 }
 type ProxyFailure struct{ Cause error }
 
-func (e *ProxyFailure) Error() string { return e.Cause.Error() }
-func (e *ProxyFailure) Unwrap() error { return e.Cause }
-
 type Emulator struct {
 	source        SearchSource
 	settings      Settings
@@ -67,6 +64,9 @@ type Emulator struct {
 	newID         func() string
 	observer      func(Event)
 }
+
+func (e *ProxyFailure) Error() string { return e.Cause.Error() }
+func (e *ProxyFailure) Unwrap() error { return e.Cause }
 
 // NewEmulator 不启动 worker，不复制搜索 Manager、客户端或配额状态。
 func NewEmulator(source SearchSource, settings Settings, groupPolicies GroupPolicy, now func() time.Time, newID func() string, observe func(Event)) *Emulator {

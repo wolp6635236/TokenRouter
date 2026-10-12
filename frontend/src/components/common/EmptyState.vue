@@ -16,7 +16,7 @@
     </h3>
 
     <!-- Description -->
-    <p class="empty-state-description">
+    <p v-if="description" class="empty-state-description">
       {{ description }}
     </p>
 
@@ -30,7 +30,7 @@
           @click="!actionTo && $emit('action')"
           class="btn btn-primary"
         >
-          <Icon v-if="actionIcon" name="plus" size="md" class="mr-2" />
+          <Icon v-if="actionIcon" name="plus" size="sm" />
           {{ actionText }}
         </component>
       </slot>

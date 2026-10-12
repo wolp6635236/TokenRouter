@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"testing"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
+
+const SettingKeyOpsRuntimeLogConfig = ops.SettingKeyOpsRuntimeLogConfig
+
+var ErrSettingNotFound = settings.ErrSettingNotFound
 
 type runtimeSettingRepoStub struct {
 	values           map[string]string
@@ -20,6 +25,17 @@ type runtimeSettingRepoStub struct {
 	getValueFn       func(key string) (string, error)
 	setFn            func(key, value string) error
 	deleteFn         func(key string) error
+}
+
+type (
+	OpsService          = ops.OpsService
+	OpsRuntimeLogConfig = ops.OpsRuntimeLogConfig
+	Setting             = settings.Setting
+)
+
+type testServiceInputs struct {
+	settingRepo ops.Settings
+	cfg         *ops.Options
 }
 
 func newRuntimeSettingRepoStub() *runtimeSettingRepoStub {
@@ -72,17 +88,13 @@ func (s *runtimeSettingRepoStub) GetMultiple(_ context.Context, keys []string) (
 }
 
 func (s *runtimeSettingRepoStub) SetMultiple(_ context.Context, settings map[string]string) error {
-	for key, value := range settings {
-		s.values[key] = value
-	}
+	maps.Copy(s.values, settings)
 	return nil
 }
 
 func (s *runtimeSettingRepoStub) GetAll(_ context.Context) (map[string]string, error) {
 	out := make(map[string]string, len(s.values))
-	for key, value := range s.values {
-		out[key] = value
-	}
+	maps.Copy(out, s.values)
 	return out, nil
 }
 
@@ -506,21 +518,6 @@ func TestApplyRuntimeLogConfigHelpers(t *testing.T) {
 
 	var nilSvc *OpsService
 	nilSvc.ApplyRuntimeLogConfigOnStartup(context.Background())
-}
-
-type (
-	OpsService          = ops.OpsService
-	OpsRuntimeLogConfig = ops.OpsRuntimeLogConfig
-	Setting             = settings.Setting
-)
-
-var ErrSettingNotFound = settings.ErrSettingNotFound
-
-const SettingKeyOpsRuntimeLogConfig = ops.SettingKeyOpsRuntimeLogConfig
-
-type testServiceInputs struct {
-	settingRepo ops.Settings
-	cfg         *ops.Options
 }
 
 func newTestService(v testServiceInputs) *OpsService {

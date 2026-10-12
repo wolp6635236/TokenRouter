@@ -41,6 +41,9 @@ backend/
 │   ├── app/                                             应用装配、依赖绑定和运行资源登记
 │   │   ├── bootstrap/                                   数据库与 Redis 引导、迁移、密钥、时区及初始数据
 │   │   └── lifecycle/                                   分阶段启停、请求屏障、派生任务等待与重启
+│   ├── requestlog/                                      请求摘要、内存批写与查询
+│   │   ├── httpapi/                                     管理员请求诊断详情
+│   │   └── postgres/                                    摘要、历史关联与归属查询
 │   ├── audit/                                           管理员操作审计与审计数据清理
 │   │   ├── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
 │   │   └── postgres/                                    PostgreSQL 持久化及事务适配
@@ -88,7 +91,6 @@ backend/
 │   │   │   ├── openaiattempt/                           OpenAI 兼容文本入口的逐次尝试绑定
 │   │   │   ├── testkit/                                 该模块测试所需的替身与夹具
 │   │   │   ├── textattempt/                             Messages、通用文本与 Gemini 入口的尝试绑定
-│   │   │   └── wsentry/                                 WebSocket 入站和每轮执行的接口绑定
 │   │   ├── live/                                        Live 创建、会话身份、模型状态和观察者编排
 │   │   ├── media/                                       媒体生成、视频归属、搜索与 Realtime 用例
 │   │   │   └── provider/                                媒体归属与异步计量的任务适配
@@ -113,10 +115,12 @@ backend/
 │   │   │   └── testkit/                                 该模块测试所需的替身与夹具
 │   │   ├── telemetry/                                   完成观测、诊断与缺失用量采样
 │   │   ├── testkit/                                     该模块测试所需的替身与夹具
+│   │   ├── systemone/                                    SystemOne 决策请求的提供商尝试与完成判断
 │   │   ├── text/                                        文本提供商循环、计数和输入 token 预检
 │   │   ├── tierpolicy/                                  Fast/Flex 服务档位准入、设置与价格规则
 │   │   ├── tokenestimate/                               本地 token 数估算
-│   │   └── ws/                                          入站 WebSocket、turn、帧与恢复编排
+│   │   └── ws/                                          Responses WS 会话、恢复与在线参数
+│   │       └── httpapi/                                 WS 升级、逐轮执行与 HTTP 转换
 │   ├── idempotency/                                     面板命令认领、重放、冲突与租约清理
 │   │   ├── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
 │   │   ├── postgres/                                    PostgreSQL 持久化及事务适配
@@ -189,6 +193,7 @@ backend/
 │   │   ├── google/                                      Google 错误、OAuth、服务账号和共享报文
 │   │   ├── grok/                                        Grok token 估算的协议常量
 │   │   ├── openai/                                      Responses、Chat、媒体、WS、Codex 与用量报文
+│   │   ├── systemone/                                   SystemOne 请求、答案与用量的纯校验
 │   │   └── wirejson/                                    保持报文结构的 JSON 读取与修改
 │   ├── modelcatalog/                                    models.dev 目录、内嵌官方补充、供应商身份索引及展示属性值
 │   │   └── provider/                                   统一目录加载、条件同步、内嵌与自定义补充、价格和属性原子快照
@@ -258,11 +263,13 @@ backend/
 │   │   ├── internal/                                    仅供 upstream 子包复用的实现；分类目录
 │   │   │   ├── googleauth/                              Google Service Account 认证
 │   │   │   └── usageclient/                             供应商用量查询的共享 HTTP 客户端
+│   │   ├── jev/                                          Jev SystemOne 单次上游请求
 │   │   ├── kimi/                                        Kimi 模型、用量及错误识别
 │   │   ├── ollama/                                      Ollama Cloud 会话用量与兼容请求
 │   │   ├── openai/                                      OpenAI/Codex 认证、请求、媒体与连接资源
 │   │   │   ├── liveattestation/                         Darwin 本机认证，其他平台返回不支持
-│   │   │   └── wsrelay/                                 WebSocket 帧转发、透传和 relay 指标
+│   │   │   └── ws/                                      Responses 握手、连接池与参数更新
+│   │   │       └── relay/                                WebSocket 双向帧转发与指标
 │   │   ├── qoder/                                       Qoder 站点、签名、模型、会话与 SSE
 │   │   │   └── localauth/                               Qoder 本机授权文件解析
 │   │   ├── usagecontract/                               供应商用量查询的请求格式
@@ -424,6 +431,7 @@ app/lifecycle 管理这些组件的启动和关闭。audit 独立记录操作审
 | creative、batchimage | [创作台](../domains/creative_studio.md)、[批量图片作业](../domains/batch_image_jobs.md) |
 | moderation | [内容审核](../domains/content_moderation.md) |
 | search、notification | [搜索编排](../domains/search_orchestration.md)、[通知投递](../domains/notification_delivery.md) |
+| requestlog | [请求 ID 与请求查询](../operations/request_lookup.md) |
 | usage、audit、ops | [数据生命周期](../operations/observability_and_data_lifecycle.md)、[监控告警](../operations/ops_monitoring_and_alerting.md)、[预聚合](../operations/pre_aggregation.md) |
 | backup | [备份与恢复](../operations/deployment_and_migrations.md#maintenance_execution) |
 | settings、site | [配置](../interfaces/configuration.md)、[HTTP 与页面权限](../interfaces/http_api.md) |

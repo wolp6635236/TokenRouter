@@ -16,6 +16,40 @@ const (
 	OpenAITeamLinkedErrorBlockReason   = "team_linked_error"
 )
 
+// TeamLinkedStore 按平台筛选提供商，并逐个独立写入状态。
+type TeamLinkedStore interface {
+	ListByPlatform(context.Context, string) ([]Record, error)
+	SetError(context.Context, int64, string) error
+}
+
+// TeamLinkedOptions 接收 app 绑定的运行阻断和日志函数。
+type TeamLinkedOptions struct {
+	Now   func() time.Time
+	Warn  func(string, ...any)
+	Block func(*Record, time.Time, string)
+}
+
+// TeamLinkedHealth 独占工作区联动的原进程内去重状态，构造不启动后台任务。
+type TeamLinkedHealth struct {
+	providerRepo           TeamLinkedStore
+	options                TeamLinkedOptions
+	openaiTeamLinkedMu     sync.Mutex
+	openaiTeamLinkedRecent map[string]time.Time
+}
+
+func NewTeamLinkedHealth(store TeamLinkedStore, options TeamLinkedOptions) *TeamLinkedHealth {
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	if options.Warn == nil {
+		options.Warn = func(string, ...any) {}
+	}
+	if options.Block == nil {
+		options.Block = func(*Record, time.Time, string) {}
+	}
+	return &TeamLinkedHealth{providerRepo: store, options: options}
+}
+
 // HandleWorkspaceDeactivated 在 OpenAI OAuth 提供商收到 402 deactivated_workspace
 // （ChatGPT Team 工作区被停用）时，把同一 Team（credentials.chatgpt_account_id 相同）
 // 的其余 active 提供商一并置为 error 并立即熔断。触发提供商自身不在 fan-out 范围内，
@@ -96,38 +130,4 @@ func (s *TeamLinkedHealth) markOpenAITeamLinkedFired(teamID string) bool {
 	}
 	s.openaiTeamLinkedRecent[teamID] = now.Add(openAITeamLinkedErrorDedupTTL)
 	return true
-}
-
-// TeamLinkedStore 按平台筛选提供商，并逐个独立写入状态。
-type TeamLinkedStore interface {
-	ListByPlatform(context.Context, string) ([]Record, error)
-	SetError(context.Context, int64, string) error
-}
-
-// TeamLinkedOptions 接收 app 绑定的运行阻断和日志函数。
-type TeamLinkedOptions struct {
-	Now   func() time.Time
-	Warn  func(string, ...any)
-	Block func(*Record, time.Time, string)
-}
-
-// TeamLinkedHealth 独占工作区联动的原进程内去重状态，构造不启动后台任务。
-type TeamLinkedHealth struct {
-	providerRepo           TeamLinkedStore
-	options                TeamLinkedOptions
-	openaiTeamLinkedMu     sync.Mutex
-	openaiTeamLinkedRecent map[string]time.Time
-}
-
-func NewTeamLinkedHealth(store TeamLinkedStore, options TeamLinkedOptions) *TeamLinkedHealth {
-	if options.Now == nil {
-		options.Now = time.Now
-	}
-	if options.Warn == nil {
-		options.Warn = func(string, ...any) {}
-	}
-	if options.Block == nil {
-		options.Block = func(*Record, time.Time, string) {}
-	}
-	return &TeamLinkedHealth{providerRepo: store, options: options}
 }

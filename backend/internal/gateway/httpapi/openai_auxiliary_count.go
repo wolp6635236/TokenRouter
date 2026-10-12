@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
@@ -15,19 +16,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
-const openAIInputTokensFallbackMinimum = 1
-
-// 兼容旧上游计数准备结构，算法由网关估算模块唯一持有。
+const (
+	openaiPlatformAPIInputTokensURL  = "https://api.openai.com/v1/responses/input_tokens"
+	openAIInputTokensFallbackMinimum = 1
+)
 
 // ForwardCountTokensAsAnthropic 将 Anthropic /v1/messages/count_tokens 桥接到
 // OpenAI POST /v1/responses/input_tokens，并返回 Anthropic 兼容结果。

@@ -4,13 +4,14 @@ import (
 	"context"
 	"strings"
 
+	entsql "entgo.io/ent/dialect/sql"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/promocode"
 	"github.com/TokenFlux/TokenRouter/ent/promocodeusage"
+	"github.com/TokenFlux/TokenRouter/internal/identity/contact"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
-
-	entsql "entgo.io/ent/dialect/sql"
 )
 
 type promoCodeRepository struct {
@@ -314,4 +315,32 @@ func promoNote(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// promoUserView 将用户实体转换为优惠码使用记录中的用户资料。
+func promoUserView(u *dbent.User) *promotion.UserView {
+	if u == nil {
+		return nil
+	}
+	return &promotion.UserView{
+		ID:                         u.ID,
+		Email:                      u.Email,
+		Username:                   u.Username,
+		Role:                       u.Role,
+		Balance:                    u.Balance,
+		FrozenBalance:              u.FrozenBalance,
+		Concurrency:                u.Concurrency,
+		Status:                     u.Status,
+		LastActiveAt:               u.LastActiveAt,
+		CreatedAt:                  u.CreatedAt,
+		UpdatedAt:                  u.UpdatedAt,
+		DeletedAt:                  u.DeletedAt,
+		BalanceNotifyEnabled:       u.BalanceNotifyEnabled,
+		BalanceNotifyThresholdType: u.BalanceNotifyThresholdType,
+		BalanceNotifyThreshold:     u.BalanceNotifyThreshold,
+		BalanceNotifyExtraEmails:   contact.ParseNotifyEmails(u.BalanceNotifyExtraEmails),
+		TotalRecharged:             u.TotalRecharged,
+		RPMLimit:                   u.RpmLimit,
+		APIKeyLimit:                u.APIKeyLimit,
+	}
 }

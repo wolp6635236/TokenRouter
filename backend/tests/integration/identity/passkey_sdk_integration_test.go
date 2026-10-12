@@ -14,14 +14,14 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/fxamacker/cbor/v2"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	identityadapter "github.com/TokenFlux/TokenRouter/internal/identity/provider"
 	identityredis "github.com/TokenFlux/TokenRouter/internal/identity/rediscache"
-	"github.com/fxamacker/cbor/v2"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
 // TestPasskeySDKCeremony 使用真实 SDK、签名、PostgreSQL 与 Redis，验证消费先于解析及凭据更新。

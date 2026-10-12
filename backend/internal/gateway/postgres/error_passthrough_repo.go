@@ -12,12 +12,12 @@ type errorPassthroughRepository struct {
 	client *ent.Client
 }
 
-// NewErrorPassthroughRepository 创建错误透传规则仓库
+// NewErrorPassthroughRepository 创建错误透传规则仓库。
 func NewErrorPassthroughRepository(client *ent.Client) errorpolicy.ErrorPassthroughRepository {
 	return &errorPassthroughRepository{client: client}
 }
 
-// List 获取所有规则
+// List 获取所有规则。
 func (r *errorPassthroughRepository) List(ctx context.Context) ([]*errorpolicy.ErrorPassthroughRule, error) {
 	rules, err := r.client.ErrorPassthroughRule.Query().
 		Order(ent.Asc(errorpassthroughrule.FieldPriority)).
@@ -33,7 +33,7 @@ func (r *errorPassthroughRepository) List(ctx context.Context) ([]*errorpolicy.E
 	return result, nil
 }
 
-// GetByID 根据 ID 获取规则
+// GetByID 根据 ID 获取规则。
 func (r *errorPassthroughRepository) GetByID(ctx context.Context, id int64) (*errorpolicy.ErrorPassthroughRule, error) {
 	rule, err := r.client.ErrorPassthroughRule.Get(ctx, id)
 	if err != nil {
@@ -45,7 +45,7 @@ func (r *errorPassthroughRepository) GetByID(ctx context.Context, id int64) (*er
 	return r.toModel(rule), nil
 }
 
-// Create 创建规则
+// Create 创建规则。
 func (r *errorPassthroughRepository) Create(ctx context.Context, rule *errorpolicy.ErrorPassthroughRule) (*errorpolicy.ErrorPassthroughRule, error) {
 	builder := r.client.ErrorPassthroughRule.Create().
 		SetName(rule.Name).
@@ -82,7 +82,7 @@ func (r *errorPassthroughRepository) Create(ctx context.Context, rule *errorpoli
 	return r.toModel(created), nil
 }
 
-// Update 更新规则
+// Update 更新规则。
 func (r *errorPassthroughRepository) Update(ctx context.Context, rule *errorpolicy.ErrorPassthroughRule) (*errorpolicy.ErrorPassthroughRule, error) {
 	builder := r.client.ErrorPassthroughRule.UpdateOneID(rule.ID).
 		SetName(rule.Name).
@@ -132,15 +132,15 @@ func (r *errorPassthroughRepository) Update(ctx context.Context, rule *errorpoli
 	return r.toModel(updated), nil
 }
 
-// Delete 删除规则
+// Delete 删除规则。
 func (r *errorPassthroughRepository) Delete(ctx context.Context, id int64) error {
 	return r.client.ErrorPassthroughRule.DeleteOneID(id).Exec(ctx)
 }
 
-// toModel 将 Ent 实体转换为服务模型
+// toModel 将 Ent 实体转换为服务模型。
 func (r *errorPassthroughRepository) toModel(e *ent.ErrorPassthroughRule) *errorpolicy.ErrorPassthroughRule {
 	rule := &errorpolicy.ErrorPassthroughRule{
-		ID:              int64(e.ID),
+		ID:              e.ID,
 		Name:            e.Name,
 		Enabled:         e.Enabled,
 		Priority:        e.Priority,

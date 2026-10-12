@@ -6,6 +6,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
+type flowScore struct {
+	Provider *FlowProvider
+	score    CandidateScore
+}
+
 // flowBasic 将候选转换为基础排序所需的数据。
 func flowBasic(a *FlowProvider) *BasicProvider {
 	if a == nil {
@@ -103,11 +108,6 @@ func flowShuffleWithinPriority(values []*FlowProvider, now func() time.Time) {
 	for i, a := range v {
 		values[i] = m[a]
 	}
-}
-
-type flowScore struct {
-	Provider *FlowProvider
-	score    CandidateScore
 }
 
 func flowScoreCandidates(values []*FlowProvider, loads map[int64]*ProviderLoadInfo, stats *RuntimeStats, weights policy.ScoreWeights, input ScoreInput, now time.Time) ([]flowScore, float64) {

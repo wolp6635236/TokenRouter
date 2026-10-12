@@ -7,26 +7,22 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 // writeSanitizedOpenAIPassthroughError 委托 HTTP Adapter，保留旧调用入口。

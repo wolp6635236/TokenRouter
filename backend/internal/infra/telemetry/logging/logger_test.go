@@ -3,6 +3,7 @@ package logging
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +11,7 @@ import (
 )
 
 func TestInit_DualOutput(t *testing.T) {
-	// Use os.MkdirTemp instead of t.TempDir to avoid cleanup failures
-	// when lumberjack holds file handles on Windows.
+	// lumberjack 在 Windows 上持有文件句柄，使用 MkdirTemp 创建目录并由测试清理。
 	tmpDir, err := os.MkdirTemp("", "logger-test-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
@@ -66,8 +66,8 @@ func TestInit_DualOutput(t *testing.T) {
 	L().Info("dual-output-info")
 	L().Warn("dual-output-warn")
 
-	// Skip Sync() — on Windows, fsync on pipes deadlocks (FlushFileBuffers).
-	// The log data is already in the pipe buffer; closing writers is sufficient.
+	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
+	// 日志已经写入管道缓冲区，关闭写端后即可读取。
 
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
@@ -176,14 +176,14 @@ func TestInit_CallerShouldPointToCallsite(t *testing.T) {
 	}
 
 	L().Info("caller-check")
-	// Skip Sync() — on Windows, fsync on pipes deadlocks (FlushFileBuffers).
+	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
 	os.Stdout = origStdout
 	os.Stderr = origStderr
 	_ = stdoutW.Close()
 	logBytes, _ := io.ReadAll(stdoutR)
 
 	var line string
-	for _, item := range strings.Split(string(logBytes), "\n") {
+	for item := range strings.SplitSeq(string(logBytes), "\n") {
 		if strings.Contains(item, "caller-check") {
 			line = item
 			break
@@ -200,5 +200,185 @@ func TestInit_CallerShouldPointToCallsite(t *testing.T) {
 	caller, _ := payload["caller"].(string)
 	if !strings.Contains(caller, "logger_test.go:") {
 		t.Fatalf("caller should point to this test file, got: %s", caller)
+	}
+}
+
+// TestLegacyPrintfCaller 检查日志记录的调用者文件名。
+func TestLegacyPrintfCaller(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caller.json")
+	err := Init(InitOptions{
+		Level:  "info",
+		Format: "json",
+		Caller: true,
+		Output: OutputOptions{ToFile: true, FilePath: path},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	LegacyPrintf("compatibility", "caller marker")
+	Sync()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "logger_test.go") {
+		t.Fatalf("caller must point at the consumer: %s", content)
+	}
+}
+
+func TestInferStdLogLevel(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want Level
+	}{
+		{msg: "Warning: queue full", want: LevelWarn},
+		{msg: "Forward request failed: timeout", want: LevelError},
+		{msg: "[ERROR] upstream unavailable", want: LevelError},
+		{msg: "[OpenAI WS Mode] reconnect_retry provider_id=22 retry=1 max_retries=5", want: LevelInfo},
+		{msg: "service started", want: LevelInfo},
+		{msg: "debug: cache miss", want: LevelDebug},
+	}
+
+	for _, tc := range cases {
+		got := inferStdLogLevel(tc.msg)
+		if got != tc.want {
+			t.Fatalf("inferStdLogLevel(%q)=%v want=%v", tc.msg, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeStdLogMessage(t *testing.T) {
+	raw := "  [TokenRefresh]  cycle complete \n total=1   failed=0 \n"
+	got := normalizeStdLogMessage(raw)
+	want := "[TokenRefresh] cycle complete total=1 failed=0"
+	if got != want {
+		t.Fatalf("normalizeStdLogMessage()=%q want=%q", got, want)
+	}
+}
+
+func TestStdLogBridgeRoutesLevels(t *testing.T) {
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+	t.Cleanup(func() {
+		os.Stdout = origStdout
+		os.Stderr = origStderr
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		_ = stderrR.Close()
+		_ = stderrW.Close()
+	})
+
+	if err := Init(InitOptions{
+		Level:       "debug",
+		Format:      "json",
+		ServiceName: "tokenrouter",
+		Environment: "test",
+		Output: OutputOptions{
+			ToStdout: true,
+			ToFile:   false,
+		},
+		Sampling: SamplingOptions{Enabled: false},
+	}); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	log.Printf("service started")
+	log.Printf("Warning: queue full")
+	log.Printf("Forward request failed: timeout")
+	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
+
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	stdoutBytes, _ := io.ReadAll(stdoutR)
+	stderrBytes, _ := io.ReadAll(stderrR)
+	stdoutText := string(stdoutBytes)
+	stderrText := string(stderrBytes)
+
+	if !strings.Contains(stdoutText, "service started") {
+		t.Fatalf("stdout missing info log: %s", stdoutText)
+	}
+	if !strings.Contains(stderrText, "Warning: queue full") {
+		t.Fatalf("stderr missing warn log: %s", stderrText)
+	}
+	if !strings.Contains(stderrText, "Forward request failed: timeout") {
+		t.Fatalf("stderr missing error log: %s", stderrText)
+	}
+	if !strings.Contains(stderrText, "\"legacy_stdlog\":true") {
+		t.Fatalf("stderr missing legacy_stdlog marker: %s", stderrText)
+	}
+}
+
+func TestLegacyPrintfRoutesLevels(t *testing.T) {
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+	t.Cleanup(func() {
+		os.Stdout = origStdout
+		os.Stderr = origStderr
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		_ = stderrR.Close()
+		_ = stderrW.Close()
+	})
+
+	if err := Init(InitOptions{
+		Level:       "debug",
+		Format:      "json",
+		ServiceName: "tokenrouter",
+		Environment: "test",
+		Output: OutputOptions{
+			ToStdout: true,
+			ToFile:   false,
+		},
+		Sampling: SamplingOptions{Enabled: false},
+	}); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	LegacyPrintf("service.test", "request started")
+	LegacyPrintf("service.test", "Warning: queue full")
+	LegacyPrintf("service.test", "forward failed: timeout")
+	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
+
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	stdoutBytes, _ := io.ReadAll(stdoutR)
+	stderrBytes, _ := io.ReadAll(stderrR)
+	stdoutText := string(stdoutBytes)
+	stderrText := string(stderrBytes)
+
+	if !strings.Contains(stdoutText, "request started") {
+		t.Fatalf("stdout missing info log: %s", stdoutText)
+	}
+	if !strings.Contains(stderrText, "Warning: queue full") {
+		t.Fatalf("stderr missing warn log: %s", stderrText)
+	}
+	if !strings.Contains(stderrText, "forward failed: timeout") {
+		t.Fatalf("stderr missing error log: %s", stderrText)
+	}
+	if !strings.Contains(stderrText, "\"legacy_printf\":true") {
+		t.Fatalf("stderr missing legacy_printf marker: %s", stderrText)
+	}
+	if !strings.Contains(stderrText, "\"component\":\"service.test\"") {
+		t.Fatalf("stderr missing component field: %s", stderrText)
 	}
 }

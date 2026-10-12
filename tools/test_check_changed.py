@@ -57,6 +57,7 @@ class PlanTest(unittest.TestCase):
     def test_script_and_tool_changes_run_their_tests(self):
         self.assertIn('make test-scripts', flat(['deploy/install.sh']))
         self.assertIn('make test-tools', flat(['tools/format_go.py']))
+        self.assertIn('make test-tools', flat(['tools/declorder/reorder.go']))
         self.assertIn('make test-tools', flat(['.githooks/pre-push']))
 
 

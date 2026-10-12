@@ -11,6 +11,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// ErrEntryLocalRoutingRejected 标记本地提供商资格检查拒绝，上游健康状态保持原值。
+var ErrEntryLocalRoutingRejected = errors.New("local websocket routing rejected")
+
 // EntryFallbackSeed 为缺少指定会话标识的请求生成隔离键。
 func EntryFallbackSeed(userID, keyID int64, groupID *int64) string {
 	var group int64
@@ -68,9 +71,6 @@ func entrySucceeded(r *ForwardResult) bool {
 	}
 	return r.UpstreamTerminalEvent == "response.completed" || r.UpstreamTerminalEvent == "response.done"
 }
-
-// ErrEntryLocalRoutingRejected 标记本地提供商资格检查拒绝，上游健康状态保持原值。
-var ErrEntryLocalRoutingRejected = errors.New("local websocket routing rejected")
 
 func EntryLocalRoutingReason(model string) string {
 	return fmt.Sprintf("model %s is not available for this websocket group or provider", strings.TrimSpace(model))

@@ -3,12 +3,15 @@ package provider
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
+
+const providerSchedulingThresholdCredentialKey = "provider_scheduling_threshold"
 
 // ProviderSchedulingThresholdDecision 表示单个提供商的纯停调判定结果。
 type ProviderSchedulingThresholdDecision struct {
@@ -27,8 +30,6 @@ type SchedulingThresholdCandidate struct {
 	UsedPercent float64
 	Until       *time.Time
 }
-
-const providerSchedulingThresholdCredentialKey = "provider_scheduling_threshold"
 
 // EvaluateProviderSchedulingThreshold 根据当前平台阈值快照判断提供商是否应暂停调度。
 func EvaluateProviderSchedulingThreshold(provider *Record, thresholds map[string]int, now time.Time) ProviderSchedulingThresholdDecision {
@@ -106,12 +107,7 @@ func EvaluateAnthropicFableSchedulingThreshold(provider *Record, thresholds map[
 }
 
 func isAllowedSchedulingThresholdPlatform(platform string) bool {
-	for _, allowed := range AllowedSchedulingThresholdPlatforms {
-		if platform == allowed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AllowedSchedulingThresholdPlatforms, platform)
 }
 
 func resolveEffectiveProviderSchedulingThreshold(provider *Record, thresholds map[string]int, platform string) (int, bool) {

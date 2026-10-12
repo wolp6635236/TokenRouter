@@ -41,6 +41,9 @@ type AuditLogService struct {
 	writtenCount uint64
 }
 
+// RetentionReader 按原时机读取保留天数，零表示永久保留。
+type RetentionReader func(context.Context) int
+
 func NewAuditLogService(repo AuditLogRepository, retention RetentionReader) *AuditLogService {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &AuditLogService{
@@ -252,6 +255,3 @@ func (s *AuditLogService) runRetentionOnce() {
 		}
 	}
 }
-
-// RetentionReader 按原时机读取保留天数，零表示永久保留。
-type RetentionReader func(context.Context) int

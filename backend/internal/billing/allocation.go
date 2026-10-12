@@ -1,5 +1,10 @@
 package billing
 
+const (
+	BillingAllocationTypeSubscription BillingAllocationType = "subscription"
+	BillingAllocationTypeBalance      BillingAllocationType = "balance"
+)
+
 type SubscriptionPlanSnapshot struct {
 	Locale          string   `json:"locale,omitempty"`
 	ProductName     string   `json:"product_name,omitempty"`
@@ -13,11 +18,6 @@ type SubscriptionPlanSnapshot struct {
 }
 
 type BillingAllocationType string
-
-const (
-	BillingAllocationTypeSubscription BillingAllocationType = "subscription"
-	BillingAllocationTypeBalance      BillingAllocationType = "balance"
-)
 
 type BillingAllocation struct {
 	Type      BillingAllocationType `json:"type"`

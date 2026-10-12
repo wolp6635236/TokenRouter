@@ -51,7 +51,7 @@ type Provider struct {
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
 	SessionWindowStatus string     `json:"session_window_status"`
 
-	// 5h窗口费用控制（仅 Anthropic OAuth/SetupToken 提供商有效）
+	// 5h 窗口费用控制（仅 Anthropic OAuth/SetupToken 提供商有效）
 	// 从 extra 字段提取，方便前端显示和编辑
 	WindowCostLimit         *float64 `json:"window_cost_limit,omitempty"`
 	WindowCostStickyReserve *float64 `json:"window_cost_sticky_reserve,omitempty"`
@@ -68,7 +68,7 @@ type Provider struct {
 	RPMStickyBuffer  *int    `json:"rpm_sticky_buffer,omitempty"`
 	UserMsgQueueMode *string `json:"user_msg_queue_mode,omitempty"`
 
-	// TLS指纹伪装（仅 Anthropic OAuth/SetupToken 提供商有效）
+	// TLS 指纹伪装（仅 Anthropic OAuth/SetupToken 提供商有效）
 	// 从 extra 字段提取，方便前端显示和编辑
 	EnableTLSFingerprint    *bool  `json:"enable_tls_fingerprint,omitempty"`
 	TLSFingerprintProfileID *int64 `json:"tls_fingerprint_profile_id,omitempty"`
@@ -77,8 +77,8 @@ type Provider struct {
 	// OpenAI OAuth 客户端访问策略。
 	OpenAIOAuthClientPolicy *string `json:"openai_oauth_client_policy,omitempty"`
 
-	// 会话ID伪装（仅 Anthropic OAuth/SetupToken 提供商有效）
-	// 启用后将在15分钟内固定 metadata.user_id 中的 session ID
+	// 会话 ID 伪装（仅 Anthropic OAuth/SetupToken 提供商有效）
+	// 启用后将在 15 分钟内固定 metadata.user_id 中的 session ID
 	// 从 extra 字段提取，方便前端显示和编辑
 	EnableSessionIDMasking *bool `json:"session_id_masking_enabled,omitempty"`
 

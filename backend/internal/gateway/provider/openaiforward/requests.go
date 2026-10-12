@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
@@ -34,7 +37,7 @@ func (o RequestTargetOptions) Resolve() (string, error) {
 	return o.AppendSuffix(target), nil
 }
 
-// BuildResponsesRequest 保留先观察端点、再归一化报文与构造 Header 的顺序。
+// BuildResponsesRequest 观察请求端点，归一化报文并构造 Responses 请求。
 func BuildResponsesRequest(ctx context.Context, body []byte, key string, target RequestTargetOptions, observe func(string), normalize func([]byte) []byte, options func(string) openai.ResponsesRequestOptions) (*http.Request, error) {
 	address, err := target.Resolve()
 	if err != nil {
@@ -47,7 +50,7 @@ func BuildResponsesRequest(ctx context.Context, body []byte, key string, target 
 	return openai.BuildResponsesRequest(ctx, body, key, options(address))
 }
 
-// BuildPassthroughRequest 保留透传入口独有的超时 Header 和 originator 策略。
+// BuildPassthroughRequest 按目标地址和报文归一化配置构造透传请求。
 func BuildPassthroughRequest(ctx context.Context, body []byte, target RequestTargetOptions, normalize func([]byte) []byte, options func(string) openai.PassthroughRequestOptions) (*http.Request, error) {
 	address, err := target.Resolve()
 	if err != nil {
@@ -55,4 +58,20 @@ func BuildPassthroughRequest(ctx context.Context, body []byte, target RequestTar
 	}
 	body = normalize(body)
 	return openai.BuildPassthroughRequest(ctx, body, options(address))
+}
+
+// ResponsesEndpoint 按平台规则处理 DeepSeek 和其他兼容平台的 URL 版本段。
+func ResponsesEndpoint(platform, base string) string {
+	if platform == capability.PlatformDeepseek {
+		return httpclient.BuildOpenAIEndpointURL(base, "/responses")
+	}
+	return httpclient.BuildOpenAIEndpointURL(base, "/v1/responses")
+}
+
+// NormalizeCNResponsesBody 清理 CN Responses 请求中的服务端状态字段。
+func NormalizeCNResponsesBody(native bool, body []byte) []byte {
+	if !native {
+		return body
+	}
+	return protocolopenai.StatelessResponsesRequest(body)
 }

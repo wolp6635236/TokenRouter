@@ -6,16 +6,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// OpenAIClientTransport 表示客户端入站协议类型。
-type OpenAIClientTransport string
-
 const (
 	OpenAIClientTransportUnknown OpenAIClientTransport = ""
 	OpenAIClientTransportHTTP    OpenAIClientTransport = "http"
 	OpenAIClientTransportWS      OpenAIClientTransport = "ws"
+
+	openAIClientTransportContextKey = "openai_client_transport"
 )
 
-const openAIClientTransportContextKey = "openai_client_transport"
+// OpenAIClientTransport 表示客户端入站协议类型。
+type OpenAIClientTransport string
 
 // SetOpenAIClientTransport 标记当前请求的客户端入站协议。
 func SetOpenAIClientTransport(c *gin.Context, transport OpenAIClientTransport) {

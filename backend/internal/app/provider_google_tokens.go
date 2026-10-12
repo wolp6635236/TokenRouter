@@ -7,10 +7,49 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
+	usageerrors "github.com/TokenFlux/TokenRouter/internal/usage"
 )
+
+func provideGeminiAuthorization(proxies egress.ProxyRepository, client provider.GeminiOAuthClient, discovery provider.GeminiCodeAssistClient, drive codeassist.DriveClient, cfg *config.Config) *provider.GeminiAuthorization {
+	options := provideradapter.GeminiAuthorizationOptions(func() google.OAuthConfig {
+		return google.OAuthConfig{ClientID: cfg.Gemini.OAuth.ClientID, ClientSecret: cfg.Gemini.OAuth.ClientSecret, Scopes: cfg.Gemini.OAuth.Scopes}
+	}, func(ctx context.Context, id int64) (string, bool) {
+		proxy, err := proxies.GetByID(ctx, id)
+		if err != nil || proxy == nil {
+			return "", false
+		}
+		return proxy.URL(), true
+	})
+	return provider.NewGeminiAuthorization(client, discovery, drive, options)
+}
+
+// provideGeminiQuotaPolicy 绑定静态参数和动态设置读取器，共用配额设置缓存。
+func provideGeminiQuotaPolicy(cfg *config.Config, store *settings.Store) *provider.GeminiQuotaService {
+	tiers := make(map[string]provider.GeminiTierQuotaOverride, len(cfg.Gemini.Quota.Tiers))
+	for id, v := range cfg.Gemini.Quota.Tiers {
+		tiers[id] = provider.GeminiTierQuotaOverride{ProRPD: v.ProRPD, FlashRPD: v.FlashRPD, CooldownMinutes: v.CooldownMinutes}
+	}
+	return provider.NewGeminiQuotaService(provider.GeminiQuotaOptions{StaticTiers: tiers, StaticPolicy: cfg.Gemini.Quota.Policy, Now: time.Now, Log: log.Printf, NotFound: settings.ErrSettingNotFound, LoadPolicy: func(ctx context.Context) (string, error) {
+		return store.GetValue(ctx, provider.GeminiQuotaPolicySettingKey)
+	}})
+}
+
+// provideGeminiPrecheck 使用洛杉矶时区和独立的每日统计缓存。
+func provideGeminiPrecheck(policy *provider.GeminiQuotaService, usage usageerrors.UsageLogRepository) *provider.GeminiPrecheck {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		location = time.FixedZone("PST", -8*3600)
+	}
+	return provider.NewGeminiPrecheck(policy, newProviderGeminiUsageReader(usage), provider.GeminiPrecheckOptions{Now: time.Now, Location: location, Info: slog.Info})
+}
 
 // provideGeminiTokens 组合 project 查询、Vertex 凭据交换和凭据字段保存。
 func provideGeminiTokens(store *postgres.ProviderStore, cache provider.AccessTokenCache, authorization *provider.GeminiAuthorization, refresh *provider.OAuthRefreshAPI) *provider.GeminiTokenSource {

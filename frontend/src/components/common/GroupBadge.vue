@@ -7,9 +7,9 @@
   >
     <!-- 分组使用管理员配置的展示品牌。 -->
     <ProviderIcon v-if="brandName" :brand="brandName" size="14px" />
-    <!-- 分组名加 self-baseline，徽章的基线取自分组名，移动卡片的标签和它对齐。 -->
+    <!-- 分组名和右侧标签都加 self-baseline。徽章的基线取自分组名，移动卡片的标签和它对齐。
+         右侧标签有上下内边距，比分组名高，两者按基线对齐后文字在同一高度。 -->
     <span class="self-baseline truncate">{{ name }}</span>
-    <!-- Right side label -->
     <span v-if="showLabel" :class="labelClass">
       <template v-if="hasCustomRate">
         <!-- 原倍率删除线 + 专属倍率高亮 -->
@@ -107,7 +107,7 @@ const labelText = computed(() => {
 
 // Label style based on type and days remaining
 const labelClass = computed(() => {
-  const base = 'px-1.5 py-0.5 rounded-compact text-xs font-semibold'
+  const base = 'self-baseline px-1.5 py-0.5 rounded-compact text-xs font-semibold'
 
   if (props.daysRemaining === null || props.daysRemaining === undefined) {
     return `${base} bg-black/10 dark:bg-white/10`
@@ -124,7 +124,7 @@ const labelClass = computed(() => {
 })
 
 const peakRateClass = computed(() => {
-  return 'px-1.5 py-0.5 rounded-compact text-xs font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+  return 'self-baseline px-1.5 py-0.5 rounded-compact text-xs font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
 })
 
 const badgeClass = computed(() => {

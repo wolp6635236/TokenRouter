@@ -14,6 +14,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
+const (
+	DefaultErrorRateAlpha = 0.2
+	DefaultTTFTAlpha      = 0.2
+)
+
 // RuntimeStats 保存所有高级调度分组共享的运行时反馈。
 // 提供商没有反馈样本时，错误率按 0% 处理，其它可选信号仍使用中性值。
 type RuntimeStats struct {
@@ -27,21 +32,6 @@ type RuntimeStats struct {
 // 统计仍按提供商共享，但系数由请求最终命中的分组决定。
 type FeedbackConfig = policy.FeedbackConfig
 
-const (
-	DefaultErrorRateAlpha = 0.2
-	DefaultTTFTAlpha      = 0.2
-)
-
-func NormalizeFeedbackConfig(value FeedbackConfig) FeedbackConfig {
-	return policy.NormalizeFeedback(value)
-}
-
-func (s *RuntimeStats) ReportSwitch() {
-	if s != nil {
-		s.switchCount.Add(1)
-	}
-}
-
 type advancedProviderRuntimeStat struct {
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
@@ -52,8 +42,113 @@ type advancedProviderRuntimeStat struct {
 	lastTTFTObservedNanos atomic.Int64
 }
 
+// FeedbackSnapshot 是诊断与评分共享的只读反馈快照，记录 EWMA 聚合后的健康指标和观测时间。
+type FeedbackSnapshot struct {
+	HasFeedback    bool
+	ErrorRate      float64
+	ErrorSamples   int64
+	TTFT           float64
+	HasTTFT        bool
+	TTFTSamples    int64
+	LastObservedAt *time.Time
+	LastTTFTAt     *time.Time
+}
+
+// CandidateScore 是完成平台硬过滤后的通用高级调度候选。
+type CandidateScore struct {
+	Provider           *ScoreProvider
+	LoadInfo           *ProviderLoadInfo
+	LoadKnown          bool
+	Score              float64
+	BaseScore          float64
+	StickyBonus        float64
+	PreviousBonus      float64
+	SessionStickyBonus float64
+	Priority           int
+	ErrorRate          float64
+	TTFT               float64
+	HasTTFT            bool
+	HasFeedback        bool
+	Feedback           FeedbackSnapshot
+	Factors            CandidateFactors
+}
+
+// CandidateFactors 保存评分使用的归一化因子，供诊断展示。
+type CandidateFactors struct {
+	Priority      float64
+	Load          float64
+	Queue         float64
+	ErrorRate     float64
+	TTFT          float64
+	Reset         float64
+	QuotaHeadroom float64
+}
+
+// ScoreRanges 记录本次候选池的归一化范围，供诊断接口直接解释公式。
+type ScoreRanges struct {
+	MinPriority       int
+	MaxPriority       int
+	MaxWaiting        int
+	MinTTFT           float64
+	MaxTTFT           float64
+	HasTTFTSample     bool
+	MinResetRemaining float64
+	MaxResetRemaining float64
+	HasResetSample    bool
+}
+
+type candidateHeap []CandidateScore
+
+// ScoreInput 只携带平台无关的可选调度信号。
+type ScoreInput struct {
+	Now                      func() time.Time
+	GroupID                  *int64
+	SessionHash              string
+	PreviousResponseID       string
+	RequestedModel           string
+	StickyProviderID         int64
+	StickyPreviousProviderID int64
+	StickyWeighted           bool
+	TopK                     int
+	QuotaHeadroomFactor      func(*ScoreProvider, time.Time) float64
+}
+
+type SelectionRNG struct {
+	state uint64
+}
+
+// ScoreSnapshot 是管理端和高级调度器共用的评分展示结构。
+type ScoreSnapshot struct {
+	BaseScore             float64
+	StickyScore           float64
+	StickyScoreInfinity   bool
+	StickyWeightedEnabled bool
+}
+
+// ScoreProvider 保存提供商评分所需的数值和标识。
+type ScoreProvider struct {
+	// Name 和 ProjectionID 供诊断关联候选使用。
+	Name             string
+	ProjectionID     uint64
+	ID               int64
+	Platform         string
+	Priority         int
+	SessionWindowEnd *time.Time
+}
+type ScoreGroup struct{}
+
+func NormalizeFeedbackConfig(value FeedbackConfig) FeedbackConfig {
+	return policy.NormalizeFeedback(value)
+}
+
 func NewRuntimeStats(now func() time.Time) *RuntimeStats {
 	return &RuntimeStats{now: now}
+}
+
+func (s *RuntimeStats) ReportSwitch() {
+	if s != nil {
+		s.switchCount.Add(1)
+	}
 }
 
 func (s *RuntimeStats) loadOrCreate(providerID int64) *advancedProviderRuntimeStat {
@@ -136,18 +231,6 @@ func (s *RuntimeStats) Report(providerID int64, success bool, firstTokenMs *int,
 	}
 }
 
-// FeedbackSnapshot 是诊断与评分共享的只读反馈快照，记录 EWMA 聚合后的健康指标和观测时间。
-type FeedbackSnapshot struct {
-	HasFeedback    bool
-	ErrorRate      float64
-	ErrorSamples   int64
-	TTFT           float64
-	HasTTFT        bool
-	TTFTSamples    int64
-	LastObservedAt *time.Time
-	LastTTFTAt     *time.Time
-}
-
 func (s *RuntimeStats) FeedbackSnapshot(providerID int64) FeedbackSnapshot {
 	if s == nil || providerID <= 0 {
 		return FeedbackSnapshot{}
@@ -208,51 +291,6 @@ func (s *RuntimeStats) Size() int {
 	}
 	return int(s.providerCount.Load())
 }
-
-// CandidateScore 是完成平台硬过滤后的通用高级调度候选。
-type CandidateScore struct {
-	Provider           *ScoreProvider
-	LoadInfo           *ProviderLoadInfo
-	LoadKnown          bool
-	Score              float64
-	BaseScore          float64
-	StickyBonus        float64
-	PreviousBonus      float64
-	SessionStickyBonus float64
-	Priority           int
-	ErrorRate          float64
-	TTFT               float64
-	HasTTFT            bool
-	HasFeedback        bool
-	Feedback           FeedbackSnapshot
-	Factors            CandidateFactors
-}
-
-// CandidateFactors 保存评分使用的归一化因子，供诊断展示。
-type CandidateFactors struct {
-	Priority      float64
-	Load          float64
-	Queue         float64
-	ErrorRate     float64
-	TTFT          float64
-	Reset         float64
-	QuotaHeadroom float64
-}
-
-// ScoreRanges 记录本次候选池的归一化范围，供诊断接口直接解释公式。
-type ScoreRanges struct {
-	MinPriority       int
-	MaxPriority       int
-	MaxWaiting        int
-	MinTTFT           float64
-	MaxTTFT           float64
-	HasTTFTSample     bool
-	MinResetRemaining float64
-	MaxResetRemaining float64
-	HasResetSample    bool
-}
-
-type candidateHeap []CandidateScore
 
 func (h candidateHeap) Len() int {
 	return len(h)
@@ -337,20 +375,6 @@ func SortCandidates(candidates []CandidateScore) {
 			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
 		}
 	}
-}
-
-// ScoreInput 只携带平台无关的可选调度信号。
-type ScoreInput struct {
-	Now                      func() time.Time
-	GroupID                  *int64
-	SessionHash              string
-	PreviousResponseID       string
-	RequestedModel           string
-	StickyProviderID         int64
-	StickyPreviousProviderID int64
-	StickyWeighted           bool
-	TopK                     int
-	QuotaHeadroomFactor      func(*ScoreProvider, time.Time) float64
 }
 
 // ScoreCandidates 对硬过滤后的候选执行通用评分，并返回负载偏斜。
@@ -551,10 +575,6 @@ func ScoreCandidatesWithRanges(
 	return candidates, LoadSkewByMoments(loadRateSum, loadRateSumSquares, knownLoadCount), ranges
 }
 
-type SelectionRNG struct {
-	state uint64
-}
-
 func NewSelectionRNG(seed uint64) SelectionRNG {
 	if seed == 0 {
 		seed = 0x9e3779b97f4a7c15
@@ -668,14 +688,6 @@ func BuildSelectionOrder(candidates []CandidateScore, input ScoreInput) []Candid
 	return BuildWeightedSelectionOrder(ranked, input)
 }
 
-// ScoreSnapshot 是管理端和高级调度器共用的评分展示结构。
-type ScoreSnapshot struct {
-	BaseScore             float64
-	StickyScore           float64
-	StickyScoreInfinity   bool
-	StickyWeightedEnabled bool
-}
-
 func BuildScoreSnapshot(
 	providers []*ScoreProvider,
 	loadMap map[int64]*ProviderLoadInfo,
@@ -711,18 +723,6 @@ func BuildScoreSnapshot(
 	}
 	return result
 }
-
-// ScoreProvider 保存提供商评分所需的数值和标识。
-type ScoreProvider struct {
-	// Name 和 ProjectionID 供诊断关联候选使用。
-	Name             string
-	ProjectionID     uint64
-	ID               int64
-	Platform         string
-	Priority         int
-	SessionWindowEnd *time.Time
-}
-type ScoreGroup struct{}
 
 func (s *RuntimeStats) nowTime() time.Time {
 	if s.now != nil {

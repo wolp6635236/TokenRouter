@@ -11,6 +11,15 @@ import (
 
 type SubscriptionRepositoryNoop struct{}
 
+type SubscriptionRepository struct {
+	SubscriptionRepositoryNoop
+
+	nextID      int64
+	ByID        map[int64]*billing.UserSubscription
+	byUserPlan  map[string][]int64
+	CreateCalls int
+}
+
 func (SubscriptionRepositoryNoop) Create(context.Context, *billing.UserSubscription) error {
 	panic("unexpected Create call")
 }
@@ -119,15 +128,6 @@ func (SubscriptionRepositoryNoop) BatchUpdateExpiredStatus(context.Context) (int
 	panic("unexpected BatchUpdateExpiredStatus call")
 }
 
-type SubscriptionRepository struct {
-	SubscriptionRepositoryNoop
-
-	nextID      int64
-	ByID        map[int64]*billing.UserSubscription
-	byUserPlan  map[string][]int64
-	CreateCalls int
-}
-
 func NewSubscriptionRepository() *SubscriptionRepository {
 	return &SubscriptionRepository{
 		nextID:     1,
@@ -148,7 +148,7 @@ func (s *SubscriptionRepository) RebuildIndex() {
 	}
 	for key := range s.byUserPlan {
 		ids := s.byUserPlan[key]
-		for i := 0; i < len(ids); i++ {
+		for i := range ids {
 			for j := i + 1; j < len(ids); j++ {
 				left := s.ByID[ids[i]]
 				right := s.ByID[ids[j]]

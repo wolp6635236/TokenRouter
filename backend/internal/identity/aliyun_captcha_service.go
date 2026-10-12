@@ -9,14 +9,38 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+const (
+	// AliyunCaptchaRegionCN 中国内地；AliyunCaptchaRegionSGP 新加坡。
+	// 该值同时下发给前端 AliyunCaptchaConfig.region，两端必须一致。
+	AliyunCaptchaRegionCN  = "cn"
+	AliyunCaptchaRegionSGP = "sgp"
+
+	AliyunCaptchaEndpointCN  = "captcha.cn-shanghai.aliyuncs.com"
+	AliyunCaptchaEndpointSGP = "captcha.ap-southeast-1.aliyuncs.com"
+
+	// AliyunCredentialValidationParam 用于后台保存时探测凭证有效性的假验证参数。
+	AliyunCredentialValidationParam = "tokenrouter-credential-validation"
+)
+
 var (
 	ErrAliyunCaptchaVerificationFailed = infraerrors.BadRequest("ALIYUN_CAPTCHA_VERIFICATION_FAILED", "aliyun captcha verification failed")
 	ErrAliyunCaptchaNotConfigured      = infraerrors.ServiceUnavailable("ALIYUN_CAPTCHA_NOT_CONFIGURED", "aliyun captcha not configured")
-	// ErrCaptchaInvalidCredentials 阿里云验证码凭证无效（仅后台保存校验时返回，公开接口错误码不变）
+	// ErrCaptchaInvalidCredentials 阿里云验证码凭证无效（仅后台保存校验时返回，公开接口错误码不变）。
 	ErrCaptchaInvalidCredentials = infraerrors.BadRequest("CAPTCHA_INVALID_CREDENTIALS", "invalid aliyun captcha credentials")
+
+	// AliyunInvalidCredentialCodes 表示 AK/SK 本身无效的阿里云错误码；
+	// 其余错误码（如 param 无效）说明签名已通过、凭证可用。
+	AliyunInvalidCredentialCodes = map[string]struct{}{
+		"InvalidAccessKeyId.NotFound":  {},
+		"InvalidAccessKeyId.Inactive":  {},
+		"SignatureDoesNotMatch":        {},
+		"Forbidden.AccessKeyDisabled":  {},
+		"IncompleteSignature":          {},
+		"InvalidSecurityToken.Expired": {},
+	}
 )
 
-// AliyunCaptchaCredentials 阿里云验证码 2.0 服务端校验所需的完整凭证
+// AliyunCaptchaCredentials 阿里云验证码 2.0 服务端校验所需的完整凭证。
 type AliyunCaptchaCredentials struct {
 	AccessKeyID     string
 	AccessKeySecret string
@@ -24,7 +48,7 @@ type AliyunCaptchaCredentials struct {
 	Endpoint        string
 }
 
-// AliyunCaptchaVerifyResult VerifyIntelligentCaptcha 的归一化结果
+// AliyunCaptchaVerifyResult VerifyIntelligentCaptcha 的归一化结果。
 type AliyunCaptchaVerifyResult struct {
 	VerifyResult bool
 	VerifyCode   string // 阿里云细分结果码，仅用于日志
@@ -37,26 +61,23 @@ type AliyunCaptchaAPIError struct {
 	Message string
 }
 
-func (e *AliyunCaptchaAPIError) Error() string {
-	return fmt.Sprintf("aliyun captcha api error: %s: %s", e.Code, e.Message)
-}
-
-// AliyunCaptchaVerifier 调用阿里云验证码 2.0 服务端校验的端口
+// AliyunCaptchaVerifier 调用阿里云验证码 2.0 服务端校验的端口。
 type AliyunCaptchaVerifier interface {
 	VerifyCaptcha(ctx context.Context, cred AliyunCaptchaCredentials, captchaVerifyParam string) (*AliyunCaptchaVerifyResult, error)
 }
 
-const (
-	// AliyunCaptchaRegionCN 中国内地；AliyunCaptchaRegionSGP 新加坡。
-	// 该值同时下发给前端 AliyunCaptchaConfig.region，两端必须一致。
-	AliyunCaptchaRegionCN  = "cn"
-	AliyunCaptchaRegionSGP = "sgp"
+// AliyunCaptchaService 阿里云验证码 2.0 服务端校验。
+type AliyunCaptchaService struct {
+	observer       Observer
+	settingService CaptchaSettings
+	verifier       AliyunCaptchaVerifier
+}
 
-	AliyunCaptchaEndpointCN  = "captcha.cn-shanghai.aliyuncs.com"
-	AliyunCaptchaEndpointSGP = "captcha.ap-southeast-1.aliyuncs.com"
-)
+func (e *AliyunCaptchaAPIError) Error() string {
+	return fmt.Sprintf("aliyun captcha api error: %s: %s", e.Code, e.Message)
+}
 
-// AliyunCaptchaEndpoint 按后台配置的地域返回服务端接入点，未知值回退中国内地
+// AliyunCaptchaEndpoint 按后台配置的地域返回服务端接入点，未知值回退中国内地。
 func AliyunCaptchaEndpoint(region string) string {
 	if region == AliyunCaptchaRegionSGP {
 		return AliyunCaptchaEndpointSGP
@@ -64,33 +85,12 @@ func AliyunCaptchaEndpoint(region string) string {
 	return AliyunCaptchaEndpointCN
 }
 
-// NormalizeAliyunCaptchaRegion 非法值一律视为中国内地
+// NormalizeAliyunCaptchaRegion 非法值一律视为中国内地。
 func NormalizeAliyunCaptchaRegion(value string) string {
 	if value == AliyunCaptchaRegionSGP {
 		return AliyunCaptchaRegionSGP
 	}
 	return AliyunCaptchaRegionCN
-}
-
-// AliyunCredentialValidationParam 用于后台保存时探测凭证有效性的假验证参数
-const AliyunCredentialValidationParam = "tokenrouter-credential-validation"
-
-// AliyunInvalidCredentialCodes 表示 AK/SK 本身无效的阿里云错误码；
-// 其余错误码（如 param 无效）说明签名已通过、凭证可用。
-var AliyunInvalidCredentialCodes = map[string]struct{}{
-	"InvalidAccessKeyId.NotFound":  {},
-	"InvalidAccessKeyId.Inactive":  {},
-	"SignatureDoesNotMatch":        {},
-	"Forbidden.AccessKeyDisabled":  {},
-	"IncompleteSignature":          {},
-	"InvalidSecurityToken.Expired": {},
-}
-
-// AliyunCaptchaService 阿里云验证码 2.0 服务端校验
-type AliyunCaptchaService struct {
-	observer       Observer
-	settingService CaptchaSettings
-	verifier       AliyunCaptchaVerifier
 }
 
 func NewAliyunCaptchaService(settingService CaptchaSettings, verifier AliyunCaptchaVerifier) *AliyunCaptchaService {
@@ -158,8 +158,7 @@ func (s *AliyunCaptchaService) ValidateCredentials(ctx context.Context, accessKe
 
 	_, err := s.verifier.VerifyCaptcha(ctx, cred, AliyunCredentialValidationParam)
 	if err != nil {
-		var apiErr *AliyunCaptchaAPIError
-		if errors.As(err, &apiErr) {
+		if apiErr, ok := errors.AsType[*AliyunCaptchaAPIError](err); ok {
 			if _, invalid := AliyunInvalidCredentialCodes[apiErr.Code]; invalid {
 				return ErrCaptchaInvalidCredentials
 			}

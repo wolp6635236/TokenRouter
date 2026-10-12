@@ -3,12 +3,13 @@ package openaiattempt
 import (
 	"context"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"go.uber.org/zap"
 )
 
 // SessionPorts 复用提供商所属的会话计数器，统一文本循环只拥有本次尝试的生命周期。

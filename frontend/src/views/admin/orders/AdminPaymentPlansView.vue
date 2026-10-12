@@ -59,7 +59,6 @@
           <Toggle
             :model-value="!!value"
             size="sm"
-            on-class="bg-primary-500"
             @update:model-value="toggleForSale(row)"
           />
         </template>

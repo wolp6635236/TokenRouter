@@ -2,25 +2,31 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// DefaultRetentionDays 与存储键保持原值。
+// DefaultRetentionDays 是审计日志的默认保留天数。
 const (
 	DefaultRetentionDays            = 180
 	SettingKeyAuditLogRetentionDays = "audit_log_retention_days"
 )
 
-// RetentionSettingsStore 只读取审计生命周期所需配置。
+// RetentionSettingsStore 读取审计日志保留期设置。
 type RetentionSettingsStore interface {
 	GetValue(context.Context, string) (string, error)
 }
 
-// RetentionSettings 拥有保留期解释，不读取其它业务设置。
+// RetentionSettings 解析审计日志保留天数。
 type RetentionSettings struct{ settingRepo RetentionSettingsStore }
 
-// NewRetentionSettings 构造不执行 I/O。
+// AdminReadSettings 包含审计日志保留天数。
+type AdminReadSettings struct{ AuditLogRetentionDays int }
+
+// NewRetentionSettings 创建保留期设置读取器。
 func NewRetentionSettings(repo RetentionSettingsStore) *RetentionSettings {
 	return &RetentionSettings{settingRepo: repo}
 }
@@ -34,7 +40,7 @@ func (s *RetentionSettings) GetAuditLogRetentionDays(ctx context.Context) int {
 	return ParseRetentionDays(value)
 }
 
-// ParseRetentionDays 对已有持久值执行原容错规则。
+// ParseRetentionDays 解析保留天数，空值或格式错误使用默认值，负数视为永久保留。
 func ParseRetentionDays(value string) int {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -48,4 +54,30 @@ func ParseRetentionDays(value string) int {
 		return 0
 	}
 	return n
+}
+
+// ReadAdminSettings 从传入的设置值解析审计日志保留天数。
+func ReadAdminSettings(settings map[string]string) *AdminReadSettings {
+	result := &AdminReadSettings{}
+	result.AuditLogRetentionDays = ParseRetentionDays(settings[SettingKeyAuditLogRetentionDays])
+
+	return result
+}
+
+// PrepareRetentionDays 将保留天数转换为十进制整数字符串。
+func PrepareRetentionDays(days int) string { return strconv.Itoa(days) }
+
+// SettingsParticipant 准备审计保留期设置。
+func SettingsParticipant() settings.Participant {
+	return settings.Participant{Module: "audit", Fields: []string{"audit_log_retention_days"}, Keys: []string{SettingKeyAuditLogRetentionDays}, Prepare: func(_ context.Context, input settings.Fields, _ map[string]string) (settings.PreparedChange, error) {
+		raw, ok := input["audit_log_retention_days"]
+		if !ok {
+			return settings.PreparedChange{}, nil
+		}
+		var days int
+		if err := json.Unmarshal(raw, &days); err != nil {
+			return settings.PreparedChange{}, err
+		}
+		return settings.PreparedChange{Values: map[string]string{SettingKeyAuditLogRetentionDays: PrepareRetentionDays(days)}}, nil
+	}}
 }

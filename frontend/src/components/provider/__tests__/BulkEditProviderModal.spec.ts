@@ -5,6 +5,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import BulkEditProviderModal from '../BulkEditProviderModal.vue'
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
 import { adminAPI } from '@/api/admin'
+import { modelAttributesAPI } from '@/api/admin/modelAttributes'
+
+vi.mock('@/api/admin/modelAttributes', () => ({ modelAttributesAPI: { defaults: vi.fn() } }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
@@ -211,28 +214,31 @@ describe('BulkEditProviderModal', () => {
     expect(selector.props('modelValue')).toEqual([])
   })
 
-  it('antigravity 白名单包含 Gemini 图片模型且过滤掉普通 GPT 模型', async () => {
+  it('白名单从统一目录加载型号，选择不会自动填充表单', async () => {
+    vi.useFakeTimers()
+    vi.mocked(modelAttributesAPI.defaults).mockResolvedValue({ items: [{ model: 'gemini-3.1-flash-image' }, { model: 'custom-model' }], total: 2 } as any)
     const wrapper = mountModal()
-    const selector = wrapper.findComponent(ModelWhitelistSelector)
-    expect(selector.exists()).toBe(true)
-
-    await selector.find('div.cursor-pointer').trigger('click')
-
-    expect(wrapper.text()).toContain('gemini-3.1-flash-image')
-    expect(wrapper.text()).toContain('gemini-2.5-flash-image')
-    expect(wrapper.text()).not.toContain('gpt-5.3-codex')
+    try {
+      const selector = wrapper.findComponent(ModelWhitelistSelector)
+      await selector.find('div.cursor-pointer').trigger('click')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(wrapper.text()).toContain('gemini-3.1-flash-image')
+      expect(wrapper.text()).toContain('custom-model')
+      expect(selector.props('modelValue')).toEqual([])
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
   })
 
-  it('antigravity 映射预设包含图片映射并过滤 OpenAI 预设', async () => {
+  it('模型映射通过手动添加编辑', async () => {
     const wrapper = mountModal()
-
-    const mappingTab = wrapper.findAll('button').find((btn) => btn.text().includes('admin.providers.modelMapping'))
-    expect(mappingTab).toBeTruthy()
+    const mappingTab = wrapper.findAll('button').find(btn => btn.text().includes('admin.providers.modelMapping'))
     await mappingTab!.trigger('click')
-
-    expect(wrapper.text()).toContain('3.1-Flash-Image透传')
-    expect(wrapper.text()).toContain('3-Pro-Image→3.1')
-    expect(wrapper.text()).not.toContain('GPT-5.3 Codex Spark')
+    const count = wrapper.findAll('input').length
+    await wrapper.findAll('button').find(btn => btn.text().includes('admin.providers.addMapping'))!.trigger('click')
+    expect(wrapper.findAll('input')).toHaveLength(count + 2)
+    wrapper.unmount()
   })
 
   it.each(['kimi', 'zhipu', 'deepseek'])('全部目标为 %s API Key 时展示请求头覆写', (platform) => {
@@ -636,22 +642,21 @@ describe('BulkEditProviderModal', () => {
     expect(wrapper.find('#bulk-edit-codex-image-tool-enabled').exists()).toBe(false)
   })
 
-  it('OpenAI OAuth 批量编辑应提交 OAuth 专属 WS mode 字段', async () => {
+  it('OpenAI OAuth 批量编辑提交统一连接字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['oauth']
     })
 
     await wrapper.get('#bulk-edit-openai-ws-mode-enabled').setValue(true)
-    await wrapper.get('[data-testid="bulk-edit-openai-ws-mode-select"]').setValue('passthrough')
+    await wrapper.get('[data-testid="bulk-edit-openai-ws-mode-select"]').setValue('per_session')
     await wrapper.get('#bulk-edit-provider-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(adminAPI.providers.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.providers.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
-        openai_oauth_responses_websockets_v2_mode: 'passthrough',
-        openai_oauth_responses_websockets_v2_enabled: true
+        responses_ws_connection_mode: 'per_session'
       }
     })
   })
@@ -857,22 +862,21 @@ describe('BulkEditProviderModal', () => {
     })
   })
 
-  it('OpenAI API Key 批量编辑应提交 API Key 专属 WS mode 字段', async () => {
+  it('OpenAI API Key 批量编辑提交统一连接字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['apikey']
     })
 
     await wrapper.get('#bulk-edit-openai-apikey-ws-mode-enabled').setValue(true)
-    await wrapper.get('[data-testid="bulk-edit-openai-apikey-ws-mode-select"]').setValue('ctx_pool')
+    await wrapper.get('[data-testid="bulk-edit-openai-apikey-ws-mode-select"]').setValue('pooled')
     await wrapper.get('#bulk-edit-provider-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(adminAPI.providers.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.providers.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
-        openai_apikey_responses_websockets_v2_mode: 'ctx_pool',
-        openai_apikey_responses_websockets_v2_enabled: true
+        responses_ws_connection_mode: 'pooled'
       }
     })
   })

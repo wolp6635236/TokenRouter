@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
@@ -9,17 +10,25 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/messageforward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/requestdebug"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
+
+func provideGatewayErrorRules(repo errorpolicy.ErrorPassthroughRepository, cache errorpolicy.ErrorPassthroughCache) *errorpolicy.ErrorPassthroughService {
+	return errorpolicy.NewErrorPassthroughService(repo, cache, telemetry.ErrorRules)
+}
 
 // provideGatewayRequestDebug 调试输出共享一个句柄；请求与完成工作退出后再关闭。
 func provideGatewayRequestDebug(manager *lifecycle.Manager) *requestdebug.Trace {
@@ -70,4 +79,9 @@ func messageExecutionOptions(cfg *config.Config) messageforward.Options {
 	options.AllowInsecureHTTP = cfg.Security.URLAllowlist.AllowInsecureHTTP
 	options.URLValidation = egress.ValidationOptions{AllowedHosts: cfg.Security.URLAllowlist.UpstreamHosts, RequireAllowlist: true, AllowPrivate: cfg.Security.URLAllowlist.AllowPrivateHosts}
 	return options
+}
+
+// provideGatewayPromptPolicy 绑定设置表和诊断日志，提示词策略由服务缓存并更新。
+func provideGatewayPromptPolicy(store *settings.Store) *promptpolicy.Service {
+	return promptpolicy.New(store, settings.ErrSettingNotFound, slog.Warn)
 }

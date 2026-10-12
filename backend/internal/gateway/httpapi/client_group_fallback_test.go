@@ -5,6 +5,10 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -15,9 +19,6 @@ import (
 	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 )
 
 type clientFallbackExecutor struct {
@@ -25,15 +26,15 @@ type clientFallbackExecutor struct {
 	calls   int
 }
 
-func (e *clientFallbackExecutor) Execute(_ context.Context, in execution.Request, _ upstream.OutputSink) (execution.ExecutionResult, error) {
-	e.request, e.calls = in, e.calls+1
-	return execution.ExecutionResult{}, nil
-}
-
 type clientFallbackFunding struct {
 	t            *testing.T
 	calls        int
 	subscription *billing.UserSubscription
+}
+
+func (e *clientFallbackExecutor) Execute(_ context.Context, in execution.Request, _ upstream.OutputSink) (execution.ExecutionResult, error) {
+	e.request, e.calls = in, e.calls+1
+	return execution.ExecutionResult{}, nil
 }
 
 func (f *clientFallbackFunding) CheckKey(_ context.Context, key *apikey.APIKey, sub *billing.UserSubscription, _ string, _ bool) error {
@@ -162,7 +163,7 @@ func TestClientGroupFallbackFailureKeepsOriginalRequestSnapshot(t *testing.T) {
 
 func TestRouteGuardClientFallbackCoversNonMessageProtocols(t *testing.T) {
 	for _, spec := range []struct{ method, path string }{
-		{"POST", "/v1/images/batches"}, {"POST", "/v1/web_search"}, {"POST", "/v1/x_search"}, {"POST", "/v1/images/generations"}, {"POST", "/v1/videos"}, {"POST", "/v1/tts"}, {"GET", "/v1/realtime"}, {"GET", "/v1/responses"}, {"POST", "/v1/live"}, {"POST", "/v1/embeddings"}, {"POST", "/v1/alpha/search"}, {"POST", "/v1/responses/input_tokens"},
+		{"POST", "/v1/images/batches"}, {"POST", "/v1/web_search"}, {"POST", "/v1/x_search"}, {"POST", "/v1/images/generations"}, {"POST", "/v1/videos"}, {"POST", "/v1/tts"}, {"GET", "/v1/realtime"}, {"GET", "/v1/responses"}, {"POST", "/v1/live"}, {"POST", "/v1/systemone"}, {"POST", "/v1/embeddings"}, {"POST", "/v1/alpha/search"}, {"POST", "/v1/responses/input_tokens"},
 	} {
 		t.Run(spec.method+spec.path, func(t *testing.T) {
 			source := ExtendedRouteProtocol(spec.method, spec.path)

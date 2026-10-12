@@ -3,8 +3,21 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
+
+// MessagesOutput 提供同步 HTTP 输出与请求观测字段。
+// 执行器通过 execution.Request 读取身份、路由、报文和资金状态。
+type MessagesOutput struct {
+	Concurrency *ConcurrencyHelper
+	ResponseSink
+	HTTP          *gin.Context
+	Log           *zap.Logger
+	StreamStarted *bool
+}
 
 // ResponseSink 接收上游同步事件，负责下游写入和 Flush。
 type ResponseSink struct{ Writer http.ResponseWriter }

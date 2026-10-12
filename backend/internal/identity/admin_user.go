@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -388,7 +389,7 @@ func AdminSameInt64Set(a, b []int64) bool {
 			seen[value] = struct{}{}
 			out = append(out, value)
 		}
-		sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+		slices.Sort(out)
 		return out
 	}
 	left := normalize(a)
@@ -582,7 +583,7 @@ func (s *UserAdmin) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRP
 	for groupID := range groupIDSet {
 		groupIDs = append(groupIDs, groupID)
 	}
-	sort.Slice(groupIDs, func(i, j int) bool { return groupIDs[i] < groupIDs[j] })
+	slices.Sort(groupIDs)
 
 	var perGroup []UserGroupRPMStatus
 	for _, groupID := range groupIDs {
@@ -739,17 +740,13 @@ func AdminCloneAdminAuthIdentityMetadata(input map[string]any) map[string]any {
 	data, err := json.Marshal(input)
 	if err != nil {
 		out := make(map[string]any, len(input))
-		for key, value := range input {
-			out[key] = value
-		}
+		maps.Copy(out, input)
 		return out
 	}
 	var out map[string]any
 	if err := json.Unmarshal(data, &out); err != nil {
 		out = make(map[string]any, len(input))
-		for key, value := range input {
-			out[key] = value
-		}
+		maps.Copy(out, input)
 	}
 	return out
 }

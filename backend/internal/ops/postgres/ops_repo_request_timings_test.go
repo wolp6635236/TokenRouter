@@ -5,15 +5,18 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
+
+var _ ops.OpsRepository = (*Store)(nil)
 
 func TestOpsRepositoryListRequestTimings(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{db: db}
 
-	mock.ExpectQuery(`(?s)SELECT DISTINCT ON \(l\.client_request_id\).*l\.client_request_id = ANY\(\$1\).*ORDER BY l\.client_request_id, l\.created_at DESC, l\.id DESC`).
+	mock.ExpectQuery(`(?s)SELECT DISTINCT ON \(COALESCE\(NULLIF\(l\.client_request_id,''\), l\.request_id\)\).*l\.request_id = ANY\(\$1\).*ORDER BY COALESCE\(NULLIF\(l\.client_request_id,''\), l\.request_id\), l\.created_at DESC, l\.id DESC`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"client_request_id", "extra"}).
 			AddRow("req-internal-1", `{"upstream_first_response_byte_ms":120000,"upstream_attempt_count":2}`).
@@ -37,5 +40,3 @@ func TestOpsRepositoryListRequestTimingsEmptyInput(t *testing.T) {
 	require.Empty(t, got)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
-
-var _ ops.OpsRepository = (*Store)(nil)

@@ -8,10 +8,11 @@ import (
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/ent/enttest"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
+
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/ent/enttest"
 )
 
 // NewClient 创建启用外键的 SQLite 测试数据库。PostgreSQL 事务行为由集成测试检查。

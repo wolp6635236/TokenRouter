@@ -2,17 +2,19 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	entsql "entgo.io/ent/dialect/sql"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/announcement"
+	_ "github.com/TokenFlux/TokenRouter/ent/runtime"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/site"
-
-	entsql "entgo.io/ent/dialect/sql"
 )
 
 type announcementRepository struct {
@@ -274,4 +276,20 @@ func announcementEntitiesToService(models []*dbent.Announcement) []site.Announce
 		}
 	}
 	return out
+}
+
+// clientFromContext 优先返回上下文中的 Ent 事务客户端，未开启事务时返回默认客户端。
+func clientFromContext(ctx context.Context, fallback *dbent.Client) *dbent.Client {
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return tx.Client()
+	}
+	return fallback
+}
+
+// announcementPersistenceError 将未找到数据库记录的错误转换为公告不存在错误。
+func announcementPersistenceError(err error) error {
+	if errors.Is(err, sql.ErrNoRows) || dbent.IsNotFound(err) {
+		return site.ErrAnnouncementNotFound.WithCause(err)
+	}
+	return err
 }

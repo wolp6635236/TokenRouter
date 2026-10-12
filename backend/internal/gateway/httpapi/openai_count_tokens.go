@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
@@ -12,8 +15,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // OpenAICountCall 不携带提供商凭据、Gin 或资金写入能力。
@@ -27,7 +28,7 @@ type OpenAICountCall struct {
 }
 
 func (h *OpenAITokensHandler) GrokCountTokens(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "anthropic")
+	done, accepted := h.BeginRequest(c, "anthropic")
 	if !accepted {
 		return
 	}
@@ -72,7 +73,7 @@ func (h *OpenAITokensHandler) GrokCountTokens(c *gin.Context) {
 }
 
 func (h *OpenAITokensHandler) CountTokens(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "anthropic")
+	done, accepted := h.BeginRequest(c, "anthropic")
 	if !accepted {
 		return
 	}

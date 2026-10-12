@@ -4,9 +4,6 @@ import (
 	"strings"
 )
 
-// UpstreamModelSyncErrorKind 对模型同步失败类型做分类，便于安全映射到 HTTP 状态码。
-type UpstreamModelSyncErrorKind string
-
 const (
 	// UpstreamModelSyncErrorConfiguration 表示提供商或服务端配置不足，无法执行同步。
 	UpstreamModelSyncErrorConfiguration UpstreamModelSyncErrorKind = "configuration"
@@ -15,6 +12,9 @@ const (
 	// UpstreamModelSyncErrorUpstream 表示已配置的上游失败或返回不可用响应。
 	UpstreamModelSyncErrorUpstream UpstreamModelSyncErrorKind = "upstream"
 )
+
+// UpstreamModelSyncErrorKind 对模型同步失败类型做分类，便于安全映射到 HTTP 状态码。
+type UpstreamModelSyncErrorKind string
 
 // UpstreamModelSyncError 包装内部失败细节，同时提供可安全返回给客户端的消息。
 type UpstreamModelSyncError struct {

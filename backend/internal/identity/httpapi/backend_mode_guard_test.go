@@ -2,22 +2,19 @@ package httpapi_test
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-
-	authctx "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway"
-
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
-
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 type bmSettingRepo struct {
@@ -48,9 +45,7 @@ func (r *bmSettingRepo) SetMultiple(_ context.Context, settings map[string]strin
 	if r.values == nil {
 		r.values = make(map[string]string, len(settings))
 	}
-	for key, value := range settings {
-		r.values[key] = value
-	}
+	maps.Copy(r.values, settings)
 	return nil
 }
 
@@ -126,7 +121,6 @@ func TestBackendModeUserGuard(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			r := gin.New()
 			if tc.role != nil {
@@ -399,7 +393,6 @@ func TestBackendModeAuthGuard(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			r := gin.New()
 

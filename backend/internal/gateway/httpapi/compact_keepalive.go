@@ -11,11 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// openAIStreamKeepaliveBytesContextKey 是 Responses SSE 心跳字节数的上下文键。
-const openAIStreamKeepaliveBytesContextKey = "openai_stream_keepalive_bytes"
+const (
+	// openAIStreamKeepaliveBytesContextKey 是 Responses SSE 心跳字节数的上下文键。
+	openAIStreamKeepaliveBytesContextKey = "openai_stream_keepalive_bytes"
 
-// openAICompactSSEKeepaliveKey 存放 body-signal compact 请求的下游 SSE 心跳器。
-const openAICompactSSEKeepaliveKey = "openai_compact_sse_keepalive"
+	// openAICompactSSEKeepaliveKey 存放 body-signal compact 请求的下游 SSE 心跳器。
+	openAICompactSSEKeepaliveKey = "openai_compact_sse_keepalive"
+)
 
 // openAICompactSSEKeepalive 在等待 Compact 上游 JSON 时发送 SSE 注释心跳。
 // 大上下文处理可能持续数分钟，Nginx 或 Cloudflare Tunnel 的空闲超时会中断静默连接，Codex 重连会重复消耗压缩配额（#3887）。
@@ -30,6 +32,13 @@ type openAICompactSSEKeepalive struct {
 	// OpenAICompactKeepaliveAdjustedWrittenSize 会扣除这些字节。
 	bytes int
 	stop  chan struct{}
+}
+
+// compactKeepaliveWriter 包装 gin.ResponseWriter，写方法在互斥锁下停止心跳，读方法加锁读取状态。
+// Forward 前读取 Size 时心跳继续运行。心跳 goroutine 直接写入内层 k.writer。
+type compactKeepaliveWriter struct {
+	gin.ResponseWriter
+	k *openAICompactSSEKeepalive
 }
 
 // StartOpenAICompactSSEKeepalive 为标记为 body-signal 客户端流式的 Compact 请求启动心跳，返回幂等停止函数。
@@ -81,8 +90,7 @@ func StartOpenAISSEKeepalive(c *gin.Context, interval time.Duration) func() {
 	}()
 	return func() {
 		k.Stop()
-		// 请求结束后恢复原 writer，避免 compact wrapper 继续引用已回收到池中的
-		// 中间件 writer。
+		// 请求结束后恢复中间件 writer，compact 包装器随请求释放。
 		if current, ok := c.Writer.(*compactKeepaliveWriter); ok && current == wrappedWriter {
 			c.Writer = originalWriter
 		}
@@ -184,13 +192,6 @@ func OpenAICompactKeepaliveAdjustedWrittenSize(c *gin.Context) int {
 		return real
 	}
 	return -1
-}
-
-// compactKeepaliveWriter 包装 gin.ResponseWriter，写方法在互斥锁下停止心跳，读方法加锁读取状态。
-// Forward 前读取 Size 时心跳继续运行。心跳 goroutine 直接写入内层 k.writer。
-type compactKeepaliveWriter struct {
-	gin.ResponseWriter
-	k *openAICompactSSEKeepalive
 }
 
 // suspend 在请求开始构造响应时停止心跳，重复调用安全。Header 访问也会触发停止。
@@ -299,4 +300,28 @@ func (w *compactKeepaliveWriter) Written() bool {
 	w.k.mu.Lock()
 	defer w.k.mu.Unlock()
 	return w.ResponseWriter.Written()
+}
+
+// RecordOpenAIStreamKeepaliveBytes 单独记录流心跳字节数。
+func RecordOpenAIStreamKeepaliveBytes(c *gin.Context, written int) {
+	if c == nil || written <= 0 {
+		return
+	}
+	current := 0
+	if value, ok := c.Get(openAIStreamKeepaliveBytesContextKey); ok {
+		current, _ = value.(int)
+	}
+	c.Set(openAIStreamKeepaliveBytesContextKey, current+written)
+}
+
+// OpenAIStreamClientOutputStarted 优先读取本地输出标记，再检查扣除心跳后的字节数。
+func OpenAIStreamClientOutputStarted(c *gin.Context, localStarted bool) bool {
+	if localStarted {
+		return true
+	}
+	if c == nil || c.Writer == nil {
+		return false
+	}
+	// compact 心跳会提交 HTTP 200，但不属于模型业务输出，不应阻止安全重试。
+	return OpenAICompactKeepaliveAdjustedWrittenSize(c) >= 0
 }

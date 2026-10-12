@@ -9,11 +9,15 @@ import (
 	"time"
 
 	core "github.com/TokenFlux/TokenRouter/internal/batchimage"
-
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
 const DefaultGeminiBatchRequeueAfter = 30 * time.Second
+
+var (
+	_ BatchImageProvider = (*GeminiAPIBatchImageProvider)(nil)
+	_ GeminiBatchClient  = (*GeminiBatchHTTPClient)(nil)
+)
 
 type GeminiBatchClient interface {
 	UploadJSONL(ctx context.Context, apiKey string, displayName string, r io.Reader) (*GeminiUploadedFile, error)
@@ -37,6 +41,10 @@ type GeminiBatchError = gemininative.GeminiBatchError
 type GeminiAPIBatchImageProvider struct {
 	client GeminiBatchClient
 }
+
+type GeminiBatchHTTPClient = gemininative.GeminiBatchHTTPClient
+
+type GeminiAPIError = gemininative.GeminiAPIError
 
 func NewGeminiAPIBatchImageProvider(client GeminiBatchClient) *GeminiAPIBatchImageProvider {
 	if client == nil {
@@ -301,15 +309,6 @@ func GeminiProviderError(reason, message string, cause error) error {
 
 func MapGeminiClientError(err error) error { return gemininative.MapClientError(err) }
 
-type GeminiBatchHTTPClient = gemininative.GeminiBatchHTTPClient
-
 func NewGeminiBatchHTTPClient(baseURL string, client *http.Client) *GeminiBatchHTTPClient {
 	return gemininative.NewGeminiBatchHTTPClient(baseURL, client, core.ErrBatchImageProviderMissingAPIKey)
 }
-
-type GeminiAPIError = gemininative.GeminiAPIError
-
-var (
-	_ BatchImageProvider = (*GeminiAPIBatchImageProvider)(nil)
-	_ GeminiBatchClient  = (*GeminiBatchHTTPClient)(nil)
-)

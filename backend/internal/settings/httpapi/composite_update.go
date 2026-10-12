@@ -2,75 +2,127 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"reflect"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+
 	"github.com/TokenFlux/TokenRouter/internal/audit"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/identity/authconfig"
 	"github.com/TokenFlux/TokenRouter/internal/identity/contact"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	identitydto "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
-
-	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-	identitydto "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
-	settingsdto "github.com/TokenFlux/TokenRouter/internal/settings/httpapi/dto"
-	sitedto "github.com/TokenFlux/TokenRouter/internal/site/httpapi/dto"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
-
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	runtimesettings "github.com/TokenFlux/TokenRouter/internal/settings"
-
-	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
+	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
+	settingsdto "github.com/TokenFlux/TokenRouter/internal/settings/httpapi/dto"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// UpdateSettingsRequest 更新设置请求
+var (
+	// semverPattern 校验由三段数字组成的版本号。
+	semverPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+	// menuItemIDPattern 校验由字母、数字、连字符和下划线组成的菜单项 ID。
+	menuItemIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+	// markdownMenuSlugPattern 校验自定义 Markdown 页面 slug，需与页面读取接口保持一致。
+	markdownMenuSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+	// settingKeyJSONAliases 记录 JSON 名称与持久化设置键不同的请求字段。
+	// UpdateSettingsRequest 的其他字段均使用对应设置键作为 JSON 名称。
+	settingKeyJSONAliases = map[string]string{
+		"smtp_from_email": notification.SettingKeySMTPFrom,
+	}
+
+	// settingKeyByJSONName 将 UpdateSettingsRequest 中非指针顶层 JSON 字段映射到其写入的设置键。
+	// 该映射只根据结构体标签构建一次，使新增字段无需修改此处也能自动纳入处理。
+	//
+	// 指针字段由 UpdateSettings 合并，省略时保留存储值，因此本表排除这些字段。
+	// 部分字段还依赖每次保存时重新写入，以重新规范化故障关闭的安全状态，参见
+	// TestUpdateSettingsMalformedForwardedClientIPHeadersRemainFailClosedWhenOmitted。
+	// 只有非指针字段无法区分省略与主动清空。
+	settingKeyByJSONName = buildSettingKeyByJSONName()
+)
+
+// UpdateSettingsRequest 更新设置请求。
 type UpdateSettingsRequest = settingsdto.UpdateSettingsRequest
+
+// generateMenuItemID 为自定义菜单项生成随机十六进制 ID。
+func generateMenuItemID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate menu item ID: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// scopesContainOpenID 检查以空白分隔的权限范围中是否有 openid，比较时忽略大小写。
+func scopesContainOpenID(scopes string) bool {
+	return slices.Contains(strings.Fields(strings.ToLower(strings.TrimSpace(scopes))), "openid")
+}
+
+// firstNonEmpty 返回首个去除首尾空白后非空的字符串。
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
 
 // ensureActorTotpForStepUp 校验操作者是否具备开启 step-up 验证的条件。
 // 操作者必须通过管理员会话登录且已启用 TOTP；管理 API Key 不满足条件。
 // 校验失败时写入错误响应并返回 false。
 func (h *Handler) ensureActorTotpForStepUp(c *gin.Context) bool {
 	if c.GetString("auth_method") == audit.AuditAuthMethodAdminAPIKey {
-		response.ErrorWithDetails(c, http.StatusForbidden,
+		httpx.ErrorWithDetails(c, http.StatusForbidden,
 			"Admin API key cannot enable step-up verification; use an admin session with TOTP enabled",
 			"STEP_UP_ADMIN_API_KEY_FORBIDDEN", nil)
 		return false
 	}
 	subject, ok := authctx.GetAuthSubjectFromContext(c)
 	if !ok || subject.UserID <= 0 {
-		response.ErrorWithDetails(c, http.StatusForbidden,
+		httpx.ErrorWithDetails(c, http.StatusForbidden,
 			"Enabling step-up verification requires an authenticated admin session",
 			"STEP_UP_ENABLE_REQUIRES_TOTP", nil)
 		return false
 	}
 	if h.userService == nil {
-		response.InternalError(c, "Step-up precondition check unavailable")
+		httpx.InternalError(c, "Step-up precondition check unavailable")
 		return false
 	}
 	user, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return false
 	}
 	if !user.TotpEnabled {
-		response.ErrorWithDetails(c, http.StatusBadRequest,
+		httpx.ErrorWithDetails(c, http.StatusBadRequest,
 			"Enable two-factor authentication (TOTP) for your account before turning on step-up verification",
 			"STEP_UP_ENABLE_REQUIRES_TOTP", nil)
 		return false
@@ -78,26 +130,10 @@ func (h *Handler) ensureActorTotpForStepUp(c *gin.Context) bool {
 	return true
 }
 
-// settingKeyJSONAliases 记录 JSON 名称与持久化设置键不同的请求字段。
-// UpdateSettingsRequest 的其他字段均使用对应设置键作为 JSON 名称。
-var settingKeyJSONAliases = map[string]string{
-	"smtp_from_email": notification.SettingKeySMTPFrom,
-}
-
-// settingKeyByJSONName 将 UpdateSettingsRequest 中非指针顶层 JSON 字段映射到其写入的设置键。
-// 该映射只根据结构体标签构建一次，使新增字段无需修改此处也能自动纳入处理。
-//
-// 指针字段由 UpdateSettings 合并，省略时保留存储值，因此本表排除这些字段。
-// 部分字段还依赖每次保存时重新写入，以重新规范化故障关闭的安全状态，参见
-// TestUpdateSettingsMalformedForwardedClientIPHeadersRemainFailClosedWhenOmitted。
-// 只有非指针字段无法区分省略与主动清空。
-var settingKeyByJSONName = buildSettingKeyByJSONName()
-
 func buildSettingKeyByJSONName() map[string]string {
-	t := reflect.TypeOf(UpdateSettingsRequest{})
+	t := reflect.TypeFor[UpdateSettingsRequest]()
 	out := make(map[string]string, t.NumField())
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
+	for field := range t.Fields() {
 		if field.Type.Kind() == reflect.Pointer {
 			continue
 		}
@@ -137,17 +173,17 @@ func SettingsAuditRequest(req UpdateSettingsRequest) UpdateSettingsRequest {
 func (h *Handler) UpdateSettings(c *gin.Context) {
 	var sentFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&sentFields, binding.JSON); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+		httpx.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 	// 废弃字段必须明确拒绝，避免旧客户端误以为自动跨型号映射仍会执行。
 	if _, exists := sentFields["grok_cross_client_model_map_enabled"]; exists {
-		response.BadRequest(c, "grok_cross_client_model_map_enabled has been removed; configure explicit model_mapping instead")
+		httpx.BadRequest(c, "grok_cross_client_model_map_enabled has been removed; configure explicit model_mapping instead")
 		return
 	}
 	for _, field := range []string{"site_name_zh", "site_name_en", "site_title_zh", "site_title_en", "site_subtitle_zh", "site_subtitle_en"} {
 		if _, exists := sentFields[field]; exists {
-			response.ErrorWithDetails(c, http.StatusBadRequest, "Use site_texts to edit translations.", "REMOVED_SETTING_FIELD", map[string]string{"field": field})
+			httpx.ErrorWithDetails(c, http.StatusBadRequest, "Use site_texts to edit translations.", "REMOVED_SETTING_FIELD", map[string]string{"field": field})
 			return
 		}
 	}
@@ -156,12 +192,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	var req UpdateSettingsRequest
 	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+		httpx.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 	update, err := h.settingService.BeginSettingsUpdate(c.Request.Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	defer update.Close()
@@ -174,7 +210,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}); ok {
 			normalized, normalizeErr := sanitizer.NormalizeCreativeModelSettingsForSave(c.Request.Context(), *req.CreativeModelSettings)
 			if normalizeErr != nil {
-				response.BadRequest(c, "Invalid creative model settings: "+normalizeErr.Error())
+				httpx.BadRequest(c, "Invalid creative model settings: "+normalizeErr.Error())
 				return
 			}
 			req.CreativeModelSettings = &normalized
@@ -185,12 +221,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 	previousSettings, err := h.settingService.GetAllSettings(c.Request.Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	previousAuthSourceDefaults, err := h.settingService.GetAuthSourceDefaultSettings(c.Request.Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
@@ -242,7 +278,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.DefaultBalance = 0
 	}
 	if req.DefaultUserAPIKeyLimit != nil && !identity.IsValidUserAPIKeyLimit(*req.DefaultUserAPIKeyLimit) {
-		response.ErrorFrom(c, identity.ErrUserAPIKeyLimitInvalid)
+		httpx.ErrorFrom(c, identity.ErrUserAPIKeyLimitInvalid)
 		return
 	}
 	normalizedPromotion := promotion.NormalizeAdminSettings(promotion.AdminSettings{AffiliateRebateRate: req.AffiliateRebateRate, AffiliateRebateFreezeHours: req.AffiliateRebateFreezeHours, AffiliateRebateDurationDays: req.AffiliateRebateDurationDays, AffiliateRebatePerInviteeCap: req.AffiliateRebatePerInviteeCap})
@@ -272,7 +308,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		Enabled: previousSettings.UsageRankingEnabled, SortBy: usage.UsageRankingSortBy(previousSettings.UsageRankingSortBy), ShowTotalTokens: previousSettings.UsageRankingShowTotalTokens, ShowRequests: previousSettings.UsageRankingShowRequests, ShowActualCost: previousSettings.UsageRankingShowActualCost, Limit: previousSettings.UsageRankingLimit,
 	}, usage.RankingSettingsUpdate{Limit: req.UsageRankingLimit, Enabled: req.UsageRankingEnabled, SortBy: req.UsageRankingSortBy, ShowTotalTokens: req.UsageRankingShowTotalTokens, ShowRequests: req.UsageRankingShowRequests, ShowActualCost: req.UsageRankingShowActualCost})
 	if rankingErr != nil {
-		response.BadRequest(c, rankingErr.Error())
+		httpx.BadRequest(c, rankingErr.Error())
 		return
 	}
 	req.UsageRankingLimit = usageRanking.Limit
@@ -326,7 +362,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 	if enabledCaptchaProviders > 1 {
-		response.BadRequest(c, "Multiple captcha providers (Cloudflare Turnstile / Tencent Captcha / Aliyun Captcha) cannot be enabled at the same time")
+		httpx.BadRequest(c, "Multiple captcha providers (Cloudflare Turnstile / Tencent Captcha / Aliyun Captcha) cannot be enabled at the same time")
 		return
 	}
 	// 规范化阿里云地域：未发送时保留已存值，非法值一律按中国内地落库。
@@ -348,13 +384,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.TurnstileEnabled {
 		// 检查必填字段
 		if req.TurnstileSiteKey == "" {
-			response.BadRequest(c, "Turnstile Site Key is required when enabled")
+			httpx.BadRequest(c, "Turnstile Site Key is required when enabled")
 			return
 		}
 		// 如果未提供 secret key，使用已保存的值（留空保留当前值）
 		if req.TurnstileSecretKey == "" {
 			if previousSettings.TurnstileSecretKey == "" {
-				response.BadRequest(c, "Turnstile Secret Key is required when enabled")
+				httpx.BadRequest(c, "Turnstile Secret Key is required when enabled")
 				return
 			}
 			req.TurnstileSecretKey = previousSettings.TurnstileSecretKey
@@ -365,7 +401,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		secretKeyChanged := previousSettings.TurnstileSecretKey != req.TurnstileSecretKey
 		if siteKeyChanged || secretKeyChanged {
 			if err := h.turnstileService.ValidateSecretKey(c.Request.Context(), req.TurnstileSecretKey); err != nil {
-				response.ErrorFrom(c, err)
+				httpx.ErrorFrom(c, err)
 				return
 			}
 		}
@@ -377,7 +413,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		appID, err := strconv.ParseUint(req.TencentCaptchaAppID, 10, 64)
 		if err != nil || appID == 0 {
-			response.BadRequest(c, "Tencent Captcha CaptchaAppId must be a positive integer when enabled")
+			httpx.BadRequest(c, "Tencent Captcha CaptchaAppId must be a positive integer when enabled")
 			return
 		}
 		if req.TencentCaptchaAppSecretKey == "" {
@@ -390,15 +426,15 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			req.TencentCaptchaCloudSecretKey = previousSettings.TencentCaptchaCloudSecretKey
 		}
 		if req.TencentCaptchaAppSecretKey == "" {
-			response.BadRequest(c, "Tencent Captcha AppSecretKey is required when enabled")
+			httpx.BadRequest(c, "Tencent Captcha AppSecretKey is required when enabled")
 			return
 		}
 		if req.TencentCaptchaCloudSecretID == "" {
-			response.BadRequest(c, "Tencent Cloud SecretId is required when Tencent Captcha is enabled")
+			httpx.BadRequest(c, "Tencent Cloud SecretId is required when Tencent Captcha is enabled")
 			return
 		}
 		if req.TencentCaptchaCloudSecretKey == "" {
-			response.BadRequest(c, "Tencent Cloud SecretKey is required when Tencent Captcha is enabled")
+			httpx.BadRequest(c, "Tencent Cloud SecretKey is required when Tencent Captcha is enabled")
 			return
 		}
 	}
@@ -415,21 +451,21 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			req.AliyunCaptchaAccessKeyID = previousSettings.AliyunCaptchaAccessKeyID
 		}
 		if req.AliyunCaptchaSceneID == "" {
-			response.BadRequest(c, "Aliyun Captcha Scene ID is required when enabled")
+			httpx.BadRequest(c, "Aliyun Captcha Scene ID is required when enabled")
 			return
 		}
 		if req.AliyunCaptchaPrefix == "" {
-			response.BadRequest(c, "Aliyun Captcha Prefix is required when enabled")
+			httpx.BadRequest(c, "Aliyun Captcha Prefix is required when enabled")
 			return
 		}
 		if req.AliyunCaptchaAccessKeyID == "" {
-			response.BadRequest(c, "Aliyun Captcha AccessKey ID is required when enabled")
+			httpx.BadRequest(c, "Aliyun Captcha AccessKey ID is required when enabled")
 			return
 		}
 		// 如果未提供 AccessKey Secret，使用已保存的值（留空保留当前值）
 		if req.AliyunCaptchaAccessKeySecret == "" {
 			if previousSettings.AliyunCaptchaAccessKeySecret == "" {
-				response.BadRequest(c, "Aliyun Captcha AccessKey Secret is required when enabled")
+				httpx.BadRequest(c, "Aliyun Captcha AccessKey Secret is required when enabled")
 				return
 			}
 			req.AliyunCaptchaAccessKeySecret = previousSettings.AliyunCaptchaAccessKeySecret
@@ -442,7 +478,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			previousSettings.AliyunCaptchaRegion != req.AliyunCaptchaRegion
 		if credentialsChanged {
 			if err := h.aliyunCaptchaService.ValidateCredentials(c.Request.Context(), req.AliyunCaptchaAccessKeyID, req.AliyunCaptchaAccessKeySecret, req.AliyunCaptchaSceneID, req.AliyunCaptchaRegion); err != nil {
-				response.ErrorFrom(c, err)
+				httpx.ErrorFrom(c, err)
 				return
 			}
 		}
@@ -453,7 +489,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.TotpEnabled && !previousSettings.TotpEnabled {
 		// 尝试启用 TOTP，检查加密密钥是否已手动配置
 		if !h.settingService.IsTotpEncryptionKeyConfigured() {
-			response.BadRequest(c, "Cannot enable TOTP: TOTP_ENCRYPTION_KEY environment variable must be configured first. Generate a key with 'openssl rand -hex 32' and set it in your environment.")
+			httpx.BadRequest(c, "Cannot enable TOTP: TOTP_ENCRYPTION_KEY environment variable must be configured first. Generate a key with 'openssl rand -hex 32' and set it in your environment.")
 			return
 		}
 	}
@@ -466,7 +502,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		loginAgreementMode = "modal"
 	case "checkbox":
 	default:
-		response.BadRequest(c, "Login agreement mode must be modal or checkbox")
+		httpx.BadRequest(c, "Login agreement mode must be modal or checkbox")
 		return
 	}
 	loginAgreementUpdatedAt := strings.TrimSpace(req.LoginAgreementUpdatedAt)
@@ -479,20 +515,20 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	for _, doc := range loginAgreementDocuments {
 		if strings.TrimSpace(doc.Title) == "" {
-			response.BadRequest(c, "Login agreement document title is required")
+			httpx.BadRequest(c, "Login agreement document title is required")
 			return
 		}
 		if len(doc.Title) > 80 {
-			response.BadRequest(c, "Login agreement document title is too long (max 80 characters)")
+			httpx.BadRequest(c, "Login agreement document title is too long (max 80 characters)")
 			return
 		}
 		if len(doc.ContentMD) > 200*1024 {
-			response.BadRequest(c, "Login agreement document content is too large (max 200KB)")
+			httpx.BadRequest(c, "Login agreement document content is too large (max 200KB)")
 			return
 		}
 	}
 	if req.LoginAgreementEnabled && len(loginAgreementDocuments) == 0 {
-		response.BadRequest(c, "Login agreement documents are required when enabled")
+		httpx.BadRequest(c, "Login agreement documents are required when enabled")
 		return
 	}
 
@@ -503,22 +539,22 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.LinuxDoConnectRedirectURL = strings.TrimSpace(req.LinuxDoConnectRedirectURL)
 
 		if req.LinuxDoConnectClientID == "" {
-			response.BadRequest(c, "LinuxDo Client ID is required when enabled")
+			httpx.BadRequest(c, "LinuxDo Client ID is required when enabled")
 			return
 		}
 		if req.LinuxDoConnectRedirectURL == "" {
-			response.BadRequest(c, "LinuxDo Redirect URL is required when enabled")
+			httpx.BadRequest(c, "LinuxDo Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.LinuxDoConnectRedirectURL); err != nil {
-			response.BadRequest(c, "LinuxDo Redirect URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "LinuxDo Redirect URL must be an absolute http(s) URL")
 			return
 		}
 
 		// 如果未提供 client_secret，则保留现有值（如有）。
 		if req.LinuxDoConnectClientSecret == "" {
 			if previousSettings.LinuxDoConnectClientSecret == "" {
-				response.BadRequest(c, "LinuxDo Client Secret is required when enabled")
+				httpx.BadRequest(c, "LinuxDo Client Secret is required when enabled")
 				return
 			}
 			req.LinuxDoConnectClientSecret = previousSettings.LinuxDoConnectClientSecret
@@ -538,22 +574,22 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.DingTalkConnectInternalCorpID = strings.TrimSpace(req.DingTalkConnectInternalCorpID)
 
 		if req.DingTalkConnectClientID == "" {
-			response.BadRequest(c, "DingTalk Client ID is required when enabled")
+			httpx.BadRequest(c, "DingTalk Client ID is required when enabled")
 			return
 		}
 		if req.DingTalkConnectRedirectURL == "" {
-			response.BadRequest(c, "DingTalk Redirect URL is required when enabled")
+			httpx.BadRequest(c, "DingTalk Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.DingTalkConnectRedirectURL); err != nil {
-			response.BadRequest(c, "DingTalk Redirect URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "DingTalk Redirect URL must be an absolute http(s) URL")
 			return
 		}
 
 		// 如果未提供 client_secret，则保留现有值（如有）。
 		if req.DingTalkConnectClientSecret == "" {
 			if previousSettings.DingTalkConnectClientSecret == "" {
-				response.BadRequest(c, "DingTalk Client Secret is required when enabled")
+				httpx.BadRequest(c, "DingTalk Client Secret is required when enabled")
 				return
 			}
 			req.DingTalkConnectClientSecret = previousSettings.DingTalkConnectClientSecret
@@ -578,7 +614,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			dingTalkCfg.AppType = "public"
 		}
 		if err := authconfig.ValidateDingTalkConfig(dingTalkCfg); err != nil {
-			response.ErrorWithDetails(c, http.StatusBadRequest, err.Error(), mapDingTalkValidateError(err), nil)
+			httpx.ErrorWithDetails(c, http.StatusBadRequest, err.Error(), mapDingTalkValidateError(err), nil)
 			return
 		}
 
@@ -643,14 +679,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 
 		if req.WeChatConnectMPEnabled && req.WeChatConnectMobileEnabled {
-			response.BadRequest(c, "WeChat Official Account and Mobile App cannot be enabled at the same time")
+			httpx.BadRequest(c, "WeChat Official Account and Mobile App cannot be enabled at the same time")
 			return
 		}
 		if req.WeChatConnectMode != "" {
 			switch req.WeChatConnectMode {
 			case "open", "mp", "mobile":
 			default:
-				response.BadRequest(c, "WeChat mode must be open, mp, or mobile")
+				httpx.BadRequest(c, "WeChat mode must be open, mp, or mobile")
 				return
 			}
 		}
@@ -693,31 +729,31 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 		if req.WeChatConnectOpenEnabled {
 			if req.WeChatConnectOpenAppID == "" {
-				response.BadRequest(c, "WeChat PC App ID is required when enabled")
+				httpx.BadRequest(c, "WeChat PC App ID is required when enabled")
 				return
 			}
 			if req.WeChatConnectOpenAppSecret == "" {
-				response.BadRequest(c, "WeChat PC App Secret is required when enabled")
+				httpx.BadRequest(c, "WeChat PC App Secret is required when enabled")
 				return
 			}
 		}
 		if req.WeChatConnectMPEnabled {
 			if req.WeChatConnectMPAppID == "" {
-				response.BadRequest(c, "WeChat Official Account App ID is required when enabled")
+				httpx.BadRequest(c, "WeChat Official Account App ID is required when enabled")
 				return
 			}
 			if req.WeChatConnectMPAppSecret == "" {
-				response.BadRequest(c, "WeChat Official Account App Secret is required when enabled")
+				httpx.BadRequest(c, "WeChat Official Account App Secret is required when enabled")
 				return
 			}
 		}
 		if req.WeChatConnectMobileEnabled {
 			if req.WeChatConnectMobileAppID == "" {
-				response.BadRequest(c, "WeChat Mobile App ID is required when enabled")
+				httpx.BadRequest(c, "WeChat Mobile App ID is required when enabled")
 				return
 			}
 			if req.WeChatConnectMobileAppSecret == "" {
-				response.BadRequest(c, "WeChat Mobile App Secret is required when enabled")
+				httpx.BadRequest(c, "WeChat Mobile App Secret is required when enabled")
 				return
 			}
 		}
@@ -731,18 +767,18 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		if req.WeChatConnectOpenEnabled || req.WeChatConnectMPEnabled {
 			if req.WeChatConnectRedirectURL == "" {
-				response.BadRequest(c, "WeChat Redirect URL is required when web oauth is enabled")
+				httpx.BadRequest(c, "WeChat Redirect URL is required when web oauth is enabled")
 				return
 			}
 			if err := authconfig.ValidateAbsoluteHTTPURL(req.WeChatConnectRedirectURL); err != nil {
-				response.BadRequest(c, "WeChat Redirect URL must be an absolute http(s) URL")
+				httpx.BadRequest(c, "WeChat Redirect URL must be an absolute http(s) URL")
 				return
 			}
 			if req.WeChatConnectFrontendRedirectURL == "" {
 				req.WeChatConnectFrontendRedirectURL = "/auth/wechat/callback"
 			}
 			if err := authconfig.ValidateFrontendRedirectURL(req.WeChatConnectFrontendRedirectURL); err != nil {
-				response.BadRequest(c, "WeChat Frontend Redirect URL is invalid")
+				httpx.BadRequest(c, "WeChat Frontend Redirect URL is invalid")
 				return
 			}
 		}
@@ -751,7 +787,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// Generic OIDC 参数验证
 	oidcUsePKCE, oidcValidateIDToken, err := h.settingService.OIDCSecurityWriteDefaults(c.Request.Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	if req.OIDCConnectEnabled {
@@ -802,85 +838,85 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 
 		if req.OIDCConnectClientID == "" {
-			response.BadRequest(c, "OIDC Client ID is required when enabled")
+			httpx.BadRequest(c, "OIDC Client ID is required when enabled")
 			return
 		}
 		if req.OIDCConnectIssuerURL == "" {
-			response.BadRequest(c, "OIDC Issuer URL is required when enabled")
+			httpx.BadRequest(c, "OIDC Issuer URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.OIDCConnectIssuerURL); err != nil {
-			response.BadRequest(c, "OIDC Issuer URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "OIDC Issuer URL must be an absolute http(s) URL")
 			return
 		}
 		if req.OIDCConnectDiscoveryURL != "" {
 			if err := authconfig.ValidateAbsoluteHTTPURL(req.OIDCConnectDiscoveryURL); err != nil {
-				response.BadRequest(c, "OIDC Discovery URL must be an absolute http(s) URL")
+				httpx.BadRequest(c, "OIDC Discovery URL must be an absolute http(s) URL")
 				return
 			}
 		}
 		if req.OIDCConnectAuthorizeURL != "" {
 			if err := authconfig.ValidateAbsoluteHTTPURL(req.OIDCConnectAuthorizeURL); err != nil {
-				response.BadRequest(c, "OIDC Authorize URL must be an absolute http(s) URL")
+				httpx.BadRequest(c, "OIDC Authorize URL must be an absolute http(s) URL")
 				return
 			}
 		}
 		if req.OIDCConnectTokenURL != "" {
 			if err := authconfig.ValidateAbsoluteHTTPURL(req.OIDCConnectTokenURL); err != nil {
-				response.BadRequest(c, "OIDC Token URL must be an absolute http(s) URL")
+				httpx.BadRequest(c, "OIDC Token URL must be an absolute http(s) URL")
 				return
 			}
 		}
 		if req.OIDCConnectUserInfoURL != "" {
 			if err := authconfig.ValidateAbsoluteHTTPURL(req.OIDCConnectUserInfoURL); err != nil {
-				response.BadRequest(c, "OIDC UserInfo URL must be an absolute http(s) URL")
+				httpx.BadRequest(c, "OIDC UserInfo URL must be an absolute http(s) URL")
 				return
 			}
 		}
 		if req.OIDCConnectRedirectURL == "" {
-			response.BadRequest(c, "OIDC Redirect URL is required when enabled")
+			httpx.BadRequest(c, "OIDC Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.OIDCConnectRedirectURL); err != nil {
-			response.BadRequest(c, "OIDC Redirect URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "OIDC Redirect URL must be an absolute http(s) URL")
 			return
 		}
 		if req.OIDCConnectFrontendRedirectURL == "" {
-			response.BadRequest(c, "OIDC Frontend Redirect URL is required when enabled")
+			httpx.BadRequest(c, "OIDC Frontend Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateFrontendRedirectURL(req.OIDCConnectFrontendRedirectURL); err != nil {
-			response.BadRequest(c, "OIDC Frontend Redirect URL is invalid")
+			httpx.BadRequest(c, "OIDC Frontend Redirect URL is invalid")
 			return
 		}
 		if !scopesContainOpenID(req.OIDCConnectScopes) {
-			response.BadRequest(c, "OIDC scopes must contain openid")
+			httpx.BadRequest(c, "OIDC scopes must contain openid")
 			return
 		}
 		switch req.OIDCConnectTokenAuthMethod {
 		case "", "client_secret_post", "client_secret_basic", "none":
 		default:
-			response.BadRequest(c, "OIDC Token Auth Method must be one of client_secret_post/client_secret_basic/none")
+			httpx.BadRequest(c, "OIDC Token Auth Method must be one of client_secret_post/client_secret_basic/none")
 			return
 		}
 		if req.OIDCConnectClockSkewSeconds < 0 || req.OIDCConnectClockSkewSeconds > 600 {
-			response.BadRequest(c, "OIDC clock skew seconds must be between 0 and 600")
+			httpx.BadRequest(c, "OIDC clock skew seconds must be between 0 and 600")
 			return
 		}
 		if oidcValidateIDToken && req.OIDCConnectAllowedSigningAlgs == "" {
-			response.BadRequest(c, "OIDC Allowed Signing Algs is required when validate_id_token=true")
+			httpx.BadRequest(c, "OIDC Allowed Signing Algs is required when validate_id_token=true")
 			return
 		}
 		if req.OIDCConnectJWKSURL != "" {
 			if err := authconfig.ValidateAbsoluteHTTPURL(req.OIDCConnectJWKSURL); err != nil {
-				response.BadRequest(c, "OIDC JWKS URL must be an absolute http(s) URL")
+				httpx.BadRequest(c, "OIDC JWKS URL must be an absolute http(s) URL")
 				return
 			}
 		}
 		if req.OIDCConnectTokenAuthMethod == "" || req.OIDCConnectTokenAuthMethod == "client_secret_post" || req.OIDCConnectTokenAuthMethod == "client_secret_basic" {
 			if req.OIDCConnectClientSecret == "" {
 				if previousSettings.OIDCConnectClientSecret == "" {
-					response.BadRequest(c, "OIDC Client Secret is required when enabled")
+					httpx.BadRequest(c, "OIDC Client Secret is required when enabled")
 					return
 				}
 				req.OIDCConnectClientSecret = previousSettings.OIDCConnectClientSecret
@@ -897,30 +933,30 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.GitHubOAuthRedirectURL = strings.TrimSpace(firstNonEmpty(req.GitHubOAuthRedirectURL, previousSettings.GitHubOAuthRedirectURL))
 		req.GitHubOAuthFrontendRedirectURL = strings.TrimSpace(firstNonEmpty(req.GitHubOAuthFrontendRedirectURL, previousSettings.GitHubOAuthFrontendRedirectURL, "/auth/oauth/callback"))
 		if req.GitHubOAuthClientID == "" {
-			response.BadRequest(c, "GitHub OAuth Client ID is required when enabled")
+			httpx.BadRequest(c, "GitHub OAuth Client ID is required when enabled")
 			return
 		}
 		if req.GitHubOAuthClientSecret == "" {
 			if previousSettings.GitHubOAuthClientSecret == "" {
-				response.BadRequest(c, "GitHub OAuth Client Secret is required when enabled")
+				httpx.BadRequest(c, "GitHub OAuth Client Secret is required when enabled")
 				return
 			}
 			req.GitHubOAuthClientSecret = previousSettings.GitHubOAuthClientSecret
 		}
 		if req.GitHubOAuthRedirectURL == "" {
-			response.BadRequest(c, "GitHub OAuth Redirect URL is required when enabled")
+			httpx.BadRequest(c, "GitHub OAuth Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.GitHubOAuthRedirectURL); err != nil {
-			response.BadRequest(c, "GitHub OAuth Redirect URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "GitHub OAuth Redirect URL must be an absolute http(s) URL")
 			return
 		}
 		if req.GitHubOAuthFrontendRedirectURL == "" {
-			response.BadRequest(c, "GitHub OAuth Frontend Redirect URL is required when enabled")
+			httpx.BadRequest(c, "GitHub OAuth Frontend Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateFrontendRedirectURL(req.GitHubOAuthFrontendRedirectURL); err != nil {
-			response.BadRequest(c, "GitHub OAuth Frontend Redirect URL is invalid")
+			httpx.BadRequest(c, "GitHub OAuth Frontend Redirect URL is invalid")
 			return
 		}
 	}
@@ -934,30 +970,30 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.GoogleOAuthRedirectURL = strings.TrimSpace(firstNonEmpty(req.GoogleOAuthRedirectURL, previousSettings.GoogleOAuthRedirectURL))
 		req.GoogleOAuthFrontendRedirectURL = strings.TrimSpace(firstNonEmpty(req.GoogleOAuthFrontendRedirectURL, previousSettings.GoogleOAuthFrontendRedirectURL, "/auth/oauth/callback"))
 		if req.GoogleOAuthClientID == "" {
-			response.BadRequest(c, "Google OAuth Client ID is required when enabled")
+			httpx.BadRequest(c, "Google OAuth Client ID is required when enabled")
 			return
 		}
 		if req.GoogleOAuthClientSecret == "" {
 			if previousSettings.GoogleOAuthClientSecret == "" {
-				response.BadRequest(c, "Google OAuth Client Secret is required when enabled")
+				httpx.BadRequest(c, "Google OAuth Client Secret is required when enabled")
 				return
 			}
 			req.GoogleOAuthClientSecret = previousSettings.GoogleOAuthClientSecret
 		}
 		if req.GoogleOAuthRedirectURL == "" {
-			response.BadRequest(c, "Google OAuth Redirect URL is required when enabled")
+			httpx.BadRequest(c, "Google OAuth Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.GoogleOAuthRedirectURL); err != nil {
-			response.BadRequest(c, "Google OAuth Redirect URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "Google OAuth Redirect URL must be an absolute http(s) URL")
 			return
 		}
 		if req.GoogleOAuthFrontendRedirectURL == "" {
-			response.BadRequest(c, "Google OAuth Frontend Redirect URL is required when enabled")
+			httpx.BadRequest(c, "Google OAuth Frontend Redirect URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateFrontendRedirectURL(req.GoogleOAuthFrontendRedirectURL); err != nil {
-			response.BadRequest(c, "Google OAuth Frontend Redirect URL is invalid")
+			httpx.BadRequest(c, "Google OAuth Frontend Redirect URL is invalid")
 			return
 		}
 	}
@@ -976,16 +1012,16 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// - 禁用时允许为空；若提供了 URL 也做基本校验，避免误配置
 	if purchaseEnabled {
 		if purchaseURL == "" {
-			response.BadRequest(c, "Purchase Subscription URL is required when enabled")
+			httpx.BadRequest(c, "Purchase Subscription URL is required when enabled")
 			return
 		}
 		if err := authconfig.ValidateAbsoluteHTTPURL(purchaseURL); err != nil {
-			response.BadRequest(c, "Purchase Subscription URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "Purchase Subscription URL must be an absolute http(s) URL")
 			return
 		}
 	} else if purchaseURL != "" {
 		if err := authconfig.ValidateAbsoluteHTTPURL(purchaseURL); err != nil {
-			response.BadRequest(c, "Purchase Subscription URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "Purchase Subscription URL must be an absolute http(s) URL")
 			return
 		}
 	}
@@ -994,7 +1030,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	req.FrontendURL = strings.TrimSpace(req.FrontendURL)
 	if req.FrontendURL != "" {
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.FrontendURL); err != nil {
-			response.BadRequest(c, "Frontend URL must be an absolute http(s) URL")
+			httpx.BadRequest(c, "Frontend URL must be an absolute http(s) URL")
 			return
 		}
 	}
@@ -1012,67 +1048,66 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.CustomMenuItems != nil {
 		items := *req.CustomMenuItems
 		if len(items) > maxCustomMenuItems {
-			response.BadRequest(c, "Too many custom menu items (max 20)")
+			httpx.BadRequest(c, "Too many custom menu items (max 20)")
 			return
 		}
 		for i, item := range items {
 			if strings.TrimSpace(item.Label) == "" {
-				response.BadRequest(c, "Custom menu item label is required")
+				httpx.BadRequest(c, "Custom menu item label is required")
 				return
 			}
 			if len(item.Label) > maxMenuItemLabelLen {
-				response.BadRequest(c, "Custom menu item label is too long (max 50 characters)")
+				httpx.BadRequest(c, "Custom menu item label is too long (max 50 characters)")
 				return
 			}
 			urlTrimmed := strings.TrimSpace(item.URL)
-			if strings.HasPrefix(urlTrimmed, "md:") {
+			if slug, ok := strings.CutPrefix(urlTrimmed, "md:"); ok {
 				// Markdown 页面模式使用 md:<slug>，slug 规则与 /api/v1/pages/:slug 保持一致。
-				slug := strings.TrimPrefix(urlTrimmed, "md:")
 				if slug == "" {
-					response.BadRequest(c, "Custom menu item markdown slug cannot be empty (use md:slug format)")
+					httpx.BadRequest(c, "Custom menu item markdown slug cannot be empty (use md:slug format)")
 					return
 				}
 				if len(slug) > 64 || !markdownMenuSlugPattern.MatchString(slug) {
-					response.BadRequest(c, "Custom menu item markdown slug contains invalid characters")
+					httpx.BadRequest(c, "Custom menu item markdown slug contains invalid characters")
 					return
 				}
 			} else {
 				if urlTrimmed == "" {
-					response.BadRequest(c, "Custom menu item URL is required (use md:slug for markdown pages)")
+					httpx.BadRequest(c, "Custom menu item URL is required (use md:slug for markdown pages)")
 					return
 				}
 				if len(urlTrimmed) > maxMenuItemURLLen {
-					response.BadRequest(c, "Custom menu item URL is too long (max 2048 characters)")
+					httpx.BadRequest(c, "Custom menu item URL is too long (max 2048 characters)")
 					return
 				}
 				if err := authconfig.ValidateAbsoluteHTTPURL(urlTrimmed); err != nil {
-					response.BadRequest(c, "Custom menu item URL must be an absolute http(s) URL or md:<slug>")
+					httpx.BadRequest(c, "Custom menu item URL must be an absolute http(s) URL or md:<slug>")
 					return
 				}
 			}
 			// 保存规范化后的 URL，避免前后空白导致运行时 md: 页面识别失败。
 			items[i].URL = urlTrimmed
 			if item.Visibility != "user" && item.Visibility != "admin" {
-				response.BadRequest(c, "Custom menu item visibility must be 'user' or 'admin'")
+				httpx.BadRequest(c, "Custom menu item visibility must be 'user' or 'admin'")
 				return
 			}
 			if len(item.IconSVG) > maxMenuItemIconSVGLen {
-				response.BadRequest(c, "Custom menu item icon SVG is too large (max 10KB)")
+				httpx.BadRequest(c, "Custom menu item icon SVG is too large (max 10KB)")
 				return
 			}
 			// Auto-generate ID if missing
 			if strings.TrimSpace(item.ID) == "" {
 				id, err := generateMenuItemID()
 				if err != nil {
-					response.Error(c, http.StatusInternalServerError, "Failed to generate menu item ID")
+					httpx.Error(c, http.StatusInternalServerError, "Failed to generate menu item ID")
 					return
 				}
 				items[i].ID = id
 			} else if len(item.ID) > maxMenuItemIDLen {
-				response.BadRequest(c, "Custom menu item ID is too long (max 32 characters)")
+				httpx.BadRequest(c, "Custom menu item ID is too long (max 32 characters)")
 				return
 			} else if !menuItemIDPattern.MatchString(item.ID) {
-				response.BadRequest(c, "Custom menu item ID contains invalid characters (only a-z, A-Z, 0-9, - and _ are allowed)")
+				httpx.BadRequest(c, "Custom menu item ID contains invalid characters (only a-z, A-Z, 0-9, - and _ are allowed)")
 				return
 			}
 		}
@@ -1080,14 +1115,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		seen := make(map[string]struct{}, len(items))
 		for _, item := range items {
 			if _, exists := seen[item.ID]; exists {
-				response.BadRequest(c, "Duplicate custom menu item ID: "+item.ID)
+				httpx.BadRequest(c, "Duplicate custom menu item ID: "+item.ID)
 				return
 			}
 			seen[item.ID] = struct{}{}
 		}
 		menuBytes, err := json.Marshal(items)
 		if err != nil {
-			response.BadRequest(c, "Failed to serialize custom menu items")
+			httpx.BadRequest(c, "Failed to serialize custom menu items")
 			return
 		}
 		customMenuJSON = string(menuBytes)
@@ -1105,38 +1140,38 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.CustomEndpoints != nil {
 		endpoints := *req.CustomEndpoints
 		if len(endpoints) > maxCustomEndpoints {
-			response.BadRequest(c, "Too many custom endpoints (max 10)")
+			httpx.BadRequest(c, "Too many custom endpoints (max 10)")
 			return
 		}
 		for _, ep := range endpoints {
 			if strings.TrimSpace(ep.Name) == "" {
-				response.BadRequest(c, "Custom endpoint name is required")
+				httpx.BadRequest(c, "Custom endpoint name is required")
 				return
 			}
 			if len(ep.Name) > maxEndpointNameLen {
-				response.BadRequest(c, "Custom endpoint name is too long (max 50 characters)")
+				httpx.BadRequest(c, "Custom endpoint name is too long (max 50 characters)")
 				return
 			}
 			if strings.TrimSpace(ep.Endpoint) == "" {
-				response.BadRequest(c, "Custom endpoint URL is required")
+				httpx.BadRequest(c, "Custom endpoint URL is required")
 				return
 			}
 			if len(ep.Endpoint) > maxEndpointURLLen {
-				response.BadRequest(c, "Custom endpoint URL is too long (max 2048 characters)")
+				httpx.BadRequest(c, "Custom endpoint URL is too long (max 2048 characters)")
 				return
 			}
 			if err := authconfig.ValidateAbsoluteHTTPURL(strings.TrimSpace(ep.Endpoint)); err != nil {
-				response.BadRequest(c, "Custom endpoint URL must be an absolute http(s) URL")
+				httpx.BadRequest(c, "Custom endpoint URL must be an absolute http(s) URL")
 				return
 			}
 			if len(ep.Description) > maxEndpointDescriptionLen {
-				response.BadRequest(c, "Custom endpoint description is too long (max 200 characters)")
+				httpx.BadRequest(c, "Custom endpoint description is too long (max 200 characters)")
 				return
 			}
 		}
 		endpointBytes, err := json.Marshal(endpoints)
 		if err != nil {
-			response.BadRequest(c, "Failed to serialize custom endpoints")
+			httpx.BadRequest(c, "Failed to serialize custom endpoints")
 			return
 		}
 		customEndpointsJSON = string(endpointBytes)
@@ -1155,44 +1190,44 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.FooterLinks != nil {
 		groups := *req.FooterLinks
 		if len(groups) > maxFooterGroups {
-			response.BadRequest(c, "Too many footer link groups (max 6)")
+			httpx.BadRequest(c, "Too many footer link groups (max 6)")
 			return
 		}
 		for _, group := range groups {
 			if strings.TrimSpace(group.Title) == "" {
-				response.BadRequest(c, "Footer link group title is required")
+				httpx.BadRequest(c, "Footer link group title is required")
 				return
 			}
 			if len(group.Title) > maxFooterLabelLen {
-				response.BadRequest(c, "Footer link group title is too long (max 50 characters)")
+				httpx.BadRequest(c, "Footer link group title is too long (max 50 characters)")
 				return
 			}
 			if len(group.Links) > maxFooterLinksPerGrp {
-				response.BadRequest(c, "Too many links in footer group (max 10)")
+				httpx.BadRequest(c, "Too many links in footer group (max 10)")
 				return
 			}
 			for _, link := range group.Links {
 				if strings.TrimSpace(link.Label) == "" {
-					response.BadRequest(c, "Footer link label is required")
+					httpx.BadRequest(c, "Footer link label is required")
 					return
 				}
 				if len(link.Label) > maxFooterLabelLen {
-					response.BadRequest(c, "Footer link label is too long (max 50 characters)")
+					httpx.BadRequest(c, "Footer link label is too long (max 50 characters)")
 					return
 				}
 				trimmedURL := strings.TrimSpace(link.URL)
 				if trimmedURL == "" {
-					response.BadRequest(c, "Footer link URL is required")
+					httpx.BadRequest(c, "Footer link URL is required")
 					return
 				}
 				if len(trimmedURL) > maxFooterURLLen {
-					response.BadRequest(c, "Footer link URL is too long (max 2048 characters)")
+					httpx.BadRequest(c, "Footer link URL is too long (max 2048 characters)")
 					return
 				}
 				// 允许绝对 http(s) URL 或站内相对路径（以 / 开头）
 				if !strings.HasPrefix(trimmedURL, "/") {
 					if err := authconfig.ValidateAbsoluteHTTPURL(trimmedURL); err != nil {
-						response.BadRequest(c, "Footer link URL must be an absolute http(s) URL or a path starting with /")
+						httpx.BadRequest(c, "Footer link URL must be an absolute http(s) URL or a path starting with /")
 						return
 					}
 				}
@@ -1200,7 +1235,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		groupBytes, err := json.Marshal(groups)
 		if err != nil {
-			response.BadRequest(c, "Failed to serialize footer links")
+			httpx.BadRequest(c, "Failed to serialize footer links")
 			return
 		}
 		footerLinksJSON = string(groupBytes)
@@ -1214,7 +1249,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.HomeFeaturedModels != nil {
 		models := *req.HomeFeaturedModels
 		if len(models) > maxHomeFeaturedModels {
-			response.BadRequest(c, "Too many home featured models (max 12)")
+			httpx.BadRequest(c, "Too many home featured models (max 12)")
 			return
 		}
 		seen := make(map[string]struct{}, len(models))
@@ -1222,11 +1257,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		for _, model := range models {
 			trimmed := strings.TrimSpace(model)
 			if trimmed == "" {
-				response.BadRequest(c, "Home featured model ID is required")
+				httpx.BadRequest(c, "Home featured model ID is required")
 				return
 			}
 			if len(trimmed) > maxHomeFeaturedModelIDLen {
-				response.BadRequest(c, "Home featured model ID is too long (max 200 characters)")
+				httpx.BadRequest(c, "Home featured model ID is too long (max 200 characters)")
 				return
 			}
 			if _, duplicate := seen[trimmed]; duplicate {
@@ -1237,7 +1272,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		modelBytes, err := json.Marshal(normalized)
 		if err != nil {
-			response.BadRequest(c, "Failed to serialize home featured models")
+			httpx.BadRequest(c, "Failed to serialize home featured models")
 			return
 		}
 		homeFeaturedModelsJSON = string(modelBytes)
@@ -1247,7 +1282,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.FooterText != nil {
 		trimmed := strings.TrimSpace(*req.FooterText)
 		if len(trimmed) > maxFooterTextLen {
-			response.BadRequest(c, "Footer text is too long (max 500 characters)")
+			httpx.BadRequest(c, "Footer text is too long (max 500 characters)")
 			return
 		}
 		footerText = trimmed
@@ -1255,13 +1290,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 	// Ops metrics collector interval validation (seconds).
 	if req.OpsMetricsIntervalSeconds != nil {
-		v := *req.OpsMetricsIntervalSeconds
-		if v < 60 {
-			v = 60
-		}
-		if v > 3600 {
-			v = 3600
-		}
+		v := min(max(*req.OpsMetricsIntervalSeconds, 60), 3600)
 		req.OpsMetricsIntervalSeconds = &v
 	}
 	defaultSubscriptions := make([]billing.DefaultSubscriptionSetting, 0, len(req.DefaultSubscriptions))
@@ -1274,7 +1303,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// 验证最低版本号格式（空字符串=禁用，或合法 semver）
 	if req.MinClaudeCodeVersion != "" {
 		if !semverPattern.MatchString(req.MinClaudeCodeVersion) {
-			response.Error(c, http.StatusBadRequest, "min_claude_code_version must be empty or a valid semver (e.g. 2.1.63)")
+			httpx.Error(c, http.StatusBadRequest, "min_claude_code_version must be empty or a valid semver (e.g. 2.1.63)")
 			return
 		}
 	}
@@ -1282,7 +1311,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// 验证最高版本号格式（空字符串=禁用，或合法 semver）
 	if req.MaxClaudeCodeVersion != "" {
 		if !semverPattern.MatchString(req.MaxClaudeCodeVersion) {
-			response.Error(c, http.StatusBadRequest, "max_claude_code_version must be empty or a valid semver (e.g. 3.0.0)")
+			httpx.Error(c, http.StatusBadRequest, "max_claude_code_version must be empty or a valid semver (e.g. 3.0.0)")
 			return
 		}
 	}
@@ -1290,7 +1319,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		normalized := strings.TrimSpace(*req.AntigravityUserAgentVersion)
 		req.AntigravityUserAgentVersion = &normalized
 		if normalized != "" && !semverPattern.MatchString(normalized) {
-			response.Error(c, http.StatusBadRequest, "antigravity_user_agent_version must be empty or a valid semver (e.g. 1.23.2)")
+			httpx.Error(c, http.StatusBadRequest, "antigravity_user_agent_version must be empty or a valid semver (e.g. 1.23.2)")
 			return
 		}
 	}
@@ -1299,7 +1328,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.OpenAICodexUserAgent = &normalized
 		// 检查长度上限，运维可自行设置 codex 版本号格式。
 		if len(normalized) > 512 {
-			response.Error(c, http.StatusBadRequest, "openai_codex_user_agent must be at most 512 characters")
+			httpx.Error(c, http.StatusBadRequest, "openai_codex_user_agent must be at most 512 characters")
 			return
 		}
 	}
@@ -1307,16 +1336,16 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// 交叉验证：如果同时设置了最低和最高版本号，最高版本号必须 >= 最低版本号
 	if req.MinClaudeCodeVersion != "" && req.MaxClaudeCodeVersion != "" {
 		if clientmeta.CompareVersions(req.MaxClaudeCodeVersion, req.MinClaudeCodeVersion) < 0 {
-			response.Error(c, http.StatusBadRequest, "max_claude_code_version must be greater than or equal to min_claude_code_version")
+			httpx.Error(c, http.StatusBadRequest, "max_claude_code_version must be greater than or equal to min_claude_code_version")
 			return
 		}
 	}
 	if req.CyberSessionBlockTTLSeconds != nil && *req.CyberSessionBlockTTLSeconds <= 0 {
-		response.BadRequest(c, "cyber_session_block_ttl_seconds must be > 0")
+		httpx.BadRequest(c, "cyber_session_block_ttl_seconds must be > 0")
 		return
 	}
 	if req.CreativeWorkerCount != nil && *req.CreativeWorkerCount <= 0 {
-		response.BadRequest(c, "creative_worker_count must be > 0")
+		httpx.BadRequest(c, "creative_worker_count must be > 0")
 		return
 	}
 
@@ -1816,7 +1845,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	values, err := h.settingService.PrepareSettingsWithAuthSourceDefaults(c.Request.Context(), settings, nil, omitted)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	changes := []runtimesettings.PreparedChange{{Module: "system-values", Values: values}}
@@ -1839,12 +1868,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// 已提取模块由静态参与者统一准备；保持全部准备成功后才执行唯一批量提交。
 	rawInput, err := json.Marshal(req)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	var fields runtimesettings.Fields
 	if err = json.Unmarshal(rawInput, &fields); err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	// 非指针字段省略时仍保留原持久值；指针字段沿用已有的合并和安全规范化流程。
@@ -1864,17 +1893,15 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// 身份字段取自完成权限检查和兼容合并后的设置，省略的非指针字段从更新集合中移除。
 	identityRaw, err := json.Marshal(settings.IdentityAdminSettings())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	var identityFields runtimesettings.Fields
 	if err = json.Unmarshal(identityRaw, &identityFields); err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
-	for name, value := range identity.AuthSourceParticipantFields(authSourceDefaults) {
-		identityFields[name] = value
-	}
+	maps.Copy(identityFields, identity.AuthSourceParticipantFields(authSourceDefaults))
 	for name, value := range identityFields {
 		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
 			if _, sent := sentFields[name]; !sent {
@@ -1892,27 +1919,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	fields["creative_model_settings"], _ = json.Marshal(settings.CreativeModelSettings)
 	fields["api_key_acl_trust_forwarded_ip"], _ = json.Marshal(settings.APIKeyACLTrustForwardedIP)
 	fields["forwarded_client_ip_headers"], _ = json.Marshal(settings.ForwardedClientIPHeaders)
-	billingRaw, err := json.Marshal(settings.BillingAdminSettings())
-	if err != nil {
-		response.ErrorFrom(c, err)
+	if err := mergeNormalizedSettingsFields(fields, settings.BillingAdminSettings(), sentFields); err != nil {
+		httpx.ErrorFrom(c, err)
 		return
-	}
-	var billingFields runtimesettings.Fields
-	if err = json.Unmarshal(billingRaw, &billingFields); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	for name, value := range billingFields {
-		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
-			if _, sent := sentFields[name]; !sent {
-				continue
-			}
-		}
-		fields[name] = value
 	}
 	schedulerFields, err := settings.SchedulerAdminSettings().ParticipantFields()
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	delete(fields, "advanced_scheduler_sticky_escape_enabled")
@@ -1924,46 +1937,18 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		fields[name] = value
 	}
-	routingRaw, err := json.Marshal(settings.RoutingAdminSettings())
-	if err != nil {
-		response.ErrorFrom(c, err)
+	if err := mergeNormalizedSettingsFields(fields, settings.RoutingAdminSettings(), sentFields); err != nil {
+		httpx.ErrorFrom(c, err)
 		return
 	}
-	var routingFields runtimesettings.Fields
-	if err = json.Unmarshal(routingRaw, &routingFields); err != nil {
-		response.ErrorFrom(c, err)
+	if err := mergeNormalizedSettingsFields(fields, settings.SiteAdminSettings(), sentFields); err != nil {
+		httpx.ErrorFrom(c, err)
 		return
-	}
-	for name, value := range routingFields {
-		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
-			if _, sent := sentFields[name]; !sent {
-				continue
-			}
-		}
-		fields[name] = value
-	}
-	siteRaw, err := json.Marshal(settings.SiteAdminSettings())
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	var siteFields runtimesettings.Fields
-	if err = json.Unmarshal(siteRaw, &siteFields); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	for name, value := range siteFields {
-		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
-			if _, sent := sentFields[name]; !sent {
-				continue
-			}
-		}
-		fields[name] = value
 	}
 	for name, value := range map[string]any{"provider_quota_notify_enabled": settings.ProviderQuotaNotifyEnabled, "provider_quota_notify_emails": settings.ProviderQuotaNotifyEmails, "provider_scheduling_thresholds": settings.ProviderSchedulingThresholds} {
 		raw, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
-			response.ErrorFrom(c, marshalErr)
+			httpx.ErrorFrom(c, marshalErr)
 			return
 		}
 		fields[name] = raw
@@ -1974,7 +1959,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	} {
 		raw, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
-			response.ErrorFrom(c, marshalErr)
+			httpx.ErrorFrom(c, marshalErr)
 			return
 		}
 		fields[name] = raw
@@ -1983,32 +1968,18 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if settings.OpenAIQuotaAutoPauseSettingsSet {
 		fields["openai_provider_quota_auto_pause"], _ = json.Marshal(settings.OpenAIQuotaAutoPauseSettings)
 	}
-	gatewayRaw, err := json.Marshal(settings.GatewayAdminSettings())
-	if err != nil {
-		response.ErrorFrom(c, err)
+	if err := mergeNormalizedSettingsFields(fields, settings.GatewayAdminSettings(), sentFields); err != nil {
+		httpx.ErrorFrom(c, err)
 		return
-	}
-	var gatewayFields runtimesettings.Fields
-	if err = json.Unmarshal(gatewayRaw, &gatewayFields); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	for name, value := range gatewayFields {
-		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
-			if _, sent := sentFields[name]; !sent {
-				continue
-			}
-		}
-		fields[name] = value
 	}
 	prepared, err := h.preparedParticipants(update.Context(), fields, values, previousSettings.StoredValues)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	changes = append(changes, prepared...)
 	if err := update.Commit(changes...); err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 
@@ -2017,13 +1988,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// 重新获取设置返回
 	updatedSettings, err := h.settingService.GetAllSettings(c.Request.Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	h.ensureDingTalkSyncAttributes(c.Request.Context(), updatedSettings)
 	updatedAuthSourceDefaults, err := h.settingService.GetAuthSourceDefaultSettings(c.Request.Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		httpx.ErrorFrom(c, err)
 		return
 	}
 	updatedDefaultSubscriptions := make([]billinghttp.DefaultSubscriptionSetting, 0, len(updatedSettings.DefaultSubscriptions))
@@ -2038,7 +2009,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if h.paymentConfigService != nil {
 		updatedPaymentCfg, err = h.paymentConfigService.GetPaymentConfig(c.Request.Context())
 		if err != nil {
-			response.ErrorFrom(c, err)
+			httpx.ErrorFrom(c, err)
 			return
 		}
 	}
@@ -2046,276 +2017,36 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		updatedPaymentCfg = &payment.PaymentConfig{}
 	}
 
-	payload := settingsdto.SystemSettings{
-		RegistrationEnabled:                              updatedSettings.RegistrationEnabled,
-		EmailVerifyEnabled:                               updatedSettings.EmailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist:                 updatedSettings.RegistrationEmailSuffixWhitelist,
-		RegistrationEmailNormalization:                   updatedSettings.RegistrationEmailNormalization,
-		RegistrationEmailDomainQuotaEnabled:              updatedSettings.RegistrationEmailDomainQuotaEnabled,
-		UserEmailChangeEnabled:                           updatedSettings.UserEmailChangeEnabled,
-		PromoCodeEnabled:                                 updatedSettings.PromoCodeEnabled,
-		PasswordResetEnabled:                             updatedSettings.PasswordResetEnabled,
-		FrontendURL:                                      updatedSettings.FrontendURL,
-		InvitationCodeEnabled:                            updatedSettings.InvitationCodeEnabled,
-		TotpEnabled:                                      updatedSettings.TotpEnabled,
-		TotpEncryptionKeyConfigured:                      h.settingService.IsTotpEncryptionKeyConfigured(),
-		SessionBindingEnabled:                            updatedSettings.SessionBindingEnabled,
-		StepUpEnabled:                                    updatedSettings.StepUpEnabled,
-		AuditLogRetentionDays:                            updatedSettings.AuditLogRetentionDays,
-		LoginAgreementEnabled:                            updatedSettings.LoginAgreementEnabled,
-		LoginAgreementMode:                               updatedSettings.LoginAgreementMode,
-		LoginAgreementUpdatedAt:                          updatedSettings.LoginAgreementUpdatedAt,
-		LoginAgreementDocuments:                          loginAgreementDocumentsToDTO(updatedSettings.LoginAgreementDocuments),
-		SMTPHost:                                         updatedSettings.SMTPHost,
-		SMTPPort:                                         updatedSettings.SMTPPort,
-		SMTPUsername:                                     updatedSettings.SMTPUsername,
-		SMTPPasswordConfigured:                           updatedSettings.SMTPPasswordConfigured,
-		SMTPFrom:                                         updatedSettings.SMTPFrom,
-		SMTPFromName:                                     updatedSettings.SMTPFromName,
-		SMTPUseTLS:                                       updatedSettings.SMTPUseTLS,
-		TurnstileEnabled:                                 updatedSettings.TurnstileEnabled,
-		TurnstileSiteKey:                                 updatedSettings.TurnstileSiteKey,
-		TurnstileSecretKeyConfigured:                     updatedSettings.TurnstileSecretKeyConfigured,
-		TencentCaptchaEnabled:                            updatedSettings.TencentCaptchaEnabled,
-		TencentCaptchaAppID:                              updatedSettings.TencentCaptchaAppID,
-		TencentCaptchaAppSecretKeyConfigured:             updatedSettings.TencentCaptchaAppSecretKeyConfigured,
-		TencentCaptchaCloudSecretIDConfigured:            updatedSettings.TencentCaptchaCloudSecretIDConfigured,
-		TencentCaptchaCloudSecretKeyConfigured:           updatedSettings.TencentCaptchaCloudSecretKeyConfigured,
-		TencentCaptchaRegion:                             updatedSettings.TencentCaptchaRegion,
-		AliyunCaptchaEnabled:                             updatedSettings.AliyunCaptchaEnabled,
-		AliyunCaptchaAccessKeyID:                         updatedSettings.AliyunCaptchaAccessKeyID,
-		AliyunCaptchaAccessKeySecretConfigured:           updatedSettings.AliyunCaptchaAccessKeySecretConfigured,
-		AliyunCaptchaSceneID:                             updatedSettings.AliyunCaptchaSceneID,
-		AliyunCaptchaPrefix:                              updatedSettings.AliyunCaptchaPrefix,
-		AliyunCaptchaRegion:                              updatedSettings.AliyunCaptchaRegion,
-		APIKeyACLTrustForwardedIP:                        updatedSettings.APIKeyACLTrustForwardedIP,
-		ForwardedClientIPHeaders:                         updatedSettings.ForwardedClientIPHeaders,
-		LinuxDoConnectEnabled:                            updatedSettings.LinuxDoConnectEnabled,
-		LinuxDoConnectClientID:                           updatedSettings.LinuxDoConnectClientID,
-		LinuxDoConnectClientSecretConfigured:             updatedSettings.LinuxDoConnectClientSecretConfigured,
-		LinuxDoConnectRedirectURL:                        updatedSettings.LinuxDoConnectRedirectURL,
-		DingTalkConnectEnabled:                           updatedSettings.DingTalkConnectEnabled,
-		DingTalkConnectClientID:                          updatedSettings.DingTalkConnectClientID,
-		DingTalkConnectClientSecretConfigured:            updatedSettings.DingTalkConnectClientSecretConfigured,
-		DingTalkConnectRedirectURL:                       updatedSettings.DingTalkConnectRedirectURL,
-		DingTalkConnectCorpRestrictionPolicy:             updatedSettings.DingTalkConnectCorpRestrictionPolicy,
-		DingTalkConnectInternalCorpID:                    updatedSettings.DingTalkConnectInternalCorpID,
-		DingTalkConnectBypassRegistration:                updatedSettings.DingTalkConnectBypassRegistration,
-		DingTalkConnectSyncCorpEmail:                     updatedSettings.DingTalkConnectSyncCorpEmail,
-		DingTalkConnectSyncDisplayName:                   updatedSettings.DingTalkConnectSyncDisplayName,
-		DingTalkConnectSyncDept:                          updatedSettings.DingTalkConnectSyncDept,
-		DingTalkConnectSyncCorpEmailAttrKey:              updatedSettings.DingTalkConnectSyncCorpEmailAttrKey,
-		DingTalkConnectSyncDisplayNameAttrKey:            updatedSettings.DingTalkConnectSyncDisplayNameAttrKey,
-		DingTalkConnectSyncDeptAttrKey:                   updatedSettings.DingTalkConnectSyncDeptAttrKey,
-		DingTalkConnectSyncCorpEmailAttrName:             updatedSettings.DingTalkConnectSyncCorpEmailAttrName,
-		DingTalkConnectSyncDisplayNameAttrName:           updatedSettings.DingTalkConnectSyncDisplayNameAttrName,
-		DingTalkConnectSyncDeptAttrName:                  updatedSettings.DingTalkConnectSyncDeptAttrName,
-		WeChatConnectEnabled:                             updatedSettings.WeChatConnectEnabled,
-		WeChatConnectAppID:                               updatedSettings.WeChatConnectAppID,
-		WeChatConnectAppSecretConfigured:                 updatedSettings.WeChatConnectAppSecretConfigured,
-		WeChatConnectOpenAppID:                           updatedSettings.WeChatConnectOpenAppID,
-		WeChatConnectOpenAppSecretConfigured:             updatedSettings.WeChatConnectOpenAppSecretConfigured,
-		WeChatConnectMPAppID:                             updatedSettings.WeChatConnectMPAppID,
-		WeChatConnectMPAppSecretConfigured:               updatedSettings.WeChatConnectMPAppSecretConfigured,
-		WeChatConnectMobileAppID:                         updatedSettings.WeChatConnectMobileAppID,
-		WeChatConnectMobileAppSecretConfigured:           updatedSettings.WeChatConnectMobileAppSecretConfigured,
-		WeChatConnectOpenEnabled:                         updatedSettings.WeChatConnectOpenEnabled,
-		WeChatConnectMPEnabled:                           updatedSettings.WeChatConnectMPEnabled,
-		WeChatConnectMobileEnabled:                       updatedSettings.WeChatConnectMobileEnabled,
-		WeChatConnectMode:                                updatedSettings.WeChatConnectMode,
-		WeChatConnectScopes:                              updatedSettings.WeChatConnectScopes,
-		WeChatConnectRedirectURL:                         updatedSettings.WeChatConnectRedirectURL,
-		WeChatConnectFrontendRedirectURL:                 updatedSettings.WeChatConnectFrontendRedirectURL,
-		OIDCConnectEnabled:                               updatedSettings.OIDCConnectEnabled,
-		OIDCConnectProviderName:                          updatedSettings.OIDCConnectProviderName,
-		OIDCConnectClientID:                              updatedSettings.OIDCConnectClientID,
-		OIDCConnectClientSecretConfigured:                updatedSettings.OIDCConnectClientSecretConfigured,
-		OIDCConnectIssuerURL:                             updatedSettings.OIDCConnectIssuerURL,
-		OIDCConnectDiscoveryURL:                          updatedSettings.OIDCConnectDiscoveryURL,
-		OIDCConnectAuthorizeURL:                          updatedSettings.OIDCConnectAuthorizeURL,
-		OIDCConnectTokenURL:                              updatedSettings.OIDCConnectTokenURL,
-		OIDCConnectUserInfoURL:                           updatedSettings.OIDCConnectUserInfoURL,
-		OIDCConnectJWKSURL:                               updatedSettings.OIDCConnectJWKSURL,
-		OIDCConnectScopes:                                updatedSettings.OIDCConnectScopes,
-		OIDCConnectRedirectURL:                           updatedSettings.OIDCConnectRedirectURL,
-		OIDCConnectFrontendRedirectURL:                   updatedSettings.OIDCConnectFrontendRedirectURL,
-		OIDCConnectTokenAuthMethod:                       updatedSettings.OIDCConnectTokenAuthMethod,
-		OIDCConnectUsePKCE:                               updatedSettings.OIDCConnectUsePKCE,
-		OIDCConnectValidateIDToken:                       updatedSettings.OIDCConnectValidateIDToken,
-		OIDCConnectAllowedSigningAlgs:                    updatedSettings.OIDCConnectAllowedSigningAlgs,
-		OIDCConnectClockSkewSeconds:                      updatedSettings.OIDCConnectClockSkewSeconds,
-		OIDCConnectRequireEmailVerified:                  updatedSettings.OIDCConnectRequireEmailVerified,
-		OIDCConnectUserInfoEmailPath:                     updatedSettings.OIDCConnectUserInfoEmailPath,
-		OIDCConnectUserInfoIDPath:                        updatedSettings.OIDCConnectUserInfoIDPath,
-		OIDCConnectUserInfoUsernamePath:                  updatedSettings.OIDCConnectUserInfoUsernamePath,
-		GitHubOAuthEnabled:                               updatedSettings.GitHubOAuthEnabled,
-		GitHubOAuthClientID:                              updatedSettings.GitHubOAuthClientID,
-		GitHubOAuthClientSecretConfigured:                updatedSettings.GitHubOAuthClientSecretConfigured,
-		GitHubOAuthRedirectURL:                           updatedSettings.GitHubOAuthRedirectURL,
-		GitHubOAuthFrontendRedirectURL:                   updatedSettings.GitHubOAuthFrontendRedirectURL,
-		GoogleOAuthEnabled:                               updatedSettings.GoogleOAuthEnabled,
-		GoogleOneTapEnabled:                              updatedSettings.GoogleOneTapEnabled,
-		GoogleOAuthClientID:                              updatedSettings.GoogleOAuthClientID,
-		GoogleOAuthClientSecretConfigured:                updatedSettings.GoogleOAuthClientSecretConfigured,
-		GoogleOAuthRedirectURL:                           updatedSettings.GoogleOAuthRedirectURL,
-		GoogleOAuthFrontendRedirectURL:                   updatedSettings.GoogleOAuthFrontendRedirectURL,
-		LocalizedSettings:                                updatedSettings.LocalizedSettings,
-		SiteTexts:                                        updatedSettings.SiteTexts,
-		DefaultLocale:                                    updatedSettings.DefaultLocale,
-		SiteName:                                         updatedSettings.SiteName,
-		SiteLogo:                                         updatedSettings.SiteLogo,
-		SiteSubtitle:                                     updatedSettings.SiteSubtitle,
-		APIBaseURL:                                       updatedSettings.APIBaseURL,
-		ContactInfo:                                      updatedSettings.ContactInfo,
-		DocURL:                                           updatedSettings.DocURL,
-		HomeContent:                                      updatedSettings.HomeContent,
-		HideCcsImportButton:                              updatedSettings.HideCcsImportButton,
-		PurchaseSubscriptionEnabled:                      updatedSettings.PurchaseSubscriptionEnabled,
-		PurchaseSubscriptionURL:                          updatedSettings.PurchaseSubscriptionURL,
-		TableDefaultPageSize:                             updatedSettings.TableDefaultPageSize,
-		TablePageSizeOptions:                             updatedSettings.TablePageSizeOptions,
-		UsageRankingLimit:                                updatedSettings.UsageRankingLimit,
-		UsageRankingEnabled:                              updatedSettings.UsageRankingEnabled,
-		UsageRankingSortBy:                               updatedSettings.UsageRankingSortBy,
-		UsageRankingShowTotalTokens:                      updatedSettings.UsageRankingShowTotalTokens,
-		UsageRankingShowRequests:                         updatedSettings.UsageRankingShowRequests,
-		UsageRankingShowActualCost:                       updatedSettings.UsageRankingShowActualCost,
-		CustomMenuItems:                                  sitedto.ParseCustomMenuItems(updatedSettings.CustomMenuItems),
-		CustomEndpoints:                                  sitedto.ParseCustomEndpoints(updatedSettings.CustomEndpoints),
-		FooterLinks:                                      sitedto.ParseFooterLinks(updatedSettings.FooterLinks),
-		FooterText:                                       updatedSettings.FooterText,
-		HomeFeaturedModels:                               sitedto.ParseHomeFeaturedModels(updatedSettings.HomeFeaturedModels),
-		DefaultConcurrency:                               updatedSettings.DefaultConcurrency,
-		DefaultBalance:                                   updatedSettings.DefaultBalance,
-		TeamEnabled:                                      updatedSettings.TeamEnabled,
-		CreativeEnabled:                                  updatedSettings.CreativeEnabled,
-		CreativeModelSettings:                            updatedSettings.CreativeModelSettings,
-		CreativeWorkerCount:                              updatedSettings.CreativeWorkerCount,
-		RiskControlEnabled:                               updatedSettings.RiskControlEnabled,
-		CyberSessionBlockEnabled:                         updatedSettings.CyberSessionBlockEnabled,
-		CyberSessionBlockTTLSeconds:                      updatedSettings.CyberSessionBlockTTLSeconds,
-		AffiliateEnabled:                                 updatedSettings.AffiliateEnabled,
-		AffiliateRebateRate:                              updatedSettings.AffiliateRebateRate,
-		AffiliateRebateFreezeHours:                       updatedSettings.AffiliateRebateFreezeHours,
-		AffiliateRebateDurationDays:                      updatedSettings.AffiliateRebateDurationDays,
-		AffiliateRebatePerInviteeCap:                     updatedSettings.AffiliateRebatePerInviteeCap,
-		AdminRechargeRebateEnabled:                       updatedSettings.AdminRechargeRebateEnabled,
-		DefaultUserRPMLimit:                              updatedSettings.DefaultUserRPMLimit,
-		DefaultUserAPIKeyLimit:                           updatedSettings.DefaultUserAPIKeyLimit,
-		DefaultSubscriptions:                             updatedDefaultSubscriptions,
-		BalanceUnitName:                                  updatedSettings.BalanceUnitName,
-		BalanceUnitSymbol:                                updatedSettings.BalanceUnitSymbol,
-		BalanceIconSVG:                                   updatedSettings.BalanceIconSVG,
-		ReasoningPointRMBUnitPrice:                       updatedSettings.ReasoningPointRMBUnitPrice,
-		USDExchangeRate:                                  updatedSettings.USDExchangeRate,
-		MarketplaceAvailabilityWindowDays:                updatedSettings.MarketplaceAvailabilityWindowDays,
-		MarketplaceAvailabilityBucketMinutes:             updatedSettings.MarketplaceAvailabilityBucketMinutes,
-		EnableModelFallback:                              updatedSettings.EnableModelFallback,
-		FallbackModelAnthropic:                           updatedSettings.FallbackModelAnthropic,
-		FallbackModelOpenAI:                              updatedSettings.FallbackModelOpenAI,
-		FallbackModelGemini:                              updatedSettings.FallbackModelGemini,
-		FallbackModelAntigravity:                         updatedSettings.FallbackModelAntigravity,
-		GrokDefaultTextModel:                             updatedSettings.GrokDefaultTextModel,
-		GrokDefaultBaseURLMode:                           updatedSettings.GrokDefaultBaseURLMode,
-		EnableIdentityPatch:                              updatedSettings.EnableIdentityPatch,
-		IdentityPatchPrompt:                              updatedSettings.IdentityPatchPrompt,
-		OpsMonitoringEnabled:                             updatedSettings.OpsMonitoringEnabled,
-		OpsRealtimeMonitoringEnabled:                     updatedSettings.OpsRealtimeMonitoringEnabled,
-		OpsMetricsIntervalSeconds:                        updatedSettings.OpsMetricsIntervalSeconds,
-		MinClaudeCodeVersion:                             updatedSettings.MinClaudeCodeVersion,
-		MaxClaudeCodeVersion:                             updatedSettings.MaxClaudeCodeVersion,
-		BackendModeEnabled:                               updatedSettings.BackendModeEnabled,
-		OpenAITTFTMode:                                   updatedSettings.OpenAITTFTMode,
-		EnableFingerprintUnification:                     updatedSettings.EnableFingerprintUnification,
-		EnableMetadataPassthrough:                        updatedSettings.EnableMetadataPassthrough,
-		EnableCCHSigning:                                 updatedSettings.EnableCCHSigning,
-		EnableClaudeOAuthSystemPromptInjection:           updatedSettings.EnableClaudeOAuthSystemPromptInjection,
-		ClaudeOAuthSystemPrompt:                          updatedSettings.ClaudeOAuthSystemPrompt,
-		ClaudeOAuthSystemPromptBlocks:                    updatedSettings.ClaudeOAuthSystemPromptBlocks,
-		EnableAnthropicCacheTTL1hInjection:               updatedSettings.EnableAnthropicCacheTTL1hInjection,
-		RewriteMessageCacheControl:                       updatedSettings.RewriteMessageCacheControl,
-		EnableClientDatelineNormalization:                updatedSettings.EnableClientDatelineNormalization,
-		AntigravityUserAgentVersion:                      updatedSettings.AntigravityUserAgentVersion,
-		OpenAICodexUserAgent:                             updatedSettings.OpenAICodexUserAgent,
-		OpenAIAllowClaudeCodeCodexPlugin:                 updatedSettings.OpenAIAllowClaudeCodeCodexPlugin,
-		UserPromptReplacementConfig:                      updatedSettings.UserPromptReplacementConfig,
-		WebSearchEmulationEnabled:                        updatedSettings.WebSearchEmulationEnabled,
-		PaymentVisibleMethodAlipaySource:                 updatedSettings.PaymentVisibleMethodAlipaySource,
-		PaymentVisibleMethodWxpaySource:                  updatedSettings.PaymentVisibleMethodWxpaySource,
-		PaymentVisibleMethodAlipayEnabled:                updatedSettings.PaymentVisibleMethodAlipayEnabled,
-		PaymentVisibleMethodWxpayEnabled:                 updatedSettings.PaymentVisibleMethodWxpayEnabled,
-		AdvancedSchedulerStickyWeightedEnabled:           updatedSettings.AdvancedSchedulerStickyWeightedEnabled,
-		AdvancedSchedulerSubscriptionPriorityEnabled:     updatedSettings.AdvancedSchedulerSubscriptionPriorityEnabled,
-		AdvancedSchedulerEWMAErrorRateAlpha:              updatedSettings.AdvancedSchedulerEWMAErrorRateAlpha,
-		AdvancedSchedulerEWMATTFTAlpha:                   updatedSettings.AdvancedSchedulerEWMATTFTAlpha,
-		AdvancedSchedulerStickyEscapeEnabled:             updatedSettings.AdvancedSchedulerStickyEscapeEnabled,
-		AdvancedSchedulerStickyEscapeTTFTMs:              updatedSettings.AdvancedSchedulerStickyEscapeTTFTMs,
-		AdvancedSchedulerStickyEscapeErrorRate:           updatedSettings.AdvancedSchedulerStickyEscapeErrorRate,
-		AdvancedSchedulerLBTopK:                          updatedSettings.AdvancedSchedulerLBTopK,
-		AdvancedSchedulerWeightPriority:                  updatedSettings.AdvancedSchedulerWeightPriority,
-		AdvancedSchedulerWeightLoad:                      updatedSettings.AdvancedSchedulerWeightLoad,
-		AdvancedSchedulerWeightQueue:                     updatedSettings.AdvancedSchedulerWeightQueue,
-		AdvancedSchedulerWeightErrorRate:                 updatedSettings.AdvancedSchedulerWeightErrorRate,
-		AdvancedSchedulerWeightTTFT:                      updatedSettings.AdvancedSchedulerWeightTTFT,
-		AdvancedSchedulerWeightReset:                     updatedSettings.AdvancedSchedulerWeightReset,
-		AdvancedSchedulerWeightQuotaHeadroom:             updatedSettings.AdvancedSchedulerWeightQuotaHeadroom,
-		AdvancedSchedulerWeightPreviousResponse:          updatedSettings.AdvancedSchedulerWeightPreviousResponse,
-		AdvancedSchedulerWeightSessionSticky:             updatedSettings.AdvancedSchedulerWeightSessionSticky,
-		AdvancedSchedulerEffectiveLBTopK:                 updatedSettings.AdvancedSchedulerEffectiveLBTopK,
-		AdvancedSchedulerEffectiveWeightPriority:         updatedSettings.AdvancedSchedulerEffectiveWeightPriority,
-		AdvancedSchedulerEffectiveWeightLoad:             updatedSettings.AdvancedSchedulerEffectiveWeightLoad,
-		AdvancedSchedulerEffectiveWeightQueue:            updatedSettings.AdvancedSchedulerEffectiveWeightQueue,
-		AdvancedSchedulerEffectiveWeightErrorRate:        updatedSettings.AdvancedSchedulerEffectiveWeightErrorRate,
-		AdvancedSchedulerEffectiveWeightTTFT:             updatedSettings.AdvancedSchedulerEffectiveWeightTTFT,
-		AdvancedSchedulerEffectiveWeightReset:            updatedSettings.AdvancedSchedulerEffectiveWeightReset,
-		AdvancedSchedulerEffectiveWeightQuotaHeadroom:    updatedSettings.AdvancedSchedulerEffectiveWeightQuotaHeadroom,
-		AdvancedSchedulerEffectiveWeightPreviousResponse: updatedSettings.AdvancedSchedulerEffectiveWeightPreviousResponse,
-		AdvancedSchedulerEffectiveWeightSessionSticky:    updatedSettings.AdvancedSchedulerEffectiveWeightSessionSticky,
-		AdvancedSchedulerEffectiveEWMAErrorRateAlpha:     updatedSettings.AdvancedSchedulerEffectiveEWMAErrorRateAlpha,
-		AdvancedSchedulerEffectiveEWMATTFTAlpha:          updatedSettings.AdvancedSchedulerEffectiveEWMATTFTAlpha,
-		AdvancedSchedulerEffectiveStickyEscapeEnabled:    updatedSettings.AdvancedSchedulerEffectiveStickyEscapeEnabled,
-		AdvancedSchedulerEffectiveStickyEscapeTTFTMs:     updatedSettings.AdvancedSchedulerEffectiveStickyEscapeTTFTMs,
-		AdvancedSchedulerEffectiveStickyEscapeErrorRate:  updatedSettings.AdvancedSchedulerEffectiveStickyEscapeErrorRate,
-		OpenAIQuotaAutoPauseSettings:                     updatedSettings.OpenAIQuotaAutoPauseSettings,
-		BalanceLowNotifyEnabled:                          updatedSettings.BalanceLowNotifyEnabled,
-		BalanceLowNotifyThreshold:                        updatedSettings.BalanceLowNotifyThreshold,
-		BalanceLowNotifyRechargeURL:                      updatedSettings.BalanceLowNotifyRechargeURL,
-		SubscriptionExpiryNotifyEnabled:                  updatedSettings.SubscriptionExpiryNotifyEnabled,
-		ProviderQuotaNotifyEnabled:                       updatedSettings.ProviderQuotaNotifyEnabled,
-		ProviderQuotaNotifyEmails:                        identitydto.NotifyEmailEntriesFromIdentity(updatedSettings.ProviderQuotaNotifyEmails),
-		PaymentEnabled:                                   updatedPaymentCfg.Enabled,
-		PaymentMinAmount:                                 updatedPaymentCfg.MinAmount,
-		PaymentMaxAmount:                                 updatedPaymentCfg.MaxAmount,
-		PaymentDailyLimit:                                updatedPaymentCfg.DailyLimit,
-		PaymentOrderTimeoutMin:                           updatedPaymentCfg.OrderTimeoutMin,
-		PaymentMaxPendingOrders:                          updatedPaymentCfg.MaxPendingOrders,
-		PaymentEnabledTypes:                              updatedPaymentCfg.EnabledTypes,
-		PaymentBalanceDisabled:                           updatedPaymentCfg.BalanceDisabled,
-		PaymentBalanceRechargeMultiplier:                 updatedPaymentCfg.BalanceRechargeMultiplier,
-		PaymentSubscriptionUSDToCNYRate:                  updatedPaymentCfg.SubscriptionUSDToCNYRate,
-		PaymentRechargeFeeRate:                           updatedPaymentCfg.RechargeFeeRate,
-		PaymentMethodFees:                                updatedPaymentCfg.MethodFees,
-		PaymentLoadBalanceStrat:                          updatedPaymentCfg.LoadBalanceStrategy,
-		PaymentProductNamePrefix:                         updatedPaymentCfg.ProductNamePrefix,
-		PaymentProductNameSuffix:                         updatedPaymentCfg.ProductNameSuffix,
-		PaymentHelpImageURL:                              updatedPaymentCfg.HelpImageURL,
-		PaymentHelpText:                                  updatedPaymentCfg.HelpText,
-		PaymentCancelRateLimitEnabled:                    updatedPaymentCfg.CancelRateLimitEnabled,
-		PaymentCancelRateLimitMax:                        updatedPaymentCfg.CancelRateLimitMax,
-		PaymentCancelRateLimitWindow:                     updatedPaymentCfg.CancelRateLimitWindow,
-		PaymentCancelRateLimitUnit:                       updatedPaymentCfg.CancelRateLimitUnit,
-		PaymentCancelRateLimitMode:                       updatedPaymentCfg.CancelRateLimitMode,
-		PaymentAlipayForceQRCode:                         updatedPaymentCfg.AlipayForceQRCode,
-		PaymentAlipayMobilePrecreateDeepLink:             updatedPaymentCfg.AlipayMobilePrecreateDeepLink,
-		AllowUserViewErrorRequests:                       updatedSettings.AllowUserViewErrorRequests,
-	}
+	payload := buildSystemSettingsResponse(updatedSettings, updatedPaymentCfg, updatedDefaultSubscriptions, h.settingService.IsTotpEncryptionKeyConfigured())
+	payload.OpsMonitoringEnabled = updatedSettings.OpsMonitoringEnabled
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)
 	} else if fastPolicy != nil {
 		payload.OpenAIFastPolicySettings = openaiFastPolicySettingsToDTO(fastPolicy)
 	}
 
-	response.Success(c, systemSettingsResponseData(payload, updatedAuthSourceDefaults))
+	httpx.Success(c, systemSettingsResponseData(payload, updatedAuthSourceDefaults))
+}
+
+// mergeNormalizedSettingsFields 将规范化设置合入更新字段，省略的非指针字段继续使用存储值。
+func mergeNormalizedSettingsFields(fields runtimesettings.Fields, normalized any, sentFields map[string]json.RawMessage) error {
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	var normalizedFields runtimesettings.Fields
+	if err := json.Unmarshal(raw, &normalizedFields); err != nil {
+		return err
+	}
+	for name, value := range normalizedFields {
+		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
+			if _, sent := sentFields[name]; !sent {
+				continue
+			}
+		}
+		fields[name] = value
+	}
+	return nil
 }
 
 // rejectDeprecatedAdvancedSchedulerRequestFields 阻止旧版 OpenAI 实验调度字段被静默忽略。
@@ -2323,7 +2054,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 func rejectDeprecatedAdvancedSchedulerRequestFields(c *gin.Context, sentFields map[string]json.RawMessage) bool {
 	for field := range sentFields {
 		if field == "advanced_scheduler_enabled" || strings.HasPrefix(field, "openai_advanced_scheduler_") {
-			response.ErrorWithDetails(c, http.StatusBadRequest,
+			httpx.ErrorWithDetails(c, http.StatusBadRequest,
 				"Deprecated advanced scheduler setting: "+field+"; select the scheduler type on each group and use advanced_scheduler_* settings",
 				"DEPRECATED_ADVANCED_SCHEDULER_SETTING", map[string]string{"field": field})
 			return true
@@ -2395,4 +2126,25 @@ func (h *Handler) ensureUserAttributeDefinition(ctx context.Context, key, name, 
 		return
 	}
 	slog.Info("dingtalk: created user attribute definition", "key", key, "name", name, "type", attrType)
+}
+
+// rejectRemovedPlatformQuotaFields 拒绝已移除的平台额度字段，并在响应中指出字段名。
+func rejectRemovedPlatformQuotaFields(c *gin.Context, fields map[string]json.RawMessage) bool {
+	for name := range fields {
+		if name == "default_platform_quotas" || strings.HasPrefix(name, "auth_source_default_") && strings.HasSuffix(name, "_platform_quotas") {
+			httpx.ErrorWithDetails(c, http.StatusBadRequest, "User platform quotas have been removed", "REMOVED_SETTING_FIELD", map[string]string{"field": name})
+			return true
+		}
+	}
+	return false
+}
+
+// rejectRemovedUngroupedKeySchedulingField 拒绝未选组调度开关，并提示 API Key 需要绑定分组。
+func rejectRemovedUngroupedKeySchedulingField(c *gin.Context, fields map[string]json.RawMessage) bool {
+	const field = "allow_ungrouped_key_scheduling"
+	if _, present := fields[field]; !present {
+		return false
+	}
+	httpx.ErrorWithDetails(c, http.StatusBadRequest, "API keys require an explicit group", "REMOVED_SETTING_FIELD", map[string]string{"field": field})
+	return true
 }

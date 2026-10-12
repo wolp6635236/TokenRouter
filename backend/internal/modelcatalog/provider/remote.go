@@ -17,7 +17,7 @@ type remoteClient struct {
 }
 
 // remoteClientError 代理初始化失败时的错误占位客户端
-// 所有请求直接返回初始化错误，禁止回退到直连
+// 所有请求直接返回初始化错误，禁止回退到直连。
 type remoteClientError struct {
 	err error
 }

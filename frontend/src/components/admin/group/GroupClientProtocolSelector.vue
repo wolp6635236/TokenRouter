@@ -69,6 +69,9 @@
             @update:model-value="toggle(protocol.id)"
           />
         </div>
+        <p v-if="protocol.id === 'openai_responses_websocket' && isEnabled(protocol.id) && fallbackMode(protocol.id) !== 'native'" class="mt-2 input-hint">
+          {{ t('admin.protocols.responsesWebSocketHTTPHint') }}
+        </p>
         <!-- 回退目标可互换位置，行 key 使用下标并关闭列表动效。 -->
         <RuleListEditor
           v-if="
@@ -176,7 +179,7 @@ const protocols = computed(
   () =>
     protocolCatalog.value?.protocols.filter((protocol) =>
       profile.value?.protocols.includes(protocol.id),
-    ) ?? [],
+    ).map(protocol => ({ ...protocol, name: protocol.id === 'openai_responses_websocket' ? t('admin.protocols.responsesWebSocket') : protocol.name })) ?? [],
 )
 function isEnabled(id: ProtocolID) {
   return props.modelValue.includes(id)
@@ -189,7 +192,7 @@ function targetOptions(source: ProtocolID) {
   return (profile.value?.fallback_targets[source] ?? []).map((id) => ({
     value: id,
     label:
-      protocolCatalog.value?.protocols.find((protocol) => protocol.id === id)
+      source === 'openai_responses_websocket' && id === 'openai_responses' ? t('admin.protocols.responsesWebSocketHTTP') : protocolCatalog.value?.protocols.find((protocol) => protocol.id === id)
         ?.name ?? id,
   }))
 }

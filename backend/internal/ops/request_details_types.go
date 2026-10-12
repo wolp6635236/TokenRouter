@@ -4,12 +4,12 @@ import (
 	"time"
 )
 
-type OpsRequestKind string
-
 const (
 	OpsRequestKindSuccess OpsRequestKind = "success"
 	OpsRequestKindError   OpsRequestKind = "error"
 )
+
+type OpsRequestKind string
 
 // OpsRequestDetail is a request-level view across success (usage_logs) and error (ops_error_logs).
 // It powers "request drilldown" UIs without exposing full request bodies for successful requests.
@@ -70,6 +70,13 @@ type OpsRequestDetailFilter struct {
 	PageSize int
 }
 
+type OpsRequestDetailList struct {
+	Items    []*OpsRequestDetail `json:"items"`
+	Total    int64               `json:"total"`
+	Page     int                 `json:"page"`
+	PageSize int                 `json:"page_size"`
+}
+
 func (f *OpsRequestDetailFilter) Normalize() (page, pageSize int, startTime, endTime time.Time) {
 	page = 1
 	pageSize = 50
@@ -104,11 +111,4 @@ func (f *OpsRequestDetailFilter) Normalize() (page, pageSize int, startTime, end
 	}
 
 	return page, pageSize, startTime, endTime
-}
-
-type OpsRequestDetailList struct {
-	Items    []*OpsRequestDetail `json:"items"`
-	Total    int64               `json:"total"`
-	Page     int                 `json:"page"`
-	PageSize int                 `json:"page_size"`
 }

@@ -8,9 +8,11 @@ import (
 
 	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
+
+// errQoderSessionBuildInvalidated 表示在途构建已失效，或已有更新的凭据。
+var errQoderSessionBuildInvalidated = providercore.ErrQoderSessionBuildInvalidated
 
 type (
 	qoderPATExchanger           func(ctx context.Context, pat string, machine *qoder.MachineIdentity) (*qoder.AuthIdentity, error)
@@ -19,9 +21,6 @@ type (
 )
 
 type qoderSessionCacheEntry = providercore.QoderSessionCacheEntry[*qoder.SessionContext]
-
-// errQoderSessionBuildInvalidated 表示在途构建已失效，或已有更新的凭据。
-var errQoderSessionBuildInvalidated = providercore.ErrQoderSessionBuildInvalidated
 
 // QoderTokenProvider 为 Qoder 提供商构建并缓存 COSY session 上下文。
 type QoderTokenProvider struct {
@@ -33,6 +32,8 @@ type QoderTokenProvider struct {
 	httpUpstream        QoderTransport
 	tlsFPProfileService *egressadapter.TLSProfiles
 }
+
+type qoderSessionState = providercore.QoderSessions[*qoder.SessionContext]
 
 func NewQoderTokenProvider(builder qoder.SessionBuilder) *QoderTokenProvider {
 	return &QoderTokenProvider{
@@ -75,8 +76,6 @@ func (p *QoderTokenProvider) InvalidateProvider(provider *providercore.Record) {
 		p.qoderState().InvalidateProvider(provider)
 	}
 }
-
-type qoderSessionState = providercore.QoderSessions[*qoder.SessionContext]
 
 // qoderState 仅惰性装配提供商状态；所有缓存与锁均归该唯一实例。
 func (p *QoderTokenProvider) qoderState() *qoderSessionState {

@@ -2,20 +2,36 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"log"
+	"time"
 
+	dbent "github.com/TokenFlux/TokenRouter/ent"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	egresspostgres "github.com/TokenFlux/TokenRouter/internal/egress/postgres"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/infra/timingwheel"
+	acctcore "github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
+	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	schedulerpostgres "github.com/TokenFlux/TokenRouter/internal/scheduler/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache/codec"
 )
 
 type providerRecordsReader interface {
-	GetByID(context.Context, int64) (*provider.Record, error)
-	GetByIDs(context.Context, []int64) ([]*provider.Record, error)
+	GetByID(context.Context, int64) (*acctcore.Record, error)
+	GetByIDs(context.Context, []int64) ([]*acctcore.Record, error)
+}
+
+type providerSchedulerEvents struct{ publisher scheduler.SnapshotPublisher }
+
+// provideProviderDeferred 为延迟写入绑定提供商存储和时间轮。
+func provideProviderDeferred(store *providerpostgres.ProviderStore, wheel *timingwheel.Wheel) *acctcore.DeferredService {
+	return acctcore.NewDeferredService(store, wheel, acctcore.DeferredOptions{Interval: 10 * time.Second, Now: time.Now, Observe: log.Printf})
 }
 
 // newProviderEvents 将提供商写入事件接入唯一 scheduler outbox 与快照发布器。
@@ -36,8 +52,6 @@ func newProviderEvents(reader providerRecordsReader, cache scheduler.SnapshotCac
 	}}
 }
 
-type providerSchedulerEvents struct{ publisher scheduler.SnapshotPublisher }
-
 func (b providerSchedulerEvents) Write(ctx context.Context, exec postgresinfra.Executor, event providerpostgres.ProviderEvent, id, group *int64, payload any) error {
 	return schedulerpostgres.EnqueueSchedulerChange(ctx, exec, providerSchedulerEventName(event), id, group, payload)
 }
@@ -49,7 +63,9 @@ func (b providerSchedulerEvents) SyncOne(ctx context.Context, id int64) { b.publ
 func (b providerSchedulerEvents) SyncMany(ctx context.Context, ids []int64) {
 	b.publisher.PublishMany(ctx, ids)
 }
+
 func (b providerSchedulerEvents) Drop(ctx context.Context, id int64) { b.publisher.Drop(ctx, id) }
+
 func (providerSchedulerEvents) Name(event providerpostgres.ProviderEvent) string {
 	return providerSchedulerEventName(event)
 }
@@ -83,7 +99,7 @@ func providerUsageEvents(reader providerRecordsReader, cache scheduler.SnapshotC
 	}
 }
 
-func wrapSchedulerRecordPointers(values []*provider.Record) []scheduler.SnapshotProvider {
+func wrapSchedulerRecordPointers(values []*acctcore.Record) []scheduler.SnapshotProvider {
 	if values == nil {
 		return nil
 	}
@@ -92,4 +108,22 @@ func wrapSchedulerRecordPointers(values []*provider.Record) []scheduler.Snapshot
 		out[i] = codec.WrapRecord(value)
 	}
 	return out
+}
+
+// provideProviderStore 构造共享的提供商存储，并绑定数据转换和事件写入函数。
+func provideProviderStore(client *dbent.Client, db *sql.DB, cache scheduler.SnapshotCache) *providerpostgres.ProviderStore {
+	store := providerpostgres.NewProviderStore(client, db, providerpostgres.ProviderStoreOptions{
+		Group: func(g *dbent.Group) *accessview.GroupConfig {
+			return (*accessview.GroupConfig)(routingpostgres.GroupFromEnt(g))
+		},
+		OllamaIdentity: acctcore.IsOllamaCloudUsageProvider,
+		Proxy:          egresspostgres.ProxyEntity, Now: time.Now, LoadLocation: time.LoadLocation,
+		Observe: func(format string, args ...any) { logging.LegacyPrintf("repository.provider", format, args...) },
+	})
+	store.SetEvents(newProviderEvents(store, cache))
+	return store
+}
+
+func provideExecutionProviderStore(store *providerpostgres.ProviderStore, usage *billingpostgres.ProviderUsageStore) gatewayprovider.ExecutionProviderStore {
+	return &executionProviderStore{data: store, usage: usage}
 }

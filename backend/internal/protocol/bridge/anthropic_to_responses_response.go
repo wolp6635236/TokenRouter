@@ -6,6 +6,50 @@ import (
 	"fmt"
 )
 
+// AnthropicEventToResponsesState tracks state for converting a sequence of
+// Anthropic SSE events into Responses SSE events.
+type AnthropicEventToResponsesState struct {
+	ResponseID     string
+	Model          string
+	Created        int64
+	SequenceNumber int
+
+	// CreatedSent tracks whether response.created has been emitted.
+	CreatedSent bool
+	// CompletedSent tracks whether the terminal event has been emitted.
+	CompletedSent bool
+
+	// Current output tracking
+	OutputIndex     int
+	CurrentItemID   string
+	CurrentItemType string // "message" | "function_call" | "reasoning"
+
+	// 消息输出的内容分片索引与当前文本累积值。
+	ContentIndex int
+	TextAccum    string
+
+	// 函数调用当前输出项的信息。
+	CurrentCallID string
+	CurrentName   string
+
+	// 当前打开输出项的完整内容，在关闭时写入 Outputs。
+	CurrentContent []ResponsesContentPart // message
+	CurrentArgs    string                 // function_call
+	CurrentSummary string                 // reasoning
+
+	// 累积所有已关闭输出项，供终止事件返回完整结果。
+	Outputs []ResponsesOutput
+
+	// message_start 和 message_delta 的 InputTokens 为未缓存输入，输出 Responses usage 时加回缓存 token。
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+
+	// StopReason 保存最后一个非空的 Anthropic 终止原因，供 message_stop 生成正确的 Responses 终态。
+	StopReason string
+}
+
 // AnthropicToResponsesResponse converts an Anthropic Messages response into a
 // Responses API response. This is the reverse of ResponsesToAnthropic and
 // enables Anthropic upstream responses to be returned in OpenAI Responses format.
@@ -121,50 +165,6 @@ func anthropicStopReasonToResponsesStatus(stopReason string, blocks []AnthropicC
 	default:
 		return "completed"
 	}
-}
-
-// AnthropicEventToResponsesState tracks state for converting a sequence of
-// Anthropic SSE events into Responses SSE events.
-type AnthropicEventToResponsesState struct {
-	ResponseID     string
-	Model          string
-	Created        int64
-	SequenceNumber int
-
-	// CreatedSent tracks whether response.created has been emitted.
-	CreatedSent bool
-	// CompletedSent tracks whether the terminal event has been emitted.
-	CompletedSent bool
-
-	// Current output tracking
-	OutputIndex     int
-	CurrentItemID   string
-	CurrentItemType string // "message" | "function_call" | "reasoning"
-
-	// 消息输出的内容分片索引与当前文本累积值。
-	ContentIndex int
-	TextAccum    string
-
-	// 函数调用当前输出项的信息。
-	CurrentCallID string
-	CurrentName   string
-
-	// 当前打开输出项的完整内容，在关闭时写入 Outputs。
-	CurrentContent []ResponsesContentPart // message
-	CurrentArgs    string                 // function_call
-	CurrentSummary string                 // reasoning
-
-	// 累积所有已关闭输出项，供终止事件返回完整结果。
-	Outputs []ResponsesOutput
-
-	// message_start 和 message_delta 的 InputTokens 为未缓存输入，输出 Responses usage 时加回缓存 token。
-	InputTokens              int
-	OutputTokens             int
-	CacheReadInputTokens     int
-	CacheCreationInputTokens int
-
-	// StopReason 保存最后一个非空的 Anthropic 终止原因，供 message_stop 生成正确的 Responses 终态。
-	StopReason string
 }
 
 // NewAnthropicEventToResponsesState returns an initialised stream state.

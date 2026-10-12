@@ -8,10 +8,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 const providerListGroupUngroupedQueryValue = "ungrouped"

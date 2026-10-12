@@ -5,7 +5,23 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
+
+// TestManagedRecoveryFencePreservesNewRuntimeBlock 检查恢复期间出现新阻断时该状态保持不变，并检查管理员清理操作。
+func TestManagedRecoveryFencePreservesNewRuntimeBlock(t *testing.T) {
+	s := NewRuntimeBlockState(time.Now)
+	a := &Record{LoadLocation: time.LoadLocation, ID: 72, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth}
+	s.BlockProviderScheduling(a, time.Now().Add(time.Minute), "first")
+	fence := s.ManagedRecoveryFence(a.ID)
+	s.BlockProviderScheduling(a, time.Now().Add(2*time.Minute), "new")
+	require.False(t, s.ClearProviderSchedulingBlockIfFence(a.ID, fence))
+	require.True(t, s.Blocked(a.ID, func() string { return RefreshCredentialIdentity(a) }))
+	require.True(t, s.ClearProviderSchedulingBlockIfFence(a.ID, s.ManagedRecoveryFence(a.ID)))
+	require.False(t, s.Blocked(a.ID, func() string { return RefreshCredentialIdentity(a) }))
+	require.False(t, s.ClearProviderSchedulingBlockIfFence(a.ID, fence))
+}
 
 // TestOpenAIRuntimeBlock_DoesNotShortenExistingBlock 验证原停调延长与清理断言迁至状态所有者，直接检查私有缓存。
 func TestOpenAIRuntimeBlock_DoesNotShortenExistingBlock(t *testing.T) {
@@ -32,4 +48,55 @@ func TestOpenAIRuntimeBlock_ClearProviderSchedulingBlock(t *testing.T) {
 
 	svc.ClearProviderSchedulingBlock(provider.ID)
 	require.False(t, svc.Blocked(provider.ID, func() string { return RefreshCredentialIdentity(provider) }))
+}
+
+// TestRefreshRuntimeBlockIsCredentialScoped 验证刷新失败的内存桥接仅属于交换凭据；即便通知晚于管理员换凭据，也不能阻断新身份。
+func TestRefreshRuntimeBlockIsCredentialScoped(t *testing.T) {
+	gateway := NewRuntimeBlockState(time.Now)
+	old := &Record{ID: 1, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth, Credentials: map[string]any{"access_token": "old-fixture"}}
+	fresh := *old
+	fresh.Credentials = map[string]any{"access_token": "new-fixture"}
+	PrepareRefreshFailureNotice(gateway, old)(time.Now().Add(time.Minute), "token_refresh_non_retryable")
+	require.True(t, gateway.Blocked(old.ID, func() string { return RefreshCredentialIdentity(old) }))
+	require.False(t, gateway.Blocked(fresh.ID, func() string { return RefreshCredentialIdentity(&fresh) }), "旧凭据失败通知阻断了新凭据")
+}
+
+func TestRefreshRuntimePublicationHonorsClearAndOtherVersions(t *testing.T) {
+	gateway := NewRuntimeBlockState(time.Now)
+	blocked := func(v *Record) bool {
+		return gateway.Blocked(v.ID, func() string { return RefreshCredentialIdentity(v) })
+	}
+	value := func(token string) *Record {
+		return &Record{LoadLocation: time.LoadLocation, ID: 1, Platform: PlatformGrok, Type: ProviderTypeOAuth, Credentials: map[string]any{"access_token": token}}
+	}
+	a, b, c := value("a"), value("b"), value("c")
+	notice := func(v *Record) RefreshFailureNotice {
+		n := FailureNotice(v)
+		n.Until = time.Now().Add(time.Minute)
+		return n
+	}
+	publishA, publishB := gateway.PrepareRefreshFailure(1), gateway.PrepareRefreshFailure(1)
+	publishB(notice(b))
+	publishA(notice(a))
+	require.True(t, blocked(a))
+	require.True(t, blocked(b))
+	require.False(t, blocked(c))
+	// 原提供商级容量/额度阻断继续覆盖全部身份，不被凭据作用域削弱。
+	gateway.BlockProviderScheduling(c, time.Now().Add(time.Hour), "429")
+	require.True(t, blocked(c))
+	gateway.ClearProviderSchedulingBlock(1)
+	publishA(notice(a))
+	publishB(notice(b))
+	require.False(t, blocked(a))
+	require.False(t, blocked(b))
+	gateway.PrepareRefreshFailure(1)(notice(c))
+	require.True(t, blocked(c))
+	// 原 Grok 临时阻断的回滚不得抹掉独立的刷新身份阻断。
+	publishAfterProbe := gateway.PrepareRefreshFailure(1)
+	release := gateway.BlockRollback(1, time.Now().Add(time.Minute), "credential_probe")
+	release()
+	publishAfterProbe(notice(value("d")))
+	require.True(t, blocked(value("d")))
+	require.True(t, blocked(c))
+	require.False(t, blocked(a))
 }

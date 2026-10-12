@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 )
 
 // StepUpSessionKey 计算 step-up 授权的会话键：

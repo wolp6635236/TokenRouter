@@ -26,18 +26,22 @@ func (p *expiryProbe) ReconcilePendingPaymentOrders(ctx context.Context) (int, e
 	<-ctx.Done()
 	return 0, ctx.Err()
 }
+
 func (p *expiryProbe) ReconcileProcessingOrders(context.Context) (int, error) {
 	p.calls.Add(1)
 	return 0, nil
 }
+
 func (p *expiryProbe) ReconcilePaidFulfillmentOrders(context.Context) (int, error) {
 	p.calls.Add(1)
 	return 0, nil
 }
+
 func (p *expiryProbe) ExpireTimedOutOrders(context.Context) (int, error) {
 	p.calls.Add(1)
 	return 0, nil
 }
+
 func TestOrderExpiryConstructionAndCancellation(t *testing.T) {
 	p := &expiryProbe{entered: make(chan struct{})}
 	runner := NewOrderExpiry(p, time.Hour, ExpiryRuntime{})
@@ -60,6 +64,7 @@ func TestOrderExpiryConstructionAndCancellation(t *testing.T) {
 		t.Fatalf("停止后不得进入后续阶段，calls=%d", p.calls.Load())
 	}
 }
+
 func TestOrderExpiryStopBudgetReportsUnfinished(t *testing.T) {
 	p := &expiryProbe{entered: make(chan struct{}), release: make(chan struct{}), ignoreCancel: true}
 	runner := NewOrderExpiry(p, time.Hour, ExpiryRuntime{})

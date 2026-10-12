@@ -11,24 +11,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
-
-type LinuxDoHandler struct {
-	*PendingHandler
-	binding    *OAuthBindHandler
-	client     identity.LinuxDoOAuthClient
-	loadConfig func(context.Context) (identity.LinuxDoOAuthOptions, error)
-}
-
-func NewLinuxDoHandler(p *PendingHandler, b *OAuthBindHandler, client identity.LinuxDoOAuthClient, load func(context.Context) (identity.LinuxDoOAuthOptions, error)) *LinuxDoHandler {
-	return &LinuxDoHandler{p, b, client, load}
-}
 
 const (
 	LinuxDoOAuthCookiePath         = "/api/v1/auth/oauth/linuxdo"
@@ -48,6 +38,24 @@ const (
 	OauthIntentLogin           = "login"
 	OauthIntentBindCurrentUser = "bind_current_user"
 )
+
+type LinuxDoHandler struct {
+	*PendingHandler
+	binding    *OAuthBindHandler
+	client     identity.LinuxDoOAuthClient
+	loadConfig func(context.Context) (identity.LinuxDoOAuthOptions, error)
+}
+
+type CompleteLinuxDoOAuthRequest struct {
+	InvitationCode   string `json:"invitation_code" binding:"required"`
+	AffCode          string `json:"aff_code,omitempty"` // 邀请返利码，仅注册新用户时绑定邀请关系。
+	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
+	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
+}
+
+func NewLinuxDoHandler(p *PendingHandler, b *OAuthBindHandler, client identity.LinuxDoOAuthClient, load func(context.Context) (identity.LinuxDoOAuthOptions, error)) *LinuxDoHandler {
+	return &LinuxDoHandler{p, b, client, load}
+}
 
 // LinuxDoOAuthStart 启动 LinuxDo Connect OAuth 登录流程。
 // GET /api/v1/auth/oauth/linuxdo/start?redirect=/dashboard
@@ -388,15 +396,15 @@ func (h *LinuxDoHandler) CompleteLinuxDoOAuthRegistration(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if updatedSession, handled, err := h.flow.LegacyRegistrationStatus(c.Request.Context(), session, h.authService != nil && h.authService.IsEmailVerifyEnabled(c.Request.Context()), h.isForceEmailOnThirdPartySignup(c.Request.Context())); err != nil {
+	updatedSession, handled, err := h.flow.LegacyRegistrationStatus(c.Request.Context(), session, h.authService != nil && h.authService.IsEmailVerifyEnabled(c.Request.Context()), h.isForceEmailOnThirdPartySignup(c.Request.Context()))
+	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	} else if handled {
 		c.JSON(http.StatusOK, BuildPendingOAuthSessionStatusPayload(updatedSession))
 		return
-	} else {
-		session = updatedSession
 	}
+	session = updatedSession
 	if err := h.ensureBackendModeAllowsNewUserLogin(c.Request.Context()); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -444,13 +452,6 @@ func (h *LinuxDoHandler) CompleteLinuxDoOAuthRegistration(c *gin.Context) {
 		"expires_in":    tokenPair.ExpiresIn,
 		"token_type":    "Bearer",
 	})
-}
-
-type CompleteLinuxDoOAuthRequest struct {
-	InvitationCode   string `json:"invitation_code" binding:"required"`
-	AffCode          string `json:"aff_code,omitempty"` // 邀请返利码，仅注册新用户时绑定邀请关系。
-	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
-	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
 }
 
 func BuildLinuxDoAuthorizeURL(cfg identity.LinuxDoOAuthOptions, state string, codeChallenge string, redirectURI string) (string, error) {

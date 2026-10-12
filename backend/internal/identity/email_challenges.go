@@ -27,7 +27,7 @@ func NewEmailChallenges(cache EmailCache, sender EmailChallengeSender) *EmailCha
 	return &EmailChallenges{cache: cache, sender: sender}
 }
 
-// GenerateVerifyCode 生成6位数字验证码
+// GenerateVerifyCode 生成 6 位数字验证码。
 func (s *EmailChallenges) GenerateVerifyCode() (string, error) {
 	const digits = "0123456789"
 	code := make([]byte, 6)
@@ -41,7 +41,7 @@ func (s *EmailChallenges) GenerateVerifyCode() (string, error) {
 	return string(code), nil
 }
 
-// SendVerifyCode 发送验证码邮件
+// SendVerifyCode 发送验证码邮件。
 func (s *EmailChallenges) SendVerifyCode(ctx context.Context, email, siteName string, locale ...string) error {
 	// 检查是否在冷却期内
 	existing, err := s.cache.GetVerificationCode(ctx, email)
@@ -71,7 +71,7 @@ func (s *EmailChallenges) SendVerifyCode(ctx context.Context, email, siteName st
 	return s.sender.SendVerifyCodeMessage(ctx, email, siteName, code, FirstEmailLocale(locale))
 }
 
-// VerifyCode 验证验证码
+// VerifyCode 验证验证码。
 func (s *EmailChallenges) VerifyCode(ctx context.Context, email, code string) error {
 	data, err := s.cache.GetVerificationCode(ctx, email)
 	if err != nil || data == nil {
@@ -106,7 +106,7 @@ func (s *EmailChallenges) VerifyCode(ctx context.Context, email, code string) er
 	return nil
 }
 
-// GeneratePasswordResetToken generates a secure 32-byte random token (64 hex characters)
+// GeneratePasswordResetToken generates a secure 32-byte random token (64 hex characters).
 func (s *EmailChallenges) GeneratePasswordResetToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -115,7 +115,7 @@ func (s *EmailChallenges) GeneratePasswordResetToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// SendPasswordResetEmail sends a password reset email with a reset link
+// SendPasswordResetEmail sends a password reset email with a reset link.
 func (s *EmailChallenges) SendPasswordResetEmail(ctx context.Context, email, siteName, resetURL string, locale ...string) error {
 	var token string
 	var needSaveToken bool
@@ -153,7 +153,7 @@ func (s *EmailChallenges) SendPasswordResetEmail(ctx context.Context, email, sit
 }
 
 // SendPasswordResetEmailWithCooldown sends password reset email with cooldown check (called by queue worker)
-// This method wraps SendPasswordResetEmail with email cooldown to prevent email bombing
+// This method wraps SendPasswordResetEmail with email cooldown to prevent email bombing.
 func (s *EmailChallenges) SendPasswordResetEmailWithCooldown(ctx context.Context, email, siteName, resetURL string, locale ...string) error {
 	// Check email cooldown to prevent email bombing
 	if s.cache.IsPasswordResetEmailInCooldown(ctx, email) {
@@ -174,7 +174,7 @@ func (s *EmailChallenges) SendPasswordResetEmailWithCooldown(ctx context.Context
 	return nil
 }
 
-// VerifyPasswordResetToken verifies the password reset token without consuming it
+// VerifyPasswordResetToken verifies the password reset token without consuming it.
 func (s *EmailChallenges) VerifyPasswordResetToken(ctx context.Context, email, token string) error {
 	data, err := s.cache.GetPasswordResetToken(ctx, email)
 	if err != nil || data == nil {
@@ -189,7 +189,7 @@ func (s *EmailChallenges) VerifyPasswordResetToken(ctx context.Context, email, t
 	return nil
 }
 
-// ConsumePasswordResetToken verifies and deletes the token (one-time use)
+// ConsumePasswordResetToken verifies and deletes the token (one-time use).
 func (s *EmailChallenges) ConsumePasswordResetToken(ctx context.Context, email, token string) error {
 	// Verify first
 	if err := s.VerifyPasswordResetToken(ctx, email, token); err != nil {

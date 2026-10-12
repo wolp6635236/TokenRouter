@@ -1,6 +1,6 @@
 package anthropic
 
-// Beta Policy 策略常量
+// Beta Policy 策略常量。
 const (
 	BetaPolicyActionPass   = "pass"   // 透传，不做任何处理
 	BetaPolicyActionFilter = "filter" // 过滤，从 beta header 中移除该 token
@@ -12,7 +12,7 @@ const (
 	BetaPolicyScopeBedrock = "bedrock" // 仅 AWS Bedrock 提供商
 )
 
-// BetaPolicyRule 单条 Beta 策略规则
+// BetaPolicyRule 单条 Beta 策略规则。
 type BetaPolicyRule struct {
 	BetaToken            string   `json:"beta_token"`                       // beta token 值
 	Action               string   `json:"action"`                           // "pass" | "filter" | "block"
@@ -23,7 +23,7 @@ type BetaPolicyRule struct {
 	FallbackErrorMessage string   `json:"fallback_error_message,omitempty"` // 未匹配白名单时的自定义错误消息 (fallback_action=block 时生效)
 }
 
-// BetaPolicySettings Beta 策略配置
+// BetaPolicySettings Beta 策略配置。
 type BetaPolicySettings struct {
 	Rules []BetaPolicyRule `json:"rules"`
 }

@@ -656,7 +656,7 @@
             <textarea
               v-model="promptDraft"
               rows="3"
-              class="h-[76px] w-full resize-y rounded-control border border-primary-900/10 px-3 py-2 text-sm leading-5 outline-none focus:border-primary-900/10 focus:ring-2 focus:ring-black/10 dark:border-dark-600 dark:bg-dark-900 dark:text-gray-100 dark:focus:border-primary-500 dark:focus:ring-primary-900/40"
+              class="input h-[76px] resize-y px-3 py-2 leading-5"
               :placeholder="t('batchImage.create.promptPlaceholder')"
             />
             <div class="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_112px_132px_112px] md:items-center">
@@ -807,6 +807,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
 import { useClipboard } from '@/composables/useClipboard'
 import { getPersistedPageSize, setPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useAppStore } from '@/stores/app'
@@ -887,6 +888,7 @@ const batchPageSizeOptions: SelectOption[] = [20, 50, 100].map(size => ({ value:
 
 const appStore = useAppStore()
 const { copyToClipboard } = useClipboard()
+const { formatBalanceAmount } = useBalanceDisplay()
 const { t, locale } = useI18n()
 const outputCountSelectOptions = computed<SelectOption[]>(() =>
   outputCountOptions.map(count => ({
@@ -2518,9 +2520,9 @@ function friendlyItemError(error: BatchImageItem['error']) {
   return error.message || error.code || '-'
 }
 
+// formatMoney 按站点配置的余额单位显示任务的冻结和实际扣费金额。
 function formatMoney(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '$0.00'
-  return `$${Number(value).toFixed(2)}`
+  return formatBalanceAmount(value, { fractionDigits: 2 })
 }
 
 function terminalZeroCost(job: Pick<BatchImageJob, 'status' | 'actual_cost'>) {

@@ -5,14 +5,40 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
 
-	sqlutil "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/lib/pq"
 
 	"github.com/TokenFlux/TokenRouter/internal/audit"
-	"github.com/lib/pq"
+	sqlutil "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+)
+
+const (
+	auditLogInsertColumns = `created_at, actor_user_id, actor_email, actor_role, auth_method,
+credential_masked, action, method, path, request_id, client_ip, user_agent,
+request_body, status_code, latency_ms, extra`
+
+	auditLogSelectColumns = `
+  l.id,
+  l.created_at,
+  l.actor_user_id,
+  COALESCE(l.actor_email, ''),
+  COALESCE(l.actor_role, ''),
+  COALESCE(l.auth_method, ''),
+  COALESCE(l.credential_masked, ''),
+  COALESCE(l.action, ''),
+  COALESCE(l.method, ''),
+  COALESCE(l.path, ''),
+  COALESCE(l.request_id, ''),
+  COALESCE(l.client_ip, ''),
+  COALESCE(l.user_agent, ''),
+  COALESCE(l.request_body, ''),
+  l.status_code,
+  l.latency_ms,
+  COALESCE(l.extra::text, '{}')`
 )
 
 // Store 审计日志仓储（raw SQL，append-only）。
@@ -25,10 +51,6 @@ type Store struct {
 func NewAuditLogRepository(db *sql.DB) *Store {
 	return &Store{db: db}
 }
-
-const auditLogInsertColumns = `created_at, actor_user_id, actor_email, actor_role, auth_method,
-credential_masked, action, method, path, request_id, client_ip, user_agent,
-request_body, status_code, latency_ms, extra`
 
 func auditLogInsertValues(log *audit.AuditLog) []any {
 	createdAt := log.CreatedAt
@@ -169,6 +191,10 @@ func buildAuditLogsWhere(filter *audit.AuditLogFilter) (string, []any) {
 			clauses = append(clauses, "l.status_code >= 400")
 		}
 	}
+	if v := strings.TrimSpace(filter.RequestID); v != "" {
+		args = append(args, v)
+		clauses = append(clauses, "l.request_id = ANY(ARRAY(SELECT id FROM request_lookup_ids($"+strconv.Itoa(len(args))+")))")
+	}
 	if v := strings.TrimSpace(filter.Query); v != "" {
 		args = append(args, "%"+sqlutil.EscapeLikePattern(v)+"%")
 		idx := strconv.Itoa(len(args))
@@ -177,25 +203,6 @@ func buildAuditLogsWhere(filter *audit.AuditLogFilter) (string, []any) {
 
 	return "WHERE " + strings.Join(clauses, " AND "), args
 }
-
-const auditLogSelectColumns = `
-  l.id,
-  l.created_at,
-  l.actor_user_id,
-  COALESCE(l.actor_email, ''),
-  COALESCE(l.actor_role, ''),
-  COALESCE(l.auth_method, ''),
-  COALESCE(l.credential_masked, ''),
-  COALESCE(l.action, ''),
-  COALESCE(l.method, ''),
-  COALESCE(l.path, ''),
-  COALESCE(l.request_id, ''),
-  COALESCE(l.client_ip, ''),
-  COALESCE(l.user_agent, ''),
-  COALESCE(l.request_body, ''),
-  l.status_code,
-  l.latency_ms,
-  COALESCE(l.extra::text, '{}')`
 
 func scanAuditLogRow(scan func(dest ...any) error) (*audit.AuditLog, error) {
 	item := &audit.AuditLog{}
@@ -372,9 +379,7 @@ func (r *Store) ClearWithTrace(ctx context.Context, trace *audit.AuditLog) (int6
 	}
 	copied := *trace
 	copied.Extra = make(map[string]any, len(trace.Extra)+1)
-	for k, v := range trace.Extra {
-		copied.Extra[k] = v
-	}
+	maps.Copy(copied.Extra, trace.Extra)
 	copied.Extra["deleted_rows"] = count
 	query := `INSERT INTO audit_logs (` + auditLogInsertColumns + `) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`
 	if _, err = tx.ExecContext(ctx, query, auditLogInsertValues(&copied)...); err != nil {

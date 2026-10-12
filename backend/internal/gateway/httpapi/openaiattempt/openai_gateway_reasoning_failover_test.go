@@ -4,11 +4,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 // kiroReasoningCanonicalBody 模拟带有 Kiro 专属加密 reasoning 项的 Responses 请求。

@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 )
 
 // TestGatewayRequestActivityTimeoutKeepsCompletionAndStorageOpen 检查 HTTP 请求和嵌套上游调用共用任务跟踪器，任一未结束时完成队列和共享存储保持打开。

@@ -4,13 +4,19 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
+
+type bedrockMarketplaceGroups struct {
+	routing.GroupRepository
+	groups []routing.Group
+}
 
 // newBedrockRoutingTestProvider 原地域模型与市场一致性断言使用相同的原生目录和报价实现。
 func newBedrockRoutingTestProvider(id int64, region string, forceGlobal bool) providercore.Record {
@@ -26,11 +32,6 @@ func newBedrockRoutingTestProvider(id int64, region string, forceGlobal bool) pr
 		provider.Credentials["aws_force_global"] = "true"
 	}
 	return provider
-}
-
-type bedrockMarketplaceGroups struct {
-	routing.GroupRepository
-	groups []routing.Group
 }
 
 func (s *bedrockMarketplaceGroups) ListActive(context.Context) ([]routing.Group, error) {

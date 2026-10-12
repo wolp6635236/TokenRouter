@@ -24,6 +24,16 @@ type ClientCloseError struct {
 	Cause  error
 }
 
+type clientReadResult struct {
+	messageType int
+	payload     []byte
+	err         error
+}
+
+func NewClientCloseError(status int, reason string, cause error) *ClientCloseError {
+	return &ClientCloseError{Status: status, Reason: strings.TrimSpace(reason), Cause: cause}
+}
+
 func (e *ClientCloseError) Error() string {
 	if e == nil {
 		return ""
@@ -39,16 +49,6 @@ func (e *ClientCloseError) Unwrap() error {
 		return nil
 	}
 	return e.Cause
-}
-
-func NewClientCloseError(status int, reason string, cause error) *ClientCloseError {
-	return &ClientCloseError{Status: status, Reason: strings.TrimSpace(reason), Cause: cause}
-}
-
-type clientReadResult struct {
-	messageType int
-	payload     []byte
-	err         error
 }
 
 // ReadClientMessage 在控制事件发送关闭帧期间保留唯一读协程，

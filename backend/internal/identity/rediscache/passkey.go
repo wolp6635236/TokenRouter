@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 const passkeySessionPrefix = "passkey:session:"

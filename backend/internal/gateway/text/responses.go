@@ -7,6 +7,8 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // ResponseSelection 保留 HTTP continuation 的逐候选跳过，不把它计为提供商切换。
@@ -171,4 +173,23 @@ func RunResponses(options ResponseOptions, p ResponsePorts) {
 		p.Completed(switches)
 		return
 	}
+}
+
+// ResponsesCapability 根据请求的生图意图返回所需端点能力。
+func ResponsesCapability(imageIntent bool, platform string) providercore.OpenAIEndpointCapability {
+	if imageIntent && platform == capability.PlatformOpenAI {
+		return providercore.OpenAIEndpointCapabilityResponses
+	}
+	return providercore.OpenAIEndpointCapabilityTextGeneration
+}
+
+// RequiredResponsesCapability 返回压缩或生图请求所需的提供商能力。
+func RequiredResponsesCapability(imageIntent bool, nativeCompactionV2 bool, legacyCompact bool, platform string) providercore.OpenAIEndpointCapability {
+	if nativeCompactionV2 && platform == capability.PlatformOpenAI {
+		return providercore.OpenAIEndpointCapabilityRemoteCompactionV2
+	}
+	if legacyCompact && platform == capability.PlatformOpenAI {
+		return providercore.OpenAIEndpointCapabilityResponses
+	}
+	return ResponsesCapability(imageIntent, platform)
 }

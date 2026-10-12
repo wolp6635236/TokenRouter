@@ -4,16 +4,25 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
-const codexCLIOnlyHeaderValueMaxBytes = 256
+const (
+	codexCLIOnlyHeaderValueMaxBytes = 256
+
+	// openAIUpstreamClientErrorFallbackType 是上游缺少 error.type 时使用的类型。
+	openAIUpstreamClientErrorFallbackType = "invalid_request_error"
+
+	// openAIUpstreamClientErrorFallbackMessage 是上游缺少可用消息时使用的文案。
+	openAIUpstreamClientErrorFallbackMessage = "Upstream rejected the request"
+)
 
 // codex_cli_only 拒绝时，诊断日志记录以下白名单中的请求头。
 var codexCLIOnlyDebugHeaderWhitelist = []string{
@@ -78,12 +87,6 @@ func SnapshotCodexRejectedHeaders(header http.Header) map[string]string {
 	}
 	return result
 }
-
-// openAIUpstreamClientErrorFallbackType 是上游缺少 error.type 时使用的类型。
-const openAIUpstreamClientErrorFallbackType = "invalid_request_error"
-
-// openAIUpstreamClientErrorFallbackMessage 是上游缺少可用消息时使用的文案。
-const openAIUpstreamClientErrorFallbackMessage = "Upstream rejected the request"
 
 // IsOpenAIDeterministicClientError 判断错误是否为不可通过换号或重试恢复的客户端请求错误。
 // 普通提供商与池模式使用不同故障转移规则，判断时同时检查分类结果。

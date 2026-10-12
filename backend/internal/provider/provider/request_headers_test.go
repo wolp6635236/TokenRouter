@@ -3,22 +3,41 @@ package provider
 import (
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/stretchr/testify/require"
 )
 
-func headerOverrideTestProvider(platform, providerType string, credentials map[string]any) *provider.Record {
-	return &provider.Record{
-		Platform:    platform,
-		Type:        providerType,
-		Credentials: credentials,
+// TestHeaderOverrideResultIsolation 验证临时修改覆写结果不能影响另一个请求的配置。
+func TestHeaderOverrideResultIsolation(t *testing.T) {
+	provider := headerOverrideProvider()
+	provider.HeaderOverrides()["x-test-marker"] = "changed-by-caller"
+	require.Equal(t, "configured", provider.HeaderOverrides()["x-test-marker"])
+}
+
+// TestHeaderOverrideConcurrentReads 验证并发解析不可变配置不得回写共享提供商字段。
+func TestHeaderOverrideConcurrentReads(t *testing.T) {
+	provider := headerOverrideProvider()
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			<-start
+			for range 20 {
+				if provider.HeaderOverrides()["x-test-marker"] != "configured" {
+					t.Error("请求头覆写读取结果发生变化")
+				}
+			}
+		})
 	}
+	close(start)
+	wg.Wait()
 }
 
 func TestIsHeaderOverrideEligible(t *testing.T) {
@@ -326,7 +345,7 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 
 	t.Run("rejects too many entries", func(t *testing.T) {
 		entries := make(map[string]any, 64+1)
-		for i := 0; i <= 64; i++ {
+		for i := range 65 {
 			entries["x-h-"+string(rune('a'+i%26))+string(rune('a'+(i/26)%26))+string(rune('a'+(i/676)%26))] = "v"
 		}
 		err := egress.NormalizeHeaderOverrideCredentials(map[string]any{
@@ -345,4 +364,18 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 		})
 		require.Error(t, err)
 	})
+}
+
+func headerOverrideProvider() *provider.Record {
+	return &provider.Record{Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{
+		"header_override_enabled": true, "header_overrides": map[string]any{"x-test-marker": "configured"},
+	}}
+}
+
+func headerOverrideTestProvider(platform, providerType string, credentials map[string]any) *provider.Record {
+	return &provider.Record{
+		Platform:    platform,
+		Type:        providerType,
+		Credentials: credentials,
+	}
 }

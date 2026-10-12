@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // ProviderSchedulerDiagnostics 读取诊断数据并调用 scheduler 计算评分。
@@ -123,4 +124,10 @@ func ensureAdvancedSchedulerScorePreviewEOF(decoder *json.Decoder) error {
 		return io.ErrUnexpectedEOF
 	}
 	return err
+}
+
+// RegisterProviderDiagnostics 在提供商路径下注册评分诊断路由，分组权限由 app 安装。
+func RegisterProviderDiagnostics(providers *gin.RouterGroup, endpoint *DiagnosticsHandler) {
+	providers.GET("/:id/advanced-scheduler-score", endpoint.GetAdvancedSchedulerScore)
+	providers.POST("/:id/advanced-scheduler-score/preview", endpoint.PreviewAdvancedSchedulerScore)
 }

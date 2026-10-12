@@ -3,10 +3,10 @@ package httpapi
 import (
 	"testing"
 
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 )
 
 func TestResolvedOpenAIUpstreamServiceTier(t *testing.T) {

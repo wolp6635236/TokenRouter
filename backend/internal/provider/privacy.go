@@ -3,10 +3,19 @@ package provider
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
+
+const (
+	privacyEnsure privacyOperation = iota
+	privacyForce
+	privacyRefresh
+)
+
+var ErrPrivacyStopped = errors.New("provider privacy maintenance stopped")
 
 type PrivacyStore interface {
 	UpdatePrivacyModeIfUnchanged(context.Context, UsageObservationVersion, string) (bool, error)
@@ -28,6 +37,8 @@ type PrivacyService struct {
 	proxies  PrivacyProxyReader
 	options  PrivacyOptions
 }
+
+type privacyOperation uint8
 
 func NewPrivacyService(store PrivacyStore, proxies PrivacyProxyReader, options PrivacyOptions) *PrivacyService {
 	noop := func(string, ...any) {}
@@ -61,20 +72,10 @@ func ApplyAntigravityPrivacyMode(value *Record, mode string) {
 		return
 	}
 	extra := make(map[string]any, len(value.Extra)+1)
-	for key, v := range value.Extra {
-		extra[key] = v
-	}
+	maps.Copy(extra, value.Extra)
 	extra["privacy_mode"] = mode
 	value.Extra = extra
 }
-
-type privacyOperation uint8
-
-const (
-	privacyEnsure privacyOperation = iota
-	privacyForce
-	privacyRefresh
-)
 
 // proxyURL 区分没有代理与代理失效，后者不能退回空 URL 发起直连。
 func (s *PrivacyService) proxyURL(ctx context.Context, value *Record) (string, bool) {
@@ -213,8 +214,6 @@ func (s *PrivacyService) RefreshOpenAIPrivacy(ctx context.Context, v *Record) {
 func (s *PrivacyService) RefreshAntigravityPrivacy(ctx context.Context, v *Record) {
 	s.apply(ctx, v, PlatformAntigravity, privacyRefresh)
 }
-
-var ErrPrivacyStopped = errors.New("provider privacy maintenance stopped")
 
 // StopContext 取消并等待隐私请求，app 等待已排队任务完成，后续调用返回停止错误。
 func (s *PrivacyService) StopContext(ctx context.Context) error {

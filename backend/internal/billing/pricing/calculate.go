@@ -8,7 +8,24 @@ import (
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
+
+// OpenAIFastTierPriority 和 OpenAIFastTierUltrafast 使用 OpenAI 协议的档位名称。
+const (
+	OpenAIFastTierPriority  = openai.ServiceTierPriority
+	OpenAIFastTierUltrafast = openai.ServiceTierUltrafast
+)
+
+// ErrModelPricingUnavailable 表示当前所有定价来源都无法为请求模型提供价格。
+var ErrModelPricingUnavailable = errors.New("pricing not found")
+
+// ResolvedTokenPriceRange 是正上下文范围的实际价格；nil 表示该范围缺价。
+type ResolvedTokenPriceRange struct {
+	minTokens int
+	maxTokens *int
+	pricing   *ModelPricing
+}
 
 func NormalizeBillingServiceTier(serviceTier string) string {
 	return strings.ToLower(strings.TrimSpace(serviceTier))
@@ -65,13 +82,13 @@ func ConfiguredServiceTierMultiplier(serviceTier string, pricing *ModelPricing) 
 }
 
 // ApplyConfigFastModeMultiplier 将价卡 Fast 倍率写入最终定价元数据。
-func ApplyConfigFastModeMultiplier(pricing *ModelPricing, ConfigPricing *ModelPricingEntry) {
-	if pricing == nil || ConfigPricing == nil {
+func ApplyConfigFastModeMultiplier(pricing *ModelPricing, configPricing *ModelPricingEntry) {
+	if pricing == nil || configPricing == nil {
 		return
 	}
-	multiplierPtr := ConfigPricing.FastMultiplier
+	multiplierPtr := configPricing.FastMultiplier
 	if multiplierPtr == nil {
-		multiplierPtr = ConfigPricing.FastModeMultiplier
+		multiplierPtr = configPricing.FastModeMultiplier
 	}
 	if multiplierPtr == nil {
 		return
@@ -84,11 +101,11 @@ func ApplyConfigFastModeMultiplier(pricing *ModelPricing, ConfigPricing *ModelPr
 	pricing.FastMultiplier = &multiplier
 }
 
-func ApplyConfigFlexMultiplier(pricing *ModelPricing, ConfigPricing *ModelPricingEntry) {
-	if pricing == nil || ConfigPricing == nil || ConfigPricing.FlexMultiplier == nil {
+func ApplyConfigFlexMultiplier(pricing *ModelPricing, configPricing *ModelPricingEntry) {
+	if pricing == nil || configPricing == nil || configPricing.FlexMultiplier == nil {
 		return
 	}
-	multiplier := *ConfigPricing.FlexMultiplier
+	multiplier := *configPricing.FlexMultiplier
 	if multiplier < 0 {
 		multiplier = 0
 	}
@@ -121,9 +138,6 @@ func MaxReasoningEffortBillingMultiplier(model, effort string, pricing *ModelPri
 	return 1
 }
 
-// ErrModelPricingUnavailable 表示当前所有定价来源都无法为请求模型提供价格。
-var ErrModelPricingUnavailable = errors.New("pricing not found")
-
 // ConfigTierOverridePrice 根据模型目录中的层级比例推导价卡层级价格。
 // 价卡覆盖普通价时，priority/Fast 价格仍按对应服务层级计算。
 func ConfigTierOverridePrice(baseStandard, baseTier, configStandard float64) float64 {
@@ -134,8 +148,8 @@ func ConfigTierOverridePrice(baseStandard, baseTier, configStandard float64) flo
 }
 
 // ApplyConfigTokenPriceOverrides 应用普通与图片 token 价格，同时保留模型内置层级比例。
-func ApplyConfigTokenPriceOverrides(pricing *ModelPricing, ConfigPricing *ModelPricingEntry) {
-	if pricing == nil || ConfigPricing == nil {
+func ApplyConfigTokenPriceOverrides(pricing *ModelPricing, configPricing *ModelPricingEntry) {
+	if pricing == nil || configPricing == nil {
 		return
 	}
 	// 显式价卡覆盖同时应用到每个目录阶梯，保留未覆盖的独立单价。
@@ -143,46 +157,46 @@ func ApplyConfigTokenPriceOverrides(pricing *ModelPricing, ConfigPricing *ModelP
 		tiers := make([]ContextModelPrice, len(pricing.ContextPrices))
 		for i, tier := range pricing.ContextPrices {
 			value := *tier.Pricing
-			ApplyConfigTokenPriceOverrides(&value, ConfigPricing)
+			ApplyConfigTokenPriceOverrides(&value, configPricing)
 			tiers[i] = ContextModelPrice{Threshold: tier.Threshold, Pricing: &value}
 		}
 		pricing.ContextPrices = tiers
 	}
-	if ConfigPricing.InputPrice != nil {
-		priority := ConfigTierOverridePrice(pricing.InputPricePerToken, pricing.InputPricePerTokenPriority, *ConfigPricing.InputPrice)
-		pricing.InputPricePerToken = *ConfigPricing.InputPrice
+	if configPricing.InputPrice != nil {
+		priority := ConfigTierOverridePrice(pricing.InputPricePerToken, pricing.InputPricePerTokenPriority, *configPricing.InputPrice)
+		pricing.InputPricePerToken = *configPricing.InputPrice
 		pricing.InputPricePerTokenPriority = priority
 	}
-	if ConfigPricing.OutputPrice != nil {
-		priority := ConfigTierOverridePrice(pricing.OutputPricePerToken, pricing.OutputPricePerTokenPriority, *ConfigPricing.OutputPrice)
-		pricing.OutputPricePerToken = *ConfigPricing.OutputPrice
+	if configPricing.OutputPrice != nil {
+		priority := ConfigTierOverridePrice(pricing.OutputPricePerToken, pricing.OutputPricePerTokenPriority, *configPricing.OutputPrice)
+		pricing.OutputPricePerToken = *configPricing.OutputPrice
 		pricing.OutputPricePerTokenPriority = priority
 	}
-	if ConfigPricing.CacheWritePrice != nil {
+	if configPricing.CacheWritePrice != nil {
 		basePriority := pricing.CacheCreationPricePerTokenPriority
-		priority := ConfigTierOverridePrice(pricing.CacheCreationPricePerToken, basePriority, *ConfigPricing.CacheWritePrice)
-		pricing.CacheCreationPricePerToken = *ConfigPricing.CacheWritePrice
+		priority := ConfigTierOverridePrice(pricing.CacheCreationPricePerToken, basePriority, *configPricing.CacheWritePrice)
+		pricing.CacheCreationPricePerToken = *configPricing.CacheWritePrice
 		pricing.CacheCreationPricePerTokenPriority = priority
 		pricing.CacheCreationPriceExplicit = true
-		pricing.CacheCreation5mPrice = *ConfigPricing.CacheWritePrice
-		if ConfigPricing.CacheWrite1hPrice == nil {
+		pricing.CacheCreation5mPrice = *configPricing.CacheWritePrice
+		if configPricing.CacheWrite1hPrice == nil {
 			// 兼容旧配置：未拆分时继续让 cache_write_price 覆盖两个 TTL 档位。
-			pricing.CacheCreation1hPrice = *ConfigPricing.CacheWritePrice
+			pricing.CacheCreation1hPrice = *configPricing.CacheWritePrice
 		}
 	}
-	if ConfigPricing.CacheWrite1hPrice != nil {
-		pricing.CacheCreation1hPrice = *ConfigPricing.CacheWrite1hPrice
+	if configPricing.CacheWrite1hPrice != nil {
+		pricing.CacheCreation1hPrice = *configPricing.CacheWrite1hPrice
 		pricing.SupportsCacheBreakdown = true
 	}
-	if ConfigPricing.CacheReadPrice != nil {
-		priority := ConfigTierOverridePrice(pricing.CacheReadPricePerToken, pricing.CacheReadPricePerTokenPriority, *ConfigPricing.CacheReadPrice)
-		pricing.CacheReadPricePerToken = *ConfigPricing.CacheReadPrice
+	if configPricing.CacheReadPrice != nil {
+		priority := ConfigTierOverridePrice(pricing.CacheReadPricePerToken, pricing.CacheReadPricePerTokenPriority, *configPricing.CacheReadPrice)
+		pricing.CacheReadPricePerToken = *configPricing.CacheReadPrice
 		pricing.CacheReadPricePerTokenPriority = priority
 	}
-	applyConfigImagePriceOverrides(pricing, ConfigPricing)
+	applyConfigImagePriceOverrides(pricing, configPricing)
 }
 
-// CalculateTokenCost 按 token 区间计费
+// CalculateTokenCost 按 token 区间计费。
 func CalculateTokenCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
 	totalContext := input.Tokens.InputTokens + input.Tokens.CacheCreationTokens + input.Tokens.CacheReadTokens
 
@@ -305,10 +319,7 @@ func ComputeTokenBreakdown(
 	}
 
 	// 分离图片输出 token 与文本输出 token
-	textOutputTokens := tokens.OutputTokens - tokens.ImageOutputTokens
-	if textOutputTokens < 0 {
-		textOutputTokens = 0
-	}
+	textOutputTokens := max(tokens.OutputTokens-tokens.ImageOutputTokens, 0)
 	bd.OutputCost = float64(textOutputTokens) * outputPrice
 
 	// 图片输出 token 费用（独立费率）
@@ -387,7 +398,7 @@ func NormalizeCacheCreationBreakdown(tokens UsageTokens) (int, int) {
 	return cacheCreation5mTokens, aggregate - cacheCreation5mTokens
 }
 
-// CalculatePerRequestCost 按次/图片计费
+// CalculatePerRequestCost 按次/图片计费。
 func CalculatePerRequestCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
 	units := input.UsageUnits
 	if units <= 0 {
@@ -810,7 +821,7 @@ func UnknownDisplayPricing() ModelDisplayPricing {
 // CalculateWebSearchCost 计算 Codex alpha/search 网页搜索按次费用。
 // callCount: 搜索调用次数（每次请求为 1）
 // groupPrice: 分组配置的单次价格（nil 表示缺价；0 表示免费）
-// rateMultiplier: 分组费率倍数
+// rateMultiplier: 分组费率倍数。
 func CalculateWebSearchCost(callCount int, groupPrice *float64, rateMultiplier float64) *CostBreakdown {
 	if callCount <= 0 {
 		return &CostBreakdown{}
@@ -934,4 +945,28 @@ func LooksLikeImageModel(model string) bool {
 		strings.HasPrefix(model, "imagen-") ||
 		strings.Contains(model, "gpt-image") ||
 		strings.Contains(model, "dall-e")
+}
+
+// CalculateCost 按计费模式计算费用，负倍率按零处理，结果记录所用模式。
+func CalculateCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
+	// 保存时要求倍率大于 0，计费时将缓存或迁移数据中的负倍率按 0 处理。
+	if input.RateMultiplier < 0 {
+		input.RateMultiplier = 0
+	}
+
+	var breakdown *CostBreakdown
+	var err error
+	switch resolved.Mode {
+	case BillingModePerRequest, BillingModeImage, BillingModeVideo:
+		breakdown, err = CalculatePerRequestCost(resolved, input)
+	default: // BillingModeToken
+		breakdown, err = CalculateTokenCost(resolved, input)
+	}
+	if err == nil && breakdown != nil {
+		breakdown.BillingMode = string(resolved.Mode)
+		if breakdown.BillingMode == "" {
+			breakdown.BillingMode = string(BillingModeToken)
+		}
+	}
+	return breakdown, err
 }

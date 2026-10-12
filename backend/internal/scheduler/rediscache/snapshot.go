@@ -9,22 +9,23 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 const (
-	schedulerBucketSetKey           = "sched:v4:buckets"
-	schedulerOutboxWatermarkKey     = "sched:v4:outbox:watermark"
-	schedulerProviderPrefix         = "sched:v4:provider:"
-	schedulerProviderMetaPrefix     = "sched:v4:meta:"
-	schedulerProviderLastUsedPrefix = "sched:v4:provider:last_used:"
-	schedulerActivePrefix           = "sched:v4:active:"
-	schedulerReadyPrefix            = "sched:v4:ready:"
-	schedulerVersionPrefix          = "sched:v4:ver:"
-	schedulerEpochPrefix            = "sched:v4:epoch:"
-	schedulerRetiredPrefix          = "sched:v4:retired:"
-	schedulerSnapshotPrefix         = "sched:v4:"
+	schedulerBucketSetKey           = "sched:v5:buckets"
+	schedulerOutboxWatermarkKey     = "sched:v5:outbox:watermark"
+	schedulerProviderPrefix         = "sched:v5:provider:"
+	schedulerProviderMetaPrefix     = "sched:v5:meta:"
+	schedulerProviderLastUsedPrefix = "sched:v5:provider:last_used:"
+	schedulerActivePrefix           = "sched:v5:active:"
+	schedulerReadyPrefix            = "sched:v5:ready:"
+	schedulerVersionPrefix          = "sched:v5:ver:"
+	schedulerEpochPrefix            = "sched:v5:epoch:"
+	schedulerRetiredPrefix          = "sched:v5:retired:"
+	schedulerSnapshotPrefix         = "sched:v5:"
 
 	defaultSchedulerSnapshotMGetChunkSize  = 128
 	defaultSchedulerSnapshotWriteChunkSize = 256
@@ -33,14 +34,13 @@ const (
 	// snapshotGraceTTLSeconds 旧快照过期的宽限期（秒）。
 	// 替代立即 DEL，让正在读取旧版本的 reader 有足够时间完成 ZRANGE。
 	snapshotGraceTTLSeconds = 60
-)
 
-const (
-	schedulerGroupLifecycleLockPrefix      = "sched:v4:group:lifecycle-lock:"
+	schedulerGroupLifecycleLockPrefix      = "sched:v5:group:lifecycle-lock:"
 	schedulerGroupLifecycleOwnerTokenBytes = 16
 )
 
-var updateSchedulerLastUsedScript = redis.NewScript(`
+var (
+	updateSchedulerLastUsedScript = redis.NewScript(`
 local updated = 0
 for index = 1, #ARGV do
     local key_index = (index - 1) * 2 + 1
@@ -59,7 +59,6 @@ end
 return updated
 `)
 
-var (
 	// epoch 标识 bucket writer 的代际，retired key 是持久退休标记。
 	// Capture、allocate、activate 都在 Lua 内同时校验两者：-1 表示已退休，-2 表示 epoch 无效或与 token 代际不匹配；
 	// allocate 与 activate 的双重校验可拦截快照写入期间发生的 Retire。
@@ -180,7 +179,7 @@ return 0
 	// ARGV[4] = 宽限期 TTL 秒数
 	// ARGV[5]：writer epoch。
 	//
-	// 返回 1 = 已激活, 0 = 版本过旧未激活
+	// 返回 1 = 已激活, 0 = 版本过旧未激活。
 	activateSnapshotScript = redis.NewScript(`
 if redis.call('EXISTS', KEYS[6]) == 1 then
     redis.call('DEL', KEYS[4])
@@ -411,19 +410,8 @@ func newSchedulerGroupLifecycleOwnerToken() (string, error) {
 }
 
 func (c *SnapshotCache) SetSnapshot(ctx context.Context, bucket scheduler.SchedulerBucket, token scheduler.SchedulerBucketWriteToken, providers []scheduler.SnapshotProvider) error {
-	if !token.ValidFor(bucket) {
-		return fmt.Errorf("%w: bucket=%s", scheduler.ErrSchedulerBucketWriteFenced, bucket.String())
-	}
-	// 分配版本和激活指针时分别校验写入令牌，数据通过激活时的校验后发布。
-	version, err := c.allocateSnapshotVersion(ctx, bucket, token)
-	if err != nil {
-		return err
-	}
-	// 快照成员使用已编码提供商的有序 ID，写入后即可激活版本。
-	if _, err := c.writeSnapshotVersionAndReturnProviderIDs(ctx, bucket, version, providers); err != nil {
-		return err
-	}
-	return c.activateSnapshotVersion(ctx, bucket, token, version)
+	_, err := c.SetSnapshotAndReturnProviderIDs(ctx, bucket, token, providers)
+	return err
 }
 
 // SetSnapshotAndReturnProviderIDs 完整发布快照，并返回实际成功编码并写入的有序提供商 ID。
@@ -517,10 +505,7 @@ func (c *SnapshotCache) writeSnapshotMembers(ctx context.Context, bucket schedul
 	snapshotKey := schedulerSnapshotKey(bucket, version)
 	pipe := c.rdb.Pipeline()
 	for start := 0; start < len(members); start += c.writeChunkSize {
-		end := start + c.writeChunkSize
-		if end > len(members) {
-			end = len(members)
-		}
+		end := min(start+c.writeChunkSize, len(members))
 		pipe.ZAdd(ctx, snapshotKey, members[start:end]...)
 	}
 	_, err := pipe.Exec(ctx)
@@ -812,10 +797,7 @@ func (c *SnapshotCache) mgetChunked(ctx context.Context, keys []string) ([]any, 
 		chunkSize = defaultSchedulerSnapshotMGetChunkSize
 	}
 	for start := 0; start < len(keys); start += chunkSize {
-		end := start + chunkSize
-		if end > len(keys) {
-			end = len(keys)
-		}
+		end := min(start+chunkSize, len(keys))
 		part, err := c.rdb.MGet(ctx, keys[start:end]...).Result()
 		if err != nil {
 			return nil, err

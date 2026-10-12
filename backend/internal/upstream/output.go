@@ -6,6 +6,11 @@ import (
 	"net/http"
 )
 
+type deferredOutputWriter struct {
+	sink   OutputSink
+	output OutputWriter
+}
+
 // OutputHead 是输出适配器需要的响应元数据，Header 在传递时复制。
 type OutputHead struct {
 	// Committed 记录输出适配器当前的 HTTP 提交状态。
@@ -42,6 +47,60 @@ type OutputWriter interface {
 	Flush()
 }
 
+type sinkWriter struct {
+	sink    OutputSink
+	header  http.Header
+	status  int
+	started bool
+	written bool
+	err     error
+	next    *OutputEvent
+}
+
+// NewDeferredOutputContext 在首次访问输出接口时取得响应 Header。
+func NewDeferredOutputContext(sink OutputSink) *OutputContext {
+	return &OutputContext{Writer: &deferredOutputWriter{sink: sink}}
+}
+
+func (w *deferredOutputWriter) writer() OutputWriter {
+	if w.output == nil {
+		w.output = NewOutputContext(w.sink).Writer
+	}
+	return w.output
+}
+func (w *deferredOutputWriter) Header() http.Header            { return w.writer().Header() }
+func (w *deferredOutputWriter) Write(data []byte) (int, error) { return w.writer().Write(data) }
+func (w *deferredOutputWriter) WriteHeader(status int)         { w.writer().WriteHeader(status) }
+func (w *deferredOutputWriter) WriteHeaderNow()                { w.writer().WriteHeaderNow() }
+func (w *deferredOutputWriter) Flush()                         { w.writer().Flush() }
+func (w *deferredOutputWriter) Written() bool {
+	if w.output != nil {
+		return w.output.Written()
+	}
+	if state, ok := w.sink.(interface{ OutputState() OutputHead }); ok {
+		return state.OutputState().Committed
+	}
+	return false
+}
+
+// CloneHeader 复制 Header 和各字段的值切片。
+func CloneHeader(src http.Header) http.Header {
+	if src == nil {
+		return nil
+	}
+	dst := make(http.Header, len(src))
+	for k, vals := range src {
+		if len(vals) == 0 {
+			dst[k] = nil
+			continue
+		}
+		copied := make([]string, len(vals))
+		copy(copied, vals)
+		dst[k] = copied
+	}
+	return dst
+}
+
 // NewOutputContext 为一次流转换建立独立元数据，禁止跨请求复用。
 func NewOutputContext(sink OutputSink) *OutputContext {
 	header := make(http.Header)
@@ -58,16 +117,6 @@ func NewOutputContext(sink OutputSink) *OutputContext {
 		}
 	}
 	return &OutputContext{Writer: &sinkWriter{sink: sink, header: header, status: status, written: committed}}
-}
-
-type sinkWriter struct {
-	sink    OutputSink
-	header  http.Header
-	status  int
-	started bool
-	written bool
-	err     error
-	next    *OutputEvent
 }
 
 func (w *sinkWriter) Header() http.Header { return w.header }
@@ -116,7 +165,7 @@ func (w *sinkWriter) Flush() {
 	}
 }
 
-// Header 只修改待发元数据，实际响应仍由 OutputSink 写入。
+// Header 设置待发送的响应头，OutputSink 写入响应。
 func (c *OutputContext) Header(key, value string) { c.Writer.Header().Set(key, value) }
 
 // WriteHeaderNow 通过 sink.Begin 提交响应头，刷新由 Flush 触发。
@@ -135,7 +184,7 @@ func (c *OutputContext) Data(status int, contentType string, body []byte) {
 	_, _ = c.Writer.Write(body)
 }
 
-// NextEvent 为下一次同步字节写入补充协议事实，不改变提交和刷新时点。
+// NextEvent 为下一次同步字节写入设置内容和终止标记。
 func (c *OutputContext) NextEvent(semantic, terminal bool) {
 	if writer, ok := c.Writer.(*deferredOutputWriter); ok {
 		(&OutputContext{Writer: writer.writer()}).NextEvent(semantic, terminal)

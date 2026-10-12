@@ -8,7 +8,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
 )
 
-// PromoCode 注册优惠码
+// PromoCode 注册优惠码。
 type PromoCode struct {
 	ID          int64      `json:"id"`
 	Code        string     `json:"code"`
@@ -22,7 +22,7 @@ type PromoCode struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
-// PromoCodeUsage 优惠码使用记录
+// PromoCodeUsage 优惠码使用记录。
 type PromoCodeUsage struct {
 	ID          int64     `json:"id"`
 	PromoCodeID int64     `json:"promo_code_id"`

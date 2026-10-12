@@ -32,6 +32,11 @@ type RecoveryService struct {
 	options          RecoveryOptions
 }
 
+// ProviderRecoveryOptions 控制提供商恢复时的附加行为。
+type ProviderRecoveryOptions struct {
+	InvalidateToken bool
+}
+
 func NewRecoveryService(store RecoveryStore, cache TempUnschedCache, options RecoveryOptions) *RecoveryService {
 	if options.Now == nil {
 		options.Now = time.Now
@@ -54,12 +59,7 @@ func (s *RecoveryService) clearSchedulingBlock(id int64) {
 	}
 }
 
-// ProviderRecoveryOptions 控制提供商恢复时的附加行为。
-type ProviderRecoveryOptions struct {
-	InvalidateToken bool
-}
-
-// ClearRateLimit 清除提供商的限流状态
+// ClearRateLimit 清除提供商的限流状态。
 func (s *RecoveryService) ClearRateLimit(ctx context.Context, providerID int64) error {
 	if err := s.providerRepo.ClearRateLimit(ctx, providerID); err != nil {
 		return err

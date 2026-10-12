@@ -7,6 +7,7 @@ import (
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
 	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )

@@ -15,20 +15,48 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
-// TestDialerBasicConnection tests that the dialer can establish TLS connections.
+// FingerprintResponse 保存 tls.peet.ws/api/all 返回的指纹数据。
+type FingerprintResponse struct {
+	IP    string  `json:"ip"`
+	TLS   TLSInfo `json:"tls"`
+	HTTP2 any     `json:"http2"`
+}
+
+// TestProfileExpectation 描述一个模板的预期 TLS 指纹。
+type TestProfileExpectation struct {
+	Profile       *Profile
+	ExpectedJA3   string // 预期 JA3 哈希，空字符串表示跳过检查。
+	ExpectedJA4   string // 预期完整 JA4，空字符串表示跳过检查。
+	JA4CipherHash string // JA4 中部的加密套件哈希，空字符串表示跳过检查。
+}
+
+// TLSInfo 保存 JA3、JA4 和 TLS 会话参数。
+type TLSInfo struct {
+	JA3           string `json:"ja3"`
+	JA3Hash       string `json:"ja3_hash"`
+	JA4           string `json:"ja4"`
+	PeetPrint     string `json:"peetprint"`
+	PeetPrintHash string `json:"peetprint_hash"`
+	ClientRandom  string `json:"client_random"`
+	SessionID     string `json:"session_id"`
+}
+
+// TestDialerBasicConnection 检查拨号器建立 TLS 连接。
 func TestDialerBasicConnection(t *testing.T) {
 	skipNetworkTest(t)
 
-	// Create a dialer with default profile
+	// 使用默认模板创建拨号器。
 	profile := &Profile{
 		Name:         "Test Profile",
 		EnableGREASE: false,
 	}
 	dialer := NewDialer(profile, nil)
 
-	// Create HTTP client with custom TLS dialer
+	// HTTP 客户端使用自定义 TLS 拨号器。
 	client := &http.Client{
 		Transport: &http.Transport{
 			DialTLSContext: dialer.DialTLSContext,
@@ -36,7 +64,7 @@ func TestDialerBasicConnection(t *testing.T) {
 		Timeout: 30 * time.Second,
 	}
 
-	// Make a request to a known HTTPS endpoint
+	// 请求 Google HTTPS 端点。
 	resp, err := client.Get("https://www.google.com")
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
@@ -50,10 +78,9 @@ func TestDialerBasicConnection(t *testing.T) {
 	}
 }
 
-// TestJA3Fingerprint verifies the JA3/JA4 fingerprint matches expected value.
-// This test uses tls.peet.ws to verify the fingerprint.
-// Expected JA3 hash: 44f88fca027f27bab4bb08d4af15f23e (Node.js 24.x)
-// Expected JA4: t13d1714h1_5b57614c22b0_7baf387fc6ff
+// TestJA3Fingerprint 通过 tls.peet.ws 检查 JA3 和 JA4 指纹。
+// 预期 JA3 哈希： 44f88fca027f27bab4bb08d4af15f23e (Node.js 24.x)
+// 预期 JA4： t13d1714h1_5b57614c22b0_7baf387fc6ff。
 func TestJA3Fingerprint(t *testing.T) {
 	skipNetworkTest(t)
 
@@ -70,11 +97,11 @@ func TestJA3Fingerprint(t *testing.T) {
 		Timeout: 30 * time.Second,
 	}
 
-	// Use tls.peet.ws fingerprint detection API
+	// 请求 tls.peet.ws 指纹检测 API。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://tls.peet.ws/api/all", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://tls.peet.ws/api/all", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -99,14 +126,14 @@ func TestJA3Fingerprint(t *testing.T) {
 		t.Fatalf("failed to parse fingerprint response: %v", err)
 	}
 
-	// Log all fingerprint information
+	// 记录指纹数据。
 	t.Logf("JA3: %s", fpResp.TLS.JA3)
 	t.Logf("JA3 Hash: %s", fpResp.TLS.JA3Hash)
 	t.Logf("JA4: %s", fpResp.TLS.JA4)
 	t.Logf("PeetPrint: %s", fpResp.TLS.PeetPrint)
 	t.Logf("PeetPrint Hash: %s", fpResp.TLS.PeetPrintHash)
 
-	// Verify JA3 hash matches expected value (Node.js 24.x default)
+	// 比较 Node.js 24.x 默认 JA3 哈希。
 	expectedJA3Hash := "44f88fca027f27bab4bb08d4af15f23e"
 	if fpResp.TLS.JA3Hash == expectedJA3Hash {
 		t.Logf("✓ JA3 hash matches expected value: %s", expectedJA3Hash)
@@ -114,7 +141,7 @@ func TestJA3Fingerprint(t *testing.T) {
 		t.Errorf("✗ JA3 hash mismatch: got %s, expected %s", fpResp.TLS.JA3Hash, expectedJA3Hash)
 	}
 
-	// Verify JA4 cipher hash (stable middle part)
+	// 比较 JA4 中部的加密套件哈希。
 	expectedJA4CipherHash := "_5b57614c22b0_"
 	if strings.Contains(fpResp.TLS.JA4, expectedJA4CipherHash) {
 		t.Logf("✓ JA4 cipher hash matches: %s", expectedJA4CipherHash)
@@ -122,7 +149,7 @@ func TestJA3Fingerprint(t *testing.T) {
 		t.Errorf("✗ JA4 cipher hash mismatch: got %s, expected containing %s", fpResp.TLS.JA4, expectedJA4CipherHash)
 	}
 
-	// Verify JA4 prefix (t13d1714h1 or t13i1714h1)
+	// 检查 JA4 前缀为 t13d1714h1 或 t13i1714h1。
 	expectedJA4Prefix := "t13d1714h1"
 	if strings.HasPrefix(fpResp.TLS.JA4, expectedJA4Prefix) {
 		t.Logf("✓ JA4 prefix matches: %s (t13=TLS1.3, d=domain, 17=ciphers, 14=extensions, h1=HTTP/1.1)", expectedJA4Prefix)
@@ -135,14 +162,14 @@ func TestJA3Fingerprint(t *testing.T) {
 		}
 	}
 
-	// Verify JA3 contains expected TLS 1.3 cipher suites
+	// 检查 JA3 中的 TLS 1.3 加密套件。
 	if strings.Contains(fpResp.TLS.JA3, "4865-4866-4867") {
 		t.Logf("✓ JA3 contains expected TLS 1.3 cipher suites")
 	} else {
 		t.Logf("Warning: JA3 does not contain expected TLS 1.3 cipher suites")
 	}
 
-	// Verify extension list (14 extensions, Node.js 24.x order)
+	// 比较按 Node.js 24.x 顺序排列的 14 个扩展。
 	expectedExtensions := "0-65037-23-65281-10-11-35-16-5-13-18-51-45-43"
 	if strings.Contains(fpResp.TLS.JA3, expectedExtensions) {
 		t.Logf("✓ JA3 contains expected extension list: %s", expectedExtensions)
@@ -160,9 +187,9 @@ func skipNetworkTest(t *testing.T) {
 	}
 }
 
-// TestDialerWithProfile tests that different profiles produce different fingerprints.
+// TestDialerWithProfile 比较不同模板生成的 ClientHello。
 func TestDialerWithProfile(t *testing.T) {
-	// Create two dialers with different profiles
+	// 用两个模板创建拨号器。
 	profile1 := &Profile{
 		Name:         "Profile 1 - No GREASE",
 		EnableGREASE: false,
@@ -175,27 +202,24 @@ func TestDialerWithProfile(t *testing.T) {
 	dialer1 := NewDialer(profile1, nil)
 	dialer2 := NewDialer(profile2, nil)
 
-	// Build specs and compare
-	// Note: We can't directly compare JA3 without making network requests
-	// but we can verify the specs are different
+	// 通过构造 ClientHello 比较模板差异。
 	spec1 := buildClientHelloSpecFromProfile(dialer1.profile)
 	spec2 := buildClientHelloSpecFromProfile(dialer2.profile)
 
-	// Profile with GREASE should have more extensions
+	// 开启 GREASE 后应增加扩展项。
 	if len(spec2.Extensions) <= len(spec1.Extensions) {
 		t.Error("expected GREASE profile to have more extensions")
 	}
 }
 
-// TestHTTPProxyDialerBasic tests HTTP proxy dialer creation.
-// Note: This is a unit test - actual proxy testing requires a proxy server.
+// TestHTTPProxyDialerBasic 检查 HTTP 代理拨号器的构造结果。
 func TestHTTPProxyDialerBasic(t *testing.T) {
 	profile := &Profile{
 		Name:         "Test Profile",
 		EnableGREASE: false,
 	}
 
-	// Test that dialer is created without panic
+	// 构造代理拨号器。
 	proxyURL := mustParseURL("http://proxy.example.com:8080")
 	dialer := NewHTTPProxyDialer(profile, proxyURL)
 
@@ -224,7 +248,7 @@ func TestHTTPProxyDialerSupportsHTTPSProxyCONNECT(t *testing.T) {
 
 	proxyURL := mustParseURL(proxyServer.URL)
 	dialer := NewHTTPProxyDialer(&Profile{Name: "Test Profile"}, proxyURL)
-	// 只信任本地代理夹具的证书，仍验证 HTTPS 代理身份。
+	// 使用本地代理夹具的证书验证 HTTPS 代理身份。
 	roots := x509.NewCertPool()
 	roots.AddCert(proxyServer.Certificate())
 	dialer.proxyTLSConfig = &stdtls.Config{RootCAs: roots}
@@ -244,15 +268,14 @@ func TestHTTPProxyDialerSupportsHTTPSProxyCONNECT(t *testing.T) {
 	}
 }
 
-// TestSOCKS5ProxyDialerBasic tests SOCKS5 proxy dialer creation.
-// Note: This is a unit test - actual proxy testing requires a proxy server.
+// TestSOCKS5ProxyDialerBasic 检查 SOCKS5 代理拨号器的构造结果。
 func TestSOCKS5ProxyDialerBasic(t *testing.T) {
 	profile := &Profile{
 		Name:         "Test Profile",
 		EnableGREASE: false,
 	}
 
-	// Test that dialer is created without panic
+	// 构造代理拨号器。
 	proxyURL := mustParseURL("socks5://proxy.example.com:1080")
 	dialer := NewSOCKS5ProxyDialer(profile, proxyURL)
 
@@ -267,9 +290,9 @@ func TestSOCKS5ProxyDialerBasic(t *testing.T) {
 	}
 }
 
-// TestBuildClientHelloSpec tests ClientHello spec construction.
+// TestBuildClientHelloSpec 检查 ClientHello 的默认值和自定义模板字段。
 func TestBuildClientHelloSpec(t *testing.T) {
-	// Test with nil profile (should use defaults)
+	// nil 模板使用默认值。
 	spec := buildClientHelloSpecFromProfile(nil)
 
 	if len(spec.CipherSuites) == 0 {
@@ -279,12 +302,12 @@ func TestBuildClientHelloSpec(t *testing.T) {
 		t.Error("expected extensions to be set")
 	}
 
-	// Verify default cipher suites are used
+	// 比较默认加密套件。
 	if len(spec.CipherSuites) != len(defaultCipherSuites) {
 		t.Errorf("expected %d cipher suites, got %d", len(defaultCipherSuites), len(spec.CipherSuites))
 	}
 
-	// Test with custom profile
+	// 设置自定义模板。
 	customProfile := &Profile{
 		Name:         "Custom",
 		EnableGREASE: false,
@@ -297,7 +320,7 @@ func TestBuildClientHelloSpec(t *testing.T) {
 	}
 }
 
-// TestToUTLSCurves tests curve ID conversion.
+// TestToUTLSCurves 检查曲线 ID 的转换。
 func TestToUTLSCurves(t *testing.T) {
 	input := []uint16{0x001d, 0x0017, 0x0018}
 	result := toUTLSCurves(input)
@@ -322,16 +345,16 @@ func mustParseURL(rawURL string) *url.URL {
 	return u
 }
 
-// TestAllProfiles tests multiple TLS fingerprint profiles against tls.peet.ws.
-// Run with: go test -v -run TestAllProfiles ./internal/infra/httpclient/tlsfingerprint/...
+// TestAllProfiles 通过 tls.peet.ws 检查多个 TLS 指纹模板。
+// 运行：TLSFINGERPRINT_NETWORK_TESTS=1 go test -v -run TestAllProfiles ./internal/infra/httpclient/tlsfingerprint/...
 func TestAllProfiles(t *testing.T) {
 	skipNetworkTest(t)
 
 	profiles := []TestProfileExpectation{
 		{
-			// Default profile (Node.js 24.x)
-			// JA3 Hash: 44f88fca027f27bab4bb08d4af15f23e
-			// JA4: t13d1714h1_5b57614c22b0_7baf387fc6ff
+			// 默认模板对应 Node.js 24.x。
+			// JA3 哈希： 44f88fca027f27bab4bb08d4af15f23e
+			// JA4： t13d1714h1_5b57614c22b0_7baf387fc6ff
 			Profile: &Profile{
 				Name:         "default_node_v24",
 				EnableGREASE: false,
@@ -339,7 +362,7 @@ func TestAllProfiles(t *testing.T) {
 			JA4CipherHash: "5b57614c22b0",
 		},
 		{
-			// Linux x64 Node.js v22.17.1 (explicit profile)
+			// Linux x64 Node.js v22.17.1 模板。
 			Profile: &Profile{
 				Name:         "linux_x64_node_v22171",
 				EnableGREASE: false,
@@ -413,11 +436,11 @@ func TestAllProfiles(t *testing.T) {
 	}
 
 	for _, tc := range profiles {
-		tc := tc // capture range variable
+		// 保存当前模板。
 		t.Run(tc.Profile.Name, func(t *testing.T) {
 			fp := fetchFingerprint(t, tc.Profile)
 			if fp == nil {
-				return // fetchFingerprint already called t.Fatal
+				return // fetchFingerprint 已调用 t.Fatal。
 			}
 
 			t.Logf("Profile: %s", tc.Profile.Name)
@@ -427,7 +450,7 @@ func TestAllProfiles(t *testing.T) {
 			t.Logf("  PeetPrint:     %s", fp.PeetPrint)
 			t.Logf("  PeetPrintHash: %s", fp.PeetPrintHash)
 
-			// Verify expectations
+			// 比较预期指纹。
 			if tc.ExpectedJA3 != "" {
 				if fp.JA3Hash == tc.ExpectedJA3 {
 					t.Logf("  ✓ JA3 hash matches: %s", tc.ExpectedJA3)
@@ -444,8 +467,8 @@ func TestAllProfiles(t *testing.T) {
 				}
 			}
 
-			// Check JA4 cipher hash (stable middle part)
-			// JA4 format: prefix_cipherHash_extHash
+			// 比较 JA4 中部的加密套件哈希。
+			// JA4 格式：prefix_cipherHash_extHash。
 			if tc.JA4CipherHash != "" {
 				if strings.Contains(fp.JA4, "_"+tc.JA4CipherHash+"_") {
 					t.Logf("  ✓ JA4 cipher hash matches: %s", tc.JA4CipherHash)
@@ -457,7 +480,7 @@ func TestAllProfiles(t *testing.T) {
 	}
 }
 
-// fetchFingerprint makes a request to tls.peet.ws and returns the TLS fingerprint info.
+// fetchFingerprint 请求 tls.peet.ws 并返回 TLS 指纹。
 func fetchFingerprint(t *testing.T, profile *Profile) *TLSInfo {
 	t.Helper()
 
@@ -472,7 +495,7 @@ func fetchFingerprint(t *testing.T, profile *Profile) *TLSInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://tls.peet.ws/api/all", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://tls.peet.ws/api/all", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 		return nil
@@ -502,4 +525,15 @@ func fetchFingerprint(t *testing.T, profile *Profile) *TLSInfo {
 	}
 
 	return &fpResp.TLS
+}
+
+// TestTLSFingerprintNetworkDialerHasBoundedTimeout 检查 TLS 指纹拨号器自身的建连和握手超时。
+// 该拨号器绕过 http.Transport.DialContext。
+func TestTLSFingerprintNetworkDialerHasBoundedTimeout(t *testing.T) {
+	dialer := newTLSFingerprintNetworkDialer()
+
+	require.Equal(t, 10*time.Second, defaultTLSFingerprintDialTimeout)
+	require.Equal(t, defaultTLSFingerprintDialTimeout, dialer.Timeout)
+	require.Equal(t, defaultTLSFingerprintDialKeepAlive, dialer.KeepAlive)
+	require.Equal(t, 10*time.Second, defaultTLSFingerprintHandshakeTimeout)
 }

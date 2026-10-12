@@ -6,14 +6,19 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/imroc/req/v3"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/google"
 )
 
 type OAuthClient struct {
 	TokenURL string
 	Config   func() OAuthConfig
 }
+
+// TokenResponse 是 Google OAuth 令牌响应。
+type TokenResponse = wire.TokenResponse
 
 // NewOAuthClient 使用调用方提供的配置读取函数创建 OAuth 客户端。
 func NewOAuthClient(config func() OAuthConfig) *OAuthClient {

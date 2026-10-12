@@ -9,15 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	anthropicwire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	geminiwire "github.com/TokenFlux/TokenRouter/internal/protocol/gemini"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
-
-type ResponseMode uint8
 
 const (
 	ModeClaudeResponse ResponseMode = iota
@@ -25,6 +24,8 @@ const (
 	ModeChatResponse
 	ModeResponsesResponse
 )
+
+type ResponseMode uint8
 
 // Target 配置单次请求的模型、输出格式、交换和响应处理回调。
 type Target struct {
@@ -41,6 +42,14 @@ type Target struct {
 	Enter          func() (func(), error)
 }
 
+type Executor struct{}
+
+// observedSink 为已经完整形成的输出段补充事实标记，不缓存或重排帧，不改变 TTFT。
+type observedSink struct {
+	upstream.OutputSink
+	nonStream bool
+}
+
 func (t *Target) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -50,8 +59,6 @@ func (t *Target) TargetID() int64 {
 
 func (t *Target) String() string   { return fmt.Sprintf("antigravity target provider=%d", t.TargetID()) }
 func (t *Target) GoString() string { return t.String() }
-
-type Executor struct{}
 
 // @project-doc docs/interfaces/antigravity_upstream.md#antigravity_native_execution
 func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
@@ -110,8 +117,8 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 			priorRaw(raw)
 		}
 		data := strings.TrimSpace(string(raw))
-		if strings.HasPrefix(data, "data:") {
-			data = strings.TrimSpace(strings.TrimPrefix(data, "data:"))
+		if after, ok0 := strings.CutPrefix(data, "data:"); ok0 {
+			data = strings.TrimSpace(after)
 		}
 		body, _ := (&ResponseAdapter{}).UnwrapV1InternalResponse([]byte(data))
 		modelObserver.ObserveGemini(body)
@@ -184,12 +191,6 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 	return result, err
 }
 
-// observedSink 为已经完整形成的输出段补充事实标记，不缓存或重排帧，不改变 TTFT。
-type observedSink struct {
-	upstream.OutputSink
-	nonStream bool
-}
-
 func (s *observedSink) InitialOutput() upstream.OutputHead {
 	if source, ok := s.OutputSink.(interface{ InitialOutput() upstream.OutputHead }); ok {
 		return source.InitialOutput()
@@ -203,10 +204,10 @@ func (s *observedSink) Emit(event upstream.OutputEvent) error {
 		event.Terminal = event.Terminal || json.Valid(event.Data)
 	}
 
-	for _, line := range strings.Split(string(event.Data), "\n") {
+	for line := range strings.SplitSeq(string(event.Data), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "data:") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			line = strings.TrimSpace(after)
 		}
 		semantic, terminal := bridge.CompatOutputMeaning([]byte("data: " + line + "\n\n"))
 		a := anthropicwire.ObserveEvent(line)

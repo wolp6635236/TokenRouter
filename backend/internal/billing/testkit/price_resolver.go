@@ -6,17 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpricing "github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/modelidentity"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	billingpricing "github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-
-	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
 )
 

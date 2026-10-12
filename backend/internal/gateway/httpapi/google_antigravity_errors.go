@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/googleforward"
@@ -17,7 +19,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"github.com/gin-gonic/gin"
 )
 
 // AntigravityOutput 保存当前 HTTP 请求和静态输出配置。
@@ -212,8 +213,7 @@ func (s *AntigravityOutput) MappedAntigravityCompatError(
 }
 
 func (s *AntigravityOutput) MapAntigravityCollectionError(err error) error {
-	var failoverError *protocolforward.UpstreamFailoverError
-	if errors.As(err, &failoverError) {
+	if _, ok := errors.AsType[*protocolforward.UpstreamFailoverError](err); ok {
 		return err
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

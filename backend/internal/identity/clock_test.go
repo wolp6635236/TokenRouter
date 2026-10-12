@@ -9,6 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type clockEmailCache struct {
+	EmailCache
+	value *VerificationCodeData
+}
+
 // TestSessionClockControlsSigningAndValidation 确认签发、有效期与库内 JWT 校验使用同一注入时钟。
 func TestSessionClockControlsSigningAndValidation(t *testing.T) {
 	now := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -35,11 +40,6 @@ func TestTotpClockUsesOriginalValidationWindow(t *testing.T) {
 	require.True(t, svc.validateCode(code, secret))
 	now = now.Add(60 * time.Second)
 	require.False(t, svc.validateCode(code, secret))
-}
-
-type clockEmailCache struct {
-	EmailCache
-	value *VerificationCodeData
 }
 
 func (c *clockEmailCache) SetNotifyVerifyCode(_ context.Context, _ string, data *VerificationCodeData, _ time.Duration) error {

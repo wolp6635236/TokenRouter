@@ -3,14 +3,13 @@
 package app
 
 import (
-	serverhttp "github.com/TokenFlux/TokenRouter/internal/server/httpapi"
+	"github.com/google/wire"
 
 	"github.com/TokenFlux/TokenRouter/internal/server"
-
-	"github.com/google/wire"
+	serverhttp "github.com/TokenFlux/TokenRouter/internal/server/httpapi"
 )
 
-// httpAssemblyProviders 汇总HTTP 入口的 Wire provider。
+// httpAssemblyProviders 汇总 HTTP 入口的 Wire provider。
 var httpAssemblyProviders = wire.NewSet(
 	nativeHTTPProviders,
 	server.ProviderSet,
@@ -25,4 +24,5 @@ var httpAssemblyProviders = wire.NewSet(
 	providePanelSettings,
 	serverhttp.NewPanelSettingsHandler,
 	provideRouterRuntime,
+	provideRequestLog,
 )

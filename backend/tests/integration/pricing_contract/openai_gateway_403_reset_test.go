@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
@@ -14,12 +16,14 @@ import (
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 type openAI403CounterResetStub struct {
 	resetCalls []int64
 }
+
+// forbiddenResetFixture 只将完成器的窄通知签名绑定到实际提供商健康实例。
+type forbiddenResetFixture struct{ core *providercore.HealthService }
 
 func (s *openAI403CounterResetStub) IncrementOpenAI403Count(context.Context, int64, int) (int64, error) {
 	return 0, nil
@@ -59,9 +63,6 @@ func TestOpenAIGatewayServiceRecordUsageResets403CounterForZeroUsage(t *testing.
 		})
 	}
 }
-
-// forbiddenResetFixture 只将完成器的窄通知签名绑定到实际提供商健康实例。
-type forbiddenResetFixture struct{ core *providercore.HealthService }
 
 func (f forbiddenResetFixture) ResetOpenAI403Counter(ctx context.Context, id int64) {
 	f.core.ResetForbiddenCounter(ctx, id)

@@ -73,10 +73,10 @@ app 分别装配文本、Responses、WS、Images 和辅助执行器，它们复�
 
 - 文本：兼容文本的 Messages、Chat、Raw Chat、原生 Anthropic 和 passthrough，由 `gateway/httpapi.OpenAITextExecutor` 接入；请求构造、Header、TLS 和客户端策略使用同一个 `OpenAIRequests`。标准 Responses、passthrough、Chat 和 Messages 的转换，以及 Raw Chat 的读取，使用原生实现，通过同步的 OutputSink 输出。
 - 输出：`gateway/httpapi.OpenAIResponseOutput` 绑定响应读取、Header、错误规则、健康观测、超时和诊断；app 注入静态参数，TTFT 设置在调用时查询。响应结果直接使用上游读取器的值类型；"只有观测、没有成功"的失败，在不同入口上的返回方式各不相同。
-- 尝试：Responses、Chat、Messages 的入站 HTTP 和单次尝试的运行时由 app 直接装配；`gateway/httpapi/openaiattempt` 复用同一套选择、反馈、完成和槽位能力。重试循环只在 `gateway/text` 里；跨模式切换时，reasoning 的清理结果从原始报文重新派生，后续请求不受影响。WS 的入站、每轮的提供商目标和完成 hooks 由 wsentry 绑定，Forward 和 WS 的结果整理在 gateway/provider；终态、恢复报文、响应的 turn-state 和每轮的计费时刻都保留。
+- 尝试：Responses、Chat、Messages 的入站 HTTP 和单次尝试的运行时由 app 直接装配；`gateway/httpapi/openaiattempt` 复用同一套选择、反馈、完成和槽位能力。重试循环只在 `gateway/text` 里；跨模式切换时，reasoning 的清理结果从原始报文重新派生，后续请求不受影响。WS 的入站、每轮的提供商目标和完成 hooks 由 `gateway/ws/httpapi` 绑定，Forward 和 WS 的结果整理在 gateway/provider；终态、恢复报文、响应的 turn-state 和每轮的计费时刻都保留。
 - 媒体和辅助：媒体和辅助入口由 mediaentry 直接绑定，使用同一套失败输出、槽位和完成快照；图片的 mandatory 策略、搜索和音频的提交策略各自保持。Embeddings、AlphaSearch、Messages 的 count_tokens 和 Responses 的 input_tokens，由 `gateway/httpapi.OpenAIAuxiliary` 直接接入；请求构造、健康和输出复用已有实例，模型整理和计数请求的准备在 gateway/provider。计数路由直接组合 RoutePlanner、选择器和受控的提供商目标。这些单次执行负责网络调用和响应资源，提供商选择、健康写入和全局重试由入站适配负责。Alpha Search 在错误处理时回卷了响应体，仍会关闭最初取得的上游 Body。计数查询区分原生的完整 JSON 和 Anthropic 兼容的响应，计数结果不作为推理结算的依据。
-- Responses：主请求由 `gateway/httpapi.OpenAIResponsesExecutor` 负责准备、模型和工具转换、HTTP 交换和协议分派。图片桥接依次使用分组的协议设置、提供商的覆盖和全局默认值。分组「协议控制」里的 Responses 图片策略，控制非 Responses Lite 的 Codex 请求是否自动补上 `image_generation` 工具和引导指令；关闭自动注入时，客户端自己声明的生图工具保留，独立的图片接口也不受影响。HTTP 和 WS 使用同一个 OpenAIEncryptedLineage 和会话存储；失效密文的摘要只在上游明确拒绝后才记录，之后的请求按原会话键剥离。转入 WS 时，传递已经固定的模型、计费数据、TLS 和请求体，使用原来的连接池和恢复循环；WS 资源由 `OpenAIWSConnections` 持有，关闭后无法重新创建连接池。
-- WS 和 Live：供应商的 OAuth、PAT 和隐私交换、规范的 Codex 身份、请求指纹、Header 组合和 WS 客户端在 `upstream/openai`；WS v2 relay 和 Live attestation 是平台内的技术子包。WS 池持有连接、预热、队列和租约状态，构造时不启动 worker，入站的持有者在第一次使用时启用。Live 的创建、sideband、DeviceCheck 密文和观察者适配由 `gateway/httpapi.OpenAILiveExecutor` 组合，app 负责 JWT 密钥和关闭登记。长连接每轮的模型资格复核由共享的选择器负责；Live 的用量费用为零。WS 的池化、透传、HTTP 桥接和逐轮帧适配由 `gateway/httpapi.OpenAIWebSocketExecutor` 执行，循环只在 `gateway/ws` 里。`OpenAIWSConnections` 统一管理按需的连接池、拨号器和停止屏障；提供商授权、用量和探测直接调用同一个连接失效接口。
+- Responses：主请求由 `gateway/httpapi.OpenAIResponsesExecutor` 负责准备、模型和工具转换、HTTP 交换和协议分派。图片桥接依次使用分组的协议设置、提供商的覆盖和全局默认值。分组「协议控制」里的 Responses 图片策略，控制非 Responses Lite 的 Codex 请求是否自动补上 `image_generation` 工具和引导指令；关闭自动注入时，客户端自己声明的生图工具保留，独立的图片接口也不受影响。HTTP 和 WS 使用同一个 OpenAIEncryptedLineage 和会话存储；失效密文的摘要只在上游明确拒绝后才记录，之后的请求按原会话键剥离。WS 资源由 `upstream/openai/ws.OpenAIWSConnections` 持有，关闭后无法重新创建连接池。
+- WS 和 Live：供应商的 OAuth、PAT 和隐私交换、规范的 Codex 身份、请求指纹、Header 组合和 WS 客户端在 `upstream/openai`；Responses WS 和 Live attestation 是平台内的技术子包。WS 池持有连接、预热、队列和租约状态，构造时不启动 worker，入站的持有者在第一次使用时启用。Live 的创建、sideband、DeviceCheck 密文和观察者适配由 `gateway/httpapi.OpenAILiveExecutor` 组合，app 负责 JWT 密钥和关闭登记。长连接每轮的模型资格复核由共享的选择器负责；Live 的用量费用为零。WS 的池化、透传、HTTP 桥接和逐轮帧适配由 `gateway/ws/httpapi.OpenAIWebSocketExecutor` 执行，循环只在 `gateway/ws` 里。`OpenAIWSConnections` 统一管理按需的连接池、拨号器和停止屏障；提供商授权、用量和探测直接调用同一个连接失效接口。
 - 首输出暂存器持有当前尝试的内存和临时文件；工具参数、usage、终态重建和图片产出计数只在 protocol 里实现。
 
 透传只决定报文和传输的处理方式。手动配置的提供商模型映射照常执行一次，普通请求和透传请求的最终模型范围相同；OAuth 认证的硬能力限制，不会因为透传或全模型通配符而关闭。HTTP 出站只局部替换 `model`，同时保留原请求模型和最终上游模型，用于响应回填、日志和计费。
@@ -183,9 +183,33 @@ Responses 历史 Chat 格式的转换、工具 ID 清理、平台 schema 选择�
 
 ## Responses 请求细节
 
+<a id="responses_ws_runtime"></a>
+### Responses 长连接与在线参数
+
+客户端能否使用 Responses WebSocket，由分组的 `allowed_protocols` 决定；上游使用 WS 还是 HTTP，由提供商的 `credentials.upstream_protocols` 和分组转换规则共同决定。WS 功能没有全局启停开关，上游 WS 使用 v2。分组撤销 WS 许可后，已有连接在下一轮准入时以 1008 关闭，已放行轮次照常完成。
+
+提供商的 `extra.responses_ws_connection_mode` 在 `pooled` 和 `per_session` 中选择，缺省为 `pooled`。页面分别显示“优先复用已有连接”和“每个会话新建连接”。连接方式与协议许可分别保存。HTTP 转换由分组配置，超大首帧也要通过上游 HTTP 能力和分组转换检查。
+
+管理员在“网关设置 → OpenAI → 长连接与连接池”修改参数。管理员设置 GET/PUT 的 `responses_ws` 保存覆盖对象，GET 和保存响应的 `responses_ws_effective` 返回有效值。字段省略表示不修改，字段为 null 时清除该项覆盖，整个对象为 null 时恢复全部部署默认值。0 和 false 按参数定义保存。管理端覆盖优先于环境变量、YAML 和代码默认值。
+
+`gateway/ws.Runtime` 保存一份不可变快照。综合设置完成校验和原子持久化后，本实例发布配置；其他实例每五秒回源一次，读取失败继续使用最后一次有效快照。发布代次阻止较早的回源覆盖新保存值。启动时首次读取失败使用部署默认值。保存成功但运行时应用失败时，接口返回 `SETTINGS_APPLY_FAILED`，metadata 的 `persisted=true` 表示参数已写入数据库。
+
+连接池扩容按需执行，缩容回收空闲连接，已占用连接等会话结束后回收。总连接上限和空闲连接上限分别计算，忙连接占用总容量。回收时的关闭握手在池引用和提供商池的访问锁外执行，其他请求仍可获取连接池或释放排队名额。
+
+每次获取租约都会检查 60 分钟寿命上限。普通请求为过期连接重新拨号，强制续接返回指定连接不可用。正在使用的连接在租约归还后回收。等待者的空闲保留规则作用于仍然有效的连接。
+
+最少和最多空闲连接数均支持 0。最多空闲连接数设为 0 时，归还的有效连接先供兼容等待者领取，没有等待者时关闭。预热每次拨号前和结果入池前检查当前需求、总容量及空闲上限。超出新限制的结果立即关闭，未使用的建连名额归还连接池。
+
+客户端连接数量和消息读取上限作用于新连接，超时和恢复参数按下一轮快照执行，轮间超时在下一次等待时读取。每次获取连接的等待预算按当前轮次快照计算，排队期间的唤醒和参数更新都使用入队时的截止时间。会话记录 TTL 作用于新写入和续期，已有记录自然过期。正在生成的回答使用该轮已经取得的参数。
+
+WS 入口、逐轮执行适配和 HTTP 转换在 `gateway/ws/httpapi`，会话与恢复规则在 `gateway/ws`，连接池、握手和 relay 在 `upstream/openai/ws`。app 创建共享拨号器和参数读取器，并在关闭连接资源前停止设置刷新。公开 HTTP Responses 请求固定走 HTTP/SSE。
+
+<a id="responses_ws_warmup"></a>
 ### WebSocket 预热和续接
 
 官方的 Codex WebSocket v2 先发送一个 `generate=false` 的预热 `response.create`，再把预热响应的 ID 作为业务请求的 `previous_response_id`。严格的续接比较会忽略每次请求都会变的 `client_metadata`、只用于传输的 `stream_options`，并把 `generate=false` 和之后省略这个字段看作等价；`generate=true`，以及 model、instructions、tools、reasoning、store 等上下文字段，仍然需要一致，无关的请求才不会被错误地串在一起。
+
+OpenAI 和 Grok 的 HTTP 桥接在本地处理 `generate=false`：返回共享同一个响应 ID 的 `response.created` 和 `response.completed`，输出为空、用量为零。预热输入保存在当前连接的重放历史中，下一轮用该 ID 续接时才调用 HTTP 推理接口。OpenAI API Key 和 Grok 的预热还会保存工具声明及名称映射，后续轮次省略 `tools` 时可继承这些工具。预热执行身份、协议和资金准入，完成后释放并发槽位；本地预热结果跳过计费、上游健康反馈和上游额度刷新。写客户端失败时结束该轮。
 
 ### 路由提示和 beta 头
 
@@ -201,7 +225,13 @@ OpenAI OAuth 的 HTTP、passthrough、旧版 Compact 和 WebSocket 出站，在�
 
 ### WebSocket 连接池的亲和
 
-WebSocket 连接池把路由提示当作拨号和普通复用的软亲和：优先复用用相同提示建立的连接，池满时仍可以在硬兼容的连接上排队，明确的 continuation 也不会只因为提示变了就断链。握手的 beta feature 和 TLS fingerprint profile 是硬兼容键，任何一个变化都禁止复用，并让还没完成的旧目标预热拨号失效。路由诊断只记录网关推导出的最终模型、规范化的 tier、传输类型、提供商 ID、是否生成了提示和 WS 亲和决策；提示头的值、token 和凭据都不记录。
+WebSocket 连接池在拨号和普通复用时优先选择路由提示相同的连接。池满或请求已经排队时，可以使用其他兼容连接。明确的 continuation 按连接 ID 查找，路由提示变化后仍可续接。
+
+上游 WebSocket 地址、代理 URL、TLS fingerprint profile、握手的 beta feature 和指纹模式要求的身份头共同决定连接能否复用。指定连接、普通连接和预热拨号使用同一套检查。地址或代理变化后，新请求选择匹配新配置的连接，忙连接继续供持有租约的会话使用。池满时，空闲的不兼容连接可以被回收。预热目标变化后，旧目标的拨号结果会被关闭。路由诊断字段为最终模型、规范化的 tier、传输类型、提供商 ID、提示生成状态和连接选择结果。
+
+普通请求在提供商池中等待，连接归还、建连完成或容量变化时重新选择兼容连接。强制续接的请求等待指定连接。提供商的排队总上限为有效连接上限乘以 `queue_limit_per_conn`，强制续接还受指定连接的排队上限限制。等待新目标连接的请求也计入队列和等待时长。取消、超时和关闭会释放排队名额，反复唤醒计为同一次排队。
+
+等待者退出后，剩余空闲连接由池的后台清理任务回收。等待者取得租约时也使用这条回收路径，多余空闲连接的关闭握手和租约交付分别执行。清理通知合并保存，关闭握手使用底层独立的超时。租约交付前发生取消时，连接先归还并唤醒其他等待者，再通知后台清理。池关闭时先唤醒等待者，再等待清理任务完成。
 
 WS 的报文、模型字段恢复和 usage 解析在 `protocol/openai`；OpenAI 的恢复载荷和供应商错误分类由 `upstream/openai` 提供。传输方式由 egress 根据提供商资格决定；入站的会话 Header、关闭码和读循环的连接适配属于网关 HTTP 层，技术诊断在网关的 provider 里。
 
@@ -259,7 +289,7 @@ API Key 的普通调度能力只表达 `text_generation` 和 `embeddings` 两种
 
 Images API 的流式和非流式上游请求，都和客户端的取消信号脱钩，继续执行，由上游的响应超时控制最终的回收。生图耗时长，而且上游可能已经产生了实际的成本；客户端中途断开，不应该取消上游、丢掉已经完成的图片的计费结果。下游写失败不影响图片的产出和结算。
 
-OpenAI HTTP 的准备、同一提供商内的恢复和响应消费，由 `gateway/provider/openaiforward` 接入 upstream 的原语；提供商切换只有 `gateway/text` 的一个循环。HTTP 到 WS 的恢复和入站 turn 的编排由 `gateway/ws` 组织，连接池和帧解析在 upstream。Compact 的恢复资格和状态在 `gateway/compact`，keepalive 和提交后的错误写出在 `gateway/httpapi`；计费和会话缓存都只有一份。
+OpenAI HTTP 的准备、同一提供商内的恢复和响应消费，由 `gateway/provider/openaiforward` 接入 upstream 的原语；提供商切换只有 `gateway/text` 的一个循环。入站 WS 的 turn 和恢复由 `gateway/ws` 组织，连接池和帧解析在 upstream。Compact 的恢复资格和状态在 `gateway/compact`，keepalive 和提交后的错误写出在 `gateway/httpapi`；计费和会话缓存都只有一份。
 
 执行器使用 `gateway/execution` 明确的 Request 和 ExecutionResult，以及同步的 OutputSink。候选计划只在实际选择返回时记录，缺失时用 PlanProvided 表示；系统不会为了填充结果额外查询，也不会在执行结束后重新计算。完成数据在入队前固定，WS 保留每个 turn 自己的定价时刻、模型链和部分失败资格。
 
@@ -294,3 +324,5 @@ API Key passthrough 的池模式，把命中 `pool_mode_retry_status_codes` 的 
 实际输出一旦开始，网关就不再重放请求或换提供商。最终的错误还可以命中[网关错误响应策略](gateway_error_policy.md)，但规则不会把失败结算成成功。排查问题时，同时检查提供商类型、需要的 transport 和 capability、客户端限制、privacy status、模型映射、配额重置时间、代理和 TLS，以及 attempt 记录。
 
 相关文档：[网关请求生命周期](../architecture/gateway_request_lifecycle.md)、[提供商调度与缓存一致性](../architecture/provider_scheduling_and_cache.md)、[模型目录与市场](model_catalog_and_marketplace.md)。
+
+模型名称与通用候选来自[统一模型目录](model_catalog_and_marketplace.md#model_catalog_resolution)。提供商空白名单允许任意型号，平台的请求格式、认证和协议规则分别检查；默认测试型号用于探测请求。

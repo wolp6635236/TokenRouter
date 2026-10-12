@@ -10,16 +10,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// 测试用 TTL 配置（15 分钟，与默认值一致）
+// 测试用 TTL 配置（15 分钟，与默认值一致）。
 const testSlotTTLMinutes = 15
 
-// 测试用 TTL Duration，用于 TTL 断言
+// 测试用 TTL Duration，用于 TTL 断言。
 var testSlotTTL = time.Duration(testSlotTTLMinutes) * time.Minute
 
 type ConcurrencyCacheSuite struct {
@@ -27,6 +29,15 @@ type ConcurrencyCacheSuite struct {
 	cache    scheduler.ConcurrencyCache
 	rawCache *concurrencyCache
 }
+
+type apiKeyConcurrencyCacheForTest interface {
+	TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
+	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
+	GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error)
+}
+
+// waitIncrementFault 为增加操作注入传输错误，查询和释放访问测试 Redis。
+type waitIncrementFault struct{ scheduler.ConcurrencyCache }
 
 func TestConcurrencyCacheSuite(t *testing.T) {
 	suite.Run(t, new(ConcurrencyCacheSuite))
@@ -38,12 +49,6 @@ func (s *ConcurrencyCacheSuite) SetupTest() {
 	s.Require().True(ok, "concurrency cache constructor type")
 	s.rawCache = cache
 	s.cache = s.rawCache
-}
-
-type apiKeyConcurrencyCacheForTest interface {
-	TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
-	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
-	GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error)
 }
 
 func (s *ConcurrencyCacheSuite) apiKeyConcurrencyCache() apiKeyConcurrencyCacheForTest {
@@ -491,7 +496,7 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots() {
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), []string{"keep-2"}, userMembers)
 
-	// API Key 槽位仅用于统计，不在启动清理范围内，依赖分数裁剪和 key TTL 自愈。
+	// API Key 统计槽位的清理由分数裁剪和 key TTL 完成。
 	apiKeyMembers, err := s.rdb.ZRange(s.ctx, apiKeyKey, 0, -1).Result()
 	require.NoError(s.T(), err)
 	require.ElementsMatch(s.T(), []string{"keep-3", "oldproc-3"}, apiKeyMembers)
@@ -877,4 +882,47 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_DeletesEmptySlotKey
 	exists, err := s.rdb.Exists(s.ctx, providerSlotKey).Result()
 	require.NoError(s.T(), err)
 	require.EqualValues(s.T(), 0, exists)
+}
+
+func (c waitIncrementFault) IncrementWaitCount(context.Context, int64, int) (bool, error) {
+	return false, errors.New("增加等待计数未确认")
+}
+
+func (c waitIncrementFault) IncrementProviderWaitCount(context.Context, int64, int) (bool, error) {
+	return false, errors.New("增加提供商等待计数未确认")
+}
+
+// TestWaitFailOpenDoesNotReleaseOtherRequest 验证错误放行后立即退出，不能递减 Redis 中另一个请求持有的用户或提供商计数。
+func TestWaitFailOpenDoesNotReleaseOtherRequest(t *testing.T) {
+	ctx := context.Background()
+	rdb := testRedis(t)
+	cache := NewConcurrencyCache(rdb, 15, 900)
+	userAllowed, err := cache.IncrementWaitCount(ctx, 91001, 20)
+	require.NoError(t, err)
+	require.True(t, userAllowed)
+	providerAllowed, err := cache.IncrementProviderWaitCount(ctx, 91002, 20)
+	require.NoError(t, err)
+	require.True(t, providerAllowed)
+	concurrency := scheduler.NewConcurrencyService(waitIncrementFault{cache}, scheduler.Diagnostics{
+		Logf: logging.LegacyPrintf,
+
+		Event: logging.Event,
+	},
+	)
+	user, err := concurrency.EnterUserWait(ctx, 91001, 20)
+	require.NoError(t, err)
+	require.True(t, user.Allowed)
+	provider, err := concurrency.EnterProviderWait(ctx, 91002, 20)
+	require.NoError(t, err)
+	require.True(t, provider.Allowed)
+	user.Release()
+	provider.Release()
+	user.Release()
+	provider.Release()
+	count, err := rdb.Get(ctx, "concurrency:wait:91001").Int()
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	count, err = cache.GetProviderWaitingCount(ctx, 91002)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
 }

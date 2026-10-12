@@ -7,6 +7,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+const (
+	// FailoverContinue 继续循环（同提供商重试或切换提供商，调用方统一 continue）。
+	FailoverContinue FailoverAction = iota
+	// FailoverExhausted 切换次数耗尽（调用方应返回错误响应）。
+	FailoverExhausted
+	// FailoverCanceled context 已取消（调用方应直接 return）。
+	FailoverCanceled
+
+	// MaxSameProviderRetries 是 RetryableOnSameProvider 错误的默认重试上限。
+	// 生产调用方可传入 provider.GetPoolModeRetryCount()，测试和缺省调用使用该值。
+	MaxSameProviderRetries = 3
+	// SameProviderRetryDelay 同提供商重试间隔。
+	SameProviderRetryDelay = 500 * time.Millisecond
+	// MaxRequestScopedRetryDelay 限制请求级瞬时错误的指数退避时长，高重试次数下也按此上限等待。
+	MaxRequestScopedRetryDelay = 8 * time.Second
+	// SingleProviderBackoffDelay 单提供商分组 503 退避重试固定延时。
+	// Service 层在 SingleProviderRetry 模式下已做充分原地重试（最多 3 次、总等待 30s），
+	// Handler 层只需短暂间隔后重新进入 Service 层即可。
+	SingleProviderBackoffDelay = 2 * time.Second
+)
+
 // FailureInfo 不携带平台响应、凭据或 HTTP 对象。
 type FailureInfo struct {
 	StatusCode                int
@@ -30,31 +51,20 @@ type TempUnscheduler[E Failure] interface {
 	TempUnscheduleRetryableError(ctx context.Context, providerID int64, failoverErr E)
 }
 
-// FailoverAction 表示 failover 错误处理后的下一步动作
+// FailoverAction 表示 failover 错误处理后的下一步动作。
 type FailoverAction int
 
-const (
-	// FailoverContinue 继续循环（同提供商重试或切换提供商，调用方统一 continue）
-	FailoverContinue FailoverAction = iota
-	// FailoverExhausted 切换次数耗尽（调用方应返回错误响应）
-	FailoverExhausted
-	// FailoverCanceled context 已取消（调用方应直接 return）
-	FailoverCanceled
-)
-
-const (
-	// MaxSameProviderRetries 是 RetryableOnSameProvider 错误的默认重试上限。
-	// 生产调用方可传入 provider.GetPoolModeRetryCount()，测试和缺省调用使用该值。
-	MaxSameProviderRetries = 3
-	// SameProviderRetryDelay 同提供商重试间隔
-	SameProviderRetryDelay = 500 * time.Millisecond
-	// MaxRequestScopedRetryDelay 限制请求级瞬时错误的指数退避时长，高重试次数下也按此上限等待。
-	MaxRequestScopedRetryDelay = 8 * time.Second
-	// SingleProviderBackoffDelay 单提供商分组 503 退避重试固定延时。
-	// Service 层在 SingleProviderRetry 模式下已做充分原地重试（最多 3 次、总等待 30s），
-	// Handler 层只需短暂间隔后重新进入 Service 层即可。
-	SingleProviderBackoffDelay = 2 * time.Second
-)
+// FailoverState 跨循环迭代共享的 failover 状态。
+type FailoverState[E Failure] struct {
+	observe                Observe
+	SwitchCount            int
+	MaxSwitches            int
+	FailedProviderIDs      map[int64]struct{}
+	SameProviderRetryCount map[int64]int
+	LastFailoverErr        E
+	ForceCacheBilling      bool
+	HasBoundSession        bool
+}
 
 // SameProviderRetryDelayFor 为请求级瞬时错误计算有上限的指数退避；
 // 其它同提供商错误继续使用固定 500ms，保持既有重试时延。
@@ -105,20 +115,8 @@ func SameProviderRetryDeadlineAllows(failoverErr *FailureInfo) bool {
 	return failoverErr == nil || failoverErr.SameProviderRetryDeadline.IsZero() || time.Now().Before(failoverErr.SameProviderRetryDeadline)
 }
 
-// FailoverState 跨循环迭代共享的 failover 状态
-type FailoverState[E Failure] struct {
-	observe                Observe
-	SwitchCount            int
-	MaxSwitches            int
-	FailedProviderIDs      map[int64]struct{}
-	SameProviderRetryCount map[int64]int
-	LastFailoverErr        E
-	ForceCacheBilling      bool
-	HasBoundSession        bool
-}
-
-// NewFailoverState 创建 failover 状态
-func NewFailoverState[E Failure](maxSwitches int, HasBoundSession bool, observers ...Observe) *FailoverState[E] {
+// NewFailoverState 创建 failover 状态。
+func NewFailoverState[E Failure](maxSwitches int, hasBoundSession bool, observers ...Observe) *FailoverState[E] {
 	var observe Observe
 	if len(observers) > 0 {
 		observe = observers[0]
@@ -128,7 +126,7 @@ func NewFailoverState[E Failure](maxSwitches int, HasBoundSession bool, observer
 		MaxSwitches:            maxSwitches,
 		FailedProviderIDs:      make(map[int64]struct{}),
 		SameProviderRetryCount: make(map[int64]int),
-		HasBoundSession:        HasBoundSession,
+		HasBoundSession:        hasBoundSession,
 	}
 }
 
@@ -218,7 +216,6 @@ func (s *FailoverState[E]) HandleSelectionExhausted(ctx context.Context) Failove
 	if failure != nil &&
 		failure.StatusCode == 503 &&
 		s.SwitchCount <= s.MaxSwitches {
-
 		s.emit(ctx, "gateway.failover_single_provider_backoff", map[string]any{"backoff_delay": SingleProviderBackoffDelay, "switch_count": s.SwitchCount, "max_switches": s.MaxSwitches})
 		if !SleepWithContext(ctx, SingleProviderBackoffDelay) {
 			return FailoverCanceled

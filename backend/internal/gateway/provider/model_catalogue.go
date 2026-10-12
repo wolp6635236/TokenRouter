@@ -7,54 +7,10 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
-
-// DefaultRequestModels 延续各平台原目录来源与未知平台回退，不另建模型缓存。
-func DefaultRequestModels(platform string) []string {
-	switch platform {
-	case capability.PlatformOpenAI:
-		return openai.DefaultModelIDs()
-	case capability.PlatformGemini:
-		ids := make([]string, 0, len(codeassist.DefaultModels))
-		for _, model := range codeassist.DefaultModels {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	case capability.PlatformAntigravity:
-		models := antigravity.DefaultModels()
-		ids := make([]string, 0, len(models))
-		for _, model := range models {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	case capability.PlatformQoder:
-		return qoder.DefaultRequestModelIDs()
-	case capability.PlatformGrok:
-		return grok.DefaultModelIDs()
-	default:
-		return anthropic.DefaultModelIDs()
-	}
-}
-
-func CatalogueDefaults() routing.CatalogueDefaults {
-	return routing.CatalogueDefaults{Platform: DefaultRequestModels, Qoder: func(cn bool) []string {
-		site := qoder.SiteGlobal
-		if cn {
-			site = qoder.SiteCN
-		}
-		return qoder.DefaultRequestModelIDsForSite(site)
-	}}
-}
 
 type catalogueRules struct{ policy ModelPolicy }
 
@@ -80,20 +36,11 @@ func (v catalogueRules) SupportsClientProtocol(model string, source capability.P
 }
 
 func (v catalogueRules) ConfiguredModels() []string {
-	return v.policy.Record.GetConfiguredRequestModels(provideradapter.ModelDefaults())
+	return v.policy.configuredModels()
 }
 
 func (v catalogueRules) Mapping() map[string]string {
-	return provider.ResolveModelMapping(v.policy.Record, provideradapter.ModelDefaults())
-}
-
-func (v catalogueRules) Unrestricted() bool {
-	return v.policy.Record.HasUnrestrictedModelScope(provideradapter.ModelDefaults())
-}
-
-func (v catalogueRules) QoderCN() bool {
-	site, err := qoder.ParseSite(v.policy.Record.GetCredential("site"))
-	return err == nil && site == qoder.SiteCN
+	return v.policy.models.Mapping()
 }
 
 func (v catalogueRules) Supports(ctx context.Context, model string) bool {
@@ -104,14 +51,20 @@ func (v catalogueRules) UpstreamModels(ctx context.Context, model string) []stri
 	return v.policy.ListingModels(ctx, model)
 }
 
-// CatalogueProvider 返回模型目录需要的提供商信息。
+// CatalogueRules 为目录调用方准备可复用的模型规则。
+func (p ModelPolicy) CatalogueRules() routing.CatalogueRules {
+	return catalogueRules{policy: p.Prepared()}
+}
+
+// CatalogueProvider 准备提供商元数据和一次目录查询的模型规则。
 func CatalogueProvider(value *provider.Record, route requeststate.AttemptRoute) routing.CatalogueProvider {
-	snapshot := (ModelPolicy{Record: value, Route: route}).CandidateSnapshot()
+	policy := (ModelPolicy{Record: value, Route: route}).Prepared()
+	snapshot := policy.CandidateSnapshot()
 	groups := make([]int64, len(value.ProviderGroups))
 	for i, g := range value.ProviderGroups {
 		groups[i] = g.GroupID
 	}
-	return routing.CatalogueProvider{ProviderSnapshot: snapshot, GroupIDs: slices.Clone(value.GroupIDs), ProviderGroupIDs: groups, Passthrough: value.IsOpenAIPassthroughEnabled(), Rules: catalogueRules{ModelPolicy{Record: value, Route: route}}}
+	return routing.CatalogueProvider{ProviderSnapshot: snapshot, GroupIDs: slices.Clone(value.GroupIDs), ProviderGroupIDs: groups, Passthrough: value.IsOpenAIPassthroughEnabled(), Rules: catalogueRules{policy}}
 }
 
 func CatalogueProviders(values []provider.Record) []routing.CatalogueProvider {

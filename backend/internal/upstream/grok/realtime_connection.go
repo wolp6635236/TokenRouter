@@ -22,15 +22,15 @@ type RealtimeDialError struct {
 	Err        error
 }
 
-func (e *RealtimeDialError) Error() string { return e.Err.Error() }
-func (e *RealtimeDialError) Unwrap() error { return e.Err }
-
 type RealtimeSession struct {
 	upstream.FrameConn
 	done     func()
 	once     sync.Once
 	closeErr error
 }
+
+func (e *RealtimeDialError) Error() string { return e.Err.Error() }
+func (e *RealtimeDialError) Unwrap() error { return e.Err }
 
 func (s *RealtimeSession) Ready() bool { return s != nil && s.FrameConn != nil }
 func (s *RealtimeSession) Close() error {
@@ -87,8 +87,7 @@ func DialRealtime(ctx context.Context, options RealtimeDialOptions) (*RealtimeSe
 func ProbeRealtime(ctx context.Context, options RealtimeDialOptions) error {
 	conn, err := DialRealtime(ctx, options)
 	if err != nil {
-		var failure *RealtimeDialError
-		if errors.As(err, &failure) {
+		if failure, ok := errors.AsType[*RealtimeDialError](err); ok {
 			return failure.Err
 		}
 		return err

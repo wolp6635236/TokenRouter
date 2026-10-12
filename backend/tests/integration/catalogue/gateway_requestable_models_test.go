@@ -7,17 +7,31 @@ import (
 	"testing"
 	"time"
 
-	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
-
-	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
+	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
 )
+
+// modelRateLimitsKey 是模型限流快照的字段名。
+const modelRateLimitsKey = "model_rate_limits"
+
+type requestableModelsPricingConfigRepoStub struct {
+	routing.PricingConfigRepository
+	err error
+}
+
+// sequencedRequestableModelsProviderRepoStub 模拟第一次提供商查询失败、第二次查询恢复。
+type sequencedRequestableModelsProviderRepoStub struct {
+	catalogueRows
+	providers []providercore.Record
+	calls     int
+}
 
 // TestResolveRequestableModels_RequiresModelLevelSchedulability 验证可见模型至少存在一个未被模型级限流的提供商。
 func TestResolveRequestableModels_RequiresModelLevelSchedulability(t *testing.T) {
@@ -59,20 +73,8 @@ func TestResolveRequestableModels_RequiresModelLevelSchedulability(t *testing.T)
 	})
 }
 
-type requestableModelsPricingConfigRepoStub struct {
-	routing.PricingConfigRepository
-	err error
-}
-
 func (s *requestableModelsPricingConfigRepoStub) ListAll(context.Context) ([]routing.PricingConfig, error) {
 	return nil, s.err
-}
-
-// sequencedRequestableModelsProviderRepoStub 模拟第一次提供商查询失败、第二次查询恢复。
-type sequencedRequestableModelsProviderRepoStub struct {
-	catalogueRows
-	providers []providercore.Record
-	calls     int
 }
 
 // ListSchedulableByGroupID 在首次调用返回临时错误，后续调用返回当前提供商快照。
@@ -330,7 +332,7 @@ func TestResolveRequestableModels_UpstreamMarksAntigravityThinkingVariantAmbiguo
 		Status:             billing.StatusActive,
 		BillingModelSource: routing.BillingModelSourceUpstream,
 	}
-	provider := providercore.Record{ID: 75, Platform: capability.PlatformAntigravity}
+	provider := providercore.Record{ID: 75, Platform: capability.PlatformAntigravity, Credentials: map[string]any{"model_mapping": map[string]any{"claude-sonnet-4-5": "claude-sonnet-4-5"}}}
 	svc := newCatalogueFixture(&modelsListProviderRepoStub{byGroup: map[int64][]providercore.Record{groupID: {provider}}}, routingtestkit.PricingConfig(groupID, capability.PlatformAntigravity, pricingConfig), nil)
 
 	result := svc.ResolveRequestableModels(context.Background(), &groupID, capability.PlatformAntigravity)
@@ -364,7 +366,7 @@ func TestResolveRequestableModels_UpstreamNormalizesAnthropicOAuthMapping(t *tes
 	require.False(t, model.PricingAmbiguous)
 }
 
-// TestResolveRequestableModels_OpenAIUsesActualForwardedModel 验证 OpenAI OAuth 与自动透传提供商使用真实上游模型定价。
+// TestResolveRequestableModels_OpenAIUsesActualForwardedModel 检查 OpenAI OAuth 与自动透传提供商按最终转发模型定价。
 func TestResolveRequestableModels_OpenAIUsesActualForwardedModel(t *testing.T) {
 	price := 0.09
 	tests := []struct {
@@ -494,17 +496,17 @@ func TestResolveRequestableModels_QoderRequiresEffectivePricing(t *testing.T) {
 	require.Contains(t, routing.RequestableModelIDs(result.Models), "qoder-model")
 }
 
-func TestResolveRequestableModels_ProviderQueryFailureKeepsFallback(t *testing.T) {
+func TestResolveRequestableModels_ProviderQueryFailureKeepsEmpty(t *testing.T) {
 	groupID := int64(4109)
 	svc := newCatalogueFixture(&modelsListProviderRepoStub{err: errors.New("temporary failure")}, nil, nil)
 
 	result := svc.ResolveRequestableModels(context.Background(), &groupID, capability.PlatformOpenAI)
-	require.False(t, result.Restricted)
-	require.Contains(t, routing.RequestableModelIDs(result.Models), "gpt-5.5")
+	require.True(t, result.Restricted)
+	require.Empty(t, routing.RequestableModelIDs(result.Models))
 }
 
-// TestResolveRequestableModels_SecondProviderQueryRestoresWhitelistCandidates 验证缓存层查询失败后仍使用当前提供商白名单。
-func TestResolveRequestableModels_SecondProviderQueryRestoresWhitelistCandidates(t *testing.T) {
+// TestResolveRequestableModels_NextQueryRecoversProviderFailure 提供商读取失败后，下一次请求读取已恢复的配置。
+func TestResolveRequestableModels_NextQueryRecoversProviderFailure(t *testing.T) {
 	groupID := int64(4121)
 	repo := &sequencedRequestableModelsProviderRepoStub{providers: []providercore.Record{{
 		ID:       82,
@@ -517,6 +519,10 @@ func TestResolveRequestableModels_SecondProviderQueryRestoresWhitelistCandidates
 
 	result := svc.ResolveRequestableModels(context.Background(), &groupID, capability.PlatformOpenAI)
 
+	require.Equal(t, 1, repo.calls)
+	require.True(t, result.Restricted)
+	require.Empty(t, result.Models)
+	result = svc.ResolveRequestableModels(context.Background(), &groupID, capability.PlatformOpenAI)
 	require.Equal(t, 2, repo.calls)
 	require.True(t, result.HadExplicitProviderModels)
 	require.Equal(t, []string{"private-model"}, routing.RequestableModelIDs(result.Models))

@@ -16,7 +16,7 @@ func ResolveDingTalkDeptPath(ctx context.Context, client *DingTalkClient, deptID
 	var parts []string
 
 	current := deptID
-	for i := 0; i < maxDepth; i++ {
+	for range maxDepth {
 		if current < 1 || visited[current] {
 			break
 		}

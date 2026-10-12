@@ -24,11 +24,11 @@ type VoiceTarget struct {
 	CopyHeaders                         func(http.Header, http.Header)
 }
 
+type VoiceExecutor struct{}
+
 func (t *VoiceTarget) TargetID() int64  { return t.ProviderID }
 func (*VoiceTarget) String() string     { return "grok voice target" }
 func (t *VoiceTarget) GoString() string { return t.String() }
-
-type VoiceExecutor struct{}
 
 func (VoiceExecutor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
 	target, ok := input.Target.(*VoiceTarget)

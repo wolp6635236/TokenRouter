@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
+
+// responsesToolCallItemIDPrefixes 列出与 Responses 工具调用类型绑定的 ID 前缀。
+var responsesToolCallItemIDPrefixes = []string{"fc_", "ctc_", "tsc_"}
 
 // ResponsesClientToolMapping 记录原生 Responses 请求发送到仅理解 function 工具的
 // 上游前所做的可逆降级映射。
@@ -13,6 +17,27 @@ type ResponsesClientToolMapping struct {
 	CustomTools    map[string]bool
 	ToolSearch     bool
 	NamespaceTools map[string]ResponsesNamespaceName
+}
+
+// ResponsesClientToolStreamRestorer 还原客户端工具的流式生命周期。
+// 它故意保持状态，因为 custom 工具需要缓冲 function 参数，直到上游标记调用完成。
+type ResponsesClientToolStreamRestorer struct {
+	adapter  ResponsesClientToolMapping
+	nextSeq  int
+	seenSeq  bool
+	calls    map[string]*responsesClientToolStreamCall
+	byOutput map[int]*responsesClientToolStreamCall
+}
+
+type responsesClientToolStreamCall struct {
+	kind string
+	name string
+	// callID/itemID 保留上游原值用于匹配后续事件；clientItemID 仅用于发给客户端。
+	callID       string
+	itemID       string
+	clientItemID string
+	outputIdx    int
+	arguments    strings.Builder
 }
 
 // AdaptResponsesClientTools 将 req 中 Codex 客户端专用工具降级为普通 function 工具。
@@ -202,9 +227,7 @@ func AdaptResponsesClientToolsWithInheritedMapping(
 
 func copyClientTool(tool map[string]any) map[string]any {
 	copy := make(map[string]any, len(tool))
-	for key, value := range tool {
-		copy[key] = value
-	}
+	maps.Copy(copy, tool)
 	return copy
 }
 
@@ -271,7 +294,7 @@ func rewriteClientToolHistory(value any, adapter *ResponsesClientToolMapping) (b
 }
 
 // normalizeLoweredFunctionItemID 将降级后的 item ID 调整为 function 协议可接受的形式。
-// ctc_/tsc_ 是由上游 fc_ ID 重typed 得到的，降级时应恢复 fc_；输出项前缀没有对应物，
+// ctc_/tsc_ 是由上游 fc_ ID 重 typed 得到的，降级时应恢复 fc_；输出项前缀没有对应物，
 // 仍然删除。call_id 始终作为独立的调用配对键保留。
 func normalizeLoweredFunctionItemID(item map[string]any) {
 	id := strings.TrimSpace(stringValue(item["id"]))
@@ -284,9 +307,6 @@ func normalizeLoweredFunctionItemID(item map[string]any) {
 	}
 	delete(item, "id")
 }
-
-// responsesToolCallItemIDPrefixes 列出与 Responses 工具调用类型绑定的 ID 前缀。
-var responsesToolCallItemIDPrefixes = []string{"fc_", "ctc_", "tsc_"}
 
 func responsesToolCallItemIDPrefix(itemType string) string {
 	switch itemType {
@@ -469,7 +489,7 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 				typed["type"] = "tool_search_call"
 				retypeResponsesToolCallItemID(typed, "tool_search_call")
 				typed["execution"] = "client"
-				typed["arguments"] = json.RawMessage(toolSearchCallArgumentsJSON(rawObjectString(typed["arguments"])))
+				typed["arguments"] = toolSearchCallArgumentsJSON(rawObjectString(typed["arguments"]))
 				delete(typed, "name")
 				delete(typed, "namespace")
 				changed = true
@@ -480,27 +500,6 @@ func restoreClientToolValue(value any, adapter *ResponsesClientToolMapping) bool
 		}
 	}
 	return changed
-}
-
-// ResponsesClientToolStreamRestorer 还原客户端工具的流式生命周期。
-// 它故意保持状态，因为 custom 工具需要缓冲 function 参数，直到上游标记调用完成。
-type ResponsesClientToolStreamRestorer struct {
-	adapter  ResponsesClientToolMapping
-	nextSeq  int
-	seenSeq  bool
-	calls    map[string]*responsesClientToolStreamCall
-	byOutput map[int]*responsesClientToolStreamCall
-}
-
-type responsesClientToolStreamCall struct {
-	kind string
-	name string
-	// callID/itemID 保留上游原值用于匹配后续事件；clientItemID 仅用于发给客户端。
-	callID       string
-	itemID       string
-	clientItemID string
-	outputIdx    int
-	arguments    strings.Builder
 }
 
 func NewResponsesClientToolStreamRestorer(mapping ResponsesClientToolMapping) *ResponsesClientToolStreamRestorer {

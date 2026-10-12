@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // GetConcurrencyStats returns real-time concurrency usage aggregated by platform/group/provider.
@@ -113,7 +114,7 @@ func (h *OpsHandler) GetUserConcurrencyStats(c *gin.Context) {
 //
 // Query params:
 // - platform: optional
-// - group_id: optional
+// - group_id: optional.
 func (h *OpsHandler) GetProviderAvailability(c *gin.Context) {
 	if h.opsService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
@@ -202,7 +203,7 @@ func parseOpsRealtimeWindow(v string) (time.Duration, string, bool) {
 // Query params:
 // - window: 1min|5min|30min|1h (default: 1min)
 // - platform: optional
-// - group_id: optional
+// - group_id: optional.
 func (h *OpsHandler) GetRealtimeTrafficSummary(c *gin.Context) {
 	if h.opsService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")

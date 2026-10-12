@@ -3,8 +3,9 @@ package httpapi
 import (
 	"net/http"
 
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
+
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
 // GetAuthCacheInvalidationHealth 返回持久化 outbox 延迟与订阅器健康状态。

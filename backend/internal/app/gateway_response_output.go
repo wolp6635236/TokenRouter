@@ -53,3 +53,15 @@ func provideReasoningHistory(cache session.GatewayCache) *session.ReasoningHisto
 	store, _ := cache.(session.ReasoningContentCache)
 	return &session.ReasoningHistory{Cache: store, Warn: gatewayadapter.WarnReasoningCacheFailure}
 }
+
+// provideOpenAIResponseState 构造由 app 管理的共享会话存储。
+func provideOpenAIResponseState(cache session.GatewayCache) session.OpenAIWSStateStore {
+	return session.NewOpenAIWSStateStore(cache, gatewayadapter.LogOpenAIWSModeInfo)
+}
+
+func provideResponseHeaderFilter(cfg *config.Config) *egress.CompiledHeaderFilter {
+	if cfg == nil {
+		return nil
+	}
+	return egress.CompileHeaderFilter(egress.ResponseHeaderOptions{Enabled: cfg.Security.ResponseHeaders.Enabled, AdditionalAllowed: cfg.Security.ResponseHeaders.AdditionalAllowed, ForceRemove: cfg.Security.ResponseHeaders.ForceRemove})
+}

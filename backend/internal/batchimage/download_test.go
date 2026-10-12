@@ -1,24 +1,18 @@
 package batchimage_test
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/batchimage"
-	batchimageprovider "github.com/TokenFlux/TokenRouter/internal/batchimage/provider"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/config"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
+
+const batchImageDownloadTestBase64 = "Zmlyc3Q="
 
 func TestBatchImageDownloadService_OpenItemContent(t *testing.T) {
 	ctx := context.Background()
@@ -193,107 +187,33 @@ func TestBatchImageDownloadFilenames(t *testing.T) {
 	require.Equal(t, `attachment; filename="cover_001.png"`, batchimage.BatchImageContentDispositionAttachment(`cover"001.png`))
 }
 
-func newTestBatchImageDownloadService() (*batchimage.Download, *fakeBatchImageRepository, *fakeBatchImageDownloadLimiter) {
-	repo := newFakeBatchImageRepository()
-	apiKeyID := int64(22)
-	providerID := int64(101)
-	repo.jobs["imgbatch_download"] = &batchimage.BatchImageJob{
-		BatchID:           "imgbatch_download",
-		UserID:            11,
-		APIKeyID:          &apiKeyID,
-		ProviderID:        &providerID,
-		Platform:          batchimage.BatchImageProviderGeminiAPI,
-		Model:             "gemini-2.5-flash-image",
-		Status:            batchimage.BatchImageJobStatusCompleted,
-		ProviderJobName:   batchimage.BatchImageStringPtr("providers/internal/job"),
-		ProviderOutputRef: batchimage.BatchImageStringPtr("gs://bucket/internal/output.jsonl"),
-		ItemCount:         3,
-		SuccessCount:      2,
-		FailCount:         1,
-		CreatedAt:         time.Now(),
-	}
-	mime := "image/png"
-	ext := "png"
-	webp := "image/webp"
-	webpExt := "webp"
-	code := "SAFETY_BLOCKED"
-	msg := "blocked in gs://bucket/internal/output.jsonl"
-	repo.items["imgbatch_download"] = []batchimage.CreateBatchImageItemParams{
-		{JobID: "imgbatch_download", CustomID: "cover/../001", Status: batchimage.BatchImageItemStatusSuccess, MimeType: &mime, FileExtension: &ext, ImageCount: 2},
-		{JobID: "imgbatch_download", CustomID: "bad", Status: batchimage.BatchImageItemStatusFailed, ErrorCode: &code, ErrorMessage: &msg},
-		{JobID: "imgbatch_download", CustomID: "ok_2", Status: batchimage.BatchImageItemStatusSuccess, MimeType: &webp, FileExtension: &webpExt, ImageCount: 1},
-	}
-	platform := &publicBatchImageProvider{name: batchimage.BatchImageProviderGeminiAPI, result: batchImageDownloadResultJSONL()}
-	limiter := &fakeBatchImageDownloadLimiter{}
-	svc := newBatchDownloadFixture(repo, batchimage.NewRegistry[batchimageprovider.BatchImageProvider](platform), &resultProviderFixture{provider: &provider.Record{ID: providerID, Platform: capability.PlatformGemini, Type: capability.ProviderTypeAPIKey, Status: billing.StatusActive, Schedulable: true}}, limiter, &config.Config{BatchImage: config.BatchImageConfig{MaxDownloadItemsZip: 10, MaxDownloadDurationSeconds: 60}})
-	return svc, repo, limiter
-}
-
-const batchImageDownloadTestBase64 = "Zmlyc3Q="
-
-func batchImageDownloadResultJSONL() string {
-	return strings.Join([]string{
-		`{"key":"cover/../001","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"Zmlyc3Q="}},{"inlineData":{"mimeType":"image/jpeg","data":"c2Vjb25k"}}]}}]}}`,
-		`{"key":"bad","error":{"code":"SAFETY","message":"blocked"}}`,
-		`{"key":"ok_2","candidates":[{"content":{"parts":[{"inline_data":{"mime_type":"image/webp","data":"dGhpcmQ="}}]}}]}`,
-	}, "\n") + "\n"
-}
-
-func readZipFiles(t *testing.T, data []byte) map[string][]byte {
-	t.Helper()
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+func TestExtractBatchImagePartsFromResultLine_MixedEnvelopes(t *testing.T) {
+	line := `{"key":"mixed","response":{"candidates":[null,{}, {"content":{"parts":[
+		null,{"text":"none"},{"inlineData":{"mimeType":"text/plain","data":"dGV4dA=="}},
+		{"inlineData":{"mimeType":"image/png","data":" \t "}},
+		{"inlineData":{},"inline_data":{"mime_type":"image/png","data":"c2tpcA=="}},
+		{"inlineData":{"mimeType":" Image/JPEG ","data":" invalid base64 "}},
+		{"inline_data":{"mime_type":"image/webp","data":" c2Vjb25k "}}
+	]}}]},"candidates":[{"content":{"parts":[
+		{"inlineData":{"mimeType":" ","mime_type":" image/png ","data":" dGhpcmQ= "}}
+	]}}]}`
+	got, err := batchimage.ExtractBatchImagePartsFromResultLine([]byte(line))
 	require.NoError(t, err)
-	out := make(map[string][]byte, len(reader.File))
-	for _, file := range reader.File {
-		rc, err := file.Open()
-		require.NoError(t, err)
-		body, err := io.ReadAll(rc)
-		require.NoError(t, err)
-		require.NoError(t, rc.Close())
-		out[file.Name] = body
+	require.Equal(t, "mixed", got.CustomID)
+	require.Empty(t, got.ErrorCode)
+	require.Equal(t, []batchimage.BatchImageInlineImage{
+		{MimeType: "Image/JPEG", Extension: "jpg", Base64Data: "invalid base64"},
+		{MimeType: "image/webp", Extension: "webp", Base64Data: "c2Vjb25k"},
+		{MimeType: "image/png", Extension: "png", Base64Data: "dGhpcmQ="},
+	}, got.Images)
+}
+
+func TestExtractBatchImageInlineImages_EmptyInputReturnsNil(t *testing.T) {
+	for _, raw := range []any{nil, map[string]any{}, []any{}, []any{nil, map[string]any{"content": nil}}} {
+		require.Nil(t, batchimage.ExtractBatchImageInlineImages(raw))
 	}
-	return out
+	got, err := batchimage.ExtractBatchImagePartsFromResultLine([]byte(`{"key":"empty","response":{"candidates":[]},"candidates":null}`))
+	require.NoError(t, err)
+	require.Nil(t, got.Images)
+	require.Equal(t, "EMPTY_IMAGE_OUTPUT", got.ErrorCode)
 }
-
-func mapValues(in map[string][]byte) [][]byte {
-	out := make([][]byte, 0, len(in))
-	for _, value := range in {
-		out = append(out, value)
-	}
-	return out
-}
-
-type fakeBatchImageDownloadLimiter struct {
-	acquireCount int
-	releaseCount int
-	deny         bool
-}
-
-func (l *fakeBatchImageDownloadLimiter) Acquire(context.Context, string, string) (batchimage.BatchImageDownloadPermit, error) {
-	l.acquireCount++
-	if l.deny {
-		return nil, batchimage.ErrBatchImageDownloadLimited
-	}
-	return &fakeBatchImageDownloadPermit{release: func() { l.releaseCount++ }}, nil
-}
-
-type fakeBatchImageDownloadPermit struct {
-	once    bool
-	release func()
-}
-
-func (p *fakeBatchImageDownloadPermit) Release(context.Context) error {
-	if p.once {
-		return nil
-	}
-	p.once = true
-	if p.release != nil {
-		p.release()
-	}
-	return nil
-}
-
-var (
-	_ batchimage.BatchImageDownloadLimiter = (*fakeBatchImageDownloadLimiter)(nil)
-	_ batchimage.BatchImageDownloadPermit  = (*fakeBatchImageDownloadPermit)(nil)
-)

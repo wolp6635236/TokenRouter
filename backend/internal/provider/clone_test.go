@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
-	"github.com/stretchr/testify/require"
 )
 
 // TestCloneValuesPreservesShapesAndIsolation 检查复制保留载荷和值类型，共享前缀但长度不同的切片各自复制。

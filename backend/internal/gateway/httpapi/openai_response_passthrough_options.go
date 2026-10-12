@@ -5,27 +5,24 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
-	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
-
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider) upstreamopenai.PassthroughOptions {
 	stream := upstreamopenai.StreamOptions{
 		NativeOpenAI: provider != nil && provider.Record.Platform == capability.PlatformOpenAI,
-		MaxLineSize:  openAIResponseDefaultMaxLineSize,
+		MaxLineSize:  OpenAIResponseDefaultMaxLineSize,
 		TTFTMode:     func() string { return p.TTFTMode(ctx) },
 		Logf: func(format string, args ...any) {
 			logging.LegacyPrintf("service.openai_gateway", format, args...)
@@ -86,6 +83,7 @@ func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Co
 	}
 	nonstream := p.NonStreamOptions(ctx, c, provider)
 	nonstream.TerminalFailover = func(resp *http.Response, event string, body []byte, message, model string) error {
+		//nolint:revive // 函数返回具体指针类型，直接 return 会把 nil 指针包成非 nil 的 error。
 		if failure := p.nonStreamingTerminalFailure(c, resp, provider, true, event, body, message, model); failure != nil {
 			return failure
 		}

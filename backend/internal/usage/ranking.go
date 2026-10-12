@@ -5,14 +5,17 @@ import (
 	"strings"
 )
 
-// UsageRankingSortBy 表示用户侧用量排行的排名指标。
-type UsageRankingSortBy string
-
 const (
 	UsageRankingSortByTotalTokens UsageRankingSortBy = "total_tokens"
 	UsageRankingSortByRequests    UsageRankingSortBy = "requests"
 	UsageRankingSortByActualCost  UsageRankingSortBy = "actual_cost"
+
+	DefaultUsageRankingLimit = 20
+	MaxUsageRankingLimit     = 100
 )
+
+// UsageRankingSortBy 表示用户侧用量排行的排名指标。
+type UsageRankingSortBy string
 
 // UsageRankingSettings 是用户侧排行读取和展示共用的运行时配置。
 type UsageRankingSettings struct {
@@ -32,6 +35,7 @@ func IsValidUsageRankingSortBy(value string) bool {
 		return false
 	}
 }
+
 func NormalizeUsageRankingSortByInternal(value string) UsageRankingSortBy {
 	if IsValidUsageRankingSortBy(value) {
 		return UsageRankingSortBy(strings.TrimSpace(value))
@@ -58,6 +62,7 @@ func NormalizeUsageRankingSettings(settings UsageRankingSettings) UsageRankingSe
 	}
 	return settings
 }
+
 func NormalizeUsageRankingLimit(value int) int {
 	if value <= 0 {
 		return DefaultUsageRankingLimit
@@ -67,6 +72,7 @@ func NormalizeUsageRankingLimit(value int) int {
 	}
 	return value
 }
+
 func NormalizeUsageRankingLimitString(raw string) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil {
@@ -74,7 +80,3 @@ func NormalizeUsageRankingLimitString(raw string) int {
 	}
 	return NormalizeUsageRankingLimit(value)
 }
-
-const DefaultUsageRankingLimit = 20
-
-const MaxUsageRankingLimit = 100

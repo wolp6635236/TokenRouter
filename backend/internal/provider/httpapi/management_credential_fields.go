@@ -3,12 +3,13 @@ package httpapi
 import (
 	"errors"
 
+	"github.com/gin-gonic/gin"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
-// BatchUpdateCredentialsRequest represents batch credentials update request
+// BatchUpdateCredentialsRequest represents batch credentials update request.
 type BatchUpdateCredentialsRequest struct {
 	ProviderIDs []int64 `json:"provider_ids" binding:"required,min=1"`
 	Field       string  `json:"field" binding:"required,oneof=account_uuid org_uuid intercept_warmup_requests"`
@@ -28,8 +29,7 @@ func (h *ManagementHandler) BatchUpdateCredentials(c *gin.Context) {
 	}
 	result, err := h.batch.PatchCredentials(c.Request.Context(), req.ProviderIDs, req.Field, req.Value)
 	if err != nil {
-		var missing *providercore.ManagementProviderMissing
-		if errors.As(err, &missing) {
+		if missing, ok := errors.AsType[*providercore.ManagementProviderMissing](err); ok {
 			response.Error(c, 404, missing.Error())
 		} else {
 			response.ErrorFrom(c, err)

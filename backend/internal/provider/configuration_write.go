@@ -3,11 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 )
-
-// ConfigurationFields 标明本次操作实际拥有的写权限，不包含活动时间、窗口或健康观测快照。
-type ConfigurationFields uint32
 
 const (
 	ConfigName ConfigurationFields = 1 << iota
@@ -29,6 +27,18 @@ const (
 	ConfigParentProviderID
 	ConfigQuotaDimension
 )
+
+// 消费由 billing 写入，观测由对应维护入口写入；配置替换不得覆盖其最新值。
+var managedConfigurationExtraKeys = []string{
+	"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start",
+	"grok_billing_snapshot", "grok_usage_snapshot", "grok_observed_models",
+	"qoder_quota_snapshot", "qoder_quota_updated_at",
+	"ollama_cloud_usage_session", "ollama_cloud_usage_auto_refresh", "ollama_cloud_usage_snapshot",
+	"cn_usage_monitor_snapshot", "model_rate_limits", "antigravity_quota_scopes", "antigravity_credits_overages",
+}
+
+// ConfigurationFields 标明本次操作实际拥有的写权限，不包含活动时间、窗口或健康观测快照。
+type ConfigurationFields uint32
 
 // ConfigurationChange 记录待修改的字段，省略的敏感子键从锁内最新凭据继承。
 type ConfigurationChange struct {
@@ -83,9 +93,7 @@ func ApplyConfigurationChange(current, desired *Record, change ConfigurationChan
 			if out.Extra == nil {
 				out.Extra = map[string]any{}
 			}
-			for key, value := range CloneValues(change.ExtraPatch) {
-				out.Extra[key] = value
-			}
+			maps.Copy(out.Extra, CloneValues(change.ExtraPatch))
 		}
 	}
 	if change.Fields&ConfigProxyID != 0 {
@@ -203,15 +211,6 @@ func ApplyConfigurationChange(current, desired *Record, change ConfigurationChan
 		delete(out.Extra, CNUsageMonitorSnapshotExtraKey)
 	}
 	return CloneRecord(out), nil
-}
-
-// 消费由 billing 写入，观测由对应维护入口写入；配置替换不得覆盖其最新值。
-var managedConfigurationExtraKeys = []string{
-	"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start",
-	"grok_billing_snapshot", "grok_usage_snapshot", "grok_observed_models",
-	"qoder_quota_snapshot", "qoder_quota_updated_at",
-	"ollama_cloud_usage_session", "ollama_cloud_usage_auto_refresh", "ollama_cloud_usage_snapshot",
-	"cn_usage_monitor_snapshot", "model_rate_limits", "antigravity_quota_scopes", "antigravity_credits_overages",
 }
 
 // WriteConfiguration 优先调用配置写入接口，通用 Update 仅支持整条记录更新。

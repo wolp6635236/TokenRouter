@@ -18,6 +18,25 @@ type scheduledScheduleStub struct {
 	start  func(func())
 }
 
+type scheduledPlansStub struct {
+	ScheduledTestPlanRepository
+	reads atomic.Int32
+	plans []*ScheduledTestPlan
+}
+
+type scheduledExecutorStub struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+type scheduledResultsStub struct{ ScheduledTestResultRepository }
+
+type scheduledBlockedStop struct {
+	scheduledScheduleStub
+	release chan struct{}
+	done    chan struct{}
+}
+
 func (s *scheduledScheduleStub) Start(_ context.Context, run func()) error {
 	s.starts.Add(1)
 	if s.start != nil {
@@ -26,12 +45,6 @@ func (s *scheduledScheduleStub) Start(_ context.Context, run func()) error {
 	return s.err
 }
 func (s *scheduledScheduleStub) Stop(context.Context) error { s.stops.Add(1); return nil }
-
-type scheduledPlansStub struct {
-	ScheduledTestPlanRepository
-	reads atomic.Int32
-	plans []*ScheduledTestPlan
-}
 
 func (s *scheduledPlansStub) ListDue(context.Context, time.Time) ([]*ScheduledTestPlan, error) {
 	s.reads.Add(1)
@@ -42,18 +55,11 @@ func (*scheduledPlansStub) UpdateAfterRun(ctx context.Context, _ int64, _, _ tim
 	return ctx.Err()
 }
 
-type scheduledExecutorStub struct {
-	entered chan struct{}
-	release chan struct{}
-}
-
 func (s scheduledExecutorStub) RunTestBackground(context.Context, int64, string) (*ScheduledTestResult, error) {
 	close(s.entered)
 	<-s.release
 	return &ScheduledTestResult{Status: "error"}, nil
 }
-
-type scheduledResultsStub struct{ ScheduledTestResultRepository }
 
 func (scheduledResultsStub) Create(ctx context.Context, _ *ScheduledTestResult) (*ScheduledTestResult, error) {
 	return nil, ctx.Err()
@@ -145,12 +151,6 @@ func TestScheduledRunnerReportsUnfinishedExecution(t *testing.T) {
 		t.Fatal("已释放执行器仍未退出")
 	}
 	require.Equal(t, err, runner.StopContext(context.Background()))
-}
-
-type scheduledBlockedStop struct {
-	scheduledScheduleStub
-	release chan struct{}
-	done    chan struct{}
 }
 
 func (s *scheduledBlockedStop) Stop(context.Context) error {

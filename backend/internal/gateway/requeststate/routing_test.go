@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/stretchr/testify/require"
 )
 
 func TestRoutingStateIsolatesRequestAndAttempt(t *testing.T) {

@@ -1,8 +1,42 @@
 package capability
 
-import "slices"
+import (
+	"slices"
 
-// Protocol 描述协议能力，不拥有 HTTP 路径或具体转换实现。
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+)
+
+const (
+	ProtocolAnthropicMessages     = protocol.ProtocolAnthropicMessages
+	ProtocolOpenAIResponses       = protocol.ProtocolOpenAIResponses
+	ProtocolOpenAIChatCompletions = protocol.ProtocolOpenAIChatCompletions
+	ProtocolGeminiGenerateContent = protocol.ProtocolGeminiGenerateContent
+	ProtocolSystemOne             = protocol.ProtocolSystemOne
+	ProtocolEmbeddings            = protocol.ProtocolEmbeddings
+	ProtocolImagesGenerations     = protocol.ProtocolImagesGenerations
+	ProtocolImagesEdits           = protocol.ProtocolImagesEdits
+	ProtocolImageBatches          = protocol.ProtocolImageBatches
+	ProtocolVideosGenerations     = protocol.ProtocolVideosGenerations
+	ProtocolVideosEdits           = protocol.ProtocolVideosEdits
+	ProtocolVideosExtensions      = protocol.ProtocolVideosExtensions
+	ProtocolTTS                   = protocol.ProtocolTTS
+	ProtocolSTT                   = protocol.ProtocolSTT
+	ProtocolCustomVoices          = protocol.ProtocolCustomVoices
+	ProtocolVoiceRealtime         = protocol.ProtocolVoiceRealtime
+	ProtocolResponsesWebSocket    = protocol.ProtocolResponsesWebSocket
+	ProtocolLive                  = protocol.ProtocolLive
+	ProtocolResponsesCompact      = protocol.ProtocolResponsesCompact
+	ProtocolAlphaSearch           = protocol.ProtocolAlphaSearch
+	ProtocolWebSearch             = protocol.ProtocolWebSearch
+	ProtocolXSearch               = protocol.ProtocolXSearch
+	ProtocolQoderChat             = protocol.ProtocolQoderChat
+	ProtocolGeminiBatch           = protocol.ProtocolGeminiBatch
+	ProtocolVertexBatch           = protocol.ProtocolVertexBatch
+)
+
+var protocolCatalog = buildProtocolCatalog()
+
+// Protocol 描述协议标识、名称、适用平台及是否专供上游使用。
 // @project-doc docs/interfaces/protocol_capabilities.md#protocol_catalog
 type Protocol struct {
 	ID           ProtocolID `json:"id"`
@@ -11,7 +45,8 @@ type Protocol struct {
 	Platforms    []string   `json:"platforms"`
 }
 
-var protocolCatalog = buildProtocolCatalog()
+// ProtocolID 引用 protocol 包的协议标识类型。
+type ProtocolID = protocol.ProtocolID
 
 func buildProtocolCatalog() []Protocol {
 	all := []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformQoder, PlatformKimi, PlatformZhipu, PlatformDeepseek}
@@ -23,6 +58,7 @@ func buildProtocolCatalog() []Protocol {
 		{ID: ProtocolOpenAIResponses, Name: "OpenAI Responses", Platforms: all},
 		{ID: ProtocolOpenAIChatCompletions, Name: "Chat Completions", Platforms: all},
 		{ID: ProtocolGeminiGenerateContent, Name: "Gemini GenerateContent", Platforms: []string{PlatformGemini, PlatformAntigravity}},
+		{ID: ProtocolSystemOne, Name: "SystemOne", Platforms: []string{PlatformJev}},
 		{ID: ProtocolEmbeddings, Name: "Embeddings", Platforms: openai},
 		{ID: ProtocolImagesGenerations, Name: "Images Generations", Platforms: both},
 		{ID: ProtocolImagesEdits, Name: "Images Edits", Platforms: both},
@@ -50,6 +86,10 @@ func buildProtocolCatalog() []Protocol {
 func NativeProtocolOptions(platform, providerType, authMode string) []ProtocolID {
 	var selected []ProtocolID
 	switch platform {
+	case PlatformJev:
+		if providerType == ProviderTypeAPIKey {
+			selected = []ProtocolID{ProtocolSystemOne}
+		}
 	case PlatformAnthropic:
 		if slices.Contains([]string{ProviderTypeOAuth, ProviderTypeSetupToken, ProviderTypeAPIKey, ProviderTypeBedrock, ProviderTypeServiceAccount}, providerType) {
 			selected = []ProtocolID{ProtocolAnthropicMessages}
@@ -105,7 +145,7 @@ func NativeProtocolOptions(platform, providerType, authMode string) []ProtocolID
 	return out
 }
 
-// ProtocolFallbackTargets 仅列出已有适配器支持的单步目标；原生直通不作为转换项。
+// ProtocolFallbackTargets 返回适配器支持的单步转换目标，并跳过与来源相同的协议。
 func ProtocolFallbackTargets(platform string, source ProtocolID) []ProtocolID {
 	if !platformSupportsClientProtocol(platform, source) {
 		return []ProtocolID{}
@@ -147,7 +187,7 @@ func ProtocolFallbackTargets(platform string, source ProtocolID) []ProtocolID {
 	return out
 }
 
-// SupportsProtocolConversion 在候选提供商层收窄转换边，禁止把 OAuth 专属适配套用到 API Key。
+// SupportsProtocolConversion 根据提供商平台、认证类型和认证模式判断是否支持单步转换。
 func SupportsProtocolConversion(platform, providerType, authMode string, source, target ProtocolID) bool {
 	if !slices.Contains(ProtocolFallbackTargets(platform, source), target) {
 		return false

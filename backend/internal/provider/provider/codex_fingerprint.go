@@ -3,10 +3,10 @@ package provider
 import (
 	"time"
 
+	"github.com/google/uuid"
+
 	acctcore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/google/uuid"
 )
 
 // ConvergedInstallationID 返回提供商级恒定的 installation_id。

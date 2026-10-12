@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // TestManagedCredentialsDatabaseCAS 检查手动刷新时的管理校验和配置事务，并在锁内核对凭据交换身份。

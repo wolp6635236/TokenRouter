@@ -12,11 +12,12 @@ import (
 	"path"
 	"strings"
 
+	coderws "github.com/coder/websocket"
+	"github.com/google/uuid"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	coderws "github.com/coder/websocket"
-	"github.com/google/uuid"
 )
 
 const (
@@ -41,13 +42,13 @@ type LiveCreateOptions struct {
 	HTTPFailure     func(int, http.Header, []byte) error
 }
 
-func (LiveCreateOptions) String() string { return "openai live create options" }
-
 type LiveFrameConn interface {
 	ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error)
 	WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error
 	Close() error
 }
+
+func (LiveCreateOptions) String() string { return "openai live create options" }
 
 func CreateLiveCall(ctx context.Context, request *wire.LiveCallRequest, options LiveCreateOptions) (*LiveCreated, error) {
 	token, err := options.Token(ctx)

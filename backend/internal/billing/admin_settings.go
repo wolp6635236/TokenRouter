@@ -7,6 +7,18 @@ import (
 	"strings"
 )
 
+// 继续使用原配置键，与用户资金字段的存储权限分开。
+const (
+	SettingKeyBalanceIconSVG                  = "balance_icon_svg"
+	SettingKeyBalanceUnitName                 = "balance_unit_name"
+	SettingKeyBalanceUnitSymbol               = "balance_unit_symbol"
+	SettingKeyDefaultBalance                  = "default_balance"
+	SettingKeyDefaultSubscriptions            = "default_subscriptions"
+	SettingKeyReasoningPointRMBUnitPrice      = "reasoning_point_rmb_unit_price"
+	SettingKeySubscriptionExpiryNotifyEnabled = "subscription_expiry_notify_enabled"
+	SettingKeyUSDExchangeRate                 = "usd_exchange_rate"
+)
+
 // AdminSettings 包含资金展示和默认权益配置。
 type AdminSettings struct {
 	BalanceIconSVG                  string                       `json:"balance_icon_svg"`
@@ -21,18 +33,6 @@ type AdminSettings struct {
 	SubscriptionExpiryNotifyEnabled bool                         `json:"subscription_expiry_notify_enabled"`
 	USDExchangeRate                 float64                      `json:"usd_exchange_rate"`
 }
-
-// 继续使用原配置键，与用户资金字段的存储权限分开。
-const (
-	SettingKeyBalanceIconSVG                  = "balance_icon_svg"
-	SettingKeyBalanceUnitName                 = "balance_unit_name"
-	SettingKeyBalanceUnitSymbol               = "balance_unit_symbol"
-	SettingKeyDefaultBalance                  = "default_balance"
-	SettingKeyDefaultSubscriptions            = "default_subscriptions"
-	SettingKeyReasoningPointRMBUnitPrice      = "reasoning_point_rmb_unit_price"
-	SettingKeySubscriptionExpiryNotifyEnabled = "subscription_expiry_notify_enabled"
-	SettingKeyUSDExchangeRate                 = "usd_exchange_rate"
-)
 
 // PrepareAdminSettings 只规范化展示与默认值，保持原金额格式；套餐引用由协调入口在原时点校验。
 func PrepareAdminSettings(settings *AdminSettings) (map[string]string, error) {

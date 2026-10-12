@@ -5,22 +5,22 @@ import (
 	"database/sql"
 	"time"
 
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/lib/pq"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/lib/pq"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 )
 
 type GroupRateStore struct {
 	sql sqlExecutor
 }
 
-// NewUserGroupRateRepository 创建用户专属分组倍率/RPM 仓储
+// NewUserGroupRateRepository 创建用户专属分组倍率/RPM 仓储。
 func NewUserGroupRateRepository(sqlDB *sql.DB) *GroupRateStore {
 	return &GroupRateStore{sql: sqlDB}
 }
 
-// GetByUserID 获取用户所有专属分组 rate_multiplier（仅返回非 NULL 的条目）
+// GetByUserID 获取用户所有专属分组 rate_multiplier（仅返回非 NULL 的条目）。
 func (r *GroupRateStore) GetByUserID(ctx context.Context, userID int64) (map[int64]float64, error) {
 	query := `SELECT group_id, rate_multiplier FROM user_group_rate_multipliers WHERE user_id = $1 AND rate_multiplier IS NOT NULL`
 	rows, err := r.sql.QueryContext(ctx, query, userID)
@@ -44,7 +44,7 @@ func (r *GroupRateStore) GetByUserID(ctx context.Context, userID int64) (map[int
 	return result, nil
 }
 
-// GetByUserIDs 批量获取多个用户的专属分组 rate_multiplier（仅返回非 NULL 的条目）
+// GetByUserIDs 批量获取多个用户的专属分组 rate_multiplier（仅返回非 NULL 的条目）。
 func (r *GroupRateStore) GetByUserIDs(ctx context.Context, userIDs []int64) (map[int64]map[int64]float64, error) {
 	result := make(map[int64]map[int64]float64, len(userIDs))
 	if len(userIDs) == 0 {
@@ -96,7 +96,7 @@ func (r *GroupRateStore) GetByUserIDs(ctx context.Context, userIDs []int64) (map
 	return result, nil
 }
 
-// GetByGroupID 获取指定分组下所有用户的专属配置（rate 与 rpm_override 任一非 NULL 即返回）
+// GetByGroupID 获取指定分组下所有用户的专属配置（rate 与 rpm_override 任一非 NULL 即返回）。
 func (r *GroupRateStore) GetByGroupID(ctx context.Context, groupID int64) ([]billing.UserGroupRateEntry, error) {
 	query := `
 		SELECT ugr.user_id, u.username, u.email, COALESCE(u.notes, ''), u.status, ugr.rate_multiplier, ugr.rpm_override
@@ -135,7 +135,7 @@ func (r *GroupRateStore) GetByGroupID(ctx context.Context, groupID int64) ([]bil
 	return result, nil
 }
 
-// GetByUserAndGroup 获取用户在特定分组的专属 rate_multiplier（NULL 返回 nil）
+// GetByUserAndGroup 获取用户在特定分组的专属 rate_multiplier（NULL 返回 nil）。
 func (r *GroupRateStore) GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error) {
 	query := `SELECT rate_multiplier FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`
 	var rate sql.NullFloat64
@@ -153,7 +153,7 @@ func (r *GroupRateStore) GetByUserAndGroup(ctx context.Context, userID, groupID 
 	return &v, nil
 }
 
-// GetRPMOverrideByUserAndGroup 获取用户在特定分组的 rpm_override（NULL 返回 nil）
+// GetRPMOverrideByUserAndGroup 获取用户在特定分组的 rpm_override（NULL 返回 nil）。
 func (r *GroupRateStore) GetRPMOverrideByUserAndGroup(ctx context.Context, userID, groupID int64) (*int, error) {
 	query := `SELECT rpm_override FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`
 	var rpm sql.NullInt32
@@ -389,13 +389,13 @@ func (r *GroupRateStore) ClearGroupRPMOverrides(ctx context.Context, groupID int
 	return err
 }
 
-// DeleteByGroupID 删除指定分组的所有用户专属条目
+// DeleteByGroupID 删除指定分组的所有用户专属条目。
 func (r *GroupRateStore) DeleteByGroupID(ctx context.Context, groupID int64) error {
 	_, err := r.sql.ExecContext(ctx, `DELETE FROM user_group_rate_multipliers WHERE group_id = $1`, groupID)
 	return err
 }
 
-// DeleteByUserID 删除指定用户的所有专属条目
+// DeleteByUserID 删除指定用户的所有专属条目。
 func (r *GroupRateStore) DeleteByUserID(ctx context.Context, userID int64) error {
 	_, err := r.sql.ExecContext(ctx, `DELETE FROM user_group_rate_multipliers WHERE user_id = $1`, userID)
 	return err

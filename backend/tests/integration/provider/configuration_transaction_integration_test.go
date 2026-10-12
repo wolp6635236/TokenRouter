@@ -6,25 +6,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
-
 	acctcore "github.com/TokenFlux/TokenRouter/internal/provider"
-
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
-
-type failConfigurationOutbox struct{ providerEventsFixture }
-
-func (failConfigurationOutbox) Write(ctx context.Context, exec postgresinfra.Executor, _ providerpostgres.ProviderEvent, _, _ *int64, _ any) error {
-	// 故障在真实事务连接上发生，验证配置 SQL 不会先行提交。
-	_, err := exec.ExecContext(ctx, "INSERT INTO test_missing_outbox_fixture DEFAULT VALUES")
-	return err
-}
 
 func TestConfigurationTransactionAndOutbox(t *testing.T) {
 	for _, mode := range []string{"outer_rollback", "outbox_failure"} {

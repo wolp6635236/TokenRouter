@@ -49,7 +49,7 @@ func TestResolveDingTalkDeptPath_SingleLevel(t *testing.T) {
 
 // TestResolveDingTalkDeptPath_MultiLevel 验证多层部门路径拼接。
 func TestResolveDingTalkDeptPath_MultiLevel(t *testing.T) {
-	// 模拟：42(AI研发) → parent=10(研发部) → parent=1(根)
+	// 模拟：42(AI 研发) → parent=10(研发部) → parent=1(根)
 	responses := map[string]string{
 		"42": `{"errcode":0,"result":{"dept_id":42,"name":"AI研发","parent_id":10}}`,
 		"10": `{"errcode":0,"result":{"dept_id":10,"name":"研发部","parent_id":1}}`,

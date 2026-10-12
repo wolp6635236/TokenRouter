@@ -99,6 +99,7 @@ apiClient.interceptors.response.use(
           status: response.status,
           code: apiResponse.code,
           message: responseErrorMessage(String(response.config?.url || ''), resp.reason, response.status, apiResponse.message || ''),
+          request_id: response.headers?.['x-request-id'],
           reason: resp.reason,
           metadata: resp.metadata,
         })
@@ -241,6 +242,7 @@ apiClient.interceptors.response.use(
         reason: apiData.reason,
         error: apiData.error,
         message: responseErrorMessage(url, apiData.reason, status, apiData.message || apiData.detail || error.message),
+        request_id: error.response?.headers?.['x-request-id'],
         metadata: apiData.metadata,
       })
     }

@@ -6,8 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/config"
 )
 
 // TestHTTPTransportConfigurationReadBoundary 检查传输实例在每次请求时读取安全配置。

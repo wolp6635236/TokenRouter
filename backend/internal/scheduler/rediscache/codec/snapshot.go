@@ -167,7 +167,24 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
-	keys := []string{"model_mapping", "compact_model_mapping", "model_whitelist", "upstream_protocols", "auth_mode", "openai_auth_mode", "provider_mode", "api_protocol", "openai_workload_capabilities", "api_key", "project_id", "oauth_type", "plan_type"}
+	keys := []string{
+		"model_mapping",
+		"compact_model_mapping",
+		"model_whitelist",
+		"upstream_protocols",
+		"auth_mode",
+		"openai_auth_mode",
+		"provider_mode",
+		"api_protocol",
+		"openai_workload_capabilities",
+		"api_key",
+		"project_id",
+		"oauth_type",
+		// Gemini 配额预检在补全凭据前执行，需要第三方来源和官方等级来选择配额策略。
+		"provider_type",
+		"tier_id",
+		"plan_type",
+	}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
@@ -203,13 +220,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"window_cost_sticky_reserve",
 		"max_sessions",
 		"session_idle_timeout_minutes",
-		"openai_oauth_responses_websockets_v2_enabled",
-		"openai_oauth_responses_websockets_v2_mode",
-		"openai_apikey_responses_websockets_v2_enabled",
-		"openai_apikey_responses_websockets_v2_mode",
-		"responses_websockets_v2_enabled",
-		"openai_ws_enabled",
-		"openai_ws_force_http",
+		"responses_ws_connection_mode",
 		"openai_text_route_mode",
 		"openai_compact_mode",
 		"openai_native_compaction_v2_mode",
@@ -248,5 +259,3 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 	}
 	return filtered
 }
-
-// AcquireBucketLease 使用调度 Redis 获取重建租约，释放句柄校验持有者令牌。

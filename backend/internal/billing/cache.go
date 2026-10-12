@@ -14,7 +14,7 @@ type APIKeyRateLimitCacheData struct {
 	Window7d int64   `json:"window_7d"`
 }
 
-// BillingCache defines cache operations for billing service
+// BillingCache defines cache operations for billing service.
 type BillingCache interface {
 	// Balance operations
 	GetUserBalance(ctx context.Context, userID int64) (float64, error)

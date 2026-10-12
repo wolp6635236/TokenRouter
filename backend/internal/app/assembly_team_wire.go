@@ -3,9 +3,9 @@
 package app
 
 import (
-	teamredis "github.com/TokenFlux/TokenRouter/internal/team/rediscache"
-
 	"github.com/google/wire"
+
+	teamredis "github.com/TokenFlux/TokenRouter/internal/team/rediscache"
 )
 
 // teamAssemblyProviders 汇总 team 模块的 Wire provider。

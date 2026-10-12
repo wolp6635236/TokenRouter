@@ -3,6 +3,8 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
@@ -12,7 +14,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/gin-gonic/gin"
 )
 
 // QoderCompatibleTarget 提供执行、刷新和完成数据捕获接口。

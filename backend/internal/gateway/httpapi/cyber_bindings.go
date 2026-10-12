@@ -3,9 +3,10 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	"github.com/gin-gonic/gin"
 )
 
 type cyberHTTPBackend struct{ core *session.CyberBlocks }
@@ -29,7 +30,7 @@ func (p cyberHTTPBackend) Mark(c *gin.Context) *moderationflow.Mark {
 	if m == nil {
 		return nil
 	}
-	v := moderationflow.Mark(*m)
+	v := *m
 	return &v
 }
 

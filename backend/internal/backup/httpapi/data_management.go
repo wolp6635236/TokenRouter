@@ -4,19 +4,15 @@ import (
 	"context"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/backup"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
 )
 
 type DataManagementHandler struct {
 	dataManagementService dataManagementService
-}
-
-func NewDataManagementHandler(dataManagementService *backup.DataManagementService) *DataManagementHandler {
-	return &DataManagementHandler{dataManagementService: dataManagementService}
 }
 
 type dataManagementService interface {
@@ -82,6 +78,10 @@ type UpdateS3ProfileRequest struct {
 	Prefix          string `json:"prefix"`
 	ForcePathStyle  bool   `json:"force_path_style"`
 	UseSSL          bool   `json:"use_ssl"`
+}
+
+func NewDataManagementHandler(dataManagementService *backup.DataManagementService) *DataManagementHandler {
+	return &DataManagementHandler{dataManagementService: dataManagementService}
 }
 
 func (h *DataManagementHandler) GetAgentHealth(c *gin.Context) {

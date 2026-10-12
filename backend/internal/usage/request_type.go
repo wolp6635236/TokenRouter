@@ -8,11 +8,7 @@ import (
 const (
 	BillingTypeBalance      int8 = 0 // 钱包余额
 	BillingTypeSubscription int8 = 1 // 订阅套餐
-)
 
-type RequestType int16
-
-const (
 	RequestTypeUnknown      RequestType = 0
 	RequestTypeSync         RequestType = 1
 	RequestTypeStream       RequestType = 2
@@ -21,6 +17,8 @@ const (
 	// RequestTypeLive 表示按会话时长记录的 ChatGPT Frameless Live 请求。
 	RequestTypeLive RequestType = 5
 )
+
+type RequestType int16
 
 func (t RequestType) IsValid() bool {
 	switch t {

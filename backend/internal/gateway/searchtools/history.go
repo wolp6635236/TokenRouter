@@ -6,9 +6,10 @@ import (
 	"strings"
 	"unsafe"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 )
 
 const (

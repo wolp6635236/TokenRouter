@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/TokenFlux/TokenRouter/migrations"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // New 应用真实迁移，并在测试结束时先关闭连接、再销毁容器。

@@ -17,7 +17,6 @@ func ApplicationsForUpdate(load func(context.Context) (*Snapshot, error), steps 
 	var snapshot *Snapshot
 	changes := []settings.PreparedChange{{Module: "system", Apply: func(ctx context.Context) error { var err error; snapshot, err = load(ctx); return err }}}
 	for _, step := range steps {
-		step := step
 		changes = append(changes, settings.PreparedChange{Module: step.Module, Apply: func(ctx context.Context) error {
 			if snapshot == nil {
 				return nil

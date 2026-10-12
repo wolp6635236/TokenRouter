@@ -9,25 +9,90 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
+	gocache "github.com/patrickmn/go-cache"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-
+	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	gocache "github.com/patrickmn/go-cache"
 )
 
-const rawUsageLogModelColumn = "model"
+const (
+	rawUsageLogModelColumn            = "model"
+	usageAnalyticsFallbackLogInterval = time.Minute
 
-const usageAnalyticsFallbackLogInterval = time.Minute
+	// rawUsageLogModelColumn preserves the exact stored usage_logs.model semantics for direct filters.
+	// Historical rows may contain upstream/billing model values, while newer rows store requested_model.
+	// Requested/upstream/mapping analytics must use resolveModelDimensionExpression instead.
 
-var usageAnalyticsFallbackLogState = struct {
-	sync.Mutex
-	lastByOperation map[string]time.Time
-}{lastByOperation: make(map[string]time.Time)}
+	// usageLogSuccessFilterUL 用于把"失败请求 usage log"（tokens=0、cost=0、不计费的占位记录）
+	// 从统计性聚合中排除，避免污染 Dashboard / 用量拆分等指标。
+	//
+	// 表结构中没有 success bool 列；新增列要做迁移，风险大；这里用 actual_cost > 0 作为代理：
+	// 任何成功落账的请求都会产生 actual_cost（包括 token 计费、纯图片 token 计费、按次/按图计费），
+	// 反之失败请求占位 usage log 的 actual_cost 为 0。
+	// 早期版本用 4 项 token 和 > 0 判定会把"按次/按图计费"与"image_output_tokens 独立计费"的纯图片
+	// 请求误判为失败，导致这部分请求从用量统计里消失，故改用 actual_cost。
+	// 配合 `FROM usage_logs ul` JOIN 查询使用。
+	usageLogSuccessFilterUL = "ul.actual_cost > 0"
+
+	// usageLogEffectivePlatformExpr 统一使用已固化的平台，避免配置变更重写统计归属。
+	usageLogEffectivePlatformExpr = "ul.platform"
+)
+
+var (
+	usageAnalyticsFallbackLogState = struct {
+		sync.Mutex
+		lastByOperation map[string]time.Time
+	}{lastByOperation: make(map[string]time.Time)}
+
+	// dateFormatWhitelist 将 granularity 参数映射为 PostgreSQL TO_CHAR 格式字符串，防止外部输入直接拼入 SQL。
+	dateFormatWhitelist = map[string]string{
+		"hour":  "YYYY-MM-DD HH24:00",
+		"day":   "YYYY-MM-DD",
+		"week":  "IYYY-IW",
+		"month": "YYYY-MM",
+	}
+)
+
+type Store struct {
+	batchLifecycleMu sync.RWMutex
+	batchStopped     bool
+	batchWG          sync.WaitGroup
+	client           *dbent.Client
+	sql              sqlExecutor
+	db               *sql.DB
+	preAggregation   *preaggregation.PreAggregationSettingsService
+	calendar         timezone.Calendar
+
+	createBatchOnce     sync.Once
+	createBatchCh       chan usageLogCreateRequest
+	bestEffortBatchOnce sync.Once
+	bestEffortBatchCh   chan usageLogBestEffortRequest
+	bestEffortRecent    *gocache.Cache
+}
+
+type UsageRankingItem = usage.UsageRankingItem
+
+type UsageRankingResponse = usage.UsageRankingResponse
+
+func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB, preAggregation *preaggregation.PreAggregationSettingsService, calendar timezone.Calendar) *Store {
+	repo := NewUsageLogRepositoryWithSQL(client, sqlDB, calendar)
+	repo.preAggregation = preAggregation
+	return repo
+}
+
+func NewUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, calendar timezone.Calendar) *Store {
+	// 使用 scanSingleRow 替代 QueryRowContext，保证 ent.Tx 作为 sqlExecutor 可用。
+	repo := &Store{client: client, sql: sqlq, calendar: calendar}
+	if db, ok := sqlq.(*sql.DB); ok {
+		repo.db = db
+	}
+	repo.bestEffortRecent = gocache.New(usageLogBestEffortRecentTTL, 0)
+	return repo
+}
 
 // logUsageAnalyticsFallback 对真实聚合查询错误限频告警，避免透明回退长期掩盖故障。
 func (r *Store) logUsageAnalyticsFallback(operation string, err error) {
@@ -49,33 +114,7 @@ func shouldLogUsageAnalyticsFallback(operation string, now time.Time) bool {
 	return true
 }
 
-// rawUsageLogModelColumn preserves the exact stored usage_logs.model semantics for direct filters.
-// Historical rows may contain upstream/billing model values, while newer rows store requested_model.
-// Requested/upstream/mapping analytics must use resolveModelDimensionExpression instead.
-
-// usageLogSuccessFilterUL 用于把"失败请求 usage log"（tokens=0、cost=0、不计费的占位记录）
-// 从统计性聚合中排除，避免污染 Dashboard / 用量拆分等指标。
-//
-// 表结构中没有 success bool 列；新增列要做迁移，风险大；这里用 actual_cost > 0 作为代理：
-// 任何成功落账的请求都会产生 actual_cost（包括 token 计费、纯图片 token 计费、按次/按图计费），
-// 反之失败请求占位 usage log 的 actual_cost 为 0。
-// 早期版本用 4 项 token 和 > 0 判定会把"按次/按图计费"与"image_output_tokens 独立计费"的纯图片
-// 请求误判为失败，导致这部分请求从用量统计里消失，故改用 actual_cost。
-// 配合 `FROM usage_logs ul` JOIN 查询使用。
-const usageLogSuccessFilterUL = "ul.actual_cost > 0"
-
-// usageLogEffectivePlatformExpr 统一使用已固化的平台，避免配置变更重写统计归属。
-const usageLogEffectivePlatformExpr = "ul.platform"
-
-// dateFormatWhitelist 将 granularity 参数映射为 PostgreSQL TO_CHAR 格式字符串，防止外部输入直接拼入 SQL
-var dateFormatWhitelist = map[string]string{
-	"hour":  "YYYY-MM-DD HH24:00",
-	"day":   "YYYY-MM-DD",
-	"week":  "IYYY-IW",
-	"month": "YYYY-MM",
-}
-
-// safeDateFormat 根据白名单获取 dateFormat，未匹配时返回默认值
+// safeDateFormat 根据白名单获取 dateFormat，未匹配时返回默认值。
 func safeDateFormat(granularity string) string {
 	if f, ok := dateFormatWhitelist[granularity]; ok {
 		return f
@@ -165,39 +204,6 @@ func appendUsageLogModelQueryFilter(query string, args []any, model string, sour
 	query += fmt.Sprintf(" AND %s = $%d", resolveModelDimensionExpression(source), len(args)+1)
 	args = append(args, model)
 	return query, args
-}
-
-type Store struct {
-	batchLifecycleMu sync.RWMutex
-	batchStopped     bool
-	batchWG          sync.WaitGroup
-	client           *dbent.Client
-	sql              sqlExecutor
-	db               *sql.DB
-	preAggregation   *preaggregation.PreAggregationSettingsService
-	calendar         timezone.Calendar
-
-	createBatchOnce     sync.Once
-	createBatchCh       chan usageLogCreateRequest
-	bestEffortBatchOnce sync.Once
-	bestEffortBatchCh   chan usageLogBestEffortRequest
-	bestEffortRecent    *gocache.Cache
-}
-
-func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB, preAggregation *preaggregation.PreAggregationSettingsService, calendar timezone.Calendar) *Store {
-	repo := NewUsageLogRepositoryWithSQL(client, sqlDB, calendar)
-	repo.preAggregation = preAggregation
-	return repo
-}
-
-func NewUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, calendar timezone.Calendar) *Store {
-	// 使用 scanSingleRow 替代 QueryRowContext，保证 ent.Tx 作为 sqlExecutor 可用。
-	repo := &Store{client: client, sql: sqlq, calendar: calendar}
-	if db, ok := sqlq.(*sql.DB); ok {
-		repo.db = db
-	}
-	repo.bestEffortRecent = gocache.New(usageLogBestEffortRecentTTL, 0)
-	return repo
 }
 
 func buildWhere(conditions []string) string {
@@ -303,7 +309,7 @@ func (r *Store) GetDashboardPublicStats(ctx context.Context, start, end time.Tim
 
 // usageRankingQueryParts 只返回受控的 SQL 片段，避免把设置值直接拼接进查询。
 func usageRankingQueryParts(sortBy usage.UsageRankingSortBy) (eligibility, orderBy string) {
-	switch usage.UsageRankingSortBy(usage.NormalizeUsageRankingSortBy(string(sortBy))) {
+	switch usage.NormalizeUsageRankingSortBy(string(sortBy)) {
 	case usage.UsageRankingSortByRequests:
 		return "COUNT(*) > 0", "requests DESC, total_tokens DESC, actual_cost DESC, user_id ASC"
 	case usage.UsageRankingSortByActualCost:
@@ -485,10 +491,6 @@ func rankingDisplayName(username, email string, userID int64) string {
 	}
 	return fmt.Sprintf("User #%d", userID)
 }
-
-type UsageRankingItem = usage.UsageRankingItem
-
-type UsageRankingResponse = usage.UsageRankingResponse
 
 // ExpireRuntimeCaches 不再隐式启动无法关闭的 janitor。
 func (r *Store) ExpireRuntimeCaches() {

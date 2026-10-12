@@ -227,7 +227,7 @@ func (l *KeyInvalidAuthAbuseLimiter) KeyShard(clientKey string) *KeyInvalidAuthA
 	const fnvOffset32 = uint32(2166136261)
 	const fnvPrime32 = uint32(16777619)
 	hash := fnvOffset32
-	for i := 0; i < len(clientKey); i++ {
+	for i := range len(clientKey) {
 		hash ^= uint32(clientKey[i])
 		hash *= fnvPrime32
 	}

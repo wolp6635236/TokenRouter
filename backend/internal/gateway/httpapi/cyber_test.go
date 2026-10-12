@@ -1,79 +1,14 @@
 package httpapi
 
 import (
-	"context"
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/TokenFlux/TokenRouter/internal/moderation"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
-
-// 逐步执行替身记录调用顺序，调用未实现接口时测试失败。
-type cyberTestPorts struct {
-	CyberBackend
-	ModerationPort
-	events   []string
-	scope    bool
-	scopeErr error
-	mark     moderationflow.Mark
-	task     func()
-	entry    *ops.OpsInsertErrorLogInput
-	enabled  bool
-	found    string
-}
-
-func (p *cyberTestPorts) Mark(*gin.Context) *moderationflow.Mark       { return &p.mark }
-func (p *cyberTestPorts) UpstreamEndpoint(*gin.Context, string) string { return "/v1/responses" }
-func (p *cyberTestPorts) Inbound(*gin.Context) string                  { return "/v1/responses" }
-func (p *cyberTestPorts) Forced(*gin.Context) (string, bool)           { return "", false }
-func (p *cyberTestPorts) CyberWarningInScope(context.Context, moderation.ContentModerationCyberWarningInput) (bool, error) {
-	p.events = append(p.events, "scope")
-	return p.scope, p.scopeErr
-}
-
-func (p *cyberTestPorts) RecordCyberWarning(context.Context, moderation.ContentModerationCyberWarningInput) (*moderation.ContentModerationCyberWarning, error) {
-	p.events = append(p.events, "warning")
-	return &moderation.ContentModerationCyberWarning{ID: 6}, nil
-}
-
-func (p *cyberTestPorts) MarkCyberSessionBlocked(context.Context, string, []string) {
-	p.events = append(p.events, "block")
-}
-
-func (p *cyberTestPorts) Go(_ string, fn func()) bool {
-	p.events = append(p.events, "submit")
-	p.task = fn
-	return true
-}
-
-func (p *cyberTestPorts) Enqueue(e *ops.OpsInsertErrorLogInput) {
-	p.events = append(p.events, "ops")
-	p.entry = e
-}
-func (p *cyberTestPorts) Available() bool { return true }
-func (p *cyberTestPorts) Enabled(context.Context) bool {
-	p.events = append(p.events, "enabled")
-	return p.enabled
-}
-
-func (p *cyberTestPorts) CyberSessionBlockGroupInScope(context.Context, *int64) (bool, error) {
-	p.events = append(p.events, "group")
-	return p.scope, p.scopeErr
-}
-
-func (p *cyberTestPorts) Find(context.Context, int64, *gin.Context, []byte) string {
-	p.events = append(p.events, "find")
-	return p.found
-}
-func (p *cyberTestPorts) StopKeepalive(*gin.Context) bool { return false }
-func (p *cyberTestPorts) Check(context.Context, moderation.ContentModerationCheckInput) (*moderation.ContentModerationDecision, error) {
-	return nil, errors.New("failed")
-}
 
 func newCyberTest(p *cyberTestPorts) *CyberHandler {
 	return NewCyberHandler(p, p, p, moderationflow.Runtime{Tasks: p, Blocks: p, Ops: p})

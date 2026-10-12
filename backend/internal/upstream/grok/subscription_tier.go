@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-// GrokQuotaSignalMaxAge 限制 grok-4.5 Responses 额度窗口影响 SuperGrok/Heavy 推断的最长时间。
-const GrokQuotaSignalMaxAge = 24 * time.Hour
-
 const (
+	// GrokQuotaSignalMaxAge 限制 grok-4.5 Responses 额度窗口影响 SuperGrok/Heavy 推断的最长时间。
+	GrokQuotaSignalMaxAge = 24 * time.Hour
+
 	grok45ResponsesModel             = "grok-4.5"
 	grokHeavyQuotaRequestLimit int64 = 8_300
 	grokHeavyQuotaTokenLimit   int64 = 53_000_000

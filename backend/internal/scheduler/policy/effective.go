@@ -5,6 +5,15 @@ import (
 	"math"
 )
 
+const (
+	defaultAdvancedSchedulerErrorRateAlpha = 0.2
+	defaultAdvancedSchedulerTTFTAlpha      = 0.2
+
+	// 消息串行和节流模式使用配置中的字符串值。
+	MessageQueueSerialize = "serialize"
+	MessageQueueThrottle  = "throttle"
+)
+
 // EffectiveSettings 是完成全局与分组覆盖合并后的请求级配置。
 // 分组字段优先级最高；缺失字段继续继承设置仓库和静态配置的结果。
 type EffectiveSettings struct {
@@ -14,6 +23,51 @@ type EffectiveSettings struct {
 	Weights                     ScoreWeights
 	Feedback                    FeedbackConfig
 	StickyEscape                StickyEscapeConfig
+}
+
+type ScoreWeights struct {
+	Priority  float64
+	Load      float64
+	Queue     float64
+	ErrorRate float64
+	TTFT      float64
+	// Reset 为会话窗口更早重置的提供商加分，默认为 0，表示关闭。
+	Reset float64
+	// QuotaHeadroom 倾向 Codex 7d 剩余额度更健康的提供商；0 表示关闭（默认）。
+	QuotaHeadroom float64
+	Previous      float64
+	SessionSticky float64
+}
+
+type RuntimeSettings struct {
+	StickyWeightedEnabled       bool
+	SubscriptionPriorityEnabled bool
+	LbTopKOverride              int
+	WeightOverrides             map[string]float64
+	EwmaErrorRateAlpha          float64
+	EwmaErrorRateAlphaSet       bool
+	EwmaTTFTAlpha               float64
+	EwmaTTFTAlphaSet            bool
+	StickyEscapeEnabled         bool
+	StickyEscapeEnabledSet      bool
+	StickyEscapeTTFTMs          float64
+	StickyEscapeTTFTMsSet       bool
+	StickyEscapeErrorRate       float64
+	StickyEscapeErrorRateSet    bool
+	StickyEscape                StickyEscapeConfig
+}
+
+type StickyEscapeConfig struct {
+	Enabled   bool
+	TtftMs    float64
+	ErrorRate float64
+}
+
+// FeedbackConfig 保存一次请求回写运行时反馈时使用的 EWMA 系数。
+// 统计仍按提供商共享，但系数由请求最终命中的分组决定。
+type FeedbackConfig struct {
+	ErrorRateAlpha float64
+	TtftAlpha      float64
 }
 
 // ValidateGroupOverrides 校验分组覆盖字段的取值范围。
@@ -70,20 +124,20 @@ func ValidateGroupOverrides(overrides GroupAdvancedSchedulerOverrides) error {
 
 // ValidateEffectiveWeights 校验合并后的完整权重。
 // 基础权重总和可以为零，基础权重和全部权重的总和都需要是有限值。
-func ValidateEffectiveWeights(Weights ScoreWeights) error {
+func ValidateEffectiveWeights(weights ScoreWeights) error {
 	values := []struct {
 		name  string
 		value float64
 	}{
-		{"weight_priority", Weights.Priority},
-		{"weight_load", Weights.Load},
-		{"weight_queue", Weights.Queue},
-		{"weight_error_rate", Weights.ErrorRate},
-		{"weight_ttft", Weights.TTFT},
-		{"weight_reset", Weights.Reset},
-		{"weight_quota_headroom", Weights.QuotaHeadroom},
-		{"weight_previous_response", Weights.Previous},
-		{"weight_session_sticky", Weights.SessionSticky},
+		{"weight_priority", weights.Priority},
+		{"weight_load", weights.Load},
+		{"weight_queue", weights.Queue},
+		{"weight_error_rate", weights.ErrorRate},
+		{"weight_ttft", weights.TTFT},
+		{"weight_reset", weights.Reset},
+		{"weight_quota_headroom", weights.QuotaHeadroom},
+		{"weight_previous_response", weights.Previous},
+		{"weight_session_sticky", weights.SessionSticky},
 	}
 	for _, item := range values {
 		if item.value < 0 || math.IsNaN(item.value) || math.IsInf(item.value, 0) {
@@ -91,7 +145,7 @@ func ValidateEffectiveWeights(Weights ScoreWeights) error {
 		}
 	}
 
-	resolved := Weights
+	resolved := weights
 	if baseSum := resolved.BaseWeightSum(); math.IsNaN(baseSum) || math.IsInf(baseSum, 0) {
 		return fmt.Errorf("base-weight sum must be finite")
 	}
@@ -116,37 +170,37 @@ func HasWeightOverrides(overrides GroupAdvancedSchedulerOverrides) bool {
 
 // ApplyGroupWeightOverrides 替换分组提供的权重字段。
 func ApplyGroupWeightOverrides(
-	Weights ScoreWeights,
+	weights ScoreWeights,
 	overrides GroupAdvancedSchedulerOverrides,
 ) ScoreWeights {
 	if overrides.WeightPriority != nil {
-		Weights.Priority = *overrides.WeightPriority
+		weights.Priority = *overrides.WeightPriority
 	}
 	if overrides.WeightLoad != nil {
-		Weights.Load = *overrides.WeightLoad
+		weights.Load = *overrides.WeightLoad
 	}
 	if overrides.WeightQueue != nil {
-		Weights.Queue = *overrides.WeightQueue
+		weights.Queue = *overrides.WeightQueue
 	}
 	if overrides.WeightErrorRate != nil {
-		Weights.ErrorRate = *overrides.WeightErrorRate
+		weights.ErrorRate = *overrides.WeightErrorRate
 	}
 	if overrides.WeightTTFT != nil {
-		Weights.TTFT = *overrides.WeightTTFT
+		weights.TTFT = *overrides.WeightTTFT
 	}
 	if overrides.WeightReset != nil {
-		Weights.Reset = *overrides.WeightReset
+		weights.Reset = *overrides.WeightReset
 	}
 	if overrides.WeightQuotaHeadroom != nil {
-		Weights.QuotaHeadroom = *overrides.WeightQuotaHeadroom
+		weights.QuotaHeadroom = *overrides.WeightQuotaHeadroom
 	}
 	if overrides.WeightPreviousResponse != nil {
-		Weights.Previous = *overrides.WeightPreviousResponse
+		weights.Previous = *overrides.WeightPreviousResponse
 	}
 	if overrides.WeightSessionSticky != nil {
-		Weights.SessionSticky = *overrides.WeightSessionSticky
+		weights.SessionSticky = *overrides.WeightSessionSticky
 	}
-	return Weights
+	return weights
 }
 
 // ResolveEffective 以全局生效配置为基线合并分组覆盖。
@@ -211,44 +265,6 @@ func ResolveEffective(
 	return effective
 }
 
-type ScoreWeights struct {
-	Priority  float64
-	Load      float64
-	Queue     float64
-	ErrorRate float64
-	TTFT      float64
-	// Reset 为会话窗口更早重置的提供商加分，默认为 0，表示关闭。
-	Reset float64
-	// QuotaHeadroom 倾向 Codex 7d 剩余额度更健康的提供商；0 表示关闭（默认）。
-	QuotaHeadroom float64
-	Previous      float64
-	SessionSticky float64
-}
-
-type RuntimeSettings struct {
-	StickyWeightedEnabled       bool
-	SubscriptionPriorityEnabled bool
-	LbTopKOverride              int
-	WeightOverrides             map[string]float64
-	EwmaErrorRateAlpha          float64
-	EwmaErrorRateAlphaSet       bool
-	EwmaTTFTAlpha               float64
-	EwmaTTFTAlphaSet            bool
-	StickyEscapeEnabled         bool
-	StickyEscapeEnabledSet      bool
-	StickyEscapeTTFTMs          float64
-	StickyEscapeTTFTMsSet       bool
-	StickyEscapeErrorRate       float64
-	StickyEscapeErrorRateSet    bool
-	StickyEscape                StickyEscapeConfig
-}
-
-type StickyEscapeConfig struct {
-	Enabled   bool
-	TtftMs    float64
-	ErrorRate float64
-}
-
 // NormalizeStickyEscape 将健康逃逸配置限制在允许的取值范围内。
 func NormalizeStickyEscape(value StickyEscapeConfig) StickyEscapeConfig {
 	thresholdsUnset := value.TtftMs == 0 && value.ErrorRate == 0
@@ -269,45 +285,33 @@ func NormalizeStickyEscape(value StickyEscapeConfig) StickyEscapeConfig {
 }
 
 func ApplyGlobalWeightOverrides(
-	Weights ScoreWeights,
+	weights ScoreWeights,
 	overrides map[string]float64,
 ) ScoreWeights {
 	for key, value := range overrides {
 		switch key {
 		case "priority":
-			Weights.Priority = value
+			weights.Priority = value
 		case "load":
-			Weights.Load = value
+			weights.Load = value
 		case "queue":
-			Weights.Queue = value
+			weights.Queue = value
 		case "error_rate":
-			Weights.ErrorRate = value
+			weights.ErrorRate = value
 		case "ttft":
-			Weights.TTFT = value
+			weights.TTFT = value
 		case "reset":
-			Weights.Reset = value
+			weights.Reset = value
 		case "quota_headroom":
-			Weights.QuotaHeadroom = value
+			weights.QuotaHeadroom = value
 		case "previous_response":
-			Weights.Previous = value
+			weights.Previous = value
 		case "session_sticky":
-			Weights.SessionSticky = value
+			weights.SessionSticky = value
 		}
 	}
-	return Weights
+	return weights
 }
-
-// FeedbackConfig 保存一次请求回写运行时反馈时使用的 EWMA 系数。
-// 统计仍按提供商共享，但系数由请求最终命中的分组决定。
-type FeedbackConfig struct {
-	ErrorRateAlpha float64
-	TtftAlpha      float64
-}
-
-const (
-	defaultAdvancedSchedulerErrorRateAlpha = 0.2
-	defaultAdvancedSchedulerTTFTAlpha      = 0.2
-)
 
 func NormalizeFeedback(value FeedbackConfig) FeedbackConfig {
 	if value.ErrorRateAlpha <= 0 || value.ErrorRateAlpha > 1 || math.IsNaN(value.ErrorRateAlpha) || math.IsInf(value.ErrorRateAlpha, 0) {

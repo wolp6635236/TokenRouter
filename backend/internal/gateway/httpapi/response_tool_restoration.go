@@ -3,21 +3,26 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	openaicore "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
-	"fmt"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
+	openaicore "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+const responseToolsContextKey = "gateway_response_tools"
+
+// 初始化只保护每个 HTTP 请求的状态指针发布，工具内容仍由请求自己持有。
+var responseToolsInit sync.Mutex
 
 func SetCodexToolNameReverse(c *gin.Context, reverse map[string]string) {
 	if c == nil {
@@ -32,12 +37,8 @@ func MergeCodexToolNameReverse(c *gin.Context, reverse map[string]string) {
 		return
 	}
 	merged := make(map[string]string, len(reverse)+len(CodexToolNameReverseFromContext(c)))
-	for aliased, original := range CodexToolNameReverseFromContext(c) {
-		merged[aliased] = original
-	}
-	for aliased, original := range reverse {
-		merged[aliased] = original
-	}
+	maps.Copy(merged, CodexToolNameReverseFromContext(c))
+	maps.Copy(merged, reverse)
 	responseTools(c, true).SetCodexNames(false, merged)
 }
 
@@ -165,11 +166,6 @@ func RestoreOpenAIResponsesNamespacePayload(c *gin.Context, payload []byte) ([]b
 	return payload, nil
 }
 
-const responseToolsContextKey = "gateway_response_tools"
-
-// 初始化只保护每个 HTTP 请求的状态指针发布，工具内容仍由请求自己持有。
-var responseToolsInit sync.Mutex
-
 func responseTools(c *gin.Context, create bool) *requeststate.ResponseTools {
 	if c == nil {
 		return nil
@@ -193,6 +189,7 @@ func responseTools(c *gin.Context, create bool) *requeststate.ResponseTools {
 	c.Set(responseToolsContextKey, state)
 	return state
 }
+
 func SetOpenAIResponsesClientToolMapping(c *gin.Context, mapping protocolbridge.ResponsesClientToolMapping) {
 	if !HasOpenAIResponsesClientToolMapping(mapping) {
 		ClearOpenAIResponsesClientToolMapping(c)
@@ -200,13 +197,16 @@ func SetOpenAIResponsesClientToolMapping(c *gin.Context, mapping protocolbridge.
 	}
 	responseTools(c, true).SetClientMapping(false, mapping)
 }
+
 func ClearOpenAIResponsesClientToolMapping(c *gin.Context) {
 	responseTools(c, false).SetClientMapping(false, protocolbridge.ResponsesClientToolMapping{})
 }
+
 func OpenAIResponsesClientToolMapping(c *gin.Context) (protocolbridge.ResponsesClientToolMapping, bool) {
 	mapping := responseTools(c, false).ClientMapping(false)
 	return mapping, HasOpenAIResponsesClientToolMapping(mapping)
 }
+
 func SetGrokResponsesClientToolMapping(c *gin.Context, mapping protocolbridge.ResponsesClientToolMapping) {
 	if !HasOpenAIResponsesClientToolMapping(mapping) {
 		ClearGrokResponsesClientToolMapping(c)
@@ -214,25 +214,32 @@ func SetGrokResponsesClientToolMapping(c *gin.Context, mapping protocolbridge.Re
 	}
 	responseTools(c, true).SetClientMapping(true, mapping)
 }
+
 func ClearGrokResponsesClientToolMapping(c *gin.Context) {
 	responseTools(c, false).SetClientMapping(true, protocolbridge.ResponsesClientToolMapping{})
 }
+
 func GrokResponsesClientToolMapping(c *gin.Context) (protocolbridge.ResponsesClientToolMapping, bool) {
 	mapping := responseTools(c, false).ClientMapping(true)
 	return mapping, HasOpenAIResponsesClientToolMapping(mapping)
 }
+
 func SetOpenAIResponsesNamespaceNames(c *gin.Context, names map[string]protocolbridge.ResponsesNamespaceName) {
 	if len(names) > 0 {
 		responseTools(c, true).SetNamespaces(names)
 	}
 }
+
 func ClearOpenAIResponsesNamespaceNames(c *gin.Context) { responseTools(c, false).SetNamespaces(nil) }
+
 func OpenAIResponsesNamespaceNames(c *gin.Context) map[string]protocolbridge.ResponsesNamespaceName {
 	return responseTools(c, false).Namespaces()
 }
+
 func OpenAIWSHTTPBridgeToolStateFromContext(c *gin.Context) (requeststate.WSBridgeTools, bool) {
 	return responseTools(c, false).Bridge()
 }
+
 func SetOpenAIWSHTTPBridgeToolState(c *gin.Context, state requeststate.WSBridgeTools) {
 	responseTools(c, true).SetBridge(state)
 }

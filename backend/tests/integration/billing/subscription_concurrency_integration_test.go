@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/stretchr/testify/require"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 )
 
 // 只暂停真实仓储的首次读取，让另一个管理员同时延长同一条时间链。

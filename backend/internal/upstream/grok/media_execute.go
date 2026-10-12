@@ -28,19 +28,19 @@ type MediaTarget struct {
 	CopyHeaders    func(http.Header, http.Header)
 }
 
-func (t *MediaTarget) TargetID() int64  { return t.ProviderID }
-func (*MediaTarget) String() string     { return "grok media target" }
-func (t *MediaTarget) GoString() string { return t.String() }
-
 // MissingImageOutput 只描述供应商成功报文缺少实际图片，故障转移由调用者决定。
 type MissingImageOutput struct {
 	Body    []byte
 	Headers http.Header
 }
 
-func (*MissingImageOutput) Error() string { return "xAI upstream returned no image output" }
-
 type MediaExecutor struct{}
+
+func (t *MediaTarget) TargetID() int64  { return t.ProviderID }
+func (*MediaTarget) String() string     { return "grok media target" }
+func (t *MediaTarget) GoString() string { return t.String() }
+
+func (*MissingImageOutput) Error() string { return "xAI upstream returned no image output" }
 
 func (MediaExecutor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
 	target, ok := input.Target.(*MediaTarget)

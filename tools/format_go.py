@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""筛选改动的手写 Go 文件，使用项目 golangci-lint 配置格式化。"""
+"""筛选改动的手写 Go 文件，重排顶层声明后使用项目 golangci-lint 配置格式化。"""
 
 import argparse
 import os
@@ -61,15 +61,33 @@ def main() -> int:
         print("没有需要格式化的手写 Go 文件。")
         return 0
 
-    # 所有格式规则只读取现有配置，工具版本由统一入口校验。
-    command = [
-        "bash", str(root / "tools/golangci-lint.sh"),
-        "fmt", "--config", str(root / "backend/.golangci.yml"),
-    ]
+    # 版本不符时在改写任何文件之前退出。
+    lint = ["bash", str(root / "tools/golangci-lint.sh")]
+    result = subprocess.run([*lint, "version", "--short"], cwd=root, check=False, stdout=subprocess.DEVNULL)
+    if result.returncode != 0:
+        return result.returncode
+
+    different = False
+    # 先按 const、var、type、func 重排顶层声明，再交给 gofumpt 和 gci 统一格式。
+    reorder = ["go", "run", "."]
+    if not args.check:
+        reorder.append("-w")
+    env = {**os.environ, "GOWORK": "off"}
+    for start in range(0, len(files), 100):
+        result = subprocess.run(
+            [*reorder, *map(str, files[start:start + 100])],
+            cwd=root / "tools/declorder", env=env, check=False,
+        )
+        if result.returncode != 0:
+            if not args.check or result.returncode != 1:
+                return result.returncode
+            different = True
+
+    # 所有格式规则只读取现有配置。
+    command = [*lint, "fmt", "--config", str(root / "backend/.golangci.yml")]
     if args.check:
         command.append("--diff")
 
-    different = False
     # 分批传参，避免大量变更超出系统命令行长度限制。
     for start in range(0, len(files), 100):
         result = subprocess.run(

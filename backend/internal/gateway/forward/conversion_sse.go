@@ -8,10 +8,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
+const defaultConversionSSEFrameBytes = 500 * 1024 * 1024
+
 // ErrConversionSSEFrameTooLarge 表示累计的 SSE 帧超过转换器上限。
 var ErrConversionSSEFrameTooLarge = errors.New("the upstream SSE frame exceeds the size limit")
-
-const defaultConversionSSEFrameBytes = 500 * 1024 * 1024
 
 // conversionSSEScanner 按空行划分上游事件，合并多行 data，并接受省略 event 的帧。
 type conversionSSEScanner struct {

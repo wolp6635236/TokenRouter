@@ -6,10 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 const CodexTurnStateHeader = "x-codex-turn-state"

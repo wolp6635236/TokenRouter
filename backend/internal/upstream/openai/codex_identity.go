@@ -6,22 +6,36 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 	"github.com/google/uuid"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 )
 
-// CodexUpstreamMinVersion 上游 /backend-api/codex 接受的最低 version 头：
-// 若请求携带 version 且低于该值，上游直接 404（issue #3901，2026-07 实测）。
-const CodexUpstreamMinVersion = "0.144.0"
+const (
+	// CodexUpstreamMinVersion 上游 /backend-api/codex 接受的最低 version 头：
+	// 若请求携带 version 且低于该值，上游直接 404（issue #3901，2026-07 实测）。
+	CodexUpstreamMinVersion = "0.144.0"
 
-const CodexClientVersionMaxLen = 64
+	CodexClientVersionMaxLen = 64
 
-var codexClientVersionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?$`)
+	CodexCLIVersion   = "0.144.1"
+	CodexCLIUserAgent = CodexDefaultOriginator + "/" + CodexCLIVersion + " (Ubuntu 22.4.0; x86_64) xterm-256color"
+
+	CodexDefaultOriginator = clientmeta.CodexDefaultOriginator
+)
 
 var (
+	codexClientVersionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?$`)
+
 	codexCanonicalUAMu       sync.RWMutex
 	codexCanonicalUAResolver func() string
 )
+
+type CodexOutboundIdentity struct {
+	UserAgent  string
+	Originator string
+	Version    string
+}
 
 // SetCodexCanonicalUserAgentResolver 注入后台设置提供的规范 Codex UA 解析器。
 // 无法注入或解析失败时，所有无提供商出站路径回退到编译期默认身份。
@@ -55,12 +69,6 @@ func ApplyCodexCanonicalAuthIdentity(h http.Header) {
 // CodexCanonicalClientVersion 返回与规范 UA 同源的版本号。
 func CodexCanonicalClientVersion() string {
 	return ResolveCodexOutboundIdentity("").Version
-}
-
-type CodexOutboundIdentity struct {
-	UserAgent  string
-	Originator string
-	Version    string
 }
 
 func ConfiguredCodexUserAgent() string {
@@ -195,7 +203,51 @@ func EnforceCodexIdentityHeadersWithUA(h http.Header, overrideUA string) {
 	}
 }
 
-const (
-	CodexCLIVersion   = "0.144.1"
-	CodexCLIUserAgent = CodexDefaultOriginator + "/" + CodexCLIVersion + " (Ubuntu 22.4.0; x86_64) xterm-256color"
-)
+// ResolveUpstreamOriginator 按路由覆盖、客户端原值、官方默认值和兼容默认值的顺序选择 originator。
+func ResolveUpstreamOriginator(read func() string, official, matched bool, routed string) string {
+	if matched {
+		if value := strings.TrimSpace(routed); value != "" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(read()); value != "" {
+		return value
+	}
+	if official {
+		return ResolveCodexOutboundIdentity("").Originator
+	}
+	return "opencode"
+}
+
+// IsBrowserUserAgent 判断 User-Agent 是否属于浏览器。
+func IsBrowserUserAgent(userAgent string) bool { return clientmeta.IsBrowserUserAgent(userAgent) }
+
+// IsCodexOfficialClientRequest 判断请求是否来自官方 Codex 客户端。
+func IsCodexOfficialClientRequest(userAgent string) bool {
+	return clientmeta.IsCodexOfficialClientRequest(userAgent)
+}
+
+// IsCodexOfficialClientRequestStrict 按完整身份格式识别官方 Codex 客户端。
+func IsCodexOfficialClientRequestStrict(userAgent string) bool {
+	return clientmeta.IsCodexOfficialClientRequestStrict(userAgent)
+}
+
+// IsCodexOfficialClientOriginator 识别官方 Codex originator。
+func IsCodexOfficialClientOriginator(originator string) bool {
+	return clientmeta.IsCodexOfficialClientOriginator(originator)
+}
+
+// IsCodexOfficialClientByHeaders 根据 User-Agent 和 originator 识别官方客户端。
+func IsCodexOfficialClientByHeaders(userAgent, originator string) bool {
+	return clientmeta.IsCodexOfficialClientByHeaders(userAgent, originator)
+}
+
+// PairCodexClientIdentity 配对 User-Agent 与 originator。
+func PairCodexClientIdentity(userAgent string) (originator string, pairedUA string, ok bool) {
+	return clientmeta.PairCodexClientIdentity(userAgent)
+}
+
+// normalizeCodexClientHeader 归一化客户端许可策略使用的请求头。
+func normalizeCodexClientHeader(value string) string {
+	return clientmeta.NormalizeCodexClientHeader(value)
+}

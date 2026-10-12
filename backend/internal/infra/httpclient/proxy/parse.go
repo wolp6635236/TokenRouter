@@ -2,11 +2,12 @@ package proxy
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 )
 
-// allowedSchemes 代理协议白名单
+// allowedSchemes 列出支持的代理协议。
 var allowedSchemes = map[string]bool{
 	"http":    true,
 	"https":   true,
@@ -14,19 +15,9 @@ var allowedSchemes = map[string]bool{
 	"socks5h": true,
 }
 
-// Parse 解析并验证代理 URL。
-//
-// 语义:
-//   - 空字符串 → ("", nil, nil)，表示直连
-//   - 非空且有效 → (trimmed, *url.URL, nil)
-//   - 非空但无效 → ("", nil, error)，fail-fast 不回退
-//
-// 验证规则:
-//   - TrimSpace 后为空视为直连
-//   - url.Parse 失败返回 error（不含原始 URL，防凭据泄露）
-//   - Host 为空返回 error（用 Redacted() 脱敏）
-//   - Scheme 必须为 http/https/socks5/socks5h
-//   - socks5:// 自动升级为 socks5h://（确保 DNS 由代理端解析，防止 DNS 泄漏）
+// Parse 解析代理 URL，支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H。
+// 去除首尾空白后为空时返回直连结果，解析失败、缺少主机或协议不受支持时返回错误。
+// SOCKS5 地址转换为 SOCKS5H，有效地址返回去除空白的字符串和解析结果。
 func Parse(raw string) (trimmed string, parsed *url.URL, err error) {
 	trimmed = strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -35,7 +26,7 @@ func Parse(raw string) (trimmed string, parsed *url.URL, err error) {
 
 	parsed, err = url.Parse(trimmed)
 	if err != nil {
-		// 不使用 %w 包装，避免 url.Parse 的底层错误消息泄漏原始 URL（可能含凭据）
+		// 将 URL 解析错误写入返回的错误消息。
 		return "", nil, fmt.Errorf("invalid proxy URL: %v", err)
 	}
 
@@ -48,13 +39,43 @@ func Parse(raw string) (trimmed string, parsed *url.URL, err error) {
 		return "", nil, fmt.Errorf("unsupported proxy scheme %q (allowed: http, https, socks5, socks5h)", scheme)
 	}
 
-	// 自动升级 socks5 → socks5h，确保 DNS 由代理端解析，防止 DNS 泄漏。
-	// Go 的 golang.org/x/net/proxy 对 socks5:// 默认在客户端本地解析 DNS，
-	// 仅 socks5h:// 才将域名发送给代理端做远程 DNS 解析。
+	// 将 SOCKS5 地址规范为 SOCKS5H。
 	if scheme == "socks5" {
 		parsed.Scheme = "socks5h"
 		trimmed = parsed.String()
 	}
 
 	return trimmed, parsed, nil
+}
+
+// NormalizePoolKey 返回代理连接池使用的规范 URL 键和解析结果。
+func NormalizePoolKey(raw string) (string, *url.URL, error) {
+	_, parsed, err := Parse(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	if parsed == nil {
+		return "direct", nil, nil
+	}
+	// 规范化：小写 scheme/host，去除路径和查询参数
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.ForceQuery = false
+	if hostname := parsed.Hostname(); hostname != "" {
+		port := parsed.Port()
+		if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+			port = ""
+		}
+		hostname = strings.ToLower(hostname)
+		if port != "" {
+			parsed.Host = net.JoinHostPort(hostname, port)
+		} else {
+			parsed.Host = hostname
+		}
+	}
+	return parsed.String(), parsed, nil
 }

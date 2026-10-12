@@ -6,9 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // UpdateDefaultPricing 只在管理员明确更新时重新加载目录，普通查询不触发同步。

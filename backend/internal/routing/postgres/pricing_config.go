@@ -6,16 +6,17 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lib/pq"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/lib/pq"
 )
 
 type PricingConfigStore struct {
 	db *sql.DB
 }
 
-// NewPricingConfigStore 创建价格配置数据访问实例
+// NewPricingConfigStore 创建价格配置数据访问实例。
 func NewPricingConfigStore(db *sql.DB) *PricingConfigStore {
 	return &PricingConfigStore{db: db}
 }
@@ -223,10 +224,7 @@ func (r *PricingConfigStore) List(ctx context.Context, params pagination.Paginat
 	}
 
 	pageSize := params.Limit() // 约束在 [1, 100]
-	page := params.Page
-	if page < 1 {
-		page = 1
-	}
+	page := max(params.Page, 1)
 	offset := (page - 1) * pageSize
 
 	// 查询 pricingConfig 列表
@@ -400,7 +398,7 @@ func (r *PricingConfigStore) ListAll(ctx context.Context) ([]routing.PricingConf
 	return pricingConfigs, nil
 }
 
-// batchLoadGroupIDs 批量加载多个价格配置的分组 ID
+// batchLoadGroupIDs 批量加载多个价格配置的分组 ID。
 func (r *PricingConfigStore) batchLoadGroupIDs(ctx context.Context, pricingConfigIDs []int64) (map[int64][]int64, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT pricing_config_id, group_id FROM pricing_config_groups

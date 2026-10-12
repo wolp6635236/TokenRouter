@@ -112,7 +112,7 @@ func CountTokens(ctx context.Context, p CountPorts, in MessageInput, parsed *req
 	// 先记录首发 wire body；如果后面进入 400 retry，retry 会基于未签名的逻辑 body 重新构建。
 	acceptedWireBody := wireBody
 
-	// 获取代理URL（自定义 base URL 模式下，proxy 通过 buildCustomRelayURL 作为查询参数传递）
+	// 获取代理 URL（自定义 base URL 模式下，proxy 通过 buildCustomRelayURL 作为查询参数传递）
 	resp, err := p.SendCount(ctx, false)
 	if err != nil {
 		p.SetError(0, p.Sanitize(err.Error()), "")

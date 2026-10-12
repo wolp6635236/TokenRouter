@@ -9,7 +9,7 @@ import (
 
 type AuthRepository struct{ State *AuthState }
 
-func (r *AuthRepository) HasDatabase() bool { return r != nil && r.State.HasDatabase() }
+func (s *AuthRepository) HasDatabase() bool { return s != nil && s.State.HasDatabase() }
 func (s *AuthRepository) ApplyProviderDefaultSettingsOnFirstBind(
 	ctx context.Context,
 	userID int64,

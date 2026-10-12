@@ -8,18 +8,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
+// 本模块继续使用现有设置键。
+const (
+	SettingKeyCyberSessionBlockEnabled    = "cyber_session_block_enabled"
+	SettingKeyCyberSessionBlockTTLSeconds = "cyber_session_block_ttl_seconds"
+)
+
 // AdminSettings 只包含本模块的管理开关与运行参数。
 type AdminSettings struct {
 	RiskControlEnabled          bool `json:"risk_control_enabled"`
 	CyberSessionBlockEnabled    bool `json:"cyber_session_block_enabled"`
 	CyberSessionBlockTTLSeconds int  `json:"cyber_session_block_ttl_seconds"`
 }
-
-// 本模块继续使用现有设置键。
-const (
-	SettingKeyCyberSessionBlockEnabled    = "cyber_session_block_enabled"
-	SettingKeyCyberSessionBlockTTLSeconds = "cyber_session_block_ttl_seconds"
-)
 
 // PrepareAdminSettings 保留既有编码和合法范围，不启动任务或发布成功通知。
 func PrepareAdminSettings(value AdminSettings) (AdminSettings, map[string]string, error) {

@@ -22,7 +22,8 @@
             </div>
           </div>
         </div>
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <!-- 按请求 ID 筛选时只看统计卡和表格，分布图和趋势图隐藏 -->
+        <div v-if="!filters.request_id" class="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <ModelDistributionChart
             v-model:source="modelDistributionSource"
             v-model:metric="modelDistributionMetric"
@@ -47,7 +48,7 @@
             :filters="breakdownFilters"
           />
         </div>
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div v-if="!filters.request_id" class="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <EndpointDistributionChart
             v-model:source="endpointDistributionSource"
             v-model:metric="endpointDistributionMetric"
@@ -208,6 +209,7 @@ import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admi
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
 import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
+import { calculateUsageTps } from '@/utils/usageTps'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'; import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
@@ -326,6 +328,8 @@ const getGranularityForRange = (start: string, end: string): 'day' | 'hour' => {
 }
 const defaultRange = getLast24HoursRangeDates()
 const startDate = ref(defaultRange.start); const endDate = ref(defaultRange.end)
+// 按请求 ID 查询时不带日期范围，保留期内的记录都能查到。
+const requestDateParams = () => filters.value.request_id ? { start_date: undefined, end_date: undefined } : {}
 const filters = ref<AdminUsageQueryParams>({ user_id: undefined, model: undefined, group_id: undefined, request_type: undefined, billing_type: null, native_compaction_v2: null, start_date: startDate.value, end_date: endDate.value })
 const pagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: 0 })
 const sortState = reactive({
@@ -411,6 +415,7 @@ const buildUsageListParams = (
     page_size: pageSize,
     exact_total: exactTotal,
     ...filters.value,
+    ...requestDateParams(),
     stream: legacyStream === null ? undefined : legacyStream,
     sort_by: sortState.sort_by,
     sort_order: sortState.sort_order
@@ -433,6 +438,7 @@ const statsParams = (source: EndpointSource, force: boolean) => {
   const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
   return {
     ...filters.value,
+    ...requestDateParams(),
     stream: legacyStream === null ? undefined : legacyStream,
     endpoint_source: source,
     ...(force ? { nocache: 1 } : {}),
@@ -550,6 +556,7 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
 }
 
 const loadChartData = async () => {
+  if (filters.value.request_id) return
   const seq = ++chartReqSeq
   chartsLoading.value = true
   try {
@@ -673,10 +680,11 @@ const exportToExcel = async () => {
       t('admin.usage.inputCost'), t('admin.usage.outputCost'),
       t('admin.usage.cacheReadCost'), t('admin.usage.cacheCreationCost'),
       t('usage.rate'), t('usage.providerMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.providerBilled'),
-      t('usage.firstToken'), t('usage.duration'), t('usage.detailedTiming'),
+      t('usage.firstToken'), t('usage.duration'), t('usage.tpsExport'), t('usage.detailedTiming'),
       t('admin.usage.requestId'), t('admin.usage.upstreamRequestId'), t('usage.userAgent'), t('admin.usage.ipAddress')
     ]
     const ws = XLSX.utils.aoa_to_sheet([headers])
+    const tpsColumn = headers.indexOf(t('usage.tpsExport'))
     while (true) {
       const res = await adminUsageAPI.list(
         buildUsageListParams(p, 100, true),
@@ -693,11 +701,17 @@ const exportToExcel = async () => {
         log.rate_multiplier?.toPrecision(4) || '1.00', (log.provider_rate_multiplier ?? 1).toPrecision(4),
         log.total_cost?.toFixed(6) || '0.000000', log.actual_cost?.toFixed(6) || '0.000000',
         ((log.provider_stats_cost ?? log.total_cost) * (log.provider_rate_multiplier ?? 1)).toFixed(6), log.first_token_ms ?? '', log.duration_ms,
+        calculateUsageTps(log) ?? '',
         formatDetailedTimingForExport(log),
         log.request_id || '', log.upstream_request_id || '', log.user_agent || '', log.ip_address || ''
       ])
       if (rows.length) {
         XLSX.utils.sheet_add_aoa(ws, rows, { origin: -1 })
+        // 每批追加后设置 TPS 的显示精度，单元格保存可用于计算的数值。
+        for (let index = 0; index < rows.length; index++) {
+          const cell = ws[XLSX.utils.encode_cell({ r: exportedCount + index + 1, c: tpsColumn })]
+          if (cell?.t === 'n') cell.z = '0.0'
+        }
       }
       exportedCount += rows.length
       exportProgress.current = exportedCount
@@ -716,11 +730,10 @@ const exportToExcel = async () => {
 
 // Column visibility
 const ALWAYS_VISIBLE = ['user', 'created_at']
-const DEFAULT_HIDDEN_COLUMNS = ['reasoning_effort', 'request_id', 'upstream_request_id', 'user_agent']
+const DEFAULT_HIDDEN_COLUMNS = ['reasoning_effort', 'upstream_request_id', 'user_agent']
 const HIDDEN_COLUMNS_KEY = 'usage-hidden-columns'
 const HIDDEN_COLUMNS_VERSION_KEY = 'usage-hidden-columns-version'
 // 隐藏列按版本逐级升级，每级将新增列加入隐藏集，用户打开的既有列保持可见。
-const HIDDEN_COLUMNS_PREV_VERSION = 'request-id-hidden-by-default'
 const HIDDEN_COLUMNS_CURRENT_VERSION = 'upstream-request-id-hidden-by-default'
 
 const allColumns = computed(() => [
@@ -736,6 +749,7 @@ const allColumns = computed(() => [
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
   { key: 'latency', label: t('usage.latency'), sortable: false },
+  { key: 'tps', label: t('usage.tps'), sortable: false },
   { key: 'created_at', label: t('usage.time'), sortable: true },
   { key: 'request_id', label: t('admin.usage.requestId'), sortable: false },
   { key: 'upstream_request_id', label: t('admin.usage.upstreamRequestId'), sortable: false },
@@ -849,9 +863,6 @@ const loadSavedColumns = () => {
       // 升级列偏好时追加新列的默认隐藏状态，已有列使用管理员保存的选择。
       const savedVersion = localStorage.getItem(HIDDEN_COLUMNS_VERSION_KEY)
       if (savedVersion !== HIDDEN_COLUMNS_CURRENT_VERSION) {
-        if (savedVersion !== HIDDEN_COLUMNS_PREV_VERSION) {
-          hiddenColumns.add('request_id')
-        }
         hiddenColumns.add('upstream_request_id')
         localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
         localStorage.setItem(HIDDEN_COLUMNS_VERSION_KEY, HIDDEN_COLUMNS_CURRENT_VERSION)
@@ -909,8 +920,9 @@ const loadAdminErrors = async () => {
       page: errPage.value,
       page_size: errPageSize.value,
       view: 'all',
-      start_time: toRFC3339(filters.value.start_date),
-      end_time: toRFC3339(filters.value.end_date, true),
+      request_id: filters.value.request_id || undefined,
+      start_time: filters.value.request_id ? undefined : toRFC3339(filters.value.start_date),
+      end_time: filters.value.request_id ? undefined : toRFC3339(filters.value.end_date, true),
       user_id: filters.value.user_id ?? undefined,
       api_key_id: filters.value.api_key_id ?? undefined,
       provider_id: filters.value.provider_id ?? undefined,

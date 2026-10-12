@@ -4,20 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	batchimageprovider "github.com/TokenFlux/TokenRouter/internal/batchimage/provider"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
 )
-
-const batchImageTestData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
 
 func TestParseBatchImageResultLine_SuccessShapes(t *testing.T) {
 	tests := []struct {
@@ -47,6 +43,30 @@ func TestParseBatchImageResultLine_SuccessShapes(t *testing.T) {
 			name:   "top_level_candidates",
 			line:   `{"request":{"key":"cover_004"},"candidates":[{"content":{"parts":[{"inline_data":{"mime_type":"image/png","data":"` + batchImageTestData + `"}},{"inlineData":{"mimeType":"image/png","data":"` + batchImageTestData + `"}}]}}]}`,
 			wantID: "cover_004", wantMime: "image/png", wantExt: "png", wantCount: 2,
+		},
+		{
+			name: "response_images_take_priority",
+			line: `{"key":"cover_005","response":{"candidates":[{"content":{"parts":[
+				{"inlineData":{"mimeType":" Image/JPEG ","data":" invalid base64 "}},
+				{"inline_data":{"mime_type":"image/webp","data":"c2Vjb25k"}}
+			]}}]},"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"dGhpcmQ="}}]}}]}`,
+			wantID: "cover_005", wantMime: "Image/JPEG", wantExt: "jpg", wantCount: 2,
+		},
+		{
+			name: "empty_response_falls_back_to_top_level",
+			line: `{"key":"cover_006","response":{"candidates":[{"content":{"parts":[{"text":"none"}]}}]},
+				"candidates":[{"content":{"parts":[{"inline_data":{"mime_type":"image/png","data":"Zmlyc3Q="}}]}}]}`,
+			wantID: "cover_006", wantMime: "image/png", wantExt: "png", wantCount: 1,
+		},
+		{
+			name: "skip_empty_and_non_image_parts",
+			line: `{"key":"cover_007","candidates":[null,{}, {"content":{"parts":[
+				null,{"text":"none"},{"inlineData":{"mimeType":"text/plain","data":"dGV4dA=="}},
+				{"inlineData":{"mimeType":"image/png","data":" \t "}},
+				{"inlineData":{},"inline_data":{"mime_type":"image/png","data":"c2tpcA=="}},
+				{"inlineData":{"mimeType":" ","mime_type":" image/webp ","data":"cGljdHVyZQ=="}}
+			]}}]}`,
+			wantID: "cover_007", wantMime: "image/webp", wantExt: "webp", wantCount: 1,
 		},
 	}
 
@@ -94,10 +114,7 @@ func TestParseBatchImageResultLine_RejectsMissingCustomIDAndDoesNotLeakData(t *t
 }
 
 func TestBatchImageResultIndexer_WritesCountsAndReplacesItems(t *testing.T) {
-	output := strings.Join([]string{
-		`{"key":"ok","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"` + batchImageTestData + `"}}]}}]}}`,
-		`{"key":"bad","error":{"code":"SAFETY","message":"blocked by safety policy"}}`,
-	}, "\n") + "\n"
+	output := `{"key":"ok","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"` + batchImageTestData + `"}}]}}]}}` + "\n" + `{"key":"bad","error":{"code":"SAFETY","message":"blocked by safety policy"}}` + "\n"
 	repo := newFakeBatchImageRepository()
 	outputRef := "files/output"
 	job := &batchimage.BatchImageJob{BatchID: "imgbatch_index", ProviderOutputRef: &outputRef}
@@ -328,62 +345,4 @@ func newTestBatchImageProcessor(repo *fakeBatchImageRepository, platform *fakePr
 		batchimage.NewRegistry[batchimageprovider.BatchImageProvider](platform),
 		&fakeBatchImageProviderResolver{provider: &providercore.Record{}},
 		&batchimage.ResultIndexer{Repo: repo, Observe: resultObserve}, nil, nil, 0)
-}
-
-type fakeBatchImageProviderResolver struct {
-	provider *providercore.Record
-	err      error
-}
-
-func (r *fakeBatchImageProviderResolver) GetByID(context.Context, int64) (*providercore.Record, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
-	return r.provider, nil
-}
-
-type fakeProcessorProvider struct {
-	status *batchimage.BatchProviderStatus
-	getErr error
-	result string
-
-	getCalled        bool
-	openResultCalled bool
-}
-
-func (p *fakeProcessorProvider) Name() string { return "fake" }
-func (p *fakeProcessorProvider) SupportsProvider(*providercore.Record) bool {
-	return true
-}
-
-func (p *fakeProcessorProvider) Submit(context.Context, *batchimage.BatchImageJob, *providercore.Record, batchimage.BatchImageInput) (*batchimage.BatchProviderJob, error) {
-	panic("Submit must not be called by PR5 processor")
-}
-
-func (p *fakeProcessorProvider) Get(context.Context, *batchimage.BatchImageJob, *providercore.Record) (*batchimage.BatchProviderStatus, error) {
-	p.getCalled = true
-	if p.getErr != nil {
-		return nil, p.getErr
-	}
-	if p.status == nil {
-		return &batchimage.BatchProviderStatus{InternalState: batchimage.BatchProviderStateQueued}, nil
-	}
-	return p.status, nil
-}
-
-func (p *fakeProcessorProvider) Cancel(context.Context, *batchimage.BatchImageJob, *providercore.Record) error {
-	return nil
-}
-
-func (p *fakeProcessorProvider) OpenResult(context.Context, *batchimage.BatchImageJob, *providercore.Record) (io.ReadCloser, string, error) {
-	p.openResultCalled = true
-	return io.NopCloser(strings.NewReader(p.result)), "application/jsonl", nil
-}
-
-func (p *fakeProcessorProvider) Cleanup(context.Context, *batchimage.BatchImageJob, *providercore.Record, batchimage.CleanupTarget) error {
-	return nil
-}
-
-func resultObserve(event string, values ...any) {
-	logging.LegacyPrintf("service.batch_image", "%s %v", event, values)
 }

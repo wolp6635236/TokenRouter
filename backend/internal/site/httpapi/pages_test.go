@@ -1,4 +1,4 @@
-package httpapi_test
+package httpapi
 
 import (
 	"context"
@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/site"
 	"github.com/TokenFlux/TokenRouter/internal/site/filesystem"
-	"github.com/TokenFlux/TokenRouter/internal/site/httpapi"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 type pageMenuFixture struct{}
@@ -30,7 +30,7 @@ func TestPageHTTPBoundaryAndVisibility(t *testing.T) {
 	require.NoError(t, os.WriteFile(outside, []byte("private-fixture"), 0o600))
 	require.NoError(t, os.Symlink(outside, filepath.Join(pages, "guide.md")))
 	require.NoError(t, os.WriteFile(filepath.Join(pages, "private.md"), []byte("admin content"), 0o600))
-	h := httpapi.NewPageHandler(site.NewPages(store, pageMenuFixture{}))
+	h := NewPageHandler(site.NewPages(store, pageMenuFixture{}))
 	router := gin.New()
 	auth := func(c *gin.Context) {
 		role := c.GetHeader("X-Fixture-Role")
@@ -81,7 +81,7 @@ func TestPageImagesCannotReadMarkdown(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, path), []byte(body), 0o600))
 	}
 	require.NoError(t, os.Symlink(filepath.Join(dir, "en.md"), filepath.Join(dir, "alias.png")))
-	handler := httpapi.NewPageHandler(site.NewPages(store, pageMenuFixture{}))
+	handler := NewPageHandler(site.NewPages(store, pageMenuFixture{}))
 	router := gin.New()
 	auth := func(c *gin.Context) {
 		if c.GetHeader("X-Fixture-Role") != "user" {

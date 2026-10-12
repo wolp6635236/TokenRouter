@@ -8,14 +8,25 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 type InputTokensOptions struct {
 	Enter          func() (func(), error)
 	Do             func(*http.Request) (*http.Response, error)
 	TransportError func(error) error
+	HTTPError      func(*http.Response, []byte) error
+	WriteError     func(int, string, string)
+}
+
+// NativeInputTokensOptions 配置原生 token 查询的请求、响应读取和错误处理。
+type NativeInputTokensOptions struct {
+	Enter          func() (func(), error)
+	Do             func(*http.Request) (*http.Response, error)
+	TransportError func(error) error
+	ReadBody       func(*http.Response) ([]byte, error)
 	HTTPError      func(*http.Response, []byte) error
 	WriteError     func(int, string, string)
 }
@@ -89,16 +100,6 @@ func BuildInputTokensRequest(ctx context.Context, body []byte, options Responses
 	options.OverrideHeaders(req.Header)
 
 	return req, nil
-}
-
-// NativeInputTokensOptions 配置原生 token 查询的请求、响应读取和错误处理。
-type NativeInputTokensOptions struct {
-	Enter          func() (func(), error)
-	Do             func(*http.Request) (*http.Response, error)
-	TransportError func(error) error
-	ReadBody       func(*http.Response) ([]byte, error)
-	HTTPError      func(*http.Response, []byte) error
-	WriteError     func(int, string, string)
 }
 
 // CountNativeInputTokens 保持数值类型验证，并原样输出供应商完整 JSON。

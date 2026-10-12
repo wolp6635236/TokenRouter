@@ -8,6 +8,15 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+var openAIAlphaSearchUnsupportedBodyFields = [...]string{
+	// Codex alpha/search 是 SearchRequest 独立协议，不是 /responses 子请求。
+	// 新版 Codex/第三方代理可能把 Responses 公共字段误带到搜索请求里；ChatGPT
+	// alpha/search 会对这些字段返回 Unknown parameter（例如 prompt_cache_key）。
+	"prompt_cache_key",
+	"prompt_cache_retention",
+	"store",
+}
+
 func BuildOpenAIAlphaSearchResponsesWebSearchBody(alphaBody []byte, model string) ([]byte, error) {
 	if strings.TrimSpace(model) == "" {
 		return nil, fmt.Errorf("model is required")
@@ -73,15 +82,6 @@ func TruncateOpenAIAlphaSearchPromptJSON(value string, limit int) string {
 	return value[:limit] + "\n...<truncated>"
 }
 
-var openAIAlphaSearchUnsupportedBodyFields = [...]string{
-	// Codex alpha/search 是 SearchRequest 独立协议，不是 /responses 子请求。
-	// 新版 Codex/第三方代理可能把 Responses 公共字段误带到搜索请求里；ChatGPT
-	// alpha/search 会对这些字段返回 Unknown parameter（例如 prompt_cache_key）。
-	"prompt_cache_key",
-	"prompt_cache_retention",
-	"store",
-}
-
 func SanitizeOpenAIAlphaSearchBody(body []byte) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
@@ -125,7 +125,7 @@ func ParseOpenAIResponsesSSEForAlphaSearch(body []byte) (string, []any) {
 	results := make([]any, 0)
 	seenURLs := make(map[string]struct{})
 
-	for _, block := range strings.Split(text, "\n\n") {
+	for block := range strings.SplitSeq(text, "\n\n") {
 		data := OpenAIAlphaSearchSSEData(block)
 		if data == "" || data == "[DONE]" {
 			continue
@@ -153,7 +153,7 @@ func ParseOpenAIResponsesSSEForAlphaSearch(body []byte) (string, []any) {
 
 func OpenAIAlphaSearchSSEData(block string) string {
 	var lines []string
-	for _, line := range strings.Split(block, "\n") {
+	for line := range strings.SplitSeq(block, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if !strings.HasPrefix(line, "data:") {
 			continue

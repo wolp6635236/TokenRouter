@@ -4,30 +4,45 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"os"
+	"runtime"
+	"runtime/debug"
 
-	"github.com/TokenFlux/TokenRouter/internal/notification"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	egresspostgres "github.com/TokenFlux/TokenRouter/internal/egress/postgres"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/ops/maintenance"
 	opspostgres "github.com/TokenFlux/TokenRouter/internal/ops/postgres"
 	opsadapter "github.com/TokenFlux/TokenRouter/internal/ops/provider"
 	opsredis "github.com/TokenFlux/TokenRouter/internal/ops/rediscache"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 )
 
+func provideOpsErrorQueue(manager *lifecycle.Manager) *ops.ErrorLogQueue {
+	q := ops.NewErrorLogQueue(ops.ErrorLogQueueOptions{Processors: func() int { return runtime.GOMAXPROCS(0) }, Logf: log.Printf, Stack: debug.Stack})
+	manager.Register(lifecycle.Hook{Name: "OpsErrorLogWorkers", StartOrder: 924, StopOrder: 76, Stop: q.Shutdown})
+	return q
+}
+
 func provideOpsRepository(db *sql.DB) ops.OpsRepository { return opspostgres.NewOpsRepository(db) }
+
 func provideOpsService(repo ops.OpsRepository, settings *settings.Store, options *ops.Options, providers *providerpostgres.ProviderStore, users *identitypostgres.UserStore, c *scheduler.ConcurrencyService, sink *ops.OpsSystemLogSink, quota *provider.QuotaSettingsCache, worker *apikey.AuthCacheInvalidationWorker, keys *apikey.APIKeyService, pre *preaggregation.PreAggregationSettingsService) *ops.OpsService {
 	s := ops.NewOpsService(repo, settings, options, opsProviderReader{providers}, opsUsers{users}, c, sink, opsadapter.LogControl{})
 	s.SetPreAggregationSettings(pre)
@@ -101,4 +116,21 @@ func provideOpsOptions(cfg *config.Config) *ops.Options {
 	o.Redis.PoolSize = cfg.Redis.PoolSize
 	o.Log = ops.LogOptions{Level: cfg.Log.Level, Caller: cfg.Log.Caller, StacktraceLevel: cfg.Log.StacktraceLevel, Sampling: ops.SamplingOptions(cfg.Log.Sampling)}
 	return o
+}
+
+// provideOpsObservationAccess 返回观测所需的身份数据，失败 Key 用于错误记录。
+func provideOpsObservationAccess() gatewayhttp.OpsObservationAccess {
+	return gatewayhttp.OpsObservationAccess{
+		APIKey: func(c *gin.Context) *apikey.APIKey {
+			if key, ok := gatewayhttp.EffectiveAPIKey(c); ok && key != nil {
+				return key
+			}
+			key, _ := keyhttp.GetOpsFallbackAPIKey(c)
+			return key
+		},
+		Rejected: func(c *gin.Context) bool {
+			_, rejected := middleware.GetIngressRejectReason(c)
+			return rejected
+		},
+	}
 }

@@ -1,14 +1,50 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerdto "github.com/TokenFlux/TokenRouter/internal/provider/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // RuntimeSettingsHandler 通过提供商设置用例处理管理请求。
 type RuntimeSettingsHandler struct{ settingService *provider.RuntimeSettings }
+
+// UpdateOverloadCooldownSettingsRequest 接收过载冷却设置。
+type UpdateOverloadCooldownSettingsRequest struct {
+	Enabled         bool `json:"enabled"`
+	CooldownMinutes int  `json:"cooldown_minutes"`
+}
+
+// UpdateRateLimit429CooldownSettingsRequest 接收 429 冷却设置。
+type UpdateRateLimit429CooldownSettingsRequest struct {
+	Enabled         bool `json:"enabled"`
+	CooldownSeconds int  `json:"cooldown_seconds"`
+}
+
+// UpdateOpenAIImagesOAuthUnavailableCooldownSettingsRequest 接收 OAuth 图片不可用冷却设置。
+type UpdateOpenAIImagesOAuthUnavailableCooldownSettingsRequest struct {
+	CooldownMinutes int `json:"cooldown_minutes"`
+}
+
+// UpdateStreamTimeoutSettingsRequest 接收流式请求超时设置。
+type UpdateStreamTimeoutSettingsRequest struct {
+	Enabled                bool   `json:"enabled"`
+	Action                 string `json:"action"`
+	TempUnschedMinutes     int    `json:"temp_unsched_minutes"`
+	ThresholdCount         int    `json:"threshold_count"`
+	ThresholdWindowMinutes int    `json:"threshold_window_minutes"`
+}
+
+// UpdateOpenAI403CooldownSettingsRequest 接收 OpenAI 403 冷却设置。
+type UpdateOpenAI403CooldownSettingsRequest struct {
+	Enabled                 bool  `json:"enabled"`
+	CooldownMinutes         int   `json:"cooldown_minutes"`
+	ErrorOnThresholdEnabled *bool `json:"error_on_threshold_enabled"`
+	ThresholdCount          *int  `json:"threshold_count"`
+	ThresholdWindowMinutes  *int  `json:"threshold_window_minutes"`
+}
 
 // NewRuntimeSettingsHandler 注入唯一的提供商设置及其缓存。
 func NewRuntimeSettingsHandler(service *provider.RuntimeSettings) *RuntimeSettingsHandler {
@@ -59,12 +95,6 @@ func (h *RuntimeSettingsHandler) UpdateOverloadCooldownSettings(c *gin.Context) 
 	})
 }
 
-// UpdateOverloadCooldownSettingsRequest 接收过载冷却设置。
-type UpdateOverloadCooldownSettingsRequest struct {
-	Enabled         bool `json:"enabled"`
-	CooldownMinutes int  `json:"cooldown_minutes"`
-}
-
 // GetRateLimit429CooldownSettings 返回 429 冷却设置。
 func (h *RuntimeSettingsHandler) GetRateLimit429CooldownSettings(c *gin.Context) {
 	settings, err := h.settingService.GetRateLimit429CooldownSettings(c.Request.Context())
@@ -109,12 +139,6 @@ func (h *RuntimeSettingsHandler) UpdateRateLimit429CooldownSettings(c *gin.Conte
 	})
 }
 
-// UpdateRateLimit429CooldownSettingsRequest 接收429 冷却设置。
-type UpdateRateLimit429CooldownSettingsRequest struct {
-	Enabled         bool `json:"enabled"`
-	CooldownSeconds int  `json:"cooldown_seconds"`
-}
-
 // GetOpenAIImagesOAuthUnavailableCooldownSettings 返回 OAuth 图片不可用时的冷却设置。
 func (h *RuntimeSettingsHandler) GetOpenAIImagesOAuthUnavailableCooldownSettings(c *gin.Context) {
 	settings, err := h.settingService.GetOpenAIImagesOAuthUnavailableCooldownSettings(c.Request.Context())
@@ -138,11 +162,6 @@ func (h *RuntimeSettingsHandler) UpdateOpenAIImagesOAuthUnavailableCooldownSetti
 		return
 	}
 	httpx.Success(c, providerdto.OpenAIImagesOAuthUnavailableCooldownSettings{CooldownMinutes: settings.CooldownMinutes})
-}
-
-// UpdateOpenAIImagesOAuthUnavailableCooldownSettingsRequest 接收OAuth 图片不可用冷却设置。
-type UpdateOpenAIImagesOAuthUnavailableCooldownSettingsRequest struct {
-	CooldownMinutes int `json:"cooldown_minutes"`
 }
 
 // GetStreamTimeoutSettings 返回流式请求超时设置。
@@ -197,15 +216,6 @@ func (h *RuntimeSettingsHandler) UpdateStreamTimeoutSettings(c *gin.Context) {
 		ThresholdCount:         updatedSettings.ThresholdCount,
 		ThresholdWindowMinutes: updatedSettings.ThresholdWindowMinutes,
 	})
-}
-
-// UpdateStreamTimeoutSettingsRequest 接收流式请求超时设置。
-type UpdateStreamTimeoutSettingsRequest struct {
-	Enabled                bool   `json:"enabled"`
-	Action                 string `json:"action"`
-	TempUnschedMinutes     int    `json:"temp_unsched_minutes"`
-	ThresholdCount         int    `json:"threshold_count"`
-	ThresholdWindowMinutes int    `json:"threshold_window_minutes"`
 }
 
 // GetOpenAI403CooldownSettings 返回 OpenAI 403 冷却设置。
@@ -273,13 +283,4 @@ func (h *RuntimeSettingsHandler) UpdateOpenAI403CooldownSettings(c *gin.Context)
 		ThresholdCount:          updatedSettings.ThresholdCount,
 		ThresholdWindowMinutes:  updatedSettings.ThresholdWindowMinutes,
 	})
-}
-
-// UpdateOpenAI403CooldownSettingsRequest 接收OpenAI 403 冷却设置。
-type UpdateOpenAI403CooldownSettingsRequest struct {
-	Enabled                 bool  `json:"enabled"`
-	CooldownMinutes         int   `json:"cooldown_minutes"`
-	ErrorOnThresholdEnabled *bool `json:"error_on_threshold_enabled"`
-	ThresholdCount          *int  `json:"threshold_count"`
-	ThresholdWindowMinutes  *int  `json:"threshold_window_minutes"`
 }

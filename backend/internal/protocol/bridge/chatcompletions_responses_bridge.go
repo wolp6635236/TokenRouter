@@ -12,6 +12,21 @@ import (
 const (
 	toolOutputMediaMarker      = "[Tool output media moved to the following user message]"
 	toolOutputMediaAttribution = "[Tool output media for call %s]"
+
+	// customToolInputSchema 是 custom/freeform 工具降级为 function 工具时的参数 schema。
+	// chat 协议无法表达 custom 工具的自由文本输入（及其 grammar 约束），退化为单一
+	// input 字符串参数；回程时再从 arguments 的 input 字段还原（见
+	// extractCustomToolCallInput）。
+	customToolInputSchema = `{"type":"object","properties":{"input":{"type":"string","description":"The raw input for this tool, passed through verbatim."}},"required":["input"]}`
+
+	// toolSearchProxyName 是 tool_search 服务端工具降级后的 function 工具名。模型对
+	// 它的调用以同名 function_call 原样回传，由 codex 端路由。
+	toolSearchProxyName = "tool_search"
+
+	toolSearchProxySchema = `{"type":"object","properties":{"query":{"type":"string","description":"Search query for tools or connectors to load."},"limit":{"type":"integer","description":"Maximum number of tool groups to return."}},"required":["query"]}`
+
+	// chatToolNameMaxLen 是 Chat Completions function 工具名的通用长度上限。
+	chatToolNameMaxLen = 64
 )
 
 type toolOutputMediaByCallID map[string][]ChatContentPart
@@ -23,6 +38,84 @@ type ResponsesToChatOptions struct {
 	// 客户端回放 encrypted-only item 时可借此恢复 DeepSeek thinking 所需的
 	// reasoning_content；缓存未命中应返回空字符串，桥接继续 fail-open。
 	ReasoningContentByID func(itemID string) string
+}
+
+// NamespacedToolName 记录 namespace 子工具的原始归属（命名空间 + 裸子工具名）。
+type NamespacedToolName struct {
+	Namespace string
+	Name      string
+}
+
+// ChatCompletionsToResponsesStreamState 记录 Chat Completions SSE chunk 转换为
+// Responses SSE 事件时的中间状态。
+type ChatCompletionsToResponsesStreamState struct {
+	ResponseID     string
+	Model          string
+	Created        int64
+	ServiceTier    string // upstream Chat chunk service_tier, echoed on response events
+	SequenceNumber int
+	CreatedSent    bool
+	CompletedSent  bool
+
+	// nextOutputIndex 按 item 打开顺序分配 output_index，保证流式索引与最终
+	// response.output 数组顺序一致。
+	nextOutputIndex int
+
+	// reasoning item 生命周期。DeepSeek 类上游会先流出 reasoning_content，再
+	// 流出正文，因此 reasoning 必须作为独立 output item，在 delta 前打开，并在
+	// message/tool item 打开前关闭。
+	ReasoningItemID string
+	ReasoningIndex  int
+	ReasoningOpen   bool
+	ReasoningDone   bool
+
+	// message item 与 output_text content part 生命周期。
+	MessageItemID string
+	MessageIndex  int
+	TextPartOpen  bool
+
+	Text      strings.Builder
+	Reasoning strings.Builder
+
+	// 工具调用生命周期，按上游 tool_call index 归档。
+	ToolCalls       map[int]*ChatToolCall
+	ToolItemIDs     map[int]string
+	ToolOutputIndex map[int]int
+
+	// CustomTools 是客户端请求中 custom/freeform 工具的名字集合（见
+	// CustomToolNames）。命中的调用按 custom_tool_call 生命周期下发，codex 才能
+	// 路由回它注册的 custom 工具。
+	CustomTools map[string]bool
+
+	// FunctionTools 保存请求声明的顶层 function 工具集合。
+	FunctionTools map[string]bool
+
+	// ToolSearchDeclared 表示客户端请求声明了 tool_search 工具（见
+	// HasToolSearchTool）。命中的代理调用按 tool_search_call 项还原，codex 只按
+	// 该项类型（且 execution=client）执行 tool search。
+	ToolSearchDeclared bool
+
+	// NamespaceTools 是 namespace 子工具的摊平名 → 原始归属映射（见
+	// NamespaceToolNames）。命中的调用还原为带 namespace 字段的 function_call 项，
+	// codex 按 namespace+name 路由。
+	NamespaceTools map[string]NamespacedToolName
+
+	// toolIsCustom 记录每个工具调用宣告时的类型判定，保证 added/done 事件的
+	// 项类型一致。
+	toolIsCustom map[int]bool
+
+	// toolIsToolSearch 记录工具调用是否判定为 tool_search 代理调用。
+	toolIsToolSearch map[int]bool
+
+	// toolNamespace 记录工具调用宣告时命中的 namespace 归属（见 NamespaceTools）。
+	toolNamespace map[int]NamespacedToolName
+
+	// toolAnnounced 记录 output_item.added 是否已发出。存在 custom 工具且名字
+	// 尚未到达时延迟宣告，待名字可判定类型后再补发（见 announceChatToolItem）。
+	toolAnnounced map[int]bool
+
+	FinishReason string
+	Usage        *ResponsesUsage
 }
 
 // ResponsesToChatCompletionsRequestWithOptions 在默认转换上增加可选的 reasoning 回查。
@@ -183,12 +276,6 @@ func FunctionToolNames(tools []ResponsesTool) map[string]bool {
 		}
 	}
 	return out
-}
-
-// NamespacedToolName 记录 namespace 子工具的原始归属（命名空间 + 裸子工具名）。
-type NamespacedToolName struct {
-	Namespace string
-	Name      string
 }
 
 // NamespaceToolNames 收集 namespace 子工具摊平名到原始归属的映射。Chat 桥回程时
@@ -907,12 +994,6 @@ func chatContentFromSingleResponsesPart(partType string, part map[string]json.Ra
 	}
 }
 
-// customToolInputSchema 是 custom/freeform 工具降级为 function 工具时的参数 schema。
-// chat 协议无法表达 custom 工具的自由文本输入（及其 grammar 约束），退化为单一
-// input 字符串参数；回程时再从 arguments 的 input 字段还原（见
-// extractCustomToolCallInput）。
-const customToolInputSchema = `{"type":"object","properties":{"input":{"type":"string","description":"The raw input for this tool, passed through verbatim."}},"required":["input"]}`
-
 func responsesToolsToChatTools(tools []ResponsesTool) ([]ChatTool, error) {
 	// 收集顶层 function/custom 工具名，检查 namespace 子工具摊平后是否重名。
 	// Responses 可按 namespace 和 name 区分这些工具，Chat 仅按名称区分，重名时返回错误。
@@ -984,12 +1065,6 @@ func responsesToolsToChatTools(tools []ResponsesTool) ([]ChatTool, error) {
 	return out, nil
 }
 
-// toolSearchProxyName 是 tool_search 服务端工具降级后的 function 工具名。模型对
-// 它的调用以同名 function_call 原样回传，由 codex 端路由。
-const toolSearchProxyName = "tool_search"
-
-const toolSearchProxySchema = `{"type":"object","properties":{"query":{"type":"string","description":"Search query for tools or connectors to load."},"limit":{"type":"integer","description":"Maximum number of tool groups to return."}},"required":["query"]}`
-
 func toolSearchProxyChatTool() ChatTool {
 	return ChatTool{
 		Type: "function",
@@ -1040,9 +1115,6 @@ func namespaceChildrenToChatTools(tool ResponsesTool, topLevel map[string]bool, 
 	}
 	return out, nil
 }
-
-// chatToolNameMaxLen 是 Chat Completions function 工具名的通用长度上限。
-const chatToolNameMaxLen = 64
 
 // flattenNamespaceToolName 生成 namespace 子工具的摊平名；超长时截断并追加
 // sha256 短哈希保证唯一性。
@@ -1352,78 +1424,6 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 		}
 	}
 	return out
-}
-
-// ChatCompletionsToResponsesStreamState 记录 Chat Completions SSE chunk 转换为
-// Responses SSE 事件时的中间状态。
-type ChatCompletionsToResponsesStreamState struct {
-	ResponseID     string
-	Model          string
-	Created        int64
-	ServiceTier    string // upstream Chat chunk service_tier, echoed on response events
-	SequenceNumber int
-	CreatedSent    bool
-	CompletedSent  bool
-
-	// nextOutputIndex 按 item 打开顺序分配 output_index，保证流式索引与最终
-	// response.output 数组顺序一致。
-	nextOutputIndex int
-
-	// reasoning item 生命周期。DeepSeek 类上游会先流出 reasoning_content，再
-	// 流出正文，因此 reasoning 必须作为独立 output item，在 delta 前打开，并在
-	// message/tool item 打开前关闭。
-	ReasoningItemID string
-	ReasoningIndex  int
-	ReasoningOpen   bool
-	ReasoningDone   bool
-
-	// message item 与 output_text content part 生命周期。
-	MessageItemID string
-	MessageIndex  int
-	TextPartOpen  bool
-
-	Text      strings.Builder
-	Reasoning strings.Builder
-
-	// 工具调用生命周期，按上游 tool_call index 归档。
-	ToolCalls       map[int]*ChatToolCall
-	ToolItemIDs     map[int]string
-	ToolOutputIndex map[int]int
-
-	// CustomTools 是客户端请求中 custom/freeform 工具的名字集合（见
-	// CustomToolNames）。命中的调用按 custom_tool_call 生命周期下发，codex 才能
-	// 路由回它注册的 custom 工具。
-	CustomTools map[string]bool
-
-	// FunctionTools 保存请求声明的顶层 function 工具集合。
-	FunctionTools map[string]bool
-
-	// ToolSearchDeclared 表示客户端请求声明了 tool_search 工具（见
-	// HasToolSearchTool）。命中的代理调用按 tool_search_call 项还原，codex 只按
-	// 该项类型（且 execution=client）执行 tool search。
-	ToolSearchDeclared bool
-
-	// NamespaceTools 是 namespace 子工具的摊平名 → 原始归属映射（见
-	// NamespaceToolNames）。命中的调用还原为带 namespace 字段的 function_call 项，
-	// codex 按 namespace+name 路由。
-	NamespaceTools map[string]NamespacedToolName
-
-	// toolIsCustom 记录每个工具调用宣告时的类型判定，保证 added/done 事件的
-	// 项类型一致。
-	toolIsCustom map[int]bool
-
-	// toolIsToolSearch 记录工具调用是否判定为 tool_search 代理调用。
-	toolIsToolSearch map[int]bool
-
-	// toolNamespace 记录工具调用宣告时命中的 namespace 归属（见 NamespaceTools）。
-	toolNamespace map[int]NamespacedToolName
-
-	// toolAnnounced 记录 output_item.added 是否已发出。存在 custom 工具且名字
-	// 尚未到达时延迟宣告，待名字可判定类型后再补发（见 announceChatToolItem）。
-	toolAnnounced map[int]bool
-
-	FinishReason string
-	Usage        *ResponsesUsage
 }
 
 // NewChatCompletionsToResponsesStreamState 返回初始化后的流式转换状态。
@@ -1848,7 +1848,7 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 		return nil
 	}
 	var events []ResponsesStreamEvent
-	for i := 0; i < len(state.ToolCalls); i++ {
+	for i := range len(state.ToolCalls) {
 		toolCall, ok := state.ToolCalls[i]
 		if !ok || toolCall == nil {
 			continue
@@ -1966,7 +1966,7 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput(runtime Runtime) 
 			Status: "completed",
 		})
 	}
-	for i := 0; i < len(state.ToolCalls); i++ {
+	for i := range len(state.ToolCalls) {
 		toolCall, ok := state.ToolCalls[i]
 		if !ok || toolCall == nil {
 			continue

@@ -8,16 +8,14 @@ import (
 	"testing"
 	"time"
 
-	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/egress/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/stretchr/testify/suite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/stretchr/testify/suite"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/egress/postgres"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 type ProxyExpirySuite struct {

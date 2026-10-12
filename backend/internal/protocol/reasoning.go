@@ -1,5 +1,9 @@
 package protocol
 
+import (
+	"strings"
+)
+
 // 推理档位是 wire 值，管理员映射和排序策略由 routing 拥有。
 const (
 	ReasoningNone    = "none"
@@ -10,6 +14,21 @@ const (
 	ReasoningXHigh   = "xhigh"
 	ReasoningMax     = "max"
 )
+
+// NormalizeClaudeOutputEffort 规范化 Claude 的 output_config.effort 值。
+// 空值和无法识别的值返回 nil。
+func NormalizeClaudeOutputEffort(raw string) *string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return nil
+	}
+	switch value {
+	case "low", "medium", "high", "xhigh", "max":
+		return &value
+	default:
+		return nil
+	}
+}
 
 // OpenAIReasoningEfforts 返回可比较档位的独立副本。
 func OpenAIReasoningEfforts() []string {

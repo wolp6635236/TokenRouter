@@ -11,7 +11,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 )
 
-// TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）
+// fallbackCounter 降级伪随机 ID 的全局计数器，混入 seed 避免高并发下 UnixNano 相同导致碰撞。
+var fallbackCounter uint64
+
+// NonStreamingProcessor 只适配旧构造及诊断，响应状态由 bridge 唯一持有。
+type NonStreamingProcessor struct {
+	*bridge.GeminiToAnthropicResponseProcessor
+}
+
+// TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）。
 func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *ClaudeUsage, error) {
 	// 解包 v1internal 响应
 	var v1Resp V1InternalResponse
@@ -48,10 +56,7 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 	return respBytes, &claudeResp.Usage, nil
 }
 
-// fallbackCounter 降级伪随机 ID 的全局计数器，混入 seed 避免高并发下 UnixNano 相同导致碰撞。
-var fallbackCounter uint64
-
-// generateRandomID 生成密码学安全的随机 ID
+// generateRandomID 生成密码学安全的随机 ID。
 func generateRandomID() string {
 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	id := make([]byte, 12)
@@ -89,11 +94,6 @@ func generateAnthropicMsgID() string {
 		b[i] = charset[int(randomBytes[i])%len(charset)]
 	}
 	return "msg_01" + string(b)
-}
-
-// NonStreamingProcessor 只适配旧构造及诊断，响应状态由 bridge 唯一持有。
-type NonStreamingProcessor struct {
-	*bridge.GeminiToAnthropicResponseProcessor
 }
 
 func NewNonStreamingProcessor() *NonStreamingProcessor {

@@ -31,6 +31,11 @@ type OAuthUsageTransport struct {
 	fallback     sync.Mutex
 }
 
+// ClaudeUsageClient 接收供应商用量查询需要的请求参数。
+type ClaudeUsageClient interface {
+	FetchUsageWithOptions(context.Context, *anthropic.UsageFetchOptions) (*provider.ClaudeUsageResponse, error)
+}
+
 // ensureTask 优先调用注入的任务函数，缺省时用实例内的互斥锁执行 task 创建。
 func (s *OAuthUsageTransport) ensureTask(ctx context.Context, value *provider.Record, expected string) error {
 	if s.EnsureTask != nil {
@@ -138,11 +143,6 @@ func ExtractOpenAIUsageUpdates(response *http.Response, now time.Time) (map[stri
 		return nil, fmt.Errorf("openai codex probe returned status %d", response.StatusCode)
 	}
 	return nil, nil
-}
-
-// ClaudeUsageClient 接收供应商用量查询需要的请求参数。
-type ClaudeUsageClient interface {
-	FetchUsageWithOptions(context.Context, *anthropic.UsageFetchOptions) (*provider.ClaudeUsageResponse, error)
 }
 
 func (s *OAuthUsageTransport) FetchAnthropic(ctx context.Context, value *provider.Record, client ClaudeUsageClient) (*provider.ClaudeUsageResponse, error) {

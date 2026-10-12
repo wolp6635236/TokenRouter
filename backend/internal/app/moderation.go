@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	egresspg "github.com/TokenFlux/TokenRouter/internal/egress/postgres"
@@ -22,8 +24,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/redis/go-redis/v9"
 )
+
+type moderationUsers struct{ users *identity.RiskStatusCommands }
+
+type moderationGroups struct{ groups *routingpg.GroupStore }
+
+type moderationProxies struct{ proxies *egresspg.ProxyStore }
 
 func provideModerationStore(db *sql.DB) moderation.ContentModerationRepository {
 	return moderationpg.NewContentModerationRepository(db, func(tx *sql.Tx) moderationpg.UserStatusTx { return identitypg.NewRiskStatusParticipant(tx) })
@@ -52,8 +59,6 @@ func provideModerationHTTP(core *moderation.ContentModerationService) *moderatio
 	return moderationhttp.NewContentModerationHandler(core)
 }
 
-type moderationUsers struct{ users *identity.RiskStatusCommands }
-
 func (s moderationUsers) GetByID(ctx context.Context, id int64) (*moderation.UserSnapshot, error) {
 	u, e := s.users.Read(ctx, id)
 	if u == nil {
@@ -66,14 +71,10 @@ func (s moderationUsers) SetStatus(ctx context.Context, id int64, status string)
 	return s.users.SetStatus(ctx, id, status)
 }
 
-type moderationGroups struct{ groups *routingpg.GroupStore }
-
 func (s moderationGroups) CheckGroup(ctx context.Context, id int64) error {
 	_, e := s.groups.GetByIDLite(ctx, id)
 	return e
 }
-
-type moderationProxies struct{ proxies *egresspg.ProxyStore }
 
 func (s moderationProxies) Lookup(ctx context.Context, id int64, now time.Time) (moderation.ProxyInfo, error) {
 	v, e := s.proxies.GetByID(ctx, id)

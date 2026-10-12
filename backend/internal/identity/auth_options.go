@@ -7,6 +7,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
+const (
+	RedeemTypeInvitation = billing.RedeemTypeInvitation
+	StatusUnused         = billing.StatusUnused
+	StatusUsed           = billing.StatusUsed
+)
+
+var ErrRedeemCodeNotFound = billing.ErrRedeemCodeNotFound
+
 type ProviderDefaultGrantSettings struct {
 	Balance          float64
 	Concurrency      int
@@ -48,14 +56,6 @@ type (
 	AssignSubscriptionInput = billing.AssignSubscriptionInput
 	UserSubscription        = billing.UserSubscription
 )
-
-const (
-	RedeemTypeInvitation = billing.RedeemTypeInvitation
-	StatusUnused         = billing.StatusUnused
-	StatusUsed           = billing.StatusUsed
-)
-
-var ErrRedeemCodeNotFound = billing.ErrRedeemCodeNotFound
 
 // AuthIdentity 是提供方持久主体的只读值。
 type AuthIdentity struct {
@@ -147,15 +147,6 @@ type AuthService struct {
 	Storage AuthStorage
 }
 
-func NewAuthService(deps *AuthDependencies, storage AuthStorage) *AuthService {
-	options := SessionOptions{}
-	if deps.Options != nil {
-		options = deps.Options.JWT
-	}
-	return &AuthService{AuthDependencies: deps, SessionService: NewSessionService(options, deps.Users, deps.RefreshTokens, deps.Settings, deps.Observer.Log), Storage: storage}
-}
-func (s *AuthService) HasDatabase() bool { return s.Storage != nil && s.Storage.HasDatabase() }
-
 // EmailAliasLookupRepository 是邮箱别名查重的可选仓储能力。
 // 保持 UserRepository 主接口不变，以兼容仅用于其他服务的测试桩。
 type EmailAliasLookupRepository interface {
@@ -167,3 +158,12 @@ type EmailAliasLookupRepository interface {
 type EmailAliasOwnerLookupRepository interface {
 	EmailAliasOwnerID(ctx context.Context, email string, currentUserID int64) (int64, bool, error)
 }
+
+func NewAuthService(deps *AuthDependencies, storage AuthStorage) *AuthService {
+	options := SessionOptions{}
+	if deps.Options != nil {
+		options = deps.Options.JWT
+	}
+	return &AuthService{AuthDependencies: deps, SessionService: NewSessionService(options, deps.Users, deps.RefreshTokens, deps.Settings, deps.Observer.Log), Storage: storage}
+}
+func (s *AuthService) HasDatabase() bool { return s.Storage != nil && s.Storage.HasDatabase() }

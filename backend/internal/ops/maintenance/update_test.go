@@ -1,4 +1,4 @@
-package maintenance_test
+package maintenance
 
 import (
 	"context"
@@ -6,15 +6,20 @@ import (
 	"testing"
 	"time"
 
-	opsadapter "github.com/TokenFlux/TokenRouter/internal/ops/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"github.com/TokenFlux/TokenRouter/internal/ops/maintenance"
-	"github.com/stretchr/testify/require"
+	opsadapter "github.com/TokenFlux/TokenRouter/internal/ops/provider"
 )
 
 type updateServiceCacheStub struct {
 	data string
+}
+
+type updateServiceGitHubClientStub struct {
+	release        *ops.GitHubRelease
+	recentReleases []*ops.GitHubRelease
+	recentErr      error
 }
 
 func (s *updateServiceCacheStub) GetUpdateInfo(context.Context) (string, error) {
@@ -27,12 +32,6 @@ func (s *updateServiceCacheStub) GetUpdateInfo(context.Context) (string, error) 
 func (s *updateServiceCacheStub) SetUpdateInfo(_ context.Context, data string, _ time.Duration) error {
 	s.data = data
 	return nil
-}
-
-type updateServiceGitHubClientStub struct {
-	release        *ops.GitHubRelease
-	recentReleases []*ops.GitHubRelease
-	recentErr      error
 }
 
 func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*ops.GitHubRelease, error) {
@@ -67,11 +66,11 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	err := svc.PerformUpdate(context.Background())
 
 	require.Error(t, err)
-	require.True(t, errors.Is(err, maintenance.ErrNoUpdateAvailable))
-	require.ErrorIs(t, err, maintenance.ErrNoUpdateAvailable)
+	require.True(t, errors.Is(err, ErrNoUpdateAvailable))
+	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
-func newRollbackTestService(current string, releases []*ops.GitHubRelease) *maintenance.UpdateService {
+func newRollbackTestService(current string, releases []*ops.GitHubRelease) *UpdateService {
 	return newMaintenanceUpdateForTest(
 		&updateServiceCacheStub{},
 		&updateServiceGitHubClientStub{recentReleases: releases},
@@ -102,7 +101,7 @@ func TestUpdateServiceRollbackToVersionRejectsDisallowedTargets(t *testing.T) {
 		"0.1.146;$(touch /tmp/tokenrouter-pwned)", // 非法 shell 字符
 	} {
 		err := svc.RollbackToVersion(context.Background(), target)
-		require.ErrorIs(t, err, maintenance.ErrRollbackVersionNotAllowed, "target %q should be rejected", target)
+		require.ErrorIs(t, err, ErrRollbackVersionNotAllowed, "target %q should be rejected", target)
 	}
 }
 
@@ -117,11 +116,11 @@ func TestUpdateServiceRollbackToVersionAcceptsVPrefix(t *testing.T) {
 	err := svc.RollbackToVersion(context.Background(), "v0.1.146")
 
 	require.Error(t, err)
-	require.NotErrorIs(t, err, maintenance.ErrRollbackVersionNotAllowed)
+	require.NotErrorIs(t, err, ErrRollbackVersionNotAllowed)
 	require.Contains(t, err.Error(), "no compatible release found")
 }
 
-// newMaintenanceUpdateForTest 只装配原发布查询与安装器，拒绝路径仍运行真实维护规则。
-func newMaintenanceUpdateForTest(cache ops.UpdateCache, client *updateServiceGitHubClientStub, version, buildType string) *maintenance.UpdateService {
-	return maintenance.NewUpdateService(ops.NewReleaseQuery(cache, client, version, buildType, ""), opsadapter.NewBinaryInstaller(client, nil))
+// newMaintenanceUpdateForTest 使用测试缓存和 GitHub 客户端创建发布查询与安装器。
+func newMaintenanceUpdateForTest(cache ops.UpdateCache, client *updateServiceGitHubClientStub, version, buildType string) *UpdateService {
+	return NewUpdateService(ops.NewReleaseQuery(cache, client, version, buildType, ""), opsadapter.NewBinaryInstaller(client, nil))
 }

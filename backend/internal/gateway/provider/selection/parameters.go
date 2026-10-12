@@ -3,10 +3,9 @@ package selection
 import (
 	"context"
 
-	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
+	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 

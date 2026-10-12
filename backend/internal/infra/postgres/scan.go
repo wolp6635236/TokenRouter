@@ -35,8 +35,5 @@ func ScanSingleRow(ctx context.Context, q Queryer, query string, args []any, des
 	if err = rows.Scan(dest...); err != nil {
 		return err
 	}
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	return nil
+	return rows.Err()
 }

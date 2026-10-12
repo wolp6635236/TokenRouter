@@ -2,18 +2,24 @@ package provider
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
 )
 
 type openAICodexSnapshotAsyncRepo struct {
 	updateExtraCh chan map[string]any
 	rateLimitCh   chan time.Time
+}
+
+type snapshotUpdateProviderRepo struct {
+	updateExtraCalls chan map[string]any
 }
 
 func (r *openAICodexSnapshotAsyncRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
@@ -26,9 +32,7 @@ func (r *openAICodexSnapshotAsyncRepo) SetRateLimited(_ context.Context, _ int64
 func (r *openAICodexSnapshotAsyncRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
 	if r.updateExtraCh != nil {
 		copied := make(map[string]any, len(updates))
-		for k, v := range updates {
-			copied[k] = v
-		}
+		maps.Copy(copied, updates)
 		r.updateExtraCh <- copied
 	}
 	return nil
@@ -123,16 +127,10 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesExtraWrites(t *t
 	}
 }
 
-type snapshotUpdateProviderRepo struct {
-	updateExtraCalls chan map[string]any
-}
-
 func (r *snapshotUpdateProviderRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if r.updateExtraCalls != nil {
 		copied := make(map[string]any, len(updates))
-		for k, v := range updates {
-			copied[k] = v
-		}
+		maps.Copy(copied, updates)
 		r.updateExtraCalls <- copied
 	}
 	return nil

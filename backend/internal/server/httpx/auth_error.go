@@ -1,17 +1,18 @@
 package httpx
 
 import (
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
-// ErrorResponse 标准错误响应结构
+// ErrorResponse 标准错误响应结构。
 type ErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-// NewErrorResponse 创建错误响应
+// NewErrorResponse 创建错误响应。
 func NewErrorResponse(code, message string) ErrorResponse {
 	return ErrorResponse{
 		Code:    code,
@@ -19,7 +20,7 @@ func NewErrorResponse(code, message string) ErrorResponse {
 	}
 }
 
-// AbortWithError 中断请求并返回JSON错误
+// AbortWithError 中断请求并返回 JSON 错误。
 func AbortWithError(c *gin.Context, statusCode int, code, message string) {
 	language := locale.Default()
 	if c.Request != nil {

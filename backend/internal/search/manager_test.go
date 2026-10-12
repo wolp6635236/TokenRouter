@@ -2,11 +2,39 @@ package search
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestConfirmedReservationReleasesOnlyOnce(t *testing.T) {
+	q := &quotaFixture{used: 1}
+	manager := NewManager(nil, q, noSearchExecutor{}, nil)
+	lease := &quotaReservation{manager: manager, config: ProviderConfig{Type: ProviderTypeBrave, QuotaLimit: 10}, acquired: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() { lease.release(ctx) })
+	}
+	wg.Wait()
+	require.Equal(t, int64(0), q.used)
+	require.Equal(t, int64(1), q.decrements)
+	require.True(t, q.releaseDeadline)
+}
+
+func TestUncertainReservationDoesNotCompensate(t *testing.T) {
+	q := &quotaFixture{uncertain: true}
+	manager := NewManager(nil, q, noSearchExecutor{}, nil)
+	allowed, acquired := manager.tryReserveQuota(context.Background(), ProviderConfig{Type: ProviderTypeBrave, QuotaLimit: 10})
+	require.True(t, allowed)
+	require.False(t, acquired)
+	lease := &quotaReservation{manager: manager, config: ProviderConfig{Type: ProviderTypeBrave, QuotaLimit: 10}, acquired: acquired}
+	lease.release(context.Background())
+	require.Zero(t, q.decrements)
+}
 
 func TestNewManager_PreservesOrder(t *testing.T) {
 	configs := []ProviderConfig{
@@ -61,15 +89,15 @@ func TestQuotaTTLFromSubscription_ZeroSubscription(t *testing.T) {
 }
 
 func TestQuotaTTLFromSubscription_ValidSubscription(t *testing.T) {
-	// Subscribed 10 days ago — next reset in ~20 days
+	// 订阅起点在十天前，下一次月度重置约在二十天后。
 	sub := time.Now().Add(-10 * 24 * time.Hour).Unix()
 	ttl := quotaTTLFromSubscription(&sub)
-	require.Greater(t, ttl, 15*24*time.Hour) // at least 15 days
+	require.Greater(t, ttl, 15*24*time.Hour) // 至少还有十五天。
 	require.Less(t, ttl, 25*24*time.Hour+quotaTTLBuffer)
 }
 
 func TestNextMonthlyReset_SubscribedRecentPast(t *testing.T) {
-	// Subscribed on the 10th of this month (always valid day)
+	// 每个月都有十日，可直接构造本月的订阅起点。
 	now := time.Now().UTC()
 	sub := time.Date(now.Year(), now.Month(), 10, 0, 0, 0, 0, time.UTC)
 	next := nextMonthlyReset(sub)
@@ -78,12 +106,12 @@ func TestNextMonthlyReset_SubscribedRecentPast(t *testing.T) {
 }
 
 func TestNextMonthlyReset_SubscribedLongAgo(t *testing.T) {
-	// Subscribed 6 months ago on the 1st
+	// 订阅起点为六个月前的一日。
 	sub := time.Now().UTC().AddDate(0, -6, 0)
 	sub = time.Date(sub.Year(), sub.Month(), 1, 0, 0, 0, 0, time.UTC)
 	next := nextMonthlyReset(sub)
 	require.True(t, next.After(time.Now().UTC()))
-	// Should be within the next 31 days
+	// 下一次重置落在一个月内。
 	require.True(t, next.Before(time.Now().UTC().AddDate(0, 1, 1)))
 }
 
@@ -97,28 +125,28 @@ func TestAddMonthsClamped_Jan31ToFeb(t *testing.T) {
 	sub := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 	next := addMonthsClamped(sub, 1)
 	require.Equal(t, time.Month(2), next.Month())
-	require.Equal(t, 28, next.Day()) // Feb 28 (2026 is not a leap year)
+	require.Equal(t, 28, next.Day()) // 2026 年二月有二十八天。
 }
 
 func TestAddMonthsClamped_Jan31ToFebLeapYear(t *testing.T) {
 	sub := time.Date(2028, 1, 31, 0, 0, 0, 0, time.UTC)
 	next := addMonthsClamped(sub, 1)
 	require.Equal(t, time.Month(2), next.Month())
-	require.Equal(t, 29, next.Day()) // Feb 29 (2028 is a leap year)
+	require.Equal(t, 29, next.Day()) // 2028 年二月有二十九天。
 }
 
 func TestAddMonthsClamped_Mar31ToApr(t *testing.T) {
 	sub := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
 	next := addMonthsClamped(sub, 1)
 	require.Equal(t, time.Month(4), next.Month())
-	require.Equal(t, 30, next.Day()) // Apr has 30 days
+	require.Equal(t, 30, next.Day()) // 四月有三十天。
 }
 
 func TestAddMonthsClamped_NormalDay(t *testing.T) {
 	sub := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
 	next := addMonthsClamped(sub, 1)
 	require.Equal(t, time.Month(2), next.Month())
-	require.Equal(t, 15, next.Day()) // no clamping needed
+	require.Equal(t, 15, next.Day()) // 十五日在目标月份存在。
 }
 
 func TestIsProviderAvailable_EmptyAPIKey(t *testing.T) {
@@ -136,7 +164,7 @@ func TestIsProviderAvailable_Valid(t *testing.T) {
 	m := newTestManager(nil, nil)
 	future := time.Now().Add(1 * time.Hour).Unix()
 	require.True(t, m.isProviderAvailable(ProviderConfig{APIKey: "k", ExpiresAt: &future}))
-	require.True(t, m.isProviderAvailable(ProviderConfig{APIKey: "k"})) // no expiry
+	require.True(t, m.isProviderAvailable(ProviderConfig{APIKey: "k"})) // 未设置到期时间。
 }
 
 func TestResolveProxyID_ProviderProxyOverrides(t *testing.T) {

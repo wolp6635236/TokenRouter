@@ -34,7 +34,6 @@ export default {
       actorRole: '角色',
       methodPath: '方法 / 路径',
       latency: '耗时',
-      requestId: '请求 ID',
       credential: '凭证（掩码）',
       userAgent: 'User-Agent',
       requestBody: '请求体（已脱敏）',

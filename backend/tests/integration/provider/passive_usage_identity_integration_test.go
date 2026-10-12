@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 // Extra 与窗口仍分别提交，二者之间的身份或窗口变化不能被旧结果覆盖。

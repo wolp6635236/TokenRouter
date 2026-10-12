@@ -15,11 +15,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
-const StatusTimeout = 2 * time.Second
+const (
+	StatusTimeout             = 2 * time.Second
+	newAPIDefaultQuotaPerUnit = 500000.0
+)
 
 type Sub2APIUsageAdapter struct{}
-
-func (*Sub2APIUsageAdapter) Name() string { return usageview.UpstreamUsageAdapterSub2API }
 
 type Sub2APIUsageResponse struct {
 	Mode         string               `json:"mode"`
@@ -64,6 +65,83 @@ type Sub2APISubscription struct {
 	Unlimited          *bool      `json:"unlimited"`
 	ExpiresAt          *time.Time `json:"expires_at"`
 }
+
+// ZivvUsageAdapter 对接 Zivv 自研网关公开给 API Key 的余额接口。
+// Zivv 的 Anthropic Base URL 通常是站点根地址，因此显式请求带版本段的
+// /v1/user/balance；已有的 URL 构造器会避免提供商 Base URL 已带 /v1 时重复拼接。
+type ZivvUsageAdapter struct{}
+
+type ZivvUsageResponse struct {
+	Balance     *float64 `json:"balance"`
+	Currency    string   `json:"currency"`
+	IsAvailable *bool    `json:"is_available"`
+	KeyLimit    *float64 `json:"key_limit"`
+	KeyUsed     *float64 `json:"key_used"`
+	PlanName    string   `json:"plan_name"`
+	TotalUsed   *float64 `json:"total_used"`
+}
+
+type NewAPIUsageAdapter struct{}
+
+type NewAPITokenUsageResponse struct {
+	Code    *bool  `json:"code"`
+	Success *bool  `json:"success"`
+	Message string `json:"message"`
+	Data    *struct {
+		Object             string          `json:"object"`
+		Name               string          `json:"name"`
+		TotalGranted       *float64        `json:"total_granted"`
+		TotalUsed          *float64        `json:"total_used"`
+		TotalAvailable     *float64        `json:"total_available"`
+		UnlimitedQuota     *bool           `json:"unlimited_quota"`
+		ExpiresAt          *int64          `json:"expires_at"`
+		UserBalance        json.RawMessage `json:"user_balance"`
+		UserBalanceDisplay json.RawMessage `json:"user_balance_display"`
+		Currency           string          `json:"currency"`
+	} `json:"data"`
+}
+type NewAPIWalletBalanceInfo struct {
+	Currency     string          `json:"currency"`
+	TotalBalance json.RawMessage `json:"total_balance"`
+	Balance      json.RawMessage `json:"balance"`
+	Remaining    json.RawMessage `json:"remaining"`
+	Used         json.RawMessage `json:"used"`
+	UsedBalance  json.RawMessage `json:"used_balance"`
+	Total        json.RawMessage `json:"total"`
+}
+type NewAPIWalletData struct {
+	ID           json.RawMessage           `json:"id"`
+	Quota        json.RawMessage           `json:"quota"`
+	UsedQuota    json.RawMessage           `json:"used_quota"`
+	Balance      json.RawMessage           `json:"balance"`
+	Remaining    json.RawMessage           `json:"remaining"`
+	TotalBalance json.RawMessage           `json:"total_balance"`
+	Used         json.RawMessage           `json:"used"`
+	Total        json.RawMessage           `json:"total"`
+	Currency     string                    `json:"currency"`
+	BalanceInfos []NewAPIWalletBalanceInfo `json:"balance_infos"`
+}
+type NewAPIWalletBalanceResponse struct {
+	Code         *bool                     `json:"code"`
+	Success      *bool                     `json:"success"`
+	Message      string                    `json:"message"`
+	BalanceInfos []NewAPIWalletBalanceInfo `json:"balance_infos"`
+	Currency     string                    `json:"currency"`
+	Balance      json.RawMessage           `json:"balance"`
+	Remaining    json.RawMessage           `json:"remaining"`
+	TotalBalance json.RawMessage           `json:"total_balance"`
+	Used         json.RawMessage           `json:"used"`
+	UsedBalance  json.RawMessage           `json:"used_balance"`
+	Total        json.RawMessage           `json:"total"`
+	Data         *NewAPIWalletData         `json:"data"`
+}
+type NewAPIUsageDisplaySettings struct {
+	Unit            string
+	QuotaPerUnit    float64
+	USDExchangeRate float64
+}
+
+func (*Sub2APIUsageAdapter) Name() string { return usageview.UpstreamUsageAdapterSub2API }
 
 func (a *Sub2APIUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {
 	client := usageclient.New(input)
@@ -314,22 +392,7 @@ func ValidateSub2APIWindowStart(raw json.RawMessage) error {
 	return nil
 }
 
-// ZivvUsageAdapter 对接 Zivv 自研网关公开给 API Key 的余额接口。
-// Zivv 的 Anthropic Base URL 通常是站点根地址，因此显式请求带版本段的
-// /v1/user/balance；已有的 URL 构造器会避免提供商 Base URL 已带 /v1 时重复拼接。
-type ZivvUsageAdapter struct{}
-
 func (*ZivvUsageAdapter) Name() string { return usageview.UpstreamUsageAdapterZivv }
-
-type ZivvUsageResponse struct {
-	Balance     *float64 `json:"balance"`
-	Currency    string   `json:"currency"`
-	IsAvailable *bool    `json:"is_available"`
-	KeyLimit    *float64 `json:"key_limit"`
-	KeyUsed     *float64 `json:"key_used"`
-	PlanName    string   `json:"plan_name"`
-	TotalUsed   *float64 `json:"total_used"`
-}
 
 func (a *ZivvUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {
 	client := usageclient.New(input)
@@ -392,69 +455,7 @@ func ParseZivvUsage(body []byte) (*usageview.UpstreamUsageInfo, error) {
 	return usage, nil
 }
 
-type NewAPIUsageAdapter struct{}
-
 func (*NewAPIUsageAdapter) Name() string { return usageview.UpstreamUsageAdapterNewAPI }
-
-type NewAPITokenUsageResponse struct {
-	Code    *bool  `json:"code"`
-	Success *bool  `json:"success"`
-	Message string `json:"message"`
-	Data    *struct {
-		Object             string          `json:"object"`
-		Name               string          `json:"name"`
-		TotalGranted       *float64        `json:"total_granted"`
-		TotalUsed          *float64        `json:"total_used"`
-		TotalAvailable     *float64        `json:"total_available"`
-		UnlimitedQuota     *bool           `json:"unlimited_quota"`
-		ExpiresAt          *int64          `json:"expires_at"`
-		UserBalance        json.RawMessage `json:"user_balance"`
-		UserBalanceDisplay json.RawMessage `json:"user_balance_display"`
-		Currency           string          `json:"currency"`
-	} `json:"data"`
-}
-type NewAPIWalletBalanceInfo struct {
-	Currency     string          `json:"currency"`
-	TotalBalance json.RawMessage `json:"total_balance"`
-	Balance      json.RawMessage `json:"balance"`
-	Remaining    json.RawMessage `json:"remaining"`
-	Used         json.RawMessage `json:"used"`
-	UsedBalance  json.RawMessage `json:"used_balance"`
-	Total        json.RawMessage `json:"total"`
-}
-type NewAPIWalletData struct {
-	ID           json.RawMessage           `json:"id"`
-	Quota        json.RawMessage           `json:"quota"`
-	UsedQuota    json.RawMessage           `json:"used_quota"`
-	Balance      json.RawMessage           `json:"balance"`
-	Remaining    json.RawMessage           `json:"remaining"`
-	TotalBalance json.RawMessage           `json:"total_balance"`
-	Used         json.RawMessage           `json:"used"`
-	Total        json.RawMessage           `json:"total"`
-	Currency     string                    `json:"currency"`
-	BalanceInfos []NewAPIWalletBalanceInfo `json:"balance_infos"`
-}
-type NewAPIWalletBalanceResponse struct {
-	Code         *bool                     `json:"code"`
-	Success      *bool                     `json:"success"`
-	Message      string                    `json:"message"`
-	BalanceInfos []NewAPIWalletBalanceInfo `json:"balance_infos"`
-	Currency     string                    `json:"currency"`
-	Balance      json.RawMessage           `json:"balance"`
-	Remaining    json.RawMessage           `json:"remaining"`
-	TotalBalance json.RawMessage           `json:"total_balance"`
-	Used         json.RawMessage           `json:"used"`
-	UsedBalance  json.RawMessage           `json:"used_balance"`
-	Total        json.RawMessage           `json:"total"`
-	Data         *NewAPIWalletData         `json:"data"`
-}
-type NewAPIUsageDisplaySettings struct {
-	Unit            string
-	QuotaPerUnit    float64
-	USDExchangeRate float64
-}
-
-const newAPIDefaultQuotaPerUnit = 500000.0
 
 func (a *NewAPIUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {
 	client := usageclient.New(input)
@@ -665,7 +666,7 @@ func ParseNewAPIWalletBalance(body []byte, settings NewAPIUsageDisplaySettings) 
 	if response.Data != nil && len(response.Data.BalanceInfos) > 0 {
 		infos = response.Data.BalanceInfos
 	}
-	for pass := 0; pass < 2; pass++ {
+	for pass := range 2 {
 		for _, info := range infos {
 			unit, displayValue := NormalizeNewAPIWalletUnit(info.Currency, settings.Unit)
 			// balance_infos 的 total_balance 是钱包展示值；部分 fork 省略

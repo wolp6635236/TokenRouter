@@ -4,16 +4,13 @@ import (
 	"context"
 	"time"
 
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/gin-gonic/gin"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/grokforward"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
 func (s *GrokExecutor) ForwardResponses(

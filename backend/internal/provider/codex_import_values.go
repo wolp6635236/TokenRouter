@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const codexImportClockSkewSeconds int64 = 120
+
 // CodexImportProviders 只提供导入所需的已校验管理用例。
 type CodexImportProviders interface {
 	CreateProvider(context.Context, *CreateProviderInput) (*Record, error)
@@ -24,13 +26,6 @@ type CodexImporter struct {
 	options   CodexImportOptions
 }
 
-func NewCodexImporter(providers CodexImportProviders, archive *Archive, options CodexImportOptions) *CodexImporter {
-	if options.Now == nil {
-		options.Now = time.Now
-	}
-	return &CodexImporter{providers, archive, options}
-}
-
 // CodexOrganizationClaim 保留导入 JWT 的原组织字段，仅供非认证提示解析。
 type CodexOrganizationClaim struct {
 	ID        string `json:"id"`
@@ -38,8 +33,6 @@ type CodexOrganizationClaim struct {
 	Title     string `json:"title"`
 	IsDefault bool   `json:"is_default"`
 }
-
-const codexImportClockSkewSeconds int64 = 120
 
 type CodexSessionImportRequest struct {
 	Content            string         `json:"content"`
@@ -126,4 +119,11 @@ type CodexJWTOpenAIClaims struct {
 	UserID           string                   `json:"user_id"`
 	POID             string                   `json:"poid"`
 	Organizations    []CodexOrganizationClaim `json:"organizations"`
+}
+
+func NewCodexImporter(providers CodexImportProviders, archive *Archive, options CodexImportOptions) *CodexImporter {
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	return &CodexImporter{providers, archive, options}
 }

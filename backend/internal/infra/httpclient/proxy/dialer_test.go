@@ -1,13 +1,19 @@
 package proxy
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var errStub = errors.New("stub dial")
 
 func TestConfigureTransportProxy_Nil(t *testing.T) {
 	transport := &http.Transport{}
@@ -65,7 +71,7 @@ func TestConfigureTransportProxy_SOCKS5H(t *testing.T) {
 func TestConfigureTransportProxy_CaseInsensitive(t *testing.T) {
 	testCases := []struct {
 		scheme   string
-		useProxy bool // true = uses Transport.Proxy, false = uses DialContext
+		useProxy bool // true 使用 Transport.Proxy，false 使用 DialContext。
 	}{
 		{"HTTP://proxy.example.com:8080", true},
 		{"Http://proxy.example.com:8080", true},
@@ -138,7 +144,7 @@ func TestConfigureTransportProxy_EmptyScheme(t *testing.T) {
 }
 
 func TestConfigureTransportProxy_PreservesExistingConfig(t *testing.T) {
-	// 验证代理配置不会覆盖 Transport 的其他配置
+	// 配置代理后检查 Transport 的其他配置仍生效。
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -201,4 +207,46 @@ func TestConfigureTransportProxy_SpecialCharsInPassword(t *testing.T) {
 			assert.NotNil(t, transport.DialContext, "SOCKS5 should set DialContext")
 		})
 	}
+}
+
+// TestSOCKS5ForwardDialerHasBoundedTimeout 检查 SOCKS5 拨号器携带建连超时。
+// SOCKS5 分支替换 Transport.DialContext，底层零值 net.Dialer 会等待内核 TCP 重传结束。
+func TestSOCKS5ForwardDialerHasBoundedTimeout(t *testing.T) {
+	require.Greater(t, socks5ForwardDialer.Timeout, time.Duration(0))
+	require.Equal(t, socks5DialTimeout, socks5ForwardDialer.Timeout)
+	require.Equal(t, socks5DialKeepAlive, socks5ForwardDialer.KeepAlive)
+}
+
+func TestConfigureTransportProxySOCKS5SetsDialContext(t *testing.T) {
+	for _, scheme := range []string{"socks5", "socks5h"} {
+		t.Run(scheme, func(t *testing.T) {
+			proxyURL, err := url.Parse(scheme + "://127.0.0.1:1080")
+			require.NoError(t, err)
+
+			transport := &http.Transport{}
+			require.NoError(t, ConfigureTransportProxy(transport, proxyURL))
+			require.NotNil(t, transport.DialContext)
+			require.Nil(t, transport.Proxy, "SOCKS5 不应设置 Transport.Proxy")
+		})
+	}
+}
+
+// TestConfigureTransportProxyHTTPPreservesDialContext 检查 HTTP 代理配置后仍调用传入的 DialContext。
+func TestConfigureTransportProxyHTTPPreservesDialContext(t *testing.T) {
+	proxyURL, err := url.Parse("http://127.0.0.1:8080")
+	require.NoError(t, err)
+
+	called := false
+	transport := &http.Transport{}
+	transport.DialContext = func(_ context.Context, _, _ string) (net.Conn, error) {
+		called = true
+		return nil, errStub
+	}
+
+	require.NoError(t, ConfigureTransportProxy(transport, proxyURL))
+	require.NotNil(t, transport.Proxy)
+	require.NotNil(t, transport.DialContext)
+
+	_, _ = transport.DialContext(context.Background(), "tcp", "127.0.0.1:1")
+	require.True(t, called, "HTTP 代理分支不应替换调用方的 DialContext")
 }

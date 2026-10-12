@@ -10,15 +10,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 type AnthropicOutputOptions struct {
@@ -680,16 +680,16 @@ func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, 
 	for _, resEvt := range finalResEvents {
 		ccChunks := bridge.ResponsesEventToChatChunks(&resEvt, ccState)
 		for _, chunk := range ccChunks {
-			writeChunk(chunk) //nolint:errcheck
+			writeChunk(chunk)
 		}
 	}
 	finalCCChunks := bridge.FinalizeResponsesChatStream(ccState)
 	for _, chunk := range finalCCChunks {
-		writeChunk(chunk) //nolint:errcheck
+		writeChunk(chunk)
 	}
 
 	if !clientDisconnected {
-		fmt.Fprint(c.Writer, "data: [DONE]\n\n") //nolint:errcheck
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 

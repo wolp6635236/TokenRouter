@@ -10,7 +10,7 @@
       <div class="flex justify-end space-x-3">
         <button
           type="button"
-          class="rounded-control border border-primary-900/10 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:border-black/20 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10 dark:border-dark-600 dark:bg-dark-700 dark:text-gray-200 dark:hover:border-dark-600 dark:hover:bg-dark-600 dark:focus:ring-primary-500"
+          class="btn btn-secondary"
           @click="handleSkip"
         >
           {{ t('creative.cropper.skip') }}
@@ -18,7 +18,7 @@
         <button
           type="button"
           :disabled="processing"
-          class="rounded-control bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-60"
+          class="btn btn-primary"
           @click="handleConfirm"
         >
           {{ processing ? t('common.processing') : t('creative.cropper.confirm') }}

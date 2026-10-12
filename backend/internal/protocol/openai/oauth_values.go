@@ -1,6 +1,6 @@
 package openai
 
-// OAuthTokenResponse represents the token response from OpenAI OAuth
+// OAuthTokenResponse represents the token response from OpenAI OAuth.
 type OAuthTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	IDToken      string `json:"id_token"`
@@ -10,7 +10,7 @@ type OAuthTokenResponse struct {
 	Scope        string `json:"scope,omitempty"`
 }
 
-// OAuthIDTokenClaims represents the claims from OpenAI ID Token
+// OAuthIDTokenClaims represents the claims from OpenAI ID Token.
 type OAuthIDTokenClaims struct {
 	// Standard claims
 	Sub           string   `json:"sub"`
@@ -25,7 +25,7 @@ type OAuthIDTokenClaims struct {
 	OpenAIAuth *OAuthAuthClaims `json:"https://api.openai.com/auth,omitempty"`
 }
 
-// OAuthAuthClaims represents the OpenAI specific auth claims
+// OAuthAuthClaims represents the OpenAI specific auth claims.
 type OAuthAuthClaims struct {
 	ChatGPTAccountID string                   `json:"chatgpt_account_id"`
 	ChatGPTUserID    string                   `json:"chatgpt_user_id"`
@@ -35,7 +35,7 @@ type OAuthAuthClaims struct {
 	Organizations    []OAuthOrganizationClaim `json:"organizations"`
 }
 
-// OAuthOrganizationClaim represents an organization in the ID Token
+// OAuthOrganizationClaim represents an organization in the ID Token.
 type OAuthOrganizationClaim struct {
 	ID        string `json:"id"`
 	Role      string `json:"role"`
@@ -54,7 +54,26 @@ type OAuthUserInfo struct {
 	Organizations    []OAuthOrganizationClaim
 }
 
-// GetUserInfo extracts user info from ID Token claims
+// ChatGPTAccountInfo 是 chatgpt.com/backend-api/accounts/check 返回的账户信息。
+type ChatGPTAccountInfo struct {
+	PlanType string
+	Email    string
+	// ProviderID 优先取 account.account_id，缺失时使用 accounts 的 map key。
+	// accounts/check 可能同时返回个人账户与 workspace，调用方据此区分数据来源。
+	ProviderID            string
+	SubscriptionExpiresAt string // entitlement.expires_at (RFC3339)
+}
+
+// PATWhoamiResponse 保存 PAT 身份查询返回的用户和账户信息。
+type PATWhoamiResponse struct {
+	Email                   string `json:"email"`
+	ChatGPTUserID           string `json:"chatgpt_user_id"`
+	ChatGPTAccountID        string `json:"chatgpt_account_id"`
+	ChatGPTPlanType         string `json:"chatgpt_plan_type"`
+	ChatGPTAccountIsFedRAMP *bool  `json:"chatgpt_account_is_fedramp"`
+}
+
+// GetUserInfo extracts user info from ID Token claims.
 func (c *OAuthIDTokenClaims) GetUserInfo() *OAuthUserInfo {
 	info := &OAuthUserInfo{
 		Email: c.Email,

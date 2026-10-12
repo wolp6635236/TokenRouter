@@ -7,12 +7,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"go.uber.org/zap"
 )
 
 const openAIMissingUsageLogInterval = time.Minute
+
+var (
+	openAIMissingUsageLogSamplerState openAIMissingUsageLogSampler
+	openAIMissingUsageTotal           atomic.Uint64
+)
 
 // openAIMissingUsageLogSampler 对缺失 usage 的诊断日志做低频采样，同时保留累计计数。
 type openAIMissingUsageLogSampler struct {
@@ -39,11 +45,6 @@ func (s *openAIMissingUsageLogSampler) sample(now time.Time) (logNow bool, total
 	s.suppressed++
 	return false, s.total, 0
 }
-
-var (
-	openAIMissingUsageLogSamplerState openAIMissingUsageLogSampler
-	openAIMissingUsageTotal           atomic.Uint64
-)
 
 // SuccessMissingUsage 按低频采样记录成功响应缺少 usage 的诊断信息。
 func SuccessMissingUsage(ctx context.Context, providerID int64, status int, usage *openai.ForwardUsage, terminalEvent string, clientDisconnected bool) {

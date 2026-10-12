@@ -6,7 +6,7 @@
     @close="handleClose"
   >
     <div v-if="provider" class="space-y-5">
-      <div class="flex flex-col gap-3 rounded-surface border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-700 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex flex-col gap-3 rounded-surface border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-800 sm:flex-row sm:items-center sm:justify-between">
         <div class="flex items-center gap-3">
           <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-control bg-emerald-500 text-white">
             <Icon name="gift" size="md" :stroke-width="2" />

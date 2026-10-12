@@ -65,6 +65,33 @@ type VertexBatchJobError struct {
 	Status  string `json:"status"`
 }
 
+type vertexCombinedJSONLReadCloser struct {
+	ctx          context.Context
+	accessToken  string
+	objects      []string
+	store        VertexBatchObjectStore
+	index        int
+	current      io.ReadCloser
+	needBoundary bool
+	closed       bool
+}
+
+type VertexBatchHTTPClient struct {
+	baseURL string
+	client  *http.Client
+}
+
+type VertexGCSObjectStore struct {
+	baseURL string
+	client  *http.Client
+}
+
+type VertexAPIError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
 func NormalizeVertexBatchModelPath(model string) string {
 	model = strings.Trim(strings.TrimSpace(model), "/")
 	if strings.HasPrefix(model, "publishers/") || strings.HasPrefix(model, "projects/") {
@@ -93,17 +120,6 @@ func BuildVertexBatchPredictionJobsEndpoint(baseURL, projectID, location string)
 		host = "aiplatform.googleapis.com"
 	}
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/batchPredictionJobs", host, url.PathEscape(projectID), url.PathEscape(location)), nil
-}
-
-type vertexCombinedJSONLReadCloser struct {
-	ctx          context.Context
-	accessToken  string
-	objects      []string
-	store        VertexBatchObjectStore
-	index        int
-	current      io.ReadCloser
-	needBoundary bool
-	closed       bool
 }
 
 func (r *vertexCombinedJSONLReadCloser) Read(p []byte) (int, error) {
@@ -163,11 +179,6 @@ func (r *vertexCombinedJSONLReadCloser) Close() error {
 	return nil
 }
 
-type VertexBatchHTTPClient struct {
-	baseURL string
-	client  *http.Client
-}
-
 func NewVertexBatchHTTPClient(baseURL string, client *http.Client) *VertexBatchHTTPClient {
 	if client == nil {
 		client = httpclient.DefaultBatchHTTPClient()
@@ -219,11 +230,6 @@ func (c *VertexBatchHTTPClient) vertexResourceURL(name string) string {
 		return c.baseURL + "/v1/" + name
 	}
 	return "https://aiplatform.googleapis.com/v1/" + name
-}
-
-type VertexGCSObjectStore struct {
-	baseURL string
-	client  *http.Client
 }
 
 func NewVertexGCSObjectStore(baseURL string, client *http.Client) *VertexGCSObjectStore {
@@ -358,12 +364,6 @@ func parseGCSURI(uri string) (bucket, object string, err error) {
 		return "", "", fmt.Errorf("invalid gcs uri")
 	}
 	return parts[0], parts[1], nil
-}
-
-type VertexAPIError struct {
-	StatusCode int
-	Code       string
-	Message    string
 }
 
 func (e *VertexAPIError) Error() string {

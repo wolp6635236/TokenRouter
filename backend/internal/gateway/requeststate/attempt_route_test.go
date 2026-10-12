@@ -4,11 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 // TestCapturedCandidatePlanDoesNotResolveMissingOrChangedCandidate 验证请求快照断言：缺失值不补造，已捕获计划不被后续修改污染。

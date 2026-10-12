@@ -11,6 +11,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
+var (
+	ErrSettingNotFound = settings.ErrSettingNotFound
+	ErrRowNotFound     = errors.New("ops row not found")
+)
+
 type Options struct {
 	Ops              RuntimeOptions
 	Database         struct{ MaxOpenConns int }
@@ -57,11 +62,6 @@ type Settings interface {
 }
 type PreAggregationReader interface{ OpsEnabled(context.Context) bool }
 
-var (
-	ErrSettingNotFound = settings.ErrSettingNotFound
-	ErrRowNotFound     = errors.New("ops row not found")
-)
-
 type GroupObservation struct {
 	ID   int64
 	Name string
@@ -74,8 +74,6 @@ type ProviderObservation struct {
 	Groups                                                  []*GroupObservation
 	TempUnschedulableUntil, RateLimitResetAt, OverloadUntil *time.Time
 }
-
-func (a ProviderObservation) EffectiveLoadFactor() int { return a.LoadFactor }
 
 type UserObservation struct {
 	ID              int64
@@ -116,6 +114,8 @@ type (
 		Failed(int64, *OpsRuntimeLogConfig, *OpsRuntimeLogConfig, string)
 	}
 )
+
+func (a ProviderObservation) EffectiveLoadFactor() int { return a.LoadFactor }
 
 func (s *OpsService) isNotFound(e error) bool {
 	if s != nil && s.cfg != nil && s.cfg.IsNotFound != nil {

@@ -23,6 +23,8 @@ const (
 	openAIProviderSelectionProbeLimit           = 64
 )
 
+var ErrNoAvailableCompactProviders = errors.New("no available providers support /responses/compact")
+
 type PlatformSelectionInput struct {
 	GroupID                  *int64
 	Platform                 string
@@ -46,13 +48,6 @@ type PlatformSelectionInput struct {
 	// AdvancedSchedulerFeedbackConfig 与 StickyEscapeConfig 固定本次请求使用的有效策略。
 	AdvancedSchedulerFeedbackConfig policy.FeedbackConfig
 	StickyEscapeConfig              policy.StickyEscapeConfig
-}
-
-func (r PlatformSelectionInput) routingModel() string {
-	if model := strings.TrimSpace(r.RoutingModel); model != "" {
-		return model
-	}
-	return r.RequestedModel
 }
 
 type PlatformDecision struct {
@@ -89,120 +84,11 @@ type PlatformMetrics struct {
 	loadSkewMilliTotal     atomic.Int64
 }
 
-func (m *PlatformMetrics) RecordSelect(decision PlatformDecision) {
-	if m == nil {
-		return
-	}
-	m.selectTotal.Add(1)
-	m.latencyMsTotal.Add(decision.LatencyMs)
-	m.loadSkewMilliTotal.Add(int64(math.Round(decision.LoadSkew * 1000)))
-	if decision.StickyPreviousHit {
-		m.stickyPreviousHitTotal.Add(1)
-	}
-	if decision.StickySessionHit {
-		m.stickySessionHitTotal.Add(1)
-	}
-	if decision.Layer == openAIProviderScheduleLayerLoadBalance {
-		m.loadBalanceSelectTotal.Add(1)
-	}
-}
-
-func (m *PlatformMetrics) RecordSwitch() {
-	if m == nil {
-		return
-	}
-	m.providerSwitchTotal.Add(1)
-}
-
-func (m *PlatformMetrics) Snapshot(providerCount int) PlatformMetricsSnapshot {
-	if m == nil {
-		return PlatformMetricsSnapshot{}
-	}
-
-	selectTotal := m.selectTotal.Load()
-	prevHit := m.stickyPreviousHitTotal.Load()
-	sessionHit := m.stickySessionHitTotal.Load()
-	switchTotal := m.providerSwitchTotal.Load()
-	latencyTotal := m.latencyMsTotal.Load()
-	loadSkewTotal := m.loadSkewMilliTotal.Load()
-
-	snapshot := PlatformMetricsSnapshot{
-		SelectTotal:               selectTotal,
-		StickyPreviousHitTotal:    prevHit,
-		StickySessionHitTotal:     sessionHit,
-		LoadBalanceSelectTotal:    m.loadBalanceSelectTotal.Load(),
-		ProviderSwitchTotal:       switchTotal,
-		SchedulerLatencyMsTotal:   latencyTotal,
-		RuntimeStatsProviderCount: providerCount,
-	}
-	if selectTotal > 0 {
-		snapshot.SchedulerLatencyMsAvg = float64(latencyTotal) / float64(selectTotal)
-		snapshot.StickyHitRatio = float64(prevHit+sessionHit) / float64(selectTotal)
-		snapshot.ProviderSwitchRate = float64(switchTotal) / float64(selectTotal)
-		snapshot.LoadSkewAvg = float64(loadSkewTotal) / 1000 / float64(selectTotal)
-	}
-	return snapshot
-}
-
 type ProbeBudget struct {
 	acquires  int
 	rechecks  int
 	attempted map[int64]struct{}
 	limited   bool
-}
-
-func NewProbeBudget() *ProbeBudget {
-	return &ProbeBudget{attempted: make(map[int64]struct{})}
-}
-
-func (b *ProbeBudget) enableLimit() {
-	if b != nil {
-		b.limited = true
-	}
-}
-
-func (b *ProbeBudget) recordAcquire(providerID int64) bool {
-	if b == nil {
-		return false
-	}
-	if !b.limited {
-		return true
-	}
-	if b.acquires >= openAIProviderSelectionProbeLimit {
-		return false
-	}
-	if b.attempted == nil {
-		b.attempted = make(map[int64]struct{})
-	}
-	b.acquires++
-	b.attempted[providerID] = struct{}{}
-	return true
-}
-
-func (b *ProbeBudget) recordRecheck() bool {
-	if b == nil {
-		return false
-	}
-	if !b.limited {
-		return true
-	}
-	if b.rechecks >= openAIProviderSelectionProbeLimit {
-		return false
-	}
-	b.rechecks++
-	return true
-}
-
-func (b *ProbeBudget) acquireExhausted() bool {
-	return b != nil && b.limited && b.acquires >= openAIProviderSelectionProbeLimit
-}
-
-func (b *ProbeBudget) wasAttempted(providerID int64) bool {
-	if b == nil {
-		return false
-	}
-	_, ok := b.attempted[providerID]
-	return ok
 }
 
 // PlatformCandidateScore 使用同一评分结果，仅保留本次候选的无凭据关联。
@@ -281,24 +167,6 @@ type PlatformSelector struct {
 	now         func() time.Time
 }
 
-func NewPlatformSelector(ports PlatformSelectionPorts, concurrency *ConcurrencyService, stats *RuntimeStats, metrics *PlatformMetrics, diagnostics Diagnostics, now func() time.Time) *PlatformSelector {
-	return &PlatformSelector{ports: ports, concurrency: concurrency, stats: stats, metrics: metrics, diagnostics: diagnostics, now: now}
-}
-
-var ErrNoAvailableCompactProviders = errors.New("no available providers support /responses/compact")
-
-func (s *PlatformSelector) requestCompatible(ctx context.Context, a *FlowProvider, input PlatformSelectionInput) bool {
-	ok, _ := s.ports.RequestCompatible(ctx, a, input)
-	return ok
-}
-
-func (s *PlatformSelector) canRecheck(b *ProbeBudget) bool {
-	if !s.ports.RecheckAvailable {
-		return true
-	}
-	return b.recordRecheck()
-}
-
 type PlatformLoadPlan struct {
 	allCandidates             []PlatformCandidateScore
 	candidates                []PlatformCandidateScore
@@ -321,6 +189,138 @@ type platformPoolAttempt struct {
 type PlatformFilterStats struct {
 	Pool    int
 	Reasons map[string]int
+}
+
+func (r PlatformSelectionInput) routingModel() string {
+	if model := strings.TrimSpace(r.RoutingModel); model != "" {
+		return model
+	}
+	return r.RequestedModel
+}
+
+func (m *PlatformMetrics) RecordSelect(decision PlatformDecision) {
+	if m == nil {
+		return
+	}
+	m.selectTotal.Add(1)
+	m.latencyMsTotal.Add(decision.LatencyMs)
+	m.loadSkewMilliTotal.Add(int64(math.Round(decision.LoadSkew * 1000)))
+	if decision.StickyPreviousHit {
+		m.stickyPreviousHitTotal.Add(1)
+	}
+	if decision.StickySessionHit {
+		m.stickySessionHitTotal.Add(1)
+	}
+	if decision.Layer == openAIProviderScheduleLayerLoadBalance {
+		m.loadBalanceSelectTotal.Add(1)
+	}
+}
+
+func (m *PlatformMetrics) RecordSwitch() {
+	if m == nil {
+		return
+	}
+	m.providerSwitchTotal.Add(1)
+}
+
+func (m *PlatformMetrics) Snapshot(providerCount int) PlatformMetricsSnapshot {
+	if m == nil {
+		return PlatformMetricsSnapshot{}
+	}
+
+	selectTotal := m.selectTotal.Load()
+	prevHit := m.stickyPreviousHitTotal.Load()
+	sessionHit := m.stickySessionHitTotal.Load()
+	switchTotal := m.providerSwitchTotal.Load()
+	latencyTotal := m.latencyMsTotal.Load()
+	loadSkewTotal := m.loadSkewMilliTotal.Load()
+
+	snapshot := PlatformMetricsSnapshot{
+		SelectTotal:               selectTotal,
+		StickyPreviousHitTotal:    prevHit,
+		StickySessionHitTotal:     sessionHit,
+		LoadBalanceSelectTotal:    m.loadBalanceSelectTotal.Load(),
+		ProviderSwitchTotal:       switchTotal,
+		SchedulerLatencyMsTotal:   latencyTotal,
+		RuntimeStatsProviderCount: providerCount,
+	}
+	if selectTotal > 0 {
+		snapshot.SchedulerLatencyMsAvg = float64(latencyTotal) / float64(selectTotal)
+		snapshot.StickyHitRatio = float64(prevHit+sessionHit) / float64(selectTotal)
+		snapshot.ProviderSwitchRate = float64(switchTotal) / float64(selectTotal)
+		snapshot.LoadSkewAvg = float64(loadSkewTotal) / 1000 / float64(selectTotal)
+	}
+	return snapshot
+}
+
+func NewProbeBudget() *ProbeBudget {
+	return &ProbeBudget{attempted: make(map[int64]struct{})}
+}
+
+func (b *ProbeBudget) enableLimit() {
+	if b != nil {
+		b.limited = true
+	}
+}
+
+func (b *ProbeBudget) recordAcquire(providerID int64) bool {
+	if b == nil {
+		return false
+	}
+	if !b.limited {
+		return true
+	}
+	if b.acquires >= openAIProviderSelectionProbeLimit {
+		return false
+	}
+	if b.attempted == nil {
+		b.attempted = make(map[int64]struct{})
+	}
+	b.acquires++
+	b.attempted[providerID] = struct{}{}
+	return true
+}
+
+func (b *ProbeBudget) recordRecheck() bool {
+	if b == nil {
+		return false
+	}
+	if !b.limited {
+		return true
+	}
+	if b.rechecks >= openAIProviderSelectionProbeLimit {
+		return false
+	}
+	b.rechecks++
+	return true
+}
+
+func (b *ProbeBudget) acquireExhausted() bool {
+	return b != nil && b.limited && b.acquires >= openAIProviderSelectionProbeLimit
+}
+
+func (b *ProbeBudget) wasAttempted(providerID int64) bool {
+	if b == nil {
+		return false
+	}
+	_, ok := b.attempted[providerID]
+	return ok
+}
+
+func NewPlatformSelector(ports PlatformSelectionPorts, concurrency *ConcurrencyService, stats *RuntimeStats, metrics *PlatformMetrics, diagnostics Diagnostics, now func() time.Time) *PlatformSelector {
+	return &PlatformSelector{ports: ports, concurrency: concurrency, stats: stats, metrics: metrics, diagnostics: diagnostics, now: now}
+}
+
+func (s *PlatformSelector) requestCompatible(ctx context.Context, a *FlowProvider, input PlatformSelectionInput) bool {
+	ok, _ := s.ports.RequestCompatible(ctx, a, input)
+	return ok
+}
+
+func (s *PlatformSelector) canRecheck(b *ProbeBudget) bool {
+	if !s.ports.RecheckAvailable {
+		return true
+	}
+	return b.recordRecheck()
 }
 
 func (s *PlatformFilterStats) Exclude(reason string) {
@@ -679,10 +679,7 @@ func (s *PlatformSelector) BuildPlan(
 		s.now(),
 	)
 
-	plan.topK = effectiveSettings.TopK
-	if plan.topK > len(plan.candidates) {
-		plan.topK = len(plan.candidates)
-	}
+	plan.topK = min(effectiveSettings.TopK, len(plan.candidates))
 	if plan.topK <= 0 {
 		plan.topK = 1
 	}
@@ -699,10 +696,7 @@ func (s *PlatformSelector) buildOpenAISelectionOrder(
 		if len(pool) == 0 || plan.topK <= 0 {
 			return nil
 		}
-		groupTopK := plan.topK
-		if groupTopK > len(pool) {
-			groupTopK = len(pool)
-		}
+		groupTopK := min(plan.topK, len(pool))
 		ranked := platformTopK(pool, groupTopK)
 		return s.weightedOrder(ranked, req)
 	}
@@ -953,7 +947,7 @@ func (s *PlatformSelector) finishLoadBalanceSelectionFallback(
 	if budget != nil && budget.limited {
 		passes = 4
 	}
-	for pass := 0; pass < passes; pass++ {
+	for pass := range passes {
 		wantAttempted := pass == 1 || pass == 3
 		wantKnownFull := pass >= 2
 		for _, candidate := range attempt.selectionOrder {

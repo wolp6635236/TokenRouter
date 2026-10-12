@@ -59,10 +59,6 @@ type DingTalkAPIError struct {
 	HTTP    int
 }
 
-func (e *DingTalkAPIError) Error() string {
-	return fmt.Sprintf("dingtalk api error code=%s msg=%s http=%d", e.Code, e.Message, e.HTTP)
-}
-
 // DingTalkOAuthClient 暴露原四步验证链与部门读取，令牌缓存仍由 provider 唯一持有。
 type DingTalkOAuthClient interface {
 	ExchangeCodeForUserToken(context.Context, string) (*DingTalkUserTokenResp, error)
@@ -70,6 +66,10 @@ type DingTalkOAuthClient interface {
 	GetUserIdByUnionId(context.Context, string) (string, error)
 	GetStaffInfoByUserId(context.Context, string) (*DingTalkProfileSnapshot, error)
 	DingTalkDepartmentReader
+}
+
+func (e *DingTalkAPIError) Error() string {
+	return fmt.Sprintf("dingtalk api error code=%s msg=%s http=%d", e.Code, e.Message, e.HTTP)
 }
 
 func DingTalkSyntheticEmail(userID string) string {
@@ -118,7 +118,7 @@ func DingTalkCorpAllowed(cfg DingTalkOAuthOptions, corpID string) bool {
 	}
 }
 
-// DingTalkErrorCode 把 DingTalkAPIError 映射到 redirectOAuthError 用的字符串 code
+// DingTalkErrorCode 把 DingTalkAPIError 映射到 redirectOAuthError 用的字符串 code。
 func DingTalkErrorCode(err error) string {
 	var apiErr *DingTalkAPIError
 	if !errors.As(err, &apiErr) {

@@ -8,6 +8,7 @@ type NavigationGuard = (
 
 const routerHarness = vi.hoisted(() => ({
   guard: null as NavigationGuard | null,
+  routes: [] as Array<{ path: string; meta?: Record<string, unknown> }>,
 }))
 
 const authStore = vi.hoisted(() => ({
@@ -33,13 +34,16 @@ const appStore = vi.hoisted(() => ({
 
 vi.mock('vue-router', () => ({
   createWebHistory: vi.fn(() => ({})),
-  createRouter: vi.fn(() => ({
-    beforeEach: vi.fn((guard: NavigationGuard) => {
-      routerHarness.guard = guard
-    }),
-    afterEach: vi.fn(),
-    onError: vi.fn(),
-  })),
+  createRouter: vi.fn((options: { routes: typeof routerHarness.routes }) => {
+    routerHarness.routes = options.routes
+    return {
+      beforeEach: vi.fn((guard: NavigationGuard) => {
+        routerHarness.guard = guard
+      }),
+      afterEach: vi.fn(),
+      onError: vi.fn(),
+    }
+  }),
 }))
 
 vi.mock('@/stores/auth', () => ({
@@ -182,5 +186,18 @@ describe('feature route guard', () => {
     expect(appStore.fetchPublicSettings).not.toHaveBeenCalled()
     expect(next).toHaveBeenCalledOnce()
     expect(next).toHaveBeenCalledWith(target)
+  })
+
+  it('请求诊断只注册管理员路由，普通用户直接访问会被拦截', async () => {
+    expect(routerHarness.routes.find(route => route.path === '/requests')).toBeUndefined()
+    const route = routerHarness.routes.find(route => route.path === '/admin/requests')
+    expect(route?.meta?.requiresAdmin).toBe(true)
+    const blocked = runGuard(route?.meta ?? {}, '/admin/requests')
+    await blocked.navigation
+    expect(blocked.next).toHaveBeenCalledWith('/dashboard')
+    authStore.isAdmin = true
+    const allowed = runGuard(route?.meta ?? {}, '/admin/requests')
+    await allowed.navigation
+    expect(allowed.next).toHaveBeenCalledWith()
   })
 })

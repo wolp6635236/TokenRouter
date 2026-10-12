@@ -1,4 +1,4 @@
-package app_test
+package app
 
 import (
 	"context"
@@ -12,15 +12,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
-	"github.com/stretchr/testify/require"
 )
+
+type qoderErrorPassthroughRepoStub struct {
+	rules []*errorpolicy.ErrorPassthroughRule
+}
 
 // fixtureClient 模拟供应商网络，测试使用平台转换、网关循环和 Lease 的生产实现。
 type fixtureClient struct {
@@ -29,18 +39,84 @@ type fixtureClient struct {
 	calls   *atomic.Int32
 }
 
+// blockingSink 模拟同步背压，当前帧写入结束后才能写下一帧。
+type blockingSink struct {
+	entered, proceed chan struct{}
+	once             atomic.Bool
+	failure          error
+}
+
+type cancelableQoderClient struct{ entered chan struct{} }
+
+func TestQoderGatewayErrorDetailsAppliesPassthroughRule(t *testing.T) {
+	customMessage := "Use another Qoder provider"
+	responseCode := http.StatusTeapot
+	svc := errorpolicy.NewErrorPassthroughService(&qoderErrorPassthroughRepoStub{
+		rules: []*errorpolicy.ErrorPassthroughRule{
+			{
+				Name:            "qoder custom",
+				Enabled:         true,
+				Priority:        1,
+				ErrorCodes:      []int{http.StatusUnprocessableEntity},
+				MatchMode:       errorpolicy.MatchModeAny,
+				Platforms:       []string{capability.PlatformQoder},
+				PassthroughCode: false,
+				ResponseCode:    &responseCode,
+				PassthroughBody: false,
+				CustomMessage:   &customMessage,
+				SkipMonitoring:  true,
+			},
+		},
+	}, nil, gatewaytelemetry.ErrorRules,
+	)
+	require.NoError(t, svc.StartContext(context.Background()))
+	t.Cleanup(svc.Stop)
+	h := gatewayhttp.QoderErrorPresenter{Rules: svc, Describe: gatewayprovider.DescribeQoderError}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	status, errType, message, ok := h.Details(c, &qoder.APIError{
+		StatusCode: http.StatusUnprocessableEntity,
+		Body:       `{"message":"original upstream message"}`,
+		Message:    "original upstream message",
+	})
+
+	require.True(t, ok)
+	require.Equal(t, responseCode, status)
+	require.Equal(t, "upstream_error", errType)
+	require.Equal(t, customMessage, message)
+	skip, exists := c.Get(gatewayhttp.OpsSkipPassthroughKey)
+	require.True(t, exists)
+	require.Equal(t, true, skip)
+}
+
+func (r *qoderErrorPassthroughRepoStub) List(context.Context) ([]*errorpolicy.ErrorPassthroughRule, error) {
+	return r.rules, nil
+}
+
+func (r *qoderErrorPassthroughRepoStub) GetByID(context.Context, int64) (*errorpolicy.ErrorPassthroughRule, error) {
+	return nil, nil
+}
+
+func (r *qoderErrorPassthroughRepoStub) Create(context.Context, *errorpolicy.ErrorPassthroughRule) (*errorpolicy.ErrorPassthroughRule, error) {
+	return nil, nil
+}
+
+func (r *qoderErrorPassthroughRepoStub) Update(context.Context, *errorpolicy.ErrorPassthroughRule) (*errorpolicy.ErrorPassthroughRule, error) {
+	return nil, nil
+}
+
+func (r *qoderErrorPassthroughRepoStub) Delete(context.Context, int64) error {
+	return nil
+}
+
 func (c fixtureClient) StreamRequestContext(context.Context, *qoder.SessionContext, string, []byte, map[string]string) (*http.Response, error) {
 	c.calls.Add(1)
 	if c.failure != nil {
 		return nil, c.failure
 	}
-	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(c.body))}, nil
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(c.body))}, nil
 }
-
-const (
-	successfulQoderStream = "data: {\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"served\\\"}}]}\"}\n\ndata: {\"body\":\"{\\\"usage\\\":{\\\"prompt_tokens\\\":12,\\\"completion_tokens\\\":3}}\"}\n\ndata: {\"body\":\"[DONE]\"}\n\n"
-	qoderFailureFrame     = "data: {\"body\":\"{\\\"code\\\":\\\"500\\\",\\\"message\\\":\\\"fixture failure\\\"}\",\"statusCodeValue\":502}\n\n"
-)
 
 func TestQoderNativeGatewayAttemptsAndCompletion(t *testing.T) {
 	for _, tc := range []struct {
@@ -127,14 +203,8 @@ func TestQoderNativeGatewayCompletedFailureNeverRetriesSupplier(t *testing.T) {
 	require.EqualValues(t, 1, calls.Load())
 }
 
-// blockingSink 模拟同步背压，当前帧写入结束后才能写下一帧。
-type blockingSink struct {
-	entered, proceed chan struct{}
-	once             atomic.Bool
-	failure          error
-}
-
 func (s *blockingSink) Begin(upstream.OutputHead) error { return nil }
+
 func (s *blockingSink) Emit(event upstream.OutputEvent) error {
 	if event.Semantic && s.once.CompareAndSwap(false, true) {
 		close(s.entered)
@@ -181,8 +251,6 @@ func TestQoderNativeGatewaySlowSinkAndWriteFailure(t *testing.T) {
 		})
 	}
 }
-
-type cancelableQoderClient struct{ entered chan struct{} }
 
 func (c cancelableQoderClient) StreamRequestContext(ctx context.Context, _ *qoder.SessionContext, _ string, _ []byte, _ map[string]string) (*http.Response, error) {
 	close(c.entered)

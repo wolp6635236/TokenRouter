@@ -200,7 +200,7 @@ Grok 的媒体、搜索和 Voice 有各自的计价维度：
 <a id="missing_model_pricing"></a>
 ### 缺价处理
 
-统一文本入口的 Responses、Chat Completions 和 Messages 在选定提供商后、调用上游前检查计费模型的价格。Responses WebSocket 每轮重新检查，包括透传和 HTTP 桥接。查价复用结算的模型来源、共享价格配置和目录价格，Key 重定向、分组映射、提供商映射和换组后的价格各自生效。手动填写的零价和有效的区间价允许调用；缺少基础价的倍率配置按缺价拒绝。尚未开始响应时，HTTP 返回 400，已开始流式响应时追加错误事件。OpenAI 错误码为 `model_pricing_unavailable`。WebSocket 按本地策略关闭连接，并提示管理员配置价格或模型映射。
+统一文本入口的 Responses、Chat Completions 和 Messages 在选定提供商后、调用上游前检查计费模型的价格。Gemini 的 `generateContent` 和 `streamGenerateContent` 在每次提供商尝试前执行相同检查，覆盖 Gemini 和 Antigravity 提供商。`countTokens` 跳过价格预检。Responses WebSocket 每轮重新检查，包括透传和 HTTP 桥接。查价复用结算的模型来源、共享价格配置和目录价格，Key 重定向、分组映射、提供商映射和换组后的价格各自生效。手动填写的零价和有效的区间价允许调用；缺少基础价的倍率配置按缺价拒绝。尚未开始响应时，HTTP 返回 400，已开始流式响应时追加错误事件。OpenAI 错误码为 `model_pricing_unavailable`。Gemini 返回 Google 格式的 400 `INVALID_ARGUMENT`。WebSocket 按本地策略关闭连接，并提示管理员配置价格或模型映射。
 
 `codex-auto-review` 等目录未收录的内部型号需要手动配置价卡，或者映射到已定价的型号。管理员可以填写零价表示免费。型号在网关的支持列表中，表示可以转发该型号，价格仍需单独解析。
 
@@ -222,6 +222,8 @@ Grok 的媒体、搜索和 Voice 有各自的计价维度：
 身份、Key、推广和完成处理共用同一个计费缓存实例。结算通过 `Funds.Settle` 进入 billing/postgres 的一个完整事务；即使 context 里已经有 Ent Tx，结算也不会自动加入外层事务。
 
 billing 根据锁定的订阅快照生成有序的分配和窗口更新，PostgreSQL 适配层负责锁顺序、SQL 更新、outbox 和提交。外层的身份或权益事务通过明确传入的 Ent Tx 复用连接；加入的一方只执行写入，提交、回滚和发布缓存、通知都由外层负责。
+
+使用记录的 `request_id` 表示本地请求，`billing_key` 表示资金操作的去重值。资金命令、账本和去重表中已有的 `request_id` 字段保存计费键。下文的结算去重步骤使用计费键，跨版本规则见[请求 ID 与请求查询](../operations/request_lookup.md#billing_identity)。
 
 标准结算流程：
 
@@ -245,6 +247,8 @@ API Key 软删除只取消之后请求的准入资格，已经放行的请求照
 scope 和参与信息不加入历史指纹，v1、v2、v3 快照和原来的 request ID 保持兼容。任务使用单独的预占和结算命令：提交时持久化余额和订阅的分配快照，完成或取消时用同一个幂等 request ID 结算、释放差额或回滚相应的预记。指定订阅需要在提交上游之前完整覆盖预占金额，额度不够时回滚并拒绝；普通请求那种"上游完成后把超出部分记为余额欠费"的时序不适用于任务。
 
 ## 记录与对账
+
+用户、团队和管理员的使用记录展示单次请求的 TPS：`output_tokens × 1000 ÷ (duration_ms − first_token_ms)`。输出 Token 数使用记录中的 `output_tokens`，耗时字段以毫秒保存。输出 Token 数大于零、首字耗时非负且总耗时大于首字耗时时可以计算；字段缺失或包含非有限数值时显示 `-`。首字耗时为零仍可计算。TPS 在前端通过 `toFixed(1)` 取一位小数，再转换为数值供页面、用户 CSV 和管理员 Excel 共用。页面单位为 `tok/s`，导出无法计算的记录时单元格留空。Excel 保存舍入后的数值，单元格格式补齐一位小数。
 
 网关的完成计算和提交顺序由 `gateway/completion.Recorder` 实现，app 在构造执行器之前，绑定同一个 Forward 和 OpenAI 完成实例。HTTP、SSE、媒体和 WS turn 在提交任务前，取得独立的主体、资金来源、报文和模型快照；后台读取快照，Gin 和之后会变化的请求对象都不再读取。普通完成、Cyber 失败补记和 Live 零费用记录各有自己的资格规则，一种入口的部分失败扣费规则不会套用到其他入口。
 
@@ -280,3 +284,5 @@ Usage Log 保存付款用户、行为用户或团队、Key、提供商、分组�
 - 新增计费类型时，测试要覆盖订阅和余额混合分配、团队归属、重复提交、死锁重试和日志写入失败。
 
 相关文档：[网关请求生命周期](../architecture/gateway_request_lifecycle.md)、[提供商调度与缓存一致性](../architecture/provider_scheduling_and_cache.md)、[网关策略控制](gateway_policy_controls.md)、[身份与租户](identity_and_tenancy.md)、[领域目录](index.md)。
+
+提供商模型范围由非空 `model_whitelist` 限定；字段缺失或为空时允许目录未知型号。`model_mapping` 负责一跳改写，最终型号仍需通过协议和平台执行资格检查。统一目录提供候选、属性及价格，目录是否收录型号不作为模型权限依据。

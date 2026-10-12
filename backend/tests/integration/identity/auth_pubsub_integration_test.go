@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keypostgres "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
 	keyredis "github.com/TokenFlux/TokenRouter/internal/apikey/rediscache"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
 // TestAuthPubSubReconnect 验证现有双实例发布订阅协议、真实断线重订阅及停止顺序。

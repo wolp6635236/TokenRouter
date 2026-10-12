@@ -8,18 +8,6 @@ import (
 	"time"
 )
 
-// GrokRefreshSuccessWriter 保存 Grok 轮换后的凭据。
-// 实现必须比较上游尝试使用的完整凭据和代理，并将成功更新与调度器失效事件原子发布。
-type GrokRefreshSuccessWriter interface {
-	UpdateGrokOAuthCredentialsIfUnchanged(
-		ctx context.Context,
-		id int64,
-		expectedCredentials map[string]any,
-		expectedProxyID *int64,
-		credentials map[string]any,
-	) (bool, error)
-}
-
 const (
 	defaultRefreshLockTTL                   = 60 * time.Second
 	defaultRefreshLockReleaseTimeout        = 2 * time.Second
@@ -32,7 +20,27 @@ var (
 	ErrRefreshCredentialPersist    = errors.New("oauth refresh credential persistence failed")
 )
 
+// GrokRefreshSuccessWriter 保存 Grok 轮换后的凭据。
+// 实现必须比较上游尝试使用的完整凭据和代理，并将成功更新与调度器失效事件原子发布。
+type GrokRefreshSuccessWriter interface {
+	UpdateGrokOAuthCredentialsIfUnchanged(
+		ctx context.Context,
+		id int64,
+		expectedCredentials map[string]any,
+		expectedProxyID *int64,
+		credentials map[string]any,
+	) (bool, error)
+}
+
 type oauthRefreshRequestPathKey struct{}
+
+type RefreshLock struct {
+	token chan struct{}
+}
+
+type RefreshStateUnavailableError struct {
+	err error
+}
 
 func WithRefreshRequestPath(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauthRefreshRequestPathKey{}, true)
@@ -41,14 +49,6 @@ func WithRefreshRequestPath(ctx context.Context) context.Context {
 func isOAuthRefreshRequestPath(ctx context.Context) bool {
 	requestPath, _ := ctx.Value(oauthRefreshRequestPathKey{}).(bool)
 	return requestPath
-}
-
-type RefreshLock struct {
-	token chan struct{}
-}
-
-type RefreshStateUnavailableError struct {
-	err error
 }
 
 func (e *RefreshStateUnavailableError) Error() string {
@@ -79,7 +79,7 @@ func (m *RefreshLock) Unlock() {
 	<-m.token
 }
 
-// getLocalLock 返回指定 cacheKey 的进程内互斥锁
+// getLocalLock 返回指定 cacheKey 的进程内互斥锁。
 func (api *OAuthRefreshAPI) getLocalLock(cacheKey string) *RefreshLock {
 	actual, _ := api.localLocks.LoadOrStore(cacheKey, NewRefreshLock())
 	mu, ok := actual.(*RefreshLock)
@@ -372,7 +372,7 @@ func IsInvalidGrantError(err error) bool {
 }
 
 // tryRecoverFromRefreshRace 在 refresh token 被拒绝后尝试竞争恢复
-// 重新读取 DB，如果 refresh_token 已改变（说明另一个 worker 成功刷新），则返回更新后的 provider
+// 重新读取 DB，如果 refresh_token 已改变（说明另一个 worker 成功刷新），则返回更新后的 provider。
 func (api *OAuthRefreshAPI) tryRecoverFromRefreshRace(ctx context.Context, usedProvider *Record) (*Record, bool) {
 	if api.providerRepo == nil {
 		return nil, false
@@ -393,7 +393,7 @@ func (api *OAuthRefreshAPI) tryRecoverFromRefreshRace(ctx context.Context, usedP
 	return nil, false
 }
 
-// MergeCredentials 将旧 credentials 中不存在于新 map 的字段保留到新 map 中
+// MergeCredentials 将旧 credentials 中不存在于新 map 的字段保留到新 map 中。
 func MergeCredentials(oldCreds, newCreds map[string]any) map[string]any {
 	if newCreds == nil {
 		newCreds = make(map[string]any)

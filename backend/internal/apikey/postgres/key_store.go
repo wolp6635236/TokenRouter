@@ -5,35 +5,27 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	usagequery "github.com/TokenFlux/TokenRouter/internal/usage/postgres/query"
-
 	"entgo.io/ent/dialect"
-
 	entsql "entgo.io/ent/dialect/sql"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
-
 	"github.com/TokenFlux/TokenRouter/ent/apikey"
-
 	"github.com/TokenFlux/TokenRouter/ent/apikeycompositegroup"
-
 	"github.com/TokenFlux/TokenRouter/ent/group"
-
 	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"github.com/TokenFlux/TokenRouter/ent/user"
-
 	keycore "github.com/TokenFlux/TokenRouter/internal/apikey"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
+	usagequery "github.com/TokenFlux/TokenRouter/internal/usage/postgres/query"
 )
 
 type KeyStore struct {
@@ -41,6 +33,9 @@ type KeyStore struct {
 	sql         SQLExecutor
 	usageTotals UsageTotalsReader
 }
+
+// UsageTotalsReader 按 Key ID 查询用于排序的用量汇总。
+type UsageTotalsReader func(context.Context, []int64) (map[int64]float64, error)
 
 func NewKeyStore(client *dbent.Client, sqlDB *sql.DB, usage UsageTotalsReader) *KeyStore {
 	return NewKeyStoreWithSQL(client, sqlDB, usage)
@@ -557,7 +552,7 @@ func (r *KeyStore) RotateCredential(ctx context.Context, key *keycore.APIKey, ol
 }
 
 func (r *KeyStore) Delete(ctx context.Context, id int64) error {
-	// 存在唯一键约束 生成tombstone key 用来释放原key，长度远小于 128，满足 schema 限制
+	// 存在唯一键约束 生成 tombstone key 用来释放原 key，长度远小于 128，满足 schema 限制
 	tombstoneKey := fmt.Sprintf("__deleted__%d__%d", id, time.Now().UnixNano())
 	// 显式软删除：避免依赖 Hook 行为，确保 deleted_at 一定被设置。
 	affected, err := r.client.APIKey.Update().
@@ -881,7 +876,7 @@ func KeyApiKeyListOrder(params pagination.PaginationParams) []func(*entsql.Selec
 	return orders
 }
 
-// SearchAPIKeys searches API keys by user ID and/or keyword (name)
+// SearchAPIKeys searches API keys by user ID and/or keyword (name).
 func (r *KeyStore) SearchAPIKeys(ctx context.Context, userID int64, keyword string, limit int) ([]keycore.APIKey, error) {
 	q := r.KeyActiveQuery()
 	if userID > 0 {
@@ -907,7 +902,7 @@ func (r *KeyStore) SearchAPIKeys(ctx context.Context, userID int64, keyword stri
 	return outKeys, nil
 }
 
-// ClearGroupIDByGroupID 将指定分组的所有 API Key 的 group_id 设为 nil
+// ClearGroupIDByGroupID 将指定分组的所有 API Key 的 group_id 设为 nil。
 func (r *KeyStore) ClearGroupIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
 	client := clientFromContext(ctx, r.client)
 	n, err := client.APIKey.Update().
@@ -923,7 +918,7 @@ func (r *KeyStore) ClearGroupIDByGroupID(ctx context.Context, groupID int64) (in
 	return int64(n + deleted), err
 }
 
-// UpdateGroupIDByUserAndGroup 将用户下绑定 oldGroupID 的所有 Key 迁移到 newGroupID
+// UpdateGroupIDByUserAndGroup 将用户下绑定 oldGroupID 的所有 Key 迁移到 newGroupID。
 func (r *KeyStore) UpdateGroupIDByUserAndGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (int64, error) {
 	client := clientFromContext(ctx, r.client)
 	n, err := client.APIKey.Update().
@@ -960,7 +955,7 @@ func (r *KeyStore) UpdateGroupIDByUserAndGroup(ctx context.Context, userID, oldG
 	return int64(n + len(bindings)), nil
 }
 
-// CountByGroupID 获取分组的 API Key 数量
+// CountByGroupID 获取分组的 API Key 数量。
 func (r *KeyStore) CountByGroupID(ctx context.Context, groupID int64) (int64, error) {
 	count, err := r.KeyActiveQuery().Where(apikey.Or(
 		apikey.GroupIDEQ(groupID),
@@ -1059,18 +1054,14 @@ func KeyApiKeyEntityToService(m *dbent.APIKey) *keycore.APIKey {
 					out.User.AllowedGroups = append(out.User.AllowedGroups, g.ID)
 				}
 			}
-			sort.Slice(out.User.AllowedGroups, func(i, j int) bool {
-				return out.User.AllowedGroups[i] < out.User.AllowedGroups[j]
-			})
+			slices.Sort(out.User.AllowedGroups)
 		}
 		if disabledPublicRows, err := m.Edges.User.Edges.UserDisabledPublicGroupsOrErr(); err == nil {
 			out.User.DisabledPublicGroups = make([]int64, 0, len(disabledPublicRows))
 			for _, row := range disabledPublicRows {
 				out.User.DisabledPublicGroups = append(out.User.DisabledPublicGroups, row.GroupID)
 			}
-			sort.Slice(out.User.DisabledPublicGroups, func(i, j int) bool {
-				return out.User.DisabledPublicGroups[i] < out.User.DisabledPublicGroups[j]
-			})
+			slices.Sort(out.User.DisabledPublicGroups)
 			out.User.GroupRestrictionsLoaded = true
 		}
 	}
@@ -1127,12 +1118,49 @@ func (r *KeyStore) GetRateLimitData(ctx context.Context, id int64) (result *keyc
 	return billingpostgres.NewKeyUsageStore(r.client, r.sql).GetRateLimitData(ctx, id)
 }
 
-// UsageTotalsReader 按 Key ID 查询用于排序的用量汇总。
-type UsageTotalsReader func(context.Context, []int64) (map[int64]float64, error)
-
 func (r *KeyStore) KeyLoadAPIKeyUsageTotals(ctx context.Context, ids []int64) (map[int64]float64, error) {
 	if r.usageTotals == nil {
 		return nil, fmt.Errorf("API key usage totals reader is not configured")
 	}
 	return r.usageTotals(ctx, ids)
+}
+
+// clientFromContext 返回上下文中的事务 client，未开启事务时返回默认 client。
+func clientFromContext(ctx context.Context, defaultClient *dbent.Client) *dbent.Client {
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return tx.Client()
+	}
+	return defaultClient
+}
+
+// translatePersistenceError 把记录缺失和唯一约束冲突转换成调用方指定的业务错误。
+func translatePersistenceError(err error, notFound, conflict *infraerrors.ApplicationError) error {
+	if err == nil {
+		return nil
+	}
+
+	// 兼容 Ent ORM 和标准 database/sql 的 NotFound 行为。
+	// Ent 使用自定义的 NotFoundError，而标准库使用 sql.ErrNoRows。
+	// 这里同时处理两种情况，保持业务错误映射一致。
+	if notFound != nil && (errors.Is(err, sql.ErrNoRows) || dbent.IsNotFound(err)) {
+		return notFound.WithCause(err)
+	}
+
+	// 处理唯一约束冲突（如邮箱已存在、名称重复等）
+	if conflict != nil && isUniqueConstraintViolation(err) {
+		return conflict.WithCause(err)
+	}
+
+	// 未匹配任何规则，返回原始错误
+	return err
+}
+
+// isUniqueConstraintViolation 调用 PostgreSQL 错误检测函数判断唯一约束冲突。
+func isUniqueConstraintViolation(err error) bool {
+	return postgresinfra.IsUniqueConstraintViolation(err)
+}
+
+// scanSingleRow 查询一行数据，并在扫描后关闭结果集。
+func scanSingleRow(ctx context.Context, q SQLExecutor, query string, args []any, dest ...any) error {
+	return postgresinfra.ScanSingleRow(ctx, q, query, args, dest...)
 }

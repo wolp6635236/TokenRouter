@@ -51,7 +51,7 @@ func GenerateSessionUUID(seed string) string {
 
 // ShortHash 保持各平台旧摘要使用的相同编码。
 // shortHash 使用 XXHash64 + Base36 生成短 hash（16 字符）
-// XXHash64 比 SHA256 快约 10 倍，Base36 比 Hex 短约 20%
+// XXHash64 比 SHA256 快约 10 倍，Base36 比 Hex 短约 20%。
 func ShortHash(data []byte) string {
 	h := xxhash.Sum64(data)
 	return strconv.FormatUint(h, 36)

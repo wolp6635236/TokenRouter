@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"google.golang.org/api/idtoken"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 type GoogleIDTokenClaims = identity.GoogleIDTokenClaims

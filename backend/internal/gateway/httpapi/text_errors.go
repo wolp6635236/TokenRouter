@@ -9,13 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 func WriteAnthropicStreamError(c *gin.Context, status int, errType, code, message string, streamStarted bool, observe func(*gin.Context, string, string, int)) {

@@ -10,18 +10,18 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// datelineRegexes 匹配带指纹的 dateline 句子，覆盖野外观察到的 4 种撇号码点和两种日期分隔符。
-// Go 的 RE2 正则不支持反向引用，因此这里用两个正则分别匹配 "-" 与 "/"，保证
-// YYYY?MM?DD 中两个分隔符一致，避免误匹配 "Today's date is 2026-07/01." 这类混合分隔符，
-// 也避免碰触 "Today is foo."、"His date is 2026-06-30." 这类用户自然文本。
 var (
+	// datelineRegexes 匹配带指纹的 dateline 句子，覆盖野外观察到的 4 种撇号码点和两种日期分隔符。
+	// Go 的 RE2 正则不支持反向引用，因此这里用两个正则分别匹配 "-" 与 "/"，保证
+	// YYYY?MM?DD 中两个分隔符一致，避免误匹配 "Today's date is 2026-07/01." 这类混合分隔符，
+	// 也避免碰触 "Today is foo."、"His date is 2026-06-30." 这类用户自然文本。
 	datelineRegexHyphen = regexp.MustCompile(`Today(['’ʼʹ])s date is (\d{4})-(\d{2})-(\d{2})\.`)
 	datelineRegexSlash  = regexp.MustCompile(`Today(['’ʼʹ])s date is (\d{4})/(\d{2})/(\d{2})\.`)
-)
 
-// systemReminderRegex 匹配 <system-reminder> 块。多轮对话后 dateline 常出现在该块中，
-// 因此 messages[].content[] 只扫描这些标签内部，避免影响普通用户文本。
-var systemReminderRegex = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+	// systemReminderRegex 匹配 <system-reminder> 块。多轮对话后 dateline 常出现在该块中，
+	// 因此 messages[].content[] 只扫描这些标签内部，避免影响普通用户文本。
+	systemReminderRegex = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+)
 
 // DatelineHit 记录单次归一化命中的指纹形态，便于观测。
 type DatelineHit struct {
@@ -29,6 +29,13 @@ type DatelineHit struct {
 	ApostropheVariant string
 	// DateSeparator 是归一化前观察到的 "-" 或 "/"。
 	DateSeparator string
+}
+
+type datelineMatch struct {
+	start, end       int
+	apoRune          rune
+	sep              string
+	year, month, day string
 }
 
 // canonicalize 返回命中 dateline 句子的规范形态，固定使用 ASCII 撇号和短横线日期分隔符。
@@ -47,13 +54,6 @@ func apostropheVariant(r rune) string {
 	default:
 		return "ascii"
 	}
-}
-
-type datelineMatch struct {
-	start, end       int
-	apoRune          rune
-	sep              string
-	year, month, day string
 }
 
 func collectMatches(text string, re *regexp.Regexp, sep string) []datelineMatch {

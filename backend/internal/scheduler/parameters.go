@@ -13,16 +13,16 @@ type ParameterDefaults struct {
 	Runtime policy.RuntimeSettings
 }
 
-// DefaultParameters 返回未提供进程配置时使用的默认参数。
-func DefaultParameters() ParameterDefaults {
-	return ParameterDefaults{TopK: 7, Weights: policy.ScoreWeights{Priority: 1, Load: 1, Queue: .7, ErrorRate: .8, TTFT: .5, Previous: 5, SessionSticky: 3}, Runtime: policy.RuntimeSettings{EwmaErrorRateAlpha: DefaultErrorRateAlpha, EwmaTTFTAlpha: DefaultTTFTAlpha, StickyEscape: policy.NormalizeStickyEscape(policy.StickyEscapeConfig{Enabled: true, TtftMs: 15000, ErrorRate: .5})}}
-}
-
 // Parameters 在构造时绑定参数来源，动态设置缓存在 SettingsRuntime 中。
 type Parameters struct {
 	defaults ParameterDefaults
 	source   RuntimeSettingSource
 	runtime  *SettingsRuntime
+}
+
+// DefaultParameters 返回未提供进程配置时使用的默认参数。
+func DefaultParameters() ParameterDefaults {
+	return ParameterDefaults{TopK: 7, Weights: policy.ScoreWeights{Priority: 1, Load: 1, Queue: .7, ErrorRate: .8, TTFT: .5, Previous: 5, SessionSticky: 3}, Runtime: policy.RuntimeSettings{EwmaErrorRateAlpha: DefaultErrorRateAlpha, EwmaTTFTAlpha: DefaultTTFTAlpha, StickyEscape: policy.NormalizeStickyEscape(policy.StickyEscapeConfig{Enabled: true, TtftMs: 15000, ErrorRate: .5})}}
 }
 
 func NewParameters(runtime *SettingsRuntime, source RuntimeSettingSource, defaults ParameterDefaults) *Parameters {

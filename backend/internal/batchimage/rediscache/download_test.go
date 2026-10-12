@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 )
 
 func TestBatchImageDownloadLimiter_AcquireDenyReleaseAndTTL(t *testing.T) {

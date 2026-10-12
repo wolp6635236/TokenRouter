@@ -38,7 +38,7 @@
               'rounded-compact px-2 py-0.5 text-xs font-medium transition',
               updating ? 'cursor-wait opacity-60' : '',
               isSelected(pt.value)
-                ? 'bg-primary-500 text-white'
+                ? 'bg-primary-50 text-primary-700 dark:bg-primary-500/8 dark:text-primary-500'
                 : 'bg-gray-100 text-gray-400 dark:bg-dark-700 dark:text-gray-500',
             ]"
           >{{ pt.label }}</button>

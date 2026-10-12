@@ -10,11 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type PassthroughInput struct {

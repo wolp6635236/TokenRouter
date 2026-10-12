@@ -19,12 +19,12 @@ import (
 	usagepostgres "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
 
+type teamIdentityUsers struct{ Users identity.UserRepository }
+
 // provideTeamRepository 把成员状态、Key 生命周期与资金窗口参与能力装在同一 SQL 连接来源上。
 func provideTeamRepository(db *sql.DB, calendar timezone.Calendar, reports *usagepostgres.Store) team.TeamRepository {
 	return teampostgres.NewTeamRepositoryWithReports(db, keypostgres.NewTeamKeys(db), billingpostgres.NewMemberUsageStore(db, &calendar), calendar, reports)
 }
-
-type teamIdentityUsers struct{ Users identity.UserRepository }
 
 func (p teamIdentityUsers) GetByID(ctx context.Context, id int64) (*team.UserSnapshot, error) {
 	u, e := p.Users.GetByID(ctx, id)

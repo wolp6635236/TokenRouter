@@ -4,12 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
+
+type ConfigEasyPayCustomMethodDisplayConfig struct {
+	DisplayNameLocalization *locale.Update[string] `json:"displayNameLocalization,omitempty"`
+	Type                    string                 `json:"type"`
+	DisplayName             string                 `json:"displayName"`
+}
 
 // GetAvailableMethodLimits collects all payment types from enabled provider
 // instances and returns limits for each, plus the global widest range.
@@ -49,9 +55,7 @@ func (s *ConfigService) ConfigPcApplyEnabledVisibleMethodInstances(ctx context.C
 	}
 
 	filtered := make(map[string][]*ProviderInstance, len(typeInstances))
-	for paymentType, groupedInstances := range typeInstances {
-		filtered[paymentType] = groupedInstances
-	}
+	maps.Copy(filtered, typeInstances)
 
 	for _, method := range []string{TypeAlipay, TypeWxpay} {
 		matching := ConfigFilterEnabledVisibleMethodInstances(instances, method)
@@ -148,12 +152,6 @@ func (s *ConfigService) ConfigPcInstancePaymentCurrency(inst *ProviderInstance) 
 	return ProviderConfigCurrency(inst.ProviderKey, cfg)
 }
 
-type ConfigEasyPayCustomMethodDisplayConfig struct {
-	DisplayNameLocalization *locale.Update[string] `json:"displayNameLocalization,omitempty"`
-	Type                    string                 `json:"type"`
-	DisplayName             string                 `json:"displayName"`
-}
-
 func (s *ConfigService) ConfigPcAggregateMethodDisplayName(pt string, instances []*ProviderInstance, language string) string {
 	pt = strings.TrimSpace(pt)
 	if pt == "" {
@@ -210,8 +208,8 @@ func ConfigPcGroupByPaymentType(instances []*ProviderInstance) map[string][]*Pro
 		if seen[key] == nil {
 			seen[key] = make(map[int64]bool)
 		}
-		if !seen[key][int64(inst.ID)] {
-			seen[key][int64(inst.ID)] = true
+		if !seen[key][inst.ID] {
+			seen[key][inst.ID] = true
 			typeInstances[key] = append(typeInstances[key], inst)
 		}
 	}

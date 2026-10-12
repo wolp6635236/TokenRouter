@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// ManagedRecoveryStep 保留手动刷新原五次独立提交，禁止把恢复扩展成任意字段写入。
-type ManagedRecoveryStep uint8
-
 const (
 	ManagedRecoveryError ManagedRecoveryStep = iota
 	ManagedRecoveryRateLimit
@@ -18,6 +15,11 @@ const (
 	ManagedRecoveryModelLimits
 	ManagedRecoveryTemporary
 )
+
+var ErrManagedRecoveryUnavailable = errors.New("managed refresh conditional recovery is not configured")
+
+// ManagedRecoveryStep 保留手动刷新原五次独立提交，禁止把恢复扩展成任意字段写入。
+type ManagedRecoveryStep uint8
 
 // ManagedRecoveryVersion 冻结交换前身份及待清理状态，只用于内部条件写入。
 type ManagedRecoveryVersion struct {
@@ -41,8 +43,6 @@ type ManagedRecoveryUnblocker interface {
 type ManagedCredentialRecovery interface {
 	ClearManagedRefreshError(context.Context, *Record) (*Record, bool, error)
 }
-
-var ErrManagedRecoveryUnavailable = errors.New("managed refresh conditional recovery is not configured")
 
 func ObserveManagedRecovery(value *Record) ManagedRecoveryVersion {
 	return ManagedRecoveryVersion{

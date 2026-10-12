@@ -3,17 +3,19 @@ package httpapi
 import (
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	providererrors "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/gin-gonic/gin"
 )
 
-// 入站和上游端点路径常量，供路径规范化与推导使用。新增 API 路径时在此登记。
-
 const (
+	// 入站和上游端点路径常量，供路径规范化与推导使用。新增 API 路径时在此登记。
+
 	EndpointMessages             = "/v1/messages"
 	EndpointChatCompletions      = "/v1/chat/completions"
+	EndpointSystemOne            = "/v1/systemone"
 	EndpointEmbeddings           = "/v1/embeddings"
 	EndpointAlphaSearch          = "/v1/alpha/search"
 	EndpointResponses            = "/v1/responses"
@@ -26,20 +28,16 @@ const (
 	EndpointVideosExtensions     = "/v1/videos/extensions"
 	EndpointVideos               = "/v1/videos"
 	EndpointGeminiModels         = "/v1beta/models"
-)
 
-// EndpointAntigravityGenerateContent 是 Antigravity 原生流式生成端点。
-const EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
+	// EndpointAntigravityGenerateContent 是 Antigravity 原生流式生成端点。
+	EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
 
-// gin.Context keys used by the middleware and helpers below.
-const (
+	// gin.Context keys used by the middleware and helpers below.
 	ctxKeyInboundEndpoint        = "_gateway_inbound_endpoint"
 	ctxKeyActualUpstreamEndpoint = "_gateway_actual_upstream_endpoint"
 )
 
-// ──────────────────────────────────────────────────────────
 // Normalization functions
-// ──────────────────────────────────────────────────────────
 
 // NormalizeInboundEndpoint maps a raw request path (which may carry
 // prefixes like /antigravity, /openai) to its canonical form.
@@ -72,6 +70,8 @@ const (
 func NormalizeInboundEndpoint(path string) string {
 	path = strings.TrimSpace(path)
 	switch {
+	case strings.HasSuffix(path, EndpointSystemOne):
+		return EndpointSystemOne
 	case strings.Contains(path, EndpointEmbeddings):
 		return EndpointEmbeddings
 	case strings.Contains(path, EndpointAlphaSearch) || isBareOrSubpathOf(strings.TrimRight(path, "/"), "/alpha/search") || isBareOrSubpathOf(strings.TrimRight(path, "/"), "/backend-api/codex/alpha/search"):
@@ -151,7 +151,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	switch platform {
 	case capability.PlatformOpenAI, capability.PlatformGrok:
-		if inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointResponsesInputTokens || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideosEdits || inbound == EndpointVideosExtensions || inbound == EndpointVideos {
+		if inbound == EndpointSystemOne || inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointResponsesInputTokens || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideosEdits || inbound == EndpointVideosExtensions || inbound == EndpointVideos {
 			return inbound
 		}
 		// OpenAI 的非原生端点统一转到 Responses API。
@@ -189,11 +189,11 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 // Returns "" when there is no meaningful suffix.
 func responsesSubpathSuffix(rawPath string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(rawPath), "/")
-	idx := strings.LastIndex(trimmed, "/responses")
-	if idx < 0 {
+	_, after, ok := strings.CutLast(trimmed, "/responses")
+	if !ok {
 		return ""
 	}
-	suffix := trimmed[idx+len("/responses"):]
+	suffix := after
 	if suffix == "" || suffix == "/" {
 		return ""
 	}
@@ -203,9 +203,7 @@ func responsesSubpathSuffix(rawPath string) string {
 	return suffix
 }
 
-// ──────────────────────────────────────────────────────────
 // Middleware
-// ──────────────────────────────────────────────────────────
 
 // InboundEndpointMiddleware normalizes the request path and stores the
 // canonical inbound endpoint in gin.Context so that every handler in

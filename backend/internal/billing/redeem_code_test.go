@@ -4,8 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
 func TestRedeemCodeExpirySemantics(t *testing.T) {

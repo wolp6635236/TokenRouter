@@ -9,6 +9,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/notification/contract"
 )
 
+const (
+	defaultSiteName = "TokenRouter"
+
+	SettingKeyProviderQuotaNotifyEmails   = "provider_quota_notify_emails"
+	SettingKeyProviderQuotaNotifyEnabled  = "provider_quota_notify_enabled"
+	SettingKeyBalanceLowNotifyEnabled     = "balance_low_notify_enabled"
+	SettingKeyBalanceLowNotifyRechargeURL = "balance_low_notify_recharge_url"
+	SettingKeyBalanceLowNotifyThreshold   = "balance_low_notify_threshold"
+	SettingKeySiteName                    = "site_name"
+)
+
 type NotifySettings interface {
 	GetMultiple(context.Context, []string) (map[string]string, error)
 	GetValue(context.Context, string) (string, error)
@@ -35,8 +46,6 @@ type BalanceNotifyService struct {
 func NewBalanceNotifyService(sender AlertSender, settings NotifySettings, providers QuotaNotifyReader, background func(string, func())) *BalanceNotifyService {
 	return &BalanceNotifyService{emailService: sender, settingRepo: settings, providerRepo: providers, background: background}
 }
-
-const defaultSiteName = "TokenRouter"
 
 // CheckBalanceAfterDeduction checks if balance crossed below threshold after deduction.
 // Notification is sent only on first crossing: oldBalance >= threshold && newBalance < threshold.
@@ -242,12 +251,3 @@ func quotaDimsFromCommitted(provider *QuotaNotifyProvider, state *ProviderQuotaS
 	}
 	return dims
 }
-
-const (
-	SettingKeyProviderQuotaNotifyEmails   = "provider_quota_notify_emails"
-	SettingKeyProviderQuotaNotifyEnabled  = "provider_quota_notify_enabled"
-	SettingKeyBalanceLowNotifyEnabled     = "balance_low_notify_enabled"
-	SettingKeyBalanceLowNotifyRechargeURL = "balance_low_notify_recharge_url"
-	SettingKeyBalanceLowNotifyThreshold   = "balance_low_notify_threshold"
-	SettingKeySiteName                    = "site_name"
-)

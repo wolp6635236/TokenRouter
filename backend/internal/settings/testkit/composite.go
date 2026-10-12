@@ -147,7 +147,6 @@ func (f *Composite) Save(ctx context.Context, value *composite.Snapshot) error {
 	changes := []settings.PreparedChange{{Module: "contract-input", Values: values}}
 	// 原独立更新断言携带准备态的显式发布标记；HTTP 回读契约由 Runtime 单独验证。
 	for _, step := range f.Applications {
-		step := step
 		changes = append(changes, settings.PreparedChange{Module: step.Module, Apply: func(ctx context.Context) error {
 			return step.Apply(ctx, value)
 		}})

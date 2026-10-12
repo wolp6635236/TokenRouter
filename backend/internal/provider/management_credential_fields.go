@@ -11,9 +11,6 @@ type ManagementProviderMissing struct {
 	Cause error
 }
 
-func (e *ManagementProviderMissing) Error() string { return fmt.Sprintf("Provider %d not found", e.ID) }
-func (e *ManagementProviderMissing) Unwrap() error { return e.Cause }
-
 type ManagementPatchItem struct {
 	ProviderID int64
 	Success    bool
@@ -24,6 +21,9 @@ type ManagementPatchResult struct {
 	SuccessIDs, FailedIDs []int64
 	Results               []ManagementPatchItem
 }
+
+func (e *ManagementProviderMissing) Error() string { return fmt.Sprintf("Provider %d not found", e.ID) }
+func (e *ManagementProviderMissing) Unwrap() error { return e.Cause }
 
 // ValidateCredentialFieldValue 只允许原管理接口的三个字段和既有值类型。
 func ValidateCredentialFieldValue(field string, value any) error {

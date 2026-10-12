@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
 
 type EmbeddingsTarget struct {
@@ -33,6 +34,8 @@ type EmbeddingsTarget struct {
 	WriteHeaders          func(http.Header, http.Header)
 }
 
+type EmbeddingsExecutor struct{}
+
 func (t *EmbeddingsTarget) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -44,8 +47,6 @@ func (t *EmbeddingsTarget) String() string {
 	return fmt.Sprintf("openai embeddings target provider=%d", t.TargetID())
 }
 func (t *EmbeddingsTarget) GoString() string { return t.String() }
-
-type EmbeddingsExecutor struct{}
 
 func (EmbeddingsExecutor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
 	t, ok := input.Target.(*EmbeddingsTarget)

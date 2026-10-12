@@ -5,26 +5,57 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/timingwheel"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-
-	usageredis "github.com/TokenFlux/TokenRouter/internal/usage/rediscache"
+	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
+	keycore "github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingpg "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/infra/timingwheel"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-
+	usagehttp "github.com/TokenFlux/TokenRouter/internal/usage/httpapi"
 	usagepg "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
+	usageredis "github.com/TokenFlux/TokenRouter/internal/usage/rediscache"
 )
+
+// publicBalanceUnit 从 billing 读取余额展示单位。
+type publicBalanceUnit struct{ store *settings.Store }
+
+func (r publicBalanceUnit) GetBalanceUnitName(ctx context.Context) string {
+	return billing.ReadBalanceUnitName(ctx, r.store)
+}
+
+func providePublicUsage(u *usage.UsageService, k *keycore.APIKeyService, users *identity.UserService, store *settings.Store, calendar timezone.Calendar) *usagehttp.PublicUsageHandler {
+	return usagehttp.NewPublicUsageHandler(u, k, usagehttp.PublicBalanceQuery(func(ctx context.Context, id int64) (*usagehttp.PublicUserBalance, error) {
+		v, e := users.GetByID(ctx, id)
+		if e != nil {
+			return nil, e
+		}
+		return &usagehttp.PublicUserBalance{Balance: v.Balance}, nil
+	}), publicBalanceUnit{store}, usagehttp.PublicUsageContext{
+		Key: func(c *gin.Context) (*keycore.APIKey, bool) {
+			value, ok := keyhttp.GetAPIKeyFromContext(c)
+			return keycore.CopyAPIKey(value), ok
+		},
+		Billing: func(c *gin.Context) (*billing.APIKeyBillingContext, bool) {
+			return gatewayhttp.GetAPIKeyBillingContext(c)
+		},
+		Subscription: func(c *gin.Context) (*billing.UserSubscription, bool) {
+			return gatewayhttp.SubscriptionFromContext(c)
+		},
+	}, calendar)
+}
 
 func provideUsageOptions(c *config.Config, calendar timezone.Calendar) *usage.Options {
 	if c == nil {

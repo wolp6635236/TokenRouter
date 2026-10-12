@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/site"
-	"github.com/gin-gonic/gin"
 )
 
 type PageHandler struct{ pages *site.Pages }

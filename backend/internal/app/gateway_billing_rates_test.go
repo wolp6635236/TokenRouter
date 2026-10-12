@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-	"github.com/stretchr/testify/require"
 )
 
 // TestGatewayGroupRateCacheTTL 检查 app 配置的默认 TTL 和自定义 TTL。

@@ -3,8 +3,9 @@
 package app
 
 import (
-	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/google/wire"
+
+	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 )
 
 // gatewayExecutionProviders 绑定网关执行器、凭据、健康反馈和会话状态的构造函数。
@@ -34,8 +35,10 @@ var gatewayExecutionProviders = wire.NewSet(
 	provideOpenAIImageBridgePolicy,
 	provideOpenAIEncryptedLineage,
 	provideOpenAIWebSockets,
+	provideResponsesWSRuntime,
 	provideOpenAIResponses,
 	provideOpenAIAuxiliary,
+	provideSystemOneExecutor,
 	provideOpenAIImages,
 	provideGatewayBillingRates,
 	provideCreativeExecutor,

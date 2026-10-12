@@ -11,7 +11,7 @@ import (
 // Key 格式: session_limit:provider:{providerID}
 // 数据结构: Sorted Set (member=sessionUUID, score=timestamp)
 //
-// 会话在空闲超时后自动过期，无需手动清理
+// 会话在空闲超时后自动过期，无需手动清理。
 type SessionLimitCache interface {
 	// RegisterSession 注册会话活动
 	// - 如果会话已存在，刷新其时间戳并返回 true

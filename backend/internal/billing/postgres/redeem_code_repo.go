@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	entsql "entgo.io/ent/dialect/sql"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	dbpredicate "github.com/TokenFlux/TokenRouter/ent/predicate"
 	"github.com/TokenFlux/TokenRouter/ent/redeemcode"
@@ -14,8 +16,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/user"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-
-	entsql "entgo.io/ent/dialect/sql"
 )
 
 type RedeemStore struct {

@@ -9,12 +9,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 )
+
+// supplementFields 定义本地补充可填写的计费字段。
+var supplementFields = map[string]string{
+	"input_cost_per_token": "input", "output_cost_per_token": "output",
+	"input_cost_per_token_priority": "priority_input", "output_cost_per_token_priority": "priority_output",
+	"cache_read_input_token_cost": "cache_read", "cache_read_input_token_cost_priority": "priority_cache_read",
+	"cache_creation_input_token_cost": "cache_write", "cache_creation_input_token_cost_priority": "priority_cache_write",
+	"cache_creation_input_token_cost_above_1hr": "cache_write_1h",
+	"input_cost_per_image_token":                "image_input", "output_cost_per_image_token": "image_output", "output_cost_per_image": "image",
+	"image_prices": "image_prices", "video_prices": "video_prices",
+	"fast_multiplier": "fast_multiplier", "flex_multiplier": "flex_multiplier",
+	"max_reasoning_effort_multiplier": "max_reasoning_effort_multiplier",
+	"cache_write_multiplier":          "cache_write_multiplier", "cache_write_1h_multiplier": "cache_write_1h_multiplier",
+	"time_pricing": "time_pricing", "source_url": "source_url", "verified_at": "verified_at",
+}
 
 // AttributeSnapshot 只供管理与展示使用，与价格在同一个锁内发布。
 type AttributeSnapshot struct {
@@ -33,6 +49,13 @@ func (s *Service) AttributesSnapshot() AttributeSnapshot {
 		result.Version = s.modelCatalog.Version
 	}
 	return result
+}
+
+// BillingDefaults 返回当前目录版本的操作价格副本。
+func (s *Service) BillingDefaults() pricing.OperationPrices {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.billingDefaults.Clone()
 }
 
 // ModelAttributes 按完整的模型身份读取属性。
@@ -58,7 +81,7 @@ func (s *Service) buildModelsCatalog(body []byte) (*modelcatalog.Catalog, map[st
 	if err != nil {
 		return nil, nil, pricing.OperationPrices{}, err
 	}
-	builtin, err := decodePricingSupplement(modelcatalog.PricingSupplements(), "embedded pricing supplements")
+	builtin, err := decodeModelSupplement(modelcatalog.Supplements(), "embedded model supplements")
 	if err != nil {
 		return nil, nil, pricing.OperationPrices{}, err
 	}
@@ -105,7 +128,10 @@ func applyModelSupplements(raw map[string]json.RawMessage, catalog *modelcatalog
 		if model == pricing.BillingDefaultsKey {
 			continue
 		}
-		if err := mergeMediaSupplement(raw, model, entry); err != nil {
+		if err := catalog.ApplyAttributeSupplement(model, entry); err != nil {
+			return err
+		}
+		if err := mergePricingSupplement(raw, model, entry); err != nil {
 			return err
 		}
 	}
@@ -117,7 +143,10 @@ func applyModelSupplements(raw map[string]json.RawMessage, catalog *modelcatalog
 			if alias == model {
 				continue
 			}
-			if err := mergeMediaSupplement(raw, alias, entry); err != nil {
+			if err := catalog.ApplyAttributeSupplement(alias, entry); err != nil {
+				return err
+			}
+			if err := mergePricingSupplement(raw, alias, entry); err != nil {
 				return err
 			}
 		}
@@ -125,8 +154,8 @@ func applyModelSupplements(raw map[string]json.RawMessage, catalog *modelcatalog
 	return nil
 }
 
-// mergeMediaSupplement 只填补允许的计费字段，目录已有值和零价均优先。
-func mergeMediaSupplement(raw map[string]json.RawMessage, model string, entry json.RawMessage) error {
+// mergePricingSupplement 只填补允许的计费字段，目录已有值和零价均优先。
+func mergePricingSupplement(raw map[string]json.RawMessage, model string, entry json.RawMessage) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(entry, &fields); err != nil {
 		return fmt.Errorf("invalid pricing supplement %s: %w", model, err)
@@ -189,7 +218,7 @@ func (s *Service) publishModelsCatalog(body []byte, updated time.Time, persist b
 	var fingerprint string
 	var defaults pricing.OperationPrices
 	// 文件编辑可能与目录同步重叠，发布前后核对文件指纹，价格数据取自同一组文件内容。
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		before := s.customPricingFilesFingerprint()
 		var err error
 		catalog, prices, defaults, err = s.buildModelsCatalog(body)
@@ -374,4 +403,47 @@ func (s *Service) updateModelsCatalog(force bool) (err error) {
 	}
 	s.catalogETag = etag
 	return nil
+}
+
+// ModelIDs 返回当前目录的完整型号，保留供应商限定名称。
+func (s *Service) ModelIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := []string{}
+	if s.modelCatalog != nil {
+		for id := range s.modelCatalog.Entries {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// ModelEntry 按统一身份规则读取名称和厂商，未知型号保留请求 ID。
+func (s *Service) ModelEntry(model string) modelcatalog.Entry {
+	candidates := []string{model}
+	if s.options.ModelLookupCandidates != nil {
+		candidates = append(candidates, s.options.ModelLookupCandidates()(model)...)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry := modelcatalog.Entry{Model: model}
+	if s.modelCatalog == nil {
+		return entry
+	}
+	if found, ok := s.modelCatalog.Lookup(s.modelCatalog.IdentityCandidates(model, candidates)); ok {
+		return found
+	}
+	entry.Attributes, _ = s.modelCatalog.LookupAttributes(model, candidates)
+	return entry
+}
+
+// ModelVersion 用于隔离目录更新前后的候选缓存。
+func (s *Service) ModelVersion() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.modelCatalog == nil {
+		return ""
+	}
+	return s.modelCatalog.Version
 }

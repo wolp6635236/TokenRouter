@@ -10,14 +10,38 @@ import (
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/lib/pq"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/group"
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/lib/pq"
+)
+
+const (
+	// 分组页的“可用”提供商数使用 ListSchedulableByGroupID 的过滤条件。
+	groupProviderAvailableSQL = `a.deleted_at IS NULL
+				AND a.status = 'active'
+				AND a.schedulable = true
+				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)
+				AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= NOW())
+				AND (a.overload_until IS NULL OR a.overload_until <= NOW())
+				AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= NOW())`
+
+	// RateLimitedProviderCount 统计处于暂时退出调度时间窗口内的提供商数量。
+	groupProviderTemporarilyLimitedSQL = `a.deleted_at IS NULL
+				AND a.status = 'active'
+				AND a.schedulable = true
+				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)
+				AND (
+					a.rate_limit_reset_at > NOW() OR
+					a.overload_until > NOW() OR
+					a.temp_unschedulable_until > NOW()
+				)`
 )
 
 type GroupLinkParticipant interface {
@@ -25,23 +49,53 @@ type GroupLinkParticipant interface {
 	Bind(context.Context, int64, []int64) error
 	Copy(context.Context, int64, int64, bool) (sql.Result, error)
 }
+
 type GroupAccessParticipant interface {
 	Delete(context.Context, int64) error
 }
+
 type GroupStoreOptions struct {
 	Providers func(postgresinfra.Executor) GroupLinkParticipant
 	Users     func(postgresinfra.Executor) GroupAccessParticipant
 	Enqueue   func(context.Context, postgresinfra.Executor, *int64) error
 }
 
-func NewGroupStore(client *dbent.Client, db postgresinfra.Executor, options GroupStoreOptions) *GroupStore {
-	return &GroupStore{client: client, sql: db, options: options}
-}
-
 type GroupStore struct {
 	options GroupStoreOptions
 	client  *dbent.Client
 	sql     postgresinfra.Executor
+}
+
+type groupProviderCounts struct {
+	Total       int64
+	Active      int64
+	RateLimited int64
+}
+
+func NewGroupStore(client *dbent.Client, db postgresinfra.Executor, options GroupStoreOptions) *GroupStore {
+	return &GroupStore{client: client, sql: db, options: options}
+}
+
+// Mutate 在可用时为分组变更开启事务，保证分组及关联变更原子化。
+func (r *GroupStore) Mutate(ctx context.Context, fn func(context.Context) error) error {
+	if dbent.TxFromContext(ctx) != nil || r.client == nil {
+		return fn(ctx)
+	}
+
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin group mutation transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txCtx := dbent.NewTxContext(ctx, tx)
+	if err := fn(txCtx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit group mutation transaction: %w", err)
+	}
+	return nil
 }
 
 func (r *GroupStore) sqlExecutorFromContext(ctx context.Context) postgresinfra.Executor {
@@ -139,7 +193,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *routi
 		builder = builder.SetModelRouting(groupIn.ModelRouting)
 	}
 
-	// 设置支持的模型系列（始终设置，空数组表示不限制）
+	// 模型系列为空数组时，分组接受所有系列。
 	builder = builder.SetSupportedModelScopes(groupIn.SupportedModelScopes)
 
 	created, err := builder.Save(ctx)
@@ -231,7 +285,7 @@ func (r *GroupStore) GetByID(ctx context.Context, id int64) (*routing.Group, err
 func (r *GroupStore) GetByIDLite(ctx context.Context, id int64) (*routing.Group, error) {
 	client := clientFromContext(ctx, r.client)
 
-	// ProviderCount is intentionally not loaded here; use GetByID when needed.
+	// 需要 ProviderCount 时调用 GetByID。
 	m, err := client.Group.Query().
 		Where(group.IDEQ(id)).
 		Only(ctx)
@@ -319,7 +373,7 @@ func (r *GroupStore) Update(ctx context.Context, groupIn *routing.Group) error {
 		builder = builder.ClearModelRouting()
 	}
 
-	// 处理 SupportedModelScopes（始终设置，空数组表示不限制）
+	// SupportedModelScopes 为空数组时，分组接受所有系列。
 	builder = builder.SetSupportedModelScopes(groupIn.SupportedModelScopes)
 
 	updated, err := builder.Save(ctx)
@@ -436,7 +490,7 @@ func (r *GroupStore) listWithProviderCountSort(ctx context.Context, q *dbent.Gro
 		entries = append(entries, sortEntry{id: r.ID, sortOrder: r.SortOrder})
 	}
 
-	// 第二步：批量加载 provider counts（一次 SQL）。
+	// 一次 SQL 读取各分组的提供商数量。
 	counts, err := r.loadProviderCounts(ctx, groupIDs)
 	if err != nil {
 		return nil, nil, err
@@ -448,7 +502,7 @@ func (r *GroupStore) listWithProviderCountSort(ctx context.Context, q *dbent.Gro
 		}
 	}
 
-	// 第三步：Go 侧排序（数据量 = Group 总数，通常 < 200，安全）。
+	// 按分组总数在 Go 中排序，分组数量通常少于 200。
 	sortOrder := params.NormalizedSortOrder(pagination.SortOrderDesc)
 	tieCmp := func(a, b sortEntry) bool {
 		if a.sortOrder == b.sortOrder {
@@ -466,7 +520,7 @@ func (r *GroupStore) listWithProviderCountSort(ctx context.Context, q *dbent.Gro
 		return entries[i].providerCount > entries[j].providerCount
 	})
 
-	// 第四步：分页，只加载当前页需要的完整 Group。
+	// 分页后加载当前页的完整分组。
 	page := pagination.Slice(entries, params)
 	if len(page) == 0 {
 		return nil, pagination.ResultFromTotal(int64(total), params), nil
@@ -720,8 +774,8 @@ func (r *GroupStore) DeleteCascade(ctx context.Context, id int64) ([]int64, erro
 	}
 	_ = GroupFromEnt(g)
 
-	// 使用 ent 事务统一包裹：避免手工基于 *sql.Tx 构造 ent client 带来的驱动断言问题，
-	// 同时保证级联删除的原子性。
+	// Ent 事务将级联删除作为一次变更提交。
+	// 手工基于 *sql.Tx 构造 Ent client 会触发驱动断言问题。
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
 		return nil, err
@@ -735,8 +789,8 @@ func (r *GroupStore) DeleteCascade(ctx context.Context, id int64) ([]int64, erro
 	}
 	// err 为 dbent.ErrTxStarted 时，复用当前 client 参与同一事务。
 
-	// 锁定分组行，避免级联删除期间出现并发写入。
-	// 这里使用 exec.QueryContext 手动扫描，确保同一事务内加锁并能区分"未找到"与其他错误。
+	// 分组行锁使级联删除与并发写入串行执行。
+	// exec.QueryContext 在当前事务内加锁，扫描结果区分“未找到”和其他错误。
 	rows, err := exec.QueryContext(ctx, "SELECT id FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id)
 	if err != nil {
 		return nil, err
@@ -767,7 +821,7 @@ func (r *GroupStore) DeleteCascade(ctx context.Context, id int64) ([]int64, erro
 		return nil, err
 	}
 
-	// 5. 软删除分组自身。
+	// 软删除分组自身。
 	if _, err := txClient.Group.Delete().Where(group.IDEQ(id)).Exec(ctx); err != nil {
 		return nil, err
 	}
@@ -783,34 +837,6 @@ func (r *GroupStore) DeleteCascade(ctx context.Context, id int64) ([]int64, erro
 
 	return affectedUserIDs, nil
 }
-
-type groupProviderCounts struct {
-	Total       int64
-	Active      int64
-	RateLimited int64
-}
-
-const (
-	// 分组页的"可用"提供商数必须与提供商仓储的 ListSchedulableByGroupID 过滤口径一致。
-	groupProviderAvailableSQL = `a.deleted_at IS NULL
-				AND a.status = 'active'
-				AND a.schedulable = true
-				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)
-				AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= NOW())
-				AND (a.overload_until IS NULL OR a.overload_until <= NOW())
-				AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= NOW())`
-
-	// 这里沿用历史字段名 RateLimitedProviderCount，但统计的是会让提供商暂时退出调度的时间窗口。
-	groupProviderTemporarilyLimitedSQL = `a.deleted_at IS NULL
-				AND a.status = 'active'
-				AND a.schedulable = true
-				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)
-				AND (
-					a.rate_limit_reset_at > NOW() OR
-					a.overload_until > NOW() OR
-					a.temp_unschedulable_until > NOW()
-				)`
-)
 
 func (r *GroupStore) loadProviderCounts(ctx context.Context, groupIDs []int64) (counts map[int64]groupProviderCounts, err error) {
 	sqlq := r.sqlExecutorFromContext(ctx)
@@ -856,7 +882,7 @@ func (r *GroupStore) loadProviderCounts(ctx context.Context, groupIDs []int64) (
 	return counts, nil
 }
 
-// GetProviderIDsByGroupIDs 获取多个分组的所有提供商 ID（去重）
+// GetProviderIDsByGroupIDs 获取多个分组的所有提供商 ID（去重）。
 func (r *GroupStore) GetProviderIDsByGroupIDs(ctx context.Context, groupIDs []int64) ([]int64, error) {
 	sqlq := r.sqlExecutorFromContext(ctx)
 	if len(groupIDs) == 0 {
@@ -888,7 +914,7 @@ func (r *GroupStore) GetProviderIDsByGroupIDs(ctx context.Context, groupIDs []in
 	return providerIDs, nil
 }
 
-// BindProvidersToGroup 将多个提供商绑定到指定分组（批量插入，忽略已存在的绑定）
+// BindProvidersToGroup 将多个提供商绑定到指定分组（批量插入，忽略已存在的绑定）。
 func (r *GroupStore) BindProvidersToGroup(ctx context.Context, groupID int64, providerIDs []int64) error {
 	sqlq := r.sqlExecutorFromContext(ctx)
 	if len(providerIDs) == 0 {
@@ -909,14 +935,14 @@ func (r *GroupStore) BindProvidersToGroup(ctx context.Context, groupID int64, pr
 	return nil
 }
 
-// UpdateSortOrders 批量更新分组排序
+// UpdateSortOrders 批量更新分组排序。
 func (r *GroupStore) UpdateSortOrders(ctx context.Context, updates []routing.GroupSortOrderUpdate) error {
 	sqlq := r.sqlExecutorFromContext(ctx)
 	if len(updates) == 0 {
 		return nil
 	}
 
-	// 去重后保留最后一次排序值，避免重复 ID 造成 CASE 分支冲突。
+	// 同一分组出现多次时，CASE 分支使用最后一次排序值。
 	sortOrderByID := make(map[int64]int, len(updates))
 	groupIDs := make([]int64, 0, len(updates))
 	for _, u := range updates {
@@ -932,7 +958,7 @@ func (r *GroupStore) UpdateSortOrders(ctx context.Context, updates []routing.Gro
 		return nil
 	}
 
-	// 与旧实现保持一致：任何不存在/已删除的分组都返回 not found，且不执行更新。
+	// 分组不存在或已删除时，返回 not found 并终止更新。
 	var existingCount int
 	if err := postgresinfra.ScanSingleRow(
 		ctx,
@@ -984,4 +1010,32 @@ func (r *GroupStore) UpdateSortOrders(ctx context.Context, updates []routing.Gro
 		}
 	}
 	return nil
+}
+
+// clientFromContext 返回 context 中的事务 client，未开启事务时返回默认 client。
+func clientFromContext(ctx context.Context, defaultClient *dbent.Client) *dbent.Client {
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return tx.Client()
+	}
+	return defaultClient
+}
+
+// translatePersistenceError 将无记录和唯一约束错误转换为指定的业务错误，附带数据库错误原因。
+// 未提供对应业务错误或错误类型不匹配时，返回数据库错误。
+func translatePersistenceError(err error, notFound, conflict *infraerrors.ApplicationError) error {
+	if err == nil {
+		return nil
+	}
+
+	// Ent 的 NotFoundError 和 database/sql 的 ErrNoRows 使用同一业务错误。
+	if notFound != nil && (errors.Is(err, sql.ErrNoRows) || dbent.IsNotFound(err)) {
+		return notFound.WithCause(err)
+	}
+
+	// 处理唯一约束冲突（如邮箱已存在、名称重复等）
+	if conflict != nil && postgresinfra.IsUniqueConstraintViolation(err) {
+		return conflict.WithCause(err)
+	}
+
+	return err
 }

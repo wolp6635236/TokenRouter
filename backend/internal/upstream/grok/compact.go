@@ -7,9 +7,7 @@ import (
 	"strings"
 
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson" // GrokCompactSummaryPrompt 对应 grok-build 的 build_compaction_prompt(None, false)。
-	// Grok 没有 OpenAI 兼容的 /responses/compact，因此用普通 Responses 轮次生成摘要。
 )
 
 const GrokCompactSummaryPrompt = `Your task is to produce a faithful, concise summary of the conversation so far so that a successor assistant can continue the work seamlessly after the earlier turns are discarded. The successor will see the user's original query plus this summary. Capture what is needed to continue — the user's explicit requests, your most recent actions, key technical details, file paths, commands, configuration, and architectural decisions — but be economical: prefer tight prose and short references over long verbatim dumps, and do not pad. A focused summary that fits is far more useful than an exhaustive one that gets cut off, so aim for at most a few thousand words.

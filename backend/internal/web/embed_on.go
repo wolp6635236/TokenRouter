@@ -20,26 +20,31 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
-	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 )
 
 const (
-	// NonceHTMLPlaceholder is the placeholder for nonce in HTML script tags
+	// NonceHTMLPlaceholder is the placeholder for nonce in HTML script tags.
 	NonceHTMLPlaceholder = "__CSP_NONCE_VALUE__"
 )
 
-//go:embed all:dist
-var frontendFS embed.FS
+var (
+	//go:embed all:dist
+	frontendFS embed.FS
 
-// PublicSettingsProvider is an interface to fetch public settings
+	// htmlLanguagePattern 匹配构建入口的语言属性。
+	htmlLanguagePattern = regexp.MustCompile(`<html(?:\s+lang="[^"]*")?`)
+)
+
+// PublicSettingsProvider is an interface to fetch public settings.
 type PublicSettingsProvider interface {
 	GetPublicSettingsForInjection(ctx context.Context) (any, error)
 }
 
-// FrontendServer serves the embedded frontend with settings injection
+// FrontendServer serves the embedded frontend with settings injection.
 type FrontendServer struct {
 	distFS      fs.FS
 	fileServer  http.Handler
@@ -49,7 +54,7 @@ type FrontendServer struct {
 	overrideDir string // local file override directory
 }
 
-// NewFrontendServer creates a new frontend server with settings injection
+// NewFrontendServer creates a new frontend server with settings injection.
 func NewFrontendServer(settingsProvider PublicSettingsProvider) (*FrontendServer, error) {
 	distFS, err := fs.Sub(frontendFS, "dist")
 	if err != nil {
@@ -81,14 +86,14 @@ func NewFrontendServer(settingsProvider PublicSettingsProvider) (*FrontendServer
 	}, nil
 }
 
-// InvalidateCache invalidates the HTML cache (call when settings change)
+// InvalidateCache invalidates the HTML cache (call when settings change).
 func (s *FrontendServer) InvalidateCache() {
 	if s != nil && s.cache != nil {
 		s.cache.Invalidate()
 	}
 }
 
-// Middleware returns the Gin middleware handler
+// Middleware returns the Gin middleware handler.
 func (s *FrontendServer) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
@@ -300,13 +305,13 @@ func injectSiteTitle(html, settingsJSON []byte) []byte {
 	return buf.Bytes()
 }
 
-// replaceNoncePlaceholder replaces the nonce placeholder with actual nonce value
+// replaceNoncePlaceholder replaces the nonce placeholder with actual nonce value.
 func replaceNoncePlaceholder(html []byte, nonce string) []byte {
 	return bytes.ReplaceAll(html, []byte(NonceHTMLPlaceholder), []byte(nonce))
 }
 
 // ServeEmbeddedFrontend returns a middleware for serving embedded frontend
-// This is the legacy function for backward compatibility when no settings provider is available
+// This is the legacy function for backward compatibility when no settings provider is available.
 func ServeEmbeddedFrontend() gin.HandlerFunc {
 	distFS, err := fs.Sub(frontendFS, "dist")
 	if err != nil {
@@ -485,6 +490,3 @@ func HasEmbeddedFrontend() bool {
 	_, err := frontendFS.ReadFile("dist/index.html")
 	return err == nil
 }
-
-// htmlLanguagePattern 匹配构建入口的语言属性。
-var htmlLanguagePattern = regexp.MustCompile(`<html(?:\s+lang="[^"]*")?`)

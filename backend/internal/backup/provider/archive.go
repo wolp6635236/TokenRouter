@@ -13,18 +13,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/backup"
 )
 
+const (
+	BackupStorageTypeS3          = backup.BackupStorageTypeS3
+	BackupS3UploadModeSpooledPut = backup.BackupS3UploadModeSpooledPut
+	backupObjectCleanupTimeout   = 2 * time.Minute
+)
+
 type (
 	BackupRecord                   = backup.BackupRecord
 	BackupS3Config                 = backup.BackupS3Config
 	BackupDumpOptions              = backup.BackupDumpOptions
 	BackupObjectStore              = backup.BackupObjectStore
 	BackupObjectStoreSizedUploader = backup.BackupObjectStoreSizedUploader
-)
-
-const (
-	BackupStorageTypeS3          = backup.BackupStorageTypeS3
-	BackupS3UploadModeSpooledPut = backup.BackupS3UploadModeSpooledPut
-	backupObjectCleanupTimeout   = 2 * time.Minute
 )
 
 // Archive 每次执行使用独立回调副本，不共享请求状态。

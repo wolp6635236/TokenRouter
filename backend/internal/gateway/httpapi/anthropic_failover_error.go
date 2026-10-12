@@ -3,9 +3,10 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
 )
 
 // WriteAnthropicFailover 依次处理静默拒绝、错误规则和默认映射，生成客户端响应。

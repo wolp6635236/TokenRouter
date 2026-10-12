@@ -3,10 +3,11 @@ package provider
 import (
 	"testing"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 func TestOpenAIResponsesToolSchemaCapabilities_PlatformBoundary(t *testing.T) {
@@ -42,7 +43,7 @@ func TestSanitizeOpenAIResponsesToolSchemasForPlatform_ReplayBoundary(t *testing
 	// supported regex semantics.
 	for _, platform := range []string{capability.PlatformAnthropic, capability.PlatformGrok, capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek} {
 		t.Run(platform, func(t *testing.T) {
-			for attempt := 0; attempt < 2; attempt++ {
+			for range 2 {
 				normalized, changed, err := SanitizeOpenAIResponsesToolSchemasForPlatform(body, platform)
 				require.NoError(t, err)
 				require.True(t, changed)

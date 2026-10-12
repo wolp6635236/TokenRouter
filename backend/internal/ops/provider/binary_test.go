@@ -16,8 +16,9 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
 // binaryFixtureClient 将受信资产请求映射到本地测试夹具。
@@ -30,7 +31,7 @@ func (c binaryFixtureClient) DownloadFile(ctx context.Context, url, dest string,
 	if c.downloads != nil {
 		*c.downloads = append(*c.downloads, url)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", c.url+"/archive", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/archive", nil)
 	if err != nil {
 		return err
 	}
@@ -47,7 +48,7 @@ func (c binaryFixtureClient) DownloadFile(ctx context.Context, url, dest string,
 }
 
 func (c binaryFixtureClient) FetchChecksumFile(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.url+"/checksum", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/checksum", nil)
 	if err != nil {
 		return nil, err
 	}

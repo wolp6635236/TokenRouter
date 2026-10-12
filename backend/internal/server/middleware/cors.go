@@ -3,25 +3,21 @@ package middleware
 import (
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
-	"github.com/TokenFlux/TokenRouter/internal/server/httpconfig"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/server/httpconfig"
 )
 
 var corsWarningOnce sync.Once
 
-// CORS 跨域中间件
+// CORS 跨域中间件。
 func CORS(cfg httpconfig.CORSConfig) gin.HandlerFunc {
 	allowedOrigins := normalizeOrigins(cfg.AllowedOrigins)
-	allowAll := false
-	for _, origin := range allowedOrigins {
-		if origin == "*" {
-			allowAll = true
-			break
-		}
-	}
+	allowAll := slices.Contains(allowedOrigins, "*")
 	wildcardWithSpecific := allowAll && len(allowedOrigins) > 1
 	if wildcardWithSpecific {
 		allowedOrigins = []string{"*"}
@@ -53,6 +49,7 @@ func CORS(cfg httpconfig.CORSConfig) gin.HandlerFunc {
 	allowHeaders := []string{
 		"Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization", "X-Creative-Workspace-ID", "Idempotency-Key",
 		"accept", "origin", "Cache-Control", "X-Requested-With", "X-API-Key", "X-Admin-UI-Request", "X-User-UI-Request",
+		"X-Request-ID", "X-Client-Request-ID",
 	}
 	// OpenAI Node SDK 会发送 x-stainless-* 请求头，需在 CORS 中显式放行。
 	openAIProperties := []string{
@@ -83,7 +80,7 @@ func CORS(cfg httpconfig.CORSConfig) gin.HandlerFunc {
 			}
 			c.Writer.Header().Set("Access-Control-Allow-Headers", allowHeadersValue)
 			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
-			c.Writer.Header().Set("Access-Control-Expose-Headers", "ETag, Server-Timing")
+			c.Writer.Header().Set("Access-Control-Expose-Headers", "ETag, Server-Timing, X-Request-ID, X-TokenRouter-Request-ID, X-Sub2API-Request-ID, X-Client-Request-ID")
 			c.Writer.Header().Set("Access-Control-Max-Age", "86400")
 		}
 		// 处理预检请求

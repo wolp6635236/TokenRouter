@@ -8,16 +8,15 @@ import (
 	"strings"
 	"time"
 
-	usagequery "github.com/TokenFlux/TokenRouter/internal/usage/postgres/query"
+	"github.com/lib/pq"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-
 	"github.com/TokenFlux/TokenRouter/internal/team"
-
-	"github.com/lib/pq"
+	usagequery "github.com/TokenFlux/TokenRouter/internal/usage/postgres/query"
 )
+
+var _ team.TeamRepository = (*TeamRepository)(nil)
 
 type TeamRepository struct {
 	calendar *timezone.Calendar
@@ -31,6 +30,25 @@ type TeamRepository struct {
 type UsageReports interface {
 	GetTeamUsageSummary(context.Context, int64, team.TeamUsageQuery) (*team.TeamUsageSummary, error)
 	ListTeamMemberUsageSeries(context.Context, int64, team.TeamUsageQuery) ([]team.TeamMemberUsageSeries, error)
+}
+
+type TeamRowScanner interface {
+	Scan(dest ...any) error
+}
+
+// TeamKeys 的事务参与方法不允许替换调用方连接或提交事务。
+type TeamKeys interface {
+	ListTeamKeyStrings(context.Context, int64) ([]string, error)
+	ListTeamKeys(context.Context, int64, *int64) ([]team.TeamAPIKeyItem, error)
+	DisableTeamKey(context.Context, int64, int64, *int64) (string, error)
+	EnableTeamKey(context.Context, int64, int64, *int64) (string, error)
+	DeleteTeamKey(context.Context, int64, int64, *int64) (string, error)
+	DisableMemberInTx(context.Context, *sql.Tx, int64, int64, time.Time) error
+	DisableHistoricalMemberInTx(context.Context, *sql.Tx, int64, int64, time.Time) error
+	DisableTeamInTx(context.Context, *sql.Tx, int64, time.Time) error
+}
+type MemberUsage interface {
+	ResetMemberUsage(context.Context, int64, int64, bool, bool, bool, time.Time) error
 }
 
 // NewTeamRepositoryWithReports 为生产团队仓储注入统一用量报表读取器。
@@ -770,10 +788,6 @@ func (r *TeamRepository) dateCalendar() timezone.Calendar {
 	return timezone.NewCalendar(time.Local)
 }
 
-type TeamRowScanner interface {
-	Scan(dest ...any) error
-}
-
 func ScanTeamMembership(row TeamRowScanner, member *team.TeamMembership) error {
 	return row.Scan(
 		&member.ID, &member.TeamID, &member.UserID, &member.Email, &member.Username, &member.Role,
@@ -801,21 +815,4 @@ func MapTeamConstraintError(err error) error {
 		return team.ErrTeamAlreadyJoined
 	}
 	return fmt.Errorf("团队数据约束失败: %w", err)
-}
-
-var _ team.TeamRepository = (*TeamRepository)(nil)
-
-// TeamKeys 的事务参与方法不允许替换调用方连接或提交事务。
-type TeamKeys interface {
-	ListTeamKeyStrings(context.Context, int64) ([]string, error)
-	ListTeamKeys(context.Context, int64, *int64) ([]team.TeamAPIKeyItem, error)
-	DisableTeamKey(context.Context, int64, int64, *int64) (string, error)
-	EnableTeamKey(context.Context, int64, int64, *int64) (string, error)
-	DeleteTeamKey(context.Context, int64, int64, *int64) (string, error)
-	DisableMemberInTx(context.Context, *sql.Tx, int64, int64, time.Time) error
-	DisableHistoricalMemberInTx(context.Context, *sql.Tx, int64, int64, time.Time) error
-	DisableTeamInTx(context.Context, *sql.Tx, int64, time.Time) error
-}
-type MemberUsage interface {
-	ResetMemberUsage(context.Context, int64, int64, bool, bool, bool, time.Time) error
 }

@@ -9,12 +9,27 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/redis/go-redis/v9"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
+
+const bytesPerMB = 1024 * 1024
+
+// HostObserver 是唯一主机/连接池采样状态，技术层不认识业务数据表。
+type HostObserver struct {
+	db                      *sql.DB
+	redisClient             *redis.Client
+	lastCgroupCPUUsageNanos uint64
+	lastCgroupCPUSampleAt   time.Time
+}
+
+func NewHostObserver(db *sql.DB, r *redis.Client) *HostObserver {
+	return &HostObserver{db: db, redisClient: r}
+}
 
 func (c *HostObserver) DbPoolStats() (active int, idle int) {
 	if c == nil || c.db == nil {
@@ -117,8 +132,8 @@ func readCgroupCPULimitCores() float64 {
 func readCgroupCPUUsageNanos() (usageNanos uint64, ok bool) {
 	// cgroup v2: cpu.stat has usage_usec
 	if raw, err := os.ReadFile("/sys/fs/cgroup/cpu.stat"); err == nil {
-		lines := strings.Split(string(raw), "\n")
-		for _, line := range lines {
+		lines := strings.SplitSeq(string(raw), "\n")
+		for line := range lines {
 			fields := strings.Fields(line)
 			if len(fields) != 2 {
 				continue
@@ -304,17 +319,4 @@ func (c *HostObserver) CollectSystemStats(ctx context.Context) (*ops.CollectedSy
 	return out, nil
 }
 
-// HostObserver 是唯一主机/连接池采样状态，技术层不认识业务数据表。
-type HostObserver struct {
-	db                      *sql.DB
-	redisClient             *redis.Client
-	lastCgroupCPUUsageNanos uint64
-	lastCgroupCPUSampleAt   time.Time
-}
-
-func NewHostObserver(db *sql.DB, r *redis.Client) *HostObserver {
-	return &HostObserver{db: db, redisClient: r}
-}
 func (c *HostObserver) GoroutineCount() int { return runtime.NumGoroutine() }
-
-const bytesPerMB = 1024 * 1024

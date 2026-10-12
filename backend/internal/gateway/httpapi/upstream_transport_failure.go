@@ -5,13 +5,14 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-	"github.com/gin-gonic/gin"
 )
 
 // UpstreamTransportFailure 保留无 HTTP 响应时的 Ops、取消和故障转移顺序。

@@ -7,12 +7,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // ArchiveHandler 只负责备份 HTTP 输入、幂等和管理员响应；资源查询与导入由提供商用例拥有。
@@ -51,8 +52,7 @@ func (h *ArchiveHandler) ExportData(c *gin.Context) {
 	}
 	payload, err := h.archive.Export(c.Request.Context(), query)
 	if err != nil {
-		var inputErr *provider.ArchiveInputError
-		if errors.As(err, &inputErr) {
+		if inputErr, ok := errors.AsType[*provider.ArchiveInputError](err); ok {
 			response.BadRequest(c, inputErr.Error())
 		} else {
 			response.ErrorFrom(c, err)
@@ -97,7 +97,7 @@ func parseProviderIDs(c *gin.Context) ([]int64, error) {
 
 	ids := make([]int64, 0, len(values))
 	for _, item := range values {
-		for _, part := range strings.Split(item, ",") {
+		for part := range strings.SplitSeq(item, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue

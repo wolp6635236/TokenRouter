@@ -27,6 +27,51 @@ type GrokFailurePorts struct {
 	NewFailover      func(GrokRetry, bool) error
 }
 
+// EmbeddingFailurePorts 按原顺序读取纯分类、应用提供商策略及写出响应。
+type EmbeddingFailurePorts struct {
+	InvalidRequest func() bool
+	ApplyPolicy    func()
+	Generic        func() bool
+	Failover       func() bool
+	RecordFailover func()
+	NewFailover    func() error
+	Forward        func()
+	Write          func(ErrorResponse)
+}
+
+// AlphaFailurePorts 提供搜索端点的故障切换和健康状态处理函数。
+type AlphaFailurePorts struct {
+	Prepare             func()
+	Failover            func() bool
+	EndpointUnsupported func() bool
+	ApplySideEffects    func() bool
+	NewFailover         func(bool) error
+}
+
+// ImageFailurePorts 分别提供授权恢复、失败观测、提供商策略和错误转换函数。
+type ImageFailurePorts struct {
+	Recover     func() (bool, error)
+	Failover    func() bool
+	Observe     func()
+	ApplyPolicy func() bool
+	NewFailover func() error
+	Handle      func() error
+}
+
+// ImageResponseFailurePorts 只在原生请求不能切换时应用客户端展示策略。
+type ImageResponseFailurePorts struct {
+	CyberMessage    func() (string, bool)
+	Observe         func(string, string)
+	Write           func(ErrorResponse) error
+	WrapCyber       func(error) error
+	ApplyPolicy     func()
+	Generic         func() bool
+	Failover        func() bool
+	NewFailover     func() error
+	Rewrite         func() (ErrorResponse, bool)
+	DefaultResponse func() error
+}
+
 // ResolveGrokFailure 依次检查内容拒绝、提供商策略和切换条件，再改写最终错误。
 // Rewrite 在确定结束提供商切换后应用错误展示规则，健康处理由调用方完成。
 func ResolveGrokFailure(status int, message string, p GrokFailurePorts) error {
@@ -63,18 +108,6 @@ func ResolveGrokFailure(status int, message string, p GrokFailurePorts) error {
 	return fmt.Errorf("upstream error: %d %s", status, message)
 }
 
-// EmbeddingFailurePorts 按原顺序读取纯分类、应用提供商策略及写出响应。
-type EmbeddingFailurePorts struct {
-	InvalidRequest func() bool
-	ApplyPolicy    func()
-	Generic        func() bool
-	Failover       func() bool
-	RecordFailover func()
-	NewFailover    func() error
-	Forward        func()
-	Write          func(ErrorResponse)
-}
-
 func ResolveEmbeddingFailure(status int, p EmbeddingFailurePorts) error {
 	if p.InvalidRequest() {
 		p.Forward()
@@ -93,15 +126,6 @@ func ResolveEmbeddingFailure(status int, p EmbeddingFailurePorts) error {
 	return fmt.Errorf("upstream returned status %d", status)
 }
 
-// AlphaFailurePorts 提供搜索端点的故障切换和健康状态处理函数。
-type AlphaFailurePorts struct {
-	Prepare             func()
-	Failover            func() bool
-	EndpointUnsupported func() bool
-	ApplySideEffects    func() bool
-	NewFailover         func(bool) error
-}
-
 func ResolveAlphaFailure(status int, p AlphaFailurePorts) error {
 	if !p.Failover() && !p.EndpointUnsupported() {
 		return nil
@@ -114,16 +138,6 @@ func ResolveAlphaFailure(status int, p AlphaFailurePorts) error {
 		disabled = p.ApplySideEffects()
 	}
 	return p.NewFailover(disabled)
-}
-
-// ImageFailurePorts 分别提供授权恢复、失败观测、提供商策略和错误转换函数。
-type ImageFailurePorts struct {
-	Recover     func() (bool, error)
-	Failover    func() bool
-	Observe     func()
-	ApplyPolicy func() bool
-	NewFailover func() error
-	Handle      func() error
 }
 
 func ResolveImageFailure(p ImageFailurePorts) (bool, error) {
@@ -144,20 +158,6 @@ func ResolveImageFailure(p ImageFailurePorts) (bool, error) {
 		return false, p.NewFailover()
 	}
 	return false, p.Handle()
-}
-
-// ImageResponseFailurePorts 只在原生请求不能切换时应用客户端展示策略。
-type ImageResponseFailurePorts struct {
-	CyberMessage    func() (string, bool)
-	Observe         func(string, string)
-	Write           func(ErrorResponse) error
-	WrapCyber       func(error) error
-	ApplyPolicy     func()
-	Generic         func() bool
-	Failover        func() bool
-	NewFailover     func() error
-	Rewrite         func() (ErrorResponse, bool)
-	DefaultResponse func() error
 }
 
 func ResolveImageResponseFailure(status int, message string, p ImageResponseFailurePorts) error {

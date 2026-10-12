@@ -42,9 +42,7 @@ func (s *AnnouncementExpiryService) Start() {
 	}
 	s.started = true
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 
@@ -57,7 +55,7 @@ func (s *AnnouncementExpiryService) Start() {
 				return
 			}
 		}
-	}()
+	})
 }
 
 // Stop 停止公告到期归档任务并等待当前扫描结束。

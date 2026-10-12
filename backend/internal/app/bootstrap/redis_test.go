@@ -4,8 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/config"
 )
 
 func TestBuildRedisOptions(t *testing.T) {

@@ -1,40 +1,31 @@
-package provider_test
+package provider
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
-
-// ---------------------------------------------------------------------------
-// TestCheckErrorPolicy 通过六组输入检查错误处理规则。
-// ---------------------------------------------------------------------------
-
-// TestGatewayFailoverSideEffects_BedrockUsesMappedModel 检查 Bedrock 临时停调规则
-// 使用实际上游模型，并禁止池模式同提供商重试。
-
-// ---------------------------------------------------------------------------
-// TestApplyErrorPolicy 通过四组输入检查错误处理入口。
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// errorPolicyRepoStub 为错误处理测试提供存储替身。
-// ---------------------------------------------------------------------------
 
 // retryExhaustedCooldownRepoStub 记录同提供商重试耗尽后的本地冷却写入。
 type retryExhaustedCooldownRepoStub struct {
-	providercore.RetryCooldownStore
+	RetryCooldownStore
 
-	provider  *providercore.Record
+	provider  *Record
 	tempCalls int
 }
 
-func (r *retryExhaustedCooldownRepoStub) GetByID(context.Context, int64) (*providercore.Record, error) {
+type capacityShedProviderRepoStub struct {
+	RetryCooldownStore
+	// 嵌入接口，未实现的方法会 panic（不应被调用）
+
+	tempUnschedCalls int
+}
+
+func (r *retryExhaustedCooldownRepoStub) GetByID(context.Context, int64) (*Record, error) {
 	return r.provider, nil
 }
 
@@ -46,7 +37,7 @@ func (r *retryExhaustedCooldownRepoStub) SetTempUnschedulable(context.Context, i
 // TestTempUnscheduleRetryableError_PoolModeSkipsLegacyCooldown 验证池模式的
 // 同提供商重试耗尽后进入提供商切换。
 func TestTempUnscheduleRetryableError_PoolModeSkipsLegacyCooldown(t *testing.T) {
-	poolProvider := &providercore.Record{
+	poolProvider := &Record{
 		LoadLocation: time.LoadLocation, ID: 81,
 		Type:     capability.ProviderTypeAPIKey,
 		Platform: capability.PlatformAnthropic,
@@ -55,14 +46,44 @@ func TestTempUnscheduleRetryableError_PoolModeSkipsLegacyCooldown(t *testing.T) 
 		},
 	}
 	repo := &retryExhaustedCooldownRepoStub{provider: poolProvider}
-	svc := providercore.NewRetryCooldown(repo, providercore.RetryCooldownOptions{})
+	svc := NewRetryCooldown(repo, RetryCooldownOptions{})
 
-	svc.Apply(context.Background(), providercore.RetryCooldownInput{ProviderID: poolProvider.ID, Status: 502, Retryable: true})
+	svc.Apply(context.Background(), RetryCooldownInput{ProviderID: poolProvider.ID, Status: 502, Retryable: true})
 
 	require.Zero(t, repo.tempCalls)
 
 	// 非池模式提供商对特殊错误使用兼容冷却规则。
-	repo.provider = &providercore.Record{LoadLocation: time.LoadLocation, ID: 82, Type: capability.ProviderTypeOAuth, Platform: capability.PlatformAntigravity}
-	svc.Apply(context.Background(), providercore.RetryCooldownInput{ProviderID: repo.provider.ID, Status: 502, Retryable: true})
+	repo.provider = &Record{LoadLocation: time.LoadLocation, ID: 82, Type: capability.ProviderTypeOAuth, Platform: capability.PlatformAntigravity}
+	svc.Apply(context.Background(), RetryCooldownInput{ProviderID: repo.provider.ID, Status: 502, Retryable: true})
 	require.Equal(t, 1, repo.tempCalls)
+}
+
+func (r *capacityShedProviderRepoStub) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, _ string) error {
+	r.tempUnschedCalls++
+	return nil
+}
+
+func (r *capacityShedProviderRepoStub) GetByID(_ context.Context, id int64) (*Record, error) {
+	return &Record{LoadLocation: time.LoadLocation, ID: id, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth}, nil
+}
+
+func TestTempUnscheduleRetryableErrorSkipsRequestScopedTransient(t *testing.T) {
+	t.Run("请求级瞬时故障不写提供商状态", func(t *testing.T) {
+		repo := &capacityShedProviderRepoStub{}
+		svc := NewRetryCooldown(repo, RetryCooldownOptions{})
+
+		svc.Apply(context.Background(), RetryCooldownInput{ProviderID: 1, Status: 502, Retryable: true, RequestScopedTransient: true})
+
+		require.Zero(t, repo.tempUnschedCalls)
+	})
+
+	// 同样的 502 未标记为请求级瞬时故障时，按提供商错误执行临时停调。
+	t.Run("未标记时保持原有临时摘号语义", func(t *testing.T) {
+		repo := &capacityShedProviderRepoStub{}
+		svc := NewRetryCooldown(repo, RetryCooldownOptions{})
+
+		svc.Apply(context.Background(), RetryCooldownInput{ProviderID: 1, Status: 502, Retryable: true})
+
+		require.Equal(t, 1, repo.tempUnschedCalls)
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -355,10 +356,8 @@ func IsGrokVideoUsageResult(result *Result, billingModels []string) bool {
 	// 存在模型族时优先匹配，但不得因重命名或映射丢失视频计费模式。
 	candidates := append([]string{}, billingModels...)
 	candidates = append(candidates, result.BillingModel, result.Model, result.UpstreamModel)
-	for _, candidate := range candidates {
-		if IsGrokVideoBillingModel(candidate) {
-			return true
-		}
+	if slices.ContainsFunc(candidates, IsGrokVideoBillingModel) {
+		return true
 	}
 	return true
 }

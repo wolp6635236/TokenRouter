@@ -7,22 +7,22 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
 )
 
 const (
-	// Google OAuth 端点
+	// Google OAuth 端点。
 	AuthorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
 	TokenURL     = "https://oauth2.googleapis.com/token"
 	UserInfoURL  = "https://www.googleapis.com/oauth2/v2/userinfo"
 
-	// Antigravity OAuth 客户端凭证
+	// Antigravity OAuth 客户端凭证。
 	ClientID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 
 	// AntigravityOAuthClientSecretEnv 是 Antigravity OAuth client_secret 的环境变量名。
@@ -34,41 +34,61 @@ const (
 	// DefaultUserAgentVersion 是未通过环境变量或后台设置覆盖时使用的默认版本号。
 	DefaultUserAgentVersion = "1.23.2"
 
-	// 固定的 redirect_uri（用户需手动复制 code）
+	// 固定的 redirect_uri（用户需手动复制 code）。
 	RedirectURI = "http://localhost:8085/callback"
 
-	// OAuth scopes
+	// OAuth scopes.
 	Scopes = "https://www.googleapis.com/auth/cloud-platform " +
 		"https://www.googleapis.com/auth/userinfo.email " +
 		"https://www.googleapis.com/auth/userinfo.profile " +
 		"https://www.googleapis.com/auth/cclog " +
 		"https://www.googleapis.com/auth/experimentsandconfigs"
 
-	// Session 过期时间
+	// Session 过期时间。
 	SessionTTL = 30 * time.Minute
 
-	// URL 可用性 TTL（不可用 URL 的恢复时间）
+	// URL 可用性 TTL（不可用 URL 的恢复时间）。
 	URLAvailabilityTTL = 5 * time.Minute
 
-	// Antigravity API 端点
+	// Antigravity API 端点。
 	antigravityProdBaseURL  = "https://cloudcode-pa.googleapis.com"
 	antigravityDailyBaseURL = "https://daily-cloudcode-pa.googleapis.com"
 )
 
-var userAgentVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
-
-// UserAgentVersionResolver 提供运行时 User-Agent 版本号覆盖能力。
-type UserAgentVersionResolver func(ctx context.Context) string
-
 var (
+	userAgentVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
 	// defaultUserAgentVersion 可通过环境变量 ANTIGRAVITY_USER_AGENT_VERSION 配置。
 	defaultUserAgentVersion  = DefaultUserAgentVersion
 	userAgentVersionMu       sync.RWMutex
 	userAgentVersionResolver UserAgentVersionResolver
+
+	// defaultClientSecret 可通过环境变量 ANTIGRAVITY_OAUTH_CLIENT_SECRET 配置。
+	defaultClientSecret = "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"
+
+	// BaseURLs 定义 Antigravity API 端点（与 Antigravity-Manager 保持一致）。
+	BaseURLs = []string{
+		antigravityProdBaseURL,  // prod (优先)
+		antigravityDailyBaseURL, // daily sandbox (备用)
+	}
+
+	// BaseURL 默认 URL（保持向后兼容）。
+	BaseURL = BaseURLs[0]
+
+	// DefaultURLAvailability 全局 URL 可用性管理器。
+	DefaultURLAvailability = NewURLAvailability(URLAvailabilityTTL)
 )
 
-// defaultClientSecret 可通过环境变量 ANTIGRAVITY_OAUTH_CLIENT_SECRET 配置
-var defaultClientSecret = "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"
+// UserAgentVersionResolver 提供运行时 User-Agent 版本号覆盖能力。
+type UserAgentVersionResolver func(ctx context.Context) string
+
+// URLAvailability 管理 URL 可用性状态（带 TTL 自动恢复和动态优先级）。
+type URLAvailability struct {
+	mu          sync.RWMutex
+	unavailable map[string]time.Time // URL -> 恢复时间
+	ttl         time.Duration
+	lastSuccess string // 最近成功请求的 URL，优先使用
+}
 
 func init() {
 	// 从环境变量读取版本号，未设置则使用默认值
@@ -138,16 +158,7 @@ func getClientSecret() (string, error) {
 	return "", infraerrors.Newf(infraerrors.CategoryBadRequest, "ANTIGRAVITY_OAUTH_CLIENT_SECRET_MISSING", "missing antigravity oauth client_secret; set %s", AntigravityOAuthClientSecretEnv)
 }
 
-// BaseURLs 定义 Antigravity API 端点（与 Antigravity-Manager 保持一致）
-var BaseURLs = []string{
-	antigravityProdBaseURL,  // prod (优先)
-	antigravityDailyBaseURL, // daily sandbox (备用)
-}
-
-// BaseURL 默认 URL（保持向后兼容）
-var BaseURL = BaseURLs[0]
-
-// ForwardBaseURLs 返回 API 转发用的 URL 顺序（daily 优先）
+// ForwardBaseURLs 返回 API 转发用的 URL 顺序（daily 优先）。
 func ForwardBaseURLs() []string {
 	if len(BaseURLs) == 0 {
 		return nil
@@ -174,18 +185,7 @@ func ForwardBaseURLs() []string {
 	return reordered
 }
 
-// URLAvailability 管理 URL 可用性状态（带 TTL 自动恢复和动态优先级）
-type URLAvailability struct {
-	mu          sync.RWMutex
-	unavailable map[string]time.Time // URL -> 恢复时间
-	ttl         time.Duration
-	lastSuccess string // 最近成功请求的 URL，优先使用
-}
-
-// DefaultURLAvailability 全局 URL 可用性管理器
-var DefaultURLAvailability = NewURLAvailability(URLAvailabilityTTL)
-
-// NewURLAvailability 创建 URL 可用性管理器
+// NewURLAvailability 创建 URL 可用性管理器。
 func NewURLAvailability(ttl time.Duration) *URLAvailability {
 	return &URLAvailability{
 		unavailable: make(map[string]time.Time),
@@ -193,14 +193,14 @@ func NewURLAvailability(ttl time.Duration) *URLAvailability {
 	}
 }
 
-// MarkUnavailable 标记 URL 临时不可用
+// MarkUnavailable 标记 URL 临时不可用。
 func (u *URLAvailability) MarkUnavailable(url string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.unavailable[url] = time.Now().Add(u.ttl)
 }
 
-// MarkSuccess 标记 URL 请求成功，将其设为优先使用
+// MarkSuccess 标记 URL 请求成功，将其设为优先使用。
 func (u *URLAvailability) MarkSuccess(url string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -209,7 +209,7 @@ func (u *URLAvailability) MarkSuccess(url string) {
 	delete(u.unavailable, url)
 }
 
-// IsAvailable 检查 URL 是否可用
+// IsAvailable 检查 URL 是否可用。
 func (u *URLAvailability) IsAvailable(url string) bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -221,7 +221,7 @@ func (u *URLAvailability) IsAvailable(url string) bool {
 }
 
 // GetAvailableURLsWithBase 返回可用的 URL 列表（使用自定义顺序）
-// 最近成功的 URL 优先，其他按传入顺序
+// 最近成功的 URL 优先，其他按传入顺序。
 func (u *URLAvailability) GetAvailableURLsWithBase(baseURLs []string) []string {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -231,13 +231,7 @@ func (u *URLAvailability) GetAvailableURLsWithBase(baseURLs []string) []string {
 
 	// 如果有最近成功的 URL 且可用，放在最前面
 	if u.lastSuccess != "" {
-		found := false
-		for _, url := range baseURLs {
-			if url == u.lastSuccess {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(baseURLs, u.lastSuccess)
 		if found {
 			expiry, exists := u.unavailable[u.lastSuccess]
 			if !exists || now.After(expiry) {
@@ -284,7 +278,7 @@ func GenerateCodeChallenge(verifier string) string { return oauthpkce.Challenge(
 
 func base64URLEncode(data []byte) string { return oauthpkce.Base64URL(data) }
 
-// BuildAuthorizationURL 构建 Google OAuth 授权 URL
+// BuildAuthorizationURL 构建 Google OAuth 授权 URL。
 func BuildAuthorizationURL(state, codeChallenge string) string {
 	params := url.Values{}
 	params.Set("client_id", ClientID)

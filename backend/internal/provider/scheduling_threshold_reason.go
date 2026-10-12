@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-const ProviderSchedulingThresholdReasonSource = "provider_scheduling_threshold"
-
 const (
+	ProviderSchedulingThresholdReasonSource = "provider_scheduling_threshold"
+
 	defaultTempUnschedReasonErrorMessage           = "temporary scheduling block reason unavailable"
 	defaultProviderSchedulingThresholdErrorMessage = "provider scheduling threshold reached"
 )

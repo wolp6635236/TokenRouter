@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 	settingspostgres "github.com/TokenFlux/TokenRouter/internal/settings/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 // TestGeminiQuotaPolicyLoadsSettingsAndKeepsSnapshot 验证真实 settings 表验证 TTL、生效顺序与损坏 JSON 回退，不修改生产设置。

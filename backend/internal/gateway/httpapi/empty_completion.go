@@ -4,17 +4,23 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	"github.com/gin-gonic/gin"
 )
 
 const (
 	openAISilentRefusalUpstreamMessage   = "OpenAI upstream returned an empty completion stream with finish_reason=stop and no usage"
 	openAIResponsesEmptyCompletedMessage = "OpenAI upstream returned an empty response.completed stream with no output and no usage"
 )
+
+// UpstreamErrorProvider 只传递已选提供商的安全观测字段。
+type UpstreamErrorProvider struct {
+	ID             int64
+	Name, Platform string
+}
 
 func NewOpenAISilentRefusalFailoverError(c *gin.Context, provider *UpstreamErrorProvider, upstreamRequestID string) *forwardcore.UpstreamFailoverError {
 	providerID := int64(0)
@@ -78,10 +84,4 @@ func NewOpenAIResponsesEmptyCompletedFailoverError(c *gin.Context, provider *Ups
 		ResponseBody:    forwardcore.OpenAISilentRefusalErrorBody(),
 		ResponseHeaders: headers,
 	}
-}
-
-// UpstreamErrorProvider 只传递已选提供商的安全观测字段。
-type UpstreamErrorProvider struct {
-	ID             int64
-	Name, Platform string
 }

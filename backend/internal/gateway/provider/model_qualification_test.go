@@ -2,15 +2,86 @@ package provider
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	protocolcore "github.com/TokenFlux/TokenRouter/internal/protocol"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/stretchr/testify/require"
 )
+
+func TestProviderIsSchedulableForModel_AntigravityRateLimits(t *testing.T) {
+	now := time.Now()
+	future := now.Add(10 * time.Minute)
+
+	provider := &providercore.Record{
+		ID:          1,
+		Name:        "acc",
+		Platform:    capability.PlatformAntigravity,
+		Status:      billing.StatusActive,
+		Schedulable: true,
+	}
+
+	provider.RateLimitResetAt = &future
+	require.False(t, (ModelPolicy{Record: provider}).Schedulable(context.Background(), "claude-sonnet-4-5"))
+	require.False(t, (ModelPolicy{Record: provider}).Schedulable(context.Background(), "gemini-3-flash"))
+
+	provider.RateLimitResetAt = nil
+	require.True(t, (ModelPolicy{Record: provider}).Schedulable(context.Background(), "claude-sonnet-4-5"))
+	require.True(t, (ModelPolicy{Record: provider}).Schedulable(context.Background(), "gemini-3-flash"))
+}
+
+// TestProtocolNativeMatrixAndSave 检查目录、保存和路线是否共用协议矩阵，并保留空协议集合与平台拒绝结果。
+func TestProtocolNativeMatrixAndSave(t *testing.T) {
+	for _, tc := range []struct {
+		platform, kind, auth string
+		count                int
+	}{
+		{capability.PlatformAnthropic, capability.ProviderTypeAPIKey, "", 1},
+		{capability.PlatformAnthropic, capability.ProviderTypeBedrock, "", 1},
+		{capability.PlatformOpenAI, capability.ProviderTypeAPIKey, "", 8},
+		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, "", 5},
+		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, providercore.OpenAIAuthModePersonalAccessToken, 3},
+		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, providercore.OpenAIAuthModeAgentIdentity, 4},
+		{capability.PlatformDeepseek, capability.ProviderTypeAPIKey, "", 3},
+		{capability.PlatformKimi, capability.ProviderTypeAPIKey, "", 3},
+		{capability.PlatformZhipu, capability.ProviderTypeAPIKey, "", 2},
+		{capability.PlatformGemini, capability.ProviderTypeAPIKey, "", 2},
+		{capability.PlatformGemini, capability.ProviderTypeServiceAccount, "", 2},
+		{capability.PlatformGemini, capability.ProviderTypeOAuth, "", 1},
+		{capability.PlatformAntigravity, capability.ProviderTypeOAuth, "", 1},
+		{capability.PlatformAntigravity, capability.ProviderTypeAPIKey, "", 0},
+		{capability.PlatformGrok, capability.ProviderTypeAPIKey, "", 11},
+		{capability.PlatformGrok, capability.ProviderTypeOAuth, "", 11},
+		{capability.PlatformQoder, capability.ProviderTypeCosy, "", 1},
+	} {
+		t.Run(tc.platform+"/"+tc.kind+"/"+tc.auth, func(t *testing.T) {
+			provider := &providercore.Record{Platform: tc.platform, Type: tc.kind, Credentials: map[string]any{"auth_mode": tc.auth}}
+			options := provider.NativeProtocolOptions()
+			require.Len(t, options, tc.count)
+			for _, protocol := range options {
+				provider.Credentials[providercore.UpstreamProtocolsKey] = []string{string(protocol)}
+				require.NoError(t, providercore.NormalizeProviderProtocols(provider))
+				require.Equal(t, []protocolcore.ProtocolID{protocol}, provider.UpstreamProtocols())
+				target, ok := (ModelPolicy{Record: provider}).ProtocolRoute(nil, protocol)
+				require.True(t, ok)
+				require.Equal(t, protocol, target)
+			}
+			provider.Credentials[providercore.UpstreamProtocolsKey] = []string{}
+			require.NoError(t, providercore.NormalizeProviderProtocols(provider))
+			require.Empty(t, provider.UpstreamProtocols())
+			provider.Credentials[providercore.UpstreamProtocolsKey] = []string{"unknown"}
+			require.Equal(t, http.StatusBadRequest, httpx.ErrorCode(providercore.NormalizeProviderProtocols(provider)))
+		})
+	}
+}
 
 func TestIsModelRateLimited(t *testing.T) {
 	now := time.Now()
@@ -138,7 +209,7 @@ func TestIsModelRateLimited(t *testing.T) {
 				},
 			},
 			requestedModel: "gemini-3-pro-preview",
-			expected:       false,
+			expected:       true,
 		},
 		{
 			name: "antigravity platform - gemini family rate limit does not block claude",
@@ -545,4 +616,25 @@ func TestIsAnthropicFableModel(t *testing.T) {
 	require.True(t, anthropic.IsAnthropicFableModel("Claude-Fable-5"))
 	require.False(t, anthropic.IsAnthropicFableModel("claude-sonnet-4-6"))
 	require.False(t, anthropic.IsAnthropicFableModel(""))
+}
+
+func TestProtocolConversionProviderConstraints(t *testing.T) {
+	for _, tc := range []struct {
+		platform, kind, auth string
+		source, target       protocolcore.ProtocolID
+		want                 bool
+	}{
+		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, "", protocolcore.ProtocolImagesEdits, protocolcore.ProtocolOpenAIResponses, true},
+		{capability.PlatformOpenAI, capability.ProviderTypeAPIKey, "", protocolcore.ProtocolImagesEdits, protocolcore.ProtocolOpenAIResponses, false},
+		{capability.PlatformGrok, capability.ProviderTypeAPIKey, "", protocolcore.ProtocolResponsesWebSocket, protocolcore.ProtocolOpenAIResponses, true},
+		{capability.PlatformGrok, capability.ProviderTypeOAuth, "", protocolcore.ProtocolWebSearch, protocolcore.ProtocolOpenAIResponses, true},
+		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, providercore.OpenAIAuthModePersonalAccessToken, protocolcore.ProtocolAlphaSearch, protocolcore.ProtocolOpenAIResponses, true},
+		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, "", protocolcore.ProtocolAlphaSearch, protocolcore.ProtocolOpenAIResponses, false},
+		{capability.PlatformOpenAI, capability.ProviderTypeAPIKey, "", protocolcore.ProtocolEmbeddings, protocolcore.ProtocolOpenAIResponses, false},
+		{capability.PlatformGrok, capability.ProviderTypeAPIKey, "", protocolcore.ProtocolTTS, protocolcore.ProtocolOpenAIResponses, false},
+	} {
+		t.Run(string(tc.source)+"/"+tc.platform+"/"+tc.kind+"/"+tc.auth, func(t *testing.T) {
+			require.Equal(t, tc.want, capability.SupportsProtocolConversion(tc.platform, tc.kind, tc.auth, tc.source, tc.target))
+		})
+	}
 }

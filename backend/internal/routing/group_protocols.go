@@ -8,6 +8,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// LegacyGroupProtocolPatch 只表达旧客户端明确修改的开关，缺省字段保持现状。
+type LegacyGroupProtocolPatch struct {
+	Messages, Image, Batch, Live *bool
+}
+
 // EffectiveAllowedProtocols 为响应映射和编辑快照返回独立协议集合。
 // 返回独立副本，并把 nil 统一表达为合法的空集合。
 func (g *Group) EffectiveAllowedProtocols() []protocol.ProtocolID {
@@ -51,11 +56,6 @@ func NormalizeGroupProtocolPolicy(group *Group, legacy *LegacyGroupProtocolPatch
 	group.AllowBatchImageGeneration = slices.Contains(group.AllowedProtocols, protocol.ProtocolImageBatches)
 	group.AllowLive = slices.Contains(group.AllowedProtocols, protocol.ProtocolLive)
 	return nil
-}
-
-// LegacyGroupProtocolPatch 只表达旧客户端明确修改的开关，缺省字段保持现状。
-type LegacyGroupProtocolPatch struct {
-	Messages, Image, Batch, Live *bool
 }
 
 // ApplyLegacyGroupProtocolPatch 只修改已校验的集合，避免兼容转换掩盖非法输入。

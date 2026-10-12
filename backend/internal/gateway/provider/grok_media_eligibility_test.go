@@ -6,11 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/stretchr/testify/require"
 
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 type grokMediaEligibilityProberStub struct {

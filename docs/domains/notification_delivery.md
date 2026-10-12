@@ -56,4 +56,4 @@ EmailQueueService 使用内存队列，容量 100；构造时未指定有效 wor
 
 ## 验证入口
 
-`backend/internal/notification/service.go` 定义事件、模板、偏好和投递流程，`coordinator.go` 与 `queue.go` 定义并发和生命周期。`fixed_regression_test.go` 覆盖同键投递、首次退订密钥、锁取消和队列排空；SMTP 测试覆盖取消、DATA 确认和 TLS 连接。identity 的邮件挑战测试核实凭据生成与存储顺序。
+`backend/internal/notification/service.go` 定义事件、模板、偏好和投递流程，`coordinator.go` 与 `queue.go` 定义并发和生命周期。`service_test.go` 覆盖同键投递和首次退订密钥，`coordinator_test.go` 覆盖锁取消，`queue_test.go` 覆盖队列排空。`mailer_test.go` 检查发送取消，SMTP 子包测试覆盖 DATA 确认和 TLS 连接。identity 的邮件挑战测试核实凭据生成与存储顺序。

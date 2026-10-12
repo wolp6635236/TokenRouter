@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 )
@@ -20,7 +21,7 @@ type RefreshPostActions struct {
 	ClearReauth               func(context.Context, *Record)
 }
 
-// Run 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
+// Run 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）。
 func (s *RefreshPostActions) Run(ctx context.Context, provider *Record) {
 	syncActions := *s
 	changed := false
@@ -147,9 +148,7 @@ func (s *RefreshPostActions) ClearRefreshRequest(ctx context.Context, provider *
 		return
 	}
 	if provider.Extra != nil {
-		for k, v := range updates {
-			provider.Extra[k] = v
-		}
+		maps.Copy(provider.Extra, updates)
 	}
 	s.Info("token_refresh.cleared_antigravity_force_refresh",
 		"provider_id", provider.ID,

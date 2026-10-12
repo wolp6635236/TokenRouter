@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 func ConfigEnabledVisibleMethodsForProvider(providerKey, supportedTypes string) []string {
@@ -71,12 +71,7 @@ func ConfigProviderSupportsVisibleMethod(inst *ProviderInstance, method string) 
 		return false
 	}
 	method = NormalizeVisibleMethod(method)
-	for _, candidate := range ConfigEnabledVisibleMethodsForProvider(inst.ProviderKey, inst.SupportedTypes) {
-		if candidate == method {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ConfigEnabledVisibleMethodsForProvider(inst.ProviderKey, inst.SupportedTypes), method)
 }
 
 func ConfigFilterEnabledVisibleMethodInstances(instances []*ProviderInstance, method string) []*ProviderInstance {

@@ -2,22 +2,23 @@ package timezone
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// Calendar 持有日期计算使用的时区，不修改进程全局状态。
+// Calendar 保存日期计算使用的时区和时钟。
 type Calendar struct {
 	location *time.Location
 	now      func() time.Time
 }
 
-// NewCalendar 使用指定时区；nil 延续 Go 的本地时区语义。
+// NewCalendar 使用指定时区，nil 表示 time.Local。
 func NewCalendar(loc *time.Location) Calendar {
 	return Calendar{location: loc}
 }
 
-// NewCalendarWithClock 使用调用方提供的时钟；传 nil 时读取系统时间。
+// NewCalendarWithClock 使用调用方提供的时钟，传 nil 时读取系统时间。
 func NewCalendarWithClock(loc *time.Location, now func() time.Time) Calendar {
 	return Calendar{location: loc, now: now}
 }
@@ -30,7 +31,7 @@ func (c Calendar) Location() *time.Location {
 	return c.location
 }
 
-// Now 返回日历时区的当前时间；零值保留系统时钟的单调读数。
+// Now 返回日历时区的当前时间。零值直接返回系统时钟的时间和单调读数。
 func (c Calendar) Now() time.Time {
 	now := time.Now
 	if c.now != nil {
@@ -59,40 +60,46 @@ func (c Calendar) UTCOffset(t time.Time) string {
 	return fmt.Sprintf("%s%02d:%02d", sign, hours, minutes)
 }
 
+// StartOfDay 返回给定时刻在日历时区中的零点。
 func (c Calendar) StartOfDay(t time.Time) time.Time {
 	loc := c.Location()
 	t = t.In(loc)
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 }
 
+// Today 返回日历时区中当天的零点。
 func (c Calendar) Today() time.Time {
 	return c.StartOfDay(c.Now())
 }
 
+// EndOfDay 返回给定日期的最后一纳秒。
 func (c Calendar) EndOfDay(t time.Time) time.Time {
 	loc := c.Location()
 	t = t.In(loc)
 	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, loc)
 }
 
+// StartOfWeek 返回所在周的星期一零点。
 func (c Calendar) StartOfWeek(t time.Time) time.Time {
 	loc := c.Location()
 	t = t.In(loc)
 	weekday := int(t.Weekday())
 	if weekday == 0 {
-		weekday = 7 // Sunday is day 7
+		weekday = 7 // 星期日按一周中的第七天计算。
 	}
 	return time.Date(t.Year(), t.Month(), t.Day()-weekday+1, 0, 0, 0, 0, loc)
 }
 
+// StartOfMonth 返回所在月份的第一天零点。
 func (c Calendar) StartOfMonth(t time.Time) time.Time {
 	loc := c.Location()
 	t = t.In(loc)
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
 }
 
+// ParseInUserLocation 按用户时区解析日期，时区无效时使用日历时区。
 func (c Calendar) ParseInUserLocation(layout, value, userTZ string) (time.Time, error) {
-	loc := c.Location() // default to server timezone
+	loc := c.Location() // 默认使用日历时区。
 	if userTZ != "" {
 		if userLoc, err := time.LoadLocation(userTZ); err == nil {
 			loc = userLoc
@@ -101,6 +108,7 @@ func (c Calendar) ParseInUserLocation(layout, value, userTZ string) (time.Time, 
 	return time.ParseInLocation(layout, value, loc)
 }
 
+// ParseDateTimeInUserLocation 解析日期或时间，并报告输入是否只有日期。
 func (c Calendar) ParseDateTimeInUserLocation(value, userTZ string) (parsed time.Time, dateOnly bool, err error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -137,6 +145,7 @@ func (c Calendar) ParseDateTimeInUserLocation(value, userTZ string) (parsed time
 	return time.Time{}, false, fmt.Errorf("invalid datetime %q", value)
 }
 
+// NowInUserLocation 返回用户时区的当前时间，时区无效时使用日历时区。
 func (c Calendar) NowInUserLocation(userTZ string) time.Time {
 	if userTZ == "" {
 		return c.Now()
@@ -147,6 +156,7 @@ func (c Calendar) NowInUserLocation(userTZ string) time.Time {
 	return c.Now()
 }
 
+// StartOfDayInUserLocation 返回用户时区中的零点，时区无效时使用日历时区。
 func (c Calendar) StartOfDayInUserLocation(t time.Time, userTZ string) time.Time {
 	loc := c.Location()
 	if userTZ != "" {
@@ -156,4 +166,20 @@ func (c Calendar) StartOfDayInUserLocation(t time.Time, userTZ string) time.Time
 	}
 	t = t.In(loc)
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+}
+
+// ParseFlexibleTimestamp 尝试 RFC3339、RFC3339Nano 和 UTC 时间戳格式。
+func ParseFlexibleTimestamp(raw string) (time.Time, error) {
+	formats := []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05.000Z",
+	}
+	for _, format := range formats {
+		if ts, err := time.Parse(format, raw); err == nil {
+			return ts, nil
+		}
+	}
+	return time.Time{}, strconv.ErrSyntax
 }

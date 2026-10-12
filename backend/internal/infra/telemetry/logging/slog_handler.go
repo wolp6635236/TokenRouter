@@ -16,6 +16,8 @@ type slogZapHandler struct {
 	groups []string
 }
 
+type zapObjectFields []zap.Field
+
 func newSlogZapHandler(logger *zap.Logger) slog.Handler {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -120,8 +122,6 @@ func slogAttrToZapField(groups []string, attr slog.Attr) zap.Field {
 		return zap.String(attr.Key, value.String())
 	}
 }
-
-type zapObjectFields []zap.Field
 
 func (z zapObjectFields) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	for _, field := range z {

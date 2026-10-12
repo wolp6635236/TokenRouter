@@ -6,9 +6,13 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
+
+// parameterSourceStub 提供参数测试中的逐键和批量读取。
+type parameterSourceStub struct{ values map[string]string }
 
 func TestParameters_DBOverridesConfig(t *testing.T) {
 	defaults := DefaultParameters()
@@ -98,9 +102,6 @@ func TestParameters_InvalidWeightSumsFallBackToConfig(t *testing.T) {
 		})
 	}
 }
-
-// parameterSourceStub 提供参数测试中的逐键和批量读取。
-type parameterSourceStub struct{ values map[string]string }
 
 func (s *parameterSourceStub) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
 	out := make(map[string]string)

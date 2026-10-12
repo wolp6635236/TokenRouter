@@ -5,43 +5,56 @@ import (
 	"strings"
 )
 
-// CodexCLIUserAgentPrefixes 定义历史 Codex CLI User-Agent 前缀。
-// 示例："codex_vscode/1.0.0"、"codex_cli_rs/0.1.2"。
-var CodexCLIUserAgentPrefixes = []string{
-	"codex_vscode/",
-	"codex_cli_rs/",
-}
+const (
+	// codexOfficialClientFamilyPrefix 覆盖 Codex Desktop 等 `Codex ` 家族标识。
+	// 该值不能进入通用前缀列表，否则归一化会移除尾随空格并退化成裸 codex。
+	codexOfficialClientFamilyPrefix = "codex "
 
-// CodexOfficialClientUserAgentPrefixes 定义 Codex 官方客户端家族 User-Agent 确定前缀。
-// `Codex ` 家族前缀需要保留尾随空格，单独由 codexOfficialClientFamilyPrefix 处理。
-var CodexOfficialClientUserAgentPrefixes = []string{
-	"codex_cli_rs/",
-	"codex-tui/",
-	"codex_vscode/",
-	"codex_vscode_copilot/",
-	"codex_app/",
-	"codex_chatgpt_desktop/",
-	"codex_atlas/",
-	"codex_exec/",
-	"codex_sdk_ts/",
-}
+	// codexOriginatorMaxLen 官方 clientInfo.name 均为短 ASCII 标识，远低于此上限。
+	codexOriginatorMaxLen = 64
 
-// codexOfficialClientFamilyPrefix 覆盖 Codex Desktop 等 `Codex ` 家族标识。
-// 该值不能进入通用前缀列表，否则归一化会移除尾随空格并退化成裸 codex。
-const codexOfficialClientFamilyPrefix = "codex "
+	// CodexDefaultOriginator 是网关默认使用的 Codex TUI originator。
+	CodexDefaultOriginator = "codex-tui"
+)
 
-// codexOfficialClientOriginators 列出 Codex 客户端 originator 的精确匹配值，codex_only 据此拒绝 evil-codex_cli 等相似名称。
-var codexOfficialClientOriginators = map[string]bool{
-	"codex_cli_rs":          true,
-	"codex-tui":             true,
-	"codex_vscode":          true,
-	"codex_vscode_copilot":  true,
-	"codex_app":             true,
-	"codex_chatgpt_desktop": true,
-	"codex_atlas":           true,
-	"codex_exec":            true,
-	"codex_sdk_ts":          true,
-}
+var (
+	// CodexCLIUserAgentPrefixes 定义历史 Codex CLI User-Agent 前缀。
+	// 示例："codex_vscode/1.0.0"、"codex_cli_rs/0.1.2"。
+	CodexCLIUserAgentPrefixes = []string{
+		"codex_vscode/",
+		"codex_cli_rs/",
+	}
+
+	// CodexOfficialClientUserAgentPrefixes 定义 Codex 官方客户端家族 User-Agent 确定前缀。
+	// `Codex ` 家族前缀需要保留尾随空格，单独由 codexOfficialClientFamilyPrefix 处理。
+	CodexOfficialClientUserAgentPrefixes = []string{
+		"codex_cli_rs/",
+		"codex-tui/",
+		"codex_vscode/",
+		"codex_vscode_copilot/",
+		"codex_app/",
+		"codex_chatgpt_desktop/",
+		"codex_atlas/",
+		"codex_exec/",
+		"codex_sdk_ts/",
+	}
+
+	// codexOfficialClientOriginators 列出 Codex 客户端 originator 的精确匹配值，codex_only 据此拒绝 evil-codex_cli 等相似名称。
+	codexOfficialClientOriginators = map[string]bool{
+		"codex_cli_rs":          true,
+		"codex-tui":             true,
+		"codex_vscode":          true,
+		"codex_vscode_copilot":  true,
+		"codex_app":             true,
+		"codex_chatgpt_desktop": true,
+		"codex_atlas":           true,
+		"codex_exec":            true,
+		"codex_sdk_ts":          true,
+	}
+
+	// codexEngineVersionPattern 提取版本段开头的三段数字 X.Y.Z（忽略 -alpha 等后缀）。
+	codexEngineVersionPattern = regexp.MustCompile(`^(\d+\.\d+\.\d+)`)
+)
 
 // IsBrowserUserAgent 根据 Mozilla/ 前缀识别 Chrome、Firefox、Safari、Edge、Opera 等浏览器 UA。
 // 该判断用于处理 OpenAI 上游接口对浏览器 UA 发出的 Cloudflare JavaScript 质询。
@@ -98,16 +111,16 @@ func isCodexOfficialClientRequest(userAgent string, strict bool) bool {
 // 例如 cccc 前缀下可提取 codex-tui。输入需要先去除两侧空白，解析失败时返回空字符串。
 // 函数按大小写无关方式解析，匹配调用方传入小写 UA，PairCodexClientIdentity 则传入原大小写以生成配套 originator。
 func codexUATrailerName(ua string) string {
-	last := strings.LastIndex(ua, "(")
-	if last < 0 {
+	_, after0, ok0 := strings.CutLast(ua, "(")
+	if !ok0 {
 		return ""
 	}
-	rest := ua[last+1:]
-	closeIdx := strings.Index(rest, ")")
-	if closeIdx < 0 {
+	rest := after0
+	before, _, ok := strings.Cut(rest, ")")
+	if !ok {
 		return ""
 	}
-	inner := strings.TrimSpace(rest[:closeIdx])
+	inner := strings.TrimSpace(before)
 	if semi := strings.Index(inner, ";"); semi >= 0 {
 		inner = strings.TrimSpace(inner[:semi])
 	}
@@ -186,15 +199,12 @@ func PairCodexClientIdentity(userAgent string) (originator string, pairedUA stri
 	return "", "", false
 }
 
-// codexOriginatorMaxLen 官方 clientInfo.name 均为短 ASCII 标识，远低于此上限。
-const codexOriginatorMaxLen = 64
-
 // isSaneCodexOriginator 检查 originator 长度及 ASCII 可打印字符，供 Codex 家族前缀匹配后的校验使用。
 func isSaneCodexOriginator(name string) bool {
 	if name == "" || len(name) > codexOriginatorMaxLen {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
+	for i := range len(name) {
 		if c := name[i]; c < 0x20 || c > 0x7e {
 			return false
 		}
@@ -212,12 +222,6 @@ func canonicalizeCodexOriginator(name string) string {
 	return name
 }
 
-// CodexDefaultOriginator 是网关默认使用的 Codex TUI originator。
-const CodexDefaultOriginator = "codex-tui"
-
-// codexEngineVersionPattern 提取版本段开头的三段数字 X.Y.Z（忽略 -alpha 等后缀）。
-var codexEngineVersionPattern = regexp.MustCompile(`^(\d+\.\d+\.\d+)`)
-
 // ParseCodexEngineVersion 从 codex-rs 形态 UA 取引擎版本：
 // `{originator}/{X.Y.Z} (...)`，第一个 '/' 后、首个空格或 '(' 前的三段版本。
 // 该版本是 codex-rs CARGO_PKG_VERSION（引擎版本，CLI/app-server 一致）。
@@ -229,7 +233,7 @@ func ParseCodexEngineVersion(ua string) (string, bool) {
 	}
 	rest := ua[slash+1:]
 	end := len(rest)
-	for i := 0; i < len(rest); i++ {
+	for i := range len(rest) {
 		if rest[i] == ' ' || rest[i] == '(' {
 			end = i
 			break

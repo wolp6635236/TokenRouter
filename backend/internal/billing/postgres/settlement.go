@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -18,6 +19,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+const (
+	taskAllowanceReserve taskAllowanceOperation = iota
+	taskAllowanceCapture
+	taskAllowanceRelease
+)
+
 type SettlementStore struct {
 	db              *sql.DB
 	calendar        timezone.Calendar
@@ -28,13 +35,43 @@ type SettlementStore struct {
 // ProviderQuotaOutbox 在提供商额度跨阈值时参与同一 SQL 事务，写入调度事件。
 type ProviderQuotaOutbox func(context.Context, *sql.Tx, int64) error
 
+type taskAllowanceOperation int
+
+type usageBillingSubscriptionRow struct {
+	ID                          int64
+	PlanID                      int64
+	StartsAt                    time.Time
+	ExpiresAt                   time.Time
+	DailyWindowStart            sql.NullTime
+	WeeklyWindowStart           sql.NullTime
+	MonthlyWindowStart          sql.NullTime
+	DailyLimitUSD               sql.NullFloat64
+	WeeklyLimitUSD              sql.NullFloat64
+	MonthlyLimitUSD             sql.NullFloat64
+	DailyUsageUSD               float64
+	WeeklyUsageUSD              float64
+	MonthlyUsageUSD             float64
+	PlanGroupIDsRaw             []byte
+	PlanGroupRateMultipliersRaw []byte
+}
+
+// TaskProjection 在计费事务中写入任务的资金分配和额度预占状态。
+//
+// @project-doc docs/domains/routing_and_billing.md#usage_settlement
+type TaskProjection interface {
+	SaveReservation(context.Context, float64, []billing.BillingAllocation, float64, float64) error
+	SetAllowanceReserved(context.Context, bool) error
+}
+type (
+	TaskProjectionFactory   func(*sql.Tx, billing.TaskReference) TaskProjection
+	TaskProjectionFactories map[billing.TaskScope]TaskProjectionFactory
+)
+
 // NewSettlementStore 构造唯一闭合资金存储，不启动后台任务。
 func NewSettlementStore(sqlDB *sql.DB, calendar timezone.Calendar, outbox ProviderQuotaOutbox, factories ...TaskProjectionFactories) *SettlementStore {
 	projections := make(TaskProjectionFactories)
 	for _, set := range factories {
-		for scope, factory := range set {
-			projections[scope] = factory
-		}
+		maps.Copy(projections, set)
 	}
 	return &SettlementStore{db: sqlDB, calendar: calendar, providerOutbox: outbox, taskProjections: projections}
 }
@@ -297,14 +334,6 @@ func (r *SettlementStore) Release(ctx context.Context, cmd *billing.TaskFundsCom
 		return releaseUsageBillingTaskBilling(ctx, tx, cmd)
 	})
 }
-
-type taskAllowanceOperation int
-
-const (
-	taskAllowanceReserve taskAllowanceOperation = iota
-	taskAllowanceCapture
-	taskAllowanceRelease
-)
 
 func (r *SettlementStore) applyTaskBalanceHold(
 	ctx context.Context,
@@ -788,24 +817,6 @@ func (r *SettlementStore) incrementUsageBillingTeamMember(ctx context.Context, t
 	}
 	// 请求在途期间成员可能退出或成为 Owner；付款快照仍需完成，只跳过已失效的成员限额计数。
 	return nil
-}
-
-type usageBillingSubscriptionRow struct {
-	ID                          int64
-	PlanID                      int64
-	StartsAt                    time.Time
-	ExpiresAt                   time.Time
-	DailyWindowStart            sql.NullTime
-	WeeklyWindowStart           sql.NullTime
-	MonthlyWindowStart          sql.NullTime
-	DailyLimitUSD               sql.NullFloat64
-	WeeklyLimitUSD              sql.NullFloat64
-	MonthlyLimitUSD             sql.NullFloat64
-	DailyUsageUSD               float64
-	WeeklyUsageUSD              float64
-	MonthlyUsageUSD             float64
-	PlanGroupIDsRaw             []byte
-	PlanGroupRateMultipliersRaw []byte
 }
 
 func usageBillingSubscriptionRowToService(userID int64, row usageBillingSubscriptionRow) *billing.UserSubscription {
@@ -1513,13 +1524,7 @@ func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKe
 	cost = billing.QuantizeUsageBillingAmount(cost)
 	res, err := tx.ExecContext(ctx, `
 		UPDATE api_keys SET
-			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN $1 ELSE usage_5h + $1 END,
-			usage_1d = CASE WHEN window_1d_start IS NOT NULL AND window_1d_start + INTERVAL '24 hours' <= NOW() THEN $1 ELSE usage_1d + $1 END,
-			usage_7d = CASE WHEN window_7d_start IS NOT NULL AND window_7d_start + INTERVAL '7 days' <= NOW() THEN $1 ELSE usage_7d + $1 END,
-			window_5h_start = CASE WHEN window_5h_start IS NULL OR window_5h_start + INTERVAL '5 hours' <= NOW() THEN NOW() ELSE window_5h_start END,
-			window_1d_start = CASE WHEN window_1d_start IS NULL OR window_1d_start + INTERVAL '24 hours' <= NOW() THEN date_trunc('day', NOW()) ELSE window_1d_start END,
-			window_7d_start = CASE WHEN window_7d_start IS NULL OR window_7d_start + INTERVAL '7 days' <= NOW() THEN date_trunc('day', NOW()) ELSE window_7d_start END,
-			updated_at = NOW()
+`+apiKeyRateLimitUsageSetSQL+`
 		WHERE id = $2
 	`, cost, apiKeyID)
 	if err != nil {

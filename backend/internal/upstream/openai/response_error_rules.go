@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 const (
@@ -691,4 +691,13 @@ func IsOpenAICyberWarningText(text string) bool {
 		(strings.Contains(lower, "risk") ||
 			strings.Contains(lower, "abuse") ||
 			strings.Contains(lower, "security work"))
+}
+
+// IsCodexPlanGatedModelError 识别 ChatGPT OAuth 套餐拒绝目标模型的错误。
+func IsCodexPlanGatedModelError(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	normalized := upstream.NormalizeModelErrorBody(body)
+	return normalized != "" && strings.Contains(normalized, "model is not supported when using codex")
 }

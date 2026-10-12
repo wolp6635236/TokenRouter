@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestMigration280RemovesMessagesOverride 验证删除专用覆盖不会改写通用分组映射或分组身份，迁移支持重复执行。

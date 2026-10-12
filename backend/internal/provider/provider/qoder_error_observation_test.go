@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
 type qoderRateLimitRepoStub struct {
@@ -17,15 +18,15 @@ type qoderRateLimitRepoStub struct {
 	resetAt       time.Time
 }
 
+type qoderPolicyContextRepoStub struct {
+	qoderRateLimitRepoStub
+	rateLimitCtxErr error
+}
+
 func (r *qoderRateLimitRepoStub) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitedID = id
 	r.resetAt = resetAt
 	return nil
-}
-
-type qoderPolicyContextRepoStub struct {
-	qoderRateLimitRepoStub
-	rateLimitCtxErr error
 }
 
 func (r *qoderPolicyContextRepoStub) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {

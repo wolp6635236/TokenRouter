@@ -27,9 +27,6 @@ type ArchiveExportQuery struct {
 }
 type ArchiveInputError struct{ Err error }
 
-func (e *ArchiveInputError) Error() string { return e.Err.Error() }
-func (e *ArchiveInputError) Unwrap() error { return e.Err }
-
 type ArchiveOptions struct {
 	Now                func() time.Time
 	DecodeIDToken      func(string) (*ArchiveIdentityHints, error)
@@ -45,6 +42,9 @@ type Archive struct {
 	proxies   ArchiveProxies
 	options   ArchiveOptions
 }
+
+func (e *ArchiveInputError) Error() string { return e.Err.Error() }
+func (e *ArchiveInputError) Unwrap() error { return e.Err }
 
 func NewArchive(providers ArchiveProviders, proxies ArchiveProxies, options ArchiveOptions) *Archive {
 	if options.Now == nil {

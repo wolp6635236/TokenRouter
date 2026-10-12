@@ -1,61 +1,69 @@
 //go:build integration
 
-package app_test
+package app
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 	"time"
 
-	idempotencypostgres "github.com/TokenFlux/TokenRouter/internal/idempotency/postgres"
-	settingspostgres "github.com/TokenFlux/TokenRouter/internal/settings/postgres"
+	"github.com/stretchr/testify/require"
 
-	"entgo.io/ent/dialect"
-	entsql "entgo.io/ent/dialect/sql"
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	_ "github.com/TokenFlux/TokenRouter/ent/runtime"
-	"github.com/TokenFlux/TokenRouter/internal/app/bootstrap"
 	"github.com/TokenFlux/TokenRouter/internal/idempotency"
+	idempotencypostgres "github.com/TokenFlux/TokenRouter/internal/idempotency/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
+	settingspostgres "github.com/TokenFlux/TokenRouter/internal/settings/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/site"
 	sitepostgres "github.com/TokenFlux/TokenRouter/internal/site/postgres"
-	"github.com/stretchr/testify/require"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-type databaseFixture struct {
-	db     *sql.DB
-	client *dbent.Client
-	dsn    string
-	host   string
-	port   int
-}
-
-// newDatabaseFixture 构造测试数据库。
-func newDatabaseFixture(t *testing.T) *databaseFixture {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+// TestMigrationsLockReplayAndRollback 在隔离的 PostgreSQL 上检查锁、checksum、事务回滚和并发索引回放。
+func TestMigrationsLockReplayAndRollback(t *testing.T) {
+	fixture := newDatabaseFixture(t)
+	ctx := context.Background()
+	migrations := fstest.MapFS{
+		"900_test_contract.sql":            {Data: []byte("CREATE TABLE test_migration_contract(id bigint PRIMARY KEY, value text);")},
+		"901_test_contract_index_notx.sql": {Data: []byte("CREATE INDEX CONCURRENTLY IF NOT EXISTS test_migration_index ON test_migration_contract(value);")},
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wg.Go(func() { results <- postgres.ApplyMigrations(ctx, fixture.db, migrations) })
+	}
+	wg.Wait()
+	close(results)
+	for err := range results {
+		require.NoError(t, err)
+	}
+	var count int
+	require.NoError(t, fixture.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE filename LIKE '90%_test_%'`).Scan(&count))
+	require.Equal(t, 2, count)
+	changed := fstest.MapFS{"900_test_contract.sql": {Data: []byte("SELECT 1;")}}
+	require.ErrorContains(t, postgres.ApplyMigrations(ctx, fixture.db, changed), "checksum")
+	failed := fstest.MapFS{"902_test_rollback.sql": {Data: []byte("CREATE TABLE test_should_rollback(id bigint); SELECT 1/0;")}}
+	require.Error(t, postgres.ApplyMigrations(ctx, fixture.db, failed))
+	var rolledBack bool
+	require.NoError(t, fixture.db.QueryRow(`SELECT to_regclass('test_should_rollback') IS NULL`).Scan(&rolledBack))
+	require.True(t, rolledBack)
+	conn, err := fixture.db.Conn(ctx)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	_, err = conn.ExecContext(ctx, `SELECT pg_advisory_lock(694208311321144027)`)
+	require.NoError(t, err)
+	defer func() {
+		_, err := conn.ExecContext(ctx, `SELECT pg_advisory_unlock(694208311321144027)`)
+		require.NoError(t, err)
+	}()
+	lockCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
-	pg, err := tcpostgres.Run(ctx, "postgres:18.1-alpine3.23", tcpostgres.WithDatabase("test_contracts"), tcpostgres.WithUsername("postgres"), tcpostgres.WithPassword("postgres"), tcpostgres.BasicWaitStrategies())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, pg.Terminate(context.Background())) })
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable", "TimeZone=UTC")
-	require.NoError(t, err)
-	db, err := sql.Open("postgres", dsn)
-	require.NoError(t, err)
-	db.SetMaxOpenConns(16)
-	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
-	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	require.NoError(t, bootstrap.ApplyMigrations(ctx, db))
-	host, err := pg.Host(ctx)
-	require.NoError(t, err)
-	port, err := pg.MappedPort(ctx, "5432/tcp")
-	require.NoError(t, err)
-	return &databaseFixture{db: db, client: client, dsn: dsn, host: host, port: port.Int()}
+	require.True(t, errors.Is(postgres.ApplyMigrations(lockCtx, fixture.db, migrations), context.DeadlineExceeded))
 }
 
 func TestStorageContracts(t *testing.T) {

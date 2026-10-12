@@ -11,10 +11,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// GrokUpstreamFailureClass 用于决定临时停调冷却与响应提交前的提供商切换。
-// 分类优先分析响应体，以识别代理改写状态码后的免费额度耗尽和空输出错误。
-type GrokUpstreamFailureClass string
-
 const (
 	GrokFailureNone          GrokUpstreamFailureClass = ""
 	GrokFailureFreeUsage     GrokUpstreamFailureClass = "subscription:free-usage-exhausted"
@@ -28,7 +24,18 @@ const (
 	// incompatible with the selected provider or upstream replay contract. It
 	// is provider-independent: fail over, but never quarantine the pool.
 	GrokFailureCompatibility GrokUpstreamFailureClass = "compatibility_error"
+
+	GrokFreeUsageProbeCooldown = 10 * time.Minute
 )
+
+var (
+	ReGrokTokenPair = regexp.MustCompile(`(?i)tokens?\s*(?:\(actual\s*/\s*limit\))?\s*[:=]?\s*(\d+)\s*/\s*(\d+)`)
+	ReGrokModelFor  = regexp.MustCompile(`(?i)(?:for\s+model|model|模型)\s*[:：]?\s*([a-z0-9][a-z0-9._-]{2,80})`)
+)
+
+// GrokUpstreamFailureClass 用于决定临时停调冷却与响应提交前的提供商切换。
+// 分类优先分析响应体，以识别代理改写状态码后的免费额度耗尽和空输出错误。
+type GrokUpstreamFailureClass string
 
 // GrokUpstreamFailureDecision 是纯分类结果，调用方再映射到提供商状态更新方法。
 type GrokUpstreamFailureDecision struct {
@@ -44,11 +51,6 @@ type GrokUpstreamFailureDecision struct {
 	TokensActual *int64
 	TokensLimit  *int64
 }
-
-var (
-	ReGrokTokenPair = regexp.MustCompile(`(?i)tokens?\s*(?:\(actual\s*/\s*limit\))?\s*[:=]?\s*(\d+)\s*/\s*(\d+)`)
-	ReGrokModelFor  = regexp.MustCompile(`(?i)(?:for\s+model|model|模型)\s*[:：]?\s*([a-z0-9][a-z0-9._-]{2,80})`)
-)
 
 // ClassifyGrokUpstreamFailure 根据状态码和响应体决定冷却与切换，优先级依次为：
 // 免费额度耗尽、账单硬额度、空输出、模型容量、普通限流、5xx；普通校验错误不冷却。
@@ -488,8 +490,6 @@ func GrokFreeUsageCooldownDuration(low string) time.Duration {
 	// 缺少绝对重置时间时使用短探测间隔，由成功探测解除阻断。
 	return GrokFreeUsageProbeCooldown
 }
-
-const GrokFreeUsageProbeCooldown = 10 * time.Minute
 
 func ParseGrokTokenPair(errText string) (actual, limit int64, ok bool) {
 	m := ReGrokTokenPair.FindStringSubmatch(errText)

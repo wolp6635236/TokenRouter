@@ -10,18 +10,17 @@ import (
 	"testing"
 	"time"
 
-	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/enttest"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
+	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-
-	"entgo.io/ent/dialect"
-	entsql "entgo.io/ent/dialect/sql"
-	_ "modernc.org/sqlite"
 )
 
 func TestApplyWeChatPaymentResumeClaims(t *testing.T) {

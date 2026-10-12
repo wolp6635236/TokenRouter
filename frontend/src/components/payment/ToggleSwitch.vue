@@ -5,7 +5,6 @@
     <Toggle
       :model-value="checked"
       size="sm"
-      on-class="bg-primary-500"
       :disabled="disabled"
       @update:model-value="emit('toggle')"
       @click.stop

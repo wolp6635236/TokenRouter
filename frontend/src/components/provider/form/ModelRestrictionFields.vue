@@ -29,12 +29,10 @@
     <ProviderModelMappingEditor
       v-else
       v-model="mappings"
-      :presets="presets"
       :source-placeholder="sourcePlaceholder"
       :target-placeholder="targetPlaceholder"
       @add="emit('add')"
       @remove="emit('remove')"
-      @preset="(from, to) => emit('preset', from, to)"
     />
   </SettingsSection>
 </template>
@@ -47,7 +45,7 @@ import SettingsSegmented from '@/components/common/settings/SettingsSegmented.vu
 import { vContentReveal } from '@/directives/contentReveal'
 import type { ModelMappingRow } from '@/utils/modelMappingRules'
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
-import ProviderModelMappingEditor, { type ProviderMappingPreset } from '../ProviderModelMappingEditor.vue'
+import ProviderModelMappingEditor from '../ProviderModelMappingEditor.vue'
 
 export type ModelRestrictionMode = 'whitelist' | 'mapping'
 
@@ -63,7 +61,6 @@ defineProps<{
     base_url?: string
     api_key: string
   }
-  presets?: ProviderMappingPreset[]
   sourcePlaceholder?: string
   targetPlaceholder?: string
   hint?: string
@@ -74,7 +71,6 @@ const mappings = defineModel<ModelMappingRow[]>('mappings', { required: true })
 const emit = defineEmits<{
   add: []
   remove: []
-  preset: [from: string, to: string]
 }>()
 
 const { t } = useI18n()

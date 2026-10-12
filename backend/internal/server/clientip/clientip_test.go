@@ -1,6 +1,7 @@
 package clientip
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -17,7 +18,7 @@ func TestGetTrustedClientIPUsesGinClientIP(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/t", nil)
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
 	req.RemoteAddr = "9.9.9.9:12345"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
 	req.Header.Set("X-Real-IP", "1.2.3.4")
@@ -36,7 +37,7 @@ func TestGetClientIPPreservesLegacyDockerForwardedHeaders(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/t", nil)
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
 	req.RemoteAddr = "192.168.32.1:12345"
 	req.Header.Set("X-Forwarded-For", "10.0.0.2, 203.0.113.42")
 	req.Header.Set("X-Real-IP", "192.168.32.1")
@@ -54,7 +55,7 @@ func TestGetSecurityClientIPSwitchEnabledUsesLegacyHeaders(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/t", nil)
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
 	req.RemoteAddr = "9.9.9.9:12345"
 	req.Header.Set("X-Real-IP", "1.2.3.4")
 	r.ServeHTTP(w, req)
@@ -164,7 +165,7 @@ func TestGetSecurityClientIPCustomHeaderPrecedenceAndFallback(t *testing.T) {
 			})
 
 			w := httptest.NewRecorder()
-			req := httptest.NewRequest("GET", "/t", nil)
+			req := httptest.NewRequest(http.MethodGet, "/t", nil)
 			req.RemoteAddr = "9.9.9.9:12345"
 			for name, value := range test.requestHeaders {
 				req.Header.Set(name, value)
@@ -184,7 +185,7 @@ func TestGetSecurityClientIPSwitchDisabledUsesConfiguredTrustedProxy(t *testing.
 	})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/t", nil)
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
 	req.RemoteAddr = "9.9.9.9:12345"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
 	r.ServeHTTP(w, req)
@@ -201,7 +202,7 @@ func TestGetClientIPSwitchDisabledUsesTrustedProxyChain(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/t", nil)
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
 	req.RemoteAddr = "9.9.9.9:12345"
 	req.Header.Set("X-Real-IP", "1.2.3.4")
 	r.ServeHTTP(w, req)
@@ -220,7 +221,7 @@ func TestGetSecurityClientIPRequestSnapshotCopiesCustomHeaders(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/t", nil)
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
 	req.RemoteAddr = "9.9.9.9:12345"
 	req.Header.Set("X-Original-IP", "1.2.3.4")
 	req.Header.Set("X-Mutated-IP", "4.4.4.4")
@@ -255,7 +256,7 @@ func TestGetSecurityClientIPRequestSnapshotOverridesLiveFallback(t *testing.T) {
 			})
 
 			w := httptest.NewRecorder()
-			req := httptest.NewRequest("GET", "/t", nil)
+			req := httptest.NewRequest(http.MethodGet, "/t", nil)
 			req.RemoteAddr = "9.9.9.9:12345"
 			req.Header.Set("X-Real-IP", "1.2.3.4")
 			r.ServeHTTP(w, req)

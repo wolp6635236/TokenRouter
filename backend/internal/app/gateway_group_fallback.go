@@ -8,13 +8,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 // runtimeGroupFallbackResolver 为各文本入口固定同一组授权、资金与会话校验顺序。
 type runtimeGroupFallbackResolver func(context.Context, *apikey.APIKey, int64, protocol.ProtocolID) (*apikey.APIKey, *billing.UserSubscription, error)
+
+// provideFundingAdmission 复用唯一权益缓存和现有 RPM 存储，资金检查通过后才累计 RPM。
+func provideFundingAdmission(funds *billing.Eligibility, rpm scheduler.UserRPMCache, rates billing.UserGroupRateRepository) *admission.FundingAdmission {
+	limiter := scheduler.NewRPMAdmission(rpm, rates, scheduler.Diagnostics{Logf: logging.LegacyPrintf})
+	return admission.NewFundingAdmission(funds, limiter)
+}
 
 func provideRuntimeGroupFallbackResolver(keys *apikey.APIKeyService, funding *admission.FundingAdmission, subscriptions *billing.SubscriptionService, cache session.GatewayCache) runtimeGroupFallbackResolver {
 	return provideGroupFallbackResolver(keys, funding, subscriptions, cache, false)

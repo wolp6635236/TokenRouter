@@ -6,11 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
+
+// homeTextSource 给公开接口与首屏注入提供相同的站点设置。
+type homeTextSource map[string]string
 
 // TestLegalTranslationKeepsConsent 覆盖译文核对、原文变更和协议确认版本。
 func TestLegalTranslationKeepsConsent(t *testing.T) {
@@ -118,9 +121,6 @@ func TestSiteTextOverrides(t *testing.T) {
 		})
 	}
 }
-
-// homeTextSource 给公开接口与首屏注入提供相同的站点设置。
-type homeTextSource map[string]string
 
 func (s homeTextSource) LoadSitePublicInputs(context.Context) (PublicInputs, error) {
 	return PublicInputs{Values: s}, nil

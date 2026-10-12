@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/stretchr/testify/require"
 )
 
 // cancelClaimStore 在取得控制权时取消请求，检查流程随后结束。
@@ -17,6 +18,32 @@ type cancelClaimStore struct {
 	session.LiveCallStore
 	cancel   context.CancelFunc
 	released atomic.Int32
+}
+
+type controllerPorts struct {
+	Ports
+	store   session.LiveCallStore
+	queries atomic.Int32
+}
+
+type idleFrames struct{}
+
+// 关闭认领成功一次只产生一条零费用事实，并释放原租约。
+type finalizeStore struct {
+	session.LiveCallStore
+	closed atomic.Bool
+}
+
+type finalLeases struct {
+	scheduler.LiveConcurrencyCache
+	released atomic.Int32
+}
+
+type finalizePorts struct {
+	Ports
+	store  *finalizeStore
+	leases *finalLeases
+	writes atomic.Int32
 }
 
 func (s *cancelClaimStore) ClaimLiveController(context.Context, string, string, string) (bool, error) {
@@ -32,12 +59,6 @@ func (s *cancelClaimStore) ReleaseLiveController(ctx context.Context, _ string, 
 	return true, nil
 }
 
-type controllerPorts struct {
-	Ports
-	store   session.LiveCallStore
-	queries atomic.Int32
-}
-
 func (p *controllerPorts) Store() (session.LiveCallStore, error) { return p.store, nil }
 func (p *controllerPorts) Target(context.Context, *session.LiveCallRecord) (Target, error) {
 	p.queries.Add(1)
@@ -47,8 +68,6 @@ func (p *controllerPorts) Target(context.Context, *session.LiveCallRecord) (Targ
 func (p *controllerPorts) BeginObserver(string) (context.Context, func(), bool) {
 	return nil, nil, false
 }
-
-type idleFrames struct{}
 
 func (idleFrames) ReadFrame(ctx context.Context) (int, []byte, error) {
 	<-ctx.Done()
@@ -70,31 +89,13 @@ func TestSidebandCancelledAfterClaimReleasesWithoutTarget(t *testing.T) {
 	require.Equal(t, int32(1), store.released.Load())
 }
 
-// 关闭认领成功一次只产生一条零费用事实，并释放原租约。
-type finalizeStore struct {
-	session.LiveCallStore
-	closed atomic.Bool
-}
-
 func (s *finalizeStore) MarkLiveCallClosed(context.Context, string, time.Duration) (bool, error) {
 	return s.closed.CompareAndSwap(false, true), nil
-}
-
-type finalLeases struct {
-	scheduler.LiveConcurrencyCache
-	released atomic.Int32
 }
 
 func (s *finalLeases) ReleaseLiveLease(context.Context, int64, int64, int64, string) error {
 	s.released.Add(1)
 	return nil
-}
-
-type finalizePorts struct {
-	Ports
-	store  *finalizeStore
-	leases *finalLeases
-	writes atomic.Int32
 }
 
 func (p *finalizePorts) Store() (session.LiveCallStore, error)           { return p.store, nil }

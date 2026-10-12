@@ -8,6 +8,13 @@ import (
 	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
+// ConcurrencyStore 只拥有身份并发额度字段；兑换事务仍由 billing 提交。
+type ConcurrencyStore struct{ client *dbent.Client }
+
+func NewConcurrencyStore(client *dbent.Client) *ConcurrencyStore {
+	return &ConcurrencyStore{client: client}
+}
+
 func (r *ConcurrencyStore) UpdateConcurrency(ctx context.Context, id int64, amount int) error {
 	client := clientFromContext(ctx, r.client)
 	n, err := client.User.Update().Where(dbuser.IDEQ(id)).AddConcurrency(amount).Save(ctx)
@@ -40,11 +47,4 @@ func (r *ConcurrencyStore) ApplyRedeemConcurrencyAdjustment(ctx context.Context,
 		return identitycore.ErrUserNotFound
 	}
 	return nil
-}
-
-// ConcurrencyStore 只拥有身份并发额度字段；兑换事务仍由 billing 提交。
-type ConcurrencyStore struct{ client *dbent.Client }
-
-func NewConcurrencyStore(client *dbent.Client) *ConcurrencyStore {
-	return &ConcurrencyStore{client: client}
 }

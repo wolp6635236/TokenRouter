@@ -3,16 +3,19 @@ package openai
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
 
-	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// codexToolNameMapping 定义 Codex 原生工具名称到 OpenCode 工具名称的映射
+// codexToolNameMapping 定义 Codex 原生工具名称到 OpenCode 工具名称的映射。
 var codexToolNameMapping = map[string]string{
 	"apply_patch":  "edit",
 	"applyPatch":   "edit",
@@ -39,19 +42,19 @@ var codexToolNameMapping = map[string]string{
 	"webFetch":  "webfetch",
 }
 
-// ToolCorrectionStats 记录工具修正的统计信息（导出用于 JSON 序列化）
+// ToolCorrectionStats 记录工具修正的统计信息（导出用于 JSON 序列化）。
 type ToolCorrectionStats struct {
 	TotalCorrected    int            `json:"total_corrected"`
 	CorrectionsByTool map[string]int `json:"corrections_by_tool"`
 }
 
-// CodexToolCorrector 处理 Codex 工具调用的自动修正
+// CodexToolCorrector 处理 Codex 工具调用的自动修正。
 type CodexToolCorrector struct {
 	stats ToolCorrectionStats
 	mu    sync.RWMutex
 }
 
-// NewCodexToolCorrector 创建新的工具修正器
+// NewCodexToolCorrector 创建新的工具修正器。
 func NewCodexToolCorrector() *CodexToolCorrector {
 	return &CodexToolCorrector{
 		stats: ToolCorrectionStats{
@@ -61,7 +64,7 @@ func NewCodexToolCorrector() *CodexToolCorrector {
 }
 
 // CorrectToolCallsInSSEData 修正 SSE 数据中的工具调用
-// 返回修正后的数据和是否进行了修正
+// 返回修正后的数据和是否进行了修正。
 func (c *CodexToolCorrector) CorrectToolCallsInSSEData(data string) (string, bool) {
 	if data == "" || data == "\n" {
 		return data, false
@@ -110,7 +113,7 @@ func (c *CodexToolCorrector) CorrectToolCallsInSSEBytes(data []byte) ([]byte, bo
 	}
 
 	choicesCount := int(gjson.GetBytes(updated, "choices.#").Int())
-	for i := 0; i < choicesCount; i++ {
+	for i := range choicesCount {
 		prefix := "choices." + strconv.Itoa(i)
 		if next, changed := c.correctToolCallsArrayAtPath(updated, prefix+".message.tool_calls"); changed {
 			collect(changed, next)
@@ -147,7 +150,7 @@ func (c *CodexToolCorrector) correctToolCallsArrayAtPath(data []byte, toolCallsP
 	}
 	updated := data
 	corrected := false
-	for i := 0; i < count; i++ {
+	for i := range count {
 		functionPath := toolCallsPath + "." + strconv.Itoa(i) + ".function"
 		if next, changed := c.correctFunctionAtPath(updated, functionPath); changed {
 			updated = next
@@ -335,7 +338,7 @@ func deleteJSONField(input, path string) (string, bool) {
 	return next, true
 }
 
-// recordCorrection 记录一次工具名称修正
+// recordCorrection 记录一次工具名称修正。
 func (c *CodexToolCorrector) recordCorrection(from, to string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -348,7 +351,7 @@ func (c *CodexToolCorrector) recordCorrection(from, to string) {
 		from, to, c.stats.TotalCorrected)
 }
 
-// GetStats 获取工具修正统计信息
+// GetStats 获取工具修正统计信息。
 func (c *CodexToolCorrector) GetStats() ToolCorrectionStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -358,17 +361,33 @@ func (c *CodexToolCorrector) GetStats() ToolCorrectionStats {
 		TotalCorrected:    c.stats.TotalCorrected,
 		CorrectionsByTool: make(map[string]int, len(c.stats.CorrectionsByTool)),
 	}
-	for k, v := range c.stats.CorrectionsByTool {
-		statsCopy.CorrectionsByTool[k] = v
-	}
+	maps.Copy(statsCopy.CorrectionsByTool, c.stats.CorrectionsByTool)
 
 	return statsCopy
 }
 
-// CorrectToolName 直接修正工具名称（用于非 SSE 场景）
+// CorrectToolName 直接修正工具名称（用于非 SSE 场景）。
 func CorrectToolName(name string) (string, bool) {
 	if correctName, found := codexToolNameMapping[name]; found {
 		return correctName, true
 	}
 	return name, false
+}
+
+// CorrectResponseBody 修正响应体中的工具调用。
+func (c *CodexToolCorrector) CorrectResponseBody(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	updated := body
+	if c != nil {
+		if corrected, changed := c.CorrectToolCallsInSSEBytes(updated); changed {
+			updated = corrected
+		}
+	}
+	if normalized, changed := protocolopenai.NormalizeOpenAIResponsesFunctionCallArguments(updated); changed {
+		updated = normalized
+	}
+	return updated
 }

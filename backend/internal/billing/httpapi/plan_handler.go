@@ -1,14 +1,15 @@
 package httpapi
 
 import (
+	"maps"
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // PlanHandler 处理套餐展示与管理；订单和支付渠道 HTTP 由 payment/httpapi 提供。
@@ -48,7 +49,7 @@ func (h *PlanHandler) GetPlans(c *gin.Context) {
 	for _, p := range plans {
 		result = append(result, planWithPlatform{
 			Resolution:           p.Resolution,
-			ID:                   int64(p.ID),
+			ID:                   p.ID,
 			Name:                 p.Name,
 			Description:          p.Description,
 			Price:                p.Price,
@@ -152,7 +153,7 @@ func ParsePlanFeatures(raw string) []string {
 		return []string{}
 	}
 	var out []string
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		if s := strings.TrimSpace(line); s != "" {
 			out = append(out, s)
 		}
@@ -168,8 +169,6 @@ func ClonePlanOfferRates(in map[int64]float64) map[int64]float64 {
 		return map[int64]float64{}
 	}
 	out := make(map[int64]float64, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }

@@ -7,7 +7,7 @@ import (
 	"net/http"
 )
 
-// BuildRequest 构建 Bedrock 上游请求
+// BuildRequest 构建 Bedrock 上游请求。
 func BuildRequest(
 	ctx context.Context,
 	body []byte,
@@ -34,7 +34,7 @@ func BuildRequest(
 	return req, nil
 }
 
-// BuildRequestAPIKey 构建 Bedrock API Key (Bearer Token) 上游请求
+// BuildRequestAPIKey 构建 Bedrock API Key (Bearer Token) 上游请求。
 func BuildRequestAPIKey(
 	ctx context.Context,
 	body []byte,

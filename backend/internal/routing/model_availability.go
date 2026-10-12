@@ -27,6 +27,22 @@ type ModelAvailabilityDiagnoser interface {
 	) ModelAvailabilityDiagnosis
 }
 
+// AvailabilityProvider 包含提供商平台和模型支持判断函数。
+type AvailabilityProvider struct {
+	Platform string
+	Supports func(context.Context, string) bool
+}
+type AvailabilityReader func(context.Context, *int64, []string, bool) ([]AvailabilityProvider, error)
+
+// ModelAvailability 用已有查询边界区分永久模型缺失和暂时容量不足；自身无缓存。
+type ModelAvailability struct {
+	Read     AvailabilityReader
+	MapModel func(context.Context, *int64, string) string
+}
+
+// ModelAvailabilityDiagnoserFunc 将已绑定诊断意图交给消费者，不新增查询或缓存。
+type ModelAvailabilityDiagnoserFunc func(context.Context, *int64, string, string) ModelAvailabilityDiagnosis
+
 // DiagnoseGeneral 通过专用持久配置查询检查指定平台的提供商，
 // 判断请求模型是否被配置支持。该查询绕过调度快照，忽略限流、过载、临时不可调度、
 // 到期窗口、额度和运行时阻断等瞬时状态。
@@ -147,22 +163,6 @@ func (s *ModelAvailability) DiagnoseCompatibleRouting(
 	}
 	return diag
 }
-
-// AvailabilityProvider 包含提供商平台和模型支持判断函数。
-type AvailabilityProvider struct {
-	Platform string
-	Supports func(context.Context, string) bool
-}
-type AvailabilityReader func(context.Context, *int64, []string, bool) ([]AvailabilityProvider, error)
-
-// ModelAvailability 用已有查询边界区分永久模型缺失和暂时容量不足；自身无缓存。
-type ModelAvailability struct {
-	Read     AvailabilityReader
-	MapModel func(context.Context, *int64, string) string
-}
-
-// ModelAvailabilityDiagnoserFunc 将已绑定诊断意图交给消费者，不新增查询或缓存。
-type ModelAvailabilityDiagnoserFunc func(context.Context, *int64, string, string) ModelAvailabilityDiagnosis
 
 func (f ModelAvailabilityDiagnoserFunc) DiagnoseModelAvailabilityForPlatform(ctx context.Context, group *int64, model, platform string) ModelAvailabilityDiagnosis {
 	return f(ctx, group, model, platform)

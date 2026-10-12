@@ -36,7 +36,7 @@
                   v-for="user in searchResults"
                   :key="user.id"
                   type="button"
-                  class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-gray-50 dark:hover:bg-dark-600"
+                  class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-gray-50 dark:hover:bg-dark-800"
                   @click="selectUser(user)"
                 >
                   <span class="text-gray-400">#{{ user.id }}</span>
@@ -141,7 +141,7 @@
                       min="0"
                       autocomplete="off"
                       :value="entry.rpm_override"
-                      class="hide-spinner w-20 rounded-compact border border-primary-900/10 bg-white px-2 py-1 text-center text-sm font-medium transition-colors focus:border-primary-900/10 focus:outline-none focus:ring-2 focus:ring-black/10 dark:border-dark-500 dark:bg-dark-700 dark:focus:border-primary-500 dark:focus:ring-primary-500/20"
+                      class="input hide-spinner min-h-0 w-20 rounded-compact px-2 py-1 text-center font-medium"
                       @change="updateLocalRpm(entry.user_id, ($event.target as HTMLInputElement).value)"
                     />
                   </td>

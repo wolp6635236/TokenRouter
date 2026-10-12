@@ -2,6 +2,11 @@ package usageview
 
 import "time"
 
+const (
+	OllamaCloudUsageModelWindowFiveHour OllamaCloudUsageModelWindow = "five_hour"
+	OllamaCloudUsageModelWindowSevenDay OllamaCloudUsageModelWindow = "seven_day"
+)
+
 // OllamaCloudUsageWindow 是单个官方用量窗口的最小化脱敏视图。
 type OllamaCloudUsageWindow struct {
 	UsedPercent float64    `json:"used_percent"`
@@ -11,11 +16,6 @@ type OllamaCloudUsageWindow struct {
 
 // OllamaCloudUsageModelWindow 标识模型请求数所属的官方用量窗口。
 type OllamaCloudUsageModelWindow string
-
-const (
-	OllamaCloudUsageModelWindowFiveHour OllamaCloudUsageModelWindow = "five_hour"
-	OllamaCloudUsageModelWindowSevenDay OllamaCloudUsageModelWindow = "seven_day"
-)
 
 // OllamaCloudUsageModel 保存 Ollama 用量页面按窗口展示的模型及请求数。
 type OllamaCloudUsageModel struct {

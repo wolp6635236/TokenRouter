@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
@@ -18,8 +21,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // embeddingRequestAdapter 处理当前请求、已选提供商和 HTTP 输出，media 执行尝试循环。
@@ -57,8 +58,7 @@ func (p *embeddingRequestAdapter) ForwardEmbedding(ctx context.Context, _ provid
 	size := p.c.Writer.Size()
 	result, err := p.h.bindings.Platform.Embeddings(ctx, p.c, p.selection.Provider, forwardBody, "")
 	outcome := gatewaymedia.EmbeddingOutcome{Result: embeddingResultView(result), Err: err, OutputChanged: p.c.Writer.Size() != size}
-	var failure *forwardcore.UpstreamFailoverError
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		outcome.Failover = true
 		outcome.StatusCode = failure.StatusCode
 	}
@@ -121,8 +121,7 @@ func (p *embeddingRequestAdapter) renderFailure(f *gatewaymedia.EmbeddingFailure
 			gatewayhttp.DefaultOpenAIErrorOutput().WriteError(p.c, cls.Status, cls.ErrType, cls.Message)
 			return
 		}
-		var failure *forwardcore.UpstreamFailoverError
-		if errors.As(f.Outcome.Err, &failure) {
+		if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](f.Outcome.Err); ok {
 			p.h.bindings.Common.Support.HandleFailoverExhausted(p.c, failure, false)
 		} else {
 			gatewayhttp.DefaultOpenAIErrorOutput().WriteError(p.c, http.StatusBadGateway, "api_error", "Upstream request failed")
@@ -134,8 +133,7 @@ func (p *embeddingRequestAdapter) renderFailure(f *gatewaymedia.EmbeddingFailure
 		}
 		gatewayhttp.DefaultOpenAIErrorOutput().WriteError(p.c, cls.Status, cls.ErrType, cls.Message)
 	case "exhausted":
-		var failure *forwardcore.UpstreamFailoverError
-		if errors.As(f.Outcome.Err, &failure) {
+		if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](f.Outcome.Err); ok {
 			p.h.bindings.Common.Support.HandleFailoverExhausted(p.c, failure, f.Outcome.OutputChanged)
 		}
 	case "forward":

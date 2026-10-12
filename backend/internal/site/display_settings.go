@@ -2,11 +2,12 @@ package site
 
 import (
 	"context"
+	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
-// DisplaySettings 按原时点读取站点名称与前端地址，不增加缓存或批量查询。
+// DisplaySettings 按需读取站点名称、前端地址和自定义菜单。
 type DisplaySettings struct {
 	store interface {
 		GetValue(context.Context, string) (string, error)
@@ -29,11 +30,23 @@ func (s *DisplaySettings) GetFrontendURL(ctx context.Context) string {
 	return ReadFrontendURL(ctx, s.store, s.frontend)
 }
 
-// GetCustomMenuItemsRaw 保留缺键失败与已保存空串的区别，权限裁决仍由 Pages 执行。
+// GetCustomMenuItemsRaw 返回保存的菜单内容，读取失败时返回空列表。
 func (s *DisplaySettings) GetCustomMenuItemsRaw(ctx context.Context) string {
 	value, err := s.store.GetValue(ctx, SettingKeyCustomMenuItems)
 	if err != nil {
 		return "[]"
 	}
 	return value
+}
+
+// ReadFrontendURL 优先读取数据库中的前端地址，缺失或读取失败时调用 fallback。
+func ReadFrontendURL(ctx context.Context, store interface {
+	GetValue(context.Context, string) (string, error)
+}, fallback func() string,
+) string {
+	val, err := store.GetValue(ctx, SettingKeyFrontendURL)
+	if err == nil && strings.TrimSpace(val) != "" {
+		return strings.TrimSpace(val)
+	}
+	return fallback()
 }

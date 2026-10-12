@@ -23,6 +23,23 @@ type LocalUsageStatsPair interface {
 	GetProviderWindowStatsPair(context.Context, int64, time.Time, time.Time) (*WindowStats, *WindowStats, error)
 }
 
+type LocalUsageStatisticsOptions struct {
+	Now   func() time.Time
+	Today func() time.Time
+	Log   func(string, ...any)
+}
+
+// LocalUsageStatistics 通过共享窗口缓存按需查询用量，处理并发回源和展示数据转换。
+type LocalUsageStatistics struct {
+	usageLogRepo LocalUsageStats
+	cache        *OAuthUsageCache
+	options      LocalUsageStatisticsOptions
+}
+
+func NewLocalUsageStatistics(reader LocalUsageStats, cache *OAuthUsageCache, options LocalUsageStatisticsOptions) *LocalUsageStatistics {
+	return &LocalUsageStatistics{reader, cache, options}
+}
+
 // GetWindowPair 优先合并窗口，读取器不支持或查询失败时分别读取以保留部分结果。
 func (s *LocalUsageStatistics) GetWindowPair(ctx context.Context, id int64, first, second time.Time) (*WindowStats, *WindowStats) {
 	if reader, ok := s.usageLogRepo.(LocalUsageStatsPair); ok {
@@ -52,23 +69,6 @@ func (s *LocalUsageStatistics) GetWindowPair(ctx context.Context, id int64, firs
 	return a, b
 }
 
-type LocalUsageStatisticsOptions struct {
-	Now   func() time.Time
-	Today func() time.Time
-	Log   func(string, ...any)
-}
-
-// LocalUsageStatistics 通过共享窗口缓存按需查询用量，处理并发回源和展示数据转换。
-type LocalUsageStatistics struct {
-	usageLogRepo LocalUsageStats
-	cache        *OAuthUsageCache
-	options      LocalUsageStatisticsOptions
-}
-
-func NewLocalUsageStatistics(reader LocalUsageStats, cache *OAuthUsageCache, options LocalUsageStatisticsOptions) *LocalUsageStatistics {
-	return &LocalUsageStatistics{reader, cache, options}
-}
-
 func normalizedLocalWindowStats(value *WindowStats) *WindowStats {
 	if value == nil {
 		return &WindowStats{}
@@ -77,7 +77,7 @@ func normalizedLocalWindowStats(value *WindowStats) *WindowStats {
 }
 
 // AddWindowStats 为 usage 数据添加窗口期统计
-// 使用独立缓存（1 分钟），与 API 缓存分离
+// 使用独立缓存（1 分钟），与 API 缓存分离。
 func (s *LocalUsageStatistics) AddWindowStats(ctx context.Context, provider *Record, usage *UsageInfo) {
 	// 修复：即使 FiveHour 为 nil，也要尝试获取统计数据
 	// 因为 SevenDay/SevenDaySonnet/SevenDayFable 可能需要
@@ -87,10 +87,8 @@ func (s *LocalUsageStatistics) AddWindowStats(ctx context.Context, provider *Rec
 
 	// 检查窗口统计缓存（1 分钟）
 	var windowStats *WindowStats
-	if cached, ok := s.cache.LoadWindow(provider.ID); ok {
-		if cache, ok := cached.(*OAuthWindowStatsCache); ok && s.options.Now().Sub(cache.Timestamp) < OAuthUsageWindowStatsCacheTTL {
-			windowStats = cache.Stats
-		}
+	if cache, ok := s.cache.LoadWindow(provider.ID); ok && s.options.Now().Sub(cache.Timestamp) < OAuthUsageWindowStatsCacheTTL {
+		windowStats = cache.Stats
 	}
 
 	// 如果没有缓存，从数据库查询
@@ -125,7 +123,7 @@ func (s *LocalUsageStatistics) AddWindowStats(ctx context.Context, provider *Rec
 	}
 }
 
-// GetTodayStats 获取提供商今日统计
+// GetTodayStats 获取提供商今日统计。
 func (s *LocalUsageStatistics) GetTodayStats(ctx context.Context, providerID int64) (*WindowStats, error) {
 	stats, err := s.usageLogRepo.GetProviderTodayStats(ctx, providerID)
 	if err != nil {

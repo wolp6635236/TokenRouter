@@ -7,20 +7,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/TokenFlux/TokenRouter/internal/usage/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/usage/httpapi/ports"
+)
 
-	"github.com/gin-gonic/gin"
+const (
+	defaultAPIKeyDailyUsageDays = 30
+	maxAPIKeyDailyUsageDays     = 90
 )
 
 type userUsageFilters struct {
@@ -78,6 +81,20 @@ type usageRankingResponse struct {
 	Limit           int                        `json:"limit"`
 }
 
+// UsageHandler 处理用户侧用量相关请求。
+type UsageHandler struct {
+	calendar       timezone.Calendar
+	usageService   *usage.UsageService
+	apiKeyService  ports.KeyReader
+	opsService     ports.UserErrors
+	settingService ports.Settings
+}
+
+// BatchAPIKeysUsageRequest 表示批量 API Key 用量请求。
+type BatchAPIKeysUsageRequest struct {
+	APIKeyIDs []int64 `json:"api_key_ids" binding:"required"`
+}
+
 func usageRankingInt64Ptr(value int64) *int64 {
 	return &value
 }
@@ -127,15 +144,6 @@ func projectUsageRankingResponse(ranking *usage.UsageRankingResponse, settings u
 		result.Ranking = append(result.Ranking, item)
 	}
 	return result
-}
-
-// UsageHandler 处理用户侧用量相关请求。
-type UsageHandler struct {
-	calendar       timezone.Calendar
-	usageService   *usage.UsageService
-	apiKeyService  ports.KeyReader
-	opsService     ports.UserErrors
-	settingService ports.Settings
 }
 
 // NewUsageHandler 创建用户侧用量处理器。
@@ -267,7 +275,7 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 		endPtr = &endTime
 	}
 
-	if requireRange {
+	if requireRange && strings.TrimSpace(c.Query("request_id")) == "" {
 		if startPtr == nil {
 			switch c.DefaultQuery("period", "") {
 			case "today":
@@ -291,8 +299,21 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 		}
 	}
 
+	if strings.TrimSpace(c.Query("request_id")) != "" {
+		if startPtr == nil {
+			startTime = time.Unix(0, 0).UTC()
+		} else {
+			startTime = *startPtr
+		}
+		if endPtr == nil {
+			endTime = time.Now().UTC()
+		} else {
+			endTime = *endPtr
+		}
+	}
 	return &userUsageFilters{
 		Filters: usage.UsageLogFilters{
+			RequestID:          strings.TrimSpace(c.Query("request_id")),
 			UserID:             subject.UserID,
 			APIKeyID:           apiKeyID,
 			GroupID:            groupID,
@@ -307,16 +328,9 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 			StartTime:          startPtr,
 			EndTime:            endPtr,
 		},
-		StartTime: derefTime(startPtr),
-		EndTime:   derefTime(endPtr),
+		StartTime: startTime,
+		EndTime:   endTime,
 	}, true
-}
-
-func derefTime(value *time.Time) time.Time {
-	if value == nil {
-		return time.Time{}
-	}
-	return *value
 }
 
 // List 分页列出当前用户的用量记录。
@@ -372,7 +386,7 @@ func (h *UsageHandler) ListErrors(c *gin.Context) {
 		pageSize = 100
 	}
 
-	filter := &ops.OpsErrorLogFilter{Page: page, PageSize: pageSize}
+	filter := &ops.OpsErrorLogFilter{Page: page, PageSize: pageSize, RequestID: strings.TrimSpace(c.Query("request_id"))}
 
 	// 日期范围使用半开区间 [start, end)，与用量列表语义一致。
 	userTZ := c.Query("timezone")
@@ -593,11 +607,6 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	response.Success(c, stats)
 }
 
-const (
-	defaultAPIKeyDailyUsageDays = 30
-	maxAPIKeyDailyUsageDays     = 90
-)
-
 func parseAPIKeyDailyUsageDays(raw string) (int, bool) {
 	if strings.TrimSpace(raw) == "" {
 		return defaultAPIKeyDailyUsageDays, true
@@ -796,11 +805,6 @@ func usageFilterDisplayEndDate(endTime time.Time) string {
 		return ""
 	}
 	return endTime.Add(-time.Nanosecond).Format("2006-01-02")
-}
-
-// BatchAPIKeysUsageRequest 表示批量 API Key 用量请求。
-type BatchAPIKeysUsageRequest struct {
-	APIKeyIDs []int64 `json:"api_key_ids" binding:"required"`
 }
 
 // DashboardAPIKeysUsage 获取当前用户多个 API Key 的用量统计。

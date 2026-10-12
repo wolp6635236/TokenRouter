@@ -9,13 +9,20 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
+const (
+	StatusActive                      = "active"
+	StatusDisabled                    = "disabled"
+	SettingKeyContentModerationConfig = "content_moderation_config"
+	SettingKeyRiskControlEnabled      = "risk_control_enabled"
+)
+
+var ErrSettingNotFound = settings.ErrSettingNotFound
+
 type (
 	ContentModerationMedia = contract.ContentModerationMedia
 	SettingRepository      = settings.Repository
 	Setting                = settings.Setting
 )
-
-var ErrSettingNotFound = settings.ErrSettingNotFound
 
 type UserSnapshot struct {
 	ID                  int64
@@ -57,12 +64,5 @@ type RiskSender interface {
 	SendAccountDisabledEmail(context.Context, *notice.RiskPolicy, *notice.RiskLog) error
 	SendCyberAccountDisabledEmail(context.Context, *notice.RiskPolicy, *notice.RiskWarning) error
 }
-
-const (
-	StatusActive                      = "active"
-	StatusDisabled                    = "disabled"
-	SettingKeyContentModerationConfig = "content_moderation_config"
-	SettingKeyRiskControlEnabled      = "risk_control_enabled"
-)
 
 type Decision = ContentModerationDecision

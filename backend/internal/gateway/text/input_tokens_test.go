@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
 )
 
 // inputTokenFixture 提供计数预检测试中的选择和计数操作。

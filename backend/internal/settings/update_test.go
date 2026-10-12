@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 // TestUpdatesAtomicCommitAndApplyFailure 验证各设置模块准备好后只有一次写入；失败不会执行任何应用。

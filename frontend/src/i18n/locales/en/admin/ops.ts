@@ -382,9 +382,6 @@ export default {
         empty: 'No requests in this window.',
         emptyHint: 'Try a different time range or remove filters.',
         failedToLoad: 'Failed to load request details',
-        requestIdCopied: 'Request ID copied',
-        copyFailed: 'Copy failed',
-        copy: 'Copy',
         viewError: 'View Error',
         kind: {
           success: 'SUCCESS',

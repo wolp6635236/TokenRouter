@@ -4,11 +4,12 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/apikey/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 type KeyAdministration interface {
@@ -21,14 +22,14 @@ type AdminAPIKeyHandler[G any] struct {
 	group        func(*routing.Group) *G
 }
 
-func NewAdminAPIKeyHandler[G any](a KeyAdministration, g func(*routing.Group) *G) *AdminAPIKeyHandler[G] {
-	return &AdminAPIKeyHandler[G]{a, g}
-}
-
 // AdminUpdateAPIKeyGroupRequest represents the request to update an API key.
 type AdminUpdateAPIKeyGroupRequest struct {
 	GroupID             *int64 `json:"group_id"`               // nil=不修改, 0=解绑, >0=绑定到目标分组
 	ResetRateLimitUsage *bool  `json:"reset_rate_limit_usage"` // true=重置 5h/1d/7d 限速用量
+}
+
+func NewAdminAPIKeyHandler[G any](a KeyAdministration, g func(*routing.Group) *G) *AdminAPIKeyHandler[G] {
+	return &AdminAPIKeyHandler[G]{a, g}
 }
 
 // UpdateGroup handles updating an API key's admin-managed fields.

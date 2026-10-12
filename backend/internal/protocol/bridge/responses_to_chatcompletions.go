@@ -7,6 +7,39 @@ import (
 	"strings"
 )
 
+// ResponsesEventToChatState tracks state for converting a sequence of Responses
+// SSE events into Chat Completions SSE chunks.
+type ResponsesEventToChatState struct {
+	ID                     string
+	Model                  string
+	Created                int64
+	ServiceTier            string // upstream tier observed on response events; echoed on chunks
+	SentRole               bool
+	SawToolCall            bool
+	SawText                bool
+	Finalized              bool        // true after finish chunk has been emitted
+	NextToolCallIndex      int         // next sequential tool_call index to assign
+	OutputIndexToToolIndex map[int]int // Responses output_index → Chat tool_calls index
+	IncludeUsage           bool
+	Usage                  *ChatUsage
+}
+
+type bufferedFuncCall struct {
+	CallID string
+	Name   string
+	Args   strings.Builder
+}
+
+// BufferedResponseAccumulator collects content from Responses SSE delta events
+// so that non-streaming handlers can reconstruct output when the terminal event
+// (response.completed / response.done) carries an empty output array.
+type BufferedResponseAccumulator struct {
+	text                 strings.Builder
+	reasoning            strings.Builder
+	funcCalls            []bufferedFuncCall
+	outputIndexToFuncIdx map[int]int
+}
+
 // ResponsesToChatCompletions converts a Responses API response into a Chat
 // Completions response. Text output items are concatenated into
 // choices[0].message.content; function_call items become tool_calls.
@@ -24,8 +57,8 @@ func ResponsesToChatCompletions(runtime Runtime, resp *ResponsesResponse, model 
 		ServiceTier: resp.ServiceTier,
 	}
 
-	var contentText string
-	var reasoningText string
+	var contentText strings.Builder
+	var reasoningText strings.Builder
 	var toolCalls []ChatToolCall
 
 	for _, item := range resp.Output {
@@ -33,7 +66,7 @@ func ResponsesToChatCompletions(runtime Runtime, resp *ResponsesResponse, model 
 		case "message":
 			for _, part := range item.Content {
 				if part.Type == "output_text" && part.Text != "" {
-					contentText += part.Text
+					_, _ = contentText.WriteString(part.Text)
 				}
 			}
 		case "function_call":
@@ -48,7 +81,7 @@ func ResponsesToChatCompletions(runtime Runtime, resp *ResponsesResponse, model 
 		case "reasoning":
 			for _, s := range item.Summary {
 				if s.Type == "summary_text" && s.Text != "" {
-					reasoningText += s.Text
+					_, _ = reasoningText.WriteString(s.Text)
 				}
 			}
 		case "web_search_call":
@@ -60,12 +93,12 @@ func ResponsesToChatCompletions(runtime Runtime, resp *ResponsesResponse, model 
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 	}
-	if contentText != "" {
-		raw, _ := json.Marshal(contentText)
+	if contentText.String() != "" {
+		raw, _ := json.Marshal(contentText.String())
 		msg.Content = raw
 	}
-	if reasoningText != "" {
-		msg.ReasoningContent = reasoningText
+	if reasoningText.String() != "" {
+		msg.ReasoningContent = reasoningText.String()
 	}
 
 	finishReason := responsesStatusToChatFinishReason(resp.Status, resp.IncompleteDetails, toolCalls)
@@ -101,23 +134,6 @@ func responsesStatusToChatFinishReason(status string, details *ResponsesIncomple
 	default:
 		return "stop"
 	}
-}
-
-// ResponsesEventToChatState tracks state for converting a sequence of Responses
-// SSE events into Chat Completions SSE chunks.
-type ResponsesEventToChatState struct {
-	ID                     string
-	Model                  string
-	Created                int64
-	ServiceTier            string // upstream tier observed on response events; echoed on chunks
-	SentRole               bool
-	SawToolCall            bool
-	SawText                bool
-	Finalized              bool        // true after finish chunk has been emitted
-	NextToolCallIndex      int         // next sequential tool_call index to assign
-	OutputIndexToToolIndex map[int]int // Responses output_index → Chat tool_calls index
-	IncludeUsage           bool
-	Usage                  *ChatUsage
 }
 
 // NewResponsesEventToChatState returns an initialised stream state.
@@ -430,22 +446,6 @@ func generateChatCmplID(runtime Runtime) string {
 	b := make([]byte, 12)
 	_, _ = runtime.ReadRandom(b)
 	return "chatcmpl-" + hex.EncodeToString(b)
-}
-
-type bufferedFuncCall struct {
-	CallID string
-	Name   string
-	Args   strings.Builder
-}
-
-// BufferedResponseAccumulator collects content from Responses SSE delta events
-// so that non-streaming handlers can reconstruct output when the terminal event
-// (response.completed / response.done) carries an empty output array.
-type BufferedResponseAccumulator struct {
-	text                 strings.Builder
-	reasoning            strings.Builder
-	funcCalls            []bufferedFuncCall
-	outputIndexToFuncIdx map[int]int
 }
 
 // NewBufferedResponseAccumulator returns an initialised accumulator.

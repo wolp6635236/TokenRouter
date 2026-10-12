@@ -49,7 +49,6 @@ func Exchange(ctx context.Context, body []byte, options ExchangeOptions) (*http.
 	lastWireBody := body
 	retryStart := time.Now()
 	for attempt := 1; attempt <= options.MaxAttempts; attempt++ {
-
 		upstreamCtx, releaseUpstreamCtx := options.Context(ctx, options.Stream)
 		upstreamReq, wireBody, err := options.Build(upstreamCtx, body)
 		releaseUpstreamCtx()
@@ -67,7 +66,7 @@ func Exchange(ctx context.Context, body []byte, options ExchangeOptions) (*http.
 			return nil, lastWireBody, options.TransportError(ctx, err, upstreamReq.URL.String())
 		}
 
-		if resp.StatusCode == 400 {
+		if resp.StatusCode == http.StatusBadRequest {
 			respBody, readErr := options.ReadErrorBody(resp)
 			if readErr == nil {
 				_ = resp.Body.Close()
@@ -109,7 +108,6 @@ func Exchange(ctx context.Context, body []byte, options ExchangeOptions) (*http.
 						retryResp, retryErr := options.Do(retryReq)
 						if retryErr == nil {
 							if retryResp.StatusCode < 400 {
-
 								lastWireBody = retryWireBody
 								if err := options.ReplaceBody(retryWireBody); err != nil {
 									_ = retryResp.Body.Close()
@@ -122,7 +120,7 @@ func Exchange(ctx context.Context, body []byte, options ExchangeOptions) (*http.
 
 							retryRespBody, retryReadErr := options.ReadErrorBody(retryResp)
 							_ = retryResp.Body.Close()
-							if retryReadErr == nil && retryResp.StatusCode == 400 && options.IsSignatureError(ctx, retryRespBody) {
+							if retryReadErr == nil && retryResp.StatusCode == http.StatusBadRequest && options.IsSignatureError(ctx, retryRespBody) {
 								options.Observe(ExchangeNotice{
 									Platform:           options.Platform,
 									ProviderID:         options.ProviderID,
@@ -145,7 +143,6 @@ func Exchange(ctx context.Context, body []byte, options ExchangeOptions) (*http.
 										retryResp2, retryErr2 := options.Do(retryReq2)
 										if retryErr2 == nil {
 											if retryResp2.StatusCode < 400 {
-
 												lastWireBody = retryWireBody2
 												if err := options.ReplaceBody(retryWireBody2); err != nil {
 													_ = retryResp2.Body.Close()
@@ -217,7 +214,6 @@ func Exchange(ctx context.Context, body []byte, options ExchangeOptions) (*http.
 							budgetRetryResp, retryErr := options.Do(budgetRetryReq)
 							if retryErr == nil {
 								if budgetRetryResp.StatusCode < 400 {
-
 									lastWireBody = budgetWireBody
 									if err := options.ReplaceBody(budgetWireBody); err != nil {
 										_ = budgetRetryResp.Body.Close()
@@ -241,7 +237,7 @@ func Exchange(ctx context.Context, body []byte, options ExchangeOptions) (*http.
 			}
 		}
 
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && options.ShouldRetry(resp.StatusCode) {
+		if resp.StatusCode >= 400 && resp.StatusCode != http.StatusBadRequest && options.ShouldRetry(resp.StatusCode) {
 			if attempt < options.MaxAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= options.MaxElapsed {

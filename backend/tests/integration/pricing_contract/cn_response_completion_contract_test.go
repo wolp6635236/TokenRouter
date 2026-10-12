@@ -5,16 +5,16 @@ import (
 	"testing"
 	"time"
 
-	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	completion "github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 func TestFilterCNProviderBillingModelCandidates(t *testing.T) {

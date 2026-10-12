@@ -2,30 +2,15 @@ package routing
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// mappedProbeExecutor 验证选择结果进入真实测试参数，历史记录仍使用管理员选择的请求模型。
+// mappedProbeExecutor 检查执行探测使用选中的模型，历史记录使用管理员请求的模型。
 type mappedProbeExecutor struct {
 	t *testing.T
-}
-
-func (e mappedProbeExecutor) Select(_ context.Context, due GroupAvailabilityProbeDueGroup, model string) (GroupProbeTarget, error) {
-	require.Equal(e.t, int64(59), due.GroupID)
-	require.Equal(e.t, "gemini-3.8-flash", model)
-	return GroupProbeTarget{ProviderID: 3678, ModelID: "gemini-3.8-flash-tiered"}, nil
-}
-
-func (e mappedProbeExecutor) Test(_ context.Context, id int64, model, prompt, userAgent string) (*ProbeExecutionResult, error) {
-	require.Equal(e.t, int64(3678), id)
-	require.Equal(e.t, "gemini-3.8-flash-tiered", model)
-	require.Equal(e.t, "hi", prompt)
-	require.Equal(e.t, "probe-client", userAgent)
-	return &ProbeExecutionResult{Status: GroupAvailabilityProbeStatusSuccess}, nil
 }
 
 func TestGroupProbeAttemptUsesMappedTargetAndRecordsRequestedModel(t *testing.T) {
@@ -36,53 +21,6 @@ func TestGroupProbeAttemptUsesMappedTargetAndRecordsRequestedModel(t *testing.T)
 	require.True(t, result.Success)
 	require.Equal(t, "gemini-3.8-flash", result.ModelID)
 	require.Equal(t, int64(3678), *result.ProviderID)
-}
-
-// groupAvailabilityProbeRunnerRepoStub 记录领取参数，并可阻塞首轮领取以验证 runner 非重入。
-type groupAvailabilityProbeRunnerRepoStub struct {
-	mu           sync.Mutex
-	claimCalls   int
-	claimLimit   int
-	claimStarted chan struct{}
-	releaseClaim chan struct{}
-	startedOnce  sync.Once
-}
-
-func (r *groupAvailabilityProbeRunnerRepoStub) ClaimDue(ctx context.Context, _ time.Time, _ time.Time, _ string, limit int) ([]GroupAvailabilityProbeDueGroup, error) {
-	r.mu.Lock()
-	r.claimCalls++
-	r.claimLimit = limit
-	r.mu.Unlock()
-
-	if r.claimStarted != nil {
-		r.startedOnce.Do(func() { close(r.claimStarted) })
-	}
-	if r.releaseClaim != nil {
-		select {
-		case <-r.releaseClaim:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	return nil, nil
-}
-
-func (r *groupAvailabilityProbeRunnerRepoStub) SaveResultAndScheduleNext(context.Context, *GroupAvailabilityProbeResult, time.Time) error {
-	return nil
-}
-
-func (r *groupAvailabilityProbeRunnerRepoStub) GetSummaryByGroupIDs(context.Context, []int64, int, int, string, time.Time) (map[int64]*GroupAvailabilitySummary, error) {
-	return nil, nil
-}
-
-func (r *groupAvailabilityProbeRunnerRepoStub) CleanupOldResults(context.Context, time.Time) error {
-	return nil
-}
-
-func (r *groupAvailabilityProbeRunnerRepoStub) claimSnapshot() (int, int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.claimCalls, r.claimLimit
 }
 
 func TestGroupAvailabilityProbeRunDueClaimsOnlyRunnableBatch(t *testing.T) {
@@ -124,7 +62,7 @@ func TestGroupAvailabilityProbeRunDueSkipsOverlappingRun(t *testing.T) {
 		t.Fatal("first run did not reach ClaimDue")
 	}
 
-	// 第二轮必须立即跳过，不能再次领取并绕过实例级 worker 上限。
+	// 首轮运行中再次调用时应跳过领取，worker 数由实例上限控制。
 	runner.runDue()
 	if calls, _ := repo.claimSnapshot(); calls != 1 {
 		t.Fatalf("ClaimDue() calls during overlap = %d, want 1", calls)
@@ -217,4 +155,18 @@ func TestRunGroupAvailabilityProbeAttemptsStopsAfterParentCancellation(t *testin
 	if attempts != 1 {
 		t.Fatalf("runGroupAvailabilityProbeAttempts() attempts = %d, want 1", attempts)
 	}
+}
+
+func (e mappedProbeExecutor) Select(_ context.Context, due GroupAvailabilityProbeDueGroup, model string) (GroupProbeTarget, error) {
+	require.Equal(e.t, int64(59), due.GroupID)
+	require.Equal(e.t, "gemini-3.8-flash", model)
+	return GroupProbeTarget{ProviderID: 3678, ModelID: "gemini-3.8-flash-tiered"}, nil
+}
+
+func (e mappedProbeExecutor) Test(_ context.Context, id int64, model, prompt, userAgent string) (*ProbeExecutionResult, error) {
+	require.Equal(e.t, int64(3678), id)
+	require.Equal(e.t, "gemini-3.8-flash-tiered", model)
+	require.Equal(e.t, "hi", prompt)
+	require.Equal(e.t, "probe-client", userAgent)
+	return &ProbeExecutionResult{Status: GroupAvailabilityProbeStatusSuccess}, nil
 }

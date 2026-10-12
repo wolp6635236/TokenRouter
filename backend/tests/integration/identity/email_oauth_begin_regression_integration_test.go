@@ -13,25 +13,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
-
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
 	"entgo.io/ent/dialect"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/TokenFlux/TokenRouter/internal/identity/rediscache"
-	identitytestkit "github.com/TokenFlux/TokenRouter/internal/identity/testkit"
-
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
-
 	entsql "entgo.io/ent/dialect/sql"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/identity/rediscache"
+	identitytestkit "github.com/TokenFlux/TokenRouter/internal/identity/testkit"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
 // failNextTransaction 在用户创建后拒绝下一次 Begin，补偿删除通过 PostgreSQL 执行。
@@ -41,6 +37,8 @@ type failNextTransaction struct {
 	failures atomic.Int64
 }
 
+type oauthSettings struct{ settingscore.Repository }
+
 func (d *failNextTransaction) Tx(ctx context.Context) (dialect.Tx, error) {
 	if d.armed.CompareAndSwap(true, false) {
 		d.failures.Add(1)
@@ -48,8 +46,6 @@ func (d *failNextTransaction) Tx(ctx context.Context) (dialect.Tx, error) {
 	}
 	return d.Driver.Tx(ctx)
 }
-
-type oauthSettings struct{ settingscore.Repository }
 
 func (oauthSettings) GetValue(_ context.Context, key string) (string, error) {
 	if key == identity.SettingKeyRegistrationEnabled {

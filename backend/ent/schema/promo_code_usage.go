@@ -14,7 +14,7 @@ import (
 
 // PromoCodeUsage holds the schema definition for the PromoCodeUsage entity.
 //
-// 优惠码使用记录：记录每个用户使用优惠码的情况
+// 优惠码使用记录：记录每个用户使用优惠码的情况。
 type PromoCodeUsage struct {
 	ent.Schema
 }

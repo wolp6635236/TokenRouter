@@ -16,6 +16,14 @@ type tierLifecycleStore struct {
 	writes atomic.Int64
 }
 
+// 批量查询最多十并发，分别记录失败。总数排除非法提供商，缺失或空列表时通过存储查询。
+type tierBatchStore struct {
+	TierManagementStore
+	values     []Record
+	queryCalls int
+	queryLimit int
+}
+
 func (s *tierLifecycleStore) UpdateProvider(context.Context, int64, *UpdateProviderInput) (*Record, error) {
 	s.writes.Add(1)
 	return nil, nil
@@ -44,14 +52,6 @@ func TestTierMaintenanceStopWaitsAndRejectsLateWrite(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 	require.Equal(t, int64(0), store.writes.Load())
 	require.Equal(t, stopErr, core.StopContext(context.Background()))
-}
-
-// 批量查询最多十并发，分别记录失败。总数排除非法提供商，缺失或空列表时通过存储查询。
-type tierBatchStore struct {
-	TierManagementStore
-	values     []Record
-	queryCalls int
-	queryLimit int
 }
 
 func (s *tierBatchStore) ListProviders(_ context.Context, page, size int, platform, kind, status, search string, id int64, privacy, sortBy, sortOrder string) ([]Record, int64, error) {

@@ -1,17 +1,19 @@
 package middleware
 
 import (
+	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
-// Logger 请求日志中间件
+// Logger 请求日志中间件。
 func Logger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 开始时间
@@ -82,6 +84,14 @@ func Logger() gin.HandlerFunc {
 			fields = append(fields, zap.Int64("request_content_length", c.Request.ContentLength))
 		}
 		fields = appendRequestStageFields(fields, c)
+		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) {
+			record.Timings = make(map[string]int64)
+			for _, field := range fields {
+				if strings.HasSuffix(field.Key, "_ms") && field.Key != "latency_ms" {
+					record.Timings[field.Key] = field.Integer
+				}
+			}
+		})
 
 		l := logging.FromContext(c.Request.Context()).With(fields...)
 		l.Info("http request completed", zap.Time("completed_at", endTime))

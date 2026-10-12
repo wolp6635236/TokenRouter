@@ -25,6 +25,35 @@ const (
 // Callers may use this to trigger provider switching instead of direct fallback.
 var ErrProxyUnavailable = errors.New("websearch: proxy unavailable")
 
+// weighted is a provider candidate with computed quota weight.
+type weighted struct {
+	cfg    ProviderConfig
+	weight int64
+}
+
+// Manager 的配置不可变，旧请求持有的代次继续使用同一快照。
+type Manager struct {
+	configs  []ProviderConfig
+	state    QuotaState
+	executor Executor
+	work     *WorkGroup
+	retired  atomic.Bool
+}
+
+type quotaReservation struct {
+	once     sync.Once
+	manager  *Manager
+	config   ProviderConfig
+	acquired bool
+}
+
+func NewManager(configs []ProviderConfig, state QuotaState, executor Executor, work *WorkGroup) *Manager {
+	if work == nil {
+		work = NewWorkGroup()
+	}
+	return &Manager{configs: CloneProviderConfigs(configs), state: state, executor: executor, work: work}
+}
+
 // SearchWithBestProvider selects a provider using quota-weighted load balancing,
 // reserves quota, executes the search, and rolls back quota on failure.
 // If the search fails due to a proxy error, the proxy is marked unavailable for 5 minutes.
@@ -106,12 +135,6 @@ func (m *Manager) filterAvailableProviders(ctx context.Context, providerProxyURL
 		out = append(out, cfg)
 	}
 	return out
-}
-
-// weighted is a provider candidate with computed quota weight.
-type weighted struct {
-	cfg    ProviderConfig
-	weight int64
 }
 
 // selectByQuotaWeight orders candidates by remaining quota weight.
@@ -347,10 +370,7 @@ func nextMonthlyReset(subscribedAt time.Time) time.Time {
 	if subscribedAt.IsZero() {
 		return now.AddDate(0, 1, 0)
 	}
-	months := (now.Year()-subscribedAt.Year())*12 + int(now.Month()-subscribedAt.Month())
-	if months < 0 {
-		months = 0
-	}
+	months := max((now.Year()-subscribedAt.Year())*12+int(now.Month()-subscribedAt.Month()), 0)
 	candidate := addMonthsClamped(subscribedAt, months)
 	if candidate.After(now) {
 		return candidate
@@ -373,21 +393,6 @@ func addMonthsClamped(t time.Time, months int) time.Time {
 	return time.Date(targetYear, targetMonth, d, 0, 0, 0, 0, time.UTC)
 }
 
-// Manager 的配置不可变，旧请求持有的代次继续使用同一快照。
-type Manager struct {
-	configs  []ProviderConfig
-	state    QuotaState
-	executor Executor
-	work     *WorkGroup
-	retired  atomic.Bool
-}
-
-func NewManager(configs []ProviderConfig, state QuotaState, executor Executor, work *WorkGroup) *Manager {
-	if work == nil {
-		work = NewWorkGroup()
-	}
-	return &Manager{configs: CloneProviderConfigs(configs), state: state, executor: executor, work: work}
-}
 func (m *Manager) ProviderConfigs() []ProviderConfig { return CloneProviderConfigs(m.configs) }
 func (m *Manager) Retire()                           { m.retired.Store(true); m.executor.CloseIdle() }
 
@@ -395,13 +400,6 @@ func (m *Manager) closeIfRetired() {
 	if m.retired.Load() {
 		m.executor.CloseIdle()
 	}
-}
-
-type quotaReservation struct {
-	once     sync.Once
-	manager  *Manager
-	config   ProviderConfig
-	acquired bool
 }
 
 func (r *quotaReservation) release(ctx context.Context) {

@@ -5,19 +5,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // TLSFingerprintRouterHandler 处理 TLS 路由器的 HTTP 请求。
 type TLSFingerprintRouterHandler struct {
 	service *egress.TLSFingerprintRouterService
-}
-
-// NewTLSFingerprintRouterHandler 创建 TLS 路由器处理器。
-func NewTLSFingerprintRouterHandler(service *egress.TLSFingerprintRouterService) *TLSFingerprintRouterHandler {
-	return &TLSFingerprintRouterHandler{service: service}
 }
 
 // CreateTLSFingerprintRouterRequest 创建 TLS 路由器请求。
@@ -48,6 +44,11 @@ type UpdateTLSFingerprintRouterRequest struct {
 type nullableInt64Patch struct {
 	Set   bool
 	Value *int64
+}
+
+// NewTLSFingerprintRouterHandler 创建 TLS 路由器处理器。
+func NewTLSFingerprintRouterHandler(service *egress.TLSFingerprintRouterService) *TLSFingerprintRouterHandler {
+	return &TLSFingerprintRouterHandler{service: service}
 }
 
 func (p *nullableInt64Patch) UnmarshalJSON(data []byte) error {

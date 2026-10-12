@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/creative"
 )
 
 // 创作台临时存储 Redis 键前缀。
@@ -20,6 +21,8 @@ const (
 	defaultCreativeOutputKeyPrefix  = "creative:output:"
 )
 
+var _ creative.CreativeTransientStore = (*creativeTransientStore)(nil)
+
 // creativeTransientStore 基于 Redis 的创作台临时存储。
 // Redis 不可用时所有写操作返回明确错误，由服务层 fail-close 拒绝新任务。
 type creativeTransientStore struct {
@@ -29,6 +32,10 @@ type creativeTransientStore struct {
 	maskPrefix    string
 	outputPrefix  string
 	defaultTTL    time.Duration
+}
+
+type TransientOptions struct {
+	TransientTTLSeconds int
 }
 
 // NewCreativeTransientStore 创建创作台临时存储。
@@ -106,7 +113,7 @@ func (s *creativeTransientStore) LoadInputs(ctx context.Context, runID string, c
 		return nil, nil
 	}
 	keys := make([]string, 0, count)
-	for idx := 0; idx < count; idx++ {
+	for idx := range count {
 		keys = append(keys, s.inputKey(runID, idx))
 	}
 	values, err := s.rdb.MGet(ctx, keys...).Result()
@@ -204,10 +211,10 @@ func (s *creativeTransientStore) DeleteRunTransient(ctx context.Context, runID s
 		s.payloadPrefix + runID,
 		s.maskPrefix + runID,
 	}
-	for idx := 0; idx < inputCount; idx++ {
+	for idx := range inputCount {
 		keys = append(keys, s.inputKey(runID, idx))
 	}
-	for index := 0; index < outputCount; index++ {
+	for index := range outputCount {
 		keys = append(keys, s.outputKey(runID, index))
 	}
 	// 计数未知（如取消路径）时按前缀扫描补齐，保证清理完整。
@@ -236,10 +243,4 @@ func (s *creativeTransientStore) inputKey(runID string, idx int) string {
 
 func (s *creativeTransientStore) outputKey(runID string, index int) string {
 	return fmt.Sprintf("%s%s:%d", s.outputPrefix, runID, index)
-}
-
-var _ creative.CreativeTransientStore = (*creativeTransientStore)(nil)
-
-type TransientOptions struct {
-	TransientTTLSeconds int
 }

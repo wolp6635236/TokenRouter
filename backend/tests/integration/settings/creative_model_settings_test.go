@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
-	"github.com/stretchr/testify/require"
+	settingskit "github.com/TokenFlux/TokenRouter/internal/settings/testkit"
 )
 
 func TestBuildSystemSettingsUpdatesCreativeModelSettings(t *testing.T) {

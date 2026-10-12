@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
 func TestRunProxyQualityTarget_CloudflareChallenge(t *testing.T) {

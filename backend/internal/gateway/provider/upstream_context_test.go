@@ -9,10 +9,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/stretchr/testify/require"
 )
 
 // TestDetachedUpstreamReceivesInternalAbort 覆盖图片和流式上游的取消隔离入口。
@@ -72,7 +72,7 @@ func TestOpenAIRequestContextLifetime(t *testing.T) {
 				response, err = openai.ExchangeHTTP(request, nil, openai.HTTPExchangeOptions{
 					StartedAt: time.Now(), FirstOutputTimeout: timeout, RequestContext: DetachUpstreamContext,
 					Build: func(ctx context.Context, _ []byte) (*http.Request, error) {
-						return http.NewRequestWithContext(ctx, "POST", server.URL, nil)
+						return http.NewRequestWithContext(ctx, http.MethodPost, server.URL, nil)
 					},
 					ApplyHeaders: func(http.Header) {}, Do: send, Latency: func(time.Duration) {},
 					HeaderTimeout: func() error { return context.DeadlineExceeded }, TransportError: func(err error) error { return err },

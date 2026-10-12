@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	acctcore "github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 // TestCNMonitorDecisionCAS 验证真实 PostgreSQL 校验版本条件、同身份恢复、旧观测拒绝以及原尽力通知边界。

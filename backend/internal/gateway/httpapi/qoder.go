@@ -9,13 +9,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
+
+const InvalidStreamFieldTypeMessage = "invalid stream field type"
 
 // ParsedRequest 是读取 HTTP 正文并校验字段后得到的只读请求数据。
 type ParsedRequest struct {
@@ -32,11 +34,9 @@ type HTTPFailure struct {
 	RetryAfter    int
 }
 
-func (e *HTTPFailure) Error() string { return e.Message }
-
 // QoderChatHandler 的装配回调加载认证和路由上下文，gateway 执行请求循环。
 type QoderChatHandler struct {
-	requestLifetime
+	RequestLifetime
 
 	Executor interface {
 		Execute(context.Context, gateway.Request, upstream.OutputSink) (gateway.ExecutionResult, error)
@@ -49,9 +49,17 @@ type QoderChatHandler struct {
 	Failure        func(*gin.Context, error) *HTTPFailure
 }
 
+// observedExecutionOutput 同步报告 HTTP 状态。
+type observedExecutionOutput struct {
+	ResponseSink
+	gateway.ExecutionObserver
+}
+
+func (e *HTTPFailure) Error() string { return e.Message }
+
 // ChatCompletions 读取 Chat 请求，写出协议错误或 SSE 响应。
 func (h *QoderChatHandler) ChatCompletions(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -66,8 +74,7 @@ func (h *QoderChatHandler) ChatCompletions(c *gin.Context) {
 	}
 	body, err := httpx.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
+		if maxErr, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			h.writeError(c, &HTTPFailure{Status: 413, Type: "invalid_request_error", Message: BodyTooLargeMessage(maxErr.Limit)}, false)
 			return
 		}
@@ -132,8 +139,7 @@ func (h *QoderChatHandler) fail(c *gin.Context, err error, stream bool) {
 			return
 		}
 	} else {
-		var typed *HTTPFailure
-		if errors.As(err, &typed) {
+		if typed, ok := errors.AsType[*HTTPFailure](err); ok {
 			failure = typed
 		}
 	}
@@ -151,8 +157,6 @@ func (h *QoderChatHandler) writeError(c *gin.Context, f *HTTPFailure, stream boo
 	}
 	c.JSON(f.Status, gin.H{"error": gin.H{"type": f.Type, "message": f.Message}})
 }
-
-const InvalidStreamFieldTypeMessage = "invalid stream field type"
 
 // ParseOpenAICompatibleStream 读取布尔字段，缺省返回 false，包含 null 在内的其他类型返回校验失败。
 func ParseOpenAICompatibleStream(body []byte) (bool, bool) {
@@ -173,10 +177,4 @@ func BodyLimitLabel(limit int64) string {
 
 func BodyTooLargeMessage(limit int64) string {
 	return fmt.Sprintf("Request body too large, limit is %s", BodyLimitLabel(limit))
-}
-
-// observedExecutionOutput 同步报告 HTTP 状态。
-type observedExecutionOutput struct {
-	ResponseSink
-	gateway.ExecutionObserver
 }

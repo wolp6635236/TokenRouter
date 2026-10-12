@@ -10,7 +10,32 @@ import (
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 )
 
-// IncrementQuotaUsed 使用 Ent 原子递增 quota_used 字段并返回新值
+const (
+	// apiKeyRateLimitUsageSetSQL 使用 $1 累计费用，窗口时间取当前 PostgreSQL 事务的 NOW()。
+	apiKeyRateLimitUsageSetSQL = `			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN $1 ELSE usage_5h + $1 END,
+			usage_1d = CASE WHEN window_1d_start IS NOT NULL AND window_1d_start + INTERVAL '24 hours' <= NOW() THEN $1 ELSE usage_1d + $1 END,
+			usage_7d = CASE WHEN window_7d_start IS NOT NULL AND window_7d_start + INTERVAL '7 days' <= NOW() THEN $1 ELSE usage_7d + $1 END,
+			window_5h_start = CASE WHEN window_5h_start IS NULL OR window_5h_start + INTERVAL '5 hours' <= NOW() THEN NOW() ELSE window_5h_start END,
+			window_1d_start = CASE WHEN window_1d_start IS NULL OR window_1d_start + INTERVAL '24 hours' <= NOW() THEN date_trunc('day', NOW()) ELSE window_1d_start END,
+			window_7d_start = CASE WHEN window_7d_start IS NULL OR window_7d_start + INTERVAL '7 days' <= NOW() THEN date_trunc('day', NOW()) ELSE window_7d_start END,
+			updated_at = NOW()`
+)
+
+// KeyUsageStore 写入 Key 的消费累计和资金窗口。
+type KeyUsageStore struct {
+	client *dbent.Client
+	sql    KeyUsageSQL
+}
+type KeyUsageSQL interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func NewKeyUsageStore(client *dbent.Client, db KeyUsageSQL) *KeyUsageStore {
+	return &KeyUsageStore{client: client, sql: db}
+}
+
+// IncrementQuotaUsed 使用 Ent 原子递增 quota_used 字段并返回新值。
 func (r *KeyUsageStore) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) (float64, error) {
 	updated, err := r.client.APIKey.UpdateOneID(id).
 		Where(apikey.DeletedAtIsNil()).
@@ -56,13 +81,7 @@ func (r *KeyUsageStore) IncrementQuotaUsedAndGetState(ctx context.Context, id in
 func (r *KeyUsageStore) IncrementRateLimitUsage(ctx context.Context, id int64, cost float64) error {
 	_, err := r.sql.ExecContext(ctx, `
 		UPDATE api_keys SET
-			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN $1 ELSE usage_5h + $1 END,
-			usage_1d = CASE WHEN window_1d_start IS NOT NULL AND window_1d_start + INTERVAL '24 hours' <= NOW() THEN $1 ELSE usage_1d + $1 END,
-			usage_7d = CASE WHEN window_7d_start IS NOT NULL AND window_7d_start + INTERVAL '7 days' <= NOW() THEN $1 ELSE usage_7d + $1 END,
-			window_5h_start = CASE WHEN window_5h_start IS NULL OR window_5h_start + INTERVAL '5 hours' <= NOW() THEN NOW() ELSE window_5h_start END,
-			window_1d_start = CASE WHEN window_1d_start IS NULL OR window_1d_start + INTERVAL '24 hours' <= NOW() THEN date_trunc('day', NOW()) ELSE window_1d_start END,
-			window_7d_start = CASE WHEN window_7d_start IS NULL OR window_7d_start + INTERVAL '7 days' <= NOW() THEN date_trunc('day', NOW()) ELSE window_7d_start END,
-			updated_at = NOW()
+`+apiKeyRateLimitUsageSetSQL+`
 		WHERE id = $2 AND deleted_at IS NULL`,
 		cost, id)
 	return err
@@ -109,16 +128,33 @@ func (r *KeyUsageStore) GetRateLimitData(ctx context.Context, id int64) (result 
 	return data, rows.Err()
 }
 
-// KeyUsageStore 写入 Key 的消费累计和资金窗口。
-type KeyUsageStore struct {
-	client *dbent.Client
-	sql    KeyUsageSQL
-}
-type KeyUsageSQL interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}
+// ApplyKeyUsageReset 将消费字段附加到调用方的更新语句。
+func ApplyKeyUsageReset(builder *dbent.APIKeyUpdate, input billing.KeyUsageReset) {
+	if input.ResetQuota {
+		builder.SetQuotaUsed(input.QuotaUsed)
+	}
 
-func NewKeyUsageStore(client *dbent.Client, db KeyUsageSQL) *KeyUsageStore {
-	return &KeyUsageStore{client: client, sql: db}
+	if input.ResetWindows {
+		builder.
+			SetUsage5h(input.Windows.Usage5h).
+			SetUsage1d(input.Windows.Usage1d).
+			SetUsage7d(input.Windows.Usage7d)
+
+		// 按输入设置或清空各限流窗口的开始时间。
+		if input.Windows.Window5hStart != nil {
+			builder.SetWindow5hStart(*input.Windows.Window5hStart)
+		} else {
+			builder.ClearWindow5hStart()
+		}
+		if input.Windows.Window1dStart != nil {
+			builder.SetWindow1dStart(*input.Windows.Window1dStart)
+		} else {
+			builder.ClearWindow1dStart()
+		}
+		if input.Windows.Window7dStart != nil {
+			builder.SetWindow7dStart(*input.Windows.Window7dStart)
+		} else {
+			builder.ClearWindow7dStart()
+		}
+	}
 }

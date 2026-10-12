@@ -14,13 +14,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/notification/contract"
 )
 
-type (
-	Client     struct{}
-	SMTPConfig = contract.SMTPConfig
-)
-
-func New() *Client { return &Client{} }
-
 const (
 	smtpDialTimeout = 10 * time.Second
 	smtpIOTimeout   = 20 * time.Second
@@ -28,9 +21,23 @@ const (
 
 var smtpTestRootCAs *x509.CertPool
 
+type (
+	Client     struct{}
+	SMTPConfig = contract.SMTPConfig
+)
+
+// contextConn 让取消关闭当前连接；正常关闭会注销回调，避免残留等待任务。
+type contextConn struct {
+	net.Conn
+	stop     func() bool
+	deadline time.Time
+}
+
+func New() *Client { return &Client{} }
+
 func sanitizeEmailHeader(s string) string { return strings.NewReplacer("\r", "", "\n", "").Replace(s) }
 
-// Send 使用指定配置发送邮件
+// Send 使用指定配置发送邮件。
 func (s *Client) Send(ctx context.Context, config *SMTPConfig, to, subject, body string) (resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -110,8 +117,7 @@ func (s *Client) connectSMTPContext(ctx context.Context, config *SMTPConfig) (*s
 		if err == nil {
 			return newSMTPClient(conn, config.Host)
 		}
-		var recordErr tls.RecordHeaderError
-		if !errors.As(err, &recordErr) {
+		if _, ok := errors.AsType[tls.RecordHeaderError](err); !ok {
 			return nil, fmt.Errorf("tls dial: %w", err)
 		}
 		// SMTP 服务先发问候语，明文问候会使 TLS 握手返回 RecordHeaderError。
@@ -179,13 +185,6 @@ func (s *Client) Test(ctx context.Context, config *SMTPConfig) (resultErr error)
 	// 认证成功即可证明配置可用于发送，忽略非标准 QUIT 响应。
 	_ = client.Quit()
 	return nil
-}
-
-// contextConn 让取消关闭当前连接；正常关闭会注销回调，避免残留等待任务。
-type contextConn struct {
-	net.Conn
-	stop     func() bool
-	deadline time.Time
 }
 
 func (c *contextConn) Close() error {

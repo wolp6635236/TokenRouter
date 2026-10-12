@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/search/contract"
-	"github.com/stretchr/testify/require"
 )
 
 type standaloneStub struct {

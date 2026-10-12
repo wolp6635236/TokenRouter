@@ -1,17 +1,18 @@
 package pricing
 
 import (
+	"slices"
 	"strings"
 )
 
-// PricingSource 定价来源标识
+// PricingSource 定价来源标识。
 const (
 	PricingSourceConfig   = "pricing_config"
 	PricingSourceCatalog  = "catalog"
 	PricingSourceUnpriced = "unpriced"
 )
 
-// ResolvedPricing 统一定价解析结果
+// ResolvedPricing 统一定价解析结果。
 type ResolvedPricing struct {
 	// Mode 计费模式
 	Mode BillingMode
@@ -92,12 +93,7 @@ func (r *ResolvedPricing) IsUnpriced() bool {
 	if r.Mode != BillingModeToken || r.ConfigPricing == nil || r.hasBaseTokenPricing() {
 		return false
 	}
-	for _, interval := range r.Intervals {
-		if PricingIntervalHasEffectiveTokenPricing(interval) {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(r.Intervals, PricingIntervalHasEffectiveTokenPricing)
 }
 
 // hasBaseTokenPricing 区分有效基础价（包含显式免费）与仅用于保存倍率的占位结构。
@@ -140,7 +136,7 @@ func (r *ResolvedPricing) HasEffectiveOverridePricing() bool {
 		r.ConfigPricing != nil && r.ConfigPricing.HasEffectivePricing()
 }
 
-// ApplyTokenOverrides 应用 token 模式的价卡覆盖
+// ApplyTokenOverrides 应用 token 模式的价卡覆盖。
 func ApplyTokenOverrides(chPricing *ModelPricingEntry, resolved *ResolvedPricing) {
 	// 过滤掉所有价格字段都为空的无效 interval
 	validIntervals := FilterValidTokenIntervals(chPricing.Intervals)
@@ -194,7 +190,7 @@ func applyConfigImagePriceOverrides(pricing *ModelPricing, chPricing *ModelPrici
 	}
 }
 
-// ApplyRequestTierOverrides 应用按次/图片模式的价卡覆盖
+// ApplyRequestTierOverrides 应用按次/图片模式的价卡覆盖。
 func ApplyRequestTierOverrides(chPricing *ModelPricingEntry, resolved *ResolvedPricing) {
 	resolved.RequestTiers = FilterValidRequestIntervals(chPricing.Intervals)
 	if chPricing.PerRequestPrice != nil {
@@ -414,7 +410,7 @@ func IntervalToModelPricingWithBase(iv *PricingInterval, supportsCacheBreakdown 
 	return pricing
 }
 
-// GetRequestTierPrice 根据层级标签获取按次价格
+// GetRequestTierPrice 根据层级标签获取按次价格。
 func GetRequestTierPrice(resolved *ResolvedPricing, tierLabel string) float64 {
 	price, ok := GetRequestTierPriceValue(resolved, tierLabel)
 	if !ok {
@@ -436,7 +432,7 @@ func GetRequestTierPriceValue(resolved *ResolvedPricing, tierLabel string) (floa
 	return 0, false
 }
 
-// GetRequestTierPriceByContext 根据 context token 数获取按次价格
+// GetRequestTierPriceByContext 根据 context token 数获取按次价格。
 func GetRequestTierPriceByContext(resolved *ResolvedPricing, totalContextTokens int) float64 {
 	price, ok := GetRequestTierPriceByContextValue(resolved, totalContextTokens)
 	if !ok {
@@ -526,4 +522,25 @@ func HasExplicitPricingPrice(p ModelPricingEntry) bool {
 // NormalizePriceModelName 只处理查询大小写与首尾空白，保留完整型号。
 func NormalizePriceModelName(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
+}
+
+// ApplyConfigPrice 在价格副本上应用价卡覆盖，图片价格可为 nil。
+func ApplyConfigPrice(pricing *ModelPricing, configPricing *ModelPricingEntry) *ModelPricing {
+	if configPricing == nil {
+		return pricing
+	}
+	// 复制目录价格后应用覆盖值。
+	cloned := *pricing
+	pricing = &cloned
+	ApplyConfigTokenPriceOverrides(pricing, configPricing)
+	multiplier, configured := NormalizedPriceMultiplier(configPricing)
+	if configured {
+		pricing = MultiplyModelPricing(pricing, multiplier)
+	}
+	ApplyConfigFastModeMultiplier(pricing, configPricing)
+	ApplyConfigFlexMultiplier(pricing, configPricing)
+	if configPricing.MaxReasoningEffortMultiplier != nil {
+		pricing.MaxReasoningEffortMultiplier = configPricing.MaxReasoningEffortMultiplier
+	}
+	return pricing
 }

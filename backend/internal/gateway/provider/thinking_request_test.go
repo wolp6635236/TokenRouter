@@ -1,15 +1,51 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
-	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
-// Gemini 格式解析测试。
+const passbackThinkingBody = `{
+	"model":"deepseek-v4-pro",
+	"thinking":{"type":"enabled","budget_tokens":1024},
+	"messages":[
+		{"role":"user","content":[{"type":"text","text":"Hi"}]},
+		{"role":"assistant","content":[
+			{"type":"thinking","thinking":"Let me think..."},
+			{"type":"text","text":"Answer"}
+		]}
+	]
+}`
+
+func TestThinkingFilters_SkipForPassbackRequired(t *testing.T) {
+	in := []byte(passbackThinkingBody)
+
+	require.True(t, bytes.Equal(in, FilterThinkingBlocks(in, "deepseek-v4-pro")))
+	require.True(t, bytes.Equal(in, FilterThinkingBlocksForRetry(in, "kimi-k2.6")))
+	require.True(t, bytes.Equal(in, FilterSignatureSensitiveBlocksForRetry(in, "glm-5.1")))
+}
+
+func TestThinkingFilters_SkipForUnknownModel(t *testing.T) {
+	in := []byte(passbackThinkingBody)
+
+	require.True(t, bytes.Equal(in, FilterThinkingBlocks(in, "yi-large")))
+	require.True(t, bytes.Equal(in, FilterThinkingBlocksForRetry(in, "gpt-5.5")))
+	require.True(t, bytes.Equal(in, FilterSignatureSensitiveBlocksForRetry(in, "")))
+}
+
+func TestThinkingFilters_StillStripForAnthropicStrict(t *testing.T) {
+	in := []byte(passbackThinkingBody)
+	out := FilterThinkingBlocks(in, "claude-sonnet-4-5")
+
+	require.False(t, bytes.Equal(in, out))
+	require.NotContains(t, string(out), `"type":"thinking"`)
+}
 
 func TestFilterThinkingBlocks(t *testing.T) {
 	containsThinkingBlock := func(body []byte) bool {
@@ -113,7 +149,7 @@ func TestFilterThinkingBlocks(t *testing.T) {
 			result := FilterThinkingBlocks([]byte(tt.input))
 
 			if tt.expectError {
-				// For invalid JSON, should return original
+				// 无效 JSON 返回输入。
 				require.Equal(t, tt.input, string(result))
 				return
 			}
@@ -121,11 +157,11 @@ func TestFilterThinkingBlocks(t *testing.T) {
 			if tt.shouldFilter {
 				require.False(t, containsThinkingBlock(result))
 			} else {
-				// Ensure we don't rewrite JSON when no filtering is needed.
+				// 无需过滤时返回输入。
 				require.Equal(t, tt.input, string(result))
 			}
 
-			// Verify valid JSON returned (unless input was invalid)
+			// 有效输入经过处理后仍是有效 JSON。
 			var parsed map[string]any
 			err := json.Unmarshal(result, &parsed)
 			require.NoError(t, err)
@@ -275,7 +311,7 @@ func TestFilterThinkingBlocksForRetry_EmptyContentGetsPlaceholder(t *testing.T) 
 }
 
 func TestFilterThinkingBlocksForRetry_StripsEmptyTextBlocks(t *testing.T) {
-	// Empty text blocks cause upstream 400: "text content blocks must be non-empty"
+	// 空文本块会触发上游 400：text content blocks must be non-empty。
 	input := []byte(`{
 		"messages":[
 			{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":""}]},
@@ -290,13 +326,13 @@ func TestFilterThinkingBlocksForRetry_StripsEmptyTextBlocks(t *testing.T) {
 	msgs, ok := req["messages"].([]any)
 	require.True(t, ok)
 
-	// First message: empty text block stripped, "hello" preserved
+	// 第一条消息删除空文本块，保留 hello。
 	msg0 := testassert.MustType[map[string]any](msgs[0])
 	content0 := testassert.MustType[[]any](msg0["content"])
 	require.Len(t, content0, 1)
 	require.Equal(t, "hello", testassert.MustType[map[string]any](content0[0])["text"])
 
-	// Second message: only had empty text block → gets placeholder
+	// 第二条消息的内容全为空，填入占位文本。
 	msg1 := testassert.MustType[map[string]any](msgs[1])
 	content1 := testassert.MustType[[]any](msg1["content"])
 	require.Len(t, content1, 1)
@@ -306,7 +342,7 @@ func TestFilterThinkingBlocksForRetry_StripsEmptyTextBlocks(t *testing.T) {
 }
 
 func TestFilterThinkingBlocksForRetry_StripsNestedEmptyTextInToolResult(t *testing.T) {
-	// Empty text blocks nested inside tool_result content should also be stripped
+	// tool_result 内容中的空文本块也会删除。
 	input := []byte(`{
 		"messages":[
 			{"role":"user","content":[
@@ -334,7 +370,7 @@ func TestFilterThinkingBlocksForRetry_StripsNestedEmptyTextInToolResult(t *testi
 }
 
 func TestFilterThinkingBlocksForRetry_NestedAllEmptyGetsEmptySlice(t *testing.T) {
-	// If all nested content blocks in tool_result are empty text, content becomes empty slice
+	// tool_result 内容全为空文本时，content 成为空切片。
 	input := []byte(`{
 		"messages":[
 			{"role":"user","content":[
@@ -360,7 +396,7 @@ func TestFilterThinkingBlocksForRetry_NestedAllEmptyGetsEmptySlice(t *testing.T)
 }
 
 func TestFilterThinkingBlocksForRetry_PreservesNonEmptyTextBlocks(t *testing.T) {
-	// Non-empty text blocks should pass through unchanged
+	// 非空文本块按输入内容输出。
 	input := []byte(`{
 		"messages":[
 			{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}
@@ -369,7 +405,7 @@ func TestFilterThinkingBlocksForRetry_PreservesNonEmptyTextBlocks(t *testing.T) 
 
 	out := FilterThinkingBlocksForRetry(input)
 
-	// Fast path: no thinking content, no empty content, no empty text blocks → unchanged
+	// 缺少思考内容、空内容和空文本块时返回输入。
 	require.Equal(t, input, out)
 }
 
@@ -407,12 +443,6 @@ func TestFilterSignatureSensitiveBlocksForRetry_DowngradesTools(t *testing.T) {
 	require.Contains(t, content0["text"], "tool_use")
 	require.Contains(t, content1["text"], "tool_result")
 }
-
-// ============ Group 6b: context_management.edits 清理测试 ============
-
-// removeThinkingDependentContextStrategies 的特殊输入测试。
-
-// FilterThinkingBlocksForRetry 处理 context_management 的测试。
 
 func TestFilterThinkingBlocksForRetry_RemovesClearThinkingStrategy_FastPath(t *testing.T) {
 	// 快速路径：messages 中无 thinking 块，仅有顶层 thinking 字段
@@ -484,8 +514,6 @@ func TestFilterThinkingBlocksForRetry_NoContextManagement_Unaffected(t *testing.
 	_, hasCM := req["context_management"]
 	require.False(t, hasCM)
 }
-
-// FilterSignatureSensitiveBlocksForRetry 处理 context_management 的测试。
 
 func TestFilterSignatureSensitiveBlocksForRetry_RemovesClearThinkingStrategy(t *testing.T) {
 	input := []byte(`{
@@ -565,17 +593,6 @@ func TestFilterSignatureSensitiveBlocksForRetry_NoThinkingField_ContextManagemen
 	require.True(t, ok)
 	require.Len(t, edits, 1, "无顶层 thinking 时 context_management 不应被修改")
 }
-
-// ============ Group 7: ParseGatewayRequest 补充单元测试 ============
-
-// Gemini 协议分支测试。
-// 已有测试覆盖：
-// - TestParseGatewayRequest_GeminiSystemInstruction: 正常 systemInstruction+contents
-// - TestParseGatewayRequest_GeminiNoContents: 缺失 contents
-// - TestParseGatewayRequest_GeminiContents: 正常 contents（无 systemInstruction）
-// 因此跳过。
-
-// ============ Task 7.5: Benchmark 测试 ============
 
 func TestDefaultEffortForThinkingEnabled(t *testing.T) {
 	tests := []struct {

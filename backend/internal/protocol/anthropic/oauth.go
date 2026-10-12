@@ -1,6 +1,6 @@
 package anthropic
 
-// OAuthTokenResponse represents the token response from OAuth provider
+// OAuthTokenResponse represents the token response from OAuth provider.
 type OAuthTokenResponse struct {
 	AccessToken  string             `json:"access_token"`
 	TokenType    string             `json:"token_type"`
@@ -11,12 +11,12 @@ type OAuthTokenResponse struct {
 	Provider     *OAuthProviderInfo `json:"account,omitempty"`
 }
 
-// OAuthOrgInfo represents organization info from OAuth response
+// OAuthOrgInfo represents organization info from OAuth response.
 type OAuthOrgInfo struct {
 	UUID string `json:"uuid"`
 }
 
-// OAuthProviderInfo represents provider info from OAuth response
+// OAuthProviderInfo represents provider info from OAuth response.
 type OAuthProviderInfo struct {
 	UUID         string `json:"uuid"`
 	EmailAddress string `json:"email_address"`

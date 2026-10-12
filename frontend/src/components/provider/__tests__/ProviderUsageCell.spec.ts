@@ -1489,7 +1489,7 @@ describe('ProviderUsageCell', () => {
 
 	    await flushPromises()
 
-	    expect(wrapper.findAll('.animate-pulse').length).toBeGreaterThan(0)
+	    expect(wrapper.findAll('.skeleton').length).toBeGreaterThan(0)
   })
 
   it('Key 提供商在无 today stats 且无配额时只显示上游查询按钮', async () => {

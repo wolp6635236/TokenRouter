@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
@@ -13,7 +15,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 // @project-doc docs/interfaces/grok_upstream.md#grok_account_contract

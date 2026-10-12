@@ -1,25 +1,27 @@
 package messageforward
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
+	"go.uber.org/zap"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"go.uber.org/zap"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
 // conversionAttempt 保存本次转换的状态、凭据和网络句柄。
@@ -128,4 +130,23 @@ func (a *conversionAttempt) FailoverError(status int, body []byte, retry bool) e
 
 func (a *conversionAttempt) Output() forwardcore.Output {
 	return a.c.ConversionOutput(a.responses, a.state)
+}
+
+// forwardResponse 为转换流创建扫描器，初始缓冲为 64 KiB，行长上限读取 MaxLineSize。
+func (s *Runtime) forwardResponse(resp *http.Response) forwardcore.Response {
+	maxLineSize := 500 * 1024 * 1024
+	if s.options.MaxLineSize > 0 {
+		maxLineSize = s.options.MaxLineSize
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	return forwardcore.Response{
+		StatusCode:       resp.StatusCode,
+		Close:            func() { _ = resp.Body.Close() },
+		Runtime:          bridge.Runtime{Now: time.Now, ReadRandom: rand.Read},
+		RequestID:        resp.Header.Get("x-request-id"),
+		Headers:          resp.Header,
+		Lines:            scanner,
+		MaxSSEFrameBytes: maxLineSize,
+	}
 }

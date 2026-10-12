@@ -4,20 +4,26 @@ import (
 	"context"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+var openAIFastPolicyCtxKey = openAIFastPolicyCtxKeyType{}
+
 // ExecutionFastPolicy 在处理请求时读取 Fast 设置和价格。
 type ExecutionFastPolicy struct {
 	Readers *RuntimeReaders
 	Prices  *billing.PriceResolver
 }
+
+// openAIFastPolicyCtxKeyType 标识 WebSocket 会话共用的 Fast 策略快照。
+// 同一会话的各帧复用该快照，策略更新在新会话中生效。
+// 管理员可断开会话，使重连后的请求读取新策略。
+type openAIFastPolicyCtxKeyType struct{}
 
 // Evaluate 返回指定提供商、模型和 service_tier 应执行的动作及错误消息。
 // 策略服务不可用或没有规则命中时返回 pass，调用方可安全地直接放行。
@@ -62,13 +68,6 @@ func openAIFastPolicyUserID(ctx context.Context) int64 {
 	}
 	return userID
 }
-
-// openAIFastPolicyCtxKeyType 标识 WebSocket 会话共用的 Fast 策略快照。
-// 同一会话的各帧复用该快照，策略更新在新会话中生效。
-// 管理员可断开会话，使重连后的请求读取新策略。
-type openAIFastPolicyCtxKeyType struct{}
-
-var openAIFastPolicyCtxKey = openAIFastPolicyCtxKeyType{}
 
 // WithFastPolicyContext 将一份 settings 快照绑定到 context，供该 ctx
 // 衍生 goroutine 中的 Evaluate 复用。

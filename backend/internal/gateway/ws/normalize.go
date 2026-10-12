@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 )
 
 // Normalize 逐轮保持客户端模型、提供商身份、图片与 Fast 策略的原执行顺序。
@@ -55,11 +57,11 @@ func (s *RequestNormalizer) Normalize(ctx context.Context, raw []byte, applyUser
 		policyRequestModel = s.State.OriginalModel
 	}
 	requestedReasoningEffort := p.RequestedEffort(normalized, strings.TrimSpace(values[1].String()))
-	if next, policyErr := p.Reasoning(normalized, policyRequestModel); policyErr != nil {
+	next, policyErr := p.Reasoning(normalized, policyRequestModel)
+	if policyErr != nil {
 		return ClientPayload{}, p.CloseError(1008, policyErr.Error(), policyErr)
-	} else {
-		normalized = next
 	}
+	normalized = next
 	responsesLite := p.IsLite(normalized)
 	if compatibilityBody, compatibilityChanged, compatibilityErr := p.Compatibility(normalized, responsesLite); compatibilityErr != nil {
 		return ClientPayload{}, p.CloseError(1008, "invalid websocket request payload", compatibilityErr)
@@ -227,4 +229,26 @@ func (s *RequestNormalizer) Normalize(ctx context.Context, raw []byte, applyUser
 		PayloadBytes:              len(normalized),
 		RequestedReasoningEffort:  requestedReasoningEffort,
 	}, nil
+}
+
+// ApplyReasoningEffortPolicy 将同一套分组策略应用到 WS 请求帧。
+// requestModel 由调用方提供客户端模型，支持后续省略 model 的多轮帧。
+func ApplyReasoningEffortPolicy(payload []byte, hooks *OpenAIIngressHooks, requestModel string) ([]byte, error) {
+	if hooks == nil || (hooks.MaxReasoningEffort == "" && len(hooks.ReasoningEffortMappings) == 0) {
+		return payload, nil
+	}
+	updated, changed, err := requeststate.ApplyOpenAIReasoningEffortPolicyForModel(
+		payload,
+		hooks.MaxReasoningEffort,
+		hooks.ReasoningEffortMappings,
+		hooks.MaxReasoningEffortOverLimit,
+		strings.TrimSpace(requestModel),
+	)
+	if err != nil {
+		return payload, err
+	}
+	if changed {
+		return updated, nil
+	}
+	return payload, nil
 }

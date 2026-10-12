@@ -14,6 +14,8 @@ const (
 	grokImportProbeQueueLimit = 64
 )
 
+var ErrImportProbeStopped = errors.New("provider import probes are stopped")
+
 // GrokImportProbeResult 保存导入记录需要的脱敏观测摘要。
 type GrokImportProbeResult struct {
 	Model           string
@@ -210,8 +212,6 @@ func panicType(value any) string {
 		return "unknown"
 	}
 }
-
-var ErrImportProbeStopped = errors.New("provider import probes are stopped")
 
 // StopContext 取消未领取的尽力探测，取消并等待在途 worker；不把取消队列报告为已探测成功。
 func (s *GrokImportProbeScheduler) StopContext(ctx context.Context) error {

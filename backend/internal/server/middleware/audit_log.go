@@ -1,8 +1,9 @@
 package middleware
 
 import (
-	audit "github.com/TokenFlux/TokenRouter/internal/audit/httpapi"
 	"github.com/gin-gonic/gin"
+
+	audit "github.com/TokenFlux/TokenRouter/internal/audit/httpapi"
 )
 
 type AuditLogMiddleware = audit.AuditLogMiddleware

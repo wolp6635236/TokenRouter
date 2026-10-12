@@ -8,13 +8,12 @@ import (
 	"sync"
 	"time"
 
-	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
-
-	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+
+	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // RequestMetadata 保存入站 API Key 标识、Claude Code 标记和请求头。
@@ -89,6 +88,10 @@ type QoderConversationDiagnostics struct {
 	OutboundPayloadBytes int
 }
 
+type QoderConversationPlanOptions struct {
+	AppendToExisting bool
+}
+
 func NewQoderConversationStore(ttl time.Duration) *QoderConversationStore {
 	if ttl <= 0 {
 		ttl = QoderConversationTTL
@@ -98,10 +101,6 @@ func NewQoderConversationStore(ttl time.Duration) *QoderConversationStore {
 		Items:   make(map[string]*QoderConversationState),
 		Aliases: make(map[string]string),
 	}
-}
-
-type QoderConversationPlanOptions struct {
-	AppendToExisting bool
 }
 
 func (s *QoderConversationStore) PlanWithOptions(key, system string, tools []any, messages []QoderMessage, options QoderConversationPlanOptions) *QoderConversationPlan {
@@ -386,13 +385,7 @@ func (p *QoderConversationPlan) AcceptedFingerprints() []string {
 	if !p.Reused {
 		return append([]string(nil), p.CommittedFingerprints...)
 	}
-	prefixLen := p.PrefixMessageCount
-	if prefixLen < 0 {
-		prefixLen = 0
-	}
-	if prefixLen > len(p.MessageFingerprints) {
-		prefixLen = len(p.MessageFingerprints)
-	}
+	prefixLen := min(max(p.PrefixMessageCount, 0), len(p.MessageFingerprints))
 	return append([]string(nil), p.MessageFingerprints[:prefixLen]...)
 }
 

@@ -7,9 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	wireprotocol "github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -339,7 +338,7 @@ func (s *GroupAdmin) NextGroupSortOrder(ctx context.Context) (int, error) {
 
 // ValidateFallbackGroup 校验降级分组的有效性
 // currentGroupID: 当前分组 ID（新建时为 0）
-// fallbackGroupID: 降级分组 ID
+// fallbackGroupID: 降级分组 ID。
 func (s *GroupAdmin) ValidateFallbackGroup(ctx context.Context, currentGroupID, fallbackGroupID int64) error {
 	// 不能将自己设置为降级分组
 	if currentGroupID > 0 && currentGroupID == fallbackGroupID {
@@ -378,7 +377,7 @@ func (s *GroupAdmin) ValidateFallbackGroup(ctx context.Context, currentGroupID, 
 // ValidateFallbackGroupOnInvalidRequest 校验无效请求兜底分组的有效性。
 // currentGroupID: 当前分组 ID（新建时为 0）
 // platform: 当前分组的平台
-// fallbackGroupID: 兜底分组 ID
+// fallbackGroupID: 兜底分组 ID。
 func (s *GroupAdmin) ValidateFallbackGroupOnInvalidRequest(ctx context.Context, currentGroupID int64, platform string, fallbackGroupID int64) error {
 	if currentGroupID > 0 && currentGroupID == fallbackGroupID {
 		return fmt.Errorf("cannot set self as invalid request fallback group")

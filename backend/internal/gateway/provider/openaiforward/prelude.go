@@ -11,8 +11,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-type Dispatch uint8
-
 const (
 	DispatchResponses Dispatch = iota
 	DispatchRawChat
@@ -20,6 +18,8 @@ const (
 	DispatchAnthropic
 	DispatchPassthrough
 )
+
+type Dispatch uint8
 
 type TransportDecision struct{ Transport, Reason string }
 

@@ -7,6 +7,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
+type RedeemParticipant struct {
+	tx        *dbent.Tx
+	mutations *RedeemMutations
+}
+
 // BalanceInTx 显式复用调用方事务，所有方法均不取得或结束事务，也不发布副作用。
 func BalanceInTx(tx *dbent.Tx) *BalanceStore {
 	return NewBalanceStore(tx.Client())
@@ -25,11 +30,6 @@ func RedeemInTx(tx *dbent.Tx, concurrency ...RedeemConcurrencyWriter) *RedeemPar
 		writer = concurrency[0]
 	}
 	return &RedeemParticipant{tx: tx, mutations: NewRedeemMutations(tx.Client(), RedeemWriters{Balances: BalanceInTx(tx), Concurrency: writer})}
-}
-
-type RedeemParticipant struct {
-	tx        *dbent.Tx
-	mutations *RedeemMutations
 }
 
 func (p *RedeemParticipant) ApplyBalance(ctx context.Context, id int64, amount float64) error {

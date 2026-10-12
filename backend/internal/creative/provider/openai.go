@@ -11,9 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
 
 // ExecuteOpenAI 按操作调用 Images 生成或编辑接口，并读取 Base64 或 URL 图片结果。

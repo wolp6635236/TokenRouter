@@ -127,7 +127,7 @@ describe('ProviderStatusIndicator', () => {
     expect(wrapper.text()).not.toContain('admin.providers.status.tempUnschedulable')
   })
 
-  it('模型限流 + overages 启用 + 无 AICredits key → 显示 ⚡ (credits_active)', () => {
+  it('模型限流 + overages 启用 + 无 AICredits key → 显示闪电图标 (credits_active)', () => {
     const wrapper = mount(ProviderStatusIndicator, {
       props: {
         provider: makeProvider({
@@ -151,11 +151,11 @@ describe('ProviderStatusIndicator', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('⚡')
+    expect(wrapper.find('icon-stub[name="bolt"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('CSon45')
   })
 
-  it('模型限流 + overages 未启用 → 普通限流样式（无 ⚡）', () => {
+  it('模型限流 + overages 未启用 → 普通限流样式（无闪电图标）', () => {
     const wrapper = mount(ProviderStatusIndicator, {
       props: {
         provider: makeProvider({
@@ -179,7 +179,7 @@ describe('ProviderStatusIndicator', () => {
     })
 
     expect(wrapper.text()).toContain('CSon45')
-    expect(wrapper.text()).not.toContain('⚡')
+    expect(wrapper.find('icon-stub[name="bolt"]').exists()).toBe(false)
   })
 
   it('模型限流徽标显示按天倒计时且提示包含完整恢复日期', () => {
@@ -237,7 +237,7 @@ describe('ProviderStatusIndicator', () => {
     expect(wrapper.text()).toContain('admin.providers.status.creditsExhausted')
   })
 
-  it('模型限流 + overages 启用 + AICredits key 生效 → 普通限流样式（积分耗尽，无 ⚡）', () => {
+  it('模型限流 + overages 启用 + AICredits key 生效 → 普通限流样式（积分耗尽，无闪电图标）', () => {
     const wrapper = mount(ProviderStatusIndicator, {
       props: {
         provider: makeProvider({
@@ -265,9 +265,9 @@ describe('ProviderStatusIndicator', () => {
       }
     })
 
-    // 模型限流 + 积分耗尽 → 不应显示 ⚡
+    // 模型限流 + 积分耗尽 → 不应显示闪电图标
     expect(wrapper.text()).toContain('CSon45')
-    expect(wrapper.text()).not.toContain('⚡')
+    expect(wrapper.find('icon-stub[name="bolt"]').exists()).toBe(false)
     // AICredits 积分耗尽状态应显示
     expect(wrapper.text()).toContain('admin.providers.status.creditsExhausted')
   })

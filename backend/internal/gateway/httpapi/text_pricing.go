@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
@@ -15,8 +18,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 )
 
 // CheckTextModelPricing 按本次映射和计费来源检查价格，提供商切换后重新计算。

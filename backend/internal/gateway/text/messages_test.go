@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/stretchr/testify/require"
 )
 
 // messageFixture 只控制单次执行结果，验证编排是否额外尝试、重复完成或扩大部分失败资格。

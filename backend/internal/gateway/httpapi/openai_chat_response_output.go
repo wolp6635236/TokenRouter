@@ -9,22 +9,18 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/gin-gonic/gin"
 
 	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) chatBufferedFailure(c *gin.Context, provider *gatewayprovider.ExecutionProvider, resp *http.Response, requestID, upstreamModel string, finalResponse *wire.ResponsesResponse, usage wire.ForwardUsage) error {

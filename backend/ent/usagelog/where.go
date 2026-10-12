@@ -85,6 +85,11 @@ func Platform(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldPlatform, v))
 }
 
+// BillingKey applies equality check predicate on the "billing_key" field. It's identical to BillingKeyEQ.
+func BillingKey(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldBillingKey, v))
+}
+
 // RequestID applies equality check predicate on the "request_id" field. It's identical to RequestIDEQ.
 func RequestID(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldRequestID, v))
@@ -513,6 +518,81 @@ func PlatformEqualFold(v string) predicate.UsageLog {
 // PlatformContainsFold applies the ContainsFold predicate on the "platform" field.
 func PlatformContainsFold(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldContainsFold(FieldPlatform, v))
+}
+
+// BillingKeyEQ applies the EQ predicate on the "billing_key" field.
+func BillingKeyEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldBillingKey, v))
+}
+
+// BillingKeyNEQ applies the NEQ predicate on the "billing_key" field.
+func BillingKeyNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldBillingKey, v))
+}
+
+// BillingKeyIn applies the In predicate on the "billing_key" field.
+func BillingKeyIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldBillingKey, vs...))
+}
+
+// BillingKeyNotIn applies the NotIn predicate on the "billing_key" field.
+func BillingKeyNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldBillingKey, vs...))
+}
+
+// BillingKeyGT applies the GT predicate on the "billing_key" field.
+func BillingKeyGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldBillingKey, v))
+}
+
+// BillingKeyGTE applies the GTE predicate on the "billing_key" field.
+func BillingKeyGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldBillingKey, v))
+}
+
+// BillingKeyLT applies the LT predicate on the "billing_key" field.
+func BillingKeyLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldBillingKey, v))
+}
+
+// BillingKeyLTE applies the LTE predicate on the "billing_key" field.
+func BillingKeyLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldBillingKey, v))
+}
+
+// BillingKeyContains applies the Contains predicate on the "billing_key" field.
+func BillingKeyContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldBillingKey, v))
+}
+
+// BillingKeyHasPrefix applies the HasPrefix predicate on the "billing_key" field.
+func BillingKeyHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldBillingKey, v))
+}
+
+// BillingKeyHasSuffix applies the HasSuffix predicate on the "billing_key" field.
+func BillingKeyHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldBillingKey, v))
+}
+
+// BillingKeyIsNil applies the IsNil predicate on the "billing_key" field.
+func BillingKeyIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldBillingKey))
+}
+
+// BillingKeyNotNil applies the NotNil predicate on the "billing_key" field.
+func BillingKeyNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldBillingKey))
+}
+
+// BillingKeyEqualFold applies the EqualFold predicate on the "billing_key" field.
+func BillingKeyEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldBillingKey, v))
+}
+
+// BillingKeyContainsFold applies the ContainsFold predicate on the "billing_key" field.
+func BillingKeyContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldBillingKey, v))
 }
 
 // RequestIDEQ applies the EQ predicate on the "request_id" field.

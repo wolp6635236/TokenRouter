@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/gin-gonic/gin"
 )
 
 var dashboardSnapshotV2Cache = newSnapshotCache(30 * time.Second)
@@ -316,11 +317,11 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		bt := int8(v)
 		filters.BillingType = &bt
 	}
-	if nativeCompactionV2, err := parseOptionalBoolDashboardFilter(c, "native_compaction_v2"); err != nil {
+	nativeCompactionV2, err := parseOptionalBoolDashboardFilter(c, "native_compaction_v2")
+	if err != nil {
 		return nil, err
-	} else {
-		filters.NativeCompactionV2 = nativeCompactionV2
 	}
+	filters.NativeCompactionV2 = nativeCompactionV2
 
 	return filters, nil
 }

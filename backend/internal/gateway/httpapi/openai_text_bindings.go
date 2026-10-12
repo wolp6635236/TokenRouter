@@ -3,7 +3,11 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
@@ -11,6 +15,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
@@ -20,8 +25,6 @@ import (
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // OpenAITextBindings 提供文本入口的资源和用例接口。
@@ -41,7 +44,20 @@ type OpenAITextBindings struct {
 	Cyber          *CyberHandler
 	IsolateSession func(context.Context, *apikey.APIKey, int64, string, string) error
 }
+
 type openAITextHTTPBackend struct{ bindings OpenAITextBindings }
+
+// ResolveOpenAIMessagesProviderLayerModel 将通用分组映射结果规范化后交给提供商模型规则。
+func ResolveOpenAIMessagesProviderLayerModel(groupMappedModel string) string {
+	return strings.TrimSpace(groupMappedModel)
+}
+
+// ResolveOpenAIMessagesProviderLayerModelForRequest 登记规范化结果，供响应恢复和用量追踪使用。
+func ResolveOpenAIMessagesProviderLayerModelForRequest(ctx context.Context, groupMappedModel string) string {
+	model := ResolveOpenAIMessagesProviderLayerModel(groupMappedModel)
+	modeltrace.RegisterStage(ctx, model)
+	return model
+}
 
 // NewBoundOpenAITextHandler 将资源、用例接口和执行器绑定到 HTTP 入口。
 func NewBoundOpenAITextHandler(options OpenAITextOptions, bindings OpenAITextBindings, prompt MessagesPrompt, executor execution.Executor) *OpenAITextHandler {

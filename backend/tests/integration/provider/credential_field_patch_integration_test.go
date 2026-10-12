@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // TestCredentialFieldPatchPreservesLockTimeState 验证管理校验后、配置行锁前发生真实凭据轮换；字段补丁必须保留新 token 和未选配置。

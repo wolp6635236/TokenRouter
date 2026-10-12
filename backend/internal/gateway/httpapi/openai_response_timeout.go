@@ -7,13 +7,12 @@ import (
 	"strings"
 	"time"
 
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/gin-gonic/gin"
 
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
-
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) FirstOutputTimeout(reasoningEffort string) time.Duration {

@@ -5,29 +5,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// Anthropic 会话 Fallback 相关常量
+// Anthropic 会话 Fallback 相关常量。
 const (
-	// AnthropicSessionTTLSeconds Anthropic 会话缓存 TTL（5 分钟）
+	// AnthropicSessionTTLSeconds Anthropic 会话缓存 TTL（5 分钟）。
 	AnthropicSessionTTLSeconds = 300
 
-	// AnthropicDigestSessionKeyPrefix Anthropic 摘要 fallback 会话 key 前缀
+	// AnthropicDigestSessionKeyPrefix Anthropic 摘要 fallback 会话 key 前缀。
 	AnthropicDigestSessionKeyPrefix = "anthropic:digest:"
 )
 
-// AnthropicSessionTTL 返回 Anthropic 会话缓存 TTL
+// AnthropicSessionTTL 返回 Anthropic 会话缓存 TTL。
 func AnthropicSessionTTL() time.Duration {
 	return AnthropicSessionTTLSeconds * time.Second
 }
 
 // BuildAnthropicDigestChain 根据 Anthropic 请求生成摘要链
 // 格式: s:<hash>-u:<hash>-a:<hash>-u:<hash>-...
-// s = system, u = user, a = assistant
+// s = system, u = user, a = assistant.
 func BuildAnthropicDigestChain(systemRaw, messages []byte) string {
-
 	var parts []string
 
 	if len(systemRaw) > 0 && string(systemRaw) != "null" {
@@ -62,7 +62,7 @@ func CanonicalAnthropicDigestJSON(raw []byte) []byte {
 	return canonical
 }
 
-// RolePrefix 将 Anthropic 的 role 映射为单字符前缀
+// RolePrefix 将 Anthropic 的 role 映射为单字符前缀。
 func RolePrefix(role string) string {
 	switch role {
 	case "assistant":
@@ -73,7 +73,7 @@ func RolePrefix(role string) string {
 }
 
 // GenerateAnthropicDigestSessionKey 生成 Anthropic 摘要 fallback 的 sessionKey
-// 组合 prefixHash 前 8 位 + uuid 前 8 位，确保不同会话产生不同的 sessionKey
+// 组合 prefixHash 前 8 位 + uuid 前 8 位，确保不同会话产生不同的 sessionKey。
 func GenerateAnthropicDigestSessionKey(prefixHash, uuid string) string {
 	prefix := prefixHash
 	if len(prefixHash) >= 8 {

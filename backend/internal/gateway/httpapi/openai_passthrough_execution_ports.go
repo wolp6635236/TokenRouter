@@ -6,25 +6,24 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/compact"
-
-	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-
-	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"go.uber.org/zap"
 )
+
+const openAIResponsesRejectedFieldRetryBudgetContextKey = "openai_responses_rejected_field_retry_budget"
 
 type openAIPassthroughExecutionAdapter struct {
 	*openAIMessagesExecutionAdapter
@@ -134,8 +133,7 @@ func (p *openAIPassthroughExecutionAdapter) NormalizeLite(body []byte) ([]byte, 
 
 func (p *openAIPassthroughExecutionAdapter) ApplyFastPass(ctx context.Context, model string, body []byte) ([]byte, error) {
 	updated, err := tierpolicy.ApplyBody(body, p.s.FastPolicy.Input(ctx, p.provider, model))
-	var blocked *tierpolicy.BlockedError
-	if errors.As(err, &blocked) {
+	if blocked, ok := errors.AsType[*tierpolicy.BlockedError](err); ok {
 		WriteFastPolicyBlockedResponse(p.c, blocked)
 	}
 	return updated, err
@@ -257,7 +255,7 @@ func (p *openAIPassthroughExecutionAdapter) ErrorResponsePass(ctx context.Contex
 
 func (p *openAIPassthroughExecutionAdapter) WrapResponseBody(r *http.Response) {
 	if mapping, ok := OpenAIResponsesClientToolMapping(p.c); ok && openai.IsEventStreamResponse(r.Header) {
-		limit := openAIResponseDefaultMaxLineSize
+		limit := OpenAIResponseDefaultMaxLineSize
 		if p.s.Output.Options.MaxLineSize > 0 {
 			limit = p.s.Output.Options.MaxLineSize
 		}
@@ -297,4 +295,38 @@ func (p *openAIPassthroughExecutionAdapter) BindOwner(ctx context.Context, id st
 
 func (p *openAIPassthroughExecutionAdapter) ObservedServiceTier() string {
 	return ObservedUpstreamResponseServiceTier(p.c)
+}
+
+// openAIRequestGroup 读取当前请求保存的分组。
+func openAIRequestGroup(c *gin.Context) *routing.Group {
+	if c == nil {
+		return nil
+	}
+	v, ok := c.Get("api_key")
+	if !ok {
+		return nil
+	}
+	key, ok := v.(*apikey.APIKey)
+	if !ok || key == nil {
+		return nil
+	}
+	return key.Group
+}
+
+// openAIResponsesRejectedFieldRetryStateForRequest 为一次提供商尝试创建报文去重状态。
+// 各次尝试共享入站请求的重试预算。
+func openAIResponsesRejectedFieldRetryStateForRequest(c *gin.Context, initialBody []byte) *openai.ResponsesRejectedFieldRetryState {
+	var budget *openai.ResponsesRejectedFieldRetryBudget
+	if c != nil {
+		if existing, ok := c.Get(openAIResponsesRejectedFieldRetryBudgetContextKey); ok {
+			budget, _ = existing.(*openai.ResponsesRejectedFieldRetryBudget)
+		}
+	}
+	if budget == nil {
+		budget = &openai.ResponsesRejectedFieldRetryBudget{}
+		if c != nil {
+			c.Set(openAIResponsesRejectedFieldRetryBudgetContextKey, budget)
+		}
+	}
+	return openai.NewOpenAIResponsesRejectedFieldRetryStateWithBudget(initialBody, budget)
 }

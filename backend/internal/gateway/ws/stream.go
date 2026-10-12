@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 

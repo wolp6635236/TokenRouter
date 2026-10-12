@@ -2,14 +2,23 @@ package provider
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// TestFetchCatalogHTTP 验证真实 HTTP 客户端的条件请求、状态码和下载上限。
+var (
+	canListenOnce sync.Once
+	canListen     bool
+	canListenErr  error
+)
+
+// TestFetchCatalogHTTP 检查 HTTP 客户端的条件请求、状态码和下载上限。
 func TestFetchCatalogHTTP(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -50,7 +59,7 @@ func TestFetchCatalogHTTP(t *testing.T) {
 	}
 }
 
-// TestFetchCatalogCancellation 验证取消传播到真实请求，并检查非法地址。
+// TestFetchCatalogCancellation 检查取消信号传递给 HTTP 请求及非法地址处理。
 func TestFetchCatalogCancellation(t *testing.T) {
 	started := make(chan struct{})
 	server := newLocalTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +90,29 @@ func TestNewRemoteClient_InvalidProxy_NoFallback(t *testing.T) {
 	require.ErrorContains(t, err, "proxy client init failed")
 }
 
-// TestNewRemoteClient_InvalidProxy_WithFallback 验证显式允许的直连回退。
+// TestNewRemoteClient_InvalidProxy_WithFallback 检查允许直连回退时的代理错误处理。
 func TestNewRemoteClient_InvalidProxy_WithFallback(t *testing.T) {
 	require.IsType(t, &remoteClient{}, NewRemoteClient("://bad", true))
+}
+
+func localListenerAvailable() bool {
+	canListenOnce.Do(func() {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			canListenErr = err
+			canListen = false
+			return
+		}
+		_ = ln.Close()
+		canListen = true
+	})
+	return canListen
+}
+
+func newLocalTestServer(tb testing.TB, handler http.Handler) *httptest.Server {
+	tb.Helper()
+	if !localListenerAvailable() {
+		tb.Skipf("local listeners are not permitted in this environment: %v", canListenErr)
+	}
+	return httptest.NewServer(handler)
 }

@@ -16,6 +16,12 @@ type anthropicPromptBinding struct {
 	ExpiresAt      time.Time
 }
 
+// AnthropicPromptCache 独占提供商与 Key 隔离的摘要绑定；没有后台清理或额外存储。
+type AnthropicPromptCache struct {
+	entries sync.Map
+	clock   func() time.Time
+}
+
 // BuildAnthropicDigestChain 保持 system 与逐条消息的原摘要编码。
 func BuildAnthropicDigestChain(req *protocolanthropic.AnthropicRequest) string {
 	if req == nil {
@@ -45,6 +51,14 @@ func anthropicDigestNamespace(providerID int64, cAPIKeyID int64) string {
 		return ""
 	}
 	return fmt.Sprintf("%d|%d|", providerID, cAPIKeyID)
+}
+
+// NewAnthropicPromptCache 使用 app 传入的时钟构造提示缓存。
+func NewAnthropicPromptCache(clock func() time.Time) *AnthropicPromptCache {
+	if clock == nil {
+		clock = time.Now
+	}
+	return &AnthropicPromptCache{clock: clock}
 }
 
 // Find 逐级回退到最长有效摘要，保持到期清理时点。
@@ -140,20 +154,6 @@ func CloneAnthropicDigestRequest(req *protocolanthropic.AnthropicRequest) *proto
 		cp.Messages = append([]protocolanthropic.AnthropicMessage(nil), req.Messages...)
 	}
 	return &cp
-}
-
-// AnthropicPromptCache 独占提供商与 Key 隔离的摘要绑定；没有后台清理或额外存储。
-type AnthropicPromptCache struct {
-	entries sync.Map
-	clock   func() time.Time
-}
-
-// NewAnthropicPromptCache 使用 app 传入的时钟构造提示缓存。
-func NewAnthropicPromptCache(clock func() time.Time) *AnthropicPromptCache {
-	if clock == nil {
-		clock = time.Now
-	}
-	return &AnthropicPromptCache{clock: clock}
 }
 
 func (s *AnthropicPromptCache) now() time.Time {

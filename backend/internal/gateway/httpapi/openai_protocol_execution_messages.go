@@ -4,13 +4,12 @@ import (
 	"context"
 	"net/http"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/gin-gonic/gin"
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 )
 
 // Messages 调用目标执行器处理 Messages 请求和错误恢复。

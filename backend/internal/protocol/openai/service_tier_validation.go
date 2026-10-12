@@ -7,6 +7,20 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+const (
+	invalidOpenAIServiceTierValueMaxLen = 64
+
+	// ServiceTierPriority 表示上游报文中的优先服务档位。
+	ServiceTierPriority  = "priority"
+	ServiceTierUltrafast = "ultrafast"
+	ServiceTierFlex      = "flex"
+)
+
+// InvalidServiceTierError 表示请求的 service_tier 无效，handler 将其转换为 400 invalid_request_error。
+type InvalidServiceTierError struct {
+	Value string
+}
+
 func NormalizeServiceTier(raw string) *string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	if value == "" {
@@ -27,16 +41,9 @@ func NormalizeServiceTier(raw string) *string {
 	}
 }
 
-// InvalidServiceTierError 表示请求的 service_tier 无效，handler 将其转换为 400 invalid_request_error。
-type InvalidServiceTierError struct {
-	Value string
-}
-
 func (e *InvalidServiceTierError) Error() string {
 	return fmt.Sprintf("invalid service_tier %q: must be one of auto, default, fast, flex, priority, scale, ultrafast", e.Value)
 }
-
-const invalidOpenAIServiceTierValueMaxLen = 64
 
 func boundInvalidOpenAIServiceTierValue(raw string) string {
 	if len(raw) <= invalidOpenAIServiceTierValueMaxLen {

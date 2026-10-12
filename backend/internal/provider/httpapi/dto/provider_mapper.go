@@ -88,7 +88,7 @@ func ProviderFromRecordShallow(a *provider.Record) *Provider {
 		if mode := runtime.GetUserMsgQueueMode(); mode != "" {
 			out.UserMsgQueueMode = &mode
 		}
-		// 会话ID伪装开关
+		// 会话 ID 伪装开关
 		if a.IsSessionIDMaskingEnabled() {
 			enabled := true
 			out.EnableSessionIDMasking = &enabled

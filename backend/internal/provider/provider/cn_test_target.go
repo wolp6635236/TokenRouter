@@ -7,14 +7,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// Target 固定本次提供商快照，适配器只根据已经准备好的测试路由执行。
-func (s *CNProviderTest) Target(value *provider.Record) provider.TestTarget {
-	return cnTestTarget{executor: s, record: value}
-}
-
 type cnTestTarget struct {
 	executor *CNProviderTest
 	record   *provider.Record
+}
+
+// Target 固定本次提供商快照，适配器只根据已经准备好的测试路由执行。
+func (s *CNProviderTest) Target(value *provider.Record) provider.TestTarget {
+	return cnTestTarget{executor: s, record: value}
 }
 
 func (t cnTestTarget) Information() provider.TestTargetInfo {

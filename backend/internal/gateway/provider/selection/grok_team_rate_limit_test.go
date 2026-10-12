@@ -4,10 +4,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 func TestGrokTeamModelRateLimit_MarksAndFiltersSiblings(t *testing.T) {

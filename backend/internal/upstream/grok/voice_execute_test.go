@@ -9,10 +9,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // 捕获同步输出，不另建队列或输出协程。
@@ -21,15 +22,15 @@ type voiceOutput struct {
 	events []upstream.OutputEvent
 }
 
+type voiceBody struct {
+	io.ReadCloser
+	closed *atomic.Int64
+}
+
 func (s *voiceOutput) Begin(head upstream.OutputHead) error { s.head = head; return nil }
 func (s *voiceOutput) Emit(event upstream.OutputEvent) error {
 	s.events = append(s.events, event)
 	return nil
-}
-
-type voiceBody struct {
-	io.ReadCloser
-	closed *atomic.Int64
 }
 
 func (b *voiceBody) Close() error { b.closed.Add(1); return b.ReadCloser.Close() }
@@ -110,7 +111,7 @@ func TestVoiceExecuteHTTPErrorDoesNotEmitOrMeter(t *testing.T) {
 	target := &VoiceTarget{
 		Request: req,
 		Do: func(*http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 403, Body: &voiceBody{io.NopCloser(strings.NewReader("denied")), &closed}}, nil
+			return &http.Response{StatusCode: http.StatusForbidden, Body: &voiceBody{io.NopCloser(strings.NewReader("denied")), &closed}}, nil
 		},
 		ReadBody:       func(io.Reader) ([]byte, error) { t.Fatal("错误响应由原策略处理"); return nil, nil },
 		BeforeResponse: func(resp *http.Response) (bool, error) { require.Equal(t, 403, resp.StatusCode); return true, sentinel },

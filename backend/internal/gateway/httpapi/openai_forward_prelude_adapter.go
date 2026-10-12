@@ -5,21 +5,19 @@ import (
 	"errors"
 	"strings"
 
-	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
-	"github.com/TokenFlux/TokenRouter/internal/egress"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
 	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
+	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 type openAIForwardPreludeAdapter struct {
@@ -27,6 +25,10 @@ type openAIForwardPreludeAdapter struct {
 	c        *gin.Context
 	provider *gatewayprovider.ExecutionProvider
 	ctx      context.Context
+}
+
+func openAIForwardProfile(provider *gatewayprovider.ExecutionProvider) forward.Profile {
+	return forward.Profile{Platform: provider.Record.Platform, Name: provider.Record.Name, Type: provider.Record.Type, UsesCodex: provider.View().UsesOpenAICodexProtocol(), OpenAI: provider.View().IsOpenAI(), OAuth: provider.View().IsOAuth(), OAuthLike: provider.View().IsOpenAIOAuthLike(), APIKey: provider.Record.Type == capability.ProviderTypeAPIKey, Grok: provider.Record.Platform == capability.PlatformGrok, DeepSeek: provider.Record.Platform == capability.PlatformDeepseek, NativeCN: gatewayprovider.ExecutionProtocolTarget(provider).UsesNativeCNResponses(), Anthropic: gatewayprovider.ExecutionProtocolTarget(provider).IsAnthropicProtocol(), RawChat: gatewayprovider.ExecutionModelPolicy(provider).RawChat(), ResolvedChat: provider.Route.Protocol() == protocol.ProtocolOpenAIChatCompletions, Passthrough: provider.View().IsOpenAIPassthroughEnabled()}
 }
 
 func (p openAIForwardPreludeAdapter) BlockGroupImages() bool {
@@ -111,17 +113,14 @@ func (p openAIForwardPreludeAdapter) LiteHeader() bool {
 func (p openAIForwardPreludeAdapter) LitePayload(body []byte) ([]byte, bool, string, error) {
 	updated, changed, err := gatewayprovider.NormalizeResponsesLiteForProvider(p.provider.View(), body)
 	param := "tools"
-	var validation *openai.ResponsesLiteValidationError
-	if errors.As(err, &validation) {
+	if validation, ok := errors.AsType[*openai.ResponsesLiteValidationError](err); ok {
 		param = validation.Parameter()
 	}
 	return updated, changed, param, err
 }
 
 func (p openAIForwardPreludeAdapter) Transport() forward.TransportDecision {
-	v := p.s.ResolveTransport(p.provider)
-	v = ResolveOpenAIWSDecisionByClientTransport(v, GetOpenAIClientTransport(p.c))
-	return forward.TransportDecision{Transport: string(v.Transport), Reason: v.Reason}
+	return forward.TransportDecision{Transport: "http_sse", Reason: "client_protocol_http"}
 }
 
 func (p openAIForwardPreludeAdapter) CompactPath() bool {

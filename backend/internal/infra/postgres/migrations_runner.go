@@ -13,12 +13,13 @@ import (
 	"time"
 )
 
-// schemaMigrationsTableDDL 定义迁移记录表的 DDL。
-// 该表用于跟踪已应用的迁移文件及其校验和。
-// - filename: 迁移文件名，作为主键唯一标识每个迁移
-// - checksum: 文件内容的 SHA256 哈希值，用于检测迁移文件是否被篡改
-// - applied_at: 迁移应用时间戳
-const schemaMigrationsTableDDL = `
+const (
+	// schemaMigrationsTableDDL 定义迁移记录表的 DDL。
+	// 该表用于跟踪已应用的迁移文件及其校验和。
+	// - filename: 迁移文件名，作为主键唯一标识每个迁移
+	// - checksum: 文件内容的 SHA256 哈希值，用于检测迁移文件是否被篡改
+	// - applied_at: 迁移应用时间戳。
+	schemaMigrationsTableDDL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
 	filename   TEXT PRIMARY KEY,
 	checksum   TEXT NOT NULL,
@@ -26,7 +27,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 `
 
-const atlasSchemaRevisionsTableDDL = `
+	atlasSchemaRevisionsTableDDL = `
 CREATE TABLE IF NOT EXISTS atlas_schema_revisions (
 	version TEXT PRIMARY KEY,
 	description TEXT NOT NULL,
@@ -43,31 +44,28 @@ CREATE TABLE IF NOT EXISTS atlas_schema_revisions (
 );
 `
 
-// migrationsAdvisoryLockID 是用于序列化迁移操作的 PostgreSQL Advisory Lock ID。
-// 在多实例部署场景下，该锁确保同一时间只有一个实例执行迁移。
-// 任何稳定的 int64 值都可以，只要不与同一数据库中的其他锁冲突即可。
-const migrationsAdvisoryLockID int64 = 694208311321144027
-const migrationsLockRetryInterval = 500 * time.Millisecond
-const nonTransactionalMigrationSuffix = "_notx.sql"
-const paymentOrdersOutTradeNoUniqueMigration = "120_enforce_payment_orders_out_trade_no_unique_notx.sql"
-const paymentOrdersOutTradeNoUniqueIndex = "paymentorder_out_trade_no_unique"
-const schedulerOutboxPendingDedupKeyMigration = "165_scheduler_outbox_pending_dedup_key_index_notx.sql"
-const schedulerOutboxPendingDedupKeyIndex = "idx_scheduler_outbox_pending_dedup_key"
-const latestAPIKeyIPIndexMigration = "201_add_usage_logs_api_key_latest_ip_index_notx.sql"
-const latestAPIKeyIPIndex = "idx_usage_logs_api_key_latest_ip"
-const usageLogsUpstreamModelMismatchIndexMigration = "195_add_usage_log_upstream_model_mismatch_index_notx.sql"
-const usageLogsUpstreamModelMismatchIndex = "idx_usage_logs_upstream_model_mismatch_created_at"
-const usageLogsEffectiveModelIndexesMigration = "226_add_usage_log_effective_model_indexes_notx.sql"
-const usageLogsEffectiveRequestedModelIndex = "idx_usage_logs_effective_requested_model_created"
-const usageLogsEffectiveUpstreamModelIndex = "idx_usage_logs_effective_upstream_model_created"
-const usageLogsUpstreamRequestIDIndexMigration = "267_add_usage_log_upstream_request_id_index_notx.sql"
-const usageLogsUpstreamRequestIDIndex = "idx_usage_logs_upstream_request_id"
-
-type migrationChecksumCompatibilityRule struct {
-	fileChecksum       string
-	acceptedDBChecksum map[string]struct{}
-	acceptedChecksums  map[string]struct{}
-}
+	// migrationsAdvisoryLockID 是用于序列化迁移操作的 PostgreSQL Advisory Lock ID。
+	// 在多实例部署场景下，该锁确保同一时间只有一个实例执行迁移。
+	// 任何稳定的 int64 值都可以，只要不与同一数据库中的其他锁冲突即可。
+	migrationsAdvisoryLockID                     int64 = 694208311321144027
+	migrationsLockRetryInterval                        = 500 * time.Millisecond
+	nonTransactionalMigrationSuffix                    = "_notx.sql"
+	paymentOrdersOutTradeNoUniqueMigration             = "120_enforce_payment_orders_out_trade_no_unique_notx.sql"
+	paymentOrdersOutTradeNoUniqueIndex                 = "paymentorder_out_trade_no_unique"
+	schedulerOutboxPendingDedupKeyMigration            = "165_scheduler_outbox_pending_dedup_key_index_notx.sql"
+	schedulerOutboxPendingDedupKeyIndex                = "idx_scheduler_outbox_pending_dedup_key"
+	latestAPIKeyIPIndexMigration                       = "201_add_usage_logs_api_key_latest_ip_index_notx.sql"
+	latestAPIKeyIPIndex                                = "idx_usage_logs_api_key_latest_ip"
+	usageLogsUpstreamModelMismatchIndexMigration       = "195_add_usage_log_upstream_model_mismatch_index_notx.sql"
+	usageLogsUpstreamModelMismatchIndex                = "idx_usage_logs_upstream_model_mismatch_created_at"
+	usageLogsEffectiveModelIndexesMigration            = "226_add_usage_log_effective_model_indexes_notx.sql"
+	usageLogsEffectiveRequestedModelIndex              = "idx_usage_logs_effective_requested_model_created"
+	usageLogsEffectiveUpstreamModelIndex               = "idx_usage_logs_effective_upstream_model_created"
+	usageLogsUpstreamRequestIDIndexMigration           = "267_add_usage_log_upstream_request_id_index_notx.sql"
+	usageLogsUpstreamRequestIDIndex                    = "idx_usage_logs_upstream_request_id"
+	auditLogsRequestIDIndexMigration                   = "296_audit_request_id_index_notx.sql"
+	auditLogsRequestIDIndex                            = "idx_audit_logs_request_id_created_at"
+)
 
 // migrationChecksumCompatibilityRules 仅用于兼容历史上误修改过的迁移文件 checksum。
 // 规则必须同时匹配「迁移名 + 数据库 checksum + 当前文件 checksum」且两者都落在该迁移的已知版本集合内才会放行，
@@ -86,6 +84,27 @@ var migrationChecksumCompatibilityRules = map[string]migrationChecksumCompatibil
 	"123_fix_legacy_auth_source_grant_on_signup_defaults.sql": newMigrationChecksumCompatibilityRule("2ce43c2cd89e9f9e1febd34a407ed9e84d177386c5544b6f02c1f58a21129f57", "6cd33422f215dcd1f486ab6f35c0ea5805d9ca69bb25906d94bc649156657145"),
 	"180_batch_image_foundation.sql":                          newMigrationChecksumCompatibilityRule("d902b70982025ec519749faf058aab7631e82c3f48167b9a4ae4db718eb72cce", "82da85b5d98e67a0507647b873a40373e84538e4adafdeed6767c0ac8b6570b2"),
 	"183_batch_image_pricing_snapshot.sql":                    newMigrationChecksumCompatibilityRule("4012af3e43636cb6af22e0176d59d1fcc70615c0f310194329461ae462c4fbd6", "96d915c9b7a6941ae99039e0ff3f1a61481eb9bddd933d11c6fadb2274554e87"),
+}
+
+type migrationChecksumCompatibilityRule struct {
+	fileChecksum       string
+	acceptedDBChecksum map[string]struct{}
+	acceptedChecksums  map[string]struct{}
+}
+
+type migrationConnection interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
+// pgAdvisoryLock 获取 PostgreSQL Advisory Lock。
+// Advisory Lock 是一种轻量级的锁机制，不与任何特定的数据库对象关联。
+// 它非常适合用于应用层面的分布式锁场景，如迁移序列化。
+type advisoryLockConnection interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 // ApplyMigrations 是迁移执行的核心实现。
@@ -253,13 +272,6 @@ func ApplyMigrations(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	return nil
 }
 
-type migrationConnection interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
-}
-
 func prepareNonTransactionalMigration(ctx context.Context, db migrationConnection, name string) error {
 	switch name {
 	case paymentOrdersOutTradeNoUniqueMigration:
@@ -279,6 +291,8 @@ func prepareNonTransactionalMigration(ctx context.Context, db migrationConnectio
 		return nil
 	case usageLogsUpstreamRequestIDIndexMigration:
 		return dropInvalidIndexIfPresent(ctx, db, usageLogsUpstreamRequestIDIndex)
+	case auditLogsRequestIDIndexMigration:
+		return dropInvalidIndexIfPresent(ctx, db, auditLogsRequestIDIndex)
 	default:
 		return nil
 	}
@@ -525,19 +539,11 @@ func splitSQLStatements(content string) []string {
 func stripSQLLineComment(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
-		if idx := strings.Index(line, "--"); idx >= 0 {
-			lines[i] = line[:idx]
+		if before, _, ok := strings.Cut(line, "--"); ok {
+			lines[i] = before
 		}
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
-}
-
-// pgAdvisoryLock 获取 PostgreSQL Advisory Lock。
-// Advisory Lock 是一种轻量级的锁机制，不与任何特定的数据库对象关联。
-// 它非常适合用于应用层面的分布式锁场景，如迁移序列化。
-type advisoryLockConnection interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 func pgAdvisoryLock(ctx context.Context, db advisoryLockConnection) error {

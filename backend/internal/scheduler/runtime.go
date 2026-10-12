@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// ErrRuntimeStopped 表示不能在已停止的实例中重新认领资源。
+var ErrRuntimeStopped = errors.New("scheduler runtime stopped")
+
 // RuntimeTask 声明初始任务或周期任务，Run 由 Start 调用。
 type RuntimeTask struct {
 	Name      string
@@ -162,6 +165,3 @@ func (r *WorkerRuntime) Enter(parent context.Context, name string) (context.Cont
 	}
 	return ctx, done, nil
 }
-
-// ErrRuntimeStopped 表示不能在已停止的实例中重新认领资源。
-var ErrRuntimeStopped = errors.New("scheduler runtime stopped")

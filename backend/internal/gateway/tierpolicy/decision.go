@@ -3,12 +3,12 @@ package tierpolicy
 import (
 	"fmt"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 // DecisionInput 保存平台和分组，按评估顺序按需读取设置和价格能力。

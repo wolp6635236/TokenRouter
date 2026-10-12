@@ -6,18 +6,14 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
 	"github.com/gin-gonic/gin"
-
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 )
 
 func (p *OpenAIResponseOutput) BindResponseProvider(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, responseID string) {

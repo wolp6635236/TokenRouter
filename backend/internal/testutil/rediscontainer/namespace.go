@@ -18,6 +18,10 @@ import (
 // redisNamespaceSeq 为共享 Redis 容器的测试分配独立键前缀，测试结束后清理对应数据。
 var redisNamespaceSeq uint64
 
+type prefixHook struct {
+	prefix string
+}
+
 func Namespaced(t *testing.T, base *redisclient.Client) *redisclient.Client {
 	t.Helper()
 
@@ -65,10 +69,6 @@ func sanitizeRedisNamespace(name string) string {
 	name = strings.ReplaceAll(name, "/", "_")
 	name = strings.ReplaceAll(name, " ", "_")
 	return name
-}
-
-type prefixHook struct {
-	prefix string
 }
 
 func (h prefixHook) DialHook(next redisclient.DialHook) redisclient.DialHook { return next }

@@ -8,8 +8,6 @@ import (
 
 type OpenAIProviderInputError struct{ Message string }
 
-func (e *OpenAIProviderInputError) Error() string { return e.Message }
-
 type OpenAIProviderOperations interface {
 	GetProvider(context.Context, int64) (*Record, error)
 	CreateProvider(context.Context, *CreateProviderInput) (*Record, error)
@@ -19,10 +17,6 @@ type OpenAIProviderImport struct {
 	Authorization *OpenAIAuthorization
 	Admin         OpenAIProviderOperations
 	ProxyURL      func(context.Context, int64) (string, bool, error)
-}
-
-func NewOpenAIProviderImport(auth *OpenAIAuthorization, admin OpenAIProviderOperations, proxy func(context.Context, int64) (string, bool, error)) *OpenAIProviderImport {
-	return &OpenAIProviderImport{Authorization: auth, Admin: admin, ProxyURL: proxy}
 }
 
 type OpenAIOAuthProviderCreateInput struct {
@@ -45,6 +39,12 @@ type OpenAICodexPATCreateInput struct {
 	AutoPauseOnExpired *bool
 	CredentialExtras   map[string]any `json:"-"`
 	Extra              map[string]any
+}
+
+func (e *OpenAIProviderInputError) Error() string { return e.Message }
+
+func NewOpenAIProviderImport(auth *OpenAIAuthorization, admin OpenAIProviderOperations, proxy func(context.Context, int64) (string, bool, error)) *OpenAIProviderImport {
+	return &OpenAIProviderImport{Authorization: auth, Admin: admin, ProxyURL: proxy}
 }
 
 func (OpenAICodexPATCreateInput) String() string { return "OpenAI PAT provider creation input" }

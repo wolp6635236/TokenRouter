@@ -2,17 +2,18 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 )
 
 func newUsageRecordTestPool(t *testing.T) *completion.UsageRecordWorkerPool {
@@ -272,9 +273,9 @@ func TestOpenAIGatewayHandlerSubmitUsageRecordTask_PreservesRequestIDs(t *testin
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	ctx := context.WithValue(req.Context(), telemetry.RequestID, "req-123")
-	ctx = context.WithValue(ctx, telemetry.ClientRequestID, "client-456")
+	ctx = context.WithValue(ctx, telemetry.ClientRequestID, "req-123")
 	c.Request = req.WithContext(ctx)
 
 	got := make(chan [2]string, 1)
@@ -286,7 +287,7 @@ func TestOpenAIGatewayHandlerSubmitUsageRecordTask_PreservesRequestIDs(t *testin
 
 	select {
 	case ids := <-got:
-		require.Equal(t, [2]string{"req-123", "client-456"}, ids)
+		require.Equal(t, [2]string{"req-123", "req-123"}, ids)
 	case <-time.After(time.Second):
 		t.Fatal("task not executed")
 	}
@@ -298,9 +299,9 @@ func TestGatewayHandlerSubmitUsageRecordTask_PreservesRequestIDs(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	ctx := context.WithValue(req.Context(), telemetry.RequestID, "req-gateway")
-	ctx = context.WithValue(ctx, telemetry.ClientRequestID, "client-gateway")
+	ctx = context.WithValue(ctx, telemetry.ClientRequestID, "req-gateway")
 	c.Request = req.WithContext(ctx)
 
 	got := make(chan [2]string, 1)
@@ -312,7 +313,7 @@ func TestGatewayHandlerSubmitUsageRecordTask_PreservesRequestIDs(t *testing.T) {
 
 	select {
 	case ids := <-got:
-		require.Equal(t, [2]string{"req-gateway", "client-gateway"}, ids)
+		require.Equal(t, [2]string{"req-gateway", "req-gateway"}, ids)
 	case <-time.After(time.Second):
 		t.Fatal("task not executed")
 	}

@@ -7,6 +7,7 @@
 - [工具链与本地运行](#工具链与本地运行)：准备环境或更新依赖时读取。
 - [依赖规则](#backend_dependency_rules)：新增后端模块、调整 import 或文件许可时读取。
 - [编码约定](#编码约定)：写注释、修改前端时读取。
+- [后端文件组织](#backend_file_layout)：新增、拆分、合并或改名后端 Go 文件和测试文件时读取，文件内的声明顺序也在这一节。
 - [生成代码与迁移](#生成代码与迁移)：修改 Ent schema、Wire 或数据库时读取。
 - [验证策略](#验证策略)：实现完成、提交之前读取。
 - [提交与文档](#提交与文档)：形成提交或维护 Project Doc 时读取。
@@ -17,12 +18,13 @@
 
 | 工具 | 版本来源 | 当前要求 |
 | --- | --- | --- |
-| Go | `backend/go.mod`、CI | `1.27.1` |
+| Go | `backend/go.mod`、CI | `1.27.2` |
 | Node.js | `.node-version` | `26.10.0` |
 | pnpm | `frontend/package.json` 的 `packageManager` | `12.9.1`；本地 pnpm 读取该字段并切换到声明的版本 |
 | golangci-lint | `.golangci-version` | 本地和 CI 使用同一个完整版本，配置在 `backend/.golangci.yml` |
 | gofumpt | golangci-lint 内置 | 使用默认规则，不开启 extra，不单独维护版本 |
 | arch-go | `tools/architecture/go.mod` | `v2.1.2`；通过 Go API 使用，由独立的工具模块运行 |
+| dst | `tools/declorder/go.mod` | `tools/declorder` 用它改写声明顺序并保留注释，独立的工具模块 |
 | PostgreSQL、Redis | Compose 和集成测试 | 生产必需；测试可以由 Testcontainers 或 Compose 提供 |
 
 本地安装和 CI 相同版本的 lint，以免规则集不同，导致问题只在 CI 上出现：
@@ -68,6 +70,8 @@ HTTP、用例、存储和后台资源，由 app 装配各模块的实现。业�
 
 `make lint-go` 的第一步用固定版本 arch-go 的 Go API 检查规则，并运行正反例、扫描覆盖和文件许可的使用方测试。工具要读取独立模块之外的源码，所以入口使用 `-count=1` 关闭测试缓存。CI 的 go-lint job 和推送前快检都运行这一步，CI 的 lint 缓存组同时包含后端和架构工具的 Go 依赖。修改角色和模块关系时，维护规则表，不另外引入生成配置的流程。golangci-lint 负责通用的代码质量检查，架构白名单不放在它里面。
 
+同一测试模块还运行[后端文件布局检查](#backend_file_layout)。
+
 ### 通用规则
 
 - 核心不依赖旧的业务实现，也不依赖框架和存储的实现；HTTP 适配层通过用例访问数据，不直接访问数据库。
@@ -111,6 +115,92 @@ HTTP、用例、存储和后台资源，由 app 装配各模块的实现。业�
 
 支付页动态导入 Stripe 和 Airwallex SDK，`frontend/vite.config.ts` 通过 Rolldown 的 `codeSplitting` 将它们分别放进独立的 vendor 包。Airwallex 在模块加载时会预取远程支付脚本，因此它和同命名空间的依赖一起分包。调整分包规则后，检查生产构建的依赖关系，确认支付 SDK 由支付流程触发加载。
 
+<a id="backend_file_layout"></a>
+## 后端文件组织
+
+本节规定 `backend/` 下手写 Go 文件的拆分和命名。带生成标记的文件（`ent/` 的生成代码、`wire_gen.go` 等）由生成命令决定。
+
+### 源文件
+
+- 一个源文件写一个主题，文件名用 snake_case 写出主题，例如 `redeem_admin.go`。
+- 文件名去掉所在目录的包名：`ops` 包里的告警文件叫 `alerts.go`，`apikey` 包里的服务文件叫 `service.go`。`api_key_service.go` 这种开头几段拼起来等于包名的写法也要去掉前缀。文件名正好等于包名时（`ops/ops.go`），用它放包的主入口。
+- 源文件的名字要能看出主题。`helper.go`、`helpers.go`、`util.go`、`utils.go`、`common.go`、`misc.go`、`shared.go` 和 `other.go` 都看不出主题，换成具体名字。`helpers` 留给测试辅助文件。
+- 去掉空行、注释和 import 后不到 30 行的源文件，如果没有自己的主题，就并进主题相同或者使用它最多的文件。几个常量、一两个错误变量、一个几行的小函数、一个只有一处调用的转换函数，都属于这种情况。`doc.go`、`wire.go`、带平台后缀或 `//go:build` 约束的文件，以及包里唯一的源文件，再小也单独保留。
+- 大包按主题给文件加统一前缀，让同一主题的文件在目录里排在一起，例如 app 包的 `gateway_*` 和 `provider_*`。新文件沿用已有前缀。
+
+<a id="backend_declaration_order"></a>
+### 文件内的声明顺序
+
+手写 Go 文件的顶层声明依次是 import、const、var、type、func：
+
+- const 和 var 各写成一个括号块。块里不同用途的声明用空行隔开，每组上方写注释。iota 按块内序号计数，一个文件有多个 iota 枚举时，第二个起单独成块，块前加 `//nolint:decorder` 并写明原因。
+- type 可以分开声明，也可以写成块。
+- func 里 init 排在最前，构造函数（以 `New` 或 `Must` 开头、返回 `T` 或 `*T` 的导出函数）排在 `T` 的第一个方法前面。其余函数按调用关系排列，调用方在前。
+
+`make fmt` 对改动的文件运行 `tools/declorder`，按上面的规则移动声明、合并 const 和 var，再交给 gofumpt 和 gci 格式化。它保持同类声明的相对顺序，var 的初始化顺序随之不变。合并时每条原声明在块内自成一组，组之间空一行。相邻的两条都是没有注释的单行声明时连写，由 gofmt 对齐。和下一条声明隔着空行的注释会跟着那条声明移动，工具在 stderr 里列出这些位置，需要人工确认注释仍然放在对的地方。`make lint-go` 用 golangci-lint 的 decorder 检查声明顺序和块数，用 funcorder 检查构造函数的位置。
+
+decorder 把初始化表达式里函数字面量内的 `var` 当成顶层声明计数，`var x = func() T { var y T; ... }()` 会被误报。这种初始化写成具名函数，例如 `var catalog = loadCatalog()`。
+
+合并文件时，把源文件的声明直接放进目标文件，再运行 `make fmt`，声明会移到对应的位置。
+
+### 包说明 doc.go
+
+手写源文件达到 15 个的包需要 `doc.go`，文件里只有包注释和 `package` 子句。包注释依次写三部分：
+
+1. 第一句以 `Package <包名>` 开头，写包负责什么。
+2. 阅读入口：第一次读这个包时先看哪两三个文件，每个文件一句话。
+3. 文件分组：按前缀或主题列出文件分组，每组一句话，写出代表文件。
+
+```go
+// Package billing 计算请求费用，维护余额、订阅和兑换码。
+//
+// 阅读入口：
+//   - calculator.go：按模型价格和用量计算单次请求的费用。
+//   - settlement.go：扣费、退款和任务资金的结算。
+//
+// 文件分组：
+//   - subscription*.go：订阅的分配、额度窗口和过期。
+//   - redeem_*.go：兑换码的生成、兑换和后台管理。
+//   - eligibility*.go：请求前的余额和额度准入。
+package billing
+```
+
+包注释写在 `doc.go` 里，其他文件的 `package` 子句上方留空。新文件归入已有分组时，`doc.go` 保持原样；新增分组，或者入口文件改名、删除时，在同一次修改里更新 `doc.go`。`doc.go` 提到的每个文件名都要在目录里存在。
+
+### 测试文件
+
+GoLand 把 `X_test.go` 折叠在 `X.go` 下面，读者也靠这个名字从源文件找到测试。测试文件按下表命名：
+
+| 文件名 | 内容 | 要求 |
+| --- | --- | --- |
+| `X_test.go` | `X.go` 的单元测试、基准测试和模糊测试 | 同目录有 `X.go`；存在不启用 `integration` 的构建组合 |
+| `X_integration_test.go` | `X.go` 的集成测试 | 同目录有 `X.go`；构建需要 `integration`，可附加平台等约束 |
+| `X_external_test.go` | `X.go` 的外部测试包（`package <包名>_test`）单元测试 | `X_test.go` 是包内测试，两者无法合并时使用 |
+| `X_external_integration_test.go` | 上一行的集成测试版本 | `//go:build integration` |
+| `main_test.go` | 包的 `TestMain` | 包里另有集成测试的 `TestMain` 时，加 `//go:build !integration` |
+| `main_integration_test.go` | 集成测试的 `TestMain` | `//go:build integration` |
+| `helpers_test.go` | 两个以上测试文件共用的 fixture、替身和断言函数 | 每个包一个 |
+| `helpers_integration_test.go` | 集成测试共用的辅助代码 | `//go:build integration` |
+| `helpers_external_test.go` | 外部测试包共用的辅助代码 | 包内与包外测试都需要共享夹具时使用 |
+| `helpers_external_integration_test.go` | 外部集成测试包共用的辅助代码 | `//go:build integration` |
+| `<场景>_scenario_test.go` | 跨多个源文件、找不到单一被测文件的场景测试 | 文件开头的注释写出覆盖的源文件 |
+| `<场景>_scenario_integration_test.go` | 上一行的集成测试版本 | `//go:build integration` |
+
+归属和拆分按下面的规则判断：
+
+- 测试函数直接调用的函数或方法定义在哪个源文件，测试就写进这个源文件对应的测试文件。HTTP handler 的测试归到 handler 函数所在的文件。
+- 一个测试文件里的测试函数分别测不同的源文件时，按测试函数拆到各自的测试文件。被测函数移到别的文件时，测试跟着移动。
+- 只有一个测试文件使用的 fixture、替身和构造函数，写在这个测试文件里；两个以上测试文件使用时，放进 `helpers_test.go`。
+- 测试类型和场景写进测试函数名，例如 `TestCalculator_ImagePricingRegression`。文件名使用上表的形式，`_contract`、`_fixture`、`_unit`、`_regression`、`_lifecycle`、`_compat` 这类后缀改写进函数名。
+- 包内测试和外部测试包的文件合并时，先改成包内测试 `package <包名>`。外部测试导入的包反过来依赖本包（常见于 `testkit`），改成包内测试会形成导入环时，放进 `X_external_test.go`。
+- 能找到被测文件时使用 `X_test.go`，`_scenario_test.go` 留给确实跨多个源文件的场景。
+
+`backend/tests/` 存放跨模块测试，`backend/migrations/` 的测试检查 SQL 文件，这两个目录的测试按场景命名。
+
+`X_integration_test.go` 等三种带后缀的测试文件，需要在 GoLand 里加一条折叠规则：打开 Project 视图选项菜单里的 Appearance → File Nesting，找到父文件后缀为 `.go` 的规则（没有就新建一条），把子文件后缀改成 `_test.go; _integration_test.go; _external_test.go; _external_integration_test.go`。
+
+布局检查在 `tools/architecture/layout.go`，由 `make lint-go`、推送前快检和 CI 运行。检查规则为 `test-name`、`test-tag`、`test-external`、`test-main`、`file-stutter`、`file-vague`、`package-doc` 和 `package-comment`，分别检查测试命名、构建标签、外部测试包、TestMain 位置、重复包名前缀、模糊源文件名、包说明及包注释位置。构建标签检查固定 `integration` 的取值，再检查其他标签是否存在可满足的组合，因此支持 `!windows` 等平台约束。集成文件在关闭 `integration` 时的所有组合都需要排除，启用时至少有一种组合能参与构建。
+
 ## 生成代码与迁移
 
 `backend/ent/` 的大部分文件由 Ent 生成，`backend/internal/app/wire_gen.go` 由 Wire 生成。统一使用：
@@ -138,11 +228,11 @@ Ent schema 不是生产环境的迁移器。数据库的变更需要新建 `back
 
 后端测试按构建标签分三层：
 
-- 单元测试没有构建标签，`make test-go` 执行 `go test ./...`。外部依赖用 SQLite、miniredis、sqlmock 或本地 HTTP 夹具代替。
+- 单元测试可在关闭 `integration` 的构建组合中运行，也可按平台添加约束。`make test-go` 执行 `go test ./...`。外部依赖用 SQLite、miniredis、sqlmock 或本地 HTTP 夹具代替。
 - 集成测试带 `//go:build integration`，通过 Testcontainers 启动 PostgreSQL 和 Redis。`make test-integration` 用 grep 找出含这个标签的包，只编译和运行这些包，包级并发为 4。集成构建同时编译同包的无标签测试，这些包的单元测试会再运行一次。
 - embed 测试带 `//go:build embed`，读取前端生产构建的产物。`make test-embed` 对 `internal/web` 和 `cmd/server` 运行 lint 和测试。
 
-新测试默认不加标签，需要 Docker 的测试才加 `integration`。同一个包的无标签文件和 integration 文件会一起编译，两边的测试函数和辅助函数需要使用不同的名字。只给单元测试构建用的文件标记 `//go:build !integration`，例如 `tests/integration/identity/suite_test.go`。
+新测试默认不加标签，需要 Docker 的测试才加 `integration`。同一个包的无标签文件和 integration 文件会一起编译，两边的测试函数和辅助函数需要使用不同的名字。只给单元测试构建用的文件标记 `//go:build !integration`，例如 `tests/integration/identity/suite_test.go`。测试文件的命名和归属见[后端文件组织](#backend_file_layout)。
 
 集成测试需要 Docker。本地没有 Docker 时，交付说明里写明集成测试没有运行。涉及迁移时，还要运行 migration runner 和对应的 schema、数据回归测试。
 
@@ -177,7 +267,7 @@ Redis 测试通过 `rediscontainer.Run` 启动独立容器，等待监听就绪�
 | `frontend` 下的其他文件 | 依赖文件改动时先冻结安装，再跑完整 lint、typecheck 和 Vitest |
 | `backend/internal/pkg/locale/*.json` | 引用这些文件的前端测试 |
 | `deploy/`、`tools/goreleaser*` | `make test-scripts` |
-| `tools/*.py`、`.githooks/` | `make test-tools` |
+| `tools/*.py`、`tools/declorder/`、`.githooks/` | `make test-tools` |
 
 快检使用 Go 测试缓存，没有改动的包直接复用上次结果。集成测试、前端生产构建和改动包的下游使用方由 CI 检查。快检失败会阻止推送，修复后重新推送；确需跳过时使用 `git push --no-verify`。手动执行 `make check` 时，基准默认取上游分支的共同祖先，也可以传 `BASE=<提交>`。
 
@@ -226,7 +316,7 @@ make lint-go
 - 网关：分别核对实际的输出、HTTP 提交和重试窗口，不能只比较最终的字符串；失败可以带有已观测的用量，但完成资格按各入口的规则判断。对完成队列、模型快照、WS 和 Live、规则发布运行定向的 race 测试，真实的资金和 Redis 协议使用隔离的存储。不同的顶层测试如果共用第三方的全局测试设置，可以分开执行，内部的并发和断言保持不变，失败和补验的日志都要保留。
 - 创作台和批量图片：真实的 PostgreSQL 测试要覆盖写任务表失败时整体回滚，以及旧请求 ID 的重放。平台和 GCS 的测试使用本地夹具，不用真实收费的生成做回归。成功的元数据、输出保存和资金变化分别核验：输出保存失败时，不会重新调用供应商；临时的 Redis 故障也不能直接认定结果永久丢失。
 - 调度：测试使用兼容的报文验证存储格式。确认取得和故障放行、重复释放、锁过期后的继任和运行时的取消，要验证实际的资源数量，只检查返回码不够。
-- 纯规则：测试直接传入值；平台选择、HTTP 的失败和取消、目录的热更新，还要验证实际的调用方。管理员目录完整的 JSON、24 项的顺序和 TypeScript 类型，由 app 的组合测试对照前端的 fixture，不能靠修改夹具掩盖输出的差异。
+- 纯规则：测试直接传入值；平台选择、HTTP 的失败和取消、目录的热更新，还要验证实际的调用方。管理员目录完整的 JSON、25 项的顺序和 TypeScript 类型，由 app 的组合测试对照前端的 fixture，不能靠修改夹具掩盖输出的差异。
 - 推广与支付：资金验证使用真实的 PostgreSQL，分别检查 Promo、返利转入、订单履约和退款的短事务；退款渠道使用本地夹具，不发起真实的付款或退款。回退新的退款代码之前，保留并核实 `REFUND_PREPARED` 记录，只替换二进制、再重新发起渠道退款是不行的。
 - 备份和维护：只对隔离的 PostgreSQL、本地的 S3 和 HTTP 夹具，以及临时的可执行文件操作。恢复至少覆盖真实的成功提交、SQL 失败回滚、输入中断和取消；系统锁覆盖同一业务 ID 不同的认领版本。二进制替换的测试不能使用测试进程或部署实例的真实路径。初始化和两个维护命令，要验证退出前释放了连接，Wire 可以重复生成，Ent 和已发布的 SQL 保持不变。
 - 装配：验证覆盖无标签、integration、wireinject、embed 和各 OS 的文件选择。lint 通过后，还需要确认规则实际检查到了目标文件。
@@ -248,11 +338,11 @@ make test-frontend
 make build
 ```
 
-部署文件变更时执行 `make test-scripts` 和 `make test-installer`。依赖安全检查使用 `make security`，Security Scan workflow 分别调用它的 `security-go` 和 `security-frontend`。govulncheck 版本在 `.govulncheck-version` 固定，漏洞数据在线更新。前端审计的 stderr 原样输出；报告为空、包含错误对象或结构不完整时返回失败，高危漏洞按 `.github/audit-exceptions.yml` 核对例外与有效期。
+部署文件变更时执行 `make test-scripts` 和 `make test-installer`。依赖安全检查使用 `make security`，Security Scan workflow 分别调用它的 `security-go` 和 `security-frontend`。govulncheck 版本在 `.govulncheck-version` 固定，漏洞数据在线更新。前端审计的 stderr 原样输出；报告为空、包含错误对象或结构不完整时返回失败，高危漏洞按 `.github/audit-exceptions.yml` 核对例外与有效期。pnpm 按高危等级过滤漏洞明细，汇总仍包含低等级计数；脚本检查高危计数与明细是否一致。
 
 Vue 的最低版本为 `3.5.42`，该版本修复了 `@vue/server-renderer` 属性名检查中的 XSS 漏洞。`frontend/pnpm-workspace.yaml` 将低于 `1.2.2` 的 `source-map-js` 依赖提升到修复版本，覆盖 Vue 编译器和 i18n 引入的索引偏移 DoS 漏洞。更新这些依赖时同步维护锁文件，并运行前端测试、生产构建和安全扫描。
 
-管理员用量导出通过动态导入 `xlsx` 生成工作簿，当前使用 `0.18.5`，调用 `aoa_to_sheet`、`sheet_add_aoa` 和 `write`。两条 SheetJS 漏洞例外有效期为 2026-10-06。[原型污染公告](https://github.com/advisories/GHSA-4r6h-8v6p-xvw6)说明纯导出流程不受该漏洞影响；[ReDoS 公告](https://github.com/advisories/GHSA-5pgg-2g8v-p4x9)仍需按升级后的依赖审计结果核对。后续优先评估 [SheetJS 官方分发](https://docs.sheetjs.com/docs/getting-started/installation/nodejs/)的修复版本并验证导出兼容性，普通 npm 版本范围更新无法取得公告列出的修复版本。替换导出库作为单独变更处理。
+管理员用量导出通过动态导入 `xlsx` 生成工作簿，调用 `aoa_to_sheet`、`sheet_add_aoa` 和 `write`。依赖固定为 [SheetJS 官方分发](https://docs.sheetjs.com/docs/getting-started/installation/nodejs/)的 `0.20.3` tarball，锁文件记录下载地址和完整性校验值。该版本包含原型污染和 ReDoS 的修复。升级时验证分页数据追加、工作簿序列化、前端生产构建和安全扫描。
 
 
 ## 提交与文档
@@ -261,7 +351,7 @@ Vue 的最低版本为 `3.5.42`，该版本修复了 `@vue/server-renderer` 属�
 
 ### Go 格式化
 
-每次提交代码之前，在仓库根目录运行 `make fmt`，再运行 `make fmt-check`。这两个入口需要 Python 3 和指定版本的 golangci-lint。`tools/format_go.py` 筛选文件后，调用 `golangci-lint fmt --config backend/.golangci.yml`，检查模式加上 `--diff`。配置启用 gofumpt 的默认规则，并保留 gofmt 的 `interface{}` → `any`、`a[b:len(a)]` → `a[b:]` 两条重写规则；gofumpt 不单独维护版本。
+每次提交代码之前，在仓库根目录运行 `make fmt`，再运行 `make fmt-check`。这两个入口需要 Python 3 和指定版本的 golangci-lint。`tools/format_go.py` 筛选文件后，调用 `golangci-lint fmt --config backend/.golangci.yml`，检查模式加上 `--diff`。配置启用 gofumpt 的默认规则，gci 按标准库、第三方、本仓库的顺序分组 import，并保留 gofmt 的 `interface{}` → `any`、`a[b:len(a)]` → `a[b:]` 两条重写规则；gofumpt 不单独维护版本。
 
 命令处理暂存、未暂存和未跟踪的 Go 文件，按整个文件格式化，覆盖后端和仓库的工具模块；删除的文件、符号链接、vendor 和 node_modules，以及带标准生成标记的文件会被跳过。生成标记是 `package` 声明之前的 `// Code generated ... DO NOT EDIT.`，Ent schema 等手写的源文件照常参与格式化。脚本会预先排除生成文件，格式化配置也使用严格的生成文件识别。
 
@@ -269,9 +359,13 @@ Vue 的最低版本为 `3.5.42`，该版本修复了 `@vue/server-renderer` 属�
 
 检查已经提交的改动，使用 `make fmt-check BASE=<基准提交>`，它按基准和 HEAD 的差异选择文件，工作区干净时也会检查。CI 的 PR 检出源提交，以目标分支和源提交的共同祖先为基准；普通 push 比较推送前后的提交，新分支第一次推送比较默认分支的共同祖先，默认分支第一次推送比较空树。基准无法解析时检查失败，不会悄悄跳过。
 
-格式规则由 `golangci-lint fmt` 的改动文件入口检查。全量 lint 检查错误处理、未使用代码和静态分析：`make lint-go` 带 integration 标签检查无标签和集成文件，`make test-embed` 检查 embed 文件。
+`make fmt` 先用 `tools/declorder` 重排[文件内的声明顺序](#backend_declaration_order)，再运行 `golangci-lint fmt`。golangci-lint 开始前，入口先校验版本，版本不符时任何文件都不会被改写。
 
-`tools/test_format_go.py` 在临时 Git 仓库里验证文件筛选、生成代码排除、暂存区保护、干净工作区下的提交差异，以及两种格式化规则同时生效。CI 的 go-lint job 通过 `make test-tools` 运行它。
+`make lint-go` 对全部手写文件运行格式检查、声明顺序检查和静态分析，带 integration 标签覆盖无标签和集成文件，`make test-embed` 检查 embed 文件。除了 errcheck、gosec、govet、staticcheck 这类错误检查，lint 还启用 whitespace、unconvert、copyloopvar、usestdlibvars、intrange 和 nolintlint。nolintlint 要求每条 `//nolint` 写出 linter 名和原因。godot 要求顶层声明的文档注释以句号结尾，中文用“。”，英文用“.”，Project Doc 锚点和路由注释（`// GET /api/...`）除外。revive 检查接收者命名、多余的 import 别名、`TestMain` 里多余的 `os.Exit`，以及可以去掉的 if 和 else。gocritic 只开 assignOp、captLocal、emptyStringTest 等几项有明确改法的检查。modernize 要求使用标准库的新写法，例如 `min`、`max`、`slices.Contains`、`maps.Copy`、`sync.WaitGroup.Go` 和 `errors.AsType`。会改变 JSON 输出、字段类型或测试 context 行为的几项，以及 Go 1.26 以后的新语法，在配置里关闭。
+
+被调函数返回具体的指针类型（例如 `*BetaBlockedError`）、外层函数返回 `error` 时，`if err := f(); err != nil { return err }; return nil` 不能改写成 `return f()`：nil 指针会被包成非 nil 的 error。revive 的 if-return 会报这类位置，在 if 上方加 `//nolint:revive` 并写明原因。
+
+`tools/test_format_go.py` 在临时 Git 仓库里验证文件筛选、生成代码排除、暂存区保护、干净工作区下的提交差异、声明重排，以及两种格式化规则同时生效。`tools/declorder` 的 Go 测试覆盖合并、无注释单行声明的连写、iota、构造函数和单行方法的间距。CI 的 go-lint job 通过 `make test-tools` 运行这两组测试。
 
 ### 本地文件和文档
 
@@ -303,6 +397,8 @@ bash tools/check-upstream-release.sh --update-seen vX.Y.Z
 同步之后，只检查 `git diff upstream/...` 不足以证明行为正确，还要核对本 fork 的迁移顺序、默认配置、i18n、生成文件、部署样例、文档链接和安全检查。fork 已有的修改，不能为了减少冲突而悄悄回退。
 
 ## 发布
+
+项目内置 [tr-release 技能](../../.agents/skills/tr-release/SKILL.md)，用于准备版本范围、核对中文发布说明和发布验收。在仓库根目录运行 `python3 .agents/skills/tr-release/scripts/tr_release.py --prepare` 获取待发布范围。
 
 `.github/workflows/release.yml` 由 `v*` tag 或手动 dispatch 触发。标准发布只构建一次前端，再把 Linux、Windows 和 macOS 的五个 Go 目标，分配到独立的 runner 并行编译；最后的 job 通过 `tools/goreleaser_prebuilt.sh` 把这些二进制导入 GoReleaser，统一生成 Release 归档、校验和、双架构镜像和 manifest。GoReleaser 使用 `tokenrouter` build ID 生成五个平台归档，每个归档包含 `tokenrouter` 可执行文件，镜像复用其中的 Linux 二进制。
 

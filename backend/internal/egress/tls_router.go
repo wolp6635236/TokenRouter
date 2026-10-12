@@ -45,6 +45,12 @@ type TLSFingerprintRouter struct {
 	UpdatedAt                                time.Time                  `json:"updated_at"`
 }
 
+// ValidationError 包含校验失败的字段和原因。
+type ValidationError struct {
+	Field   string
+	Message string
+}
+
 // Validate 验证路由器配置的有效性。
 func (r *TLSFingerprintRouter) Validate() error {
 	if r.Name == "" {
@@ -100,4 +106,9 @@ func NormalizeTLSRouterMatchType(matchType string) string {
 	default:
 		return TLSRouterMatchContains
 	}
+}
+
+// Error 返回字段名和失败原因。
+func (e *ValidationError) Error() string {
+	return e.Field + ": " + e.Message
 }

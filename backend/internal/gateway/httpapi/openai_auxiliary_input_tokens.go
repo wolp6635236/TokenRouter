@@ -6,21 +6,19 @@ import (
 	"net/http"
 	"strings"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tokenestimate"
-
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // ForwardResponsesInputTokens 转发 OpenAI 原生 POST /responses/input_tokens。

@@ -4,15 +4,19 @@ import (
 	"context"
 	"testing"
 
-	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
 )
+
+type marketplaceGroupRepoStub struct {
+	routing.GroupRepository
+
+	groups []routing.Group
+}
 
 func TestModelMarketplaceQoderProviderMappedCustomModelUsesRouteKeyManualPricing(t *testing.T) {
 	groupID := int64(903)
@@ -150,12 +154,6 @@ func TestModelMarketplacePrefetchSortsByGlobalProviderPriority(t *testing.T) {
 	if providers[0].ID != 5101 || providers[1].ID != 5102 || providers[2].ID != 5103 {
 		t.Fatalf("prefetched provider order = [%d %d %d], want [5101 5102 5103]", providers[0].ID, providers[1].ID, providers[2].ID)
 	}
-}
-
-type marketplaceGroupRepoStub struct {
-	routing.GroupRepository
-
-	groups []routing.Group
 }
 
 func (s *marketplaceGroupRepoStub) ListActive(context.Context) ([]routing.Group, error) {

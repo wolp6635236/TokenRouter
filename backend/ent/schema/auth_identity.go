@@ -3,8 +3,6 @@ package schema
 import (
 	"fmt"
 
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
@@ -12,6 +10,8 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 var authProviderTypes = map[string]struct{}{
@@ -24,16 +24,16 @@ var authProviderTypes = map[string]struct{}{
 	"dingtalk": {},
 }
 
+// AuthIdentity stores the canonical login identity for an account.
+type AuthIdentity struct {
+	ent.Schema
+}
+
 func validateAuthProviderType(value string) error {
 	if _, ok := authProviderTypes[value]; ok {
 		return nil
 	}
 	return fmt.Errorf("invalid auth provider type %q", value)
-}
-
-// AuthIdentity stores the canonical login identity for an account.
-type AuthIdentity struct {
-	ent.Schema
 }
 
 func (AuthIdentity) Annotations() []schema.Annotation {

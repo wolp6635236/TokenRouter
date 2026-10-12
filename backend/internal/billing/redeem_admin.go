@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
@@ -22,10 +23,6 @@ type RedeemAdmin struct {
 	redeemCodeRepo RedeemCodeRepository
 	transactions   RedeemAdminTransactions
 	now            func() time.Time
-}
-
-func NewRedeemAdmin(repo RedeemCodeRepository, transactions RedeemAdminTransactions, now func() time.Time) *RedeemAdmin {
-	return &RedeemAdmin{redeemCodeRepo: repo, transactions: transactions, now: now}
 }
 
 type GenerateRedeemCodesInput struct {
@@ -46,6 +43,10 @@ type UpdateRedeemCodeInput struct {
 	ExpiresAt       *time.Time
 	ExpiresAtSet    bool
 	PlanID          *int64 // 订阅类型专用：关联的套餐ID
+}
+
+func NewRedeemAdmin(repo RedeemCodeRepository, transactions RedeemAdminTransactions, now func() time.Time) *RedeemAdmin {
+	return &RedeemAdmin{redeemCodeRepo: repo, transactions: transactions, now: now}
 }
 
 // ListRedeemCodes 按筛选条件分页查询兑换码，并返回总数。
@@ -79,7 +80,8 @@ func (s *RedeemAdmin) GenerateRedeemCodes(ctx context.Context, input *GenerateRe
 		if input.Count != 1 {
 			return nil, apperror.BadRequest("REDEEM_CODE_CUSTOM_COUNT_INVALID", "count must be 1 when code is provided")
 		}
-		if len(customCode) > 32 {
+		// 长度按 Unicode 字符计数，中文每字占一个名额。
+		if utf8.RuneCountInString(customCode) > 32 {
 			return nil, apperror.BadRequest("REDEEM_CODE_TOO_LONG", "code must be at most 32 characters")
 		}
 	}
@@ -98,7 +100,7 @@ func (s *RedeemAdmin) GenerateRedeemCodes(ctx context.Context, input *GenerateRe
 	}
 
 	codes := make([]RedeemCode, 0, input.Count)
-	for i := 0; i < input.Count; i++ {
+	for range input.Count {
 		codeValue := customCode
 		if codeValue == "" {
 			generatedCode, err := GenerateRedeemCode()
@@ -231,10 +233,7 @@ func (s *RedeemAdmin) UpdateRedeemCode(ctx context.Context, id int64, input *Upd
 			code.Status = StatusUnused
 		}
 		code.Status = code.PersistedStatus()
-		if err := s.redeemCodeRepo.Update(opCtx, code); err != nil {
-			return err
-		}
-		return nil
+		return s.redeemCodeRepo.Update(opCtx, code)
 	})
 	if err != nil {
 		return nil, err

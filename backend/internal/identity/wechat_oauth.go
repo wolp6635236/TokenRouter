@@ -8,13 +8,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 )
 
+const (
+	WeChatOAuthProviderKey       = "wechat-main"
+	WeChatOAuthLegacyProviderKey = "wechat"
+)
+
 // WeChatOAuthOptions 包含一次微信授权所需的配置，模式和地址由 HTTP 层解析。
 type WeChatOAuthOptions struct {
 	Mode, AppID, AppSecret, AuthorizeURL, Scope, RedirectURI, FrontendCallback, APIBaseURL string
 	OpenEnabled, MPEnabled                                                                 bool
 }
-
-func (c WeChatOAuthOptions) RequiresUnionID() bool { return c.OpenEnabled && c.MPEnabled }
 
 type WeChatOAuthTokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -39,6 +42,8 @@ type WeChatOAuthUserInfoResponse struct {
 type WeChatOAuthClient interface {
 	FetchIdentity(context.Context, WeChatOAuthOptions, string) (*WeChatOAuthTokenResponse, *WeChatOAuthUserInfoResponse, error)
 }
+
+func (c WeChatOAuthOptions) RequiresUnionID() bool { return c.OpenEnabled && c.MPEnabled }
 
 func WeChatSyntheticEmail(subject string) string {
 	subject = strings.TrimSpace(subject)
@@ -156,4 +161,16 @@ func PrepareWeChatChoice(
 		UpstreamIdentityClaims: upstreamClaims,
 		CompletionResponse:     completionResponse,
 	}
+}
+
+func WeChatCompatibleProviderKeys(providerKey string) []string {
+	preferred := strings.TrimSpace(providerKey)
+	if preferred == "" {
+		preferred = WeChatOAuthProviderKey
+	}
+	keys := []string{preferred}
+	if !strings.EqualFold(preferred, WeChatOAuthLegacyProviderKey) {
+		keys = append(keys, WeChatOAuthLegacyProviderKey)
+	}
+	return keys
 }

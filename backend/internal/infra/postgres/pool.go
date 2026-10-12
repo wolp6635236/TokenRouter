@@ -19,6 +19,14 @@ type PoolSettings struct {
 	ConnMaxIdleTime time.Duration
 }
 
+// PoolOptions 包含启动时解析的数据库连接池参数。
+type PoolOptions struct {
+	MaxOpenConns           int
+	MaxIdleConns           int
+	ConnMaxLifetimeMinutes int
+	ConnMaxIdleTimeMinutes int
+}
+
 func ResolvePoolSettings(cfg PoolOptions) PoolSettings {
 	return PoolSettings{
 		MaxOpenConns:    cfg.MaxOpenConns,
@@ -56,12 +64,4 @@ func ApplyPoolSettings(db *sql.DB, cfg PoolOptions) {
 			slog.Duration("max_idle_time", settings.ConnMaxIdleTime),
 		),
 	)
-}
-
-// PoolOptions 包含启动时解析的数据库连接池参数。
-type PoolOptions struct {
-	MaxOpenConns           int
-	MaxIdleConns           int
-	ConnMaxLifetimeMinutes int
-	ConnMaxIdleTimeMinutes int
 }

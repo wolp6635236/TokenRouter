@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/gemini"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
-	"github.com/tidwall/gjson"
 )
 
 type ImageRequestInput struct {

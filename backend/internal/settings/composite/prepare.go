@@ -4,37 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strconv"
 
+	"github.com/TokenFlux/TokenRouter/internal/audit"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/creative"
+	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/moderation"
+	"github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
-
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/site"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	"github.com/TokenFlux/TokenRouter/internal/server/runtimeconfig"
-
-	"github.com/TokenFlux/TokenRouter/internal/creative"
-	"github.com/TokenFlux/TokenRouter/internal/moderation"
-	"github.com/TokenFlux/TokenRouter/internal/team"
-
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-
-	"github.com/TokenFlux/TokenRouter/internal/audit"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
-
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
-
-	"github.com/TokenFlux/TokenRouter/internal/notification"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/server/runtimeconfig"
+	"github.com/TokenFlux/TokenRouter/internal/site"
+	"github.com/TokenFlux/TokenRouter/internal/team"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // PrepareOptions 固定原有校验顺序所需的只读能力，准备阶段不接受写入或通知端口。
@@ -87,18 +76,10 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 	settings.PaymentVisibleMethodAlipaySource = visibleInput.PaymentVisibleMethodAlipaySource
 	settings.PaymentVisibleMethodWxpaySource = visibleInput.PaymentVisibleMethodWxpaySource
 	updates := make(map[string]string)
-	for key, value := range visibleValues {
-		updates[key] = value
-	}
-	for key, value := range routingValues {
-		updates[key] = value
-	}
-	for key, value := range billingValues {
-		updates[key] = value
-	}
-	for key, value := range identityValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, visibleValues)
+	maps.Copy(updates, routingValues)
+	maps.Copy(updates, billingValues)
+	maps.Copy(updates, identityValues)
 
 	siteInput := settings.SiteAdminSettings()
 	siteValues, err := site.PrepareAdminSettings(&siteInput)
@@ -106,19 +87,13 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 		return nil, err
 	}
 	settings.ApplySiteAdminSettings(siteInput)
-	for key, value := range siteValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, siteValues)
 
 	updates[audit.SettingKeyAuditLogRetentionDays] = audit.PrepareRetentionDays(settings.AuditLogRetentionDays)
 
-	for key, value := range notification.PrepareSMTPSettings(notification.AdminSMTPSettings{SMTPHost: settings.SMTPHost, SMTPPort: settings.SMTPPort, SMTPUsername: settings.SMTPUsername, SMTPPassword: settings.SMTPPassword, SMTPFrom: settings.SMTPFrom, SMTPFromName: settings.SMTPFromName, SMTPUseTLS: settings.SMTPUseTLS}) {
-		updates[key] = value
-	}
+	maps.Copy(updates, notification.PrepareSMTPSettings(notification.AdminSMTPSettings{SMTPHost: settings.SMTPHost, SMTPPort: settings.SMTPPort, SMTPUsername: settings.SMTPUsername, SMTPPassword: settings.SMTPPassword, SMTPFrom: settings.SMTPFrom, SMTPFromName: settings.SMTPFromName, SMTPUseTLS: settings.SMTPUseTLS}))
 
-	for key, value := range forwardedValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, forwardedValues)
 
 	usageRanking, rankingValues := usage.PrepareRankingSettings(usage.UsageRankingSettings{
 		Enabled:         settings.UsageRankingEnabled,
@@ -134,9 +109,7 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 	settings.UsageRankingShowRequests = usageRanking.ShowRequests
 	settings.UsageRankingShowActualCost = usageRanking.ShowActualCost
 	settings.UsageRankingLimit = usageRanking.Limit
-	for key, value := range rankingValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, rankingValues)
 
 	creativeSettings, creativeValues, err := creative.PrepareAdminSettings(creative.AdminSettings{CreativeEnabled: settings.CreativeEnabled, CreativeWorkerCount: settings.CreativeWorkerCount, CreativeModelSettings: settings.CreativeModelSettings})
 	if err != nil {
@@ -144,9 +117,7 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 	}
 	settings.CreativeModelSettings = creativeSettings.CreativeModelSettings
 	settings.CreativeWorkerCount = creativeSettings.CreativeWorkerCount
-	for key, value := range creativeValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, creativeValues)
 
 	promotionValues, preparedPromotion := promotion.PrepareAdminSettings(promotion.AdminSettings{PromoCodeEnabled: settings.PromoCodeEnabled, InvitationCodeEnabled: settings.InvitationCodeEnabled, AffiliateEnabled: settings.AffiliateEnabled, AffiliateRebateRate: settings.AffiliateRebateRate, AffiliateRebateFreezeHours: settings.AffiliateRebateFreezeHours, AffiliateRebateDurationDays: settings.AffiliateRebateDurationDays, AffiliateRebatePerInviteeCap: settings.AffiliateRebatePerInviteeCap, AdminRechargeRebateEnabled: settings.AdminRechargeRebateEnabled})
 	settings.PromoCodeEnabled = promotionValues.PromoCodeEnabled
@@ -157,22 +128,16 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 	settings.AffiliateRebateDurationDays = promotionValues.AffiliateRebateDurationDays
 	settings.AffiliateRebatePerInviteeCap = promotionValues.AffiliateRebatePerInviteeCap
 	settings.AdminRechargeRebateEnabled = promotionValues.AdminRechargeRebateEnabled
-	for key, value := range preparedPromotion {
-		updates[key] = value
-	}
+	maps.Copy(updates, preparedPromotion)
 
 	gatewayInput := settings.GatewayAdminSettings()
 	gatewayValues, err := gateway.PrepareAdminSettings(&gatewayInput, options.Gateway)
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range gatewayValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, gatewayValues)
 
-	for key, value := range ops.PrepareMonitoringSettings(ops.CompositeMonitoringSettings{OpsMonitoringEnabled: settings.OpsMonitoringEnabled, OpsRealtimeMonitoringEnabled: settings.OpsRealtimeMonitoringEnabled, OpsMetricsIntervalSeconds: settings.OpsMetricsIntervalSeconds}) {
-		updates[key] = value
-	}
+	maps.Copy(updates, ops.PrepareMonitoringSettings(ops.CompositeMonitoringSettings{OpsMonitoringEnabled: settings.OpsMonitoringEnabled, OpsRealtimeMonitoringEnabled: settings.OpsRealtimeMonitoringEnabled, OpsMetricsIntervalSeconds: settings.OpsMetricsIntervalSeconds}))
 
 	schedulerInput := settings.SchedulerAdminSettings()
 	schedulerValues, err := scheduler.PrepareAdminSettings(&schedulerInput, options.Scheduler)
@@ -180,9 +145,7 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 		return nil, err
 	}
 	settings.ApplySchedulerAdminSettings(schedulerInput)
-	for key, value := range schedulerValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, schedulerValues)
 
 	if settings.OpenAIQuotaAutoPauseSettingsSet {
 		opsAdvanced, err := prepareQuotaMerge(ctx, options, settings.OpenAIQuotaAutoPauseSettings)
@@ -197,21 +160,15 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 	}
 
 	_, teamValues, _ := team.PrepareAdminSettings(team.AdminSettings{TeamEnabled: settings.TeamEnabled})
-	for key, value := range teamValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, teamValues)
 	_, moderationValues, _ := moderation.PrepareAdminSettings(moderation.AdminSettings{RiskControlEnabled: settings.RiskControlEnabled, CyberSessionBlockEnabled: settings.CyberSessionBlockEnabled, CyberSessionBlockTTLSeconds: settings.CyberSessionBlockTTLSeconds})
-	for key, value := range moderationValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, moderationValues)
 
 	providerValues, err := provider.PrepareAdminSettings(provider.AdminSettings{ProviderQuotaNotifyEnabled: settings.ProviderQuotaNotifyEnabled, ProviderQuotaNotifyEmails: settings.ProviderQuotaNotifyEmails, ProviderSchedulingThresholds: settings.ProviderSchedulingThresholds})
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range providerValues {
-		updates[key] = value
-	}
+	maps.Copy(updates, providerValues)
 
 	updates[usage.SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 

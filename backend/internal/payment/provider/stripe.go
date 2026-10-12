@@ -9,9 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/payment"
 	"github.com/stripe/stripe-go/v85"
 	"github.com/stripe/stripe-go/v85/webhook"
+
+	"github.com/TokenFlux/TokenRouter/internal/payment"
 )
 
 // Stripe constants.
@@ -24,6 +25,14 @@ const (
 	stripeEventCheckoutAsyncFailed    = "checkout.session.async_payment_failed"
 	stripeEventInvoicePaid            = "invoice.paid"
 	stripeEventInvoiceFailed          = "invoice.payment_failed"
+)
+
+// Ensure interface compliance.
+var (
+	_ payment.Provider                 = (*Stripe)(nil)
+	_ payment.CancelableProvider       = (*Stripe)(nil)
+	_ payment.DocumentProvider         = (*Stripe)(nil)
+	_ payment.MerchantIdentityProvider = (*Stripe)(nil)
 )
 
 // Stripe implements the payment.CancelableProvider interface for Stripe payments.
@@ -935,11 +944,3 @@ func (s *Stripe) findInvoicePaymentIntentID(ctx context.Context, invoiceID strin
 	}
 	return "", nil
 }
-
-// Ensure interface compliance.
-var (
-	_ payment.Provider                 = (*Stripe)(nil)
-	_ payment.CancelableProvider       = (*Stripe)(nil)
-	_ payment.DocumentProvider         = (*Stripe)(nil)
-	_ payment.MerchantIdentityProvider = (*Stripe)(nil)
-)

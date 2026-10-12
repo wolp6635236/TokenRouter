@@ -3,9 +3,10 @@ package httpapi
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // QoderAuthorizationUseCase 提供 HTTP 层需要的 Qoder 授权操作。
@@ -19,17 +20,31 @@ type QoderOAuthHandler struct {
 	qoderOAuthService QoderAuthorizationUseCase
 }
 
-func NewQoderOAuthHandler(qoderOAuthService QoderAuthorizationUseCase) *QoderOAuthHandler {
-	return &QoderOAuthHandler{qoderOAuthService: qoderOAuthService}
-}
-
 type QoderGenerateAuthURLRequest struct {
 	ProxyID *int64 `json:"proxy_id"`
 	Site    string `json:"site"`
 }
 
+type QoderExchangeCodeRequest struct {
+	SessionID   string `json:"session_id" binding:"required"`
+	State       string `json:"state"`
+	Code        string `json:"code"`
+	CallbackURL string `json:"callback_url"`
+	ProxyID     *int64 `json:"proxy_id"`
+}
+
+type QoderPollRequest struct {
+	SessionID string `json:"session_id" binding:"required"`
+	State     string `json:"state" binding:"required"`
+	ProxyID   *int64 `json:"proxy_id"`
+}
+
+func NewQoderOAuthHandler(qoderOAuthService QoderAuthorizationUseCase) *QoderOAuthHandler {
+	return &QoderOAuthHandler{qoderOAuthService: qoderOAuthService}
+}
+
 // GenerateAuthURL 生成 Qoder 浏览器授权 URL。
-// 路由：POST /api/v1/admin/qoder/oauth/auth-url
+// 路由：POST /api/v1/admin/qoder/oauth/auth-url。
 func (h *QoderOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	var req QoderGenerateAuthURLRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -51,16 +66,8 @@ func (h *QoderOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	response.Success(c, result)
 }
 
-type QoderExchangeCodeRequest struct {
-	SessionID   string `json:"session_id" binding:"required"`
-	State       string `json:"state"`
-	Code        string `json:"code"`
-	CallbackURL string `json:"callback_url"`
-	ProxyID     *int64 `json:"proxy_id"`
-}
-
 // ExchangeCode 完成 Qoder 设备授权并返回提供商凭据。
-// 路由：POST /api/v1/admin/qoder/oauth/exchange-code
+// 路由：POST /api/v1/admin/qoder/oauth/exchange-code。
 func (h *QoderOAuthHandler) ExchangeCode(c *gin.Context) {
 	var req QoderExchangeCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -83,14 +90,8 @@ func (h *QoderOAuthHandler) ExchangeCode(c *gin.Context) {
 	response.Success(c, tokenInfo)
 }
 
-type QoderPollRequest struct {
-	SessionID string `json:"session_id" binding:"required"`
-	State     string `json:"state" binding:"required"`
-	ProxyID   *int64 `json:"proxy_id"`
-}
-
 // Poll 检查 Qoder 浏览器授权是否已完成。
-// 路由：POST /api/v1/admin/qoder/oauth/poll
+// 路由：POST /api/v1/admin/qoder/oauth/poll。
 func (h *QoderOAuthHandler) Poll(c *gin.Context) {
 	var req QoderPollRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

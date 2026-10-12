@@ -7,11 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/backup"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 type emptyBackupSettings struct{}

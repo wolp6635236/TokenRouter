@@ -5,14 +5,13 @@ import (
 	"testing"
 	"time"
 
-	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	"github.com/stretchr/testify/require"
 
 	billingcore "github.com/TokenFlux/TokenRouter/internal/billing"
 	billingpricing "github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestCNProviderAnthropicUsageBillsUncachedInput(t *testing.T) {

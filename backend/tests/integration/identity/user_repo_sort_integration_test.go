@@ -3,19 +3,113 @@
 package identity_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
-	apikey "github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/stretchr/testify/require"
+
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	dbprovider "github.com/TokenFlux/TokenRouter/ent/provider"
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
+
+// mustCreateProvider 创建排序测试使用的提供商并回填数据库字段。
+func mustCreateProvider(t *testing.T, client *dbent.Client, a *providercore.Record) *providercore.Record {
+	t.Helper()
+	ctx := context.Background()
+
+	if a.Platform == "" {
+		a.Platform = capability.PlatformAnthropic
+	}
+	if a.Type == "" {
+		a.Type = capability.ProviderTypeOAuth
+	}
+	if a.Status == "" {
+		a.Status = providercore.StatusActive
+	}
+	if a.Concurrency == 0 {
+		a.Concurrency = 3
+	}
+	if a.Priority == 0 {
+		a.Priority = 50
+	}
+	if !a.Schedulable {
+		a.Schedulable = true
+	}
+	if a.Credentials == nil {
+		a.Credentials = map[string]any{}
+	}
+	if a.Extra == nil {
+		a.Extra = map[string]any{}
+	}
+
+	create := client.Provider.Create().
+		SetName(a.Name).
+		SetPlatform(a.Platform).
+		SetType(a.Type).
+		SetCredentials(a.Credentials).
+		SetExtra(a.Extra).
+		SetConcurrency(a.Concurrency).
+		SetPriority(a.Priority).
+		SetStatus(a.Status).
+		SetSchedulable(a.Schedulable).
+		SetErrorMessage(a.ErrorMessage)
+
+	if a.ProxyID != nil {
+		create.SetProxyID(*a.ProxyID)
+	}
+	if a.LastUsedAt != nil {
+		create.SetLastUsedAt(*a.LastUsedAt)
+	}
+	if a.RateLimitedAt != nil {
+		create.SetRateLimitedAt(*a.RateLimitedAt)
+	}
+	if a.RateLimitResetAt != nil {
+		create.SetRateLimitResetAt(*a.RateLimitResetAt)
+	}
+	if a.OverloadUntil != nil {
+		create.SetOverloadUntil(*a.OverloadUntil)
+	}
+	if a.SessionWindowStart != nil {
+		create.SetSessionWindowStart(*a.SessionWindowStart)
+	}
+	if a.SessionWindowEnd != nil {
+		create.SetSessionWindowEnd(*a.SessionWindowEnd)
+	}
+	if a.SessionWindowStatus != "" {
+		create.SetSessionWindowStatus(a.SessionWindowStatus)
+	}
+	if !a.CreatedAt.IsZero() {
+		create.SetCreatedAt(a.CreatedAt)
+	}
+	if !a.UpdatedAt.IsZero() {
+		create.SetUpdatedAt(a.UpdatedAt)
+	}
+	if a.ParentProviderID != nil {
+		create.SetParentProviderID(*a.ParentProviderID)
+	}
+	if a.QuotaDimension != "" {
+		create.SetQuotaDimension(dbprovider.QuotaDimension(a.QuotaDimension))
+	}
+
+	created, err := create.Save(ctx)
+	require.NoError(t, err, "create provider")
+
+	a.ID = created.ID
+	a.CreatedAt = created.CreatedAt
+	a.UpdatedAt = created.UpdatedAt
+	return a
+}
 
 func (s *UserRepoSuite) mustInsertUsageLog(userID int64, createdAt time.Time) {
 	s.T().Helper()
 
-	provider := mustCreateProvider(s.T(), s.client, &provider.Record{Name: "usage-log-provider"})
+	provider := mustCreateProvider(s.T(), s.client, &providercore.Record{Name: "usage-log-provider"})
 	apiKey := mustCreateApiKey(s.T(), s.client, &apikey.APIKey{UserID: userID})
 
 	_, err := s.db.ExecContext(

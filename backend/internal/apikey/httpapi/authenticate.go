@@ -7,12 +7,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // AuthenticationOptions 仅描述 HTTP 输入和观察端口；网关转换/计费仍由后续执行层拥有。
@@ -61,10 +62,7 @@ func Authenticate(c *gin.Context, auth *apikey.APIKeyService, o AuthenticationOp
 	}
 	invalid := func() { auth.RecordInvalidAuthFailure(clientKey) }
 	if retry, blocked := auth.CheckInvalidAuthAbuse(clientKey); blocked {
-		seconds := int(math.Ceil(retry.Seconds()))
-		if seconds < 1 {
-			seconds = 1
-		}
+		seconds := max(int(math.Ceil(retry.Seconds())), 1)
 		c.Header("Retry-After", strconv.Itoa(seconds))
 		o.reject(c, "invalid_auth_rate_limited")
 		o.abort(c, 429, "INVALID_AUTH_RATE_LIMITED", "Too many invalid authentication attempts; retry later")
@@ -139,6 +137,7 @@ func Authenticate(c *gin.Context, auth *apikey.APIKeyService, o AuthenticationOp
 		checkLimits = !o.NonConsuming(c)
 	}
 	access, err := auth.Authenticate(ctx, credential, apikey.AuthenticationInput{ClientIP: ip, CheckMemberLimits: checkLimits})
+	recordAccessOwnership(c, access)
 	if access != nil && o.Loaded != nil {
 		o.Loaded(c, access.KeyView())
 	}
@@ -209,5 +208,21 @@ func SetAccessPrincipal(c *gin.Context, a *apikey.AccessSnapshot) {
 		return
 	}
 	c.Set("apikey_access_snapshot", a)
+	recordAccessOwnership(c, a)
 	authctx.SetAuthenticatedPrincipal(c, identity.Principal{UserID: a.ActorUserID, CredentialKind: "api_key"})
+}
+
+// recordAccessOwnership 保存已匹配凭据的归属，认证结果由 Authenticate 的错误值决定。
+func recordAccessOwnership(c *gin.Context, access *apikey.AccessSnapshot) {
+	if c == nil || c.Request == nil || access == nil {
+		return
+	}
+	telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) {
+		record.APIKeyID = access.KeyID
+		record.UserID = access.ActorUserID
+		record.TeamID = 0
+		if access.TeamID != nil {
+			record.TeamID = *access.TeamID
+		}
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -104,4 +105,23 @@ func ParsePricingTimePeriods(periods []TimePricingPeriod) ([]ParsedPricingTimePe
 		}
 	}
 	return parsed, nil
+}
+
+// ValidateTimezoneName 拒绝空时区名和依赖进程环境的 Local 时区。
+func ValidateTimezoneName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("timezone is required")
+	}
+	if name == "Local" {
+		return fmt.Errorf("local is not a supported timezone")
+	}
+	return nil
+}
+
+// ResolvedTimeMultiplier 使用传入的时区计算价卡分时倍率。
+func ResolvedTimeMultiplier(resolved *ResolvedPricing, at time.Time, location *time.Location) float64 {
+	if resolved == nil || resolved.Mode != BillingModeToken || resolved.ConfigPricing == nil {
+		return 1
+	}
+	return resolved.ConfigPricing.TimePricing.MultiplierAt(at, location)
 }

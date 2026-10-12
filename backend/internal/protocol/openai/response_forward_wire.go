@@ -6,9 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 type OpenAICompatSSEFrame struct {
@@ -157,7 +158,7 @@ func IsResponsesFunctionCallItemType(itemType string) bool {
 }
 
 func DedupeRepeatedJSONArgumentString(arguments string) (string, bool) {
-	if len(arguments) == 0 || len(arguments)%2 != 0 {
+	if arguments == "" || len(arguments)%2 != 0 {
 		return "", false
 	}
 	halfLen := len(arguments) / 2
@@ -312,10 +313,10 @@ func OpenAIUsageFromGJSON(value gjson.Result) (ForwardUsage, bool) {
 	}
 	// xAI 可能将 reasoning_tokens 与可见输出 token 分开返回；按 total_tokens
 	// 与推理字段的差额判断独立部分，OpenAI 标准 completion_tokens 已包含推理细节。
-	reasoningTokens := max(int(FirstPositiveGJSONInt(
+	reasoningTokens := max(FirstPositiveGJSONInt(
 		value.Get("completion_tokens_details.reasoning_tokens"),
 		value.Get("output_tokens_details.reasoning_tokens"),
-	)), 0)
+	), 0)
 	if reasoningTokens > 0 {
 		outputTokens = protocol.IncludeIndependentReasoningTokens(
 			inputTokens, outputTokens, value.Get("total_tokens").Int(), int64(reasoningTokens),
@@ -384,7 +385,7 @@ func OpenAICacheCreationTokensFromUsage(value gjson.Result) int {
 // BodyHasSSEFraming 按 SSE 规范检查是否存在以 data: 或 event: 开头的物理行。
 // 有效 JSON 字符串中的同名文本不会出现在物理行首，因此不会被误判。
 func BodyHasSSEFraming(body []byte) bool {
-	for _, line := range bytes.Split(body, []byte("\n")) {
+	for line := range bytes.SplitSeq(body, []byte("\n")) {
 		line = bytes.TrimRight(line, "\r")
 		if bytes.HasPrefix(line, []byte("data:")) || bytes.HasPrefix(line, []byte("event:")) {
 			return true
@@ -603,7 +604,7 @@ func BoundedJSONNonNegativeInt(value gjson.Result) (int, bool) {
 		return 0, false
 	}
 	raw := value.Raw
-	if len(raw) == 0 || len(raw) > 64 || raw[0] == '-' {
+	if raw == "" || len(raw) > 64 || raw[0] == '-' {
 		return 0, false
 	}
 
@@ -640,11 +641,11 @@ func BoundedJSONNonNegativeInt(value gjson.Result) (int, bool) {
 	if mantissaEnd < len(raw) {
 		exponentRaw := raw[mantissaEnd+1:]
 		negative := false
-		if len(exponentRaw) > 0 && (exponentRaw[0] == '+' || exponentRaw[0] == '-') {
+		if exponentRaw != "" && (exponentRaw[0] == '+' || exponentRaw[0] == '-') {
 			negative = exponentRaw[0] == '-'
 			exponentRaw = exponentRaw[1:]
 		}
-		if len(exponentRaw) == 0 {
+		if exponentRaw == "" {
 			return 0, false
 		}
 		for len(exponentRaw) > 1 && exponentRaw[0] == '0' {
@@ -758,11 +759,11 @@ func ForEachOpenAISSEFrame(body string, fn func(string, []byte)) {
 			emitData(frame.Data)
 			return
 		}
-		for _, value := range strings.Split(frame.Data, "\n") {
+		for value := range strings.SplitSeq(frame.Data, "\n") {
 			emitData(value)
 		}
 	}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		emit(parser.AddLine(strings.TrimRight(line, "\r")))
 	}
 	emit(parser.Finish())

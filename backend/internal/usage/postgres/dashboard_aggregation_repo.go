@@ -8,17 +8,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
+
+const usageLogsCleanupBatchSize = 10000
 
 type AggregationStore struct {
 	archiveDedup func(context.Context, time.Time) error
 	sql          sqlExecutor
 	calendar     timezone.Calendar
 }
-
-const usageLogsCleanupBatchSize = 10000
 
 // NewDashboardAggregationRepository 创建仪表盘预聚合仓储。
 func NewDashboardAggregationRepository(sqlDB *sql.DB, calendar timezone.Calendar, archive func(context.Context, time.Time) error) *AggregationStore {
@@ -97,10 +98,7 @@ func (r *AggregationStore) aggregateRangeInTx(ctx context.Context, hourStart, ho
 	if err := r.upsertHourlyAggregates(ctx, hourStart, hourEnd); err != nil {
 		return err
 	}
-	if err := r.upsertDailyAggregates(ctx, dayStart, dayEnd); err != nil {
-		return err
-	}
-	return nil
+	return r.upsertDailyAggregates(ctx, dayStart, dayEnd)
 }
 
 func (r *AggregationStore) RecomputeRange(ctx context.Context, start, end time.Time) error {
@@ -162,10 +160,7 @@ func (r *AggregationStore) recomputeRangeInTx(ctx context.Context, hourStart, ho
 	if err := r.upsertHourlyAggregates(ctx, hourStart, hourEnd); err != nil {
 		return err
 	}
-	if err := r.upsertDailyAggregates(ctx, dayStart, dayEnd); err != nil {
-		return err
-	}
-	return nil
+	return r.upsertDailyAggregates(ctx, dayStart, dayEnd)
 }
 
 func (r *AggregationStore) GetAggregationWatermark(ctx context.Context) (time.Time, error) {

@@ -2,29 +2,12 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 )
-
-// prepareLegacyConfigTest 隔离宿主环境，只让当前用例声明的配置参与优先级判断。
-func prepareLegacyConfigTest(t *testing.T, body string) string {
-	t.Helper()
-	resetViperWithJWTSecret(t)
-	for _, item := range legacyConfigKeys {
-		for _, key := range []string{item.oldKey, item.newKey} {
-			t.Setenv(strings.ToUpper(strings.ReplaceAll(key, ".", "_")), "")
-		}
-	}
-	t.Setenv("GATEWAY_CONNECTION_POOL_ISOLATION", "")
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
-	t.Setenv("CONFIG_FILE", path)
-	return path
-}
 
 // TestLoadLegacyDeploymentConfig 验证完整加载入口保留旧部署的数值与开关，读取后不重写挂载配置。
 func TestLoadLegacyDeploymentConfig(t *testing.T) {

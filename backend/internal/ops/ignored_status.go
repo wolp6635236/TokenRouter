@@ -5,6 +5,7 @@ import "sort"
 func DefaultOpsIgnoredStatusCodes() []int {
 	return []int{401, 403}
 }
+
 func NormalizeOpsIgnoredStatusCodes(codes []int) []int {
 	if codes == nil {
 		return DefaultOpsIgnoredStatusCodes()

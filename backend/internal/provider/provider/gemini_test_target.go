@@ -7,14 +7,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// Target 只公开测试资格，凭据留在本次平台执行句柄中。
-func (s *GeminiProviderTest) Target(value *provider.Record) provider.TestTarget {
-	return geminiTestTarget{executor: s, record: value}
-}
-
 type geminiTestTarget struct {
 	executor *GeminiProviderTest
 	record   *provider.Record
+}
+
+// Target 只公开测试资格，凭据留在本次平台执行句柄中。
+func (s *GeminiProviderTest) Target(value *provider.Record) provider.TestTarget {
+	return geminiTestTarget{executor: s, record: value}
 }
 
 func (t geminiTestTarget) Information() provider.TestTargetInfo {

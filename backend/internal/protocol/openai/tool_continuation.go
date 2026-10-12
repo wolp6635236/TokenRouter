@@ -3,9 +3,9 @@ package openai
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
-
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
 // ToolContinuationSignals 在一次遍历中收集工具续接所需的 input 信号。
@@ -24,6 +24,17 @@ type FunctionCallOutputValidation struct {
 	HasToolCallContext                 bool
 	HasFunctionCallOutputMissingCallID bool
 	HasItemReferenceForAllCallIDs      bool
+}
+
+// ToolCallOutputContextCoverage 描述 input 中工具输出与可重建上下文的覆盖关系，
+// 用于判断剥离 previous_response_id 后上游能否仅凭 input 重建工具续链。
+type ToolCallOutputContextCoverage struct {
+	HasFunctionCallOutput bool
+	// ContextCoversAllCallIDs 表示每个工具输出的 call_id 都能在 input 内找到
+	// 同 call_id 的工具调用上下文项或同 id 的 item_reference，且不存在缺失 call_id 的输出。
+	// 任一输出无法由 input 自身重建时为 false，此时剥离 previous_response_id 会导致
+	// 上游以 "No tool call found for function call output" 拒绝请求。
+	ContextCoversAllCallIDs bool
 }
 
 // IsCodexToolCallContextItemType 判断 input item 是否是带 call_id 的工具调用上下文。
@@ -217,17 +228,6 @@ func ValidateFunctionCallOutputContextBytes(body []byte) FunctionCallOutputValid
 	}
 	result.HasItemReferenceForAllCallIDs = allReferenced
 	return result
-}
-
-// ToolCallOutputContextCoverage 描述 input 中工具输出与可重建上下文的覆盖关系，
-// 用于判断剥离 previous_response_id 后上游能否仅凭 input 重建工具续链。
-type ToolCallOutputContextCoverage struct {
-	HasFunctionCallOutput bool
-	// ContextCoversAllCallIDs 表示每个工具输出的 call_id 都能在 input 内找到
-	// 同 call_id 的工具调用上下文项或同 id 的 item_reference，且不存在缺失 call_id 的输出。
-	// 任一输出无法由 input 自身重建时为 false，此时剥离 previous_response_id 会导致
-	// 上游以 "No tool call found for function call output" 拒绝请求。
-	ContextCoversAllCallIDs bool
 }
 
 // AnalyzeToolCallOutputContextCoverageBytes 全量扫描 input，按 call_id 精确匹配工具输出

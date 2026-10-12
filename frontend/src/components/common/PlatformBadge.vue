@@ -1,7 +1,8 @@
 <template>
   <span :class="badgeClass">
     <ProviderIcon :brand="platform" size="14px" />
-    {{ label }}
+    <!-- 平台名加 self-baseline，徽章的基线取自平台名，移动卡片的标签和它对齐。 -->
+    <span class="self-baseline">{{ label }}</span>
   </span>
 </template>
 

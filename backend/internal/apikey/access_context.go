@@ -1,6 +1,8 @@
 package apikey
 
-import "context"
+import (
+	"context"
+)
 
 type accessSnapshotContextKey struct{}
 

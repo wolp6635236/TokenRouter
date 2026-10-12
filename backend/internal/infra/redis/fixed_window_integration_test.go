@@ -4,19 +4,50 @@ package redis
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
-const redisImageTag = "redis:8.4-alpine"
+// TestFixedWindowConcurrentCounts 检查并发计数的唯一性、获准请求数和窗口 TTL。
+func TestFixedWindowConcurrentCounts(t *testing.T) {
+	client := startRedis(t, t.Context())
+	limiter := NewFixedWindowLimiter(client, "rate_limit:")
+	type result struct {
+		allowed bool
+		count   int64
+		err     error
+	}
+	results := make(chan result, 32)
+	var group sync.WaitGroup
+	for range 32 {
+		group.Go(func() {
+			allowed, count, _, err := limiter.Allow(t.Context(), "concurrent", 16, 2*time.Second)
+			results <- result{allowed, count, err}
+		})
+	}
+	group.Wait()
+	close(results)
+	counts := map[int64]bool{}
+	allowed := 0
+	for value := range results {
+		require.NoError(t, value.err)
+		counts[value.count] = true
+		if value.allowed {
+			allowed++
+		}
+	}
+	require.Len(t, counts, 32)
+	require.True(t, counts[1])
+	require.True(t, counts[32])
+	require.Equal(t, 16, allowed)
+	ttl, err := client.PTTL(t.Context(), "rate_limit:concurrent").Result()
+	require.NoError(t, err)
+	require.Greater(t, ttl, time.Duration(0))
+	require.LessOrEqual(t, ttl, 2*time.Second)
+}
 
 func TestRateLimiterSetsTTLAndDoesNotRefresh(t *testing.T) {
 	ctx := context.Background()
@@ -63,75 +94,4 @@ func TestRateLimiterFixesMissingTTL(t *testing.T) {
 	ttlAfter, err := rdb.PTTL(ctx, redisKey).Result()
 	require.NoError(t, err)
 	require.Greater(t, ttlAfter, time.Duration(0))
-}
-
-func startRedis(t *testing.T, ctx context.Context) *redis.Client {
-	t.Helper()
-	ensureDockerAvailable(t)
-
-	redisContainer, err := rediscontainer.Run(ctx, redisImageTag)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = redisContainer.Terminate(ctx)
-	})
-
-	redisHost, err := redisContainer.Host(ctx)
-	require.NoError(t, err)
-	redisPort, err := redisContainer.MappedPort(ctx, "6379/tcp")
-	require.NoError(t, err)
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%d", redisHost, redisPort.Int()),
-		DB:   0,
-	})
-	require.NoError(t, rdb.Ping(ctx).Err())
-
-	t.Cleanup(func() {
-		_ = rdb.Close()
-	})
-
-	return rdb
-}
-
-func ensureDockerAvailable(t *testing.T) {
-	t.Helper()
-	if dockerAvailable() {
-		return
-	}
-	if os.Getenv("CI") != "" || os.Getenv("TOKENROUTER_VERIFY_STRICT") == "1" {
-		t.Fatal("Docker 未启用，无法执行集成测试")
-	}
-	t.Skip("Docker 未启用，跳过依赖 testcontainers 的集成测试")
-}
-
-func dockerAvailable() bool {
-	if os.Getenv("DOCKER_HOST") != "" {
-		return true
-	}
-
-	socketCandidates := []string{
-		"/var/run/docker.sock",
-		filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "docker.sock"),
-		filepath.Join(userHomeDir(), ".docker", "run", "docker.sock"),
-		filepath.Join(userHomeDir(), ".docker", "desktop", "docker.sock"),
-		filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "docker.sock"),
-	}
-
-	for _, socket := range socketCandidates {
-		if socket == "" {
-			continue
-		}
-		if _, err := os.Stat(socket); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func userHomeDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return home
 }

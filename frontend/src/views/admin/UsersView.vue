@@ -289,7 +289,8 @@
                 :alt="value"
                 size-class="h-8 w-8"
               />
-              <span class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
+              <!-- 邮箱按基线对齐，移动卡片的标签对齐邮箱。行高 32px 和头像等高，邮箱仍在头像中线上。 -->
+              <span class="self-baseline font-medium leading-8 text-gray-900 dark:text-white">{{ value }}</span>
             </div>
           </template>
 
@@ -341,8 +342,9 @@
                 @click.stop="toggleExpandedGroup(row.id)"
               >
                 <Icon name="shield" size="xs" class="h-3.5 w-3.5 text-purple-500 dark:text-purple-400" />
-                <span class="font-medium text-purple-600 dark:text-purple-400">{{ getUserGroups(row).exclusive.length }}</span>
-                <span class="text-gray-500 dark:text-dark-400">{{ t('admin.users.exclusiveLabel') }}</span>
+                <!-- 数量和文字加 self-baseline，移动卡片的标签对齐这行文字。 -->
+                <span class="self-baseline font-medium text-purple-600 dark:text-purple-400">{{ getUserGroups(row).exclusive.length }}</span>
+                <span class="self-baseline text-gray-500 dark:text-dark-400">{{ t('admin.users.exclusiveLabel') }}</span>
                 <!-- Hover tooltip（操作菜单未打开时显示） -->
                 <div
                   v-if="expandedGroupUserId !== row.id"
@@ -378,8 +380,8 @@
                 class="group/pub relative inline-flex cursor-default items-center gap-1 whitespace-nowrap text-xs"
               >
                 <Icon name="globe" size="xs" class="h-3.5 w-3.5 text-gray-400 dark:text-dark-500" />
-                <span class="font-medium text-gray-600 dark:text-dark-300">{{ getUserGroups(row).publicGroups.length }}</span>
-                <span class="text-gray-400 dark:text-dark-500">{{ t('admin.users.publicLabel') }}</span>
+                <span class="self-baseline font-medium text-gray-600 dark:text-dark-300">{{ getUserGroups(row).publicGroups.length }}</span>
+                <span class="self-baseline text-gray-400 dark:text-dark-500">{{ t('admin.users.publicLabel') }}</span>
                 <!-- Tooltip: 向下弹出 -->
                 <div class="pointer-events-none absolute left-0 top-full z-50 mt-1.5 tooltip-panel rounded-compact px-2.5 py-1.5 text-xs opacity-0 shadow-lg transition-opacity duration-fast group-hover/pub:opacity-100">
                   <div class="tooltip-caret -top-1 left-4 border-l border-t"></div>
@@ -560,7 +562,8 @@
                   value === 'active' ? 'bg-green-500' : 'bg-red-500'
                 ]"
               ></span>
-              <span class="text-sm text-gray-700 dark:text-gray-300">
+              <!-- 状态文字加 self-baseline，移动卡片的标签对齐文字。 -->
+              <span class="self-baseline text-sm text-gray-700 dark:text-gray-300">
                 {{ value === 'active' ? t('common.active') : t('admin.users.disabled') }}
               </span>
             </div>

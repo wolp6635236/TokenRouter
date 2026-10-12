@@ -8,8 +8,9 @@ import (
 	"log"
 	"time"
 
-	keycore "github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/redis/go-redis/v9"
+
+	keycore "github.com/TokenFlux/TokenRouter/internal/apikey"
 )
 
 const (
@@ -19,6 +20,10 @@ const (
 	AuthCacheInvalidateChannel = "auth:cache:invalidate"
 )
 
+type ApiKeyCache struct {
+	rdb *redis.Client
+}
+
 // ApiKeyRateLimitKey generates the Redis key for API key creation rate limiting.
 func ApiKeyRateLimitKey(userID int64) string {
 	return fmt.Sprintf("%s%d", ApiKeyRateLimitKeyPrefix, userID)
@@ -26,10 +31,6 @@ func ApiKeyRateLimitKey(userID int64) string {
 
 func ApiKeyAuthCacheKey(key string) string {
 	return fmt.Sprintf("%s%s", ApiKeyAuthCachePrefix, key)
-}
-
-type ApiKeyCache struct {
-	rdb *redis.Client
 }
 
 func NewAPIKeyCache(rdb *redis.Client) keycore.APIKeyCache {
@@ -94,12 +95,12 @@ func (c *ApiKeyCache) DeleteAuthCache(ctx context.Context, key string) error {
 	return c.rdb.Del(ctx, ApiKeyAuthCacheKey(key)).Err()
 }
 
-// PublishAuthCacheInvalidation publishes a cache invalidation message to all instances
+// PublishAuthCacheInvalidation publishes a cache invalidation message to all instances.
 func (c *ApiKeyCache) PublishAuthCacheInvalidation(ctx context.Context, cacheKey string) error {
 	return c.rdb.Publish(ctx, AuthCacheInvalidateChannel, cacheKey).Err()
 }
 
-// SubscribeAuthCacheInvalidation subscribes to cache invalidation messages
+// SubscribeAuthCacheInvalidation subscribes to cache invalidation messages.
 func (c *ApiKeyCache) SubscribeAuthCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
 	pubsub := c.rdb.Subscribe(ctx, AuthCacheInvalidateChannel)
 

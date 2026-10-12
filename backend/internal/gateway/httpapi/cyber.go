@@ -6,23 +6,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
-
-const CyberPolicyRecordedKey = "ops_cyber_recorded"
-
-type CyberBlockFormat int
 
 const (
 	CyberBlockResponses CyberBlockFormat = iota
 	CyberBlockChat
 	CyberBlockAnthropic
+
+	CyberPolicyRecordedKey = "ops_cyber_recorded"
 )
+
+type CyberBlockFormat int
 
 type CyberBackend interface {
 	Available() bool
@@ -41,10 +43,6 @@ type CyberHandler struct {
 	runtime   moderationflow.Runtime
 }
 
-func NewCyberHandler(b CyberBackend, m ModerationPort, e ModerationEndpoints, r moderationflow.Runtime) *CyberHandler {
-	return &CyberHandler{b, m, e, r}
-}
-
 // CyberPolicyCall 的资金数据已在入口转为 completion 的独立快照。
 type CyberPolicyCall struct {
 	Key            *apikey.APIKey
@@ -55,6 +53,10 @@ type CyberPolicyCall struct {
 	BlockKey       string
 	Plan           moderationflow.BlockPlan
 	HasPlan        bool
+}
+
+func NewCyberHandler(b CyberBackend, m ModerationPort, e ModerationEndpoints, r moderationflow.Runtime) *CyberHandler {
+	return &CyberHandler{b, m, e, r}
 }
 
 func (h *CyberHandler) GroupInScope(c *gin.Context, key *apikey.APIKey) bool {
@@ -144,7 +146,7 @@ func (h *CyberHandler) RecordPolicy(c *gin.Context, in CyberPolicyCall) bool {
 }
 
 func (h *CyberHandler) Meta(c *gin.Context, key *apikey.APIKey, provider *moderationflow.Provider, model, platform string, stream bool, blockKey string) moderationflow.OpsMeta {
-	meta := moderationflow.OpsMeta{RequestID: c.Writer.Header().Get("X-Request-Id"), ClientRequestID: c.GetHeader("X-Request-Id"), Platform: platform, Model: strings.TrimSpace(model), Stream: stream, InboundEndpoint: h.endpoints.Inbound(c), UpstreamEndpoint: h.backend.UpstreamEndpoint(c, platform), UserAgent: c.GetHeader("User-Agent"), ClientIP: clientip.GetClientIP(c), CreatedAt: time.Now(), SessionBlockKey: blockKey}
+	meta := moderationflow.OpsMeta{RequestID: telemetry.RequestIDValue(c.Request.Context()), ClientRequestID: telemetry.RequestIDValue(c.Request.Context()), Platform: platform, Model: strings.TrimSpace(model), Stream: stream, InboundEndpoint: h.endpoints.Inbound(c), UpstreamEndpoint: h.backend.UpstreamEndpoint(c, platform), UserAgent: c.GetHeader("User-Agent"), ClientIP: clientip.GetClientIP(c), CreatedAt: time.Now(), SessionBlockKey: blockKey}
 	if c.Request != nil && c.Request.URL != nil {
 		meta.RequestPath = c.Request.URL.Path
 	}

@@ -13,6 +13,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 )
 
+var _ creative.CreativeRunOutboxRepository = (*creativeRunOutboxRepository)(nil)
+
 // creativeRunOutboxRepository 使用 PostgreSQL 原生 SQL 实现可恢复的创作台后台动作。
 type creativeRunOutboxRepository struct {
 	db *sql.DB
@@ -56,10 +58,7 @@ func (r *creativeRunOutboxRepository) Claim(ctx context.Context, workerID string
 	if lease <= 0 {
 		lease = 2 * time.Minute
 	}
-	leaseSeconds := int64(lease / time.Second)
-	if leaseSeconds < 1 {
-		leaseSeconds = 1
-	}
+	leaseSeconds := max(int64(lease/time.Second), 1)
 	token, err := newCreativeOutboxLeaseToken(workerID)
 	if err != nil {
 		return nil, err
@@ -168,5 +167,3 @@ func newCreativeOutboxLeaseToken(workerID string) (string, error) {
 	}
 	return workerID + ":" + hex.EncodeToString(raw[:]), nil
 }
-
-var _ creative.CreativeRunOutboxRepository = (*creativeRunOutboxRepository)(nil)

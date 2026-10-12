@@ -7,14 +7,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-type GrokTokenSource struct {
-	Cache      AccessTokenCache
-	Repository RefreshRepository
-	Policy     ProviderRefreshPolicy
-	Refresh    func(context.Context, *Record, time.Duration) (*OAuthRefreshResult, error)
-}
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+)
 
 const (
 	GrokTokenCacheSkew          = 5 * time.Minute
@@ -30,6 +25,43 @@ var (
 	ErrGrokOAuthAccessTokenExpired   = errors.New("grok oauth access token is expired")
 	ErrGrokOAuthConfiguredProxyMiss  = errors.New("grok oauth configured proxy is missing")
 )
+
+type GrokTokenSource struct {
+	Cache      AccessTokenCache
+	Repository RefreshRepository
+	Policy     ProviderRefreshPolicy
+	Refresh    func(context.Context, *Record, time.Duration) (*OAuthRefreshResult, error)
+}
+
+// GrokStoredAccessToken 按提供商类型读取已存储的访问令牌。
+func GrokStoredAccessToken(value *Record) (string, error) {
+	switch value.Type {
+	case capability.ProviderTypeOAuth:
+		token := value.GetGrokAccessToken()
+		if token == "" {
+			return "", errors.New("grok access_token not found in credentials")
+		}
+		return token, nil
+	case capability.ProviderTypeSetupToken:
+		token := value.GetCredential("access_token")
+		if token == "" {
+			return "", errors.New("access_token not found in credentials")
+		}
+		return token, nil
+	case capability.ProviderTypeAPIKey:
+		token := value.GetCredential("api_key")
+		if token == "" {
+			return "", errors.New("api_key not found in credentials")
+		}
+		return token, nil
+	case capability.ProviderTypeBedrock:
+		return "", nil
+	case capability.ProviderTypeServiceAccount:
+		return "", fmt.Errorf("unsupported service account platform: %s", value.Platform)
+	default:
+		return "", fmt.Errorf("unsupported provider type: %s", value.Type)
+	}
+}
 
 // @project-doc docs/interfaces/grok_upstream.md#grok_account_contract
 func (p *GrokTokenSource) GetAccessToken(ctx context.Context, provider *Record) (string, error) {

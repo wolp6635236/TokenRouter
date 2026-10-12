@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// BillingDefaultsKey 是本地文件的保留节点，不属于模型身份空间。
+const BillingDefaultsKey = "_billing_defaults"
+
 // CatalogRules 保存目录之外经核实的价格维度；空指针表示没有额外商业规则。
 type CatalogRules struct {
 	ImagePrices                  MediaPrices        `json:"image_prices,omitempty"`
@@ -22,6 +25,20 @@ type CatalogRules struct {
 	SourceURL                    string             `json:"source_url,omitempty"`
 	VerifiedAt                   string             `json:"verified_at,omitempty"`
 }
+
+// OperationPrices 保存按操作计量的单价；缺失值不能解释为免费。
+type OperationPrices struct {
+	WebSearchPricePerCall        *float64          `json:"web_search_price_per_call,omitempty"`
+	SearchPricePer1k             *float64          `json:"search_price_per_1k,omitempty"`
+	AudioRealtimePricePerMin     *float64          `json:"audio_realtime_price_per_min,omitempty"`
+	AudioTTSPricePerMillionChars *float64          `json:"audio_tts_price_per_million_chars,omitempty"`
+	AudioSTTPricePerHour         *float64          `json:"audio_stt_price_per_hour,omitempty"`
+	Sources                      map[string]string `json:"sources,omitempty"`
+	VerifiedAt                   string            `json:"verified_at,omitempty"`
+}
+
+// MediaPrices 区分明确的零单价与无效的空尺寸价格。
+type MediaPrices map[string]float64
 
 func copyOptional[T any](value *T) *T {
 	if value == nil {
@@ -79,20 +96,6 @@ func (r CatalogRules) Validate() error {
 
 func validAmount(value float64) bool {
 	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
-}
-
-// BillingDefaultsKey 是本地文件的保留节点，不属于模型身份空间。
-const BillingDefaultsKey = "_billing_defaults"
-
-// OperationPrices 保存按操作计量的单价；缺失值不能解释为免费。
-type OperationPrices struct {
-	WebSearchPricePerCall        *float64          `json:"web_search_price_per_call,omitempty"`
-	SearchPricePer1k             *float64          `json:"search_price_per_1k,omitempty"`
-	AudioRealtimePricePerMin     *float64          `json:"audio_realtime_price_per_min,omitempty"`
-	AudioTTSPricePerMillionChars *float64          `json:"audio_tts_price_per_million_chars,omitempty"`
-	AudioSTTPricePerHour         *float64          `json:"audio_stt_price_per_hour,omitempty"`
-	Sources                      map[string]string `json:"sources,omitempty"`
-	VerifiedAt                   string            `json:"verified_at,omitempty"`
 }
 
 // Clone 返回操作价的独立副本。
@@ -161,9 +164,6 @@ func deriveCatalogCachePrices(price *CatalogModelPricing) error {
 	}
 	return nil
 }
-
-// MediaPrices 区分明确的零单价与无效的空尺寸价格。
-type MediaPrices map[string]float64
 
 // UnmarshalJSON 拒绝尺寸值 null，避免 JSON 解码将未知单价变成免费。
 func (p *MediaPrices) UnmarshalJSON(body []byte) error {

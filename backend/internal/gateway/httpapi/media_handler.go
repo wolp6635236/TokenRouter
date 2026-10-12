@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 // MediaAccess 仅包含 HTTP 准入、日志和复合资源查找所需字段。
@@ -80,7 +81,7 @@ type MediaHTTPPorts interface {
 
 // MediaHandler 独占媒体路由的 HTTP 准入、错误响应和同步输出；业务尝试由 media 执行。
 type MediaHandler struct {
-	requestLifetime
+	RequestLifetime
 	ports MediaHTTPPorts
 }
 
@@ -89,8 +90,7 @@ func NewMediaHandler(ports MediaHTTPPorts) *MediaHandler { return &MediaHandler{
 func (h *MediaHandler) readBody(c *gin.Context) ([]byte, bool) {
 	body, err := ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
-		var exceeded *http.MaxBytesError
-		if errors.As(err, &exceeded) {
+		if exceeded, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			h.ports.Error(c, 413, "invalid_request_error", BodyTooLargeMessage(exceeded.Limit))
 		} else {
 			h.ports.Error(c, 400, "invalid_request_error", "Failed to read request body")
@@ -105,7 +105,7 @@ func (h *MediaHandler) readBody(c *gin.Context) ([]byte, bool) {
 }
 
 func (h *MediaHandler) Images(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -206,7 +206,7 @@ func (h *MediaHandler) GrokVideoContent(c *gin.Context) {
 }
 
 func (h *MediaHandler) GrokMedia(c *gin.Context, endpoint, requestID string) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}

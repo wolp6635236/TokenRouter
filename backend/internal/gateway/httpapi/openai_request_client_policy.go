@@ -5,15 +5,27 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
+
+func OpenAIClientPolicyForbiddenMessage(result providercore.CodexClientRestrictionDetectionResult) string {
+	// 按客户端策略返回拒绝原因。
+	if result.Policy == providercore.OpenAIOAuthClientPolicyCodexOnly {
+		return "This provider only allows Codex official clients"
+	}
+	if result.Policy == providercore.OpenAIOAuthClientPolicyTLSRouterMatchedOnly {
+		return "This provider only allows clients matched by the configured TLS router"
+	}
+	return "This provider only allows configured OpenAI OAuth clients"
+}
 
 func (s *OpenAIRequests) DetectClient(c *gin.Context, provider *gatewayprovider.ExecutionProvider, tlsRouterMatch egress.TLSFingerprintRouterMatchResult) providercore.CodexClientRestrictionDetectionResult {
 	ctx := context.Background()

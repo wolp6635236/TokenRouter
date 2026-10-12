@@ -58,7 +58,7 @@
               v-model="apiKey"
               :type="keyVisible ? 'text' : 'password'"
               :placeholder="t('keyUsage.placeholder')"
-              class="input-ring h-9 w-full pl-12 pr-12 rounded-control border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 transition dark:border-dark-700 dark:bg-dark-900 dark:text-white dark:placeholder:text-dark-500"
+              class="input pl-12 pr-12"
               @keydown.enter="queryKey"
             />
             <button
@@ -72,16 +72,16 @@
           <button
             @click="queryKey"
             :disabled="isQuerying"
-            class="h-9 px-7 rounded-control bg-primary-500 hover:bg-primary-600 text-white font-medium text-sm transition active:scale-[0.97] flex items-center gap-2 whitespace-nowrap disabled:opacity-60"
+            class="btn btn-primary whitespace-nowrap px-7"
           >
             <Icon
               name="loader"
               size="sm"
               :animate-on-hover="false"
               v-if="isQuerying"
-              class="w-4 h-4 animate-spin"
+              class="animate-spin"
             />
-            <Icon name="search" size="sm" v-else class="w-4 h-4" />
+            <Icon name="search" size="sm" v-else />
             {{ isQuerying ? t('keyUsage.querying') : t('keyUsage.query') }}
           </button>
         </div>
@@ -99,24 +99,24 @@
               @click="setDateRange(range.key)"
               class="text-xs px-3 py-1.5 rounded-control border transition"
               :class="currentRange === range.key
-                ? 'bg-primary-500 text-white border-primary-500'
+                ? 'border-primary-500/60 bg-primary-50 text-primary-700 dark:border-primary-500/15 dark:bg-primary-500/8 dark:text-primary-500'
                 : 'border-gray-200 bg-white text-gray-700 dark:border-dark-700 dark:bg-dark-900 dark:text-dark-200 hover:border-black/20 dark:hover:border-dark-600'"
             >{{ range.label }}</button>
             <div v-if="currentRange === 'custom'" class="flex items-center gap-2 ml-1">
               <input
                 v-model="customStartDate"
                 type="date"
-                class="input-ring h-9 text-xs px-2 py-1.5 rounded-control border border-primary-900/10 bg-white text-gray-900 dark:border-dark-700 dark:bg-dark-900 dark:text-white"
+                class="input w-auto px-2 text-xs"
               />
               <span class="text-xs text-gray-400">-</span>
               <input
                 v-model="customEndDate"
                 type="date"
-                class="input-ring h-9 text-xs px-2 py-1.5 rounded-control border border-primary-900/10 bg-white text-gray-900 dark:border-dark-700 dark:bg-dark-900 dark:text-white"
+                class="input w-auto px-2 text-xs"
               />
               <button
                 @click="queryKey"
-                class="h-9 text-xs px-3 py-1.5 rounded-control bg-primary-500 text-white hover:bg-primary-600"
+                class="btn btn-primary btn-sm h-9"
               >{{ t('keyUsage.apply') }}</button>
             </div>
           </div>
@@ -302,15 +302,14 @@
           >
             <div class="flex flex-col gap-3 px-8 py-5 border-b border-gray-200 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
               <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-dark-400">{{ t('keyUsage.dailyDetail') }}</h3>
-              <div class="inline-flex rounded-control border border-gray-200 bg-white p-0.5 dark:border-dark-700 dark:bg-dark-950">
+              <div v-segmented class="segmented">
                 <button
                   v-for="option in dailyUsageOptions"
                   :key="option.value"
+                  type="button"
                   @click="setDailyUsageDays(option.value)"
-                  class="min-w-12 rounded-control px-3 py-1.5 text-xs font-medium transition-colors"
-                  :class="dailyUsageDays === option.value
-                    ? 'bg-primary-500 text-white'
-                    : 'text-gray-600 hover:bg-gray-100 dark:text-dark-300 dark:hover:bg-dark-800'"
+                  class="segmented-item min-w-12 px-3 py-1.5 text-xs"
+                  :class="{ 'segmented-item-active': dailyUsageDays === option.value }"
                 >
                   {{ option.label }}
                 </button>
@@ -427,6 +426,7 @@ import { useLocaleRefresh } from '@/composables/useLocaleRefresh'
 import { getLocale } from '@/i18n'
 import { localizedErrorMessage } from '@/i18n/errors'
 import { vContentReveal } from '@/directives/contentReveal'
+import { vSegmented } from '@/directives/segmented'
 import { useRoute as useMotionRoute } from 'vue-router'
 const motionRoute = useMotionRoute()
 
@@ -1013,21 +1013,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 自定义日期输入在浅色模式使用中性焦点圈，暗色模式使用品牌色。 */
-.input-ring {
-  transition: box-shadow var(--motion-normal) var(--motion-ease), border-color var(--motion-normal) var(--motion-ease);
-}
-.input-ring:focus {
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
-  border-color: rgba(45, 79, 104, 0.1);
-  outline: none;
-}
-
-:global(.dark) .input-ring:focus {
-  box-shadow: 0 0 0 3px rgba(0, 210, 255, 0.22);
-  border-color: #00D2FF;
-}
-
 /* Ring animation — 时长不在此写死，由模板内联 transitionDuration 注入 RING_ANIMATION_MS。 */
 .progress-ring {
   transition-property: stroke-dashoffset;

@@ -3,14 +3,15 @@ package bridge
 import (
 	"bytes"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 )
 
 // CompatOutputMeaning 从本模块写出的完整帧中识别内容输出和终止事件。
 // 文本、推理和工具调用计为内容输出。
 func CompatOutputMeaning(frame []byte) (bool, bool) {
-	for _, line := range bytes.Split(frame, []byte("\n")) {
+	for line := range bytes.SplitSeq(frame, []byte("\n")) {
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}

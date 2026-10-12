@@ -110,9 +110,7 @@ func TestGetInstanceChannelLimitsFallsBackToLegacyDirectAliases(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Helper to build test PaymentProviderInstance values
-// ---------------------------------------------------------------------------
 
 func testInstance(id int64, providerKey, limits string) *ProviderInstance {
 	return &ProviderInstance{
@@ -130,9 +128,7 @@ func makeLimitsJSON(paymentType string, cl ChannelLimits) string {
 	return string(b)
 }
 
-// ---------------------------------------------------------------------------
 // filterByLimits
-// ---------------------------------------------------------------------------
 
 func TestFilterByLimits(t *testing.T) {
 	t.Parallel()
@@ -283,9 +279,7 @@ func TestFilterByLimits(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // pickLeastAmount
-// ---------------------------------------------------------------------------
 
 func TestPickLeastAmount(t *testing.T) {
 	t.Parallel()
@@ -341,9 +335,7 @@ func TestPickLeastAmount(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // getInstanceChannelLimits
-// ---------------------------------------------------------------------------
 
 func TestGetInstanceChannelLimits(t *testing.T) {
 	t.Parallel()
@@ -421,9 +413,7 @@ func TestGetInstanceChannelLimits(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // startOfDay
-// ---------------------------------------------------------------------------
 
 func TestStartOfDay(t *testing.T) {
 	t.Parallel()
@@ -564,9 +554,7 @@ func stringMapEqual(a, b map[string]string) bool {
 	return true
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 // int64SliceEqual compares two int64 slices for equality.
 // Both nil and empty slices are treated as equal.

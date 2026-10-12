@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
 )
 
@@ -47,6 +46,15 @@ type dashboardEntityTrendCacheKey struct {
 	EndTime     string `json:"end_time"`
 	Granularity string `json:"granularity"`
 	Limit       int    `json:"limit"`
+}
+
+type dashboardQueryCaches struct {
+	dashboardTrendCache            *querycache.Cache
+	dashboardModelStatsCache       *querycache.Cache
+	dashboardGroupStatsCache       *querycache.Cache
+	dashboardUsersTrendCache       *querycache.Cache
+	dashboardAPIKeysTrendCache     *querycache.Cache
+	ranking, batchUsers, batchKeys *querycache.Cache
 }
 
 func mustMarshalDashboardCacheKey(value any) string {
@@ -215,15 +223,6 @@ func (h *DashboardService) GetUserUsageTrendCached(ctx context.Context, startTim
 	}
 	trend, err := snapshotPayloadAs[[]UserUsageTrendPoint](entry.Payload)
 	return trend, hit, err
-}
-
-type dashboardQueryCaches struct {
-	dashboardTrendCache            *querycache.Cache
-	dashboardModelStatsCache       *querycache.Cache
-	dashboardGroupStatsCache       *querycache.Cache
-	dashboardUsersTrendCache       *querycache.Cache
-	dashboardAPIKeysTrendCache     *querycache.Cache
-	ranking, batchUsers, batchKeys *querycache.Cache
 }
 
 func newDashboardQueryCaches() *dashboardQueryCaches {

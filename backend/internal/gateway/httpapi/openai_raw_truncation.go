@@ -6,13 +6,13 @@ import (
 	"net/http"
 	"strings"
 
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/gin-gonic/gin"
 
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 // openAIRawStreamTruncatedUpstreamMessage 是 raw CC 直转路径上游截断的 Ops 消息。

@@ -13,10 +13,47 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
+
+const (
+	GrokMediaEndpointImagesGenerations GrokMediaEndpoint = "images_generations"
+	GrokMediaEndpointImagesEdits       GrokMediaEndpoint = "images_edits"
+	GrokMediaEndpointVideosGenerations GrokMediaEndpoint = "videos_generations"
+	GrokMediaEndpointVideosEdits       GrokMediaEndpoint = "videos_edits"
+	GrokMediaEndpointVideosExtensions  GrokMediaEndpoint = "videos_extensions"
+	GrokMediaEndpointVideoStatus       GrokMediaEndpoint = "video_status"
+	GrokMediaEndpointVideoContent      GrokMediaEndpoint = "video_content"
+
+	// xAI Imagine 官方图片编辑数量上限。
+	GrokMediaMaxEditSourceImages = 3
+)
+
+// Grok Imagine 官方图片几何规格参考：
+// https://docs.x.ai/developers/model-capabilities/images/generation
+var grokImagineAspectRatioValues = []struct {
+	label string
+	ratio float64
+}{
+	{"1:1", 1},
+	{"16:9", 16.0 / 9.0},
+	{"9:16", 9.0 / 16.0},
+	{"4:3", 4.0 / 3.0},
+	{"3:4", 3.0 / 4.0},
+	{"3:2", 1.5},
+	{"2:3", 2.0 / 3.0},
+	{"2:1", 2},
+	{"1:2", 0.5},
+	{"19.5:9", 19.5 / 9.0},
+	{"9:19.5", 9.0 / 19.5},
+	{"20:9", 20.0 / 9.0},
+	{"9:20", 9.0 / 20.0},
+	{"21:9", 21.0 / 9.0},
+	{"5:2", 5.0 / 2.0},
+}
 
 type MediaNormalization struct {
 	MaxUploadPartSize                                                            int64
@@ -32,18 +69,21 @@ type (
 	GrokMediaEndpoint string
 )
 
-const (
-	GrokMediaEndpointImagesGenerations GrokMediaEndpoint = "images_generations"
-	GrokMediaEndpointImagesEdits       GrokMediaEndpoint = "images_edits"
-	GrokMediaEndpointVideosGenerations GrokMediaEndpoint = "videos_generations"
-	GrokMediaEndpointVideosEdits       GrokMediaEndpoint = "videos_edits"
-	GrokMediaEndpointVideosExtensions  GrokMediaEndpoint = "videos_extensions"
-	GrokMediaEndpointVideoStatus       GrokMediaEndpoint = "video_status"
-	GrokMediaEndpointVideoContent      GrokMediaEndpoint = "video_content"
-
-	// xAI Imagine 官方图片编辑数量上限。
-	GrokMediaMaxEditSourceImages = 3
-)
+type GrokMediaRequestInfo struct {
+	Model           string
+	Prompt          string
+	N               int
+	Size            string
+	SizeTier        string
+	AspectRatio     string
+	ImageResolution string
+	Resolution      string
+	DurationSeconds int
+	InputImageURLs  []string
+	MaskImageURL    string
+	Uploads         []upstream.ImageUpload
+	MaskUpload      *upstream.ImageUpload
+}
 
 func (e GrokMediaEndpoint) RequiresRequestBody() bool {
 	return !e.IsVideoLookupRequest()
@@ -60,22 +100,6 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 	default:
 		return false
 	}
-}
-
-type GrokMediaRequestInfo struct {
-	Model           string
-	Prompt          string
-	N               int
-	Size            string
-	SizeTier        string
-	AspectRatio     string
-	ImageResolution string
-	Resolution      string
-	DurationSeconds int
-	InputImageURLs  []string
-	MaskImageURL    string
-	Uploads         []upstream.ImageUpload
-	MaskUpload      *upstream.ImageUpload
 }
 
 func (r GrokMediaRequestInfo) ModerationBody() []byte {
@@ -565,29 +589,6 @@ func (m MediaCodec) IsGrokMediaVideoContentURL(rawURL, requestID string) bool {
 	return segments[len(segments)-3] == "videos" &&
 		decodedID == requestID &&
 		segments[len(segments)-1] == "content"
-}
-
-// Grok Imagine 官方图片几何规格参考：
-// https://docs.x.ai/developers/model-capabilities/images/generation
-var grokImagineAspectRatioValues = []struct {
-	label string
-	ratio float64
-}{
-	{"1:1", 1},
-	{"16:9", 16.0 / 9.0},
-	{"9:16", 9.0 / 16.0},
-	{"4:3", 4.0 / 3.0},
-	{"3:4", 3.0 / 4.0},
-	{"3:2", 1.5},
-	{"2:3", 2.0 / 3.0},
-	{"2:1", 2},
-	{"1:2", 0.5},
-	{"19.5:9", 19.5 / 9.0},
-	{"9:19.5", 9.0 / 19.5},
-	{"20:9", 20.0 / 9.0},
-	{"9:20", 9.0 / 20.0},
-	{"21:9", 21.0 / 9.0},
-	{"5:2", 5.0 / 2.0},
 }
 
 func (m MediaCodec) ApplyGrokImagineImageGeometry(body []byte) ([]byte, error) {

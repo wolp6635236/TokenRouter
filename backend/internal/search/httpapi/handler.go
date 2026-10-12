@@ -3,9 +3,10 @@ package httpapi
 import (
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/search"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 type Handler struct{ settingService *search.ConfigService }

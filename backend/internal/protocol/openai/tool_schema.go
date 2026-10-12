@@ -12,6 +12,20 @@ import (
 )
 
 const (
+	openAIResponsesToolSchemaSkip openAIResponsesToolSchemaContext = iota
+	openAIResponsesToolSchemaDocument
+	openAIResponsesToolSchemaTools
+	openAIResponsesToolSchemaTool
+	openAIResponsesToolSchemaInput
+	openAIResponsesToolSchemaInputItem
+	openAIResponsesToolSchemaToolCarrier
+	openAIResponsesToolSchemaTypeProbe
+	openAIResponsesToolSchemaFunction
+	openAIResponsesToolSchema
+	openAIResponsesToolSchemaArray
+	openAIResponsesToolSchemaMap
+	openAIResponsesToolSchemaOrArray
+
 	// Keep this aligned with the gateway's default maximum request-body size. A
 	// caller with a larger custom limit must not make this compatibility pass an
 	// unbounded parser or patch accumulator.
@@ -24,7 +38,35 @@ const (
 	openAIResponsesToolSchemaFallbackType = `"object"`
 )
 
-var errOpenAIResponsesToolSchemaLimit = errors.New("OpenAI Responses tool schema safety limit exceeded")
+var (
+	errOpenAIResponsesToolSchemaLimit = errors.New("OpenAI Responses tool schema safety limit exceeded")
+
+	openAIResponsesJSONOneOfKey     = []byte(`"oneOf"`)
+	openAIResponsesJSONAnyOfKey     = []byte(`"anyOf"`)
+	openAIResponsesJSONEscapeNeedle = []byte{'\\'}
+)
+
+type openAIResponsesToolSchemaOptions struct {
+	removeLookaroundPatterns        bool
+	replaceNullParameterTypes       bool
+	injectObjectUnionRootObjectType bool
+}
+
+type openAIResponsesToolSchemaContext uint8
+
+type openAIResponsesToolSchemaEdit struct {
+	start       int
+	end         int
+	replacement string
+}
+
+type openAIResponsesToolSchemaParser struct {
+	body      []byte
+	pos       int
+	options   openAIResponsesToolSchemaOptions
+	edits     []openAIResponsesToolSchemaEdit
+	probeType string
+}
 
 // SanitizeToolSchemaPatterns removes only schema constraints
 // containing regex lookaround, which OpenAI rejects. It deliberately does not
@@ -62,44 +104,6 @@ func openAIResponsesBodyMayContainRegexLookaround(body []byte) bool {
 func hasRegexLookaround(pattern string) bool {
 	return strings.Contains(pattern, "(?=") || strings.Contains(pattern, "(?!") ||
 		strings.Contains(pattern, "(?<=") || strings.Contains(pattern, "(?<!")
-}
-
-type openAIResponsesToolSchemaOptions struct {
-	removeLookaroundPatterns        bool
-	replaceNullParameterTypes       bool
-	injectObjectUnionRootObjectType bool
-}
-
-type openAIResponsesToolSchemaContext uint8
-
-const (
-	openAIResponsesToolSchemaSkip openAIResponsesToolSchemaContext = iota
-	openAIResponsesToolSchemaDocument
-	openAIResponsesToolSchemaTools
-	openAIResponsesToolSchemaTool
-	openAIResponsesToolSchemaInput
-	openAIResponsesToolSchemaInputItem
-	openAIResponsesToolSchemaToolCarrier
-	openAIResponsesToolSchemaTypeProbe
-	openAIResponsesToolSchemaFunction
-	openAIResponsesToolSchema
-	openAIResponsesToolSchemaArray
-	openAIResponsesToolSchemaMap
-	openAIResponsesToolSchemaOrArray
-)
-
-type openAIResponsesToolSchemaEdit struct {
-	start       int
-	end         int
-	replacement string
-}
-
-type openAIResponsesToolSchemaParser struct {
-	body      []byte
-	pos       int
-	options   openAIResponsesToolSchemaOptions
-	edits     []openAIResponsesToolSchemaEdit
-	probeType string
 }
 
 func sanitizeOpenAIResponsesToolSchemas(
@@ -303,12 +307,6 @@ func (p *openAIResponsesToolSchemaParser) parseObject(
 		return nil
 	}
 }
-
-var (
-	openAIResponsesJSONOneOfKey     = []byte(`"oneOf"`)
-	openAIResponsesJSONAnyOfKey     = []byte(`"anyOf"`)
-	openAIResponsesJSONEscapeNeedle = []byte{'\\'}
-)
 
 func openAIMissingRootObjectUnionTypeEdit(raw []byte, absoluteStart int) (openAIResponsesToolSchemaEdit, bool) {
 	if len(raw) > openAIResponsesObjectUnionMaxSize {

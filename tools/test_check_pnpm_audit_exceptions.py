@@ -23,6 +23,22 @@ class AuditValidationTest(unittest.TestCase):
     def test_valid_empty_report(self):
         validate_audit(audit_report(), 0)
 
+    def test_accepts_filtered_lower_severity_findings(self):
+        """高危过滤后的空明细可以包含低等级汇总计数。"""
+        for severity in ('info', 'low', 'moderate'):
+            report = audit_report()
+            report['metadata']['vulnerabilities'][severity] = 2
+            with self.subTest(severity=severity):
+                validate_audit(report, 0)
+
+    def test_rejects_filtered_high_severity_findings(self):
+        """高危汇总有计数时需要对应的漏洞明细。"""
+        for severity in ('high', 'critical'):
+            report = audit_report()
+            report['metadata']['vulnerabilities'][severity] = 1
+            with self.subTest(severity=severity), self.assertRaises(ValueError):
+                validate_audit(report, 1)
+
     def test_rejects_failed_or_incomplete_reports(self):
         for report in ({}, {'error': {'code': 'UNAVAILABLE'}}, {'advisories': {}}, [],
                        audit_report({'a': {'severity': 'high'}})):

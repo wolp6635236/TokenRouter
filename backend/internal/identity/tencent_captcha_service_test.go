@@ -5,28 +5,11 @@ import (
 	"errors"
 	"testing"
 
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
-	"github.com/stretchr/testify/require"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 )
-
-type tencentCaptchaVerifierStub struct {
-	response    *identity.TencentCaptchaVerifyResponse
-	err         error
-	calls       int
-	proof       identity.TencentCaptchaProof
-	remoteIP    string
-	credentials identity.TencentCaptchaCredentials
-}
-
-func (s *tencentCaptchaVerifierStub) VerifyTicket(_ context.Context, credentials identity.TencentCaptchaCredentials, proof identity.TencentCaptchaProof, remoteIP string) (*identity.TencentCaptchaVerifyResponse, error) {
-	s.calls++
-	s.credentials = credentials
-	s.proof = proof
-	s.remoteIP = remoteIP
-	return s.response, s.err
-}
 
 func newTencentCaptchaTestService(verifier identity.TencentCaptchaVerifier) *identity.TencentCaptchaService {
 	return newTencentCaptchaTestServiceWithRegion(verifier, "")

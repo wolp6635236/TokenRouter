@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/ent/pendingauthsession"
 	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
+	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
 )
 
 func TestLogoutClearsOAuthStateCookiesAndConsumesPendingSession(t *testing.T) {

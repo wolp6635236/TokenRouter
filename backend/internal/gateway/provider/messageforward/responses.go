@@ -6,13 +6,17 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
+	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
+)
+
+// 固定时长用于平台重试预算。
+const (
+	maxRetryAttempts = 5
+	maxRetryElapsed  = 10 * time.Second
 )
 
 // streamOptions 配置响应窗口观测和逐事件缓存规则读取函数。
@@ -95,9 +99,3 @@ func detachedStreamContext(ctx context.Context, stream bool) (context.Context, c
 	}
 	return requestcontext.Detach(ctx), func() {}
 }
-
-// 固定时长用于平台重试预算。
-const (
-	maxRetryAttempts = 5
-	maxRetryElapsed  = 10 * time.Second
-)

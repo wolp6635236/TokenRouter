@@ -1,0 +1,600 @@
+package qoder
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+)
+
+const (
+	qoderXMLToolCallFixture       = `<tool_call>Read<arg_value><arg_key>file_path</arg_key><arg_value>/workspace/campus-navigation/README.md</arg_value></tool_call>`
+	qoderJSONShellToolCallFixture = `<tool_call>{"name":"shell","arguments":{"command":"pwd","description":"Print working directory"}}</tool_call>`
+
+	qoderDSMLToolCallFixture = `<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="Bash">
+<｜｜DSML｜｜parameter name="command" string="true">ls -la</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="description" string="true">List root files</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>`
+)
+
+var qoderCachedUsageEventForTest = SSEEvent{
+	Type:             "usage",
+	PromptTokens:     66637,
+	CompletionTokens: 6,
+	TotalTokens:      66643,
+	UsageDetails: UsageDetails{
+		PromptTokensDetails:     &PromptTokensDetails{CachedTokens: 66612, CacheableTokens: 19},
+		CompletionTokensDetails: &CompletionTokensDetails{ReasoningTokens: 0},
+	},
+	HasUsage: true,
+}
+
+func qoderNoIndexNamedParallelToolCallEventsForTest() []SSEEvent {
+	return []SSEEvent{
+		{Type: "tool_call_delta", ToolName: "Bash", Arguments: `{"command":"pwd && date \"+%Y-%m-%d %H:%M:%S\" && uname -srm","description":"Show current dir, time, system info"}`},
+		{Type: "tool_call_delta", ToolName: "Bash", Arguments: `{"command":"ls -la","description":"List files in current directory"}`},
+		{Type: "tool_call_delta", ToolName: "glob", Arguments: `{"pattern":"**/*.md"}`},
+		{IsDone: true},
+	}
+}
+
+func qoderRepeatedIndexNamedParallelToolCallEventsForTest() []SSEEvent {
+	return []SSEEvent{
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolName: "Bash", Arguments: `{"command":"pwd","description":"Print working directory"}`},
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolName: "Bash", Arguments: `{"command":"printf OPENCODE_PARALLEL_OK","description":"Print parallel OK string"}`},
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolName: "glob", Arguments: `{"pattern":"docs/*.md"}`},
+		{IsDone: true},
+	}
+}
+
+func TestResolveQoderModelUsesOpus46AliasForUltimate(t *testing.T) {
+	info := ResolveQoderModelForSite(SiteGlobal, "claude-opus-4-6")
+	require.Equal(t, "ultimate", info.Key)
+	require.Equal(t, "system", info.Source)
+
+	legacy := ResolveQoderModelForSite(SiteGlobal, "claude-opus-4-5")
+	require.Equal(t, "claude-opus-4-5", legacy.Key)
+
+	codex := ResolveQoderModelForSite(SiteGlobal, "gpt-5-codex")
+	require.Equal(t, "gpt-5-codex", codex.Key)
+}
+
+func TestResolveQoderModelUsesQwen38MaxAlias(t *testing.T) {
+	for _, site := range []Site{SiteGlobal, SiteCN} {
+		info := ResolveQoderModelForSite(site, "qwen3.8-max")
+		require.Equal(t, "qmodel_38max", info.Key)
+		require.Equal(t, "system", info.Source)
+	}
+}
+
+func TestResolveQoderModelUsesKimiK3Alias(t *testing.T) {
+	info := ResolveQoderModelForSite(SiteGlobal, "kimi-k3")
+	require.Equal(t, "kmodel_latest", info.Key)
+	require.Equal(t, "system", info.Source)
+}
+
+func TestResolveQoderModelUsesGLM52RouteKey(t *testing.T) {
+	info := ResolveQoderModelForSite(SiteGlobal, "glm-5.2")
+	require.Equal(t, "gm51model", info.Key)
+	require.Equal(t, "system", info.Source)
+}
+
+func TestResolveQoderModelUsesGLM53RouteKey(t *testing.T) {
+	for _, site := range []Site{SiteGlobal, SiteCN} {
+		info := ResolveQoderModelForSite(site, "glm-5.3")
+		require.Equal(t, "gmodel", info.Key)
+		require.Equal(t, "system", info.Source)
+	}
+}
+
+func TestResolveQoderModelDoesNotTranslateRemovedCompatibilityAliases(t *testing.T) {
+	for _, model := range []string{"ultimate", "qwen3.8-max-preview", "qmodel_preview", "qwen3.5-plus", "glm-5", "glm-5.1", "kimi-k2.6"} {
+		info := ResolveQoderModelForSite(SiteGlobal, model)
+		require.Equal(t, model, info.Key)
+		require.Equal(t, "system", info.Source)
+	}
+}
+
+func TestQoderGatewayAssemblesResponsesKeepsNoIndexNamedParallelFunctionCalls(t *testing.T) {
+	body, err := BuildQoderResponsesResponse("claude-opus-4-6", qoderNoIndexNamedParallelToolCallEventsForTest())
+	require.NoError(t, err)
+
+	functionCalls := gjson.GetBytes(body, `output.#(type=="function_call")#`).Array()
+	require.Len(t, functionCalls, 3, string(body))
+	require.Equal(t, "Bash", functionCalls[0].Get("name").String())
+	require.JSONEq(t, `{"command":"pwd && date \"+%Y-%m-%d %H:%M:%S\" && uname -srm","description":"Show current dir, time, system info"}`, functionCalls[0].Get("arguments").String())
+	require.Equal(t, "Bash", functionCalls[1].Get("name").String())
+	require.JSONEq(t, `{"command":"ls -la","description":"List files in current directory"}`, functionCalls[1].Get("arguments").String())
+	require.Equal(t, "glob", functionCalls[2].Get("name").String())
+	require.JSONEq(t, `{"pattern":"**/*.md"}`, functionCalls[2].Get("arguments").String())
+	for _, call := range functionCalls {
+		require.NotContains(t, call.Get("arguments").String(), `}{`)
+	}
+}
+
+func TestQoderGatewayAssemblesResponsesKeepsRepeatedIndexNamedParallelFunctionCalls(t *testing.T) {
+	body, err := BuildQoderResponsesResponse("claude-opus-4-6", qoderRepeatedIndexNamedParallelToolCallEventsForTest())
+	require.NoError(t, err)
+
+	functionCalls := gjson.GetBytes(body, `output.#(type=="function_call")#`).Array()
+	require.Len(t, functionCalls, 3, string(body))
+	require.Equal(t, "Bash", functionCalls[0].Get("name").String())
+	require.JSONEq(t, `{"command":"pwd","description":"Print working directory"}`, functionCalls[0].Get("arguments").String())
+	require.Equal(t, "Bash", functionCalls[1].Get("name").String())
+	require.JSONEq(t, `{"command":"printf OPENCODE_PARALLEL_OK","description":"Print parallel OK string"}`, functionCalls[1].Get("arguments").String())
+	require.Equal(t, "glob", functionCalls[2].Get("name").String())
+	require.JSONEq(t, `{"pattern":"docs/*.md"}`, functionCalls[2].Get("arguments").String())
+	for _, call := range functionCalls {
+		require.NotContains(t, call.Get("arguments").String(), `}{`)
+	}
+}
+
+func TestQoderGatewayUsageSplitsCachedPromptTokens(t *testing.T) {
+	usage := QoderUsageFromEvents([]SSEEvent{qoderCachedUsageEventForTest})
+	require.Equal(t, 25, usage.InputTokens)
+	require.Equal(t, 66612, usage.CacheReadInputTokens)
+	require.Equal(t, 6, usage.OutputTokens)
+	require.Equal(t, 0, usage.CacheCreationInputTokens)
+}
+
+func TestQoderGatewayUsageClampsCachedPromptTokens(t *testing.T) {
+	event := qoderCachedUsageEventForTest
+	promptDetails := *event.UsageDetails.PromptTokensDetails
+	event.UsageDetails.PromptTokensDetails = &promptDetails
+	event.UsageDetails.PromptTokensDetails.CachedTokens = 70000
+	usage := QoderUsageFromEvents([]SSEEvent{event})
+	require.Equal(t, 0, usage.InputTokens)
+	require.Equal(t, 70000, usage.CacheReadInputTokens)
+}
+
+func TestQoderGatewayUsageKeepsOldBehaviorWhenDetailsMissing(t *testing.T) {
+	event := SSEEvent{Type: "usage", PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46, HasUsage: true}
+	usage := QoderUsageFromEvents([]SSEEvent{event})
+	require.Equal(t, 12, usage.InputTokens)
+	require.Equal(t, 0, usage.CacheReadInputTokens)
+	require.Equal(t, 34, usage.OutputTokens)
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletion(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "reasoning_delta", Text: "hidden thought"},
+		{Type: "text_delta", Text: "Hel"},
+		{Type: "text_delta", Text: "lo"},
+		{Type: "usage", PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46, HasUsage: true},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	choices := qoderFixtureValue[[]any](t, decoded["choices"])
+	message := qoderFixtureValue[map[string]any](t, qoderFixtureValue[map[string]any](t, choices[0])["message"])
+	require.Equal(t, "Hello", message["content"])
+	usage := qoderFixtureValue[map[string]any](t, decoded["usage"])
+	require.Equal(t, float64(12), usage["prompt_tokens"])
+	require.Equal(t, float64(34), usage["completion_tokens"])
+	require.Equal(t, float64(46), usage["total_tokens"])
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionWithToolCalls(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolCallID: "call_1", ToolType: "function", ToolName: "bash", Arguments: `{"cmd":`},
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, Arguments: `"pwd"}`},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.True(t, gjson.GetBytes(body, "choices.0.message.content").Exists())
+	require.Equal(t, gjson.Null, gjson.GetBytes(body, "choices.0.message.content").Type)
+	require.Equal(t, "call_1", gjson.GetBytes(body, "choices.0.message.tool_calls.0.id").String())
+	require.Equal(t, "bash", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"cmd":"pwd"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionMapsToolNameToDeclaredOpenAITool(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolCallID: "call_1", ToolType: "function", ToolName: "Bash", Arguments: `{"command":"pwd"}`},
+		{IsDone: true},
+	}
+	tools := []any{map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":       "bash",
+			"parameters": map[string]any{"type": "object"},
+		},
+	}}
+
+	body, err := BuildQoderOpenAICompletion("auto", events, QoderDeclaredToolNameMapper(tools))
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, "bash", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"command":"pwd"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionMergesIndexDriftForSameCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolCallID: "call_1", ToolType: "function", ToolName: "bash"},
+		{Type: "tool_call_delta", ToolCallIndex: 1, HasToolCallIndex: true, ToolCallID: "call_1", Arguments: `{"cmd":`},
+		{Type: "tool_call_delta", ToolCallIndex: 1, HasToolCallIndex: true, Arguments: `"pwd"}`},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, int64(1), gjson.GetBytes(body, "choices.0.message.tool_calls.#").Int())
+	require.Equal(t, "call_1", gjson.GetBytes(body, "choices.0.message.tool_calls.0.id").String())
+	require.Equal(t, "bash", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"cmd":"pwd"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionKeepsParallelCallIndexes(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolCallID: "call_1", ToolType: "function", ToolName: "read"},
+		{Type: "tool_call_delta", ToolCallIndex: 1, HasToolCallIndex: true, ToolCallID: "call_2", ToolType: "function", ToolName: "write"},
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, Arguments: `{"path":"a"}`},
+		{Type: "tool_call_delta", ToolCallIndex: 1, HasToolCallIndex: true, Arguments: `{"path":"b"}`},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, "call_1", gjson.GetBytes(body, "choices.0.message.tool_calls.0.id").String())
+	require.Equal(t, "read", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"path":"a"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+	require.Equal(t, "call_2", gjson.GetBytes(body, "choices.0.message.tool_calls.1.id").String())
+	require.Equal(t, "write", gjson.GetBytes(body, "choices.0.message.tool_calls.1.function.name").String())
+	require.JSONEq(t, `{"path":"b"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.1.function.arguments").String())
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionParsesXMLTextToolCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: qoderXMLToolCallFixture},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, gjson.Null, gjson.GetBytes(body, "choices.0.message.content").Type)
+	require.Equal(t, "Read", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"file_path":"/workspace/campus-navigation/README.md"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+	require.NotContains(t, string(body), "<tool_call>")
+	require.NotContains(t, string(body), "arg_key")
+	require.NotContains(t, string(body), "arg_value")
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionParsesJSONTextToolCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: qoderJSONShellToolCallFixture},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, gjson.Null, gjson.GetBytes(body, "choices.0.message.content").Type)
+	require.NotContains(t, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String(), "{")
+	require.Equal(t, "Bash", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"command":"pwd","description":"Print working directory"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionParsesDSMLTextToolCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: qoderDSMLToolCallFixture},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, gjson.Null, gjson.GetBytes(body, "choices.0.message.content").Type)
+	require.Equal(t, "Bash", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"command":"ls -la","description":"List root files"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+	require.NotContains(t, string(body), "DSML")
+	require.NotContains(t, string(body), "invoke")
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionParsesSplitXMLTextToolCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: "<tool_"},
+		{Type: "text_delta", Text: "call>Re"},
+		{Type: "text_delta", Text: "ad<arg_value><arg_key>file_path</arg_key>"},
+		{Type: "text_delta", Text: "<arg_value>/workspace/campus-navigation/README.md</arg_value></tool_call>"},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, "Read", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"file_path":"/workspace/campus-navigation/README.md"}`, gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.arguments").String())
+	require.NotContains(t, string(body), "<tool_call>")
+	require.NotContains(t, string(body), "arg_key")
+	require.NotContains(t, string(body), "arg_value")
+}
+
+func TestQoderGatewayAssemblesNonStreamingChatCompletionKeepsMixedXMLToolText(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: "I will inspect it.\n"},
+		{Type: "text_delta", Text: qoderXMLToolCallFixture},
+		{Type: "text_delta", Text: "\nWaiting for result."},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderOpenAICompletion("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_calls", gjson.GetBytes(body, "choices.0.finish_reason").String())
+	require.Equal(t, "I will inspect it.\n\nWaiting for result.", gjson.GetBytes(body, "choices.0.message.content").String())
+	require.Equal(t, "Read", gjson.GetBytes(body, "choices.0.message.tool_calls.0.function.name").String())
+	require.NotContains(t, string(body), "<tool_call>")
+	require.NotContains(t, string(body), "arg_key")
+	require.NotContains(t, string(body), "arg_value")
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageWithThinking(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "reasoning_delta", Text: "hidden thought"},
+		{Type: "text_delta", Text: "Hi"},
+		{Type: "usage", PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46, HasUsage: true},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderAnthropicMessage("claude-opus-4-6", events)
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	content := qoderFixtureValue[[]any](t, decoded["content"])
+	require.Len(t, content, 2)
+	thinkingBlock := qoderFixtureValue[map[string]any](t, content[0])
+	require.Equal(t, "thinking", thinkingBlock["type"])
+	require.Equal(t, "hidden thought", thinkingBlock["thinking"])
+	textBlock := qoderFixtureValue[map[string]any](t, content[1])
+	require.Equal(t, "Hi", textBlock["text"])
+	usage := qoderFixtureValue[map[string]any](t, decoded["usage"])
+	require.Equal(t, float64(12), usage["input_tokens"])
+	require.Equal(t, float64(34), usage["output_tokens"])
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageWithToolUse(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, ToolCallID: "call_1", ToolType: "function", ToolName: "bash", Arguments: `{"cmd":`},
+		{Type: "tool_call_delta", ToolCallIndex: 0, HasToolCallIndex: true, Arguments: `"pwd"}`},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderAnthropicMessage("auto", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "stop_reason").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "content.0.type").String())
+	require.Equal(t, "call_1", gjson.GetBytes(body, "content.0.id").String())
+	require.Equal(t, "bash", gjson.GetBytes(body, "content.0.name").String())
+	require.Equal(t, "pwd", gjson.GetBytes(body, "content.0.input.cmd").String())
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageRejectsMalformedToolArguments(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "tool_call_delta", ToolCallID: "call_1", ToolType: "function", ToolName: "bash", Arguments: `{"cmd":`},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderAnthropicMessage("auto", events)
+
+	require.Error(t, err)
+	require.Nil(t, body)
+	require.Contains(t, err.Error(), "malformed qoder tool arguments")
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageSkipsTypeOnlyPlaceholder(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "tool_call_delta", ToolType: "function"},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderAnthropicMessage("claude-opus-4-6", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "end_turn", gjson.GetBytes(body, "stop_reason").String(), string(body))
+	require.Equal(t, "text", gjson.GetBytes(body, "content.0.type").String(), string(body))
+	require.False(t, gjson.GetBytes(body, `content.#(type=="tool_use")`).Exists(), string(body))
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageKeepsNoIndexNamedParallelToolCalls(t *testing.T) {
+	body, err := BuildQoderAnthropicMessage("claude-opus-4-6", qoderNoIndexNamedParallelToolCallEventsForTest())
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "stop_reason").String(), string(body))
+	require.Equal(t, int64(3), gjson.GetBytes(body, "content.#").Int(), string(body))
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "content.0.type").String(), string(body))
+	require.Equal(t, "Bash", gjson.GetBytes(body, "content.0.name").String(), string(body))
+	require.Equal(t, "pwd && date \"+%Y-%m-%d %H:%M:%S\" && uname -srm", gjson.GetBytes(body, "content.0.input.command").String(), string(body))
+	require.Equal(t, "Bash", gjson.GetBytes(body, "content.1.name").String(), string(body))
+	require.Equal(t, "ls -la", gjson.GetBytes(body, "content.1.input.command").String(), string(body))
+	require.Equal(t, "glob", gjson.GetBytes(body, "content.2.name").String(), string(body))
+	require.Equal(t, "**/*.md", gjson.GetBytes(body, "content.2.input.pattern").String(), string(body))
+	require.False(t, gjson.GetBytes(body, "content.0.input.raw").Exists(), string(body))
+	require.False(t, gjson.GetBytes(body, "content.1.input.raw").Exists(), string(body))
+	require.False(t, gjson.GetBytes(body, "content.2.input.raw").Exists(), string(body))
+	require.NotContains(t, string(body), `}{`)
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageKeepsRepeatedIndexNamedParallelToolCalls(t *testing.T) {
+	body, err := BuildQoderAnthropicMessage("claude-opus-4-6", qoderRepeatedIndexNamedParallelToolCallEventsForTest())
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "stop_reason").String(), string(body))
+	require.Equal(t, int64(3), gjson.GetBytes(body, "content.#").Int(), string(body))
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "content.0.type").String(), string(body))
+	require.Equal(t, "Bash", gjson.GetBytes(body, "content.0.name").String(), string(body))
+	require.Equal(t, "pwd", gjson.GetBytes(body, "content.0.input.command").String(), string(body))
+	require.Equal(t, "Bash", gjson.GetBytes(body, "content.1.name").String(), string(body))
+	require.Equal(t, "printf OPENCODE_PARALLEL_OK", gjson.GetBytes(body, "content.1.input.command").String(), string(body))
+	require.Equal(t, "glob", gjson.GetBytes(body, "content.2.name").String(), string(body))
+	require.Equal(t, "docs/*.md", gjson.GetBytes(body, "content.2.input.pattern").String(), string(body))
+	require.False(t, gjson.GetBytes(body, "content.0.input.raw").Exists(), string(body))
+	require.False(t, gjson.GetBytes(body, "content.1.input.raw").Exists(), string(body))
+	require.False(t, gjson.GetBytes(body, "content.2.input.raw").Exists(), string(body))
+	require.NotContains(t, string(body), `}{`)
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageParsesXMLTextToolCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: qoderXMLToolCallFixture},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderAnthropicMessage("claude-opus-4-6", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "stop_reason").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "content.0.type").String())
+	require.Equal(t, "Read", gjson.GetBytes(body, "content.0.name").String())
+	require.Equal(t, "/workspace/campus-navigation/README.md", gjson.GetBytes(body, "content.0.input.file_path").String())
+	require.NotContains(t, string(body), "<tool_call>")
+	require.NotContains(t, string(body), "arg_key")
+	require.NotContains(t, string(body), "arg_value")
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageParsesJSONTextToolCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: qoderJSONShellToolCallFixture},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderAnthropicMessage("claude-opus-4-6", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "stop_reason").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "content.0.type").String())
+	require.Equal(t, "Bash", gjson.GetBytes(body, "content.0.name").String())
+	require.Equal(t, "pwd", gjson.GetBytes(body, "content.0.input.command").String())
+	require.Equal(t, "Print working directory", gjson.GetBytes(body, "content.0.input.description").String())
+	require.NotContains(t, string(body), `"name":"{\"name\"`)
+}
+
+func TestQoderGatewayAssemblesNonStreamingAnthropicMessageParsesDSMLTextToolCall(t *testing.T) {
+	events := []SSEEvent{
+		{Type: "text_delta", Text: qoderDSMLToolCallFixture},
+		{IsDone: true},
+	}
+
+	body, err := BuildQoderAnthropicMessage("claude-opus-4-6", events)
+	require.NoError(t, err)
+
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "stop_reason").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(body, "content.0.type").String())
+	require.Equal(t, "Bash", gjson.GetBytes(body, "content.0.name").String())
+	require.Equal(t, "ls -la", gjson.GetBytes(body, "content.0.input.command").String())
+	require.Equal(t, "List root files", gjson.GetBytes(body, "content.0.input.description").String())
+	require.NotContains(t, string(body), "DSML")
+	require.NotContains(t, string(body), "invoke")
+}
+
+func TestQoderGatewayReadsWrappedSSE(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(bytes.NewBufferString(
+			"data: {\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"reasoning_content\\\":\\\"hidden thought\\\"}}]}\"}\n\n" +
+				"data: {\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"Hi\\\"}}]}\"}\n\n" +
+				"data: {\"body\":\"{\\\"usage\\\":{\\\"prompt_tokens\\\":3,\\\"completion_tokens\\\":4,\\\"total_tokens\\\":7}}\"}\n\n" +
+				"data: {\"body\":\"[DONE]\"}\n\n",
+		)),
+	}
+
+	events, err := ReadQoderSSEEventsContext(context.Background(), resp, nil)
+	require.NoError(t, err)
+	require.Len(t, events, 4)
+	require.Equal(t, "reasoning_delta", events[0].Type)
+	require.Equal(t, "hidden thought", events[0].Text)
+	require.Equal(t, "text_delta", events[1].Type)
+	require.Equal(t, "Hi", events[1].Text)
+	require.True(t, events[2].HasUsage)
+	require.Equal(t, 3, events[2].PromptTokens)
+	require.Equal(t, 4, events[2].CompletionTokens)
+	require.True(t, events[3].IsDone)
+}
+
+func TestQoderGatewayScannerStopsWhenResultSendIsCanceled(t *testing.T) {
+	line := "data: {\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"Hi\\\"}}]}\"}\n\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Repeat(line, 10)))}
+	ctx, cancel := context.WithCancel(context.Background())
+	results := make(chan QoderEventResult, 1)
+	done := make(chan struct{})
+
+	go func() {
+		ScanQoderEvents(ctx, resp, results)
+		close(done)
+	}()
+
+	select {
+	case <-results:
+	case <-time.After(time.Second):
+		t.Fatal("scanner did not emit first event")
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scanner goroutine did not exit after context cancellation")
+	}
+}
+
+func TestQoderGatewayReadsWrappedSSEUpstreamError(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(bytes.NewBufferString(
+			"data: {\"headers\":{\"Content-Type\":[\"application/json\"]},\"body\":\"{\\\"code\\\":\\\"101\\\",\\\"message\\\":\\\"Signature invalid\\\"}\",\"statusCodeValue\":403,\"statusCode\":\"FORBIDDEN\"}\n\n",
+		)),
+	}
+
+	events, err := ReadQoderSSEEventsContext(context.Background(), resp, nil)
+	require.Error(t, err)
+	require.Empty(t, events)
+	var apiErr *APIError
+	require.True(t, errors.As(err, &apiErr))
+	require.Equal(t, 403, apiErr.StatusCode)
+	require.Equal(t, "101", apiErr.Code)
+	require.Equal(t, "Signature invalid", apiErr.Message)
+	require.Equal(t, "Qoder upstream error 101: Signature invalid", apiErr.Error())
+}
+
+func TestQoderGatewayOpenAIUsageDerivesTotalFromPromptWhenUpstreamTotalMissing(t *testing.T) {
+	event := qoderCachedUsageEventForTest
+	event.TotalTokens = 0
+	body, err := BuildQoderOpenAICompletion("auto", []SSEEvent{
+		{Type: "text_delta", Text: "OK"},
+		event,
+		{IsDone: true},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, int64(66637), gjson.GetBytes(body, "usage.prompt_tokens").Int())
+	require.Equal(t, int64(6), gjson.GetBytes(body, "usage.completion_tokens").Int())
+	require.Equal(t, int64(66643), gjson.GetBytes(body, "usage.total_tokens").Int())
+	require.Equal(t, int64(66612), gjson.GetBytes(body, "usage.prompt_tokens_details.cached_tokens").Int())
+}

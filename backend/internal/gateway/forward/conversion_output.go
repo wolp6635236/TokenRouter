@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
 
 // ResponsesBuffered 保留当前转换链的事件推进、用量与退出顺序。
@@ -202,10 +204,8 @@ func ResponsesStreaming(in Response, out Output, originalModel, mappedModel stri
 		}
 
 		events := bridge.AnthropicEventToResponsesEvents(in.Runtime, event, state)
-		for _, evt := range events {
-			if writeEvent(evt) {
-				return true
-			}
+		if slices.ContainsFunc(events, writeEvent) {
+			return true
 		}
 		if len(events) > 0 {
 			out.Flush()
@@ -215,10 +215,8 @@ func ResponsesStreaming(in Response, out Output, originalModel, mappedModel stri
 
 	finalizeStream := func() (*Result, error) {
 		if finalEvents := bridge.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 {
-			for _, evt := range finalEvents {
-				if writeEvent(evt) {
-					return resultWithUsage(), nil
-				}
+			if slices.ContainsFunc(finalEvents, writeEvent) {
+				return resultWithUsage(), nil
 			}
 			out.Flush()
 		}
@@ -480,15 +478,15 @@ func ChatStreaming(in Response, out Output, originalModel, mappedModel string, r
 	for _, resEvt := range finalResEvents {
 		ccChunks := bridge.ResponsesEventToChatChunks(&resEvt, ccState)
 		for _, chunk := range ccChunks {
-			writeChunk(chunk) //nolint:errcheck
+			writeChunk(chunk)
 		}
 	}
 	finalCCChunks := bridge.FinalizeResponsesChatStream(ccState)
 	for _, chunk := range finalCCChunks {
-		writeChunk(chunk) //nolint:errcheck
+		writeChunk(chunk)
 	}
 
-	out.Event("", []byte("[DONE]")) //nolint:errcheck
+	out.Event("", []byte("[DONE]")) //nolint:errcheck // 流已经结束，[DONE] 写失败时没有后续处理。
 	out.Flush()
 
 	return resultWithUsage(), scanner.Err()

@@ -41,6 +41,12 @@ type LinuxDoTokenExchangeError struct {
 	Body                string
 }
 
+// LinuxDoOAuthClient 隐藏外部 HTTP 与资料解析，回调只传入本次授权参数。
+type LinuxDoOAuthClient interface {
+	ExchangeCode(context.Context, LinuxDoOAuthOptions, string, string, string) (*LinuxDoTokenResponse, error)
+	FetchUserInfo(context.Context, LinuxDoOAuthOptions, *LinuxDoTokenResponse) (string, string, string, string, string, error)
+}
+
 func (e *LinuxDoTokenExchangeError) Error() string {
 	if e == nil {
 		return ""
@@ -53,12 +59,6 @@ func (e *LinuxDoTokenExchangeError) Error() string {
 		parts = append(parts, "error_description="+strings.TrimSpace(e.ProviderDescription))
 	}
 	return strings.Join(parts, " ")
-}
-
-// LinuxDoOAuthClient 隐藏外部 HTTP 与资料解析，回调只传入本次授权参数。
-type LinuxDoOAuthClient interface {
-	ExchangeCode(context.Context, LinuxDoOAuthOptions, string, string, string) (*LinuxDoTokenResponse, error)
-	FetchUserInfo(context.Context, LinuxDoOAuthOptions, *LinuxDoTokenResponse) (string, string, string, string, string, error)
 }
 
 func PrepareLinuxDoChoice(

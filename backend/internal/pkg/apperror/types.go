@@ -1,5 +1,35 @@
 package apperror
 
+const (
+	// CategoryOK 保留对应错误类别的稳定标识。
+	CategoryOK Category = 200
+	// CategoryBadRequest 保留对应错误类别的稳定标识。
+	CategoryBadRequest Category = 400
+	// CategoryUnauthorized 保留对应错误类别的稳定标识。
+	CategoryUnauthorized Category = 401
+	// CategoryForbidden 保留对应错误类别的稳定标识。
+	CategoryForbidden Category = 403
+	// CategoryNotFound 保留对应错误类别的稳定标识。
+	CategoryNotFound Category = 404
+	// CategoryConflict 保留对应错误类别的稳定标识。
+	CategoryConflict Category = 409
+	// CategoryTooManyRequests 保留对应错误类别的稳定标识。
+	CategoryTooManyRequests Category = 429
+	// CategoryClientClosed 保留对应错误类别的稳定标识。
+	CategoryClientClosed Category = 499
+	// CategoryInternalServer 保留对应错误类别的稳定标识。
+	CategoryInternalServer Category = 500
+	// CategoryBadGateway 保留对应错误类别的稳定标识。
+	CategoryBadGateway Category = 502
+	// CategoryServiceUnavailable 保留对应错误类别的稳定标识。
+	CategoryServiceUnavailable Category = 503
+	// CategoryGatewayTimeout 保留对应错误类别的稳定标识。
+	CategoryGatewayTimeout Category = 504
+)
+
+// Category 为应用错误类别；数值在兼容期保留旧错误身份，不依赖 HTTP 包。
+type Category int32
+
 // BadRequest new BadRequest error that is mapped to a 400 response.
 func BadRequest(reason, message string) *ApplicationError {
 	return New(CategoryBadRequest, reason, message)
@@ -56,33 +86,3 @@ func ServiceUnavailable(reason, message string) *ApplicationError {
 func GatewayTimeout(reason, message string) *ApplicationError {
 	return New(CategoryGatewayTimeout, reason, message)
 }
-
-// Category 为应用错误类别；数值在兼容期保留旧错误身份，不依赖 HTTP 包。
-type Category int32
-
-const (
-	// CategoryOK 保留对应错误类别的稳定标识。
-	CategoryOK Category = 200
-	// CategoryBadRequest 保留对应错误类别的稳定标识。
-	CategoryBadRequest Category = 400
-	// CategoryUnauthorized 保留对应错误类别的稳定标识。
-	CategoryUnauthorized Category = 401
-	// CategoryForbidden 保留对应错误类别的稳定标识。
-	CategoryForbidden Category = 403
-	// CategoryNotFound 保留对应错误类别的稳定标识。
-	CategoryNotFound Category = 404
-	// CategoryConflict 保留对应错误类别的稳定标识。
-	CategoryConflict Category = 409
-	// CategoryTooManyRequests 保留对应错误类别的稳定标识。
-	CategoryTooManyRequests Category = 429
-	// CategoryClientClosed 保留对应错误类别的稳定标识。
-	CategoryClientClosed Category = 499
-	// CategoryInternalServer 保留对应错误类别的稳定标识。
-	CategoryInternalServer Category = 500
-	// CategoryBadGateway 保留对应错误类别的稳定标识。
-	CategoryBadGateway Category = 502
-	// CategoryServiceUnavailable 保留对应错误类别的稳定标识。
-	CategoryServiceUnavailable Category = 503
-	// CategoryGatewayTimeout 保留对应错误类别的稳定标识。
-	CategoryGatewayTimeout Category = 504
-)

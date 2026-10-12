@@ -3,15 +3,15 @@ package httpapi
 import (
 	"errors"
 	"net/http"
-	"strings"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeldisplay"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
 )
 
-// WriteGroupSelectionBusinessError 在原失败时点读取 Key 展示限制，不执行额外选号。
+// WriteGroupSelectionBusinessError 输出分组选择错误，并按 Key 配置筛选可展示型号。
 func WriteGroupSelectionBusinessError(c *gin.Context, err error, streamStarted bool, readAccess func(*gin.Context) (*apikey.APIKey, bool), catalogue modeldisplay.Catalog, writeError func(int, string, string, bool)) bool {
 	if errors.Is(err, routing.ErrClaudeCodeOnly) {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
@@ -19,16 +19,11 @@ func WriteGroupSelectionBusinessError(c *gin.Context, err error, streamStarted b
 		return true
 	}
 
-	var modelErr *routing.GroupModelUnsupportedError
-	if errors.As(err, &modelErr) {
+	if modelErr, ok := errors.AsType[*routing.GroupModelUnsupportedError](err); ok {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		message := modelErr.Error()
 		if apiKey, ok := readAccess(c); ok && apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
-			platform := strings.TrimSpace(modelErr.Platform)
-			if platform == "" {
-				platform = ""
-			}
-			availableModels := FilterModelsByCustomList(modelErr.AvailableModels, modeldisplay.DefaultModelIDs(catalogue, platform), apiKey.Group.ModelsListConfig.Models)
+			availableModels := FilterModelsByCustomList(modelErr.AvailableModels, nil, apiKey.Group.ModelsListConfig.Models)
 			message = (&routing.GroupModelUnsupportedError{
 				RequestedModel:  modelErr.RequestedModel,
 				AvailableModels: availableModels,

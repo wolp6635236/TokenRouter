@@ -269,7 +269,7 @@
             <button
               v-if="row.detailed_timing"
               type="button"
-              class="group relative mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-400 transition-colors hover:bg-primary-100 hover:text-primary-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 dark:bg-gray-700 dark:text-gray-500 dark:hover:bg-primary-500/8 dark:hover:text-primary-500"
+              class="group relative mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-400 transition-colors hover:bg-primary-100 hover:text-primary-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 dark:bg-dark-700 dark:text-gray-500 dark:hover:bg-primary-500/8 dark:hover:text-primary-500"
               :aria-label="t('usage.detailedTiming')"
               :title="t('usage.detailedTiming')"
               @mouseenter="showTimingTooltip($event, row)"
@@ -281,30 +281,18 @@
           </div>
         </template>
 
+        <template #cell-tps="{ row }">
+          <span class="cursor-help whitespace-nowrap text-sm tabular-nums text-gray-600 dark:text-gray-400" :title="t('usage.tpsHint')">
+            {{ formatUsageTps(row) }}
+          </span>
+        </template>
+
         <template #cell-created_at="{ value }">
           <span class="text-sm text-gray-600 dark:text-gray-400">{{ formatDateTime(value) }}</span>
         </template>
 
         <template #cell-request_id="{ row }">
-          <div v-if="row.request_id" class="flex max-w-[160px] items-center gap-1.5">
-            <span class="truncate font-mono text-xs text-gray-500 dark:text-gray-400" :title="row.request_id">
-              {{ row.request_id }}
-            </span>
-            <button
-              type="button"
-              class="shrink-0 rounded-compact p-0.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-dark-700 dark:hover:text-gray-300"
-              :class="copiedRequestId === row.request_id ? 'text-green-500 hover:text-green-500' : ''"
-              :title="copiedRequestId === row.request_id ? t('keys.copied') : t('keys.copyToClipboard')"
-              @click="copyRequestId(row.request_id)"
-            >
-              <Icon
-                :name="copiedRequestId === row.request_id ? 'check' : 'copy'"
-                size="sm"
-                class="h-3.5 w-3.5"
-              />
-            </button>
-          </div>
-          <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
+          <RequestIdLink :value="row.request_id" />
         </template>
 
         <template #cell-upstream_request_id="{ row }">
@@ -669,6 +657,7 @@
 </template>
 
 <script setup lang="ts">
+import RequestIdLink from '@/components/common/RequestIdLink.vue'
 import MotionTransition from '@/components/common/MotionTransition.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -680,6 +669,7 @@ import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import { formatUsageTps } from '@/utils/usageTps'
 import {
   LATENCY_BAR_CLASSES,
   LATENCY_BAR_FROM_CLASSES,
@@ -835,14 +825,7 @@ const handleBatchFetchIpGeo = async () => {
   }
 }
 
-// 请求 ID 复制复用全局剪贴板降级与提示，并单独维护当前行的完成图标。
-const copyRequestId = async (requestId: string) => {
-  if (!await copyToClipboard(requestId, t('admin.usage.requestIdCopied'))) return
-  copiedRequestId.value = requestId
-  window.setTimeout(() => {
-    if (copiedRequestId.value === requestId) copiedRequestId.value = null
-  }, COPY_FEEDBACK_MS)
-}
+// 上游请求 ID 复制复用全局剪贴板降级与提示，并单独维护当前行的完成图标。
 const copyUpstreamRequestId = async (upstreamRequestId: string) => {
   if (!await copyToClipboard(upstreamRequestId, t('admin.usage.upstreamRequestIdCopied'))) return
   copiedRequestId.value = upstreamRequestId
@@ -947,7 +930,7 @@ const getRequestTypeBadgeClass = (row: AdminUsageLog): string => {
   if (requestType === 'live') return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200'
   if (requestType === 'ws_v2') return 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200'
   if (requestType === 'stream') return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-  if (requestType === 'sync') return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
+  if (requestType === 'sync') return 'bg-gray-100 text-gray-800 dark:bg-dark-700 dark:text-dark-100'
   return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200'
 }
 

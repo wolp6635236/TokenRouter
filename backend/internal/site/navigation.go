@@ -5,10 +5,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/site/content"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/TokenFlux/TokenRouter/internal/site/content"
 )
 
 // 站点展示的值类型由纯内容包定义，管理端和用户端共用编码格式。

@@ -5,16 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
-
-func init() {}
-
-// ──────────────────────────────────────────────────────────
-// NormalizeInboundEndpoint
-// ──────────────────────────────────────────────────────────
 
 func TestNormalizeInboundEndpoint(t *testing.T) {
 	tests := []struct {
@@ -79,10 +74,6 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────
-// DeriveUpstreamEndpoint
-// ──────────────────────────────────────────────────────────
-
 func TestDeriveUpstreamEndpoint(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -113,7 +104,7 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
 		{"openai bare responses", EndpointResponses, "/responses", capability.PlatformOpenAI, EndpointResponses},
 		{"openai codex direct responses", EndpointResponses, "/backend-api/codex/responses", capability.PlatformOpenAI, EndpointResponses},
 
-		// 入站已是规范 Compact 端点但原始路径无法派生后缀时，不得静默回退到根端点。
+		// 入站已是规范 Compact 端点且原始路径无法派生后缀时，使用 Compact 后缀。
 		{"openai responses compact inbound only, unrelated raw path", EndpointResponsesCompact, "/v1/messages", capability.PlatformOpenAI, EndpointResponsesCompact},
 
 		{"openai from messages", EndpointMessages, "/v1/messages", capability.PlatformOpenAI, EndpointResponses},
@@ -165,10 +156,6 @@ func TestGetUpstreamEndpointUsesOpenAIRuntimeOverride(t *testing.T) {
 	require.Equal(t, EndpointChatCompletions, GetUpstreamEndpoint(c, capability.PlatformOpenAI))
 }
 
-// ──────────────────────────────────────────────────────────
-// responsesSubpathSuffix
-// ──────────────────────────────────────────────────────────
-
 func TestResponsesSubpathSuffix(t *testing.T) {
 	tests := []struct {
 		raw  string
@@ -193,10 +180,6 @@ func TestResponsesSubpathSuffix(t *testing.T) {
 		})
 	}
 }
-
-// ──────────────────────────────────────────────────────────
-// InboundEndpointMiddleware + context helpers
-// ──────────────────────────────────────────────────────────
 
 func TestInboundEndpointMiddleware(t *testing.T) {
 	router := gin.New()
@@ -344,4 +327,47 @@ func TestGetUpstreamEndpoint_FullFlow(t *testing.T) {
 
 	got := GetUpstreamEndpoint(c, capability.PlatformOpenAI)
 	require.Equal(t, "/v1/responses/compact", got)
+}
+
+// TestOpenAIUpstreamEndpoint_ViaGetUpstreamEndpoint verifies that the
+// unified GetUpstreamEndpoint helper produces the same results as the
+// former normalizedOpenAIUpstreamEndpoint for OpenAI platform requests.
+func TestOpenAIUpstreamEndpoint_ViaGetUpstreamEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "responses root maps to responses upstream",
+			path: "/v1/responses",
+			want: EndpointResponses,
+		},
+		{
+			name: "responses compact keeps compact suffix",
+			path: "/openai/v1/responses/compact",
+			want: "/v1/responses/compact",
+		},
+		{
+			name: "responses nested suffix preserved",
+			path: "/openai/v1/responses/compact/detail",
+			want: "/v1/responses/compact/detail",
+		},
+		{
+			name: "non responses path uses platform fallback",
+			path: "/v1/messages",
+			want: EndpointResponses,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, nil)
+
+			got := GetUpstreamEndpoint(c, capability.PlatformOpenAI)
+			require.Equal(t, tt.want, got)
+		})
+	}
 }

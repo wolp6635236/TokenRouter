@@ -4,25 +4,22 @@ import (
 	"context"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-
+	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-
-	promotionhttp "github.com/TokenFlux/TokenRouter/internal/promotion/httpapi"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
-
+	promotionhttp "github.com/TokenFlux/TokenRouter/internal/promotion/httpapi"
 	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
 )
+
+// identityPromotion 将推广档案操作结果转换为身份用例需要的成功或失败结果。
+type identityPromotion struct{ Service *promotion.AffiliateService }
 
 func providePromotionAffiliateStore(client *dbent.Client) promotion.AffiliateRepository {
 	return promotionpostgres.NewAffiliateRepository(client, func(tx *dbent.Tx) promotionpostgres.TransferBalance { return billingpostgres.BalanceInTx(tx) })
@@ -33,9 +30,6 @@ func providePromotionAffiliate(repo promotion.AffiliateRepository, settings *pro
 		logging.LegacyPrintf("service.affiliate", "[Affiliate] Failed to invalidate billing cache for user %d: %v", id, err)
 	}})
 }
-
-// identityPromotion 将推广档案操作结果转换为身份用例需要的成功或失败结果。
-type identityPromotion struct{ Service *promotion.AffiliateService }
 
 func (p identityPromotion) EnsureUserAffiliate(ctx context.Context, id int64) error {
 	_, err := p.Service.EnsureUserAffiliate(ctx, id)

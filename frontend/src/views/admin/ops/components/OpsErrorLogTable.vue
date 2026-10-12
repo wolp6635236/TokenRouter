@@ -21,10 +21,11 @@
         @rowClick="(row) => emit('openErrorDetail', row.id)"
       >
         <template #cell-created_at="{ row }">
-          <span
-            class="text-sm text-gray-600 dark:text-gray-400"
-            :title="row.request_id || row.client_request_id"
-          >{{ formatDateTime(row.created_at) }}</span>
+          <span class="text-sm text-gray-600 dark:text-gray-400">{{ formatDateTime(row.created_at) }}</span>
+        </template>
+
+        <template #cell-request_id="{ row }">
+          <RequestIdLink :value="row.request_id || row.client_request_id" />
         </template>
 
         <template #cell-type="{ row }">
@@ -159,7 +160,7 @@
         <template #cell-actions="{ row }">
           <button
             type="button"
-            class="rounded-compact p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-600 dark:hover:text-primary-400"
+            class="rounded-compact p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400"
             :title="t('admin.ops.errorLog.details')"
             @click.stop="emit('openErrorDetail', row.id)"
           >
@@ -183,6 +184,7 @@
 </template>
 
 <script setup lang="ts">
+import RequestIdLink from '@/components/common/RequestIdLink.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -200,7 +202,7 @@ import { mapErrorSortKey, statusCodeBadgeClass } from '@/utils/errorBadges'
 const { t } = useI18n()
 
 // 列序对齐管理端用量明细:身份(用户→Key→提供商)→请求形态(平台→模型→端点→分组→类型)
-// →结果(状态→消息)→时间→UA→IP→操作。
+// →结果(状态→消息)→时间→请求 ID→UA→IP→操作。
 const allColumns = computed<Column[]>(() => [
   { key: 'user', label: t('admin.ops.errorLog.user') },
   { key: 'api_key', label: t('admin.ops.errorLog.apiKey') },
@@ -214,6 +216,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'status', label: t('admin.ops.errorLog.status'), sortable: true },
   { key: 'message', label: t('admin.ops.errorLog.message') },
   { key: 'created_at', label: t('admin.ops.errorLog.time'), sortable: true },
+  { key: 'request_id', label: t('requests.id') },
   { key: 'user_agent', label: t('usage.userAgent') },
   { key: 'client_ip', label: t('admin.ops.errorLog.ip') },
   { key: 'actions', label: t('admin.ops.errorLog.action') },

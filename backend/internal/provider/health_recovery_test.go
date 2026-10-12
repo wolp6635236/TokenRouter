@@ -25,6 +25,19 @@ type rateLimitClearRepoStub struct {
 	clearTempUnschedulableErr error
 }
 
+type tempUnschedCacheRecorder struct {
+	deletedIDs []int64
+	deleteErr  error
+}
+
+type recoverTokenInvalidatorStub struct {
+	providers []*Record
+	err       error
+}
+
+// 恢复反馈夹具只记录已提交的清理通知。
+type runtimeBlockRecorder struct{ clearedIDs []int64 }
+
 func (r *rateLimitClearRepoStub) GetByID(ctx context.Context, id int64) (*Record, error) {
 	r.getByIDCalls++
 	if r.getByIDErr != nil {
@@ -56,16 +69,6 @@ func (r *rateLimitClearRepoStub) ClearModelRateLimits(ctx context.Context, id in
 func (r *rateLimitClearRepoStub) ClearTempUnschedulable(ctx context.Context, id int64) error {
 	r.clearTempUnschedCalls++
 	return r.clearTempUnschedulableErr
-}
-
-type tempUnschedCacheRecorder struct {
-	deletedIDs []int64
-	deleteErr  error
-}
-
-type recoverTokenInvalidatorStub struct {
-	providers []*Record
-	err       error
 }
 
 func (c *tempUnschedCacheRecorder) SetTempUnsched(ctx context.Context, providerID int64, state *TempUnschedState) error {
@@ -328,9 +331,6 @@ func TestRecoveryService_RecoverProviderState_InvalidatesQoderCosyTokenOnErrorRe
 	require.Len(t, invalidator.providers, 1)
 	require.Equal(t, int64(22), invalidator.providers[0].ID)
 }
-
-// 恢复反馈夹具只记录已提交的清理通知。
-type runtimeBlockRecorder struct{ clearedIDs []int64 }
 
 func (r *runtimeBlockRecorder) ClearProviderSchedulingBlock(id int64) {
 	r.clearedIDs = append(r.clearedIDs, id)

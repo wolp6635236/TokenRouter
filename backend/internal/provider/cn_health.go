@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// CNConcurrencyLimitReason 保留并发限制状态的原来源标记。
+const CNConcurrencyLimitReason = "cn_concurrency_limit"
+
 // ApplyCNConcurrencyLimit 将 Kimi 并发限制写为短期临时不可调度，
 // 当前请求继续切换提供商，此类错误的累计 403 次数保持不变。
 func (s *HealthService) ApplyCNConcurrencyLimit(
@@ -119,6 +122,3 @@ func (s *HealthService) ApplyCNQuotaSnapshotCooldown(ctx context.Context, provid
 	}
 	return false
 }
-
-// CNConcurrencyLimitReason 保留并发限制状态的原来源标记。
-const CNConcurrencyLimitReason = "cn_concurrency_limit"

@@ -12,6 +12,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+const DefaultStreamIdleTimeout = 180 * time.Second
+
 type ResponsesTarget struct {
 	// 已有桥接读取器直接解释原流，不增加另一层帧过滤。
 	PassRawStream  bool
@@ -25,11 +27,13 @@ type ResponsesTarget struct {
 	ReadResponse   func(*http.Response, upstream.AttemptInput, upstream.OutputSink) (upstream.ResponsesObservation, error)
 }
 
-func (t *ResponsesTarget) TargetID() int64  { return t.ProviderID }
-func (*ResponsesTarget) String() string     { return "grok responses target" }
-func (t *ResponsesTarget) GoString() string { return t.String() }
-
 type ResponsesExecutor struct{}
+
+func (t *ResponsesTarget) TargetID() int64 { return t.ProviderID }
+
+func (*ResponsesTarget) String() string { return "grok responses target" }
+
+func (t *ResponsesTarget) GoString() string { return t.String() }
 
 func (ResponsesExecutor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, err error) {
 	t, ok := input.Target.(*ResponsesTarget)
@@ -95,4 +99,13 @@ func (ResponsesExecutor) Execute(ctx context.Context, input upstream.AttemptInpu
 	result.FirstSemanticOutput = observed.FirstSemanticOutput
 	result.Duration = time.Since(started)
 	return result, err
+}
+
+// ResolveStreamIdleTimeout 使用正数全局设置作为读取空闲超时，其他值使用 Grok 默认值。
+// 挂起的 SSE 达到此时限后可触发提供商切换。
+func ResolveStreamIdleTimeout(cfgStreamIntervalSec int) time.Duration {
+	if cfgStreamIntervalSec > 0 {
+		return time.Duration(cfgStreamIntervalSec) * time.Second
+	}
+	return DefaultStreamIdleTimeout
 }

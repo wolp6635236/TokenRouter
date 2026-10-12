@@ -6,19 +6,17 @@ import (
 	"log/slog"
 	"time"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-
 	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
-
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
+	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
 func qoderRequestCanceled(ctx context.Context, err error) bool {
@@ -210,11 +208,11 @@ func (h *QoderCompatibleRuntime) writeQoderFailoverExhaustedError(c *gin.Context
 }
 
 func (h *QoderCompatibleRuntime) streamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool, endpoint QoderEndpoint) {
-	WriteQoderStreamError(c, status, errType, message, streamStarted, QoderEndpoint(endpoint))
+	WriteQoderStreamError(c, status, errType, message, streamStarted, endpoint)
 }
 
 func (h *QoderCompatibleRuntime) errorResponse(c *gin.Context, status int, errType, message string, endpoint QoderEndpoint) {
-	WriteQoderError(c, status, errType, message, QoderEndpoint(endpoint))
+	WriteQoderError(c, status, errType, message, endpoint)
 }
 
 // qoderGatewayErrorDetails 复用同一原生错误展示器。

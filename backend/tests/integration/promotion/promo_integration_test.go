@@ -9,18 +9,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/promocodeusage"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-	dto "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
 	promotionhttp "github.com/TokenFlux/TokenRouter/internal/promotion/httpapi"
 	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
-	"github.com/stretchr/testify/require"
 )
+
+// 后置失效只计数；失败事务不得触达该端口。
+type promotionInvalidationProbe struct{ auth, balance int }
 
 // TestPromotionApplyCodeFundsAndUsageAtomicity 验证组合推广用例与真实存储，验证资金、累计充值、usage 和次数的原子边界。
 func TestPromotionApplyCodeFundsAndUsageAtomicity(t *testing.T) {
@@ -97,9 +101,6 @@ func TestPromotionApplyCodeFundsAndUsageAtomicity(t *testing.T) {
 		})
 	}
 }
-
-// 后置失效只计数；失败事务不得触达该端口。
-type promotionInvalidationProbe struct{ auth, balance int }
 
 func (p *promotionInvalidationProbe) InvalidateAuthCacheByUserID(context.Context, int64) { p.auth++ }
 

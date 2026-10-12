@@ -3,10 +3,10 @@ package provider
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 func TestBuildQuotaDims_AllDimensionsReturned(t *testing.T) {

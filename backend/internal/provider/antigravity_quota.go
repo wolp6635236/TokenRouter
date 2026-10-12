@@ -9,6 +9,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/google"
 )
 
+const (
+	ForbiddenTypeValidation = "validation"
+	ForbiddenTypeViolation  = "violation"
+	ForbiddenTypeForbidden  = "forbidden"
+
+	// 机器可读的错误码。
+	ErrorCodeForbidden       = "forbidden"
+	ErrorCodeUnauthenticated = "unauthenticated"
+	ErrorCodeRateLimited     = "rate_limited"
+	ErrorCodeNetworkError    = "network_error"
+)
+
 type AntigravityQuotaClient interface {
 	FetchAvailableModels(context.Context, string, string, int64) (*google.AntigravityFetchAvailableModelsResponse, map[string]any, error)
 	LoadCodeAssist(context.Context, string) (*google.AntigravityLoadCodeAssistResponse, map[string]any, error)
@@ -23,19 +35,7 @@ type AntigravityQuotaOptions struct {
 }
 type AntigravityQuota struct{ Options AntigravityQuotaOptions }
 
-const (
-	ForbiddenTypeValidation = "validation"
-	ForbiddenTypeViolation  = "violation"
-	ForbiddenTypeForbidden  = "forbidden"
-
-	// 机器可读的错误码
-	ErrorCodeForbidden       = "forbidden"
-	ErrorCodeUnauthenticated = "unauthenticated"
-	ErrorCodeRateLimited     = "rate_limited"
-	ErrorCodeNetworkError    = "network_error"
-)
-
-// CanFetch 检查是否可以获取此提供商的额度
+// CanFetch 检查是否可以获取此提供商的额度。
 func (f *AntigravityQuota) CanFetch(provider *Record) bool {
 	if provider.Platform != PlatformAntigravity {
 		return false
@@ -44,7 +44,7 @@ func (f *AntigravityQuota) CanFetch(provider *Record) bool {
 	return accessToken != ""
 }
 
-// FetchQuota 获取 Antigravity 提供商额度信息
+// FetchQuota 获取 Antigravity 提供商额度信息。
 func (f *AntigravityQuota) FetchQuota(ctx context.Context, provider *Record, proxyURL string) (*QuotaResult, error) {
 	accessToken := provider.GetCredential("access_token")
 	projectID := provider.GetCredential("project_id")
@@ -106,7 +106,7 @@ func (f *AntigravityQuota) fetchSubscriptionTier(ctx context.Context, client Ant
 	return raw, normalized, loadResp
 }
 
-// NormalizeAntigravityTier 将原始 tier 字符串归一化为 FREE/PRO/ULTRA/UNKNOWN
+// NormalizeAntigravityTier 将原始 tier 字符串归一化为 FREE/PRO/ULTRA/UNKNOWN。
 func NormalizeAntigravityTier(raw string) string {
 	if raw == "" {
 		return ""
@@ -203,7 +203,7 @@ func (f *AntigravityQuota) BuildUsageInfo(modelsResp *google.AntigravityFetchAva
 	return info
 }
 
-// GetProxyURL 获取提供商的代理 URL
+// GetProxyURL 获取提供商的代理 URL。
 func (f *AntigravityQuota) GetProxyURL(ctx context.Context, provider *Record) string {
 	if provider.ProxyID == nil || f.Options.ResolveProxy == nil {
 		return ""

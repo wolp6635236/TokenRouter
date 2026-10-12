@@ -172,7 +172,7 @@ func (_c *PaymentAuditLogCreate) sqlSave(ctx context.Context) (*PaymentAuditLog,
 		return nil, err
 	}
 	id := _spec.ID.Value.(int64)
-	_node.ID = int64(id)
+	_node.ID = id
 	_c.mutation.id = &_node.ID
 	_c.mutation.done = true
 	return _node, nil
@@ -487,7 +487,7 @@ func (_c *PaymentAuditLogCreateBulk) Save(ctx context.Context) ([]*PaymentAuditL
 				mutation.id = &nodes[i].ID
 				if specs[i].ID.Value != nil {
 					id := specs[i].ID.Value.(int64)
-					nodes[i].ID = int64(id)
+					nodes[i].ID = id
 				}
 				mutation.done = true
 				return nodes[i], nil

@@ -7,13 +7,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	ip "github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 type (
@@ -24,18 +24,6 @@ type (
 		settingSvc  BackendSettings
 	}
 )
-
-func NewPasskeyHandler(
-	passkeys *identity.PasskeyService,
-	authService *identity.AuthService,
-	settingService BackendSettings,
-) *PasskeyHandler {
-	return &PasskeyHandler{
-		passkeys:    passkeys,
-		authService: authService,
-		settingSvc:  settingService,
-	}
-}
 
 type PasskeyOptionsResponse struct {
 	SessionToken string `json:"session_token"`
@@ -57,6 +45,18 @@ type PasskeyBeginLoginRequest struct {
 
 type PasskeyRenameRequest struct {
 	Name string `json:"name" binding:"required"`
+}
+
+func NewPasskeyHandler(
+	passkeys *identity.PasskeyService,
+	authService *identity.AuthService,
+	settingService BackendSettings,
+) *PasskeyHandler {
+	return &PasskeyHandler{
+		passkeys:    passkeys,
+		authService: authService,
+		settingSvc:  settingService,
+	}
 }
 
 // BeginLogin 启动无需用户名的可发现凭据登录流程。

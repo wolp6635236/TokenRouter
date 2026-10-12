@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
@@ -24,8 +27,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // Options 配置提供商切换次数和非流式图片心跳预算。
@@ -34,8 +35,9 @@ type Options struct {
 	ImageKeepalive time.Duration
 }
 
-// PlatformPorts 执行一次已选提供商的请求，media 负责尝试循环和完成资格判断。
+// PlatformPorts 执行已选提供商的一次请求，调用方管理重试和完成处理。
 type PlatformPorts struct {
+	SystemOne     func(context.Context, *gin.Context, *gatewayadapter.ExecutionProvider, []byte) (upstream.AttemptResult, error)
 	SelectImages  func(context.Context, *int64, string, string, map[int64]struct{}, provider.OpenAIImagesCapability) (*gatewayadapter.SelectionResult, scheduler.PlatformDecision, error)
 	Images        func(context.Context, *gin.Context, *gatewayadapter.ExecutionProvider, []byte, *media.ImageRequest, string, ...egress.TLSFingerprintRouterMatchResult) (*forward.OpenAIResult, error)
 	GrokMedia     func(context.Context, *gin.Context, *gatewayadapter.ExecutionProvider, grok.GrokMediaEndpoint, string, []byte, string) (*forward.OpenAIResult, error)

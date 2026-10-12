@@ -1,4 +1,4 @@
-package httpapi_test
+package httpapi
 
 import (
 	"encoding/json"
@@ -10,14 +10,12 @@ import (
 	"testing"
 	"time"
 
-	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
@@ -59,7 +57,7 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-			gatewayhttp.DefaultOpenAIErrorOutput().StreamError(c, http.StatusBadGateway, tt.errType, tt.message, true)
+			DefaultOpenAIErrorOutput().StreamError(c, http.StatusBadGateway, tt.errType, tt.message, true)
 
 			body := w.Body.String()
 
@@ -93,7 +91,7 @@ func TestOpenAIHandleStreamingAwareErrorWithCode_EmitsStableClassification(t *te
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	gatewayhttp.DefaultOpenAIErrorOutput().WriteStreamingErrorWithCode(
+	DefaultOpenAIErrorOutput().WriteStreamingErrorWithCode(
 		c,
 		http.StatusBadGateway,
 		"upstream_error",
@@ -109,7 +107,7 @@ func TestOpenAIHandleStreamingAwareErrorWithCode_EmitsStableClassification(t *te
 	require.Equal(t, openai.OpenAIUpstreamHTTP2StreamErrorCode, gjson.Get(body[strings.Index(body, "{"):], "error.code").String())
 	require.NotContains(t, body, "stream ID")
 
-	streamErr, ok := gatewayhttp.GetOpsStreamError(c)
+	streamErr, ok := GetOpsStreamError(c)
 	require.True(t, ok)
 	require.True(t, streamErr.CountTowardsSLA)
 	require.Equal(t, http.StatusBadGateway, streamErr.IntendedStatus)
@@ -120,7 +118,7 @@ func TestOpenAIHandleStreamingAwareError_NonStreaming(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	gatewayhttp.DefaultOpenAIErrorOutput().StreamError(c, http.StatusBadGateway, "upstream_error", "test error", false)
+	DefaultOpenAIErrorOutput().StreamError(c, http.StatusBadGateway, "upstream_error", "test error", false)
 
 	// 非流式应返回 JSON 响应
 	assert.Equal(t, http.StatusBadGateway, w.Code)
@@ -139,7 +137,7 @@ func TestOpenAIEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testin
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	wrote := gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, false)
+	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
 
 	require.True(t, wrote)
 	require.Equal(t, http.StatusBadGateway, w.Code)
@@ -161,7 +159,7 @@ func TestOpenAIEnsureForwardErrorResponse_AppendsSSEAfterWritten(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 	c.String(http.StatusTeapot, "already written")
 
-	wrote := gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, false)
+	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
 
 	require.True(t, wrote, "must attempt to communicate the failure to the client via SSE")
 	// 状态码改不了（headers 已 flush），但 body 应该追加 SSE 错误事件。
@@ -175,11 +173,11 @@ func TestOpenAIEnsureForwardErrorResponse_AppendsSSEAfterWritten(t *testing.T) {
 func TestOpenAIEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, gatewayhttp.EndpointResponses, nil)
+	c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
 	// 模拟 ping 已 flush 的状态：Writer 已写过 1 个字节
 	_, _ = c.Writer.WriteString(":\n\n")
 
-	wrote := gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, false)
+	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
 
 	require.True(t, wrote)
 	body := w.Body.String()
@@ -193,18 +191,18 @@ func TestOpenAIEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsRespons
 func TestOpenAIEnsureForwardErrorResponse_CompactKeepaliveOnlyWritesResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, gatewayhttp.EndpointResponses, nil)
-	gatewayhttp.MarkOpenAICompactClientStream(c)
+	c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
+	MarkOpenAICompactClientStream(c)
 
-	stop := gatewayhttp.StartOpenAICompactSSEKeepalive(c, 5*time.Millisecond)
+	stop := StartOpenAICompactSSEKeepalive(c, 5*time.Millisecond)
 	defer stop()
-	before := gatewayhttp.OpenAICompactKeepaliveAdjustedWrittenSize(c)
+	before := OpenAICompactKeepaliveAdjustedWrittenSize(c)
 	require.Eventually(t, c.Writer.Written, time.Second, time.Millisecond)
-	require.Equal(t, before, gatewayhttp.OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, before, OpenAICompactKeepaliveAdjustedWrittenSize(c))
 	// 模拟设置 committed 标记后尚未写出协议事件的错误路径。
-	gatewayhttp.MarkResponseCommitted(c)
+	MarkResponseCommitted(c)
 
-	require.True(t, gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, false))
+	require.True(t, DefaultOpenAIErrorOutput().EnsureFallback(c, false))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), "event: response.failed\n")
 	require.NotContains(t, w.Body.String(), "event: error\n")
@@ -214,13 +212,13 @@ func TestOpenAIEnsureForwardErrorResponse_CompactKeepaliveOnlyWritesResponseFail
 func TestOpenAIEnsureForwardErrorResponse_AfterDeltaAppendsSingleValidResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, gatewayhttp.EndpointResponses, nil)
+	c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
 
 	delta := `{"type":"response.output_text.delta","delta":"ok","sequence_number":1}`
 	_, err := c.Writer.WriteString("event: response.output_text.delta\ndata: " + delta + "\n\n")
 	require.NoError(t, err)
 
-	require.True(t, gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, true))
+	require.True(t, DefaultOpenAIErrorOutput().EnsureFallback(c, true))
 
 	frames := strings.Split(strings.TrimSuffix(w.Body.String(), "\n\n"), "\n\n")
 	require.Len(t, frames, 2)
@@ -251,14 +249,14 @@ func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepaliveWritesSingleJSONFall
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 
-	stop := gatewayhttp.StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
+	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	defer stop()
-	before := gatewayhttp.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
 	require.Eventually(t, c.Writer.Written, time.Second, time.Millisecond)
-	require.Equal(t, before, gatewayhttp.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c))
-	require.False(t, gatewayhttp.OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream response: unexpected EOF")))
+	require.Equal(t, before, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c))
+	require.False(t, OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream response: unexpected EOF")))
 
-	wrote := gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, false)
+	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
 
 	require.True(t, wrote)
 	require.Equal(t, http.StatusOK, w.Code, "heartbeat already committed the status")
@@ -279,17 +277,17 @@ func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepalivePreservesCompletedJS
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 
-	stop := gatewayhttp.StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
+	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	defer stop()
-	before := gatewayhttp.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
 	require.Eventually(t, c.Writer.Written, time.Second, time.Millisecond)
 	c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"b64_json": "aW1hZ2U="}}})
 	completedBody := w.Body.String()
 	require.True(t, json.Valid([]byte(completedBody)), completedBody)
-	require.Greater(t, gatewayhttp.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), before)
-	require.False(t, gatewayhttp.OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream trailer: unexpected EOF")))
+	require.Greater(t, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), before)
+	require.False(t, OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream trailer: unexpected EOF")))
 
-	wrote := gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, false)
+	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
 
 	require.False(t, wrote, "the completed Images JSON already communicated the response")
 	require.Equal(t, completedBody, w.Body.String())
@@ -308,16 +306,16 @@ func TestOpenAIEnsureForwardErrorResponse_FastImageJSONKeepalivePreservesComplet
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 
-	stop := gatewayhttp.StartOpenAIImagesJSONKeepalive(c, time.Hour)
+	stop := StartOpenAIImagesJSONKeepalive(c, time.Hour)
 	defer stop()
-	before := gatewayhttp.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
 	c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"b64_json": "ZmFzdC1pbWFnZQ=="}}})
 	completedBody := w.Body.String()
 	require.True(t, json.Valid([]byte(completedBody)), completedBody)
-	require.Greater(t, gatewayhttp.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), before)
-	require.False(t, gatewayhttp.OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream trailer: unexpected EOF")))
+	require.Greater(t, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), before)
+	require.False(t, OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream trailer: unexpected EOF")))
 
-	wrote := gatewayhttp.DefaultOpenAIErrorOutput().EnsureFallback(c, false)
+	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
 
 	require.False(t, wrote, "fast completed Images JSON already communicated the response")
 	require.Equal(t, completedBody, w.Body.String())

@@ -5,19 +5,24 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
+)
+
+const (
+	OpenAISelectionSession OpenAISessionInput = iota
+	OpenAIExplicitSession
+	OpenAIPromptCacheSession
 )
 
 // OpenAITextOptions 配置 HTTP 限制和提供商切换上限。
@@ -30,12 +35,6 @@ type OpenAITextOptions struct {
 
 // OpenAISessionInput 分别提供粘性会话、客户端隔离标识和上游缓存键。
 type OpenAISessionInput uint8
-
-const (
-	OpenAISelectionSession OpenAISessionInput = iota
-	OpenAIExplicitSession
-	OpenAIPromptCacheSession
-)
 
 // OpenAITextCall 保存通过 HTTP 准入的请求数据，执行接口同步捕获完成快照。
 type OpenAITextCall struct {
@@ -110,7 +109,7 @@ type OpenAITextBackend interface {
 // OpenAITextHandler 不创建工作任务、反馈或缓存，app 可将同一对象绑定三种协议路由。
 type OpenAITextHandler struct {
 	executor execution.Executor
-	requestLifetime
+	RequestLifetime
 
 	options OpenAITextOptions
 	backend OpenAITextBackend

@@ -175,10 +175,7 @@ func (w *BatchImageWorker) RunOnce(ctx context.Context) error {
 }
 
 func (w *BatchImageWorker) heartbeatInterval() time.Duration {
-	interval := w.opts.JobLockTTL
-	if w.opts.StaleActiveAfter < interval {
-		interval = w.opts.StaleActiveAfter
-	}
+	interval := min(w.opts.StaleActiveAfter, w.opts.JobLockTTL)
 	interval /= 3
 	if interval < time.Second {
 		interval = time.Second
@@ -276,6 +273,7 @@ func SleepOrDone(ctx context.Context, d time.Duration) {
 
 // Options 返回不可变运行参数副本，供同一实例的恢复循环读取周期。
 func (w *BatchImageWorker) Options() BatchImageWorkerOptions { return w.opts }
+
 func (w *BatchImageWorker) warn(event string, fields ...any) {
 	if w.opts.Observe != nil {
 		w.opts.Observe(event, fields...)

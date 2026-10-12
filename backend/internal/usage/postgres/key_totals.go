@@ -4,8 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 )
 
 func ReadAPIKeyUsageTotals(ctx context.Context, sqlq sqlExecutor, preAggregation *preaggregation.PreAggregationSettingsService, keyIDs []int64) (map[int64]float64, error) {

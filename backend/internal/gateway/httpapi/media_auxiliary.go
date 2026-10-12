@@ -8,14 +8,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // AuxiliaryHTTPInput 固化分组映射、原报文与客户端模型；实际认证实体留在调用方 Adapter。
@@ -47,12 +48,23 @@ type AuxiliaryHTTPPorts interface {
 	RealtimeDialTimeout() time.Duration
 }
 
-// AuxiliaryHandler 处理 Embeddings、AlphaSearch、Voice 和 Realtime 的 HTTP 请求。
+// AuxiliaryHandler 处理 SystemOne、Embeddings、AlphaSearch、Voice 和 Realtime 的 HTTP 请求。
 type AuxiliaryHandler struct {
-	requestLifetime
+	RequestLifetime
 
 	base  *MediaHandler
 	ports AuxiliaryHTTPPorts
+}
+
+type mediaClientFrames struct{ conn *websocket.Conn }
+
+type EmbeddingHTTPExecution interface {
+	media.EmbeddingsPorts
+	EndEmbeddingFailure(*media.EmbeddingFailure)
+}
+type AlphaHTTPExecution interface {
+	media.AlphaPorts
+	EndAlphaFailure(*media.AlphaFailure)
 }
 
 func NewAuxiliaryHandler(ports AuxiliaryHTTPPorts) *AuxiliaryHandler {
@@ -60,7 +72,7 @@ func NewAuxiliaryHandler(ports AuxiliaryHTTPPorts) *AuxiliaryHandler {
 }
 
 func (h *AuxiliaryHandler) Embeddings(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -120,7 +132,7 @@ func (h *AuxiliaryHandler) Embeddings(c *gin.Context) {
 }
 
 func (h *AuxiliaryHandler) AlphaSearch(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -186,7 +198,7 @@ func (h *AuxiliaryHandler) AlphaSearch(c *gin.Context) {
 }
 
 func (h *AuxiliaryHandler) GrokVoice(c *gin.Context, endpoint string) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -237,7 +249,7 @@ func (h *AuxiliaryHandler) GrokVoice(c *gin.Context, endpoint string) {
 }
 
 func (h *AuxiliaryHandler) GrokRealtime(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -302,8 +314,6 @@ func (h *AuxiliaryHandler) GrokRealtime(c *gin.Context) {
 	}
 }
 
-type mediaClientFrames struct{ conn *websocket.Conn }
-
 func (c mediaClientFrames) ReadFrame(ctx context.Context) (upstream.FrameKind, []byte, error) {
 	kind, data, err := c.conn.Read(ctx)
 	return upstream.FrameKind(kind), data, err
@@ -313,15 +323,6 @@ func (c mediaClientFrames) WriteFrame(ctx context.Context, kind upstream.FrameKi
 	return c.conn.Write(ctx, websocket.MessageType(kind), data)
 }
 func (c mediaClientFrames) Close() error { return c.conn.CloseNow() }
-
-type EmbeddingHTTPExecution interface {
-	media.EmbeddingsPorts
-	EndEmbeddingFailure(*media.EmbeddingFailure)
-}
-type AlphaHTTPExecution interface {
-	media.AlphaPorts
-	EndAlphaFailure(*media.AlphaFailure)
-}
 
 func mediaWebsocketUpgrade(r *http.Request) bool {
 	if r == nil {

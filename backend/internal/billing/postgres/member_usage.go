@@ -9,6 +9,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
 
+// MemberUsageStore 写入成员的消费累计和窗口。
+type MemberUsageStore struct {
+	db       *sql.DB
+	calendar *timezone.Calendar
+}
+
+func NewMemberUsageStore(db *sql.DB, calendar *timezone.Calendar) *MemberUsageStore {
+	return &MemberUsageStore{db: db, calendar: calendar}
+}
+
 func (r *MemberUsageStore) ResetMemberUsage(ctx context.Context, teamID, userID int64, resetDaily, resetWeekly, resetMonthly bool, now time.Time) error {
 	calendar := timezone.NewCalendar(time.Local)
 	if r.calendar != nil {
@@ -36,14 +46,4 @@ func (r *MemberUsageStore) ResetMemberUsage(ctx context.Context, teamID, userID 
 		return billing.ErrTeamMembershipRequired
 	}
 	return nil
-}
-
-// MemberUsageStore 写入成员的消费累计和窗口。
-type MemberUsageStore struct {
-	db       *sql.DB
-	calendar *timezone.Calendar
-}
-
-func NewMemberUsageStore(db *sql.DB, calendar *timezone.Calendar) *MemberUsageStore {
-	return &MemberUsageStore{db: db, calendar: calendar}
 }

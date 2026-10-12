@@ -5,8 +5,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 type aliyunVerifierSpy struct {
@@ -204,4 +207,13 @@ func TestAuthServiceVerifyActionCaptchaIfEnabledSkipsWhenOnlyTurnstile(t *testin
 
 	require.NoError(t, err)
 	require.Zero(t, spy.called)
+}
+
+func newAliyunAuthServiceForTest(options *identity.AuthOptions, values map[string]string, verifier *aliyunVerifierSpy) *identity.AuthService {
+	runtime := identity.NewRuntimeSettings(&captchaSettingsStore{values: values}, settingscore.ErrSettingNotFound)
+	turnstile := identity.NewTurnstileService(runtime, &turnstileVerifierSpy{})
+	turnstile.SetObserver(logging.LegacyPrintf)
+	aliyun := identity.NewAliyunCaptchaService(runtime, verifier)
+	aliyun.SetObserver(logging.LegacyPrintf)
+	return identity.NewAuthService(&identity.AuthDependencies{Options: options, Settings: captchaAuthSettings{runtime: runtime}, Turnstile: turnstile, Aliyun: aliyun, Observer: identity.Observer{Log: logging.LegacyPrintf}}, nil)
 }

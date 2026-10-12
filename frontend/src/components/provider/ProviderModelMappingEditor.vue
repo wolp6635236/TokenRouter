@@ -18,19 +18,6 @@
     <template v-if="$slots['header-actions']" #header-actions>
       <slot name="header-actions" />
     </template>
-    <template v-if="presets?.length" #footer>
-      <div class="flex flex-wrap gap-2">
-        <button
-          v-for="preset in presets"
-          :key="preset.label"
-          type="button"
-          :class="['rounded-control px-3 py-1 text-xs transition-colors', preset.color]"
-          @click="emit('preset', preset.from, preset.to)"
-        >
-          + {{ preset.label }}
-        </button>
-      </div>
-    </template>
   </ModelMappingEditor>
 </template>
 
@@ -44,17 +31,8 @@ import {
   type ModelMappingRow,
 } from '@/utils/modelMappingRules'
 
-/** ProviderMappingPreset 是映射区下方的快捷添加项。 */
-export interface ProviderMappingPreset {
-  label: string
-  from: string
-  to: string
-  color: string
-}
-
 const props = defineProps<{
   modelValue: ModelMappingRow[]
-  presets?: ProviderMappingPreset[]
   title?: string
   hint?: string
   sourcePlaceholder?: string
@@ -67,7 +45,6 @@ const emit = defineEmits<{
   'update:modelValue': [rows: ModelMappingRow[]]
   add: [row: ModelMappingRow]
   remove: [row: ModelMappingRow, index: number]
-  preset: [from: string, to: string]
 }>()
 
 const { t } = useI18n()

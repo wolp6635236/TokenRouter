@@ -1,98 +1,10 @@
 package httpapi
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
-	"github.com/TokenFlux/TokenRouter/internal/search/contract"
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
-
-type searchHTTPStub struct {
-	calls         []string
-	authenticated bool
-	platform      string
-	billing       *SearchHTTPFailure
-	moderation    *SearchHTTPFailure
-	isX           bool
-	released      bool
-	completed     bool
-}
-
-func (s *searchHTTPStub) DefaultModel() string {
-	s.calls = append(s.calls, "model")
-	return "grok-test"
-}
-
-func (s *searchHTTPStub) NormalizeMaxResults(n int) int {
-	if n <= 0 {
-		return 5
-	}
-	if n > 20 {
-		return 20
-	}
-	return n
-}
-
-func (s *searchHTTPStub) Access(*gin.Context) (SearchAccess, bool) {
-	s.calls = append(s.calls, "access")
-	id := int64(1)
-	return SearchAccess{GroupPresent: true, Platform: s.platform, GroupID: &id}, s.authenticated
-}
-
-func (s *searchHTTPStub) Billing(*gin.Context) *SearchHTTPFailure {
-	s.calls = append(s.calls, "billing")
-	return s.billing
-}
-
-func (s *searchHTTPStub) Moderate(*gin.Context, string, []byte) *SearchHTTPFailure {
-	s.calls = append(s.calls, "moderation")
-	return s.moderation
-}
-
-func (s *searchHTTPStub) Run(_ *gin.Context, _ int64, isX bool) SearchHTTPRun {
-	s.calls = append(s.calls, "run")
-	s.isX = isX
-	return s
-}
-
-func (s *searchHTTPStub) ConcurrencyError(c *gin.Context, err error) {
-	c.JSON(429, gin.H{"message": err.Error()})
-}
-
-func (s *searchHTTPStub) Select(context.Context, string, map[int64]struct{}) (searchtools.Selection, bool, error) {
-	s.calls = append(s.calls, "select")
-	return searchtools.Selection{ProviderID: 7}, true, nil
-}
-
-func (s *searchHTTPStub) Acquire(context.Context, searchtools.Selection) (func(), bool, error) {
-	return func() { s.released = true; s.calls = append(s.calls, "release") }, true, nil
-}
-
-func (s *searchHTTPStub) Execute(_ context.Context, _ int64, request searchtools.StandaloneRequest, _ string, _ int) (*contract.SearchResponse, string, error) {
-	return &contract.SearchResponse{Query: request.Query, Results: []contract.SearchResult{{URL: "https://source.test", Title: "source", Snippet: "snippet"}}}, "grok-native", nil
-}
-func (s *searchHTTPStub) CanSwitch(error) bool { return false }
-func (s *searchHTTPStub) Complete(_ *gin.Context, _ searchtools.StandaloneRequest, _ searchtools.StandaloneResult, _ bool) {
-	if s.released {
-		panic("provider released before completion snapshot")
-	}
-	s.completed = true
-	s.calls = append(s.calls, "complete")
-}
-
-func searchContext(body string) (*gin.Context, *httptest.ResponseRecorder) {
-	r := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(r)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/web_search", strings.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-	return c, r
-}
 
 func TestStandaloneSearchHTTPOrderAndResponse(t *testing.T) {
 	ports := &searchHTTPStub{authenticated: true, platform: "grok"}

@@ -4,10 +4,11 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // UpstreamUsageQueries 提供管理员用量查询操作。
@@ -17,13 +18,13 @@ type UpstreamUsageQueries interface {
 }
 type UpstreamUsageHandler struct{ queries UpstreamUsageQueries }
 
-func NewUpstreamUsageHandler(queries UpstreamUsageQueries) *UpstreamUsageHandler {
-	return &UpstreamUsageHandler{queries: queries}
-}
-
 // UpstreamUsageBatchRequest 是 API Key 上游用量批量查询请求。
 type UpstreamUsageBatchRequest struct {
 	ProviderIDs []int64 `json:"provider_ids" binding:"required"`
+}
+
+func NewUpstreamUsageHandler(queries UpstreamUsageQueries) *UpstreamUsageHandler {
+	return &UpstreamUsageHandler{queries: queries}
 }
 
 // QueryUpstreamUsage 查询 API Key 提供商的实时上游用量。

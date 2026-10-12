@@ -1,24 +1,33 @@
 package app
 
 import (
-	"time"
+	"context"
+	"log/slog"
 
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/config"
-
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// provideRoutingModelList 为模型列表缓存配置 TTL，默认十五秒。
-func provideRoutingModelList(repo *providerpostgres.ProviderStore, cfg *config.Config) *routing.ModelList {
-	return routing.NewModelList(catalogueReader(repo), resolveModelsListCacheTTL(cfg))
+// catalogueReader 查询指定分组或全部可调度提供商，由网关适配器转换模型数据。
+func catalogueReader(store *providerpostgres.ProviderStore) func(context.Context, *int64) ([]routing.CatalogueProvider, error) {
+	return func(ctx context.Context, id *int64) ([]routing.CatalogueProvider, error) {
+		var values []provider.Record
+		var err error
+		if id != nil {
+			values, err = store.ListSchedulableByGroupID(ctx, *id)
+		} else {
+			values, err = store.ListSchedulable(ctx)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return gatewayprovider.CatalogueProviders(values), nil
+	}
 }
 
-// resolveModelsListCacheTTL 返回配置的正数 TTL，其他情况使用十五秒。
-func resolveModelsListCacheTTL(cfg *config.Config) time.Duration {
-	if cfg == nil || cfg.Gateway.ModelsListCacheTTLSeconds <= 0 {
-		return 15 * time.Second
-	}
-	return time.Duration(cfg.Gateway.ModelsListCacheTTLSeconds) * time.Second
+// provideRequestableCatalogue 为目录解析绑定提供商存储和分组策略。
+func provideRequestableCatalogue(store *providerpostgres.ProviderStore, modelConfigs *routing.PricingConfigService) *routing.RequestableCatalogue {
+	return &routing.RequestableCatalogue{Read: catalogueReader(store), Resolver: routing.RequestableResolver{GroupPolicies: modelConfigs, Warn: slog.Warn}, Warn: slog.Warn}
 }

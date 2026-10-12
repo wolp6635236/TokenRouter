@@ -36,6 +36,9 @@ const page = ref(1)
 const pageSize = ref(10)
 
 const q = ref('')
+// requestId 是输入框里的内容，按回车后写入 appliedRequestId 再查询。
+const requestId = ref('')
+const appliedRequestId = ref('')
 const statusCode = ref<number | 'other' | null>(null)
 const phase = ref<string>('')
 const errorOwner = ref<string>('')
@@ -131,6 +134,13 @@ async function fetchErrorLogs() {
     if (typeof props.groupId === 'number' && props.groupId > 0) params.group_id = props.groupId
 
     if (q.value.trim()) params.q = q.value.trim()
+    // 按请求 ID 查询时去掉时间条件，保留期内的记录都能查到。
+    if (appliedRequestId.value) {
+      params.request_id = appliedRequestId.value
+      delete params.time_range
+      delete params.start_time
+      delete params.end_time
+    }
     if (statusCode.value === 'other') params.status_codes_other = '1'
     else if (typeof statusCode.value === 'number') params.status_codes = String(statusCode.value)
 
@@ -155,8 +165,17 @@ async function fetchErrorLogs() {
   }
 }
 
+function searchRequests() {
+  requestId.value = requestId.value.trim()
+  appliedRequestId.value = requestId.value
+  page.value = 1
+  void fetchErrorLogs()
+}
+
   function resetFilters() {
     q.value = ''
+    requestId.value = ''
+    appliedRequestId.value = ''
     statusCode.value = null
     phase.value = props.errorType === 'upstream' ? 'upstream' : ''
     errorOwner.value = ''
@@ -222,23 +241,36 @@ watch(
     <div class="flex h-full min-h-0 flex-col">
       <!-- Filters -->
       <div class="mb-4 flex-shrink-0 border-b border-gray-200 pb-4 dark:border-dark-700">
-        <div class="grid grid-cols-2 gap-2 md:grid-cols-8">
+        <div class="grid grid-cols-2 gap-2 md:grid-cols-10">
           <div class="col-span-2 compact-select">
-            <div class="relative group">
+            <div class="relative">
               <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
                 <Icon
                   name="search"
                   size="xs"
-                  class="h-3.5 w-3.5 text-gray-400 transition-colors group-focus-within:text-blue-500"
+                  class="h-3.5 w-3.5 text-gray-400"
                 />
               </div>
               <input
                 v-model="q"
                 type="text"
-                class="h-9 w-full rounded-control border-gray-200 bg-gray-50/50 py-1.5 pl-9 pr-3 text-xs font-medium text-gray-700 transition focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-500/10 dark:border-dark-700 dark:bg-dark-950 dark:text-gray-300 dark:focus:bg-dark-800"
+                class="input pl-9 pr-3 text-xs"
                 :placeholder="t('admin.ops.errorDetails.searchPlaceholder')"
               />
             </div>
+          </div>
+
+          <div class="col-span-2">
+            <input
+              v-model="requestId"
+              type="text"
+              class="input px-3 font-mono text-xs"
+              spellcheck="false"
+              maxlength="255"
+              :aria-label="t('requests.id')"
+              :placeholder="t('requests.id')"
+              @keydown.enter.prevent="searchRequests"
+            />
           </div>
 
           <div class="compact-select">

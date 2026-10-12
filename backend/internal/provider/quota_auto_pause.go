@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const CodexAutoPauseStaleAfter = 2 * time.Hour
+
 // QuotaAutoPauseSettings 提供动态阈值，缺省项由调用方使用回退值。
 type QuotaAutoPauseSettings struct {
 	DefaultThreshold5h float64 `json:"default_threshold_5h"`
@@ -19,8 +21,6 @@ type QuotaAutoPauseDecision struct {
 	Window                 string
 	Threshold, Utilization float64
 }
-
-const CodexAutoPauseStaleAfter = 2 * time.Hour
 
 func quotaClamp(value float64) float64 {
 	if value < 0 {

@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// batchLoadProviderStatsPricingRules 批量加载多个共享价格配置的提供商统计定价规则（含模型定价）
+// batchLoadProviderStatsPricingRules 批量加载多个共享价格配置的提供商统计定价规则（含模型定价）。
 func (r *PricingConfigStore) batchLoadProviderStatsPricingRules(ctx context.Context, pricingConfigIDs []int64) (map[int64][]routing.ProviderStatsPricingRule, error) {
 	// 1. 查询规则
 	rows, err := r.db.QueryContext(ctx,
@@ -57,7 +58,7 @@ func (r *PricingConfigStore) batchLoadProviderStatsPricingRules(ctx context.Cont
 	return result, nil
 }
 
-// batchLoadProviderStatsModelPricing 批量加载规则的模型定价
+// batchLoadProviderStatsModelPricing 批量加载规则的模型定价。
 func (r *PricingConfigStore) batchLoadProviderStatsModelPricing(ctx context.Context, ruleIDs []int64) (map[int64][]routing.ModelPricingEntry, error) {
 	if len(ruleIDs) == 0 {
 		return make(map[int64][]routing.ModelPricingEntry), nil
@@ -118,7 +119,7 @@ func (r *PricingConfigStore) batchLoadProviderStatsModelPricing(ctx context.Cont
 	return pricingMap, nil
 }
 
-// loadProviderStatsPricingRules 加载单个共享价格配置的提供商统计定价规则（供 GetByID 使用）
+// loadProviderStatsPricingRules 加载单个共享价格配置的提供商统计定价规则（供 GetByID 使用）。
 func (r *PricingConfigStore) loadProviderStatsPricingRules(ctx context.Context, pricingConfigID int64) ([]routing.ProviderStatsPricingRule, error) {
 	result, err := r.batchLoadProviderStatsPricingRules(ctx, []int64{pricingConfigID})
 	if err != nil {
@@ -127,7 +128,7 @@ func (r *PricingConfigStore) loadProviderStatsPricingRules(ctx context.Context, 
 	return result[pricingConfigID], nil
 }
 
-// replaceProviderStatsPricingRulesTx 在事务中替换共享价格配置的提供商统计定价规则（删除旧的 + 插入新的）
+// replaceProviderStatsPricingRulesTx 在事务中替换共享价格配置的提供商统计定价规则（删除旧的 + 插入新的）。
 func replaceProviderStatsPricingRulesTx(ctx context.Context, tx *sql.Tx, pricingConfigID int64, rules []routing.ProviderStatsPricingRule) error {
 	// CASCADE 会自动删除关联的 model_pricing
 	if _, err := tx.ExecContext(ctx,
@@ -145,7 +146,7 @@ func replaceProviderStatsPricingRulesTx(ctx context.Context, tx *sql.Tx, pricing
 	return nil
 }
 
-// createProviderStatsPricingRuleTx 在事务中创建单条提供商统计定价规则及其模型定价
+// createProviderStatsPricingRuleTx 在事务中创建单条提供商统计定价规则及其模型定价。
 func createProviderStatsPricingRuleTx(ctx context.Context, tx *sql.Tx, rule *routing.ProviderStatsPricingRule) error {
 	err := tx.QueryRowContext(ctx,
 		`INSERT INTO pricing_config_provider_stats_pricing_rules (pricing_config_id, name, group_ids, provider_ids, sort_order)
@@ -164,7 +165,7 @@ func createProviderStatsPricingRuleTx(ctx context.Context, tx *sql.Tx, rule *rou
 	return nil
 }
 
-// createProviderStatsModelPricingTx 在事务中创建单条提供商统计模型定价
+// createProviderStatsModelPricingTx 在事务中创建单条提供商统计模型定价。
 func createProviderStatsModelPricingTx(ctx context.Context, tx *sql.Tx, ruleID int64, pricing *routing.ModelPricingEntry) error {
 	modelsJSON, err := json.Marshal(pricing.Models)
 	if err != nil {

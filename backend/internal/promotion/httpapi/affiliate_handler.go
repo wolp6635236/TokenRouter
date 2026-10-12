@@ -6,10 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // AffiliateHandler 处理管理端邀请返利能力：
@@ -18,6 +19,37 @@ type AffiliateHandler struct {
 	affiliateService *promotion.AffiliateService
 	lookupUsers      func(context.Context, string) ([]AffiliateUserSummary, error)
 	calendar         timezone.Calendar
+}
+
+// UpdateUserSettings 更新单个用户的邀请返利配置。
+// PUT /api/v1/admin/affiliates/users/:user_id
+//
+// 两个字段都可选，并会独立应用。
+type UpdateAffiliateUserRequest struct {
+	AffCode              *string  `json:"aff_code"`
+	AffRebateRatePercent *float64 `json:"aff_rebate_rate_percent"`
+	// ClearRebateRate 显式清除用户专属比例（写入 NULL），用于区分“未传字段”。
+	ClearRebateRate bool `json:"clear_rebate_rate"`
+}
+
+// BatchSetRate 为多个用户批量设置或清除同一个专属返利比例。
+//
+// 协议：clear=true 表示清除比例，此时忽略 aff_rebate_rate_percent。
+// 否则必须传 aff_rebate_rate_percent，并应用到所有 user_id。
+// 显式 clear 标记用于避免 JSON 解码无法区分“未传字段”和 null 的歧义。
+//
+// POST /api/v1/admin/affiliates/users/batch-rate
+type BatchSetRateRequest struct {
+	UserIDs              []int64  `json:"user_ids" binding:"required"`
+	AffRebateRatePercent *float64 `json:"aff_rebate_rate_percent"`
+	Clear                bool     `json:"clear"`
+}
+
+// AffiliateUserSummary 是 LookupUsers 返回给前端选择器的最小用户结构。
+type AffiliateUserSummary struct {
+	ID       int64  `json:"id"`
+	Email    string `json:"email"`
+	Username string `json:"username"`
 }
 
 // NewAffiliateHandler 创建管理端邀请返利处理器。
@@ -41,17 +73,6 @@ func (h *AffiliateHandler) ListUsers(c *gin.Context) {
 		return
 	}
 	httpx.Paginated(c, entries, total, page, pageSize)
-}
-
-// UpdateUserSettings 更新单个用户的邀请返利配置。
-// PUT /api/v1/admin/affiliates/users/:user_id
-//
-// 两个字段都可选，并会独立应用。
-type UpdateAffiliateUserRequest struct {
-	AffCode              *string  `json:"aff_code"`
-	AffRebateRatePercent *float64 `json:"aff_rebate_rate_percent"`
-	// ClearRebateRate 显式清除用户专属比例（写入 NULL），用于区分“未传字段”。
-	ClearRebateRate bool `json:"clear_rebate_rate"`
 }
 
 func (h *AffiliateHandler) UpdateUserSettings(c *gin.Context) {
@@ -111,19 +132,6 @@ func (h *AffiliateHandler) ClearUserSettings(c *gin.Context) {
 	httpx.Success(c, gin.H{"user_id": userID})
 }
 
-// BatchSetRate 为多个用户批量设置或清除同一个专属返利比例。
-//
-// 协议：clear=true 表示清除比例，此时忽略 aff_rebate_rate_percent。
-// 否则必须传 aff_rebate_rate_percent，并应用到所有 user_id。
-// 显式 clear 标记用于避免 JSON 解码无法区分“未传字段”和 null 的歧义。
-//
-// POST /api/v1/admin/affiliates/users/batch-rate
-type BatchSetRateRequest struct {
-	UserIDs              []int64  `json:"user_ids" binding:"required"`
-	AffRebateRatePercent *float64 `json:"aff_rebate_rate_percent"`
-	Clear                bool     `json:"clear"`
-}
-
 func (h *AffiliateHandler) BatchSetRate(c *gin.Context) {
 	var req BatchSetRateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -147,13 +155,6 @@ func (h *AffiliateHandler) BatchSetRate(c *gin.Context) {
 		return
 	}
 	httpx.Success(c, gin.H{"affected": len(req.UserIDs)})
-}
-
-// AffiliateUserSummary 是 LookupUsers 返回给前端选择器的最小用户结构。
-type AffiliateUserSummary struct {
-	ID       int64  `json:"id"`
-	Email    string `json:"email"`
-	Username string `json:"username"`
 }
 
 // LookupUsers 按邮箱或用户名搜索用户，用于添加专属用户弹窗。

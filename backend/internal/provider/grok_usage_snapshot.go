@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/provider/usageview"
@@ -53,9 +54,7 @@ func MergeUsageExtra(extra, updates map[string]any) map[string]any {
 	if out == nil {
 		out = make(map[string]any, len(updates))
 	}
-	for k, v := range CloneValues(updates) {
-		out[k] = v
-	}
+	maps.Copy(out, CloneValues(updates))
 	return out
 }
 

@@ -17,6 +17,16 @@ type cnLifecycleStore struct {
 	ignore           bool
 }
 
+type cnNoQueries struct{ CNMonitorQueries }
+
+type cnLeaseFixture struct {
+	ok         bool
+	err        error
+	key, owner string
+	ttl        time.Duration
+	released   bool
+}
+
 func (s *cnLifecycleStore) ListByPlatform(ctx context.Context, _ string) ([]Record, error) {
 	if s.reads.Add(1) == 1 && s.started != nil {
 		close(s.started)
@@ -28,8 +38,6 @@ func (s *cnLifecycleStore) ListByPlatform(ctx context.Context, _ string) ([]Reco
 	}
 	return nil, nil
 }
-
-type cnNoQueries struct{ CNMonitorQueries }
 
 // TestCNMonitorStopPreventsLaterStart 验证原构造无后台上下文及停止后不能重启的断言跟随生命周期所有者迁入本包。
 func TestCNMonitorStopPreventsLaterStart(t *testing.T) {
@@ -80,14 +88,6 @@ func TestCNMonitorStopReportsBlockedStorage(t *testing.T) {
 	require.Contains(t, err.Error(), "CN usage monitor")
 	close(store.release)
 	require.Same(t, err, monitor.StopContext(context.Background()))
-}
-
-type cnLeaseFixture struct {
-	ok         bool
-	err        error
-	key, owner string
-	ttl        time.Duration
-	released   bool
 }
 
 func (s *cnLeaseFixture) TryAcquireLeaderLock(_ context.Context, key, owner string, ttl time.Duration) (bool, error) {

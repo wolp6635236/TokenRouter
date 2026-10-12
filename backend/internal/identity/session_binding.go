@@ -19,6 +19,8 @@ type SessionBinding struct {
 	UserAgent string
 }
 
+type SessionBindingCtxKey struct{}
+
 // Hash 计算绑定指纹哈希（IP 与 UA 合并，任一变化哈希即变化）。
 func (b *SessionBinding) Hash() string {
 	if b == nil {
@@ -32,8 +34,6 @@ func (b *SessionBinding) Hash() string {
 	sum := sha256.Sum256([]byte(ip + "\n" + ua))
 	return hex.EncodeToString(sum[:16])
 }
-
-type SessionBindingCtxKey struct{}
 
 // WithSessionBinding 将会话指纹注入 context（由 HTTP 入口中间件调用）。
 func WithSessionBinding(ctx context.Context, binding *SessionBinding) context.Context {

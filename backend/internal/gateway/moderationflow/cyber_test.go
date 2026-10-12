@@ -5,16 +5,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"github.com/stretchr/testify/require"
 )
 
 // 捕获队列任务后改写请求数据，证明执行阶段只看到提交时快照。
 type queuedCyberTasks struct{ task func() }
-
-func (q *queuedCyberTasks) Go(_ string, fn func()) bool { q.task = fn; return true }
 
 type cyberEffects struct {
 	events []string
@@ -23,15 +22,19 @@ type cyberEffects struct {
 	keys   []string
 }
 
+func (q *queuedCyberTasks) Go(_ string, fn func()) bool { q.task = fn; return true }
+
 func (e *cyberEffects) MarkCyberSessionBlocked(ctx context.Context, _ string, keys []string) {
 	e.events = append(e.events, "block")
 	e.ctx = ctx
 	e.keys = keys
 }
+
 func (e *cyberEffects) Enqueue(in *ops.OpsInsertErrorLogInput) {
 	e.events = append(e.events, "ops")
 	e.entry = in
 }
+
 func TestPolicyDispatchFreezesMetadataAndKeepsIndependentBudget(t *testing.T) {
 	q := &queuedCyberTasks{}
 	effects := &cyberEffects{}
@@ -60,11 +63,13 @@ func TestPolicyDispatchFreezesMetadataAndKeepsIndependentBudget(t *testing.T) {
 	require.True(t, ok)
 	require.InDelta(t, 30, time.Until(deadline).Seconds(), 1)
 }
+
 func TestPolicyBlockPlanRetainsOriginalKeyOrdering(t *testing.T) {
 	p := BuildBlockPlan("explicit", []string{"explicit", "old", "new"}, "scope")
 	require.Equal(t, BlockPlan{ScopeKey: "scope", Keys: []string{"explicit", "old", "new"}}, p)
 	require.Equal(t, BlockPlan{Keys: []string{"explicit"}}, BuildBlockPlan("explicit", nil, "unused"))
 }
+
 func TestModerationContentSnapshotIsolatesAllCollections(t *testing.T) {
 	in := moderation.ContentModerationInput{Images: []string{"image"}, Items: []moderation.ContentModerationInputItem{{Text: "tool"}}, ImageItems: []moderation.ContentModerationImage{{Reference: "ref"}}}
 	out := SnapshotContent(in)

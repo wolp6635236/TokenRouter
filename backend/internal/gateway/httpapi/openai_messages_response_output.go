@@ -5,16 +5,15 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) messagesBufferedFailure(c *gin.Context, provider *gatewayprovider.ExecutionProvider, resp *http.Response, requestID, upstreamModel string, finalResponse *wire.ResponsesResponse, usage wire.ForwardUsage) error {

@@ -9,8 +9,6 @@ import (
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
-type Antigravity429Category string
-
 const (
 	Antigravity429Unknown        Antigravity429Category = "unknown"
 	Antigravity429RateLimited    Antigravity429Category = "rate_limited"
@@ -35,6 +33,13 @@ var (
 		"resource has been exhausted",
 	}
 )
+
+type Antigravity429Category string
+
+type CreditsOveragesRetryResult struct {
+	Handled bool
+	Resp    *http.Response
+}
 
 // ClassifyAntigravity429 将 Antigravity 的 429 响应归类为配额耗尽、限流或未知。
 func ClassifyAntigravity429(body []byte) Antigravity429Category {
@@ -88,11 +93,6 @@ func ShouldMarkCreditsExhausted(resp *http.Response, respBody []byte, reqErr err
 		}
 	}
 	return false
-}
-
-type CreditsOveragesRetryResult struct {
-	Handled bool
-	Resp    *http.Response
 }
 
 // AttemptCreditsOveragesRetry 在确认免费配额耗尽后，尝试注入 AI Credits 继续请求。

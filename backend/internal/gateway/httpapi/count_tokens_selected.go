@@ -6,16 +6,29 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tokenestimate"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
-	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
+
+// messagesCountGoogleOutput 只转换计数响应，复用原生 Gemini 的认证、网络和错误策略。
+type messagesCountGoogleOutput struct {
+	GoogleBoundary
+	context  *gin.Context
+	fallback int
+}
+
+type messagesCountSink struct {
+	output *messagesCountGoogleOutput
+	status int
+}
 
 // ForwardSelectedCountTokens 在提供商选择后分派，不取得生成槽、不发送生成请求或提交用量。
 func ForwardSelectedCountTokens(ctx context.Context, c *gin.Context, target *gatewayadapter.ExecutionProvider, parsed *requeststate.ParsedRequest, messages *MessagesExecutor, auxiliary *OpenAIAuxiliary, gemini *GeminiExecutor) error {
@@ -72,13 +85,6 @@ func forwardGeminiMessagesCount(ctx context.Context, c *gin.Context, target *gat
 	return err
 }
 
-// messagesCountGoogleOutput 只转换计数响应，复用原生 Gemini 的认证、网络和错误策略。
-type messagesCountGoogleOutput struct {
-	GoogleBoundary
-	context  *gin.Context
-	fallback int
-}
-
 func (o *messagesCountGoogleOutput) Count(_ int) {
 	o.context.JSON(http.StatusOK, gin.H{"input_tokens": o.fallback})
 }
@@ -92,11 +98,6 @@ func (o *messagesCountGoogleOutput) GeminiNativeUpstreamError(target *gatewayada
 }
 
 func (o *messagesCountGoogleOutput) Sink() upstream.OutputSink { return &messagesCountSink{output: o} }
-
-type messagesCountSink struct {
-	output *messagesCountGoogleOutput
-	status int
-}
 
 func (s *messagesCountSink) Begin(head upstream.OutputHead) error { s.status = head.Status; return nil }
 

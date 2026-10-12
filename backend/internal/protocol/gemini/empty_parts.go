@@ -3,7 +3,7 @@ package gemini
 import "encoding/json"
 
 // FilterEmptyParts 过滤掉 parts 为空的消息
-// Gemini API 不接受空 parts，需要在请求前过滤
+// Gemini API 不接受空 parts，需要在请求前过滤。
 func FilterEmptyParts(body []byte) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {

@@ -8,6 +8,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 )
 
+// ModelPricingUnavailableMessage 告知调用方配置价格或选择已定价的模型。
+const ModelPricingUnavailableMessage = "Model pricing is unavailable. Ask the administrator to configure a price or map the request to a priced model."
+
 // ErrModelPricingRejected 表示请求在调用上游前因缺价被拒绝。
 var ErrModelPricingRejected = fmt.Errorf("model pricing admission rejected: %w", pricing.ErrModelPricingUnavailable)
 
@@ -25,6 +28,3 @@ func (p *ModelPricing) Check(ctx context.Context, groupID *int64, model string) 
 	}
 	return nil
 }
-
-// ModelPricingUnavailableMessage 告知调用方配置价格或选择已定价的模型。
-const ModelPricingUnavailableMessage = "Model pricing is unavailable. Ask the administrator to configure a price or map the request to a priced model."

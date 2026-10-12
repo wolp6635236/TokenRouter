@@ -1,6 +1,6 @@
 //go:build integration
 
-package app_test
+package app
 
 import (
 	"bufio"
@@ -16,51 +16,47 @@ import (
 	"testing"
 	"time"
 
-	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	providerpg "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-
-	keypg "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	billingpg "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-
-	billingredis "github.com/TokenFlux/TokenRouter/internal/billing/rediscache"
-	"github.com/TokenFlux/TokenRouter/internal/gateway"
-
-	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-
-	routingpg "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	schedulerredis "github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
-
-	usagepg "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	keypg "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpg "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	billingredis "github.com/TokenFlux/TokenRouter/internal/billing/rediscache"
+	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	providerpg "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
+	routingpg "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	schedulerredis "github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
+	usagepg "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
 
 // balanceReader 从数据库读取余额并返回给 billing。
 type balanceReader struct{ db *sql.DB }
+
+// storageQoderRuntime 提供供应商与依赖的测试实现，执行、租约、资金和分析记录使用生产模块。
+type storageQoderRuntime struct {
+	prepare        func(context.Context, gateway.Request) (gateway.Request, error)
+	check          func(context.Context) error
+	selectProvider func(context.Context, gateway.Request, map[int64]struct{}) (*gateway.Selection, error)
+}
 
 func (r balanceReader) GetByID(ctx context.Context, id int64) (*billing.UserSummary, error) {
 	u := &billing.UserSummary{ID: id}
@@ -385,13 +381,6 @@ func TestQoderHTTPStorageChain(t *testing.T) {
 			require.Zero(t, slots)
 		})
 	}
-}
-
-// storageQoderRuntime 提供供应商与依赖的测试实现，执行、租约、资金和分析记录使用生产模块。
-type storageQoderRuntime struct {
-	prepare        func(context.Context, gateway.Request) (gateway.Request, error)
-	check          func(context.Context) error
-	selectProvider func(context.Context, gateway.Request, map[int64]struct{}) (*gateway.Selection, error)
 }
 
 func (r *storageQoderRuntime) Prepare(ctx context.Context, v gateway.Request) (gateway.Request, error) {

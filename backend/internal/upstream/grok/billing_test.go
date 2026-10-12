@@ -143,7 +143,6 @@ func TestBuildBillingSummaryWeeklyDoesNotInheritMonthlyPeriodEnd(t *testing.T) {
 func TestMergeBillingProbeResultRetainsFailedWindow(t *testing.T) {
 	t.Parallel()
 	previous := &BillingSummary{
-
 		PeriodType: "weekly",
 
 		UsagePercent: floatPointer(100),
@@ -163,7 +162,6 @@ func TestMergeBillingProbeResultRetainsFailedWindow(t *testing.T) {
 		FailedWindows: []string{"monthly"},
 	}
 	monthly := &BillingSummary{
-
 		PeriodType: "monthly",
 
 		MonthlyLimitCents: floatPointer(15000),

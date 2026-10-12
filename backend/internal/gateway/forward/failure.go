@@ -1,38 +1,50 @@
 package forward
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
 )
-
-// GatewayFailureStage 标识请求失败的阶段。零值有意按推理阶段处理，
-// 从而保持现有 UpstreamFailoverError 调用方的行为。
-type GatewayFailureStage string
-
-const (
-	GatewayFailureStageInference    GatewayFailureStage = "inference"
-	GatewayFailureStageProviderAuth GatewayFailureStage = "provider_auth"
-)
-
-// GatewayFailureScope 区分单个提供商、共享凭据设施和请求本身，供切换决策使用。
-type GatewayFailureScope string
-
-const (
-	GatewayFailureScopeProvider GatewayFailureScope = "provider"
-	GatewayFailureScopeShared   GatewayFailureScope = "shared"
-	GatewayFailureScopeRequest  GatewayFailureScope = "request"
-)
-
-// NextProviderAction 描述提供商切换动作，零值继续尝试，NextProviderStop 终止切换。
-type NextProviderAction uint8
 
 const (
 	NextProviderLegacyRetry NextProviderAction = iota
 	NextProviderRetry
 	NextProviderStop
+
+	OpenAIRequestBodyTooLargeClientMessage     = "Request payload is too large"
+	OpenAIUpstreamAccessStateReason            = GatewayFailureReason("openai_upstream_access_state")
+	OpenAIHTTPContinuationUnsupportedReason    = GatewayFailureReason("openai_http_continuation_unsupported")
+	AntigravityCredentialRejectedClientMessage = "Antigravity rejected the OAuth credential after refresh; reauthorize the provider and verify project_id"
+	AntigravityCredentialRejectedReason        = GatewayFailureReason("antigravity_oauth_credential_rejected")
+
+	openAISilentRefusalErrorCode       = "openai_silent_refusal"
+	openAISilentRefusalUpstreamMessage = "OpenAI upstream returned an empty completion stream with finish_reason=stop and no usage"
+	openAISilentRefusalClientMessage   = "Upstream returned an empty completion without usage; no fallback provider was available"
+
+	GatewayFailureStageInference    GatewayFailureStage = "inference"
+	GatewayFailureStageProviderAuth GatewayFailureStage = "provider_auth"
+
+	GatewayFailureScopeProvider GatewayFailureScope = "provider"
+	GatewayFailureScopeShared   GatewayFailureScope = "shared"
+	GatewayFailureScopeRequest  GatewayFailureScope = "request"
 )
+
+// AgentIdentityTaskRecoveredError 表示身份任务已恢复，调用方可重试请求。
+type AgentIdentityTaskRecoveredError struct{}
+
+// GatewayFailureStage 标识请求失败的阶段，零值表示推理阶段。
+type GatewayFailureStage string
+
+// GatewayFailureScope 区分单个提供商、共享凭据设施和请求本身，供切换决策使用。
+type GatewayFailureScope string
+
+// NextProviderAction 描述提供商切换动作，零值继续尝试，NextProviderStop 终止切换。
+type NextProviderAction uint8
 
 type GatewayFailureReason string
 
@@ -55,6 +67,33 @@ type UpstreamFailoverError struct {
 	NextProviderAction        NextProviderAction
 	ClientStatusCode          int
 	ClientMessage             string
+}
+
+func (e *AgentIdentityTaskRecoveredError) Error() string { return "agent identity task recovered" }
+
+// OpenAISilentRefusalErrorBody 返回网关用于静默拒绝的错误码和安全消息。
+func OpenAISilentRefusalErrorBody() []byte {
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"code":    openAISilentRefusalErrorCode,
+			"message": openAISilentRefusalUpstreamMessage,
+		},
+	})
+	if err != nil {
+		return []byte(`{"error":{"type":"upstream_error","code":"openai_silent_refusal","message":"OpenAI upstream returned an empty completion stream with finish_reason=stop and no usage"}}`)
+	}
+	return body
+}
+
+// IsOpenAISilentRefusalErrorBody 判断响应体是否由 OpenAI 静默拒绝检测器生成。
+func IsOpenAISilentRefusalErrorBody(body []byte) bool {
+	return strings.TrimSpace(gjson.GetBytes(body, "error.code").String()) == openAISilentRefusalErrorCode
+}
+
+// OpenAISilentRefusalClientMessage 返回静默拒绝且 failover 耗尽时给客户端看的错误文案。
+func OpenAISilentRefusalClientMessage() string {
+	return openAISilentRefusalClientMessage
 }
 
 func (e *UpstreamFailoverError) Error() string {

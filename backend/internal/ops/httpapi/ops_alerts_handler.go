@@ -9,60 +9,62 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-var validOpsAlertMetricTypes = []string{
-	"success_rate",
-	"error_rate",
-	"upstream_error_rate",
-	"cpu_usage_percent",
-	"memory_usage_percent",
-	"disk_usage_percent",
-	"concurrency_queue_depth",
-	"group_available_providers",
-	"group_available_ratio",
-	"group_rate_limit_ratio",
-	"provider_rate_limited_count",
-	"provider_error_count",
-	"provider_error_ratio",
-	"overload_provider_count",
-	"proxy_expired_count",
-	"proxy_expiring_soon_count",
-}
-
-var validOpsAlertMetricTypeSet = func() map[string]struct{} {
-	set := make(map[string]struct{}, len(validOpsAlertMetricTypes))
-	for _, v := range validOpsAlertMetricTypes {
-		set[v] = struct{}{}
+var (
+	validOpsAlertMetricTypes = []string{
+		"success_rate",
+		"error_rate",
+		"upstream_error_rate",
+		"cpu_usage_percent",
+		"memory_usage_percent",
+		"disk_usage_percent",
+		"concurrency_queue_depth",
+		"group_available_providers",
+		"group_available_ratio",
+		"group_rate_limit_ratio",
+		"provider_rate_limited_count",
+		"provider_error_count",
+		"provider_error_ratio",
+		"overload_provider_count",
+		"proxy_expired_count",
+		"proxy_expiring_soon_count",
 	}
-	return set
-}()
 
-var validOpsAlertOperators = []string{">", "<", ">=", "<=", "==", "!="}
+	validOpsAlertMetricTypeSet = func() map[string]struct{} {
+		set := make(map[string]struct{}, len(validOpsAlertMetricTypes))
+		for _, v := range validOpsAlertMetricTypes {
+			set[v] = struct{}{}
+		}
+		return set
+	}()
 
-var validOpsAlertOperatorSet = func() map[string]struct{} {
-	set := make(map[string]struct{}, len(validOpsAlertOperators))
-	for _, v := range validOpsAlertOperators {
-		set[v] = struct{}{}
-	}
-	return set
-}()
+	validOpsAlertOperators = []string{">", "<", ">=", "<=", "==", "!="}
 
-var validOpsAlertSeverities = []string{"P0", "P1", "P2", "P3"}
+	validOpsAlertOperatorSet = func() map[string]struct{} {
+		set := make(map[string]struct{}, len(validOpsAlertOperators))
+		for _, v := range validOpsAlertOperators {
+			set[v] = struct{}{}
+		}
+		return set
+	}()
 
-var validOpsAlertSeveritySet = func() map[string]struct{} {
-	set := make(map[string]struct{}, len(validOpsAlertSeverities))
-	for _, v := range validOpsAlertSeverities {
-		set[v] = struct{}{}
-	}
-	return set
-}()
+	validOpsAlertSeverities = []string{"P0", "P1", "P2", "P3"}
+
+	validOpsAlertSeveritySet = func() map[string]struct{} {
+		set := make(map[string]struct{}, len(validOpsAlertSeverities))
+		for _, v := range validOpsAlertSeverities {
+			set[v] = struct{}{}
+		}
+		return set
+	}()
+)
 
 type opsAlertRuleValidatedInput struct {
 	Name       string

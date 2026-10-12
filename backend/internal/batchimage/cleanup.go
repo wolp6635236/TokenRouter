@@ -9,6 +9,13 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+const (
+	DefaultBatchImageInputRetentionAfterTerminal = 24 * time.Hour
+
+	DefaultBatchImageCleanupInterval  = 30 * time.Minute
+	DefaultBatchImageCleanupBatchSize = 100
+)
+
 type CleanupOptions struct {
 	InputRetention time.Duration
 	Interval       time.Duration
@@ -20,6 +27,12 @@ type Cleanup struct {
 	ResolveProvider func(context.Context, *BatchImageJob) (BoundProvider, error)
 	Options         CleanupOptions
 	Observe         func(string, ...any)
+}
+
+type BatchImageCleanupRunResult struct {
+	InputCleaned  int
+	OutputCleaned int
+	Failures      int
 }
 
 func (s *Cleanup) warn(event string, values ...any) {
@@ -43,13 +56,6 @@ func (s *Cleanup) Run(ctx context.Context) {
 		}
 	}
 }
-
-const (
-	DefaultBatchImageInputRetentionAfterTerminal = 24 * time.Hour
-
-	DefaultBatchImageCleanupInterval  = 30 * time.Minute
-	DefaultBatchImageCleanupBatchSize = 100
-)
 
 // AppendCleanupEvent 追加清理审计事件；事件写入失败不阻断清理流程，但必须留痕。
 func (s *Cleanup) AppendCleanupEvent(ctx context.Context, batchID, eventType string, payload any) {
@@ -230,12 +236,6 @@ func (s *Cleanup) CleanupBatchSize() int {
 		return s.Options.BatchSize
 	}
 	return DefaultBatchImageCleanupBatchSize
-}
-
-type BatchImageCleanupRunResult struct {
-	InputCleaned  int
-	OutputCleaned int
-	Failures      int
 }
 
 func CleanupEventPayload(batchID string, target CleanupTarget, reason string, deletedAt *time.Time) map[string]any {

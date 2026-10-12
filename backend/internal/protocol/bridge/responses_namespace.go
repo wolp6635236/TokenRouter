@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -100,9 +101,7 @@ func FlattenResponsesNamespacesExcept(req map[string]any, preserved map[string]b
 			}
 			seen[flat] = true
 			flatChild := make(map[string]any, len(child))
-			for key, value := range child {
-				flatChild[key] = value
-			}
+			maps.Copy(flatChild, child)
 			flatChild["name"] = flat
 			flattened = append(flattened, flatChild)
 		}

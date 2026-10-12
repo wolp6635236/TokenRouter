@@ -15,13 +15,6 @@ type OrderLifecycle struct {
 	fulfillmentReconcileCursor uint64
 }
 
-func NewOrderLifecycle(core *Fulfillment, resume *PaymentResumeService, observe func(context.Context) func()) *OrderLifecycle {
-	if observe == nil {
-		observe = func(context.Context) func() { return func() {} }
-	}
-	return &OrderLifecycle{Fulfillment: core, resume: resume, observe: observe}
-}
-
 // LifeStore 提供订单闭合状态操作及后台处理所需的批量查询。
 type LifeStore interface {
 	ForceExpire(context.Context, int64, string) error
@@ -32,4 +25,11 @@ type LifeStore interface {
 	ProcessingIDs(context.Context) ([]int64, error)
 	ProcessingOrders(context.Context, []int64) ([]*Order, error)
 	RecoverableFulfillmentIDs(context.Context, time.Time, time.Duration, time.Duration) ([]int64, error)
+}
+
+func NewOrderLifecycle(core *Fulfillment, resume *PaymentResumeService, observe func(context.Context) func()) *OrderLifecycle {
+	if observe == nil {
+		observe = func(context.Context) func() { return func() {} }
+	}
+	return &OrderLifecycle{Fulfillment: core, resume: resume, observe: observe}
 }

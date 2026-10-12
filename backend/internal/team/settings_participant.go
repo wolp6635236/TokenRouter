@@ -8,17 +8,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// AdminSettings 只包含本模块的管理开关与运行参数。
-type AdminSettings struct {
-	TeamEnabled bool `json:"team_enabled"`
-}
-
-// 本模块继续使用现有设置键。
+// SettingKeyTeamEnabled 是团队功能的设置键。
 const (
 	SettingKeyTeamEnabled = "team_enabled"
 )
 
-// PrepareAdminSettings 保留既有编码和合法范围，不启动任务或发布成功通知。
+// AdminSettings 保存团队功能的启用设置。
+type AdminSettings struct {
+	TeamEnabled bool `json:"team_enabled"`
+}
+
+// PrepareAdminSettings 将团队启用状态编码为设置键值。
 func PrepareAdminSettings(value AdminSettings) (AdminSettings, map[string]string, error) {
 	values := map[string]string{}
 	values[SettingKeyTeamEnabled] = strconv.FormatBool(value.TeamEnabled)
@@ -53,4 +53,9 @@ func SettingsParticipant() settings.Participant {
 		}
 		return settings.PreparedChange{Values: values}, nil
 	}}
+}
+
+// PublicSettings 返回配置与进程开关共同决定的团队启用状态，以及自助创建开关。
+func PublicSettings(values map[string]string, enabled, selfService bool) (bool, bool) {
+	return values[SettingKeyTeamEnabled] != "false" && enabled, selfService
 }

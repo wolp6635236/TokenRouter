@@ -18,9 +18,9 @@ const (
 	MinGroupAvailabilityProbeMaxRetries          = 0
 	MaxGroupAvailabilityProbeMaxRetries          = 10
 	MaxGroupAvailabilityProbeUserAgentLength     = 512
-)
 
-const InvalidGroupAvailabilityProbeConfigReason = "INVALID_AVAILABILITY_PROBE_CONFIG"
+	InvalidGroupAvailabilityProbeConfigReason = "INVALID_AVAILABILITY_PROBE_CONFIG"
+)
 
 // NormalizeGroupAvailabilityProbeConfig 统一清洗分组主动探测配置。
 // 未启用时只保留 enabled=false，避免无效模型和提示词长期堆积在 JSON 字段里。
@@ -83,7 +83,7 @@ func NormalizeGroupAvailabilityProbeConfigForAdminWrite(cfg GroupAvailabilityPro
 
 // HasInvalidHTTPHeaderValueByte 拒绝控制字符，避免保存后在发送 User-Agent header 时失败。
 func HasInvalidHTTPHeaderValueByte(value string) bool {
-	for i := 0; i < len(value); i++ {
+	for i := range len(value) {
 		b := value[i]
 		if b < 0x20 || b == 0x7f {
 			return true

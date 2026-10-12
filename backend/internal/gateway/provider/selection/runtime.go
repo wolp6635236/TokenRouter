@@ -36,6 +36,63 @@ type Generic struct {
 	setProviderError        func(context.Context, int64, string) error
 }
 
+// Compatible 为调度器提供 OpenAI/Grok 资格规则和共享状态。
+type Compatible struct {
+	generic             *Generic
+	gemini              *Gemini
+	options             Options
+	providerRepo        Providers
+	schedulerSnapshot   Snapshots
+	schedulingGroups    func(context.Context, int64) (*routing.Group, error)
+	cache               schedulercore.StickyCache
+	concurrencyService  *schedulercore.ConcurrencyService
+	healthObserver      *provideradapter.UpstreamHealth
+	groupPolicies       *routing.PricingConfigService
+	schedulerParameters *schedulercore.Parameters
+	openaiProviderStats *schedulercore.RuntimeStats
+	quotaSettings       *provider.QuotaSettingsCache
+	freeQuotaGate       *provider.FreeQuotaGate
+	newFreeQuotaGate    func() *provider.FreeQuotaGate
+	runtime             *provider.RuntimeBlockState
+	modelTransient      *provider.ModelTransientState
+	proxyCircuit        *egress.ProxyStreamCircuit
+	proxyFailOpenLogAt  atomic.Int64
+	responseState       session.OpenAIWSStateStore
+	stickyMetrics       *schedulercore.StickyStats
+	pickerOnce          sync.Once
+	picker              pickerEngine
+}
+
+// Gemini 包含 Gemini 和混合池的无槽选择依赖。
+type Gemini struct {
+	options               Options
+	providerRepo          Providers
+	groupRepo             Groups
+	schedulerSnapshot     Snapshots
+	cache                 schedulercore.StickyCache
+	schedulerParameters   *schedulercore.Parameters
+	advancedProviderStats *schedulercore.RuntimeStats
+	quotaPrecheck         *provider.GeminiPrecheck
+}
+
+// DiagnosticSource 定义诊断所需的提供商读取方法，scheduler 构造诊断结果。
+type DiagnosticSource interface {
+	GetProvider(context.Context, int64) (*gatewayadapter.ExecutionProvider, error)
+	GetGroup(context.Context, int64) (*routing.Group, error)
+	ListProvidersForSchedulerScoreFilter(context.Context, string, string, string, string, int64, string) ([]gatewayadapter.ExecutionProvider, error)
+	ListSchedulableProvidersForAdvancedSchedulerScore(context.Context, *int64, string) ([]gatewayadapter.ExecutionProvider, error)
+}
+
+// Diagnostics 与请求选择共用参数、反馈和资格规则，用于只读诊断。
+type Diagnostics struct {
+	source              DiagnosticSource
+	concurrencyService  *schedulercore.ConcurrencyService
+	feedback            *schedulercore.RuntimeStats
+	schedulerParameters *schedulercore.Parameters
+	gatewayService      *Generic
+	openAIGateway       *Compatible
+}
+
 // NewGeneric 绑定共享调度状态，为每次选择建立执行目标。
 // @project-doc docs/architecture/provider_scheduling_and_cache.md#advanced_scheduler_selection
 func NewGeneric(deps GenericDependencies, options Options) *Generic {
@@ -63,33 +120,6 @@ func NewGeneric(deps GenericDependencies, options Options) *Generic {
 		sessionLimitCache: deps.Sessions,
 		setProviderError:  deps.SetProviderError,
 	}
-}
-
-// Compatible 为调度器提供 OpenAI/Grok 资格规则和共享状态。
-type Compatible struct {
-	generic             *Generic
-	gemini              *Gemini
-	options             Options
-	providerRepo        Providers
-	schedulerSnapshot   Snapshots
-	schedulingGroups    func(context.Context, int64) (*routing.Group, error)
-	cache               schedulercore.StickyCache
-	concurrencyService  *schedulercore.ConcurrencyService
-	healthObserver      *provideradapter.UpstreamHealth
-	groupPolicies       *routing.PricingConfigService
-	schedulerParameters *schedulercore.Parameters
-	openaiProviderStats *schedulercore.RuntimeStats
-	quotaSettings       *provider.QuotaSettingsCache
-	freeQuotaGate       *provider.FreeQuotaGate
-	newFreeQuotaGate    func() *provider.FreeQuotaGate
-	runtime             *provider.RuntimeBlockState
-	modelTransient      *provider.ModelTransientState
-	proxyCircuit        *egress.ProxyStreamCircuit
-	proxyFailOpenLogAt  atomic.Int64
-	responseState       session.OpenAIWSStateStore
-	stickyMetrics       *schedulercore.StickyStats
-	pickerOnce          sync.Once
-	picker              pickerEngine
 }
 
 func NewCompatible(deps CompatibleDependencies, options Options) *Compatible {
@@ -135,18 +165,6 @@ func NewCompatible(deps CompatibleDependencies, options Options) *Compatible {
 	}
 }
 
-// Gemini 包含 Gemini 和混合池的无槽选择依赖。
-type Gemini struct {
-	options               Options
-	providerRepo          Providers
-	groupRepo             Groups
-	schedulerSnapshot     Snapshots
-	cache                 schedulercore.StickyCache
-	schedulerParameters   *schedulercore.Parameters
-	advancedProviderStats *schedulercore.RuntimeStats
-	quotaPrecheck         *provider.GeminiPrecheck
-}
-
 func NewGemini(deps GeminiDependencies, options Options) *Gemini {
 	return &Gemini{
 		options:           options,
@@ -159,24 +177,6 @@ func NewGemini(deps GeminiDependencies, options Options) *Gemini {
 		advancedProviderStats: deps.Feedback,
 		quotaPrecheck:         deps.QuotaPrecheck,
 	}
-}
-
-// DiagnosticSource 定义诊断所需的提供商读取方法，scheduler 构造诊断结果。
-type DiagnosticSource interface {
-	GetProvider(context.Context, int64) (*gatewayadapter.ExecutionProvider, error)
-	GetGroup(context.Context, int64) (*routing.Group, error)
-	ListProvidersForSchedulerScoreFilter(context.Context, string, string, string, string, int64, string) ([]gatewayadapter.ExecutionProvider, error)
-	ListSchedulableProvidersForAdvancedSchedulerScore(context.Context, *int64, string) ([]gatewayadapter.ExecutionProvider, error)
-}
-
-// Diagnostics 与请求选择共用参数、反馈和资格规则，用于只读诊断。
-type Diagnostics struct {
-	source              DiagnosticSource
-	concurrencyService  *schedulercore.ConcurrencyService
-	feedback            *schedulercore.RuntimeStats
-	schedulerParameters *schedulercore.Parameters
-	gatewayService      *Generic
-	openAIGateway       *Compatible
 }
 
 func NewDiagnostics(source DiagnosticSource, shared Shared, generic *Generic, compatible *Compatible) *Diagnostics {

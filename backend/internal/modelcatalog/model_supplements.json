@@ -1,0 +1,182 @@
+{
+  "gemini-2.5-flash-image": {
+    "provider": "gemini",
+    "output_cost_per_token": 2.5e-06,
+    "image_prices": {
+      "1K": 0.039
+    },
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "gemini-3-pro-image": {
+    "provider": "gemini",
+    "output_cost_per_token": 1.2e-05,
+    "image_prices": {
+      "1K": 0.134,
+      "2K": 0.134,
+      "4K": 0.24
+    },
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "gemini-3.1-flash-image": {
+    "provider": "gemini",
+    "output_cost_per_token": 3e-06,
+    "image_prices": {
+      "1K": 0.067,
+      "2K": 0.101,
+      "4K": 0.151
+    },
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "gemini-3.1-flash-lite-image": {
+    "provider": "gemini",
+    "output_cost_per_token": 1.5e-06,
+    "image_prices": {
+      "1K": 0.0336
+    },
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "gpt-image-1": {
+    "provider": "openai",
+    "mode": "image_generation",
+    "input_cost_per_token": 5e-06,
+    "cache_read_input_token_cost": 1.25e-06,
+    "input_cost_per_image_token": 1e-05,
+    "output_cost_per_image_token": 4e-05,
+    "source_url": "https://developers.openai.com/api/docs/models/gpt-image-1",
+    "verified_at": "2026-10-01"
+  },
+  "gpt-image-1-mini": {
+    "provider": "openai",
+    "mode": "image_generation",
+    "input_cost_per_token": 2e-06,
+    "cache_read_input_token_cost": 2e-07,
+    "input_cost_per_image_token": 2.5e-06,
+    "output_cost_per_image_token": 8e-06,
+    "source_url": "https://developers.openai.com/api/docs/models/gpt-image-1-mini",
+    "verified_at": "2026-10-01"
+  },
+  "gpt-image-1.5": {
+    "provider": "openai",
+    "mode": "image_generation",
+    "input_cost_per_token": 5e-06,
+    "cache_read_input_token_cost": 1.25e-06,
+    "input_cost_per_image_token": 8e-06,
+    "output_cost_per_image_token": 3.2e-05,
+    "output_cost_per_token": 1e-05,
+    "source_url": "https://developers.openai.com/api/docs/models/gpt-image-1.5",
+    "verified_at": "2026-10-01"
+  },
+  "grok-imagine-image": {
+    "provider": "xai",
+    "mode": "image_generation",
+    "image_prices": {
+      "1K": 0.02,
+      "2K": 0.02
+    },
+    "source_url": "https://docs.x.ai/developers/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "grok-imagine-image-quality": {
+    "provider": "xai",
+    "mode": "image_generation",
+    "image_prices": {
+      "1K": 0.05,
+      "2K": 0.07
+    },
+    "source_url": "https://docs.x.ai/developers/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "grok-imagine-video": {
+    "provider": "xai",
+    "mode": "video",
+    "video_prices": {
+      "480p": 0.05,
+      "720p": 0.07
+    },
+    "source_url": "https://docs.x.ai/developers/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "grok-imagine-video-1.5": {
+    "provider": "xai",
+    "mode": "video",
+    "video_prices": {
+      "480p": 0.08,
+      "720p": 0.14,
+      "1080p": 0.25
+    },
+    "source_url": "https://docs.x.ai/developers/pricing",
+    "verified_at": "2026-10-01"
+  },
+  "_billing_defaults": {
+    "web_search_price_per_call": 0.01,
+    "audio_tts_price_per_million_chars": 15,
+    "audio_stt_price_per_hour": 0.1,
+    "sources": {
+      "web_search_price_per_call": "https://developers.openai.com/api/docs/pricing",
+      "audio_tts_price_per_million_chars": "https://docs.x.ai/developers/pricing",
+      "audio_stt_price_per_hour": "https://docs.x.ai/developers/pricing"
+    },
+    "verified_at": "2026-10-01"
+  },
+  "jev-latest": {
+    "provider": "typesafe",
+    "input_cost_per_token": 4.2e-08,
+    "output_cost_per_token": 0,
+    "source_url": "https://docs.typesafe.ai/models",
+    "verified_at": "2026-10-11",
+    "attributes": {
+      "display_name": "Jev",
+      "context": 64000,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "structured_output": true,
+      "attachment": false
+    }
+  },
+  "jev-preview": {
+    "provider": "typesafe",
+    "input_cost_per_token": 4.2e-08,
+    "output_cost_per_token": 0,
+    "source_url": "https://docs.typesafe.ai/models",
+    "verified_at": "2026-10-11",
+    "attributes": {
+      "display_name": "Jev Preview",
+      "context": 64000,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "structured_output": true,
+      "attachment": false
+    }
+  },
+  "jev-1.13.0": {
+    "provider": "typesafe",
+    "input_cost_per_token": 4.2e-08,
+    "output_cost_per_token": 0,
+    "source_url": "https://docs.typesafe.ai/models",
+    "verified_at": "2026-10-11",
+    "attributes": {
+      "display_name": "Jev 1.13",
+      "context": 64000,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "structured_output": true,
+      "attachment": false
+    }
+  }
+}

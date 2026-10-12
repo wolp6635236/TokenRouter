@@ -3,8 +3,9 @@ package media
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
 const (
@@ -25,6 +26,12 @@ type ImageToolRules struct {
 	FirstString     func(...any) string
 }
 type ImageIntentPolicy struct{ rules ImageToolRules }
+
+type OpenAIResponsesImageBillingConfig struct {
+	Model     string
+	SizeTier  string
+	InputSize string
+}
 
 func NewImageIntentPolicy(rules ImageToolRules) ImageIntentPolicy {
 	return ImageIntentPolicy{rules: rules}
@@ -386,12 +393,6 @@ func (p ImageIntentPolicy) OpenAIAnyToolChoiceSelectsExplicitImageGeneration(cho
 		)
 	}
 	return false
-}
-
-type OpenAIResponsesImageBillingConfig struct {
-	Model     string
-	SizeTier  string
-	InputSize string
 }
 
 func (p ImageIntentPolicy) ResolveOpenAIResponsesImageBillingConfigDetailed(reqBody map[string]any, fallbackModel string) (OpenAIResponsesImageBillingConfig, error) {

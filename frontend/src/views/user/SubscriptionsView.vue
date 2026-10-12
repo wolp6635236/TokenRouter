@@ -10,18 +10,12 @@
         </div>
       </div>
 
-      <div v-else-if="planChains.length === 0" class="card p-12 text-center">
-        <div
-          class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100 dark:bg-dark-700"
-        >
-          <Icon name="creditCard" size="xl" class="text-gray-400" />
-        </div>
-        <h3 class="mb-2 text-lg font-semibold text-gray-900 dark:text-white">
-          {{ t('userSubscriptions.noActiveSubscriptions') }}
-        </h3>
-        <p class="text-gray-500 dark:text-dark-400">
-          {{ t('userSubscriptions.noActiveSubscriptionsDesc') }}
-        </p>
+      <div v-else-if="planChains.length === 0" class="card">
+        <EmptyState :title="t('userSubscriptions.noActiveSubscriptions')">
+          <template #icon>
+            <Icon name="creditCard" class="empty-state-icon h-10 w-10" />
+          </template>
+        </EmptyState>
       </div>
 
       <div v-else class="grid gap-4 lg:grid-cols-2">
@@ -232,6 +226,7 @@ import subscriptionsAPI, { type RevokeSubscriptionResponse } from '@/api/subscri
 import type { SubscriptionPlan, UserSubscription } from '@/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
 import { formatDateOnly, formatDateTimeToMinute } from '@/utils/format'

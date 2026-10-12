@@ -9,9 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/tidwall/gjson"
 )
 
 // ImageResponseOptions 配置图片响应的读取、输出和观测。

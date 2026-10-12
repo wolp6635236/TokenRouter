@@ -31,7 +31,7 @@ func ExtractClaudeCodeSessionIDFromPayload(body []byte) string {
 		return matches[1]
 	}
 	// Claude Code 也可能嵌入 JSON：{"session_id":"..."}。
-	if len(userID) > 0 && userID[0] == '{' {
+	if userID != "" && userID[0] == '{' {
 		if sid := strings.TrimSpace(gjson.Get(userID, "session_id").String()); sid != "" {
 			return sid
 		}

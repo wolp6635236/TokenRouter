@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
 // TestSettlementDeletedKey 在真实数据库中验证删除与结算交错及幂等重试。

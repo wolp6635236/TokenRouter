@@ -11,12 +11,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-	opspostgres "github.com/TokenFlux/TokenRouter/internal/ops/postgres"
-
 	_ "github.com/TokenFlux/TokenRouter/ent/runtime"
 	"github.com/TokenFlux/TokenRouter/internal/app/bootstrap"
 	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	opspostgres "github.com/TokenFlux/TokenRouter/internal/ops/postgres"
 )
 
 func main() {

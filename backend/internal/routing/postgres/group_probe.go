@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 type GroupAvailabilityProbeStore struct {
@@ -198,7 +199,7 @@ func (r *GroupAvailabilityProbeStore) GetSummaryByGroupIDs(ctx context.Context, 
 			BucketMinutes: bucketMinutes,
 			Days:          make([]routing.GroupAvailabilityBucket, 0, bucketCount),
 		}
-		for i := 0; i < bucketCount; i++ {
+		for i := range bucketCount {
 			bucketStart := startLocal.Add(time.Duration(i) * bucketDuration)
 			summary.Days = append(summary.Days, routing.GroupAvailabilityBucket{
 				Date: bucketStart.Format(time.RFC3339),

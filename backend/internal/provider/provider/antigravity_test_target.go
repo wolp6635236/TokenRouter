@@ -13,13 +13,13 @@ type AntigravityProviderTest struct {
 	Probe func(context.Context, *provider.Record, provider.PreparedTestRequest) (*antigravity.TestConnectionResult, error)
 }
 
-func (s *AntigravityProviderTest) Target(value *provider.Record) provider.TestTarget {
-	return antigravityTestTarget{executor: s, record: value}
-}
-
 type antigravityTestTarget struct {
 	executor *AntigravityProviderTest
 	record   *provider.Record
+}
+
+func (s *AntigravityProviderTest) Target(value *provider.Record) provider.TestTarget {
+	return antigravityTestTarget{executor: s, record: value}
 }
 
 func (t antigravityTestTarget) Information() provider.TestTargetInfo {

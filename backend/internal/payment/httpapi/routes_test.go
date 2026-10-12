@@ -8,6 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// routePlansStub 为路由注册测试提供套餐处理方法。
+type routePlansStub struct{}
+
 func TestPaymentRoutesDoNotExposeAIChannels(t *testing.T) {
 	router := gin.New()
 	passThrough := func(c *gin.Context) { c.Next() }
@@ -31,9 +34,6 @@ func TestPaymentRoutesDoNotExposeAIChannels(t *testing.T) {
 	require.True(t, registered[http.MethodPost+" /api/v1/admin/payment/orders/:id/force-expire"])
 	require.True(t, registered[http.MethodPost+" /api/v1/admin/payment/providers/test"])
 }
-
-// routePlansStub 为路由注册测试提供套餐处理方法。
-type routePlansStub struct{}
 
 func (*routePlansStub) GetPlans(*gin.Context)   {}
 func (*routePlansStub) ListPlans(*gin.Context)  {}

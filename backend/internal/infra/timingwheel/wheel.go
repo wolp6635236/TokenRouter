@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/zeromicro/go-zero/core/collection"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
 var newTimingWheel = collection.NewTimingWheel

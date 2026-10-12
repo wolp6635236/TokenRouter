@@ -3,9 +3,12 @@ package provider
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"sync"
 )
+
+const OpenAIAuthModeAgentIdentity = "agentIdentity"
 
 type OpenAITaskOptions struct {
 	Read          func(context.Context, int64) (*Record, error)
@@ -18,15 +21,20 @@ type OpenAITaskOptions struct {
 // OpenAITaskCoordinator 延续原进程内按提供商共享锁，不增加跨进程协调协议。
 type OpenAITaskCoordinator struct{ locks sync.Map }
 
+func (r *Record) IsOpenAIAgentIdentity() bool {
+	if r == nil || !r.IsOpenAIOAuth() {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.GetCredential(OpenAIAuthModeCredentialKey)), OpenAIAuthModeAgentIdentity)
+}
+
 // openAITaskCopyCredentials 浅拷贝任务更新需要的凭据 map。
 func openAITaskCopyCredentials(values map[string]any) map[string]any {
 	if values == nil {
 		return nil
 	}
 	result := make(map[string]any, len(values))
-	for key, value := range values {
-		result[key] = value
-	}
+	maps.Copy(result, values)
 	return result
 }
 
@@ -90,9 +98,7 @@ func (s *OpenAITaskCoordinator) Ensure(ctx context.Context, options OpenAITaskOp
 		return err
 	}
 	credentials := make(map[string]any, len(credProvider.Credentials)+1)
-	for key, value := range credProvider.Credentials {
-		credentials[key] = value
-	}
+	maps.Copy(credentials, credProvider.Credentials)
 	credentials["task_id"] = newTaskID
 	if err := options.Persist(ctx, credProvider, credentials); err != nil {
 		return err

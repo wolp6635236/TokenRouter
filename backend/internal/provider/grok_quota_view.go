@@ -3,18 +3,49 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
+	"github.com/TokenFlux/TokenRouter/internal/provider/usageview"
+	upstreamusageview "github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
 type GrokQuotaView struct {
 	FreeTokenLimit      int64
 	NeedsReauth         func(*Record) bool
 	JWTSubscriptionTier func(string) string
-	CanonicalPlan       func(*float64, string, *usageview.QuotaSnapshot) string
+	CanonicalPlan       func(*float64, string, *upstreamusageview.QuotaSnapshot) string
 	ParseTime           func(string) (time.Time, error)
+}
+
+// CloneGrokQuotaProbeResult 深拷贝探测结果中嵌套的展示数据。
+func CloneGrokQuotaProbeResult(value *GrokQuotaProbeResult) *GrokQuotaProbeResult {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	out.Billing = usageview.CloneBillingSummary(value.Billing)
+	out.LocalUsage24h = cloneGrokProbePointer(value.LocalUsage24h)
+	out.LocalUsage7d = cloneGrokProbePointer(value.LocalUsage7d)
+	out.LocalUsageMonthly = cloneGrokProbePointer(value.LocalUsageMonthly)
+	if value.Snapshot != nil {
+		out.Snapshot = cloneGrokProbePointer(value.Snapshot)
+		out.Snapshot.Requests = usageview.CloneQuotaWindow(value.Snapshot.Requests)
+		out.Snapshot.Tokens = usageview.CloneQuotaWindow(value.Snapshot.Tokens)
+		out.Snapshot.RetryAfterSeconds = cloneGrokProbePointer(value.Snapshot.RetryAfterSeconds)
+		out.Snapshot.Headers = maps.Clone(value.Snapshot.Headers)
+	}
+	return &out
+}
+
+// cloneGrokProbePointer 用于仅含标量的窗口值与可选字段。
+func cloneGrokProbePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
 }
 
 func (f GrokQuotaView) BuildUsageInfo(provider *Record) *UsageInfo {
@@ -146,7 +177,7 @@ func (f GrokQuotaView) BuildUsageInfo(provider *Record) *UsageInfo {
 	return usage
 }
 
-func NewerSuccessfulGrokActiveProbeClearsBillingForbidden(billing *usageview.BillingSummary, snapshot *usageview.QuotaSnapshot) bool {
+func NewerSuccessfulGrokActiveProbeClearsBillingForbidden(billing *upstreamusageview.BillingSummary, snapshot *upstreamusageview.QuotaSnapshot) bool {
 	if billing == nil || billing.StatusCode != 403 || snapshot == nil ||
 		snapshot.StatusCode != 200 || strings.TrimSpace(snapshot.ObservationSource) != "active_probe" {
 		return false
@@ -169,7 +200,7 @@ func FirstGrokObservationTime(values ...string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func (f GrokQuotaView) ApplyGrokCredentialUsageFallback(usage *UsageInfo, provider *Record, billing *usageview.BillingSummary, snapshot *usageview.QuotaSnapshot) {
+func (f GrokQuotaView) ApplyGrokCredentialUsageFallback(usage *UsageInfo, provider *Record, billing *upstreamusageview.BillingSummary, snapshot *upstreamusageview.QuotaSnapshot) {
 	if usage == nil || provider == nil {
 		return
 	}
@@ -179,7 +210,7 @@ func (f GrokQuotaView) ApplyGrokCredentialUsageFallback(usage *UsageInfo, provid
 	f.ApplyGrokResolvedSubscriptionTier(usage, provider, billing, snapshot)
 }
 
-func (f GrokQuotaView) ApplyGrokResolvedSubscriptionTier(usage *UsageInfo, provider *Record, billing *usageview.BillingSummary, snapshot *usageview.QuotaSnapshot) {
+func (f GrokQuotaView) ApplyGrokResolvedSubscriptionTier(usage *UsageInfo, provider *Record, billing *upstreamusageview.BillingSummary, snapshot *upstreamusageview.QuotaSnapshot) {
 	if usage == nil || provider == nil {
 		return
 	}
@@ -215,7 +246,7 @@ func (f GrokQuotaView) ApplyGrokResolvedSubscriptionTier(usage *UsageInfo, provi
 	}
 }
 
-func GrokQuotaSnapshotFromExtra(extra map[string]any) (*usageview.QuotaSnapshot, error) {
+func GrokQuotaSnapshotFromExtra(extra map[string]any) (*upstreamusageview.QuotaSnapshot, error) {
 	if extra == nil {
 		return nil, nil
 	}
@@ -224,16 +255,16 @@ func GrokQuotaSnapshotFromExtra(extra map[string]any) (*usageview.QuotaSnapshot,
 		return nil, nil
 	}
 	switch snapshot := raw.(type) {
-	case *usageview.QuotaSnapshot:
+	case *upstreamusageview.QuotaSnapshot:
 		return snapshot, nil
-	case usageview.QuotaSnapshot:
+	case upstreamusageview.QuotaSnapshot:
 		return &snapshot, nil
 	case map[string]any:
 		data, err := json.Marshal(snapshot)
 		if err != nil {
 			return nil, err
 		}
-		var out usageview.QuotaSnapshot
+		var out upstreamusageview.QuotaSnapshot
 		if err := json.Unmarshal(data, &out); err != nil {
 			return nil, err
 		}
@@ -243,7 +274,7 @@ func GrokQuotaSnapshotFromExtra(extra map[string]any) (*usageview.QuotaSnapshot,
 		if err != nil {
 			return nil, fmt.Errorf("marshal grok quota snapshot: %w", err)
 		}
-		var out usageview.QuotaSnapshot
+		var out upstreamusageview.QuotaSnapshot
 		if err := json.Unmarshal(data, &out); err != nil {
 			return nil, err
 		}
@@ -253,7 +284,7 @@ func GrokQuotaSnapshotFromExtra(extra map[string]any) (*usageview.QuotaSnapshot,
 
 // ApplyGrokBillingProgressWindows 根据账单探测摘要填充官方周度（seven_day）
 // 与月度（thirty_day）UsageProgress。
-func (f GrokQuotaView) ApplyGrokBillingProgressWindows(usage *UsageInfo, billing *usageview.BillingSummary, now time.Time) {
+func (f GrokQuotaView) ApplyGrokBillingProgressWindows(usage *UsageInfo, billing *upstreamusageview.BillingSummary, now time.Time) {
 	if usage == nil || billing == nil {
 		return
 	}
@@ -297,7 +328,7 @@ func (f GrokQuotaView) ApplyGrokBillingProgressWindows(usage *UsageInfo, billing
 }
 
 // StampGrokQuotaPlan 从当前提供商快照读取历史档位信号。
-func StampGrokQuotaPlan(record *Record, snapshot *usageview.QuotaSnapshot, model string, resolveModel func(string, ...string) string, applySignal func(*usageview.QuotaSnapshot, *usageview.QuotaSnapshot)) {
+func StampGrokQuotaPlan(record *Record, snapshot *upstreamusageview.QuotaSnapshot, model string, resolveModel func(string, ...string) string, applySignal func(*upstreamusageview.QuotaSnapshot, *upstreamusageview.QuotaSnapshot)) {
 	if snapshot == nil {
 		return
 	}
@@ -306,7 +337,7 @@ func StampGrokQuotaPlan(record *Record, snapshot *usageview.QuotaSnapshot, model
 			snapshot.Model = resolveModel(model)
 		}
 	}
-	var previous *usageview.QuotaSnapshot
+	var previous *upstreamusageview.QuotaSnapshot
 	if record != nil {
 		previous, _ = GrokQuotaSnapshotFromExtra(record.Extra)
 	}

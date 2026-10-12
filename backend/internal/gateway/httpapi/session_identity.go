@@ -1,21 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 const (
@@ -23,24 +21,40 @@ const (
 	OpenCodeSessionIDHeader       = "X-Session-Id"
 	OpenCodeNativeSessionHeader   = "X-OpenCode-Session"
 	CodeBuddyConversationHeader   = "X-Conversation-ID"
-)
 
-var explicitOpenAIHeaderSessionNames = []string{
-	"session-id",
-	"session_id",
-	"conversation_id",
-	OpenCodeSessionAffinityHeader,
-	OpenCodeSessionIDHeader,
-	OpenCodeNativeSessionHeader,
-	CodeBuddyConversationHeader,
-}
-
-const (
 	GrokConversationIDHeader = "X-Grok-Conv-Id"
 	ClaudeCodeSessionHeader  = "X-Claude-Code-Session-Id"
 )
 
-var clientSessionIDHeaders = append(append([]string(nil), explicitOpenAIHeaderSessionNames...), ClaudeCodeSessionHeader)
+var (
+	explicitOpenAIHeaderSessionNames = []string{
+		"session-id",
+		"session_id",
+		"conversation_id",
+		OpenCodeSessionAffinityHeader,
+		OpenCodeSessionIDHeader,
+		OpenCodeNativeSessionHeader,
+		CodeBuddyConversationHeader,
+	}
+
+	clientSessionIDHeaders = append(append([]string(nil), explicitOpenAIHeaderSessionNames...), ClaudeCodeSessionHeader)
+)
+
+// WithOpenAIGuardianParentAffinity 从 HTTP 头和报文提取父会话，再通过 scheduler 生成亲和性散列。
+func WithOpenAIGuardianParentAffinity(ctx context.Context, c *gin.Context, body []byte, model string) context.Context {
+	if ctx == nil || c == nil || !clientmeta.IsCodexReviewModel(model) {
+		return ctx
+	}
+	parent := clientmeta.CodexReviewParent(clientmeta.CodexReviewInput{Model: model, Body: body, Subagent: c.GetHeader(clientmeta.OpenAISubagentHeader), ParentThreadID: c.GetHeader(clientmeta.CodexParentThreadIDHeader), TurnMetadata: c.GetHeader(clientmeta.CodexTurnMetadataHeader)})
+	if parent == "" {
+		return ctx
+	}
+	current, legacy := scheduler.DeriveSessionHashes(parent)
+	if current == "" {
+		return ctx
+	}
+	return requeststate.WithGuardianParentAffinity(ctx, requeststate.GuardianParentAffinity{CurrentSessionHash: current, LegacySessionHash: legacy})
+}
 
 // ExplicitOpenAIHeaderSessionID 提取 OpenAI 兼容客户端发送的稳定会话标识。
 // 这里只接收会话级字段；每轮变化的请求或消息 ID 会破坏粘性路由和上游提示缓存。

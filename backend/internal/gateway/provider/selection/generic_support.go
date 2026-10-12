@@ -4,16 +4,14 @@ import (
 	"context"
 	"time"
 
-	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
 const stickySessionTTL = time.Hour // 粘性会话TTL
 
-// providerWithLoad 提供商与负载信息的组合，用于负载感知调度
+// providerWithLoad 提供商与负载信息的组合，用于负载感知调度。
 type providerWithLoad struct {
 	provider *gatewayprovider.ExecutionProvider
 	loadInfo *schedulercore.ProviderLoadInfo
@@ -29,7 +27,7 @@ func shortSessionHash(sessionHash string) string {
 	return sessionHash[:8]
 }
 
-// derefGroupID safely dereferences *int64 to int64, returning 0 if nil
+// derefGroupID safely dereferences *int64 to int64, returning 0 if nil.
 func derefGroupID(groupID *int64) int64 {
 	if groupID == nil {
 		return 0

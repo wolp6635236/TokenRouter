@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/apikey/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
@@ -15,7 +17,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/stretchr/testify/require"
 )
 
 type fallbackGroupRepository struct {
@@ -24,20 +25,9 @@ type fallbackGroupRepository struct {
 	groups map[int64]*routing.Group
 }
 
-func (r fallbackGroupRepository) GetByIDLite(_ context.Context, id int64) (*routing.Group, error) {
-	if r.groups != nil {
-		return r.groups[id], nil
-	}
-	return r.group, nil
-}
-
 type fallbackUserRepository struct {
 	identity.UserRepository
 	user *identity.User
-}
-
-func (r fallbackUserRepository) GetByID(context.Context, int64) (*identity.User, error) {
-	return r.user, nil
 }
 
 type fallbackFundingCheck struct {
@@ -46,19 +36,9 @@ type fallbackFundingCheck struct {
 	denied error
 }
 
-func (f *fallbackFundingCheck) Check(_ context.Context, input billing.CheckInput) error {
-	f.calls++
-	f.input = input
-	return f.denied
-}
-
 type fallbackSubscriptionRepository struct {
 	billing.UserSubscriptionRepository
 	value *billing.UserSubscription
-}
-
-func (r fallbackSubscriptionRepository) GetByID(context.Context, int64) (*billing.UserSubscription, error) {
-	return r.value, nil
 }
 
 // 测试用存储替身提供数据，目标组授权、订阅覆盖和会话隔离由生产用例执行。
@@ -66,6 +46,29 @@ type fallbackIsolationCache struct {
 	session.GatewayCache
 	ownerID, userID int64
 	source, hash    string
+}
+
+type clientFallbackRPM struct{ calls int }
+
+func (r fallbackGroupRepository) GetByIDLite(_ context.Context, id int64) (*routing.Group, error) {
+	if r.groups != nil {
+		return r.groups[id], nil
+	}
+	return r.group, nil
+}
+
+func (r fallbackUserRepository) GetByID(context.Context, int64) (*identity.User, error) {
+	return r.user, nil
+}
+
+func (f *fallbackFundingCheck) Check(_ context.Context, input billing.CheckInput) error {
+	f.calls++
+	f.input = input
+	return f.denied
+}
+
+func (r fallbackSubscriptionRepository) GetByID(context.Context, int64) (*billing.UserSubscription, error) {
+	return r.value, nil
 }
 
 func (c *fallbackIsolationCache) SetSessionOwnerGroupID(_ context.Context, userID int64, source, hash string, groupID int64, _ time.Duration) (bool, error) {
@@ -170,8 +173,6 @@ func TestRuntimeGroupFallbackStopsOnFundingDenial(t *testing.T) {
 	require.Equal(t, 1, funds.calls)
 	require.Zero(t, cache.userID)
 }
-
-type clientFallbackRPM struct{ calls int }
 
 func (r *clientFallbackRPM) Check(context.Context, *scheduler.RPMUser, *scheduler.RPMGroup) error {
 	r.calls++

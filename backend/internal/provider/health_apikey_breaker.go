@@ -9,6 +9,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// OpenAIAPIKeyHealthBreakerReason 保留缓存中的原状态来源。
+const OpenAIAPIKeyHealthBreakerReason = "openai_apikey_health_breaker"
+
 func isOpenAIAPIKeyHealthBreakerProvider(provider *Record) bool {
 	return provider != nil && provider.Platform == capability.PlatformOpenAI && provider.Type == capability.ProviderTypeAPIKey && provider.IsPoolMode()
 }
@@ -89,6 +92,3 @@ func (s *HealthService) ApplyAPIKeyHealthFailure(ctx context.Context, provider *
 func (s *HealthService) ObserveAPIKeyHealthSuccess(context.Context, *Record) {
 	// 健康失败累计在原滚动窗口中；成功不重置窗口，也不增加 Redis 往返。
 }
-
-// OpenAIAPIKeyHealthBreakerReason 保留缓存中的原状态来源。
-const OpenAIAPIKeyHealthBreakerReason = "openai_apikey_health_breaker"

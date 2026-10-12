@@ -8,14 +8,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
-// 路由声明复用唯一的协议 ID。
-type ProtocolID = protocol.ProtocolID
-
 const (
 	ProtocolAnthropicMessages     = protocol.ProtocolAnthropicMessages
 	ProtocolOpenAIResponses       = protocol.ProtocolOpenAIResponses
 	ProtocolOpenAIChatCompletions = protocol.ProtocolOpenAIChatCompletions
 	ProtocolGeminiGenerateContent = protocol.ProtocolGeminiGenerateContent
+	ProtocolSystemOne             = protocol.ProtocolSystemOne
 	ProtocolEmbeddings            = protocol.ProtocolEmbeddings
 	ProtocolImagesGenerations     = protocol.ProtocolImagesGenerations
 	ProtocolImagesEdits           = protocol.ProtocolImagesEdits
@@ -38,27 +36,12 @@ const (
 	ProtocolVertexBatch           = protocol.ProtocolVertexBatch
 )
 
-// ProtocolRoute 描述需要分组准入的标准化入口；别名在路由层统一去除前缀。
-type ProtocolRoute struct {
-	// 空方法匹配所有方法，子资源按完整路径段匹配。
-	Method    string
-	Path      string
-	Prefix    bool
-	WebSocket bool
-}
-
-// ProtocolEndpoint 保存 HTTP 展示和准入的共同声明。
-type ProtocolEndpoint struct {
-	ID       ProtocolID
-	Endpoint string
-	Routes   []ProtocolRoute
-}
-
 var protocolEndpoints = []ProtocolEndpoint{
 	{ID: ProtocolAnthropicMessages, Endpoint: "POST /v1/messages"},
 	{ID: ProtocolOpenAIResponses, Endpoint: "POST /v1/responses"},
 	{ID: ProtocolOpenAIChatCompletions, Endpoint: "POST /v1/chat/completions"},
 	{ID: ProtocolGeminiGenerateContent, Endpoint: "POST /v1beta/models/{model}:generateContent / :streamGenerateContent"},
+	httpProtocol(ProtocolSystemOne, ProtocolRoute{Method: http.MethodPost, Path: "/systemone"}),
 	httpProtocol(ProtocolEmbeddings, ProtocolRoute{Method: http.MethodPost, Path: "/embeddings"}),
 	httpProtocol(ProtocolImagesGenerations, ProtocolRoute{Method: http.MethodPost, Path: "/images/generations"}),
 	httpProtocol(ProtocolImagesEdits, ProtocolRoute{Method: http.MethodPost, Path: "/images/edits"}),
@@ -79,6 +62,25 @@ var protocolEndpoints = []ProtocolEndpoint{
 	{ID: ProtocolQoderChat, Endpoint: "agent_chat_generation (SSE)"},
 	{ID: ProtocolGeminiBatch, Endpoint: "POST /v1beta/models/{model}:batchGenerateContent"},
 	{ID: ProtocolVertexBatch, Endpoint: "POST /v1/projects/{project}/locations/{location}/batchPredictionJobs"},
+}
+
+// 路由声明复用唯一的协议 ID。
+type ProtocolID = protocol.ProtocolID
+
+// ProtocolRoute 描述需要分组准入的标准化入口；别名在路由层统一去除前缀。
+type ProtocolRoute struct {
+	// 空方法匹配所有方法，子资源按完整路径段匹配。
+	Method    string
+	Path      string
+	Prefix    bool
+	WebSocket bool
+}
+
+// ProtocolEndpoint 保存 HTTP 展示和准入的共同声明。
+type ProtocolEndpoint struct {
+	ID       ProtocolID
+	Endpoint string
+	Routes   []ProtocolRoute
 }
 
 // httpProtocol 使用门禁的路径元数据生成目录展示。

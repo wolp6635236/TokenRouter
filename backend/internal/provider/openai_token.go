@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+const (
+	openAITokenRefreshSkew    = 3 * time.Minute
+	openAITokenCacheSkew      = 5 * time.Minute
+	openAILockInitialWait     = 20 * time.Millisecond
+	openAILockMaxWait         = 120 * time.Millisecond
+	openAILockMaxAttempts     = 5
+	openAILockJitterRatio     = 0.2
+	openAILockWarnThresholdMs = 250
+)
+
 type OpenAITokenSource struct {
 	Cache       AccessTokenCache
 	Repository  RefreshRepository
@@ -20,20 +30,6 @@ type OpenAITokenSource struct {
 	Block       func(*Record, time.Time, string)
 	Debug, Warn func(string, ...any)
 }
-
-func OpenAITokenCacheKey(provider *Record) string {
-	return "openai:provider:" + strconv.FormatInt(provider.ID, 10)
-}
-
-const (
-	openAITokenRefreshSkew    = 3 * time.Minute
-	openAITokenCacheSkew      = 5 * time.Minute
-	openAILockInitialWait     = 20 * time.Millisecond
-	openAILockMaxWait         = 120 * time.Millisecond
-	openAILockMaxAttempts     = 5
-	openAILockJitterRatio     = 0.2
-	openAILockWarnThresholdMs = 250
-)
 
 // OpenAITokenRuntimeMetrics is a snapshot of refresh and lock contention metrics.
 type OpenAITokenRuntimeMetrics struct {
@@ -59,6 +55,10 @@ type OpenAITokenMetricsStore struct {
 	lockWaitHit        atomic.Int64
 	lockWaitMiss       atomic.Int64
 	lastObservedUnixMs atomic.Int64
+}
+
+func OpenAITokenCacheKey(provider *Record) string {
+	return "openai:provider:" + strconv.FormatInt(provider.ID, 10)
 }
 
 func (m *OpenAITokenMetricsStore) snapshot() OpenAITokenRuntimeMetrics {
@@ -273,7 +273,7 @@ func (p *OpenAITokenSource) DisableProviderMissingRefreshToken(provider *Record,
 func (p *OpenAITokenSource) WaitForTokenAfterLockRace(ctx context.Context, cacheKey string) (string, error) {
 	wait := openAILockInitialWait
 	totalWaitMs := int64(0)
-	for i := 0; i < openAILockMaxAttempts; i++ {
+	for i := range openAILockMaxAttempts {
 		actualWait := JitterOpenAILockWait(wait)
 		timer := time.NewTimer(actualWait)
 		select {
@@ -288,10 +288,7 @@ func (p *OpenAITokenSource) WaitForTokenAfterLockRace(ctx context.Context, cache
 		case <-timer.C:
 		}
 
-		waitMs := actualWait.Milliseconds()
-		if waitMs < 0 {
-			waitMs = 0
-		}
+		waitMs := max(actualWait.Milliseconds(), 0)
 		totalWaitMs += waitMs
 		p.Metrics.lockWaitSamples.Add(1)
 		p.Metrics.lockWaitTotalMs.Add(waitMs)

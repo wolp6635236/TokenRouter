@@ -98,7 +98,7 @@
           v-else-if="item.kind === 'credits_active'"
           class="inline-flex items-center gap-1 rounded-compact bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
         >
-          <span>⚡</span>
+          <Icon name="bolt" size="xs" />
           {{ formatScopeName(item.model) }}
           <span class="text-xs opacity-70">{{ formatCountdown(item.reset_at) }}</span>
         </span>

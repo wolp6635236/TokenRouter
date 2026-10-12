@@ -1,18 +1,21 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
 type TurnstileServiceSuite struct {
@@ -22,24 +25,11 @@ type TurnstileServiceSuite struct {
 	received chan url.Values
 }
 
-func (s *TurnstileServiceSuite) SetupTest() {
-	s.ctx = context.Background()
-	s.received = make(chan url.Values, 1)
-	verifier, ok := NewTurnstileVerifier().(*turnstileVerifier)
-	require.True(s.T(), ok, "type assertion failed")
-	s.verifier = verifier
-}
-
-func (s *TurnstileServiceSuite) setupTransport(handler http.HandlerFunc) {
-	s.verifier.verifyURL = "http://in-process/turnstile"
-	s.verifier.httpClient = &http.Client{
-		Transport: newInProcessTransport(handler, nil),
-	}
-}
+type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (s *TurnstileServiceSuite) TestVerifyToken_SendsFormAndDecodesJSON() {
 	s.setupTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Capture form data in main goroutine context later
+		// 保存表单，供测试主 goroutine 检查。
 		body, _ := io.ReadAll(r.Body)
 		values, _ := url.ParseQuery(string(body))
 		s.received <- values
@@ -53,7 +43,7 @@ func (s *TurnstileServiceSuite) TestVerifyToken_SendsFormAndDecodesJSON() {
 	require.NotNil(s.T(), resp)
 	require.True(s.T(), resp.Success, "expected success response")
 
-	// Assert form fields in main goroutine
+	// 在测试主 goroutine 中检查表单字段。
 	select {
 	case values := <-s.received:
 		require.Equal(s.T(), "sk", values.Get("secret"))
@@ -138,4 +128,41 @@ func (s *TurnstileServiceSuite) TestVerifyToken_SuccessFalse() {
 
 func TestTurnstileServiceSuite(t *testing.T) {
 	suite.Run(t, new(TurnstileServiceSuite))
+}
+
+func (s *TurnstileServiceSuite) SetupTest() {
+	s.ctx = context.Background()
+	s.received = make(chan url.Values, 1)
+	verifier, ok := NewTurnstileVerifier().(*turnstileVerifier)
+	require.True(s.T(), ok, "type assertion failed")
+	s.verifier = verifier
+}
+
+func (s *TurnstileServiceSuite) setupTransport(handler http.HandlerFunc) {
+	s.verifier.verifyURL = "http://in-process/turnstile"
+	s.verifier.httpClient = &http.Client{
+		Transport: newInProcessTransport(handler, nil),
+	}
+}
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// newInProcessTransport 将 HTTP 处理函数适配成在进程内执行的 RoundTripper。
+// 读取请求体并交给 capture 后，重新设置请求体供处理函数使用。
+func newInProcessTransport(handler http.HandlerFunc, capture func(r *http.Request, body []byte)) http.RoundTripper {
+	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+			_ = r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		if capture != nil {
+			capture(r, body)
+		}
+
+		rec := httptest.NewRecorder()
+		handler(rec, r)
+		return rec.Result(), nil
+	})
 }

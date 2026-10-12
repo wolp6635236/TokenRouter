@@ -8,6 +8,28 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 )
 
+const (
+	auditRedactedPlaceholder = "***"
+	auditRedactMaxDepth      = 24
+)
+
+// auditBodySensitiveSubstrings 请求体脱敏的包含匹配子串（对归一化后的键名比对）。
+// 命中任一子串即整体擦除该键的值（例如 new_password / secret_access_key / temp_token）。
+var auditBodySensitiveSubstrings = []string{
+	"password", "passwd", "secret", "token",
+	"apikey", "accesskey", "privatekey",
+	"otp", "credentialvalue",
+	"sessionkey", "serviceprovider",
+}
+
+// auditBodySensitiveExactKeys 请求体脱敏的精确匹配键（归一化后）。
+// 除内置清单外，程序化并入两份权威敏感表以防清单漂移：
+//   - SensitiveCredentialKeys：提供商 credentials 的敏感子键（session_key / service_account_json 等）
+//   - providerSensitiveConfigFields：支付渠道密钥字段（pkey / privatekey / apiv3key 等）
+//
+// Redactor 保存敏感键集合，构造后按只读方式共享。
+type Redactor struct{ exact map[string]struct{} }
+
 // auditNormalizeBodyKey 归一化键名：小写并去除分隔符，
 // 使 private_key / privateKey / privatekey / api-v3-key 等写法共享同一判定，
 // 避免子串清单假设 snake_case 而漏掉支付渠道等无分隔符风格的密钥字段。
@@ -25,14 +47,6 @@ func auditNormalizeBodyKey(key string) string {
 	return b.String()
 }
 
-// auditBodySensitiveExactKeys 请求体脱敏的精确匹配键（归一化后）。
-// 除内置清单外，程序化并入两份权威敏感表以防清单漂移：
-//   - SensitiveCredentialKeys：提供商 credentials 的敏感子键（session_key / service_account_json 等）
-//   - providerSensitiveConfigFields：支付渠道密钥字段（pkey / privatekey / apiv3key 等）
-//
-// Redactor 保存敏感键集合，构造后按只读方式共享。
-type Redactor struct{ exact map[string]struct{} }
-
 func NewRedactor(extraKeys []string) *Redactor {
 	builtin := []string{"code", "codes", "pin", "cvv", "authorization", "cookie", "x-api-key", "credential", "key", "proxy_key", "custom_key", "session"}
 	set := make(map[string]struct{}, len(builtin)+len(extraKeys))
@@ -40,15 +54,6 @@ func NewRedactor(extraKeys []string) *Redactor {
 		set[auditNormalizeBodyKey(k)] = struct{}{}
 	}
 	return &Redactor{exact: set}
-}
-
-// auditBodySensitiveSubstrings 请求体脱敏的包含匹配子串（对归一化后的键名比对）。
-// 命中任一子串即整体擦除该键的值（例如 new_password / secret_access_key / temp_token）。
-var auditBodySensitiveSubstrings = []string{
-	"password", "passwd", "secret", "token",
-	"apikey", "accesskey", "privatekey",
-	"otp", "credentialvalue",
-	"sessionkey", "serviceprovider",
 }
 
 func (r *Redactor) IsSensitiveKey(key string) bool {
@@ -63,8 +68,6 @@ func (r *Redactor) IsSensitiveKey(key string) bool {
 	}
 	return false
 }
-
-const auditRedactedPlaceholder = "***"
 
 // RedactBody 对请求体做审计入库前的脱敏：
 //   - JSON：递归擦除敏感键的值（保留结构，base_url 等非敏感字段可见以便追责）
@@ -99,8 +102,6 @@ func (r *Redactor) RedactBody(raw []byte, contentType string) string {
 	}
 	return out
 }
-
-const auditRedactMaxDepth = 24
 
 func (r *Redactor) redactValue(value any, depth int) any {
 	if depth > auditRedactMaxDepth {

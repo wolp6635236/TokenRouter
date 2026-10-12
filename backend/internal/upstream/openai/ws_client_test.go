@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 )
 
 func TestCoderOpenAIWSClientDialer_ProxyHTTPClientReuse(t *testing.T) {
@@ -59,7 +60,7 @@ func TestCoderOpenAIWSClientDialer_ProxyClientCacheCapacity(t *testing.T) {
 	require.True(t, ok)
 
 	total := openAIWSProxyClientCacheMaxEntries + 32
-	for i := 0; i < total; i++ {
+	for i := range total {
 		_, err := impl.ProxyHTTPClient(fmt.Sprintf("http://127.0.0.1:%d", 20000+i), nil)
 		require.NoError(t, err)
 	}

@@ -26,7 +26,7 @@
       </span>
 
       <!-- Progress bar container -->
-      <div class="h-1.5 w-8 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+      <div class="h-1.5 w-8 shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-700">
         <div
           :class="['h-full transition-[width,background-color] duration-layout', barClass]"
           :style="{ width: barWidth }"

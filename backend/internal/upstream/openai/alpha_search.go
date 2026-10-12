@@ -29,6 +29,9 @@ type AlphaSearchTarget struct {
 	Headers           func(http.Header, http.Header)
 }
 
+// AlphaSearchExecutor 保留独立搜索与 PAT Responses 回退的错误/用量差异。
+type AlphaSearchExecutor struct{}
+
 func (t *AlphaSearchTarget) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -40,9 +43,6 @@ func (t *AlphaSearchTarget) String() string {
 	return fmt.Sprintf("openai alpha search target provider=%d", t.TargetID())
 }
 func (t *AlphaSearchTarget) GoString() string { return t.String() }
-
-// AlphaSearchExecutor 保留独立搜索与 PAT Responses 回退的错误/用量差异。
-type AlphaSearchExecutor struct{}
 
 func (AlphaSearchExecutor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
 	t, ok := input.Target.(*AlphaSearchTarget)

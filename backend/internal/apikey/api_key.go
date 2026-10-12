@@ -4,75 +4,33 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/ipmatch"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// API Key status constants
 const (
+	// API Key status constants.
 	StatusAPIKeyActive         = "active"
 	StatusAPIKeyDisabled       = "disabled"
 	StatusAPIKeyQuotaExhausted = "quota_exhausted"
 	StatusAPIKeyExpired        = "expired"
-)
 
-// API Key Fast 模式策略常量。
-const (
+	// API Key Fast 模式策略常量。
 	APIKeyFastModePolicyFollowRequest = "follow_request"
 	APIKeyFastModePolicyForceOn       = "force_on"
 	APIKeyFastModePolicyForceOff      = "force_off"
-)
 
-// API Key 结算模式常量。auto 保持存量 Key 的订阅优先、余额补足行为。
-const (
+	// API Key 结算模式常量。auto 保持存量 Key 的订阅优先、余额补足行为。
 	APIKeyBillingModeAuto         = "auto"
 	APIKeyBillingModeSubscription = "subscription"
 	APIKeyBillingModeBalance      = "balance"
-)
 
-// NormalizeAPIKeyFastModePolicy 校验并规范化 API Key Fast 模式策略。
-// 空值用于兼容旧客户端，按跟随下游请求处理。
-func NormalizeAPIKeyFastModePolicy(value string) (string, bool) {
-	switch value {
-	case "", APIKeyFastModePolicyFollowRequest:
-		return APIKeyFastModePolicyFollowRequest, true
-	case APIKeyFastModePolicyForceOn, APIKeyFastModePolicyForceOff:
-		return value, true
-	default:
-		return "", false
-	}
-}
-
-// NormalizeAPIKeyBillingMode 委托唯一资金来源规则。
-func NormalizeAPIKeyBillingMode(value string) (string, bool) {
-	return billing.NormalizeAPIKeyBillingMode(value)
-}
-
-// APIKeyEffectiveBillingMode 返回 Key 实际生效的结算模式。
-// 历史记录在缺少该字段时按 auto 处理，避免滚动升级期间错误拒绝请求。
-func APIKeyEffectiveBillingMode(key *APIKey) string {
-	if key == nil {
-		return APIKeyBillingModeAuto
-	}
-	mode, ok := NormalizeAPIKeyBillingMode(key.BillingMode)
-	if !ok {
-		return APIKeyBillingModeAuto
-	}
-	return mode
-}
-
-// Rate limit window durations
-const (
+	// Rate limit window durations.
 	RateLimitWindow5h = 5 * time.Hour
 	RateLimitWindow1d = 24 * time.Hour
 	RateLimitWindow7d = 7 * 24 * time.Hour
 )
-
-// IsWindowExpired returns true if the window starting at windowStart has exceeded the given duration.
-// A nil windowStart is treated as expired — no initialized window means any accumulated usage is stale.
-func IsWindowExpired(start *time.Time, window time.Duration) bool {
-	return billing.IsWindowExpired(start, window)
-}
 
 type APIKey struct {
 	ID     int64
@@ -152,16 +110,61 @@ type APIKeyCompositeGroup struct {
 	Group                *routing.Group
 }
 
+// APIKeyListFilters holds optional filtering parameters for listing API keys.
+type APIKeyListFilters struct {
+	Search  string
+	Status  string
+	GroupID *int64 // nil=不筛选, 0=无分组, >0=指定分组
+	Scope   string // personal 或 team；空值兼容历史调用并返回全部
+}
+
+// NormalizeAPIKeyFastModePolicy 校验并规范化 API Key Fast 模式策略。
+// 空值用于兼容旧客户端，按跟随下游请求处理。
+func NormalizeAPIKeyFastModePolicy(value string) (string, bool) {
+	switch value {
+	case "", APIKeyFastModePolicyFollowRequest:
+		return APIKeyFastModePolicyFollowRequest, true
+	case APIKeyFastModePolicyForceOn, APIKeyFastModePolicyForceOff:
+		return value, true
+	default:
+		return "", false
+	}
+}
+
+// NormalizeAPIKeyBillingMode 委托唯一资金来源规则。
+func NormalizeAPIKeyBillingMode(value string) (string, bool) {
+	return billing.NormalizeAPIKeyBillingMode(value)
+}
+
+// APIKeyEffectiveBillingMode 返回 Key 实际生效的结算模式。
+// 历史记录在缺少该字段时按 auto 处理，避免滚动升级期间错误拒绝请求。
+func APIKeyEffectiveBillingMode(key *APIKey) string {
+	if key == nil {
+		return APIKeyBillingModeAuto
+	}
+	mode, ok := NormalizeAPIKeyBillingMode(key.BillingMode)
+	if !ok {
+		return APIKeyBillingModeAuto
+	}
+	return mode
+}
+
+// IsWindowExpired returns true if the window starting at windowStart has exceeded the given duration.
+// A nil windowStart is treated as expired — no initialized window means any accumulated usage is stale.
+func IsWindowExpired(start *time.Time, window time.Duration) bool {
+	return billing.IsWindowExpired(start, window)
+}
+
 func (k *APIKey) IsActive() bool {
 	return k.Status == StatusActive && !k.TeamOwnerDisabled
 }
 
-// HasRateLimits returns true if any rate limit window is configured
+// HasRateLimits returns true if any rate limit window is configured.
 func (k *APIKey) HasRateLimits() bool {
 	return k.RateLimit5h > 0 || k.RateLimit1d > 0 || k.RateLimit7d > 0
 }
 
-// IsExpired checks if the API key has expired
+// IsExpired checks if the API key has expired.
 func (k *APIKey) IsExpired() bool {
 	if k.ExpiresAt == nil {
 		return false
@@ -169,7 +172,7 @@ func (k *APIKey) IsExpired() bool {
 	return k.IsExpiredAt(time.Now())
 }
 
-// IsQuotaExhausted checks if the API key quota is exhausted
+// IsQuotaExhausted checks if the API key quota is exhausted.
 func (k *APIKey) IsQuotaExhausted() bool {
 	if k.Quota <= 0 {
 		return false // unlimited
@@ -177,7 +180,7 @@ func (k *APIKey) IsQuotaExhausted() bool {
 	return k.QuotaUsed >= k.Quota
 }
 
-// GetQuotaRemaining returns remaining quota (-1 for unlimited)
+// GetQuotaRemaining returns remaining quota (-1 for unlimited).
 func (k *APIKey) GetQuotaRemaining() float64 {
 	if k.Quota <= 0 {
 		return -1 // unlimited
@@ -189,7 +192,7 @@ func (k *APIKey) GetQuotaRemaining() float64 {
 	return remaining
 }
 
-// GetDaysUntilExpiry returns days until expiry (-1 for never expires)
+// GetDaysUntilExpiry returns days until expiry (-1 for never expires).
 func (k *APIKey) GetDaysUntilExpiry() int {
 	if k.ExpiresAt == nil {
 		return -1 // never expires
@@ -225,15 +228,47 @@ func (k *APIKey) EffectiveUsage7d() float64 {
 	return k.Usage7d
 }
 
-// APIKeyListFilters holds optional filtering parameters for listing API keys.
-type APIKeyListFilters struct {
-	Search  string
-	Status  string
-	GroupID *int64 // nil=不筛选, 0=无分组, >0=指定分组
-	Scope   string // personal 或 team；空值兼容历史调用并返回全部
-}
-
 // IsExpiredAt 允许用例使用已经注入的时钟，旧无参入口继续保持默认行为。
 func (k *APIKey) IsExpiredAt(now time.Time) bool {
 	return k.ExpiresAt != nil && now.After(*k.ExpiresAt)
+}
+
+// CopyAPIKey 复制 Key 及关联的用户和分组数据。认证缓存使用自身快照的复制规则。
+func CopyAPIKey(value *APIKey) *APIKey {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	out.User = identity.CopyUser(value.User)
+	out.ActorUser = identity.CopyUser(value.ActorUser)
+	out.Group = routing.CloneGroup(value.Group)
+	out.CompositeGroups = CopyCompositeGroups(value.CompositeGroups)
+	return &out
+}
+
+// CopyCompositeGroup 保留绑定顺序和请求级覆盖，分组策略不与输入共享。
+func CopyCompositeGroup(value APIKeyCompositeGroup) APIKeyCompositeGroup {
+	value.Group = routing.CloneGroup(value.Group)
+	return value
+}
+
+func CopyCompositeGroups(values []APIKeyCompositeGroup) []APIKeyCompositeGroup {
+	if values == nil {
+		return nil
+	}
+	out := make([]APIKeyCompositeGroup, len(values))
+	for i, value := range values {
+		out[i] = CopyCompositeGroup(value)
+	}
+	return out
+}
+
+// GroupFromRouting 复制分组，供认证与管理调用方各自使用。
+func GroupFromRouting(group *routing.Group) *routing.Group {
+	return routing.CloneGroup(group)
+}
+
+// RoutingGroup 返回请求独立副本，调用方不能修改认证缓存。
+func RoutingGroup(group *routing.Group) *routing.Group {
+	return routing.CloneGroup(group)
 }

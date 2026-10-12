@@ -16,7 +16,7 @@ func SupplementCompactionItemFromSSE(compact bool, finalResponse []byte, bodyTex
 		return finalResponse
 	}
 	if len(gjson.GetBytes(finalResponse, "output").Array()) == 0 {
-		// 空 output 由 reconstructResponseOutputFromSSE 整体修补，不在此处理。
+		// 空 output 由 reconstructResponseOutputFromSSE 重建。
 		return finalResponse
 	}
 	if ResponsesOutputHasCompactionItem(finalResponse) {
@@ -54,4 +54,9 @@ func OpenAIStreamEventIsTerminalWithType(data, eventType string) bool {
 		return true
 	}
 	return OpenAIStreamEventTypeIsTerminal(eventType)
+}
+
+// GenericFailedEventPayload 返回客户端可识别的通用失败事件。
+func GenericFailedEventPayload(_ ...[]byte) []byte {
+	return []byte(`{"type":"response.failed","response":{"error":{"message":"Upstream gateway error"}}}`)
 }

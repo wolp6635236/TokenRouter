@@ -7,14 +7,15 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	identitytestkit "github.com/TokenFlux/TokenRouter/internal/identity/testkit"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
 )
 
 // TestPendingFinalizeRollbackAndCompensation 验证原两段注册事务在真实 PostgreSQL 上的回滚与补偿。

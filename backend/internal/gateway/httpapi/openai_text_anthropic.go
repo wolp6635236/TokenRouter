@@ -3,12 +3,11 @@ package httpapi
 import (
 	"context"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/gin-gonic/gin"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/gin-gonic/gin"
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 )
 
 // NativeMessages 将 Anthropic Messages 请求零转换

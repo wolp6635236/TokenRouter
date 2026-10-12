@@ -1,8 +1,9 @@
 package provider
 
-const ProviderListGroupUngrouped int64 = -1
-
-const ProviderPrivacyModeUnsetFilter = "__unset__"
+const (
+	ProviderListGroupUngrouped     int64 = -1
+	ProviderPrivacyModeUnsetFilter       = "__unset__"
+)
 
 // OAuthRefreshPageOptions 描述一次有界且游标稳定的 OAuth 提供商扫描。
 // 候选平台来自 TokenRefreshService 注册表，与已登记的刷新器对应。

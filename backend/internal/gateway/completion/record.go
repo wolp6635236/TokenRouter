@@ -18,7 +18,7 @@ func (s *Recorder) RecordAnthropic(ctx context.Context, input *Input, opts *Pric
 	user := input.User
 	provider := input.Provider
 	subscription := input.Subscription
-	s.normalizeResult(result, provider, false, provider)
+	s.normalizeResult(result, provider, false, provider, input.RequestID)
 
 	// 强制缓存计费：将 input_tokens 转为 cache_read_input_tokens
 	// 用于粘性会话切换时的特殊计费处理
@@ -110,8 +110,7 @@ func (s *Recorder) RecordAnthropic(ctx context.Context, input *Input, opts *Pric
 	}
 
 	subscriptionMultiplier, balanceMultiplier, subscriptionMultiplierScale := RatesForMode(apiKey, cost, subscriptionMultiplier, balanceMultiplier, rateNow)
-	requestID := usageLog.RequestID
-	_, billingErr := s.Apply(ctx, requestID, usageLog, &usageBillingParams{
+	_, billingErr := s.Apply(ctx, input.SettlementKey(), usageLog, &usageBillingParams{
 		Cost:                            cost,
 		User:                            user,
 		APIKey:                          apiKey,
@@ -162,6 +161,7 @@ func (s *Recorder) BuildRecordUsageLog(
 		ProviderID:            provider.ID,
 		Platform:              provider.Platform,
 		RequestID:             requestID,
+		BillingKey:            input.SettlementKey(),
 		UpstreamRequestID:     result.UpstreamRequestID,
 		Model:                 result.Model,
 		RequestedModel:        requestedModel,
@@ -246,13 +246,10 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 			return err
 		}
 	}
-	s.normalizeResult(result, billingProvider, true, provider)
+	s.normalizeResult(result, billingProvider, true, provider, input.RequestID)
 
 	// OpenAI input_tokens 包含缓存读取和写入，此处分为未缓存输入、缓存读取和缓存写入三个独立计费桶。
-	actualInputTokens := result.Usage.InputTokens - result.Usage.CacheReadInputTokens - result.Usage.CacheCreationInputTokens
-	if actualInputTokens < 0 {
-		actualInputTokens = 0
-	}
+	actualInputTokens := max(result.Usage.InputTokens-result.Usage.CacheReadInputTokens-result.Usage.CacheCreationInputTokens, 0)
 
 	// Calculate cost
 	tokens := UsageTokens{
@@ -348,7 +345,7 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 				return standardErr
 			}
 			// 标准价缺失时用户费用为零，提供商统计仍使用 Fast 成本。
-			s.observeEvent(BillingEvent{Kind: "standard_pricing_missing", Component: "service.openai_gateway", RequestID: result.RequestID, Err: standardErr})
+			s.observeEvent(BillingEvent{Kind: "standard_pricing_missing", Component: "service.openai_gateway", RequestID: input.RequestID, Err: standardErr})
 			standardCost = &CostBreakdown{}
 		}
 		standardBase := standardCost.TotalCost
@@ -367,22 +364,6 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 	durationMs := int(result.Duration.Milliseconds())
 	providerRateMultiplier := provider.RateMultiplier
 	requestID := input.RequestID
-	if result.OpenAIWSMode {
-		if upstreamRequestID := strings.TrimSpace(result.RequestID); upstreamRequestID != "" {
-			requestID = upstreamRequestID
-		}
-	}
-	// 异步 Grok 视频始终使用稳定任务 ID 去重，使状态与内容轮询共享一笔费用。
-	// 否则 Redis 领取记录丢失时，上下文局部的客户端或本地 ID 会让每次轮询新增记录。
-	if result.VideoCount > 0 {
-		if stable := stableVideoRequestID(firstNonEmpty(
-			strings.TrimPrefix(strings.TrimSpace(result.RequestID), "grok-video:"),
-			strings.TrimSpace(result.ResponseID),
-			strings.TrimPrefix(strings.TrimSpace(requestID), "grok-video:"),
-		)); stable != "" {
-			requestID = stable
-		}
-	}
 
 	// 确定 RequestedModel（分组映射前的原始模型）
 	requestedModel := result.Model
@@ -398,6 +379,7 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 		ProviderID:            provider.ID,
 		Platform:              provider.Platform,
 		RequestID:             requestID,
+		BillingKey:            input.SettlementKey(),
 		UpstreamRequestID:     result.UpstreamRequestID,
 		Model:                 result.Model,
 		RequestedModel:        requestedModel,
@@ -507,7 +489,7 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 
 	subscriptionMultiplier, balanceMultiplier, subscriptionMultiplierScale := RatesForMode(apiKey, cost, subscriptionMultiplier, balanceMultiplier, rateNow)
 	billingErr := func() error {
-		_, err := s.Apply(ctx, requestID, usageLog, &usageBillingParams{
+		_, err := s.Apply(ctx, input.SettlementKey(), usageLog, &usageBillingParams{
 			Cost:                            cost,
 			User:                            user,
 			APIKey:                          apiKey,
@@ -532,4 +514,18 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 	}
 	s.WriteUsage(ctx, usageLog, "service.openai_gateway")
 	return nil
+}
+
+// RecordCyber 对符合条件的错误补记用量，调用 RecordOpenAI 应用计费或零费用规则。
+// 调用方在提交前复制 Input。
+func (s *Recorder) RecordCyber(ctx context.Context, in *Input) {
+	if s == nil || in == nil || in.APIKey == nil || in.User == nil || in.Provider == nil || in.Result == nil || strings.TrimSpace(in.Result.Model) == "" {
+		return
+	}
+	snapshot := Snapshot(in)
+	snapshot.Result.Model = strings.TrimSpace(snapshot.Result.Model)
+	snapshot.CyberBlocked = true
+	if err := s.Record(ctx, snapshot, true); err != nil {
+		s.printf("service.openai_gateway", "cyber usage record failed: request_id=%s err=%v", snapshot.RequestID, err)
+	}
 }

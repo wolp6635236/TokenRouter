@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,25 +17,23 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
-	_ "embed"
+	"github.com/gin-gonic/gin"
 
 	_ "github.com/TokenFlux/TokenRouter/ent/runtime"
 	"github.com/TokenFlux/TokenRouter/internal/app"
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 	"github.com/TokenFlux/TokenRouter/internal/setup"
 	"github.com/TokenFlux/TokenRouter/internal/web"
-	"github.com/gin-gonic/gin"
 )
 
-//go:embed VERSION
-var embeddedVersion string
-
-// Build-time variables (can be set by ldflags)
 var (
+	//go:embed VERSION
+	embeddedVersion string
+
+	// Build-time variables (can be set by ldflags).
 	Version   = ""
 	Commit    = "unknown"
 	Date      = "unknown"

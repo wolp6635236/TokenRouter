@@ -118,7 +118,7 @@ func TestAntigravitySessionStore_多个Session(t *testing.T) {
 	store.Start()
 	defer store.Stop()
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		session := &AntigravityAuthorizationSession{
 			State:     "state-" + string(rune('0'+i)),
 			CreatedAt: time.Now(),
@@ -127,7 +127,7 @@ func TestAntigravitySessionStore_多个Session(t *testing.T) {
 	}
 
 	// 验证都能取到
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_, ok := store.Get("session-" + string(rune('0'+i)))
 		if !ok {
 			t.Errorf("session-%d 应存在", i)

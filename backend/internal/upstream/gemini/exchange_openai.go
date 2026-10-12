@@ -44,11 +44,10 @@ func ExchangeOpenAI(ctx context.Context, options ExchangeOptions) (ExchangeResul
 			return ExchangeResult{}, options.FinalError("Upstream request failed after retries: " + safeErr)
 		}
 
-		if matched, rebuilt := options.CheckPolicy(ctx, resp); matched {
-			resp = rebuilt
+		matched, rebuilt := options.CheckPolicy(ctx, resp)
+		resp = rebuilt
+		if matched {
 			break
-		} else {
-			resp = rebuilt
 		}
 
 		if resp.StatusCode >= 400 && options.ShouldRetry(resp.StatusCode) {

@@ -60,10 +60,7 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest, options RequestOpti
 		maxTokens = *req.MaxCompletionTokens
 	}
 	if maxTokens > 0 {
-		v := maxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
-		}
+		v := max(maxTokens, minMaxOutputTokens)
 		out.MaxOutputTokens = &v
 	}
 
@@ -358,7 +355,7 @@ func marshalChatInputContent(content chatMessageContent) (json.RawMessage, error
 	parts := convertChatContentPartsToResponses(content.Parts)
 	if len(parts) == 0 {
 		// nil slice 会被序列化为 JSON null，上游 Responses API 会拒绝该值
-		//（期望对象数组或字符串）。没有可用 parts 时回退为空字符串。
+		// （期望对象数组或字符串）。没有可用 parts 时回退为空字符串。
 		return json.Marshal("")
 	}
 	return json.Marshal(parts)

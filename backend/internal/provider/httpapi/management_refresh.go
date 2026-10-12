@@ -3,9 +3,10 @@ package httpapi
 import (
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // ApplyOAuthCredentialsRequest 是重新授权后保存 OAuth 凭据的专用请求体。

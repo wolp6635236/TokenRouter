@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"strings"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
+
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 const SilentRefusalMinRequestBodyBytes = 64 * 1024

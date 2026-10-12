@@ -8,30 +8,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-	"github.com/google/uuid"
 )
 
-// 创作台（Creative Studio）操作类型。
 const (
+	// 创作台（Creative Studio）操作类型。
 	CreativeOperationGenerate = "generate"
 	CreativeOperationEdit     = "edit"
 	CreativeOperationInpaint  = "inpaint"
-)
 
-// 创作台创建 saga 阶段，按顺序持久化推进，便于进程崩溃后继续执行。
-const (
+	// 创作台创建 saga 阶段，按顺序持久化推进，便于进程崩溃后继续执行。
 	CreativeProvisioningPhaseCreated        = "created"
 	CreativeProvisioningPhaseHoldReserved   = "hold_reserved"
 	CreativeProvisioningPhaseTransientSaved = "transient_saved"
 	CreativeProvisioningPhaseEnqueued       = "enqueued"
 	CreativeProvisioningPhaseFailed         = "failed"
 	CreativeProvisioningPhaseComplete       = "complete"
-)
 
-// 创作台任务状态。
-const (
+	// 创作台任务状态。
 	CreativeRunStatusQueued            = "queued"
 	CreativeRunStatusRunning           = "running"
 	CreativeRunStatusProviderSucceeded = "provider_succeeded"
@@ -41,19 +38,29 @@ const (
 	CreativeRunStatusFailed            = "failed"
 	CreativeRunStatusCancelled         = "cancelled"
 	CreativeRunStatusResultLost        = "result_lost"
-)
 
-// 创作台输出状态。
-const (
+	// 创作台输出状态。
 	CreativeRunOutputStatusPending   = "pending"
 	CreativeRunOutputStatusSucceeded = "succeeded"
 	CreativeRunOutputStatusFailed    = "failed"
 	CreativeRunOutputStatusLost      = "lost"
 	CreativeRunOutputStatusAcked     = "acked"
-)
 
-// CreativeManagedBy 是 api_keys.managed_by 的取值，标记创作台隐藏执行 Key。
-const CreativeManagedBy = "creative_studio"
+	// CreativeManagedBy 是 api_keys.managed_by 的取值，标记创作台隐藏执行 Key。
+	CreativeManagedBy = "creative_studio"
+
+	// CreativeWorkspaceHeader 是创作台浏览器工作区请求头名称。
+	CreativeWorkspaceHeader = "X-Creative-Workspace-ID"
+
+	CreativeRunOutboxProvision CreativeRunOutboxOperation = "provision"
+	CreativeRunOutboxSettle    CreativeRunOutboxOperation = "settle"
+	CreativeRunOutboxRelease   CreativeRunOutboxOperation = "release"
+
+	CreativeRunOutboxPending   CreativeRunOutboxStatus = "pending"
+	CreativeRunOutboxLeased    CreativeRunOutboxStatus = "leased"
+	CreativeRunOutboxDone      CreativeRunOutboxStatus = "done"
+	CreativeRunOutboxCancelled CreativeRunOutboxStatus = "cancelled"
+)
 
 var (
 	// transient store 的三类错误必须由 worker 分别处理，不能把基础设施故障当作结果丢失。
@@ -92,39 +99,10 @@ var (
 	ErrCreativeSettlementBillingFail = infraerrors.New(infraerrors.CategoryBadGateway, "CREATIVE_SETTLEMENT_BILLING_FAILED", "creative settlement billing failed")
 )
 
-// CreativeWorkspaceHeader 是创作台浏览器工作区请求头名称。
-const CreativeWorkspaceHeader = "X-Creative-Workspace-ID"
-
 // CreativeRunScope 将用户身份与浏览器工作区绑定，所有用户侧任务访问都必须携带。
 type CreativeRunScope struct {
 	UserID      int64
 	WorkspaceID string
-}
-
-// NormalizeCreativeWorkspaceID 校验并规范化创作台工作区 UUID。
-func NormalizeCreativeWorkspaceID(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", ErrCreativeWorkspaceRequired
-	}
-	parsed, err := uuid.Parse(raw)
-	if err != nil || parsed == uuid.Nil {
-		return "", ErrCreativeWorkspaceInvalid
-	}
-	return strings.ToLower(parsed.String()), nil
-}
-
-// NormalizeCreativeRunScope 校验用户身份并将工作区 UUID 规范化为小写。
-func NormalizeCreativeRunScope(scope CreativeRunScope) (CreativeRunScope, error) {
-	if scope.UserID <= 0 {
-		return CreativeRunScope{}, ErrCreativeRunNotFound
-	}
-	normalizedWorkspaceID, err := NormalizeCreativeWorkspaceID(scope.WorkspaceID)
-	if err != nil {
-		return CreativeRunScope{}, err
-	}
-	scope.WorkspaceID = normalizedWorkspaceID
-	return scope, nil
 }
 
 // CreativeRun 是创作台异步任务的元数据。
@@ -239,21 +217,8 @@ type CreativeRunTransitionOptions struct {
 // CreativeRunOutboxOperation 是创作台可恢复后台动作类型。
 type CreativeRunOutboxOperation string
 
-const (
-	CreativeRunOutboxProvision CreativeRunOutboxOperation = "provision"
-	CreativeRunOutboxSettle    CreativeRunOutboxOperation = "settle"
-	CreativeRunOutboxRelease   CreativeRunOutboxOperation = "release"
-)
-
 // CreativeRunOutboxStatus 是 outbox 记录状态。
 type CreativeRunOutboxStatus string
-
-const (
-	CreativeRunOutboxPending   CreativeRunOutboxStatus = "pending"
-	CreativeRunOutboxLeased    CreativeRunOutboxStatus = "leased"
-	CreativeRunOutboxDone      CreativeRunOutboxStatus = "done"
-	CreativeRunOutboxCancelled CreativeRunOutboxStatus = "cancelled"
-)
 
 // CreativeRunOutbox 保存创作台后台补偿动作的持久记录。
 type CreativeRunOutbox struct {
@@ -464,6 +429,32 @@ type CreativeCapabilitiesResponse struct {
 type CreativeListRunsResponse struct {
 	Data    []*CreativeRunPublic `json:"data"`
 	HasMore bool                 `json:"has_more"`
+}
+
+// NormalizeCreativeWorkspaceID 校验并规范化创作台工作区 UUID。
+func NormalizeCreativeWorkspaceID(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ErrCreativeWorkspaceRequired
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil || parsed == uuid.Nil {
+		return "", ErrCreativeWorkspaceInvalid
+	}
+	return strings.ToLower(parsed.String()), nil
+}
+
+// NormalizeCreativeRunScope 校验用户身份并将工作区 UUID 规范化为小写。
+func NormalizeCreativeRunScope(scope CreativeRunScope) (CreativeRunScope, error) {
+	if scope.UserID <= 0 {
+		return CreativeRunScope{}, ErrCreativeRunNotFound
+	}
+	normalizedWorkspaceID, err := NormalizeCreativeWorkspaceID(scope.WorkspaceID)
+	if err != nil {
+		return CreativeRunScope{}, err
+	}
+	scope.WorkspaceID = normalizedWorkspaceID
+	return scope, nil
 }
 
 // NewCreativeRunID 生成 'crun_' + 16 字节 hex 的任务 ID。

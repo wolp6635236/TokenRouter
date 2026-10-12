@@ -8,8 +8,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
 // AdaptOpenAIResponsesClientTools 将 Codex 专用工具降级为上游可接受的 function 工具。

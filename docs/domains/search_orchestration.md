@@ -56,4 +56,4 @@ Redis 计数键为 `websearch:quota:<provider>`，按供应商类型区分。预
 
 ## 验证入口
 
-核心依据是 `backend/internal/search/config.go`、`manager.go`、`lifecycle.go` 和 `rediscache/state.go`。配置测试覆盖慢回源与发布竞争、快照副本；`lease_test.go` 覆盖重复退额、不明确的预占、取消预算与停机；provider 测试验证代理、HTTP 和 Redis 协作。工具启用规则由 `backend/internal/gateway/searchtools/` 的实现和测试核实。
+`backend/internal/search/config.go`、`manager.go`、`lifecycle.go` 和 `rediscache/state.go` 实现配置、请求编排、退出等待和额度存储。配置测试覆盖慢回源与发布竞争、快照副本。`manager_test.go`、`lifecycle_test.go` 和 `quota_cleanup_scenario_test.go` 覆盖重复退额、预占结果不确定、取消预算与停机等待。provider 测试验证代理、HTTP 和 Redis 协作。工具启用规则由 `backend/internal/gateway/searchtools/` 的实现和测试核实。

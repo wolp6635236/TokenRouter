@@ -8,11 +8,12 @@ import (
 	"strings"
 	"time"
 
+	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	gatewayws "github.com/TokenFlux/TokenRouter/internal/gateway/ws"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
-	coderws "github.com/coder/websocket"
-	"github.com/gin-gonic/gin"
 )
 
 // ResponsesWSFailure 保存连接升级后的客户端错误展示信息。

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func TestOpenAIImagesJSONKeepalive_PreservesValidJSONResponse(t *testing.T) {
@@ -148,4 +151,37 @@ func waitForOpenAIImagesJSONKeepalive(t *testing.T, c *gin.Context) {
 // writeKeepaliveImageError 根据心跳状态写出图片错误，供应商错误转换由执行测试覆盖。
 func writeKeepaliveImageError(c *gin.Context, in *ImageErrorResponse) bool {
 	return WriteImageError(c, in, func() int { return OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) }, func() { StopOpenAIImagesJSONKeepaliveCommitted(c) })
+}
+
+func TestOpenAIImagesJSONKeepalive_KeepsOAuthNonStreamResponseValid(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	reader, writer := io.Pipe()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = io.WriteString(writer,
+			"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000000,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"aW1hZ2U=\",\"output_format\":\"png\"}]}}\n\n"+
+				"data: [DONE]\n\n",
+		)
+		_ = writer.Close()
+	}()
+
+	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       reader,
+	}
+	svc := newImagesFixture(imagesFixtureInputs{})
+	_, imageCount, _, err := openai.ReadImagesOAuthNonStreaming(resp, ResponseSink{Writer: c.Writer}, svc.Output.ImageOptions(c), "b64_json", "gpt-image-2")
+	stop()
+
+	require.NoError(t, err)
+	require.Equal(t, 1, imageCount)
+	require.True(t, rec.Flushed)
+	require.True(t, strings.HasPrefix(rec.Body.String(), " \n"), rec.Body.String())
+	require.True(t, json.Valid(rec.Body.Bytes()), rec.Body.String())
+	require.Equal(t, "aW1hZ2U=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }

@@ -4,6 +4,9 @@ import (
 	"strings"
 )
 
+// OAuthLinuxDoMaxSubjectLength 限制合成邮箱本地部分使用的主体长度。
+const OAuthLinuxDoMaxSubjectLength = 64 - len("linuxdo-")
+
 func OAuthFirstNonEmpty(values ...string) string {
 	for _, v := range values {
 		v = strings.TrimSpace(v)
@@ -39,6 +42,3 @@ func OAuthLinuxDoSyntheticEmail(subject string) string {
 	}
 	return "linuxdo-" + subject + LinuxDoConnectSyntheticEmailDomain
 }
-
-// OAuthLinuxDoMaxSubjectLength 限制合成邮箱本地部分使用的主体长度。
-const OAuthLinuxDoMaxSubjectLength = 64 - len("linuxdo-")

@@ -1,15 +1,14 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // CRSHandler 只解析管理请求，六类同步及逐条结果由提供商用例拥有。
 type CRSHandler struct{ core *provider.CRSSync }
-
-func NewCRSHandler(core *provider.CRSSync) *CRSHandler { return &CRSHandler{core: core} }
 
 type SyncFromCRSRequest struct {
 	BaseURL             string   `json:"base_url" binding:"required"`
@@ -23,6 +22,8 @@ type PreviewFromCRSRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
 }
+
+func NewCRSHandler(core *provider.CRSSync) *CRSHandler { return &CRSHandler{core: core} }
 
 // SyncFromCRS 执行管理员同步。
 // POST /api/v1/admin/providers/sync/crs

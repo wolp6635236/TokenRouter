@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/TokenFlux/TokenRouter/internal/routing/modelmap"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // ModelResolver 解析当前提供商和最终分组的模型映射。

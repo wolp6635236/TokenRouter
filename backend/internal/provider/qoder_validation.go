@@ -39,11 +39,7 @@ func ValidateQoderCredentials(ctx context.Context, provider *Record, deferPATExc
 		if deferPATExchange {
 			return nil
 		}
-		if err := ports.ValidatePAT(ctx, provider, site, pat); err != nil {
-			return err
-		}
-
-		return nil
+		return ports.ValidatePAT(ctx, provider, site, pat)
 	}
 
 	token := strings.TrimSpace(provider.GetCredential("security_oauth_token"))

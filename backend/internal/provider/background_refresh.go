@@ -124,8 +124,7 @@ func (s *BackgroundRefreshService) StopContext(ctx context.Context) error {
 	var workers sync.WaitGroup
 	stops := []func(context.Context) error{s.loop.StopContext, func(ctx context.Context) error { return s.activity.stop(ctx, "provider refresh scans") }, s.reconciliation.StopContext}
 	for i, stop := range stops {
-		workers.Add(1)
-		go func() { defer workers.Done(); results[i] = stop(ctx) }()
+		workers.Go(func() { ; results[i] = stop(ctx) })
 	}
 	workers.Wait()
 	err := errors.Join(results...)

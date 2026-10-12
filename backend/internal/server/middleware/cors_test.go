@@ -5,17 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/TokenFlux/TokenRouter/internal/config"
 )
-
-func init() {
-	// cors_test 与 security_headers_test 在同一个包，但 init 是幂等的
-
-}
-
-// --- Task 8.2: 验证 CORS 条件化头部 ---
 
 func TestCORS_DisallowedOrigin_NoAllowHeaders(t *testing.T) {
 	cfg := config.CORSConfig{

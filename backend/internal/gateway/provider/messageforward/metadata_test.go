@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/stretchr/testify/require"
 )
 
 func TestBuildOAuthMetadataUserID_FallbackWithoutAccountUUID(t *testing.T) {

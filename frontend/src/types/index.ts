@@ -468,6 +468,7 @@ export type ProtocolID =
   | 'openai_responses'
   | 'openai_chat_completions'
   | 'gemini_generate_content'
+  | 'systemone'
   | 'openai_embeddings'
   | 'openai_images_generations'
   | 'openai_images_edits'
@@ -952,6 +953,7 @@ export type ProviderPlatform =
   | 'kimi'
   | 'zhipu'
   | 'deepseek'
+  | 'jev'
 export type ProviderType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account' | 'cosy'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
@@ -2129,6 +2131,7 @@ export interface ExtendSubscriptionRequest {
 // ==================== Query Parameters ====================
 
 export interface UserErrorRequest {
+  request_id?: string
   id: number
   created_at: string
   model: string
@@ -2152,6 +2155,7 @@ export interface UserErrorRequestDetail extends UserErrorRequest {
 }
 
 export interface UserErrorListParams {
+  request_id?: string
   page?: number
   page_size?: number
   start_date?: string
@@ -2167,6 +2171,7 @@ export interface UserErrorListParams {
 }
 
 export interface UsageQueryParams {
+  request_id?: string
   page?: number
   page_size?: number
   api_key_id?: number

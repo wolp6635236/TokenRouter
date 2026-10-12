@@ -14,9 +14,7 @@ import (
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/gemini"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
 )
@@ -33,6 +31,12 @@ type (
 		client        *http.Client
 	}
 )
+
+type GeminiAPIError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
 
 func NewGeminiBatchHTTPClient(baseURL string, client *http.Client, missingAPIKey error) *GeminiBatchHTTPClient {
 	if missingAPIKey == nil {
@@ -251,12 +255,6 @@ func validateGeminiDownloadHost(downloadURL, baseURL string) error {
 	return ProviderError("GEMINI_INVALID_RESPONSE", "Gemini download uri host is not allowed", nil)
 }
 
-type GeminiAPIError struct {
-	StatusCode int
-	Code       string
-	Message    string
-}
-
 func (e *GeminiAPIError) Error() string {
 	if e == nil {
 		return "<nil>"
@@ -296,8 +294,7 @@ func MapClientError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var apiErr *GeminiAPIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*GeminiAPIError](err); ok {
 		switch apiErr.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return ProviderError("GEMINI_AUTH_FAILED", "Gemini authentication failed", nil)

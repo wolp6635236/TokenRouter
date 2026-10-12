@@ -6,15 +6,15 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // APIKeyFastModePolicy 只读取鉴权中间件写入的可信策略。

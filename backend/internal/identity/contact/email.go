@@ -61,7 +61,7 @@ func isOldStringArrayFormat(raw string) bool {
 	}
 	// Check if first element starts with a quote (string) vs { (object)
 	first := strings.TrimSpace(string(arr[0]))
-	return len(first) > 0 && first[0] == '"'
+	return first != "" && first[0] == '"'
 }
 
 // MarshalNotifyEmails 将通知邮箱 Entry 列表序列化为 JSON。

@@ -25,6 +25,10 @@ type Recording struct {
 	ProviderLookup func(context.Context, int64) (*provider.Record, error)
 }
 
+type recordProviders struct {
+	lookup func(context.Context, int64) (*provider.Record, error)
+}
+
 // NewRecording 配置记录夹具的默认倍率和缓存期限，并构造计费计算器。
 func NewRecording(logs usage.UsageLogRepository, funds completion.Store, rates billing.UserGroupRateRepository, withResolver bool) *Recording {
 	calculator := billingtestkit.Calculator(nil, nil)
@@ -84,10 +88,6 @@ func (f *Recording) RecordOpenAI(ctx context.Context, in *gatewayadapter.OpenAIC
 // RecordMessages 与普通 Messages 完成链共享相同捕获与记录实现。
 func (f *Recording) RecordMessages(ctx context.Context, in *gatewayadapter.MessagesCapture) error {
 	return f.Core(in.APIKeyService, false).Record(ctx, gatewayadapter.CaptureMessages(ctx, in), false)
-}
-
-type recordProviders struct {
-	lookup func(context.Context, int64) (*provider.Record, error)
 }
 
 func (p recordProviders) CredentialProvider(ctx context.Context, in completion.ProviderSnapshot) (*completion.ProviderSnapshot, error) {

@@ -6,16 +6,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/creative"
+	creativeprovider "github.com/TokenFlux/TokenRouter/internal/creative/provider"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
-
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	creativeprovider "github.com/TokenFlux/TokenRouter/internal/creative/provider"
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 	geminicli "github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
@@ -39,29 +36,29 @@ type CreativeTargets struct {
 }
 
 // ForProvider 绑定所选提供商的执行函数，调用这些函数时读取凭据并发送请求。
-func (gateway *CreativeTargets) ForProvider(provider *ExecutionProvider) *creativeprovider.Target {
+func (s *CreativeTargets) ForProvider(provider *ExecutionProvider) *creativeprovider.Target {
 	target := &creativeprovider.Target{}
-	if gateway == nil {
+	if s == nil {
 		return target
 	}
 	token := func(ctx context.Context) (string, error) {
-		value, _, err := gateway.Credentials.Resolve(ctx, ExecutionRecord(provider))
+		value, _, err := s.Credentials.Resolve(ctx, ExecutionRecord(provider))
 		return value, err
 	}
 	// 创作台必须取得图片字节，URL 下载不受普通 API 的可选回填开关控制。
 	imageDownload := openai.ImageBackfillOptions{
 		ValidateURL: func(raw string) (string, error) {
-			return gateway.Requests.ValidateBaseURL(raw)
+			return s.Requests.ValidateBaseURL(raw)
 		},
 		Do: func(req *http.Request) (*http.Response, error) {
-			return gateway.Transport.Do(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency)
+			return s.Transport.Do(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency)
 		},
 	}
 	target.OpenAI = &creativeprovider.OpenAIOptions{
 		FetchImage: imageDownload.FetchBase64,
 		Token:      token,
 		URL: func(endpoint string) (string, error) {
-			targetURL, err := gateway.Requests.ImagesURL(provider, endpoint)
+			targetURL, err := s.Requests.ImagesURL(provider, endpoint)
 			if err != nil {
 				return "", creative.CreativeNonRetryableError("creative openai base url invalid: %s", err.Error())
 			}
@@ -71,25 +68,25 @@ func (gateway *CreativeTargets) ForProvider(provider *ExecutionProvider) *creati
 			return req.WithContext(upstream.WithHTTPUpstreamProfile(req.Context(), upstream.HTTPUpstreamProfileOpenAI))
 		},
 		AuthHeaders: func(ctx context.Context, token string) (http.Header, error) {
-			return gateway.Identity.Headers(ctx, provider, token)
+			return s.Identity.Headers(ctx, provider, token)
 		},
 		ApplyHeaders: BindExecutionHeaders(provider),
 		Do: func(req *http.Request) (*http.Response, error) {
-			return gateway.Transport.DoWithTLS(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency, gateway.Requests.TLSProfile(provider))
+			return s.Transport.DoWithTLS(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency, s.Requests.TLSProfile(provider))
 		},
 	}
 	target.Grok = &creativeprovider.GrokOptions{
 		OAuth: provider.View().IsGrokOAuth(),
 		Token: token,
 		URL: func(endpoint grok.GrokMediaEndpoint) (string, error) {
-			return gateway.Routes.Media(provider, endpoint, "")
+			return s.Routes.Media(provider, endpoint, "")
 		},
 		Prepare: func(req *http.Request) *http.Request {
 			return req.WithContext(upstream.WithHTTPUpstreamProfile(req.Context(), upstream.HTTPUpstreamProfileGrok))
 		},
 		ApplyHeaders: BindExecutionHeaders(provider),
 		Do: func(req *http.Request) (*http.Response, error) {
-			return gateway.Transport.Do(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency)
+			return s.Transport.Do(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency)
 		},
 	}
 	target.Gemini = func(model string) gemininative.ImageOptions {
@@ -99,23 +96,23 @@ func (gateway *CreativeTargets) ForProvider(provider *ExecutionProvider) *creati
 			ProjectID:             provider.View().GetCredential("project_id"),
 			APIKey:                func() string { return provider.View().GetCredential("api_key") },
 			BaseURL:               func() string { return provider.View().GetGeminiBaseURL(geminicli.AIStudioBaseURL) },
-			ValidateURL:           gateway.Requests.ValidateBaseURL,
-			ValidateGeminiBaseURL: gateway.validateGeminiBaseURL,
+			ValidateURL:           s.Requests.ValidateBaseURL,
+			ValidateGeminiBaseURL: s.validateGeminiBaseURL,
 			VertexURL: func() (string, error) {
 				return vertex.BuildVertexGeminiURL(ExecutionProtocolRecord(provider).VertexProjectID(vertex.ServiceAccountProjectID), ExecutionProtocolRecord(provider).VertexLocation(model), model, "generateContent", false)
 			},
 			ApplyHeaders: BindExecutionHeaders(provider),
 			Do: func(req *http.Request) (*http.Response, error) {
-				return gateway.Transport.Do(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency)
+				return s.Transport.Do(req, creativeTargetProxyURL(provider), provider.Record.ID, provider.Record.Concurrency)
 			},
 			HTTPError:    func(status int, message string) error { return creative.CreativeHTTPStatusError(status, message) },
 			Invalid:      func(format string, args ...any) error { return creative.CreativeNonRetryableError(format, args...) },
 			ErrorMessage: upstream.ExtractErrorMessage,
-			Enter:        gateway.Enter,
+			Enter:        s.Enter,
 		}
-		if gateway.GeminiTokens != nil {
+		if s.GeminiTokens != nil {
 			options.Token = func(ctx context.Context) (string, error) {
-				return ExecutionToken(ctx, gateway.GeminiTokens, provider)
+				return ExecutionToken(ctx, s.GeminiTokens, provider)
 			}
 		}
 		return options

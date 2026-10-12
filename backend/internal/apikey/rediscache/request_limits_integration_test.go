@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
 // TestRequestLimitsAtomicAdmission 用并行请求验证多个客户端共用同一份上限。
@@ -31,7 +32,7 @@ func TestRequestLimitsAtomicAdmission(t *testing.T) {
 			require.NoError(t, client.FlushDB(ctx).Err())
 			var accepted atomic.Int64
 			var wg sync.WaitGroup
-			for i := 0; i < 24; i++ {
+			for i := range 24 {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()

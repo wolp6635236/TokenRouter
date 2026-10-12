@@ -14,6 +14,7 @@ type clientFrameConn struct {
 	conn                 ClientSocket
 	controlCtx           context.Context
 	interTurnIdleTimeout time.Duration
+	idleTimeout          func() time.Duration
 	interTurnStarted     chan struct{}
 	waitingForNextTurn   atomic.Bool
 	// The relay observes upstream payloads, while clients must keep seeing the
@@ -32,6 +33,12 @@ type policyFrameConn struct {
 	filter      func(msgType int, payload []byte) ([]byte, *PolicyBlocked, error)
 	writeFilter func(msgType int, payload []byte) ([]byte, error)
 	onBlock     func(blocked *PolicyBlocked)
+}
+
+// TurnActivity 通过同一个原子标记协调终态提交和下一轮空闲等待。
+type TurnActivity struct {
+	Waiting *atomic.Bool
+	Started chan struct{}
 }
 
 func (c *policyFrameConn) ReadFrame(ctx context.Context) (int, []byte, error) {
@@ -87,17 +94,20 @@ func (c *clientFrameConn) ReadFrame(ctx context.Context) (int, []byte, error) {
 	if c.controlCtx != nil {
 		controlCtx = c.controlCtx
 	}
+	idleTimeout := c.interTurnIdleTimeout
+	if c.idleTimeout != nil {
+		idleTimeout = c.idleTimeout()
+	}
 	msgType, payload, err := ReadClientMessageWithTimeoutStart(
 		controlCtx,
 		c.conn,
-		c.interTurnIdleTimeout,
+		idleTimeout,
 		1000,
 		"websocket idle timeout",
 		c.interTurnStarted,
 		func() bool { return c.waitingForNextTurn.Load() },
 	)
-	var closeErr *ClientCloseError
-	if errors.As(err, &closeErr) {
+	if closeErr, ok := errors.AsType[*ClientCloseError](err); ok {
 		err = c.closeError(closeErr.Status, closeErr.Reason, closeErr.Cause)
 	}
 	return msgType, payload, err
@@ -159,12 +169,6 @@ func (c *clientFrameConn) Close() error {
 // NewPolicyFrames 组合同步入站/出站过滤，供 HTTP 与协议 Adapter 复用。
 func NewPolicyFrames(inner FrameConn, filter func(int, []byte) ([]byte, *PolicyBlocked, error), writeFilter func(int, []byte) ([]byte, error), onBlock func(*PolicyBlocked), closeError func(int, string, error) error, closedError error) FrameConn {
 	return &policyFrameConn{inner: inner, filter: filter, writeFilter: writeFilter, onBlock: onBlock, closeError: closeError, closedError: closedError}
-}
-
-// TurnActivity 通过同一个原子标记协调终态提交和下一轮空闲等待。
-type TurnActivity struct {
-	Waiting *atomic.Bool
-	Started chan struct{}
 }
 
 func (a TurnActivity) MarkStarted() { a.Waiting.Store(false) }

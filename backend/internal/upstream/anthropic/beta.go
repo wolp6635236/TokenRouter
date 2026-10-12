@@ -8,23 +8,26 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// GetBetaHeader 处理anthropic-beta header
-// 对于OAuth提供商，需要确保包含oauth-2025-04-20
+// 缺省 drop 集合只初始化一次，调用方需要扩展时使用副本。
+var DefaultDroppedBetasSet = BuildBetaTokenSet(DroppedBetas)
+
+// GetBetaHeader 处理 anthropic-beta header
+// 对于 OAuth 提供商，需要确保包含 oauth-2025-04-20。
 func GetBetaHeader(modelID string, clientBetaHeader string) string {
-	// 如果客户端传了anthropic-beta
+	// 如果客户端传了 anthropic-beta
 	if clientBetaHeader != "" {
-		// 已包含oauth beta则直接返回
+		// 已包含 oauth beta 则直接返回
 		if strings.Contains(clientBetaHeader, BetaOAuth) {
 			return clientBetaHeader
 		}
 
-		// 需要添加oauth beta
+		// 需要添加 oauth beta
 		parts := strings.Split(clientBetaHeader, ",")
 		for i, p := range parts {
 			parts[i] = strings.TrimSpace(p)
 		}
 
-		// 在claude-code-20250219后面插入oauth beta
+		// 在 claude-code-20250219 后面插入 oauth beta
 		claudeCodeIdx := -1
 		for i, p := range parts {
 			if p == BetaClaudeCode {
@@ -34,7 +37,7 @@ func GetBetaHeader(modelID string, clientBetaHeader string) string {
 		}
 
 		if claudeCodeIdx >= 0 {
-			// 在claude-code后面插入
+			// 在 claude-code 后面插入
 			newParts := make([]string, 0, len(parts)+1)
 			newParts = append(newParts, parts[:claudeCodeIdx+1]...)
 			newParts = append(newParts, BetaOAuth)
@@ -42,7 +45,7 @@ func GetBetaHeader(modelID string, clientBetaHeader string) string {
 			return strings.Join(newParts, ",")
 		}
 
-		// 没有claude-code，放在第一位
+		// 没有 claude-code，放在第一位
 		return BetaOAuth + "," + clientBetaHeader
 	}
 
@@ -111,7 +114,7 @@ func MergeAnthropicBeta(required []string, incoming string) string {
 	for _, r := range required {
 		add(r)
 	}
-	for _, p := range strings.Split(incoming, ",") {
+	for p := range strings.SplitSeq(incoming, ",") {
 		add(p)
 	}
 	return strings.Join(out, ",")
@@ -123,7 +126,7 @@ func MergeAnthropicBetaDropping(required []string, incoming string, drop map[str
 		return merged
 	}
 	out := make([]string, 0, 8)
-	for _, p := range strings.Split(merged, ",") {
+	for p := range strings.SplitSeq(merged, ",") {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
@@ -308,7 +311,7 @@ func ContainsBetaToken(header, token string) bool {
 	if header == "" || token == "" {
 		return false
 	}
-	for _, p := range strings.Split(header, ",") {
+	for p := range strings.SplitSeq(header, ",") {
 		if strings.TrimSpace(p) == token {
 			return true
 		}
@@ -368,6 +371,3 @@ func ApplyClaudeCodeMimicHeaders(req *http.Request, isStream bool) {
 		SetHeaderRaw(req.Header, "x-client-request-id", uuid.NewString())
 	}
 }
-
-// 缺省 drop 集合只初始化一次，调用方需要扩展时使用副本。
-var DefaultDroppedBetasSet = BuildBetaTokenSet(DroppedBetas)

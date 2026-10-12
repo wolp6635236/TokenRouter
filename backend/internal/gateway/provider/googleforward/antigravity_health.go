@@ -13,7 +13,7 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// antigravityRetryLoopParams 重试循环的参数
+// antigravityRetryLoopParams 重试循环的参数。
 type antigravityRetryLoopParams struct {
 	userAgent       string // 指定提供商探测显式提供，普通转发保持空值。
 	ctx             context.Context
@@ -33,7 +33,7 @@ type antigravityRetryLoopParams struct {
 	sessionHash     string // 用于模型级限流时清除粘性会话
 }
 
-// logPrefix 生成统一的日志前缀
+// logPrefix 生成统一的日志前缀。
 func logPrefix(sessionID, providerName string) string {
 	if sessionID != "" {
 		return fmt.Sprintf("[antigravity-Forward] session=%s provider=%s", sessionID, providerName)
@@ -50,7 +50,7 @@ func (s *Antigravity) shouldFailoverUpstreamError(statusCode int) bool {
 	}
 }
 
-// isSingleProviderRetry 检查 context 中是否设置了单提供商退避重试标记
+// isSingleProviderRetry 检查 context 中是否设置了单提供商退避重试标记。
 func isSingleProviderRetry(ctx context.Context) bool {
 	v, _ := requeststate.SingleProviderRetryFromContext(ctx)
 	return v

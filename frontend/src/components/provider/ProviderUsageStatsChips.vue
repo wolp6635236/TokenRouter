@@ -6,7 +6,7 @@
         :key="chip.key"
         :data-stat="chip.key"
         :title="chip.hint"
-        class="whitespace-nowrap rounded-compact bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
+        class="whitespace-nowrap rounded-compact bg-gray-100 px-1.5 py-0.5 dark:bg-dark-700"
       >
         <span class="text-gray-400 dark:text-gray-500">{{ chip.label }}</span> <span class="tabular-nums text-gray-600 dark:text-gray-300">{{ chip.value }}</span>
       </span>

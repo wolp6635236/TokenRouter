@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/stretchr/testify/require"
 )
 
 // imagesContractSink 保留每次同步输出，允许在读到终态前验证渐进交付。
@@ -22,6 +23,12 @@ type imagesContractSink struct {
 	flushed   int
 	head      upstream.OutputHead
 	onPartial func()
+}
+
+// imagesCloseRecorder 记录本次执行关闭网络响应体的次数。
+type imagesCloseRecorder struct {
+	io.ReadCloser
+	closed *atomic.Int32
 }
 
 func (s *imagesContractSink) Begin(head upstream.OutputHead) error { s.head = head; return nil }
@@ -37,12 +44,6 @@ func (s *imagesContractSink) Emit(event upstream.OutputEvent) error {
 		s.onPartial = nil
 	}
 	return nil
-}
-
-// imagesCloseRecorder 记录本次执行关闭网络响应体的次数。
-type imagesCloseRecorder struct {
-	io.ReadCloser
-	closed *atomic.Int32
 }
 
 func (b *imagesCloseRecorder) Close() error { b.closed.Add(1); return b.ReadCloser.Close() }

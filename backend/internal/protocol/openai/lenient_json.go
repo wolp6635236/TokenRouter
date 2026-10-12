@@ -2,8 +2,10 @@ package openai
 
 import "fmt"
 
-const jsonUTF8BOMLen = 3
-const maxDecompressedBodySize = 64 << 20
+const (
+	jsonUTF8BOMLen          = 3
+	maxDecompressedBodySize = 64 << 20
+)
 
 // BodyLimitError 表示规范化后的请求超过允许大小，由 HTTP 入口映射为原错误类型。
 type BodyLimitError struct{ Limit int64 }

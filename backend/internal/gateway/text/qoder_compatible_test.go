@@ -6,8 +6,9 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // qoderCompatibleFixture 检查不同响应提交状态下的尝试次数和完成资格。

@@ -42,6 +42,26 @@ type CreativeWorkerRuntime struct {
 	desiredWorkerCount int
 }
 
+// RuntimeWorker 是运行拥有者需要的最小任务执行接口。
+type RuntimeWorker interface {
+	RunUntilStopped(context.Context, <-chan struct{})
+	RunDelayedMover(context.Context)
+	RunStaleActiveRecovery(context.Context)
+	BusyCount() int
+}
+
+// RuntimeOptions 包含 app 提供的启用开关、worker 数量读取函数和两个恢复循环。
+type RuntimeOptions struct {
+	Enabled     bool
+	WorkerCount func(context.Context) int
+	Outbox      func(context.Context)
+	Transient   func(context.Context)
+}
+
+func NewCreativeWorkerRuntime(worker RuntimeWorker, options RuntimeOptions) *CreativeWorkerRuntime {
+	return &CreativeWorkerRuntime{worker: worker, options: options, desiredWorkerCount: DefaultCreativeWorkerCount}
+}
+
 // Start 启动任务 worker 池、delayed mover 与 stale recovery；重复调用幂等。
 func (r *CreativeWorkerRuntime) Start() {
 	if r == nil || r.worker == nil || !r.options.Enabled {
@@ -272,24 +292,4 @@ func (r *CreativeWorkerRuntime) Running() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cancel != nil && !r.stopped
-}
-
-// RuntimeWorker 是运行拥有者需要的最小任务执行接口。
-type RuntimeWorker interface {
-	RunUntilStopped(context.Context, <-chan struct{})
-	RunDelayedMover(context.Context)
-	RunStaleActiveRecovery(context.Context)
-	BusyCount() int
-}
-
-// RuntimeOptions 包含 app 提供的启用开关、worker 数量读取函数和两个恢复循环。
-type RuntimeOptions struct {
-	Enabled     bool
-	WorkerCount func(context.Context) int
-	Outbox      func(context.Context)
-	Transient   func(context.Context)
-}
-
-func NewCreativeWorkerRuntime(worker RuntimeWorker, options RuntimeOptions) *CreativeWorkerRuntime {
-	return &CreativeWorkerRuntime{worker: worker, options: options, desiredWorkerCount: DefaultCreativeWorkerCount}
 }

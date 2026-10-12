@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/redis/go-redis/v9"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/redis/go-redis/v9"
 )
 
 // 并发槽位使用 Redis 有序集合，每个提供商或用户对应一个键，成员为 requestID，分数为时间戳。
@@ -16,11 +17,11 @@ import (
 // 计数在单次 Redis 调用中完成，逐请求建键后使用 SCAN 会增加网络往返和遍历开销。
 const (
 	// 并发槽位键前缀（有序集合）
-	// 格式: concurrency:provider:{providerID}
+	// 格式: concurrency:provider:{providerID}。
 	providerSlotKeyPrefix = "concurrency:provider:"
-	// 格式: concurrency:user:{userID}
+	// 格式: concurrency:user:{userID}。
 	userSlotKeyPrefix = "concurrency:user:"
-	// 格式: concurrency:api_key:{apiKeyID}
+	// 格式: concurrency:api_key:{apiKeyID}。
 	apiKeySlotKeyPrefix       = "concurrency:api_key:"
 	liveProviderSlotKeyPrefix = "concurrency:live:provider:"
 	liveUserSlotKeyPrefix     = "concurrency:live:user:"
@@ -29,12 +30,12 @@ const (
 	openAIWSIngressLeaseKeyPrefix  = "concurrency:openai_ws_ingress:api_key:"
 	openAIWSIngressLeaseTTLSeconds = 60
 	liveLeaseTTLSeconds            = 60
-	// 等待队列计数器格式: concurrency:wait:{userID}
+	// 等待队列计数器格式: concurrency:wait:{userID}。
 	waitQueueKeyPrefix = "concurrency:wait:"
-	// 提供商级等待队列计数器格式: wait:provider:{providerID}
+	// 提供商级等待队列计数器格式: wait:provider:{providerID}。
 	providerWaitKeyPrefix = "wait:provider:"
 
-	// 默认槽位过期时间（分钟），可通过配置覆盖
+	// 默认槽位过期时间（分钟），可通过配置覆盖。
 	defaultSlotTTLMinutes = 15
 
 	// 活跃索引用来替代后台任务全量 SCAN 槽位键。
@@ -100,7 +101,7 @@ var (
 	// getCountScript 统计有序集合中的槽位数量并清理过期条目
 	// 使用 Redis TIME 命令获取服务器时间
 	// KEYS[1] = 普通槽位键，KEYS[2] = 对应 Live 槽位键
-	// ARGV[1] = TTL（秒）
+	// ARGV[1] = TTL（秒）。
 	getCountScript = redis.NewScript(`
 		-- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 		-- 5.0 及以上默认按效果复制；保留调用不改变行为。
@@ -174,7 +175,7 @@ var (
 	// trackSlotScript 登记用于统计的槽位。
 	// KEYS[1] = 有序集合键
 	// ARGV[1] = TTL（秒）
-	// ARGV[2] = requestID
+	// ARGV[2] = requestID.
 	trackSlotScript = redis.NewScript(`
 		-- 兼容 Redis 3.2-4.x：启用按效果复制，确保 TIME 调用正确同步。
 		-- Redis 5.0 及以上默认按效果复制，因此该调用不改变行为。
@@ -289,7 +290,7 @@ var (
 		return {1, now}
 	`)
 
-	// decrementWaitScript - same as before
+	// decrementWaitScript - same as before.
 	decrementWaitScript = redis.NewScript(`
 			local current = redis.call('GET', KEYS[1])
 			if current ~= false and tonumber(current) > 0 then
@@ -300,7 +301,7 @@ var (
 
 	// cleanupExpiredSlotsScript 清理单个提供商/用户有序集合中过期槽位
 	// KEYS[1] = 有序集合键
-	// ARGV[1] = TTL（秒）
+	// ARGV[1] = TTL（秒）。
 	cleanupExpiredSlotsScript = redis.NewScript(`
 		-- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 		-- 5.0 及以上默认按效果复制；保留调用不改变行为。
@@ -341,6 +342,9 @@ var (
 		end
 		return {removed, remaining}
 	`)
+
+	providerSlotIndex = slotIndexSpec{indexKey: providerActiveIndexKey, slotKey: providerSlotKey, waitKey: providerWaitKey}
+	userSlotIndex     = slotIndexSpec{indexKey: userActiveIndexKey, slotKey: userSlotKey, waitKey: waitQueueKey}
 )
 
 type concurrencyCache struct {
@@ -349,9 +353,24 @@ type concurrencyCache struct {
 	waitQueueTTLSeconds int // 等待队列过期时间（秒）
 }
 
+// slotIndexSpec 描述一个活跃索引及其对应的槽位/等待键构造方式。
+// slotKey 和 waitKey 的函数签名相同，通过字段名区分用途。
+type slotIndexSpec struct {
+	indexKey string
+	slotKey  func(int64) string
+	waitKey  func(int64) string
+}
+
+type activeIndexLoad struct {
+	id        int64
+	member    string
+	slotCount int
+	waitCount int
+}
+
 // NewConcurrencyCache 创建并发控制缓存
 // slotTTLMinutes: 槽位过期时间（分钟），0 或负数使用默认值 15 分钟
-// waitQueueTTLSeconds: 等待队列过期时间（秒），0 或负数使用 slot TTL
+// waitQueueTTLSeconds: 等待队列过期时间（秒），0 或负数使用 slot TTL。
 func NewConcurrencyCache(rdb *redis.Client, slotTTLMinutes int, waitQueueTTLSeconds int) scheduler.ConcurrencyCache {
 	if slotTTLMinutes <= 0 {
 		slotTTLMinutes = defaultSlotTTLMinutes
@@ -412,19 +431,6 @@ func (c *concurrencyCache) redisUnixSeconds(ctx context.Context) (int64, error) 
 	return now.Unix(), nil
 }
 
-// slotIndexSpec 描述一个活跃索引及其对应的槽位/等待键构造方式。
-// slotKey 和 waitKey 的函数签名相同，通过字段名区分用途。
-type slotIndexSpec struct {
-	indexKey string
-	slotKey  func(int64) string
-	waitKey  func(int64) string
-}
-
-var (
-	providerSlotIndex = slotIndexSpec{indexKey: providerActiveIndexKey, slotKey: providerSlotKey, waitKey: providerWaitKey}
-	userSlotIndex     = slotIndexSpec{indexKey: userActiveIndexKey, slotKey: userSlotKey, waitKey: waitQueueKey}
-)
-
 // touchActiveIndexAt 是写路径上的轻量标记：主操作已成功时，尽力把 ID 放入活跃索引，
 // score 为给定的绝对过期时间（Redis Unix 秒）。索引失败不影响并发槽位/等待队列本身，
 // 后续释放或清理会再次校正，因此只记日志不上抛。
@@ -481,13 +487,6 @@ func (c *concurrencyCache) refreshActiveIndex(ctx context.Context, indexKey stri
 	c.touchActiveIndexAt(ctx, indexKey, id, now+int64(ttlSeconds))
 }
 
-type activeIndexLoad struct {
-	id        int64
-	member    string
-	slotCount int
-	waitCount int
-}
-
 // activeIndexTTL 取槽位 TTL 与等待队列 TTL 中仍然需要关注的较大值。
 // 只要并发槽位或等待计数还有负载，就保留索引；两者都为 0 时调用方会删除索引。
 func (c *concurrencyCache) activeIndexTTL(slotCount int, waitCount int) int {
@@ -541,10 +540,7 @@ func (c *concurrencyCache) readIndexLoads(ctx context.Context, spec slotIndexSpe
 
 	cutoffTime := now - int64(c.slotTTLSeconds)
 	for start := 0; start < len(candidates); start += activeIndexPipelineChunkSize {
-		end := start + activeIndexPipelineChunkSize
-		if end > len(candidates) {
-			end = len(candidates)
-		}
+		end := min(start+activeIndexPipelineChunkSize, len(candidates))
 		chunk := candidates[start:end]
 
 		pipe := c.rdb.Pipeline()

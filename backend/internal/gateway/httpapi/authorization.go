@@ -7,12 +7,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/gin-gonic/gin"
 )
 
 // AuthorizationSubscriptions 保留同一权益实例的读取、校验与窗口维护。
@@ -25,6 +26,22 @@ type AuthorizationSubscriptions interface {
 type APIKeyAuthorizationOptions struct {
 	Authentication keyhttp.AuthenticationOptions
 	BindLegacyKey  func(*gin.Context, *apikey.APIKey)
+}
+
+// APIKeyIDFromContext 读取已认证主体的 Key ID，缺失或类型不匹配时返回零。
+func APIKeyIDFromContext(c *gin.Context) int64 {
+	if c == nil {
+		return 0
+	}
+	v, exists := c.Get("api_key")
+	if !exists {
+		return 0
+	}
+	apiKey, ok := v.(*apikey.APIKey)
+	if !ok || apiKey == nil {
+		return 0
+	}
+	return apiKey.ID
 }
 
 func (o APIKeyAuthorizationOptions) loaded(c *gin.Context, k *apikey.APIKey) {
@@ -399,4 +416,17 @@ func isResponsesTurnAdmission(c *gin.Context) bool {
 	default:
 		return false
 	}
+}
+
+// GetExecutionAPIKey 从请求上下文读取已认证的 API Key。
+func GetExecutionAPIKey(c interface{ Get(string) (any, bool) }) *apikey.APIKey {
+	if c == nil {
+		return nil
+	}
+	v, exists := c.Get("api_key")
+	if !exists {
+		return nil
+	}
+	apiKey, _ := v.(*apikey.APIKey)
+	return apiKey
 }

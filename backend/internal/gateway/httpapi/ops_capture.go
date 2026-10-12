@@ -8,22 +8,21 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
 	opscore "github.com/TokenFlux/TokenRouter/internal/ops"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 const (
@@ -44,7 +43,85 @@ const (
 	opsErrInsufficientBalance         = "insufficient balance"
 	opsErrInsufficientProviderBalance = "insufficient account balance"
 	opsErrInsufficientQuota           = "insufficient_quota"
+
+	opsCaptureWriterLimit         = opscore.OpsErrorLogQueueBodyMaxBytes
+	opsTerminalSSEFrameProbeLimit = 16 * 1024
+
+	opsCaptureWriterPoolMaxRetainedCapacity = opscore.OpsErrorLogQueueBodyMaxBytes
 )
+
+var (
+	opsCaptureWriterPool opsCaptureWriterStatePool = &sync.Pool{
+		New: func() any {
+			return &opsCaptureWriterState{limit: opsCaptureWriterLimit}
+		},
+	}
+
+	_ gin.ResponseWriter = (*opsCaptureWriter)(nil)
+)
+
+// OpsErrorLogQueue 将已冻结的请求观测值加入日志队列，app 管理队列的启停。
+type OpsErrorLogQueue interface {
+	Enqueue(*opscore.OpsService, *opscore.OpsInsertErrorLogInput)
+}
+
+// OpsObservationAccess 为错误日志提供身份数据和准入拒绝信息。
+type OpsObservationAccess struct {
+	APIKey   func(*gin.Context) *apikey.APIKey
+	Rejected func(*gin.Context) bool
+}
+
+type opsCaptureWriter struct {
+	// Handles are never pooled. A generation binds each handle to exactly one
+	// pooled state lease, so a stale handle cannot reach a later request.
+	state      *opsCaptureWriterState
+	generation uint64
+	pool       opsCaptureWriterStatePool
+}
+
+type opsCaptureWriterState struct {
+	mu             sync.RWMutex
+	inFlight       sync.WaitGroup
+	generation     uint64
+	responseWriter gin.ResponseWriter
+	limit          int
+	buf            bytes.Buffer
+	probe          []byte
+	lineProbe      []byte
+	frameLineLen   int
+	frameTruncated bool
+	lineTruncated  bool
+	skipLF         bool
+	sseCapturing   bool
+	terminalError  parsedOpsError
+	terminalFound  bool
+	ctx            *gin.Context
+	rejected       func(*gin.Context) bool
+}
+
+type opsCaptureWriterStatePool interface {
+	Get() any
+	Put(any)
+}
+
+type parsedOpsError struct {
+	ErrorType     string
+	Message       string
+	Code          string
+	StatusCode    int
+	StreamFailure bool
+}
+
+func (a OpsObservationAccess) key(c *gin.Context) *apikey.APIKey {
+	if a.APIKey == nil {
+		return nil
+	}
+	return a.APIKey(c)
+}
+
+func (a OpsObservationAccess) rejected(c *gin.Context) bool {
+	return a.Rejected != nil && a.Rejected(c)
+}
 
 // keyPrefix 返回脱敏前缀(前 n 个字符);不足 n 则原样返回。
 func keyPrefix(key string, n int) string {
@@ -143,52 +220,6 @@ func IsOpsNoAvailableProviderError(err error) bool {
 		return true
 	}
 	return opscore.IsNoAvailableProviderMessage(err.Error())
-}
-
-type opsCaptureWriter struct {
-	// Handles are never pooled. A generation binds each handle to exactly one
-	// pooled state lease, so a stale handle cannot reach a later request.
-	state      *opsCaptureWriterState
-	generation uint64
-	pool       opsCaptureWriterStatePool
-}
-
-type opsCaptureWriterState struct {
-	mu             sync.RWMutex
-	inFlight       sync.WaitGroup
-	generation     uint64
-	responseWriter gin.ResponseWriter
-	limit          int
-	buf            bytes.Buffer
-	probe          []byte
-	lineProbe      []byte
-	frameLineLen   int
-	frameTruncated bool
-	lineTruncated  bool
-	skipLF         bool
-	sseCapturing   bool
-	terminalError  parsedOpsError
-	terminalFound  bool
-	ctx            *gin.Context
-	rejected       func(*gin.Context) bool
-}
-
-const (
-	opsCaptureWriterLimit         = opscore.OpsErrorLogQueueBodyMaxBytes
-	opsTerminalSSEFrameProbeLimit = 16 * 1024
-)
-
-const opsCaptureWriterPoolMaxRetainedCapacity = opscore.OpsErrorLogQueueBodyMaxBytes
-
-type opsCaptureWriterStatePool interface {
-	Get() any
-	Put(any)
-}
-
-var opsCaptureWriterPool opsCaptureWriterStatePool = &sync.Pool{
-	New: func() any {
-		return &opsCaptureWriterState{limit: opsCaptureWriterLimit}
-	},
 }
 
 func acquireOpsCaptureWriter(rw gin.ResponseWriter) *opsCaptureWriter {
@@ -476,8 +507,6 @@ func (w *opsCaptureWriter) WriteString(s string) (int, error) {
 	return rw.WriteString(s)
 }
 
-var _ gin.ResponseWriter = (*opsCaptureWriter)(nil)
-
 func isOpsTerminalSSEFrame(frame []byte) bool {
 	eventType, payload := parseOpsSSEFrameEnvelope(frame)
 	if bytes.Equal(eventType, []byte("response.failed")) || bytes.Equal(eventType, []byte("error")) {
@@ -732,6 +761,17 @@ func OpsErrorLoggerMiddleware(ops *opscore.OpsService, queue OpsErrorLogQueue, a
 		c.Next()
 		w.finalizeCapture()
 
+		captured := parseOpsErrorResponse(w.capturedBytes())
+		if terminal, ok := w.capturedTerminalError(); ok {
+			captured = terminal
+		}
+		if captured.StreamFailure {
+			telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) {
+				record.State = "failed"
+				record.ErrorCode = "stream_error"
+				record.ErrorCode = "stream_error"
+			})
+		}
 		if access.rejected(c) {
 			return
 		}
@@ -934,9 +974,11 @@ func logOpsRecoveredUpstream(c *gin.Context, ops *opscore.OpsService, finalStatu
 		lastStatus = *entry.UpstreamStatusCode
 	}
 	lastStage := ""
-	for i := len(entry.UpstreamErrors) - 1; i >= 0; i-- {
-		if event := entry.UpstreamErrors[i]; event != nil {
+	lastKind := ""
+	for _, event := range slices.Backward(entry.UpstreamErrors) {
+		if event != nil {
 			lastStage = event.Stage
+			lastKind = event.Kind
 			if event.ProviderID > 0 {
 				providerID := event.ProviderID
 				entry.ProviderID = &providerID
@@ -960,13 +1002,16 @@ func logOpsRecoveredUpstream(c *gin.Context, ops *opscore.OpsService, finalStatu
 	entry.IsCountTokens = isCountTokensRequest(c)
 	entry.CreatedAt = time.Now()
 	entry.ErrorMessage = "Recovered upstream error"
-	if lastStage == opscore.ErrorPhaseProviderAuth {
+	if lastKind == "usage_invalid" {
+		entry.ErrorMessage = "SystemOne usage is missing or invalid; billing skipped"
+	}
+	if lastKind != "usage_invalid" && lastStage == opscore.ErrorPhaseProviderAuth {
 		entry.ErrorPhase = opscore.ErrorPhaseProviderAuth
 		entry.ErrorMessage = "Recovered provider authentication failure"
-	} else if lastStatus > 0 {
+	} else if lastKind != "usage_invalid" && lastStatus > 0 {
 		entry.ErrorMessage += " " + strconv.Itoa(lastStatus)
 	}
-	if entry.UpstreamErrorMessage != nil && strings.TrimSpace(*entry.UpstreamErrorMessage) != "" {
+	if lastKind != "usage_invalid" && entry.UpstreamErrorMessage != nil && strings.TrimSpace(*entry.UpstreamErrorMessage) != "" {
 		entry.ErrorMessage += ": " + strings.TrimSpace(*entry.UpstreamErrorMessage)
 	}
 	entry.ErrorMessage = truncateString(entry.ErrorMessage, 2048)
@@ -1202,9 +1247,9 @@ func applyOpsStreamErrorSnapshot(entry *opscore.OpsInsertErrorLogInput, streamEr
 	}
 	entry.UpstreamErrors = streamErr.UpstreamErrors
 	lastStage := ""
-	for i := len(streamErr.UpstreamErrors) - 1; i >= 0; i-- {
-		if streamErr.UpstreamErrors[i] != nil {
-			lastStage = streamErr.UpstreamErrors[i].Stage
+	for _, v := range slices.Backward(streamErr.UpstreamErrors) {
+		if v != nil {
+			lastStage = v.Stage
 			break
 		}
 	}
@@ -1232,9 +1277,9 @@ func shouldSkipFinalOpsFailure(c *gin.Context) bool {
 	}
 	if v, ok := c.Get(OpsUpstreamErrorsKey); ok {
 		if events, ok := v.([]*opscore.OpsUpstreamErrorEvent); ok {
-			for i := len(events) - 1; i >= 0; i-- {
-				if events[i] != nil {
-					return events[i].SkipMonitoring
+			for _, event := range slices.Backward(events) {
+				if event != nil {
+					return event.SkipMonitoring
 				}
 			}
 		}
@@ -1242,7 +1287,7 @@ func shouldSkipFinalOpsFailure(c *gin.Context) bool {
 	return false
 }
 
-// isCountTokensRequest checks if the request is a count_tokens request
+// isCountTokensRequest checks if the request is a count_tokens request.
 func isCountTokensRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
@@ -1306,9 +1351,9 @@ func applyOpsUpstreamFieldsFromContext(c *gin.Context, entry *opscore.OpsInsertE
 func applyOpsUpstreamErrorEvents(entry *opscore.OpsInsertErrorLogInput, events []*opscore.OpsUpstreamErrorEvent) {
 	entry.UpstreamErrors = events
 	var last *opscore.OpsUpstreamErrorEvent
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i] != nil {
-			last = events[i]
+	for _, event := range slices.Backward(events) {
+		if event != nil {
+			last = event
 			break
 		}
 	}
@@ -1372,14 +1417,6 @@ func getContextLatencyMs(c *gin.Context, key string) *int64 {
 		return nil
 	}
 	return &ms
-}
-
-type parsedOpsError struct {
-	ErrorType     string
-	Message       string
-	Code          string
-	StatusCode    int
-	StreamFailure bool
 }
 
 func parseOpsErrorResponse(body []byte) parsedOpsError {
@@ -1468,7 +1505,7 @@ func parseOpsSSEFailure(body []byte) (parsedOpsError, bool) {
 	normalized := strings.ReplaceAll(string(body), "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	var errorCandidate *parsedOpsError
-	for _, frame := range strings.Split(normalized, "\n\n") {
+	for frame := range strings.SplitSeq(normalized, "\n\n") {
 		frame = strings.TrimSpace(frame)
 		if frame == "" {
 			continue
@@ -1600,7 +1637,7 @@ func sanitizeOpsSSEDataForPersistence(body []byte) string {
 		}
 		wroteData := false
 		emittedLine := false
-		for _, line := range bytes.Split(frame, []byte{'\n'}) {
+		for line := range bytes.SplitSeq(frame, []byte{'\n'}) {
 			field, _, found := bytes.Cut(line, []byte{':'})
 			if found && bytes.Equal(bytes.TrimSpace(field), []byte("data")) {
 				if wroteData {
@@ -1672,11 +1709,6 @@ func inferStreamFailureStatus(_ *gin.Context, parsed parsedOpsError) int {
 
 	return http.StatusBadGateway
 }
-
-// getOpsAPIKey 返回用于 Ops 错误日志的 API Key：优先取已鉴权写入的正式 key；
-// 鉴权早退（分组停用/删除、Key 停用/过期/额度、用户停用、IP 限制等）时，
-// 正式 key 尚未写入，回退到 middleware 写入的 ops fallback key
-// （含 User/Group/Platform），从而让日志能展示 用户/分组/平台。
 
 // selectedOpsPlatform 只使用已选提供商的快照，尚未选号的错误保留 unknown。
 func selectedOpsPlatform(c *gin.Context) string {
@@ -1760,9 +1792,9 @@ func hasOpsProviderAuthFailure(c *gin.Context) bool {
 	}
 	if v, ok := c.Get(OpsUpstreamErrorsKey); ok {
 		if events, ok := v.([]*opscore.OpsUpstreamErrorEvent); ok {
-			for i := len(events) - 1; i >= 0; i-- {
-				if events[i] != nil {
-					return events[i].Stage == opscore.ErrorPhaseProviderAuth
+			for _, event := range slices.Backward(events) {
+				if event != nil {
+					return event.Stage == opscore.ErrorPhaseProviderAuth
 				}
 			}
 		}

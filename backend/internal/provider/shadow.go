@@ -6,8 +6,41 @@ import (
 	"fmt"
 	"strings"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
+
+// sparkShadowAllowedCredentialKeys 是 spark 影子提供商唯一可写的凭据键集合(仅模型映射)。
+// 凭据校验与清理共用此列表。
+var sparkShadowAllowedCredentialKeys = map[string]struct{}{
+	"model_mapping":         {},
+	"compact_model_mapping": {},
+}
+
+// ResolveCredentialRecord 解析影子提供商到其母提供商，用于凭据/Token 透传。
+// - 普通提供商（非影子）：直接返回自身。
+// - 影子提供商：通过 repo 取母提供商，校验母提供商存在且为 OpenAI OAuth 类型，否则返回错误。
+// 凭据读取、额度查询和用量探测共用此入口校验母提供商。
+func ResolveCredentialRecord(ctx context.Context, read func(context.Context, int64) (*Record, error), provider *Record) (*Record, error) {
+	if provider == nil || !provider.IsCredentialShadow() {
+		return provider, nil
+	}
+	parent, err := read(ctx, *provider.ParentProviderID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve spark shadow parent %d: %w", *provider.ParentProviderID, err)
+	}
+	if parent == nil {
+		return nil, fmt.Errorf("spark shadow parent %d not found", *provider.ParentProviderID)
+	}
+	// 创建入口禁止二级影子；此处也拒绝手工写入或损坏数据形成的影子链。
+	// 凭据解析读取一层母提供商，母提供商也是影子时返回错误。
+	if parent.IsCredentialShadow() {
+		return nil, fmt.Errorf("spark shadow parent %d is itself a shadow", parent.ID)
+	}
+	if !parent.IsOpenAIOAuth() {
+		return nil, fmt.Errorf("spark shadow parent %d is not OpenAI OAuth", parent.ID)
+	}
+	return parent, nil
+}
 
 // CreateShadow 为指定 OpenAI OAuth 母提供商创建 spark 维度影子提供商（一母一影）。
 // 安全不变量：Credentials 恒不含 auth token（仅 model_mapping，守卫 isAllowedSparkShadowCredentialsUpdate 放行）。
@@ -18,12 +51,12 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 		return nil, fmt.Errorf("get parent provider: %w", err)
 	}
 	if !parent.IsOpenAIOAuth() {
-		return nil, infraerrors.New(infraerrors.CategoryBadRequest, "SPARK_SHADOW_INVALID_PARENT",
+		return nil, apperror.New(apperror.CategoryBadRequest, "SPARK_SHADOW_INVALID_PARENT",
 			"spark shadow requires an OpenAI OAuth parent provider")
 	}
 	// 母提供商需要持有独立凭据，resolveCredentialProvider 解析一层母提供商。
 	if parent.IsCredentialShadow() {
-		return nil, infraerrors.New(infraerrors.CategoryBadRequest, "SPARK_SHADOW_PARENT_IS_SHADOW",
+		return nil, apperror.New(apperror.CategoryBadRequest, "SPARK_SHADOW_PARENT_IS_SHADOW",
 			"spark shadow parent must be a real provider, not another spark shadow")
 	}
 
@@ -33,7 +66,7 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 		return nil, fmt.Errorf("check existing spark shadows: %w", err)
 	}
 	if len(shadows) > 0 {
-		return nil, infraerrors.New(infraerrors.CategoryConflict, "SPARK_SHADOW_ALREADY_EXISTS",
+		return nil, apperror.New(apperror.CategoryConflict, "SPARK_SHADOW_ALREADY_EXISTS",
 			"parent provider already has a spark shadow provider")
 	}
 
@@ -89,7 +122,7 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 	// 复查确认影子已经存在时返回结构化 409。
 	if err := s.providerRepo.Create(ctx, shadow); err != nil {
 		if existing, qerr := s.providerRepo.ListShadowsByParent(ctx, parentID); qerr == nil && len(existing) > 0 {
-			return nil, infraerrors.New(infraerrors.CategoryConflict, "SPARK_SHADOW_ALREADY_EXISTS",
+			return nil, apperror.New(apperror.CategoryConflict, "SPARK_SHADOW_ALREADY_EXISTS",
 				"parent provider already has a spark shadow provider")
 		}
 		return nil, fmt.Errorf("create spark shadow: %w", err)
@@ -155,4 +188,46 @@ func (s *Admin) ValidateGroupIDs(ctx context.Context, ids []int64) error {
 		return errors.New("group repository not configured")
 	}
 	return s.options.Groups.ValidateGroups(ctx, ids)
+}
+
+func IsAllowedSparkShadowCredentialsUpdate(credentials map[string]any) bool {
+	if credentials == nil {
+		return true
+	}
+	for key := range credentials {
+		if _, ok := sparkShadowAllowedCredentialKeys[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func SanitizeSparkShadowCredentials(credentials map[string]any) map[string]any {
+	if len(credentials) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(sparkShadowAllowedCredentialKeys))
+	for key := range sparkShadowAllowedCredentialKeys {
+		if value, ok := credentials[key]; ok && value != nil {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// ParentHealthyForShadow 判断 Spark 影子共用的母提供商凭据是否可用于调度。
+// 非影子直接返回 true；lookup 从调度快照或存储取得母提供商。
+// 母提供商必须是 OpenAI OAuth、状态为 active、令牌未过期，且不处于 TempUnschedulableUntil 冷却期。
+// 该冷却可能来自认证失败、刷新耗尽或传输故障，会影响共用凭据的影子。
+// 母提供商的全局 RateLimitResetAt、OverloadUntil 和手动 Schedulable 开关不参与此判断，
+// Spark 用量窗口独立维护。母提供商缺失、类型不符或凭据不可用时，影子不能进入候选池。
+func ParentHealthyForShadow(provider *Record, lookup func(int64) *Record) bool {
+	if provider == nil || !provider.IsShadow() {
+		return true
+	}
+	parent := lookup(*provider.ParentProviderID)
+	if parent == nil {
+		return false
+	}
+	return parent.IsOpenAIOAuth() && parent.IsCredentialUsableForShadow()
 }

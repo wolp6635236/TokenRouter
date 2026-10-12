@@ -1,13 +1,13 @@
 package schema
 
 import (
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 // SecuritySecret 存储系统级安全密钥（如 JWT 签名密钥、TOTP 加密密钥）。

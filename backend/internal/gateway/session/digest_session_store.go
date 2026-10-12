@@ -8,10 +8,10 @@ import (
 	gocache "github.com/patrickmn/go-cache"
 )
 
-// digestSessionTTL 摘要会话默认 TTL
+// digestSessionTTL 摘要会话默认 TTL。
 const digestSessionTTL = 5 * time.Minute
 
-// sessionEntry flat cache 条目
+// sessionEntry flat cache 条目。
 type sessionEntry struct {
 	uuid       string
 	providerID int64
@@ -23,7 +23,7 @@ type DigestSessionStore struct {
 	cache *gocache.Cache
 }
 
-// NewDigestSessionStore 创建内存摘要会话存储
+// NewDigestSessionStore 创建内存摘要会话存储。
 func NewDigestSessionStore() *DigestSessionStore {
 	return &DigestSessionStore{
 		cache: gocache.New(digestSessionTTL, 0),
@@ -63,7 +63,7 @@ func (s *DigestSessionStore) Find(groupID int64, prefixHash, digestChain string)
 	}
 }
 
-// buildNS 构建 namespace 前缀
+// buildNS 构建 namespace 前缀。
 func buildNS(groupID int64, prefixHash string) string {
 	return strconv.FormatInt(groupID, 10) + ":" + prefixHash + "|"
 }

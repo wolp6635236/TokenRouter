@@ -18,6 +18,7 @@ func (r DateRuntime) now() time.Time {
 	}
 	return time.Now()
 }
+
 func (r DateRuntime) calendar() timezone.Calendar {
 	if r.Calendar != nil {
 		return *r.Calendar

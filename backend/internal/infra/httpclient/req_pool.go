@@ -7,13 +7,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/imroc/req/v3"
+
 	proxyurl "github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
 	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
-
-	"github.com/imroc/req/v3"
 )
 
-// ReqClientOptions 定义 req 客户端的构建参数
+// sharedReqClients 存储按配置参数缓存的 req 客户端实例
+//
+// sync.Map 缓存客户端：
+// 1. 相同配置（代理+超时+模拟设置）复用同一客户端
+// 2. 复用底层连接池，减少 TLS 握手开销
+// 3. LoadOrStore 保证并发安全，避免重复创建。
+var sharedReqClients sync.Map
+
+// ReqClientOptions 定义 req 客户端的构建参数。
 type ReqClientOptions struct {
 	ProxyURL    string        // 代理 URL（支持 http/https/socks5）
 	Timeout     time.Duration // 请求超时时间
@@ -21,16 +29,8 @@ type ReqClientOptions struct {
 	ForceHTTP2  bool          // 是否强制使用 HTTP/2
 }
 
-// sharedReqClients 存储按配置参数缓存的 req 客户端实例
-//
-// sync.Map 缓存客户端：
-// 1. 相同配置（代理+超时+模拟设置）复用同一客户端
-// 2. 复用底层连接池，减少 TLS 握手开销
-// 3. LoadOrStore 保证并发安全，避免重复创建
-var sharedReqClients sync.Map
-
 // GetSharedReqClient 获取共享的 req 客户端实例
-// 性能优化：相同配置复用同一客户端，避免重复创建
+// 性能优化：相同配置复用同一客户端，避免重复创建。
 func GetSharedReqClient(opts ReqClientOptions) (*req.Client, error) {
 	key := buildReqClientKey(opts)
 	if cached, ok := sharedReqClients.Load(key); ok {

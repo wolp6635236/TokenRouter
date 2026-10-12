@@ -16,6 +16,9 @@ var (
 	// CacheTierPricePattern 匹配缓存长上下文单价字段，供价格数据校验告警使用。
 	// 组 1 为缓存基础价字段，组 2 为 1 小时缓存时长段，组 3 为服务档后缀。
 	CacheTierPricePattern = regexp.MustCompile(`^(cache_(?:creation|read)_input_token_cost)(_above_1hr)?_above_\d+k_tokens((?:_[a-z]+)?)$`)
+
+	// 模型广场可下发的模态取值白名单与固定输出顺序。
+	MarketplaceModalityOrder = []string{"text", "image", "audio", "video"}
 )
 
 // DeriveLongContextFromAboveTierFields 将目录中的 above_XXXk 绝对价折算为本 fork
@@ -124,9 +127,6 @@ func OrphanCacheTierFields(rawEntry json.RawMessage) []string {
 	sort.Strings(orphans)
 	return orphans
 }
-
-// 模型广场可下发的模态取值白名单与固定输出顺序。
-var MarketplaceModalityOrder = []string{"text", "image", "audio", "video"}
 
 // SanitizeModalities 过滤定价文件中的非模态取值并去重，按固定顺序输出。
 func SanitizeModalities(values []string) []string {

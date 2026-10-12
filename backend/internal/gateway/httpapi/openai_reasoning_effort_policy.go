@@ -3,14 +3,13 @@ package httpapi
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // ReasoningEffortPolicyForRequest 返回请求目标平台对应的分组策略。

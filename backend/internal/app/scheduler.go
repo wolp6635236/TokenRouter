@@ -4,18 +4,29 @@ import (
 	"context"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache/codec"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 	schedulerredis "github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache"
-	"github.com/redis/go-redis/v9"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache/codec"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
+
+// schedulerSharedState 保存跨平台共享的调度反馈、运行参数和粘性会话统计。
+type schedulerSharedState struct {
+	Feedback   *scheduler.RuntimeStats
+	Settings   *scheduler.SettingsRuntime
+	Parameters *scheduler.Parameters
+	Sticky     *scheduler.StickyStats
+}
 
 func provideSchedulerCache(rdb *redis.Client, cfg *config.Config) *schedulerredis.SnapshotCache {
 	options := schedulerredis.SnapshotCacheOptions{}
@@ -90,4 +101,39 @@ func provideMessageQueue(cache scheduler.UserMsgQueueCache, rpm scheduler.RPMCac
 		Event: logging.Event,
 	},
 	)
+}
+
+// provideSelectionSnapshots 返回快照读取适配器，来源缺失时返回 nil 接口。
+func provideSelectionSnapshots(source *scheduler.SnapshotService) selection.Snapshots {
+	if source == nil {
+		return nil
+	}
+	return schedulerredis.NewSnapshotReader(source)
+}
+
+// schedulerParameterDefaults 从进程配置读取调度默认参数，零值直接传给调度器。
+func schedulerParameterDefaults(cfg *config.Config) scheduler.ParameterDefaults {
+	defaults := scheduler.DefaultParameters()
+	if cfg == nil {
+		return defaults
+	}
+	value := cfg.Gateway.AdvancedScheduler
+	if value.LBTopK > 0 {
+		defaults.TopK = value.LBTopK
+	}
+	weights := value.ScoreWeights
+	defaults.Weights = policy.ScoreWeights{Priority: weights.Priority, Load: weights.Load, Queue: weights.Queue, ErrorRate: weights.ErrorRate, TTFT: weights.TTFT, Reset: weights.Reset, QuotaHeadroom: weights.QuotaHeadroom, Previous: weights.PreviousResponse, SessionSticky: weights.SessionSticky}
+	defaults.Runtime.EwmaErrorRateAlpha = value.EWMAErrorRateAlpha
+	defaults.Runtime.EwmaTTFTAlpha = value.EWMATTFTAlpha
+	defaults.Runtime.StickyEscape = policy.NormalizeStickyEscape(policy.StickyEscapeConfig{Enabled: value.StickyEscapeEnabled, TtftMs: float64(value.StickyEscapeTTFTMs), ErrorRate: value.StickyEscapeErrorRate})
+	return defaults
+}
+
+func provideSchedulerSharedState(cfg *config.Config, source settings.Repository) *schedulerSharedState {
+	state := &schedulerSharedState{Feedback: scheduler.NewRuntimeStats(time.Now), Settings: scheduler.NewSettingsRuntime(scheduler.Diagnostics{
+		Logf: logging.LegacyPrintf, Event: logging.Event,
+	},
+	), Sticky: &scheduler.StickyStats{}}
+	state.Parameters = scheduler.NewParameters(state.Settings, source, schedulerParameterDefaults(cfg))
+	return state
 }

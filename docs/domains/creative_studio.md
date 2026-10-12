@@ -35,7 +35,7 @@ provider.Target 负责实际平台分派。app 直接绑定原生选择器与 ga
 
 新创作任务按操作使用统一协议：OpenAI/Grok 的 generate 对应 Images 生成，edit/inpaint 对应 Images 编辑；Gemini 对应 GenerateContent。目录和提交只提供分组已开放的操作，执行器复用提供商原生集合及分组指定转换目标筛选候选。Responses 图片策略不阻断 Images 内部适配。Claude Code 专用分组不进入创作台目录，提交在创建托管 Key 和预留资金前返回 `CREATIVE_GROUP_FORBIDDEN`。创作台不解析客户端限制回退；worker 只使用任务持久化的分组和 provider，原组受限时停止本次执行。已创建任务的读取、下载和清理仍遵循原资源权限。
 
-创作台路由挂在用户 JWT 面板前缀下（`backend/internal/creative/httpapi/routes_user.go` 与 `backend/internal/app/http_routes_user.go`），响应统一 envelope `{code, message, data}`；`POST /creative/runs` 额外经过面板 heavy 限流：
+创作台路由挂在用户 JWT 面板前缀下（`backend/internal/creative/httpapi/routes_user.go` 与 `backend/internal/app/http_routes.go`），响应统一 envelope `{code, message, data}`；`POST /creative/runs` 额外经过面板 heavy 限流：
 
 ```text
 GET  /api/v1/creative/models
@@ -105,7 +105,9 @@ POST /api/v1/creative/runs/{id}/outputs/{index}/ack
 <a id="creative_model_policy"></a>
 ## 模型与分组策略
 
-目录和提交校验使用同一模型集合。目录从组内 OpenAI、Gemini 和 Grok 候选提供商读取模型，并同时检查提供商协议及分组允许的操作；分组本身没有平台。候选来自平台默认图片模型、提供商配置、分组映射和白名单中的具体名称，以及创作台已配置的请求模型；通配符只参与匹配。每个请求模型先执行一次分组映射，再执行一次提供商映射及平台名称规范化，最终模型必须具备图片能力并满足提供商限制。白名单按分组的 `requested`、`group_mapped` 或 `upstream` 阶段检查，空白名单拒绝全部模型。关闭分组策略后，保存的映射和白名单草稿均不参与解析。完整规则见[分组独立策略](gateway_policy_controls.md#group_routing_policy)。
+用户目录按 `creative_model_settings` 中的分组和型号逐项校验。后台候选来自提供商白名单、映射、平台执行规则及分组策略中的具体名称，并合并创作台已经保存的型号。提供商和分组映射的具体来源、具体目标都参与候选生成。通配符在这些有限候选中匹配。每个请求型号先经过分组映射，再经过提供商映射和平台规范化，最终型号需要具备图片能力并通过协议及白名单检查。分组白名单按 `requested`、`group_mapped` 或 `upstream` 阶段检查；开启限制且名单为空时拒绝全部型号。关闭分组策略后，保存的草稿在重新启用前保持停用。完整规则见[分组独立策略](gateway_policy_controls.md#group_routing_policy)。
+
+提交任务直接验证用户选中的具体型号。含 `*` 或 `?` 的设置项视为无法解析，用户目录过滤该项，提交返回 `CREATIVE_INVALID_MODEL`。一次查询为每个提供商准备一次映射、白名单和协议集合；保存多项创作台设置时，同一分组共用一次分组与提供商读取，再逐项校验能力。综合设置的更新保护覆盖这段校验，无法解析的历史设置按保存规则继续保留。
 
 每次任务执行前重新取得分组策略副本；读取失败时停止本次执行。调度器接收原请求模型，执行器把已解析的分组模型交给所选提供商，并对实际要发送的上游模型复核白名单。通过检查后固定执行模型，组装请求体时不再重复映射。目录和执行使用同一套网关提供商规则，所以透传提供商也按实际发送的模型检查。没有关联共享价格配置时，上述规则仍然生效。
 
@@ -166,7 +168,7 @@ creative_settle:{run_id}    写 usage_logs 的结算记录 ID
 ```
 
 - 创建任务时先估价并冻结（auto 模式先预留订阅额度、只冻结未覆盖部分的钱包余额）；免费分组（估价为 0）跳过资金动作。
-- 成功时按实际成功输出数捕获，并写一条 `usage_logs`：`BillingMode` 为 `"image"`，`ImageCount` 为成功输出数，`request_id` 为 `creative_settle:{run_id}`，入站端点记录 `/v1/creative/runs`，上游端点记录 `creative:{operation}`。
+- 成功时按实际成功输出数捕获，并写一条 `usage_logs`：`BillingMode` 为 `"image"`，`ImageCount` 为成功输出数，`request_id` 为任务对应的统一请求 ID，`billing_key` 为 `creative_settle:{run_id}`，入站端点记录 `/v1/creative/runs`，上游端点记录 `creative:{operation}`。
 - 失败与内部取消状态通过幂等路径释放全部未使用预占；指纹冲突时按已释放处理，这样同一条消息不会反复失败、无限重试。
 - provider 已成功但结果丢失（`result_lost` 且已捕获）时保持计费；payload 过期导致 provider 未执行的 `result_lost` 释放预占。
 - 任务执行期间进入 `cancelled` 但 provider 已成功：费用按实际成功输出捕获、用量照写，终态保持 `cancelled`。
@@ -213,7 +215,7 @@ app 固定唯一生产实例，提供商目录复用 creative/provider 对原生
 
 以下上游参数和异步任务、存储或计费的模型对不上，目前不开放：OpenAI `moderation`、`input_fidelity`、`stream`、`partial_images`，Gemini `includeThoughts`、`temperature`、`topP`、`topK`、`seed`、Google Search grounding 和通用 `candidateCount`，以及任意自定义 OpenAI `WxH` 尺寸。审核策略由服务端统一控制，`gpt-image-2` 固定高保真，Gemini 中间 thought image 固定不返回。
 
-模型候选：Gemini 复用批量图片的提供商模型映射展开（含 Vertex），并额外内置 `nano-banana-pro`/`nano-banana-2` 两个代理别名；`nano-banana-*` 别名族按 Gemini 图片模型处理；OpenAI 候选为 `gpt-image-1`/`gpt-image-2`；Grok 候选为 `grok-imagine` 系列。提供商没有配置模型映射时，相当于网关的全量透传，按平台默认候选回退，并加入提供商 `model_whitelist` 里符合图片模型判断条件的变体，再执行提供商最终模型白名单过滤。
+模型候选合并提供商配置、平台执行规则、分组规则和创作台配置，再执行图片型号、协议、站点与白名单检查。自定义请求别名按最终上游型号判断图片能力。统一元数据目录未收录的具体型号可通过管理员配置加入。
 
 可选的尺寸档位只由平台和模型能力决定，是否填写了单价不影响；GPT Image 2 开放 `4K`；Gemini 3.1 Flash Image 额外开放 `512`，该档位优先使用价格配置价卡的 `512` 分层价格，未配置时回退价卡默认价格；`gemini-2.5-flash-image` 与 `gemini-3.1-flash-lite-image` 固定为 `1K`。接口同时返回按模型广场分组倍率计算的各尺寸展示单价，创作台预估费用按所选尺寸单价计算，每次任务固定单张输出。
 
@@ -272,7 +274,7 @@ creative:
 
 - 确认 Redis 可用（临时存储与队列都依赖 Redis）。
 - 确认 `creative.enabled`、数据库运行时开关 `creative_enabled` 与 `creative.queue_enabled`。
-- 确认目标分组启用图片生成；未配置图片尺寸价格或提供商模型映射时会按平台默认值回退，GPT Image 2 缺少 4K 覆盖价时仍使用默认价开放 4K。
+- 确认目标分组启用图片生成；未配置图片尺寸价格时按完整型号查询目录价格，提供商模型映射按已保存配置执行，GPT Image 2 缺少 4K 覆盖价时仍使用默认价开放 4K。
 - 确认上游提供商凭据有效（Gemini apikey/Vertex/OAuth、OpenAI、xAI）。
 - 确认价格配置价卡与分组有效倍率，验证估价的 hold/capture/release 行为。
 - 临时输出默认 30 分钟过期：通知用户及时取回，或按需调大 `transient_ttl_seconds`。

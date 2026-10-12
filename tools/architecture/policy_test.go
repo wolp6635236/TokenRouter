@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-// 正反例覆盖架构契约，不依赖当前配置的行数或具体规则名称。
+// TestDependencyBoundaries 检查各目录角色的允许依赖和禁止依赖。
 func TestDependencyBoundaries(t *testing.T) {
 	cases := []struct {
 		file     string
 		imported string
 		allowed  bool
 	}{
-		{"migrations/pricing_preview_fixture_test.go", modulePath + "/internal/billing/pricing", true},
-		{"migrations/pricing_merge_fixture_test.go", modulePath + "/internal/billing/pricing", true},
-		{"migrations/pricing_merge_test.go", modulePath + "/internal/billing/pricing", true},
+		{"migrations/platform_independent_pricing_integration_test.go", modulePath + "/internal/billing/pricing", false},
+		{"migrations/helpers_test.go", modulePath + "/internal/billing/pricing", false},
+		{"migrations/pricing_merge_test.go", modulePath + "/internal/billing/pricing", false},
 		{"migrations/new_test.go", modulePath + "/internal/billing/pricing", false},
 		{"migrations/platform_independent_pricing_integration_test.go", modulePath + "/internal/routing/postgres", false},
 		{"internal/provider/new.go", modulePath + "/internal/billing", true},
@@ -56,7 +56,7 @@ func TestDependencyBoundaries(t *testing.T) {
 		{"internal/provider/health_spark.go", "net/http", true},
 		{"internal/provider/health_spark.go", "net/http/httptest", false},
 		{"internal/provider/new.go", "net/http", false},
-		{"internal/gateway/clientmeta/claude_validator_contract_test.go", "os", true},
+		{"internal/gateway/clientmeta/claude_validator_test.go", "os", true},
 		{"internal/gateway/clientmeta/new_test.go", "os", false},
 		{"internal/pkg/ipmatch/helpers/new.go", "net", true},
 		{"internal/pkg/ipmatch_extra/new.go", "net", false},

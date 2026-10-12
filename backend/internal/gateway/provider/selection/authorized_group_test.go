@@ -4,12 +4,13 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 type authorizedGroupReader struct {
@@ -34,9 +35,9 @@ func TestSelectorsNeverFollowClientFallbackWithoutAdmission(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			target := &routing.Group{ID: targetID, Hydrated: true, Status: routing.StatusActive, SchedulerType: routing.GroupSchedulerTypeAdvanced}
 			groups := &authorizedGroupReader{groups: map[int64]*routing.Group{sourceID: source, targetID: target}}
-			repo := &mixedGroupProviders{values: []gatewayadapter.ExecutionProvider{mixedGroupProvider(9, capability.PlatformGemini, "shared", targetID)}}
+			repo := &mixedGroupProviders{values: []gatewayprovider.ExecutionProvider{mixedGroupProvider(9, capability.PlatformGemini, "shared", targetID)}}
 			reads := Reads{Providers: repo, Groups: groups}
-			var choose func(context.Context, *int64, string, string) (*gatewayadapter.ExecutionProvider, error)
+			var choose func(context.Context, *int64, string, string) (*gatewayprovider.ExecutionProvider, error)
 			switch name {
 			case "generic":
 				choose = NewGeneric(GenericDependencies{Reads: reads}, DefaultOptions()).SelectProviderForModel
@@ -44,7 +45,7 @@ func TestSelectorsNeverFollowClientFallbackWithoutAdmission(t *testing.T) {
 				choose = NewCompatible(CompatibleDependencies{Reads: reads}, DefaultOptions()).SelectProviderForModel
 			case "gemini":
 				selector := NewGemini(GeminiDependencies{Reads: reads}, DefaultOptions())
-				choose = func(ctx context.Context, groupID *int64, sessionHash, model string) (*gatewayadapter.ExecutionProvider, error) {
+				choose = func(ctx context.Context, groupID *int64, sessionHash, model string) (*gatewayprovider.ExecutionProvider, error) {
 					return selector.SelectProviderForModelWithExclusions(ctx, groupID, sessionHash, model, nil)
 				}
 			}

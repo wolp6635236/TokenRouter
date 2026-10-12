@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/payment"
-	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 	"github.com/stretchr/testify/require"
 	stripe "github.com/stripe/stripe-go/v85"
+
+	"github.com/TokenFlux/TokenRouter/internal/payment"
+	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
 // stripeRefundBackend 捕获 Stripe SDK 的退款参数，避免测试访问外部网络。

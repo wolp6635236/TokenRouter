@@ -8,13 +8,13 @@ import (
 	"time"
 	"unicode/utf8"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
-	"github.com/stretchr/testify/require"
 )
 
 type duplicateGroupRepoStub struct {

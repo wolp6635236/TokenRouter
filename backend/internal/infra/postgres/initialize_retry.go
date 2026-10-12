@@ -28,26 +28,23 @@ func initializeDatabaseWithRetryWithWait(
 	wait func(context.Context, time.Duration) error,
 ) error {
 	for attempt := 1; ; attempt++ {
-		if err := initialize(ctx); err == nil {
+		err := initialize(ctx)
+		if err == nil {
 			return nil
-		} else {
-			if !isTransientDatabaseInitializationError(err) || attempt > maxDatabaseInitializationRetries {
-				return err
-			}
+		}
+		if !isTransientDatabaseInitializationError(err) || attempt > maxDatabaseInitializationRetries {
+			return err
+		}
 
-			delay := databaseInitializationRetryBase * time.Duration(1<<(attempt-1))
-			if delay > databaseInitializationRetryMax {
-				delay = databaseInitializationRetryMax
-			}
-			slog.Warn("database initialization temporarily unavailable; retrying",
-				"retry", attempt,
-				"max_retries", maxDatabaseInitializationRetries,
-				"retry_in", delay,
-				"error", err,
-			)
-			if err := wait(ctx, delay); err != nil {
-				return err
-			}
+		delay := min(databaseInitializationRetryBase*time.Duration(1<<(attempt-1)), databaseInitializationRetryMax)
+		slog.Warn("database initialization temporarily unavailable; retrying",
+			"retry", attempt,
+			"max_retries", maxDatabaseInitializationRetries,
+			"retry_in", delay,
+			"error", err,
+		)
+		if err := wait(ctx, delay); err != nil {
+			return err
 		}
 	}
 }

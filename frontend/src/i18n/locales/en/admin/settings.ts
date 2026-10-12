@@ -1,6 +1,86 @@
 export default {
 // Settings
     settings: {
+      responsesWS: {
+  "title": "Long connections and connection pool",
+  "description": "Tune Responses WebSocket pool, timeout and session parameters. Changes apply online after saving. Group protocol permissions decide whether clients can use long connections.",
+  "advanced": "Advanced parameters",
+  "advancedHint": "Dynamic limits, prewarming and session continuation",
+  "restore": "Reset all to defaults",
+  "resetField": "Use default",
+  "applies": "Empty fields use deployment defaults; the gray number in each field is the effective value. Pool limits change gradually and active connections close after their sessions finish. Timeouts apply from the next turn or wait.",
+  "loadError": "Could not load connection settings. Try again.",
+  "saveError": "Could not save connection settings.",
+  "applyError": "Settings were saved, but applying them failed. Check the service logs and effective values.",
+  "retry": "Reload",
+  "restoring": "All parameters return to deployment defaults after saving.",
+  "units": {
+    "seconds": "s",
+    "ms": "ms",
+    "mib": "MiB"
+  },
+  "groups": {
+    "pool": {
+      "title": "Upstream pool",
+      "hint": "Each provider has its own pool of upstream connections that sessions draw from."
+    },
+    "client": {
+      "title": "Client connections",
+      "hint": "WebSocket connections from clients to the gateway."
+    },
+    "messageSize": {
+      "title": "Message size"
+    },
+    "timeout": {
+      "title": "Upstream timeouts",
+      "hint": "How long to wait when connecting to the upstream and exchanging messages."
+    },
+    "dynamic": {
+      "title": "Dynamic connection limit"
+    },
+    "prewarm": {
+      "title": "Prewarming"
+    },
+    "session": {
+      "title": "Session continuation"
+    }
+  },
+  "fields": {
+    "max_conns_per_provider": "Max connections per provider",
+    "queue_limit_per_conn": "Queue limit per connection",
+    "min_idle_per_provider": "Min idle connections",
+    "max_idle_per_provider": "Max idle connections",
+    "max_ingress_connections_per_api_key": "Max connections per API key",
+    "client_first_message_timeout_seconds": "First message timeout",
+    "ingress_inter_turn_idle_timeout_seconds": "Max idle time between turns",
+    "client_read_limit_bytes": "Max message size",
+    "http_bridge_threshold_bytes": "HTTP fallback size",
+    "dial_timeout_seconds": "Connect",
+    "read_timeout_seconds": "Wait for upstream message",
+    "write_timeout_seconds": "Send message",
+    "dynamic_max_conns_by_provider_concurrency_enabled": "Scale with provider concurrency",
+    "oauth_max_conns_factor": "OAuth provider factor",
+    "apikey_max_conns_factor": "API key provider factor",
+    "pool_target_utilization": "Target utilization",
+    "prewarm_cooldown_ms": "Min prewarm interval",
+    "ingress_previous_response_recovery_enabled": "Recover when the upstream loses the previous turn",
+    "sticky_session_ttl_seconds": "Provider session retention",
+    "sticky_response_id_ttl_seconds": "Response continuation retention"
+  },
+  "hints": {
+    "max_conns_per_provider": "Limits computed from concurrency are capped at this value.",
+    "queue_limit_per_conn": "Requests that can wait on each connection when all connections are busy.",
+    "min_idle_per_provider": "Connections kept ready while idle.",
+    "max_idle_per_provider": "0 keeps no idle connections.",
+    "max_ingress_connections_per_api_key": "0 means unlimited.",
+    "ingress_inter_turn_idle_timeout_seconds": "0 means unlimited.",
+    "http_bridge_threshold_bytes": "Larger requests go to the upstream over HTTP. The group must allow this conversion.",
+    "dynamic_max_conns_by_provider_concurrency_enabled": "Each provider's limit is its concurrency times the matching factor, up to the per-provider maximum. Providers with unlimited concurrency use that maximum.",
+    "pool_target_utilization": "Between 0 and 1. The pool prepares requests ÷ target utilization connections, so lower values keep more spare connections.",
+    "ingress_previous_response_recovery_enabled": "When the upstream cannot find the previous response, retry once without its ID. Requests that carry tool call output return the error."
+  }
+},
+
       title: 'System Settings',
       description: 'Manage registration, email verification, default values, and SMTP settings',
       tabs: {
@@ -744,7 +824,7 @@ export default {
         urlPlaceholder: 'https://example.com/purchase',
         urlHint: 'Must be an absolute http(s) URL',
         iframeWarning:
-          '⚠️ iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.',
+          'iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.',
         integrationDoc: 'Payment Integration Docs',
         integrationDocHint: 'Covers endpoint specs, idempotency semantics, and code samples'
       },

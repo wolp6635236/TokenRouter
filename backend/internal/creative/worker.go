@@ -7,21 +7,8 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
-
-type CreativeOutput = upstream.ImageOutput
-
-// CreativeExecuteResult 是任务执行结果，由 CreativeRunExecutor 返回。
-type CreativeExecuteResult struct {
-	Outputs      []CreativeOutput
-	ProviderID   int64
-	ProviderCost float64
-}
-
-// ErrCreativeExecutionPending 表示任务暂时没有用户或提供商执行槽位，应保留 queued 并重排。
-var ErrCreativeExecutionPending = errors.New("creative execution is pending concurrency admission")
 
 const (
 	DefaultCreativeWorkerLockTTL             = 5 * time.Minute
@@ -36,7 +23,21 @@ const (
 	DefaultCreativeWorkerErrorBackoff        = time.Second
 	DefaultCreativeWorkerReserveBlockTimeout = 5 * time.Second
 	DefaultCreativeConcurrencyRequeueDelay   = time.Second
+
+	defaultCreativeMaxAttempts = 3
 )
+
+// ErrCreativeExecutionPending 表示任务暂时没有用户或提供商执行槽位，应保留 queued 并重排。
+var ErrCreativeExecutionPending = errors.New("creative execution is pending concurrency admission")
+
+type CreativeOutput = upstream.ImageOutput
+
+// CreativeExecuteResult 是任务执行结果，由 CreativeRunExecutor 返回。
+type CreativeExecuteResult struct {
+	Outputs      []CreativeOutput
+	ProviderID   int64
+	ProviderCost float64
+}
 
 // CreativeWorkerOptions 是创作台 worker 的运行参数（全部可由配置覆盖）。
 type CreativeWorkerOptions struct {
@@ -52,6 +53,52 @@ type CreativeWorkerOptions struct {
 	DelayedMoveLimit    int
 	RecoverLimit        int
 	MaxAttempts         int
+}
+
+// CreativeProcessResult 是单次任务处理结果：Terminal 表示任务可 Ack，否则按 RequeueAfter 重排。
+type CreativeProcessResult struct {
+	RequeueAfter time.Duration
+	Terminal     bool
+}
+
+// CreativeRunWorker 是创作台队列 worker：Reserve → 锁 → 执行 → 结算 → Ack/Requeue。
+type CreativeRunWorker struct {
+	queue    CreativeRunQueue
+	repo     CreativeRunRepository
+	store    CreativeTransientStore
+	executor CreativeRunExecutor
+	service  *Results
+	ports    WorkerPorts
+	opts     CreativeWorkerOptions
+	// busy 记录正在处理任务的 worker 数量，供管理端展示当前使用情况。
+	busy atomic.Int32
+}
+
+type creativeLeaseStateKey struct{}
+
+type creativeLeaseState struct {
+	lost atomic.Bool
+}
+
+// ExecutionTarget 隐藏凭据与具体平台，只能执行本次已选提供商的请求。
+type ExecutionTarget interface {
+	Execute(context.Context, CreativeRun, CreativeRunPayload) (*CreativeExecuteResult, error)
+}
+type CreativeExecution struct {
+	Platform      string
+	ProviderID    int64
+	UpstreamModel string
+	Target        ExecutionTarget
+	ReleaseFunc   func()
+}
+type CreativeRunExecutor interface {
+	Prepare(context.Context, CreativeRun) (*CreativeExecution, error)
+	IsRetryable(error) bool
+}
+type WorkerPorts struct {
+	AcquireUser func(context.Context, int64) (func(), bool, error)
+	UserMissing func(error) bool
+	Observe     func(string, ...any)
 }
 
 func NormalizeCreativeWorkerOptions(opts CreativeWorkerOptions) CreativeWorkerOptions {
@@ -94,29 +141,8 @@ func NormalizeCreativeWorkerOptions(opts CreativeWorkerOptions) CreativeWorkerOp
 	return opts
 }
 
-// CreativeProcessResult 是单次任务处理结果：Terminal 表示任务可 Ack，否则按 RequeueAfter 重排。
-type CreativeProcessResult struct {
-	RequeueAfter time.Duration
-	Terminal     bool
-}
-
-// CreativeRunWorker 是创作台队列 worker：Reserve → 锁 → 执行 → 结算 → Ack/Requeue。
-type CreativeRunWorker struct {
-	queue    CreativeRunQueue
-	repo     CreativeRunRepository
-	store    CreativeTransientStore
-	executor CreativeRunExecutor
-	service  *Results
-	ports    WorkerPorts
-	opts     CreativeWorkerOptions
-	// busy 记录正在处理任务的 worker 数量，供管理端展示当前使用情况。
-	busy atomic.Int32
-}
-
-type creativeLeaseStateKey struct{}
-
-type creativeLeaseState struct {
-	lost atomic.Bool
+func NewCreativeRunWorker(queue CreativeRunQueue, repo CreativeRunRepository, store CreativeTransientStore, executor CreativeRunExecutor, results *Results, opts CreativeWorkerOptions, ports WorkerPorts) *CreativeRunWorker {
+	return &CreativeRunWorker{queue: queue, repo: repo, store: store, executor: executor, service: results, opts: NormalizeCreativeWorkerOptions(opts), ports: ports}
 }
 
 // RunUntilStopped 运行一个可优雅排空的 worker；stop 关闭后不再领取新任务。
@@ -520,8 +546,7 @@ func (w *CreativeRunWorker) handleExecuteError(ctx context.Context, runID string
 
 // creativeExecuteErrorParts 把执行错误映射为落库的错误码与消息。
 func creativeExecuteErrorParts(err error) (string, string) {
-	var upstreamErr *CreativeUpstreamError
-	if errors.As(err, &upstreamErr) {
+	if upstreamErr, ok := errors.AsType[*CreativeUpstreamError](err); ok {
 		if upstreamErr.Code != "" {
 			return upstreamErr.Code, upstreamErr.Message
 		}
@@ -608,10 +633,7 @@ func (w *CreativeRunWorker) runJobHeartbeat(ctx context.Context, runID, leaseTok
 }
 
 func (w *CreativeRunWorker) heartbeatInterval() time.Duration {
-	interval := w.opts.JobLockTTL
-	if w.opts.StaleActiveAfter < interval {
-		interval = w.opts.StaleActiveAfter
-	}
+	interval := min(w.opts.StaleActiveAfter, w.opts.JobLockTTL)
 	interval /= 3
 	if interval < time.Second {
 		interval = time.Second
@@ -666,30 +688,6 @@ func (w *CreativeRunWorker) RunStaleActiveRecovery(ctx context.Context) {
 	}
 }
 
-// ExecutionTarget 隐藏凭据与具体平台，只能执行本次已选提供商的请求。
-type ExecutionTarget interface {
-	Execute(context.Context, CreativeRun, CreativeRunPayload) (*CreativeExecuteResult, error)
-}
-type CreativeExecution struct {
-	Platform      string
-	ProviderID    int64
-	UpstreamModel string
-	Target        ExecutionTarget
-	ReleaseFunc   func()
-}
-type CreativeRunExecutor interface {
-	Prepare(context.Context, CreativeRun) (*CreativeExecution, error)
-	IsRetryable(error) bool
-}
-type WorkerPorts struct {
-	AcquireUser func(context.Context, int64) (func(), bool, error)
-	UserMissing func(error) bool
-	Observe     func(string, ...any)
-}
-
-func NewCreativeRunWorker(queue CreativeRunQueue, repo CreativeRunRepository, store CreativeTransientStore, executor CreativeRunExecutor, results *Results, opts CreativeWorkerOptions, ports WorkerPorts) *CreativeRunWorker {
-	return &CreativeRunWorker{queue: queue, repo: repo, store: store, executor: executor, service: results, opts: NormalizeCreativeWorkerOptions(opts), ports: ports}
-}
 func (w *CreativeRunWorker) Options() CreativeWorkerOptions { return w.opts }
 func (w *CreativeRunWorker) warn(event string, values ...any) {
 	if w.ports.Observe != nil {
@@ -705,8 +703,6 @@ func sleepOrDone(ctx context.Context, delay time.Duration) {
 	case <-timer.C:
 	}
 }
-
-const defaultCreativeMaxAttempts = 3
 
 // RunOnce 处理一个队列任务。
 func (w *CreativeRunWorker) RunOnce(ctx context.Context) error {

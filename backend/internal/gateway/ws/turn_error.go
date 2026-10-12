@@ -15,6 +15,18 @@ type FallbackError struct {
 	Err    error
 }
 
+type IngressTurnError struct {
+	stage           string
+	cause           error
+	wroteDownstream bool
+}
+
+// CurrentTurnFailoverError 携带可在替换提供商上重放的当前回合请求。
+type CurrentTurnFailoverError struct {
+	cause        error
+	retryPayload []byte
+}
+
 func (e *FallbackError) Error() string {
 	if e == nil {
 		return ""
@@ -34,18 +46,6 @@ func (e *FallbackError) Unwrap() error {
 
 func WrapFallback(reason string, err error) error {
 	return &FallbackError{Reason: strings.TrimSpace(reason), Err: err}
-}
-
-type IngressTurnError struct {
-	stage           string
-	cause           error
-	wroteDownstream bool
-}
-
-// CurrentTurnFailoverError 携带可在替换提供商上重放的当前回合请求。
-type CurrentTurnFailoverError struct {
-	cause        error
-	retryPayload []byte
 }
 
 func (e *CurrentTurnFailoverError) Error() string {

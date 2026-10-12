@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,23 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// FingerprintIDs 保存统一指纹使用的 ID。
+// resolveCodexFingerprintIDs 生成的实例供请求头和请求体共用，使 turn_id 等随机字段一致。
+// 请求体改写时记录客户端的 client_metadata.session_id，用于识别根级 prompt_cache_key 的默认值。
+// 字段用于同次尝试，并通过 json 标签排除序列化。
+type FingerprintIDs struct {
+	ProviderID                    int64  `json:"-"`
+	Mode                          string `json:"-"`
+	InstallationID                string `json:"-"`
+	SessionID                     string `json:"-"`
+	ThreadID                      string `json:"-"`
+	TurnID                        string `json:"-"`
+	WindowID                      string `json:"-"`
+	TurnStartedAtUnixMs           int64  `json:"-"`
+	OriginalBodySessionID         string `json:"-"`
+	OriginalBodySessionIDCaptured bool   `json:"-"`
+}
 
 // ResolveFingerprintIDs 在原取时和随机 ID 时点建立本次尝试的唯一状态。
 func ResolveFingerprintIDs(providerID int64, seed, clientSessionID, mode string, installation func(string) string, now func() time.Time, newTurnID func() string) *FingerprintIDs {
@@ -58,23 +76,6 @@ func ResolveConvergedThreadID(seed, clientSessionID string) string {
 	}
 	// thread_id 由固定前缀、seed 和客户端会话标识派生，升级时需要保持前缀稳定。
 	return DeriveStableUUIDv4("sub2api:codex-thread-id:v2:" + seed + ":" + clientSessionID)
-}
-
-// FingerprintIDs 保存统一指纹使用的 ID。
-// resolveCodexFingerprintIDs 生成的实例供请求头和请求体共用，使 turn_id 等随机字段一致。
-// 请求体改写时记录客户端的 client_metadata.session_id，用于识别根级 prompt_cache_key 的默认值。
-// 字段用于同次尝试，并通过 json 标签排除序列化。
-type FingerprintIDs struct {
-	ProviderID                    int64  `json:"-"`
-	Mode                          string `json:"-"`
-	InstallationID                string `json:"-"`
-	SessionID                     string `json:"-"`
-	ThreadID                      string `json:"-"`
-	TurnID                        string `json:"-"`
-	WindowID                      string `json:"-"`
-	TurnStartedAtUnixMs           int64  `json:"-"`
-	OriginalBodySessionID         string `json:"-"`
-	OriginalBodySessionIDCaptured bool   `json:"-"`
 }
 
 // ExtractClientSessionID 从请求头中提取客户端原始的会话标识。
@@ -134,9 +135,7 @@ func RewriteCodexTurnMetadataFields(h http.Header, fields map[string]any) {
 	if err := json.Unmarshal([]byte(raw), &metadata); err != nil || metadata == nil {
 		metadata = make(map[string]any, len(fields))
 	}
-	for k, v := range fields {
-		metadata[k] = v
-	}
+	maps.Copy(metadata, fields)
 	rebuilt, err := json.Marshal(metadata)
 	if err != nil {
 		return
@@ -326,9 +325,7 @@ func RewriteClientMetadataEmbeddedTurnMetadata(clientMetadata map[string]any, fi
 	if err := json.Unmarshal([]byte(raw), &metadata); err != nil || metadata == nil {
 		metadata = make(map[string]any, len(fields))
 	}
-	for k, v := range fields {
-		metadata[k] = v
-	}
+	maps.Copy(metadata, fields)
 	if rebuilt, err := json.Marshal(metadata); err == nil {
 		clientMetadata["x-codex-turn-metadata"] = string(rebuilt)
 	}

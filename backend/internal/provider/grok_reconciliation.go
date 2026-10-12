@@ -10,35 +10,6 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// GrokReconciliationOptions 只提供提供商存储、共用平台执行器和失效观察接口。
-type GrokReconciliationOptions struct {
-	Pager            OAuthRefreshCandidatePager
-	Reader           RefreshRepository
-	ConditionalError GrokOAuthConditionalErrorWriter
-	Execution        func() *RefreshProviderExecution
-	PrepareFailure   func(*Record) func(time.Time, string)
-	Invalidate       func(context.Context, *Record) error
-	Now              func() time.Time
-	Skew             time.Duration
-}
-
-// GrokReconciliationService 拥有管理对账的分类、分页、逐条结果与可等待的生命周期。
-type GrokReconciliationService struct {
-	options  GrokReconciliationOptions
-	activity operationActivity
-}
-
-func NewGrokReconciliationService(options GrokReconciliationOptions) *GrokReconciliationService {
-	if options.Now == nil {
-		options.Now = time.Now
-	}
-	return &GrokReconciliationService{options: options}
-}
-
-func (s *GrokReconciliationService) StopContext(ctx context.Context) error {
-	return s.activity.stop(ctx, "Grok provider reconciliation")
-}
-
 const (
 	DefaultGrokOAuthReconcilePageSize = 50
 	MaxGrokOAuthReconcilePageSize     = 500
@@ -80,6 +51,24 @@ var (
 	)
 )
 
+// GrokReconciliationOptions 只提供提供商存储、共用平台执行器和失效观察接口。
+type GrokReconciliationOptions struct {
+	Pager            OAuthRefreshCandidatePager
+	Reader           RefreshRepository
+	ConditionalError GrokOAuthConditionalErrorWriter
+	Execution        func() *RefreshProviderExecution
+	PrepareFailure   func(*Record) func(time.Time, string)
+	Invalidate       func(context.Context, *Record) error
+	Now              func() time.Time
+	Skew             time.Duration
+}
+
+// GrokReconciliationService 拥有管理对账的分类、分页、逐条结果与可等待的生命周期。
+type GrokReconciliationService struct {
+	options  GrokReconciliationOptions
+	activity operationActivity
+}
+
 // GrokOAuthReconciler 是面向管理端的窄化对账接口。
 type GrokOAuthReconciler interface {
 	ReconcileGrokOAuth(ctx context.Context, input GrokOAuthReconcileInput) (*GrokOAuthReconcileResult, error)
@@ -119,6 +108,17 @@ type GrokOAuthReconcileResult struct {
 	Items        []GrokOAuthReconcileItem `json:"items"`
 	NextAfterID  int64                    `json:"next_after_id"`
 	HasMore      bool                     `json:"has_more"`
+}
+
+func NewGrokReconciliationService(options GrokReconciliationOptions) *GrokReconciliationService {
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	return &GrokReconciliationService{options: options}
+}
+
+func (s *GrokReconciliationService) StopContext(ctx context.Context) error {
+	return s.activity.stop(ctx, "Grok provider reconciliation")
 }
 
 func (s *GrokReconciliationService) ReconcileGrokOAuth(ctx context.Context, input GrokOAuthReconcileInput) (*GrokOAuthReconcileResult, error) {

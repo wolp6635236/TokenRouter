@@ -13,10 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-	"github.com/tidwall/gjson"
 )
 
 const debugGatewayBodyDefaultFilename = "gateway_debug.log"
@@ -188,21 +189,19 @@ func (s *Trace) open(path string) {
 	}
 
 	// 如果 path 指向一个已存在的目录，自动追加默认文件名
-	//nolint:gosec // 调试日志路径来自管理员环境变量，允许显式指定。
+
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		path = filepath.Join(path, debugGatewayBodyDefaultFilename)
 	}
 
 	// 确保父目录存在
 	if dir := filepath.Dir(path); dir != "." {
-		//nolint:gosec // 调试日志路径来自管理员环境变量，允许显式指定。
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			slog.Error("failed to create gateway debug log directory", "dir", dir, "error", err)
 			return
 		}
 	}
 
-	//nolint:gosec // 调试日志路径来自管理员环境变量，允许显式指定。
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		slog.Error("failed to open gateway debug log file", "path", path, "error", err)

@@ -27,6 +27,11 @@ type localBackupPart struct {
 	SHA256    string
 }
 
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
 // spoolNextBackupPart 只落盘一个有界分卷，并通过 bufio.Peek 判断后续是否还有数据。
 // 调用方必须在使用完返回路径后删除临时文件。
 func spoolNextBackupPart(ctx context.Context, src *bufio.Reader, index int, partSize int64) (part localBackupPart, hasPart bool, hasMore bool, err error) {
@@ -75,11 +80,6 @@ func spoolNextBackupPart(ctx context.Context, src *bufio.Reader, index int, part
 		SizeBytes: written,
 		SHA256:    hex.EncodeToString(hash.Sum(nil)),
 	}, true, hasMore, nil
-}
-
-type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
 }
 
 // Read 在每次读取前检查取消信号，避免临时卷写入阶段忽略任务超时。

@@ -10,14 +10,22 @@ import (
 
 	entsql "entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqljson"
+	"github.com/lib/pq"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	dbpredicate "github.com/TokenFlux/TokenRouter/ent/predicate"
 	dbprovider "github.com/TokenFlux/TokenRouter/ent/provider"
 	dbprovidergroup "github.com/TokenFlux/TokenRouter/ent/providergroup"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	acctcore "github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/lib/pq"
 )
+
+type ProviderGroupQueryOptions struct {
+	status               string
+	schedulable          bool
+	ignoreTransientState bool
+	platforms            []string // 允许的多个平台，空切片表示不进行平台过滤
+}
 
 func (r *ProviderStore) GetByCRSAccountID(ctx context.Context, crsProviderID string) (*acctcore.Record, error) {
 	if crsProviderID == "" {
@@ -671,13 +679,6 @@ func (r *ProviderStore) QueryProvidersByGroup(ctx context.Context, groupID int64
 	}
 
 	return r.RecordsFromEntities(ctx, providers)
-}
-
-type ProviderGroupQueryOptions struct {
-	status               string
-	schedulable          bool
-	ignoreTransientState bool
-	platforms            []string // 允许的多个平台，空切片表示不进行平台过滤
 }
 
 func ProviderListOrder(params pagination.PaginationParams) []func(*entsql.Selector) {

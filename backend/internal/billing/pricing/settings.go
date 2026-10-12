@@ -66,7 +66,7 @@ func parseMinutes(hhmm string) (int, bool) {
 		return 0, false
 	}
 	hour := 0
-	for i := 0; i < colon; i++ {
+	for i := range colon {
 		digit := hhmm[i] - '0'
 		if digit > 9 {
 			return 0, false
@@ -90,19 +90,19 @@ func parseMinutes(hhmm string) (int, bool) {
 //   - 调用方先将时刻转换到日期对象的时区
 //
 // 该方法是纯函数，不读取任何外部状态，便于单测。
-func (g *BillingSettings) PeakMultiplierAt(now time.Time) float64 {
-	if g == nil || !g.PeakRateEnabled || g.PeakStart == "" || g.PeakEnd == "" {
+func (s *BillingSettings) PeakMultiplierAt(now time.Time) float64 {
+	if s == nil || !s.PeakRateEnabled || s.PeakStart == "" || s.PeakEnd == "" {
 		return 1.0
 	}
-	start, ok1 := parseMinutes(g.PeakStart)
-	end, ok2 := parseMinutes(g.PeakEnd)
+	start, ok1 := parseMinutes(s.PeakStart)
+	end, ok2 := parseMinutes(s.PeakEnd)
 	if !ok1 || !ok2 || start >= end {
 		return 1.0
 	}
 	t := now
 	cur := t.Hour()*60 + t.Minute()
 	if cur >= start && cur < end {
-		return g.PeakRateMultiplier
+		return s.PeakRateMultiplier
 	}
 	return 1.0
 }

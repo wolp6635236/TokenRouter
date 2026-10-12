@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockErrorPassthroughRepo 用于测试的 mock repository
+// mockErrorPassthroughRepo 用于测试的 mock repository。
 type mockErrorPassthroughRepo struct {
 	rules     []*ErrorPassthroughRule
 	listErr   error
@@ -27,6 +29,22 @@ type mockErrorPassthroughCache struct {
 	setCalled        int
 	invalidateCalled int
 	notifyCalled     int
+}
+
+// controlledRules 用通道控制读取与更新的执行顺序。
+type controlledRules struct {
+	ErrorPassthroughRepository
+	mu      sync.Mutex
+	current *ErrorPassthroughRule
+	entered chan struct{}
+	resume  chan struct{}
+	block   bool
+}
+
+type callbackRuleCache struct {
+	ErrorPassthroughCache
+	callback func()
+	done     chan struct{}
 }
 
 func newMockErrorPassthroughCache(rules []*ErrorPassthroughRule, hasData bool) *mockErrorPassthroughCache {
@@ -130,7 +148,7 @@ func (m *mockErrorPassthroughRepo) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// newTestService 创建测试用的服务实例
+// newTestService 创建测试用的服务实例。
 func newTestService(rules []*ErrorPassthroughRule) *ErrorPassthroughService {
 	repo := &mockErrorPassthroughRepo{rules: rules}
 	svc := &ErrorPassthroughService{
@@ -142,7 +160,7 @@ func newTestService(rules []*ErrorPassthroughRule) *ErrorPassthroughService {
 	return svc
 }
 
-// newCachedRuleForTest 从 ErrorPassthroughRule 创建 cachedPassthroughRule（测试用）
+// newCachedRuleForTest 从 ErrorPassthroughRule 创建 cachedPassthroughRule（测试用）。
 func newCachedRuleForTest(rule *ErrorPassthroughRule) *cachedPassthroughRule {
 	cr := &cachedPassthroughRule{ErrorPassthroughRule: rule}
 	if len(rule.Keywords) > 0 {
@@ -165,8 +183,6 @@ func newCachedRuleForTest(rule *ErrorPassthroughRule) *cachedPassthroughRule {
 	}
 	return cr
 }
-
-// 测试 ruleMatchesOptimized 的匹配规则。
 
 func TestRuleMatches_NoConditions(t *testing.T) {
 	// 没有配置任何条件时，不应该匹配
@@ -360,10 +376,6 @@ func TestRuleMatches_BothConditions_AllMode(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// 测试 platformMatchesCached 平台匹配逻辑
-// =============================================================================
-
 func TestPlatformMatches(t *testing.T) {
 	svc := newTestService(nil)
 
@@ -427,10 +439,6 @@ func TestPlatformMatches(t *testing.T) {
 		})
 	}
 }
-
-// =============================================================================
-// 测试 MatchRule 完整匹配流程
-// =============================================================================
 
 func TestMatchRule_Priority(t *testing.T) {
 	// 测试规则按优先级排序，优先级小的先匹配
@@ -609,8 +617,6 @@ func TestMatchRule_CaseInsensitiveKeyword(t *testing.T) {
 	}
 }
 
-// 测试完整错误响应中的规则匹配。
-
 func TestMatchRule_RealWorldScenario_ContextLimitPassthrough(t *testing.T) {
 	// 场景：上游返回 422 + "context limit has been reached"，需要透传给客户端
 	rules := []*ErrorPassthroughRule{
@@ -696,10 +702,6 @@ func TestMatchRule_RealWorldScenario_CustomErrorMessage(t *testing.T) {
 	assert.False(t, matched.PassthroughBody)
 	assert.Equal(t, customMsg, *matched.CustomMessage)
 }
-
-// =============================================================================
-// 测试 Validate
-// =============================================================================
 
 func TestErrorPassthroughRule_Validate(t *testing.T) {
 	tests := []struct {
@@ -849,10 +851,6 @@ func TestErrorPassthroughRule_Validate(t *testing.T) {
 		})
 	}
 }
-
-// =============================================================================
-// 测试写路径缓存刷新（Create/Update/Delete）
-// =============================================================================
 
 func TestCreate_ForceRefreshCacheAfterWrite(t *testing.T) {
 	ctx := context.Background()
@@ -1005,5 +1003,149 @@ func newPassthroughRuleForWritePathTest(id int64, keyword, customMsg string) *Er
 }
 
 // testIntPtr 返回测试用整数指针。
-func testIntPtr(i int) *int       { return &i }
+func testIntPtr(i int) *int { return &i }
+
 func testStrPtr(s string) *string { return &s }
+
+func (r *controlledRules) List(ctx context.Context) ([]*ErrorPassthroughRule, error) {
+	r.mu.Lock()
+	snapshot := cloneRule(r.current)
+	block := r.block
+	r.block = false
+	r.mu.Unlock()
+	if block {
+		close(r.entered)
+		select {
+		case <-r.resume:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return []*ErrorPassthroughRule{snapshot}, nil
+}
+
+func (r *controlledRules) Update(_ context.Context, rule *ErrorPassthroughRule) (*ErrorPassthroughRule, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.current = cloneRule(rule)
+	return cloneRule(rule), nil
+}
+
+func fixtureRule() *ErrorPassthroughRule {
+	message := "original"
+	code := 502
+	return &ErrorPassthroughRule{ID: 1, Name: "fixture", Enabled: true, MatchMode: MatchModeAny, ErrorCodes: []int{503}, ResponseCode: &code, CustomMessage: &message, Keywords: []string{}, Platforms: []string{"openai"}}
+}
+
+func blockedRules() *controlledRules {
+	return &controlledRules{current: fixtureRule(), entered: make(chan struct{}), resume: make(chan struct{}), block: true}
+}
+
+// TestRuleUpdateCannotBeOverwrittenByOlderLoad 检查回源和管理写入按顺序发布，禁用后的缓存保持最新规则。
+func TestRuleUpdateCannotBeOverwrittenByOlderLoad(t *testing.T) {
+	repo := blockedRules()
+	svc := NewErrorPassthroughService(repo, nil)
+	defer svc.Stop()
+	loaded := make(chan error, 1)
+	go func() { loaded <- svc.reloadRulesFromDB(context.Background()) }()
+	<-repo.entered
+	changed := fixtureRule()
+	changed.Enabled = false
+	updated := make(chan error, 1)
+	go func() { _, err := svc.Update(context.Background(), changed); updated <- err }()
+	close(repo.resume)
+	require.NoError(t, <-loaded)
+	require.NoError(t, <-updated)
+	require.Nil(t, svc.MatchRule("openai", 503, nil))
+	// 反向顺序同样保留最新状态，后续回源读取权威的新值。
+	require.NoError(t, svc.reloadRulesFromDB(context.Background()))
+	require.Nil(t, svc.MatchRule("openai", 503, nil))
+}
+
+func TestRuleUpdateCoordinatorWaitHonorsCancellation(t *testing.T) {
+	repo := blockedRules()
+	svc := NewErrorPassthroughService(repo, nil)
+	defer svc.Stop()
+	loaded := make(chan error, 1)
+	go func() { loaded <- svc.reloadRulesFromDB(context.Background()) }()
+	<-repo.entered
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	changed := fixtureRule()
+	changed.Enabled = false
+	_, err := svc.Update(ctx, changed)
+	close(repo.resume)
+	require.NoError(t, <-loaded)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotNil(t, svc.MatchRule("openai", 503, nil), "未成功写入不能发布禁用状态")
+}
+
+// TestRuleSnapshotOwnership 验证输入、结果和嵌套响应动作均与已编译快照独立。
+func TestRuleSnapshotOwnership(t *testing.T) {
+	source := fixtureRule()
+	svc := NewErrorPassthroughService(nil, nil)
+	defer svc.Stop()
+	svc.setLocalCache([]*ErrorPassthroughRule{source})
+	*source.CustomMessage = "input mutation"
+	source.Platforms[0] = "other"
+	source.ErrorCodes[0] = 400
+	first := svc.MatchRule("openai", 503, nil)
+	require.NotNil(t, first)
+	require.Equal(t, "original", *first.CustomMessage)
+	first.Enabled = false
+	*first.CustomMessage = "output mutation"
+	*first.ResponseCode = 418
+	first.Keywords = append(first.Keywords, "changed")
+	second := svc.MatchRule("openai", 503, nil)
+	require.NotNil(t, second)
+	require.Equal(t, "original", *second.CustomMessage)
+	require.Equal(t, 502, *second.ResponseCode)
+	require.NotNil(t, second.Keywords)
+	require.Empty(t, second.Keywords)
+}
+
+// TestStopCancelsStartupRuleLoad 验证运行取消能够到达启动中的数据库调用，Stop 不必等外部释放夹具。
+func TestStopCancelsStartupRuleLoad(t *testing.T) {
+	repo := blockedRules()
+	svc := NewErrorPassthroughService(repo, nil)
+	started := make(chan error, 1)
+	go func() { started <- svc.StartContext(context.Background()) }()
+	<-repo.entered
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, svc.StopContext(ctx))
+	require.ErrorIs(t, <-started, context.Canceled)
+	require.NoError(t, svc.StopContext(ctx))
+	require.NoError(t, svc.StartContext(ctx))
+}
+
+func (c *callbackRuleCache) Get(context.Context) ([]*ErrorPassthroughRule, bool) { return nil, false }
+
+func (c *callbackRuleCache) Set(context.Context, []*ErrorPassthroughRule) error { return nil }
+
+func (c *callbackRuleCache) SubscribeUpdates(_ context.Context, callback func()) {
+	c.callback = callback
+}
+
+func (c *callbackRuleCache) StopSubscription() {
+	if c.done != nil {
+		<-c.done
+	}
+}
+
+func TestStopCancelsSubscriptionRuleLoad(t *testing.T) {
+	repo := blockedRules()
+	repo.block = false
+	cache := &callbackRuleCache{}
+	svc := NewErrorPassthroughService(repo, cache)
+	require.NoError(t, svc.StartContext(context.Background()))
+	repo.mu.Lock()
+	repo.block = true
+	repo.mu.Unlock()
+	cache.done = make(chan struct{})
+	go func() { cache.callback(); close(cache.done) }()
+	<-repo.entered
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, svc.StopContext(ctx))
+}

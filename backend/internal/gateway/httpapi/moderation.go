@@ -5,21 +5,30 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
+)
+
+const (
+	CyberWarningRecordedKey      = "openai_cyber_warning_recorded"
+	CyberWarningSnapshotKey      = "openai_cyber_warning_snapshot"
+	CyberWarningPromptExcerptKey = "openai_cyber_warning_prompt_excerpt"
 )
 
 type ModerationEndpoints interface {
 	Inbound(*gin.Context) string
 	Forced(*gin.Context) (string, bool)
 }
+
 type ModerationPort interface {
 	Check(context.Context, moderation.ContentModerationCheckInput) (*moderation.ContentModerationDecision, error)
 	RecordCyberWarning(context.Context, moderation.ContentModerationCyberWarningInput) (*moderation.ContentModerationCyberWarning, error)
@@ -27,11 +36,10 @@ type ModerationPort interface {
 	CyberSessionBlockGroupInScope(context.Context, *int64) (bool, error)
 }
 
-const (
-	CyberWarningRecordedKey      = "openai_cyber_warning_recorded"
-	CyberWarningSnapshotKey      = "openai_cyber_warning_snapshot"
-	CyberWarningPromptExcerptKey = "openai_cyber_warning_prompt_excerpt"
-)
+type ContentModerationIdentity = moderationflow.Identity
+
+// GatewayModerationEndpoints 读取请求路由和强制平台。
+type GatewayModerationEndpoints struct{}
 
 func ContentModerationStatus(decision *moderation.ContentModerationDecision) int {
 	if decision == nil || decision.StatusCode < 400 || decision.StatusCode > 599 {
@@ -259,8 +267,6 @@ func BuildContentModerationInput(endpoints ModerationEndpoints, c *gin.Context, 
 	return input
 }
 
-type ContentModerationIdentity = moderationflow.Identity
-
 func ResolveContentModerationIdentity(key *apikey.APIKey, subject authctx.AuthSubject) ContentModerationIdentity {
 	return moderationflow.ResolveIdentity(key, subject.UserID)
 }
@@ -288,4 +294,10 @@ func ContentModerationRequestID(ctx context.Context) string {
 		return strings.TrimSpace(requestID)
 	}
 	return ""
+}
+
+func (GatewayModerationEndpoints) Inbound(c *gin.Context) string { return GetInboundEndpoint(c) }
+
+func (GatewayModerationEndpoints) Forced(c *gin.Context) (string, bool) {
+	return keyhttp.GetForcePlatformFromContext(c)
 }

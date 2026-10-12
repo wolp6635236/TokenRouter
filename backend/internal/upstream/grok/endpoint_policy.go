@@ -73,3 +73,30 @@ func BuildVoiceEndpointURL(base string, endpoint string, validator BaseURLValida
 	}
 	return strings.TrimRight(validated, "/") + "/" + strings.Join(encoded, "/"), nil
 }
+
+// ResolveProviderBaseURL 归一化 OAuth 官方地址，并使用配置的中继地址。
+// 调用方在构造请求时按出站策略校验目标。
+func ResolveProviderBaseURL(oauth bool, configured, fallback string) string {
+	fallback = strings.TrimRight(strings.TrimSpace(fallback), "/")
+	if fallback == "" {
+		if oauth {
+			fallback = DefaultCLIBaseURL
+		} else {
+			fallback = DefaultBaseURL
+		}
+	}
+	base := strings.TrimSpace(configured)
+	if base == "" {
+		return fallback
+	}
+	if !oauth {
+		return base
+	}
+	if validated, err := ValidateTrustedBaseURL(base); err == nil {
+		return validated
+	}
+	if parsed, err := url.Parse(base); err == nil && parsed.Scheme != "" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" {
+		return strings.TrimRight(base, "/")
+	}
+	return fallback
+}

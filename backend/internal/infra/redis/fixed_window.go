@@ -10,17 +10,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// FixedWindowLimiter 使用外层提供的键前缀，保持 Lua 计数的原子边界。
-type FixedWindowLimiter struct {
-	redis  *redis.Client
-	prefix string
-}
-
-// NewFixedWindowLimiter 构造固定窗口计数器；客户端生命周期仍由应用负责。
-func NewFixedWindowLimiter(client *redis.Client, prefix string) *FixedWindowLimiter {
-	return &FixedWindowLimiter{redis: client, prefix: prefix}
-}
-
 var rateLimitScript = redis.NewScript(`
 local current = redis.call('INCR', KEYS[1])
 local ttl = redis.call('PTTL', KEYS[1])
@@ -33,6 +22,26 @@ elseif ttl == -1 then
 end
 return {current, repaired}
 `)
+
+// FixedWindowLimiter 使用外层提供的键前缀，保持 Lua 计数的原子边界。
+type FixedWindowLimiter struct {
+	redis  *redis.Client
+	prefix string
+}
+
+type allowResult struct {
+	// Allowed 是否放行
+	Allowed bool
+	// Count 当前窗口内累计请求数（含本次）
+	Count int64
+	// RetryAfter 超限时距窗口重置的剩余时间（尽力而为；PTTL 不可用时回退为完整窗口）
+	RetryAfter time.Duration
+}
+
+// NewFixedWindowLimiter 构造固定窗口计数器；客户端生命周期仍由应用负责。
+func NewFixedWindowLimiter(client *redis.Client, prefix string) *FixedWindowLimiter {
+	return &FixedWindowLimiter{redis: client, prefix: prefix}
+}
 
 func runFixedWindowScript(ctx context.Context, client *redis.Client, key string, windowMillis int64) (int64, bool, error) {
 	values, err := rateLimitScript.Run(ctx, client, []string{key}, windowMillis).Slice()
@@ -51,15 +60,6 @@ func runFixedWindowScript(ctx context.Context, client *redis.Client, key string,
 		return 0, false, err
 	}
 	return count, repaired == 1, nil
-}
-
-type allowResult struct {
-	// Allowed 是否放行
-	Allowed bool
-	// Count 当前窗口内累计请求数（含本次）
-	Count int64
-	// RetryAfter 超限时距窗口重置的剩余时间（尽力而为；PTTL 不可用时回退为完整窗口）
-	RetryAfter time.Duration
 }
 
 // Allow 对给定 key（不含 "rate_limit:" 前缀）执行一次固定窗口计数判定。

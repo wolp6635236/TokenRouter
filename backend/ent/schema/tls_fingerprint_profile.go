@@ -1,13 +1,13 @@
 package schema
 
 import (
-	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
+
+	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
 // TLSFingerprintProfile 定义 TLS 指纹配置模板的 schema。

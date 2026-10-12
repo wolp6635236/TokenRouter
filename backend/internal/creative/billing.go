@@ -9,18 +9,33 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
-// 创作台计费请求 ID 前缀：全部经由 usage_billing_dedup 幂等表去重，
-// 同一 runID 的同一操作（hold/capture/release）重试不会产生重复资金动作。
 const (
+	// 创作台计费请求 ID 前缀：全部经由 usage_billing_dedup 幂等表去重，
+	// 同一 runID 的同一操作（hold/capture/release）重试不会产生重复资金动作。
 	creativeHoldRequestPrefix       = "creative_hold:"
 	creativeCaptureRequestPrefix    = "creative_capture:"
 	creativeReleaseRequestPrefix    = "creative_release:"
 	creativeSettlementRequestPrefix = "creative_settle:"
+
+	// creativePricingSnapshotVersion 标识按基础金额分配的计费快照版本。
+	// 创作台没有批量折扣与提供商倍率：scale 固定为 1，hold 与结算同价。
+	creativePricingSnapshotVersion = 2
+
+	// FundingScope 标识创作台任务的资金操作范围。
+	FundingScope billing.TaskScope = "creative"
 )
 
-// creativePricingSnapshotVersion 采用与批量图片第二版一致的按基础金额分配语义。
-// 创作台没有批量折扣与提供商倍率：scale 固定为 1，hold 与结算同价。
-const creativePricingSnapshotVersion = 2
+// FundingStore 提供任务资金的预占、捕获和释放操作。
+type FundingStore interface {
+	Reserve(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
+	Capture(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
+	Release(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
+}
+
+type Funding struct {
+	Store   FundingStore
+	Observe func(string, ...any)
+}
 
 func CreativeHoldRequestID(runID string) string {
 	return creativeHoldRequestPrefix + strings.TrimSpace(runID)
@@ -101,7 +116,7 @@ func (funding Funding) Reserve(ctx context.Context, run *CreativeRun) error {
 	if err != nil {
 		return err
 	}
-	// 预占阶段按新任务预记语义统计 API Key/成员额度，并在任务行上落预记标记；
+	// 预占阶段统计 API Key 和成员额度，并在任务行上记录预记标记。
 	// 捕获/释放阶段则使用任务行上持久化的 run.AllowanceReserved。
 	cmd.AllowanceReserved = true
 	result, err := funding.Store.Reserve(ctx, cmd)
@@ -123,7 +138,7 @@ func (funding Funding) Reserve(ctx context.Context, run *CreativeRun) error {
 		run.HoldAmount = &holdAmount
 		run.EstimatedCost = result.EstimatedAmountUSD
 	}
-	// 预占成功后同步更新内存快照，后续创建失败回滚必须携带真实 allowance 状态。
+	// 预占成功后更新内存快照，创建失败回滚使用此时的 allowance 状态。
 	run.AllowanceReserved = true
 	return nil
 }
@@ -149,7 +164,7 @@ func (funding Funding) Capture(ctx context.Context, run *CreativeRun, successCou
 }
 
 // Release 释放未消耗的冻结（失败/取消/结果丢失路径，幂等）。
-// 与批量图片一致：同 request id 的指纹冲突视为已释放，避免毒消息循环。
+// 同 request id 的指纹冲突视为已释放，结束该消息的重试。
 func (funding Funding) Release(ctx context.Context, run *CreativeRun) error {
 	if funding.Store == nil || run == nil {
 		return nil
@@ -177,17 +192,6 @@ func (funding Funding) Release(ctx context.Context, run *CreativeRun) error {
 	return nil
 }
 
-// FundingStore 是任务资金动作端口，生产由唯一 billing.Funds 实现。
-type FundingStore interface {
-	Reserve(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
-	Capture(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
-	Release(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
-}
-type Funding struct {
-	Store   FundingStore
-	Observe func(string, ...any)
-}
-
 func cloneBillingAllocations(values []billing.BillingAllocation) []billing.BillingAllocation {
 	if values == nil {
 		return nil
@@ -207,4 +211,10 @@ func batchImageSubscriptionAllocations(values []billing.BillingAllocation) []bil
 		}
 	}
 	return out
+}
+
+// FundingReference 返回任务资金引用和预占请求 ID。
+func FundingReference(id string) billing.TaskReference {
+	id = strings.TrimSpace(id)
+	return billing.TaskReference{Scope: FundingScope, ID: id, ReserveRequestID: CreativeHoldRequestID(id)}
 }

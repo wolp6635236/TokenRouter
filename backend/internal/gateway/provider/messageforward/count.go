@@ -6,14 +6,12 @@ import (
 	"net/http"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
 // countAttempt 保存计数请求句柄并复用请求准备操作。

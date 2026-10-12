@@ -11,6 +11,7 @@ type ManagedKeyStore interface {
 	GetManagedKeyByUserAndGroup(context.Context, int64, int64, string) (*APIKey, error)
 	CreateManagedKey(context.Context, *APIKey) error
 }
+
 type ManagedKeys struct {
 	Store      ManagedKeyStore
 	Prefix     string

@@ -237,11 +237,11 @@ func (s *OrderLifecycle) ApplyQueriedPaymentStatus(ctx context.Context, o *Order
 		}
 		notificationTradeNo := o.PaymentTradeNo
 		if upstreamTradeNo := strings.TrimSpace(resp.TradeNo); PaymentOrderShouldPersistUpstreamTradeNo(queryRef, upstreamTradeNo, notificationTradeNo) {
-			if updateErr := s.store.SaveUpstreamTradeNumber(ctx, o.ID, upstreamTradeNo); updateErr != nil {
+			updateErr := s.store.SaveUpstreamTradeNumber(ctx, o.ID, upstreamTradeNo)
+			if updateErr != nil {
 				return LifecycleCheckPaidResultAlreadyPaid, fmt.Errorf("persist upstream trade no during checkPaid: %w", updateErr)
-			} else {
-				o.PaymentTradeNo = upstreamTradeNo
 			}
+			o.PaymentTradeNo = upstreamTradeNo
 			notificationTradeNo = upstreamTradeNo
 		}
 		if err := s.HandlePaymentNotification(ctx, &PaymentNotification{
@@ -575,7 +575,7 @@ func (s *OrderLifecycle) NextReconcilePageIDs(ids []int64, cursor *uint64, limit
 
 	pageIDs := ReconcilePageIDs(ids, *cursor, limit)
 	if len(ids) > limit {
-		*cursor = *cursor + 1
+		*cursor++
 	}
 	return pageIDs
 }
@@ -592,10 +592,7 @@ func ReconcilePageIDs(ids []int64, cursor uint64, limit int) []int64 {
 	pageCount := (len(ids) + limit - 1) / limit
 	page := int(cursor % uint64(pageCount))
 	start := page * limit
-	end := start + limit
-	if end > len(ids) {
-		end = len(ids)
-	}
+	end := min(start+limit, len(ids))
 	return append([]int64(nil), ids[start:end]...)
 }
 

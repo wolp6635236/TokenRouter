@@ -3,16 +3,13 @@
 package app
 
 import (
-	providerauth "github.com/TokenFlux/TokenRouter/internal/provider"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
-	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
-
-	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-
-	providerredis "github.com/TokenFlux/TokenRouter/internal/provider/rediscache"
-
 	"github.com/google/wire"
+
+	providerauth "github.com/TokenFlux/TokenRouter/internal/provider"
+	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
+	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	providerredis "github.com/TokenFlux/TokenRouter/internal/provider/rediscache"
 )
 
 // providerAssemblyProviders 汇总 provider 模块的 Wire provider。

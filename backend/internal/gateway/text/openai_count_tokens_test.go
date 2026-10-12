@@ -20,6 +20,7 @@ func (p *singleCountProbe) Select() (bool, error) {
 }
 func (p *singleCountProbe) Selected()             { p.events = append(p.events, "latency") }
 func (p *singleCountProbe) SelectionFailed(error) { p.events = append(p.events, "selection-failed") }
+
 func (p *singleCountProbe) Forward() error {
 	p.events = append(p.events, "forward")
 	return p.forwardErr

@@ -3,6 +3,7 @@ package composite
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
@@ -58,9 +59,7 @@ func (s *Runtime) PrepareSettingsWithAuthSourceDefaults(ctx context.Context, val
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range authValues {
-		values[key] = value
-	}
+	maps.Copy(values, authValues)
 	omitted.DropFrom(values)
 	return values, nil
 }

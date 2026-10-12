@@ -6,16 +6,35 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
+)
+
+const (
+	oauthIntentBindCurrentUser    = "bind_current_user"
+	linuxDoOAuthDefaultRedirectTo = "/dashboard"
+	linuxDoOAuthMaxRedirectLen    = 2048
+
+	OauthPendingBrowserCookiePath = "/api/v1/auth/oauth"
+	OauthPendingBrowserCookieName = "oauth_pending_browser_session"
+	OauthPendingSessionCookiePath = "/api/v1/auth/oauth"
+	OauthPendingSessionCookieName = "oauth_pending_session"
+	OauthPromoCodeCookieName      = "oauth_promo_code"
+	OauthPendingCookieMaxAgeSec   = 10 * 60
+	OauthPendingChoiceStep        = identity.OAuthPendingChoiceStep
+
+	OauthCompletionResponseKey = identity.OAuthCompletionResponseKey
+	OauthPromoCodeStateKey     = identity.OAuthPromoCodeStateKey
 )
 
 // PendingHTTPOptions 包含 HTTP 回调和测试观察函数。
@@ -31,56 +50,6 @@ type PendingHandler struct {
 	flow           *identity.PendingFlow
 	pendingOptions PendingHTTPOptions
 }
-
-func NewPendingHandler(session *SessionHandler, flow *identity.PendingFlow, options PendingHTTPOptions) *PendingHandler {
-	return &PendingHandler{session, flow, options}
-}
-func (h *PendingHandler) pendingFlow() *identity.PendingFlow { return h.flow }
-func (h *PendingHandler) pendingIdentityService() (identity.PendingStore, error) {
-	if !h.flow.Available() {
-		return nil, infraerrors.ServiceUnavailable("PENDING_AUTH_NOT_READY", "pending auth service is not ready")
-	}
-	return h.flow.Store, nil
-}
-
-func (h *PendingHandler) isForceEmailOnThirdPartySignup(ctx context.Context) bool {
-	return h.pendingOptions.ForceEmailOnSignup != nil && h.pendingOptions.ForceEmailOnSignup(ctx)
-}
-
-func (h *PendingHandler) ensurePendingOAuthAdoptionDecision(c *gin.Context, id int64, r OauthAdoptionDecisionRequest) (*identity.IdentityAdoptionDecision, error) {
-	return h.flow.AdoptionDecision(c.Request.Context(), id, identity.OAuthAdoptionChoice{AdoptDisplayName: r.AdoptDisplayName, AdoptAvatar: r.AdoptAvatar}, true)
-}
-
-func (h *PendingHandler) upsertPendingOAuthAdoptionDecision(c *gin.Context, id int64, r OauthAdoptionDecisionRequest) (*identity.IdentityAdoptionDecision, error) {
-	return h.flow.AdoptionDecision(c.Request.Context(), id, identity.OAuthAdoptionChoice{AdoptDisplayName: r.AdoptDisplayName, AdoptAvatar: r.AdoptAvatar}, false)
-}
-
-func (h *PendingHandler) transitionPendingOAuthAccountToChoiceState(c *gin.Context, p *identity.PendingAuthSession, u *identity.User, email string) (*identity.PendingAuthSession, error) {
-	return h.flow.TransitionAccountToChoice(c.Request.Context(), p, u, email)
-}
-
-func (h *PendingHandler) shouldSkipPendingOAuthAdoptionPrompt(ctx context.Context, p *identity.PendingAuthSession, state map[string]any) (bool, error) {
-	return h.flow.SkipAdoptionPrompt(ctx, p, state)
-}
-
-const (
-	oauthIntentBindCurrentUser    = "bind_current_user"
-	linuxDoOAuthDefaultRedirectTo = "/dashboard"
-	linuxDoOAuthMaxRedirectLen    = 2048
-)
-
-const (
-	OauthPendingBrowserCookiePath = "/api/v1/auth/oauth"
-	OauthPendingBrowserCookieName = "oauth_pending_browser_session"
-	OauthPendingSessionCookiePath = "/api/v1/auth/oauth"
-	OauthPendingSessionCookieName = "oauth_pending_session"
-	OauthPromoCodeCookieName      = "oauth_promo_code"
-	OauthPendingCookieMaxAgeSec   = 10 * 60
-	OauthPendingChoiceStep        = identity.OAuthPendingChoiceStep
-
-	OauthCompletionResponseKey = identity.OAuthCompletionResponseKey
-	OauthPromoCodeStateKey     = identity.OAuthPromoCodeStateKey
-)
 
 type OauthPendingSessionPayload = identity.OAuthPendingDraft
 
@@ -116,6 +85,37 @@ type SendPendingOAuthVerifyCodeRequest struct {
 	TencentCaptchaRandstr string `json:"tencent_captcha_randstr,omitempty"`
 	PendingAuthToken      string `json:"pending_auth_token,omitempty"`
 	PendingOAuthToken     string `json:"pending_oauth_token,omitempty"`
+}
+
+func NewPendingHandler(session *SessionHandler, flow *identity.PendingFlow, options PendingHTTPOptions) *PendingHandler {
+	return &PendingHandler{session, flow, options}
+}
+func (h *PendingHandler) pendingFlow() *identity.PendingFlow { return h.flow }
+func (h *PendingHandler) pendingIdentityService() (identity.PendingStore, error) {
+	if !h.flow.Available() {
+		return nil, infraerrors.ServiceUnavailable("PENDING_AUTH_NOT_READY", "pending auth service is not ready")
+	}
+	return h.flow.Store, nil
+}
+
+func (h *PendingHandler) isForceEmailOnThirdPartySignup(ctx context.Context) bool {
+	return h.pendingOptions.ForceEmailOnSignup != nil && h.pendingOptions.ForceEmailOnSignup(ctx)
+}
+
+func (h *PendingHandler) ensurePendingOAuthAdoptionDecision(c *gin.Context, id int64, r OauthAdoptionDecisionRequest) (*identity.IdentityAdoptionDecision, error) {
+	return h.flow.AdoptionDecision(c.Request.Context(), id, identity.OAuthAdoptionChoice{AdoptDisplayName: r.AdoptDisplayName, AdoptAvatar: r.AdoptAvatar}, true)
+}
+
+func (h *PendingHandler) upsertPendingOAuthAdoptionDecision(c *gin.Context, id int64, r OauthAdoptionDecisionRequest) (*identity.IdentityAdoptionDecision, error) {
+	return h.flow.AdoptionDecision(c.Request.Context(), id, identity.OAuthAdoptionChoice{AdoptDisplayName: r.AdoptDisplayName, AdoptAvatar: r.AdoptAvatar}, false)
+}
+
+func (h *PendingHandler) transitionPendingOAuthAccountToChoiceState(c *gin.Context, p *identity.PendingAuthSession, u *identity.User, email string) (*identity.PendingAuthSession, error) {
+	return h.flow.TransitionAccountToChoice(c.Request.Context(), p, u, email)
+}
+
+func (h *PendingHandler) shouldSkipPendingOAuthAdoptionPrompt(ctx context.Context, p *identity.PendingAuthSession, state map[string]any) (bool, error) {
+	return h.flow.SkipAdoptionPrompt(ctx, p, state)
 }
 
 func (r BindPendingOAuthLoginRequest) adoptionDecision() OauthAdoptionDecisionRequest {
@@ -484,9 +484,7 @@ func BuildPendingOAuthSessionStatusPayload(session *identity.PendingAuthSession)
 		"provider":    strings.TrimSpace(session.ProviderType),
 		"intent":      strings.TrimSpace(session.Intent),
 	}
-	for key, value := range completionResponse {
-		payload[key] = value
-	}
+	maps.Copy(payload, completionResponse)
 	if email := strings.TrimSpace(session.ResolvedEmail); email != "" {
 		payload["email"] = email
 	}
@@ -682,8 +680,7 @@ func (h *PendingHandler) CreatePendingAccountForProvider(c *gin.Context, provide
 
 	finalization := identity.PendingAccountFinalization{Session: session, User: user, InvitationCode: strings.TrimSpace(req.InvitationCode), AffiliateCode: strings.TrimSpace(req.AffCode), BeforeCommit: h.pendingOptions.BeforeAccountCommit}
 	if err := h.flow.FinalizeCreatedAccountWithChoice(c.Request.Context(), finalization, identity.OAuthAdoptionChoice{AdoptDisplayName: req.AdoptDisplayName, AdoptAvatar: req.AdoptAvatar}); err != nil {
-		var failure *identity.PendingWriteError
-		if errors.As(err, &failure) {
+		if failure, ok := errors.AsType[*identity.PendingWriteError](err); ok {
 			switch failure.Phase {
 			case "binding", "hook":
 				RespondPendingOAuthBindingApplyError(c, failure.Cause)

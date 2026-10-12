@@ -8,25 +8,21 @@ import (
 	"testing"
 	"time"
 
-	creativeprovider "github.com/TokenFlux/TokenRouter/internal/creative/provider"
-	"github.com/TokenFlux/TokenRouter/internal/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-	creativeredis "github.com/TokenFlux/TokenRouter/internal/creative/rediscache"
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	billingcore "github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/config"
-
-	"github.com/TokenFlux/TokenRouter/internal/creative"
-
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	billingcore "github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/creative"
+	creativeprovider "github.com/TokenFlux/TokenRouter/internal/creative/provider"
+	creativeredis "github.com/TokenFlux/TokenRouter/internal/creative/rediscache"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 // 冒烟测试使用 miniredis 和仓储、执行器替身，覆盖创建、入队、Reserve、执行、
@@ -39,6 +35,28 @@ type smokeFakeRunRepo struct {
 	runs    map[string]*creative.CreativeRun
 	outputs map[string][]*creative.CreativeRunOutput
 }
+
+// smokeFakeBillingRepo 记录 capture/release 调用。
+type smokeFakeBillingRepo struct {
+	captureN int
+	releaseN int
+}
+
+// smokeFakeExecutor 返回固定输出。
+type smokeFakeExecutor struct{}
+
+// smokeFakeManagedKeyRepo 供应固定隐藏 Key。
+type smokeFakeManagedKeyRepo struct{ key *apikey.APIKey }
+
+type smokeFakeUserRepo struct{}
+
+type smokeFakeGroupRepo struct{}
+
+type smokeFakeProviderRepo struct{}
+
+type smokeFakeRateRepo struct{}
+
+type smokeCreativeSettingReader struct{}
 
 func newSmokeFakeRunRepo() *smokeFakeRunRepo {
 	return &smokeFakeRunRepo{
@@ -67,7 +85,7 @@ func (r *smokeFakeRunRepo) CreateCreativeRun(ctx context.Context, params creativ
 	}
 	r.runs[run.RunID] = run
 	outputs := make([]*creative.CreativeRunOutput, 0, params.RequestedOutputCount)
-	for index := 0; index < params.RequestedOutputCount; index++ {
+	for index := range params.RequestedOutputCount {
 		outputs = append(outputs, &creative.CreativeRunOutput{RunID: run.RunID, OutputIndex: index, Status: creative.CreativeRunOutputStatusPending})
 	}
 	r.outputs[run.RunID] = outputs
@@ -281,12 +299,6 @@ func (r *smokeFakeRunRepo) SetCreativeRunReconcileError(ctx context.Context, run
 	return nil
 }
 
-// smokeFakeBillingRepo 记录 capture/release 调用。
-type smokeFakeBillingRepo struct {
-	captureN int
-	releaseN int
-}
-
 func (r *smokeFakeBillingRepo) Reserve(ctx context.Context, cmd *billingcore.TaskFundsCommand) (*billingcore.TaskFundsResult, error) {
 	return &billingcore.TaskFundsResult{Applied: true, HoldAmountUSD: cmd.HoldAmount, EstimatedAmountUSD: cmd.HoldAmount, BalanceAmountUSD: cmd.HoldAmount}, nil
 }
@@ -300,9 +312,6 @@ func (r *smokeFakeBillingRepo) Release(ctx context.Context, cmd *billingcore.Tas
 	r.releaseN++
 	return &billingcore.TaskFundsResult{Applied: true}, nil
 }
-
-// smokeFakeExecutor 返回固定输出。
-type smokeFakeExecutor struct{}
 
 func (e *smokeFakeExecutor) Prepare(ctx context.Context, run creative.CreativeRun) (*creative.CreativeExecution, error) {
 	return &creative.CreativeExecution{
@@ -323,9 +332,6 @@ func (e *smokeFakeExecutor) Execute(ctx context.Context, run creative.CreativeRu
 
 func (e *smokeFakeExecutor) IsRetryable(err error) bool { return false }
 
-// smokeFakeManagedKeyRepo 供应固定隐藏 Key。
-type smokeFakeManagedKeyRepo struct{ key *apikey.APIKey }
-
 func (r *smokeFakeManagedKeyRepo) GetManagedKeyByUserAndGroup(ctx context.Context, userID, groupID int64, managedBy string) (*apikey.APIKey, error) {
 	if r.key != nil {
 		return r.key, nil
@@ -339,13 +345,9 @@ func (r *smokeFakeManagedKeyRepo) CreateManagedKey(ctx context.Context, key *api
 	return nil
 }
 
-type smokeFakeUserRepo struct{}
-
 func (r *smokeFakeUserRepo) GetByID(ctx context.Context, id int64) (creative.UserAccess, error) {
 	return &identity.User{ID: id}, nil
 }
-
-type smokeFakeGroupRepo struct{}
 
 func (r *smokeFakeGroupRepo) GetByIDLite(ctx context.Context, id int64) (*creative.GroupView, error) {
 	return &creative.GroupView{ID: id, Name: "Smoke Group", Active: true, AllowImageGeneration: true, RateMultiplier: 1, Operations: map[string][]string{creative.PlatformGemini: {creative.CreativeOperationGenerate, creative.CreativeOperationEdit}}}, nil
@@ -355,19 +357,13 @@ func (r *smokeFakeGroupRepo) ListActive(context.Context) ([]creative.GroupView, 
 	return nil, nil
 }
 
-type smokeFakeProviderRepo struct{}
-
 func (r *smokeFakeProviderRepo) ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]creative.CatalogProvider, error) {
 	return []creative.CatalogProvider{creativeprovider.CatalogProvider(&provider.Record{ID: 55, Platform: "gemini", Type: "apikey", Status: billingcore.StatusActive, Schedulable: true, Credentials: map[string]any{"model_mapping": map[string]any{"gemini-3.1-flash-image": "gemini-3.1-flash-image"}}})}, nil
 }
 
-type smokeFakeRateRepo struct{}
-
 func (r *smokeFakeRateRepo) GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error) {
 	return nil, nil
 }
-
-type smokeCreativeSettingReader struct{}
 
 func (smokeCreativeSettingReader) IsCreativeEnabled(context.Context) bool { return true }
 

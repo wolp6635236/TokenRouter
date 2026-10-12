@@ -1,11 +1,27 @@
 package gateway
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
+)
+
+// 网关综合设置使用以下持久化键。
+const (
+	SettingKeyAntigravityUserAgentVersion      = "antigravity_user_agent_version"
+	SettingKeyBackendModeEnabled               = "backend_mode_enabled"
+	SettingKeyEnableIdentityPatch              = "enable_identity_patch"
+	SettingKeyGrokDefaultBaseURLMode           = "grok_default_base_url_mode"
+	SettingKeyGrokDefaultTextModel             = "grok_default_text_model"
+	SettingKeyIdentityPatchPrompt              = "identity_patch_prompt"
+	SettingKeyOpenAIAllowClaudeCodeCodexPlugin = "openai_allow_claude_code_codex_plugin"
+	SettingKeyOpenAICodexUserAgent             = "openai_codex_user_agent"
+	SettingKeyUserPromptReplacementConfig      = promptpolicy.SettingKeyUserPromptReplacementConfig
 )
 
 // AdminSettings 仅包含入站与转发配置；Fast 使用已有的独立策略准备器。
@@ -39,19 +55,6 @@ type AdminSettingsRules struct {
 	NormalizeUserAgentVersion  func(string) string
 	ValidateClaudePromptBlocks func(string) error
 }
-
-// 网关综合设置使用以下持久化键。
-const (
-	SettingKeyAntigravityUserAgentVersion      = "antigravity_user_agent_version"
-	SettingKeyBackendModeEnabled               = "backend_mode_enabled"
-	SettingKeyEnableIdentityPatch              = "enable_identity_patch"
-	SettingKeyGrokDefaultBaseURLMode           = "grok_default_base_url_mode"
-	SettingKeyGrokDefaultTextModel             = "grok_default_text_model"
-	SettingKeyIdentityPatchPrompt              = "identity_patch_prompt"
-	SettingKeyOpenAIAllowClaudeCodeCodexPlugin = "openai_allow_claude_code_codex_plugin"
-	SettingKeyOpenAICodexUserAgent             = "openai_codex_user_agent"
-	SettingKeyUserPromptReplacementConfig      = promptpolicy.SettingKeyUserPromptReplacementConfig
-)
 
 // PrepareAdminSettings 规范化管理配置并编码为待写入的键值。
 func PrepareAdminSettings(settings *AdminSettings, rules AdminSettingsRules) (map[string]string, error) {
@@ -111,4 +114,32 @@ func NormalizeGrokDefaultBaseURLMode(mode string) string {
 	default:
 		return "cli"
 	}
+}
+
+// AdminSettingsParticipant 用给定规则准备管理设置的键值更新。
+func AdminSettingsParticipant(rules AdminSettingsRules) settings.Participant {
+	keys := []string{SettingKeyAntigravityUserAgentVersion, SettingKeyBackendModeEnabled, SettingKeyClaudeOAuthSystemPrompt, SettingKeyClaudeOAuthSystemPromptBlocks, SettingKeyEnableAnthropicCacheTTL1hInjection, SettingKeyEnableCCHSigning, SettingKeyEnableClaudeOAuthSystemPromptInjection, SettingKeyEnableClientDatelineNormalization, SettingKeyEnableFingerprintUnification, SettingKeyEnableIdentityPatch, SettingKeyEnableMetadataPassthrough, SettingKeyGrokDefaultBaseURLMode, SettingKeyGrokDefaultTextModel, SettingKeyIdentityPatchPrompt, SettingKeyMaxClaudeCodeVersion, SettingKeyMinClaudeCodeVersion, SettingKeyOpenAIAllowClaudeCodeCodexPlugin, SettingKeyOpenAICodexUserAgent, SettingKeyOpenAITTFTMode, SettingKeyRewriteMessageCacheControl, SettingKeyUserPromptReplacementConfig}
+	return settings.Participant{Module: "gateway-forwarding", Fields: keys, Keys: keys, Prepare: func(_ context.Context, input settings.Fields, _ map[string]string) (settings.PreparedChange, error) {
+		if len(input) == 0 {
+			return settings.PreparedChange{}, nil
+		}
+		raw, err := json.Marshal(input)
+		if err != nil {
+			return settings.PreparedChange{}, err
+		}
+		var value AdminSettings
+		if err = json.Unmarshal(raw, &value); err != nil {
+			return settings.PreparedChange{}, err
+		}
+		values, err := PrepareAdminSettings(&value, rules)
+		if err != nil {
+			return settings.PreparedChange{}, err
+		}
+		for key := range values {
+			if _, ok := input[key]; !ok {
+				delete(values, key)
+			}
+		}
+		return settings.PreparedChange{Values: values}, nil
+	}}
 }

@@ -5,16 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/authidentity"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
+
+// AuthState 通过 Ent 持久化认证状态，业务校验调用注入的 AuthService。
+type AuthState struct {
+	*identitycore.AuthDependencies
+	entClient *dbent.Client
+	Rules     *identitycore.AuthService
+}
+
+func NewAuthState(client *dbent.Client, deps *identitycore.AuthDependencies) *AuthState {
+	return &AuthState{AuthDependencies: deps, entClient: client}
+}
 
 // ApplyProviderDefaultSettingsOnFirstBind applies provider-specific bootstrap
 // settings the first time a user binds a third-party identity. The grant is
@@ -194,10 +207,7 @@ func (s *AuthState) AuthCreateRegisteredUser(ctx context.Context, user *identity
 	if err := run(txCtx); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *AuthState) AuthEnsureEmailAuthIdentity(ctx context.Context, user *identitycore.User, source string) (*dbent.AuthIdentity, bool) {
@@ -277,9 +287,7 @@ func (s *AuthState) AuthEnsureEmailOAuthIdentity(ctx context.Context, userID int
 		"email":          strings.TrimSpace(strings.ToLower(input.Email)),
 		"email_verified": input.EmailVerified,
 	}
-	for key, value := range input.UpstreamMetadata {
-		metadata[key] = value
-	}
+	maps.Copy(metadata, input.UpstreamMetadata)
 	if strings.TrimSpace(input.Username) != "" {
 		metadata["username"] = strings.TrimSpace(input.Username)
 	}
@@ -639,16 +647,6 @@ func (s *AuthState) AuthUseOAuthRegistrationInvitation(ctx context.Context, invi
 	return s.Redeem.Use(ctx, invitationID, userID)
 }
 
-// AuthState 通过 Ent 持久化认证状态，业务校验调用注入的 AuthService。
-type AuthState struct {
-	*identitycore.AuthDependencies
-	entClient *dbent.Client
-	Rules     *identitycore.AuthService
-}
-
-func NewAuthState(client *dbent.Client, deps *identitycore.AuthDependencies) *AuthState {
-	return &AuthState{AuthDependencies: deps, entClient: client}
-}
 func (s *AuthState) HasDatabase() bool { return s != nil && s.entClient != nil }
 
 func AuthReplaceBoundEmailAuthIdentityWithClient(

@@ -1,9 +1,16 @@
 package payment
 
 import (
+	"maps"
+	"math/rand/v2"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+)
+
+const (
+	// OrderIDPrefix 是新建商户订单号的前缀。
+	OrderIDPrefix = "tr_"
 )
 
 type Order struct {
@@ -55,11 +62,11 @@ type Order struct {
 	SrcURL               *string                          `json:"src_url,omitempty"`
 	CreatedAt            time.Time                        `json:"created_at,omitempty"`
 	UpdatedAt            time.Time                        `json:"updated_at,omitempty"`
-	// 原订单查询不加载用户关系，HTTP 保留空 edges 字段。
+	// 订单查询返回的 HTTP 数据包含空 edges 字段。
 	Edges struct{} `json:"edges"`
 }
 
-// Clone 为请求和旧形状转换提供独立副本，保持 JSON 数字与空集合类型。
+// Clone 复制订单及其快照，保持 JSON 数字与空集合类型。
 func (o *Order) Clone() *Order {
 	if o == nil {
 		return nil
@@ -204,11 +211,26 @@ func cloneOrderValue(value any) any {
 			return map[string]string(nil)
 		}
 		out := make(map[string]string, len(typed))
-		for k, v := range typed {
-			out[k] = v
-		}
+		maps.Copy(out, typed)
 		return out
 	default:
 		return value
 	}
+}
+
+// GenerateOutTradeNo 生成渠道使用的商户订单号，格式为 tr_、当前日期和 8 位随机字符。
+func GenerateOutTradeNo() string {
+	date := time.Now().Format("20060102")
+	rnd := GenerateMerchantRandomString(8)
+	return OrderIDPrefix + date + rnd
+}
+
+// GenerateMerchantRandomString 生成指定长度的字母数字字符串。
+func GenerateMerchantRandomString(n int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = charset[rand.IntN(len(charset))]
+	}
+	return string(b)
 }

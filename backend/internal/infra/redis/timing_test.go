@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
-
 	"github.com/redis/go-redis/v9"
+
+	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 )
 
 func TestServerTimingRedisHookRecordsCommands(t *testing.T) {

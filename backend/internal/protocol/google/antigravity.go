@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// AntigravityTokenResponse Google OAuth token 响应
+// AntigravityTokenResponse Google OAuth token 响应。
 type AntigravityTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	ExpiresIn    int64  `json:"expires_in"`
@@ -16,7 +16,7 @@ type AntigravityTokenResponse struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
-// AntigravityUserInfo Google 用户信息
+// AntigravityUserInfo Google 用户信息。
 type AntigravityUserInfo struct {
 	Email      string `json:"email"`
 	Name       string `json:"name,omitempty"`
@@ -25,7 +25,7 @@ type AntigravityUserInfo struct {
 	Picture    string `json:"picture,omitempty"`
 }
 
-// AntigravityLoadCodeAssistRequest loadCodeAssist 请求
+// AntigravityLoadCodeAssistRequest loadCodeAssist 请求。
 type AntigravityLoadCodeAssistRequest struct {
 	Metadata struct {
 		IDEType    string `json:"ideType"`
@@ -34,11 +34,115 @@ type AntigravityLoadCodeAssistRequest struct {
 	} `json:"metadata"`
 }
 
-// AntigravityTierInfo 提供商类型信息
+// AntigravityTierInfo 提供商类型信息。
 type AntigravityTierInfo struct {
 	ID          string `json:"id"`          // free-tier, g1-pro-tier, g1-ultra-tier
 	Name        string `json:"name"`        // 显示名称
 	Description string `json:"description"` // 描述
+}
+
+// AntigravityIneligibleTier 不符合条件的层级信息。
+type AntigravityIneligibleTier struct {
+	Tier *AntigravityTierInfo `json:"tier,omitempty"`
+	// ReasonCode 不符合条件的原因代码，如 INELIGIBLE_ACCOUNT
+	ReasonCode    string `json:"reasonCode,omitempty"`
+	ReasonMessage string `json:"reasonMessage,omitempty"`
+}
+
+// AntigravityLoadCodeAssistResponse loadCodeAssist 响应。
+type AntigravityLoadCodeAssistResponse struct {
+	CloudAICompanionProject string                       `json:"cloudaicompanionProject"`
+	CurrentTier             *AntigravityTierInfo         `json:"currentTier,omitempty"`
+	PaidTier                *AntigravityPaidTierInfo     `json:"paidTier,omitempty"`
+	IneligibleTiers         []*AntigravityIneligibleTier `json:"ineligibleTiers,omitempty"`
+}
+
+// AntigravityPaidTierInfo 付费等级信息，包含 AI Credits 余额。
+type AntigravityPaidTierInfo struct {
+	ID               string                       `json:"id"`
+	Name             string                       `json:"name"`
+	Description      string                       `json:"description"`
+	AvailableCredits []AntigravityAvailableCredit `json:"availableCredits,omitempty"`
+}
+
+// AntigravityAvailableCredit 表示一条 AI Credits 余额记录。
+type AntigravityAvailableCredit struct {
+	CreditType                  string `json:"creditType,omitempty"`
+	CreditAmount                string `json:"creditAmount,omitempty"`
+	MinimumCreditAmountForUsage string `json:"minimumCreditAmountForUsage,omitempty"`
+}
+
+// AntigravityOnboardUserRequest onboardUser 请求。
+type AntigravityOnboardUserRequest struct {
+	TierID   string `json:"tierId"`
+	Metadata struct {
+		IDEType    string `json:"ideType"`
+		Platform   string `json:"platform,omitempty"`
+		PluginType string `json:"pluginType,omitempty"`
+	} `json:"metadata"`
+}
+
+// AntigravityOnboardUserResponse onboardUser 响应。
+type AntigravityOnboardUserResponse struct {
+	Name     string         `json:"name,omitempty"`
+	Done     bool           `json:"done"`
+	Response map[string]any `json:"response,omitempty"`
+}
+
+// AntigravityModelQuotaInfo 模型配额信息。
+type AntigravityModelQuotaInfo struct {
+	RemainingFraction float64 `json:"remainingFraction"`
+	ResetTime         string  `json:"resetTime,omitempty"`
+}
+
+// AntigravityModelInfo 模型信息。
+type AntigravityModelInfo struct {
+	QuotaInfo          *AntigravityModelQuotaInfo `json:"quotaInfo,omitempty"`
+	DisplayName        string                     `json:"displayName,omitempty"`
+	SupportsImages     *bool                      `json:"supportsImages,omitempty"`
+	SupportsThinking   *bool                      `json:"supportsThinking,omitempty"`
+	ThinkingBudget     *int                       `json:"thinkingBudget,omitempty"`
+	Recommended        *bool                      `json:"recommended,omitempty"`
+	MaxTokens          *int                       `json:"maxTokens,omitempty"`
+	MaxOutputTokens    *int                       `json:"maxOutputTokens,omitempty"`
+	SupportedMimeTypes map[string]bool            `json:"supportedMimeTypes,omitempty"`
+}
+
+// AntigravityDeprecatedModelInfo 废弃模型转发信息。
+type AntigravityDeprecatedModelInfo struct {
+	NewModelID string `json:"newModelId"`
+}
+
+// AntigravityFetchAvailableModelsRequest fetchAvailableModels 请求。
+type AntigravityFetchAvailableModelsRequest struct {
+	Project string `json:"project"`
+}
+
+// AntigravityFetchAvailableModelsResponse fetchAvailableModels 响应。
+type AntigravityFetchAvailableModelsResponse struct {
+	Models             map[string]AntigravityModelInfo           `json:"models"`
+	DeprecatedModelIDs map[string]AntigravityDeprecatedModelInfo `json:"deprecatedModelIds,omitempty"`
+}
+
+// AntigravitySetUserSettingsRequest setUserSettings 请求体。
+type AntigravitySetUserSettingsRequest struct {
+	UserSettings map[string]any `json:"user_settings"`
+}
+
+// AntigravityFetchUserInfoRequest fetchUserInfo 请求体。
+type AntigravityFetchUserInfoRequest struct {
+	Project string `json:"project"`
+}
+
+// AntigravityFetchUserInfoResponse fetchUserInfo 响应体。
+type AntigravityFetchUserInfoResponse struct {
+	UserSettings map[string]any `json:"userSettings,omitempty"`
+	RegionCode   string         `json:"regionCode,omitempty"`
+}
+
+// AntigravitySetUserSettingsResponse setUserSettings 响应体。
+type AntigravitySetUserSettingsResponse struct {
+	UserSettings map[string]any `json:"userSettings,omitempty"`
 }
 
 // UnmarshalJSON supports both legacy string tiers and object tiers.
@@ -64,30 +168,6 @@ func (t *AntigravityTierInfo) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// AntigravityIneligibleTier 不符合条件的层级信息
-type AntigravityIneligibleTier struct {
-	Tier *AntigravityTierInfo `json:"tier,omitempty"`
-	// ReasonCode 不符合条件的原因代码，如 INELIGIBLE_ACCOUNT
-	ReasonCode    string `json:"reasonCode,omitempty"`
-	ReasonMessage string `json:"reasonMessage,omitempty"`
-}
-
-// AntigravityLoadCodeAssistResponse loadCodeAssist 响应
-type AntigravityLoadCodeAssistResponse struct {
-	CloudAICompanionProject string                       `json:"cloudaicompanionProject"`
-	CurrentTier             *AntigravityTierInfo         `json:"currentTier,omitempty"`
-	PaidTier                *AntigravityPaidTierInfo     `json:"paidTier,omitempty"`
-	IneligibleTiers         []*AntigravityIneligibleTier `json:"ineligibleTiers,omitempty"`
-}
-
-// AntigravityPaidTierInfo 付费等级信息，包含 AI Credits 余额。
-type AntigravityPaidTierInfo struct {
-	ID               string                       `json:"id"`
-	Name             string                       `json:"name"`
-	Description      string                       `json:"description"`
-	AvailableCredits []AntigravityAvailableCredit `json:"availableCredits,omitempty"`
-}
-
 // UnmarshalJSON 兼容 paidTier 既可能是字符串也可能是对象的情况。
 func (p *AntigravityPaidTierInfo) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
@@ -111,13 +191,6 @@ func (p *AntigravityPaidTierInfo) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// AntigravityAvailableCredit 表示一条 AI Credits 余额记录。
-type AntigravityAvailableCredit struct {
-	CreditType                  string `json:"creditType,omitempty"`
-	CreditAmount                string `json:"creditAmount,omitempty"`
-	MinimumCreditAmountForUsage string `json:"minimumCreditAmountForUsage,omitempty"`
-}
-
 // GetAmount 将 creditAmount 解析为浮点数。
 func (c *AntigravityAvailableCredit) GetAmount() float64 {
 	if c.CreditAmount == "" {
@@ -138,25 +211,8 @@ func (c *AntigravityAvailableCredit) GetMinimumAmount() float64 {
 	return value
 }
 
-// AntigravityOnboardUserRequest onboardUser 请求
-type AntigravityOnboardUserRequest struct {
-	TierID   string `json:"tierId"`
-	Metadata struct {
-		IDEType    string `json:"ideType"`
-		Platform   string `json:"platform,omitempty"`
-		PluginType string `json:"pluginType,omitempty"`
-	} `json:"metadata"`
-}
-
-// AntigravityOnboardUserResponse onboardUser 响应
-type AntigravityOnboardUserResponse struct {
-	Name     string         `json:"name,omitempty"`
-	Done     bool           `json:"done"`
-	Response map[string]any `json:"response,omitempty"`
-}
-
 // GetTier 获取提供商类型
-// 优先返回 paidTier（付费订阅级别），否则返回 currentTier
+// 优先返回 paidTier（付费订阅级别），否则返回 currentTier。
 func (r *AntigravityLoadCodeAssistResponse) GetTier() string {
 	if r.PaidTier != nil && r.PaidTier.ID != "" {
 		return r.PaidTier.ID
@@ -192,58 +248,7 @@ func AntigravityTierIDToPlanType(tierID string) string {
 	}
 }
 
-// AntigravityModelQuotaInfo 模型配额信息
-type AntigravityModelQuotaInfo struct {
-	RemainingFraction float64 `json:"remainingFraction"`
-	ResetTime         string  `json:"resetTime,omitempty"`
-}
-
-// AntigravityModelInfo 模型信息
-type AntigravityModelInfo struct {
-	QuotaInfo          *AntigravityModelQuotaInfo `json:"quotaInfo,omitempty"`
-	DisplayName        string                     `json:"displayName,omitempty"`
-	SupportsImages     *bool                      `json:"supportsImages,omitempty"`
-	SupportsThinking   *bool                      `json:"supportsThinking,omitempty"`
-	ThinkingBudget     *int                       `json:"thinkingBudget,omitempty"`
-	Recommended        *bool                      `json:"recommended,omitempty"`
-	MaxTokens          *int                       `json:"maxTokens,omitempty"`
-	MaxOutputTokens    *int                       `json:"maxOutputTokens,omitempty"`
-	SupportedMimeTypes map[string]bool            `json:"supportedMimeTypes,omitempty"`
-}
-
-// AntigravityDeprecatedModelInfo 废弃模型转发信息
-type AntigravityDeprecatedModelInfo struct {
-	NewModelID string `json:"newModelId"`
-}
-
-// AntigravityFetchAvailableModelsRequest fetchAvailableModels 请求
-type AntigravityFetchAvailableModelsRequest struct {
-	Project string `json:"project"`
-}
-
-// AntigravityFetchAvailableModelsResponse fetchAvailableModels 响应
-type AntigravityFetchAvailableModelsResponse struct {
-	Models             map[string]AntigravityModelInfo           `json:"models"`
-	DeprecatedModelIDs map[string]AntigravityDeprecatedModelInfo `json:"deprecatedModelIds,omitempty"`
-}
-
-// AntigravitySetUserSettingsRequest setUserSettings 请求体
-type AntigravitySetUserSettingsRequest struct {
-	UserSettings map[string]any `json:"user_settings"`
-}
-
-// AntigravityFetchUserInfoRequest fetchUserInfo 请求体
-type AntigravityFetchUserInfoRequest struct {
-	Project string `json:"project"`
-}
-
-// AntigravityFetchUserInfoResponse fetchUserInfo 响应体
-type AntigravityFetchUserInfoResponse struct {
-	UserSettings map[string]any `json:"userSettings,omitempty"`
-	RegionCode   string         `json:"regionCode,omitempty"`
-}
-
-// IsPrivate 判断隐私是否已设置：userSettings 为空或不含 telemetryEnabled 表示已设置
+// IsPrivate 判断隐私是否已设置：userSettings 为空或不含 telemetryEnabled 表示已设置。
 func (r *AntigravityFetchUserInfoResponse) IsPrivate() bool {
 	if r == nil || r.UserSettings == nil {
 		return true
@@ -252,12 +257,7 @@ func (r *AntigravityFetchUserInfoResponse) IsPrivate() bool {
 	return !hasTelemetry
 }
 
-// AntigravitySetUserSettingsResponse setUserSettings 响应体
-type AntigravitySetUserSettingsResponse struct {
-	UserSettings map[string]any `json:"userSettings,omitempty"`
-}
-
-// IsSuccess 判断 setUserSettings 是否成功：返回 {"userSettings":{}} 且无 telemetryEnabled
+// IsSuccess 判断 setUserSettings 是否成功：返回 {"userSettings":{}} 且无 telemetryEnabled。
 func (r *AntigravitySetUserSettingsResponse) IsSuccess() bool {
 	if r == nil {
 		return false

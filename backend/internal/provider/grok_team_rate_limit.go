@@ -6,7 +6,19 @@ import (
 	"strings"
 	"sync"
 	"time"
-) // 以下为 Grok OAuth 的进程内 team+model 限流覆盖：同一 team_id 的某提供商在模型上被限流后，
+)
+
+const (
+	grokTeamRateLimitDefaultTTL = 10 * time.Minute
+	grokTeamRateLimitMaxTTL     = time.Hour
+	grokTeamRateLimitMinTTL     = 30 * time.Second
+)
+
+var globalGrokTeamModelRateLimits = &grokTeamModelRateLimitStore{
+	items: make(map[string]grokTeamModelRateLimit),
+}
+
+// 以下为 Grok OAuth 的进程内 team+model 限流覆盖：同一 team_id 的某提供商在模型上被限流后，
 
 // 其它提供商在冷却期内跳过该模型。多实例各自从本实例 429 学习，短 TTL 让状态漂移自行收敛。
 type grokTeamModelRateLimit struct {
@@ -16,16 +28,6 @@ type grokTeamModelRateLimitStore struct {
 	mu    sync.Mutex
 	items map[string]grokTeamModelRateLimit
 }
-
-var globalGrokTeamModelRateLimits = &grokTeamModelRateLimitStore{
-	items: make(map[string]grokTeamModelRateLimit),
-}
-
-const (
-	grokTeamRateLimitDefaultTTL = 10 * time.Minute
-	grokTeamRateLimitMaxTTL     = time.Hour
-	grokTeamRateLimitMinTTL     = 30 * time.Second
-)
 
 func GrokTeamFingerprint(teamID string) string {
 	teamID = strings.TrimSpace(teamID)

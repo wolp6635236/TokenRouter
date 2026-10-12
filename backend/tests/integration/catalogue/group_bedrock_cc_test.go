@@ -3,10 +3,10 @@ package catalogue_test
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/testkit"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/bedrock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/bedrock"
 )
 
 func TestGroupPolicy_IsBedrockCCCompatEnabled_Enabled(t *testing.T) {

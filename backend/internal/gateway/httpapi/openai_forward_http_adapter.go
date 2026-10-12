@@ -6,21 +6,19 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/compact"
+	"github.com/gin-gonic/gin"
 
+	"github.com/TokenFlux/TokenRouter/internal/gateway/compact"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
 	openaicore "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 // nativeForwardHTTPOptions 不预热读取器，保留响应到达后才读取运行设置及绑定输出观察。
@@ -89,7 +87,7 @@ func (s *OpenAIResponsesExecutor) nativeForwardHTTPOptions(ctx context.Context, 
 		ErrorSchedulingModel: gatewayprovider.ErrorSchedulingModel,
 		WrapResponseBody: func(resp *http.Response) {
 			if mapping, ok := OpenAIResponsesClientToolMapping(c); ok && openai.IsEventStreamResponse(resp.Header) {
-				limit := openAIResponseDefaultMaxLineSize
+				limit := OpenAIResponseDefaultMaxLineSize
 				if s.Output.Options.MaxLineSize > 0 {
 					limit = s.Output.Options.MaxLineSize
 				}

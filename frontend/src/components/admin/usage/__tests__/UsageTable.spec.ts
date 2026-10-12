@@ -69,7 +69,6 @@ const messages: Record<string, string> = {
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
-  'admin.usage.requestIdCopied': 'Request ID copied',
   'admin.usage.upstreamRequestIdCopied': 'Upstream ID copied',
   'keys.copied': 'Copied',
   'keys.copyToClipboard': 'Copy to clipboard',
@@ -88,6 +87,9 @@ const messages: Record<string, string> = {
   'usage.timingWriteError': 'Write error',
   'usage.timingUnavailable': 'Not collected',
   'common.copyFailed': 'Copy failed',
+  'common.copied': 'Copied',
+  'requests.copy': 'Copy request ID',
+  'requests.copied': 'Request ID copied',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -110,6 +112,7 @@ const DataTableStub = {
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-cost" :row="row" />
         <slot name="cell-latency" :row="row" />
+        <div class="tps-cell"><slot name="cell-tps" :row="row" /></div>
         <slot name="cell-request_id" :row="row" />
         <slot name="cell-upstream_request_id" :row="row" />
       </div>
@@ -190,10 +193,31 @@ describe('admin UsageTable request ID column', () => {
     })
 
     expect(wrapper.text()).toContain('req-admin-visible-id')
-    await wrapper.get('button[title="Copy to clipboard"]').trigger('click')
+    await wrapper.get('button[title="Copy request ID"]').trigger('click')
 
     expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith('req-admin-visible-id', 'Request ID copied')
     expect(wrapper.get('button').attributes('title')).toBe('Copied')
+  })
+})
+
+describe('使用记录 TPS 列', () => {
+  it('展示 TPS 和公式提示，历史记录缺少耗时时显示占位符', () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          { ...baseImageRow, request_id: 'valid', output_tokens: 100, duration_ms: 5000, first_token_ms: 1000 },
+          { ...baseImageRow, request_id: 'missing', output_tokens: 100, duration_ms: 5000, first_token_ms: null },
+          { ...baseImageRow, request_id: 'rounding', output_tokens: 23, duration_ms: 21000, first_token_ms: 1000 },
+        ],
+        columns: [{ key: 'tps', label: 'TPS' }],
+      },
+      global: {
+        stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true },
+      },
+    })
+    expect(wrapper.findAll('.tps-cell').map(cell => cell.text())).toEqual(['25.0 tok/s', '-', '1.1 tok/s'])
+    expect(wrapper.get('.tps-cell span').attributes('title')).toBe('usage.tpsHint')
+    wrapper.unmount()
   })
 })
 
@@ -657,7 +681,7 @@ describe('admin UsageTable request ID column', () => {
     })
 
     expect(wrapper.text()).toContain('req-admin-visible-id')
-    await wrapper.get('button[title="Copy to clipboard"]').trigger('click')
+    await wrapper.get('button[title="Copy request ID"]').trigger('click')
 
     expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith('req-admin-visible-id', 'Request ID copied')
   })

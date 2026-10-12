@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/payment"
-	"github.com/stretchr/testify/require"
+	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
 )
 
 func TestPersistCreatePaymentResponseSyncsProviderExpiry(t *testing.T) {

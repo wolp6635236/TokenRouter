@@ -4,10 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/transport"
-
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
@@ -15,6 +11,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/transport"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
@@ -24,16 +22,22 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/search"
 )
 
-// ProvideGatewaySearchTools 为网关请求构造共享的搜索工具编排器。
-func ProvideGatewaySearchTools(settings *search.ConfigService, modelConfigs *routing.PricingConfigService) *searchtools.Emulator {
-	runtime := gatewayprovider.NewSearchTools(settings, modelConfigs)
-	return runtime
-}
-
 // standaloneSearchExecution 将单次选择和执行结果传给独立搜索入口。
 type standaloneSearchExecution struct {
 	selector *selection.Compatible
 	executor *gatewayprovider.GrokSearchExecutor
+}
+
+// 选中的实例保存在请求内，完成记录入队时复制一份快照。
+type standaloneSearchTarget struct {
+	source   *gatewayprovider.GrokSearchExecutor
+	provider *provider.Record
+}
+
+// ProvideGatewaySearchTools 为网关请求构造共享的搜索工具编排器。
+func ProvideGatewaySearchTools(settings *search.ConfigService, modelConfigs *routing.PricingConfigService) *searchtools.Emulator {
+	runtime := gatewayprovider.NewSearchTools(settings, modelConfigs)
+	return runtime
 }
 
 func (p standaloneSearchExecution) Select(ctx context.Context, group int64, model string, excluded map[int64]struct{}) (gatewayhttp.StandaloneSearchTarget, searchtools.Selection, bool, error) {
@@ -46,12 +50,6 @@ func (p standaloneSearchExecution) Select(ctx context.Context, group int64, mode
 	}
 	target := standaloneSearchTarget{source: p.executor, provider: gatewayprovider.ExecutionRecord(selected.Provider)}
 	return target, searchtools.Selection{ProviderID: selected.Provider.Record.ID, Acquired: selected.Acquired, Release: selected.ReleaseFunc, WaitPlan: selected.WaitPlan}, true, nil
-}
-
-// 选中的实例保存在请求内，完成记录入队时复制一份快照。
-type standaloneSearchTarget struct {
-	source   *gatewayprovider.GrokSearchExecutor
-	provider *provider.Record
 }
 
 func (t standaloneSearchTarget) CompletionRecord() *provider.Record {

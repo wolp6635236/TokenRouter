@@ -46,6 +46,7 @@ marketplace: {
       openai_responses: 'Responses',
       openai_chat_completions: 'Chat Completions',
       gemini_generate_content: 'GenerateContent',
+      systemone: 'SystemOne',
       openai_embeddings: 'Embeddings',
       openai_images_generations: '图片生成',
       openai_images_edits: '图片编辑',
@@ -230,7 +231,6 @@ marketplace: {
     title: '我的订阅',
     description: '查看您的订阅计划和用量',
     noActiveSubscriptions: '暂无有效订阅',
-    noActiveSubscriptionsDesc: '您没有任何有效订阅。请联系管理员获取订阅。',
     failedToLoad: '加载订阅失败',
     status: {
       active: '有效',

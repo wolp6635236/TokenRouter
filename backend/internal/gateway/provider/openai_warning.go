@@ -4,11 +4,37 @@ import (
 	"strings"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+// openAIUpstreamWarningError 实现共享的上游警告接口。
+var _ forwardcore.UpstreamWarningCarrier = (*openAIUpstreamWarningError)(nil)
+
+type openAIUpstreamWarningError struct {
+	warning *forwardcore.UpstreamWarning
+	err     error
+}
+
+// ParseOpenAICyberPolicyEvent 识别供应商安全策略事件，记录截断后的正文和已观测用量。
+func ParseOpenAICyberPolicyEvent(payload []byte, upstreamStatus int, usage *openai.ForwardUsage) *moderationflow.Mark {
+	hit, code, message := upstreamopenai.DetectOpenAICyberPolicy(payload)
+	if !hit {
+		return nil
+	}
+	mark := &moderationflow.Mark{
+		Code: code, Message: message,
+		Body: logredact.TruncateUTF8(string(payload), 4096), UpstreamStatus: upstreamStatus,
+	}
+	if usage != nil {
+		mark.UpstreamInTok = usage.InputTokens
+		mark.UpstreamOutTok = usage.OutputTokens
+	}
+	return mark
+}
 
 func (e *openAIUpstreamWarningError) Error() string {
 	if e == nil || e.err == nil {
@@ -33,14 +59,14 @@ func (e *openAIUpstreamWarningError) Unwrap() error {
 
 // ExtractOpenAICyberWarningMessage 提取可直接回传给下游客户端的 cyber 风控提示。
 func ExtractOpenAICyberWarningMessage(responseBody []byte, warningText string) string {
-	if hit, _, message := openai.DetectOpenAICyberPolicy(responseBody); hit && strings.TrimSpace(message) != "" {
+	if hit, _, message := upstreamopenai.DetectOpenAICyberPolicy(responseBody); hit && strings.TrimSpace(message) != "" {
 		return logredact.TruncateLine([]byte(logredact.SanitizeUpstreamQueries(message)), 2048)
 	}
 	for _, candidate := range []string{
 		strings.TrimSpace(warningText),
 		strings.TrimSpace(moderation.ExtractCyberWarningText(responseBody)),
 	} {
-		if openai.IsOpenAICyberWarningText(candidate) {
+		if upstreamopenai.IsOpenAICyberWarningText(candidate) {
 			return logredact.TruncateLine([]byte(logredact.SanitizeUpstreamQueries(candidate)), 2048)
 		}
 	}
@@ -55,24 +81,24 @@ func ExtractOpenAICyberWarningMessage(responseBody []byte, warningText string) s
 
 // IsOpenAICyberWarningPayload 判断上游响应体或错误文本是否属于 OpenAI cyber 风控拒绝。
 func IsOpenAICyberWarningPayload(responseBody []byte, warningText string) bool {
-	if openai.IsOpenAICyberWarningText(warningText) {
+	if upstreamopenai.IsOpenAICyberWarningText(warningText) {
 		return true
 	}
 	if len(responseBody) == 0 {
 		return false
 	}
-	if hit, _, _ := openai.DetectOpenAICyberPolicy(responseBody); hit {
+	if hit, _, _ := upstreamopenai.DetectOpenAICyberPolicy(responseBody); hit {
 		return true
 	}
-	return openai.IsOpenAICyberWarningText(moderation.ExtractCyberWarningText(responseBody)) ||
-		openai.IsOpenAICyberWarningText(string(responseBody))
+	return upstreamopenai.IsOpenAICyberWarningText(moderation.ExtractCyberWarningText(responseBody)) ||
+		upstreamopenai.IsOpenAICyberWarningText(string(responseBody))
 }
 
 func OpenAIUpstreamWarningIsCyber(warning *forwardcore.UpstreamWarning) bool {
 	if warning == nil {
 		return false
 	}
-	// 保持 WS 重试决策与 cyber 落库识别规则一致，避免重试覆盖可统计的上游风控拒绝。
+	// WS 重试和 cyber 存储使用相同的识别规则，上游风控拒绝进入统计。
 	return IsOpenAICyberWarningPayload(warning.ResponseBody, warning.Message)
 }
 
@@ -90,11 +116,3 @@ func WrapOpenAIUpstreamWarningIfCyber(statusCode int, responseBody []byte, messa
 	}
 	return &openAIUpstreamWarningError{warning: warning, err: err}
 }
-
-type openAIUpstreamWarningError struct {
-	warning *forwardcore.UpstreamWarning
-	err     error
-}
-
-// openAIUpstreamWarningError 实现共享的上游警告接口。
-var _ forwardcore.UpstreamWarningCarrier = (*openAIUpstreamWarningError)(nil)

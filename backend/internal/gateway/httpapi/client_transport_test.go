@@ -84,3 +84,19 @@ func TestOpenAIClientTransport_NilAndUnknownInput(t *testing.T) {
 	_, exists = c.Get(openAIClientTransportContextKey)
 	require.False(t, exists)
 }
+
+func TestSetOpenAIClientTransportHTTP(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	require.Equal(t, OpenAIClientTransportHTTP, GetOpenAIClientTransport(c))
+}
+
+func TestSetOpenAIClientTransportWS(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	SetOpenAIClientTransport(c, OpenAIClientTransportWS)
+	require.Equal(t, OpenAIClientTransportWS, GetOpenAIClientTransport(c))
+}

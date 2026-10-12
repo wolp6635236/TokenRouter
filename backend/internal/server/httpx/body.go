@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -89,4 +92,19 @@ func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
 	default:
 		return nil, errors.New("unsupported Content-Encoding")
 	}
+}
+
+// BindJSONStrict 绑定单个 JSON 对象，拒绝未知字段，并按 binding 标签校验结构体。
+// credentials、extra 等 map 字段的内容由调用方校验。
+func BindJSONStrict(c *gin.Context, target any) error {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("request must contain one JSON object")
+	}
+	return binding.Validator.ValidateStruct(target)
 }

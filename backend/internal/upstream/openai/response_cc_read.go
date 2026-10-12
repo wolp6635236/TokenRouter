@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"go.uber.org/zap"
 )
 
 // CCResponseOptions 保持每次读取独立的档位观察器及原响应体限制。

@@ -3,12 +3,15 @@ package provider
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"net/http"
 	"time"
 
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
+
+const grokQuotaSnapshotExtraKey = "grok_usage_snapshot"
 
 // GrokHealthStore 保留现有快照与状态写权限，扩展/恢复 CAS 仍由实际存储能力提供。
 type GrokHealthStore interface {
@@ -27,8 +30,6 @@ type GrokHealth struct {
 	Health         *UpstreamHealth
 	ModelTransient *providercore.ModelTransientState
 }
-
-const grokQuotaSnapshotExtraKey = "grok_usage_snapshot"
 
 // ProviderStateContext 为提供商状态写入保留五秒独立预算。
 func ProviderStateContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -63,9 +64,7 @@ func (s *GrokHealth) StoreSnapshot(ctx context.Context, value *providercore.Reco
 	}
 	// 同时派生 grokThresholdCandidates 评估器读取的调度阈值扩展字段 grok_sched_*。
 	// 缺少此写入逻辑时，管理员配置的 Grok 自动暂停阈值无法触发。
-	for k, v := range providercore.BuildGrokSchedulerExtraUpdates(snapshot) {
-		updates[k] = v
-	}
+	maps.Copy(updates, providercore.BuildGrokSchedulerExtraUpdates(snapshot))
 	stateCtx := ctx
 	if hasActiveLimit {
 		var cancel context.CancelFunc

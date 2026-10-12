@@ -3,11 +3,11 @@ package provider
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
-
-	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
+	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
 func TestBuildGrokXSearchResponsesBody(t *testing.T) {

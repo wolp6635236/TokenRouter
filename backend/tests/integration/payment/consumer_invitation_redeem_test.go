@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-	"github.com/stretchr/testify/require"
 )
 
 func TestRedeemRejectsInvitationCodeBeforeGrantingBenefits(t *testing.T) {

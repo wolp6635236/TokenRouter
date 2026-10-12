@@ -7,11 +7,11 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/gin-gonic/gin"
 )
 
 func (p *OpenAIResponseOutput) BufferedReadFailure(

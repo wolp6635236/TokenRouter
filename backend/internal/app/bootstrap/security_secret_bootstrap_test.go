@@ -10,15 +10,15 @@ import (
 	"sync"
 	"testing"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
+
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/enttest"
 	"github.com/TokenFlux/TokenRouter/ent/securitysecret"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-	"github.com/stretchr/testify/require"
-
-	"entgo.io/ent/dialect"
-	entsql "entgo.io/ent/dialect/sql"
-	_ "modernc.org/sqlite"
 )
 
 func newSecuritySecretTestClient(t *testing.T) *dbent.Client {
@@ -167,7 +167,7 @@ func TestGetOrCreateGeneratedSecuritySecretConcurrentCreation(t *testing.T) {
 	errs := make([]error, goroutines)
 
 	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

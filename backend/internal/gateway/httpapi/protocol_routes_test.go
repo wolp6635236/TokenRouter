@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // TestProtocolRouteMethodAndResourceBoundaries 验证准入按方法和子资源区分，已有任务操作使用自己的开关。

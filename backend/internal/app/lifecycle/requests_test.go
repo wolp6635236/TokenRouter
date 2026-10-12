@@ -93,13 +93,6 @@ func TestRequestsCloseHijackedConnectionsBeforeWaiting(t *testing.T) {
 	require.NoError(t, manager.Stop(stopCtx))
 }
 
-func TestServeReturnsListenerFailure(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer func() { _ = ln.Close() }()
-	require.Error(t, Serve(context.Background(), &http.Server{Addr: ln.Addr().String()}))
-}
-
 // TestRequestsCloseLateHijack 检查关闭快照取得后升级的连接由 ConnState 关闭。
 func TestRequestsCloseLateHijack(t *testing.T) {
 	manager := New()

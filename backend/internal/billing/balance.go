@@ -6,6 +6,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+var ErrBalanceNegative = apperror.BadRequest("BALANCE_NEGATIVE", "balance cannot be negative")
+
 // BalanceChange 记录一次余额变更前后的值。
 type BalanceChange struct {
 	Old float64
@@ -18,4 +20,5 @@ type BalanceAdjuster interface {
 	AdjustBalance(context.Context, int64, float64) (BalanceChange, error)
 }
 
-var ErrBalanceNegative = apperror.BadRequest("BALANCE_NEGATIVE", "balance cannot be negative")
+// InitialUserFunds 是注册时赠送的余额，累计充值额保持不变。
+type InitialUserFunds struct{ Balance float64 }

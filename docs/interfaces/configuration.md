@@ -57,17 +57,25 @@
 
 时区的优先级：标准的 `TZ`、兼容的 `TIMEZONE`、配置文件、默认值 `Asia/Shanghai`。`TZ` 非空时覆盖 `TIMEZONE`，容器运行时、应用的本地日统计和 PostgreSQL 连接的时区因此保持一致；无效的 IANA 名称在启动校验时失败。
 
+### 请求记录
+
+`request_log.retention_days` 控制请求摘要保留天数，默认 30，环境变量为 `REQUEST_LOG_RETENTION_DAYS`。内存批写、失败处理和关闭排空见[请求 ID 与请求查询](../operations/request_lookup.md#request_storage)。
+
 ### 模型目录与价格补充
 
-模型目录使用 `pricing.remote_url`（默认 `https://models.dev/catalog.json`）和 `pricing.check_interval_minutes`（默认 10 分钟），自动同步价格和展示属性。旧的 `pricing.hash_check_interval_minutes` 和对应的环境变量，按下面的兼容键优先级映射到新键。
+模型目录使用 `pricing.remote_url`（默认 `https://models.dev/catalog.json?type=all`）和 `pricing.check_interval_minutes`（默认 10 分钟），自动同步价格和展示属性。旧的 `pricing.hash_check_interval_minutes` 和对应的环境变量，按下面的兼容键优先级映射到新键。
 
-已知的 Wei-Shaw、BerriAI 公共旧价格地址，在内存里转换为 models.dev 地址，并补上新的下载域名；自定义地址保持不变，需要返回 models.dev 的目录格式。配置文件不会被改写。官方的价格补充通过 `go:embed` 编进二进制，`pricing.fallback_file` 默认为空，用于指定可选的自定义补充。旧的相对资源路径和 `/app/resources/` 打包路径，只在原文件不存在时，迁移到同目录的 `model_pricing_supplements.json`；已存在的文件和其他自定义路径保持不变。路径只在内存里解析，部署文件不会被改写或创建；目标文件也不存在时，使用内嵌的补充。旧的目录缓存不再加载，也不会被删除。
+已知的 Wei-Shaw、BerriAI 公共旧价格地址，在内存里转换为 models.dev 地址，并补上新的下载域名；自定义地址保持不变，需要返回 models.dev 的目录格式。配置文件不会被改写。官方模型补充通过 `go:embed` 编进二进制，同一个型号条目包含价格字段和 `attributes`。`pricing.fallback_file` 默认为空，用于指定相同格式的自定义补充。旧的相对资源路径和 `/app/resources/` 打包路径，只在原文件不存在时，迁移到同目录的 `model_pricing_supplements.json`；已存在的文件和其他自定义路径保持不变。路径只在内存里解析，部署文件不会被改写或创建；目标文件也不存在时，使用内嵌的补充。旧的目录缓存不再加载，也不会被删除。
 
 数据的优先级：目录里已有的字段（包括零价）最高，其次是自定义补充，最后由内嵌补充填上有明确来源的缺失模型价格、媒体单价、生图文本输出价和明确的商业规则。媒体尺寸表这类复合字段整体选择一个来源，不同来源的尺寸表不合并。补充文件要求是 JSON 对象；顶层 `null`、非对象条目和非法的价格字段会让整次更新被拒绝，已发布的目录保持不变，并记录错误。自定义文件不存在时，这一层为空，内嵌补充照常生效。修改和删除在下一次周期检查或管理员手动更新时生效，包括远程返回 304 或远程地址为空的情况。首次启动遇到损坏的补充文件时，仍然可以发布带内嵌补充的离线目录，并保留错误，等待修复。
 
 补充文件里的 `_billing_defaults` 是操作价格的保留节点，可以包含 `web_search_price_per_call`、`search_price_per_1k`、`audio_realtime_price_per_min`、`audio_tts_price_per_million_chars` 和 `audio_stt_price_per_hour`，单位和价格配置里的同名设置一致。自定义补充按字段叠加到内嵌的操作默认价上，管理员的价格配置优先，填写零表示免费；这个节点不会出现在模型列表、价格候选和属性列表里。
 
 本地 JSON 使用 `provider` 字段，读取时兼容 `litellm_provider`；同一条目两者都有时，以新字段为准，包括空值和 `null`。内部的价格类型和来源分类使用目录通用的名称，实际报价来自哪里，由 `source` 和 `price_sources` 区分。
+
+`gateway.models_list_cache_ttl_seconds` 已弃用，保留配置解析和 10 到 30 秒的合法值校验。目录查询使用本次读取的提供商配置，该值已停止控制运行时缓存。
+
+精确配置为旧官方目录地址 `https://models.dev/catalog.json` 时，加载器补上 `?type=all`。带查询参数的地址和自定义镜像按配置读取。
 
 ### 已退役和改名的键
 
@@ -229,6 +237,12 @@ SMTP 的测试连接和实际发送共用同一条建连路径和超时：
 进程配置的默认参数在 `gateway.advanced_scheduler`，包括 `lb_top_k`、`score_weights`、`ewma_error_rate_alpha`、`ewma_ttft_alpha` 和粘性逃逸的阈值。两个 alpha 要求 `0 < alpha <= 1`；sticky escape 的 TTFT 阈值是正数，错误率阈值在 `0..1` 之间，错误率阈值设为 `0` 表示任何正的错误率都会触发逃逸。
 
 旧的进程配置 `gateway.openai_ws.lb_top_k`、`gateway.openai_ws.scheduler_score_weights.*` 和 `gateway.openai_scheduler.sticky_escape_*`，在加载时分别映射到 `gateway.advanced_scheduler` 的 `lb_top_k`、`score_weights.*` 和 `sticky_escape_*`，对应的环境变量也兼容，优先级和上面的兼容键相同。管理设置请求里的 `openai_advanced_scheduler_*` 和旧的全局开关，返回已弃用的错误。OpenAI 的配额自动暂停是 OpenAI 专属的设置，不属于通用的高级调度参数。
+
+### Responses 长连接参数
+
+“网关设置 → OpenAI → 长连接与连接池”支持在线调整连接数量、超时、消息大小和会话记录期限。数据库 `responses_ws` 保存覆盖对象，未覆盖字段使用 `gateway.openai_ws` 的部署默认值。配置来源和热更新时机见 [Responses 长连接与在线参数](openai_upstream.md#responses_ws_runtime)。
+
+旧的 WS 总开关、认证类型开关、强制 HTTP、新旧模式选择和协议版本开关已经退役，加载器提示后忽略。客户端是否允许使用 WS，统一由分组协议控制。HTTP 转 WS 执行路径的预热生成、重试退避、批量刷新、存储恢复和日志采样参数也已退役。连接池自身的预热与逐轮恢复继续按在线参数执行。
 
 ### 平台相关设置
 

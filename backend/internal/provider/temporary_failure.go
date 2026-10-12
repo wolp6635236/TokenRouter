@@ -5,6 +5,16 @@ import (
 	"time"
 )
 
+const (
+	googleConfigErrorCooldown = time.Minute
+	emptyResponseCooldown     = time.Minute
+)
+
+// TemporaryFailureStore 独立写入临时停调字段。
+type TemporaryFailureStore interface {
+	SetTempUnschedulable(context.Context, int64, time.Time, string) error
+}
+
 // TempUnscheduleGoogleConfigError 对服务端配置类 400 错误触发临时封禁，
 // 停调期间，后续请求会跳过该提供商。
 func TempUnscheduleGoogleConfigError(ctx context.Context, repo TemporaryFailureStore, providerID int64, logPrefix string, logf func(string, ...any)) {
@@ -28,13 +38,3 @@ func TempUnscheduleEmptyResponse(ctx context.Context, repo TemporaryFailureStore
 		logf("%s temp_unscheduled provider=%d until=%v reason=%q", logPrefix, providerID, until.Format("15:04:05"), reason)
 	}
 }
-
-// TemporaryFailureStore 独立写入临时停调字段。
-type TemporaryFailureStore interface {
-	SetTempUnschedulable(context.Context, int64, time.Time, string) error
-}
-
-const (
-	googleConfigErrorCooldown = time.Minute
-	emptyResponseCooldown     = time.Minute
-)

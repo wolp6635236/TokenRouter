@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
-	"github.com/stretchr/testify/require"
 )
 
 func TestGeminiTokenRefreshUsesOriginalCAS(t *testing.T) {

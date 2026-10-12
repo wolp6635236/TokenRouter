@@ -46,10 +46,7 @@ func ClassifyImageBillingTier(size string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	maxEdge := width
-	if height > maxEdge {
-		maxEdge = height
-	}
+	maxEdge := max(height, width)
 	switch {
 	case maxEdge <= 1024:
 		return ImageBillingSize1K, true

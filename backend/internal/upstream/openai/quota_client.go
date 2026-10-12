@@ -17,6 +17,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+const (
+	openaiQuotaUpstreamTimeout  = 20 * time.Second
+	openaiQuotaCodexBeta        = "codex-1"
+	openaiQuotaCodexOriginator  = "Codex Desktop"
+	openaiQuotaCodexLanguageTag = "zh-CN"
+	openaiQuotaSecFetchSite     = "none"
+	openaiQuotaSecFetchMode     = "no-cors"
+	openaiQuotaSecFetchDest     = "empty"
+)
+
 type QuotaClientOptions struct {
 	Available       bool
 	UserAgent       string
@@ -30,16 +40,6 @@ type QuotaClientOptions struct {
 	Failure         func(int, string)
 }
 type QuotaClient struct{ Options QuotaClientOptions }
-
-const (
-	openaiQuotaUpstreamTimeout  = 20 * time.Second
-	openaiQuotaCodexBeta        = "codex-1"
-	openaiQuotaCodexOriginator  = "Codex Desktop"
-	openaiQuotaCodexLanguageTag = "zh-CN"
-	openaiQuotaSecFetchSite     = "none"
-	openaiQuotaSecFetchMode     = "no-cors"
-	openaiQuotaSecFetchDest     = "empty"
-)
 
 func (s *QuotaClient) GetJSON(ctx context.Context, path string, query map[string]string) (map[string]any, error) {
 	target, err := s.Options.URL(path, query)

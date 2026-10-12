@@ -29,7 +29,7 @@
         <template v-if="paymentProcessing">
           <div class="card p-6">
             <div class="flex flex-col items-center space-y-4 py-6 text-center">
-              <div class="h-10 w-10 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent"></div>
+              <div class="spinner h-10 w-10 text-cyan-500"></div>
               <p class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('payment.result.processing') }}</p>
               <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('payment.result.processingHint') }}</p>
             </div>
@@ -61,7 +61,7 @@
         <template v-else-if="redirecting">
           <div class="card p-6">
             <div class="flex flex-col items-center space-y-4 py-4">
-              <div class="h-10 w-10 animate-spin rounded-full border-4 border-[#00AEEF] border-t-transparent"></div>
+              <div class="spinner h-10 w-10 text-[#00AEEF]"></div>
               <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('payment.qr.payInNewWindowHint') }}</p>
             </div>
           </div>
@@ -87,7 +87,7 @@
             <p v-if="stripeError" class="mt-4 text-sm text-red-600 dark:text-red-400">{{ stripeError }}</p>
             <button class="btn btn-stripe mt-6 w-full py-0 text-base" :disabled="stripeSubmitting || !stripeReady" @click="handleGenericPay">
               <span v-if="stripeSubmitting" class="flex items-center justify-center gap-2">
-                <span class="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                <span class="spinner h-4 w-4"></span>
                 {{ t('common.processing') }}
               </span>
               <span v-else>{{ t('payment.stripePay') }}</span>

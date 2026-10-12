@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 type testLoaderStub struct {
@@ -17,20 +18,9 @@ type testLoaderStub struct {
 	request TestRequest
 }
 
-func (l *testLoaderStub) LoadTestTarget(_ context.Context, request TestRequest) (TestTarget, error) {
-	l.loads++
-	l.request = request
-	return l.target, l.err
-}
-
 type testTargetStub struct {
 	info TestTargetInfo
 	run  func(context.Context, PreparedTestRequest, TestEventSink) error
-}
-
-func (t testTargetStub) Information() TestTargetInfo { return t.info }
-func (t testTargetStub) Execute(ctx context.Context, request PreparedTestRequest, sink TestEventSink) error {
-	return t.run(ctx, request, sink)
 }
 
 type testSinkStub struct {
@@ -39,7 +29,92 @@ type testSinkStub struct {
 	err     error
 }
 
+func TestNormalizeProviderTestMode(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "", want: ProviderTestModeDefault},
+		{input: "default", want: ProviderTestModeDefault},
+		{input: " compact ", want: ProviderTestModeCompact},
+		{input: "COMPACT", want: ProviderTestModeCompact},
+		{input: " legacy_compact ", want: ProviderTestModeLegacyCompact},
+		{input: "unknown", want: ProviderTestModeDefault},
+	}
+
+	for _, tt := range tests {
+		if got := NormalizeProviderTestMode(tt.input); got != tt.want {
+			t.Fatalf("normalizeProviderTestMode(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestDecisionTestingRequiresJev 检查决策请求只能交给 Jev，并把结构化参数传入执行器。
+func TestDecisionTestingRequiresJev(t *testing.T) {
+	for _, platform := range []string{PlatformJev, PlatformOpenAI} {
+		t.Run(platform, func(t *testing.T) {
+			called := false
+			kind := ProviderTestTypeDecision
+			request := TestRequest{Type: &kind, SystemOne: []byte(`{"state":["ready"],"questions":{"x":{"type":"noul","instructions":"Ready?"}}}`)}
+			loader := &testLoaderStub{target: testTargetStub{info: TestTargetInfo{ProviderSnapshot: ProviderSnapshot{Platform: platform, Type: ProviderTypeAPIKey}}, run: func(_ context.Context, got PreparedTestRequest, _ TestEventSink) error {
+				called = true
+				require.Equal(t, TestRouteJev, got.Route)
+				require.Equal(t, kind, got.TestType)
+				require.Equal(t, request.SystemOne, got.SystemOne)
+				return nil
+			}}}
+			err := NewTestService(loader, TestOptions{}).Test(context.Background(), request, &testSinkStub{})
+			if platform == PlatformJev {
+				require.NoError(t, err)
+				require.True(t, called)
+			} else {
+				require.EqualError(t, err, "Decision tests require a Jev provider")
+				require.False(t, called)
+			}
+		})
+	}
+}
+
+func TestResolveProviderTestModeAndType(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      string
+		testTypes []string
+		wantMode  string
+		wantType  string
+		explicit  bool
+	}{
+		{name: "explicit image", mode: "default", testTypes: []string{"image"}, wantMode: ProviderTestModeDefault, wantType: ProviderTestTypeImage, explicit: true},
+		{name: "explicit text", mode: "default", testTypes: []string{"text"}, wantMode: ProviderTestModeDefault, wantType: ProviderTestTypeText, explicit: true},
+		{name: "legacy compact", mode: "compact", wantMode: ProviderTestModeCompact, wantType: "", explicit: false},
+		{name: "mode alias", mode: "image", wantMode: ProviderTestModeDefault, wantType: ProviderTestTypeImage, explicit: true},
+		{name: "swapped new call", mode: "image", testTypes: []string{"compact"}, wantMode: ProviderTestModeCompact, wantType: ProviderTestTypeImage, explicit: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode, testType, explicit := ResolveProviderTestModeAndType(tt.mode, tt.testTypes...)
+			if mode != tt.wantMode || testType != tt.wantType || explicit != tt.explicit {
+				t.Fatalf("resolveProviderTestModeAndType(%q, %#v) = (%q, %q, %v), want (%q, %q, %v)", tt.mode, tt.testTypes, mode, testType, explicit, tt.wantMode, tt.wantType, tt.explicit)
+			}
+		})
+	}
+}
+
+func (l *testLoaderStub) LoadTestTarget(_ context.Context, request TestRequest) (TestTarget, error) {
+	l.loads++
+	l.request = request
+	return l.target, l.err
+}
+
+func (t testTargetStub) Information() TestTargetInfo { return t.info }
+
+func (t testTargetStub) Execute(ctx context.Context, request PreparedTestRequest, sink TestEventSink) error {
+	return t.run(ctx, request, sink)
+}
+
 func (s *testSinkStub) Begin(context.Context, bool) error { s.begin++; return s.err }
+
 func (s *testSinkStub) Emit(_ context.Context, event TestEvent) error {
 	s.emitted = append(s.emitted, event)
 	return s.err

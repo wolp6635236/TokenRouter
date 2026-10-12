@@ -1,6 +1,6 @@
 package openai
 
-// OpenAICodexUsageSnapshot represents Codex API usage limits from response headers
+// OpenAICodexUsageSnapshot represents Codex API usage limits from response headers.
 type OpenAICodexUsageSnapshot struct {
 	PrimaryUsedPercent          *float64 `json:"primary_used_percent,omitempty"`
 	PrimaryResetAfterSeconds    *int     `json:"primary_reset_after_seconds,omitempty"`
@@ -12,7 +12,7 @@ type OpenAICodexUsageSnapshot struct {
 	UpdatedAt                   string   `json:"updated_at,omitempty"`
 }
 
-// NormalizedCodexLimits contains normalized 5h/7d rate limit data
+// NormalizedCodexLimits contains normalized 5h/7d rate limit data.
 type NormalizedCodexLimits struct {
 	Used5hPercent   *float64
 	Reset5hSeconds  *int

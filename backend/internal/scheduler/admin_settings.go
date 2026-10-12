@@ -18,25 +18,6 @@ type AdminDefaults struct {
 	Process policy.RuntimeSettings
 }
 
-// DefaultAdminSettingsDefaults 返回未提供配置时的管理默认值。
-func DefaultAdminSettingsDefaults() AdminDefaults {
-	return AdminDefaults{TopK: 7, Weights: policy.ConfigScoreWeights{Priority: 1, Load: 1, Queue: 0.7, ErrorRate: 0.8, TTFT: 0.5, Reset: 0, QuotaHeadroom: 0, PreviousResponse: 5, SessionSticky: 3}, Process: policy.RuntimeSettings{EwmaErrorRateAlpha: DefaultErrorRateAlpha, EwmaTTFTAlpha: DefaultTTFTAlpha, StickyEscape: policy.NormalizeStickyEscape(policy.StickyEscapeConfig{Enabled: true, TtftMs: 15000, ErrorRate: 0.5})}}
-}
-
-func EffectiveAdminWeights(defaults AdminDefaults) policy.ConfigScoreWeights {
-	if defaults.Weights.IsValid() {
-		return defaults.Weights
-	}
-	return DefaultAdminSettingsDefaults().Weights
-}
-
-func EffectiveAdminTopK(defaults AdminDefaults) string {
-	if defaults.TopK > 0 {
-		return strconv.Itoa(defaults.TopK)
-	}
-	return "7"
-}
-
 // AdminSettings 是调度管理覆盖值，区分空字符串、布尔零值和未设置。
 type AdminSettings struct {
 	AdvancedSchedulerEWMAErrorRateAlpha          string `json:"advanced_scheduler_ewma_error_rate_alpha"`
@@ -57,6 +38,25 @@ type AdminSettings struct {
 	AdvancedSchedulerWeightReset                 string `json:"advanced_scheduler_weight_reset"`
 	AdvancedSchedulerWeightSessionSticky         string `json:"advanced_scheduler_weight_session_sticky"`
 	AdvancedSchedulerWeightTTFT                  string `json:"advanced_scheduler_weight_ttft"`
+}
+
+// DefaultAdminSettingsDefaults 返回未提供配置时的管理默认值。
+func DefaultAdminSettingsDefaults() AdminDefaults {
+	return AdminDefaults{TopK: 7, Weights: policy.ConfigScoreWeights{Priority: 1, Load: 1, Queue: 0.7, ErrorRate: 0.8, TTFT: 0.5, Reset: 0, QuotaHeadroom: 0, PreviousResponse: 5, SessionSticky: 3}, Process: policy.RuntimeSettings{EwmaErrorRateAlpha: DefaultErrorRateAlpha, EwmaTTFTAlpha: DefaultTTFTAlpha, StickyEscape: policy.NormalizeStickyEscape(policy.StickyEscapeConfig{Enabled: true, TtftMs: 15000, ErrorRate: 0.5})}}
+}
+
+func EffectiveAdminWeights(defaults AdminDefaults) policy.ConfigScoreWeights {
+	if defaults.Weights.IsValid() {
+		return defaults.Weights
+	}
+	return DefaultAdminSettingsDefaults().Weights
+}
+
+func EffectiveAdminTopK(defaults AdminDefaults) string {
+	if defaults.TopK > 0 {
+		return strconv.Itoa(defaults.TopK)
+	}
+	return "7"
 }
 
 // NormalizeAdminSettings 保留每项范围、有效权重和错误 reason。

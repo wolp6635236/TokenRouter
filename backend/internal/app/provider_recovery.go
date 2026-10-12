@@ -13,6 +13,18 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
+// providerHealthRuntime 保存同一次装配创建的健康状态组件。
+type providerHealthRuntime struct {
+	Health   *provider.HealthService
+	Recovery *provider.RecoveryService
+	Observer *provideradapter.UpstreamHealth
+}
+
+// provideUpstreamHealth 返回 app 已构造的共享健康状态组件。
+func provideUpstreamHealth(runtime *providerHealthRuntime) *provideradapter.UpstreamHealth {
+	return runtime.Observer
+}
+
 // provideProviderHealthRuntime 为提供商健康状态组件绑定配置、设置读取器和基础设施接口。
 func provideProviderHealthRuntime(
 	store *providerpostgres.ProviderStore,
@@ -87,14 +99,12 @@ func provideProviderHealthRuntime(
 	}
 }
 
-// providerHealthRuntime 保存同一次装配创建的健康状态组件。
-type providerHealthRuntime struct {
-	Health   *provider.HealthService
-	Recovery *provider.RecoveryService
-	Observer *provideradapter.UpstreamHealth
-}
-
 // provideProviderRecovery 返回共享的提供商恢复用例。
 func provideProviderRecovery(runtime *providerHealthRuntime) *provider.RecoveryService {
 	return runtime.Recovery
+}
+
+// provideProviderRuntimeState 构造恢复、刷新和执行入口共享的运行状态。
+func provideProviderRuntimeState() *provider.RuntimeBlockState {
+	return provider.NewRuntimeBlockState(time.Now)
 }

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -9,52 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
-
-type mediaHTTPProbe struct {
-	AuxiliaryHTTPPorts
-	t       *testing.T
-	access  *MediaAccess
-	steps   []string
-	mapping routing.GroupMappingResult
-}
-
-func (p *mediaHTTPProbe) Access(*gin.Context) (*MediaAccess, bool) {
-	p.steps = append(p.steps, "auth")
-	return p.access, p.access != nil
-}
-
-func (p *mediaHTTPProbe) Subject(*gin.Context) (MediaSubject, bool) {
-	return MediaSubject{UserID: 1, Concurrency: 1}, true
-}
-
-func (p *mediaHTTPProbe) Error(c *gin.Context, status int, kind, message string) {
-	c.JSON(status, gin.H{"error": gin.H{"type": kind, "message": message}})
-}
-
-func (p *mediaHTTPProbe) EnsureForwardError(*gin.Context, bool) bool {
-	p.t.Error("unexpected panic in media HTTP adapter")
-	return false
-}
-
-func (p *mediaHTTPProbe) Logger(*gin.Context, string, ...zap.Field) *zap.Logger { return zap.NewNop() }
-func (p *mediaHTTPProbe) Dependencies(*gin.Context, *zap.Logger) bool           { return true }
-func (p *mediaHTTPProbe) HTTPTransport(*gin.Context)                            {}
-func (p *mediaHTTPProbe) ObserveRequest(*gin.Context, string, bool, bool)       {}
-func (p *mediaHTTPProbe) Plan(c *gin.Context, _ string, _ bool) (context.Context, routing.GroupMappingResult) {
-	p.steps = append(p.steps, "plan")
-	return c.Request.Context(), p.mapping
-}
-func (p *mediaHTTPProbe) ImagePolicyDenied(*gin.Context) { p.steps = append(p.steps, "denied") }
-func (p *mediaHTTPProbe) ImagePermissionMessage() string { return "image disabled" }
-func (p *mediaHTTPProbe) ParseGrok(string, []byte) GrokMediaInput {
-	p.steps = append(p.steps, "parse")
-	return GrokMediaInput{}
-}
 
 type unreadableMediaBody struct{ reads int }
 
@@ -62,7 +20,9 @@ func (b *unreadableMediaBody) Read([]byte) (int, error) {
 	b.reads++
 	return 0, errors.New("must not read")
 }
+
 func (b *unreadableMediaBody) Close() error { return nil }
+
 func mediaHTTPContext(method, path string, body io.Reader) (*gin.Context, *httptest.ResponseRecorder) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

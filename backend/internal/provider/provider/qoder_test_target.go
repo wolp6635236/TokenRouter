@@ -7,14 +7,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// Target 将选中的提供商封装为单次测试组件，公开字段返回脱敏数据。
-func (s *QoderProviderTest) Target(value *provider.Record) provider.TestTarget {
-	return qoderTestTarget{executor: s, record: value}
-}
-
 type qoderTestTarget struct {
 	executor *QoderProviderTest
 	record   *provider.Record
+}
+
+// Target 将选中的提供商封装为单次测试组件，公开字段返回脱敏数据。
+func (s *QoderProviderTest) Target(value *provider.Record) provider.TestTarget {
+	return qoderTestTarget{executor: s, record: value}
 }
 
 func (t qoderTestTarget) Information() provider.TestTargetInfo {

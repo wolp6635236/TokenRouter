@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 func EnsureLoginUserActive(user *identity.User) error {
@@ -30,7 +31,7 @@ func RespondWithTokenPair(c *gin.Context, authService *identity.AuthService, use
 	tokenPair, err := authService.GenerateTokenPair(c.Request.Context(), user, "")
 	if err != nil {
 		slog.Error("failed to generate token pair", "error", err, "user_id", user.ID)
-		// 回退到只返回Access Token
+		// 回退到只返回 Access Token
 		token, tokenErr := authService.GenerateToken(c.Request.Context(), user)
 		if tokenErr != nil {
 			response.InternalError(c, "Failed to generate token")

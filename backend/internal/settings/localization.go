@@ -11,9 +11,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
-// LocalizedTexts 是综合设置中普通用户可见的独立文案。
-type LocalizedTexts = locale.TextUpdates
-
 // LocalizedTextFields 将管理字段映射到各业务原文的存储键。
 var LocalizedTextFields = map[string]string{
 	"balance_unit_name":               "balance_unit_name",
@@ -25,6 +22,9 @@ var LocalizedTextFields = map[string]string{
 	"payment_product_name_suffix":     "PRODUCT_NAME_SUFFIX",
 	"smtp_from_name":                  "smtp_from_name",
 }
+
+// LocalizedTexts 是综合设置中普通用户可见的独立文案。
+type LocalizedTexts = locale.TextUpdates
 
 // ReadLocalizedTexts 构建编辑值，历史原文在管理员选择之前保持未知语言。
 func ReadLocalizedTexts(values map[string]string) LocalizedTexts {

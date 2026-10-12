@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestMigration279RemovesOnlyMessagesFamilyMapping 验证迁移只删除系列字段，精确覆盖、分组 ID 和其它策略保持原值，重复执行不改变结果。

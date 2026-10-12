@@ -3,7 +3,6 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/gin-gonic/gin"
 )
 
@@ -13,25 +12,12 @@ func (h *ModelsHandler) WriteUnifiedModelsList(c *gin.Context, ids []string) {
 		c.JSON(http.StatusOK, gin.H{"object": "list", "data": []any{}})
 		return
 	}
-	known := make(map[string]gin.H)
-	for _, model := range h.catalog.OpenAIModels() {
-		known[model.ID] = gin.H{"id": model.ID, "object": "model", "type": "model", "display_name": model.DisplayName, "owned_by": model.OwnedBy, "created": model.Created}
-	}
-	for _, platform := range []string{capability.PlatformAnthropic, capability.PlatformGemini, capability.PlatformAntigravity, capability.PlatformQoder} {
-		for _, model := range h.catalog.ClaudeModels(platform) {
-			if _, exists := known[model.ID]; !exists {
-				known[model.ID] = gin.H{"id": model.ID, "object": "model", "type": "model", "display_name": model.DisplayName, "created_at": model.CreatedAt}
-			}
-		}
-	}
-	for _, model := range h.catalog.GrokModels() {
-		known[model.ID] = h.unifiedGrokModel(model)
-	}
 	models := make([]gin.H, 0, len(ids))
 	for _, id := range ids {
-		item := known[id]
-		if item == nil {
-			item = gin.H{"id": id, "object": "model", "type": "model", "display_name": id, "owned_by": "tokenrouter"}
+		model := h.catalog.Model(id)
+		item := gin.H{"id": id, "object": "model", "type": "model", "display_name": model.DisplayName, "owned_by": model.OwnedBy, "created": model.Created}
+		if GrokModelSupportsConfigurableReasoning(id) {
+			item = h.unifiedGrokModel(GrokModel{ID: id, Object: "model", Type: "model", OwnedBy: "xai", DisplayName: model.DisplayName})
 		}
 		models = append(models, item)
 	}

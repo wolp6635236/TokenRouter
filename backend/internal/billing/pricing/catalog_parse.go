@@ -99,7 +99,7 @@ func ParsePricingEntries(rawData map[string]json.RawMessage) (map[string]*Catalo
 		invalidAmount := false
 		value := reflect.ValueOf(entry)
 		fields := value.Type()
-		for i := 0; i < value.NumField(); i++ {
+		for i := range value.NumField() {
 			field := value.Field(i)
 			if field.Kind() == reflect.Pointer && field.Type().Elem().Kind() == reflect.Float64 && !field.IsNil() && !validAmount(field.Elem().Float()) {
 				invalidEntries = append(invalidEntries, fmt.Sprintf("%s: invalid %s", modelName, fields.Field(i).Tag.Get("json")))

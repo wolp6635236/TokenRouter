@@ -143,10 +143,9 @@ def validate_audit(data: dict, exit_code: int | None = None) -> None:
                 raise ValueError("漏洞来源缺少公告标识")
     findings = list(iter_vulns(data))
     high_count = sum(1 for _, level, _, _ in findings if level in HIGH_SEVERITIES)
+    # --audit-level=high 会过滤低等级明细，metadata 仍统计所有等级。
     if (counts['high'] + counts['critical'] > 0) != (high_count > 0):
         raise ValueError("审计计数与高危漏洞记录不符")
-    if sum(counts[level] for level in levels) > 0 and not findings:
-        raise ValueError("审计报告有漏洞计数但缺少记录")
     if exit_code is not None and (exit_code not in (0, 1) or exit_code != int(high_count > 0)):
         raise ValueError("审计命令执行失败，退出码: " + str(exit_code))
 

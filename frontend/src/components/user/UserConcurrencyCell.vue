@@ -8,9 +8,10 @@
     >
       <!-- Four-square grid icon -->
       <Icon name="grid" size="xs" class="h-3 w-3" />
-      <span class="font-mono">{{ current }}</span>
-      <span class="text-gray-400 dark:text-gray-500">/</span>
-      <span class="font-mono">{{ max }}</span>
+      <!-- 数字加 self-baseline，徽章的基线取自数字，移动卡片的标签和它对齐。 -->
+      <span class="self-baseline font-mono">{{ current }}</span>
+      <span class="self-baseline text-gray-400 dark:text-gray-500">/</span>
+      <span class="self-baseline font-mono">{{ max }}</span>
     </span>
   </div>
 </template>
@@ -37,6 +38,6 @@ const statusClass = computed(() => {
     return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
   }
   // Idle: gray
-  return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+  return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-dark-300'
 })
 </script>

@@ -117,7 +117,7 @@
 
       <div class="flex items-center gap-3">
         <label class="text-sm text-gray-700 dark:text-gray-300">{{ t('payment.admin.forSale') }}</label>
-        <Toggle v-model="planForm.for_sale" variant="flush" on-class="bg-primary-500" />
+        <Toggle v-model="planForm.for_sale" variant="flush" />
       </div>
     </form>
 

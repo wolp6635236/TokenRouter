@@ -12,6 +12,7 @@ type RedeemAdministrationMutations struct{ client *dbent.Client }
 func NewRedeemAdministrationMutations(client *dbent.Client) *RedeemAdministrationMutations {
 	return &RedeemAdministrationMutations{client: client}
 }
+
 func (m *RedeemAdministrationMutations) Mutation(ctx context.Context, fn func(context.Context) error) error {
 	if dbent.TxFromContext(ctx) != nil || m.client == nil {
 		return fn(ctx)
@@ -29,6 +30,7 @@ func (m *RedeemAdministrationMutations) Mutation(ctx context.Context, fn func(co
 	}
 	return nil
 }
+
 func (m *RedeemAdministrationMutations) Adjustment(ctx context.Context, fn func(context.Context) error) error {
 	if m.client == nil {
 		return fn(ctx)
@@ -46,6 +48,7 @@ func (m *RedeemAdministrationMutations) Adjustment(ctx context.Context, fn func(
 	}
 	return nil
 }
+
 func (m *RedeemAdministrationMutations) PlanExists(ctx context.Context, id int64) error {
 	_, err := clientFromContext(ctx, m.client).SubscriptionPlan.Get(ctx, id)
 	return err

@@ -2,50 +2,11 @@ package provider
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
-
-// 本地交换器通过闸门控制何时响应取消。
-type lifecycleRefreshExecutor struct {
-	started      chan struct{}
-	release      chan struct{}
-	ignoreCancel bool
-	calls        atomic.Int32
-}
-
-func (e *lifecycleRefreshExecutor) CacheKey(*Record) string                  { return "lifecycle:provider" }
-func (e *lifecycleRefreshExecutor) CanRefresh(*Record) bool                  { return true }
-func (e *lifecycleRefreshExecutor) NeedsRefresh(*Record, time.Duration) bool { return true }
-func (e *lifecycleRefreshExecutor) Refresh(ctx context.Context, _ *Record) (map[string]any, error) {
-	if e.calls.Add(1) == 1 {
-		close(e.started)
-	}
-	if e.ignoreCancel {
-		<-e.release
-		return map[string]any{"access_token": "late"}, nil
-	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-e.release:
-		return map[string]any{"access_token": "new"}, nil
-	}
-}
-
-type lifecycleRefreshRepository struct{ writes atomic.Int32 }
-
-func (*lifecycleRefreshRepository) GetByID(context.Context, int64) (*Record, error) {
-	return &Record{ID: 1, Platform: PlatformOpenAI, Type: ProviderTypeOAuth, Status: StatusActive}, nil
-}
-
-func (r *lifecycleRefreshRepository) UpdateOAuthCredentialsIfUnchanged(context.Context, CredentialVersion, map[string]any) (bool, error) {
-	r.writes.Add(1)
-	return true, nil
-}
 
 func TestRefreshStopCancelsExchangeAndQueuedWork(t *testing.T) {
 	repo := &lifecycleRefreshRepository{}

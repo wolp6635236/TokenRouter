@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 	"github.com/stretchr/testify/require"
+
+	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestMigration265RemovesDataSharing 验证迁移可重复执行，并且只改动目标 schema 与设置。

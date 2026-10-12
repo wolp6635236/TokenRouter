@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/stretchr/testify/require"
 )
 
 // windowPairSource 为装配测试同时提供双窗口和多提供商批量查询。

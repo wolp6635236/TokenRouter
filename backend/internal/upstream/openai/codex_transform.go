@@ -5,12 +5,48 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-const ImagesResponsesMainModel = "gpt-5.4-mini"
+const (
+	ImagesResponsesMainModel = "gpt-5.4-mini"
+
+	CodexCallIDMaxLength = 64
+	CodexCallIDPrefix    = "fc_"
+
+	CodexImageGenerationFunctionToolName = "image_gen.imagegen"
+
+	CodexImageGenerationBridgeMarker = "<tokenrouter-codex-image-generation>"
+	CodexImageGenerationBridgeText   = CodexImageGenerationBridgeMarker + "\nWhen the user asks for raster image generation or editing, use the OpenAI Responses native `image_generation` tool attached to this request. The local Codex client may not expose an `image_gen` namespace, but that does not mean image generation is unavailable. Do not ask the user to switch to CLI fallback solely because `image_gen` is absent.\n</tokenrouter-codex-image-generation>"
+	CodexSparkImageUnsupportedMarker = "<tokenrouter-codex-spark-image-unsupported>"
+	CodexSparkImageUnsupportedText   = CodexSparkImageUnsupportedMarker + "\nThe current model is gpt-5.3-codex-spark, which does not support image generation, image editing, image input, the `image_generation` tool, or Codex `image_gen`/`$imagegen` workflows. If the user asks for image generation or image editing, clearly explain this model limitation and ask them to switch to a non-Spark Codex model such as gpt-5.3-codex or gpt-5.4. Do not claim that the local environment merely lacks image_gen tooling, and do not suggest CLI fallback as the primary fix while the model remains Spark.\n</tokenrouter-codex-spark-image-unsupported>"
+)
+
+var (
+	OpenAIChatGPTInternalUnsupportedFields = []string{
+		"chat_template_kwargs",
+		"user",
+		"metadata",
+		"prompt_cache_retention",
+		"safety_identifier",
+		"stream_options",
+		"truncation",
+		"stop_sequences",
+	}
+
+	OpenAICodexOAuthUnsupportedFields = append([]string{
+		"max_output_tokens",
+		"max_completion_tokens",
+		"temperature",
+		"top_p",
+		"frequency_penalty",
+		"presence_penalty",
+	}, OpenAIChatGPTInternalUnsupportedFields...)
+)
 
 type CodexTransformResult struct {
 	Modified        bool
@@ -29,10 +65,10 @@ type CodexOAuthTransformOptions struct {
 	OmitPromotedSystemMessagesFromInput bool
 }
 
-const (
-	CodexCallIDMaxLength = 64
-	CodexCallIDPrefix    = "fc_"
-)
+type CodexInputFilterOptions struct {
+	PreserveReferences bool
+	PreserveCallIDs    bool
+}
 
 func NormalizeCodexCallID(id string) string {
 	return NormalizeCodexCallIDForItemType("function_call", id)
@@ -66,41 +102,12 @@ func CompactCodexCallIDForItemType(itemType, id string) string {
 
 func TrimOpenAIResponsesKnownCallIDPrefix(id string) string {
 	for _, prefix := range []string{"fc_", "ctc_", "tsc_"} {
-		if strings.HasPrefix(id, prefix) {
-			return strings.TrimPrefix(id, prefix)
+		if after, ok := strings.CutPrefix(id, prefix); ok {
+			return after
 		}
 	}
 	return id
 }
-
-const CodexImageGenerationFunctionToolName = "image_gen.imagegen"
-
-const (
-	CodexImageGenerationBridgeMarker = "<tokenrouter-codex-image-generation>"
-	CodexImageGenerationBridgeText   = CodexImageGenerationBridgeMarker + "\nWhen the user asks for raster image generation or editing, use the OpenAI Responses native `image_generation` tool attached to this request. The local Codex client may not expose an `image_gen` namespace, but that does not mean image generation is unavailable. Do not ask the user to switch to CLI fallback solely because `image_gen` is absent.\n</tokenrouter-codex-image-generation>"
-	CodexSparkImageUnsupportedMarker = "<tokenrouter-codex-spark-image-unsupported>"
-	CodexSparkImageUnsupportedText   = CodexSparkImageUnsupportedMarker + "\nThe current model is gpt-5.3-codex-spark, which does not support image generation, image editing, image input, the `image_generation` tool, or Codex `image_gen`/`$imagegen` workflows. If the user asks for image generation or image editing, clearly explain this model limitation and ask them to switch to a non-Spark Codex model such as gpt-5.3-codex or gpt-5.4. Do not claim that the local environment merely lacks image_gen tooling, and do not suggest CLI fallback as the primary fix while the model remains Spark.\n</tokenrouter-codex-spark-image-unsupported>"
-)
-
-var OpenAIChatGPTInternalUnsupportedFields = []string{
-	"chat_template_kwargs",
-	"user",
-	"metadata",
-	"prompt_cache_retention",
-	"safety_identifier",
-	"stream_options",
-	"truncation",
-	"stop_sequences",
-}
-
-var OpenAICodexOAuthUnsupportedFields = append([]string{
-	"max_output_tokens",
-	"max_completion_tokens",
-	"temperature",
-	"top_p",
-	"frequency_penalty",
-	"presence_penalty",
-}, OpenAIChatGPTInternalUnsupportedFields...)
 
 func ApplyCodexOAuthTransformWithOptions(reqBody map[string]any, opts CodexOAuthTransformOptions) CodexTransformResult {
 	result := CodexTransformResult{}
@@ -407,9 +414,7 @@ func NormalizeCodexToolRoleMessages(input []any) ([]any, bool) {
 			// Responses does not accept role:"tool". If no call id is available,
 			// preserve the text as a user message instead of sending invalid input.
 			fallback := make(map[string]any, len(m))
-			for key, value := range m {
-				fallback[key] = value
-			}
+			maps.Copy(fallback, m)
 			fallback["role"] = "user"
 			delete(fallback, "tool_call_id")
 			normalized = append(normalized, fallback)
@@ -468,9 +473,7 @@ func NormalizeCodexMessageContentText(input []any) ([]any, bool) {
 				return
 			}
 			newItem = make(map[string]any, len(m))
-			for key, value := range m {
-				newItem[key] = value
-			}
+			maps.Copy(newItem, m)
 			newParts = make([]any, len(parts))
 			copy(newParts, parts)
 		}
@@ -490,9 +493,7 @@ func NormalizeCodexMessageContentText(input []any) ([]any, bool) {
 
 			ensureItemCopy()
 			newPart := make(map[string]any, len(part))
-			for key, value := range part {
-				newPart[key] = value
-			}
+			maps.Copy(newPart, part)
 			newPart["text"] = StringifyCodexContentText(text)
 			newParts[i] = newPart
 			modified = true
@@ -712,10 +713,8 @@ func HasOpenAIInputImage(reqBody map[string]any) bool {
 func HasOpenAIInputImageValue(value any) bool {
 	switch v := value.(type) {
 	case []any:
-		for _, item := range v {
-			if HasOpenAIInputImageValue(item) {
-				return true
-			}
+		if slices.ContainsFunc(v, HasOpenAIInputImageValue) {
+			return true
 		}
 	case map[string]any:
 		if strings.TrimSpace(FirstNonEmptyString(v["type"])) == "input_image" {
@@ -1314,7 +1313,7 @@ func ApplyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
 }
 
 // IsInstructionsEmpty 检查 instructions 字段是否为空
-// 处理以下情况：字段不存在、nil、空字符串、纯空白字符串
+// 处理以下情况：字段不存在、nil、空字符串、纯空白字符串。
 func IsInstructionsEmpty(reqBody map[string]any) bool {
 	val, exists := reqBody["instructions"]
 	if !exists {
@@ -1328,11 +1327,6 @@ func IsInstructionsEmpty(reqBody map[string]any) bool {
 		return true
 	}
 	return strings.TrimSpace(str) == ""
-}
-
-type CodexInputFilterOptions struct {
-	PreserveReferences bool
-	PreserveCallIDs    bool
 }
 
 func NormalizeCodexFilterCallID(itemType, id string, preserve bool) string {
@@ -1463,9 +1457,7 @@ func FilterCodexInputWithOptions(input []any, opts CodexInputFilterOptions) []an
 				continue
 			}
 			newItem := make(map[string]any, len(m))
-			for key, value := range m {
-				newItem[key] = value
-			}
+			maps.Copy(newItem, m)
 			if id, ok := newItem["id"].(string); ok && strings.HasPrefix(strings.TrimSpace(id), "call_") {
 				trimmedID := strings.TrimSpace(id)
 				_, referencesExistingItem := inputItemIDs[trimmedID]
@@ -1491,9 +1483,7 @@ func FilterCodexInputWithOptions(input []any, opts CodexInputFilterOptions) []an
 				return
 			}
 			newItem = make(map[string]any, len(m))
-			for key, value := range m {
-				newItem[key] = value
-			}
+			maps.Copy(newItem, m)
 			copied = true
 		}
 

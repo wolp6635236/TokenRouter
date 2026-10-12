@@ -10,19 +10,24 @@ import (
 	"strings"
 	"testing"
 
-	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
-
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/internal/payment"
-	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"entgo.io/ent/dialect"
-	entsql "entgo.io/ent/dialect/sql"
 	_ "modernc.org/sqlite"
+
+	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/payment"
+	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
+	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
 )
+
+type webhookHandlerProviderStub struct {
+	key          string
+	notification *payment.PaymentNotification
+	verifyErr    error
+}
 
 func TestWriteSuccessResponse(t *testing.T) {
 	tests := []struct {
@@ -260,16 +265,10 @@ func TestVerifyNotificationWithProvidersFailsWhenAllProvidersReject(t *testing.T
 	require.Error(t, err)
 }
 
-type webhookHandlerProviderStub struct {
-	key          string
-	notification *payment.PaymentNotification
-	verifyErr    error
-}
-
 func (p webhookHandlerProviderStub) Name() string        { return p.key }
 func (p webhookHandlerProviderStub) ProviderKey() string { return p.key }
 func (p webhookHandlerProviderStub) SupportedTypes() []payment.PaymentType {
-	return []payment.PaymentType{payment.PaymentType(p.key)}
+	return []payment.PaymentType{p.key}
 }
 
 func (p webhookHandlerProviderStub) CreatePayment(context.Context, payment.CreatePaymentRequest) (*payment.CreatePaymentResponse, error) {

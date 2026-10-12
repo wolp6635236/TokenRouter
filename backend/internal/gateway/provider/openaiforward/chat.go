@@ -11,13 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
-	"go.uber.org/zap"
 )
 
 // CursorResponsesUnsupportedFields 列出 Cursor Responses 请求需要过滤的字段。
@@ -58,14 +59,14 @@ func RunChat(ctx context.Context, body []byte, promptCacheKey, defaultMappedMode
 			return p.DispatchChat(ctx, DispatchGrok, body, promptCacheKey, defaultMappedModel)
 		}
 		if profile.GrokOAuth {
-			if eligible, reason := p.GrokBridgeEligible(body); eligible {
+			eligible, reason := p.GrokBridgeEligible(body)
+			if eligible {
 				return p.DispatchChat(ctx, DispatchGrok, body, promptCacheKey, defaultMappedModel)
-			} else {
-				p.Debug("grok chat_completions: using raw fallback",
-					zap.Int64("provider_id", profile.ID),
-					zap.String("reason", reason),
-				)
 			}
+			p.Debug("grok chat_completions: using raw fallback",
+				zap.Int64("provider_id", profile.ID),
+				zap.String("reason", reason),
+			)
 		}
 		return p.DispatchChat(ctx, DispatchRawChat, body, promptCacheKey, defaultMappedModel)
 	}

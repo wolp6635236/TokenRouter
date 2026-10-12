@@ -26,6 +26,8 @@ TokenRouter 支持长时间运行的 SSE 和 WebSocket 请求。入口保护不�
 
 不要增加全应用共用的请求信号量，因为一个 SSE 请求可能正常占用它数分钟。连接和未认证请求限制应放在边缘；已认证用户或 API Key 的并发仍由应用负责。
 
+HTTP/1 的连接空闲超时使用 `server.idle_timeout`，h2c 使用 `server.h2c.idle_timeout`。HTTP/2 配置通过 `x/net/http2.ConfigureServer` 传给标准库，分别应用两个协议的空闲超时；标准库公开的 `http.HTTP2Config` 暂无独立空闲超时字段。
+
 <a id="fixed_window_rate_limits"></a>
 ## 固定窗口限流
 

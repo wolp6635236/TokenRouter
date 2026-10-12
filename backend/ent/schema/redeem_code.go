@@ -10,6 +10,7 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
@@ -34,8 +35,9 @@ func (RedeemCode) Annotations() []schema.Annotation {
 
 func (RedeemCode) Fields() []ent.Field {
 	return []ent.Field{
+		// 兑换码最多 32 个 Unicode 字符，与 API 的长度校验一致。
 		field.String("code").
-			MaxLen(32).
+			MaxRuneLen(32).
 			NotEmpty().
 			Unique(),
 		field.String("type").

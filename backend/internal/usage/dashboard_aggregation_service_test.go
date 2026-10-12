@@ -3,12 +3,35 @@ package usage
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/settings"
+	p "github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 )
+
+const SettingKeyPreAggregationSettings = p.SettingKeyPreAggregationSettings
+
+type blockingAggregation struct {
+	DashboardAggregationRepository
+	entered  chan struct{}
+	release  chan struct{}
+	canceled atomic.Bool
+}
+
+// stateRepo 控制手工回填读取状态的时点，用于交错实时进度写入。
+type stateRepo struct {
+	UsageAnalyticsAggregationRepository
+	mu      sync.Mutex
+	state   UsageAnalyticsAggregationState
+	reads   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
 
 type dashboardAggregationRepoTestStub struct {
 	aggregateCalls       int
@@ -28,20 +51,6 @@ type dashboardAggregationRepoTestStub struct {
 	aggregateStarted     chan struct{}
 }
 
-func (s *dashboardAggregationRepoTestStub) AggregateRange(ctx context.Context, start, end time.Time) error {
-	s.aggregateCalls++
-	s.aggregateRanges = append(s.aggregateRanges, aggregationRangeCall{start: start, end: end})
-	s.lastStart = start
-	s.lastEnd = end
-	if s.aggregateStarted != nil {
-		select {
-		case s.aggregateStarted <- struct{}{}:
-		default:
-		}
-	}
-	return s.aggregateErr
-}
-
 type aggregationRangeCall struct {
 	start time.Time
 	end   time.Time
@@ -56,6 +65,113 @@ type usageAnalyticsAggregationRepoTestStub struct {
 	recomputeCalls []aggregationRangeCall
 	hourlyCallback func(context.Context, time.Time, time.Time) error
 	dailyCallback  func(context.Context, time.Time, time.Time) error
+}
+
+type (
+	PreAggregationUsageSettings = p.PreAggregationUsageSettings
+	PreAggregationOpsSettings   = p.PreAggregationOpsSettings
+	runtimeSettingRepoStub      struct {
+		mu     sync.Mutex
+		values map[string]string
+	}
+)
+
+func (r *blockingAggregation) RecomputeRange(ctx context.Context, a, b time.Time) error {
+	close(r.entered)
+	select {
+	case <-ctx.Done():
+		r.canceled.Store(true)
+		return ctx.Err()
+	case <-r.release:
+		return nil
+	}
+}
+
+func TestRegressionAggregationStopCancelsWork(t *testing.T) {
+	r := &blockingAggregation{entered: make(chan struct{}), release: make(chan struct{})}
+	s := NewDashboardAggregationService(r, nil, nil)
+	s.runtimeStarted = true
+	if e := s.TriggerRecomputeRange(time.Now().Add(-time.Hour), time.Now()); e != nil {
+		t.Fatal(e)
+	}
+	<-r.entered
+	done := make(chan struct{})
+	go func() { s.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Error("Stop did not cancel context-aware in-flight aggregation")
+	}
+	close(r.release)
+	<-done
+	if !r.canceled.Load() {
+		t.Error("aggregation context was never canceled")
+	}
+}
+
+func (r *stateRepo) GetUsageAnalyticsAggregationState(context.Context) (*UsageAnalyticsAggregationState, error) {
+	r.mu.Lock()
+	v := r.state
+	r.mu.Unlock()
+	if r.reads.Add(1) == 1 {
+		close(r.entered)
+		<-r.release
+	}
+	return &v, nil
+}
+
+func (r *stateRepo) SaveUsageAnalyticsAggregationState(_ context.Context, v *UsageAnalyticsAggregationState) error {
+	r.mu.Lock()
+	r.state = *v
+	r.mu.Unlock()
+	return nil
+}
+
+func TestRegressionManualBackfillPreservesLiveProgress(t *testing.T) {
+	old := time.Date(2026, 9, 1, 1, 0, 0, 0, time.UTC)
+	next := old.Add(time.Hour)
+	r := &stateRepo{state: UsageAnalyticsAggregationState{LiveWatermark: old}, entered: make(chan struct{}), release: make(chan struct{})}
+	s := NewDashboardAggregationService(&dashboardAggregationRepoTestStub{}, nil, &Options{DashboardAgg: DashboardAggregationConfig{BackfillEnabled: true}})
+	s.analyticsRepo = r
+	done := make(chan error, 1)
+	go func() { done <- s.TriggerBackfill(old.Add(-time.Hour), old) }()
+	<-r.entered
+	s.markAnalyticsLiveSuccess(context.Background(), next, old, time.Now())
+	close(r.release)
+	if e := <-done; e != nil {
+		t.Fatal(e)
+	}
+	r.mu.Lock()
+	got := r.state.LiveWatermark
+	r.mu.Unlock()
+	if !got.Equal(next) {
+		t.Errorf("live watermark regressed: want %v got %v", next, got)
+	}
+}
+
+func (r *stateRepo) ApplyUsageAnalyticsState(_ context.Context, c AnalyticsStateChange) (*UsageAnalyticsAggregationState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, e := ApplyAnalyticsStateChange(r.state, c)
+	if e != nil {
+		return nil, e
+	}
+	r.state = v
+	return &v, nil
+}
+
+func (s *dashboardAggregationRepoTestStub) AggregateRange(ctx context.Context, start, end time.Time) error {
+	s.aggregateCalls++
+	s.aggregateRanges = append(s.aggregateRanges, aggregationRangeCall{start: start, end: end})
+	s.lastStart = start
+	s.lastEnd = end
+	if s.aggregateStarted != nil {
+		select {
+		case s.aggregateStarted <- struct{}{}:
+		default:
+		}
+	}
+	return s.aggregateErr
 }
 
 func (s *usageAnalyticsAggregationRepoTestStub) AggregateUsageAnalyticsRange(_ context.Context, start, end time.Time) error {
@@ -442,7 +558,7 @@ func TestDashboardAggregationServiceLiveRebuildsTouchedClosedUTCDays(t *testing.
 	}}, analyticsRepo.dailyCalls)
 
 	analyticsRepo.dailyCalls = nil
-	// 回看范围完全进入当前日期后，不再改写前一日日表。
+	// 回看范围位于当前日期时，前一日日表保持已有结果。
 	require.NoError(t, svc.aggregateLiveRange(context.Background(), start.Add(2*time.Minute), end.Add(2*time.Minute)))
 	require.Empty(t, analyticsRepo.dailyCalls)
 }
@@ -566,7 +682,7 @@ func TestDashboardAggregationServiceBudgetExhaustionKeepsBackfill(t *testing.T) 
 	require.Equal(t, cursor.Add(-time.Hour), *analyticsRepo.state.BackfillCursor)
 }
 
-// TestDashboardAggregationServiceFirstChunkTimeoutIsError 验证首个小时耗尽完整预算时才标记真实异常。
+// TestDashboardAggregationServiceFirstChunkTimeoutIsError 检查首个小时耗尽预算后进入错误状态。
 func TestDashboardAggregationServiceFirstChunkTimeoutIsError(t *testing.T) {
 	cursor := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
 	oldest := cursor.Add(-2 * time.Hour)
@@ -626,4 +742,33 @@ func (s *usageAnalyticsAggregationRepoTestStub) ApplyUsageAnalyticsState(_ conte
 	}
 	s.state = v
 	return &v, nil
+}
+
+func newRuntimeSettingRepoStub() *runtimeSettingRepoStub {
+	return &runtimeSettingRepoStub{values: map[string]string{}}
+}
+
+func (s *runtimeSettingRepoStub) GetValue(_ context.Context, k string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.values[k]
+	if !ok {
+		return "", settings.ErrSettingNotFound
+	}
+	return v, nil
+}
+
+func (s *runtimeSettingRepoStub) Set(_ context.Context, k, v string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values[k] = v
+	return nil
+}
+
+func NewPreAggregationSettingsService(repo p.Repository, cfg *Options) *p.PreAggregationSettingsService {
+	var options *p.Options
+	if cfg != nil {
+		options = &p.Options{Usage: p.UsageOptions{Enabled: cfg.DashboardAgg.Enabled, IntervalSeconds: cfg.DashboardAgg.IntervalSeconds, BackfillEnabled: cfg.DashboardAgg.BackfillEnabled, BackfillMaxDays: cfg.DashboardAgg.BackfillMaxDays}}
+	}
+	return p.NewPreAggregationSettingsService(repo, options)
 }

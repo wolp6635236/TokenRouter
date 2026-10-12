@@ -4,28 +4,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 const (
 	AnnouncementStatusDraft    = "draft"
 	AnnouncementStatusActive   = "active"
 	AnnouncementStatusArchived = "archived"
-)
 
-const (
 	AnnouncementNotifyModeSilent = "silent"
 	AnnouncementNotifyModePopup  = "popup"
-)
 
-const (
 	AnnouncementConditionTypeSubscription = "subscription"
 	AnnouncementConditionTypeBalance      = "balance"
-)
 
-const (
 	AnnouncementOperatorIn  = "in"
 	AnnouncementOperatorGT  = "gt"
 	AnnouncementOperatorGTE = "gte"
@@ -63,6 +56,32 @@ type AnnouncementCondition struct {
 
 	// balance 条件：比较阈值
 	Value float64 `json:"value,omitempty"`
+}
+
+// AnnouncementCopy 将标题和正文作为同一语言版本保存。
+type AnnouncementCopy struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+// AnnouncementLocalization 是公告的多语言内容。
+type AnnouncementLocalization locale.Content[AnnouncementCopy]
+
+type Announcement struct {
+	Localization AnnouncementLocalization
+	Resolution   locale.Resolution
+	ID           int64
+	Title        string
+	Content      string
+	Status       string
+	NotifyMode   string
+	Targeting    AnnouncementTargeting
+	StartsAt     *time.Time
+	EndsAt       *time.Time
+	CreatedBy    *int64
+	UpdatedBy    *int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 func (t AnnouncementTargeting) Matches(balance float64, activePlanIDs map[int64]struct{}) bool {
@@ -199,32 +218,6 @@ func (c AnnouncementCondition) validate() error {
 	default:
 		return ErrAnnouncementInvalidTarget
 	}
-}
-
-// AnnouncementCopy 将标题和正文作为同一语言版本保存。
-type AnnouncementCopy struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
-}
-
-// AnnouncementLocalization 是公告的多语言内容。
-type AnnouncementLocalization locale.Content[AnnouncementCopy]
-
-type Announcement struct {
-	Localization AnnouncementLocalization
-	Resolution   locale.Resolution
-	ID           int64
-	Title        string
-	Content      string
-	Status       string
-	NotifyMode   string
-	Targeting    AnnouncementTargeting
-	StartsAt     *time.Time
-	EndsAt       *time.Time
-	CreatedBy    *int64
-	UpdatedBy    *int64
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
 }
 
 func (a *Announcement) IsActiveAt(now time.Time) bool {

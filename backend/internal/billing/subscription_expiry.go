@@ -21,6 +21,8 @@ const (
 	subscriptionExpiryReminderLeaderLockTTL = 5 * time.Minute
 )
 
+var ErrReminderTransportUnconfigured = errors.New("subscription reminder transport is not configured")
+
 // ExpiryReminder 是资格与阈值判断完成后的通知事实，发送器只负责投递。
 type ExpiryReminder struct {
 	UserID, SubscriptionID                  int64
@@ -35,8 +37,6 @@ type ExpiryNotifier interface {
 	Ready(context.Context) error
 	Send(context.Context, ExpiryReminder) error
 }
-
-var ErrReminderTransportUnconfigured = errors.New("subscription reminder transport is not configured")
 
 type ExpirySettings interface {
 	GetValue(context.Context, string) (string, error)

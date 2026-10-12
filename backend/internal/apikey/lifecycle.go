@@ -25,8 +25,11 @@ func (g *authOperationGate) enter() bool {
 	g.active.Add(1)
 	return true
 }
-func (g *authOperationGate) leave()           { g.active.Done() }
-func (g *authOperationGate) stop()            { g.mu.Lock(); g.stopping = true; g.mu.Unlock() }
+
+func (g *authOperationGate) leave() { g.active.Done() }
+
+func (g *authOperationGate) stop() { g.mu.Lock(); g.stopping = true; g.mu.Unlock() }
+
 func (g *authOperationGate) isStopping() bool { g.mu.Lock(); defer g.mu.Unlock(); return g.stopping }
 
 // Start 只在 app 完成绑定后初始化缓存与订阅；停止过的实例不能重新认领工作。

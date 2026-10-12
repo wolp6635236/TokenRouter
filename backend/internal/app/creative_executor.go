@@ -4,14 +4,14 @@ import (
 	"context"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
-
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	creativeprovider "github.com/TokenFlux/TokenRouter/internal/creative/provider"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -92,4 +92,18 @@ func provideCreativeExecutor(cfg *config.Config, groups creativeprovider.Executi
 		}
 	}
 	return out
+}
+
+// provideCreativeTargets 为创作台任务绑定与 HTTP 入口共享的凭据、身份和传输实例。
+func provideCreativeTargets(cfg *config.Config, auxiliary *gatewayhttp.OpenAIAuxiliary, tokens *provider.GeminiTokenSource, activity *gatewayRequestActivity) *gatewayprovider.CreativeTargets {
+	requests := auxiliary.Requests
+	return &gatewayprovider.CreativeTargets{
+		Requests:     requests,
+		Credentials:  requests.Credentials,
+		Identity:     requests.Identity,
+		Transport:    requests.Transport,
+		Routes:       provideGrokRoutes(cfg, nil),
+		GeminiTokens: tokens,
+		Enter:        activity.Enter,
+	}
 }

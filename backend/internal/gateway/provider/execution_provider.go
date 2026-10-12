@@ -1,10 +1,13 @@
 package provider
 
 import (
+	"net/http"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
@@ -15,12 +18,18 @@ type ExecutionProvider struct {
 	Route  requeststate.AttemptRoute `json:"-"`
 }
 
-// View 返回提供商记录，接收者为 nil 时返回 nil。
-func (value *ExecutionProvider) View() *provider.Record {
-	if value == nil {
-		return nil
+// BindExecutionHeaders 返回绑定提供商的 Header 设置函数，调用时读取最新字段。
+func BindExecutionHeaders(value *ExecutionProvider) func(http.Header) {
+	return func(headers http.Header) {
+		provideradapter.ApplyProviderHeaderOverrides(ExecutionProtocolRecord(value), headers)
 	}
-	return &value.Record
+}
+
+// BindExecutionHeaderValue 返回绑定提供商的 Header 查询函数，调用时读取字段值。
+func BindExecutionHeaderValue(value *ExecutionProvider) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		return provideradapter.HeaderOverrideValue(ExecutionProtocolRecord(value), name)
+	}
 }
 
 // NewExecutionProvider 复制提供商记录并设置时钟函数。
@@ -33,6 +42,14 @@ func NewExecutionProvider(value *provider.Record) *ExecutionProvider {
 	out.Record.Now = time.Now
 	out.Record.LoadLocation = time.LoadLocation
 	return out
+}
+
+// View 返回提供商记录，接收者为 nil 时返回 nil。
+func (value *ExecutionProvider) View() *provider.Record {
+	if value == nil {
+		return nil
+	}
+	return &value.Record
 }
 
 func ExecutionRecord(value *ExecutionProvider) *provider.Record {
@@ -159,4 +176,19 @@ func ExecutionCompletionRecord(value *ExecutionProvider) *provider.Record {
 	}
 	v := &value.Record
 	return &provider.Record{ID: v.ID, Name: v.Name, Platform: v.Platform, Type: v.Type, Credentials: v.Credentials, Extra: v.Extra, RateMultiplier: v.RateMultiplier, ParentProviderID: v.ParentProviderID}
+}
+
+// ExecutionTLSSelection 提取 TLS 资格与配置 ID，供 egress 选择策略。
+func ExecutionTLSSelection(value *ExecutionProvider, routerMatch []egress.TLSFingerprintRouterMatchResult) egress.TLSSelection {
+	selection := egress.TLSSelection{}
+	if value != nil {
+		selection.Enabled = value.View().IsTLSFingerprintEnabled()
+		selection.DirectProfileID = value.View().GetTLSFingerprintProfileID()
+	}
+	if len(routerMatch) > 0 {
+		selection.RouterMatched = routerMatch[0].Matched
+		selection.RouterID = routerMatch[0].RouterID
+		selection.RouterProfileID = routerMatch[0].TLSFingerprintProfileID
+	}
+	return selection
 }

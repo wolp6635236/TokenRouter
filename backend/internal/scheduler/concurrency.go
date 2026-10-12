@@ -17,8 +17,30 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+const (
+	openAIWSIngressLeaseTTL             = 60 * time.Second
+	openAIWSIngressLeaseRefreshInterval = 20 * time.Second
+	openAIWSIngressLeaseOperationTO     = 2 * time.Second
+
+	// 默认等待队列额外槽位。
+	defaultExtraWaitSlots = 20
+
+	defaultProviderLoadBatchCacheTTL = 200 * time.Millisecond
+	providerLoadBatchFetchTimeout    = 3 * time.Second
+	maxProviderLoadBatchCacheEntries = 256
+	apiKeyConcurrencyFetchTimeout    = 3 * time.Second
+	apiKeySlotTrackTimeout           = 2 * time.Second
+)
+
+var (
+	ErrOpenAIWSIngressLeaseLost = errors.New("openai websocket ingress lease lost")
+
+	requestIDPrefix  = initRequestIDPrefix()
+	requestIDCounter atomic.Uint64
+)
+
 // ConcurrencyCache 定义并发控制的缓存接口
-// 使用有序集合存储槽位，按时间戳清理过期条目
+// 使用有序集合存储槽位，按时间戳清理过期条目。
 type ConcurrencyCache interface {
 	// 提供商槽位管理
 	// 键格式: concurrency:provider:{providerID}（有序集合，成员为 requestID）
@@ -69,14 +91,6 @@ type OpenAIWSIngressLeaseCache interface {
 	ReleaseOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, leaseID string) error
 }
 
-const (
-	openAIWSIngressLeaseTTL             = 60 * time.Second
-	openAIWSIngressLeaseRefreshInterval = 20 * time.Second
-	openAIWSIngressLeaseOperationTO     = 2 * time.Second
-)
-
-var ErrOpenAIWSIngressLeaseLost = errors.New("openai websocket ingress lease lost")
-
 // OpenAIWSIngressLease 维持 Redis 入站租约；若整个租约周期都无法确认所有权，则取消上下文。
 // handler 的所有退出路径都必须调用 Release，立即归还容量。
 type OpenAIWSIngressLease struct {
@@ -91,6 +105,54 @@ type OpenAIWSIngressLease struct {
 	stopCh        chan struct{}
 	refreshDone   chan struct{}
 	finishRuntime func()
+}
+
+// ConcurrencyService 管理提供商和用户的并发限制。
+type ConcurrencyService struct {
+	diagnostics Diagnostics
+	runtime     WorkerRuntime
+
+	cache ConcurrencyCache
+
+	providerLoadCacheTTL atomic.Int64
+	providerLoadCacheMu  sync.RWMutex
+	providerLoadCache    map[string]cachedProviderLoadBatch
+	providerLoadGroup    singleflight.Group
+}
+
+type cachedProviderLoadBatch struct {
+	loadMap   map[int64]*ProviderLoadInfo
+	expiresAt time.Time
+}
+
+// AcquireResult 记录是否取得并发槽位及其释放函数。
+type AcquireResult struct {
+	Acquired    bool
+	ReleaseFunc func() // 调用方在请求结束时调用，可使用 defer。
+}
+
+type ProviderWithConcurrency struct {
+	ID             int64
+	MaxConcurrency int
+}
+
+type UserWithConcurrency struct {
+	ID             int64
+	MaxConcurrency int
+}
+
+type ProviderLoadInfo struct {
+	ProviderID         int64
+	CurrentConcurrency int
+	WaitingCount       int
+	LoadRate           int // 0-100+ (percent)
+}
+
+type UserLoadInfo struct {
+	UserID             int64
+	CurrentConcurrency int
+	WaitingCount       int
+	LoadRate           int // 0-100+ (percent)
 }
 
 func (l *OpenAIWSIngressLease) Context() context.Context {
@@ -188,11 +250,6 @@ func (l *OpenAIWSIngressLease) refresh(lastConfirmedAt time.Time) (time.Time, bo
 	return lastConfirmedAt, false
 }
 
-var (
-	requestIDPrefix  = initRequestIDPrefix()
-	requestIDCounter atomic.Uint64
-)
-
 func initRequestIDPrefix() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err == nil {
@@ -211,42 +268,6 @@ func GenerateRequestID() string {
 	return requestIDPrefix + "-" + strconv.FormatUint(seq, 36)
 }
 
-func (s *ConcurrencyService) CleanupStaleProcessSlots(ctx context.Context) error {
-	if s == nil || s.cache == nil {
-		return nil
-	}
-	return s.cache.CleanupStaleProcessSlots(ctx, RequestIDPrefix())
-}
-
-const (
-	// 默认等待队列额外槽位
-	defaultExtraWaitSlots = 20
-
-	defaultProviderLoadBatchCacheTTL = 200 * time.Millisecond
-	providerLoadBatchFetchTimeout    = 3 * time.Second
-	maxProviderLoadBatchCacheEntries = 256
-	apiKeyConcurrencyFetchTimeout    = 3 * time.Second
-	apiKeySlotTrackTimeout           = 2 * time.Second
-)
-
-// ConcurrencyService 管理提供商和用户的并发限制。
-type ConcurrencyService struct {
-	diagnostics Diagnostics
-	runtime     WorkerRuntime
-
-	cache ConcurrencyCache
-
-	providerLoadCacheTTL atomic.Int64
-	providerLoadCacheMu  sync.RWMutex
-	providerLoadCache    map[string]cachedProviderLoadBatch
-	providerLoadGroup    singleflight.Group
-}
-
-type cachedProviderLoadBatch struct {
-	loadMap   map[int64]*ProviderLoadInfo
-	expiresAt time.Time
-}
-
 // NewConcurrencyService 创建并发控制服务。
 func NewConcurrencyService(cache ConcurrencyCache, options ...Diagnostics) *ConcurrencyService {
 	var diagnostics Diagnostics
@@ -261,6 +282,13 @@ func NewConcurrencyService(cache ConcurrencyCache, options ...Diagnostics) *Conc
 	}
 	svc.SetProviderLoadBatchCacheTTL(defaultProviderLoadBatchCacheTTL)
 	return svc
+}
+
+func (s *ConcurrencyService) CleanupStaleProcessSlots(ctx context.Context) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	return s.cache.CleanupStaleProcessSlots(ctx, RequestIDPrefix())
 }
 
 // AcquireOpenAIWSIngressLease 为 API Key 原子预留一个活跃入站连接；非正数上限表示关闭保护。
@@ -318,36 +346,6 @@ func (s *ConcurrencyService) SetProviderLoadBatchCacheTTL(ttl time.Duration) {
 		s.providerLoadCache = make(map[string]cachedProviderLoadBatch)
 		s.providerLoadCacheMu.Unlock()
 	}
-}
-
-// AcquireResult 记录是否取得并发槽位及其释放函数。
-type AcquireResult struct {
-	Acquired    bool
-	ReleaseFunc func() // 调用方在请求结束时调用，可使用 defer。
-}
-
-type ProviderWithConcurrency struct {
-	ID             int64
-	MaxConcurrency int
-}
-
-type UserWithConcurrency struct {
-	ID             int64
-	MaxConcurrency int
-}
-
-type ProviderLoadInfo struct {
-	ProviderID         int64
-	CurrentConcurrency int
-	WaitingCount       int
-	LoadRate           int // 0-100+ (percent)
-}
-
-type UserLoadInfo struct {
-	UserID             int64
-	CurrentConcurrency int
-	WaitingCount       int
-	LoadRate           int // 0-100+ (percent)
 }
 
 // acquireProviderSlot 尝试获取提供商并发槽位。

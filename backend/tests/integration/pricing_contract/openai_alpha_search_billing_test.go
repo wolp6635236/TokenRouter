@@ -5,16 +5,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
-	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
-
-	completion "github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/stretchr/testify/require"
 )
 
 func TestCalculateWebSearchCostDefaultAndOverride(t *testing.T) {

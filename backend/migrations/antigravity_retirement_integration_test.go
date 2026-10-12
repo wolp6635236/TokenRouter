@@ -7,11 +7,12 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
-	"github.com/TokenFlux/TokenRouter/migrations"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
 // TestAntigravityRetirementMigration 验证停用、重放及历史记录保留，usage 表的独占锁用于发现意外访问。

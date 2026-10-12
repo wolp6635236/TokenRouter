@@ -1,12 +1,13 @@
 package provider
 
 import (
+	"go.uber.org/zap"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/ollama"
-	"go.uber.org/zap"
 )
 
 func IsOllamaCloudRawChatCompletionsProvider(provider *ExecutionProvider) bool {

@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/gin-gonic/gin"
 )
 
 // JSON 类型错误使用此结构名，执行前转换为独立请求值。
@@ -41,13 +42,13 @@ type SearchHTTPPorts interface {
 	ConcurrencyError(*gin.Context, error)
 }
 type SearchHandler struct {
-	requestLifetime
+	RequestLifetime
 	ports SearchHTTPPorts
 }
 
 func NewSearchHandler(ports SearchHTTPPorts) *SearchHandler { return &SearchHandler{ports: ports} }
 func (h *SearchHandler) XSearch(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -63,7 +64,7 @@ func searchError(c *gin.Context, status int, code, message string) {
 
 // WebSearch 依次解析请求、鉴权、检查资金、审核并选择提供商。
 func (h *SearchHandler) WebSearch(c *gin.Context) {
-	done, accepted := h.beginRequest(c, "openai")
+	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
@@ -125,8 +126,7 @@ func (h *SearchHandler) WebSearch(c *gin.Context) {
 	run := h.ports.Run(c, *access.GroupID, isX)
 	result, err := searchtools.RunStandalone(c.Request.Context(), request, model, maxResults, run, lease)
 	if err != nil {
-		var failure *searchtools.StandaloneFailure
-		if errors.As(err, &failure) {
+		if failure, ok := errors.AsType[*searchtools.StandaloneFailure](err); ok {
 			switch failure.Stage {
 			case "selection":
 				searchError(c, 503, "scheduling_error", failure.Error())

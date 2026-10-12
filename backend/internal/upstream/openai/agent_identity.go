@@ -16,9 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 )
 
 const agentIdentityTaskRegistrationTimeout = 30 * time.Second
@@ -29,15 +30,15 @@ type AgentIdentityKey struct {
 	TaskID     string             `json:"-"`
 }
 
-func (AgentIdentityKey) String() string       { return "agent identity key" }
-func (key AgentIdentityKey) GoString() string { return key.String() }
-
 type agentIdentityTaskRegistrationResponse struct {
 	TaskID               string `json:"task_id"`
 	TaskIDCamel          string `json:"taskId"`
 	EncryptedTaskID      string `json:"encrypted_task_id"`
 	EncryptedTaskIDCamel string `json:"encryptedTaskId"`
 }
+
+func (AgentIdentityKey) String() string       { return "agent identity key" }
+func (key AgentIdentityKey) GoString() string { return key.String() }
 
 func BuildAgentAssertion(key AgentIdentityKey, now time.Time) (string, error) {
 	if key.RuntimeID == "" || key.TaskID == "" {

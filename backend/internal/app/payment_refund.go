@@ -7,27 +7,27 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-	notificationcore "github.com/TokenFlux/TokenRouter/internal/notification"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-	"github.com/TokenFlux/TokenRouter/internal/promotion"
-
-	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
-
 	dbent "github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
+	notificationcore "github.com/TokenFlux/TokenRouter/internal/notification"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
-
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
 	paymentadapter "github.com/TokenFlux/TokenRouter/internal/payment/provider"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
-
+	"github.com/TokenFlux/TokenRouter/internal/promotion"
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 )
+
+type paymentRefundRights struct {
+	balances      *billingpostgres.BalanceStore
+	subscriptions *billing.SubscriptionService
+}
 
 func providePaymentRuntime(client *dbent.Client, registry *payment.Registry, balancer payment.LoadBalancer, redeem *billing.RedeemService, subscriptions *billing.SubscriptionService, affiliate *promotion.AffiliateService, notification *notificationcore.NotificationEmailService, instances *paymentpostgres.InstanceStore, routingGroups *routingpostgres.GroupStore, identityUsers *identitypostgres.UserStore, coreConfig *payment.ConfigService, key payment.EncryptionKey, settings *identity.OAuthSettings, tasks *lifecycle.Tasks, calendar timezone.Calendar) *payment.Runtime {
 	bindings := payment.NewProviderBindings(instances, registry, balancer, payment.BindingRuntime{Factory: paymentadapter.CreateProvider, RegistryFactory: paymentadapter.CreateProvider, Warn: slog.Warn}, false)
@@ -113,11 +113,6 @@ func providePaymentRuntime(client *dbent.Client, registry *payment.Registry, bal
 	})
 	orderLifecycle := payment.NewOrderLifecycle(fulfillment, resume, func(ctx context.Context) func() { return timing.ObserveDependency(ctx, "payment") })
 	return &payment.Runtime{Checkout: checkout, OrderQueries: queries, RefundWorkflow: workflow, OrderLifecycle: orderLifecycle, ProviderBindings: bindings}
-}
-
-type paymentRefundRights struct {
-	balances      *billingpostgres.BalanceStore
-	subscriptions *billing.SubscriptionService
 }
 
 func (p paymentRefundRights) DeductBalance(ctx context.Context, id int64, amount float64) (float64, error) {

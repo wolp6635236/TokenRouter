@@ -2,14 +2,16 @@ package scheduler
 
 import (
 	"context"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
 // 设置键对应数据库中的运行参数记录。
@@ -48,10 +50,6 @@ type SettingsRuntime struct {
 	diagnostics Diagnostics
 }
 
-func NewSettingsRuntime(diagnostics Diagnostics) *SettingsRuntime {
-	return &SettingsRuntime{diagnostics: diagnostics}
-}
-
 type cachedAdvancedSchedulerSetting struct {
 	StickyWeightedEnabled       bool
 	SubscriptionPriorityEnabled bool
@@ -69,6 +67,16 @@ type cachedAdvancedSchedulerSetting struct {
 	StickyEscapeErrorRateSet    bool
 	StickyEscape                policy.StickyEscapeConfig
 	expiresAt                   int64
+}
+
+// WeightOverrideSpec 保留管理与校验使用的稳定顺序。
+type WeightOverrideSpec struct {
+	Key  string
+	Name string
+}
+
+func NewSettingsRuntime(diagnostics Diagnostics) *SettingsRuntime {
+	return &SettingsRuntime{diagnostics: diagnostics}
 }
 
 func (s *SettingsRuntime) Load(ctx context.Context, repo RuntimeSettingSource, defaults policy.RuntimeSettings) policy.RuntimeSettings {
@@ -135,36 +143,27 @@ func (s *SettingsRuntime) Load(ctx context.Context, repo RuntimeSettingSource, d
 			dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), advancedSchedulerSettingDBTimeout)
 			defer cancel()
 
-			if values, err := repo.GetMultiple(dbCtx, AdvancedSchedulerRuntimeSettingKeys()); err == nil {
-				stickyWeightedEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyAdvancedSchedulerStickyWeightedEnabled]), "true")
-				subscriptionPriorityEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyAdvancedSchedulerSubscriptionPriorityEnabled]), "true")
-				lbTopKOverride = ParsePositiveIntOverride(values[SettingKeyAdvancedSchedulerLBTopK])
-				weightOverrides = ParseAdvancedSchedulerWeightOverrides(values)
-				ewmaErrorRateAlpha, ewmaErrorRateAlphaSet = ParseAdvancedSchedulerAlphaOverride(values[SettingKeyAdvancedSchedulerEWMAErrorRateAlpha], defaults.EwmaErrorRateAlpha)
-				ewmaTTFTAlpha, ewmaTTFTAlphaSet = ParseAdvancedSchedulerAlphaOverride(values[SettingKeyAdvancedSchedulerEWMATTFTAlpha], defaults.EwmaTTFTAlpha)
-				stickyEscapeEnabled, stickyEscapeEnabledSet = ParseAdvancedSchedulerBoolOverride(values[SettingKeyAdvancedSchedulerStickyEscapeEnabled], defaults.StickyEscape.Enabled)
-				stickyEscapeTTFTMs, stickyEscapeTTFTMsSet = ParseAdvancedSchedulerPositiveFloatOverride(values[SettingKeyAdvancedSchedulerStickyEscapeTTFTMs], defaults.StickyEscape.TtftMs)
-				stickyEscapeErrorRate, stickyEscapeErrorRateSet = ParseAdvancedSchedulerRateOverride(values[SettingKeyAdvancedSchedulerStickyEscapeErrorRate], defaults.StickyEscape.ErrorRate)
-			} else {
+			values, err := repo.GetMultiple(dbCtx, AdvancedSchedulerRuntimeSettingKeys())
+			if err != nil {
 				// 批量读取失败时逐键读取全部设置，包括 TopK 和权重。
 				// 降级结果缓存一个 TTL，日志记录批量读取失败的原因。
 				s.diagnostics.event("warn", "advanced_scheduler_settings_batch_load_failed", "error", err)
-				fallbackValues := make(map[string]string)
+				values = make(map[string]string)
 				for _, key := range AdvancedSchedulerRuntimeSettingKeys() {
 					if value, valueErr := repo.GetValue(dbCtx, key); valueErr == nil {
-						fallbackValues[key] = value
+						values[key] = value
 					}
 				}
-				stickyWeightedEnabled = strings.EqualFold(strings.TrimSpace(fallbackValues[SettingKeyAdvancedSchedulerStickyWeightedEnabled]), "true")
-				subscriptionPriorityEnabled = strings.EqualFold(strings.TrimSpace(fallbackValues[SettingKeyAdvancedSchedulerSubscriptionPriorityEnabled]), "true")
-				lbTopKOverride = ParsePositiveIntOverride(fallbackValues[SettingKeyAdvancedSchedulerLBTopK])
-				weightOverrides = ParseAdvancedSchedulerWeightOverrides(fallbackValues)
-				ewmaErrorRateAlpha, ewmaErrorRateAlphaSet = ParseAdvancedSchedulerAlphaOverride(fallbackValues[SettingKeyAdvancedSchedulerEWMAErrorRateAlpha], defaults.EwmaErrorRateAlpha)
-				ewmaTTFTAlpha, ewmaTTFTAlphaSet = ParseAdvancedSchedulerAlphaOverride(fallbackValues[SettingKeyAdvancedSchedulerEWMATTFTAlpha], defaults.EwmaTTFTAlpha)
-				stickyEscapeEnabled, stickyEscapeEnabledSet = ParseAdvancedSchedulerBoolOverride(fallbackValues[SettingKeyAdvancedSchedulerStickyEscapeEnabled], defaults.StickyEscape.Enabled)
-				stickyEscapeTTFTMs, stickyEscapeTTFTMsSet = ParseAdvancedSchedulerPositiveFloatOverride(fallbackValues[SettingKeyAdvancedSchedulerStickyEscapeTTFTMs], defaults.StickyEscape.TtftMs)
-				stickyEscapeErrorRate, stickyEscapeErrorRateSet = ParseAdvancedSchedulerRateOverride(fallbackValues[SettingKeyAdvancedSchedulerStickyEscapeErrorRate], defaults.StickyEscape.ErrorRate)
 			}
+			stickyWeightedEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyAdvancedSchedulerStickyWeightedEnabled]), "true")
+			subscriptionPriorityEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyAdvancedSchedulerSubscriptionPriorityEnabled]), "true")
+			lbTopKOverride = ParsePositiveIntOverride(values[SettingKeyAdvancedSchedulerLBTopK])
+			weightOverrides = ParseAdvancedSchedulerWeightOverrides(values)
+			ewmaErrorRateAlpha, ewmaErrorRateAlphaSet = ParseAdvancedSchedulerAlphaOverride(values[SettingKeyAdvancedSchedulerEWMAErrorRateAlpha], defaults.EwmaErrorRateAlpha)
+			ewmaTTFTAlpha, ewmaTTFTAlphaSet = ParseAdvancedSchedulerAlphaOverride(values[SettingKeyAdvancedSchedulerEWMATTFTAlpha], defaults.EwmaTTFTAlpha)
+			stickyEscapeEnabled, stickyEscapeEnabledSet = ParseAdvancedSchedulerBoolOverride(values[SettingKeyAdvancedSchedulerStickyEscapeEnabled], defaults.StickyEscape.Enabled)
+			stickyEscapeTTFTMs, stickyEscapeTTFTMsSet = ParseAdvancedSchedulerPositiveFloatOverride(values[SettingKeyAdvancedSchedulerStickyEscapeTTFTMs], defaults.StickyEscape.TtftMs)
+			stickyEscapeErrorRate, stickyEscapeErrorRateSet = ParseAdvancedSchedulerRateOverride(values[SettingKeyAdvancedSchedulerStickyEscapeErrorRate], defaults.StickyEscape.ErrorRate)
 		}
 
 		s.cache.Store(&cachedAdvancedSchedulerSetting{
@@ -208,12 +207,6 @@ func (s *SettingsRuntime) Load(ctx context.Context, repo RuntimeSettingSource, d
 	// 每个请求复制一份权重映射后再应用覆盖值。
 	settings.WeightOverrides = CloneAdvancedSchedulerWeightOverrides(settings.WeightOverrides)
 	return settings
-}
-
-// WeightOverrideSpec 保留管理与校验使用的稳定顺序。
-type WeightOverrideSpec struct {
-	Key  string
-	Name string
 }
 
 func ParseAdvancedSchedulerAlphaOverride(raw string, fallback float64) (float64, bool) {
@@ -328,9 +321,7 @@ func CloneAdvancedSchedulerWeightOverrides(in map[string]float64) map[string]flo
 		return nil
 	}
 	out := make(map[string]float64, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
+	maps.Copy(out, in)
 	return out
 }
 

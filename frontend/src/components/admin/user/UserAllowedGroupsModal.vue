@@ -80,7 +80,7 @@
                     :value="config.customRate ?? ''"
                     @input="updateCustomRate(config.groupId, ($event.target as HTMLInputElement).value)"
                     :placeholder="String(config.defaultRate)"
-                    class="hide-spinner w-24 rounded-control border border-primary-900/10 bg-white px-3 py-2 text-sm font-medium transition-colors focus:border-primary-900/10 focus:outline-none focus:ring-2 focus:ring-black/10 dark:border-dark-500 dark:bg-dark-700 dark:focus:border-primary-500 dark:focus:ring-primary-500/20"
+                    class="input hide-spinner w-24 px-3 font-medium"
                   />
                 </div>
               </div>
@@ -157,7 +157,7 @@
                     :value="config.customRate ?? ''"
                     @input="updateCustomRate(config.groupId, ($event.target as HTMLInputElement).value)"
                     :placeholder="String(config.defaultRate)"
-                    class="hide-spinner w-24 rounded-control border border-primary-900/10 bg-white px-3 py-2 text-sm font-medium transition-colors focus:border-primary-900/10 focus:outline-none focus:ring-2 focus:ring-black/10 dark:border-dark-500 dark:bg-dark-700 dark:focus:border-primary-500 dark:focus:ring-primary-500/20"
+                    class="input hide-spinner w-24 px-3 font-medium"
                   />
                 </div>
               </div>

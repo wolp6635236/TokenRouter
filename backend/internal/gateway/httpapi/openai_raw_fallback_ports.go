@@ -6,23 +6,17 @@ import (
 	"errors"
 	"net/http"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
-
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/gin-gonic/gin"
 
 	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
-
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
-
 	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
-
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 type openAIRawFallbackAdapter struct {
@@ -55,8 +49,7 @@ func (p *openAIRawFallbackAdapter) NormalizeGLM(b []byte, m string) ([]byte, boo
 
 func (p *openAIRawFallbackAdapter) FastFallback(ctx context.Context, m string, b []byte) ([]byte, error) {
 	updated, err := tierpolicy.ApplyBody(b, p.s.FastPolicy.Input(ctx, p.provider, m))
-	var blocked *tierpolicy.BlockedError
-	if errors.As(err, &blocked) {
+	if blocked, ok := errors.AsType[*tierpolicy.BlockedError](err); ok {
 		WriteFastPolicyBlockedResponse(p.c, blocked)
 	}
 	return updated, err

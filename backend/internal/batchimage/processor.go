@@ -15,6 +15,15 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+const (
+	BatchImageParsedStatusSucceeded = "succeeded"
+	BatchImageParsedStatusFailed    = "failed"
+
+	DefaultBatchImageProcessorRequeue = 30 * time.Second
+	BatchImageProviderErrorRequeue    = time.Minute
+	BatchImageMaxErrorMessageLength   = 1000
+)
+
 type BoundProvider interface {
 	Submit(context.Context, *BatchImageJob, BatchImageInput) (*BatchProviderJob, error)
 	Get(context.Context, *BatchImageJob) (*BatchProviderStatus, error)
@@ -33,26 +42,36 @@ type ProviderProcessor struct {
 	Observe         func(string, ...any)
 }
 
-func (p *ProviderProcessor) warn(event string, values ...any) {
-	if p.Observe != nil {
-		p.Observe(event, values...)
-	}
-}
-
 type ResultIndexer struct {
 	Now     func() time.Time
 	Repo    BatchImageRepository
 	Observe func(string, ...any)
 }
 
-const (
-	BatchImageParsedStatusSucceeded = "succeeded"
-	BatchImageParsedStatusFailed    = "failed"
+type BatchImageIndexResult struct {
+	SuccessCount int
+	FailCount    int
+	TotalCount   int
+}
 
-	DefaultBatchImageProcessorRequeue = 30 * time.Second
-	BatchImageProviderErrorRequeue    = time.Minute
-	BatchImageMaxErrorMessageLength   = 1000
-)
+type ParsedBatchImageResult struct {
+	CustomID      string
+	Status        string
+	MimeType      string
+	FileExtension string
+	ImageCount    int
+
+	ErrorCode    string
+	ErrorMessage string
+
+	SourceLineNumber int
+}
+
+func (p *ProviderProcessor) warn(event string, values ...any) {
+	if p.Observe != nil {
+		p.Observe(event, values...)
+	}
+}
 
 func (p *ProviderProcessor) Process(ctx context.Context, batchID string) (BatchImageProcessResult, error) {
 	if p == nil || p.Repo == nil || p.ResolveProvider == nil {
@@ -267,12 +286,6 @@ func IsBatchImageProcessorDoneStatus(status string) bool {
 	return IsTerminalBatchImageJobStatus(status)
 }
 
-type BatchImageIndexResult struct {
-	SuccessCount int
-	FailCount    int
-	TotalCount   int
-}
-
 func (i *ResultIndexer) Index(ctx context.Context, job *BatchImageJob, platform BoundProvider) (*BatchImageIndexResult, error) {
 	if i == nil || i.Repo == nil || job == nil || platform == nil {
 		return nil, ErrBatchImageIndexOutputMissing
@@ -441,19 +454,6 @@ func (i *ResultIndexer) ListExpectedCustomIDs(ctx context.Context, batchID strin
 	}
 }
 
-type ParsedBatchImageResult struct {
-	CustomID      string
-	Status        string
-	MimeType      string
-	FileExtension string
-	ImageCount    int
-
-	ErrorCode    string
-	ErrorMessage string
-
-	SourceLineNumber int
-}
-
 func ParseBatchImageResultLine(line []byte, lineNumber int) (*ParsedBatchImageResult, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(line, &obj); err != nil {
@@ -512,12 +512,22 @@ func BatchImageFindImageParts(obj map[string]any) (int, string) {
 }
 
 func BatchImageFindImagePartsInCandidates(raw any) (int, string) {
-	candidates, ok := raw.([]any)
-	if !ok {
-		return 0, ""
-	}
 	count := 0
 	firstMime := ""
+	visitBatchImageInlineImages(raw, func(mime, _ string) {
+		count++
+		if firstMime == "" {
+			firstMime = mime
+		}
+	})
+	return count, firstMime
+}
+
+func visitBatchImageInlineImages(raw any, visit func(mime, data string)) {
+	candidates, ok := raw.([]any)
+	if !ok {
+		return
+	}
 	for _, candidateRaw := range candidates {
 		candidate, ok := candidateRaw.(map[string]any)
 		if !ok {
@@ -538,17 +548,13 @@ func BatchImageFindImagePartsInCandidates(raw any) (int, string) {
 				continue
 			}
 			data := strings.TrimSpace(BatchImageMapString(inline, "data"))
-			mime := BatchImageFirstNonEmptyString(BatchImageMapString(inline, "mimeType"), BatchImageMapString(inline, "mime_type"))
-			if data == "" || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(mime)), "image/") {
+			mime := strings.TrimSpace(BatchImageFirstNonEmptyString(BatchImageMapString(inline, "mimeType"), BatchImageMapString(inline, "mime_type")))
+			if data == "" || !strings.HasPrefix(strings.ToLower(mime), "image/") {
 				continue
 			}
-			count++
-			if firstMime == "" {
-				firstMime = strings.TrimSpace(mime)
-			}
+			visit(mime, data)
 		}
 	}
-	return count, firstMime
 }
 
 func BatchImageFailureFromProviderFields(obj map[string]any) (string, string, bool) {
@@ -660,9 +666,9 @@ func (i *ResultIndexer) warn(event string, values ...any) {
 }
 
 // now 保持各原取时点，构造时可注入同一时钟来源。
-func (s *ResultIndexer) now() time.Time {
-	if s.Now != nil {
-		return s.Now()
+func (i *ResultIndexer) now() time.Time {
+	if i.Now != nil {
+		return i.Now()
 	}
 	return time.Now()
 }

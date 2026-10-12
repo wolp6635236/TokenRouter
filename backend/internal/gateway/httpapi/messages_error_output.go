@@ -4,17 +4,29 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/gin-gonic/gin"
 )
+
+// AnthropicForwardErrorOutput 写出 Messages 错误，调用方管理响应提交和流状态。
+type AnthropicForwardErrorOutput struct{ Context *gin.Context }
 
 // MessagesErrorOutput 使用共享规则实例生成 Messages 错误响应。
 type MessagesErrorOutput struct {
 	Rules *errorpolicy.ErrorPassthroughService
+}
+
+func (o AnthropicForwardErrorOutput) Message(status int, kind, message string) {
+	o.Context.JSON(status, gin.H{"type": "error", "error": gin.H{"type": kind, "message": message}})
+}
+
+func (o AnthropicForwardErrorOutput) Raw(status int, body []byte) {
+	o.Context.Data(status, "application/json", body)
 }
 
 // ConcurrencyError 统一处理并发槽位获取失败。
@@ -23,14 +35,14 @@ func (h MessagesErrorOutput) ConcurrencyError(c *gin.Context, err error, slotTyp
 	h.StreamErrorWithCode(c, status, errType, code, message, streamStarted)
 }
 
-// ExhaustedStatus 简化版本，用于没有响应体的情况
+// ExhaustedStatus 简化版本，用于没有响应体的情况。
 func (h MessagesErrorOutput) ExhaustedStatus(c *gin.Context, statusCode int, streamStarted bool) {
 	status, errType, errMsg := AnthropicUpstreamError(statusCode)
 	SetOpsUpstreamError(c, statusCode, errMsg, "")
 	h.StreamError(c, status, errType, errMsg, streamStarted)
 }
 
-// StreamError handles errors that may occur after streaming has started
+// StreamError handles errors that may occur after streaming has started.
 func (h MessagesErrorOutput) StreamError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	h.StreamErrorWithCode(c, status, errType, "", message, streamStarted)
 }
@@ -75,7 +87,7 @@ func ForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForward int
 	return !strings.Contains(contentType, "text/event-stream")
 }
 
-// Error 返回Claude API格式的错误响应
+// Error 返回 Claude API 格式的错误响应。
 func (h MessagesErrorOutput) Error(c *gin.Context, status int, errType, message string) {
 	h.ErrorWithCode(c, status, errType, "", message)
 }

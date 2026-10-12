@@ -1116,10 +1116,7 @@ function handleToolbarRefresh() {
                     <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeQps.toFixed(1) }}</span>
                     <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">QPS</span>
                   </div>
-                  <div class="flex items-baseline gap-1.5">
-                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeTps.toFixed(1) }}</span>
-                    <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">{{ t('admin.ops.tps') }}</span>
-                  </div>
+                  <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black tabular-nums text-gray-900 dark:text-white']">{{ displayRealTimeTps.toFixed(1) }}</span>
                 </div>
               </div>
 
@@ -1133,10 +1130,7 @@ function handleToolbarRefresh() {
                       <span class="font-black text-gray-900 dark:text-white">{{ realtimeQpsPeakLabel }}</span>
                       <span class="text-xs">QPS</span>
                     </div>
-                    <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsPeakLabel }}</span>
-                      <span class="text-xs">{{ t('admin.ops.tps') }}</span>
-                    </div>
+                    <div class="font-black tabular-nums text-gray-900 dark:text-white">{{ realtimeTpsPeakLabel }}</div>
                   </div>
                 </div>
 
@@ -1148,10 +1142,7 @@ function handleToolbarRefresh() {
                       <span class="font-black text-gray-900 dark:text-white">{{ realtimeQpsAvgLabel }}</span>
                       <span class="text-xs">QPS</span>
                     </div>
-                    <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsAvgLabel }}</span>
-                      <span class="text-xs">{{ t('admin.ops.tps') }}</span>
-                    </div>
+                    <div class="font-black tabular-nums text-gray-900 dark:text-white">{{ realtimeTpsAvgLabel }}</div>
                   </div>
                 </div>
               </div>
@@ -1216,7 +1207,7 @@ function handleToolbarRefresh() {
             </div>
             <div class="flex justify-between">
               <span class="text-gray-500">{{ t('admin.ops.avgTps') }}:</span>
-              <span class="font-bold text-gray-900 dark:text-white">{{ tpsAvgLabel }}</span>
+              <span class="font-bold tabular-nums text-gray-900 dark:text-white">{{ tpsAvgLabel }}</span>
             </div>
           </div>
         </div>
@@ -1583,7 +1574,7 @@ function handleToolbarRefresh() {
           <input
             v-model="customStartTimeInput"
             type="datetime-local"
-            class="w-full rounded-control border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-dark-600 dark:bg-dark-900 dark:text-white"
+            class="input"
           />
         </div>
         <div>
@@ -1593,13 +1584,13 @@ function handleToolbarRefresh() {
           <input
             v-model="customEndTimeInput"
             type="datetime-local"
-            class="w-full rounded-control border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-dark-600 dark:bg-dark-900 dark:text-white"
+            class="input"
           />
         </div>
         <div class="flex justify-end gap-3 pt-2">
           <button
             type="button"
-            class="rounded-control bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 dark:bg-dark-950 dark:text-gray-300 dark:hover:bg-dark-800"
+            class="btn btn-secondary"
             @click="handleCustomTimeRangeCancel"
           >
             {{ t('common.cancel') }}

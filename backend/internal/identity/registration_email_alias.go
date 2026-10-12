@@ -10,6 +10,13 @@ var GmailFamilyDomains = map[string]struct{}{
 	"googlemail.com": {},
 }
 
+// EmailAliasProbe 描述 SQL 别名探针的本地部分和域名部分。
+// 探针会去除点号以覆盖 Gmail 点号及域名根点；查询命中后仍须重新执行完整归一化。
+type EmailAliasProbe struct {
+	Local  string
+	Domain string
+}
+
 // NormalizeEmailForAliasDedup 将邮箱折叠为收件箱身份，只用于别名查重，
 // 不改变数据库中保存的地址，也不改变登录和发信地址。
 // 所有域名去掉本地部分的 + 后缀；Gmail 家族另外忽略本地部分点号并统一域名。
@@ -24,13 +31,6 @@ func NormalizeEmailForAliasDedup(email string) string {
 		domain = "gmail.com"
 	}
 	return local + "@" + domain
-}
-
-// EmailAliasProbe 描述 SQL 别名探针的本地部分和域名部分。
-// 探针会去除点号以覆盖 Gmail 点号及域名根点；查询命中后仍须重新执行完整归一化。
-type EmailAliasProbe struct {
-	Local  string
-	Domain string
 }
 
 // EmailAliasDedupProbes 返回可能与 email 指向同一收件箱的 SQL 探针。

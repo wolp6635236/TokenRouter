@@ -7,6 +7,28 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAIBodyHasThinkingEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "enabled", body: `{"thinking":{"type":"enabled"}}`, want: true},
+		{name: "adaptive", body: `{"thinking":{"type":"adaptive"}}`, want: true},
+		{name: "uppercase", body: `{"thinking":{"type":"ENABLED"}}`, want: true},
+		{name: "disabled", body: `{"thinking":{"type":"disabled"}}`, want: false},
+		{name: "missing type", body: `{"thinking":{"budget_tokens":1024}}`, want: false},
+		{name: "missing thinking", body: `{"model":"glm-5.1"}`, want: false},
+		{name: "invalid json", body: `{not json`, want: false},
+		{name: "empty body", body: ``, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, OpenAIBodyHasThinkingEnabled([]byte(tt.body)))
+		})
+	}
+}
+
 func TestThinkingPolicyPreservesExcludedPayload(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"history"}]}]}`)
 	require.Equal(t, body, FilterThinkingBlocks(body, ThinkingRequestOptions{}))
@@ -15,6 +37,7 @@ func TestThinkingPolicyPreservesExcludedPayload(t *testing.T) {
 	filtered := FilterThinkingBlocks(body, ThinkingRequestOptions{PreFilter: true, DummySignature: "placeholder"})
 	require.NotEqual(t, body, filtered)
 }
+
 func TestThinkingPolicyExplicitEffortAndNativeFallback(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"adaptive"}}`)
 	effort := "max"
@@ -22,6 +45,7 @@ func TestThinkingPolicyExplicitEffortAndNativeFallback(t *testing.T) {
 	require.Nil(t, ApplyThinkingEnabledFallback(nil, body, ThinkingRequestOptions{PassbackRequired: true, NativeReasoningEffort: true}))
 	require.Equal(t, "high", *ApplyThinkingEnabledFallback(nil, body, ThinkingRequestOptions{PassbackRequired: true}))
 }
+
 func TestThinkingPolicyGLMVariants(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

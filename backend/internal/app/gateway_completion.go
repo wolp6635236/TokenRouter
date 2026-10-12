@@ -4,10 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
-
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
 )
 
 func usageRecordPoolOptionsFromConfig(cfg *config.Config) completion.UsageRecordWorkerPoolOptions {

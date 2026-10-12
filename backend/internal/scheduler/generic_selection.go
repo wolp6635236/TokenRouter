@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"time"
@@ -12,6 +13,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
+
+const stickySessionTTL = time.Hour
+
+var ErrNoAvailableProviders = errors.New("no available providers")
 
 // FlowProvider 保存本次选择使用的提供商数据，ProjectionID 供调用方关联执行目标。
 type FlowProvider struct {
@@ -23,10 +28,6 @@ type FlowProvider struct {
 	PrivacySet                                 bool
 	LastUsedAt, SessionWindowEnd               *time.Time
 }
-
-func (a *FlowProvider) IsPrivacySet() bool       { return a.PrivacySet }
-func (a *FlowProvider) EffectiveLoadFactor() int { return a.LoadFactor }
-func (a *FlowProvider) GetBaseRPM() int          { return a.BaseRPM }
 
 type FlowGroup struct {
 	routing.Group
@@ -109,13 +110,13 @@ type GenericSelector struct {
 	now                func() time.Time
 }
 
+func (a *FlowProvider) IsPrivacySet() bool       { return a.PrivacySet }
+func (a *FlowProvider) EffectiveLoadFactor() int { return a.LoadFactor }
+func (a *FlowProvider) GetBaseRPM() int          { return a.BaseRPM }
+
 func NewGenericSelector(ports GenericSelectionPorts, cache StickyCache, concurrency *ConcurrencyService, diagnostics Diagnostics, now func() time.Time) *GenericSelector {
 	return &GenericSelector{ports: ports, cache: cache, concurrencyService: concurrency, diagnostics: diagnostics, now: now}
 }
-
-var ErrNoAvailableProviders = errors.New("no available providers")
-
-const stickySessionTTL = time.Hour
 
 func derefGroupID(id *int64) int64 {
 	if id == nil {
@@ -203,11 +204,8 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 
 	// 基础调度器在负载批查询不可用时走单次选择。高级分组仍执行评分，缺失负载按中性信号处理。
 	if !usesAdvancedScheduler && (s.concurrencyService == nil || !cfg.LoadBatchEnabled) {
-
 		localExcluded := make(map[int64]struct{})
-		for k, v := range excludedIDs {
-			localExcluded[k] = v
-		}
+		maps.Copy(localExcluded, excludedIDs)
 
 		for {
 			provider, err := s.selectRoutes(ctx, groupID, sessionHash, requestedModel, localExcluded)
@@ -217,7 +215,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 
 			result, err := s.ports.TryAcquireProviderSlot(ctx, provider.ID, provider.Concurrency)
 			if err == nil && result.Acquired {
-
 				if !s.ports.CheckAndRegisterSession(ctx, provider, sessionHash) {
 					result.ReleaseFunc()
 					localExcluded[provider.ID] = struct{}{}
@@ -310,7 +307,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 	}
 
 	if len(routingProviderIDs) > 0 && (s.concurrencyService != nil || usesAdvancedScheduler) {
-
 		var routingCandidates []*FlowProvider
 		var filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost int
 		var modelScopeSkippedIDs []int64
@@ -405,7 +401,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 								if !s.ports.CheckAndRegisterSession(ctx, stickyProvider, sessionHash) {
 									result.ReleaseFunc()
 									stickyCacheMissReason = "session_limit"
-
 								} else {
 									s.diagnostics.event("debug", "sticky.layer1_5_hit",
 										"provider_id", stickyProviderID,
@@ -439,7 +434,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 									stickyCacheMissReason = "wait_queue_full"
 								}
 							}
-
 						} else if !gatePass {
 							stickyCacheMissReason = "gate_check"
 						} else {
@@ -528,7 +522,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 				for _, item := range routingAvailable {
 					result, err := s.ports.TryAcquireProviderSlot(ctx, item.Provider.ID, item.Provider.Concurrency)
 					if err == nil && result.Acquired {
-
 						if !s.ports.CheckAndRegisterSession(ctx, item.Provider, sessionHash) {
 							result.ReleaseFunc()
 							continue
@@ -557,7 +550,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 						MaxWaiting:     cfg.StickySessionMaxWaiting,
 					})
 				}
-
 			}
 
 			s.diagnostics.printf("service.gateway", "[ModelRouting] All routed providers unavailable for model=%s, falling back to normal selection", requestedModel)
@@ -569,7 +561,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 		if providerID > 0 && !isExcluded(providerID) {
 			provider, ok := providerByID[providerID]
 			if ok {
-
 				clearSticky := s.ports.ShouldClearStickySessionForProviderLayer(ctx, provider, requestedModel)
 				if clearSticky {
 					s.diagnostics.event("debug", "sticky.layer1_5_no_routing_clear",
@@ -791,7 +782,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 		}
 
 		for len(available) > 0 {
-
 			candidates := flowFilterByMinPriority(available)
 
 			if cfg.PreferSoonestReset {
@@ -830,7 +820,6 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 
 	s.SortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
 	for _, acc := range candidates {
-
 		if !s.ports.CheckAndRegisterSession(ctx, acc, sessionHash) {
 			continue
 		}

@@ -8,18 +8,24 @@ import (
 	"unicode"
 )
 
-// errorMessagesJSON 保存前后端共用的用户错误提示。
-//
-//go:embed error_messages.json
-var errorMessagesJSON []byte
+var (
+	// errorMessagesJSON 保存前后端共用的用户错误提示。
+	//
+	//go:embed error_messages.json
+	errorMessagesJSON []byte
 
-var errorMessages = func() map[string]map[string]string {
+	// errorMessages 按语言代码和错误原因保存提示文字。
+	errorMessages = loadErrorMessages()
+)
+
+// loadErrorMessages 解析内嵌的错误提示，文件格式错误时 panic。
+func loadErrorMessages() map[string]map[string]string {
 	var messages map[string]map[string]string
 	if err := json.Unmarshal(errorMessagesJSON, &messages); err != nil {
 		panic(err)
 	}
 	return messages
-}()
+}
 
 // ErrorText 根据业务原因生成用户提示，英文原文和第三方内容由调用方选择是否传入。
 func ErrorText(language, reason string, status int, original string) string {

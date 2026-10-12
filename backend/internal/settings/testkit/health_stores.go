@@ -2,6 +2,7 @@ package testkit
 
 import (
 	"context"
+	"maps"
 	"sync"
 
 	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
@@ -65,9 +66,7 @@ func (m *Memory) GetMultiple(_ context.Context, keys []string) (map[string]strin
 func (m *Memory) SetMultiple(_ context.Context, settings map[string]string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
-	for k, v := range settings {
-		m.Data[k] = v
-	}
+	maps.Copy(m.Data, settings)
 	return nil
 }
 
@@ -75,9 +74,7 @@ func (m *Memory) GetAll(_ context.Context) (map[string]string, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	result := make(map[string]string, len(m.Data))
-	for k, v := range m.Data {
-		result[k] = v
-	}
+	maps.Copy(result, m.Data)
 	return result, nil
 }
 

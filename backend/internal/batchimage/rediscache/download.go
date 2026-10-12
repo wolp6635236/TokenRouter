@@ -5,8 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 )
 
 const (
@@ -15,7 +16,8 @@ const (
 	defaultBatchImageDownloadConcurrency  = 2
 )
 
-var batchImageDownloadAcquireScript = redis.NewScript(`
+var (
+	batchImageDownloadAcquireScript = redis.NewScript(`
 local current = tonumber(redis.call("GET", KEYS[1]) or "0")
 local max = tonumber(ARGV[1])
 if current >= max then
@@ -26,7 +28,7 @@ redis.call("EXPIRE", KEYS[1], ARGV[2])
 return 1
 `)
 
-var batchImageDownloadReleaseScript = redis.NewScript(`
+	batchImageDownloadReleaseScript = redis.NewScript(`
 local current = tonumber(redis.call("GET", KEYS[1]) or "0")
 if current <= 1 then
   redis.call("DEL", KEYS[1])
@@ -35,11 +37,28 @@ end
 return redis.call("DECR", KEYS[1])
 `)
 
+	_ batchimage.BatchImageDownloadLimiter = (*batchImageDownloadLimiter)(nil)
+	_ batchimage.BatchImageDownloadPermit  = (*batchImageDownloadPermit)(nil)
+)
+
 type batchImageDownloadLimiter struct {
 	rdb          *redis.Client
 	activePrefix string
 	maxActive    int
 	ttl          time.Duration
+}
+
+type batchImageDownloadPermit struct {
+	rdb  *redis.Client
+	key  string
+	once sync.Once
+	err  error
+}
+
+// DownloadOptions 配置每用户下载并发数和最长下载时间。
+type DownloadOptions struct {
+	MaxDownloadConcurrencyPerUser int
+	MaxDownloadDurationSeconds    int
 }
 
 func NewBatchImageDownloadLimiter(rdb *redis.Client, cfg *DownloadOptions) batchimage.BatchImageDownloadLimiter {
@@ -80,13 +99,6 @@ func (l *batchImageDownloadLimiter) activeKey(userID string) string {
 	return l.activePrefix + userID
 }
 
-type batchImageDownloadPermit struct {
-	rdb  *redis.Client
-	key  string
-	once sync.Once
-	err  error
-}
-
 func (p *batchImageDownloadPermit) Release(ctx context.Context) error {
 	if p == nil || p.rdb == nil || p.key == "" {
 		return nil
@@ -95,15 +107,4 @@ func (p *batchImageDownloadPermit) Release(ctx context.Context) error {
 		_, p.err = batchImageDownloadReleaseScript.Run(ctx, p.rdb, []string{p.key}).Result()
 	})
 	return p.err
-}
-
-var (
-	_ batchimage.BatchImageDownloadLimiter = (*batchImageDownloadLimiter)(nil)
-	_ batchimage.BatchImageDownloadPermit  = (*batchImageDownloadPermit)(nil)
-)
-
-// DownloadOptions 配置每用户下载并发数和最长下载时间。
-type DownloadOptions struct {
-	MaxDownloadConcurrencyPerUser int
-	MaxDownloadDurationSeconds    int
 }

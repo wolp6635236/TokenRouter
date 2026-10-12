@@ -11,6 +11,8 @@ import { isIOSDevice } from '@/utils/device'
 import '@fontsource-variable/plus-jakarta-sans'
 import '@fontsource-variable/plus-jakarta-sans/wght-italic.css'
 import '@fontsource-variable/geist-mono'
+// 思源黑体按字符切片，没有苹方的设备才会下载用到的切片。字重上限和 emoji 处理见 postcss.config.js。
+import '@fontsource-variable/noto-sans-sc'
 import './style.css'
 
 function initIOSViewportZoomFix() {

@@ -389,7 +389,34 @@ export function deriveWeChatConnectStoredMode(
 /**
  * System settings interface
  */
+/** Responses WS 的有效运行参数及可清除覆盖值。 */
+export interface ResponsesWSParameters {
+  max_conns_per_provider: number;
+  min_idle_per_provider: number;
+  max_idle_per_provider: number;
+  dynamic_max_conns_by_provider_concurrency_enabled: boolean;
+  oauth_max_conns_factor: number;
+  apikey_max_conns_factor: number;
+  queue_limit_per_conn: number;
+  pool_target_utilization: number;
+  prewarm_cooldown_ms: number;
+  client_first_message_timeout_seconds: number;
+  ingress_inter_turn_idle_timeout_seconds: number;
+  max_ingress_connections_per_api_key: number;
+  client_read_limit_bytes: number;
+  http_bridge_threshold_bytes: number;
+  dial_timeout_seconds: number;
+  read_timeout_seconds: number;
+  write_timeout_seconds: number;
+  ingress_previous_response_recovery_enabled: boolean;
+  sticky_session_ttl_seconds: number;
+  sticky_response_id_ttl_seconds: number;
+}
+export type ResponsesWSOverrides = { [K in keyof ResponsesWSParameters]?: ResponsesWSParameters[K] | null };
+
 export interface SystemSettings {
+ responses_ws: ResponsesWSOverrides;
+ responses_ws_effective: ResponsesWSParameters;
   // Registration settings
   registration_enabled: boolean;
   email_verify_enabled: boolean;
@@ -726,6 +753,7 @@ export interface SystemSettings {
 }
 
 export interface UpdateSettingsRequest {
+ responses_ws?: ResponsesWSOverrides | null;
   registration_enabled?: boolean;
   email_verify_enabled?: boolean;
   registration_email_suffix_whitelist?: string[];

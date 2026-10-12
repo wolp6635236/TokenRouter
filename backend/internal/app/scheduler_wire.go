@@ -3,10 +3,11 @@
 package app
 
 import (
+	"github.com/google/wire"
+
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	schedulerpostgres "github.com/TokenFlux/TokenRouter/internal/scheduler/postgres"
 	schedulerredis "github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache"
-	"github.com/google/wire"
 )
 
 // schedulerProviders 构造共享调度实例，生命周期管理器调用其 Start 和 Stop。

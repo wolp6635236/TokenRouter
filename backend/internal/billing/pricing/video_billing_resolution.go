@@ -8,11 +8,9 @@ const (
 	VideoBillingResolution480P  = "480p"
 	VideoBillingResolution720P  = "720p"
 	VideoBillingResolution1080P = "1080p"
-)
 
-// xAI 视频生成按秒计费，duration 请求参数允许 1-15 秒；未指定时上游默认生成 8 秒。
-// 计费时长必须与上游实际消耗对齐，否则用户可通过拉长 duration 套利（提交时长由用户控制）。
-const (
+	// xAI 视频生成按秒计费，duration 请求参数允许 1-15 秒；未指定时上游默认生成 8 秒。
+	// 计费时长必须与上游实际消耗对齐，否则用户可通过拉长 duration 套利（提交时长由用户控制）。
 	VideoBillingMinDurationSeconds     = 1
 	VideoBillingMaxDurationSeconds     = 15
 	VideoBillingDefaultDurationSeconds = 8

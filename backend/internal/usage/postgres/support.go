@@ -3,9 +3,8 @@ package postgres
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
 	"github.com/TokenFlux/TokenRouter/ent"
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keypg "github.com/TokenFlux/TokenRouter/internal/apikey/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingpg "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
@@ -17,6 +16,9 @@ import (
 	groupPG "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
+
+// 死锁重试始终复用 infra 的完整操作闭包机制。
+const postgresDeadlockMaxAttempts = infra.DeadlockMaxAttempts
 
 type (
 	sqlExecutor = infra.Executor
@@ -67,9 +69,6 @@ func apiKeyEntityToService(m *ent.APIKey) *usage.KeyView {
 	}
 	return querycache.Clone(out)
 }
-
-// 死锁重试始终复用 infra 的完整操作闭包机制。
-const postgresDeadlockMaxAttempts = infra.DeadlockMaxAttempts
 
 func retryPostgresDeadlock[T any](ctx context.Context, operation string, size int, fn func() (T, error)) (T, error) {
 	return infra.RetryDeadlock(ctx, operation, size, fn)

@@ -41,10 +41,7 @@ func DuplicateGroupName(sourceName string, copyNumber int) string {
 		suffix = fmt.Sprintf(" (Copy %d)", copyNumber)
 	}
 	baseRunes := []rune(strings.TrimSpace(sourceName))
-	maxBaseRunes := MaxGroupNameRunes - len([]rune(suffix))
-	if maxBaseRunes < 0 {
-		maxBaseRunes = 0
-	}
+	maxBaseRunes := max(MaxGroupNameRunes-len([]rune(suffix)), 0)
 	if len(baseRunes) > maxBaseRunes {
 		baseRunes = baseRunes[:maxBaseRunes]
 	}

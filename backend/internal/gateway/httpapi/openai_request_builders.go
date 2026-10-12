@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	forward "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
@@ -12,13 +14,12 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/gin-gonic/gin"
 )
 
 func (s *OpenAIRequests) Target(c *gin.Context, a *gatewayprovider.ExecutionProvider, passthrough bool) forward.RequestTargetOptions {
 	oauth := a.Record.Type == capability.ProviderTypeOAuth || a.Record.Type == capability.ProviderTypeSetupToken && (!passthrough || a.View().IsOpenAIOAuthLike())
 	return forward.RequestTargetOptions{
-		OAuthTarget: oauth, APIKey: a.Record.Type == capability.ProviderTypeAPIKey, DefaultURL: openaiPlatformAPIURL, CodexURL: chatgptCodexURL,
+		OAuthTarget: oauth, APIKey: a.Record.Type == capability.ProviderTypeAPIKey, DefaultURL: OpenaiPlatformAPIURL, CodexURL: ChatgptCodexURL,
 		BaseURL: func() string {
 			base := gatewayprovider.ExecutionProtocolTarget(a).GetOpenAIBaseURL()
 			if _, unified := a.Record.Credentials[provider.UpstreamProtocolsKey]; gatewayprovider.ExecutionProtocolTarget(a).UsesNativeCNResponses() && (unified || gatewayprovider.ExecutionProtocolTarget(a).IsAdaptiveAPIProtocol()) {

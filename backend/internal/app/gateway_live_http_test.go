@@ -6,13 +6,14 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 // TestLiveAssemblyKeepsPermissionAndStopBeforeRead 检查 Live 入口在读取请求体前执行平台准入和关闭检查。

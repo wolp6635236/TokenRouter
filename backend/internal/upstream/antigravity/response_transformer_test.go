@@ -13,7 +13,7 @@ import (
 
 func TestGenerateRandomID_Uniqueness(t *testing.T) {
 	seen := make(map[string]struct{}, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		id := generateRandomID()
 		require.Len(t, id, 12, "ID 长度应为 12")
 		_, dup := seen[id]
@@ -24,7 +24,7 @@ func TestGenerateRandomID_Uniqueness(t *testing.T) {
 
 func TestGenerateAnthropicMsgID_FormatAndUniqueness(t *testing.T) {
 	seen := make(map[string]struct{}, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		id := generateAnthropicMsgID()
 		require.Regexp(t, `^msg_01[0-9A-Za-z]{22}$`, id)
 		_, duplicate := seen[id]
@@ -50,7 +50,7 @@ func TestFallbackCounter_ConcurrentIncrements(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 			results[idx] = atomic.AddUint64(&fallbackCounter, 1)
@@ -69,13 +69,13 @@ func TestFallbackCounter_ConcurrentIncrements(t *testing.T) {
 func TestGenerateRandomID_Charset(t *testing.T) {
 	const validChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	validSet := make(map[byte]struct{}, len(validChars))
-	for i := 0; i < len(validChars); i++ {
+	for i := range len(validChars) {
 		validSet[validChars[i]] = struct{}{}
 	}
 
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		id := generateRandomID()
-		for j := 0; j < len(id); j++ {
+		for j := range len(id) {
 			_, ok := validSet[id[j]]
 			require.True(t, ok, "ID 包含非法字符: %c (ID=%s)", id[j], id)
 		}
@@ -83,7 +83,7 @@ func TestGenerateRandomID_Charset(t *testing.T) {
 }
 
 func TestGenerateRandomID_Length(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		id := generateRandomID()
 		assert.Len(t, id, 12, "每次生成的 ID 长度应为 12")
 	}
@@ -96,7 +96,7 @@ func TestGenerateRandomID_ConcurrentUniqueness(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 			results[idx] = generateRandomID()
@@ -112,7 +112,7 @@ func TestGenerateRandomID_ConcurrentUniqueness(t *testing.T) {
 }
 
 func BenchmarkGenerateRandomID(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = generateRandomID()
 	}
 }

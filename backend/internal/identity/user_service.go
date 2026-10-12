@@ -16,55 +16,75 @@ import (
 	_ "image/png"
 	"log/slog"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 	xdraw "golang.org/x/image/draw"
 	"golang.org/x/sync/singleflight"
-)
 
-// IsValidUserAPIKeyLimit 判断用户 API Key 数量上限能否安全写入数据库。
-func IsValidUserAPIKeyLimit(limit int) bool {
-	return limit >= 0 && limit <= MaxUserAPIKeyLimit
-}
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
+)
 
 const (
 	ProfileMaxNotifyEmails      = 3 // Maximum number of notification emails per user
 	ProfileMaxInlineAvatarBytes = 100 * 1024
 	ProfileTargetAvatarBytes    = 20 * 1024
 
-	// User-level rate limiting for notify email verification codes
+	// User-level rate limiting for notify email verification codes.
 	ProfileNotifyCodeUserRateLimit  = 5
 	ProfileNotifyCodeUserRateWindow = 10 * time.Minute
 
 	ProfileDefaultUserIdentityRedirect = "/settings/profile"
 	ProfileUserLastActiveMinTouch      = 10 * time.Minute
 	ProfileUserLastActiveFailBackoff   = 30 * time.Second
+
+	ProfileUserIdentityNoteEmailManagedByBinding   = "profile.authBindings.notes.emailManagedByBinding"
+	ProfileUserIdentityNoteCanUnbind               = "profile.authBindings.notes.canUnbind"
+	ProfileUserIdentityNoteBindAnotherBeforeUnbind = "profile.authBindings.notes.bindAnotherBeforeUnbind"
+
+	SettingKeyDingTalkConnectEnabled     = "dingtalk_connect_enabled"
+	SettingKeyLinuxDoConnectEnabled      = "linuxdo_connect_enabled"
+	SettingKeyOIDCConnectEnabled         = "oidc_connect_enabled"
+	SettingKeySiteName                   = "site_name"
+	SettingKeyWeChatConnectEnabled       = "wechat_connect_enabled"
+	SettingKeyWeChatConnectMPEnabled     = "wechat_connect_mp_enabled"
+	SettingKeyWeChatConnectMobileEnabled = "wechat_connect_mobile_enabled"
+	SettingKeyWeChatConnectMode          = "wechat_connect_mode"
+	SettingKeyWeChatConnectOpenEnabled   = "wechat_connect_open_enabled"
 )
 
 var (
 	ProfileAvatarScaleSteps   = []float64{1, 0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44, 0.36}
 	ProfileAvatarQualitySteps = []int{88, 80, 72, 64, 56, 48, 40, 32}
-)
 
-const (
-	ProfileUserIdentityNoteEmailManagedByBinding   = "profile.authBindings.notes.emailManagedByBinding"
-	ProfileUserIdentityNoteCanUnbind               = "profile.authBindings.notes.canUnbind"
-	ProfileUserIdentityNoteBindAnotherBeforeUnbind = "profile.authBindings.notes.bindAnotherBeforeUnbind"
+	ErrBalanceNegative             = billing.ErrBalanceNegative
+	ErrInsufficientPerms           = infraerrors.Forbidden("INSUFFICIENT_PERMISSIONS", "insufficient permissions")
+	ErrNotifyCodeUserRateLimit     = infraerrors.TooManyRequests("NOTIFY_CODE_USER_RATE_LIMIT", "too many verification codes requested, please try again later")
+	ErrAvatarInvalid               = infraerrors.BadRequest("AVATAR_INVALID", "avatar must be a valid image data URL or http(s) URL")
+	ErrAvatarTooLarge              = infraerrors.BadRequest("AVATAR_TOO_LARGE", "avatar image must be 100KB or smaller")
+	ErrAvatarNotImage              = infraerrors.BadRequest("AVATAR_NOT_IMAGE", "avatar content must be an image")
+	ErrProfileEmailChangeForbidden = infraerrors.BadRequest("EMAIL_PROFILE_UPDATE_FORBIDDEN", "email must be changed through verified email binding")
+	ErrIdentityProviderInvalid     = infraerrors.BadRequest("IDENTITY_PROVIDER_INVALID", "identity provider is invalid")
+	ErrIdentityRedirectInvalid     = infraerrors.BadRequest("IDENTITY_REDIRECT_INVALID", "identity redirect path is invalid")
+	ErrUserAPIKeyLimitInvalid      = infraerrors.BadRequest("INVALID_API_KEY_LIMIT", fmt.Sprintf("api key limit must be between 0 and %d", MaxUserAPIKeyLimit))
+	ErrIdentityUnbindLastMethod    = infraerrors.Conflict(
+		"IDENTITY_UNBIND_LAST_METHOD",
+		"bind another sign-in method before unbinding this provider",
+	)
 )
 
 type ProfileUserProfileIdentityTxRunner interface {
 	WithUserProfileIdentityTx(ctx context.Context, fn func(txCtx context.Context) error) error
 }
 
-// UserService 用户服务
+// UserService 用户服务。
 type UserService struct {
 	operationClock
 	runBackground        func(string, func()) bool
@@ -76,7 +96,43 @@ type UserService struct {
 	lastActiveTouchSF    singleflight.Group
 }
 
-// GetFirstAdmin 获取首个管理员用户（用于 Admin API Key 认证）
+// ProfileSettings 只提供资料页面需要的动态设置。
+type ProfileSettings interface {
+	GetMultiple(context.Context, []string) (map[string]string, error)
+	GetValue(context.Context, string) (string, error)
+}
+
+type (
+	UserAuthInvalidator interface{ InvalidateAuthCacheByUserID(context.Context, int64) }
+	UserBalanceCache    interface {
+		InvalidateUserBalance(context.Context, int64) error
+	}
+)
+
+// NotifyVerificationNotice 只表达身份已确认的验证码投递事实。
+type NotifyVerificationNotice struct {
+	UserID                        int64
+	Email, Code, Locale, SiteName string
+}
+
+type NotifyVerificationSender interface {
+	GenerateVerifyCode() (string, error)
+	SendNotifyVerification(context.Context, NotifyVerificationNotice) error
+}
+
+// IsValidUserAPIKeyLimit 判断用户 API Key 数量上限能否安全写入数据库。
+func IsValidUserAPIKeyLimit(limit int) bool {
+	return limit >= 0 && limit <= MaxUserAPIKeyLimit
+}
+
+func NewUserService(users UserRepository, settings ProfileSettings, auth UserAuthInvalidator, balance UserBalanceCache, background func(string, func()) bool, clocks ...func() time.Time) *UserService {
+	if background == nil {
+		background = func(_ string, fn func()) bool { fn(); return true }
+	}
+	return &UserService{operationClock: clockFromOptional(clocks), userRepo: users, settingRepo: settings, authCacheInvalidator: auth, billingCache: balance, runBackground: background}
+}
+
+// GetFirstAdmin 获取首个管理员用户（用于 Admin API Key 认证）。
 func (s *UserService) GetFirstAdmin(ctx context.Context) (*User, error) {
 	admin, err := s.userRepo.GetFirstAdmin(ctx)
 	if err != nil {
@@ -85,7 +141,7 @@ func (s *UserService) GetFirstAdmin(ctx context.Context) (*User, error) {
 	return admin, nil
 }
 
-// GetProfile 获取用户资料
+// GetProfile 获取用户资料。
 func (s *UserService) GetProfile(ctx context.Context, userID int64) (*User, error) {
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -232,7 +288,7 @@ func (s *UserService) UnbindUserAuthProviderWithResult(ctx context.Context, user
 	return updatedUser, true, nil
 }
 
-// UpdateProfile 更新用户资料
+// UpdateProfile 更新用户资料。
 func (s *UserService) UpdateProfile(ctx context.Context, userID int64, req UpdateProfileRequest) (*User, error) {
 	if txRunner, ok := s.userRepo.(ProfileUserProfileIdentityTxRunner); ok {
 		var (
@@ -592,13 +648,7 @@ func (s *UserService) ProfileCanUseEmailAsSignInMethod(user *User, records []Use
 		return true
 	}
 
-	for _, record := range ProfileFilterUserAuthIdentities(records, "email") {
-		if ProfileEmailIdentitySupportsSignIn(record) {
-			return true
-		}
-	}
-
-	return false
+	return slices.ContainsFunc(ProfileFilterUserAuthIdentities(records, "email"), ProfileEmailIdentitySupportsSignIn)
 }
 
 func ProfileEmailSignupSourceAllowsLogin(signupSource string) bool {
@@ -788,7 +838,7 @@ func ProfileMaskOpaqueIdentity(value string) string {
 }
 
 // ChangePassword 修改密码
-// Security: Increments TokenVersion to invalidate all existing JWT tokens
+// Security: Increments TokenVersion to invalidate all existing JWT tokens.
 func (s *UserService) ChangePassword(ctx context.Context, userID int64, req ChangePasswordRequest) error {
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -817,7 +867,7 @@ func (s *UserService) ChangePassword(ctx context.Context, userID int64, req Chan
 	return nil
 }
 
-// GetByID 根据ID获取用户（管理员功能）
+// GetByID 根据 ID 获取用户（管理员功能）。
 func (s *UserService) GetByID(ctx context.Context, id int64) (*User, error) {
 	user, err := s.userRepo.GetByID(ctx, id)
 	if err != nil {
@@ -911,7 +961,7 @@ func (s *UserService) ProfileHydrateUserAvatar(ctx context.Context, user *User) 
 	return nil
 }
 
-// List 获取用户列表（管理员功能）
+// List 获取用户列表（管理员功能）。
 func (s *UserService) List(ctx context.Context, params pagination.PaginationParams) ([]User, *pagination.PaginationResult, error) {
 	users, pagination, err := s.userRepo.List(ctx, params)
 	if err != nil {
@@ -920,7 +970,7 @@ func (s *UserService) List(ctx context.Context, params pagination.PaginationPara
 	return users, pagination, nil
 }
 
-// UpdateBalance 更新用户余额（管理员功能）
+// UpdateBalance 更新用户余额（管理员功能）。
 func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount float64) error {
 	if err := s.userRepo.UpdateBalance(ctx, userID, amount); err != nil {
 		return fmt.Errorf("update balance: %w", err)
@@ -945,7 +995,7 @@ func (s *UserService) UpdateBalance(ctx context.Context, userID int64, amount fl
 	return nil
 }
 
-// UpdateConcurrency 更新用户并发数（管理员功能）
+// UpdateConcurrency 更新用户并发数（管理员功能）。
 func (s *UserService) UpdateConcurrency(ctx context.Context, userID int64, concurrency int) error {
 	if err := s.userRepo.UpdateConcurrency(ctx, userID, concurrency); err != nil {
 		return fmt.Errorf("update concurrency: %w", err)
@@ -956,7 +1006,7 @@ func (s *UserService) UpdateConcurrency(ctx context.Context, userID int64, concu
 	return nil
 }
 
-// UpdateStatus 更新用户状态（管理员功能）
+// UpdateStatus 更新用户状态（管理员功能）。
 func (s *UserService) UpdateStatus(ctx context.Context, userID int64, status string) error {
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -975,7 +1025,7 @@ func (s *UserService) UpdateStatus(ctx context.Context, userID int64, status str
 	return nil
 }
 
-// Delete 删除用户（管理员功能）
+// Delete 删除用户（管理员功能）。
 func (s *UserService) Delete(ctx context.Context, userID int64) error {
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
@@ -1153,35 +1203,6 @@ func (s *UserService) ToggleNotifyEmail(ctx context.Context, userID int64, email
 	return s.userRepo.Update(ctx, user, UserUpdateFields{BalanceNotifyExtraEmails: true})
 }
 
-// ProfileSettings 只提供资料页面需要的动态设置。
-type ProfileSettings interface {
-	GetMultiple(context.Context, []string) (map[string]string, error)
-	GetValue(context.Context, string) (string, error)
-}
-type (
-	UserAuthInvalidator interface{ InvalidateAuthCacheByUserID(context.Context, int64) }
-	UserBalanceCache    interface {
-		InvalidateUserBalance(context.Context, int64) error
-	}
-)
-
-// NotifyVerificationNotice 只表达身份已确认的验证码投递事实。
-type NotifyVerificationNotice struct {
-	UserID                        int64
-	Email, Code, Locale, SiteName string
-}
-type NotifyVerificationSender interface {
-	GenerateVerifyCode() (string, error)
-	SendNotifyVerification(context.Context, NotifyVerificationNotice) error
-}
-
-func NewUserService(users UserRepository, settings ProfileSettings, auth UserAuthInvalidator, balance UserBalanceCache, background func(string, func()) bool, clocks ...func() time.Time) *UserService {
-	if background == nil {
-		background = func(_ string, fn func()) bool { fn(); return true }
-	}
-	return &UserService{operationClock: clockFromOptional(clocks), userRepo: users, settingRepo: settings, authCacheInvalidator: auth, billingCache: balance, runBackground: background}
-}
-
 func (s *UserService) SendNotifyVerifyEmail(ctx context.Context, sender NotifyVerificationSender, userID int64, email, code, locale string) error {
 	siteName := "TokenRouter"
 	if s.settingRepo != nil {
@@ -1230,21 +1251,3 @@ func ParseWeChatConnectCapabilitySettings(settings map[string]string, enabled bo
 	}
 	return true, false, false
 }
-
-const SettingKeyDingTalkConnectEnabled = "dingtalk_connect_enabled"
-
-const SettingKeyLinuxDoConnectEnabled = "linuxdo_connect_enabled"
-
-const SettingKeyOIDCConnectEnabled = "oidc_connect_enabled"
-
-const SettingKeySiteName = "site_name"
-
-const SettingKeyWeChatConnectEnabled = "wechat_connect_enabled"
-
-const SettingKeyWeChatConnectMPEnabled = "wechat_connect_mp_enabled"
-
-const SettingKeyWeChatConnectMobileEnabled = "wechat_connect_mobile_enabled"
-
-const SettingKeyWeChatConnectMode = "wechat_connect_mode"
-
-const SettingKeyWeChatConnectOpenEnabled = "wechat_connect_open_enabled"

@@ -26,6 +26,11 @@ type openAIImagesJSONKeepalive struct {
 	stop    chan struct{}
 }
 
+type openAIImagesJSONKeepaliveWriter struct {
+	gin.ResponseWriter
+	k *openAIImagesJSONKeepalive
+}
+
 // StartOpenAIImagesJSONKeepalive 为非流式图片请求启动空白心跳；非正间隔表示禁用。
 func StartOpenAIImagesJSONKeepalive(c *gin.Context, interval time.Duration) func() {
 	if c == nil || c.Writer == nil || interval <= 0 {
@@ -159,11 +164,6 @@ func openAIImagesJSONKeepaliveFromContext(c *gin.Context) *openAIImagesJSONKeepa
 	}
 	k, _ := value.(*openAIImagesJSONKeepalive)
 	return k
-}
-
-type openAIImagesJSONKeepaliveWriter struct {
-	gin.ResponseWriter
-	k *openAIImagesJSONKeepalive
 }
 
 func (w *openAIImagesJSONKeepaliveWriter) suspend() {

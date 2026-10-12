@@ -278,83 +278,49 @@ gateway:
   # ChatGPT Frameless Live 单会话硬上限（秒）。
   live:
     max_session_duration_seconds: 3600
-  # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
+  # Responses 长连接参数的部署默认值，管理端“网关设置 → OpenAI”保存的值优先。
+  # 是否允许客户端使用长连接，由分组协议控制。
   openai_ws:
-    # 新版 WS mode 路由（默认关闭）。关闭时忽略提供商级 WS mode（包括 http_bridge），保持 legacy ctx_pool 行为。
-    # 环境变量：GATEWAY_OPENAI_WS_MODE_ROUTER_V2_ENABLED=true
-    mode_router_v2_enabled: false
-    # ingress 默认模式：off|ctx_pool|passthrough|http_bridge（仅 mode_router_v2_enabled=true 生效；关闭时提供商级 WS mode 被忽略）
-    # 兼容旧值：shared/dedicated 会按 ctx_pool 处理。
-    ingress_mode_default: ctx_pool
-    # 完整读取并解压首条客户端消息的总超时（秒）；大请求或慢链路可调高到 120-300。
-    client_first_message_timeout_seconds: 30
-    # 客户端在已完成轮次之间保持空闲的最长时间（秒），0 表示关闭。
-    ingress_inter_turn_idle_timeout_seconds: 300
-    # 所有实例中单个 API Key 允许的活跃入站 WebSocket 会话数，0 表示关闭。
-    max_ingress_connections_per_api_key: 64
-    # 全局总开关，默认 true；关闭时所有请求保持原有 HTTP/SSE 路由
-    enabled: true
-    # 按提供商类型细分开关
-    oauth_enabled: true
-    apikey_enabled: true
-    # 全局强制 OpenAI Responses 上游使用 HTTP/SSE，不使用 WebSocket（紧急回滚开关）。
-    # 此开关不强制 HTTP/1.1；HTTP/2 由 gateway.openai_http2 单独控制。
-    force_http: false
-    # 允许在 WSv2 下按策略恢复 store=true（默认 false）
-    allow_store_recovery: false
-    # ingress 模式收到 previous_response_not_found 时，自动去掉 previous_response_id 重试一次（默认 true）
-    ingress_previous_response_recovery_enabled: true
-    # store=false 且无可复用会话连接时的策略：
-    # strict=强制新建连接（隔离优先），adaptive=仅在高风险失败后强制新建，off=尽量复用（性能优先）
-    store_disabled_conn_mode: strict
-    # store=false 且无可复用会话连接时，是否强制新建连接（默认 true，优先会话隔离）
-    # 兼容旧配置：仅在 store_disabled_conn_mode 未配置时生效
-    store_disabled_force_new_conn: true
-    # 是否启用 WSv2 generate=false 预热（默认 false）
-    prewarm_generate_enabled: false
-    # 协议 feature 开关，v2 优先于 v1
-    responses_websockets: false
-    responses_websockets_v2: true
-    # 连接池参数（按提供商池化复用）
+    # 每个提供商的连接数上限
     max_conns_per_provider: 128
+    # 至少准备的空闲连接数
     min_idle_per_provider: 4
+    # 最多保留的空闲连接数
     max_idle_per_provider: 12
-    # 是否按提供商并发动态计算连接池上限：
-    # effective_max_conns = min(max_conns_per_provider, ceil(provider.concurrency * factor))
+    # 根据提供商并发计算连接数量
     dynamic_max_conns_by_provider_concurrency_enabled: true
-    # 按提供商类型分别设置系数（OAuth / API Key）
-    oauth_max_conns_factor: 1.0
-    apikey_max_conns_factor: 1.0
-    dial_timeout_seconds: 10
-    read_timeout_seconds: 900
-    write_timeout_seconds: 120
-    pool_target_utilization: 0.7
+    # OAuth 连接数与并发的比例
+    oauth_max_conns_factor: 1
+    # API Key 连接数与并发的比例
+    apikey_max_conns_factor: 1
+    # 每条连接的排队上限
     queue_limit_per_conn: 64
-    # 流式写出批量 flush 参数
-    event_flush_batch_size: 1
-    event_flush_interval_ms: 10
-    # 预热触发冷却（毫秒）
+    # 预热目标使用率
+    pool_target_utilization: 0.7
+    # 两次预热的最短间隔（毫秒）
     prewarm_cooldown_ms: 300
-    # WS 重试退避参数（毫秒）
-    retry_backoff_initial_ms: 120
-    retry_backoff_max_ms: 2000
-    # 抖动比例（0-1）
-    retry_jitter_ratio: 0.2
-    # 单次请求 WS 重试总预算（毫秒）；建议设置为有限值，避免重试拉高 TTFT 长尾
-    retry_total_budget_ms: 5000
-    # payload_schema 日志采样率（0-1）；降低热路径日志放大
-    payload_log_sample_rate: 0.2
-    # 粘连参数
+    # 等待首条客户端消息的时间（秒）
+    client_first_message_timeout_seconds: 30
+    # 轮间空闲上限（秒），0 表示不限制
+    ingress_inter_turn_idle_timeout_seconds: 300
+    # 单 Key 的客户端连接上限，0 表示不限制
+    max_ingress_connections_per_api_key: 64
+    # 客户端消息上限（字节）
+    client_read_limit_bytes: 67108864
+    # 首条请求达到该大小时按分组许可转为 HTTP（字节）
+    http_bridge_threshold_bytes: 15728640
+    # 连接上游超时（秒）
+    dial_timeout_seconds: 10
+    # 读取消息超时（秒）
+    read_timeout_seconds: 900
+    # 发送消息超时（秒）
+    write_timeout_seconds: 120
+    # 上游找不到上一轮时尝试恢复
+    ingress_previous_response_recovery_enabled: true
+    # 提供商会话记录有效期（秒）
     sticky_session_ttl_seconds: 3600
-    # 会话哈希迁移兼容开关：新 key 未命中时回退读取旧 SHA-256 key
-    session_hash_read_old_fallback: true
-    # 会话哈希迁移兼容开关：写入时双写旧 SHA-256 key（短 TTL）
-    session_hash_dual_write_old: true
-    # context 元数据迁移兼容开关：保留旧 ctxkey.* 读取/注入桥接
-    metadata_bridge_enabled: true
+    # 响应续接记录有效期（秒）
     sticky_response_id_ttl_seconds: 3600
-    # 兼容旧键：当 sticky_response_id_ttl_seconds 缺失时回退该值
-    sticky_previous_response_ttl_seconds: 3600
   # 通用高级调度器配置。是否使用由每个分组的 scheduler_type 决定。
   advanced_scheduler:
     # 每次加权选择前保留的高分候选数量。
@@ -1036,7 +1002,7 @@ rate_limit:
 pricing:
   # URL for the unified models.dev catalog
   # 模型价格与展示属性共用的 models.dev 目录地址
-  remote_url: "https://models.dev/catalog.json"
+  remote_url: "https://models.dev/catalog.json?type=all"
   # Local data directory for caching
   # 本地数据缓存目录
   data_dir: "./data"
@@ -1166,3 +1132,7 @@ update:
   proxy_url: ""
   # 面板在线更新读取的 GitHub owner/repo。
   github_repo: "wolp6635236/TokenRouter"
+
+# 请求摘要独立于 Ops 采样保存，通过内存缓冲批量写入数据库。
+request_log:
+  retention_days: 30

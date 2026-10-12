@@ -6,8 +6,9 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
 func TestBatchUpsertIngressRejectsUsesFixedMultiRowChunks(t *testing.T) {

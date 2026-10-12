@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// FableWindowReason 保留模型窗口持久化原因。
+const FableWindowReason = "anthropic_7d_oi_window_exhausted"
+
 // RateLimitReset 表达供应商限流头的重置观测，不执行提供商状态写入。
 type RateLimitReset struct {
 	ResetAt       time.Time  // 限流重置时间
@@ -77,7 +80,7 @@ func parseResetTimestamp(raw string, now time.Time, maxAge time.Duration) (time.
 		return time.Time{}, false
 	}
 	if ts > 1e11 {
-		ts = ts / 1000
+		ts /= 1000
 	}
 	resetAt := time.Unix(ts, 0)
 	if !resetAt.After(now) || resetAt.After(now.Add(maxAge)) {
@@ -200,6 +203,3 @@ func pickSooner(a, b *time.Time) *time.Time {
 		return b
 	}
 }
-
-// FableWindowReason 保留模型窗口持久化原因。
-const FableWindowReason = "anthropic_7d_oi_window_exhausted"

@@ -6,37 +6,37 @@ import (
 	"testing"
 	"time"
 
-	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
-
-	purepricing "github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	completion "github.com/TokenFlux/TokenRouter/internal/gateway/completion"
-	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
-
+	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	pricingprovider "github.com/TokenFlux/TokenRouter/internal/billing/provider"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-
+	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
-	identity "github.com/TokenFlux/TokenRouter/internal/identity"
+	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/stretchr/testify/require"
 )
 
-// 共享价卡的免费 Fast 保留提供商成本，并按 Standard 金额向用户收费。
+type configuredPrices struct {
+	base     *billing.PriceResolver
+	groupID  int64
+	settings pricing.BillingSettings
+	cards    []routing.ModelPricingEntry
+}
 
 func TestGroupPricingFreeFastWithIntervalsAndTurnTime(t *testing.T) {
 	for _, free := range []bool{false, true} {
 		t.Run(fmt.Sprint(free), func(t *testing.T) {
-			usageRepo := &gatewaytestkit.UsageLogStore{Inserted: true}
-			svc := newOpenAIRecordUsageServiceForTest(usageRepo, &gatewaytestkit.UserStore{}, &gatewaytestkit.SubscriptionStore{}, nil)
+			usageRepo := &testkit.UsageLogStore{Inserted: true}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, &testkit.UserStore{}, &testkit.SubscriptionStore{}, nil)
 			svc.Dependencies.Prices = billingtestkit.PriceResolver(nil, svc.Dependencies.Calculator)
 			groupID := int64(88)
 			tier := "priority"
@@ -45,7 +45,7 @@ func TestGroupPricingFreeFastWithIntervalsAndTurnTime(t *testing.T) {
 				Hydrated:       true,
 				Status:         billing.StatusActive,
 				RateMultiplier: 0.5,
-			}, purepricing.BillingSettings{
+			}, pricing.BillingSettings{
 				FreeOpenAIFast:               free,
 				LongContextPricingEnabled:    true,
 				PeakRateMultiplier:           1,
@@ -80,7 +80,7 @@ func TestGroupPricingFreeFastWithIntervalsAndTurnTime(t *testing.T) {
 			cmd := requireOpenAIRecordUsageBillingRepoStub(t, svc).LastCmd
 			require.InDelta(t, wantBase, cmd.BaseAmountUSD, 1e-12)
 			require.InDelta(t, wantBase*0.5, cmd.BillableAmountUSD, 1e-12)
-			// 展示复用解析器，但免费 Fast 不得污染随后计算的 Fast 成本。
+			// 免费 Fast 的展示使用 Standard 价格，随后结算的提供商成本使用 Fast 价格。
 			market := newPricingMarketplaceFixture(nil, nil, svc.Dependencies.Prices, svc.Dependencies.Calculator, nil, nil, nil)
 			display := market.PublicModelPricing(context.Background(), group, "gpt-5.6-sol")
 			require.Len(t, display.ContextIntervals, 2)
@@ -95,10 +95,10 @@ func TestGroupPricingFreeFastWithIntervalsAndTurnTime(t *testing.T) {
 	}
 }
 
-// TestConfigPricingFreeFastDisplayRespectsModelSupport 验证免费 Fast 不能让不支持该档位的模型在市场中多出 Fast 价格。
+// TestConfigPricingFreeFastDisplayRespectsModelSupport 检查市场按模型支持的服务档位展示价格。
 func TestConfigPricingFreeFastDisplayRespectsModelSupport(t *testing.T) {
 	bs := billingtestkit.ResolverCalculator()
-	settings := purepricing.DefaultBillingSettings()
+	settings := pricing.DefaultBillingSettings()
 	settings.FreeOpenAIFast = true
 	group := &routing.Group{ID: 100, RateMultiplier: 1}
 	for _, factor := range []*float64{nil, testPtrFloat64(0)} {
@@ -144,7 +144,7 @@ func TestConfiguredIntervalsPreserveDefaultPrices(t *testing.T) {
 					for _, tier := range []string{"default", "priority"} {
 						cost, err := rCalculator.CalculateCostUnified(billing.CostInput{
 							Ctx: context.Background(), Model: model, GroupID: &group.ID,
-							Tokens:         purepricing.UsageTokens{InputTokens: tc.input, OutputTokens: 5, CacheCreationTokens: 20, CacheCreation5mTokens: 10, CacheCreation1hTokens: 10, CacheReadTokens: 20},
+							Tokens:         pricing.UsageTokens{InputTokens: tc.input, OutputTokens: 5, CacheCreationTokens: 20, CacheCreation5mTokens: 10, CacheCreation1hTokens: 10, CacheReadTokens: 20},
 							RateMultiplier: 0.7, ServiceTier: tier, Resolver: r,
 						})
 						require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestConfiguredIntervalsPreserveDefaultPrices(t *testing.T) {
 	}
 }
 
-// TestFreeFastIntervalOnlyDisplayMatchesStandard 验证自定义模型只有区间价格时，免费 Fast 在单档和多档展示中都必须与 Standard 一致。
+// TestFreeFastIntervalOnlyDisplayMatchesStandard 检查自定义模型使用区间价格时，免费 Fast 的展示价格与 Standard 一致。
 func TestFreeFastIntervalOnlyDisplayMatchesStandard(t *testing.T) {
 	for _, source := range []string{"channel"} {
 		for _, tierCount := range []int{1, 2} {
@@ -183,7 +183,7 @@ func TestFreeFastIntervalOnlyDisplayMatchesStandard(t *testing.T) {
 						RateMultiplier: 0.5,
 					}
 					rCalculator := billingtestkit.ResolverCalculator()
-					settings := purepricing.DefaultBillingSettings()
+					settings := pricing.DefaultBillingSettings()
 					settings.FreeOpenAIFast = free
 					r := billingtestkit.SharedPriceResolver(rCalculator, group.ID, settings, []routing.ModelPricingEntry{card})
 					svc := newPricingMarketplaceFixture(nil, nil, r, rCalculator, nil, nil, nil)
@@ -206,10 +206,10 @@ func TestFreeFastIntervalOnlyDisplayMatchesStandard(t *testing.T) {
 							require.InDelta(t, interval.CacheReadPricePerToken*ratio, interval.FastCacheReadPricePerToken, 1e-12)
 						}
 					}
-					// 展示副本不能污染后续结算的 Fast 成本。
+					// 展示计算后的结算继续使用 Fast 成本。
 					cost, err := rCalculator.CalculateCostUnified(billing.CostInput{
 						Ctx: context.Background(), Model: "custom-priced", GroupID: &group.ID,
-						Tokens: purepricing.UsageTokens{InputTokens: 50}, RateMultiplier: group.RateMultiplier, ServiceTier: "priority", Resolver: r,
+						Tokens: pricing.UsageTokens{InputTokens: 50}, RateMultiplier: group.RateMultiplier, ServiceTier: "priority", Resolver: r,
 					})
 					require.NoError(t, err)
 					require.InDelta(t, 50*0.001*3, cost.TotalCost, 1e-12)
@@ -219,7 +219,7 @@ func TestFreeFastIntervalOnlyDisplayMatchesStandard(t *testing.T) {
 	}
 }
 
-// TestTimeOnlyPricingGroupPricingConfigParity 验证分时配置独立生效，共享价格配置不能忽略没有填写单价的有效价卡。
+// TestTimeOnlyPricingGroupPricingConfigParity 检查仅配置分时倍率的价卡在分组和共享价格配置中都生效。
 func TestTimeOnlyPricingGroupPricingConfigParity(t *testing.T) {
 	card := routing.ModelPricingEntry{
 		Models: []string{"claude-sonnet-4"}, BillingMode: routing.BillingModeToken,
@@ -237,7 +237,7 @@ func TestTimeOnlyPricingGroupPricingConfigParity(t *testing.T) {
 		}
 		cost, err := rCalculator.CalculateCostUnified(billing.CostInput{
 			Ctx: context.Background(), Model: "claude-sonnet-4", GroupID: &group.ID,
-			Tokens: purepricing.UsageTokens{InputTokens: 100}, RateMultiplier: 1, PricingAt: time.Date(2026, 9, 9, 9, 30, 0, 0, time.UTC), Resolver: r,
+			Tokens: pricing.UsageTokens{InputTokens: 100}, RateMultiplier: 1, PricingAt: time.Date(2026, 9, 9, 9, 30, 0, 0, time.UTC), Resolver: r,
 		})
 		require.NoError(t, err)
 		costs = append(costs, cost.ActualCost)
@@ -263,7 +263,7 @@ func TestTierOnlyPricingPreservesImagePricesEqually(t *testing.T) {
 		}
 		cost, err := bs.CalculateCostUnified(billing.CostInput{
 			Ctx: context.Background(), Model: "claude-sonnet-4", GroupID: &group.ID,
-			Tokens: purepricing.UsageTokens{InputTokens: 200, ImageInputTokens: 100, OutputTokens: 50, ImageOutputTokens: 50}, RateMultiplier: 1, ServiceTier: "priority", Resolver: r,
+			Tokens: pricing.UsageTokens{InputTokens: 200, ImageInputTokens: 100, OutputTokens: 50, ImageOutputTokens: 50}, RateMultiplier: 1, ServiceTier: "priority", Resolver: r,
 		})
 		require.NoError(t, err)
 		costs = append(costs, cost.ActualCost)
@@ -286,7 +286,7 @@ func TestQoderGroupPricingConfigBlankPricesParity(t *testing.T) {
 
 		resolved, model := gateway.ResolveConfigPricing(context.Background(), "claude-opus-4-6", gatewaycapture.ProjectCompletionKey(&apikey.APIKey{Group: group, GroupID: &group.ID})), "claude-opus-4-6"
 		require.NotNil(t, resolved)
-		cost, err := bs.CalculateCostUnified(billing.CostInput{Ctx: context.Background(), Model: model, GroupID: &group.ID, Tokens: purepricing.UsageTokens{OutputTokens: 100}, RateMultiplier: 1, Resolver: r, Resolved: resolved})
+		cost, err := bs.CalculateCostUnified(billing.CostInput{Ctx: context.Background(), Model: model, GroupID: &group.ID, Tokens: pricing.UsageTokens{OutputTokens: 100}, RateMultiplier: 1, Resolver: r, Resolved: resolved})
 		require.NoError(t, err)
 		costs = append(costs, cost.ActualCost)
 	}
@@ -294,7 +294,7 @@ func TestQoderGroupPricingConfigBlankPricesParity(t *testing.T) {
 	require.InDelta(t, 0.0025, costs[0], 1e-12)
 }
 
-// TestModifierCardsPreserveBuiltinPricingPolicy 验证纯倍率保留目录来源，且不会按型号追加峰值定价。
+// TestModifierCardsPreserveBuiltinPricingPolicy 检查纯倍率价卡使用目录价格和已配置的分时倍率。
 func TestModifierCardsPreserveBuiltinPricingPolicy(t *testing.T) {
 	model := "deepseek-v4-flash"
 	card := routing.ModelPricingEntry{
@@ -311,10 +311,10 @@ func TestModifierCardsPreserveBuiltinPricingPolicy(t *testing.T) {
 			for _, hour := range []int{0, 1, 3, 4} {
 				at := time.Date(2026, 9, 9, hour, 0, 0, 0, time.UTC)
 				resolved := r.Resolve(context.Background(), billing.PricingInput{Model: model, GroupID: &group.ID})
-				require.Equal(t, purepricing.PricingSourceCatalog, resolved.Source)
+				require.Equal(t, pricing.PricingSourceCatalog, resolved.Source)
 				cost, err := bs.CalculateCostUnified(billing.CostInput{
 					Model: model, GroupID: &group.ID, Resolver: r,
-					Tokens: purepricing.UsageTokens{InputTokens: 100}, RateMultiplier: 1, PricingAt: at, ServiceTier: "priority",
+					Tokens: pricing.UsageTokens{InputTokens: 100}, RateMultiplier: 1, PricingAt: at, ServiceTier: "priority",
 				})
 				require.NoError(t, err)
 				expected := 100 * 2.2e-7 * 3
@@ -328,13 +328,13 @@ func TestModifierCardsPreserveBuiltinPricingPolicy(t *testing.T) {
 	}
 }
 
-// TestQoderPricingMatchesOtherPlatforms 验证Qoder 的服务层级、分时、零价及图片默认价与其他平台共用结算和展示入口。
+// TestQoderPricingMatchesOtherPlatforms 检查 Qoder 的服务层级、分时、零价及图片默认价使用统一结算和展示入口。
 func TestQoderPricingMatchesOtherPlatforms(t *testing.T) {
 	for _, model := range []string{"claude-opus-4-6", "gpt-image-1", "custom-image", "qmodel"} {
 		for _, kind := range []string{"default", "modifiers", "free"} {
 			t.Run(model+"/"+kind, func(t *testing.T) {
-				var prices []purepricing.ModelDisplayPricing
-				var costs []*purepricing.CostBreakdown
+				var prices []pricing.ModelDisplayPricing
+				var costs []*pricing.CostBreakdown
 				for _, platform := range []string{capability.PlatformQoder, capability.PlatformOpenAI} {
 					group := &routing.Group{ID: 100, RateMultiplier: 1}
 					card := routing.ModelPricingEntry{Models: []string{model}}
@@ -352,7 +352,7 @@ func TestQoderPricingMatchesOtherPlatforms(t *testing.T) {
 					market := newPricingMarketplaceFixture(nil, nil, r, bs, nil, nil, nil)
 					prices = append(prices, market.RequestableModelPricing(context.Background(), group, routing.MarketplaceModelDef{ID: model, PricingModel: model}))
 					result := &forwardcore.MessagesResult{Usage: upstream.TokenUsage{InputTokens: 100, OutputTokens: 10}, ServiceTier: testPtrString("priority")}
-					if purepricing.LooksLikeImageModel(model) {
+					if pricing.LooksLikeImageModel(model) {
 						result.ImageCount = 1
 					}
 					costs = append(costs, gateway.CalculateRecordUsageCost(context.Background(), gatewaycapture.ProjectMessagesCompletionResult(result, gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), gatewaycapture.ProjectCompletionKey(&apikey.APIKey{Group: group}), gatewaycapture.ProjectCompletionProvider(gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), model, model, routing.BillingModelSourceRequested, model, 1, 1, &completion.PricingOptions{PricingAt: time.Date(2026, 9, 9, 9, 0, 0, 0, time.UTC)}))
@@ -371,3 +371,40 @@ func TestQoderPricingMatchesOtherPlatforms(t *testing.T) {
 		}
 	}
 }
+
+func requireOpenAIRecordUsageBillingRepoStub(t *testing.T, svc *testkit.Recording) *testkit.SettlementStore {
+	t.Helper()
+
+	billingRepo, ok := svc.Dependencies.Funds.(*testkit.SettlementStore)
+	require.True(t, ok)
+	return billingRepo
+}
+
+// configureBillingGroup 为记录夹具配置分组计费设置和共享价卡。
+func configureBillingGroup(svc *testkit.Recording, group *routing.Group, settings pricing.BillingSettings, cards []routing.ModelPricingEntry) *routing.Group {
+	source := configuredPrices{base: svc.Dependencies.Prices, groupID: group.ID, settings: settings, cards: cards}
+	svc.Dependencies.Prices = billing.NewPriceResolver(source, svc.Dependencies.Calculator, nil, nil)
+	return group
+}
+
+func (s configuredPrices) GetEffectiveBillingSettings(ctx context.Context, id int64) pricing.BillingSettings {
+	if id == s.groupID {
+		return s.settings.Clone()
+	}
+	return s.base.BillingSettings(ctx, &id)
+}
+
+func (s configuredPrices) GetEffectiveConfigModelPricing(ctx context.Context, id int64, model string) *pricing.ModelPricingEntry {
+	if id == s.groupID {
+		if card := pricing.MatchPriceCard(s.cards, model); card != nil {
+			return card
+		}
+	}
+	if s.base != nil {
+		return s.base.LookupConfigPricingNormalized(ctx, id, model)
+	}
+	return nil
+}
+
+// testPtrString 返回字符串指针。
+func testPtrString(v string) *string { return &v }

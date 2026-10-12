@@ -3,9 +3,10 @@ package provider
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/stretchr/testify/require"
 )
 
 // TestCompletionKeySnapshotPreservesSourceGroup 验证捕获保留分组身份与基础倍率，价格由结算读取共享配置。

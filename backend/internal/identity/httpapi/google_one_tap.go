@@ -6,11 +6,23 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
+)
+
+const (
+	emailOAuthDefaultRedirect   = "/dashboard"
+	emailOAuthDefaultFrontendCB = "/auth/oauth/callback"
+
+	GoogleOneTapCredentialMaxBytes  = 16 * 1024
+	GoogleOneTapContextMaxBytes     = 256
+	GoogleOneTapRequestMaxBytes     = 24 * 1024
+	GoogleOneTapStatusAuthenticated = "authenticated"
+	GoogleOneTapStatusRegistration  = "registration_required"
 )
 
 type (
@@ -27,27 +39,6 @@ type GoogleOneTapHandler struct {
 	googleOptions GoogleOneTapHTTPOptions
 }
 
-func NewGoogleOneTapHandler(pending *PendingHandler, verifier identity.GoogleIDTokenVerifier, options GoogleOneTapHTTPOptions) *GoogleOneTapHandler {
-	return &GoogleOneTapHandler{pending, verifier, options}
-}
-
-func (h *GoogleOneTapHandler) verifyGoogleOneTapCredential(ctx context.Context, credential, audience string) (*identity.GoogleIDTokenClaims, error) {
-	return h.Verifier.Verify(ctx, credential, audience)
-}
-
-const (
-	emailOAuthDefaultRedirect   = "/dashboard"
-	emailOAuthDefaultFrontendCB = "/auth/oauth/callback"
-)
-
-const (
-	GoogleOneTapCredentialMaxBytes  = 16 * 1024
-	GoogleOneTapContextMaxBytes     = 256
-	GoogleOneTapRequestMaxBytes     = 24 * 1024
-	GoogleOneTapStatusAuthenticated = "authenticated"
-	GoogleOneTapStatusRegistration  = "registration_required"
-)
-
 type GoogleOneTapRequest struct {
 	Credential string `json:"credential" binding:"required"`
 	Redirect   string `json:"redirect,omitempty"`
@@ -61,6 +52,14 @@ type GoogleOneTapResponse struct {
 	ExpiresIn    int    `json:"expires_in,omitempty"`
 	TokenType    string `json:"token_type,omitempty"`
 	Redirect     string `json:"redirect,omitempty"`
+}
+
+func NewGoogleOneTapHandler(pending *PendingHandler, verifier identity.GoogleIDTokenVerifier, options GoogleOneTapHTTPOptions) *GoogleOneTapHandler {
+	return &GoogleOneTapHandler{pending, verifier, options}
+}
+
+func (h *GoogleOneTapHandler) verifyGoogleOneTapCredential(ctx context.Context, credential, audience string) (*identity.GoogleIDTokenClaims, error) {
+	return h.Verifier.Verify(ctx, credential, audience)
 }
 
 // GoogleOneTap 使用浏览器取得的 Google ID Token 建立现有面板会话。

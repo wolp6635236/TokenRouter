@@ -5,19 +5,20 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/idempotency"
 	middleware2 "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
-
-type IdempotencyStoreUnavailableMode int
 
 const (
 	IdempotencyStoreUnavailableFailClose IdempotencyStoreUnavailableMode = iota
 	IdempotencyStoreUnavailableFailOpen
 )
+
+type IdempotencyStoreUnavailableMode int
 
 func (e *Executor) ExecuteAdminIdempotent(
 	c *gin.Context,

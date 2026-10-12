@@ -5,74 +5,101 @@ import (
 	"strings"
 )
 
-// HeaderWireCasing 定义每个白名单 header 在真实 Claude CLI 抓包中的准确大小写。
-// Go 的 HTTP server 解析请求时会将所有 header key 转为 Canonical 形式（如 x-app → X-App），
-// 此 map 用于在转发时恢复到真实的 wire format。
-//
-// 来源：对真实 Claude CLI (claude-cli/2.1.81) 到 api.anthropic.com 的 HTTPS 流量抓包。
-var HeaderWireCasing = map[string]string{
-	// Title case
-	"accept":     "Accept",
-	"user-agent": "User-Agent",
+var (
+	// HeaderWireCasing 定义每个白名单 header 在真实 Claude CLI 抓包中的准确大小写。
+	// Go 的 HTTP server 解析请求时会将所有 header key 转为 Canonical 形式（如 x-app → X-App），
+	// 此 map 用于在转发时恢复到真实的 wire format。
+	//
+	// 来源：对真实 Claude CLI (claude-cli/2.1.81) 到 api.anthropic.com 的 HTTPS 流量抓包。
+	HeaderWireCasing = map[string]string{
+		// Title case
+		"accept":     "Accept",
+		"user-agent": "User-Agent",
 
-	// X-Stainless-* 保持 SDK 原始大小写
-	"x-stainless-retry-count":     "X-Stainless-Retry-Count",
-	"x-stainless-timeout":         "X-Stainless-Timeout",
-	"x-stainless-lang":            "X-Stainless-Lang",
-	"x-stainless-package-version": "X-Stainless-Package-Version",
-	"x-stainless-os":              "X-Stainless-OS",
-	"x-stainless-arch":            "X-Stainless-Arch",
-	"x-stainless-runtime":         "X-Stainless-Runtime",
-	"x-stainless-runtime-version": "X-Stainless-Runtime-Version",
-	"x-stainless-helper-method":   "x-stainless-helper-method",
+		// X-Stainless-* 保持 SDK 原始大小写
+		"x-stainless-retry-count":     "X-Stainless-Retry-Count",
+		"x-stainless-timeout":         "X-Stainless-Timeout",
+		"x-stainless-lang":            "X-Stainless-Lang",
+		"x-stainless-package-version": "X-Stainless-Package-Version",
+		"x-stainless-os":              "X-Stainless-OS",
+		"x-stainless-arch":            "X-Stainless-Arch",
+		"x-stainless-runtime":         "X-Stainless-Runtime",
+		"x-stainless-runtime-version": "X-Stainless-Runtime-Version",
+		"x-stainless-helper-method":   "x-stainless-helper-method",
 
-	// Anthropic SDK 自身设置的 header，全小写
-	"anthropic-dangerous-direct-browser-access": "anthropic-dangerous-direct-browser-access",
-	"anthropic-version":                         "anthropic-version",
-	"anthropic-beta":                            "anthropic-beta",
-	"x-app":                                     "x-app",
-	"content-type":                              "content-type",
-	"accept-language":                           "accept-language",
-	"sec-fetch-mode":                            "sec-fetch-mode",
-	"accept-encoding":                           "accept-encoding",
-	"authorization":                             "authorization",
+		// Anthropic SDK 自身设置的 header，全小写
+		"anthropic-dangerous-direct-browser-access": "anthropic-dangerous-direct-browser-access",
+		"anthropic-version":                         "anthropic-version",
+		"anthropic-beta":                            "anthropic-beta",
+		"x-app":                                     "x-app",
+		"content-type":                              "content-type",
+		"accept-language":                           "accept-language",
+		"sec-fetch-mode":                            "sec-fetch-mode",
+		"accept-encoding":                           "accept-encoding",
+		"authorization":                             "authorization",
 
-	// Claude Code 2.1.87+ 新增 header
-	"x-claude-code-session-id": "X-Claude-Code-Session-Id",
-	"x-client-request-id":      "x-client-request-id",
-	"content-length":           "content-length",
-}
+		// Claude Code 2.1.87+ 新增 header
+		"x-claude-code-session-id": "X-Claude-Code-Session-Id",
+		"x-client-request-id":      "x-client-request-id",
+		"content-length":           "content-length",
+	}
 
-// HeaderWireOrder 定义真实 Claude CLI 发送 header 的顺序（基于抓包）。
-// 用于 debug log 按此顺序输出，便于与抓包结果直接对比。
-var HeaderWireOrder = []string{
-	"Accept",
-	"X-Stainless-Retry-Count",
-	"X-Stainless-Timeout",
-	"X-Stainless-Lang",
-	"X-Stainless-Package-Version",
-	"X-Stainless-OS",
-	"X-Stainless-Arch",
-	"X-Stainless-Runtime",
-	"X-Stainless-Runtime-Version",
-	"anthropic-dangerous-direct-browser-access",
-	"anthropic-version",
-	"authorization",
-	"x-app",
-	"User-Agent",
-	"X-Claude-Code-Session-Id",
-	"content-type",
-	"anthropic-beta",
-	"x-client-request-id",
-	"accept-language",
-	"sec-fetch-mode",
-	"accept-encoding",
-	"content-length",
-	"x-stainless-helper-method",
-}
+	// HeaderWireOrder 定义真实 Claude CLI 发送 header 的顺序（基于抓包）。
+	// 用于 debug log 按此顺序输出，便于与抓包结果直接对比。
+	HeaderWireOrder = []string{
+		"Accept",
+		"X-Stainless-Retry-Count",
+		"X-Stainless-Timeout",
+		"X-Stainless-Lang",
+		"X-Stainless-Package-Version",
+		"X-Stainless-OS",
+		"X-Stainless-Arch",
+		"X-Stainless-Runtime",
+		"X-Stainless-Runtime-Version",
+		"anthropic-dangerous-direct-browser-access",
+		"anthropic-version",
+		"authorization",
+		"x-app",
+		"User-Agent",
+		"X-Claude-Code-Session-Id",
+		"content-type",
+		"anthropic-beta",
+		"x-client-request-id",
+		"accept-language",
+		"sec-fetch-mode",
+		"accept-encoding",
+		"content-length",
+		"x-stainless-helper-method",
+	}
 
-// HeaderWireOrderSet 用于快速判断某个 key 是否在 HeaderWireOrder 中（按 lowercase 匹配）。
-var HeaderWireOrderSet map[string]struct{}
+	// HeaderWireOrderSet 用于快速判断某个 key 是否在 HeaderWireOrder 中（按 lowercase 匹配）。
+	HeaderWireOrderSet map[string]struct{}
+
+	// AllowedHeaders 白名单 headers（参考 CRS 项目）。
+	AllowedHeaders = map[string]bool{
+		"accept":                                    true,
+		"x-stainless-retry-count":                   true,
+		"x-stainless-timeout":                       true,
+		"x-stainless-lang":                          true,
+		"x-stainless-package-version":               true,
+		"x-stainless-os":                            true,
+		"x-stainless-arch":                          true,
+		"x-stainless-runtime":                       true,
+		"x-stainless-runtime-version":               true,
+		"x-stainless-helper-method":                 true,
+		"anthropic-dangerous-direct-browser-access": true,
+		"anthropic-version":                         true,
+		"x-app":                                     true,
+		"anthropic-beta":                            true,
+		"accept-language":                           true,
+		"sec-fetch-mode":                            true,
+		"user-agent":                                true,
+		"content-type":                              true,
+		"accept-encoding":                           true,
+		"x-claude-code-session-id":                  true,
+		"x-client-request-id":                       true,
+	}
+)
 
 func init() {
 	HeaderWireOrderSet = make(map[string]struct{}, len(HeaderWireOrder))
@@ -175,29 +202,4 @@ func SortHeadersByWireOrder(h http.Header) []string {
 	}
 
 	return result
-}
-
-// AllowedHeaders 白名单headers（参考CRS项目）
-var AllowedHeaders = map[string]bool{
-	"accept":                                    true,
-	"x-stainless-retry-count":                   true,
-	"x-stainless-timeout":                       true,
-	"x-stainless-lang":                          true,
-	"x-stainless-package-version":               true,
-	"x-stainless-os":                            true,
-	"x-stainless-arch":                          true,
-	"x-stainless-runtime":                       true,
-	"x-stainless-runtime-version":               true,
-	"x-stainless-helper-method":                 true,
-	"anthropic-dangerous-direct-browser-access": true,
-	"anthropic-version":                         true,
-	"x-app":                                     true,
-	"anthropic-beta":                            true,
-	"accept-language":                           true,
-	"sec-fetch-mode":                            true,
-	"user-agent":                                true,
-	"content-type":                              true,
-	"accept-encoding":                           true,
-	"x-claude-code-session-id":                  true,
-	"x-client-request-id":                       true,
 }

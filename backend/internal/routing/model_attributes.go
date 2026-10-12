@@ -9,10 +9,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
 var (

@@ -31,6 +31,28 @@ type antigravityChatStreamAdapter struct {
 	chatState      *bridge.ResponsesEventToChatState
 }
 
+type antigravityResponsesStreamAdapter struct {
+	c                  *upstream.OutputContext
+	reverseTools       func([]byte) []byte
+	anthropicState     *bridge.AnthropicEventToResponsesState
+	clientToolRestorer *bridge.ResponsesClientToolStreamRestorer
+}
+
+type antigravityCompatScanEvent struct {
+	line string
+	err  error
+}
+type antigravityCompatStreamSession struct {
+	processor      *StreamingProcessor
+	adapter        antigravityCompatStreamAdapter
+	writer         *ClientWriter
+	usage          *upstream.TokenUsage
+	pendingEvents  []protocolanthropic.AnthropicStreamEvent
+	firstTokenMs   *int
+	startTime      time.Time
+	meaningfulData bool
+}
+
 func NewAntigravityChatStreamAdapter(c *upstream.OutputContext, model string, includeUsage bool, reverse func([]byte) []byte) *antigravityChatStreamAdapter {
 	anthropicState := bridge.NewAnthropicEventToResponsesState(bridge.Runtime{Now: time.Now, ReadRandom: rand.Read})
 	anthropicState.Model = model
@@ -80,13 +102,6 @@ func (a *antigravityChatStreamAdapter) writeChunk(chunk protocolopenai.ChatCompl
 	}
 	payload = a.reverseTools(payload)
 	writer.Fprintf("data: %s\n\n", payload)
-}
-
-type antigravityResponsesStreamAdapter struct {
-	c                  *upstream.OutputContext
-	reverseTools       func([]byte) []byte
-	anthropicState     *bridge.AnthropicEventToResponsesState
-	clientToolRestorer *bridge.ResponsesClientToolStreamRestorer
 }
 
 func NewAntigravityResponsesStreamAdapter(
@@ -144,21 +159,6 @@ func (a *antigravityResponsesStreamAdapter) emitResponseEvent(event protocolopen
 	}
 }
 
-type antigravityCompatScanEvent struct {
-	line string
-	err  error
-}
-type antigravityCompatStreamSession struct {
-	processor      *StreamingProcessor
-	adapter        antigravityCompatStreamAdapter
-	writer         *ClientWriter
-	usage          *upstream.TokenUsage
-	pendingEvents  []protocolanthropic.AnthropicStreamEvent
-	firstTokenMs   *int
-	startTime      time.Time
-	meaningfulData bool
-}
-
 func NewAntigravityCompatStreamSession(
 	model string,
 	startTime time.Time,
@@ -210,7 +210,7 @@ func (s *antigravityCompatStreamSession) result(clientDisconnect bool) *StreamRe
 
 func (s *antigravityCompatStreamSession) consumeClaudeEvents(data []byte) {
 	var eventType string
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "event:"):

@@ -35,7 +35,6 @@ function createTestI18n() {
         },
         userSubscriptions: {
           noActiveSubscriptions: 'No active subscriptions',
-          noActiveSubscriptionsDesc: 'No active subscriptions yet',
           queuedPacks: 'Queued {count}',
           startsAt: 'Starts At',
           expires: 'Expires',

@@ -15,23 +15,23 @@ import (
 
 type DriveStorageInfo = google.DriveStorageInfo
 
-// DriveClient interface for Google Drive API operations
+// DriveClient interface for Google Drive API operations.
 type DriveClient interface {
 	GetStorageQuota(ctx context.Context, accessToken, proxyURL string) (*DriveStorageInfo, error)
 }
 
 type driveClient struct{}
 
-// NewDriveClient creates a new Drive API client
+// NewDriveClient creates a new Drive API client.
 func NewDriveClient() DriveClient {
 	return &driveClient{}
 }
 
-// GetStorageQuota fetches storage quota from Google Drive API
+// GetStorageQuota fetches storage quota from Google Drive API.
 func (c *driveClient) GetStorageQuota(ctx context.Context, accessToken, proxyURL string) (*DriveStorageInfo, error) {
 	const driveAPIURL = "https://www.googleapis.com/drive/v3/about?fields=storageQuota"
 
-	req, err := http.NewRequestWithContext(ctx, "GET", driveAPIURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, driveAPIURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -62,7 +62,7 @@ func (c *driveClient) GetStorageQuota(ctx context.Context, accessToken, proxyURL
 	var resp *http.Response
 	maxRetries := 3
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("request cancelled: %w", ctx.Err())
 		}

@@ -11,6 +11,47 @@ import (
 
 type GroupCapacitySummary = accessview.GroupCapacitySummary
 
+type groupCapacityProviderRef struct {
+	groupID    int64
+	providerID int64
+}
+
+type CapacityProviderRow struct {
+	GroupID  int64
+	Provider provider.CapacitySnapshot
+}
+type CapacityProviders interface {
+	ListSchedulableByGroupID(context.Context, int64) ([]provider.CapacitySnapshot, error)
+}
+type CapacityBatchProviders interface {
+	ListSchedulableCapacityByGroupIDs(context.Context, []int64) ([]CapacityProviderRow, error)
+}
+type CapacityGroups interface {
+	ListActiveIDs(context.Context) ([]int64, error)
+}
+type CapacityConcurrency interface {
+	GetProviderConcurrencyBatch(context.Context, []int64) (map[int64]int, error)
+}
+type CapacitySessions interface {
+	GetActiveSessionCountBatch(context.Context, []int64, map[int64]time.Duration) (map[int64]int, error)
+}
+type CapacityRPM interface {
+	GetRPMBatch(context.Context, []int64) (map[int64]int, error)
+}
+
+// CapacityService 聚合提供商配置和运行计数，计算分组容量。
+type CapacityService struct {
+	providerRepo       CapacityProviders
+	groupRepo          CapacityGroups
+	concurrencyService CapacityConcurrency
+	sessionLimitCache  CapacitySessions
+	rpmCache           CapacityRPM
+}
+
+func NewCapacityService(providers CapacityProviders, groups CapacityGroups, concurrency CapacityConcurrency, sessions CapacitySessions, rpm CapacityRPM) *CapacityService {
+	return &CapacityService{providerRepo: providers, groupRepo: groups, concurrencyService: concurrency, sessionLimitCache: sessions, rpmCache: rpm}
+}
+
 // GetAllGroupCapacity 返回全部活跃分组的容量摘要。
 func (s *CapacityService) GetAllGroupCapacity(ctx context.Context) ([]GroupCapacitySummary, error) {
 	groupIDs, err := s.groupRepo.ListActiveIDs(ctx)
@@ -37,11 +78,6 @@ func (s *CapacityService) getGroupCapacitiesSequential(ctx context.Context, grou
 		results = append(results, cap)
 	}
 	return results
-}
-
-type groupCapacityProviderRef struct {
-	groupID    int64
-	providerID int64
 }
 
 func (s *CapacityService) getGroupCapacitiesBatch(ctx context.Context, groupIDs []int64, lister CapacityBatchProviders) ([]GroupCapacitySummary, error) {
@@ -283,40 +319,4 @@ func (s *CapacityService) GetGroupCapacity(ctx context.Context, groupID int64) (
 		RPMUsed:         rpmUsed,
 		RPMMax:          rpmMax,
 	}, nil
-}
-
-type CapacityProviderRow struct {
-	GroupID  int64
-	Provider provider.CapacitySnapshot
-}
-type CapacityProviders interface {
-	ListSchedulableByGroupID(context.Context, int64) ([]provider.CapacitySnapshot, error)
-}
-type CapacityBatchProviders interface {
-	ListSchedulableCapacityByGroupIDs(context.Context, []int64) ([]CapacityProviderRow, error)
-}
-type CapacityGroups interface {
-	ListActiveIDs(context.Context) ([]int64, error)
-}
-type CapacityConcurrency interface {
-	GetProviderConcurrencyBatch(context.Context, []int64) (map[int64]int, error)
-}
-type CapacitySessions interface {
-	GetActiveSessionCountBatch(context.Context, []int64, map[int64]time.Duration) (map[int64]int, error)
-}
-type CapacityRPM interface {
-	GetRPMBatch(context.Context, []int64) (map[int64]int, error)
-}
-
-// CapacityService 聚合提供商配置和运行计数，计算分组容量。
-type CapacityService struct {
-	providerRepo       CapacityProviders
-	groupRepo          CapacityGroups
-	concurrencyService CapacityConcurrency
-	sessionLimitCache  CapacitySessions
-	rpmCache           CapacityRPM
-}
-
-func NewCapacityService(providers CapacityProviders, groups CapacityGroups, concurrency CapacityConcurrency, sessions CapacitySessions, rpm CapacityRPM) *CapacityService {
-	return &CapacityService{providerRepo: providers, groupRepo: groups, concurrencyService: concurrency, sessionLimitCache: sessions, rpmCache: rpm}
 }

@@ -4,10 +4,10 @@ import (
 	"crypto/tls"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	redisinfra "github.com/TokenFlux/TokenRouter/internal/infra/redis"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // InitRedis 初始化 Redis 客户端
@@ -15,7 +15,7 @@ import (
 // 连接池和超时参数由配置提供：
 // 1. PoolSize: 控制最大并发连接数（默认 128）
 // 2. MinIdleConns: 保持最小空闲连接，减少冷启动延迟（默认 10）
-// 3. DialTimeout/ReadTimeout/WriteTimeout: 分别控制建连、读取和写入超时
+// 3. DialTimeout/ReadTimeout/WriteTimeout: 分别控制建连、读取和写入超时。
 func InitRedis(cfg *config.Config) *redis.Client {
 	return redisinfra.NewClient(buildRedisOptions(cfg), cfg.Server.EnableServerTiming)
 }

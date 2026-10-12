@@ -6,26 +6,41 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// 阈值键不包含消费累计，普通更新不会写入提供商资金快照。
-const SettingKeyProviderSchedulingThresholds = "provider_scheduling_thresholds"
+const (
+	AnthropicFableRateLimitKey = "claude-fable-5"
+
+	// 阈值键不包含消费累计，普通更新不会写入提供商资金快照。
+	SettingKeyProviderSchedulingThresholds = "provider_scheduling_thresholds"
+
+	providerSchedulingThresholdsCacheTTL  = 60 * time.Second
+	providerSchedulingThresholdsErrorTTL  = 5 * time.Second
+	providerSchedulingThresholdsDBTimeout = 5 * time.Second
+)
+
+// AllowedSchedulingThresholdPlatforms 是允许设置提供商自动停调阈值的平台列表。
+// openai/anthropic/grok 有原生用量窗口；kimi/zhipu 的 Coding Plan 同样暴露 5h/weekly
+// 滚动窗口，纳入阈值评估。DeepSeek 使用余额检测。
+var AllowedSchedulingThresholdPlatforms = []string{
+	PlatformOpenAI,
+	PlatformAnthropic,
+	PlatformGrok,
+	PlatformKimi,
+	PlatformZhipu,
+}
 
 // cachedProviderSchedulingThresholds 缓存各平台自动停调阈值。
 type cachedProviderSchedulingThresholds struct {
 	thresholds map[string]int
 	expiresAt  int64 // Unix 纳秒时间戳
 }
-
-const (
-	providerSchedulingThresholdsCacheTTL  = 60 * time.Second
-	providerSchedulingThresholdsErrorTTL  = 5 * time.Second
-	providerSchedulingThresholdsDBTimeout = 5 * time.Second
-)
 
 func DefaultProviderSchedulingThresholds() map[string]int {
 	return map[string]int{
@@ -38,13 +53,7 @@ func DefaultProviderSchedulingThresholds() map[string]int {
 func ValidateAndNormalizeProviderSchedulingThresholds(input map[string]int) (map[string]int, error) {
 	normalized := DefaultProviderSchedulingThresholds()
 	for platform, value := range input {
-		allowed := false
-		for _, item := range AllowedSchedulingThresholdPlatforms {
-			if item == platform {
-				allowed = true
-				break
-			}
-		}
+		allowed := slices.Contains(AllowedSchedulingThresholdPlatforms, platform)
 		if !allowed {
 			return nil, apperror.BadRequest("INVALID_PROVIDER_SCHEDULING_THRESHOLDS", fmt.Sprintf("unknown platform %q", platform))
 		}
@@ -86,9 +95,7 @@ func CloneProviderSchedulingThresholds(input map[string]int) map[string]int {
 		return DefaultProviderSchedulingThresholds()
 	}
 	cloned := make(map[string]int, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, input)
 	return cloned
 }
 

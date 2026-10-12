@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"maps"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
@@ -12,13 +13,22 @@ import (
 	"sync/atomic"
 	"testing"
 
-	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/stretchr/testify/require"
+
+	settingscore "github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
 type MemorySettings struct {
 	mu     sync.RWMutex
 	values map[string]string
+}
+
+type SMTPServer struct {
+	listener      net.Listener
+	wg            sync.WaitGroup
+	messages      atomic.Int64
+	messageMu     sync.Mutex
+	messageBodies []string
 }
 
 func NewMemorySettings() *MemorySettings {
@@ -65,9 +75,7 @@ func (r *MemorySettings) GetMultiple(_ context.Context, keys []string) (map[stri
 func (r *MemorySettings) SetMultiple(_ context.Context, settings map[string]string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for key, value := range settings {
-		r.values[key] = value
-	}
+	maps.Copy(r.values, settings)
 	return nil
 }
 
@@ -75,9 +83,7 @@ func (r *MemorySettings) GetAll(_ context.Context) (map[string]string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make(map[string]string, len(r.values))
-	for key, value := range r.values {
-		out[key] = value
-	}
+	maps.Copy(out, r.values)
 	return out, nil
 }
 
@@ -89,14 +95,6 @@ func (r *MemorySettings) Delete(_ context.Context, key string) error {
 	}
 	delete(r.values, key)
 	return nil
-}
-
-type SMTPServer struct {
-	listener      net.Listener
-	wg            sync.WaitGroup
-	messages      atomic.Int64
-	messageMu     sync.Mutex
-	messageBodies []string
 }
 
 func StartSMTPServer(t *testing.T) *SMTPServer {
@@ -144,7 +142,7 @@ func (s *SMTPServer) LastMessageBody(t *testing.T) string {
 	message, err := mail.ReadMessage(strings.NewReader(s.LastMessage()))
 	require.NoError(t, err)
 
-	bodyReader := io.Reader(message.Body)
+	bodyReader := message.Body
 	if strings.EqualFold(message.Header.Get("Content-Transfer-Encoding"), "quoted-printable") {
 		bodyReader = quotedprintable.NewReader(message.Body)
 	}

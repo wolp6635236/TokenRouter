@@ -9,6 +9,12 @@ import (
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 )
 
+type SQLExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+type sqlQueryer = postgresinfra.Queryer
+
 func UserFromEntity(u *dbent.User) *identitycore.User {
 	if u == nil {
 		return nil
@@ -47,9 +53,3 @@ func UserFromEntity(u *dbent.User) *identitycore.User {
 	}
 	return out
 }
-
-type SQLExecutor interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}
-type sqlQueryer = postgresinfra.Queryer

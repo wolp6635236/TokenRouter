@@ -1,9 +1,10 @@
 package rediscache
 
 import (
+	"github.com/redis/go-redis/v9"
+
 	"github.com/TokenFlux/TokenRouter/internal/infra/redis/session"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/redis/go-redis/v9"
 )
 
 func NewGrokSessionStore(rdb *redis.Client) *provider.GrokSessionStore {

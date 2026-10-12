@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/identity"
-
-	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/lib/pq"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/TokenFlux/TokenRouter/internal/identity"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 type usageAnalyticsWindow struct {

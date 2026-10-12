@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/redeemcodeusage"
 	"github.com/TokenFlux/TokenRouter/ent/usersubscription"
@@ -18,7 +20,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/payment"
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
 	"github.com/TokenFlux/TokenRouter/migrations"
-	"github.com/stretchr/testify/require"
 )
 
 // createEligibilityOrder 创建隔离的付款记录，paid_at 表示渠道付款已经确认。

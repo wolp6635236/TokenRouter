@@ -1,11 +1,15 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -14,15 +18,6 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 )
-
-func resetViperWithJWTSecret(t *testing.T) {
-	t.Helper()
-	viper.Reset()
-	t.Cleanup(viper.Reset)
-	t.Setenv("CONFIG_FILE", "")
-	t.Setenv("DATA_DIR", "")
-	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
-}
 
 func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	resetViperWithJWTSecret(t)
@@ -122,7 +117,6 @@ func TestLoadAdvancedSchedulerStickyEscapeZeroBoundaries(t *testing.T) {
 	})
 
 	for _, source := range []string{"yaml", "env"} {
-		source := source
 		t.Run(source+" 拒绝显式零 TTFT", func(t *testing.T) {
 			resetViperWithJWTSecret(t)
 			if source == "yaml" {
@@ -237,23 +231,18 @@ func TestForwardedClientIPSettingsConcurrentPublication(t *testing.T) {
 		{TrustForwardedIP: true, Headers: []string{"X-Public-A"}},
 		{TrustForwardedIP: false, Headers: []string{"X-Public-B"}},
 	} {
-		settings := settings
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
-			for i := 0; i < iterations; i++ {
+			for range iterations {
 				cfg.SetForwardedClientIPSettings(settings.TrustForwardedIP, settings.Headers)
 			}
-		}()
+		})
 	}
 
-	for i := 0; i < cap(errCh); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range cap(errCh) {
+		wg.Go(func() {
 			<-start
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				snapshot := cfg.ForwardedClientIPSettings()
 				validA := snapshot.TrustForwardedIP && len(snapshot.Headers) == 1 && snapshot.Headers[0] == "X-Public-A"
 				validB := !snapshot.TrustForwardedIP && len(snapshot.Headers) == 1 && snapshot.Headers[0] == "X-Public-B"
@@ -262,7 +251,7 @@ func TestForwardedClientIPSettingsConcurrentPublication(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	close(start)
@@ -508,15 +497,6 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if !cfg.Gateway.OpenAIWS.Enabled {
-		t.Fatalf("Gateway.OpenAIWS.Enabled = false, want true")
-	}
-	if !cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 {
-		t.Fatalf("Gateway.OpenAIWS.ResponsesWebsocketsV2 = false, want true")
-	}
-	if cfg.Gateway.OpenAIWS.ResponsesWebsockets {
-		t.Fatalf("Gateway.OpenAIWS.ResponsesWebsockets = true, want false")
-	}
 	if !cfg.Gateway.OpenAIWS.DynamicMaxConnsByProviderConcurrencyEnabled {
 		t.Fatalf("Gateway.OpenAIWS.DynamicMaxConnsByProviderConcurrencyEnabled = false, want true")
 	}
@@ -556,54 +536,22 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds != 3600 {
 		t.Fatalf("Gateway.OpenAIWS.StickyResponseIDTTLSeconds = %d, want 3600", cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds)
 	}
-	if cfg.Gateway.OpenAIWS.EventFlushBatchSize != 1 {
-		t.Fatalf("Gateway.OpenAIWS.EventFlushBatchSize = %d, want 1", cfg.Gateway.OpenAIWS.EventFlushBatchSize)
-	}
-	if cfg.Gateway.OpenAIWS.EventFlushIntervalMS != 10 {
-		t.Fatalf("Gateway.OpenAIWS.EventFlushIntervalMS = %d, want 10", cfg.Gateway.OpenAIWS.EventFlushIntervalMS)
-	}
+
 	if cfg.Gateway.OpenAIWS.PrewarmCooldownMS != 300 {
 		t.Fatalf("Gateway.OpenAIWS.PrewarmCooldownMS = %d, want 300", cfg.Gateway.OpenAIWS.PrewarmCooldownMS)
 	}
 	if cfg.Gateway.OpenAIWS.ClientReadLimitBytes != 64*1024*1024 {
 		t.Fatalf("Gateway.OpenAIWS.ClientReadLimitBytes = %d, want %d", cfg.Gateway.OpenAIWS.ClientReadLimitBytes, 64*1024*1024)
 	}
-	if !cfg.Gateway.OpenAIWS.HTTPBridgeEnabled {
-		t.Fatalf("Gateway.OpenAIWS.HTTPBridgeEnabled = false, want true")
-	}
+
 	if cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes != 15*1024*1024 {
 		t.Fatalf("Gateway.OpenAIWS.HTTPBridgeThresholdBytes = %d, want %d", cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes, 15*1024*1024)
 	}
-	if cfg.Gateway.OpenAIWS.RetryBackoffInitialMS != 120 {
-		t.Fatalf("Gateway.OpenAIWS.RetryBackoffInitialMS = %d, want 120", cfg.Gateway.OpenAIWS.RetryBackoffInitialMS)
-	}
-	if cfg.Gateway.OpenAIWS.RetryBackoffMaxMS != 2000 {
-		t.Fatalf("Gateway.OpenAIWS.RetryBackoffMaxMS = %d, want 2000", cfg.Gateway.OpenAIWS.RetryBackoffMaxMS)
-	}
-	if cfg.Gateway.OpenAIWS.RetryJitterRatio != 0.2 {
-		t.Fatalf("Gateway.OpenAIWS.RetryJitterRatio = %v, want 0.2", cfg.Gateway.OpenAIWS.RetryJitterRatio)
-	}
-	if cfg.Gateway.OpenAIWS.RetryTotalBudgetMS != 5000 {
-		t.Fatalf("Gateway.OpenAIWS.RetryTotalBudgetMS = %d, want 5000", cfg.Gateway.OpenAIWS.RetryTotalBudgetMS)
-	}
-	if cfg.Gateway.OpenAIWS.PayloadLogSampleRate != 0.2 {
-		t.Fatalf("Gateway.OpenAIWS.PayloadLogSampleRate = %v, want 0.2", cfg.Gateway.OpenAIWS.PayloadLogSampleRate)
-	}
+
 	if cfg.Gateway.AdvancedScheduler.ScoreWeights.QuotaHeadroom != 0 {
 		t.Fatalf("Gateway.AdvancedScheduler.ScoreWeights.QuotaHeadroom = %v, want 0", cfg.Gateway.AdvancedScheduler.ScoreWeights.QuotaHeadroom)
 	}
-	if !cfg.Gateway.OpenAIWS.StoreDisabledForceNewConn {
-		t.Fatalf("Gateway.OpenAIWS.StoreDisabledForceNewConn = false, want true")
-	}
-	if cfg.Gateway.OpenAIWS.StoreDisabledConnMode != "strict" {
-		t.Fatalf("Gateway.OpenAIWS.StoreDisabledConnMode = %q, want %q", cfg.Gateway.OpenAIWS.StoreDisabledConnMode, "strict")
-	}
-	if cfg.Gateway.OpenAIWS.ModeRouterV2Enabled {
-		t.Fatalf("Gateway.OpenAIWS.ModeRouterV2Enabled = true, want false")
-	}
-	if cfg.Gateway.OpenAIWS.IngressModeDefault != "ctx_pool" {
-		t.Fatalf("Gateway.OpenAIWS.IngressModeDefault = %q, want %q", cfg.Gateway.OpenAIWS.IngressModeDefault, "ctx_pool")
-	}
+
 	if cfg.Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds != DefaultOpenAIWSClientFirstMessageTimeoutSeconds {
 		t.Fatalf(
 			"Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds = %d, want %d",
@@ -628,13 +576,13 @@ func TestLoadOpenAIWSClientFirstMessageTimeoutFromEnv(t *testing.T) {
 	require.Equal(t, 120, cfg.Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds)
 }
 
-func TestLoadOpenAIWSForceHTTPFromEnv(t *testing.T) {
+func TestLoadIgnoresRemovedOpenAIWSSwitch(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_FORCE_HTTP", "true")
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.True(t, cfg.Gateway.OpenAIWS.ForceHTTP)
+	require.Equal(t, 128, cfg.Gateway.OpenAIWS.MaxConnsPerProvider)
 }
 
 func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {
@@ -1420,7 +1368,7 @@ func TestGenerateJWTSecretDefaultLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateJWTSecret error: %v", err)
 	}
-	if len(secret) == 0 {
+	if secret == "" {
 		t.Fatalf("generateJWTSecret returned empty string")
 	}
 }
@@ -1508,7 +1456,7 @@ func TestGenerateJWTSecretWithLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateJWTSecret error: %v", err)
 	}
-	if len(secret) == 0 {
+	if secret == "" {
 		t.Fatalf("generateJWTSecret returned empty string")
 	}
 }
@@ -2296,26 +2244,7 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.QueueLimitPerConn = 0 },
 			wantErr: "gateway.openai_ws.queue_limit_per_conn",
 		},
-		{
-			name:    "store_disabled_conn_mode 必须为 strict|adaptive|off",
-			mutate:  func(c *Config) { c.Gateway.OpenAIWS.StoreDisabledConnMode = "invalid" },
-			wantErr: "gateway.openai_ws.store_disabled_conn_mode",
-		},
-		{
-			name:    "ingress_mode_default 必须为 off|ctx_pool|passthrough|http_bridge",
-			mutate:  func(c *Config) { c.Gateway.OpenAIWS.IngressModeDefault = "invalid" },
-			wantErr: "gateway.openai_ws.ingress_mode_default",
-		},
-		{
-			name:    "payload_log_sample_rate 必须在 [0,1] 范围内",
-			mutate:  func(c *Config) { c.Gateway.OpenAIWS.PayloadLogSampleRate = 1.2 },
-			wantErr: "gateway.openai_ws.payload_log_sample_rate",
-		},
-		{
-			name:    "retry_total_budget_ms 不能为负数",
-			mutate:  func(c *Config) { c.Gateway.OpenAIWS.RetryTotalBudgetMS = -1 },
-			wantErr: "gateway.openai_ws.retry_total_budget_ms",
-		},
+
 		{
 			name:    "lb_top_k 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.AdvancedScheduler.LBTopK = 0 },
@@ -2429,7 +2358,6 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := buildValid(t)
 			tc.mutate(cfg)
@@ -2699,38 +2627,11 @@ func TestLoadIgnoresRetiredSubscriptionMaintenance(t *testing.T) {
 
 // TestLoadIgnoresRetiredOpenAIWSFallbackCooldown 验证旧冷却键被忽略，重试配置仍按原规则读取和校验。
 func TestLoadIgnoresRetiredOpenAIWSFallbackCooldown(t *testing.T) {
-	cases := []struct {
-		name string
-		yaml string
-		env  string
-	}{
-		{
-			name: "YAML",
-			yaml: "gateway:\n  openai_ws:\n    fallback_cooldown_seconds: -1\n    retry_backoff_initial_ms: 137\n",
-		},
-		{
-			name: "环境变量",
-			yaml: "gateway:\n  openai_ws:\n    retry_backoff_initial_ms: 137\n",
-			env:  "-2",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resetViperWithJWTSecret(t)
-			configFile := filepath.Join(t.TempDir(), "config.yaml")
-			require.NoError(t, os.WriteFile(configFile, []byte(tc.yaml), 0o600))
-			t.Setenv("CONFIG_FILE", configFile)
-			t.Setenv("GATEWAY_OPENAI_WS_FALLBACK_COOLDOWN_SECONDS", tc.env)
-			t.Setenv("GATEWAY_OPENAI_WS_RETRY_BACKOFF_INITIAL_MS", "")
-
-			cfg, err := Load()
-			require.NoError(t, err)
-			require.Equal(t, 137, cfg.Gateway.OpenAIWS.RetryBackoffInitialMS)
-
-			cfg.Gateway.OpenAIWS.RetryBackoffInitialMS = -1
-			require.ErrorContains(t, cfg.Validate(), "gateway.openai_ws.retry_backoff_initial_ms")
-		})
-	}
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_WS_FALLBACK_COOLDOWN_SECONDS", "-2")
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 10, cfg.Gateway.OpenAIWS.DialTimeoutSeconds)
 }
 
 // TestProductConfigDirectories 验证显式路径不回退，默认搜索同时兼容新旧系统目录。
@@ -2748,5 +2649,402 @@ func TestProductConfigDirectories(t *testing.T) {
 	configureConfigSource(func(path string) { explicit = path }, func(string) { t.Fatal("explicit config must not fall back") })
 	if explicit != "/fixture/custom.yaml" {
 		t.Fatalf("explicit = %q", explicit)
+	}
+}
+
+// TestConfigKeysAreEnvReachable 检查配置标量字段是否注册为 Viper 可读取的键。
+// Unmarshal 根据 AllKeys 返回的默认值、文件和 BindEnv 键解码，AutomaticEnv 覆盖已注册键。
+// 缺失键需要在 setEnvReachableDefaults 注册零值默认项。map 和结构体切片由配置文件设置。
+func TestConfigKeysAreEnvReachable(t *testing.T) {
+	bound := map[string]string{}
+	collectMapstructureKeys(reflect.TypeFor[Config](), "", bound)
+
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	setDefaults()
+	registered := map[string]struct{}{}
+	for _, key := range viper.AllKeys() {
+		registered[key] = struct{}{}
+	}
+
+	var unreachable []string
+	for key, kind := range bound {
+		if _, ok := registered[key]; !ok {
+			unreachable = append(unreachable, key+" ("+kind+")")
+		}
+	}
+	sort.Strings(unreachable)
+
+	if len(unreachable) > 0 {
+		t.Fatalf("%d config keys have no default registered, so their environment variables are silently ignored:\n  %s",
+			len(unreachable), strings.Join(unreachable, "\n  "))
+	}
+}
+
+// TestPricingCatalogLegacySourceMigration 检查公共旧价格源的地址转换，以及自定义地址的读取。
+func TestPricingCatalogLegacySourceMigration(t *testing.T) {
+	for _, source := range []string{
+		"https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+		"https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/refs/heads/main//model_prices_and_context_window.json",
+		"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+	} {
+		cfg := Config{Pricing: PricingConfig{RemoteURL: source}}
+		cfg.normalizePricingCatalogSource()
+		cfg.normalizePricingCatalogSource()
+		require.Equal(t, "https://models.dev/catalog.json?type=all", cfg.Pricing.RemoteURL)
+		require.Equal(t, []string{"models.dev"}, cfg.Security.URLAllowlist.PricingHosts)
+	}
+	for _, source := range []string{
+		"https://mirror.example/catalog.json?source=raw.githubusercontent.com/wei-shaw/model-price-repo/main/model_prices_and_context_window.json",
+		"https://raw.githubusercontent.com.evil.example/BerriAI/litellm/main/model_prices_and_context_window.json",
+		"https://raw.githubusercontent.com/custom/litellm/main/model_prices_and_context_window.json",
+		"https://raw.githubusercontent.com/BerriAI/litellm-other/main/model_prices_and_context_window.json",
+		"",
+	} {
+		cfg := Config{Pricing: PricingConfig{RemoteURL: source}}
+		cfg.normalizePricingCatalogSource()
+		require.Equal(t, source, cfg.Pricing.RemoteURL)
+	}
+}
+
+// TestPricingCatalogConfigAliases 检查别名、环境变量优先级和退役键的加载。
+func TestPricingCatalogConfigAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, oldEnv, newEnv string
+		want                       int
+	}{
+		{"default", "", "", "", 10},
+		{"old yaml", "  hash_check_interval_minutes: 17\n", "", "", 17},
+		{"new yaml", "  hash_check_interval_minutes: 17\n  check_interval_minutes: 18\n", "", "", 18},
+		{"old env", "  check_interval_minutes: 18\n", "19", "", 19},
+		{"new env", "  check_interval_minutes: 18\n", "19", "20", 20},
+		{"zero", "  check_interval_minutes: 0\n", "", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "pricing:\n  hash_url: [obsolete]\n  update_interval_hours: obsolete\n" + tc.yaml
+			file := prepareLegacyConfigTest(t, body)
+			t.Setenv("PRICING_HASH_CHECK_INTERVAL_MINUTES", tc.oldEnv)
+			t.Setenv("PRICING_CHECK_INTERVAL_MINUTES", tc.newEnv)
+			t.Setenv("PRICING_HASH_URL", "obsolete")
+			t.Setenv("PRICING_UPDATE_INTERVAL_HOURS", "obsolete")
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.Pricing.CheckIntervalMinutes)
+			saved, err := os.ReadFile(file)
+			require.NoError(t, err)
+			require.Equal(t, body, string(saved))
+		})
+	}
+}
+
+// TestPricingCatalogPackagedFallbackMigration 检查缺失的打包路径迁移，以及管理员已有文件的保留。
+func TestPricingCatalogPackagedFallbackMigration(t *testing.T) {
+	t.Chdir(t.TempDir())
+	old := "./resources/model-pricing/model_prices_and_context_window.json"
+	cfg := Config{Pricing: PricingConfig{FallbackFile: old}}
+	cfg.normalizePricingCatalogSource()
+	require.Equal(t, "resources/model-pricing/model_pricing_supplements.json", cfg.Pricing.FallbackFile)
+	require.NoError(t, os.MkdirAll(filepath.Dir(old), 0o700))
+	require.NoError(t, os.WriteFile(old, []byte(`{}`), 0o600))
+	cfg.Pricing.FallbackFile = old
+	cfg.normalizePricingCatalogSource()
+	require.Equal(t, old, cfg.Pricing.FallbackFile)
+	cfg.Pricing.FallbackFile = "./custom/model_prices_and_context_window.json"
+	cfg.normalizePricingCatalogSource()
+	require.Equal(t, "./custom/model_prices_and_context_window.json", cfg.Pricing.FallbackFile)
+}
+
+// TestPricingCatalogSupplementConfig 检查空的默认补充路径、自定义路径与环境变量优先级。
+func TestPricingCatalogSupplementConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, env, want string
+	}{
+		{"default", "", "", ""},
+		{"custom yaml", "  fallback_file: ./custom/prices.json\n", "", "./custom/prices.json"},
+		{"custom env", "  fallback_file: ./custom/prices.json\n", "/data/custom.json", "/data/custom.json"},
+		{"explicit resource", "  fallback_file: ./resources/model-pricing/model_pricing_supplements.json\n", "", "./resources/model-pricing/model_pricing_supplements.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "pricing:\n  remote_url: https://models.dev/catalog.json\n" + tc.yaml
+			file := prepareLegacyConfigTest(t, body)
+			t.Setenv("PRICING_FALLBACK_FILE", tc.env)
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.Pricing.FallbackFile)
+			saved, err := os.ReadFile(file)
+			require.NoError(t, err)
+			require.Equal(t, body, string(saved))
+		})
+	}
+}
+
+// TestRetiredPricingOverrideWarnsWithoutRewritingFiles 检查旧键的迁移提示与配置文件内容。
+func TestRetiredPricingOverrideWarnsWithoutRewritingFiles(t *testing.T) {
+	for _, env := range []bool{false, true} {
+		t.Run(fmt.Sprint(env), func(t *testing.T) {
+			legacy := filepath.Join(t.TempDir(), "old-prices.json")
+			require.NoError(t, os.WriteFile(legacy, []byte("invalid retired file"), 0o600))
+			body := "pricing:\n  remote_url: https://models.dev/catalog.json\n"
+			if !env {
+				body += "  override_file: " + legacy + "\n"
+			}
+			file := prepareLegacyConfigTest(t, body)
+			value := ""
+			if env {
+				value = legacy
+			}
+			t.Setenv("PRICING_OVERRIDE_FILE", value)
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, "https://models.dev/catalog.json?type=all", cfg.Pricing.RemoteURL)
+			require.Contains(t, logs.String(), "pricing.override_file is retired and ignored")
+			saved, err := os.ReadFile(file)
+			require.NoError(t, err)
+			require.Equal(t, body, string(saved))
+			data, err := os.ReadFile(legacy)
+			require.NoError(t, err)
+			require.Equal(t, "invalid retired file", string(data))
+		})
+	}
+}
+
+func TestNormalizeProxyProbeURLs(t *testing.T) {
+	t.Parallel()
+
+	got, err := normalizeProxyProbeURLs([]ProbeURLConfig{
+		{URL: " https://chatgpt.com/cdn-cgi/trace ", Parser: " CHATGPT-TRACE "},
+		{URL: "https://api64.ipify.org?format=json", Parser: "ipify"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []ProbeURLConfig{
+		{URL: "https://chatgpt.com/cdn-cgi/trace", Parser: "chatgpt-trace"},
+		{URL: "https://api64.ipify.org?format=json", Parser: "ipify"},
+	}, got)
+}
+
+func TestNormalizeProxyProbeURLsRejectsInvalidEntries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		target  ProbeURLConfig
+		wantErr string
+	}{
+		{name: "missing URL", target: ProbeURLConfig{Parser: "ipify"}, wantErr: "url is required"},
+		{name: "missing parser", target: ProbeURLConfig{URL: "https://example.com"}, wantErr: "parser is required"},
+		{name: "unknown parser", target: ProbeURLConfig{URL: "https://example.com", Parser: "ip_api"}, wantErr: "unsupported parser"},
+		{name: "relative URL", target: ProbeURLConfig{URL: "/cdn-cgi/trace", Parser: "chatgpt-trace"}, wantErr: "invalid url"},
+		{name: "unsupported scheme", target: ProbeURLConfig{URL: "ftp://example.com/file", Parser: "ipify"}, wantErr: "scheme must be http or https"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := normalizeProxyProbeURLs([]ProbeURLConfig{tt.target})
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestValidateDingTalkConfig_Disabled_Skip(t *testing.T) {
+	require.NoError(t, ValidateDingTalkConfig(DingTalkConnectConfig{Enabled: false}))
+}
+
+func TestValidateDingTalkConfig_V4_DingTalkAppKind(t *testing.T) {
+	err := ValidateDingTalkConfig(DingTalkConnectConfig{
+		Enabled:               true,
+		DingTalkAppKind:       "third_party_enterprise_app",
+		CorpRestrictionPolicy: "none",
+	})
+	require.ErrorIs(t, err, ErrDingTalkV4InvalidAppKind)
+}
+
+func TestValidateDingTalkConfig_V1_InternalOnlyRequiresInternalAppType(t *testing.T) {
+	err := ValidateDingTalkConfig(DingTalkConnectConfig{
+		Enabled:               true,
+		DingTalkAppKind:       "internal_app",
+		AppType:               "public",
+		CorpRestrictionPolicy: "internal_only",
+		InternalCorpID:        "dingABC",
+	})
+	require.ErrorIs(t, err, ErrDingTalkV1AppTypeMismatch)
+}
+
+// TestValidateDingTalkConfig_V3_InternalOnlyAllowsEmptyCorpID 检查 internal_only 策略接受空的企业 ID。
+// 企业隔离由钉钉的 internal 应用类型提供。
+func TestValidateDingTalkConfig_V3_InternalOnlyAllowsEmptyCorpID(t *testing.T) {
+	err := ValidateDingTalkConfig(DingTalkConnectConfig{
+		Enabled:               true,
+		DingTalkAppKind:       "internal_app",
+		AppType:               "internal",
+		CorpRestrictionPolicy: "internal_only",
+		InternalCorpID:        "",
+	})
+	require.NoError(t, err)
+}
+
+func TestValidateDingTalkConfig_HappyPath_None(t *testing.T) {
+	require.NoError(t, ValidateDingTalkConfig(DingTalkConnectConfig{
+		Enabled:               true,
+		DingTalkAppKind:       "internal_app",
+		AppType:               "public",
+		CorpRestrictionPolicy: "none",
+	}))
+}
+
+func TestValidateWebAuthnConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*Config)
+		wantError string
+	}{
+		{
+			name: "valid production origin",
+			configure: func(cfg *Config) {
+				cfg.WebAuthn = WebAuthnConfig{
+					Enabled:       true,
+					RPDisplayName: "TokenRouter",
+					RPID:          "tokenrouter.example.com",
+					RPOrigins:     []string{"https://tokenrouter.example.com"},
+				}
+			},
+		},
+		{
+			name: "valid localhost development origin",
+			configure: func(cfg *Config) {
+				cfg.WebAuthn = WebAuthnConfig{
+					Enabled:       true,
+					RPDisplayName: "TokenRouter Dev",
+					RPID:          "localhost",
+					RPOrigins:     []string{"http://localhost:5173"},
+				}
+			},
+		},
+		{
+			name: "missing relying party id",
+			configure: func(cfg *Config) {
+				cfg.WebAuthn = WebAuthnConfig{
+					Enabled:       true,
+					RPDisplayName: "TokenRouter",
+					RPOrigins:     []string{"https://tokenrouter.example.com"},
+				}
+			},
+			wantError: "webauthn.rp_id",
+		},
+		{
+			name: "relying party id contains scheme",
+			configure: func(cfg *Config) {
+				cfg.WebAuthn = WebAuthnConfig{
+					Enabled:       true,
+					RPDisplayName: "TokenRouter",
+					RPID:          "https://tokenrouter.example.com",
+					RPOrigins:     []string{"https://tokenrouter.example.com"},
+				}
+			},
+			wantError: "domain without scheme",
+		},
+		{
+			name: "non-local insecure origin",
+			configure: func(cfg *Config) {
+				cfg.WebAuthn = WebAuthnConfig{
+					Enabled:       true,
+					RPDisplayName: "TokenRouter",
+					RPID:          "tokenrouter.example.com",
+					RPOrigins:     []string{"http://tokenrouter.example.com"},
+				}
+			},
+			wantError: "must use HTTPS",
+		},
+		{
+			name: "origin outside relying party id",
+			configure: func(cfg *Config) {
+				cfg.WebAuthn = WebAuthnConfig{
+					Enabled:       true,
+					RPDisplayName: "TokenRouter",
+					RPID:          "example.com",
+					RPOrigins:     []string{"https://example.net"},
+				}
+			},
+			wantError: "not within relying party ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			viper.Reset()
+			t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+			cfg, err := Load()
+			require.NoError(t, err)
+			tt.configure(cfg)
+
+			err = cfg.Validate()
+			if tt.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tt.wantError)
+			}
+		})
+	}
+}
+
+// collectMapstructureKeys 遍历配置结构，返回 viper 填充结构所需的全部点分键。
+func collectMapstructureKeys(t reflect.Type, prefix string, out map[string]string) {
+	for field := range t.Fields() {
+		if field.PkgPath != "" {
+			continue // 跳过未导出字段
+		}
+		tag := field.Tag.Get("mapstructure")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(field.Name)
+		}
+		key := name
+		if prefix != "" {
+			key = prefix + "." + name
+		}
+
+		ft := field.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Struct {
+			collectMapstructureKeys(ft, key, out)
+			continue
+		}
+		if ft.Kind() == reflect.Map {
+			// map 字段由配置文件解码。
+			continue
+		}
+		if ft.Kind() == reflect.Slice {
+			elem := ft.Elem()
+			for elem.Kind() == reflect.Pointer {
+				elem = elem.Elem()
+			}
+			if elem.Kind() == reflect.Struct {
+				// 结构体切片由配置文件解码。
+				continue
+			}
+		}
+		out[strings.ToLower(key)] = ft.String()
+	}
+}
+
+// TestPricingCatalogIncludesDecisionModels 检查旧官方地址升级和自定义查询参数。
+func TestPricingCatalogIncludesDecisionModels(t *testing.T) {
+	for _, source := range []string{"https://models.dev/catalog.json", "https://models.dev/catalog.json?type=all", "https://models.dev/catalog.json?type=language", "https://mirror.example/catalog.json"} {
+		cfg := Config{Pricing: PricingConfig{RemoteURL: source}}
+		cfg.normalizePricingCatalogSource()
+		expected := source
+		if source == "https://models.dev/catalog.json" {
+			expected += "?type=all"
+		}
+		require.Equal(t, expected, cfg.Pricing.RemoteURL)
 	}
 }

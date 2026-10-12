@@ -47,7 +47,7 @@ type GroupSortOrderRepository interface {
 	LockGroupSortOrder(ctx context.Context) error
 }
 
-// GroupSortOrderUpdate 分组排序更新
+// GroupSortOrderUpdate 分组排序更新。
 type GroupSortOrderUpdate struct {
 	ID        int64 `json:"id"`
 	SortOrder int   `json:"sort_order"`

@@ -8,11 +8,25 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
+)
+
+const (
+	DingTalkOAuthCookiePath         = "/api/v1/auth/oauth/dingtalk"
+	DingTalkOAuthStateCookieName    = "dingtalk_oauth_state"
+	DingTalkOAuthRedirectCookie     = "dingtalk_oauth_redirect"
+	DingTalkOAuthIntentCookieName   = "dingtalk_oauth_intent"
+	DingTalkOAuthBindUserCookieName = "dingtalk_oauth_bind_user"
+	DingTalkOAuthCookieMaxAgeSec    = 600 // 10 分钟
+	DingTalkOAuthDefaultRedirectTo  = "/dashboard"
+	DingTalkOAuthDefaultFrontendCB  = "/auth/dingtalk/callback"
+
+	DingTalkLevelThreeEnabled = true
 )
 
 // DingTalkHTTPOptions 保持配置热读取与注册开关的读取顺序。
@@ -25,6 +39,13 @@ type DingTalkHandler struct {
 	binding         *OAuthBindHandler
 	syncer          *identity.DingTalkSyncRuntime
 	dingTalkOptions DingTalkHTTPOptions
+}
+
+type CompleteDingTalkOAuthRequest struct {
+	InvitationCode   string `json:"invitation_code" binding:"required"`
+	AffCode          string `json:"aff_code,omitempty"`
+	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
+	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
 }
 
 func NewDingTalkHandler(p *PendingHandler, b *OAuthBindHandler, s *identity.DingTalkSyncRuntime, o DingTalkHTTPOptions) *DingTalkHandler {
@@ -45,27 +66,13 @@ func (h *DingTalkHandler) findDingTalkCompatEmailUser(ctx context.Context, email
 	return h.flow.Database.FindDingTalkCompatEmailUser(ctx, email)
 }
 
-const (
-	DingTalkOAuthCookiePath         = "/api/v1/auth/oauth/dingtalk"
-	DingTalkOAuthStateCookieName    = "dingtalk_oauth_state"
-	DingTalkOAuthRedirectCookie     = "dingtalk_oauth_redirect"
-	DingTalkOAuthIntentCookieName   = "dingtalk_oauth_intent"
-	DingTalkOAuthBindUserCookieName = "dingtalk_oauth_bind_user"
-	DingTalkOAuthCookieMaxAgeSec    = 600 // 10 分钟
-	DingTalkOAuthDefaultRedirectTo  = "/dashboard"
-	DingTalkOAuthDefaultFrontendCB  = "/auth/dingtalk/callback"
-
-	DingTalkLevelThreeEnabled = true
-)
-
 // DingTalkUpstreamRedirect 在 4 步链上游调用失败时记录详细错误日志并跳错误页。
 // 把钉钉 errcode/errmsg 写进 backend log + URL fragment，避免被泛 "internal error" 吞掉。
 func DingTalkUpstreamRedirect(c *gin.Context, frontendCallback, step string, err error) {
-	var apiErr *identity.DingTalkAPIError
 	dtCode := ""
 	dtMsg := ""
 	dtHTTP := 0
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*identity.DingTalkAPIError](err); ok {
 		dtCode = apiErr.Code
 		dtMsg = apiErr.Message
 		dtHTTP = apiErr.HTTP
@@ -221,7 +228,7 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 	}
 	forceEmailOnSignup := h.isForceEmailOnThirdPartySignup(c.Request.Context())
 
-	// ─── 4 步链（Step 1 + Step 2 必须；Step 3/4 按需 + 跨组织降级）───
+	// 4 步链（Step 1 + Step 2 必须；Step 3/4 按需 + 跨组织降级）
 	client := h.syncer.Client(cfg)
 	userToken, err := client.ExchangeCodeForUserToken(c.Request.Context(), code)
 	if err != nil {
@@ -259,7 +266,7 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 
 	upstreamClaims := identity.DingTalkUpstreamClaims(staff, unionID, corpID)
 
-	// ─── S1 主动绑定分支（PR-3 才走到这里）───
+	// S1 主动绑定分支
 	if intent == OauthIntentBindCurrentUser {
 		targetUserID, err := h.binding.ReadOAuthBindUserIDFromCookie(c, DingTalkOAuthBindUserCookieName)
 		if err != nil {
@@ -286,7 +293,7 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// ─── 第一级：命中 auth_identities ───
+	// 第一级：命中 auth_identities
 	if existing, _ := h.flow.Database.FindOAuthIdentityUser(c.Request.Context(), identityKey); existing != nil {
 		// 身份同步：已登录用户，直接同步（user_id 已知）。
 		// 异步执行避免上游钉钉接口（GetStaffInfoByUserId / 部门递归）阻塞登录跳转。
@@ -306,7 +313,7 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 
 	signupBlocked := h.isDingTalkSignupBlocked(c.Request.Context(), cfg)
 
-	// ─── 非命中：require_email=false 走 synthetic email 直接登录 ───
+	// 非命中：require_email=false 走 synthetic email 直接登录
 	if !cfg.RequireEmail {
 		if signupBlocked {
 			// 注册被拦 + 无邮箱可输：唯一出路是绑定已有账户
@@ -336,7 +343,7 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// ─── require_email=true 且 staff.Email 空 → 补邮箱（默认）或直接 bind_login（注册被拦时） ───
+	// require_email=true 且 staff.Email 空 → 补邮箱（默认）或直接 bind_login（注册被拦时）
 	if staff.Email == "" {
 		completionResponse := map[string]any{
 			"step":                      "email_completion",
@@ -360,7 +367,7 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// ─── L3/L4 有邮箱：统一 choice pending session ───
+	// L3/L4 有邮箱：统一 choice pending session
 	var compatEmailUser *identity.User
 	if DingTalkLevelThreeEnabled && staff.Email != "" {
 		compatEmailUser, _ = h.findDingTalkCompatEmailUser(c.Request.Context(), staff.Email)
@@ -410,13 +417,6 @@ func BuildDingTalkAuthorizeURL(cfg identity.DingTalkOAuthOptions, state string) 
 	return u.String(), nil
 }
 
-type CompleteDingTalkOAuthRequest struct {
-	InvitationCode   string `json:"invitation_code" binding:"required"`
-	AffCode          string `json:"aff_code,omitempty"`
-	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
-	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
-}
-
 // CompleteDingTalkOAuthRegistration 校验邀请码并创建用户，完成待处理的钉钉 OAuth 注册。
 // POST /api/v1/auth/oauth/dingtalk/complete-registration
 func (h *DingTalkHandler) CompleteDingTalkOAuthRegistration(c *gin.Context) {
@@ -457,15 +457,15 @@ func (h *DingTalkHandler) CompleteDingTalkOAuthRegistration(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if updatedSession, handled, err := h.flow.LegacyRegistrationStatus(c.Request.Context(), session, h.authService != nil && h.authService.IsEmailVerifyEnabled(c.Request.Context()), h.isForceEmailOnThirdPartySignup(c.Request.Context())); err != nil {
+	updatedSession, handled, err := h.flow.LegacyRegistrationStatus(c.Request.Context(), session, h.authService != nil && h.authService.IsEmailVerifyEnabled(c.Request.Context()), h.isForceEmailOnThirdPartySignup(c.Request.Context()))
+	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	} else if handled {
 		c.JSON(http.StatusOK, BuildPendingOAuthSessionStatusPayload(updatedSession))
 		return
-	} else {
-		session = updatedSession
 	}
+	session = updatedSession
 	if err := h.ensureBackendModeAllowsNewUserLogin(c.Request.Context()); err != nil {
 		response.ErrorFrom(c, err)
 		return

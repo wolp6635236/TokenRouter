@@ -4,24 +4,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/search"
+	"github.com/stretchr/testify/require"
 
+	"github.com/TokenFlux/TokenRouter/internal/search"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/stretchr/testify/require"
 )
-
-// readerStoreProbe 记录动态设置查询次数，首次读取和缓存命中分别检查。
-type readerStoreProbe struct {
-	settings.Repository
-	reads int
-}
-
-func (s *readerStoreProbe) GetValue(context.Context, string) (string, error) {
-	s.reads++
-	return "", settings.ErrSettingNotFound
-}
 
 func TestSettingsReadersSharePublishedState(t *testing.T) {
 	repo := &readerStoreProbe{}

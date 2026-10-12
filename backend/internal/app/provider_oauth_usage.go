@@ -2,23 +2,57 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
+	openaiws "github.com/TokenFlux/TokenRouter/internal/upstream/openai/ws"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 	usagepostgres "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
+
+// provideCNUsageMonitor 绑定提供商 Store、用量查询和数据库咨询锁。
+func provideCNUsageMonitor(store *providerpostgres.ProviderStore, queries *provider.UpstreamUsageService, cfg *config.Config, leader provider.CNMonitorLeader, db *sql.DB) *provider.CNUsageMonitor {
+	options := provider.CNMonitorOptions{Now: time.Now, InstanceID: uuid.NewString(), BalanceThreshold: 0.5, Leader: leader, Warn: slog.Warn, Debug: slog.Debug}
+	if cfg != nil {
+		v := cfg.Gateway.CNProviders
+		options.Enabled = v.MonitorEnabled
+		options.Interval = time.Duration(v.IntervalMinutes) * time.Minute
+		options.ProbeTimeout = time.Duration(v.ProbeTimeoutSeconds) * time.Second
+		options.RoundTimeout = time.Duration(v.RoundTimeoutSeconds) * time.Second
+		options.Concurrency = v.Concurrency
+		options.BalanceThreshold = v.BalanceThreshold
+		h := cfg.Security.URLAllowlist
+		options.HostPolicy = egress.MonitorHostPolicy{Enabled: h.Enabled, AllowInsecureHTTP: h.AllowInsecureHTTP, AllowPrivate: h.AllowPrivateHosts, AllowedHosts: h.UpstreamHosts}
+	}
+	if db != nil {
+		options.Advisory = func(ctx context.Context, key string) (func(), bool) {
+			return postgresinfra.TryAcquireDBAdvisoryLock(ctx, db, postgresinfra.HashAdvisoryLockID(key))
+		}
+	}
+	return provider.NewCNUsageMonitor(store, queries, options)
+}
 
 // provideOAuthUsageStats 绑定存储批量查询和共享的展示缓存。
 func provideOAuthUsageStats(store *usagepostgres.Store, cache *provider.OAuthUsageCache, calendar timezone.Calendar) *provider.LocalUsageStatistics {
@@ -26,7 +60,7 @@ func provideOAuthUsageStats(store *usagepostgres.Store, cache *provider.OAuthUsa
 }
 
 // provideOAuthUsageCore 为 OAuth 用量查询绑定数据读取、平台查询及启停操作。
-func provideOAuthUsageCore(store *providerpostgres.ProviderStore, usageStore *usagepostgres.Store, cache *provider.OAuthUsageCache, stats *provider.LocalUsageStatistics, gemini *provider.GeminiQuotaService, antigravity *provider.AntigravityQuota, grokView *provider.GrokQuotaView, grok *provider.GrokQuotaService, openAI *provider.OpenAIQuotaService, fetcher provideradapter.ClaudeUsageClient, fingerprints anthropic.FingerprintCache, profiles *egressprovider.TLSProfiles, transport httpclient.UpstreamTransport, settings *provider.QuotaSettingsCache, connections *gatewayhttp.OpenAIWSConnections, manager *lifecycle.Manager, coordinator *provider.OpenAITaskCoordinator) *provider.OAuthUsageService {
+func provideOAuthUsageCore(store *providerpostgres.ProviderStore, usageStore *usagepostgres.Store, cache *provider.OAuthUsageCache, stats *provider.LocalUsageStatistics, gemini *provider.GeminiQuotaService, antigravity *provider.AntigravityQuota, grokView *provider.GrokQuotaView, grok *provider.GrokQuotaService, openAI *provider.OpenAIQuotaService, fetcher provideradapter.ClaudeUsageClient, fingerprints anthropic.FingerprintCache, profiles *egressprovider.TLSProfiles, transport httpclient.UpstreamTransport, settings *provider.QuotaSettingsCache, connections *openaiws.OpenAIWSConnections, manager *lifecycle.Manager, coordinator *provider.OpenAITaskCoordinator) *provider.OAuthUsageService {
 	taskOptions := provider.OpenAITaskOptions{
 		Read: store.GetByID,
 		Register: func(ctx context.Context, value *provider.Record) (string, error) {
@@ -115,4 +149,54 @@ func geminiQuotaLocation() *time.Location {
 		return time.FixedZone("PST", -8*3600)
 	}
 	return location
+}
+
+// provideOllamaUsage 直接绑定唯一提供商存储、加密器、动态设置与供应商执行句柄。
+func provideOllamaUsage(store *providerpostgres.ProviderStore, upstream httpclient.UpstreamTransport, settings *provider.RuntimeSettings, cipher identity.SecretEncryptor, cfg *config.Config, leader provider.CNMonitorLeader, db *sql.DB) *provider.OllamaCloudUsageService {
+	var do func(*http.Request, string, int64, int) (*http.Response, error)
+	if upstream != nil {
+		do = upstream.Do
+	}
+	var advisory func(context.Context, string) (func(), bool)
+	if db != nil {
+		advisory = func(ctx context.Context, key string) (func(), bool) {
+			return postgresinfra.TryAcquireDBAdvisoryLock(ctx, db, postgresinfra.HashAdvisoryLockID(key))
+		}
+	}
+	options := provider.OllamaUsageOptions{EncryptionKeyConfigured: cfg != nil && cfg.Totp.EncryptionKeyConfigured, Now: time.Now, Jitter: rand.Int64N, InstanceID: uuid.NewString(), Fetch: provideradapter.OllamaUsageFetcher(do), Log: func(format string, args ...any) {
+		logging.LegacyPrintf("service.ollama_cloud_usage", format, args...)
+	}, Lease: func(ctx context.Context, key, owner string, ttl time.Duration) (func(), bool) {
+		return provider.AcquireSingletonLease(ctx, leader, advisory, key, owner, ttl)
+	}}
+	return provider.NewOllamaCloudUsageService(store, settings, cipher, options)
+}
+
+// provideUpstreamUsage 为提供商用量查询绑定存储、平台执行器和有超时限制的关闭流程。
+func provideUpstreamUsage(store *providerpostgres.ProviderStore, upstream httpclient.UpstreamTransport, cfg *config.Config, tls *egressprovider.TLSProfiles, manager *lifecycle.Manager) *provider.UpstreamUsageService {
+	options := provideradapter.UsageHTTPOptions{Available: store != nil && upstream != nil}
+	if cfg != nil {
+		value := cfg.Security.URLAllowlist
+		options.Policy = egress.UsageURLPolicy{Configured: true, Enabled: value.Enabled, AllowInsecureHTTP: value.AllowInsecureHTTP, AllowPrivateHosts: value.AllowPrivateHosts, UpstreamHosts: value.UpstreamHosts}
+	}
+	if upstream != nil {
+		options.Do = upstream.DoWithTLS
+	}
+	if tls != nil {
+		options.ResolveTLS = tls.ResolveRequestTLS
+	}
+	source := provideradapter.NewUpstreamUsageHTTPExecution(options)
+	core := provider.NewUpstreamUsageService(store, source, provider.UpstreamUsageOptions{Now: time.Now})
+	// 周期生产者停止后，查询完成才允许后续 SQL/HTTP 依赖释放。
+	manager.Register(lifecycle.Hook{Name: "ProviderUpstreamUsage", StopOrder: 25, Stop: core.StopContext})
+	return core
+}
+
+// provideUpstreamUsageHTTP 将提供商用量查询用例绑定到 HTTP 接口。
+func provideUpstreamUsageHTTP(source *provider.UpstreamUsageService) *providerhttp.UpstreamUsageHandler {
+	return providerhttp.NewUpstreamUsageHandler(source)
+}
+
+// provideProviderUsage 为管理和用量累计入口绑定共享的资金存储。
+func provideProviderUsage(db *sql.DB, store *providerpostgres.ProviderStore, cache scheduler.SnapshotCache) *billingpostgres.ProviderUsageStore {
+	return billingpostgres.NewProviderUsageStore(db, providerUsageEvents(store, cache, db))
 }

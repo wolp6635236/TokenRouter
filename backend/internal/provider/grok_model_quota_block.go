@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+const (
+	grokModelQuotaBlockDefaultTTL = 2 * time.Hour
+	grokModelQuotaBlockMaxTTL     = 6 * time.Hour
+	grokModelQuotaBlockMinTTL     = 20 * time.Minute
+
+	grokModelTransientBlockMinTTL = 500 * time.Millisecond
+	grokModelTransientBlockMaxTTL = 5 * time.Minute
+)
+
+var globalGrokModelQuotaBlocks = &grokModelQuotaBlockStore{
+	items: make(map[string]grokModelQuotaBlock),
+}
+
 // 此结构保存进程内按提供商和模型划分的 Grok 免费额度软性阻断记录。
 // 当错误明确指出某个模型额度耗尽时，同一提供商的其他模型仍可调度；
 // 多实例部署中，每个进程分别从自身收到的上游错误学习该状态。
@@ -17,16 +30,6 @@ type grokModelQuotaBlockStore struct {
 	mu    sync.Mutex
 	items map[string]grokModelQuotaBlock // 键格式为 providerID|model。
 }
-
-var globalGrokModelQuotaBlocks = &grokModelQuotaBlockStore{
-	items: make(map[string]grokModelQuotaBlock),
-}
-
-const (
-	grokModelQuotaBlockDefaultTTL = 2 * time.Hour
-	grokModelQuotaBlockMaxTTL     = 6 * time.Hour
-	grokModelQuotaBlockMinTTL     = 20 * time.Minute
-)
 
 func GrokModelQuotaBlockKey(providerID int64, model string) string {
 	return strings.TrimSpace(strings.ToLower(model)) + "|" + strconv.FormatInt(providerID, 10)
@@ -47,11 +50,6 @@ func MarkGrokModelQuotaBlock(providerID int64, model string, until time.Time) {
 	}
 	StoreGrokModelQuotaBlock(providerID, model, until, now)
 }
-
-const (
-	grokModelTransientBlockMinTTL = 500 * time.Millisecond
-	grokModelTransientBlockMaxTTL = 5 * time.Minute
-)
 
 // MarkGrokModelTransientBlock 在短时容量波动时仅软阻断单个模型，
 // 不使用免费额度的 20 分钟下限，也不暂停整个提供商。

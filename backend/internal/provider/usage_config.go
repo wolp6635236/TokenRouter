@@ -7,9 +7,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
+// 持久化键通过常量和别名供各平台共用。
+const (
+	CNUsageMonitorSnapshotExtraKey   = "cn_usage_monitor_snapshot"
+	UpstreamUsageQueryExtraKey       = "upstream_usage_query"
+	OllamaCloudUsageSnapshotExtraKey = "ollama_cloud_usage_snapshot"
+)
+
 // EffectiveUpstreamUsageConfig 解析提供商的生效配置。缺少配置时使用安全的默认适配器。
 func EffectiveUpstreamUsageConfig(provider *Record) (UpstreamUsageQueryConfig, error) {
-	config := UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageDefaultAdapter}
+	config := UpstreamUsageQueryConfig{Enabled: provider == nil || provider.Platform != PlatformJev, Adapter: UpstreamUsageDefaultAdapter}
 	if adapter := CNUpstreamUsageAdapterName(provider); adapter != "" {
 		config.Adapter = adapter
 	}

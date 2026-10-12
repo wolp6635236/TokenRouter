@@ -1,14 +1,14 @@
 package httpapi
 
 import (
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 func ValidateOpenAIFunctionCallOutput(c *gin.Context, body []byte, reqLog *zap.Logger) bool {

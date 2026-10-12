@@ -55,12 +55,10 @@ func (s RefreshPageProcessor) ProcessPage(
 	var wg sync.WaitGroup
 	for platform, group := range groups {
 		state := providerStates[platform]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			refreshed, skipped, failed := s.ProcessProvider(ctx, state, group, refreshWindow)
 			results <- providerResult{refreshed: refreshed, skipped: skipped, failed: failed}
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)
@@ -93,15 +91,10 @@ func (s RefreshPageProcessor) ProcessProvider(
 	}
 	jobs := make(chan *Record, len(providers))
 	results := make(chan refreshResult, len(providers))
-	workerCount := s.Concurrency
-	if workerCount > len(providers) {
-		workerCount = len(providers)
-	}
+	workerCount := min(s.Concurrency, len(providers))
 	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workerCount {
+		wg.Go(func() {
 			for provider := range jobs {
 				if ctx.Err() != nil || state.State.IsTripped() {
 					results <- refreshResult{providerID: provider.ID, err: ErrRefreshSkipped}
@@ -115,7 +108,7 @@ func (s RefreshPageProcessor) ProcessProvider(
 				state.State.RecordResult(err)
 				results <- refreshResult{providerID: provider.ID, err: err}
 			}
-		}()
+		})
 	}
 	for _, provider := range providers {
 		jobs <- provider

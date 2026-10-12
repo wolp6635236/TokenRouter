@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/provider/transfer"
-	"github.com/stretchr/testify/require"
 )
 
 type archiveProvidersFixture struct {
@@ -16,6 +17,11 @@ type archiveProvidersFixture struct {
 	values  []*Record
 	events  *[]string
 	created []CreateProviderInput
+}
+
+type archiveProxiesFixture struct {
+	ArchiveProxies
+	events *[]string
 }
 
 func (f *archiveProvidersFixture) GetProvidersByIDs(context.Context, []int64) ([]*Record, error) {
@@ -30,11 +36,6 @@ func (f *archiveProvidersFixture) CreateProvider(_ context.Context, input *Creat
 		return nil, errors.New("fixture rejected")
 	}
 	return &Record{ID: 1, Name: input.Name, Platform: input.Platform, Type: input.Type}, nil
-}
-
-type archiveProxiesFixture struct {
-	ArchiveProxies
-	events *[]string
 }
 
 func (f archiveProxiesFixture) ImportForProviderBinding(context.Context, []egress.TransferProxy) (map[string]int64, egress.ProxyImportResult, error) {

@@ -40,10 +40,8 @@ func SnapshotMedia(ctx context.Context, media []contract.ContentModerationMedia)
 	var wg sync.WaitGroup
 	var retainedBytes atomic.Int64
 	workerCount := min(contentModerationSnapshotConcurrency, len(out))
-	for worker := 0; worker < workerCount; worker++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workerCount {
+		wg.Go(func() {
 			for index := range jobs {
 				data, mimeType, err := fetchContentModerationImage(snapshotCtx, out[index].OriginalRef)
 				if err != nil {
@@ -66,7 +64,7 @@ func SnapshotMedia(ctx context.Context, media []contract.ContentModerationMedia)
 				out[index].SnapshotError = ""
 				out[index].Content = data
 			}
-		}()
+		})
 	}
 	enqueueStopped := false
 	for index := range out {

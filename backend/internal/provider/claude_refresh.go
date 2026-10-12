@@ -37,8 +37,8 @@ func CanRefreshClaude(provider *Record) bool {
 	return provider.Platform == PlatformAnthropic && provider.IsOAuth()
 }
 
-// NeedsRefreshClaude 检查token是否需要刷新
-// 基于 expires_at 字段判断是否在刷新窗口内
+// NeedsRefreshClaude 检查 token 是否需要刷新
+// 基于 expires_at 字段判断是否在刷新窗口内。
 func NeedsRefreshClaude(provider *Record, refreshWindow time.Duration) bool {
 	expiresAt := provider.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
@@ -47,7 +47,7 @@ func NeedsRefreshClaude(provider *Record, refreshWindow time.Duration) bool {
 	return time.Until(*expiresAt) < refreshWindow
 }
 
-// RefreshClaudeCredentials Refresh 执行token刷新
+// RefreshClaudeCredentials Refresh 执行 token 刷新
 // 将 token 字段合并进 credentials，其余字段保持当前值。
 func RefreshClaudeCredentials(ctx context.Context, provider *Record, exchange func(context.Context, *Record) (*ClaudeTokenInfo, error)) (map[string]any, error) {
 	tokenInfo, err := exchange(ctx, provider)
@@ -62,7 +62,7 @@ func RefreshClaudeCredentials(ctx context.Context, provider *Record, exchange fu
 }
 
 // BuildClaudeProviderCredentials 为 Claude 平台构建 OAuth credentials map
-// 消除 Claude 平台没有 BuildProviderCredentials 方法的问题
+// 消除 Claude 平台没有 BuildProviderCredentials 方法的问题。
 func BuildClaudeProviderCredentials(tokenInfo *ClaudeTokenInfo) map[string]any {
 	creds := map[string]any{
 		"access_token": tokenInfo.AccessToken,

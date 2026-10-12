@@ -8,15 +8,33 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 const (
 	codexProviderIdentityNamespaceVersion = "v1"
 	WSTurnMetadataHeader                  = "x-codex-turn-metadata"
 )
+
+var codexProviderIdentityFields = []struct {
+	name string
+	kind string
+}{
+	{name: "installation_id", kind: "installation"},
+	{name: "x-codex-installation-id", kind: "installation"},
+	{name: "session_id", kind: "session"},
+	{name: "session-id", kind: "session"},
+	{name: "thread_id", kind: "thread"},
+	{name: "thread-id", kind: "thread"},
+	{name: "turn_id", kind: "turn"},
+	{name: "turn-id", kind: "turn"},
+	{name: "window_id", kind: "window"},
+	{name: "x-codex-window-id", kind: "window"},
+	{name: "x-client-request-id", kind: "request"},
+}
 
 // ProviderIdentityInput 只携带原 namespace 所需数据，setup token 禁止序列化或展开日志。
 type ProviderIdentityInput struct {
@@ -25,8 +43,10 @@ type ProviderIdentityInput struct {
 	SetupToken                            string `json:"-"`
 }
 
-func (ProviderIdentityInput) String() string     { return "openai provider identity input" }
+func (ProviderIdentityInput) String() string { return "openai provider identity input" }
+
 func (v ProviderIdentityInput) GoString() string { return v.String() }
+
 func CodexProviderNamespace(input ProviderIdentityInput) string {
 	if input.ChatGPTAccountID != "" {
 		if input.ChatGPTUserID != "" {
@@ -75,23 +95,6 @@ func ScopeCodexProviderIdentityValue(namespace string, apiKeyID int64, kind, raw
 		kind,
 		raw,
 	))
-}
-
-var codexProviderIdentityFields = []struct {
-	name string
-	kind string
-}{
-	{name: "installation_id", kind: "installation"},
-	{name: "x-codex-installation-id", kind: "installation"},
-	{name: "session_id", kind: "session"},
-	{name: "session-id", kind: "session"},
-	{name: "thread_id", kind: "thread"},
-	{name: "thread-id", kind: "thread"},
-	{name: "turn_id", kind: "turn"},
-	{name: "turn-id", kind: "turn"},
-	{name: "window_id", kind: "window"},
-	{name: "x-codex-window-id", kind: "window"},
-	{name: "x-client-request-id", kind: "request"},
 }
 
 func ApplyCodexProviderIdentityFields(values map[string]any, namespace string, apiKeyID int64) bool {
@@ -258,4 +261,19 @@ func DeriveStableUUIDv4(seed string) string {
 		binary.BigEndian.Uint16(b[6:8]),
 		binary.BigEndian.Uint16(b[8:10]),
 		b[10:16])
+}
+
+// SetChatGPTAccountHeaders 设置 ChatGPT 账户 ID 和 FedRAMP 请求头。
+func SetChatGPTAccountHeaders(headers http.Header, id string, fedRAMP bool) {
+	if headers == nil {
+		return
+	}
+	if id != "" {
+		headers.Set("chatgpt-account-id", id)
+	}
+	if fedRAMP {
+		headers.Set("x-openai-fedramp", "true")
+	} else {
+		headers.Del("x-openai-fedramp")
+	}
 }

@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // TestDashboardCacheLegacyKeyAndTTL 验证原键可直接读入新实现，新写入也可由原始 Redis 客户端按旧键读取。

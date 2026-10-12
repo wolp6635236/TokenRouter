@@ -11,21 +11,28 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
-
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/deepseek"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/kimi"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/zhipu"
-
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/zhipu"
 )
+
+// CNProviderTest 保留国产供应商的固定协议和自适应顺序，共享同一技术传输。
+type CNProviderTest struct {
+	Transport   QoderTransport
+	Profiles    *egressprovider.TLSProfiles
+	ValidateURL func(string) (string, error)
+	Store       interface {
+		SetError(context.Context, int64, string) error
+	}
+	Responses *OpenAIProviderTest
+}
 
 func defaultCNProviderTestModel(platform string) string {
 	switch platform {
@@ -165,17 +172,6 @@ func (s *CNProviderTest) executeChat(
 	prompt string,
 ) error {
 	return s.Execute(c, value, modelID, prompt)
-}
-
-// CNProviderTest 保留国产供应商的固定协议和自适应顺序，共享同一技术传输。
-type CNProviderTest struct {
-	Transport   QoderTransport
-	Profiles    *egressprovider.TLSProfiles
-	ValidateURL func(string) (string, error)
-	Store       interface {
-		SetError(context.Context, int64, string) error
-	}
-	Responses *OpenAIProviderTest
 }
 
 func (s *CNProviderTest) resolveTLSProfile(value *providercore.Record) *tlsfingerprint.Profile {

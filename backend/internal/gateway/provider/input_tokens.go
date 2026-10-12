@@ -8,10 +8,9 @@ import (
 
 	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tokenestimate"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 type InputTokensPrepared struct {

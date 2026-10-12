@@ -10,17 +10,61 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
+	"github.com/TokenFlux/TokenRouter/internal/gateway"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/failover"
+	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/search"
+	"github.com/TokenFlux/TokenRouter/internal/settings"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 	usagepostgres "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
+
+// gatewayModelAvailability 包含三种诊断函数，共用提供商存储和分组映射读取实例。
+type gatewayModelAvailability struct {
+	Messages   routing.ModelAvailabilityDiagnoser
+	Compatible routing.ModelAvailabilityDiagnoser
+	Resolved   routing.ModelAvailabilityDiagnoser
+}
+
+func provideGatewayModelAvailability(store *postgres.ProviderStore, modelConfigs *routing.PricingConfigService) *gatewayModelAvailability {
+	var source gatewayadapter.AvailabilityProviders
+	if store != nil {
+		source = store
+	}
+	general := gatewayadapter.NewModelAvailability(source, modelConfigs, false)
+	compatible := gatewayadapter.NewModelAvailability(source, modelConfigs, true)
+	return &gatewayModelAvailability{
+		Messages:   routing.ModelAvailabilityDiagnoserFunc(general.DiagnoseGeneral),
+		Compatible: routing.ModelAvailabilityDiagnoserFunc(compatible.DiagnoseCompatible),
+		Resolved:   routing.ModelAvailabilityDiagnoserFunc(compatible.DiagnoseCompatibleRouting),
+	}
+}
+
+// provideGatewayRuntimeReaders 绑定共享读取器，动态设置在请求期间读取。
+func provideGatewayRuntimeReaders(store *settings.Store, gatewayRuntime *gateway.RuntimeSettings, providerRuntime *provider.RuntimeSettings, quota *provider.QuotaSettingsCache, routingRuntime *routing.RuntimeSettings, moderationRuntime *moderation.RuntimeSettings, searchRuntime *search.ConfigService) *gatewayadapter.RuntimeReaders {
+	antigravity.SetUserAgentVersionResolver(gatewayRuntime.GetAntigravityUserAgentVersion)
+	openai.SetCodexCanonicalUserAgentResolver(func() string { return gatewayRuntime.GetOpenAICodexUserAgent(context.Background()) })
+	readers := &gatewayadapter.RuntimeReaders{Gateway: gatewayRuntime, Provider: providerRuntime, Quota: quota, Routing: routingRuntime, Moderation: moderationRuntime, Search: searchRuntime, Scheduler: store}
+	return readers
+}
+
+// provideModerationSettings 为网关审核绑定独立的设置缓存。
+func provideModerationSettings(store *settings.Store) *moderation.RuntimeSettings {
+	return moderation.NewRuntimeSettings(store, settings.ErrSettingNotFound)
+}
 
 // provideSelectionReads 组合选择器的数据查询函数，选择用例决定快照与数据库的查询顺序。
 func provideSelectionReads(providers gatewayadapter.ExecutionProviderStore, groups routing.GroupRepository, snapshots selection.Snapshots) selection.Reads {
@@ -50,8 +94,6 @@ func selectionOptions(cfg *config.Config) selection.Options {
 	s := cfg.Gateway.Scheduling
 	options.Scheduling = scheduler.FlowOptions{LoadBatchEnabled: s.LoadBatchEnabled, PreferSoonestReset: s.PreferSoonestReset, FallbackMaxWaiting: s.FallbackMaxWaiting, StickySessionMaxWaiting: s.StickySessionMaxWaiting, FallbackSelectionMode: s.FallbackSelectionMode, FallbackWaitTimeout: s.FallbackWaitTimeout, StickySessionWaitTimeout: s.StickySessionWaitTimeout}
 	ws := cfg.Gateway.OpenAIWS
-	options.WS = &egress.OpenAIWSOptions{Enabled: ws.Enabled, ForceHTTP: ws.ForceHTTP, OAuthEnabled: ws.OAuthEnabled, APIKeyEnabled: ws.APIKeyEnabled, ModeRouterV2Enabled: ws.ModeRouterV2Enabled, ResponsesWebsockets: ws.ResponsesWebsockets, ResponsesWebsocketsV2: ws.ResponsesWebsocketsV2}
-	options.WSIngressMode = ws.IngressModeDefault
 	options.ReadLegacySticky = ws.SessionHashReadOldFallback
 	options.WriteLegacySticky = ws.SessionHashDualWriteOld
 	if ws.StickySessionTTLSeconds > 0 {
@@ -133,4 +175,22 @@ func productEnv(suffix string) string {
 		return value
 	}
 	return os.Getenv("SUB2API_" + suffix)
+}
+
+// gatewayCompatibilitySnapshot 返回共享粘性会话计数，metadata 计数为零。
+func gatewayCompatibilitySnapshot(shared *schedulerSharedState) gatewayhttp.CompatibilityLogSnapshot {
+	if shared == nil || shared.Sticky == nil {
+		return gatewayhttp.CompatibilityLogSnapshot{}
+	}
+	total, hit, dual := shared.Sticky.Snapshot()
+	rate := float64(0)
+	if total > 0 {
+		rate = float64(hit) / float64(total)
+	}
+	return gatewayhttp.CompatibilityLogSnapshot{ReadTotal: total, ReadHit: hit, DualWrite: dual, ReadHitRate: rate}
+}
+
+// stopOpenAI429 将凭据资格传给重试预算规则。
+func stopOpenAI429(value *gatewayadapter.ExecutionProvider, status, switches int, state *failover.OAuth429State) bool {
+	return failover.StopOAuth429(failover.OAuth429Provider{OpenAI: value != nil && value.View().IsOpenAIOAuthLike(), Grok: value != nil && value.Record.Platform == capability.PlatformGrok && value.Record.Type == capability.ProviderTypeOAuth}, status, switches, state)
 }

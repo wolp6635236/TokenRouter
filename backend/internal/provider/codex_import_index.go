@@ -9,6 +9,11 @@ type CodexProviderIndex struct {
 	keysByProviderID map[int64]map[string]struct{}
 }
 
+type CodexSeenIdentity struct {
+	index  int
+	userID string
+}
+
 // BuildCodexStoredIdentityKeys 生成存量提供商索引键，保留 user/provider 维度，
 // 让 accessToken-only 提供商后续升级为完整 OAuth 时仍能命中并更新原提供商。
 func BuildCodexStoredIdentityKeys(providerID, userID, email, accessToken string) []string {
@@ -155,11 +160,6 @@ func codexIdentityConflicts(key, userID, storedUserID string) bool {
 	userID = strings.TrimSpace(userID)
 	storedUserID = strings.TrimSpace(storedUserID)
 	return userID != "" && storedUserID != "" && userID != storedUserID
-}
-
-type CodexSeenIdentity struct {
-	index  int
-	userID string
 }
 
 func FirstSeenCodexIdentity(seen map[string]CodexSeenIdentity, keys []string, userID string) (int, bool) {

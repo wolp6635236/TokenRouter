@@ -899,6 +899,7 @@ affiliates: {
         kimi: 'Kimi',
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
+        jev: 'Jev',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -1033,7 +1034,7 @@ affiliates: {
         tooltipEdit: 'Select one or more groups. After saving, current group providers will be replaced with providers from these groups (deduplicated).',
         selectPlaceholder: 'Select groups to copy providers from...',
         hint: 'Multiple groups can be selected, providers will be deduplicated',
-        hintEdit: '⚠️ Warning: This will replace all existing provider bindings'
+        hintEdit: 'Warning: This will replace all existing provider bindings'
       },
       modelRouting: {
         title: 'Model Routing',

@@ -1,13 +1,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { OpenAIOAuthClientPolicy } from '@/types'
-import {
-  OPENAI_WS_MODE_CTX_POOL,
-  OPENAI_WS_MODE_HTTP_BRIDGE,
-  OPENAI_WS_MODE_OFF,
-  OPENAI_WS_MODE_PASSTHROUGH,
-  type OpenAIWSMode
-} from '@/utils/openaiWsMode'
+import { RESPONSES_WS_POOLED, RESPONSES_WS_PER_SESSION } from '@/utils/responsesWsConnection'
 
 export type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
 export type RpmStrategy = 'tiered' | 'sticky_exempt'
@@ -25,13 +19,11 @@ export function useCodexFingerprintModeOptions() {
   ])
 }
 
-export function useOpenAIWSModeOptions() {
+export function useResponsesWSConnectionModeOptions() {
   const { t } = useI18n()
   return computed(() => [
-    { value: OPENAI_WS_MODE_OFF as OpenAIWSMode, label: t('admin.providers.openai.wsModeOff') },
-    { value: OPENAI_WS_MODE_CTX_POOL as OpenAIWSMode, label: t('admin.providers.openai.wsModeCtxPool') },
-    { value: OPENAI_WS_MODE_PASSTHROUGH as OpenAIWSMode, label: t('admin.providers.openai.wsModePassthrough') },
-    { value: OPENAI_WS_MODE_HTTP_BRIDGE as OpenAIWSMode, label: t('admin.providers.openai.wsModeHttpBridge') }
+    { value: RESPONSES_WS_POOLED, label: t('admin.providers.openai.wsConnectionPooled') },
+    { value: RESPONSES_WS_PER_SESSION, label: t('admin.providers.openai.wsConnectionPerSession') }
   ])
 }
 

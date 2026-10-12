@@ -1,9 +1,10 @@
 package httpapi
 
 import (
+	"github.com/gin-gonic/gin"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // BatchDelete 以有限并发删除多个提供商，并返回稳定的逐提供商结果。

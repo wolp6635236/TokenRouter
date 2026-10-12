@@ -24,17 +24,17 @@ type CRSClientOptions struct {
 }
 type CRSClient struct{ options CRSClientOptions }
 
-func NewCRSClient(options CRSClientOptions) *CRSClient {
-	options.Hosts = slices.Clone(options.Hosts)
-	return &CRSClient{options: options}
-}
-
 type crsLoginResponse struct {
 	Success  bool   `json:"success"`
 	Token    string `json:"token"`
 	Message  string `json:"message"`
 	Error    string `json:"error"`
 	Username string `json:"username"`
+}
+
+func NewCRSClient(options CRSClientOptions) *CRSClient {
+	options.Hosts = slices.Clone(options.Hosts)
+	return &CRSClient{options: options}
 }
 
 // Fetch 按原顺序校验连接、登录并读取导出；同步与预览共用此技术实现。

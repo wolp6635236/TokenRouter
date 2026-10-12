@@ -1,10 +1,10 @@
 package httpapi
 
 import (
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/gin-gonic/gin"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 )
 
 // BindRequestedReasoningEffort 在任何策略改写前保存客户端请求的档位。

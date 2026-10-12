@@ -3,8 +3,9 @@ package rediscache
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/usage"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 func TestNewDashboardCacheKeyPrefix(t *testing.T) {

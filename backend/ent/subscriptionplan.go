@@ -129,7 +129,7 @@ func (_m *SubscriptionPlan) assignValues(columns []string, values []any) error {
 			if !ok {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
-			_m.ID = int64(value.Int64)
+			_m.ID = value.Int64
 		case subscriptionplan.FieldLocalization:
 			if value, ok := values[i].(*[]byte); !ok {
 				return fmt.Errorf("unexpected type %T for field localization", values[i])

@@ -20,6 +20,21 @@ type HTTPExchangeOptions struct {
 	TransportError     func(error) error
 }
 
+type openAIFirstOutputHeaderGuard struct {
+	cancel  context.CancelFunc
+	release context.CancelFunc
+	timer   *time.Timer
+	fired   chan struct{}
+	once    sync.Once
+}
+
+type openAIRequestContextReadCloser struct {
+	io.ReadCloser
+	cleanup func()
+	once    sync.Once
+	err     error
+}
+
 func ExchangeHTTP(ctx context.Context, body []byte, options HTTPExchangeOptions) (*http.Response, error) {
 	upstreamCtx, release := options.RequestContext(ctx)
 	var guard *openAIFirstOutputHeaderGuard
@@ -62,14 +77,6 @@ func ExchangeHTTP(ctx context.Context, body []byte, options HTTPExchangeOptions)
 	return response, nil
 }
 
-type openAIFirstOutputHeaderGuard struct {
-	cancel  context.CancelFunc
-	release context.CancelFunc
-	timer   *time.Timer
-	fired   chan struct{}
-	once    sync.Once
-}
-
 func newOpenAIFirstOutputHeaderGuard(
 	ctx context.Context,
 	release context.CancelFunc,
@@ -102,13 +109,6 @@ func (g *openAIFirstOutputHeaderGuard) close() {
 		g.cancel()
 		g.release()
 	})
-}
-
-type openAIRequestContextReadCloser struct {
-	io.ReadCloser
-	cleanup func()
-	once    sync.Once
-	err     error
 }
 
 func (r *openAIRequestContextReadCloser) Close() error {

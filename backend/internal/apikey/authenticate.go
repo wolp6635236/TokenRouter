@@ -5,6 +5,16 @@ import (
 	"fmt"
 )
 
+const (
+	AuthenticationLookup       AuthenticationFailureKind = "lookup"
+	AuthenticationDisabled     AuthenticationFailureKind = "disabled"
+	AuthenticationTeam         AuthenticationFailureKind = "team"
+	AuthenticationMemberLimit  AuthenticationFailureKind = "member_limit"
+	AuthenticationIP           AuthenticationFailureKind = "ip"
+	AuthenticationUserMissing  AuthenticationFailureKind = "user_missing"
+	AuthenticationUserInactive AuthenticationFailureKind = "user_inactive"
+)
+
 // @project-doc docs/architecture/gateway_request_lifecycle.md#apikey_authentication
 // AccessSnapshot 明确区分凭据所有者、付款用户与行为成员；资金来源由 billing 另行解析。
 // key 是本次认证的独立副本，L1/L2 保存各自的快照。
@@ -18,30 +28,13 @@ type AccessSnapshot struct {
 	fastModePolicy string
 }
 
-// KeyView 将认证快照转换为本次网关请求使用的 APIKey。
-func (a *AccessSnapshot) KeyView() *APIKey {
-	if a == nil {
-		return nil
-	}
-	return a.key
-}
-
 // AuthenticationInput 提供 HTTP 层已经解析的地址与消费入口意图，不读取请求体。
 type AuthenticationInput struct {
 	ClientIP          string
 	CheckMemberLimits bool
 }
-type AuthenticationFailureKind string
 
-const (
-	AuthenticationLookup       AuthenticationFailureKind = "lookup"
-	AuthenticationDisabled     AuthenticationFailureKind = "disabled"
-	AuthenticationTeam         AuthenticationFailureKind = "team"
-	AuthenticationMemberLimit  AuthenticationFailureKind = "member_limit"
-	AuthenticationIP           AuthenticationFailureKind = "ip"
-	AuthenticationUserMissing  AuthenticationFailureKind = "user_missing"
-	AuthenticationUserInactive AuthenticationFailureKind = "user_inactive"
-)
+type AuthenticationFailureKind string
 
 // AuthenticationFailure 只携带失败阶段，协议状态码和错误 envelope 由 HTTP 适配器决定。
 type AuthenticationFailure struct {
@@ -50,12 +43,24 @@ type AuthenticationFailure struct {
 	ClientIP string
 }
 
+// ipAccessDenied 保留既有公开错误文本；HTTP 适配独立决定响应形状。
+type ipAccessDenied string
+
+// KeyView 将认证快照转换为本次网关请求使用的 APIKey。
+func (a *AccessSnapshot) KeyView() *APIKey {
+	if a == nil {
+		return nil
+	}
+	return a.key
+}
+
 func (e *AuthenticationFailure) Error() string {
 	if e.Cause != nil {
 		return e.Cause.Error()
 	}
 	return string(e.Kind)
 }
+
 func (e *AuthenticationFailure) Unwrap() error { return e.Cause }
 
 // Authenticate 保留 Key/团队/成员限额/IP/付款用户的既有检查顺序。
@@ -112,8 +117,5 @@ func (s *APIKeyService) authenticateKey(key *APIKey, input AuthenticationInput) 
 	}
 	return access, nil
 }
-
-// ipAccessDenied 保留既有公开错误文本；HTTP 适配独立决定响应形状。
-type ipAccessDenied string
 
 func (e ipAccessDenied) Error() string { return fmt.Sprintf("Access denied. Your IP is %s", string(e)) }

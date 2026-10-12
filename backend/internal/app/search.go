@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	egresspg "github.com/TokenFlux/TokenRouter/internal/egress/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/search"
@@ -10,8 +12,9 @@ import (
 	searchadapter "github.com/TokenFlux/TokenRouter/internal/search/provider"
 	"github.com/TokenFlux/TokenRouter/internal/search/rediscache"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
-	"github.com/redis/go-redis/v9"
 )
+
+type searchProxies struct{ proxies *egresspg.ProxyStore }
 
 func provideSearchRegistry() *search.Registry {
 	registry := search.NewRegistry()
@@ -33,8 +36,6 @@ func provideSearchRuntime(store *settings.Store, proxies *egresspg.ProxyStore, r
 func provideSearchHTTP(runtime *search.ConfigService) *searchhttp.Handler {
 	return searchhttp.New(runtime)
 }
-
-type searchProxies struct{ proxies *egresspg.ProxyStore }
 
 func (s searchProxies) URLs(ctx context.Context, ids []int64) (map[int64]string, error) {
 	values, err := s.proxies.ListByIDs(ctx, ids)

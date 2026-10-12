@@ -9,23 +9,24 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson" // StaticToolNameRewrites 是"静态前缀映射"，与 Parrot src/transform/cc_mimicry.py
-	// TOOL_NAME_REWRITES 完全一致。只有以这些前缀开头的工具会被重写。
 )
-
-var StaticToolNameRewrites = map[string]string{"sessions_": "cc_sess_", "session_": "cc_ses_"}
-
-// FakeToolNamePrefixes 是"动态映射"的前缀池，与 Parrot _FAKE_PREFIXES 一致。
-// 当 tools 数量 > DynamicToolMapThreshold 时随机选用其中前缀生成可读假名。
-var FakeToolNamePrefixes = []string{
-	"analyze_", "compute_", "fetch_", "generate_", "lookup_", "modify_",
-	"process_", "query_", "render_", "resolve_", "sync_", "update_",
-	"validate_", "convert_", "extract_", "manage_", "monitor_", "parse_",
-	"review_", "search_", "transform_", "handle_", "invoke_", "notify_",
-}
 
 // DynamicToolMapThreshold 与 Parrot 一致：tools 数量超过 5 才启用动态映射。
 // 少量工具不需要混淆（一般是 Claude Code 自己的核心工具 bash/edit/read 等）。
 const DynamicToolMapThreshold = 5
+
+var (
+	StaticToolNameRewrites = map[string]string{"sessions_": "cc_sess_", "session_": "cc_ses_"}
+
+	// FakeToolNamePrefixes 是"动态映射"的前缀池，与 Parrot _FAKE_PREFIXES 一致。
+	// 当 tools 数量 > DynamicToolMapThreshold 时随机选用其中前缀生成可读假名。
+	FakeToolNamePrefixes = []string{
+		"analyze_", "compute_", "fetch_", "generate_", "lookup_", "modify_",
+		"process_", "query_", "render_", "resolve_", "sync_", "update_",
+		"validate_", "convert_", "extract_", "manage_", "monitor_", "parse_",
+		"review_", "search_", "transform_", "handle_", "invoke_", "notify_",
+	}
+)
 
 // ToolNameRewrite 是单次请求内的工具名混淆映射。
 //   - Forward: real → fake，请求阶段在 body 上应用。
@@ -70,10 +71,7 @@ func BuildDynamicToolMap(toolNames []string) map[string]string {
 	mapping := make(map[string]string, len(toolNames))
 	for i, name := range toolNames {
 		prefix := available[i%len(available)]
-		headLen := 3
-		if len(name) < 3 {
-			headLen = len(name)
-		}
+		headLen := min(len(name), 3)
 		fake := fmt.Sprintf("%s%s%02d", prefix, name[:headLen], i)
 		mapping[name] = fake
 	}

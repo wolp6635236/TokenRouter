@@ -5,9 +5,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	googleapi "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 const MaxAuthorizationHeaderBytes = apikey.MaxAPIKeyCredentialBytes + 128

@@ -11,15 +11,112 @@ import (
 	"strings"
 	"time"
 
-	schedulerredis "github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
-	"github.com/redis/go-redis/v9"
+	schedulerredis "github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache"
 )
 
 const (
 	openAIResponsesSessionWindowPrefix = "openai_responses_session_window:"
 	liveCallPrefix                     = "live:call:"
+
+	grokVideoPendingBillingPrefix = "grok_video_pending:"
+	grokVideoBilledPrefix         = "grok_video_billed:"
+
+	reasoningContentPrefix = "reasoning_content:"
+
+	// reasoningContentDefaultTTL 是推理缓存的默认有效期，支持 Codex 会话在七天内恢复。
+	// 调用方传入非正 TTL 时使用该值。
+	reasoningContentDefaultTTL = 7 * 24 * time.Hour
+
+	cyberSessionBlockPrefix         = "cyber_session_block:"
+	cyberSessionScopePrefix         = "cyber_session_scope:"
+	cyberSessionRedisCommandMaxKeys = 128
+)
+
+var (
+	// DeleteSessionProviderID 删除粘性会话与提供商的绑定关系。
+	// 当检测到绑定的提供商不可用（如状态错误、禁用、不可调度等）时调用，
+	// 以便下次请求能够重新选择可用提供商。
+	//
+	// DeleteSessionProviderID removes the sticky session binding for the given session.
+	// Called when the bound provider becomes unavailable (e.g., error status, disabled,
+	// or unschedulable), allowing subsequent requests to select a new available provider.
+
+	// SetSessionOwnerGroupID 在首次写入时记录指定会话所属的分组。
+
+	claimOpenAIResponsesSessionWindowScript = redis.NewScript(`
+local previous = redis.call('GET', KEYS[1])
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+return previous
+`)
+
+	compareAndRefreshOpenAIResponsesSessionWindowScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == false or current ~= ARGV[1] then
+  return 0
+end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
+`)
+
+	compareAndDeleteOpenAIResponsesSessionWindowScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == false or current ~= ARGV[1] then
+  return 0
+end
+redis.call('DEL', KEYS[1])
+return 1
+`)
+
+	_ session.OpenAIWSSessionPreemptionCache = (*gatewayCache)(nil)
+	_ session.GrokVideoBillingCache          = (*gatewayCache)(nil)
+	_ session.ReasoningContentCache          = (*gatewayCache)(nil)
+	_ session.CyberSessionBlockStore         = (*gatewayCache)(nil)
+	_ session.LiveCallStore                  = (*gatewayCache)(nil)
+
+	claimLiveControllerScript = redis.NewScript(`
+	local key = KEYS[1]
+	local target = ARGV[1]
+	local owner = ARGV[2]
+	local current = redis.call('HGET', key, 'controller')
+	if current == false or current == 'closed' then
+		return 0
+	end
+	if target == 'observer' and current ~= 'pending' then
+		return 0
+	end
+	if target == 'proxy' and current ~= 'pending' and current ~= 'observer' and
+		(current ~= 'proxy' or redis.call('HGET', key, 'controller_owner') ~= owner) then
+		return 0
+	end
+	redis.call('HSET', key, 'controller', target, 'controller_owner', owner)
+	return 1
+`)
+
+	markLiveCallClosedScript = redis.NewScript(`
+	local key = KEYS[1]
+	if redis.call('EXISTS', key) == 0 then
+		return 0
+	end
+	if redis.call('HGET', key, 'controller') == 'closed' then
+		return 0
+	end
+	redis.call('HSET', key, 'controller', 'closed', 'controller_owner', '')
+	redis.call('EXPIRE', key, ARGV[1])
+	return 1
+`)
+
+	releaseLiveControllerScript = redis.NewScript(`
+	local key = KEYS[1]
+	if redis.call('HGET', key, 'controller') ~= 'proxy' or
+		redis.call('HGET', key, 'controller_owner') ~= ARGV[1] then
+		return 0
+	end
+	redis.call('HSET', key, 'controller', 'pending', 'controller_owner', '')
+	return 1
+`)
 )
 
 type gatewayCache struct {
@@ -40,40 +137,6 @@ func NewGatewayCache(rdb *redis.Client) session.GatewayCache {
 func buildOpenAIResponsesSessionWindowKey(groupID int64, sessionHash string) string {
 	return fmt.Sprintf("%s%d:%s", openAIResponsesSessionWindowPrefix, groupID, sessionHash)
 }
-
-// DeleteSessionProviderID 删除粘性会话与提供商的绑定关系。
-// 当检测到绑定的提供商不可用（如状态错误、禁用、不可调度等）时调用，
-// 以便下次请求能够重新选择可用提供商。
-//
-// DeleteSessionProviderID removes the sticky session binding for the given session.
-// Called when the bound provider becomes unavailable (e.g., error status, disabled,
-// or unschedulable), allowing subsequent requests to select a new available provider.
-
-// SetSessionOwnerGroupID 在首次写入时记录指定会话所属的分组。
-
-var claimOpenAIResponsesSessionWindowScript = redis.NewScript(`
-local previous = redis.call('GET', KEYS[1])
-redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
-return previous
-`)
-
-var compareAndRefreshOpenAIResponsesSessionWindowScript = redis.NewScript(`
-local current = redis.call('GET', KEYS[1])
-if current == false or current ~= ARGV[1] then
-  return 0
-end
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
-return 1
-`)
-
-var compareAndDeleteOpenAIResponsesSessionWindowScript = redis.NewScript(`
-local current = redis.call('GET', KEYS[1])
-if current == false or current ~= ARGV[1] then
-  return 0
-end
-redis.call('DEL', KEYS[1])
-return 1
-`)
 
 func (c *gatewayCache) ClaimOpenAIResponsesSessionWindow(ctx context.Context, groupID int64, sessionHash string, owner []byte, ttl time.Duration) ([]byte, error) {
 	if c == nil || c.rdb == nil {
@@ -140,18 +203,6 @@ func (c *gatewayCache) CompareAndDeleteOpenAIResponsesSessionWindow(ctx context.
 	return n == 1, err
 }
 
-var _ session.OpenAIWSSessionPreemptionCache = (*gatewayCache)(nil)
-
-const (
-	grokVideoPendingBillingPrefix = "grok_video_pending:"
-	grokVideoBilledPrefix         = "grok_video_billed:"
-)
-
-var (
-	_ session.GrokVideoBillingCache = (*gatewayCache)(nil)
-	_ session.ReasoningContentCache = (*gatewayCache)(nil)
-)
-
 // SetGrokVideoPendingBilling 保存视频创建成功时的计费快照，供后续状态轮询使用。
 func (c *gatewayCache) SetGrokVideoPendingBilling(ctx context.Context, key string, payload []byte, ttl time.Duration) error {
 	if c == nil || c.rdb == nil {
@@ -210,17 +261,6 @@ func (c *gatewayCache) ReleaseGrokVideoBilled(ctx context.Context, key string) e
 	return c.rdb.Del(ctx, grokVideoBilledPrefix+key).Err()
 }
 
-var (
-	_ session.CyberSessionBlockStore = (*gatewayCache)(nil)
-	_ session.LiveCallStore          = (*gatewayCache)(nil)
-)
-
-const reasoningContentPrefix = "reasoning_content:"
-
-// reasoningContentDefaultTTL 是推理缓存的默认有效期，支持 Codex 会话在七天内恢复。
-// 调用方传入非正 TTL 时使用该值。
-const reasoningContentDefaultTTL = 7 * 24 * time.Hour
-
 // SetReasoningContent 按 reasoning item ID 缓存全文，itemID 或 content 为空时返回 nil。
 func (c *gatewayCache) SetReasoningContent(ctx context.Context, itemID string, content string, ttl time.Duration) error {
 	if c == nil || c.rdb == nil {
@@ -255,12 +295,6 @@ func (c *gatewayCache) GetReasoningContent(ctx context.Context, itemID string) (
 	}
 	return val, nil
 }
-
-const (
-	cyberSessionBlockPrefix         = "cyber_session_block:"
-	cyberSessionScopePrefix         = "cyber_session_scope:"
-	cyberSessionRedisCommandMaxKeys = 128
-)
 
 // SetCyberSessionBlocked writes exact blocks in bounded transactions. The
 // coarse scope is activated only after all exact blocks have been stored.
@@ -315,10 +349,7 @@ func (c *gatewayCache) FindCyberSessionBlocked(ctx context.Context, keys []strin
 		return "", nil
 	}
 	for start := 0; start < len(keys); start += cyberSessionRedisCommandMaxKeys {
-		end := start + cyberSessionRedisCommandMaxKeys
-		if end > len(keys) {
-			end = len(keys)
-		}
+		end := min(start+cyberSessionRedisCommandMaxKeys, len(keys))
 		redisKeys := make([]string, end-start)
 		for i, key := range keys[start:end] {
 			redisKeys[i] = cyberSessionBlockPrefix + key
@@ -335,48 +366,6 @@ func (c *gatewayCache) FindCyberSessionBlocked(ctx context.Context, keys []strin
 	}
 	return "", nil
 }
-
-var claimLiveControllerScript = redis.NewScript(`
-	local key = KEYS[1]
-	local target = ARGV[1]
-	local owner = ARGV[2]
-	local current = redis.call('HGET', key, 'controller')
-	if current == false or current == 'closed' then
-		return 0
-	end
-	if target == 'observer' and current ~= 'pending' then
-		return 0
-	end
-	if target == 'proxy' and current ~= 'pending' and current ~= 'observer' and
-		(current ~= 'proxy' or redis.call('HGET', key, 'controller_owner') ~= owner) then
-		return 0
-	end
-	redis.call('HSET', key, 'controller', target, 'controller_owner', owner)
-	return 1
-`)
-
-var markLiveCallClosedScript = redis.NewScript(`
-	local key = KEYS[1]
-	if redis.call('EXISTS', key) == 0 then
-		return 0
-	end
-	if redis.call('HGET', key, 'controller') == 'closed' then
-		return 0
-	end
-	redis.call('HSET', key, 'controller', 'closed', 'controller_owner', '')
-	redis.call('EXPIRE', key, ARGV[1])
-	return 1
-`)
-
-var releaseLiveControllerScript = redis.NewScript(`
-	local key = KEYS[1]
-	if redis.call('HGET', key, 'controller') ~= 'proxy' or
-		redis.call('HGET', key, 'controller_owner') ~= ARGV[1] then
-		return 0
-	end
-	redis.call('HSET', key, 'controller', 'pending', 'controller_owner', '')
-	return 1
-`)
 
 func liveCallKey(callHash string) string {
 	return liveCallPrefix + callHash

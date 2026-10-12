@@ -191,7 +191,8 @@
                 :alt="row.user?.email || ''"
                 size-class="h-8 w-8"
               />
-              <span class="font-medium text-gray-900 dark:text-white">
+              <!-- 用户名按基线对齐，移动卡片的标签对齐用户名。行高 32px 和头像等高，用户名仍在头像中线上。 -->
+              <span class="self-baseline font-medium leading-8 text-gray-900 dark:text-white">
                 {{ userColumnMode === 'email'
                   ? (row.user?.email || t('admin.redeem.userPrefix', { id: row.user_id }))
                   : (row.user?.username || '-')
@@ -620,7 +621,7 @@
       <MotionTransition name="modal">
         <div v-if="showGuideModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" @mousedown.self="showGuideModal = false">
           <div class="fixed inset-0 bg-[var(--overlay-bg)]" @click="showGuideModal = false"></div>
-          <div class="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-surface bg-white p-6 shadow-2xl dark:bg-dark-800 sm:rounded-dialog">
+          <div class="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-surface bg-white p-6 shadow-2xl dark:bg-dark-900 sm:rounded-dialog">
             <button type="button" class="absolute right-4 top-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" @click="showGuideModal = false">
               <Icon name="x" size="sm" />
             </button>

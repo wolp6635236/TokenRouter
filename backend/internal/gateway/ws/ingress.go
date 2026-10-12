@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
+
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 func payloadString(body []byte, key string) string {
@@ -19,6 +20,15 @@ func payloadString(body []byte, key string) string {
 // Run 拥有整条入站连接的逐轮循环；平台 Adapter 只处理单次解析、租约和转发。
 func (s *IngressSession) Run(ctx context.Context, firstMessage []byte) error {
 	p, codec, o, state := s.Port, s.Codec, s.Options, s.State
+	refresh := func() {
+		if s.Refresh == nil {
+			return
+		}
+		value := s.Refresh()
+		o.PreviousRecovery = value.IngressPreviousResponseRecoveryEnabled
+		o.ResponseStickyTTL = time.Duration(value.StickyResponseIDTTLSeconds) * time.Second
+		o.SessionStickyTTL = time.Duration(value.StickySessionTTLSeconds) * time.Second
+	}
 	hooks, stateStore, groupID := s.Hooks, s.Store, s.Options.GroupID
 	debugEnabled := o.Debug
 	storeDisabledConnMode := o.StoreDisabledMode
@@ -62,6 +72,7 @@ func (s *IngressSession) Run(ctx context.Context, firstMessage []byte) error {
 		var bridgeProviderFailoverInput []json.RawMessage
 		bridgeProviderFailoverInputExists := false
 		for turn := 1; ; turn++ {
+			refresh()
 			turnStartedAt := time.Now()
 			if hooks != nil && hooks.TurnStarted != nil {
 				hooks.TurnStarted(turn, turnStartedAt)
@@ -446,6 +457,7 @@ func (s *IngressSession) Run(ctx context.Context, firstMessage []byte) error {
 		return true
 	}
 	for {
+		refresh()
 		turnStartedAt := time.Now()
 		if hooks != nil && hooks.TurnStarted != nil {
 			hooks.TurnStarted(turn, turnStartedAt)

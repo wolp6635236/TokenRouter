@@ -1,188 +1,35 @@
 package httpapi
 
 import (
-	"context"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
-	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
-	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// 测试嵌入 HTTP 适配器，I/O 接口使用替身，HTTP 读取和错误输出直接调用生产实现。
-type openAITextEntryProbe struct {
-	openAITextHTTPBackend
-	events                          []string
-	key                             *apikey.APIKey
-	allowed, owned, image, canceled bool
-	eligibility                     error
-	rewrite                         []byte
-	decision                        *moderation.Decision
-	call                            *OpenAITextCall
-}
+func TestAllowOpenAICompatibleMessagesDispatchUsesProtocolCollectionForCN(t *testing.T) {
+	require.True(t, (openAITextHTTPBackend{}).AllowsMessages(nil))
+	for _, platform := range []string{capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek} {
+		disabled := &apikey.APIKey{Group: &routing.Group{}}
+		require.False(t, (openAITextHTTPBackend{}).AllowsMessages(disabled), platform)
 
-func (p *openAITextEntryProbe) mark(s string) { p.events = append(p.events, s) }
-func (p *openAITextEntryProbe) Access(*gin.Context) (*apikey.APIKey, bool) {
-	p.mark("access")
-	return p.key, p.key != nil
-}
-
-func (p *openAITextEntryProbe) Dependencies(*gin.Context, *zap.Logger) bool {
-	p.mark("dependencies")
-	return true
-}
-
-func (p *openAITextEntryProbe) AllowsMessages(*apikey.APIKey) bool {
-	p.mark("messages-policy")
-	return p.allowed
-}
-
-func (p *openAITextEntryProbe) StartCompact(*gin.Context, time.Duration) func() {
-	p.mark("keepalive-start")
-	return func() { p.mark("keepalive-stop") }
-}
-
-func (p *openAITextEntryProbe) Reasoning(_ *gin.Context, _ *apikey.APIKey, body []byte) ([]byte, bool, error) {
-	p.mark("reasoning")
-	if p.rewrite != nil {
-		return p.rewrite, true, nil
+		enabled := &apikey.APIKey{Group: &routing.Group{
+			AllowedProtocols: []protocol.ProtocolID{protocol.ProtocolAnthropicMessages},
+		}}
+		require.True(t, (openAITextHTTPBackend{}).AllowsMessages(enabled), platform)
 	}
-	return body, false, nil
 }
 
-func (p *openAITextEntryProbe) MessageReasoning(*gin.Context, *apikey.APIKey, []byte) {
-	p.mark("message-reasoning")
-}
-
-func (p *openAITextEntryProbe) ApplyUserPromptReplacementToBody(_ context.Context, body []byte, format string) []byte {
-	p.mark("prompt:" + format)
-	return body
-}
-
-func (p *openAITextEntryProbe) ValidateOwner(context.Context, int64, string, int64, int64) (bool, error) {
-	p.mark("owner-check")
-	return p.owned, nil
-}
-
-func (p *openAITextEntryProbe) SetOwner(c *gin.Context, u, k int64) {
-	p.mark("owner-set")
-	p.openAITextHTTPBackend.SetOwner(c, u, k)
-}
-
-func (p *openAITextEntryProbe) Moderate(*gin.Context, *zap.Logger, *apikey.APIKey, authctx.AuthSubject, protocol.ProtocolID, string, []byte) *moderation.Decision {
-	p.mark("moderate")
-	return p.decision
-}
-
-func (p *openAITextEntryProbe) Plan(context.Context, *apikey.APIKey, string) routing.RoutePlan {
-	p.mark("plan")
-	return routing.RoutePlan{}
-}
-
-func (p *openAITextEntryProbe) ChatImageModel(string, routing.GroupMappingResult) bool {
-	p.mark("chat-model")
-	return p.image
-}
-
-func (p *openAITextEntryProbe) ImageIntent(model string, body []byte, _ routing.GroupMappingResult, _ string) ([]byte, string, bool) {
-	p.mark("image-intent")
-	return body, model, false
-}
-
-func (p *openAITextEntryProbe) UserSlot(c *gin.Context, _ int64, _ int, _ bool, _ *bool, _ *zap.Logger) (func(), bool) {
-	p.mark("user-slot")
-	if p.canceled {
-		c.Status(499)
-		return nil, false
-	}
-	return func() { p.mark("user-release") }, true
-}
-
-func (p *openAITextEntryProbe) Eligibility(context.Context, *apikey.APIKey, *billing.UserSubscription) error {
-	p.mark("eligibility")
-	return p.eligibility
-}
-
-func (p *openAITextEntryProbe) SessionHash(_ *gin.Context, kind OpenAISessionInput, _ []byte) string {
-	if kind == OpenAIExplicitSession {
-		return "explicit"
-	}
-	return "session"
-}
-
-func (p *openAITextEntryProbe) RejectCyber(*gin.Context, *apikey.APIKey, []byte, string, protocol.ProtocolID) bool {
-	p.mark("cyber-check")
-	return false
-}
-
-func (p *openAITextEntryProbe) Isolate(context.Context, *apikey.APIKey, int64, string, string) error {
-	p.mark("isolation")
-	return nil
-}
-
-func (p *openAITextEntryProbe) GuardianContext(ctx context.Context, _ *gin.Context, _ []byte, _ string) context.Context {
-	p.mark("guardian")
-	return ctx
-}
-
-func (p *openAITextEntryProbe) MappedBodyCache(body []byte) func(bool, string) []byte {
-	p.mark("mapped-cache")
-	return func(bool, string) []byte { return body }
-}
-
-func (p *openAITextEntryProbe) MessageProviderModel(_ context.Context, _ *apikey.APIKey, model string) string {
-	return model
-}
-
-func (p *openAITextEntryProbe) Execution(_ *gin.Context, call OpenAITextCall) textflow.ResponsePorts {
-	p.mark("execution")
-	p.call = &call
-	return openAITextNoAttempt{}
-}
-
-// 不选择提供商的终点证明前置组合已进入统一循环，未额外发起供应商请求。
-type openAITextNoAttempt struct{ textflow.ResponsePorts }
-
-func (openAITextNoAttempt) CanAttempt() bool { return false }
-
-type openAITextReadProbe struct {
-	io.Reader
-	reads int
-}
-
-func (b *openAITextReadProbe) Read(p []byte) (int, error) { b.reads++; return b.Reader.Read(p) }
-func (*openAITextReadProbe) Close() error                 { return nil }
-
-func newOpenAITextEntryProbe(t *testing.T, body string) (*openAITextEntryProbe, *OpenAITextHandler, *gin.Context, *httptest.ResponseRecorder, *openAITextReadProbe) {
-	t.Helper()
-	c, w := func() (*gin.Context, *httptest.ResponseRecorder) {
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		return c, w
-	}()
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	reader := &openAITextReadProbe{Reader: strings.NewReader(body)}
-	c.Request.Body = reader
-	c.Set(authctx.ContextKeyUser, authctx.AuthSubject{UserID: 7, Concurrency: 2})
-	p := &openAITextEntryProbe{openAITextHTTPBackend: openAITextHTTPBackend{}, key: &apikey.APIKey{ID: 9, UserID: 7}, allowed: true, owned: true}
-	h := NewOpenAITextHandler(OpenAITextOptions{MaxBodyBytes: 1024 * 1024, MaxSwitches: 2}, p, p, p)
-	return p, h, c, w, reader
+// TestMessagesProviderModelKeepsGroupMapping 验证 Messages 使用通用分组映射结果并规范化协议型号。
+func TestMessagesProviderModelKeepsGroupMapping(t *testing.T) {
+	require.Equal(t, "group-model", ResolveOpenAIMessagesProviderLayerModel("group-model"))
+	require.Equal(t, "claude-sonnet-4-6", ResolveOpenAIMessagesProviderLayerModel("claude-sonnet-4-6"))
+	require.Equal(t, "gpt-5.4-high", ResolveOpenAIMessagesProviderLayerModel("gpt-5.4-high"))
 }
 
 func TestOpenAITextHTTPPreludeErrorOrder(t *testing.T) {
@@ -289,17 +136,4 @@ func TestOpenAITextHTTPWaitAndSnapshot(t *testing.T) {
 		require.Equal(t, p.rewrite, p.call.Body)
 		require.NotNil(t, p.call.SelectionContext)
 	})
-}
-
-func (p *openAITextEntryProbe) Execute(_ context.Context, in execution.Request, _ upstream.OutputSink) (execution.ExecutionResult, error) {
-	p.mark("execution")
-	proto := protocol.ProtocolOpenAIResponses
-	switch in.Text.Kind {
-	case execution.TextOpenAIChat:
-		proto = protocol.ProtocolOpenAIChatCompletions
-	case execution.TextOpenAIMessages:
-		proto = protocol.ProtocolAnthropicMessages
-	}
-	p.call = &OpenAITextCall{Protocol: proto, Key: in.Funding.Key, Subscription: in.Funding.Subscription, Body: in.Body, ForwardBody: in.AttemptBody, SessionHashBody: in.Text.SessionHashBody, Model: in.Model, ForwardModel: in.Text.ForwardModel, Stream: in.Stream, Mapping: in.Text.Mapping, SessionHash: in.SessionHash, SelectionContext: in.Text.SelectionContext, PreviousResponseID: in.Text.PreviousResponseID, ProviderLayerModel: in.Text.ProviderLayerModel, PromptCacheKey: in.Text.PromptCacheKey, NativeCompactionV2: in.Text.NativeCompactionV2, LegacyCompact: in.Text.LegacyCompact}
-	return execution.ExecutionResult{}, nil
 }

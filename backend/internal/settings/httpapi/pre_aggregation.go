@@ -5,10 +5,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
-	"github.com/gin-gonic/gin"
 )
 
 type preAggregationAvailabilityResponse struct {
@@ -29,6 +30,26 @@ type preAggregationSettingsResponse struct {
 
 type preAggregationBackfillRequest struct {
 	Days int `json:"days"`
+}
+
+// AggregationStatus 查询预聚合任务的运行状态。
+type AggregationStatus interface {
+	RuntimeStatus(context.Context) preaggregation.PreAggregationRuntimeStatus
+}
+type UsageBackfill interface {
+	AggregationStatus
+	TriggerBackfill(time.Time, time.Time) error
+}
+
+// PreAggregationHandler 复用唯一设置控制器与运行任务，只承担 HTTP 映射。
+type PreAggregationHandler struct {
+	preAggregationSettings *preaggregation.PreAggregationSettingsService
+	dashboardAggregation   UsageBackfill
+	opsAggregation         AggregationStatus
+}
+
+func NewPreAggregationHandler(settings *preaggregation.PreAggregationSettingsService, usage UsageBackfill, ops AggregationStatus) *PreAggregationHandler {
+	return &PreAggregationHandler{preAggregationSettings: settings, dashboardAggregation: usage, opsAggregation: ops}
 }
 
 // GetPreAggregationSettings 返回统一设置、部署能力和任务运行状态。
@@ -135,24 +156,4 @@ func (h *PreAggregationHandler) buildPreAggregationSettingsResponse(c *gin.Conte
 		result.OpsStatus = h.opsAggregation.RuntimeStatus(ctx)
 	}
 	return result
-}
-
-// AggregationStatus 查询预聚合任务的运行状态。
-type AggregationStatus interface {
-	RuntimeStatus(context.Context) preaggregation.PreAggregationRuntimeStatus
-}
-type UsageBackfill interface {
-	AggregationStatus
-	TriggerBackfill(time.Time, time.Time) error
-}
-
-// PreAggregationHandler 复用唯一设置控制器与运行任务，只承担 HTTP 映射。
-type PreAggregationHandler struct {
-	preAggregationSettings *preaggregation.PreAggregationSettingsService
-	dashboardAggregation   UsageBackfill
-	opsAggregation         AggregationStatus
-}
-
-func NewPreAggregationHandler(settings *preaggregation.PreAggregationSettingsService, usage UsageBackfill, ops AggregationStatus) *PreAggregationHandler {
-	return &PreAggregationHandler{preAggregationSettings: settings, dashboardAggregation: usage, opsAggregation: ops}
 }

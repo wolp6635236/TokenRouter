@@ -3,9 +3,8 @@ package completion
 import (
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
 type ServiceTierBillingResolution struct {
@@ -57,7 +56,7 @@ func applyCacheOverride(usage *TokenUsage, target string) bool {
 }
 
 // normalizeResult 根据请求快照和响应观测规范化本次结果的档位。
-func (s *Recorder) normalizeResult(r *Result, a *ProviderSnapshot, openAI bool, observedProvider *ProviderSnapshot) ServiceTierBillingResolution {
+func (s *Recorder) normalizeResult(r *Result, a *ProviderSnapshot, openAI bool, observedProvider *ProviderSnapshot, requestID string) ServiceTierBillingResolution {
 	// 缺失结果不产生档位调整或观测事件。
 	if r == nil {
 		return ServiceTierBillingResolution{}
@@ -88,7 +87,7 @@ func (s *Recorder) normalizeResult(r *Result, a *ProviderSnapshot, openAI bool, 
 		if !openAI && r.Usage.Speed != "" {
 			r.Usage.Speed = tier
 		}
-		event := BillingEvent{Kind: "tier_downgrade", Component: "service.gateway", RequestID: strings.TrimSpace(r.RequestID), RequestedTier: resolution.Requested, ObservedTier: resolution.Observed, BilledTier: resolution.Billing}
+		event := BillingEvent{Kind: "tier_downgrade", Component: "service.gateway", RequestID: strings.TrimSpace(requestID), RequestedTier: resolution.Requested, ObservedTier: resolution.Observed, BilledTier: resolution.Billing}
 		if openAI {
 			event.Component = "service.openai_gateway"
 		}

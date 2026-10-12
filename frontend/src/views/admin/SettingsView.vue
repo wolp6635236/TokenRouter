@@ -3085,6 +3085,7 @@
             </SettingsSection>
           </SettingsCard>
 
+          <ResponsesWSSettings v-show="activeGatewaySection === 'openai'" v-content-reveal="activeGatewaySection === 'openai'" />
           <!-- OpenAI / Codex 请求转发 -->
           <SettingsCard
             v-show="activeGatewaySection === 'openai'" v-content-reveal="activeGatewaySection === 'openai'"
@@ -5324,6 +5325,7 @@
 </template>
 
 <script setup lang="ts">
+import ResponsesWSSettings from './settings/ResponsesWSSettings.vue';
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import { vContentReveal } from '@/directives/contentReveal'
 import Collapse from '@/components/common/Collapse.vue'
@@ -5944,6 +5946,8 @@ interface DefaultSubscriptionPlanOption {
 
 type SettingsForm = Omit<
   SystemSettings,
+  | "responses_ws"
+  | "responses_ws_effective"
   | "wechat_connect_open_enabled"
   | "wechat_connect_mp_enabled"
   | "wechat_connect_mobile_enabled"
@@ -7570,7 +7574,7 @@ async function loadHomeFeaturedModelOptions() {
       for (const model of group.models) {
         options.push({
           value: model.id,
-          label: model.display_name ? `${model.display_name}（${model.id}）` : model.id,
+          label: model.id,
         });
       }
     }

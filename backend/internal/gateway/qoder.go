@@ -6,17 +6,11 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
-
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
-
-// Request 使用已认证主体及最终路由计划，不定义第二套身份或路由实体。
-type Request = execution.Request
-
-type FailureStage string
 
 const (
 	FailureBilling        FailureStage = "billing"
@@ -29,20 +23,17 @@ const (
 	FailureUpstream       FailureStage = "upstream"
 )
 
+// Request 使用已认证主体及最终路由计划，不定义第二套身份或路由实体。
+type Request = execution.Request
+
+type FailureStage string
+
 // Failure 保留原始错误与失败阶段，协议状态码由 HTTP 适配器映射。
 type Failure struct {
 	Stage     FailureStage
 	Cause     error
 	Attempted bool
 }
-
-func (e *Failure) Error() string {
-	if e.Cause != nil {
-		return e.Cause.Error()
-	}
-	return string(e.Stage)
-}
-func (e *Failure) Unwrap() error { return e.Cause }
 
 // Selection 的回调提供当前执行目标，不拥有重试循环或共享状态。
 type Selection struct {
@@ -81,6 +72,14 @@ type QoderUseCase struct {
 	concurrency  *scheduler.ConcurrencyService
 	runtime      QoderRuntime
 }
+
+func (e *Failure) Error() string {
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return string(e.Stage)
+}
+func (e *Failure) Unwrap() error { return e.Cause }
 
 func NewQoderUseCase(maxProviders int, waitTimeout time.Duration) *QoderUseCase {
 	return &QoderUseCase{MaxProviders: maxProviders, WaitTimeout: waitTimeout}

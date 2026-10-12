@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/config"
@@ -13,10 +13,10 @@ import (
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-	"github.com/gin-gonic/gin"
 )
 
 // openAITokenExecution 将提供商选择接入 token 计数操作。
@@ -24,6 +24,12 @@ type openAITokenExecution struct {
 	*gatewayhttp.OpenAIAuxiliary
 	planner *gatewayprovider.RoutePlanner
 	choices *selection.Compatible
+}
+
+// openAITokenTarget 保存单次计数的凭据，向 HTTP 返回独立的选择结果快照。
+type openAITokenTarget struct {
+	source *gatewayhttp.OpenAIAuxiliary
+	value  *gatewayprovider.ExecutionProvider
 }
 
 func (p openAITokenExecution) PlanTokenRoute(ctx context.Context, key *apikey.APIKey, model string) routing.RoutePlan {
@@ -52,12 +58,6 @@ func (p openAITokenExecution) SelectInputTokens(ctx context.Context, group *int6
 		result.Release = selected.ReleaseFunc
 	}
 	return result, nil
-}
-
-// openAITokenTarget 保存单次计数的凭据，向 HTTP 返回独立的选择结果快照。
-type openAITokenTarget struct {
-	source *gatewayhttp.OpenAIAuxiliary
-	value  *gatewayprovider.ExecutionProvider
 }
 
 func (t openAITokenTarget) Snapshot() provider.ProviderSnapshot {

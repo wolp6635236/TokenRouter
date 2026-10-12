@@ -75,7 +75,7 @@ func TestCollectorSanitizesDependencyMetric(t *testing.T) {
 func TestCollectorBoundsHeaderLength(t *testing.T) {
 	startedAt := time.Unix(500, 0)
 	collector := New(startedAt)
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		collector.Record(
 			dependencyMetricName(fmt.Sprintf("module_%03d_with_a_deliberately_long_name", i)),
 			startedAt,
@@ -102,10 +102,10 @@ func TestCollectorConcurrentRecording(t *testing.T) {
 	const recordsPerWorker = 100
 	var wg sync.WaitGroup
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < recordsPerWorker; j++ {
+			for range recordsPerWorker {
 				Record(ctx, MetricDatabase, startedAt, startedAt.Add(time.Microsecond), 1)
 			}
 		}()

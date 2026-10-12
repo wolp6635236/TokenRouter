@@ -10,6 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type managedRefreshReader struct {
+	reads   atomic.Int32
+	current *Record
+}
+
 // TestManagedRefreshSharesLockAndStopWithBackground 检查手动与后台刷新共用协调器，停止时取消已接纳的工作和锁等待。
 func TestManagedRefreshSharesLockAndStopWithBackground(t *testing.T) {
 	repo := &lifecycleRefreshRepository{}
@@ -44,11 +49,6 @@ func TestManagedRefreshSharesLockAndStopWithBackground(t *testing.T) {
 	}
 	require.Zero(t, executor.calls.Load())
 	require.Zero(t, repo.writes.Load())
-}
-
-type managedRefreshReader struct {
-	reads   atomic.Int32
-	current *Record
 }
 
 func (r *managedRefreshReader) GetByID(context.Context, int64) (*Record, error) {

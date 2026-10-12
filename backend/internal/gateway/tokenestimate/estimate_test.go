@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/stretchr/testify/require"
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 func TestEstimateOpenAIInputTokens_RequestSamples(t *testing.T) {
@@ -60,6 +61,7 @@ func TestEstimateOpenAIInputTokens_RequestSamples(t *testing.T) {
 		})
 	}
 }
+
 func TestEstimateGrokCountTokens_AnthropicRequests(t *testing.T) {
 	cases := []struct {
 		name string
@@ -93,6 +95,7 @@ func TestEstimateGrokCountTokens_AnthropicRequests(t *testing.T) {
 		})
 	}
 }
+
 func TestEstimateGrokCountTokens_RejectsInvalidRequests(t *testing.T) {
 	for _, body := range []string{
 		`{`,
@@ -103,6 +106,7 @@ func TestEstimateGrokCountTokens_RejectsInvalidRequests(t *testing.T) {
 		require.Error(t, err, "body=%s", body)
 	}
 }
+
 func TestOpenAIInputTokensEncodingForModel(t *testing.T) {
 	cases := []struct {
 		model string

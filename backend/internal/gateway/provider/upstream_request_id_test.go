@@ -5,9 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 func TestUpstreamRequestIDFromHeaders_UnconfiguredProviderRecordsNothing(t *testing.T) {

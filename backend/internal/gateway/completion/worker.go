@@ -28,16 +28,7 @@ const (
 	defaultUsageRecordAutoScaleInterval    = 3 * time.Second
 	defaultUsageRecordAutoScaleCooldown    = 10 * time.Second
 	usageRecordDropLogInterval             = 5 * time.Second
-)
 
-// UsageRecordTask 是提交到使用量记录池的任务。
-// 任务实现应自行处理业务错误日志；池本身只负责调度与超时控制。
-type UsageRecordTask func(ctx context.Context)
-
-// UsageRecordSubmitMode 表示任务提交结果。
-type UsageRecordSubmitMode string
-
-const (
 	UsageRecordSubmitModeEnqueued UsageRecordSubmitMode = "enqueued"
 	UsageRecordSubmitModeDropped  UsageRecordSubmitMode = "dropped"
 	// UsageRecordSubmitModeDroppedStopped 表示任务因池停止而未执行。
@@ -46,10 +37,12 @@ const (
 	UsageRecordSubmitModeSync           UsageRecordSubmitMode = "sync_fallback"
 )
 
-// Dropped 报告任务是否未入队且未同步执行。
-func (m UsageRecordSubmitMode) Dropped() bool {
-	return m == UsageRecordSubmitModeDropped || m == UsageRecordSubmitModeDroppedStopped
-}
+// UsageRecordTask 是提交到使用量记录池的任务。
+// 任务实现应自行处理业务错误日志；池本身只负责调度与超时控制。
+type UsageRecordTask func(ctx context.Context)
+
+// UsageRecordSubmitMode 表示任务提交结果。
+type UsageRecordSubmitMode string
 
 // UsageRecordWorkerPoolOptions 使用量记录池配置。
 type UsageRecordWorkerPoolOptions struct {
@@ -121,6 +114,11 @@ type UsageRecordWorkerPool struct {
 	active           sync.WaitGroup
 	activeCount      atomic.Int64
 	stopDone         chan struct{}
+}
+
+// Dropped 报告任务是否未入队且未同步执行。
+func (m UsageRecordSubmitMode) Dropped() bool {
+	return m == UsageRecordSubmitModeDropped || m == UsageRecordSubmitModeDroppedStopped
 }
 
 // NewUsageRecordWorkerPoolWithOptions 根据给定参数构建使用量记录池。
@@ -273,10 +271,7 @@ func (p *UsageRecordWorkerPool) startAutoScaler() {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.autoScaleCancel = cancel
 
-	p.lifecycleWg.Add(1)
-	go func() {
-		defer p.lifecycleWg.Done()
-
+	p.lifecycleWg.Go(func() {
 		ticker := time.NewTicker(p.autoScaleInterval)
 		defer ticker.Stop()
 
@@ -288,7 +283,7 @@ func (p *UsageRecordWorkerPool) startAutoScaler() {
 				p.autoScaleTick()
 			}
 		}
-	}()
+	})
 }
 
 func (p *UsageRecordWorkerPool) autoScaleTick() {
@@ -319,10 +314,7 @@ func (p *UsageRecordWorkerPool) autoScaleTick() {
 
 	// 扩容优先：队列占用率超过阈值时，按步长提升并发上限。
 	if queuePercent >= p.autoScaleUpPercent && current < p.autoScaleMaxWorkers {
-		target := current + p.autoScaleUpStep
-		if target > p.autoScaleMaxWorkers {
-			target = p.autoScaleMaxWorkers
-		}
+		target := min(current+p.autoScaleUpStep, p.autoScaleMaxWorkers)
 		p.resizePool(current, target, queuePercent, waiting, runningPercent, queueSize, "scale_up")
 		return
 	}
@@ -331,10 +323,7 @@ func (p *UsageRecordWorkerPool) autoScaleTick() {
 	if queuePercent <= p.autoScaleDownPercent && waiting == 0 &&
 		runningPercent <= p.autoScaleDownPercent &&
 		current > p.autoScaleMinWorkers {
-		target := current - p.autoScaleDownStep
-		if target < p.autoScaleMinWorkers {
-			target = p.autoScaleMinWorkers
-		}
+		target := max(current-p.autoScaleDownStep, p.autoScaleMinWorkers)
 		p.resizePool(current, target, queuePercent, waiting, runningPercent, queueSize, "scale_down")
 	}
 }

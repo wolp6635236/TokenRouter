@@ -25,3 +25,14 @@ func (s *Snapshot) ApplyRoutingAdminSettings(value routing.AdminSettings) {
 	s.MarketplaceAvailabilityBucketMinutes = value.MarketplaceAvailabilityBucketMinutes
 	s.MarketplaceAvailabilityWindowDays = value.MarketplaceAvailabilityWindowDays
 }
+
+// ApplyRoutingAdminReadSettings 将模型回退和市场可用性统计窗口写入快照。
+func (s *Snapshot) ApplyRoutingAdminReadSettings(value *routing.AdminReadSettings) {
+	s.EnableModelFallback = value.EnableModelFallback
+	s.FallbackModelAnthropic = value.FallbackModelAnthropic
+	s.FallbackModelAntigravity = value.FallbackModelAntigravity
+	s.FallbackModelGemini = value.FallbackModelGemini
+	s.FallbackModelOpenAI = value.FallbackModelOpenAI
+	s.MarketplaceAvailabilityBucketMinutes = value.MarketplaceAvailabilityBucketMinutes
+	s.MarketplaceAvailabilityWindowDays = value.MarketplaceAvailabilityWindowDays
+}

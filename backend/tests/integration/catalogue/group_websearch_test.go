@@ -3,11 +3,10 @@ package catalogue_test
 import (
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/testkit"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
-
-	"github.com/stretchr/testify/require"
+	"github.com/TokenFlux/TokenRouter/internal/routing/testkit"
 )
 
 func TestGroupPolicy_IsWebSearchEmulationEnabled_Enabled(t *testing.T) {

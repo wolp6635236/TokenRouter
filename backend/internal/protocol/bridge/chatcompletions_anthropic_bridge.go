@@ -7,6 +7,37 @@ import (
 	"strings"
 )
 
+// ChatCompletionsToAnthropicStreamState 保存 Chat SSE chunk 直转 Anthropic SSE event 的状态，
+// 将原来的两个转换状态机合并为一个。
+type ChatCompletionsToAnthropicStreamState struct {
+	MessageStartSent bool
+	MessageStopSent  bool
+
+	// 当前文本或思考内容块的生命周期状态。
+	ContentBlockIndex int
+	ContentBlockOpen  bool
+	CurrentBlockType  string // 内容块类型：text 或 thinking。
+	HasToolCall       bool
+
+	// 工具调用按上游 index 聚合。Chat Completions 允许多个工具的参数分片交错到达，
+	// Anthropic 内容块则必须在 stop 前收到全部 delta，因此统一在流收尾时顺序输出。
+	toolCalls             map[int]*ChatToolCall
+	toolArgumentFragments map[int][]string
+
+	// DeepSeek 风格 reasoning_content 先于正文到达；内容块按顺序生成，因此复用同一个 block index 计数器。
+
+	FinishReason string
+
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+
+	ResponseID string
+	Model      string
+	Created    int64
+}
+
 // AnthropicToChatCompletionsRequest 直接把 Anthropic Messages 请求转换为 Chat Completions 请求。
 // 结果等价于依次调用 AnthropicToResponses 和 ResponsesToChatCompletionsRequest，
 // 但不会创建中间 ResponsesRequest，也省去额外的序列化往返。
@@ -33,10 +64,7 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest, options RequestOpt
 	}
 
 	if req.MaxTokens > 0 {
-		v := req.MaxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
-		}
+		v := max(req.MaxTokens, minMaxOutputTokens)
 		out.MaxCompletionTokens = &v
 	}
 
@@ -469,10 +497,7 @@ func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 		}
 	}
 
-	inputTokens := usage.PromptTokens - cachedTokens - cacheCreationTokens
-	if inputTokens < 0 {
-		inputTokens = 0
-	}
+	inputTokens := max(usage.PromptTokens-cachedTokens-cacheCreationTokens, 0)
 
 	return AnthropicUsage{
 		InputTokens:              inputTokens,
@@ -480,37 +505,6 @@ func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 		CacheReadInputTokens:     cachedTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
 	}
-}
-
-// ChatCompletionsToAnthropicStreamState 保存 Chat SSE chunk 直转 Anthropic SSE event 的状态，
-// 将原来的两个转换状态机合并为一个。
-type ChatCompletionsToAnthropicStreamState struct {
-	MessageStartSent bool
-	MessageStopSent  bool
-
-	// 当前文本或思考内容块的生命周期状态。
-	ContentBlockIndex int
-	ContentBlockOpen  bool
-	CurrentBlockType  string // 内容块类型：text 或 thinking。
-	HasToolCall       bool
-
-	// 工具调用按上游 index 聚合。Chat Completions 允许多个工具的参数分片交错到达，
-	// Anthropic 内容块则必须在 stop 前收到全部 delta，因此统一在流收尾时顺序输出。
-	toolCalls             map[int]*ChatToolCall
-	toolArgumentFragments map[int][]string
-
-	// DeepSeek 风格 reasoning_content 先于正文到达；内容块按顺序生成，因此复用同一个 block index 计数器。
-
-	FinishReason string
-
-	InputTokens              int
-	OutputTokens             int
-	CacheReadInputTokens     int
-	CacheCreationInputTokens int
-
-	ResponseID string
-	Model      string
-	Created    int64
 }
 
 // NewChatCompletionsToAnthropicStreamState 返回已初始化的直转流状态。

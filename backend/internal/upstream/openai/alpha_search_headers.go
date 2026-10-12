@@ -8,8 +8,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 type AlphaSearchRequestOptions struct {

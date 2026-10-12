@@ -5,19 +5,14 @@ import (
 	"errors"
 	"net/http"
 
-	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
@@ -37,8 +32,7 @@ func (p *openAIRawChatAdapter) ReplaceModel(b []byte, m string) []byte {
 
 func (p *openAIRawChatAdapter) FastRaw(ctx context.Context, m string, b []byte) ([]byte, error) {
 	updated, err := tierpolicy.ApplyBody(b, p.s.FastPolicy.Input(ctx, p.provider, m))
-	var blocked *tierpolicy.BlockedError
-	if errors.As(err, &blocked) {
+	if blocked, ok := errors.AsType[*tierpolicy.BlockedError](err); ok {
 		MarkOpsClientBusinessLimited(p.c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 		WriteForwardChatError(p.c, http.StatusForbidden, "permission_error", blocked.Message)
 	}

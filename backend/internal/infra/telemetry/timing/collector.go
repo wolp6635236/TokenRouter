@@ -210,10 +210,7 @@ func (c *Collector) HeaderValue(endedAt time.Time, cacheStatus string) string {
 
 	total := endedAt.Sub(c.startedAt)
 	blocked := unionDuration(allIntervals, c.startedAt, endedAt)
-	app := total - blocked
-	if app < 0 {
-		app = 0
-	}
+	app := max(total-blocked, 0)
 
 	cacheStatus = normalizeCacheStatus(cacheStatus)
 	if cacheStatus == "" {

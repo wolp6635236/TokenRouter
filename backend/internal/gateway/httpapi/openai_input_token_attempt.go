@@ -6,21 +6,15 @@ import (
 	"net/http"
 	"time"
 
-	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/apikey"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-
-	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-)
 
-func (p OpenAITokenPorts) InputTokensExecution(c *gin.Context, call InputTokensCall) textflow.InputTokensPorts {
-	return &inputTokensAttemptBridge{ports: p, c: c, call: call, key: apikey.CopyAPIKey(call.Key)}
-}
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
+)
 
 type inputTokensAttemptBridge struct {
 	ports     OpenAITokenPorts
@@ -28,6 +22,10 @@ type inputTokensAttemptBridge struct {
 	call      InputTokensCall
 	key       *apikey.APIKey
 	selection InputTokensSelection
+}
+
+func (p OpenAITokenPorts) InputTokensExecution(c *gin.Context, call InputTokensCall) textflow.InputTokensPorts {
+	return &inputTokensAttemptBridge{ports: p, c: c, call: call, key: apikey.CopyAPIKey(call.Key)}
 }
 
 func (p *inputTokensAttemptBridge) Context() context.Context { return p.c.Request.Context() }
@@ -82,8 +80,7 @@ func (p *inputTokensAttemptBridge) Forward(_ textflow.Selection) *textflow.Attem
 	if err == nil {
 		return nil
 	}
-	var original *forwardcore.UpstreamFailoverError
-	if errors.As(err, &original) {
+	if original, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		return &textflow.AttemptFailure{Cause: err, Policy: original.RetryFailure()}
 	}
 	return &textflow.AttemptFailure{Cause: err}

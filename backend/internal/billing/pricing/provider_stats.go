@@ -1,8 +1,18 @@
 package pricing
 
 import (
+	"slices"
 	"strings"
 )
+
+// ProviderStatsInput 包含查询到的价卡，nil 成本和配置的零价分别处理。
+type ProviderStatsInput struct {
+	Rules               []ProviderStatsPricingRule
+	ProviderID, GroupID int64
+	Models              []string
+	Tokens              UsageTokens
+	RequestCount        int
+}
 
 func UniqueNonEmptyProviderStatsModels(models []string) []string {
 	out := make([]string, 0, len(models))
@@ -51,17 +61,10 @@ func MatchProviderStatsRule(rule *ProviderStatsPricingRule, providerID, groupID 
 	if len(rule.ProviderIDs) == 0 && len(rule.GroupIDs) == 0 {
 		return false
 	}
-	for _, id := range rule.ProviderIDs {
-		if id == providerID {
-			return true
-		}
+	if slices.Contains(rule.ProviderIDs, providerID) {
+		return true
 	}
-	for _, id := range rule.GroupIDs {
-		if id == groupID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(rule.GroupIDs, groupID)
 }
 
 // FindEffectivePricingForModel 用于提供商统计成本规则。
@@ -84,7 +87,7 @@ func FindPricingForModelByPredicate(pricingList []ModelPricingEntry, modelLower 
 			continue
 		}
 		for _, m := range p.Models {
-			if strings.ToLower(m) == modelLower {
+			if strings.EqualFold(m, modelLower) {
 				return p
 			}
 		}
@@ -208,15 +211,6 @@ func HasAnyStatsTokenUsage(tokens UsageTokens) bool {
 		tokens.CacheCreationTokens > 0 ||
 		tokens.CacheReadTokens > 0 ||
 		tokens.ImageOutputTokens > 0
-}
-
-// ProviderStatsInput 包含查询到的价卡，nil 成本和配置的零价分别处理。
-type ProviderStatsInput struct {
-	Rules               []ProviderStatsPricingRule
-	ProviderID, GroupID int64
-	Models              []string
-	Tokens              UsageTokens
-	RequestCount        int
 }
 
 // ResolveProviderStatsOverride 返回 handled，区分明确不覆盖与继续查询模型目录。

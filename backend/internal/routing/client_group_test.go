@@ -8,6 +8,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestGatewayService_ResolveGatewayGroup_DetectsFallbackCycle 检查回退循环返回分组限制错误。
+func TestGatewayService_ResolveGatewayGroup_DetectsFallbackCycle(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10)
+	fallbackID := int64(11)
+
+	group := &Group{
+		ID: groupID,
+
+		Status:          StatusActive,
+		ClaudeCodeOnly:  true,
+		FallbackGroupID: &fallbackID,
+	}
+	fallbackGroup := &Group{
+		ID: fallbackID,
+
+		Status:          StatusActive,
+		ClaudeCodeOnly:  true,
+		FallbackGroupID: &groupID,
+	}
+
+	groups := map[int64]*Group{groupID: group, fallbackID: fallbackGroup}
+	gotGroup, gotID, err := ResolveClientGroup(ctx, &groupID, func(_ context.Context, id int64) (*Group, error) { return groups[id], nil }, func(context.Context) bool { return false }, ClientGroupPolicy{})
+	require.Error(t, err)
+	require.Nil(t, gotGroup)
+	require.Nil(t, gotID)
+	require.Contains(t, err.Error(), "fallback group cycle")
+}
+
 // TestClientGroupResolutionKeepsReadOrder 验证先读取分组、再读取客户端标志，以及未受限目标的短路。
 func TestClientGroupResolutionKeepsReadOrder(t *testing.T) {
 	first, next := int64(1), int64(2)
@@ -30,7 +59,7 @@ func TestClientGroupResolutionKeepsReadOrder(t *testing.T) {
 	require.Equal(t, []string{"first", "client", "next"}, sequence)
 }
 
-// TestClientGroupResolutionKeepsFallbackIDPolicies 验证两个入口对无效回退 ID 的错误优先级不同，不在提取时统一。
+// TestClientGroupResolutionKeepsFallbackIDPolicies 检查两个入口对无效回退 ID 的错误优先级。
 func TestClientGroupResolutionKeepsFallbackIDPolicies(t *testing.T) {
 	for _, reject := range []bool{false, true} {
 		id, invalid := int64(1), int64(0)
@@ -53,7 +82,7 @@ func TestClientGroupResolutionKeepsFallbackIDPolicies(t *testing.T) {
 	}
 }
 
-// TestClientGroupResolutionKeepsMissingSnapshot 验证快照入口缺失分组时保留原 ID，不增加数据库回源或客户端判断。
+// TestClientGroupResolutionKeepsMissingSnapshot 检查缺失快照时返回输入 ID，并记录数据库读取和客户端判断次数。
 func TestClientGroupResolutionKeepsMissingSnapshot(t *testing.T) {
 	id := int64(9)
 	group, resolved, err := ResolveClientGroup(context.Background(), &id, func(context.Context, int64) (*Group, error) {

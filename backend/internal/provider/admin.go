@@ -5,8 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
+)
+
+var (
+	ErrProviderNotFound      = billing.ErrProviderNotFound
+	ErrProviderNilInput      = apperror.BadRequest("PROVIDER_NIL_INPUT", "provider input cannot be nil")
+	ErrProviderNotInFallback = apperror.BadRequest("PROVIDER_NOT_IN_FALLBACK", "provider is not in proxy fallback state")
 )
 
 // ListProviders 按筛选条件分页查询提供商，并返回总数。
@@ -36,7 +43,7 @@ func (s *Admin) ListSchedulableProvidersForAdvancedSchedulerScore(ctx context.Co
 	if platform != "" {
 		return s.providerRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
 	}
-	return s.providerRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformQoder, PlatformKimi, PlatformZhipu, PlatformDeepseek})
+	return s.providerRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformQoder, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformJev})
 }
 
 func (s *Admin) GetProvider(ctx context.Context, id int64) (*Record, error) {
@@ -67,10 +74,7 @@ func (s *Admin) DeleteProvider(ctx context.Context, id int64) error {
 			return fmt.Errorf("cascade delete spark shadow %d: %w", shadow.ID, err)
 		}
 	}
-	if err := s.providerRepo.Delete(ctx, id); err != nil {
-		return err
-	}
-	return nil
+	return s.providerRepo.Delete(ctx, id)
 }
 
 func (s *Admin) ClearProviderError(ctx context.Context, id int64) (*Record, error) {
@@ -114,7 +118,7 @@ func (s *Admin) ResetProviderQuota(ctx context.Context, id int64) error {
 	// spark 影子提供商不持自有配额(凭据透传母提供商、spark 用量走独立 codex_* 维度由 QueryUsage 维护),
 	// 影子共用母提供商额度，额度重置需要指定母提供商，此处返回 400。
 	if provider.IsCredentialShadow() {
-		return infraerrors.New(infraerrors.CategoryBadRequest, "SPARK_SHADOW_NO_QUOTA_RESET",
+		return apperror.New(apperror.CategoryBadRequest, "SPARK_SHADOW_NO_QUOTA_RESET",
 			"cannot reset quota for a spark shadow provider; manage it on the parent provider")
 	}
 	return s.options.Quotas.ResetQuotaUsedAndClearRateLimitCooldown(ctx, id)

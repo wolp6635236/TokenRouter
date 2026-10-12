@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -23,17 +24,18 @@ func TestRequestLifetimeRejectsBeforeBodyAndDependencies(t *testing.T) {
 	h.BindRequestActivity(func() (func(), error) { return nil, errors.New("stopped") })
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest("POST", "/v1/messages/count_tokens", nil)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
 	c.Request.Body = shutdownBody{t}
 	h.CountTokens(c)
 	require.Equal(t, 503, rec.Code)
 	require.JSONEq(t, `{"type":"error","error":{"type":"api_error","message":"Service is shutting down"}}`, rec.Body.String())
 }
+
 func TestRequestLifetimeUsesSharedOwnerWithoutNewState(t *testing.T) {
 	active := 0
-	scope := requestLifetime{}
+	scope := RequestLifetime{}
 	scope.BindRequestActivity(func() (func(), error) { active++; return func() { active-- }, nil })
-	done, accepted := scope.beginRequest(nil, "openai")
+	done, accepted := scope.BeginRequest(nil, "openai")
 	require.True(t, accepted)
 	require.Equal(t, 1, active)
 	done()

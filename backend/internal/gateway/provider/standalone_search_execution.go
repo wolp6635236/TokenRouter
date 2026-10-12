@@ -10,12 +10,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // SearchTransport 使用原客户端池的闭合请求接口，不创建独立连接池。

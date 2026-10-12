@@ -7,8 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/tidwall/gjson"
+
+	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
 type RequestOptions struct {
@@ -50,25 +51,25 @@ func BuildRequest(ctx context.Context, body []byte, token, tokenType, modelID st
 		return nil, nil, err
 	}
 
-	// OAuth提供商：应用统一指纹和metadata重写（受设置开关控制）
+	// OAuth 提供商：应用统一指纹和 metadata 重写（受设置开关控制）
 	var fingerprint *Fingerprint
 	enableFP, enableMPT := true, false
 	if options.Forwarding != nil {
 		enableFP, enableMPT = options.Forwarding(ctx)
 	}
 	if options.OAuth && options.Fingerprint != nil {
-		// 1. 获取或创建指纹（包含随机生成的ClientID）
+		// 1. 获取或创建指纹（包含随机生成的 ClientID）
 		fp, err := options.Fingerprint.GetOrCreateFingerprint(ctx, options.ProviderID, clientHeaders)
 		if err != nil {
 			logger.LegacyPrintf("service.gateway", "Warning: failed to get fingerprint for provider %d: %v", options.ProviderID, err)
-			// 失败时降级为透传原始headers
+			// 失败时降级为透传原始 headers
 		} else {
 			if enableFP {
 				fingerprint = fp
 			}
 
-			// 2. 重写metadata.user_id（需要指纹中的ClientID和提供商的account_uuid）
-			// 如果启用了会话ID伪装，会在重写后替换 session 部分为固定值
+			// 2. 重写 metadata.user_id（需要指纹中的 ClientID 和提供商的 account_uuid）
+			// 如果启用了会话 ID 伪装，会在重写后替换 session 部分为固定值
 			// 当 metadata 透传开启时跳过重写
 			if !enableMPT {
 				providerUUID := options.AccountUUID
@@ -116,7 +117,7 @@ func BuildRequest(ctx context.Context, body []byte, token, tokenType, modelID st
 		body = sanitized
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -145,12 +146,12 @@ func BuildRequest(ctx context.Context, body []byte, token, tokenType, modelID st
 		}
 	}
 
-	// OAuth提供商：应用缓存的指纹到请求头（覆盖白名单透传的头）
+	// OAuth 提供商：应用缓存的指纹到请求头（覆盖白名单透传的头）
 	if fingerprint != nil {
 		options.Fingerprint.ApplyFingerprint(req, fingerprint)
 	}
 
-	// 确保必要的headers存在（保持原始大小写）
+	// 确保必要的 headers 存在（保持原始大小写）
 	if GetHeaderRaw(req.Header, "content-type") == "" {
 		SetHeaderRaw(req.Header, "content-type", "application/json")
 	}

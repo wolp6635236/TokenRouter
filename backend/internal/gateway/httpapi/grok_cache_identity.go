@@ -4,12 +4,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
-	"github.com/gin-gonic/gin"
 )
 
 const (

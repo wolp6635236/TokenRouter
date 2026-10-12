@@ -152,8 +152,8 @@ func NormalizeRegistrationEmailSuffix(raw string) (string, error) {
 		return "", nil
 	}
 
-	if strings.HasPrefix(value, "*.") {
-		domain := strings.TrimPrefix(value, "*.")
+	if after, ok := strings.CutPrefix(value, "*."); ok {
+		domain := after
 		if !IsValidRegistrationEmailDomain(domain) {
 			return "", fmt.Errorf("invalid email suffix: %q", raw)
 		}

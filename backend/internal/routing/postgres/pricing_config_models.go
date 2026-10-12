@@ -8,9 +8,17 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/lib/pq"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
+
+// dbExec 是 *sql.DB 和 *sql.Tx 共享的最小 SQL 执行接口。
+type dbExec interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
 
 func (r *PricingConfigStore) ListModelPricing(ctx context.Context, pricingConfigID int64) ([]routing.ModelPricingEntry, error) {
 	rows, err := r.db.QueryContext(ctx,
@@ -89,7 +97,7 @@ func (r *PricingConfigStore) ReplaceModelPricing(ctx context.Context, pricingCon
 	})
 }
 
-// batchLoadModelPricing 批量加载多个价格配置的模型定价（含区间）
+// batchLoadModelPricing 批量加载多个价格配置的模型定价（含区间）。
 func (r *PricingConfigStore) batchLoadModelPricing(ctx context.Context, pricingConfigIDs []int64) (map[int64][]routing.ModelPricingEntry, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, pricing_config_id, models, billing_mode, price_multiplier, fast_mode_multiplier, fast_multiplier, flex_multiplier, max_reasoning_effort_multiplier, input_price, output_price, cache_write_price, cache_write_1h_price, cache_read_price, image_input_price, image_output_price, per_request_price, time_pricing, created_at, updated_at
@@ -128,7 +136,7 @@ func (r *PricingConfigStore) batchLoadModelPricing(ctx context.Context, pricingC
 	return pricingMap, nil
 }
 
-// batchLoadIntervals 批量加载多个定价条目的区间
+// batchLoadIntervals 批量加载多个定价条目的区间。
 func (r *PricingConfigStore) batchLoadIntervals(ctx context.Context, pricingIDs []int64) (map[int64][]routing.PricingInterval, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
@@ -163,7 +171,7 @@ func (r *PricingConfigStore) batchLoadIntervals(ctx context.Context, pricingIDs 
 	return intervalMap, nil
 }
 
-// scanModelPricingRows 扫描 model pricing 行，返回结果列表和 ID 列表
+// scanModelPricingRows 扫描 model pricing 行，返回结果列表和 ID 列表。
 func scanModelPricingRows(rows *sql.Rows) ([]routing.ModelPricingEntry, []int64, error) {
 	var result []routing.ModelPricingEntry
 	var pricingIDs []int64
@@ -196,13 +204,6 @@ func scanModelPricingRows(rows *sql.Rows) ([]routing.ModelPricingEntry, []int64,
 		return nil, nil, fmt.Errorf("iterate model pricing: %w", err)
 	}
 	return result, pricingIDs, nil
-}
-
-// dbExec 是 *sql.DB 和 *sql.Tx 共享的最小 SQL 执行接口
-type dbExec interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 func setGroupIDsTx(ctx context.Context, exec dbExec, pricingConfigID int64, groupIDs []int64) error {
@@ -305,7 +306,7 @@ func replaceModelPricingTx(ctx context.Context, exec dbExec, pricingConfigID int
 	return nil
 }
 
-// isUniqueViolation 检查 pq 唯一约束违反错误
+// isUniqueViolation 检查 pq 唯一约束违反错误。
 func isUniqueViolation(err error) bool {
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) && pqErr != nil {
@@ -314,7 +315,7 @@ func isUniqueViolation(err error) bool {
 	return false
 }
 
-// escapeLike 转义 LIKE/ILIKE 模式中的特殊字符
+// escapeLike 转义 LIKE/ILIKE 模式中的特殊字符。
 func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `%`, `\%`)

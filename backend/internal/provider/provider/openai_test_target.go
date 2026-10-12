@@ -7,14 +7,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// Target 将本次请求状态与提供商记录隔离，不向公开测试信息暴露凭据。
-func (s *OpenAIProviderTest) Target(value *provider.Record) provider.TestTarget {
-	return openaiTestTarget{executor: s, record: value}
-}
-
 type openaiTestTarget struct {
 	executor *OpenAIProviderTest
 	record   *provider.Record
+}
+
+// Target 将本次请求状态与提供商记录隔离，不向公开测试信息暴露凭据。
+func (s *OpenAIProviderTest) Target(value *provider.Record) provider.TestTarget {
+	return openaiTestTarget{executor: s, record: value}
 }
 
 func (t openaiTestTarget) Information() provider.TestTargetInfo {

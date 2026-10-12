@@ -5,15 +5,17 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/googleforward"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
-	"github.com/gin-gonic/gin"
 )
 
 // GeminiOutput 保存当前 HTTP 请求和静态输出配置。
@@ -422,3 +424,5 @@ func (s *GeminiOutput) ChatError(status int, errType, message string) error {
 	})
 	return fmt.Errorf("%s", message)
 }
+
+func HTTPStatusToGoogleStatus(status int) string { return httpx.HTTPStatusToGoogleStatus(status) }

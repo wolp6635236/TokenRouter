@@ -51,6 +51,7 @@ type RelayExit struct {
 
 type RelayOptions struct {
 	WriteTimeout                    time.Duration
+	WriteTimeoutForTurn             func() time.Duration
 	IdleTimeout                     time.Duration
 	UpstreamDrainTimeout            time.Duration
 	FirstTurnStartedAt              time.Time

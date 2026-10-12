@@ -329,13 +329,12 @@
             </div>
           </template>
           <template #cell-schedulable="{ row }">
-            <!-- 异步保存,值由 handleToggleSchedulable 写回列表;保留本站点的 hover 配色。 -->
+            <!-- 异步保存，值由 handleToggleSchedulable 写回列表。 -->
             <Toggle
               :model-value="row.schedulable"
               size="sm"
               :disabled="togglingSchedulable === row.id"
-              on-class="bg-primary-500 hover:bg-primary-600"
-              off-class="bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500"
+              off-tone="soft"
               :title="row.schedulable ? t('admin.providers.schedulableEnabled') : t('admin.providers.schedulableDisabled')"
               @update:model-value="handleToggleSchedulable(row)"
             />
@@ -2154,7 +2153,7 @@ function providerHomepageUrl(row: Provider): string {
 function getAntigravityTierClass(row: any): string {
   const tier = getAntigravityTierFromRow(row)
   switch (tier) {
-    case 'free-tier': return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+    case 'free-tier': return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-dark-200'
     case 'g1-pro-tier': return 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300'
     case 'g1-ultra-tier': return 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300'
     default: return ''
@@ -2795,7 +2794,7 @@ const handleSchedule = async (a: Provider) => {
   showSchedulePanel.value = true
   try {
     const models = await adminAPI.providers.getAvailableModels(a.id)
-    scheduleModelOptions.value = models.map((m: ClaudeModel) => ({ value: m.id, label: m.display_name || m.id }))
+    scheduleModelOptions.value = models.map((m: ClaudeModel) => ({ value: m.id, label: m.id }))
   } catch {
     scheduleModelOptions.value = []
   }

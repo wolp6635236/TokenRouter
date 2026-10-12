@@ -58,3 +58,6 @@ type AttemptResult struct {
 type Executor interface {
 	Execute(context.Context, AttemptInput, OutputSink) (AttemptResult, error)
 }
+
+// TokenUsage 是协议解析器统计的令牌用量。
+type TokenUsage = protocol.TokenUsage

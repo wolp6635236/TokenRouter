@@ -5,8 +5,9 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 )
 
 // TooLargeWriter 在原 HTTP 入口写出对应协议的超限错误。

@@ -226,6 +226,63 @@ describe('admin RedeemView batch update', () => {
     expect(showSuccess).toHaveBeenCalledWith('admin.redeem.batchUpdateSuccess')
   })
 
+  // 生僻汉字按一个字符计数，超长输入在提交时提示并保留供用户修改。
+  it.each([
+    { name: '32 个常用汉字', code: '兑'.repeat(32), tooLong: false },
+    { name: '32 个生僻汉字', code: '𠮷'.repeat(32), tooLong: false },
+    { name: '32 个混合字符', code: '兑𠮷a🎁'.repeat(8), tooLong: false },
+    { name: '首尾空白', code: ` \t${'𠮷'.repeat(32)}\n `, tooLong: false },
+    { name: '33 个常用汉字', code: '兑'.repeat(33), tooLong: true },
+    { name: '33 个生僻汉字', code: '𠮷'.repeat(33), tooLong: true },
+    { name: '33 个英文字母', code: 'a'.repeat(33), tooLong: true }
+  ])('按字符校验自定义兑换码：$name', async ({ code, tooLong }) => {
+    const wrapper = mount(RedeemView, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          TablePageLayout: {
+            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
+          },
+          DataTable: DataTableStub,
+          Pagination: true,
+          ConfirmDialog: true,
+          Select: SelectStub,
+          BaseDialog: {
+            props: ['show'],
+            template: '<div v-if="show"><slot /><slot name="footer" /></div>'
+          },
+          Icon: true,
+          Teleport: true
+        }
+      }
+    })
+
+    try {
+      await flushPromises()
+      await wrapper.get('[data-testid="generate-open"]').trigger('click')
+      const input = wrapper.get<HTMLInputElement>('[placeholder="admin.redeem.customCodePlaceholder"]')
+      await input.setValue(code)
+      await wrapper.get('[data-testid="generate-form"]').trigger('submit')
+      await flushPromises()
+
+      if (tooLong) {
+        expect(generateRedeemCodes).not.toHaveBeenCalled()
+        expect(showError).toHaveBeenCalledWith('admin.redeem.customCodeTooLong')
+        expect(input.element.value).toBe(code)
+        expect(wrapper.find('[data-testid="generate-form"]').exists()).toBe(true)
+        return
+      }
+      expect(showError).not.toHaveBeenCalled()
+      expect(generateRedeemCodes).toHaveBeenCalledTimes(1)
+      expect(generateRedeemCodes.mock.calls[0][6]).toBe(code.trim())
+      // jsdom 跳过 maxlength 的输入截断，需检查原生长度限制是否存在。
+      expect(input.attributes('maxlength')).toBeUndefined()
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it.each([false, true])('提交生成兑换码的付款条件：%s', async (requiresPayment) => {
     const wrapper = mount(RedeemView, {
       attachTo: document.body,

@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
-
-	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
 // Recovery converts panics into the project's standard JSON error envelope.

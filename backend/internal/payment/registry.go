@@ -6,14 +6,14 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+// ErrProviderNotFound is returned when a requested payment provider is not registered.
+var ErrProviderNotFound = infraerrors.NotFound("PROVIDER_NOT_FOUND", "payment provider not registered")
+
 // Registry is a thread-safe registry mapping PaymentType to Provider.
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[PaymentType]Provider
 }
-
-// ErrProviderNotFound is returned when a requested payment provider is not registered.
-var ErrProviderNotFound = infraerrors.NotFound("PROVIDER_NOT_FOUND", "payment provider not registered")
 
 // NewRegistry creates a new empty provider registry.
 func NewRegistry() *Registry {

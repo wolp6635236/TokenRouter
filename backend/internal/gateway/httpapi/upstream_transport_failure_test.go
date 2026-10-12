@@ -12,22 +12,28 @@ import (
 	"testing"
 	"time"
 
-	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 )
 
 // openAITransportProviderRepoStub 记录临时不可调度调用，调用其他仓储方法会使测试失败。
 type openAITransportProviderRepoStub struct {
 	tempUnschedCalls []tempUnschedCall
+}
+
+// 传输错误测试使用的最小状态写入观测。
+type tempUnschedCall struct {
+	providerID int64
+	until      time.Time
+	reason     string
 }
 
 // TestClassifyUpstreamTransportError 验证传输错误按持久性分类。
@@ -251,13 +257,6 @@ func TestHandleOpenAIProviderUpstreamError_RecordsOllamaActivityOnly(t *testing.
 	require.True(t, ok, "Ollama Cloud non-2xx must schedule last_used activity")
 	_, ok = activity.Load(int64(505))
 	require.False(t, ok, "non-Ollama non-2xx must not schedule Ollama activity")
-}
-
-// 传输错误测试使用的最小状态写入观测。
-type tempUnschedCall struct {
-	providerID int64
-	until      time.Time
-	reason     string
 }
 
 // transportHealthFixture 为传输健康测试提供共享运行状态和 Deferred。

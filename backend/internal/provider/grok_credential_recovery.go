@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+const (
+	grokCredentialMutationTimeout     = 5 * time.Second
+	grokCredentialMutationConfirmWait = 250 * time.Millisecond
+	grokCredentialCacheCleanupTimeout = 500 * time.Millisecond
+)
+
+var ErrGrokCredentialStateUpdateFailed = errors.New("grok oauth provider state update failed")
+
 // GrokCredentialMutation 描述本次已分类的凭据状态操作，不包含 HTTP 重试或响应字段。
 type GrokCredentialMutation struct {
 	Permanent     bool
@@ -35,14 +43,6 @@ type GrokCredentialRecovery struct {
 	Warn       func(string, ...any)
 	locks      sync.Map
 }
-
-var ErrGrokCredentialStateUpdateFailed = errors.New("grok oauth provider state update failed")
-
-const (
-	grokCredentialMutationTimeout     = 5 * time.Second
-	grokCredentialMutationConfirmWait = 250 * time.Millisecond
-	grokCredentialCacheCleanupTimeout = 500 * time.Millisecond
-)
 
 // @project-doc docs/interfaces/grok_upstream.md#grok_account_contract
 func (s *GrokCredentialRecovery) Apply(ctx context.Context, value *Record, class GrokCredentialMutation) (string, error) {
@@ -73,7 +73,7 @@ func (s *GrokCredentialRecovery) Apply(ctx context.Context, value *Record, class
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		rollbackRuntime := s.blockRuntime(value, time.Time{}, string(class.Reason))
+		rollbackRuntime := s.blockRuntime(value, time.Time{}, class.Reason)
 		keepRuntimeBlock := false
 		runtimeRollbackDone := false
 		defer func() {
@@ -94,7 +94,7 @@ func (s *GrokCredentialRecovery) Apply(ctx context.Context, value *Record, class
 			cancel()
 			return "", err
 		}
-		updated, err := stateRepo.SetGrokCredentialErrorIfMatch(stateCtx, value.ID, snapshot, string(class.Reason))
+		updated, err := stateRepo.SetGrokCredentialErrorIfMatch(stateCtx, value.ID, snapshot, class.Reason)
 		requestErr := ctx.Err()
 		cancel()
 		if err != nil {
@@ -147,7 +147,7 @@ func (s *GrokCredentialRecovery) Apply(ctx context.Context, value *Record, class
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		rollbackRuntime := s.blockRuntime(value, until, string(class.Reason))
+		rollbackRuntime := s.blockRuntime(value, until, class.Reason)
 		keepRuntimeBlock := false
 		runtimeRollbackDone := false
 		defer func() {
@@ -170,7 +170,7 @@ func (s *GrokCredentialRecovery) Apply(ctx context.Context, value *Record, class
 			cancel()
 			return "", err
 		}
-		updated, err := stateRepo.SetGrokCredentialTempUnschedulableIfMatch(stateCtx, value.ID, snapshot, until, string(class.Reason))
+		updated, err := stateRepo.SetGrokCredentialTempUnschedulableIfMatch(stateCtx, value.ID, snapshot, until, class.Reason)
 		requestErr := ctx.Err()
 		cancel()
 		if err != nil {
@@ -280,11 +280,11 @@ func (s *GrokCredentialRecovery) mutationCommitted(providerID int64, class GrokC
 		return false
 	}
 	if class.Permanent {
-		return latest.Status == StatusError && !latest.Schedulable && latest.ErrorMessage == string(class.Reason)
+		return latest.Status == StatusError && !latest.Schedulable && latest.ErrorMessage == class.Reason
 	}
 	if class.Transient {
 		return latest.TempUnschedulableUntil != nil && !latest.TempUnschedulableUntil.Before(until) &&
-			latest.TempUnschedulableReason == string(class.Reason)
+			latest.TempUnschedulableReason == class.Reason
 	}
 	return false
 }

@@ -8,21 +8,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
-)
 
-type NativeAnthropicKind uint8
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+)
 
 const (
 	NativeMessages NativeAnthropicKind = iota
 	NativeResponses
 	NativeChat
 )
+
+type NativeAnthropicKind uint8
 
 func ForwardNativeMessages(ctx context.Context, body []byte, defaultMappedModel string, p NativeAnthropicPorts) (*Result, error) {
 	profile := p.Profile()

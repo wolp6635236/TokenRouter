@@ -66,7 +66,7 @@
       </div>
       <button
         type="button"
-        class="flex-shrink-0 rounded-control bg-primary-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-700"
+        class="btn btn-primary btn-sm shrink-0"
         @click="emit('open')"
       >
         {{ t('legal.viewTerms') }}
@@ -135,14 +135,14 @@
             <div class="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                class="h-9 rounded-control border border-gray-200 bg-white px-4 py-1.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-200 dark:hover:bg-dark-700"
+                class="btn btn-secondary"
                 @click="emit('reject')"
               >
                 {{ t('legal.reject') }}
               </button>
               <button
                 type="button"
-                class="h-9 rounded-control bg-primary-600 px-4 py-1.5 text-sm font-semibold text-white shadow-none transition hover:bg-primary-700"
+                class="btn btn-primary"
                 @click="emit('accept')"
               >
                 {{ t('legal.accept') }}

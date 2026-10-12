@@ -17,14 +17,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/search/contract"
 )
 
-type (
-	SearchRequest  = contract.SearchRequest
-	SearchResponse = contract.SearchResponse
-	SearchResult   = contract.SearchResult
-	Provider       = contract.Provider
-	ProviderConfig = contract.ProviderConfig
-)
-
 const (
 	defaultMaxResults    = contract.DefaultMaxResults
 	proxyDialTimeout     = 3 * time.Second
@@ -32,6 +24,14 @@ const (
 	searchDataTimeout    = 60 * time.Second
 	searchRequestTimeout = searchDataTimeout + proxyDialTimeout
 	maxCachedClients     = 100
+)
+
+type (
+	SearchRequest  = contract.SearchRequest
+	SearchResponse = contract.SearchResponse
+	SearchResult   = contract.SearchResult
+	Provider       = contract.Provider
+	ProviderConfig = contract.ProviderConfig
 )
 
 type Executor struct {
@@ -122,17 +122,14 @@ func isProxyError(err error) bool {
 		return false
 	}
 	// Network-level errors (timeout, connection refused, DNS failure)
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return true
 	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if _, ok := errors.AsType[*net.OpError](err); ok {
 		return true
 	}
 	// TLS handshake failures (often caused by proxy intercepting/blocking)
-	var tlsErr *tls.RecordHeaderError
-	if errors.As(err, &tlsErr) {
+	if _, ok := errors.AsType[*tls.RecordHeaderError](err); ok {
 		return true
 	}
 	// String-based detection for wrapped errors

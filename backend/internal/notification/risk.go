@@ -10,6 +10,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/notification/contract"
 )
 
+const defaultContentModerationBanThreshold = 10
+
 type RiskDelivery struct {
 	emailService *Mailer
 }
@@ -179,5 +181,3 @@ func defaultContentModerationString(value string, fallback string) string {
 	}
 	return strings.TrimSpace(value)
 }
-
-const defaultContentModerationBanThreshold = 10

@@ -5,10 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
 // TestEmptyCompletionKeepsOneObservationAndFailure 验证两种空终态保留不同的观察消息，失败编码与请求标识兼容旧消费者。

@@ -16,7 +16,7 @@ type UserGroupRateEntry struct {
 	RPMOverride    *int     `json:"rpm_override,omitempty"`
 }
 
-// GroupRateMultiplierInput 批量设置分组倍率的输入条目
+// GroupRateMultiplierInput 批量设置分组倍率的输入条目。
 type GroupRateMultiplierInput struct {
 	UserID         int64   `json:"user_id"`
 	RateMultiplier float64 `json:"rate_multiplier"`

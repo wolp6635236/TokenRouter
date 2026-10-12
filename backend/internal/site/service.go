@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
@@ -17,21 +16,6 @@ type AnnouncementService struct {
 	readRepo         AnnouncementReadRepository
 	userRepo         UserReader
 	userSubRepo      SubscriptionReader
-}
-
-// @project-doc docs/interfaces/http_api.md#announcement_api
-func NewAnnouncementService(
-	announcementRepo AnnouncementRepository,
-	readRepo AnnouncementReadRepository,
-	userRepo UserReader,
-	userSubRepo SubscriptionReader,
-) *AnnouncementService {
-	return &AnnouncementService{
-		announcementRepo: announcementRepo,
-		readRepo:         readRepo,
-		userRepo:         userRepo,
-		userSubRepo:      userSubRepo,
-	}
 }
 
 type CreateAnnouncementInput struct {
@@ -72,6 +56,21 @@ type AnnouncementUserReadStatus struct {
 	ReadAt   *time.Time `json:"read_at,omitempty"`
 }
 
+// @project-doc docs/interfaces/http_api.md#announcement_api
+func NewAnnouncementService(
+	announcementRepo AnnouncementRepository,
+	readRepo AnnouncementReadRepository,
+	userRepo UserReader,
+	userSubRepo SubscriptionReader,
+) *AnnouncementService {
+	return &AnnouncementService{
+		announcementRepo: announcementRepo,
+		readRepo:         readRepo,
+		userRepo:         userRepo,
+		userSubRepo:      userSubRepo,
+	}
+}
+
 func (s *AnnouncementService) Create(ctx context.Context, input *CreateAnnouncementInput) (*Announcement, error) {
 	if input == nil {
 		return nil, ErrAnnouncementNilInput
@@ -103,7 +102,7 @@ func (s *AnnouncementService) Create(ctx context.Context, input *CreateAnnouncem
 		return nil, ErrAnnouncementInvalidStatus
 	}
 
-	targeting, err := AnnouncementTargeting(input.Targeting).NormalizeAndValidate()
+	targeting, err := input.Targeting.NormalizeAndValidate()
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +198,7 @@ func (s *AnnouncementService) Update(ctx context.Context, id int64, input *Updat
 	}
 
 	if input.Targeting != nil {
-		targeting, err := AnnouncementTargeting(*input.Targeting).NormalizeAndValidate()
+		targeting, err := (*input.Targeting).NormalizeAndValidate()
 		if err != nil {
 			return nil, err
 		}
@@ -435,7 +434,7 @@ func (s *AnnouncementService) ListUserReadStatus(
 			Email:    u.Email,
 			Username: u.Username,
 			Balance:  u.Balance,
-			Eligible: AnnouncementTargeting(ann.Targeting).Matches(u.Balance, activePlanIDs),
+			Eligible: ann.Targeting.Matches(u.Balance, activePlanIDs),
 			ReadAt:   ptr,
 		})
 	}

@@ -6,8 +6,9 @@ import (
 	"net/http"
 	"testing"
 
-	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/stretchr/testify/require"
+
+	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 func TestClassifyOpenAIWSAcquireError(t *testing.T) {
@@ -88,4 +89,9 @@ func TestOpenAIWSErrorEventHelpers_ConsistentWithWrapper(t *testing.T) {
 	rawStatus := WSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw)
 	require.Equal(t, wrappedStatus, rawStatus)
 	require.Equal(t, http.StatusBadRequest, rawStatus)
+}
+
+func TestOpenAIWSErrorHTTPStatusFromRaw_UsageLimitReachedIs429(t *testing.T) {
+	require.Equal(t, http.StatusTooManyRequests, WSErrorHTTPStatusFromRaw("", "usage_limit_reached"))
+	require.Equal(t, http.StatusTooManyRequests, WSErrorHTTPStatusFromRaw("rate_limit_exceeded", ""))
 }

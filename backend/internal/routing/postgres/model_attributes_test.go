@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
 // TestAttributeBatchLookup 验证共享档案只返回一行，并限制结果中的分组范围。

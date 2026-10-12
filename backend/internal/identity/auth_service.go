@@ -11,6 +11,37 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+var (
+	ErrInvalidCredentials = infraerrors.Unauthorized("INVALID_CREDENTIALS", "invalid email or password")
+	ErrUserNotActive      = infraerrors.Forbidden("USER_NOT_ACTIVE", "user is not active")
+	ErrEmailExists        = infraerrors.Conflict("EMAIL_EXISTS", "email already exists")
+	ErrEmailReserved      = infraerrors.BadRequest("EMAIL_RESERVED", "email is reserved")
+	ErrInvalidToken       = infraerrors.Unauthorized("INVALID_TOKEN", "invalid token")
+	ErrTokenExpired       = infraerrors.Unauthorized("TOKEN_EXPIRED", "token has expired")
+
+	ErrTokenTooLarge       = infraerrors.BadRequest("TOKEN_TOO_LARGE", "token too large")
+	ErrTokenRevoked        = infraerrors.Unauthorized("TOKEN_REVOKED", "token has been revoked")
+	ErrRefreshTokenInvalid = infraerrors.Unauthorized("REFRESH_TOKEN_INVALID", "invalid refresh token")
+	ErrRefreshTokenExpired = infraerrors.Unauthorized("REFRESH_TOKEN_EXPIRED", "refresh token has expired")
+
+	ErrEmailVerifyRequired          = infraerrors.BadRequest("EMAIL_VERIFY_REQUIRED", "email verification is required")
+	ErrEmailSuffixNotAllowed        = infraerrors.BadRequest("EMAIL_SUFFIX_NOT_ALLOWED", "email suffix is not allowed")
+	ErrEmailDomainRegistrationLimit = infraerrors.BadRequest(
+		"EMAIL_DOMAIN_REGISTRATION_LIMIT",
+		"this email domain cannot register another account; use a mainstream email or contact support to add the enterprise domain",
+	)
+	ErrEmailChangeDisabled     = infraerrors.Forbidden("EMAIL_CHANGE_DISABLED", "email changes are disabled")
+	ErrRegDisabled             = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
+	ErrServiceUnavailable      = infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "service temporarily unavailable")
+	ErrInvitationCodeRequired  = infraerrors.BadRequest("INVITATION_CODE_REQUIRED", "invitation code is required")
+	ErrInvitationCodeInvalid   = infraerrors.BadRequest("INVITATION_CODE_INVALID", "invalid or used invitation code")
+	ErrOAuthInvitationRequired = infraerrors.Forbidden("OAUTH_INVITATION_REQUIRED", "invitation code required to complete oauth registration")
+	ErrCaptchaProviderConflict = infraerrors.ServiceUnavailable("CAPTCHA_PROVIDER_CONFLICT", "multiple captcha providers are enabled")
+
+	// ErrPasswordIncorrect 表示当前密码校验失败。
+	ErrPasswordIncorrect = infraerrors.BadRequest("PASSWORD_INCORRECT", "current password is incorrect")
+)
+
 type CaptchaProof struct {
 	// TurnstileToken 承载 Cloudflare Turnstile token；阿里云验证码复用该字段承载 captchaVerifyParam
 	TurnstileToken string
@@ -28,7 +59,18 @@ type AuthSignupGrantPlan struct {
 	Subscriptions []DefaultSubscriptionSetting
 }
 
-// RegisterWithVerification 用户注册（支持邮件验证、优惠码、邀请码和邀请返利码），返回token和用户。
+// SendVerifyCodeResult 发送验证码返回结果。
+type SendVerifyCodeResult struct {
+	Countdown int `json:"countdown"` // 倒计时秒数
+}
+
+type AuthRegistrationArtifacts struct {
+	InvitationRedeemCode *RedeemCode
+	// EnforceEmailDomainQuota 仅为普通注册和 OAuth 邮箱补全开启非白名单域名额度。
+	EnforceEmailDomainQuota bool
+}
+
+// RegisterWithVerification 用户注册（支持邮件验证、优惠码、邀请码和邀请返利码），返回 token 和用户。
 func (s *AuthService) RegisterWithVerification(ctx context.Context, email, password, verifyCode, promoCode, invitationCode, affiliateCode string) (string, *User, error) {
 	// 检查是否开放注册（默认关闭：settingService 未配置时不允许注册）
 	if s.Settings == nil || !s.Settings.IsRegistrationEnabled(ctx) {
@@ -129,7 +171,7 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 		}
 	}
 
-	// 生成token
+	// 生成 token
 	token, err := s.GenerateToken(ctx, user)
 	if err != nil {
 		return "", nil, fmt.Errorf("generate token: %w", err)
@@ -138,12 +180,7 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 	return token, user, nil
 }
 
-// SendVerifyCodeResult 发送验证码返回结果
-type SendVerifyCodeResult struct {
-	Countdown int `json:"countdown"` // 倒计时秒数
-}
-
-// SendVerifyCode 发送邮箱验证码（同步方式）
+// SendVerifyCode 发送邮箱验证码（同步方式）。
 func (s *AuthService) SendVerifyCode(ctx context.Context, email string, locale ...string) error {
 	// 检查是否开放注册（默认关闭）
 	if s.Settings == nil || !s.Settings.IsRegistrationEnabled(ctx) {
@@ -180,7 +217,7 @@ func (s *AuthService) SendVerifyCode(ctx context.Context, email string, locale .
 	return s.Email.SendVerifyCode(ctx, email, siteName, FirstEmailLocale(locale))
 }
 
-// SendVerifyCodeAsync 异步发送邮箱验证码并返回倒计时
+// SendVerifyCodeAsync 异步发送邮箱验证码并返回倒计时。
 func (s *AuthService) SendVerifyCodeAsync(ctx context.Context, email string, locale ...string) (*SendVerifyCodeResult, error) {
 	s.Observer.Printf("service.auth", "[Auth] SendVerifyCodeAsync called for email: %s", email)
 
@@ -287,7 +324,7 @@ func (s *AuthService) VerifyCaptcha(ctx context.Context, proof CaptchaProof, rem
 	return nil
 }
 
-// AuthCaptchaProvidersConflict 同一时间仅允许启用一家人机验证服务商
+// AuthCaptchaProvidersConflict 同一时间仅允许启用一家人机验证服务商。
 func AuthCaptchaProvidersConflict(enabled ...bool) bool {
 	count := 0
 	for _, e := range enabled {
@@ -336,7 +373,7 @@ func (s *AuthService) VerifyActionCaptchaIfEnabled(ctx context.Context, proof Ca
 	)
 }
 
-// IsTurnstileEnabled 检查是否启用Turnstile验证
+// IsTurnstileEnabled 检查是否启用 Turnstile 验证。
 func (s *AuthService) IsTurnstileEnabled(ctx context.Context) bool {
 	if s.Turnstile == nil {
 		return false
@@ -344,7 +381,7 @@ func (s *AuthService) IsTurnstileEnabled(ctx context.Context) bool {
 	return s.Turnstile.IsEnabled(ctx)
 }
 
-// IsRegistrationEnabled 检查是否开放注册
+// IsRegistrationEnabled 检查是否开放注册。
 func (s *AuthService) IsRegistrationEnabled(ctx context.Context) bool {
 	if s.Settings == nil {
 		return false // 安全默认：settingService 未配置时关闭注册
@@ -352,7 +389,7 @@ func (s *AuthService) IsRegistrationEnabled(ctx context.Context) bool {
 	return s.Settings.IsRegistrationEnabled(ctx)
 }
 
-// IsEmailVerifyEnabled 检查是否开启邮件验证
+// IsEmailVerifyEnabled 检查是否开启邮件验证。
 func (s *AuthService) IsEmailVerifyEnabled(ctx context.Context) bool {
 	if s.Settings == nil {
 		return false
@@ -360,7 +397,7 @@ func (s *AuthService) IsEmailVerifyEnabled(ctx context.Context) bool {
 	return s.Settings.IsEmailVerifyEnabled(ctx)
 }
 
-// Login 用户登录，返回JWT token
+// Login 用户登录，返回 JWT token。
 func (s *AuthService) Login(ctx context.Context, email, password string) (string, *User, error) {
 	// 查找用户
 	user, err := s.Users.GetByEmail(ctx, email)
@@ -383,7 +420,7 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (string
 		return "", nil, ErrUserNotActive
 	}
 
-	// 生成JWT token
+	// 生成 JWT token
 	token, err := s.GenerateToken(ctx, user)
 	if err != nil {
 		return "", nil, fmt.Errorf("generate token: %w", err)
@@ -572,12 +609,6 @@ func (s *AuthService) AuthAssignSubscriptions(ctx context.Context, userID int64,
 			s.Observer.Printf("service.auth", "[Auth] Failed to assign default subscription: user_id=%d plan_id=%d err=%v", userID, item.PlanID, err)
 		}
 	}
-}
-
-type AuthRegistrationArtifacts struct {
-	InvitationRedeemCode *RedeemCode
-	// EnforceEmailDomainQuota 仅为普通注册和 OAuth 邮箱补全开启非白名单域名额度。
-	EnforceEmailDomainQuota bool
 }
 
 func (s *AuthService) AuthResolveRegistrationArtifacts(ctx context.Context, invitationCode string, missingInvitationErr error) (*AuthRegistrationArtifacts, error) {
@@ -829,7 +860,7 @@ func AuthBuildEmailSuffixNotAllowedError(whitelist []string) error {
 }
 
 // IsPasswordResetEnabled 检查是否启用密码重置功能
-// 要求：必须同时开启邮件验证且 SMTP 配置正确
+// 要求：必须同时开启邮件验证且 SMTP 配置正确。
 func (s *AuthService) IsPasswordResetEnabled(ctx context.Context) bool {
 	if s.Settings == nil {
 		return false
@@ -843,7 +874,7 @@ func (s *AuthService) IsPasswordResetEnabled(ctx context.Context) bool {
 
 // AuthPreparePasswordReset validates the password reset request and returns necessary data
 // Returns (siteName, resetURL, shouldProceed)
-// shouldProceed is false when we should silently return success (to prevent enumeration)
+// shouldProceed is false when we should silently return success (to prevent enumeration).
 func (s *AuthService) AuthPreparePasswordReset(ctx context.Context, email, frontendBaseURL string) (string, string, bool) {
 	// Check if user exists (but don't reveal this to the caller)
 	user, err := s.Users.GetByEmail(ctx, email)
@@ -876,7 +907,7 @@ func (s *AuthService) AuthPreparePasswordReset(ctx context.Context, email, front
 }
 
 // RequestPasswordResetAsync 异步请求密码重置（队列发送）
-// Security: Returns the same response regardless of whether the email exists (prevent user enumeration)
+// Security: Returns the same response regardless of whether the email exists (prevent user enumeration).
 func (s *AuthService) RequestPasswordResetAsync(ctx context.Context, email, frontendBaseURL string, locale ...string) error {
 	if !s.IsPasswordResetEnabled(ctx) {
 		return infraerrors.Forbidden("PASSWORD_RESET_DISABLED", "password reset is not enabled")
@@ -900,7 +931,7 @@ func (s *AuthService) RequestPasswordResetAsync(ctx context.Context, email, fron
 }
 
 // ResetPassword 重置密码
-// Security: Increments TokenVersion to invalidate all existing JWT tokens
+// Security: Increments TokenVersion to invalidate all existing JWT tokens.
 func (s *AuthService) ResetPassword(ctx context.Context, email, token, newPassword string) error {
 	// Check if password reset is enabled
 	if !s.IsPasswordResetEnabled(ctx) {

@@ -13,11 +13,50 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
+	"github.com/TokenFlux/TokenRouter/internal/requestlog"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// batchPricingGroups 返回任务报价需要的分组字段，由任务用例按需读取。
+type batchPricingGroups struct {
+	source   routing.GroupRepository
+	settings *routing.PricingConfigService
+}
+
+func (r batchPricingGroups) GetByIDLite(ctx context.Context, id int64) (*batchimage.GroupView, error) {
+	value, err := r.source.GetByIDLite(ctx, id)
+	if value == nil {
+		return nil, err
+	}
+	settings := r.settings.GetEffectiveBillingSettings(ctx, id)
+	return &batchimage.GroupView{ID: value.ID, AllowBatchImageGeneration: value.AllowBatchImageGeneration, RateMultiplier: value.RateMultiplier, BatchImageDiscountMultiplier: settings.BatchImageDiscountMultiplier, BatchImageHoldMultiplier: settings.BatchImageHoldMultiplier}, err
+}
+
+func provideBatchPricing(resolver *billing.PriceResolver, groups routing.GroupRepository, configs *routing.PricingConfigService) *batchimage.Pricing {
+	return &batchimage.Pricing{Resolver: resolver, GroupRepo: batchPricingGroups{groups, configs}}
+}
+
+func batchVertexOptions(cfg *config.Config) batchprovider.VertexBatchImageProviderOptions {
+	if cfg == nil {
+		return batchprovider.VertexBatchImageProviderOptions{}
+	}
+	return batchprovider.VertexBatchImageProviderOptions{
+		Enabled:                cfg.BatchImage.VertexEnabled,
+		ProjectID:              cfg.BatchImage.VertexProjectID,
+		Location:               cfg.BatchImage.VertexLocation,
+		ManagedGCSBucket:       cfg.BatchImage.VertexManagedGCSBucket,
+		ManagedGCSPrefix:       cfg.BatchImage.VertexManagedGCSPrefix,
+		Environment:            cfg.Log.Environment,
+		InputRetentionHours:    cfg.BatchImage.VertexInputRetentionHours,
+		OutputRetentionHours:   cfg.BatchImage.VertexOutputRetentionHours,
+		BatchPredictionBaseURL: cfg.BatchImage.VertexBatchPredictionBaseURL,
+		GCSBaseURL:             cfg.BatchImage.VertexGCSBaseURL,
+	}
+}
+
 // provideBatchRuntime 绑定批量图片的资金、处理和恢复实例及后台运行循环。
-func provideBatchRuntime(repo batchimage.BatchImageRepository, providers *providerpostgres.ProviderStore, queue batchimage.BatchImageQueue, funds *billing.Funds, logs usage.UsageLogRepository, pricing *batchimage.Pricing, auth apikey.APIKeyAuthCacheInvalidator, cfg *config.Config, registry *batchimage.Registry[batchprovider.BatchImageProvider]) *batchimage.Runtime {
+func provideBatchRuntime(requests *requestlog.Service, repo batchimage.BatchImageRepository, providers *providerpostgres.ProviderStore, queue batchimage.BatchImageQueue, funds *billing.Funds, logs usage.UsageLogRepository, pricing *batchimage.Pricing, auth apikey.APIKeyAuthCacheInvalidator, cfg *config.Config, registry *batchimage.Registry[batchprovider.BatchImageProvider]) *batchimage.Runtime {
 	funding := batchimage.Funding{Store: funds, Observe: creativeObserve}
 	processor := &batchimage.ProviderProcessor{Repo: repo, Funding: funding, Observe: creativeObserve, ResolveProvider: (batchprovider.ResultAccess{Registry: registry, Providers: providers}).Process}
 	settlement := &batchimage.Settlement{Repo: repo, Funding: funding, Observe: creativeObserve}
@@ -30,7 +69,7 @@ func provideBatchRuntime(repo batchimage.BatchImageRepository, providers *provid
 		}
 	}
 	if logs != nil {
-		recorder := completion.NewRecorder(completion.Dependencies{Logs: completion.SnapshotLogWriter(logs), Observe: func(component, message string) { logging.LegacyPrintf(component, "%s", message) }}, completion.RecorderOptions{})
+		recorder := completion.NewRecorder(completion.Dependencies{RequestRecords: requests.Observe, Logs: completion.SnapshotLogWriter(logs), Observe: func(component, message string) { logging.LegacyPrintf(component, "%s", message) }}, completion.RecorderOptions{})
 		settlement.RecordUsage = func(ctx context.Context, row *usage.UsageLog) {
 			recorder.WriteUsage(ctx, querycache.Clone(row), "service.batch_image_settlement")
 		}

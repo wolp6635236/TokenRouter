@@ -4,8 +4,9 @@ import (
 	"strconv"
 	"strings"
 
-	wireopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/tidwall/gjson"
+
+	wireopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
 // CountGrokNativeSearchCallsFromJSONBytes 统计 Responses JSON 中已完成的原生搜索工具调用，

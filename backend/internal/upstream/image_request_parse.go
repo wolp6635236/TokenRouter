@@ -10,6 +10,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/textproto"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -368,7 +369,7 @@ func NormalizeOpenAIImagesEndpointPath(path string) string {
 }
 
 func HasOpenAINativeImageOptions(exists func(path string) bool) bool {
-	for _, path := range []string{
+	return slices.ContainsFunc([]string{
 		"background",
 		"quality",
 		"style",
@@ -377,12 +378,7 @@ func HasOpenAINativeImageOptions(exists func(path string) bool) bool {
 		"moderation",
 		"input_fidelity",
 		"partial_images",
-	} {
-		if exists(path) {
-			return true
-		}
-	}
-	return false
+	}, exists)
 }
 
 func IsOpenAINativeImageOption(name string) bool {

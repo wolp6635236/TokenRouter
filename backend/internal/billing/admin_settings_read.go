@@ -1,9 +1,11 @@
 package billing
 
 import (
+	"context"
 	"strconv"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	settingvalues "github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
@@ -55,4 +57,17 @@ func ReadAdminSettings(settings map[string]string, defaultBalance func() float64
 	result.BalanceLowNotifyRechargeURL = settings[SettingKeyBalanceLowNotifyRechargeURL]
 	result.SubscriptionExpiryNotifyEnabled = !settingvalues.IsExplicitFalse(settings[SettingKeySubscriptionExpiryNotifyEnabled])
 	return result
+}
+
+// ReadBalanceUnitName 按键读取余额单位并去除空白，读取失败时返回 USD。
+func ReadBalanceUnitName(ctx context.Context, store interface {
+	GetValue(context.Context, string) (string, error)
+},
+) string {
+	value := locale.ReadSettingText(ctx, store, SettingKeyBalanceUnitName, "USD")
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "USD"
+	}
+	return value
 }

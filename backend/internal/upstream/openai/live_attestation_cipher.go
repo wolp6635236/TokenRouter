@@ -16,6 +16,15 @@ type LiveAttestationCipher struct {
 	key [32]byte
 }
 
+func NewLiveAttestationCipher(secret string) *LiveAttestationCipher {
+	if strings.TrimSpace(secret) == "" {
+		return nil
+	}
+	return &LiveAttestationCipher{
+		key: sha256.Sum256([]byte("tokenrouter/live-attestation/v1\x00" + secret)),
+	}
+}
+
 func (c *LiveAttestationCipher) Encrypt(plaintext string) (string, error) {
 	block, err := aes.NewCipher(c.key[:])
 	if err != nil {
@@ -54,13 +63,4 @@ func (c *LiveAttestationCipher) Decrypt(ciphertext string) (string, error) {
 		return "", fmt.Errorf("decrypt Live attestation: %w", err)
 	}
 	return string(plaintext), nil
-}
-
-func NewLiveAttestationCipher(secret string) *LiveAttestationCipher {
-	if strings.TrimSpace(secret) == "" {
-		return nil
-	}
-	return &LiveAttestationCipher{
-		key: sha256.Sum256([]byte("tokenrouter/live-attestation/v1\x00" + secret)),
-	}
 }

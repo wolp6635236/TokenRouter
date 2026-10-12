@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-	"github.com/tidwall/gjson"
 )
 
 type TransformResult struct {

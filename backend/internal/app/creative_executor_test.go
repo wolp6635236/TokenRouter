@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 	creativeprovider "github.com/TokenFlux/TokenRouter/internal/creative/provider"
@@ -13,12 +16,22 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 // creativeExecutionGroupProbe 提供分组读取函数，记录装配期间的读取次数。
 type creativeExecutionGroupProbe struct{ reads int }
+
+type creativePolicyGroups struct{ group *routing.Group }
+
+type creativePolicyProviders struct {
+	selection.Providers
+	value *gatewayprovider.ExecutionProvider
+}
+
+// 价格存储为空，验证分组策略不依赖价格配置关联。
+type creativeNoPrices struct {
+	routing.PricingConfigRepository
+}
 
 func (p *creativeExecutionGroupProbe) GetByIDLite(context.Context, int64) (*routing.Group, error) {
 	p.reads++
@@ -38,8 +51,6 @@ func TestCreativeExecutorNativeAssemblyPreservesPrepareReads(t *testing.T) {
 	require.Equal(t, 5*time.Minute, provideCreativeExecutor(nil, nil, nil, nil, nil).Timeout)
 }
 
-type creativePolicyGroups struct{ group *routing.Group }
-
 func (s creativePolicyGroups) GetByID(context.Context, int64) (*routing.Group, error) {
 	return routing.CloneGroup(s.group), nil
 }
@@ -48,22 +59,12 @@ func (s creativePolicyGroups) GetByIDLite(ctx context.Context, id int64) (*routi
 	return s.GetByID(ctx, id)
 }
 
-type creativePolicyProviders struct {
-	selection.Providers
-	value *gatewayprovider.ExecutionProvider
-}
-
 func (s creativePolicyProviders) GetByID(context.Context, int64) (*gatewayprovider.ExecutionProvider, error) {
 	return s.value, nil
 }
 
 func (s creativePolicyProviders) ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]gatewayprovider.ExecutionProvider, error) {
 	return []gatewayprovider.ExecutionProvider{*s.value}, nil
-}
-
-// 价格存储为空，验证分组策略不依赖价格配置关联。
-type creativeNoPrices struct {
-	routing.PricingConfigRepository
 }
 
 func (creativeNoPrices) ListAll(context.Context) ([]routing.PricingConfig, error) {

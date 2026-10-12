@@ -6,18 +6,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/batchimage"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/batchimage"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
+
+// recoveryFundsFixture 记录资金释放请求、模拟释放错误并按请求去重。
+type recoveryFundsFixture struct {
+	releases   []*billing.TaskFundsCommand
+	releaseErr error
+	seen       map[string]struct{}
+}
 
 type recordingBatchImageQueue struct {
 	*fakeBatchImageQueue
 	enqueued []string
-}
-
-func (q *recordingBatchImageQueue) Enqueue(_ context.Context, batchID string) error {
-	q.enqueued = append(q.enqueued, batchID)
-	return nil
 }
 
 func TestBatchImageBillingRecoveryService_ReleasesStaleUnsubmittedHold(t *testing.T) {
@@ -108,9 +112,42 @@ func TestBatchImageBillingRecoveryService_EnqueuesRetryWhenReleaseFails(t *testi
 
 	released, err := svc.ReleaseStaleUnsubmittedOnce(context.Background())
 	// job 已转 failed、不会再出现在 stale 列表：释放失败必须入队重试
-	//（由 worker 的 releaseTerminalHold 兜底），否则冻结余额永久泄漏。
+	// （由 worker 的 releaseTerminalHold 兜底），否则冻结余额永久泄漏。
 	require.Error(t, err)
 	require.Equal(t, 0, released)
 	require.Equal(t, batchimage.BatchImageJobStatusFailed, repo.jobs[stale.BatchID].Status)
 	require.Equal(t, []string{stale.BatchID}, queue.enqueued)
+}
+
+func (r *recoveryFundsFixture) Reserve(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error) {
+	panic("unexpected Reserve")
+}
+
+func (r *recoveryFundsFixture) Capture(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error) {
+	panic("unexpected Capture")
+}
+
+func (r *recoveryFundsFixture) Release(_ context.Context, cmd *billing.TaskFundsCommand) (*billing.TaskFundsResult, error) {
+	if r.releaseErr != nil {
+		r.releases = append(r.releases, cmd)
+		return nil, r.releaseErr
+	}
+	if r.seen == nil {
+		r.seen = make(map[string]struct{})
+	}
+	if cmd != nil {
+		cmd.Normalize()
+		if _, ok := r.seen[cmd.RequestID]; ok {
+			r.releases = append(r.releases, cmd)
+			return &billing.TaskFundsResult{Applied: false}, nil
+		}
+		r.seen[cmd.RequestID] = struct{}{}
+	}
+	r.releases = append(r.releases, cmd)
+	return &billing.TaskFundsResult{Applied: true}, nil
+}
+
+func (q *recordingBatchImageQueue) Enqueue(_ context.Context, batchID string) error {
+	q.enqueued = append(q.enqueued, batchID)
+	return nil
 }

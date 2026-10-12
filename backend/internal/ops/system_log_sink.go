@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +13,16 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logevent"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+)
+
+const (
+	// maxSystemLogHostLength 与数据库 host 列长度保持一致，避免异常环境值回滚整批写入。
+	maxSystemLogHostLength = 255
+
+	// 首次写入失败后暂停落库的时长，之后逐次翻倍到上限。
+	defaultOpsSystemLogFlushBackoff = 2 * time.Second
+	// 退避上限。日志是尽力而为的观测数据，不值得为它无限期占用连接池。
+	defaultOpsSystemLogFlushBackoffMax = 60 * time.Second
 )
 
 type OpsSystemLogSinkHealth struct {
@@ -55,15 +66,17 @@ type OpsSystemLogSink struct {
 	lastError atomic.Value
 }
 
-// maxSystemLogHostLength 与数据库 host 列长度保持一致，避免异常环境值回滚整批写入。
-const maxSystemLogHostLength = 255
+// SystemLogWriter 是队列唯一需要的存储能力。
+type SystemLogWriter interface {
+	BatchInsertSystemLogs(context.Context, []*OpsInsertSystemLogInput) (int64, error)
+}
 
-const (
-	// 首次写入失败后暂停落库的时长，之后逐次翻倍到上限。
-	defaultOpsSystemLogFlushBackoff = 2 * time.Second
-	// 退避上限。日志是尽力而为的观测数据，不值得为它无限期占用连接池。
-	defaultOpsSystemLogFlushBackoffMax = 60 * time.Second
-)
+// SystemLogSinkOptions 的主机信息与失败输出由 app 的技术 Adapter 提供。
+type SystemLogSinkOptions struct {
+	Host           string
+	HostError      error
+	OnWriteFailure func(error, int, int, time.Duration)
+}
 
 func NewOpsSystemLogSink(opsRepo SystemLogWriter, options ...SystemLogSinkOptions) *OpsSystemLogSink {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -389,9 +402,7 @@ func CopyMap(in map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -446,16 +457,4 @@ func AsInt64Ptr(v any) *int64 {
 		}
 	}
 	return nil
-}
-
-// SystemLogWriter 是队列唯一需要的存储能力。
-type SystemLogWriter interface {
-	BatchInsertSystemLogs(context.Context, []*OpsInsertSystemLogInput) (int64, error)
-}
-
-// SystemLogSinkOptions 的主机信息与失败输出由 app 的技术 Adapter 提供。
-type SystemLogSinkOptions struct {
-	Host           string
-	HostError      error
-	OnWriteFailure func(error, int, int, time.Duration)
 }

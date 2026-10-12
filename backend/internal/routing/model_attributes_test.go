@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
-	"github.com/stretchr/testify/require"
 )
 
 // attributeRepoFixture 记录属性查询次数，并提供按分组区分的档案。

@@ -10,17 +10,15 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+const claudeCodeLongContextModelSuffix = "[1m]"
+
 var (
-	// 预先保存快速判断使用的字节模式，省去每次将字符串转换为字节切片的分配。
-
-	// Fast-path patterns for empty text blocks: {"type":"text","text":""}
-
 	sessionUserAgentProductPattern = regexp.MustCompile(`([A-Za-z0-9._-]+)/[A-Za-z0-9._-]+`)
 	sessionUserAgentVersionPattern = regexp.MustCompile(`\bv?\d+(?:\.\d+){1,3}\b`)
 )
@@ -41,6 +39,32 @@ type jsonRange struct {
 
 type RequestBodyRef struct {
 	data []byte
+}
+
+// ParsedRequest 保存网关请求的预解析结果。
+// HTTP 入口调用 ParseGatewayRequest 一次，执行和会话计算共用 model、stream、messages 和 metadata 的解析结果。
+type ParsedRequest struct {
+	Body            *RequestBodyRef // 原始请求体引用（保留用于转发）；替换内容请走 ReplaceBody
+	Model           string          // 请求的模型名称
+	Stream          bool            // 是否为流式请求
+	MetadataUserID  string          // metadata.user_id（用于会话亲和）
+	HasSystem       bool            // system 字段是否存在，null 也算存在。
+	ThinkingEnabled bool            // 是否开启 thinking（部分平台会影响最终模型名）
+	OutputEffort    string          // output_config.effort（Claude API 的推理强度控制）
+	MaxTokens       int             // max_tokens 值（用于探测请求拦截）
+	SessionContext  *SessionContext // 可选：请求上下文区分因子（nil 时行为不变）
+
+	protocol      string    // 当前 Body 的协议格式，用于 Body 替换后刷新 raw range
+	systemRange   jsonRange // system/systemInstruction.parts 的 raw JSON 范围，绑定 Body 当前内容
+	messagesRange jsonRange // messages/contents 的 raw JSON 范围，绑定 Body 当前内容
+	inputRange    jsonRange // Responses API input 的 raw JSON 范围，绑定 Body 当前内容
+
+	// GroupID 请求所属分组 ID（来自 API Key）
+	GroupID *int64
+
+	// OnUpstreamAccepted 在上游接受请求后调用，用于提前释放串行锁。
+	// 流式请求收到 2xx 响应头时调用。
+	OnUpstreamAccepted func()
 }
 
 func NewRequestBodyRef(data []byte) *RequestBodyRef {
@@ -142,8 +166,6 @@ func setGatewayRequestRanges(parsed *ParsedRequest, protocol string, jsonStr str
 	}
 }
 
-const claudeCodeLongContextModelSuffix = "[1m]"
-
 // normalizeClaudeCodeLongContextModel Claude Code 将 [1m] 作为客户端上下文选择器，转发前应移除泄漏到模型名末尾的
 // 单个或重复后缀。
 func normalizeClaudeCodeLongContextModel(model string) string {
@@ -229,40 +251,13 @@ func refreshGatewayRequestRanges(parsed *ParsedRequest, protocol string) error {
 func DescribeInvalidJSON(body []byte) error {
 	var raw json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
-		var syntaxErr *json.SyntaxError
-		if errors.As(err, &syntaxErr) {
+		if syntaxErr, ok := errors.AsType[*json.SyntaxError](err); ok {
 			return fmt.Errorf("invalid json (len=%d, offset=%d): %s", len(body), syntaxErr.Offset, syntaxErr.Error())
 		}
 		return fmt.Errorf("invalid json (len=%d): %w", len(body), err)
 	}
 	// gjson 拒绝但 encoding/json 接受的边缘情况只报告长度。
 	return fmt.Errorf("invalid json (len=%d)", len(body))
-}
-
-// ParsedRequest 保存网关请求的预解析结果。
-// HTTP 入口调用 ParseGatewayRequest 一次，执行和会话计算共用 model、stream、messages 和 metadata 的解析结果。
-type ParsedRequest struct {
-	Body            *RequestBodyRef // 原始请求体引用（保留用于转发）；替换内容请走 ReplaceBody
-	Model           string          // 请求的模型名称
-	Stream          bool            // 是否为流式请求
-	MetadataUserID  string          // metadata.user_id（用于会话亲和）
-	HasSystem       bool            // system 字段是否存在，null 也算存在。
-	ThinkingEnabled bool            // 是否开启 thinking（部分平台会影响最终模型名）
-	OutputEffort    string          // output_config.effort（Claude API 的推理强度控制）
-	MaxTokens       int             // max_tokens 值（用于探测请求拦截）
-	SessionContext  *SessionContext // 可选：请求上下文区分因子（nil 时行为不变）
-
-	protocol      string    // 当前 Body 的协议格式，用于 Body 替换后刷新 raw range
-	systemRange   jsonRange // system/systemInstruction.parts 的 raw JSON 范围，绑定 Body 当前内容
-	messagesRange jsonRange // messages/contents 的 raw JSON 范围，绑定 Body 当前内容
-	inputRange    jsonRange // Responses API input 的 raw JSON 范围，绑定 Body 当前内容
-
-	// GroupID 请求所属分组 ID（来自 API Key）
-	GroupID *int64
-
-	// OnUpstreamAccepted 在上游接受请求后调用，用于提前释放串行锁。
-	// 流式请求收到 2xx 响应头时调用。
-	OnUpstreamAccepted func()
 }
 
 // NormalizeSessionUserAgent reduces UA noise for sticky-session and digest hashing.
@@ -383,4 +378,14 @@ func (p *ParsedRequest) ReplaceBody(data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// FirstNonEmpty 返回去除两侧空白后的首个非空字符串。
+func FirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

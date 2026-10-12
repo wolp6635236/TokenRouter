@@ -9,29 +9,25 @@ import (
 	"strings"
 	"time"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
-	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-
-	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
-	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
-	mediaprovider "github.com/TokenFlux/TokenRouter/internal/gateway/media/provider"
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
-	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
+
+	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
+	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	mediaprovider "github.com/TokenFlux/TokenRouter/internal/gateway/media/provider"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
 func (s *OpenAIAuxiliary) ForwardEmbeddings(

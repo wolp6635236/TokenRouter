@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
-	"github.com/stretchr/testify/require"
 )
 
 // 在每个提交步骤前插入管理员修改，使用 PostgreSQL 检查提交条件。

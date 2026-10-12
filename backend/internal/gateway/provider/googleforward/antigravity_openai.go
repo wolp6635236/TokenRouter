@@ -24,12 +24,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
-type antigravityCompatProtocol uint8
-
 const (
 	antigravityCompatChatCompletions antigravityCompatProtocol = iota
 	antigravityCompatResponses
 )
+
+type antigravityCompatProtocol uint8
 
 type antigravityCompatRequest struct {
 	protocol          antigravityCompatProtocol

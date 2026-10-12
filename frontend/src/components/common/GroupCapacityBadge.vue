@@ -1,4 +1,5 @@
 <template>
+  <!-- 徽章里的数字加 self-baseline，徽章的基线取自数字，移动卡片的标签和它对齐。 -->
   <div :class="layoutClass">
     <!-- 并发槽位 -->
     <div class="flex items-center gap-1">
@@ -9,9 +10,9 @@
         ]"
       >
         <Icon name="grid" size="md" class="h-2.5 w-2.5" />
-        <span class="font-mono">{{ concurrencyUsed }}</span>
-        <span class="text-gray-400 dark:text-gray-500">/</span>
-        <span class="font-mono">{{ concurrencyMax }}</span>
+        <span class="self-baseline font-mono">{{ concurrencyUsed }}</span>
+        <span class="self-baseline text-gray-400 dark:text-gray-500">/</span>
+        <span class="self-baseline font-mono">{{ concurrencyMax }}</span>
       </span>
     </div>
 
@@ -24,9 +25,9 @@
         ]"
       >
         <Icon name="users" size="md" class="h-2.5 w-2.5" />
-        <span class="font-mono">{{ sessionsUsed }}</span>
-        <span class="text-gray-400 dark:text-gray-500">/</span>
-        <span class="font-mono">{{ sessionsMax }}</span>
+        <span class="self-baseline font-mono">{{ sessionsUsed }}</span>
+        <span class="self-baseline text-gray-400 dark:text-gray-500">/</span>
+        <span class="self-baseline font-mono">{{ sessionsMax }}</span>
       </span>
     </div>
 
@@ -39,9 +40,9 @@
         ]"
       >
         <Icon name="clock" size="md" class="h-2.5 w-2.5" />
-        <span class="font-mono">{{ rpmUsed }}</span>
-        <span class="text-gray-400 dark:text-gray-500">/</span>
-        <span class="font-mono">{{ rpmMax }}</span>
+        <span class="self-baseline font-mono">{{ rpmUsed }}</span>
+        <span class="self-baseline text-gray-400 dark:text-gray-500">/</span>
+        <span class="self-baseline font-mono">{{ rpmMax }}</span>
       </span>
     </div>
   </div>
@@ -85,6 +86,6 @@ function capacityClass(used: number, max: number): string {
   if (used > 0) {
     return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
   }
-  return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+  return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-dark-300'
 }
 </script>

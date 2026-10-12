@@ -6,13 +6,13 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/ent/intercept"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/mixin"
+
+	"github.com/TokenFlux/TokenRouter/ent/intercept"
 )
 
 // SoftDeleteMixin 实现基于 deleted_at 时间戳的软删除功能。
@@ -37,6 +37,10 @@ type SoftDeleteMixin struct {
 	mixin.Schema
 }
 
+// softDeleteKey 是用于在 context 中标记跳过软删除的键类型。
+// 使用空结构体作为键可以避免与其他包的键冲突。
+type softDeleteKey struct{}
+
 // Fields 定义软删除所需的字段。
 // deleted_at 字段：
 //   - 类型为 TIMESTAMPTZ，精确记录删除时间
@@ -52,10 +56,6 @@ func (SoftDeleteMixin) Fields() []ent.Field {
 			}),
 	}
 }
-
-// softDeleteKey 是用于在 context 中标记跳过软删除的键类型。
-// 使用空结构体作为键可以避免与其他包的键冲突。
-type softDeleteKey struct{}
 
 // SkipSoftDelete 返回一个新的 context，用于跳过软删除的拦截器和变更器。
 //

@@ -3,10 +3,10 @@ package pricingcontract
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	billingpricing "github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 	billingtestkit "github.com/TokenFlux/TokenRouter/internal/billing/testkit"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestOpenAIFastBillingUsesExplicitCatalogRates(t *testing.T) {

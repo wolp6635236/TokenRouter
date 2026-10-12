@@ -3,8 +3,9 @@ package httpapi
 import (
 	"sync"
 
-	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 )
 
 const responseFailureEffectsKey = "gateway_response_failure_effects"

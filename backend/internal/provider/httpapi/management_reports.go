@@ -5,11 +5,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/usage"
+	"github.com/gin-gonic/gin"
 
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-
-	"github.com/gin-gonic/gin"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // ProviderReportOptions 提供详细用量查询函数。

@@ -4,17 +4,18 @@ package billing_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/stretchr/testify/suite"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/redeemcodeusage"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/stretchr/testify/suite"
 )
 
 type RedeemCodeRepoSuite struct {
@@ -88,8 +89,6 @@ func (s *RedeemCodeRepoSuite) createUsedCode(codeType, code string, userID int64
 	return redeemCode
 }
 
-// --- Create / CreateBatch / GetByID / GetByCode ---
-
 func (s *RedeemCodeRepoSuite) TestCreate() {
 	code := &billing.RedeemCode{
 		Code:   "TEST-CREATE",
@@ -152,8 +151,6 @@ func (s *RedeemCodeRepoSuite) TestGetByCode_NotFound() {
 	s.Require().ErrorIs(err, billing.ErrRedeemCodeNotFound)
 }
 
-// --- Delete ---
-
 func (s *RedeemCodeRepoSuite) TestDelete() {
 	created, err := s.client.RedeemCode.Create().
 		SetCode("TO-DELETE").
@@ -171,8 +168,6 @@ func (s *RedeemCodeRepoSuite) TestDelete() {
 	s.Require().Error(err, "expected error after delete")
 	s.Require().ErrorIs(err, billing.ErrRedeemCodeNotFound)
 }
-
-// --- List / ListWithFilters ---
 
 func (s *RedeemCodeRepoSuite) TestList() {
 	s.Require().NoError(s.repo.Create(s.ctx, &billing.RedeemCode{Code: "LIST-1", Type: billing.RedeemTypeBalance, Value: 0, Status: billing.StatusUnused}))
@@ -258,8 +253,6 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_PlanPreload() {
 	s.Require().Equal(plan.ID, codes[0].Plan.ID)
 }
 
-// --- Update ---
-
 func (s *RedeemCodeRepoSuite) TestUpdate() {
 	code := &billing.RedeemCode{
 		Code:   "UPDATE-ME",
@@ -277,8 +270,6 @@ func (s *RedeemCodeRepoSuite) TestUpdate() {
 	s.Require().NoError(err)
 	s.Require().Equal(float64(50), got.Value)
 }
-
-// --- Use ---
 
 func (s *RedeemCodeRepoSuite) TestUse() {
 	user := s.createUser(uniqueTestValue(s.T(), "use") + "@example.com")
@@ -357,8 +348,6 @@ func (s *RedeemCodeRepoSuite) TestUse_ExpiredInvitationRejected() {
 	s.Require().ErrorIs(err, billing.ErrRedeemCodeUsed)
 }
 
-// --- ListByUserPaginated ---
-
 // listUserHistory 读取用户兑换历史的第一页，页容量足够覆盖单个用例创建的记录。
 func (s *RedeemCodeRepoSuite) listUserHistory(userID int64) []billing.RedeemCode {
 	codes, _, err := s.repo.ListByUserPaginated(s.ctx, userID, pagination.PaginationParams{Page: 1, PageSize: 10}, "")
@@ -405,8 +394,6 @@ func (s *RedeemCodeRepoSuite) TestListByUser_Pages() {
 	s.Require().Equal("PAGE-1", codes[0].Code)
 	s.Require().Equal(int64(3), result.Total)
 }
-
-// --- Combined original test ---
 
 func (s *RedeemCodeRepoSuite) TestCreateBatch_Filters_Use_Idempotency_ListByUser() {
 	user := s.createUser(uniqueTestValue(s.T(), "rc") + "@example.com")
@@ -468,4 +455,27 @@ func (s *RedeemCodeRepoSuite) TestCreateBatch_Filters_Use_Idempotency_ListByUser
 	used := s.listUserHistory(user.ID)
 	s.Require().Len(used, 2, "expected 2 used codes")
 	s.Require().Equal("CODEA", used[0].Code, "expected newest used code first")
+}
+
+// uniqueTestValue 为兑换存储测试生成格式固定的唯一名称。
+func uniqueTestValue(t *testing.T, prefix string) string {
+	t.Helper()
+	safeName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	return fmt.Sprintf("%s-%s", prefix, safeName)
+}
+
+func (s *RedeemCodeRepoSuite) TestListWithFilters_SortByValueAsc() {
+	s.Require().NoError(s.repo.Create(s.ctx, &billing.RedeemCode{Code: "VALUE-20", Type: billing.RedeemTypeBalance, Value: 20, Status: billing.StatusUnused}))
+	s.Require().NoError(s.repo.Create(s.ctx, &billing.RedeemCode{Code: "VALUE-10", Type: billing.RedeemTypeBalance, Value: 10, Status: billing.StatusUnused}))
+
+	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{
+		Page:      1,
+		PageSize:  10,
+		SortBy:    "value",
+		SortOrder: "asc",
+	}, "", "", "")
+	s.Require().NoError(err)
+	s.Require().Len(codes, 2)
+	s.Require().Equal("VALUE-10", codes[0].Code)
+	s.Require().Equal("VALUE-20", codes[1].Code)
 }

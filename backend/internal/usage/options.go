@@ -10,6 +10,8 @@ import (
 	p "github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 )
 
+var ErrCleanupTaskNotFound = errors.New("usage cleanup task not found")
+
 type Options struct {
 	Calendar      timezone.Calendar
 	RunBackground func(string, func()) bool
@@ -51,8 +53,6 @@ type (
 	PreAggregationSettings = p.PreAggregationSettings
 	SingletonLocker        func(context.Context, string, string, time.Duration) (func(), bool)
 )
-
-var ErrCleanupTaskNotFound = errors.New("usage cleanup task not found")
 
 func logUsage(component, format string, args ...any) { log.Printf(format, args...) }
 

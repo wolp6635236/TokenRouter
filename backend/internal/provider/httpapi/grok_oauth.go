@@ -7,16 +7,86 @@ import (
 	"strings"
 	"time"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/gin-gonic/gin"
 
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider/httpapi/dto"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 type GrokGenerateAuthURLRequest struct {
 	ProxyID     *int64 `json:"proxy_id"`
 	RedirectURI string `json:"redirect_uri"`
+}
+
+type GrokExchangeCodeRequest struct {
+	SessionID   string `json:"session_id" binding:"required"`
+	Code        string `json:"code" binding:"required"`
+	State       string `json:"state"`
+	RedirectURI string `json:"redirect_uri"`
+	ProxyID     *int64 `json:"proxy_id"`
+}
+
+type GrokRefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token"`
+	RT           string `json:"rt"`
+	ClientID     string `json:"client_id"`
+	ProxyID      *int64 `json:"proxy_id"`
+}
+
+type GrokSSOTokenRequest struct {
+	SSOToken string `json:"sso_token"`
+	ProxyID  *int64 `json:"proxy_id"`
+}
+
+type GrokPasswordAuthorizeRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	ProxyID  *int64 `json:"proxy_id"`
+}
+
+type GrokOAuthReconcileRequest struct {
+	DryRun               *bool `json:"dry_run"`
+	Apply                bool  `json:"apply"`
+	AfterID              int64 `json:"after_id"`
+	Limit                int   `json:"limit"`
+	RefreshWindowSeconds int64 `json:"refresh_window_seconds"`
+}
+
+type GrokSSOToOAuthRequest = providercore.GrokSSOToOAuthRequest
+
+type GrokSSOToOAuthItemResult struct {
+	Index    int           `json:"index"`
+	Name     string        `json:"name,omitempty"`
+	Email    string        `json:"email,omitempty"`
+	Provider *dto.Provider `json:"provider,omitempty"`
+	Error    string        `json:"error,omitempty"`
+}
+
+type GrokSSOToOAuthResponse struct {
+	Created []GrokSSOToOAuthItemResult `json:"created"`
+	Failed  []GrokSSOToOAuthItemResult `json:"failed"`
+}
+
+// 授权 HTTP 使用本模块用例、代理查询和运行诊断接口。
+type GrokOAuthReconciler interface {
+	ReconcileGrokOAuth(context.Context, providercore.GrokOAuthReconcileInput) (*providercore.GrokOAuthReconcileResult, error)
+}
+type GrokOAuthHTTPOptions struct {
+	ProxyURL      func(context.Context, int64) (string, bool, error)
+	RuntimeSanity func() any
+	Reconciler    GrokOAuthReconciler
+}
+type GrokOAuthHandler struct {
+	grokOAuthService *providercore.GrokAuthorization
+	imports          *providercore.GrokProviderImport
+	quotaService     *providercore.GrokQuotaService
+	reconciler       GrokOAuthReconciler
+	options          GrokOAuthHTTPOptions
+}
+
+func NewGrokOAuthHandler(auth *providercore.GrokAuthorization, imports *providercore.GrokProviderImport, quota *providercore.GrokQuotaService, options GrokOAuthHTTPOptions) *GrokOAuthHandler {
+	return &GrokOAuthHandler{grokOAuthService: auth, imports: imports, quotaService: quota, reconciler: options.Reconciler, options: options}
 }
 
 func (h *GrokOAuthHandler) GetCapabilities(c *gin.Context) {
@@ -34,14 +104,6 @@ func (h *GrokOAuthHandler) GenerateAuthURL(c *gin.Context) {
 		return
 	}
 	response.Success(c, result)
-}
-
-type GrokExchangeCodeRequest struct {
-	SessionID   string `json:"session_id" binding:"required"`
-	Code        string `json:"code" binding:"required"`
-	State       string `json:"state"`
-	RedirectURI string `json:"redirect_uri"`
-	ProxyID     *int64 `json:"proxy_id"`
 }
 
 func (h *GrokOAuthHandler) ExchangeCode(c *gin.Context) {
@@ -66,24 +128,6 @@ func (h *GrokOAuthHandler) ExchangeCode(c *gin.Context) {
 		return
 	}
 	response.Success(c, tokenInfo)
-}
-
-type GrokRefreshTokenRequest struct {
-	RefreshToken string `json:"refresh_token"`
-	RT           string `json:"rt"`
-	ClientID     string `json:"client_id"`
-	ProxyID      *int64 `json:"proxy_id"`
-}
-
-type GrokSSOTokenRequest struct {
-	SSOToken string `json:"sso_token"`
-	ProxyID  *int64 `json:"proxy_id"`
-}
-
-type GrokPasswordAuthorizeRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	ProxyID  *int64 `json:"proxy_id"`
 }
 
 func (h *GrokOAuthHandler) RefreshToken(c *gin.Context) {
@@ -162,8 +206,7 @@ func (h *GrokOAuthHandler) RefreshProviderToken(c *gin.Context) {
 	}
 	value, err := h.imports.RefreshProvider(c.Request.Context(), id)
 	if err != nil {
-		var input *providercore.GrokImportInputError
-		if errors.As(err, &input) {
+		if input, ok := errors.AsType[*providercore.GrokImportInputError](err); ok {
 			response.BadRequest(c, input.Message)
 		} else {
 			response.ErrorFrom(c, err)
@@ -171,14 +214,6 @@ func (h *GrokOAuthHandler) RefreshProviderToken(c *gin.Context) {
 		return
 	}
 	response.Success(c, dto.ProviderFromRecord(value))
-}
-
-type GrokOAuthReconcileRequest struct {
-	DryRun               *bool `json:"dry_run"`
-	Apply                bool  `json:"apply"`
-	AfterID              int64 `json:"after_id"`
-	Limit                int   `json:"limit"`
-	RefreshWindowSeconds int64 `json:"refresh_window_seconds"`
 }
 
 func (h *GrokOAuthHandler) ReconcileOAuthProviders(c *gin.Context) {
@@ -255,21 +290,6 @@ func (h *GrokOAuthHandler) CreateProviderFromOAuth(c *gin.Context) {
 	response.Success(c, dto.ProviderFromRecord(value))
 }
 
-type GrokSSOToOAuthRequest = providercore.GrokSSOToOAuthRequest
-
-type GrokSSOToOAuthItemResult struct {
-	Index    int           `json:"index"`
-	Name     string        `json:"name,omitempty"`
-	Email    string        `json:"email,omitempty"`
-	Provider *dto.Provider `json:"provider,omitempty"`
-	Error    string        `json:"error,omitempty"`
-}
-
-type GrokSSOToOAuthResponse struct {
-	Created []GrokSSOToOAuthItemResult `json:"created"`
-	Failed  []GrokSSOToOAuthItemResult `json:"failed"`
-}
-
 func (h *GrokOAuthHandler) CreateProvidersFromSSO(c *gin.Context) {
 	var req GrokSSOToOAuthRequest
 	if err := response.BindJSONStrict(c, &req); err != nil {
@@ -338,25 +358,4 @@ func (h *GrokOAuthHandler) ResetQuota(c *gin.Context) {
 
 func (h *GrokOAuthHandler) RuntimeSanity(c *gin.Context) {
 	response.Success(c, h.options.RuntimeSanity())
-}
-
-// 授权 HTTP 使用本模块用例、代理查询和运行诊断接口。
-type GrokOAuthReconciler interface {
-	ReconcileGrokOAuth(context.Context, providercore.GrokOAuthReconcileInput) (*providercore.GrokOAuthReconcileResult, error)
-}
-type GrokOAuthHTTPOptions struct {
-	ProxyURL      func(context.Context, int64) (string, bool, error)
-	RuntimeSanity func() any
-	Reconciler    GrokOAuthReconciler
-}
-type GrokOAuthHandler struct {
-	grokOAuthService *providercore.GrokAuthorization
-	imports          *providercore.GrokProviderImport
-	quotaService     *providercore.GrokQuotaService
-	reconciler       GrokOAuthReconciler
-	options          GrokOAuthHTTPOptions
-}
-
-func NewGrokOAuthHandler(auth *providercore.GrokAuthorization, imports *providercore.GrokProviderImport, quota *providercore.GrokQuotaService, options GrokOAuthHTTPOptions) *GrokOAuthHandler {
-	return &GrokOAuthHandler{grokOAuthService: auth, imports: imports, quotaService: quota, reconciler: options.Reconciler, options: options}
 }

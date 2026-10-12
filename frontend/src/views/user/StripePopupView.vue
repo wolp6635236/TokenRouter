@@ -29,8 +29,8 @@
 
       <!-- Success -->
       <div v-else-if="success" class="space-y-3 py-4 text-center">
-        <div class="text-5xl text-green-600 dark:text-green-400">✓</div>
-        <p class="text-sm text-gray-500 dark:text-slate-400">{{ t('payment.result.success') }}</p>
+        <Icon name="checkCircle" size="xl" :animate-on-hover="false" class="mx-auto h-12 w-12 text-green-600 dark:text-green-400" />
+        <p class="text-sm text-gray-500 dark:text-dark-300">{{ t('payment.result.success') }}</p>
         <button
           class="text-sm underline dark:text-blue-400 dark:hover:text-blue-300"
           :style="{ color: methodColor }"
@@ -43,10 +43,10 @@
       <!-- Loading / Redirecting -->
       <div v-else class="flex items-center justify-center py-8">
         <div
-          class="h-8 w-8 animate-spin rounded-full border-2 border-t-transparent"
-          :style="{ borderColor: methodColor, borderTopColor: 'transparent' }"
+          class="spinner h-8 w-8"
+          :style="{ color: methodColor }"
         />
-        <span class="ml-3 text-sm text-gray-500 dark:text-slate-400">{{ hint }}</span>
+        <span class="ml-3 text-sm text-gray-500 dark:text-dark-300">{{ hint }}</span>
       </div>
     </div>
   </div>
@@ -55,6 +55,7 @@
 <script setup lang="ts">
 import { getLocale } from '@/i18n'
 import { vContentReveal } from '@/directives/contentReveal'
+import Icon from '@/components/icons/Icon.vue'
 
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'

@@ -8,6 +8,17 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+const (
+	SessionIsolationSourceOpenAI                 = "openai"
+	SessionIsolationSourceOpenAIPreviousResponse = "openai_previous_response"
+	SessionIsolationSourceGateway                = "gateway"
+	SessionIsolationSourceGemini                 = "gemini"
+
+	SessionIsolationConflictMessage = "This session already belongs to another group and cannot switch to the current session-isolated group"
+)
+
+var ErrSessionIsolationConflict = infraerrors.Forbidden("SESSION_ISOLATION_CONFLICT", SessionIsolationConflictMessage)
+
 // OwnerStore 原子记录首次会话归属并更新有效期。
 type OwnerStore interface {
 	SetSessionOwnerGroupID(context.Context, int64, string, string, int64, time.Duration) (bool, error)
@@ -22,17 +33,6 @@ type IsolationInput struct {
 	Enabled         bool
 	TTL             time.Duration
 }
-
-const (
-	SessionIsolationSourceOpenAI                 = "openai"
-	SessionIsolationSourceOpenAIPreviousResponse = "openai_previous_response"
-	SessionIsolationSourceGateway                = "gateway"
-	SessionIsolationSourceGemini                 = "gemini"
-
-	SessionIsolationConflictMessage = "This session already belongs to another group and cannot switch to the current session-isolated group"
-)
-
-var ErrSessionIsolationConflict = infraerrors.Forbidden("SESSION_ISOLATION_CONFLICT", SessionIsolationConflictMessage)
 
 // EnsureIsolation 根据用户、最终分组和会话标识检查会话归属。
 func EnsureIsolation(ctx context.Context, cache OwnerStore, input IsolationInput) error {

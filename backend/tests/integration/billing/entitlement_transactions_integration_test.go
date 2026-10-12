@@ -10,15 +10,19 @@ import (
 	"testing"
 	"time"
 
-	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
+	"github.com/stretchr/testify/require"
 
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/ent/redeemcodeusage"
 	"github.com/TokenFlux/TokenRouter/ent/usersubscription"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	"github.com/stretchr/testify/require"
+	identitypostgres "github.com/TokenFlux/TokenRouter/internal/identity/postgres"
 )
+
+type failedRedeemUsage struct{ billing.RedeemCodeRepository }
+
+type redeemAuthObservation struct{ count atomic.Int32 }
 
 // TestSubscriptionParticipantReadsUncommittedAndRollsBack 验证外层新建的用户和套餐尚未提交，读得到它们即证明初始读取和锁都在同一连接。
 func TestSubscriptionParticipantReadsUncommittedAndRollsBack(t *testing.T) {
@@ -37,7 +41,7 @@ func TestSubscriptionParticipantReadsUncommittedAndRollsBack(t *testing.T) {
 			subs := billing.NewSubscriptionService(subscriptionContractEmptyGroups{}, billingpostgres.NewUserSubscriptionRepository(client), billingpostgres.NewSubscriptionMutations(client))
 			if explicit {
 				subs = billingpostgres.SubscriptionsInTx(tx, nil, billing.DateRuntime{Now: time.Now})
-				callCtx = ctx // 显式参与入口无需调用者自行安装 context。
+				callCtx = ctx // 参与入口接收外层事务上下文。
 			}
 			result, err := subs.AssignSubscription(callCtx, &billing.AssignSubscriptionInput{UserID: user.ID, PlanID: plan.ID})
 			require.NoError(t, err)
@@ -84,8 +88,6 @@ func TestValidityChangeParticipatesInOuterTransaction(t *testing.T) {
 	require.True(t, outside.ExpiresAt.Equal(expires))
 }
 
-type failedRedeemUsage struct{ billing.RedeemCodeRepository }
-
 func (r failedRedeemUsage) CreateUsage(ctx context.Context, usage *billing.RedeemCodeUsage) error {
 	if err := r.RedeemCodeRepository.CreateUsage(ctx, usage); err != nil {
 		return err
@@ -93,11 +95,9 @@ func (r failedRedeemUsage) CreateUsage(ctx context.Context, usage *billing.Redee
 	return errors.New("test usage audit failed after actual insert")
 }
 
-type redeemAuthObservation struct{ count atomic.Int32 }
-
 func (o *redeemAuthObservation) InvalidateAuthCacheByUserID(context.Context, int64) { o.count.Add(1) }
 
-// TestRedeemEffectsWaitForCommit 验证每种权益都真实写入后制造 usage 失败，验证余额/订阅/并发数和次数同事务回滚。
+// TestRedeemEffectsWaitForCommit 在权益写入后模拟 usage 失败，检查余额、订阅、并发数和使用次数随事务回滚。
 func TestRedeemEffectsWaitForCommit(t *testing.T) {
 	for _, kind := range []string{billing.RedeemTypeBalance, billing.RedeemTypeConcurrency, billing.RedeemTypeSubscription} {
 		t.Run(kind, func(t *testing.T) {
@@ -142,11 +142,4 @@ func TestRedeemEffectsWaitForCommit(t *testing.T) {
 			require.Equal(t, int32(1), auth.count.Load())
 		})
 	}
-}
-
-// subscriptionContractEmptyGroups 模拟未配置分组来源时的空查询结果。
-type subscriptionContractEmptyGroups struct{}
-
-func (subscriptionContractEmptyGroups) GetByIDLite(context.Context, int64) (*billing.SubscriptionPlanGroup, error) {
-	return nil, nil
 }

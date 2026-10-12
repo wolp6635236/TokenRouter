@@ -1,20 +1,21 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"log/slog"
 	"reflect"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/identity/contact"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
 	"github.com/TokenFlux/TokenRouter/internal/site"
-
-	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
-
-	"github.com/gin-gonic/gin"
 )
 
 func (h *Handler) auditSettingsUpdate(c *gin.Context, before *composite.Snapshot, after *composite.Snapshot, beforeAuthSourceDefaults *identity.AuthSourceDefaultSettings, afterAuthSourceDefaults *identity.AuthSourceDefaultSettings, req UpdateSettingsRequest) {
@@ -871,4 +872,11 @@ func stringSetting(value *string, fallback string) string {
 		return fallback
 	}
 	return *value
+}
+
+// equalUserPromptReplacementConfig 比较序列化后的提示词替换配置，比较范围包含 rules 内的嵌套字段。
+func equalUserPromptReplacementConfig(a, b *promptpolicy.UserPromptReplacementConfig) bool {
+	rawA, _ := json.Marshal(a)
+	rawB, _ := json.Marshal(b)
+	return string(rawA) == string(rawB)
 }

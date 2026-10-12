@@ -27,9 +27,9 @@ func RegisterAuthenticationRoutes(v1 *gin.RouterGroup, endpoints AuthEndpoints, 
 		auth.POST("/passkey/login/begin", guards.Limit("passkey-login-begin", 20, time.Minute), passkeys.BeginLogin)
 		auth.POST("/passkey/login/finish", guards.Limit("passkey-login-finish", 20, time.Minute), passkeys.FinishLogin)
 		auth.POST("/send-verify-code", guards.Limit("auth-send-verify-code", 5, time.Minute), endpoints.SendVerifyCode)
-		// Token刷新接口添加速率限制：每分钟最多 30 次（Redis 故障时 fail-close）
+		// Token 刷新接口添加速率限制：每分钟最多 30 次（Redis 故障时 fail-close）
 		auth.POST("/refresh", guards.Limit("refresh-token", 30, time.Minute), endpoints.RefreshToken)
-		// 登出接口（公开，允许未认证用户调用以撤销Refresh Token）
+		// 登出接口（公开，允许未认证用户调用以撤销 Refresh Token）
 		auth.POST("/logout", endpoints.Logout)
 		// 优惠码验证接口添加速率限制：每分钟最多 10 次（Redis 故障时 fail-close）
 		auth.POST("/validate-promo-code", guards.Limit("validate-promo", 10, time.Minute), endpoints.ValidatePromoCode)
@@ -156,7 +156,6 @@ func RegisterAuthenticationRoutes(v1 *gin.RouterGroup, endpoints AuthEndpoints, 
 			endpoints.CreateDingTalkOAuthAccount,
 		)
 	}
-
 }
 
 // RegisterSessionRoutes 保留当前用户、会话撤销及绑定 Cookie 的原鉴权次序。

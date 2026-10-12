@@ -12,12 +12,26 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
+
+// GrokProviderTest 使用共享 token 源和传输实例，健康规则负责状态写入。
+type GrokProviderTest struct {
+	Tokens    *providercore.GrokTokenSource
+	Transport interface {
+		Do(*http.Request, string, int64, int) (*http.Response, error)
+	}
+	Store interface {
+		providercore.GrokRateLimitWriter
+		UpdateExtra(context.Context, int64, map[string]any) error
+		SetTempUnschedulable(context.Context, int64, time.Time, string) error
+	}
+	OperatorValidator xai.BaseURLValidator
+	DefaultBaseURL    func(context.Context) string
+	SuppressStart     bool
+}
 
 // Execute 通过 xAI Responses API 测试 Grok OAuth 或 API-key 提供商。
 func (s *GrokProviderTest) Execute(c *TestRun, value *providercore.Record, modelID string, testArgs ...string) error {
@@ -251,22 +265,6 @@ func (s *GrokProviderTest) executeImage(c *TestRun, ctx context.Context, value *
 	}
 	(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
 	return nil
-}
-
-// GrokProviderTest 使用共享 token 源和传输实例，健康规则负责状态写入。
-type GrokProviderTest struct {
-	Tokens    *providercore.GrokTokenSource
-	Transport interface {
-		Do(*http.Request, string, int64, int) (*http.Response, error)
-	}
-	Store interface {
-		providercore.GrokRateLimitWriter
-		UpdateExtra(context.Context, int64, map[string]any) error
-		SetTempUnschedulable(context.Context, int64, time.Time, string) error
-	}
-	OperatorValidator xai.BaseURLValidator
-	DefaultBaseURL    func(context.Context) string
-	SuppressStart     bool
 }
 
 func (s *GrokProviderTest) responsesURL(value *providercore.Record) (string, error) {

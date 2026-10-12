@@ -3,9 +3,8 @@ package app
 import (
 	"log/slog"
 
-	"github.com/TokenFlux/TokenRouter/internal/creative"
-
 	"github.com/TokenFlux/TokenRouter/internal/audit"
+	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/admission"
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/promotion"

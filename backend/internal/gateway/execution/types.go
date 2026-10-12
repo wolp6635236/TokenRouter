@@ -12,12 +12,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// Executor 固定依赖在构造时绑定；调用只传业务状态和同步输出。
-type Executor interface {
-	Execute(context.Context, Request, upstream.OutputSink) (ExecutionResult, error)
-}
-type TextKind uint8
-
 const (
 	TextMessages TextKind = iota
 	TextGeminiMessages
@@ -28,6 +22,12 @@ const (
 	TextOpenAIChat
 	TextOpenAIMessages
 )
+
+// Executor 固定依赖在构造时绑定；调用只传业务状态和同步输出。
+type Executor interface {
+	Execute(context.Context, Request, upstream.OutputSink) (ExecutionResult, error)
+}
+type TextKind uint8
 
 // TextState 保存前置步骤确定的文本请求数据。
 type TextState struct {

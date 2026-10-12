@@ -48,6 +48,8 @@ type KeyQueries struct {
 	Search    func(context.Context, int64, string, int) ([]KeyReference, error)
 }
 
+type UserQueries func(context.Context, int, int, UserListFilters, string, string) ([]UserReference, int64, error)
+
 func (q KeyQueries) GetByID(ctx context.Context, id int64) (*KeyReference, error) {
 	return q.Lookup(ctx, id)
 }
@@ -59,8 +61,6 @@ func (q KeyQueries) VerifyOwnership(ctx context.Context, id int64, keys []int64)
 func (q KeyQueries) SearchAPIKeys(ctx context.Context, id int64, query string, limit int) ([]KeyReference, error) {
 	return q.Search(ctx, id, query, limit)
 }
-
-type UserQueries func(context.Context, int, int, UserListFilters, string, string) ([]UserReference, int64, error)
 
 func (q UserQueries) ListUsers(ctx context.Context, page, size int, f UserListFilters, sort, order string) ([]UserReference, int64, error) {
 	return q(ctx, page, size, f, sort, order)

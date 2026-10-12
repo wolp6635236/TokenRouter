@@ -8,25 +8,21 @@ import (
 	"strings"
 	"time"
 
-	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
-	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
-
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
+	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	mediaprovider "github.com/TokenFlux/TokenRouter/internal/gateway/media/provider"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
-	gatewaymedia "github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
-
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
-
-	"github.com/gin-gonic/gin"
 )
 
 func buildOpenAIImagesResponsesRequest(parsed *gatewaymedia.ImageRequest, toolModel string) ([]byte, error) {

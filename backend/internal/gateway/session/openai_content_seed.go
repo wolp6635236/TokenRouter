@@ -5,16 +5,18 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-
 	"github.com/tidwall/gjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// contentSessionSeedPrefix 为内容派生种子添加前缀，与 sess-xxx 等指定会话 ID 区分。
-const contentSessionSeedPrefix = "compat_cs_"
+const (
+	// contentSessionSeedPrefix 为内容派生种子添加前缀，与 sess-xxx 等指定会话 ID 区分。
+	contentSessionSeedPrefix = "compat_cs_"
 
-// contentStablePrefixSessionSeedPrefix 标识仅由跨独立提示仍保持稳定的请求字段派生的缓存身份。
-const contentStablePrefixSessionSeedPrefix = "compat_csp_"
+	// contentStablePrefixSessionSeedPrefix 标识仅由跨独立提示仍保持稳定的请求字段派生的缓存身份。
+	contentStablePrefixSessionSeedPrefix = "compat_csp_"
+)
 
 // OpenAIContentSeed 从 OpenAI 格式请求体构建稳定会话种子。
 // 仅包含跨对话轮次不变的字段；Chat 仅采集开头的 system/developer 前缀，
@@ -38,7 +40,7 @@ func OpenAIContentSeed(body []byte) string {
 	var seen uint8
 	// 从首个根容器开始扫描，以匹配 gjson.GetBytes 对带非 JSON 前缀畸形输入的行为。
 	root := body
-	for i := 0; i < len(body); i++ {
+	for i := range body {
 		switch body[i] {
 		case '{':
 			root = body[i:]

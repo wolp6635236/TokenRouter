@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
 func ollamaUsageFixture(t *testing.T) []byte {

@@ -4,13 +4,18 @@ import (
 	"context"
 
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
-
-	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
 	schedulerhttp "github.com/TokenFlux/TokenRouter/internal/scheduler/httpapi"
 )
+
+// providerDiagnosticSource 将管理查询结果转换为调度诊断数据，诊断共用资格检查和反馈实例。
+type providerDiagnosticSource struct {
+	providers *provider.Admin
+	groups    *routing.GroupAdmin
+}
 
 // provideProviderDiagnostics 为诊断绑定调度使用的资格规则、参数和反馈实例。
 func provideProviderDiagnostics(admin *provider.Admin, groups *routing.GroupAdmin, concurrency *scheduler.ConcurrencyService,
@@ -23,12 +28,6 @@ func provideProviderDiagnostics(admin *provider.Admin, groups *routing.GroupAdmi
 // provideSchedulerDiagnosticsHTTP 直接将只读诊断用例装配到 scheduler HTTP。
 func provideSchedulerDiagnosticsHTTP(core *selection.Diagnostics) *schedulerhttp.DiagnosticsHandler {
 	return schedulerhttp.NewDiagnosticsHandler(core)
-}
-
-// providerDiagnosticSource 将管理查询结果转换为调度诊断数据，诊断共用资格检查和反馈实例。
-type providerDiagnosticSource struct {
-	providers *provider.Admin
-	groups    *routing.GroupAdmin
 }
 
 func (s providerDiagnosticSource) GetProvider(ctx context.Context, id int64) (*gatewayprovider.ExecutionProvider, error) {

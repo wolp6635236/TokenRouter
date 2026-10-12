@@ -8,6 +8,13 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+const (
+	AdjustmentTypeAdminConcurrency = billing.AdjustmentTypeAdminConcurrency
+	AdjustmentTypeAdminBalance     = billing.AdjustmentTypeAdminBalance
+)
+
+var ErrRPMStatusUnavailable = infraerrors.New(501, "RPM_STATUS_UNAVAILABLE", "RPM cache not available")
+
 // CreateUserInput represents input for creating a new user via admin operations.
 type CreateUserInput struct {
 	Email         string
@@ -22,7 +29,7 @@ type CreateUserInput struct {
 	AllowedGroups []int64
 	// DisabledPublicGroups 记录管理员禁止该用户使用的公开分组 ID。
 	DisabledPublicGroups []int64
-	// ActorAdminID 执行本次操作的管理员ID(来自JWT)，仅用于权限敏感操作的审计日志。
+	// ActorAdminID 执行本次操作的管理员 ID(来自 JWT)，仅用于权限敏感操作的审计日志。
 	ActorAdminID int64
 }
 
@@ -43,7 +50,7 @@ type UpdateUserInput struct {
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates map[int64]*float64
-	// ActorAdminID 执行本次操作的管理员ID(来自JWT)，仅用于权限敏感操作的审计日志。
+	// ActorAdminID 执行本次操作的管理员 ID(来自 JWT)，仅用于权限敏感操作的审计日志。
 	ActorAdminID int64
 }
 
@@ -85,7 +92,7 @@ type AdminBoundAuthIdentityChannel struct {
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
-// ReplaceUserGroupResult 分组替换操作的结果
+// ReplaceUserGroupResult 分组替换操作的结果。
 type ReplaceUserGroupResult struct {
 	MigratedKeys int64 // 迁移的 Key 数量
 }
@@ -128,15 +135,6 @@ type (
 		Background    func(string, func()) bool
 	}
 )
-
-func NewUserAdmin(d AdminDependencies) *UserAdmin { return &UserAdmin{d} }
-func (s *UserAdmin) RunBackground(name string, fn func()) bool {
-	if s.Background != nil {
-		return s.Background(name, fn)
-	}
-	fn()
-	return true
-}
 
 type AdminUserSettings interface {
 	GetDefaultBalance(context.Context) float64
@@ -202,9 +200,11 @@ type PreparedAdminIdentityBinding struct {
 	VerifiedAt                                 time.Time
 }
 
-const (
-	AdjustmentTypeAdminConcurrency = billing.AdjustmentTypeAdminConcurrency
-	AdjustmentTypeAdminBalance     = billing.AdjustmentTypeAdminBalance
-)
-
-var ErrRPMStatusUnavailable = infraerrors.New(501, "RPM_STATUS_UNAVAILABLE", "RPM cache not available")
+func NewUserAdmin(d AdminDependencies) *UserAdmin { return &UserAdmin{d} }
+func (s *UserAdmin) RunBackground(name string, fn func()) bool {
+	if s.Background != nil {
+		return s.Background(name, fn)
+	}
+	fn()
+	return true
+}

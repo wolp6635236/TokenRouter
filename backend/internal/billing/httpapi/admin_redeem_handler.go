@@ -10,11 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	idempotencyhttp "github.com/TokenFlux/TokenRouter/internal/idempotency/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
-	"github.com/gin-gonic/gin"
 )
 
 // RedeemAdministrator 只包含兑换 HTTP 所需的完整用例。
@@ -28,7 +29,7 @@ type RedeemAdministrator interface {
 	ExpireRedeemCode(ctx context.Context, id int64) (*billing.RedeemCode, error)
 }
 
-// AdminRedeemHandler handles admin redeem code management
+// AdminRedeemHandler handles admin redeem code management.
 type AdminRedeemHandler struct {
 	idempotencyhttp.Executor
 
@@ -36,15 +37,7 @@ type AdminRedeemHandler struct {
 	redeemService *billing.RedeemService
 }
 
-// NewAdminRedeemHandler 创建管理员兑换码处理器。
-func NewAdminRedeemHandler(adminService RedeemAdministrator, redeemService *billing.RedeemService) *AdminRedeemHandler {
-	return &AdminRedeemHandler{
-		adminService:  adminService,
-		redeemService: redeemService,
-	}
-}
-
-// GenerateRedeemCodesRequest represents generate redeem codes request
+// GenerateRedeemCodesRequest represents generate redeem codes request.
 type GenerateRedeemCodesRequest struct {
 	RequiresPayment bool    `json:"requires_payment"` // 默认允许所有用户领取
 	Code            string  `json:"code" binding:"omitempty,max=32"`
@@ -77,6 +70,14 @@ type CreateAndRedeemCodeRequest struct {
 	Notes         string  `json:"notes"`
 	ExpiresAt     *int64  `json:"expires_at" binding:"omitempty,min=0"`
 	ExpiresInDays *int    `json:"expires_in_days" binding:"omitempty,min=1,max=3650"`
+}
+
+// NewAdminRedeemHandler 创建管理员兑换码处理器。
+func NewAdminRedeemHandler(adminService RedeemAdministrator, redeemService *billing.RedeemService) *AdminRedeemHandler {
+	return &AdminRedeemHandler{
+		adminService:  adminService,
+		redeemService: redeemService,
+	}
 }
 
 // ResolveRedeemCodeExpiresAt 兼容绝对过期时间和相对天数，统一返回 UTC 过期时间。
@@ -113,14 +114,9 @@ func (h *AdminRedeemHandler) List(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
 	codeType := c.Query("type")
 	status := c.Query("status")
-	search := c.Query("search")
+	search := normalizeRedeemSearch(c.Query("search"))
 	sortBy := c.DefaultQuery("sort_by", "id")
 	sortOrder := c.DefaultQuery("sort_order", "desc")
-	// 标准化和验证 search 参数
-	search = strings.TrimSpace(search)
-	if len(search) > 100 {
-		search = search[:100]
-	}
 
 	codes, total, err := h.adminService.ListRedeemCodes(c.Request.Context(), page, pageSize, codeType, status, search, sortBy, sortOrder)
 	if err != nil {
@@ -133,6 +129,19 @@ func (h *AdminRedeemHandler) List(c *gin.Context) {
 		out = append(out, *RedeemCodeFromServiceAdmin(&codes[i]))
 	}
 	response.Paginated(c, out, total, page, pageSize)
+}
+
+// normalizeRedeemSearch 去掉搜索词首尾空白，并截取前 100 个 Unicode 字符。
+func normalizeRedeemSearch(search string) string {
+	search = strings.TrimSpace(search)
+	count := 0
+	for index := range search {
+		if count == 100 {
+			return search[:index]
+		}
+		count++
+	}
+	return search
 }
 
 // GetByID handles getting a redeem code by ID
@@ -437,12 +446,9 @@ func (h *AdminRedeemHandler) Expire(c *gin.Context) {
 func (h *AdminRedeemHandler) Export(c *gin.Context) {
 	codeType := c.Query("type")
 	status := c.Query("status")
-	search := strings.TrimSpace(c.Query("search"))
+	search := normalizeRedeemSearch(c.Query("search"))
 	sortBy := c.DefaultQuery("sort_by", "id")
 	sortOrder := c.DefaultQuery("sort_order", "desc")
-	if len(search) > 100 {
-		search = search[:100]
-	}
 
 	// Get all codes without pagination (use large page size)
 	codes, _, err := h.adminService.ListRedeemCodes(c.Request.Context(), 1, 10000, codeType, status, search, sortBy, sortOrder)

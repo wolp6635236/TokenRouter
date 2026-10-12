@@ -5,21 +5,18 @@ import (
 	"net/http"
 	"time"
 
-	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/TokenFlux/TokenRouter/internal/usage"
-
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
-
 	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
+	openaiprotocol "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
-
-	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
+	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 func (h *QoderCompatibleRuntime) Enter() (func(), error) {
@@ -44,7 +41,7 @@ func (h *QoderCompatibleRuntime) BindErrors(c *gin.Context) {
 }
 
 func (h *QoderCompatibleRuntime) PrepareClient(c *gin.Context, body []byte, endpoint QoderEndpoint) {
-	prepareQoderRequestContext(c, body, QoderEndpoint(endpoint))
+	prepareQoderRequestContext(c, body, endpoint)
 }
 
 func (h *QoderCompatibleRuntime) ObserveRequest(c *gin.Context, model string, stream bool) {
@@ -86,11 +83,11 @@ func (h *QoderCompatibleRuntime) Eligibility(ctx context.Context, key *apikey.AP
 }
 
 func (h *QoderCompatibleRuntime) SessionHash(c *gin.Context, endpoint QoderEndpoint, body []byte, id int64) string {
-	return h.qoderSessionHash(c, QoderEndpoint(endpoint), body, id)
+	return h.qoderSessionHash(c, endpoint, body, id)
 }
 
 func (h *QoderCompatibleRuntime) ConcurrencyError(c *gin.Context, err error, kind string, started bool, endpoint QoderEndpoint) {
-	h.handleConcurrencyError(c, err, kind, started, QoderEndpoint(endpoint))
+	h.handleConcurrencyError(c, err, kind, started, endpoint)
 }
 
 func (h *QoderCompatibleRuntime) Execution(c *gin.Context, call QoderCompatibleCall) textflow.QoderCompatiblePorts {
@@ -99,7 +96,7 @@ func (h *QoderCompatibleRuntime) Execution(c *gin.Context, call QoderCompatibleC
 	body := call.Body
 	reqModel := call.Model
 	reqLog := call.Log
-	endpoint := QoderEndpoint(call.Endpoint)
+	endpoint := call.Endpoint
 	groupMapping := call.Plan.Mapping()
 
 	recordUsage := func(provider QoderCompatibleTarget, result *forwardcore.MessagesResult) {

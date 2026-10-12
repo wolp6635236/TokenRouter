@@ -4,9 +4,10 @@ import (
 	"context"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
-	"github.com/gin-gonic/gin"
 )
 
 func CyberSessionExplicitBlockKey(id int64, c *gin.Context, body []byte) string {

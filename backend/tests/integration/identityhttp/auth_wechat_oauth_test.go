@@ -3,7 +3,6 @@ package identityhttp_test
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,39 +10,22 @@ import (
 	"testing"
 	"time"
 
-	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
-
-	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
-	identitytestkit "github.com/TokenFlux/TokenRouter/internal/identity/testkit"
-	"github.com/TokenFlux/TokenRouter/internal/promotion"
-
-	"github.com/TokenFlux/TokenRouter/internal/billing"
-
-	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
-
-	"github.com/TokenFlux/TokenRouter/internal/settings"
-
-	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
-
-	"entgo.io/ent/dialect"
-	dbent "github.com/TokenFlux/TokenRouter/ent"
-	"github.com/TokenFlux/TokenRouter/ent/authidentity"
-	"github.com/TokenFlux/TokenRouter/ent/authidentitychannel"
-	"github.com/TokenFlux/TokenRouter/ent/enttest"
-	"github.com/TokenFlux/TokenRouter/ent/identityadoptiondecision"
-	"github.com/TokenFlux/TokenRouter/ent/pendingauthsession"
-
-	dbuser "github.com/TokenFlux/TokenRouter/ent/user"
-
-	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
-	"github.com/TokenFlux/TokenRouter/internal/config"
-	"github.com/TokenFlux/TokenRouter/internal/payment"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-
-	entsql "entgo.io/ent/dialect/sql"
-
 	_ "modernc.org/sqlite"
+
+	"github.com/TokenFlux/TokenRouter/ent/authidentity"
+	"github.com/TokenFlux/TokenRouter/ent/authidentitychannel"
+	"github.com/TokenFlux/TokenRouter/ent/identityadoptiondecision"
+	"github.com/TokenFlux/TokenRouter/ent/pendingauthsession"
+	dbuser "github.com/TokenFlux/TokenRouter/ent/user"
+	"github.com/TokenFlux/TokenRouter/internal/billing"
+	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
+	identitycore "github.com/TokenFlux/TokenRouter/internal/identity"
+	identityhttp "github.com/TokenFlux/TokenRouter/internal/identity/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/payment"
+	paymenthttp "github.com/TokenFlux/TokenRouter/internal/payment/httpapi"
+	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
 func TestWeChatOAuthStartRedirectsAndSetsPendingCookies(t *testing.T) {
@@ -1342,164 +1324,4 @@ func TestWeChatOAuthCallbackRepairsLegacyProviderKeyCanonicalIdentity(t *testing
 		Only(ctx)
 	require.NoError(t, err)
 	require.Equal(t, repairedIdentity.ID, channel.IdentityID)
-}
-
-func newWeChatOAuthTestHandler(t *testing.T, invitationEnabled bool) (*authHTTPFixture, *dbent.Client) {
-	return newWeChatOAuthTestHandlerWithSettings(t, invitationEnabled, nil)
-}
-
-func wechatOAuthTestSettings(mode, appID, secret, frontendRedirect string) map[string]string {
-	return map[string]string{
-		identitycore.SettingKeyWeChatConnectEnabled:             "true",
-		identitycore.SettingKeyWeChatConnectAppID:               appID,
-		identitycore.SettingKeyWeChatConnectAppSecret:           secret,
-		identitycore.SettingKeyWeChatConnectMode:                mode,
-		identitycore.SettingKeyWeChatConnectScopes:              identitycore.SettingsDefaultWeChatConnectScopesForMode(mode),
-		identitycore.SettingKeyWeChatConnectRedirectURL:         "https://api.example.com/api/v1/auth/oauth/wechat/callback",
-		identitycore.SettingKeyWeChatConnectFrontendRedirectURL: frontendRedirect,
-	}
-}
-
-func newWeChatOAuthTestHandlerWithSettings(t *testing.T, invitationEnabled bool, extraSettings map[string]string) (*authHTTPFixture, *dbent.Client) {
-	t.Helper()
-
-	db, err := sql.Open("sqlite", "file:auth_wechat_oauth?mode=memory&cache=shared")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	_, err = db.Exec("PRAGMA foreign_keys = ON")
-	require.NoError(t, err)
-
-	drv := entsql.OpenDB(dialect.SQLite, db)
-	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
-
-	userRepo := &oauthPendingFlowUserRepo{client: client}
-	redeemRepo := billingpostgres.NewRedeemCodeRepository(client)
-	cfg := &config.Config{
-		JWT: config.JWTConfig{
-			Secret:                   "test-secret",
-			ExpireHour:               1,
-			AccessTokenExpireMinutes: 60,
-			RefreshTokenExpireDays:   7,
-		},
-		Default: config.DefaultConfig{
-			UserBalance:     0,
-			UserConcurrency: 1,
-		},
-	}
-	values := map[string]string{
-		identitycore.SettingKeyRegistrationEnabled: "true",
-		promotion.SettingKeyInvitationCodeEnabled:  boolSettingValue(invitationEnabled),
-	}
-	for key, value := range wechatOAuthTestSettings("open", "wx-open-app", "wx-open-secret", "/auth/wechat/callback") {
-		values[key] = value
-	}
-	for key, value := range extraSettings {
-		values[key] = value
-	}
-	settingSvc := newAuthSettingsFixture(&wechatOAuthSettingRepoStub{values: values}, cfg)
-
-	authSvc := identitytestkit.Auth(
-		client, &identitycore.AuthDependencies{Users: userRepo, Redeem: redeemRepo, RefreshTokens: &wechatOAuthRefreshTokenCacheStub{}, Options: identitytestkit.AuthOptions(cfg), Settings: authContractSettings(settingSvc)},
-	)
-
-	return newAuthHTTPFixture(t, &authHTTPFixture{
-		authDB:      client,
-		authService: authSvc,
-		settingSvc:  settingSvc,
-		cfg:         cfg,
-	}), client
-}
-
-type wechatOAuthSettingRepoStub struct {
-	values map[string]string
-}
-
-func (s *wechatOAuthSettingRepoStub) Get(context.Context, string) (*settings.Setting, error) {
-	return nil, settings.ErrSettingNotFound
-}
-
-func (s *wechatOAuthSettingRepoStub) GetValue(_ context.Context, key string) (string, error) {
-	value, ok := s.values[key]
-	if !ok {
-		return "", settings.ErrSettingNotFound
-	}
-	return value, nil
-}
-
-func (s *wechatOAuthSettingRepoStub) Set(context.Context, string, string) error {
-	return nil
-}
-
-func (s *wechatOAuthSettingRepoStub) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
-	result := make(map[string]string, len(keys))
-	for _, key := range keys {
-		if value, ok := s.values[key]; ok {
-			result[key] = value
-		}
-	}
-	return result, nil
-}
-
-func (s *wechatOAuthSettingRepoStub) SetMultiple(context.Context, map[string]string) error {
-	return nil
-}
-
-func (s *wechatOAuthSettingRepoStub) GetAll(context.Context) (map[string]string, error) {
-	result := make(map[string]string, len(s.values))
-	for key, value := range s.values {
-		result[key] = value
-	}
-	return result, nil
-}
-
-func (s *wechatOAuthSettingRepoStub) Delete(context.Context, string) error {
-	return nil
-}
-
-type wechatOAuthRefreshTokenCacheStub struct{}
-
-func (s *wechatOAuthRefreshTokenCacheStub) StoreRefreshToken(context.Context, string, *identitycore.RefreshTokenData, time.Duration) error {
-	return nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) GetRefreshToken(context.Context, string) (*identitycore.RefreshTokenData, error) {
-	return nil, identitycore.ErrRefreshTokenNotFound
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) DeleteRefreshToken(context.Context, string) error {
-	return nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) DeleteUserRefreshTokens(context.Context, int64) error {
-	return nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) DeleteTokenFamily(context.Context, string) error {
-	return nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) AddToUserTokenSet(context.Context, int64, string, time.Duration) error {
-	return nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) AddToFamilyTokenSet(context.Context, string, string, time.Duration) error {
-	return nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) GetUserTokenHashes(context.Context, int64) ([]string, error) {
-	return nil, nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) GetFamilyTokenHashes(context.Context, string) ([]string, error) {
-	return nil, nil
-}
-
-func (s *wechatOAuthRefreshTokenCacheStub) IsTokenInFamily(context.Context, string, string) (bool, error) {
-	return false, nil
-}
-
-// ConsumeRefreshToken 与此桩始终未找到凭据的读取行为一致。
-func (s *wechatOAuthRefreshTokenCacheStub) ConsumeRefreshToken(context.Context, string) (bool, error) {
-	return false, nil
 }

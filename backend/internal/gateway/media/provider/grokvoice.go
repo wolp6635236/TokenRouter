@@ -23,13 +23,13 @@ type GrokVoiceOptions struct {
 	CopyHeaders                         func(http.Header, http.Header)
 }
 
+type GrokVoice struct{ Options GrokVoiceOptions }
+
 // String 防止技术参数中的令牌或请求被默认日志展开。
 func (o GrokVoiceOptions) String() string {
 	return fmt.Sprintf("media GrokVoice provider=%d", o.ProviderID)
 }
 func (o GrokVoiceOptions) GoString() string { return o.String() }
-
-type GrokVoice struct{ Options GrokVoiceOptions }
 
 func (e GrokVoice) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (upstream.AttemptResult, error) {
 	o := e.Options

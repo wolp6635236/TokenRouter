@@ -6,16 +6,14 @@ import (
 	"testing"
 	"time"
 
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
-	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
-
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
-
+	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
-	"github.com/stretchr/testify/require"
 )
 
 func TestScheduleOllamaCloudUsageActivityOnlyForOllama(t *testing.T) {

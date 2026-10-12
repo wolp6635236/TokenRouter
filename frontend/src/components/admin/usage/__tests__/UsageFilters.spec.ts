@@ -141,7 +141,7 @@ describe('UsageFilters — user search dropdown', () => {
     const wrapper = mountFilters()
 
     // 聚焦并输入关键词以触发防抖搜索。
-    const input = wrapper.find('input[type="text"]')
+    const input = wrapper.find('input[placeholder="Search user..."]')
     await input.trigger('focus')
     await input.setValue('test')
     await input.trigger('input')
@@ -185,7 +185,7 @@ describe('UsageFilters — user search dropdown', () => {
       .mockImplementationOnce(() => secondSearch.promise)
 
     const wrapper = mountFilters()
-    const input = wrapper.find('input[type="text"]')
+    const input = wrapper.find('input[placeholder="Search user..."]')
     await input.trigger('focus')
 
     await input.setValue('a')
@@ -211,7 +211,7 @@ describe('UsageFilters — user search dropdown', () => {
     mockSearchUsers.mockImplementationOnce(() => pendingSearch.promise)
 
     const wrapper = mountFilters()
-    const input = wrapper.find('input[type="text"]')
+    const input = wrapper.find('input[placeholder="Search user..."]')
     await input.trigger('focus')
 
     await input.setValue('stale')

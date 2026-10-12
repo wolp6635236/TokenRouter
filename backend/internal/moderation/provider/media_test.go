@@ -9,8 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/TokenFlux/TokenRouter/internal/moderation/contract"
 	"github.com/stretchr/testify/require"
+
+	"github.com/TokenFlux/TokenRouter/internal/moderation/contract"
 )
 
 func TestContentModerationSnapshotStopsImmediatelyWhenContextCanceled(t *testing.T) {
@@ -29,6 +30,7 @@ func TestContentModerationSnapshotStopsImmediatelyWhenContextCanceled(t *testing
 		require.Contains(t, item.SnapshotError, context.Canceled.Error())
 	}
 }
+
 func TestContentModerationSnapshotTotalByteBudgetIsAtomic(t *testing.T) {
 	var retained atomic.Int64
 
@@ -36,6 +38,7 @@ func TestContentModerationSnapshotTotalByteBudgetIsAtomic(t *testing.T) {
 	require.False(t, reserveContentModerationSnapshotBytes(&retained, 2))
 	require.Equal(t, int64(maxContentModerationSnapshotTotalBytes-1), retained.Load())
 }
+
 func TestContentModerationDataImageRejectsDecodedPayloadOverLimit(t *testing.T) {
 	payload := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxContentModerationSnapshotBytes+1))
 
@@ -44,6 +47,7 @@ func TestContentModerationDataImageRejectsDecodedPayloadOverLimit(t *testing.T) 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "20 MB")
 }
+
 func TestContentModerationSnapshotRejectsWrongMIMEAndPrivateRedirect(t *testing.T) {
 	_, err := normalizeContentModerationImageMIME("text/plain")
 	require.Error(t, err)
@@ -52,6 +56,7 @@ func TestContentModerationSnapshotRejectsWrongMIMEAndPrivateRedirect(t *testing.
 	redirect := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/redirected.png", nil)
 	require.Error(t, client.CheckRedirect(redirect, nil))
 }
+
 func TestContentModerationRemoteSnapshotRejectsPrivateAddress(t *testing.T) {
 	_, _, err := fetchContentModerationImage(context.Background(), "http://127.0.0.1/private.png")
 

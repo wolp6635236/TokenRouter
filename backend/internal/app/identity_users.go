@@ -13,6 +13,9 @@ import (
 // announcementUsers 将身份查询结果转换为公告资格判断需要的用户数据。
 type announcementUsers struct{ Repository identity.UserRepository }
 
+// billingIdentityUsers 从身份存储读取资金用例需要的用户数据。
+type billingIdentityUsers struct{ Repository identity.UserRepository }
+
 func provideAnnouncementUsers(users *identitypostgres.UserStore) site.UserReader {
 	return &announcementUsers{users}
 }
@@ -36,9 +39,6 @@ func (a *announcementUsers) ListWithFilters(ctx context.Context, p pagination.Pa
 	}
 	return out, page, nil
 }
-
-// billingIdentityUsers 从身份存储读取资金用例需要的用户数据。
-type billingIdentityUsers struct{ Repository identity.UserRepository }
 
 func (b billingIdentityUsers) GetByID(ctx context.Context, id int64) (*billing.UserSummary, error) {
 	u, e := b.Repository.GetByID(ctx, id)

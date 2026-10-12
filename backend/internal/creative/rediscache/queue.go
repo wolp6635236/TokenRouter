@@ -7,8 +7,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/TokenFlux/TokenRouter/internal/creative"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/TokenFlux/TokenRouter/internal/creative"
 )
 
 const (
@@ -25,7 +26,8 @@ const (
 	creativeReservePollInterval = time.Second
 )
 
-var creativeMoveDueDelayedScript = redis.NewScript(`
+var (
+	creativeMoveDueDelayedScript = redis.NewScript(`
 local jobs = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, ARGV[2])
 for _, job in ipairs(jobs) do
   redis.call("ZREM", KEYS[1], job)
@@ -34,7 +36,7 @@ end
 return #jobs
 `)
 
-var creativeRecoverStaleActiveScript = redis.NewScript(`
+	creativeRecoverStaleActiveScript = redis.NewScript(`
 local jobs = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, ARGV[2])
 for _, job in ipairs(jobs) do
   redis.call("ZREM", KEYS[1], job)
@@ -44,7 +46,7 @@ end
 return #jobs
 `)
 
-var creativeAckScript = redis.NewScript(`
+	creativeAckScript = redis.NewScript(`
 if redis.call("ZSCORE", KEYS[1], ARGV[1]) and redis.call("GET", KEYS[3] .. ARGV[1]) == ARGV[2] then
   redis.call("ZREM", KEYS[1], ARGV[1])
   redis.call("ZREM", KEYS[2], ARGV[1])
@@ -54,7 +56,7 @@ end
 return 0
 `)
 
-var creativeRequeueScript = redis.NewScript(`
+	creativeRequeueScript = redis.NewScript(`
 if redis.call("ZSCORE", KEYS[1], ARGV[1]) and redis.call("GET", KEYS[3] .. ARGV[1]) == ARGV[2] then
   redis.call("ZREM", KEYS[1], ARGV[1])
   redis.call("ZREM", KEYS[2], ARGV[1])
@@ -68,7 +70,7 @@ end
 return 0
 `)
 
-var creativeHeartbeatScript = redis.NewScript(`
+	creativeHeartbeatScript = redis.NewScript(`
 if redis.call("ZSCORE", KEYS[1], ARGV[1]) and redis.call("GET", KEYS[2] .. ARGV[1]) == ARGV[2] then
   redis.call("ZADD", KEYS[1], ARGV[3], ARGV[1])
   return 1
@@ -76,24 +78,24 @@ end
 return 0
 `)
 
-var creativeReleaseLockScript = redis.NewScript(`
+	creativeReleaseLockScript = redis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("DEL", KEYS[1])
 end
 return 0
 `)
 
-var creativeRefreshLockScript = redis.NewScript(`
+	creativeRefreshLockScript = redis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("PEXPIRE", KEYS[1], ARGV[2])
 end
 return 0
 `)
 
-// creativeReserveScript 原子地从 ready 弹出并写入 active zset。
-// BRPop + ZAdd 两步方案在两步之间进程崩溃时 job 会脱离所有队列结构，
-// 且 inflight 去重键（默认 7 天）会挡住所有重新入队。
-var creativeReserveScript = redis.NewScript(`
+	// creativeReserveScript 原子地从 ready 弹出并写入 active zset。
+	// BRPop + ZAdd 两步方案在两步之间进程崩溃时 job 会脱离所有队列结构，
+	// 且 inflight 去重键（默认 7 天）会挡住所有重新入队。
+	creativeReserveScript = redis.NewScript(`
 local job = redis.call("RPOP", KEYS[1])
 if not job then
   return nil
@@ -103,16 +105,20 @@ redis.call("SET", KEYS[3] .. job, ARGV[2], "PX", ARGV[3])
 return job
 `)
 
-// creativeEnqueueScript 原子地设置 inflight 去重键并推入 ready。
-// SetNX + LPush 两步方案在两步之间进程崩溃时，inflight 键（默认 7 天）
-// 会挡住所有后续入队，而 job 从未进入 ready。
-var creativeEnqueueScript = redis.NewScript(`
+	// creativeEnqueueScript 原子地设置 inflight 去重键并推入 ready。
+	// SetNX + LPush 两步方案在两步之间进程崩溃时，inflight 键（默认 7 天）
+	// 会挡住所有后续入队，而 job 从未进入 ready。
+	creativeEnqueueScript = redis.NewScript(`
 if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
   redis.call("LPUSH", KEYS[2], ARGV[1])
   return 1
 end
 return 0
 `)
+
+	_ creative.CreativeRunQueue            = (*creativeQueue)(nil)
+	_ creative.CreativeRunJobLockRefresher = (*creativeRedisJobLock)(nil)
+)
 
 type creativeQueue struct {
 	rdb            *redis.Client
@@ -123,6 +129,22 @@ type creativeQueue struct {
 	lockPrefix     string
 	inflightTTL    time.Duration
 	lockTTL        time.Duration
+}
+
+type creativeRedisJobLock struct {
+	rdb   *redis.Client
+	key   string
+	token string
+}
+
+type QueueOptions struct {
+	InflightKeyPrefix  string
+	InflightTTLSeconds int
+	JobLockTTLSeconds  int
+	LockKeyPrefix      string
+	QueueActiveKey     string
+	QueueDelayedKey    string
+	QueueReadyKey      string
 }
 
 // NewCreativeQueue 创建创作台 Redis 队列，键前缀全部来自 cfg.Creative。
@@ -194,10 +216,7 @@ func (q *creativeQueue) Reserve(ctx context.Context, blockTimeout time.Duration)
 		if remaining <= 0 {
 			return creative.ReservedCreativeRun{}, creative.ErrCreativeQueueEmpty
 		}
-		wait := creativeReservePollInterval
-		if remaining < wait {
-			wait = remaining
-		}
+		wait := min(remaining, creativeReservePollInterval)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -335,12 +354,6 @@ func (q *creativeQueue) lockKey(runID string) string {
 	return q.lockPrefix + runID
 }
 
-type creativeRedisJobLock struct {
-	rdb   *redis.Client
-	key   string
-	token string
-}
-
 func (l *creativeRedisJobLock) Release(ctx context.Context) error {
 	if l == nil || l.rdb == nil || l.key == "" || l.token == "" {
 		return nil
@@ -360,25 +373,10 @@ func (l *creativeRedisJobLock) Refresh(ctx context.Context, ttl time.Duration) (
 	return result == 1, err
 }
 
-var (
-	_ creative.CreativeRunQueue            = (*creativeQueue)(nil)
-	_ creative.CreativeRunJobLockRefresher = (*creativeRedisJobLock)(nil)
-)
-
 func newCreativeLockToken() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
-}
-
-type QueueOptions struct {
-	InflightKeyPrefix  string
-	InflightTTLSeconds int
-	JobLockTTLSeconds  int
-	LockKeyPrefix      string
-	QueueActiveKey     string
-	QueueDelayedKey    string
-	QueueReadyKey      string
 }
