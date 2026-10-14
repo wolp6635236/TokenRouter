@@ -92,8 +92,7 @@ func ClassifyWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bo
 	if strings.Contains(msg, "connection limit") && strings.Contains(msg, "websocket") {
 		return "ws_connection_limit_reached", true
 	}
-	if strings.Contains(msg, "invalid_encrypted_content") ||
-		(strings.Contains(msg, "encrypted content") && strings.Contains(msg, "could not be verified")) {
+	if IsOpenAIInvalidEncryptedContentError("", msg) {
 		return "invalid_encrypted_content", true
 	}
 	if strings.Contains(msg, "previous_response_not_found") ||

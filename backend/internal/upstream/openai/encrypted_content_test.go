@@ -7,6 +7,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestIsOpenAIInvalidEncryptedContentError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, code, message string
+		want                bool
+	}{
+		{name: "code", code: "invalid_encrypted_content", message: "rejected", want: true},
+		{name: "relay_message_without_code", message: "encrypted content could not be verified", want: true},
+		{name: "official_message_without_code", message: "The encrypted content gAAA...KCI= could not be verified. Reason: Encrypted content could not be decrypted or parsed.", want: true},
+		{name: "code_in_message", message: "upstream error: invalid_encrypted_content", want: true},
+		{name: "other_invalid_request", code: "invalid_request_error", message: "Unsupported parameter: temperature"},
+		{name: "function_output_decrypt", code: "thinking_signature_invalid", message: "Encrypted function output content could not be decrypted or decoded."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, IsOpenAIInvalidEncryptedContentError(tc.code, tc.message))
+		})
+	}
+}
+
 func TestCollectOpenAIEncryptedContentDigestsRaw(t *testing.T) {
 	t.Parallel()
 

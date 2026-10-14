@@ -614,7 +614,7 @@ func (s *OpenAIWebSocketExecutor) proxyOpenAIWSHTTPBridgeTurn(
 		_ = resp.Body.Close()
 		gatewayhttp.MarkOpenAICyberPolicyEvent(c, respBody, resp.StatusCode, nil)
 		if resp.StatusCode == http.StatusBadRequest &&
-			upstream.ExtractErrorCode(respBody) == gatewayhttp.OpenAIInvalidEncryptedContentReason {
+			upstreamopenai.IsOpenAIInvalidEncryptedContentError(upstream.ExtractErrorCode(respBody), upstream.ExtractErrorMessage(respBody)) {
 			s.Lineage.MarkPayload(
 				c, body, "ingress_ws_http_bridge_invalid_encrypted_lineage_mark", provider.Record.ID, turn,
 			)

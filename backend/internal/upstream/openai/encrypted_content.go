@@ -12,6 +12,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
+// IsOpenAIInvalidEncryptedContentError 判断上游是否拒绝了请求里的加密 reasoning 或 compaction。
+// 部分中转站返回这类 400 时去掉了 code，这时按 message 识别。
+func IsOpenAIInvalidEncryptedContentError(code, message string) bool {
+	if strings.EqualFold(strings.TrimSpace(code), "invalid_encrypted_content") {
+		return true
+	}
+	msg := strings.ToLower(message)
+	return strings.Contains(msg, "invalid_encrypted_content") ||
+		(strings.Contains(msg, "encrypted content") && strings.Contains(msg, "could not be verified"))
+}
+
 func OpenAIEncryptedContentDigest(encrypted string) string {
 	sum := sha256.Sum256([]byte(encrypted))
 	return hex.EncodeToString(sum[:])

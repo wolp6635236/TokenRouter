@@ -23,7 +23,7 @@ func (b *trackedBody) Close() error { b.closes++; return nil }
 
 // TestRunHTTPRecoveryBoundaries 使用固定上游错误检查同提供商恢复的次数和时间限制。
 func TestRunHTTPRecoveryBoundaries(t *testing.T) {
-	for _, kind := range []string{"agent", "encrypted", "plain"} {
+	for _, kind := range []string{"agent", "encrypted", "encrypted_message", "plain"} {
 		t.Run(kind, func(t *testing.T) {
 			bodies := []*trackedBody{}
 			requests, recoveries, lineages := 0, 0, 0
@@ -48,8 +48,12 @@ func TestRunHTTPRecoveryBoundaries(t *testing.T) {
 				RecoverAgentTask: func(context.Context) error { recoveries++; return nil },
 				RedactErrorBody:  func(_ context.Context, b []byte) []byte { return b },
 				ErrorDetails: func([]byte) (string, string) {
-					if kind == "encrypted" {
+					switch kind {
+					case "encrypted":
 						return "rejected", "invalid_encrypted_content"
+					case "encrypted_message":
+						// 模拟去掉了 code 的中转站错误。
+						return "encrypted content could not be verified", ""
 					}
 					return "rejected", ""
 				},
@@ -76,7 +80,7 @@ func TestRunHTTPRecoveryBoundaries(t *testing.T) {
 			} else {
 				require.Equal(t, 1, recoveries)
 			}
-			if kind == "encrypted" {
+			if kind == "encrypted" || kind == "encrypted_message" {
 				require.Equal(t, 1, lineages)
 			} else {
 				require.Zero(t, lineages)

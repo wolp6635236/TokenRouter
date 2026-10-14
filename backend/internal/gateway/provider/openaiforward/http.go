@@ -127,7 +127,7 @@ func RunHTTP(ctx context.Context, input HTTPInput, o HTTPOptions) (*Result, erro
 			payload = o.RedactErrorBody(ctx, payload)
 			resp.Body = io.NopCloser(bytes.NewReader(payload))
 			message, code := o.ErrorDetails(payload)
-			if !encryptedRetried && resp.StatusCode == http.StatusBadRequest && code == "invalid_encrypted_content" {
+			if !encryptedRetried && resp.StatusCode == http.StatusBadRequest && openai.IsOpenAIInvalidEncryptedContentError(code, message) {
 				retryBody, changed, retryErr := o.RetryEncrypted(body)
 				if retryErr != nil {
 					return nil, retryErr
