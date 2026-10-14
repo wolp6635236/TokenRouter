@@ -52,7 +52,7 @@ type responsesAttemptBridge struct {
 	result                                                                   *forwardcore.OpenAIResult
 	writerSizeBeforeForward                                                  int
 	cyberPolicyHandled, wroteFallback                                        bool
-	failoverReasoningState                                                   openAIFailoverReasoningState
+	passthroughFailoverState                                                 openAIPassthroughFailoverState
 	fields                                                                   []zap.Field
 }
 
@@ -183,8 +183,8 @@ func (b *responsesAttemptBridge) Forward() textflow.ResponseOutcome {
 	forwardStart := time.Now()
 	// 快照扣除心跳注释字节，上游失败时仍可按协议输出状态决定换号（#3887）。
 	b.writerSizeBeforeForward = gatewayhttp.OpenAICompactKeepaliveAdjustedWrittenSize(b.c)
-	// 换到本次请求第一个提供商以外的提供商时，从 canonical 请求体派生本次正文并清除加密 reasoning。
-	attemptBody := b.binding().deriveOpenAIForwardAttemptBody(b.reqLog, b.forwardBody, b.provider, &b.failoverReasoningState)
+	// 从透传切换到非透传提供商时，从 canonical 请求体派生本次正文并清除上游私有的加密 reasoning。
+	attemptBody := b.binding().deriveOpenAIForwardAttemptBody(b.reqLog, b.forwardBody, b.provider, &b.passthroughFailoverState)
 	b.result, err = func() (*forwardcore.OpenAIResult, error) {
 		defer func() {
 			if b.providerReleaseFunc != nil {

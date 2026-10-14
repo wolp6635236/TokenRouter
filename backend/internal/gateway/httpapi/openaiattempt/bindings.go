@@ -153,7 +153,7 @@ type openAIExecutionDependencies struct {
 		reqLog *zap.Logger,
 		canonicalBody []byte,
 		provider *gatewaycapture.ExecutionProvider,
-		state *openAIFailoverReasoningState,
+		state *openAIPassthroughFailoverState,
 	) []byte
 	ensureAnthropicErrorResponse         func(c *gin.Context, streamStarted bool) bool
 	ensureOpenAIForwardErrorResponse     func(c *gin.Context, streamStarted bool, err error) bool
