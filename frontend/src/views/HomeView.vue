@@ -61,18 +61,6 @@
         </div>
       </section>
 
-      <section class="mx-auto mt-16 grid max-w-4xl grid-cols-2 gap-x-6 gap-y-8 md:grid-cols-4">
-        <div v-for="card in homeStatsCards" :key="card.key" class="text-center">
-          <p class="min-h-[1.1em] text-3xl font-bold tabular-nums tracking-tight text-gray-950 dark:text-white md:text-4xl">
-            {{ card.value }}
-          </p>
-          <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">{{ card.label }}</p>
-        </div>
-      </section>
-      <p v-if="homeStatsError" class="mt-4 text-center text-xs text-gray-500 dark:text-dark-400">
-        {{ t('home.stats.unavailable') }}
-      </p>
-
       <!-- Provider icon marquee -->
       <section class="mx-auto mt-14 max-w-5xl" aria-hidden="true">
         <div class="home-marquee relative overflow-hidden">
@@ -507,8 +495,8 @@ import AppHeader from '@/components/layout/AppHeader.vue'
 import ProviderIcon from '@/components/common/ProviderIcon.vue'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { getMarketplaceModels, getMarketplaceStats } from '@/api/marketplace'
-import type { MarketplaceGroup, MarketplaceModel, MarketplaceStats } from '@/types'
+import { getMarketplaceModels } from '@/api/marketplace'
+import type { MarketplaceGroup, MarketplaceModel } from '@/types'
 import { sanitizeUrl } from '@/utils/url'
 import { hasAcceptedLoginAgreement } from '@/utils/loginAgreement'
 import { isGoogleOneTapEligible, isGoogleOneTapOriginSupported } from '@/utils/googleIdentity'
@@ -519,10 +507,7 @@ import {
   resolveProviderBrandKey,
 } from '@/utils/providerBrand'
 
-type HomeStatsKey = 'today-tokens' | 'total-tokens' | 'total-users' | 'supported-models'
-type HomeStatsIcon = 'bolt' | 'database' | 'users' | 'grid'
 type HomeStepIcon = 'userPlus' | 'grid' | 'key'
-type HomeStatFormat = 'compact' | 'number'
 
 interface HomeProviderCategory {
   key: string
@@ -536,15 +521,6 @@ interface HomeProviderSummary extends HomeProviderCategory {
   officialPriceRatio?: number
   sortOrder: number
   firstIndex: number
-}
-
-interface HomeStatsCard {
-  key: HomeStatsKey
-  label: string
-  value: string
-  icon: HomeStatsIcon
-  iconWrapClass: string
-  iconClass: string
 }
 
 interface HomeStep {
@@ -656,22 +632,10 @@ const homeMarqueeBrands = computed(() => {
 })
 
 const marketplaceGroups = ref<MarketplaceGroup[]>([])
-const homeStats = ref<MarketplaceStats | null>(null)
 const homeMarketplaceLoading = ref(true)
-const homeStatsLoading = ref(true)
 const homeMarketplaceError = ref(false)
-const homeStatsError = ref(false)
 const homeMarketplaceButtonIconIndex = ref(0)
 let homeMarketplaceButtonIconTimer: number | null = null
-const homeAnimatedStats = ref<Record<HomeStatsKey, number>>({
-  'today-tokens': 0,
-  'total-tokens': 0,
-  'total-users': 0,
-  'supported-models': 0,
-})
-const homeAnimatedStatKeys = new Set<HomeStatsKey>()
-const homeStatAnimationFrames = new Map<HomeStatsKey, number>()
-const homeStatAnimationDurationMs = 3200
 
 const providerVisualFallbacks = [
   'Google',
@@ -754,13 +718,6 @@ const featuredModels = computed<HomeFeaturedModel[]>(() => {
   return resolved
 })
 
-const homeStatAnimationTargets = computed<Record<HomeStatsKey, number | null>>(() => ({
-  'today-tokens': homeStatsLoading.value ? null : normalizedHomeStatTarget(homeStats.value?.today_tokens),
-  'total-tokens': homeStatsLoading.value ? null : normalizedHomeStatTarget(homeStats.value?.total_tokens),
-  'total-users': homeStatsLoading.value ? null : normalizedHomeStatTarget(homeStats.value?.total_users),
-  'supported-models': homeMarketplaceLoading.value ? null : normalizedHomeStatTarget(totalModelCount.value),
-}))
-
 const supportedProviders = computed<HomeProviderSummary[]>(() => {
   const summaries = new Map<string, HomeProviderSummary>()
   const sortedGroups = [...marketplaceGroups.value].sort((left, right) => {
@@ -813,41 +770,6 @@ const supportedProviders = computed<HomeProviderSummary[]>(() => {
     return left.firstIndex - right.firstIndex
   })
 })
-
-const homeStatsCards = computed<HomeStatsCard[]>(() => [
-  {
-    key: 'today-tokens',
-    label: t('home.stats.todayTokens'),
-    value: formatAnimatedHomeStat('today-tokens', homeStatAnimationTargets.value['today-tokens'], homeStatsLoading.value),
-    icon: 'bolt',
-    iconWrapClass: 'bg-sky-100 dark:bg-sky-500/15',
-    iconClass: 'text-sky-600 dark:text-sky-300',
-  },
-  {
-    key: 'total-tokens',
-    label: t('home.stats.totalTokens'),
-    value: formatAnimatedHomeStat('total-tokens', homeStatAnimationTargets.value['total-tokens'], homeStatsLoading.value),
-    icon: 'database',
-    iconWrapClass: 'bg-emerald-100 dark:bg-emerald-500/15',
-    iconClass: 'text-emerald-600 dark:text-emerald-300',
-  },
-  {
-    key: 'total-users',
-    label: t('home.stats.totalUsers'),
-    value: formatAnimatedHomeStat('total-users', homeStatAnimationTargets.value['total-users'], homeStatsLoading.value, 'number'),
-    icon: 'users',
-    iconWrapClass: 'bg-violet-100 dark:bg-violet-500/15',
-    iconClass: 'text-violet-600 dark:text-violet-300',
-  },
-  {
-    key: 'supported-models',
-    label: t('home.stats.supportedModels'),
-    value: formatAnimatedHomeStat('supported-models', homeStatAnimationTargets.value['supported-models'], homeMarketplaceLoading.value, 'number'),
-    icon: 'grid',
-    iconWrapClass: 'bg-primary-100 dark:bg-primary-500/15',
-    iconClass: 'text-primary-600 dark:text-primary-300',
-  },
-])
 
 const homeProviderVisuals = computed(() => {
   const brands = supportedProviders.value.map(provider => provider.iconBrand)
@@ -964,124 +886,12 @@ function formatFeaturedDiscountOff(ratio?: number): string | null {
   return t('home.featured.discountOff', { percent })
 }
 
-function formatAnimatedHomeStat(
-  key: HomeStatsKey,
-  target: number | null,
-  loading: boolean,
-  format: HomeStatFormat = 'compact'
-): string {
-  if (loading) {
-    return '...'
-  }
-  if (target === null) {
-    return '-'
-  }
-
-  const value = homeAnimatedStats.value[key]
-  const formatted = format === 'compact'
-    ? formatAnimatedCompactNumber(value, target)
-    : formatWholeNumber(value)
-  return `${formatted}+`
-}
-
 function formatMarketplaceStat(value: number): string {
   if (homeMarketplaceLoading.value) {
     return '...'
   }
   return new Intl.NumberFormat(numberLocale.value).format(value)
 }
-
-function formatAnimatedCompactNumber(value: number, target: number): string {
-  const targetParts = new Intl.NumberFormat(numberLocale.value, {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).formatToParts(target)
-  const compactPart = targetParts.find(part => part.type === 'compact')?.value ?? ''
-  const scaledValue = compactPart ? scaleCompactValue(value, target) : value
-  const decimalDigits = compactPart && targetParts.some(part => part.type === 'fraction') ? 1 : 0
-  const numberText = new Intl.NumberFormat(numberLocale.value, {
-    minimumFractionDigits: decimalDigits,
-    maximumFractionDigits: decimalDigits,
-    useGrouping: false,
-  }).format(scaledValue)
-
-  return `${numberText}${compactPart}`
-}
-
-function scaleCompactValue(value: number, target: number): number {
-  const compactTargetNumber = Number(new Intl.NumberFormat(numberLocale.value, {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).formatToParts(target)
-    .filter(part => part.type === 'integer' || part.type === 'decimal' || part.type === 'fraction')
-    .map(part => part.value)
-    .join(''))
-  if (!Number.isFinite(compactTargetNumber) || compactTargetNumber <= 0) {
-    return value
-  }
-
-  return value / (target / compactTargetNumber)
-}
-
-function formatWholeNumber(value: number): string {
-  return new Intl.NumberFormat(numberLocale.value, {
-    maximumFractionDigits: 0,
-    useGrouping: false,
-  }).format(Math.round(value))
-}
-
-function normalizedHomeStatTarget(value?: number): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : null
-}
-
-function startHomeStatAnimation(key: HomeStatsKey, target: number) {
-  homeAnimatedStatKeys.add(key)
-  if (homeStatAnimationFrames.has(key)) {
-    cancelAnimationFrame(homeStatAnimationFrames.get(key)!)
-    homeStatAnimationFrames.delete(key)
-  }
-
-  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-  if (reduceMotion || target === 0) {
-    homeAnimatedStats.value = { ...homeAnimatedStats.value, [key]: target }
-    return
-  }
-
-  const startTime = performance.now()
-  const tick = (now: number) => {
-    const progress = Math.min((now - startTime) / homeStatAnimationDurationMs, 1)
-    // 四次缓出配合更长时长，让计数器前段启动快，尾段明显慢下来。
-    const easedProgress = 1 - Math.pow(1 - progress, 4)
-    homeAnimatedStats.value = {
-      ...homeAnimatedStats.value,
-      [key]: target * easedProgress,
-    }
-
-    if (progress < 1) {
-      homeStatAnimationFrames.set(key, requestAnimationFrame(tick))
-      return
-    }
-
-    homeAnimatedStats.value = { ...homeAnimatedStats.value, [key]: target }
-    homeStatAnimationFrames.delete(key)
-  }
-
-  homeStatAnimationFrames.set(key, requestAnimationFrame(tick))
-}
-
-watch(
-  homeStatAnimationTargets,
-  (targets) => {
-    const statEntries = Object.entries(targets) as Array<[HomeStatsKey, number | null]>
-    statEntries.forEach(([key, target]) => {
-      if (target === null || homeAnimatedStatKeys.has(key)) {
-        return
-      }
-      startHomeStatAnimation(key, target)
-    })
-  },
-  { immediate: true }
-)
 
 watch(
   homeMarketplaceButtonBrands,
@@ -1133,21 +943,6 @@ async function fetchHomeMarketplace() {
   }
 }
 
-async function fetchHomeStats() {
-  homeStatsLoading.value = true
-  homeStatsError.value = false
-
-  try {
-    homeStats.value = await getMarketplaceStats()
-  } catch (error) {
-    console.error('Failed to load home marketplace stats:', error)
-    homeStats.value = null
-    homeStatsError.value = true
-  } finally {
-    homeStatsLoading.value = false
-  }
-}
-
 onMounted(async () => {
   authStore.checkAuth()
   homeMarketplaceButtonIconTimer = window.setInterval(() => {
@@ -1166,13 +961,11 @@ onMounted(async () => {
   }
 
   if (!homeContent.value) {
-    await Promise.all([fetchHomeMarketplace(), fetchHomeStats()])
+    await fetchHomeMarketplace()
   }
 })
 
 onUnmounted(() => {
-  homeStatAnimationFrames.forEach(frameId => cancelAnimationFrame(frameId))
-  homeStatAnimationFrames.clear()
   if (homeMarketplaceButtonIconTimer) {
     window.clearInterval(homeMarketplaceButtonIconTimer)
     homeMarketplaceButtonIconTimer = null
