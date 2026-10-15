@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,6 +78,10 @@ type Engine struct {
 	NotFound error
 	// AnalyzeTrace 覆盖默认指纹归因，测试里注入。
 	AnalyzeTrace func([]TraceOutput) (TraceResult, error)
+	// applyMu 串行写入同一提供商的 Extra。测号在拿到这把锁之前完成，多选的几轮可以同时打上游。
+	applyMu sync.Map
+	// probeSlots 限制同一提供商同时进行的探测轮数，容量与自动探测的并发相同。
+	probeSlots sync.Map
 }
 
 // RunReport 是一轮探测的对外结果。

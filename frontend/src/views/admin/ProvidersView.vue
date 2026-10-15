@@ -484,9 +484,7 @@
     <QualityProbeResultModal
       :show="showQualityProbe"
       :provider="qualityProbeAcc"
-      :loading="qualityProbeLoading"
-      :report="qualityProbeReport"
-      :error="qualityProbeError"
+      :runs="qualityProbeRuns"
       @close="closeQualityProbeModal"
     />
     <ProviderStatsModal :show="showStats" :provider="statsAcc" @close="closeStatsModal" />
@@ -531,7 +529,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
-import type { QualityProbeReport } from '@/api/admin/providers'
+import type { QualityProbeRun } from '@/components/admin/provider/qualityProbeRun'
 import { isUpstreamUsageQueryEnabled, supportsUpstreamUsageQuery } from '@/utils/upstreamUsage'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
@@ -674,9 +672,7 @@ const creatingShadowAcc = ref<Provider | null>(null)
 const reAuthAcc = ref<Provider | null>(null)
 const testingAcc = ref<Provider | null>(null)
 const qualityProbeAcc = ref<Provider | null>(null)
-const qualityProbeLoading = ref(false)
-const qualityProbeReport = ref<QualityProbeReport | null>(null)
-const qualityProbeError = ref('')
+const qualityProbeRuns = ref<QualityProbeRun[]>([])
 let qualityProbeAbort: AbortController | null = null
 const statsAcc = ref<Provider | null>(null)
 const advancedSchedulerScoreAcc = ref<Provider | null>(null)
@@ -2746,14 +2742,18 @@ const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = nul
 const handleTest = (a: Provider) => { testingAcc.value = a; showTest.value = true }
 const qualityProbeInFlight = new Set<number>()
 const closeQualityProbeModal = () => {
-  // 关掉弹窗后请求继续，跑完写入 Extra。
+  // 关掉弹窗后请求继续，跑完写入 Extra。各模型的进度留在 qualityProbeRuns，再次打开弹窗还能看到。
   showQualityProbe.value = false
   qualityProbeAcc.value = null
-  qualityProbeLoading.value = false
-  qualityProbeReport.value = null
-  qualityProbeError.value = ''
 }
-const handleQualityProbe = async (a: Provider, model?: string) => {
+const patchQualityProbeRun = (model: string, patch: Partial<QualityProbeRun>) => {
+  qualityProbeRuns.value = qualityProbeRuns.value.map(run => run.model === model ? { ...run, ...patch } : run)
+}
+const handleQualityProbe = async (a: Provider, models: string[] = []) => {
+  const selected = [...new Set(models.map(model => model.trim()).filter(Boolean))]
+  if (!selected.length) {
+    return
+  }
   if (qualityProbeInFlight.has(a.id)) {
     qualityProbeAcc.value = a
     showQualityProbe.value = true
@@ -2764,25 +2764,38 @@ const handleQualityProbe = async (a: Provider, model?: string) => {
   qualityProbeAbort = abort
   qualityProbeInFlight.add(a.id)
   qualityProbeAcc.value = a
-  qualityProbeReport.value = null
-  qualityProbeError.value = ''
-  qualityProbeLoading.value = true
+  qualityProbeRuns.value = selected.map(model => ({
+    model,
+    phase: 'running',
+    report: null,
+    error: '',
+  }))
   showQualityProbe.value = true
   try {
-    const report = await adminAPI.providers.runQualityProbe(a.id, { signal: abort.signal, model })
-    if (abort.signal.aborted) {
-      return
+    await Promise.all(selected.map(async model => {
+      try {
+        const report = await adminAPI.providers.runQualityProbe(a.id, { signal: abort.signal, model })
+        if (abort.signal.aborted) {
+          return
+        }
+        patchQualityProbeRun(model, { phase: 'done', report, error: '' })
+      } catch (error: any) {
+        if (abort.signal.aborted || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') {
+          return
+        }
+        patchQualityProbeRun(model, {
+          phase: 'error',
+          error: error?.message || t('admin.providers.qualityProbeFailed'),
+        })
+      }
+    }))
+    if (!abort.signal.aborted) {
+      reload()
     }
-    qualityProbeReport.value = report
-    reload()
-  } catch (error: any) {
-    if (abort.signal.aborted || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') {
-      return
-    }
-    qualityProbeError.value = error?.message || t('admin.providers.qualityProbeFailed')
   } finally {
-    qualityProbeLoading.value = false
-    qualityProbeInFlight.delete(a.id)
+    if (qualityProbeAbort === abort) {
+      qualityProbeInFlight.delete(a.id)
+    }
   }
 }
 const handleViewStats = (a: Provider) => { statsAcc.value = a; showStats.value = true }
@@ -2972,8 +2985,12 @@ const proxyExpiryText = (p: ProviderProxy): string => {
   return params ? t(key, params) : t(key)
 }
 
-// 滚动时关闭行内操作菜单，顶部下拉菜单保持打开但同步位置。
-const handleScroll = () => {
+// 页面滚动时关掉行内菜单。浮层是固定定位，行滚走以后会对不上。菜单自己和降智探测模型列表的滚动要留下来，否则滑不到下面的模型。
+const handleScroll = (event: Event) => {
+  const target = event.target
+  if (target instanceof Element && target.closest('.action-menu')) {
+    return
+  }
   menu.show = false
   updateTopDropdownPositions()
 }

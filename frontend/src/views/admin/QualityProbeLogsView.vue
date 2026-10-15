@@ -2,7 +2,7 @@
   <AppLayout>
     <TablePageLayout>
       <template #filters>
-        <div class="flex items-center justify-end">
+        <div class="flex items-center justify-end gap-2">
           <button
             type="button"
             class="btn btn-secondary btn-icon shrink-0"
@@ -13,6 +13,42 @@
           >
             <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" />
           </button>
+          <div ref="columnDropdownRef" class="relative">
+            <button
+              type="button"
+              class="btn btn-secondary btn-icon shrink-0"
+              :title="t('admin.providers.viewColumns')"
+              :aria-label="t('admin.providers.viewColumns')"
+              @click.stop="showColumnDropdown = !showColumnDropdown"
+            >
+              <Icon name="grid" size="sm" />
+            </button>
+            <MotionTransition name="dropdown-fade">
+              <div
+                v-if="showColumnDropdown"
+                :inert="!showColumnDropdown || undefined"
+                class="dropdown right-0 top-full z-50 mt-1 max-h-menu w-48 overflow-y-auto"
+              >
+                <button
+                  v-for="col in toggleableColumns"
+                  :key="col.key"
+                  type="button"
+                  class="dropdown-item justify-between"
+                  @click="toggleColumn(col.key)"
+                >
+                  <span>{{ col.label }}</span>
+                  <Icon
+                    v-if="isColumnVisible(col.key)"
+                    name="check"
+                    size="sm"
+                    class="text-primary-500"
+                    :stroke-width="2"
+                    :animate-on-hover="false"
+                  />
+                </button>
+              </div>
+            </MotionTransition>
+          </div>
         </div>
       </template>
       <template #table>
@@ -111,7 +147,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
@@ -125,7 +161,16 @@ import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import QualityProbeSamples from '@/components/admin/provider/QualityProbeSamples.vue'
+import {
+  QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY,
+  migrateQualityProbeLogsProviderFirst
+} from '@/components/admin/provider/qualityProbeLogsColumns'
+import MotionTransition from '@/components/common/MotionTransition.vue'
 import Icon from '@/components/icons/Icon.vue'
+
+if (typeof window !== 'undefined') {
+  migrateQualityProbeLogsProviderFirst(localStorage)
+}
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -154,9 +199,10 @@ const rows = computed(() =>
   }))
 )
 
-const columns = computed<Column[]>(() => [
-  { key: 'at', label: t('admin.providers.qualityProbeLogs.time'), sortable: true },
+const ALWAYS_VISIBLE_COLUMNS = new Set(['provider_name', 'actions'])
+const allColumns = computed<Column[]>(() => [
   { key: 'provider_name', label: t('admin.providers.qualityProbeLogs.provider') },
+  { key: 'at', label: t('admin.providers.qualityProbeLogs.time'), sortable: true },
   { key: 'trigger', label: t('admin.providers.qualityProbeLogs.trigger') },
   { key: 'candy_ok', label: t('admin.providers.qualityProbeLogs.candy') },
   { key: 'trace_ok', label: t('admin.providers.qualityProbeLogs.trace') },
@@ -164,6 +210,74 @@ const columns = computed<Column[]>(() => [
   { key: 'model', label: t('admin.providers.qualityProbeLogs.model') },
   { key: 'actions', label: t('common.actions') }
 ])
+const toggleableColumns = computed(() =>
+  allColumns.value.filter(col => !ALWAYS_VISIBLE_COLUMNS.has(col.key))
+)
+const hiddenColumns = reactive(new Set<string>())
+const showColumnDropdown = ref(false)
+const columnDropdownRef = ref<HTMLElement | null>(null)
+
+function loadSavedColumns() {
+  hiddenColumns.clear()
+  try {
+    const saved = localStorage.getItem(QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY)
+    const validKeys = new Set(toggleableColumns.value.map(col => col.key))
+    if (!saved) {
+      return
+    }
+    const parsed: unknown = JSON.parse(saved)
+    if (!Array.isArray(parsed)) {
+      return
+    }
+    parsed
+      .filter((key): key is string => typeof key === 'string' && validKeys.has(key))
+      .forEach(key => hiddenColumns.add(key))
+  } catch (error) {
+    console.error('Failed to load quality probe log columns:', error)
+  }
+}
+
+function saveColumnsToStorage() {
+  try {
+    const validKeys = new Set(toggleableColumns.value.map(col => col.key))
+    const keys = [...hiddenColumns].filter(key => validKeys.has(key))
+    localStorage.setItem(QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY, JSON.stringify(keys))
+  } catch (error) {
+    console.error('Failed to save quality probe log columns:', error)
+  }
+}
+
+function isColumnVisible(key: string) {
+  return !hiddenColumns.has(key)
+}
+
+function toggleColumn(key: string) {
+  if (ALWAYS_VISIBLE_COLUMNS.has(key) || !toggleableColumns.value.some(col => col.key === key)) {
+    return
+  }
+  if (hiddenColumns.has(key)) {
+    hiddenColumns.delete(key)
+  } else {
+    hiddenColumns.add(key)
+  }
+  saveColumnsToStorage()
+}
+
+function handleClickOutside(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) {
+    return
+  }
+  if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) {
+    showColumnDropdown.value = false
+  }
+}
+
+const columns = computed<Column[]>(() =>
+  allColumns.value.filter(col => ALWAYS_VISIBLE_COLUMNS.has(col.key) || !hiddenColumns.has(col.key))
+)
+
+loadSavedColumns()
 
 function verdictLabel(row: QualityProbeLogItem) {
   if (row.skipped) {
@@ -224,5 +338,12 @@ function handlePageSizeChange(size: number) {
   load()
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
 </script>

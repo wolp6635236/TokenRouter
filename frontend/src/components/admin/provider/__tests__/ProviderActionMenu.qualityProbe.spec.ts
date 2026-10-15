@@ -61,7 +61,7 @@ describe('ProviderActionMenu quality probe models', () => {
     ])
   })
 
-  it('悬停降智探测时列出可用模型，点击后带上模型发起探测', async () => {
+  it('悬停降智探测时默认勾选全部模型，取消一个后只探测剩下的', async () => {
     const provider = makeProvider()
     const wrapper = mount(ProviderActionMenu, {
       props: { show: true, provider, position: { top: 80, left: 80 } },
@@ -74,13 +74,26 @@ describe('ProviderActionMenu quality probe models', () => {
     await probeButton!.parentElement!.dispatchEvent(new Event('mouseenter'))
     await flushPromises()
     expect(getAvailableModels).toHaveBeenCalledWith(12)
-    const terra = Array.from(document.body.querySelectorAll('button')).find(button =>
-      button.textContent?.includes('GPT-5.6 Terra'),
+
+    const boxes = Array.from(document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+    expect(boxes).toHaveLength(3)
+    expect(boxes.every(box => box.checked)).toBe(true)
+
+    const terra = Array.from(document.body.querySelectorAll('label')).find(label =>
+      label.textContent?.includes('GPT-5.6 Terra'),
     )
     expect(terra).toBeDefined()
-    terra!.click()
+    terra!.querySelector('input')!.click()
     await wrapper.vm.$nextTick()
-    expect(wrapper.emitted('quality-probe')?.[0]).toEqual([provider, 'gpt-5.6-terra'])
+    expect(wrapper.emitted('quality-probe')).toBeUndefined()
+
+    const start = Array.from(document.body.querySelectorAll('button')).find(button =>
+      button.textContent?.includes('admin.providers.qualityProbeStart'),
+    )
+    expect(start).toBeDefined()
+    start!.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('quality-probe')?.[0]).toEqual([provider, ['gpt-6-astra']])
     expect(wrapper.emitted('close')).toHaveLength(1)
     wrapper.unmount()
   })

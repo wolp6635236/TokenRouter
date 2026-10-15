@@ -86,96 +86,13 @@ func (e *Engine) runWithActive(
 	if trigger == TriggerAuto && e.Catalog != nil && !CatalogContainsModel(catalog, model) {
 		return e.finishSkip(ctx, snap, state, trigger, "model")
 	}
+	release, slotErr := e.acquireProbeSlot(ctx, providerID)
+	if slotErr != nil {
+		return report, slotErr
+	}
+	defer release()
 	round := e.probeRound(ctx, providerID, model)
-	held := e.lastSchedulableHeld(ctx, snap)
-	decision := Decide(DecideInput{
-		Settings:            cfg,
-		Platform:            snap.Platform,
-		LastSchedulableHeld: held,
-		State:               state.cycle(),
-		Round:               round,
-		Trigger:             trigger,
-	})
-	if decision.Skip {
-		return e.finishSkip(ctx, snap, state, trigger, "decide")
-	}
-	next := nextRetry(now, cfg, decision)
-	stored := StoredState{
-		ConsecutiveFails:  decision.ConsecutiveFails,
-		CycleStopped:      decision.StopCycle,
-		NextRetryAt:       next,
-		LastCandyOK:       round.CandyOK,
-		LastTraceOK:       round.ModelTraceOK,
-		LastUpstreamError: decision.UpstreamError,
-		LastError:         firstError(round),
-		LastModel:         model,
-		UpdatedAt:         now,
-	}
-	writeCtx := persistCtx(ctx)
-	if decision.ClearTemp {
-		if strings.TrimSpace(snap.TempUnschedulableReason) == "" ||
-			snap.TempUnschedulableReason == TempUnscheduleReason {
-			if err := e.Dir.ClearTempUnschedulable(writeCtx, providerID); err != nil {
-				return report, err
-			}
-		}
-	}
-	if decision.TempUnschedule {
-		until := now.Add(decision.Cooldown)
-		if err := e.Dir.SetTempUnschedulable(writeCtx, providerID, until, TempUnscheduleReason); err != nil {
-			return report, err
-		}
-	}
-	emailSent := false
-	if decision.SendEmail && e.Mail != nil {
-		subject, body := emailCopy(snap, stored)
-		if err := e.Mail.Send(ctx, cfg.NotifyEmail, subject, body); err != nil {
-			stored.LastError = joinErrors(stored.LastError, err.Error())
-		} else {
-			emailSent = true
-		}
-	}
-	stored.History = appendProbeLog(state.History, ProbeLog{
-		At:               now,
-		Trigger:          trigger,
-		Model:            model,
-		CandyOK:          round.CandyOK,
-		TraceOK:          round.ModelTraceOK,
-		TracePrediction:  round.TracePrediction,
-		TraceProbability: round.TraceProbability,
-		Degraded:         decision.Degraded,
-		UpstreamError:    decision.UpstreamError,
-		TempUnscheduled:  decision.TempUnschedule,
-		KeptForCoverage:  decision.SkipBecauseLastInGroup,
-		EmailSent:        emailSent,
-		ConsecutiveFails: decision.ConsecutiveFails,
-		CycleStopped:     decision.StopCycle,
-		Error:            stored.LastError,
-		Samples:          round.Samples,
-	})
-	if err := e.Dir.UpdateExtra(writeCtx, providerID, stored.extraUpdate()); err != nil {
-		return report, err
-	}
-	return RunReport{
-		ProviderID:       providerID,
-		ProviderName:     snap.Name,
-		Model:            model,
-		CandyOK:          round.CandyOK,
-		TraceOK:          round.ModelTraceOK,
-		TracePrediction:  round.TracePrediction,
-		TraceProbability: round.TraceProbability,
-		Degraded:         decision.Degraded,
-		UpstreamError:    decision.UpstreamError,
-		TempUnscheduled:  decision.TempUnschedule,
-		KeptForCoverage:  decision.SkipBecauseLastInGroup,
-		EmailSent:        emailSent,
-		ConsecutiveFails: decision.ConsecutiveFails,
-		CycleStopped:     decision.StopCycle,
-		Error:            stored.LastError,
-		Trigger:          trigger,
-		At:               now,
-		Samples:          round.Samples,
-	}, nil
+	return e.applyProbedRound(ctx, cfg, providerID, trigger, model, round)
 }
 
 // RunDue 扫描 OpenAI 提供商并执行到期的自动探测。
@@ -234,6 +151,17 @@ func (e *Engine) Status(ctx context.Context, providerID int64) (StoredState, err
 }
 
 func (e *Engine) finishSkip(ctx context.Context, snap *Snapshot, state StoredState, trigger Trigger, reason string) (RunReport, error) {
+	unlock := e.lockProvider(snap.ID)
+	defer unlock()
+	writeCtx := persistCtx(ctx)
+	if fresh, err := e.Dir.Get(writeCtx, snap.ID); err == nil && fresh != nil {
+		snap = fresh
+		state = ParseStoredState(fresh.Extra)
+	}
+	return e.recordSkip(writeCtx, snap, state, trigger, reason)
+}
+
+func (e *Engine) recordSkip(ctx context.Context, snap *Snapshot, state StoredState, trigger Trigger, reason string) (RunReport, error) {
 	report := RunReport{
 		ProviderID:       snap.ID,
 		ProviderName:     snap.Name,
@@ -256,10 +184,144 @@ func (e *Engine) finishSkip(ctx context.Context, snap *Snapshot, state StoredSta
 		CycleStopped:     state.CycleStopped,
 	})
 	state.UpdatedAt = report.At
-	if err := e.Dir.UpdateExtra(persistCtx(ctx), snap.ID, state.extraUpdate()); err != nil {
+	if err := e.Dir.UpdateExtra(ctx, snap.ID, state.extraUpdate()); err != nil {
 		return report, err
 	}
 	return report, nil
+}
+
+func (e *Engine) applyProbedRound(
+	ctx context.Context,
+	cfg Settings,
+	providerID int64,
+	trigger Trigger,
+	model string,
+	round ProbeRound,
+) (RunReport, error) {
+	unlock := e.lockProvider(providerID)
+	defer unlock()
+	writeCtx := persistCtx(ctx)
+	snap, err := e.Dir.Get(writeCtx, providerID)
+	if err != nil {
+		return RunReport{ProviderID: providerID, Model: model}, err
+	}
+	if snap == nil {
+		return RunReport{ProviderID: providerID, Model: model}, fmt.Errorf("provider %d is missing", providerID)
+	}
+	state := ParseStoredState(snap.Extra)
+	now := e.now()
+	held := e.lastSchedulableHeld(writeCtx, snap)
+	decision := Decide(DecideInput{
+		Settings:            cfg,
+		Platform:            snap.Platform,
+		LastSchedulableHeld: held,
+		State:               state.cycle(),
+		Round:               round,
+		Trigger:             trigger,
+	})
+	if decision.Skip {
+		return e.recordSkip(writeCtx, snap, state, trigger, "decide")
+	}
+	next := nextRetry(now, cfg, decision)
+	stored := StoredState{
+		ConsecutiveFails:  decision.ConsecutiveFails,
+		CycleStopped:      decision.StopCycle,
+		NextRetryAt:       next,
+		LastCandyOK:       round.CandyOK,
+		LastTraceOK:       round.ModelTraceOK,
+		LastUpstreamError: decision.UpstreamError,
+		LastError:         firstError(round),
+		LastModel:         model,
+		UpdatedAt:         now,
+	}
+	if decision.ClearTemp {
+		if strings.TrimSpace(snap.TempUnschedulableReason) == "" ||
+			snap.TempUnschedulableReason == TempUnscheduleReason {
+			if err := e.Dir.ClearTempUnschedulable(writeCtx, providerID); err != nil {
+				return RunReport{ProviderID: providerID, Model: model}, err
+			}
+		}
+	}
+	if decision.TempUnschedule {
+		until := now.Add(decision.Cooldown)
+		if err := e.Dir.SetTempUnschedulable(writeCtx, providerID, until, TempUnscheduleReason); err != nil {
+			return RunReport{ProviderID: providerID, Model: model}, err
+		}
+	}
+	emailSent := false
+	if decision.SendEmail && e.Mail != nil {
+		subject, body := emailCopy(snap, stored)
+		if err := e.Mail.Send(ctx, cfg.NotifyEmail, subject, body); err != nil {
+			stored.LastError = joinErrors(stored.LastError, err.Error())
+		} else {
+			emailSent = true
+		}
+	}
+	stored.History = appendProbeLog(state.History, ProbeLog{
+		At:               now,
+		Trigger:          trigger,
+		Model:            model,
+		CandyOK:          round.CandyOK,
+		TraceOK:          round.ModelTraceOK,
+		TracePrediction:  round.TracePrediction,
+		TraceProbability: round.TraceProbability,
+		Degraded:         decision.Degraded,
+		UpstreamError:    decision.UpstreamError,
+		TempUnscheduled:  decision.TempUnschedule,
+		KeptForCoverage:  decision.SkipBecauseLastInGroup,
+		EmailSent:        emailSent,
+		ConsecutiveFails: decision.ConsecutiveFails,
+		CycleStopped:     decision.StopCycle,
+		Error:            stored.LastError,
+		Samples:          round.Samples,
+	})
+	if err := e.Dir.UpdateExtra(writeCtx, providerID, stored.extraUpdate()); err != nil {
+		return RunReport{ProviderID: providerID, Model: model}, err
+	}
+	return RunReport{
+		ProviderID:       providerID,
+		ProviderName:     snap.Name,
+		Model:            model,
+		CandyOK:          round.CandyOK,
+		TraceOK:          round.ModelTraceOK,
+		TracePrediction:  round.TracePrediction,
+		TraceProbability: round.TraceProbability,
+		Degraded:         decision.Degraded,
+		UpstreamError:    decision.UpstreamError,
+		TempUnscheduled:  decision.TempUnschedule,
+		KeptForCoverage:  decision.SkipBecauseLastInGroup,
+		EmailSent:        emailSent,
+		ConsecutiveFails: decision.ConsecutiveFails,
+		CycleStopped:     decision.StopCycle,
+		Error:            stored.LastError,
+		Trigger:          trigger,
+		At:               now,
+		Samples:          round.Samples,
+	}, nil
+}
+
+func (e *Engine) lockProvider(providerID int64) func() {
+	if e == nil {
+		return func() {}
+	}
+	actual, _ := e.applyMu.LoadOrStore(providerID, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (e *Engine) acquireProbeSlot(ctx context.Context, providerID int64) (func(), error) {
+	if e == nil {
+		return func() {}, nil
+	}
+	// 请求取消时这一轮继续跑完。探测超时到期后，新的一轮直接返回超时。
+	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
+		return nil, ctx.Err()
+	}
+	actual, _ := e.probeSlots.LoadOrStore(providerID, make(chan struct{}, autoProbeConcurrency))
+	slot := actual.(chan struct{})
+	slot <- struct{}{}
+	return func() { <-slot }, nil
 }
 
 // ListLogs 汇总 OpenAI 提供商 Extra 里的探测记录，按时间倒序分页。

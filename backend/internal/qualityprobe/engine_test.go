@@ -44,6 +44,13 @@ type errorProber struct {
 	n   int
 }
 
+type overlapProber struct {
+	mu      sync.Mutex
+	n       int
+	release chan struct{}
+	mark    func(int)
+}
+
 type memGroups struct {
 	ids []int64
 }
@@ -144,6 +151,20 @@ func (p *scriptedProber) ProbeText(context.Context, int64, string, string) (Text
 	text := p.answers[p.index]
 	p.index++
 	return TextResult{Answer: text}, nil
+}
+
+func (p *overlapProber) ProbeText(context.Context, int64, string, string) (TextResult, error) {
+	p.mu.Lock()
+	p.n++
+	n := p.n
+	p.mu.Unlock()
+	if p.mark != nil {
+		p.mark(n)
+	}
+	if n <= 2 {
+		<-p.release
+	}
+	return TextResult{Answer: "no"}, nil
 }
 
 func (p *countingProber) ProbeText(_ context.Context, providerID int64, _, _ string) (TextResult, error) {
@@ -944,5 +965,83 @@ func TestEngine_SaveSettingsClearsQualityDegradedWhenUnscheduleOff(t *testing.T)
 	}
 	if loaded.UnscheduleOnDegraded {
 		t.Fatal("saved unschedule_on_degraded=false must round-trip")
+	}
+}
+
+func TestEngine_ParallelManualProbesOverlapAndAppendHistory(t *testing.T) {
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "a", Platform: PlatformOpenAI, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	var releaseOnce sync.Once
+	openRelease := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	t.Cleanup(openRelease)
+	engine := &Engine{
+		Settings: &memSettings{raw: enabledJSON()},
+		Dir:      dir,
+		Catalog:  stubCatalog{models: []string{"gpt-6-astra", "gpt-5.6-terra"}},
+		Prober: &overlapProber{
+			release: release,
+			mark: func(n int) {
+				if n == 2 {
+					enteredOnce.Do(func() { close(entered) })
+				}
+			},
+		},
+		Now: func() time.Time { return time.Unix(1, 0) },
+	}
+	var wg sync.WaitGroup
+	var first, second RunReport
+	var firstErr, secondErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		first, firstErr = engine.RunWithModel(context.Background(), 1, TriggerManual, "gpt-6-astra")
+	}()
+	go func() {
+		defer wg.Done()
+		second, secondErr = engine.RunWithModel(context.Background(), 1, TriggerManual, "gpt-5.6-terra")
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("two probe rounds did not run at the same time")
+	}
+	openRelease()
+	wg.Wait()
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("run errors: %v %v", firstErr, secondErr)
+	}
+	fails := []int{first.ConsecutiveFails, second.ConsecutiveFails}
+	if fails[0] > fails[1] {
+		fails[0], fails[1] = fails[1], fails[0]
+	}
+	if fails[0] != 1 || fails[1] != 2 {
+		t.Fatalf("consecutive fails = %v, reports %#v %#v", fails, first, second)
+	}
+	snap, err := dir.Get(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := ParseStoredState(snap.Extra)
+	if state.ConsecutiveFails != 2 || len(state.History) != 2 {
+		t.Fatalf("state = %+v", state)
+	}
+	seen := map[string]bool{}
+	for _, entry := range state.History {
+		seen[entry.Model] = true
+		if !entry.Degraded {
+			t.Fatalf("history entry = %+v", entry)
+		}
+	}
+	if !seen["gpt-6-astra"] || !seen["gpt-5.6-terra"] {
+		t.Fatalf("history models = %+v", state.History)
 	}
 }

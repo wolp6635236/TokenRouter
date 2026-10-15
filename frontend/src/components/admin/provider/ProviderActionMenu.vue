@@ -6,7 +6,7 @@
       <MotionTransition name="dropdown-fade">
         <div
           v-if="show && position"
-          class="action-menu action-menu-content max-h-[calc(100dvh-16px)] w-52 overflow-y-auto"
+          class="action-menu action-menu-content max-h-[calc(100dvh-16px)] w-52 overflow-y-auto overscroll-contain"
           :style="{ top: position.top + 'px', left: position.left + 'px' }"
           @click.stop
         >
@@ -97,30 +97,54 @@
       <MotionTransition name="dropdown-fade">
         <div
           v-if="show && probeFlyoutOpen && probeFlyoutPos"
-          class="action-menu max-h-64 w-56 overflow-y-auto"
+          class="action-menu flex w-64 flex-col overflow-hidden"
           :style="{ top: probeFlyoutPos.top + 'px', left: probeFlyoutPos.left + 'px' }"
           @click.stop
           @mouseenter="cancelCloseProbeFlyout"
           @mouseleave="scheduleCloseProbeFlyout"
         >
-          <div class="py-1">
-            <p v-if="probeModelsLoading" class="px-4 py-2 text-xs text-gray-500 dark:text-dark-400">
-              {{ t('common.loading') }}
-            </p>
-            <p v-else-if="probeModelsError" class="px-4 py-2 text-xs text-red-600 dark:text-red-400">
-              {{ probeModelsError }}
-            </p>
-            <p v-else-if="!probeModels.length" class="px-4 py-2 text-xs text-gray-500 dark:text-dark-400">
-              {{ t('admin.providers.qualityProbeModelsEmpty') }}
-            </p>
+          <div class="min-h-0 overflow-y-auto overscroll-contain" :class="probeModels.length ? 'max-h-menu' : ''">
+            <div class="py-1">
+              <p v-if="probeModelsLoading" class="px-4 py-2 text-xs text-gray-500 dark:text-dark-400">
+                {{ t('common.loading') }}
+              </p>
+              <p v-else-if="probeModelsError" class="px-4 py-2 text-xs text-red-600 dark:text-red-400">
+                {{ probeModelsError }}
+              </p>
+              <p v-else-if="!probeModels.length" class="px-4 py-2 text-xs text-gray-500 dark:text-dark-400">
+                {{ t('admin.providers.qualityProbeModelsEmpty') }}
+              </p>
+              <template v-else>
+                <label class="dropdown-item-sm">
+                  <input
+                    ref="probeSelectAllEl"
+                    type="checkbox"
+                    class="h-4 w-4 shrink-0"
+                    :checked="allProbeModelsSelected"
+                    @change="toggleAllProbeModels"
+                  />
+                  <span>{{ t('common.selectAll') }}</span>
+                </label>
+                <label v-for="model in probeModels" :key="model.id" class="dropdown-item-sm">
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 shrink-0"
+                    :checked="isProbeModelSelected(model.id)"
+                    @change="toggleProbeModel(model.id)"
+                  />
+                  <span class="min-w-0 truncate">{{ model.display_name || model.id }}</span>
+                </label>
+              </template>
+            </div>
+          </div>
+          <div v-if="probeModels.length" class="border-t border-gray-100 p-2 dark:border-dark-700">
             <button
-              v-for="model in probeModels"
-              :key="model.id"
               type="button"
-              class="dropdown-item-sm"
-              @click="selectProbeModel(model.id)"
+              class="btn btn-primary w-full"
+              :disabled="!selectedProbeModelIds.length"
+              @click="startSelectedProbes"
             >
-              <span class="min-w-0 truncate">{{ model.display_name || model.id }}</span>
+              {{ t('admin.providers.qualityProbeStart', { count: selectedProbeModelIds.length }) }}
             </button>
           </div>
         </div>
@@ -145,6 +169,9 @@ const probeFlyoutPos = ref<{ top: number; left: number } | null>(null)
 const probeModels = ref<ClaudeModel[]>([])
 const probeModelsLoading = ref(false)
 const probeModelsError = ref('')
+const selectedProbeModelIds = ref<string[]>([])
+const probeSelectAllEl = ref<HTMLInputElement | null>(null)
+const loadedProbeProviderID = ref(0)
 let probeCloseTimer: number | undefined
 let probeLoadSeq = 0
 const canDuplicate = computed(() => {
@@ -224,7 +251,7 @@ function placeProbeFlyout() {
   if (!rect) {
     return
   }
-  const width = 224
+  const width = 256
   let left = rect.left - width - 4
   if (left < 8) {
     left = rect.right + 4
@@ -239,14 +266,55 @@ function placeProbeFlyout() {
   }
 }
 
+const allProbeModelsSelected = computed(() =>
+  probeModels.value.length > 0 && selectedProbeModelIds.value.length === probeModels.value.length
+)
+const someProbeModelsSelected = computed(() =>
+  selectedProbeModelIds.value.length > 0 && !allProbeModelsSelected.value
+)
+
+function isProbeModelSelected(id: string) {
+  return selectedProbeModelIds.value.includes(id)
+}
+
+function toggleProbeModel(id: string) {
+  const selected = new Set(selectedProbeModelIds.value)
+  if (selected.has(id)) {
+    selected.delete(id)
+  } else {
+    selected.add(id)
+  }
+  selectedProbeModelIds.value = probeModels.value.map(model => model.id).filter(modelID => selected.has(modelID))
+}
+
+function toggleAllProbeModels() {
+  if (allProbeModelsSelected.value) {
+    selectedProbeModelIds.value = []
+    return
+  }
+  selectedProbeModelIds.value = probeModels.value.map(model => model.id)
+}
+
+function startSelectedProbes() {
+  if (!props.provider || !selectedProbeModelIds.value.length) {
+    return
+  }
+  emit('quality-probe', props.provider, [...selectedProbeModelIds.value])
+  emit('close')
+}
+
 async function openProbeFlyout() {
   if (!props.provider) {
     return
   }
+  const alreadyOpen = probeFlyoutOpen.value
   cancelCloseProbeFlyout()
   probeFlyoutOpen.value = true
   await nextTick()
   placeProbeFlyout()
+  if (alreadyOpen && (probeModelsLoading.value || loadedProbeProviderID.value === props.provider.id)) {
+    return
+  }
   const seq = ++probeLoadSeq
   const providerId = props.provider.id
   probeModelsLoading.value = true
@@ -257,25 +325,21 @@ async function openProbeFlyout() {
       return
     }
     probeModels.value = models
+    selectedProbeModelIds.value = models.map(model => model.id)
+    loadedProbeProviderID.value = providerId
   } catch (error: any) {
     if (seq !== probeLoadSeq) {
       return
     }
     probeModels.value = []
+    selectedProbeModelIds.value = []
+    loadedProbeProviderID.value = 0
     probeModelsError.value = error?.message || t('admin.providers.qualityProbeModelsLoadFailed')
   } finally {
     if (seq === probeLoadSeq) {
       probeModelsLoading.value = false
     }
   }
-}
-
-function selectProbeModel(model: string) {
-  if (!props.provider) {
-    return
-  }
-  emit('quality-probe', props.provider, model)
-  emit('close')
 }
 
 watch(
@@ -287,11 +351,20 @@ watch(
       window.removeEventListener('keydown', handleKeydown)
       closeProbeFlyout()
       probeModels.value = []
+      selectedProbeModelIds.value = []
+      loadedProbeProviderID.value = 0
       probeModelsError.value = ''
     }
   },
   { immediate: true }
 )
+
+watch(someProbeModelsSelected, async partial => {
+  await nextTick()
+  if (probeSelectAllEl.value) {
+    probeSelectAllEl.value.indeterminate = partial
+  }
+})
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)

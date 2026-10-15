@@ -19,9 +19,9 @@
 
 `unschedule_on_degraded` 默认开启。开启时降智会写入 `quality_degraded` 临时停调（分组保底仍生效）。关闭后仍判定降智、累计次数、发邮件和停自动循环，账号保持可调度；保存为关闭时立即清掉 OpenAI 账号上已有的 `quality_degraded` 临时停调，其它原因的临时停调继续由原有恢复路径处理。
 
-探测走提供商测试通道，费用记在上游账号上。循环状态和最近 50 条记录写在提供商 Extra 的 `quality_probe` 键，`history` 同时收录自动探测和手动探测，每条带上测号的提问和截断后的回答。后台每分钟扫描到期且命中上述过滤的提供商，最多同时探测 4 台；每台内部是糖果题加一道 ModelTrace，依次调用。通过后的下次自动探测按设置的周期（默认 30 分钟），失败后按冷却（默认 5 分钟）。
+探测走提供商测试通道，费用记在上游账号上。循环状态和最近 50 条记录写在提供商 Extra 的 `quality_probe` 键，`history` 同时收录自动探测和手动探测，每条带上测号的提问和截断后的回答。后台每分钟扫描到期且命中上述过滤的提供商，最多同时探测 4 台；每台内部是糖果题加一道 ModelTrace，依次调用。手动多选时，同一提供商同时最多 4 轮测号。每一轮的上游调用并行，写 Extra 按完成顺序排队，history 和连续失败次数依次累加。通过后的下次自动探测按设置的周期（默认 30 分钟），失败后按冷却（默认 5 分钟）。
 
-管理接口：`GET`/`PUT /api/v1/admin/quality-probe/settings`，`GET /api/v1/admin/quality-probe/logs`，`GET`/`POST /api/v1/admin/providers/:id/quality-probe`。管理侧栏「降智探测」列出汇总记录并分页，可打开该轮问答。提供商列表在分组列后读 `extra.quality_probe` 显示最近一轮通过、降智、上游报错或跳过。管理员在提供商菜单悬停「降智探测」时列出该账号可用模型，点模型后弹出结果对话框并按所选模型探测。自动循环停止后，菜单里的手动探测仍会执行。POST 可带 `model`；没带时用设置里的探测模型。POST 会连续打两次测试通道，前端超时 180 秒；关掉弹窗或浏览器取消请求后，服务端仍把这一轮跑完并写入 Extra。总开关关闭时立即返回 `skip_reason=disabled`。账号未开启时自动探测返回 `skip_reason=account`。自动探测未命中启用中的所选分组时返回 `skip_reason=group`。设置中的探测模型不在该账号可用模型里时返回 `skip_reason=model`。时段外自动探测返回 `skip_reason=schedule`。history 保存实际跑完的探测，以及手动触发且需要展示的跳过（例如总开关关闭）。
+管理接口：`GET`/`PUT /api/v1/admin/quality-probe/settings`，`GET /api/v1/admin/quality-probe/logs`，`GET`/`POST /api/v1/admin/providers/:id/quality-probe`。管理侧栏「降智探测」列出汇总记录并分页，可打开该轮问答。提供商列表在分组列后读 `extra.quality_probe` 显示最近一轮通过、降智、上游报错或跳过。管理员在提供商菜单悬停「降智探测」时列出该账号可用模型，每行一个复选框，打开时全部勾选。点「开始探测」后，勾选的模型各发一次 POST，结果对话框按模型列出进度。自动循环停止后，菜单里的手动探测仍会执行。POST 可带 `model`；没带时用设置里的探测模型。POST 会连续打两次测试通道，前端超时 180 秒；关掉弹窗或浏览器取消请求后，服务端仍把这一轮跑完并写入 Extra。总开关关闭时立即返回 `skip_reason=disabled`。账号未开启时自动探测返回 `skip_reason=account`。自动探测未命中启用中的所选分组时返回 `skip_reason=group`。设置中的探测模型不在该账号可用模型里时返回 `skip_reason=model`。时段外自动探测返回 `skip_reason=schedule`。history 保存实际跑完的探测，以及手动触发且需要展示的跳过（例如总开关关闭）。
 
 <a id="quality_probe_verdict"></a>
 ## 判定

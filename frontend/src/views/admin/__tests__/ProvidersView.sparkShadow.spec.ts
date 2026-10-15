@@ -18,6 +18,7 @@ const {
   getAllGroups,
   duplicateProvider,
   createSparkShadow,
+  getAvailableModels,
   showSuccess,
   showError
 } = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ const {
   getAllGroups: vi.fn(),
   duplicateProvider: vi.fn(),
   createSparkShadow: vi.fn(),
+  getAvailableModels: vi.fn(),
   showSuccess: vi.fn(),
   showError: vi.fn()
 }))
@@ -40,6 +42,7 @@ vi.mock('@/api/admin', () => ({
       getBatchTodayStats,
       duplicate: duplicateProvider,
       createSparkShadow,
+      getAvailableModels,
       delete: vi.fn(),
       batchClearError: vi.fn(),
       batchRefresh: vi.fn(),
@@ -589,6 +592,115 @@ describe('admin ProvidersView — 提供商行展示', () => {
 
     expect(listWithEtag).toHaveBeenCalledTimes(1)
     expect(wrapper.findComponent(PlatformTypeBadge).props('planType')).toBe('SuperGrok')
+    wrapper.unmount()
+  })
+})
+
+const mountViewWithMenu = () =>
+  mount(ProvidersView, {
+    global: {
+      stubs: {
+        AppLayout: { template: '<div><slot /></div>' },
+        TablePageLayout: {
+          template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
+        },
+        DataTable: {
+          props: ['data'],
+          template: `<div>
+            <div v-for="(row, idx) in (data || [])" :key="idx">
+              <slot name="cell-actions" :row="row" />
+            </div>
+          </div>`
+        },
+        Pagination: true,
+        ConfirmDialog: true,
+        ProviderTableActions: { template: '<div><slot name="beforeCreate" /><slot name="after" /></div>' },
+        ProviderTableFilters: { template: '<div></div>' },
+        ProviderBulkActionsBar: true,
+        ImportDataModal: true,
+        ReAuthProviderModal: true,
+        ProviderTestModal: true,
+        QualityProbeResultModal: true,
+        ProviderStatsModal: true,
+        ScheduledTestsPanel: true,
+        SyncFromCrsModal: true,
+        TempUnschedStatusModal: true,
+        ErrorPassthroughRulesModal: true,
+        TLSFingerprintProfilesModal: true,
+        CreateProviderModal: true,
+        EditProviderModal: true,
+        BulkEditProviderModal: true,
+        PlatformTypeBadge: true,
+        ProviderCapacityCell: true,
+        ProviderStatusIndicator: true,
+        ProviderTodayStatsCell: true,
+        ProviderGroupsCell: true,
+        ProviderUsageCell: true,
+        Icon: true
+      }
+    }
+  })
+
+describe('admin ProvidersView — 操作菜单滚动', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    for (const fn of [listProviders, listWithEtag, getBatchTodayStats, getAllProxies, getAllGroups, getAvailableModels]) {
+      fn.mockReset()
+    }
+    listWithEtag.mockResolvedValue({ notModified: true, etag: null, data: null })
+    getBatchTodayStats.mockResolvedValue({ stats: {} })
+    getAllProxies.mockResolvedValue([])
+    getAllGroups.mockResolvedValue([])
+    getAvailableModels.mockResolvedValue([
+      { id: 'gpt-6-luna', display_name: 'GPT-6 Luna' },
+    ])
+    listProviders.mockResolvedValue({
+      items: [{ id: 12, name: 'usfast', platform: 'openai', type: 'oauth' }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+  })
+
+  afterEach(() => {
+    document.body.querySelectorAll('.action-menu').forEach(node => node.remove())
+  })
+
+  it('模型列表自己滚动时菜单保持打开，页面滚动才关闭', async () => {
+    const wrapper = mountViewWithMenu()
+    await flushPromises()
+
+    const more = wrapper.findAll('button').find(button => button.text().includes('common.more'))
+    expect(more).toBeDefined()
+    await more!.trigger('click')
+    await flushPromises()
+
+    const menu = document.body.querySelector<HTMLElement>('.action-menu-content')
+    expect(menu).toBeTruthy()
+    menu!.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(wrapper.findComponent(ProviderActionMenu).props('show')).toBe(true)
+
+    const probeButton = Array.from(document.body.querySelectorAll('button')).find(button =>
+      button.textContent?.includes('admin.providers.qualityProbe'),
+    )
+    expect(probeButton).toBeDefined()
+    probeButton!.parentElement!.dispatchEvent(new Event('mouseenter'))
+    await flushPromises()
+
+    const flyout = Array.from(document.body.querySelectorAll<HTMLElement>('.action-menu')).find(node =>
+      node.textContent?.includes('GPT-6 Luna'),
+    )
+    expect(flyout).toBeDefined()
+    flyout!.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(wrapper.findComponent(ProviderActionMenu).props('show')).toBe(true)
+    expect(document.body.textContent).toContain('GPT-6 Luna')
+
+    document.documentElement.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(wrapper.findComponent(ProviderActionMenu).props('show')).toBe(false)
     wrapper.unmount()
   })
 })
