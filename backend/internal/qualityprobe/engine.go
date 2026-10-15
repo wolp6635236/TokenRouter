@@ -305,7 +305,10 @@ func (e *Engine) lockProvider(providerID int64) func() {
 		return func() {}
 	}
 	actual, _ := e.applyMu.LoadOrStore(providerID, &sync.Mutex{})
-	mu := actual.(*sync.Mutex)
+	mu, ok := actual.(*sync.Mutex)
+	if !ok || mu == nil {
+		return func() {}
+	}
 	mu.Lock()
 	return mu.Unlock
 }
@@ -319,7 +322,10 @@ func (e *Engine) acquireProbeSlot(ctx context.Context, providerID int64) (func()
 		return nil, ctx.Err()
 	}
 	actual, _ := e.probeSlots.LoadOrStore(providerID, make(chan struct{}, autoProbeConcurrency))
-	slot := actual.(chan struct{})
+	slot, ok := actual.(chan struct{})
+	if !ok || slot == nil {
+		return func() {}, fmt.Errorf("quality probe slot for provider %d is missing", providerID)
+	}
 	slot <- struct{}{}
 	return func() { <-slot }, nil
 }
