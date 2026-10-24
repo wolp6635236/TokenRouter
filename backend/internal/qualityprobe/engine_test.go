@@ -930,6 +930,81 @@ func TestEngineAutomaticModelsRequireAllDegraded(t *testing.T) {
 	}
 }
 
+// TestEngineAutomaticModelVerdictOrder exercises mixed model results in every
+// ordering. Account recovery wins when any model passes, while upstream errors
+// preserve the failure cycle when no model passes.
+func TestEngineAutomaticModelVerdictOrder(t *testing.T) {
+	pass := modelProbeRound{Model: "passing", Round: ProbeRound{CandyOK: true}}
+	degraded := modelProbeRound{Model: "degraded"}
+	upstream := modelProbeRound{Model: "upstream", Round: ProbeRound{CandyError: "upstream unavailable"}}
+	cases := []struct {
+		name     string            // subtest result ordering
+		rounds   []modelProbeRound // completed model probe evidence
+		wantPass bool              // account recovery expected
+		wantErr  bool              // account cycle preservation expected
+	}{
+		{name: "pass error", rounds: []modelProbeRound{pass, upstream}, wantPass: true},
+		{name: "error pass", rounds: []modelProbeRound{upstream, pass}, wantPass: true},
+		{name: "pass degraded error", rounds: []modelProbeRound{pass, degraded, upstream}, wantPass: true},
+		{name: "pass error degraded", rounds: []modelProbeRound{pass, upstream, degraded}, wantPass: true},
+		{name: "degraded pass error", rounds: []modelProbeRound{degraded, pass, upstream}, wantPass: true},
+		{name: "degraded error pass", rounds: []modelProbeRound{degraded, upstream, pass}, wantPass: true},
+		{name: "error pass degraded", rounds: []modelProbeRound{upstream, pass, degraded}, wantPass: true},
+		{name: "error degraded pass", rounds: []modelProbeRound{upstream, degraded, pass}, wantPass: true},
+		{name: "degraded error", rounds: []modelProbeRound{degraded, upstream}, wantErr: true},
+		{name: "error degraded", rounds: []modelProbeRound{upstream, degraded}, wantErr: true},
+		{name: "all degraded", rounds: []modelProbeRound{degraded, degraded}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := &memDir{
+				items: map[int64]*Snapshot{
+					1: {
+						ID:                      1,
+						Platform:                PlatformOpenAI,
+						GroupIDs:                []int64{1},
+						TempUnschedulableReason: TempUnscheduleReason,
+						Extra: map[string]any{
+							ExtraKey: map[string]any{"consecutive_fails": 2},
+						},
+					},
+				},
+				schedulable: map[int64][]int64{1: {1, 2}},
+				temp:        map[int64]string{1: TempUnscheduleReason},
+			}
+			mail := &recordingMail{}
+			engine := &Engine{Dir: dir, Mail: mail, Now: func() time.Time { return time.Unix(10, 0) }}
+			cfg := DefaultSettings()
+			cfg.Enabled = true
+			report, err := engine.applyProbedRounds(context.Background(), cfg, 1, TriggerAuto, tc.rounds)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := ParseStoredState(dir.items[1].Extra)
+			if len(state.History) != len(tc.rounds) {
+				t.Fatalf("history length = %d, want %d", len(state.History), len(tc.rounds))
+			}
+			switch {
+			case tc.wantPass:
+				if report.Degraded || report.UpstreamError || state.ConsecutiveFails != 0 ||
+					state.CycleStopped || dir.temp[1] != "" || mail.n != 0 {
+					t.Fatalf("passing account: report=%+v state=%+v temp=%q mail=%d", report, state, dir.temp[1], mail.n)
+				}
+			case tc.wantErr:
+				if report.Degraded || !report.UpstreamError || state.ConsecutiveFails != 2 ||
+					state.CycleStopped || dir.temp[1] != TempUnscheduleReason || mail.n != 0 {
+					t.Fatalf("upstream account: report=%+v state=%+v temp=%q mail=%d", report, state, dir.temp[1], mail.n)
+				}
+			default:
+				if !report.Degraded || report.UpstreamError || state.ConsecutiveFails != 3 ||
+					!state.CycleStopped || dir.temp[1] != TempUnscheduleReason || mail.n != 1 {
+					t.Fatalf("degraded account: report=%+v state=%+v temp=%q mail=%d", report, state, dir.temp[1], mail.n)
+				}
+			}
+		})
+	}
+}
+
 func TestEngine_AutoSkipsOutsideScheduleWindow(t *testing.T) {
 	loc := time.FixedZone("Asia/Shanghai", 8*3600)
 	previous := time.Local

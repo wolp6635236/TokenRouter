@@ -10,6 +10,18 @@ import (
 	"time"
 )
 
+// engine.go runs provider quality probes and applies their results to account
+// scheduling, retry cycles, history, and notifications. Automatic probes filter
+// the configured groups and models before issuing requests. Each selected
+// model records its own evidence, while the account receives one decision
+// after all selected model requests finish.
+//
+// Probe slots limit overlapping requests for each provider. A separate provider
+// lock serializes state updates so concurrent manual and automatic probes
+// append to the latest history. Completed probe evidence is persisted with a
+// context that survives request cancellation, allowing an administrator to
+// close the result dialog while the server finishes recording the round.
+
 // autoProbeConcurrency 是自动探测同时跑的提供商数。
 // 每个提供商内部仍是糖果题和一道 ModelTrace 依次打。再高主要叠加上游连接和 token，不是本机 goroutine。
 const autoProbeConcurrency = 4
@@ -529,22 +541,30 @@ func probeRoundModels(rounds []modelProbeRound) []string {
 	return models
 }
 
-// aggregateProbeRounds combines automatic model evidence for one account. A
-// single passing model clears degradation, while any upstream error preserves
-// the existing account cycle instead of treating the account as degraded.
+// aggregateProbeRounds combines completed automatic model evidence for one
+// account. Any passing model clears degradation, including when another model
+// reports an upstream error. This priority applies to every configured model
+// order because account recovery depends on finding one usable model.
+//
+// When no model passes, the first upstream error keeps the existing failure
+// cycle unchanged. All degraded rounds produce a degraded account result;
+// callers skip accounts with no eligible models before collecting these rounds.
 func aggregateProbeRounds(rounds []modelProbeRound) ProbeRound {
-	result := ProbeRound{CandyOK: true, ModelTraceOK: true}
+	var result ProbeRound
 	for _, item := range rounds {
 		if HasUpstreamError(item.Round) {
-			return ProbeRound{CandyError: firstError(item.Round), ModelTraceError: firstError(item.Round)}
+			// Keep error evidence while checking later models: a usable model
+			// clears the account even when another model cannot be tested.
+			if !HasUpstreamError(result) {
+				result = ProbeRound{CandyError: firstError(item.Round), ModelTraceError: firstError(item.Round)}
+			}
+			continue
 		}
 		if !IsDegraded(item.Round) {
-			result.CandyOK = true
-			result.ModelTraceOK = true
-			return result
+			return ProbeRound{CandyOK: true, ModelTraceOK: true}
 		}
 	}
-	return ProbeRound{}
+	return result
 }
 
 func (e *Engine) lockProvider(providerID int64) func() {
