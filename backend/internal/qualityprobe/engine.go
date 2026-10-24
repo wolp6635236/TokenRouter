@@ -3,6 +3,7 @@ package qualityprobe
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,13 @@ import (
 // autoProbeConcurrency 是自动探测同时跑的提供商数。
 // 每个提供商内部仍是糖果题和一道 ModelTrace 依次打。再高主要叠加上游连接和 token，不是本机 goroutine。
 const autoProbeConcurrency = 4
+
+// modelProbeRound keeps one model's completed probe evidence until the account
+// decision can evaluate every model selected for the same automatic cycle.
+type modelProbeRound struct {
+	Model string
+	Round ProbeRound
+}
 
 // Run 对单个提供商执行一轮探测并应用决策。
 func (e *Engine) Run(ctx context.Context, providerID int64, trigger Trigger) (RunReport, error) {
@@ -78,14 +86,27 @@ func (e *Engine) runWithActive(
 		return e.finishSkip(ctx, snap, state, trigger, "not_due")
 	}
 	catalog := e.catalogModels(ctx, snap)
-	model := ResolveProbeModel(cfg.Model, catalog)
-	if trigger == TriggerManual && manualModel != "" {
+	if trigger == TriggerAuto {
+		models := e.autoProbeModels(cfg, catalog)
+		if len(models) == 0 {
+			return e.finishSkip(ctx, snap, state, trigger, "model")
+		}
+		if len(models) == 1 {
+			model := models[0]
+			release, slotErr := e.acquireProbeSlot(ctx, providerID)
+			if slotErr != nil {
+				return report, slotErr
+			}
+			defer release()
+			return e.applyProbedRound(ctx, cfg, providerID, trigger, model, e.probeRound(ctx, providerID, model))
+		}
+		return e.runAutomaticModels(ctx, cfg, providerID, models)
+	}
+	model := ResolveProbeModels(cfg.Models, catalog)[0]
+	if manualModel != "" {
 		model = manualModel
 	}
 	report.Model = model
-	if trigger == TriggerAuto && e.Catalog != nil && !CatalogContainsModel(catalog, model) {
-		return e.finishSkip(ctx, snap, state, trigger, "model")
-	}
 	release, slotErr := e.acquireProbeSlot(ctx, providerID)
 	if slotErr != nil {
 		return report, slotErr
@@ -93,6 +114,95 @@ func (e *Engine) runWithActive(
 	defer release()
 	round := e.probeRound(ctx, providerID, model)
 	return e.applyProbedRound(ctx, cfg, providerID, trigger, model, round)
+}
+
+// autoProbeModels filters configured probe models through this provider's
+// catalog. A missing model is skipped, preserving the prior eligibility rule.
+func (e *Engine) autoProbeModels(cfg Settings, catalog []string) []string {
+	configured := ResolveProbeModels(cfg.Models, catalog)
+	models := make([]string, 0, len(configured))
+	for _, model := range configured {
+		if e.Catalog != nil && !CatalogContainsModel(catalog, model) {
+			continue
+		}
+		models = append(models, model)
+	}
+	return models
+}
+
+// ModelCandidates returns the deduplicated requestable models from active
+// selected groups. An empty group selection uses every active group, matching
+// automatic probe scope before individual provider catalogs apply their skips.
+func (e *Engine) ModelCandidates(ctx context.Context, selected []int64) ([]string, error) {
+	if e == nil || e.Groups == nil || e.GroupModels == nil {
+		return []string{}, nil
+	}
+	active, err := e.Groups.ActiveIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	selectedSet := make(map[int64]struct{}, len(selected))
+	for _, groupID := range NormalizeGroupIDs(selected) {
+		selectedSet[groupID] = struct{}{}
+	}
+	models := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, groupID := range active {
+		if len(selectedSet) > 0 {
+			if _, selected := selectedSet[groupID]; !selected {
+				continue
+			}
+		}
+		candidates, err := e.GroupModels.Models(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		for _, model := range candidates {
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
+			}
+			if _, exists := seen[model]; exists {
+				continue
+			}
+			seen[model] = struct{}{}
+			models = append(models, model)
+		}
+	}
+	sort.Strings(models)
+	return models, nil
+}
+
+// runAutomaticModels probes every eligible configured model concurrently, then
+// applies one account decision. This prevents goroutine completion order from
+// changing consecutive failures or temporary unscheduling.
+func (e *Engine) runAutomaticModels(ctx context.Context, cfg Settings, providerID int64, models []string) (RunReport, error) {
+	rounds := make([]modelProbeRound, len(models))
+	var wg sync.WaitGroup
+	for index, model := range models {
+		wg.Add(1)
+		go func(index int, model string) {
+			defer wg.Done()
+			release, err := e.acquireProbeSlot(ctx, providerID)
+			if err != nil {
+				rounds[index] = modelProbeRound{Model: model, Round: probeFailureRound(err)}
+				return
+			}
+			defer release()
+			rounds[index] = modelProbeRound{Model: model, Round: e.probeRound(ctx, providerID, model)}
+		}(index, model)
+	}
+	wg.Wait()
+	return e.applyProbedRounds(ctx, cfg, providerID, TriggerAuto, rounds)
+}
+
+// probeFailureRound converts a slot or deadline failure into upstream evidence
+// so the account preserves its prior failure cycle instead of being degraded.
+func probeFailureRound(err error) ProbeRound {
+	if err == nil {
+		return ProbeRound{}
+	}
+	return ProbeRound{CandyError: err.Error(), ModelTraceError: err.Error()}
 }
 
 // RunDue 扫描 OpenAI 提供商并执行到期的自动探测。
@@ -300,6 +410,143 @@ func (e *Engine) applyProbedRound(
 	}, nil
 }
 
+// applyProbedRounds records every automatic model result, then derives one
+// account decision. A provider degrades only when all successfully probed
+// configured models degrade; any pass clears the previous failure cycle.
+func (e *Engine) applyProbedRounds(
+	ctx context.Context,
+	cfg Settings,
+	providerID int64,
+	trigger Trigger,
+	rounds []modelProbeRound,
+) (RunReport, error) {
+	unlock := e.lockProvider(providerID)
+	defer unlock()
+	writeCtx := persistCtx(ctx)
+	snap, err := e.Dir.Get(writeCtx, providerID)
+	if err != nil {
+		return RunReport{ProviderID: providerID}, err
+	}
+	if snap == nil {
+		return RunReport{ProviderID: providerID}, fmt.Errorf("provider %d is missing", providerID)
+	}
+	state := ParseStoredState(snap.Extra)
+	accountRound := aggregateProbeRounds(rounds)
+	now := e.now()
+	held := e.lastSchedulableHeld(writeCtx, snap)
+	decision := Decide(DecideInput{
+		Settings:            cfg,
+		Platform:            snap.Platform,
+		LastSchedulableHeld: held,
+		State:               state.cycle(),
+		Round:               accountRound,
+		Trigger:             trigger,
+	})
+	if decision.Skip {
+		return e.recordSkip(writeCtx, snap, state, trigger, "decide")
+	}
+	stored := StoredState{
+		ConsecutiveFails:  decision.ConsecutiveFails,
+		CycleStopped:      decision.StopCycle,
+		NextRetryAt:       nextRetry(now, cfg, decision),
+		LastCandyOK:       accountRound.CandyOK,
+		LastTraceOK:       accountRound.ModelTraceOK,
+		LastUpstreamError: decision.UpstreamError,
+		LastError:         firstError(accountRound),
+		LastModel:         strings.Join(probeRoundModels(rounds), ", "),
+		UpdatedAt:         now,
+	}
+	if decision.ClearTemp {
+		if strings.TrimSpace(snap.TempUnschedulableReason) == "" ||
+			snap.TempUnschedulableReason == TempUnscheduleReason {
+			if err := e.Dir.ClearTempUnschedulable(writeCtx, providerID); err != nil {
+				return RunReport{ProviderID: providerID}, err
+			}
+		}
+	}
+	if decision.TempUnschedule {
+		until := now.Add(decision.Cooldown)
+		if err := e.Dir.SetTempUnschedulable(writeCtx, providerID, until, TempUnscheduleReason); err != nil {
+			return RunReport{ProviderID: providerID}, err
+		}
+	}
+	emailSent := false
+	if decision.SendEmail && e.Mail != nil {
+		subject, body := emailCopy(snap, stored)
+		if err := e.Mail.Send(ctx, cfg.NotifyEmail, subject, body); err != nil {
+			stored.LastError = joinErrors(stored.LastError, err.Error())
+		} else {
+			emailSent = true
+		}
+	}
+	stored.History = state.History
+	for _, item := range slices.Backward(rounds) {
+		stored.History = appendProbeLog(stored.History, ProbeLog{
+			At:               now,
+			Trigger:          trigger,
+			Model:            item.Model,
+			CandyOK:          item.Round.CandyOK,
+			TraceOK:          item.Round.ModelTraceOK,
+			TracePrediction:  item.Round.TracePrediction,
+			TraceProbability: item.Round.TraceProbability,
+			Degraded:         IsDegraded(item.Round),
+			UpstreamError:    HasUpstreamError(item.Round),
+			TempUnscheduled:  decision.TempUnschedule,
+			KeptForCoverage:  decision.SkipBecauseLastInGroup,
+			EmailSent:        emailSent,
+			ConsecutiveFails: decision.ConsecutiveFails,
+			CycleStopped:     decision.StopCycle,
+			Error:            firstError(item.Round),
+			Samples:          item.Round.Samples,
+		})
+	}
+	if err := e.Dir.UpdateExtra(writeCtx, providerID, stored.extraUpdate()); err != nil {
+		return RunReport{ProviderID: providerID}, err
+	}
+	return RunReport{
+		ProviderID:       providerID,
+		ProviderName:     snap.Name,
+		Degraded:         decision.Degraded,
+		UpstreamError:    decision.UpstreamError,
+		TempUnscheduled:  decision.TempUnschedule,
+		KeptForCoverage:  decision.SkipBecauseLastInGroup,
+		EmailSent:        emailSent,
+		ConsecutiveFails: decision.ConsecutiveFails,
+		CycleStopped:     decision.StopCycle,
+		Error:            stored.LastError,
+		Trigger:          trigger,
+		At:               now,
+	}, nil
+}
+
+// probeRoundModels returns configured-order labels for account-level history
+// and notification text after every model round has finished.
+func probeRoundModels(rounds []modelProbeRound) []string {
+	models := make([]string, 0, len(rounds))
+	for _, item := range rounds {
+		models = append(models, item.Model)
+	}
+	return models
+}
+
+// aggregateProbeRounds combines automatic model evidence for one account. A
+// single passing model clears degradation, while any upstream error preserves
+// the existing account cycle instead of treating the account as degraded.
+func aggregateProbeRounds(rounds []modelProbeRound) ProbeRound {
+	result := ProbeRound{CandyOK: true, ModelTraceOK: true}
+	for _, item := range rounds {
+		if HasUpstreamError(item.Round) {
+			return ProbeRound{CandyError: firstError(item.Round), ModelTraceError: firstError(item.Round)}
+		}
+		if !IsDegraded(item.Round) {
+			result.CandyOK = true
+			result.ModelTraceOK = true
+			return result
+		}
+	}
+	return ProbeRound{}
+}
+
 func (e *Engine) lockProvider(providerID int64) func() {
 	if e == nil {
 		return func() {}
@@ -355,6 +602,7 @@ func (e *Engine) ListLogs(ctx context.Context, page, pageSize int) ([]LogItem, i
 			out = append(out, LogItem{
 				ProviderID:   items[i].ID,
 				ProviderName: items[i].Name,
+				GroupNames:   append([]string{}, items[i].GroupNames...),
 				ProbeLog:     entry,
 			})
 		}

@@ -75,6 +75,11 @@
               <div class="text-xs text-gray-500 dark:text-dark-400">#{{ row.provider_id }}</div>
             </div>
           </template>
+          <template #cell-group_names="{ value }">
+            <span class="text-sm text-gray-600 dark:text-dark-300">{{
+              value?.join(', ') || '—'
+            }}</span>
+          </template>
           <template #cell-trigger="{ value }">
             {{
               value === 'manual'
@@ -211,9 +216,10 @@ const rows = computed(() =>
   })),
 )
 
-const ALWAYS_VISIBLE_COLUMNS = new Set(['provider_name', 'actions'])
+const ALWAYS_VISIBLE_COLUMNS = new Set(['provider_name', 'group_names', 'actions'])
 const allColumns = computed<Column[]>(() => [
   { key: 'provider_name', label: t('admin.providers.qualityProbeLogs.provider') },
+  { key: 'group_names', label: t('admin.providers.columns.groups') },
   { key: 'at', label: t('admin.providers.qualityProbeLogs.time'), sortable: true },
   { key: 'trigger', label: t('admin.providers.qualityProbeLogs.trigger') },
   { key: 'candy_ok', label: t('admin.providers.qualityProbeLogs.candy') },

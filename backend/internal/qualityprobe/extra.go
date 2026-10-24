@@ -64,8 +64,9 @@ type ProbeSample struct {
 
 // LogItem 是管理端记录列表的一行。
 type LogItem struct {
-	ProviderID   int64  `json:"provider_id"`
-	ProviderName string `json:"provider_name"`
+	ProviderID   int64    `json:"provider_id"`
+	ProviderName string   `json:"provider_name"`
+	GroupNames   []string `json:"group_names"`
 	ProbeLog
 }
 

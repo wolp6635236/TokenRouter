@@ -30,6 +30,7 @@ type Snapshot struct {
 	SchedulingOff           bool
 	Schedulable             bool
 	GroupIDs                []int64
+	GroupNames              []string
 	Extra                   map[string]any
 	TempUnschedulableUntil  *time.Time
 	TempUnschedulableReason string
@@ -50,6 +51,12 @@ type GroupIndex interface {
 	ActiveIDs(context.Context) ([]int64, error)
 }
 
+// GroupModelCatalog resolves requestable model names for one routing group.
+// Its adapter owns routing-policy and provider-capability resolution.
+type GroupModelCatalog interface {
+	Models(context.Context, int64) ([]string, error)
+}
+
 // Catalog 返回该提供商可测的模型名。
 type Catalog interface {
 	Models(context.Context, *Snapshot) []string
@@ -68,14 +75,15 @@ type SettingsRepo interface {
 
 // Engine 编排一轮探测并落状态。
 type Engine struct {
-	Settings SettingsRepo
-	Dir      Directory
-	Groups   GroupIndex
-	Prober   Prober
-	Catalog  Catalog
-	Mail     Mailer
-	Now      func() time.Time
-	NotFound error
+	Settings    SettingsRepo
+	Dir         Directory
+	Groups      GroupIndex
+	GroupModels GroupModelCatalog
+	Prober      Prober
+	Catalog     Catalog
+	Mail        Mailer
+	Now         func() time.Time
+	NotFound    error
 	// AnalyzeTrace 覆盖默认指纹归因，测试里注入。
 	AnalyzeTrace func([]TraceOutput) (TraceResult, error)
 	// applyMu 串行写入同一提供商的 Extra。测号在拿到这把锁之前完成，多选的几轮可以同时打上游。
@@ -110,17 +118,20 @@ type RunReport struct {
 
 // SettingsPayload 是管理端读写的 JSON 形状。
 type SettingsPayload struct {
-	Enabled              bool    `json:"enabled"`
-	IntervalMinutes      int     `json:"interval_minutes"`
-	Model                string  `json:"model"`
-	CooldownMinutes      int     `json:"cooldown_minutes"`
-	MaxAttempts          int     `json:"max_attempts"`
-	NotifyEmail          string  `json:"notify_email"`
-	GroupIDs             []int64 `json:"group_ids"`
-	ScheduleEnabled      *bool   `json:"schedule_enabled"`
-	ScheduleStart        string  `json:"schedule_start"`
-	ScheduleEnd          string  `json:"schedule_end"`
-	UnscheduleOnDegraded *bool   `json:"unschedule_on_degraded"`
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+	// Model retains the previous single-value JSON field for stored settings.
+	// New clients send Models, whose nonempty value takes precedence on read.
+	Model                string   `json:"model,omitempty"`
+	Models               []string `json:"models"`
+	CooldownMinutes      int      `json:"cooldown_minutes"`
+	MaxAttempts          int      `json:"max_attempts"`
+	NotifyEmail          string   `json:"notify_email"`
+	GroupIDs             []int64  `json:"group_ids"`
+	ScheduleEnabled      *bool    `json:"schedule_enabled"`
+	ScheduleStart        string   `json:"schedule_start"`
+	ScheduleEnd          string   `json:"schedule_end"`
+	UnscheduleOnDegraded *bool    `json:"unschedule_on_degraded"`
 }
 
 func (e *Engine) now() time.Time {
@@ -214,16 +225,14 @@ func fileFromSettings(cfg Settings) SettingsPayload {
 	if email == "" {
 		email = DefaultNotifyEmail
 	}
-	model := strings.TrimSpace(cfg.Model)
-	if model == "" {
-		model = DefaultProbeModel
-	}
+	models := NormalizeProbeModels(cfg.Models)
 	scheduleEnabled := cfg.ScheduleEnabled
 	unscheduleOnDegraded := cfg.UnscheduleOnDegraded
 	return SettingsPayload{
 		Enabled:              cfg.Enabled,
 		IntervalMinutes:      interval,
-		Model:                model,
+		Model:                models[0],
+		Models:               models,
 		CooldownMinutes:      cooldown,
 		MaxAttempts:          maxAttempts,
 		NotifyEmail:          email,
@@ -241,9 +250,11 @@ func (f SettingsPayload) Settings() Settings {
 	if f.IntervalMinutes > 0 {
 		cfg.Interval = time.Duration(f.IntervalMinutes) * time.Minute
 	}
-	if strings.TrimSpace(f.Model) != "" {
-		cfg.Model = strings.TrimSpace(f.Model)
+	models := NormalizeProbeModels(f.Models)
+	if len(f.Models) == 0 && strings.TrimSpace(f.Model) != "" {
+		models = NormalizeProbeModels([]string{f.Model})
 	}
+	cfg.Models = models
 	if f.CooldownMinutes > 0 {
 		cfg.Cooldown = time.Duration(f.CooldownMinutes) * time.Minute
 	}

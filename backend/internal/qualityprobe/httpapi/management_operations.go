@@ -35,6 +35,18 @@ var ManagementOperations = map[string]*adminapi.Operation{
 		BrowserPath: "/admin/settings",
 		Input:       adminapi.Arguments("/api/v1/admin/quality-probe/settings", nil, (*qualityprobe.SettingsPayload)(nil)),
 	}),
+	"quality_probe.models.list": adminapi.Define(adminapi.Operation{
+		ID:          "quality_probe.models.list",
+		Module:      "quality-probe",
+		Title:       "List Quality Probe Models",
+		Description: "Read requestable models from the active groups selected for automatic quality probes.",
+		Method:      "GET",
+		Path:        "/api/v1/admin/quality-probe/models",
+		ReadOnly:    true,
+		Response:    adminapi.ResponseJSON,
+		BrowserPath: "/admin/settings",
+		Input:       adminapi.Arguments("/api/v1/admin/quality-probe/models", []string{"group_ids"}, nil),
+	}),
 	"quality_probe.logs.list": adminapi.Define(adminapi.Operation{
 		ID:          "quality_probe.logs.list",
 		Module:      "quality-probe",

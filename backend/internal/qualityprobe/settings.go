@@ -28,7 +28,7 @@ const (
 type Settings struct {
 	Enabled     bool
 	Interval    time.Duration
-	Model       string
+	Models      []string
 	Cooldown    time.Duration
 	MaxAttempts int
 	NotifyEmail string
@@ -48,7 +48,7 @@ func DefaultSettings() Settings {
 	return Settings{
 		Enabled:              false,
 		Interval:             30 * time.Minute,
-		Model:                DefaultProbeModel,
+		Models:               []string{DefaultProbeModel},
 		Cooldown:             5 * time.Minute,
 		MaxAttempts:          3,
 		NotifyEmail:          DefaultNotifyEmail,
@@ -138,6 +138,28 @@ func NormalizeGroupIDs(ids []int64) []int64 {
 	return out
 }
 
+// NormalizeProbeModels trims, deduplicates, and preserves the configured model
+// order. An empty configuration retains the historical default probe model.
+func NormalizeProbeModels(models []string) []string {
+	seen := make(map[string]struct{}, len(models))
+	result := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		result = append(result, model)
+	}
+	if len(result) == 0 {
+		return []string{DefaultProbeModel}
+	}
+	return result
+}
+
 // AutoGroupAllowed 判断自动探测是否覆盖该提供商。selected 为空且 active 为 nil 时，账号所属分组都视为启用。
 func AutoGroupAllowed(selected, providerGroups []int64) bool {
 	return AutoScopeAllowed(selected, providerGroups, nil)
@@ -179,27 +201,36 @@ func AccountAutoEligible(snap *Snapshot) bool {
 	return true
 }
 
-// ResolveProbeModel 选择本轮探测模型。configured 为空时用默认 Astra；
-// 为 latest 时从 catalog 里取字典序最大的 Astra 名称。
-func ResolveProbeModel(configured string, catalog []string) string {
-	name := strings.TrimSpace(configured)
-	if name == "" {
-		return DefaultProbeModel
-	}
-	if !strings.EqualFold(name, LatestModelToken) {
-		return name
-	}
-	astras := make([]string, 0, len(catalog))
-	for _, item := range catalog {
-		if isGPT6AstraModel(item) {
-			astras = append(astras, item)
+// ResolveProbeModels expands configured model values for one provider catalog.
+// The legacy latest token resolves to the newest Astra name, then duplicates are
+// removed so each provider model receives at most one concurrent probe round.
+func ResolveProbeModels(configured, catalog []string) []string {
+	resolved := make([]string, 0, len(configured))
+	for _, model := range NormalizeProbeModels(configured) {
+		if !strings.EqualFold(model, LatestModelToken) {
+			resolved = append(resolved, model)
+			continue
 		}
+		astras := make([]string, 0, len(catalog))
+		for _, item := range catalog {
+			if isGPT6AstraModel(item) {
+				astras = append(astras, item)
+			}
+		}
+		if len(astras) == 0 {
+			resolved = append(resolved, DefaultProbeModel)
+			continue
+		}
+		sort.Strings(astras)
+		resolved = append(resolved, astras[len(astras)-1])
 	}
-	if len(astras) == 0 {
-		return DefaultProbeModel
-	}
-	sort.Strings(astras)
-	return astras[len(astras)-1]
+	return NormalizeProbeModels(resolved)
+}
+
+// ResolveProbeModel keeps the single-model helper for callers that retain the
+// previous configuration shape. New automatic probing uses ResolveProbeModels.
+func ResolveProbeModel(configured string, catalog []string) string {
+	return ResolveProbeModels([]string{configured}, catalog)[0]
 }
 
 // CatalogContainsModel 判断该提供商可用模型里有没有本轮探测模型。

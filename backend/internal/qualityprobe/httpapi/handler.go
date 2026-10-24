@@ -57,6 +57,28 @@ func (h *Handler) PutSettings(c *gin.Context) {
 	response.Success(c, qualityprobe.SettingsDTO(cfg))
 }
 
+// ModelCandidates returns requestable model identifiers from active selected
+// groups. The optional group_ids query repeats group IDs; an empty list covers
+// every active group, matching automatic probe scope.
+func (h *Handler) ModelCandidates(c *gin.Context) {
+	values := append(c.QueryArray("group_ids"), c.QueryArray("group_ids[]")...)
+	groupIDs := make([]int64, 0, len(values))
+	for _, rawID := range values {
+		groupID, err := strconv.ParseInt(rawID, 10, 64)
+		if err != nil || groupID <= 0 {
+			response.BadRequest(c, "Invalid group ID")
+			return
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	models, err := h.engine.ModelCandidates(c.Request.Context(), groupIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"models": models})
+}
+
 // Run executes one manual probe for a provider and returns its report. Browser
 // cancellation does not stop the detached request because history persistence
 // must reflect a probe that already reached its upstream account.
@@ -115,6 +137,7 @@ func (h *Handler) ListLogs(c *gin.Context) {
 func RegisterRoutes(admin *gin.RouterGroup, endpoint *Handler) {
 	adminapi.Register(admin, ManagementOperations["quality_probe.settings.get"], endpoint.GetSettings)
 	adminapi.Register(admin, ManagementOperations["quality_probe.settings.update"], endpoint.PutSettings)
+	adminapi.Register(admin, ManagementOperations["quality_probe.models.list"], endpoint.ModelCandidates)
 	adminapi.Register(admin, ManagementOperations["quality_probe.logs.list"], endpoint.ListLogs)
 	adminapi.Register(admin, ManagementOperations["quality_probe.provider.get"], endpoint.Status)
 	adminapi.Register(admin, ManagementOperations["quality_probe.provider.run"], endpoint.Run)

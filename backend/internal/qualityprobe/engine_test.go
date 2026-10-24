@@ -59,6 +59,14 @@ type stubCatalog struct {
 	models []string
 }
 
+type groupModelCatalogStub struct {
+	models map[int64][]string
+}
+
+type modelAnswerProber struct {
+	answers map[string]string
+}
+
 func (m *memSettings) GetValue(context.Context, string) (string, error) {
 	if m.err != nil {
 		return "", m.err
@@ -555,6 +563,7 @@ func TestEngine_ListLogsOrdersNewestFirst(t *testing.T) {
 				Platform:    PlatformOpenAI,
 				Schedulable: true,
 				GroupIDs:    []int64{1},
+				GroupNames:  []string{"primary", "secondary"},
 			},
 		},
 		schedulable: map[int64][]int64{1: {7, 8}},
@@ -577,6 +586,9 @@ func TestEngine_ListLogsOrdersNewestFirst(t *testing.T) {
 	}
 	if len(logs[0].Samples) != 2 || logs[0].Samples[0].Name != "candy" || logs[0].Samples[0].Answer != "21" {
 		t.Fatalf("samples = %+v", logs[0].Samples)
+	}
+	if got, want := strings.Join(logs[0].GroupNames, ","), "primary,secondary"; got != want {
+		t.Fatalf("groups = %q, want %q", got, want)
 	}
 }
 
@@ -808,6 +820,41 @@ func (c stubCatalog) Models(context.Context, *Snapshot) []string {
 	return c.models
 }
 
+func (c groupModelCatalogStub) Models(_ context.Context, groupID int64) ([]string, error) {
+	return c.models[groupID], nil
+}
+
+// TestEngineModelCandidates selects models from active selected groups and
+// deduplicates names shared by multiple groups. Empty selection covers all
+// active groups, matching automatic probe scope.
+func TestEngineModelCandidates(t *testing.T) {
+	engine := &Engine{
+		Groups: memGroups{ids: []int64{1, 2}},
+		GroupModels: groupModelCatalogStub{models: map[int64][]string{
+			1: {"gpt-6-astra", "gpt-5.6-terra"},
+			2: {"gpt-5.6-terra", "gpt-6-luna"},
+		}},
+	}
+	selected, err := engine.ModelCandidates(context.Background(), []int64{2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(selected, ","), "gpt-5.6-terra,gpt-6-luna"; got != want {
+		t.Fatalf("selected models = %q, want %q", got, want)
+	}
+	all, err := engine.ModelCandidates(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(all, ","), "gpt-5.6-terra,gpt-6-astra,gpt-6-luna"; got != want {
+		t.Fatalf("all models = %q, want %q", got, want)
+	}
+}
+
+func (p *modelAnswerProber) ProbeText(_ context.Context, _ int64, model, _ string) (TextResult, error) {
+	return TextResult{Answer: p.answers[model]}, nil
+}
+
 func TestEngine_ManualUsesRequestedModel(t *testing.T) {
 	dir := &memDir{
 		items: map[int64]*Snapshot{
@@ -829,6 +876,57 @@ func TestEngine_ManualUsesRequestedModel(t *testing.T) {
 	}
 	if got.Model != "gpt-5.6-terra" {
 		t.Fatalf("model = %q", got.Model)
+	}
+}
+
+// TestEngineAutomaticModelsRequireAllDegraded keeps the account schedulable
+// when one selected model passes. It then changes both results to degraded and
+// verifies the account-level cycle advances once after both rounds finish.
+func TestEngineAutomaticModelsRequireAllDegraded(t *testing.T) {
+	now := time.Unix(10, 0)
+	dir := &memDir{
+		items: map[int64]*Snapshot{
+			1: {ID: 1, Name: "account", Platform: PlatformOpenAI, Schedulable: true, GroupIDs: []int64{1}},
+		},
+		schedulable: map[int64][]int64{1: {1, 2}},
+	}
+	settings := &memSettings{raw: "{\"enabled\":true,\"models\":[\"gpt-6-astra\",\"gpt-5.6-terra\"],\"schedule_enabled\":false}"}
+	engine := &Engine{
+		Settings: settings,
+		Dir:      dir,
+		Groups:   memGroups{ids: []int64{1}},
+		Catalog:  stubCatalog{models: []string{"gpt-6-astra", "gpt-5.6-terra"}},
+		Prober: &modelAnswerProber{answers: map[string]string{
+			"gpt-6-astra":   "21",
+			"gpt-5.6-terra": "wrong",
+		}},
+		AnalyzeTrace: func([]TraceOutput) (TraceResult, error) {
+			return TraceResult{Prediction: "gpt-6-astra", Probability: 1}, nil
+		},
+		Now: func() time.Time { return now },
+	}
+	first, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Degraded || first.TempUnscheduled || first.ConsecutiveFails != 0 {
+		t.Fatalf("mixed results must not degrade account: %+v", first)
+	}
+	state := ParseStoredState(dir.items[1].Extra)
+	if len(state.History) != 2 || state.ConsecutiveFails != 0 {
+		t.Fatalf("mixed state = %+v", state)
+	}
+	now = now.Add(31 * time.Minute)
+	engine.Prober = &modelAnswerProber{answers: map[string]string{"gpt-6-astra": "wrong", "gpt-5.6-terra": "wrong"}}
+	engine.AnalyzeTrace = func([]TraceOutput) (TraceResult, error) {
+		return TraceResult{Prediction: "gpt-6-luna", Probability: 1}, nil
+	}
+	second, err := engine.Run(context.Background(), 1, TriggerAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Degraded || !second.TempUnscheduled || second.ConsecutiveFails != 1 {
+		t.Fatalf("all-degraded account = %+v", second)
 	}
 }
 

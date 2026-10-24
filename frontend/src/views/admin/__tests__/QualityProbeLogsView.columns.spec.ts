@@ -55,12 +55,16 @@ describe('QualityProbeLogsView columns', () => {
     listQualityProbeLogs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
   })
 
+  // The logs view keeps provider, groups, and actions visible while an
+  // administrator hides time. The persisted hidden-column value must contain
+  // only the optional time field after that interaction.
   it('提供商列在最前，列显示可以藏起时间并记住选择', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     const columnText = () => wrapper.get('[data-test="columns"]').text()
     expect(columnText().startsWith('provider_name,')).toBe(true)
+    expect(columnText()).toContain('group_names')
     expect(columnText()).toContain('actions')
 
     await wrapper.get('button[aria-label="admin.providers.viewColumns"]').trigger('click')

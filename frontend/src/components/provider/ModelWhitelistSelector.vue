@@ -143,7 +143,7 @@
     </div>
 
     <!-- Quick Actions -->
-    <div class="mb-4 flex flex-wrap gap-2">
+    <div v-if="showQuickActions" class="mb-4 flex flex-wrap gap-2">
       <button
         v-if="canSyncUpstream"
         type="button"
@@ -167,7 +167,7 @@
     </div>
 
     <!-- Custom Model Input -->
-    <div class="mb-3">
+    <div v-if="allowCustom" class="mb-3">
       <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{
         t('admin.providers.customModelName')
       }}</label>
@@ -225,29 +225,39 @@ const { t } = useI18n()
 
 // props exposes caller-owned inputs used by the template and derived state in this
 // component.
-const props = defineProps<{
-  // Selected model IDs remain parent-owned and are independent from explicit or catalog
-  // candidate suggestions.
-  modelValue: string[]
-  platform?: string // Provider platform identifier.
-  // A nonempty list takes precedence over platform when determining upstream
-  // synchronization availability for this selector.
-  platforms?: string[]
-  // Explicit candidates override catalog lookup, including an empty array that
-  // intentionally supplies no suggestions.
-  models?: string[]
-  // Saved provider identifier; when present, upstream synchronization uses it before any
-  // preview credentials.
-  providerId?: number
-  // Unsaved credentials used for preview synchronization when a saved provider identifier
-  // is unavailable.
-  syncCredentials?: {
-    platform: string // Provider platform identifier.
-    type: string // Provider authentication type.
-    base_url?: string // Optional preview upstream address.
-    api_key: string // Preview API credential value.
-  }
-}>()
+const props = withDefaults(
+  defineProps<{
+    // Selected model IDs remain parent-owned and are independent from explicit or catalog
+    // candidate suggestions.
+    modelValue: string[]
+    platform?: string // Provider platform identifier.
+    // A nonempty list takes precedence over platform when determining upstream
+    // synchronization availability for this selector.
+    platforms?: string[]
+    // Explicit candidates override catalog lookup, including an empty array that
+    // intentionally supplies no suggestions.
+    models?: string[]
+    // Hides provider-specific actions when the caller supplies a constrained list.
+    showQuickActions?: boolean
+    // Allows free-form identifiers in addition to the supplied candidate list.
+    allowCustom?: boolean
+    // Saved provider identifier; when present, upstream synchronization uses it before any
+    // preview credentials.
+    providerId?: number
+    // Unsaved credentials used for preview synchronization when a saved provider identifier
+    // is unavailable.
+    syncCredentials?: {
+      platform: string // Provider platform identifier.
+      type: string // Provider authentication type.
+      base_url?: string // Optional preview upstream address.
+      api_key: string // Preview API credential value.
+    }
+  }>(),
+  {
+    showQuickActions: true,
+    allowCustom: true,
+  },
+)
 
 // emit publishes typed draft changes and actions to the parent that owns this component.
 const emit = defineEmits<{

@@ -2092,7 +2092,8 @@ export async function backfillPreAggregation(days: number): Promise<{
 export interface QualityProbeSettings {
   enabled: boolean // Global scheduled and manual probe switch.
   interval_minutes: number // Scheduled probe interval in minutes.
-  model: string // Default model identifier for automatic probes.
+  model?: string // Legacy single model identifier retained for older servers.
+  models: string[] // Selected model identifiers for automatic probes.
   cooldown_minutes: number // Delay before retrying a degraded provider.
   max_attempts: number // Consecutive degraded-result limit.
   notify_email: string // Failure notification recipient address.
@@ -2126,12 +2127,24 @@ export async function saveQualityProbeSettings(
 }
 
 /**
+ * getQualityProbeModels retrieves requestable model identifiers from active
+ * selected groups. An empty group list lets the server include all active groups.
+ */
+export async function getQualityProbeModels(groupIDs: number[]): Promise<string[]> {
+  const { data } = await apiClient.get<{ models?: string[] }>('/admin/quality-probe/models', {
+    params: { group_ids: groupIDs },
+  })
+  return data.models ?? []
+}
+
+/**
  * QualityProbeLogItem records one automatic or manual quality-probe result
  * stored in a provider's bounded history.
  */
 export interface QualityProbeLogItem {
   provider_id: number // Provider record identifier.
   provider_name: string // Provider name captured for list display.
+  group_names: string[] // Current hydrated provider group names.
   at: string // Probe completion timestamp.
   trigger: 'auto' | 'manual' | string // Source that initiated the probe.
   skipped: boolean // No upstream probe ran for this record.
@@ -2215,6 +2228,7 @@ export const settingsAPI = {
   backfillPreAggregation,
   getQualityProbeSettings,
   saveQualityProbeSettings,
+  getQualityProbeModels,
   listQualityProbeLogs,
 }
 

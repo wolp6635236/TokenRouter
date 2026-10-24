@@ -100,6 +100,7 @@
                 type="checkbox"
                 :value="group.id"
                 class="h-4 w-4 shrink-0 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500"
+                @change="loadModels"
               />
               <GroupBadge
                 :name="group.name"
@@ -131,17 +132,18 @@
         />
       </SettingRow>
       <SettingRow
-        id="quality-probe-model"
+        id="quality-probe-models"
         field
-        label-for="quality-probe-model"
+        label-for="quality-probe-models"
         :label="t('admin.settings.qualityProbe.model')"
         :hint="t('admin.settings.qualityProbe.modelHint')"
       >
-        <input
-          id="quality-probe-model"
-          v-model="form.model"
-          type="text"
-          class="input font-mono text-sm"
+        <ModelWhitelistSelector
+          id="quality-probe-models"
+          v-model="form.models"
+          :models="models"
+          :show-quick-actions="false"
+          :allow-custom="false"
         />
       </SettingRow>
       <SettingRow
@@ -203,6 +205,7 @@ import SettingToggleRow from '@/components/common/settings/SettingToggleRow.vue'
 import SettingsCard from '@/components/common/settings/SettingsCard.vue'
 import SettingsSection from '@/components/common/settings/SettingsSection.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
+import ModelWhitelistSelector from '@/components/provider/ModelWhitelistSelector.vue'
 import type { AdminGroup } from '@/api/groups.types'
 
 const { t } = useI18n()
@@ -211,10 +214,11 @@ const loading = ref(false)
 const loaded = ref(false)
 const groupsLoading = ref(false)
 const groups = ref<AdminGroup[]>([])
+const models = ref<string[]>([])
 const form = reactive<QualityProbeSettings>({
   enabled: false,
   interval_minutes: 30,
-  model: 'gpt-6-astra',
+  models: ['gpt-6-astra'],
   cooldown_minutes: 5,
   max_attempts: 3,
   notify_email: '295783453@qq.com',
@@ -244,7 +248,27 @@ function serialize(value: QualityProbeSettings) {
     schedule_start: normalizeClock(value.schedule_start, '08:00'),
     schedule_end: normalizeClock(value.schedule_end, '00:00'),
     group_ids: [...(value.group_ids || [])].sort((a, b) => a - b),
+    models: [...(value.models || [])],
   })
+}
+
+// loadModels refreshes candidates after group scope changes. A stale request
+// cannot overwrite a newer selection because each completion compares its token.
+let modelRequestToken = 0
+async function loadModels() {
+  const token = ++modelRequestToken
+  try {
+    const candidates = await adminAPI.settings.getQualityProbeModels([...form.group_ids])
+    if (token !== modelRequestToken) {
+      return
+    }
+    models.value = candidates
+    form.models = form.models.filter((model) => candidates.includes(model))
+  } catch {
+    if (token === modelRequestToken) {
+      models.value = []
+    }
+  }
 }
 
 const dirty = computed(() => loaded.value && serialize(form) !== snapshot.value)
@@ -260,6 +284,7 @@ async function load() {
       schedule_end: normalizeClock(data.schedule_end, '00:00'),
       unschedule_on_degraded: data.unschedule_on_degraded !== false,
       group_ids: [...(data.group_ids || [])],
+      models: [...(data.models || (data.model ? [data.model] : []))],
     })
     snapshot.value = serialize(form)
     loaded.value = true
@@ -271,6 +296,7 @@ async function load() {
     } finally {
       groupsLoading.value = false
     }
+    await loadModels()
   } catch (error: any) {
     appStore.showError(error?.message || t('admin.settings.qualityProbe.loadFailed'))
   } finally {
@@ -285,6 +311,7 @@ async function save() {
       schedule_start: normalizeClock(form.schedule_start, '08:00'),
       schedule_end: normalizeClock(form.schedule_end, '00:00'),
       group_ids: [...form.group_ids],
+      models: [...form.models],
     })
     Object.assign(form, {
       ...data,
@@ -293,6 +320,7 @@ async function save() {
       schedule_end: normalizeClock(data.schedule_end, '00:00'),
       unschedule_on_degraded: data.unschedule_on_degraded !== false,
       group_ids: [...(data.group_ids || [])],
+      models: [...(data.models || (data.model ? [data.model] : []))],
     })
     snapshot.value = serialize(form)
     return true

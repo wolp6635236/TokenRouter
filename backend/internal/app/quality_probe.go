@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/qualityprobe"
 	qualityprobehttp "github.com/TokenFlux/TokenRouter/internal/qualityprobe/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
@@ -21,6 +23,10 @@ type qualityProbeDirectory struct {
 
 type qualityProbeGroups struct {
 	store *routingpostgres.GroupStore
+}
+
+type qualityProbeGroupModels struct {
+	admin *routing.GroupAdmin
 }
 
 type qualityProbeProber struct {
@@ -44,17 +50,19 @@ func provideQualityProbeEngine(
 	store *settings.Store,
 	providers *providerpostgres.ProviderStore,
 	groups *routingpostgres.GroupStore,
+	groupAdmin *routing.GroupAdmin,
 	tests *provider.TestService,
 	mailer *notification.Mailer,
 ) *qualityprobe.Engine {
 	return &qualityprobe.Engine{
-		Settings: store,
-		Dir:      qualityProbeDirectory{store: providers},
-		Groups:   qualityProbeGroups{store: groups},
-		Prober:   qualityProbeProber{tests: tests},
-		Catalog:  qualityProbeCatalog{store: providers},
-		Mail:     qualityProbeMail{mailer: mailer},
-		NotFound: settings.ErrSettingNotFound,
+		Settings:    store,
+		Dir:         qualityProbeDirectory{store: providers},
+		Groups:      qualityProbeGroups{store: groups},
+		GroupModels: qualityProbeGroupModels{admin: groupAdmin},
+		Prober:      qualityProbeProber{tests: tests},
+		Catalog:     qualityProbeCatalog{store: providers},
+		Mail:        qualityProbeMail{mailer: mailer},
+		NotFound:    settings.ErrSettingNotFound,
 	}
 }
 
@@ -130,10 +138,35 @@ func snapshotFromRecord(record *provider.Record) qualityprobe.Snapshot {
 		SchedulingOff:           !record.Schedulable,
 		Schedulable:             record.IsSchedulable(),
 		GroupIDs:                record.GroupIDs,
+		GroupNames:              qualityProbeGroupNames(record),
 		Extra:                   record.Extra,
 		TempUnschedulableUntil:  record.TempUnschedulableUntil,
 		TempUnschedulableReason: record.TempUnschedulableReason,
 	}
+}
+
+// qualityProbeGroupNames copies loaded group names for probe log presentation.
+// A provider can retain IDs without hydrated group records in narrow storage
+// reads, so the log leaves names empty until a management list hydrates them.
+func qualityProbeGroupNames(record *provider.Record) []string {
+	if record == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0, len(record.Groups))
+	for _, group := range record.Groups {
+		if group == nil || strings.TrimSpace(group.Name) == "" {
+			continue
+		}
+		name := strings.TrimSpace(group.Name)
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (g qualityProbeGroups) ActiveIDs(ctx context.Context) ([]int64, error) {
@@ -141,6 +174,14 @@ func (g qualityProbeGroups) ActiveIDs(ctx context.Context) ([]int64, error) {
 		return nil, nil
 	}
 	return g.store.ListActiveIDs(ctx)
+}
+
+// Models returns requestable model candidates from one active routing group.
+func (m qualityProbeGroupModels) Models(ctx context.Context, groupID int64) ([]string, error) {
+	if m.admin == nil {
+		return []string{}, nil
+	}
+	return m.admin.GetGroupModelsListCandidates(ctx, groupID, "")
 }
 
 func (p qualityProbeProber) ProbeText(ctx context.Context, providerID int64, model, prompt string) (qualityprobe.TextResult, error) {

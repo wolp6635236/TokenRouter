@@ -61,6 +61,7 @@ func TestSettingsPayloadPreservesNewFields(t *testing.T) {
 		Enabled:              true,
 		IntervalMinutes:      30,
 		Model:                DefaultProbeModel,
+		Models:               []string{DefaultProbeModel, "gpt-5.6-terra"},
 		CooldownMinutes:      5,
 		MaxAttempts:          3,
 		NotifyEmail:          DefaultNotifyEmail,
@@ -75,6 +76,9 @@ func TestSettingsPayloadPreservesNewFields(t *testing.T) {
 	}
 	if got.ScheduleStart != "09:30" || got.ScheduleEnd != "21:00" {
 		t.Fatalf("clock = %s-%s", got.ScheduleStart, got.ScheduleEnd)
+	}
+	if len(got.Models) != 2 || got.Models[1] != "gpt-5.6-terra" {
+		t.Fatalf("models = %v", got.Models)
 	}
 	legacy := SettingsPayload{Enabled: true, IntervalMinutes: 30}.Settings()
 	if !legacy.ScheduleEnabled || !legacy.UnscheduleOnDegraded {
@@ -188,8 +192,8 @@ func TestDefaultSettings(t *testing.T) {
 	if got.Interval != 30*time.Minute {
 		t.Fatalf("interval = %s, want 30m", got.Interval)
 	}
-	if got.Model != DefaultProbeModel {
-		t.Fatalf("model = %q, want %q", got.Model, DefaultProbeModel)
+	if len(got.Models) != 1 || got.Models[0] != DefaultProbeModel {
+		t.Fatalf("models = %v, want [%q]", got.Models, DefaultProbeModel)
 	}
 	if got.Cooldown != 5*time.Minute {
 		t.Fatalf("cooldown = %s, want 5m", got.Cooldown)
