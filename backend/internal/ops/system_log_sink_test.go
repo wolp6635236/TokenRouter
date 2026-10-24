@@ -13,8 +13,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logevent"
 )
 
+// stringerValue supplies a defined string implementing fmt.Stringer for
+// conversion fixtures.
 type stringerValue string
 
+// opsSystemLogBackoffEvent allocates a warning event with empty attributes for
+// failure-traffic fixtures.
 func opsSystemLogBackoffEvent() *logevent.LogEvent {
 	return &logevent.LogEvent{
 		Time:      time.Now().UTC(),
@@ -25,11 +29,22 @@ func opsSystemLogBackoffEvent() *logevent.LogEvent {
 	}
 }
 
-// pumpOpsSystemLogEvents 持续投递日志事件，模拟故障期间业务侧不断产生 WARN/ERROR。
+// pumpOpsSystemLogEvents repeatedly submits fresh warning events with
+// two-millisecond waits until test cleanup signals it. Cleanup joins the
+// producer after closing its stop channel; the sink's own deferred Stop has a
+// separate lifecycle.
+//
+// The producer can overlap the sink's deferred stop, which seals admission
+// first in these fixtures when the test function returns. Closing the producer
+// signal then waits for done, keeping the loop from submitting more events
+// after cleanup returns.
 func pumpOpsSystemLogEvents(t *testing.T, sink *OpsSystemLogSink) {
 	t.Helper()
 	stop := make(chan struct{})
 	done := make(chan struct{})
+	// Keep fixture event generation alive until cleanup signals stop, then publish
+	// producer completion through done so no generator retains the fixture after
+	// joining.
 	go func() {
 		defer close(done)
 		for {
@@ -39,15 +54,24 @@ func pumpOpsSystemLogEvents(t *testing.T, sink *OpsSystemLogSink) {
 			default:
 			}
 			sink.WriteLogEvent(opsSystemLogBackoffEvent())
+			// Pace fresh fixture traffic; cleanup is observed at the next loop select
+			// instead of interrupting this short wait itself.
 			time.Sleep(2 * time.Millisecond)
 		}
 	}()
+	// Stop and join the independent event producer after fixture assertions. The
+	// sink's deferred Stop seals admission even if the producer has not yet
+	// received this signal.
 	t.Cleanup(func() {
 		close(stop)
 		<-done
 	})
 }
 
+// waitForOpsSystemLogCondition polls a supplied observation until its
+// elapsed-time deadline with five-millisecond waits. It returns a final
+// condition read after timeout, so caller assertions decide failure while
+// worker cancellation remains separately owned.
 func waitForOpsSystemLogCondition(t *testing.T, timeout time.Duration, cond func() bool) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -55,18 +79,24 @@ func waitForOpsSystemLogCondition(t *testing.T, timeout time.Duration, cond func
 		if cond() {
 			return true
 		}
+		// Yield between observation checks so the independent sink worker can advance
+		// without requiring fixture state changes on this goroutine.
 		time.Sleep(5 * time.Millisecond)
 	}
 	return cond()
 }
 
+// TestOpsSystemLogSinkFlushBackoffFor supplies one-second base and eight-second
+// maximum suppression bounds. It protects doubling/capping for the listed
+// streaks, including a large streak that stops arithmetic at these small
+// bounds.
 func TestOpsSystemLogSinkFlushBackoffFor(t *testing.T) {
 	sink := &OpsSystemLogSink{flushBackoff: time.Second, flushBackoffMax: 8 * time.Second}
 
 	cases := []struct {
-		name     string
-		failures int
-		want     time.Duration
+		name     string        // selected streak fixture label
+		failures int           // supplied attempted failure streak
+		want     time.Duration // expected selected suppression duration
 	}{
 		{"first_failure", 1, time.Second},
 		{"second_failure", 2, 2 * time.Second},
@@ -86,7 +116,9 @@ func TestOpsSystemLogSinkFlushBackoffFor(t *testing.T) {
 	}
 }
 
-// TestOpsSystemLogSinkFlushBackoffForFallbacks 检查缺失配置使用默认值，max 小于 base 时使用 base。
+// TestOpsSystemLogSinkFlushBackoffForFallbacks supplies zero settings and an
+// inverted base/maximum pair. It protects default delay selection and lifting
+// the maximum to the configured base for those cases.
 func TestOpsSystemLogSinkFlushBackoffForFallbacks(t *testing.T) {
 	zero := &OpsSystemLogSink{}
 	if got := zero.flushBackoffFor(1); got != defaultOpsSystemLogFlushBackoff {
@@ -102,9 +134,10 @@ func TestOpsSystemLogSinkFlushBackoffForFallbacks(t *testing.T) {
 	}
 }
 
-// TestOpsSystemLogSinkSuppressesRetriesDuringBackoff 验证 issue #5265：写入失败后如果按 flushInterval 继续每秒重试，每一轮都会占用并取消
-// 一条池内连接（远程 PG 上 COPY 取消会让连接协议失步而被销毁），小连接池会被日志
-// 通道长期占满，业务侧最终报 Billing 503。失败后必须退避。
+// TestOpsSystemLogSinkSuppressesRetriesDuringBackoff submits sustained warning
+// traffic to a failing mock writer (#5265). It protects one attempted write
+// during the observed suppression interval plus dropped and failed-entry
+// health, using no real database pool.
 func TestOpsSystemLogSinkSuppressesRetriesDuringBackoff(t *testing.T) {
 	var calls int64
 	repo := &opsRepoMock{
@@ -120,6 +153,9 @@ func TestOpsSystemLogSinkSuppressesRetriesDuringBackoff(t *testing.T) {
 	sink.flushBackoff = 800 * time.Millisecond
 	sink.flushBackoffMax = 800 * time.Millisecond
 	sink.Start()
+	// Join the started sink when the fixture returns or fatals. Its writer and
+	// local suppression state finish before callback-owned test data goes out of
+	// scope.
 	defer sink.Stop()
 	pumpOpsSystemLogEvents(t, sink)
 
@@ -127,13 +163,13 @@ func TestOpsSystemLogSinkSuppressesRetriesDuringBackoff(t *testing.T) {
 		t.Fatalf("first flush never happened")
 	}
 
-	// 退避窗口内不得再打上游：修复前 5ms 的 flushInterval 会在这 300ms 里打出上百次。
+	// The backoff window must suppress writes despite the 5 ms flush interval.
 	time.Sleep(300 * time.Millisecond)
 	if got := atomic.LoadInt64(&calls); got != 1 {
 		t.Fatalf("upstream calls during backoff = %d, want 1", got)
 	}
 
-	// 被抑制的批次记为 dropped。write_failed 统计已尝试写入的失败批次。
+	// Suppressed entries count as dropped; write_failed counts entries in attempted failed batches.
 	health := sink.Health()
 	if health.DroppedCount == 0 {
 		t.Fatalf("dropped_count should grow while flushing is suppressed")
@@ -143,7 +179,10 @@ func TestOpsSystemLogSinkSuppressesRetriesDuringBackoff(t *testing.T) {
 	}
 }
 
-// TestOpsSystemLogSinkResumesAfterBackoffWindow 验证退避到期后必须自动恢复，不能变成永久停写。
+// TestOpsSystemLogSinkResumesAfterBackoffWindow uses repeated mock failures
+// with a short fixed delay. It protects additional attempted writes after
+// suppression expires while the warning producer continues submitting new
+// events.
 func TestOpsSystemLogSinkResumesAfterBackoffWindow(t *testing.T) {
 	var calls int64
 	repo := &opsRepoMock{
@@ -159,6 +198,9 @@ func TestOpsSystemLogSinkResumesAfterBackoffWindow(t *testing.T) {
 	sink.flushBackoff = 150 * time.Millisecond
 	sink.flushBackoffMax = 150 * time.Millisecond
 	sink.Start()
+	// Join the started sink when the fixture returns or fatals. Its writer and
+	// local suppression state finish before callback-owned test data goes out of
+	// scope.
 	defer sink.Stop()
 	pumpOpsSystemLogEvents(t, sink)
 
@@ -167,7 +209,9 @@ func TestOpsSystemLogSinkResumesAfterBackoffWindow(t *testing.T) {
 	}
 }
 
-// TestOpsSystemLogSinkSuccessClearsSuppression 验证一次成功必须清空失败计数与抑制窗口，否则短暂抖动后写入速率无法恢复。
+// TestOpsSystemLogSinkSuccessClearsSuppression fails the first attempted write
+// and succeeds afterward. It protects renewed frequent writes and growing
+// written-row health after recovery rather than retaining the prior delay.
 func TestOpsSystemLogSinkSuccessClearsSuppression(t *testing.T) {
 	var calls int64
 	repo := &opsRepoMock{
@@ -185,10 +229,13 @@ func TestOpsSystemLogSinkSuccessClearsSuppression(t *testing.T) {
 	sink.flushBackoff = 150 * time.Millisecond
 	sink.flushBackoffMax = 150 * time.Millisecond
 	sink.Start()
+	// Join the started sink when the fixture returns or fatals. Its writer and
+	// local suppression state finish before callback-owned test data goes out of
+	// scope.
 	defer sink.Stop()
 	pumpOpsSystemLogEvents(t, sink)
 
-	// 第 2 次调用（恢复后的首次成功）之后不应再有抑制：调用次数需要快速爬升。
+	// After the second call succeeds, subsequent writes should proceed without backoff.
 	if !waitForOpsSystemLogCondition(t, 3*time.Second, func() bool { return atomic.LoadInt64(&calls) >= 2 }) {
 		t.Fatalf("sink never retried after the first failure")
 	}
@@ -202,7 +249,9 @@ func TestOpsSystemLogSinkSuccessClearsSuppression(t *testing.T) {
 	}
 }
 
-// TestOpsSystemLogSinkHealthyPathNeverSuppressed 验证健康路径不受影响：一直成功就永远不进入退避。
+// TestOpsSystemLogSinkHealthyPathNeverSuppressed returns success for sustained
+// warning batches with an intentionally long configured backoff. It protects
+// ongoing write attempts and zero dropped count under this healthy fixture.
 func TestOpsSystemLogSinkHealthyPathNeverSuppressed(t *testing.T) {
 	var calls int64
 	repo := &opsRepoMock{
@@ -218,6 +267,9 @@ func TestOpsSystemLogSinkHealthyPathNeverSuppressed(t *testing.T) {
 	sink.flushBackoff = time.Hour
 	sink.flushBackoffMax = time.Hour
 	sink.Start()
+	// Join the started sink when the fixture returns or fatals. Its writer and
+	// local suppression state finish before callback-owned test data goes out of
+	// scope.
 	defer sink.Stop()
 	pumpOpsSystemLogEvents(t, sink)
 
@@ -229,13 +281,16 @@ func TestOpsSystemLogSinkHealthyPathNeverSuppressed(t *testing.T) {
 	}
 }
 
+// TestOpsSystemLogSink_ShouldIndex supplies selected levels, access/audit
+// component forms, and a true skip marker. It protects the listed eligibility
+// outcomes, including skip precedence for the provided access event.
 func TestOpsSystemLogSink_ShouldIndex(t *testing.T) {
 	sink := &OpsSystemLogSink{}
 
 	cases := []struct {
-		name  string
-		event *logevent.LogEvent
-		want  bool
+		name  string             // selected eligibility fixture label
+		event *logevent.LogEvent // supplied stable event observation
+		want  bool               // expected event indexing decision
 	}{
 		{
 			name:  "warn level",
@@ -298,6 +353,9 @@ func TestOpsSystemLogSink_ShouldIndex(t *testing.T) {
 	}
 }
 
+// TestOpsSystemLogSink_WriteLogEvent_ShouldDropWhenQueueFull submits two
+// warning pointers to an unstarted one-slot queue. It protects one buffered
+// event and one counted capacity rejection for direct admission.
 func TestOpsSystemLogSink_WriteLogEvent_ShouldDropWhenQueueFull(t *testing.T) {
 	sink := &OpsSystemLogSink{
 		queue: make(chan *logevent.LogEvent, 1),
@@ -314,6 +372,10 @@ func TestOpsSystemLogSink_WriteLogEvent_ShouldDropWhenQueueFull(t *testing.T) {
 	}
 }
 
+// TestOpsSystemLogSink_Health assigns independent fixture counters and two
+// queued events without starting work. It protects sampled counts, capacity,
+// error text, and successful-duration division yielding one millisecond per
+// reported row.
 func TestOpsSystemLogSink_Health(t *testing.T) {
 	sink := &OpsSystemLogSink{
 		queue: make(chan *logevent.LogEvent, 10),
@@ -322,7 +384,9 @@ func TestOpsSystemLogSink_Health(t *testing.T) {
 	atomic.StoreUint64(&sink.droppedCount, 3)
 	atomic.StoreUint64(&sink.writeFailed, 2)
 	atomic.StoreUint64(&sink.writtenCount, 5)
-	atomic.StoreUint64(&sink.totalDelayNs, uint64(5000000)) // 5ms total -> avg 1ms
+	// Five million successful-flush nanoseconds across five reported rows yields
+	// one integer millisecond per row in the sampled health calculation.
+	atomic.StoreUint64(&sink.totalDelayNs, uint64(5000000))
 	sink.queue <- &logevent.LogEvent{Level: "warn", Component: "app"}
 	sink.queue <- &logevent.LogEvent{Level: "warn", Component: "app"}
 
@@ -350,6 +414,10 @@ func TestOpsSystemLogSink_Health(t *testing.T) {
 	}
 }
 
+// TestOpsSystemLogSink_StartStopAndFlushSuccess submits one attributed warning
+// and captures prepared rows through a mock writer. It protects
+// host/correlation/scalar IDs, a nonempty message, and eventual written count;
+// no credential-removal assertion is made.
 func TestOpsSystemLogSink_StartStopAndFlushSuccess(t *testing.T) {
 	done := make(chan struct{}, 1)
 	var captured []*OpsInsertSystemLogInput
@@ -369,6 +437,9 @@ func TestOpsSystemLogSink_StartStopAndFlushSuccess(t *testing.T) {
 	sink.batchSize = 1
 	sink.flushInterval = 10 * time.Millisecond
 	sink.Start()
+	// Join the started sink when the fixture returns or fatals. Its writer and
+	// local suppression state finish before callback-owned test data goes out of
+	// scope.
 	defer sink.Stop()
 
 	sink.WriteLogEvent(&logevent.LogEvent{
@@ -431,6 +502,9 @@ func TestOpsSystemLogSink_StartStopAndFlushSuccess(t *testing.T) {
 	}
 }
 
+// TestOpsSystemLogSink_FlushFailureUpdatesHealth injects one failed warning
+// write and observes health. It protects a positive attempted-failure count and
+// retained database-error diagnostic within the fixture wait.
 func TestOpsSystemLogSink_FlushFailureUpdatesHealth(t *testing.T) {
 	repo := &opsRepoMock{
 		BatchInsertSystemLogsFn: func(_ context.Context, inputs []*OpsInsertSystemLogInput) (int64, error) {
@@ -441,6 +515,9 @@ func TestOpsSystemLogSink_FlushFailureUpdatesHealth(t *testing.T) {
 	sink.batchSize = 1
 	sink.flushInterval = 10 * time.Millisecond
 	sink.Start()
+	// Join the started sink when the fixture returns or fatals. Its writer and
+	// local suppression state finish before callback-owned test data goes out of
+	// scope.
 	defer sink.Stop()
 
 	sink.WriteLogEvent(&logevent.LogEvent{
@@ -451,6 +528,8 @@ func TestOpsSystemLogSink_FlushFailureUpdatesHealth(t *testing.T) {
 		Fields:    map[string]any{},
 	})
 
+	// Poll separate health loads until a failed-attempt count is visible; the
+	// following diagnostic assertion uses that sampled response.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		health := sink.Health()
@@ -465,6 +544,10 @@ func TestOpsSystemLogSink_FlushFailureUpdatesHealth(t *testing.T) {
 	t.Fatalf("write_failed_count not updated")
 }
 
+// TestOpsSystemLogSink_StopFlushUsesActiveContextAndDrainsQueue leaves one
+// warning below a large batch size and stops before the periodic tick. It
+// protects one reported write using a live context and no canceled-context
+// callback calls.
 func TestOpsSystemLogSink_StopFlushUsesActiveContextAndDrainsQueue(t *testing.T) {
 	var inserted int64
 	var canceledCtxCalls int64
@@ -506,8 +589,13 @@ func TestOpsSystemLogSink_StopFlushUsesActiveContextAndDrainsQueue(t *testing.T)
 	}
 }
 
+// String returns the defined stringer's underlying text for conversion testing.
 func (s stringerValue) String() string { return string(s) }
 
+// TestOpsSystemLogSink_HelperFunctions supplies scalar map copies, Stringer
+// values, and several identity representations. It protects top-level copy
+// independence, selected string conversion, and the listed
+// positive-versus-invalid numeric cases.
 func TestOpsSystemLogSink_HelperFunctions(t *testing.T) {
 	src := map[string]any{"a": 1}
 	cloned := CopyMap(src)
@@ -527,9 +615,9 @@ func TestOpsSystemLogSink_HelperFunctions(t *testing.T) {
 	}
 
 	cases := []struct {
-		in   any
-		want int64
-		ok   bool
+		in   any   // supplied scalar identity representation
+		want int64 // expected positive identity value
+		ok   bool  // expected identity pointer presence
 	}{
 		{in: 5, want: 5, ok: true},
 		{in: int64(6), want: 6, ok: true},
@@ -552,6 +640,9 @@ func TestOpsSystemLogSink_HelperFunctions(t *testing.T) {
 	}
 }
 
+// TestNormalizeSystemLogHost supplies trimmed, empty, errored, and oversized
+// Unicode hostnames. It protects unknown selection and the maximum rune count
+// on the provided truncation path.
 func TestNormalizeSystemLogHost(t *testing.T) {
 	if got := normalizeSystemLogHost(" api-node-1 ", nil); got != "api-node-1" {
 		t.Fatalf("trimmed host = %q, want api-node-1", got)
@@ -569,13 +660,21 @@ func TestNormalizeSystemLogHost(t *testing.T) {
 	}
 }
 
+// newTestSystemLogSink delegates construction with an empty options value,
+// preserving standard sink defaults for fixtures.
 func newTestSystemLogSink(repo SystemLogWriter) *OpsSystemLogSink {
 	return NewOpsSystemLogSink(repo, SystemLogSinkOptions{})
 }
 
+// TestRegressionSystemLogDuplicateStart calls Start twice and blocks the first
+// repository batch while more events are buffered. It protects no second
+// concurrent writer entry during the observation interval and joins after
+// release.
 func TestRegressionSystemLogDuplicateStart(t *testing.T) {
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
+	// Signal repository entry, then hold that writer until release. A second entry
+	// while it remains blocked exposes a separately running duplicate writer.
 	r := &opsRepoMock{BatchInsertSystemLogsFn: func(_ context.Context, in []*OpsInsertSystemLogInput) (int64, error) {
 		entered <- struct{}{}
 		<-release
@@ -587,12 +686,16 @@ func TestRegressionSystemLogDuplicateStart(t *testing.T) {
 	for range 400 {
 		s.WriteLogEvent(&logevent.LogEvent{Level: "error", Message: "lifecycle-test"})
 	}
+	// Wait for the first writer before observing duplicate entry; this timeout
+	// starts after initial admission and does not bound that first wait.
 	<-entered
 	select {
 	case <-entered:
 		t.Error("duplicate Start created two concurrent system-log writers with separate backoff state")
 	case <-time.After(100 * time.Millisecond):
 	}
+	// Release the blocked write after checking duplicate startup, then join the
+	// worker so queued batches can finish before the fixture returns.
 	close(release)
 	s.Stop()
 }

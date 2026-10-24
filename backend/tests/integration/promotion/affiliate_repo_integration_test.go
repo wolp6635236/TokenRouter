@@ -18,10 +18,31 @@ import (
 	promotionpostgres "github.com/TokenFlux/TokenRouter/internal/promotion/postgres"
 )
 
+// Affiliate transfers report the quota claimed before clearing it and retain
+// ledger observations of the resulting wallet and quota values. PostgreSQL
+// transaction cases inspect that transfer, outer-transaction accrual rollback,
+// empty available quota, custom invitation-code ownership, nullable rebate
+// overrides, and administrator lists of users with overrides.
+//
+// User fixture construction saves the owning row before inserting its
+// allowed-group references, leaving transaction completion to the supplied
+// client owner. Deliberate duplicate-code errors run in their own rollback
+// transaction because PostgreSQL aborts that transaction after the uniqueness
+// violation. Scalar query helpers inspect their first row and discard
+// result-close errors, while fixture transaction cleanup discards errors from
+// already completed rollback.
+
+// querySingleFloat returns the first row's floating-point value and fails the
+// test on query, missing-row, scan, or row errors reported after that scan.
+// Additional rows remain unread and deferred close errors are discarded, so
+// callers supply a scalar query.
 func querySingleFloat(t *testing.T, ctx context.Context, client *dbent.Client, query string, args ...any) float64 {
 	t.Helper()
 	rows, err := client.QueryContext(ctx, query, args...)
 	require.NoError(t, err)
+	// Close each scalar or ledger result before returning to the borrowed
+	// client; the fixture discards close errors while query and scan errors
+	// remain assertion failures.
 	defer func() { _ = rows.Close() }()
 
 	require.True(t, rows.Next(), "expected one row")
@@ -31,10 +52,17 @@ func querySingleFloat(t *testing.T, ctx context.Context, client *dbent.Client, q
 	return value
 }
 
+// querySingleInt returns the first row's integer value and fails the test on
+// query, missing-row, scan, or currently reported row errors. Additional rows
+// remain unread and deferred close errors are discarded while the caller owns
+// the executor.
 func querySingleInt(t *testing.T, ctx context.Context, client *dbent.Client, query string, args ...any) int {
 	t.Helper()
 	rows, err := client.QueryContext(ctx, query, args...)
 	require.NoError(t, err)
+	// Close each scalar or ledger result before returning to the borrowed
+	// client; the fixture discards close errors while query and scan errors
+	// remain assertion failures.
 	defer func() { _ = rows.Close() }()
 
 	require.True(t, rows.Next(), "expected one row")
@@ -44,6 +72,10 @@ func querySingleInt(t *testing.T, ctx context.Context, client *dbent.Client, que
 	return value
 }
 
+// TestAffiliateRepository_TransferQuotaToBalance_UsesClaimedQuotaBeforeClear
+// transfers 12.34 from an affiliate quota into a 5.5 wallet. Returned amounts,
+// cleared quota, stored balance, and one ledger record all reflect the claimed
+// pre-clear amount.
 func TestAffiliateRepository_TransferQuotaToBalance_UsesClaimedQuotaBeforeClear(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -61,6 +93,8 @@ func TestAffiliateRepository_TransferQuotaToBalance_UsesClaimedQuotaBeforeClear(
 		Concurrency:  5,
 	})
 
+	// Nine timestamp digits keep this prefixed fixture code within the
+	// invitation length limit.
 	affCode := fmt.Sprintf("AFF%09d", time.Now().UnixNano()%1_000_000_000)
 	_, err := client.ExecContext(txCtx, `
 INSERT INTO user_affiliates (user_id, aff_code, aff_quota, aff_history_quota, created_at, updated_at)
@@ -69,6 +103,8 @@ VALUES ($1, $2, $3, $3, NOW(), NOW())`, u.ID, affCode, 12.34)
 
 	transferred, balance, err := repo.TransferQuotaToBalance(txCtx, u.ID)
 	require.NoError(t, err)
+	// Compare claimed funds and ledger values with the same small numeric
+	// tolerance.
 	require.InDelta(t, 12.34, transferred, 1e-9)
 	require.InDelta(t, 17.84, balance, 1e-9)
 
@@ -94,6 +130,9 @@ FROM user_affiliate_ledger
 WHERE user_id = $1 AND action = 'transfer'
 LIMIT 1`, u.ID)
 	require.NoError(t, err)
+	// Close each scalar or ledger result before returning to the borrowed
+	// client; the fixture discards close errors while query and scan errors
+	// remain assertion failures.
 	defer func() { _ = rows.Close() }()
 	require.True(t, rows.Next(), "expected transfer ledger")
 	var amount, balanceAfter, quotaAfter, frozenAfter, historyAfter float64
@@ -105,15 +144,19 @@ LIMIT 1`, u.ID)
 	require.InDelta(t, 12.34, historyAfter, 1e-9)
 }
 
-// TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction 检查 AccrueQuota 使用 dbent.NewTxContext 传入的事务。
-// 外层事务回滚后返利记录一同回滚，支付履约的资金和返利写入保持同一次提交。
+// TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction creates affiliate
+// profiles and an accrual inside a context-bound outer transaction. The credit
+// is visible inside that transaction, and rollback leaves no matching affiliate
+// profiles outside it.
 func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 	ctx := context.Background()
 
 	integrationEntClient, _ := testStore(t)
 	outerTx, err := integrationEntClient.Tx(ctx)
 	require.NoError(t, err, "begin outer tx")
-	// 断言提前结束测试时也回滚事务，重复回滚返回的错误可忽略。
+	// Retain outer rollback cleanup even when an assertion exits before the
+	// explicit rollback, releasing fixture writes and tolerating an already
+	// completed transaction.
 	t.Cleanup(func() { _ = outerTx.Rollback() })
 	client := outerTx.Client()
 	txCtx := dbent.NewTxContext(ctx, outerTx)
@@ -150,15 +193,21 @@ func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 	// Visible inside the outer tx.
 	innerQuota := querySingleFloat(t, txCtx, client,
 		"SELECT aff_quota::double precision FROM user_affiliates WHERE user_id = $1", inviter.ID)
+	// A small numeric tolerance checks the uncommitted accrued quota value.
 	require.InDelta(t, 3.5, innerQuota, 1e-9)
 
-	// 外层事务回滚后，通过事务外客户端检查返利记录也已撤销。
+	// Roll back the caller transaction before inspecting profiles through
+	// its base client so that query exposes any accrual participant that
+	// committed fixture work early.
 	require.NoError(t, outerTx.Rollback())
 
 	rows, err := integrationEntClient.QueryContext(ctx,
 		"SELECT COUNT(*) FROM user_affiliates WHERE user_id IN ($1, $2)",
 		inviter.ID, invitee.ID)
 	require.NoError(t, err)
+	// Close each scalar or ledger result before returning to the borrowed
+	// client; the fixture discards close errors while query and scan errors
+	// remain assertion failures.
 	defer func() { _ = rows.Close() }()
 	require.True(t, rows.Next())
 	var postRollbackCount int
@@ -167,6 +216,9 @@ func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 		"AccrueQuota must propagate the outer tx — found persisted rows after rollback")
 }
 
+// TestAffiliateRepository_TransferQuotaToBalance_EmptyQuota supplies an
+// affiliate profile with zero available quota. Transfer returns the empty-quota
+// error with zero result amounts, while the stored wallet retains 3.21.
 func TestAffiliateRepository_TransferQuotaToBalance_EmptyQuota(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -184,6 +236,8 @@ func TestAffiliateRepository_TransferQuotaToBalance_EmptyQuota(t *testing.T) {
 		Concurrency:  5,
 	})
 
+	// Nine timestamp digits keep this prefixed fixture code within the
+	// invitation length limit.
 	affCode := fmt.Sprintf("AFF%09d", time.Now().UnixNano()%1_000_000_000)
 	_, err := client.ExecContext(txCtx, `
 INSERT INTO user_affiliates (user_id, aff_code, aff_quota, aff_history_quota, created_at, updated_at)
@@ -192,6 +246,8 @@ VALUES ($1, $2, 0, 0, NOW(), NOW())`, u.ID, affCode)
 
 	transferred, balance, err := repo.TransferQuotaToBalance(txCtx, u.ID)
 	require.ErrorIs(t, err, promotion.ErrAffiliateQuotaEmpty)
+	// Numeric tolerance compares empty result amounts with the unchanged
+	// wallet read.
 	require.InDelta(t, 0.0, transferred, 1e-9)
 	require.InDelta(t, 0.0, balance, 1e-9)
 
@@ -200,9 +256,9 @@ VALUES ($1, $2, 0, 0, NOW(), NOW())`, u.ID, affCode)
 	require.InDelta(t, 3.21, persistedBalance, 1e-9)
 }
 
-// TestAffiliateRepository_AdminCustomCode 检查自定义邀请码的写入、查询与重置。
-// 重置后恢复系统格式并清除自定义标记，被替换的邀请码退出查询。
-// 重复邀请码的冲突由独立测试检查，因为唯一约束失败会终止当前 PostgreSQL 事务。
+// TestAffiliateRepository_AdminCustomCode assigns a custom invitation code and
+// then resets it to a generated code. Stored custom flags and owner lookup
+// follow each selected value, and replaced codes stop matching.
 func TestAffiliateRepository_AdminCustomCode(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -223,7 +279,8 @@ func TestAffiliateRepository_AdminCustomCode(t *testing.T) {
 	require.False(t, original.AffCodeCustom, "system-generated codes start as non-custom")
 	originalCode := original.AffCode
 
-	// Rewrite to a custom code
+	// Assign a custom code. Nine timestamp digits keep this prefixed
+	// fixture code within the invitation length limit.
 	customCode := fmt.Sprintf("VIP%09d", time.Now().UnixNano()%1_000_000_000)
 	require.NoError(t, repo.UpdateUserAffCode(txCtx, u.ID, customCode))
 
@@ -232,16 +289,16 @@ func TestAffiliateRepository_AdminCustomCode(t *testing.T) {
 	require.Equal(t, customCode, updated.AffCode)
 	require.True(t, updated.AffCodeCustom)
 
-	// Lookup by new custom code finds the user
+	// The custom code resolves to the user.
 	byCode, err := repo.GetAffiliateByCode(txCtx, customCode)
 	require.NoError(t, err)
 	require.Equal(t, u.ID, byCode.UserID)
 
-	// Old system code should no longer match
+	// The replaced system code stops matching.
 	_, err = repo.GetAffiliateByCode(txCtx, originalCode)
 	require.ErrorIs(t, err, promotion.ErrAffiliateProfileNotFound)
 
-	// Reset back to a fresh system code, clears custom flag
+	// Reset generates a code and clears the custom flag.
 	newSysCode, err := repo.ResetUserAffCode(txCtx, u.ID)
 	require.NoError(t, err)
 	require.NotEqual(t, customCode, newSysCode)
@@ -251,13 +308,15 @@ func TestAffiliateRepository_AdminCustomCode(t *testing.T) {
 	require.Equal(t, newSysCode, reset.AffCode)
 	require.False(t, reset.AffCodeCustom)
 
-	// The old custom code is now free again
+	// The replaced custom code stops matching.
 	_, err = repo.GetAffiliateByCode(txCtx, customCode)
 	require.ErrorIs(t, err, promotion.ErrAffiliateProfileNotFound)
 }
 
-// TestAffiliateRepository_AdminCustomCode_Conflict 检查重复邀请码触发唯一约束。
-// PostgreSQL 会终止发生冲突的事务，此用例单独创建事务。
+// TestAffiliateRepository_AdminCustomCode_Conflict assigns one user's code to
+// another user in the same case transaction with registered rollback cleanup.
+// The duplicate request returns AffiliateCodeTaken and is the last operation
+// before cleanup rolls that transaction back.
 func TestAffiliateRepository_AdminCustomCode_Conflict(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -277,15 +336,21 @@ func TestAffiliateRepository_AdminCustomCode_Conflict(t *testing.T) {
 		Role:         identity.RoleUser, Status: billing.StatusActive,
 	})
 
+	// Nine timestamp digits keep this prefixed fixture code within the
+	// invitation length limit.
 	takenCode := fmt.Sprintf("HOT%09d", time.Now().UnixNano()%1_000_000_000)
 	require.NoError(t, repo.UpdateUserAffCode(txCtx, taker.ID, takenCode))
 
-	// Now requester tries to grab the same code → conflict.
+	// Perform the duplicate assignment last because its PostgreSQL
+	// uniqueness error aborts this case transaction, leaving remaining
+	// fixture cleanup to the registered rollback.
 	err := repo.UpdateUserAffCode(txCtx, requester.ID, takenCode)
 	require.ErrorIs(t, err, promotion.ErrAffiliateCodeTaken)
 }
 
-// TestAffiliateRepository_AdminRebateRate 检查专属返利率的单个和批量设置，以及用 NULL 清除配置。
+// TestAffiliateRepository_AdminRebateRate sets and clears individual and batch
+// rebate-rate overrides. Stored nullable pointers reflect each selection,
+// including nil after clearing both user overrides in the final batch.
 func TestAffiliateRepository_AdminRebateRate(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -307,22 +372,24 @@ func TestAffiliateRepository_AdminRebateRate(t *testing.T) {
 		Status:       billing.StatusActive,
 	})
 
-	// Set exclusive rate for u1
+	// Set a rate override for u1.
 	rate := 42.5
 	require.NoError(t, repo.SetUserRebateRate(txCtx, u1.ID, &rate))
 
 	got, err := repo.EnsureUserAffiliate(txCtx, u1.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got.AffRebateRatePercent)
+	// A small numeric tolerance checks individual and batch percentage
+	// overrides.
 	require.InDelta(t, 42.5, *got.AffRebateRatePercent, 1e-9)
 
-	// Clear exclusive rate
+	// Clear the override.
 	require.NoError(t, repo.SetUserRebateRate(txCtx, u1.ID, nil))
 	cleared, err := repo.EnsureUserAffiliate(txCtx, u1.ID)
 	require.NoError(t, err)
 	require.Nil(t, cleared.AffRebateRatePercent)
 
-	// Batch set both users
+	// Set both users' rates in a batch.
 	batchRate := 15.0
 	require.NoError(t, repo.BatchSetUserRebateRate(txCtx, []int64{u1.ID, u2.ID}, &batchRate))
 
@@ -333,7 +400,7 @@ func TestAffiliateRepository_AdminRebateRate(t *testing.T) {
 		require.InDelta(t, 15.0, *v.AffRebateRatePercent, 1e-9)
 	}
 
-	// Batch clear
+	// Clear both overrides in a batch.
 	require.NoError(t, repo.BatchSetUserRebateRate(txCtx, []int64{u1.ID, u2.ID}, nil))
 	for _, uid := range []int64{u1.ID, u2.ID} {
 		v, err := repo.EnsureUserAffiliate(txCtx, uid)
@@ -342,7 +409,9 @@ func TestAffiliateRepository_AdminRebateRate(t *testing.T) {
 	}
 }
 
-// TestAffiliateRepository_ListUsersWithCustomSettings 检查管理列表包含设置了自定义邀请码或专属返利率的用户。
+// TestAffiliateRepository_ListUsersWithCustomSettings creates plain,
+// custom-code, and custom-rate profiles. The result excludes the plain fixture,
+// reports the two configured overrides, and has total count at least two.
 func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -351,7 +420,7 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 
 	repo := promotionpostgres.NewAffiliateRepository(client, func(tx *dbent.Tx) promotionpostgres.TransferBalance { return billingpostgres.BalanceInTx(tx) })
 
-	// 未设置自定义配置的用户不在列表中。
+	// Users with neither override are excluded.
 	plainEmail := fmt.Sprintf("affiliate-plain-%d@example.com", time.Now().UnixNano())
 	uPlain := mustCreateUser(t, client, &identity.User{
 		Email: plainEmail, PasswordHash: "hash",
@@ -360,15 +429,17 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	_, err := repo.EnsureUserAffiliate(txCtx, uPlain.ID)
 	require.NoError(t, err)
 
-	// 设置自定义邀请码的用户在列表中。
+	// A custom invitation code qualifies the user for the list.
 	uCode := mustCreateUser(t, client, &identity.User{
 		Email:        fmt.Sprintf("affiliate-codeonly-%d@example.com", time.Now().UnixNano()),
 		PasswordHash: "hash",
 		Role:         identity.RoleUser, Status: billing.StatusActive,
 	})
+	// Nine timestamp digits keep this prefixed fixture code within the
+	// invitation length limit.
 	require.NoError(t, repo.UpdateUserAffCode(txCtx, uCode.ID, fmt.Sprintf("VIP%09d", time.Now().UnixNano()%1_000_000_000)))
 
-	// 设置专属返利率的用户在列表中。
+	// A custom rebate rate also qualifies the user for the list.
 	uRate := mustCreateUser(t, client, &identity.User{
 		Email:        fmt.Sprintf("affiliate-rateonly-%d@example.com", time.Now().UnixNano()),
 		PasswordHash: "hash",
@@ -382,7 +453,8 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// 按用户 ID 索引结果，检查本用例创建的三个用户。
+	// Index results by user ID to check the three fixtures created by this
+	// test.
 	byUserID := make(map[int64]promotion.AffiliateAdminEntry, len(entries))
 	for _, e := range entries {
 		byUserID[e.UserID] = e
@@ -399,22 +471,130 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	require.True(t, ok, "custom-rate user missing from list")
 	require.False(t, rateEntry.AffCodeCustom)
 	require.NotNil(t, rateEntry.AffRebateRatePercent)
+	// Compare the returned percentage with the configured override using a
+	// small tolerance.
 	require.InDelta(t, 33.3, *rateEntry.AffRebateRatePercent, 1e-9)
 
 	require.GreaterOrEqual(t, total, int64(2), "total must include at least our 2 custom rows")
 }
 
-// testEntTx 为测试创建 Ent 事务，测试结束时回滚。
+// TestAffiliateRepository_ProfileReads_UseOuterTransaction fills every stored
+// profile field inside an uncommitted caller transaction. Both public reads
+// observe those values through the context, including NULL and zero overrides,
+// while base-client reads and rollback expose no saved profile.
+func TestAffiliateRepository_ProfileReads_UseOuterTransaction(t *testing.T) {
+	baseClient, _ := testStore(t)
+	// Bound profile reads so selecting the base connection cannot leave a
+	// creation attempt waiting indefinitely on this test's own uncommitted user.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	outerTx, err := baseClient.Tx(ctx)
+	require.NoError(t, err)
+	// Keep rollback registered through assertions so the caller's transaction
+	// releases its fixture writes before the database clone is closed and dropped.
+	t.Cleanup(func() { _ = outerTx.Rollback() })
+	txClient := outerTx.Client()
+	txCtx := dbent.NewTxContext(ctx, outerTx)
+	repo := promotionpostgres.NewAffiliateRepository(baseClient, nil)
+
+	inviter := mustCreateUser(t, txClient, &identity.User{
+		Email: "affiliate-profile-inviter@example.com",
+	})
+	user := mustCreateUser(t, txClient, &identity.User{
+		Email: "affiliate-profile-reader@example.com",
+	})
+	_, err = repo.EnsureUserAffiliate(txCtx, inviter.ID)
+	require.NoError(t, err)
+	_, err = repo.EnsureUserAffiliate(txCtx, user.ID)
+	require.NoError(t, err)
+
+	createdAt := time.Date(2026, time.October, 14, 1, 2, 3, 0, time.UTC)
+	updatedAt := createdAt.Add(2 * time.Hour)
+	zeroRate := 0.0
+	positiveRate := 17.5
+	cases := []struct {
+		name    string   // nullable override scenario
+		rate    *float64 // stored percentage choice
+		inviter *int64   // stored inviter choice
+	}{
+		{name: "null"},
+		{name: "zero", rate: &zeroRate, inviter: &inviter.ID},
+		{name: "positive", rate: &positiveRate, inviter: &inviter.ID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := txClient.ExecContext(txCtx, `
+UPDATE user_affiliates
+SET aff_code = 'PROFILE_TEST',
+    aff_code_custom = true,
+    aff_rebate_rate_percent = $2,
+    inviter_id = $3,
+    aff_count = 9,
+    aff_quota = 12.25,
+    aff_frozen_quota = 3.5,
+    aff_history_quota = 45.75,
+    created_at = $4,
+    updated_at = $5
+WHERE user_id = $1`, user.ID, tc.rate, tc.inviter, createdAt, updatedAt)
+			require.NoError(t, err)
+
+			byID, err := repo.EnsureUserAffiliate(txCtx, user.ID)
+			require.NoError(t, err)
+			byCode, err := repo.GetAffiliateByCode(txCtx, " \tproFile_test\n ")
+			require.NoError(t, err)
+			require.Equal(t, byID, byCode)
+			require.Equal(t, &promotion.AffiliateSummary{
+				UserID:               user.ID,
+				AffCode:              "PROFILE_TEST",
+				AffCodeCustom:        true,
+				AffRebateRatePercent: tc.rate,
+				InviterID:            tc.inviter,
+				AffCount:             9,
+				AffQuota:             12.25,
+				AffFrozenQuota:       3.5,
+				AffHistoryQuota:      45.75,
+				CreatedAt:            createdAt,
+				UpdatedAt:            updatedAt,
+			}, byID)
+		})
+	}
+
+	_, err = repo.GetAffiliateByCode(ctx, "PROFILE_TEST")
+	require.ErrorIs(t, err, promotion.ErrAffiliateProfileNotFound)
+	// Roll back before checking through the base connection so an accidental
+	// inner commit would remain visible in the profile count and code lookup.
+	require.NoError(t, outerTx.Rollback())
+	require.Equal(t, 0, querySingleInt(t, ctx, baseClient,
+		"SELECT COUNT(*) FROM user_affiliates WHERE user_id IN ($1, $2)",
+		user.ID, inviter.ID))
+	_, err = repo.GetAffiliateByCode(ctx, "PROFILE_TEST")
+	require.ErrorIs(t, err, promotion.ErrAffiliateProfileNotFound)
+}
+
+// testEntTx opens a transaction on a newly cloned promotion database and
+// registers rollback after case work ends. Callers own any earlier completion;
+// cleanup discards errors from an already ended transaction.
 func testEntTx(t *testing.T) *dbent.Tx {
 	t.Helper()
 	client := testEntClient(t)
 	tx, err := client.Tx(context.Background())
 	require.NoError(t, err)
+	// Roll back before Ent and clone cleanup run so case-owned writes and
+	// locks are released while their executor still exists; repeated
+	// completion errors are discarded.
 	t.Cleanup(func() { _ = tx.Rollback() })
 	return tx
 }
 
-// mustCreateUser 将用户夹具写入数据库。
+// mustCreateUser persists selected identity fields and fills the supplied
+// object's generated ID and timestamps. Empty email, password, role, and status
+// receive fixture values, and zero concurrency becomes five.
+//
+// Allowed-group rows are written after user creation so they can reference the
+// stored owner ID. All writes use the supplied client and a background context;
+// a later grant failure can follow earlier writes before the test fails. The
+// caller controls rollback or committed-fixture cleanup for that selected
+// storage scope.
 func mustCreateUser(t *testing.T, client *dbent.Client, u *identity.User) *identity.User {
 	t.Helper()
 	ctx := context.Background()
@@ -458,6 +638,9 @@ func mustCreateUser(t *testing.T, client *dbent.Client, u *identity.User) *ident
 	u.CreatedAt = created.CreatedAt
 	u.UpdatedAt = created.UpdatedAt
 
+	// Insert grants after the user ID is stored so every reference has its
+	// owner; the caller's supplied client determines rollback of partial
+	// fixture creation after failure.
 	if len(u.AllowedGroups) > 0 {
 		for _, groupID := range u.AllowedGroups {
 			_, err := client.UserAllowedGroup.Create().

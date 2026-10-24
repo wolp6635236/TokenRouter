@@ -15,7 +15,18 @@ import (
 	openaiwire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// provideOpenAIAttemptBindings 为 HTTP 和 WS 绑定共享的平台单次调用、槽位和完成记录函数。
+// gateway_openai_attempts.go constructs shared OpenAI attempt bindings and
+// their text runtime.
+// HTTP and WebSocket text attempts share OpenAI concurrency, moderation, and
+// completion support. Assembly uses selected platform executors when available,
+// then lets the unified executor replace forwarding callbacks. Cross-platform
+// attempts use the same support and recorder.
+
+// provideOpenAIAttemptBindings assembles shared OpenAI attempt support and
+// platform callbacks. Optional source and unified executors provide forwarding;
+// unified overrides source forwarding and client-policy methods when both
+// exist. Destination fallback requires keys, funding, and planner, and
+// completion retains the supplied OpenAI recorder.
 func provideOpenAIAttemptBindings(
 	source *gatewayhttp.OpenAIResponsesExecutor,
 	keys *apikey.APIKeyService,
@@ -87,7 +98,8 @@ func provideOpenAIAttemptBindings(
 	return b
 }
 
-// provideOpenAITextAttemptRuntime 组合文本请求所需的执行支持和平台调用函数。
+// provideOpenAITextAttemptRuntime creates text attempt state from the assembled
+// bindings.
 func provideOpenAITextAttemptRuntime(b openaiattempt.Bindings) *openaiattempt.Runtime {
 	return openaiattempt.New(b)
 }

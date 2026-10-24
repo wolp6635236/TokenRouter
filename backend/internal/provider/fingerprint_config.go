@@ -4,31 +4,52 @@ import (
 	"strings"
 )
 
+// fingerprint_config.go parses Codex fingerprint modes and checks whether
+// provider configuration requires a seed.
+// OpenAI OAuth and Setup Token providers can select which outgoing Codex
+// identifiers are tied to a provider seed. Missing, malformed, or unknown mode
+// values select off, so a saved provider stays on client identifiers until
+// administration opts in.
+//
+// Device, session, and full modes each require the system-managed seed. Mode
+// parsing and provider eligibility are evaluated separately, allowing Extra
+// patch writers to decide when to retain or generate a seed while request
+// readers return off for other provider types. Request construction separately
+// validates the stored seed before applying a selected mode.
+
+// Fingerprint mode values identify the outgoing identifiers rewritten per
+// provider; the Extra keys store the administrator selection and its
+// system-managed seed.
 const (
-	// CodexFingerprintOff 不做任何收敛，原样透传客户端标识。
-	// 指纹模式默认关闭，管理员开启后生效。
+	// CodexFingerprintOff passes client identifiers through unchanged.
+	// This is the default until an administrator enables a fingerprint mode.
 	CodexFingerprintOff CodexFingerprintMode = "off"
-	// CodexFingerprintDevice 仅收敛 installation_id 为提供商级恒定值。
-	// 上游看到 1 台设备 + 多会话（每用户各自的 session）。
+	// CodexFingerprintDevice gives installation_id a stable provider-specific value.
+	// Client sessions remain distinct under the shared installation.
 	CodexFingerprintDevice CodexFingerprintMode = "device"
-	// CodexFingerprintSession 收敛 installation_id + session_id，
-	// thread_id 从客户端 session-id 派生，每个 Codex 会话对应独立线程。
-	// 上游看到 1 台设备 + 1 会话 + N 线程，最接近正常用户 spawn 子代理的模式。
+	// CodexFingerprintSession gives installation_id and session_id stable
+	// provider-specific values.
+	// It derives thread_id from the client session ID, or uses the provider
+	// session ID when absent.
 	CodexFingerprintSession CodexFingerprintMode = "session"
-	// CodexFingerprintFull 收敛所有标识：installation_id + session_id + thread_id。
-	// 上游看到 1 台设备 + 1 会话 + 1 线程，最激进。
+	// CodexFingerprintFull gives installation_id, session_id, and thread_id stable
+	// provider-specific values.
 	CodexFingerprintFull CodexFingerprintMode = "full"
 
-	CodexFingerprintModeExtraKey = "codex_fingerprint_mode"
-	CodexFingerprintSeedExtraKey = "codex_fingerprint_seed"
+	CodexFingerprintModeExtraKey = "codex_fingerprint_mode" // administrator mode selection key
+	CodexFingerprintSeedExtraKey = "codex_fingerprint_seed" // system-managed provider seed key
 )
 
-// CodexFingerprintMode 控制 OAuth 提供商出站请求的设备指纹收敛强度。
-// 多人共享同一 OAuth 提供商时，每个用户的 Codex 客户端会携带各自不同的
-// installation_id / session_id / thread_id，上游据此判定设备数和会话数。
-// 收敛模式将这些标识改写为提供商级恒定值，减少上游可见的设备/会话指纹。
+// CodexFingerprintMode selects the outgoing Codex identifiers rewritten for
+// eligible providers. Device mode shares installation identity, session mode
+// also shares a provider session while deriving threads from client sessions,
+// and full mode shares the provider thread. Rewriting uses a valid provider
+// seed; installation identity prefers a configured OpenAI OAuth device ID.
 type CodexFingerprintMode string
 
+// CodexFingerprintModeFromExtra reads a trimmed mode string from Extra. Missing
+// values, nonstrings, and unknown or differently cased names return off,
+// keeping fingerprint changes an administrator opt-in.
 func CodexFingerprintModeFromExtra(extra map[string]any) CodexFingerprintMode {
 	if extra == nil {
 		return CodexFingerprintOff
@@ -42,6 +63,9 @@ func CodexFingerprintModeFromExtra(extra map[string]any) CodexFingerprintMode {
 	}
 }
 
+// CodexFingerprintModeRequiresSeed reports whether a recognized mode needs a
+// provider seed. Device, session, and full return true; off and unknown values
+// leave seed generation unnecessary for that setting.
 func CodexFingerprintModeRequiresSeed(mode CodexFingerprintMode) bool {
 	switch mode {
 	case CodexFingerprintDevice, CodexFingerprintSession, CodexFingerprintFull:
@@ -51,8 +75,9 @@ func CodexFingerprintModeRequiresSeed(mode CodexFingerprintMode) bool {
 	}
 }
 
-// ShouldEnsureCodexFingerprintSeedForExtraUpdates 判断 Extra 增量是否开启了
-// Codex 指纹收敛；开启时仓储必须原子保留或生成系统管理的提供商 seed。
+// ShouldEnsureCodexFingerprintSeedForExtraUpdates reports whether an Extra
+// patch requests a mode needing a seed. When true, the storage update retains a
+// valid stored seed or generates one under its write lock.
 func ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates map[string]any) bool {
 	if updates == nil {
 		return false
@@ -60,7 +85,9 @@ func ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates map[string]any) boo
 	return CodexFingerprintModeRequiresSeed(CodexFingerprintModeFromExtra(updates))
 }
 
-// GetCodexFingerprintMode 返回 OAuth 提供商的指纹模式，其他类型返回关闭。
+// GetCodexFingerprintMode reads the configured mode for an OpenAI OAuth or
+// Setup Token record. Nil records and other platform/type combinations return
+// off even when their Extra contains a recognized mode.
 func (r *Record) GetCodexFingerprintMode() CodexFingerprintMode {
 	if r == nil || !r.IsOpenAIOAuthLike() {
 		return CodexFingerprintOff

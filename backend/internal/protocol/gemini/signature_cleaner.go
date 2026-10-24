@@ -4,52 +4,81 @@ import (
 	"encoding/json"
 )
 
-// CleanNativeThoughtSignatures 将 Gemini 请求中的 thoughtSignature 替换为给定的 dummy 签名。
-// 粘性会话切换提供商后，此前提供商的签名会使新提供商校验失败，dummy 签名用于跳过该校验。
+// signature_cleaner.go replaces Gemini thought signatures throughout decoded
+// request history for provider-switch recovery.
+// Gemini replay signatures belong to the upstream state that produced their
+// history. Provider-switch preparation can replace thoughtSignature fields
+// with a caller-selected placeholder, including fields nested inside arrays
+// or objects, before the request enters another provider's replay rules.
+//
+// Replacement matches that exact field name and leaves differently named
+// signature fields untouched. The recursive helper copies map[string]any and
+// []any containers while retaining scalar values; other Go values pass through.
+// The byte-oriented entry point first decodes ordinary JSON, then serializes
+// the complete result even if no matching field existed. Consequently JSON
+// formatting and map-decoded numeric representation can change on success,
+// while decoding or encoding failure returns the supplied request body.
+
+// CleanNativeThoughtSignatures replaces every exact thoughtSignature field
+// with placeholder in a decoded request. Empty bodies and decoding or encoding
+// failures return the supplied bytes; successful calls reserialize the whole
+// value even when no matching signature field existed.
+//
+// The caller chooses the placeholder and determines whether another provider
+// accepts that replay strategy. This transformation replaces field values,
+// including nonstring ones, without establishing cryptographic validity.
+// Ordinary map decoding can round unrelated large numbers before serialization,
+// so callers use this operation for the intended native replay-recovery path.
 func CleanNativeThoughtSignatures(body []byte, placeholder string) []byte {
 	if len(body) == 0 {
 		return body
 	}
 
-	// 解析 JSON
 	var data any
 	if err := json.Unmarshal(body, &data); err != nil {
-		// 如果解析失败，返回原始 body（可能不是 JSON 或格式不正确）
+		// A failed JSON decode leaves no traversable request value to repair.
+		// Return the supplied bytes so the caller retains the complete body for other recovery handling.
 		return body
 	}
 
-	// 递归替换 thoughtSignature 为 dummy 签名
 	replaced := replaceThoughtSignaturesRecursive(data, placeholder)
 
-	// 重新序列化
 	result, err := json.Marshal(replaced)
 	if err != nil {
-		// 如果序列化失败，返回原始 body
+		// Failed final encoding leaves the replacement value unpublished.
+		// Return the supplied request body so the caller receives a complete representation for further handling.
 		return body
 	}
 
 	return result
 }
 
-// replaceThoughtSignaturesRecursive 递归遍历数据结构，将所有 thoughtSignature 字段替换为 dummy 签名。
+// replaceThoughtSignaturesRecursive copies map[string]any and []any containers
+// while replacing exact thoughtSignature keys with placeholder. Other field
+// names retain their recursively processed values, so a field named signature
+// remains distinct from the Gemini replay field.
+//
+// Nested supported containers are copied before their values are replaced,
+// allowing the supplied maps and slices to retain their membership and values.
+// Scalars and unsupported Go container types return unchanged, which can
+// retain sharing for manually constructed inputs. Callers pass decoded JSON
+// when they need every object and array traversed by this helper.
 func replaceThoughtSignaturesRecursive(data any, placeholder string) any {
 	switch v := data.(type) {
 	case map[string]any:
-		// 创建新的 map，替换 thoughtSignature 为 dummy 签名
 		result := make(map[string]any, len(v))
 		for key, value := range v {
-			// 替换 thoughtSignature 字段为 dummy 签名
 			if key == "thoughtSignature" {
+				// Field-name matching confines the placeholder to Gemini replay
+				// data; a neighboring signature field can belong to another format and keeps its value.
 				result[key] = placeholder
 				continue
 			}
-			// 递归处理嵌套结构
 			result[key] = replaceThoughtSignaturesRecursive(value, placeholder)
 		}
 		return result
 
 	case []any:
-		// 递归处理数组中的每个元素
 		result := make([]any, len(v))
 		for i, item := range v {
 			result[i] = replaceThoughtSignaturesRecursive(item, placeholder)
@@ -57,7 +86,6 @@ func replaceThoughtSignaturesRecursive(data any, placeholder string) any {
 		return result
 
 	default:
-		// 基本类型（string, number, bool, null）直接返回
 		return v
 	}
 }

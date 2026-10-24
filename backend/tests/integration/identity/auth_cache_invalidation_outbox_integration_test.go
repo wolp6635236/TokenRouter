@@ -19,6 +19,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
+// Authentication invalidation triggers distinguish selected security edits from
+// spending and cosmetic updates. The PostgreSQL scenario counts events for one
+// hashed credential after each isolated mutation, including tombstone deletion
+// whose invalidation identifies the preceding credential rather than its
+// replacement string.
+
+// TestAuthCacheInvalidationTriggers_CoverSecurityMutationsOnly applies selected
+// key, user, group, and access-grant mutations in PostgreSQL. Event counts
+// distinguish tested security changes, and tombstone invalidation stores the
+// hash of the preceding credential.
 func TestAuthCacheInvalidationTriggers_CoverSecurityMutationsOnly(t *testing.T) {
 	integrationDB, integrationEntClient := identityDatabase(t)
 	ctx := context.Background()
@@ -47,11 +57,15 @@ func TestAuthCacheInvalidationTriggers_CoverSecurityMutationsOnly(t *testing.T) 
 			"SELECT COUNT(*) FROM auth_cache_invalidation_outbox WHERE cache_key = $1", cacheKey).Scan(&value))
 		return value
 	}
+	// Clear creation events before each mutation observation and again after hard
+	// fixture deletion, so event counts concern this credential and the selected
+	// operation.
 	clear()
 	t.Cleanup(clear)
 	t.Cleanup(func() {
-		// 隔离共享集成数据库，避免影响断言全平台分组数量的测试套件。
-		// 最后的清理会在此之后运行，并删除这些硬删除操作产生的失效事件。
+		// Remove dependent grants and keys before their user and group owners so
+		// foreign keys permit fixture deletion. The earlier-registered event cleanup
+		// runs afterward.
 		_, err := integrationDB.ExecContext(ctx, "DELETE FROM user_allowed_groups WHERE user_id = $1 OR group_id = $2", user.ID, group.ID)
 		require.NoError(t, err)
 		_, err = integrationDB.ExecContext(ctx, "DELETE FROM api_keys WHERE id = $1", key.ID)
@@ -119,6 +133,8 @@ func TestAuthCacheInvalidationTriggers_CoverSecurityMutationsOnly(t *testing.T) 
 	require.Equal(t, 1, count(), "exclusive-group revocation must enqueue")
 	clear()
 
+	// Delete the key after clearing earlier events so the sole tombstone event can
+	// be checked against the old credential hash and for raw-secret exclusion.
 	require.NoError(t, apiKeyRepo.DeleteWithAudit(ctx, key.ID))
 	require.Equal(t, 1, count(), "tombstone delete must hash OLD.key exactly once")
 	var stored string

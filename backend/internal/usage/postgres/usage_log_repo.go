@@ -19,36 +19,56 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// usage_log_repo.go constructs the usage store, coordinates batcher shutdown,
+// and supplies compatibility filters and public rankings.
+// Usage records preserve the acting user, financial identity, execution
+// platform, and model evidence needed by distinct reports. Report filters keep
+// those meanings separate: ordinary user scopes select actors, public rankings
+// merge the payer's activity, and media/request-type helpers interpret
+// historical rows that lack newer dimensions.
+//
+// Store retains an Ent client and a caller-selected SQL executor; a concrete
+// database pool enables queued writes and independent dashboard queries. Two
+// lazily started batchers share shutdown coordination, and a recent-write cache
+// suppresses repeated best-effort submissions. Calendar supplies server dates,
+// while aggregate failures are logged at most once per operation per minute
+// before eligible callers read raw records.
+
 const (
-	rawUsageLogModelColumn            = "model"
+	// rawUsageLogModelColumn selects the stored model value for direct filters.
+	// Historical rows can contain upstream or billing models; current rows contain
+	// the internal request model. Use resolveModelDimensionExpression for
+	// requested, upstream, or mapping analytics.
+	rawUsageLogModelColumn = "model"
+	// usageAnalyticsFallbackLogInterval bounds repeated process warnings for each
+	// failed report operation before complete raw-query recovery is attempted.
 	usageAnalyticsFallbackLogInterval = time.Minute
 
-	// rawUsageLogModelColumn preserves the exact stored usage_logs.model semantics for direct filters.
-	// Historical rows may contain upstream/billing model values, while newer rows store requested_model.
-	// Requested/upstream/mapping analytics must use resolveModelDimensionExpression instead.
-
-	// usageLogSuccessFilterUL 用于把"失败请求 usage log"（tokens=0、cost=0、不计费的占位记录）
-	// 从统计性聚合中排除，避免污染 Dashboard / 用量拆分等指标。
+	// usageLogSuccessFilterUL selects charged rows for queries using the ul alias.
+	// The cost predicate excludes zero-cost failure placeholders and free requests.
 	//
-	// 表结构中没有 success bool 列；新增列要做迁移，风险大；这里用 actual_cost > 0 作为代理：
-	// 任何成功落账的请求都会产生 actual_cost（包括 token 计费、纯图片 token 计费、按次/按图计费），
-	// 反之失败请求占位 usage log 的 actual_cost 为 0。
-	// 早期版本用 4 项 token 和 > 0 判定会把"按次/按图计费"与"image_output_tokens 独立计费"的纯图片
-	// 请求误判为失败，导致这部分请求从用量统计里消失，故改用 actual_cost。
-	// 配合 `FROM usage_logs ul` JOIN 查询使用。
+	// Checking cost also includes per-request and image charges whose text token
+	// counts are zero.
 	usageLogSuccessFilterUL = "ul.actual_cost > 0"
 
-	// usageLogEffectivePlatformExpr 统一使用已固化的平台，避免配置变更重写统计归属。
+	// usageLogEffectivePlatformExpr uses the stored platform so configuration
+	// changes do not reassign historical usage.
 	usageLogEffectivePlatformExpr = "ul.platform"
 )
 
 var (
+	// usageAnalyticsFallbackLogState shares warning timestamps across stores so one
+	// failing operation cannot flood process logs from concurrent queries.
 	usageAnalyticsFallbackLogState = struct {
-		sync.Mutex
-		lastByOperation map[string]time.Time
+		// Mutex protects lastByOperation during rate checks, claims, and test cleanup.
+		// These operation timestamps are process-wide and require the same lock for
+		// every reader and writer that inspects or changes them.
+		sync.Mutex                           // protects operation timestamps
+		lastByOperation map[string]time.Time // last warning claim per operation
 	}{lastByOperation: make(map[string]time.Time)}
 
-	// dateFormatWhitelist 将 granularity 参数映射为 PostgreSQL TO_CHAR 格式字符串，防止外部输入直接拼入 SQL。
+	// dateFormatWhitelist maps allowed granularities to fixed PostgreSQL formats,
+	// keeping report SQL interpolation separate from user-supplied text.
 	dateFormatWhitelist = map[string]string{
 		"hour":  "YYYY-MM-DD HH24:00",
 		"day":   "YYYY-MM-DD",
@@ -57,35 +77,69 @@ var (
 	}
 )
 
+// Store persists analytical usage and reads reports with caller-owned SQL and
+// Ent resources. Pool-backed stores lazily start two write workers, which
+// StopUsageBatchers drains.
 type Store struct {
-	batchLifecycleMu sync.RWMutex
-	batchStopped     bool
-	batchWG          sync.WaitGroup
-	client           *dbent.Client
-	sql              sqlExecutor
-	db               *sql.DB
-	preAggregation   *preaggregation.PreAggregationSettingsService
-	calendar         timezone.Calendar
+	// batchLifecycleMu, batchStopped, and batchWG coordinate lazy worker creation,
+	// queue admission, and shutdown. Queued writers hold the read lock through
+	// their wait; StopUsageBatchers takes the write lock before closing queues and
+	// then waits.
+	batchLifecycleMu sync.RWMutex   // admission and close lock
+	batchStopped     bool           // terminal queue shutdown flag
+	batchWG          sync.WaitGroup // initialized batch workers
+	// client supplies current display associations using the Ent client selected
+	// at construction. Callers pass a transaction client for transaction-scoped
+	// hydration; cleanup methods can select another client from context.
+	client *dbent.Client
+	// sql runs on the caller-selected connection or transaction. Its owner controls
+	// transaction completion and database resource shutdown.
+	sql sqlExecutor
+	// db is set only for a concrete pool executor, enabling queued writes and
+	// independently connected report queries. Nil selects direct writes, while
+	// runDashboardQueries uses its serial callback path.
+	db *sql.DB
+	// preAggregation decides multidimensional query eligibility when bound. Legacy
+	// dashboard paths retain their own behavior when this service is nil.
+	preAggregation *preaggregation.PreAggregationSettingsService
+	calendar       timezone.Calendar // server reporting date rules
 
-	createBatchOnce     sync.Once
-	createBatchCh       chan usageLogCreateRequest
-	bestEffortBatchOnce sync.Once
-	bestEffortBatchCh   chan usageLogBestEffortRequest
-	bestEffortRecent    *gocache.Cache
+	// createBatchOnce and createBatchCh publish the result-aware queue once;
+	// bestEffortBatchOnce and bestEffortBatchCh do the same for
+	// acknowledgement-only writes. All queue creation and closing participates in
+	// batchLifecycleMu.
+	createBatchOnce     sync.Once                      // create worker initialization guard
+	createBatchCh       chan usageLogCreateRequest     // result-aware write admissions
+	bestEffortBatchOnce sync.Once                      // best-effort initialization guard
+	bestEffortBatchCh   chan usageLogBestEffortRequest // acknowledgement-only write admissions
+	// bestEffortRecent records successful request/key submissions for a short
+	// suppression interval; ExpireRuntimeCaches performs its scheduled cleanup.
+	bestEffortRecent *gocache.Cache
 }
 
+// UsageRankingItem is a public billing-user ranking entry with display data.
 type UsageRankingItem = usage.UsageRankingItem
 
+// UsageRankingResponse combines limited public entries with all eligible payer
+// totals.
 type UsageRankingResponse = usage.UsageRankingResponse
 
+// NewUsageLogRepository constructs a usage store with the supplied shared
+// database and Calendar. It binds preAggregation for query selection; batch
+// workers start lazily during writes, and the caller owns database shutdown.
 func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB, preAggregation *preaggregation.PreAggregationSettingsService, calendar timezone.Calendar) *Store {
 	repo := NewUsageLogRepositoryWithSQL(client, sqlDB, calendar)
 	repo.preAggregation = preAggregation
 	return repo
 }
 
+// NewUsageLogRepositoryWithSQL constructs a store for a caller-selected SQL
+// executor and Calendar. A concrete *sql.DB enables queued writes and pool
+// report dispatch; other executors use direct writes. The caller owns the Ent
+// client, SQL resource, and transaction completion.
 func NewUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, calendar timezone.Calendar) *Store {
-	// 使用 scanSingleRow 替代 QueryRowContext，保证 ent.Tx 作为 sqlExecutor 可用。
+	// The infra row scanner accepts QueryContext executors such as Ent
+	// transactions, allowing report reads to use the caller's chosen transaction.
 	repo := &Store{client: client, sql: sqlq, calendar: calendar}
 	if db, ok := sqlq.(*sql.DB); ok {
 		repo.db = db
@@ -94,16 +148,28 @@ func NewUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, calend
 	return repo
 }
 
-// logUsageAnalyticsFallback 对真实聚合查询错误限频告警，避免透明回退长期掩盖故障。
+// logUsageAnalyticsFallback warns when a nonnil aggregate error qualifies for
+// the shared operation limit. It changes no query data; callers execute their
+// raw-query recovery after deciding the aggregate result is unusable.
 func (r *Store) logUsageAnalyticsFallback(operation string, err error) {
 	if err == nil || !shouldLogUsageAnalyticsFallback(operation, time.Now()) {
 		return
 	}
-	slog.Warn("预聚合查询失败，已透明回退使用记录原始表", "operation", operation, "error", err)
+	slog.Warn("Pre-aggregation query failed, querying raw usage logs", "operation", operation, "error", err)
 }
 
-// shouldLogUsageAnalyticsFallback 按操作限制同类聚合故障每分钟最多告警一次。
+// shouldLogUsageAnalyticsFallback claims the next warning slot for an operation.
+// A shared mutex protects the timestamp check and update, so concurrent failures
+// cannot publish separate warnings inside one permitted interval.
+//
+// The first timestamp and later differences are evaluated against the supplied
+// now value. Calls less than one minute after the previous claim return false
+// without updating it; an eligible claim stores now before releasing the lock.
+// The claim records permission, so logging later remains the caller's
+// responsibility.
 func shouldLogUsageAnalyticsFallback(operation string, now time.Time) bool {
+	// Keep the timestamp read and claim together; releasing the lock between them
+	// would allow concurrent failures to claim the same warning interval.
 	usageAnalyticsFallbackLogState.Lock()
 	defer usageAnalyticsFallbackLogState.Unlock()
 	last := usageAnalyticsFallbackLogState.lastByOperation[operation]
@@ -114,7 +180,9 @@ func shouldLogUsageAnalyticsFallback(operation string, now time.Time) bool {
 	return true
 }
 
-// safeDateFormat 根据白名单获取 dateFormat，未匹配时返回默认值。
+// safeDateFormat returns the fixed PostgreSQL format for an allowed granularity.
+// Unknown labels use daily formatting, allowing callers to interpolate a format
+// whose text comes from the whitelist.
 func safeDateFormat(granularity string) string {
 	if f, ok := dateFormatWhitelist[granularity]; ok {
 		return f
@@ -122,8 +190,9 @@ func safeDateFormat(granularity string) string {
 	return "YYYY-MM-DD"
 }
 
-// appendRawUsageLogModelWhereCondition 对历史数据兼容使用原始 model 列过滤。
-// requested/upstream 维度分析必须改用 resolveModelDimensionExpression。
+// appendRawUsageLogModelWhereCondition appends equality on the stored model
+// column. Blank model text adds nothing; otherwise the original string becomes
+// the next bound parameter, and appending may reuse the supplied slice storage.
 func appendRawUsageLogModelWhereCondition(conditions []string, args []any, model string) ([]string, []any) {
 	if strings.TrimSpace(model) == "" {
 		return conditions, args
@@ -133,10 +202,23 @@ func appendRawUsageLogModelWhereCondition(conditions []string, args []any, model
 	return conditions, args
 }
 
+// appendUsageLogBillingModeWhereCondition appends the unqualified historical
+// billing-mode predicate. Blank input leaves the slices unchanged; other input
+// is trimmed and bound by the alias-aware helper using its media compatibility
+// rules.
 func appendUsageLogBillingModeWhereCondition(conditions []string, args []any, billingMode string) ([]string, []any) {
 	return appendUsageLogBillingModeWhereConditionWithAlias(conditions, args, billingMode, "")
 }
 
+// appendUsageLogBillingModeWhereConditionWithAlias adds a mode filter to a
+// trusted SQL column alias. Trimmed empty input leaves the query unchanged, and
+// returned slices can retain the input backing arrays.
+//
+// Explicit stored modes match directly. Rows with null or empty modes infer
+// video from positive duration, image from positive image count with nonpositive
+// video duration, and token from neither media marker. Other mode labels use
+// exact equality. That ordering keeps legacy video evidence ahead of image
+// evidence without altering rows carrying a stored mode.
 func appendUsageLogBillingModeWhereConditionWithAlias(conditions []string, args []any, billingMode string, alias string) ([]string, []any) {
 	mode := strings.TrimSpace(billingMode)
 	if mode == "" {
@@ -149,6 +231,8 @@ func appendUsageLogBillingModeWhereConditionWithAlias(conditions []string, args 
 		return alias + "." + name
 	}
 	placeholder := fmt.Sprintf("$%d", len(args)+1)
+	// Legacy image matching excludes positive video duration so mixed media evidence
+	// belongs to the video filter when the stored billing mode is absent.
 	switch pricing.BillingMode(mode) {
 	case pricing.BillingModeImage:
 		conditions = append(conditions, fmt.Sprintf("(%s = %s OR ((%s IS NULL OR %s = '') AND COALESCE(%s, 0) <= 0 AND COALESCE(%s, 0) > 0))", column("billing_mode"), placeholder, column("billing_mode"), column("billing_mode"), column("video_duration_seconds"), column("image_count")))
@@ -163,6 +247,9 @@ func appendUsageLogBillingModeWhereConditionWithAlias(conditions []string, args 
 	return conditions, args
 }
 
+// appendUsageLogBillingModeQueryFilter adds the mode predicate to SQL with an
+// existing WHERE clause. Blank input leaves SQL and arguments unchanged; callers
+// supply a trusted alias for the compatibility helper.
 func appendUsageLogBillingModeQueryFilter(query string, args []any, billingMode string, alias string) (string, []any) {
 	conditions, args := appendUsageLogBillingModeWhereConditionWithAlias(nil, args, billingMode, alias)
 	if len(conditions) == 0 {
@@ -171,6 +258,10 @@ func appendUsageLogBillingModeQueryFilter(query string, args []any, billingMode 
 	return query + " AND " + conditions[0], args
 }
 
+// appendUsageLogModelWhereCondition adds equality using the selected model
+// dimension. Empty source selects raw model storage; blank model input adds
+// nothing, while a supplied source goes through the fixed dimension-expression
+// helper.
 func appendUsageLogModelWhereCondition(conditions []string, args []any, model string, source string) ([]string, []any) {
 	if strings.TrimSpace(source) == "" {
 		return appendRawUsageLogModelWhereCondition(conditions, args, model)
@@ -183,8 +274,9 @@ func appendUsageLogModelWhereCondition(conditions []string, args []any, model st
 	return conditions, args
 }
 
-// appendRawUsageLogModelQueryFilter 对历史数据兼容使用原始 model 列过滤。
-// requested/upstream 维度分析必须改用 resolveModelDimensionExpression。
+// appendRawUsageLogModelQueryFilter appends stored-model equality to SQL that
+// already has WHERE. Blank model input returns the original query and arguments;
+// nonblank text is bound without trimming its value.
 func appendRawUsageLogModelQueryFilter(query string, args []any, model string) (string, []any) {
 	if strings.TrimSpace(model) == "" {
 		return query, args
@@ -194,6 +286,9 @@ func appendRawUsageLogModelQueryFilter(query string, args []any, model string) (
 	return query, args
 }
 
+// appendUsageLogModelQueryFilter appends model equality to a query with WHERE.
+// Empty source uses the raw stored column, a supplied source selects its
+// normalized dimension, and blank models leave the query unchanged.
 func appendUsageLogModelQueryFilter(query string, args []any, model string, source string) (string, []any) {
 	if strings.TrimSpace(source) == "" {
 		return appendRawUsageLogModelQueryFilter(query, args, model)
@@ -206,6 +301,9 @@ func appendUsageLogModelQueryFilter(query string, args []any, model string, sour
 	return query, args
 }
 
+// buildWhere returns the WHERE clause for the supplied predicates joined by AND.
+// Empty predicates produce empty text, allowing callers to append the result to
+// either a filtered or unrestricted SQL source.
 func buildWhere(conditions []string) string {
 	if len(conditions) == 0 {
 		return ""
@@ -213,6 +311,10 @@ func buildWhere(conditions []string) string {
 	return "WHERE " + strings.Join(conditions, " AND ")
 }
 
+// appendRequestTypeOrStreamWhereCondition adds one transport selector to the
+// predicates. A nonnil requestType takes precedence over stream and uses
+// legacy-compatible matching; nil selectors leave the supplied predicates and
+// arguments unchanged.
 func appendRequestTypeOrStreamWhereCondition(conditions []string, args []any, requestType *int16, stream *bool) ([]string, []any) {
 	if requestType != nil {
 		condition, conditionArgs := buildRequestTypeFilterCondition(len(args)+1, *requestType)
@@ -227,6 +329,10 @@ func appendRequestTypeOrStreamWhereCondition(conditions []string, args []any, re
 	return conditions, args
 }
 
+// appendRequestTypeOrStreamQueryFilter adds one transport selector after an
+// existing WHERE. Request type takes precedence over stream, while absent
+// selectors leave SQL unchanged; compatibility handling belongs to the
+// request-type helper.
 func appendRequestTypeOrStreamQueryFilter(query string, args []any, requestType *int16, stream *bool) (string, []any) {
 	if requestType != nil {
 		condition, conditionArgs := buildRequestTypeFilterCondition(len(args)+1, *requestType)
@@ -241,7 +347,9 @@ func appendRequestTypeOrStreamQueryFilter(query string, args []any, requestType 
 	return query, args
 }
 
-// appendNativeCompactionV2WhereCondition 为原生 compaction 标记追加可选布尔过滤。
+// appendNativeCompactionV2WhereCondition adds compaction equality when value is
+// nonnil. False remains a requested filter, nil adds nothing, and alias names
+// come from trusted callers before the value is bound.
 func appendNativeCompactionV2WhereCondition(conditions []string, args []any, value *bool, alias string) ([]string, []any) {
 	if value == nil {
 		return conditions, args
@@ -255,7 +363,9 @@ func appendNativeCompactionV2WhereCondition(conditions []string, args []any, val
 	return conditions, args
 }
 
-// appendNativeCompactionV2QueryFilter 为带已有条件的查询追加原生 compaction 过滤。
+// appendNativeCompactionV2QueryFilter appends compaction equality after an
+// existing WHERE. Nil leaves SQL and arguments unchanged; the trusted alias
+// qualifies the column while the boolean remains a bound value.
 func appendNativeCompactionV2QueryFilter(query string, args []any, value *bool, alias string) (string, []any) {
 	conditions, args := appendNativeCompactionV2WhereCondition(nil, args, value, alias)
 	if len(conditions) == 0 {
@@ -264,12 +374,24 @@ func appendNativeCompactionV2QueryFilter(query string, args []any, value *bool, 
 	return query + " AND " + conditions[0], args
 }
 
-// buildRequestTypeFilterCondition 在 request_type 过滤时兼容 legacy 字段，避免历史数据漏查。
+// buildRequestTypeFilterCondition returns a legacy-compatible unqualified
+// transport predicate and its argument. startArgIndex identifies the caller's
+// next SQL parameter, and unsupported request types normalize to the unknown
+// category.
 func buildRequestTypeFilterCondition(startArgIndex int, requestType int16) (string, []any) {
 	return buildRequestTypeFilterConditionWithAlias(startArgIndex, requestType, "")
 }
 
-// buildRequestTypeFilterConditionWithAlias 为带表别名的统计查询复用历史请求类型兼容条件。
+// buildRequestTypeFilterConditionWithAlias returns transport equality for a
+// trusted alias and normalized type. Callers supply the next parameter position
+// and use the returned argument in that slot. Unsupported category codes
+// normalize to unknown before a predicate is selected.
+//
+// For sync, stream, and WebSocket types, rows storing unknown type can also
+// match their legacy flags. WebSocket evidence takes precedence over stream,
+// while sync requires both flags false. Other categories match the stored type
+// alone, so special execution categories retain their own recorded meaning
+// rather than inheriting transport labels.
 func buildRequestTypeFilterConditionWithAlias(startArgIndex int, requestType int16, alias string) (string, []any) {
 	normalized := usage.RequestTypeFromInt16(requestType)
 	requestTypeArg := int16(normalized)
@@ -277,6 +399,8 @@ func buildRequestTypeFilterConditionWithAlias(startArgIndex int, requestType int
 	if alias != "" {
 		prefix = alias + "."
 	}
+	// Infer legacy transport only for unknown stored types, keeping rows with an
+	// explicit execution category from inheriting another category's boolean match.
 	switch normalized {
 	case usage.RequestTypeSync:
 		return fmt.Sprintf("(%srequest_type = $%d OR (%srequest_type = %d AND %sstream = FALSE AND %sopenai_ws_mode = FALSE))", prefix, startArgIndex, prefix, int16(usage.RequestTypeUnknown), prefix, prefix), []any{requestTypeArg}
@@ -289,13 +413,18 @@ func buildRequestTypeFilterConditionWithAlias(startArgIndex int, requestType int
 	}
 }
 
-// GetDashboardPublicStats 只读取首页公开统计所需字段，避免公开接口复用完整仪表盘查询。
+// GetDashboardPublicStats returns current nondeleted-user count with public
+// token totals. useAggregates reads retained dashboard days regardless of
+// start/end; raw mode applies that supplied range to TotalTokens and Calendar's
+// midnight plus twenty-four hours to TodayTokens.
 func (r *Store) GetDashboardPublicStats(ctx context.Context, start, end time.Time, useAggregates bool) (*usage.DashboardPublicStats, error) {
 	stats := &usage.DashboardPublicStats{}
 	if err := r.fillDashboardPublicUserStats(ctx, stats); err != nil {
 		return nil, err
 	}
 	if useAggregates {
+		// The caller selected retained daily buckets; propagate query failure because
+		// this public path does not retry raw token totals itself.
 		if err := r.fillDashboardPublicTokenStatsAggregated(ctx, stats, r.calendar.Today()); err != nil {
 			return nil, err
 		}
@@ -307,7 +436,9 @@ func (r *Store) GetDashboardPublicStats(ctx context.Context, start, end time.Tim
 	return stats, nil
 }
 
-// usageRankingQueryParts 只返回受控的 SQL 片段，避免把设置值直接拼接进查询。
+// usageRankingQueryParts chooses fixed eligibility and ordering SQL for public
+// rankings. Invalid metrics normalize to total tokens; each ordering uses other
+// counters as tie breakers and ends with ascending user ID.
 func usageRankingQueryParts(sortBy usage.UsageRankingSortBy) (eligibility, orderBy string) {
 	switch usage.NormalizeUsageRankingSortBy(string(sortBy)) {
 	case usage.UsageRankingSortByRequests:
@@ -319,11 +450,22 @@ func usageRankingQueryParts(sortBy usage.UsageRankingSortBy) (eligibility, order
 	}
 }
 
-// GetUsageRanking 返回用户侧按配置指标排序的用量排行。
+// GetUsageRanking returns eligible billing-user rankings for the supplied
+// half-open range. Nonpositive limit uses the public default, and unavailable or
+// failed multidimensional analytics causes a complete raw query, with failures
+// warning through the shared limiter.
+//
+// Raw rows group by billing_user_id with historical user_id recovery. Positive
+// eligibility follows the selected metric, and window sums compute totals before
+// LIMIT, so totals cover every eligible payer. Current identity supplies
+// username or masked-email display, while only ranked entries are returned to
+// the caller.
 func (r *Store) GetUsageRanking(ctx context.Context, startTime, endTime time.Time, limit int, sortBy usage.UsageRankingSortBy) (result *UsageRankingResponse, err error) {
 	if limit <= 0 {
 		limit = usage.DefaultUsageRankingLimit
 	}
+	// Unavailable coverage or an aggregate failure sends the whole ranking through
+	// raw SQL, so partial aggregate totals never enter the response.
 	if aggregated, ok, aggregateErr := r.getUsageRankingFromAnalytics(ctx, startTime, endTime, limit, sortBy); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
@@ -392,6 +534,8 @@ func (r *Store) GetUsageRanking(ctx context.Context, startTime, endTime time.Tim
 	if err != nil {
 		return nil, err
 	}
+	// Close the ranking rows on every exit. An otherwise successful cleanup failure
+	// clears the response and becomes the returned error.
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
@@ -441,6 +585,9 @@ func (r *Store) GetUsageRanking(ctx context.Context, startTime, endTime time.Tim
 	}, nil
 }
 
+// fillDashboardPublicTokenStatsAggregated writes today's and retained-total
+// tokens into stats from daily dashboard buckets. todayStart is interpreted as a
+// SQL date, and empty retained buckets yield zero sums.
 func (r *Store) fillDashboardPublicTokenStatsAggregated(ctx context.Context, stats *usage.DashboardPublicStats, todayStart time.Time) error {
 	query := `
 		SELECT
@@ -451,10 +598,21 @@ func (r *Store) fillDashboardPublicTokenStatsAggregated(ctx context.Context, sta
 	return scanSingleRow(ctx, r.sql, query, []any{todayStart}, &stats.TodayTokens, &stats.TotalTokens)
 }
 
+// fillDashboardPublicTokenStatsFromUsageLogs fills range and today token totals
+// from raw records. start/end determine TotalTokens, while todayStart determines
+// a separate fixed twenty-four-hour TodayTokens window.
+//
+// The query scans the union of both time spans and applies distinct FILTER
+// predicates to each sum. This lets today's usage remain available even when the
+// requested retained range ends elsewhere. UTC conversion keeps parameter
+// instants intact; adding twenty-four hours describes elapsed time and can
+// differ from a local calendar day's end around offset transitions.
 func (r *Store) fillDashboardPublicTokenStatsFromUsageLogs(ctx context.Context, stats *usage.DashboardPublicStats, start, end, todayStart time.Time) error {
 	startUTC := start.UTC()
 	endUTC := end.UTC()
 	todayStartUTC := todayStart.UTC()
+	// Today's raw token window uses twenty-four elapsed hours from Calendar
+	// midnight.
 	todayEndUTC := todayStartUTC.Add(24 * time.Hour)
 	query := `
 		WITH scoped AS (
@@ -476,12 +634,17 @@ func (r *Store) fillDashboardPublicTokenStatsFromUsageLogs(ctx context.Context, 
 	return scanSingleRow(ctx, r.sql, query, []any{startUTC, endUTC, todayStartUTC, todayEndUTC}, &stats.TodayTokens, &stats.TotalTokens)
 }
 
+// fillDashboardPublicUserStats fills the count of current nondeleted users in
+// stats. User status and usage activity do not restrict this count, and query
+// errors leave the caller to discard the response.
 func (r *Store) fillDashboardPublicUserStats(ctx context.Context, stats *usage.DashboardPublicStats) error {
 	query := `SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`
 	return scanSingleRow(ctx, r.sql, query, nil, &stats.TotalUsers)
 }
 
-// rankingDisplayName 只返回用户名或脱敏邮箱，避免排行接口泄露完整邮箱。
+// rankingDisplayName chooses a public label from trimmed username, masked email,
+// then userID. A nonblank username wins; only when it is absent is the trimmed
+// email passed to identity.MaskEmail.
 func rankingDisplayName(username, email string, userID int64) string {
 	if name := strings.TrimSpace(username); name != "" {
 		return name
@@ -492,15 +655,28 @@ func rankingDisplayName(username, email string, userID int64) string {
 	return fmt.Sprintf("User #%d", userID)
 }
 
-// ExpireRuntimeCaches 不再隐式启动无法关闭的 janitor。
+// ExpireRuntimeCaches removes expired best-effort deduplication entries when the
+// cache exists. The application schedules this call because the cache
+// constructor starts no cleanup janitor, and queued writes retain their own
+// lifecycle.
 func (r *Store) ExpireRuntimeCaches() {
 	if r.bestEffortRecent != nil {
 		r.bestEffortRecent.DeleteExpired()
 	}
 }
 
-// StopUsageBatchers 在使用量任务停止提交后封闭并排空两个独立批处理队列。
+// StopUsageBatchers stops admission to both initialized queues and waits for
+// worker drainage. Repeated calls keep the stopped state and wait on the same
+// workers; the method has no cancellation budget.
+//
+// The exclusive lifecycle lock waits for writers holding read locks before
+// closing channels, preventing sends from racing with close. The stopped flag
+// also prevents later lazy starts. Worker waiting occurs after releasing that
+// lock so drainage can finish, and callers stop completion writers before
+// invoking this method to let queued submissions settle.
 func (r *Store) StopUsageBatchers() {
+	// Exclude active admissions before channel close, then publish the terminal
+	// flag so subsequent writers cannot start or send to either queue.
 	r.batchLifecycleMu.Lock()
 	if !r.batchStopped {
 		r.batchStopped = true
@@ -511,6 +687,8 @@ func (r *Store) StopUsageBatchers() {
 			close(r.bestEffortBatchCh)
 		}
 	}
+	// Release the lifecycle lock before waiting for both workers to flush their
+	// closed queues and complete accepted callers' acknowledgement channels.
 	r.batchLifecycleMu.Unlock()
 	r.batchWG.Wait()
 }

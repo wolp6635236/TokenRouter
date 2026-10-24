@@ -1,21 +1,35 @@
 package provider
 
+// background_policy.go maps refresh lock contention and already-refreshed
+// records to skipped or successful worker outcomes.
+// Lock contention and an already fresh provider both finish background work
+// without exchanging credentials. The selected skip policy converts each case
+// into either ErrRefreshSkipped or success, which determines how page workers
+// count the result.
+
+// Background skip actions determine worker statistics when coordinated refresh
+// returns contention or a provider that needs no exchange.
 const (
-	// BackgroundSkipAsSkipped 计入 skipped（保持当前默认行为）。
+	// BackgroundSkipAsSkipped counts an unperformed refresh as skipped by
+	// default.
 	BackgroundSkipAsSkipped BackgroundSkipAction = iota
-	// BackgroundSkipAsSuccess 将跳过计入 success，调用方可按统计需要选择。
+	// BackgroundSkipAsSuccess counts an unperformed refresh as successful.
 	BackgroundSkipAsSuccess
 )
 
-// BackgroundSkipAction 定义后台刷新服务在“未实际刷新”场景的计数方式。
+// BackgroundSkipAction selects the statistics outcome for an unperformed
+// credential exchange.
 type BackgroundSkipAction int
 
-// BackgroundRefreshPolicy 描述后台刷新服务的调用侧策略。
+// BackgroundRefreshPolicy independently classifies distributed contention and
+// current credentials that require no exchange for background workers.
 type BackgroundRefreshPolicy struct {
-	OnLockHeld       BackgroundSkipAction
-	OnAlreadyRefresh BackgroundSkipAction
+	OnLockHeld       BackgroundSkipAction // distributed lock contention
+	OnAlreadyRefresh BackgroundSkipAction // reread needs no exchange
 }
 
+// DefaultBackgroundRefreshPolicy counts contention and fresh credentials as
+// skipped background work.
 func DefaultBackgroundRefreshPolicy() BackgroundRefreshPolicy {
 	return BackgroundRefreshPolicy{
 		OnLockHeld:       BackgroundSkipAsSkipped,
@@ -23,6 +37,9 @@ func DefaultBackgroundRefreshPolicy() BackgroundRefreshPolicy {
 	}
 }
 
+// HandleLockHeld classifies contention using OnLockHeld and returns nil for the
+// success action. Every other value, including the zero value, returns
+// ErrRefreshSkipped for worker accounting.
 func (p BackgroundRefreshPolicy) HandleLockHeld() error {
 	if p.OnLockHeld == BackgroundSkipAsSuccess {
 		return nil
@@ -30,6 +47,9 @@ func (p BackgroundRefreshPolicy) HandleLockHeld() error {
 	return ErrRefreshSkipped
 }
 
+// HandleAlreadyRefreshed classifies a reread that requires no exchange using
+// OnAlreadyRefresh. The success action returns nil; zero and unrecognized
+// actions return ErrRefreshSkipped for worker accounting.
 func (p BackgroundRefreshPolicy) HandleAlreadyRefreshed() error {
 	if p.OnAlreadyRefresh == BackgroundSkipAsSuccess {
 		return nil

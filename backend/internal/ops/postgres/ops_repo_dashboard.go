@@ -12,63 +12,123 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
+// ops_repo_dashboard.go builds dashboard overviews from raw observations or
+// covered hourly aggregates and raw fragments.
+// Dashboard counts and latency samples are separate observations, so a latency
+// query can time out while counts remain usable. Recognized deadline errors
+// produce missing latency values and can replace nonpositive current or peak
+// rates with whole-window estimates; cancellation and other query failures
+// reject the response. Raw statements execute independently and do not provide
+// one shared snapshot.
+//
+// Automatic selection reads covered stable UTC hours with raw fragments around
+// them, then combines counts additively and latency summaries approximately.
+// Duration low percentiles and means use success counts, TTFT summaries
+// use measured sample counts, and high percentiles use maxima. Global-hour
+// coverage relies on aligned rows produced by aggregation; dimension absence
+// can mean no matching traffic. Any automatic-path error retries the complete
+// raw range, while current and peak rates still read raw observations even
+// after successful aggregation.
+
+// opsRawLatencyQueryTimeout and opsRawPeakQueryTimeout limit optional expensive
+// subqueries so recognized deadlines can leave counts and estimated rates
+// available.
 const (
-	opsRawLatencyQueryTimeout = 2 * time.Second
-	opsRawPeakQueryTimeout    = 1500 * time.Millisecond
+	opsRawLatencyQueryTimeout = 2 * time.Second         // raw latency child budget
+	opsRawPeakQueryTimeout    = 1500 * time.Millisecond // raw peak child budget
 )
 
+// opsDashboardPartial holds additive counts and approximate latency summaries
+// for one selected source segment.
 type opsDashboardPartial struct {
-	successCount         int64
-	ttftSampleCount      int64
-	errorCountTotal      int64
-	businessLimitedCount int64
-	errorCountSLA        int64
+	// successCount counts all usage observations and errorCountTotal counts final
+	// client failures; businessLimitedCount and errorCountSLA divide failures
+	// under the supplied SLA policy. ttftSampleCount independently counts nonnull
+	// TTFT measurements.
+	successCount         int64 // saved usage observation count
+	ttftSampleCount      int64 // nonnull TTFT sample count
+	errorCountTotal      int64 // final client failure count
+	businessLimitedCount int64 // SLA-excluded client failure count
+	errorCountSLA        int64 // SLA-countable client failure count
 
-	upstreamErrorCountExcl429529 int64
-	upstream429Count             int64
-	upstream529Count             int64
+	// upstreamErrorCountExcl429529, upstream429Count, and upstream529Count
+	// classify SLA-countable provider observations by effective status,
+	// independently of final-client totals so eligible recovered attempts can
+	// contribute.
+	upstreamErrorCountExcl429529 int64 // countable other provider observations
+	upstream429Count             int64 // countable provider 429 observations
+	upstream529Count             int64 // countable provider 529 observations
 
-	tokenConsumed int64
+	tokenConsumed int64 // input/output/cache token total
 
-	duration ops.OpsPercentiles
-	ttft     ops.OpsPercentiles
+	// duration and ttft hold pointer-valued millisecond measurements. Copying this
+	// partial value shares those pointers, so segment readers treat the pointed-to
+	// statistics as immutable.
+	duration ops.OpsPercentiles // request duration percentile values
+	ttft     ops.OpsPercentiles // TTFT latency percentile values
 }
 
+// opsHourlyMetricsRow preserves SQL measurement presence and counts while
+// scanning one saved hourly dimension.
 type opsHourlyMetricsRow struct {
-	bucketStart time.Time
+	bucketStart time.Time // saved UTC hour start
 
-	successCount         int64
-	ttftSampleCount      int64
-	errorCountTotal      int64
-	businessLimitedCount int64
-	errorCountSLA        int64
+	// successCount counts usage observations, ttftSampleCount counts measured
+	// TTFT values, and errorCountTotal, businessLimitedCount, and
+	// errorCountSLA retain the saved final-client classification. Their counters
+	// add across selected rows.
+	successCount         int64 // saved usage observation count
+	ttftSampleCount      int64 // nonnull TTFT sample count
+	errorCountTotal      int64 // final client failure count
+	businessLimitedCount int64 // SLA-excluded client failure count
+	errorCountSLA        int64 // SLA-countable client failure count
 
-	upstreamErrorCountExcl429529 int64
-	upstream429Count             int64
-	upstream529Count             int64
+	// upstreamErrorCountExcl429529, upstream429Count, and upstream529Count
+	// classify saved countable provider observations by effective status; their
+	// eligibility can include recovery independently of client-failure counters.
+	upstreamErrorCountExcl429529 int64 // countable other provider observations
+	upstream429Count             int64 // countable provider 429 observations
+	upstream529Count             int64 // countable provider 529 observations
 
-	tokenConsumed int64
+	tokenConsumed int64 // input/output/cache token total
 
-	durationP50 sql.NullInt64
-	durationP90 sql.NullInt64
-	durationP95 sql.NullInt64
-	durationP99 sql.NullInt64
-	durationAvg sql.NullFloat64
-	durationMax sql.NullInt64
+	// durationP50, durationP90, and durationAvg use positive successCount as
+	// weight when their SQL values are valid. durationP95, durationP99, and
+	// durationMax contribute maxima independently of that weight.
+	durationP50 sql.NullInt64   // duration median in milliseconds
+	durationP90 sql.NullInt64   // duration 90th percentile milliseconds
+	durationP95 sql.NullInt64   // duration 95th percentile milliseconds
+	durationP99 sql.NullInt64   // duration 99th percentile milliseconds
+	durationAvg sql.NullFloat64 // mean duration in milliseconds
+	durationMax sql.NullInt64   // maximum duration in milliseconds
 
-	ttftP50 sql.NullInt64
-	ttftP90 sql.NullInt64
-	ttftP95 sql.NullInt64
-	ttftP99 sql.NullInt64
-	ttftAvg sql.NullFloat64
-	ttftMax sql.NullInt64
+	// ttftP50, ttftP90, and ttftAvg use positive ttftSampleCount for valid
+	// measured values. ttftP95, ttftP99, and ttftMax retain valid maxima even when
+	// sample weight is nonpositive.
+	ttftP50 sql.NullInt64   // TTFT median in milliseconds
+	ttftP90 sql.NullInt64   // TTFT 90th percentile milliseconds
+	ttftP95 sql.NullInt64   // TTFT 95th percentile milliseconds
+	ttftP99 sql.NullInt64   // TTFT 99th percentile milliseconds
+	ttftAvg sql.NullFloat64 // mean TTFT latency milliseconds
+	ttftMax sql.NullInt64   // maximum TTFT latency milliseconds
 }
 
+// opsPercentileSegment pairs a caller-selected sample weight with one
+// approximate percentile summary.
 type opsPercentileSegment struct {
-	weight int64
-	p      ops.OpsPercentiles
+	// weight controls p's median, 90th percentile, and mean contributions only
+	// when positive. High percentiles and maximum use available values regardless
+	// of weight, and readers treat p's pointers as immutable.
+	weight int64              // selected measurement sample weight
+	p      ops.OpsPercentiles // pointer-valued percentile summary
 }
 
+// GetDashboardOverview returns a raw or automatic Ops summary for nonzero
+// filter endpoints. Invalid modes select raw; automatic mode tries covered
+// hourly summaries and transparently retries the entire raw range on any error.
+// OpsService validates endpoint ordering and resolves runtime source policy
+// before repository calls. Returned GroupID retains the filter pointer, so
+// callers keep that identity read-only while sharing either summary.
 func (r *Store) GetDashboardOverview(ctx context.Context, filter *ops.OpsDashboardFilter) (*ops.OpsDashboardOverview, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("nil ops repository")
@@ -88,6 +148,8 @@ func (r *Store) GetDashboardOverview(ctx context.Context, filter *ops.OpsDashboa
 	switch mode {
 	case ops.OpsQueryModeAuto:
 		out, err := r.getDashboardOverviewPreaggregated(ctx, filter)
+		// Retry the complete raw range after any automatic-path error, discarding its
+		// incomplete work rather than adding it to the raw result.
 		if err != nil {
 			return r.getDashboardOverviewRaw(ctx, filter)
 		}
@@ -97,6 +159,19 @@ func (r *Store) GetDashboardOverview(ctx context.Context, filter *ops.OpsDashboa
 	}
 }
 
+// getDashboardOverviewRaw combines raw counts, latency, error categories, and
+// rates for the supplied filter and half-open range. It expects a usable Store
+// and nonnil filter. Usage and error counts execute separately, and
+// zero-or-negative window seconds select one second for average-rate division.
+//
+// Latency and peak queries have child budgets. Only errors wrapping
+// context.DeadlineExceeded permit degraded results; cancellation and other
+// errors reject the response. A latency timeout produces absent measurements,
+// and any recognized optional timeout can replace nonpositive current rates
+// with averages and peaks with the greater of current and average, including an
+// actual observed zero. Current uses the minute before end independently of
+// start. Ratios divide by success plus SLA errors and round to four decimals,
+// with zero denominators yielding zero and no upper clamp.
 func (r *Store) getDashboardOverviewRaw(ctx context.Context, filter *ops.OpsDashboardFilter) (*ops.OpsDashboardOverview, error) {
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
@@ -107,6 +182,9 @@ func (r *Store) getDashboardOverviewRaw(ctx context.Context, filter *ops.OpsDash
 		return nil, err
 	}
 
+	// Use a child latency budget and release it after querying. Recognized
+	// deadline failure leaves counts available, while missing measurements remain
+	// absent for consumers.
 	latencyCtx, cancelLatency := context.WithTimeout(ctx, opsRawLatencyQueryTimeout)
 	duration, ttft, _, err := r.queryUsageLatency(latencyCtx, filter, start, end)
 	cancelLatency()
@@ -125,6 +203,9 @@ func (r *Store) getDashboardOverviewRaw(ctx context.Context, filter *ops.OpsDash
 		return nil, err
 	}
 
+	// Average rates use the entire selected duration, including idle time. A
+	// nonpositive duration selects one second rather than changing the queried
+	// observation range.
 	windowSeconds := end.Sub(start).Seconds()
 	if windowSeconds <= 0 {
 		windowSeconds = 1
@@ -146,6 +227,9 @@ func (r *Store) getDashboardOverviewRaw(ctx context.Context, filter *ops.OpsDash
 		}
 	}
 
+	// Budget the raw peak subquery separately, then cancel that child. Recognized
+	// deadline failure enables estimates while other errors reject the dashboard
+	// response.
 	peakCtx, cancelPeak := context.WithTimeout(ctx, opsRawPeakQueryTimeout)
 	qpsPeak, tpsPeak, err := r.queryPeakRates(peakCtx, filter, start, end)
 	cancelPeak()
@@ -159,6 +243,9 @@ func (r *Store) getDashboardOverviewRaw(ctx context.Context, filter *ops.OpsDash
 
 	qpsAvg := roundTo1DP(float64(requestCountTotal) / windowSeconds)
 	tpsAvg := roundTo1DP(float64(tokenConsumed) / windowSeconds)
+	// A recognized optional-query deadline enables replacements for every
+	// nonpositive current or peak value, even one successfully read as zero, using
+	// window averages.
 	if degraded {
 		if qpsCurrent <= 0 {
 			qpsCurrent = qpsAvg
@@ -211,6 +298,21 @@ func (r *Store) getDashboardOverviewRaw(ctx context.Context, filter *ops.OpsDash
 	}, nil
 }
 
+// getDashboardOverviewPreaggregated combines stable full UTC hours with raw
+// head and tail fragments. The stable end is capped at five minutes before the
+// current time and then floored; start is ceiled to the next hour. If no full
+// segment remains, the method directly uses raw. Global coverage failure
+// returns an error for the outer automatic selector to retry raw.
+//
+// Filtered hourly absence is checked against raw sources; positive existence
+// triggers raw retry, while existence-check errors are ignored and empty
+// aggregate counts remain possible. Counts from nonoverlapping fragments add,
+// duration summaries use success weights, and TTFT summaries use
+// measured weights. Weighted medians/90th percentiles are approximations and
+// high percentiles use maxima. Current and peak still query raw; recognized
+// rate timeouts substitute nonpositive values from averages. Saved aggregate
+// classification is used as stored, so OpsService selects raw for custom
+// ignored-status policy.
 func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *ops.OpsDashboardFilter) (*ops.OpsDashboardOverview, error) {
 	if filter == nil {
 		return nil, fmt.Errorf("nil filter")
@@ -219,12 +321,14 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
 
-	// Stable full-hour range covered by pre-aggregation.
+	// Cap at a delayed current end, ceil the selected start, and floor the stable
+	// end so raw fragments and whole-hour rows cover separate intervals.
 	aggSafeEnd := preaggSafeEnd(end)
 	aggFullStart := utcCeilToHour(start)
 	aggFullEnd := utcFloorToHour(aggSafeEnd)
 
-	// If there are no stable full-hour buckets, use raw directly (short windows).
+	// Use raw directly when the selected range contains no stable full hour. The
+	// dashboard then applies the raw method's optional-query degradation rules.
 	if !aggFullStart.Before(aggFullEnd) {
 		return r.getDashboardOverviewRaw(ctx, filter)
 	}
@@ -236,20 +340,25 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 		return nil, ops.ErrOpsPreaggregatedNotPopulated
 	}
 
-	// 1) Pre-aggregated stable segment.
+	// Read selected hourly dimensions after global coverage succeeds. Filtered
+	// absence can mean no traffic, so probe raw sources before treating those
+	// absent dimensions as zero.
 	preaggRows, err := r.listHourlyMetricsRows(ctx, filter, aggFullStart, aggFullEnd)
 	if err != nil {
 		return nil, err
 	}
 	if len(preaggRows) == 0 {
-		// Distinguish "no data" vs "preagg not populated yet".
+		// A matching raw observation makes empty hourly dimensions incomplete. Probe
+		// errors are suppressed, allowing the empty aggregate to remain when
+		// existence cannot be established.
 		if exists, err := r.rawOpsDataExists(ctx, filter, aggFullStart, aggFullEnd); err == nil && exists {
 			return nil, ops.ErrOpsPreaggregatedNotPopulated
 		}
 	}
 	preagg := aggregateHourlyRows(preaggRows)
 
-	// 2) Raw head/tail fragments (at most ~1 hour each).
+	// Keep raw observations outside the stable full-hour interval in separate head
+	// and tail segments. The delayed recent tail can exceed one hour.
 	head := opsDashboardPartial{}
 	tail := opsDashboardPartial{}
 
@@ -268,7 +377,8 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 		tail = *part
 	}
 
-	// Merge counts.
+	// Add counts from nonoverlapping stable, head, and tail intervals. Each was
+	// read independently, so concurrent writes need not produce a common snapshot.
 	successCount := preagg.successCount + head.successCount + tail.successCount
 	errorTotal := preagg.errorCountTotal + head.errorCountTotal + tail.errorCountTotal
 	businessLimited := preagg.businessLimitedCount + head.businessLimitedCount + tail.businessLimitedCount
@@ -280,21 +390,26 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 
 	tokenConsumed := preagg.tokenConsumed + head.tokenConsumed + tail.tokenConsumed
 
-	// 跨片段近似合并分位数：
-	// - 请求耗时的 p50/p90/avg 按 success_count 加权
-	// - p95/p99/max 使用最大值，保守保留长尾
+	// Weight low duration percentiles and mean by successes in each segment,
+	// excluding missing component values. High percentile maxima approximate
+	// combined tails rather than reconstructing request-level quantiles.
 	duration := combineApproxPercentiles([]opsPercentileSegment{
 		{weight: preagg.successCount, p: preagg.duration},
 		{weight: head.successCount, p: head.duration},
 		{weight: tail.successCount, p: tail.duration},
 	})
-	// 首 token 延迟只在流式请求中记录，按真实样本数加权，避免非流式成功请求稀释数值。
+	// Use nonnull TTFT sample counts separately from successes, so segments
+	// containing unmeasured requests do not inflate this latency summary's
+	// denominator.
 	ttft := combineApproxPercentiles([]opsPercentileSegment{
 		{weight: preagg.ttftSampleCount, p: preagg.ttft},
 		{weight: head.ttftSampleCount, p: head.ttft},
 		{weight: tail.ttftSampleCount, p: tail.ttft},
 	})
 
+	// Average rates use the entire selected duration, including idle time. A
+	// nonpositive duration selects one second rather than changing the queried
+	// observation range.
 	windowSeconds := end.Sub(start).Seconds()
 	if windowSeconds <= 0 {
 		windowSeconds = 1
@@ -308,7 +423,9 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 	upstreamErrorRate := safeDivideFloat64(float64(upstreamExcl), float64(requestCountSLA))
 	degraded := false
 
-	// Keep "current" rates as raw, to preserve realtime semantics.
+	// Read current from the raw minute before end even when historical counts use
+	// saved hours. This rate observes fresh data independently of the aggregation
+	// segment.
 	qpsCurrent, tpsCurrent, err := r.queryCurrentRates(ctx, filter, end)
 	if err != nil {
 		if isQueryTimeoutErr(err) {
@@ -318,6 +435,9 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 		}
 	}
 
+	// Budget the raw peak subquery separately, then cancel that child. Recognized
+	// deadline failure enables estimates while other errors reject the dashboard
+	// response.
 	peakCtx, cancelPeak := context.WithTimeout(ctx, opsRawPeakQueryTimeout)
 	qpsPeak, tpsPeak, err := r.queryPeakRates(peakCtx, filter, start, end)
 	cancelPeak()
@@ -331,6 +451,9 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 
 	qpsAvg := roundTo1DP(float64(requestCountTotal) / windowSeconds)
 	tpsAvg := roundTo1DP(float64(tokenConsumed) / windowSeconds)
+	// A recognized optional-query deadline enables replacements for every
+	// nonpositive current or peak value, even one successfully read as zero, using
+	// window averages.
 	if degraded {
 		if qpsCurrent <= 0 {
 			qpsCurrent = qpsAvg
@@ -383,8 +506,17 @@ func (r *Store) getDashboardOverviewPreaggregated(ctx context.Context, filter *o
 	}, nil
 }
 
-// hasCompleteHourlyMetricsCoverage 使用全局桶确认每个稳定小时都已经由任务处理。
-// 过滤维度可能在某小时没有数据，因此不能用过滤后的结果行判断覆盖范围。
+// hasCompleteHourlyMetricsCoverage compares global-row count with the number of
+// whole UTC hours in the floored half-open range. Empty or unordered floored
+// ranges return true. The check requires aligned global buckets produced by
+// aggregation and their unique dimension index; it does not inspect every
+// individual timestamp or freshness.
+//
+// Filtered platform/group dimensions can legitimately have no traffic rows, so
+// only null platform and null group establish this marker. Equal row count is
+// the acceptance condition, and irregular timestamps could satisfy that count
+// if written outside the aligned aggregation path. Database errors return false
+// with the error.
 func (r *Store) hasCompleteHourlyMetricsCoverage(ctx context.Context, start, end time.Time) (bool, error) {
 	if r == nil || r.db == nil {
 		return false, fmt.Errorf("nil ops repository")
@@ -394,6 +526,9 @@ func (r *Store) hasCompleteHourlyMetricsCoverage(ctx context.Context, start, end
 	if !start.Before(end) {
 		return true, nil
 	}
+	// Count expected whole hours after flooring both endpoints. Aligned global
+	// buckets and their unique dimension index let row count stand in for
+	// coverage.
 	expected := int64(end.Sub(start) / time.Hour)
 	var actual int64
 	err := r.db.QueryRowContext(ctx, `
@@ -408,6 +543,17 @@ func (r *Store) hasCompleteHourlyMetricsCoverage(ctx context.Context, start, end
 	return actual == expected, nil
 }
 
+// listHourlyMetricsRows reads ordered saved hourly dimensions for valid nonzero
+// increasing endpoints, returning an empty slice for other ranges. Positive
+// GroupID selects that group across platforms unless platform is supplied;
+// platform alone selects platform summary rows with null group; no positive
+// dimension selects global rows.
+//
+// Platform is trimmed and lowercased, times become UTC, and stored
+// classification/nullable latency values are retained for aggregateHourlyRows.
+// Group selection uses saved identities rather than current membership. This
+// read follows a separate global coverage statement, so writes between them can
+// change what is available. Query, scan, and cursor errors reject the row set.
 func (r *Store) listHourlyMetricsRows(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) ([]opsHourlyMetricsRow, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("nil ops repository")
@@ -427,6 +573,8 @@ func (r *Store) listHourlyMetricsRows(ctx context.Context, filter *ops.OpsDashbo
 		groupID = filter.GroupID
 	}
 
+	// Select one stored dimension level to avoid counting both global and platform
+	// summaries. Group filtering can sum that group's rows across saved platforms.
 	switch {
 	case groupID != nil && *groupID > 0:
 		where += fmt.Sprintf(" AND group_id = $%d", idx)
@@ -435,12 +583,10 @@ func (r *Store) listHourlyMetricsRows(ctx context.Context, filter *ops.OpsDashbo
 		if platform != "" {
 			where += fmt.Sprintf(" AND platform = $%d", idx)
 			args = append(args, platform)
-			// idx++ removed - not used after this
 		}
 	case platform != "":
 		where += fmt.Sprintf(" AND platform = $%d AND group_id IS NULL", idx)
 		args = append(args, platform)
-		// idx++ removed - not used after this
 	default:
 		where += " AND platform IS NULL AND group_id IS NULL"
 	}
@@ -477,6 +623,8 @@ ORDER BY bucket_start ASC`
 	if err != nil {
 		return nil, err
 	}
+	// Close the row cursor after scanning or early failure. Cleanup errors are
+	// suppressed, while rows.Err still rejects an incomplete hourly row set.
 	defer func() { _ = rows.Close() }()
 
 	out := make([]opsHourlyMetricsRow, 0, 64)
@@ -516,6 +664,19 @@ ORDER BY bucket_start ASC`
 	return out, nil
 }
 
+// aggregateHourlyRows adds selected counts and combines nullable latency
+// summaries into one partial result. Empty input yields zero counts and absent
+// measurements. Median, 90th percentile, and mean require both valid SQL values
+// and positive weight; duration uses all successes of each contributing row
+// while TTFT values use measured samples.
+//
+// Each component has its own denominator so missing values do not contribute to
+// that component. High percentiles and maxima select available largest values
+// regardless of weights, which can retain a measurement even when its sample
+// count is nonpositive. Weighted values round to integer milliseconds, and SQL
+// integer values narrow to native int unchecked. Counter and weight sums have
+// no overflow validation, and resulting percentiles approximate the original
+// request distribution.
 func aggregateHourlyRows(rows []opsHourlyMetricsRow) opsDashboardPartial {
 	out := opsDashboardPartial{}
 	if len(rows) == 0 {
@@ -562,6 +723,9 @@ func aggregateHourlyRows(rows []opsHourlyMetricsRow) opsDashboardPartial {
 
 		out.tokenConsumed += row.tokenConsumed
 
+		// Use each available duration component's own positive-weight denominator;
+		// all successes of a contributing hour supply weight even when some durations
+		// were missing.
 		if row.successCount > 0 {
 			if row.durationP50.Valid {
 				p50Sum += float64(row.durationP50.Int64) * float64(row.successCount)
@@ -577,7 +741,9 @@ func aggregateHourlyRows(rows []opsHourlyMetricsRow) opsDashboardPartial {
 			}
 		}
 
-		// 首 token 延迟按记录了 first_token_ms 的流式请求数加权。
+		// TTFT weight counts measured values rather than every usage success.
+		// A missing component is excluded from its own denominator even when other
+		// TTFT values are present.
 		if row.ttftSampleCount > 0 {
 			if row.ttftP50.Valid {
 				ttftP50Sum += float64(row.ttftP50.Int64) * float64(row.ttftSampleCount)
@@ -593,6 +759,9 @@ func aggregateHourlyRows(rows []opsHourlyMetricsRow) opsDashboardPartial {
 			}
 		}
 
+		// Select valid high percentile and maximum values independently of weight,
+		// keeping their greatest observed hourly value while narrowing SQL integers
+		// unchecked.
 		if row.durationP95.Valid {
 			v := int(row.durationP95.Int64)
 			if p95Max == nil || v > *p95Max {
@@ -632,7 +801,9 @@ func aggregateHourlyRows(rows []opsHourlyMetricsRow) opsDashboardPartial {
 		}
 	}
 
-	// duration
+	// Round weighted duration estimates to integer milliseconds; independent
+	// denominators keep wholly missing components nil while maxima retain their
+	// selected measurements.
 	if p50W > 0 {
 		v := int(math.Round(p50Sum / float64(p50W)))
 		out.duration.P50 = &v
@@ -649,7 +820,9 @@ func aggregateHourlyRows(rows []opsHourlyMetricsRow) opsDashboardPartial {
 	}
 	out.duration.Max = maxMax
 
-	// ttft
+	// Round weighted TTFT estimates using measured-sample denominators.
+	// High percentile and maximum pointers already represent the greatest
+	// available values, independently of weights.
 	if ttftP50W > 0 {
 		v := int(math.Round(ttftP50Sum / float64(ttftP50W)))
 		out.ttft.P50 = &v
@@ -669,17 +842,34 @@ func aggregateHourlyRows(rows []opsHourlyMetricsRow) opsDashboardPartial {
 	return out
 }
 
+// queryRawPartial combines raw usage counts, latency measurements, and error
+// categories for one segment using separate statements. A usable Store and
+// nonnil filter are required. Recognized latency deadline errors leave counts
+// available while returning absent duration/TTFT measurements and zero
+// TTFT sample weight.
+//
+// Other latency errors and either count failure reject the segment. The child
+// latency budget inherits caller cancellation, while counts use the supplied
+// context. Zero TTFT weight prevents an unavailable latency segment from
+// diluting combined TTFT averages; duration still retains its success
+// count but absent component values are excluded by the combination helper.
 func (r *Store) queryRawPartial(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) (*opsDashboardPartial, error) {
 	successCount, tokenConsumed, err := r.queryUsageCounts(ctx, filter, start, end)
 	if err != nil {
 		return nil, err
 	}
 
+	// Use a child latency budget and release it after querying. Recognized
+	// deadline failure leaves counts available, while missing measurements remain
+	// absent for consumers.
 	latencyCtx, cancelLatency := context.WithTimeout(ctx, opsRawLatencyQueryTimeout)
 	duration, ttft, ttftSampleCount, err := r.queryUsageLatency(latencyCtx, filter, start, end)
 	cancelLatency()
 	if err != nil {
 		if isQueryTimeoutErr(err) {
+			// A recognized latency deadline discards unavailable measurement values and
+			// their TTFT weight. Counts already read remain usable for this
+			// segment's additive totals.
 			duration = ops.OpsPercentiles{}
 			ttft = ops.OpsPercentiles{}
 			ttftSampleCount = 0
@@ -708,6 +898,10 @@ func (r *Store) queryRawPartial(ctx context.Context, filter *ops.OpsDashboardFil
 	}, nil
 }
 
+// rawOpsDataExists checks usage first and then non-probe error observations in
+// the supplied half-open range. It expects a usable Store and delegates
+// saved-dimension filters to the shared builders; any matching error
+// phase/status can establish existence, and query failures return an error.
 func (r *Store) rawOpsDataExists(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) (bool, error) {
 	{
 		join, where, args, _ := buildUsageWhere(filter, start, end, 1)
@@ -732,7 +926,21 @@ func (r *Store) rawOpsDataExists(ctx context.Context, filter *ops.OpsDashboardFi
 	}
 }
 
+// combineApproxPercentiles combines supplied measurement segments into
+// integer-millisecond estimates. Median, 90th percentile, and mean use positive
+// segment weights and present values, with a separate denominator for each
+// component. No contributing weight yields nil for that weighted component.
+//
+// High percentiles and maximum select the greatest present value regardless of
+// segment weight, including zero or negative weight. New scalar pointers are
+// allocated for selected values and rounded weighted results, so callers can
+// read the result independently of input pointer storage. Summation and
+// conversion have no finite/range validation, and weighting saved percentiles
+// cannot recover exact combined quantiles.
 func combineApproxPercentiles(segments []opsPercentileSegment) ops.OpsPercentiles {
+	// Compute each weighted component separately, skipping missing values and
+	// nonpositive weights. Positive contributions determine its denominator, while
+	// the maximum path below ignores weights.
 	weightedInt := func(get func(ops.OpsPercentiles) *int) *int {
 		var sum float64
 		var w int64
@@ -750,10 +958,16 @@ func combineApproxPercentiles(segments []opsPercentileSegment) ops.OpsPercentile
 		if w <= 0 {
 			return nil
 		}
+		// OpsPercentiles exposes integer milliseconds, so round each weighted
+		// component after division and allocate its scalar rather than sharing an
+		// input pointer.
 		out := int(math.Round(sum / float64(w)))
 		return &out
 	}
 
+	// Copy the greatest present scalar for each high percentile or maximum.
+	// Ignoring sample weight permits these available tails to survive otherwise
+	// excluded weighted segments.
 	maxInt := func(get func(ops.OpsPercentiles) *int) *int {
 		var max *int
 		for _, seg := range segments {
@@ -779,8 +993,12 @@ func combineApproxPercentiles(segments []opsPercentileSegment) ops.OpsPercentile
 	}
 }
 
+// preaggSafeEnd caps a requested end at five minutes before the current UTC
+// time. Ends at or before that cutoff remain supplied; the caller floors the
+// result to whole hours, leaving recent traffic in raw fragments.
 func preaggSafeEnd(endTime time.Time) time.Time {
 	now := time.Now().UTC()
+	// Delay current aggregation coverage by five minutes before hour flooring.
 	cutoff := now.Add(-5 * time.Minute)
 	if endTime.After(cutoff) {
 		return cutoff
@@ -788,6 +1006,7 @@ func preaggSafeEnd(endTime time.Time) time.Time {
 	return endTime
 }
 
+// utcCeilToHour returns the first UTC hour at or after t.
 func utcCeilToHour(t time.Time) time.Time {
 	u := t.UTC()
 	f := u.Truncate(time.Hour)
@@ -797,10 +1016,12 @@ func utcCeilToHour(t time.Time) time.Time {
 	return f.Add(time.Hour)
 }
 
+// utcFloorToHour returns the whole UTC hour at or before t.
 func utcFloorToHour(t time.Time) time.Time {
 	return t.UTC().Truncate(time.Hour)
 }
 
+// minTime returns the earlier supplied timestamp, choosing b when equal.
 func minTime(a, b time.Time) time.Time {
 	if a.Before(b) {
 		return a
@@ -808,6 +1029,7 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
+// maxTime returns the later supplied timestamp, choosing b when equal.
 func maxTime(a, b time.Time) time.Time {
 	if a.After(b) {
 		return a
@@ -815,6 +1037,10 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
+// queryUsageCounts returns raw usage-row count and summed input/output/cache
+// tokens in a half-open range. Shared filtering uses saved platform and
+// positive group identity; nil filter leaves both dimensions unrestricted, and
+// an absent token sum becomes zero.
 func (r *Store) queryUsageCounts(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) (successCount int64, tokenConsumed int64, err error) {
 	join, where, args, _ := buildUsageWhere(filter, start, end, 1)
 
@@ -836,6 +1062,17 @@ FROM usage_logs ul
 	return successCount, tokenConsumed, nil
 }
 
+// queryUsageLatency returns duration and TTFT percentile measurements
+// from raw usage rows plus the count of nonnull TTFT samples. Shared
+// filtering uses the supplied half-open range and saved dimensions. SQL
+// excludes missing measurement values from each statistic, while recorded zero
+// still contributes.
+//
+// Percentiles and means are rounded into newly allocated native-int pointers,
+// preserving absence as nil. Maximum SQL integers narrow unchecked to native
+// int. The returned sample count weights TTFT summaries when combining
+// raw fragments with saved hours; query failure rejects all measurements. The
+// caller owns its cancellation and any optional latency child budget.
 func (r *Store) queryUsageLatency(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) (duration ops.OpsPercentiles, ttft ops.OpsPercentiles, ttftSampleCount int64, err error) {
 	join, where, args, _ := buildUsageWhere(filter, start, end, 1)
 	q := `
@@ -846,13 +1083,13 @@ SELECT
   percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS duration_p99,
   AVG(duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS duration_avg,
   MAX(duration_ms) AS duration_max,
-  percentile_cont(0.50) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p50,
-  percentile_cont(0.90) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p90,
-  percentile_cont(0.95) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p95,
-  percentile_cont(0.99) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p99,
-  AVG(first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_avg,
-  MAX(first_token_ms) AS ttft_max,
-  COUNT(first_token_ms) AS ttft_sample_count
+  percentile_cont(0.50) WITHIN GROUP (ORDER BY ` + usageTTFTSQL("") + `) FILTER (WHERE ` + usageTTFTSQL("") + ` IS NOT NULL) AS ttft_p50,
+  percentile_cont(0.90) WITHIN GROUP (ORDER BY ` + usageTTFTSQL("") + `) FILTER (WHERE ` + usageTTFTSQL("") + ` IS NOT NULL) AS ttft_p90,
+  percentile_cont(0.95) WITHIN GROUP (ORDER BY ` + usageTTFTSQL("") + `) FILTER (WHERE ` + usageTTFTSQL("") + ` IS NOT NULL) AS ttft_p95,
+  percentile_cont(0.99) WITHIN GROUP (ORDER BY ` + usageTTFTSQL("") + `) FILTER (WHERE ` + usageTTFTSQL("") + ` IS NOT NULL) AS ttft_p99,
+  AVG(` + usageTTFTSQL("") + `) FILTER (WHERE ` + usageTTFTSQL("") + ` IS NOT NULL) AS ttft_avg,
+  MAX(` + usageTTFTSQL("") + `) AS ttft_max,
+  COUNT(` + usageTTFTSQL("") + `) AS ttft_sample_count
 FROM usage_logs ul
 ` + join + `
 ` + where
@@ -871,6 +1108,9 @@ FROM usage_logs ul
 		return ops.OpsPercentiles{}, ops.OpsPercentiles{}, 0, err
 	}
 
+	// Round available SQL percentiles and means into fresh integer pointers,
+	// preserving missing measurements as nil; maximum values narrow SQL integers
+	// without range validation.
 	duration.P50 = floatToIntPtr(dP50)
 	duration.P90 = floatToIntPtr(dP90)
 	duration.P95 = floatToIntPtr(dP95)
@@ -894,6 +1134,10 @@ FROM usage_logs ul
 	return duration, ttft, tCount, nil
 }
 
+// queryErrorCounts returns raw client-failure and provider-status categories
+// for a nonnil filter. buildErrorWhere excludes count-token probes and applies
+// saved dimensions; queryOpsErrorCounts applies the supplied ignored-status
+// policy to its own shared classification expressions.
 func (r *Store) queryErrorCounts(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) (
 	errorTotal int64,
 	businessLimited int64,
@@ -907,7 +1151,19 @@ func (r *Store) queryErrorCounts(ctx context.Context, filter *ops.OpsDashboardFi
 	return queryOpsErrorCounts(ctx, r.db, where, args, filter.IgnoredStatusCodes)
 }
 
+// queryCurrentRates returns one-decimal request and token rates over the minute
+// ending at end. It expects a usable Store and nonnil filter. Usage and error
+// counts are independent reads, and this interval can precede the selected
+// start for a window shorter than a minute.
+//
+// Requests add usage and final-client failures, while tokens use usage alone.
+// Both rates divide by sixty seconds, including idle time; their queries use
+// the caller context with no separate local timeout. A count error rejects the
+// two rates, allowing the owning dashboard method to apply its recognized
+// deadline policy.
 func (r *Store) queryCurrentRates(ctx context.Context, filter *ops.OpsDashboardFilter, end time.Time) (qpsCurrent float64, tpsCurrent float64, err error) {
+	// Read the entire minute before end independently of selected start; divide
+	// later by sixty seconds so idle intervals remain part of the rate.
 	windowStart := end.Add(-1 * time.Minute)
 
 	successCount1m, token1m, err := r.queryUsageCounts(ctx, filter, windowStart, end)
@@ -924,6 +1180,16 @@ func (r *Store) queryCurrentRates(ctx context.Context, filter *ops.OpsDashboardF
 	return qpsCurrent, tpsCurrent, nil
 }
 
+// queryPeakRates finds the greatest raw request and token counts in minute
+// buckets within the supplied half-open range. It expects a usable Store and
+// nonnil filter. Usage and final-client failures combine by bucket, while
+// count-token errors are excluded and tokens remain from usage only.
+//
+// One statement reads both sources, and minute grouping follows the SQL session
+// timezone. Positive maxima divide by sixty seconds and round to one decimal
+// even for partial endpoint minutes; null, zero, or negative maxima leave zero
+// rates. The caller supplies any child budget and decides whether a recognized
+// deadline permits a degraded summary.
 func (r *Store) queryPeakRates(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) (qpsPeak float64, tpsPeak float64, err error) {
 	usageJoin, usageWhere, usageArgs, next := buildUsageWhere(filter, start, end, 1)
 	errorWhere, errorArgs, _ := buildErrorWhere(filter, start, end, next)
@@ -964,6 +1230,9 @@ FROM combined`
 	if err := r.db.QueryRowContext(ctx, q, args...).Scan(&maxReqPerMinute, &maxTokensPerMinute); err != nil {
 		return 0, 0, err
 	}
+	// Convert positive bucket maxima to per-second rates using a full minute,
+	// including partial endpoint minutes; absent or nonpositive maxima leave the
+	// zero result.
 	if maxReqPerMinute.Valid && maxReqPerMinute.Int64 > 0 {
 		qpsPeak = roundTo1DP(float64(maxReqPerMinute.Int64) / 60.0)
 	}
@@ -973,10 +1242,18 @@ FROM combined`
 	return qpsPeak, tpsPeak, nil
 }
 
+// isQueryTimeoutErr reports whether err wraps context.DeadlineExceeded for
+// optional-query degradation. It does not inspect caller context or driver
+// message text; cancellation and unrelated SQL errors therefore remain ordinary
+// failures.
 func isQueryTimeoutErr(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
 }
 
+// buildUsageWhere returns a half-open raw-usage predicate and ordered arguments
+// starting at a positive caller-supplied placeholder index. Nil filter leaves
+// saved dimensions unrestricted; only positive GroupID and nonblank folded
+// platform add conditions, and the returned join remains empty.
 func buildUsageWhere(filter *ops.OpsDashboardFilter, start, end time.Time, startIndex int) (join string, where string, args []any, nextIndex int) {
 	platform := ""
 	groupID := (*int64)(nil)
@@ -1002,7 +1279,8 @@ func buildUsageWhere(filter *ops.OpsDashboardFilter, start, end time.Time, start
 		idx++
 	}
 	if platform != "" {
-		// 使用记录自身的平台快照，不依赖当前提供商或分组状态。
+		// Use the saved execution platform so historical selection follows the
+		// observed request even after provider settings or group membership change.
 		args = append(args, platform)
 		clauses = append(clauses, fmt.Sprintf("ul.platform = $%d", idx))
 		idx++
@@ -1012,6 +1290,11 @@ func buildUsageWhere(filter *ops.OpsDashboardFilter, start, end time.Time, start
 	return join, where, args, idx
 }
 
+// buildErrorWhere returns half-open raw-error predicates and arguments from a
+// positive supplied placeholder index. Nil filter leaves dimensions
+// unrestricted; count-token eligibility requires is_count_tokens FALSE, while
+// positive GroupID and folded nonblank platform add saved-dimension
+// restrictions.
 func buildErrorWhere(filter *ops.OpsDashboardFilter, start, end time.Time, startIndex int) (where string, args []any, nextIndex int) {
 	platform := ""
 	groupID := (*int64)(nil)
@@ -1048,14 +1331,22 @@ func buildErrorWhere(filter *ops.OpsDashboardFilter, start, end time.Time, start
 	return where, args, idx
 }
 
+// floatToIntPtr rounds a valid SQL float to a new native-int pointer, retaining
+// missing SQL data as nil. Conversion is unchecked, so callers rely on
+// supported finite measurement values and native integer range.
 func floatToIntPtr(v sql.NullFloat64) *int {
 	if !v.Valid {
 		return nil
 	}
+	// Latency aggregates become whole milliseconds, with halfway values rounded
+	// away from zero.
 	n := int(math.Round(v.Float64))
 	return &n
 }
 
+// safeDivideFloat64 divides supplied values with zero returned for a zero
+// denominator. Other denominators, including negative values, pass through
+// ordinary floating-point division with no finite or range validation.
 func safeDivideFloat64(numerator float64, denominator float64) float64 {
 	if denominator == 0 {
 		return 0
@@ -1063,10 +1354,14 @@ func safeDivideFloat64(numerator float64, denominator float64) float64 {
 	return numerator / denominator
 }
 
+// roundTo1DP rounds a supplied value to one decimal place.
 func roundTo1DP(v float64) float64 {
+	// Display rates round halfway values away from zero at this decimal precision.
 	return math.Round(v*10) / 10
 }
 
+// roundTo4DP rounds a supplied ratio to four decimal places.
 func roundTo4DP(v float64) float64 {
+	// Dashboard ratios retain four decimals, rounding halfway values away from zero.
 	return math.Round(v*10000) / 10000
 }

@@ -1,16 +1,21 @@
-// Package batchimage 管理批量图片作业的提交、轮询、结算和资源清理。
+// Package batchimage manages asynchronous image jobs from validated submission
+// through provider execution, indexed results, funding settlement and resource
+// cleanup. PostgreSQL stores lifecycle state and submission snapshots; Redis
+// coordinates visits, leases, retries and download permits. Provider resource
+// names stay inside persisted records.
 //
-// 阅读入口：
-//   - public.go：校验提交请求，选择提供商并预留任务资金。
-//   - worker.go：消费队列任务，维护任务锁并安排重试。
-//   - pipeline.go：衔接提供商处理和终态结算。
+// Start here:
+//   - public.go: validates submission, binds the provider and checks ownership.
+//   - worker.go: coordinates queue visits and cancellation through held leases.
+//   - processor.go: polls the provider and reconciles results before settlement.
 //
-// 文件分组：
-//   - job.go、contracts.go：定义作业状态、条目、仓储接口和请求响应类型。
-//   - public.go、public_values.go：处理公共 API 请求并生成对外响应。
-//   - provider_values.go、registry.go、value_helpers.go：管理提供商注册和作业字段转换。
-//   - worker.go、queue.go、runtime.go：消费队列任务并管理后台循环的启停。
-//   - processor.go、pipeline.go：轮询上游任务、解析结果并进入结算。
-//   - billing.go、pricing.go、settlement.go、recovery.go：预留和结算资金，恢复滞留任务。
-//   - download.go、cleanup.go：下载图片和 ZIP 文件，清理过期输入输出。
+// File groups:
+//   - job.go and contracts.go: define persisted records and provider/public values.
+//   - billing.go, pricing.go and settlement.go: reserve and settle frozen funding.
+//   - pipeline.go, recovery.go and runtime.go: resume stages and manage work loops.
+//   - download.go and cleanup.go: stream retained results and remove resources.
+//   - registry.go and model_attributes.go: select backends and validate model
+//     preferences. provider_values.go and public_values.go render persisted
+//     values; value_helpers.go supplies nullable-field and model-identity
+//     conversions.
 package batchimage

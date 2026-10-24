@@ -15,6 +15,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// openai_failure_policy.go derives OpenAI failover, retry timing, and client
+// error metadata.
+// OpenAI failures carry provider-switch decisions, same-provider retry
+// windows, and client-facing status independently. Cyber and context failures
+// remain request conditions, capacity can use bounded replay, and structured
+// access-state or proxy body-size failures choose another provider with their
+// own client response metadata.
+//
+// Response headers used for classification can differ from retained diagnostic
+// headers. Eligible OAuth 429 handling derives a deadline from shared health
+// and a delay bounded by Retry-After, its maximum, and remaining time. API Key
+// health accounting excludes dedicated recovery, replay, and shared/request
+// scope so those observations do not accumulate as provider outages. Callers
+// also enforce request budgets and the prohibition on replay after actual
+// output begins.
+
+// These values identify proxy body-size failures and generic access-state
+// client text, while default and maximum delays bound eligible OAuth 429 retries.
 const (
 	openAIRequestBodyTooLargeReason              = forwardcore.GatewayFailureReason("openai_request_body_too_large")
 	openAIUpstreamAccessUnavailableClientMessage = "Upstream access is temporarily unavailable, please retry later"
@@ -22,19 +40,25 @@ const (
 	openAIOAuth429MaxRetryDelay                  = 8 * time.Second
 )
 
-// OpenAIFailoverPolicy 计算当前提供商的恢复资格与截止时间。
+// OpenAIFailoverPolicy combines shared response health with request retry
+// metadata selection.
 type OpenAIFailoverPolicy struct {
+	// shared OAuth response health policy
 	Health *provideradapter.OpenAIResponseHealth
 }
 
-// ClassifyOpenAIAPIKeyHealthFailure 区分请求取消、平台故障和提供商故障。
+// ClassifyOpenAIAPIKeyHealthFailure returns observed failure status/body and
+// provider-health eligibility. Cancellation, credential recovery,
+// same-provider retries, and request/shared failures are excluded; qualifying
+// failover or image errors require 429 or server status.
 func ClassifyOpenAIAPIKeyHealthFailure(err error) (int, []byte, bool) {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return 0, nil, false
 	}
 
 	if failoverErr, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
-		// 已有独立恢复、同提供商重试或非提供商归因的错误，不进入健康计数。
+		// Dedicated recovery and replay already have their own state handling.
+		// Exclude their errors and shared/request scopes before accumulating ordinary provider-health failures.
 		if failoverErr.IsCredentialFailure() ||
 			failoverErr.RequestScopedTransient ||
 			failoverErr.RetryableOnSameProvider ||
@@ -56,22 +80,35 @@ func ClassifyOpenAIAPIKeyHealthFailure(err error) (int, []byte, bool) {
 	return 0, nil, false
 }
 
-// IsOpenAIRequestBodyTooLarge 判断当前失败是否仍可通过更换提供商发送相同报文。
+// IsOpenAIRequestBodyTooLarge recognizes the stable oversized-request reason
+// on a failover error.
 func IsOpenAIRequestBodyTooLarge(e *forwardcore.UpstreamFailoverError) bool {
 	return e != nil && e.Reason == "openai_request_body_too_large"
 }
 
-// IsOpenAICapacityShed 保留请求级瞬态标记与平台报文识别的共同条件。
+// IsOpenAICapacityShed requires request-scoped transient metadata and a
+// recognized capacity payload. Nil errors or capacity text without that scope
+// flag return false, retaining classification evidence as well as content.
 func IsOpenAICapacityShed(e *forwardcore.UpstreamFailoverError) bool {
 	return e != nil && e.RequestScopedTransient && openai.IsOpenAIRequestScopedCapacityShed("", e.ResponseBody)
 }
 
+// OpenAI429RetryDelay returns a wait bounded by Retry-After policy and the
+// caller's retry deadline. Positive future Retry-After evidence supplies the
+// initial delay; absent or elapsed header evidence uses the default delay.
+//
+// The server delay is capped before the remaining deadline clips it, because
+// both limits can apply to one replay. A zero deadline skips that second cap,
+// while an elapsed deadline returns zero. Callers enforce attempt eligibility
+// and decide whether a zero wait still permits another attempt.
 func OpenAI429RetryDelay(headers http.Header, deadline time.Time) time.Duration {
 	delay := openAIOAuth429RetryDelay
 	now := time.Now()
 	if resetAt := openai.ParseRetryAfterResetTime(headers, now); resetAt != nil && resetAt.After(now) {
 		delay = resetAt.Sub(now)
 	}
+	// Bound the server-supplied delay before clipping it to the remaining request
+	// retry window, so long Retry-After values cannot extend caller recovery time.
 	if delay > openAIOAuth429MaxRetryDelay {
 		delay = openAIOAuth429MaxRetryDelay
 	}
@@ -84,6 +121,8 @@ func OpenAI429RetryDelay(headers http.Header, deadline time.Time) time.Duration 
 	return delay
 }
 
+// ShouldFailoverUpstreamStatus recognizes authentication, payment, rate-limit,
+// overload, and server status codes.
 func ShouldFailoverUpstreamStatus(statusCode int) bool {
 	switch statusCode {
 	case 401, 402, 403, 429, 529:
@@ -93,8 +132,12 @@ func ShouldFailoverUpstreamStatus(statusCode int) bool {
 	}
 }
 
+// ShouldFailoverOpenAIResponse excludes cyber warnings and context-window
+// rejection before provider-switch classification. Access-state errors and
+// oversized request bodies permit failover, followed by ordinary status rules
+// and OpenAI transient-processing evidence.
 func ShouldFailoverOpenAIResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
-	// cyber_policy 即使被中间层包成 5xx，仍属于请求拒绝，不触发提供商切换。
+	// A cyber_policy rejection stays a request rejection even when an intermediary wraps it in a 5xx status.
 	if IsOpenAICyberWarningPayload(upstreamBody, upstreamMsg) {
 		return false
 	}
@@ -113,10 +156,26 @@ func ShouldFailoverOpenAIResponse(statusCode int, upstreamMsg string, upstreamBo
 	return openai.IsOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
 }
 
+// IsOpenAIRequestBodyTooLargeError recognizes HTTP 413 when the payload does
+// not identify a context-window error. That distinction lets callers switch
+// targets for proxy/body limits while retaining request-specific model-context
+// rejection.
 func IsOpenAIRequestBodyTooLargeError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	return statusCode == http.StatusRequestEntityTooLarge && !openai.IsOpenAIContextWindowError(upstreamMsg, upstreamBody)
 }
 
+// NewOpenAIUpstreamFailure builds a classified error retaining body bytes and
+// cloned response headers. Capacity evidence initially enables same-provider
+// retry, while oversized request and access-state handling can replace that
+// classification.
+//
+// Body-size failures select provider switching with a 413 client result.
+// Structured access-state failures override authentication scope and use a
+// generic 502 client message; otherwise capacity sets a retryable 503
+// explanation. If capacity evidence also accompanies a body-size failure,
+// this final capacity branch can replace the client status/message while
+// retaining provider-scope switching metadata. Callers keep the body stable
+// while the loop reads it and enforce attempt and output-start restrictions.
 func NewOpenAIUpstreamFailure(
 	statusCode int,
 	responseHeaders http.Header,
@@ -132,6 +191,8 @@ func NewOpenAIUpstreamFailure(
 		RetryableOnSameProvider: retryableOnSameProvider || requestScopedCapacity,
 		RequestScopedTransient:  requestScopedCapacity,
 	}
+	// A proxy body-size refusal can differ between providers; select switching
+	// and retain 413 for the client after the request owner exhausts that recovery.
 	if IsOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, responseBody) {
 		failoverErr.RetryableOnSameProvider = false
 		failoverErr.RequestScopedTransient = false
@@ -141,6 +202,8 @@ func NewOpenAIUpstreamFailure(
 		failoverErr.ClientStatusCode = http.StatusRequestEntityTooLarge
 		failoverErr.ClientMessage = forwardcore.OpenAIRequestBodyTooLargeClientMessage
 	}
+	// Structured access-state evidence attributes this failure to authentication
+	// availability, replacing capacity replay metadata with a provider-switch decision and generic client text.
 	if IsOpenAIHTTPUpstreamAccessStateError(statusCode, upstreamMsg, responseBody) {
 		failoverErr.RetryableOnSameProvider = false
 		failoverErr.RequestScopedTransient = false
@@ -151,13 +214,18 @@ func NewOpenAIUpstreamFailure(
 		failoverErr.ClientStatusCode = http.StatusBadGateway
 		failoverErr.ClientMessage = openAIUpstreamAccessUnavailableClientMessage
 	} else if requestScopedCapacity {
-		// 重试耗尽后保留供应商的过载说明，并按可重试服务端错误返回。
+		// Capacity supplies the final client explanation when access-state handling
+		// did not win, including a body-size match whose switching metadata stays set.
 		failoverErr.ClientStatusCode = http.StatusServiceUnavailable
 		failoverErr.ClientMessage = OpenAICapacityShedClientMessage(upstreamMsg, responseBody)
 	}
 	return failoverErr
 }
 
+// NewProviderFailure builds an upstream failure using the same response
+// headers for classification and retained diagnostics. It delegates OAuth 429
+// eligibility and deadline calculation to
+// NewProviderFailureWithClassificationHeaders.
 func (p OpenAIFailoverPolicy) NewProviderFailure(
 	provider *ExecutionProvider,
 	statusCode int,
@@ -170,6 +238,10 @@ func (p OpenAIFailoverPolicy) NewProviderFailure(
 	return p.NewProviderFailureWithClassificationHeaders(provider, statusCode, responseHeaders, responseHeaders, responseBody, upstreamMsg, shouldDisable, retryableOnSameProvider)
 }
 
+// NewProviderFailureWithClassificationHeaders separates health-classification
+// headers from those retained by the failover error. Eligible OAuth 429
+// responses add the shared health deadline and a bounded delay computed from
+// responseHeaders; other failures keep ordinary metadata.
 func (p OpenAIFailoverPolicy) NewProviderFailureWithClassificationHeaders(
 	provider *ExecutionProvider,
 	statusCode int,
@@ -195,14 +267,25 @@ func (p OpenAIFailoverPolicy) NewProviderFailureWithClassificationHeaders(
 	return failoverErr
 }
 
+// IsOpenAIUpstreamAccessStateError delegates structured access-state detection
+// using body alone. The compatibility string argument is ignored, so caller
+// message text cannot independently establish this provider-auth
+// classification.
 func IsOpenAIUpstreamAccessStateError(_ string, body []byte) bool {
 	return openai.IsOpenAIUpstreamAccessStateError("", body)
 }
 
+// IsOpenAIHTTPUpstreamAccessStateError delegates structured HTTP access-state
+// detection using body alone. Status and message arguments are currently
+// ignored, retaining the body evidence as the classifier input.
 func IsOpenAIHTTPUpstreamAccessStateError(_ int, _ string, body []byte) bool {
 	return openai.IsOpenAIHTTPUpstreamAccessStateError(0, "", body)
 }
 
+// OpenAICapacityShedClientMessage selects the first recognized sanitized
+// capacity explanation from supplied text and nested error messages. Unmatched
+// candidates use a generic overload message, keeping unrelated upstream text
+// out of this client response.
 func OpenAICapacityShedClientMessage(upstreamMsg string, body []byte) string {
 	for _, candidate := range []string{
 		upstreamMsg,
@@ -218,7 +301,9 @@ func OpenAICapacityShedClientMessage(upstreamMsg string, body []byte) string {
 	return "Upstream service is temporarily overloaded, please retry later"
 }
 
-// OpenAISemantic429Headers 为 Spark OAuth 请求的流内限流处理提供响应头。
+// OpenAISemantic429Headers returns borrowed headers for exact Spark models on
+// OAuth-like targets. Other targets or models return nil, so in-stream health
+// classification receives these headers only for that qualified path.
 func OpenAISemantic429Headers(target *ExecutionProvider, model string, headers http.Header) http.Header {
 	if IsCodexSparkModel(model) && target != nil && target.View().IsOpenAIOAuthLike() {
 		return headers
@@ -226,13 +311,16 @@ func OpenAISemantic429Headers(target *ExecutionProvider, model string, headers h
 	return nil
 }
 
-// OpenAIStreamFailureRetryable 保留容量降载与提供商池模式的同提供商重试资格。
+// OpenAIStreamFailureRetryable permits recognized capacity events or eligible
+// pool-mode semantic errors. Nil targets fail; capacity can retry outside pool
+// mode, while other failures require configured pool statuses or
+// transient-processing evidence.
 func OpenAIStreamFailureRetryable(provider *ExecutionProvider, payload []byte, message string) bool {
 	if provider == nil {
 		return false
 	}
-	// 容量降载由客户端身份或模型容量触发，与当前提供商健康无关；非池提供商也应先
-	// 在同一提供商上按重试预算恢复请求。
+	// Recognized capacity shedding has request-scoped recovery metadata and can
+	// use the caller's same-provider budget even when pool mode is not enabled.
 	if openai.IsOpenAIUpstreamCapacityShedEvent(payload) {
 		return true
 	}

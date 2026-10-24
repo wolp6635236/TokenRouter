@@ -12,7 +12,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
 
-// TestTeamUsageQueryInjectedCalendar 检查带用户时区参数的查询仍按服务端时区计算日期范围。
+// TestTeamUsageQueryInjectedCalendar requests one date across the New York
+// spring daylight-saving transition with a conflicting timezone query. The
+// injected calendar produces a 23-hour exclusive-end range and retains parsed
+// positive member/Key filters.
 func TestTeamUsageQueryInjectedCalendar(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
 	require.NoError(t, err)

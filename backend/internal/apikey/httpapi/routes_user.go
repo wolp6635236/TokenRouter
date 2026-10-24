@@ -2,7 +2,16 @@ package httpapi
 
 import "github.com/gin-gonic/gin"
 
-// RegisterUserRoutes 注册所属用户接口，共享鉴权、限流和审计已由 app 安装。
+// routes_user.go registers console routes for Key configuration and funding
+// choices. Registration binds list, detail, creation, update, rotation and
+// deletion alongside available-group and rate queries, with middleware
+// supplied by the caller before the handlers access their authenticated
+// subject.
+
+// RegisterUserRoutes binds Key administration and group-option queries below
+// the supplied authenticated group. Callers install identity authentication,
+// rate limits and auditing before registration; creation uses the handler's
+// idempotency executor, and rotation returns the replacement secret directly.
 func RegisterUserRoutes[G any](authenticated *gin.RouterGroup, endpoint *APIKeyHandler[G]) {
 	keys := authenticated.Group("/keys")
 	{

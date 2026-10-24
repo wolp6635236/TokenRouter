@@ -12,37 +12,44 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+// dialer.go configures HTTP transports to connect through HTTP, HTTPS, or
+// SOCKS proxies.
+// SOCKS proxy routing replaces an HTTP transport's DialContext, so a caller's
+// original dial budget no longer governs that route. A shared forward
+// net.Dialer supplies its own ten-second connection limit and keepalive
+// interval beneath SOCKS negotiation; HTTP and HTTPS proxy selection retains
+// the caller's configured network dialer.
+
+// SOCKS forward connection settings bound proxy TCP setup and retain periodic
+// keepalive probes after its replacement DialContext takes over transport dialing.
 const (
-	// socks5DialTimeout 限制到 SOCKS5 代理自身的 TCP 建连耗时。
+	// socks5DialTimeout bounds TCP connection setup to the SOCKS5 proxy.
 	socks5DialTimeout = 10 * time.Second
-	// socks5DialKeepAlive 与 Go 默认 keepalive 探测间隔保持一致。
+	// socks5DialKeepAlive sets the TCP keepalive interval to 30 seconds.
 	socks5DialKeepAlive = 30 * time.Second
 )
 
-// socks5ForwardDialer 是 SOCKS5 dialer 的底层拨号器。
+// socks5ForwardDialer supplies bounded TCP dialing beneath the SOCKS5 dialer.
 //
-// proxy.FromURL 的默认 forward dialer 是 proxy.Direct（零值 net.Dialer，无超时），
-// 代理地址不可达时会一直卡到内核 TCP 重传耗尽（Linux 约 130 秒）。SOCKS5 分支会
-// 覆盖 Transport.DialContext，因此调用方在 Transport 上设置的建连超时对这条路径
-// 无效，必须在这里补上。
+// The default proxy.FromURL forward dialer has no dial timeout.
+// An unreachable proxy can therefore wait for the operating system's TCP retries.
+// SOCKS replaces Transport.DialContext, so the timeout on the caller's transport
+// must be supplied by this forward dialer for SOCKS connections.
 var socks5ForwardDialer = &net.Dialer{
 	Timeout:   socks5DialTimeout,
 	KeepAlive: socks5DialKeepAlive,
 }
 
-// ConfigureTransportProxy 根据代理 URL 配置 Transport
+// ConfigureTransportProxy mutates the caller-owned transport to use proxyURL,
+// leaving nil proxy selection unchanged. Configure before concurrent
+// requests; HTTP/HTTPS sets Proxy while SOCKS5/SOCKS5H installs a SOCKS
+// DialContext and retains any existing Proxy field.
 //
-// 支持的协议：
-//   - http/https: 设置 transport.Proxy
-//   - socks5: 设置 transport.DialContext（客户端本地解析 DNS）
-//   - socks5h: 设置 transport.DialContext（代理端远程解析 DNS，推荐）
-//
-// 参数：
-//   - transport: 需要配置的 http.Transport
-//   - proxyURL: 代理地址，nil 表示直连
-//
-// 返回：
-//   - error: 代理配置错误（协议不支持或 dialer 创建失败）
+// The pinned SOCKS implementation accepts context-aware dialing and forwards
+// hostnames to the proxy. A dialer lacking that interface uses a
+// noncancelable adapter; construction or unsupported-scheme errors are
+// returned for caller policy. This function changes routing fields rather
+// than clearing unrelated previous routing configuration.
 func ConfigureTransportProxy(transport *http.Transport, proxyURL *url.URL) error {
 	if proxyURL == nil {
 		return nil
@@ -59,12 +66,13 @@ func ConfigureTransportProxy(transport *http.Transport, proxyURL *url.URL) error
 		if err != nil {
 			return fmt.Errorf("create socks5 dialer: %w", err)
 		}
-		// 优先使用支持 context 的 DialContext，以支持请求取消和超时
+		// SOCKS replaces the caller's DialContext. Use the dialer's context-aware
+		// path when available so the request budget reaches proxy connection setup.
 		if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
 			transport.DialContext = contextDialer.DialContext
 		} else {
-			// 回退路径：如果 dialer 不支持 ContextDialer，则包装为简单的 DialContext
-			// 注意：此回退不支持请求取消和超时控制
+			// A non-context dialer still fits the transport callback through this
+			// adapter, but Dial receives no request cancellation signal or deadline.
 			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			}

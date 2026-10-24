@@ -12,13 +12,22 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// kiroReasoningCanonicalBody 模拟带有 Kiro 专属加密 reasoning 项的 Responses 请求。
+// A provider-mode transition changes whether encrypted reasoning is forwarded
+// from canonical Responses input. The fixtures hold message content and
+// reasoning identity constant while switching modes, checking sanitation after
+// passthrough, retention in compatible paths, and reuse of untouched canonical
+// bytes across retries.
+
+// kiroReasoningCanonicalBody supplies messages and an encrypted reasoning item
+// whose ID and ciphertext allow cross-mode removal assertions.
 const kiroReasoningCanonicalBody = `{"model":"gpt-5.1","stream":false,"input":[` +
 	`{"type":"message","role":"user","content":"hello"},` +
 	`{"type":"reasoning","id":"rs_kiro_abc123","encrypted_content":"ENC_BLOB","summary":[{"type":"summary_text","text":"thinking"}]},` +
 	`{"type":"message","role":"assistant","content":"hi"}` +
 	`]}`
 
+// newOpenAIPassthroughProvider creates an API-key fixture with the requested
+// passthrough mode.
 func newOpenAIPassthroughProvider(id int64, passthrough bool) *gatewayprovider.ExecutionProvider {
 	return &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -30,6 +39,8 @@ func newOpenAIPassthroughProvider(id int64, passthrough bool) *gatewayprovider.E
 	}
 }
 
+// reasoningItemCount counts reasoning entries in the supplied fixture Responses
+// input.
 func reasoningItemCount(t *testing.T, body []byte) int {
 	t.Helper()
 	count := 0
@@ -42,8 +53,10 @@ func reasoningItemCount(t *testing.T, body []byte) int {
 	return count
 }
 
-// TestDeriveOpenAIForwardAttemptBody_CrossModeStripsKiroReasoning 验证透传提供商切换到
-// 非透传提供商时会移除整个加密 reasoning 项，同时保持 canonical 请求体不变。
+// TestDeriveOpenAIForwardAttemptBody_CrossModeStripsKiroReasoning follows
+// passthrough with managed conversion. It checks reasoning ID/ciphertext
+// removal, retained user and assistant messages, and canonical input unchanged
+// after the derived attempt.
 func TestDeriveOpenAIForwardAttemptBody_CrossModeStripsKiroReasoning(t *testing.T) {
 	canonical := []byte(kiroReasoningCanonicalBody)
 	kiro := newOpenAIPassthroughProvider(1, true)
@@ -67,8 +80,10 @@ func TestDeriveOpenAIForwardAttemptBody_CrossModeStripsKiroReasoning(t *testing.
 	require.JSONEq(t, kiroReasoningCanonicalBody, string(canonical))
 }
 
-// TestDeriveOpenAIForwardAttemptBody_SameModePreservesReasoning 验证同模式重试和切换到
-// 透传提供商时都继续使用完整的 canonical reasoning。
+// TestDeriveOpenAIForwardAttemptBody_SameModePreservesReasoning compares
+// managed, passthrough, entry-to-passthrough, and same-provider paths. It
+// checks reasoning remains present whenever the cross-mode removal rule has not
+// selected managed sanitation.
 func TestDeriveOpenAIForwardAttemptBody_SameModePreservesReasoning(t *testing.T) {
 	canonical := []byte(kiroReasoningCanonicalBody)
 
@@ -105,8 +120,10 @@ func TestDeriveOpenAIForwardAttemptBody_SameModePreservesReasoning(t *testing.T)
 	})
 }
 
-// TestDeriveOpenAIForwardAttemptBody_SanitizationSticksAcrossBedrockRetries 验证跨模式后
-// 所有后续非透传提供商重试都会继续使用清理后的请求体。
+// TestDeriveOpenAIForwardAttemptBody_SanitizationSticksAcrossBedrockRetries
+// repeats managed attempts after passthrough history. It checks each derived
+// body omits reasoning while the original canonical payload remains available
+// with its encrypted item.
 func TestDeriveOpenAIForwardAttemptBody_SanitizationSticksAcrossBedrockRetries(t *testing.T) {
 	canonical := []byte(kiroReasoningCanonicalBody)
 	state := &openAIPassthroughFailoverState{}

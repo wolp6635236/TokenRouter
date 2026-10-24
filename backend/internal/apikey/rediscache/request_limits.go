@@ -10,9 +10,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 )
 
+// request_limits.go reserves, renews, and releases API key request capacity
+// with Redis scripts.
+// Request admission uses two Redis sorted sets per Key ID: active leases expire
+// after two minutes, while RPM members retain their first admission time for
+// sixty seconds. Both sets share a hash tag so one Lua operation can prune
+// ended records, check configured limits and publish a reservation atomically
+// for all groups and instances using that Key.
+//
+// A replay reuses existing request members while their required records remain
+// present; rejection adds neither member, and releasing a request removes its
+// active member alone. Renewal requires an unexpired lease and extends it using
+// Redis server time. Lost, undecodable or wrong-length reservation replies become
+// limiter-unavailable errors so gateway callers reject uncertain new admission
+// and perform independent cleanup.
+
+// Redis scripts coordinate admission and renewal with server time so
+// independent instances share the same active and rolling request counts.
 var (
-	// reserveRequestScript 使用 Redis 时间检查最近 60 秒的请求和两分钟的并发租约。
-	// 两项检查都通过后再写入，超限请求不会消耗另一项额度。
+	// reserveRequestScript uses Redis time to prune ended lease and RPM members
+	// before checking both allowances. Existing request identities support command
+	// replay, and a rejection publishes neither new active nor RPM member.
 	reserveRequestScript = redis.NewScript(`
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
@@ -44,7 +62,9 @@ end
 return {0, 0}
 `)
 
-	// refreshRequestScript 仅续租仍有效的请求，过期租约要求请求停止。
+	// refreshRequestScript checks the stored lease before extending its server-time
+	// deadline. Missing or elapsed members cannot be resurrected by renewal, so
+	// callers stop processing when the script returns its failure result.
 	refreshRequestScript = redis.NewScript(`
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
@@ -56,18 +76,36 @@ return 1
 `)
 )
 
-// requestLimitKeys 用同一个 Key ID 聚合所有分组和实例的请求。
+// requestLimitKeys returns the active name followed by the RPM name in one
+// Key-ID namespace. The slice is newly allocated; callers retain that order for
+// Lua script arguments or selection of the active set.
 func requestLimitKeys(id int64) []string {
+	// Keep the Key ID inside braces so both sorted sets share a Redis Cluster slot
+	// for the reservation script.
 	prefix := fmt.Sprintf("apikey:requests:{%d}:", id)
 	return []string{prefix + "active", prefix + "rpm"}
 }
 
-// ReserveRequest 原子检查并发和 RPM，返回超限后的重试间隔。
+// ReserveRequest atomically reserves configured active and RPM allowances for
+// one request identity, returning a retry delay on rejection. Nonpositive
+// limits disable their respective checks, and records for other groups share
+// the supplied Key ID.
+//
+// The script prunes expired members before checking replay and capacity.
+// Existing required members let a replay succeed without moving its RPM
+// timestamp; rejected requests add no member. A full active set returns a
+// one-second retry, while RPM rejection uses its oldest admission expiry.
+// Script failures or malformed result lengths return limiter unavailable;
+// callers handle an uncertain reservation outcome.
 func (c *ApiKeyCache) ReserveRequest(ctx context.Context, id int64, request string, concurrency, rpm int) (time.Duration, error) {
 	result, err := reserveRequestScript.Run(ctx, c.rdb, requestLimitKeys(id), request, concurrency, rpm).Int64Slice()
+	// Classify failed transport or malformed replies as unavailable because this
+	// adapter cannot establish whether Redis applied a reservation before the
+	// response failed.
 	if err != nil || len(result) != 2 {
 		return 0, apikey.ErrKeyLimiterUnavailable
 	}
+	// Lua retry values are milliseconds for the gateway's Retry-After conversion.
 	retry := time.Duration(result[1]) * time.Millisecond
 	switch result[0] {
 	case 1:
@@ -79,16 +117,25 @@ func (c *ApiKeyCache) ReserveRequest(ctx context.Context, id int64, request stri
 	}
 }
 
-// RefreshRequest 将活跃请求的租约延长两分钟。
+// RefreshRequest extends an unexpired active request lease by two minutes using
+// Redis server time. Missing, expired or failed renewal returns
+// ErrKeyLimiterUnavailable, telling the service to abort processing that has
+// lost its reservation.
 func (c *ApiKeyCache) RefreshRequest(ctx context.Context, id int64, request string) error {
 	result, err := refreshRequestScript.Run(ctx, c.rdb, requestLimitKeys(id)[:1], request).Int()
+	// A failed or non-successful acknowledgement leaves renewal unconfirmed, so
+	// the service receives the unavailable identity and stops work relying on this
+	// lease.
 	if err != nil || result != 1 {
 		return apikey.ErrKeyLimiterUnavailable
 	}
 	return nil
 }
 
-// ReleaseRequest 归还并发槽，RPM 记录在一分钟后过期。
+// ReleaseRequest removes the request's active member while retaining its RPM
+// admission record. Removing an absent member succeeds according to Redis ZREM
+// behavior; returned transport errors leave cleanup outcome uncertain for the
+// caller.
 func (c *ApiKeyCache) ReleaseRequest(ctx context.Context, id int64, request string) error {
 	return c.rdb.ZRem(ctx, requestLimitKeys(id)[0], request).Err()
 }

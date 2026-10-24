@@ -22,6 +22,7 @@ import (
 	routingdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
 	routescheduler "github.com/TokenFlux/TokenRouter/internal/scheduler/httpapi"
 	routesearch "github.com/TokenFlux/TokenRouter/internal/search/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/server/adminapi"
 	serverhttp "github.com/TokenFlux/TokenRouter/internal/server/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 	routesettings "github.com/TokenFlux/TokenRouter/internal/settings/httpapi"
@@ -30,7 +31,17 @@ import (
 	routeusageadmin "github.com/TokenFlux/TokenRouter/internal/usage/httpapi/admin"
 )
 
-// provideAdminRouteMount 将管理员 HTTP 处理器和跨模块读取函数绑定到路由注册函数。
+// http_routes_admin.go mounts administrator endpoints and assigns their shared
+// and operation-specific guards. Administrator routes inherit administrator
+// authentication, panel limits, audit, and provider terminology handling before
+// module registration. Sensitive provider, proxy, backup, data-management, and
+// team operations additionally receive the shared step-up guard at the
+// registrar or individual route that requires it.
+
+// provideAdminRouteMount returns administrator registration under /api/v1/admin
+// using constructed handlers. The callback installs administrator, panel,
+// audit, and terminology middleware first, then passes step-up into sensitive
+// module registrars and team transfer or dissolution routes.
 func provideAdminRouteMount(eAdminTLSFingerprintProfile *routeegress.TLSFingerprintProfileHandler,
 	eAdminSchedulerDiagnostics *routescheduler.DiagnosticsHandler,
 	eAdminTLSFingerprintRouter *routeegress.TLSFingerprintRouterHandler,
@@ -86,30 +97,30 @@ func provideAdminRouteMount(eAdminTLSFingerprintProfile *routeegress.TLSFingerpr
 	return func(v1 *gin.RouterGroup, security httpRouteSecurity, protocolCatalog gin.HandlerFunc) {
 		admin := v1.Group("/admin")
 		admin.Use(security.Admin)
-		// 面板全局按用户限流（默认管理员豁免，可在系统设置中关闭豁免）
+		// Panel limits are per user; administrators are exempt by default unless settings disable the exemption.
 		admin.Use(security.Panel.Global())
-		// 审计中间件挂在认证之后：所有管理面变更类操作 + 敏感读取入审计日志
+		// Audit runs after authentication and records administrative mutations and sensitive reads.
 		admin.Use(security.Audit)
 		admin.Use(middleware.ProviderTerminology())
 		{
-			// 只读能力目录：提供商与分组表单共用后端定义。
-			admin.GET("/protocol-capabilities", protocolCatalog)
-			// 仪表盘
+			// Provider and group forms share this read-only capability catalogue.
+			adminapi.Register(admin, ManagementOperations["protocol_capabilities.list"], protocolCatalog)
+			// Dashboard routes.
 			{
 				routeusageadmin.RegisterDashboardRoutes(admin, eAdminDashboard)
 			}
 
-			// 用户管理
+			// User management.
 			{
 				routeidentity.RegisterUserManagementRoutes(admin, eAdminUser, eAdminUserAttribute)
 			}
 
-			// 分组管理
+			// Group management.
 			{
 				routerouting.RegisterGroupRoutes(admin, eAdminGroup)
 			}
 
-			// 提供商管理
+			// Provider management.
 			{
 				routeprovider.RegisterProviderRoutes(admin, routeprovider.ProviderRouteEndpoints{
 					ProviderArchive:     eAdminProviderArchive,
@@ -128,52 +139,52 @@ func provideAdminRouteMount(eAdminTLSFingerprintProfile *routeegress.TLSFingerpr
 				})
 			}
 
-			// 公告管理
+			// Announcements.
 			{
 				routesite.RegisterAnnouncementRoutes(admin, eAdminAnnouncement)
 			}
 
-			// OpenAI OAuth 管理
+			// OpenAI OAuth management.
 			{
 				routeprovider.RegisterOpenAIOAuthRoutes(admin, eAdminOpenAIOAuth)
 			}
 
-			// Gemini OAuth 管理
+			// Gemini OAuth management.
 			{
 				routeprovider.RegisterGeminiOAuthRoutes(admin, eAdminGeminiOAuth)
 			}
 
-			// Antigravity OAuth 管理
+			// Antigravity OAuth management.
 			{
 				routeprovider.RegisterAntigravityOAuthRoutes(admin, eAdminAntigravityOAuth)
 			}
 
-			// Qoder OAuth 管理
+			// Qoder OAuth management.
 			{
 				routeprovider.RegisterQoderOAuthRoutes(admin, eAdminQoderOAuth)
 			}
 
-			// Grok OAuth 管理
+			// Grok OAuth management.
 			{
 				routeprovider.RegisterGrokOAuthRoutes(admin, eAdminGrokOAuth)
 			}
 
-			// 代理管理
+			// Proxy management.
 			{
 				routeegress.RegisterProxyRoutes(admin, eAdminProxy, security.StepUp)
 			}
 
-			// 卡密管理
+			// Redeem codes.
 			{
 				routebilling.RegisterRedeemCodeRoutes(admin, eAdminRedeem)
 			}
 
-			// 优惠码管理
+			// Promo codes.
 			{
 				routepromotion.RegisterPromoCodeRoutes(admin, eAdminPromo)
 			}
 
-			// 系统设置
+			// System settings.
 			{
 				adminSettings := admin.Group("/settings")
 				routesettings.RegisterSettingsSettingsRoutes(adminSettings, eAdminSetting, ePreAggregation)
@@ -186,102 +197,104 @@ func provideAdminRouteMount(eAdminTLSFingerprintProfile *routeegress.TLSFingerpr
 				routesearch.RegisterSettingsRoutes(adminSettings, eSearch)
 			}
 
+			// Data management.
+			// Quality probes own their settings, manual provider runs, and log list
+			// under the administrator group so they share authentication and auditing.
 			{
 				routequalityprobe.RegisterRoutes(admin, eQualityProbe)
 			}
 
-			// 数据管理
 			{
 				routebackup.RegisterDataManagementRoutes(admin, eAdminDataManagement, security.StepUp)
 			}
 
-			// 数据库备份恢复
+			// Database backup and restore.
 			{
 				routebackup.RegisterBackupRoutes(admin, eAdminBackup, security.StepUp)
 			}
 
-			// 运维监控（Ops）
+			// Operations monitoring.
 			{
 				routeops.RegisterOpsRoutes(admin, eAdminOps)
 			}
 
-			// 系统管理
+			// System administration.
 			{
 				routeops.RegisterSystemRoutes(admin, eAdminSystem)
 			}
 
-			// 订阅管理
+			// Subscription management.
 			{
 				routebilling.RegisterSubscriptionRoutes(admin, eAdminSubscription)
 			}
 
-			// 使用记录管理
+			// Usage records.
 			{
 				routeusageadmin.RegisterUsageRoutes(admin, eAdminUsage)
 			}
 
-			// 用户属性管理
+			// User attributes.
 			{
 				routeidentity.RegisterUserAttributeRoutes(admin, eAdminUserAttribute)
 			}
 
-			// 错误透传规则管理
+			// Error passthrough rules.
 			{
 				routegateway.RegisterErrorPassthroughRoutes(admin, eAdminErrorPassthrough)
 			}
 
-			// TLS 指纹模板管理
+			// TLS fingerprint profiles.
 			{
 				routeegress.RegisterTLSFingerprintProfileRoutes(admin, eAdminTLSFingerprintProfile)
 			}
 
-			// TLS 路由器管理
+			// TLS fingerprint routers.
 			{
 				routeegress.RegisterTLSFingerprintRouterRoutes(admin, eAdminTLSFingerprintRouter)
 			}
 
-			// API Key 管理
+			// API Key management.
 			{
 				routeapikey.RegisterAdminAPIKeyRoutes(admin, eAdminAPIKey)
 			}
 
-			// 定时测试计划
+			// Scheduled provider tests.
 			{
 				routeprovider.RegisterScheduledTestRoutes(admin, eAdminScheduledTest)
 			}
 
-			// 价格管理
+			// Pricing and model attributes.
 			{
 				routerouting.RegisterPricingRoutes(admin, eAdminPricing)
 				routerouting.RegisterModelAttributeRoutes(admin, eModelAttributes)
 			}
 
-			// 风控中心
+			// Content moderation.
 			{
 				routemoderation.RegisterContentModerationRoutes(admin, eAdminContentModeration)
 			}
 
-			// 邀请返利
+			// Referral rebates.
 			{
 				routepromotion.RegisterAffiliateRoutes(admin, eAdminAffiliate)
 			}
 
-			// 操作审计日志
+			// Audit logs.
 			{
 				routeaudit.RegisterAuditLogRoutes(admin, eAdminAuditLog)
 			}
 
-			// 团队运维管理。
+			// Team administration.
 			teams := admin.Group("/teams")
 			{
-				teams.GET("", eAdminTeam.List)
-				teams.POST("", eAdminTeam.Create)
-				teams.GET("/:id", eAdminTeam.Get)
-				teams.GET("/:id/members", eAdminTeam.ListMembers)
-				teams.GET("/:id/usage", eAdminTeam.GetUsage)
-				teams.PATCH("/:id", eAdminTeam.Update)
-				teams.POST("/:id/force-transfer", security.StepUp, eAdminTeam.ForceTransfer)
-				teams.DELETE("/:id", security.StepUp, eAdminTeam.Dissolve)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.list"], eAdminTeam.List)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.create"], eAdminTeam.Create)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.get"], eAdminTeam.Get)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.members.list"], eAdminTeam.ListMembers)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.usage.list"], eAdminTeam.GetUsage)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.update"], eAdminTeam.Update)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.force_transfer.create"], security.StepUp, eAdminTeam.ForceTransfer)
+				adminapi.Register(teams, httpapi.ManagementOperations["teams.delete"], security.StepUp, eAdminTeam.Dissolve)
 			}
 		}
 	}

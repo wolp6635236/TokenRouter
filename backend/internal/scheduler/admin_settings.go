@@ -11,47 +11,97 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
-// AdminDefaults 保存调度的启动参数。
+// admin_settings.go validates scheduler overrides and prepares their stored
+// text and presence flags.
+// Administrative scheduler input keeps numeric overrides as text so an empty
+// value can inherit a process default. Normalization validates each supplied
+// value, then resolves the weight set to reject combinations whose base or
+// complete sum is unusable. Successful preparation stores the normalized text,
+// preserving the distinction between inheritance and an explicit zero.
+//
+// The escape switch has a separate presence flag because false can either be
+// supplied or left unset. The two other switches are ordinary booleans.
+// ParticipantFields carries this distinction into partial settings updates,
+// while PrepareAdminSettings uses it to select a stored boolean or an empty
+// inheriting value. Callers perform persistence after preparation succeeds.
+
+// AdminDefaults supplies process values used when administrative numeric
+// overrides are empty.
 type AdminDefaults struct {
-	TopK    int
-	Weights policy.ConfigScoreWeights
-	Process policy.RuntimeSettings
+	TopK    int                       // configured candidate sample size
+	Weights policy.ConfigScoreWeights // process scoring factor weights
+	Process policy.RuntimeSettings    // process feedback and escape defaults
 }
 
-// AdminSettings 是调度管理覆盖值，区分空字符串、布尔零值和未设置。
+// AdminSettings holds administrative scheduler values before normalization and
+// persistent settings preparation. Numeric text uses empty strings for
+// inheritance; the escape switch's presence flag distinguishes a supplied
+// false from an omitted switch.
 type AdminSettings struct {
-	AdvancedSchedulerEWMAErrorRateAlpha          string `json:"advanced_scheduler_ewma_error_rate_alpha"`
-	AdvancedSchedulerEWMATTFTAlpha               string `json:"advanced_scheduler_ewma_ttft_alpha"`
-	AdvancedSchedulerLBTopK                      string `json:"advanced_scheduler_lb_top_k"`
-	AdvancedSchedulerStickyEscapeEnabled         bool   `json:"advanced_scheduler_sticky_escape_enabled"`
-	AdvancedSchedulerStickyEscapeEnabledSet      bool   `json:"-"`
-	AdvancedSchedulerStickyEscapeErrorRate       string `json:"advanced_scheduler_sticky_escape_error_rate"`
-	AdvancedSchedulerStickyEscapeTTFTMs          string `json:"advanced_scheduler_sticky_escape_ttft_ms"`
-	AdvancedSchedulerStickyWeightedEnabled       bool   `json:"advanced_scheduler_sticky_weighted_enabled"`
-	AdvancedSchedulerSubscriptionPriorityEnabled bool   `json:"advanced_scheduler_subscription_priority_enabled"`
-	AdvancedSchedulerWeightErrorRate             string `json:"advanced_scheduler_weight_error_rate"`
-	AdvancedSchedulerWeightLoad                  string `json:"advanced_scheduler_weight_load"`
-	AdvancedSchedulerWeightPreviousResponse      string `json:"advanced_scheduler_weight_previous_response"`
-	AdvancedSchedulerWeightPriority              string `json:"advanced_scheduler_weight_priority"`
-	AdvancedSchedulerWeightQueue                 string `json:"advanced_scheduler_weight_queue"`
-	AdvancedSchedulerWeightQuotaHeadroom         string `json:"advanced_scheduler_weight_quota_headroom"`
-	AdvancedSchedulerWeightReset                 string `json:"advanced_scheduler_weight_reset"`
-	AdvancedSchedulerWeightSessionSticky         string `json:"advanced_scheduler_weight_session_sticky"`
-	AdvancedSchedulerWeightTTFT                  string `json:"advanced_scheduler_weight_ttft"`
+	// error sample blending coefficient
+	AdvancedSchedulerEWMAErrorRateAlpha string `json:"advanced_scheduler_ewma_error_rate_alpha"`
+	// TTFT sample blending coefficient
+	AdvancedSchedulerEWMATTFTAlpha string `json:"advanced_scheduler_ewma_ttft_alpha"`
+	// candidate sample size override
+	AdvancedSchedulerLBTopK string `json:"advanced_scheduler_lb_top_k"`
+	// configured sticky escape switch
+	AdvancedSchedulerStickyEscapeEnabled bool `json:"advanced_scheduler_sticky_escape_enabled"`
+	// AdvancedSchedulerStickyEscapeEnabledSet records whether the escape switch
+	// was supplied. Preparation stores an empty inheriting value when this flag
+	// is false, and ParticipantFields omits that JSON field.
+	AdvancedSchedulerStickyEscapeEnabledSet bool `json:"-"` // escape switch input presence
+	// escape error fraction threshold
+	AdvancedSchedulerStickyEscapeErrorRate string `json:"advanced_scheduler_sticky_escape_error_rate"`
+	// escape TTFT threshold milliseconds
+	AdvancedSchedulerStickyEscapeTTFTMs string `json:"advanced_scheduler_sticky_escape_ttft_ms"`
+	// weighted session affinity switch
+	AdvancedSchedulerStickyWeightedEnabled bool `json:"advanced_scheduler_sticky_weighted_enabled"`
+	// subscription candidate preference switch
+	AdvancedSchedulerSubscriptionPriorityEnabled bool `json:"advanced_scheduler_subscription_priority_enabled"`
+	// observed error health weight
+	AdvancedSchedulerWeightErrorRate string `json:"advanced_scheduler_weight_error_rate"`
+	// provider load factor weight
+	AdvancedSchedulerWeightLoad string `json:"advanced_scheduler_weight_load"`
+	// previous response affinity weight
+	AdvancedSchedulerWeightPreviousResponse string `json:"advanced_scheduler_weight_previous_response"`
+	// global provider priority weight
+	AdvancedSchedulerWeightPriority string `json:"advanced_scheduler_weight_priority"`
+	// provider waiting count weight
+	AdvancedSchedulerWeightQueue string `json:"advanced_scheduler_weight_queue"`
+	// remaining platform quota weight
+	AdvancedSchedulerWeightQuotaHeadroom string `json:"advanced_scheduler_weight_quota_headroom"`
+	// upcoming window reset weight
+	AdvancedSchedulerWeightReset string `json:"advanced_scheduler_weight_reset"`
+	// session binding affinity weight
+	AdvancedSchedulerWeightSessionSticky string `json:"advanced_scheduler_weight_session_sticky"`
+	// observed TTFT factor weight
+	AdvancedSchedulerWeightTTFT string `json:"advanced_scheduler_weight_ttft"`
 }
 
-// DefaultAdminSettingsDefaults 返回未提供配置时的管理默认值。
+// DefaultAdminSettingsDefaults returns the management defaults used when
+// process configuration is absent. The returned weight set is valid for global
+// administrative validation, and the escape policy enables the default latency
+// and error thresholds.
 func DefaultAdminSettingsDefaults() AdminDefaults {
 	return AdminDefaults{TopK: 7, Weights: policy.ConfigScoreWeights{Priority: 1, Load: 1, Queue: 0.7, ErrorRate: 0.8, TTFT: 0.5, Reset: 0, QuotaHeadroom: 0, PreviousResponse: 5, SessionSticky: 3}, Process: policy.RuntimeSettings{EwmaErrorRateAlpha: DefaultErrorRateAlpha, EwmaTTFTAlpha: DefaultTTFTAlpha, StickyEscape: policy.NormalizeStickyEscape(policy.StickyEscapeConfig{Enabled: true, TtftMs: 15000, ErrorRate: 0.5})}}
 }
 
+// EffectiveAdminWeights returns valid process weights or the management
+// default weight set. Invalid individual values or unusable combined sums
+// trigger replacement of the complete set before administrative overrides are
+// resolved.
 func EffectiveAdminWeights(defaults AdminDefaults) policy.ConfigScoreWeights {
 	if defaults.Weights.IsValid() {
 		return defaults.Weights
 	}
+	// Validation resolves partial overrides against one valid base set. Replace the
+	// complete invalid process set before individual administrative values can inherit it.
 	return DefaultAdminSettingsDefaults().Weights
 }
 
+// EffectiveAdminTopK formats the process sample size for administrative
+// output. A nonpositive process value produces the management default of
+// seven, matching the default returned when process configuration is absent.
 func EffectiveAdminTopK(defaults AdminDefaults) string {
 	if defaults.TopK > 0 {
 		return strconv.Itoa(defaults.TopK)
@@ -59,7 +109,16 @@ func EffectiveAdminTopK(defaults AdminDefaults) string {
 	return "7"
 }
 
-// NormalizeAdminSettings 保留每项范围、有效权重和错误 reason。
+// NormalizeAdminSettings canonicalizes supplied numeric text and validates the
+// resolved global weight set. Callers provide a nonnil settings pointer;
+// normalization mutates earlier fields even when a later field fails
+// validation, so an error does not mean the input object is untouched.
+//
+// Empty numeric fields inherit validated process values, while an explicit
+// zero remains a weight override. Individual finite, nonnegative weights can
+// still overflow when added together, so both resolved sums are checked after
+// the per-field passes. Global settings require nonzero base and total sums,
+// unlike the separate group override policy that permits a zero base.
 func NormalizeAdminSettings(settings *AdminSettings, defaults AdminDefaults) error {
 	lbTopK, err := NormalizeOptionalPositiveIntString(settings.AdvancedSchedulerLBTopK)
 	if err != nil {
@@ -67,8 +126,8 @@ func NormalizeAdminSettings(settings *AdminSettings, defaults AdminDefaults) err
 	}
 	settings.AdvancedSchedulerLBTopK = lbTopK
 	for _, item := range []struct {
-		name   string
-		target *string
+		name   string  // administrative validation error label
+		target *string // supplied coefficient text destination
 	}{
 		{"advanced scheduler error-rate EWMA alpha", &settings.AdvancedSchedulerEWMAErrorRateAlpha},
 		{"advanced scheduler TTFT EWMA alpha", &settings.AdvancedSchedulerEWMATTFTAlpha},
@@ -109,9 +168,9 @@ func NormalizeAdminSettings(settings *AdminSettings, defaults AdminDefaults) err
 		*target = normalized
 	}
 
-	// 与 config.Validate 的 "scheduler_score_weights must not all be zero" 保持一致：
-	// 覆盖值（空则回退到生效的配置值）叠加后的基础权重和不允许为 0，
-	// 否则调度会静默退化为 TopK 内均匀随机。
+	// Individually valid weights can overflow when combined. Resolve inherited values
+	// before checking both sums so a partial administrative update cannot hide that failure.
+
 	effective := EffectiveAdminWeights(defaults)
 	resolved := policy.ConfigScoreWeights{
 		Priority:         ResolveAdvancedSchedulerWeight(settings.AdvancedSchedulerWeightPriority, effective.Priority),
@@ -130,17 +189,26 @@ func NormalizeAdminSettings(settings *AdminSettings, defaults AdminDefaults) err
 	return nil
 }
 
+// ResolveAdvancedSchedulerWeight parses normalized weight text or returns its
+// fallback. Empty or unparsable text inherits the fallback; callers normalize
+// and validate ranges separately because this helper accepts any successfully
+// parsed float.
 func ResolveAdvancedSchedulerWeight(normalized string, fallback float64) float64 {
 	if normalized == "" {
 		return fallback
 	}
 	value, err := strconv.ParseFloat(normalized, 64)
+	// A parse failure leaves the chosen process weight in place. Range validation
+	// belongs to normalization, so this recovery handles malformed text alone.
 	if err != nil {
 		return fallback
 	}
 	return value
 }
 
+// NormalizeOptionalPositiveIntString trims text and canonicalizes a positive
+// decimal integer. Empty input remains empty for inheritance, while a parse
+// failure or nonpositive value returns an error.
 func NormalizeOptionalPositiveIntString(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -153,6 +221,9 @@ func NormalizeOptionalPositiveIntString(raw string) (string, error) {
 	return strconv.Itoa(value), nil
 }
 
+// NormalizeOptionalNonNegativeFloatString canonicalizes finite, nonnegative
+// float text without exponent notation. Empty input represents inheritance,
+// and invalid, negative, NaN, or infinite values return an error.
 func NormalizeOptionalNonNegativeFloatString(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -165,6 +236,9 @@ func NormalizeOptionalNonNegativeFloatString(raw string) (string, error) {
 	return strconv.FormatFloat(value, 'f', -1, 64), nil
 }
 
+// NormalizeOptionalAlphaString canonicalizes a finite EWMA coefficient in the
+// range zero exclusive to one inclusive. Empty input remains an inheritance
+// value, and values outside that range return an error.
 func NormalizeOptionalAlphaString(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -177,6 +251,9 @@ func NormalizeOptionalAlphaString(raw string) (string, error) {
 	return strconv.FormatFloat(value, 'f', -1, 64), nil
 }
 
+// NormalizeOptionalRateString canonicalizes a finite fraction between zero and
+// one inclusive. Empty input remains an inheritance value, while invalid or
+// out-of-range values return an error.
 func NormalizeOptionalRateString(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -189,7 +266,10 @@ func NormalizeOptionalRateString(raw string) (string, error) {
 	return strconv.FormatFloat(value, 'f', -1, 64), nil
 }
 
-// PrepareAdminSettings 将管理设置转换为待持久化的键值。
+// PrepareAdminSettings normalizes the supplied object and returns scheduler
+// key/value updates for persistence. Validation errors leave no update map,
+// but earlier normalization may already have mutated fields; an absent escape
+// switch becomes an empty stored value.
 func PrepareAdminSettings(settings *AdminSettings, defaults AdminDefaults) (map[string]string, error) {
 	if err := NormalizeAdminSettings(settings, defaults); err != nil {
 		return nil, err
@@ -202,7 +282,6 @@ func PrepareAdminSettings(settings *AdminSettings, defaults AdminDefaults) (map[
 	if settings.AdvancedSchedulerStickyEscapeEnabledSet {
 		updates[SettingKeyAdvancedSchedulerStickyEscapeEnabled] = strconv.FormatBool(settings.AdvancedSchedulerStickyEscapeEnabled)
 	} else {
-		// 开关缺省时保留空值，让进程配置继续提供默认值。
 		updates[SettingKeyAdvancedSchedulerStickyEscapeEnabled] = ""
 	}
 	updates[SettingKeyAdvancedSchedulerStickyEscapeTTFTMs] = settings.AdvancedSchedulerStickyEscapeTTFTMs
@@ -220,7 +299,10 @@ func PrepareAdminSettings(settings *AdminSettings, defaults AdminDefaults) (map[
 	return updates, nil
 }
 
-// ParticipantFields 在逃逸开关已设置时输出其布尔值，未设置时省略该字段。
+// ParticipantFields encodes scheduler input into independent JSON field bytes
+// for settings participants. It omits the escape switch when its presence flag
+// is false, preserving omission through the typed boolean's otherwise
+// unavoidable zero value.
 func (value AdminSettings) ParticipantFields() (map[string]json.RawMessage, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {

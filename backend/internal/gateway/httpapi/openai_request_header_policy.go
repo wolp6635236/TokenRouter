@@ -2,14 +2,27 @@ package httpapi
 
 import "github.com/TokenFlux/TokenRouter/internal/gateway/media"
 
-// 普通 Responses、passthrough 与 Raw Chat 保留各自请求头白名单。
+// openai_request_header_policy.go defines allowed outgoing headers for
+// Responses passthrough and raw Chat requests.
+// Outgoing header permissions differ between Codex Responses and raw Chat.
+// Standard and passthrough Responses retain session and device metadata for
+// later identity rewriting, while raw Chat forwards general client headers and
+// lets request construction supply authentication and protocol headers.
+
+// ChatgptCodexURL and OpenaiPlatformAPIURL select the default OAuth and API-key
+// Responses targets before provider-specific base URLs and inbound path
+// suffixes are applied.
 const (
-	ChatgptCodexURL      = "https://chatgpt.com/backend-api/codex/responses"
+	// ChatgptCodexURL is the ChatGPT OAuth Responses endpoint.
+	ChatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
+	// OpenaiPlatformAPIURL is the public API-key Responses endpoint.
 	OpenaiPlatformAPIURL = "https://api.openai.com/v1/responses"
 )
 
 var (
-	// OpenAI allowed headers whitelist (for non-passthrough).
+	// openaiAllowedHeaders permits standard Responses client metadata for
+	// subsequent session isolation, provider identity rewriting, and
+	// required upstream header completion.
 	openaiAllowedHeaders = map[string]bool{
 		"accept-language": true,
 		"content-type":    true,
@@ -17,7 +30,9 @@ var (
 		"user-agent":      true,
 		"originator":      true,
 		"session_id":      true,
-		// 请求构造器保留 Codex 设备和会话标识，用于提供商 namespace 隔离。
+		// Request builders rewrite device and session identifiers after
+		// this admission check, so client metadata reaches the
+		// provider-namespace isolation step.
 		"installation_id":            true,
 		"x-codex-installation-id":    true,
 		"session-id":                 true,
@@ -35,8 +50,10 @@ var (
 		media.ResponsesLiteHeaderKey: true,
 	}
 
-	// OpenAI passthrough allowed headers whitelist.
-	// 透传模式放行以下低风险请求头，其他请求头可能触发上游风控。
+	// openaiPassthroughAllowedHeaders permits passthrough Responses
+	// metadata, including explicit beta negotiation. Client timeout names
+	// are admitted separately according to the request service's
+	// timeout-header permission.
 	openaiPassthroughAllowedHeaders = map[string]bool{
 		"accept":                     true,
 		"accept-language":            true,
@@ -63,19 +80,22 @@ var (
 		media.ResponsesLiteHeaderKey: true,
 	}
 
-	// openaiCCRawAllowedHeaders 是 Chat Completions 直转的客户端请求头白名单。
-	// Codex 专用头 originator、session_id、x-codex-turn-state、x-codex-turn-metadata、conversation_id 用于 ChatGPT OAuth。
-	// 将这些头发给 DeepSeek、Kimi、GLM 等兼容上游，可能被忽略或返回 400 unknown parameter。
-	// 此白名单透传通用 HTTP 头，content-type、authorization 和 accept 由请求上下文设置。
-	// 参见 pensieve/short-term/maxims/dont-reuse-shared-headers-whitelist-across-different-upstream-trust-domains。
+	// openaiCCRawAllowedHeaders permits language and user-agent metadata on
+	// raw Chat. SendChatRequest supplies authentication, content type, and
+	// the stream-dependent Accept header before provider overrides are
+	// applied.
 	openaiCCRawAllowedHeaders = map[string]bool{
 		"accept-language": true,
 		"user-agent":      true,
 	}
 )
 
-// AllowOpenAIRawChatHeader 供媒体和原生 Chat 入口复用同一通用白名单。
+// AllowOpenAIRawChatHeader checks the lowercase general-client header policy
+// for raw Chat.
 func AllowOpenAIRawChatHeader(name string) bool { return openaiCCRawAllowedHeaders[name] }
 
-// AllowOpenAIPassthroughHeader 保留图片入口不携带客户端超时头的范围。
+// AllowOpenAIPassthroughHeader checks the lowercase passthrough header
+// allowlist used by images. Timeout names have no entries in this map, so image
+// callers receive no additional timeout-header permission through this
+// function.
 func AllowOpenAIPassthroughHeader(name string) bool { return openaiPassthroughAllowedHeaders[name] }

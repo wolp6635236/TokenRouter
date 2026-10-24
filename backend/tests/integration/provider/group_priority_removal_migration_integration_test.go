@@ -12,14 +12,29 @@ import (
 	dbmigrations "github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// TestMigration240RemovesProviderGroupPriority 验证关联优先级迁移可重复执行且清理完整。
+// Membership priority is removed by migration 240, leaving provider priority to
+// order capacity results. The shared database already has every migration, so
+// one SQL transaction reconstructs the legacy membership table, column, and
+// priority indexes before running the embedded migration twice. The column and
+// index queries check that both executions leave the retired structures absent.
+//
+// Capacity queries use the current membership representation after the migration
+// checks. Fixture rollback restores the shared schema and removes inserted rows
+// when the test completes. Provider and membership insertion orders deliberately
+// differ, allowing the result assertions to distinguish global priority from
+// membership order and to check provider ID as the tie-breaker.
+
+// TestMigration240RemovesProviderGroupPriority rebuilds the legacy membership
+// schema and executes the embedded migration twice in one transaction. The
+// priority column and indexes disappear, and capacity results follow provider
+// priority with ID tie-breaking.
 func TestMigration240RemovesProviderGroupPriority(t *testing.T) {
 	ctx := context.Background()
 	migrationSQL, err := dbmigrations.FS.ReadFile("240_remove_account_group_priority.sql")
 	require.NoError(t, err)
 	tx := testTx(t)
 
-	// 测试数据库已应用全部迁移，在事务内恢复迁移前的表结构后执行升级。
+	// Restore the pre-migration schema inside a transaction because the test database already has all migrations.
 	_, err = tx.ExecContext(ctx, `
 ALTER TABLE provider_groups RENAME TO account_groups;
 ALTER TABLE account_groups RENAME COLUMN provider_id TO account_id;
@@ -62,7 +77,8 @@ WHERE schemaname = current_schema()
 `).Scan(&indexCount))
 	require.Zero(t, indexCount)
 
-	// 历史迁移验证完成后回到当前名称，再验证实际提供商仓储的排序。
+	// Return the legacy table and column to current names before invoking
+	// provider storage, which queries provider_groups while the transaction still owns schema changes.
 	_, err = tx.ExecContext(ctx, `ALTER TABLE account_groups RENAME COLUMN account_id TO provider_id; ALTER TABLE account_groups RENAME TO provider_groups`)
 	require.NoError(t, err)
 
@@ -73,7 +89,8 @@ VALUES ('migration-240-capacity-order')
 RETURNING id
 `).Scan(&groupID))
 
-	// 先插入低优先级提供商，使 ID 顺序与优先级顺序相反；同优先级提供商再按 ID 稳定排序。
+	// Insert the larger numeric priority first so ID order differs from
+	// provider-priority order, then add equal priorities to exercise the ID tie-break.
 	insertProvider := func(name string, priority int) int64 {
 		t.Helper()
 		var providerID int64
@@ -88,7 +105,8 @@ RETURNING id
 	highPriorityFirstID := insertProvider("migration-240-high-priority-first", 10)
 	highPrioritySecondID := insertProvider("migration-240-high-priority-second", 10)
 
-	// 打乱关联写入顺序，检查容量查询仍按提供商优先级排序。
+	// Bind the equal-priority providers in reverse ID order so membership
+	// insertion order cannot satisfy the expected provider-priority and ID sequence.
 	for _, providerID := range []int64{lowPriorityID, highPrioritySecondID, highPriorityFirstID} {
 		_, err = tx.ExecContext(ctx, `
 INSERT INTO provider_groups (provider_id, group_id)
@@ -108,7 +126,9 @@ VALUES ($1, $2)
 	})
 }
 
-// testTx 为迁移测试创建事务，测试结束时回滚结构变更。
+// testTx begins a SQL transaction and registers an asserted rollback at test
+// cleanup. Schema changes and fixture rows remain inside that transaction so
+// the shared migrated database retains its current schema afterward.
 func testTx(t *testing.T) *sql.Tx {
 	t.Helper()
 	tx, err := integrationDB.BeginTx(context.Background(), nil)

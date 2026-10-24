@@ -9,7 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWriteThrottleSharedProviderWindow 验证同一提供商的并发反馈共用一次写入额度，其他提供商和下个时间窗口仍可写入。
+// Concurrent snapshot attempts for one provider share a single reservation
+// interval, while another provider has its own timestamp. The test starts many
+// callers at the same supplied time and then checks admission immediately
+// before and exactly at the interval's end.
+
+// TestWriteThrottleSharedProviderWindow sends thirty-two concurrent attempts
+// for one provider at one timestamp. Exactly one is admitted; a different
+// provider passes independently, and the first provider passes at the interval
+// boundary.
 func TestWriteThrottleSharedProviderWindow(t *testing.T) {
 	throttle := NewWriteThrottle(30 * time.Second)
 	now := time.Unix(1_800_000_000, 0)

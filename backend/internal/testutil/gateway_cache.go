@@ -12,73 +12,104 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 )
 
+// gateway_cache.go provides gateway cache stubs and constructs a
+// miniredis-backed session cache for tests.
+// Gateway session tests can choose between fixed empty cache observations and a
+// miniredis-backed adapter. The stub keeps session affinity, ownership, and
+// pending billing data absent while accepting claims; NewRedisGatewayCache
+// supplies the stateful Redis implementation when the tested path needs stored
+// values.
+
+// The interface assertion keeps StubGatewayCache available wherever gateway
+// session fixtures require the methods defined by session.GatewayCache,
+// including ownership and billing claims.
 var _ session.GatewayCache = StubGatewayCache{}
 
-// StubGatewayCache 是返回空会话和可领取状态的网关缓存替身。
+// StubGatewayCache supplies empty session data and fixed successful claims for
+// fixtures. Inputs and cancellation are ignored, and writes do not affect later
+// reads, so stateful session tests use another cache.
 type StubGatewayCache struct{}
 
-// NewRedisGatewayCache 使用 miniredis 创建网关缓存，并注册连接清理。
+// NewRedisGatewayCache constructs a gateway cache over a per-test miniredis
+// server and client. Test cleanup closes the client before the server cleanup
+// registered by RunT; client-close errors are discarded by this helper.
 func NewRedisGatewayCache(t *testing.T) session.GatewayCache {
 	t.Helper()
 
 	redisServer := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	// Register after RunT so reverse cleanup order closes the client before its
+	// server. This helper discards client-close errors while the server fixture owns termination.
 	t.Cleanup(func() { _ = redisClient.Close() })
 
 	return gatewayredis.NewGatewayCache(redisClient)
 }
 
-// GetSessionProviderID 返回空的会话提供商 ID。
+// GetSessionProviderID returns the missing-provider sentinel zero with a nil
+// fixture error.
 func (c StubGatewayCache) GetSessionProviderID(_ context.Context, _ int64, _ string) (int64, error) {
 	return 0, nil
 }
 
-// SetSessionProviderID 模拟成功写入会话提供商 ID。
+// SetSessionProviderID accepts an affinity write and returns a nil fixture
+// error.
 func (c StubGatewayCache) SetSessionProviderID(_ context.Context, _ int64, _ string, _ int64, _ time.Duration) error {
 	return nil
 }
 
-// RefreshSessionTTL 模拟成功续期会话。
+// RefreshSessionTTL accepts session expiration refreshes and returns a nil
+// fixture error.
 func (c StubGatewayCache) RefreshSessionTTL(_ context.Context, _ int64, _ string, _ time.Duration) error {
 	return nil
 }
 
-// DeleteSessionProviderID 模拟成功删除会话提供商 ID。
+// DeleteSessionProviderID accepts affinity deletion and returns a nil fixture
+// error.
 func (c StubGatewayCache) DeleteSessionProviderID(_ context.Context, _ int64, _ string) error {
 	return nil
 }
 
-// SetSessionOwnerGroupID 模拟成功写入会话所属分组。
+// SetSessionOwnerGroupID returns a successful ownership claim for each fixture
+// request. It stores no owner, so GetSessionOwnerGroupID continues returning
+// zero and repeated claims also receive true.
 func (c StubGatewayCache) SetSessionOwnerGroupID(_ context.Context, _ int64, _, _ string, _ int64, _ time.Duration) (bool, error) {
 	return true, nil
 }
 
-// GetSessionOwnerGroupID 返回空的会话所属分组 ID。
+// GetSessionOwnerGroupID returns the missing-owner sentinel zero with a nil
+// fixture error.
 func (c StubGatewayCache) GetSessionOwnerGroupID(_ context.Context, _ int64, _, _ string) (int64, error) {
 	return 0, nil
 }
 
-// RefreshSessionOwnerTTL 模拟成功续期会话所属分组。
+// RefreshSessionOwnerTTL accepts owner expiration refreshes and returns a nil
+// fixture error.
 func (c StubGatewayCache) RefreshSessionOwnerTTL(_ context.Context, _ int64, _, _ string, _ time.Duration) error {
 	return nil
 }
 
-// SetGrokVideoPendingBilling 模拟成功写入视频待计费数据。
+// SetGrokVideoPendingBilling accepts pending billing data and returns a nil
+// fixture error.
 func (c StubGatewayCache) SetGrokVideoPendingBilling(_ context.Context, _ string, _ []byte, _ time.Duration) error {
 	return nil
 }
 
-// GetGrokVideoPendingBilling 返回空的视频待计费数据。
+// GetGrokVideoPendingBilling returns a nil payload indicating absent pending
+// billing data. Earlier writes leave that result unchanged because the fixed
+// stub retains no payload or expiration state.
 func (c StubGatewayCache) GetGrokVideoPendingBilling(_ context.Context, _ string) ([]byte, error) {
 	return nil, nil
 }
 
-// ClaimGrokVideoBilled 模拟成功领取视频计费标记。
+// ClaimGrokVideoBilled returns a successful billed claim for every fixture
+// call. Repeated calls keep succeeding because this stub has no claim state;
+// tests requiring deduplication use a stateful cache.
 func (c StubGatewayCache) ClaimGrokVideoBilled(_ context.Context, _ string, _ time.Duration) (bool, error) {
 	return true, nil
 }
 
-// ReleaseGrokVideoBilled 模拟成功释放视频计费标记。
+// ReleaseGrokVideoBilled accepts billing-claim cleanup and returns a nil
+// fixture error.
 func (c StubGatewayCache) ReleaseGrokVideoBilled(_ context.Context, _ string) error {
 	return nil
 }

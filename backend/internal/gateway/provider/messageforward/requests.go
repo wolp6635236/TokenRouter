@@ -17,9 +17,38 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/vertex"
 )
 
-// buildRequest 根据已选提供商类型调用请求构造器。
+// requests.go builds Messages and counting requests using model attributes,
+// credentials, and selected endpoint policy.
+// Messages attributes are applied to the final upstream model before choosing
+// Anthropic or Vertex construction. Service accounts use provider project and
+// location values, while ordinary builders receive request headers, beta
+// filters, and fingerprint options.
+//
+// Relay selection validates a configured base before adding endpoint paths. An
+// enabled empty custom base produces an error, and custom relays can receive an
+// escaped provider proxy query. Request builders retain current attempt state
+// in their callbacks so header assembly uses the successful beta evaluation
+// already attached to the attempt. Counting shares those callbacks while
+// selecting its own path and body preparation.
+
+// buildRequest applies final-model parameters and selects the provider request
+// builder. Anthropic service accounts use Vertex with deferred-tool cache
+// controls stripped; other targets delegate prepared request and wire bytes to
+// Anthropic.
 func (r *Runtime) buildRequest(ctx context.Context, output HTTPBoundary, state *AttemptState, target *gatewayadapter.ExecutionProvider, body []byte, token, tokenType, model string, stream, mimic bool) (*http.Request, []byte, error) {
+	attributes, err := gatewayadapter.ResolveModelAttributes(ctx, target, model, r.dependencies.Attributes, "anthropic_messages")
+	if err != nil {
+		return nil, nil, err
+	}
+	body, err = gatewayadapter.ApplyModelAttributeParameters(body, attributes)
+	if err != nil {
+		return nil, nil, err
+	}
 	if target.Record.Platform == capability.PlatformAnthropic && target.Record.Type == capability.ProviderTypeServiceAccount {
+		// Vertex preparation removes deferred-tool cache controls
+		// before its builder sanitizes beta-dependent body fields,
+		// keeping this service-account payload compatible with that
+		// platform variant.
 		body = anthropic.StripDeferredToolCacheControl(body)
 		request, err := r.buildVertexRequest(ctx, output, target, body, token, model, stream)
 		return request, body, err
@@ -27,6 +56,9 @@ func (r *Runtime) buildRequest(ctx context.Context, output HTTPBoundary, state *
 	return anthropic.BuildRequest(ctx, body, token, tokenType, model, stream, mimic, r.requestOptions(ctx, output, state, target, model, tokenType, mimic))
 }
 
+// buildVertexRequest delegates Vertex construction using current headers, beta
+// policy, project, and model location. The selected provider supplies Vertex
+// context, and callers send and close the returned request body.
 func (r *Runtime) buildVertexRequest(ctx context.Context, output HTTPBoundary, target *gatewayadapter.ExecutionProvider, body []byte, token, model string, stream bool) (*http.Request, error) {
 	var headers http.Header
 	var beta string
@@ -62,8 +94,20 @@ func (r *Runtime) buildVertexRequest(ctx context.Context, output HTTPBoundary, t
 	})
 }
 
+// buildPassthroughRequest applies model attributes before native API key
+// request preparation. Nonempty provider base URLs are validated before the
+// Messages suffix is added, and policy block errors propagate from
+// construction.
 func (r *Runtime) buildPassthroughRequest(ctx context.Context, output HTTPBoundary, state *AttemptState, target *gatewayadapter.ExecutionProvider, body []byte, token string) (*http.Request, []byte, error) {
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	attributes, err := gatewayadapter.ResolveModelAttributes(ctx, target, model, r.dependencies.Attributes, "anthropic_messages")
+	if err != nil {
+		return nil, nil, err
+	}
+	body, err = gatewayadapter.ApplyModelAttributeParameters(body, attributes)
+	if err != nil {
+		return nil, nil, err
+	}
 	options := r.requestOptions(ctx, output, state, target, model, "apikey", false)
 	options.URL = func() (string, error) {
 		if base := target.View().GetBaseURL(); base != "" {
@@ -85,6 +129,9 @@ func (r *Runtime) buildPassthroughRequest(ctx context.Context, output HTTPBounda
 	return anthropic.BuildRequestPassthrough(ctx, body, token, options)
 }
 
+// buildCountRequest builds counting with shared request options and the
+// selected passthrough mode. Passthrough returns nil wire bytes beside its
+// request; ordinary counting returns the upstream builder wire bytes.
 func (r *Runtime) buildCountRequest(ctx context.Context, output HTTPBoundary, state *AttemptState, target *gatewayadapter.ExecutionProvider, body []byte, token, tokenType, model string, mimic, passthrough bool) (*http.Request, []byte, error) {
 	if passthrough {
 		options := r.countOptions(ctx, output, state, target, "", "apikey", false, true)
@@ -95,7 +142,10 @@ func (r *Runtime) buildCountRequest(ctx context.Context, output HTTPBoundary, st
 	return anthropic.BuildCountTokensRequest(ctx, body, token, tokenType, model, mimic, options)
 }
 
-// requestOptions 保存本次目标和准备状态，平台构造器读取动态设置。
+// requestOptions captures target, HTTP adapter, and attempt state for Anthropic
+// builders. Callbacks read current settings, reuse evaluated beta filters, and
+// retain optional fingerprint and debug services through synchronous
+// preparation.
 func (r *Runtime) requestOptions(ctx context.Context, output HTTPBoundary, state *AttemptState, target *gatewayadapter.ExecutionProvider, model, tokenType string, mimic bool) anthropic.RequestOptions {
 	options := anthropic.RequestOptions{
 		InjectAPIKeyBeta: r.options.InjectAPIKeyBeta,
@@ -132,7 +182,7 @@ func (r *Runtime) requestOptions(ctx context.Context, output HTTPBoundary, state
 		return provideradapter.HeaderOverrideValue(gatewayadapter.ExecutionProtocolRecord(target), "anthropic-beta")
 	}
 	options.CheckFastBeta = func(ctx context.Context) error {
-		//nolint:revive // checkBetaTokens 返回具体指针类型，直接 return 会把 nil 指针包成非 nil 的 error。
+		//nolint:revive // checkBetaTokens returns a concrete pointer; returning a nil pointer directly would produce a non-nil error interface.
 		if err := r.checkBetaTokens(ctx, []string{anthropic.BetaFastMode}, target, model); err != nil {
 			return err
 		}
@@ -156,7 +206,14 @@ func (r *Runtime) requestOptions(ctx context.Context, output HTTPBoundary, state
 	return options
 }
 
-// requestURL 根据普通、计数或透传请求选择端点，为自定义 relay 添加代理查询参数。
+// requestURL selects the Messages or counting endpoint and validates any
+// provider relay. API key bases use the dedicated endpoint suffix, and enabled
+// empty custom bases return an error.
+//
+// The custom-base path removes trailing slashes before adding the endpoint and
+// beta query. An attached provider proxy is escaped as one query value so its
+// URL separators stay inside that relay parameter. Branches permitting an
+// absent configured base retain the corresponding built-in endpoint.
 func (r *Runtime) requestURL(target *gatewayadapter.ExecutionProvider, count, passthrough bool) (string, error) {
 	endpoint, path := anthropic.ClaudeAPIURL, "/v1/messages"
 	if count {
@@ -182,6 +239,9 @@ func (r *Runtime) requestURL(target *gatewayadapter.ExecutionProvider, count, pa
 		endpoint = strings.TrimRight(validated, "/") + path + "?beta=true"
 		if target.Record.ProxyID != nil && target.Record.Proxy != nil {
 			if proxy := target.Record.Proxy.URL(); proxy != "" {
+				// Escape the attached proxy URL as one query
+				// value so its own separators do not become
+				// additional relay request parameters.
 				endpoint += "&proxy=" + url.QueryEscape(proxy)
 			}
 		}
@@ -189,17 +249,27 @@ func (r *Runtime) requestURL(target *gatewayadapter.ExecutionProvider, count, pa
 	return endpoint, nil
 }
 
+// countOptions derives shared Anthropic options and substitutes the counting
+// endpoint callback. Output, provider, and attempt state remain borrowed until
+// request construction finishes, and passthrough affects the selected URL
+// branch.
 func (r *Runtime) countOptions(ctx context.Context, output HTTPBoundary, state *AttemptState, target *gatewayadapter.ExecutionProvider, model, tokenType string, mimic, passthrough bool) anthropic.RequestOptions {
 	options := r.requestOptions(ctx, output, state, target, model, tokenType, mimic)
 	options.URL = func() (string, error) { return r.requestURL(target, true, passthrough) }
 	return options
 }
 
+// checkBetaTokens returns the block error for resolved tokens under current
+// provider policy. Missing settings, empty token input, and failed settings
+// reads return nil while construction continues its remaining beta rules.
 func (r *Runtime) checkBetaTokens(ctx context.Context, tokens []string, target *gatewayadapter.ExecutionProvider, model string) *anthropic.BetaBlockedError {
 	if r.dependencies.Settings == nil || len(tokens) == 0 {
 		return nil
 	}
 	settings, err := r.dependencies.Settings.GetBetaPolicySettings(ctx)
+	// An unavailable beta settings read supplies no block result here,
+	// letting the upstream builder continue with its platform token
+	// preparation rules.
 	if err != nil || settings == nil {
 		return nil
 	}

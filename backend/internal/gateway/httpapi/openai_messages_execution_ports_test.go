@@ -16,7 +16,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestOpenAIMessagesExecutionAdapterPreservesNilFailover 验证指针错误转接口后仍为 nil，确定性 400 据此写出响应。
+// TestOpenAIMessagesExecutionAdapterPreservesNilFailover classifies a
+// model-not-found HTTP 400 through the Messages adapter. It checks a nil error
+// interface and that classification leaves the client writer untouched.
 func TestOpenAIMessagesExecutionAdapterPreservesNilFailover(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)

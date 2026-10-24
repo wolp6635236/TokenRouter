@@ -108,11 +108,25 @@ OpenAI 兼容非流式响应的 usage，按 `usage`、`response.usage`、`data.u
 推理历史的读取、请求回填和响应缓存，由 `gateway/session.ReasoningHistory` 使用同一个可选的缓存能力完成：保留客户端的 reasoning item ID，TTL 七天，单独的操作预算两秒，读取失败时放行，写入失败时只记日志。这份数据在缓存过期或丢失后无法恢复。
 
 <a id="images_url_backfill"></a>
-### 图片结果回填
+### 图片结果回填与模式转换
 
-图片 API Key 和 OAuth 的单次发送和响应释放由 ImagesExecutor 执行，网关的入站编排决定提供商恢复、失败重试和完成处理。图片的实际产出、HTTP 提交和失败分别记录；非流式时按张数回退、部分结果的返回，各入口按自己的规则处理。
+图片 API Key 和 OAuth 的单次发送和响应释放由 ImagesExecutor 执行，网关的入站编排决定提供商恢复、失败重试和完成处理。图片的实际产出、HTTP 提交和失败分别记录。API Key 的原生图片结果可以双向转换，OAuth 继续使用 Responses 图片转换。
 
 图片入口由 `gateway/httpapi.OpenAIImagesExecutor` 组合请求和输出能力，app 把同一个实例直接绑定到媒体运行时。API Key 和 OAuth 两个分支各有协议转换、实际产出计数和失败资格。图片请求在原位置和客户端的取消脱钩，读取完成后才交付已观测的用量；JSON 心跳不算实际的图片输出。结构化的"图片工具不可用"事件，由 `provider/provider.ImageToolCooldown` 写入模型级冷却；模型改用文字回复时，不触发这项写入。
+
+`stream=true` 的图片请求，在每次实际发送上游 HTTP 请求前启动 SSE 注释心跳，覆盖等待响应头的阶段。API Key 和 OAuth 使用同一个 `gateway.image_stream_keepalive_interval`，默认 10 秒，设为 `0` 关闭。首个周期到达前可以直接返回原有 HTTP 错误；上游返回 SSE 时，取得响应头后交给 SSE 读取器接续保活。上游返回普通 JSON 或 HTTP 错误时，等待心跳持续到有大小限制的读体结束，再停止并交给输出逻辑。心跳字节和已提交的响应格式跨尝试保留，仅有注释时仍按现有规则决定是否重试。
+
+OpenAI API Key 的生成和编辑分别读取 `credentials.images_generations_mode`、`credentials.images_edits_mode`。`both` 跟随客户端；`non_streaming` 从 JSON 或 multipart 中移除 `stream` 和 `partial_images`；`streaming` 设置 `stream=true`，客户端要求非流式时另设 `partial_images=0`。每次提供商尝试都从原始请求构造出站载荷，上传图片、mask、其他字段和客户端模式独立保留。未配置的旧提供商按 `both` 处理。JSON 顶层重复键先收拢为唯一键，再应用模型和模式改写；关闭流式时全部移除 `stream`、`partial_images`，强制流式时写入唯一的目标值。嵌套字段和大整数保留其 JSON 值。
+
+成功响应按实际 Content-Type 选择读取器。所有原生 JSON 结果共用完整文档、非空 `data[]` 和图片字段校验；HTTP 200 错误体、空结果和损坏结果不会按请求张数补成成功。JSON 转 SSE 先验证完整文档与全部 `data[]`，再逐项输出 `image_generation.completed` 或 `image_edit.completed`，最后发送 `data: [DONE]`。每项包含非空字符串 `b64_json` 或 `url`。原生 API Key 的 URL 项经过安全下载补上 `b64_json`，总 usage 只随最后一张图发送。这项流式格式转换不依赖可选的 `images_url_to_b64_json` 开关；下载等待期间继续发送 SSE 注释心跳。中间预览无法从非流式结果重建。
+
+SSE 转 JSON 收集、去重完成图片，输出 `created`、`data[]` 和 usage。非流式汇总跳过预览图片字段校验和下载，同时继续校验 SSE 帧与 JSON 结构；错误事件、读体失败、帧中断、字节超限和完成图片少于请求张数都会结束尝试。客户端要求 `response_format=url` 而结果只有 Base64 时，沿用 data URL 格式。原生 SSE 的逐帧转发与聚合共用读取器；事件多行 data 会合并，声明 SSE 却返回完整 Images JSON 的兼容上游也会转换成客户端要求的格式。
+
+图片数量、尺寸和 usage 从上游原始结果观察，转换后的内容不再次参与结算。HTTP 200 中的 `error` 对象按失败处理。转换和下载失败不会再次提交生图；已经观测到的原生完成图片和用量在失败时保留，包括非流式客户端聚合到一半的情况。客户端断开后，原生流停止下游写入并继续收集上游结果；等待心跳和实际输出仍分别决定 HTTP 提交与重试窗口。诊断记录客户端模式、出站模式、响应格式和是否转换。错误提交规则见[网关错误响应策略](gateway_error_policy.md#处理位置)。
+
+流式客户端在已发送图片或 SSE 心跳后遇到上游错误，会收到一个 `error` 事件，网关同时记录失败状态；错误后不发送 `[DONE]`。尚未提交响应时使用 HTTP JSON 错误。
+
+原生 Images 的 `image_generation.completed` 和 `image_edit.completed` 都按实际图片内容计数，沿用 ID、call ID 和内容摘要的去重规则。部分图片按事件类型判断，提示词、URL 等元数据中的 `partial_image` 字样不参与过滤。部分图片事件与没有图片内容的完成事件不增加完成图片数，完成事件中的尺寸和用量照常保留。
 
 OpenAI API Key 提供商可以通过 `extra.images_url_to_b64_json=true` 开启图片回填，默认关闭。非流式的 `/images/generations` 和 `/images/edits` 响应里，只有缺少非空 `b64_json`、但带有 URL 的图片项才会被补全；已有 Base64 的、明确指定 `response_format=url` 的和流式的请求，保持原样。回填保留原 URL、修订后的提示词和所有上游元数据，某一张下载失败时只跳过它；用量、图片数量和计费尺寸，始终从回填之前的上游响应读取。
 
@@ -122,7 +136,7 @@ OpenAI API Key 提供商可以通过 `extra.images_url_to_b64_json=true` 开启�
 
 ### 创作台的 Images 请求
 
-创作台的异步执行器，`generate` 使用 `/v1/images/generations` 的 JSON，`edit` 和 `inpaint` 使用 `/v1/images/edits` 的 multipart；固定发送 PNG、单张 `n=1`，并按最终模型的能力透传尺寸、质量和背景。GPT Image 模型不发送 `response_format`，只有 DALL-E 模型带 `response_format=b64_json`。inpaint 的 mask 需要是和源图同尺寸、4 MiB 以内的 PNG，透明像素表示需要重绘的区域。
+创作台的异步执行器读取同一套端点模式能力，流式上游由共享 Images 读取器汇总为最终图片。`generate` 使用 `/v1/images/generations` 的 JSON，`edit` 和 `inpaint` 使用 `/v1/images/edits` 的 multipart；固定发送 PNG、单张 `n=1`，并按最终模型的能力透传尺寸、质量和背景。GPT Image 模型不发送 `response_format`，只有 DALL-E 模型带 `response_format=b64_json`。inpaint 的 mask 需要是和源图同尺寸、4 MiB 以内的 PNG，透明像素表示需要重绘的区域。
 
 兼容上游可能只返回 `data[].url`。创作台优先解析可用的 `b64_json`，没有可用的 Base64 时下载 URL 图片；这条路径一定要拿到图片的字节，不依赖普通 API 的 `images_url_to_b64_json` 开关。下载复用上面的回填下载器和提供商代理，保留签名 URL，不带生图的认证和自定义请求头，并应用相同的公网、重定向、格式、20 MiB 大小和单次 60 秒的限制。生图的响应在下载之前关闭，释放连接。
 
@@ -237,9 +251,9 @@ WS 的报文、模型字段恢复和 usage 解析在 `protocol/openai`；OpenAI 
 
 ### TTFT 的计算
 
-Responses WebSocket 的 TTFT 只按实际的 token delta 计算；上游没有 delta 时，带完整文本或工具参数的 `response.output_text.done`、`response.function_call_arguments.done` 也算作语义输出。`response.completed`、`response.done`，以及 content part、output item 等结构性的终态不产生 TTFT，纯终态的响应保持未观测，总耗时不会被误记成首 token 延迟。
+OpenAI HTTP/SSE、Chat/Messages 转换和文本 WebSocket 使用全局 `ttft_mode`。首包取首个非心跳上游事件，首字取首个有效内容，两者均从本次生成请求发起计时。内容分类、TPS 和存储归属见 [HTTP 接口](http_api.md#response_errors)，设置规则见 [配置](configuration.md#runtime_settings)。
 
-Responses HTTP/SSE 同样区分结构进度和可见输出：`response.created`、空的 reasoning item 等进度，可以提交当前的 attempt、解除首输出超时，并关闭输出前的 failover 窗口，但不记录 TTFT；非空的文本或工具 delta、完整的文本或工具参数、图片结果，以及终态里实际的 output，才开始计算 TTFT。只带 usage 的终态保持 TTFT 未观测。
+HTTP 提交、首输出超时与重试资格仍由响应处理策略判断。统计口径不改变这些状态，也不为非流式响应、图片结果或纯 usage 终态补造文本首字时间。
 
 ### Codex 基础指令和 Responses Lite
 
@@ -253,7 +267,15 @@ OpenAI OAuth 提供商处理 Anthropic 的 `count_tokens` 时，调用 Responses
 
 ### namespace 和工具 ID
 
-OpenAI OAuth 的普通 Responses 请求，默认原样保留 Codex 的 namespace 工具声明，并保留 `function_call`、`tool_call`、`custom_tool_call`、`mcp_tool_call` 历史项上的 `namespace`；普通消息等非调用项上残留的这个字段会被清理。旧版 Compact 请求始终把 namespace 摊平并删除输入项上的字段，API Key 的出口也按标准的 Responses schema 清理。
+OpenAI OAuth 和 API Key 的普通 Responses 请求保留 `function_call`、`tool_call`、`custom_tool_call`、`mcp_tool_call` 历史项上的 `namespace`。工具可以在顶层 `tools`、历史的 `additional_tools.tools` 或 `tool_search_output.tools` 中声明，也可以由上游会话保存；本轮省略声明不影响已经执行的调用身份。普通消息等非调用项上残留的这个字段会被清理，转义的 JSON 键名使用同一规则。旧版 Compact 的字段白名单、namespace 清理和 OAuth 工具平铺仍由对应端点规则决定。
+
+转换到 Chat 或 function-only Responses 时，协议桥接层先解析有效声明，再生成已知历史调用、`tool_choice` 和响应恢复使用的名称映射。默认 `functions` 命名空间使用工具裸名；其他显式 namespace 子工具使用稳定的平铺名称。工具搜索加载的普通 function 根据实际加载声明保留自己的调用身份。转换后的非流式结果、SSE 生命周期和终态使用声明映射恢复名称、namespace 和调用 ID；声明之间的名称碰撞或无法解析的限定工具选择返回错误。
+
+压缩或工具列表变化后，历史 `function_call` 仍可能带有 namespace，但对应声明已被省略。桥接层为这些调用单独分配本次请求的回放名称，保留调用 ID、参数和结果。名称分配预留已知工具、响应恢复认可的 custom 工具别名及历史裸名，按 namespace/name 排序；平铺名称碰撞时，用完整二元组的摘要区分，并检查长度和名称占用。补出的身份只用于输入回放，工具声明、选择器、响应恢复和后续 WS 可用工具不包含这些身份。身份扫描仅检查直接输入项，工具结果和参数中的嵌套数据不参与名称分配。
+
+WS HTTP bridge 在后续轮次省略 `tools` 时复用已有的声明和映射；显式空值清空后续可用工具，历史身份仍可用于解释已经执行的调用。原生 Responses 保留动态声明项的原位置，工具平铺只在需要协议转换的路径执行。提供商切换清空当前尝试的映射，下一次尝试从原始请求重新准备。
+
+上游明确以 HTTP 400 拒绝 `input[i].namespace` 时，现有字段恢复只删除该索引处的字段，同类型其他调用的 namespace 保留。`Missing namespace` 表示上游需要调用身份，不触发删除。恢复继续受现有六次预算和重复报文检查约束，超过预算返回实际错误。
 
 API Key 的 Responses 回放还会校验输入项 ID 的前缀：message 使用 `msg`，工具调用使用 `fc`，reasoning 使用 `rs`；类型对不上的 ID 直接删除，不会被改写成别的，这样伪造的标识就指不到另一个上游对象。兼容层把只支持 function 的上游返回的 `fc_` 工具调用，还原成客户端的 `custom_tool_call` 或 `tool_search_call` 时，把 ID 类型分别改成 `ctc_` 或 `tsc_`，后缀保留；再次降级到 function 时恢复原来的 `fc_`，输出项没有对应 function ID 的继续删除。
 
@@ -273,9 +295,15 @@ Responses 生图有一个明确的协议适配例外：请求的图片模型进�
 
 ## 模型与能力
 
+图片模型识别使用最终路线的输出模态。图片接口与 Responses 的原生图片工具在发送前检查能力：未知返回 `MODEL_CAPABILITY_UNKNOWN`，明确不支持返回 `MODEL_CAPABILITY_UNSUPPORTED`。型号名称中的 image 不参与判断。工具明确型号优先于转换过程中确认的图片型号，未指定型号的原生图片工具使用其既定默认型号，并执行相同校验。HTTP、透传与 WebSocket 使用相同规则；本地拒绝不计作上游故障。
+
+Responses 图片工具的型号在候选提供商阶段逐条校验，使用该候选的最终协议和模型属性。同组其他路线具备能力时继续选择；全部路线不满足时返回能力错误。转发前还会检查最终工具列表，工具被策略移除时不参与图片能力校验。
+
 客户端的模型名依次经过 Key、分组和提供商手动配置的映射。调度、模型列表、健康冷却、管理测试和请求转发使用同一个完整的模型身份；原生能力和传输资格继续限制提供商选择，相似的模型名绕不过这些限制。
 
-Messages、Chat、Responses 和 WebSocket 都保留手动映射后的完整模型 ID，不做 Codex 拼写纠正、旧型号迁移、日期剥离或 effort 后缀解析。明确的 `output_config.effort` 按最终的上游型号转换；GPT-5.6 支持原生的 max，不会降成 xhigh。能力判断可以只读地识别供应商限定名的型号尾段，例如 `openai/gpt-5.6-sol` 支持明确的 max；这种识别不用于改写转发的 ID 或生成价格候选，Messages 桥接和 Responses 转换遵守同样的规则。
+Messages、Chat、Responses 和 WebSocket 按最终的完整型号查询[统一模型属性](model_catalog_and_marketplace.md#model_attributes)。推理档位来自目录与管理员覆盖，未知型号保留客户端的明确参数。GPT-5.6 Sol/Terra/Luna 的普通请求支持 max，OAuth Compact 使用平台的 max 到 xhigh 转换。GPT-5.2/5.4 的采样能力带 effort=none 条件，GPT-6 的 Chat 工具能力按具体型号与 effort 区分。Codex OAuth 禁用 temperature、top_p 和输出参数字段，目录中的输出容量仍保留。
+
+供应商限定名按完整服务条目查询，例如 `openai/gpt-5.6-sol`。查询结果不改写出站模型，目录缺项时也不会从任意尾段、日期或版本号生成能力。
 
 GPT-5.6 的内置产品是 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`。裸的 `gpt-5.6` 按未知型号处理。请求通过提供商的模型范围和协议资格检查后，上游收到手动映射后的完整型号，计费候选使用选定的计费模型。未知名称是否可用由上游决定。管理员配置的 Key、分组和提供商映射参与请求处理，历史配置和用量记录保持原值。模型目录的查询和能力来源，见[模型目录与市场](model_catalog_and_marketplace.md#model_catalog_metadata_lookup)。
 

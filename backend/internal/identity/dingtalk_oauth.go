@@ -7,75 +7,137 @@ import (
 	"strings"
 )
 
+// dingtalk_oauth.go builds DingTalk identity claims and pending account-choice
+// decisions.
+// DingTalk authorization uses the global unionID for the canonical identity
+// while retaining organization-local staff information as separate profile
+// and audit observations. A missing directory profile can therefore leave
+// email or staff identifiers empty without replacing the global subject.
+//
+// Organization policy acceptance and actual membership lookup run at separate
+// boundaries. Pending choice construction selects compatible account hints,
+// then registration blocking can force the binding step regardless of those
+// hints. It retains caller-owned claim storage and target ID pointers through
+// publication. The first department claim records supplied data, while
+// profile synchronization independently chooses its usable department path
+// and applies its configured fields.
+
+// DingTalkOAuthOptions carries application, organization and profile-sync
+// configuration for provider authorization.
 type DingTalkOAuthOptions struct {
-	Enabled             bool   `mapstructure:"enabled"`
-	ClientID            string `mapstructure:"client_id"`
-	ClientSecret        string `mapstructure:"client_secret"`
-	AuthorizeURL        string `mapstructure:"authorize_url"`
-	TokenURL            string `mapstructure:"token_url"`
-	UserInfoURL         string `mapstructure:"userinfo_url"`
-	Scopes              string `mapstructure:"scopes"`
-	RedirectURL         string `mapstructure:"redirect_url"`
-	FrontendRedirectURL string `mapstructure:"frontend_redirect_url"`
-
-	// 平台底座 + 业务行为
-	DingTalkAppKind string `mapstructure:"dingtalk_app_kind"` // 仅 "internal_app"（V4 fail-closed）
-	AppType         string `mapstructure:"app_type"`          // "public" (default) | "internal"
-
-	// Corp 限定（none | internal_only）
-	CorpRestrictionPolicy   string `mapstructure:"corp_restriction_policy"`
-	InternalCorpID          string `mapstructure:"internal_corp_id"`
-	BypassRegistration      bool   `mapstructure:"bypass_registration"`
-	SyncCorpEmail           bool   `mapstructure:"sync_corp_email"`
-	SyncDisplayName         bool   `mapstructure:"sync_display_name"`
-	SyncDept                bool   `mapstructure:"sync_dept"`
-	SyncCorpEmailAttrKey    string `mapstructure:"sync_corp_email_attr_key"`
-	SyncDisplayNameAttrKey  string `mapstructure:"sync_display_name_attr_key"`
-	SyncDeptAttrKey         string `mapstructure:"sync_dept_attr_key"`
-	SyncCorpEmailAttrName   string `mapstructure:"sync_corp_email_attr_name"`
-	SyncDisplayNameAttrName string `mapstructure:"sync_display_name_attr_name"`
-	SyncDeptAttrName        string `mapstructure:"sync_dept_attr_name"`
-
-	// 邮箱 + Username
-	RequireEmail            bool   `mapstructure:"require_email"`
-	UsernameOverwritePolicy string `mapstructure:"username_overwrite_policy"`
-
-	// Attribute（私有版扩展点；开源版仅声明）
-	UsernameAttributeKey         string   `mapstructure:"username_attribute_key"`
-	EnableAttributeMatching      bool     `mapstructure:"enable_attribute_matching"`
-	EnableAttributeSync          bool     `mapstructure:"enable_attribute_sync"`
+	Enabled             bool   `mapstructure:"enabled"`               // configured DingTalk login switch
+	ClientID            string `mapstructure:"client_id"`             // upstream application client identifier
+	ClientSecret        string `mapstructure:"client_secret"`         // upstream application client credential
+	AuthorizeURL        string `mapstructure:"authorize_url"`         // provider browser authorization endpoint
+	TokenURL            string `mapstructure:"token_url"`             // provider token exchange endpoint
+	UserInfoURL         string `mapstructure:"userinfo_url"`          // provider identity lookup endpoint
+	Scopes              string `mapstructure:"scopes"`                // requested provider authorization scopes
+	RedirectURL         string `mapstructure:"redirect_url"`          // registered backend authorization callback
+	FrontendRedirectURL string `mapstructure:"frontend_redirect_url"` // browser authorization return destination
+	// DingTalkAppKind must be internal_app for enabled settings under
+	// authconfig.ValidateDingTalkConfig. Disabled drafts can remain incomplete
+	// while the administrator configures them.
+	DingTalkAppKind string `mapstructure:"dingtalk_app_kind"`
+	// AppType selects public or internal application behavior. Configuration
+	// defaults use public, while internal_only policy requires the internal
+	// application type.
+	AppType string `mapstructure:"app_type"`
+	// CorpRestrictionPolicy selects none or internal_only membership handling.
+	// DingTalkCorpAllowed accepts those labels without comparing corpID; the
+	// callback performs the required directory lookup.
+	CorpRestrictionPolicy string `mapstructure:"corp_restriction_policy"`
+	InternalCorpID        string `mapstructure:"internal_corp_id"` // configured organization identifier hint
+	// BypassRegistration permits the global-registration exemption only with
+	// internal_only policy. Validated provider settings and the registration
+	// observation still come from the calling authentication flow.
+	BypassRegistration bool `mapstructure:"bypass_registration"`
+	// SyncCorpEmail, SyncDisplayName and SyncDept select independent attribute
+	// writes in DingTalkProfileSync. The OAuth settings reader disables these
+	// organization-directory selections outside internal_only policy.
+	SyncCorpEmail           bool   `mapstructure:"sync_corp_email"`             // corporate-email attribute synchronization switch
+	SyncDisplayName         bool   `mapstructure:"sync_display_name"`           // staff-name attribute synchronization switch
+	SyncDept                bool   `mapstructure:"sync_dept"`                   // department attribute synchronization switch
+	SyncCorpEmailAttrKey    string `mapstructure:"sync_corp_email_attr_key"`    // corporate-email destination attribute key
+	SyncDisplayNameAttrKey  string `mapstructure:"sync_display_name_attr_key"`  // staff-name destination attribute key
+	SyncDeptAttrKey         string `mapstructure:"sync_dept_attr_key"`          // department destination attribute key
+	SyncCorpEmailAttrName   string `mapstructure:"sync_corp_email_attr_name"`   // corporate-email destination display label
+	SyncDisplayNameAttrName string `mapstructure:"sync_display_name_attr_name"` // staff-name destination display label
+	SyncDeptAttrName        string `mapstructure:"sync_dept_attr_name"`         // department destination display label
+	RequireEmail            bool   `mapstructure:"require_email"`               // configured upstream-email requirement flag
+	UsernameOverwritePolicy string `mapstructure:"username_overwrite_policy"`   // configured username replacement policy
+	UsernameAttributeKey    string `mapstructure:"username_attribute_key"`      // configured username destination attribute
+	EnableAttributeMatching bool   `mapstructure:"enable_attribute_matching"`   // configured attribute matching switch
+	EnableAttributeSync     bool   `mapstructure:"enable_attribute_sync"`       // configured attribute synchronization switch
+	// AttributeSyncFields retains the supplied configuration slice during
+	// ordinary option copying. Callers keep that shared field selection stable
+	// while a consumer reads it.
 	AttributeSyncFields          []string `mapstructure:"attribute_sync_fields"`
-	AttributeSyncOverwritePolicy string   `mapstructure:"attribute_sync_overwrite_policy"`
+	AttributeSyncOverwritePolicy string   `mapstructure:"attribute_sync_overwrite_policy"` // configured attribute replacement policy
 }
+
+// DingTalkUserTokenResp carries upstream user credentials and an optional
+// organization observation.
 type DingTalkUserTokenResp struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-	ExpireIn     int64  `json:"expireIn"`
-	CorpID       string `json:"corpId"`
+	AccessToken  string `json:"accessToken"`  // upstream user access credential
+	RefreshToken string `json:"refreshToken"` // upstream user renewal credential
+	ExpireIn     int64  `json:"expireIn"`     // seconds
+	// CorpID retains the organization hint returned by authorization and may be
+	// empty. DingTalkCorpAllowed does not compare it to InternalCorpID before
+	// membership lookup.
+	CorpID string `json:"corpId"`
 }
+
+// DingTalkAPIError records provider failure code, message and its observed
+// HTTP status.
 type DingTalkAPIError struct {
-	Code    string
-	Message string
-	HTTP    int
+	Code    string // upstream provider error code
+	Message string // upstream provider error message
+	HTTP    int    // upstream response HTTP status
 }
 
-// DingTalkOAuthClient 暴露原四步验证链与部门读取，令牌缓存仍由 provider 唯一持有。
+// DingTalkOAuthClient exposes user-token and organization-directory
+// operations through one provider instance. The provider implementation owns
+// its application-token cache.
 type DingTalkOAuthClient interface {
+	// ExchangeCodeForUserToken exchanges a browser authorization code for
+	// upstream user credentials. The caller uses that access token for global
+	// unionID lookup; provider/transport errors remain errors before local
+	// identity decisions.
 	ExchangeCodeForUserToken(context.Context, string) (*DingTalkUserTokenResp, error)
+	// GetUnionIdByUserToken returns the global unionID and OAuth nickname for a
+	// user access token. The caller retains the canonical subject separately
+	// from organization staff IDs and handles failed upstream identity lookup.
 	GetUnionIdByUserToken(context.Context, string) (string, string, error)
+	// GetUserIdByUnionId resolves a global unionID under the application-token
+	// directory. The HTTP callback uses that organization-local result for
+	// internal membership and staff lookup; an error remains a provider failure.
 	GetUserIdByUnionId(context.Context, string) (string, error)
+	// GetStaffInfoByUserId reads organization-local profile and department
+	// observations for a staff identifier. The callback supplies a separate
+	// global unionID for canonical binding and handles unavailable or rejected
+	// directory reads before draft construction.
 	GetStaffInfoByUserId(context.Context, string) (*DingTalkProfileSnapshot, error)
-	DingTalkDepartmentReader
+	DingTalkDepartmentReader // shared directory department lookups
 }
 
+// Error formats the provider code, message and HTTP status as a diagnostic
+// string.
 func (e *DingTalkAPIError) Error() string {
 	return fmt.Sprintf("dingtalk api error code=%s msg=%s http=%d", e.Code, e.Message, e.HTTP)
 }
 
+// DingTalkSyntheticEmail formats the reserved compatibility address from
+// trimmed lowercased identity text. It does not reject blank input or
+// validate mailbox syntax, and callers supply the global unionID rather than
+// the organization-local staff ID.
 func DingTalkSyntheticEmail(userID string) string {
 	return "dingtalk-" + strings.ToLower(strings.TrimSpace(userID)) + DingTalkConnectSyntheticEmailDomain
 }
 
+// DingTalkBindLoginCompletionResponse builds the existing-account binding
+// step with creation disabled. It retains the supplied redirect text
+// unchanged; the caller validates browser destinations and later completes
+// credential or second-factor proof before binding.
 func DingTalkBindLoginCompletionResponse(redirectTo string) map[string]any {
 	return map[string]any{
 		"step":                      "bind_login_required",
@@ -85,8 +147,22 @@ func DingTalkBindLoginCompletionResponse(redirectTo string) map[string]any {
 	}
 }
 
+// DingTalkUpstreamClaims copies a nonnil staff snapshot into provider
+// identity/profile observations. unionID supplies the canonical subject and
+// its provider-specific duplicate, while staff.UserID remains separate
+// organization-local diagnostic data; unavailable directory fields can come
+// from an empty snapshot.
+//
+// The claim map records the first supplied department ID or zero when none
+// exists. Profile synchronization makes its own usable-department selection,
+// so this claim does not identify that later selected path. The returned map
+// is new and contains scalar values read without trimming; callers establish
+// consistent unionID/corpID observations before constructing it.
 func DingTalkUpstreamClaims(staff *DingTalkProfileSnapshot, unionID, corpID string) map[string]any {
 	primaryDeptID := int64(0)
+	// Record the first supplied department for upstream diagnostics; profile
+	// synchronization performs its own separate usable-department choice when
+	// building the destination path.
 	if len(staff.DeptIDs) > 0 {
 		primaryDeptID = staff.DeptIDs[0]
 	}
@@ -94,22 +170,24 @@ func DingTalkUpstreamClaims(staff *DingTalkProfileSnapshot, unionID, corpID stri
 		"email":           staff.Email,
 		"username":        staff.Name,
 		"nickname":        staff.Nickname,
-		"subject":         unionID,      // 与 identityKey.ProviderSubject 保持一致（全局唯一 unionID）
-		"corp_user_id":    staff.UserID, // 企业 userid（跨组织时为空），保留作独立字段用于 audit
+		"subject":         unionID,      // canonical global provider subject
+		"corp_user_id":    staff.UserID, // organization-local staff ID; empty in the unavailable-directory view
 		"union_id":        unionID,
 		"corp_id":         corpID,
-		"primary_dept_id": primaryDeptID, // 首个部门 ID，用于 internal_only 同步路径
+		"primary_dept_id": primaryDeptID, // first supplied department identifier
 	}
 }
 
+// DingTalkCorpAllowed accepts the recognized empty, none and internal_only
+// policy labels without comparing corpID. The HTTP callback enforces internal
+// membership through the application-token directory lookup, so this
+// predicate alone does not establish organization membership.
 func DingTalkCorpAllowed(cfg DingTalkOAuthOptions, corpID string) bool {
 	switch cfg.CorpRestrictionPolicy {
 	case "internal_only":
-		// 方案 A：完全跳过 corpID 字段校验，由 step 3 `GetUserIdByUnionId` 做真实判定。
-		// 原因：钉钉 /v1.0/oauth2/userAccessToken 在部分授权场景（扫码登录、非企业工作台入口）
-		// 不会返回 corpId 字段。而 step 3 用本企业 appToken 查 unionId→userId 映射，
-		// 跨企业用户会被钉钉拒绝（错误码 60011/60121），mapDingTalkErrorCode 已将其映射回 "corp_rejected"。
-		// AppType=internal 已由 ValidateDingTalkConfig 强制保证应用属性。
+		// Accept the policy label here even with absent or different corpID text;
+		// the callback's application-token lookup supplies the actual membership result.
+		// Validated internal_only configuration uses the internal application type.
 		return true
 	case "none", "":
 		return true
@@ -118,9 +196,16 @@ func DingTalkCorpAllowed(cfg DingTalkOAuthOptions, corpID string) bool {
 	}
 }
 
-// DingTalkErrorCode 把 DingTalkAPIError 映射到 redirectOAuthError 用的字符串 code。
+// DingTalkErrorCode maps wrapped provider errors into browser redirect
+// labels. Codes 60011 and 60121 become corp_rejected; other or non-DingTalk
+// failures use upstream_error, preserving one redirect category without
+// exposing the diagnostic error text. A matched DingTalkAPIError must be
+// nonnil.
 func DingTalkErrorCode(err error) string {
 	var apiErr *DingTalkAPIError
+	// Non-DingTalk failures have no provider membership code to classify, so
+	// return the generic upstream redirect category without displaying their raw
+	// diagnostic text.
 	if !errors.As(err, &apiErr) {
 		return "upstream_error"
 	}
@@ -134,6 +219,17 @@ func DingTalkErrorCode(err error) string {
 	}
 }
 
+// PrepareDingTalkChoice builds account-choice controls from caller-supplied
+// email, compatibility and registration observations. A blank suggestion
+// falls back to the resolved hint, and a compatibility user prefills email
+// controls with a positive target ID when available.
+//
+// Signup blocking then forces the existing-account binding step and keeps
+// account creation disabled, even after compatibility prefill or forced-email
+// wording. The payload's original resolved_email differs from the draft's
+// selected ResolvedEmail when another hint wins. Upstream claim storage and
+// the compatibility user ID pointer remain shared, while the completion map
+// is new; callers keep their ownership observations aligned.
 func PrepareDingTalkChoice(
 	identity PendingAuthIdentityKey,
 	suggestedEmail string,
@@ -148,6 +244,9 @@ func PrepareDingTalkChoice(
 ) OAuthPendingDraft {
 	suggestionEmail := strings.TrimSpace(suggestedEmail)
 	canonicalEmail := strings.TrimSpace(resolvedEmail)
+	// A missing suggestion uses the resolved hint until a compatibility account
+	// supplies its email; this selects display state without another account
+	// lookup.
 	if suggestionEmail == "" {
 		suggestionEmail = canonicalEmail
 	}
@@ -178,9 +277,8 @@ func PrepareDingTalkChoice(
 	if forceEmailOnSignup && compatEmailUser == nil {
 		completionResponse["choice_reason"] = "force_email_on_signup"
 	}
-	// 注册被拦：无论是否匹配到 compat email user，都跳过 choice，直接进 bind_login。
-	// "开放注册" 关闭 且 "钉钉企业模式豁免" 也关闭时，唯一合法出口是绑定已有账户，
-	// 不应该让用户看到"创建新账户"按钮；compat user 命中只是让 bind_login 的邮箱字段预填得更准。
+	// Registration blocking overrides earlier choice wording and forces binding;
+	// compatibility prefill remains visible, but its presence cannot enable creation in this payload.
 	if signupBlocked {
 		completionResponse["step"] = "bind_login_required"
 		completionResponse["existing_account_bindable"] = true
@@ -204,7 +302,11 @@ func PrepareDingTalkChoice(
 	}
 }
 
-// DingTalkSignupBlocked 只判断已经读取的注册开关，HTTP 保留动态读取时机。
+// DingTalkSignupBlocked reports whether the supplied global registration
+// switch blocks signup under DingTalk bypass policy. Bypass works only for
+// exact internal_only policy; the predicate does not read cfg.Enabled or
+// credentials, and HTTP callers choose when to sample the registration
+// switch.
 func DingTalkSignupBlocked(cfg DingTalkOAuthOptions, enabled bool) bool {
 	return !enabled && (!cfg.BypassRegistration || cfg.CorpRestrictionPolicy != "internal_only")
 }

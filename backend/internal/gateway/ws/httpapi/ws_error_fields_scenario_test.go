@@ -1,7 +1,5 @@
 package httpapi
 
-// WS 错误字段场景覆盖 protocol/openai/ws_events.go、upstream/openai/ws_error_rules.go 和 gateway/provider/ws_diagnostics.go，测量字段解析后复用分类与诊断结果的开销。
-
 import (
 	"testing"
 
@@ -10,11 +8,22 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// WS classification, log summaries and HTTP status mapping can reuse one parse
+// of the same error frame. The benchmark passes those extracted values to each
+// helper so measured work includes their shared-field reuse, with results
+// retained in package sinks.
+
+// These sinks retain benchmark classification and diagnostic results so repeated
+// helper work remains observable after each measured iteration completes.
 var (
-	benchmarkOpenAIWSStringSink string
-	benchmarkOpenAIWSBoolSink   bool
+	benchmarkOpenAIWSStringSink string // retained diagnostic string result
+	benchmarkOpenAIWSBoolSink   bool   // retained classification or status result
 )
 
+// BenchmarkOpenAIWSErrorEventFieldReuse parses one invalid-request frame and
+// reuses its fields for classification, logging and status mapping. Package
+// sinks retain each result while allocation reporting measures repeated
+// combined helper work after fixture preparation.
 func BenchmarkOpenAIWSErrorEventFieldReuse(b *testing.B) {
 	event := []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_request","message":"invalid input"}}`)
 	b.ReportAllocs()

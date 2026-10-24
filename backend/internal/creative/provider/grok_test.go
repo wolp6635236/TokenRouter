@@ -9,7 +9,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 )
 
-// TestCreativeGrokOperationMatrix 检查 Grok 拒绝 inpaint 操作。
+// Grok generation uses one output even when saved run metadata requests more.
+// Edit request fixtures check the singular and plural reference
+// representations and their exact MIME/base64 data URLs, while unsupported
+// inpaint is rejected before transport dependencies are needed.
+
+// TestCreativeGrokOperationMatrix calls the unconfigured xAI adapter with
+// inpaint. The operation check returns an error marked nonretryable before the
+// adapter needs credential or transport callbacks.
 func TestCreativeGrokOperationMatrix(t *testing.T) {
 	executor := &Target{}
 	for _, operation := range []string{creative.CreativeOperationInpaint} {
@@ -21,7 +28,9 @@ func TestCreativeGrokOperationMatrix(t *testing.T) {
 	}
 }
 
-// TestBuildCreativeGrokRequest 校验 grok 请求体构造。
+// TestBuildCreativeGrokRequest supplies resolution, ratio, quality, and a
+// two-output run. The body still requests one base64 image, and an unsupported
+// ratio is omitted in the additional case.
 func TestBuildCreativeGrokRequest(t *testing.T) {
 	run := creative.CreativeRun{ImageSize: "2K", AspectRatio: "16:9", RequestedOutputCount: 2}
 	payload := creative.CreativeRunPayload{Prompt: "画猫", Quality: "low"}
@@ -34,7 +43,7 @@ func TestBuildCreativeGrokRequest(t *testing.T) {
 	require.Equal(t, "16:9", request["aspect_ratio"])
 	require.Equal(t, "low", request["quality"])
 
-	// 不支持的 aspect_ratio 不落字段；1K 映射 1k。
+	// Unsupported aspect ratios are omitted; 1K maps to 1k.
 	run = creative.CreativeRun{ImageSize: "1K", AspectRatio: "21:99"}
 	request = BuildCreativeGrokRequest(run, payload, "grok-imagine")
 	require.Equal(t, "1k", request["resolution"])
@@ -42,7 +51,9 @@ func TestBuildCreativeGrokRequest(t *testing.T) {
 	require.False(t, ok)
 }
 
-// TestBuildCreativeGrokEditRequest 校验 Grok 单图与多图编辑 JSON 结构。
+// TestBuildCreativeGrokEditRequest builds bodies with two references and then
+// one reference. It checks generation fields, exact encoded source URLs, and
+// the corresponding images or image field presence.
 func TestBuildCreativeGrokEditRequest(t *testing.T) {
 	run := creative.CreativeRun{ImageSize: "2K", AspectRatio: "16:9", RequestedOutputCount: 2}
 	payload := creative.CreativeRunPayload{

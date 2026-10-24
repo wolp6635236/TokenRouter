@@ -7,13 +7,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOpsWSShutdownCancelsIdleTimer 验证最后一个 WS 离开后的三十秒空闲定时器不能拖延应用退出或在退出后重新安排。
+// TestOpsWSShutdownCancelsIdleTimer schedules the default idle stop before
+// final runtime shutdown with no active sample loop. It checks Stop returns
+// within one second, later idle scheduling keeps its timer nil, and repeated
+// Stop completes.
 func TestOpsWSShutdownCancelsIdleTimer(t *testing.T) {
 	rt := NewRealtimeRuntime()
 
 	rt.scheduleQPSWSIdleStop()
 	finished := make(chan struct{})
+	// Close finished only after runtime Stop returns. The select observes
+	// completed shutdown rather than a state flag published before timer or
+	// sampler work joined.
 	go func() { rt.Stop(); close(finished) }()
+	// A one-second observation budget exposes waiting for the uncancelled
+	// thirty-second idle delay. Completion proceeds to the separate assertion that
+	// later idle scheduling stays closed.
 	select {
 	case <-finished:
 	case <-time.After(time.Second):
@@ -26,7 +35,9 @@ func TestOpsWSShutdownCancelsIdleTimer(t *testing.T) {
 	rt.Stop()
 }
 
-// TestRealtimePayloadRequestIsolation 验证跨请求的序列化快照仍是独立副本，不允许下游改写共享缓存。
+// TestRealtimePayloadRequestIsolation publishes nonempty cached JSON and
+// mutates the first Payload result. It checks another read retains the original
+// first byte, protecting separate returned byte storage for readers.
 func TestRealtimePayloadRequestIsolation(t *testing.T) {
 	r := NewRealtimeRuntime()
 	r.cache.payload.Store([]byte(`{"type":"qps_update"}`))

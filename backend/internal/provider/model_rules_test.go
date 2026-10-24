@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPreparedModelRulesParity 核对准备后的索引与逐次读取配置的匹配结果。
+// TestPreparedModelRulesParity exercises four platforms with empty, wildcard,
+// alias, and Unicode whitelists. It compares prepared admission, final membership,
+// mapped targets and flags, forwarding, and configured names with per-call helpers.
 func TestPreparedModelRulesParity(t *testing.T) {
 	rules := ModelPlatformRules{
 		NormalizeQoder:      func(model string) string { return strings.TrimSuffix(strings.ToLower(model), "-alias") },
@@ -36,7 +38,9 @@ func TestPreparedModelRulesParity(t *testing.T) {
 	}
 }
 
-// TestPreparedModelRulesOwnConfiguration 配置替换和调用方修改返回值不会改变已准备的规则。
+// TestPreparedModelRulesOwnConfiguration mutates the original mapping and
+// whitelist plus the snapshot's returned collections. It checks that captured
+// admission, the alias target, and configured names retain their prepared values.
 func TestPreparedModelRulesOwnConfiguration(t *testing.T) {
 	mapping := map[string]any{"alias": "known"}
 	whitelist := []string{"known"}
@@ -54,7 +58,9 @@ func TestPreparedModelRulesOwnConfiguration(t *testing.T) {
 	require.ElementsMatch(t, []string{"known", "alias"}, snapshot.ConfiguredModels())
 }
 
-// TestPreparedModelRulesReadDefaultsOnce 多个型号校验共用一次默认配置读取。
+// TestPreparedModelRulesReadDefaultsOnce repeatedly validates an Antigravity
+// alias and reads configured names after preparation. It checks that the model
+// and mapping factories each ran once across those subsequent queries.
 func TestPreparedModelRulesReadDefaultsOnce(t *testing.T) {
 	modelsReads, mappingReads := 0, 0
 	defaults := ModelMappingDefaults{

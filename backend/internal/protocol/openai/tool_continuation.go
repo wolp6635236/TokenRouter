@@ -8,36 +8,76 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/wirejson"
 )
 
-// ToolContinuationSignals 在一次遍历中收集工具续接所需的 input 信号。
+// tool_continuation.go evaluates tool-result history and checks whether call or
+// reference identities cover continuation outputs.
+// A tool result can depend on a prior upstream response even when the request
+// contains some tool-call context. Preliminary validation asks whether an
+// output and any nonblank call context exist; that decision can accept
+// unrelated context. Moving or rebuilding a continuation needs a stronger
+// comparison in which every output ID has call or reference evidence.
+//
+// Decoded-map scans require actual string IDs, while raw byte scans use gjson
+// string forms and borrowed request storage. The full raw coverage scan
+// accepts an input array or one object and examines all outputs. Coarse scans
+// can stop early, so their missing-ID and reference flags describe the items
+// inspected under their individual rules; callers retain continuation state or
+// reject recovery using the appropriate result.
+
+// ToolContinuationSignals records decoded-array observations used by WebSocket
+// continuation inference. FunctionCallOutput field names cover all four
+// recognized Codex output types, and their flags have independent evidence
+// rules.
 type ToolContinuationSignals struct {
-	HasFunctionCallOutput              bool
-	HasFunctionCallOutputMissingCallID bool
-	HasToolCallContext                 bool
-	HasItemReference                   bool
-	HasItemReferenceForAllCallIDs      bool
-	FunctionCallOutputCallIDs          []string
+	// HasFunctionCallOutput records any recognized output, while
+	// HasFunctionCallOutputMissingCallID marks an output with no nonblank string
+	// call ID. Those observations remain independent of reference coverage for
+	// other outputs.
+	HasFunctionCallOutput              bool // recognized output item observed
+	HasFunctionCallOutputMissingCallID bool // observed output lacks string ID
+	// HasToolCallContext means some recognized call has a nonblank string
+	// call_id; that call can be unrelated to the output IDs.
+	HasToolCallContext bool // nonblank call context observed
+	// HasItemReference records the literal item_reference type even when its id
+	// is blank or has another decoded type.
+	HasItemReference bool // literal reference item observed
+	// HasItemReferenceForAllCallIDs covers the unique nonblank IDs in
+	// FunctionCallOutputCallIDs. Missing output IDs are tracked separately and do
+	// not force this flag false; the returned slice has unspecified order.
+	HasItemReferenceForAllCallIDs bool     // nonblank outputs fully referenced
+	FunctionCallOutputCallIDs     []string // unique trimmed output call IDs
 }
 
-// FunctionCallOutputValidation 汇总 function_call_output 关联性校验结果。
+// FunctionCallOutputValidation records coarse output/context evidence for
+// preliminary HTTP-style gates. Its scanners can stop early and do not
+// establish identity coverage for every output.
 type FunctionCallOutputValidation struct {
-	HasFunctionCallOutput              bool
-	HasToolCallContext                 bool
-	HasFunctionCallOutputMissingCallID bool
-	HasItemReferenceForAllCallIDs      bool
+	// HasFunctionCallOutput and HasToolCallContext can end preliminary scanning
+	// once both are observed. Context means a recognized call's nonblank ID, so this
+	// combination does not establish all-output matching.
+	HasFunctionCallOutput bool // recognized output item observed
+	HasToolCallContext    bool // nonblank call context observed
+	// HasFunctionCallOutputMissingCallID records inspected missing IDs. The raw
+	// scan can set it before finding context; map validation checks it only on
+	// its no-context second pass.
+	HasFunctionCallOutputMissingCallID bool // observed output lacks usable ID
+	// HasItemReferenceForAllCallIDs checks collected nonblank output IDs when
+	// call context is absent. Read the missing-ID flag separately before
+	// accepting a reference-only request.
+	HasItemReferenceForAllCallIDs bool // nonblank outputs fully referenced
 }
 
-// ToolCallOutputContextCoverage 描述 input 中工具输出与可重建上下文的覆盖关系，
-// 用于判断剥离 previous_response_id 后上游能否仅凭 input 重建工具续链。
+// ToolCallOutputContextCoverage reports raw-input identity matching before
+// callers discard an upstream continuation chain.
 type ToolCallOutputContextCoverage struct {
-	HasFunctionCallOutput bool
-	// ContextCoversAllCallIDs 表示每个工具输出的 call_id 都能在 input 内找到
-	// 同 call_id 的工具调用上下文项或同 id 的 item_reference，且不存在缺失 call_id 的输出。
-	// 任一输出无法由 input 自身重建时为 false，此时剥离 previous_response_id 会导致
-	// 上游以 "No tool call found for function call output" 拒绝请求。
-	ContextCoversAllCallIDs bool
+	HasFunctionCallOutput bool // recognized output item observed
+	// ContextCoversAllCallIDs requires an output and a nonblank call_id on every
+	// output. Each distinct trimmed ID must match a call-context call_id or
+	// literal item_reference id from the same input.
+	ContextCoversAllCallIDs bool // every observed output ID matched
 }
 
-// IsCodexToolCallContextItemType 判断 input item 是否是带 call_id 的工具调用上下文。
+// IsCodexToolCallContextItemType recognizes the supported call-context labels
+// after trimming surrounding whitespace.
 func IsCodexToolCallContextItemType(typ string) bool {
 	switch strings.TrimSpace(typ) {
 	case "tool_call",
@@ -52,7 +92,8 @@ func IsCodexToolCallContextItemType(typ string) bool {
 	}
 }
 
-// IsCodexToolCallOutputItemType 判断 input item 是否是 Codex 工具输出。
+// IsCodexToolCallOutputItemType recognizes the four supported output labels
+// after trimming surrounding whitespace.
 func IsCodexToolCallOutputItemType(typ string) bool {
 	switch strings.TrimSpace(typ) {
 	case "function_call_output",
@@ -65,9 +106,10 @@ func IsCodexToolCallOutputItemType(typ string) bool {
 	}
 }
 
-// NeedsToolContinuation 判定请求是否需要工具调用续链处理。
-// 满足以下任一信号即视为续链：previous_response_id、input 内包含工具输出/item_reference、
-// 或声明 tools/tool_choice。
+// NeedsToolContinuation reports a nonblank string previous ID, nonempty
+// decoded tools/choice, or exact Codex call/output/reference labels in an
+// input array. Unsupported input shapes contribute no item signal; this
+// classification does not validate a continuation chain.
 func NeedsToolContinuation(reqBody map[string]any) bool {
 	if reqBody == nil {
 		return false
@@ -98,9 +140,17 @@ func NeedsToolContinuation(reqBody map[string]any) bool {
 	return false
 }
 
-// AnalyzeToolContinuationSignals 单次遍历 input，提取工具输出/工具调用上下文/item_reference 相关信号。
-// FunctionCallOutput 字段覆盖 Codex 的所有工具输出
-// （function_call_output/tool_search_output/custom_tool_call_output/mcp_tool_call_output）。
+// AnalyzeToolContinuationSignals scans a decoded []any input array for output,
+// context, and reference evidence. Unsupported request/item shapes produce no
+// observation, and ID fields must be actual strings. Output IDs are trimmed,
+// deduplicated, and returned in unspecified order.
+//
+// Any call with a nonblank ID establishes context presence, even if unrelated
+// to an output. Reference coverage compares the unique nonblank output IDs
+// with literal item_reference IDs; outputs lacking IDs set their own flag and
+// do not force that coverage flag false. Callers combine these observations
+// according to their continuation policy rather than treating context presence
+// as a matched history.
 func AnalyzeToolContinuationSignals(reqBody map[string]any) ToolContinuationSignals {
 	signals := ToolContinuationSignals{}
 	if reqBody == nil {
@@ -169,13 +219,24 @@ func AnalyzeToolContinuationSignals(reqBody map[string]any) ToolContinuationSign
 	return signals
 }
 
-// ValidateFunctionCallOutputContextBytes 扫描 raw JSON 校验工具输出续接，供 handler 预校验使用。
+// ValidateFunctionCallOutputContextBytes collects coarse flags from a raw
+// input array using gjson string forms. Empty or unsupported containers
+// produce zero flags, and complete-document validation belongs to the caller.
+// Keep body bytes unchanged during the synchronous borrowed-view scan.
+//
+// The scan can stop after observing an output and some nonblank call context.
+// Missing output IDs encountered before that stop remain recorded; later items
+// may be unexamined. Without context, nonblank output IDs are compared against
+// reference IDs, while missing IDs remain a separate result. This preliminary
+// gate does not establish all-output context coverage, and its coercion or
+// early missing-ID observations can differ from the decoded-map helper.
 func ValidateFunctionCallOutputContextBytes(body []byte) FunctionCallOutputValidation {
 	result := FunctionCallOutputValidation{}
 	if len(body) == 0 {
 		return result
 	}
-	// handler 同步扫描 input，直接使用请求字节。
+	// ParseView borrows the body storage for this synchronous scan. The
+	// returned flags contain no borrowed strings, but parsing requires stable input bytes.
 	input := wirejson.ParseView(body).Get("input")
 	if !input.IsArray() {
 		return result
@@ -214,6 +275,8 @@ func ValidateFunctionCallOutputContextBytes(body []byte) FunctionCallOutputValid
 			}
 			referenceIDs[idValue] = struct{}{}
 		}
+		// The HTTP gate accepts any call context before checking missing IDs or
+		// references. Stop once both presence categories can decide that branch.
 		return !result.HasFunctionCallOutput || !result.HasToolCallContext
 	})
 	if !result.HasFunctionCallOutput || result.HasToolCallContext || len(callIDs) == 0 || len(referenceIDs) == 0 {
@@ -230,9 +293,17 @@ func ValidateFunctionCallOutputContextBytes(body []byte) FunctionCallOutputValid
 	return result
 }
 
-// AnalyzeToolCallOutputContextCoverageBytes 全量扫描 input，按 call_id 精确匹配工具输出
-// 与可重建上下文。不能复用 ValidateFunctionCallOutputContextBytes 的 HasToolCallContext：
-// 该标志只代表"存在某一个上下文项"，部分覆盖的续链仍会被上游拒绝。
+// AnalyzeToolCallOutputContextCoverageBytes checks all recognized output IDs
+// against call or reference IDs in a raw input array or single object. At
+// least one output is required, every output needs a nonblank gjson
+// string-form call ID, and each distinct ID must occur in the combined context
+// set.
+//
+// The full scan ignores item order and accepts either call_id on a recognized
+// call or id on a literal item_reference. Missing IDs or one unmatched output
+// leave coverage false. Keep body bytes stable during borrowed parsing and
+// validate the complete request separately; matching these strings does not
+// verify that an upstream referenced object exists.
 func AnalyzeToolCallOutputContextCoverageBytes(body []byte) ToolCallOutputContextCoverage {
 	coverage := ToolCallOutputContextCoverage{}
 	if len(body) == 0 {
@@ -304,11 +375,17 @@ func AnalyzeToolCallOutputContextCoverageBytes(body []byte) ToolCallOutputContex
 	return coverage
 }
 
-// ValidateFunctionCallOutputContext 为 handler 提供低开销校验结果：
-// 1) 无工具输出直接返回
-// 2) 若已存在工具调用上下文则提前返回
-// 3) 仅在无工具上下文时才构建 call_id / item_reference 集合
-// FunctionCallOutput 字段覆盖所有 Codex 工具输出。
+// ValidateFunctionCallOutputContext collects preliminary flags from a decoded
+// input array. Its first pass can return after finding any output plus any
+// nonblank call context, or after proving one category absent. Unsupported
+// shapes contribute no evidence.
+//
+// Only output-bearing requests with no call context receive the second pass
+// for missing IDs and references. That pass requires string IDs and compares
+// the unique nonblank output set with trimmed reference IDs; missing IDs
+// remain independently flagged. Context presence is deliberately coarse, so
+// callers use AnalyzeToolCallOutputContextCoverageBytes when every output must
+// match before a continuation chain is removed.
 func ValidateFunctionCallOutputContext(reqBody map[string]any) FunctionCallOutputValidation {
 	result := FunctionCallOutputValidation{}
 	if reqBody == nil {
@@ -334,6 +411,8 @@ func ValidateFunctionCallOutputContext(reqBody map[string]any) FunctionCallOutpu
 				result.HasToolCallContext = true
 			}
 		}
+		// Context presence decides the coarse gate, so later malformed outputs
+		// need not be scanned on this path. Full identity coverage uses its separate helper.
 		if result.HasFunctionCallOutput && result.HasToolCallContext {
 			return result
 		}
@@ -384,14 +463,24 @@ func ValidateFunctionCallOutputContext(reqBody map[string]any) FunctionCallOutpu
 	return result
 }
 
-// HasFunctionCallOutput 判断 input 是否包含任意 Codex 工具输出，用于触发续链校验。
-// 此处同时处理 function_call_output 和其他 Codex 工具输出。
+// HasFunctionCallOutput delegates decoded-array signal collection and reports
+// any recognized Codex output type. Nil requests and unsupported input
+// containers return false; the result is presence evidence, independent of IDs
+// or matching context.
 func HasFunctionCallOutput(reqBody map[string]any) bool {
 	return AnalyzeToolContinuationSignals(reqBody).HasFunctionCallOutput
 }
 
-// HasItemReferenceForCallIDs 判断 item_reference.id 是否覆盖所有 call_id。
-// 用于仅依赖引用项完成续链场景的校验。
+// HasItemReferenceForCallIDs matches every supplied trimmed call ID against
+// trimmed literal item_reference IDs in a decoded input array. Nil requests,
+// empty ID lists, unsupported input, or no nonblank references return false.
+// Repeated requested IDs can share one reference entry.
+//
+// The helper compares the provided ID list rather than deriving output IDs or
+// checking their call contexts. A blank requested ID fails because blank
+// references are excluded. Matching establishes string-set coverage only; the
+// caller determines whether those references belong to valid upstream objects
+// and whether other continuation requirements are satisfied.
 func HasItemReferenceForCallIDs(reqBody map[string]any, callIDs []string) bool {
 	if reqBody == nil || len(callIDs) == 0 {
 		return false
@@ -428,13 +517,16 @@ func HasItemReferenceForCallIDs(reqBody map[string]any, callIDs []string) bool {
 	return true
 }
 
-// HasNonEmptyString 判断字段是否为非空字符串。
+// HasNonEmptyString reports whether the value is a string containing
+// non-whitespace text.
 func HasNonEmptyString(value any) bool {
 	stringValue, ok := value.(string)
 	return ok && strings.TrimSpace(stringValue) != ""
 }
 
-// HasToolsSignal 判断 tools 字段是否存在且非空。
+// HasToolsSignal reports a nonempty []any value under tools in the decoded
+// request map. Missing, nil, empty, and differently typed collections return
+// false; the signal does not validate individual tool declarations.
 func HasToolsSignal(reqBody map[string]any) bool {
 	raw, exists := reqBody["tools"]
 	if !exists || raw == nil {
@@ -446,7 +538,9 @@ func HasToolsSignal(reqBody map[string]any) bool {
 	return false
 }
 
-// HasToolChoiceSignal 判断 tool_choice 字段是否非空且非 nil。
+// HasToolChoiceSignal reports a nonblank string or nonempty decoded map under
+// tool_choice. Any such string, including none, supplies this signal; absent,
+// nil, empty, and other typed values return false.
 func HasToolChoiceSignal(reqBody map[string]any) bool {
 	raw, exists := reqBody["tool_choice"]
 	if !exists || raw == nil {

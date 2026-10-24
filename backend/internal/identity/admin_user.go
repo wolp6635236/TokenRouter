@@ -13,7 +13,33 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
-// ListUsers 分页查询用户，并补充最近使用时间和用户专属分组倍率。
+// admin_user.go applies administrator account and balance changes and enriches
+// account queries.
+// Administrator funding updates use atomic delta or replacement operations
+// before a refreshed account is returned. A later account read can fail after
+// funding persistence, while profile updates use a selected field mask before
+// optional multiplier synchronization and adjustment history.
+//
+// Cache publication follows applicable successful returns and selected field
+// differences, with separately scheduled funding-cache cleanup and diagnostic
+// auxiliary failures. Role demotion checks a count before its independent
+// update, and RPM display combines independently read counts, metadata and
+// overrides from a bounded Key sample. Returned user/maps/timestamps remain
+// the available observations supplied by readers, so callers keep completed
+// mutations separate from partial enrichment, callback propagation and later
+// transaction completion.
+
+// ListUsers returns the repository page enriched with usage activity and
+// optional group multipliers. Base account/page failure remains an error; the
+// repository supplies nonnil pagination metadata, while later activity or
+// multiplier failures are diagnosed and retain the available account view.
+//
+// A batch multiplier capability is preferred. Failure or missing capability
+// selects per-account reads, whose individual failures leave that account's
+// earlier map untouched. Returned timestamp pointers and multiplier maps can
+// remain shared with their readers, so callers treat this as a sequence of
+// observations rather than one consistent independently mutable database
+// snapshot.
 func (s *UserAdmin) ListUsers(ctx context.Context, page, pageSize int, filters UserListFilters, sortBy, sortOrder string) ([]User, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
 	users, result, err := s.Users.ListWithFilters(ctx, params, filters)
@@ -26,6 +52,9 @@ func (s *UserAdmin) ListUsers(ctx context.Context, page, pageSize int, filters U
 			userIDs = append(userIDs, users[i].ID)
 		}
 		lastUsedByUserID, latestErr := s.Users.GetLatestUsedAtByUserIDs(ctx, userIDs)
+		// Base account/page loading succeeded, so diagnose unavailable usage
+		// enrichment and leave each returned account's earlier activity field
+		// rather than rejecting the whole list.
 		if latestErr != nil {
 			s.Observer.Printf("service.admin", "failed to load user last_used_at in batch: err=%v", latestErr)
 		} else {
@@ -34,7 +63,9 @@ func (s *UserAdmin) ListUsers(ctx context.Context, page, pageSize int, filters U
 			}
 		}
 	}
-	// 批量加载用户专属分组倍率
+	// Prefer a bulk multiplier observation when supported; a failed or absent
+	// capability selects per-account reads so usable profile rows can still
+	// retain available rate data.
 	if s.Rates != nil && len(users) > 0 {
 		if batchRepo, ok := s.Rates.(AdminGroupRateBatchReader); ok {
 			userIDs := make([]int64, 0, len(users))
@@ -59,12 +90,19 @@ func (s *UserAdmin) ListUsers(ctx context.Context, page, pageSize int, filters U
 	return users, result.Total, nil
 }
 
+// AdminLoadUserGroupRatesOneByOne fills group multipliers on the supplied
+// user slice through individual reads. Missing Rates skips work and read
+// failures are diagnosed while retaining that account's earlier map; callers
+// keep this mutable slice stable during hydration.
 func (s *UserAdmin) AdminLoadUserGroupRatesOneByOne(ctx context.Context, users []User) {
 	if s.Rates == nil {
 		return
 	}
 	for i := range users {
 		rates, err := s.Rates.GetByUserID(ctx, users[i].ID)
+		// An unreadable multiplier map cannot replace this user's current
+		// observation; diagnose that account's failure and continue enriching the
+		// other returned rows.
 		if err != nil {
 			s.Observer.Printf("service.admin", "failed to load user group rates: user_id=%d err=%v", users[i].ID, err)
 			continue
@@ -73,20 +111,30 @@ func (s *UserAdmin) AdminLoadUserGroupRatesOneByOne(ctx context.Context, users [
 	}
 }
 
+// GetUser reads a current account and enriches it with usage activity and
+// optional group multipliers. Base account errors abort; enrichment errors
+// remain diagnostic, preserving existing fields, while returned
+// maps/timestamp pointers follow their reader's sharing behavior.
 func (s *UserAdmin) GetUser(ctx context.Context, id int64) (*User, error) {
 	user, err := s.Users.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	lastUsedAt, latestErr := s.Users.GetLatestUsedAtByUserID(ctx, id)
+	// The account read already succeeded; diagnose activity-summary failure and
+	// retain its earlier timestamp so optional enrichment does not reject the
+	// profile result.
 	if latestErr != nil {
 		s.Observer.Printf("service.admin", "failed to load user last_used_at: user_id=%d err=%v", id, latestErr)
 	} else {
 		user.LastUsedAt = lastUsedAt
 	}
-	// 加载用户专属分组倍率
+
 	if s.Rates != nil {
 		rates, err := s.Rates.GetByUserID(ctx, id)
+		// Optional multiplier lookup failed after account loading; keep the
+		// existing map and return the account while diagnostics retain the failed
+		// enrichment observation.
 		if err != nil {
 			s.Observer.Printf("service.admin", "failed to load user group rates: user_id=%d err=%v", id, err)
 		} else {
@@ -96,12 +144,18 @@ func (s *UserAdmin) GetUser(ctx context.Context, id int64) (*User, error) {
 	return user, nil
 }
 
+// GetUserIncludeDeleted delegates account lookup including soft-deleted rows
+// for administrator history. It returns repository errors unchanged and does
+// not perform GetUser's optional activity/rate enrichment, so callers use its
+// returned audit fields as supplied.
 func (s *UserAdmin) GetUserIncludeDeleted(ctx context.Context, id int64) (*User, error) {
 	return s.Users.GetByIDIncludeDeleted(ctx, id)
 }
 
-// AdminNormalizeUserRole 校验并归一化角色输入。
-// 空字符串返回 fallback(未提供时的默认角色);非法值返回错误。
+// AdminNormalizeUserRole accepts exact admin or user text and returns an
+// error for other nonempty input. Empty text returns fallback as supplied
+// without revalidating it; callers select that fallback from their creation
+// or existing-account context.
 func AdminNormalizeUserRole(role, fallback string) (string, error) {
 	if role == "" {
 		return fallback, nil
@@ -112,6 +166,19 @@ func AdminNormalizeUserRole(role, fallback string) (string, error) {
 	return role, nil
 }
 
+// CreateUser saves a planned account from required administrator input and
+// user storage. Omitted balance reads current defaults or zero, while
+// explicit balance zero is retained; Key allowance starts from the
+// current/default limit and accepts a valid supplied zero as unlimited. Other
+// numeric limits come from the input.
+//
+// Role validation and password hashing precede persistence, with the optional
+// normalized-mailbox switch selecting the guarded create method. The supplied
+// group slices remain shared with the working account through creation. A
+// successful repository return precedes privilege diagnostics and optional
+// default plan assignment; failed plan assignment is diagnostic and does not
+// remove the created account. HTTP callers supply administrative
+// authorization and shaped credential data.
 func (s *UserAdmin) CreateUser(ctx context.Context, input *CreateUserInput) (*User, error) {
 	balance := 0.0
 	if input.Balance != nil {
@@ -130,7 +197,6 @@ func (s *UserAdmin) CreateUser(ctx context.Context, input *CreateUserInput) (*Us
 		apiKeyLimit = *input.APIKeyLimit
 	}
 
-	// 角色可由管理员在创建时指定(admin/user);未提供时默认 user。
 	role, err := AdminNormalizeUserRole(input.Role, RoleUser)
 	if err != nil {
 		return nil, err
@@ -152,6 +218,9 @@ func (s *UserAdmin) CreateUser(ctx context.Context, input *CreateUserInput) (*Us
 	if err := user.SetPassword(input.Password); err != nil {
 		return nil, err
 	}
+	// Choose the normalized-mailbox write guard from current policy before
+	// persistence; the working group slices and selected creation amounts remain
+	// the caller's stable input.
 	createUser := s.Users.Create
 	if s.Settings != nil && s.Settings.IsRegistrationEmailNormalizationEnabled(ctx) {
 		normalizedEmail := NormalizeRegistrationEmailAddress(user.Email)
@@ -164,18 +233,27 @@ func (s *UserAdmin) CreateUser(ctx context.Context, input *CreateUserInput) (*Us
 	if err := createUser(ctx, user); err != nil {
 		return nil, err
 	}
-	// 创建管理员属权限敏感操作，落审计日志（含操作者），便于事后追溯。
 	if user.Role == RoleAdmin {
 		s.Observer.Printf("service.admin", "audit: admin user created actor_admin_id=%d target_user_id=%d",
 			input.ActorAdminID, user.ID)
 	}
+	// Account persistence has returned successfully before optional plan
+	// assignment; later assignment failures are diagnosed and do not delete the
+	// created account here.
 	s.AdminAssignDefaultSubscriptions(ctx, user.ID)
 	return user, nil
 }
 
-// AdminEnsureNotLastAdmin 降级管理员前确认系统中仍存在其他管理员，防止零 admin 锁死。
-// 注：读取与写入之间存在竞态窗口，极端并发下仍可能双双降级；作为后台低频操作
-// 的兜底保护足够，彻底防护需依赖数据库层约束。
+// AdminEnsureNotLastAdmin rejects demotion when the observed undeleted
+// administrator count is absent or at most one. It requests one row without
+// subscriptions but uses pagination Total for the full role count; disabled
+// administrators still participate because no status filter is supplied.
+//
+// A failed count returns a wrapped error. The count is separate from
+// UpdateUser's later role write, so concurrent demotions can both pass and
+// this check does not reserve a remaining active administrator. Callers
+// retain that limitation when assessing role-management policy rather than
+// treating success as a transactional last-administrator guarantee.
 func (s *UserAdmin) AdminEnsureNotLastAdmin(ctx context.Context) error {
 	noSubs := false
 	_, result, err := s.Users.ListWithFilters(ctx,
@@ -185,17 +263,32 @@ func (s *UserAdmin) AdminEnsureNotLastAdmin(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("count admin users: %w", err)
 	}
+	// This role-only count needs another record before admitting administrator demotion.
 	if result == nil || result.Total <= 1 {
 		return errors.New("cannot demote the last admin user")
 	}
 	return nil
 }
 
+// AdminAssignDefaultSubscriptions requests current default plans for an
+// already created positive account when settings and assigner exist. Each
+// plan carries the same account and administrator-default notes, and
+// successful entitlement/pending results are discarded.
+//
+// Individual assignment failure is diagnosed and later plans continue. These
+// calls do not use authentication's per-plan savepoint wrapper, so actual
+// transaction participation and recovery belong to the assigner and
+// surrounding caller. Earlier completed grants can remain when later ones
+// fail; the method returns no aggregate result and does not undo account
+// creation.
 func (s *UserAdmin) AdminAssignDefaultSubscriptions(ctx context.Context, userID int64) {
 	if s.Settings == nil || s.Subscriptions == nil || userID <= 0 {
 		return
 	}
 	items := s.Settings.GetDefaultSubscriptions(ctx)
+	// Attempt current default plans after account creation; diagnose individual
+	// failures and continue, leaving transaction participation and any already
+	// completed grant to the assigner.
 	for _, item := range items {
 		if _, _, err := s.Subscriptions.AssignOrExtendSubscription(ctx, &AssignSubscriptionInput{
 			UserID: userID,
@@ -207,8 +300,22 @@ func (s *UserAdmin) AdminAssignDefaultSubscriptions(ctx context.Context, userID 
 	}
 }
 
+// UpdateUser applies administrator-selected account fields through a mask and
+// then requests separate multiplier/history effects. Required input/user
+// storage supplies the working account; nonpositive nonnil multipliers are
+// rejected before lookup, and the currently admin account cannot receive
+// literal disabled even when a role change was also submitted.
+//
+// Credential changes select applicable mailbox guards, while role demotion
+// checks a separately observed administrator count. Working fields and
+// referenced slices can change before later validation or persistence
+// failure. Balance input is not read here. After successful account return,
+// multiplier sync failure is diagnostic, selected authentication changes
+// request optional invalidation, and a concurrency difference requests
+// history whose failure is also diagnosed. The core does not reload
+// multiplier data after synchronization, so callers distinguish that side
+// effect from the returned account view.
 func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserInput) (*User, error) {
-	// 校验用户专属分组倍率：必须 > 0（nil 合法，表示清除专属倍率）
 	if input.GroupRates != nil {
 		for groupID, rate := range input.GroupRates {
 			if rate != nil && *rate <= 0 {
@@ -222,7 +329,6 @@ func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserI
 		return nil, err
 	}
 
-	// Protect admin users: cannot disable admin accounts
 	if user.Role == "admin" && input.Status == "disabled" {
 		return nil, errors.New("cannot disable admin user")
 	}
@@ -236,8 +342,9 @@ func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserI
 	oldAllowedGroups := append([]int64(nil), user.AllowedGroups...)
 	oldDisabledPublicGroups := append([]int64(nil), user.DisabledPublicGroups...)
 
-	// fields 与下面的 input.X 判空条件一一对应：管理员没提交的列不写回，
-	// 避免这份快照回滚并发的扣费、状态变更或批量限额调整。
+	// Select submitted columns/relations for the working snapshot, keeping
+	// unrelated balance and admission fields written by other requests out of
+	// this account update.
 	var fields UserUpdateFields
 
 	if input.Email != "" {
@@ -280,14 +387,14 @@ func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserI
 		fields.Status = true
 	}
 
-	// 角色变更(admin/user);空字符串表示不修改。
 	if input.Role != "" {
 		role, err := AdminNormalizeUserRole(input.Role, user.Role)
 		if err != nil {
 			return nil, err
 		}
-		// 防锁死保护：不允许降级系统中最后一个管理员（自我降级已在 handler 层拦截，
-		// 此处兜底覆盖跨管理员互降导致零 admin 的场景）。
+		// Demotion requests a fresh administrator count before role persistence;
+		// this service check remains separate from that write, while the HTTP
+		// caller handles acting-user self-demotion.
 		if user.Role == RoleAdmin && role == RoleUser {
 			if err := s.AdminEnsureNotLastAdmin(ctx); err != nil {
 				return nil, err
@@ -334,13 +441,14 @@ func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserI
 		return nil, err
 	}
 
-	// 角色变更属权限敏感操作，落审计日志（含操作者），便于事后追溯。
 	if user.Role != oldRole {
 		s.Observer.Printf("service.admin", "audit: user role changed actor_admin_id=%d target_user_id=%d old_role=%s new_role=%s",
 			input.ActorAdminID, user.ID, oldRole, user.Role)
 	}
 
-	// 同步用户专属分组倍率
+	// Persist selected account fields before separate multiplier
+	// synchronization; sync failure is diagnostic and subsequent
+	// invalidation/history decisions still use the submitted state.
 	if input.GroupRates != nil && s.Rates != nil {
 		if err := s.Rates.SyncUserGroupRates(ctx, user.ID, input.GroupRates); err != nil {
 			s.Observer.Printf("service.admin", "failed to sync user group rates: user_id=%d err=%v", user.ID, err)
@@ -348,9 +456,9 @@ func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserI
 	}
 
 	if s.Invalidator != nil {
-		// RPMLimit 直接参与 billing_cache_service.checkRPM 的三级级联，
-		// allowed_groups/disabled_public_groups 参与 API Key 分组授权判断；
-		// 不失效缓存会让修改在一个 L2 TTL 内失去效果。
+		// Account admission fields and group permission sets drive cached
+		// authentication; request publication after the write, including submitted
+		// multiplier sync even when that optional sync failed.
 		if user.Concurrency != oldConcurrency ||
 			user.Status != oldStatus ||
 			user.Role != oldRole ||
@@ -362,8 +470,13 @@ func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserI
 		}
 	}
 
+	// Record a changed concurrency allowance after persistence and cache
+	// requests; history failure stays diagnostic while the selected account
+	// limit remains the update result.
 	concurrencyDiff := user.Concurrency - oldConcurrency
 	if concurrencyDiff != 0 {
+		// Express the concurrency difference as the numeric amount used by
+		// adjustment history.
 		if err := s.Records.RecordAdjustment(ctx, user.ID, AdjustmentTypeAdminConcurrency, float64(concurrencyDiff), ""); err != nil {
 			s.Observer.Printf("service.admin", "failed to create concurrency adjustment redeem code: %v", err)
 		}
@@ -372,10 +485,22 @@ func (s *UserAdmin) UpdateUser(ctx context.Context, id int64, input *UpdateUserI
 	return user, nil
 }
 
+// AdminSameInt64Set compares the positive ID sets represented by two slices.
+// It discards nonpositive IDs and duplicate values, sorts fresh working
+// slices and treats nil, empty and invalid-only inputs as the same empty set.
+//
+// UpdateUser uses this result to select cache publication for group
+// permissions, whose meaning depends on membership rather than list order.
+// The helper leaves input slices unchanged and does not decide whether
+// submitted groups should be persisted or validated; the selected account
+// field mask and repository still own those writes.
 func AdminSameInt64Set(a, b []int64) bool {
 	if len(a) == 0 && len(b) == 0 {
 		return true
 	}
+	// Permission equality ignores order, duplicate and nonpositive IDs before
+	// cache selection; fresh working slices keep that comparison from changing
+	// either submitted relation list.
 	normalize := func(values []int64) []int64 {
 		seen := make(map[int64]struct{}, len(values))
 		out := make([]int64, 0, len(values))
@@ -405,6 +530,16 @@ func AdminSameInt64Set(a, b []int64) bool {
 	return true
 }
 
+// BatchUpdateConcurrency deduplicates positive account IDs and delegates
+// exact set or add mode. Empty usable IDs returns zero before mode
+// validation; PostgreSQL replacement and additive operations apply their own
+// zero floors.
+//
+// A failed repository update returns before publication. After success, every
+// cleaned input ID receives optional account invalidation, even when the
+// affected-row count is smaller than the input set. The returned count
+// describes the repository write and does not confirm cache propagation or
+// record per-account adjustment history; callers keep those effects separate.
 func (s *UserAdmin) BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error) {
 	cleaned := make([]int64, 0, len(userIDs))
 	seen := make(map[int64]struct{}, len(userIDs))
@@ -437,7 +572,9 @@ func (s *UserAdmin) BatchUpdateConcurrency(ctx context.Context, userIDs []int64,
 	}
 
 	if s.Invalidator != nil {
-		// 并发数写入后立即失效认证缓存，避免 API Key 继续使用旧并发快照。
+		// The batch write returned successfully; publish every cleaned account ID
+		// because this result count does not identify which cached account
+		// observations actually changed.
 		for _, userID := range cleaned {
 			s.Invalidator.InvalidateAuthCacheByUserID(ctx, userID)
 		}
@@ -445,7 +582,17 @@ func (s *UserAdmin) BatchUpdateConcurrency(ctx context.Context, userIDs []int64,
 	return affected, nil
 }
 
-// BatchUpdateLimits 清洗用户 ID 后批量覆盖限制，并在写入成功后失效认证缓存。
+// BatchUpdateLimits requires a supplied concurrency or RPM pointer,
+// deduplicates positive IDs and delegates the selected limits together. Empty
+// usable IDs returns zero without writing; PostgreSQL floors negative
+// selected values and retains nil fields.
+//
+// Repository failure returns before optional invalidation. A successful
+// return publishes every cleaned input ID regardless of the affected count,
+// then returns that count unchanged. Callers keep the input pointers stable
+// during the write and distinguish selected values, actual affected rows and
+// callback propagation rather than treating the count as a per-account
+// completion list.
 func (s *UserAdmin) BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error) {
 	if concurrency == nil && rpmLimit == nil {
 		return 0, fmt.Errorf("at least one of concurrency or rpm_limit is required")
@@ -472,7 +619,9 @@ func (s *UserAdmin) BatchUpdateLimits(ctx context.Context, userIDs []int64, conc
 		return 0, err
 	}
 	if s.Invalidator != nil {
-		// 两个字段都会进入认证快照，必须在数据库写入成功后逐用户失效缓存。
+		// The selected limit write returned successfully; publish every cleaned
+		// input account, leaving the affected count separate from which
+		// authentication snapshots received a change request.
 		for _, userID := range cleaned {
 			s.Invalidator.InvalidateAuthCacheByUserID(ctx, userID)
 		}
@@ -480,8 +629,24 @@ func (s *UserAdmin) BatchUpdateLimits(ctx context.Context, userIDs []int64, conc
 	return affected, nil
 }
 
+// UpdateUserBalance applies exact set, add or subtract through required
+// atomic balance storage, then reads the current account. Negative-result
+// errors use the adjuster's companion before/after observations; other errors
+// remain errors, and successful funding can still precede a failed account
+// readback.
+//
+// After a usable account result, nonzero difference requests optional
+// authentication invalidation and adjustment history. Positive add can also
+// request a policy-enabled affiliate rebate, whose failure is diagnostic.
+// Optional funding-cache cleanup runs through the selected background runner
+// with a fresh five-second context, while history errors are diagnosed after
+// persistence. The returned account was read before those later effects;
+// callers retain that ordering and do not infer rollback from a subsequent
+// read or auxiliary failure.
 func (s *UserAdmin) UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error) {
-	// 余额调整必须走原子接口：先读后整行写回会把并发的计费扣款覆盖掉。
+	// Choose the adjuster's atomic delta/replacement operation instead of
+	// writing a read balance snapshot; successful funding precedes the account
+	// read and later auxiliary effects.
 	var (
 		change BalanceChange
 		err    error
@@ -496,6 +661,9 @@ func (s *UserAdmin) UpdateUserBalance(ctx context.Context, userID int64, balance
 	default:
 		return nil, fmt.Errorf("unsupported balance operation: %q", operation)
 	}
+	// Report rejected balance observations at two-decimal USD display precision;
+	// the formatted error exposes companion amounts and does not wrap
+	// ErrBalanceNegative for errors.Is.
 	if errors.Is(err, ErrBalanceNegative) {
 		return nil, fmt.Errorf("balance cannot be negative, current balance: %.2f, requested operation would result in: %.2f", change.Old, change.New)
 	}
@@ -514,8 +682,14 @@ func (s *UserAdmin) UpdateUserBalance(ctx context.Context, userID int64, balance
 	}
 	s.AdminTryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, balance)
 
+	// Funding has already completed; schedule optional cache cleanup
+	// independently of request cancellation, while a rejected configured runner
+	// supplies no automatic synchronous retry.
 	if s.BalanceCache != nil {
 		s.RunBackground("service/admin_user.go:UpdateUserBalance", func() {
+			// Give post-write funding-cache cleanup a fresh five-second budget and
+			// release its timer afterward; cleanup failure is diagnosed without
+			// undoing the account adjustment.
 			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := s.BalanceCache.InvalidateUserBalance(cacheCtx, userID); err != nil {
@@ -524,6 +698,9 @@ func (s *UserAdmin) UpdateUserBalance(ctx context.Context, userID int64, balance
 		})
 	}
 
+	// Save history from the adjuster's successful before/after difference, after
+	// optional cache/rebate requests; a history error remains diagnostic for the
+	// already completed funding change.
 	if balanceDiff != 0 {
 		if err := s.Records.RecordAdjustment(ctx, user.ID, AdjustmentTypeAdminBalance, balanceDiff, notes); err != nil {
 			s.Observer.Printf("service.admin", "failed to create balance adjustment redeem code: %v", err)
@@ -533,7 +710,11 @@ func (s *UserAdmin) UpdateUserBalance(ctx context.Context, userID int64, balance
 	return user, nil
 }
 
-// AdminTryAccrueAffiliateRebateForAdminRecharge 以尽力而为方式计提返利，不回滚已完成的余额调整。
+// AdminTryAccrueAffiliateRebateForAdminRecharge requests rebate only for
+// exact add mode with a positive amount and configured enabled
+// policy/service. It runs after balance adjustment; failure is diagnosed, and
+// a positive returned rebate is logged without changing the completed
+// recharge result.
 func (s *UserAdmin) AdminTryAccrueAffiliateRebateForAdminRecharge(ctx context.Context, userID int64, operation string, amount float64) {
 	if operation != "add" || amount <= 0 || s.Settings == nil || s.Affiliates == nil {
 		return
@@ -542,7 +723,13 @@ func (s *UserAdmin) AdminTryAccrueAffiliateRebateForAdminRecharge(ctx context.Co
 		return
 	}
 
+	// The positive add recharge already persisted before this optional rebate
+	// request; diagnose accrual failure and keep the primary funding result in
+	// place.
 	rebate, err := s.Affiliates.AccrueInviteRebate(ctx, userID, amount)
+	// Keep fractional USD detail in rebate diagnostics; these eight-decimal
+	// formats affect message text while the earlier primary funding write keeps
+	// its stored amount.
 	if err != nil {
 		s.Observer.Printf("service.admin", "affiliate rebate failed for admin recharge: user_id=%d amount=%.8f err=%v", userID, amount, err)
 		return
@@ -552,6 +739,18 @@ func (s *UserAdmin) AdminTryAccrueAffiliateRebateForAdminRecharge(ctx context.Co
 	}
 }
 
+// GetUserRPMStatus combines current account limits with cached usage and
+// primary groups from the first thousand Key observations. Missing RPM
+// returns its availability error; account or Key reads remain fatal errors,
+// while count/metadata/override errors are diagnosed and retain available
+// companion observations.
+//
+// Positive group IDs are deduplicated and sorted before display. Readable
+// group metadata selects its ceiling/source, then a readable nonnil account
+// override replaces that choice, including zero. Absent metadata and override
+// can leave empty source/name with zero ceiling. These independent reads
+// provide administrator status observations rather than a synchronized
+// admission decision or full account Key catalogue.
 func (s *UserAdmin) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRPMStatus, error) {
 	if s.RPM == nil {
 		return nil, ErrRPMStatusUnavailable
@@ -563,10 +762,16 @@ func (s *UserAdmin) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRP
 	}
 
 	userRPMUsed, err := s.RPM.GetUserRPM(ctx, userID)
+	// A failed count read still supplies its companion observation; retain it
+	// for status while the readable account limit and later group observations
+	// remain available.
 	if err != nil {
 		s.Observer.Printf("service.admin", "failed to get user rpm: user_id=%d err=%v", userID, err)
 	}
 
+	// Use the first thousand Key observations for display groups; discard total
+	// count and keep this bounded sample separate from a complete account
+	// credential catalogue.
 	keys, _, err := s.Keys.List(ctx, userID, 1, 1000, "", "")
 	if err != nil {
 		return nil, err
@@ -588,6 +793,9 @@ func (s *UserAdmin) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRP
 	var perGroup []UserGroupRPMStatus
 	for _, groupID := range groupIDs {
 		used, getErr := s.RPM.GetUserGroupRPM(ctx, userID, groupID)
+		// These groups were already selected from Key observations; count-read
+		// failure retains the companion value rather than removing the group before
+		// metadata/override selection.
 		if getErr != nil {
 			s.Observer.Printf("service.admin", "failed to get user group rpm: user_id=%d group_id=%d err=%v", userID, groupID, getErr)
 		}
@@ -597,6 +805,9 @@ func (s *UserAdmin) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRP
 			Used:    used,
 		}
 
+		// Optional group metadata fills display name and default ceiling; missing
+		// or failed data leaves initial fields available for a later account
+		// override to replace.
 		if s.Groups != nil {
 			if group, groupErr := s.Groups.GetByIDLite(ctx, groupID); groupErr == nil && group != nil {
 				entry.GroupName = group.Name
@@ -607,6 +818,9 @@ func (s *UserAdmin) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRP
 			}
 		}
 
+		// A readable nonnil account override supersedes group metadata, including
+		// zero; failed or absent override lookup leaves the earlier selected
+		// ceiling/source observation.
 		if s.Rates != nil {
 			override, overrideErr := s.Rates.GetRPMOverrideByUserAndGroup(ctx, userID, groupID)
 			if overrideErr != nil {
@@ -627,8 +841,11 @@ func (s *UserAdmin) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRP
 	}, nil
 }
 
+// GetUserUsageStats returns fixed zero placeholder metrics with the supplied
+// period label. It ignores account ID and context, queries no usage data and
+// returns success, so callers cannot treat this response as measured account
+// activity.
 func (s *UserAdmin) GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error) {
-	// Return mock data for now
 	return map[string]any{
 		"period":          period,
 		"total_requests":  0,
@@ -638,10 +855,18 @@ func (s *UserAdmin) GetUserUsageStats(ctx context.Context, userID int64, period 
 	}, nil
 }
 
+// GetUserBalanceHistory delegates paginated funding-history reads to required
+// Records with the supplied code type. It preserves returned records, counts,
+// aggregate amount and errors; this operation performs no account funding
+// mutation.
 func (s *UserAdmin) GetUserBalanceHistory(ctx context.Context, userID int64, page, pageSize int, codeType string) ([]RedeemCode, int64, float64, error) {
 	return s.Records.GetUserBalanceHistory(ctx, userID, page, pageSize, codeType)
 }
 
+// AdminCompatibleAdminAuthIdentityProviderKeys returns the trimmed requested
+// namespace and WeChat compatibility candidates. Blank input stays as a
+// one-element blank list; WeChat adds current/legacy keys when distinct under
+// case-insensitive comparison, while supplied key case remains unchanged.
 func AdminCompatibleAdminAuthIdentityProviderKeys(providerType, providerKey string) []string {
 	providerType = strings.TrimSpace(strings.ToLower(providerType))
 	providerKey = strings.TrimSpace(providerKey)
@@ -652,6 +877,9 @@ func AdminCompatibleAdminAuthIdentityProviderKeys(providerType, providerKey stri
 		return []string{providerKey}
 	}
 
+	// Keep the supplied namespace case while adding distinct WeChat
+	// compatibility candidates; callers pair this lookup list with their
+	// separately selected write namespace.
 	keys := []string{providerKey}
 	if !strings.EqualFold(providerKey, "wechat-main") {
 		keys = append(keys, "wechat-main")
@@ -662,6 +890,17 @@ func AdminCompatibleAdminAuthIdentityProviderKeys(providerType, providerKey stri
 	return keys
 }
 
+// AdminCanonicalAdminAuthIdentityProviderKey chooses the namespace to write
+// from requested/existing keys. Non-WeChat providers prefer a nonblank
+// request, then existing text. WeChat selects wechat-main for a recognized
+// existing legacy/current key or a requested current key.
+//
+// A requested legacy wechat key with no existing key remains that requested
+// key; BindUserAuthIdentity supplies the empty existing argument before
+// storage lookup. Other nonblank requests retain their case/text, and blank
+// requests retain the existing key. Callers keep compatibility lookup
+// candidates aligned with this selected write value; the helper itself
+// performs no ownership read or relationship migration.
 func AdminCanonicalAdminAuthIdentityProviderKey(providerType, existingKey, requestedKey string) string {
 	providerType = strings.TrimSpace(strings.ToLower(providerType))
 	existingKey = strings.TrimSpace(existingKey)
@@ -672,6 +911,9 @@ func AdminCanonicalAdminAuthIdentityProviderKey(providerType, existingKey, reque
 		}
 		return existingKey
 	}
+	// Recognized existing legacy/current state selects the current namespace; a
+	// legacy request with no existing key follows the later requested-text
+	// branch instead.
 	if strings.EqualFold(existingKey, "wechat") || strings.EqualFold(existingKey, "wechat-main") || strings.EqualFold(requestedKey, "wechat-main") {
 		return "wechat-main"
 	}
@@ -681,6 +923,10 @@ func AdminCanonicalAdminAuthIdentityProviderKey(providerType, existingKey, reque
 	return existingKey
 }
 
+// AdminAdminAuthIdentityProviderKeyRank ranks WeChat current namespace first,
+// custom namespace second and legacy namespace last after trimmed
+// case-insensitive comparison. Other provider types return zero, leaving tie
+// selection to the caller's record order.
 func AdminAdminAuthIdentityProviderKeyRank(providerType, providerKey string) int {
 	providerType = strings.TrimSpace(strings.ToLower(providerType))
 	providerKey = strings.TrimSpace(providerKey)
@@ -697,6 +943,10 @@ func AdminAdminAuthIdentityProviderKeyRank(providerType, providerKey string) int
 	}
 }
 
+// AdminNormalizeAdminBindChannelInput trims channel/application/subject into
+// a new struct and copies metadata through the administrator JSON helper. Nil
+// input or any blank required field returns nil; callers distinguish omitted
+// channel from invalid supplied channel before persistence.
 func AdminNormalizeAdminBindChannelInput(input *AdminBindAuthIdentityChannelInput) *AdminBindAuthIdentityChannelInput {
 	if input == nil {
 		return nil
@@ -713,6 +963,10 @@ func AdminNormalizeAdminBindChannelInput(input *AdminBindAuthIdentityChannelInpu
 	return channel
 }
 
+// AdminNormalizeAdminAuthIdentityProviderType returns a supported
+// administrative provider label after trimming/lowercasing. Email, LinuxDo,
+// OIDC, WeChat and DingTalk are accepted; other labels return empty text and
+// are rejected by binding input validation.
 func AdminNormalizeAdminAuthIdentityProviderType(input string) string {
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "email":
@@ -730,6 +984,16 @@ func AdminNormalizeAdminAuthIdentityProviderType(input string) string {
 	}
 }
 
+// AdminCloneAdminAuthIdentityMetadata copies metadata through JSON when both
+// conversion steps succeed. Nil input returns nil and empty input returns an
+// allocated empty map; a successful round trip produces decoded values whose
+// numbers/types follow encoding/json's representation.
+//
+// Marshal or unmarshal failure selects an outer-map copy with shared nested
+// references instead. Callers therefore do not assume every result is an
+// independent deep copy or preserves concrete Go value types. The channel
+// normalizer and binding response builder use this same copy rule and retain
+// stable input data while conversion runs.
 func AdminCloneAdminAuthIdentityMetadata(input map[string]any) map[string]any {
 	if input == nil {
 		return nil
@@ -737,6 +1001,9 @@ func AdminCloneAdminAuthIdentityMetadata(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return map[string]any{}
 	}
+	// Try JSON conversion for independently decoded metadata; marshal or
+	// unmarshal failure falls back to an outer copy, retaining nested references
+	// and their caller-owned stability.
 	data, err := json.Marshal(input)
 	if err != nil {
 		out := make(map[string]any, len(input))

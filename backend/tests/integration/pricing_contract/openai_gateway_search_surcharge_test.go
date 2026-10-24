@@ -13,10 +13,19 @@ import (
 	gatewaycapture "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 )
 
+// SearchCount adds a per-thousand-call operation charge to successful token
+// pricing. A search-only request can produce its own breakdown when no token
+// model is offered, while an offered model with unavailable token pricing
+// still returns the calculation error.
+
+// TestCalculateOpenAIRecordUsageCost_SearchIsAdditiveToTokens combines known
+// Claude fixture tokens with one hundred searches. It checks that both base
+// and user totals include the token amount plus
+// the per-thousand-call surcharge.
 func TestCalculateOpenAIRecordUsageCost_SearchIsAdditiveToTokens(t *testing.T) {
 	t.Parallel()
 
-	price := 10.0 // 每千次搜索 10 美元，100 次搜索费用为 1 美元。
+	price := 10.0 // USD per 1,000 searches; 100 searches cost $1.
 	svc := completion.NewRecorder(completion.Dependencies{
 		Calculator: newCalculator(nil),
 	}, completion.RecorderOptions{DefaultMultiplier: 1})
@@ -27,8 +36,9 @@ func TestCalculateOpenAIRecordUsageCost_SearchIsAdditiveToTokens(t *testing.T) {
 		},
 	}
 
-	// claude-sonnet-4 回退价格：输入 3 美元/百万令牌，输出 15 美元/百万令牌。
-	// 输入 1000、输出 500 个令牌的费用为 0.0105 美元，再加 100 次搜索的 1 美元。
+	// The fixture prices claude-sonnet-4 input at $3 and output at $15 per
+	// million tokens. 1,000 input and 500 output tokens cost $0.0105, plus $1
+	// for 100 searches.
 	cost, err := svc.CalculateOpenAIRecordUsageCostAt(
 		context.Background(), gatewaycapture.ProjectOpenAICompletionResult(&forwardcore.OpenAIResult{SearchCount: 100}, nil), apiKey, []string{"claude-sonnet-4"},
 		1.0,
@@ -40,10 +50,15 @@ func TestCalculateOpenAIRecordUsageCost_SearchIsAdditiveToTokens(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, cost)
+	// The token/search USD amount allows a small absolute rounding difference.
 	require.InDelta(t, 1.0105, cost.ActualCost, 1e-9)
 	require.InDelta(t, 1.0105, cost.TotalCost, 1e-9)
 }
 
+// TestCalculateOpenAIRecordUsageCost_SearchOnlyWhenNoTokenPricing offers
+// searches with empty token usage and no model candidates. It checks that the
+// recorder returns a successful breakdown containing the
+// search-only user amount.
 func TestCalculateOpenAIRecordUsageCost_SearchOnlyWhenNoTokenPricing(t *testing.T) {
 	t.Parallel()
 
@@ -55,7 +70,9 @@ func TestCalculateOpenAIRecordUsageCost_SearchOnlyWhenNoTokenPricing(t *testing.
 	apiKey := &completion.KeySnapshot{
 		Group: &completion.GroupSnapshot{SearchPricePer1k: &price},
 	}
-	// 模型列表为空时令牌路径失败，但仍应计算仅搜索附加费。
+	// Omit model candidates together with token usage so the recorder can
+	// return the search-only breakdown instead of a
+	// selected-model pricing error.
 	cost, err := svc.CalculateOpenAIRecordUsageCostAt(
 		context.Background(), gatewaycapture.ProjectOpenAICompletionResult(&forwardcore.OpenAIResult{SearchCount: 100}, nil), apiKey, nil,
 		1.0,
@@ -67,9 +84,14 @@ func TestCalculateOpenAIRecordUsageCost_SearchOnlyWhenNoTokenPricing(t *testing.
 	)
 	require.NoError(t, err)
 	require.NotNil(t, cost)
+	// The search-only USD charge allows a small absolute rounding difference.
 	require.InDelta(t, 1.0, cost.ActualCost, 1e-9)
 }
 
+// TestCalculateOpenAIRecordUsageCost_TokenPricingErrorNotSwallowedBySearch
+// combines searches with token usage for an unknown model. It checks that
+// unavailable model pricing returns an error and leaves the
+// cost breakdown nil.
 func TestCalculateOpenAIRecordUsageCost_TokenPricingErrorNotSwallowedBySearch(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +103,8 @@ func TestCalculateOpenAIRecordUsageCost_TokenPricingErrorNotSwallowedBySearch(t 
 	apiKey := &completion.KeySnapshot{
 		Group: &completion.GroupSnapshot{SearchPricePer1k: &price},
 	}
-	// 未知模型会使令牌计价失败，搜索费用不得用零令牌费用或仅搜索账单掩盖该错误。
+	// Keep a nonempty unknown candidate in this row. Removing that candidate
+	// would exercise the separate search-only branch instead of token failure.
 	cost, err := svc.CalculateOpenAIRecordUsageCostAt(
 		context.Background(), gatewaycapture.ProjectOpenAICompletionResult(&forwardcore.OpenAIResult{SearchCount: 100}, nil), apiKey, []string{"totally-unknown-model-xyz-no-pricing"},
 		1.0,

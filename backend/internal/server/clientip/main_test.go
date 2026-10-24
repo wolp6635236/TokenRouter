@@ -6,7 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在运行测试前将 Gin 设为测试模式。
+// TestMain configures Gin test mode before client-IP fixtures build their engines.
+// The tests then run with the same mode for their synthetic direct-peer and
+// forwarded-header requests throughout this package.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	m.Run()

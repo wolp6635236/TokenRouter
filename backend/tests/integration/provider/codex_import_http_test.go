@@ -18,7 +18,15 @@ import (
 	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
 )
 
-// TestCodexImportHTTPDatabaseContract 验证真实 PostgreSQL 与实际管理用例验证 HTTP 导入、同批更新和部分失败；平台隐私任务不在本测试执行。
+// Codex session imports create or update providers identified by the imported
+// account and user hints. The HTTP fixture uses PostgreSQL persistence and
+// records invalidation calls, while background privacy scheduling is disabled
+// to keep assertions focused on import results and response redaction.
+
+// TestCodexImportHTTPDatabaseContract imports a session through the HTTP
+// handler, then rotates its tokens alongside an invalid entry. PostgreSQL
+// retains the provider ID and status, the valid update invalidates once, and
+// responses redact credentials.
 func TestCodexImportHTTPDatabaseContract(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)
@@ -45,8 +53,8 @@ func TestCodexImportHTTPDatabaseContract(t *testing.T) {
 		router.ServeHTTP(w, req)
 		require.Equal(t, 200, w.Code, w.Body.String())
 		var envelope struct {
-			Code int                               `json:"code"`
-			Data provider.CodexSessionImportResult `json:"data"`
+			Code int                               `json:"code"` // response application status code
+			Data provider.CodexSessionImportResult `json:"data"` // normalized session-import result data
 		}
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &envelope))
 		require.Zero(t, envelope.Code)
@@ -63,6 +71,8 @@ func TestCodexImportHTTPDatabaseContract(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "fixture-rt", before.Credentials["refresh_token"])
 	require.Empty(t, invalidated)
+	// Reuse the same account/user hints after rotating tokens so the second
+	// import exercises updating that identity while reporting the invalid item separately.
 	source["access_token"] = "fixture-at-new"
 	source["refresh_token"] = "fixture-rt-new"
 	second := request([]any{source, map[string]any{"unsupported": "invalid-entry"}})

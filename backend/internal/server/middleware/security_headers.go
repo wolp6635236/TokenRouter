@@ -13,55 +13,99 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/httpconfig"
 )
 
+// security_headers.go sets browser security headers and prepares nonce-bearing
+// content policies.
+// Placeholder-based browser policies use a request nonce in both the CSP header
+// and the HTML rendered by the frontend server. Configured policies are
+// supplemented with the sources the application's CAPTCHA, identity, payment,
+// analytics, and loopback-import integrations are granted. A fixed policy is
+// prepared when middleware is constructed, while optional frame origins are
+// read per request.
+//
+// Baseline response headers apply before the selected gateway-path exclusions,
+// which skip nonce generation and CSP assignment. Other paths receive nonce
+// replacement when CSP is enabled. Policy editing uses textual directive
+// insertion, so callers provide canonical CSP source tokens and policy syntax.
+// With Go 1.27.3, crypto/rand.Read terminates on entropy-reader failure; the
+// helper's error signature and the middleware's error branch do not make that
+// failure recoverable.
+
 const (
-	// CSPNonceKey is the context key for storing the CSP nonce.
+	// Nonce identifiers and integration source tokens connect request context,
+	// frontend rendering, and the CSP directives supplemented by this middleware.
+	// CSPNonceKey names the Gin entry used to share the request nonce with
+	// frontend rendering.
 	CSPNonceKey = "csp_nonce"
-	// NonceTemplate is the placeholder in CSP policy for nonce.
+	// NonceTemplate marks positions replaced by the current request's nonce in CSP
+	// policy text.
 	NonceTemplate = "__CSP_NONCE__"
-	// CloudflareInsightsDomain is the domain for Cloudflare Web Analytics.
+	// CloudflareInsightsDomain is the analytics script source granted by runtime
+	// CSP supplementation.
 	CloudflareInsightsDomain = "https://static.cloudflareinsights.com"
-	// GoogleIdentityScriptURL 是 Google Identity Services 官方脚本地址。
+	// GoogleIdentityScriptURL is the identity script source granted by runtime CSP
+	// supplementation.
 	GoogleIdentityScriptURL = "https://accounts.google.com/gsi/client"
-	// GoogleIdentityResourceURL 是 One Tap iframe 与网络请求使用的路径来源。
+	// GoogleIdentityResourceURL is the identity source granted to frame and
+	// connection directives.
 	GoogleIdentityResourceURL = "https://accounts.google.com/gsi/"
-	// GoogleIdentityStyleURL 是 One Tap 浏览器界面使用的官方样式地址。
+	// GoogleIdentityStyleURL is the identity stylesheet source granted by runtime
+	// CSP supplementation.
 	GoogleIdentityStyleURL = "https://accounts.google.com/gsi/style"
-	// TencentCaptchaDomain 是腾讯验证码 2.0 中国站 Web SDK 域名。
+	// TencentCaptchaDomain is the CAPTCHA source granted to script, frame, and
+	// connection directives.
 	TencentCaptchaDomain = "https://turing.captcha.qcloud.com"
-	// TencentCaptchaStaticDomain 是腾讯验证码静态资源域名。
+	// TencentCaptchaStaticDomain is the wildcard CAPTCHA stylesheet source granted
+	// by policy supplementation.
 	TencentCaptchaStaticDomain = "https://*.captcha.gtimg.com"
-	// TencentCaptchaCDNDomain 是天御国内站的核心 JS CDN 主机：
-	// 入口脚本 TJCaptcha.js 会再从这里加载 /1/tgJCap.*.js，缺失时会被 script-src 拦截。
+	// TencentCaptchaCDNDomain is a CAPTCHA script source granted by runtime CSP
+	// supplementation.
 	TencentCaptchaCDNDomain = "https://turing.captcha.gtimg.com"
-	// TencentCaptchaGlobalDomain 是天御国际站的 Web SDK 与验证弹窗 iframe 主机。
+	// TencentCaptchaGlobalDomain is the global CAPTCHA source granted to script
+	// and frame directives.
 	TencentCaptchaGlobalDomain = "https://ca.turing.captcha.qcloud.com"
-	// TencentCaptchaGlobalCDNDomain 是天御国际站的核心 JS CDN 主机。
+	// TencentCaptchaGlobalCDNDomain is a global CAPTCHA script source granted by
+	// policy supplementation.
 	TencentCaptchaGlobalCDNDomain = "https://global.turing.captcha.gtimg.com"
-	// TencentCaptchaPrehandleDomain 是天御 SDK 动态预处理脚本与预处理接口主机。
+	// TencentCaptchaPrehandleDomain is the CAPTCHA source granted to script,
+	// connection, and frame directives.
 	TencentCaptchaPrehandleDomain = "https://www.tycaptcha.com"
-	// TencentCaptchaJQueryDomain 是国内站入口脚本动态加载的 jQuery CDN 主机。
+	// TencentCaptchaJQueryDomain is a CAPTCHA dependency script source granted by
+	// policy supplementation.
 	TencentCaptchaJQueryDomain = "https://cloudcache.tencentcs.com"
-	// TencentCaptchaRceDomain 是国际站风控校验接口主机。
+	// TencentCaptchaRceDomain is the CAPTCHA risk-check connection source granted
+	// by policy supplementation.
 	TencentCaptchaRceDomain = "https://rce.tencentrio.com"
-	// TencentCaptchaWorkerSource 是天御国际站创建验证码 Web Worker 时使用的来源。
+	// TencentCaptchaWorkerSource grants the blob scheme to the supplemented
+	// CAPTCHA worker directive.
 	TencentCaptchaWorkerSource = "blob:"
-	// AliyunCaptchaStaticDomain 是阿里云验证码 Web SDK 与样式资源域名。
+	// AliyunCaptchaStaticDomain is the wildcard CAPTCHA source granted to script
+	// and style directives.
 	AliyunCaptchaStaticDomain = "https://*.alicdn.com"
-	// StripeDomain is the domain for Stripe.js SDK.
+	// StripeDomain is the wildcard Stripe source granted to script and frame
+	// directives.
 	StripeDomain = "https://*.stripe.com"
-	// AirwallexStaticDomain 是 Airwallex 生产环境 SDK 脚本域名。
+	// AirwallexStaticDomain is the production payment SDK source granted to script
+	// and style directives.
 	AirwallexStaticDomain = "https://static.airwallex.com"
-	// AirwallexCheckoutDomain 是 Airwallex 生产环境收银台元素和 iframe 域名。
+	// AirwallexCheckoutDomain is the production checkout source granted to script,
+	// style, and frame directives.
 	AirwallexCheckoutDomain = "https://checkout.airwallex.com"
-	// AirwallexDemoStaticDomain 是 Airwallex 沙箱环境 SDK 脚本域名。
+	// AirwallexDemoStaticDomain is the sandbox payment SDK source granted to
+	// script and style directives.
 	AirwallexDemoStaticDomain = "https://static-demo.airwallex.com"
-	// AirwallexDemoCheckoutDomain 是 Airwallex 沙箱环境收银台元素和 iframe 域名。
+	// AirwallexDemoCheckoutDomain is the sandbox checkout source granted to
+	// script, style, and frame directives.
 	AirwallexDemoCheckoutDomain = "https://checkout-demo.airwallex.com"
 )
 
+// requiredCSPDirectiveValues lists the directive/source pairs granted by
+// runtime policy supplementation for application frontend integrations.
 var requiredCSPDirectiveValues = []struct {
-	directive string
-	value     string
+	// directive and value identify one required source permission together.
+	// enhanceCSPPolicy checks the pair against the first matching directive before
+	// inserting missing values into that policy.
+	directive string // exact CSP directive name
+	value     string // required source token
 }{
 	{"script-src", CloudflareInsightsDomain},
 	{"script-src", GoogleIdentityScriptURL},
@@ -109,17 +153,26 @@ var requiredCSPDirectiveValues = []struct {
 	{"connect-src", "http://127.0.0.1:43119"},
 }
 
-// GenerateNonce generates a cryptographically secure random nonce.
-// 返回 error 以确保调用方在 crypto/rand 失败时能正确降级。
+// GenerateNonce returns sixteen random bytes encoded as padded standard base64
+// text for CSP. With the selected Go 1.27.3 toolchain, crypto/rand.Read fills
+// the buffer or terminates the process on reader failure, so entropy failure is
+// not returned through this error result.
 func GenerateNonce() (string, error) {
+	// Sixteen random bytes supply a 128-bit nonce value.
 	b := make([]byte, 16)
+	// Read retains an error result in its API, but Go 1.27.3 terminates on
+	// entropy-reader failure before this error-return branch can be reached.
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate CSP nonce: %w", err)
 	}
+	// Encode nonce bytes as padded base64 so the shared HTML and response-policy
+	// value uses printable text rather than raw random bytes.
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
-// GetNonceFromContext retrieves the CSP nonce from gin context.
+// GetNonceFromContext returns the string nonce stored under CSPNonceKey in a
+// nonnil Gin context. Missing values or other types return empty text; frontend
+// rendering uses the same value assigned by SecurityHeaders.
 func GetNonceFromContext(c *gin.Context) string {
 	if nonce, exists := c.Get(CSPNonceKey); exists {
 		if s, ok := nonce.(string); ok {
@@ -129,16 +182,26 @@ func GetNonceFromContext(c *gin.Context) string {
 	return ""
 }
 
-// SecurityHeaders sets baseline security headers for all responses.
-// getFrameSrcOrigins is an optional function that returns extra origins to inject into frame-src;
-// pass nil to disable dynamic frame-src injection.
+// SecurityHeaders constructs baseline browser-header middleware from cfg and an
+// optional frame-origin reader. Blank policy selects DefaultCSPPolicy and
+// runtime supplementation runs at construction. The frame reader is called per
+// request before path and enablement checks; supply canonical CSP sources safe
+// for concurrent reads.
+//
+// Selected gateway prefixes skip CSP and nonce assignment after baseline
+// headers are set. Other paths generate and store a request nonce when CSP is
+// enabled, then replace every policy placeholder with that value for frontend
+// rendering. The source insertion helpers edit text and do not validate
+// supplied origin tokens or deduplicate dynamic frame values.
 func SecurityHeaders(cfg httpconfig.CSPConfig, getFrameSrcOrigins func() []string) gin.HandlerFunc {
 	policy := strings.TrimSpace(cfg.Policy)
 	if policy == "" {
 		policy = httpconfig.DefaultCSPPolicy
 	}
 
-	// Enhance policy with required directives (nonce placeholder and Cloudflare Insights)
+	// Apply the configured integration permissions once before serving requests.
+	// Per-request work can then add current frame sources and substitute that
+	// request's nonce.
 	policy = enhanceCSPPolicy(policy)
 
 	return func(c *gin.Context) {
@@ -154,19 +217,26 @@ func SecurityHeaders(cfg httpconfig.CSPConfig, getFrameSrcOrigins func() []strin
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		// Per-request nonce text belongs to frontend rendering. The selected gateway
+		// path skips that phase after the frame reader and baseline response headers
+		// have already run.
 		if isAPIRoutePath(c) {
 			c.Next()
 			return
 		}
 
 		if cfg.Enabled {
-			// Generate nonce for this request
 			nonce, err := GenerateNonce()
 			if err != nil {
-				// crypto/rand 失败时降级为无 nonce 的 CSP 策略
-				log.Printf("[SecurityHeaders] %v — 降级为无 nonce 的 CSP", err)
+				// If the nonce helper returns an error, this branch substitutes
+				// unsafe-inline for placeholder positions. Go 1.27.3 entropy-reader failure
+				// terminates before this branch can run.
+				log.Printf("[SecurityHeaders] %v; using CSP without a nonce", err)
 				c.Header("Content-Security-Policy", strings.ReplaceAll(finalPolicy, NonceTemplate, "'unsafe-inline'"))
 			} else {
+				// Publish the nonce before downstream frontend rendering. A
+				// placeholder-based policy substitutes that same value in every matching
+				// header position so rendered HTML and CSP agree.
 				c.Set(CSPNonceKey, nonce)
 				c.Header("Content-Security-Policy", strings.ReplaceAll(finalPolicy, NonceTemplate, "'nonce-"+nonce+"'"))
 			}
@@ -175,6 +245,9 @@ func SecurityHeaders(cfg httpconfig.CSPConfig, getFrameSrcOrigins func() []strin
 	}
 }
 
+// isAPIRoutePath selects the gateway prefixes that skip CSP assignment: /v1/,
+// /v1beta/, /antigravity/, /responses, and /images. It returns false for
+// missing request data; other API paths are not covered by this predicate.
 func isAPIRoutePath(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
@@ -187,14 +260,22 @@ func isAPIRoutePath(c *gin.Context) bool {
 		strings.HasPrefix(path, "/images")
 }
 
-// enhanceCSPPolicy 确保 CSP 策略包含 nonce 支持和运行时组件必需域名。
-// 这样旧配置文件没有及时补域名时，验证码和支付组件仍能正常加载。
+// enhanceCSPPolicy adds configured integration permissions and a script nonce
+// placeholder when the policy contains neither that placeholder nor any nonce
+// prefix. Directive and source matching is case-sensitive; existing matching
+// values stay in the first recognized directive, and literal nonce text is
+// retained.
 func enhanceCSPPolicy(policy string) string {
-	// Add nonce placeholder to script-src if not present
+	// A policy already containing placeholder or nonce text supplies its own
+	// nonce-bearing syntax. Add the script placeholder only when both forms are
+	// absent.
 	if !strings.Contains(policy, NonceTemplate) && !strings.Contains(policy, "'nonce-") {
 		policy = addToDirective(policy, "script-src", NonceTemplate)
 	}
 
+	// Custom policies can omit configured integration sources. Add each missing
+	// pair so default and supplemented policies advertise the same listed
+	// permissions.
 	for _, required := range requiredCSPDirectiveValues {
 		if !directiveHasValue(policy, required.directive, required.value) {
 			policy = addToDirective(policy, required.directive, required.value)
@@ -204,6 +285,10 @@ func enhanceCSPPolicy(policy string) string {
 	return policy
 }
 
+// directiveHasValue reports whether the first exact matching directive contains
+// value as a complete whitespace-delimited token. It splits semicolon sections
+// and compares case-sensitively; a later repeated directive is not consulted
+// after the first match.
 func directiveHasValue(policy, directive, value string) bool {
 	for rawDirective := range strings.SplitSeq(policy, ";") {
 		fields := strings.Fields(strings.TrimSpace(rawDirective))
@@ -215,38 +300,40 @@ func directiveHasValue(policy, directive, value string) bool {
 	return false
 }
 
-// addToDirective adds a value to a specific CSP directive.
-// If the directive doesn't exist, it will be added after default-src.
+// addToDirective inserts value into the first textual directive followed by a
+// space. Callers provide canonical directive names and source tokens; insertion
+// neither validates nor deduplicates them. Missing directives gain self and
+// value after a terminated default-src section, or at the policy's front.
 func addToDirective(policy, directive, value string) string {
-	// Find the directive in the policy
 	directivePrefix := directive + " "
 	idx := strings.Index(policy, directivePrefix)
 
 	if idx == -1 {
-		// Directive not found, add it after default-src or at the beginning
+		// When no textual directive matches, create its own source list containing
+		// self and the requested value. A terminated default-src section supplies an
+		// insertion position.
 		defaultSrcIdx := strings.Index(policy, "default-src ")
 		if defaultSrcIdx != -1 {
-			// Find the end of default-src directive (next semicolon)
 			endIdx := strings.Index(policy[defaultSrcIdx:], ";")
 			if endIdx != -1 {
 				insertPos := defaultSrcIdx + endIdx + 1
-				// Insert new directive after default-src
+
 				return policy[:insertPos] + " " + directive + " 'self' " + value + ";" + policy[insertPos:]
 			}
 		}
-		// Fallback: prepend the directive
+
 		return directive + " 'self' " + value + "; " + policy
 	}
 
-	// Find the end of this directive (next semicolon or end of string)
 	endIdx := strings.Index(policy[idx:], ";")
 
+	// An unterminated final directive has no separator before which to insert the
+	// source. Append to that final source list so the policy text stays
+	// contiguous.
 	if endIdx == -1 {
-		// No semicolon found, directive goes to end of string
 		return policy + " " + value
 	}
 
-	// Insert value before the semicolon
 	insertPos := idx + endIdx
 	return policy[:insertPos] + " " + value + policy[insertPos:]
 }

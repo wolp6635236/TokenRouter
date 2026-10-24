@@ -9,7 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAnthropicPromptCacheScopePrefixAndExpiry 检查提供商和 Key 隔离、最长前缀匹配、旧链替换和到期清理。
+// TestAnthropicPromptCacheScopePrefixAndExpiry binds and extends a Messages digest
+// with an injected clock. It checks provider/key isolation, trimmed keys, longest
+// prefix reuse, old-chain removal, and rejection at the expiration instant.
 func TestAnthropicPromptCacheScopePrefixAndExpiry(t *testing.T) {
 	now := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	store := NewAnthropicPromptCache(func() time.Time { return now })
@@ -33,10 +35,14 @@ func TestAnthropicPromptCacheScopePrefixAndExpiry(t *testing.T) {
 	require.Empty(t, chain)
 }
 
-// TestAnthropicPromptCacheConcurrentBindings 验证并发消费者使用同一原生实例，不能串入其它提供商的相同摘要。
+// TestAnthropicPromptCacheConcurrentBindings writes one digest under twenty providers
+// concurrently. After joining the writers, each provider returns its own prompt
+// key and matching chain under the shared API Key.
 func TestAnthropicPromptCacheConcurrentBindings(t *testing.T) {
 	store := NewAnthropicPromptCache(time.Now)
 	var pending sync.WaitGroup
+	// Exercise writes in overlapping goroutines, then join every writer before
+	// asserting per-provider lookup so assertions observe completed bindings.
 	for id := int64(1); id <= 20; id++ {
 		pending.Go(func() {
 			store.Bind(id, 5, "s:a-u:b", fmt.Sprint(id), "", time.Hour)

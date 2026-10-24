@@ -12,7 +12,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
 
-// TestLocalizedPageFiles 覆盖正文实际语言、图片目录、公共回退及目录外符号链接。
+// TestLocalizedPageFiles creates translated Markdown, language assets, and shared images.
+// It verifies reported language, source and image fallback, and rejection of
+// external Markdown symlinks and image traversal through the filesystem adapter.
 func TestLocalizedPageFiles(t *testing.T) {
 	root := t.TempDir()
 	files := New(root)
@@ -48,7 +50,9 @@ func TestLocalizedPageFiles(t *testing.T) {
 	require.ErrorIs(t, err, site.ErrPageNotFound)
 }
 
-// TestMarkdownRootAndSize 检查页面正文的大小上限，以及根目录内外符号链接的读取结果。
+// TestMarkdownRootAndSize supplies in-root and external symlinks plus boundary-sized bodies.
+// It verifies permitted internal targets and rejects escaped content and files
+// one byte beyond the Markdown size limit.
 func TestMarkdownRootAndSize(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
@@ -72,12 +76,15 @@ func TestMarkdownRootAndSize(t *testing.T) {
 	require.ErrorIs(t, err, site.ErrPageTooLarge)
 }
 
+// TestCleanPageImageRelativePath supplies plain and escaped image path components.
+// It verifies normalization of safe paths and rejection of parent traversal,
+// absolute paths, backslashes, NUL bytes, and invalid URL escapes.
 func TestCleanPageImageRelativePath(t *testing.T) {
 	tests := []struct {
-		name string
-		in   string
-		want string
-		ok   bool
+		name string // named path scenario
+		in   string // supplied URL path
+		want string // expected normalized path
+		ok   bool   // expected validity result
 	}{
 		{name: "single filename", in: "logo.png", want: "logo.png", ok: true},
 		{name: "nested path", in: "images/logo.png", want: filepath.Join("images", "logo.png"), ok: true},
@@ -106,6 +113,9 @@ func TestCleanPageImageRelativePath(t *testing.T) {
 	}
 }
 
+// TestResolvePageImagePath creates direct and nested images in one page directory.
+// It verifies resolved filenames for safe requests and rejects a parent path
+// that tries to reference the page's Markdown body.
 func TestResolvePageImagePath(t *testing.T) {
 	root := t.TempDir()
 	pagesDir := filepath.Join(root, "pages")
@@ -143,6 +153,9 @@ func TestResolvePageImagePath(t *testing.T) {
 	}
 }
 
+// TestResolvePageImagePathRejectsSymlinkEscape links an image directory outside its page root.
+// It verifies rejection of an otherwise valid image suffix when symlink
+// resolution points to an asset outside the allowed directory.
 func TestResolvePageImagePathRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	pagesDir := filepath.Join(root, "pages")
@@ -159,6 +172,8 @@ func TestResolvePageImagePathRejectsSymlinkEscape(t *testing.T) {
 		t.Fatalf("create outside file: %v", err)
 	}
 	if err := os.Symlink(outside, filepath.Join(base, "images")); err != nil {
+		// This scenario requires an actual symlink escape. Platforms that cannot
+		// create the fixture skip it instead of interpreting setup failure as access rejection.
 		t.Skipf("symlink not supported: %v", err)
 	}
 
@@ -167,6 +182,9 @@ func TestResolvePageImagePathRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+// mustEvalSymlinks resolves a fixture path for exact expected-filename assertions.
+// It marks itself as a helper and fails the owning test when fixture
+// resolution fails, so comparisons use the filesystem's actual target spelling.
 func mustEvalSymlinks(t *testing.T, path string) string {
 	t.Helper()
 

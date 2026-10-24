@@ -13,16 +13,20 @@ import (
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestApplyOpenAIReasoningEffortPolicyForRequest_MapsConfiguredNoneForAstra 验证分组可自行决定不兼容档位的目标值。
+// TestApplyOpenAIReasoningEffortPolicyForRequest_MapsConfiguredNoneForAstra
+// maps a configured none effort to low for the named model. It checks the
+// outgoing effort and retention of requested none in context and result
+// attribution.
 func TestApplyOpenAIReasoningEffortPolicyForRequest_MapsConfiguredNoneForAstra(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	SetOpsSelectedProvider(c, 1, capability.PlatformOpenAI)
+	SetOpsSelectedProvider(c, provider.ProviderSnapshot{ID: 1, Platform: capability.PlatformOpenAI})
 
 	apiKey := &apikey.APIKey{
 		Group: &routing.Group{
@@ -51,11 +55,14 @@ func TestApplyOpenAIReasoningEffortPolicyForRequest_MapsConfiguredNoneForAstra(t
 	require.Equal(t, "none", *result.RequestedReasoningEffort)
 }
 
+// TestApplyAnthropicReasoningEffortPolicyForRequest_CapsOutputConfigEffort
+// caps max output_config effort to the group's high setting. It checks the
+// changed body while requested max remains recorded in context.
 func TestApplyAnthropicReasoningEffortPolicyForRequest_CapsOutputConfigEffort(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	SetOpsSelectedProvider(c, 1, capability.PlatformAnthropic)
+	SetOpsSelectedProvider(c, provider.ProviderSnapshot{ID: 1, Platform: capability.PlatformAnthropic})
 	apiKey := &apikey.APIKey{Group: &routing.Group{
 		MaxReasoningEffort: "high",
 	}}
@@ -69,7 +76,9 @@ func TestApplyAnthropicReasoningEffortPolicyForRequest_CapsOutputConfigEffort(t 
 	require.Equal(t, "max", *requested)
 }
 
-// TestAnthropicReasoningPolicy_PreservesForcedPlatformAndDefault 验证强制平台入口与缺省请求都不能被 Anthropic 分组策略意外改写。
+// TestAnthropicReasoningPolicy_PreservesForcedPlatformAndDefault compares a
+// request with no effort and one forced to Antigravity. It checks unchanged
+// request bytes and false change results for these scenarios.
 func TestAnthropicReasoningPolicy_PreservesForcedPlatformAndDefault(t *testing.T) {
 	apiKey := &apikey.APIKey{Group: &routing.Group{MaxReasoningEffort: "low"}}
 	for _, forced := range []bool{false, true} {
@@ -78,7 +87,7 @@ func TestAnthropicReasoningPolicy_PreservesForcedPlatformAndDefault(t *testing.T
 		body := []byte(`{"model":"claude-fable-5-1"}`)
 		if forced {
 			c.Set(string(keyhttp.ContextKeyForcePlatform), capability.PlatformAntigravity)
-			SetOpsSelectedProvider(c, 1, capability.PlatformAntigravity)
+			SetOpsSelectedProvider(c, provider.ProviderSnapshot{ID: 1, Platform: capability.PlatformAntigravity})
 			body = []byte(`{"model":"claude-fable-5-1","output_config":{"effort":"max"}}`)
 		}
 		updated, changed, err := ApplyAnthropicReasoningEffortPolicyForRequest(c, apiKey, body)

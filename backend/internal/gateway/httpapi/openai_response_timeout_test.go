@@ -9,6 +9,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 )
 
+// TestOpenAIFirstOutputTimeoutForReasoningEffort configures base and
+// high-effort first-output budgets. It checks low, high, xhigh and max
+// selections, including max extracted from a compatible request body.
 func TestOpenAIFirstOutputTimeoutForReasoningEffort(t *testing.T) {
 	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{Response: OpenAIResponseOptions{OpenAIFirstOutputTimeoutSeconds: 120, OpenAIHighEffortFirstOutputTimeoutSeconds: 300}}})
 
@@ -17,7 +20,8 @@ func TestOpenAIFirstOutputTimeoutForReasoningEffort(t *testing.T) {
 	require.Equal(t, 300*time.Second, svc.Output.FirstOutputTimeout("xhigh"))
 	require.Equal(t, 300*time.Second, svc.Output.FirstOutputTimeout("max"))
 
-	// 请求指定的 max 透传至第三方上游，首输出等待时间与其他高推理档位一致。
+	// Extract max from a compatible request body before checking its timeout
+	// class; this fixture observes budget selection and performs no upstream forwarding.
 	effort := requeststate.ExtractOpenAIReasoningEffortFromBody(
 		[]byte(`{"model":"deepseek-v4-flash","reasoning":{"effort":"max"}}`))
 	require.NotNil(t, effort)

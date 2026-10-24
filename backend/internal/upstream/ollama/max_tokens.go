@@ -1,46 +1,43 @@
 package ollama
 
 import (
-	"encoding/json"
-
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 )
 
+// max_tokens.go resolves Ollama output caps and clamps supplied numeric token
+// limits before forwarding.
+// Ollama output caps are resolved from provider configuration using the model
+// catalog's shared numeric rules. Request clamping changes supplied numeric
+// output-limit fields when their integer interpretation exceeds a positive cap,
+// leaving missing fields available for the upstream's own default.
+
+// The cap aliases connect provider Extra lookup and request clamping to the
+// model catalog's shared output-limit configuration and execution default.
 const (
-	MaxTokensCapExtraKey = "ollama_max_tokens_cap"
-	DefaultMaxTokensCap  = 65535
+	// MaxTokensCapExtraKey: provider cap setting key.
+	MaxTokensCapExtraKey = modelcatalog.OllamaOutputCapExtraKey
+	// DefaultMaxTokensCap: default output token count.
+	DefaultMaxTokensCap = modelcatalog.OllamaDefaultOutputLimit
 )
 
-// MaxTokensCap 返回提供商配置的 max_tokens 上限。提供商为 nil 或 extra 中
-// 无该键时返回默认值；键值为数值类型（float64/int64/int/json.Number）时返回其整数
-// 值（0 或负数表示显式禁用 clamp）；其它类型回退默认值。
+// MaxTokensCap resolves provider output-cap configuration through modelcatalog.
+// Missing values, unsupported types, and unreadable integer json.Number values
+// select DefaultMaxTokensCap. Accepted nonpositive values disable clamping;
+// float64 values use Go's int64 conversion, truncating fractions toward zero
+// when representable and performing no range validation here.
 func MaxTokensCap(value any, present bool) int64 {
-	if !present {
-		return DefaultMaxTokensCap
-	}
-
-	switch number := value.(type) {
-	case float64:
-		return int64(number)
-	case int64:
-		return number
-	case int:
-		return int64(number)
-	case json.Number:
-		parsed, err := number.Int64()
-		if err != nil {
-			return DefaultMaxTokensCap
-		}
-		return parsed
-	default:
-		return DefaultMaxTokensCap
-	}
+	return modelcatalog.OllamaOutputCap(value, present)
 }
 
-// ClampMaxTokens 把 body 中超过 cap 的 max_tokens / max_completion_tokens
-// 单向压到 cap。cap <= 0 或 body 不是合法 JSON 时原样返回；sjson 出错时返回原始 body。
-// 有任一字段被 clamp 时记录一条 Debug 日志。
+// ClampMaxTokens lowers numeric max_tokens and max_completion_tokens fields
+// whose gjson integer interpretation exceeds cap, and reports whether either
+// field changed. Nonpositive caps, invalid JSON, and update errors return the
+// supplied body with false; missing, nonnumeric, and integer-within-cap values
+// remain as supplied. For example, max_tokens=10.9 remains unchanged at cap=10
+// because its integer interpretation is ten.
 func ClampMaxTokens(body []byte, cap int64) ([]byte, bool) {
 	if cap <= 0 || !gjson.ValidBytes(body) {
 		return body, false
@@ -52,8 +49,15 @@ func ClampMaxTokens(body []byte, cap int64) ([]byte, bool) {
 		if !result.Exists() || result.Type != gjson.Number || result.Int() <= cap {
 			continue
 		}
+		// Apply the cap to either supported output-limit spelling after
+		// the integer comparison, so both request representations share
+		// the same configured threshold.
 		updated, err := sjson.SetBytes(out, key, cap)
 		if err != nil {
+			// An update failure cannot supply a completed clamp
+			// result. Return the provided body and clear the
+			// changed flag so callers retain one consistent
+			// request.
 			return body, false
 		}
 		out = updated

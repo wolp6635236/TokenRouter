@@ -12,76 +12,90 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
-// TLSFingerprintRouter 定义 TLS 指纹路由器 schema。
-//
-// TLS 路由器按入站 User-Agent 选择 TLS 指纹模板，提供商可在固定模板之上绑定一个
-// 路由器，实现不同客户端运行时使用不同 TLS ClientHello。
+// tls_fingerprint_router.go defines stored User-Agent rules for selecting
+// outbound TLS profiles and headers. A stored router retains the ordered rules
+// alongside separate token and invitation-reset settings, so those special
+// requests can choose their transport identity independently of ordinary model
+// requests.
+
+// TLSFingerprintRouter stores User-Agent rules and special-request TLS overrides.
 type TLSFingerprintRouter struct {
-	ent.Schema
+	ent.Schema // generated entity definition
 }
 
-// Annotations 返回 schema 的注解配置。
+// Annotations maps router queries and mutations to the tls_fingerprint_routers table.
 func (TLSFingerprintRouter) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "tls_fingerprint_routers"},
 	}
 }
 
-// Mixin 返回该 schema 使用的混入组件。
+// Mixin adds creation and update timestamps to stored TLS routers.
 func (TLSFingerprintRouter) Mixin() []ent.Mixin {
 	return []ent.Mixin{
 		mixins.TimeMixin{},
 	}
 }
 
-// Fields 定义 TLS 路由器实体的所有字段。
+// Fields describes ordered routing rules and special-request TLS settings.
+// New routers start enabled with empty User-Agent overrides. Nullable profile
+// selections distinguish inherited behavior from built-in, random, or stored
+// profile choices.
 func (TLSFingerprintRouter) Fields() []ent.Field {
 	return []ent.Field{
-		// name: 路由器名称，唯一标识。
+		// Unique router name.
 		field.String("name").
 			MaxLen(100).
 			NotEmpty().
 			Unique(),
 
-		// description: 路由器描述。
+		// Administrator router description.
 		field.Text("description").
 			Optional().
 			Nillable(),
 
-		// enabled: 是否启用该路由器。
+		// Router activation flag.
 		field.Bool("enabled").
 			Default(true),
 
-		// chatgpt_oauth_token_user_agent: ChatGPT OAuth token 请求使用的 UA，空值使用系统兜底。
+		// chatgpt_oauth_token_user_agent overrides the token request identity.
+		// The authorization dependency uses its configured Codex User-Agent when
+		// this value is empty and a token-specific TLS profile is selected.
 		field.String("chatgpt_oauth_token_user_agent").
 			MaxLen(512).
 			Default(""),
 
-		// chatgpt_oauth_token_tls_fingerprint_profile_id: ChatGPT OAuth token 请求使用的 TLS 模板。
-		// nil 表示不启用 token 专用 TLS 模板；0 表示内置默认模板；-1 表示随机模板；正数表示指定模板。
+		// TLS profile for ChatGPT OAuth token requests.
+		// nil leaves token-specific TLS unset. Zero selects the built-in default,
+		// -1 selects a random profile, and positive values select stored profiles.
 		field.Int64("chatgpt_oauth_token_tls_fingerprint_profile_id").
 			Optional().
 			Nillable(),
 
-		// codex_invite_reset_user_agent: Codex 邀请重置请求使用的 UA，空值使用 Desktop 兜底。
+		// codex_invite_reset_user_agent overrides invitation/reset request identity.
+		// The Codex invitation client uses its Desktop default when this value is
+		// empty after trimming whitespace.
 		field.String("codex_invite_reset_user_agent").
 			MaxLen(512).
 			Default(""),
 
-		// codex_invite_reset_tls_fingerprint_profile_id: Codex 邀请重置请求使用的 TLS 模板。
-		// nil 表示沿用提供商 TLS 模板；0 表示内置默认模板；-1 表示随机模板；正数表示指定模板。
+		// TLS profile for Codex invitation reset requests.
+		// nil inherits the provider selection. Zero selects the built-in default,
+		// -1 selects a random profile, and positive values select stored profiles.
 		field.Int64("codex_invite_reset_tls_fingerprint_profile_id").
 			Optional().
 			Nillable(),
 
-		// rules: 按顺序匹配的 UA 规则列表，命中第一条后返回对应 TLS 模板。
+		// rules supplies ordered User-Agent matches to the egress router service.
+		// The first matching enabled rule determines the request's selected TLS
+		// profile and any configured upstream header overrides.
 		field.JSON("rules", []egress.TLSFingerprintRouterRule{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 	}
 }
 
-// Indexes 定义数据库索引，优化查询性能。
+// Indexes supports finding routers with the requested enabled-state filter.
 func (TLSFingerprintRouter) Indexes() []ent.Index {
 	return []ent.Index{
 		index.Fields("enabled"),

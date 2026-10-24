@@ -8,28 +8,46 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// OpenAIResponsesRequestPathSuffix 提取 Responses 路径后缀并检查协议白名单。
+// responses_path.go extracts and validates operation suffixes from OpenAI
+// Responses request paths.
+// Responses aliases can append upstream operations such as compact or
+// input_tokens. The raw suffix is extracted from the matched HTTP path, then
+// checked by the shared upstream validator before route admission or URL
+// construction accepts it.
+
+// OpenAIResponsesRequestPathSuffix returns a validated Responses suffix or an
+// empty string on failure. Because valid root paths also yield empty, callers
+// use IsForwardableOpenAIResponsesRequestPath to decide whether forwarding is
+// permitted.
 func OpenAIResponsesRequestPathSuffix(c *gin.Context) string {
 	suffix, ok := upstream.SanitizedUpstreamPathSuffix(RawOpenAIResponsesRequestPathSuffix(c))
+	// Invalid suffixes contribute no upstream path text; forwarding gates use the
+	// separate boolean validator to distinguish this rejection from root requests.
 	if !ok {
 		return ""
 	}
 	return suffix
 }
 
-// IsForwardableOpenAIResponsesRequestPath 判断入站请求携带的 /responses 子路径
-// 是否可以安全转发。路由层用它在鉴权后、调度前直接拒绝畸形子路径。
+// IsForwardableOpenAIResponsesRequestPath validates the extracted suffix before
+// upstream scheduling or URL construction. Empty suffixes are accepted by the
+// shared validator, so root and unrelated paths require route matching to
+// establish the Responses entry.
 func IsForwardableOpenAIResponsesRequestPath(c *gin.Context) bool {
 	_, ok := upstream.SanitizedUpstreamPathSuffix(RawOpenAIResponsesRequestPathSuffix(c))
 	return ok
 }
 
-// IsOpenAIResponsesInputTokensRequestPath 判断请求是否指向原生 Responses 输入 token 预检端点。
+// IsOpenAIResponsesInputTokensRequestPath reports whether the validated suffix
+// selects input-token preflight.
 func IsOpenAIResponsesInputTokensRequestPath(c *gin.Context) bool {
 	return OpenAIResponsesRequestPathSuffix(c) == "/input_tokens"
 }
 
-// RawOpenAIResponsesRequestPathSuffix 提取路径后缀，调用方负责校验路径。
+// RawOpenAIResponsesRequestPathSuffix extracts text following the last
+// /responses marker after trimming trailing slashes. Missing request paths,
+// unrelated paths and markers without a slash-prefixed continuation yield
+// empty; callers validate any returned suffix before appending it upstream.
 func RawOpenAIResponsesRequestPathSuffix(c *gin.Context) string {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return ""

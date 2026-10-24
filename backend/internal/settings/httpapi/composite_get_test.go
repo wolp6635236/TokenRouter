@@ -9,8 +9,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 )
 
-// TestOpenAIFastPolicySettingsFromDTO_NormalizesServiceTier 检查管理员设置写入前的 ServiceTier 归一化。
-// 空字符串和纯空白转换为 tierpolicy.OpenAIFastTierAny（“all”），非空值转为小写。
+// TestOpenAIFastPolicySettingsFromDTO_NormalizesServiceTier covers nil policy,
+// empty and whitespace tiers, uppercase text, and recognized tier spellings.
+// Conversion returns expected normalized tiers and retains the supplied user
+// identifier selection in its rule values.
 func TestOpenAIFastPolicySettingsFromDTO_NormalizesServiceTier(t *testing.T) {
 	t.Run("nil input returns nil", func(t *testing.T) {
 		require.Nil(t, OpenaiFastPolicySettingsFromDTO(nil))

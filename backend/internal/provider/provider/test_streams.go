@@ -14,18 +14,46 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
-// 兼容原 data: 前缀后可选空白，保留各平台独立的终态判定。
+// test_streams.go converts platform test streams into content, error, and
+// completion events.
+// Provider test streams expose platform content through one typed event sink,
+// but their completion rules differ. Gemini and ordinary Anthropic accept EOF
+// as success, Qoder accepts EOF after a parsed event, and Responses requires a
+// terminal response event.
+//
+// Chat tracks both parsed JSON and finish reasons so a stream ending after a
+// finish reason can succeed while unfinished JSON fails. Gemini emits a frame's
+// text and images before recognizing its finish reason, preserving content
+// carried by the terminating frame. Completion suppression lets adaptive probes
+// share these parsers without publishing intermediate whole-test success. Sink
+// failures are logged here and retained by TestRun, which cancels execution and
+// combines them with the executor's final result.
+
+// sseDataPrefix recognizes data fields with optional following whitespace for
+// parsers that accept both compact and spaced SSE framing.
 var sseDataPrefix = regexp.MustCompile(`^data:\s*`)
 
-// TestStreamOutput 将供应商流同步转换为提供商测试事件。
+// TestStreamOutput converts platform stream data into synchronous provider test
+// events.
 type TestStreamOutput struct{}
 
-// Gemini 保留 Gemini 流的内容、图片与终态事件顺序。
+// Gemini reads newline-delimited SSE data and emits content from the first
+// candidate. EOF, DONE, or a nonempty finish reason emits successful
+// completion; malformed JSON frames are skipped, and other read failures or
+// error objects emit failures.
+//
+// AI Studio candidates can appear at the root, while CLI responses wrap them in
+// response. After unwrapping, text and inline image parts are emitted before
+// checking the candidate's finish reason, so content in a terminal frame
+// reaches the sink. The caller owns the reader's response-body cleanup. Only
+// newline-terminated data is parsed; an EOF fragment is discarded.
 func (s TestStreamOutput) Gemini(c *TestRun, body io.Reader) error {
 	reader := bufio.NewReader(body)
 
 	for {
 		line, err := reader.ReadString('\n')
+		// Handle EOF before parsing returned bytes: an unterminated final fragment is
+		// discarded, and Gemini completes through its separate EOF rule.
 		if err != nil {
 			if err == io.EOF {
 				s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
@@ -46,19 +74,24 @@ func (s TestStreamOutput) Gemini(c *TestRun, body io.Reader) error {
 		}
 
 		var data map[string]any
+		// Ignore malformed frame data and continue looking for a usable platform
+		// event. Completion still follows this parser's separate terminal or EOF
+		// rule.
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
 		}
 
-		// 同时兼容原生与 CLI 包装的两种响应形状：
-		// - AI Studio: {"candidates": [...]}
-		// - Gemini CLI: {"response": {"candidates": [...]}}
+		// AI Studio places candidates at the root; Gemini CLI wraps the same
+		// candidate structure in response. Unwrap once so both forms share content
+		// and termination handling.
 		if resp, ok := data["response"].(map[string]any); ok && resp != nil {
 			data = resp
 		}
 		if candidates, ok := data["candidates"].([]any); ok && len(candidates) > 0 {
 			if candidate, ok := candidates[0].(map[string]any); ok {
-				// 先输出内容，再判断本帧是否完成。
+				// A terminating candidate can also carry its final text or image parts.
+				// Emit those parts before finishReason returns so the preview retains that
+				// content.
 				if content, ok := candidate["content"].(map[string]any); ok {
 					if parts, ok := content["parts"].([]any); ok {
 						for _, part := range parts {
@@ -82,7 +115,6 @@ func (s TestStreamOutput) Gemini(c *TestRun, body io.Reader) error {
 					}
 				}
 
-				// 内容处理完毕后再发送完成事件。
 				if finishReason, ok := candidate["finishReason"].(string); ok && finishReason != "" {
 					s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
 					return nil
@@ -90,8 +122,10 @@ func (s TestStreamOutput) Gemini(c *TestRun, body io.Reader) error {
 			}
 		}
 
-		// 错误事件在消息缺失时使用回退文本。
 		if errData, ok := data["error"].(map[string]any); ok {
+			// An error event can omit usable message details. Keep the event-specific
+			// diagnostic until a string message is available from the expected platform
+			// shape.
 			errorMsg := "Unknown error"
 			if msg, ok := errData["message"].(string); ok {
 				errorMsg = msg
@@ -101,12 +135,17 @@ func (s TestStreamOutput) Gemini(c *TestRun, body io.Reader) error {
 	}
 }
 
-// Anthropic 将 Claude 流转换为提供商测试事件。
+// Anthropic emits text deltas from newline-delimited Claude SSE data. EOF,
+// DONE, and message_stop emit completion, malformed JSON frames are skipped,
+// and upstream or read errors emit failure; the caller closes the response
+// body. Only newline-terminated data is parsed; an EOF fragment is discarded.
 func (s TestStreamOutput) Anthropic(c *TestRun, body io.Reader) error {
 	reader := bufio.NewReader(body)
 
 	for {
 		line, err := reader.ReadString('\n')
+		// Handle EOF before parsing returned bytes: an unterminated final fragment is
+		// discarded, and ordinary Anthropic completes through its separate EOF rule.
 		if err != nil {
 			if err == io.EOF {
 				s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
@@ -127,6 +166,9 @@ func (s TestStreamOutput) Anthropic(c *TestRun, body io.Reader) error {
 		}
 
 		var data map[string]any
+		// Ignore malformed frame data and continue looking for a usable platform
+		// event. Completion still follows this parser's separate terminal or EOF
+		// rule.
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
 		}
@@ -144,6 +186,9 @@ func (s TestStreamOutput) Anthropic(c *TestRun, body io.Reader) error {
 			s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
 			return nil
 		case "error":
+			// An error event can omit usable message details. Keep the event-specific
+			// diagnostic until a string message is available from the expected platform
+			// shape.
 			errorMsg := "Unknown error"
 			if errData, ok := data["error"].(map[string]any); ok {
 				if msg, ok := errData["message"].(string); ok {
@@ -155,6 +200,15 @@ func (s TestStreamOutput) Anthropic(c *TestRun, body io.Reader) error {
 	}
 }
 
+// Qoder parses SSE lines, emits text deltas, and closes its supplied body. Nil
+// bodies, parser failures, scanner failures, and EOF before any parsed event
+// return a probe error.
+//
+// A done event completes immediately, while EOF after at least one parsed event
+// is also accepted as completion. This distinguishes an empty or non-event
+// response from an accepted stream that lacked an explicit final marker. The
+// scanner uses the shared upstream line ceiling, and TestRun retains any sink
+// error generated during these events.
 func (s TestStreamOutput) Qoder(c *TestRun, body io.ReadCloser) error {
 	if body == nil {
 		return s.Error(c, "Qoder response body is nil")
@@ -162,6 +216,7 @@ func (s TestStreamOutput) Qoder(c *TestRun, body io.ReadCloser) error {
 	defer func() { _ = body.Close() }()
 
 	scanner := bufio.NewScanner(body)
+	// Match forwarding limits so probes accept the same maximum-sized SSE lines.
 	scanner.Buffer(make([]byte, 0, 64*1024), upstream.DefaultSSELineLimit)
 	seenEvent := false
 	for scanner.Scan() {
@@ -183,6 +238,9 @@ func (s TestStreamOutput) Qoder(c *TestRun, body io.ReadCloser) error {
 	if err := scanner.Err(); err != nil {
 		return s.Error(c, fmt.Sprintf("Qoder stream read error: %s", err.Error()))
 	}
+	// At least one parsed Qoder event establishes an accepted stream here. Permit
+	// EOF completion for that case while an entirely empty response remains a
+	// failure.
 	if seenEvent {
 		s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
 		return nil
@@ -190,7 +248,17 @@ func (s TestStreamOutput) Qoder(c *TestRun, body io.ReadCloser) error {
 	return s.Error(c, "Qoder stream ended before any response")
 }
 
-// ChatCompletions 处理 OpenAI 兼容 Chat Completions API 返回的 SSE 分片。
+// ChatCompletions converts OpenAI-compatible SSE chunks into probe content and
+// completion. A DONE marker succeeds immediately, and malformed data JSON or
+// explicit error objects produce a failure; callers close the supplied response
+// body.
+//
+// The parser separately records parsed JSON and nonempty finish reasons. EOF
+// after a finish reason is accepted, but EOF after unfinished JSON reports a
+// missing terminal marker, and EOF without JSON reports an invalid response.
+// Content is read from both delta and message forms before finish state is
+// recorded. Only newline-terminated data is parsed; an EOF fragment is
+// discarded.
 func (s TestStreamOutput) ChatCompletions(c *TestRun, body io.Reader) error {
 	reader := bufio.NewReader(body)
 	seenJSON := false
@@ -198,10 +266,12 @@ func (s TestStreamOutput) ChatCompletions(c *TestRun, body io.Reader) error {
 
 	for {
 		line, err := reader.ReadString('\n')
+		// A read error takes precedence over returned fragments. EOF can complete
+		// only from a finish reason recorded on an earlier newline-terminated chunk.
 		if err != nil {
 			if err == io.EOF {
 				if seenFinish {
-					s.SendEvent(c, providercore.TestEvent{Type: "status", Text: "已通过 /v1/chat/completions 验证"})
+					s.SendEvent(c, providercore.TestEvent{Type: "status", Text: "Verified through /v1/chat/completions"})
 					s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
 					return nil
 				}
@@ -220,7 +290,7 @@ func (s TestStreamOutput) ChatCompletions(c *TestRun, body io.Reader) error {
 
 		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
 		if jsonStr == "[DONE]" {
-			s.SendEvent(c, providercore.TestEvent{Type: "status", Text: "已通过 /v1/chat/completions 验证"})
+			s.SendEvent(c, providercore.TestEvent{Type: "status", Text: "Verified through /v1/chat/completions"})
 			s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
 			return nil
 		}
@@ -265,11 +335,18 @@ func (s TestStreamOutput) ChatCompletions(c *TestRun, body io.Reader) error {
 	}
 }
 
-// Responses 要求实际收到终态事件，不能把提前 EOF 当作成功。
+// Responses emits output-text deltas and requires response.completed or
+// response.done for success. EOF and DONE before those events fail, malformed
+// JSON frames are skipped, and error or response.failed events emit a failure;
+// callers close the reader. Only newline-terminated data is parsed; an EOF
+// fragment is discarded.
 func (s TestStreamOutput) Responses(c *TestRun, body io.Reader) error {
 	reader := bufio.NewReader(body)
 	for {
 		line, err := reader.ReadString('\n')
+		// An EOF fragment is discarded before parsing. Success therefore requires a
+		// completed or done event from an earlier newline-terminated frame; otherwise
+		// this call fails.
 		if err != nil {
 			if err == io.EOF {
 				return s.Error(c, "Stream ended before response.completed")
@@ -288,6 +365,9 @@ func (s TestStreamOutput) Responses(c *TestRun, body io.Reader) error {
 		}
 
 		var data map[string]any
+		// Ignore malformed frame data and continue looking for a usable platform
+		// event. Completion still follows this parser's separate terminal or EOF
+		// rule.
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
 		}
@@ -296,7 +376,6 @@ func (s TestStreamOutput) Responses(c *TestRun, body io.Reader) error {
 
 		switch eventType {
 		case "response.output_text.delta":
-			// Responses 文本增量使用 delta 字段。
 			if delta, ok := data["delta"].(string); ok && delta != "" {
 				s.SendEvent(c, providercore.TestEvent{Type: "content", Text: delta})
 			}
@@ -304,6 +383,9 @@ func (s TestStreamOutput) Responses(c *TestRun, body io.Reader) error {
 			s.SendEvent(c, providercore.TestEvent{Type: "test_complete", Success: true})
 			return nil
 		case "response.failed":
+			// An error event can omit usable message details. Keep the event-specific
+			// diagnostic until a string message is available from the expected platform
+			// shape.
 			errorMsg := "OpenAI response failed"
 			if responseData, ok := data["response"].(map[string]any); ok {
 				if errData, ok := responseData["error"].(map[string]any); ok {
@@ -314,6 +396,9 @@ func (s TestStreamOutput) Responses(c *TestRun, body io.Reader) error {
 			}
 			return s.Error(c, errorMsg)
 		case "error":
+			// An error event can omit usable message details. Keep the event-specific
+			// diagnostic until a string message is available from the expected platform
+			// shape.
 			errorMsg := "Unknown error"
 			if errData, ok := data["error"].(map[string]any); ok {
 				if msg, ok := errData["message"].(string); ok {
@@ -325,16 +410,25 @@ func (s TestStreamOutput) Responses(c *TestRun, body io.Reader) error {
 	}
 }
 
+// SendEvent emits a typed event unless an intermediate completion is
+// suppressed. Sink failures are logged and remain retained by TestRun for
+// Result, while content, status, and error events remain eligible during
+// suppression.
 func (s TestStreamOutput) SendEvent(c *TestRun, event providercore.TestEvent) {
 	if event.Type == "test_complete" && c.SuppressCompletion() {
 		return
 	}
+	// SendEvent cannot return a write failure to every parser call site. Log it
+	// while TestRun retains the first error and cancels cooperative upstream
+	// execution.
 	if err := c.Emit(event); err != nil {
 		log.Printf("failed to write SSE event: %v", err)
 	}
 }
 
-// Error 记录错误日志和事件，并返回错误文本。
+// Error logs and emits the supplied probe failure, then returns an error with
+// that message. A sink failure stays in TestRun for final Result handling
+// rather than replacing this diagnostic message.
 func (s TestStreamOutput) Error(c *TestRun, errorMsg string) error {
 	log.Printf("Provider test error: %s", errorMsg)
 	s.SendEvent(c, providercore.TestEvent{Type: "error", Error: errorMsg})

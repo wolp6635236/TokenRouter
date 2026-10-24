@@ -5,19 +5,39 @@ import (
 	"fmt"
 )
 
-// CreativeUpstreamError 是执行器向上抛出的上游调用错误，携带可重试判定。
+// execution_error.go classifies creative execution failures for public
+// messages and worker retry decisions.
+// Creative execution failures carry a public message and a worker retry
+// decision. HTTP failures replace supplied upstream text with status-class
+// messages, while image retrieval failures end generation attempts so a failed
+// download cannot request another image.
+
+// CreativeUpstreamError describes an upstream execution failure and whether the
+// worker may retry.
 type CreativeUpstreamError struct {
-	Code       string
-	StatusCode int
-	Message    string
-	Retryable  bool
+	// Code overrides the worker status-derived code when nonempty, identifying
+	// image retrieval failures separately from a failed generation request.
+	Code string // optional persisted execution code
+	// StatusCode retains the supplied upstream status. Zero identifies failures
+	// without a response status; Retryable independently controls the worker.
+	StatusCode int    // upstream HTTP status number
+	Message    string // caller supplied public message
+	// Retryable permits another execution attempt subject to the worker attempt
+	// limit; a false value sends the task toward funding release.
+	Retryable bool // worker retry permission flag
 }
 
-// CreativeImageResultError 标记结果读取失败，禁止 worker 重新请求生图。
+// CreativeImageResultError identifies a failed image retrieval after the
+// generation response. The worker terminates this attempt using code and
+// message as supplied, so callers provide text suitable for public task
+// metadata.
 func CreativeImageResultError(code, message string) *CreativeUpstreamError {
 	return &CreativeUpstreamError{Code: code, Message: message, Retryable: false}
 }
 
+// Error formats the status and public message for an execution failure. A nil
+// receiver returns the fixed creative upstream error text, allowing logging of
+// that receiver.
 func (e *CreativeUpstreamError) Error() string {
 	if e == nil {
 		return "creative upstream error"
@@ -25,15 +45,22 @@ func (e *CreativeUpstreamError) Error() string {
 	return fmt.Sprintf("creative upstream error status=%d: %s", e.StatusCode, e.Message)
 }
 
-// CreativeNonRetryableError 生成不可重试的执行错误（如平台不支持该操作）。
+// CreativeNonRetryableError formats a failure that stops worker execution
+// retries. It retains the supplied formatted message, so callers exclude
+// credentials and private upstream details before constructing the error.
 func CreativeNonRetryableError(format string, args ...any) *CreativeUpstreamError {
 	return &CreativeUpstreamError{StatusCode: 0, Message: fmt.Sprintf(format, args...), Retryable: false}
 }
 
-// CreativeHTTPStatusError 把上游 HTTP 状态码映射为可重试性：网络层错误、429 与 5xx 可重试，其余 4xx 不可重试。
+// CreativeHTTPStatusError classifies connection, rate-limit, and server
+// failures for worker retries. Status zero, 429, and values at least 500
+// permit retries; message is discarded in favor of fixed public status-class
+// text.
 func CreativeHTTPStatusError(statusCode int, message string) *CreativeUpstreamError {
 	retryable := statusCode == 0 || statusCode == 429 || statusCode >= 500
-	// 上游 body 可能回显 prompt、内部 URL 或认证信息；对外只保留稳定的状态类消息。
+	// Worker error metadata reaches the user API. Discard the supplied upstream
+	// message here so prompts, private addresses, or credentials in that text are
+	// replaced by the public status-class description.
 	publicMessage := "creative platform request failed"
 	switch {
 	case statusCode == 0:
@@ -48,11 +75,19 @@ func CreativeHTTPStatusError(statusCode int, message string) *CreativeUpstreamEr
 	return &CreativeUpstreamError{StatusCode: statusCode, Message: publicMessage, Retryable: retryable}
 }
 
-// IsRetryableCreativeError 判断错误是否值得 worker 有限重试。
+// IsRetryableCreativeError returns the embedded retry decision when err wraps
+// CreativeUpstreamError. Every other nonnil error permits the worker to apply
+// its attempt limit; nil reports false.
+//
+// Callers represent no error with a nil interface and keep matched upstream
+// error pointers nonnil. A typed nil upstream error matches errors.AsType but
+// panics when this method reads its Retryable field.
 func IsRetryableCreativeError(err error) bool {
 	if upstreamErr, ok := errors.AsType[*CreativeUpstreamError](err); ok {
 		return upstreamErr.Retryable
 	}
-	// 未知错误（网络层、序列化等）保守视为可重试，由最大次数兜底。
+	// Generic transport and serialization errors carry no explicit retry decision.
+	// Let the worker count these failures and stop them at its configured attempt
+	// limit before moving the task to funding release recovery.
 	return err != nil
 }

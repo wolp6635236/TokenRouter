@@ -12,7 +12,18 @@ import (
 	creativeredis "github.com/TokenFlux/TokenRouter/internal/creative/rediscache"
 )
 
-// provideCreativeQueue 根据队列配置构造创作台队列，并设置键名和租约时间。
+// task_storage.go configures Redis queues, transient creative storage, and
+// batch-image download limits.
+// Creative and batch-image queues keep task reservation and locking names
+// beside their lease lifetimes. Assembly supplies those Redis options from
+// startup configuration, while transient creative data and batch downloads
+// receive their separate retention and concurrency settings through their
+// owning adapters.
+
+// provideCreativeQueue binds creative queue names and reservation/lock
+// lifetimes to Redis. Nil cfg passes nil options for constructor defaults;
+// supplied configuration forwards key prefixes and seconds values to the
+// creative queue adapter.
 func provideCreativeQueue(client *redis.Client, cfg *config.Config) creative.CreativeRunQueue {
 	if cfg == nil {
 		return creativeredis.NewCreativeQueue(client, nil)
@@ -28,7 +39,10 @@ func provideCreativeQueue(client *redis.Client, cfg *config.Config) creative.Cre
 	})
 }
 
-// provideCreativeTransientStore 复用任务模块的唯一暂存实现。
+// provideCreativeTransientStore constructs Redis transient payload/output
+// storage with its configured lifetime. Nil cfg passes constructor defaults,
+// while supplied TransientTTLSeconds remains the retention input used by the
+// creative adapter.
 func provideCreativeTransientStore(client *redis.Client, cfg *config.Config) creative.CreativeTransientStore {
 	if cfg == nil {
 		return creativeredis.NewCreativeTransientStore(client, nil)
@@ -38,7 +52,10 @@ func provideCreativeTransientStore(client *redis.Client, cfg *config.Config) cre
 	})
 }
 
-// provideBatchQueue 将秒数配置转换为时长，缺省时使用默认队列参数。
+// provideBatchQueue constructs batch-image task queues with configured names
+// and lease durations. Nil cfg passes constructor defaults; supplied inflight
+// and job-lock seconds are converted to durations before the Redis queue
+// normalizes its options.
 func provideBatchQueue(client *redis.Client, cfg *config.Config) batchimage.BatchImageQueue {
 	if cfg == nil {
 		return batchredis.NewBatchImageQueue(client, nil)
@@ -49,12 +66,15 @@ func provideBatchQueue(client *redis.Client, cfg *config.Config) batchimage.Batc
 		ActiveKey:      cfg.BatchImage.QueueActiveKey,
 		InflightPrefix: cfg.BatchImage.InflightKeyPrefix,
 		LockPrefix:     cfg.BatchImage.LockKeyPrefix,
-		InflightTTL:    time.Duration(cfg.BatchImage.InflightTTLSeconds) * time.Second,
-		LockTTL:        time.Duration(cfg.BatchImage.JobLockTTLSeconds) * time.Second,
+		// Inflight reservations and job locks consume lease durations converted from seconds.
+		InflightTTL: time.Duration(cfg.BatchImage.InflightTTLSeconds) * time.Second,
+		LockTTL:     time.Duration(cfg.BatchImage.JobLockTTLSeconds) * time.Second,
 	})
 }
 
-// provideBatchDownloadLimiter 为共享下载限制器提供用户并发数和租约时长。
+// provideBatchDownloadLimiter binds per-user download concurrency and
+// maximum-duration seconds to Redis. Nil cfg selects constructor defaults,
+// while configured values remain inputs to the batch download lease adapter.
 func provideBatchDownloadLimiter(client *redis.Client, cfg *config.Config) batchimage.BatchImageDownloadLimiter {
 	if cfg == nil {
 		return batchredis.NewBatchImageDownloadLimiter(client, nil)

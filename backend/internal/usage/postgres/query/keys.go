@@ -6,13 +6,22 @@ import (
 	"strings"
 
 	"entgo.io/ent/dialect"
-	// 其它方言使用逐项占位符，便于 SQLite 回归测试覆盖真实 SQL。
-	// 每个 Key 只做一次有序索引探测，避免为整段历史记录计算窗口排名。
 	"github.com/lib/pq"
 
-	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres" // KeyLatestUsageLogIPsQuery 按数据库方言生成批量查询：PostgreSQL 使用数组，
+	infra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 )
 
+// keys.go queries the latest nonempty usage IP address for each requested API
+// key.
+// A key's recent IP is the latest retained usage row with a nonempty ip_address,
+// ordered by creation time and row ID. PostgreSQL probes once for each requested
+// key through a lateral subquery; other dialects rank matching rows before
+// selecting one per key.
+
+// KeyLatestUsageLogIPsQuery builds a latest-nonempty-IP query and matching bound
+// arguments. PostgreSQL uses an array and per-key lateral probes; other dialects
+// use individual placeholders. Callers supply nonempty IDs for the latter form
+// to avoid an empty IN list.
 func KeyLatestUsageLogIPsQuery(apiKeyIDs []int64, dialectName string) (string, []any) {
 	if dialectName == dialect.Postgres {
 		return `
@@ -48,7 +57,10 @@ func KeyLatestUsageLogIPsQuery(apiKeyIDs []int64, dialectName string) (string, [
 		WHERE rn = 1`, strings.Join(placeholders, ", ")), args
 }
 
-// KeyLatestUsageLogIPs 从 usage_logs 查询每个 API Key 最新的非空 IP。
+// KeyLatestUsageLogIPs returns each requested key's latest retained nonempty IP.
+// Empty IDs or a nil executor return an allocated empty map; keys without a
+// matching row are omitted, and a close failure is returned when no earlier
+// error exists.
 func KeyLatestUsageLogIPs(ctx context.Context, db infra.Executor, dialectName string, apiKeyIDs []int64) (result map[int64]string, err error) {
 	if len(apiKeyIDs) == 0 || db == nil {
 		return map[int64]string{}, nil
@@ -59,6 +71,8 @@ func KeyLatestUsageLogIPs(ctx context.Context, db infra.Executor, dialectName st
 	if err != nil {
 		return nil, err
 	}
+	// Close rows after every query exit. Preserve earlier failures, while a cleanup
+	// failure can become the returned error after successful iteration.
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr

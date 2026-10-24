@@ -8,12 +8,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// ParseCodexRateLimitHeaders 解析供应商额度 Header，供查询与 429 处理共用。
+// codex_usage_headers.go parses Codex quota headers into independently present
+// usage observations.
+// Codex rate-limit headers expose primary and secondary windows before the
+// quota layer assigns daily or weekly meaning. Each successfully parsed field
+// remains independently observable, so a partial header set can still update
+// quota information while missing or malformed values remain absent.
+
+// ParseCodexRateLimitHeaders returns observed quota fields and a local RFC3339
+// update timestamp. Nil or entirely unparseable headers return nil; percentage
+// and integer fields are parsed independently, and this parser does not
+// validate their business ranges.
 func ParseCodexRateLimitHeaders(headers http.Header) *openai.OpenAICodexUsageSnapshot {
 	snapshot := &openai.OpenAICodexUsageSnapshot{}
 	hasData := false
 
-	// 缺失或非法数值保持未观测状态。
+	// A malformed percentage is left unobserved so other valid headers can still
+	// update the quota snapshot without synthesizing a zero-percent measurement.
 	parseFloat := func(key string) *float64 {
 		if v := headers.Get(key); v != "" {
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
@@ -23,7 +34,8 @@ func ParseCodexRateLimitHeaders(headers http.Header) *openai.OpenAICodexUsageSna
 		return nil
 	}
 
-	// 整数窗口字段由 strconv 解析。
+	// Window durations and reset offsets are parsed independently, retaining
+	// partial observations when a percentage or another integer field is missing.
 	parseInt := func(key string) *int {
 		if v := headers.Get(key); v != "" {
 			if i, err := strconv.Atoi(v); err == nil {
@@ -33,7 +45,8 @@ func ParseCodexRateLimitHeaders(headers http.Header) *openai.OpenAICodexUsageSna
 		return nil
 	}
 
-	// 主窗口的原始字段，实际日/周含义由后续归一化确定。
+	// Keep primary-window labels as observed; the quota normalizer uses the
+	// window length to assign daily or weekly meaning after this header snapshot.
 	if v := parseFloat("x-codex-primary-used-percent"); v != nil {
 		snapshot.PrimaryUsedPercent = v
 		hasData = true
@@ -47,7 +60,7 @@ func ParseCodexRateLimitHeaders(headers http.Header) *openai.OpenAICodexUsageSna
 		hasData = true
 	}
 
-	// 次窗口的原始字段。
+	// The secondary window is recorded independently.
 	if v := parseFloat("x-codex-secondary-used-percent"); v != nil {
 		snapshot.SecondaryUsedPercent = v
 		hasData = true
@@ -61,7 +74,7 @@ func ParseCodexRateLimitHeaders(headers http.Header) *openai.OpenAICodexUsageSna
 		hasData = true
 	}
 
-	// 主次窗口的额度比例。
+	// Percentage ratio between the primary and secondary limits.
 	if v := parseFloat("x-codex-primary-over-secondary-limit-percent"); v != nil {
 		snapshot.PrimaryOverSecondaryPercent = v
 		hasData = true

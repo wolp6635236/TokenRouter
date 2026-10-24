@@ -8,9 +8,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 )
 
-// CountGeminiInlineImageOutputs 统计一段 Gemini 响应 JSON 里的内联图片 part。
-// Gemini REST 回 camelCase 的 inlineData，官方 SDK 与部分中转会回 snake_case
-// 的 inline_data，两种都要认。
+// image_observation.go counts nonempty inline image parts in Gemini candidates
+// for image output observations.
+// Gemini image billing observes inline image parts across every candidate in
+// one payload. Compatible camelCase and snake_case fields are recognized, and
+// an image MIME label plus nonblank data defines the counted image
+// observation and excludes empty image-shaped parts.
+
+// CountGeminiInlineImageOutputs counts qualifying inline image parts across
+// all candidates of one valid JSON payload. Empty or invalid JSON returns
+// zero; it counts parts per payload, while stream accumulation policy belongs
+// to callers.
 func CountGeminiInlineImageOutputs(payload []byte) int {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return 0
@@ -28,7 +36,14 @@ func CountGeminiInlineImageOutputs(payload []byte) int {
 	return count
 }
 
+// GeminiPartIsInlineImage recognizes an inline-data part with an image MIME
+// label and nonblank data text. Existing camelCase fields take precedence over
+// snake_case alternatives; this predicate checks presence and MIME, leaving
+// base64 decoding to image consumers.
 func GeminiPartIsInlineImage(part gjson.Result) bool {
+	// Prefer an existing camelCase field before the compatible snake_case
+	// spelling, including when the preferred field is empty; that precedence
+	// matches both lookups below.
 	inline := part.Get("inlineData")
 	if !inline.Exists() {
 		inline = part.Get("inline_data")
@@ -45,6 +60,7 @@ func GeminiPartIsInlineImage(part gjson.Result) bool {
 		return false
 	}
 
-	// 只认真的带上了 base64 数据的 part，空壳 part 不计费。
+	// A MIME label alone carries no observed image bytes. Require nonblank data
+	// text before this part contributes to the caller image count.
 	return strings.TrimSpace(inline.Get("data").String()) != ""
 }

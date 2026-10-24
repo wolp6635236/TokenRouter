@@ -4,11 +4,29 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// RedactCredentials 复制一份 in，剥离 provider.SensitiveCredentialKeys 列出的所有敏感子键，
-// 并产出一个 has_<key> 状态 map 表示哪些敏感键存在且非零值。
+// credentials.go redacts sensitive provider credentials and reports their
+// configured presence to administrators.
+// Administrator credential responses expose permitted configuration and
+// sensitive-key presence separately. The provider classifier removes known
+// secret keys even when unconfigured, and presence flags use value-specific
+// rules so empty strings and false do not appear as configured secrets.
 //
-// 输入 nil 时返回 nil, nil，响应省略对应对象。
-// 不修改入参；调用方拿到的 out 可安全序列化进 JSON 返回前端。
+// Redaction builds the public map separately from presence flags, so an
+// omitted secret can still be shown as configured without returning its value.
+// Nil input retains nil outputs. Permitted values copy the container forms
+// supported by CloneValues; unsupported mutable values can remain shared with
+// the caller.
+
+// RedactCredentials returns permitted credential values and flags for
+// configured sensitive keys. Nil input returns two nil maps, and sensitive keys
+// are removed regardless of presence. Flags are allocated only for present
+// sensitive values.
+//
+// Each retained value is copied with CloneValues, whose concrete JSON map and
+// slice cases support independent container edits. Unsupported mutable values
+// can remain shared, and callers keep those values immutable through
+// serialization. The input map is not changed by redaction; arbitrary
+// unclassified keys remain available in the output.
 func RedactCredentials(in map[string]any) (out map[string]any, status map[string]bool) {
 	if in == nil {
 		return nil, nil
@@ -22,6 +40,8 @@ func RedactCredentials(in map[string]any) (out map[string]any, status map[string
 				}
 				status["has_"+k] = true
 			}
+			// Known secret keys are omitted even when their values count as absent.
+			// The response exposes presence only for configured values through the separate flag map.
 			continue
 		}
 		out[k] = provider.CloneValues(map[string]any{k: v})[k]
@@ -29,8 +49,10 @@ func RedactCredentials(in map[string]any) (out map[string]any, status map[string
 	return out, status
 }
 
-// isCredentialValuePresent 判断值是否"存在且非零"。空字符串、nil、false 均视为未配置；
-// 其余非零类型（数字、对象、字符串等）视为已配置。
+// isCredentialValuePresent reports whether a sensitive credential value counts
+// as configured. Nil, an exactly empty string and false report absent;
+// whitespace strings, numeric zero, empty containers and other values report
+// present.
 func isCredentialValuePresent(v any) bool {
 	switch x := v.(type) {
 	case nil:

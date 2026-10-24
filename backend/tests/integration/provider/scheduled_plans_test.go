@@ -14,7 +14,14 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// TestScheduledPlanStorageContract 在隔离 PostgreSQL 中检查计划限制、结果保留数和级联删除。
+// Scheduled provider tests store the next cron occurrence and retain a bounded
+// result history. PostgreSQL assertions compare the due-time edge, trim three
+// stored results to two, update the plan schedule, and check that deleting the
+// plan removes its results.
+
+// TestScheduledPlanStorageContract creates a cron plan and queries immediately
+// before and at its next run. PostgreSQL retains two of three results, updates
+// the disabled plan's schedule, and removes results when the plan is deleted.
 func TestScheduledPlanStorageContract(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)
@@ -29,7 +36,8 @@ func TestScheduledPlanStorageContract(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 50, plan.MaxResults)
 	require.NotNil(t, plan.NextRunAt)
-	// PostgreSQL timestamp 以微秒表示边界，不能用会被舍入的纳秒差值构造夹具。
+	// Use PostgreSQL's stored microsecond precision for the before-due comparison,
+	// keeping that request distinct from the exact next-run timestamp checked afterward.
 	before, err := plans.ListDue(ctx, plan.NextRunAt.Add(-time.Microsecond))
 	require.NoError(t, err)
 	for _, p := range before {

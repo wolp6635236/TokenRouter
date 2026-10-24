@@ -9,8 +9,17 @@ import (
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
 )
 
+// assembly_payment_wire.go registers payment runtime and HTTP constructors and
+// binds the payment load balancer.
+// Payment runtime, public endpoints, and administrator handlers share
+// persisted provider instances and the application provider registry. Wire
+// binds DefaultLoadBalancer to payment.LoadBalancer, so order processing
+// receives selection backed by the same instance store and configured
+// encryption key.
+
 var (
-	// paymentAssemblyProviders 汇总 payment 模块的 Wire provider。
+	// paymentAssemblyProviders supplies payment runtime, expiry handling, and
+	// public, administrator, and webhook HTTP constructors for application routes.
 	paymentAssemblyProviders = wire.NewSet(
 		providePaymentExpiry,
 		providePaymentHTTP,
@@ -21,8 +30,8 @@ var (
 		paymentProviders,
 	)
 
-	// 支付 Wire 集合供生成器使用，运行构造函数位于普通 app 文件。
-	// ProviderSet 是支付模块的 Wire provider 集合。
+	// paymentProviders supplies persisted instances, encryption, and registry
+	// construction, then binds the default payment load balancer.
 	paymentProviders = wire.NewSet(
 		paymentpostgres.NewInstanceStore,
 		providePaymentEncryptionKey,

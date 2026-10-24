@@ -18,11 +18,24 @@ import (
 	usageerrors "github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// provider_google_tokens.go assembles Gemini authorization and quota prechecks
+// alongside cached Gemini and Antigravity credentials. Gemini and Antigravity
+// token reads share provider storage, access-token cache, and refresh
+// coordination. Gemini also binds project discovery and Vertex exchange, while
+// quota prechecks use Los Angeles dates or a fixed PST fallback when the
+// location database cannot be loaded.
+
+// provideGeminiAuthorization binds configured Google OAuth and stored proxy
+// resolution to platform clients. cfg and proxies supply request-time
+// callbacks; unreadable or absent proxy results are reported through the
+// resolver's false availability result.
 func provideGeminiAuthorization(proxies egress.ProxyRepository, client provider.GeminiOAuthClient, discovery provider.GeminiCodeAssistClient, drive codeassist.DriveClient, cfg *config.Config) *provider.GeminiAuthorization {
 	options := provideradapter.GeminiAuthorizationOptions(func() google.OAuthConfig {
 		return google.OAuthConfig{ClientID: cfg.Gemini.OAuth.ClientID, ClientSecret: cfg.Gemini.OAuth.ClientSecret, Scopes: cfg.Gemini.OAuth.Scopes}
 	}, func(ctx context.Context, id int64) (string, bool) {
 		proxy, err := proxies.GetByID(ctx, id)
+		// A failed or absent proxy read cannot supply authorization routing.
+		// Return the resolver's unavailable result so the Google flow handles that selected dependency.
 		if err != nil || proxy == nil {
 			return "", false
 		}
@@ -31,7 +44,10 @@ func provideGeminiAuthorization(proxies egress.ProxyRepository, client provider.
 	return provider.NewGeminiAuthorization(client, discovery, drive, options)
 }
 
-// provideGeminiQuotaPolicy 绑定静态参数和动态设置读取器，共用配额设置缓存。
+// provideGeminiQuotaPolicy binds startup tier overrides and policy JSON reads
+// to quota resolution. cfg is required; configured tiers are collected before
+// construction, and LoadPolicy reads the shared store when the service requests
+// runtime policy.
 func provideGeminiQuotaPolicy(cfg *config.Config, store *settings.Store) *provider.GeminiQuotaService {
 	tiers := make(map[string]provider.GeminiTierQuotaOverride, len(cfg.Gemini.Quota.Tiers))
 	for id, v := range cfg.Gemini.Quota.Tiers {
@@ -42,16 +58,23 @@ func provideGeminiQuotaPolicy(cfg *config.Config, store *settings.Store) *provid
 	}})
 }
 
-// provideGeminiPrecheck 使用洛杉矶时区和独立的每日统计缓存。
+// provideGeminiPrecheck constructs quota admission using local Gemini usage and
+// its own cache. It uses America/Los_Angeles when loaded, otherwise a fixed
+// UTC-minus-eight PST zone for the daily window calculations.
 func provideGeminiPrecheck(policy *provider.GeminiQuotaService, usage usageerrors.UsageLogRepository) *provider.GeminiPrecheck {
 	location, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
+		// Location loading failure selects fixed PST so quota dates remain defined.
+		// This fallback uses UTC minus eight throughout the year and therefore has no daylight-saving transition.
 		location = time.FixedZone("PST", -8*3600)
 	}
 	return provider.NewGeminiPrecheck(policy, newProviderGeminiUsageReader(usage), provider.GeminiPrecheckOptions{Now: time.Now, Location: location, Info: slog.Info})
 }
 
-// provideGeminiTokens 组合 project 查询、Vertex 凭据交换和凭据字段保存。
+// provideGeminiTokens binds cached tokens, project discovery, Vertex exchange,
+// and credential persistence. Refresh delegates to the shared coordinator with
+// the platform cache key, while persist returns the provider mutation error for
+// token handling.
 func provideGeminiTokens(store *postgres.ProviderStore, cache provider.AccessTokenCache, authorization *provider.GeminiAuthorization, refresh *provider.OAuthRefreshAPI) *provider.GeminiTokenSource {
 	executor := &provider.GeminiTokenRefresher{Authorization: authorization, Key: provideradapter.GeminiTokenCacheKey}
 	return &provider.GeminiTokenSource{Options: provider.GeminiTokenOptions{
@@ -71,13 +94,18 @@ func provideGeminiTokens(store *postgres.ProviderStore, cache provider.AccessTok
 	}}
 }
 
-// provideAntigravityTokens 绑定共享的回填状态、冷却缓存和刷新协调器。
+// provideAntigravityTokens combines cached tokens, project backfill, temporary
+// pause state, and platform refresh. It delegates conditional persistence and
+// refresh to provider helpers, retaining their errors while diagnostics use the
+// configured print and log callbacks.
 func provideAntigravityTokens(store *postgres.ProviderStore, cache provider.AccessTokenCache, authorization *provider.AntigravityAuthorization, refresh *provider.OAuthRefreshAPI, cooldown provider.TempUnschedCache) *provider.AntigravityTokenSource {
 	executor := &provider.AntigravityRefreshRules{
 		RefreshProviderToken:     authorization.RefreshProviderToken,
 		BuildProviderCredentials: authorization.BuildProviderCredentials,
-		Printf:                   func(format string, args ...any) { _, _ = fmt.Printf(format, args...) },
-		Logf:                     log.Printf,
+		// Platform print diagnostics have no returned result. Output errors are
+		// discarded by this callback while the refresh operation retains its own credential or persistence error.
+		Printf: func(format string, args ...any) { _, _ = fmt.Printf(format, args...) },
+		Logf:   log.Printf,
 	}
 	return &provider.AntigravityTokenSource{Options: provider.AntigravityTokenOptions{
 		Cache: cache, Repository: store, Policy: provider.AntigravityProviderRefreshPolicy(),

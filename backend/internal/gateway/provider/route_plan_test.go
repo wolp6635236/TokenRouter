@@ -15,7 +15,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestGroupMappingChainIncludesAPIKeyRedirectAndDeduplicatesStages 验证模型映射链包含 Key 重定向，并去除重复阶段。
+// TestGroupMappingChainIncludesAPIKeyRedirectAndDeduplicatesStages combines a
+// Key redirect with group and upstream names. Usage fields retain the
+// requested and group names, while repeated stages appear once in the model
+// chain.
 func TestGroupMappingChainIncludesAPIKeyRedirectAndDeduplicatesStages(t *testing.T) {
 	ctx := modeltrace.WithContext(
 		context.Background(),
@@ -32,12 +35,14 @@ func TestGroupMappingChainIncludesAPIKeyRedirectAndDeduplicatesStages(t *testing
 	require.Equal(t, "gpt-5.6-luna-channel", fields.GroupMappedModel)
 	require.Equal(t, "codex-auto-review→gpt-5.6-luna→gpt-5.6-luna-channel→gpt-5.6-luna-upstream", fields.ModelMappingChain)
 
-	// 映射链里重复出现的模型只记录第一次。
+	// Record only the first occurrence of each model in the mapping chain.
 	require.Equal(t, "codex-auto-review→gpt-5.6-luna→gpt-5.6-luna-channel", mapping.BuildModelMappingChain("gpt-5.6-luna", "codex-auto-review"))
 	require.Equal(t, []string{"gpt-5.6-luna", "gpt-5.6-luna-channel"}, mustAPIKeyResponseModels(t, ctx))
 }
 
-// TestRoutePlannerWithoutGroupDoesNotReadConfiguration 检查未绑定分组时是否返回请求模型，存储读取次数为零。
+// TestRoutePlannerWithoutGroupDoesNotReadConfiguration invokes a planner with
+// no group and an otherwise unusable policy repository. The returned mapping
+// keeps the requested model and the route has a zero group ID.
 func TestRoutePlannerWithoutGroupDoesNotReadConfiguration(t *testing.T) {
 	planner := NewRoutePlanner(routing.NewPricingConfigService(nil, nil))
 	plan := planner.PlanRoute(context.Background(), nil, nil, "request-model")
@@ -45,6 +50,10 @@ func TestRoutePlannerWithoutGroupDoesNotReadConfiguration(t *testing.T) {
 	require.Zero(t, plan.GroupID())
 }
 
+// TestProtocolRouteNativeFirstAndExplicitFallback selects Messages before an
+// allowed Responses conversion for a relay with both protocols. Removing
+// native support selects the configured conversion, while an unrelated Chat
+// candidate and a native-only group policy are rejected.
 func TestProtocolRouteNativeFirstAndExplicitFallback(t *testing.T) {
 	provider := &ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformDeepseek, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{providercore.UpstreamProtocolsKey: []string{"anthropic_messages", "openai_responses"}, "api_base_urls": map[string]any{"anthropic": "https://relay.example/messages", "responses": "https://relay.example/responses"}}}}
 	group := &routing.Group{AllowedProtocols: []protocolcore.ProtocolID{protocolcore.ProtocolAnthropicMessages}, ProtocolFallbacks: map[protocolcore.ProtocolID][]protocolcore.ProtocolID{protocolcore.ProtocolAnthropicMessages: {protocolcore.ProtocolOpenAIResponses}}}
@@ -59,7 +68,7 @@ func TestProtocolRouteNativeFirstAndExplicitFallback(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, providercore.APIProtocolResponses, ExecutionProtocolTarget(selected).GetAPIProtocol())
 	require.Equal(t, "https://relay.example/responses", ExecutionProtocolTarget(selected).GetCNProtocolBaseURL(providercore.APIProtocolResponses))
-	// 转换目标无需向客户端开放；下一次切号重新使用该候选的集合。
+	// Conversion targets need not be exposed to clients; each failover candidate supplies its own protocol set.
 	require.False(t, group.AllowsClientProtocol(protocolcore.ProtocolOpenAIResponses))
 	next := *provider
 	next.Record.Credentials = map[string]any{providercore.UpstreamProtocolsKey: []string{"openai_chat_completions"}}
@@ -69,7 +78,10 @@ func TestProtocolRouteNativeFirstAndExplicitFallback(t *testing.T) {
 	require.False(t, ExecutionModelPolicy(provider).AllowsProtocol(ctx))
 }
 
-// TestRoutePlanRebuildsCandidateAndKeepsModelReadTiming 验证当前请求计划不能污染共享提供商；模型读取仍按每次原匹配时机获得最新配置。
+// TestRoutePlanRebuildsCandidateAndKeepsModelReadTiming creates an attempt
+// from a shared provider target and changes its model rules. Candidate state
+// stays on the attempt, later mapping reads see its replacement credentials,
+// and incompatible fresh protocols return an error.
 func TestRoutePlanRebuildsCandidateAndKeepsModelReadTiming(t *testing.T) {
 	group := &routing.Group{ID: 7, AllowedProtocols: []protocolcore.ProtocolID{protocolcore.ProtocolAnthropicMessages}, ProtocolFallbacks: map[protocolcore.ProtocolID][]protocolcore.ProtocolID{protocolcore.ProtocolAnthropicMessages: {protocolcore.ProtocolOpenAIResponses}}}
 	ctx := requeststate.WithClientProtocol(requeststate.WithGroup(context.Background(), group), protocolcore.ProtocolAnthropicMessages)

@@ -8,8 +8,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// testSessionString 生成 Claude Code 风格的会话标识。
-// 格式沿用 DefaultHeaders 中的 UA 版本，使 user_id 与上游请求 UA 保持一致。
+// test_payload.go builds streaming Anthropic probe payloads with CLI-style
+// system and metadata values.
+// Administrative Anthropic probes use the package's CLI-style system prompt and
+// metadata format alongside a streaming user message. Random device and session
+// identifiers keep each prepared probe self-contained, while a trimmed prompt
+// defaults to hi for an empty administrative input.
+
+// testSessionString returns CLI probe metadata with a 64-hex device value and
+// new session UUID, formatted for the User-Agent version in DefaultHeaders.
+// Device bytes use crypto/rand.Read, whose source errors terminate the process;
+// uuid.New panics when session UUID generation fails.
 func testSessionString() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -21,7 +30,11 @@ func testSessionString() (string, error) {
 	return FormatMetadataUserID(hex64, "", sessionUUID, uaVersion), nil
 }
 
-// TestPayloadWithPrompt 创建 Claude Code 风格测试请求，并允许主动探测传入轻量提示词。
+// TestPayloadWithPrompt returns a streaming administrative probe for modelID.
+// The prompt is trimmed and defaults to hi when blank. The body includes the
+// CLI system prompt, cache markers, and fresh session metadata. Identifier
+// generation inherits testSessionString's random-read termination and UUID
+// panic behavior.
 func TestPayloadWithPrompt(modelID string, prompt string) (map[string]any, error) {
 	sessionID, err := testSessionString()
 	if err != nil {
@@ -60,6 +73,7 @@ func TestPayloadWithPrompt(modelID string, prompt string) (map[string]any, error
 		"metadata": map[string]string{
 			"user_id": sessionID,
 		},
+		// Bound administrative probe output with a fixed generated-token ceiling.
 		"max_tokens":  1024,
 		"temperature": 1,
 		"stream":      true,

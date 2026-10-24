@@ -14,10 +14,20 @@ import (
 	usagehttp "github.com/TokenFlux/TokenRouter/internal/usage/httpapi/admin"
 )
 
+// idempotency_http.go binds the application idempotency coordinator to panel
+// command handlers before serving starts. Handler executors store the shared
+// coordinator pointer without synchronization, so binding finishes before HTTP
+// serving; the readiness marker makes Wire resolve these bindings before
+// application startup.
+
+// idempotencyHTTPReady marks assignment of the application coordinator to handler executors.
 type idempotencyHTTPReady struct{}
 
-// provideIdempotencyHTTP 在开放 HTTP 前把全部幂等入口绑定到应用唯一协调器。
-// 各应用实例持有独立的协调器绑定。
+// provideIdempotencyHTTP assigns the supplied coordinator to each assembled
+// command handler and returns a Wire readiness marker. Supply all handler
+// instances and call before serving HTTP: executor binding is unsynchronized
+// with requests, and each consumer stores the same coordinator pointer. A nil
+// coordinator selects the executors' direct-callback fixture behavior.
 func provideIdempotencyHTTP(
 	coordinator *idempotency.IdempotencyCoordinator,
 	providers *providerhttp.ManagementHandler,
@@ -32,7 +42,14 @@ func provideIdempotencyHTTP(
 	system *opshttp.SystemHandler,
 	usage *usagehttp.UsageHandler,
 ) *idempotencyHTTPReady {
+	// Bind every consumer before endpoints read its unsynchronized executor
+	// pointer. A configured coordinator supplies shared storage, while command
+	// scopes still determine which requests can replay the same record.
 	for _, consumer := range []interface {
+		// BindIdempotency assigns the coordinator for subsequent command execution.
+		// Assignment is performed during construction because it is unsynchronized
+		// with requests, and another binding replaces the executor's current pointer.
+		// Nil clears the binding for standalone direct-callback fixtures.
 		BindIdempotency(*idempotency.IdempotencyCoordinator)
 	}{providers, archive, codex, keys, redeem, subscriptions, proxies, users, groups, system, usage} {
 		consumer.BindIdempotency(coordinator)

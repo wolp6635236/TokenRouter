@@ -6,7 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在测试进程运行前设置 Gin 测试模式。
+// TestMain configures Gin test mode before executing the idempotency HTTP suite.
+// All administrator and user fixtures therefore construct routers with the same global mode.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	m.Run()

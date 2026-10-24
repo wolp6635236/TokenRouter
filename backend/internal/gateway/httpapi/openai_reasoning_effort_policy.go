@@ -12,18 +12,43 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// ReasoningEffortPolicyForRequest 返回请求目标平台对应的分组策略。
-// 鉴权中间件已为复合 Key 选定分组，此处读取该分组。
+// openai_reasoning_effort_policy.go selects group reasoning-effort policy and
+// retains the client's requested effort.
+// Group effort limits apply only when the selected Ops platform matches the
+// policy platform. A group can still have an applicable policy after its
+// invalid maximum or unexpressible mappings have been discarded, so
+// applicability is distinct from having a usable limit or mapping.
+//
+// Requested effort is bound before group rewriting so result attribution can
+// distinguish the client control from the forwarded value. Messages-to-OpenAI
+// conversion binds policy in the request context only for a nonblank string
+// output_config.effort; when that field is absent, the bridge's own default
+// remains unbound by this step. The requeststate helpers implement the later
+// model-sensitive mapping and cap rules.
+
+// ReasoningEffortPolicyForRequest returns the selected group's usable effort
+// policy for the supplied platform. A missing group or different selected Ops
+// platform returns false applicability. For an applicable group, an invalid
+// maximum becomes empty and mappings with invalid endpoints are omitted.
+//
+// Those filtering results do not turn an applicable group into an absent
+// policy: the final boolean remains true and the over-limit action is
+// retained. Callers therefore use applicability to decide whether to invoke
+// policy processing, while the returned maximum and mappings describe which
+// controls remain expressible.
 func ReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apikey.APIKey, platform string) (string, []routing.ReasoningEffortMapping, string, bool) {
 	if apiKey == nil || apiKey.Group == nil || selectedOpsPlatform(c) != platform {
 		return "", nil, "", false
 	}
 	group := apiKey.Group
 	maxEffort, err := routing.NormalizeMaxReasoningEffortForPlatform(platform, group.MaxReasoningEffort)
+	// A maximum unsupported by this platform cannot constrain forwarding; keep
+	// the group applicable so its other usable mappings and action remain available.
 	if err != nil {
 		maxEffort = ""
 	}
-	// 平台专属档位只作用于能够表达该档位的实际提供商。
+	// Both ends need platform-supported values before a mapping can run; discard
+	// invalid pairs while retaining the order of the remaining group mappings.
 	var mappings []routing.ReasoningEffortMapping
 	for _, mapping := range group.ReasoningEffortMappings {
 		if _, err := routing.NormalizeReasoningEffortMappingValueForPlatform(platform, mapping.From); err != nil {
@@ -37,17 +62,26 @@ func ReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apikey.APIKey, plat
 	return maxEffort, mappings, group.MaxReasoningEffortOverLimit, true
 }
 
-// OpenAIReasoningEffortPolicyForRequest 返回 OpenAI 分组策略。
+// OpenAIReasoningEffortPolicyForRequest returns the current group's usable
+// OpenAI effort controls and applicability. Callers check that flag even when
+// maximum and mappings are empty, because filtering invalid controls retains
+// an applicable group policy.
 func OpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apikey.APIKey) (string, []routing.ReasoningEffortMapping, string, bool) {
 	return ReasoningEffortPolicyForRequest(c, apiKey, capability.PlatformOpenAI)
 }
 
-// AnthropicReasoningEffortPolicyForRequest 返回 Anthropic 分组策略。
+// AnthropicReasoningEffortPolicyForRequest returns the selected group's usable
+// Anthropic effort controls and applicability. A missing group or different
+// selected Ops platform returns false; an applicable group retains its flag
+// after invalid controls are filtered.
 func AnthropicReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apikey.APIKey) (string, []routing.ReasoningEffortMapping, string, bool) {
 	return ReasoningEffortPolicyForRequest(c, apiKey, capability.PlatformAnthropic)
 }
 
-// ApplyOpenAIReasoningEffortPolicyForRequest 在策略改写前保存客户端档位，并执行分组裁决。
+// ApplyOpenAIReasoningEffortPolicyForRequest binds the client effort before
+// applying the selected OpenAI group policy. An inapplicable policy returns
+// the supplied bytes with false change; mapping and limit errors from
+// requeststate reach the HTTP entry for rejection.
 func ApplyOpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apikey.APIKey, body []byte) ([]byte, bool, error) {
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	BindRequestedReasoningEffort(c, body, model)
@@ -58,8 +92,11 @@ func ApplyOpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apikey.A
 	return requeststate.ApplyOpenAIReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
 }
 
-// ApplyAnthropicReasoningEffortPolicyForRequest 在 Anthropic Messages/Responses
-// 请求转发前执行分组策略，支持 output_config.effort 和 reasoning.effort。
+// ApplyAnthropicReasoningEffortPolicyForRequest binds requested effort and
+// applies the selected Anthropic group policy. The shared requeststate
+// processor supports output_config.effort and reasoning.effort; an
+// inapplicable policy returns the input unchanged, and processing errors reach
+// the caller.
 func ApplyAnthropicReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apikey.APIKey, body []byte) ([]byte, bool, error) {
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	BindRequestedReasoningEffort(c, body, model)
@@ -70,14 +107,24 @@ func ApplyAnthropicReasoningEffortPolicyForRequest(c *gin.Context, apiKey *apike
 	return requeststate.ApplyOpenAIReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
 }
 
-// BindOpenAIReasoningEffortPolicyForMessagesRequest 为客户端填写的 output_config.effort 绑定策略。
-// 字段缺省时跳过绑定，桥接器补充的 medium 按默认值处理。
+// BindOpenAIReasoningEffortPolicyForMessagesRequest binds requested effort and
+// optionally installs OpenAI policy for later Messages conversion. Missing
+// HTTP request state ends the operation, and a missing, nonstring or blank
+// output_config.effort leaves conversion policy unbound.
+//
+// For a supplied effort and applicable OpenAI group, the new request context
+// carries maximum, mappings, action and current model together. Conversion can
+// then apply that client policy after producing Responses fields. This
+// distinction keeps the bridge's generated default separate from a client
+// effort that needs group enforcement.
 func BindOpenAIReasoningEffortPolicyForMessagesRequest(c *gin.Context, apiKey *apikey.APIKey, body []byte) {
 	if c == nil || c.Request == nil {
 		return
 	}
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	BindRequestedReasoningEffort(c, body, model)
+	// The bridge can introduce its own default effort during conversion. Bind
+	// group enforcement here only when the client supplied a usable effort string.
 	effort := gjson.GetBytes(body, "output_config.effort")
 	if !effort.Exists() || effort.Type != gjson.String || strings.TrimSpace(effort.String()) == "" {
 		return

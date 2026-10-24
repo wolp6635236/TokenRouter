@@ -2,6 +2,9 @@ package egress
 
 import "testing"
 
+// TestValidateURLFormat supplies empty, malformed, HTTP, HTTPS, and
+// invalid-port URL inputs. It checks scheme permission and trimming of trailing
+// slashes from root and endpoint paths in successful format-validation results.
 func TestValidateURLFormat(t *testing.T) {
 	if _, err := ValidateURLFormat("", false); err == nil {
 		t.Fatalf("expected empty url to fail")
@@ -22,7 +25,7 @@ func TestValidateURLFormat(t *testing.T) {
 		t.Fatalf("expected invalid port to fail")
 	}
 
-	// 验证末尾斜杠被移除
+	// Remove a trailing slash.
 	normalized, err := ValidateURLFormat("https://example.com/", false)
 	if err != nil {
 		t.Fatalf("expected trailing slash url to pass, got %v", err)
@@ -31,7 +34,7 @@ func TestValidateURLFormat(t *testing.T) {
 		t.Fatalf("expected trailing slash to be removed, got %s", normalized)
 	}
 
-	// 验证多个末尾斜杠被移除
+	// Remove every trailing slash.
 	normalized, err = ValidateURLFormat("https://example.com///", false)
 	if err != nil {
 		t.Fatalf("expected multiple trailing slashes to pass, got %v", err)
@@ -40,7 +43,7 @@ func TestValidateURLFormat(t *testing.T) {
 		t.Fatalf("expected all trailing slashes to be removed, got %s", normalized)
 	}
 
-	// 验证带路径的 URL 末尾斜杠被移除
+	// Remove trailing slashes from the URL path as well.
 	normalized, err = ValidateURLFormat("https://example.com/api/v1/", false)
 	if err != nil {
 		t.Fatalf("expected trailing slash url with path to pass, got %v", err)
@@ -50,6 +53,9 @@ func TestValidateURLFormat(t *testing.T) {
 	}
 }
 
+// TestValidateHTTPURL combines scheme permission, empty required allowlists,
+// exact/wildcard host patterns, and localhost input. It checks the observed
+// acceptance and rejection decisions through the egress forwarding helper.
 func TestValidateHTTPURL(t *testing.T) {
 	if _, err := ValidateHTTPURL("http://example.com", false, ValidationOptions{}); err == nil {
 		t.Fatalf("expected http to fail when allow_insecure_http is false")

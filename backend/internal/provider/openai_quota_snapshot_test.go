@@ -1,12 +1,17 @@
 package provider
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
+// TestCodexSnapshotBaseTime uses nil, absent, valid, and malformed snapshot
+// timestamps.
+// It checks that valid observation time wins and the other fixtures return the
+// supplied fallback time unchanged.
 func TestCodexSnapshotBaseTime(t *testing.T) {
 	fallback := time.Date(2026, 2, 20, 9, 0, 0, 0, time.UTC)
 
@@ -40,6 +45,10 @@ func TestCodexSnapshotBaseTime(t *testing.T) {
 	})
 }
 
+// TestCodexResetAtRFC3339 supplies absent, positive, and negative reset
+// intervals.
+// It checks nil output, the expected ninety-second timestamp, and clamping a
+// negative interval to the base timestamp.
 func TestCodexResetAtRFC3339(t *testing.T) {
 	base := time.Date(2026, 2, 16, 10, 0, 0, 0, time.UTC)
 
@@ -74,6 +83,10 @@ func TestCodexResetAtRFC3339(t *testing.T) {
 	})
 }
 
+// TestBuildCodexUsageExtraUpdates_UsesSnapshotUpdatedAt supplies primary
+// seven-day and secondary five-hour observations.
+// It checks the saved update time and both absolute resets against the snapshot
+// timestamp rather than the later fallback clock.
 func TestBuildCodexUsageExtraUpdates_UsesSnapshotUpdatedAt(t *testing.T) {
 	primaryUsed := 88.0
 	primaryReset := 86400
@@ -108,12 +121,14 @@ func TestBuildCodexUsageExtraUpdates_UsesSnapshotUpdatedAt(t *testing.T) {
 	}
 }
 
-// TestBuildCodexUsageExtraUpdates_FreshProviderUsedPercentNotInverted_Issue2994 检查 5h 已用比例直接保存上游数值。
-// 上游 secondary_used_percent 约为 1% 时，codex_5h_used_percent 也为约 1%（issue #2994、PR #2918）。
+// TestBuildCodexUsageExtraUpdates_FreshProviderUsedPercentNotInverted_Issue2994
+// supplies low used percentages in long and short windows. It checks that the
+// normalized values remain two percent and one percent used, protecting the
+// issue #2994 / PR #2918 case from percent inversion.
 func TestBuildCodexUsageExtraUpdates_FreshProviderUsedPercentNotInverted_Issue2994(t *testing.T) {
-	secondaryUsed := 1.0 // 5h 窗口：几乎未使用
+	secondaryUsed := 1.0 // Five-hour window with little usage.
 	secondaryWindow := 300
-	primaryUsed := 2.0 // 7d 窗口：几乎未使用
+	primaryUsed := 2.0 // Seven-day window with little usage.
 	primaryWindow := 10080
 
 	snapshot := &openai.OpenAICodexUsageSnapshot{
@@ -137,6 +152,10 @@ func TestBuildCodexUsageExtraUpdates_FreshProviderUsedPercentNotInverted_Issue29
 	}
 }
 
+// TestBuildCodexUsageExtraUpdates_FallbackToNowWhenUpdatedAtInvalid uses a
+// malformed update time and one short window.
+// It checks that both the update timestamp and thirty-second reset use the
+// supplied fallback observation clock.
 func TestBuildCodexUsageExtraUpdates_FallbackToNowWhenUpdatedAtInvalid(t *testing.T) {
 	primaryUsed := 15.0
 	primaryReset := 30
@@ -163,6 +182,10 @@ func TestBuildCodexUsageExtraUpdates_FallbackToNowWhenUpdatedAtInvalid(t *testin
 	}
 }
 
+// TestBuildCodexUsageExtraUpdates_ClampNegativeResetSeconds supplies a
+// negative short-window reset and a valid timestamp.
+// It checks that the raw negative count remains observable while the absolute
+// five-hour reset equals the snapshot time.
 func TestBuildCodexUsageExtraUpdates_ClampNegativeResetSeconds(t *testing.T) {
 	primaryUsed := 90.0
 	primaryReset := 7200
@@ -194,12 +217,20 @@ func TestBuildCodexUsageExtraUpdates_ClampNegativeResetSeconds(t *testing.T) {
 	}
 }
 
+// TestBuildCodexUsageExtraUpdates_NilSnapshot passes no quota observation
+// with a real fallback clock.
+// It checks that the builder returns nil, so a missing snapshot supplies no Extra
+// update patch.
 func TestBuildCodexUsageExtraUpdates_NilSnapshot(t *testing.T) {
 	if got := BuildCodexUsageExtraUpdates(nil, time.Now()); got != nil {
 		t.Fatalf("expected nil updates, got %v", got)
 	}
 }
 
+// TestBuildCodexUsageExtraUpdates_WithoutNormalizedWindowFields supplies a
+// utilization observation with no reset interval or update time.
+// It checks the fallback update timestamp and absence of both absolute reset
+// keys in the returned patch.
 func TestBuildCodexUsageExtraUpdates_WithoutNormalizedWindowFields(t *testing.T) {
 	primaryUsed := 42.0
 	fallbackNow := time.Date(2026, 2, 20, 9, 15, 0, 0, time.UTC)
@@ -221,5 +252,179 @@ func TestBuildCodexUsageExtraUpdates_WithoutNormalizedWindowFields(t *testing.T)
 	}
 	if _, ok := updates["codex_7d_reset_at"]; ok {
 		t.Fatalf("did not expect codex_7d_reset_at in updates: %v", updates["codex_7d_reset_at"])
+	}
+}
+
+// TestBuildCodexUsageExtraUpdates_CompleteMaps supplies paired, partial, zero,
+// and absent observations at fixed times. It checks every raw and normalized
+// field, scalar value, reset timestamp, and missing key in the returned patch.
+func TestBuildCodexUsageExtraUpdates_CompleteMaps(t *testing.T) {
+	// A fractional fallback in UTC-7 exposes clock substitution or zone conversion
+	// in the saved observation and reset timestamps.
+	fallback := time.Date(2026, 10, 14, 8, 30, 0, 123000000, time.FixedZone("UTC-7", -7*60*60))
+	shortUsed := 12.0
+	longUsed := 88.0
+	ratio := 733.0
+	shortReset := 3600
+	longReset := 86400
+	shortWindow := 300
+	longWindow := 10080
+	zeroUsed := 0.0
+	zeroReset := 0
+	zeroWindow := 0
+	negativeReset := -15
+	partialReset := 30
+	oneSecond := 1
+
+	tests := []struct {
+		name     string                           // descriptive fixture name
+		snapshot *openai.OpenAICodexUsageSnapshot // supplied quota observation
+		fallback time.Time                        // supplied observation clock
+		want     map[string]any                   // complete expected patch
+	}{
+		{
+			name:     "nil snapshot",
+			fallback: fallback,
+		},
+		{
+			name:     "empty observation keeps fallback timestamp",
+			snapshot: &openai.OpenAICodexUsageSnapshot{},
+			fallback: fallback,
+			want: map[string]any{
+				"codex_usage_updated_at": "2026-10-14T08:30:00-07:00",
+			},
+		},
+		{
+			name: "swapped windows and raw ratio use snapshot zone",
+			snapshot: &openai.OpenAICodexUsageSnapshot{
+				PrimaryUsedPercent:          &longUsed,
+				PrimaryResetAfterSeconds:    &longReset,
+				PrimaryWindowMinutes:        &longWindow,
+				SecondaryUsedPercent:        &shortUsed,
+				SecondaryResetAfterSeconds:  &shortReset,
+				SecondaryWindowMinutes:      &shortWindow,
+				PrimaryOverSecondaryPercent: &ratio,
+				UpdatedAt:                   "2026-10-14T13:02:03+08:00",
+			},
+			fallback: fallback,
+			want: map[string]any{
+				"codex_primary_used_percent":           88.0,
+				"codex_primary_reset_after_seconds":    86400,
+				"codex_primary_window_minutes":         10080,
+				"codex_secondary_used_percent":         12.0,
+				"codex_secondary_reset_after_seconds":  3600,
+				"codex_secondary_window_minutes":       300,
+				"codex_primary_over_secondary_percent": 733.0,
+				"codex_usage_updated_at":               "2026-10-14T13:02:03+08:00",
+				"codex_5h_used_percent":                12.0,
+				"codex_5h_reset_after_seconds":         3600,
+				"codex_5h_window_minutes":              300,
+				"codex_5h_reset_at":                    "2026-10-14T14:02:03+08:00",
+				"codex_7d_used_percent":                88.0,
+				"codex_7d_reset_after_seconds":         86400,
+				"codex_7d_window_minutes":              10080,
+				"codex_7d_reset_at":                    "2026-10-15T13:02:03+08:00",
+			},
+		},
+		{
+			name: "primary short window keeps paired fields",
+			snapshot: &openai.OpenAICodexUsageSnapshot{
+				PrimaryUsedPercent:         &shortUsed,
+				PrimaryResetAfterSeconds:   &shortReset,
+				PrimaryWindowMinutes:       &shortWindow,
+				SecondaryUsedPercent:       &longUsed,
+				SecondaryResetAfterSeconds: &longReset,
+				SecondaryWindowMinutes:     &longWindow,
+				UpdatedAt:                  "2026-10-14T05:02:03Z",
+			},
+			fallback: fallback,
+			want: map[string]any{
+				"codex_primary_used_percent":          12.0,
+				"codex_primary_reset_after_seconds":   3600,
+				"codex_primary_window_minutes":        300,
+				"codex_secondary_used_percent":        88.0,
+				"codex_secondary_reset_after_seconds": 86400,
+				"codex_secondary_window_minutes":      10080,
+				"codex_usage_updated_at":              "2026-10-14T05:02:03Z",
+				"codex_5h_used_percent":               12.0,
+				"codex_5h_reset_after_seconds":        3600,
+				"codex_5h_window_minutes":             300,
+				"codex_5h_reset_at":                   "2026-10-14T06:02:03Z",
+				"codex_7d_used_percent":               88.0,
+				"codex_7d_reset_after_seconds":        86400,
+				"codex_7d_window_minutes":             10080,
+				"codex_7d_reset_at":                   "2026-10-15T05:02:03Z",
+			},
+		},
+		{
+			name: "partial reset with invalid timestamp uses fallback zone",
+			snapshot: &openai.OpenAICodexUsageSnapshot{
+				PrimaryResetAfterSeconds: &partialReset,
+				UpdatedAt:                "invalid",
+			},
+			fallback: fallback,
+			want: map[string]any{
+				"codex_primary_reset_after_seconds": 30,
+				"codex_usage_updated_at":            "2026-10-14T08:30:00-07:00",
+				"codex_7d_reset_after_seconds":      30,
+				"codex_7d_reset_at":                 "2026-10-14T08:30:30-07:00",
+			},
+		},
+		{
+			name: "present zeros remain observable",
+			snapshot: &openai.OpenAICodexUsageSnapshot{
+				PrimaryUsedPercent:       &zeroUsed,
+				PrimaryResetAfterSeconds: &zeroReset,
+				PrimaryWindowMinutes:     &zeroWindow,
+			},
+			fallback: fallback,
+			want: map[string]any{
+				"codex_primary_used_percent":        0.0,
+				"codex_primary_reset_after_seconds": 0,
+				"codex_primary_window_minutes":      0,
+				"codex_usage_updated_at":            "2026-10-14T08:30:00-07:00",
+				"codex_5h_used_percent":             0.0,
+				"codex_5h_reset_after_seconds":      0,
+				"codex_5h_window_minutes":           0,
+				"codex_5h_reset_at":                 "2026-10-14T08:30:00-07:00",
+			},
+		},
+		{
+			name: "partial secondary negative reset clamps absolute date",
+			snapshot: &openai.OpenAICodexUsageSnapshot{
+				SecondaryResetAfterSeconds: &negativeReset,
+				SecondaryWindowMinutes:     &shortWindow,
+			},
+			fallback: fallback,
+			want: map[string]any{
+				"codex_secondary_reset_after_seconds": -15,
+				"codex_secondary_window_minutes":      300,
+				"codex_usage_updated_at":              "2026-10-14T08:30:00-07:00",
+				"codex_5h_reset_after_seconds":        -15,
+				"codex_5h_window_minutes":             300,
+				"codex_5h_reset_at":                   "2026-10-14T08:30:00-07:00",
+			},
+		},
+		{
+			name: "zero fallback is supplied unchanged",
+			snapshot: &openai.OpenAICodexUsageSnapshot{
+				PrimaryResetAfterSeconds: &oneSecond,
+			},
+			want: map[string]any{
+				"codex_primary_reset_after_seconds": 1,
+				"codex_usage_updated_at":            "0001-01-01T00:00:00Z",
+				"codex_7d_reset_after_seconds":      1,
+				"codex_7d_reset_at":                 "0001-01-01T00:00:01Z",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildCodexUsageExtraUpdates(tt.snapshot, tt.fallback)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("updates = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }

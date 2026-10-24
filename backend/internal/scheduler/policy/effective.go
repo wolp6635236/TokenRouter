@@ -5,73 +5,130 @@ import (
 	"math"
 )
 
+// effective.go resolves and validates effective scheduler policy from process
+// defaults, global settings, and sparse group overrides.
+// Advanced scheduling resolves each group field over dynamic global values and
+// process defaults. Pointer presence preserves explicit false and zero group
+// choices, including a deliberately zero base score. Global coefficients still
+// require a positive base sum before they can supply the inherited weight set.
+//
+// ResolveEffective normalizes feedback and escape thresholds after applying
+// the group values. Weight validation is separate from those switches and
+// thresholds: an invalid merged weight set reverts to the global weights while
+// other group choices remain effective. This prevents a malformed coefficient
+// combination from discarding valid group policy. Missing, invalid, and wholly
+// zero escape configuration also differ, so their normalization is described
+// where it is applied.
+
+// EWMA defaults normalize invalid coefficients, while the message-queue
+// strings identify stored serialization and throttling choices read by request
+// adapters.
 const (
 	defaultAdvancedSchedulerErrorRateAlpha = 0.2
 	defaultAdvancedSchedulerTTFTAlpha      = 0.2
 
-	// 消息串行和节流模式使用配置中的字符串值。
-	MessageQueueSerialize = "serialize"
-	MessageQueueThrottle  = "throttle"
+	// MessageQueueSerialize and MessageQueueThrottle are stored mode names. The
+	// request adapter selects lock-based serialization or delay-based throttling from them.
+	MessageQueueSerialize = "serialize" // provider serialization lock
+	MessageQueueThrottle  = "throttle"  // RPM aware spacing
 )
 
-// EffectiveSettings 是完成全局与分组覆盖合并后的请求级配置。
-// 分组字段优先级最高；缺失字段继续继承设置仓库和静态配置的结果。
+// EffectiveSettings contains request settings after global and group overrides are merged.
+// Group fields take precedence; missing fields inherit runtime settings and process defaults.
 type EffectiveSettings struct {
-	StickyWeightedEnabled       bool
-	SubscriptionPriorityEnabled bool
-	TopK                        int
-	Weights                     ScoreWeights
-	Feedback                    FeedbackConfig
-	StickyEscape                StickyEscapeConfig
+	StickyWeightedEnabled       bool               // weighted affinity switch
+	SubscriptionPriorityEnabled bool               // subscription pool preference
+	TopK                        int                // sampled candidate count
+	Weights                     ScoreWeights       // resolved score coefficients
+	Feedback                    FeedbackConfig     // resolved sample coefficients
+	StickyEscape                StickyEscapeConfig // resolved escape thresholds
 }
 
+// ScoreWeights holds the coefficients for candidate factors and optional
+// affinity bonuses.
 type ScoreWeights struct {
-	Priority  float64
-	Load      float64
-	Queue     float64
-	ErrorRate float64
-	TTFT      float64
-	// Reset 为会话窗口更早重置的提供商加分，默认为 0，表示关闭。
-	Reset float64
-	// QuotaHeadroom 倾向 Codex 7d 剩余额度更健康的提供商；0 表示关闭（默认）。
-	QuotaHeadroom float64
-	Previous      float64
-	SessionSticky float64
+	Priority      float64 // global priority coefficient
+	Load          float64 // provider load coefficient
+	Queue         float64 // waiting count coefficient
+	ErrorRate     float64 // feedback health coefficient
+	TTFT          float64 // token latency coefficient
+	Reset         float64 // window reset coefficient
+	QuotaHeadroom float64 // platform quota coefficient
+	// scheduler.ScoreCandidates applies Previous and SessionSticky for
+	// enabled weighted stickiness with a matching positive provider
+	// identity. Validation includes both in the total sum even when this
+	// request cannot use their bonuses.
+	Previous      float64 // previous response bonus
+	SessionSticky float64 // session provider bonus
 }
 
+// RuntimeSettings carries parsed dynamic values and presence flags for group
+// resolution and diagnostics.
 type RuntimeSettings struct {
-	StickyWeightedEnabled       bool
-	SubscriptionPriorityEnabled bool
-	LbTopKOverride              int
-	WeightOverrides             map[string]float64
-	EwmaErrorRateAlpha          float64
-	EwmaErrorRateAlphaSet       bool
-	EwmaTTFTAlpha               float64
-	EwmaTTFTAlphaSet            bool
-	StickyEscapeEnabled         bool
-	StickyEscapeEnabledSet      bool
-	StickyEscapeTTFTMs          float64
-	StickyEscapeTTFTMsSet       bool
-	StickyEscapeErrorRate       float64
-	StickyEscapeErrorRateSet    bool
-	StickyEscape                StickyEscapeConfig
+	StickyWeightedEnabled       bool // weighted affinity switch
+	SubscriptionPriorityEnabled bool // subscription pool preference
+	// LbTopKOverride supplies a global candidate count when positive.
+	// ResolveEffective inherits the process count for nonpositive values
+	// and gives a positive group override precedence.
+	LbTopKOverride int // positive candidate count override
+	// WeightOverrides maps scoring names to supplied coefficients. Copying
+	// RuntimeSettings shares this map, so callers that change its contents
+	// need separately cloned storage.
+	WeightOverrides map[string]float64 // named coefficient overrides
+	// EwmaErrorRateAlpha and EwmaErrorRateAlphaSet preserve the parsed
+	// coefficient and its presence. EwmaTTFTAlpha and EwmaTTFTAlphaSet do
+	// the same for TTFT, allowing diagnostics to distinguish inherited
+	// defaults from stored values.
+	EwmaErrorRateAlpha    float64 // error sample coefficient
+	EwmaErrorRateAlphaSet bool    // error coefficient presence
+	EwmaTTFTAlpha         float64 // TTFT sample coefficient
+	EwmaTTFTAlphaSet      bool    // TTFT coefficient presence
+	// StickyEscapeEnabled and StickyEscapeEnabledSet, StickyEscapeTTFTMs
+	// and StickyEscapeTTFTMsSet, and StickyEscapeErrorRate and
+	// StickyEscapeErrorRateSet pair resolved values with dynamic-setting
+	// presence. StickyEscape retains the parsed configuration used as
+	// defaults by settings loading.
+	StickyEscapeEnabled      bool               // health escape switch
+	StickyEscapeEnabledSet   bool               // escape switch presence
+	StickyEscapeTTFTMs       float64            // milliseconds
+	StickyEscapeTTFTMsSet    bool               // latency threshold presence
+	StickyEscapeErrorRate    float64            // error fraction threshold
+	StickyEscapeErrorRateSet bool               // error threshold presence
+	StickyEscape             StickyEscapeConfig // parsed escape defaults
 }
 
+// StickyEscapeConfig defines health thresholds used to escape a provider
+// binding for one request.
 type StickyEscapeConfig struct {
-	Enabled   bool
-	TtftMs    float64
-	ErrorRate float64
+	// Enabled, TtftMs, and ErrorRate carry the escape switch with threshold
+	// context. NormalizeStickyEscape enables a wholly zero struct; a false
+	// switch accompanied by supplied thresholds remains disabled.
+	Enabled bool // health escape switch
+	// TtftMs supplies the millisecond latency threshold.
+	// NormalizeStickyEscape substitutes its scheduler default for
+	// nonpositive or nonfinite values before the threshold is used.
+	TtftMs float64 // milliseconds
+	// ErrorRate is the error fraction compared by
+	// scheduler.ShouldEscapeSticky using a strict greater-than test.
+	// NormalizeStickyEscape replaces invalid fractions and the wholly unset
+	// threshold pair with its default.
+	ErrorRate float64 // error fraction threshold
 }
 
-// FeedbackConfig 保存一次请求回写运行时反馈时使用的 EWMA 系数。
-// 统计仍按提供商共享，但系数由请求最终命中的分组决定。
+// FeedbackConfig contains the EWMA coefficients used when a request records feedback.
+// Statistics are shared per provider; the final request group determines these coefficients.
 type FeedbackConfig struct {
-	ErrorRateAlpha float64
-	TtftAlpha      float64
+	// ErrorRateAlpha and TtftAlpha weight new error and latency samples
+	// independently. NormalizeFeedback replaces nonfinite values and
+	// coefficients outside (0, 1] with scheduler defaults.
+	ErrorRateAlpha float64 // error sample coefficient
+	TtftAlpha      float64 // TTFT sample coefficient
 }
 
-// ValidateGroupOverrides 校验分组覆盖字段的取值范围。
-// 基础权重允许全部设为零，此时 Top-K 使用稳定并列规则并等权抽样。
+// ValidateGroupOverrides validates each supplied group value without resolving
+// inherited fields. Explicit false and zero weights remain valid, and this
+// check permits a wholly zero base contribution; merged sum validation is
+// performed separately.
 func ValidateGroupOverrides(overrides GroupAdvancedSchedulerOverrides) error {
 	if overrides.LBTopK != nil && *overrides.LBTopK <= 0 {
 		return fmt.Errorf("lb_top_k must be a positive integer")
@@ -122,8 +179,15 @@ func ValidateGroupOverrides(overrides GroupAdvancedSchedulerOverrides) error {
 	return nil
 }
 
-// ValidateEffectiveWeights 校验合并后的完整权重。
-// 基础权重总和可以为零，基础权重和全部权重的总和都需要是有限值。
+// ValidateEffectiveWeights rejects negative or nonfinite coefficients and
+// overflowed combined sums. A zero base is valid for group policy, including a
+// score determined solely by affinity bonuses.
+//
+// The base and total sums are evaluated in scoring field order. Finite
+// individual coefficients can overflow when combined, so checking fields alone
+// cannot establish that the merged weights are usable. Callers resolve
+// inheritance before applying this validation and decide how to handle its
+// error.
 func ValidateEffectiveWeights(weights ScoreWeights) error {
 	values := []struct {
 		name  string
@@ -155,7 +219,8 @@ func ValidateEffectiveWeights(weights ScoreWeights) error {
 	return nil
 }
 
-// HasWeightOverrides 判断是否需要读取全局权重完成合并校验。
+// HasWeightOverrides reports whether the group supplies at least one scoring
+// coefficient.
 func HasWeightOverrides(overrides GroupAdvancedSchedulerOverrides) bool {
 	return overrides.WeightPriority != nil ||
 		overrides.WeightLoad != nil ||
@@ -168,7 +233,10 @@ func HasWeightOverrides(overrides GroupAdvancedSchedulerOverrides) bool {
 		overrides.WeightSessionSticky != nil
 }
 
-// ApplyGroupWeightOverrides 替换分组提供的权重字段。
+// ApplyGroupWeightOverrides replaces each coefficient supplied by a non-nil
+// group pointer. It returns the changed value copy, retains inherited
+// coefficients for missing fields, and accepts explicit zero without
+// performing validation.
 func ApplyGroupWeightOverrides(
 	weights ScoreWeights,
 	overrides GroupAdvancedSchedulerOverrides,
@@ -203,8 +271,15 @@ func ApplyGroupWeightOverrides(
 	return weights
 }
 
-// ResolveEffective 以全局生效配置为基线合并分组覆盖。
-// 分组设置的零值也参与覆盖，基础权重全部为零时仍使用分组权重。
+// ResolveEffective returns request parameters after process, dynamic, and
+// group values are combined. Nonpositive process TopK uses seven, positive
+// dynamic TopK overrides it, and a positive supplied group count wins last.
+//
+// Group pointers preserve false and zero choices independently. Feedback and
+// escape thresholds are normalized after group application. Global weight
+// overrides must have a valid positive base or the process weight set is used;
+// invalid merged group weights revert to that effective global set while the
+// other group choices remain applied.
 func ResolveEffective(
 	baseTopK int,
 	baseWeights ScoreWeights,
@@ -220,6 +295,9 @@ func ResolveEffective(
 	}
 	globalWeights := ApplyGlobalWeightOverrides(baseWeights, global.WeightOverrides)
 	if !globalWeights.ValidGlobal() {
+		// Dynamic coefficients cannot supply valid global scoring
+		// weights. Use the process baseline so later group merging
+		// starts with the caller-configured weight set.
 		globalWeights = baseWeights
 	}
 
@@ -250,6 +328,8 @@ func ResolveEffective(
 		effective.StickyEscape.Enabled = *overrides.StickyEscapeEnabled
 	}
 	if overrides.StickyEscapeTTFTMs != nil {
+		// Convert integer milliseconds to the floating threshold used
+		// by feedback.
 		effective.StickyEscape.TtftMs = float64(*overrides.StickyEscapeTTFTMs)
 	}
 	if overrides.StickyEscapeErrorRate != nil {
@@ -259,17 +339,30 @@ func ResolveEffective(
 	effective.StickyEscape = NormalizeStickyEscape(effective.StickyEscape)
 	effective.Weights = ApplyGroupWeightOverrides(effective.Weights, overrides)
 	if validateErr := ValidateEffectiveWeights(effective.Weights); validateErr != nil {
-		// 权重异常时回退到默认权重，分组的其他有效覆盖继续生效。
+		// The merged coefficients failed sum or field validation.
+		// Retain the effective global weights while leaving
+		// independently valid group switches and thresholds applied.
 		effective.Weights = globalWeights
 	}
 	return effective
 }
 
-// NormalizeStickyEscape 将健康逃逸配置限制在允许的取值范围内。
+// NormalizeStickyEscape returns an escape policy with usable threshold values.
+// A wholly zero configuration enables escape and supplies the default error
+// fraction, distinguishing missing configuration from a disabled policy with
+// supplied thresholds.
+//
+// Nonpositive or nonfinite TTFT uses fifteen thousand milliseconds. Invalid
+// error fractions use one half, while an explicitly zero fraction is retained
+// when at least one threshold was supplied. The Enabled value is otherwise
+// retained, so callers represent a deliberate disabled policy with threshold
+// context.
 func NormalizeStickyEscape(value StickyEscapeConfig) StickyEscapeConfig {
 	thresholdsUnset := value.TtftMs == 0 && value.ErrorRate == 0
 	if !value.Enabled && value.TtftMs == 0 && value.ErrorRate == 0 {
-		// 未注册配置结构体时使用零值，默认开启健康逃逸。
+		// With no threshold context, the zero struct represents
+		// missing configuration. Enable health escape here so an
+		// unconfigured policy receives the scheduler defaults.
 		value.Enabled = true
 	}
 	if value.TtftMs <= 0 || math.IsNaN(value.TtftMs) || math.IsInf(value.TtftMs, 0) {
@@ -284,6 +377,9 @@ func NormalizeStickyEscape(value StickyEscapeConfig) StickyEscapeConfig {
 	return value
 }
 
+// ApplyGlobalWeightOverrides replaces recognized scoring coefficients in the
+// supplied value copy. Unknown keys are ignored, explicit zero is applied, and
+// callers validate individual values and combined sums after merging.
 func ApplyGlobalWeightOverrides(
 	weights ScoreWeights,
 	overrides map[string]float64,
@@ -313,6 +409,9 @@ func ApplyGlobalWeightOverrides(
 	return weights
 }
 
+// NormalizeFeedback supplies default EWMA coefficients for invalid values
+// independently. Each valid coefficient lies above zero and at most one;
+// callers can configure error and latency samples with different weights.
 func NormalizeFeedback(value FeedbackConfig) FeedbackConfig {
 	if value.ErrorRateAlpha <= 0 || value.ErrorRateAlpha > 1 || math.IsNaN(value.ErrorRateAlpha) || math.IsInf(value.ErrorRateAlpha, 0) {
 		value.ErrorRateAlpha = defaultAdvancedSchedulerErrorRateAlpha
@@ -323,16 +422,22 @@ func NormalizeFeedback(value FeedbackConfig) FeedbackConfig {
 	return value
 }
 
-// BaseWeightSum 按配置字段顺序累加基础权重，浮点加法的顺序会影响结果。
+// BaseWeightSum adds ordinary factor coefficients in the order used by
+// scoring.
 func (w ScoreWeights) BaseWeightSum() float64 {
 	return w.Priority + w.Load + w.Queue + w.ErrorRate + w.TTFT + w.Reset + w.QuotaHeadroom
 }
 
+// TotalWeightSum adds the base coefficients and both optional provider
+// affinity bonuses.
 func (w ScoreWeights) TotalWeightSum() float64 {
 	return w.BaseWeightSum() + w.Previous + w.SessionSticky
 }
 
-// ValidGlobal 检查全局基础权重之和为正，分组权重另行校验并允许总和为零。
+// ValidGlobal reports whether the weights are finite, nonnegative global
+// defaults with a positive base sum. Group policies use
+// ValidateEffectiveWeights directly so their deliberate zero base remains
+// valid.
 func (w ScoreWeights) ValidGlobal() bool {
 	return ValidateEffectiveWeights(w) == nil && w.BaseWeightSum() > 0
 }

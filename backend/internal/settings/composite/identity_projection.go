@@ -2,7 +2,18 @@ package composite
 
 import "github.com/TokenFlux/TokenRouter/internal/identity"
 
-// IdentityAdminSettings 从综合快照提取身份设置。
+// identity_projection.go transfers identity administrator settings and
+// secret-presence flags through the combined snapshot.
+// Identity settings supply registration defaults, challenge credentials, and
+// OAuth choices to the combined administrator Snapshot. The update value selects
+// fields used by identity preparation, while readback additionally includes
+// secret-presence flags; the registration suffix slice remains shared during
+// these conversions.
+
+// IdentityAdminSettings returns registration, challenge, and OAuth values for
+// identity preparation. RegistrationEmailSuffixWhitelist retains the Snapshot's
+// slice; credential text is internal input, while response-side presence flags
+// come from the separate identity read-result conversion.
 func (s *Snapshot) IdentityAdminSettings() identity.AdminSettings {
 	return identity.AdminSettings{
 		AliyunCaptchaAccessKeyID:               s.AliyunCaptchaAccessKeyID,
@@ -105,7 +116,10 @@ func (s *Snapshot) IdentityAdminSettings() identity.AdminSettings {
 	}
 }
 
-// ApplyIdentityAdminSettings 将身份设置写入综合快照。
+// ApplyIdentityAdminSettings writes normalized identity update values back into
+// the Snapshot. Its registration suffix slice remains shared with the supplied
+// value, and existing configured-secret flags are outside this update-value
+// transfer and remain as previously read.
 func (s *Snapshot) ApplyIdentityAdminSettings(value identity.AdminSettings) {
 	s.AliyunCaptchaAccessKeyID = value.AliyunCaptchaAccessKeyID
 	s.AliyunCaptchaAccessKeySecret = value.AliyunCaptchaAccessKeySecret
@@ -206,7 +220,10 @@ func (s *Snapshot) ApplyIdentityAdminSettings(value identity.AdminSettings) {
 	s.WeChatConnectScopes = value.WeChatConnectScopes
 }
 
-// ApplyIdentityAdminReadSettings 将身份读取结果写入综合快照。
+// ApplyIdentityAdminReadSettings transfers a nonnil identity reader result,
+// including raw credentials and their configured flags. The registration suffix
+// slice remains shared with that result; the HTTP response later selects public
+// credential metadata from the combined Snapshot.
 func (s *Snapshot) ApplyIdentityAdminReadSettings(value *identity.AdminReadSettings) {
 	s.AliyunCaptchaAccessKeyID = value.AliyunCaptchaAccessKeyID
 	s.AliyunCaptchaAccessKeySecret = value.AliyunCaptchaAccessKeySecret

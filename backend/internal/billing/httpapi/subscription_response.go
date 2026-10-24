@@ -5,18 +5,34 @@ import (
 	billingdto "github.com/TokenFlux/TokenRouter/internal/billing/httpapi/dto"
 )
 
+// subscription_response.go prepares subscription response values with optional
+// localized plan text.
+// User subscription responses can resolve plan display text in a selected
+// language while retaining granted validity and quotas. The wrapper localizes
+// a shallow plan view before DTO conversion, and administrator/batch wrappers
+// retain the assignment data selected by their DTO mappers.
+
+// UserSubscription aliases the JSON grant response with user-facing plan and
+// quota data.
 type UserSubscription = billingdto.UserSubscription
 
+// AdminUserSubscription aliases the JSON grant response containing
+// administrator assignment metadata.
 type AdminUserSubscription = billingdto.AdminUserSubscription
 
+// BulkAssignResult aliases batch grant counts, records and per-user JSON
+// outcomes.
 type BulkAssignResult = billingdto.BulkAssignResult
 
-// DefaultSubscriptionSetting 是默认订阅设置的 HTTP JSON 数据。
+// DefaultSubscriptionSetting is the HTTP JSON representation of a default subscription plan.
 type DefaultSubscriptionSetting struct {
-	PlanID int64 `json:"plan_id"`
+	PlanID int64 `json:"plan_id"` // default signup plan identifier
 }
 
-// UserSubscriptionFromService 转换订阅响应，并按指定语言翻译套餐资料。
+// UserSubscriptionFromService builds a user response, returning nil for nil
+// input. When a language is supplied, its first value localizes a shallow plan
+// view on a subscription copy; the DTO mapper then applies its selective
+// collection copies and shared-pointer rules.
 func UserSubscriptionFromService(sub *billing.UserSubscription, language ...string) *UserSubscription {
 	if sub != nil && len(language) > 0 {
 		copy := *sub
@@ -26,12 +42,18 @@ func UserSubscriptionFromService(sub *billing.UserSubscription, language ...stri
 	return billingdto.UserSubscriptionFromService(sub)
 }
 
-// UserSubscriptionFromServiceAdmin 将订阅转换为管理员响应。
+// UserSubscriptionFromServiceAdmin delegates administrator grant response
+// mapping and returns nil for nil input. Assignment details and notes are
+// included, while optional dates and quota pointers follow the DTO mapper's
+// read-only sharing rules.
 func UserSubscriptionFromServiceAdmin(sub *billing.UserSubscription) *AdminUserSubscription {
 	return billingdto.UserSubscriptionFromServiceAdmin(sub)
 }
 
-// BulkAssignResultFromService 将批量发放结果转换为响应。
+// BulkAssignResultFromService delegates batch grant response mapping and
+// returns nil for nil input. Administrator records and decimal status keys are
+// rebuilt, while error storage and per-record optional pointers follow the DTO
+// mapper's sharing rules.
 func BulkAssignResultFromService(r *billing.BulkAssignResult) *BulkAssignResult {
 	return billingdto.BulkAssignResultFromService(r)
 }

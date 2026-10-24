@@ -14,11 +14,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
+// provider_qoder.go constructs Qoder authorization and execution session
+// sources with shared credential invalidation. Qoder authorization resolves
+// supplied proxy IDs from persistence and uses an empty proxy URL when no ID is
+// supplied. Execution tokens use a separate session cache bound to transport
+// and TLS profiles; the composite invalidator connects that cache with
+// access-token cache invalidation.
+
+// provideQoderAuthorizationHTTP constructs the HTTP adapter for Qoder authorization operations.
 func provideQoderAuthorizationHTTP(source *provideradapter.QoderAuthorization) *providerhttp.QoderOAuthHandler {
 	return providerhttp.NewQoderOAuthHandler(source)
 }
 
-// provideQoderAuthorization 绑定代理读取接口，授权组件和供应商执行器分别管理会话与请求。
+// provideQoderAuthorization constructs authorization with a callback for
+// persisted proxy lookup. A nil proxy ID resolves to an empty URL; supplied IDs
+// require an available repository and an existing proxy record. The adapter
+// selects its default upstream client factory from the nil factory argument.
+// Callers arrange Core.Start for session maintenance and Core.StopContext for
+// shutdown; provideAuthRuntime supplies those callbacks in the application graph.
 func provideQoderAuthorization(proxies egress.ProxyRepository) *provideradapter.QoderAuthorization {
 	return provideradapter.NewQoderAuthorization(func(ctx context.Context, id *int64) (string, error) {
 		if id == nil {
@@ -38,14 +51,21 @@ func provideQoderAuthorization(proxies egress.ProxyRepository) *provideradapter.
 	}, nil)
 }
 
-// provideQoderTokens 构造唯一提供商会话缓存，站点交换由供应商构建器负责。
+// provideQoderTokens creates the execution session cache and binds the
+// supplied transport and TLS profiles for site-specific exchanges. Session
+// builds begin on demand; provideAuthRuntime registers StopContext to cancel
+// and wait for them before shared connections close. Standalone callers own
+// that shutdown for their returned instance.
 func provideQoderTokens(transport provideradapter.QoderTransport, profiles *egressprovider.TLSProfiles) *provideradapter.QoderTokenProvider {
 	source := provideradapter.NewQoderTokenProvider(qoder.SessionBuilder{})
 	source.SetHTTPUpstream(transport, profiles)
 	return source
 }
 
-// provideTokenCacheInvalidator 为失效操作绑定共享的会话和 token 缓存。
+// provideTokenCacheInvalidator constructs the provider's composite credential
+// invalidator using access-token and Qoder session caches. Platform key and
+// session selection stay in that implementation; access-token deletion failures
+// are reported through slog.Warn.
 func provideTokenCacheInvalidator(cache providerauth.AccessTokenCache, sessions *provideradapter.QoderTokenProvider) providerauth.TokenCacheInvalidator {
 	return providerauth.NewCompositeTokenCacheInvalidator(cache, sessions, slog.Warn)
 }

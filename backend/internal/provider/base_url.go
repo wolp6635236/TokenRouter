@@ -4,9 +4,28 @@ import (
 	"strings"
 )
 
-// OpenAIBaseURL 解析 OpenAI 协议族提供商的上游 base_url。
-// 适用 openai 与国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）；grok 走 GetGrokBaseURL，
-// Grok 的默认地址由调用方解析，此处返回空字符串。
+// base_url.go selects OpenAI-compatible request addresses from
+// protocol-specific configuration, legacy credentials, and platform defaults.
+// CN providers can configure a Chat-specific address independently of the
+// legacy base URL. The presence of unified protocol settings or adaptive
+// routing selects that address when populated. Saved legacy addresses apply to
+// API-key and upstream record types, and remaining choices use platform and
+// service-mode defaults.
+//
+// Address selection keeps the protocol-specific configuration ahead of its
+// legacy counterpart for CN routes. Kimi and Zhipu distinguish coding from payg
+// defaults, while DeepSeek has one default and OpenAI uses its official address.
+// Unsupported platforms return an empty result so their execution paths can
+// use their own address resolution.
+
+// OpenAIBaseURL resolves a nonnil OpenAI or CN record's upstream address.
+// Unified-key presence or adaptive CN routes prefer a populated Chat address;
+// saved base URLs apply to API-key and upstream types before defaults are used.
+//
+// CN addresses depend on service mode when no applicable saved address exists.
+// The returned address is trimmed but is not validated here; execution callers
+// apply their outbound URL policy. Unsupported platforms return an empty string,
+// directing callers to their platform-specific address helper.
 func (r *Record) OpenAIBaseURL(adaptive bool) string {
 	if !r.IsOpenAI() && !r.IsCNProvider() {
 		return ""
@@ -23,7 +42,8 @@ func (r *Record) OpenAIBaseURL(adaptive bool) string {
 			return baseURL
 		}
 	}
-	// 平台默认 base_url：CN 供应商按 provider_mode 选择 payg / coding 默认值。
+	// No applicable stored address was selected. Kimi and Zhipu mode defaults
+	// choose their payg or coding endpoint, while DeepSeek and OpenAI use their platform address.
 	switch r.Platform {
 	case PlatformKimi:
 		if r.GetProviderMode() == ProviderModeCoding {

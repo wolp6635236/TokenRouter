@@ -9,7 +9,15 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// TestTokenRefreshService_RegistrationsAreCandidateEligibilitySource 检查候选资格使用的平台注册集合与执行器登记一致，且每个平台登记一次。
+// Background refresh eligibility comes from the same platform registration that
+// supplies its exchange implementation. The assembly scenario checks the six
+// configured platform entries in order and verifies each entry provides both
+// eligibility and execution objects.
+
+// TestTokenRefreshService_RegistrationsAreCandidateEligibilitySource constructs
+// refresh registrations from platform authorization dependencies. It checks the
+// six-platform order and nonnil eligibility plus executor for every entry,
+// without issuing credential exchanges.
 func TestTokenRefreshService_RegistrationsAreCandidateEligibilitySource(t *testing.T) {
 	registrations := provideRefreshPlatforms(nil, nil, nil, &provider.AntigravityAuthorization{}, provideradapter.NewQoderAuthorization(nil, nil), nil, nil, nil)
 	platforms := make([]string, 0, len(registrations))

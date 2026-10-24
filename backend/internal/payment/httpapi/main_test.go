@@ -6,7 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在测试启动前统一设置模式，保留各协议测试的并行执行。
+// TestMain selects Gin test mode before the payment HTTP test suite starts. It
+// runs the suite after that shared mode change so parallel protocol cases use
+// the same configuration.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	m.Run()

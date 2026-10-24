@@ -11,32 +11,60 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// A cached OAuth token may use a project identity or a provider-ID identity,
+// and both can survive discovery of the project. Deletion fixtures record
+// adapter calls to verify key selection and deduplication across the tested
+// platforms. Injected single-key failures also pin the nil invalidation result.
+
+// geminiTokenCacheStub records deletion identities and supplies one configured
+// cleanup error.
 type geminiTokenCacheStub struct {
+	// deletedKeys is appended for every deletion attempt, including attempts
+	// returning deleteErr. The fixture's tests access this slice serially.
 	deletedKeys []string
-	deleteErr   error
+	deleteErr   error // injected token deletion error
 }
 
+// GetAccessToken supplies an empty successful result for the unused read side
+// of AccessTokenCache. The invalidation tests observe DeleteAccessToken calls,
+// so this method stores no token state.
 func (s *geminiTokenCacheStub) GetAccessToken(ctx context.Context, cacheKey string) (string, error) {
 	return "", nil
 }
 
+// SetAccessToken acknowledges cache writes in the deletion fixture. Values and
+// ttl are discarded because these tests record deletion identities and inject
+// failures through DeleteAccessToken.
 func (s *geminiTokenCacheStub) SetAccessToken(ctx context.Context, cacheKey string, token string, ttl time.Duration) error {
 	return nil
 }
 
+// DeleteAccessToken appends the requested key before returning the configured
+// error, including failed cleanup attempts. The fixture is used serially;
+// callers synchronize access if they introduce concurrent invalidation.
 func (s *geminiTokenCacheStub) DeleteAccessToken(ctx context.Context, cacheKey string) error {
 	s.deletedKeys = append(s.deletedKeys, cacheKey)
 	return s.deleteErr
 }
 
+// AcquireRefreshLock reports successful logical acquisition for the unused
+// lock side of this deletion fixture. It records no lease, so later
+// ReleaseRefreshLock has no state to remove.
 func (s *geminiTokenCacheStub) AcquireRefreshLock(ctx context.Context, cacheKey string, ttl time.Duration) (bool, error) {
 	return true, nil
 }
 
+// ReleaseRefreshLock acknowledges release for this fixture's unrecorded
+// logical acquisitions. It returns nil because deletion tests inject cleanup
+// failures through DeleteAccessToken and keep lock behavior independent of
+// those assertions.
 func (s *geminiTokenCacheStub) ReleaseRefreshLock(ctx context.Context, cacheKey string) error {
 	return nil
 }
 
+// TestCompositeTokenCacheInvalidator_Gemini supplies an OAuth record with a
+// discovered project ID. Deletion calls cover the selected project identity
+// and the earlier provider-ID identity in order.
 func TestCompositeTokenCacheInvalidator_Gemini(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -51,11 +79,14 @@ func TestCompositeTokenCacheInvalidator_Gemini(t *testing.T) {
 
 	err := invalidator.InvalidateToken(context.Background(), provider)
 	require.NoError(t, err)
-	// 新行为：同时删除基于 project_id 和 provider_id 的缓存键
-	// 这是为了处理：首次获取 token 时可能没有 project_id，之后自动检测到后会使用新 key
+	// Clear both identities because project discovery can change the cache key
+	// after a token has already been cached by provider ID.
 	require.Equal(t, []string{"gemini:project-x", "gemini:provider:10"}, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_GeminiWithoutProjectID supplies an OAuth
+// record whose project identity is absent. Both selected forms resolve to one
+// provider key, and the fixture records one deletion invocation.
 func TestCompositeTokenCacheInvalidator_GeminiWithoutProjectID(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -70,10 +101,13 @@ func TestCompositeTokenCacheInvalidator_GeminiWithoutProjectID(t *testing.T) {
 
 	err := invalidator.InvalidateToken(context.Background(), provider)
 	require.NoError(t, err)
-	// 没有 project_id 时，两个 key 相同，去重后只删除一个
+	// Missing project IDs resolve to the provider key, which is deleted once.
 	require.Equal(t, []string{"gemini:provider:10"}, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_Antigravity supplies an OAuth record with
+// an Antigravity project ID. The fixture records cleanup of the project
+// identity followed by the provider-ID identity.
 func TestCompositeTokenCacheInvalidator_Antigravity(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -88,10 +122,13 @@ func TestCompositeTokenCacheInvalidator_Antigravity(t *testing.T) {
 
 	err := invalidator.InvalidateToken(context.Background(), provider)
 	require.NoError(t, err)
-	// 新行为：同时删除基于 project_id 和 provider_id 的缓存键
+	// Project and provider identities are both invalidated.
 	require.Equal(t, []string{"ag:ag-project", "ag:provider:99"}, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_AntigravityWithoutProjectID supplies an
+// OAuth record with no project identity. Deduplication leaves one provider-key
+// deletion even though both identity forms select it.
 func TestCompositeTokenCacheInvalidator_AntigravityWithoutProjectID(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -106,10 +143,13 @@ func TestCompositeTokenCacheInvalidator_AntigravityWithoutProjectID(t *testing.T
 
 	err := invalidator.InvalidateToken(context.Background(), provider)
 	require.NoError(t, err)
-	// 没有 project_id 时，两个 key 相同，去重后只删除一个
+	// Missing project IDs resolve to the provider key, which is deleted once.
 	require.Equal(t, []string{"ag:provider:99"}, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_OpenAI supplies an OAuth record with
+// stored OpenAI credentials. The fixture records the single provider-ID key
+// used by the OpenAI token source.
 func TestCompositeTokenCacheInvalidator_OpenAI(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -127,6 +167,9 @@ func TestCompositeTokenCacheInvalidator_OpenAI(t *testing.T) {
 	require.Equal(t, []string{"openai:provider:500"}, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_Claude supplies an OAuth record on the
+// Anthropic platform. The fixture records the Claude-prefixed provider-ID key
+// used by that token source.
 func TestCompositeTokenCacheInvalidator_Claude(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -144,13 +187,16 @@ func TestCompositeTokenCacheInvalidator_Claude(t *testing.T) {
 	require.Equal(t, []string{"claude:provider:600"}, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_SkipNonOAuth supplies API-key records and
+// an Anthropic setup-token record. Each call returns success with an empty
+// deletion list, protecting the tested provider-type eligibility rules.
 func TestCompositeTokenCacheInvalidator_SkipNonOAuth(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
 
 	tests := []struct {
-		name     string
-		provider *Record
+		name     string  // provider invalidation case label
+		provider *Record // snapshot selecting cleanup identities
 	}{
 		{
 			name: "gemini_api_key",
@@ -196,6 +242,9 @@ func TestCompositeTokenCacheInvalidator_SkipNonOAuth(t *testing.T) {
 	}
 }
 
+// TestCompositeTokenCacheInvalidator_SkipUnsupportedPlatform supplies an OAuth
+// record on an unknown platform. The call returns nil and records no deletion
+// because no supported token identity is selected.
 func TestCompositeTokenCacheInvalidator_SkipUnsupportedPlatform(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -210,6 +259,9 @@ func TestCompositeTokenCacheInvalidator_SkipUnsupportedPlatform(t *testing.T) {
 	require.Empty(t, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_NilCache supplies an eligible Gemini
+// snapshot while omitting the shared cache dependency. Invalidation returns
+// success, allowing callers to finish even when cache cleanup is unavailable.
 func TestCompositeTokenCacheInvalidator_NilCache(t *testing.T) {
 	invalidator := NewCompositeTokenCacheInvalidator(nil, nil, nil)
 	provider := &Record{
@@ -222,6 +274,9 @@ func TestCompositeTokenCacheInvalidator_NilCache(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestCompositeTokenCacheInvalidator_NilProvider invokes an initialized
+// invalidator with no provider snapshot. The call returns success and the
+// fixture's deletion list remains empty.
 func TestCompositeTokenCacheInvalidator_NilProvider(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
@@ -231,6 +286,9 @@ func TestCompositeTokenCacheInvalidator_NilProvider(t *testing.T) {
 	require.Empty(t, cache.deletedKeys)
 }
 
+// TestCompositeTokenCacheInvalidator_NilInvalidator invokes the method through
+// a nil receiver with an otherwise eligible snapshot. The call returns nil,
+// protecting optional invalidator wiring.
 func TestCompositeTokenCacheInvalidator_NilInvalidator(t *testing.T) {
 	var invalidator *CompositeTokenCacheInvalidator
 	provider := &Record{
@@ -243,14 +301,17 @@ func TestCompositeTokenCacheInvalidator_NilInvalidator(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestCompositeTokenCacheInvalidator_DeleteError injects deletion errors for
+// OpenAI and Anthropic OAuth records. Both invalidation calls return nil,
+// pinning the caller-visible result for these two single-key failures.
 func TestCompositeTokenCacheInvalidator_DeleteError(t *testing.T) {
 	expectedErr := errors.New("redis connection failed")
 	cache := &geminiTokenCacheStub{deleteErr: expectedErr}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
 
 	tests := []struct {
-		name     string
-		provider *Record
+		name     string  // provider invalidation case label
+		provider *Record // snapshot selecting cleanup identities
 	}{
 		{
 			name: "openai_delete_error",
@@ -272,16 +333,20 @@ func TestCompositeTokenCacheInvalidator_DeleteError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 删除失败时记录日志，调用返回成功。
-			// 这是因为缓存失效失败不应影响主业务流程
+			// Each case exercises one platform key and asserts the nil result from an
+			// injected deletion failure; provider writes are outside this fixture.
 			err := invalidator.InvalidateToken(context.Background(), tt.provider)
 			require.NoError(t, err)
 		})
 	}
 }
 
+// TestCompositeTokenCacheInvalidator_AllPlatformsIntegration combines Gemini,
+// Antigravity, OpenAI and Anthropic records in one serial fixture. The
+// recorded adapter calls protect both specific and provider identities for the
+// first two platforms and single keys for the others.
 func TestCompositeTokenCacheInvalidator_AllPlatformsIntegration(t *testing.T) {
-	// 测试所有平台的缓存键生成和删除
+	// Exercise the key families for these four OAuth platforms.
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache, nil, nil)
 
@@ -292,7 +357,7 @@ func TestCompositeTokenCacheInvalidator_AllPlatformsIntegration(t *testing.T) {
 		{ID: 4, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth},
 	}
 
-	// 新行为：Gemini 和 Antigravity 会同时删除基于 project_id 和 provider_id 的键
+	// Gemini and Antigravity invalidate both project and provider keys.
 	expectedKeys := []string{
 		"gemini:gemini-proj",
 		"gemini:provider:1",

@@ -11,7 +11,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// AgentIdentityKey 在执行时校验凭据字段并解析私钥。
+// agent_identity.go prepares signing credentials, registers tasks, and redacts
+// responses for OpenAI Agent Identity requests. Agent Identity requests
+// authenticate a runtime and its registered task with a signed assertion.
+// Provider credentials hold the signing key and task identifier; registration
+// returns a task for the coordinator to persist, while response redaction can
+// resolve a shadow back to the credential owner.
+
+// AgentIdentityKey parses the Ed25519 private key and trimmed runtime and task
+// IDs. A nil record, invalid key, or missing runtime ID returns an error; an
+// empty task ID remains available for registration.
 func AgentIdentityKey(value *provider.Record) (openai.AgentIdentityKey, error) {
 	if value == nil {
 		return openai.AgentIdentityKey{}, errors.New("agent identity provider is nil")
@@ -27,7 +36,10 @@ func AgentIdentityKey(value *provider.Record) (openai.AgentIdentityKey, error) {
 	return openai.AgentIdentityKey{RuntimeID: runtimeID, PrivateKey: privateKey, TaskID: strings.TrimSpace(value.GetCredential("task_id"))}, nil
 }
 
-// RegisterAgentIdentityTask 复用供应商交换，提供商协调器拥有认领、复查和持久化。
+// RegisterAgentIdentityTask registers a task with the upstream runtime using
+// the record's key and current time. A loaded proxy is used when both ProxyID
+// and Proxy exist; the provider coordinator claims and persists the returned
+// task.
 func RegisterAgentIdentityTask(ctx context.Context, value *provider.Record, baseURL string) (string, error) {
 	key, err := AgentIdentityKey(value)
 	if err != nil {
@@ -41,7 +53,10 @@ func RegisterAgentIdentityTask(ctx context.Context, value *provider.Record, base
 	return openai.RegisterAgentIdentityTask(ctx, key, proxyURL, baseURL, now)
 }
 
-// AgentIdentityHeaders 同时返回本次签名 task，恢复只能针对该身份执行。
+// AgentIdentityHeaders ensures a task exists and returns its signed
+// Authorization header and task ID. Callers supply a nonnil ensure callback and
+// an Agent Identity record, then target recovery at the returned task if the
+// upstream rejects the assertion.
 func AgentIdentityHeaders(ctx context.Context, value *provider.Record, ensure func(context.Context, *provider.Record, string) error) (http.Header, string, error) {
 	if value == nil || !value.IsOpenAIAgentIdentity() {
 		return nil, "", errors.New("agent identity provider is required")
@@ -62,13 +77,19 @@ func AgentIdentityHeaders(ctx context.Context, value *provider.Record, ensure fu
 	return headers, key.TaskID, nil
 }
 
-// RedactAgentIdentityBody 在原位置读取影子母提供商，并把凭据值交给平台脱敏器。
+// RedactAgentIdentityBody removes Agent Identity credential values from an
+// upstream body. It returns the input for empty bodies or other authentication
+// modes; a failed shadow resolution retains the supplied record for the
+// redaction check.
 func RedactAgentIdentityBody(ctx context.Context, read func(context.Context, int64) (*provider.Record, error), value *provider.Record, body []byte) []byte {
 	if value == nil || len(body) == 0 {
 		return body
 	}
 	credential := value
 	if value.IsCredentialShadow() {
+		// A failed parent lookup leaves the shadow as the candidate, so best-effort
+		// logging redaction can continue without turning the lookup error into a
+		// request failure.
 		if resolved, err := provider.ResolveCredentialRecord(ctx, read, value); err == nil && resolved != nil {
 			credential = resolved
 		}

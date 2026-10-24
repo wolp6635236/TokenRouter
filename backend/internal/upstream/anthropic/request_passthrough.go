@@ -9,6 +9,35 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// request_passthrough.go builds API-key passthrough requests with provider
+// authentication and beta policy enforcement.
+// API-key passthrough forwards allowed client request headers while replacing
+// the credential used for the selected provider. Optional body fields still
+// depend on the beta header selected by policy and provider overrides, so
+// passthrough preparation can change the returned wire bytes.
+//
+// OriginalPolicy evaluates the supplied model and client beta before FastMode
+// can revise the body or headers. The filtered or overridden beta then gates
+// the body, and fast-mode eligibility is checked when that token remains.
+// Authentication replacement follows allowed-header copying, required protocol
+// headers receive defaults, and provider overrides take final precedence. The
+// returned body lets the exchange synchronize parsed input before dispatch.
+
+// BuildRequestPassthrough returns an API-key Messages request and its sanitized
+// wire body. Callers provide URL, OriginalPolicy, FastMode, BetaOverride,
+// CheckFastBeta, and ApplyOverrides; policy and fast-mode errors stop
+// construction before dispatch.
+//
+// The initial beta-policy evaluation uses the client's model and header, while
+// body sanitization uses the value selected after fast-mode processing and any
+// provider beta override. Allowed headers are copied with wire casing, client
+// credentials are replaced by token, and provider overrides run last. The
+// returned bytes may differ from body and remain available to parsed-input
+// synchronization.
+//
+// The request reader and its GetBody snapshots can share prepared input
+// storage. Callers keep those bytes unchanged while the transport can still
+// read them.
 func BuildRequestPassthrough(ctx context.Context, body []byte, token string, options RequestOptions) (*http.Request, []byte, error) {
 	body = StripDeferredToolCacheControl(body)
 	targetURL, err := options.URL()
@@ -26,7 +55,9 @@ func BuildRequestPassthrough(ctx context.Context, body []byte, token string, opt
 		return nil, nil, err
 	}
 	clientBeta := StripBetaTokensWithSet(GetHeaderRaw(clientHeaders, "anthropic-beta"), filterSet)
-	// 提供商覆写了 anthropic-beta 时，覆写值即最终上游值：净化以覆写值为准
+	// The provider beta override will replace the forwarded value at final
+	// header application. Use it now so optional body fields match the selected
+	// outbound header.
 	if beta, ok := options.BetaOverride(); ok {
 		clientBeta = beta
 	}
@@ -54,13 +85,17 @@ func BuildRequestPassthrough(ctx context.Context, body []byte, token string, opt
 			AddHeaderRaw(req.Header, wireKey, v)
 		}
 	}
-	// 透传白名单可能写入 Key 改写前的值，按系统策略裁决后的 beta 覆盖。
+	// Allowed-header forwarding can retain client betas that policy removed.
+	// Replace their case forms with the selected value used to sanitize this
+	// request's body.
 	DeleteHeaderAllForms(req.Header, "anthropic-beta")
 	if clientBeta != "" {
 		SetHeaderRaw(req.Header, "anthropic-beta", clientBeta)
 	}
 
-	// 覆盖入站鉴权残留，并注入上游认证
+	// Allowed client headers are copied before credential selection. Remove
+	// credential and cookie entries so the prepared request uses the selected
+	// provider token before final overrides.
 	req.Header.Del("authorization")
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
@@ -74,7 +109,9 @@ func BuildRequestPassthrough(ctx context.Context, body []byte, token string, opt
 		SetHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
 
-	// 提供商级请求头覆写（最终生效，覆盖上面所有来源的同名头）
+	// Provider overrides run after forwarded values, policy-selected beta,
+	// credentials, and defaults. Enabled values therefore define the final
+	// header choices retained in this request.
 	options.ApplyOverrides(req.Header)
 
 	return req, body, nil

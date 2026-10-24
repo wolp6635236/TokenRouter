@@ -17,14 +17,42 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// input_tokens.go validates Responses input-token requests and prepares mapped
+// counting input after funding admission.
+// Responses input-token preflight checks a request without generating an answer
+// or submitting usage completion. Funding eligibility precedes group route
+// planning here, and the original requested model remains separate from the
+// mapped routing name passed into the counting attempt adapter.
+//
+// A nonempty mapped model rewrites the counting body and supplies
+// RoutingModel, while Model retains the trimmed client name for subsequent
+// error presentation. Session hashing uses those prepared bytes after mapping,
+// matching the body passed to the count adapter. The handler binds the same
+// route plan in request context before constructing that adapter, so
+// downstream selection can interpret the mapped payload with the group
+// decision that produced it.
+
+// InputTokensCall retains requested and routed identity for Responses counting
+// execution.
 type InputTokensCall struct {
-	Key                                        *apikey.APIKey
-	Body                                       []byte
+	Key  *apikey.APIKey // authenticated effective API Key
+	Body []byte         // mapped counting request bytes
+	// Model, RoutingModel, Platform and SessionHash describe the same
+	// counting request. Model retains the client request name; RoutingModel
+	// names the mapped selection model; Platform constrains eligible
+	// provider candidates; SessionHash is the sticky selection seed for
+	// that counting request.
 	Model, RoutingModel, Platform, SessionHash string
-	Log                                        *zap.Logger
+	// request counting diagnostic logger
+	Log *zap.Logger
 }
 
-// ResponsesInputTokens 处理 Codex 的 Responses 输入 token 预检，使用无并发槽、免用量记录的计数流程。
+// ResponsesInputTokens executes authenticated Responses input-token preflight
+// under the request activity barrier. It validates protocol permission and JSON
+// model input, checks funding eligibility, then binds the group route and
+// mapped body before opening the bounded text counting loop. This path performs
+// no generation completion submission; selected resource handling belongs to
+// its execution adapter.
 func (h *OpenAITokensHandler) ResponsesInputTokens(c *gin.Context) {
 	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
@@ -90,7 +118,9 @@ func (h *OpenAITokensHandler) ResponsesInputTokens(c *gin.Context) {
 	}
 	h.backend.AuthLatency(c, time.Since(requestStart).Milliseconds())
 
-	// 当前分组和分组映射结果进入独立计划，不改变原解析位置。
+	// Plan after funding eligibility and retain the client model
+	// separately, so mapped request bytes and selection use the group route
+	// without losing request attribution.
 	groupMappingRoutePlan := h.backend.Plan(c.Request.Context(), apiKey, reqModel)
 	groupMapping := groupMappingRoutePlan.Mapping()
 	h.backend.BindPlan(c, groupMappingRoutePlan)

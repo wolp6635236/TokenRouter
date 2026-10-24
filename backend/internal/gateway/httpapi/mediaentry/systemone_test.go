@@ -27,14 +27,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// SystemOne usage warnings retain the served decision and correlate its
+// unknown usage with the request attempt. These fixtures also check
+// Jev-specific final error rules and verify repeated provider exchanges share
+// one initial RPM admission while later funding checks skip that increment.
+
+// systemOneFunds permits fixture funding admission so RPM behavior can be
+// observed.
 type systemOneFunds struct{}
 
+// systemOneRPM counts serial RPM admissions for one decision request fixture.
 type systemOneRPM struct {
-	scheduler.UserRPMCache
-	calls int
+	scheduler.UserRPMCache     // unused RPM cache operations
+	calls                  int // serial RPM admission count
 }
 
-// TestSystemOneFailoverRules 检查重试耗尽时的平台匹配、监控开关和重试时间。
+// TestSystemOneFailoverRules exhausts a Jev request under Jev, unrelated and
+// unrestricted response rules. It checks applicable rewrite/monitoring
+// behavior and preserves Retry-After for every platform fixture.
 func TestSystemOneFailoverRules(t *testing.T) {
 	for _, platform := range []string{"jev", "openai", ""} {
 		t.Run(platform, func(t *testing.T) {
@@ -66,7 +76,10 @@ func TestSystemOneFailoverRules(t *testing.T) {
 	}
 }
 
-// TestSystemOneMissingUsageRetainsSuccessfulRequest 检查用量告警的请求关联及成功响应。
+// TestSystemOneMissingUsageRetainsSuccessfulRequest adds invalid-usage
+// observation after a successful answer was written. It checks the request
+// remains completed with HTTP 200 and gains one correlated usage_unknown
+// attempt and usage_invalid Ops event.
 func TestSystemOneMissingUsageRetainsSuccessfulRequest(t *testing.T) {
 	var saved telemetry.RequestRecord
 	ctx := telemetry.WithRequestCapture(context.Background(), telemetry.RequestRecord{RequestID: "local", State: "completed", Status: 200}, func(record telemetry.RequestRecord) { saved = record })
@@ -74,7 +87,10 @@ func TestSystemOneMissingUsageRetainsSuccessfulRequest(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, gatewayhttp.EndpointSystemOne, nil).WithContext(ctx)
 	c.Data(200, "application/json", []byte(`{"answers":{"available":{"type":"noul","noul":1}}}`))
 	run := &systemOneRun{c: c, log: zap.NewNop(), selection: &gatewayprovider.SelectionResult{Provider: gatewayprovider.NewExecutionProvider(&provider.Record{ID: 42, Platform: provider.PlatformJev, Type: provider.ProviderTypeAPIKey})}}
-	run.MissingUsage(ctx, upstream.AttemptResult{Served: true, RequestID: "upstream"})
+	ctx = telemetry.BeginRequestAttempt(telemetry.WithRequestProvider(ctx, 42, "X-Client-Request-ID"), 1)
+	c.Request = c.Request.WithContext(ctx)
+	telemetry.ObserveRequestHeaders(ctx, telemetry.RequestAttemptFromContext(ctx), http.Header{"X-Client-Request-Id": {"upstream"}}, 200)
+	run.MissingUsage(ctx, upstream.AttemptResult{Served: true, RequestID: "unselected"})
 	require.Equal(t, 200, c.Writer.Status())
 	require.Equal(t, "completed", saved.State)
 	require.Len(t, saved.Attempts, 1)
@@ -88,14 +104,21 @@ func TestSystemOneMissingUsageRetainsSuccessfulRequest(t *testing.T) {
 	require.Equal(t, "usage_invalid", typed[0].Kind)
 }
 
+// Check permits fixture funding input and returns a successful admission
+// result.
 func (systemOneFunds) Check(context.Context, billing.CheckInput) error { return nil }
 
+// IncrementUserRPM increments and returns the serial fixture admission count.
+// It ignores user/context inputs and reports no cache error, allowing the test
+// to distinguish initial counting from later skipped checks.
 func (r *systemOneRPM) IncrementUserRPM(context.Context, int64) (int, error) {
 	r.calls++
 	return r.calls, nil
 }
 
-// TestSystemOneConsumesOneRPM 检查首次准入后，多次上游尝试共用一次 RPM 计数。
+// TestSystemOneConsumesOneRPM performs initial funding admission followed by
+// two selected-provider exchanges. It checks both forwards succeed while the
+// RPM cache increments once because repeated funding checks skip counting.
 func TestSystemOneConsumesOneRPM(t *testing.T) {
 	cache := &systemOneRPM{}
 	checker := admission.NewFundingAdmission(systemOneFunds{}, scheduler.NewRPMAdmission(cache, nil, scheduler.Diagnostics{}))

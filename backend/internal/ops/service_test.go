@@ -16,35 +16,64 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+// benchmarkOpsMonitoringEnabled and benchmarkOpsAdvancedSettings retain each
+// measured read result after serial benchmark iterations, keeping observable
+// output outside the timed loop's local variables.
 var (
 	benchmarkOpsMonitoringEnabled bool
 	benchmarkOpsAdvancedSettings  OpsAdvancedSettings
 )
 
+// opsRuntimeRefreshRepo supplies controlled preference reads and independent
+// failure/call observations for polling tests.
 type opsRuntimeRefreshRepo struct {
+	// Settings embeds unsupported methods through a nil interface in these
+	// fixtures. Tests call the supplied GetMultiple method; other embedded
+	// operations require another implementation.
 	Settings
-	mu     sync.RWMutex
-	values map[string]string
-	fail   atomic.Bool
-	calls  atomic.Int64
+	// mu protects values during reads and set updates. GetMultiple returns a new
+	// selected map, while fail and calls are independent atomics sampled outside
+	// that value-map lock.
+	mu     sync.RWMutex      // fixture values map mutex
+	values map[string]string // fixture persisted preference map
+	fail   atomic.Bool       // injected preference read failure
+	calls  atomic.Int64      // observed attempted preference reads
 }
 
-// OpsRuntimeSettingsRefreshHealth 汇总测试所需的配置刷新状态。
+// OpsRuntimeSettingsRefreshHealth carries test-only independently sampled
+// polling state and attempt counters.
 type OpsRuntimeSettingsRefreshHealth struct {
-	Running      bool   `json:"running"`
-	SuccessTotal uint64 `json:"success_total"`
-	FailureTotal uint64 `json:"failure_total"`
+	// Running, SuccessTotal, and FailureTotal are separate atomic observations
+	// read by the test helper. They can reflect different instants, and Stop
+	// joining establishes completion for assertions.
+	Running      bool   `json:"running"`       // sampled worker running flag
+	SuccessTotal uint64 `json:"success_total"` // cumulative successful preference reads
+	FailureTotal uint64 `json:"failure_total"` // cumulative failed preference reads
 }
 
+// stubOpsRepoForUserErr captures user-list selection and supplies controlled
+// diagnostic detail for serial fixtures.
 type stubOpsRepoForUserErr struct {
-	OpsRepository // 嵌入接口，未实现的方法 panic，仅覆盖 ListErrorLogs
-	gotFilter     *OpsErrorLogFilter
+	// OpsRepository embeds unavailable operations through a nil interface. These
+	// fixtures supply ListErrorLogs and GetErrorLogByID only; callers reaching
+	// other methods would panic.
+	OpsRepository
+	// gotFilter retains the supplied shallow filter pointer for assertions. Tests
+	// leave pointed-to identities and category slices stable while inspecting it
+	// after the call.
+	gotFilter *OpsErrorLogFilter // retained supplied user-list filter
 
-	// GetErrorLogByID 控制字段
-	detailToReturn    *OpsErrorLogDetail
-	detailErrToReturn error
+	// detailErrToReturn takes precedence over detailToReturn in GetErrorLogByID.
+	// Successful detail fixtures configure a nonnil shared pointer, while error
+	// fixtures need no detail allocation.
+	detailToReturn    *OpsErrorLogDetail // shared configured diagnostic pointer
+	detailErrToReturn error              // configured diagnostic lookup error
 }
 
+// TestSanitizeOpsUpstreamErrorsForQueueBoundsAndRedacts supplies twenty
+// oversized upstream events with JSON credential fields. It protects sixteen
+// serialized survivors, raw-list release, byte limits, and removal of the
+// selected fixture credentials.
 func TestSanitizeOpsUpstreamErrorsForQueueBoundsAndRedacts(t *testing.T) {
 	entry := &OpsInsertErrorLogInput{}
 	for range 20 {
@@ -88,6 +117,9 @@ func TestSanitizeOpsUpstreamErrorsForQueueBoundsAndRedacts(t *testing.T) {
 	}
 }
 
+// GetMultiple counts the attempt before checking context cancellation and the
+// injected failure flag. On success it copies selected string values under the
+// read lock into a new map; fixture callers supply nonnil ctx.
 func (r *opsRuntimeRefreshRepo) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
 	r.calls.Add(1)
 	select {
@@ -109,12 +141,19 @@ func (r *opsRuntimeRefreshRepo) GetMultiple(ctx context.Context, keys []string) 
 	return out, nil
 }
 
+// set changes one fixture preference under the values mutex. The map must be
+// initialized by the fixture; background GetMultiple calls then see that update
+// when they next acquire the read lock.
 func (r *opsRuntimeRefreshRepo) set(key, value string) {
 	r.mu.Lock()
 	r.values[key] = value
 	r.mu.Unlock()
 }
 
+// waitForOpsRefresh polls a supplied condition with millisecond waits until an
+// elapsed-time deadline, then fatals on failure. Conditions can read
+// independent atomic health values; the helper owns no cancellation of the
+// worker being observed.
 func waitForOpsRefresh(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -122,11 +161,17 @@ func waitForOpsRefresh(t *testing.T, timeout time.Duration, condition func() boo
 		if condition() {
 			return
 		}
+		// Yield between checks so the independently scheduled worker can publish
+		// progress before the fixture deadline expires.
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("condition not satisfied before timeout")
 }
 
+// TestOpsRuntimeSettingsSnapshotLoadsOnceAndServesHotPath initializes two
+// stored preferences and performs one thousand snapshot reads. It protects
+// loaded values and exactly one initial bulk read with no hot-path single
+// reads.
 func TestOpsRuntimeSettingsSnapshotLoadsOnceAndServesHotPath(t *testing.T) {
 	repo := newRuntimeSettingRepoStub()
 	repo.values[SettingKeyOpsMonitoringEnabled] = "false"
@@ -155,6 +200,10 @@ func TestOpsRuntimeSettingsSnapshotLoadsOnceAndServesHotPath(t *testing.T) {
 	}
 }
 
+// TestOpsRuntimeSettingsAdministrativeUpdatesAreImmediatelyVisible changes
+// monitoring and advanced preferences directly in memory. It protects immediate
+// snapshot visibility and retention of monitoring state while the advanced
+// component changes.
 func TestOpsRuntimeSettingsAdministrativeUpdatesAreImmediatelyVisible(t *testing.T) {
 	svc := &OpsService{}
 	svc.initRuntimeSettings(context.Background())
@@ -179,6 +228,10 @@ func TestOpsRuntimeSettingsAdministrativeUpdatesAreImmediatelyVisible(t *testing
 	}
 }
 
+// TestOpsRuntimeSettingsBackgroundRefreshConverges changes a fixture preference
+// after initialization and starts short-interval polling. It protects eventual
+// updated monitoring plus a recorded success and stops the worker through test
+// cleanup.
 func TestOpsRuntimeSettingsBackgroundRefreshConverges(t *testing.T) {
 	repo := &opsRuntimeRefreshRepo{values: map[string]string{SettingKeyOpsMonitoringEnabled: "false"}}
 	svc := &OpsService{settingRepo: repo}
@@ -189,13 +242,18 @@ func TestOpsRuntimeSettingsBackgroundRefreshConverges(t *testing.T) {
 
 	repo.set(SettingKeyOpsMonitoringEnabled, "true")
 	svc.startRuntimeSettingsRefresh(context.Background(), 5*time.Millisecond, 0, 50*time.Millisecond)
+	// Stop and join the background refresh after the test completes or fatals,
+	// releasing the worker while its fixture map remains available.
 	t.Cleanup(svc.StopRuntimeSettingsRefresh)
 	waitForOpsRefresh(t, time.Second, func() bool {
 		return svc.IsMonitoringEnabled(context.Background()) && svc.RuntimeSettingsRefreshHealth().SuccessTotal > 0
 	})
 }
 
-// TestOpsRuntimeSettingsRefreshFailuresKeepLastKnownGoodSnapshot 检查连续刷新失败后的缓存值。
+// TestOpsRuntimeSettingsRefreshFailuresKeepLastKnownGoodSnapshot injects three
+// failed reads under a virtual clock after loading valid preferences. It
+// protects failure counting and retained monitoring/advanced values across
+// those failures.
 func TestOpsRuntimeSettingsRefreshFailuresKeepLastKnownGoodSnapshot(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		repo := &opsRuntimeRefreshRepo{values: map[string]string{
@@ -206,9 +264,13 @@ func TestOpsRuntimeSettingsRefreshFailuresKeepLastKnownGoodSnapshot(t *testing.T
 		svc.initRuntimeSettings(context.Background())
 		repo.fail.Store(true)
 		svc.startRuntimeSettingsRefresh(context.Background(), 5*time.Millisecond, 0, 50*time.Millisecond)
+		// Join the polling worker when the virtual-clock callback exits, so its
+		// retained handles and timers do not outlive the failure assertions.
 		defer svc.StopRuntimeSettingsRefresh()
 
-		// 虚拟时钟逐次触发刷新，Wait 等待每次刷新完成。
+		// Wait until the worker is durably blocked, then advance one configured
+		// interval per iteration and wait again so each injected refresh failure is
+		// counted deterministically.
 		synctest.Wait()
 		for range 3 {
 			time.Sleep(5 * time.Millisecond)
@@ -226,6 +288,10 @@ func TestOpsRuntimeSettingsRefreshFailuresKeepLastKnownGoodSnapshot(t *testing.T
 	})
 }
 
+// TestOpsRuntimeSettingsRefreshStopEndsLifecycle starts polling and waits for
+// success before stopping. It protects no additional fixture reads during the
+// subsequent observation interval, a false running flag, and repeated stop
+// completion.
 func TestOpsRuntimeSettingsRefreshStopEndsLifecycle(t *testing.T) {
 	repo := &opsRuntimeRefreshRepo{values: map[string]string{}}
 	svc := &OpsService{settingRepo: repo}
@@ -244,10 +310,14 @@ func TestOpsRuntimeSettingsRefreshStopEndsLifecycle(t *testing.T) {
 	if svc.RuntimeSettingsRefreshHealth().Running {
 		t.Fatal("refresh health still reports running after Stop")
 	}
-	// 重复停止刷新任务应当成功。
+	// Stopping an already stopped refresh loop is safe.
 	svc.StopRuntimeSettingsRefresh()
 }
 
+// BenchmarkOpsRuntimeSettingsSnapshotRead measures cached monitoring and
+// advanced-value reads after initialization. It reports allocations and retains
+// results globally; storage initialization remains outside the timed benchmark
+// iterations.
 func BenchmarkOpsRuntimeSettingsSnapshotRead(b *testing.B) {
 	svc := &OpsService{}
 	svc.initRuntimeSettings(context.Background())
@@ -260,6 +330,10 @@ func BenchmarkOpsRuntimeSettingsSnapshotRead(b *testing.B) {
 	}
 }
 
+// TestOpsServiceRecordErrorBatch_SanitizesAndBatches supplies two entries with
+// missing defaults and selected JSON/query credentials. It protects one
+// captured prepared batch, explicit status cleanup, raw-list release, and
+// selected redaction/default values.
 func TestOpsServiceRecordErrorBatch_SanitizesAndBatches(t *testing.T) {
 	t.Parallel()
 
@@ -320,6 +394,9 @@ func TestOpsServiceRecordErrorBatch_SanitizesAndBatches(t *testing.T) {
 	require.False(t, second.CreatedAt.IsZero())
 }
 
+// TestOpsServiceRecordErrorBatch_DoesNotFallbackToSingleInsertsWhenBatchFails
+// injects a failed two-entry repository batch. It protects one batch call,
+// returned failure, and zero single-row replay attempts afterward.
 func TestOpsServiceRecordErrorBatch_DoesNotFallbackToSingleInsertsWhenBatchFails(t *testing.T) {
 	t.Parallel()
 
@@ -348,10 +425,16 @@ func TestOpsServiceRecordErrorBatch_DoesNotFallbackToSingleInsertsWhenBatchFails
 	require.Zero(t, singleCalls)
 }
 
+// TestOpsServiceRecordErrorBatch_SkipsFallbackAfterContextCanceled injects an
+// already canceled context and a repository error. It protects returned
+// cancellation, one batch attempt, and no single-row replay for that supplied
+// fixture.
 func TestOpsServiceRecordErrorBatch_SkipsFallbackAfterContextCanceled(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel before service execution so the fixture's batch failure returns that
+	// context error; preparation and the attempted batch still occur as supplied.
 	cancel()
 	var (
 		batchCalls  int
@@ -378,6 +461,10 @@ func TestOpsServiceRecordErrorBatch_SkipsFallbackAfterContextCanceled(t *testing
 	require.Equal(t, 0, singleCalls)
 }
 
+// TestOpsServiceRecordErrorPersistsExplicitProviderAuthStatusZero supplies
+// retained inference followed by credential-failure evidence. It protects
+// provider_auth precedence, explicit upstream zero, cleared stale detail, and
+// both diagnostic events in serialized history.
 func TestOpsServiceRecordErrorPersistsExplicitProviderAuthStatusZero(t *testing.T) {
 	t.Parallel()
 
@@ -426,11 +513,15 @@ func TestOpsServiceRecordErrorPersistsExplicitProviderAuthStatusZero(t *testing.
 	require.Contains(t, *captured.UpstreamErrorsJSON, `"stage":"provider_auth"`)
 }
 
+// strPtr allocates a pointer to the supplied fixture string value.
 func strPtr(v string) *string {
 	return &v
 }
 
-// RuntimeSettingsRefreshHealth 读取配置刷新任务的运行与成功失败计数。
+// RuntimeSettingsRefreshHealth returns test-only separately loaded polling
+// state and attempt counters, with zero fields for nil service. Values are not
+// a common snapshot; tests use Stop joining where consistent completion
+// matters.
 func (s *OpsService) RuntimeSettingsRefreshHealth() OpsRuntimeSettingsRefreshHealth {
 	if s == nil {
 		return OpsRuntimeSettingsRefreshHealth{}
@@ -442,6 +533,9 @@ func (s *OpsService) RuntimeSettingsRefreshHealth() OpsRuntimeSettingsRefreshHea
 	}
 }
 
+// TestIsSensitiveKey_TokenBudgetKeysNotRedacted supplies telemetry budget names
+// and selected credential names. It protects the listed allowlist decisions and
+// credential matching, including the tested case-folded Authorization spelling.
 func TestIsSensitiveKey_TokenBudgetKeysNotRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -482,6 +576,10 @@ func TestIsSensitiveKey_TokenBudgetKeysNotRedacted(t *testing.T) {
 	}
 }
 
+// TestSanitizeAndTrimJSONPayload_PreservesTokenBudgetFields supplies nested
+// thinking budgets and an access token in a fitting JSON body. It protects
+// retained numeric budget fields and replacement of the selected credential
+// value.
 func TestSanitizeAndTrimJSONPayload_PreservesTokenBudgetFields(t *testing.T) {
 	t.Parallel()
 
@@ -513,6 +611,10 @@ func TestSanitizeAndTrimJSONPayload_PreservesTokenBudgetFields(t *testing.T) {
 	}
 }
 
+// TestShrinkToEssentials_IncludesThinking supplies a thinking configuration and
+// a two-element conversation. It protects the presence of the thinking field in
+// the selected essential map; it does not assert conversation truncation or
+// deep copying.
 func TestShrinkToEssentials_IncludesThinking(t *testing.T) {
 	t.Parallel()
 
@@ -535,6 +637,10 @@ func TestShrinkToEssentials_IncludesThinking(t *testing.T) {
 	}
 }
 
+// ListErrorLogs retains the supplied filter and returns one synthetic error
+// with fixed pagination metadata. It ignores context and predicate execution,
+// so tests inspect the captured service selection rather than database
+// ownership enforcement.
 func (s *stubOpsRepoForUserErr) ListErrorLogs(ctx context.Context, f *OpsErrorLogFilter) (*OpsErrorLogList, error) {
 	s.gotFilter = f
 	return &OpsErrorLogList{
@@ -547,6 +653,9 @@ func (s *stubOpsRepoForUserErr) ListErrorLogs(ctx context.Context, f *OpsErrorLo
 	}, nil
 }
 
+// GetErrorLogByID returns the configured error first, otherwise the shared
+// detail pointer. Context and requested ID are ignored; successful user-detail
+// fixtures provide nonnil data for the service's ownership comparison.
 func (s *stubOpsRepoForUserErr) GetErrorLogByID(ctx context.Context, id int64) (*OpsErrorLogDetail, error) {
 	if s.detailErrToReturn != nil {
 		return nil, s.detailErrToReturn
@@ -554,6 +663,10 @@ func (s *stubOpsRepoForUserErr) GetErrorLogByID(ctx context.Context, id int64) (
 	return s.detailToReturn, nil
 }
 
+// TestListUserErrorRequests_ForcesScopeAndRedacts supplies a positive user
+// identity plus a conflicting administrator-style filter. It protects forced
+// selection fields, retained key identity, unchanged caller scalars, and
+// returned category/requested-model display values through a stub.
 func TestListUserErrorRequests_ForcesScopeAndRedacts(t *testing.T) {
 	stub := &stubOpsRepoForUserErr{}
 	svc := &OpsService{opsRepo: stub}
@@ -564,36 +677,42 @@ func TestListUserErrorRequests_ForcesScopeAndRedacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 强制按用户
+	// The stub captures a positive caller identity rather than running SQL. Verify
+	// the service overwrites the selection before checking its other user-facing
+	// restrictions.
 	if stub.gotFilter.UserID == nil || *stub.gotFilter.UserID != uid {
 		t.Fatalf("UserID not forced: %+v", stub.gotFilter.UserID)
 	}
-	// 强制 View=all（含业务限流/余额）
+	// Include business-limit and balance errors.
 	if stub.gotFilter.View != "all" {
 		t.Fatalf("View not forced to all: %q", stub.gotFilter.View)
 	}
-	// 强制排除 count_tokens
+	// Exclude count_tokens probes.
 	if !stub.gotFilter.ExcludeCountTokens {
 		t.Fatal("ExcludeCountTokens not forced")
 	}
-	// 强制清空 Phase（防止 "upstream" 绕过 status>=400 子句 + 与 ErrorPhasesAny 双重约束）
+	// Clear Phase so it cannot bypass status filtering or conflict with category phases.
 	if stub.gotFilter.Phase != "" {
 		t.Fatalf("Phase not cleared: %q", stub.gotFilter.Phase)
 	}
-	// APIKeyID 透传保留（用户可按自己 key 过滤；越权由 user_id AND api_key_id 双重防护）
+	// Retain APIKeyID; the repository combines it with UserID for ownership checks.
 	if stub.gotFilter.APIKeyID == nil || *stub.gotFilter.APIKeyID != kid {
 		t.Fatalf("APIKeyID should be preserved, got %v", stub.gotFilter.APIKeyID)
 	}
-	// 调用方传入的 filter 不应被原地篡改（验证 shallow copy 隔离生效）
+	// The shallow copy must keep the caller's scalar filters unchanged.
 	if in.View != "errors" || in.UserID != nil || in.Phase != "upstream" {
 		t.Fatalf("caller filter was mutated: View=%q UserID=%v Phase=%q", in.View, in.UserID, in.Phase)
 	}
-	// 脱敏：返回条目含 message 字段
+	// Check the sanitized category and requested model.
 	if len(out.Items) != 1 || out.Items[0].Category != "rate_limit" || out.Items[0].Model != "rm" {
 		t.Fatalf("bad item: %+v", out.Items)
 	}
 }
 
+// TestGetUserErrorRequestDetail_OwnershipEnforced supplies one saved owner's
+// diagnostic and calls as another user then the owner. It protects not-found
+// concealment for the other user and retained body/status/message for the
+// owner.
 func TestGetUserErrorRequestDetail_OwnershipEnforced(t *testing.T) {
 	ownerUID := int64(999)
 	callerUID := int64(1)
@@ -619,7 +738,7 @@ func TestGetUserErrorRequestDetail_OwnershipEnforced(t *testing.T) {
 	stub := &stubOpsRepoForUserErr{detailToReturn: detail}
 	svc := &OpsService{opsRepo: stub}
 
-	// 越权调用（callerUID=1,但记录属于 ownerUID=999）→ 应返回 NotFound,detail 为 nil
+	// A different user receives NotFound and no details.
 	got, err := svc.GetUserErrorRequestDetail(context.Background(), callerUID, 42)
 	if err == nil {
 		t.Fatal("expected error for unauthorized access, got nil")
@@ -627,12 +746,12 @@ func TestGetUserErrorRequestDetail_OwnershipEnforced(t *testing.T) {
 	if got != nil {
 		t.Fatalf("expected nil detail for unauthorized access, got %+v", got)
 	}
-	// 其他用户的错误记录返回 NotFound。
+	// Other users' records are reported as missing.
 	if !apperror.IsNotFound(err) {
 		t.Fatalf("expected NotFound error, got: %v", err)
 	}
 
-	// 合法调用（callerUID=999 = ownerUID）→ 应返回 non-nil detail
+	// The owner receives the request details.
 	got2, err2 := svc.GetUserErrorRequestDetail(context.Background(), ownerUID, 42)
 	if err2 != nil {
 		t.Fatalf("expected no error for legitimate access, got %v", err2)
@@ -655,6 +774,9 @@ func TestGetUserErrorRequestDetail_OwnershipEnforced(t *testing.T) {
 	}
 }
 
+// TestGetUserErrorRequestDetail_NotFound injects a missing-row repository error
+// for a positive identity. It protects a failed user-detail lookup with nil
+// returned detail for that supplied absence.
 func TestGetUserErrorRequestDetail_NotFound(t *testing.T) {
 	stub := &stubOpsRepoForUserErr{detailErrToReturn: ErrRowNotFound}
 	svc := &OpsService{opsRepo: stub}
@@ -668,6 +790,9 @@ func TestGetUserErrorRequestDetail_NotFound(t *testing.T) {
 	}
 }
 
+// TestGetUserErrorRequestDetail_InvalidID supplies zero and negative error
+// identities through a configured service. It protects rejection before a
+// successful detail lookup would use the stub's unset detail pointer.
 func TestGetUserErrorRequestDetail_InvalidID(t *testing.T) {
 	stub := &stubOpsRepoForUserErr{}
 	svc := &OpsService{opsRepo: stub}

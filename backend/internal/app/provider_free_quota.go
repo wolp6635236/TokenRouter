@@ -11,14 +11,29 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// selectionFreeQuotaGates 保存两种普通选择流程和高级选择器各自的免费额度缓存。
+// provider_free_quota.go constructs separate free-quota gates for generic,
+// compatible, and advanced selection. Free-quota decisions are cached per
+// selection scope, so loading usage into one gate does not populate another
+// gate's cache. Construction gives generic and compatible selection separate
+// gates and advanced selection a factory, with usage loading, task tracking,
+// and observations shared among them.
+
+// selectionFreeQuotaGates supplies separately cached gates and an advanced-selection gate factory.
 type selectionFreeQuotaGates struct {
-	Generic    *provider.FreeQuotaGate
-	Compatible *provider.FreeQuotaGate
-	Advanced   func() *provider.FreeQuotaGate
+	// Generic, Compatible, and gates returned by Advanced share the options
+	// getter, usage loader, task tracker, and metrics. Each gate owns its cache
+	// and in-flight refresh state; every Advanced call constructs a fresh gate.
+	Generic    *provider.FreeQuotaGate        // generic selection quota
+	Compatible *provider.FreeQuotaGate        // compatible selection quota
+	Advanced   func() *provider.FreeQuotaGate // advanced gate factory
 }
 
-// provideSelectionFreeQuota 绑定免费额度配置和用量来源，缓存及后台任务由额度组件管理。
+// provideSelectionFreeQuota constructs independent quota gates using cfg and
+// the usage reader. The gates use tasks.Go for on-demand refresh work. Nil cfg
+// supplies disabled settings, and a nil reader leaves loading unset; either
+// case lets gate checks return no blocked providers. Supply the application
+// task tracker to own requested refreshes and coordinate cfg writes with gate
+// checks because the options getter retains cfg.
 func provideSelectionFreeQuota(cfg *config.Config, reader usage.UsageLogRepository, tasks *lifecycle.Tasks) *selectionFreeQuotaGates {
 	metrics := &provider.FreeQuotaMetrics{}
 	options := func() provider.FreeQuotaOptions {
@@ -46,6 +61,5 @@ func provideSelectionFreeQuota(cfg *config.Config, reader usage.UsageLogReposito
 			}
 		}, metrics)
 	}
-	// 两种普通选择流程各自使用一份缓存，高级调度器的每个实例也有独立缓存。
 	return &selectionFreeQuotaGates{Generic: factory(), Compatible: factory(), Advanced: factory}
 }

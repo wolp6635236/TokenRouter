@@ -14,12 +14,43 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+// admin_edit.go validates and applies single-provider and bulk configuration
+// edits, including shadow proxy and group updates.
+// Provider edits combine user-selected configuration with credentials and
+// observations that may change after the initial read. UpdateProvider validates
+// a prospective record, then describes the selected fields in
+// ConfigurationChange so configuration-aware storage can merge them into the
+// latest locked record. Internal credential and Extra patches retain their raw
+// key sets for that merge.
+//
+// Configuration saving, parent-to-shadow proxy propagation, and group
+// replacement are separate operations. A later error can leave the earlier
+// changes committed. Bulk editing validates protocol changes for each target
+// before submitting shared scalar and JSON updates, then reports membership
+// failures per requested ID. Service-managed snapshots and quota counters
+// remain controlled by their dedicated writers during configuration
+// replacement.
+
+// UpdateProvider validates an edit and saves its selected configuration fields.
+// Callers supply a nonnil input. In ordinary edits, empty credential maps skip
+// replacement, while explicit empty shadow credentials clear model mapping.
+// Extra distinguishes omission, explicit empty replacement, and deprecated-only
+// input.
+//
+// Configuration-aware stores merge selected fields and omitted secrets against
+// their latest locked record. ExpectedCredentials and nonnil raw maintenance
+// patches require that writer capability. A plain Update adapter receives the
+// prospective configuration record. Proxy propagation and group binding follow
+// as separate calls; a later error can leave prior writes applied, with
+// transaction completion controlled by the supplied store or its outer owner.
 func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProviderInput) (*Record, error) {
 	provider, err := s.providerRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	var expected *CredentialVersion
+	// Freeze the refresh identity before further normalization. The initial check
+	// rejects stale input, and the writer repeats it against the locked row.
 	if input.ExpectedCredentials != nil {
 		frozen := CloneCredentialVersion(*input.ExpectedCredentials)
 		expected = &frozen
@@ -28,6 +59,9 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		}
 	}
 	credentialInput := input.Credentials
+	// Retain submitted credentials separately from the merged validation view.
+	// A nonnil raw map lets storage merge selected keys with values changed
+	// after this read.
 	if input.PatchCredentials {
 		credentialInput = CloneValues(input.Credentials)
 		copy := *input
@@ -35,6 +69,9 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		input = &copy
 	}
 	var extraPatch map[string]any
+	// Validate the merged Extra view separately from raw maintenance input.
+	// A nonnil raw map carries key-merge intent into the latest locked record;
+	// nil carries no raw patch.
 	if input.PatchExtra {
 		extraPatch = CloneValues(input.Extra)
 		copy := *input
@@ -65,23 +102,27 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		}
 	}
 	previousOllamaUsageIdentity := OllamaCloudUsageIdentity(provider)
-	// 安全/身份不变量(影子提供商):通用更新路径被 edit/re-auth/refresh/batch 共用,
-	// 必须在此守住,否则仅在创建时的保证可被这些路径绕过。
+	// Enforce shadow identity rules on the shared update path so editing,
+	// reauthorization, refresh, and batch callers cannot bypass creation checks.
 	if provider.IsCredentialShadow() {
-		// 影子凭据由母提供商管理，不能独立写入。
+		// A shadow resolves authentication through its parent. Reject other
+		// credential keys here so refresh and reauthorization cannot attach a
+		// separate identity.
 		if !IsAllowedSparkShadowCredentialsUpdate(input.Credentials) {
 			return nil, infraerrors.Newf(infraerrors.CategoryBadRequest, "SPARK_SHADOW_NO_CREDENTIALS",
 				"spark shadow providers do not hold auth credentials; only model mapping can be configured on the shadow provider")
 		}
-		// 影子类型必须保持 OAuth。认证转换、ChatGPT Header 和 WS 决策依赖该类型，
-		// 改成 API Key 会使请求按错误协议转发。
+		// Shadows retain their persisted type. Supported Spark creation uses
+		// OAuth, whose authentication rules select ChatGPT headers and WebSocket
+		// handling during forwarding.
 		if input.Type != "" && input.Type != provider.Type {
 			return nil, infraerrors.Newf(infraerrors.CategoryBadRequest, "SPARK_SHADOW_IMMUTABLE_TYPE",
 				"spark shadow provider type cannot be changed; it must remain an OpenAI OAuth shadow")
 		}
 	} else if input.Type != "" && input.Type != provider.Type && input.Type != ProviderTypeOAuth {
-		// 有 Spark 影子的母提供商必须保持 OpenAI OAuth，否则影子无法解析共用凭据。
-		// 修改母提供商类型前必须先删除影子。
+		// A parent with shadows rejects a different non-OAuth type. Same-type
+		// edits retain the persisted type; remove the shadows before converting
+		// an OAuth parent to another authentication type.
 		shadows, serr := s.providerRepo.ListShadowsByParent(ctx, id)
 		if serr != nil {
 			return nil, serr
@@ -111,32 +152,41 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	} else if len(input.Credentials) > 0 {
 		incomingCredentials := PreserveProtocolCredentials(provider.Credentials, input.Credentials)
 		if IsOpenAIAPIKeyProvider(provider) {
-			// 先规范化本次增量，请求中的兼容别名按本次输入覆盖已保存的配置。
+			// Normalize submitted compatibility aliases before merging saved
+			// credentials. Otherwise an echoed modern value could override the
+			// administrator's legacy selection.
 			if err := NormalizeOpenAIAPIKeyConfigurationPatch(incomingCredentials, nil); err != nil {
 				return nil, err
 			}
 		}
-		// 前端拿到脱敏后的凭据，提交完整对象时会省略敏感字段。
-		// 更新时从当前记录补齐这些字段。
+		// The UI receives redacted credentials and omits secrets when
+		// submitting the object. Fill those omitted fields from the current
+		// record.
 		provider.Credentials = MergePreservingSensitiveCreds(provider.Credentials, incomingCredentials)
-		// 校验并规范化请求头覆写配置（header 名小写化、格式检查）
+		// Normalize header spellings after omitted secrets are merged so the saved
+		// override object has one lowercase key for each validated upstream header.
 		if err := egress.NormalizeHeaderOverrideCredentials(provider.Credentials); err != nil {
 			return nil, err
 		}
-		// 移除不得与 OAuth token 一同保存的 SSO 和密码残留。
+		// Remove exchange-only login material after restoring omitted secrets
+		// so credentials saved through an edit contain the resulting tokens
+		// rather than passwords.
 		provider.Credentials = SanitizeStoredCredentials(provider.Platform, provider.Credentials)
 		if err := ValidateGeminiThirdPartyBaseURL(provider); err != nil {
 			return nil, err
 		}
 	}
-	// Extra 为 nil 时保持当前值，空 map 表示清空。
-	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库；只有废弃键时则不替换。
+	// Nil Extra preserves the current value; an empty map clears configurable
+	// fields. Persist extra:{} when quota keys are removed. A patch containing
+	// only deprecated keys is ignored.
 	if shouldReplaceExtra {
 		DiscardDeprecatedProviderExtra(normalizedExtra)
 		if err := NormalizeUpstreamUsageExtra(normalizedExtra); err != nil {
 			return nil, err
 		}
-		// 请求省略查询配置键时，整份 Extra 替换也保持已保存的查询配置。
+		// Usage-query configuration is edited independently. Retain a valid
+		// saved value when a full replacement omits its key, then request
+		// locked-value retention.
 		if _, provided := input.Extra[UpstreamUsageQueryExtraKey]; !provided {
 			if value, exists := provider.Extra[UpstreamUsageQueryExtraKey]; exists {
 				if normalized, ok := NormalizedUpstreamUsageConfigValue(value); ok {
@@ -144,17 +194,28 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 				}
 			}
 		}
+		// An omitted reminder object retains the saved policy; disabling reminders
+		// requires an explicit enabled=false value so unrelated edits cannot erase it.
+		if _, provided := input.Extra[UpstreamBalanceAlertExtraKey]; !provided {
+			if value, exists := provider.Extra[UpstreamBalanceAlertExtraKey]; exists {
+				normalizedExtra[UpstreamBalanceAlertExtraKey] = value
+			}
+		}
 		delete(normalizedExtra, OllamaCloudUsageSessionExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageSnapshotExtraKey)
 		delete(normalizedExtra, CNUsageMonitorSnapshotExtraKey)
-		// 保留配额用量和专用服务受管字段，防止普通提供商编辑意外覆盖。
+		// Retain the initial managed observations for prospective validation.
+		// The configuration writer later substitutes the latest billing and
+		// maintenance values under lock.
 		for _, key := range []string{
 			"quota_used",
 			"quota_daily_used",
 			"quota_daily_start",
 			"quota_weekly_used",
+			"quota_monthly_used",
 			"quota_weekly_start",
+			"quota_monthly_start",
 			"grok_billing_snapshot",
 			OllamaCloudUsageSessionExtraKey,
 			OllamaCloudUsageAutoRefreshExtraKey,
@@ -166,7 +227,9 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 			}
 		}
 		if IsOpenAIAPIKeyProvider(provider) {
-			// 请求省略能力字段时，保持已保存的管理员设置。
+			// Continuation capability has an independent control. Carry its
+			// saved value through validation when omitted, and ask storage to
+			// retain the latest value.
 			_, continuationProvided := input.Extra[ExtraKeyResponsesContinuationSupported]
 			if !continuationProvided {
 				if value, ok := provider.Extra[ExtraKeyResponsesContinuationSupported]; ok {
@@ -177,17 +240,24 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		normalizedExtra = PrepareCodexFingerprintExtraForUpdate(provider, normalizedExtra, s.options.Creation.NewSeed)
 		provider.Extra = normalizedExtra
 		if provider.Platform == PlatformAntigravity && wasOveragesEnabled && !provider.IsOveragesEnabled() {
-			delete(provider.Extra, "antigravity_credits_overages") // 清理旧版 overages 运行态
-			// 清除 AICredits 限流 key
+			delete(provider.Extra, "antigravity_credits_overages")
+			// Disabling overages drops the credit-specific cooldown while
+			// retaining ordinary model limits, whose constraints still apply to
+			// the selected provider.
 			if rawLimits, ok := provider.Extra["model_rate_limits"].(map[string]any); ok {
 				delete(rawLimits, "AICredits")
 			}
 		}
+		// Enabling credit overages changes how existing model cooldowns apply.
+		// Clear the old model-limit view before validating and saving that
+		// configuration change.
 		if provider.Platform == PlatformAntigravity && !wasOveragesEnabled && provider.IsOveragesEnabled() {
 			delete(provider.Extra, "model_rate_limits")
-			delete(provider.Extra, "antigravity_credits_overages") // 清理旧版 overages 运行态
+			delete(provider.Extra, "antigravity_credits_overages")
 		}
-		// 校验并预计算固定时间重置的下次重置时间
+		// Reject invalid reset configuration before deriving windows. Capture
+		// both observation times so the writer can recompute using current
+		// locked usage counters.
 		if err := ValidateQuotaResetConfig(provider.Extra, s.options.Creation.LoadLocation); err != nil {
 			return nil, err
 		}
@@ -201,17 +271,24 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	if input.Extra == nil {
 		provider.Extra = PrepareCodexFingerprintExtraForUpdate(provider, provider.Extra, s.options.Creation.NewSeed)
 	}
-	// 影子代理由母提供商同步，不能独立编辑，否则两次同步之间会出现出站代理不一致。
+	// Parent-owned proxy selection is propagated after saving the parent. Leave
+	// shadow proxy requests out of the field selection so independent edits
+	// retain inheritance.
 	if input.ProxyID != nil && !provider.IsCredentialShadow() {
-		// 0 表示清除代理，前端通过这个值提交清除操作。
 		if *input.ProxyID == 0 {
 			provider.ProxyID = nil
 		} else {
 			provider.ProxyID = input.ProxyID
 		}
-		provider.Proxy = nil // 清除关联对象，防止 GORM Save 时根据 Proxy.ID 覆盖 ProxyID
+		// A changed proxy ID makes the hydrated association stale. Clear it
+		// before credential validation loads the association selected by the
+		// prospective configuration.
+		provider.Proxy = nil
 	}
 	DiscardDeprecatedProviderExtra(provider.Extra)
+	// Interpret supplied legacy protocol selections before normalizing the
+	// unified set, so saved modern fields cannot override an older client's
+	// requested protocol change.
 	ApplyLegacyProtocolPatch(provider, input.Credentials, input.Extra)
 	if err := NormalizeCNProviderCredentials(provider, false); err != nil {
 		return nil, err
@@ -222,6 +299,9 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	if err := NormalizeProviderProtocols(provider); err != nil {
 		return nil, err
 	}
+	// Stored Ollama observations belong to the credentials and proxy that
+	// produced them. Remove them when the prospective identity changes or
+	// leaves that provider kind.
 	if provider.Extra != nil {
 		if !IsOllamaCloudUsageProvider(provider) {
 			delete(provider.Extra, OllamaCloudUsageSessionExtraKey)
@@ -233,12 +313,12 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 			delete(provider.Extra, OllamaCloudUsageSnapshotExtraKey)
 		}
 	}
-	// 只在指针非 nil 时更新 Concurrency（支持设置为 0）
+
 	if input.Concurrency != nil {
 		provider.Concurrency = NormalizeProviderConcurrency(provider.Platform, provider.Type, *input.Concurrency)
 		change.Fields |= ConfigConcurrency
 	}
-	// 只在指针非 nil 时更新 Priority（支持设置为 0）
+
 	if input.Priority != nil {
 		provider.Priority = *input.Priority
 		change.Fields |= ConfigPriority
@@ -250,9 +330,10 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		provider.RateMultiplier = input.RateMultiplier
 		change.Fields |= ConfigRateMultiplier
 	}
+	// Bound scheduler denominators before saving the selected load override.
 	if input.LoadFactor != nil {
 		if *input.LoadFactor <= 0 {
-			provider.LoadFactor = nil // 0 或负数表示清除
+			provider.LoadFactor = nil // Nonpositive values clear the override.
 		} else if *input.LoadFactor > 10000 {
 			return nil, errors.New("load_factor must be <= 10000")
 		} else {
@@ -268,6 +349,7 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		if *input.ExpiresAt <= 0 {
 			provider.ExpiresAt = nil
 		} else {
+			// Convert supplied Unix seconds into a separate expiration time value.
 			expiresAt := time.Unix(*input.ExpiresAt, 0)
 			provider.ExpiresAt = &expiresAt
 		}
@@ -278,13 +360,16 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		change.Fields |= ConfigAutoPauseOnExpired
 	}
 
-	// 先验证分组是否存在（在任何写操作之前）
 	if input.GroupIDs != nil {
 		if err := s.ValidateGroupIDs(ctx, *input.GroupIDs); err != nil {
 			return nil, err
 		}
 	}
 
+	// A site change with the same existing PAT can defer exchange validation.
+	// Compare site and trimmed PAT so a replaced PAT is checked now; an
+	// unreadable original site disables deferral and leaves prospective
+	// validation to check the request.
 	deferQoderPATValidation := false
 	if provider.IsQoder() && originalQoderSiteErr == nil && originalQoderPAT != "" && originalQoderPAT == strings.TrimSpace(provider.GetCredential("pat")) {
 		if currentSite, siteErr := s.options.Credentials.Site(provider); siteErr == nil {
@@ -292,10 +377,16 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		}
 	}
 	s.attachProxyForValidation(ctx, provider)
+	// CN monitor observations belong to one usage identity. A credential or
+	// configuration identity change invalidates that snapshot before
+	// prospective validation.
 	if previousCNUsageIdentity != CNUsageMonitorIdentityFingerprint(provider) && provider.Extra != nil {
 		delete(provider.Extra, CNUsageMonitorSnapshotExtraKey)
 	}
 	if err := s.options.Credentials.ValidateEdit(ctx, provider, deferQoderPATValidation); err != nil {
+		return nil, err
+	}
+	if _, err := BalanceAlertConfiguration(provider); err != nil {
 		return nil, err
 	}
 	change.ExtraPatch = extraPatch
@@ -317,6 +408,9 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	}
 	if shouldReplaceExtra {
 		change.Fields |= ConfigExtra
+		if _, provided := input.Extra[UpstreamBalanceAlertExtraKey]; !provided {
+			change.PreserveExtraKeys = append(change.PreserveExtraKeys, UpstreamBalanceAlertExtraKey)
+		}
 		if _, provided := input.Extra[UpstreamUsageQueryExtraKey]; !provided {
 			change.PreserveExtraKeys = append(change.PreserveExtraKeys, UpstreamUsageQueryExtraKey)
 		}
@@ -324,26 +418,30 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 			change.PreserveExtraKeys = append(change.PreserveExtraKeys, ExtraKeyResponsesContinuationSupported)
 		}
 	}
+	// Submit configuration before propagating proxies or replacing memberships.
+	// A configured ConfigurationWriter merges against the latest row; storage's
+	// transaction owner determines whether the completed call has committed.
 	if err := WriteConfiguration(ctx, s.providerRepo, provider, change); err != nil {
 		return nil, err
 	}
 
-	// 将 proxy 变更传播到 spark 影子提供商（同步；Update 内部已触发调度快照）。
-	// 影子自身 proxy 不可独立编辑(见上),故对影子的更新不触发传播。
+	// Propagate the parent's proxy synchronously after its configuration write.
+	// Shadow updates cannot change the proxy and do not trigger propagation.
 	if input.ProxyID != nil && !provider.IsCredentialShadow() {
 		if err := s.propagateProxyToShadows(ctx, id, provider.ProxyID); err != nil {
 			return nil, err
 		}
 	}
 
-	// 绑定分组
+	// Replace memberships after configuration and any shadow proxy writes. A
+	// binding error stops this method without compensating earlier calls;
+	// storage's transaction owner still controls their commit or rollback.
 	if input.GroupIDs != nil {
 		if err := s.providerRepo.BindGroups(ctx, provider.ID, *input.GroupIDs); err != nil {
 			return nil, err
 		}
 	}
 
-	// 重新查询完整数据，包括更新后的 Proxy 关联对象。
 	updated, err := s.providerRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -351,7 +449,10 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	return updated, nil
 }
 
-// UpdateProviderExtra 按键合并 Extra JSONB，其余运行状态和配置字段保持当前值。
+// UpdateProviderExtra validates and merges a configuration key patch through
+// storage. It filters managed snapshots and caller fingerprint seeds; an empty
+// effective patch succeeds without reading the provider, while OpenAI
+// protocol-related patches require an OpenAI API Key target.
 func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if err := validateResponsesWSConnectionModePatch(updates); err != nil {
 		return err
@@ -361,6 +462,9 @@ func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[s
 	if err := NormalizeUpstreamUsageExtra(updates); err != nil {
 		return err
 	}
+	// Dedicated maintenance APIs own these observations. Discard submitted
+	// snapshot keys so a configuration patch cannot install usage or session
+	// state from a client.
 	delete(updates, OllamaCloudUsageSessionExtraKey)
 	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(updates, OllamaCloudUsageSnapshotExtraKey)
@@ -383,16 +487,48 @@ func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[s
 	if len(updates) == 0 {
 		return nil
 	}
+	if _, supplied := updates[UpstreamBalanceAlertExtraKey]; supplied {
+		current, err := s.providerRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		prospective := CloneRecord(current)
+		if prospective.Extra == nil {
+			prospective.Extra = map[string]any{}
+		}
+		maps.Copy(prospective.Extra, updates)
+		if _, err := BalanceAlertConfiguration(prospective); err != nil {
+			return err
+		}
+		return WriteConfiguration(ctx, s.providerRepo, prospective, ConfigurationChange{Fields: ConfigExtra, ExtraPatch: updates})
+	}
 	return s.providerRepo.UpdateExtra(ctx, id, updates)
 }
 
-// BulkUpdateProviders 在单次请求中更新多个提供商。
-// 凭据和 extra 使用键级合并，不覆盖整个对象。
+// BulkUpdateProviders validates a shared configuration patch and updates its
+// selected providers. Callers supply a nonnil input. Explicit ProviderIDs take
+// precedence over Filters, and the resolved ID sequence determines the returned
+// membership outcomes. Normalization can replace or modify input maps, and
+// filter resolution installs ProviderIDs before later validation completes.
+//
+// The shared configuration write precedes shadow proxy propagation and
+// per-provider group binding. A propagation error returns after configuration
+// has been written, subject to storage's transaction completion; membership
+// errors are reported individually while other bindings continue. Credentials
+// and Extra merge by key, and a nonpositive administrative LoadFactor is omitted
+// from the storage patch.
+//
+// Storage's affected-row count is ignored. Requested IDs are reported successful
+// when their binding stage has no error, including an unmatched ID when no
+// binding is requested. Results therefore counts requested outcomes, not rows
+// changed by the shared update.
 func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvidersInput) (*BulkUpdateProvidersResult, error) {
 	if err := validateResponsesWSConnectionModePatch(input.Extra); err != nil {
 		return nil, err
 	}
-	// 受管会话状态只能通过专用类型接口更新，废弃提供商扩展字段直接丢弃。
+	// Dedicated maintenance owns session and monitor snapshots. Filter those
+	// keys and obsolete configuration before resolving targets or preparing a
+	// shared JSON patch.
 	input.Extra = SanitizedCodexFingerprintExtraUpdates(input.Extra)
 	DiscardDeprecatedProviderExtra(input.Extra)
 	if err := NormalizeUpstreamUsageExtra(input.Extra); err != nil {
@@ -430,15 +566,36 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 		return nil, err
 	}
 
-	// 一次预取全部目标提供商，供凭据和代理校验共用。
 	var cachedTargets []*Record
 	hasOpenAIConfigPatch := HasOpenAIConfigurationPatch(input.Credentials, input.Extra)
-	if len(input.Credentials) > 0 || input.ProxyID != nil || hasOpenAIConfigPatch {
+	_, hasBalanceAlertPatch := input.Extra[UpstreamBalanceAlertExtraKey]
+	if len(input.Credentials) > 0 || input.ProxyID != nil || hasOpenAIConfigPatch || hasBalanceAlertPatch {
 		loaded, err := s.providerRepo.GetByIDs(ctx, input.ProviderIDs)
 		if err != nil {
 			return nil, err
 		}
 		cachedTargets = loaded
+	}
+	if hasBalanceAlertPatch || len(input.Credentials) > 0 {
+		// Validate every target before writing the shared patch, since wallet
+		// eligibility can differ between platforms and change with provider mode.
+		for _, target := range cachedTargets {
+			if target == nil {
+				continue
+			}
+			prospective := CloneRecord(target)
+			if prospective.Extra == nil {
+				prospective.Extra = map[string]any{}
+			}
+			if prospective.Credentials == nil {
+				prospective.Credentials = map[string]any{}
+			}
+			maps.Copy(prospective.Extra, input.Extra)
+			maps.Copy(prospective.Credentials, input.Credentials)
+			if _, err := BalanceAlertConfiguration(prospective); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if hasOpenAIConfigPatch {
 		targetsByID := make(map[int64]*Record, len(cachedTargets))
@@ -466,8 +623,9 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 			return nil, err
 		}
 	}
-	// 批量写入凭据时，目标不能包含影子。
-	// ProviderIDs 包含请求传入的 ID 和筛选结果中的 ID。
+	// A common credential patch would give a shadow a separate authentication
+	// identity. Reject every such target before the shared write can affect its
+	// parent.
 	if len(input.Credentials) > 0 {
 		for _, acc := range cachedTargets {
 			if acc != nil && acc.IsCredentialShadow() {
@@ -477,8 +635,9 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 		}
 	}
 
-	// 批量代理更新拒绝影子提供商，影子的代理通过母提供商更新。
-	// 含影子时拒绝整批更新，要求调用方先将影子移出目标集合。
+	// Shared proxy patches cannot independently alter a shadow's inherited
+	// proxy. Reject a shadow target before saving; parent-targeted changes
+	// propagate afterward.
 	if input.ProxyID != nil {
 		for _, acc := range cachedTargets {
 			if acc != nil && acc.IsCredentialShadow() {
@@ -494,14 +653,21 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 		}
 	}
 
-	// 校验并规范化请求头覆写配置（批量路径为 JSONB 顶层 key 合并，直接校验增量即可）
+	// Bulk storage merges top-level credential keys. Validate and lowercase
+	// this submitted header object before it replaces the stored object at that
+	// JSON key.
 	if err := egress.NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
-	// 批量更新可能混合平台，因此始终移除临时 SSO、密码和 cookie 字段。
+	// A batch can span platforms. Use cross-platform credential sanitization so
+	// exchange-only SSO, passwords, and cookies cannot survive in any target's
+	// stored patch.
 	if input.Credentials != nil {
 		input.Credentials = SanitizeStoredCredentials("", input.Credentials)
 	}
+	// Normalize a prospective copy for every target before writing common keys.
+	// Store its protocol patch alongside the common update so legacy fields
+	// converge together.
 	protocolUpdates := map[int64]map[string]any{}
 	if len(input.Credentials) > 0 || hasOpenAIConfigPatch {
 		for _, provider := range cachedTargets {
@@ -536,7 +702,6 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 		}
 	}
 
-	// Prepare bulk updates for columns and JSONB fields.
 	repoUpdates := ProviderBulkUpdate{
 		ProtocolUpdates:            protocolUpdates,
 		Credentials:                input.Credentials,
@@ -558,9 +723,10 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 	if input.RateMultiplier != nil {
 		repoUpdates.RateMultiplier = input.RateMultiplier
 	}
+	// Bound scheduler denominators before saving the selected load override.
 	if input.LoadFactor != nil {
 		if *input.LoadFactor <= 0 {
-			repoUpdates.LoadFactor = nil // 0 或负数表示清除
+			repoUpdates.LoadFactor = nil // Nonpositive values produce a nil patch, leaving the stored override unchanged.
 		} else if *input.LoadFactor > 10000 {
 			return nil, errors.New("load_factor must be <= 10000")
 		} else {
@@ -574,12 +740,16 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 		repoUpdates.Schedulable = input.Schedulable
 	}
 
-	// Run bulk update for column/jsonb fields first.
+	// Submit shared configuration before proxy propagation and membership writes.
+	// This method does not compensate that call after a later failure; a store
+	// participating in an outer transaction leaves rollback to its owner.
 	if _, err := s.providerRepo.BulkUpdate(ctx, input.ProviderIDs, repoUpdates); err != nil {
 		return nil, err
 	}
 
-	// 将 proxy 变更传播到每个目标提供商的 spark 影子提供商
+	// Parent proxy selection has saved already. Propagate it synchronously so
+	// credential shadows resolve the same proxy; stop on failure while
+	// retaining earlier writes.
 	if repoUpdates.ProxyID != nil {
 		var effectiveProxyID *int64
 		if *repoUpdates.ProxyID != 0 {
@@ -592,7 +762,9 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 		}
 	}
 
-	// Handle group bindings per provider (requires individual operations).
+	// Membership writes can fail independently after shared configuration
+	// succeeds. Record each failure against its requested ID and continue
+	// binding the remaining providers.
 	for _, providerID := range input.ProviderIDs {
 		entry := BulkUpdateProviderResult{ProviderID: providerID}
 
@@ -616,6 +788,9 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 	return result, nil
 }
 
+// resolveBulkUpdateTargetIDs reads matching provider IDs in pages for
+// filter-target batches. A nil filter returns nil IDs; Group accepts an empty
+// value, ungrouped, or a trimmed decimal identifier.
 func (s *Admin) resolveBulkUpdateTargetIDs(ctx context.Context, filters *BulkUpdateProviderFilters) ([]int64, error) {
 	if filters == nil {
 		return nil, nil
@@ -634,6 +809,7 @@ func (s *Admin) resolveBulkUpdateTargetIDs(ctx context.Context, filters *BulkUpd
 		groupID = parsedGroupID
 	}
 
+	// Bound each filter query while collecting all matching IDs for the batch.
 	const pageSize = 500
 	page := 1
 	providerIDs := make([]int64, 0, pageSize)

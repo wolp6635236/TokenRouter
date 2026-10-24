@@ -6,19 +6,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 )
 
-// UpstreamTransport 接收一次请求的代理、隔离键及 TLS 技术参数。
-// 实现仍负责闭合执行和响应体关闭后的连接池释放，不接收业务实体。
+// upstream_transport.go defines the gateway interface for ordinary and
+// fingerprinted upstream requests.
+// Gateway transport callers supply the selected proxy, provider identity, and
+// optional TLS profile for each request. Implementations reserve their
+// connection-pool entry through the response lifetime, so a successful caller
+// closes the body after reading or abandoning it.
+
+// UpstreamTransport executes requests with proxy, isolation, and TLS settings.
+// Callers close response bodies to release pool reservations.
 type UpstreamTransport interface {
-	// Do 执行 HTTP 请求（不启用 TLS 指纹）
+	// Do executes req with the selected proxy and provider pool settings.
+	// Errors end the request attempt; after success, callers close the body to
+	// release any pool reservation held by the implementation.
 	Do(req *http.Request, proxyURL string, providerID int64, providerConcurrency int) (*http.Response, error)
 
-	// DoWithTLS 执行带 TLS 指纹伪装的 HTTP 请求
-	//
-	// profile 参数:
-	//   - nil: 不启用 TLS 指纹，行为与 Do 方法相同
-	//   - non-nil: 使用指定的 Profile 进行 TLS 指纹伪装
-	//
-	// Profile 由调用方通过 TLSFingerprintProfileService 解析后传入，
-	// 支持按提供商绑定的数据库 profile 或内置默认 profile。
+	// DoWithTLS executes req with the selected fingerprint and provider pool
+	// settings. A nil profile selects the ordinary Do path; callers close a
+	// successful response body to release the implementation's pool reservation.
 	DoWithTLS(req *http.Request, proxyURL string, providerID int64, providerConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error)
 }

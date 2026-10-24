@@ -5,6 +5,14 @@ import (
 	"testing"
 )
 
+// Published model IDs are compared as the sorted union expected by the request
+// catalogue. Local import conversion is checked separately with supplied
+// identity fields, keeping catalogue membership independent of the private token
+// representation used for session creation.
+
+// TestDefaultModels compares the sorted public model union with the expected
+// alias set. It checks count and every sorted entry, catching missing,
+// duplicated, or unexpected model names.
 func TestDefaultModels(t *testing.T) {
 	ids := DefaultRequestModelIDs()
 	want := []string{
@@ -16,7 +24,6 @@ func TestDefaultModels(t *testing.T) {
 		"qwen3.8-max",
 		"qwen3.7-max",
 		"qwen3.7-plus",
-		// 默认模型接口需要列出这些路由。
 		"kimi-k3",
 		"kimi-k2.7-code",
 		"glm-5.3",
@@ -38,6 +45,9 @@ func TestDefaultModels(t *testing.T) {
 	}
 }
 
+// TestLocalAuthInfoToIdentity converts a local fixture with an existing COSY
+// security token. It checks the name, UID, and chosen token in the resulting
+// session identity.
 func TestLocalAuthInfoToIdentity(t *testing.T) {
 	info := &AuthInfo{
 		Name:               "test user",

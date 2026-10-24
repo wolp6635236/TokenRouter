@@ -2,16 +2,29 @@ package scheduler
 
 import "context"
 
-// RPMCache RPM 计数器缓存接口
-// 用于 Anthropic OAuth/SetupToken 提供商的每分钟请求数限制。
+// rpm_cache.go defines provider request-count reads and increments for
+// scheduler RPM admission.
+// Provider RPM admission reads a soft count for the current minute and records
+// requests through a separate increment. The Redis adapter uses its server
+// clock so all instances address the same minute bucket for each observation.
+
+// RPMCache reads and increments minute counters used by provider RPM
+// admission.
 type RPMCache interface {
-	// IncrementRPM 原子递增并返回当前分钟的计数
-	// minute key 使用 Redis 服务器时间，各实例共用同一个分钟窗口。
+	// IncrementRPM records one provider request and returns the updated
+	// minute count. Redis resolves the minute using server time and
+	// refreshes counter expiry when incrementing; callers handle storage
+	// failures.
 	IncrementRPM(ctx context.Context, providerID int64) (count int, err error)
 
-	// GetRPM 获取当前分钟的 RPM 计数
+	// GetRPM reads the provider's current minute count without
+	// incrementing it. An absent Redis key returns zero; storage failures
+	// remain errors so admission callers can choose their failure policy.
 	GetRPM(ctx context.Context, providerID int64) (count int, err error)
 
-	// GetRPMBatch 批量获取多个提供商的 RPM 计数（使用 Pipeline）
+	// GetRPMBatch reads counts for the supplied provider IDs using one
+	// minute observation. Empty input returns an empty map; the Redis
+	// adapter reports a batch failure and treats unavailable individual
+	// values as zero.
 	GetRPMBatch(ctx context.Context, providerIDs []int64) (map[int64]int, error)
 }

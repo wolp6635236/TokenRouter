@@ -1,16 +1,21 @@
-// Package postgres 持久化用户、认证身份、待完成登录会话和分组授权。
+// Package postgres stores accounts, provider identities, browser pending
+// state, and account group grants. Its adapters join caller transactions where
+// their operations support participation, while account and pending workflows
+// own the required ordering, rollback, and stored-row checks before
+// completion.
 //
-// 阅读入口：
-//   - user_repo.go：用户资料、邮箱查重、分组授权和余额操作。
-//   - auth_state.go：注册和登录时的认证身份写入。
-//   - pending.go：待完成登录会话、完成码和资料采纳选择。
+// Begin with user_repo.go for accounts, email uniqueness, grants, and balance
+// operations, auth_state.go for registration and login writes, and pending.go
+// for browser sessions, completion codes, and adoption choices.
 //
-// 文件分组：
-//   - user_*.go：用户仓储、身份绑定、属性定义和实体转换。
-//   - auth_*.go、oauth_lookup.go：注册登录的数据操作与 OAuth 身份查询。
-//   - pending*.go：登录会话管理、身份绑定和资料采纳。
-//   - admin_mutations.go、bootstrap_admin.go：管理员初始化及后台用户操作。
-//   - group_access_*.go：在调用方事务中添加或删除分组授权。
-//   - passkey.go：Passkey 凭据的保存、查询和更新。
-//   - concurrency.go、risk_status.go：并发额度修改与风控禁用状态写入。
+// The user_*.go group contains profile and attribute repositories, identity
+// bindings, and entity conversion. auth_*.go and oauth_lookup.go support
+// registration, login, and provider lookup. pending*.go implements session
+// state, binding, and profile adoption.
+//
+// admin_mutations.go and bootstrap_admin.go implement administrative account
+// writes and initial administrator creation. group_access_*.go participates in
+// caller transactions for grant changes. passkey.go stores WebAuthn
+// credentials; concurrency.go and risk_status.go write allowance and
+// account-disable state.
 package postgres

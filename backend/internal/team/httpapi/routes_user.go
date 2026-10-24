@@ -2,7 +2,18 @@ package httpapi
 
 import "github.com/gin-gonic/gin"
 
-// RegisterUserRoutes 注册所属用户接口，共享鉴权、限流和审计已由 app 安装。
+// routes_user.go registers authenticated team endpoints and applies step-up
+// checks to selected sensitive actions.
+// Current-user team routes inherit the caller's authentication, rate limiting
+// and auditing middleware. Selected ownership/status/teardown operations
+// additionally use the supplied step-up handler, while endpoint methods pass
+// the authenticated account to the service for team permissions.
+
+// RegisterUserRoutes binds current-user team endpoints beneath the
+// authenticated group. Assembly installs authentication, rate limits and
+// auditing first; supplied stepUp guards status, dissolution and
+// ownership-transfer start/resolve/cancel, while the service authorizes team
+// roles for each action.
 func RegisterUserRoutes(authenticated *gin.RouterGroup, endpoint *UserHandler, stepUp gin.HandlerFunc) {
 	team := authenticated.Group("/team")
 	{

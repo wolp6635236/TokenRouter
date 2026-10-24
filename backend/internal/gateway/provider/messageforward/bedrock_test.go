@@ -13,6 +13,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+// TestResolveBedrockBetaTokensForRequest_BlocksOnOriginalAnthropicToken
+// supplies an Anthropic beta that policy blocks before Bedrock conversion.
+// Request preparation returns the configured block message even though the
+// platform later translates tokens.
 func TestResolveBedrockBetaTokensForRequest_BlocksOnOriginalAnthropicToken(t *testing.T) {
 	settings := &anthropic.BetaPolicySettings{
 		Rules: []anthropic.BetaPolicyRule{
@@ -47,6 +51,10 @@ func TestResolveBedrockBetaTokensForRequest_BlocksOnOriginalAnthropicToken(t *te
 	}
 }
 
+// TestResolveBedrockBetaTokensForRequest_FiltersAfterBedrockTransform filters
+// the Bedrock tool-search token produced from an Anthropic beta. The translated
+// removal target disappears from the result while request preparation completes
+// successfully.
 func TestResolveBedrockBetaTokensForRequest_FiltersAfterBedrockTransform(t *testing.T) {
 	settings := &anthropic.BetaPolicySettings{
 		Rules: []anthropic.BetaPolicyRule{
@@ -82,9 +90,9 @@ func TestResolveBedrockBetaTokensForRequest_FiltersAfterBedrockTransform(t *test
 	}
 }
 
-// TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedComputerUse 验证：
-// 管理员 block 了 computer-use，客户端不在 header 中带该 token，
-// 但请求体包含 computer_use 工具 → 自动注入后应被 block。
+// TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedComputerUse
+// supplies a computer-use tool with an empty beta header. Preparation returns
+// the policy block message for the beta inferred from the body tool.
 func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedComputerUse(t *testing.T) {
 	settings := &anthropic.BetaPolicySettings{
 		Rules: []anthropic.BetaPolicyRule{
@@ -104,11 +112,11 @@ func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedComputerUse(t 
 	svc := NewRuntime(Dependencies{Settings: newBetaRuntime(map[string]string{gateway.SettingKeyBetaPolicySettings: string(raw)})}, Options{})
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeBedrock}}
 
-	// header 中不带 beta token，但 body 中有 computer_use 工具
+	// The body supplies the tool while the header omits its beta.
 	_, err = svc.bedrockBetaTokens(
 		context.Background(),
 		provider,
-		"", // 空 header
+		"", // Empty beta header.
 		[]byte(`{"tools":[{"type":"computer_20250124","name":"computer"}],"messages":[{"role":"user","content":"hi"}]}`),
 		"us.anthropic.claude-opus-4-6-v1",
 	)
@@ -120,9 +128,9 @@ func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedComputerUse(t 
 	}
 }
 
-// TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedToolSearch 验证：
-// 管理员 block 了 tool-search-tool，客户端不在 header 中带 beta token，
-// 但请求体包含 tool search 工具 → 自动注入后应被 block。
+// TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedToolSearch
+// supplies a tool-search body tool with an empty beta header. The configured
+// block message is returned for the platform token inferred during preparation.
 func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedToolSearch(t *testing.T) {
 	settings := &anthropic.BetaPolicySettings{
 		Rules: []anthropic.BetaPolicyRule{
@@ -142,7 +150,7 @@ func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedToolSearch(t *
 	svc := NewRuntime(Dependencies{Settings: newBetaRuntime(map[string]string{gateway.SettingKeyBetaPolicySettings: string(raw)})}, Options{})
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeBedrock}}
 
-	// header 中不带 beta token，但 body 中有 tool_search_tool 工具
+	// The body supplies tool search while the header omits its beta.
 	_, err = svc.bedrockBetaTokens(
 		context.Background(),
 		provider,
@@ -158,8 +166,10 @@ func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedToolSearch(t *
 	}
 }
 
-// TestResolveBedrockBetaTokensForRequest_PassesWhenNoBlockRuleMatches 验证：
-// body 自动注入的 token 如果没有对应的 block 规则，应正常通过。
+// TestResolveBedrockBetaTokensForRequest_PassesWhenNoBlockRuleMatches blocks
+// context-1m while the body requests a computer-use tool. The resolved
+// computer-use beta remains in the result because its token has no matching
+// block rule.
 func TestResolveBedrockBetaTokensForRequest_PassesWhenNoBlockRuleMatches(t *testing.T) {
 	settings := &anthropic.BetaPolicySettings{
 		Rules: []anthropic.BetaPolicyRule{
@@ -179,7 +189,7 @@ func TestResolveBedrockBetaTokensForRequest_PassesWhenNoBlockRuleMatches(t *test
 	svc := NewRuntime(Dependencies{Settings: newBetaRuntime(map[string]string{gateway.SettingKeyBetaPolicySettings: string(raw)})}, Options{})
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeBedrock}}
 
-	// body 中有 computer_use 工具（会注入 computer-use token），但 block 规则只针对 context-1m
+	// The body injects computer-use, but the block rule targets context-1m.
 	tokens, err := svc.bedrockBetaTokens(
 		context.Background(),
 		provider,

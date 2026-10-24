@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestImageByteDefaultsRemainCompatible 检查原始 Base64 图片的解码和媒体类型。
+// TestImageByteDefaultsRemainCompatible supplies an unpadded standard-base64
+// payload with a PNG prefix. It checks the decoded fixture bytes and PNG label
+// returned to image consumers.
 func TestImageByteDefaultsRemainCompatible(t *testing.T) {
 	data := []byte("\x89PNG\r\n\x1a\nfixture")
 	decoded, err := DecodeBase64Image(base64.RawStdEncoding.EncodeToString(data))

@@ -13,18 +13,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// stubChatGPTHeadersRepo 是最小化 ProviderRepository stub，仅实现 GetByID，
-// 供 TestResolveAndSetOpenAIChatGPTAccountHeaders 使用。
+// stubChatGPTHeadersRepo supplies ID-indexed parent targets for ChatGPT header
+// tests.
 type stubChatGPTHeadersRepo struct {
+	// ExecutionProviderStore leaves unused operations unimplemented; tests must
+	// call only the fixture's GetByID override when resolving credential parents.
 	ExecutionProviderStore
 
-	byID map[int64]*ExecutionProvider
+	byID map[int64]*ExecutionProvider // parent targets by ID
 }
 
+// GetByID returns the configured execution target for id, with nil for missing
+// entries. Other repository operations are left on the embedded interface and
+// must stay unused in these header tests.
 func (r *stubChatGPTHeadersRepo) GetByID(_ context.Context, id int64) (*ExecutionProvider, error) {
 	return r.byID[id], nil
 }
 
+// TestResolveAndSetOpenAIChatGPTAccountHeaders constructs ordinary and shadow
+// OAuth execution targets with different account IDs. Header application uses
+// the parent account for shadows and the ordinary target's own account
+// otherwise.
 func TestResolveAndSetOpenAIChatGPTAccountHeaders(t *testing.T) {
 	ctx := context.Background()
 	pid := int64(100)
@@ -75,24 +84,27 @@ func TestResolveAndSetOpenAIChatGPTAccountHeaders(t *testing.T) {
 	})
 }
 
+// TestResolveCredentialProvider resolves an ordinary OAuth target and a shadow
+// sharing its parent ID. It checks the returned provider IDs and rejects an
+// API Key record offered as the shadow parent.
 func TestResolveCredentialProvider(t *testing.T) {
 	ctx := context.Background()
 	pid := int64(100)
 
-	// 普通提供商（非影子）→ 返回自身
+	// An ordinary provider resolves to itself.
 	parent := &ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 100, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth, Status: billing.StatusActive}}
 	repo := newStubCredRepo(parent)
 	got, err := CredentialProvider(ctx, repo, parent)
 	require.NoError(t, err)
 	require.Equal(t, int64(100), got.Record.ID)
 
-	// 影子提供商 + 合法 OpenAI OAuth 母提供商 → 返回母提供商
+	// A shadow resolves to its OpenAI OAuth parent.
 	shadow := &ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 200, ParentProviderID: &pid, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth}}
 	got, err = CredentialProvider(ctx, repo, shadow)
 	require.NoError(t, err)
 	require.Equal(t, int64(100), got.Record.ID)
 
-	// 影子提供商 + 母提供商非 OpenAI OAuth（API Key 类型）→ 返回 error
+	// An API Key parent is invalid for an OAuth shadow.
 	badRepo := newStubCredRepo(&ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 100, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}})
 	_, err = CredentialProvider(ctx, badRepo, shadow)
 	require.Error(t, err)

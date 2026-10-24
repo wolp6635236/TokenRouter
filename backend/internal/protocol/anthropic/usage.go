@@ -1,27 +1,39 @@
 package anthropic
 
-// ClaudeUsageWindow Anthropic /api/oauth/usage 返回的单个用量窗口。
+// usage.go represents rolling quota observations returned by the Claude OAuth
+// usage endpoint.
+// Claude's OAuth usage endpoint reports utilization and reset timestamps for
+// several rolling quota windows. The wire response retains the timestamp text
+// for provider-side parsing, where the five-hour window is displayed even when
+// its reset time is absent and optional weekly windows require reset information.
+
+// ClaudeUsageWindow is one window returned by Anthropic /api/oauth/usage.
 type ClaudeUsageWindow struct {
-	Utilization float64 `json:"utilization"`
-	ResetsAt    string  `json:"resets_at"`
+	Utilization float64 `json:"utilization"` // percent
+	ResetsAt    string  `json:"resets_at"`   // upstream reset timestamp
 }
 
-// ClaudeUsageResponse Anthropic API 返回的 usage 结构。
+// ClaudeUsageResponse holds rolling quota observations returned by Claude's usage endpoint.
 type ClaudeUsageResponse struct {
+	// FiveHour supplies the short quota window; BuildUsageInfo includes its
+	// utilization even when the upstream omits the corresponding reset timestamp.
 	FiveHour struct {
-		Utilization float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
+		Utilization float64 `json:"utilization"` // percent
+		ResetsAt    string  `json:"resets_at"`   // upstream reset timestamp
 	} `json:"five_hour"`
+	// SevenDay supplies the general weekly quota window; BuildUsageInfo includes
+	// this window when its reset timestamp is present in the response.
 	SevenDay struct {
-		Utilization float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
+		Utilization float64 `json:"utilization"` // percent
+		ResetsAt    string  `json:"resets_at"`   // upstream reset timestamp
 	} `json:"seven_day"`
+	// SevenDaySonnet supplies the Sonnet weekly quota; BuildUsageInfo includes
+	// this window when its reset timestamp is present in the response.
 	SevenDaySonnet struct {
-		Utilization float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
+		Utilization float64 `json:"utilization"` // percent
+		ResetsAt    string  `json:"resets_at"`   // upstream reset timestamp
 	} `json:"seven_day_sonnet"`
-	// Fable 专属 7d 窗口（对应响应头 7d_oi，claim 名为 seven_day_overage_included，
-	// 见 anthropic-ratelimit-unified-representative-claim 头）。上游 usage API
-	// 若不下发该字段，GetUsage 会用被动采样数据回填。
+	// SevenDayOverageIncluded holds the weekly Fable observation, corresponding
+	// to the 7d_oi header window. BuildUsageInfo exposes it when ResetsAt is present.
 	SevenDayOverageIncluded ClaudeUsageWindow `json:"seven_day_overage_included"`
 }

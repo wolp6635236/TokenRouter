@@ -7,14 +7,37 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// CRSAuthorization 按平台补全导入凭据。
+// crs_authorization.go selects post-import OAuth exchanges and builds
+// replacement credentials for CRS imports.
+// CRS imports can save a provider before its OAuth token has been refreshed.
+// Post-import exchange therefore returns replacement credentials separately
+// from import success, and an exchange failure leaves the saved provider
+// available for later maintenance.
+//
+// Platform builders replace token fields while retaining omitted stored
+// metadata, with inherited nested values remaining shared until
+// supported-container copying. The coordinated callback uses platform lock keys
+// and RefreshImported to reread and compare persisted identity before saving.
+// Missing platform clients skip exchange. That persistent owner observes
+// cancellation and competing administrator changes, while this selector keeps
+// each platform's map construction rules.
+
+// CRSAuthorization selects post-import OAuth exchanges for Anthropic, OpenAI,
+// and Gemini records.
 type CRSAuthorization struct {
-	Claude *ClaudeAuthorization
-	OpenAI *OpenAIAuthorization
-	Gemini *GeminiAuthorization
+	// Claude, OpenAI, and Gemini are optional platform clients for callback
+	// selection and exchange. A missing client makes its platform a
+	// successful
+	// skip before exchange is attempted.
+	Claude *ClaudeAuthorization // Anthropic post-import token exchange
+	OpenAI *OpenAIAuthorization // OpenAI post-import token exchange
+	Gemini *GeminiAuthorization // Gemini post-import token exchange
 }
 
-// Coordinated 复用导入路径的原锁键与条件写入，不改变导入的状态资格。
+// Coordinated returns a refresh callback using each supported platform's normal
+// lock key and RefreshImported persistence. Callers supply a nonnil record and
+// coordinator when the platform client exists; Gemini also requires its key
+// callback. Missing clients or unsupported platforms skip successfully.
 func (s *CRSAuthorization) Coordinated(coordinator *OAuthRefreshAPI, geminiKey func(*Record) string) func(context.Context, *Record) error {
 	return func(ctx context.Context, record *Record) error {
 		var key string
@@ -41,7 +64,18 @@ func (s *CRSAuthorization) Coordinated(coordinator *OAuthRefreshAPI, geminiKey f
 	}
 }
 
-// Refresh 保留导入的尽力交换，失败不改变已落库的同步结果。
+// Refresh exchanges an imported OAuth record and returns replacement
+// credentials or nil when skipped or failed. Callers supply a nonnil record; it
+// does not persist the returned map. Coordinated delegates persistence and
+// identity comparison to RefreshImported after the import has already been
+// accepted.
+//
+// Anthropic copies existing top-level values before replacing returned token
+// fields, retaining absent refresh token or scope. OpenAI and Gemini build
+// replacement fields first and inherit stored keys the response omitted.
+// Inherited nested values stay shared; the coordinator copies supported
+// containers before writing. Exchange failure becomes nil so import success
+// remains independent of refresh success.
 func (s *CRSAuthorization) Refresh(ctx context.Context, provider *Record) map[string]any {
 	if provider.Type != capability.ProviderTypeOAuth {
 		return nil
@@ -59,10 +93,14 @@ func (s *CRSAuthorization) Refresh(ctx context.Context, provider *Record) map[st
 		if refreshErr != nil {
 			err = refreshErr
 		} else {
-			// 保留现有非令牌配置。
+			// Begin from stored values so omitted refresh token,
+			// scope, and
+			// provider metadata remain available when this exchange
+			// supplies
+			// replacement token fields.
 			newCredentials = make(map[string]any)
 			maps.Copy(newCredentials, provider.Credentials)
-			// 覆盖本次返回的令牌字段。
+			// Apply token fields returned by this exchange.
 			newCredentials["access_token"] = tokenInfo.AccessToken
 			newCredentials["token_type"] = tokenInfo.TokenType
 			newCredentials["expires_in"] = tokenInfo.ExpiresIn
@@ -83,7 +121,11 @@ func (s *CRSAuthorization) Refresh(ctx context.Context, provider *Record) map[st
 			err = refreshErr
 		} else {
 			newCredentials = BuildOpenAIProviderCredentials(tokenInfo)
-			// 保留响应未覆盖的非令牌配置。
+			// The builder owns returned token fields; inherit
+			// absent keys so
+			// saved platform metadata remains available without
+			// overriding the
+			// exchange response.
 			for k, v := range provider.Credentials {
 				if _, exists := newCredentials[k]; !exists {
 					newCredentials[k] = v
@@ -99,6 +141,10 @@ func (s *CRSAuthorization) Refresh(ctx context.Context, provider *Record) map[st
 			err = refreshErr
 		} else {
 			newCredentials = s.Gemini.BuildProviderCredentials(tokenInfo)
+			// Gemini metadata can replace token fields in its
+			// builder; retain that
+			// completed map precedence while inheriting only stored
+			// keys it omitted.
 			for k, v := range provider.Credentials {
 				if _, exists := newCredentials[k]; !exists {
 					newCredentials[k] = v
@@ -110,7 +156,10 @@ func (s *CRSAuthorization) Refresh(ctx context.Context, provider *Record) map[st
 	}
 
 	if err != nil {
-		// 刷新失败不改变已完成的同步结果。
+		// Refresh is post-import maintenance; nil skips credential
+		// persistence
+		// so a failed exchange cannot change the accepted import item
+		// outcome.
 		return nil
 	}
 

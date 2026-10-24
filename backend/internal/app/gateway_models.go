@@ -18,22 +18,36 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
-// geminiModelReadTarget 保存本次选中的提供商，供模型资源查询使用。
+// gateway_models.go constructs model-list HTTP handlers and adapts selected
+// Gemini providers for model-resource reads.
+// Model HTTP display combines requestable routing data with catalog metadata.
+// Gemini resource reads use a selected provider and return its status, headers,
+// and body, while catalog absence is represented as a nil reader interface for
+// optional display enrichment.
+
+// geminiModelReadTarget binds one selected Gemini provider to model-resource
+// reads.
 type geminiModelReadTarget struct {
-	reader *googleforward.Gemini
-	value  *gatewayprovider.ExecutionProvider
+	reader *googleforward.Gemini              // Gemini GET execution
+	value  *gatewayprovider.ExecutionProvider // selected resource provider
 }
 
-// provideModelsHTTP 构造四个模型目录查询入口。
-func provideModelsHTTP(catalog *catalogprovider.Service, catalogue *routing.RequestableCatalogue, reader *googleforward.Gemini, activity *gatewayRequestActivity, choices *selection.Gemini) *gatewayhttp.ModelsHandler {
+// provideModelsHTTP constructs model display using optional catalog metadata
+// and requestable routing. A nil catalog is passed as a nil interface, allowing
+// modelsHTTP to leave the display source unset rather than retaining a typed
+// nil pointer.
+func provideModelsHTTP(catalog *catalogprovider.Service, catalogue *routing.RequestableCatalogue, reader *googleforward.Gemini, activity *gatewayRequestActivity, choices *selection.Gemini, attributes *routing.ModelAttributeService) *gatewayhttp.ModelsHandler {
 	if catalog == nil {
-		return modelsHTTP(nil, catalogue, reader, activity, choices)
+		return modelsHTTP(nil, catalogue, reader, activity, choices, attributes)
 	}
-	return modelsHTTP(catalog, catalogue, reader, activity, choices)
+	return modelsHTTP(catalog, catalogue, reader, activity, choices, attributes)
 }
 
-// modelsHTTP 为目录查询绑定统一元数据读取和客户端权限上下文。
-func modelsHTTP(catalog modelcatalog.Reader, catalogue *routing.RequestableCatalogue, reader *googleforward.Gemini, activity *gatewayRequestActivity, choices *selection.Gemini) *gatewayhttp.ModelsHandler {
+// modelsHTTP binds Key, platform, billing, and Gemini selection reads for model
+// handlers. Catalogue and catalog display are optional; activity is attached
+// when supplied, while Gemini resource callbacks require their selected
+// provider reader and choices service.
+func modelsHTTP(catalog modelcatalog.Reader, catalogue *routing.RequestableCatalogue, reader *googleforward.Gemini, activity *gatewayRequestActivity, choices *selection.Gemini, attributes ...*routing.ModelAttributeService) *gatewayhttp.ModelsHandler {
 	ports := gatewayhttp.ModelsPorts{
 		ReadAccess: keyhttp.GetAPIKeyFromContext, ReadPlatform: keyhttp.GetForcePlatformFromContext,
 		ReadBilling: func(c *gin.Context) (*billing.APIKeyBillingContext, bool) {
@@ -56,13 +70,16 @@ func modelsHTTP(catalog modelcatalog.Reader, catalogue *routing.RequestableCatal
 	if catalog != nil {
 		display.Source = catalog
 	}
-	result := gatewayhttp.NewModelsHandler(ports, display)
+	result := gatewayhttp.NewModelsHandler(ports, display, attributes...)
 	if activity != nil {
 		result.BindRequestActivity(activity.Enter)
 	}
 	return result
 }
 
+// Read delegates an AI Studio GET using the selected provider. A nil platform
+// response remains nil; available status, headers, and body are passed to HTTP
+// together with any forwarding error.
 func (p geminiModelReadTarget) Read(ctx context.Context, path string) (*gatewayhttp.ModelHTTPResponse, error) {
 	value, err := p.reader.ForwardAIStudioGET(ctx, p.value, path)
 	if value == nil {
@@ -71,7 +88,9 @@ func (p geminiModelReadTarget) Read(ctx context.Context, path string) (*gatewayh
 	return &gatewayhttp.ModelHTTPResponse{StatusCode: value.StatusCode, Headers: value.Headers, Body: value.Body}, err
 }
 
-// resolveModelsListReadLimit 返回模型目录读取上限，缺省或非正值使用默认值。
+// resolveModelsListReadLimit returns configured positive model-response bytes
+// or the default. Nil cfg and nonpositive values both select the configuration
+// constant used for model-list response reads.
 func resolveModelsListReadLimit(cfg *config.Config) int64 {
 	if cfg != nil && cfg.Gateway.ModelsListReadMaxBytes > 0 {
 		return cfg.Gateway.ModelsListReadMaxBytes

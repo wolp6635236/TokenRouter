@@ -13,8 +13,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// TestApplyCodexOAuthTransform_ToolContinuationPreservesInput transforms an
+// item reference and an isolated function output under store=false. The reference
+// ID and output item ID remain available, while call_id receives the
+// function-call prefix.
 func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
-	// 续链场景：保留 item_reference 与 id，但不再强制 store=true。
+	// Continuation requests retain item references and IDs with store=false.
 
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -27,7 +31,7 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 
 	ApplyCodexOAuthTransform(reqBody, false, false)
 
-	// 未设置 store=true 时默认为 false。
+	// Storage defaults to false.
 	store, ok := reqBody["store"].(bool)
 	require.True(t, ok)
 	require.False(t, store)
@@ -36,19 +40,21 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, input, 2)
 
-	// 确认 input[0] 是 map 后读取字段。
 	first, ok := input[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "item_reference", first["type"])
 	require.Equal(t, "ref1", first["id"])
 
-	// 校验 input[1] 为 map，确保后续字段断言安全。
 	second, ok := input[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "o1", second["id"])
 	require.Equal(t, "fc_1", second["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly
+// supplies a Messages bridge marker and an Anthropic metadata cache key.
+// Transformation returns that key for header use, marks the body changed, and
+// removes prompt_cache_key from the body.
 func TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly(t *testing.T) {
 	reqBody := map[string]any{
 		"model":            "gpt-5.5",
@@ -82,6 +88,10 @@ func TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly(t *te
 	require.NotContains(t, reqBody, "prompt_cache_key")
 }
 
+// TestApplyCodexOAuthTransform_ToolContinuationPreservesNativeMessageAndReasoningIDs
+// supplies a message and a reasoning item reference under continuation. Their
+// native message and reference identifiers remain intact after OAuth body
+// transformation.
 func TestApplyCodexOAuthTransform_ToolContinuationPreservesNativeMessageAndReasoningIDs(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -107,6 +117,10 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesNativeMessageAndReaso
 	require.Equal(t, "rs_123", second["id"])
 }
 
+// TestApplyCodexOAuthTransform_ToolContinuationNormalizesToolReferenceIDsOnly
+// pairs a legacy call_ reference with a function output. Both identifiers
+// become fc_1, retaining their relationship across the transformed input
+// items.
 func TestApplyCodexOAuthTransform_ToolContinuationNormalizesToolReferenceIDsOnly(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -132,6 +146,10 @@ func TestApplyCodexOAuthTransform_ToolContinuationNormalizesToolReferenceIDsOnly
 	require.Equal(t, "fc_1", second["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_NormalizesIsolatedLegacyReferenceAcrossTurns
+// supplies legacy, native, and vendor item references without matching local
+// calls. Legacy call_ becomes fc_, while native and opaque vendor references
+// retain their existing values.
 func TestApplyCodexOAuthTransform_NormalizesIsolatedLegacyReferenceAcrossTurns(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -154,12 +172,16 @@ func TestApplyCodexOAuthTransform_NormalizesIsolatedLegacyReferenceAcrossTurns(t
 	}
 }
 
+// TestApplyCodexOAuthTransform_BoundsLongCallIDsAndPreservesPairing supplies
+// boundary, oversized, and equivalent-prefix call/output pairs. Resulting IDs
+// share deterministic function-call replacements and stay within
+// CodexCallIDMaxLength after normalization.
 func TestApplyCodexOAuthTransform_BoundsLongCallIDsAndPreservesPairing(t *testing.T) {
 	suffix := strings.Repeat("z", 62)
 	for _, tc := range []struct {
-		name         string
-		callID       string
-		outputCallID string
+		name         string // call identity scenario label
+		callID       string // incoming function call identity
+		outputCallID string // paired output call identity
 	}{
 		{name: "non-native boundary id", callID: "call-" + strings.Repeat("x", 59), outputCallID: "call-" + strings.Repeat("x", 59)},
 		{name: "overlong fc id", callID: "fc_" + strings.Repeat("y", 62), outputCallID: "fc_" + strings.Repeat("y", 62)},
@@ -194,12 +216,16 @@ func TestApplyCodexOAuthTransform_BoundsLongCallIDsAndPreservesPairing(t *testin
 	}
 }
 
+// TestApplyCodexOAuthTransform_PreservesCallIDsWithinLimitWhenRequested
+// enables preserve mode for Anthropic and exact-limit call IDs. Both function
+// calls and their outputs retain the supplied IDs when their lengths fit the
+// allowed limit.
 func TestApplyCodexOAuthTransform_PreservesCallIDsWithinLimitWhenRequested(t *testing.T) {
-	// preserve 模式下不超过 64 字符的 id 原样透传（包含长度正好为 64 的情况），
-	// 不做任何前缀改写或压缩。
+	// Preserve mode passes IDs of up to 64 characters through unchanged,
+	// including IDs exactly at the limit.
 	for _, tc := range []struct {
-		name   string
-		callID string
+		name   string // preserved call identity case
+		callID string // requested preserved call identity
 	}{
 		{name: "anthropic toolu id", callID: "toolu_01ABCdefGHIjklMNOpqrsTUV"},
 		{name: "boundary 64 chars", callID: "toolu_" + strings.Repeat("x", openai.CodexCallIDMaxLength-len("toolu_"))},
@@ -230,9 +256,12 @@ func TestApplyCodexOAuthTransform_PreservesCallIDsWithinLimitWhenRequested(t *te
 	}
 }
 
+// TestApplyCodexOAuthTransform_CompactsOverlongCallIDsWhenPreserveRequested
+// enables preserve mode for a 78-character call ID. Calls and outputs still
+// receive the same deterministic compacted identifier of CodexCallIDMaxLength.
 func TestApplyCodexOAuthTransform_CompactsOverlongCallIDsWhenPreserveRequested(t *testing.T) {
-	// preserve 模式下超过 64 字符的 id 若原样透传，上游必然返回 400；
-	// function_call 与 function_call_output 两侧使用相同的确定性压缩结果。
+	// IDs longer than 64 characters must be shortened even in preserve mode.
+	// Calls and their outputs must receive the same deterministic replacement.
 	callID := "srvtoolu_" + strings.Repeat("x", 69)
 	require.Len(t, callID, 78)
 	reqBody := map[string]any{
@@ -262,6 +291,9 @@ func TestApplyCodexOAuthTransform_CompactsOverlongCallIDsWhenPreserveRequested(t
 	require.Equal(t, openai.NormalizeCodexCallID(callID), compacted, "压缩必须是确定性的")
 }
 
+// TestApplyCodexOAuthTransform_ToolSearchOutputPreservesCallID transforms an
+// isolated tool-search output with a legacy call prefix. The output type
+// remains tool_search_output and its call_id uses the tool-search prefix.
 func TestApplyCodexOAuthTransform_ToolSearchOutputPreservesCallID(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -282,6 +314,10 @@ func TestApplyCodexOAuthTransform_ToolSearchOutputPreservesCallID(t *testing.T) 
 	require.Equal(t, "tsc_1", first["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_CustomAndMCPToolOutputsPreserveCallID
+// transforms isolated custom and MCP outputs carrying legacy call IDs. Their
+// resulting IDs use custom-tool and function-call prefixes respectively, with
+// both items retained.
 func TestApplyCodexOAuthTransform_CustomAndMCPToolOutputsPreserveCallID(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -306,6 +342,10 @@ func TestApplyCodexOAuthTransform_CustomAndMCPToolOutputsPreserveCallID(t *testi
 	require.Equal(t, "fc_mcp", second["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_NormalizesNativeToolCallPairsByType supplies
+// custom and search calls with invalid replay IDs plus outputs referencing
+// those IDs. Invalid item IDs disappear, and each call/output pair receives
+// its corresponding type-specific call_id.
 func TestApplyCodexOAuthTransform_NormalizesNativeToolCallPairsByType(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.6-sol",
@@ -338,6 +378,9 @@ func TestApplyCodexOAuthTransform_NormalizesNativeToolCallPairsByType(t *testing
 	require.Equal(t, search["call_id"], searchOutput["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_PreservesNativeCallIDsWhenRequested enables
+// preserve mode for custom and search calls with valid item IDs. Both item
+// identifiers and each supplied paired call_id survive transformation.
 func TestApplyCodexOAuthTransform_PreservesNativeCallIDsWhenRequested(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.6-sol",
@@ -370,6 +413,10 @@ func TestApplyCodexOAuthTransform_PreservesNativeCallIDsWhenRequested(t *testing
 	require.Equal(t, "call_search", fourth["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_BoundsEquivalentNativeToolCallIDsWithPairing
+// uses oversized equivalent call_ and fc_ values for a custom call/output
+// pair. Preserve mode still produces matching bounded ctc_ identifiers for
+// both items.
 func TestApplyCodexOAuthTransform_BoundsEquivalentNativeToolCallIDsWithPairing(t *testing.T) {
 	suffix := strings.Repeat("x", 70)
 	reqBody := map[string]any{
@@ -398,6 +445,9 @@ func TestApplyCodexOAuthTransform_BoundsEquivalentNativeToolCallIDsWithPairing(t
 	require.Equal(t, callID, outputCallID)
 }
 
+// TestApplyCodexOAuthTransform_ImageAndWebSearchCallsDoNotGainCallID supplies
+// an image call with a valid item ID and a web-search call carrying call_id.
+// Image identity survives while both non-pair item types end without call_id.
 func TestApplyCodexOAuthTransform_ImageAndWebSearchCallsDoNotGainCallID(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -426,6 +476,10 @@ func TestApplyCodexOAuthTransform_ImageAndWebSearchCallsDoNotGainCallID(t *testi
 	require.False(t, hasCallID)
 }
 
+// TestApplyCodexOAuthTransform_ConvertsToolRoleMessageToFunctionCallOutput
+// supplies a Chat-style tool-role message with content and tool_call_id.
+// Transformation produces a function output, normalizes its paired ID, retains
+// output text, and removes role.
 func TestApplyCodexOAuthTransform_ConvertsToolRoleMessageToFunctionCallOutput(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -454,6 +508,9 @@ func TestApplyCodexOAuthTransform_ConvertsToolRoleMessageToFunctionCallOutput(t 
 	require.False(t, hasRole)
 }
 
+// TestApplyCodexOAuthTransform_StringifiesNonStringMessageContentText places
+// an array in an input_text part's text field. OAuth transformation retains
+// the content part and encodes that value as the JSON string for the array.
 func TestApplyCodexOAuthTransform_StringifiesNonStringMessageContentText(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -481,6 +538,9 @@ func TestApplyCodexOAuthTransform_StringifiesNonStringMessageContentText(t *test
 	require.Equal(t, `["a","b"]`, part["text"])
 }
 
+// TestApplyCodexOAuthTransform_DowngradesUnknownToolChoice selects a custom
+// tool type while only a function declaration exists. Transformation replaces
+// that unmatched selection with auto for the resulting request.
 func TestApplyCodexOAuthTransform_DowngradesUnknownToolChoice(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -495,6 +555,9 @@ func TestApplyCodexOAuthTransform_DowngradesUnknownToolChoice(t *testing.T) {
 	require.Equal(t, "auto", reqBody["tool_choice"])
 }
 
+// TestApplyCodexOAuthTransform_PreservesKnownToolChoice selects custom with a
+// matching custom tool declaration. The transformed tool-choice object remains
+// present and retains its custom type.
 func TestApplyCodexOAuthTransform_PreservesKnownToolChoice(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -511,6 +574,10 @@ func TestApplyCodexOAuthTransform_PreservesKnownToolChoice(t *testing.T) {
 	require.Equal(t, "custom", choice["type"])
 }
 
+// TestApplyCodexOAuthTransform_NormalizesLegacyFunctionToolChoice uses the
+// nested Chat function-choice object with a declared function. Transformation
+// produces flat Responses type and name fields and removes the nested function
+// object.
 func TestApplyCodexOAuthTransform_NormalizesLegacyFunctionToolChoice(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -532,6 +599,10 @@ func TestApplyCodexOAuthTransform_NormalizesLegacyFunctionToolChoice(t *testing.
 	require.NotContains(t, choice, "function")
 }
 
+// TestApplyCodexOAuthTransform_DowngradesMissingFunctionToolChoice selects a
+// nested function name missing from the declared tools. The transformed
+// request uses auto, allowing the remaining declared function list to govern
+// selection.
 func TestApplyCodexOAuthTransform_DowngradesMissingFunctionToolChoice(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -549,6 +620,9 @@ func TestApplyCodexOAuthTransform_DowngradesMissingFunctionToolChoice(t *testing
 	require.Equal(t, "auto", reqBody["tool_choice"])
 }
 
+// TestApplyCodexOAuthTransform_AddsFallbackNameForFunctionCallInput supplies a
+// function call lacking a name beside a user message. The transformed call
+// retains its type, receives the fallback name tool, and normalizes call_id.
 func TestApplyCodexOAuthTransform_AddsFallbackNameForFunctionCallInput(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -570,6 +644,9 @@ func TestApplyCodexOAuthTransform_AddsFallbackNameForFunctionCallInput(t *testin
 	require.Equal(t, "fc_1", item["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_PreservesFunctionCallInputName transforms a
+// named custom-tool call with a legacy identifier. The supplied shell name
+// survives while call_id receives the custom-tool prefix.
 func TestApplyCodexOAuthTransform_PreservesFunctionCallInputName(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -589,6 +666,9 @@ func TestApplyCodexOAuthTransform_PreservesFunctionCallInputName(t *testing.T) {
 	require.Equal(t, "ctc_1", item["call_id"])
 }
 
+// TestApplyCodexOAuthTransform_PreservesMCPToolCallIDAndName supplies a named
+// MCP call with arguments and a legacy call identifier. The type and remote
+// tool name remain, while the identifier normalizes to fc_abc.
 func TestApplyCodexOAuthTransform_PreservesMCPToolCallIDAndName(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -614,6 +694,9 @@ func TestApplyCodexOAuthTransform_PreservesMCPToolCallIDAndName(t *testing.T) {
 	require.Equal(t, "fc_abc", item["call_id"])
 }
 
+// TestCodexInputItemRequiresNameTypesAllowCallID checks function, custom-tool,
+// and MCP call types against the upstream predicates. Each listed type both
+// requires a name and belongs to the call-ID-capable tool set.
 func TestCodexInputItemRequiresNameTypesAllowCallID(t *testing.T) {
 	for _, typ := range []string{"function_call", "custom_tool_call", "mcp_tool_call"} {
 		require.True(t, openai.CodexInputItemRequiresName(typ), typ)
@@ -621,9 +704,10 @@ func TestCodexInputItemRequiresNameTypesAllowCallID(t *testing.T) {
 	}
 }
 
+// TestApplyCodexOAuthTransform_ExplicitStoreFalsePreserved supplies
+// store=false alongside a continuation output. The transformed request retains
+// a boolean storage field with false as its value.
 func TestApplyCodexOAuthTransform_ExplicitStoreFalsePreserved(t *testing.T) {
-	// 续链请求中的 store=false 保持为 false。
-
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
 		"store": false,
@@ -640,9 +724,10 @@ func TestApplyCodexOAuthTransform_ExplicitStoreFalsePreserved(t *testing.T) {
 	require.False(t, store)
 }
 
+// TestApplyCodexOAuthTransform_ExplicitStoreTrueForcedFalse supplies
+// store=true alongside a continuation output. OAuth transformation replaces
+// that value with boolean false for the internal Responses request.
 func TestApplyCodexOAuthTransform_ExplicitStoreTrueForcedFalse(t *testing.T) {
-	// store=true 会被强制设置为 false。
-
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
 		"store": true,
@@ -659,6 +744,9 @@ func TestApplyCodexOAuthTransform_ExplicitStoreTrueForcedFalse(t *testing.T) {
 	require.False(t, store)
 }
 
+// TestApplyCodexOAuthTransform_CompactForcesNonStreaming supplies storage and
+// streaming flags on a Compact request. Both fields are removed and the
+// transformation reports modification for the resulting Compact body.
 func TestApplyCodexOAuthTransform_CompactForcesNonStreaming(t *testing.T) {
 	reqBody := map[string]any{
 		"model":  "gpt-5.1-codex",
@@ -675,8 +763,11 @@ func TestApplyCodexOAuthTransform_CompactForcesNonStreaming(t *testing.T) {
 	require.True(t, result.Modified)
 }
 
+// TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs
+// supplies a plain text item with an ID and no continuation. Transformation
+// adds boolean store=false, keeps the item, and removes its input ID.
 func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs(t *testing.T) {
-	// 非续链场景：未设置 store 时默认 false，并移除 input 中的 id。
+	// Requests without continuation default to store=false and strip input IDs.
 
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
@@ -694,15 +785,18 @@ func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs(
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
 	require.Len(t, input, 1)
-	// 确认 input[0] 是 map 后读取字段。
+
 	item, ok := input[0].(map[string]any)
 	require.True(t, ok)
 	_, hasID := item["id"]
 	require.False(t, hasID)
 }
 
+// TestApplyCodexOAuthTransform_PreservesReasoningInput includes a reasoning
+// item with an empty summary beside a user message. Transformation keeps
+// reasoning and its summary but removes the replay item ID.
 func TestApplyCodexOAuthTransform_PreservesReasoningInput(t *testing.T) {
-	// HTTP 非透传路径保留 reasoning item，多轮任务通过这些项传递交错思考上下文。
+	// The HTTP conversion path retains reasoning items for interleaved thinking across turns.
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
 		"input": []any{
@@ -727,6 +821,9 @@ func TestApplyCodexOAuthTransform_PreservesReasoningInput(t *testing.T) {
 	require.NotContains(t, reasoning, "id")
 }
 
+// TestFilterCodexInput_RemovesItemReferenceWhenNotPreserved disables reference
+// preservation for an item reference followed by text. Filtering drops the
+// reference, retains the text item, and removes its ID.
 func TestFilterCodexInput_RemovesItemReferenceWhenNotPreserved(t *testing.T) {
 	input := []any{
 		map[string]any{"type": "item_reference", "id": "ref1"},
@@ -735,7 +832,7 @@ func TestFilterCodexInput_RemovesItemReferenceWhenNotPreserved(t *testing.T) {
 
 	filtered := openai.FilterCodexInputWithOptions(input, openai.CodexInputFilterOptions{PreserveReferences: false})
 	require.Len(t, filtered, 1)
-	// 校验 filtered[0] 为 map，确保字段检查可靠。
+
 	item, ok := filtered[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "text", item["type"])
@@ -743,6 +840,10 @@ func TestFilterCodexInput_RemovesItemReferenceWhenNotPreserved(t *testing.T) {
 	require.False(t, hasID)
 }
 
+// TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunctionTools
+// mixes a valid flat Responses function with a null nested function. The
+// transformed tools retain the valid function and discard the malformed
+// declaration.
 func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunctionTools(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
@@ -772,6 +873,10 @@ func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunction
 	require.Equal(t, "bash", first["name"])
 }
 
+// TestNormalizeOpenAIResponsesImageGenerationTools_RewritesLegacyFields
+// supplies format and compression on an image-generation tool. Normalization
+// moves their values to output_format and output_compression and removes both
+// legacy fields.
 func TestNormalizeOpenAIResponsesImageGenerationTools_RewritesLegacyFields(t *testing.T) {
 	reqBody := map[string]any{
 		"tools": []any{
@@ -798,6 +903,9 @@ func TestNormalizeOpenAIResponsesImageGenerationTools_RewritesLegacyFields(t *te
 	require.False(t, hasCompression)
 }
 
+// TestEnsureOpenAIResponsesImageGenerationTool_NoTools supplies a non-Spark
+// request with no tool list. Injection reports a change and creates one
+// image_generation tool whose default output format is png.
 func TestEnsureOpenAIResponsesImageGenerationTool_NoTools(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -816,6 +924,9 @@ func TestEnsureOpenAIResponsesImageGenerationTool_NoTools(t *testing.T) {
 	require.Equal(t, "png", tool["output_format"])
 }
 
+// TestEnsureOpenAIResponsesImageGenerationTool_SkipsSpark attempts image-tool
+// injection on an exact Spark model request. It reports no modification and
+// leaves the tools field absent.
 func TestEnsureOpenAIResponsesImageGenerationTool_SkipsSpark(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
@@ -827,6 +938,9 @@ func TestEnsureOpenAIResponsesImageGenerationTool_SkipsSpark(t *testing.T) {
 	require.NotContains(t, reqBody, "tools")
 }
 
+// TestEnsureOpenAIResponsesImageGenerationTool_AppendsToExistingTools starts
+// with a web-search tool on a non-Spark request. Injection keeps that
+// declaration and appends one hosted image tool with png output.
 func TestEnsureOpenAIResponsesImageGenerationTool_AppendsToExistingTools(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -850,6 +964,10 @@ func TestEnsureOpenAIResponsesImageGenerationTool_AppendsToExistingTools(t *test
 	require.Equal(t, "png", second["output_format"])
 }
 
+// TestEnsureOpenAIResponsesImageGenerationTool_PreservesExistingImageTool
+// supplies an image tool requesting webp beside web search. Injection reports
+// no change, retains both tools, and keeps the image format selected by the
+// client.
 func TestEnsureOpenAIResponsesImageGenerationTool_PreservesExistingImageTool(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -870,10 +988,14 @@ func TestEnsureOpenAIResponsesImageGenerationTool_PreservesExistingImageTool(t *
 	require.Equal(t, "webp", tool["output_format"])
 }
 
+// TestEnsureOpenAIResponsesImageGenerationTool_PreservesImageGenNamespace
+// declares image_gen in top-level tools or Responses Lite additional_tools.
+// Recognition finds both forms and injection leaves them free of a duplicate
+// hosted image_generation declaration.
 func TestEnsureOpenAIResponsesImageGenerationTool_PreservesImageGenNamespace(t *testing.T) {
 	tests := []struct {
-		name    string
-		reqBody map[string]any
+		name    string         // image declaration scenario label
+		reqBody map[string]any // mutable image declaration request
 	}{
 		{
 			name: "top-level tools",
@@ -929,10 +1051,15 @@ func TestEnsureOpenAIResponsesImageGenerationTool_PreservesImageGenNamespace(t *
 	}
 }
 
+// TestCodexImageGenerationBridge_PreservesClientImageFunctionTools compares
+// flat and nested image_gen.imagegen declarations with a similar unrelated
+// name. Exact client functions retain instructions and absent tool choice; the
+// unrelated name receives hosted-tool bridge injection.
 func TestCodexImageGenerationBridge_PreservesClientImageFunctionTools(t *testing.T) {
 	tests := []struct {
-		name       string
-		reqBody    map[string]any
+		name    string         // client image function case
+		reqBody map[string]any // mutable bridge request fixture
+		// expected client image function recognition
 		wantClient bool
 	}{
 		{
@@ -1009,6 +1136,9 @@ func TestCodexImageGenerationBridge_PreservesClientImageFunctionTools(t *testing
 	}
 }
 
+// TestApplyCodexImageGenerationBridgeInstructions_AppendsBridgeOnce starts
+// with existing instructions and a hosted image tool. Bridge guidance appends
+// once, retains the prior text, and a second invocation reports no change.
 func TestApplyCodexImageGenerationBridgeInstructions_AppendsBridgeOnce(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.4",
@@ -1031,6 +1161,9 @@ func TestApplyCodexImageGenerationBridgeInstructions_AppendsBridgeOnce(t *testin
 	require.False(t, modified)
 }
 
+// TestApplyCodexImageGenerationBridgeInstructions_SkipsSpark supplies a hosted
+// image tool on an exact Spark request. The bridge instruction helper reports
+// no change and retains the existing instruction text.
 func TestApplyCodexImageGenerationBridgeInstructions_SkipsSpark(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.3-codex-spark",
@@ -1045,6 +1178,10 @@ func TestApplyCodexImageGenerationBridgeInstructions_SkipsSpark(t *testing.T) {
 	require.Equal(t, "existing instructions", reqBody["instructions"])
 }
 
+// TestApplyCodexImageGenerationBridgeInstructions_SkipsWithoutImageTool
+// supplies existing instructions with a web-search declaration alone. The
+// image bridge helper reports no change and retains the exact instruction
+// string.
 func TestApplyCodexImageGenerationBridgeInstructions_SkipsWithoutImageTool(t *testing.T) {
 	reqBody := map[string]any{
 		"instructions": "existing instructions",
@@ -1058,6 +1195,9 @@ func TestApplyCodexImageGenerationBridgeInstructions_SkipsWithoutImageTool(t *te
 	require.Equal(t, "existing instructions", reqBody["instructions"])
 }
 
+// TestValidateCodexSparkInputRejectsInputImage supplies Responses text and
+// image parts to an exact Spark model. Validation returns an error whose text
+// identifies unsupported image input.
 func TestValidateCodexSparkInputRejectsInputImage(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
@@ -1077,6 +1217,9 @@ func TestValidateCodexSparkInputRejectsInputImage(t *testing.T) {
 	require.Contains(t, err.Error(), "does not support image input")
 }
 
+// TestValidateCodexSparkInputRejectsChatImageURL supplies a Chat message
+// containing text and an image_url object to Spark. Validation rejects that
+// alternate image representation with an error.
 func TestValidateCodexSparkInputRejectsChatImageURL(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
@@ -1095,6 +1238,9 @@ func TestValidateCodexSparkInputRejectsChatImageURL(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestValidateCodexSparkInputAllowsTextOnly supplies a Spark request
+// containing a text part and no image. Validation returns no error for that
+// supported input shape.
 func TestValidateCodexSparkInputAllowsTextOnly(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
@@ -1111,6 +1257,10 @@ func TestValidateCodexSparkInputAllowsTextOnly(t *testing.T) {
 	require.NoError(t, ValidateCodexSparkInput(reqBody, "gpt-5.3-codex-spark"))
 }
 
+// TestApplyCodexOAuthTransform_AddsSparkImageUnsupportedInstructions supplies
+// Spark with existing instruction text and plain input. Transformation appends
+// Spark-specific image guidance and leaves the ordinary hosted-image bridge
+// marker absent.
 func TestApplyCodexOAuthTransform_AddsSparkImageUnsupportedInstructions(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.3-codex-spark",
@@ -1130,6 +1280,9 @@ func TestApplyCodexOAuthTransform_AddsSparkImageUnsupportedInstructions(t *testi
 	require.NotContains(t, instructions, openai.CodexImageGenerationBridgeMarker)
 }
 
+// TestApplyCodexOAuthTransform_DoesNotAddSparkImageUnsupportedForNonSpark uses
+// ordinary GPT text input and existing instructions. The resulting
+// instructions do not contain the Spark-only image capability marker.
 func TestApplyCodexOAuthTransform_DoesNotAddSparkImageUnsupportedForNonSpark(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.4",
@@ -1143,7 +1296,10 @@ func TestApplyCodexOAuthTransform_DoesNotAddSparkImageUnsupportedForNonSpark(t *
 	require.NotContains(t, instructions, openai.CodexSparkImageUnsupportedMarker)
 }
 
-// TestApplyCodexOAuthTransform_StripsImageGenerationToolForSpark 验证 gpt-5.3-codex-spark 上游会拒绝 image_generation 工具，OAuth 转换需要剥离该工具并保留其它工具。
+// TestApplyCodexOAuthTransform_StripsImageGenerationToolForSpark supplies
+// Spark with function and hosted image tools. Transformation reports
+// modification, removes image-generation capability, and retains the named
+// function declaration.
 func TestApplyCodexOAuthTransform_StripsImageGenerationToolForSpark(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
@@ -1167,7 +1323,9 @@ func TestApplyCodexOAuthTransform_StripsImageGenerationToolForSpark(t *testing.T
 	require.Equal(t, "shell", first["name"])
 }
 
-// TestApplyCodexOAuthTransform_StripsImageGenerationToolForSparkAlias 验证 Spark 推理强度别名会归一化为 gpt-5.3-codex-spark，也需要剥离 image_generation。
+// TestApplyCodexOAuthTransform_StripsImageGenerationToolForSparkAlias supplies
+// the exact Spark model with a sole hosted image tool. Transformation removes
+// image capability and omits the now-empty tools field.
 func TestApplyCodexOAuthTransform_StripsImageGenerationToolForSparkAlias(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
@@ -1180,11 +1338,15 @@ func TestApplyCodexOAuthTransform_StripsImageGenerationToolForSparkAlias(t *test
 	result := ApplyCodexOAuthTransform(reqBody, true, false)
 	require.True(t, result.Modified)
 	require.False(t, openai.HasOpenAIImageGenerationTool(reqBody))
-	// 剥离唯一工具后 tools 会被清空并删除字段。
+	// An empty tool list is omitted.
 	_, hasTools := reqBody["tools"]
 	require.False(t, hasTools)
 }
 
+// TestStripOpenAIImageGenerationTools_StripsNamespaceFormats mixes hosted
+// image namespaces with code tools in top-level and additional_tools lists.
+// Stripping retains code declarations and messages, removes image selection,
+// and reports no change when repeated.
 func TestStripOpenAIImageGenerationTools_StripsNamespaceFormats(t *testing.T) {
 	imageNamespace := func() map[string]any {
 		return map[string]any{
@@ -1257,6 +1419,9 @@ func TestStripOpenAIImageGenerationTools_StripsNamespaceFormats(t *testing.T) {
 	require.False(t, openai.StripOpenAIImageGenerationTools(reqBody), "stripping should be idempotent")
 }
 
+// TestStripOpenAIImageGenerationTools_KeepsNonImageNamespaces supplies
+// code/browser namespaces and auto selection with no image declarations.
+// Stripping reports false and retains the automatic tool choice.
 func TestStripOpenAIImageGenerationTools_KeepsNonImageNamespaces(t *testing.T) {
 	reqBody := map[string]any{
 		"tools": []any{
@@ -1278,6 +1443,9 @@ func TestStripOpenAIImageGenerationTools_KeepsNonImageNamespaces(t *testing.T) {
 	require.False(t, openai.HasOpenAIImageGenerationTool(reqBody))
 }
 
+// TestStripOpenAIImageGenerationTools_KeepsCustomImagegenFunctionChoice
+// supplies a custom nested function choice named imagegen with no image tool
+// declaration. Stripping reports no change and retains tool_choice.
 func TestStripOpenAIImageGenerationTools_KeepsCustomImagegenFunctionChoice(t *testing.T) {
 	reqBody := map[string]any{
 		"tool_choice": map[string]any{
@@ -1289,7 +1457,10 @@ func TestStripOpenAIImageGenerationTools_KeepsCustomImagegenFunctionChoice(t *te
 	require.Contains(t, reqBody, "tool_choice")
 }
 
-// TestApplyCodexOAuthTransform_KeepsImageGenerationToolForNonSpark 验证非 Spark Codex 模型支持 image_generation，工具应保持不变。
+// TestApplyCodexOAuthTransform_KeepsImageGenerationToolForNonSpark supplies a
+// hosted image-generation tool on a non-Spark Codex model with plain input.
+// The transformed request continues to advertise that image-generation
+// capability.
 func TestApplyCodexOAuthTransform_KeepsImageGenerationToolForNonSpark(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex",
@@ -1303,6 +1474,10 @@ func TestApplyCodexOAuthTransform_KeepsImageGenerationToolForNonSpark(t *testing
 	require.True(t, openai.HasOpenAIImageGenerationTool(reqBody))
 }
 
+// TestNormalizeOpenAIResponsesImageOnlyModel_BuildsImageToolRequest supplies
+// an image-only model with prompt and top-level image options. Normalization
+// selects the text driver, moves prompt to input and options into the image
+// tool, and selects image generation.
 func TestNormalizeOpenAIResponsesImageOnlyModel_BuildsImageToolRequest(t *testing.T) {
 	reqBody := map[string]any{
 		"model":         "gpt-image-2",
@@ -1311,7 +1486,7 @@ func TestNormalizeOpenAIResponsesImageOnlyModel_BuildsImageToolRequest(t *testin
 		"output_format": "png",
 	}
 
-	modified := NormalizeOpenAIResponsesImageOnlyModel(reqBody)
+	modified := openai.NormalizeOpenAIResponsesImageOnlyModel(reqBody, true)
 	require.True(t, modified)
 	require.Equal(t, openai.ImagesResponsesMainModel, reqBody["model"])
 	require.Equal(t, "draw a cat", reqBody["input"])
@@ -1335,6 +1510,10 @@ func TestNormalizeOpenAIResponsesImageOnlyModel_BuildsImageToolRequest(t *testin
 	require.Equal(t, "image_generation", choice["type"])
 }
 
+// TestNormalizeOpenAIResponsesImageOnlyModel_PreservesExistingImageTool
+// supplies an image-only model plus a hosted tool naming a different image
+// model. Normalization selects the text driver while retaining the existing
+// tool model and auto choice.
 func TestNormalizeOpenAIResponsesImageOnlyModel_PreservesExistingImageTool(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-image-2",
@@ -1348,7 +1527,7 @@ func TestNormalizeOpenAIResponsesImageOnlyModel_PreservesExistingImageTool(t *te
 		"tool_choice": "auto",
 	}
 
-	modified := NormalizeOpenAIResponsesImageOnlyModel(reqBody)
+	modified := openai.NormalizeOpenAIResponsesImageOnlyModel(reqBody, true)
 	require.True(t, modified)
 	require.Equal(t, openai.ImagesResponsesMainModel, reqBody["model"])
 	require.Equal(t, "auto", reqBody["tool_choice"])
@@ -1361,19 +1540,23 @@ func TestNormalizeOpenAIResponsesImageOnlyModel_PreservesExistingImageTool(t *te
 	require.Equal(t, "gpt-image-1.5", tool["model"])
 }
 
+// TestValidateOpenAIResponsesImageModel_RejectsImageOnlyModel uses an
+// image-only top-level model with a hosted image tool. Validation returns the
+// error requiring a Responses-capable text driver for that request.
 func TestValidateOpenAIResponsesImageModel_RejectsImageOnlyModel(t *testing.T) {
-	err := ValidateOpenAIResponsesImageModel(map[string]any{
+	err := openai.ValidateOpenAIResponsesImageModel(map[string]any{
 		"tools": []any{
 			map[string]any{"type": "image_generation"},
 		},
-	}, "gpt-image-2")
+	}, "gpt-image-2", true)
 
 	require.ErrorContains(t, err, `/v1/responses image_generation requests require a Responses-capable text model`)
 }
 
+// TestApplyCodexOAuthTransform_EmptyInput supplies an allocated empty input
+// array alongside the GPT model in an OAuth request. The resulting input
+// retains array representation and zero items.
 func TestApplyCodexOAuthTransform_EmptyInput(t *testing.T) {
-	// 空 input 应保持为空且不触发异常。
-
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
 		"input": []any{},
@@ -1386,7 +1569,9 @@ func TestApplyCodexOAuthTransform_EmptyInput(t *testing.T) {
 	require.Len(t, input, 0)
 }
 
-// TestCodexTransformPreservesModelID 检查 Codex 请求中的完整型号。
+// TestCodexTransformPreservesModelID passes version spellings, vendor
+// prefixes, effort suffixes, and aliases through OAuth transformation. Each
+// full model identifier stays unchanged in the request body.
 func TestCodexTransformPreservesModelID(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.4":                   "gpt-5.4",
@@ -1434,7 +1619,9 @@ func TestCodexTransformPreservesModelID(t *testing.T) {
 	}
 }
 
-// TestCodexTransformPreservesLegacyModelID 检查历史型号和空字段的转发值。
+// TestCodexTransformPreservesLegacyModelID passes older Codex identifiers and
+// an empty model field through transformation. Their values remain unchanged
+// for the listed cases.
 func TestCodexTransformPreservesLegacyModelID(t *testing.T) {
 	cases := map[string]string{
 		"":                   "",
@@ -1457,6 +1644,9 @@ func TestCodexTransformPreservesLegacyModelID(t *testing.T) {
 	}
 }
 
+// TestApplyCodexOAuthTransform_PreservesBareSparkModel supplies an exact Spark
+// model and empty input. Both request and returned normalized model retain the
+// exact identifier, while storage is set false.
 func TestApplyCodexOAuthTransform_PreservesBareSparkModel(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
@@ -1472,6 +1662,10 @@ func TestApplyCodexOAuthTransform_PreservesBareSparkModel(t *testing.T) {
 	require.False(t, store)
 }
 
+// TestApplyCodexOAuthTransform_TrimmedModelWithoutPolicyRewrite supplies a
+// padded exact Spark identifier with empty input. Transformation trims both
+// request model and returned normalized identity and reports the request
+// modification.
 func TestApplyCodexOAuthTransform_TrimmedModelWithoutPolicyRewrite(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "  gpt-5.3-codex-spark  ",
@@ -1485,9 +1679,11 @@ func TestApplyCodexOAuthTransform_TrimmedModelWithoutPolicyRewrite(t *testing.T)
 	require.True(t, result.Modified)
 }
 
+// TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions supplies
+// instruction text with CLI mode enabled. The transformed instructions retain
+// the exact existing text, independently of other fields that may mark the
+// request modified.
 func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *testing.T) {
-	// Codex CLI 场景：已有 instructions 时不修改
-
 	reqBody := map[string]any{
 		"model":        "gpt-5.1",
 		"instructions": "existing instructions",
@@ -1498,16 +1694,17 @@ func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *test
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
 	require.Equal(t, "existing instructions", instructions)
-	// Modified 仍可能为 true（因为其他字段被修改），但 instructions 应保持不变
+	// Other transformations may set Modified even when instructions remain unchanged.
 	_ = result
 }
 
+// TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty omits
+// instructions on a CLI-mode request. Transformation creates a nonempty
+// instruction string and reports that the request was modified.
 func TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty(t *testing.T) {
-	// Codex CLI 场景：无 instructions 时补充默认值
-
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
-		// 没有 instructions 字段
+		// Instructions are absent.
 	}
 
 	result := ApplyCodexOAuthTransform(reqBody, true, false) // isCodexCLI=true
@@ -1518,6 +1715,9 @@ func TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty(t *testing.T
 	require.True(t, result.Modified)
 }
 
+// TestApplyCodexOAuthTransform_GPT55SuppliesModelSpecificInstructions supplies
+// blank instructions for GPT-5.5. Transformation uses the GPT-5 coding-agent
+// text and excludes the older GPT-5.1 CLI instruction phrase.
 func TestApplyCodexOAuthTransform_GPT55SuppliesModelSpecificInstructions(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.5",
@@ -1533,8 +1733,12 @@ func TestApplyCodexOAuthTransform_GPT55SuppliesModelSpecificInstructions(t *test
 	require.True(t, result.Modified)
 }
 
+// TestApplyCodexOAuthTransform_NonCodexCLI_PreservesExistingInstructions
+// supplies a model and nonempty instruction text with CLI mode disabled.
+// Transformation retains the exact instruction string on the resulting non-CLI
+// request.
 func TestApplyCodexOAuthTransform_NonCodexCLI_PreservesExistingInstructions(t *testing.T) {
-	// 非 Codex CLI 场景中，已有 instructions 使用客户端的值。
+	// Non-CLI requests also retain client instructions.
 
 	reqBody := map[string]any{
 		"model":        "gpt-5.1",
@@ -1548,6 +1752,9 @@ func TestApplyCodexOAuthTransform_NonCodexCLI_PreservesExistingInstructions(t *t
 	require.Equal(t, "old instructions", instructions)
 }
 
+// TestApplyCodexOAuthTransform_StringInputConvertedToArray supplies a plain
+// string input to OAuth transformation. The resulting one-item array contains
+// a user message with the original text and reports modification.
 func TestApplyCodexOAuthTransform_StringInputConvertedToArray(t *testing.T) {
 	reqBody := map[string]any{"model": "gpt-5.4", "input": "Hello, world!"}
 	result := ApplyCodexOAuthTransform(reqBody, false, false)
@@ -1562,6 +1769,9 @@ func TestApplyCodexOAuthTransform_StringInputConvertedToArray(t *testing.T) {
 	require.Equal(t, "Hello, world!", msg["content"])
 }
 
+// TestApplyCodexOAuthTransform_EmptyStringInputBecomesEmptyArray supplies an
+// empty string as input on a model-bearing OAuth request. Transformation
+// reports modification and returns an allocated input array with zero items.
 func TestApplyCodexOAuthTransform_EmptyStringInputBecomesEmptyArray(t *testing.T) {
 	reqBody := map[string]any{"model": "gpt-5.4", "input": ""}
 	result := ApplyCodexOAuthTransform(reqBody, false, false)
@@ -1571,6 +1781,9 @@ func TestApplyCodexOAuthTransform_EmptyStringInputBecomesEmptyArray(t *testing.T
 	require.Len(t, input, 0)
 }
 
+// TestApplyCodexOAuthTransform_WhitespaceStringInputBecomesEmptyArray supplies
+// whitespace-only input alongside a model identifier in an OAuth request.
+// Transformation reports modification and creates a zero-item input array.
 func TestApplyCodexOAuthTransform_WhitespaceStringInputBecomesEmptyArray(t *testing.T) {
 	reqBody := map[string]any{"model": "gpt-5.4", "input": "   "}
 	result := ApplyCodexOAuthTransform(reqBody, false, false)
@@ -1580,6 +1793,9 @@ func TestApplyCodexOAuthTransform_WhitespaceStringInputBecomesEmptyArray(t *test
 	require.Len(t, input, 0)
 }
 
+// TestApplyCodexOAuthTransform_StringInputWithToolsField supplies string input
+// alongside a declared function tool. Transformation converts the input to a
+// one-item array in that request.
 func TestApplyCodexOAuthTransform_StringInputWithToolsField(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -1592,6 +1808,10 @@ func TestApplyCodexOAuthTransform_StringInputWithToolsField(t *testing.T) {
 	require.Len(t, input, 1)
 }
 
+// TestExtractSystemMessagesFromInput exercises absent, string, array,
+// multiple, and mixed system messages with optional promoted-message omission.
+// Assertions cover instruction ordering, developer-role conversion, retained
+// user content, and mixed image content that remains in input.
 func TestExtractSystemMessagesFromInput(t *testing.T) {
 	t.Run("no system messages", func(t *testing.T) {
 		reqBody := map[string]any{
@@ -1778,8 +1998,9 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 	})
 }
 
-// TestApplyCodexOAuthTransform_StripsPromptCacheRetention 检查删除客户端传入的 prompt_cache_retention。
-// ChatGPT 内部 Codex 端点会以 Unsupported parameter: prompt_cache_retention 拒绝该字段。
+// TestApplyCodexOAuthTransform_StripsPromptCacheRetention supplies the
+// unsupported prompt_cache_retention field with a user message in an OAuth
+// request. Transformation removes that field from the resulting request body.
 func TestApplyCodexOAuthTransform_StripsPromptCacheRetention(t *testing.T) {
 	reqBody := map[string]any{
 		"model":                  "gpt-5.1",
@@ -1796,6 +2017,10 @@ func TestApplyCodexOAuthTransform_StripsPromptCacheRetention(t *testing.T) {
 		"prompt_cache_retention must be stripped before forwarding to Codex upstream")
 }
 
+// TestApplyCodexOAuthTransform_StripsChatGPTInternalUnsupportedFields supplies
+// every listed ChatGPT-internal unsupported field with user input.
+// Transformation reports modification and removes all fields in the upstream
+// unsupported-field list.
 func TestApplyCodexOAuthTransform_StripsChatGPTInternalUnsupportedFields(t *testing.T) {
 	reqBody := map[string]any{
 		"model":                  "gpt-5.4",
@@ -1820,6 +2045,9 @@ func TestApplyCodexOAuthTransform_StripsChatGPTInternalUnsupportedFields(t *test
 	}
 }
 
+// TestApplyCodexOAuthTransform_NormalizesPromptAndCommands supplies legacy
+// prompt text and commands on a Codex request. Transformation creates a
+// user-message input array and removes both legacy fields.
 func TestApplyCodexOAuthTransform_NormalizesPromptAndCommands(t *testing.T) {
 	reqBody := map[string]any{
 		"model":    "gpt-5.5",
@@ -1836,13 +2064,17 @@ func TestApplyCodexOAuthTransform_NormalizesPromptAndCommands(t *testing.T) {
 	require.NotContains(t, reqBody, "commands")
 }
 
-func TestNormalizeOpenAIResponsesImageGenerationTools_StripsGPTImage2InputFidelity(t *testing.T) {
+// TestNormalizeOpenAIResponsesImageGenerationTools_PreservesInputFidelityBeforeResolution
+// supplies input_fidelity on two image tool models before final attribute
+// resolution. General tool normalization reports false and retains both
+// fidelity values.
+func TestNormalizeOpenAIResponsesImageGenerationTools_PreservesInputFidelityBeforeResolution(t *testing.T) {
 	reqBody := map[string]any{"tools": []any{
 		map[string]any{"type": "image_generation", "model": "gpt-image-2-codex", "input_fidelity": "high"},
 		map[string]any{"type": "image_generation", "model": "gpt-image-1.5", "input_fidelity": "high"},
 	}}
 
-	require.True(t, openai.NormalizeOpenAIResponsesImageGenerationTools(reqBody))
+	require.False(t, openai.NormalizeOpenAIResponsesImageGenerationTools(reqBody))
 	tools, ok := reqBody["tools"].([]any)
 	require.True(t, ok)
 	require.Len(t, tools, 2)
@@ -1850,16 +2082,23 @@ func TestNormalizeOpenAIResponsesImageGenerationTools_StripsGPTImage2InputFideli
 	require.True(t, ok)
 	second, ok := tools[1].(map[string]any)
 	require.True(t, ok)
-	require.NotContains(t, first, "input_fidelity")
+	require.Equal(t, "high", first["input_fidelity"])
 	require.Equal(t, "high", second["input_fidelity"])
 }
 
+// TestOpenAIRequestBodyImageGenerationToolNeedsNormalization_GPTImage2InputFidelity
+// supplies a GPT-image-2 Codex hosted tool with input_fidelity set high. The
+// general image-tool normalization predicate reports that this request body
+// needs no rewrite.
 func TestOpenAIRequestBodyImageGenerationToolNeedsNormalization_GPTImage2InputFidelity(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"image_generation","model":"gpt-image-2-codex","input_fidelity":"high"}]}`)
 
-	require.True(t, ImageIntent().OpenAIRequestBodyImageGenerationToolNeedsNormalization(body))
+	require.False(t, ImageIntent().OpenAIRequestBodyImageGenerationToolNeedsNormalization(body))
 }
 
+// TestApplyCodexOAuthTransform_ExtractsSystemMessages supplies system and user
+// input messages to the full transformation. System text appears in
+// instructions and a developer message, while the user role remains unchanged.
 func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
@@ -1889,6 +2128,10 @@ func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 	require.Equal(t, "You are a coding assistant.", instructions)
 }
 
+// TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput requests
+// JSON-object output with JSON guidance in the system message. Transformation
+// retains that guidance both in instructions and developer input alongside the
+// user message.
 func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -1927,11 +2170,14 @@ func TestApplyCodexOAuthTransform_JsonObjectKeepsJsonInstructionInInput(t *testi
 	require.Equal(t, "user", user["role"])
 }
 
+// TestIsInstructionsEmpty covers absent, nil, blank, padded, non-string, and
+// nonempty instruction values. The predicate treats only the nonblank string
+// case as present instructions.
 func TestIsInstructionsEmpty(t *testing.T) {
 	tests := []struct {
-		name     string
-		reqBody  map[string]any
-		expected bool
+		name     string         // instruction emptiness case label
+		reqBody  map[string]any // instruction value request fixture
+		expected bool           // expected instruction absence result
 	}{
 		{"missing field", map[string]any{}, true},
 		{"nil value", map[string]any{"instructions": nil}, true},
@@ -1949,8 +2195,10 @@ func TestIsInstructionsEmpty(t *testing.T) {
 	}
 }
 
-// TestFilterCodexInput_PreservesReasoningStripsID 检查 OAuth 续链保留 reasoning 内容及 encrypted_content。
-// store=false 时通过加密内容重放推理上下文；rs_* 引用会触发上游 404，因此在两种引用保留模式下都会删除。
+// TestFilterCodexInput_PreservesReasoningStripsID runs reference preservation
+// both ways for reasoning with encrypted content and call_id. Filtering
+// retains encrypted content and empty summary while removing item and non-pair
+// call IDs.
 func TestFilterCodexInput_PreservesReasoningStripsID(t *testing.T) {
 	build := func() []any {
 		return []any{
@@ -1971,16 +2219,17 @@ func TestFilterCodexInput_PreservesReasoningStripsID(t *testing.T) {
 
 			item, ok := filtered[0].(map[string]any)
 			require.True(t, ok)
-			// reasoning 项经过过滤后仍存在。
+
 			require.Equal(t, "reasoning", item["type"])
-			// encrypted_content 按输入内容输出。
+
 			require.Equal(t, "gAAAAAB-enc-payload", item["encrypted_content"])
-			// PreserveReferences=true 时也删除 rs_* ID，上游会通过该 ID 查询历史项并返回 404。
+			// Reference preservation retains encrypted replay data while discarding its item ID.
+			// This assertion checks transformation output; it does not contact upstream lookup.
 			_, hasID := item["id"]
 			require.False(t, hasID)
 			_, hasCallID := item["call_id"]
 			require.False(t, hasCallID)
-			// summary 按输入内容输出。
+
 			summary, ok := item["summary"].([]any)
 			require.True(t, ok)
 			require.Len(t, summary, 0)
@@ -1988,8 +2237,10 @@ func TestFilterCodexInput_PreservesReasoningStripsID(t *testing.T) {
 	}
 }
 
-// TestFilterCodexInput_BareReasoningStripsIDBackfillsSummary 检查删除 reasoning 的 rs_* ID，并补齐空 summary。
-// 缺少 summary 会触发上游 400：Missing required parameter input[N].summary。
+// TestFilterCodexInput_BareReasoningStripsIDBackfillsSummary supplies
+// reasoning that already has an empty summary among message and tool history.
+// Filtering retains that summary and all four items while removing the
+// reasoning ID.
 func TestFilterCodexInput_BareReasoningStripsIDBackfillsSummary(t *testing.T) {
 	input := []any{
 		map[string]any{"type": "message", "id": "msg_0", "role": "user", "content": "hi"},
@@ -2012,8 +2263,11 @@ func TestFilterCodexInput_BareReasoningStripsIDBackfillsSummary(t *testing.T) {
 	require.NotContains(t, reasoning, "id")
 }
 
+// TestFilterCodexInput_ReasoningBackfillsMissingSummary supplies encrypted
+// reasoning without a summary. Filtering adds an empty summary, retains
+// encrypted content, and removes the replay item ID.
 func TestFilterCodexInput_ReasoningBackfillsMissingSummary(t *testing.T) {
-	// 上游要求 reasoning item 带 summary；缺失时补空数组，同时保留 encrypted_content。
+	// Reasoning requires a summary; supply an empty array while retaining encrypted content.
 	input := []any{
 		map[string]any{
 			"type":              "reasoning",
@@ -2033,8 +2287,13 @@ func TestFilterCodexInput_ReasoningBackfillsMissingSummary(t *testing.T) {
 	require.NotContains(t, reasoning, "id")
 }
 
+// TestFilterCodexInput_PreservesReasoningSummaryContentAndEncryptedContent
+// supplies reasoning summary, plaintext content, and encrypted content with
+// reference preservation enabled. Those values survive while the reasoning
+// item ID is removed.
 func TestFilterCodexInput_PreservesReasoningSummaryContentAndEncryptedContent(t *testing.T) {
-	// store=false 时移除不可续链的 rs_* id，其他 reasoning 字段原样保留。
+	// Reference preservation applies to item_reference entries. This reasoning
+	// object keeps its content fields while its own replay ID is removed.
 	summary := []any{map[string]any{"type": "summary_text", "text": "checked files"}}
 	content := []any{map[string]any{"type": "reasoning_text", "text": "private state"}}
 	input := []any{
@@ -2058,8 +2317,12 @@ func TestFilterCodexInput_PreservesReasoningSummaryContentAndEncryptedContent(t 
 	require.NotContains(t, reasoning, "id")
 }
 
+// TestFilterCodexInput_StripsReasoningIDsWhenReferencesArePreserved enables
+// reference preservation for a reasoning item with an ID and summary. The item
+// survives but its replay ID is removed.
 func TestFilterCodexInput_StripsReasoningIDsWhenReferencesArePreserved(t *testing.T) {
-	// 续链时移除 reasoning item 的 rs_* id，因为 store=false 时这些引用不可达。
+	// Even when references are preserved, reasoning's own ID follows the removal
+	// rule; the reasoning item itself remains in the retained input.
 	input := []any{
 		map[string]any{
 			"type":    "reasoning",
@@ -2077,10 +2340,11 @@ func TestFilterCodexInput_StripsReasoningIDsWhenReferencesArePreserved(t *testin
 	require.NotContains(t, reasoning, "id")
 }
 
-// TestApplyCodexClientMetadata 验证 Codex 客户端元数据的注入。
-// gatewayprovider.ApplyCodexClientMetadata：使用提供商的 device_id 补充缺失的 installation 标识，重复调用结果相同。
+// TestApplyCodexClientMetadata supplies an OpenAI OAuth device ID with absent
+// or partial metadata. Installation ID injection retains unrelated metadata,
+// remains idempotent, and skips an OAuth provider lacking a device ID.
 func TestApplyCodexClientMetadata(t *testing.T) {
-	// 仅 OpenAI OAuth 提供商才有 device_id（GetOpenAIDeviceID 的门控）。
+	// GetOpenAIDeviceID exposes the device ID only for OpenAI OAuth providers.
 	acc := &ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth, Extra: map[string]any{"openai_device_id": "dev-xyz"}}}
 
 	body := map[string]any{}
@@ -2088,16 +2352,16 @@ func TestApplyCodexClientMetadata(t *testing.T) {
 	cm, ok := body["client_metadata"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "dev-xyz", cm["x-codex-installation-id"])
-	// 幂等
+	// Repeated injection is a no-op.
 	require.False(t, ApplyCodexClientMetadata(body, acc))
 
-	// OAuth 提供商但无 device_id → 不写入（不伪造）
+	// An OAuth provider without device_id supplies no installation key.
 	body2 := map[string]any{}
 	require.False(t, ApplyCodexClientMetadata(body2, &ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth}}))
 	_, ok = body2["client_metadata"]
 	require.False(t, ok)
 
-	// 既有 client_metadata（如 turn metadata）保留，仅补 installation 键
+	// Retain existing client metadata and add the missing installation key.
 	body3 := map[string]any{"client_metadata": map[string]any{"x-codex-turn-metadata": "t"}}
 	require.True(t, ApplyCodexClientMetadata(body3, acc))
 	cm3, _ := body3["client_metadata"].(map[string]any)

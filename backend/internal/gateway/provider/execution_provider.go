@@ -6,33 +6,61 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// ExecutionProvider 保存提供商记录和本次请求的路线。
-// Route 用于本次请求，provider.Record 提供提供商规则。
+// execution_provider.go constructs execution targets and supplies provider
+// views for routing, protocol handling, and completion.
+// A selected provider has persistent configuration and a route resolved for
+// one request attempt. ExecutionProvider keeps those values together, while
+// the adapter functions choose which fields a protocol, scheduler, or
+// completion consumer receives. Full-record conversions use the provider
+// module's copying rules and attach the process clock and location loader.
+// Reduced views borrow their nested values from the target.
+//
+// Keeping Record at the same address lets callbacks bound to the execution
+// target observe later credential or configuration updates. Replacing Record
+// leaves Route and Capabilities on that target intact; rebuilding a target
+// starts those request-specific fields at their zero values. Callers
+// synchronize mutation of targets and borrowed views.
+
+// ExecutionProvider combines provider configuration with the route and
+// optional capabilities resolved for a request attempt.
 type ExecutionProvider struct {
-	Record provider.Record           `json:"-"`
-	Route  requeststate.AttemptRoute `json:"-"`
+	// Capabilities contains the resolution attached by request preparation;
+	// ExecutionModelAttributes reuses it when its target model matches.
+	Capabilities *modelcatalog.Resolution `json:"-"`
+	// request provider configuration
+	Record provider.Record `json:"-"`
+	// request attempt route
+	Route requeststate.AttemptRoute `json:"-"`
 }
 
-// BindExecutionHeaders 返回绑定提供商的 Header 设置函数，调用时读取最新字段。
+// BindExecutionHeaders returns a callback that applies the target's current
+// provider header overrides to a writable header map. The callback rereads
+// Record on each invocation, so callers synchronize target changes with header
+// construction.
 func BindExecutionHeaders(value *ExecutionProvider) func(http.Header) {
 	return func(headers http.Header) {
 		provideradapter.ApplyProviderHeaderOverrides(ExecutionProtocolRecord(value), headers)
 	}
 }
 
-// BindExecutionHeaderValue 返回绑定提供商的 Header 查询函数，调用时读取字段值。
+// BindExecutionHeaderValue returns a callback that looks up an override by
+// header name in the target's current configuration. It rereads Record on
+// every call; callers synchronize target changes with callback use.
 func BindExecutionHeaderValue(value *ExecutionProvider) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		return provideradapter.HeaderOverrideValue(ExecutionProtocolRecord(value), name)
 	}
 }
 
-// NewExecutionProvider 复制提供商记录并设置时钟函数。
+// NewExecutionProvider copies a provider record into a request target using
+// provider.CopyRecordInto and sets the process clock and location loader. Nil
+// input returns nil; Route and Capabilities start unset.
 func NewExecutionProvider(value *provider.Record) *ExecutionProvider {
 	if value == nil {
 		return nil
@@ -44,7 +72,9 @@ func NewExecutionProvider(value *provider.Record) *ExecutionProvider {
 	return out
 }
 
-// View 返回提供商记录，接收者为 nil 时返回 nil。
+// View returns the embedded record at its existing address, or nil for a nil
+// target. The record and its nested values remain owned by the target; callers
+// synchronize reads and mutations.
 func (value *ExecutionProvider) View() *provider.Record {
 	if value == nil {
 		return nil
@@ -52,6 +82,9 @@ func (value *ExecutionProvider) View() *provider.Record {
 	return &value.Record
 }
 
+// ExecutionRecord returns a provider-module copy of the target's Record, or
+// nil for a nil target. It uses CloneRecord's supported-container copying
+// rules and supplies the process clock and location loader.
 func ExecutionRecord(value *ExecutionProvider) *provider.Record {
 	if value == nil {
 		return nil
@@ -62,7 +95,10 @@ func ExecutionRecord(value *ExecutionProvider) *provider.Record {
 	return out
 }
 
-// ApplyExecutionRecord 原地更新记录，Record 地址和本次路线保持不变。
+// ApplyExecutionRecord copies provider fields into the existing Record address
+// and installs the process clock and location loader. Nil arguments are
+// ignored; the target's request Route and Capabilities remain available to
+// bound callbacks and later execution.
 func ApplyExecutionRecord(out *ExecutionProvider, value *provider.Record) {
 	if out == nil || value == nil {
 		return
@@ -72,6 +108,10 @@ func ApplyExecutionRecord(out *ExecutionProvider, value *provider.Record) {
 	out.Record.LoadLocation = time.LoadLocation
 }
 
+// ExecutionProviders converts provider records into execution targets using
+// CopyRecordInto for each element. Nil input stays nil, empty input stays
+// empty, and each target receives the process clock and location loader with
+// an unset request route.
 func ExecutionProviders(values []provider.Record) []ExecutionProvider {
 	if values == nil {
 		return nil
@@ -85,6 +125,9 @@ func ExecutionProviders(values []provider.Record) []ExecutionProvider {
 	return out
 }
 
+// ExecutionRecords copies each execution Record into a provider-module slice
+// using CopyRecordInto. Nil input stays nil, empty input stays empty, and
+// every output record receives the process clock and location loader.
 func ExecutionRecords(values []ExecutionProvider) []provider.Record {
 	if values == nil {
 		return nil
@@ -98,6 +141,10 @@ func ExecutionRecords(values []ExecutionProvider) []provider.Record {
 	return out
 }
 
+// ExecutionRecordPointers converts a target slice through ExecutionRecord,
+// retaining nil input and nil elements. Each nonnil target receives the same
+// supported-container copying and clock setup as an individual record
+// conversion.
 func ExecutionRecordPointers(values []*ExecutionProvider) []*provider.Record {
 	if values == nil {
 		return nil
@@ -109,6 +156,9 @@ func ExecutionRecordPointers(values []*ExecutionProvider) []*provider.Record {
 	return out
 }
 
+// ExecutionModelPolicy combines a copied provider record with the target's
+// current attempt route for model checks. A nil target produces a policy with
+// both values unset; route assignment uses the route value as supplied.
 func ExecutionModelPolicy(value *ExecutionProvider) ModelPolicy {
 	out := ModelPolicy{Record: ExecutionRecord(value)}
 	if value != nil {
@@ -117,6 +167,10 @@ func ExecutionModelPolicy(value *ExecutionProvider) ModelPolicy {
 	return out
 }
 
+// ExecutionProtocolRecord returns the platform, type, credentials, extras, and
+// parent reference used by protocol policy. Nil targets return nil; nested
+// values are borrowed from Record, so callers keep them stable while consumers
+// read.
 func ExecutionProtocolRecord(value *ExecutionProvider) *provider.Record {
 	if value == nil {
 		return nil
@@ -125,6 +179,9 @@ func ExecutionProtocolRecord(value *ExecutionProvider) *provider.Record {
 	return &provider.Record{Platform: v.Platform, Type: v.Type, Credentials: v.Credentials, Extra: v.Extra, ParentProviderID: v.ParentProviderID}
 }
 
+// ExecutionProtocolTarget combines the reduced provider view with the
+// attempt's resolved upstream protocol. A nil target produces an empty target;
+// the reduced record borrows credentials and extras from the execution target.
 func ExecutionProtocolTarget(value *ExecutionProvider) provider.ProtocolTarget {
 	out := provider.ProtocolTarget{Record: ExecutionProtocolRecord(value)}
 	if value != nil {
@@ -133,6 +190,10 @@ func ExecutionProtocolTarget(value *ExecutionProvider) provider.ProtocolTarget {
 	return out
 }
 
+// NormalizeExecutionProtocols applies provider protocol normalization to the
+// reduced record and transfers its credentials and extras back to value. The
+// transfer occurs even when normalization returns an error, retaining any
+// partial changes made by that operation.
 func NormalizeExecutionProtocols(value *ExecutionProvider) error {
 	record := ExecutionProtocolRecord(value)
 	err := provider.NormalizeProviderProtocols(record)
@@ -143,6 +204,10 @@ func NormalizeExecutionProtocols(value *ExecutionProvider) error {
 	return err
 }
 
+// ExecutionSnapshot builds the candidate snapshot used for protocol and model
+// eligibility from the target's route and scheduling fields. Nil targets
+// return an empty snapshot; candidate construction follows ModelPolicy's
+// mapping and policy rules.
 func ExecutionSnapshot(value *ExecutionProvider) provider.ProviderSnapshot {
 	if value == nil {
 		return provider.ProviderSnapshot{}
@@ -157,6 +222,9 @@ func ExecutionSnapshot(value *ExecutionProvider) provider.ProviderSnapshot {
 	return (ModelPolicy{Record: v, Route: value.Route}).CandidateSnapshot()
 }
 
+// ExecutionCandidatePlan returns the route's resolved candidate and its
+// presence flag for selection capture. A nil target returns an empty plan with
+// false, allowing consumers to distinguish an absent attempt route.
 func ExecutionCandidatePlan(value *ExecutionProvider) (routing.CandidatePlan, bool) {
 	if value == nil {
 		return routing.CandidatePlan{}, false
@@ -164,12 +232,19 @@ func ExecutionCandidatePlan(value *ExecutionProvider) (routing.CandidatePlan, bo
 	return value.Route.Candidate()
 }
 
+// ExecutionRuntimeConfig returns the extras, concurrency, and session-window
+// references used by provider runtime policy. The target must be nonnil;
+// nested values are borrowed, so callers keep them stable throughout policy
+// reads.
 func ExecutionRuntimeConfig(value *ExecutionProvider) *provider.RuntimeConfig {
 	v := &value.Record
 	return &provider.RuntimeConfig{Extra: v.Extra, Concurrency: v.Concurrency, SessionWindowStart: v.SessionWindowStart, SessionWindowEnd: v.SessionWindowEnd}
 }
 
-// ExecutionCompletionRecord 返回完成记录需要的提供商字段。
+// ExecutionCompletionRecord selects provider identity, credentials, extras,
+// rate multiplier, and parent fields for completion capture. Nil targets
+// return nil; nested values are borrowed until completion capture creates its
+// worker-owned snapshot.
 func ExecutionCompletionRecord(value *ExecutionProvider) *provider.Record {
 	if value == nil {
 		return nil
@@ -178,7 +253,9 @@ func ExecutionCompletionRecord(value *ExecutionProvider) *provider.Record {
 	return &provider.Record{ID: v.ID, Name: v.Name, Platform: v.Platform, Type: v.Type, Credentials: v.Credentials, Extra: v.Extra, RateMultiplier: v.RateMultiplier, ParentProviderID: v.ParentProviderID}
 }
 
-// ExecutionTLSSelection 提取 TLS 资格与配置 ID，供 egress 选择策略。
+// ExecutionTLSSelection reads the target's TLS enablement and direct profile,
+// then attaches the first router match when present. A nil target leaves
+// direct settings empty, and later router matches are ignored.
 func ExecutionTLSSelection(value *ExecutionProvider, routerMatch []egress.TLSFingerprintRouterMatchResult) egress.TLSSelection {
 	selection := egress.TLSSelection{}
 	if value != nil {

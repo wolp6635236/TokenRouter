@@ -12,14 +12,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 )
 
-// WriteInterceptStream 发送流式 mock 响应（用于请求拦截）。
+// interception.go writes local Messages responses for intercepted Claude Code
+// probes in JSON or SSE form.
+// Claude Code probes can be answered locally before provider forwarding begins.
+// Synthetic Messages responses retain message IDs, stop fields and usage shape
+// expected by the client; streaming emits the same staged block lifecycle while
+// unary one-token Haiku probes carry their max_tokens stop reason.
+
+// WriteInterceptStream emits an Anthropic-shaped synthetic stream for local
+// probe interception. Suggestion mode returns empty text with one output token;
+// other modes use the warmup text and two tokens. Each event is flushed with a
+// short pause, and write errors are discarded because this local response has
+// no upstream attempt to retry.
 func WriteInterceptStream(c *gin.Context, model string, interceptType clientmeta.InterceptType) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	// 根据拦截类型决定响应内容
 	var msgID string
 	var outputTokens int
 	var textDeltas []string
@@ -28,29 +38,27 @@ func WriteInterceptStream(c *gin.Context, model string, interceptType clientmeta
 	case clientmeta.InterceptTypeSuggestionMode:
 		msgID = GenerateInterceptMessageID()
 		outputTokens = 1
-		textDeltas = []string{""} // 空内容
+		textDeltas = []string{""} // Suggestion probes return empty text.
 	default: // clientmeta.InterceptTypeWarmup
 		msgID = GenerateInterceptMessageID()
 		outputTokens = 2
 		textDeltas = []string{"New", " Conversation"}
 	}
 
-	// 构造与 Anthropic 官方响应字段一致的 message_start 事件。
+	// Emit message_start with Anthropic message and usage fields.
 	messageStartJSON := `{"type":"message_start","message":{"model":` + strconv.Quote(model) + `,"id":` + strconv.Quote(msgID) + `,"type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}`
 
-	// 构造内容块事件。
 	events := []string{
 		`event: message_start` + "\n" + `data: ` + messageStartJSON,
 		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 	}
 
-	// 按原顺序追加文本增量。
 	for _, text := range textDeltas {
 		deltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + strconv.Quote(text) + `}}`
 		events = append(events, `event: content_block_delta`+"\n"+`data: `+deltaJSON)
 	}
 
-	// message_delta 的 usage 只包含本次增量的输出 token。
+	// The terminal message_delta carries the synthetic response's output token count.
 	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"output_tokens":` + strconv.Itoa(outputTokens) + `}}`
 
 	events = append(events,
@@ -59,6 +67,9 @@ func WriteInterceptStream(c *gin.Context, model string, interceptType clientmeta
 		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
 	)
 
+	// Emit each synthetic lifecycle event with a separate flush and pause; failed
+	// client writes do not trigger an upstream retry for this intercepted local
+	// answer.
 	for _, event := range events {
 		_, _ = c.Writer.WriteString(event + "\n\n")
 		c.Writer.Flush()
@@ -66,13 +77,20 @@ func WriteInterceptStream(c *gin.Context, model string, interceptType clientmeta
 	}
 }
 
-// GenerateInterceptMessageID 生成 Anthropic 官方格式的消息 ID：msg_01 + 22 位 Base62。
+// GenerateInterceptMessageID generates msg_01 plus twenty-two Base62 characters
+// from random bytes, with modulo mapping rather than a collision check. The
+// pinned Go runtime fills the random slice or terminates on entropy failure;
+// its Read implementation never returns the error that selects the defensive
+// timestamp branch below.
 func GenerateInterceptMessageID() string {
 	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	// Match the twenty-two-character suffix accepted by the Messages probe shape.
 	const idLen = 22
 	randomBytes := make([]byte, idLen)
 	if _, err := rand.Read(randomBytes); err != nil {
-		// 极端情况下熵源不可用，仍保持客户端依赖的固定格式。
+		// This branch defines a timestamp-shaped ID if Read returns an error. The
+		// pinned Go implementation terminates on entropy failure before this path
+		// can provide a response.
 		return fmt.Sprintf("msg_01%022d", time.Now().UnixNano())
 	}
 	b := make([]byte, idLen)
@@ -82,7 +100,10 @@ func GenerateInterceptMessageID() string {
 	return "msg_01" + string(b)
 }
 
-// WriteInterceptResponse 发送非流式 mock 响应（用于请求拦截）。
+// WriteInterceptResponse writes an Anthropic-shaped synthetic JSON result for
+// intercepted probes. Suggestion mode returns empty text, the one-token Haiku
+// probe returns # with max_tokens termination, and other modes return warmup
+// text; synthetic usage and model metadata are provided directly.
 func WriteInterceptResponse(c *gin.Context, model string, interceptType clientmeta.InterceptType) {
 	var msgID, text, stopReason string
 	var outputTokens int
@@ -97,7 +118,9 @@ func WriteInterceptResponse(c *gin.Context, model string, interceptType clientme
 		msgID = GenerateInterceptMessageID()
 		text = "#"
 		outputTokens = 1
-		stopReason = "max_tokens" // max_tokens=1 探测请求的 stop_reason 应为 max_tokens
+		// The one-token probe needs its requested limit reflected in termination,
+		// so its fixed one-character answer uses max_tokens rather than end_turn.
+		stopReason = "max_tokens"
 	default: // clientmeta.InterceptTypeWarmup
 		msgID = GenerateInterceptMessageID()
 		text = "New Conversation"
@@ -105,7 +128,7 @@ func WriteInterceptResponse(c *gin.Context, model string, interceptType clientme
 		stopReason = "end_turn"
 	}
 
-	// 构建与 Anthropic 官方响应字段一致的完整响应。
+	// Use the Anthropic message shape for the synthetic response.
 	response := gin.H{
 		"model":         model,
 		"id":            msgID,

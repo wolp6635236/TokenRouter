@@ -6,40 +6,71 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
+// rule.go defines and validates configurable final error-response rules. Final
+// error-response rules combine status and keyword conditions after a separate
+// platform filter. Validation requires configured conditions and values for
+// custom response actions; it checks a custom status for positivity, so callers
+// do not receive an HTTP range guarantee from this model.
+
+// Match modes combine the configured status-code and keyword categories while
+// the separate platform filter still qualifies every rule before those conditions.
 const (
-	// MatchModeAny 表示任一条件匹配即可。
+	// MatchModeAny accepts a match in any configured condition category.
 	MatchModeAny = "any"
 
-	// MatchModeAll 表示所有条件都必须匹配。
+	// MatchModeAll requires a match in every configured condition category.
 	MatchModeAll = "all"
 )
 
-// ErrorPassthroughRule 全局错误透传规则
-// 用于控制上游错误如何返回给客户端。
+// ErrorPassthroughRule controls how upstream errors are returned to clients.
+// Platform filters apply independently of the error-code and keyword match mode.
 type ErrorPassthroughRule struct {
-	ID              int64     `json:"id"`
-	Name            string    `json:"name"`             // 规则名称
-	Enabled         bool      `json:"enabled"`          // 是否启用
-	Priority        int       `json:"priority"`         // 优先级（数字越小优先级越高）
-	ErrorCodes      []int     `json:"error_codes"`      // 匹配的错误码列表（OR关系）
-	Keywords        []string  `json:"keywords"`         // 匹配的关键词列表（OR关系）
-	MatchMode       string    `json:"match_mode"`       // "any"(任一条件) 或 "all"(所有条件)
-	Platforms       []string  `json:"platforms"`        // 适用平台列表
-	PassthroughCode bool      `json:"passthrough_code"` // 是否透传原始状态码
-	ResponseCode    *int      `json:"response_code"`    // 自定义状态码（passthrough_code=false 时使用）
-	PassthroughBody bool      `json:"passthrough_body"` // 是否透传原始错误信息
-	CustomMessage   *string   `json:"custom_message"`   // 自定义错误信息（passthrough_body=false 时使用）
-	SkipMonitoring  bool      `json:"skip_monitoring"`  // 是否跳过运维监控记录
-	Description     *string   `json:"description"`      // 规则描述
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID      int64  `json:"id"`      // persisted error-rule record identifier
+	Name    string `json:"name"`    // administrator rule display name
+	Enabled bool   `json:"enabled"` // rule participates in final matching
+	// Priority selects earlier matches when its value is lower. Matching supplies
+	// no secondary key for equal priorities, so callers do not rely on their
+	// relative order.
+	Priority int `json:"priority"` // ascending error-rule matching priority
+	// ErrorCodes, Keywords, and MatchMode describe one condition decision. Empty
+	// categories are omitted; at least one category is required, and any/all
+	// combines only categories that are configured.
+	ErrorCodes []int `json:"error_codes"` // accepted supplied error status values
+	// Keywords is a substring list folded to lowercase during compilation.
+	// Entries are not trimmed here, and an empty configured keyword matches any
+	// converted body.
+	Keywords  []string `json:"keywords"`   // case-folded body substring match values
+	MatchMode string   `json:"match_mode"` // configured condition category combination mode
+	// Platforms is independent of MatchMode and empty lists match all platforms.
+	// Compilation folds case but retains supplied whitespace in each platform
+	// label.
+	Platforms       []string `json:"platforms"`        // case-folded permitted upstream platform labels
+	PassthroughCode bool     `json:"passthrough_code"` // retain supplied upstream response status
+	// ResponseCode is used when PassthroughCode is false and Validate requires a
+	// positive pointed value. Validation supplies no HTTP status range
+	// restriction for that replacement.
+	ResponseCode    *int `json:"response_code"`    // optional custom response status value
+	PassthroughBody bool `json:"passthrough_body"` // retain extracted upstream error message
+	// CustomMessage is used when PassthroughBody is false. Validate requires a
+	// nonempty pointed string for that action and does not trim its contents.
+	CustomMessage *string `json:"custom_message"` // optional administrator response message pointer
+	// SkipMonitoring instructs final error consumers to suppress ordinary Ops
+	// errors for the request. Provider health classification and other record
+	// paths remain the consumers' separate operations.
+	SkipMonitoring bool      `json:"skip_monitoring"` // suppress ordinary Ops error observation
+	Description    *string   `json:"description"`     // optional administrator rule description text
+	CreatedAt      time.Time `json:"created_at"`      // persisted rule creation wall-clock time
+	UpdatedAt      time.Time `json:"updated_at"`      // persisted rule update wall-clock time
 }
 
+// ValidationError identifies the rejected field and message using the egress
+// error representation.
 type ValidationError = egress.ValidationError
 
-// 支持的平台常量
-
-// Validate 验证规则配置的有效性。
+// Validate returns the first missing name, invalid mode, absent condition
+// category, or unusable custom-action value. The receiver must be nonnil;
+// condition entries are not validated individually, and custom response status
+// requires positivity without an HTTP range check.
 func (r *ErrorPassthroughRule) Validate() error {
 	if r.Name == "" {
 		return &ValidationError{Field: "name", Message: "name is required"}
@@ -47,7 +78,7 @@ func (r *ErrorPassthroughRule) Validate() error {
 	if r.MatchMode != MatchModeAny && r.MatchMode != MatchModeAll {
 		return &ValidationError{Field: "match_mode", Message: "match_mode must be 'any' or 'all'"}
 	}
-	// 至少需要配置一个匹配条件（错误码或关键词）
+
 	if len(r.ErrorCodes) == 0 && len(r.Keywords) == 0 {
 		return &ValidationError{Field: "conditions", Message: "at least one error_code or keyword is required"}
 	}

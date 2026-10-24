@@ -1,7 +1,5 @@
 package selection
 
-// 模型诊断场景覆盖 generic.go、compatible.go 的候选选择与 compatible_picker.go 的模型限制判断。
-
 import (
 	"context"
 	"errors"
@@ -21,10 +19,16 @@ import (
 	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// selectionAvailabilityFixture 筛选候选并返回模型诊断需要的记录。
-type selectionAvailabilityFixture struct{ *mockProviderRepoForPlatform }
+// selectionAvailabilityFixture exposes platform fixture candidates as provider
+// records for model diagnostics.
+type selectionAvailabilityFixture struct {
+	*mockProviderRepoForPlatform /* platform availability fixture */
+}
 
-// newBedrockRoutingTestProvider 用虚构凭据构造测试用可调度提供商。
+// newBedrockRoutingTestProvider constructs a schedulable Bedrock record with
+// supplied region and optional global routing. Fictitious SigV4 credentials let
+// selection and diagnosis exercise regional model policy without contacting an
+// upstream.
 func newBedrockRoutingTestProvider(id int64, region string, forceGlobal bool) gatewayprovider.ExecutionProvider {
 	provider := gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -42,7 +46,10 @@ func newBedrockRoutingTestProvider(id int64, region string, forceGlobal bool) ga
 	return provider
 }
 
-// TestBedrockRegionRouting_SchedulerAndDiagnosisAgree 检查提供商筛选和错误诊断使用相同的区域规则，跳过区域不支持的粘性提供商。
+// TestBedrockRegionRouting_SchedulerAndDiagnosisAgree supplies an invalid
+// regional provider and optional valid backup under both load modes.
+// Diagnostics and selection agree on model support, and an incompatible sticky
+// target cannot win.
 func TestBedrockRegionRouting_SchedulerAndDiagnosisAgree(t *testing.T) {
 	groupID := int64(5200)
 	invalid := newBedrockRoutingTestProvider(1, "ap-northeast-1", false)
@@ -84,7 +91,7 @@ func TestBedrockRegionRouting_SchedulerAndDiagnosisAgree(t *testing.T) {
 				diagnosis := gatewayprovider.NewModelAvailability(selectionAvailabilityFixture{repo}, nil, false).DiagnoseGeneral(context.Background(), &groupID, "claude-sonnet-5", capability.PlatformAnthropic)
 				require.True(t, diagnosis.HasProvidersInPool)
 				require.Equal(t, withValid, diagnosis.HasModelSupport)
-				selected, err := gateway.SelectProviderWithLoadAwareness(context.Background(), &groupID, "sticky", "claude-sonnet-5", nil, "", 0)
+				selected, err := gateway.SelectProviderWithLoadAwareness(context.Background(), &groupID, "sticky", "claude-sonnet-5", nil)
 				if withValid {
 					require.NoError(t, err)
 					require.Equal(t, valid.Record.ID, selected.Provider.Record.ID)
@@ -100,6 +107,10 @@ func TestBedrockRegionRouting_SchedulerAndDiagnosisAgree(t *testing.T) {
 	}
 }
 
+// ListModelAvailabilityCandidates converts the platform fixture's filtered
+// candidates to provider record values. It passes group, platform, and
+// include-grouped inputs through, with the fixture's read error accompanying
+// the converted result.
 func (s selectionAvailabilityFixture) ListModelAvailabilityCandidates(ctx context.Context, group *int64, platforms []string, all bool) ([]providercore.Record, error) {
 	values, err := s.availabilityRecords(ctx, group, platforms, all)
 	out := make([]providercore.Record, len(values))
@@ -109,6 +120,9 @@ func (s selectionAvailabilityFixture) ListModelAvailabilityCandidates(ctx contex
 	return out, err
 }
 
+// TestModelAvailabilityDiagnosisAcceptsPricingConfigAlias maps a client alias
+// through a group and provider to an allowed model. Persistent-model diagnosis
+// finds support using the supplied group policy and final provider allowlist.
 func TestModelAvailabilityDiagnosisAcceptsPricingConfigAlias(t *testing.T) {
 	groupID := int64(4203)
 	pricingConfig := routingtestkit.Configuration{
@@ -140,7 +154,10 @@ func TestModelAvailabilityDiagnosisAcceptsPricingConfigAlias(t *testing.T) {
 	require.True(t, diagnosis.HasModelSupport)
 }
 
-// TestOpenAIHTTPPassthroughKeepsExplicitModelScope 检查透传提供商的最终模型白名单。
+// TestOpenAIHTTPPassthroughKeepsExplicitModelScope supplies a passthrough
+// provider whose final mapped model misses its allowlist. Eligibility, picker
+// checks, and typed rejection observe the scope; the separate diagnosis call
+// returns no support with its missing group input.
 func TestOpenAIHTTPPassthroughKeepsExplicitModelScope(t *testing.T) {
 	provider := gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{

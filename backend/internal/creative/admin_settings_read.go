@@ -1,13 +1,23 @@
 package creative
 
-// AdminReadSettings 包含创作台开关、模型和 worker 数量。
+// admin_settings_read.go decodes stored creative settings for administrator
+// responses.
+// Administrator reads interpret the feature flag independently from model
+// admission. Missing worker counts use the pool default, while missing or
+// malformed model settings yield an empty allowlist that closes the creative
+// directory.
+
+// AdminReadSettings contains the creative feature switch, model settings, and
+// worker count.
 type AdminReadSettings struct {
-	CreativeEnabled       bool
-	CreativeModelSettings []CreativeModelSetting
-	CreativeWorkerCount   int
+	CreativeEnabled       bool                   // feature switch read result
+	CreativeModelSettings []CreativeModelSetting // normalized model allowlist entries
+	CreativeWorkerCount   int                    // configured task worker count
 }
 
-// ReadAdminSettings 从传入的设置值解析创作台开关、模型和 worker 数量。
+// ReadAdminSettings parses creative values for the administration response.
+// Only the exact string false disables the feature; model parsing fails closed
+// and invalid worker counts use DefaultCreativeWorkerCount.
 func ReadAdminSettings(settings map[string]string) *AdminReadSettings {
 	result := &AdminReadSettings{}
 	result.CreativeModelSettings = ParseCreativeModelSettings(settings[SettingKeyCreativeModelSettings])

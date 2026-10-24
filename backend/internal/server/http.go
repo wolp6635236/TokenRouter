@@ -12,13 +12,23 @@ import (
 	middleware2 "github.com/TokenFlux/TokenRouter/internal/server/middleware"
 )
 
-// ProviderSet 提供服务器层的依赖。
+// http.go constructs the Gin router and HTTP server from resolved server
+// options.
+// Generation streams and large uploads can outlive short HTTP calls. Server
+// construction therefore limits header reads and idle connections while leaving
+// whole-body and response deadlines to request owners. App's resolved options
+// also supply an absolute body cap and optional cleartext HTTP/2 connection limits.
+
+// ProviderSet supplies Wire with router construction and the HTTP listener
+// configuration, using app's shared middleware runtime and resolved process options.
 var ProviderSet = wire.NewSet(
 	ProvideRouter,
 	ProvideHTTPServer,
 )
 
-// ProvideRouter 提供路由器。
+// ProvideRouter constructs the engine with recovery, proxy trust, and app's routes.
+// Call before serving requests with a nonnil RouterRuntime; "release" changes
+// Gin's process-wide mode, and invalid or absent proxy lists disable Gin forwarding trust.
 func ProvideRouter(cfg Options, runtime *RouterRuntime) *gin.Engine {
 	if cfg.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -31,10 +41,15 @@ func ProvideRouter(cfg Options, runtime *RouterRuntime) *gin.Engine {
 	return SetupRouter(r, runtime)
 }
 
+// configureTrustedProxies applies an explicit peer list or disables Gin forwarding trust.
+// Run before requests are served. Invalid lists are logged and replaced with nil;
+// release mode also reports absent or explicitly empty configuration for operators.
 func configureTrustedProxies(r *gin.Engine, cfg Options) {
 	if cfg.TrustedProxiesConfigured {
 		if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
 			log.Printf("Failed to set trusted proxies: %v", err)
+			// Gin may retain a valid prefix from the rejected list. Clear all peers
+			// so a malformed configuration cannot leave partially enabled forwarding trust.
 			_ = r.SetTrustedProxies(nil)
 		}
 		if len(cfg.TrustedProxies) == 0 && cfg.Mode == "release" {
@@ -50,7 +65,10 @@ func configureTrustedProxies(r *gin.Engine, cfg Options) {
 	}
 }
 
-// ProvideHTTPServer 提供 HTTP 服务器
+// ProvideHTTPServer returns a server with header, idle, body, and H2C limits.
+// Construct it before serving and supply H2C sizes that fit the adapter's uint32
+// frame and int32 window fields. A positive body limit wraps the router; H2C
+// configuration errors are logged before returning the server.
 // @project-doc docs/operations/edge_security.md#http_ingress_limits
 func ProvideHTTPServer(cfg Options, router *gin.Engine) *http.Server {
 	httpHandler := http.Handler(router)
@@ -58,24 +76,31 @@ func ProvideHTTPServer(cfg Options, router *gin.Engine) *http.Server {
 		Addr:           cfg.Address,
 		Handler:        httpHandler,
 		MaxHeaderBytes: cfg.MaxHeaderBytes,
-		// ReadHeaderTimeout: 读取请求头的超时时间，防止慢速请求头攻击
+		// Convert configured seconds into the header-read budget, which leaves
+		// handler body consumption free to use its own deadline.
 		ReadHeaderTimeout: time.Duration(cfg.ReadHeaderTimeout) * time.Second,
-		// IdleTimeout: 空闲连接超时时间，释放不活跃的连接资源
+		// IdleTimeout also uses seconds and measures waiting between HTTP/1
+		// requests, independently of the H2C adapter's configured idle budget.
 		IdleTimeout: time.Duration(cfg.IdleTimeout) * time.Second,
-		// 注意：不设置 WriteTimeout，因为流式响应可能持续十几分钟
-		// 不设置 ReadTimeout，因为大请求体可能需要较长时间读取
+		// Whole-body and response deadlines would apply to large uploads and
+		// long generation streams. Their owners choose request-specific limits,
+		// so ReadTimeout and WriteTimeout remain zero on the shared listener.
 	}
 
 	globalMaxSize := cfg.MaxRequestBodySize
 	if globalMaxSize > 0 {
+		// Wrap the complete router so body consumers inherit the absolute cap
+		// even when their route also applies a narrower request-body limit.
 		httpHandler = http.MaxBytesHandler(httpHandler, globalMaxSize)
+		// Express the byte cap as MiB in this diagnostic.
 		log.Printf("Global max request body size: %d bytes (%.2f MB)", globalMaxSize, float64(globalMaxSize)/(1<<20))
 	}
 
-	// 根据配置决定是否启用 H2C
+	// The adapter accepts a separate H2C idle timeout while http.Server holds
+	// the HTTP/1 value. Convert seconds before passing both connection policies.
 	if cfg.H2C.Enabled {
 		h2cConfig := cfg.H2C
-		//nolint:staticcheck // HTTP/1 与 h2c 使用独立空闲超时，http.HTTP2Config 尚无独立的 IdleTimeout 字段。
+		//nolint:staticcheck // HTTP/1 and h2c need separate idle timeouts; http.HTTP2Config has no separate IdleTimeout field.
 		if err := http2.ConfigureServer(server, &http2.Server{
 			MaxConcurrentStreams:         h2cConfig.MaxConcurrentStreams,
 			IdleTimeout:                  time.Duration(h2cConfig.IdleTimeout) * time.Second,
@@ -83,6 +108,8 @@ func ProvideHTTPServer(cfg Options, router *gin.Engine) *http.Server {
 			MaxUploadBufferPerConnection: int32(h2cConfig.MaxUploadBufferPerConnection),
 			MaxUploadBufferPerStream:     int32(h2cConfig.MaxUploadBufferPerStream),
 		}); err != nil {
+			// Keep the returned server's Protocols unset on this error path. The
+			// diagnostic reports configuration failure before explicit H2C opt-in occurs.
 			log.Printf("Failed to configure HTTP/2 Cleartext (h2c): %v", err)
 		} else {
 			protocols := new(http.Protocols)

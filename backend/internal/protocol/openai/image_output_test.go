@@ -1,13 +1,44 @@
 package openai
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
+// TestOpenAIImageOutputCounterCompletedEventFamilies supplies generation and
+// editing completions with repeated final snapshots. Both event families count
+// payload-bearing images once, preserve sizes, and exclude partial or empty events.
+func TestOpenAIImageOutputCounterCompletedEventFamilies(t *testing.T) {
+	for _, family := range []string{"image_generation", "image_edit"} {
+		t.Run(family, func(t *testing.T) {
+			counter := NewOpenAIImageOutputCounter()
+			counter.AddSSEData([]byte(fmt.Sprintf(`{"type":%q,"b64_json":"partial"}`, family+".partial_image")))
+			counter.AddSSEData([]byte(fmt.Sprintf(`{"type":%q}`, family+".completed")))
+			require.Zero(t, counter.Count())
+			first := []byte(fmt.Sprintf(`{"type":%q,"id":"image-1","b64_json":"first","size":"1536x2048"}`, family+".completed"))
+			counter.AddSSEData(first)
+			counter.AddSSEData(first)
+			counter.AddSSEData([]byte(`{"type":"response.completed","response":{"output":[{"type":"image_generation_call","id":"image-1","result":"first","size":"1536x2048"}]}}`))
+			require.Equal(t, 1, counter.Count())
+			require.Equal(t, []string{"1536x2048"}, counter.Sizes())
+			counter.AddSSEData([]byte(fmt.Sprintf(`{"type":%q,"b64_json":"second","size":"1024x1024"}`, family+".completed")))
+			require.Equal(t, 2, counter.Count())
+			require.Equal(t, []string{"1536x2048", "1024x1024"}, counter.Sizes())
+		})
+	}
+}
+
+// Image observations require output evidence beyond IDs and completion labels.
+// The fixtures cover text-only responses, recognized data entries, repeated final
+// items, and separate size observations. Multiline SSE cases exercise valid joins
+// and the parser's separate-line recovery path through the resulting image count.
+
+// TestOpenAIImageOutputCounter_TextOnlyResponsesStream sends text deltas and a
+// completed text response with usage. The image count remains zero through the
+// whole SSE body, including its DONE marker.
 func TestOpenAIImageOutputCounter_TextOnlyResponsesStream(t *testing.T) {
-	// 回归覆盖：纯文本 /v1/responses 流不能因为 message output item 被记为图片。
 	sseBody := `data: {"type":"response.created","response":{"id":"resp_123"}}
 
 data: {"type":"response.output_item.added","item":{"id":"item_1","type":"message","role":"assistant","status":"in_progress"}}
@@ -25,8 +56,10 @@ data: [DONE]`
 	}
 }
 
+// TestOpenAIImageOutputCounter_DataArraySkipsNonImageObjects compares metadata
+// entries with a URL-bearing Images API entry. The metadata fixture counts zero,
+// while the image fixture contributes one count and its reported size.
 func TestOpenAIImageOutputCounter_DataArraySkipsNonImageObjects(t *testing.T) {
-	// 图片 data 参与图片计数，其他 data 数组的图片计数为零。
 	nonImageData := `data: {"type":"response.completed","response":{"id":"resp_1","output":[{"id":"item_1","type":"message","content":[{"type":"output_text","text":"Hello"}]}]},"data":[{"id":"not_an_image","status":"done"}]}
 
 data: [DONE]`
@@ -50,8 +83,10 @@ data: [DONE]`
 	}
 }
 
+// TestOpenAIImageOutputCounter_CompletedImageEventRequiresOutput compares two
+// completed-image events sharing an ID-only shape. Adding a URL changes the
+// observed count from zero to one for these otherwise similar fixtures.
 func TestOpenAIImageOutputCounter_CompletedImageEventRequiresOutput(t *testing.T) {
-	// 回归覆盖：缺少 result/b64_json/url 的 image_generation.completed 事件不能只凭 id 计数。
 	emptyCompleted := `data: {"type":"image_generation.completed","item":{"type":"image_generation.completed","id":"call_1"}}
 
 data: [DONE]`
@@ -69,8 +104,10 @@ data: [DONE]`
 	}
 }
 
+// TestOpenAIImageOutputCounter_JSONDataArraySkipsNonImageObjects supplies text
+// output, usage, and a data object containing ID/status metadata. The JSON image
+// helper returns zero because the fixture has no recognized image output field.
 func TestOpenAIImageOutputCounter_JSONDataArraySkipsNonImageObjects(t *testing.T) {
-	// 回归覆盖：非流式 JSON 响应中的非图片 data 数组也不能触发图片计费。
 	body := []byte(`{
 		"id": "resp_1",
 		"object": "response",
@@ -90,6 +127,9 @@ func TestOpenAIImageOutputCounter_JSONDataArraySkipsNonImageObjects(t *testing.T
 	}
 }
 
+// TestOpenAIImageOutputCounterDeduplicatesFinalImages repeats one final item in
+// the completed response after an item-done event and a partial-image event.
+// Two final identities count once each, retaining their sizes in first-seen order.
 func TestOpenAIImageOutputCounterDeduplicatesFinalImages(t *testing.T) {
 	counter := NewOpenAIImageOutputCounter()
 	counter.AddSSEData([]byte(`{"type":"response.image_generation_call.partial_image","partial_image_b64":"abc"}`))
@@ -99,6 +139,10 @@ func TestOpenAIImageOutputCounterDeduplicatesFinalImages(t *testing.T) {
 	require.Equal(t, []string{"1024x1024", "3840x2160"}, counter.Sizes())
 }
 
+// TestOpenAIImageOutputCounterCountsImagesAPIStreamShapes observes root, item,
+// and response-output completion forms with distinct IDs, yielding three images.
+// A separate counter reads two growing data arrays and returns their largest
+// count of three.
 func TestOpenAIImageOutputCounterCountsImagesAPIStreamShapes(t *testing.T) {
 	counter := NewOpenAIImageOutputCounter()
 	counter.AddSSEData([]byte(`{"type":"image_generation.completed","id":"ig_complete","b64_json":"final-a"}`))
@@ -112,12 +156,18 @@ func TestOpenAIImageOutputCounterCountsImagesAPIStreamShapes(t *testing.T) {
 	require.Equal(t, 3, dataCounter.Count())
 }
 
+// TestOpenAIImageOutputCounterCountsMultilineSSEDataPayload supplies one complete
+// image JSON payload with a physical newline between fields. Direct data
+// observation accepts that valid document and records one image.
 func TestOpenAIImageOutputCounterCountsMultilineSSEDataPayload(t *testing.T) {
 	counter := NewOpenAIImageOutputCounter()
 	counter.AddSSEData([]byte("{\"type\":\"image_generation.completed\",\n\"b64_json\":\"final-a\"}"))
 	require.Equal(t, 1, counter.Count())
 }
 
+// TestOpenAIImageOutputCounterCountsMultilineSSEBodyPayload splits an image JSON
+// document across two data lines in one SSE event. Joining those lines yields
+// one recognized image before the separate DONE event.
 func TestOpenAIImageOutputCounterCountsMultilineSSEBodyPayload(t *testing.T) {
 	counter := NewOpenAIImageOutputCounter()
 	counter.AddSSEBody(
@@ -128,6 +178,9 @@ func TestOpenAIImageOutputCounterCountsMultilineSSEBodyPayload(t *testing.T) {
 	require.Equal(t, 1, counter.Count())
 }
 
+// TestOpenAIImageOutputCounterFallsBackForInvalidMultilineSSEBody places two
+// complete image JSON documents in consecutive data lines of one event. Their
+// invalid join falls back to separate observations, producing two image counts.
 func TestOpenAIImageOutputCounterFallsBackForInvalidMultilineSSEBody(t *testing.T) {
 	counter := NewOpenAIImageOutputCounter()
 	counter.AddSSEBody(
@@ -137,6 +190,9 @@ func TestOpenAIImageOutputCounterFallsBackForInvalidMultilineSSEBody(t *testing.
 	require.Equal(t, 2, counter.Count())
 }
 
+// TestCollectOpenAIResponseImageOutputSizesFromJSONBytes supplies two distinct
+// image output items with different dimensions. The JSON helpers return count
+// two and the exact size strings in the items' observed order.
 func TestCollectOpenAIResponseImageOutputSizesFromJSONBytes(t *testing.T) {
 	body := []byte(`{
 		"output": [
@@ -149,6 +205,9 @@ func TestCollectOpenAIResponseImageOutputSizesFromJSONBytes(t *testing.T) {
 	require.Equal(t, []string{"3840x2160", "1024x1024"}, CollectOpenAIResponseImageOutputSizesFromJSONBytes(body))
 }
 
+// TestCollectOpenAIResponseImageOutputSizesFromImagesAPIData supplies two Images
+// API data entries with different results and equal sizes. The count is two, and
+// size collection retains both occurrences of the dimension string.
 func TestCollectOpenAIResponseImageOutputSizesFromImagesAPIData(t *testing.T) {
 	body := []byte(`{
 		"data": [
@@ -161,6 +220,9 @@ func TestCollectOpenAIResponseImageOutputSizesFromImagesAPIData(t *testing.T) {
 	require.Equal(t, []string{"2048x1152", "2048x1152"}, CollectOpenAIResponseImageOutputSizesFromJSONBytes(body))
 }
 
+// TestCollectOpenAIImageOutputSizesFromSSEBody repeats an item ID between an
+// item-done event and a completed response containing another image. Helpers
+// return two images and their exact first-seen size order across the SSE body.
 func TestCollectOpenAIImageOutputSizesFromSSEBody(t *testing.T) {
 	body := "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"ig_1\",\"type\":\"image_generation_call\",\"result\":\"final-a\",\"size\":\"3840x2160\"}}\n\n" +
 		"data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"ig_1\",\"type\":\"image_generation_call\",\"result\":\"final-a\"},{\"id\":\"ig_2\",\"type\":\"image_generation_call\",\"result\":\"final-b\",\"size\":\"1024x1024\"}]}}\n\n" +
@@ -168,4 +230,22 @@ func TestCollectOpenAIImageOutputSizesFromSSEBody(t *testing.T) {
 
 	require.Equal(t, 2, CountOpenAIImageOutputsFromSSEBody(body))
 	require.Equal(t, []string{"3840x2160", "1024x1024"}, CollectOpenAIImageOutputSizesFromSSEBody(body))
+}
+
+// TestOpenAIImageOutputCounterUsesEventTypes distinguishes completion labels
+// from incidental partial-image text. Native and Responses completions retain
+// output and size evidence, while explicit preview events remain uncounted.
+func TestOpenAIImageOutputCounterUsesEventTypes(t *testing.T) {
+	for _, payload := range []string{
+		`{"type":"image_generation.completed","b64_json":"image","revised_prompt":"label partial_image","size":"1024x1024"}`,
+		`{"type":"image_edit.completed","url":"https://example.invalid/partial_image_final.png","size":"1024x1024"}`,
+		`{"type":"response.output_item.done","item":{"type":"image_generation_call","result":"image","revised_prompt":"label partial_image","size":"1024x1024"}}`,
+	} {
+		counter := NewOpenAIImageOutputCounter()
+		counter.AddSSEData([]byte(payload))
+		counter.AddSSEData([]byte(payload))
+		counter.AddSSEData([]byte(`{"type":"image_generation.partial_image","b64_json":"preview"}`))
+		require.Equal(t, 1, counter.Count())
+		require.Equal(t, []string{"1024x1024"}, counter.Sizes())
+	}
 }

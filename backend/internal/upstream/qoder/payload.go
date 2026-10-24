@@ -16,14 +16,39 @@ import (
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	protocolanthropic "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
+// payload.go converts Chat, Responses, and Messages requests into Qoder
+// payloads with paired tool history and model controls.
+// Client requests encode instructions and tool history differently across Chat,
+// Messages, and Responses. Conversion keeps control roles in Qoder system text,
+// pairs tool calls with their results, and selects a session source before
+// building the site's model and runtime configuration.
+//
+// Responses histories can contain orphan outputs or unanswered calls, so pairing
+// retains matched calls and orders their results after the owning assistant
+// turn. Anthropic text and tool results become separate ordered Qoder messages,
+// while thinking history is omitted. Payload construction retains shared tool
+// definitions and text-block maps, mirrors context and thinking controls where
+// Qoder reads them, and adds ephemeral cache control to the last eligible text
+// block.
+
+// Billing checksum normalization and blank response metadata support stable
+// history comparison while payload messages retain the Gateway's required
+// metadata shape.
 var (
+	// QoderClaudeBillingCCHRe recognizes five-hex billing checksum text ending in a
+	// semicolon. System normalization replaces that volatile value before message
+	// payload or conversation fingerprint construction.
 	QoderClaudeBillingCCHRe = regexp.MustCompile(`(x-anthropic-billing-header:[^\n\r;]*?(?:;[^\n\r;]*?)*\bcch=)[0-9a-fA-F]{5}(;)`)
 
+	// QoderBlankResponseMeta supplies blank identity and usage fields to payload
+	// messages. The same nested map is shared across those messages, so callers
+	// keep this metadata immutable.
 	QoderBlankResponseMeta = map[string]any{
 		"id": "",
 		"usage": map[string]any{
@@ -40,35 +65,58 @@ var (
 	}
 )
 
-// QoderThinkingDirective 表示下游思考参数归一化后的开关和等级。
+// QoderThinkingDirective carries normalized client intent before
+// route-capability effort mapping.
 type QoderThinkingDirective struct {
-	Enabled bool
-	Effort  string
+	// Enabled selects whether adjustable routes send thinking controls. Effort is
+	// normalized client intent; effort-capable routes translate it only while
+	// Enabled is true. Disabled thinking sends none on those adjustable routes.
+	Enabled bool   // requested thinking switch
+	Effort  string // normalized requested effort
 }
 
+// QoderPayloadRequest retains normalized protocol input and session sources for
+// Gateway preparation.
 type QoderPayloadRequest struct {
-	Model           string
-	Site            Site
-	System          string
-	Messages        []QoderMessage
-	Tools           []any
-	MaxTokens       int
-	Thinking        QoderThinkingDirective
-	UserType        string
-	ExplicitSession string
-	PromptCacheKey  string
-	MetadataUserID  string
-	ResponseID      string
-	// AutoResponseSession 表示 ExplicitSession 由本次响应 ID 合成。
-	// 选择会话键时，prompt_cache_key 和请求头中的稳定标识优先。
-	AutoResponseSession bool
-	// previousResponseID 标记 OpenAI Responses 续写请求。不同于
-	// session_id/conversation_id，previous_response_id 通常只携带新的 input item，
-	// 对话规划器将新的 input item 追加到已有状态。
-	PreviousResponseID string
+	// Capabilities supplies per-attempt resolved attributes and execution rules
+	// when present. Nil leaves site catalog capability lookup to payload
+	// construction.
+	Capabilities *modelcatalog.Resolution // resolved route attributes
+	Model        string                   // client model name
+	Site         Site                     // selected credential site
+	System       string                   // normalized system text
+	// Messages retains mutable raw and text-block maps used by conversion.
+	// Enrichment and cache-control insertion can mutate those maps before request
+	// dispatch.
+	Messages []QoderMessage // ordered normalized history
+	// Tools is shared with payloads when tools are included. Callers keep its
+	// nested declarations stable while planning fingerprints and preparing request
+	// bytes.
+	Tools     []any                  // declared function tools
+	MaxTokens int                    // output tokens
+	Thinking  QoderThinkingDirective // normalized thinking intent
+	UserType  string                 // Qoder account classification
+	// ExplicitSession, PromptCacheKey, and MetadataUserID retain distinct client
+	// session sources. QoderConversationKey selects precedence and applies API-key
+	// plus provider isolation after parsing.
+	ExplicitSession string // body session identifier
+	PromptCacheKey  string // stable prompt-cache identifier
+	MetadataUserID  string // Anthropic metadata identity
+	ResponseID      string // generated Responses identifier
+	// AutoResponseSession marks ExplicitSession generated from ResponseID.
+	// Conversation selection then considers stable cache, metadata, header, and
+	// Claude Code sources before that generated value.
+	AutoResponseSession bool // generated session marker
+	// PreviousResponseID enables Responses append planning in Execute. The parser
+	// also uses it as an explicit session candidate after session_id and
+	// conversation_id.
+	PreviousResponseID string // Responses continuation identifier
 }
 
-// BuildQoderPayloadFromChatCompletionsForSite 按提供商站点解析默认模型 alias。
+// BuildQoderPayloadFromChatCompletionsForSite parses Chat input and builds a
+// complete site-specific payload. The supplied site and user type determine
+// aliases and capabilities; construction sends all parsed messages with system
+// and tools enabled.
 func BuildQoderPayloadFromChatCompletionsForSite(body []byte, userType string, site Site) (map[string]any, string, error) {
 	request, err := ParseQoderChatCompletionsPayload(body)
 	if err != nil {
@@ -80,6 +128,16 @@ func BuildQoderPayloadFromChatCompletionsForSite(body []byte, userType string, s
 	return payload, modelKey, nil
 }
 
+// ParseQoderChatCompletionsPayload parses Chat input into normalized system,
+// messages, tools, and controls. A nonempty model is required, unsupported
+// message roles return errors, and positive max_completion_tokens takes
+// precedence over max_tokens and the execution default.
+//
+// Control-role messages contribute to system text while assistant/tool history
+// retains call identity. Modern tools and legacy functions are combined before
+// tool-choice filtering, and thinking controls use Chat's field precedence.
+// Session and metadata fields remain separate so conversation selection can
+// apply caller and provider isolation later.
 func ParseQoderChatCompletionsPayload(body []byte) (QoderPayloadRequest, error) {
 	var req protocolopenai.ChatCompletionsRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -97,7 +155,9 @@ func ParseQoderChatCompletionsPayload(body []byte) (QoderPayloadRequest, error) 
 
 	rawReq := QoderRequestMap(body)
 	maxTokens := QoderDefaultMaxTokens
-	// max_completion_tokens 优先于 max_tokens
+	// Chat clients can send both output-limit fields. Prefer the positive
+	// completion-specific value so legacy max_tokens cannot override the requested
+	// completion budget.
 	if req.MaxCompletionTokens != nil && *req.MaxCompletionTokens > 0 {
 		maxTokens = *req.MaxCompletionTokens
 	} else if req.MaxTokens != nil && *req.MaxTokens > 0 {
@@ -116,6 +176,10 @@ func ParseQoderChatCompletionsPayload(body []byte) (QoderPayloadRequest, error) 
 	}, nil
 }
 
+// BuildQoderPayloadFromAnthropicMessages parses Messages input and builds a
+// complete global-site payload. The supplied user type replaces the parsed
+// value; construction sends all parsed messages, system text, and converted tool
+// definitions.
 func BuildQoderPayloadFromAnthropicMessages(body []byte, userType string) (map[string]any, string, error) {
 	request, err := ParseQoderAnthropicMessagesPayload(body)
 	if err != nil {
@@ -126,6 +190,18 @@ func BuildQoderPayloadFromAnthropicMessages(body []byte, userType string) (map[s
 	return payload, modelKey, nil
 }
 
+// ParseQoderResponsesPayload normalizes Responses instructions, input items,
+// tools, and continuation identity. A nonempty model is required, and positive
+// max_output_tokens replaces the execution default. Instructions and
+// control-role input items combine into system text.
+//
+// Explicit session_id, conversation_id, and previous_response_id are selected
+// before generating a response ID. When none exists, the generated response ID
+// becomes an auto session that yields to stable cache/header keys later.
+// Function calls and outputs are normalized into paired history before the
+// conversation planner interprets continuation input. An output needs its call in
+// the submitted items; previous_response_id does not supply missing calls for this
+// pairing step.
 func ParseQoderResponsesPayload(body []byte) (QoderPayloadRequest, error) {
 	var req protocolopenai.ResponsesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -140,12 +216,16 @@ func ParseQoderResponsesPayload(body []byte) (QoderPayloadRequest, error) {
 	}
 	messages = EnrichQoderToolResultMessages(messages)
 
-	// 从 instructions 和 input 中的 developer/system 项收集 system prompt
+	// Responses instructions and control-role items are separate inputs. Combine
+	// their text into the Qoder system prompt so role conversion can omit duplicate
+	// history.
 	systemParts := make([]string, 0)
 	if req.Instructions != "" {
 		systemParts = append(systemParts, strings.TrimSpace(req.Instructions))
 	}
-	// 从 input 中提取 developer/system 消息
+	// The history converter drops developer/system items after this step. Keep
+	// their supported text here so those control instructions survive protocol
+	// conversion.
 	if len(req.Input) > 0 {
 		var items []protocolopenai.ResponsesInputItem
 		if err := json.Unmarshal(req.Input, &items); err == nil {
@@ -191,6 +271,16 @@ func ParseQoderResponsesPayload(body []byte) (QoderPayloadRequest, error) {
 	}, nil
 }
 
+// ParseQoderAnthropicMessagesPayload normalizes Messages system text, tool
+// history, and Qoder thinking controls. A nonempty model is required and
+// positive max_tokens replaces the execution default. Unsupported system or
+// content blocks return errors.
+//
+// Tool definitions use the shared bridge with messages and thinking fields
+// cleared, because Qoder handles those independently. This permits Qoder's
+// effort tolerance and preserves text/tool-result ordering in its own history
+// converter. Session metadata and the protocol's native output_config effort are
+// retained for later planning and capability mapping.
 func ParseQoderAnthropicMessagesPayload(body []byte) (QoderPayloadRequest, error) {
 	var req protocolanthropic.AnthropicRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -207,7 +297,9 @@ func ParseQoderAnthropicMessagesPayload(body []byte) (QoderPayloadRequest, error
 	toolReq := req
 	toolReq.System = nil
 	toolReq.Messages = nil
-	// 这里只借用兼容层转换工具定义；思考字段由 Qoder 自行容错和映射。
+	// The bridge is used for tool definitions here. Clear thinking controls so its
+	// validation cannot reject effort values handled independently by Qoder's
+	// capability mapping.
 	toolReq.Thinking = nil
 	toolReq.OutputConfig = nil
 	responsesReq, err := bridge.AnthropicToResponses(&toolReq, bridge.RequestOptions{})
@@ -238,8 +330,15 @@ func ParseQoderAnthropicMessagesPayload(body []byte) (QoderPayloadRequest, error
 	}, nil
 }
 
-// QoderThinkingDirectiveFromBody 将不同下游协议的思考字段归一为 Qoder 开关和通用等级。
-// 明确关闭的优先级最高；非法等级不会阻断请求，仍可由预算或显式开关启用。
+// QoderThinkingDirectiveFromBody selects the requested thinking switch and
+// normalized effort. Explicit disabled/none/off type or a disable effort in any
+// supplied path wins over all enabling inputs. The first valid effort wins among
+// enabling paths.
+//
+// If no valid effort exists, a positive budget or enabled/adaptive type selects
+// max. Missing or unusable controls leave thinking disabled. This ordered choice
+// keeps an invalid effort eligible for an independent budget or switch while
+// honoring a disable even after another effort was found.
 func QoderThinkingDirectiveFromBody(body []byte, effortPaths ...string) QoderThinkingDirective {
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	if thinkingType == "disabled" || thinkingType == "none" || thinkingType == "off" {
@@ -247,6 +346,8 @@ func QoderThinkingDirectiveFromBody(body []byte, effortPaths ...string) QoderThi
 	}
 
 	effort := ""
+	// Inspect every supplied effort path after retaining the first valid enable.
+	// A later disable still overrides it, so an earlier match cannot end this scan.
 	for _, path := range effortPaths {
 		raw := strings.TrimSpace(gjson.GetBytes(body, path).String())
 		if raw == "" {
@@ -273,7 +374,9 @@ func QoderThinkingDirectiveFromBody(body []byte, effortPaths ...string) QoderThi
 	return QoderThinkingDirective{}
 }
 
-// NormalizeQoderThinkingEffort 将常见下游等级归一化，最终档位由所选模型能力决定。
+// NormalizeQoderThinkingEffort maps normalized effort labels and reports an
+// explicit disable. Separators and case are ignored; unknown values return empty
+// effort with disabled=false so the caller can consider a budget or switch.
 func NormalizeQoderThinkingEffort(raw string) (effort string, disabled bool) {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
@@ -293,6 +396,10 @@ func NormalizeQoderThinkingEffort(raw string) (effort string, disabled bool) {
 	}
 }
 
+// QoderClaudeCodeStablePrefixKey joins model, normalized system, tool hash, and
+// first user text. The conversation caller applies API-key and provider
+// isolation to the result; a missing first user text leaves the other stable
+// inputs present.
 func QoderClaudeCodeStablePrefixKey(request QoderPayloadRequest) string {
 	parts := []string{
 		"model=" + strings.TrimSpace(request.Model),
@@ -305,6 +412,9 @@ func QoderClaudeCodeStablePrefixKey(request QoderPayloadRequest) string {
 	return strings.Join(parts, "|")
 }
 
+// QoderFirstUserMessageText returns the first nonblank user text after
+// trimming it. Roles are trimmed before matching user; absent qualifying text
+// returns empty so stable-prefix construction can use its other inputs.
 func QoderFirstUserMessageText(messages []QoderMessage) string {
 	for _, message := range messages {
 		if strings.TrimSpace(message.Role) != "user" {
@@ -317,6 +427,9 @@ func QoderFirstUserMessageText(messages []QoderMessage) string {
 	return ""
 }
 
+// QoderMetadataUserID reads the user_id field from a decoded request metadata
+// object. Absent or non-object metadata returns empty text; QoderStringField
+// supplies trimming and tolerated value formatting.
 func QoderMetadataUserID(raw any) string {
 	metadata, ok := raw.(map[string]any)
 	if !ok {
@@ -325,6 +438,10 @@ func QoderMetadataUserID(raw any) string {
 	return QoderStringField(metadata, "user_id")
 }
 
+// QoderMessageFingerprints hashes each message's outgoing payload representation
+// in order. Payload conversion borrows text-block maps and response metadata, so
+// callers keep message contents stable while the planner computes these history
+// fingerprints.
 func QoderMessageFingerprints(messages []QoderMessage) []string {
 	fingerprints := make([]string, 0, len(messages))
 	for _, message := range messages {
@@ -333,14 +450,22 @@ func QoderMessageFingerprints(messages []QoderMessage) []string {
 	return fingerprints
 }
 
+// QoderFingerprintString returns the payload fingerprint of the supplied string
+// bytes.
 func QoderFingerprintString(value string) string {
 	return qoderPayloadFingerprint([]byte(value))
 }
 
+// QoderSystemFingerprint hashes system text after normalizing recognized
+// volatile billing checksums.
 func QoderSystemFingerprint(system string) string {
 	return QoderFingerprintString(QoderNormalizeSystemForFingerprint(system))
 }
 
+// QoderNormalizeSystemForFingerprint replaces recognized five-hex cch values
+// before system hashing. Other system text remains supplied, allowing stable
+// conversation comparison across checksum variants while retaining the rest of
+// the billing header.
 func QoderNormalizeSystemForFingerprint(system string) string {
 	if !strings.Contains(system, "x-anthropic-billing-header") || !strings.Contains(system, "cch=") {
 		return system
@@ -348,14 +473,31 @@ func QoderNormalizeSystemForFingerprint(system string) string {
 	return QoderClaudeBillingCCHRe.ReplaceAllString(system, "${1}<cch>${2}")
 }
 
+// QoderFingerprintAny hashes compact JSON, using formatted text when JSON
+// marshaling fails. Empty serialized input follows qoderPayloadFingerprint's
+// empty result; callers use the returned text for conversation comparison.
 func QoderFingerprintAny(value any) string {
 	body, err := json.Marshal(value)
 	if err != nil {
+		// Unsupported Go values cannot produce JSON fingerprints. Hash their formatted
+		// text so the helper still returns a fingerprint when marshaling fails.
 		return qoderPayloadFingerprint([]byte(fmt.Sprint(value)))
 	}
 	return qoderPayloadFingerprint(body)
 }
 
+// BuildQoderPayloadWithOptions builds a complete Qoder request using selected
+// messages and inclusion flags. Model aliases and controls depend on
+// request.Site, missing user type selects personal_standard, and a blank session
+// ID generates a UUID. The supplied MaxTokens is written as provided, and
+// callers pass a supported site for business-profile lookup.
+//
+// Request and chat-record IDs share one UUID while request-set and business IDs
+// are separate. Prompt selection considers current messages before the request's
+// full history. System/tool inclusion and mirrored context/thinking settings
+// shape the outgoing request, and ephemeral cache control can mutate borrowed
+// text-block maps. Tools and blank response metadata remain shared references in
+// the returned payload.
 func BuildQoderPayloadWithOptions(request QoderPayloadRequest, sessionID string, messages []QoderMessage, includeSystem bool, includeTools bool) (map[string]any, string) {
 	modelInfo := ResolveQoderModelForSite(request.Site, request.Model)
 	userType := request.UserType
@@ -390,9 +532,12 @@ func BuildQoderPayloadWithOptions(request QoderPayloadRequest, sessionID string,
 	chatText["text"] = prompt
 	extraModelConfig["key"] = modelInfo.Key
 	extraModelConfig["source"] = modelInfo.Source
-	ApplyQoderContextCapability(payload, request.Site, modelInfo.Key)
-	ApplyQoderThinkingDirective(payload, request.Site, modelInfo.Key, request.Thinking)
+	ApplyQoderContextCapability(payload, request.Site, modelInfo.Key, request.Capabilities)
+	ApplyQoderThinkingDirective(payload, request.Site, modelInfo.Key, request.Thinking, request.Capabilities)
 	extraOriginalContent["text"] = prompt
+	// Business name is limited to thirty runes while full prompt text remains in
+	// chat context and message history. Truncation affects this descriptive title
+	// alone.
 	payload["business"] = map[string]any{
 		"product":  "cli",
 		"version":  MustProfileForSite(request.Site).ClientVersion,
@@ -410,6 +555,9 @@ func BuildQoderPayloadWithOptions(request QoderPayloadRequest, sessionID string,
 	for _, msg := range messages {
 		outMessages = append(outMessages, QoderPayloadMessageFromMessage(msg))
 	}
+	// The last eligible text block defines the outgoing ephemeral cache marker.
+	// Apply it after message conversion so included system and history share one
+	// selection order.
 	AddQoderEphemeralCacheControl(outMessages)
 	payload["messages"] = outMessages
 	if includeTools {
@@ -420,10 +568,25 @@ func BuildQoderPayloadWithOptions(request QoderPayloadRequest, sessionID string,
 	return payload, modelInfo.Key
 }
 
-// ApplyQoderContextCapability 按站点和最终 route 选择官方最高上下文档位。
-// 只有官方声明 contextConfig 的 route 才写入运行时覆盖，避免为固定上限或未知 route 伪造档位。
-func ApplyQoderContextCapability(payload map[string]any, site Site, modelKey string) {
+// ApplyQoderContextCapability writes the route input limit to Qoder's supported
+// configuration locations. The payload needs the nested maps from
+// QoderBasePayload. A nonnil first resolutions entry can replace
+// input limit and runtime-selection rules.
+//
+// Every route writes model_config.max_input_tokens. Runtime-selectable routes
+// also write parameters.context_length and
+// ideModelConfigOverride.max_input_tokens, creating the latter map when absent.
+// Fixed routes return after the model limit so their request does not gain a
+// context override that the route lacks.
+func ApplyQoderContextCapability(payload map[string]any, site Site, modelKey string, resolutions ...*modelcatalog.Resolution) {
 	capability := ContextCapabilityForSite(site, modelKey)
+	if len(resolutions) > 0 && resolutions[0] != nil {
+		value := resolutions[0]
+		if value.Attributes.InputLimit != nil {
+			capability.MaxInputTokens = *value.Attributes.InputLimit
+		}
+		capability.RuntimeSelectable = value.Rules.RuntimeContext
+	}
 	modelConfig, _ := payload["model_config"].(map[string]any)
 	modelConfig["max_input_tokens"] = capability.MaxInputTokens
 	if !capability.RuntimeSelectable {
@@ -442,10 +605,22 @@ func ApplyQoderContextCapability(payload map[string]any, site Site, modelKey str
 	runtimeOverride["max_input_tokens"] = capability.MaxInputTokens
 }
 
-// ApplyQoderThinkingDirective 同步 Qoder 请求中重复出现的模型配置。
-// reasoning_effort=none 是官方客户端用于关闭可调 Thinking 的运行时覆盖值。
-func ApplyQoderThinkingDirective(payload map[string]any, site Site, modelKey string, directive QoderThinkingDirective) {
+// ApplyQoderThinkingDirective writes coherent switch and effort values across
+// Qoder configuration copies. The payload needs QoderBasePayload's nested maps.
+// A supplied first resolution replaces the site capability lookup, and
+// unsupported routes retain their existing configuration.
+//
+// Adjustable routes write both is_reasoning copies. Enabled toggle-only routes
+// return after those switches, retaining any preexisting effort fields. Disabled
+// routes send none to override upstream defaults.
+// Effort-capable routes map the normalized request into supported levels and
+// mirror that result in parameters, model config, extra model config, and
+// runtime override.
+func ApplyQoderThinkingDirective(payload map[string]any, site Site, modelKey string, directive QoderThinkingDirective, resolutions ...*modelcatalog.Resolution) {
 	capability := ThinkingCapabilityForSite(site, modelKey)
+	if len(resolutions) > 0 && resolutions[0] != nil {
+		capability = thinkingCapabilityFromAttributes(resolutions[0].Attributes)
+	}
 	if capability == ThinkingUnsupported {
 		return
 	}
@@ -455,10 +630,14 @@ func ApplyQoderThinkingDirective(payload map[string]any, site Site, modelKey str
 	chatContext, _ := payload["chat_context"].(map[string]any)
 	extra, _ := chatContext["extra"].(map[string]any)
 	extraModelConfig, _ := extra["modelConfig"].(map[string]any)
+	// The outgoing model and IDE configuration each carry a reasoning switch.
+	// Update both before effort selection so they describe the same enabled state.
 	modelConfig["is_reasoning"] = directive.Enabled
 	extraModelConfig["is_reasoning"] = directive.Enabled
 
-	// 仅开关型模型开启时不能携带 High/Max；关闭仍使用 none 明确覆盖上游默认值。
+	// Toggle-only routes accept the switch without an enabling effort. Disabled
+	// requests continue below to send none and override the route's upstream
+	// default.
 	if capability == ThinkingToggleOnly && directive.Enabled {
 		return
 	}
@@ -478,7 +657,10 @@ func ApplyQoderThinkingDirective(payload map[string]any, site Site, modelKey str
 	runtimeOverride["reasoning_effort"] = effort
 }
 
-// QoderThinkingEffortForCapability 把请求的思考等级转换为模型支持的档位。
+// QoderThinkingEffortForCapability selects a supported effort for the capability
+// and normalized request. High/max routes promote low/medium to high;
+// low/high/max routes retain low, map medium/high to high, and use max for other
+// requests.
 func QoderThinkingEffortForCapability(capability ThinkingCapability, requested string) string {
 	switch capability {
 	case ThinkingHighMax:
@@ -500,6 +682,10 @@ func QoderThinkingEffortForCapability(capability ThinkingCapability, requested s
 	}
 }
 
+// AddQoderEphemeralCacheControl mutates the last nonblank text block in the
+// supplied messages. An existing cache_control on that block wins. It stops
+// after that eligible block, leaving earlier blocks and non-text contents
+// available as supplied.
 func AddQoderEphemeralCacheControl(messages []any) {
 	for _, message := range slices.Backward(messages) {
 		message, ok := message.(map[string]any)
@@ -525,6 +711,9 @@ func AddQoderEphemeralCacheControl(messages []any) {
 	}
 }
 
+// QoderBasePayload returns newly allocated Qoder request maps with execution
+// defaults and empty history. Nested model and chat-context maps are ready for
+// capability writers, while messages and tools start as empty slices.
 func QoderBasePayload() map[string]any {
 	return map[string]any{
 		"request_id":       "",
@@ -573,22 +762,35 @@ func QoderBasePayload() map[string]any {
 	}
 }
 
+// QoderPayloadMessage converts a role and text through the standard Qoder
+// message builder.
 func QoderPayloadMessage(role, text string) map[string]any {
 	return QoderPayloadMessageFromMessage(QoderMessage{Role: role, Text: text})
 }
 
+// QoderRequestMap decodes optional raw request fields into a JSON object.
+// Malformed input returns an empty object, allowing typed request parsers to own
+// rejection while optional session/control extraction uses absent values.
 func QoderRequestMap(body []byte) map[string]any {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
+		// Optional raw-field extraction shares typed parsing at the request entry
+		// point. Invalid raw-object decoding therefore presents no optional fields to
+		// session and control readers.
 		return map[string]any{}
 	}
 	return req
 }
 
+// QoderChatSystemText joins nonempty system and developer text in their original
+// message order. Other roles do not contribute; QoderChatContentText extracts
+// supported text representations from each selected control message.
 func QoderChatSystemText(messages []protocolopenai.ChatMessage) string {
 	parts := make([]string, 0)
 	for _, message := range messages {
-		// system 和 developer 消息都应该合并到 system prompt
+		// Chat control roles are collected separately from visible history. Keep both
+		// system and developer text here so later role conversion cannot drop
+		// developer instructions.
 		if message.Role != "system" && message.Role != "developer" {
 			continue
 		}
@@ -600,6 +802,9 @@ func QoderChatSystemText(messages []protocolopenai.ChatMessage) string {
 	return strings.Join(parts, "\n")
 }
 
+// QoderChatContentText reads string content or joins text parts with newlines.
+// Empty/null content, malformed representations, and unsupported part types
+// contribute empty text for the caller's role conversion.
 func QoderChatContentText(raw json.RawMessage) string {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -609,6 +814,9 @@ func QoderChatContentText(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &text); err == nil {
 		return text
 	}
+	// Chat content can carry a string or typed parts. Try the part representation
+	// after string decoding so control prompts and visible history retain supported
+	// text blocks.
 	var parts []protocolopenai.ChatContentPart
 	if err := json.Unmarshal(raw, &parts); err == nil {
 		out := make([]string, 0, len(parts))
@@ -622,6 +830,9 @@ func QoderChatContentText(raw json.RawMessage) string {
 	return ""
 }
 
+// QoderMessagesFromChatCompletions converts ordered Chat messages and skips
+// empty converted roles. A converter error stops the operation; control roles
+// are extracted separately by the request parser and omitted from this history.
 func QoderMessagesFromChatCompletions(messages []protocolopenai.ChatMessage) ([]QoderMessage, error) {
 	out := make([]QoderMessage, 0, len(messages))
 	for _, message := range messages {
@@ -636,6 +847,14 @@ func QoderMessagesFromChatCompletions(messages []protocolopenai.ChatMessage) ([]
 	return out, nil
 }
 
+// QoderMessageFromChatCompletionsMessage maps one Chat role and tool history
+// into Qoder representation. Blank role becomes user, system/developer produces
+// an empty converted role, and unsupported roles return errors.
+//
+// Assistant history prefers modern calls and then legacy function_call. Tool
+// output carries its call ID and uses an empty-output marker; legacy function
+// results use the function name as identity so they pair with the converted
+// legacy call. Visible text extraction stays separate from tool-call metadata.
 func QoderMessageFromChatCompletionsMessage(message protocolopenai.ChatMessage) (QoderMessage, error) {
 	role := strings.TrimSpace(message.Role)
 	switch role {
@@ -648,6 +867,9 @@ func QoderMessageFromChatCompletionsMessage(message protocolopenai.ChatMessage) 
 		text := QoderChatContentText(message.Content)
 		raw := map[string]any{"role": "assistant", "content": text}
 		if toolCalls := QoderChatToolCalls(message.ToolCalls); len(toolCalls) > 0 {
+			// Modern call history takes precedence when present. A legacy function call
+			// fills the empty modern-call case so results still have one owning assistant
+			// representation.
 			raw["tool_calls"] = toolCalls
 		} else if toolCalls := QoderLegacyChatFunctionCall(message.FunctionCall); len(toolCalls) > 0 {
 			raw["tool_calls"] = toolCalls
@@ -687,6 +909,9 @@ func QoderMessageFromChatCompletionsMessage(message protocolopenai.ChatMessage) 
 	}
 }
 
+// QoderChatToolCalls converts modern Chat calls into new wire maps while
+// retaining call IDs. Empty arguments become an empty JSON object string and
+// absent type becomes function; an empty input list returns nil.
 func QoderChatToolCalls(toolCalls []protocolopenai.ChatToolCall) []any {
 	if len(toolCalls) == 0 {
 		return nil
@@ -713,6 +938,15 @@ func QoderChatToolCalls(toolCalls []protocolopenai.ChatToolCall) []any {
 	return out
 }
 
+// QoderLegacyChatFunctionCall builds tool history for a named legacy function
+// call. Nil input or a blank name returns nil, while QoderToolCallMap supplies
+// an empty-object argument string when needed.
+//
+// Legacy function_call has no invocation ID. The trimmed function name fills
+// the converted call ID and name, matching the function-role result's identity
+// selection. This lets ordinary legacy history pair a result with its
+// assistant turn; repeated invocations of the same name retain that shared
+// identity rather than acquiring a unique modern call ID.
 func QoderLegacyChatFunctionCall(functionCall *protocolopenai.ChatFunctionCall) []any {
 	if functionCall == nil {
 		return nil
@@ -721,10 +955,20 @@ func QoderLegacyChatFunctionCall(functionCall *protocolopenai.ChatFunctionCall) 
 	if name == "" {
 		return nil
 	}
-	// 旧版 function 消息没有 call id，使用函数名作为稳定 id，保证后续 role=function 的结果能关联回来。
+	// Use the trimmed name passed to the converted function-role result. A separate
+	// generated ID here would leave that legacy reply unable to match its call.
 	return []any{QoderToolCallMap(name, name, functionCall.Arguments)}
 }
 
+// QoderAnthropicSystemText extracts supported Messages system text and
+// normalizes recognized billing checksums. Empty or null input returns empty
+// text. String input follows the same normalization as each text block, while
+// malformed fields or non-text system blocks return errors.
+//
+// Block text is retained in order and joined with newlines after empty
+// normalized parts are skipped. The volatile cch value becomes a stable marker
+// before request construction and conversation hashing, so checksum changes
+// alone do not change the normalized control text.
 func QoderAnthropicSystemText(raw json.RawMessage) (string, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -734,6 +978,9 @@ func QoderAnthropicSystemText(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &text); err == nil {
 		return QoderStripVolatileSystemText(text), nil
 	}
+	// A Messages system prompt may be text or an array of text blocks. Decode
+	// blocks after the string form so their instructions survive the same
+	// normalization.
 	var blocks []protocolanthropic.AnthropicContentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return "", errors.New("unsupported system field")
@@ -750,10 +997,20 @@ func QoderAnthropicSystemText(raw json.RawMessage) (string, error) {
 	return strings.Join(parts, "\n"), nil
 }
 
+// QoderStripVolatileSystemText replaces recognized five-hex billing cch values
+// with a stable marker.
 func QoderStripVolatileSystemText(text string) string {
 	return QoderClaudeBillingCCHRe.ReplaceAllString(text, "${1}<cch>${2}")
 }
 
+// QoderMessagesFromResponsesInput converts Responses text or ordered items into
+// paired Qoder history. Empty/null input produces nil, string input becomes a
+// user message, and malformed item arrays return errors.
+//
+// Consecutive function calls are collected into one assistant turn before the
+// next item is converted. Pairing then keeps calls with outputs and places their
+// results immediately after that turn, so parallel calls remain grouped even
+// when Responses input represents each call as a separate item.
 func QoderMessagesFromResponsesInput(raw json.RawMessage) ([]QoderMessage, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -772,6 +1029,9 @@ func QoderMessagesFromResponsesInput(raw json.RawMessage) ([]QoderMessage, error
 	}
 	messages := make([]QoderMessage, 0, len(items))
 	var pendingToolCalls []any
+	// Responses calls appear as separate items. Group consecutive calls before
+	// another item so matched parallel replies can follow one assistant turn during
+	// pairing.
 	flushPendingToolCalls := func() {
 		if len(pendingToolCalls) == 0 {
 			return
@@ -800,6 +1060,10 @@ func QoderMessagesFromResponsesInput(raw json.RawMessage) ([]QoderMessage, error
 	return NormalizeQoderResponsesToolPairing(messages), nil
 }
 
+// QoderMessageFromResponsesInputItem maps message, function call, or function
+// output items into Qoder history. Control roles and unsupported item types
+// produce an empty message; function outputs retain call_id and use an
+// empty-output marker when needed.
 func QoderMessageFromResponsesInputItem(item protocolopenai.ResponsesInputItem) QoderMessage {
 	switch item.Type {
 	case "function_call":
@@ -843,9 +1107,20 @@ func QoderMessageFromResponsesInputItem(item protocolopenai.ResponsesInputItem) 
 	}
 }
 
+// NormalizeQoderResponsesToolPairing filters recognized call-bearing assistant
+// turns and places matched replies after them. Replies are indexed by trimmed
+// call ID, with the last reply for an ID winning. QoderMessageHasToolCalls
+// requires both a usable ID and name before a turn enters call filtering.
+//
+// Within those turns, normalized calls lacking a reply disappear; retained calls
+// keep assistant order. Empty call-only turns are omitted after filtering, while
+// visible text survives with tool_calls removed from a shallow raw-map copy.
+// Other turns pass through, including call metadata the predicate cannot
+// identify; standalone tool outputs are omitted.
 func NormalizeQoderResponsesToolPairing(messages []QoderMessage) []QoderMessage {
-	// Responses 历史可能包含未返回 output 的 function_call，或重连后遗留的孤儿 output。
-	// Qoder 走 Chat 形状上游，同样要求 assistant tool_calls 后面有对应 tool 消息。
+	// Responses histories can contain unanswered calls or orphan outputs. Index
+	// replies first so each retained assistant call is followed by its matching
+	// result.
 	replies := make(map[string]QoderMessage)
 	for _, message := range messages {
 		if message.Role != "tool" {
@@ -881,6 +1156,9 @@ func NormalizeQoderResponsesToolPairing(messages []QoderMessage) []QoderMessage 
 				keptTools = append(keptTools, tool)
 				keptReplies = append(keptReplies, reply)
 			}
+			// Removing unanswered calls can leave useful assistant text. Retain that text
+			// with a copied raw map, while an empty call-only turn contributes no
+			// outgoing history.
 			if len(keptTools) == 0 {
 				if QoderMessageHasText(message) {
 					out = append(out, QoderMessageWithoutToolCalls(message))
@@ -898,16 +1176,24 @@ func NormalizeQoderResponsesToolPairing(messages []QoderMessage) []QoderMessage 
 	return out
 }
 
+// QoderMessageHasText reports nonblank message text or the presence of
+// text-content blocks.
 func QoderMessageHasText(message QoderMessage) bool {
 	return strings.TrimSpace(message.Text) != "" || len(message.TextContent) > 0
 }
 
+// QoderMessageWithoutToolCalls removes tool_calls from a shallow copy of the raw
+// map. Nested values and the message's text-block references remain shared;
+// callers use it when retaining visible text from an unmatched assistant turn.
 func QoderMessageWithoutToolCalls(message QoderMessage) QoderMessage {
 	message.Raw = QoderCopyRawMap(message.Raw)
 	delete(message.Raw, "tool_calls")
 	return message
 }
 
+// QoderCopyRawMap returns a new top-level map containing the supplied raw
+// entries. Nested values remain shared, and nil or empty input produces an
+// editable empty map for message normalization.
 func QoderCopyRawMap(raw map[string]any) map[string]any {
 	if len(raw) == 0 {
 		return map[string]any{}
@@ -917,6 +1203,9 @@ func QoderCopyRawMap(raw map[string]any) map[string]any {
 	return copied
 }
 
+// QoderResponsesContentText reads strings or joins supported Responses text
+// parts with newlines. Empty/null or malformed input becomes empty text;
+// input_text, output_text, and text parts contribute to visible history.
 func QoderResponsesContentText(raw json.RawMessage) string {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -926,6 +1215,9 @@ func QoderResponsesContentText(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &text); err == nil {
 		return text
 	}
+	// Responses content may be a string or typed text parts. Decode the supported
+	// part array after string recognition so system and visible text extraction
+	// share one rule.
 	var parts []protocolopenai.ResponsesContentPart
 	if err := json.Unmarshal(raw, &parts); err == nil {
 		out := make([]string, 0, len(parts))
@@ -942,6 +1234,10 @@ func QoderResponsesContentText(raw json.RawMessage) string {
 	return ""
 }
 
+// QoderMessagesFromAnthropicMessages converts ordered Messages turns and expands
+// their resulting Qoder messages. A content conversion error stops the
+// operation, while one user turn can produce alternating text and tool-result
+// messages.
 func QoderMessagesFromAnthropicMessages(messages []protocolanthropic.AnthropicMessage) ([]QoderMessage, error) {
 	out := make([]QoderMessage, 0, len(messages))
 	for _, message := range messages {
@@ -954,6 +1250,15 @@ func QoderMessagesFromAnthropicMessages(messages []protocolanthropic.AnthropicMe
 	return out, nil
 }
 
+// QoderMessagesFromAnthropicMessage converts one Messages turn while retaining
+// text/tool-result order. Non-user turns use the assistant content converter.
+// String user content becomes one message; unsupported blocks return errors.
+//
+// Text is buffered until a tool result with an ID appears, then emitted before
+// that result. Results lacking an ID contribute text instead of inventing call
+// identity. Text blocks retain cache-control maps, thinking history is omitted,
+// and a turn with no visible output still keeps its role as an empty history
+// message.
 func QoderMessagesFromAnthropicMessage(message protocolanthropic.AnthropicMessage) ([]QoderMessage, error) {
 	if message.Role != "user" {
 		text, raw, err := QoderAnthropicMessageTextAndRaw(message)
@@ -975,6 +1280,9 @@ func QoderMessagesFromAnthropicMessage(message protocolanthropic.AnthropicMessag
 	var out []QoderMessage
 	var textParts []string
 	var textContent []map[string]any
+	// Text and identified tool results have different Gateway roles. Flush buffered
+	// text before appending a result so their order in the original user turn
+	// remains visible.
 	flushText := func() {
 		text := strings.Join(NonEmptyStrings(textParts), "\n")
 		contents := textContent
@@ -997,6 +1305,9 @@ func QoderMessagesFromAnthropicMessage(message protocolanthropic.AnthropicMessag
 			textContent = append(textContent, QoderTextContentBlock(block.Text, block.CacheControl))
 		case "tool_result":
 			toolText := QoderAnthropicToolResultText(block.Content)
+			// A result without tool_use_id cannot identify its owning call. Keep its
+			// readable text with the user turn instead of constructing an unrelated
+			// Gateway result.
 			if strings.TrimSpace(block.ToolUseID) == "" {
 				if toolText != "" {
 					textParts = append(textParts, toolText)
@@ -1017,9 +1328,13 @@ func QoderMessagesFromAnthropicMessage(message protocolanthropic.AnthropicMessag
 				})
 			}
 		case "tool_use":
-			// Qoder payload.py 展开消息文本时会忽略 tool_use。
+			// User tool-use blocks do not become visible text. Assistant conversion owns
+			// call metadata, so this path leaves result and text ordering to their own
+			// blocks.
 		case "thinking", "redacted_thinking":
-			// Qoder 历史消息不接受 Anthropic thinking signature。
+			// Thinking and redacted-thinking blocks carry protocol-specific history that
+			// this converter omits, keeping replayed user content limited to text and
+			// tool results.
 		default:
 			return nil, fmt.Errorf("unsupported content block type: %v", block.Type)
 		}
@@ -1031,6 +1346,15 @@ func QoderMessagesFromAnthropicMessage(message protocolanthropic.AnthropicMessag
 	return out, nil
 }
 
+// QoderAnthropicMessageTextAndRaw converts text and assistant tool-use blocks
+// into raw history. String content becomes direct text; unsupported blocks
+// return errors, and thinking or redacted-thinking blocks are omitted.
+//
+// Visible text is flattened separately while raw tool-use blocks retain ID,
+// name, and decoded input. CopyQoderToolFields later converts those blocks into
+// Qoder calls, preserving tool identity even when the assistant's visible text
+// is empty. Missing or invalid input uses the supplied empty-object
+// representation.
 func QoderAnthropicMessageTextAndRaw(message protocolanthropic.AnthropicMessage) (string, map[string]any, error) {
 	blocks, ok, err := QoderAnthropicContentBlocks(message.Content)
 	if err != nil {
@@ -1055,7 +1379,9 @@ func QoderAnthropicMessageTextAndRaw(message protocolanthropic.AnthropicMessage)
 				"input": QoderRawMessageOrDefault(block.Input, map[string]any{}),
 			})
 		case "thinking", "redacted_thinking":
-			// 不把 thinking 写入 Qoder content/tool 历史。
+			// Thinking history has no outgoing representation in this converter. Keep it
+			// out of visible assistant text and call metadata while retaining adjacent
+			// tool-use blocks.
 		default:
 			return "", nil, fmt.Errorf("unsupported content block type: %v", block.Type)
 		}
@@ -1063,6 +1389,10 @@ func QoderAnthropicMessageTextAndRaw(message protocolanthropic.AnthropicMessage)
 	return strings.Join(NonEmptyStrings(textParts), "\n"), map[string]any{"role": message.Role, "content": rawBlocks}, nil
 }
 
+// QoderAnthropicContentBlocks distinguishes block-array content from string,
+// empty, or null content. A string reports ok=false with no error, while
+// malformed nonstring input returns the array decoding error for callers that
+// validate content.
 func QoderAnthropicContentBlocks(raw json.RawMessage) ([]protocolanthropic.AnthropicContentBlock, bool, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -1079,6 +1409,10 @@ func QoderAnthropicContentBlocks(raw json.RawMessage) ([]protocolanthropic.Anthr
 	return blocks, true, nil
 }
 
+// QoderAnthropicContentText flattens supported Messages text and tool-result
+// content with newlines. String input is retained; absent, malformed, or
+// unsupported representations contribute empty text for fallback user-message
+// conversion.
 func QoderAnthropicContentText(raw json.RawMessage) string {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -1089,6 +1423,9 @@ func QoderAnthropicContentText(raw json.RawMessage) string {
 		return text
 	}
 	blocks, ok, err := QoderAnthropicContentBlocks(raw)
+	// This tolerant text reader returns no text for unsupported content. The
+	// validating message converter handles content errors before callers use this
+	// helper's fallback result.
 	if err != nil || !ok {
 		return ""
 	}
@@ -1104,6 +1441,9 @@ func QoderAnthropicContentText(raw json.RawMessage) string {
 	return strings.Join(NonEmptyStrings(parts), "\n")
 }
 
+// QoderAnthropicToolResultText reads string results or concatenates text blocks
+// without separators. Absent/null or malformed result content becomes empty
+// text, and non-text blocks do not contribute to the converted tool result.
 func QoderAnthropicToolResultText(raw json.RawMessage) string {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -1114,6 +1454,9 @@ func QoderAnthropicToolResultText(raw json.RawMessage) string {
 		return text
 	}
 	var blocks []protocolanthropic.AnthropicContentBlock
+	// Unreadable result content supplies no supported text blocks. Return empty
+	// text so the owning converter can choose its empty-result or role-preserving
+	// representation.
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return ""
 	}
@@ -1126,11 +1469,16 @@ func QoderAnthropicToolResultText(raw json.RawMessage) string {
 	return strings.Join(parts, "")
 }
 
+// QoderResponsesRole maps default/user and assistant roles while omitting
+// control roles. ParseQoderResponsesPayload already includes developer/system
+// items in system text; other role strings remain supplied for downstream
+// history conversion.
 func QoderResponsesRole(role string) string {
 	switch strings.TrimSpace(role) {
 	case "developer", "system":
-		// Responses 的控制角色 input item 已由 ParseQoderResponsesPayload 合并到
-		// Qoder system prompt，不能再作为 chat 历史轮次发送。
+		// ParseQoderResponsesPayload has already collected these control-role items
+		// into system text. Omit their history role so instructions are not replayed
+		// twice.
 		return ""
 	case "assistant":
 		return "assistant"
@@ -1141,8 +1489,14 @@ func QoderResponsesRole(role string) string {
 	}
 }
 
+// QoderToolCallMap builds a function-call map with the supplied ID, name, and
+// argument text. Blank arguments select an empty JSON object string, giving
+// later result pairing a complete argument representation.
 func QoderToolCallMap(id, name, arguments string) map[string]any {
 	if strings.TrimSpace(arguments) == "" {
+		// Blank function arguments need a complete empty-object representation for
+		// later client output. Keep that marker separate from call identity, which is
+		// supplied by ID and name.
 		arguments = "{}"
 	}
 	return map[string]any{
@@ -1155,6 +1509,9 @@ func QoderToolCallMap(id, name, arguments string) map[string]any {
 	}
 }
 
+// QoderChatCompletionsTools combines modern raw tools with converted legacy
+// functions and applies tool choice. The outer modern tool slice is copied,
+// while its nested maps remain shared with the raw request.
 func QoderChatCompletionsTools(req protocolopenai.ChatCompletionsRequest, rawReq map[string]any) []any {
 	tools := append([]any(nil), QoderAnySlice(rawReq["tools"])...)
 	for _, fn := range req.Functions {
@@ -1165,6 +1522,10 @@ func QoderChatCompletionsTools(req protocolopenai.ChatCompletionsRequest, rawReq
 	return QoderApplyChatToolChoice(tools, req.ToolChoice, req.FunctionCall)
 }
 
+// QoderChatFunctionToQoderTool converts a named legacy function into a
+// function-tool definition. Blank names return false; absent or malformed
+// parameters use an object schema, and supplied description and strict values
+// are retained.
 func QoderChatFunctionToQoderTool(fn protocolopenai.ChatFunction) (map[string]any, bool) {
 	name := strings.TrimSpace(fn.Name)
 	if name == "" {
@@ -1186,6 +1547,10 @@ func QoderChatFunctionToQoderTool(fn protocolopenai.ChatFunction) (map[string]an
 	}, true
 }
 
+// QoderApplyChatToolChoice filters declared tools by a selected name or returns
+// the usable set. Disabled choice produces an empty slice, unnamed choice
+// retains all tools, and an unknown selected name retains the declarations for
+// upstream handling.
 func QoderApplyChatToolChoice(tools []any, toolChoice json.RawMessage, functionCall json.RawMessage) []any {
 	if len(tools) == 0 {
 		return []any{}
@@ -1203,13 +1568,25 @@ func QoderApplyChatToolChoice(tools []any, toolChoice json.RawMessage, functionC
 			filtered = append(filtered, tool)
 		}
 	}
-	// 如果客户端传了不存在的工具名，保持原始 tools，让上游按正常协议报错或自行处理。
+	// An unknown selected name provides no usable filtered tool set. Keep the
+	// declarations so the upstream request can handle that choice with its
+	// available tools.
 	if len(filtered) == 0 {
 		return tools
 	}
 	return filtered
 }
 
+// QoderChatToolChoiceTarget selects recognized modern tool_choice before
+// legacy function_call. A missing or malformed modern representation permits
+// legacy selection; recognized none disables tools immediately, and auto or
+// required retains an unnamed enabled choice.
+//
+// A decoded modern object counts as recognized even when it has no supported
+// name fields. That empty selection therefore retains modern precedence
+// instead of falling through to a legacy request. The returned name and
+// disable flag let QoderApplyChatToolChoice decide whether to filter, retain,
+// or remove declarations.
 func QoderChatToolChoiceTarget(toolChoice json.RawMessage, functionCall json.RawMessage) (string, bool) {
 	if name, disabled, ok := QoderParseChatToolChoice(toolChoice, true); ok {
 		return name, disabled
@@ -1220,6 +1597,15 @@ func QoderChatToolChoiceTarget(toolChoice json.RawMessage, functionCall json.Raw
 	return "", false
 }
 
+// QoderParseChatToolChoice returns a selected name, disable flag, and
+// recognition flag for modern or legacy input. Empty, null, or malformed
+// representations are unrecognized. String none disables tools, auto and
+// required retain the set, and other strings become trimmed names.
+//
+// Any decoded object is recognized. Legacy objects read name; modern objects
+// accept type=none, prefer top-level name, then nested function.name. An
+// object lacking those fields returns an unnamed enabled choice, which still
+// prevents the caller from consulting a lower-precedence legacy choice.
 func QoderParseChatToolChoice(raw json.RawMessage, modern bool) (string, bool, bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
@@ -1255,6 +1641,10 @@ func QoderParseChatToolChoice(raw json.RawMessage, modern bool) (string, bool, b
 	return "", false, true
 }
 
+// QoderResponsesToolsToQoderTools converts named function tools into Qoder
+// function definitions. Unsupported types and blank names are skipped; absent
+// parameters use an object schema, and description/strict values remain
+// available.
 func QoderResponsesToolsToQoderTools(tools []protocolopenai.ResponsesTool) []any {
 	if len(tools) == 0 {
 		return []any{}
@@ -1282,6 +1672,16 @@ func QoderResponsesToolsToQoderTools(tools []protocolopenai.ResponsesTool) []any
 	return converted
 }
 
+// QoderDeclaredToolNameMapper returns a mapper from normalized aliases to
+// client-declared tool names. No usable declarations returns nil. Alias
+// construction resolves collisions in declaration order, with the last name
+// recorded for a key.
+//
+// The returned callback trims and normalizes each lookup key, then returns the
+// declared spelling when present. Unknown or blank incoming names retain their
+// supplied text. The alias map belongs to this callback after construction, so
+// subsequent changes to the input declaration maps do not rebuild its
+// selections.
 func QoderDeclaredToolNameMapper(tools []any) QoderToolNameMapper {
 	aliases := QoderDeclaredToolNameAliases(tools)
 	if len(aliases) == 0 {
@@ -1299,6 +1699,9 @@ func QoderDeclaredToolNameMapper(tools []any) QoderToolNameMapper {
 	}
 }
 
+// QoderDeclaredToolNameAliases builds normalized alias keys for the supplied
+// tool definitions. Unnamed declarations are skipped and later declarations
+// replace colliding keys; no usable alias returns nil for optional mapping.
 func QoderDeclaredToolNameAliases(tools []any) map[string]string {
 	aliases := map[string]string{}
 	for _, raw := range tools {
@@ -1319,6 +1722,9 @@ func QoderDeclaredToolNameAliases(tools []any) map[string]string {
 	return aliases
 }
 
+// QoderDeclaredToolName reads a trimmed top-level tool name before nested
+// function.name. Non-object or unnamed declarations produce empty text, allowing
+// alias construction and selection to skip unusable entries.
 func QoderDeclaredToolName(raw any) string {
 	tool, ok := raw.(map[string]any)
 	if !ok {
@@ -1331,6 +1737,10 @@ func QoderDeclaredToolName(raw any) string {
 	return strings.TrimSpace(QoderStringField(function, "name"))
 }
 
+// QoderToolNameAliases returns the declared spelling and recognized Qoder
+// compatibility names. Blank input returns nil; known shell/file/search/todo
+// tools add the supported aliases, while other names keep their trimmed spelling
+// alone.
 func QoderToolNameAliases(name string) []string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -1360,25 +1770,44 @@ func QoderToolNameAliases(name string) []string {
 	return aliases
 }
 
+// QoderToolNameKey lowercases trimmed tool names and removes underscores for
+// alias matching.
 func QoderToolNameKey(name string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "_", ""))
 }
 
+// QoderRawMessageOrDefault decodes JSON or returns the caller's fallback for
+// absent or invalid content. The fallback value is returned directly, so callers
+// control its shape and any mutable sharing.
 func QoderRawMessageOrDefault(raw json.RawMessage, fallback any) any {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
 		return fallback
 	}
 	var value any
+	// Tool schema and input callers supply the fallback shape they accept. Failed
+	// JSON decoding returns that supplied object directly rather than introducing
+	// another representation.
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return fallback
 	}
 	return value
 }
 
+// QoderPayloadMessageFromMessage builds a wire message while retaining
+// structured text and tool identity. User text goes into contents with empty
+// scalar content, while other roles keep scalar text. Existing text-block maps
+// and QoderBlankResponseMeta are shared.
+//
+// Tool history is normalized from raw modern calls or Anthropic tool-use blocks.
+// A nonblank message ToolCallID then supplies both Gateway result-ID fields,
+// overriding any raw ID. This keeps the visible text representation and
+// call/result identity coherent across protocol conversion.
 func QoderPayloadMessageFromMessage(message QoderMessage) map[string]any {
 	isUser := message.Role == "user"
 	content := message.Text
+	// User text is carried by structured contents below. Leave scalar content
+	// empty so the payload representation does not carry a second copy there.
 	if isUser {
 		content = ""
 	}
@@ -1399,6 +1828,9 @@ func QoderPayloadMessageFromMessage(message QoderMessage) map[string]any {
 		msg["contents"] = []any{map[string]any{"type": "text", "text": message.Text}}
 	}
 	CopyQoderToolFields(msg, message.Raw)
+	// Explicit message identity wins after raw-field conversion. Write the same
+	// trimmed ID into both Gateway aliases so result association cannot split
+	// across competing sources.
 	if strings.TrimSpace(message.ToolCallID) != "" {
 		toolCallID := strings.TrimSpace(message.ToolCallID)
 		msg["tool_call_id"] = toolCallID
@@ -1407,6 +1839,9 @@ func QoderPayloadMessageFromMessage(message QoderMessage) map[string]any {
 	return msg
 }
 
+// QoderTextContentBlock returns a text block with an optional copied
+// cache-control type. The returned maps are newly allocated; callers can later
+// add the ephemeral marker during payload construction.
 func QoderTextContentBlock(text string, cacheControl *protocolanthropic.AnthropicCacheControl) map[string]any {
 	block := map[string]any{"type": "text", "text": text}
 	if cacheControl != nil {
@@ -1415,6 +1850,16 @@ func QoderTextContentBlock(text string, cacheControl *protocolanthropic.Anthropi
 	return block
 }
 
+// CopyQoderToolFields writes normalized call history and result identity into
+// a usable outgoing message map. Empty raw input leaves the map as supplied.
+// Modern tool_calls take precedence when usable; otherwise Anthropic tool-use
+// blocks supply function history.
+//
+// Result identity prefers tool_call_id, tool_call_call_id, then call_id after
+// trimming. The selected value fills both Gateway result fields so they refer
+// to one invocation. A nonblank string name retains its supplied spelling.
+// Normalized call maps are allocated, while this operation mutates the
+// caller's outgoing map.
 func CopyQoderToolFields(out map[string]any, raw map[string]any) {
 	if len(raw) == 0 {
 		return
@@ -1424,6 +1869,8 @@ func CopyQoderToolFields(out map[string]any, raw map[string]any) {
 	} else if toolCalls := AnthropicToolUseBlocksToQoderToolCalls(raw["content"]); len(toolCalls) > 0 {
 		out["tool_calls"] = toolCalls
 	}
+	// Raw result histories use several ID spellings. Resolve them once and mirror
+	// that choice into both Gateway result fields so they identify one invocation.
 	if toolCallID := FirstNonEmptyQoder(
 		QoderStringField(raw, "tool_call_id"),
 		QoderStringField(raw, "tool_call_call_id"),
@@ -1437,6 +1884,16 @@ func CopyQoderToolFields(out map[string]any, raw map[string]any) {
 	}
 }
 
+// EnrichQoderToolResultMessages mutates result messages with call IDs and names
+// learned while walking history. It indexes each raw message before enriching
+// that message, retaining the latest
+// name per call ID. Existing result name and explicit ToolCallID remain
+// authoritative.
+//
+// A tool result can therefore gain the owning assistant call's name even when
+// the client omitted it. The message slice and raw maps are modified in place,
+// creating a raw map when necessary; callers finish enrichment before sharing
+// the request with conversation planning.
 func EnrichQoderToolResultMessages(messages []QoderMessage) []QoderMessage {
 	toolNamesByID := map[string]string{}
 	for i := range messages {
@@ -1470,6 +1927,9 @@ func EnrichQoderToolResultMessages(messages []QoderMessage) []QoderMessage {
 	return messages
 }
 
+// QoderToolCallIDFromMap selects trimmed id, tool_call_id, then call_id from
+// call metadata. Missing or entirely blank fields return empty text so
+// Responses pairing can reject a call lacking identity.
 func QoderToolCallIDFromMap(tool map[string]any) string {
 	return FirstNonEmptyQoder(
 		QoderStringField(tool, "id"),
@@ -1478,6 +1938,10 @@ func QoderToolCallIDFromMap(tool map[string]any) string {
 	)
 }
 
+// NormalizeQoderToolCalls converts usable nested function calls into newly
+// allocated wire maps. Missing name and arguments drops an entry, absent type
+// becomes function, and argument values are serialized through
+// QoderToolArgumentsString.
 func NormalizeQoderToolCalls(raw any) []any {
 	tools := QoderAnySlice(raw)
 	if len(tools) == 0 {
@@ -1498,6 +1962,9 @@ func NormalizeQoderToolCalls(raw any) []any {
 		id := QoderStringField(tool, "id")
 		callType := QoderStringField(tool, "type")
 		if callType == "" {
+			// Call type is optional in imported history. Supply function for downstream
+			// output while retaining the actual ID and name fields used to associate
+			// results.
 			callType = "function"
 		}
 		normalized = append(normalized, map[string]any{
@@ -1512,6 +1979,9 @@ func NormalizeQoderToolCalls(raw any) []any {
 	return normalized
 }
 
+// AnthropicToolUseBlocksToQoderToolCalls converts named tool_use blocks into
+// function-call maps. Other content and blank names are skipped; IDs remain with
+// their serialized inputs for later tool-result association.
 func AnthropicToolUseBlocksToQoderToolCalls(raw any) []any {
 	blocks := QoderAnySlice(raw)
 	if len(blocks) == 0 {
@@ -1539,7 +2009,9 @@ func AnthropicToolUseBlocksToQoderToolCalls(raw any) []any {
 	return toolCalls
 }
 
-// qoderPayloadFingerprint 保留会话身份的空值及 SHA-256 十六进制格式，不调用资金领域。
+// qoderPayloadFingerprint returns lowercase SHA-256 text, with empty text for
+// zero-length payloads. Callers use that empty result to distinguish absent
+// serialized data while comparing conversation fingerprints.
 func qoderPayloadFingerprint(payload []byte) string {
 	if len(payload) == 0 {
 		return ""

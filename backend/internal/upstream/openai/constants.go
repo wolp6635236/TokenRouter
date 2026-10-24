@@ -5,24 +5,33 @@ import (
 	"strings"
 )
 
+// constants.go selects embedded Codex instructions by model and defines
+// default provider probe models.
+// Codex base instructions are embedded with dedicated prompts for GPT-5.1 and
+// GPT-5.2 and a latest prompt for other models. A model name containing codex
+// selects the Codex prompt before version-prefix matching, so names such as
+// gpt-5.2-codex retain that model family's instructions.
+
+// Probe models select ordinary inference and quota-query compatibility targets;
+// callers may override the inference model when testing a configured provider.
 const (
-	// DefaultTestModel 是测试 OpenAI 提供商时使用的默认模型。
+	// DefaultTestModel is the default model for OpenAI provider probes.
 	DefaultTestModel = "gpt-5.4"
 
-	// CodexUsageProbeModel 是 OAuth Codex 额度探针使用的兼容模型。
+	// CodexUsageProbeModel is the compatibility model for OAuth quota probes.
 	CodexUsageProbeModel = "codex-auto-review"
 )
 
+// Embedded instruction strings retain their authored contents; model selection
+// checks availability and returns the prompt appropriate to the requested family.
 var (
-	// DefaultInstructions 是非 Codex CLI 请求的默认 instructions。
-	// 内容为真实 Codex CLI 的 GPT-5-Codex base prompt（codex 系模型默认）。
+	// DefaultInstructions contains the embedded GPT-5-Codex base prompt.
 	//
 	//go:embed instructions.txt
 	DefaultInstructions string
 
-	// instructionsGPT51 / instructionsGPT52 / instructionsGPT55 为 gpt-5.1 / gpt-5.2 / gpt-5.5
-	// 非 codex 模型对应的真实 Codex 编码 agent base prompt，用于模型感知的 instructions 选择。
-	// GPT-5.5 同时作为最新版本的 fallback（覆盖 5.3 / 5.4 等未单独维护 prompt 的版本）。
+	// instructionsGPT51 is the embedded GPT-5.1 coding prompt. Model selection also
+	// uses the GPT-5.2 and GPT-5.5 prompts below; GPT-5.5 covers models without a dedicated prompt.
 	//
 	//go:embed instructions_gpt5_1.txt
 	instructionsGPT51 string
@@ -34,23 +43,22 @@ var (
 	instructionsGPT55 string
 )
 
-// latestCodexInstructions 返回当前已知最新版本的 Codex base instructions，
-// 当前为 GPT-5.5；若 5.5 prompt 意外为空则回退到 DefaultInstructions 保证非空。
+// latestCodexInstructions returns the latest embedded prompt, selecting
+// DefaultInstructions when it is blank. The selected string is returned as
+// embedded, so whitespace checking does not rewrite prompt content.
 func latestCodexInstructions() string {
 	if v := strings.TrimSpace(instructionsGPT55); v != "" {
 		return instructionsGPT55
 	}
+	// A blank latest prompt still needs usable synthesized instructions; the
+	// Codex base prompt supplies that recovery value without altering embedded text.
 	return DefaultInstructions
 }
 
-// CodexBaseInstructionsForModel 按模型返回最匹配的真实 Codex base instructions：
-//   - 含 "codex" 的模型（gpt-5-codex / gpt-5.x-codex / codex-max / spark 等）→ GPT-5-Codex prompt
-//   - gpt-5.5 系非 codex 模型 → GPT-5.5 prompt
-//   - gpt-5.2 系非 codex 模型 → GPT-5.2 prompt
-//   - gpt-5.1 系非 codex 模型 → GPT-5.1 prompt
-//   - 其它（含 gpt-5.3 / gpt-5.4 / 裸 gpt-5 / 未知模型）→ 回退到最新版本（当前 GPT-5.5）
-//
-// 任一专用 prompt 意外为空时回退链最终落到 DefaultInstructions，保证返回非空。
+// CodexBaseInstructionsForModel selects an embedded prompt from the trimmed,
+// lowercased model name. Codex-containing names take precedence over version
+// prefixes; missing dedicated prompts and unknown names use
+// latestCodexInstructions.
 func CodexBaseInstructionsForModel(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	switch {
@@ -67,5 +75,7 @@ func CodexBaseInstructionsForModel(model string) string {
 			return instructionsGPT51
 		}
 	}
+	// Unknown families and blank dedicated prompts use the latest available
+	// instruction body so synthesized OAuth requests receive a non-family-specific default.
 	return latestCodexInstructions()
 }

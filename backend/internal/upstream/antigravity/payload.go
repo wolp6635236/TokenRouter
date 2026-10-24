@@ -14,37 +14,59 @@ import (
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// AntigravityGemini31ProAgentModel 是 Gemini 3.1 Pro High 的上游路由键。
+// payload.go prepares Antigravity request envelopes, identity instructions,
+// schemas, and token-limit overrides.
+// Antigravity generation payloads carry a project and internal model route
+// outside the Gemini request object. The envelope supplies a new agent request
+// ID and fixed client identity, while preparation retains the distinction
+// between model mapping, thinking variants, and safe error text.
+//
+// Identity injection and schema cleanup decode mutable JSON maps and reencode
+// when their conditions require changes. Existing camelCase declaration arrays take
+// precedence, and mixed Search/function declarations enable server-side
+// invocations. Token limits preserve max_completion_tokens presence precedence
+// even when its value prevents a positive override. Directly supplied schema
+// maps can be mutated by bridge cleaners; byte wrappers work on separately
+// decoded objects.
+
+// AntigravityGemini31ProAgentModel identifies the internal route selected by
+// the default public Gemini 3.1 Pro High model mapping.
 const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 
 var (
-	// AntigravityPassthroughErrorMessages 透传给客户端的错误消息白名单（小写）
-	// 匹配时使用 strings.Contains，无需完全匹配。
+	// AntigravityPassthroughErrorMessages lists lowercase fragments that permit upstream
+	// text to reach clients through substring matching in local error handling.
 	AntigravityPassthroughErrorMessages = []string{
 		"prompt is too long",
 	}
 
+	// ErrProjectIDRequired reports a missing trimmed project for the generic
+	// v1internal wrapper, before generation data can be serialized for sending.
 	ErrProjectIDRequired = errors.New("this standard-tier Antigravity provider requires project_id")
 
-	// DefaultAntigravityModelMapping 将公开请求型号转换为平台内部路由键。
+	// DefaultAntigravityModelMapping selects the internal agent route for the public
+	// Gemini alias before payload construction and thinking-model suffix selection.
 	DefaultAntigravityModelMapping = map[string]string{
 		"gemini-3.1-pro-high": AntigravityGemini31ProAgentModel,
 	}
 )
 
-// PromptTooLongError 表示上游明确返回 prompt too long。
+// PromptTooLongError retains a prompt-length response status, request
+// identity, and captured body.
 type PromptTooLongError struct {
-	StatusCode int
-	RequestID  string
-	Body       []byte
+	StatusCode int    // upstream HTTP status code
+	RequestID  string // upstream response request identifier
+	Body       []byte // captured upstream error bytes
 }
 
+// Error returns the prompt-length failure label and its upstream HTTP status.
 func (e *PromptTooLongError) Error() string {
 	return fmt.Sprintf("prompt too long: status=%d", e.StatusCode)
 }
 
-// ApplyThinkingModelSuffix 根据 thinking 配置调整模型名
-// 当映射结果是 claude-sonnet-4-5 且请求开启了 thinking 时，改为 claude-sonnet-4-5-thinking。
+// ApplyThinkingModelSuffix selects the Sonnet 4.5 thinking name when enabled
+// and the mapped name exactly matches its base. Other names and disabled
+// thinking retain their supplied model identity.
 func ApplyThinkingModelSuffix(mappedModel string, thinkingEnabled bool) string {
 	if !thinkingEnabled {
 		return mappedModel
@@ -55,22 +77,27 @@ func ApplyThinkingModelSuffix(mappedModel string, thinkingEnabled bool) string {
 	return mappedModel
 }
 
-// InjectIdentityPatchToGeminiRequest 为 Gemini 格式请求注入身份提示词
-// 如果请求中已包含 "You are Antigravity" 则不重复注入。
+// InjectIdentityPatchToGeminiRequest adds the default identity before existing
+// camelCase systemInstruction parts. Callers supply a nonnull JSON object;
+// decoded numeric values use float64 when a changed request is reencoded.
+//
+// A text part containing the identity marker anywhere selects the supplied
+// bytes unchanged. Otherwise existing parts follow the injected part, while
+// absent or differently shaped instruction/parts values are replaced. This
+// ordering keeps valid user instructions after the platform identity without
+// appending another identity to a marked request.
 func InjectIdentityPatchToGeminiRequest(body []byte) ([]byte, error) {
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
 		return nil, fmt.Errorf("parse Gemini request: %w", err)
 	}
 
-	// 检查现有 systemInstruction 是否已包含身份提示词
 	if sysInst, ok := request["systemInstruction"].(map[string]any); ok {
 		if parts, ok := sysInst["parts"].([]any); ok {
 			for _, part := range parts {
 				if partMap, ok := part.(map[string]any); ok {
 					if text, ok := partMap["text"].(string); ok {
 						if strings.Contains(text, "You are Antigravity") {
-							// 已包含身份提示词，直接返回原始请求
 							return body, nil
 						}
 					}
@@ -79,21 +106,20 @@ func InjectIdentityPatchToGeminiRequest(body []byte) ([]byte, error) {
 		}
 	}
 
-	// 获取默认身份提示词
 	identityPatch := GetDefaultIdentityPatch()
 
-	// 构建新的 systemInstruction
+	// Prepend the identity to existing parts so user instructions remain present;
+	// a supplied marker selects unchanged bytes before any reserialization
+	// occurs.
 	newPart := map[string]any{"text": identityPatch}
 
 	if existing, ok := request["systemInstruction"].(map[string]any); ok {
-		// 已有 systemInstruction，在开头插入身份提示词
 		if parts, ok := existing["parts"].([]any); ok {
 			existing["parts"] = append([]any{newPart}, parts...)
 		} else {
 			existing["parts"] = []any{newPart}
 		}
 	} else {
-		// 没有 systemInstruction，创建新的
 		request["systemInstruction"] = map[string]any{
 			"parts": []any{newPart},
 		}
@@ -102,7 +128,9 @@ func InjectIdentityPatchToGeminiRequest(body []byte) ([]byte, error) {
 	return json.Marshal(request)
 }
 
-// WrapV1InternalRequest 包装请求为 v1internal 格式。
+// WrapV1InternalRequest adds project/model routing and a fresh agent ID around
+// decoded request data. projectID is trimmed and required; request JSON can be
+// any decoded value, and reencoding uses ordinary float64 numbers.
 func WrapV1InternalRequest(projectID, model string, originalBody []byte) ([]byte, error) {
 	var request any
 	if err := json.Unmarshal(originalBody, &request); err != nil {
@@ -116,7 +144,7 @@ func WrapV1InternalRequest(projectID, model string, originalBody []byte) ([]byte
 	wrapped := map[string]any{
 		"project":     projectID,
 		"requestId":   "agent-" + uuid.New().String(),
-		"userAgent":   "antigravity", // 固定值，与官方客户端一致
+		"userAgent":   "antigravity", // fixed protocol identity
 		"requestType": "agent",
 		"model":       model,
 		"request":     request,
@@ -125,20 +153,26 @@ func WrapV1InternalRequest(projectID, model string, originalBody []byte) ([]byte
 	return json.Marshal(wrapped)
 }
 
+// IsSignatureRelatedError searches extracted platform text or the raw body for
+// signature and expected-thinking wording. Matching is case-insensitive and
+// broad; callers use HTTP status and policy to decide whether it permits
+// recovery.
 func IsSignatureRelatedError(respBody []byte) bool {
 	msg := strings.ToLower(strings.TrimSpace(googlewire.ExtractPlatformMessage(respBody)))
 	if msg == "" {
-		// Fallback: best-effort scan of the raw payload.
+		// Search captured body text when structured extraction is blank so
+		// compatible or malformed envelopes can still supply a signature recovery
+		// marker.
 		msg = strings.ToLower(string(respBody))
 	}
 
-	// Keep this intentionally broad: different upstreams may use "signature" or "thought_signature".
+	// Accept both signature and thought_signature wording.
 	if strings.Contains(msg, "thought_signature") || strings.Contains(msg, "signature") {
 		return true
 	}
 
-	// Also detect thinking block structural errors:
-	// "Expected `thinking` or `redacted_thinking`, but found `text`"
+	// Expected-thinking wording also selects the signature-related category here;
+	// the response owner still checks status and policy before attempting recovery.
 	if strings.Contains(msg, "expected") && (strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking")) {
 		return true
 	}
@@ -146,10 +180,15 @@ func IsSignatureRelatedError(respBody []byte) bool {
 	return false
 }
 
-// IsPromptTooLongError 检测是否为 prompt too long 错误。
+// IsPromptTooLongError recognizes prompt/context length or max_tokens wording
+// in platform text. Blank extraction searches the raw body; callers determine
+// status and model-fallback eligibility separately from this textual
+// classifier.
 func IsPromptTooLongError(respBody []byte) bool {
 	msg := strings.ToLower(strings.TrimSpace(googlewire.ExtractPlatformMessage(respBody)))
 	if msg == "" {
+		// Search the captured body when structured extraction is blank so an
+		// unrecognized envelope can still provide a prompt-length recovery marker.
 		msg = strings.ToLower(string(respBody))
 	}
 	return strings.Contains(msg, "prompt is too long") ||
@@ -158,7 +197,8 @@ func IsPromptTooLongError(respBody []byte) bool {
 		strings.Contains(msg, "max_tokens")
 }
 
-// IsPassthroughErrorMessage 检查错误消息是否在透传白名单中。
+// IsPassthroughErrorMessage reports whether case-folded text contains a
+// locally allowed message pattern.
 func IsPassthroughErrorMessage(msg string) bool {
 	lower := strings.ToLower(msg)
 	for _, pattern := range AntigravityPassthroughErrorMessages {
@@ -169,7 +209,9 @@ func IsPassthroughErrorMessage(msg string) bool {
 	return false
 }
 
-// GetPassthroughOrDefault 若消息在白名单内则返回原始消息，否则返回默认消息。
+// GetPassthroughOrDefault returns upstream text when its case-folded spelling
+// contains an allowed pattern. Otherwise it returns defaultMsg, letting caller
+// error handling retain fixed client-facing text for other failures.
 func GetPassthroughOrDefault(upstreamMsg, defaultMsg string) string {
 	if IsPassthroughErrorMessage(upstreamMsg) {
 		return upstreamMsg
@@ -177,7 +219,17 @@ func GetPassthroughOrDefault(upstreamMsg, defaultMsg string) string {
 	return defaultMsg
 }
 
-// CleanGeminiRequest 清理 Gemini 请求体中的 Schema。
+// CleanGeminiRequest cleans decoded object schemas under Gemini function
+// declarations. Invalid JSON returns an error; a request without a selected
+// object parameters map returns its supplied bytes.
+//
+// An existing camelCase declaration array takes precedence over snake_case
+// even when empty. Selected parameter maps pass through undefined removal and
+// schema adaptation, and processing any such map selects request reencoding
+// even if the cleaner makes no visible change. Other tool entries retain their
+// decoded values, including float64 numbers, within that reencoded request.
+// Schema cleanup requires terminating references and comparable entries in
+// union required arrays; valid JSON alone does not establish those conditions.
 func CleanGeminiRequest(body []byte) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -186,7 +238,6 @@ func CleanGeminiRequest(body []byte) ([]byte, error) {
 
 	modified := false
 
-	// 1. 清理 Tools
 	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
 		for _, t := range tools {
 			toolMap, ok := t.(map[string]any)
@@ -194,7 +245,9 @@ func CleanGeminiRequest(body []byte) ([]byte, error) {
 				continue
 			}
 
-			// function_declarations (snake_case) or functionDeclarations (camelCase)
+			// Prefer an existing camelCase declaration array over snake_case so cleanup
+			// uses one selected schema source; unchanged tools bypass request
+			// reserialization.
 			var funcs []any
 			if f, ok := toolMap["functionDeclarations"].([]any); ok {
 				funcs = f
@@ -229,25 +282,50 @@ func CleanGeminiRequest(body []byte) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
+// PreserveChatCompletionTokenLimit copies the selected positive Chat token
+// limit into claudeRequest. Nil request pointers leave the destination
+// unchanged, and an absent limit supplies no override.
+//
+// Selection uses max_completion_tokens presence before testing positivity. For
+// example, max_tokens=100 with max_completion_tokens=0 keeps the existing
+// Claude value rather than copying 100. A positive completion limit wins over
+// max_tokens; when the completion field is absent, a positive max_tokens value
+// becomes the converted limit.
 func PreserveChatCompletionTokenLimit(request *protocolopenai.ChatCompletionsRequest, claudeRequest *protocolanthropic.AnthropicRequest) {
 	if request == nil || claudeRequest == nil {
 		return
 	}
 	limit := request.MaxTokens
+	// Select by presence before positivity so an explicit completion limit can
+	// suppress the older max_tokens value, matching the Chat request precedence
+	// used by conversion.
 	if request.MaxCompletionTokens != nil {
 		limit = request.MaxCompletionTokens
 	}
 	if limit != nil && *limit > 0 {
-		claudeRequest.MaxTokens = min(*limit, 64000)
+		claudeRequest.MaxTokens = *limit
 	}
 }
 
+// EnableMixedGeminiToolInvocations sets the server-side invocation flag when
+// decoded tools contain both camelCase search-key presence and a nonempty
+// function declaration array. Callers supply a nonnull JSON object, and
+// invalid JSON returns an error.
+//
+// The observations can come from different tool entries. Search-key presence
+// counts even when its value is null, while an empty declaration array does
+// not count. Requests missing either observation return their supplied bytes;
+// qualifying requests retain other object toolConfig fields and reencode the
+// request after replacing any nonobject toolConfig.
 func EnableMixedGeminiToolInvocations(body []byte) ([]byte, error) {
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
 		return nil, err
 	}
 
+	// Combine search presence and nonempty function declarations across tool
+	// entries because either observation alone leaves server-side invocation
+	// configuration untouched.
 	var hasGoogleSearch, hasFunctionDeclarations bool
 	if tools, ok := request["tools"].([]any); ok {
 		for _, rawTool := range tools {
@@ -274,8 +352,16 @@ func EnableMixedGeminiToolInvocations(body []byte) ([]byte, error) {
 	return json.Marshal(request)
 }
 
-// CleanJSONSchema 将 JSON Schema 转换为 Gemini 支持的格式。
+// CleanJSONSchema delegates recursive schema adaptation and returns the
+// bridge-selected map. Schema and nested maps can be mutated, so callers copy
+// mutable schema data shared with other requests before cleanup. Acyclic
+// containers, terminating references, and comparable union-required entries
+// are required by the shared cleaner; malformed values can panic.
 func CleanJSONSchema(schema map[string]any) map[string]any { return bridge.CleanJSONSchema(schema) }
 
-// DeepCleanUndefined 递归删除值为 "[undefined]" 的对象字段。
+// DeepCleanUndefined delegates recursive undefined-field removal to the
+// bridge. Object maps within value can be mutated, so callers isolate mutable
+// schema data they share with other requests before applying cleanup. The
+// input needs acyclic ordinary maps and arrays because recursive traversal
+// has no cycle guard.
 func DeepCleanUndefined(value any) { bridge.DeepCleanUndefined(value) }

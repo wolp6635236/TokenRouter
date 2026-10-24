@@ -11,17 +11,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// 健康规则测试检查处理顺序和输入，适配器负责转换模型数据。
+// cnHealthFailureStore records a failed temporary-pause write after runtime
+// notification.
 type cnHealthFailureStore struct {
-	HealthStore
+	HealthStore // unused health store operations
+	// order points to the event slice also appended by the block callback
+	// during this serial test.
 	order *[]string
 }
 
+// SetTempUnschedulable appends a store event and returns the fixture error. The
+// order pointer is shared with the block callback, allowing the test to compare
+// both operations in one sequence.
 func (s cnHealthFailureStore) SetTempUnschedulable(context.Context, int64, time.Time, string) error {
 	*s.order = append(*s.order, "store")
 	return errors.New("fixture persistence failed")
 }
 
+// TestCNConcurrencyRepositoryFailureKeepsRuntimeBlock makes temporary-pause
+// persistence fail after a Kimi concurrency response. It asserts the block
+// callback precedes storage and receives the same record with the configured
+// deadline and runtime reason.
 func TestCNConcurrencyRepositoryFailureKeepsRuntimeBlock(t *testing.T) {
 	var order []string
 	var blocked *Record
@@ -38,7 +48,10 @@ func TestCNConcurrencyRepositoryFailureKeepsRuntimeBlock(t *testing.T) {
 	require.Same(t, original, blocked)
 }
 
-// TestCNProviderQuotaSnapshotReset Coding Plan 429 冷却：取快照中最早的「仍在未来」窗口重置点。
+// TestCNProviderQuotaSnapshotReset supplies expired and future Coding Plan
+// resets in identity-valid snapshots. It asserts the earliest future deadline
+// wins, wholly expired windows return nil, and pay-as-you-go records ignore
+// those windows.
 func TestCNProviderQuotaSnapshotReset(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
@@ -46,7 +59,7 @@ func TestCNProviderQuotaSnapshotReset(t *testing.T) {
 	futureWeekly := now.Add(3 * 24 * time.Hour)
 	pastWeekly := now.Add(-24 * time.Hour)
 
-	// 5h 在未来、weekly 已过期 → 返回 5h。
+	// The future 5h reset wins when the weekly reset has expired.
 	used := 100.0
 	provider := cnCodingTestProvider(capability.PlatformKimi)
 	attachCNMonitorLimits(provider, now, []UpstreamUsageLimit{
@@ -57,7 +70,7 @@ func TestCNProviderQuotaSnapshotReset(t *testing.T) {
 	require.NotNil(t, got)
 	require.True(t, future5h.Equal(*got))
 
-	// 两个窗口都尚未重置时取较早时间，429 通常由 5h 窗口触发。
+	// When both resets are in the future, choose the earlier one.
 	both := cnCodingTestProvider(capability.PlatformKimi)
 	attachCNMonitorLimits(both, now, []UpstreamUsageLimit{
 		{Name: "5h", Used: &used, ResetAt: &future5h},
@@ -67,7 +80,7 @@ func TestCNProviderQuotaSnapshotReset(t *testing.T) {
 	require.NotNil(t, gotBoth)
 	require.True(t, future5h.Equal(*gotBoth))
 
-	// 两窗口均过期 → nil。
+	// Both resets have expired.
 	expired := cnCodingTestProvider(capability.PlatformKimi)
 	attachCNMonitorLimits(expired, now, []UpstreamUsageLimit{
 		{Name: "5h", Used: &used, ResetAt: &pastWeekly},
@@ -75,7 +88,9 @@ func TestCNProviderQuotaSnapshotReset(t *testing.T) {
 	})
 	require.Nil(t, CNProviderQuotaSnapshotReset(expired, now))
 
-	// payg 提供商（非 coding）→ nil（余额型走余额检测）。
+	// Pay-as-you-go providers use balance monitoring rather than Coding
+	// Plan
+	// windows.
 	payg := cnCodingTestProvider(capability.PlatformKimi)
 	payg.Credentials["provider_mode"] = ProviderModePayG
 	require.Nil(t, CNProviderQuotaSnapshotReset(payg, now))

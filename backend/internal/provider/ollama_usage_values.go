@@ -7,16 +7,30 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
-const (
-	OllamaCloudUsageStatusOK           = "ok"
-	OllamaCloudUsageStatusUnauthorized = "unauthorized"
-	OllamaCloudUsageStatusFailed       = "failed"
+// ollama_usage_values.go defines Ollama usage settings, fetch inputs,
+// snapshots, and administrator state.
+// Ollama browser usage snapshots keep the latest attempt and the last
+// successful display observation separately. Failed attempts can retain older
+// plan and window data while carrying their own status and retry deadline, and
+// administrator state also reports managed session availability.
 
-	OllamaCloudUsageSessionExtraKey     = "ollama_cloud_usage_session"
-	OllamaCloudUsageAutoRefreshExtraKey = "ollama_cloud_usage_auto_refresh"
-	OllamaCloudUsageMinFetchInterval    = 15 * time.Minute
+// Ollama Cloud usage statuses distinguish successful fetches, authentication
+// rejection, and other failures. Managed Extra keys store local session/refresh
+// settings, and the minimum fetch interval constrains successful periodic
+// observations.
+const (
+	OllamaCloudUsageStatusOK           = "ok"           // successful settings-page fetch
+	OllamaCloudUsageStatusUnauthorized = "unauthorized" // observed browser session rejection
+	OllamaCloudUsageStatusFailed       = "failed"       // other normalized fetch failure
+
+	OllamaCloudUsageSessionExtraKey     = "ollama_cloud_usage_session"      // encrypted local browser session
+	OllamaCloudUsageAutoRefreshExtraKey = "ollama_cloud_usage_auto_refresh" // per-group refresh enablement key
+	OllamaCloudUsageMinFetchInterval    = 15 * time.Minute                  // minimum successful periodic fetch spacing
 )
 
+// These Ollama usage errors report unavailable dependencies, invalid
+// provider/session configuration, identity changes during refresh, and manual
+// cooldown rejection to administrator callers.
 var (
 	ErrOllamaCloudUsageUnavailable = apperror.ServiceUnavailable(
 		"OLLAMA_CLOUD_USAGE_UNAVAILABLE", "Ollama Cloud usage is unavailable",
@@ -38,49 +52,88 @@ var (
 	)
 )
 
-// OllamaUsageFetchInput 保存出站用量查询参数。
+// OllamaUsageFetchInput captures the transport and observation inputs for one
+// settings-page fetch.
 type OllamaUsageFetchInput struct {
-	ProviderID  int64
-	Concurrency int
-	ProxyURL    string `json:"-"`
-	Cookie      string `json:"-"`
-	ObservedAt  time.Time
+	ProviderID  int64     // provider transport pool identity
+	Concurrency int       // provider HTTP concurrency configuration
+	ProxyURL    string    `json:"-"` // sensitive provider proxy endpoint
+	Cookie      string    `json:"-"` // normalized browser session cookies
+	ObservedAt  time.Time // timestamp captured before fetching
 }
 
+// OllamaUsageObservation aliases the upstream parsed display data and sanitized
+// fetch failure evidence.
 type OllamaUsageObservation = usageview.OllamaUsageObservation
 
-// OllamaCloudUsageSettings 控制可选的请求驱动刷新任务。
-//
-// IntervalMinutes 是最大等待上限：模型请求持续到达并不断推迟尾随防抖时，
-// 超过该时长会强制刷新。DebounceMinutes 是分组最近一次请求后的静默期。
+// OllamaCloudUsageSettings configures global activity-triggered scans and their
+// timing in minutes.
 type OllamaCloudUsageSettings struct {
-	Enabled         bool `json:"enabled"`
-	IntervalMinutes int  `json:"interval_minutes"` // 请求持续到达时的最大等待时间
-	DebounceMinutes int  `json:"debounce_minutes"` // 最近一次请求后的尾随静默期
+	Enabled bool `json:"enabled"` // global periodic scanning enabled
+	// IntervalMinutes and DebounceMinutes jointly determine min(last
+	// activity
+	// plus debounce, reference attempt plus maximum wait). Normalization
+	// bounds
+	// each separately, while EncodeOllamaCloudUsageSettings additionally
+	// requires debounce below interval.
+	IntervalMinutes int `json:"interval_minutes"` // maximum activity wait in minutes
+	DebounceMinutes int `json:"debounce_minutes"` // quiet period after activity in minutes
 }
 
+// OllamaCloudUsageData aliases parsed plan, window, balance, and model-count
+// display observations.
 type OllamaCloudUsageData = usageview.OllamaCloudUsageData
 
-// OllamaCloudUsageSnapshot 是保存在提供商 Extra 中的用量观测。
-// NextRefreshAt 随快照持久化。ok 状态下它表示最大等待时间，自动刷新由分组活动时间与防抖、最大等待共同决定。
-// failed 或 unauthorized 状态下它表示 Retry-After 或指数退避计算的最早重试时间，实际到期取它与 activityDue 的较晚值。
+// OllamaCloudUsageSnapshot stores the latest attempt beside retained successful
+// display data in provider Extra.
 type OllamaCloudUsageSnapshot struct {
-	Status        string                `json:"status"`
-	Data          *OllamaCloudUsageData `json:"data,omitempty"`
-	FetchedAt     *time.Time            `json:"fetched_at,omitempty"`
-	LastAttemptAt time.Time             `json:"last_attempt_at"`
-	NextRefreshAt time.Time             `json:"next_refresh_at"`
-	FailureCount  int                   `json:"failure_count,omitempty"`
-	HTTPStatus    int                   `json:"http_status,omitempty"`
-	LastError     string                `json:"last_error,omitempty"`
+	Status string `json:"status"` // latest attempt status enum
+	// Data and FetchedAt describe the last successful fetch and remain
+	// together
+	// on later failure. A failed attempt advances LastAttemptAt and retry
+	// state
+	// while the previous display observation remains available.
+	Data          *OllamaCloudUsageData `json:"data,omitempty"`       // last successful display data
+	FetchedAt     *time.Time            `json:"fetched_at,omitempty"` // last successful observation timestamp
+	LastAttemptAt time.Time             `json:"last_attempt_at"`      // latest fetch attempt timestamp
+	// NextRefreshAt supplies a retry floor after failure or unauthorized
+	// status; successful periodic scheduling instead derives its due time
+	// from
+	// FetchedAt and new activity.
+	NextRefreshAt time.Time `json:"next_refresh_at"`
+	FailureCount  int       `json:"failure_count,omitempty"` // consecutive persisted failed attempts
+	HTTPStatus    int       `json:"http_status,omitempty"`   // latest observed HTTP status
+	LastError     string    `json:"last_error,omitempty"`    // latest sanitized failure label
 }
 
-// OllamaCloudUsageState 是向管理员暴露的专用 DTO。
+// OllamaCloudUsageState reports provider eligibility and managed usage
+// configuration to administrator clients.
 type OllamaCloudUsageState struct {
-	ProviderID              int64                     `json:"provider_id"`
-	Eligible                bool                      `json:"eligible"`
-	Configured              bool                      `json:"configured"`
-	AutoRefreshEnabled      bool                      `json:"auto_refresh_enabled"`
-	EncryptionKeyConfigured bool                      `json:"encryption_key_configured"`
-	Snapshot                *OllamaCloudUsageSnapshot `json:"snapshot,omitempty"`
+	ProviderID int64 `json:"provider_id"` // displayed provider record ID
+	// Eligible uses IsOllamaCloudUsageProvider to check platform, API Key
+	// type,
+	// and Ollama base URL. Usable API-key contents are checked separately
+	// when
+	// group identity is required.
+	Eligible bool `json:"eligible"` // supported Ollama provider kind
+	// Configured reports a nonblank stored session string for an eligible
+	// provider; it does not establish successful decryption or upstream
+	// authentication.
+	Configured bool `json:"configured"`
+	// AutoRefreshEnabled combines a configured session with the stored
+	// per-group boolean; global settings and actual due timing are
+	// evaluated
+	// when scanning.
+	AutoRefreshEnabled bool `json:"auto_refresh_enabled"`
+	// EncryptionKeyConfigured is filled by service EnrichState from its
+	// process
+	// configuration; direct state construction leaves this flag false until
+	// enrichment.
+	EncryptionKeyConfigured bool `json:"encryption_key_configured"`
+	// Snapshot holds fresh JSON-decoded display state when its stored
+	// status is
+	// recognized; decode failure yields nil and group resolution happens in
+	// the
+	// service.
+	Snapshot *OllamaCloudUsageSnapshot `json:"snapshot,omitempty"`
 }

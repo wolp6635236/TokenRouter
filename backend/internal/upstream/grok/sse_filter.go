@@ -14,25 +14,53 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// 供应商 ping 通常只包含一行 event 和一行短 data。限制判定期间的缓冲量，
-// 防止上游用永不结束的帧持续占用网关内存；超过限制的帧保持原样透传。
+// sse_filter.go converts recognized Grok billing ping frames to SSE comments
+// while preserving other stream frames.
+// Grok billing gateways can insert event: ping frames into a Responses stream,
+// and strict clients may interpret that event as an unsupported application
+// message. A recognized ping becomes an SSE comment, which retains keepalive
+// traffic while ordinary Responses events and their original line endings pass
+// to the shared reader.
+//
+// Recognition needs the whole candidate frame because a later data.type can
+// contradict the initial ping event. The filter copies candidate lines across
+// scanner advances and caps extensions by both line count and bytes. Unknown
+// fields or exceeded caps replay those copies and make the rest of that frame
+// pass through. A pipe connects the filtering goroutine to its reader; closing
+// the reader interrupts writes, and sync.Once gives worker completion and caller
+// cleanup one shared source-close result.
+
+// ResponsesPingFrameMaxLines and ResponsesPingFrameMaxBytes limit extensions of
+// a buffered candidate; exceeding either cap replays it and passes the frame
+// through.
 const (
 	ResponsesPingFrameMaxLines = 16
 	ResponsesPingFrameMaxBytes = 16 * 1024
 )
 
-// 严格客户端把 OpenAI Responses SSE 事件类型视为闭集，未知的 `event: ping`
-// 会中断整轮响应。Grok 订阅背后的供应商网关会注入计费或保活 ping，因此将其
-// 改写为所有解析器都会忽略的 SSE 注释，同时让下游连接继续保持活跃。
+// responsesPingComment is the replacement SSE comment written for a recognized
+// billing ping, keeping stream activity visible to downstream connection
+// readers.
 var responsesPingComment = []byte(": ping\n\n")
 
+// ResponsesBillingPingFilterBody connects filtered stream reads to coordinated
+// source cleanup.
 type ResponsesBillingPingFilterBody struct {
-	*io.PipeReader
-	source    io.Closer
-	closeOnce sync.Once
-	closeErr  error
+	// PipeReader belongs to the returned body; consuming or closing it releases
+	// filter writes that would otherwise wait for the caller's next read.
+	*io.PipeReader // filtered stream reader
+	// source, closeOnce and closeErr share cleanup between the filtering goroutine
+	// and reader closure; closeOnce saves the first source.Close result in
+	// closeErr.
+	source    io.Closer // owned upstream closer
+	closeOnce sync.Once // source cleanup coordination
+	closeErr  error     // cached source-close error
 }
 
+// Close closes the pipe reader and then closes the source through shared
+// cleanup. The concrete io.PipeReader close returns nil, so this path returns
+// the cached source-close result. Reader closure releases any filter write
+// blocked on consumption.
 func (b *ResponsesBillingPingFilterBody) Close() error {
 	readerErr := b.PipeReader.Close()
 	sourceErr := b.closeSource()
@@ -42,11 +70,18 @@ func (b *ResponsesBillingPingFilterBody) Close() error {
 	return sourceErr
 }
 
+// closeSource closes the underlying source once and returns its cached error.
+// The filter worker and the body's Close method share this operation, so either
+// completion path can release the same source.
 func (b *ResponsesBillingPingFilterBody) closeSource() error {
 	b.closeOnce.Do(func() { b.closeErr = b.source.Close() })
 	return b.closeErr
 }
 
+// NewGrokResponsesBillingPingFilterBody starts a filtering goroutine and returns
+// its pipe reader. Callers consume or close the returned body to release pipe
+// writes and source ownership. Nonpositive maxLineSize selects the standard SSE
+// line limit.
 func NewGrokResponsesBillingPingFilterBody(source io.ReadCloser, maxLineSize int) io.ReadCloser {
 	reader, writer := io.Pipe()
 	body := &ResponsesBillingPingFilterBody{PipeReader: reader, source: source}
@@ -54,12 +89,24 @@ func NewGrokResponsesBillingPingFilterBody(source io.ReadCloser, maxLineSize int
 	return body
 }
 
+// FilterGrokResponsesBillingPings writes a stream whose recognized billing pings
+// become comments. It owns destination completion and invokes closeSource when
+// processing ends; destination errors stop reading. Nonpositive maxLineSize uses
+// DefaultSSELineLimit, and scanner storage is returned after scanning finishes.
+//
+// A frame-leading ping starts copied candidate lines. Data or comments can
+// extend it within both caps; another field or excess buffering replays the
+// candidate and passes the frame through. At a separator or EOF, a conflicting
+// decoded type retains the original bytes. Scanner errors reach readers through
+// CloseWithError after any pending candidate is resolved.
 func FilterGrokResponsesBillingPings(
 	source io.Reader,
 	destination *io.PipeWriter,
 	closeSource func() error,
 	maxLineSize int,
 ) {
+	// The worker releases source ownership on every exit, sharing cleanup with
+	// caller Close so either path can end the read.
 	defer func() { _ = closeSource() }()
 	if maxLineSize <= 0 {
 		maxLineSize = upstream.DefaultSSELineLimit
@@ -67,12 +114,15 @@ func FilterGrokResponsesBillingPings(
 
 	scanner := bufio.NewScanner(source)
 	scanBuf := httpclient.GetSSEScannerBuf64K()
+	// Keep scanner storage borrowed until filtering ends; retained ping lines use
+	// their own copies and outlive individual scanner tokens.
 	defer httpclient.PutSSEScannerBuf64K(scanBuf)
 	initialBufferSize := min(maxLineSize, len(scanBuf))
 	scanner.Buffer(scanBuf[:0:initialBufferSize], maxLineSize)
 	scanner.Split(ScanSSELinesPreservingEndings)
 
-	// 仅缓冲以 `event: ping` 开始的候选帧；其它帧逐行直通，不额外复制。
+	// Copy candidate lines before the scanner advances; its reusable buffer would
+	// otherwise overwrite bytes needed when a later field disqualifies the ping.
 	pingFrame := make([][]byte, 0, 3)
 	pingFrameBytes := 0
 	inPassthroughFrame := false
@@ -87,8 +137,8 @@ func FilterGrokResponsesBillingPings(
 		pingFrameBytes = 0
 		return nil
 	}
-	// 对完整候选帧做最终判定：供应商 ping 改写为 SSE 注释，其它内容逐字回放。
-	// 当流在帧内结束时，blankLine 为 nil。
+	// Decide after the complete candidate is available because data.type can name a
+	// different application event. A nil blankLine represents the EOF-only path.
 	endPingFrame := func(blankLine []byte) error {
 		if IsGrokResponsesPingEventFrame(pingFrame) {
 			pingFrame = pingFrame[:0]
@@ -137,8 +187,8 @@ func FilterGrokResponsesBillingPings(
 				pingFrameBytes += len(line)
 				continue
 			}
-			// 出现意外字段或超过缓冲上限时，该帧不再可过滤；回放已缓冲内容，
-			// 并原样直通帧内剩余数据。
+			// An unexpected field or exceeded cap means conversion is unsafe for this
+			// candidate. Replay saved bytes, then keep the rest of its frame intact.
 			if err := replayPingFrame(); err != nil {
 				abort(err)
 				return
@@ -151,7 +201,8 @@ func FilterGrokResponsesBillingPings(
 			continue
 		}
 
-		// 帧起点只有 `event: ping` 才进入候选缓冲。
+		// A frame's first event identifies a possible billing ping; events encountered
+		// after another field stay in passthrough to retain their application meaning.
 		if !isBlank {
 			if value, ok := wireopenai.ExtractSSEEventLine(string(TrimSSELineEnding(line))); ok && value == "ping" {
 				pingFrame = append(pingFrame, append([]byte(nil), line...))
@@ -178,12 +229,23 @@ func FilterGrokResponsesBillingPings(
 	_ = destination.Close()
 }
 
+// ScanSSELinesPreservingEndings splits LF, CRLF and lone-CR lines with
+// terminators included. Tokens borrow scanner input storage, so callers copy
+// bytes they retain across subsequent scans. At EOF the remaining unterminated
+// bytes form a final token.
+//
+// A CR at the current buffer end waits for more input before choosing its
+// terminator length. This keeps a CRLF split across reads together, allowing
+// disqualified ping candidates and ordinary events to replay their original line
+// endings.
 func ScanSSELinesPreservingEndings(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	for index, value := range data {
 		switch value {
 		case '\n':
 			return index + 1, data[:index+1], nil
 		case '\r':
+			// Wait for the next read to reveal a following LF; treating this CR
+			// immediately would split one CRLF terminator.
 			if index+1 == len(data) && !atEOF {
 				return 0, nil, nil
 			}
@@ -199,12 +261,17 @@ func ScanSSELinesPreservingEndings(data []byte, atEOF bool) (advance int, token 
 	return 0, nil, nil
 }
 
+// TrimSSELineEnding removes one trailing LF and then one trailing CR from a
+// line. Its result shares the original storage, and callers use it for frame
+// interpretation while retaining the terminated bytes for forwarding.
 func TrimSSELineEnding(line []byte) []byte {
 	return bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
 }
 
-// CanExtendGrokResponsesPingFrame 判断当前行是否仍可能属于供应商 ping 帧。
-// 只接受 data 行和 SSE 注释；第二个 event、id、retry 等字段说明它不是普通 ping。
+// CanExtendGrokResponsesPingFrame admits comment and data lines inside an
+// existing ping candidate. Callers identify the leading event separately;
+// additional event, id, retry or unknown fields make the candidate return to
+// byte-preserving forwarding.
 func CanExtendGrokResponsesPingFrame(rawLine []byte) bool {
 	line := TrimSSELineEnding(rawLine)
 	if len(line) > 0 && line[0] == ':' {
@@ -214,9 +281,10 @@ func CanExtendGrokResponsesPingFrame(rawLine []byte) bool {
 	return ok
 }
 
-// IsGrokResponsesPingEventFrame 判定首行为 `event: ping` 的候选帧。只有 data
-// 明确声明了不同事件类型时才原样回放；计费、保活、无 data 或畸形 JSON 等其它
-// 形态都会破坏严格的 Responses 客户端，因此统一改写为注释。
+// IsGrokResponsesPingEventFrame checks data fields of a nonempty candidate
+// already beginning with event: ping. Absent data, a JSON/type decoding error,
+// or a missing/null type permits conversion. A successfully decoded string type
+// other than ping retains the application frame.
 func IsGrokResponsesPingEventFrame(rawLines [][]byte) bool {
 	dataParts := make([]string, 0, 1)
 	for _, rawLine := range rawLines[1:] {
@@ -228,7 +296,9 @@ func IsGrokResponsesPingEventFrame(rawLines [][]byte) bool {
 		return true
 	}
 	var payload struct {
-		Type *string `json:"type"`
+		// Type distinguishes a decoded event from missing or null type; missing values
+		// permit this candidate's keepalive conversion.
+		Type *string `json:"type"` // decoded event type
 	}
 	if err := json.Unmarshal([]byte(strings.Join(dataParts, "\n")), &payload); err != nil || payload.Type == nil {
 		return true

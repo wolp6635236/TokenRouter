@@ -9,7 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestLoadLegacyDeploymentConfig 验证完整加载入口保留旧部署的数值与开关，读取后不重写挂载配置。
+// TestLoadLegacyDeploymentConfig loads retired pool and scheduler fields
+// through normal and bootstrap entry points. Expected zero, false, and weighted
+// values must reach current fields while the mounted YAML stays
+// byte-equivalent.
 func TestLoadLegacyDeploymentConfig(t *testing.T) {
 	body := `gateway:
   max_account_switches: 0
@@ -72,11 +75,13 @@ func TestLoadLegacyDeploymentConfig(t *testing.T) {
 	}
 }
 
-// TestLoadLegacyConfigPrecedence 验证来源优先级仍是环境变量高于 YAML；同一来源显式的新字段覆盖旧字段。
+// TestLoadLegacyConfigPrecedence combines current and retired YAML names with
+// both environment aliases. Environment values must win over YAML, and the
+// current name must win within a source while retaining explicit zero.
 func TestLoadLegacyConfigPrecedence(t *testing.T) {
 	for _, tc := range []struct {
-		name, yaml, oldEnv, newEnv string
-		want                       int
+		name, yaml, oldEnv, newEnv string // name: displayed case name; yaml: supplied YAML input; oldEnv: retired environment value; newEnv: current environment value
+		want                       int    // expected provider switch limit
 	}{
 		{"default", "{}", "", "", 10},
 		{"old YAML", "gateway:\n  max_account_switches: 6\n", "", "", 6},
@@ -97,7 +102,9 @@ func TestLoadLegacyConfigPrecedence(t *testing.T) {
 	}
 }
 
-// TestLoadLegacyConfigEnvironment 验证纯环境变量部署也保留旧连接池参数和关闭开关，不依赖 YAML 出现旧键。
+// TestLoadLegacyConfigEnvironment supplies retired field names through
+// environment-only input. Current pool and scheduler fields must receive those
+// values, including zero and false, and retired isolation enums must normalize.
 func TestLoadLegacyConfigEnvironment(t *testing.T) {
 	prepareLegacyConfigTest(t, "{}")
 	for key, value := range map[string]string{
@@ -130,9 +137,13 @@ func TestLoadLegacyConfigEnvironment(t *testing.T) {
 	require.Equal(t, ConnectionPoolIsolationProvider, cfg.Gateway.ConnectionPoolIsolation)
 }
 
-// TestLoadLegacyConfigStillValidatesValues 验证兼容旧名称仍须校验取值；不能把非法连接数或拼错的隔离模式当成默认值。
+// TestLoadLegacyConfigStillValidatesValues supplies invalid retired numeric
+// input and isolation text. Compatibility loading must still return the
+// expected decode or current-field validation error.
 func TestLoadLegacyConfigStillValidatesValues(t *testing.T) {
-	for _, tc := range []struct{ key, value, message string }{
+	for _, tc := range []struct {
+		key, value, message string // key: selected environment name; value: supplied invalid text; message: expected error fragment
+	}{
 		{"GATEWAY_OPENAI_WS_MAX_CONNS_PER_ACCOUNT", "-1", "max_conns_per_provider must be positive"},
 		{"GATEWAY_OPENAI_WS_MAX_CONNS_PER_ACCOUNT", "invalid", "unmarshal config error"},
 		{"GATEWAY_CONNECTION_POOL_ISOLATION", "invalid", "connection_pool_isolation must be one of"},
@@ -146,7 +157,9 @@ func TestLoadLegacyConfigStillValidatesValues(t *testing.T) {
 	}
 }
 
-// TestLegacyConfigPreservesCustomProfileNames 验证自定义配置名含 account 时保持原样，兼容映射不做关键词替换。
+// TestLegacyConfigPreservesCustomProfileNames supplies a TLS profile map whose
+// custom name includes account. Alias preparation must leave that user-selected
+// map key and its stored display name unchanged.
 func TestLegacyConfigPreservesCustomProfileNames(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -156,7 +169,10 @@ func TestLegacyConfigPreservesCustomProfileNames(t *testing.T) {
 	require.Equal(t, "custom", viper.GetString("gateway.tls_fingerprint.profiles.account_gateway.name"))
 }
 
-// TestLoadLegacyConfigMixedNestedFields 验证新旧嵌套对象按字段合并，显式零值和关闭开关不被旧值覆盖，也不丢失同级配置。
+// TestLoadLegacyConfigMixedNestedFields combines current and retired nested
+// values with an environment override, then changes the selected YAML file.
+// Loading must merge individual fields with correct precedence and clear
+// removed prior-file values on reload.
 func TestLoadLegacyConfigMixedNestedFields(t *testing.T) {
 	prepareLegacyConfigTest(t, `gateway:
   openai_ws:
@@ -190,7 +206,8 @@ func TestLoadLegacyConfigMixedNestedFields(t *testing.T) {
 	require.Equal(t, 1.2, cfg.Gateway.AdvancedScheduler.ScoreWeights.Load)
 	require.Equal(t, 7.0, cfg.Gateway.AdvancedScheduler.ScoreWeights.Queue)
 
-	// 再次加载必须读取新的文件内容，不能沿用上次在内存中补齐的旧值。
+	// Replace the selected YAML input after the first merge. The following load
+	// must discard prior file values while retaining loader defaults for fields now absent.
 	require.NoError(t, os.WriteFile(os.Getenv("CONFIG_FILE"), []byte("gateway:\n  max_provider_switches: 4\n"), 0o600))
 	cfg, err = Load()
 	require.NoError(t, err)

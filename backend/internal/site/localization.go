@@ -12,17 +12,43 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
+// localization.go prepares and resolves localized site text and revisioned
+// legal documents.
+// Configured site text distinguishes a saved empty string from a field with
+// no localized content. Editor reads fill missing fields from legacy source
+// keys, while prepared writes retain omitted fields and validate changes
+// against each field's current content revision. Public reads resolve saved
+// blocks and leave source settings available in an independently owned map.
+//
+// Legal documents match previous localization by document ID and treat title
+// and Markdown as one copy. An omitted localization block retains the previous
+// document's tracked source and translations. Revision preparation validates
+// supplied copies before replacing that state, while consent revision calculation
+// elsewhere excludes translation metadata and responds to source changes.
+
+// Localization keys separate per-field site content from the default language
+// used by public readers when a request does not select another language.
 const (
 	SettingKeySiteTexts     = "site_texts"
 	SettingKeyDefaultLocale = "default_locale"
 )
 
+// siteTextKeys lists the source fields initialized for the editor when saved
+// localized content does not yet define an editable block for those keys.
 var siteTextKeys = []string{"site_name", "site_title", "site_subtitle", "contact_info", "doc_url", "home_content", "purchase_subscription_url", "footer_text"}
 
-// LocalizedTexts 按独立字段保存站点文案，译文缺失时各自选择原文。
+// LocalizedTexts stores site text by field so each field can resolve translations independently.
 type LocalizedTexts = locale.TextUpdates
 
-// ParseLocalizedTexts 从已保存内容构建编辑值，缺少的字段取现有原文。
+// ParseLocalizedTexts returns editable content from saved groups and legacy source values.
+// Each missing siteTextKeys field receives an original content block, with
+// TokenRouter used for an empty legacy site_name. Saved blocks remain present,
+// including explicitly empty content and any other keys already stored in the
+// group.
+//
+// Filling the editor map does not persist those generated blocks. Their initial
+// revision is used by PrepareLocalizedTexts to distinguish an unchanged absent
+// field from an administrator's submitted content or review update.
 func ParseLocalizedTexts(values map[string]string) LocalizedTexts {
 	result := ConfiguredSiteTexts(values)
 	for _, key := range siteTextKeys {
@@ -37,7 +63,15 @@ func ParseLocalizedTexts(values map[string]string) LocalizedTexts {
 	return result
 }
 
-// PrepareLocalizedTexts 检查字段范围和版本，并保留请求未修改的内容块。
+// PrepareLocalizedTexts returns configured site text after preparing submitted content changes.
+// Omitted fields remain as saved, and fields absent from the prepared prior
+// map are rejected. Equal content with no reviewed locales causes no write,
+// including editor defaults generated for fields that were never configured.
+//
+// Changed copies pass through locale.Prepare using their current revisions.
+// Link fields accept relative, HTTP, and HTTPS destinations; homepage HTML uses
+// a separate larger text limit. Saved empty optional text remains distinguishable
+// from absence, while a changed site_name must contain a nonblank name.
 func PrepareLocalizedTexts(values map[string]string, input LocalizedTexts) (LocalizedTexts, error) {
 	previous := ParseLocalizedTexts(values)
 	result := ConfiguredSiteTexts(values)
@@ -56,8 +90,10 @@ func PrepareLocalizedTexts(values map[string]string, input LocalizedTexts) (Loca
 					return apperror.BadRequest("INVALID_LINK_URL", "Link URL is invalid.")
 				}
 			}
+			// Ordinary display copy is bounded in Unicode characters.
 			limit := 2000
 			if key == "home_content" {
+				// Homepage content permits larger HTML or link source text.
 				limit = 1 << 20
 			}
 			if utf8.RuneCountInString(value) > limit {
@@ -76,7 +112,9 @@ func PrepareLocalizedTexts(values map[string]string, input LocalizedTexts) (Loca
 	return result, nil
 }
 
-// ResolveSiteTexts 返回独立的设置副本，权限、菜单结构和内容原文保持在持久数据中。
+// ResolveSiteTexts returns a separate settings map with saved text resolved for code.
+// Unconfigured source keys retain their values, while a configured block may
+// resolve to an intentionally empty string that overrides the source setting.
 func ResolveSiteTexts(values map[string]string, code string) map[string]string {
 	result := make(map[string]string, len(values))
 	maps.Copy(result, values)
@@ -86,7 +124,18 @@ func ResolveSiteTexts(values map[string]string, code string) map[string]string {
 	return result
 }
 
-// PrepareLegalDocuments 检查每份协议的译文版本，标题和正文一起保存。
+// PrepareLegalDocuments returns source copies and localization prepared against
+// the previously stored documents.
+// Document IDs match previous content, and an omitted localization block reuses
+// that document's saved localization and source copy. Nonempty input receives
+// a copied outer slice; empty input returns nil. Unchanged submitted localization
+// pointers can remain shared with input, so callers copy retained nested content
+// before modifying it independently.
+//
+// Supplied updates use title and Markdown as one revisioned copy. A changed
+// copy requires a nonblank title, a body of at most one mebibyte, and a nonblank
+// body when the submitted source body is nonblank. Preparation updates each
+// returned document's source fields; it performs no persistence.
 func PrepareLegalDocuments(raw string, input []LoginAgreementDocument) ([]LoginAgreementDocument, error) {
 	current := map[string]LoginAgreementDocument{}
 	for _, doc := range ParseLoginAgreementDocuments(raw) {
@@ -115,6 +164,7 @@ func PrepareLegalDocuments(raw string, input []LoginAgreementDocument) ([]LoginA
 			if strings.TrimSpace(copy.Title) == "" {
 				return apperror.BadRequest("LEGAL_TITLE_REQUIRED", "Document title is required.")
 			}
+			// Legal Markdown is limited in bytes, independently of title length.
 			if len(copy.ContentMD) > 1<<20 {
 				return apperror.BadRequest("LEGAL_CONTENT_TOO_LONG", "Document exceeds the allowed length.")
 			}
@@ -132,9 +182,14 @@ func PrepareLegalDocuments(raw string, input []LoginAgreementDocument) ([]LoginA
 	return result, nil
 }
 
-// ConfiguredSiteTexts 区分未配置的字段与管理员明确保存的空字符串。
+// ConfiguredSiteTexts returns content decoded from the grouped site_texts setting.
+// Decoder errors are discarded, retaining any populated entries; nil decoded
+// maps become empty maps. Missing fields remain absent instead of acquiring
+// editor defaults, so callers can identify deliberately configured empty text.
 func ConfiguredSiteTexts(values map[string]string) LocalizedTexts {
 	result := LocalizedTexts{}
+	// Public override reporting depends on the saved group's actual keys. Keep
+	// decoder-populated entries and leave default insertion to the editor-specific parsing function.
 	_ = json.Unmarshal([]byte(values[SettingKeySiteTexts]), &result)
 	if result == nil {
 		return LocalizedTexts{}

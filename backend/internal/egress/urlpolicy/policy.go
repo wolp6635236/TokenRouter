@@ -11,20 +11,41 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/ipmatch"
 )
 
+// policy.go validates outbound URL syntax and host permissions before callers
+// append endpoint paths and send requests. Scheme permission, optional port
+// range, normalized host patterns, and literal private-host permission
+// determine whether a parsed URL can be used. Hostname resolution belongs to
+// the transport layer, so accepting ordinary DNS names here does not classify
+// their resolved addresses.
+//
+// AllowedHosts constrains the URL when normalization retains entries;
+// RequireAllowlist also rejects an empty normalized list. Wildcard patterns
+// admit their suffix host as well as subdomains. Successful full validation
+// rebuilds the parsed URL after trimming decoded trailing path separators and
+// clearing RawPath, which can change escaped path spelling. Format-only
+// validation instead trims the supplied text and leaves host policy to its
+// caller.
+
+// ValidationOptions selects allowlist requirements and literal private-host
+// handling for outbound URL checks.
 type ValidationOptions struct {
-	AllowedHosts     []string
-	RequireAllowlist bool
-	AllowPrivate     bool
+	// AllowedHosts constrains hosts whenever normalization leaves at least one
+	// entry. RequireAllowlist additionally rejects an empty configured list, while
+	// AllowPrivate independently controls localhost names and literal IPs.
+	AllowedHosts     []string // configured host allowlist patterns
+	RequireAllowlist bool     // reject empty normalized allowlists
+	AllowPrivate     bool     // permit nonpublic literal hosts
 }
 
-// ValidateHTTPURL validates an outbound HTTP/HTTPS URL.
+// ValidateHTTPURL validates and normalizes an outbound HTTP or HTTPS URL using
+// optional host patterns and literal-address policy. HTTP requires
+// allowInsecureHTTP, a supplied port needs the range 1 through 65535, and
+// RequireAllowlist rejects an empty normalized host list.
 //
-// It provides a single validation entry point that supports:
-// - scheme 校验（https 或可选允许 http）
-// - 可选 allowlist（支持 *.example.com 通配）
-// - allow_private_hosts 策略（阻断 localhost/私网字面量 IP）
-//
-// 注意：DNS Rebinding 防护（解析后 IP 校验）应在实际发起请求时执行，避免 TOCTOU。
+// Allowlist wildcards match both their suffix host and subdomains. The result
+// is rebuilt from the parsed URL after trimming decoded path slashes and
+// clearing RawPath, so encoded path spelling may change. DNS results require
+// separate validation when a request is sent.
 func ValidateHTTPURL(raw string, allowInsecureHTTP bool, opts ValidationOptions) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -64,13 +85,18 @@ func ValidateHTTPURL(raw string, allowInsecureHTTP bool, opts ValidationOptions)
 		return "", fmt.Errorf("host is not allowed: %s", host)
 	}
 
+	// Rebuild from the decoded Path after trimming its trailing separators.
+	// Clearing RawPath lets url.URL choose escaping for the normalized path value.
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	parsed.RawPath = ""
 	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
+// ValidateURLFormat checks a trimmed URL for HTTP/HTTPS scheme, hostname, and
+// any supplied port range. HTTP needs allowInsecureHTTP; successful output
+// trims trailing slash characters from the input text, leaving allowlist and
+// private-address decisions to policy callers.
 func ValidateURLFormat(raw string, allowInsecureHTTP bool) (string, error) {
-	// 检查 URL 能否解析及 scheme 是否有效。
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", errors.New("url is required")
@@ -101,13 +127,17 @@ func ValidateURLFormat(raw string, allowInsecureHTTP bool) (string, error) {
 	return strings.TrimRight(trimmed, "/"), nil
 }
 
+// ValidateHTTPSURL applies outbound URL validation with HTTP disabled and the
+// supplied host policy. It returns normalized HTTPS text on success, and
+// callers perform any required checks of resolved DNS addresses separately.
 func ValidateHTTPSURL(raw string, opts ValidationOptions) (string, error) {
 	return ValidateHTTPURL(raw, false, opts)
 }
 
-// ValidateResolvedIP 验证 DNS 解析后的 IP 地址是否安全
-// 用于防止 DNS Rebinding 攻击：在实际 HTTP 请求时调用此函数验证解析后的 IP
-
+// NormalizeAllowlist trims and lowercases host entries, drops blank values, and
+// removes ports accepted by SplitHostPort. Nil or empty input returns nil;
+// wildcard text remains available for IsAllowedHost, and entries are not
+// DNS-resolved or deduplicated.
 func NormalizeAllowlist(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -118,6 +148,8 @@ func NormalizeAllowlist(values []string) []string {
 		if entry == "" {
 			continue
 		}
+		// URL validation compares parsed hostnames, so remove recognized authority
+		// ports from configured patterns while leaving other supplied text intact.
 		if host, _, err := net.SplitHostPort(entry); err == nil {
 			entry = host
 		}
@@ -126,11 +158,17 @@ func NormalizeAllowlist(values []string) []string {
 	return normalized
 }
 
+// IsAllowedHost reports whether host exactly matches an allowlist entry or its
+// wildcard suffix. Wildcards also admit the suffix itself; callers normalize
+// host and entries before lookup, since this comparison preserves case and
+// whitespace.
 func IsAllowedHost(host string, allowlist []string) bool {
 	for _, entry := range allowlist {
 		if entry == "" {
 			continue
 		}
+		// The configured wildcard covers the suffix host as well as descendants.
+		// Include the apex comparison so a shared domain pattern admits either spelling.
 		if after, ok := strings.CutPrefix(entry, "*."); ok {
 			suffix := after
 			if host == suffix || strings.HasSuffix(host, "."+suffix) {
@@ -145,12 +183,17 @@ func IsAllowedHost(host string, allowlist []string) bool {
 	return false
 }
 
-// IsBlockedHost 报告 host 是否为 localhost 或内网地址字面量。
-// 域名解析结果由 ValidateResolvedIP 在实际请求前单独校验。
+// IsBlockedHost reports whether a trimmed, lowercased hostname is localhost, a
+// localhost subdomain, or a nonpublic IP literal. Other names return false
+// here; callers separately validate resolved DNS addresses when their policy
+// requires it.
 func IsBlockedHost(host string) bool {
 	return blockedHost(strings.ToLower(strings.TrimSpace(host)))
 }
 
+// blockedHost checks a normalized hostname for local names and nonpublic IP
+// literals. Ordinary DNS names return false without resolution, allowing
+// transport callers to apply their separate resolved-address policy later.
 func blockedHost(host string) bool {
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return true

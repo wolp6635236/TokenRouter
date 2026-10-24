@@ -1,75 +1,66 @@
 package modelidentity
 
-import "strings"
+import "github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 
+// thinking.go resolves model signature policy and gates Anthropic thinking
+// repair filters.
+// Historical thinking blocks require the rules of the model receiving the
+// Anthropic body. Catalogue signature modes distinguish strict Anthropic
+// validation from upstreams that need unchanged passback, and unknown modes
+// leave the gateway's repair guards disabled.
+
+// Thinking protocol values tell request filters which signature handling the
+// resolved model family permits before forwarding historical blocks or retrying
+// rejected requests.
 const (
-	// ThinkingProtocolUnknown 表示无法识别协议族，默认保守不剥离。
+	// ThinkingProtocolUnknown leaves thinking blocks intact when the protocol family is unknown.
 	ThinkingProtocolUnknown ThinkingProtocol = iota
 
-	// ThinkingProtocolAnthropicStrict 表示 Anthropic 官方规则：剥离签名缺失或非法的 thinking block。
+	// ThinkingProtocolAnthropicStrict removes thinking blocks with missing or invalid signatures.
 	ThinkingProtocolAnthropicStrict
 
-	// ThinkingProtocolPassbackRequired 表示第三方兼容规则：原样回传 thinking block。
+	// ThinkingProtocolPassbackRequired replays thinking blocks unchanged for compatible upstreams.
 	ThinkingProtocolPassbackRequired
 )
 
-// ThinkingProtocol 描述上游对 thinking block 的处理规则。
-// 不同上游对历史 thinking block 的要求相反：Anthropic 官方要求有效签名，
-// 第三方 Anthropic 兼容上游通常要求原样回传历史 thinking block。
+// ThinkingProtocol describes how the upstream handles historical thinking blocks.
+// Anthropic requires valid signatures; compatible providers with passback rules
+// require the historical blocks to be replayed unchanged.
 type ThinkingProtocol int
 
-// ResolveThinkingProtocol 根据上游模型 ID 推断 thinking 协议族。
-//
-// Anthropic 原生路径应传映射后的上游模型；Gemini messages compat 的 Claude body
-// retry 则传客户端原始模型，因为被整流的是 Anthropic 请求体本身。
+// ResolveThinkingProtocol converts the catalogue's Anthropic-message signature
+// mode into a thinking policy. Anthropic forwarding supplies the mapped
+// upstream model, while Gemini Messages retry callers use the model parsed
+// from the Anthropic body they filter. Unrecognized signature modes return
+// ThinkingProtocolUnknown.
 func ResolveThinkingProtocol(modelID string) ThinkingProtocol {
-	id := strings.ToLower(strings.TrimSpace(modelID))
-	if id == "" {
+	rules := (modelcatalog.View{}).Resolve(modelcatalog.Target{Model: modelID, UpstreamProtocol: "anthropic_messages"}, modelcatalog.Attributes{}).Rules
+	switch rules.SignatureMode {
+	case "passback":
+		return ThinkingProtocolPassbackRequired
+	case "anthropic":
+		return ThinkingProtocolAnthropicStrict
+	default:
+		// Unrecognized signature modes retain historical blocks because the gateway
+		// has no catalogue rule authorizing strict Anthropic filtering for this model.
 		return ThinkingProtocolUnknown
 	}
-
-	switch {
-	case strings.HasPrefix(id, "deepseek-"),
-		strings.HasPrefix(id, "kimi-"),
-		strings.HasPrefix(id, "moonshot-"),
-		strings.HasPrefix(id, "glm-"),
-		// Kimi Code 的官方 bare ID 必须精确匹配，不能用宽泛的 k3- 前缀。
-		id == "k3",
-		id == "k3-256k":
-		return ThinkingProtocolPassbackRequired
-	}
-	if strings.HasPrefix(id, "minimax-m") {
-		return ThinkingProtocolPassbackRequired
-	}
-	if (strings.HasPrefix(id, "qwen-") ||
-		strings.HasPrefix(id, "qwen2-") ||
-		strings.HasPrefix(id, "qwen3-") ||
-		strings.HasPrefix(id, "qwen4-")) && strings.Contains(id, "-thinking") {
-		return ThinkingProtocolPassbackRequired
-	}
-
-	switch {
-	case strings.HasPrefix(id, "claude-"),
-		strings.HasPrefix(id, "opus-"),
-		strings.HasPrefix(id, "sonnet-"),
-		strings.HasPrefix(id, "haiku-"):
-		return ThinkingProtocolAnthropicStrict
-	}
-
-	return ThinkingProtocolUnknown
 }
 
-// ShouldPreFilterThinkingBlocks 判断是否应在转发前剥离无效 thinking block。
+// ShouldPreFilterThinkingBlocks reports whether the resolved family uses strict
+// Anthropic signature validation.
 func ShouldPreFilterThinkingBlocks(modelID string) bool {
 	return ResolveThinkingProtocol(modelID) == ThinkingProtocolAnthropicStrict
 }
 
-// ShouldRectifyThinkingSignatureError 判断是否应在 400 后触发 thinking 签名整流 retry。
+// ShouldRectifyThinkingSignatureError reports whether strict Anthropic rules
+// permit signature-error repair on retry.
 func ShouldRectifyThinkingSignatureError(modelID string) bool {
 	return ResolveThinkingProtocol(modelID) == ThinkingProtocolAnthropicStrict
 }
 
-// ShouldApplyRetryFilters 判断 retry 路径是否应执行 thinking/tool block 变形。
+// ShouldApplyRetryFilters reports whether strict Anthropic rules permit
+// rewriting retry-sensitive thinking and tool blocks.
 func ShouldApplyRetryFilters(modelID string) bool {
 	return ResolveThinkingProtocol(modelID) == ThinkingProtocolAnthropicStrict
 }

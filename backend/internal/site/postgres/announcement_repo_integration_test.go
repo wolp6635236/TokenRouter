@@ -17,7 +17,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
 )
 
-// TestAnnouncementConcurrentLocalization 检查两个编辑副本中只有先保存的版本生效。
+// TestAnnouncementConcurrentLocalization fetches two editing copies before saving the first one.
+// It verifies that the stale copy returns a localization conflict and that
+// storage retains the first edit's title and incremented content revision.
 func TestAnnouncementConcurrentLocalization(t *testing.T) {
 	ctx := context.Background()
 	db := postgrescontainer.New(t)

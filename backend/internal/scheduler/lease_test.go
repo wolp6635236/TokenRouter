@@ -11,12 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestLeaseConcurrentReleaseOwnership 检查取消与请求完成竞争时资源归还一次，后取得的提供商资源先于用户资源释放。
+// TestLeaseConcurrentReleaseOwnership races concurrent release calls with
+// cancellation on one request lease. It requires one cleanup per resource in
+// reverse ownership order after the release callers have joined.
 func TestLeaseConcurrentReleaseOwnership(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var order []string
 	l := NewLease(ctx, ReleaseOnCancel, func() { order = append(order, "user") }, func() { order = append(order, "provider") })
 	var wg sync.WaitGroup
+	// Concurrent release callers and the cancellation callback share one
+	// lease. Join the callers before reading order so their cleanup has
+	// returned before the assertion.
 	for range 16 {
 		wg.Go(func() { ; l.Release() })
 	}
@@ -25,7 +30,10 @@ func TestLeaseConcurrentReleaseOwnership(t *testing.T) {
 	require.Equal(t, []string{"provider", "user"}, order)
 }
 
-// TestLeaseCompletionIgnoresClientCancellation 检查 Qoder 完成释放模式在客户端取消后持有容量，直到上游结束。
+// TestLeaseCompletionIgnoresClientCancellation cancels a request using
+// completion-based resource release and then invokes release twice. It checks
+// that cancellation leaves the count untouched and explicit completion cleans
+// up exactly once.
 func TestLeaseCompletionIgnoresClientCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var count atomic.Int64
@@ -37,7 +45,9 @@ func TestLeaseCompletionIgnoresClientCancellation(t *testing.T) {
 	require.EqualValues(t, 1, count.Load())
 }
 
-// TestLeaseRejectsLateResource 检查请求结束后收到的资源被立即释放。
+// TestLeaseRejectsLateResource offers a resource after its lease has already
+// closed. It requires Own to reject ownership while invoking immediate cleanup
+// for that late resource exactly once.
 func TestLeaseRejectsLateResource(t *testing.T) {
 	l := NewLease(context.Background(), ReleaseOnCompletion)
 	l.Release()
@@ -46,7 +56,9 @@ func TestLeaseRejectsLateResource(t *testing.T) {
 	require.Equal(t, 1, count)
 }
 
-// TestAttemptLeaseRetainsCompletionOutcome 验证本次成功会话保留与另一未完成尝试的失败清理互不覆盖。
+// TestAttemptLeaseRetainsCompletionOutcome finishes one attempt as served and
+// leaves another unfinished before parent cleanup. It checks retained served
+// and failed outcomes and exactly two physical cleanup calls.
 func TestAttemptLeaseRetainsCompletionOutcome(t *testing.T) {
 	parent := NewLease(context.Background(), ReleaseOnCompletion)
 	var outcomes []bool
@@ -60,8 +72,14 @@ func TestAttemptLeaseRetainsCompletionOutcome(t *testing.T) {
 	require.Equal(t, 2, released)
 }
 
-// TestWrapReleaseOnDone_NoGoroutineLeak 检查释放后的 goroutine 数量。
+// TestWrapReleaseOnDone_NoGoroutineLeak releases a cancellation wrapper and
+// samples process goroutine counts after settling and garbage collection. It
+// checks one cleanup and allows at most two additional goroutines for
+// test-harness variation.
 func TestWrapReleaseOnDone_NoGoroutineLeak(t *testing.T) {
+	// Collect garbage and let existing goroutines settle before sampling the
+	// baseline. Later measurements compare against this observed process
+	// state.
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
 	initialGoroutines := runtime.NumGoroutine()
@@ -76,18 +94,20 @@ func TestWrapReleaseOnDone_NoGoroutineLeak(t *testing.T) {
 
 	release()
 
-	// 给取消回调中的 goroutine 留出退出时间。
+	// Explicit release removes the registered cancellation callback. Allow
+	// process goroutines to settle before sampling counts used by this
+	// approximate leak check.
 	time.Sleep(200 * time.Millisecond)
 
 	if count := atomic.LoadInt32(&releaseCount); count != 1 {
 		t.Errorf("expected release count to be 1, got %d", count)
 	}
 
-	// 强制 GC，清理已退出的 goroutine
+	// Run GC before sampling the final goroutine count.
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
 
-	// 验证 goroutine 数量没有增加（允许±2 的误差，考虑到测试框架本身可能创建的 goroutine）
+	// Allow two goroutines of variation from the test harness.
 	finalGoroutines := runtime.NumGoroutine()
 	if finalGoroutines > initialGoroutines+2 {
 		t.Errorf("goroutine leak detected: initial=%d, final=%d, leaked=%d",
@@ -95,25 +115,37 @@ func TestWrapReleaseOnDone_NoGoroutineLeak(t *testing.T) {
 	}
 }
 
-// TestWrapReleaseOnDone_ContextCancellation 检查 context 取消时释放资源。
+// TestWrapReleaseOnDone_ContextCancellation installs a release wrapper and
+// cancels its request context. It waits for the cleanup callback to finish
+// before checking that the recorded cleanup count is one.
 func TestWrapReleaseOnDone_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var releaseCount int32
+	released := make(chan struct{})
 	_ = WrapRelease(ctx, ReleaseOnCancel, func() {
 		atomic.AddInt32(&releaseCount, 1)
+		close(released)
 	})
 
-	// 取消 context，应该触发释放
+	// Cancellation dispatches cleanup asynchronously. Wait for its completion
+	// signal so the count assertion observes the callback rather than scheduler timing.
 	cancel()
-
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("context cancellation did not finish release")
+	}
 
 	if count := atomic.LoadInt32(&releaseCount); count != 1 {
 		t.Errorf("expected release count to be 1, got %d", count)
 	}
 }
 
+// TestWrapReleaseOnDone_AlreadyCancelledReleasesExactlyOnce wraps cleanup
+// under a context canceled before construction and also invokes the returned
+// release. It waits for exactly one cleanup, protecting coordination between
+// immediate caller cleanup and cancellation handling.
 func TestWrapReleaseOnDone_AlreadyCancelledReleasesExactlyOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -129,7 +161,9 @@ func TestWrapReleaseOnDone_AlreadyCancelledReleasesExactlyOnce(t *testing.T) {
 	}, time.Second, time.Millisecond)
 }
 
-// TestWrapReleaseOnDone_MultipleCallsOnlyReleaseOnce 验证多次调用 release 只释放一次。
+// TestWrapReleaseOnDone_MultipleCallsOnlyReleaseOnce calls the same returned
+// release three times under a live request context. It requires one recorded
+// cleanup after the calls, protecting the wrapper's repeated-release behavior.
 func TestWrapReleaseOnDone_MultipleCallsOnlyReleaseOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -150,7 +184,9 @@ func TestWrapReleaseOnDone_MultipleCallsOnlyReleaseOnce(t *testing.T) {
 	}
 }
 
-// TestWrapReleaseOnDone_NilReleaseFunc 检查 nil 释放函数的返回值。
+// TestWrapReleaseOnDone_NilReleaseFunc constructs a cancellation wrapper with
+// no cleanup callback. It requires a nil returned handle so callers can
+// represent absence of an owned resource.
 func TestWrapReleaseOnDone_NilReleaseFunc(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -162,7 +198,9 @@ func TestWrapReleaseOnDone_NilReleaseFunc(t *testing.T) {
 	}
 }
 
-// TestWrapReleaseOnDone_ConcurrentCalls 检查并发调用只释放一次。
+// TestWrapReleaseOnDone_ConcurrentCalls dispatches ten goroutines using one
+// cancellation release wrapper. It joins every caller before requiring one
+// cleanup observation across the complete set of concurrent calls.
 func TestWrapReleaseOnDone_ConcurrentCalls(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -172,19 +210,24 @@ func TestWrapReleaseOnDone_ConcurrentCalls(t *testing.T) {
 		atomic.AddInt32(&releaseCount, 1)
 	})
 
+	// Join every cleanup caller before inspecting the count so a late invocation
+	// cannot escape the assertion merely because its goroutine has not run yet.
 	const numGoroutines = 10
+	var callers sync.WaitGroup
 	for range numGoroutines {
-		go release()
+		callers.Go(release)
 	}
-
-	time.Sleep(200 * time.Millisecond)
+	callers.Wait()
 
 	if count := atomic.LoadInt32(&releaseCount); count != 1 {
 		t.Errorf("expected release count to be 1, got %d", count)
 	}
 }
 
-// BenchmarkWrapReleaseOnDone 测量租约释放包装函数的开销。
+// BenchmarkWrapReleaseOnDone constructs and releases cancellation wrappers
+// under one shared context. Timed iterations include wrapper creation and
+// explicit cleanup, providing a local overhead workload for that lifecycle
+// path.
 func BenchmarkWrapReleaseOnDone(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

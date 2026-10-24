@@ -2,110 +2,129 @@ package httpapi
 
 import (
 	"github.com/gin-gonic/gin"
+
+	"github.com/TokenFlux/TokenRouter/internal/server/adminapi"
 )
 
-// RegisterOpsRoutes 注册所属管理路由；组鉴权、限流和审计由 app 预先安装。
+// routes_admin.go registers administrator Ops and system-maintenance HTTP
+// routes on the supplied Gin group.
+// Ops and system routes inherit the supplied Gin admin group middleware.
+// Production app installs administrator authentication, panel-limiter, and
+// audit middleware before calling these registrars; endpoints perform request
+// and command checks. The historical OpenAI token-statistics path binds the
+// same general token handler as the current path.
+
+// RegisterOpsRoutes binds monitoring, runtime settings, diagnostic, and
+// dashboard handlers below the supplied admin group. Callers install
+// authentication, rate limits, and auditing on that group and provide a usable
+// endpoint before registration. Register once for its prefix before serving
+// requests.
 func RegisterOpsRoutes(admin *gin.RouterGroup, endpoint *OpsHandler) {
 	ops := admin.Group("/ops")
 	{
-		// 实时运维信号
-		ops.GET("/concurrency", endpoint.GetConcurrencyStats)
-		ops.GET("/user-concurrency", endpoint.GetUserConcurrencyStats)
-		ops.GET("/provider-availability", endpoint.GetProviderAvailability)
-		ops.GET("/realtime-traffic", endpoint.GetRealtimeTrafficSummary)
+		// Realtime operational signals.
+		adminapi.Register(ops, ManagementOperations["ops.concurrency.list"], endpoint.GetConcurrencyStats)
+		adminapi.Register(ops, ManagementOperations["ops.user_concurrency.list"], endpoint.GetUserConcurrencyStats)
+		adminapi.Register(ops, ManagementOperations["ops.provider_availability.list"], endpoint.GetProviderAvailability)
+		adminapi.Register(ops, ManagementOperations["ops.realtime_traffic.list"], endpoint.GetRealtimeTrafficSummary)
 
-		// 告警规则和事件
-		ops.GET("/alert-rules", endpoint.ListAlertRules)
-		ops.POST("/alert-rules", endpoint.CreateAlertRule)
-		ops.PUT("/alert-rules/:id", endpoint.UpdateAlertRule)
-		ops.DELETE("/alert-rules/:id", endpoint.DeleteAlertRule)
-		ops.GET("/alert-events", endpoint.ListAlertEvents)
-		ops.GET("/alert-events/:id", endpoint.GetAlertEvent)
-		ops.PUT("/alert-events/:id/status", endpoint.UpdateAlertEventStatus)
-		ops.POST("/alert-silences", endpoint.CreateAlertSilence)
+		// Alert rules and events.
+		adminapi.Register(ops, ManagementOperations["ops.alert_rules.list"], endpoint.ListAlertRules)
+		adminapi.Register(ops, ManagementOperations["ops.alert_rules.create"], endpoint.CreateAlertRule)
+		adminapi.Register(ops, ManagementOperations["ops.alert_rules.update"], endpoint.UpdateAlertRule)
+		adminapi.Register(ops, ManagementOperations["ops.alert_rules.delete"], endpoint.DeleteAlertRule)
+		adminapi.Register(ops, ManagementOperations["ops.alert_events.list"], endpoint.ListAlertEvents)
+		adminapi.Register(ops, ManagementOperations["ops.alert_events.get"], endpoint.GetAlertEvent)
+		adminapi.Register(ops, ManagementOperations["ops.alert_events.status.update"], endpoint.UpdateAlertEventStatus)
+		adminapi.Register(ops, ManagementOperations["ops.alert_silences.create"], endpoint.CreateAlertSilence)
 
-		// 邮件通知配置（数据库持久化）
-		ops.GET("/email-notification/config", endpoint.GetEmailNotificationConfig)
-		ops.PUT("/email-notification/config", endpoint.UpdateEmailNotificationConfig)
+		// Persisted email notification configuration.
+		adminapi.Register(ops, ManagementOperations["ops.email_notification.config.list"], endpoint.GetEmailNotificationConfig)
+		adminapi.Register(ops, ManagementOperations["ops.email_notification.config.update"], endpoint.UpdateEmailNotificationConfig)
 
-		// 运行时设置（数据库持久化）
+		// Persisted runtime settings.
 		runtime := ops.Group("/runtime")
 		{
-			runtime.GET("/alert", endpoint.GetAlertRuntimeSettings)
-			runtime.PUT("/alert", endpoint.UpdateAlertRuntimeSettings)
-			runtime.GET("/logging", endpoint.GetRuntimeLogConfig)
-			runtime.PUT("/logging", endpoint.UpdateRuntimeLogConfig)
-			runtime.POST("/logging/reset", endpoint.ResetRuntimeLogConfig)
+			adminapi.Register(runtime, ManagementOperations["ops.runtime.alert.list"], endpoint.GetAlertRuntimeSettings)
+			adminapi.Register(runtime, ManagementOperations["ops.runtime.alert.update"], endpoint.UpdateAlertRuntimeSettings)
+			adminapi.Register(runtime, ManagementOperations["ops.runtime.logging.list"], endpoint.GetRuntimeLogConfig)
+			adminapi.Register(runtime, ManagementOperations["ops.runtime.logging.update"], endpoint.UpdateRuntimeLogConfig)
+			adminapi.Register(runtime, ManagementOperations["ops.runtime.logging.reset.create"], endpoint.ResetRuntimeLogConfig)
 		}
 
-		// 高级设置（数据库持久化）
-		ops.GET("/advanced-settings", endpoint.GetAdvancedSettings)
-		ops.PUT("/advanced-settings", endpoint.UpdateAdvancedSettings)
+		// Persisted advanced settings.
+		adminapi.Register(ops, ManagementOperations["ops.advanced_settings.list"], endpoint.GetAdvancedSettings)
+		adminapi.Register(ops, ManagementOperations["ops.advanced_settings.update"], endpoint.UpdateAdvancedSettings)
 
-		// 设置分组（数据库持久化）
+		// Persisted metric threshold settings.
 		settings := ops.Group("/settings")
 		{
-			settings.GET("/metric-thresholds", endpoint.GetMetricThresholds)
-			settings.PUT("/metric-thresholds", endpoint.UpdateMetricThresholds)
+			adminapi.Register(settings, ManagementOperations["ops.settings.metric_thresholds.list"], endpoint.GetMetricThresholds)
+			adminapi.Register(settings, ManagementOperations["ops.settings.metric_thresholds.update"], endpoint.UpdateMetricThresholds)
 		}
 
-		// WebSocket 实时 QPS/TPS
+		// Realtime QPS/TPS over WebSocket.
 		ws := ops.Group("/ws")
 		{
-			ws.GET("/qps", endpoint.QPSWSHandler)
+			adminapi.Register(ws, ManagementOperations["ops.ws.qps.list"], endpoint.QPSWSHandler)
 		}
 
-		// 旧版错误日志
-		ops.GET("/errors", endpoint.GetErrorLogs)
-		ops.GET("/errors/:id", endpoint.GetErrorLogByID)
-		ops.PUT("/errors/:id/resolve", endpoint.UpdateErrorResolution)
+		// Legacy error log routes.
+		adminapi.Register(ops, ManagementOperations["ops.errors.list"], endpoint.GetErrorLogs)
+		adminapi.Register(ops, ManagementOperations["ops.errors.get"], endpoint.GetErrorLogByID)
+		adminapi.Register(ops, ManagementOperations["ops.errors.resolve.update"], endpoint.UpdateErrorResolution)
 
-		// 请求错误（客户端可见失败）
-		ops.GET("/request-errors", endpoint.ListRequestErrors)
-		ops.GET("/request-errors/:id", endpoint.GetRequestError)
-		ops.GET("/request-errors/:id/upstream-errors", endpoint.ListRequestErrorUpstreamErrors)
-		ops.PUT("/request-errors/:id/resolve", endpoint.ResolveRequestError)
+		// Request-error list, shared detail, and resolution aliases.
+		adminapi.Register(ops, ManagementOperations["ops.request_errors.list"], endpoint.ListRequestErrors)
+		adminapi.Register(ops, ManagementOperations["ops.request_errors.get"], endpoint.GetRequestError)
+		adminapi.Register(ops, ManagementOperations["ops.request_errors.upstream_errors.list"], endpoint.ListRequestErrorUpstreamErrors)
+		adminapi.Register(ops, ManagementOperations["ops.request_errors.resolve.update"], endpoint.ResolveRequestError)
 
-		// 有界聚合入口准入拒绝记录。
-		ops.GET("/ingress-rejections", endpoint.ListIngressRejects)
-		ops.GET("/ingress-rejections/health", endpoint.GetIngressRejectHealth)
-		ops.GET("/auth-cache-invalidation/health", endpoint.GetAuthCacheInvalidationHealth)
+		// Bounded ingress rejection aggregates.
+		adminapi.Register(ops, ManagementOperations["ops.ingress_rejections.list"], endpoint.ListIngressRejects)
+		adminapi.Register(ops, ManagementOperations["ops.ingress_rejections.health.list"], endpoint.GetIngressRejectHealth)
+		adminapi.Register(ops, ManagementOperations["ops.auth_cache_invalidation.health.list"], endpoint.GetAuthCacheInvalidationHealth)
 
-		// 上游错误（独立上游失败）
-		ops.GET("/upstream-errors", endpoint.ListUpstreamErrors)
-		ops.GET("/upstream-errors/:id", endpoint.GetUpstreamError)
-		ops.PUT("/upstream-errors/:id/resolve", endpoint.ResolveUpstreamError)
+		// Independent upstream failures.
+		adminapi.Register(ops, ManagementOperations["ops.upstream_errors.list"], endpoint.ListUpstreamErrors)
+		adminapi.Register(ops, ManagementOperations["ops.upstream_errors.get"], endpoint.GetUpstreamError)
+		adminapi.Register(ops, ManagementOperations["ops.upstream_errors.resolve.update"], endpoint.ResolveUpstreamError)
 
-		// 请求明细（成功和失败）
-		ops.GET("/requests", endpoint.ListRequestDetails)
+		// Successful and failed request details.
+		adminapi.Register(ops, ManagementOperations["ops.requests.list"], endpoint.ListRequestDetails)
 
-		// 已索引系统日志
-		ops.GET("/system-logs", endpoint.ListSystemLogs)
-		ops.POST("/system-logs/cleanup", endpoint.CleanupSystemLogs)
-		ops.GET("/system-logs/health", endpoint.GetSystemLogIngestionHealth)
+		// Indexed system logs.
+		adminapi.Register(ops, ManagementOperations["ops.system_logs.list"], endpoint.ListSystemLogs)
+		adminapi.Register(ops, ManagementOperations["ops.system_logs.cleanup.create"], endpoint.CleanupSystemLogs)
+		adminapi.Register(ops, ManagementOperations["ops.system_logs.health.list"], endpoint.GetSystemLogIngestionHealth)
 
-		// 新版仪表盘原始数据接口
-		ops.GET("/dashboard/snapshot-v2", endpoint.GetDashboardSnapshotV2)
-		ops.GET("/dashboard/overview", endpoint.GetDashboardOverview)
-		ops.GET("/dashboard/throughput-trend", endpoint.GetDashboardThroughputTrend)
-		ops.GET("/dashboard/latency-histogram", endpoint.GetDashboardLatencyHistogram)
-		ops.GET("/dashboard/error-trend", endpoint.GetDashboardErrorTrend)
-		ops.GET("/dashboard/error-distribution", endpoint.GetDashboardErrorDistribution)
-		ops.GET("/dashboard/token-stats", endpoint.GetDashboardTokenStats)
-		// 旧路由作为兼容别名保留，响应结构与新路由一致。
-		ops.GET("/dashboard/openai-token-stats", endpoint.GetDashboardTokenStats)
+		// Dashboard snapshots and historical statistics.
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.snapshot_v2.list"], endpoint.GetDashboardSnapshotV2)
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.overview.list"], endpoint.GetDashboardOverview)
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.throughput_trend.list"], endpoint.GetDashboardThroughputTrend)
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.latency_histogram.list"], endpoint.GetDashboardLatencyHistogram)
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.error_trend.list"], endpoint.GetDashboardErrorTrend)
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.error_distribution.list"], endpoint.GetDashboardErrorDistribution)
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.token_stats.list"], endpoint.GetDashboardTokenStats)
+		// The historical OpenAI token-stats URL uses the same general token handler.
+		// Its filters and response shape follow that endpoint, preserving clients
+		// that still request the older route.
+		adminapi.Register(ops, ManagementOperations["ops.dashboard.openai_token_stats.list"], endpoint.GetDashboardTokenStats)
 	}
 }
 
-// RegisterSystemRoutes 注册所属管理路由；组鉴权、限流和审计由 app 预先安装。
+// RegisterSystemRoutes binds version reads and update, rollback, and restart
+// handlers below the supplied admin group. Callers provide its protected
+// middleware and usable SystemHandler before registration; command checks
+// remain with that handler. Register once for the prefix before serving.
 func RegisterSystemRoutes(admin *gin.RouterGroup, endpoint *SystemHandler) {
 	system := admin.Group("/system")
 	{
-		system.GET("/version", endpoint.GetVersion)
-		system.GET("/check-updates", endpoint.CheckUpdates)
-		system.GET("/rollback-versions", endpoint.GetRollbackVersions)
-		system.POST("/update", endpoint.PerformUpdate)
-		system.POST("/rollback", endpoint.Rollback)
-		system.POST("/restart", endpoint.RestartService)
+		adminapi.Register(system, ManagementOperations["system.version.list"], endpoint.GetVersion)
+		adminapi.Register(system, ManagementOperations["system.check_updates.list"], endpoint.CheckUpdates)
+		adminapi.Register(system, ManagementOperations["system.rollback_versions.list"], endpoint.GetRollbackVersions)
+		adminapi.Register(system, ManagementOperations["system.update.create"], endpoint.PerformUpdate)
+		adminapi.Register(system, ManagementOperations["system.rollback.create"], endpoint.Rollback)
+		adminapi.Register(system, ManagementOperations["system.restart.create"], endpoint.RestartService)
 	}
 }

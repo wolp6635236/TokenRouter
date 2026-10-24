@@ -1,6 +1,17 @@
 package policy
 
-// CloneGroupAdvancedSchedulerOverrides 返回覆盖对象及其指针字段的独立副本。
+// clone.go copies sparse group scheduler overrides into independently mutable
+// pointer values.
+// A group configuration snapshot contains pointers so it can distinguish
+// inheritance from explicit values. Copying the struct alone would retain
+// those shared addresses; cloning allocates supplied values again so request
+// or administration changes cannot modify the copied configuration through
+// them.
+
+// CloneGroupAdvancedSchedulerOverrides copies every supplied pointer into
+// newly allocated storage. Nil pointers remain nil, retaining field
+// inheritance; callers can modify pointed-to values in the result
+// independently from the input overrides.
 func CloneGroupAdvancedSchedulerOverrides(overrides GroupAdvancedSchedulerOverrides) GroupAdvancedSchedulerOverrides {
 	cloneBool := func(value *bool) *bool {
 		if value == nil {

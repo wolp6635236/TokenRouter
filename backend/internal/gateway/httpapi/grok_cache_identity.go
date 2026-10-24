@@ -12,33 +12,69 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// grok_cache_identity.go collects Grok cache identity inputs and resolves
+// client-tool cache opt-in precedence.
+// Grok prompt-cache routing depends on the caller's session signal, API Key
+// and final upstream model. The HTTP adapter collects the available headers
+// and supplies content-seed callbacks to platform identity resolution, which
+// returns an opaque isolated value or disables caching when required identity
+// is absent.
+//
+// Free OAuth function-tool requests also combine provider policy, a local
+// request header and a Claude Desktop fingerprint. Header presence determines
+// whether the current or legacy name is read, and recognized request values
+// override provider settings. Fingerprint activation applies only when the
+// provider policy is absent and the request has not opted out; platform
+// routing still checks the provider's Free eligibility and available tool
+// intent.
+
+// These local request headers select Grok client-tool cache routing; the current
+// TokenRouter name takes precedence over the retained legacy integration name.
 const (
-	grokClientToolCacheOptInHeader       = "X-TokenRouter-Grok-Client-Tool-Cache"
-	legacyGrokClientToolCacheOptInHeader = "X-Sub2API-Grok-Client-Tool-Cache"
+	grokClientToolCacheOptInHeader       = "X-TokenRouter-Grok-Client-Tool-Cache" // current opt-in control
+	legacyGrokClientToolCacheOptInHeader = "X-Sub2API-Grok-Client-Tool-Cache"     // legacy opt-in control
 )
 
-// ExtractClaudeCodeSessionID 从请求头或 Anthropic/OpenAI 兼容载荷元数据中提取
-// Claude Code 会话标识。
+// ExtractClaudeCodeSessionID reads a trimmed Claude session header before
+// payload metadata. Nil HTTP context permits payload-only extraction, and an
+// absent identity returns an empty string for the caller's other seed choices.
 func ExtractClaudeCodeSessionID(c *gin.Context, body []byte) string {
 	if c != nil {
 		if seed := strings.TrimSpace(c.GetHeader(ClaudeCodeSessionHeader)); seed != "" {
 			return seed
 		}
 	}
+	// Payload metadata supplies a session seed for clients that omit identity
+	// headers; recover it here before callers choose their other content-based seeds.
 	return grok.ExtractClaudeCodeSessionIDFromPayload(body)
 }
 
+// ResolveGrokCacheIdentity delegates isolated prompt-cache identity
+// construction using HTTP signals and the supplied upstream model. A missing
+// positive API Key, compact request, empty model or absent content/session
+// seed returns an empty identity.
 func ResolveGrokCacheIdentity(c *gin.Context, body []byte, explicitKey, upstreamModel string) string {
 	return grok.ResolveCacheIdentity(grokCacheInput(c, explicitKey, upstreamModel), body)
 }
 
-// ApplyGrokFreeRequestToolCacheRoute 还接受请求级开关。该兼容协议头仅在本地消费，
-// buildGrokResponsesRequest 只向上游转发明确支持的 OpenAI-Beta 头。
+// ApplyGrokFreeRequestToolCacheRoute combines provider cache policy with
+// recognized local request overrides for Free OAuth tools. Callers retain tool
+// intent before filtering and provide a request when the Gin context is
+// nonnil. The current header's presence suppresses the legacy header,
+// including when its value is empty.
+//
+// Recognized opt-in can override provider opt-out; opt-out prevents automatic
+// Claude Desktop fingerprint activation. The delegated platform rule checks
+// Free eligibility, cache identity and tool intent. A tool_choice=none intent
+// selects a separate branch that can append native search tools even when
+// opt-in flags are false. That branch retains the current body's choice;
+// callers retain none there to keep tools disabled.
 func ApplyGrokFreeRequestToolCacheRoute(c *gin.Context, body, intentSourceBody []byte, provider *gatewayprovider.ExecutionProvider, cacheIdentity string) ([]byte, error) {
 	allowPureClientTools, providerPolicyExplicit := gatewayprovider.GrokClientToolCacheProviderPolicy(provider)
 	requestOptOut := false
 	if c != nil {
-		// 新请求头的关闭值优先，缺失新头时读取兼容请求头。
+		// Header presence, including an empty current value, prevents consulting the
+		// legacy name so older integration settings cannot override this request's control.
 		value := c.GetHeader(grokClientToolCacheOptInHeader)
 		if _, present := c.Request.Header[http.CanonicalHeaderKey(grokClientToolCacheOptInHeader)]; !present {
 			value = c.GetHeader(legacyGrokClientToolCacheOptInHeader)
@@ -51,17 +87,20 @@ func ApplyGrokFreeRequestToolCacheRoute(c *gin.Context, body, intentSourceBody [
 			requestOptOut = true
 		}
 	}
+	// Automatic desktop routing fills an absent provider decision only after
+	// request opt-out is ruled out, preserving the precedence of configured controls.
 	if !allowPureClientTools && !providerPolicyExplicit && !requestOptOut && isGrokClaudeDesktopResponsesCacheRequest(c) {
 		allowPureClientTools = true
 	}
-	// 名为 web_search/x_search 的函数仍是客户端函数。已知 Free OAuth 提供商默认使用
-	// 缓存路由；请求级启用可覆盖提供商关闭，而请求级关闭始终优先。旧 Claude 指纹仅在
-	// 尚无提供商策略时作为兼容回退（#4486）。
+	// Forward the selected policy flags beside retained tool intent. The platform
+	// still handles tool_choice=none separately by appending disabled native search tools.
 	return gatewayprovider.ApplyGrokFreeToolCacheRoute(body, intentSourceBody, provider, cacheIdentity, allowPureClientTools, allowPureClientTools)
 }
 
-// isGrokClaudeDesktopResponsesCacheRequest 识别 Claude Desktop 本地代理经 CC Switch 转换的 Responses 请求。
-// 全部指纹信号匹配时启用平台和客户端混合工具路由。
+// isGrokClaudeDesktopResponsesCacheRequest reports whether path and client
+// headers match the Claude Desktop Responses fingerprint. Compact paths,
+// missing request state or any absent/mismatched signal return false; all
+// qualifying signals are required.
 func isGrokClaudeDesktopResponsesCacheRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil || IsOpenAIResponsesCompactPath(c) {
 		return false
@@ -85,7 +124,10 @@ func isGrokClaudeDesktopResponsesCacheRequest(c *gin.Context) bool {
 	return strings.TrimSpace(c.GetHeader("X-Claude-Code-Session-Id")) != ""
 }
 
-// grokCacheInput 请求读取留在适配器；原种子 helper 只在平台实际选择该分支时调用。
+// grokCacheInput assembles HTTP identities and the platform's content-seed
+// callbacks for cache resolution. A nil HTTP context omits header signals; the
+// supplied explicit key and final model remain available to identity
+// precedence.
 func grokCacheInput(c *gin.Context, explicitKey, model string) grok.CacheIdentityInput {
 	input := grok.CacheIdentityInput{APIKeyID: APIKeyIDFromContext(c), Compact: IsOpenAIResponsesCompactPath(c), Model: model, ExplicitKey: explicitKey, StablePrefixSeed: gatewaysession.OpenAIStablePrefixSeed, AnchoredSeed: gatewaysession.OpenAIAnchoredContentSeed, PreviousResponseSeed: gatewaysession.GrokPreviousResponseSeed}
 	if c != nil {

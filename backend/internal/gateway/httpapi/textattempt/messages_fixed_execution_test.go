@@ -14,10 +14,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// TestFixedMessagesOpenUsesBoundDependenciesAndExplicitState 验证请求会话使用构造时绑定的依赖和传入状态。
+// Opening Messages execution must reuse fixed service bindings while
+// allocating fresh request state. The observation fixture mutates source
+// metadata after an errored result is converted, protecting partial usage and
+// the specific timing, header and size copies consumed by the text loop.
+
+// TestFixedMessagesOpenUsesBoundDependenciesAndExplicitState opens two
+// requests on one runtime. Both bridges must share the bound dependency
+// pointer while keeping distinct state and preserving the first request’s
+// model after the second opens.
 func TestFixedMessagesOpenUsesBoundDependenciesAndExplicitState(t *testing.T) {
 	dependencies := &messageExecutionDependencies{}
 	runtime := &Runtime{dependencies: dependencies}
@@ -44,19 +53,22 @@ func TestFixedMessagesOpenUsesBoundDependenciesAndExplicitState(t *testing.T) {
 	}
 }
 
-// TestMessageObservedAttemptRetainsPartialUsageAndCopiesMetadata 验证失败与已观测结果可同时返回，返回值不共享后续完成处理会修改的集合。
+// TestMessageObservedAttemptRetainsPartialUsageAndCopiesMetadata converts
+// usage with a cancellation error, then mutates original timing, headers and
+// output sizes. The attempt must remain Served/HasUsage and keep the captured
+// metadata values.
 func TestMessageObservedAttemptRetainsPartialUsageAndCopiesMetadata(t *testing.T) {
 	first := 12
-	result := &forwardcore.MessagesResult{Model: "model", Usage: upstream.TokenUsage{OutputTokens: 2}, UpstreamHeaders: http.Header{"X-Request-Id": []string{"upstream"}}, FirstTokenMs: &first, ImageOutputSizes: []string{"1K"}}
+	result := &forwardcore.MessagesResult{Model: "model", Usage: upstream.TokenUsage{OutputTokens: 2}, UpstreamHeaders: http.Header{"X-Request-Id": []string{"upstream"}}, Timings: &timing.Performance{Stream: true, Values: map[string]int64{"upstream_started_ms": 0, "upstream_first_output_ms": int64(first)}}, ImageOutputSizes: []string{"1K"}}
 	observed := messageObservedAttempt(result, context.Canceled)
-	first = 99
+	result.Timings.Values["upstream_first_output_ms"] = 99
 	http.Header(result.UpstreamHeaders).Set("X-Request-Id", "changed")
 	result.ImageOutputSizes[0] = "4K"
 	require.True(t, observed.Cancelled)
 	require.True(t, observed.HasUsage)
 	require.True(t, observed.Served)
 	require.Equal(t, 2, observed.Usage.OutputTokens)
-	require.Equal(t, 12, *observed.FirstTokenMs)
+	require.Equal(t, 12, *observed.Timings.TTFTMs())
 	require.Equal(t, "upstream", observed.UpstreamHeaders.Get("X-Request-Id"))
 	require.Equal(t, []string{"1K"}, observed.ImageOutputSizes)
 }

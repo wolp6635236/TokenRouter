@@ -20,7 +20,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
-// provideOAuthSettings 从启动配置提取认证需要的字段，交给 OAuth 设置读取器。
+// settings_defaults.go constructs module settings readers and administration
+// defaults from application configuration. Settings readers combine database
+// values with startup options interpreted by their owning modules. OAuth,
+// signup grants, forwarded-IP trust, scheduler defaults, gateway platform
+// rules, and quota parsing receive their application dependencies here while
+// later read and publication timing stays with each reader.
+
+// provideOAuthSettings supplies optional startup OAuth defaults and OIDC
+// metadata discovery. Nil cfg leaves defaults absent; configured platform
+// options are copied into the defaults object retained by the shared identity
+// reader.
 func provideOAuthSettings(store *settings.Store, cfg *config.Config) *identity.OAuthSettings {
 	var defaults *identity.OAuthSettingsDefaults
 	if cfg != nil {
@@ -29,7 +39,10 @@ func provideOAuthSettings(store *settings.Store, cfg *config.Config) *identity.O
 	return identity.NewOAuthSettings(store, defaults, identityprovider.ResolveSettingsOIDCMetadata)
 }
 
-// provideGrantSettings 为注册赠送设置绑定 billing 套餐查询。
+// provideGrantSettings binds signup balance/concurrency defaults and
+// subscription-plan validation. Nil cfg leaves numeric options at zero, while
+// configured values are copied; ValidatePlans reads the supplied plan service
+// when grants are checked.
 func provideGrantSettings(store *settings.Store, cfg *config.Config, plans *billing.Plans) *identity.GrantSettings {
 	options := identity.GrantSettingsOptions{ValidatePlans: func(ctx context.Context, items []identity.DefaultSubscriptionSetting) error {
 		return identity.ValidateDefaultSubscriptionPlans(ctx, items, plans.GetPlan)
@@ -41,12 +54,17 @@ func provideGrantSettings(store *settings.Store, cfg *config.Config, plans *bill
 	return identity.NewGrantSettings(store, options)
 }
 
-// provideForwardedSettings 将启动配置中的可信代理和共享运行状态传给 server。
+// provideForwardedSettings binds required cfg to client-IP trust, header reads,
+// and publication. Initial trust and trusted-proxy presence are captured, while
+// callbacks read and publish cfg's current forwarded client-IP settings.
 func provideForwardedSettings(store *settings.Store, cfg *config.Config) *runtimeconfig.ForwardedSettings {
 	return runtimeconfig.NewForwardedSettings(store, runtimeconfig.ForwardedSettingsOptions{InitialTrust: cfg.Security.TrustForwardedIPForAPIKeyACL, TrustedProxiesConfigured: cfg.Server.TrustedProxiesConfigured, Headers: func() []string { return cfg.ForwardedClientIPSettings().Headers }, Publish: cfg.SetForwardedClientIPSettings})
 }
 
-// provideSchedulerAdminDefaults 提取调度需要的进程配置，由 scheduler/policy 规范化。
+// provideSchedulerAdminDefaults copies process score settings and normalized
+// sticky escape into administration defaults. Nil cfg returns built-in inputs;
+// supplied Top-K and weights replace them directly, including configured zero
+// values.
 func provideSchedulerAdminDefaults(cfg *config.Config) *scheduler.AdminDefaults {
 	value := scheduler.DefaultAdminSettingsDefaults()
 	if cfg != nil {
@@ -60,19 +78,21 @@ func provideSchedulerAdminDefaults(cfg *config.Config) *scheduler.AdminDefaults 
 	return &value
 }
 
-// provideGatewayAdminRules 返回各平台的规则函数。
+// provideGatewayAdminRules binds platform model defaults, User-Agent
+// normalization, and Claude prompt validation.
 func provideGatewayAdminRules() *gateway.AdminSettingsRules {
 	return &gateway.AdminSettingsRules{GrokDefaultTextModel: grok.DefaultTextModel, NormalizeUserAgentVersion: antigravity.NormalizeUserAgentVersion, ValidateClaudePromptBlocks: anthropic.ValidateClaudeOAuthSystemPromptBlocksConfig}
 }
 
-// provideGatewaySettings 将平台默认值转换为配置参数，构造网关运行设置实例。
+// provideGatewaySettings constructs runtime forwarding policy with
+// missing-setting and platform defaults.
 func provideGatewaySettings(store *settings.Store) *gateway.RuntimeSettings {
 	return gateway.NewRuntimeSettings(store, settings.ErrSettingNotFound, func() *gateway.BetaPolicySettings {
 		return gatewayprovider.GatewayBetaPolicy(anthropic.DefaultBetaPolicySettings())
 	}, gateway.ClientSettingsOptions{NormalizeUserAgentVersion: antigravity.NormalizeUserAgentVersion, DefaultUserAgentVersion: antigravity.GetDefaultUserAgentVersion})
 }
 
-// provideQuotaSettings 通过 Ops 读取共享 JSON 中的配额设置，传给提供商模块。
+// provideQuotaSettings binds shared quota JSON reads to the Ops runtime parser.
 func provideQuotaSettings(store *settings.Store) *provider.QuotaSettingsCache {
 	return provider.NewQuotaSettingsCache(store, settings.ErrSettingNotFound, ops.ParseRuntimeQuotaAutoPauseSettings)
 }

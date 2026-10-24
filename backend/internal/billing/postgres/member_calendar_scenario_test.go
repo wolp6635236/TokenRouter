@@ -1,7 +1,5 @@
 package postgres
 
-// 本文件检查 settlement.go 的结算累计和 member_usage.go 的管理重置使用同一时区。
-
 import (
 	"context"
 	"testing"
@@ -13,7 +11,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
 
-// TestMemberWritesUseInjectedCalendar 验证结算与管理重置在同一注入时区计算 SQL 窗口。
+// Member calendar cases compare settlement.go accumulation and member_usage.go
+// administrator reset arguments in the injected New York timezone.
+
+// TestMemberWritesUseInjectedCalendar supplies two UTC observations that land
+// on New York Sunday evenings near daylight-saving transitions. It checks
+// settlement accumulation and administrator resets receive matching local day,
+// Monday-week and month SQL arguments for those observations.
 func TestMemberWritesUseInjectedCalendar(t *testing.T) {
 	location, err := time.LoadLocation("America/New_York")
 	require.NoError(t, err)
@@ -30,8 +34,13 @@ func TestMemberWritesUseInjectedCalendar(t *testing.T) {
 				require.NoError(t, db.Close())
 			}()
 			day := time.Date(now.In(location).Year(), now.In(location).Month(), now.In(location).Day(), 0, 0, 0, 0, location)
+			// Both local observations are Sunday, so subtract six calendar days to
+			// obtain the expected Monday start across their offset changes.
 			week := day.AddDate(0, 0, -6)
 			month := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, location)
+			// Exercise accumulation on a transaction, then roll that mock transaction
+			// back before the standalone administrator reset uses the same calendar
+			// argument expectations.
 			mock.ExpectBegin()
 			tx, err := db.BeginTx(context.Background(), nil)
 			require.NoError(t, err)

@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRemoveDataSharingMigrationContract 锁定数据共享的表、列、设置与备份字段清理边界。
+// TestRemoveDataSharingMigrationContract inspects the data-sharing retirement SQL.
+// It requires table, index, column, setting, and backup-field cleanup fragments,
+// plus the specific exception classes and absence of a catch-all exception clause.
 func TestRemoveDataSharingMigrationContract(t *testing.T) {
 	content, err := FS.ReadFile("265_remove_data_sharing.sql")
 	require.NoError(t, err)

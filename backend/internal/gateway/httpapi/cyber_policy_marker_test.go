@@ -12,7 +12,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// TestCyberPolicyMarkerFirstEventAndTurnReset 验证首个上游证据保留到当前 turn 收尾，下一 turn 清除后才能登记新证据。
+// Policy marker lookup exposes the current turn's first saved evidence and
+// treats a typed nil reset as absence. This scenario checks normalized text,
+// copied input counts, reset behavior, and the distinction between event
+// recognition and whether an HTTP context can store that evidence.
+
+// TestCyberPolicyMarkerFirstEventAndTurnReset records competing markers and then
+// clears the turn. Saved text and input counts must remain from the first
+// marker, fresh parsed usage must remain after caller mutation, and recognition
+// must still return true for a nil context.
 func TestCyberPolicyMarkerFirstEventAndTurnReset(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	mark := moderationflow.Mark{Message: " first ", Body: " body ", UpstreamStatus: 403, UpstreamInTok: 3}
@@ -34,7 +42,7 @@ func TestCyberPolicyMarkerFirstEventAndTurnReset(t *testing.T) {
 	require.Equal(t, 2, GetOpsCyberPolicy(c).UpstreamOutTok)
 	require.False(t, MarkOpenAICyberPolicyEvent(c, []byte(`{"error":{"code":"other"}}`), 500, nil))
 	require.Equal(t, 5, GetOpsCyberPolicy(c).UpstreamInTok)
-	// nil HTTP 上下文不登记状态，命中返回值仍表示原事件已识别。
+	// A nil HTTP context stores nothing; true still means the upstream event was recognized.
 	require.True(t, MarkOpenAICyberPolicyEvent(nil, payload, 403, nil))
 	require.Nil(t, GetOpsCyberPolicy(nil))
 	ClearOpsCyberPolicy(nil)

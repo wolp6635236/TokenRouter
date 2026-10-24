@@ -7,6 +7,35 @@ import (
 	"time"
 )
 
+// codex_import_flow.go imports normalized Codex sessions by matching existing
+// providers, applying expiry rules, and recording per-entry outcomes.
+// Codex session imports load one stored-provider population, then normalize
+// and persist each entry independently. Fatal initial lookup failure aborts
+// the batch, while normalization, expiry, and row-write failures become item
+// results and leave already completed rows in place.
+//
+// Identity is marked seen before persistence, so a failed item can still
+// suppress a later same-batch duplicate. Existing-row updates retain refresh
+// credentials omitted by access-only input and remove its new provider-expiry
+// pause override in that case. Token invalidation follows accepted updates and
+// is best effort. Successful nonnil returned records update the index for
+// later matching; nil successful results retain the existing row ID for
+// updates or zero for creation. Callers supply stable request values and
+// initialized importer dependencies.
+
+// Import normalizes and saves stable entries against one loaded OpenAI OAuth
+// population. Initial archive failure aborts, while individual failures
+// accumulate and earlier accepted writes remain committed.
+//
+// Full OAuth, access-only, and Agent Identity keys follow their distinct
+// matching policies. Seen identity is reserved before create/update, even when
+// that write later fails. Updates merge supported credential/Extra values,
+// retain omitted existing renewal fields, and avoid a new access-only expiry
+// pause when renewal remains available. Optional invalidation errors do not
+// reverse success. Returned records refresh the local index; nil successful
+// records use the prior update ID or zero creation ID. Defaults apply only
+// where creation owns them, and the caller retains request synchronization
+// throughout processing.
 func (h *CodexImporter) Import(ctx context.Context, req CodexSessionImportRequest, entries []CodexImportEntry) (CodexSessionImportResult, error) {
 	result := CodexSessionImportResult{
 		Total: len(entries),
@@ -81,7 +110,7 @@ func (h *CodexImporter) Import(ctx context.Context, req CodexSessionImportReques
 		}
 
 		if duplicateIndex, ok := FirstSeenCodexIdentity(seenIdentity, item.IdentityKeys, item.UserID); ok {
-			message := fmt.Sprintf("与第 %d 条导入项重复，已跳过", duplicateIndex)
+			message := fmt.Sprintf("Duplicate of import entry %d, skipped", duplicateIndex)
 			result.Skipped++
 			result.Items = append(result.Items, CodexSessionImportItem{
 				Index:   entry.Index,
@@ -96,6 +125,9 @@ func (h *CodexImporter) Import(ctx context.Context, req CodexSessionImportReques
 			})
 			continue
 		}
+		// Reserve identity before persistence so later same-batch duplicates are
+		// skipped even if this item’s create or update fails. The result records
+		// that failed first attempt independently.
 		MarkCodexIdentitySeen(seenIdentity, item.IdentityKeys, entry.Index, item.UserID)
 
 		existing, matchedKey := index.Find(item.IdentityKeys, item.UserID)
@@ -105,16 +137,19 @@ func (h *CodexImporter) Import(ctx context.Context, req CodexSessionImportReques
 				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
 					Index:   entry.Index,
 					Name:    providerName,
-					Message: "已有提供商未记录 chatgpt_user_id，已按共享的 chatgpt_account_id 匹配并回填，请确认两者属于同一用户",
+					Message: "Existing provider was matched by shared chatgpt_account_id and its missing chatgpt_user_id was filled in. Verify that both belong to the same user",
 				})
 			}
 			preserveExistingRefresh := item.RefreshToken == "" &&
 				CodexCredentialString(existing.Credentials, "refresh_token") != ""
+			// Existing renewal remains usable when access-only input omits it.
+			// Clear this input’s provider-expiry/pause overrides so the update does
+			// not turn that renewable row into an access-only scheduling lifetime.
 			if preserveExistingRefresh {
 				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
 					Index:   entry.Index,
 					Name:    providerName,
-					Message: "已有提供商包含 refresh_token，本次 accessToken-only 导入已保留自动续期凭据",
+					Message: "Existing provider has a refresh_token; this accessToken-only import retained it for automatic renewal",
 				})
 				effectiveExpiresAt = nil
 				autoPauseOnExpired = nil
@@ -154,6 +189,8 @@ func (h *CodexImporter) Import(ctx context.Context, req CodexSessionImportReques
 				})
 				continue
 			}
+			// Invalidate after the accepted row update. Failure leaves persisted
+			// credentials in place and does not change this item’s success count.
 			if h.options.Invalidate != nil && updated != nil {
 				_ = h.options.Invalidate(ctx, updated)
 			}
@@ -161,6 +198,9 @@ func (h *CodexImporter) Import(ctx context.Context, req CodexSessionImportReques
 			providerID := existing.ID
 			if updated != nil {
 				providerID = updated.ID
+				// Returned identities replace stored candidates
+				// after persistence, so later entries match the
+				// accepted row data rather than stale keys.
 				index.Add(*updated)
 			}
 			result.Items = append(result.Items, CodexSessionImportItem{
@@ -203,6 +243,9 @@ func (h *CodexImporter) Import(ctx context.Context, req CodexSessionImportReques
 			})
 			continue
 		}
+		// A nonnil created row contributes its identities only after accepted
+		// persistence. Nil successful data still counts creation but adds no
+		// row-specific matching information to this batch’s index.
 		if provider != nil {
 			index.Add(*provider)
 		}

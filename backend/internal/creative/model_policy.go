@@ -2,24 +2,51 @@ package creative
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// groupModelPolicy 固定一次目录查询或执行尝试的分组策略，价格配置不参与模型准入。
+// model_policy.go resolves creative model candidates through group
+// restrictions, provider mappings, and operation capabilities.
+// Creative directory names come from finite configuration candidates rather
+// than the entire model metadata catalogue. Group mappings and provider rules
+// resolve each candidate to a concrete upstream image route, with restrictions
+// applied at their configured requested, group-mapped, or upstream stage.
+// Wildcard settings cannot themselves become request names, but wildcard rules
+// can match the finite candidates.
+//
+// A query reads each eligible platform provider list once and shares a
+// model-attribute session across resolutions. An available route is selected
+// in OpenAI, Gemini, then Grok order, combining capabilities across eligible
+// providers and separately across each operation. Display resolution can
+// continue after attribute errors using name recognition, while submission
+// resolution returns those errors before the task is created.
+
+// groupModelPolicy snapshots group admission rules for one query or execution
+// attempt, independently of pricing.
 type groupModelPolicy struct {
-	view *routing.GroupPolicyView
+	view *routing.GroupPolicyView // cloned enabled group policy view
 }
 
-// creativeModelQuery 复用一个分组的提供商及模型规则。
+// creativeModelQuery reuses provider records and model rules for one group.
 type creativeModelQuery struct {
-	group     *GroupView
-	policy    groupModelPolicy
+	// query shared model attribute session
+	attributes *routing.ModelAttributeSession
+	// group retains the supplied view while policy clones its routing policy.
+	// Callers keep group operation and fallback maps stable throughout this query.
+	group  *GroupView       // supplied group view pointer
+	policy groupModelPolicy // cloned group model restriction policy
+	// queried eligible providers by platform
 	providers map[string][]CatalogProvider
 }
 
+// newGroupModelPolicy clones an enabled group routing policy for creative
+// admission. A disabled policy yields a nil view, whose routing methods
+// preserve the requested model and allow unrestricted admission.
 func newGroupModelPolicy(policy routing.GroupRoutingPolicy) groupModelPolicy {
 	if !policy.Enabled {
 		return groupModelPolicy{}
@@ -29,7 +56,9 @@ func newGroupModelPolicy(policy routing.GroupRoutingPolicy) groupModelPolicy {
 	}}
 }
 
-// resolve 只执行一次分组映射；上游阶段留给具体提供商解析完成后检查。
+// resolve returns the single group-mapped model when the configured
+// restriction stage permits it. Upstream-stage restrictions are deferred until
+// provider model resolution supplies the actual model being sent.
 func (p groupModelPolicy) resolve(requested string) (string, bool) {
 	mapped := p.view.ResolveModel(requested)
 	if p.view.RestrictionSource() != routing.BillingModelSourceUpstream {
@@ -41,16 +70,32 @@ func (p groupModelPolicy) resolve(requested string) (string, bool) {
 	return mapped, true
 }
 
+// allowsUpstream reports whether the final provider model passes an
+// upstream-stage group restriction. Other stages were checked during group
+// resolution, and a disabled policy permits the model.
 func (p groupModelPolicy) allowsUpstream(model string) bool {
 	return p.view.RestrictionSource() != routing.BillingModelSourceUpstream || !p.view.IsModelRestricted(model)
 }
 
-// candidates 合并可枚举的请求名称，返回可选模型列表。通配符留给后续匹配使用。
+// candidates returns sorted concrete names collected from supplied
+// configuration, group policy, and schedulable providers. Blank names and
+// names containing wildcard characters are omitted.
+//
+// Both source and target names in group mappings contribute finite candidates,
+// while providers contribute configured request names and mapping sources.
+// Candidate inclusion alone grants no route permission: resolve later checks
+// group restrictions, provider support, protocols, and image capability before
+// a name reaches the catalogue.
 func (p groupModelPolicy) candidates(configured []string, providers []CatalogProvider) []string {
 	models := make(map[string]struct{})
 	add := func(values ...string) {
 		for _, model := range values {
 			model = strings.TrimSpace(model)
+			// Rules may contain wildcard patterns, but the
+			// directory submits concrete names.
+			// Keep patterns out of this finite candidate set so
+			// route matching, rather
+			// than a pattern string itself, determines each public entry.
 			if model != "" && !strings.ContainsAny(model, "*?") {
 				models[model] = struct{}{}
 			}
@@ -80,12 +125,15 @@ func (p groupModelPolicy) candidates(configured []string, providers []CatalogPro
 	return result
 }
 
-// prepareCreativeModels 按已开放的操作读取提供商，每个平台读取一次。
+// prepareCreativeModels reads eligible providers once for each platform with
+// group operations. Missing provider readers, nil groups, or ClaudeCodeOnly
+// groups return a nil query; provider read errors abort preparation.
 func (s *Public) prepareCreativeModels(ctx context.Context, group *GroupView) (*creativeModelQuery, error) {
 	if s.ProviderRepo == nil || group == nil || group.ClaudeCodeOnly {
 		return nil, nil
 	}
 	query := &creativeModelQuery{group: group, policy: newGroupModelPolicy(group.RoutingPolicy), providers: map[string][]CatalogProvider{}}
+	query.attributes = s.Attributes.NewSession()
 	for _, platform := range []string{PlatformOpenAI, PlatformGemini, PlatformGrok} {
 		if len(group.Operations[platform]) == 0 {
 			continue
@@ -99,6 +147,8 @@ func (s *Public) prepareCreativeModels(ctx context.Context, group *GroupView) (*
 	return query, nil
 }
 
+// creativeSettingsModels returns model names configured for the exact supplied
+// group identifier.
 func creativeSettingsModels(settings []CreativeModelSetting, groupID int64) []string {
 	var models []string
 	for _, setting := range settings {
@@ -109,6 +159,9 @@ func creativeSettingsModels(settings []CreativeModelSetting, groupID int64) []st
 	return models
 }
 
+// candidates combines configured names with the supplied group custom model
+// list. A nil query returns nil, and the cloned policy filters and sorts
+// candidates across the prepared platform providers.
 func (q *creativeModelQuery) candidates(configured []string) []string {
 	if q == nil {
 		return nil
@@ -122,50 +175,104 @@ func (q *creativeModelQuery) candidates(configured []string) []string {
 	return q.policy.candidates(models, providers)
 }
 
-func (q *creativeModelQuery) resolveModels(ctx context.Context, models []string) map[string]creativeModelRoute {
+// resolveModels returns routes for distinct input names that resolve
+// successfully. Cancellation returns the context error before each name,
+// unavailable routes are omitted, and display attribute errors follow resolve
+// display handling.
+func (q *creativeModelQuery) resolveModels(ctx context.Context, models []string) (map[string]creativeModelRoute, error) {
 	out := make(map[string]creativeModelRoute)
 	for _, model := range models {
 		if ctx.Err() != nil {
-			return map[string]creativeModelRoute{}
+			return nil, ctx.Err()
 		}
 		if _, exists := out[model]; exists {
 			continue
 		}
-		if route, ok := q.resolve(ctx, model); ok {
+		if route, ok, err := q.resolve(ctx, model, true); err != nil {
+			return nil, err
+		} else if ok {
 			out[model] = route
 		}
 	}
-	return out
+	return out, nil
 }
 
-// resolve 校验具体型号，并按 OpenAI、Gemini、Grok 的顺序选择图片能力。
-func (q *creativeModelQuery) resolve(ctx context.Context, model string) (creativeModelRoute, bool) {
+// resolve selects the first platform with an eligible image route for a
+// concrete request name. Nil queries, cancelled contexts, blank names, and
+// wildcard names report unavailable with no error.
+//
+// Group mapping precedes provider mapping and staged restrictions. Each
+// provider operation must pass its protocol route before attribute resolution,
+// and final output modalities must explicitly include image. Attribute loading
+// failures stop both discovery and submission. Display mode omits routes whose
+// loaded attributes lack image output; submission reports their capability
+// rejection. Shared capabilities are computed across matching
+// providers and per operation, with OpenAI, Gemini, then Grok defining
+// platform precedence.
+func (q *creativeModelQuery) resolve(ctx context.Context, model string, display bool) (creativeModelRoute, bool, error) {
 	if q == nil || ctx.Err() != nil || strings.TrimSpace(model) == "" || strings.ContainsAny(model, "*?") {
-		return creativeModelRoute{}, false
+		return creativeModelRoute{}, false, nil
 	}
 	mapped, allowed := q.policy.resolve(model)
 	if !allowed {
-		return creativeModelRoute{}, false
+		return creativeModelRoute{}, false, nil
 	}
+	var capabilityErr error
 	for _, platform := range []string{PlatformOpenAI, PlatformGemini, PlatformGrok} {
+		route := creativeModelRoute{Platform: platform, OperationAttributes: map[string]modelcatalog.Attributes{}}
+		var values []modelcatalog.Attributes
+		perOperation := map[string][]modelcatalog.Attributes{}
 		for _, provider := range q.providers[platform] {
 			if provider == nil || provider.PlatformID() != platform || !provider.IsSchedulable() || !provider.IsModelSupported(mapped) {
 				continue
 			}
 			finalModel := mappedCatalogModel(provider, mapped)
-			if !CreativePlatformImageModel(platform, finalModel) || !q.policy.allowsUpstream(finalModel) {
+			if !q.policy.allowsUpstream(finalModel) {
 				continue
 			}
-			var operations []string
 			for _, operation := range q.group.Operations[platform] {
-				if provider.AllowsProtocol(OperationProtocol(platform, operation), q.group.ProtocolFallbacks) {
-					operations = append(operations, operation)
+				if !provider.AllowsProtocol(OperationProtocol(platform, operation), q.group.ProtocolFallbacks) {
+					continue
 				}
-			}
-			if len(operations) > 0 {
-				return creativeModelRoute{Platform: platform, Model: finalModel, Operations: operations}, true
+				target := modelcatalog.Target{Platform: platform, Model: finalModel}
+				if aware, ok := provider.(interface {
+					// AttributeTarget supplies
+					// provider-specific identity for
+					// selected model attributes.
+					AttributeTarget(string) modelcatalog.Target
+				}); ok {
+					target = aware.AttributeTarget(finalModel)
+				}
+				target.ClientProtocol = string(OperationProtocol(platform, operation))
+				target.UpstreamProtocol = target.ClientProtocol
+				resolved, err := q.attributes.Resolve(ctx, q.group.ID, target)
+				if err != nil {
+					return creativeModelRoute{}, false, err
+				}
+				if err := routing.RequireImageOutput(resolved.Attributes); err != nil {
+					capabilityErr = err
+					continue
+				}
+				if route.Model == "" {
+					route.Model = finalModel
+				}
+				if !slices.Contains(route.Operations, operation) {
+					route.Operations = append(route.Operations, operation)
+				}
+				perOperation[operation] = append(perOperation[operation], resolved.Attributes)
+				values = append(values, resolved.Attributes)
 			}
 		}
+		if len(route.Operations) > 0 {
+			route.Attributes, _ = modelcatalog.Common(values)
+			for operation, attributes := range perOperation {
+				route.OperationAttributes[operation], _ = modelcatalog.Common(attributes)
+			}
+			return route, true, nil
+		}
 	}
-	return creativeModelRoute{}, false
+	if !display && capabilityErr != nil {
+		return creativeModelRoute{}, false, capabilityErr
+	}
+	return creativeModelRoute{}, false, nil
 }

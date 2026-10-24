@@ -9,10 +9,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在运行 HTTP 测试前设置 Gin 测试模式和 UTC 时区。
+// Payment unit cases run HTTP and SQLite scenarios with Gin configured for
+// tests and UTC as their process-local timezone. This nonintegration runner
+// performs that setup before the Go test runner, keeping date expectations
+// consistent across the unit fixtures.
+
+// TestMain selects Gin test mode and UTC for nonintegration payment cases
+// before running the package. Their HTTP recorder and timestamp assertions then
+// share the configured process environment.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
-	// 测试进程使用 UTC，保证时间夹具不受本地时区影响。
+	// UTC makes time fixtures independent of the host time zone.
 	time.Local = time.UTC
 	m.Run()
 }

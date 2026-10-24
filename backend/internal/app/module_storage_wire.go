@@ -13,7 +13,15 @@ import (
 	routingpostgres "github.com/TokenFlux/TokenRouter/internal/routing/postgres"
 )
 
-// moduleStorageProviders 按模块构造存储，事务参与者使用同一个数据库连接。
+// module_storage_wire.go registers task storage constructors and billing
+// repository bindings for Wire assembly. Creative runs keep persistent metadata
+// and outbox actions in PostgreSQL and temporary payloads in Redis. This
+// storage set supplies both kinds of construction, together with batch queues,
+// download limiting, and billing repository bindings consumed by their task and
+// funding services.
+
+// moduleStorageProviders supplies task and billing storage constructors and
+// binds the billing repository interfaces to PostgreSQL implementations.
 var moduleStorageProviders = wire.NewSet(
 	provideCreativeQueue,
 	provideCreativeTransientStore,

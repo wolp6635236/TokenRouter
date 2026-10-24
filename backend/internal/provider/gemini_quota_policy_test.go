@@ -10,7 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGeminiQuotaPolicyPrecedenceTTLAndSnapshots 验证静态参数、JSON 策略、动态设置依次覆盖；缓存到期前后保持原取值时机。
+// TestGeminiQuotaPolicyPrecedenceTTLAndSnapshots varies static pointer input,
+// policy JSON, dynamic settings, age, and malformed text. It checks captured
+// input isolation, dynamic precedence, TTL reuse/reload, and fallback to
+// static JSON after invalid dynamic data.
 func TestGeminiQuotaPolicyPrecedenceTTLAndSnapshots(t *testing.T) {
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	rpd := int64(10)
@@ -39,13 +42,18 @@ func TestGeminiQuotaPolicyPrecedenceTTLAndSnapshots(t *testing.T) {
 	require.Equal(t, int64(20), next.ProRPD, "设置损坏沿用原静态策略回退")
 }
 
-// TestGeminiQuotaPolicyConcurrentReaderIsolation 验证并发读者可修改各自返回对象，不能修改服务正在使用的策略缓存。
+// TestGeminiQuotaPolicyConcurrentReaderIsolation warms the policy cache before
+// concurrent callers modify their returned maps. It checks unchanged cached
+// default quotas and one dynamic loader invocation for this configured run.
 func TestGeminiQuotaPolicyConcurrentReaderIsolation(t *testing.T) {
 	var reads atomic.Int64
 	core := NewGeminiQuotaService(GeminiQuotaOptions{LoadPolicy: func(context.Context) (string, error) { reads.Add(1); return "", nil }})
 	core.Policy(context.Background())
 	var group sync.WaitGroup
 	var corrupted atomic.Bool
+	// Give each worker its own cloned policy before mutation, then compare
+	// fresh service reads against the warmed cache. The group join below fixes
+	// the assertion point after every worker has completed.
 	for range 20 {
 		group.Go(func() {
 			for j := range 20 {
@@ -59,12 +67,17 @@ func TestGeminiQuotaPolicyConcurrentReaderIsolation(t *testing.T) {
 			}
 		})
 	}
+	// Join every mutation/read loop before observing the atomic corruption
+	// flag and load count, so the assertions describe completed concurrent
+	// activity.
 	group.Wait()
 	require.False(t, corrupted.Load(), "返回策略不能污染缓存")
 	require.Equal(t, int64(1), reads.Load())
 }
 
-// TestGeminiQuotaPolicyReturnCannotMutateCachedPolicy 验证策略读者不得通过返回对象改写服务下一次查询使用的缓存。
+// TestGeminiQuotaPolicyReturnCannotMutateCachedPolicy applies a limit override
+// to a returned policy copy. It checks that a subsequent service read retains
+// the configured default quota in its cached policy.
 func TestGeminiQuotaPolicyReturnCannotMutateCachedPolicy(t *testing.T) {
 	s := NewGeminiQuotaService(GeminiQuotaOptions{})
 	policy := s.Policy(context.Background())

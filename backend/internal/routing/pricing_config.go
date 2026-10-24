@@ -7,72 +7,102 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing/pricing"
 )
 
-const (
-	BillingModeToken      = pricing.BillingModeToken
-	BillingModePerRequest = pricing.BillingModePerRequest
-	BillingModeImage      = pricing.BillingModeImage
-	BillingModeVideo      = pricing.BillingModeVideo
+// pricing_config.go defines shared pricing configurations and copies their
+// editable price graphs.
+// A shared pricing configuration associates several groups with the same model
+// cards and billing settings. Model cards retain optional amount presence, and
+// cloned configurations separate mutable price pointers and collections before
+// cache consumers or management callers edit them.
 
-	BillingModelSourceRequested   = "requested"
-	BillingModelSourceUpstream    = "upstream"
-	BillingModelSourceGroupMapped = "group_mapped"
+// Billing-mode aliases select charging units, while model-source names identify
+// the request stage used for group restrictions and shared price resolution.
+const (
+	BillingModeToken      = pricing.BillingModeToken      // charge by token usage
+	BillingModePerRequest = pricing.BillingModePerRequest // charge by request count
+	BillingModeImage      = pricing.BillingModeImage      // charge by image specification
+	BillingModeVideo      = pricing.BillingModeVideo      // charge by video specification
+
+	BillingModelSourceRequested   = "requested"    // model after Key redirection
+	BillingModelSourceUpstream    = "upstream"     // final executed upstream model
+	BillingModelSourceGroupMapped = "group_mapped" // model after group mapping
 )
 
-// BillingMode 使用统一价卡的计费模式。
+// BillingMode identifies the shared price card's unit of charging.
 type BillingMode = pricing.BillingMode
 
-// PricingConfig 价格配置实体。
+// PricingConfig contains shared billing settings and ordered prices associated
+// with groups.
 type PricingConfig struct {
-	pricing.BillingSettings
-	ID                 int64
-	Name               string
-	Description        string
-	Status             string
-	BillingModelSource string // "requested", "upstream", or "group_mapped"
+	pricing.BillingSettings        // shared configuration billing switches
+	ID                      int64  // saved pricing configuration ID
+	Name                    string // administrative configuration display name
+	Description             string // administrative configuration description text
+	Status                  string // saved configuration activity status
+	// BillingModelSource selects the model stage used by pricing consumers. Empty
+	// saved values resolve as group_mapped when ResolveGroupMapping attaches
+	// billing metadata.
+	BillingModelSource string // requested, upstream, or group_mapped model identity
 
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt time.Time // configuration row creation time
+	UpdatedAt time.Time // configuration row update time
 
-	// 关联的分组 ID 列表
-	GroupIDs []int64
-	// 共享模型定价列表
-	ModelPricing []ModelPricingEntry
+	// GroupIDs identifies groups sharing this price configuration. Cache
+	// publication clones the collection, while administrative creation initially
+	// attaches supplied IDs to its working value.
+	GroupIDs []int64 // associated saved group IDs
 
-	// 提供商统计定价
-	ProviderStatsPricingRules []ProviderStatsPricingRule // 自定义提供商统计定价规则（按 SortOrder 排序，先命中为准）
+	// ModelPricing supplies exact and trailing-wildcard lookup entries.
+	// Configuration-level settings remain effective for active groups even when
+	// this collection has no cards.
+	ModelPricing []ModelPricingEntry // ordered shared model cards
+
+	// ProviderStatsPricingRules is loaded by SortOrder then ID in PostgreSQL.
+	// Provider-cost selection follows slice order and uses the first matching rule
+	// that can calculate the model's cost.
+	ProviderStatsPricingRules []ProviderStatsPricingRule // ordered provider-cost pricing rules
 }
 
-// ProviderStatsPricingRule 定义提供商成本统计的定价规则。
+// ProviderStatsPricingRule contains ordered selectors and model prices for
+// provider-cost calculation.
 type ProviderStatsPricingRule = pricing.ProviderStatsPricingRule
 
-// ModelPricingEntry 定义共享价格配置的模型价卡。
+// ModelPricingEntry contains a model card's optional amounts and billing
+// modifiers.
 type ModelPricingEntry = pricing.ModelPricingEntry
 
-// TimePricingConfig 定义每日分时倍率。
+// TimePricingConfig contains daily multiplier periods and their interpretation
+// timezone.
 type TimePricingConfig = pricing.TimePricingConfig
 
-// TimePricingPeriod 定义单个分时时段。
+// TimePricingPeriod identifies one daily pricing interval and its multiplier.
 type TimePricingPeriod = pricing.TimePricingPeriod
 
-// PricingInterval 定义上下文或媒体规格的价格区间。
+// PricingInterval contains context-range or media-label pricing overrides for a
+// model card.
 type PricingInterval = pricing.PricingInterval
 
-// PricingUsageFields 价格配置相关的使用记录字段（嵌入到各平台的 RecordUsageInput 中）。
+// PricingUsageFields records group mapping identities and billing-source
+// metadata for usage.
 type PricingUsageFields struct {
-	PricingConfigID    int64  // 价格配置 ID（0 = 无价格配置）
-	OriginalModel      string // Key 重定向后的请求模型（分组映射前）
-	GroupMappedModel   string // 分组映射后的模型名（无映射时等于 OriginalModel）
-	BillingModelSource string // 计费模型来源："requested" / "upstream" / "group_mapped"
-	ModelMappingChain  string // 映射链描述，如 "a→b→c"
+	PricingConfigID int64 // associated configuration ID; zero means absent
+	// OriginalModel and GroupMappedModel retain request identity before and after
+	// group mapping. When mapping does not change the model, ToUsageFields uses
+	// the request model for both fields.
+	OriginalModel      string // model after Key redirection
+	GroupMappedModel   string // model after group mapping
+	BillingModelSource string // requested, upstream, or group_mapped price stage
+	ModelMappingChain  string // ordered model rewrite display chain
 }
 
-// IsActive 判断价格配置是否启用。
+// IsActive reports whether this pricing configuration has the active status.
 func (c *PricingConfig) IsActive() bool {
 	return c.Status == StatusActive
 }
 
-// GetModelPricing 根据模型名查找价格配置定价，未找到返回 nil。
-// 精确匹配，大小写不敏感。返回值拷贝，不污染缓存。
+// GetModelPricing returns a cloned card for the first exact case-insensitive
+// model name. Whitespace is retained in matching, wildcard entries are not
+// expanded, and an unmatched name returns nil for the caller's next pricing
+// source.
 func (c *PricingConfig) GetModelPricing(model string) *ModelPricingEntry {
 	modelLower := strings.ToLower(model)
 
@@ -88,7 +118,10 @@ func (c *PricingConfig) GetModelPricing(model string) *ModelPricingEntry {
 	return nil
 }
 
-// Clone 返回 PricingConfig 的深拷贝。
+// Clone returns separate storage for billing amounts, group IDs, model cards,
+// and provider-cost selectors and cards. A nil receiver returns nil;
+// ModelPricingEntry.Clone handles each card's amounts, intervals, and
+// time-pricing periods.
 func (c *PricingConfig) Clone() *PricingConfig {
 	if c == nil {
 		return nil
@@ -129,7 +162,10 @@ func (c *PricingConfig) Clone() *PricingConfig {
 	return &cp
 }
 
-// ValidateIntervals 委托唯一纯定价实现，保留旧调用签名。
+// ValidateIntervals delegates model-card interval checking to the shared
+// pricing package. Empty intervals are accepted; billing mode determines
+// whether context overlap is forbidden or ordered media-label selection can
+// handle overlapping ranges.
 func ValidateIntervals(intervals []PricingInterval, mode BillingMode) error {
 	return pricing.ValidateIntervals(intervals, mode)
 }

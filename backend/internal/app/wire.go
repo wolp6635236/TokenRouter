@@ -11,7 +11,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/config"
 )
 
-// initializeApplication 构造并登记资源，Application.Run 负责启动。
+// wire.go declares the application dependency graph used to generate runtime
+// initialization.
+// Initialize passes its lifecycle manager, restarter, and task tracker to
+// application construction. Wire uses those objects with the supplied context
+// and configuration while resolving subsystem constructors, then returns an
+// Application after providers have registered their resource hooks.
+
+// initializeApplication specifies the complete application graph for Wire
+// generation. The wireinject build contains a placeholder result; generated
+// runtime initialization resolves the providers using cfg, ctx, build
+// metadata, and the supplied lifecycle objects.
 func initializeApplication(ctx context.Context, cfg *config.Config, info BuildInfo, manager *lifecycle.Manager, restarter *lifecycle.Restarter, tasks *lifecycle.Tasks) (*Application, error) {
 	wire.Build(
 		egressAssemblyProviders,

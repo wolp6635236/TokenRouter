@@ -2,5 +2,9 @@
 
 package bootstrap
 
-// 集成测试注册 Ent 字段默认值和 hook。
 import _ "github.com/TokenFlux/TokenRouter/ent/runtime"
+
+// Ent field defaults and hooks are installed by the generated runtime package.
+// Integration fixtures import that package for its initialization side
+// effects, so entities created through Ent use their configured defaults and
+// validation hooks during bootstrap tests.

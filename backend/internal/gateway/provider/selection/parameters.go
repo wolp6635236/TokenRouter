@@ -9,7 +9,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
-// advancedSchedulerEffectiveSettingsForGroup 将分组覆盖置于运行时全局设置之上。
+// parameters.go resolves request-group overrides for effective advanced
+// scheduler settings.
+// Advanced scheduler overrides apply to the request's final group after
+// admission. Valid group context takes precedence over repository lookup, and a
+// missing group supplies empty overrides so Parameters can resolve global
+// process and runtime settings.
+
+// advancedSchedulerEffectiveSettingsForGroup delegates group overrides to the
+// selector's scheduler parameters. A nil selector uses Parameters defaults, and
+// basic or missing groups contribute empty overrides so their retained advanced
+// settings do not apply.
 func (s *Compatible) advancedSchedulerEffectiveSettingsForGroup(ctx context.Context, group *routing.Group) policy.EffectiveSettings {
 	var parameters *schedulercore.Parameters
 	if s != nil {
@@ -18,8 +28,10 @@ func (s *Compatible) advancedSchedulerEffectiveSettingsForGroup(ctx context.Cont
 	return parameters.Effective(ctx, schedulerGroupOverrides(group))
 }
 
-// advancedSchedulerEffectiveSettingsForRequest 读取最终目标分组并生成请求级有效配置。
-// 分组不存在或未被加载时只使用全局配置，保持无分组路径的历史行为。
+// advancedSchedulerEffectiveSettingsForRequest resolves the request's final
+// group before applying advanced overrides. A nil context becomes Background,
+// and an unavailable group leaves Parameters to use global settings for this
+// call.
 func (s *Compatible) advancedSchedulerEffectiveSettingsForRequest(
 	ctx context.Context,
 	groupID *int64,
@@ -30,12 +42,17 @@ func (s *Compatible) advancedSchedulerEffectiveSettingsForRequest(
 	return s.advancedSchedulerEffectiveSettingsForGroup(ctx, s.advancedSchedulerGroupForRequest(ctx, groupID))
 }
 
-// advancedSchedulerGroupForRequest 优先复用请求上下文的最终分组，必要时再读取调度快照。
+// advancedSchedulerGroupForRequest reuses a matching valid group or permits a
+// scheduling-group read when snapshots are configured. Missing request IDs,
+// unavailable snapshot reads, and read failures produce nil for global-setting
+// resolution.
 func (s *Compatible) advancedSchedulerGroupForRequest(ctx context.Context, id *int64) *routing.Group {
 	return schedulerRequestGroup(ctx, id, s != nil && s.schedulerSnapshot != nil, s.readSchedulingGroup)
 }
 
-// schedulerGroupOverrides 返回最终高级分组的配置覆盖值，基础分组返回空配置。
+// schedulerGroupOverrides returns the override value attached to an advanced
+// group. Basic and missing groups return empty overrides, leaving every
+// effective field to inherit the process and runtime settings.
 func schedulerGroupOverrides(group *routing.Group) policy.GroupAdvancedSchedulerOverrides {
 	if group != nil && group.UsesAdvancedScheduler() {
 		return group.AdvancedSchedulerOverrides
@@ -43,7 +60,10 @@ func schedulerGroupOverrides(group *routing.Group) policy.GroupAdvancedScheduler
 	return policy.GroupAdvancedSchedulerOverrides{}
 }
 
-// schedulerRequestGroup 保留请求优先和仅有快照时回源的顺序。
+// schedulerRequestGroup prefers a valid context group whose ID matches the
+// requested positive ID. Otherwise it invokes read when snapshotAvailable is
+// true; absent eligibility or a read error returns nil. Callers supply a
+// callable reader when resolution can reach that repository branch.
 func schedulerRequestGroup(ctx context.Context, id *int64, snapshotAvailable bool, read func(context.Context, int64) (*routing.Group, error)) *routing.Group {
 	if id == nil || *id <= 0 {
 		return nil
@@ -56,6 +76,8 @@ func schedulerRequestGroup(ctx context.Context, id *int64, snapshotAvailable boo
 	if !snapshotAvailable {
 		return nil
 	}
+	// The scheduling snapshot binding enables this full group read for overrides.
+	// Failed reads yield no group, allowing Parameters to resolve its global settings.
 	group, err := read(ctx, *id)
 	if err != nil {
 		return nil

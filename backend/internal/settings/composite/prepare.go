@@ -26,15 +26,42 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// PrepareOptions 固定原有校验顺序所需的只读能力，准备阶段不接受写入或通知端口。
+// prepare.go normalizes combined administrator settings and collects their
+// persistence values.
+// A combined Snapshot contains settings from multiple owning modules, whose
+// normalizers need to run before any key/value batch reaches storage. Preparation
+// visits those modules in a fixed order, updates selected Snapshot fields, and
+// collects strings for later persistence by the update session. Gateway
+// preparation contributes strings without copying its normalized value back;
+// initial scheduler normalization is copied back before its error is checked.
+//
+// An error can therefore leave the supplied Snapshot partly normalized even
+// though this preparation performs no write. OpenAI quota thresholds require a
+// read/merge of the wider Ops JSON when their presence flag is set; that step
+// carries recognized advanced fields through Ops normalization. Request omission
+// filtering and registry ownership replacement happen after this broad preparation
+// in the combined HTTP flow.
+
+// PrepareOptions supplies validation, current values, and module defaults for batch preparation.
 type PrepareOptions struct {
-	ValidatePlans func(context.Context, []billing.DefaultSubscriptionSetting) error
-	ReadValues    func(context.Context) (map[string]string, error)
-	Gateway       gateway.AdminSettingsRules
-	Scheduler     scheduler.AdminDefaults
+	ValidatePlans func(context.Context, []billing.DefaultSubscriptionSetting) error // default subscription plan validation
+	// ReadValues is invoked when the quota presence flag requires an Ops JSON
+	// merge. It supplies current strings, and a read failure stops preparation.
+	ReadValues func(context.Context) (map[string]string, error)
+	Gateway    gateway.AdminSettingsRules // gateway normalization and validation rules
+	Scheduler  scheduler.AdminDefaults    // inherited scheduler parameter defaults
 }
 
-// Prepare 组合所属模块准备结果，保留原完整文档入口的错误优先级。
+// Prepare normalizes a nonnil Snapshot and returns strings for a later combined
+// settings write. ValidatePlans runs before module preparation, and each successful
+// module normalization can mutate the Snapshot before another module reports an
+// error. The function itself performs no persistence.
+//
+// Collected values are merged in the declared module sequence. The caller later
+// drops omitted keys and replaces keys owned by its registered participants, so
+// this broad map is an intermediate result. A supplied OpenAI quota flag selects
+// the Ops advanced-JSON read/merge step; that failure also returns before the batch
+// can be committed by the update session.
 func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (map[string]string, error) {
 	if err := options.ValidatePlans(ctx, settings.DefaultSubscriptions); err != nil {
 		return nil, err
@@ -147,6 +174,8 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 	settings.ApplySchedulerAdminSettings(schedulerInput)
 	maps.Copy(updates, schedulerValues)
 
+	// Merge thresholds only after presence selected a quota update so routine
+	// saves can leave this wider Ops JSON untouched until its own participant prepares it.
 	if settings.OpenAIQuotaAutoPauseSettingsSet {
 		opsAdvanced, err := prepareQuotaMerge(ctx, options, settings.OpenAIQuotaAutoPauseSettings)
 		if err != nil {
@@ -159,6 +188,9 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 		updates["ops_advanced_settings"] = string(raw)
 	}
 
+	// Team and moderation preparation currently return no validation failure for
+	// these supplied value records. Their discarded errors accompany encoded keys
+	// collected for the eventual combined batch.
 	_, teamValues, _ := team.PrepareAdminSettings(team.AdminSettings{TeamEnabled: settings.TeamEnabled})
 	maps.Copy(updates, teamValues)
 	_, moderationValues, _ := moderation.PrepareAdminSettings(moderation.AdminSettings{RiskControlEnabled: settings.RiskControlEnabled, CyberSessionBlockEnabled: settings.CyberSessionBlockEnabled, CyberSessionBlockTTLSeconds: settings.CyberSessionBlockTTLSeconds})
@@ -175,7 +207,10 @@ func Prepare(ctx context.Context, settings *Snapshot, options PrepareOptions) (m
 	return updates, nil
 }
 
-// prepareQuotaMerge 保留额外 GetAll 的原时点，Ops 独占共享 JSON 合并。
+// prepareQuotaMerge reads current strings when quota thresholds must be prepared
+// inside Ops advanced settings. Read failures retain their cause. The shared Ops
+// merger decodes recognized saved fields over defaults, replaces the quota object,
+// and normalizes that typed result before it is encoded for persistence.
 func prepareQuotaMerge(ctx context.Context, options PrepareOptions, quota provider.QuotaAutoPauseSettings) (*ops.OpsAdvancedSettings, error) {
 	values, err := options.ReadValues(ctx)
 	if err != nil {

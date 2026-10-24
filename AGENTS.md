@@ -1,61 +1,69 @@
-# TokenRouter 协作规范
+# TokenRouter Collaboration Guidelines
 
-## 开始任务
+## Starting a task
 
-处理本仓库任务时，优先使用项目内置的 [project-doc](.agents/skills/project-doc/SKILL.md) 技能。
+Use the repository's [project-doc](.agents/skills/project-doc/SKILL.md) skill first when working on this repository.
 
-- 执行任何仓库任务前，先确认当前 Agent 会话能调用名为 `project-doc` 的技能。Claude Code 直接读取 `.agents/skills` 下的技能文件。
-- 无法调用时立即停止，此后唯一允许的动作是回复：“当前环境未安装或未加载 `project-doc` 技能，按仓库规则无法继续。请安装或启用该技能，并在新会话中重试。”
-- 能够调用时，先使用 `project-doc`。当前会话第一次处理本仓库任务时，完整读取 `docs/index.md`，再按目录路由完成任务。
-- 同一会话里已经读过、上下文中仍保留足够内容的技能说明、索引和相关章节，直接复用，修改文件、继续子任务和任务收尾时也一样。内容缺失、相关文件变化或路由冲突时，按技能的“读取与上下文复用”规则补读受影响的部分。
+- Before any repository task, confirm that the current agent session can invoke a skill named `project-doc`. Claude Code reads skill files directly from `.agents/skills`.
+- If the skill is unavailable, stop immediately. The only permitted next action is to reply: "The current environment has not installed or loaded the `project-doc` skill, so repository rules prevent further work. Please install or enable the skill and retry in a new session."
+- When the skill is available, use `project-doc` first. On the session's first task in this repository, read all of `docs/index.md`, then follow its routing for the task.
+- Reuse skill instructions, indexes, and sections already read in the same session while enough of their content remains in context. This also applies when editing files, continuing subtasks, and finishing work. If content is missing, relevant files change, or routing conflicts arise, reread the affected material under the skill's "Reading and context reuse" rules.
 
-## 编码与写作
+## Coding and writing
 
-- 每次编写或修改代码前，必须先加载并遵循项目级 [code-complete](.agents/skills/code-complete/SKILL.md) Skill，指导具体编码实现。执行前主动参考相关模块的现有实现，保持项目设计与编码风格一致。
-- 涉及方法抽象、接口设计、模块边界或职责划分等设计决策时，额外加载并遵循项目级 [a-philosophy-of-software-design](.agents/skills/a-philosophy-of-software-design/SKILL.md) Skill。两者同时适用时，由后者指导设计与抽象决策，前者指导具体实现。
-- 两个 Skill 默认使用各自的 mini 规范，必要时再查阅完整版，文件入口见各自的 `SKILL.md`。
-- 编写或修改文字前，加载并遵循项目级 [humanizer](.agents/skills/humanizer/SKILL.md)，优先使用本仓库版本。适用范围包括代码注释、文档、提交信息、PR 描述、界面文案、i18n、错误与日志消息、计划、技能说明和 Agent 规范。首次使用时完整读取，内容遗失时补读。
-- 文字表达冲突时，以 Humanizer 的规则为准。提交、交付文档或结束任务前，完成技能要求的“交付前自查”。
+- Before writing or changing code, load and follow the project [code-complete](.agents/skills/code-complete/SKILL.md) skill for implementation guidance. First inspect existing implementations in the relevant module and follow the project's design and coding style.
+- For decisions about method abstractions, interface design, module boundaries, or responsibilities, also load and follow the project [a-philosophy-of-software-design](.agents/skills/a-philosophy-of-software-design/SKILL.md) skill. When both skills apply, use this skill for design and abstraction decisions and `code-complete` for implementation.
+- Use each skill's mini specification by default. Consult the full version when needed; each `SKILL.md` links to both.
+- Before writing, changing, or reviewing handwritten code, load and follow the project [code-comments](.agents/skills/code-comments/SKILL.md) skill, including changes that initially contain no comments. Meet its mandatory coverage, length, placement, and accuracy requirements for the task's scope.
+- Before writing or changing other prose, load and follow the project [humanizer](.agents/skills/humanizer/SKILL.md) skill. This includes documentation, commit messages, PR descriptions, UI text, i18n entries, error and log messages, plans, skill instructions, and agent guidelines.
+- Choose the writing skill by content type. Apply one of `code-comments` or `humanizer` to each passage. When a task includes both comments and other prose, use the corresponding skill for each. This division takes precedence over conflicting scope statements in the skills.
+- Read each applicable skill in full on first use, and reread it if its content is lost. Before committing, delivering documentation, or finishing the task, perform the corresponding skill's self-review.
 
-## 修改约定
+## Change conventions
 
-- 所有任务直接在当前 `main` 分支上完成。用户明确要求时，才创建或切换 Git 分支。
-- 手写代码按需添加中文注释，说明约束、失败行为和代码中看不出的原因。Go 文档注释遵循 Go 规范。
-- 代码按可读性换行，一行写一件事。修改代码时同步更新注释，删除代码时一起清理失效的注释和空行。
-- 后端 Go 代码的 import 在包名冲突等确有需要时才加别名。Go 文件直接从 `package` 声明或 `//go:build` 约束开始。
-- 新增、拆分、合并、改名后端 Go 文件，或调整文件内声明顺序前，按 Project Doc 规则读取或复用[后端文件组织](docs/operations/development_workflow.md#backend_file_layout)，遵循其中的命名、测试归属、包说明和声明顺序要求。改名或合并文件时，同步更新引用这些文件名的文档、架构许可和注释。
+- Work directly on the current `main` branch. Create or switch branches only when the user explicitly requests it.
+- Use the project's designated brand-color token wherever the UI calls for brand color. Identify the correct token from the user-approved reference component and its theme and interaction state. Do not substitute another color or shade, darken or lighten it, or reduce its opacity for readability, contrast, aesthetics, skill recommendations, or other reasons unless the user explicitly requests that color change. This rule applies when following `oil-ui-pro` and all other UI skills. Resolve readability issues through layout, typography, or surrounding surfaces while preserving the brand color.
+- Write code comments and docstrings in English. Cover the files, declarations, fields, tests, and operations required by `code-comments`, including private declarations. Follow Go documentation conventions and the repository's file-overview and `doc.go` placement rules.
+- Wrap code for readability and put one operation on each line.
+- Treat comment maintenance as part of every code change. When behavior, names, parameters, return values, constraints, or execution order change, update affected comments in the same edit. Check file overviews, declaration comments, field comments, and inline comments against the resulting implementation.
+- When deleting or renaming a symbol or changing its responsibility, search affected modules, callers, and tests for the old name and keywords describing the previous behavior. Review each matching comment and documentation reference, and update or remove obsolete content based on the current implementation.
+- When moving or extracting code, move its comments with it and revise them for the destination. Remove comments left at the source when they no longer describe the code there. When deleting or replacing code, remove obsolete explanations and duplicate comments.
+- Keep comments next to the declarations or operations they explain. After editing, remove empty comment blocks and blank lines left by deleted or moved code or comments. Retain blank lines that separate meaningful logical groups and follow the language's formatting conventions.
+- Add aliases to backend Go imports only when needed, such as to resolve package-name conflicts. Start Go files with the `package` declaration or a `//go:build` constraint.
+- Before adding, splitting, merging, or renaming backend Go files, or changing declaration order, read or reuse [Backend file organization](docs/operations/development_workflow.md#backend_file_layout) under the Project Doc rules. Follow its naming, test ownership, package documentation, and declaration-order requirements. When renaming or merging files, update documentation, architecture allowances, and comments that reference those filenames.
 
-## 降智探测
+## Fork extensions
 
-本仓库在 TokenRouter 上做二次开发。降智探测和同类“按账号质量改调度资格”的能力放在旁路模块，上游合并时这类改动集中在探测包和 app 装配。判定、循环和保底规则见 [docs/domains/quality_probe.md](docs/domains/quality_probe.md)。改这项能力时遵守下面几条。
+Quality probing belongs in `backend/internal/qualityprobe`; its administrator
+HTTP adapter belongs in `qualityprobe/httpapi`. The application package binds
+provider storage, `provider.TestService`, `notification.Mailer`, routes, and the
+periodic runner. Provider eligibility continues through
+`temp_unschedulable_until` and `temp_unschedulable_reason` with the
+`quality_degraded` reason. The provider menu, the quality-probe log page, and
+the Gateway OpenAI settings card are the administrator UI entry points. Read
+[Quality probing](docs/domains/quality_probe.md) before changing its rules.
 
-- 业务放在 `backend/internal/qualityprobe`，管理 HTTP 放在 `qualityprobe/httpapi`，Wire 和生命周期放在 `backend/internal/app`（`quality_probe.go`、`assembly_qualityprobe_wire.go`、管理路由、maintenance runner）。前端入口是提供商菜单的探测按钮、侧栏「降智探测」记录页，以及设置页网关 → OpenAI 里的探测卡片。
-- `gateway`、`scheduler`、`provider` 核心包继续走现有选号和评分。探测通过已有的 `temp_unschedulable_until` / `temp_unschedulable_reason` 进入筛选，原因常量是 `quality_degraded`。引用 `qualityprobe` 的是 app 适配器和 `qualityprobe/httpapi`。
-- 探测调用 `provider.TestService`（管理测号通道），用量记在上游账号。邮件调用 `notification.Mailer.SendEmail`。
-- 运行时键 `quality_probe_settings`，缺省关闭。覆盖 `platform=openai`（OAuth 和 API Key）。自动探测要求账号 `status=active`、打开了「参与调度」，至少属于一个启用中的分组，并且可用模型包含设置里的探测模型。`group_ids` 为空时覆盖全部启用中的 OpenAI 分组；非空时覆盖勾选且仍为启用状态的分组。`schedule_enabled` 默认开，窗口默认本地时区 `08:00`–`00:00`；时段外停自动探测，不改写总开关，手动探测照常。`unschedule_on_degraded` 默认开；关掉后降智不停调，保存时立即清掉已有的 `quality_degraded`。循环状态和最近 50 条记录（含各次提问和截断后的回答）写在提供商 Extra 的 `quality_probe`。新增探测字段时继续写 Extra；和上游并行加迁移时，编号容易冲突。
-- 糖果题和 ModelTrace 都未通过才记降智。测号通道报错时记上游报错，调度和自动循环保持原样。ModelTrace 用内置指纹库归因，最可能模型与本次请求的模型为同一条算通过。失败后按设置冷却再测，连续达到次数上限后发邮件并停止自动循环。`unschedule_on_degraded` 开启且该提供商在任一所属分组里已经是最后一个可调度成员时，保持可调度，失败计数和邮件仍执行。
-- 清除临时停调前核对原因是 `quality_degraded`。其他原因的临时停调由提供商健康恢复处理。
-- 连续 502/503 由提供商上已有的临时停调规则和自定义错误码处理。
+The administrator update service reads `update.github_repo` and
+`UPDATE_GITHUB_REPO`, defaulting to `wolp6635236/TokenRouter`. Keep
+`config.DefaultUpdateGitHubRepo`, `ops.DefaultUpdateGitHubRepo`, deployment
+examples, and configuration documentation synchronized when that default
+changes. `upstream` tracks `TokenFlux/TokenRouter`; use
+`tools/check-upstream-release.sh` with `tools/upstream-release.seen` to detect
+official releases. Update the seen tag after this fork releases the merged
+upstream version.
 
-## 面板更新与上游同步
+## Verification and delivery
 
-本 fork 的管理后台在线更新读取 `update.github_repo`（环境变量 `UPDATE_GITHUB_REPO`），缺省是 `wolp6635236/TokenRouter`。改缺省仓库时，同步改 `config.DefaultUpdateGitHubRepo`、`ops.DefaultUpdateGitHubRepo`，以及 `tools/upstream-release.seen` 的说明。
+- During development, run local tests for the changed package or component. Select scope and commands under the [Verification strategy](docs/operations/development_workflow.md#验证策略).
+- Run `make hooks` once for each local checkout. On push, the hook runs the same quick checks as `make check` in the current working tree, selecting checks from changes relative to the remote.
+- Before committing, inspect the task's changes for contradictions and safe cleanup opportunities, and address issues related to the change.
+- Before committing or finishing a code task, read the resulting code in each changed file with its surrounding comments and spacing. Check comments outside the diff when the change affects their claims. Resolve stale descriptions, misplaced or orphaned comments, and unexplained blank lines before delivery; formatter and test success do not replace this review.
+- Before every commit, run `make fmt` from the repository root, inspect the diff, and manually stage the changes belonging to that commit. Review partially staged files hunk by hunk. Then run `make fmt-check` and confirm that declaration-order and formatting differences are resolved. See [Go formatting](docs/operations/development_workflow.md#go-格式化) for tool behavior, generated-file detection, and checks of committed code.
+- Write commit message subjects and bodies in English and follow Conventional Commits.
+- After pushing, check CI results. CI runs full lint, unit, integration, frontend, build, and script checks. CI also checks integration tests and downstream users of changed packages.
+- For full local acceptance, run `make verify`. It runs the same checks as CI and requires Docker. Run `make security` for security scans.
+- If a test fails or a check is interrupted, fix the cause and rerun verification. Explain skipped tests and mark their scope as unverified.
 
-官方仓库是 `TokenFlux/TokenRouter`，本地 remote 名 `upstream`。感知官方新 Release 用 `tools/check-upstream-release.sh`，对照 `tools/upstream-release.seen`。GitHub Action `.github/workflows/check-upstream-release.yml` 每 6 小时跑一次，发现新 tag 时开 Issue。维护者确认后执行 fetch、merge、冲突处理和本 fork 的迁移编号规则，再打 tag 走 `release.yml`。发版后把 seen 文件写成已并入的官方 tag：`bash tools/check-upstream-release.sh --update-seen vX.Y.Z`。
+## Plan mode
 
-Docker Compose 的 `image` 和 `pull_policy: always` 决定重建时拉取哪份镜像。面板更新替换的是正在运行的进程二进制。线上实例使用本仓库 GHCR 镜像，或固定本 fork 的发布 tag。
-
-## 验证与交付
-
-- 开发时运行改动所在包或组件的局部测试。验证范围和命令按[验证策略](docs/operations/development_workflow.md#验证策略)执行。
-- 每个本地检出执行一次 `make hooks`。推送时 hook 在当前工作区运行和 `make check` 相同的快检，按相对远端的改动选择检查项。
-- 提交前检查本次变更中的矛盾和可安全清理的问题，一并处理与本次修改相关的内容。
-- 每次提交前，在仓库根目录运行 `make fmt`，检查 diff，并手动暂存属于本次提交的修改。部分暂存的文件逐块确认。随后运行 `make fmt-check`，确认声明顺序和格式差异已经清零。工具行为、生成文件识别和已提交代码的检查方式见 [Go 格式化](docs/operations/development_workflow.md#go-格式化)。
-- 提交信息遵循 Conventional Commits 规范。
-- 推送后查看 CI 结果。CI 运行全量 lint、单元、集成、前端、构建和脚本检查，集成测试和改动包的下游使用方由 CI 检查。
-- 本地需要完整验收时运行 `make verify`，它执行和 CI 相同的检查，需要 Docker。安全扫描使用 `make security`。
-- 测试失败或检查中断时，修复原因后重新验证。跳过的测试说明原因，并标记为未验证。
-
-## 计划模式
-
-- 使用 Codex 计划模式时，开始实施前把定稿计划原样保存到 `.agents/plans/`。执行期间把任务进度追加到计划文件末尾。计划文件留在本地，提交时排除它们。
+- When using Codex plan mode, save the finalized plan verbatim under `.agents/plans/` before implementation. Append progress to the end of that file during execution. Keep plan files local and exclude them from commits.

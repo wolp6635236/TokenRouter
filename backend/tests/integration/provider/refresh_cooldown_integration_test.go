@@ -12,12 +12,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// TestRefreshCooldownDatabaseIdentity 验证 PostgreSQL 条件清理保留命名/余额等无关修改，拒绝身份与新 cooldown，并保留尽力 outbox。
+// Refresh cooldown recovery qualifies the observed credentials, provider
+// status, window, and reason before clearing temporary suspension. Sequential
+// PostgreSQL changes check which observations still match, including
+// cancellation and a notification failure after a successful state write.
+
+// TestRefreshCooldownDatabaseIdentity reads a cooldown then sequentially
+// changes identity, status, window, or reason before recovery. A rename remains
+// eligible; rejected observations stay unchanged, and a failed notification
+// does not undo successful clearing.
 func TestRefreshCooldownDatabaseIdentity(t *testing.T) {
 	for _, change := range []string{"none", "name", "credentials", "status", "window", "reason", "outbox_failure", "cancelled"} {
 		t.Run(change, func(t *testing.T) {
 			ctx := context.Background()
 			client := testEntClient(t)
+			// Match database precision when comparing the observed and stored cooldown.
 			until := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
 			row, err := client.Provider.Create().SetName("test-refresh-cooldown").SetPlatform(provider.PlatformGemini).SetType(provider.ProviderTypeOAuth).SetStatus(provider.StatusActive).SetCredentials(map[string]any{"refresh_token": "observed"}).SetTempUnschedulableUntil(until).SetTempUnschedulableReason("old").Save(ctx)
 			require.NoError(t, err)

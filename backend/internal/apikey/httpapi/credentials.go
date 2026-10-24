@@ -11,8 +11,28 @@ import (
 	googleapi "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
+// credentials.go checks credential header sizes, extracts Google-compatible
+// credentials, and formats team authentication errors. Header-size checks run
+// before Key lookup to bound credential input. Team rejection helpers
+// translate member allowances and lifecycle failures into generic or Google
+// response bodies.
+//
+// Credential extraction checks the Google header first, then a Bearer value,
+// then x-api-key, and finally an eligible query key. Blank values fall through
+// to the next source after trimming. The path restriction applies to query
+// credentials, while header credentials remain available on other paths.
+// Failure formatting maps the same team error identities to the response
+// structure expected by the selected client protocol.
+
+// MaxAuthorizationHeaderBytes allows credential length plus bearer-scheme and
+// whitespace overhead before the HTTP adapter rejects an oversized
+// authorization header.
 const MaxAuthorizationHeaderBytes = apikey.MaxAPIKeyCredentialBytes + 128
 
+// HeadersTooLarge reports whether any supported credential header exceeds its
+// byte allowance. Nil Gin contexts return false; the authorization header has
+// additional scheme overhead, while both direct Key headers use
+// MaxAPIKeyCredentialBytes.
 func HeadersTooLarge(c *gin.Context) bool {
 	if c == nil {
 		return false
@@ -22,6 +42,10 @@ func HeadersTooLarge(c *gin.Context) bool {
 		len(c.GetHeader("x-goog-api-key")) > apikey.MaxAPIKeyCredentialBytes
 }
 
+// HasCredentialInput reports whether any supported credential header contains
+// nonempty raw text. Nil contexts return false; malformed authorization text
+// still counts as input, and query credentials are considered by the extractor
+// separately.
 func HasCredentialInput(c *gin.Context) bool {
 	if c == nil {
 		return false
@@ -31,7 +55,10 @@ func HasCredentialInput(c *gin.Context) bool {
 		c.GetHeader("x-goog-api-key") != ""
 }
 
-// AbortTeamError 将团队生命周期与成员限额错误映射为稳定的网关响应。
+// AbortTeamError writes and aborts for recognized team lifecycle or
+// member-allowance errors. It uses errors.Is so wrapped causes retain their
+// mapping; unrecognized errors return false with no response for the caller to
+// handle.
 func AbortTeamError(c *gin.Context, err error) bool {
 	switch {
 	case errors.Is(err, apikey.ErrTeamMemberDailyExceeded):
@@ -56,16 +83,20 @@ func AbortTeamError(c *gin.Context, err error) bool {
 	return true
 }
 
-// ExtractGoogleCredential extracts API key for Google/Gemini endpoints.
-// Priority: x-goog-api-key > Authorization: Bearer > x-api-key > query key
-// This allows OpenClaw and other clients using Bearer auth to work with Gemini endpoints.
+// ExtractGoogleCredential returns the first nonempty trimmed credential from
+// Google header, Bearer authorization, ordinary Key header, then permitted
+// query input. Callers provide a usable request and Gin context. The Bearer
+// scheme ignores case, malformed or empty bearer input permits later sources,
+// and query key is examined only when AllowGoogleQueryKey accepts the path.
 func ExtractGoogleCredential(c *gin.Context) string {
-	// 1) preferred: Gemini native header
+	// Google-native clients put their credential in this header; its nonempty
+	// value wins when a request also supplies other compatible authentication forms.
 	if k := strings.TrimSpace(c.GetHeader("x-goog-api-key")); k != "" {
 		return k
 	}
 
-	// 2) fallback: Authorization: Bearer <key>
+	// Bearer credentials support clients sharing the generic gateway scheme.
+	// Malformed or empty bearer text leaves the later header and query sources eligible.
 	auth := strings.TrimSpace(c.GetHeader("Authorization"))
 	if auth != "" {
 		parts := strings.SplitN(auth, " ", 2)
@@ -76,12 +107,14 @@ func ExtractGoogleCredential(c *gin.Context) string {
 		}
 	}
 
-	// 3) x-api-key header (backward compatibility)
+	// Ordinary Key-header clients can reuse their credential form when the
+	// Google and bearer sources are absent or supply no usable credential text.
 	if k := strings.TrimSpace(c.GetHeader("x-api-key")); k != "" {
 		return k
 	}
 
-	// 4) query parameter key (for specific paths)
+	// Query credentials are retained for these Google route prefixes. Other
+	// paths require a supported header even when query input contains a secret.
 	if AllowGoogleQueryKey(c.Request.URL.Path) {
 		if v := strings.TrimSpace(c.Query("key")); v != "" {
 			return v
@@ -91,10 +124,16 @@ func ExtractGoogleCredential(c *gin.Context) string {
 	return ""
 }
 
+// AllowGoogleQueryKey reports whether path starts with /v1beta or
+// /antigravity/v1beta. The check is literal prefix matching, so callers needing
+// a narrower route segment condition perform that routing check themselves.
 func AllowGoogleQueryKey(path string) bool {
 	return strings.HasPrefix(path, "/v1beta") || strings.HasPrefix(path, "/antigravity/v1beta")
 }
 
+// AbortGoogleError writes the supplied HTTP status and message in Google's
+// nested error shape and aborts Gin processing. The symbolic Google status is
+// derived from the HTTP code through the shared response helper.
 func AbortGoogleError(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{
 		"error": gin.H{
@@ -106,7 +145,9 @@ func AbortGoogleError(c *gin.Context, status int, message string) {
 	c.Abort()
 }
 
-// GoogleTeamError 返回 Google 风格团队鉴权错误需要的状态码和消息。
+// GoogleTeamError returns the HTTP status and public message for recognized
+// team failure identities. Wrapped causes are accepted through errors.Is, and
+// unmatched errors return false so the HTTP caller can select another response.
 func GoogleTeamError(err error) (int, string, bool) {
 	switch {
 	case errors.Is(err, apikey.ErrTeamMemberDailyExceeded), errors.Is(err, apikey.ErrTeamMemberWeeklyExceeded), errors.Is(err, apikey.ErrTeamMemberMonthlyExceeded):

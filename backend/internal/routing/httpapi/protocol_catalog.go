@@ -6,50 +6,79 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// ProtocolProviderProfile 描述可展示的原生选项，不包含令牌或提供商标识。
+// protocol_catalog.go builds administrative protocol descriptions from
+// capability rules and HTTP endpoint metadata.
+// Protocol admission choices come from routing capability rules, while their
+// public endpoint text comes from HTTP route wiring. Administrative responses
+// combine those sources with provider authentication profiles and one generic
+// group profile so editors use the same protocol choices as request routing.
+
+// ProtocolProviderProfile lists native choices for one provider
+// authentication combination.
 type ProtocolProviderProfile struct {
-	Platform  string                `json:"platform"`
-	Type      string                `json:"type"`
-	AuthMode  string                `json:"auth_mode"`
-	Protocols []protocol.ProtocolID `json:"protocols"`
+	Platform string `json:"platform"` // provider platform identifier
+	Type     string `json:"type"`     // provider credential type
+	// AuthMode identifies an OpenAI OAuth variant; an empty string selects the
+	// ordinary authentication profile for the platform and type.
+	AuthMode  string                `json:"auth_mode"` // provider authentication mode
+	Protocols []protocol.ProtocolID `json:"protocols"` // supported native protocol choices
 }
 
+// ProtocolGroupProfile supplies generic group admission choices and ordered
+// conversion defaults.
 type ProtocolGroupProfile struct {
-	Protocols        []protocol.ProtocolID                         `json:"protocols"`
-	Defaults         []protocol.ProtocolID                         `json:"defaults"`
-	FallbackTargets  map[protocol.ProtocolID][]protocol.ProtocolID `json:"fallback_targets"`
-	DefaultFallbacks map[protocol.ProtocolID][]protocol.ProtocolID `json:"default_fallbacks"`
+	ProbeProtocols []protocol.ProtocolID `json:"probe_protocols"` // supported availability probe entries
+	Protocols      []protocol.ProtocolID `json:"protocols"`       // available client protocol choices
+	Defaults       []protocol.ProtocolID `json:"defaults"`        // new group admission defaults
+	// FallbackTargets lists available single-step conversions for each source;
+	// target order supplies the automatic selection order used by group editors.
+	FallbackTargets map[protocol.ProtocolID][]protocol.ProtocolID `json:"fallback_targets"` // ordered allowed conversion targets
+	// DefaultFallbacks starts with no per-entry overrides, so new groups use the
+	// automatic target choices until an administrator supplies restrictions.
+	DefaultFallbacks map[protocol.ProtocolID][]protocol.ProtocolID `json:"default_fallbacks"` // new group conversion overrides
 }
 
-// ProtocolCatalogResponse 是协议、提供商和分组能力的目录响应。
+// ProtocolCatalogResponse combines protocol definitions, editor choices, and
+// auxiliary authorization rules.
 type ProtocolCatalogResponse struct {
-	Protocols           []Protocol                `json:"protocols"`
-	Providers           []ProtocolProviderProfile `json:"providers"`
-	Groups              []ProtocolGroupProfile    `json:"groups"`
-	AuxiliaryOperations []AuxiliaryOperation      `json:"auxiliary_operations"`
+	Protocols           []Protocol                `json:"protocols"`            // displayed protocol capability entries
+	Providers           []ProtocolProviderProfile `json:"providers"`            // provider authentication option profiles
+	Groups              []ProtocolGroupProfile    `json:"groups"`               // generic group editor profile
+	AuxiliaryOperations []AuxiliaryOperation      `json:"auxiliary_operations"` // auxiliary action authorization descriptions
 }
 
-// AuxiliaryOperation 登记主协议的辅助操作；资源生命周期不会生成新的协议复选框。
+// AuxiliaryOperation identifies a protocol-linked action and its
+// authorization rule.
 type AuxiliaryOperation struct {
-	Operation     string              `json:"operation"`
-	Protocol      protocol.ProtocolID `json:"protocol,omitempty"`
-	Authorization string              `json:"authorization"`
+	Operation string `json:"operation"` // auxiliary action or resource
+	// Protocol names the owning capability when one applies; local model and
+	// usage queries carry an empty value that JSON omits.
+	Protocol      protocol.ProtocolID `json:"protocol,omitempty"` // owning protocol identifier
+	Authorization string              `json:"authorization"`      // authorization rule category
 }
 
-// Protocol 保留管理员目录的 JSON 顺序和字段。
+// Protocol exposes a capability definition with its configured public
+// endpoint.
 type Protocol struct {
-	ID           protocol.ProtocolID `json:"id"`
-	Name         string              `json:"name"`
-	Endpoint     string              `json:"endpoint"`
-	UpstreamOnly bool                `json:"upstream_only"`
-	Platforms    []string            `json:"platforms"`
+	ID   protocol.ProtocolID `json:"id"`   // stable protocol identifier
+	Name string              `json:"name"` // protocol display name
+	// Endpoint comes from the supplied HTTP endpoint map; omitted entries remain
+	// empty, including capabilities used solely by upstream adapters.
+	Endpoint     string   `json:"endpoint"`      // configured public endpoint text
+	UpstreamOnly bool     `json:"upstream_only"` // upstream-only capability marker
+	Platforms    []string `json:"platforms"`     // platforms implementing this capability
 }
 
-// AdminProtocolCatalog 生成管理端使用的协议能力目录。
+// AdminProtocolCatalog combines capability rules with the supplied endpoint
+// descriptions for administrator forms. It includes provider type and
+// authentication combinations with their native protocol sets, and returns
+// one generic group profile with admission defaults and ordered conversion
+// choices. Missing endpoint keys produce empty endpoint text.
 func AdminProtocolCatalog(endpoints map[protocol.ProtocolID]string) ProtocolCatalogResponse {
 	providers := []ProtocolProviderProfile{}
 	groups := []ProtocolGroupProfile{}
@@ -72,7 +101,7 @@ func AdminProtocolCatalog(endpoints map[protocol.ProtocolID]string) ProtocolCata
 	for _, source := range supported {
 		targets[source] = capability.AutomaticProtocolFallbackTargets(source)
 	}
-	groups = append(groups, ProtocolGroupProfile{Protocols: supported, Defaults: capability.DefaultGroupClientProtocols(""), FallbackTargets: targets, DefaultFallbacks: capability.DefaultProtocolFallbacks("")})
+	groups = append(groups, ProtocolGroupProfile{Protocols: supported, ProbeProtocols: provider.GroupProbeProtocols(), Defaults: capability.DefaultGroupClientProtocols(""), FallbackTargets: targets, DefaultFallbacks: capability.DefaultProtocolFallbacks("")})
 
 	return ProtocolCatalogResponse{
 		Protocols: publicProtocols(endpoints), Providers: providers, Groups: groups,
@@ -80,6 +109,8 @@ func AdminProtocolCatalog(endpoints map[protocol.ProtocolID]string) ProtocolCata
 	}
 }
 
+// AuxiliaryOperations returns the protocol and authorization categories for
+// supported auxiliary actions.
 func AuxiliaryOperations() []AuxiliaryOperation {
 	return []AuxiliaryOperation{
 		{"/messages/count_tokens", protocol.ProtocolAnthropicMessages, "protocol"},
@@ -96,6 +127,10 @@ func AuxiliaryOperations() []AuxiliaryOperation {
 	}
 }
 
+// publicProtocols adds supplied endpoint text to copied capability
+// definitions for HTTP responses. Capability ordering and platform lists come
+// from ProtocolCatalog, while absent map entries leave their endpoint text
+// empty.
 func publicProtocols(endpoints map[protocol.ProtocolID]string) []Protocol {
 	catalog := capability.ProtocolCatalog()
 	out := make([]Protocol, len(catalog))
@@ -105,7 +140,10 @@ func publicProtocols(endpoints map[protocol.ProtocolID]string) []Protocol {
 	return out
 }
 
-// NewProtocolCatalogHandler 复制 app 传入的端点表，使用该副本生成目录响应。
+// NewProtocolCatalogHandler snapshots endpoint descriptions and returns the
+// administrator catalog query handler. Later caller changes to the supplied
+// map do not alter responses because construction clones that map before the
+// closure captures it.
 func NewProtocolCatalogHandler(endpoints map[protocol.ProtocolID]string) gin.HandlerFunc {
 	snapshot := maps.Clone(endpoints)
 	return func(c *gin.Context) { httpx.Success(c, AdminProtocolCatalog(snapshot)) }

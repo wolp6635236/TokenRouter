@@ -6,37 +6,91 @@ import (
 	"time"
 )
 
+// gemini_precheck.go checks Gemini daily and minute request usage before
+// admitting provider candidates.
+// Gemini local quota admission compares recorded request totals with the
+// policy selected for each provider and requested model class. Daily checks
+// run before minute checks, and exhaustion skips the provider without writing
+// a durable rate limit; missing dependencies or unavailable quota leave
+// admission open.
+//
+// Daily observations are cached by row ID and calendar start for less than one
+// minute, while minute reads use the current fixed clock-minute window.
+// Batches reuse daily cache entries and prefer aggregate readers, then query
+// minute totals only for records still admitted. Single checks treat empty
+// model text as the model classifier’s default, while empty-model batches skip
+// quota work. Mutable records, callback clocks, and shared readers remain
+// stable throughout each check; cached totals are scalar copies under a map
+// lock.
+
+// geminiPrecheckCacheTTL bounds reuse of daily totals for an unchanged
+// provider row and calendar window before another usage observation is
+// required.
 const geminiPrecheckCacheTTL = time.Minute
 
-// GeminiQuotaUsageReader 读取提供商配额预检所需的本地模型用量，SQL 查询由 usage 存储适配器执行。
+// GeminiQuotaUsageReader obtains local model request totals for quota
+// admission windows.
 type GeminiQuotaUsageReader interface {
+	// GetModelUsage reads a provider within the supplied start/end range.
+	// Successful rows are aggregated by model class, nil rows mean zero totals,
+	// and query failure is left to precheck callers to handle.
 	GetModelUsage(context.Context, int64, time.Time, time.Time) ([]GeminiModelUsage, error)
 }
+
+// GeminiPrecheckOptions supplies quota calendar, observation clock, and
+// exhaustion diagnostics.
 type GeminiPrecheckOptions struct {
-	Now      func() time.Time
+	// Now supplies one check’s window end and cache timestamp. Nil selects
+	// time.Now in construction; keep the callback stable with its quota calendar.
+	Now func() time.Time
+	// Location selects daily calendar midnight. Nil construction input selects
+	// fixed PST, while request totals must use this same configured calendar.
 	Location *time.Location
-	Info     func(string, ...any)
+	// Info observes exhausted quota decisions and defaults to a no-op callback.
+	// Its output changes no persistent scheduling limit or local request totals.
+	Info func(string, ...any)
 }
 
-// GeminiPrecheck 保留独立的日统计短缓存；预检不写提供商限流或用户资金。
+// GeminiPrecheck caches daily totals and evaluates local provider quota
+// admission.
 type GeminiPrecheck struct {
-	usageRepo          GeminiQuotaUsageReader
-	geminiQuotaService *GeminiQuotaService
-	options            GeminiPrecheckOptions
-	usageCacheMu       sync.RWMutex
-	usageCache         map[int64]*geminiUsageCacheEntry
+	// usageRepo and geminiQuotaService are retained shared dependencies, while
+	// options copies clock/calendar callbacks. Configure them before activity
+	// and keep record observations stable during both quota phases.
+	usageRepo          GeminiQuotaUsageReader // shared model usage reader
+	geminiQuotaService *GeminiQuotaService    // shared quota policy service
+	options            GeminiPrecheckOptions  // captured clock and calendar
+	// usageCacheMu protects usageCache lookups and replacement. Entries own
+	// scalar totals and are matched to both row ID and calendar start before
+	// reuse.
+	usageCacheMu sync.RWMutex // daily observation synchronization mutex
+	// daily observations by row
+	usageCache map[int64]*geminiUsageCacheEntry
 }
 
+// geminiUsageCacheEntry associates scalar totals with their calendar start and
+// observation age.
 type geminiUsageCacheEntry struct {
-	windowStart time.Time
-	cachedAt    time.Time
-	totals      GeminiUsageTotals
+	// windowStart and cachedAt identify the daily calendar and reuse age of
+	// totals. A hit requires both the same calendar start and an observation
+	// younger than the cache lifetime.
+	windowStart time.Time         // selected daily calendar start
+	cachedAt    time.Time         // cached observation clock value
+	totals      GeminiUsageTotals // scalar model-class usage totals
 }
 
+// GeminiUsageTotalsBatchReader optionally supplies aggregate totals for
+// multiple provider window queries.
 type GeminiUsageTotalsBatchReader interface {
+	// GetGeminiUsageTotalsBatch reads class totals for requested provider IDs
+	// under one range. Missing successful IDs mean zero totals; a whole-query
+	// error aborts this quota phase instead of applying partial results.
 	GetGeminiUsageTotalsBatch(ctx context.Context, providerIDs []int64, startTime, endTime time.Time) (map[int64]GeminiUsageTotals, error)
 }
 
+// NewGeminiPrecheck retains policy and usage readers and initializes its daily
+// cache. Missing clock and logger select time.Now and a no-op, while missing
+// location selects fixed UTC-minus-eight PST for quota dates.
 func NewGeminiPrecheck(policy *GeminiQuotaService, usage GeminiQuotaUsageReader, options GeminiPrecheckOptions) *GeminiPrecheck {
 	if options.Now == nil {
 		options.Now = time.Now
@@ -50,8 +104,18 @@ func NewGeminiPrecheck(policy *GeminiQuotaService, usage GeminiQuotaUsageReader,
 	return &GeminiPrecheck{geminiQuotaService: policy, usageRepo: usage, options: options, usageCache: make(map[int64]*geminiUsageCacheEntry)}
 }
 
-// PreCheckUsage 在派发前执行原本地配额预检。
-// 返回 false 表示当前提供商应被跳过。
+// PreCheckUsage reports whether a stable provider can dispatch under local
+// quota estimates. Nil, other platforms, missing dependencies, and unavailable
+// policy remain allowed; a query error returns true plus the error for caller
+// handling.
+//
+// The requested model determines a class, including the classifier default for
+// empty text. A positive shared daily limit sums class requests; otherwise its
+// selected class limit applies, and nonpositive returned limits skip that
+// check. Daily exhaustion returns before minute querying. Successful daily
+// totals are briefly cached, while minute totals are freshly read for a fixed
+// clock minute. False with nil error means modeled quota exhaustion and leaves
+// persistent rate-limit state unchanged.
 func (s *GeminiPrecheck) PreCheckUsage(ctx context.Context, provider *Record, requestedModel string) (bool, error) {
 	if provider == nil || provider.Platform != PlatformGemini {
 		return true, nil
@@ -68,7 +132,9 @@ func (s *GeminiPrecheck) PreCheckUsage(ctx context.Context, provider *Record, re
 	now := s.options.Now()
 	modelClass := GeminiModelClassFromName(requestedModel)
 
-	// 日配额按洛杉矶当地日界检查。
+	// Daily totals use the configured calendar start. A cache miss reloads that
+	// same window before admission, while a hit keeps minute querying separate
+	// from the reused daily observation.
 	{
 		limit := geminiDailyLimit(quota, modelClass)
 		if limit > 0 {
@@ -86,16 +152,17 @@ func (s *GeminiPrecheck) PreCheckUsage(ctx context.Context, provider *Record, re
 			used := geminiUsedRequests(quota, modelClass, totals, true)
 			if used >= limit {
 				resetAt := GeminiDailyResetTime(now, s.options.Location)
-				// 日额度预检使用本地统计，
-				// 本地预检只减少上游 429。
-				// rate_limit_reset_at 记录上游返回 429 时的重置时间。
+				// Local usage predicts quota exhaustion to
+				// reduce upstream 429 responses. Persisted
+				// rate_limit_reset_at values come from upstream
+				// rate-limit observations.
 				s.options.Info("gemini_precheck_daily_quota_reached", "provider_id", provider.ID, "used", used, "limit", limit, "reset_at", resetAt)
 				return false, nil
 			}
 		}
 	}
 
-	// 分钟配额使用当前固定分钟窗口。
+	// Minute quotas use the current fixed minute window.
 	{
 		limit := geminiMinuteLimit(quota, modelClass)
 		if limit > 0 {
@@ -109,7 +176,8 @@ func (s *GeminiPrecheck) PreCheckUsage(ctx context.Context, provider *Record, re
 			used := geminiUsedRequests(quota, modelClass, totals, false)
 			if used >= limit {
 				resetAt := start.Add(time.Minute)
-				// 本地分钟预检同样不持久化提供商限流状态。
+				// The local minute check leaves persisted
+				// rate-limit state to upstream observations.
 				s.options.Info("gemini_precheck_minute_quota_reached", "provider_id", provider.ID, "used", used, "limit", limit, "reset_at", resetAt)
 				return false, nil
 			}
@@ -119,8 +187,18 @@ func (s *GeminiPrecheck) PreCheckUsage(ctx context.Context, provider *Record, re
 	return true, nil
 }
 
-// PreCheckUsageBatch 保留单次请求的批量提供商预检。
-// 返回表中的 false 表示跳过该提供商。
+// PreCheckUsageBatch returns admission by row ID for stable provider
+// observations. Nil entries are ignored; empty model/input, absent readers, or
+// unavailable quota leaves initialized entries true. Callers use consistent
+// record identity for repeated IDs.
+//
+// Daily cache misses prefer aggregate reads and populate scalar observations
+// before quota comparison. Only daily-admitted rows with positive minute
+// limits enter the second query. A daily read error returns the initialized
+// map, while a minute error retains prior daily rejections; callers decide how
+// to handle that error. The aggregate helper queries unique positive IDs and
+// normalizes absent successful totals to zero, and all rate-limit persistence
+// remains with upstream observations.
 func (s *GeminiPrecheck) PreCheckUsageBatch(ctx context.Context, providers []*Record, requestedModel string) (map[int64]bool, error) {
 	result := make(map[int64]bool, len(providers))
 	for _, provider := range providers {
@@ -142,9 +220,13 @@ func (s *GeminiPrecheck) PreCheckUsageBatch(ctx context.Context, providers []*Re
 	dailyStart := GeminiDailyWindowStart(now, s.options.Location)
 	minuteStart := now.Truncate(time.Minute)
 
+	// quotaProvider pairs one stable provider observation with its resolved
+	// limits.
 	type quotaProvider struct {
-		provider *Record
-		quota    GeminiQuota
+		// provider and quota remain paired through both quota phases so row-based
+		// totals are compared with the limits selected for this exact observation.
+		provider *Record     // selected provider row
+		quota    GeminiQuota // resolved request quota
 	}
 	quotaProviders := make([]quotaProvider, 0, len(providers))
 	for _, provider := range providers {
@@ -164,7 +246,9 @@ func (s *GeminiPrecheck) PreCheckUsageBatch(ctx context.Context, providers []*Re
 		return result, nil
 	}
 
-	// 日配额优先短缓存，未命中时批量回源。
+	// Keep cache hits with their selected daily window and load only misses.
+	// Comparing all daily totals before minute admission prevents daily-exhausted
+	// providers from participating in the later minute query.
 	dailyTotalsByID := make(map[int64]GeminiUsageTotals, len(quotaProviders))
 	dailyMissIDs := make([]int64, 0, len(quotaProviders))
 	for _, item := range quotaProviders {
@@ -204,7 +288,9 @@ func (s *GeminiPrecheck) PreCheckUsageBatch(ctx context.Context, providers []*Re
 		}
 	}
 
-	// 2) Minute precheck (batch DB)
+	// Daily rejection takes precedence over minute work. Query only admitted
+	// rows with positive minute limits so exhausted daily accounts need no
+	// additional statistics read.
 	minuteIDs := make([]int64, 0, len(quotaProviders))
 	for _, item := range quotaProviders {
 		providerID := item.provider.ID
@@ -246,6 +332,15 @@ func (s *GeminiPrecheck) PreCheckUsageBatch(ctx context.Context, providers []*Re
 	return result, nil
 }
 
+// getGeminiUsageTotalsBatch reads unique positive IDs for one supplied window.
+// Empty input returns an empty map, and caller-provided records remain the
+// source of quota policy rather than this aggregate reader.
+//
+// When the repository supports aggregate reads, returned struct totals are
+// projected to requested IDs; missing rows become zero. Otherwise ordered
+// per-row model queries are aggregated into the same shape. Any query error
+// aborts the helper without a partial totals map, letting the surrounding
+// batch retain only decisions made before this query.
 func (s *GeminiPrecheck) getGeminiUsageTotalsBatch(ctx context.Context, providerIDs []int64, start, end time.Time) (map[int64]GeminiUsageTotals, error) {
 	result := make(map[int64]GeminiUsageTotals, len(providerIDs))
 	if len(providerIDs) == 0 {
@@ -279,6 +374,9 @@ func (s *GeminiPrecheck) getGeminiUsageTotalsBatch(ctx context.Context, provider
 		return result, nil
 	}
 
+	// Without aggregate capability, collect the same requested identities
+	// through serial model queries. A failure aborts this phase instead of
+	// treating unobserved requests as zero usage.
 	for _, providerID := range ids {
 		stats, err := s.usageRepo.GetModelUsage(ctx, providerID, start, end)
 		if err != nil {
@@ -289,6 +387,9 @@ func (s *GeminiPrecheck) getGeminiUsageTotalsBatch(ctx context.Context, provider
 	return result, nil
 }
 
+// geminiDailyLimit returns positive shared daily quota before model-class
+// limits. Flash selects FlashRPD when shared is nonpositive; every other class
+// selects ProRPD, and callers enforce only a positive returned value.
 func geminiDailyLimit(quota GeminiQuota, modelClass GeminiModelClass) int64 {
 	if quota.SharedRPD > 0 {
 		return quota.SharedRPD
@@ -301,6 +402,9 @@ func geminiDailyLimit(quota GeminiQuota, modelClass GeminiModelClass) int64 {
 	}
 }
 
+// geminiMinuteLimit returns positive shared minute quota before model-class
+// limits. Flash selects FlashRPM when shared is nonpositive; other classes
+// select ProRPM, and callers skip enforcement for a nonpositive result.
 func geminiMinuteLimit(quota GeminiQuota, modelClass GeminiModelClass) int64 {
 	if quota.SharedRPM > 0 {
 		return quota.SharedRPM
@@ -313,6 +417,15 @@ func geminiMinuteLimit(quota GeminiQuota, modelClass GeminiModelClass) int64 {
 	}
 }
 
+// geminiUsedRequests selects request totals matching daily or minute quota
+// mode. Positive shared quota for that duration combines Pro and Flash;
+// otherwise Flash chooses its own requests and other classes choose Pro.
+//
+// The duration flag is evaluated independently because daily and minute
+// sharing can differ in one policy. Limit selectors and this count selector
+// therefore use the same positive shared gate, keeping a class quota paired
+// with class usage and a shared quota paired with combined usage. It returns
+// scalar counts without modifying the cached observations.
 func geminiUsedRequests(quota GeminiQuota, modelClass GeminiModelClass, totals GeminiUsageTotals, daily bool) int64 {
 	if daily {
 		if quota.SharedRPD > 0 {
@@ -331,6 +444,9 @@ func geminiUsedRequests(quota GeminiQuota, modelClass GeminiModelClass, totals G
 	}
 }
 
+// getGeminiUsageTotals returns copied scalar daily totals under the cache read
+// lock. Missing entries, another calendar start, or age at least one minute
+// miss; future timestamps can still satisfy that age check.
 func (s *GeminiPrecheck) getGeminiUsageTotals(providerID int64, windowStart, now time.Time) (GeminiUsageTotals, bool) {
 	s.usageCacheMu.RLock()
 	defer s.usageCacheMu.RUnlock()
@@ -352,12 +468,18 @@ func (s *GeminiPrecheck) getGeminiUsageTotals(providerID int64, windowStart, now
 	return entry.totals, true
 }
 
+// setGeminiUsageTotals replaces one row observation under the cache write
+// lock. Supplied start and now identify its calendar and age, and its scalar
+// totals are copied for independently usable later reads.
 func (s *GeminiPrecheck) setGeminiUsageTotals(providerID int64, windowStart, now time.Time, totals GeminiUsageTotals) {
 	s.usageCacheMu.Lock()
 	defer s.usageCacheMu.Unlock()
 	if s.usageCache == nil {
 		s.usageCache = make(map[int64]*geminiUsageCacheEntry)
 	}
+	// Replace the complete observation under the map lock so readers receive
+	// totals with the same calendar and age. Concurrent loads publish in the
+	// order this setter obtains the lock.
 	s.usageCache[providerID] = &geminiUsageCacheEntry{
 		windowStart: windowStart,
 		cachedAt:    now,
@@ -365,7 +487,10 @@ func (s *GeminiPrecheck) setGeminiUsageTotals(providerID int64, windowStart, now
 	}
 }
 
-// GeminiCooldown 根据等级保留 Gemini 429 的原回退冷却。
+// GeminiCooldown returns the current policy duration or five minutes when
+// record or policy is unavailable. Quota service handles other-platform and
+// unresolved-tier fallbacks, so this value remains separate from local
+// admission results.
 func (s *GeminiPrecheck) GeminiCooldown(ctx context.Context, provider *Record) time.Duration {
 	if provider == nil {
 		return 5 * time.Minute

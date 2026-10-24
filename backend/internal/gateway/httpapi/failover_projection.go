@@ -9,7 +9,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// CredentialFailoverClientResponse 为已分类的凭据失败生成客户端响应。
+// failover_projection.go converts upstream failover evidence into the fields
+// used by final OpenAI HTTP error output.
+// A failed attempt carries upstream evidence and classified reasons used by
+// final HTTP error output. Presentation derives safe credential responses and
+// protocol-specific flags from that evidence, while response headers and bytes
+// remain shared with the source failure.
+
+// CredentialFailoverClientResponse chooses a safe client response for a
+// classified credential failure. OpenAI access-state messages retain their
+// supplied text and positive status, defaulting to 503; Antigravity rejection
+// uses 502, and remaining cases use the shared Grok-unavailable response.
 func CredentialFailoverClientResponse(failoverErr *forwardcore.UpstreamFailoverError) (int, string) {
 	if failoverErr != nil && failoverErr.Reason == forwardcore.OpenAIUpstreamAccessStateReason && strings.TrimSpace(failoverErr.ClientMessage) != "" {
 		status := failoverErr.ClientStatusCode
@@ -21,10 +31,16 @@ func CredentialFailoverClientResponse(failoverErr *forwardcore.UpstreamFailoverE
 	if failoverErr != nil && failoverErr.Reason == forwardcore.AntigravityCredentialRejectedReason {
 		return http.StatusBadGateway, forwardcore.AntigravityCredentialRejectedClientMessage
 	}
+	// Unrecognized credential reasons use the shared unavailable response, keeping
+	// provider-specific authentication diagnostics out of the default client
+	// message.
 	return http.StatusServiceUnavailable, forwardcore.GrokCredentialUnavailableClientMessage
 }
 
-// ProjectOpenAIFailoverError 提取平台确认的错误展示信息，HTTP 层应用展示规则。
+// ProjectOpenAIFailoverError extracts failure classifications for final HTTP
+// error presentation. Nil input returns nil. Headers and body retain the source
+// error storage, so consumers read them as attempt evidence; credential, size,
+// continuation and warning flags come from their owning classifiers.
 func ProjectOpenAIFailoverError(err *forwardcore.UpstreamFailoverError) *OpenAIFailoverError {
 	if err == nil {
 		return nil

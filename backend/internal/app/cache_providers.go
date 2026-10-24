@@ -10,7 +10,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider/rediscache"
 )
 
-// cacheProviders 绑定各缓存实现，使用方共用周期任务锁。
+// cache_providers.go registers provider error counters and the shared Redis
+// leader lock with Wire.
+// Provider internal-error counters and leader election use Redis resources
+// from the application graph. The CN usage monitor receives the shared leader
+// lock through its own interface, while provider consumers receive the counter
+// cache constructor from this set.
+
+// cacheProviders supplies provider error counters and binds the shared Redis
+// leader lock for CN usage monitoring.
 var cacheProviders = wire.NewSet(
 	rediscache.NewInternal500CounterCache,
 	redisinfra.NewLeaderLockCache,

@@ -26,15 +26,28 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
-// messageHTTPBindings 保存各模块接口和无状态 HTTP 辅助函数。
+// gateway_messages_http.go constructs Messages, compatible text, and Gemini
+// HTTP handlers with shared preparation dependencies.
+// Messages and Gemini HTTP handlers share prompt policy, route planning, and
+// concurrency helpers. Their execution options differ for partial failure and
+// cancellation, so each handler constructs the appropriate text loop around the
+// same attempt runtime and activity barrier.
+
+// messageHTTPBindings retains shared preparation dependencies for Messages-
+// family HTTP handlers.
 type messageHTTPBindings struct {
-	options     gatewayhttp.MessagesHTTPOptions
-	bindings    gatewayhttp.MessagesBindings
-	prompt      *promptpolicy.Service
-	concurrency *gatewayhttp.ConcurrencyHelper
+	// options and bindings are copied into each handler; prompt and concurrency
+	// are shared pointers, keeping prompt-cache and slot behavior common across those handlers.
+	options     gatewayhttp.MessagesHTTPOptions // startup request limits
+	bindings    gatewayhttp.MessagesBindings    // shared preparation callbacks
+	prompt      *promptpolicy.Service           // cached prompt policy
+	concurrency *gatewayhttp.ConcurrencyHelper  // user slot helper
 }
 
-// provideMessageHTTPBindings 为消息 HTTP 入口绑定依赖，执行组件由单独的构造函数提供。
+// provideMessageHTTPBindings constructs shared Messages preparation and
+// concurrency helpers. The switch defaults are ten and three for Gemini;
+// positive configuration overrides them, while configured body bytes and ping
+// seconds are passed through to the handlers.
 func provideMessageHTTPBindings(
 	planner *gatewayprovider.RoutePlanner,
 	cache session.GatewayCache,
@@ -52,6 +65,8 @@ func provideMessageHTTPBindings(
 	ping := time.Duration(0)
 	if cfg != nil {
 		options.MaxBodyBytes = cfg.Gateway.MaxBodySize
+		options.ForceCodexCLI = cfg.Gateway.ForceCodexCLI
+		// Waiting handlers emit pings using the configured interval in seconds.
 		ping = time.Duration(cfg.Concurrency.PingInterval) * time.Second
 		if cfg.Gateway.MaxProviderSwitches > 0 {
 			options.MaxSwitches = cfg.Gateway.MaxProviderSwitches
@@ -78,6 +93,9 @@ func provideMessageHTTPBindings(
 	return &messageHTTPBindings{options: options, bindings: bindings, prompt: prompts, concurrency: gatewayhttp.NewConcurrencyHelper(concurrency, gatewayhttp.SSEPingFormatClaude, ping)}
 }
 
+// provideMessagesHTTP constructs Messages HTTP with the shared bindings and
+// activity barrier. The primary text loop enables partial-failure completion,
+// while its Gemini loop uses the separately configured switch budget.
 func provideMessagesHTTP(
 	shared *messageHTTPBindings,
 	runtime *textattempt.Runtime,
@@ -105,6 +123,10 @@ func provideMessagesHTTP(
 	return result
 }
 
+// provideCompatibleTextHTTP constructs compatible text handlers using shared
+// Messages dependencies. Both text loops stop on canceled context, model
+// replacement uses the OpenAI wire helper, and activity tracks each request
+// through the application barrier.
 func provideCompatibleTextHTTP(
 	shared *messageHTTPBindings,
 	runtime *textattempt.Runtime,
@@ -134,6 +156,10 @@ func provideCompatibleTextHTTP(
 	return result
 }
 
+// provideGeminiNativeHTTP constructs Gemini native handlers with shared
+// preparation and request activity. It adds safe model-path checks, shared
+// digest lookup, sticky binding, and generated session IDs; both execution
+// loops use the Gemini switch budget.
 func provideGeminiNativeHTTP(
 	shared *messageHTTPBindings,
 	digest *session.DigestSessionStore,

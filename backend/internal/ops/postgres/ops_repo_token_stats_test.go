@@ -11,6 +11,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
+// TestOpsRepositoryGetTokenStats_PaginationMode supplies two ranked model rows
+// with a larger model total. It protects normalized platform arguments, page
+// offset, nullable measurements, and returned pagination metadata.
 func TestOpsRepositoryGetTokenStats_PaginationMode(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{db: db}
@@ -33,7 +36,7 @@ func TestOpsRepositoryGetTokenStats_PaginationMode(t *testing.T) {
 		"model",
 		"request_count",
 		"avg_tokens_per_sec",
-		"avg_first_token_ms",
+		"avg_ttft_ms",
 		"total_output_tokens",
 		"avg_duration_ms",
 		"requests_with_first_token",
@@ -61,12 +64,15 @@ func TestOpsRepositoryGetTokenStats_PaginationMode(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4", resp.Items[0].Model)
 	require.NotNil(t, resp.Items[0].AvgTokensPerSec)
 	require.InDelta(t, 21.56, *resp.Items[0].AvgTokensPerSec, 0.0001)
-	require.NotNil(t, resp.Items[0].AvgFirstTokenMs)
-	require.InDelta(t, 120.34, *resp.Items[0].AvgFirstTokenMs, 0.0001)
+	require.NotNil(t, resp.Items[0].AvgTTFTMs)
+	require.InDelta(t, 120.34, *resp.Items[0].AvgTTFTMs, 0.0001)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestOpsRepositoryGetTokenStats_TopNMode supplies a leading-model limit and
+// missing rate and latency measurements. It protects limit-only SQL, nil
+// averages, and absent pagination metadata in that mode.
 func TestOpsRepositoryGetTokenStats_TopNMode(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{db: db}
@@ -84,7 +90,7 @@ func TestOpsRepositoryGetTokenStats_TopNMode(t *testing.T) {
 		"model",
 		"request_count",
 		"avg_tokens_per_sec",
-		"avg_first_token_ms",
+		"avg_ttft_ms",
 		"total_output_tokens",
 		"avg_duration_ms",
 		"requests_with_first_token",
@@ -106,11 +112,14 @@ func TestOpsRepositoryGetTokenStats_TopNMode(t *testing.T) {
 	require.Equal(t, 0, resp.PageSize)
 	require.Len(t, resp.Items, 1)
 	require.Nil(t, resp.Items[0].AvgTokensPerSec)
-	require.Nil(t, resp.Items[0].AvgFirstTokenMs)
+	require.Nil(t, resp.Items[0].AvgTTFTMs)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestOpsRepositoryGetTokenStats_EmptyResult supplies the left join's synthetic
+// row for an empty model selection. It protects zero total, an empty Items
+// slice, and retained page metadata.
 func TestOpsRepositoryGetTokenStats_EmptyResult(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{db: db}
@@ -131,7 +140,7 @@ func TestOpsRepositoryGetTokenStats_EmptyResult(t *testing.T) {
 			"model",
 			"request_count",
 			"avg_tokens_per_sec",
-			"avg_first_token_ms",
+			"avg_ttft_ms",
 			"total_output_tokens",
 			"avg_duration_ms",
 			"requests_with_first_token",

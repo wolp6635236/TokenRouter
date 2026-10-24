@@ -7,25 +7,39 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/config"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// providerHealthRuntime 保存同一次装配创建的健康状态组件。
+// provider_recovery.go constructs shared provider health, recovery, and
+// platform observation services. Provider health observation and recovery share
+// the same counters, storage, runtime blocks, and clock. Health delegates
+// window clearing to the recovery instance assigned during assembly, and the
+// exported runtime keeps one observer whose window, team, and model components
+// reference that assembled health state.
+
+// providerHealthRuntime retains shared health, recovery, and platform
+// observation components.
 type providerHealthRuntime struct {
-	Health   *provider.HealthService
-	Recovery *provider.RecoveryService
-	Observer *provideradapter.UpstreamHealth
+	// Health and Recovery are bound together during construction, and Observer
+	// routes platform observations through that Health instance. Consumers retain these same pointers across administration and execution.
+	Health   *provider.HealthService         // shared health commands
+	Recovery *provider.RecoveryService       // shared recovery commands
+	Observer *provideradapter.UpstreamHealth // shared platform observations
 }
 
-// provideUpstreamHealth 返回 app 已构造的共享健康状态组件。
+// provideUpstreamHealth returns the platform observer from the constructed
+// health runtime.
 func provideUpstreamHealth(runtime *providerHealthRuntime) *provideradapter.UpstreamHealth {
 	return runtime.Observer
 }
 
-// provideProviderHealthRuntime 为提供商健康状态组件绑定配置、设置读取器和基础设施接口。
+// provideProviderHealthRuntime constructs mutually bound health observation and
+// recovery services. cfg is required; optional settings, counters, token
+// invalidation, and runtime blocks provide their capabilities, and the
+// window-clear closure is called after recovery has been assigned.
 func provideProviderHealthRuntime(
 	store *providerpostgres.ProviderStore,
 	cache provider.TempUnschedCache,
@@ -66,7 +80,8 @@ func provideProviderHealthRuntime(
 		options.Block = state.BlockProviderScheduling
 	}
 
-	// 恢复与窗口观测会相互调用，完成函数绑定后再返回组件供调用方使用。
+	// Health window clearing closes over recovery while recovery resets the
+	// health counter. Complete both bindings before returning so later callbacks use the assembled instances.
 	var recovery *provider.RecoveryService
 	options.ClearWindowRateLimit = func(ctx context.Context, id int64) error {
 		return recovery.ClearRateLimit(ctx, id)
@@ -82,6 +97,7 @@ func provideProviderHealthRuntime(
 	recovery = provider.NewRecoveryService(store, cache, recoveryOptions)
 
 	limits := &provideradapter.RateLimitObserver{Health: health, Plans: store, NextGeminiDaily: func() *int64 {
+		// Rate-limit observation expects a Unix-second Gemini quota reset timestamp.
 		reset := provider.GeminiDailyResetTime(time.Now(), geminiQuotaLocation()).Unix()
 		return &reset
 	}}
@@ -92,19 +108,21 @@ func provideProviderHealthRuntime(
 	}
 
 	team := provider.NewTeamLinkedHealth(store, provider.TeamLinkedOptions{Now: options.Now, Warn: options.Warn, Block: options.Block})
-	models := &provideradapter.ModelHealth{Health: health, IsImageModel: media.IsGPTImageGenerationModel}
+	models := &provideradapter.ModelHealth{Health: health, ImageOutput: gatewayprovider.ResolvedImageOutput}
 
 	return &providerHealthRuntime{
 		Health: health, Recovery: recovery, Observer: &provideradapter.UpstreamHealth{Core: health, Team: team, Limits: limits, Models: models},
 	}
 }
 
-// provideProviderRecovery 返回共享的提供商恢复用例。
+// provideProviderRecovery returns the recovery service from the constructed
+// health runtime.
 func provideProviderRecovery(runtime *providerHealthRuntime) *provider.RecoveryService {
 	return runtime.Recovery
 }
 
-// provideProviderRuntimeState 构造恢复、刷新和执行入口共享的运行状态。
+// provideProviderRuntimeState constructs shared scheduling containment using
+// the system clock.
 func provideProviderRuntimeState() *provider.RuntimeBlockState {
 	return provider.NewRuntimeBlockState(time.Now)
 }

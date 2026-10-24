@@ -6,25 +6,54 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// endpoint_rule.go evaluates OpenAI-compatible endpoint eligibility from
+// provider protocols, authentication, and workload settings.
+// Endpoint eligibility combines a provider protocol set with type-specific
+// capability rules and workload configuration. An empty requested capability
+// means no extra restriction, while named capabilities require OpenAI-compatible
+// providers. Grok follows its own text/media path, including unobserved billing
+// candidates that forwarding must verify before media generation.
+//
+// Responses operations require a usable Responses route, and native compaction
+// adds its independent administrator switch before inheriting text-generation
+// checks. Live eligibility narrows OAuth authentication types; Alpha Search and
+// Embeddings impose their own type and configured-protocol requirements.
+// Workload defaults remain available when no capability set was saved, while an
+// explicit set determines the final eligibility result.
+
+// Capability values distinguish compatible operations whose platform, credential
+// and protocol requirements are checked before a provider reaches execution.
 const (
-	OpenAIEndpointCapabilityTextGeneration OpenAIEndpointCapability = "text_generation"
-	OpenAIEndpointCapabilityEmbeddings     OpenAIEndpointCapability = "embeddings"
-	OpenAIEndpointCapabilityAlphaSearch    OpenAIEndpointCapability = "alpha_search"
-	// OpenAIEndpointCapabilityLive 表示仅 ChatGPT OAuth 提供商支持的 Frameless Live 能力。
+	OpenAIEndpointCapabilityTextGeneration OpenAIEndpointCapability = "text_generation" // compatible text-generation operation
+	OpenAIEndpointCapabilityEmbeddings     OpenAIEndpointCapability = "embeddings"      // API Key embeddings operation
+	OpenAIEndpointCapabilityAlphaSearch    OpenAIEndpointCapability = "alpha_search"    // compatible Alpha Search operation
+	// OpenAIEndpointCapabilityLive identifies Frameless Live support for eligible ChatGPT OAuth providers.
 	OpenAIEndpointCapabilityLive OpenAIEndpointCapability = "live"
-	// OpenAIEndpointCapabilityGrokMediaGeneration 用于排除已禁用或计费资格
-	// 探测遭拒的 Grok 提供商；视频状态查询不要求该能力，以便继续查询已提交的任务。
+	// OpenAIEndpointCapabilityGrokMediaGeneration excludes disabled or billing-ineligible Grok providers.
+	// Video status queries do not require it so submitted tasks remain queryable.
 	OpenAIEndpointCapabilityGrokMediaGeneration OpenAIEndpointCapability = "grok_media_generation"
-	// OpenAIEndpointCapabilityResponses 表示上游确实提供 /v1/responses 端点。
-	// 根据已启用的协议集合和路由规则判断。
+	// OpenAIEndpointCapabilityResponses requires a Responses route.
+	// Eligibility is derived from configured protocols and routing rules.
 	OpenAIEndpointCapabilityResponses OpenAIEndpointCapability = "responses"
-	// OpenAIEndpointCapabilityRemoteCompactionV2 表示提供商可承接原生 remote_compaction_v2。
-	// 它仍要求普通 Responses 能力，额外受提供商级 V2 开关控制。
+	// OpenAIEndpointCapabilityRemoteCompactionV2 identifies native remote_compaction_v2 support.
+	// It requires ordinary Responses capability and the provider's V2 switch.
 	OpenAIEndpointCapabilityRemoteCompactionV2 OpenAIEndpointCapability = "remote_compaction_v2"
 )
 
+// OpenAIEndpointCapability identifies an operation requested during compatible
+// provider eligibility checks.
 type OpenAIEndpointCapability string
 
+// SupportsOpenAIEndpointCapability checks the requested operation against
+// configured protocols, authentication type and workload choices. Nil records
+// fail, while an empty request imposes no capability restriction. Keep the
+// record and any media callback inputs stable during evaluation.
+//
+// Grok media needs a callback and admits billing_unobserved candidates for a
+// later forwarding probe; other Grok capabilities use its dedicated text rule.
+// Responses and native compaction require Responses routing before text workload
+// checks. Unknown capabilities fail, and an absent workload set permits the
+// applicable default behavior.
 func (r *Record) SupportsOpenAIEndpointCapability(requested OpenAIEndpointCapability, grokMedia func() (bool, string)) bool {
 	if r == nil {
 		return false
@@ -35,6 +64,9 @@ func (r *Record) SupportsOpenAIEndpointCapability(requested OpenAIEndpointCapabi
 	if !r.IsOpenAICompatible() {
 		return false
 	}
+	// A saved native set remains authoritative even when empty. Workload flags
+	// cannot re-enable an operation excluded by that set before its type-specific
+	// checks run.
 	if _, unified := r.Credentials[UpstreamProtocolsKey]; unified && !r.IsGrok() {
 		enabled := r.UpstreamProtocols()
 		has := func(p capability.ProtocolID) bool { return slices.Contains(enabled, p) }
@@ -56,6 +88,9 @@ func (r *Record) SupportsOpenAIEndpointCapability(requested OpenAIEndpointCapabi
 				return false
 			}
 		case OpenAIEndpointCapabilityAlphaSearch:
+			// Personal access tokens use the Responses route for converted Alpha Search,
+			// so their native selection can qualify through Responses while ordinary
+			// records need Alpha Search itself.
 			if !has(capability.ProtocolAlphaSearch) && (!r.IsOpenAIPersonalAccessToken() || !has(capability.ProtocolOpenAIResponses)) {
 				return false
 			}
@@ -70,8 +105,8 @@ func (r *Record) SupportsOpenAIEndpointCapability(requested OpenAIEndpointCapabi
 				return false
 			}
 			eligible, reason := grokMedia()
-			// 尚无观测的 OAuth 提供商仍作为调度候选，供请求路径在转发前执行计费探测。
-			// 如果探测不可用或无法提供明确的付费资格证据，转发门控会拒绝该提供商。
+			// Unobserved OAuth providers remain candidates so forwarding can perform the billing probe.
+			// The forwarding gate rejects providers without affirmative paid-eligibility evidence.
 			return eligible || reason == "billing_unobserved"
 		default:
 			return false
@@ -90,22 +125,20 @@ func (r *Record) SupportsOpenAIEndpointCapability(requested OpenAIEndpointCapabi
 		}
 		fallthrough
 	case OpenAIEndpointCapabilityResponses:
-		// 生图等原生 Responses 路径不能降级；使用 Responses 首选协议解析后，
-		// 管理员只启用 Chat 的 APIKey 提供商必须排除。
+		// Native Responses operations such as image generation cannot use a Chat-only route.
+		// Exclude API Key providers whose configured route resolves Responses to another protocol.
 		if r.Type == ProviderTypeAPIKey && ResolveUpstreamTextProtocol(
 			r.Extra,
 			TextProtocolResponses,
 		) != TextProtocolResponses {
 			return false
 		}
-		// 支持 Responses 的上游同样需具备普通文本能力：复用下方 text_generation
-		// 配置集校验。
+		// Responses uses the text-generation workload after its route checks, so
+		// an explicitly disabled text workload also rejects the Responses operation.
 		requested = OpenAIEndpointCapabilityTextGeneration
 	case OpenAIEndpointCapabilityAlphaSearch:
-		// alpha/search 的转发按提供商类型分流：OAuth/PAT 走
-		// chatgpt.com/backend-api/codex/alpha/search，API key 走
-		// {base_url}/v1/alpha/search（见 openAIAlphaSearchURL），两类提供商
-		// 都可承接独立搜索请求，上游拒绝该端点时由转发层切换提供商。
+		// Alpha Search requires OAuth or API Key authentication before workload
+		// admission; the execution adapter chooses its endpoint and handles rejection.
 		if r.Type != ProviderTypeOAuth && r.Type != ProviderTypeAPIKey {
 			return false
 		}
@@ -121,6 +154,8 @@ func (r *Record) SupportsOpenAIEndpointCapability(requested OpenAIEndpointCapabi
 	if !found {
 		return true
 	}
+	// Alpha Search inherits an enabled text workload so stored workload choices
+	// can admit it even when no separate alpha_search flag was saved.
 	if requested == OpenAIEndpointCapabilityAlphaSearch && configured[string(OpenAIEndpointCapabilityTextGeneration)] {
 		return true
 	}

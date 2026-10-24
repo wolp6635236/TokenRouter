@@ -1,18 +1,24 @@
-// Package grok 适配 xAI 的认证、请求格式、流式响应和媒体接口。
+// Package grok adapts xAI token grants, request bodies, streamed responses,
+// and media exchanges for TokenRouter's upstream callers. Incoming tool
+// histories, cache identities, and usage observations need platform-specific
+// normalization before gateway and provider services apply their routing or
+// persistence rules.
 //
-// 阅读入口：
-//   - request_patch.go：调整 Responses 请求中的模型、工具和历史消息。
-//   - responses_execute.go：执行 Responses 请求并汇总用量和完成状态。
-//   - oauth.go：定义 OAuth 参数并构造授权与 API 地址。
+// Start with request_patch.go for Responses input policy,
+// responses_execute.go for execution and completion results, and oauth.go for
+// effective authorization and API URLs. OAuth and sso_device.go handle grant
+// exchanges, while billing, quota, and subscription_tier.go interpret account
+// observations. Provider services own authorization sessions, credential
+// storage, and health updates around those platform operations.
 //
-// 文件分组：
-//   - oauth*.go、sso_device.go：授权、令牌交换和设备登录。
-//   - request_patch.go、model_input.go、compact.go：请求字段、工具调用历史和上下文压缩。
-//   - cache*.go、chat*.go、composer_images.go：缓存身份、聊天转换和图片描述。
-//   - responses*.go、sse_filter.go：Responses 请求、重试和流式帧过滤。
-//   - media*.go、video_content.go、voice*.go、realtime*.go：图片、视频、语音和实时连接。
-//   - billing*.go、quota*.go、subscription_tier.go、audio_usage.go：账单、额度、订阅等级和音频用量。
-//   - models.go、observed_models.go、standalone_search.go、search_count.go：模型识别、独立搜索和搜索次数统计。
-//   - cli_identity.go、endpoint_policy.go、transport_fallback.go：客户端身份、目标地址和传输回退。
-//   - errors.go、failure_classifier.go：错误识别、冷却和故障转移条件。
+// Request patching, model_input.go, and compact.go handle fields, replay, and
+// compaction. Cache, chat, and composer_images.go handle identities,
+// conversion, and image descriptions. Responses and sse_filter.go handle
+// execution and stream frames. Media, video_content.go, voice,
+// audio_usage.go, and realtime handle generated content and audio quantities.
+// Models, observed_models.go, standalone_search.go, and search_count.go
+// handle names, search evidence, and search usage. CLI identity,
+// endpoint_policy.go, and transport_fallback.go handle request targets and
+// transport identity; errors.go and failure_classifier.go interpret rejected
+// exchanges for their callers.
 package grok

@@ -6,46 +6,93 @@ import (
 	"strings"
 )
 
-// NativeMessageEvent 描述待输出的事件或 HTTP 层需要执行的 Flush、首 token 标记。
+// gemini_messages_stream.go converts native Gemini payloads into Messages
+// events and delivery signals.
+// Native Messages clients receive indexed content blocks and separate HTTP
+// flush signals from each Gemini payload. All nonempty text
+// parts use the visible text channel here, including thought-marked parts,
+// while adjacent same-name function calls share one argument history until
+// text or another name ends that tool.
+//
+// Accumulated text and argument histories let the iterator suppress repeated
+// prefixes and emit incremental fragments. Each yield can stop consumption
+// after state has already advanced; finish metadata is recorded before output,
+// but usage is replaced only after every part and control signal has been
+// consumed. The HTTP adapter emits each named event and honors flush requests
+// in order. Callers consume one response sequentially and finish once.
+
+// NativeMessageEvent carries one Messages SSE payload or a separate control
+// signal consumed by the upstream Gemini HTTP adapter.
 type NativeMessageEvent struct {
-	Name       string
-	Data       any
-	Flush      bool
-	FirstToken bool
+	// Name selects an SSE event; an empty name denotes a control-only yield.
+	// The HTTP adapter serializes Data only when Name is nonempty.
+	Name string // Messages SSE event name
+	Data any    // Messages SSE event payload
+	// Flush requests the HTTP flusher after any named payload in this yield;
+	// the iterator emits standalone flush requests after starts and data updates.
+	Flush bool
 }
 
-// NativeGeminiMessagesStream 保存 Gemini 转 Messages 的流状态，跟踪 thinking 内容和块索引。
+// NativeGeminiMessagesStream retains one native response's active content
+// blocks, cumulative text, arguments, and observed usage for indexed Messages
+// output.
 type NativeGeminiMessagesStream struct {
-	runtime        NativeGeminiRuntime
-	finishReason   string
-	sawToolUse     bool
-	nextBlockIndex int
-	openBlockIndex int
-	openToolIndex  int
-	openBlockType  string
-	seenText       string
-	openToolID     string
-	openToolName   string
-	seenToolJSON   string
-	usage          NativeGeminiUsage
+	// runtime supplies RandomHex when a tool block opens; callbacks are retained
+	// by the constructor and used as the iterator reaches that part.
+	runtime NativeGeminiRuntime
+	// finishReason retains the latest nonempty first-candidate reason, even when
+	// iteration stops before output or usage updates for that payload complete.
+	finishReason string
+	// sawToolUse makes Finish prefer tool_use after any tool block opens, so
+	// the client can supply a tool result on its next turn.
+	sawToolUse bool
+	// nextBlockIndex allocates new starts; openBlockIndex and openToolIndex use
+	// -1 for absence. openBlockType describes the active text lifecycle, which
+	// closes before a tool block opens and clears on that transition.
+	nextBlockIndex int    // next announced block index
+	openBlockIndex int    // active text block index
+	openToolIndex  int    // active tool block index
+	openBlockType  string // active text block kind
+	// seenText accumulates across text/tool transitions; comparison against that
+	// history determines whether incoming text is cumulative, repeated, or incremental.
+	seenText string
+	// openToolID, openToolName, and seenToolJSON describe one adjacent same-name
+	// tool group. Closing it clears name and arguments; the next opening replaces
+	// its ID before the new block_start is yielded.
+	openToolID   string // generated active tool identity
+	openToolName string // active tool grouping name
+	seenToolJSON string // accumulated tool argument text
+	// usage holds the latest fully consumed payload with usageMetadata; stopping
+	// before its final part/control yield completes leaves earlier counts intact.
+	usage NativeGeminiUsage
 }
 
-// NewNativeGeminiMessagesStream 构造仅创建本次流的状态；负索引表示尚未打开任何内容块。
+// NewNativeGeminiMessagesStream creates one response's indexed block and
+// usage state with no active content. It copies runtime, so provide RandomHex
+// at construction when tool parts can occur; consume each returned sequence
+// serially before moving to another payload.
 func NewNativeGeminiMessagesStream(runtime NativeGeminiRuntime) *NativeGeminiMessagesStream {
 	return &NativeGeminiMessagesStream{runtime: runtime, openBlockIndex: -1, openToolIndex: -1}
 }
 
-// Usage 返回已观测用量的副本。
+// Usage returns a detached value copy of the latest fully consumed payload's
+// observed token counts.
 func (s *NativeGeminiMessagesStream) Usage() *NativeGeminiUsage {
 	value := s.usage
 	return &value
 }
 
-// Begin 保留读取首个上游事件前的 message_start 与刷新顺序。
+// Begin yields an empty assistant message followed by a flush request using
+// the supplied identity and model. Consume it once before Process; stopping on
+// message_start skips the flush, and repeated consumption repeats
+// initialization output.
 func (s *NativeGeminiMessagesStream) Begin(messageID, originalModel string) iter.Seq[NativeMessageEvent] {
 	return func(yield func(NativeMessageEvent) bool) {
 		emit := func(name string, data any) bool { return yield(NativeMessageEvent{Name: name, Data: data}) }
 		flush := func() bool { return yield(NativeMessageEvent{Flush: true}) }
+		// Announce the client message before upstream content arrives; the HTTP
+		// adapter flushes the subsequent control yield to expose that start
+		// promptly.
 		messageStart := map[string]any{
 			"type": "message_start",
 			"message": map[string]any{
@@ -71,12 +118,23 @@ func (s *NativeGeminiMessagesStream) Begin(messageID, originalModel string) iter
 	}
 }
 
-// Process 按消费方的迭代节奏产生事件，不缓冲整个 payload 的输出。
+// Process yields indexed Messages blocks and HTTP control signals from the
+// first Gemini candidate. Keep geminiResp and raw unchanged during
+// consumption, and consume each sequence once before processing the next
+// payload.
+//
+// All nonempty text uses the visible text accumulator, regardless of thought
+// flags. Same-name adjacent function parts share a generated tool ID and
+// argument history; changing names or receiving text closes that group. A
+// consumer stop retains partial block/history changes and skips remaining
+// output. Finish metadata is read first, while usage is replaced after the
+// payload's output and flush yields finish, so early exit can retain earlier
+// counts.
 func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []byte) iter.Seq[NativeMessageEvent] {
 	return func(yield func(NativeMessageEvent) bool) {
 		emit := func(name string, data any) bool { return yield(NativeMessageEvent{Name: name, Data: data}) }
 		flush := func() bool { return yield(NativeMessageEvent{Flush: true}) }
-		token := func() bool { return yield(NativeMessageEvent{FirstToken: true}) }
+
 		if fr := NativeExtractGeminiFinishReason(geminiResp); fr != "" {
 			s.finishReason = fr
 		}
@@ -84,9 +142,9 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 		parts := NativeExtractGeminiParts(geminiResp)
 		for _, part := range parts {
 			if text, ok := part["text"].(string); ok && text != "" {
-				// 开始文本块前先关闭已打开的 tool_use 块，和 functionCall 分支
-				// 先关闭文本块的处理保持对称；否则工具块和文本块会在
-				// Anthropic SSE 中重叠，违反 content block 生命周期约束。
+				// A text part ends the current tool group before opening or resuming
+				// visible text; clearing arguments prevents reuse by a later same-name
+				// call.
 				if s.openToolIndex >= 0 {
 					if !emit("content_block_stop", map[string]any{
 						"type":  "content_block_stop",
@@ -99,12 +157,17 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 					s.seenToolJSON = ""
 				}
 
+				// One visible text history covers every nonempty text part, so
+				// thought-marked parts participate in the same cumulative-prefix heuristic
+				// on this native Messages path.
 				delta, newSeen := NativeComputeGeminiTextDelta(s.seenText, text)
 				s.seenText = newSeen
 				if delta == "" {
 					continue
 				}
 
+				// Announce an empty indexed text block before its first delta, allowing
+				// the Messages client to address all later text updates to that block.
 				if s.openBlockType != "text" {
 					if s.openBlockIndex >= 0 {
 						if !emit("content_block_stop", map[string]any{
@@ -129,9 +192,8 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 					}
 				}
 
-				if !token() {
-					return
-				}
+				// Yield the timing marker before the text delta; the HTTP adapter records
+				// only its first occurrence even though each nonempty delta requests it.
 				if !emit("content_block_delta", map[string]any{
 					"type":  "content_block_delta",
 					"index": s.openBlockIndex,
@@ -151,11 +213,14 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 			if fc, ok := part["functionCall"].(map[string]any); ok && fc != nil {
 				name, _ := fc["name"].(string)
 				args := fc["args"]
+				// A blank function name selects the generic tool label so the emitted tool
+				// block still supplies a name to Messages consumers.
 				if strings.TrimSpace(name) == "" {
 					name = "tool"
 				}
 
-				// 工具调用前先关闭当前文本块。
+				// Finish the current visible text lifecycle before a tool opens, so its
+				// later argument deltas have a distinct indexed content block.
 				if s.openBlockIndex >= 0 {
 					if !emit("content_block_stop", map[string]any{
 						"type":  "content_block_stop",
@@ -167,7 +232,8 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 					s.openBlockType = ""
 				}
 
-				// 分片收到工具参数时，保持同一个 tool_use 块并持续发出 delta。
+				// A different function name ends the adjacent call group; matching names
+				// keep the existing ID and accumulated arguments until text intervenes.
 				if s.openToolIndex >= 0 && s.openToolName != name {
 					if !emit("content_block_stop", map[string]any{
 						"type":  "content_block_stop",
@@ -201,10 +267,11 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 					}
 				}
 
+				// Keep supplied string arguments verbatim, serialize other values, and use
+				// an empty object when arguments are absent, blank, or cannot be encoded.
 				argsJSONText := "{}"
 				switch v := args.(type) {
 				case nil:
-					// 保持默认的 "{}"。
 				case string:
 					if strings.TrimSpace(v) != "" {
 						argsJSONText = v
@@ -215,6 +282,8 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 					}
 				}
 
+				// Compare serialized arguments against the active group's history so
+				// cumulative argument payloads do not repeat already emitted JSON text.
 				delta, newSeen := NativeComputeGeminiTextDelta(s.seenToolJSON, argsJSONText)
 				s.seenToolJSON = newSeen
 				if delta != "" {
@@ -235,18 +304,31 @@ func (s *NativeGeminiMessagesStream) Process(geminiResp map[string]any, raw []by
 			}
 		}
 
+		// Update counts after all part output and flush signals are consumed; early
+		// consumer exit therefore leaves the preceding completed payload's usage
+		// available.
 		if u := NativeExtractGeminiUsage(raw); u != nil {
 			s.usage = *u
 		}
 	}
 }
 
-// Finish 依次关闭内容块、输出终态用量和消息结束事件。
+// Finish stops active blocks and yields final message_delta, message_stop, and
+// a flush request. Consume it once after upstream exhaustion; open markers
+// remain set, so repeated consumption can repeat stops and terminal events.
+//
+// Tool presence overrides the recorded finish reason because the client
+// receives a call requiring a result. Output usage is emitted even at zero,
+// while input usage is included only when positive and cache counts remain in
+// Usage. A consumer stop skips later terminal or flush yields and does not
+// reset response state.
 func (s *NativeGeminiMessagesStream) Finish() iter.Seq[NativeMessageEvent] {
 	return func(yield func(NativeMessageEvent) bool) {
 		emit := func(name string, data any) bool { return yield(NativeMessageEvent{Name: name, Data: data}) }
 		flush := func() bool { return yield(NativeMessageEvent{Flush: true}) }
 
+		// Close indexed content before message-level termination so the client
+		// finishes its text or argument accumulator before reading final usage.
 		if s.openBlockIndex >= 0 {
 			if !emit("content_block_stop", map[string]any{
 				"type":  "content_block_stop",
@@ -264,11 +346,16 @@ func (s *NativeGeminiMessagesStream) Finish() iter.Seq[NativeMessageEvent] {
 			}
 		}
 
+		// An opened tool selects tool_use regardless of the finish reason because
+		// the emitted call asks the client for a tool result.
 		stopReason := NativeMapGeminiFinishReasonToClaudeStopReason(s.finishReason)
 		if s.sawToolUse {
 			stopReason = "tool_use"
 		}
 
+		// The native Messages terminal payload includes output count at zero but
+		// adds input only when positive; cached counts remain available through
+		// Usage.
 		usageObj := map[string]any{
 			"output_tokens": s.usage.OutputTokens,
 		}

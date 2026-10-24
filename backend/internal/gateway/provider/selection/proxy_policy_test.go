@@ -13,7 +13,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestOpenAIProxyStreamQuarantineBypassContext 检查第二次调度绕过代理隔离后，熔断状态是否仍然存在。
+// TestOpenAIProxyStreamQuarantineBypassContext records a blocked proxy and
+// derives a context with bypass enabled. The original context reports
+// quarantine, while the derived context reports the provider as unquarantined.
 func TestOpenAIProxyStreamQuarantineBypassContext(t *testing.T) {
 	proxyID := int64(7)
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI, ProxyID: &proxyID}}

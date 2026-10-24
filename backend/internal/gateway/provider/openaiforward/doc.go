@@ -1,14 +1,19 @@
-// Package openaiforward 执行 OpenAI 兼容请求转发和 Anthropic 协议转换。
+// Package openaiforward executes a selected provider attempt for Responses,
+// Chat Completions, passthrough, and Anthropic-compatible requests. Preparation
+// keeps request identities, client-tool restoration data, and provider-local
+// recovery budgets with that attempt; synchronous output readers expose usage
+// and timing to the caller before the outer gateway decides completion or
+// another provider attempt.
 //
-// 阅读入口：
-//   - prelude.go：读取请求并选择协议和传输方式。
-//   - chat.go：转换 Chat Completions 请求并处理上游响应。
-//   - http.go：执行 HTTP 请求和同提供商重试。
+// Reading entry points:
+//   - prelude.go: request preparation and protocol and transport selection.
+//   - chat.go: Chat Completions conversion and upstream response handling.
+//   - http.go: HTTP exchanges and retries on the same provider.
 //
-// 文件分组：
-//   - requests.go、transform.go：构造上游请求和转换请求报文。
-//   - messages.go、passthrough.go：执行 Messages 请求和透传请求。
-//   - raw_chat*.go、raw_fallback*.go：转发 Chat 请求和执行协议回退。
-//   - anthropic*.go：构造 Anthropic 请求，读取流并转换响应及用量。
-//   - result_projection.go：转换网关、兼容响应和本包的结果类型。
+// File groups:
+//   - requests.go, transform.go: upstream request construction and body transformation.
+//   - messages.go, passthrough.go: Messages and passthrough execution.
+//   - raw_chat*.go, raw_fallback*.go: Chat forwarding and protocol conversion.
+//   - anthropic*.go: Anthropic requests, stream reading, response conversion, and usage.
+//   - result_projection.go: conversion between gateway, compatibility, and package result types.
 package openaiforward

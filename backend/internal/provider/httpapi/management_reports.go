@@ -11,14 +11,30 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// ProviderReportOptions 提供详细用量查询函数。
+// management_reports.go queries provider usage reports over calendar-day
+// ranges selected by administrator requests.
+// Provider reports include complete calendar days in the timezone supplied by
+// application assembly. The requested span includes today and ends at
+// tomorrow's day start, so a days value describes calendar dates rather than a
+// fixed number of elapsed hours.
+
+// ProviderReportOptions supplies provider usage queries and calendar callbacks
+// for date-range reports.
 type ProviderReportOptions struct {
+	// Now, StartOfDay and Query are required by GetStats and retained by the
+	// handler. Now and StartOfDay share a calendar; Query receives the resulting
+	// half-open date range under the HTTP request context.
+	// calendar current-time callback
 	Now        func() time.Time
-	StartOfDay func(time.Time) time.Time
-	Query      func(context.Context, int64, time.Time, time.Time) (*usage.ProviderUsageStatsResponse, error)
+	StartOfDay func(time.Time) time.Time // configured calendar day boundary
+	// provider usage range query
+	Query func(context.Context, int64, time.Time, time.Time) (*usage.ProviderUsageStatsResponse, error)
 }
 
-// GetStats handles getting provider statistics
+// GetStats returns provider usage across the requested calendar-day span,
+// including today. Malformed or out-of-range days selects 30; the injected
+// calendar computes both boundaries before the report query receives the
+// request context.
 // GET /api/v1/admin/providers/:id/stats
 func (h *ManagementHandler) GetStats(c *gin.Context) {
 	providerID, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -27,7 +43,8 @@ func (h *ManagementHandler) GetStats(c *gin.Context) {
 		return
 	}
 
-	// 请求范围为 1 到 90 天，默认 30 天。
+	// Malformed and out-of-range values use the standard monthly display span,
+	// keeping report queries between one and ninety calendar days.
 	days := 30
 	if daysStr := c.Query("days"); daysStr != "" {
 		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 && d <= 90 {
@@ -35,7 +52,8 @@ func (h *ManagementHandler) GetStats(c *gin.Context) {
 		}
 	}
 
-	// 日界仍按应用装配的同一时区计算。
+	// Calendar boundaries include today and stop before tomorrow. The injected
+	// calendar applies its timezone, including daylight-saving changes in day length.
 	now := h.reports.Now()
 	endTime := h.reports.StartOfDay(now.AddDate(0, 0, 1))
 	startTime := h.reports.StartOfDay(now.AddDate(0, 0, -days+1))

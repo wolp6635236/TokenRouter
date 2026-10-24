@@ -8,6 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestResponsesToChatCompletions_BasicText converts one text output with
+// usage. It checks Chat object/model, one stop choice, decoded content, and
+// copied input/output plus total counts.
 func TestResponsesToChatCompletions_BasicText(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_123",
@@ -43,6 +46,9 @@ func TestResponsesToChatCompletions_BasicText(t *testing.T) {
 	assert.Equal(t, 15, chat.Usage.TotalTokens)
 }
 
+// TestResponsesToChatCompletions_ToolCalls converts one function output
+// without visible text. Its single choice must use tool_calls and retain the
+// inspected correlation, function kind, name, and argument text.
 func TestResponsesToChatCompletions_ToolCalls(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_456",
@@ -69,6 +75,9 @@ func TestResponsesToChatCompletions_ToolCalls(t *testing.T) {
 	assert.Equal(t, `{"city":"NYC"}`, msg.ToolCalls[0].Function.Arguments)
 }
 
+// TestResponsesToChatCompletions_Reasoning supplies reasoning summary before
+// visible text. The single returned choice must expose answer text as decoded
+// content and summary text in reasoning_content.
 func TestResponsesToChatCompletions_Reasoning(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_789",
@@ -98,6 +107,9 @@ func TestResponsesToChatCompletions_Reasoning(t *testing.T) {
 	assert.Equal(t, "I thought about it.", chat.Choices[0].Message.ReasoningContent)
 }
 
+// TestResponsesToChatCompletions_Incomplete supplies token-limit incomplete
+// details with partial text. Conversion must return one choice whose finish
+// reason is length for that status/detail fixture.
 func TestResponsesToChatCompletions_Incomplete(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:                "resp_inc",
@@ -118,6 +130,9 @@ func TestResponsesToChatCompletions_Incomplete(t *testing.T) {
 	assert.Equal(t, "length", chat.Choices[0].FinishReason)
 }
 
+// TestResponsesToChatCompletions_CachedTokens supplies cached input within
+// Responses usage. The returned Chat usage must include prompt details with
+// the inspected cached-token count retained.
 func TestResponsesToChatCompletions_CachedTokens(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_cache",
@@ -144,6 +159,9 @@ func TestResponsesToChatCompletions_CachedTokens(t *testing.T) {
 	assert.Equal(t, 80, chat.Usage.PromptTokensDetails.CachedTokens)
 }
 
+// TestResponsesToChatCompletions_ReasoningTokens supplies reasoning detail
+// within output usage. The returned completion count remains supplied output,
+// and its detail object retains the reasoning-token value.
 func TestResponsesToChatCompletions_ReasoningTokens(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_reasoning",
@@ -171,8 +189,12 @@ func TestResponsesToChatCompletions_ReasoningTokens(t *testing.T) {
 	assert.Equal(t, 32, chat.Usage.CompletionTokensDetails.ReasoningTokens)
 }
 
+// TestResponsesToChatCompletions_AllTokenDetailsPassThrough supplies
+// cached/audio prompt and reasoning/audio/prediction completion counts. It
+// checks each copied field plus selected detail keys/counts in encoded Chat
+// usage.
 func TestResponsesToChatCompletions_AllTokenDetailsPassThrough(t *testing.T) {
-	// 检查 OpenAI CompletionUsage 的音频、预测输出等明细字段。
+	// Check audio and prediction token details as well as reasoning counts.
 	resp := &ResponsesResponse{
 		ID:     "resp_full_details",
 		Status: "completed",
@@ -219,8 +241,11 @@ func TestResponsesToChatCompletions_AllTokenDetailsPassThrough(t *testing.T) {
 	assert.Contains(t, string(raw), `"accepted_prediction_tokens":10`)
 }
 
+// TestResponsesToChatCompletions_NoReasoningTokensWhenZero supplies an all-
+// zero supported output detail object. The returned completion details must be
+// nil, and encoded usage omits the inspected detail/reasoning keys.
 func TestResponsesToChatCompletions_NoReasoningTokensWhenZero(t *testing.T) {
-	// 非推理模型缺少 reasoning_tokens 时，输出省略 completion_tokens_details。
+	// Omit completion_tokens_details when all supported counts are zero.
 	resp := &ResponsesResponse{
 		ID:     "resp_no_reasoning",
 		Status: "completed",
@@ -250,6 +275,9 @@ func TestResponsesToChatCompletions_NoReasoningTokensWhenZero(t *testing.T) {
 	assert.NotContains(t, string(raw), "reasoning_tokens")
 }
 
+// TestResponsesToChatCompletions_WebSearch combines hosted search with visible
+// answer text. The single choice must use stop and retain the decoded message
+// text in the inspected output.
 func TestResponsesToChatCompletions_WebSearch(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_ws",
@@ -275,6 +303,9 @@ func TestResponsesToChatCompletions_WebSearch(t *testing.T) {
 	assert.Equal(t, "search results", content)
 }
 
+// TestResponsesEventToChatChunks_TextDelta feeds creation then visible text.
+// It checks the assistant role chunk, SentRole state, and the later nonnil
+// content pointer containing the supplied fragment.
 func TestResponsesEventToChatChunks_TextDelta(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -300,12 +331,16 @@ func TestResponsesEventToChatChunks_TextDelta(t *testing.T) {
 	assert.Equal(t, "Hello", *chunks[0].Choices[0].Delta.Content)
 }
 
+// TestResponsesEventToChatChunks_ToolCallDelta registers two nonzero source
+// positions and interleaves their fragments. Assertions check sequential Chat
+// indexes, retained initial metadata, and fragment routing back to each
+// announced call.
 func TestResponsesEventToChatChunks_ToolCallDelta(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
 	state.SentRole = true
 
-	// function_call 的 output_item.added 使用 output_index=1，索引 0 可留给 message。
+	// Place the function at output_index 1; index 0 may belong to a message.
 	chunks := ResponsesEventToChatChunks(&ResponsesStreamEvent{
 		Type:        "response.output_item.added",
 		OutputIndex: 1,
@@ -323,7 +358,7 @@ func TestResponsesEventToChatChunks_ToolCallDelta(t *testing.T) {
 	require.NotNil(t, tc.Index)
 	assert.Equal(t, 0, *tc.Index)
 
-	// function_call_arguments.delta 根据 output_index 查找工具调用。
+	// Resolve argument deltas using the Responses output_index.
 	chunks = ResponsesEventToChatChunks(&ResponsesStreamEvent{
 		Type:        "response.function_call_arguments.delta",
 		OutputIndex: 1, // matches the output_index from output_item.added above
@@ -373,6 +408,9 @@ func TestResponsesEventToChatChunks_ToolCallDelta(t *testing.T) {
 	assert.Equal(t, 0, *tc.Index, "first tool arg delta must still use index 0")
 }
 
+// TestResponsesEventToChatChunks_Completed requests usage on a terminal
+// response with cached input. It checks finish-before-usage chunks, stop
+// reason, complete counts, and the retained cached prompt detail.
 func TestResponsesEventToChatChunks_Completed(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -408,6 +446,9 @@ func TestResponsesEventToChatChunks_Completed(t *testing.T) {
 	assert.Equal(t, 30, chunks[1].Usage.PromptTokensDetails.CachedTokens)
 }
 
+// TestResponsesEventToChatChunks_CompletedWithReasoningTokens requests
+// separate usage on a reasoning terminal. Two chunks must appear, and the
+// usage chunk retains the inspected reasoning detail count.
 func TestResponsesEventToChatChunks_CompletedWithReasoningTokens(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-5.5"
@@ -434,6 +475,9 @@ func TestResponsesEventToChatChunks_CompletedWithReasoningTokens(t *testing.T) {
 	assert.Equal(t, 32, chunks[1].Usage.CompletionTokensDetails.ReasoningTokens)
 }
 
+// TestResponsesEventToChatChunks_ResponseDone requests usage for a legacy
+// completed done event. It checks stop and usage counts, then requires EOF
+// finalization to return nil.
 func TestResponsesEventToChatChunks_ResponseDone(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -455,6 +499,9 @@ func TestResponsesEventToChatChunks_ResponseDone(t *testing.T) {
 	assert.Nil(t, FinalizeResponsesChatStream(state))
 }
 
+// TestResponsesEventToChatChunks_TopLevelTerminalUsage omits nested usage and
+// supplies event counters with cached input. The separate usage chunk must
+// retain prompt/completion counts and the inspected cached detail.
 func TestResponsesEventToChatChunks_TopLevelTerminalUsage(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -482,6 +529,9 @@ func TestResponsesEventToChatChunks_TopLevelTerminalUsage(t *testing.T) {
 	assert.Equal(t, 4, chunks[1].Usage.PromptTokensDetails.CachedTokens)
 }
 
+// TestResponsesEventToChatChunks_ResponseDoneIncomplete supplies legacy done
+// with token-limit details and usage. It checks length plus usage counts and
+// confirms that EOF finalization contributes no later chunks.
 func TestResponsesEventToChatChunks_ResponseDoneIncomplete(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -504,6 +554,9 @@ func TestResponsesEventToChatChunks_ResponseDoneIncomplete(t *testing.T) {
 	assert.Nil(t, FinalizeResponsesChatStream(state))
 }
 
+// TestResponsesEventToChatChunks_CompletedWithToolCalls marks a tool
+// observation before completed status. The single emitted finish chunk must
+// have a nonnil tool_calls reason for that state.
 func TestResponsesEventToChatChunks_CompletedWithToolCalls(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -520,6 +573,9 @@ func TestResponsesEventToChatChunks_CompletedWithToolCalls(t *testing.T) {
 	assert.Equal(t, "tool_calls", *chunks[0].Choices[0].FinishReason)
 }
 
+// TestResponsesEventToChatChunks_ReasoningDelta supplies summary text after
+// role state is set. It checks the nonnil reasoning_content pointer, retained
+// fragment, and no chunks from summary completion.
 func TestResponsesEventToChatChunks_ReasoningDelta(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -539,6 +595,10 @@ func TestResponsesEventToChatChunks_ReasoningDelta(t *testing.T) {
 	require.Len(t, chunks, 0)
 }
 
+// TestResponsesEventToChatChunks_ReasoningThenTextAutoCloseTag sends reasoning
+// followed by answer text. Assertions inspect separate reasoning_content and
+// content pointers with their supplied values; no tag-closing assertion is
+// performed.
 func TestResponsesEventToChatChunks_ReasoningThenTextAutoCloseTag(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -561,6 +621,9 @@ func TestResponsesEventToChatChunks_ReasoningThenTextAutoCloseTag(t *testing.T) 
 	assert.Equal(t, "answer", *chunks[0].Choices[0].Delta.Content)
 }
 
+// TestFinalizeResponsesChatStream finalizes constructor state with stored
+// usage and no source terminal. It checks stop then usage output and nil
+// chunks on the second finalization call.
 func TestFinalizeResponsesChatStream(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -586,9 +649,13 @@ func TestFinalizeResponsesChatStream(t *testing.T) {
 	assert.Nil(t, FinalizeResponsesChatStream(state))
 }
 
+// TestFinalizeResponsesChatStream_AfterCompleted supplies terminal usage
+// before EOF finalization. Terminal conversion must produce chunks, and the
+// later finalizer must return nil for that already-finalized state.
 func TestFinalizeResponsesChatStream_AfterCompleted(t *testing.T) {
-	// If response.completed already emitted the finish chunk, FinalizeResponsesChatStream
-	// must be a no-op (prevents double finish_reason being sent to the client).
+	// If response.completed already emitted the finish chunk,
+	// FinalizeResponsesChatStream must be a no-op (prevents double finish_reason
+	// being sent to the client).
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
 	state.IncludeUsage = true
@@ -607,10 +674,12 @@ func TestFinalizeResponsesChatStream_AfterCompleted(t *testing.T) {
 	}, state)
 	require.NotEmpty(t, chunks) // finish + usage chunks
 
-	// 流已结束，再次 FinalizeResponsesChatStream 返回 nil。
 	assert.Nil(t, FinalizeResponsesChatStream(state))
 }
 
+// TestChatChunkToSSE serializes an assistant-role chunk with fixed metadata.
+// The returned frame must contain the data prefix, response identity, and role
+// text, and exceed the asserted length.
 func TestChatChunkToSSE(t *testing.T) {
 	chunk := ChatCompletionsChunk{
 		ID:      "chatcmpl-test",
@@ -634,9 +703,11 @@ func TestChatChunkToSSE(t *testing.T) {
 	assert.True(t, len(sse) > 10)
 }
 
+// TestChatCompletionsStreamRoundTrip feeds creation, four text fragments, and
+// terminal usage. It checks seven ordered chunks, joined answer text, stop,
+// usage counts, and one shared response ID.
 func TestChatCompletionsStreamRoundTrip(t *testing.T) {
-	// Simulate: client sends chat completions request, upstream returns Responses SSE events.
-	// Verify that the streaming state machine produces correct chat completions chunks.
+	// Exercise conversion of a complete Responses SSE sequence into Chat chunks.
 
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-4o"
@@ -703,6 +774,9 @@ func TestChatCompletionsStreamRoundTrip(t *testing.T) {
 	}
 }
 
+// TestBufferedResponseAccumulator_TextOnly appends two visible text fragments.
+// HasContent must become true, and reconstruction must produce one assistant
+// message with one output-text part containing their concatenation.
 func TestBufferedResponseAccumulator_TextOnly(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 
@@ -720,6 +794,10 @@ func TestBufferedResponseAccumulator_TextOnly(t *testing.T) {
 	assert.Equal(t, "Hello, world!", output[0].Content[0].Text)
 }
 
+// TestBufferedResponseAccumulator_ToolCalls announces one function and
+// supplies two argument fragments. It checks content presence and one
+// reconstructed call retaining correlation/name and complete concatenated
+// argument text.
 func TestBufferedResponseAccumulator_ToolCalls(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 
@@ -754,6 +832,10 @@ func TestBufferedResponseAccumulator_ToolCalls(t *testing.T) {
 	assert.Equal(t, `{"city":"NYC"}`, output[0].Arguments)
 }
 
+// TestBufferedResponseAccumulator_Reasoning appends two reasoning-summary
+// fragments. Reconstruction must return one reasoning item with one summary-
+// text member containing the complete concatenation, after HasContent becomes
+// true.
 func TestBufferedResponseAccumulator_Reasoning(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 
@@ -770,6 +852,9 @@ func TestBufferedResponseAccumulator_Reasoning(t *testing.T) {
 	assert.Equal(t, "Step 1: think about it", output[0].Summary[0].Text)
 }
 
+// TestBufferedResponseAccumulator_Mixed supplies reasoning, visible text, then
+// one call with arguments. It checks three ordered reconstructed kinds,
+// retained message text, and the selected function name.
 func TestBufferedResponseAccumulator_Mixed(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 
@@ -807,6 +892,10 @@ func TestBufferedResponseAccumulator_Mixed(t *testing.T) {
 	assert.Equal(t, "verify", output[2].Name)
 }
 
+// TestBufferedResponseAccumulator_SupplementEmptyOutput supplies visible
+// deltas beside a terminal response with nil output. Supplementation must
+// create the inspected message/text while retaining the asserted input usage
+// count.
 func TestBufferedResponseAccumulator_SupplementEmptyOutput(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 	acc.ProcessEvent(&ResponsesStreamEvent{Type: "response.output_text.delta", Delta: "Hello"})
@@ -827,6 +916,9 @@ func TestBufferedResponseAccumulator_SupplementEmptyOutput(t *testing.T) {
 	assert.Equal(t, 10, resp.Usage.InputTokens)
 }
 
+// TestBufferedResponseAccumulator_NoSupplementWhenOutputExists supplies delta
+// text beside populated terminal output. The terminal's single message and
+// text must retain precedence after the supplement helper is called.
 func TestBufferedResponseAccumulator_NoSupplementWhenOutputExists(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 	acc.ProcessEvent(&ResponsesStreamEvent{Type: "response.output_text.delta", Delta: "from deltas"})
@@ -851,10 +943,12 @@ func TestBufferedResponseAccumulator_NoSupplementWhenOutputExists(t *testing.T) 
 	assert.Equal(t, "from terminal event", resp.Output[0].Content[0].Text)
 }
 
+// TestBufferedResponseAccumulator_EmptyDeltas supplies empty text and an
+// unrelated creation event. HasContent remains false, and supplementing an
+// empty terminal leaves its output slice nil.
 func TestBufferedResponseAccumulator_EmptyDeltas(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 
-	// 空 delta 应保持累计内容为空。
 	acc.ProcessEvent(&ResponsesStreamEvent{Type: "response.output_text.delta", Delta: ""})
 	acc.ProcessEvent(&ResponsesStreamEvent{Type: "response.created"})
 
@@ -865,6 +959,9 @@ func TestBufferedResponseAccumulator_EmptyDeltas(t *testing.T) {
 	assert.Nil(t, resp.Output)
 }
 
+// TestBufferedResponseAccumulator_IgnoresNonFunctionCallItems announces a
+// message item without text deltas. HasContent must remain false, protecting
+// the no-recorded-content result for that unsupported addition kind.
 func TestBufferedResponseAccumulator_IgnoresNonFunctionCallItems(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 
@@ -878,8 +975,9 @@ func TestBufferedResponseAccumulator_IgnoresNonFunctionCallItems(t *testing.T) {
 	assert.False(t, acc.HasContent())
 }
 
-// TestResponsesEventToChatChunks_CustomToolCallInputDelta 验证 custom_tool_call（custom/freeform 工具，如新版 apply_patch）应像 function_call 一样
-// 注册为工具调用，其 *_input.delta 增量映射到正确的工具索引。
+// TestResponsesEventToChatChunks_CustomToolCallInputDelta opens a custom call
+// at source position one. It checks initial call identity/name and raw input
+// text routed to Chat tool index zero.
 func TestResponsesEventToChatChunks_CustomToolCallInputDelta(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-5-codex"
@@ -912,8 +1010,9 @@ func TestResponsesEventToChatChunks_CustomToolCallInputDelta(t *testing.T) {
 	assert.Equal(t, "*** Begin Patch", tc.Function.Arguments)
 }
 
-// TestResponsesEventToChatChunks_ReasoningTextDelta 验证原始推理文本增量 reasoning_text.delta 应像 reasoning_summary_text.delta 一样
-// 映射为 reasoning_content。
+// TestResponsesEventToChatChunks_ReasoningTextDelta supplies raw reasoning
+// text with role state already set. One chunk must carry a nonnil
+// reasoning_content pointer containing that exact fragment.
 func TestResponsesEventToChatChunks_ReasoningTextDelta(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.Model = "gpt-5-codex"
@@ -928,7 +1027,9 @@ func TestResponsesEventToChatChunks_ReasoningTextDelta(t *testing.T) {
 	assert.Equal(t, "thinking step", *chunks[0].Choices[0].Delta.ReasoningContent)
 }
 
-// TestBufferedResponseAccumulator_CodexEvents 检查累加器读取工具输入和推理文本增量。
+// TestBufferedResponseAccumulator_CodexEvents supplies a custom addition/input
+// fragment and raw reasoning text. The assertion requires HasContent to be
+// true; reconstruction fields are not checked in this case.
 func TestBufferedResponseAccumulator_CodexEvents(t *testing.T) {
 	acc := NewBufferedResponseAccumulator()
 	acc.ProcessEvent(&ResponsesStreamEvent{
@@ -948,8 +1049,10 @@ func TestBufferedResponseAccumulator_CodexEvents(t *testing.T) {
 	require.True(t, acc.HasContent())
 }
 
-// TestResponsesEventToChatChunks_ArgumentsDeltaOmitsEmptyName 检查仅含参数的增量省略工具名。
-// OpenAI 兼容客户端从首个增量读取工具名，后续空名称会覆盖该名称并导致调用失败。
+// TestResponsesEventToChatChunks_ArgumentsDeltaOmitsEmptyName serializes an
+// added call followed by two argument chunks. Initial JSON retains the name,
+// while each later payload contains arguments and omits the inspected name
+// key.
 func TestResponsesEventToChatChunks_ArgumentsDeltaOmitsEmptyName(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 
@@ -981,6 +1084,9 @@ func TestResponsesEventToChatChunks_ArgumentsDeltaOmitsEmptyName(t *testing.T) {
 	}
 }
 
+// TestResponsesToChatCompletions_PreservesUpstreamServiceTier converts a
+// priority reply with visible text. The returned tier must be priority and
+// encoded JSON must contain that service_tier member.
 func TestResponsesToChatCompletions_PreservesUpstreamServiceTier(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:          "resp_1",
@@ -1002,12 +1108,14 @@ func TestResponsesToChatCompletions_PreservesUpstreamServiceTier(t *testing.T) {
 	chat := ResponsesToChatCompletions(testRuntime(), resp, "gpt-5.5")
 	require.Equal(t, "priority", chat.ServiceTier)
 
-	// 序列化后字段仍在（omitempty 不丢非空值）。
 	raw, err := json.Marshal(chat)
 	require.NoError(t, err)
 	require.Contains(t, string(raw), `"service_tier":"priority"`)
 }
 
+// TestResponsesToChatCompletions_OmitsMissingServiceTier converts a reply with
+// no tier value. The returned field stays empty, and encoded Chat JSON must
+// omit the service_tier key.
 func TestResponsesToChatCompletions_OmitsMissingServiceTier(t *testing.T) {
 	resp := &ResponsesResponse{ID: "resp_1", Model: "gpt-5.5", Status: "completed"}
 	chat := ResponsesToChatCompletions(testRuntime(), resp, "gpt-5.5")
@@ -1017,6 +1125,9 @@ func TestResponsesToChatCompletions_OmitsMissingServiceTier(t *testing.T) {
 	require.NotContains(t, string(raw), "service_tier")
 }
 
+// TestResponsesEventToChatChunks_PreservesUpstreamServiceTier observes
+// priority at creation before text and completion without another tier. Every
+// inspected role/content/finish/usage chunk must retain that observed value.
 func TestResponsesEventToChatChunks_PreservesUpstreamServiceTier(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.IncludeUsage = true
@@ -1030,13 +1141,13 @@ func TestResponsesEventToChatChunks_PreservesUpstreamServiceTier(t *testing.T) {
 		require.Equal(t, "priority", chunk.ServiceTier)
 	}
 
-	// 后续 delta chunk 继续携带 service_tier。
+	// Subsequent deltas retain the observed service tier.
 	delta := &ResponsesStreamEvent{Type: "response.output_text.delta", Delta: "hi"}
 	chunks = ResponsesEventToChatChunks(delta, state)
 	require.NotEmpty(t, chunks)
 	require.Equal(t, "priority", chunks[0].ServiceTier)
 
-	// 终止事件同样携带。
+	// Completion and usage chunks retain it too.
 	completed := &ResponsesStreamEvent{Type: "response.completed", Response: &ResponsesResponse{
 		ID: "resp", Model: "gpt-5.5", Status: "completed",
 		Usage: &ResponsesUsage{InputTokens: 1, OutputTokens: 1},
@@ -1048,6 +1159,9 @@ func TestResponsesEventToChatChunks_PreservesUpstreamServiceTier(t *testing.T) {
 	}
 }
 
+// TestResponsesEventToChatChunks_NoServiceTierStaysClean creates a stream
+// without tier metadata. The first produced chunk keeps an empty typed tier
+// and omits service_tier from its encoded JSON.
 func TestResponsesEventToChatChunks_NoServiceTierStaysClean(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	created := &ResponsesStreamEvent{Type: "response.created", Response: &ResponsesResponse{ID: "resp", Model: "gpt-5.5"}}
@@ -1059,6 +1173,9 @@ func TestResponsesEventToChatChunks_NoServiceTierStaysClean(t *testing.T) {
 	require.NotContains(t, string(raw), "service_tier")
 }
 
+// TestResponsesToChatCompletions_ContentFilter supplies incomplete status with
+// content_filter details and partial text. The single buffered choice must use
+// the corresponding content_filter finish reason.
 func TestResponsesToChatCompletions_ContentFilter(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_cf",
@@ -1078,13 +1195,16 @@ func TestResponsesToChatCompletions_ContentFilter(t *testing.T) {
 	assert.Equal(t, "content_filter", cc.Choices[0].FinishReason)
 }
 
+// TestResponsesToChatCompletionsStreaming_ContentFilter supplies the content-
+// filter incomplete terminal to started role state. At least one returned
+// choice must carry the inspected content_filter finish reason.
 func TestResponsesToChatCompletionsStreaming_ContentFilter(t *testing.T) {
 	state := NewResponsesEventToChatState(testRuntime())
 	state.ID = "resp_cf"
 	state.Model = "gpt-5.5"
 	state.SentRole = true
 
-	// content_filter 在 Responses 流中使用 response.incomplete 作为终止事件。
+	// Content filtering terminates Responses streams with response.incomplete.
 	events := ResponsesEventToChatChunks(&ResponsesStreamEvent{
 		Type: "response.incomplete",
 		Response: &ResponsesResponse{

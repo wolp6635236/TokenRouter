@@ -125,6 +125,9 @@ backend/
 │   │   ├── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
 │   │   ├── postgres/                                    PostgreSQL 持久化及事务适配
 │   │   └── testkit/                                     该模块测试所需的替身与夹具
+│   ├── mcp/                                             MCP 确认、文件及操作调用类型
+│   │   ├── httpapi/                                     MCP 传输、管理页面 API 和既有管理路由分发
+│   │   └── rediscache/                                  原子确认状态与加密临时文件
 │   ├── identity/                                        用户、登录身份、会话、强认证和绑定
 │   │   ├── authconfig/                                  登录配置值、地址与钉钉配置解析
 │   │   ├── contact/                                     邮箱规范化等联系方式纯规则
@@ -195,7 +198,7 @@ backend/
 │   │   ├── openai/                                      Responses、Chat、媒体、WS、Codex 与用量报文
 │   │   ├── systemone/                                   SystemOne 请求、答案与用量的纯校验
 │   │   └── wirejson/                                    保持报文结构的 JSON 读取与修改
-│   ├── modelcatalog/                                    models.dev 目录、内嵌官方补充、供应商身份索引及展示属性值
+│   ├── modelcatalog/                                    models.dev 目录、内嵌官方补充、供应商身份索引、路线能力解析与平台执行规则
 │   │   └── provider/                                   统一目录加载、条件同步、内嵌与自定义补充、价格和属性原子快照
 │   ├── routing/                                         分组、价格配置、模型目录和请求路线
 │   │   ├── accessview/                                  分组访问、能力、模型和调度配置的只读视图
@@ -218,6 +221,7 @@ backend/
 │   │   ├── provider/                                    外部服务与技术能力适配
 │   │   └── rediscache/                                  Redis 缓存、计数或会话适配
 │   ├── server/                                          HTTP server、公共路由和入口中间件
+│   │   ├── adminapi/                                    管理操作描述、请求 schema 和路由覆盖检查
 │   │   ├── clientip/                                    可信代理链中的客户端 IP 提取
 │   │   │   └── policy/                                  转发 IP Header 的纯校验规则
 │   │   ├── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
@@ -437,3 +441,5 @@ app/lifecycle 管理这些组件的启动和关闭。audit 独立记录操作审
 | settings、site | [配置](../interfaces/configuration.md)、[HTTP 与页面权限](../interfaces/http_api.md) |
 | idempotency | [面板命令幂等](../interfaces/http_api.md#write_idempotency) |
 | infra、pkg、testutil、cmd、ent、migrations、tests、scripts | [系统架构](system_architecture.md)、[开发验证](../operations/development_workflow.md)、[部署迁移](../operations/deployment_and_migrations.md) |
+
+MCP 管理通过 `server/adminapi` 共享操作目录，并在既有 HTTP 管理链上执行。专用凭据和 OAuth 应用授权归 identity，OAuth 协议适配与 CIMD 读取位于 identity/provider，临时确认和文件归 mcp；接入与授权规则见 [MCP 管理接口](../interfaces/mcp_management.md)。

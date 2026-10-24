@@ -11,8 +11,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestPersistProviderCredentials_SkipsShadow 验证凭据写入唯一汇聚点
-// persistProviderCredentials 对 spark 影子早返 no-op,任何上游路径都无法把凭据落到影子行。
+// Spark shadow authentication belongs to the parent provider, so an ordinary
+// credential write must skip the shadow. The fixture inspects both the passed
+// record and its stored row after trying to supply new authentication values.
+
+// TestPersistProviderCredentials_SkipsShadow attempts an ordinary credential
+// write against a stored Spark shadow. The call succeeds while both the input
+// and stored credential maps remain empty.
 func TestPersistProviderCredentials_SkipsShadow(t *testing.T) {
 	ctx := context.Background()
 	repo := newSparkShadowRepoStub()

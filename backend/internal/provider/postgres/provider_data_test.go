@@ -8,7 +8,15 @@ import (
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 )
 
-// TestProviderEntityProjectionIsolatesNestedCredentials 检查 Ent 行转换出的记录持有独立凭据副本，修改副本后源行保持不变。
+// Converting an Ent provider copies supported nested JSON credential
+// containers before callers edit the result. The isolated map test covers
+// provider_data.go with one extension object, protecting the source Ent row
+// from mutation through that converted credential path.
+
+// TestProviderEntityProjectionIsolatesNestedCredentials converts one Ent row
+// with a nested extension map and edits the converted value. The source map
+// retains its text, covering that supported container shape rather than every
+// possible credential value.
 func TestProviderEntityProjectionIsolatesNestedCredentials(t *testing.T) {
 	entity := &dbent.Provider{ID: 1, Credentials: map[string]any{"extension": map[string]any{"value": "original"}}}
 	projected := RecordFromEntity(entity)

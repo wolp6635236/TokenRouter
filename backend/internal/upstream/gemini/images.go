@@ -15,28 +15,78 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
 )
 
+// images.go builds and sends Gemini image generation requests and selects a
+// decoded image result.
+// Creative Gemini image requests embed reference bytes in generation parts and
+// select API-key, OAuth, or service-account endpoints from caller options.
+// Project-bearing OAuth adds the Code Assist envelope, while service accounts
+// obtain their already resolved model URL from the caller and other modes use
+// a validated REST base.
+//
+// The request is serialized before authentication, and provider header
+// handling runs after credential headers are applied. Response reads retain
+// at most sixty-four MiB through the shared limiter, which returns a prefix
+// successfully when that limit is reached. Image parsing walks the first
+// candidate and keeps the last decodable inline part as one zero-indexed
+// result; earlier decoded images and other candidates are omitted by this
+// creative-result selection rule.
+
+// ImageRequestInput supplies prompt text, generation controls, and decoded
+// reference-image bytes.
 type ImageRequestInput struct {
+	// Prompt supplies user text; ImageSize selects size; AspectRatio selects
+	// shape; ThinkingLevel selects reasoning.
 	Prompt, ImageSize, AspectRatio, ThinkingLevel string
-	Sources                                       []upstream.DecodedImage
-}
-type ImageOptions struct {
-	Mode                               CredentialMode
-	Model, ProjectID                   string
-	APIKey                             func() string
-	Token                              func(context.Context) (string, error)
-	BaseURL                            func() string
-	ValidateURL, ValidateGeminiBaseURL func(string) (string, error)
-	VertexURL                          func() (string, error)
-	ApplyHeaders                       func(http.Header)
-	Do                                 func(*http.Request) (*http.Response, error)
-	HTTPError                          func(int, string) error
-	Invalid                            func(string, ...any) error
-	ErrorMessage                       func([]byte) string
-	Enter                              func() (func(), error)
+	// decoded inline reference images
+	Sources []upstream.DecodedImage
 }
 
-// BuildImageRequest 构造 Gemini generateContent 请求体：
-// parts 为 prompt 文本与每张参考图 inlineData；创作台不向 Gemini 发送独立 mask。
+// ImageOptions supplies image endpoint selection, credentials, transport, and
+// failure callbacks.
+type ImageOptions struct {
+	Mode CredentialMode // selected image credential family
+	// Model identifies the upstream model; ProjectID identifies its Code Assist
+	// project.
+	Model, ProjectID string
+	// APIKey is required for API-key mode and is read during endpoint validation
+	// and again during header authentication; callers supply a consistent
+	// credential across those reads.
+	APIKey func() string // API-key credential source callback
+	// bearer access-token source callback
+	// Token supplies bearer credentials for every mode except API-key mode. A
+	// missing callback is an input error; acquisition failures pass through
+	// HTTPError.
+	Token func(context.Context) (string, error)
+	// BaseURL and ValidateGeminiBaseURL resolve REST destinations; ValidateURL
+	// validates Code Assist destinations; VertexURL builds service-account
+	// destinations. Callers supply the callbacks used by the selected route.
+	BaseURL func() string // configured image REST API base
+	// ValidateURL checks the Code Assist base; ValidateGeminiBaseURL checks the
+	// REST base.
+	ValidateURL, ValidateGeminiBaseURL func(string) (string, error)
+	VertexURL                          func() (string, error) // service-account image endpoint builder
+	// ApplyHeaders and Do are required after successful construction; HTTPError
+	// and Invalid map applicable failures. Endpoint validation/build callbacks
+	// are required for the branch selected by Mode and ProjectID.
+	// post-authentication header mutation callback
+	ApplyHeaders func(http.Header)
+	// Do returns a usable response and body on success. GenerateImages closes
+	// successful exchanges; the callback cleans up any response returned with an
+	// error.
+	Do           func(*http.Request) (*http.Response, error)
+	HTTPError    func(int, string) error    // image HTTP error mapping
+	Invalid      func(string, ...any) error // image input error mapping
+	ErrorMessage func([]byte) string        // upstream error text extraction
+	// Enter optionally registers the image attempt and returns a nonnil release
+	// callback. Its release runs after the response closes or a later preparation
+	// failure.
+	Enter func() (func(), error) // optional image attempt registration
+}
+
+// BuildImageRequest returns image generation parts with trimmed prompt/control
+// text and base64 reference data. Blank source MIME uses image/png, output
+// requests TEXT and IMAGE, and a nonblank thinking level adds controls with
+// thoughts excluded.
 func BuildImageRequest(input ImageRequestInput) wire.ImageGenerateRequest {
 	parts := make([]wire.BatchPart, 0, len(input.Sources)+1)
 	if prompt := strings.TrimSpace(input.Prompt); prompt != "" {
@@ -72,7 +122,16 @@ func BuildImageRequest(input ImageRequestInput) wire.ImageGenerateRequest {
 	}
 }
 
-// ParseImageOutputs 从 generateContent 响应中提取 inlineData 图片输出。
+// ParseImageOutputs returns the last decodable inline part from the first
+// response candidate as one zero-indexed image. Callers supply a nonnil
+// httpError mapper for absent content or image results.
+//
+// Existing inlineData takes precedence over inline_data, while a blank MIME
+// spelling permits its alternate spelling or decoded MIME. Invalid or empty
+// base64 sources are skipped before selecting the final retained image.
+// Selection follows part order and does not inspect a thought flag, so the
+// returned creative result represents that ordered selection rather than all
+// inline image observations.
 func ParseImageOutputs(body []byte, httpError func(int, string) error) ([]upstream.ImageOutput, error) {
 	parts := gjson.GetBytes(body, "candidates.0.content.parts")
 	if !parts.IsArray() || len(parts.Array()) == 0 {
@@ -91,6 +150,8 @@ func ParseImageOutputs(body []byte, httpError func(int, string) error) ([]upstre
 		if raw == "" {
 			continue
 		}
+		// Skip an undecodable or empty inline source so a malformed later part
+		// cannot displace the last usable image already accepted from earlier parts.
 		decoded, err := upstream.DecodeBase64Image(raw)
 		if err != nil || len(decoded.Bytes) == 0 {
 			continue
@@ -107,7 +168,9 @@ func ParseImageOutputs(body []byte, httpError func(int, string) error) ([]upstre
 	if len(outputs) == 0 {
 		return nil, httpError(http.StatusBadGateway, "gemini upstream returned no image output")
 	}
-	// Vertex 高分辨率生成可能先返回 thought image，再返回最终图片；最终图片位于最后一个 image part。
+	// Select one creative result from the decoded part sequence and reset its
+	// index to zero; this choice uses ordering and does not examine thought
+	// metadata.
 	outputs = outputs[len(outputs)-1:]
 	for index := range outputs {
 		outputs[index].Index = index
@@ -115,6 +178,17 @@ func ParseImageOutputs(body []byte, httpError func(int, string) error) ([]upstre
 	return outputs, nil
 }
 
+// GenerateImages selects an endpoint, authenticates the image request, and
+// returns its selected creative image result. Callers supply callbacks for the
+// selected ImageOptions route, and optional lifecycle registration remains
+// held through response closing.
+//
+// Project-bearing OAuth wraps the serialized request for Code Assist, service
+// accounts use VertexURL, and remaining routes use validated REST
+// construction. API-key acquisition occurs again when setting authentication,
+// and ApplyHeaders can override prepared headers before Do. The bounded
+// response read precedes error-status mapping and optional OAuth unwrapping;
+// decoding then returns the final decodable image of the first candidate.
 func GenerateImages(ctx context.Context, request wire.ImageGenerateRequest, options ImageOptions) ([]upstream.ImageOutput, error) {
 	if options.Enter != nil {
 		done, err := options.Enter()
@@ -132,13 +206,17 @@ func GenerateImages(ctx context.Context, request wire.ImageGenerateRequest, opti
 	projectID := strings.TrimSpace(options.ProjectID)
 	switch {
 	case options.Mode == ServiceAccountCredential:
-		// Vertex 服务账号：{location}-aiplatform.../v1/projects/.../models/{model}:generateContent + Bearer。
+		// Resolve the service-account model resource through the supplied Vertex
+		// builder before authentication so project and location stay with the caller
+		// selected endpoint policy.
 		targetURL, err = options.VertexURL()
 		if err != nil {
 			return nil, options.Invalid("build vertex gemini url: %s", err.Error())
 		}
 	case options.Mode == OAuthCredential && projectID != "":
-		// Code Assist：v1internal 包装请求。
+		// Include the caller project and model alongside generation data for the
+		// internal endpoint, keeping its routing envelope distinct from the REST
+		// request shape.
 		baseURL, validateErr := options.ValidateURL(codeassist.GeminiCliBaseURL)
 		if validateErr != nil {
 			return nil, options.HTTPError(0, validateErr.Error())
@@ -168,7 +246,9 @@ func GenerateImages(ctx context.Context, request wire.ImageGenerateRequest, opti
 			return nil, options.Invalid("build gemini url: %s", err.Error())
 		}
 	default:
-		// OAuth（无 project_id）：AI Studio Bearer 模式。
+		// A remaining mode uses the REST endpoint builder and bearer authentication;
+		// callers validate supported credential modes before passing image options
+		// to this technical operation.
 		baseURL, validateErr := options.ValidateGeminiBaseURL(options.BaseURL())
 		if validateErr != nil {
 			return nil, options.Invalid("gemini base url invalid: %s", validateErr.Error())
@@ -187,7 +267,9 @@ func GenerateImages(ctx context.Context, request wire.ImageGenerateRequest, opti
 	if err := applyImageAuth(ctx, req, options); err != nil {
 		return nil, err
 	}
-	// 提供商级请求头覆写最后应用，配置值优先于内置默认头。
+	// Apply caller header handling after authentication so its allowed overrides
+	// can replace built-in values before the selected transport sends this
+	// prepared request.
 	options.ApplyHeaders(req.Header)
 
 	resp, err := options.Do(req)
@@ -202,7 +284,9 @@ func GenerateImages(ctx context.Context, request wire.ImageGenerateRequest, opti
 	if resp.StatusCode >= 400 {
 		return nil, options.HTTPError(resp.StatusCode, options.ErrorMessage(respBody))
 	}
-	// Code Assist 模式的响应包裹在 response 字段内。
+	// Unwrap only the project-bearing OAuth response because that route used the
+	// internal envelope; REST and service-account responses already carry the
+	// selected generation payload.
 	if options.Mode == OAuthCredential && projectID != "" {
 		respBody, err = UnwrapGeminiResponse(respBody)
 		if err != nil {
@@ -212,7 +296,9 @@ func GenerateImages(ctx context.Context, request wire.ImageGenerateRequest, opti
 	return ParseImageOutputs(respBody, options.HTTPError)
 }
 
-// applyImageAuth 按提供商类型设置鉴权头：apikey 用 x-goog-api-key，其余用 Bearer token。
+// applyImageAuth sets an API-key header or acquires a bearer token from the
+// selected callback. Blank API keys and absent bearer callbacks return input
+// errors; OAuth mode also selects the Gemini CLI User-Agent.
 func applyImageAuth(ctx context.Context, req *http.Request, options ImageOptions) error {
 	if options.Mode == APIKeyCredential {
 		apiKey := strings.TrimSpace(options.APIKey())

@@ -8,41 +8,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResolveRebateRatePercent_PerUserOverride 验证邀请人的专属比例优先于全局比例，
-// NULL 会回退到全局比例，越界专属比例会被静默裁剪到允许范围。
+// Custom inviter percentages use a separate nil state so clearing an override
+// can return to global policy while an explicit zero disables that inviter's
+// reward. Focused tests exercise percentage validation, email masking
+// examples, and accepted normalized invitation-code text.
+
+// TestResolveRebateRatePercent_PerUserOverride compares a nil override with
+// custom, zero, excessive, and negative values.
 //
-// 这里故意让 SettingService 为 nil，使 globalRebateRatePercent 返回默认值，
-// 以覆盖不额外搭建设置 stub 的兜底路径。
+// It protects custom-rate precedence and endpoint clamping while the missing
+// settings reader supplies the global default.
 func TestResolveRebateRatePercent_PerUserOverride(t *testing.T) {
 	t.Parallel()
 	svc := &AffiliateService{}
 
-	// nil 专属比例会回退到全局默认值。
+	// Compare default, custom, zero, and clamped percentages with a 1e-9
+	// tolerance so these policy assertions accept tiny float representation
+	// differences. A nil override uses the global default.
 	require.InDelta(t, AffiliateRebateRateDefault,
 		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{}), 1e-9)
 
-	// 设置专属比例后优先生效。
+	// A custom rate takes precedence.
 	rate := 50.0
 	require.InDelta(t, 50.0,
 		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &rate}), 1e-9)
 
-	// 专属比例为 0 表示明确不返利。
+	// A zero override disables rebates for this inviter.
 	zero := 0.0
 	require.InDelta(t, 0.0,
 		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &zero}), 1e-9)
 
-	// 高于最大值时会裁剪到最大值。
+	// Rates above the maximum are clamped.
 	tooHigh := 250.0
 	require.InDelta(t, AffiliateRebateRateMax,
 		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &tooHigh}), 1e-9)
 
-	// 低于最小值时会裁剪到最小值。
+	// Rates below the minimum are clamped.
 	tooLow := -5.0
 	require.InDelta(t, AffiliateRebateRateMin,
 		svc.resolveRebateRatePercent(context.Background(), &AffiliateSummary{AffRebateRatePercent: &tooLow}), 1e-9)
 }
 
-// TestIsEnabled_NilSettingServiceReturnsDefault 验证设置服务缺失时安全返回默认关闭状态。
+// TestIsEnabled_NilSettingServiceReturnsDefault constructs a service without
+// a settings reader.
+//
+// It checks that IsEnabled returns both false and the configured affiliate
+// default for that missing dependency.
 func TestIsEnabled_NilSettingServiceReturnsDefault(t *testing.T) {
 	t.Parallel()
 	svc := &AffiliateService{}
@@ -50,8 +61,10 @@ func TestIsEnabled_NilSettingServiceReturnsDefault(t *testing.T) {
 	require.Equal(t, AffiliateEnabledDefault, svc.IsEnabled(context.Background()))
 }
 
-// TestValidateExclusiveRate_BoundaryAndInvalid 覆盖管理端专属比例校验：
-// nil 表示清除，范围内数值通过，NaN/Inf 和越界值会返回 BadRequest。
+// TestValidateExclusiveRate_BoundaryAndInvalid passes nil, finite boundary
+// and interior percentages, out-of-range numbers, NaN, and both infinities.
+//
+// It checks that only nil or accepted finite percentages pass validation.
 func TestValidateExclusiveRate_BoundaryAndInvalid(t *testing.T) {
 	t.Parallel()
 	require.NoError(t, validateExclusiveRate(nil))
@@ -72,6 +85,10 @@ func TestValidateExclusiveRate_BoundaryAndInvalid(t *testing.T) {
 	require.Error(t, validateExclusiveRate(&negInf))
 }
 
+// TestMaskEmail supplies an ordinary email, a one-character local part with
+// an undotted domain, and empty text.
+//
+// It protects their exact masks and the empty-string result.
 func TestMaskEmail(t *testing.T) {
 	t.Parallel()
 	require.Equal(t, "a***@g***.com", maskEmail("alice@gmail.com"))
@@ -79,17 +96,21 @@ func TestMaskEmail(t *testing.T) {
 	require.Equal(t, "", maskEmail(""))
 }
 
+// TestIsValidAffiliateCodeFormat supplies generated-style and
+// administrator-style normalized codes alongside invalid byte lengths and
+// characters.
+//
+// It protects uppercase ASCII admission, permitted punctuation, and rejection
+// of lowercase or non-ASCII text.
 func TestIsValidAffiliateCodeFormat(t *testing.T) {
 	t.Parallel()
 
-	// 邀请码格式校验同时服务于：
-	// 1) 系统自动生成的 12 位随机码（A-Z 去 I/O，2-9 去 0/1）
-	// 2) 管理员设置的自定义专属码（如 "VIP2026"、"NEW_USER-1"）
-	// 因此校验放宽到 [A-Z0-9_-]{4,32}（要求调用方先 ToUpper）。
+	// Generated codes use a smaller alphabet, while administrator codes may
+	// include I, O, 0, and 1 under the shared format rules.
 	cases := []struct {
-		name string
-		in   string
-		want bool
+		name string // test case description
+		in   string // supplied code text
+		want bool   // expected format admission
 	}{
 		{"valid canonical 12-char", "ABCDEFGHJKLM", true},
 		{"valid all digits 2-9", "234567892345", true},
@@ -98,7 +119,7 @@ func TestIsValidAffiliateCodeFormat(t *testing.T) {
 		{"valid admin custom with hyphen", "NEW-USER", true},
 		{"valid admin custom with underscore", "VIP_2026", true},
 		{"valid 32-char max", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", true},
-		// 管理员自定义码允许 I/O/0/1 等历史上排除过的字符。
+		// Custom codes may contain I, O, 0, and 1, which generated codes exclude.
 		{"letter I now allowed", "IBCDEFGHJKLM", true},
 		{"letter O now allowed", "OBCDEFGHJKLM", true},
 		{"digit 0 now allowed", "0BCDEFGHJKLM", true},
@@ -107,7 +128,7 @@ func TestIsValidAffiliateCodeFormat(t *testing.T) {
 		{"too long (33 chars)", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456", false},
 		{"lowercase rejected (caller must ToUpper first)", "abcdefghjklm", false},
 		{"empty", "", false},
-		{"utf8 non-ascii", "ÄÄÄÄÄÄ", false}, // 非 ASCII 字节不在允许字符集内
+		{"utf8 non-ascii", "ÄÄÄÄÄÄ", false}, // Non-ASCII bytes are outside the accepted character set.
 		{"ascii punctuation .", "ABCDEFGHJK.M", false},
 		{"whitespace", "ABCDEFGHJK M", false},
 	}

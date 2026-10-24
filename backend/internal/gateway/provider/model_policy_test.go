@@ -17,6 +17,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/bedrock"
 )
 
+// TestResolveProviderUpstreamModelRegistersFinalRedirectStage combines a Key
+// redirect trace with provider mapping to an upstream name. Resolution returns
+// that final name and adds it to the response model stages.
 func TestResolveProviderUpstreamModelRegistersFinalRedirectStage(t *testing.T) {
 	ctx := modeltrace.WithContext(
 		context.Background(),
@@ -36,6 +39,10 @@ func TestResolveProviderUpstreamModelRegistersFinalRedirectStage(t *testing.T) {
 	require.Equal(t, []string{"key-target", "upstream-target"}, mustAPIKeyResponseModels(t, ctx))
 }
 
+// TestResolveBedrockModelID resolves known aliases, mapped aliases,
+// force-global settings, and explicit base IDs across source regions. Expected
+// regional/global identifiers are returned while the unsupported alias is
+// rejected.
 func TestResolveBedrockModelID(t *testing.T) {
 	t.Run("default alias resolves and adjusts region", func(t *testing.T) {
 		provider := &providercore.Record{
@@ -158,14 +165,23 @@ func TestResolveBedrockModelID(t *testing.T) {
 	})
 }
 
-// TestResolveBedrockModelRoute_RegionMatrix 验证同一来源区域的不同型号必须遵守各自的精确推理 ID，不能用统一前缀猜测。
+// TestResolveBedrockModelRoute_RegionMatrix varies registered models, source
+// regions, and force-global settings. Route/result parity retains source
+// region, produces expected model IDs or typed failure reasons, and limits
+// global diagnostic hints to supported cases.
 func TestResolveBedrockModelRoute_RegionMatrix(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
+		// name: routing scenario label. model: requested Bedrock
+		// identity. region: configured source region. want: expected
+		// outbound model.
 		name, model, region, want string
-		global                    bool
-		failure                   bedrock.BedrockRoutingFailure
-		globalHint                bool
+		// force-global provider route setting
+		global bool
+		// expected typed routing failure
+		failure bedrock.BedrockRoutingFailure
+		// expected global routing diagnostic hint
+		globalHint bool
 	}{
 		{name: "大阪 Opus 4.7", model: "claude-opus-4-7", region: "ap-northeast-3", want: "jp.anthropic.claude-opus-4-7"},
 		{name: "墨尔本 Opus 4.8", model: "claude-opus-4-8", region: "ap-southeast-4", want: "au.anthropic.claude-opus-4-8"},
@@ -220,15 +236,18 @@ func TestResolveBedrockModelRoute_RegionMatrix(t *testing.T) {
 			require.Equal(t, tc.globalHint, failure.GlobalAvailable)
 			require.NotContains(t, err.Error(), tc.region)
 			if tc.globalHint {
-				require.Contains(t, bedrock.BedrockRoutingDiagnostic(err), "可开启“强制全局”")
+				require.Contains(t, bedrock.BedrockRoutingDiagnostic(err), "enable Force Global")
 			} else {
-				require.NotContains(t, bedrock.BedrockRoutingDiagnostic(err), "可开启")
+				require.NotContains(t, bedrock.BedrockRoutingDiagnostic(err), "enable Force Global")
 			}
 		})
 	}
 }
 
-// TestResolveBedrockModelRoute_OpaqueIDsAndProviderMapping 检查资源 ID 和提供商映射结果是否原样透传。
+// TestResolveBedrockModelRoute_OpaqueIDsAndProviderMapping maps client aliases
+// to opaque resources and unregistered explicit IDs before route resolution.
+// Those values remain unchanged, credentials stay unmodified, and known
+// aliases still use normalized source-region rules.
 func TestResolveBedrockModelRoute_OpaqueIDsAndProviderMapping(t *testing.T) {
 	t.Parallel()
 	for _, modelID := range []string{
@@ -267,15 +286,21 @@ func TestResolveBedrockModelRoute_OpaqueIDsAndProviderMapping(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestResolveBedrockModelID_OfficialVersionlessModels 验证无版本号的官方模型名解析为 Bedrock 模型 ID。
-// 默认别名必须生成官方请求地址，且无版本后缀的模型仍保留新版缓存能力。
+// TestResolveBedrockModelID_OfficialVersionlessModels resolves listed
+// versionless Claude models under regional and global scope. Model IDs form
+// expected invoke URLs and preserve the tested one-hour cache TTL in request
+// preparation.
 func TestResolveBedrockModelID_OfficialVersionlessModels(t *testing.T) {
 	t.Parallel()
 	for _, model := range []string{"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5"} {
 		t.Run(model, func(t *testing.T) {
 			for _, scope := range []struct {
+				// name: inference scope label. region: source
+				// region identity. prefix: expected inference
+				// namespace.
 				name, region, prefix string
-				forceGlobal          bool
+				// force-global provider route setting
+				forceGlobal bool
 			}{
 				{name: "区域推理", region: "eu-west-1", prefix: "eu"},
 				{name: "全局推理", region: "us-east-1", prefix: "global", forceGlobal: true},
@@ -302,13 +327,22 @@ func TestResolveBedrockModelID_OfficialVersionlessModels(t *testing.T) {
 	}
 }
 
+// TestResolveOpenAIForwardModel compares dispatch-mapped, provider-mapped,
+// passthrough, blank, and ordinary request names. Dispatch identity precedes
+// one provider hop, while absent dispatch data retains the supplied request
+// identity.
 func TestResolveOpenAIForwardModel(t *testing.T) {
 	tests := []struct {
-		name                        string
-		provider                    *providercore.Record
-		requestedModel              string
+		// forward model scenario label
+		name string
+		// configured mapping provider fixture
+		provider *providercore.Record
+		// post-group request model identity
+		requestedModel string
+		// optional Messages dispatch model
 		messagesDispatchMappedModel string
-		expectedModel               string
+		// expected mapped forward model
+		expectedModel string
 	}{
 		{
 			name:                        "uses messages dispatch model for known claude family",
@@ -431,12 +465,16 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 	}
 }
 
+// TestResolveOpenAICompactForwardModel checks exact, wildcard, identity,
+// absent, and nil Compact mappings against a fixed model. The dedicated helper
+// selects the expected mapped or unchanged name.
 func TestResolveOpenAICompactForwardModel(t *testing.T) {
 	tests := []struct {
-		name          string
+		name string // Compact mapping scenario label
+		// configured Compact provider fixture
 		provider      *providercore.Record
-		model         string
-		expectedModel string
+		model         string // request model under resolution
+		expectedModel string // expected Compact model identity
 	}{
 		{
 			name:          "nil provider keeps original model",
@@ -494,6 +532,10 @@ func TestResolveOpenAICompactForwardModel(t *testing.T) {
 	}
 }
 
+// TestResolveOpenAIForwardMappedModels_CompactMappingPrecedence combines
+// conflicting ordinary and Compact mappings with OAuth, passthrough, and raw
+// Chat. Billing keeps ordinary identity while Compact outbound priority
+// follows the request or mapped name as configured.
 func TestResolveOpenAIForwardMappedModels_CompactMappingPrecedence(t *testing.T) {
 	conflictingMappings := map[string]any{
 		"model_mapping":         map[string]any{"gpt-5.5": "gpt-5.4"},
@@ -504,11 +546,12 @@ func TestResolveOpenAIForwardMappedModels_CompactMappingPrecedence(t *testing.T)
 		"compact_model_mapping": map[string]any{"gpt-5.4": "gpt-5.4-openai-compact"},
 	}
 	tests := []struct {
-		name           string
+		name string // billing upstream mapping case
+		// configured model policy record
 		provider       *providercore.Record
-		requireCompact bool
-		wantBilling    string
-		wantUpstream   string
+		requireCompact bool   // Compact endpoint selection flag
+		wantBilling    string // expected ordinary billing model
+		wantUpstream   string // expected final upstream model
 	}{
 		{
 			name: "compact uses client-visible model before ordinary mapping",
@@ -577,12 +620,17 @@ func TestResolveOpenAIForwardMappedModels_CompactMappingPrecedence(t *testing.T)
 	}
 }
 
+// TestCanonicalOpenAIProviderSchedulingModelMatchesForwardSemantics checks
+// ordinary OpenAI identity, one-hop passthrough mapping, and a Grok target
+// with a GPT name. Scheduling keys retain the expected executed model without
+// an extra mapping hop.
 func TestCanonicalOpenAIProviderSchedulingModelMatchesForwardSemantics(t *testing.T) {
 	tests := []struct {
-		name     string
+		name string // model normalization scenario label
+		// configured provider model policy
 		provider *providercore.Record
-		model    string
-		want     string
+		model    string // requested complete model identity
+		want     string // expected final model identity
 	}{
 		{
 			name:     "OpenAI OAuth preserves bare GPT-5.6 identity",
@@ -617,6 +665,10 @@ func TestCanonicalOpenAIProviderSchedulingModelMatchesForwardSemantics(t *testin
 	}
 }
 
+// TestResolveOpenAIErrorSchedulingModelPrefersActualUpstreamModel supplies
+// different billing and Compact upstream names, then omits upstream identity.
+// Error scheduling uses the observed upstream value first and billing identity
+// when absent.
 func TestResolveOpenAIErrorSchedulingModelPrefersActualUpstreamModel(t *testing.T) {
 	if got := ErrorSchedulingModel("gpt-5.4", "gpt-5.5-openai-compact"); got != "gpt-5.5-openai-compact" {
 		t.Fatalf("error scheduling model = %q, want compact upstream model", got)
@@ -626,7 +678,9 @@ func TestResolveOpenAIErrorSchedulingModelPrefersActualUpstreamModel(t *testing.
 	}
 }
 
-// TestOpenAIUpstreamPreservesModelID 检查最终请求使用完整模型名称。
+// TestOpenAIUpstreamPreservesModelID passes full version, suffix, Spark,
+// image, and unknown model identifiers through a record-free policy. The
+// returned outbound names equal each listed input.
 func TestOpenAIUpstreamPreservesModelID(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.3-codex-spark":       "gpt-5.3-codex-spark",
@@ -647,12 +701,16 @@ func TestOpenAIUpstreamPreservesModelID(t *testing.T) {
 	}
 }
 
+// TestNormalizeOpenAIModelForUpstream varies nil, OAuth, and API Key policies
+// with padded, prefixed, ordinary, and unknown IDs. Normalization trims the
+// tested whitespace while retaining full identifiers.
 func TestNormalizeOpenAIModelForUpstream(t *testing.T) {
 	tests := []struct {
-		name     string
+		name string // model normalization scenario label
+		// configured provider model policy
 		provider *providercore.Record
-		model    string
-		want     string
+		model    string // requested complete model identity
+		want     string // expected final model identity
 	}{
 		{
 			name:     "nil provider only trims whitespace",
@@ -731,7 +789,9 @@ func TestNormalizeOpenAIModelForUpstream(t *testing.T) {
 	}
 }
 
-// TestPreparedModelPolicyParity 目录快照与执行入口共用各平台的最终型号规则。
+// TestPreparedModelPolicyParity compares captured and live rules across
+// platform and credential configurations with both thinking states. Support,
+// upstream, listing, and limit-key results agree for every listed model.
 func TestPreparedModelPolicyParity(t *testing.T) {
 	parent := int64(10)
 	records := []*providercore.Record{

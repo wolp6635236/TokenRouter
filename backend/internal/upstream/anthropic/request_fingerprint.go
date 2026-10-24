@@ -19,25 +19,49 @@ import (
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
+// request_fingerprint.go maintains provider fingerprints and rewrites OAuth
+// metadata identities and masked sessions.
+// OAuth requests can reuse one provider fingerprint even when client headers
+// change between requests. User-Agent acceptance precedes persistence so
+// malformed local-build versions and implausible Claude CLI major versions
+// cannot direct the normal upgrade path.
+//
+// Cached identity is repaired when invalid, upgraded for acceptable newer
+// versions of the same product, and lazily written after the renewal interval.
+// Missing SDK headers keep cached values during merging. Metadata rewriting
+// combines the cached device, provider account, and provider-scoped session
+// seed, then selects its wire format from the fingerprint User-Agent. Optional
+// masking reuses a provider session value and renews its cache expiry. Cache
+// reads, writes, and metadata edits are best effort where documented, and
+// separate cache operations do not serialize concurrent creation or masking
+// decisions.
+
 const (
+	// ClaudeCLIUserAgentProduct identifies the product whose cached UA also
+	// obeys the configured Claude CLI major-version window.
 	ClaudeCLIUserAgentProduct = "claude-cli"
-	// 限制持久化 User-Agent 长度，避免异常客户端把超长值写入提供商缓存。
+	// MaxFingerprintUserAgentLength caps the trimmed UA's byte length before
+	// persistent identity selection, limiting the accepted cache value size.
 	MaxFingerprintUserAgentLength = 256
-	// MaxClaudeCLIMajorVersionSkew 是 claude-cli 主版本号相对 tokenrouter 自身伪装
-	// 版本（CLIVersion()）允许的最大超前量。给足两个大版本的升级
-	// 窗口，同时挡掉 999 这类哨兵版本号。
+	// MaxClaudeCLIMajorVersionSkew permits a Claude CLI UA two major versions
+	// ahead of the configured current version during cache admission.
 	MaxClaudeCLIMajorVersionSkew = 2
 )
 
 var (
-	// 预编译正则表达式（避免每次调用重新编译）
-	// 匹配 User-Agent 版本号: xxx/x.y.z。
+	// UserAgentVersionRegex finds the slash-prefixed numeric triple used by
+	// version comparison; fingerprint admission separately checks the full
+	// leading product shape.
 	UserAgentVersionRegex = regexp.MustCompile(`/(\d+)\.(\d+)\.(\d+)`)
 
-	// 校验可写入提供商级持久指纹的 User-Agent 形态，版本号后只允许空白或结束。
+	// FingerprintUserAgentPattern requires a leading product and three numeric
+	// version parts followed by whitespace or end-of-input before a UA can be
+	// cached.
 	FingerprintUserAgentPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/\d+\.\d+\.\d+(\s|$)`)
 
-	// 默认指纹值（当客户端未提供时使用）。
+	// DefaultFingerprint supplies the accepted default UA and SDK values used
+	// when client creation inputs are missing; upgrades retain omitted cached
+	// SDK fields.
 	DefaultFingerprint = Fingerprint{
 		UserAgent:               "claude-cli/" + CLIVersion() + " (external, cli)",
 		StainlessLang:           "js",
@@ -49,49 +73,84 @@ var (
 	}
 )
 
-// Fingerprint represents provider fingerprint data.
+// Fingerprint contains provider-level device identity, UA, and SDK headers used
+// during OAuth request preparation. Returned cached values can be updated
+// during repair or renewal.
 type Fingerprint struct {
-	ClientID                string
-	UserAgent               string
-	StainlessLang           string
-	StainlessPackageVersion string
-	StainlessOS             string
-	StainlessArch           string
-	StainlessRuntime        string
-	StainlessRuntimeVersion string
-	UpdatedAt               int64 `json:",omitempty"` // Unix timestamp，用于判断是否需要续期TTL
+	// ClientID is generated when a fingerprint is created and retained through
+	// cached UA repair or upgrade. Metadata rewriting uses it as the provider's
+	// selected device component.
+	ClientID string
+	// UserAgent selects outbound UA and metadata wire format. Cached creation,
+	// upgrade, and repair paths validate it before selecting provider identity,
+	// while ApplyFingerprint writes a supplied nonempty value.
+	UserAgent string
+	// StainlessLang, StainlessPackageVersion, StainlessOS, StainlessArch,
+	// StainlessRuntime, and StainlessRuntimeVersion supply SDK headers.
+	// Creation fills empty values from DefaultFingerprint; upgrades retain
+	// cached values for omitted headers.
+	StainlessLang           string // SDK implementation language label
+	StainlessPackageVersion string // SDK package version string
+	StainlessOS             string // SDK operating system label
+	StainlessArch           string // SDK processor architecture label
+	StainlessRuntime        string // SDK execution runtime label
+	StainlessRuntimeVersion string // SDK execution runtime version
+	// UpdatedAt records the last selected write in Unix seconds. Zero or a
+	// timestamp more than twenty-four hours old triggers lazy renewal when no
+	// repair or version upgrade already requires a write.
+	UpdatedAt int64 `json:",omitempty"`
 }
 
-// FingerprintCache defines cache operations for identity service.
+// FingerprintCache reads and writes provider identity and optional session
+// masks. RequestFingerprint performs separate operations, so implementations
+// define persistence failures, expiry, and value ownership.
 type FingerprintCache interface {
+	// GetFingerprint returns the cached fingerprint or a missing/error result.
+	// RequestFingerprint creates identity when the read fails or returns nil,
+	// and mutates returned values during repair or renewal. Implementations
+	// permit that mutation and coordinate any shared storage.
 	GetFingerprint(ctx context.Context, providerID int64) (*Fingerprint, error)
+	// SetFingerprint stores the selected provider fingerprint and reports
+	// persistence failure. RequestFingerprint can still use the selected value
+	// after an error; the Redis adapter renews its seven-day expiry on success.
 	SetFingerprint(ctx context.Context, providerID int64, fp *Fingerprint) error
-	// GetMaskedSessionID 获取固定的会话 ID（用于会话 ID 伪装功能）
-	// 返回的 sessionID 是一个 UUID 格式的字符串
-	// 如果不存在或已过期（15 分钟无请求），返回空字符串
+	// GetMaskedSessionID returns the provider's session mask or an absent/error
+	// result. The Redis adapter returns empty after missing or idle-expired
+	// entries, while RequestFingerprint keeps ordinary rewriting when this read
+	// fails.
 	GetMaskedSessionID(ctx context.Context, providerID int64) (string, error)
-	// SetMaskedSessionID 设置固定的会话 ID，TTL 为 15 分钟
-	// 每次调用都会刷新 TTL
+	// SetMaskedSessionID stores a provider mask and reports write failure. The
+	// Redis adapter renews its fifteen-minute idle expiry; RequestFingerprint
+	// still attempts the metadata edit with that mask after persistence fails.
 	SetMaskedSessionID(ctx context.Context, providerID int64, sessionID string) error
 }
 
-// RequestFingerprint 管理 OAuth 提供商的请求身份指纹。
+// RequestFingerprint prepares OAuth provider identity through a configured
+// cache and metadata transformation rules.
 type RequestFingerprint struct {
+	// cache supplies provider fingerprint and session-mask reads and writes.
+	// The service requires a usable implementation and keeps those operations
+	// separate through identity preparation.
 	cache FingerprintCache
 }
 
-// IsAcceptableFingerprintUserAgent 判断 User-Agent 是否适合作为提供商级持久身份。
-// 指纹只升不降且会随活跃请求续期，因此本地构建后缀或不可信高版本一旦写入，
-// 会长期覆盖同提供商的所有后续上游请求。
+// IsAcceptableFingerprintUserAgent reports whether a trimmed User-Agent is
+// eligible for provider identity caching. It requires the configured byte limit
+// and product/version shape. Claude CLI values also parse their version and
+// stay within the current major-version window; other products use the shape
+// and length checks.
 func IsAcceptableFingerprintUserAgent(userAgent string) bool {
 	userAgent = strings.TrimSpace(userAgent)
+	// Bound the trimmed UA bytes admitted to provider caching.
 	if userAgent == "" || len(userAgent) > MaxFingerprintUserAgentLength {
 		return false
 	}
 	if !FingerprintUserAgentPattern.MatchString(userAgent) {
 		return false
 	}
-	// 其它产品只校验稳定形态，避免把 Claude CLI 的版本窗口误用于第三方客户端。
+	// The Claude major-version window applies to that product's cached
+	// identity. Other products stop after the leading version shape and trimmed
+	// length are accepted.
 	if ExtractProduct(userAgent) != ClaudeCLIUserAgentProduct {
 		return true
 	}
@@ -100,31 +159,49 @@ func IsAcceptableFingerprintUserAgent(userAgent string) bool {
 		return false
 	}
 	currentMajor, _, _, currentOK := ParseUserAgentVersion(ClaudeCLIUserAgentProduct + "/" + CLIVersion())
+	// If the configured current CLI version cannot be parsed, the
+	// format-accepted client UA remains eligible. This path leaves the
+	// major-window comparison unavailable for admission.
 	if !currentOK {
 		return true
 	}
+	// Reject implausible CLI majors before persistent upgrade selection can use
+	// them.
 	return major <= currentMajor+MaxClaudeCLIMajorVersionSkew
 }
 
-// NewRequestFingerprint 创建新的 RequestFingerprint。
+// NewRequestFingerprint binds provider identity preparation to the supplied
+// FingerprintCache. Callers provide a usable cache for fingerprint lookup and
+// masking; the service performs separate reads and writes through that
+// dependency.
 func NewRequestFingerprint(cache FingerprintCache) *RequestFingerprint {
 	return &RequestFingerprint{cache: cache}
 }
 
-// GetOrCreateFingerprint 获取或创建提供商的指纹
-// 如果缓存存在，检测 user-agent 版本，新版本则更新
-// 如果缓存不存在，生成随机 ClientID 并从请求头创建指纹，然后缓存。
+// GetOrCreateFingerprint selects a cached, repaired, upgraded, or newly created
+// provider fingerprint. Cache read failure or an absent value creates identity
+// from client headers and defaults with a generated ClientID. Handled cache
+// failures return the selected fingerprint with a nil error; failed writes are
+// logged while that identity remains usable.
+//
+// An invalid cached User-Agent is repaired before renewal; an acceptable newer
+// version of the same product merges supplied SDK headers. Otherwise the cached
+// fields remain until a lazy write is due. The method mutates the returned
+// cache value during repair or renewal and logs persistence failures. Cache
+// operations remain separate, so callers cannot infer atomic selection across
+// concurrent requests from this method.
 func (s *RequestFingerprint) GetOrCreateFingerprint(ctx context.Context, providerID int64, headers http.Header) (*Fingerprint, error) {
-	// 创建、升级和历史缓存自愈必须共用同一份校验结果。
+	// Use the same UA validation for creation, upgrades, and cached-value
+	// repair.
 	clientUA := strings.TrimSpace(headers.Get("User-Agent"))
 	uaAcceptable := IsAcceptableFingerprintUserAgent(clientUA)
 
-	// 尝试从缓存获取指纹
 	cached, err := s.cache.GetFingerprint(ctx, providerID)
 	if err == nil && cached != nil {
 		needWrite := false
 
-		// 仅在非法值原本会升级缓存时记录拒绝，避免异常客户端高频重试刷屏。
+		// Log invalid client versions only when they would otherwise upgrade
+		// the cache.
 		if !uaAcceptable && clientUA != "" && IsNewerVersion(clientUA, cached.UserAgent) {
 			logger.LegacyPrintf("service.identity",
 				"Rejected fingerprint user-agent for provider %d: %q (malformed or implausible version)",
@@ -132,7 +209,9 @@ func (s *RequestFingerprint) GetOrCreateFingerprint(ctx context.Context, provide
 		}
 
 		if !IsAcceptableFingerprintUserAgent(cached.UserAgent) {
-			// 历史污染指纹会被活跃提供商持续续期，读取时用合法客户端值或默认值自愈。
+			// Repair an invalid cached UA before checking lazy renewal so
+			// continued traffic cannot keep selecting the poisoned value solely
+			// by updating its timestamp.
 			poisonedUA := cached.UserAgent
 			if uaAcceptable {
 				MergeHeadersIntoFingerprint(cached, headers)
@@ -144,20 +223,25 @@ func (s *RequestFingerprint) GetOrCreateFingerprint(ctx context.Context, provide
 				"Replaced malformed cached fingerprint for provider %d: %q -> %q",
 				providerID, poisonedUA, cached.UserAgent)
 		} else if uaAcceptable && IsNewerVersion(clientUA, cached.UserAgent) {
-			// 版本升级时更新请求携带的字段，其余字段使用缓存值
-			// 避免缺失的头被硬编码默认值覆盖（如新 CLI 版本 + 旧 SDK 默认值的不一致）
+			// A version upgrade merges the client's supplied SDK fields into
+			// cached identity. Omitted SDK headers keep their cached values,
+			// maintaining that provider's selected header set.
 			MergeHeadersIntoFingerprint(cached, headers)
 			needWrite = true
 			logger.LegacyPrintf("service.identity", "Updated fingerprint for provider %d: %s (merge update)", providerID, clientUA)
 		}
 
 		if !needWrite && time.Since(time.Unix(cached.UpdatedAt, 0)) > 24*time.Hour {
-			// 距上次写入超过 24 小时，续期 TTL
+			// Renew active fingerprints before their Redis seven-day expiry can
+			// lapse.
 			needWrite = true
 		}
 
 		if needWrite {
 			cached.UpdatedAt = time.Now().Unix()
+			// The repaired or renewed value remains usable for this request
+			// even if the cache write fails. Log that persistence failure while
+			// returning the selected identity.
 			if err := s.cache.SetFingerprint(ctx, providerID, cached); err != nil {
 				logger.LegacyPrintf("service.identity", "Warning: failed to refresh fingerprint for provider %d: %v", providerID, err)
 			}
@@ -165,7 +249,9 @@ func (s *RequestFingerprint) GetOrCreateFingerprint(ctx context.Context, provide
 		return cached, nil
 	}
 
-	// 首次创建也是持久化入口，非法值必须回退默认指纹。
+	// A missing cache value or failed read starts creation from accepted client
+	// headers and defaults. This request can select identity even while cache
+	// availability is degraded.
 	if !uaAcceptable && clientUA != "" {
 		logger.LegacyPrintf("service.identity",
 			"Rejected fingerprint user-agent for provider %d: %q (malformed or implausible version)",
@@ -173,11 +259,12 @@ func (s *RequestFingerprint) GetOrCreateFingerprint(ctx context.Context, provide
 	}
 	fp := s.createFingerprintFromHeaders(headers)
 
-	// 生成随机 ClientID
 	fp.ClientID = GenerateClientID()
 	fp.UpdatedAt = time.Now().Unix()
 
-	// 保存到缓存（7 天 TTL，每 24 小时自动续期）
+	// Creation assigns device identity and a selected write timestamp before
+	// cache publication. A failed write is logged while the new fingerprint is
+	// still returned for preparation.
 	if err := s.cache.SetFingerprint(ctx, providerID, fp); err != nil {
 		logger.LegacyPrintf("service.identity", "Warning: failed to cache fingerprint for provider %d: %v", providerID, err)
 	}
@@ -186,18 +273,22 @@ func (s *RequestFingerprint) GetOrCreateFingerprint(ctx context.Context, provide
 	return fp, nil
 }
 
-// createFingerprintFromHeaders 从请求头创建指纹。
+// createFingerprintFromHeaders returns a fingerprint with accepted client UA
+// and supplied SDK fields. Rejected or absent UA uses DefaultFingerprint, and
+// empty SDK header values use its defaults. ClientID and UpdatedAt are assigned
+// by GetOrCreateFingerprint after this header preparation.
 func (s *RequestFingerprint) createFingerprintFromHeaders(headers http.Header) *Fingerprint {
 	fp := &Fingerprint{}
 
-	// 只有稳定形态且版本合理的 User-Agent 才能成为持久提供商身份。
+	// An unacceptable client UA selects the package default during creation.
+	// Only admitted version text can become the client's contribution to this
+	// provider fingerprint.
 	if ua := strings.TrimSpace(headers.Get("User-Agent")); IsAcceptableFingerprintUserAgent(ua) {
 		fp.UserAgent = ua
 	} else {
 		fp.UserAgent = DefaultFingerprint.UserAgent
 	}
 
-	// 获取 x-stainless-*头，如果没有则使用默认值
 	fp.StainlessLang = GetHeaderOrDefault(headers, "X-Stainless-Lang", DefaultFingerprint.StainlessLang)
 	fp.StainlessPackageVersion = GetHeaderOrDefault(headers, "X-Stainless-Package-Version", DefaultFingerprint.StainlessPackageVersion)
 	fp.StainlessOS = GetHeaderOrDefault(headers, "X-Stainless-OS", DefaultFingerprint.StainlessOS)
@@ -208,16 +299,14 @@ func (s *RequestFingerprint) createFingerprintFromHeaders(headers http.Header) *
 	return fp
 }
 
-// MergeHeadersIntoFingerprint 将请求头中实际存在的字段合并到现有指纹中（用于版本升级场景）
-// 请求携带的字段覆盖缓存，缺失的字段使用缓存值。
-// 与 createFingerprintFromHeaders 的区别：后者用于首次创建，缺失头回退到 DefaultFingerprint；
-// 版本升级时，缺失字段使用缓存值。
+// MergeHeadersIntoFingerprint copies nonempty client UA and SDK values into fp.
+// Missing values keep their cached fields. Callers provide nonnil fp and
+// validate the User-Agent before using this merge for cached identity upgrades
+// or repair.
 func MergeHeadersIntoFingerprint(fp *Fingerprint, headers http.Header) {
-	// User-Agent：版本升级的触发条件，一定存在
 	if ua := headers.Get("User-Agent"); ua != "" {
 		fp.UserAgent = ua
 	}
-	// X-Stainless-* 头：仅在请求中实际携带时才更新，否则保留缓存值
 	MergeHeader(headers, "X-Stainless-Lang", &fp.StainlessLang)
 	MergeHeader(headers, "X-Stainless-Package-Version", &fp.StainlessPackageVersion)
 	MergeHeader(headers, "X-Stainless-OS", &fp.StainlessOS)
@@ -226,14 +315,18 @@ func MergeHeadersIntoFingerprint(fp *Fingerprint, headers http.Header) {
 	MergeHeader(headers, "X-Stainless-Runtime-Version", &fp.StainlessRuntimeVersion)
 }
 
-// MergeHeader 如果请求头中存在该字段则更新目标值，否则保留原值。
+// MergeHeader replaces target with a nonempty value read from headers. Empty
+// values retain the pointed-to string; callers supply a nonnil target, and
+// whitespace-only values count as supplied values.
 func MergeHeader(headers http.Header, key string, target *string) {
 	if v := headers.Get(key); v != "" {
 		*target = v
 	}
 }
 
-// GetHeaderOrDefault 获取 header 值，如果不存在则返回默认值。
+// GetHeaderOrDefault returns the nonempty header value or defaultValue.
+// Whitespace-only values remain supplied values, so callers trim them
+// separately when their consumer requires normalized header text.
 func GetHeaderOrDefault(headers http.Header, key, defaultValue string) string {
 	if v := headers.Get(key); v != "" {
 		return v
@@ -241,19 +334,19 @@ func GetHeaderOrDefault(headers http.Header, key, defaultValue string) string {
 	return defaultValue
 }
 
-// ApplyFingerprint 将指纹应用到请求头（覆盖原有的 x-stainless-*头）
-// 使用 setHeaderRaw 保持请求头的大小写，例如 X-Stainless-OS。
+// ApplyFingerprint writes nonempty UA and SDK values into req's header map. A
+// nil fingerprint leaves the request alone; callers supply a usable request
+// when values are present. Raw header setters retain the package's chosen wire
+// casing while replacing each selected value.
 func (s *RequestFingerprint) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
 	if fp == nil {
 		return
 	}
 
-	// 设置 user-agent
 	if fp.UserAgent != "" {
 		SetHeaderRaw(req.Header, "User-Agent", fp.UserAgent)
 	}
 
-	// 设置 x-stainless-*头（保持与 DefaultHeaders 一致的大小写）
 	if fp.StainlessLang != "" {
 		SetHeaderRaw(req.Header, "X-Stainless-Lang", fp.StainlessLang)
 	}
@@ -274,12 +367,17 @@ func (s *RequestFingerprint) ApplyFingerprint(req *http.Request, fp *Fingerprint
 	}
 }
 
-// RewriteUserID 重写 body 中的 metadata.user_id
-// 支持旧拼接格式和新 JSON 格式的 user_id 解析，
-// 根据 fingerprintUA 版本选择输出格式。
+// RewriteUserID replaces usable metadata identity with the cached device and
+// provider account, returning the resulting body. Empty identity inputs, absent
+// or malformed metadata, and failed JSON updates retain the supplied bytes. The
+// fingerprint User-Agent selects legacy or JSON-string metadata encoding.
 //
-// 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
-// 避免重新序列化导致 thinking 块等内容被修改。
+// The session seed combines providerID with the client session before UUID
+// formatting, separating the same incoming session across providers. A path
+// update changes metadata.user_id while neighboring body data remains available
+// in its existing representation. Reapplying the method hashes the session
+// present in that input, so callers pass the intended incoming body for each
+// preparation rather than treating the transform as idempotent.
 func (s *RequestFingerprint) RewriteUserID(body []byte, providerID int64, providerUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
 	if len(body) == 0 || providerUUID == "" || cachedClientID == "" {
 		return body, nil
@@ -302,25 +400,28 @@ func (s *RequestFingerprint) RewriteUserID(body []byte, providerID int64, provid
 		return body, nil
 	}
 
-	// 解析 user_id（兼容旧拼接格式和新 JSON 格式）
 	parsed := ParseMetadataUserID(userID)
 	if parsed == nil {
 		return body, nil
 	}
 
-	sessionTail := parsed.SessionID // 原始session UUID
+	sessionTail := parsed.SessionID // Client-supplied session UUID.
 
-	// 生成新的 session hash: SHA256(providerID::sessionTail) -> UUID 格式
+	// Combine the incoming session with providerID before UUID formatting so
+	// the same client session has a different deterministic seed for another
+	// selected provider.
 	seed := fmt.Sprintf("%d::%s", providerID, sessionTail)
 	newSessionHash := GenerateUUIDFromSeed(seed)
 
-	// 根据客户端版本选择输出格式
 	version := ExtractCLIVersion(fingerprintUA)
 	newUserID := FormatMetadataUserID(cachedClientID, providerUUID, newSessionHash, version)
 	if newUserID == userID {
 		return body, nil
 	}
 
+	// Edit the metadata path after selecting all identity components. A failed
+	// path update keeps the supplied body available, including neighboring
+	// history and system data used for this request.
 	newBody, err := sjson.SetBytes(body, "metadata.user_id", newUserID)
 	if err != nil {
 		return body, nil
@@ -328,20 +429,24 @@ func (s *RequestFingerprint) RewriteUserID(body []byte, providerID int64, provid
 	return newBody, nil
 }
 
-// RewriteUserIDWithMasking 重写 body 中的 metadata.user_id，支持会话 ID 伪装
-// 如果提供商启用了会话 ID 伪装（session_id_masking_enabled），
-// 则在完成常规重写后，将 session 部分替换为固定的伪装 ID（15 分钟内保持不变）
+// RewriteUserIDWithMasking applies ordinary provider identity rewriting, then
+// optionally replaces a usable metadata session with the provider's cached
+// mask. Disabled masking or unusable rewritten metadata returns the ordinary
+// result. A mask read error also keeps that result.
 //
-// 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
-// 避免重新序列化导致 thinking 块等内容被修改。
+// A missing mask generates a selected UUID; every usable masking request writes
+// it back to renew the cache lifetime. Write failure is logged and leaves the
+// selected UUID available for the following metadata edit. Device and account
+// components from ordinary rewriting remain in the output format selected by
+// fingerprintUA. Separate cache reads and writes allow concurrent initial
+// requests to select different masks; JSON update failure returns the ordinary
+// rewrite.
 func (s *RequestFingerprint) RewriteUserIDWithMasking(ctx context.Context, body []byte, providerID int64, masking bool, providerUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
-	// 先执行常规的 RewriteUserID 逻辑
 	newBody, err := s.RewriteUserID(body, providerID, providerUUID, cachedClientID, fingerprintUA)
 	if err != nil {
 		return newBody, err
 	}
 
-	// 检查是否启用会话 ID 伪装
 	if !masking {
 		return newBody, nil
 	}
@@ -363,13 +468,14 @@ func (s *RequestFingerprint) RewriteUserIDWithMasking(ctx context.Context, body 
 		return newBody, nil
 	}
 
-	// 解析已重写的 user_id
 	uidParsed := ParseMetadataUserID(userID)
 	if uidParsed == nil {
 		return newBody, nil
 	}
 
-	// 获取或生成固定的伪装 session ID
+	// Mask selection follows ordinary identity rewriting. A cache read failure
+	// retains that ordinary device/account/session result, leaving this body
+	// usable without a selected cached mask.
 	maskedSessionID, err := s.cache.GetMaskedSessionID(ctx, providerID)
 	if err != nil {
 		logger.LegacyPrintf("service.identity", "Warning: failed to get masked session ID for provider %d: %v", providerID, err)
@@ -377,17 +483,23 @@ func (s *RequestFingerprint) RewriteUserIDWithMasking(ctx context.Context, body 
 	}
 
 	if maskedSessionID == "" {
-		// 首次或已过期，生成新的伪装 session ID
+		// A missing provider mask starts a selected session value for this
+		// request. Separate reads and writes can leave concurrent initial
+		// requests with different generated values.
 		maskedSessionID = GenerateRandomUUID()
 		logger.LegacyPrintf("service.identity", "Generated new masked session ID for provider %d: %s", providerID, maskedSessionID)
 	}
 
-	// 刷新 TTL（每次请求都刷新，保持 15 分钟有效期）
+	// Write the selected mask on each usable masking request to renew the Redis
+	// idle expiry. Persistence failure is logged while this request keeps its
+	// chosen mask.
 	if err := s.cache.SetMaskedSessionID(ctx, providerID, maskedSessionID); err != nil {
 		logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for provider %d: %v", providerID, err)
 	}
 
-	// 用 FormatMetadataUserID 重建（保持与 RewriteUserID 相同的格式）
+	// Retain the device and account parsed after ordinary rewriting while
+	// changing the session. Select metadata wire format from the same
+	// fingerprint UA used by that earlier step.
 	version := ExtractCLIVersion(fingerprintUA)
 	newUserID := FormatMetadataUserID(uidParsed.DeviceID, uidParsed.AccountUUID, maskedSessionID, version)
 
@@ -401,6 +513,9 @@ func (s *RequestFingerprint) RewriteUserIDWithMasking(ctx context.Context, body 
 		return newBody, nil
 	}
 
+	// The mask is already selected and its cache write attempted. If the
+	// metadata edit fails, return the ordinary rewrite so no partially edited
+	// mask body is published.
 	maskedBody, setErr := sjson.SetBytes(newBody, "metadata.user_id", newUserID)
 	if setErr != nil {
 		return newBody, nil
@@ -408,16 +523,24 @@ func (s *RequestFingerprint) RewriteUserIDWithMasking(ctx context.Context, body 
 	return maskedBody, nil
 }
 
-// GenerateRandomUUID 生成随机 UUID v4 格式字符串。
+// GenerateRandomUUID returns a random UUID string with version-four and variant
+// bits. crypto/rand.Read fills the bytes or terminates the process on source
+// failure, so the timestamp-hash error branch is inactive under the configured
+// Go API behavior. Callers cannot use that branch to recover from an entropy
+// source failure.
 func GenerateRandomUUID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// fallback: 使用时间戳生成
+		// This branch encodes a timestamp digest if Read reports an error. The
+		// configured crypto/rand.Read terminates first, leaving that
+		// error-return path inactive for current callers.
 		h := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 		b = h[:16]
 	}
 
-	// 设置 UUID v4 版本和变体位
+	// Random or timestamp-derived bytes need UUID format bits before rendering
+	// the session identifier used by metadata preparation. Reserve those bits
+	// while retaining the remaining selected bytes.
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 
@@ -425,25 +548,34 @@ func GenerateRandomUUID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// GenerateClientID 生成 64 位十六进制客户端 ID（32 字节随机数）。
+// GenerateClientID returns 64 hexadecimal digits from 32 random bytes.
+// crypto/rand.Read fills those bytes or terminates the process on source
+// failure. Its timestamp-hash error branch does not provide runtime recovery
+// under the configured Go API, so callers receive the random-byte encoding when
+// this function returns normally.
 func GenerateClientID() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// 极罕见的情况，使用时间戳+固定值作为 fallback
+		// This error-return path would log before selecting a timestamp-derived
+		// ID. The configured random API terminates on source failure, so
+		// ordinary execution does not reach this recovery log.
 		logger.LegacyPrintf("service.identity", "Warning: crypto/rand.Read failed: %v, using fallback", err)
-		// 使用 SHA256(当前纳秒时间)作为 fallback
 		h := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 		return hex.EncodeToString(h[:])
 	}
 	return hex.EncodeToString(b)
 }
 
-// GenerateUUIDFromSeed 从种子生成确定性 UUID v4 格式字符串。
+// GenerateUUIDFromSeed hashes seed into a deterministic UUID-shaped string.
+// Identical seeds yield identical output with version-four and variant bits;
+// callers provide the provider and session scope used by metadata rewriting.
 func GenerateUUIDFromSeed(seed string) string {
 	hash := sha256.Sum256([]byte(seed))
 	bytes := hash[:16]
 
-	// 设置 UUID v4 版本和变体位
+	// The provider/session digest needs the UUID string shape used by metadata.
+	// Reserve its version and variant positions before rendering the remaining
+	// deterministic digest bytes into that identifier.
 	bytes[6] = (bytes[6] & 0x0f) | 0x40
 	bytes[8] = (bytes[8] & 0x3f) | 0x80
 
@@ -451,14 +583,18 @@ func GenerateUUIDFromSeed(seed string) string {
 		bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
 }
 
-// ParseUserAgentVersion 解析 user-agent 版本号
-// 例如：claude-cli/2.1.2 -> (2, 1, 2)。
+// ParseUserAgentVersion extracts the first slash-prefixed three-part numeric
+// version in ua. A missing match or int conversion overflow returns false. This
+// extraction alone does not establish the stricter fingerprint acceptance
+// shape.
 func ParseUserAgentVersion(ua string) (major, minor, patch int, ok bool) {
-	// 匹配 xxx/x.y.z 格式
 	matches := UserAgentVersionRegex.FindStringSubmatch(ua)
 	if len(matches) != 4 {
 		return 0, 0, 0, false
 	}
+	// All version components need representable integer values before
+	// comparison. If any conversion fails, discard that incomplete tuple so
+	// callers treat the version as unavailable for upgrade selection.
 	var err error
 	if major, err = strconv.Atoi(matches[1]); err != nil {
 		return 0, 0, 0, false
@@ -472,8 +608,9 @@ func ParseUserAgentVersion(ua string) (major, minor, patch int, ok bool) {
 	return major, minor, patch, true
 }
 
-// ExtractProduct 提取 User-Agent 中 "/" 前的产品名
-// 例如：claude-cli/2.1.22 (external, cli) -> "claude-cli"。
+// ExtractProduct returns the lowercase prefix before the first slash. A missing
+// slash or an empty prefix returns an empty string; the prefix is otherwise
+// retained without whitespace normalization.
 func ExtractProduct(ua string) string {
 	if idx := strings.Index(ua, "/"); idx > 0 {
 		return strings.ToLower(ua[:idx])
@@ -481,10 +618,11 @@ func ExtractProduct(ua string) string {
 	return ""
 }
 
-// IsNewerVersion 比较版本号，判断 newUA 是否比 cachedUA 更新
-// 要求产品名一致（防止浏览器 UA 如 Mozilla/5.0 误判为更新版本）。
+// IsNewerVersion compares numeric version triples for matching nonempty product
+// prefixes. Missing products, different products, or failed version parsing
+// return false. Equal versions also return false; callers apply fingerprint
+// admissibility checks separately before persisting an upgrade.
 func IsNewerVersion(newUA, cachedUA string) bool {
-	// 校验产品名一致性
 	newProduct := ExtractProduct(newUA)
 	cachedProduct := ExtractProduct(cachedUA)
 	if newProduct == "" || cachedProduct == "" || newProduct != cachedProduct {
@@ -498,7 +636,6 @@ func IsNewerVersion(newUA, cachedUA string) bool {
 		return false
 	}
 
-	// 比较版本号
 	if newMajor > cachedMajor {
 		return true
 	}

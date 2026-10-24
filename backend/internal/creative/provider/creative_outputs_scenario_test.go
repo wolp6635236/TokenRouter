@@ -1,7 +1,5 @@
 package provider
 
-// 本文件检查父包 ../execution_values.go 的输出归一化和 ../execution_error.go 的重试错误分类。
-
 import (
 	"errors"
 	"testing"
@@ -11,9 +9,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/creative"
 )
 
-// TestNormalizeCreativeOutputs 校验大小上限、去重并固定只保留一张。
+// One-image delivery normalizes candidate byte content before the worker
+// consumes it. These scenarios compare retained bytes and indexes, reject an
+// oversized candidate, and independently check the listed HTTP status classes
+// and generic errors used for retry decisions. The scenarios cover
+// creative/execution_values.go normalization and creative/execution_error.go
+// retry classification.
+
+// TestNormalizeCreativeOutputs supplies duplicate bytes, distinct images,
+// oversized bytes, and an empty list. It checks the single retained image and
+// zero index, plus failure and retry classification for oversized output.
 func TestNormalizeCreativeOutputs(t *testing.T) {
-	// sha256 去重：相同字节只保留一张。
+	// Equal SHA-256 hashes identify duplicate image bytes.
 	outputs, err := creative.NormalizeCreativeOutputs([]creative.CreativeOutput{
 		{Index: 0, Bytes: []byte("same"), Mime: "image/png"},
 		{Index: 1, Bytes: []byte("same"), Mime: "image/png"},
@@ -23,7 +30,7 @@ func TestNormalizeCreativeOutputs(t *testing.T) {
 	require.Len(t, outputs, 1)
 	require.Equal(t, []byte("same"), outputs[0].Bytes)
 
-	// 上游返回多张时固定截断为一张并重排行号。
+	// Multiple upstream images are reduced to one with index zero.
 	outputs, err = creative.NormalizeCreativeOutputs([]creative.CreativeOutput{
 		{Index: 0, Bytes: []byte("a"), Mime: "image/png"},
 		{Index: 1, Bytes: []byte("b"), Mime: "image/png"},
@@ -33,18 +40,21 @@ func TestNormalizeCreativeOutputs(t *testing.T) {
 	require.Len(t, outputs, 1)
 	require.Equal(t, 0, outputs[0].Index)
 
-	// 单张超限（>32MiB）视为失败。
+	// Allocate one byte beyond the execution image cap so this case checks
+	// rejection at the limit, independently of decoding or provider response syntax.
 	big := make([]byte, creative.CreativeMaxOutputBytes+1)
 	_, err = creative.NormalizeCreativeOutputs([]creative.CreativeOutput{{Index: 0, Bytes: big, Mime: "image/png"}})
 	require.Error(t, err)
 	require.False(t, creative.IsRetryableCreativeError(err))
 
-	// 空输出视为失败。
+	// Empty output fails normalization.
 	_, err = creative.NormalizeCreativeOutputs(nil)
 	require.Error(t, err)
 }
 
-// TestCreativeErrorRetryableMatrix 校验状态码到可重试性的映射。
+// TestCreativeErrorRetryableMatrix constructs errors for the listed
+// connection, rate-limit, server, and client statuses. It checks their retry
+// booleans together with nil, generic, and explicitly nonretryable errors.
 func TestCreativeErrorRetryableMatrix(t *testing.T) {
 	retryable := []int{0, 429, 500, 502, 503}
 	for _, status := range retryable {

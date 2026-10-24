@@ -10,29 +10,72 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// PriceUpdate 区分不修改、清除覆盖与显式零价。
+// pricing_settings.go merges partial billing settings and validates the
+// resulting prices and peak windows.
+// Billing settings updates distinguish an omitted optional price, a cleared
+// override, and an explicit free amount. PriceUpdate carries presence
+// separately from its amount pointer, while ordinary pointer settings allow
+// partial changes to be merged with the current configuration.
+//
+// Apply checks the merged peak window, finite nonnegative amounts, and batch
+// hold versus discount factors before copying accepted amount pointers.
+// Assignments occur before validation, so an error can leave the supplied
+// working settings changed and still sharing supplied price pointers. Callers
+// use a disposable working value until acceptance. Disabled peak settings
+// retain valid clocks for re-enablement, while the active window requires
+// increasing same-day minute values.
+
+// PriceUpdate distinguishes omitted optional amounts, cleared overrides, and
+// supplied free prices.
 type PriceUpdate struct {
-	Set   bool
-	Value *float64
+	// Set and Value preserve optional-price intent. Set=false retains the stored
+	// amount; Set=true with nil Value clears it, and a pointer to zero supplies
+	// free pricing.
+	Set   bool     // optional update presence marker
+	Value *float64 // supplied optional price amount
 }
 
-// BillingSettingsPatch 仅应用本次请求显式提供的配置项。
+// BillingSettingsPatch contains optional changes merged into current shared
+// billing settings.
 type BillingSettingsPatch struct {
-	PeakRateEnabled              *bool
-	PeakStart                    *string
-	PeakEnd                      *string
-	PeakRateMultiplier           *float64
-	LongContextPricingEnabled    *bool
-	FreeOpenAIFast               *bool
-	BatchImageDiscountMultiplier *float64
-	BatchImageHoldMultiplier     *float64
-	WebSearchPricePerCall        PriceUpdate
-	SearchPricePer1k             PriceUpdate
-	AudioRealtimePricePerMin     PriceUpdate
-	AudioTTSPricePerMillionChars PriceUpdate
-	AudioSTTPricePerHour         PriceUpdate
+	// PeakRateEnabled, PeakStart, PeakEnd, and PeakRateMultiplier apply supplied
+	// pointer values to one saved peak window. Nil retains each field, and Apply
+	// validates their merged configuration together. An enabled window requires
+	// valid same-day clocks with PeakEnd after PeakStart.
+	PeakRateEnabled    *bool    // enable daily peak multiplier
+	PeakStart          *string  // peak window start clock
+	PeakEnd            *string  // peak window end clock
+	PeakRateMultiplier *float64 // peak-window amount scaling factor
+	// LongContextPricingEnabled, FreeOpenAIFast, BatchImageDiscountMultiplier, and
+	// BatchImageHoldMultiplier retain omitted pointer values. Supplied false and
+	// zero remain present, and Apply checks discount and hold factors together.
+	LongContextPricingEnabled    *bool    // enable built-in long-context pricing
+	FreeOpenAIFast               *bool    // charge eligible Fast at Standard
+	BatchImageDiscountMultiplier *float64 // batch image settlement scaling factor
+	// BatchImageHoldMultiplier cannot be below the merged discount factor. A
+	// smaller value rejects Apply even when the patch did not supply the existing
+	// discount.
+	BatchImageHoldMultiplier *float64 // batch image reservation scaling factor
+	// WebSearchPricePerCall, SearchPricePer1k, AudioRealtimePricePerMin,
+	// AudioTTSPricePerMillionChars, and AudioSTTPricePerHour use PriceUpdate
+	// presence rules. Explicit zero is free, explicit nil clears an override, and
+	// omitted updates retain it.
+	WebSearchPricePerCall        PriceUpdate // USD per web-search call
+	SearchPricePer1k             PriceUpdate // USD per thousand searches
+	AudioRealtimePricePerMin     PriceUpdate // USD per realtime audio minute
+	AudioTTSPricePerMillionChars PriceUpdate // USD per million speech characters
+	AudioSTTPricePerHour         PriceUpdate // USD per transcribed audio hour
 }
 
+// Apply merges supplied billing settings and validates the complete working
+// result. Supply a non-nil disposable target because assignments precede
+// validation and a returned error can leave fields changed.
+//
+// Optional amounts preserve omitted, cleared, and explicit-zero input through
+// PriceUpdate. Accepted amounts and factors must be finite and nonnegative, the
+// reservation factor cannot be below the discount factor, and enabled peak
+// clocks must form an increasing same-day range. Only after validation does
+// Clone detach the optional price pointers from input storage.
 func (p BillingSettingsPatch) Apply(s *pricing.BillingSettings) error {
 	if p.PeakRateEnabled != nil {
 		s.PeakRateEnabled = *p.PeakRateEnabled
@@ -74,31 +117,40 @@ func (p BillingSettingsPatch) Apply(s *pricing.BillingSettings) error {
 		s.AudioSTTPricePerHour = p.AudioSTTPricePerHour.Value
 	}
 
+	// Validate the merged factors after applying supplied values, so existing
+	// settings and the patch jointly satisfy amount bounds and
+	// reservation-versus-settlement ordering.
 	for _, v := range []float64{s.PeakRateMultiplier, s.BatchImageDiscountMultiplier, s.BatchImageHoldMultiplier} {
 		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-			return infraerrors.BadRequest("INVALID_BILLING_SETTINGS", "倍率必须为非负有限数值")
+			return infraerrors.BadRequest("INVALID_BILLING_SETTINGS", "Multipliers must be finite nonnegative numbers")
 		}
 	}
 	for _, v := range []*float64{s.WebSearchPricePerCall, s.SearchPricePer1k, s.AudioRealtimePricePerMin, s.AudioTTSPricePerMillionChars, s.AudioSTTPricePerHour} {
 		if v != nil && (math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0) {
-			return infraerrors.BadRequest("INVALID_BILLING_SETTINGS", "价格必须为非负有限数值")
+			return infraerrors.BadRequest("INVALID_BILLING_SETTINGS", "Prices must be finite nonnegative numbers")
 		}
 	}
 	if s.BatchImageHoldMultiplier < s.BatchImageDiscountMultiplier {
-		return infraerrors.BadRequest("INVALID_BILLING_SETTINGS", "预扣倍率不能低于折扣倍率")
+		return infraerrors.BadRequest("INVALID_BILLING_SETTINGS", "Precharge multiplier must not be lower than the discount multiplier")
 	}
 	s.PeakRateEnabled, s.PeakStart, s.PeakEnd, s.PeakRateMultiplier = NormalizePeakRateConfig(s.PeakRateEnabled, s.PeakStart, s.PeakEnd, s.PeakRateMultiplier)
 	if err := ValidatePeakRateConfig(s.PeakRateEnabled, s.PeakStart, s.PeakEnd, s.PeakRateMultiplier); err != nil {
 		return infraerrors.BadRequest("INVALID_BILLING_SETTINGS", err.Error())
 	}
+	// Detach accepted optional amount pointers after validation; until this point
+	// supplied pointers can remain attached to the disposable working settings on
+	// an error path.
 	*s = s.Clone()
 	return nil
 }
 
-// ParseMinutes 把 "HH:MM" 解析为当日分钟数（0..1439），格式非法返回 (0,false)。
+// ParseMinutes converts a supplied H:MM or HH:MM clock to minutes since
+// midnight. It accepts one or two hour digits and exactly two minute digits,
+// rejects surrounding whitespace, and returns false for malformed or
+// out-of-range clocks.
 func ParseMinutes(hhmm string) (int, bool) {
-	// 手工解析避免计费热路径反复走 time.Parse；接受集保持与 time.Parse("15:04", s) 一致：
-	// 小时允许 1-2 位数字（0..23），分钟必须是 2 位数字（00..59）。
+	// Accept the saved clock widths before digit parsing so extra digits and
+	// surrounding whitespace cannot enter the minute-based peak-window comparison.
 	colon := strings.IndexByte(hhmm, ':')
 	if (colon != 1 && colon != 2) || len(hhmm)-colon-1 != 2 {
 		return 0, false
@@ -116,53 +168,63 @@ func ParseMinutes(hhmm string) (int, bool) {
 		return 0, false
 	}
 	minute := int(minuteTens)*10 + int(minuteOnes)
+	// Keep both clock components within a single day's minute range.
 	if hour > 23 || minute > 59 {
 		return 0, false
 	}
+	// Peak window comparisons use minute granularity rather than seconds.
 	return hour*60 + minute, true
 }
 
-// ValidatePeakRateConfig 是高峰倍率配置的唯一校验来源，供 handler 与 service 层共用。
-// enabled=true 时要求 start/end 合法且 end>start（不支持跨天），multiplier>=0。
-// multiplier=0 是允许的，表示高峰 token 请求按 0 倍计费，可用于折扣/免费策略。
-// enabled=false 时放行。
+// ValidatePeakRateConfig checks the active peak window's clocks and rejects a
+// negative multiplier. Disabled configuration passes unchanged; enabled windows
+// require valid increasing same-day times, and callers validate finite amounts
+// separately when accepting external settings.
 func ValidatePeakRateConfig(enabled bool, start, end string, multiplier float64) error {
 	if !enabled {
 		return nil
 	}
 	if start == "" || end == "" {
-		return errors.New("peak_rate_enabled 为 true 时 peak_start 与 peak_end 必填")
+		return errors.New("peak_start and peak_end are required when peak_rate_enabled is true")
 	}
 	st, okStart := ParseMinutes(start)
 	if !okStart {
-		return fmt.Errorf("peak_start 格式应为 HH:MM，got %q", start)
+		return fmt.Errorf("peak_start must use HH:MM format, got %q", start)
 	}
 	en, okEnd := ParseMinutes(end)
 	if !okEnd {
-		return fmt.Errorf("peak_end 格式应为 HH:MM，got %q", end)
+		return fmt.Errorf("peak_end must use HH:MM format, got %q", end)
 	}
 	if st >= en {
-		return errors.New("peak_end 必须大于 peak_start（不支持跨天区间，如 22:00-02:00）")
+		return errors.New("peak_end must be after peak_start; overnight ranges such as 22:00-02:00 are not supported")
 	}
 	if multiplier < 0 {
-		return errors.New("peak_rate_multiplier 不能为负")
+		return errors.New("peak_rate_multiplier must not be negative")
 	}
 	return nil
 }
 
-// NormalizePeakRateConfig 归一化最终落库的高峰倍率配置，供价格配置创建与更新共用。
-// 启用时保持原值并交给 ValidatePeakRateConfig 严格校验；停用时保留合法窗口与非负倍率，
-// 仅清理脏窗口与负倍率，便于管理员临时停用后按原配置重新启用。
+// NormalizePeakRateConfig prepares disabled peak settings for later
+// re-enablement by clearing malformed clocks and resetting a negative
+// multiplier to one. Enabled input is returned unchanged for validation; other
+// multipliers remain as supplied, including values requiring a separate
+// finiteness check.
 func NormalizePeakRateConfig(enabled bool, start, end string, multiplier float64) (bool, string, string, float64) {
 	if enabled {
 		return enabled, start, end, multiplier
 	}
+	// Clear malformed disabled clocks independently while retaining any valid
+	// companion value, so re-enabling the policy begins from editable saved clock
+	// settings.
 	if _, ok := ParseMinutes(start); !ok {
 		start = ""
 	}
 	if _, ok := ParseMinutes(end); !ok {
 		end = ""
 	}
+	// A disabled negative factor is replaced with the neutral multiplier so
+	// re-enabling a retained valid clock range does not revive a negative amount
+	// factor.
 	if multiplier < 0 {
 		multiplier = 1.0
 	}

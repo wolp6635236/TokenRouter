@@ -7,28 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsOpenAIInvalidEncryptedContentError(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name, code, message string
-		want                bool
-	}{
-		{name: "code", code: "invalid_encrypted_content", message: "rejected", want: true},
-		{name: "relay_message_without_code", message: "encrypted content could not be verified", want: true},
-		{name: "official_message_without_code", message: "The encrypted content gAAA...KCI= could not be verified. Reason: Encrypted content could not be decrypted or parsed.", want: true},
-		{name: "code_in_message", message: "upstream error: invalid_encrypted_content", want: true},
-		{name: "other_invalid_request", code: "invalid_request_error", message: "Unsupported parameter: temperature"},
-		{name: "function_output_decrypt", code: "thinking_signature_invalid", message: "Encrypted function output content could not be decrypted or decoded."},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tc.want, IsOpenAIInvalidEncryptedContentError(tc.code, tc.message))
-		})
-	}
-}
-
+// TestCollectOpenAIEncryptedContentDigestsRaw mixes supported encrypted items,
+// plaintext input, missing ciphertext, and an unsupported message type. It
+// checks digest order and that unsupported or absent input contributes no
+// tracked ciphertext.
 func TestCollectOpenAIEncryptedContentDigestsRaw(t *testing.T) {
 	t.Parallel()
 
@@ -39,7 +21,7 @@ func TestCollectOpenAIEncryptedContentDigestsRaw(t *testing.T) {
 		{"type":"reasoning"},
 		{"type":"message","encrypted_content":"cipher-alien"}
 	]}`))
-	// 剥离端处理不了的类型（message）不收摘要，否则该摘要永远命中却剥不掉。
+	// Unsupported message items must not contribute digests that the sanitizer cannot remove.
 	require.Equal(t, []string{
 		OpenAIEncryptedContentDigest("cipher-a"),
 		OpenAIEncryptedContentDigest("cipher-b"),
@@ -48,6 +30,10 @@ func TestCollectOpenAIEncryptedContentDigestsRaw(t *testing.T) {
 	require.Nil(t, CollectOpenAIEncryptedContentDigestsRaw([]byte(`{"model":"gpt-5"}`)))
 }
 
+// TestStripOpenAIInvalidEncryptedContentItems supplies stale and fresh
+// ciphertext in decoded histories. It protects reasoning-shell retention,
+// encrypted compaction removal, fresh-item survival, and zero changes when no
+// digest matches.
 func TestStripOpenAIInvalidEncryptedContentItems(t *testing.T) {
 	t.Parallel()
 
@@ -108,6 +94,10 @@ func TestStripOpenAIInvalidEncryptedContentItems(t *testing.T) {
 	})
 }
 
+// TestStripOpenAIInvalidEncryptedContentFromReplayItems sanitizes stale
+// reasoning and compaction alongside unchanged raw input. It checks replacement
+// content, removal counts, shared unmatched byte storage, immutable original
+// bytes, and no-hit storage reuse.
 func TestStripOpenAIInvalidEncryptedContentFromReplayItems(t *testing.T) {
 	t.Parallel()
 
@@ -130,7 +120,7 @@ func TestStripOpenAIInvalidEncryptedContentFromReplayItems(t *testing.T) {
 		require.Equal(t, "rs_1", rewritten["id"])
 		_, hasEncrypted := rewritten["encrypted_content"]
 		require.False(t, hasEncrypted)
-		// 未命中项共享正文，命中项用新正文替换。
+		// Unmatched items share their bodies; changed items receive new bodies.
 		require.Same(t, &clean[0], &next[1][0])
 		require.Contains(t, string(original), "stale-cipher")
 	})
@@ -144,6 +134,9 @@ func TestStripOpenAIInvalidEncryptedContentFromReplayItems(t *testing.T) {
 	})
 }
 
+// TestStripOpenAIInvalidEncryptedContentRaw rewrites one stale item in a
+// complete raw request with fresh history. It checks preserved model and input
+// content plus reuse of the original payload storage on a no-hit path.
 func TestStripOpenAIInvalidEncryptedContentRaw(t *testing.T) {
 	t.Parallel()
 

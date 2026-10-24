@@ -12,8 +12,18 @@ import (
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// IsContentPolicyRejection 识别只由当前请求内容触发的 OpenAI 安全拒绝。
-// 这类错误即使通过流内事件被推断为 502，也不能命中提供商级自定义错误策略。
+// failure_scope.go classifies request-scoped rejections and transient provider
+// failures for recovery decisions.
+// Request-content and request-shape failures need different treatment from
+// provider outages during health observation and replay. Classifiers combine
+// structured OpenAI markers with message matching and Grok content-policy
+// rules, while transient status recognition identifies errors eligible for
+// short-lived recovery policy.
+
+// IsContentPolicyRejection recognizes OpenAI content refusals from nested
+// error markers and selected message phrases. Empty bodies return false;
+// callers exclude matching failures from provider-wide error rules even when a
+// stream wrapper supplies HTTP 502.
 func IsContentPolicyRejection(responseBody []byte) bool {
 	if len(responseBody) == 0 {
 		return false
@@ -44,8 +54,10 @@ func IsContentPolicyRejection(responseBody []byte) bool {
 	return false
 }
 
-// IsRequestScopedProviderFailure 识别应按单次请求处理的提供商错误。
-// 413 请求体限制可能是提供商上游代理的独有限制，仍允许切换提供商，因此不在这里统一排除。
+// IsRequestScopedProviderFailure identifies content, cyber, invalid-request,
+// and context-window errors whose scope is this request. Grok targets also use
+// Grok content-policy classification; HTTP 413 alone remains eligible for
+// provider failover because a proxy may impose its own limit.
 func IsRequestScopedProviderFailure(provider *ExecutionProvider, statusCode int, responseBody []byte) bool {
 	upstreamMsg := strings.TrimSpace(upstream.ExtractErrorMessage(responseBody))
 	if hit, _, _ := upstreamopenai.DetectOpenAICyberPolicy(responseBody); hit {
@@ -60,7 +72,10 @@ func IsRequestScopedProviderFailure(provider *ExecutionProvider, statusCode int,
 	return provider != nil && provider.Record.Platform == capability.PlatformGrok && grok.IsGrokContentPolicyRejection(statusCode, responseBody)
 }
 
-// IsTransientProviderFailure 保留状态码与请求处理错误的短期恢复分类。
+// IsTransientProviderFailure recognizes server and proxy failure statuses,
+// plus OpenAI transient-processing errors reported as HTTP 400. Other statuses
+// return false, leaving caller policy to decide how classification affects
+// cooldown or replay.
 func IsTransientProviderFailure(statusCode int, responseBody []byte) bool {
 	switch statusCode {
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 520, 521, 522, 523, 524:
@@ -72,8 +87,11 @@ func IsTransientProviderFailure(statusCode int, responseBody []byte) bool {
 	}
 }
 
-// OpenAIWSHTTPBridgeRequestScopedError 识别只与当前请求有关的错误。
-// 这类错误既不修改提供商状态，也不能因为池模式配置而回放当前 turn。
+// OpenAIWSHTTPBridgeRequestScopedError recognizes cyber, warning,
+// client-input, context-window, and Grok content-policy failures for a bridge turn.
+// Callers exclude matches from provider health changes and pool retries
+// because replay under another connection cannot resolve that request
+// condition.
 func OpenAIWSHTTPBridgeRequestScopedError(provider *ExecutionProvider, statusCode int, message string, body []byte) bool {
 	if hit, _, _ := upstreamopenai.DetectOpenAICyberPolicy(body); hit {
 		return true

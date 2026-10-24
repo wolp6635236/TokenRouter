@@ -10,40 +10,79 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// RequestMetadata 是 HTTP 适配在执行前取得的值快照；不保留响应器或请求对象。
+// execution.go binds prepared Qoder requests to scheduling callbacks and
+// invokes the request execution loop. The executor creates a new output tracker
+// and result accumulator for each call, allowing shared runtime dependencies to
+// serve concurrent requests with separate attempt observations.
+
+// RequestMetadata contains values captured by the HTTP adapter before execution.
 type RequestMetadata = execution.RequestMetadata
 
-// FundingState 保存认证和复合选组完成后的访问数据及指定权益。
-// 资金算法和最终授权仍由 billing 执行。
+// FundingState contains authenticated access data and the selected
+// subscription after composite-group resolution.
+// Billing performs funding checks and settlement authorization.
 type FundingState = execution.FundingState
 
-// ExecutionResult 独立返回最后一次已执行尝试，即使该尝试同时失败也保留观测用量。
+// ExecutionResult retains the final executed attempt and its observed usage
+// even when execution fails.
 type ExecutionResult = execution.ExecutionResult
 
-// QoderRuntime 由 app 构造并绑定选择、恢复和执行能力。HTTP 调用传入请求数据和同步输出回调。
+// QoderRuntime supplies request preparation, funding checks, provider
+// selection, and recovery decisions.
 type QoderRuntime interface {
+	// Prepare returns the request after adapter routing and input preparation.
+	// The caller stops on error before admission or provider selection; retained
+	// request references remain valid throughout the subsequent execution call.
 	Prepare(context.Context, Request) (Request, error)
+	// Check performs funding admission for the prepared request. afterWait
+	// identifies the user-slot recheck so runtime implementations can avoid
+	// counting request RPM again while validating funds after a wait.
 	Check(context.Context, Request, bool) error
+	// Select returns a usable provider selection outside the request's excluded
+	// set. A successful selection supplies its executor, input and owned slot or
+	// wait plan; errors stop or exhaust the outer provider loop.
 	Select(context.Context, Request, map[int64]struct{}) (*Selection, error)
+	// CanRefresh reports whether an upstream error permits credential refresh
+	// recovery.
 	CanRefresh(error) bool
+	// CanFailover reports whether an upstream error permits another provider
+	// attempt.
 	CanFailover(error) bool
+	// RefreshPending reports whether credential refresh is still owned by another
+	// operation.
 	RefreshPending(error) bool
+	// QueueFailure synchronously reports a failed wait-counter operation for
+	// request diagnostics.
 	QueueFailure(string, error)
 }
 
-// ExecutionObserver 在请求处理中同步报告 HTTP 观测和等待心跳。
+// ExecutionObserver synchronously reports request observations and wait heartbeats.
 type ExecutionObserver interface {
+	// Prepared synchronously observes adapter-prepared request state before
+	// funding and selection. The request retains nested references; observers
+	// copy data they need after the current execution rather than changing those
+	// inputs.
 	Prepared(Request)
+	// Selected synchronously records the provider about to begin its attempt
+	// execution.
 	Selected(provider.ProviderSnapshot)
+	// Waiting returns optional synchronous heartbeat hooks for a named slot wait.
+	// The execution loop invokes these during acquisition; callback errors can
+	// stop the wait through the scheduler's observation handling.
 	Waiting(string) scheduler.WaitObserver
 }
 
-// NewQoderExecutor 绑定 Qoder 执行依赖和尝试流程。
+// NewQoderExecutor binds a usable Qoder runtime and optional concurrency
+// service to its provider budget and wait timeout. Limits are stored as
+// supplied; each Execute call later allocates its own request state.
 func NewQoderExecutor(maxProviders int, waitTimeout time.Duration, concurrency *scheduler.ConcurrencyService, runtime QoderRuntime) *QoderUseCase {
 	return &QoderUseCase{MaxProviders: maxProviders, WaitTimeout: waitTimeout, concurrency: concurrency, runtime: runtime}
 }
 
-// Execute 不要求调用者组装选择、刷新、计费或完成回调。
+// Execute prepares one Qoder request and delegates admission, provider
+// attempts, and completion through the bound runtime. It requires a nonnil
+// context, usable runtime, and output sink; pre-canceled calls skip
+// preparation, and observed partial results can accompany an error.
 func (u *QoderUseCase) Execute(ctx context.Context, request Request, output upstream.OutputSink) (ExecutionResult, error) {
 	var result ExecutionResult
 	if err := ctx.Err(); err != nil {

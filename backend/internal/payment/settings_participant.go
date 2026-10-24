@@ -7,8 +7,29 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// paymentCompositeFields 明确记录综合设置字段到现有支付配置的映射。
-var paymentCompositeFields = []struct{ input, target string }{
+// settings_participant.go maps composite payment fields into validated
+// settings writes and a post-commit refresh callback.
+// Composite settings use payment-prefixed HTTP names while payment validation
+// accepts its own serialized request fields. Each mapping pair carries a
+// present raw value whose text is not exactly null into that typed request, so pointer and collection
+// omissions can retain existing settings.
+//
+// Preparation returns validated values and a provider refresh callback for the
+// settings coordinator. UpdateSession owns the combined persistence step and
+// invokes application callbacks after marking the update committed. A refresh
+// failure therefore remains an application error for already stored
+// configuration; this participant cannot claim a settings rollback. With no
+// selected input it returns an empty change, and the declared field/key lists
+// define which settings belong to payment.
+
+// paymentCompositeFields pairs composite input names with serialized
+// UpdatePaymentConfigRequest field names. input and target select each present
+// nonnull raw value before typed validation, keeping omitted fields outside
+// the prepared setting batch.
+var paymentCompositeFields = []struct {
+	// input: composite input field name; target: payment request JSON name
+	input, target string
+}{
 	{"payment_enabled", "enabled"},
 	{"payment_min_amount", "min_amount"},
 	{"payment_max_amount", "max_amount"},
@@ -35,7 +56,17 @@ var paymentCompositeFields = []struct{ input, target string }{
 	{"payment_alipay_mobile_precreate_deep_link", "alipay_mobile_precreate_deep_link"},
 }
 
-// SettingsParticipant 复用唯一支付校验；先准备，整批提交后才刷新渠道运行表。
+// SettingsParticipant registers payment-owned composite fields and prepares
+// their supplied setting values. Its callback excludes exact raw null text,
+// decodes the renamed JSON fields into UpdatePaymentConfigRequest, and
+// delegates payment validation.
+//
+// No selected input yields an empty prepared change. Other accepted input
+// returns Values plus the supplied refresh callback, leaving persistence and
+// post-commit invocation to settings.UpdateSession. The session marks
+// persistence committed before Apply, so refresh failure reports an already
+// stored update; this participant performs no local rollback or retry of that
+// application callback.
 func SettingsParticipant(refresh func(context.Context) error) settings.Participant {
 	fields := make([]string, len(paymentCompositeFields))
 	for i, field := range paymentCompositeFields {
@@ -68,6 +99,9 @@ func SettingsParticipant(refresh func(context.Context) error) settings.Participa
 		SettingAlipayMobilePrecreateDeepLink,
 	}, Prepare: func(ctx context.Context, input settings.Fields, _ map[string]string) (settings.PreparedChange, error) {
 		projected := map[string]json.RawMessage{}
+		// Exclude absent payment inputs and exact raw null text while renaming their JSON keys.
+		// The typed request then preserves pointer and nil-collection omission for
+		// PreparePaymentConfig's partial update rules.
 		for _, field := range paymentCompositeFields {
 			if value, ok := input[field.input]; ok && string(value) != "null" {
 				projected[field.target] = value
@@ -88,6 +122,9 @@ func SettingsParticipant(refresh func(context.Context) error) settings.Participa
 		if err != nil {
 			return settings.PreparedChange{}, err
 		}
+		// Return refresh as deferred application alongside prepared values.
+		// UpdateSession persists the combined batch before invoking callbacks, so a
+		// refresh error leaves that stored configuration in place.
 		return settings.PreparedChange{Values: values, Apply: refresh}, nil
 	}}
 }

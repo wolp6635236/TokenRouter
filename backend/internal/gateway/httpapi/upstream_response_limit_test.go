@@ -15,6 +15,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 )
 
+// TestReadUpstreamResponseBody exercises valid bodies, overflow and a separate
+// read failure. It requires the overflow callback only for the size sentinel,
+// while every failed read returns no body.
 func TestReadUpstreamResponseBody(t *testing.T) {
 	t.Run("within limit", func(t *testing.T) {
 		body, err := ReadUpstreamResponseBody(bytes.NewReader([]byte("ok")), httpclient.DefaultResponseReadMaxBytes, nil, nil)
@@ -54,12 +57,14 @@ func TestReadUpstreamResponseBody(t *testing.T) {
 	})
 }
 
-// TestUpstreamResponseLimitPreservesProtocolEnvelope 验证超限仍沿原协议返回 502；不能把已识别的大小错误改写成普通读取失败。
+// TestUpstreamResponseLimitPreservesProtocolEnvelope overflows a small buffer
+// with Anthropic and OpenAI writers. It requires the size sentinel plus each
+// protocol's 502 envelope and safe response-size message.
 func TestUpstreamResponseLimitPreservesProtocolEnvelope(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		write TooLargeWriter
-		body  string
+		name  string         // inbound protocol label
+		write TooLargeWriter // protocol overflow output callback
+		body  string         // expected JSON error envelope
 	}{
 		{"anthropic", AnthropicResponseTooLarge, `{"type":"error","error":{"type":"upstream_error","message":"Upstream response too large"}}`},
 		{"openai", OpenAIResponseTooLarge, `{"error":{"type":"upstream_error","message":"Upstream response too large"}}`},

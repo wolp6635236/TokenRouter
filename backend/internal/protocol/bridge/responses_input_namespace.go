@@ -3,16 +3,28 @@ package bridge
 import (
 	"bytes"
 	"fmt"
-	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-// openAIResponsesToolCallItemTypes 是携带 namespace 的调用项类型集合。与
-// removeOpenAIResponsesRejectedNamespaceAtIndex 的反应式白名单保持一致；codex-rs
-// protocol/src/models.rs 中只有 FunctionCall 与 CustomToolCall 序列化 namespace，
-// 其余类型带该字段一定是非 Codex 客户端或历史残留，清掉才安全。
+// responses_input_namespace.go removes disallowed namespace fields from direct
+// Responses history items.
+// Namespace fields can remain on ordinary Responses history items even when
+// forwarding policy accepts them only on tool calls. Cleanup examines direct
+// input objects and keeps the caller-selected call types; tool declarations
+// and nested fields continue to carry their own namespace data.
+//
+// Raw item patching avoids decoding the complete request into generic numbers
+// and maps. The array is rebuilt once after selected keys are removed, so
+// unchanged objects retain their JSON spelling. JSON-key traversal recognizes
+// escaped namespace spellings without decoding argument bodies or numeric
+// literals into generic maps. The caller owns full-document validation and
+// platform or transport eligibility.
+
+// openAIResponsesToolCallItemTypes identifies the four call-item spellings
+// eligible to retain namespace during direct input cleanup when the caller
+// selects that policy.
 var openAIResponsesToolCallItemTypes = map[string]bool{
 	"function_call":    true,
 	"tool_call":        true,
@@ -20,36 +32,36 @@ var openAIResponsesToolCallItemTypes = map[string]bool{
 	"mcp_tool_call":    true,
 }
 
-func HasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
-	tools := gjson.GetBytes(body, "tools")
-	if !tools.IsArray() {
-		return false
-	}
-	found := false
-	tools.ForEach(func(_, tool gjson.Result) bool {
-		if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "namespace") {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-// StripOpenAIResponsesInputNamespaces 仅移除 input 数组直接子项的 namespace，
-// 保留工具声明和嵌套内容中的同名字段。keepToolCallNamespaces 为 true 时，调用项
-// 保留 namespace。一次性重建 input 数组可让长历史记录保持线性处理。
+// StripOpenAIResponsesInputNamespaces removes namespace keys from direct
+// objects in an input array. With keepToolCallNamespaces, the configured call
+// types retain their keys. Declaration tools and nested input fields remain
+// untouched; callers provide valid JSON and determine forwarding policy before
+// this cleanup.
+//
+// Each selected object is patched from its raw bytes, then the input array is
+// replaced once. JSON field lookup recognizes escaped namespace spellings.
+// Unchanged cases and either patch failure return the supplied body, with
+// failures carrying an error. Buffer reconstruction retains each unmodified
+// item's raw representation while array separators are rebuilt.
 func StripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces bool) ([]byte, error) {
-	if !bytes.Contains(body, []byte(`"namespace"`)) {
-		return body, nil
-	}
 	input := gjson.GetBytes(body, "input")
 	if !input.IsArray() {
+		return body, nil
+	}
+	needsCleanup := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		needsCleanup = item.IsObject() && item.Get("namespace").Exists() &&
+			(!keepToolCallNamespaces || !IsOpenAIResponsesToolCallItemType(item.Get("type").String()))
+		return !needsCleanup
+	})
+	if !needsCleanup {
 		return body, nil
 	}
 
 	var rebuilt bytes.Buffer
 	rebuilt.Grow(len(input.Raw))
+	// bytes.Buffer writes cannot fail. Rebuild separators once so raw objects
+	// can be retained and sjson need not replace the full request per item.
 	_ = rebuilt.WriteByte('[')
 	changed := false
 	first := true
@@ -62,6 +74,8 @@ func StripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 		itemBody := []byte(item.Raw)
 		if item.IsObject() && item.Get("namespace").Exists() &&
 			(!keepToolCallNamespaces || !IsOpenAIResponsesToolCallItemType(item.Get("type").String())) {
+			// Remove only this object's direct key, because nested metadata and
+			// retained call namespaces can still identify declarations or historical tools.
 			itemBody, stripErr = sjson.DeleteBytes(itemBody, "namespace")
 			if stripErr != nil {
 				return false

@@ -1,7 +1,5 @@
 package moderation
 
-// 本文件覆盖 input.go 的图片输入提取和 service.go 的审核日志摘录生成。
-
 import (
 	"testing"
 
@@ -11,6 +9,15 @@ import (
 	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// Image extraction keeps references available for moderation, while these
+// scenarios build logs from aggregate text alone. Anthropic inline data and
+// prepared OpenAI image/mask uploads are checked separately from the text-only
+// excerpt assertions; media database retention is outside these fixtures.
+
+// TestExtractContentModerationInput_AnthropicImageSourceOnlyParticipatesInMemory
+// extracts an inline Anthropic image and text from the latest turn. It checks
+// the image reference in memory and builds a text-only log whose excerpt
+// contains the text rather than base64 data.
 func TestExtractContentModerationInput_AnthropicImageSourceOnlyParticipatesInMemory(t *testing.T) {
 	body := []byte(`{
 		"messages": [
@@ -32,6 +39,10 @@ func TestExtractContentModerationInput_AnthropicImageSourceOnlyParticipatesInMem
 	require.NotContains(t, log.InputExcerpt, "aGVsbG8=")
 }
 
+// TestOpenAIImagesRequestModerationBody_MultipartEditIncludesUploadsInMemory
+// converts prepared image and mask upload bytes into moderation references. It
+// checks both encoded references and a separately built text-only log excerpt,
+// without exercising media persistence.
 func TestOpenAIImagesRequestModerationBody_MultipartEditIncludesUploadsInMemory(t *testing.T) {
 	parsed := &media.ImageRequest{
 		Endpoint: upstreamcore.OpenAIImagesEditsEndpoint,

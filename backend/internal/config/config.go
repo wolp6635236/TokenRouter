@@ -23,1115 +23,1657 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/httpconfig"
 )
 
-const (
-	// 使用量记录队列溢出策略。
-	UsageRecordOverflowPolicyDrop   = "drop"
-	UsageRecordOverflowPolicySample = "sample"
-	UsageRecordOverflowPolicySync   = "sync"
+// config.go loads, normalizes, and validates process configuration and
+// publishes forwarded-IP settings.
+// Startup configuration can distinguish an omitted key from a deliberately
+// supplied zero, false, or empty list. Loading registers Viper decode keys,
+// resolves file and environment precedence, and maps selected retired inputs
+// before the values reach module options. Trusted-proxy and forwarded-header
+// lists separately record environment presence so emptiness can replace
+// configured data.
+//
+// Validation mutates selected values while checking coupled startup
+// requirements, and an error can follow those mutations. Forwarded-IP policy
+// has another lifetime: copied trust/header pairs are atomically published
+// after the cell is initialized, while their static startup fields remain
+// available to validation. Bootstrap loading can defer JWT secret selection to
+// persistent storage; generated TOTP input is marked separately from a
+// configured encryption key.
 
-	// DefaultCSPPolicy is the default Content-Security-Policy with nonce support
-	// __CSP_NONCE__ will be replaced with actual nonce at request time by the SecurityHeaders middleware.
+const (
+	// These policy strings select how completion work handles failed queue admission.
+	// Inline execution, percentage selection, or dropped work have different
+	// recorded outcomes.
+	UsageRecordOverflowPolicyDrop   = "drop"   // discarded overflow work mode
+	UsageRecordOverflowPolicySample = "sample" // percentage inline overflow mode
+	UsageRecordOverflowPolicySync   = "sync"   // inline overflow execution mode
+
+	// DefaultCSPPolicy is the default Content-Security-Policy.
+	// SecurityHeaders replaces __CSP_NONCE__ with a per-request nonce.
 	DefaultCSPPolicy = httpconfig.DefaultCSPPolicy
 
-	// 连接池隔离策略常量
-	// 用于控制上游 HTTP 连接池的隔离粒度，影响连接复用和资源消耗
-	// ConnectionPoolIsolationProxy: 按代理隔离
-	// 同一代理地址共享连接池，适合代理数量少、提供商数量多的场景。
+	// Upstream HTTP connection pools can be shared by proxy, provider, or both.
+	// Pool isolation determines connection reuse and resource consumption.
+	// ConnectionPoolIsolationProxy shares a pool among providers using the same proxy.
+	// This reduces pool count when many providers use a few proxies.
 	ConnectionPoolIsolationProxy = "proxy"
-	// ConnectionPoolIsolationProvider: 按提供商隔离
-	// 每个提供商独立连接池，适合提供商数量少、需要严格隔离的场景。
+	// ConnectionPoolIsolationProvider gives each provider a separate pool.
 	ConnectionPoolIsolationProvider = "provider"
-	// ConnectionPoolIsolationProviderProxy: 按提供商+代理组合隔离（默认）
-	// 同一提供商+代理组合共享连接池，提供最细粒度的隔离。
+	// ConnectionPoolIsolationProviderProxy isolates each provider/proxy pair by default.
+	// Requests using the same provider and proxy share a pool.
 	ConnectionPoolIsolationProviderProxy = "provider_proxy"
 
-	// DefaultUpstreamResponseReadMaxBytes 上游非流式响应体的默认读取上限。
-	// 128 MB 可容纳 2-3 张 4K PNG（base64 膨胀 33%，单张 4K PNG 最坏约 67MB base64）。
-	// 可通过 gateway.upstream_response_read_max_bytes 配置项覆盖。
+	// DefaultUpstreamResponseReadMaxBytes limits non-streaming upstream response bodies.
+	// The 128 MiB limit accommodates large base64-encoded image responses.
+	// Override it with gateway.upstream_response_read_max_bytes.
 	DefaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024
 
-	// DefaultModelsListReadMaxBytes 上游模型列表响应体的默认读取上限。
-	// 可通过 gateway.models_list_read_max_bytes 配置项覆盖。
+	// DefaultModelsListReadMaxBytes limits upstream model-list response bodies.
+	// Override it with gateway.models_list_read_max_bytes.
 	DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
+	// These values supply WeChat Open-mode and frontend callback defaults while
+	// normalization resolves omitted deployment text and maps supported legacy
+	// credentials.
 	defaultWeChatConnectMode             = "open"
 	defaultWeChatConnectScopes           = "snsapi_login"
 	defaultWeChatConnectFrontendRedirect = "/auth/wechat/callback"
 
+	// MaxForwardedClientIPHeaders shares the discovery-source limit with the policy
+	// normalizer used by both process configuration and persisted runtime settings.
 	MaxForwardedClientIPHeaders = ippolicy.MaxForwardedClientIPHeaders
 
-	ImageConcurrencyOverflowModeReject = "reject"
-	ImageConcurrencyOverflowModeWait   = "wait"
+	// These modes choose immediate rejection or queue waiting when separate image
+	// admission reaches its process request capacity in the image limiter.
+	ImageConcurrencyOverflowModeReject = "reject" // immediate image-slot rejection mode
+	ImageConcurrencyOverflowModeWait   = "wait"   // queued image-slot admission mode
 
-	// DefaultOpenAIWSClientFirstMessageTimeoutSeconds 是入站首条消息的等待秒数。
+	// DefaultOpenAIWSClientFirstMessageTimeoutSeconds supplies the deployment ingress
+	// budget for the first client message before a Responses WebSocket turn begins.
 	DefaultOpenAIWSClientFirstMessageTimeoutSeconds = 30
 
-	// DefaultUpdateGitHubRepo 是面板在线更新缺省读取的 GitHub 仓库。
+	// DefaultUpdateGitHubRepo identifies this fork's release repository for the
+	// administrator update service when deployment configuration omits a repository.
 	DefaultUpdateGitHubRepo = "wolp6635236/TokenRouter"
 )
 
 var (
-	// ErrDingTalkV1AppTypeMismatch 表示钉钉应用类型与企业限制策略冲突。
+	// ErrDingTalkV1AppTypeMismatch shares identity validation's sentinel for an
+	// app type conflicting with its configured enterprise restriction in enabled
+	// login settings.
 	ErrDingTalkV1AppTypeMismatch = authconfig.ErrDingTalkV1AppTypeMismatch
 
-	// ErrDingTalkV4InvalidAppKind 表示钉钉应用种类无效。
+	// ErrDingTalkV4InvalidAppKind shares identity validation's sentinel for an
+	// unsupported application kind, allowing facade callers to retain errors.Is identity.
 	ErrDingTalkV4InvalidAppKind = authconfig.ErrDingTalkV4InvalidAppKind
 )
 
-// RequestLogConfig 配置独立请求摘要的保留天数。
+// RequestLogConfig sets retention in days for request summaries.
 type RequestLogConfig struct {
-	RetentionDays int `mapstructure:"retention_days"`
+	RetentionDays int `mapstructure:"retention_days"` // request summary retention days
 }
 
+// Config holds process startup settings decoded from Viper and supplied to
+// application construction. Load normalizes and validates these values, while
+// the forwarded-IP accessors separately publish copied live policy snapshots.
 type Config struct {
-	RequestLog        RequestLogConfig           `mapstructure:"request_log"`
-	Server            ServerConfig               `mapstructure:"server"`
-	Log               LogConfig                  `mapstructure:"log"`
-	CORS              CORSConfig                 `mapstructure:"cors"`
-	Security          SecurityConfig             `mapstructure:"security"`
-	Billing           BillingConfig              `mapstructure:"billing"`
-	Turnstile         TurnstileConfig            `mapstructure:"turnstile"`
-	Database          DatabaseConfig             `mapstructure:"database"`
-	Redis             RedisConfig                `mapstructure:"redis"`
-	Ops               OpsConfig                  `mapstructure:"ops"`
-	JWT               JWTConfig                  `mapstructure:"jwt"`
-	Totp              TotpConfig                 `mapstructure:"totp"`
-	WebAuthn          WebAuthnConfig             `mapstructure:"webauthn"`
-	LinuxDo           LinuxDoConnectConfig       `mapstructure:"linuxdo_connect"`
-	WeChat            WeChatConnectConfig        `mapstructure:"wechat_connect"`
-	OIDC              OIDCConnectConfig          `mapstructure:"oidc_connect"`
-	DingTalk          DingTalkConnectConfig      `mapstructure:"dingtalk_connect"`
-	GitHubOAuth       EmailOAuthProviderConfig   `mapstructure:"github_oauth"`
-	GoogleOAuth       EmailOAuthProviderConfig   `mapstructure:"google_oauth"`
-	Default           DefaultConfig              `mapstructure:"default"`
-	RateLimit         RateLimitConfig            `mapstructure:"rate_limit"`
-	Pricing           PricingConfig              `mapstructure:"pricing"`
-	Gateway           GatewayConfig              `mapstructure:"gateway"`
-	APIKeyAuth        APIKeyAuthCacheConfig      `mapstructure:"api_key_auth_cache"`
-	SubscriptionCache SubscriptionCacheConfig    `mapstructure:"subscription_cache"`
-	Dashboard         DashboardCacheConfig       `mapstructure:"dashboard_cache"`
-	DashboardAgg      DashboardAggregationConfig `mapstructure:"dashboard_aggregation"`
-	UsageCleanup      UsageCleanupConfig         `mapstructure:"usage_cleanup"`
-	Concurrency       ConcurrencyConfig          `mapstructure:"concurrency"`
-	TokenRefresh      TokenRefreshConfig         `mapstructure:"token_refresh"`
-	Timezone          string                     `mapstructure:"timezone"` // e.g. "Asia/Shanghai", "UTC"
-	Gemini            GeminiConfig               `mapstructure:"gemini"`
-	Update            UpdateConfig               `mapstructure:"update"`
-	Idempotency       IdempotencyConfig          `mapstructure:"idempotency"`
-	BatchImage        BatchImageConfig           `mapstructure:"batch_image"`
-	Creative          CreativeConfig             `mapstructure:"creative"`
-	Team              TeamConfig                 `mapstructure:"team"`
+	MCPOAuthSigningSecret string `mapstructure:"-" json:"-"` // Bootstrap-resolved hexadecimal OAuth signing key.
+
+	// request summary retention settings
+	RequestLog RequestLogConfig `mapstructure:"request_log"`
+	// HTTP ingress and listener settings
+	Server ServerConfig `mapstructure:"server"`
+	Log    LogConfig    `mapstructure:"log"` // process logging output settings
+	// browser cross-origin response settings
+	CORS CORSConfig `mapstructure:"cors"`
+	// URL and response security settings
+	Security SecurityConfig `mapstructure:"security"`
+	// forwarding balance protection settings
+	Billing BillingConfig `mapstructure:"billing"`
+	// captcha deployment requirement settings
+	Turnstile TurnstileConfig `mapstructure:"turnstile"`
+	// PostgreSQL connection and pool settings
+	Database DatabaseConfig `mapstructure:"database"`
+	// Redis connection and pool settings
+	Redis RedisConfig `mapstructure:"redis"`
+	// operational monitoring process settings
+	Ops OpsConfig `mapstructure:"ops"`
+	JWT JWTConfig `mapstructure:"jwt"` // identity token signing settings
+	// secret encryption deployment settings
+	Totp TotpConfig `mapstructure:"totp"`
+	// passkey relying-party deployment settings
+	WebAuthn WebAuthnConfig `mapstructure:"webauthn"`
+	// LinuxDo login deployment settings
+	LinuxDo LinuxDoConnectConfig `mapstructure:"linuxdo_connect"`
+	// WeChat login deployment settings
+	WeChat WeChatConnectConfig `mapstructure:"wechat_connect"`
+	// OIDC login deployment settings
+	OIDC OIDCConnectConfig `mapstructure:"oidc_connect"`
+	// DingTalk login deployment settings
+	DingTalk DingTalkConnectConfig `mapstructure:"dingtalk_connect"`
+	// GitHub login deployment settings
+	GitHubOAuth EmailOAuthProviderConfig `mapstructure:"github_oauth"`
+	// Google login deployment settings
+	GoogleOAuth EmailOAuthProviderConfig `mapstructure:"google_oauth"`
+	// initial user and billing defaults
+	Default DefaultConfig `mapstructure:"default"`
+	// provider cooldown duration settings
+	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+	// model catalog source settings
+	Pricing PricingConfig `mapstructure:"pricing"`
+	// request forwarding process defaults
+	Gateway GatewayConfig `mapstructure:"gateway"`
+	// API-key authentication cache settings
+	APIKeyAuth APIKeyAuthCacheConfig `mapstructure:"api_key_auth_cache"`
+	// subscription authentication cache settings
+	SubscriptionCache SubscriptionCacheConfig `mapstructure:"subscription_cache"`
+	// dashboard Redis cache settings
+	Dashboard DashboardCacheConfig `mapstructure:"dashboard_cache"`
+	// dashboard aggregation job settings
+	DashboardAgg DashboardAggregationConfig `mapstructure:"dashboard_aggregation"`
+	// usage record cleanup settings
+	UsageCleanup UsageCleanupConfig `mapstructure:"usage_cleanup"`
+	// slot-wait keepalive settings
+	Concurrency ConcurrencyConfig `mapstructure:"concurrency"`
+	// OAuth refresh worker settings
+	TokenRefresh TokenRefreshConfig `mapstructure:"token_refresh"`
+	// Timezone selects the calendar zone initialized by app/bootstrap after
+	// loading. TZ precedes TIMEZONE, selected YAML, and Asia/Shanghai; bootstrap
+	// rejects an invalid IANA name before publishing time.Local.
+	Timezone string `mapstructure:"timezone"`
+	// Gemini OAuth and quota settings
+	Gemini GeminiConfig `mapstructure:"gemini"`
+	// GitHub release access settings
+	Update UpdateConfig `mapstructure:"update"`
+	// write coordination process defaults
+	Idempotency IdempotencyConfig `mapstructure:"idempotency"`
+	// batch image process defaults
+	BatchImage BatchImageConfig `mapstructure:"batch_image"`
+	// creative studio process defaults
+	Creative CreativeConfig `mapstructure:"creative"`
+	// team availability and membership defaults
+	Team TeamConfig `mapstructure:"team"`
 }
 
-// TeamConfig 控制团队功能的默认开放策略。
+// TeamConfig sets the default availability and limits of team features.
 type TeamConfig struct {
-	Enabled            bool `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled"` // deployment team availability flag
+	// user team creation availability flag
 	SelfServiceEnabled bool `mapstructure:"self_service_enabled"`
-	DefaultMemberLimit int  `mapstructure:"default_member_limit"`
+	// initial team membership limit
+	DefaultMemberLimit int `mapstructure:"default_member_limit"`
 }
 
+// LogConfig holds process logging thresholds, labels, sinks, rotation, and
+// sampling controls.
 type LogConfig struct {
-	Level           string            `mapstructure:"level"`
-	Format          string            `mapstructure:"format"`
-	ServiceName     string            `mapstructure:"service_name"`
-	Environment     string            `mapstructure:"env"`
-	Caller          bool              `mapstructure:"caller"`
-	StacktraceLevel string            `mapstructure:"stacktrace_level"`
-	Output          LogOutputConfig   `mapstructure:"output"`
-	Rotation        LogRotationConfig `mapstructure:"rotation"`
-	Sampling        LogSamplingConfig `mapstructure:"sampling"`
+	Level string `mapstructure:"level"` // minimum process log severity
+	// console or JSON encoding selection
+	Format string `mapstructure:"format"`
+	// record service label text
+	ServiceName string `mapstructure:"service_name"`
+	Environment string `mapstructure:"env"`    // record environment label text
+	Caller      bool   `mapstructure:"caller"` // caller location inclusion flag
+	// stacktrace inclusion severity text
+	StacktraceLevel string `mapstructure:"stacktrace_level"`
+	// stdout and file sink selection
+	Output LogOutputConfig `mapstructure:"output"`
+	// file rotation and retention settings
+	Rotation LogRotationConfig `mapstructure:"rotation"`
+	// repeated-message sampling settings
+	Sampling LogSamplingConfig `mapstructure:"sampling"`
 }
 
+// LogOutputConfig selects stdout and file sinks plus the optional file
+// destination.
 type LogOutputConfig struct {
-	ToStdout bool   `mapstructure:"to_stdout"`
-	ToFile   bool   `mapstructure:"to_file"`
+	ToStdout bool `mapstructure:"to_stdout"` // standard output sink switch
+	ToFile   bool `mapstructure:"to_file"`   // rotating file sink switch
+	// FilePath selects the rotating log destination. Empty text lets
+	// logging.buildFileCore resolve its default path before creating the parent
+	// directory and file writer.
 	FilePath string `mapstructure:"file_path"`
 }
 
+// LogRotationConfig supplies lumberjack file rotation sizes, retention,
+// compression, and naming time.
 type LogRotationConfig struct {
-	MaxSizeMB  int  `mapstructure:"max_size_mb"`
-	MaxBackups int  `mapstructure:"max_backups"`
-	MaxAgeDays int  `mapstructure:"max_age_days"`
-	Compress   bool `mapstructure:"compress"`
-	LocalTime  bool `mapstructure:"local_time"`
+	MaxSizeMB  int  `mapstructure:"max_size_mb"`  // rotation size in MiB
+	MaxBackups int  `mapstructure:"max_backups"`  // retained rotated file count
+	MaxAgeDays int  `mapstructure:"max_age_days"` // rotated file retention days
+	Compress   bool `mapstructure:"compress"`     // rotated file compression switch
+	LocalTime  bool `mapstructure:"local_time"`   // local-time filename timestamp switch
 }
 
+// LogSamplingConfig supplies repeated-message admission counts to the
+// configured Zap sampler.
 type LogSamplingConfig struct {
-	Enabled    bool `mapstructure:"enabled"`
-	Initial    int  `mapstructure:"initial"`
-	Thereafter int  `mapstructure:"thereafter"`
+	Enabled bool `mapstructure:"enabled"` // repeated-message sampling switch
+	// Initial and Thereafter configure repeated messages in the logging sampler's
+	// one-second tick. Initial admits the first messages and Thereafter selects
+	// the stride after that count; Enabled selects whether sampling runs.
+	Initial    int `mapstructure:"initial"`    // initial messages admitted per tick
+	Thereafter int `mapstructure:"thereafter"` // subsequent message sampling stride
 }
 
+// GeminiConfig holds process OAuth client input and Gemini quota policy
+// overrides.
 type GeminiConfig struct {
-	OAuth GeminiOAuthConfig `mapstructure:"oauth"`
-	Quota GeminiQuotaConfig `mapstructure:"quota"`
+	OAuth GeminiOAuthConfig `mapstructure:"oauth"` // process OAuth client settings
+	Quota GeminiQuotaConfig `mapstructure:"quota"` // static quota policy settings
 }
 
+// GeminiOAuthConfig supplies optional OAuth client credentials and requested
+// scope text.
 type GeminiOAuthConfig struct {
-	ClientID     string `mapstructure:"client_id"`
-	ClientSecret string `mapstructure:"client_secret"`
-	Scopes       string `mapstructure:"scopes"`
+	// ClientID and ClientSecret form the configured OAuth client pair. Validate
+	// requires both trimmed values to be supplied or both empty, so the consuming
+	// client can apply its default credential choice.
+	ClientID     string `mapstructure:"client_id"`     // configured OAuth client identifier
+	ClientSecret string `mapstructure:"client_secret"` // configured OAuth client secret
+	Scopes       string `mapstructure:"scopes"`        // requested OAuth scope text
 }
 
+// GeminiQuotaConfig supplies static tier overrides and a JSON policy to Gemini
+// quota construction.
 type GeminiQuotaConfig struct {
+	// static overrides by tier identifier
 	Tiers  map[string]GeminiTierQuotaConfig `mapstructure:"tiers"`
-	Policy string                           `mapstructure:"policy"`
+	Policy string                           `mapstructure:"policy"` // static JSON quota policy
 }
 
+// GeminiTierQuotaConfig carries optional daily quota and cooldown values for a
+// named tier.
 type GeminiTierQuotaConfig struct {
-	ProRPD          *int64 `mapstructure:"pro_rpd" json:"pro_rpd"`
-	FlashRPD        *int64 `mapstructure:"flash_rpd" json:"flash_rpd"`
-	CooldownMinutes *int   `mapstructure:"cooldown_minutes" json:"cooldown_minutes"`
+	// ProRPD is applied when nonnil by the provider quota policy. It overrides a
+	// positive shared daily limit when present, otherwise the Pro limit; -1
+	// denotes unlimited and values below -1 clamp to zero.
+	ProRPD *int64 `mapstructure:"pro_rpd" json:"pro_rpd"`
+	// FlashRPD overrides the Flash daily limit when nonnil and the policy has no
+	// positive shared limit. A ProRPD update runs first and can change that
+	// shared-limit condition before Flash is considered.
+	FlashRPD *int64 `mapstructure:"flash_rpd" json:"flash_rpd"`
+	// CooldownMinutes replaces the tier cooldown when nonnil. The policy clamps
+	// negative minutes to zero before converting the selected value to its stored
+	// duration.
+	CooldownMinutes *int `mapstructure:"cooldown_minutes" json:"cooldown_minutes"`
 }
 
+// UpdateConfig contains the optional proxy address used for GitHub release
+// access.
 type UpdateConfig struct {
-	// ProxyURL 用于访问 GitHub 的代理地址
-	// 支持 http/https/socks5/socks5h 协议
-	// 例如: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080"
+	// ProxyURL is the proxy address for GitHub access.
+	// Supported schemes are http, https, socks5, and socks5h.
+	// Examples: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080".
 	ProxyURL string `mapstructure:"proxy_url"`
-	// GitHubRepo 是面板在线更新读取的 owner/repo，例如 wolp6635236/TokenRouter。
+	// GitHubRepo selects the owner/repository used by the administrator update service.
+	// Empty values resolve to DefaultUpdateGitHubRepo during configuration normalization.
 	GitHubRepo string `mapstructure:"github_repo"`
 }
 
+// IdempotencyConfig supplies record lifetimes, observation mode, and
+// coordinator maintenance limits.
 type IdempotencyConfig struct {
-	// ObserveOnly 为 true 时处于观察期：未携带 Idempotency-Key 的请求继续放行。
+	// ObserveOnly permits a missing request key even for commands requiring one.
+	// Present keys still use the coordinator; false allows those command
+	// requirements to reject missing keys.
 	ObserveOnly bool `mapstructure:"observe_only"`
-	// DefaultTTLSeconds 关键写接口的幂等记录默认 TTL（秒）。
+	// ordinary write record retention seconds
 	DefaultTTLSeconds int `mapstructure:"default_ttl_seconds"`
-	// SystemOperationTTLSeconds 系统操作接口的幂等记录 TTL（秒）。
+	// system operation record retention seconds
 	SystemOperationTTLSeconds int `mapstructure:"system_operation_ttl_seconds"`
-	// ProcessingTimeoutSeconds processing 状态锁超时（秒）。
+	// processing record lock timeout seconds
 	ProcessingTimeoutSeconds int `mapstructure:"processing_timeout_seconds"`
-	// FailedRetryBackoffSeconds 失败退避窗口（秒）。
+	// failed-operation retry delay seconds
 	FailedRetryBackoffSeconds int `mapstructure:"failed_retry_backoff_seconds"`
-	// MaxStoredResponseLen 持久化响应体最大长度（字节）。
+	// MaxStoredResponseLen limits persisted response bodies in bytes.
 	MaxStoredResponseLen int `mapstructure:"max_stored_response_len"`
-	// CleanupIntervalSeconds 过期记录清理周期（秒）。
+	// expired-record cleanup interval seconds
 	CleanupIntervalSeconds int `mapstructure:"cleanup_interval_seconds"`
-	// CleanupBatchSize 每次清理的最大记录数。
+	// CleanupBatchSize limits the records removed in one cleanup batch.
 	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
 }
 
+// BatchImageConfig holds deployment inputs for batch image access, storage,
+// queueing, and cleanup.
 type BatchImageConfig struct {
-	Enabled                           bool   `mapstructure:"enabled"`
-	MaxItemsPerJobDefault             int    `mapstructure:"max_items_per_job_default"`
-	MaxItemsPerJobTrial               int    `mapstructure:"max_items_per_job_trial"`
-	MaxOutputImagesPerJob             int    `mapstructure:"max_output_images_per_job"`
-	MaxOutputImagesPerItem            int    `mapstructure:"max_output_images_per_item"`
-	MaxPromptCharsPerItem             int    `mapstructure:"max_prompt_chars_per_item"`
-	MaxReferenceImagesPerJob          int    `mapstructure:"max_reference_images_per_job"`
-	MaxReferenceInlineBytesPerJob     int    `mapstructure:"max_reference_inline_bytes_per_job"`
-	DefaultResponseMimeType           string `mapstructure:"default_response_mime_type"`
-	DefaultImageSize                  string `mapstructure:"default_image_size"`
-	MaxDownloadItemsZip               int    `mapstructure:"max_download_items_zip"`
-	MaxDownloadBytesPerRequest        int64  `mapstructure:"max_download_bytes_per_request"`
-	MaxDownloadDurationSeconds        int    `mapstructure:"max_download_duration_seconds"`
-	MaxDownloadConcurrencyPerUser     int    `mapstructure:"max_download_concurrency_per_user"`
-	InputRetentionAfterTerminalHours  int    `mapstructure:"input_retention_after_terminal_hours"`
-	OutputRetentionAfterTerminalHours int    `mapstructure:"output_retention_after_terminal_hours"`
-	OutputRetentionMaxDays            int    `mapstructure:"output_retention_max_days"`
-	CleanupIntervalMinutes            int    `mapstructure:"cleanup_interval_minutes"`
-	CleanupBatchSize                  int    `mapstructure:"cleanup_batch_size"`
-	QueueEnabled                      bool   `mapstructure:"queue_enabled"`
-	QueueReadyKey                     string `mapstructure:"queue_ready_key"`
-	QueueDelayedKey                   string `mapstructure:"queue_delayed_key"`
-	QueueActiveKey                    string `mapstructure:"queue_active_key"`
-	InflightKeyPrefix                 string `mapstructure:"inflight_key_prefix"`
-	LockKeyPrefix                     string `mapstructure:"lock_key_prefix"`
-	IdempotencyKeyPrefix              string `mapstructure:"idempotency_key_prefix"`
-	InflightTTLSeconds                int    `mapstructure:"inflight_ttl_seconds"`
-	JobLockTTLSeconds                 int    `mapstructure:"job_lock_ttl_seconds"`
-	DefaultRequeueDelaySeconds        int    `mapstructure:"default_requeue_delay_seconds"`
-	ErrorRetryDelaySeconds            int    `mapstructure:"error_retry_delay_seconds"`
-	LockConflictDelaySeconds          int    `mapstructure:"lock_conflict_delay_seconds"`
-	StaleActiveAfterSeconds           int    `mapstructure:"stale_active_after_seconds"`
-	DelayedMoverIntervalSeconds       int    `mapstructure:"delayed_mover_interval_seconds"`
-	RecoveryIntervalSeconds           int    `mapstructure:"recovery_interval_seconds"`
-	DelayedMoveLimit                  int    `mapstructure:"delayed_move_limit"`
-	RecoverLimit                      int    `mapstructure:"recover_limit"`
-	VertexEnabled                     bool   `mapstructure:"vertex_enabled"`
-	VertexProjectID                   string `mapstructure:"vertex_project_id"`
-	VertexLocation                    string `mapstructure:"vertex_location"`
+	// batch image API availability switch
+	Enabled bool `mapstructure:"enabled"`
+	// ordinary job item count limit
+	MaxItemsPerJobDefault int `mapstructure:"max_items_per_job_default"`
+	// MaxItemsPerJobTrial is parsed and defaulted by this loader. Current batch
+	// application construction does not pass this field to PublicOptions, so it
+	// has no named runtime reader there.
+	MaxItemsPerJobTrial int `mapstructure:"max_items_per_job_trial"`
+	// total output image count limit
+	MaxOutputImagesPerJob int `mapstructure:"max_output_images_per_job"`
+	// per-item output image count limit
+	MaxOutputImagesPerItem int `mapstructure:"max_output_images_per_item"`
+	// MaxPromptCharsPerItem supplies the batch prompt length limit.
+	// batchimage.Public validates trimmed prompt bytes with len, so this field
+	// counts bytes despite its characters-oriented name.
+	MaxPromptCharsPerItem int `mapstructure:"max_prompt_chars_per_item"`
+	// expanded reference image count limit
+	MaxReferenceImagesPerJob int `mapstructure:"max_reference_images_per_job"`
+	// expanded inline reference byte limit
+	MaxReferenceInlineBytesPerJob int `mapstructure:"max_reference_inline_bytes_per_job"`
+	// default output image MIME type
+	DefaultResponseMimeType string `mapstructure:"default_response_mime_type"`
+	// default requested image size text
+	DefaultImageSize string `mapstructure:"default_image_size"`
+	// maximum bundled ZIP item count
+	MaxDownloadItemsZip int `mapstructure:"max_download_items_zip"`
+	// download request byte count limit
+	MaxDownloadBytesPerRequest int64 `mapstructure:"max_download_bytes_per_request"`
+	// download request budget seconds
+	MaxDownloadDurationSeconds int `mapstructure:"max_download_duration_seconds"`
+	// per-user download admission limit
+	MaxDownloadConcurrencyPerUser int `mapstructure:"max_download_concurrency_per_user"`
+	// terminal job input retention hours
+	InputRetentionAfterTerminalHours int `mapstructure:"input_retention_after_terminal_hours"`
+	// terminal job output retention hours
+	OutputRetentionAfterTerminalHours int `mapstructure:"output_retention_after_terminal_hours"`
+	// OutputRetentionMaxDays is decoded and defaulted by this loader. Current
+	// batch application cleanup options do not reference this field, so its parsed
+	// day value does not control that cleanup.
+	OutputRetentionMaxDays int `mapstructure:"output_retention_max_days"`
+	// batch cleanup polling minutes
+	CleanupIntervalMinutes int `mapstructure:"cleanup_interval_minutes"`
+	// cleanup job batch size
+	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+	// batch queue worker availability switch
+	QueueEnabled bool `mapstructure:"queue_enabled"`
+	// Redis ready-queue key name
+	QueueReadyKey string `mapstructure:"queue_ready_key"`
+	// Redis delayed-queue key name
+	QueueDelayedKey string `mapstructure:"queue_delayed_key"`
+	// Redis active-queue key name
+	QueueActiveKey string `mapstructure:"queue_active_key"`
+	// Redis active-task key prefix
+	InflightKeyPrefix string `mapstructure:"inflight_key_prefix"`
+	// Redis job-lock key prefix
+	LockKeyPrefix string `mapstructure:"lock_key_prefix"`
+	// Redis submission idempotency prefix
+	IdempotencyKeyPrefix string `mapstructure:"idempotency_key_prefix"`
+	// active-task marker lifetime seconds
+	InflightTTLSeconds int `mapstructure:"inflight_ttl_seconds"`
+	// job-lock lifetime in seconds
+	JobLockTTLSeconds int `mapstructure:"job_lock_ttl_seconds"`
+	// ordinary requeue delay seconds
+	DefaultRequeueDelaySeconds int `mapstructure:"default_requeue_delay_seconds"`
+	// provider-error retry delay seconds
+	ErrorRetryDelaySeconds int `mapstructure:"error_retry_delay_seconds"`
+	// occupied job-lock retry seconds
+	LockConflictDelaySeconds int `mapstructure:"lock_conflict_delay_seconds"`
+	// active-task recovery threshold seconds
+	StaleActiveAfterSeconds int `mapstructure:"stale_active_after_seconds"`
+	// delayed-task mover interval seconds
+	DelayedMoverIntervalSeconds int `mapstructure:"delayed_mover_interval_seconds"`
+	// active-task recovery interval seconds
+	RecoveryIntervalSeconds int `mapstructure:"recovery_interval_seconds"`
+	// delayed-task mover batch count
+	DelayedMoveLimit int `mapstructure:"delayed_move_limit"`
+	// active-task recovery batch count
+	RecoverLimit int `mapstructure:"recover_limit"`
+	// Vertex batch adapter availability switch
+	VertexEnabled bool `mapstructure:"vertex_enabled"`
+	// Vertex batch project identifier
+	VertexProjectID string `mapstructure:"vertex_project_id"`
+	// Vertex batch region identifier
+	VertexLocation string `mapstructure:"vertex_location"`
 	// VertexManagedGCSBucket is a server-owned bucket for batch JSONL input/output.
-	// Disable Cloud Storage soft delete on this bucket to avoid retaining deleted batch objects.
-	VertexManagedGCSBucket       string `mapstructure:"vertex_managed_gcs_bucket"`
-	VertexManagedGCSPrefix       string `mapstructure:"vertex_managed_gcs_prefix"`
-	VertexInputRetentionHours    int    `mapstructure:"vertex_input_retention_hours"`
-	VertexOutputRetentionHours   int    `mapstructure:"vertex_output_retention_hours"`
+	// Disable Cloud Storage soft delete on this bucket to avoid retaining deleted
+	// batch objects.
+	VertexManagedGCSBucket string `mapstructure:"vertex_managed_gcs_bucket"`
+	// VertexManagedGCSPrefix identifies managed object paths and must contain
+	// {batch_id} while Vertex is enabled. That placeholder separates objects
+	// belonging to different batch jobs in the managed bucket.
+	VertexManagedGCSPrefix string `mapstructure:"vertex_managed_gcs_prefix"`
+	// managed input retention hours
+	VertexInputRetentionHours int `mapstructure:"vertex_input_retention_hours"`
+	// managed output retention hours
+	VertexOutputRetentionHours int `mapstructure:"vertex_output_retention_hours"`
+	// Vertex batch endpoint override URL
 	VertexBatchPredictionBaseURL string `mapstructure:"vertex_batch_prediction_base_url"`
-	VertexGCSBaseURL             string `mapstructure:"vertex_gcs_base_url"`
+	// Cloud Storage endpoint override URL
+	VertexGCSBaseURL string `mapstructure:"vertex_gcs_base_url"`
 }
 
+// CreativeConfig supplies studio input limits and process defaults for its
+// worker queue.
 type CreativeConfig struct {
-	// Enabled 控制创作台 HTTP API 是否可用。
+	// Enabled controls Creative Studio HTTP API availability.
 	Enabled bool `mapstructure:"enabled"`
-	// QueueEnabled 控制创作台队列是否启用（第二阶段 worker runtime 使用）。
+	// QueueEnabled enables the Creative Studio worker queue.
 	QueueEnabled bool `mapstructure:"queue_enabled"`
-	// TransientTTLSeconds 输入载荷与临时输出的保留时间（秒）。
+	// TransientTTLSeconds is the retention for input payloads and temporary output.
 	TransientTTLSeconds int `mapstructure:"transient_ttl_seconds"`
-	// MaxAssetBytes 单个上传文件（源图/mask）的大小上限（字节）。
+	// MaxAssetBytes limits each uploaded source image or mask in bytes.
 	MaxAssetBytes int64 `mapstructure:"max_asset_bytes"`
-	// MaxTotalInputBytes 单次任务输入总大小上限（字节）。
+	// MaxTotalInputBytes limits the total input size of one task in bytes.
 	MaxTotalInputBytes int64 `mapstructure:"max_total_input_bytes"`
-	// MaxPromptChars prompt 最大字符数。
-	MaxPromptChars              int    `mapstructure:"max_prompt_chars"`
-	DefaultResponseMimeType     string `mapstructure:"default_response_mime_type"`
-	DefaultImageSize            string `mapstructure:"default_image_size"`
-	QueueReadyKey               string `mapstructure:"queue_ready_key"`
-	QueueDelayedKey             string `mapstructure:"queue_delayed_key"`
-	QueueActiveKey              string `mapstructure:"queue_active_key"`
-	InflightKeyPrefix           string `mapstructure:"inflight_key_prefix"`
-	LockKeyPrefix               string `mapstructure:"lock_key_prefix"`
-	InflightTTLSeconds          int    `mapstructure:"inflight_ttl_seconds"`
-	JobLockTTLSeconds           int    `mapstructure:"job_lock_ttl_seconds"`
-	DefaultRequeueDelaySeconds  int    `mapstructure:"default_requeue_delay_seconds"`
-	ErrorRetryDelaySeconds      int    `mapstructure:"error_retry_delay_seconds"`
-	LockConflictDelaySeconds    int    `mapstructure:"lock_conflict_delay_seconds"`
-	StaleActiveAfterSeconds     int    `mapstructure:"stale_active_after_seconds"`
-	DelayedMoverIntervalSeconds int    `mapstructure:"delayed_mover_interval_seconds"`
-	RecoveryIntervalSeconds     int    `mapstructure:"recovery_interval_seconds"`
-	DelayedMoveLimit            int    `mapstructure:"delayed_move_limit"`
-	RecoverLimit                int    `mapstructure:"recover_limit"`
-	// ExecuteTimeoutSeconds 是单次上游执行调用的超时时间（秒）。
+	// MaxPromptChars limits prompt text by Unicode rune count in creative.Public
+	// validation. It differs from the batch image prompt field, whose consumer
+	// counts trimmed bytes.
+	MaxPromptChars int `mapstructure:"max_prompt_chars"`
+	// default output image MIME type
+	DefaultResponseMimeType string `mapstructure:"default_response_mime_type"`
+	// default requested image size text
+	DefaultImageSize string `mapstructure:"default_image_size"`
+	// Redis ready-queue key name
+	QueueReadyKey string `mapstructure:"queue_ready_key"`
+	// Redis delayed-queue key name
+	QueueDelayedKey string `mapstructure:"queue_delayed_key"`
+	// Redis active-queue key name
+	QueueActiveKey string `mapstructure:"queue_active_key"`
+	// Redis active-run key prefix
+	InflightKeyPrefix string `mapstructure:"inflight_key_prefix"`
+	// Redis run-lock key prefix
+	LockKeyPrefix string `mapstructure:"lock_key_prefix"`
+	// active-run marker lifetime seconds
+	InflightTTLSeconds int `mapstructure:"inflight_ttl_seconds"`
+	// run-lock lifetime in seconds
+	JobLockTTLSeconds int `mapstructure:"job_lock_ttl_seconds"`
+	// ordinary requeue delay seconds
+	DefaultRequeueDelaySeconds int `mapstructure:"default_requeue_delay_seconds"`
+	// provider-error retry delay seconds
+	ErrorRetryDelaySeconds int `mapstructure:"error_retry_delay_seconds"`
+	// occupied run-lock retry seconds
+	LockConflictDelaySeconds int `mapstructure:"lock_conflict_delay_seconds"`
+	// active-run recovery threshold seconds
+	StaleActiveAfterSeconds int `mapstructure:"stale_active_after_seconds"`
+	// delayed-run mover interval seconds
+	DelayedMoverIntervalSeconds int `mapstructure:"delayed_mover_interval_seconds"`
+	// active-run recovery interval seconds
+	RecoveryIntervalSeconds int `mapstructure:"recovery_interval_seconds"`
+	// delayed-run mover batch count
+	DelayedMoveLimit int `mapstructure:"delayed_move_limit"`
+	// active-run recovery batch count
+	RecoverLimit int `mapstructure:"recover_limit"`
+	// ExecuteTimeoutSeconds bounds one upstream execution attempt.
 	ExecuteTimeoutSeconds int `mapstructure:"execute_timeout_seconds"`
-	// MaxExecuteAttempts 是 provider 瞬时错误的最大执行次数（含首次）。
+	// MaxExecuteAttempts limits attempted upstream executions after transient
+	// provider errors. The count includes the initial execution before any retry,
+	// and enabled startup validation requires a positive value.
 	MaxExecuteAttempts int `mapstructure:"max_execute_attempts"`
 }
 
+// LinuxDoConnectConfig aliases the identity module's LinuxDo OAuth deployment
+// settings.
 type LinuxDoConnectConfig = authconfig.LinuxDoConnectConfig
 
+// WeChatConnectConfig aliases identity settings for Open, MP, and Mobile WeChat
+// login.
 type WeChatConnectConfig = authconfig.WeChatConnectConfig
 
+// OIDCConnectConfig aliases identity settings for issuer discovery and OIDC
+// login validation.
 type OIDCConnectConfig = authconfig.OIDCConnectConfig
 
+// DingTalkConnectConfig aliases identity settings for DingTalk credentials and
+// corporation restrictions.
 type DingTalkConnectConfig = authconfig.DingTalkConnectConfig
 
-// EmailOAuthProviderConfig 保存 GitHub/Google 这类邮箱 OAuth 登录的配置。
+// EmailOAuthProviderConfig configures email-based OAuth login such as GitHub and Google.
 type EmailOAuthProviderConfig = authconfig.EmailOAuthProviderConfig
 
-// TokenRefreshConfig OAuth token 自动刷新配置。
+// TokenRefreshConfig supplies polling, admission, retry, and timeout defaults
+// for token refresh workers.
 type TokenRefreshConfig struct {
-	// 是否启用自动刷新
+	// Enabled controls automatic token refresh.
 	Enabled bool `mapstructure:"enabled"`
-	// 检查间隔（分钟）
+	// Interval between refresh checks, in minutes.
 	CheckIntervalMinutes int `mapstructure:"check_interval_minutes"`
-	// 提前刷新时间（小时），在 token 过期前多久开始刷新
+	// Hours before expiry at which a token becomes eligible for refresh.
 	RefreshBeforeExpiryHours float64 `mapstructure:"refresh_before_expiry_hours"`
-	// 最大重试次数
+	// MaxRetries supplies the total attempted refresh exchanges, including the
+	// first request. provider.RefreshTuning.Retries selects one attempt for
+	// nonpositive input and caps positive counts at ten.
 	MaxRetries int `mapstructure:"max_retries"`
-	// 重试退避基础时间（秒）
+	// RetryBackoffSeconds supplies the initial retry delay in seconds.
+	// provider.RefreshTuning disables waiting for nonpositive input; positive
+	// delays undergo exponential growth, provider/attempt jitter, and a
+	// thirty-second final cap.
 	RetryBackoffSeconds int `mapstructure:"retry_backoff_seconds"`
-	// 每次从数据库读取的候选提供商上限
+	// CandidatePageSize, ProviderConcurrency, ProviderQPS, and
+	// ProviderFailureThreshold become bounded maintenance limits through
+	// provider.RefreshTuning. Its accessors replace nonpositive values with
+	// matching defaults and cap positive values at each owning ceiling.
+	// database candidate page size
 	CandidatePageSize int `mapstructure:"candidate_page_size"`
-	// 每个平台允许的并发刷新数
+	// occupied attempts per platform
 	ProviderConcurrency int `mapstructure:"provider_concurrency"`
-	// 每个平台、每个进程允许的刷新请求速率
-	ProviderQPS int `mapstructure:"provider_qps"`
-	// 一个周期内连续临时失败达到此值后停止该平台
+	ProviderQPS         int `mapstructure:"provider_qps"` // exchange starts per platform second
+	// consecutive platform failure trip count
 	ProviderFailureThreshold int `mapstructure:"provider_failure_threshold"`
-	// 单次上游刷新尝试的超时（秒）
+	// AttemptTimeoutSeconds supplies each refresh exchange budget when the caller
+	// has no positive override. provider.RefreshTuning uses fifteen seconds for
+	// nonpositive input, caps configured positive budgets at five minutes, and can
+	// shorten them for a distributed lock lease.
 	AttemptTimeoutSeconds int `mapstructure:"attempt_timeout_seconds"`
-	// 单个后台刷新周期的总超时（秒）
+	// CycleTimeoutSeconds bounds a complete candidate scan, including its page
+	// processing. provider.RefreshTuning selects four minutes for nonpositive
+	// input and caps positive values at one hour.
 	CycleTimeoutSeconds int `mapstructure:"cycle_timeout_seconds"`
 }
 
+// PricingConfig supplies catalog download and local supplement inputs for model
+// pricing construction.
 type PricingConfig struct {
-	// 模型价格与属性统一目录地址（models.dev 格式）
+	// Model price and attribute catalog URL in models.dev format.
 	RemoteURL string `mapstructure:"remote_url"`
-	// 本地数据目录
-	DataDir string `mapstructure:"data_dir"`
-	// 可选的自定义价格补充文件路径；空值只使用目录和内嵌补充。
+	DataDir   string `mapstructure:"data_dir"` // Local data directory.
+	// FallbackFile names the optional custom supplement used alongside catalog and
+	// embedded data. Empty text skips that custom source, and normalization
+	// migrates only missing recognized packaged paths in memory.
 	FallbackFile string `mapstructure:"fallback_file"`
-	// 目录与本地文件检查间隔（分钟）
+	// Catalog and local-file check interval, in minutes.
 	CheckIntervalMinutes int `mapstructure:"check_interval_minutes"`
 }
 
+// ServerConfig holds listener, ingress, trusted-proxy, and optional collector
+// settings for server construction.
 type ServerConfig struct {
-	Host                     string                        `mapstructure:"host"`
-	Port                     int                           `mapstructure:"port"`
-	Mode                     string                        `mapstructure:"mode"`                      // debug/release
-	EnableServerTiming       bool                          `mapstructure:"enable_server_timing"`      // 是否为管理端页面请求返回 Server-Timing
-	FrontendURL              string                        `mapstructure:"frontend_url"`              // 前端基础 URL，用于生成邮件中的外部链接
-	ReadHeaderTimeout        int                           `mapstructure:"read_header_timeout"`       // 读取请求头超时（秒）
-	MaxHeaderBytes           int                           `mapstructure:"max_header_bytes"`          // 请求头最大字节数（HTTP/2 映射为 header-list 上限）
-	IdleTimeout              int                           `mapstructure:"idle_timeout"`              // 空闲连接超时（秒）
-	TrustedProxies           []string                      `mapstructure:"trusted_proxies"`           // 可信代理列表（CIDR/IP）
-	TrustedProxiesConfigured bool                          `mapstructure:"-" json:"-" yaml:"-"`       // 是否显式配置了可信代理列表
-	MaxRequestBodySize       int64                         `mapstructure:"max_request_body_size"`     // 全局最大请求体限制
-	H2C                      H2CConfig                     `mapstructure:"h2c"`                       // HTTP/2 Cleartext 配置
-	TLSFingerprintCollector  TLSFingerprintCollectorConfig `mapstructure:"tls_fingerprint_collector"` // TLS 指纹收集器配置
+	Host string `mapstructure:"host"` // listener host address text
+	Port int    `mapstructure:"port"` // listener TCP port number
+	// Gin debug or release mode
+	Mode               string `mapstructure:"mode"`
+	EnableServerTiming bool   `mapstructure:"enable_server_timing"` // Return Server-Timing for admin page requests.
+	FrontendURL        string `mapstructure:"frontend_url"`         // Default frontend address for email links and MCP OAuth.
+	ReadHeaderTimeout  int    `mapstructure:"read_header_timeout"`  // Request-header read timeout, in seconds.
+	MaxHeaderBytes     int    `mapstructure:"max_header_bytes"`     // Header size limit in bytes; maps to the HTTP/2 header-list limit.
+	IdleTimeout        int    `mapstructure:"idle_timeout"`         // Idle connection timeout, in seconds.
+	// TrustedProxies is the ordered startup list of proxy IPs and CIDRs.
+	// TrustedProxiesConfigured distinguishes omission from supplied emptiness,
+	// while server/clientip interprets that presence when selecting address
+	// handling.
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
+	// TrustedProxiesConfigured records operator presence independently of list
+	// length. An explicitly empty YAML or environment list selects configured
+	// proxy handling, and this derived flag is excluded from file decoding.
+	TrustedProxiesConfigured bool                          `mapstructure:"-" json:"-" yaml:"-"`
+	MaxRequestBodySize       int64                         `mapstructure:"max_request_body_size"`     // Global request-body size limit, in bytes.
+	H2C                      H2CConfig                     `mapstructure:"h2c"`                       // HTTP/2 cleartext settings.
+	TLSFingerprintCollector  TLSFingerprintCollectorConfig `mapstructure:"tls_fingerprint_collector"` // TLS fingerprint collector settings.
 }
 
-// TLSFingerprintCollectorConfig TLS 指纹收集器配置。
+// TLSFingerprintCollectorConfig supplies listen settings and session limits for
+// fingerprint capture.
 type TLSFingerprintCollectorConfig struct {
-	Host                 string `mapstructure:"host"`                    // 收集器监听地址
-	Port                 int    `mapstructure:"port"`                    // 收集器监听端口
-	PublicBaseURL        string `mapstructure:"public_base_url"`         // 客户端可访问的采集 URL 前缀
-	CertFile             string `mapstructure:"cert_file"`               // 可选服务端证书路径
-	KeyFile              string `mapstructure:"key_file"`                // 可选服务端私钥路径
-	SessionTTLSeconds    int    `mapstructure:"session_ttl_seconds"`     // 采集会话有效期
-	MaxRecordsPerSession int    `mapstructure:"max_records_per_session"` // 每个会话保留的最大采集记录数
+	Host                 string `mapstructure:"host"`                    // Collector listen address.
+	Port                 int    `mapstructure:"port"`                    // Collector listen port.
+	PublicBaseURL        string `mapstructure:"public_base_url"`         // Client-accessible collection URL prefix.
+	CertFile             string `mapstructure:"cert_file"`               // Optional server certificate path.
+	KeyFile              string `mapstructure:"key_file"`                // Optional server private-key path.
+	SessionTTLSeconds    int    `mapstructure:"session_ttl_seconds"`     // Collection session lifetime, in seconds.
+	MaxRecordsPerSession int    `mapstructure:"max_records_per_session"` // Maximum collection records retained per session.
 }
 
-// H2CConfig HTTP/2 Cleartext 配置。
+// H2CConfig supplies HTTP/2 cleartext stream, frame, and receive-buffer
+// settings.
 type H2CConfig struct {
-	Enabled                      bool   `mapstructure:"enabled"`                          // 是否启用 H2C
-	MaxConcurrentStreams         uint32 `mapstructure:"max_concurrent_streams"`           // 最大并发流数量
-	IdleTimeout                  int    `mapstructure:"idle_timeout"`                     // 空闲超时（秒）
-	MaxReadFrameSize             int    `mapstructure:"max_read_frame_size"`              // 最大帧大小（字节）
-	MaxUploadBufferPerConnection int    `mapstructure:"max_upload_buffer_per_connection"` // 每个连接的上传缓冲区（字节）
-	MaxUploadBufferPerStream     int    `mapstructure:"max_upload_buffer_per_stream"`     // 每个流的上传缓冲区（字节）
+	// HTTP/2 cleartext listener switch
+	Enabled                      bool   `mapstructure:"enabled"`
+	MaxConcurrentStreams         uint32 `mapstructure:"max_concurrent_streams"`           // Maximum concurrent streams.
+	IdleTimeout                  int    `mapstructure:"idle_timeout"`                     // Idle timeout, in seconds.
+	MaxReadFrameSize             int    `mapstructure:"max_read_frame_size"`              // Maximum frame size, in bytes.
+	MaxUploadBufferPerConnection int    `mapstructure:"max_upload_buffer_per_connection"` // Upload buffer per connection, in bytes.
+	MaxUploadBufferPerStream     int    `mapstructure:"max_upload_buffer_per_stream"`     // Upload buffer per stream, in bytes.
 }
 
+// CORSConfig aliases the HTTP configuration values consumed by server CORS
+// middleware.
 type CORSConfig = httpconfig.CORSConfig
 
-// WebAuthnConfig 定义当前部署作为 WebAuthn 依赖方时使用的固定身份。
-// RPID 与 RPOrigins 属于安全边界，不能从不可信的 Host 或 Origin 请求头推断。
+// WebAuthnConfig defines this deployment's fixed WebAuthn relying-party identity.
+// RPID and RPOrigins must not be inferred from untrusted Host or Origin headers.
 type WebAuthnConfig struct {
-	Enabled       bool     `mapstructure:"enabled"`
-	RPDisplayName string   `mapstructure:"rp_display_name"`
-	RPID          string   `mapstructure:"rp_id"`
-	RPOrigins     []string `mapstructure:"rp_origins"`
+	Enabled bool `mapstructure:"enabled"` // passkey login availability switch
+	// browser relying-party display name
+	RPDisplayName string `mapstructure:"rp_display_name"`
+	// RPID is the configured relying-party domain used for passkey checks. Enabled
+	// validation normalizes it and requires each accepted RPOrigins host to equal
+	// it or be its subdomain.
+	RPID string `mapstructure:"rp_id"`
+	// RPOrigins lists configured browser origins for this relying party. Enabled
+	// validation permits HTTPS or local loopback HTTP and replaces accepted
+	// entries with normalized scheme/host text before identity construction.
+	RPOrigins []string `mapstructure:"rp_origins"`
 }
 
+// ForwardedClientIPSettings pairs one live forwarding trust flag with its
+// ordered header names.
 type ForwardedClientIPSettings struct {
-	TrustForwardedIP bool
-	Headers          []string
+	// TrustForwardedIP and Headers form one policy observation. Config publishes
+	// them together in an immutable object and returns a copied header list so
+	// readers can retain the pair independently.
+	TrustForwardedIP bool     // raw forwarding-header trust switch
+	Headers          []string // ordered client-address header names
 }
 
+// SecurityConfig holds outbound checks, response policies, proxy controls, and
+// startup/live forwarding settings.
 type SecurityConfig struct {
-	URLAllowlist    URLAllowlistConfig   `mapstructure:"url_allowlist"`
+	// outbound host admission settings
+	URLAllowlist URLAllowlistConfig `mapstructure:"url_allowlist"`
+	// upstream response header filtering settings
 	ResponseHeaders ResponseHeaderConfig `mapstructure:"response_headers"`
-	CSP             CSPConfig            `mapstructure:"csp"`
-	ProxyFallback   ProxyFallbackConfig  `mapstructure:"proxy_fallback"`
-	ProxyProbe      ProxyProbeConfig     `mapstructure:"proxy_probe"`
-	// TrustForwardedIPForAPIKeyACL 控制是否由原始转发请求头接管客户端 IP 解析。
-	// 关闭时，所有客户端 IP 使用方都以 server.trusted_proxies 为唯一可信来源。
-	TrustForwardedIPForAPIKeyACL  bool                                       `mapstructure:"trust_forwarded_ip_for_api_key_acl"`
-	ForwardedClientIPHeaders      []string                                   `mapstructure:"forwarded_client_ip_headers" json:"forwarded_client_ip_headers" yaml:"forwarded_client_ip_headers"`
+	CSP             CSPConfig            `mapstructure:"csp"` // browser content security policy
+	// auxiliary proxy failure handling settings
+	ProxyFallback ProxyFallbackConfig `mapstructure:"proxy_fallback"`
+	// proxy endpoint probe settings
+	ProxyProbe ProxyProbeConfig `mapstructure:"proxy_probe"`
+	// TrustForwardedIPForAPIKeyACL lets raw forwarding headers determine client IPs.
+	// When disabled, client IP consumers rely on server.trusted_proxies.
+	TrustForwardedIPForAPIKeyACL bool `mapstructure:"trust_forwarded_ip_for_api_key_acl"`
+	// startup client-address header names
+	ForwardedClientIPHeaders []string `mapstructure:"forwarded_client_ip_headers" json:"forwarded_client_ip_headers" yaml:"forwarded_client_ip_headers"`
+	// forwardedClientIPSettingsLive points to the lazily initialized atomic
+	// publication cell used by Config policy accessors. Initialize the pointer
+	// before concurrent access; subsequent stores replace immutable copied policy
+	// objects.
 	forwardedClientIPSettingsLive *atomic.Pointer[ForwardedClientIPSettings] `mapstructure:"-" json:"-" yaml:"-"`
 }
 
+// URLAllowlistConfig supplies host patterns and private or HTTP admission
+// choices for URL checks.
 type URLAllowlistConfig struct {
-	Enabled           bool     `mapstructure:"enabled"`
-	UpstreamHosts     []string `mapstructure:"upstream_hosts"`
-	PricingHosts      []string `mapstructure:"pricing_hosts"`
-	CRSHosts          []string `mapstructure:"crs_hosts"`
-	AllowPrivateHosts bool     `mapstructure:"allow_private_hosts"`
-	// 关闭 URL 白名单校验时，是否允许 http URL（默认只允许 https）
+	Enabled bool `mapstructure:"enabled"` // outbound allowlist check switch
+	// permitted upstream hostname patterns
+	UpstreamHosts []string `mapstructure:"upstream_hosts"`
+	// permitted catalog hostname patterns
+	PricingHosts []string `mapstructure:"pricing_hosts"`
+	// permitted CRS hostname patterns
+	CRSHosts []string `mapstructure:"crs_hosts"`
+	// private target address admission switch
+	AllowPrivateHosts bool `mapstructure:"allow_private_hosts"`
+	// AllowInsecureHTTP permits HTTP in format-only operator URL checks when the
+	// allowlist is disabled. setDefaults enables this flag; enabled
+	// OperatorURLPolicy instead applies its HTTPS allowlist check.
 	AllowInsecureHTTP bool `mapstructure:"allow_insecure_http"`
 }
 
+// ResponseHeaderConfig supplies allowed and removed header lists to upstream
+// response filtering.
 type ResponseHeaderConfig struct {
-	Enabled           bool     `mapstructure:"enabled"`
+	// configurable response header filtering switch
+	Enabled bool `mapstructure:"enabled"`
+	// extra permitted response header names
 	AdditionalAllowed []string `mapstructure:"additional_allowed"`
-	ForceRemove       []string `mapstructure:"force_remove"`
+	// forced removed response header names
+	ForceRemove []string `mapstructure:"force_remove"`
 }
 
+// CSPConfig aliases the HTTP content-security-policy values used by server
+// response middleware.
 type CSPConfig = httpconfig.CSPConfig
 
+// ProxyFallbackConfig supplies the auxiliary-service choice after proxy
+// construction fails.
 type ProxyFallbackConfig struct {
-	// AllowDirectOnError 当辅助服务的代理初始化失败时是否允许回退直连。
-	// 仅影响以下非 AI 提供商连接的辅助服务：
-	//   - GitHub Release 更新检查
-	//   - 定价数据拉取
-	// 不影响 AI 提供商网关连接（Claude/OpenAI/Gemini/Antigravity），
-	// 这些关键路径的代理失败始终返回错误，不会回退直连。
-	// 默认 false：避免因代理配置错误导致服务器真实 IP 泄露。
+	// AllowDirectOnError permits direct connections after auxiliary-service proxy
+	// initialization fails.
+	// It applies to these auxiliary services:
+	//   - GitHub Release update checks
+	//   - Pricing data downloads
+	// AI gateway connections, including Claude, OpenAI, Gemini, and Antigravity,
+	// return proxy errors rather than connecting directly.
+	// The default is false to prevent proxy misconfiguration from exposing the server IP.
 	AllowDirectOnError bool `mapstructure:"allow_direct_on_error"`
 }
 
+// ProxyProbeConfig supplies configured probe endpoints and the unsupported
+// TLS-skip input.
 type ProxyProbeConfig struct {
-	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"` // 已禁用：禁止跳过 TLS 证书验证
-	// URLs 按优先级排列的自定义探测 URL 列表；为空时使用内置回退列表。
+	// InsecureSkipVerify reaches proxy probe client construction as supplied.
+	// True makes httpclient.GetClient reject the probe, so this option cannot
+	// disable certificate verification.
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
+	// URLs lists probe endpoints in priority order; empty uses the built-in list.
 	URLs []ProbeURLConfig `mapstructure:"urls"`
 }
 
-// ProbeURLConfig 描述一个代理出口探测端点及其响应解析方式。
+// ProbeURLConfig describes a proxy-egress probe endpoint and its response parser.
 type ProbeURLConfig struct {
-	URL    string `mapstructure:"url"`
-	Parser string `mapstructure:"parser"` // ip-api / ipify / chatgpt-trace
+	URL    string `mapstructure:"url"`    // proxy probe endpoint URL
+	Parser string `mapstructure:"parser"` // ip-api, ipify, or chatgpt-trace parser
 }
 
+// BillingConfig supplies pre-forwarding balance reserve and billing
+// circuit-breaker deployment settings.
 type BillingConfig struct {
+	// billing failure circuit settings
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
-	// MinimumBalanceReserve 是余额计费转发前的保守余额下限。
-	// 设为 0 时保持仅要求 balance > 0 的旧行为。
+	// MinimumBalanceReserve is the conservative balance threshold before
+	// balance-funded forwarding.
+	// Zero requires only balance > 0.
 	MinimumBalanceReserve float64 `mapstructure:"minimum_balance_reserve"`
 }
 
+// CircuitBreakerConfig supplies failure counts and recovery admission limits to
+// billing protection.
 type CircuitBreakerConfig struct {
-	Enabled             bool `mapstructure:"enabled"`
-	FailureThreshold    int  `mapstructure:"failure_threshold"`
-	ResetTimeoutSeconds int  `mapstructure:"reset_timeout_seconds"`
-	HalfOpenRequests    int  `mapstructure:"half_open_requests"`
+	// billing circuit availability switch
+	Enabled bool `mapstructure:"enabled"`
+	// failure count opening the circuit
+	FailureThreshold int `mapstructure:"failure_threshold"`
+	// open-circuit reset delay seconds
+	ResetTimeoutSeconds int `mapstructure:"reset_timeout_seconds"`
+	// half-open probe admission count
+	HalfOpenRequests int `mapstructure:"half_open_requests"`
 }
 
+// ConcurrencyConfig supplies the SSE keepalive interval used during
+// concurrency-slot waiting.
 type ConcurrencyConfig struct {
-	// PingInterval: 并发等待期间的 SSE ping 间隔（秒）
+	// PingInterval is the SSE ping interval while waiting for concurrency, in seconds.
 	PingInterval int `mapstructure:"ping_interval"`
 }
 
+// ImageConcurrencyConfig supplies separate image-request admission and
+// queue-wait deployment limits.
 type ImageConcurrencyConfig struct {
-	// Enabled: 是否启用图片生成独立并发限制，默认关闭以保持现有行为
+	// Enabled selects the separate image admission limiter. Its deployment default
+	// is false, while the remaining fields describe the process capacity and
+	// overflow choices passed to image handling.
 	Enabled bool `mapstructure:"enabled"`
-	// MaxConcurrentRequests: 当前进程允许同时处理的图片生成请求数，0 表示不限制
+	// MaxConcurrentRequests supplies the process image-slot limit. Zero is
+	// unlimited in the image admission consumer, and a negative configured value
+	// is rejected during startup validation.
 	MaxConcurrentRequests int `mapstructure:"max_concurrent_requests"`
-	// OverflowMode: 图片并发达到上限后的处理方式：reject/wait
+	// OverflowMode selects reject or wait when the image concurrency limit is reached.
 	OverflowMode string `mapstructure:"overflow_mode"`
-	// WaitTimeoutSeconds: overflow_mode=wait 时等待图片并发槽位的超时时间（秒）
+	// WaitTimeoutSeconds supplies the image-slot wait budget in seconds. It is
+	// relevant when OverflowMode selects wait, alongside the queued-request limit
+	// used by image admission.
 	WaitTimeoutSeconds int `mapstructure:"wait_timeout_seconds"`
-	// MaxWaitingRequests: overflow_mode=wait 时当前进程允许排队等待的图片请求数
+	// MaxWaitingRequests limits queued image requests in this process when
+	// overflow_mode is wait.
 	MaxWaitingRequests int `mapstructure:"max_waiting_requests"`
 }
 
-// GatewayConfig API 网关相关配置。
+// GatewayConfig supplies process defaults for forwarding limits, provider
+// selection, and completion work.
 type GatewayConfig struct {
-	// 等待上游响应头的超时时间（秒），0 表示无超时
-	// 注意：这不影响流式数据传输，只控制等待响应头的时间
+	// ResponseHeaderTimeout is the generic upstream header budget in seconds.
+	// Zero disables it; OpenAI and Grok profile selection uses their separate
+	// fields. This deadline ends when headers arrive, before streaming duration.
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
-	// OpenAIResponseHeaderTimeout: OpenAI/Codex 上游等待响应头的超时时间（秒），0 表示无超时
-	// OpenAI/Codex 请求可能在上游排队较久；默认不使用通用响应头超时截断。
+	// OpenAIResponseHeaderTimeout bounds OpenAI/Codex header waits in seconds;
+	// zero disables it.
+	// The default permits long upstream queue waits independently of the generic timeout.
 	OpenAIResponseHeaderTimeout int `mapstructure:"openai_response_header_timeout"`
-	// GrokResponseHeaderTimeout bounds the pre-first-byte wait for xAI/Grok.
-	// A zero value uses the provider-safe default instead of the generic gateway timeout.
+	// GrokResponseHeaderTimeout bounds xAI/Grok response-header waits in seconds.
+	// With configured transport options, zero disables this deadline; only absent
+	// options select the transport's 120-second Grok default. The generic gateway
+	// header timeout is replaced during Grok profile selection.
 	GrokResponseHeaderTimeout int `mapstructure:"grok_response_header_timeout"`
-	// OpenAIFirstOutputTimeoutSeconds: native HTTP Responses 首个语义输出超时（秒），0 表示禁用。
+	// OpenAIFirstOutputTimeoutSeconds and
+	// OpenAIHighEffortFirstOutputTimeoutSeconds feed
+	// OpenAIResponseOutput.FirstOutputTimeout for HTTP and WS Responses. A
+	// nonpositive ordinary budget disables the deadline before the override is
+	// considered; with a positive ordinary budget, high, xhigh, and max reasoning
+	// requests use a positive override or retain the ordinary value.
+	// ordinary first-output deadline seconds
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
-	// OpenAIHighEffortFirstOutputTimeoutSeconds: high/xhigh/max 推理的首个语义输出超时（秒）。
-	// 0 表示回退到 OpenAIFirstOutputTimeoutSeconds。
+	// high-effort first-output override seconds
 	OpenAIHighEffortFirstOutputTimeoutSeconds int `mapstructure:"openai_high_effort_first_output_timeout_seconds"`
-	// 请求体最大字节数，用于网关请求体大小限制
+	// Maximum gateway request-body size, in bytes.
 	MaxBodySize int64 `mapstructure:"max_body_size"`
-	// TextMaxBodySize 限制不允许内联图片或视频载荷的端点请求体大小。
+	// TextMaxBodySize limits bodies on endpoints that disallow inline image or
+	// video payloads.
 	TextMaxBodySize int64 `mapstructure:"text_max_body_size"`
-	// 非流式上游响应体读取上限（字节），用于防止无界读取导致内存放大
+	// Non-streaming upstream response limit in bytes, bounding memory used by body reads.
 	UpstreamResponseReadMaxBytes int64 `mapstructure:"upstream_response_read_max_bytes"`
-	// 上游模型列表响应体读取上限（字节）
+	// Upstream model-list response limit, in bytes.
 	ModelsListReadMaxBytes int64 `mapstructure:"models_list_read_max_bytes"`
-	// 代理探测响应体读取上限（字节）
+	// Proxy-probe response limit, in bytes.
 	ProxyProbeResponseReadMaxBytes int64 `mapstructure:"proxy_probe_response_read_max_bytes"`
-	// Gemini 上游响应头调试日志开关（默认关闭，避免高频日志开销）
+	// Log Gemini response headers for debugging; disabled by default to limit log volume.
 	GeminiDebugResponseHeaders bool `mapstructure:"gemini_debug_response_headers"`
-	// ConnectionPoolIsolation: 上游连接池隔离策略（proxy/provider/provider_proxy）
+	// ConnectionPoolIsolation selects proxy, provider, or provider_proxy isolation.
 	ConnectionPoolIsolation string `mapstructure:"connection_pool_isolation"`
-	// ForceCodexCLI: 强制将 OpenAI `/v1/responses` 请求按 Codex CLI 处理。
-	// 用于网关未透传/改写 User-Agent 时的兼容兜底（默认关闭，避免影响其他客户端）。
+	// ForceCodexCLI treats OpenAI /v1/responses requests as Codex CLI requests.
+	// Use when a gateway removes or rewrites User-Agent; disabled by default.
 	ForceCodexCLI bool `mapstructure:"force_codex_cli"`
-	// CodexImageGenerationBridgeEnabled: 是否为 Codex `/v1/responses` 自动注入 image_generation 工具和桥接指令。
-	// 默认关闭，避免纯文本 Codex 请求被意外改写；显式携带 image_generation 工具的请求仍按分组能力转发。
+	// CodexImageGenerationBridgeEnabled injects the image_generation tool and
+	// bridge instructions into Codex
+	// /v1/responses.
+	// Disabled by default; requests already containing the tool still follow group
+	// capabilities.
 	CodexImageGenerationBridgeEnabled bool `mapstructure:"codex_image_generation_bridge_enabled"`
-	// ForcedCodexInstructionsTemplateFile: 服务端强制附加到 Codex 顶层 instructions 的模板文件路径。
-	// 模板渲染后会直接覆盖最终 instructions；若需要保留客户端 system 转换结果，请在模板中显式引用 {{ .ExistingInstructions }}。
+	// ForcedCodexInstructionsTemplateFile is the template that supplies final
+	// Codex instructions.
+	// The rendered template replaces instructions; include {{ .ExistingInstructions }} to retain converted client system text.
 	ForcedCodexInstructionsTemplateFile string `mapstructure:"forced_codex_instructions_template_file"`
-	// ForcedCodexInstructionsTemplate: 启动时从模板文件读取并缓存的模板内容。
-	// 该字段不直接参与配置反序列化，仅用于请求热路径避免重复读盘。
+	// ForcedCodexInstructionsTemplate caches the template read at startup.
+	// It is excluded from configuration decoding so requests can use it without
+	// disk reads.
 	ForcedCodexInstructionsTemplate string `mapstructure:"-"`
-	// OpenAICompactModel 是显式 compact 请求在提供商映射未命中时使用的全局回退模型。
+	// OpenAICompactModel supplies the global model for explicit compact requests
+	// when provider mapping misses.
 	OpenAICompactModel string `mapstructure:"openai_compact_model"`
-	// OpenAIPassthroughAllowTimeoutHeaders: OpenAI 透传模式是否放行客户端超时头
-	// 关闭（默认）可避免 x-stainless-timeout 等头导致上游提前断流。
+	// OpenAIPassthroughAllowTimeoutHeaders permits client timeout headers in
+	// OpenAI passthrough mode.
+	// Disabled by default so headers such as x-stainless-timeout do not
+	// prematurely end streams.
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
-	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
+	// OpenAIWS configures OpenAI Responses WebSocket connections.
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
-	// Live: ChatGPT Frameless Live 会话配置。
+	// Live configures ChatGPT Frameless Live sessions.
 	Live GatewayLiveConfig `mapstructure:"live"`
-	// AdvancedScheduler: 跨平台高级调度器配置。
+	// AdvancedScheduler configures scheduling across platforms.
 	AdvancedScheduler GatewayAdvancedSchedulerConfig `mapstructure:"advanced_scheduler"`
-	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
+	// OpenAIHTTP2 prefers HTTP/2 and can fall back to HTTP/1.1 for incompatible proxies.
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
-	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
+	// OpenAIProxyStreamCircuit configures Responses SSE proxy-disconnection isolation.
 	OpenAIProxyStreamCircuit GatewayOpenAIProxyStreamCircuitConfig `mapstructure:"openai_proxy_stream_circuit"`
-	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
+	// ImageConcurrency supplies a process image-admission policy separate from
+	// ordinary request concurrency. Its Enabled field defaults false, and the
+	// image consumer uses its capacity and overflow settings.
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
 
-	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
-	// MaxIdleConns: 所有主机的最大空闲连接总数
+	// MaxIdleConns, MaxIdleConnsPerHost, and MaxConnsPerHost supply global pool
+	// limits. transport.Client.resolvePoolSettings replaces all three with a
+	// positive provider concurrency for provider or provider_proxy isolation;
+	// other pools retain these configured limits.
+	// MaxIdleConns limits idle connections across all hosts.
 	MaxIdleConns int `mapstructure:"max_idle_conns"`
-	// MaxIdleConnsPerHost: 每个主机的最大空闲连接数（关键参数，影响连接复用率）
+	// MaxIdleConnsPerHost limits idle connections retained per host for reuse.
 	MaxIdleConnsPerHost int `mapstructure:"max_idle_conns_per_host"`
-	// MaxConnsPerHost: 每个主机的最大连接数（包括活跃+空闲），0 表示无限制
+	// MaxConnsPerHost bounds active and idle connections to one host when the
+	// global limits apply. Zero leaves that host limit unlimited while the idle
+	// limits still govern retained connections.
 	MaxConnsPerHost int `mapstructure:"max_conns_per_host"`
-	// IdleConnTimeoutSeconds: 空闲连接超时时间（秒）
+	// IdleConnTimeoutSeconds is the idle connection timeout.
 	IdleConnTimeoutSeconds int `mapstructure:"idle_conn_timeout_seconds"`
-	// MaxUpstreamClients: 上游连接池客户端最大缓存数量
-	// 当使用连接池隔离策略时，系统会为不同的提供商/代理组合创建独立的 HTTP 客户端
-	// 此参数限制缓存的客户端数量，超出后会淘汰最久未使用的客户端
-	// 建议值：预估的活跃提供商数 * 1.2（留有余量）
+	// MaxUpstreamClients limits cached upstream HTTP clients.
+	// Pool isolation creates clients for distinct provider/proxy identities.
+	// Exceeding the cache limit evicts the least recently used client.
+	// Size this limit for the expected active provider/proxy identities.
 	MaxUpstreamClients int `mapstructure:"max_upstream_clients"`
-	// ClientIdleTTLSeconds: 上游连接池客户端空闲回收阈值（秒）
-	// 超过此时间未使用的客户端会被标记为可回收
-	// 建议值：根据用户访问频率设置，一般 10-30 分钟
+	// ClientIdleTTLSeconds is the idle threshold for client reclamation.
+	// Clients unused beyond this threshold become eligible for reclamation.
+	// Choose the threshold based on request frequency.
 	ClientIdleTTLSeconds int `mapstructure:"client_idle_ttl_seconds"`
-	// ConcurrencySlotTTLMinutes: 并发槽位过期时间（分钟）
-	// 应大于最长 LLM 请求时间，防止请求完成前槽位过期
+	// ConcurrencySlotTTLMinutes is the concurrency slot lifetime.
+	// Set it longer than the longest LLM request so active slots do not expire.
 	ConcurrencySlotTTLMinutes int `mapstructure:"concurrency_slot_ttl_minutes"`
-	// SessionIdleTimeoutMinutes: 会话空闲超时时间（分钟），默认 5 分钟
-	// 用于 Anthropic OAuth/SetupToken 提供商的会话数量限制功能
-	// 空闲超过此时间的会话将被自动释放
+	// SessionIdleTimeoutMinutes is the session idle timeout; the default is five minutes.
+	// It applies to session-count limits for Anthropic OAuth and SetupToken providers.
+	// Sessions idle past the timeout are released.
 	SessionIdleTimeoutMinutes int `mapstructure:"session_idle_timeout_minutes"`
 
-	// StreamDataIntervalTimeout: 流数据间隔超时（秒），0 表示禁用
+	// StreamDataIntervalTimeout is the allowed ordinary stream data gap in
+	// seconds. Zero disables the gap deadline; positive values reach the stream
+	// consumer separately from its keepalive interval.
 	StreamDataIntervalTimeout int `mapstructure:"stream_data_interval_timeout"`
-	// StreamKeepaliveInterval: 流式 keepalive 间隔（秒），0 表示禁用
+	// StreamKeepaliveInterval supplies ordinary streaming ping intervals in
+	// seconds. Zero disables these keepalives, while the separate data-gap timeout
+	// can still bound an inactive upstream stream.
 	StreamKeepaliveInterval int `mapstructure:"stream_keepalive_interval"`
-	// ImageStreamDataIntervalTimeout: 图片流数据间隔超时（秒），0 表示禁用
+	// ImageStreamDataIntervalTimeout supplies the image stream data-gap limit in
+	// seconds. Zero disables that deadline; image generation uses this budget
+	// separately from ordinary text stream timing.
 	ImageStreamDataIntervalTimeout int `mapstructure:"image_stream_data_interval_timeout"`
-	// ImageStreamKeepaliveInterval: 图片流式 keepalive 间隔（秒），0 表示禁用
+	// ImageStreamKeepaliveInterval supplies heartbeat seconds during image
+	// response-header waits and SSE reads. Zero disables those pings, while the
+	// independent image data-gap timeout remains a separate stream liveness choice.
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
-	// ImageNonstreamKeepaliveInterval: 图片非流式 JSON keepalive 间隔（秒），0 表示禁用
+	// ImageNonstreamKeepaliveInterval supplies keepalive seconds for nonstreaming
+	// image JSON responses. Zero disables that behavior, and the setting remains
+	// separate from image SSE keepalive timing.
 	ImageNonstreamKeepaliveInterval int `mapstructure:"image_nonstream_keepalive_interval"`
-	// MaxLineSize: 上游 SSE 单行最大字节数（0 使用默认值）
+	// MaxLineSize limits an upstream SSE line in bytes; zero uses the default.
 	MaxLineSize int `mapstructure:"max_line_size"`
 
-	// 是否记录上游错误响应体摘要（避免输出请求内容）
+	// Log summaries of upstream error response bodies.
 	LogUpstreamErrorBody bool `mapstructure:"log_upstream_error_body"`
-	// 上游错误响应体记录最大字节数（超过会截断）
+	// Maximum logged upstream error-body bytes; longer bodies are truncated.
 	LogUpstreamErrorBodyMaxBytes int `mapstructure:"log_upstream_error_body_max_bytes"`
 
-	// API-key 提供商在客户端未提供 anthropic-beta 时，是否按需自动补齐（默认关闭以保持兼容）
+	// Add required anthropic-beta values for API-key providers when absent from
+	// the client; disabled by default.
 	InjectBetaForAPIKey bool `mapstructure:"inject_beta_for_apikey"`
 
-	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
+	// FailoverOn400 permits provider switching for the selected recoverable HTTP
+	// 400 cases interpreted by gateway error handling. It defaults false and does
+	// not classify every 400 response as retryable.
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
 
-	// 提供商切换最大次数（遇到上游错误时切换到其他提供商的次数上限）
+	// Maximum provider switches after upstream errors.
 	MaxProviderSwitches int `mapstructure:"max_provider_switches"`
-	// Gemini 提供商切换最大次数（Gemini 平台单独配置，因 API 限制更严格）
+	// Separate maximum provider switches for Gemini.
 	MaxProviderSwitchesGemini int `mapstructure:"max_provider_switches_gemini"`
 
-	// Antigravity 429 fallback 限流时间（分钟），解析重置时间失败时使用
+	// AntigravityFallbackCooldownMinutes supplies the 429 cooldown when the
+	// adapter cannot parse a reset time. The application passes its minute value
+	// to the Antigravity fallback duration selection.
 	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
 
-	// Scheduling: 提供商调度相关配置
+	// Scheduling configures provider selection and waiting.
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
 
-	// TLSFingerprint: TLS 指纹伪装配置
+	// TLSFingerprint configures upstream TLS handshake fingerprints.
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
 
-	// UsageRecord: 使用量记录异步队列配置（有界队列 + 固定 worker）
+	// UsageRecord configures the bounded asynchronous usage-record queue and workers.
 	UsageRecord GatewayUsageRecordConfig `mapstructure:"usage_record"`
 
-	// UserGroupRateCacheTTLSeconds: 用户分组倍率热路径缓存 TTL（秒）
+	// UserGroupRateCacheTTLSeconds supplies the retained lifetime of user/group
+	// rate multipliers in seconds. Startup requires a positive value before the
+	// rate cache uses this process default.
 	UserGroupRateCacheTTLSeconds int `mapstructure:"user_group_rate_cache_ttl_seconds"`
-	// ModelsListCacheTTLSeconds 兼容历史配置，当前目录查询已停用候选短缓存。
+	// ModelsListCacheTTLSeconds accepts a retired cache lifetime in seconds and
+	// remains validated from ten through thirty. Current catalog queries read
+	// their provider configuration directly and do not consume this field.
 	ModelsListCacheTTLSeconds int `mapstructure:"models_list_cache_ttl_seconds"`
 
-	// UserMessageQueue: 用户消息串行队列配置
-	// 对 role:"user" 的真实用户消息实施提供商级串行化 + RPM 自适应延迟
+	// UserMessageQueue configures user-message serialization.
+	// It serializes role:"user" messages per provider and applies RPM-based delay.
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
 
-	// Grok 保存 Grok/xAI 网关调度与免费层软门禁配置。
+	// Grok configures Grok/xAI scheduling and the free-tier quota gate.
 	Grok GatewayGrokConfig `mapstructure:"grok"`
 
-	// CNProviders 配置国产 OpenAI 兼容供应商的独立用量监控。
+	// CNProviders configures usage monitoring for Chinese OpenAI-compatible suppliers.
 	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
 }
 
-// GatewayGrokConfig 保存 Grok 专用的网关调度参数。
+// GatewayGrokConfig supplies Grok password authorization and its free-tier
+// rolling token gate. The gate applies to OAuth providers marked free and stops
+// new scheduling at a configured percentage of its nominal window allowance.
+// Window duration is measured in hours.
 //
-// 免费额度软门禁键位均位于 gateway.grok：
-//   - free_quota_soft_gate_enabled：为明确标记为 free 的 OAuth 提供商启用本地滚动窗口调度门禁；
-//   - free_quota_token_limit：滚动窗口名义 token 额度；
-//   - free_quota_soft_gate_percent：达到名义额度前停止新调度的百分比，范围 1-100；
-//   - free_quota_window_hours：本地用量滚动窗口小时数；
-//   - free_quota_stats_cache_seconds：免费层用量统计缓存 TTL，热路径不等待数据库，
-//     缓存未命中时放行并在后台刷新。
+// Quota observations are cached for scheduling consumers. A cache miss permits
+// scheduling while statistics refresh in the background, so the request does
+// not wait for the usage database to produce those observations.
 type GatewayGrokConfig struct {
-	// PasswordAuthEnabled 控制可选的密码转 SSO OAuth 流程，默认关闭，必须由运维显式启用。
-	// 启用后 POST /admin/grok/oauth/password 才执行实际授权。
+	// PasswordAuthEnabled enables the optional password-to-SSO OAuth flow;
+	// disabled by default.
+	// POST /admin/grok/oauth/password performs authorization only when enabled.
 	PasswordAuthEnabled bool `mapstructure:"password_auth_enabled"`
-	// FreeQuotaSoftGateEnabled 仅为明确标记为 free 的 Grok OAuth 提供商启用本地滚动窗口门禁。
+	// FreeQuotaSoftGateEnabled gates Grok OAuth providers marked free using local
+	// rolling usage.
 	FreeQuotaSoftGateEnabled bool `mapstructure:"free_quota_soft_gate_enabled"`
-	// FreeQuotaTokenLimit 是滚动窗口的名义 token 额度。
+	// FreeQuotaTokenLimit is the nominal token allowance for the rolling window.
 	FreeQuotaTokenLimit int64 `mapstructure:"free_quota_token_limit"`
-	// FreeQuotaSoftGatePercent 指定停止新调度的额度百分比。
+	// FreeQuotaSoftGatePercent is the allowance percentage that stops new scheduling.
 	FreeQuotaSoftGatePercent int `mapstructure:"free_quota_soft_gate_percent"`
-	// FreeQuotaWindowHours 指定本地用量滚动窗口小时数。
+	// FreeQuotaWindowHours is the local usage window length.
 	FreeQuotaWindowHours int `mapstructure:"free_quota_window_hours"`
-	// FreeQuotaStatsCacheSeconds 是软门禁统计缓存 TTL；热路径不等待 usage_logs，
-	// 未命中时放行并异步刷新。
+	// FreeQuotaStatsCacheSeconds is the quota-statistics cache TTL; requests do
+	// not wait for usage_logs.
+	// A cache miss permits scheduling and triggers an asynchronous refresh.
 	FreeQuotaStatsCacheSeconds int `mapstructure:"free_quota_stats_cache_seconds"`
 }
 
-// GatewayCNProvidersConfig 配置国产供应商的周期性余额/额度探测。
-// 该任务默认关闭，开启后探测活动的 API Key 提供商。管理员手动查询独立执行。
+// GatewayCNProvidersConfig configures periodic balance and quota probes for
+// Chinese suppliers.
+// Disabled by default; when enabled it probes active API-key providers. Manual
+// queries run independently.
 type GatewayCNProvidersConfig struct {
-	// MonitorEnabled 显式开启后才运行后台周期探测；手动查询不受此开关影响。
-	MonitorEnabled      bool    `mapstructure:"monitor_enabled"`
-	BalanceThreshold    float64 `mapstructure:"balance_threshold"`
-	IntervalMinutes     int     `mapstructure:"interval_minutes"`
-	Concurrency         int     `mapstructure:"concurrency"`
-	ProbeTimeoutSeconds int     `mapstructure:"probe_timeout_seconds"`
-	RoundTimeoutSeconds int     `mapstructure:"round_timeout_seconds"`
+	// MonitorEnabled selects periodic supplier probes, while the deployment
+	// default leaves that monitor disabled. Administrator-initiated usage queries
+	// remain separate from this background availability choice.
+	MonitorEnabled bool `mapstructure:"monitor_enabled"`
+	// supplier low-balance observation threshold
+	BalanceThreshold float64 `mapstructure:"balance_threshold"`
+	// supplier probe round interval minutes
+	IntervalMinutes int `mapstructure:"interval_minutes"`
+	// simultaneous supplier probe limit
+	Concurrency int `mapstructure:"concurrency"`
+	// per-supplier probe budget seconds
+	ProbeTimeoutSeconds int `mapstructure:"probe_timeout_seconds"`
+	// whole supplier round budget seconds
+	RoundTimeoutSeconds int `mapstructure:"round_timeout_seconds"`
 }
 
-// GatewayLiveConfig 定义 ChatGPT Frameless Live 会话限制。
+// GatewayLiveConfig supplies the hard session duration used by Frameless Live
+// forwarding.
 type GatewayLiveConfig struct {
-	// MaxSessionDurationSeconds 是 Live 会话的硬上限。
+	// MaxSessionDurationSeconds supplies the Live session cap in seconds. Validate
+	// replaces a nonpositive value with one hour before application construction
+	// passes it to Live forwarding.
 	MaxSessionDurationSeconds int `mapstructure:"max_session_duration_seconds"`
 }
 
-// GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
-// 默认启用 HTTP/2；在部分代理不兼容时按策略回退 HTTP/1.1。
+// GatewayOpenAIHTTP2Config configures OpenAI upstream HTTP versions.
+// HTTP/2 is preferred by default, with policy-controlled HTTP/1.1 fallback for
+// incompatible proxies.
 type GatewayOpenAIHTTP2Config struct {
-	// Enabled: 是否启用 OpenAI HTTP/2 优先策略
+	// Enabled enables the OpenAI HTTP/2 preference.
 	Enabled bool `mapstructure:"enabled"`
-	// AllowProxyFallbackToHTTP1: HTTP/HTTPS 代理出现明确 H2 兼容错误时，临时回退 HTTP/1.1
+	// AllowProxyFallbackToHTTP1 permits recognized proxy H2 compatibility errors
+	// to select HTTP/1.1 while H2 preference is Enabled. FallbackErrorThreshold
+	// counts failures within FallbackWindowSeconds; FallbackTTLSeconds controls
+	// the resulting recovery period. The transport policy replaces nonpositive
+	// counts and durations with its corresponding defaults.
+	// proxy HTTP/1.1 recovery switch
 	AllowProxyFallbackToHTTP1 bool `mapstructure:"allow_proxy_fallback_to_http1"`
-	// FallbackErrorThreshold: 回退窗口内累计多少次兼容错误后触发回退
+	// compatibility failure trigger count
 	FallbackErrorThreshold int `mapstructure:"fallback_error_threshold"`
-	// FallbackWindowSeconds: 统计兼容错误的时间窗口（秒）
+	// compatibility failure window seconds
 	FallbackWindowSeconds int `mapstructure:"fallback_window_seconds"`
-	// FallbackTTLSeconds: 触发后回退 HTTP/1.1 的持续时间（秒）
+	// HTTP/1.1 recovery lifetime seconds
 	FallbackTTLSeconds int `mapstructure:"fallback_ttl_seconds"`
 }
 
-// GatewayOpenAIProxyStreamCircuitConfig 配置进程内有界的 Responses SSE 代理断流熔断器。
+// GatewayOpenAIProxyStreamCircuitConfig configures bounded, process-local
+// Responses SSE proxy isolation.
 type GatewayOpenAIProxyStreamCircuitConfig struct {
-	// Disabled: 完全关闭代理断流熔断，默认保持开启。
+	// Disabled turns off the process proxy-disconnection isolation consumer. Its
+	// default false leaves that consumer enabled, with the configured window and
+	// count determining when isolation is selected.
 	Disabled bool `mapstructure:"disabled"`
-	// FailureThreshold: 统计窗口内多少次断流后隔离代理。
+	// FailureThreshold counts eligible proxy disconnections within WindowSeconds,
+	// and TTLSeconds controls the resulting isolation period.
+	// egress.NewProxyStreamCircuit replaces nonpositive counts and durations with
+	// its corresponding defaults; Disabled independently bypasses circuit
+	// recording.
+	// proxy disconnection trigger count
 	FailureThreshold int `mapstructure:"failure_threshold"`
-	// WindowSeconds: 断流统计窗口（秒）。
+	// proxy disconnection window seconds
 	WindowSeconds int `mapstructure:"window_seconds"`
-	// TTLSeconds: 代理隔离持续时间（秒）。
-	TTLSeconds int `mapstructure:"ttl_seconds"`
+	TTLSeconds    int `mapstructure:"ttl_seconds"` // proxy isolation retention seconds
 }
 
-// UserMessageQueueConfig 用户消息串行队列配置
-// 用于 Anthropic OAuth/SetupToken 提供商的用户消息串行化发送。
+// UserMessageQueueConfig configures serial user-message delivery
+// for Anthropic OAuth and SetupToken providers.
 type UserMessageQueueConfig struct {
-	// Mode: 模式选择
-	// "serialize" = 提供商级串行锁 + RPM 自适应延迟
-	// "throttle" = RPM 自适应前置延迟，请求可并发执行
-	// "" = 禁用（默认）
-	Mode string `mapstructure:"mode"`
-	// Enabled: 已废弃，仅向后兼容（等同于 mode: "serialize"）
-	Enabled bool `mapstructure:"enabled"`
-	// LockTTLMs: 串行锁 TTL（毫秒），应大于最长请求时间
+	// Mode and Enabled express current and retired queue choices. Recognized
+	// serialize or throttle Mode values win; an absent or unsupported Mode uses
+	// Enabled, with true selecting serialization. Serialize holds a provider lock
+	// and applies RPM delay; throttle applies delay while allowing concurrent
+	// requests.
+	Mode    string `mapstructure:"mode"`    // serialize, throttle, or empty choice
+	Enabled bool   `mapstructure:"enabled"` // retired serialization availability switch
+	// LockTTLMs is the serial lock lifetime in milliseconds; set it longer than
+	// the longest request.
 	LockTTLMs int `mapstructure:"lock_ttl_ms"`
-	// WaitTimeoutMs: 等待获取锁的超时时间（毫秒）
+	// WaitTimeoutMs bounds lock acquisition in milliseconds.
 	WaitTimeoutMs int `mapstructure:"wait_timeout_ms"`
-	// MinDelayMs: RPM 自适应延迟下限（毫秒）
+	// MinDelayMs and MaxDelayMs bound RPM-based delay interpolation in
+	// milliseconds. scheduler.CalculateRPMAwareDelay replaces nonpositive values
+	// with its defaults and swaps inverted bounds before calculating the delay and
+	// applying jitter.
+	// lower RPM-delay interpolation milliseconds
 	MinDelayMs int `mapstructure:"min_delay_ms"`
-	// MaxDelayMs: RPM 自适应延迟上限（毫秒）
+	// upper RPM-delay interpolation milliseconds
 	MaxDelayMs int `mapstructure:"max_delay_ms"`
-	// CleanupIntervalSeconds: 孤儿锁清理间隔（秒），0 表示禁用
+	// CleanupIntervalSeconds supplies the orphaned message-lock cleanup cadence.
+	// Zero disables this periodic cleanup choice, while message admission and its
+	// lock lifetime retain their own settings.
 	CleanupIntervalSeconds int `mapstructure:"cleanup_interval_seconds"`
 }
 
-// GatewayOpenAIWSConfig 提供 Responses WS 运行参数的部署默认值，管理端可以覆盖。
+// GatewayOpenAIWSConfig supplies deployment defaults for Responses WS,
+// overridable by admin settings.
 type GatewayOpenAIWSConfig struct {
-	ClientFirstMessageTimeoutSeconds            int     `mapstructure:"client_first_message_timeout_seconds"`
-	IngressInterTurnIdleTimeoutSeconds          int     `mapstructure:"ingress_inter_turn_idle_timeout_seconds"`
-	MaxIngressConnectionsPerAPIKey              int     `mapstructure:"max_ingress_connections_per_api_key"`
-	IngressPreviousResponseRecoveryEnabled      bool    `mapstructure:"ingress_previous_response_recovery_enabled"`
-	ClientReadLimitBytes                        int64   `mapstructure:"client_read_limit_bytes"`
-	HTTPBridgeThresholdBytes                    int64   `mapstructure:"http_bridge_threshold_bytes"`
-	MaxConnsPerProvider                         int     `mapstructure:"max_conns_per_provider"`
-	MinIdlePerProvider                          int     `mapstructure:"min_idle_per_provider"`
-	MaxIdlePerProvider                          int     `mapstructure:"max_idle_per_provider"`
-	DynamicMaxConnsByProviderConcurrencyEnabled bool    `mapstructure:"dynamic_max_conns_by_provider_concurrency_enabled"`
-	OAuthMaxConnsFactor                         float64 `mapstructure:"oauth_max_conns_factor"`
-	APIKeyMaxConnsFactor                        float64 `mapstructure:"apikey_max_conns_factor"`
-	DialTimeoutSeconds                          int     `mapstructure:"dial_timeout_seconds"`
-	ReadTimeoutSeconds                          int     `mapstructure:"read_timeout_seconds"`
-	WriteTimeoutSeconds                         int     `mapstructure:"write_timeout_seconds"`
-	PoolTargetUtilization                       float64 `mapstructure:"pool_target_utilization"`
-	QueueLimitPerConn                           int     `mapstructure:"queue_limit_per_conn"`
-	PrewarmCooldownMS                           int     `mapstructure:"prewarm_cooldown_ms"`
-	StickySessionTTLSeconds                     int     `mapstructure:"sticky_session_ttl_seconds"`
-	SessionHashReadOldFallback                  bool    `mapstructure:"session_hash_read_old_fallback"`
-	SessionHashDualWriteOld                     bool    `mapstructure:"session_hash_dual_write_old"`
-	MetadataBridgeEnabled                       bool    `mapstructure:"metadata_bridge_enabled"`
-	StickyResponseIDTTLSeconds                  int     `mapstructure:"sticky_response_id_ttl_seconds"`
-	StickyPreviousResponseTTLSeconds            int     `mapstructure:"sticky_previous_response_ttl_seconds"`
+	// ingress first-message wait seconds
+	ClientFirstMessageTimeoutSeconds int `mapstructure:"client_first_message_timeout_seconds"`
+	// ingress between-turn idle seconds
+	IngressInterTurnIdleTimeoutSeconds int `mapstructure:"ingress_inter_turn_idle_timeout_seconds"`
+	// per-key ingress connection limit
+	MaxIngressConnectionsPerAPIKey int `mapstructure:"max_ingress_connections_per_api_key"`
+	// ingress previous-response recovery switch
+	IngressPreviousResponseRecoveryEnabled bool `mapstructure:"ingress_previous_response_recovery_enabled"`
+	// client message read-limit bytes
+	ClientReadLimitBytes int64 `mapstructure:"client_read_limit_bytes"`
+	// large message HTTP-bridge threshold bytes
+	HTTPBridgeThresholdBytes int64 `mapstructure:"http_bridge_threshold_bytes"`
+	// MaxConnsPerProvider, MinIdlePerProvider, and MaxIdlePerProvider describe one
+	// provider pool. Startup validation keeps the idle minimum within the idle
+	// maximum and keeps that maximum within total capacity before pool
+	// construction.
+	// provider connection pool capacity
+	MaxConnsPerProvider int `mapstructure:"max_conns_per_provider"`
+	// provider idle connection minimum
+	MinIdlePerProvider int `mapstructure:"min_idle_per_provider"`
+	// provider idle connection maximum
+	MaxIdlePerProvider int `mapstructure:"max_idle_per_provider"`
+	// concurrency-derived pool capacity switch
+	DynamicMaxConnsByProviderConcurrencyEnabled bool `mapstructure:"dynamic_max_conns_by_provider_concurrency_enabled"`
+	// OAuth pool concurrency multiplier
+	OAuthMaxConnsFactor float64 `mapstructure:"oauth_max_conns_factor"`
+	// API-key pool concurrency multiplier
+	APIKeyMaxConnsFactor float64 `mapstructure:"apikey_max_conns_factor"`
+	// upstream connection dialing seconds
+	DialTimeoutSeconds int `mapstructure:"dial_timeout_seconds"`
+	// upstream frame reading seconds
+	ReadTimeoutSeconds int `mapstructure:"read_timeout_seconds"`
+	// upstream frame writing seconds
+	WriteTimeoutSeconds int `mapstructure:"write_timeout_seconds"`
+	// pool target occupation fraction
+	PoolTargetUtilization float64 `mapstructure:"pool_target_utilization"`
+	// per-connection queued request limit
+	QueueLimitPerConn int `mapstructure:"queue_limit_per_conn"`
+	// pool prewarming cooldown milliseconds
+	PrewarmCooldownMS int `mapstructure:"prewarm_cooldown_ms"`
+	// session affinity retention seconds
+	StickySessionTTLSeconds int `mapstructure:"sticky_session_ttl_seconds"`
+	// legacy session affinity read switch
+	SessionHashReadOldFallback bool `mapstructure:"session_hash_read_old_fallback"`
+	// legacy session affinity write switch
+	SessionHashDualWriteOld bool `mapstructure:"session_hash_dual_write_old"`
+	// session metadata forwarding switch
+	MetadataBridgeEnabled bool `mapstructure:"metadata_bridge_enabled"`
+	// response-ID affinity retention seconds
+	StickyResponseIDTTLSeconds int `mapstructure:"sticky_response_id_ttl_seconds"`
+	// StickyPreviousResponseTTLSeconds is the compatibility lifetime read by load
+	// and Validate. A positive value fills StickyResponseIDTTLSeconds when that
+	// current field is nonpositive; otherwise the current value wins.
+	StickyPreviousResponseTTLSeconds int `mapstructure:"sticky_previous_response_ttl_seconds"`
 }
 
-// GatewayAdvancedSchedulerScoreWeights 高级调度器提供商打分权重。
+// GatewayAdvancedSchedulerScoreWeights weights provider scores in the advanced scheduler.
 type GatewayAdvancedSchedulerScoreWeights = schedulerpolicy.ConfigScoreWeights
 
-// GatewayAdvancedSchedulerConfig 跨平台高级调度器配置。
+// GatewayAdvancedSchedulerConfig supplies cross-platform candidate scoring and
+// affinity-escape defaults.
 type GatewayAdvancedSchedulerConfig struct {
-	// LBTopK 是每次加权选择前保留的高分候选数量。
+	// LBTopK is the number of highest-scoring candidates retained before weighted
+	// selection.
 	LBTopK int `mapstructure:"lb_top_k"`
-	// ScoreWeights 是通用高级调度器的候选评分权重。
+	// ScoreWeights weights candidate scores in the advanced scheduler.
 	ScoreWeights GatewayAdvancedSchedulerScoreWeights `mapstructure:"score_weights"`
-	// EWMAErrorRateAlpha 是错误率反馈的 EWMA 平滑系数，取值越大越重视最新样本。
+	// EWMAErrorRateAlpha and EWMATTFTAlpha weight the latest error or first-token
+	// latency observation against retained history. Startup requires finite
+	// coefficients in (0,1], and larger coefficients give recent observations more
+	// weight.
+	// error observation smoothing coefficient
 	EWMAErrorRateAlpha float64 `mapstructure:"ewma_error_rate_alpha"`
-	// EWMATTFTAlpha 是首 token 延迟反馈的 EWMA 平滑系数，取值越大越重视最新样本。
+	// TTFT observation smoothing coefficient
 	EWMATTFTAlpha float64 `mapstructure:"ewma_ttft_alpha"`
-	// StickyEscapeEnabled: 是否允许 session_hash sticky 在提供商健康度劣化时临时逃逸
+	// StickyEscapeEnabled lets scheduler policy bypass session affinity based on
+	// configured TTFT or error-rate observations. It controls that health-based
+	// escape choice alongside its two separately configured thresholds.
 	StickyEscapeEnabled bool `mapstructure:"sticky_escape_enabled"`
-	// StickyEscapeTTFTMs: TTFT EWMA 超过该阈值时跳过 sticky
+	// StickyEscapeTTFTMs is the TTFT EWMA threshold in milliseconds for skipping
+	// affinity.
 	StickyEscapeTTFTMs int `mapstructure:"sticky_escape_ttft_ms"`
-	// StickyEscapeErrorRate: 错误率 EWMA 超过该阈值时跳过 sticky
+	// StickyEscapeErrorRate supplies the error-rate EWMA threshold for
+	// health-based affinity escape. Startup range checks accept zero, and
+	// schedulerpolicy.NormalizeStickyEscape handles nonfinite or out-of-range
+	// values passed to it.
 	StickyEscapeErrorRate float64 `mapstructure:"sticky_escape_error_rate"`
 }
 
-// GatewayUsageRecordConfig 使用量记录异步队列配置。
+// GatewayUsageRecordConfig supplies completion queue admission, task budgets,
+// and worker scaling controls.
 type GatewayUsageRecordConfig struct {
-	// WorkerCount: worker 初始数量（自动扩缩容开启时作为初始并发上限）
+	// WorkerCount supplies initial completion worker concurrency whether
+	// autoscaling is enabled or disabled. When AutoScaleEnabled is true, Validate
+	// requires it within the configured minimum and maximum before constructing
+	// the worker pool.
 	WorkerCount int `mapstructure:"worker_count"`
-	// QueueSize: 队列容量（有界）
+	// QueueSize is the bounded queue capacity.
 	QueueSize int `mapstructure:"queue_size"`
-	// TaskTimeoutSeconds: 单个使用量记录任务超时（秒）
+	// completion task timeout seconds
 	TaskTimeoutSeconds int `mapstructure:"task_timeout_seconds"`
-	// OverflowPolicy: 队列满时策略（drop/sample/sync）
+	// OverflowPolicy selects handling after queue admission fails: sync runs
+	// inline, sample may run inline by percentage, and drop discards work.
+	// Pool-stop rejection is handled separately by the completion consumer.
 	OverflowPolicy string `mapstructure:"overflow_policy"`
-	// OverflowSamplePercent: sample 策略下，同步回写采样百分比（1-100）
+	// OverflowSamplePercent is the percentage written synchronously under sample
+	// policy, from 1 to 100.
 	OverflowSamplePercent int `mapstructure:"overflow_sample_percent"`
 
-	// AutoScaleEnabled: 是否启用 worker 自动扩缩容
+	// AutoScaleEnabled enables worker autoscaling.
 	AutoScaleEnabled bool `mapstructure:"auto_scale_enabled"`
-	// AutoScaleMinWorkers: 自动扩缩容最小 worker 数
+	// AutoScaleMinWorkers and AutoScaleMaxWorkers bound the initial WorkerCount
+	// and subsequent autoscaling while AutoScaleEnabled is true. Startup
+	// validation rejects an inverted range or an initial count outside it.
+	// autoscaling worker count minimum
 	AutoScaleMinWorkers int `mapstructure:"auto_scale_min_workers"`
-	// AutoScaleMaxWorkers: 自动扩缩容最大 worker 数
+	// autoscaling worker count maximum
 	AutoScaleMaxWorkers int `mapstructure:"auto_scale_max_workers"`
-	// AutoScaleUpQueuePercent: 队列占用率达到该阈值时触发扩容
+	// AutoScaleUpQueuePercent and AutoScaleDownQueuePercent set separated
+	// occupancy thresholds for growth and shrinkage. When AutoScaleEnabled is
+	// true, Validate requires the shrinkage threshold below the growth threshold,
+	// leaving a gap between those decisions.
+	// queue occupancy growth percentage
 	AutoScaleUpQueuePercent int `mapstructure:"auto_scale_up_queue_percent"`
-	// AutoScaleDownQueuePercent: 队列占用率低于该阈值时触发缩容
+	// queue occupancy shrinkage percentage
 	AutoScaleDownQueuePercent int `mapstructure:"auto_scale_down_queue_percent"`
-	// AutoScaleUpStep: 每次扩容步长
+	// AutoScaleUpStep and AutoScaleDownStep supply positive worker-count changes
+	// for their respective scaling directions. When AutoScaleEnabled is true,
+	// Validate checks both before completion workers respond to queue
+	// observations.
+	// workers added per adjustment
 	AutoScaleUpStep int `mapstructure:"auto_scale_up_step"`
-	// AutoScaleDownStep: 每次缩容步长
+	// workers removed per adjustment
 	AutoScaleDownStep int `mapstructure:"auto_scale_down_step"`
-	// AutoScaleCheckIntervalSeconds: 自动扩缩容检测间隔（秒）
+	// AutoScaleCheckIntervalSeconds supplies observation cadence, and
+	// AutoScaleCooldownSeconds separates adjustment decisions, both in seconds.
+	// When AutoScaleEnabled is true, Validate requires a positive observation
+	// interval and permits a zero cooldown.
+	// scaling observation cadence seconds
 	AutoScaleCheckIntervalSeconds int `mapstructure:"auto_scale_check_interval_seconds"`
-	// AutoScaleCooldownSeconds: 自动扩缩容冷却时间（秒）
+	// inter-adjustment cooldown in seconds
 	AutoScaleCooldownSeconds int `mapstructure:"auto_scale_cooldown_seconds"`
 }
 
-// TLSFingerprintConfig TLS 指纹伪装配置
-// 用于模拟 Claude CLI (Node.js) 的 TLS 握手特征，避免被识别为非官方客户端。
+// TLSFingerprintConfig supplies global availability and named upstream
+// ClientHello profiles. The transport selects a named profile before
+// tlsfingerprint builds its supported extension values and protocol lists.
 type TLSFingerprintConfig struct {
-	// Enabled: 是否全局启用 TLS 指纹功能
+	// Enabled enables TLS fingerprinting globally.
 	Enabled bool `mapstructure:"enabled"`
-	// Profiles: 预定义的 TLS 指纹配置模板
-	// key 为模板名称，如 "claude_cli_v2", "chrome_120" 等
+	// Profiles contains named TLS fingerprint templates.
+	// Keys are profile names such as "claude_cli_v2" or "chrome_120".
 	Profiles map[string]TLSProfileConfig `mapstructure:"profiles"`
 }
 
-// TLSProfileConfig 单个 TLS 指纹模板的配置
-// 所有列表字段为空时使用内置默认值（Claude CLI 2.x / Node.js 20.x）
-// 建议通过 TLS 指纹采集工具 (tests/tls-fingerprint-web) 获取完整配置。
+// TLSProfileConfig supplies one TLS fingerprint's configured parameters.
+// CipherSuites, Curves, PointFormats, SignatureAlgorithms, ALPNProtocols,
+// SupportedVersions, KeyShareGroups, PSKModes, and Extensions use their
+// respective defaults in tlsfingerprint.buildClientHelloSpecFromProfile when
+// empty; the fingerprint collector can supply captured values.
+//
+// Those defaults include http/1.1 ALPN, TLS 1.3 and 1.2 versions, X25519 key
+// share, and the extension order defined by
+// tlsfingerprint.defaultExtensionOrder. Explicit nonempty lists retain their
+// configured ordering for the dialer's ClientHello construction.
 type TLSProfileConfig struct {
-	// Name: 模板显示名称
-	Name string `mapstructure:"name"`
-	// EnableGREASE: 是否启用 GREASE 扩展（Chrome 使用，Node.js 不使用）
+	Name string `mapstructure:"name"` // Name is the profile display name.
+	// EnableGREASE enables GREASE extensions for profiles such as Chrome.
 	EnableGREASE bool `mapstructure:"enable_grease"`
-	// CipherSuites: TLS 加密套件列表
+	// CipherSuites lists TLS cipher suite IDs.
 	CipherSuites []uint16 `mapstructure:"cipher_suites"`
-	// Curves: 椭圆曲线列表
+	// Curves lists supported elliptic curve IDs.
 	Curves []uint16 `mapstructure:"curves"`
-	// PointFormats: 点格式列表
+	// PointFormats supplies configured point-format identifiers. The dialer
+	// narrows each uint16 value to one byte when constructing the ClientHello
+	// supported-points extension, so upper bits are discarded.
 	PointFormats []uint16 `mapstructure:"point_formats"`
-	// SignatureAlgorithms: 签名算法列表
+	// SignatureAlgorithms lists signature algorithm IDs.
 	SignatureAlgorithms []uint16 `mapstructure:"signature_algorithms"`
-	// ALPNProtocols: ALPN 协议列表（如 ["h2", "http/1.1"]）
+	// ALPNProtocols lists protocols such as ["h2", "http/1.1"].
 	ALPNProtocols []string `mapstructure:"alpn_protocols"`
-	// SupportedVersions: 支持的 TLS 版本列表（如 [0x0304, 0x0303] 即 TLS1.3, TLS1.2）
+	// SupportedVersions lists TLS versions, such as [0x0304, 0x0303] for TLS 1.3 and 1.2.
 	SupportedVersions []uint16 `mapstructure:"supported_versions"`
-	// KeyShareGroups: Key Share 中发送的曲线组（如 [29] 即 X25519）
+	// KeyShareGroups lists curves sent in Key Share, such as [29] for X25519.
 	KeyShareGroups []uint16 `mapstructure:"key_share_groups"`
-	// PSKModes: PSK 密钥交换模式（如 [1] 即 psk_dhe_ke）
+	// PSKModes supplies configured pre-shared-key exchange identifiers. The dialer
+	// narrows each uint16 value to one byte when constructing the exchange-modes
+	// extension; empty uses its DHE default.
 	PSKModes []uint16 `mapstructure:"psk_modes"`
-	// Extensions: TLS 扩展类型 ID 列表，按发送顺序排列
-	// 空则使用内置默认顺序 [0,11,10,35,16,22,23,13,43,45,51]
-	// GREASE 值(如 0x0a0a)会自动插入 GREASE 扩展
+	// Extensions supplies the TLS extension IDs in wire order. Empty uses
+	// tlsfingerprint.defaultExtensionOrder; GREASE IDs create GREASE entries,
+	// while unrecognized ordinary IDs produce empty-data GenericExtension entries.
 	Extensions []uint16 `mapstructure:"extensions"`
 }
 
-// GatewaySchedulingConfig providers scheduling configuration.
+// GatewaySchedulingConfig configures provider selection, waiting, and snapshot refresh.
 type GatewaySchedulingConfig struct {
-	// 粘性会话排队配置
-	StickySessionMaxWaiting  int           `mapstructure:"sticky_session_max_waiting"`
+	// StickySessionMaxWaiting and StickySessionWaitTimeout bound the queue for an
+	// already selected sticky provider. The first limits waiting requests; the
+	// second supplies their acquisition duration, and both require positive
+	// startup values.
+	// sticky-provider waiter count limit
+	StickySessionMaxWaiting int `mapstructure:"sticky_session_max_waiting"`
+	// sticky-provider wait duration
 	StickySessionWaitTimeout time.Duration `mapstructure:"sticky_session_wait_timeout"`
 
-	// 兜底排队配置
+	// FallbackWaitTimeout and FallbackMaxWaiting bound waiting after selection of
+	// an alternative provider. They supply the acquisition duration and queue
+	// capacity independently of the sticky-provider queue limits.
+	// alternative-provider wait duration
 	FallbackWaitTimeout time.Duration `mapstructure:"fallback_wait_timeout"`
-	FallbackMaxWaiting  int           `mapstructure:"fallback_max_waiting"`
+	// alternative-provider waiter count limit
+	FallbackMaxWaiting int `mapstructure:"fallback_max_waiting"`
 
-	// 兜底层提供商选择策略: "last_used"(按最后使用时间排序，默认) 或 "random"(随机)
+	// Selection mode: "last_used" orders by last use by default; "random"
+	// randomizes selection.
 	FallbackSelectionMode string `mapstructure:"fallback_selection_mode"`
 
-	// PreferSoonestReset 开启后，负载感知选择会优先选用「会话窗口最早重置」的提供商
-	// 先用尽即将重置的提供商，保留重置时间还很久的提供商。
-	// 默认 false，保持原有「优先级 → 负载率 → LRU」行为不变。
+	// PreferSoonestReset makes load-aware selection favor providers whose session
+	// windows reset soonest.
+	// This consumes allowances near reset before those with more time remaining.
+	// Disabled by default, using priority, load ratio, and LRU ordering.
 	PreferSoonestReset bool `mapstructure:"prefer_soonest_reset"`
 
-	// 负载计算
-	LoadBatchEnabled    bool `mapstructure:"load_batch_enabled"`
-	LoadBatchCacheTTLMS int  `mapstructure:"load_batch_cache_ttl_ms"`
-	// 快照桶读取时的 MGET 分块大小
+	// batched load observation switch
+	LoadBatchEnabled bool `mapstructure:"load_batch_enabled"`
+	// LoadBatchCacheTTLMS supplies provider-load cache lifetime in milliseconds to
+	// scheduler.ConcurrencyService. Zero disables and clears that cache; the
+	// batched observation selection switch remains independently configured.
+	LoadBatchCacheTTLMS int `mapstructure:"load_batch_cache_ttl_ms"`
+	// MGET chunk size when reading snapshot buckets.
 	SnapshotMGetChunkSize int `mapstructure:"snapshot_mget_chunk_size"`
-	// 快照重建时的缓存写入分块大小
+	// Cache write chunk size when rebuilding snapshots.
 	SnapshotWriteChunkSize int `mapstructure:"snapshot_write_chunk_size"`
 
-	// 过期槽位清理周期（0 表示禁用）
+	// SlotCleanupInterval supplies periodic expired-slot cleanup timing. Zero
+	// disables that cleanup loop, while admitted slots retain their separately
+	// configured TTL and normal release behavior.
 	SlotCleanupInterval time.Duration `mapstructure:"slot_cleanup_interval"`
 
-	// 受控回源配置
+	// DbFallbackEnabled permits scheduler storage reads when cached scheduling
+	// data cannot supply trusted candidates. The timeout and per-process QPS
+	// fields then constrain those permitted database reads.
 	DbFallbackEnabled bool `mapstructure:"db_fallback_enabled"`
-	// 受控回源超时（秒），0 表示不额外收紧超时
+	// DbFallbackTimeoutSeconds adds a timeout to permitted scheduler database
+	// reads when positive. Zero leaves the caller context budget in control, and
+	// values are supplied in seconds.
 	DbFallbackTimeoutSeconds int `mapstructure:"db_fallback_timeout_seconds"`
-	// 受控回源限流（实例级 QPS），0 表示不限制
+	// DbFallbackMaxQPS supplies the per-process scheduler database-read rate
+	// limit. Zero leaves it unlimited, while DbFallbackEnabled still determines
+	// whether cache-miss database reads can run.
 	DbFallbackMaxQPS int `mapstructure:"db_fallback_max_qps"`
 
-	// Outbox 轮询与滞后阈值配置
-	// Outbox 轮询周期（秒）
+	// Outbox polling and rebuild thresholds.
+	// Outbox polling interval, in seconds.
 	OutboxPollIntervalSeconds int `mapstructure:"outbox_poll_interval_seconds"`
-	// Outbox 滞后告警阈值（秒）
+	// OutboxLagWarnSeconds enables age warnings when positive. Positive
+	// OutboxLagRebuildSeconds enables the separate age trigger, and
+	// OutboxLagRebuildFailures counts eligible degraded observations before a
+	// rebuild. SnapshotService pauses that count while rebuilds or their lag
+	// retries are active; zero age thresholds disable their respective triggers.
+	// outbox age warning threshold seconds
 	OutboxLagWarnSeconds int `mapstructure:"outbox_lag_warn_seconds"`
-	// Outbox 触发强制重建阈值（秒）
+	// outbox age rebuild threshold seconds
 	OutboxLagRebuildSeconds int `mapstructure:"outbox_lag_rebuild_seconds"`
-	// Outbox 连续滞后触发次数
+	// eligible excessive-age observation count
 	OutboxLagRebuildFailures int `mapstructure:"outbox_lag_rebuild_failures"`
-	// Outbox 积压触发重建阈值（行数）
+	// OutboxBacklogRebuildRows supplies the maximum-ID minus watermark threshold
+	// used by scheduler.SnapshotService. Zero disables this trigger; gaps in event
+	// IDs can make this ID distance exceed actual pending rows.
 	OutboxBacklogRebuildRows int `mapstructure:"outbox_backlog_rebuild_rows"`
 
-	// 全量重建周期配置
-	// 全量重建周期（秒），0 表示禁用
+	// FullRebuildIntervalSeconds supplies periodic complete snapshot refresh
+	// timing in seconds. Zero disables that loop, while outbox-triggered rebuild
+	// decisions retain their own configured thresholds.
 	FullRebuildIntervalSeconds int `mapstructure:"full_rebuild_interval_seconds"`
 }
 
-// DatabaseConfig 数据库连接配置
-// 性能优化：新增连接池参数，避免频繁创建/销毁连接。
+// DatabaseConfig configures database connections and their pool.
+// Pool limits control connection reuse and resource consumption.
 type DatabaseConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	User     string `mapstructure:"user"`
-	Password string `mapstructure:"password"`
-	DBName   string `mapstructure:"dbname"`
-	SSLMode  string `mapstructure:"sslmode"`
-	// 连接池配置（性能优化：可配置化连接池参数）
-	// MaxOpenConns: 最大打开连接数，控制数据库连接上限，防止资源耗尽
-	MaxOpenConns int `mapstructure:"max_open_conns"`
-	// MaxIdleConns: 最大空闲连接数，保持热连接减少建连延迟
-	MaxIdleConns int `mapstructure:"max_idle_conns"`
-	// ConnMaxLifetimeMinutes: 连接最大存活时间，防止长连接导致的资源泄漏
+	Host     string `mapstructure:"host"`     // PostgreSQL server host text
+	Port     int    `mapstructure:"port"`     // PostgreSQL connection port number
+	User     string `mapstructure:"user"`     // PostgreSQL authentication username text
+	Password string `mapstructure:"password"` // PostgreSQL authentication secret text
+	DBName   string `mapstructure:"dbname"`   // target PostgreSQL database name
+	SSLMode  string `mapstructure:"sslmode"`  // libpq TLS mode text
+	// MaxOpenConns and MaxIdleConns bound one shared SQL pool. Startup validation
+	// requires a positive open capacity and keeps the nonnegative idle limit
+	// within that capacity before database/sql receives them.
+	MaxOpenConns int `mapstructure:"max_open_conns"` // open SQL connection capacity
+	MaxIdleConns int `mapstructure:"max_idle_conns"` // retained idle SQL connection limit
+	// ConnMaxLifetimeMinutes limits a connection's total lifetime in minutes.
 	ConnMaxLifetimeMinutes int `mapstructure:"conn_max_lifetime_minutes"`
-	// ConnMaxIdleTimeMinutes: 空闲连接最大存活时间，及时释放不活跃连接
+	// ConnMaxIdleTimeMinutes limits a connection's idle lifetime in minutes.
 	ConnMaxIdleTimeMinutes int `mapstructure:"conn_max_idle_time_minutes"`
 }
 
-// RedisConfig Redis 连接配置
-// 性能优化：新增连接池和超时参数，提升高并发场景下的吞吐量。
+// RedisConfig holds Redis credentials, pool limits, and configured socket
+// operation budgets.
 type RedisConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	Username string `mapstructure:"username"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
-	// 连接池与超时配置（性能优化：可配置化连接池参数）
-	// DialTimeoutSeconds: 建立连接超时，防止慢连接阻塞
+	Host     string `mapstructure:"host"`     // Redis server host text
+	Port     int    `mapstructure:"port"`     // Redis connection port number
+	Username string `mapstructure:"username"` // Redis authentication username text
+	Password string `mapstructure:"password"` // Redis authentication secret text
+	DB       int    `mapstructure:"db"`       // Redis logical database number
+	// connection establishment budget seconds
 	DialTimeoutSeconds int `mapstructure:"dial_timeout_seconds"`
-	// ReadTimeoutSeconds: 读取超时，避免慢查询阻塞连接池
+	// socket read operation seconds
 	ReadTimeoutSeconds int `mapstructure:"read_timeout_seconds"`
-	// WriteTimeoutSeconds: 写入超时，避免慢写入阻塞连接池
+	// socket write operation seconds
 	WriteTimeoutSeconds int `mapstructure:"write_timeout_seconds"`
-	// PoolSize: 连接池大小，控制最大并发连接数
-	PoolSize int `mapstructure:"pool_size"`
-	// MinIdleConns: 最小空闲连接数，保持热连接减少冷启动延迟
+	// PoolSize and MinIdleConns configure one Redis connection pool. Startup
+	// validation requires positive capacity and keeps its nonnegative ready-idle
+	// minimum within that capacity before client construction.
+	PoolSize int `mapstructure:"pool_size"` // Redis connection pool capacity
+	// ready idle Redis connection minimum
 	MinIdleConns int `mapstructure:"min_idle_conns"`
-	// EnableTLS: 是否启用 TLS/SSL 连接
+	// EnableTLS enables TLS connections.
 	EnableTLS bool `mapstructure:"enable_tls"`
 }
 
+// OpsConfig supplies deployment availability, cleanup, aggregation, and
+// collector cache defaults.
 type OpsConfig struct {
 	// Enabled controls whether ops features should run.
 	//
-	// NOTE: vNext still has a DB-backed feature flag (ops_monitoring_enabled) for runtime on/off.
-	// This config flag is the "hard switch" for deployments that want to disable ops completely.
+	// The database setting ops_monitoring_enabled controls runtime availability
+	// when this deployment-level switch is enabled.
 	Enabled bool `mapstructure:"enabled"`
 
 	// Cleanup controls periodic deletion of old ops data to prevent unbounded growth.
 	Cleanup OpsCleanupConfig `mapstructure:"cleanup"`
 
-	// MetricsCollectorCache controls Redis caching for expensive per-window collector queries.
+	// accepted collector-cache process inputs
 	MetricsCollectorCache OpsMetricsCollectorCacheConfig `mapstructure:"metrics_collector_cache"`
 
-	// Pre-aggregation configuration.
+	// operational metrics aggregation settings
 	Aggregation OpsAggregationConfig `mapstructure:"aggregation"`
 }
 
+// OpsCleanupConfig supplies the schedule, batch pacing, and retention of Ops
+// datasets.
 type OpsCleanupConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	Schedule     string `mapstructure:"schedule"`
-	BatchSize    int    `mapstructure:"batch_size"`
-	BatchPauseMS int    `mapstructure:"batch_pause_ms"`
+	Enabled   bool   `mapstructure:"enabled"`    // Ops cleanup job availability switch
+	Schedule  string `mapstructure:"schedule"`   // Ops cleanup cron expression
+	BatchSize int    `mapstructure:"batch_size"` // deleted rows per cleanup batch
+	// cleanup batch pause milliseconds
+	BatchPauseMS int `mapstructure:"batch_pause_ms"`
 
-	// 保留天数：0 表示清空目标表，正数表示保留最近对应天数的数据。
-	// vNext 默认所有运维数据集保留 30 天。
-	ErrorLogRetentionDays      int `mapstructure:"error_log_retention_days"`
-	SystemLogRetentionDays     int `mapstructure:"system_log_retention_days"`
+	// ErrorLogRetentionDays, SystemLogRetentionDays, MinuteMetricsRetentionDays,
+	// and HourlyMetricsRetentionDays supply day windows for their corresponding
+	// cleanup datasets. They default to thirty days; the cleanup consumer
+	// interprets zero as clearing that target dataset.
+	// error log retention days
+	ErrorLogRetentionDays int `mapstructure:"error_log_retention_days"`
+	// system log retention days
+	SystemLogRetentionDays int `mapstructure:"system_log_retention_days"`
+	// minute metrics retention days
 	MinuteMetricsRetentionDays int `mapstructure:"minute_metrics_retention_days"`
+	// hourly metrics retention days
 	HourlyMetricsRetentionDays int `mapstructure:"hourly_metrics_retention_days"`
 }
 
+// OpsAggregationConfig supplies deployment availability for operational metrics
+// preaggregation jobs.
 type OpsAggregationConfig struct {
-	Enabled bool `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled"` // Ops aggregation job availability switch
 }
 
+// OpsMetricsCollectorCacheConfig holds accepted availability and lifetime
+// inputs copied into Ops runtime options.
 type OpsMetricsCollectorCacheConfig struct {
-	Enabled bool          `mapstructure:"enabled"`
-	TTL     time.Duration `mapstructure:"ttl"`
+	// Enabled and TTL are decoded and copied into ops.Options, with negative TTL
+	// rejected by startup validation. Current collection uses direct
+	// MetricsQueries SQL reads, so these accepted inputs have no metrics-query
+	// cache consumer.
+	Enabled bool          `mapstructure:"enabled"` // accepted cache availability flag
+	TTL     time.Duration `mapstructure:"ttl"`     // accepted cache duration input
 }
 
+// JWTConfig holds signing input and access/refresh token lifetime values for
+// identity construction.
 type JWTConfig struct {
+	// Secret is signing input validated during ordinary Load. LoadForBootstrap can
+	// return it empty until database bootstrap selects the persisted key, then
+	// performs full validation before identity construction.
 	Secret     string `mapstructure:"secret"`
-	ExpireHour int    `mapstructure:"expire_hour"`
-	// AccessTokenExpireMinutes: Access Token 有效期（分钟）
-	// - >0: 使用分钟配置（优先级高于 ExpireHour）
-	// - =0: 回退使用 ExpireHour（向后兼容旧配置）
+	ExpireHour int    `mapstructure:"expire_hour"` // legacy access-token expiry hours
+	// AccessTokenExpireMinutes overrides ExpireHour when positive for access-token
+	// expiry selection. Zero retains hour-based behavior, and startup validation
+	// rejects a negative override before identity consumes these settings.
 	AccessTokenExpireMinutes int `mapstructure:"access_token_expire_minutes"`
-	// RefreshTokenExpireDays: Refresh Token 有效期（天），默认 30 天
+	// RefreshTokenExpireDays supplies the refresh-token lifetime in days. Default
+	// loading selects thirty days, and validation requires a positive lifetime
+	// while warning when the supplied value exceeds ninety days.
 	RefreshTokenExpireDays int `mapstructure:"refresh_token_expire_days"`
-	// RefreshWindowMinutes: 刷新窗口（分钟），在 Access Token 过期前多久开始允许刷新
+	// RefreshWindowMinutes permits a refresh request this many minutes before
+	// access-token expiry. Startup validation accepts zero and rejects negative
+	// window lengths before identity uses these settings.
 	RefreshWindowMinutes int `mapstructure:"refresh_window_minutes"`
 }
 
-// TotpConfig TOTP 双因素认证配置。
+// TotpConfig supplies the secret encryption key and whether deployment input
+// configured it.
 type TotpConfig struct {
-	// EncryptionKey 用于加密 TOTP 密钥的 AES-256 密钥（32 字节 hex 编码）
-	// 如果为空，将自动生成一个随机密钥（仅适用于开发环境）
+	// EncryptionKey is the hex-encoded 32-byte AES-256 key used to encrypt TOTP secrets.
+	// Empty generates a random development key at startup.
 	EncryptionKey string `mapstructure:"encryption_key"`
-	// EncryptionKeyConfigured 标记加密密钥是否为手动配置（非自动生成）
-	// 只有手动配置了密钥才允许在管理后台启用 TOTP 功能
+	// EncryptionKeyConfigured reports whether the key was configured rather than
+	// generated.
+	// Admin settings permit enabling TOTP only with a configured key.
 	EncryptionKeyConfigured bool `mapstructure:"-"`
 }
 
+// TurnstileConfig supplies the deployment default for mandatory Turnstile
+// verification.
 type TurnstileConfig struct {
-	Required bool `mapstructure:"required"`
+	Required bool `mapstructure:"required"` // default mandatory captcha verification flag
 }
 
+// DefaultConfig supplies initial administrator input and default user, key, and
+// billing values.
 type DefaultConfig struct {
-	AdminEmail      string  `mapstructure:"admin_email"`
-	AdminPassword   string  `mapstructure:"admin_password"`
-	UserConcurrency int     `mapstructure:"user_concurrency"`
-	UserBalance     float64 `mapstructure:"user_balance"`
-	APIKeyPrefix    string  `mapstructure:"api_key_prefix"`
-	RateMultiplier  float64 `mapstructure:"rate_multiplier"`
+	// AdminEmail and AdminPassword remain accepted startup bootstrap inputs with
+	// empty loader defaults. The ordinary installation flow obtains initial
+	// credentials separately, and identity bootstrap leaves existing user data
+	// unchanged.
+	// bootstrap administrator email text
+	AdminEmail string `mapstructure:"admin_email"`
+	// bootstrap administrator password text
+	AdminPassword string `mapstructure:"admin_password"`
+	// new-user concurrent request limit
+	UserConcurrency int `mapstructure:"user_concurrency"`
+	// new-user initial balance amount
+	UserBalance float64 `mapstructure:"user_balance"`
+	// generated API-key text prefix
+	APIKeyPrefix string `mapstructure:"api_key_prefix"`
+	// new-user billing rate multiplier
+	RateMultiplier float64 `mapstructure:"rate_multiplier"`
 }
 
+// RateLimitConfig supplies provider cooldown durations after overload and OAuth
+// authorization failures.
 type RateLimitConfig struct {
-	OverloadCooldownMinutes int `mapstructure:"overload_cooldown_minutes"`  // 529过载冷却时间(分钟)
-	OAuth401CooldownMinutes int `mapstructure:"oauth_401_cooldown_minutes"` // OAuth 401临时不可调度冷却(分钟)
+	OverloadCooldownMinutes int `mapstructure:"overload_cooldown_minutes"`  // HTTP 529 overload cooldown, in minutes.
+	OAuth401CooldownMinutes int `mapstructure:"oauth_401_cooldown_minutes"` // OAuth HTTP 401 scheduling cooldown, in minutes.
 }
 
-// APIKeyAuthCacheConfig API Key 认证缓存配置。
+// APIKeyAuthCacheConfig supplies authentication cache lifetimes, lookup
+// admission, and invalid-key abuse limits.
 type APIKeyAuthCacheConfig struct {
-	L1Size             int                    `mapstructure:"l1_size"`
-	L1TTLSeconds       int                    `mapstructure:"l1_ttl_seconds"`
-	L2TTLSeconds       int                    `mapstructure:"l2_ttl_seconds"`
-	NegativeTTLSeconds int                    `mapstructure:"negative_ttl_seconds"`
-	JitterPercent      int                    `mapstructure:"jitter_percent"`
-	Singleflight       bool                   `mapstructure:"singleflight"`
-	LookupConcurrency  int                    `mapstructure:"lookup_concurrency"`
-	InvalidAbuse       InvalidAuthAbuseConfig `mapstructure:"invalid_abuse"`
-}
-
-type InvalidAuthAbuseConfig struct {
-	Enabled       bool `mapstructure:"enabled"`
-	Threshold     int  `mapstructure:"threshold"`
-	WindowSeconds int  `mapstructure:"window_seconds"`
-	BlockSeconds  int  `mapstructure:"block_seconds"`
-	Capacity      int  `mapstructure:"capacity"`
-}
-
-// SubscriptionCacheConfig 订阅认证 L1 缓存配置。
-type SubscriptionCacheConfig struct {
-	L1Size        int `mapstructure:"l1_size"`
-	L1TTLSeconds  int `mapstructure:"l1_ttl_seconds"`
+	// process authentication entry capacity
+	L1Size int `mapstructure:"l1_size"`
+	// process authentication retention seconds
+	L1TTLSeconds int `mapstructure:"l1_ttl_seconds"`
+	// Redis authentication retention seconds
+	L2TTLSeconds int `mapstructure:"l2_ttl_seconds"`
+	// missing-key observation retention seconds
+	NegativeTTLSeconds int `mapstructure:"negative_ttl_seconds"`
+	// entry lifetime jitter percent
 	JitterPercent int `mapstructure:"jitter_percent"`
+	// same-key authentication load coalescing switch
+	Singleflight bool `mapstructure:"singleflight"`
+	// authentication lookup admission limit
+	LookupConcurrency int `mapstructure:"lookup_concurrency"`
+	// invalid-key abuse observation settings
+	InvalidAbuse InvalidAuthAbuseConfig `mapstructure:"invalid_abuse"`
 }
 
-// DashboardCacheConfig 仪表盘统计缓存配置。
+// InvalidAuthAbuseConfig supplies process-local repeated invalid authentication
+// observation and blocking limits.
+type InvalidAuthAbuseConfig struct {
+	// invalid-auth observation availability switch
+	Enabled   bool `mapstructure:"enabled"`
+	Threshold int  `mapstructure:"threshold"` // invalid-auth count triggering block
+	// invalid-auth observation window seconds
+	WindowSeconds int `mapstructure:"window_seconds"`
+	// invalid-auth blocking duration seconds
+	BlockSeconds int `mapstructure:"block_seconds"`
+	Capacity     int `mapstructure:"capacity"` // observed invalid-auth source capacity
+}
+
+// SubscriptionCacheConfig supplies the subscription authentication L1 cache
+// capacity and entry lifetime.
+type SubscriptionCacheConfig struct {
+	// subscription authentication entry capacity
+	L1Size int `mapstructure:"l1_size"`
+	// subscription authentication retention seconds
+	L1TTLSeconds  int `mapstructure:"l1_ttl_seconds"`
+	JitterPercent int `mapstructure:"jitter_percent"` // entry lifetime jitter percent
+}
+
+// DashboardCacheConfig supplies Redis statistics freshness, total retention,
+// and refresh timeout settings.
 type DashboardCacheConfig struct {
-	// Enabled: 是否启用仪表盘缓存
+	// Enabled enables dashboard caching.
 	Enabled bool `mapstructure:"enabled"`
-	// KeyPrefix: Redis key 前缀，用于多环境隔离
+	// KeyPrefix isolates Redis keys across deployments.
 	KeyPrefix string `mapstructure:"key_prefix"`
-	// StatsFreshTTLSeconds: 缓存命中认为“新鲜”的时间窗口（秒）
+	// StatsFreshTTLSeconds and StatsTTLSeconds separate the fresh period from
+	// total Redis retention. Enabled startup validation requires positive values
+	// and bounds freshness by total lifetime, allowing retained statistics to
+	// outlive their fresh period.
+	// statistics freshness duration seconds
 	StatsFreshTTLSeconds int `mapstructure:"stats_fresh_ttl_seconds"`
-	// StatsTTLSeconds: Redis 缓存总 TTL（秒）
+	// total statistics retention seconds
 	StatsTTLSeconds int `mapstructure:"stats_ttl_seconds"`
-	// StatsRefreshTimeoutSeconds: 异步刷新超时（秒）
+	// background refresh budget seconds
 	StatsRefreshTimeoutSeconds int `mapstructure:"stats_refresh_timeout_seconds"`
 }
 
-// DashboardAggregationConfig 仪表盘预聚合配置。
+// DashboardAggregationConfig supplies aggregation cadence, historical work, and
+// table retention defaults.
 type DashboardAggregationConfig struct {
-	// Enabled: 是否启用预聚合作业
+	// Enabled enables preaggregation jobs.
 	Enabled bool `mapstructure:"enabled"`
-	// IntervalSeconds: 聚合刷新间隔（秒）
+	// aggregate refresh interval seconds
 	IntervalSeconds int `mapstructure:"interval_seconds"`
-	// LookbackSeconds: 回看窗口（秒）
-	LookbackSeconds int `mapstructure:"lookback_seconds"`
-	// BackfillEnabled: 是否允许全量回填
+	LookbackSeconds int `mapstructure:"lookback_seconds"` // recent data lookback seconds
+	// BackfillEnabled permits full backfills.
 	BackfillEnabled bool `mapstructure:"backfill_enabled"`
-	// BackfillMaxDays: 回填最大跨度（天）
+	// BackfillMaxDays limits the time span of a backfill.
 	BackfillMaxDays int `mapstructure:"backfill_max_days"`
-	// Retention: 各表保留窗口（天）
+	// Retention sets each table's retention window in days.
 	Retention DashboardAggregationRetentionConfig `mapstructure:"retention"`
-	// RecomputeDays: 启动时重算最近 N 天
+	// RecomputeDays is the number of recent days recomputed at startup.
 	RecomputeDays int `mapstructure:"recompute_days"`
 }
 
-// DashboardAggregationRetentionConfig 预聚合保留窗口。
+// DashboardAggregationRetentionConfig supplies day-based retention for raw
+// usage, deduplication, and aggregates.
 type DashboardAggregationRetentionConfig struct {
-	UsageLogsDays         int `mapstructure:"usage_logs_days"`
+	// UsageLogsDays and UsageBillingDedupDays retain raw usage and billing
+	// deduplication records in days. Startup validation keeps deduplication
+	// retention at least as long as raw-record retention when both are positive,
+	// including disabled aggregation settings.
+	UsageLogsDays int `mapstructure:"usage_logs_days"` // raw usage record retention days
+	// billing deduplication retention days
 	UsageBillingDedupDays int `mapstructure:"usage_billing_dedup_days"`
-	HourlyDays            int `mapstructure:"hourly_days"`
-	DailyDays             int `mapstructure:"daily_days"`
+	// hourly aggregate retention days
+	HourlyDays int `mapstructure:"hourly_days"`
+	// daily aggregate retention days
+	DailyDays int `mapstructure:"daily_days"`
 }
 
-// UsageCleanupConfig 使用记录清理任务配置。
+// UsageCleanupConfig supplies background cleanup range, batching, polling, and
+// execution budgets.
 type UsageCleanupConfig struct {
-	// Enabled: 是否启用清理任务执行器
+	// Enabled enables the cleanup executor.
 	Enabled bool `mapstructure:"enabled"`
-	// MaxRangeDays: 单次任务允许的最大时间跨度（天）
+	// MaxRangeDays limits the time span of one cleanup task.
 	MaxRangeDays int `mapstructure:"max_range_days"`
-	// BatchSize: 单批删除数量
+	// BatchSize limits rows deleted per batch.
 	BatchSize int `mapstructure:"batch_size"`
-	// WorkerIntervalSeconds: 后台任务轮询间隔（秒）
+	// cleanup task polling interval seconds
 	WorkerIntervalSeconds int `mapstructure:"worker_interval_seconds"`
-	// TaskTimeoutSeconds: 单次任务最大执行时长（秒）
+	// cleanup task execution budget seconds
 	TaskTimeoutSeconds int `mapstructure:"task_timeout_seconds"`
 }
 
-// NormalizeUpdateGitHubRepo 把空值和 GitHub URL 收成 owner/repo。
-func NormalizeUpdateGitHubRepo(raw string) (string, error) {
-	s := strings.TrimSpace(raw)
-	s = strings.TrimPrefix(s, "https://github.com/")
-	s = strings.TrimPrefix(s, "http://github.com/")
-	s = strings.TrimSuffix(s, ".git")
-	s = strings.Trim(s, "/")
-	if s == "" {
-		s = DefaultUpdateGitHubRepo
-	}
-	owner, repo, ok := strings.Cut(s, "/")
-	if !ok || strings.Contains(repo, "/") || owner == "" || repo == "" {
-		return "", fmt.Errorf("update.github_repo must be owner/repo")
-	}
-	if !isGitHubName(owner) || !isGitHubName(repo) {
-		return "", fmt.Errorf("update.github_repo must be owner/repo")
-	}
-	return owner + "/" + repo, nil
-}
-
-func isGitHubName(s string) bool {
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
+// firstNonEmptyString returns the first trimmed nonblank value in supplied
+// order. It returns empty text when every value is blank, allowing credential
+// compatibility code to apply its ordered source choices.
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -1141,6 +1683,44 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
+// NormalizeUpdateGitHubRepo converts an optional GitHub HTTPS URL or owner/repository
+// value to an owner/repository identifier. Empty input selects the fork default,
+// while malformed names return an error before the update client constructs a URL.
+func NormalizeUpdateGitHubRepo(raw string) (string, error) {
+	repo := strings.TrimSpace(raw)
+	repo = strings.TrimPrefix(repo, "https://github.com/")
+	repo = strings.TrimPrefix(repo, "http://github.com/")
+	repo = strings.TrimSuffix(repo, ".git")
+	repo = strings.Trim(repo, "/")
+	if repo == "" {
+		repo = DefaultUpdateGitHubRepo
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || strings.Contains(name, "/") || owner == "" || name == "" {
+		return "", fmt.Errorf("update.github_repo must be owner/repo")
+	}
+	if !isGitHubRepositoryName(owner) || !isGitHubRepositoryName(name) {
+		return "", fmt.Errorf("update.github_repo must be owner/repo")
+	}
+	return owner + "/" + name, nil
+}
+
+// isGitHubRepositoryName reports whether a GitHub owner or repository segment
+// contains only characters accepted by the administrator update configuration.
+func isGitHubRepositoryName(value string) bool {
+	for _, runeValue := range value {
+		switch {
+		case runeValue >= 'a' && runeValue <= 'z', runeValue >= 'A' && runeValue <= 'Z', runeValue >= '0' && runeValue <= '9', runeValue == '-', runeValue == '_', runeValue == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeWeChatConnectMode returns mp or mobile for trimmed case-insensitive
+// matches, otherwise the default open mode. Unknown and empty input share that
+// default before stored-mode availability is considered.
 func normalizeWeChatConnectMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "mp":
@@ -1152,6 +1732,15 @@ func normalizeWeChatConnectMode(raw string) string {
 	}
 }
 
+// normalizeWeChatConnectStoredMode selects a display mode consistent with the
+// available WeChat mode flags. The normalized requested mode wins when its
+// corresponding flag is enabled.
+//
+// If that mode is disabled, available modes are tried in Open, MP, then Mobile
+// order. With no enabled mode the normalized request is returned, allowing
+// later validation and feature availability to handle the inactive
+// configuration. This keeps mode selection separate from the overall Enabled
+// value used by its caller.
 func normalizeWeChatConnectStoredMode(openEnabled, mpEnabled, mobileEnabled bool, mode string) string {
 	mode = normalizeWeChatConnectMode(mode)
 	switch mode {
@@ -1168,6 +1757,8 @@ func normalizeWeChatConnectStoredMode(openEnabled, mpEnabled, mobileEnabled bool
 			return "mobile"
 		}
 	}
+	// The requested mode has no enabled path. Select an available login path in
+	// priority order so the stored display mode follows usable mode flags.
 	switch {
 	case openEnabled:
 		return "open"
@@ -1180,6 +1771,9 @@ func normalizeWeChatConnectStoredMode(openEnabled, mpEnabled, mobileEnabled bool
 	}
 }
 
+// defaultWeChatConnectScopesForMode returns the built-in scope text for the
+// normalized login mode. MP uses snsapi_userinfo, Mobile uses empty text, and
+// Open or unknown input uses snsapi_login.
 func defaultWeChatConnectScopesForMode(mode string) string {
 	switch normalizeWeChatConnectMode(mode) {
 	case "mp":
@@ -1191,6 +1785,10 @@ func defaultWeChatConnectScopesForMode(mode string) string {
 	}
 }
 
+// normalizeWeChatConnectScopes selects scope text accepted for the normalized
+// mode. MP retains snsapi_base or snsapi_userinfo exactly after trimming and
+// otherwise uses its default; Mobile clears scopes and Open uses the fixed
+// login scope.
 func normalizeWeChatConnectScopes(raw, mode string) string {
 	switch normalizeWeChatConnectMode(mode) {
 	case "mp":
@@ -1200,6 +1798,8 @@ func normalizeWeChatConnectScopes(raw, mode string) string {
 		case "snsapi_userinfo":
 			return "snsapi_userinfo"
 		default:
+			// MP accepts the two recognized consent scopes exactly. Replace unsupported
+			// scope text with the mode default before this value reaches login settings.
 			return defaultWeChatConnectScopesForMode(mode)
 		}
 	case "mobile":
@@ -1209,6 +1809,9 @@ func normalizeWeChatConnectScopes(raw, mode string) string {
 	}
 }
 
+// shouldApplyLegacyWeChatEnv reports whether a retired variable may supply this
+// current field. YAML presence blocks compatibility, and any current
+// environment presence also blocks it, including an explicitly empty variable.
 func shouldApplyLegacyWeChatEnv(configKey, envKey string) bool {
 	if viper.InConfig(configKey) {
 		return false
@@ -1217,6 +1820,9 @@ func shouldApplyLegacyWeChatEnv(configKey, envKey string) bool {
 	return !hasNewEnv
 }
 
+// hasExplicitConfigOrEnv reports whether the current field appears in YAML or
+// its named environment variable exists. Empty, zero, and false values still
+// count as explicit inputs for OIDC presence flags.
 func hasExplicitConfigOrEnv(configKey, envKey string) bool {
 	if viper.InConfig(configKey) {
 		return true
@@ -1225,11 +1831,24 @@ func hasExplicitConfigOrEnv(configKey, envKey string) bool {
 	return ok
 }
 
+// applyLegacyWeChatConnectEnvCompatibility fills eligible WeChat fields from
+// retired environment input, accepting a nil cfg as a no-op. Current YAML or
+// environment presence blocks each corresponding compatibility assignment.
+//
+// Open and MP credential pairs additionally respect the generic AppID and
+// AppSecret current inputs. A complete eligible retired pair can enable the
+// overall and specific mode flags, and selection favors Open when both pairs
+// are complete. Mode, scopes, and frontend redirect are updated only when their
+// own current inputs are absent. The resulting fields still pass through normal
+// WeChat normalization and validation.
 func applyLegacyWeChatConnectEnvCompatibility(cfg *WeChatConnectConfig) {
 	if cfg == nil {
 		return
 	}
 
+	// Retired Open and MP credentials are eligible only when neither their current
+	// mode field nor the generic credential field has YAML/environment presence.
+	// Track eligible complete pairs before enabling modes.
 	legacyOpenAppID := ""
 	if shouldApplyLegacyWeChatEnv("wechat_connect.open_app_id", "WECHAT_CONNECT_OPEN_APP_ID") &&
 		shouldApplyLegacyWeChatEnv("wechat_connect.app_id", "WECHAT_CONNECT_APP_ID") {
@@ -1272,6 +1891,9 @@ func applyLegacyWeChatConnectEnvCompatibility(cfg *WeChatConnectConfig) {
 		}
 	}
 
+	// Enable compatibility modes from complete eligible credential pairs so a lone
+	// retired ID or secret cannot activate a login mode. Open wins display
+	// selection when both pairs are complete.
 	hasLegacyOpen := legacyOpenAppID != "" && legacyOpenAppSecret != ""
 	hasLegacyMP := legacyMPAppID != "" && legacyMPAppSecret != ""
 
@@ -1302,6 +1924,18 @@ func applyLegacyWeChatConnectEnvCompatibility(cfg *WeChatConnectConfig) {
 	}
 }
 
+// normalizeWeChatConnectConfig trims WeChat deployment text and supplies
+// related credential and mode defaults in place. A nil pointer performs no
+// work, and callers invoke this before using the fields for validation or login
+// settings.
+//
+// Generic credentials prefer their supplied values, then Open, MP, and Mobile
+// values. Each mode-specific credential separately uses the resulting generic
+// value when empty, so callers supply matched credential pairs when mixing
+// sources. An enabled legacy configuration with no individual mode flags
+// enables its selected mode; stored-mode selection then follows available
+// flags, scopes follow that mode, and an empty frontend redirect receives its
+// default.
 func normalizeWeChatConnectConfig(cfg *WeChatConnectConfig) {
 	if cfg == nil {
 		return
@@ -1319,6 +1953,9 @@ func normalizeWeChatConnectConfig(cfg *WeChatConnectConfig) {
 	cfg.RedirectURL = strings.TrimSpace(cfg.RedirectURL)
 	cfg.FrontendRedirectURL = strings.TrimSpace(cfg.FrontendRedirectURL)
 
+	// Resolve generic credentials before filling mode-specific omissions. Each
+	// credential member uses its own ordered nonblank choice, so supplied pairs
+	// must remain consistent across these sources.
 	cfg.AppID = firstNonEmptyString(cfg.AppID, cfg.OpenAppID, cfg.MPAppID, cfg.MobileAppID)
 	cfg.AppSecret = firstNonEmptyString(cfg.AppSecret, cfg.OpenAppSecret, cfg.MPAppSecret, cfg.MobileAppSecret)
 	cfg.OpenAppID = firstNonEmptyString(cfg.OpenAppID, cfg.AppID)
@@ -1328,6 +1965,9 @@ func normalizeWeChatConnectConfig(cfg *WeChatConnectConfig) {
 	cfg.MobileAppID = firstNonEmptyString(cfg.MobileAppID, cfg.AppID)
 	cfg.MobileAppSecret = firstNonEmptyString(cfg.MobileAppSecret, cfg.AppSecret)
 
+	// An enabled legacy configuration can express its choice through Mode alone.
+	// Promote that selected mode before stored-mode normalization so its login
+	// path remains available to consumers.
 	if !cfg.OpenEnabled && !cfg.MPEnabled && !cfg.MobileEnabled && cfg.Enabled {
 		switch cfg.Mode {
 		case "mp":
@@ -1345,10 +1985,17 @@ func normalizeWeChatConnectConfig(cfg *WeChatConnectConfig) {
 	}
 }
 
+// NormalizeForwardedClientIPHeaders delegates ordered HTTP field-name
+// normalization to the client-IP policy owner. It trims and canonicalizes
+// names, removes case aliases, rejects invalid or excess unique names, and
+// returns an allocated empty slice for empty input.
 func NormalizeForwardedClientIPHeaders(headers []string) ([]string, error) {
 	return ippolicy.NormalizeForwardedClientIPHeaders(headers)
 }
 
+// cloneForwardedClientIPHeaders returns an independently allocated list of the
+// supplied header names. Empty and nil input both return a nonnil empty slice,
+// supporting policy JSON arrays and independent snapshot editing.
 func cloneForwardedClientIPHeaders(headers []string) []string {
 	if len(headers) == 0 {
 		return []string{}
@@ -1356,6 +2003,17 @@ func cloneForwardedClientIPHeaders(headers []string) []string {
 	return append([]string(nil), headers...)
 }
 
+// ForwardedClientIPSettings returns one trust/header policy with copied header
+// storage. Nil configuration returns an empty policy with an allocated empty
+// list, and a populated live pointer supplies the policy ahead of startup
+// fields.
+//
+// The trust flag and header list are read from one published immutable object
+// so request consumers see a complete policy. Before live pointer
+// initialization, the method copies the static Security fields instead.
+// Initialize that pointer before concurrent access and keep startup fields
+// stable while readers can use this path; the getter does not normalize
+// arbitrary supplied names.
 func (c *Config) ForwardedClientIPSettings() ForwardedClientIPSettings {
 	if c == nil {
 		return ForwardedClientIPSettings{Headers: []string{}}
@@ -1375,32 +2033,65 @@ func (c *Config) ForwardedClientIPSettings() ForwardedClientIPSettings {
 	}
 }
 
+// TrustForwardedIPForAPIKeyACL returns the forwarding trust flag from the
+// current copied policy snapshot. Nil configuration uses false, while an
+// initialized live snapshot takes precedence over the original startup flag.
 func (c *Config) TrustForwardedIPForAPIKeyACL() bool {
 	return c.ForwardedClientIPSettings().TrustForwardedIP
 }
 
+// SetForwardedClientIPSettings copies headers and publishes one immutable
+// trust/header pair, accepting nil configuration as a no-op. Callers validate
+// header names before publication; this setter does not invoke the normalizer.
+//
+// The atomic cell is allocated lazily and its pointer assignment is
+// unsynchronized, so initialize it before concurrent readers or publishers
+// start. Later stores replace the whole pair and leave the static startup
+// fields unchanged. Copying the list keeps subsequent caller slice edits
+// outside the published policy used by request consumers.
 func (c *Config) SetForwardedClientIPSettings(enabled bool, headers []string) {
 	if c == nil {
 		return
 	}
 	headers = cloneForwardedClientIPHeaders(headers)
+	// Allocate the live publication cell before sharing this configuration
+	// concurrently. The pointer assignment itself is ordinary storage, while
+	// subsequent atomic stores publish copied whole-policy objects.
 	if c.Security.forwardedClientIPSettingsLive == nil {
 		c.Security.forwardedClientIPSettingsLive = &atomic.Pointer[ForwardedClientIPSettings]{}
 	}
+	// Publish trust and header names as one copied object so a request cannot
+	// combine values from separate policy updates. The startup fields stay
+	// available for validation and prepublication lookup.
 	c.Security.forwardedClientIPSettingsLive.Store(&ForwardedClientIPSettings{
 		TrustForwardedIP: enabled,
 		Headers:          headers,
 	})
 }
 
+// SetTrustForwardedIPForAPIKeyACL republishes enabled with the headers read
+// from the current policy, accepting nil configuration as a no-op. It delegates
+// copied whole-policy storage to SetForwardedClientIPSettings.
+//
+// Reading the headers and storing the replacement are separate operations. A
+// publisher can install a new header list between them, after which this method
+// can replace that list with its earlier observation. Callers serialize coupled
+// policy edits when retaining the latest headers matters and initialize live
+// storage before concurrent use.
 func (c *Config) SetTrustForwardedIPForAPIKeyACL(enabled bool) {
 	if c == nil {
 		return
 	}
+	// Header retention uses a separate read before publication. Serialize coupled
+	// edits when another publisher could otherwise replace headers between this
+	// read and the store.
 	c.SetForwardedClientIPSettings(enabled, c.ForwardedClientIPSettings().Headers)
 }
 
-// normalizeProxyProbeURLs 校验并规范化配置文件中的探测端点。
+// normalizeProxyProbeURLs returns trimmed HTTP(S) endpoints and normalized
+// recognized parser names in input order. Empty input returns nil; the first
+// invalid entry returns an indexed error, and URL host/scheme validation leaves
+// additional URL details for the probe consumer.
 func normalizeProxyProbeURLs(targets []ProbeURLConfig) ([]ProbeURLConfig, error) {
 	if len(targets) == 0 {
 		return nil, nil
@@ -1433,32 +2124,56 @@ func normalizeProxyProbeURLs(targets []ProbeURLConfig) ([]ProbeURLConfig, error)
 	return normalized, nil
 }
 
-// WaitTimeout 返回等待超时的 time.Duration。
+// WaitTimeout returns the configured positive millisecond value as a duration,
+// otherwise thirty seconds. The receiver must be nonnil, and callers keep
+// values within time.Duration conversion limits when bypassing normal
+// deployment input.
 func (c *UserMessageQueueConfig) WaitTimeout() time.Duration {
 	if c.WaitTimeoutMs <= 0 {
 		return 30 * time.Second
 	}
+	// Convert configured milliseconds to the duration consumed by queue
+	// acquisition contexts.
 	return time.Duration(c.WaitTimeoutMs) * time.Millisecond
 }
 
-// GetEffectiveMode 返回生效的模式
-// 注意：Mode 字段已在 load() 中做过白名单校验和规范化，此处无需重复验证。
+// GetEffectiveMode selects a recognized serialize or throttle mode before
+// consulting the legacy Enabled flag. Its receiver must be nonnil; a recognized
+// Mode wins independently of that flag.
+//
+// When the supplied mode is empty or unsupported, true Enabled selects
+// serialize and remaining cases return disabled text. load clears an
+// unsupported Mode but retains Enabled, so that loading path can still produce
+// serialization through this method. Callers use this effective choice rather
+// than assuming an empty Mode disables the queue.
 func (c *UserMessageQueueConfig) GetEffectiveMode() string {
 	if c.Mode == schedulerpolicy.MessageQueueSerialize || c.Mode == schedulerpolicy.MessageQueueThrottle {
 		return c.Mode
 	}
+	// An absent or unsupported Mode leaves the retired Enabled switch in control,
+	// so compatibility loading can still select serialized message-lock
+	// acquisition.
 	if c.Enabled {
-		return schedulerpolicy.MessageQueueSerialize // 向后兼容
+		return schedulerpolicy.MessageQueueSerialize // Legacy Enabled flag.
 	}
 	return ""
 }
 
+// Address formats the nonnil server settings as host text followed by a colon
+// and port. It performs no validation or IPv6 bracketing, so callers supply
+// host spelling accepted by their listener.
 func (s *ServerConfig) Address() string {
 	return fmt.Sprintf("%s:%d", s.Host, s.Port)
 }
 
+// DSN formats nonnil PostgreSQL settings as an interpolated libpq keyword
+// string. Empty password omits that parameter, and remaining fields are
+// inserted without quoting, so callers supply values valid in this DSN
+// representation.
 func (d *DatabaseConfig) DSN() string {
-	// 当密码为空时不包含 password 参数，避免 libpq 解析错误
+	// Empty keyword password text would run into the next interpolated DSN field.
+	// Omit the parameter so libpq can parse the remaining unquoted connection
+	// values as intended.
 	if d.Password == "" {
 		return fmt.Sprintf(
 			"host=%s port=%d user=%s dbname=%s sslmode=%s",
@@ -1471,12 +2186,16 @@ func (d *DatabaseConfig) DSN() string {
 	)
 }
 
-// DSNWithTimezone returns DSN with timezone setting.
+// DSNWithTimezone formats the interpolated libpq settings with the supplied
+// timezone, using Asia/Shanghai for empty tz. Empty password is omitted, and
+// caller-supplied field text must be valid for unquoted keyword DSN input.
 func (d *DatabaseConfig) DSNWithTimezone(tz string) string {
 	if tz == "" {
 		tz = "Asia/Shanghai"
 	}
-	// 当密码为空时不包含 password 参数，避免 libpq 解析错误
+	// Empty keyword password text would run into the next interpolated DSN field.
+	// Omit the parameter so libpq can parse the remaining unquoted connection
+	// values as intended.
 	if d.Password == "" {
 		return fmt.Sprintf(
 			"host=%s port=%d user=%s dbname=%s sslmode=%s TimeZone=%s",
@@ -1489,52 +2208,85 @@ func (d *DatabaseConfig) DSNWithTimezone(tz string) string {
 	)
 }
 
+// Address formats the nonnil Redis settings as host text followed by a colon
+// and port. The host is retained as supplied without IPv6 bracketing, so
+// callers provide address spelling accepted by the client.
 func (r *RedisConfig) Address() string {
 	return fmt.Sprintf("%s:%d", r.Host, r.Port)
 }
 
-// Load 读取并校验完整配置（要求 jwt.secret 已显式提供）。
+// Load decodes normalized process configuration and requires a nonempty,
+// sufficiently long JWT secret during validation. It uses process Viper state,
+// so callers serialize loader use and handle its configuration-source,
+// decoding, template-read, or validation errors.
 func Load() (*Config, error) {
 	return load(false)
 }
 
-// LoadForBootstrap 读取启动阶段配置。
-//
-// 启动阶段允许 jwt.secret 先留空，后续由数据库初始化流程补齐并再次完整校验。
+// LoadForBootstrap decodes normalized process configuration while allowing a
+// missing JWT secret in the returned value. Database bootstrap must supply the
+// persisted secret and run full validation again before identity consumers use
+// that configuration.
 func LoadForBootstrap() (*Config, error) {
 	return load(true)
 }
 
-// load 进程配置、引导配置和数据库运行时设置的分层由对应工程文档维护。
+// load builds startup configuration from process Viper state, selected YAML,
+// and environment input, returning only a validated normalized object. Callers
+// serialize the shared Viper configuration; this operation mutates its
+// bindings, defaults, and in-memory compatibility mappings.
+//
+// Only a missing searched configuration file permits continued
+// default/environment loading; explicit file access and parsing errors fail. TZ
+// sets the overriding timezone value, while trusted-proxy and forwarding-header
+// environment presence is decoded separately to retain explicit empty lists.
+// Other fields undergo normalization, compatibility choices, and any configured
+// template file read before Validate.
+//
+// An absent TOTP key is generated for this loaded object and marked
+// unconfigured for deployment-dependent consumers. Bootstrap loading
+// temporarily substitutes valid JWT text during Validate, then restores its
+// absent secret in the returned configuration. The bootstrap caller later
+// supplies persistence-backed signing input; this loader neither writes the
+// mounted YAML nor persists generated TOTP data.
 // @project-doc docs/interfaces/configuration.md#configuration_sources
 func load(allowMissingJWTSecret bool) (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
 	configureConfigSource(viper.SetConfigFile, viper.AddConfigPath)
 
-	// 环境变量支持
+	// Register environment lookup before defaults and decoding so registered
+	// dotted keys use their uppercase underscore names. Explicit bindings below
+	// can select a different environment spelling for a current field.
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	if tz, ok := os.LookupEnv("TZ"); ok && strings.TrimSpace(tz) != "" {
-		// 标准 TZ 显式覆盖兼容的 TIMEZONE，避免容器时区与应用统计口径分离。
+		// TZ is the standard container timezone input. Put its nonblank trimmed value
+		// in Viper's override layer so local-day application consumers use it ahead of
+		// legacy TIMEZONE and YAML.
 		viper.Set("timezone", strings.TrimSpace(tz))
 	}
 	if err := viper.BindEnv("server.enable_server_timing", "ENABLE_SERVER_TIMING"); err != nil {
 		return nil, fmt.Errorf("bind ENABLE_SERVER_TIMING: %w", err)
 	}
 
-	// 默认值
+	// Register defaults before decoding configuration.
 	setDefaults()
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("read config error: %w", err)
 		}
-		// 配置文件不存在时使用默认值
+		// A missing searched file still permits environment-only deployments. Continue
+		// with registered defaults and variables; other read errors above retain their
+		// failure result for startup.
 	}
 	if err := applyLegacyConfigCompatibility(); err != nil {
 		return nil, err
 	}
+	// Record list presence separately before Unmarshal so an explicitly empty
+	// environment value can replace a supplied list. Viper's usual empty-value
+	// lookup alone cannot express that distinction.
 	trustedProxiesEnv, trustedProxiesEnvConfigured := os.LookupEnv("SERVER_TRUSTED_PROXIES")
 	forwardedClientIPHeadersEnv, forwardedClientIPHeadersEnvConfigured := os.LookupEnv("SECURITY_FORWARDED_CLIENT_IP_HEADERS")
 	trustedProxiesConfigured := viper.InConfig("server.trusted_proxies") ||
@@ -1556,8 +2308,14 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	}
 	cfg.Server.TrustedProxiesConfigured = trustedProxiesConfigured
 	cfg.Gateway.ConnectionPoolIsolation = normalizeLegacyConnectionPoolIsolation(cfg.Gateway.ConnectionPoolIsolation)
-	// 作为兜底保留：setEnvReachableDefaults 已用实际默认值 true 注册该键，
-	// 因而 IsSet 通常恒为 true；若后续误删注册，这里仍能守住默认行为。
+	updateGitHubRepo, err := NormalizeUpdateGitHubRepo(cfg.Update.GitHubRepo)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Update.GitHubRepo = updateGitHubRepo
+	// Normal default registration makes the sticky-escape key present even when
+	// unsupplied. This compatibility guard supplies true only when that
+	// registration is absent, retaining configured false values otherwise.
 	if !cfg.Gateway.AdvancedScheduler.StickyEscapeEnabled && !viper.IsSet("gateway.advanced_scheduler.sticky_escape_enabled") {
 		cfg.Gateway.AdvancedScheduler.StickyEscapeEnabled = true
 	}
@@ -1627,13 +2385,16 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Gateway.ForcedCodexInstructionsTemplate = string(content)
 	}
 
-	// 兼容旧键 gateway.openai_ws.sticky_previous_response_ttl_seconds。
-	// 新键未配置（<=0）时回退旧键；新键优先。
+	// A positive current response-ID lifetime wins. Fill a nonpositive current
+	// value from the positive retired lifetime so the WS affinity consumer
+	// receives one effective duration during loading.
 	if cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && cfg.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {
 		cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = cfg.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
 	}
 
-	// Normalize UMQ mode: 白名单校验，非法值在加载时一次性 warn 并清空
+	// Clear an unsupported queue mode before the settings reach message-queue
+	// consumers. The legacy Enabled flag is retained, so GetEffectiveMode can
+	// still select serialization from that flag.
 	if m := cfg.Gateway.UserMessageQueue.Mode; m != "" && m != schedulerpolicy.MessageQueueSerialize && m != schedulerpolicy.MessageQueueThrottle {
 		slog.Warn("invalid user_message_queue mode, disabling",
 			"mode", m,
@@ -1641,10 +2402,12 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Gateway.UserMessageQueue.Mode = ""
 	}
 
-	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
+	// Generate thirty-two random bytes as hexadecimal text when the trimmed TOTP
+	// key is absent. Mark that key unconfigured so deployment-dependent features
+	// can distinguish ephemeral generation from supplied encryption input.
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
 	if cfg.Totp.EncryptionKey == "" {
-		key, err := generateJWTSecret(32) // Reuse the same random generation function
+		key, err := generateJWTSecret(32)
 		if err != nil {
 			return nil, fmt.Errorf("generate totp encryption key error: %w", err)
 		}
@@ -1657,7 +2420,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 
 	originalJWTSecret := cfg.JWT.Secret
 	if allowMissingJWTSecret && originalJWTSecret == "" {
-		// 启动阶段允许先无 JWT 密钥，后续在数据库初始化后补齐。
+		// Supply temporary length-valid text for the missing JWT input so other
+		// startup fields can undergo full Validate. Restore absence after success,
+		// leaving persistent secret selection to database bootstrap.
 		cfg.JWT.Secret = strings.Repeat("0", 32)
 	}
 
@@ -1689,14 +2454,19 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	return &cfg, nil
 }
 
-// configureConfigSource 优先使用显式 CONFIG_FILE，否则按既有目录顺序搜索 config.yaml。
+// configureConfigSource registers the trimmed CONFIG_FILE path when supplied,
+// otherwise ordered config.yaml search directories. The selected callback must
+// be callable; DATA_DIR precedes container and local paths, and current system
+// paths precede the legacy path.
 func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 	if configFile := strings.TrimSpace(os.Getenv("CONFIG_FILE")); configFile != "" {
 		setConfigFile(configFile)
 		return
 	}
 
-	// DATA_DIR 优先于容器、当前目录和系统级默认路径。
+	// Register the configured data directory before container, working-directory,
+	// and system paths so file discovery uses that deployment location ahead of
+	// conventional config directories.
 	if dataDir := strings.TrimSpace(os.Getenv("DATA_DIR")); dataDir != "" {
 		addConfigPath(dataDir)
 	}
@@ -1704,10 +2474,18 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 	addConfigPath(".")
 	addConfigPath("./config")
 	addConfigPath("/etc/tokenrouter")
-	// 旧安装继续读取原目录，新目录在两者同时存在时优先。
+	// Keep the retired system directory last so its mounted configuration remains
+	// discoverable when current locations have no file. A current system file
+	// takes precedence in discovery order.
 	addConfigPath("/etc/sub2api")
 }
 
+// setDefaults registers process configuration defaults and
+// environment-reachable keys on the Viper singleton. Run it before Unmarshal
+// with global Viper use serialized, because AutomaticEnv resolves values only
+// for keys included in decoding. It supplies process defaults separately from
+// installer-written values and invokes setEnvReachableDefaults for additional
+// fixed keys.
 func setDefaults() {
 	// Server
 	viper.SetDefault("server.host", "0.0.0.0")
@@ -1715,18 +2493,18 @@ func setDefaults() {
 	viper.SetDefault("server.mode", "release")
 	viper.SetDefault("server.enable_server_timing", false)
 	viper.SetDefault("server.frontend_url", "")
-	viper.SetDefault("server.read_header_timeout", 10) // 10秒读取请求头
+	viper.SetDefault("server.read_header_timeout", 10) // 10-second header read timeout.
 	viper.SetDefault("server.max_header_bytes", 64*1024)
-	viper.SetDefault("server.idle_timeout", 120) // 120秒空闲超时
+	viper.SetDefault("server.idle_timeout", 120) // 120-second idle timeout.
 	viper.SetDefault("server.max_request_body_size", int64(256*1024*1024))
-	// H2C 默认配置
+	// H2C defaults.
 	viper.SetDefault("server.h2c.enabled", false)
-	viper.SetDefault("server.h2c.max_concurrent_streams", uint32(50))      // 50 个并发流
-	viper.SetDefault("server.h2c.idle_timeout", 75)                        // 75 秒
-	viper.SetDefault("server.h2c.max_read_frame_size", 1<<20)              // 1MB（够用）
-	viper.SetDefault("server.h2c.max_upload_buffer_per_connection", 2<<20) // 2MB
-	viper.SetDefault("server.h2c.max_upload_buffer_per_stream", 512<<10)   // 512KB
-	// TLS 指纹收集器默认不随主服务启动，只提供页面启停时使用的监听参数。
+	viper.SetDefault("server.h2c.max_concurrent_streams", uint32(50))      // 50 concurrent streams.
+	viper.SetDefault("server.h2c.idle_timeout", 75)                        // 75 seconds.
+	viper.SetDefault("server.h2c.max_read_frame_size", 1<<20)              // 1 MiB.
+	viper.SetDefault("server.h2c.max_upload_buffer_per_connection", 2<<20) // 2 MiB
+	viper.SetDefault("server.h2c.max_upload_buffer_per_stream", 512<<10)   // 512 KiB
+	// The collector starts from the UI; these values supply its listen settings.
 	viper.SetDefault("server.tls_fingerprint_collector.host", "0.0.0.0")
 	viper.SetDefault("server.tls_fingerprint_collector.port", 8443)
 	viper.SetDefault("server.tls_fingerprint_collector.public_base_url", "")
@@ -1758,7 +2536,8 @@ func setDefaults() {
 	viper.SetDefault("cors.allowed_origins", []string{})
 	viper.SetDefault("cors.allow_credentials", true)
 
-	// Passkey 默认关闭，启用时部署方必须显式声明依赖方域名和可信浏览器 Origin。
+	// Passkeys are disabled by default; enabling requires a relying-party domain
+	// and trusted browser origins.
 	viper.SetDefault("webauthn.enabled", false)
 	viper.SetDefault("webauthn.rp_display_name", "TokenRouter")
 	viper.SetDefault("webauthn.rp_id", "")
@@ -1809,7 +2588,7 @@ func setDefaults() {
 	// Turnstile
 	viper.SetDefault("turnstile.required", false)
 
-	// LinuxDo Connect OAuth 登录
+	// LinuxDo Connect OAuth login.
 	viper.SetDefault("linuxdo_connect.enabled", false)
 	viper.SetDefault("linuxdo_connect.client_id", "")
 	viper.SetDefault("linuxdo_connect.client_secret", "")
@@ -1825,7 +2604,7 @@ func setDefaults() {
 	viper.SetDefault("linuxdo_connect.userinfo_id_path", "")
 	viper.SetDefault("linuxdo_connect.userinfo_username_path", "")
 
-	// WeChat Connect OAuth 登录
+	// WeChat Connect OAuth login.
 	viper.SetDefault("wechat_connect.enabled", false)
 	viper.SetDefault("wechat_connect.app_id", "")
 	viper.SetDefault("wechat_connect.app_secret", "")
@@ -1843,7 +2622,7 @@ func setDefaults() {
 	viper.SetDefault("wechat_connect.redirect_url", "")
 	viper.SetDefault("wechat_connect.frontend_redirect_url", defaultWeChatConnectFrontendRedirect)
 
-	// Generic OIDC OAuth 登录
+	// Generic OIDC login.
 	viper.SetDefault("oidc_connect.enabled", false)
 	viper.SetDefault("oidc_connect.provider_name", "OIDC")
 	viper.SetDefault("oidc_connect.client_id", "")
@@ -1867,7 +2646,7 @@ func setDefaults() {
 	viper.SetDefault("oidc_connect.userinfo_id_path", "")
 	viper.SetDefault("oidc_connect.userinfo_username_path", "")
 
-	// DingTalk Connect OAuth 登录
+	// DingTalk Connect OAuth login.
 	viper.SetDefault("dingtalk_connect.enabled", false)
 	viper.SetDefault("dingtalk_connect.authorize_url", "https://login.dingtalk.com/oauth2/auth")
 	viper.SetDefault("dingtalk_connect.token_url", "https://api.dingtalk.com/v1.0/oauth2/userAccessToken")
@@ -1952,7 +2731,7 @@ func setDefaults() {
 	viper.SetDefault("batch_image.vertex_batch_prediction_base_url", "")
 	viper.SetDefault("batch_image.vertex_gcs_base_url", "")
 
-	// Creative Studio（创作台）
+	// Creative Studio.
 	viper.SetDefault("creative.enabled", true)
 	viper.SetDefault("creative.queue_enabled", true)
 	viper.SetDefault("creative.transient_ttl_seconds", 1800)
@@ -1979,13 +2758,13 @@ func setDefaults() {
 	viper.SetDefault("creative.execute_timeout_seconds", 300)
 	viper.SetDefault("creative.max_execute_attempts", 3)
 
-	// Ops (vNext)
+	// Ops
 	viper.SetDefault("ops.enabled", true)
 	viper.SetDefault("ops.cleanup.enabled", true)
 	viper.SetDefault("ops.cleanup.schedule", "0 3 * * *")
 	viper.SetDefault("ops.cleanup.batch_size", 1000)
 	viper.SetDefault("ops.cleanup.batch_pause_ms", 200)
-	// Retention days: vNext defaults to 30 days across ops datasets.
+	// Retain 30 days across Ops datasets by default.
 	viper.SetDefault("request_log.retention_days", 30)
 	viper.SetDefault("ops.cleanup.error_log_retention_days", 30)
 	viper.SetDefault("ops.cleanup.system_log_retention_days", 30)
@@ -1993,22 +2772,26 @@ func setDefaults() {
 	viper.SetDefault("ops.cleanup.hourly_metrics_retention_days", 30)
 	viper.SetDefault("ops.aggregation.enabled", true)
 	viper.SetDefault("ops.metrics_collector_cache.enabled", true)
-	// TTL should be slightly larger than collection interval (1m) to maximize cross-replica cache hits.
+	// Register the accepted collector-cache lifetime copied into ops.Options. The
+	// current MetricsQueries reader does not consume it; sixty-five seconds
+	// exceeds the collector's default/minimum one-minute interval, while runtime
+	// cadence can be longer.
 	viper.SetDefault("ops.metrics_collector_cache.ttl", 65*time.Second)
 
 	// JWT
 	viper.SetDefault("jwt.secret", "")
 	viper.SetDefault("jwt.expire_hour", 24)
-	viper.SetDefault("jwt.access_token_expire_minutes", 0) // 0 表示回退到 expire_hour
-	viper.SetDefault("jwt.refresh_token_expire_days", 30)  // 30天Refresh Token有效期
-	viper.SetDefault("jwt.refresh_window_minutes", 2)      // 过期前2分钟开始允许刷新
+	viper.SetDefault("jwt.access_token_expire_minutes", 0) // Zero uses expire_hour.
+	viper.SetDefault("jwt.refresh_token_expire_days", 30)  // 30-day refresh-token lifetime.
+	viper.SetDefault("jwt.refresh_window_minutes", 2)      // Permit refresh two minutes before expiry.
 
 	// TOTP
 	viper.SetDefault("totp.encryption_key", "")
 
 	// Default
 	// Admin credentials are created via the setup flow (web wizard / CLI / AUTO_SETUP).
-	// Do not ship fixed defaults here to avoid insecure "known credentials" in production.
+	// Do not ship fixed defaults here to avoid insecure "known credentials" in
+	// production.
 	viper.SetDefault("default.admin_email", "")
 	viper.SetDefault("default.admin_password", "")
 	viper.SetDefault("default.user_concurrency", 5)
@@ -2020,13 +2803,14 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
-	// Pricing 从 models.dev 同步统一目录，本地文件补充专用计费维度。
+	// Pricing uses the models.dev catalog and local supplements for additional
+	// billing dimensions.
 	viper.SetDefault("pricing.remote_url", "https://models.dev/catalog.json?type=all")
 	viper.SetDefault("pricing.data_dir", "./data")
 	viper.SetDefault("pricing.fallback_file", "")
 	viper.SetDefault("pricing.check_interval_minutes", 10)
 
-	// Timezone (default to Asia/Shanghai for Chinese users)
+	// Default time zone for local-day statistics.
 	viper.SetDefault("timezone", "Asia/Shanghai")
 	viper.SetDefault("team.enabled", true)
 	viper.SetDefault("team.self_service_enabled", true)
@@ -2088,7 +2872,7 @@ func setDefaults() {
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
 
 	// Gateway
-	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
+	viper.SetDefault("gateway.response_header_timeout", 600) // Allow ten minutes for upstream LLM queueing before response headers.
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_compact_model", "")
 	viper.SetDefault("gateway.grok_response_header_timeout", 120)
@@ -2104,7 +2888,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
-	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
+	// OpenAI Responses WebSocket defaults.
 	viper.SetDefault("gateway.openai_ws.client_first_message_timeout_seconds", DefaultOpenAIWSClientFirstMessageTimeoutSeconds)
 	viper.SetDefault("gateway.openai_ws.ingress_inter_turn_idle_timeout_seconds", 300)
 	viper.SetDefault("gateway.openai_ws.max_ingress_connections_per_api_key", 64)
@@ -2141,7 +2925,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.advanced_scheduler.score_weights.quota_headroom", 0.0)
 	viper.SetDefault("gateway.advanced_scheduler.score_weights.previous_response", 5.0)
 	viper.SetDefault("gateway.advanced_scheduler.score_weights.session_sticky", 3.0)
-	// OpenAI HTTP 上游协议策略
+	// OpenAI upstream HTTP version policy.
 	viper.SetDefault("gateway.openai_http2.enabled", true)
 	viper.SetDefault("gateway.openai_http2.allow_proxy_fallback_to_http1", true)
 	viper.SetDefault("gateway.openai_http2.fallback_error_threshold", 2)
@@ -2151,16 +2935,16 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.failure_threshold", 2)
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.window_seconds", 60)
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.ttl_seconds", 600)
-	// Grok 免费层本地软门禁仅用于调度，管理端 QueryQuota 不经过该门禁。
-	// 免费层识别要求显式标记，因此默认启用不会误拦未知或付费提供商。
+	// The Grok quota gate applies to scheduling; admin QueryQuota bypasses it.
+	// Only providers marked free are gated, so unknown and paid tiers are unaffected.
 	viper.SetDefault("gateway.grok.free_quota_soft_gate_enabled", true)
 	viper.SetDefault("gateway.grok.password_auth_enabled", false)
-	// 运维默认策略：滚动 24 小时名义额度为 50 万 token。
+	// Default nominal allowance: 500,000 tokens in a rolling 24-hour window.
 	viper.SetDefault("gateway.grok.free_quota_token_limit", int64(500_000))
 	viper.SetDefault("gateway.grok.free_quota_soft_gate_percent", 95)
 	viper.SetDefault("gateway.grok.free_quota_window_hours", 24)
 	viper.SetDefault("gateway.grok.free_quota_stats_cache_seconds", 60)
-	// 国产供应商用量监控默认关闭；管理员手动查询不受该开关影响。
+	// Supplier monitoring is disabled by default; manual admin queries remain available.
 	viper.SetDefault("gateway.cn_providers.monitor_enabled", false)
 	viper.SetDefault("gateway.cn_providers.balance_threshold", 0.5)
 	viper.SetDefault("gateway.cn_providers.interval_minutes", 10)
@@ -2181,14 +2965,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.proxy_probe_response_read_max_bytes", int64(1024*1024))
 	viper.SetDefault("gateway.gemini_debug_response_headers", false)
 	viper.SetDefault("gateway.connection_pool_isolation", ConnectionPoolIsolationProviderProxy)
-	// HTTP 上游连接池配置（针对 5000+ 并发用户优化）
-	viper.SetDefault("gateway.max_idle_conns", 2560)          // 最大空闲连接总数（高并发场景可调大）
-	viper.SetDefault("gateway.max_idle_conns_per_host", 120)  // 每主机最大空闲连接（HTTP/2 场景默认）
-	viper.SetDefault("gateway.max_conns_per_host", 1024)      // 每主机最大连接数（含活跃；流式/HTTP1.1 场景可调大，如 2400+）
-	viper.SetDefault("gateway.idle_conn_timeout_seconds", 90) // 空闲连接超时（秒）
+	// Upstream HTTP connection-pool defaults.
+	viper.SetDefault("gateway.max_idle_conns", 2560)          // Total idle connection limit.
+	viper.SetDefault("gateway.max_idle_conns_per_host", 120)  // Idle connection limit per host.
+	viper.SetDefault("gateway.max_conns_per_host", 1024)      // Active and idle connection limit per host.
+	viper.SetDefault("gateway.idle_conn_timeout_seconds", 90) // Idle timeout, in seconds.
 	viper.SetDefault("gateway.max_upstream_clients", 5000)
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
-	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
+	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // Slot lifetime accommodates long requests.
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
@@ -2218,9 +3002,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.worker_count", 128)
 	viper.SetDefault("gateway.usage_record.queue_size", 16384)
 	viper.SetDefault("gateway.usage_record.task_timeout_seconds", 5)
-	// 默认 sync：队列满时由提交方内联执行（提交点在响应写出之后，不阻塞客户端）。
-	// sample/drop 会在溢出时静默丢弃计费任务，造成扣费与 usage_logs 对账缺口（issue #3656），
-	// 仅供显式配置的运维场景使用。
+	// The default sync policy runs overflow tasks inline after the response is written.
+	// sample and drop can discard billing tasks, creating charge and usage_logs
+	// reconciliation gaps (issue #3656).
+	// Use those policies only when the deployment accepts that loss.
 	viper.SetDefault("gateway.usage_record.overflow_policy", UsageRecordOverflowPolicySync)
 	viper.SetDefault("gateway.usage_record.overflow_sample_percent", 10)
 	viper.SetDefault("gateway.usage_record.auto_scale_enabled", true)
@@ -2234,8 +3019,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
-	// TLS 指纹伪装配置（默认关闭，需要提供商级别单独启用）
-	// 用户消息串行队列默认值
+	// User-message queue defaults.
 	viper.SetDefault("gateway.user_message_queue.enabled", false)
 	viper.SetDefault("gateway.user_message_queue.lock_ttl_ms", 120000)
 	viper.SetDefault("gateway.user_message_queue.wait_timeout_ms", 30000)
@@ -2243,15 +3027,16 @@ func setDefaults() {
 	viper.SetDefault("gateway.user_message_queue.max_delay_ms", 2000)
 	viper.SetDefault("gateway.user_message_queue.cleanup_interval_seconds", 60)
 
+	// Enable TLS fingerprint support by default.
 	viper.SetDefault("gateway.tls_fingerprint.enabled", true)
 	viper.SetDefault("concurrency.ping_interval", 10)
 
 	// TokenRefresh
 	viper.SetDefault("token_refresh.enabled", true)
-	viper.SetDefault("token_refresh.check_interval_minutes", 5)        // 每5分钟检查一次
-	viper.SetDefault("token_refresh.refresh_before_expiry_hours", 0.5) // 提前30分钟刷新（适配Google 1小时token）
-	viper.SetDefault("token_refresh.max_retries", 3)                   // 最多重试3次
-	viper.SetDefault("token_refresh.retry_backoff_seconds", 2)         // 重试退避基础2秒
+	viper.SetDefault("token_refresh.check_interval_minutes", 5)        // Check every five minutes.
+	viper.SetDefault("token_refresh.refresh_before_expiry_hours", 0.5) // Half-hour proactive refresh window.
+	viper.SetDefault("token_refresh.max_retries", 3)                   // Three total exchange attempts, including the first.
+	viper.SetDefault("token_refresh.retry_backoff_seconds", 2)         // Two-second base backoff.
 	viper.SetDefault("token_refresh.candidate_page_size", 200)
 	viper.SetDefault("token_refresh.provider_concurrency", 4)
 	viper.SetDefault("token_refresh.provider_qps", 2)
@@ -2259,9 +3044,9 @@ func setDefaults() {
 	viper.SetDefault("token_refresh.attempt_timeout_seconds", 15)
 	viper.SetDefault("token_refresh.cycle_timeout_seconds", 240)
 
-	// Gemini OAuth - configure via environment variables or config file
-	// GEMINI_OAUTH_CLIENT_ID and GEMINI_OAUTH_CLIENT_SECRET
-	// Default: uses Gemini CLI public credentials (set via environment)
+	// Gemini OAuth credential and scope inputs remain empty by default.
+	// Application construction passes them to the OAuth consumer, which selects
+	// its effective client configuration.
 	viper.SetDefault("gemini.oauth.client_id", "")
 	viper.SetDefault("gemini.oauth.client_secret", "")
 	viper.SetDefault("gemini.oauth.scopes", "")
@@ -2270,14 +3055,17 @@ func setDefaults() {
 	setEnvReachableDefaults()
 }
 
-// setEnvReachableDefaults 为配置键注册零值默认项，供环境变量赋值。
+// setEnvReachableDefaults registers remaining finite configuration keys so
+// environment-only input participates in Viper decoding. Call it before
+// Unmarshal as part of setDefaults, using serialized access to process Viper
+// state.
 //
-// viper.Unmarshal 只解码 AllKeys 返回的键；该集合由 SetDefault、配置文件键和
-// BindEnv 键组成。AutomaticEnv 覆盖这个集合中的键。构建使用
-// `-tags embed` 时也不会启用 viper_bind_struct。因此仅出现在示例文件中的键无法
-// 通过环境变量到达配置结构，纯环境变量部署会无提示地得到零值。
-//
-// 缺失键解码为零值，各子系统在解码后应用自己的默认值。
+// Trusted-proxy and forwarded-header lists use BindEnv instead of a default,
+// because load needs to distinguish absent policy from an explicitly supplied
+// empty list. Their values are then decoded with LookupEnv. Sticky-escape
+// defaults allow explicit zero error rate to remain configured while a zero
+// TTFT still reaches validation. Other unconfigured scalar fields use
+// registered defaults or downstream interpretation after decoding.
 func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.forced_codex_instructions_template_file", "")
 	viper.SetDefault("gateway.session_idle_timeout_minutes", 0)
@@ -2285,23 +3073,25 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("update.proxy_url", "")
 	viper.SetDefault("update.github_repo", DefaultUpdateGitHubRepo)
 
-	// sticky escape 使用实际默认值，保留显式 error rate 0，并让显式 TTFT 0
-	// 进入配置校验。配置文件或环境变量仍可覆盖这些值。
+	// Register sticky-escape defaults as decode keys so supplied zero error rate
+	// stays meaningful and zero TTFT reaches validation. YAML and usable
+	// environment values can replace these defaults.
 	viper.SetDefault("gateway.advanced_scheduler.sticky_escape_enabled", true)
 	viper.SetDefault("gateway.advanced_scheduler.sticky_escape_error_rate", 0.5)
 	viper.SetDefault("gateway.advanced_scheduler.sticky_escape_ttft_ms", 15000)
 
-	// server.trusted_proxies 与 security.forwarded_client_ip_headers 是另一组例外：
-	// load() 需要区分“显式配置”和“配置缺席”（#4600），而 viper.IsSet 也会把
-	// SetDefault 注册的值视为已配置，因此注册默认值会让可信代理永久表现为显式配置。
-	// 这两个环境变量已由 load() 通过 os.LookupEnv 手工解析，并不会被静默丢弃；
-	// 此处仅通过 BindEnv 将其加入 AllKeys，让环境变量可达性守卫能够识别，且不会
-	// 在环境变量缺席时影响 IsSet。参数完整时 BindEnv 不会返回错误。
+	// server.trusted_proxies and security.forwarded_client_ip_headers use BindEnv:
+	// load must distinguish configured values from absent values (#4600), while IsSet
+	// treats SetDefault entries as configured even when the operator supplies nothing.
+	// load parses these two environment variables through os.LookupEnv.
+	// BindEnv adds the keys to AllKeys for the environment-reachability check,
+	// while leaving IsSet false for absent variables. These complete BindEnv
+	// arguments cannot fail.
 	_ = viper.BindEnv("server.trusted_proxies", "SERVER_TRUSTED_PROXIES")
 	_ = viper.BindEnv("security.forwarded_client_ip_headers", "SECURITY_FORWARDED_CLIENT_IP_HEADERS")
 
-	// 第三方登录配置包含客户端密钥，运维通常会通过环境变量注入，
-	// 但这些键此前都无法通过该路径到达配置结构。
+	// Register OAuth client secrets and other login settings so deployments
+	// can supply them through environment variables.
 	for _, provider := range []string{"github_oauth", "google_oauth"} {
 		viper.SetDefault(provider+".enabled", false)
 		viper.SetDefault(provider+".client_id", "")
@@ -2336,22 +3126,42 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("dingtalk_connect.sync_corp_email_attr_name", "")
 }
 
+// Validate checks deployment constraints and returns the first encountered
+// configuration error. The receiver must be nonnil, and callers serialize this
+// mutating operation before handing configuration to concurrently running
+// consumers.
+//
+// Validation also normalizes known pricing sources, header names, probe
+// targets, and enabled WebAuthn origin text. It republishes the static
+// forwarding trust/header fields, fills an absent Live duration and compatible
+// old response-ID TTL, and can retain those mutations when a later check fails.
+// A runtime policy published earlier can therefore be replaced by the startup
+// policy during another Validate call.
+//
+// Enabled feature flags select additional requirements, while several inactive
+// controls still reject negative values. Coupled checks retain cache freshness
+// inside total lifetime, deduplication retention through raw-record retention,
+// pool minima below capacity, finite scheduler scoring sums, and separated
+// scaling thresholds. This is the startup rule set; downstream runtime settings
+// and subsystem defaults remain their owners' responsibility.
 func (c *Config) Validate() error {
 	if c.RequestLog.RetentionDays < 0 {
 		return fmt.Errorf("request_log.retention_days must be non-negative")
 	}
-	c.normalizePricingCatalogSource()
-
-	githubRepo, err := NormalizeUpdateGitHubRepo(c.Update.GitHubRepo)
+	updateGitHubRepo, err := NormalizeUpdateGitHubRepo(c.Update.GitHubRepo)
 	if err != nil {
 		return err
 	}
-	c.Update.GitHubRepo = githubRepo
+	c.Update.GitHubRepo = updateGitHubRepo
+	c.normalizePricingCatalogSource()
 
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {
 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)
 	}
+	// Successful header normalization reaches publication before proxy-probe
+	// checking. Proxy-probe or later validation failures leave the startup
+	// trust/header policy installed in the live cell.
 	c.Security.ForwardedClientIPHeaders = forwardedClientIPHeaders
 	c.SetForwardedClientIPSettings(c.Security.TrustForwardedIPForAPIKeyACL, forwardedClientIPHeaders)
 	proxyProbeURLs, err := normalizeProxyProbeURLs(c.Security.ProxyProbe.URLs)
@@ -2359,9 +3169,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("security.proxy_probe.urls: %w", err)
 	}
 	c.Security.ProxyProbe.URLs = proxyProbeURLs
+	// This budget covers ingress header reading before body handling or upstream
+	// stream timing begins.
 	if c.Server.ReadHeaderTimeout < 1 || c.Server.ReadHeaderTimeout > 60 {
 		return fmt.Errorf("server.read_header_timeout must be between 1 and 60 seconds")
 	}
+	// Server construction also uses this ingress limit for the HTTP/2 header-list
+	// size.
 	if c.Server.MaxHeaderBytes < 8*1024 || c.Server.MaxHeaderBytes > 1024*1024 {
 		return fmt.Errorf("server.max_header_bytes must be between 8192 and 1048576 bytes")
 	}
@@ -2371,6 +3185,9 @@ func (c *Config) Validate() error {
 	if c.Server.MaxRequestBodySize < 0 {
 		return fmt.Errorf("server.max_request_body_size must be non-negative")
 	}
+	// HTTP/2 frame payload lengths use a 24-bit value, and connection receive
+	// windows start at 65535 bytes. Check enabled cleartext settings against those
+	// protocol limits before server construction.
 	if c.Server.H2C.Enabled {
 		if c.Server.H2C.MaxConcurrentStreams == 0 {
 			return fmt.Errorf("server.h2c.max_concurrent_streams must be positive")
@@ -2388,16 +3205,27 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("server.h2c.max_upload_buffer_per_stream must be positive")
 		}
 	}
+	// Apply the configured abuse observation limits when tracking is enabled. Its
+	// threshold, observation window, block interval, and capacity determine the
+	// process-local invalid-auth counter behavior.
 	if c.APIKeyAuth.InvalidAbuse.Enabled {
+		// The counter threshold governs repeated invalid credentials from one
+		// observed client address.
 		if c.APIKeyAuth.InvalidAbuse.Threshold < 10 {
 			return fmt.Errorf("api_key_auth_cache.invalid_abuse.threshold must be at least 10")
 		}
+		// Bound the seconds during which invalid-auth observations contribute to that
+		// client counter.
 		if c.APIKeyAuth.InvalidAbuse.WindowSeconds < 1 || c.APIKeyAuth.InvalidAbuse.WindowSeconds > 3600 {
 			return fmt.Errorf("api_key_auth_cache.invalid_abuse.window_seconds must be between 1 and 3600")
 		}
+		// The blocking interval starts after the observation threshold has been
+		// reached.
 		if c.APIKeyAuth.InvalidAbuse.BlockSeconds < 1 || c.APIKeyAuth.InvalidAbuse.BlockSeconds > 3600 {
 			return fmt.Errorf("api_key_auth_cache.invalid_abuse.block_seconds must be between 1 and 3600")
 		}
+		// This entry capacity bounds client-address tracking in the process-local
+		// abuse cache.
 		if c.APIKeyAuth.InvalidAbuse.Capacity < 256 || c.APIKeyAuth.InvalidAbuse.Capacity > 1_000_000 {
 			return fmt.Errorf("api_key_auth_cache.invalid_abuse.capacity must be between 256 and 1000000")
 		}
@@ -2406,62 +3234,19 @@ func (c *Config) Validate() error {
 	if jwtSecret == "" {
 		return fmt.Errorf("jwt.secret is required")
 	}
-	// NOTE: 按 UTF-8 编码后的字节长度计算。
-	// JWT 密钥长度按字节检查，最少 32 字节。
+	// The signing input minimum is measured as encoded bytes rather than rune
+	// count. Check the trimmed secret before identity construction so multibyte
+	// text contributes its UTF-8 byte length.
 	if len([]byte(jwtSecret)) < 32 {
 		return fmt.Errorf("jwt.secret must be at least 32 bytes")
 	}
-	switch c.Log.Level {
-	case "debug", "info", "warn", "error":
-	case "":
-		return fmt.Errorf("log.level is required")
-	default:
-		return fmt.Errorf("log.level must be one of: debug/info/warn/error")
-	}
-	switch c.Log.Format {
-	case "json", "console":
-	case "":
-		return fmt.Errorf("log.format is required")
-	default:
-		return fmt.Errorf("log.format must be one of: json/console")
-	}
-	switch c.Log.StacktraceLevel {
-	case "none", "error", "fatal":
-	case "":
-		return fmt.Errorf("log.stacktrace_level is required")
-	default:
-		return fmt.Errorf("log.stacktrace_level must be one of: none/error/fatal")
-	}
-	if !c.Log.Output.ToStdout && !c.Log.Output.ToFile {
-		return fmt.Errorf("log.output.to_stdout and log.output.to_file cannot both be false")
-	}
-	if c.Log.Rotation.MaxSizeMB <= 0 {
-		return fmt.Errorf("log.rotation.max_size_mb must be positive")
-	}
-	if c.Log.Rotation.MaxBackups < 0 {
-		return fmt.Errorf("log.rotation.max_backups must be non-negative")
-	}
-	if c.Log.Rotation.MaxAgeDays < 0 {
-		return fmt.Errorf("log.rotation.max_age_days must be non-negative")
-	}
-	if c.Log.Sampling.Enabled {
-		if c.Log.Sampling.Initial <= 0 {
-			return fmt.Errorf("log.sampling.initial must be positive when sampling is enabled")
-		}
-		if c.Log.Sampling.Thereafter <= 0 {
-			return fmt.Errorf("log.sampling.thereafter must be positive when sampling is enabled")
-		}
-	} else {
-		if c.Log.Sampling.Initial < 0 {
-			return fmt.Errorf("log.sampling.initial must be non-negative")
-		}
-		if c.Log.Sampling.Thereafter < 0 {
-			return fmt.Errorf("log.sampling.thereafter must be non-negative")
-		}
+	if err := c.validateLog(); err != nil {
+		return err
 	}
 
-	// Gemini OAuth 配置校验：client_id 与 client_secret 必须同时设置或同时留空。
-	// 留空时表示使用内置的 Gemini CLI OAuth 客户端（其 client_secret 通过环境变量注入）。
+	// Gemini client selection uses a credential pair. Reject a partial trimmed
+	// pair before consumers select configured credentials or their default client
+	// choice, keeping the two source members together.
 	geminiClientID := strings.TrimSpace(c.Gemini.OAuth.ClientID)
 	geminiClientSecret := strings.TrimSpace(c.Gemini.OAuth.ClientSecret)
 	if (geminiClientID == "") != (geminiClientSecret == "") {
@@ -2484,63 +3269,34 @@ func (c *Config) Validate() error {
 		}
 		warnIfInsecureURL("server.frontend_url", c.Server.FrontendURL)
 	}
-	if c.WebAuthn.Enabled {
-		c.WebAuthn.RPDisplayName = strings.TrimSpace(c.WebAuthn.RPDisplayName)
-		c.WebAuthn.RPID = strings.ToLower(strings.TrimSpace(c.WebAuthn.RPID))
-		c.WebAuthn.RPOrigins = normalizeStringSlice(c.WebAuthn.RPOrigins)
-		if c.WebAuthn.RPDisplayName == "" {
-			return fmt.Errorf("webauthn.rp_display_name is required when passkeys are enabled")
-		}
-		if c.WebAuthn.RPID == "" {
-			return fmt.Errorf("webauthn.rp_id is required when passkeys are enabled")
-		}
-		if strings.Contains(c.WebAuthn.RPID, "://") || strings.ContainsAny(c.WebAuthn.RPID, "/:") {
-			return fmt.Errorf("webauthn.rp_id must be a domain without scheme, port, or path")
-		}
-		if len(c.WebAuthn.RPOrigins) == 0 {
-			return fmt.Errorf("webauthn.rp_origins must contain at least one origin when passkeys are enabled")
-		}
-		for i, origin := range c.WebAuthn.RPOrigins {
-			u, err := url.Parse(origin)
-			if err != nil || u.Scheme == "" || u.Host == "" {
-				return fmt.Errorf("webauthn.rp_origins contains invalid origin %q", origin)
-			}
-			if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
-				return fmt.Errorf("webauthn.rp_origins entry %q must not include userinfo, path, query, or fragment", origin)
-			}
-			u.Scheme = strings.ToLower(u.Scheme)
-			u.Host = strings.ToLower(u.Host)
-			host := strings.ToLower(u.Hostname())
-			localDevelopment := host == "localhost" || host == "127.0.0.1" || host == "::1"
-			// WebAuthn 仅允许 HTTPS，本地回环地址可使用 HTTP 便于开发调试。
-			if u.Scheme != "https" && (u.Scheme != "http" || !localDevelopment) {
-				return fmt.Errorf("webauthn.rp_origins entry %q must use HTTPS (HTTP is allowed only for localhost)", origin)
-			}
-			if host != c.WebAuthn.RPID && !strings.HasSuffix(host, "."+c.WebAuthn.RPID) {
-				return fmt.Errorf("webauthn.rp_origins entry %q is not within relying party ID %q", origin, c.WebAuthn.RPID)
-			}
-			c.WebAuthn.RPOrigins[i] = u.Scheme + "://" + u.Host
-		}
+	if err := c.validateWebAuthn(); err != nil {
+		return err
 	}
 	if c.JWT.ExpireHour <= 0 {
 		return fmt.Errorf("jwt.expire_hour must be positive")
 	}
+	// Validate the legacy hour value even when a positive minute override will
+	// select access-token expiry.
 	if c.JWT.ExpireHour > 168 {
 		return fmt.Errorf("jwt.expire_hour must be <= 168 (7 days)")
 	}
+	// This shorter warning threshold retains the accepted configured lifetime
+	// unchanged.
 	if c.JWT.ExpireHour > 24 {
 		slog.Warn("jwt.expire_hour is high; consider shorter expiration for security", "expire_hour", c.JWT.ExpireHour)
 	}
-	// JWT Refresh Token 配置验证
 	if c.JWT.AccessTokenExpireMinutes < 0 {
 		return fmt.Errorf("jwt.access_token_expire_minutes must be non-negative")
 	}
+	// A positive minute override selects expiry; long overrides produce a warning
+	// and remain accepted.
 	if c.JWT.AccessTokenExpireMinutes > 720 {
 		slog.Warn("jwt.access_token_expire_minutes is high; consider shorter expiration for security", "access_token_expire_minutes", c.JWT.AccessTokenExpireMinutes)
 	}
 	if c.JWT.RefreshTokenExpireDays <= 0 {
 		return fmt.Errorf("jwt.refresh_token_expire_days must be positive")
 	}
+	// Long refresh-token lifetimes remain accepted after this warning is emitted.
 	if c.JWT.RefreshTokenExpireDays > 90 {
 		slog.Warn("jwt.refresh_token_expire_days is high; consider shorter expiration for security", "refresh_token_expire_days", c.JWT.RefreshTokenExpireDays)
 	}
@@ -2641,83 +3397,8 @@ func (c *Config) Validate() error {
 		}
 		warnIfInsecureURL("wechat_connect.frontend_redirect_url", weChat.FrontendRedirectURL)
 	}
-	if c.OIDC.Enabled {
-		if strings.TrimSpace(c.OIDC.ClientID) == "" {
-			return fmt.Errorf("oidc_connect.client_id is required when oidc_connect.enabled=true")
-		}
-		if strings.TrimSpace(c.OIDC.IssuerURL) == "" {
-			return fmt.Errorf("oidc_connect.issuer_url is required when oidc_connect.enabled=true")
-		}
-		if strings.TrimSpace(c.OIDC.RedirectURL) == "" {
-			return fmt.Errorf("oidc_connect.redirect_url is required when oidc_connect.enabled=true")
-		}
-		if strings.TrimSpace(c.OIDC.FrontendRedirectURL) == "" {
-			return fmt.Errorf("oidc_connect.frontend_redirect_url is required when oidc_connect.enabled=true")
-		}
-		if !scopeContainsOpenID(c.OIDC.Scopes) {
-			return fmt.Errorf("oidc_connect.scopes must contain openid")
-		}
-
-		method := strings.ToLower(strings.TrimSpace(c.OIDC.TokenAuthMethod))
-		switch method {
-		case "", "client_secret_post", "client_secret_basic", "none":
-		default:
-			return fmt.Errorf("oidc_connect.token_auth_method must be one of: client_secret_post/client_secret_basic/none")
-		}
-		if (method == "" || method == "client_secret_post" || method == "client_secret_basic") &&
-			strings.TrimSpace(c.OIDC.ClientSecret) == "" {
-			return fmt.Errorf("oidc_connect.client_secret is required when oidc_connect.enabled=true and token_auth_method is client_secret_post/client_secret_basic")
-		}
-		if c.OIDC.ClockSkewSeconds < 0 || c.OIDC.ClockSkewSeconds > 600 {
-			return fmt.Errorf("oidc_connect.clock_skew_seconds must be between 0 and 600")
-		}
-		if c.OIDC.ValidateIDToken && strings.TrimSpace(c.OIDC.AllowedSigningAlgs) == "" {
-			return fmt.Errorf("oidc_connect.allowed_signing_algs is required when oidc_connect.validate_id_token=true")
-		}
-
-		if err := ValidateAbsoluteHTTPURL(c.OIDC.IssuerURL); err != nil {
-			return fmt.Errorf("oidc_connect.issuer_url invalid: %w", err)
-		}
-		if v := strings.TrimSpace(c.OIDC.DiscoveryURL); v != "" {
-			if err := ValidateAbsoluteHTTPURL(v); err != nil {
-				return fmt.Errorf("oidc_connect.discovery_url invalid: %w", err)
-			}
-		}
-		if v := strings.TrimSpace(c.OIDC.AuthorizeURL); v != "" {
-			if err := ValidateAbsoluteHTTPURL(v); err != nil {
-				return fmt.Errorf("oidc_connect.authorize_url invalid: %w", err)
-			}
-		}
-		if v := strings.TrimSpace(c.OIDC.TokenURL); v != "" {
-			if err := ValidateAbsoluteHTTPURL(v); err != nil {
-				return fmt.Errorf("oidc_connect.token_url invalid: %w", err)
-			}
-		}
-		if v := strings.TrimSpace(c.OIDC.UserInfoURL); v != "" {
-			if err := ValidateAbsoluteHTTPURL(v); err != nil {
-				return fmt.Errorf("oidc_connect.userinfo_url invalid: %w", err)
-			}
-		}
-		if v := strings.TrimSpace(c.OIDC.JWKSURL); v != "" {
-			if err := ValidateAbsoluteHTTPURL(v); err != nil {
-				return fmt.Errorf("oidc_connect.jwks_url invalid: %w", err)
-			}
-		}
-		if err := ValidateAbsoluteHTTPURL(c.OIDC.RedirectURL); err != nil {
-			return fmt.Errorf("oidc_connect.redirect_url invalid: %w", err)
-		}
-		if err := ValidateFrontendRedirectURL(c.OIDC.FrontendRedirectURL); err != nil {
-			return fmt.Errorf("oidc_connect.frontend_redirect_url invalid: %w", err)
-		}
-
-		warnIfInsecureURL("oidc_connect.issuer_url", c.OIDC.IssuerURL)
-		warnIfInsecureURL("oidc_connect.discovery_url", c.OIDC.DiscoveryURL)
-		warnIfInsecureURL("oidc_connect.authorize_url", c.OIDC.AuthorizeURL)
-		warnIfInsecureURL("oidc_connect.token_url", c.OIDC.TokenURL)
-		warnIfInsecureURL("oidc_connect.userinfo_url", c.OIDC.UserInfoURL)
-		warnIfInsecureURL("oidc_connect.jwks_url", c.OIDC.JWKSURL)
-		warnIfInsecureURL("oidc_connect.redirect_url", c.OIDC.RedirectURL)
-		warnIfInsecureURL("oidc_connect.frontend_redirect_url", c.OIDC.FrontendRedirectURL)
+	if err := c.validateOIDC(); err != nil {
+		return err
 	}
 	if c.Billing.CircuitBreaker.Enabled {
 		if c.Billing.CircuitBreaker.FailureThreshold <= 0 {
@@ -2739,6 +3420,9 @@ func (c *Config) Validate() error {
 	if c.Database.MaxIdleConns < 0 {
 		return fmt.Errorf("database.max_idle_conns must be non-negative")
 	}
+	// Idle connections belong to the open pool. Keep their retained maximum within
+	// its total capacity before configuring the shared SQL pool for application
+	// storage.
 	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {
 		return fmt.Errorf("database.max_idle_conns cannot exceed database.max_open_conns")
 	}
@@ -2763,6 +3447,9 @@ func (c *Config) Validate() error {
 	if c.Redis.MinIdleConns < 0 {
 		return fmt.Errorf("redis.min_idle_conns must be non-negative")
 	}
+	// The ready idle minimum is part of the Redis pool. Bound that minimum by
+	// configured capacity before the client creates or replenishes its idle
+	// connections.
 	if c.Redis.MinIdleConns > c.Redis.PoolSize {
 		return fmt.Errorf("redis.min_idle_conns cannot exceed redis.pool_size")
 	}
@@ -2798,6 +3485,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("batch_image.recover_limit must be positive")
 		}
 	}
+	// Managed Vertex objects require a bucket name and a batch-specific prefix.
+	// Validate the per-batch identity placeholder before these settings are passed
+	// to the managed batch adapter.
 	if c.BatchImage.VertexEnabled {
 		if strings.TrimSpace(c.BatchImage.VertexManagedGCSBucket) == "" {
 			return fmt.Errorf("batch_image.vertex_managed_gcs_bucket must not be empty when vertex is enabled")
@@ -2821,7 +3511,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("batch_image.vertex_output_retention_hours must be positive")
 		}
 	}
-	// 创作台配置校验。
+	// Creative input limits are checked when its API is enabled, while queue
+	// requirements are checked by their separate flag. Keep total input capacity
+	// at least large enough for one allowed asset.
 	if c.Creative.Enabled {
 		if c.Creative.TransientTTLSeconds <= 0 {
 			return fmt.Errorf("creative.transient_ttl_seconds must be positive")
@@ -2879,6 +3571,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("creative.max_execute_attempts must be at least 1")
 		}
 	}
+	// Enabled dashboard caching needs positive lifetimes and a refresh budget.
+	// Keep freshness within total Redis lifetime; disabled settings can be zero
+	// but retain nonnegative checks below.
 	if c.Dashboard.Enabled {
 		if c.Dashboard.StatsFreshTTLSeconds <= 0 {
 			return fmt.Errorf("dashboard_cache.stats_fresh_ttl_seconds must be positive")
@@ -2903,6 +3598,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("dashboard_cache.stats_refresh_timeout_seconds must be non-negative")
 		}
 	}
+	// Enabled aggregation needs positive retained datasets, and billing
+	// deduplication must survive at least as long as raw usage records. Inactive
+	// settings retain nonnegative and paired-retention checks below.
 	if c.DashboardAgg.Enabled {
 		if c.DashboardAgg.IntervalSeconds <= 0 {
 			return fmt.Errorf("dashboard_aggregation.interval_seconds must be positive")
@@ -3034,17 +3732,28 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIResponseHeaderTimeout < 0 {
 		return fmt.Errorf("gateway.openai_response_header_timeout must be non-negative")
 	}
+	// Grok header timing has its own cap before streaming data-gap handling takes
+	// over.
 	if c.Gateway.GrokResponseHeaderTimeout < 0 || c.Gateway.GrokResponseHeaderTimeout > 1800 {
 		return fmt.Errorf("gateway.grok_response_header_timeout must be between 0-1800 seconds")
 	}
+	// The ordinary OpenAI first-output budget is validated independently of the
+	// high-effort budget below; zero disables its configured first-output
+	// deadline.
 	if c.Gateway.OpenAIFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIFirstOutputTimeoutSeconds > 600 ||
 		(c.Gateway.OpenAIFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_first_output_timeout_seconds must be 0 or between 30-600 seconds")
 	}
+	// The high-effort override can exceed the ordinary budget. The consumer
+	// considers it after a positive ordinary budget has enabled first-output
+	// timing.
 	if c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 1800 ||
 		(c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_high_effort_first_output_timeout_seconds must be 0 or between 30-1800 seconds")
 	}
+	// A missing or nonpositive Live session duration has no usable cap. Supply the
+	// one-hour process default before downstream Live session construction reads
+	// this field.
 	if c.Gateway.Live.MaxSessionDurationSeconds <= 0 {
 		c.Gateway.Live.MaxSessionDurationSeconds = 3600
 	}
@@ -3083,6 +3792,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.IdleConnTimeoutSeconds <= 0 {
 		return fmt.Errorf("gateway.idle_conn_timeout_seconds must be positive")
 	}
+	// This transport-idle threshold warns while retaining the supplied connection
+	// lifetime.
 	if c.Gateway.IdleConnTimeoutSeconds > 180 {
 		slog.Warn("gateway.idle_conn_timeout_seconds is high; consider 60-120 seconds for better connection reuse", "idle_conn_timeout_seconds", c.Gateway.IdleConnTimeoutSeconds)
 	}
@@ -3098,6 +3809,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.StreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")
 	}
+	// Bound ordinary stream inactivity independently of the keepalive interval;
+	// zero disables this deadline.
 	if c.Gateway.StreamDataIntervalTimeout != 0 &&
 		(c.Gateway.StreamDataIntervalTimeout < 30 || c.Gateway.StreamDataIntervalTimeout > 300) {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be 0 or between 30-300 seconds")
@@ -3105,6 +3818,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.StreamKeepaliveInterval < 0 {
 		return fmt.Errorf("gateway.stream_keepalive_interval must be non-negative")
 	}
+	// These downstream keepalives have their own interval, independent of upstream
+	// data arrival.
 	if c.Gateway.StreamKeepaliveInterval != 0 &&
 		(c.Gateway.StreamKeepaliveInterval < 5 || c.Gateway.StreamKeepaliveInterval > 30) {
 		return fmt.Errorf("gateway.stream_keepalive_interval must be 0 or between 5-30 seconds")
@@ -3112,6 +3827,7 @@ func (c *Config) Validate() error {
 	if c.Gateway.ImageStreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.image_stream_data_interval_timeout must be non-negative")
 	}
+	// Image data gaps allow a wider budget than ordinary text streams.
 	if c.Gateway.ImageStreamDataIntervalTimeout != 0 &&
 		(c.Gateway.ImageStreamDataIntervalTimeout < 60 || c.Gateway.ImageStreamDataIntervalTimeout > 1800) {
 		return fmt.Errorf("gateway.image_stream_data_interval_timeout must be 0 or between 60-1800 seconds")
@@ -3119,6 +3835,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.ImageStreamKeepaliveInterval < 0 {
 		return fmt.Errorf("gateway.image_stream_keepalive_interval must be non-negative")
 	}
+	// Image streaming keepalives use the image-specific interval while awaiting
+	// generation output.
 	if c.Gateway.ImageStreamKeepaliveInterval != 0 &&
 		(c.Gateway.ImageStreamKeepaliveInterval < 5 || c.Gateway.ImageStreamKeepaliveInterval > 60) {
 		return fmt.Errorf("gateway.image_stream_keepalive_interval must be 0 or between 5-60 seconds")
@@ -3126,11 +3844,15 @@ func (c *Config) Validate() error {
 	if c.Gateway.ImageNonstreamKeepaliveInterval < 0 {
 		return fmt.Errorf("gateway.image_nonstream_keepalive_interval must be non-negative")
 	}
+	// Nonstream image JSON responses have their own keepalive cadence, separate
+	// from image SSE.
 	if c.Gateway.ImageNonstreamKeepaliveInterval != 0 &&
 		(c.Gateway.ImageNonstreamKeepaliveInterval < 5 || c.Gateway.ImageNonstreamKeepaliveInterval > 60) {
 		return fmt.Errorf("gateway.image_nonstream_keepalive_interval must be 0 or between 5-60 seconds")
 	}
-	// 兼容旧键 sticky_previous_response_ttl_seconds
+	// Resolve a positive retired response affinity lifetime when the current
+	// lifetime is nonpositive. Validate the effective value afterward so
+	// compatibility still respects the active WS lifetime requirement.
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {
 		c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
 	}
@@ -3152,6 +3874,9 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIWS.MaxIdlePerProvider < 0 {
 		return fmt.Errorf("gateway.openai_ws.max_idle_per_provider must be non-negative")
 	}
+	// Provider pool minima and retained-idle maxima share the total connection
+	// capacity. Reject inverted or oversized idle limits before constructing pools
+	// that maintain and reclaim those connections.
 	if c.Gateway.OpenAIWS.MinIdlePerProvider > c.Gateway.OpenAIWS.MaxIdlePerProvider {
 		return fmt.Errorf("gateway.openai_ws.min_idle_per_provider must be <= max_idle_per_provider")
 	}
@@ -3173,6 +3898,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIWS.WriteTimeoutSeconds <= 0 {
 		return fmt.Errorf("gateway.openai_ws.write_timeout_seconds must be positive")
 	}
+	// Pool sizing consumes this value as a target fraction of connection
+	// utilization.
 	if c.Gateway.OpenAIWS.PoolTargetUtilization <= 0 || c.Gateway.OpenAIWS.PoolTargetUtilization > 1 {
 		return fmt.Errorf("gateway.openai_ws.pool_target_utilization must be within (0,1]")
 	}
@@ -3191,6 +3918,9 @@ func (c *Config) Validate() error {
 	if c.Gateway.AdvancedScheduler.LBTopK <= 0 {
 		return fmt.Errorf("gateway.advanced_scheduler.lb_top_k must be positive")
 	}
+	// Both EWMA coefficients weight the latest observation against retained
+	// error-rate or TTFT history. Reject nonfinite coefficients before those
+	// scheduler updates can consume them.
 	if c.Gateway.AdvancedScheduler.EWMAErrorRateAlpha <= 0 || c.Gateway.AdvancedScheduler.EWMAErrorRateAlpha > 1 ||
 		math.IsNaN(c.Gateway.AdvancedScheduler.EWMAErrorRateAlpha) || math.IsInf(c.Gateway.AdvancedScheduler.EWMAErrorRateAlpha, 0) {
 		return fmt.Errorf("gateway.advanced_scheduler.ewma_error_rate_alpha must be between 0 and 1")
@@ -3226,6 +3956,9 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIProxyStreamCircuit.TTLSeconds < 0 {
 		return fmt.Errorf("gateway.openai_proxy_stream_circuit.ttl_seconds must be non-negative")
 	}
+	// Scoring consumes each finite nonnegative weight and their combined totals.
+	// Check individual values before summing so an invalid component cannot enter
+	// candidate score calculations.
 	weights := c.Gateway.AdvancedScheduler.ScoreWeights
 	for _, weight := range []float64{
 		weights.Priority, weights.Load, weights.Queue, weights.ErrorRate, weights.TTFT,
@@ -3236,6 +3969,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("gateway.advanced_scheduler.score_weights.* must be non-negative and finite")
 		}
 	}
+	// BaseWeightSum omits affinity bonus weights, so a positive bonus cannot make
+	// an otherwise zero base score valid. Check sums for overflow as well as
+	// component validity before scheduler construction.
 	weightSum := weights.BaseWeightSum()
 	if weightSum <= 0 {
 		return fmt.Errorf("gateway.advanced_scheduler.score_weights must not all be zero")
@@ -3249,12 +3985,16 @@ func (c *Config) Validate() error {
 	if c.Gateway.AdvancedScheduler.StickyEscapeTTFTMs <= 0 {
 		return fmt.Errorf("gateway.advanced_scheduler.sticky_escape_ttft_ms must be positive")
 	}
+	// This fraction sets the error-rate condition for leaving sticky provider
+	// affinity.
 	if c.Gateway.AdvancedScheduler.StickyEscapeErrorRate < 0 || c.Gateway.AdvancedScheduler.StickyEscapeErrorRate > 1 {
 		return fmt.Errorf("gateway.advanced_scheduler.sticky_escape_error_rate must be between 0 and 1")
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")
 	}
+	// The nonzero limit applies to one scanned SSE line; zero selects downstream
+	// scanner defaults.
 	if c.Gateway.MaxLineSize != 0 && c.Gateway.MaxLineSize < 1024*1024 {
 		return fmt.Errorf("gateway.max_line_size must be at least 1MB")
 	}
@@ -3273,6 +4013,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("gateway.usage_record.overflow_policy must be one of: %s/%s/%s",
 			UsageRecordOverflowPolicyDrop, UsageRecordOverflowPolicySample, UsageRecordOverflowPolicySync)
 	}
+	// Validate the percentage for every overflow policy. Sample mode additionally
+	// requires positive admission, while the other policies can retain a zero
+	// percentage.
 	if c.Gateway.UsageRecord.OverflowSamplePercent < 0 || c.Gateway.UsageRecord.OverflowSamplePercent > 100 {
 		return fmt.Errorf("gateway.usage_record.overflow_sample_percent must be between 0-100")
 	}
@@ -3280,6 +4023,9 @@ func (c *Config) Validate() error {
 		c.Gateway.UsageRecord.OverflowSamplePercent <= 0 {
 		return fmt.Errorf("gateway.usage_record.overflow_sample_percent must be positive when overflow_policy=sample")
 	}
+	// Worker growth and shrinkage use separated queue thresholds inside a
+	// configured worker range. Validate the initial count and both adjustment
+	// steps with that range before the completion pool can scale.
 	if c.Gateway.UsageRecord.AutoScaleEnabled {
 		if c.Gateway.UsageRecord.AutoScaleMinWorkers <= 0 {
 			return fmt.Errorf("gateway.usage_record.auto_scale_min_workers must be positive")
@@ -3319,6 +4065,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.UserGroupRateCacheTTLSeconds <= 0 {
 		return fmt.Errorf("gateway.user_group_rate_cache_ttl_seconds must be positive")
 	}
+	// The retired catalog-cache key remains range-validated even though current
+	// model lookup does not read it.
 	if c.Gateway.ModelsListCacheTTLSeconds < 10 || c.Gateway.ModelsListCacheTTLSeconds > 30 {
 		return fmt.Errorf("gateway.models_list_cache_ttl_seconds must be between 10-30")
 	}
@@ -3370,6 +4118,9 @@ func (c *Config) Validate() error {
 	if c.Gateway.Scheduling.FullRebuildIntervalSeconds < 0 {
 		return fmt.Errorf("gateway.scheduling.full_rebuild_interval_seconds must be non-negative")
 	}
+	// Positive outbox thresholds should warn before forced rebuild. Check their
+	// relative order when both mechanisms are configured, allowing zero to retain
+	// each consumer's disabled-threshold behavior.
 	if c.Gateway.Scheduling.OutboxLagWarnSeconds > 0 &&
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 &&
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds < c.Gateway.Scheduling.OutboxLagWarnSeconds {
@@ -3393,12 +4144,18 @@ func (c *Config) Validate() error {
 	if c.Ops.Cleanup.Enabled && strings.TrimSpace(c.Ops.Cleanup.Schedule) == "" {
 		return fmt.Errorf("ops.cleanup.schedule is required when ops.cleanup.enabled=true")
 	}
+	// Ops cleanup deletes bounded row batches when a dataset has a positive
+	// retention window.
 	if c.Ops.Cleanup.BatchSize < 100 || c.Ops.Cleanup.BatchSize > 5000 {
 		return fmt.Errorf("ops.cleanup.batch_size must be between 100 and 5000")
 	}
+	// The pause paces successive deletion batches in milliseconds during
+	// retained-data cleanup.
 	if c.Ops.Cleanup.BatchPauseMS < 1 || c.Ops.Cleanup.BatchPauseMS > 2000 {
 		return fmt.Errorf("ops.cleanup.batch_pause_ms must be between 1 and 2000")
 	}
+	// Concurrency waiting sends SSE keepalives at this cadence before a request
+	// obtains its slot.
 	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
 		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
 	}
@@ -3406,6 +4163,8 @@ func (c *Config) Validate() error {
 		if c.Gateway.Grok.FreeQuotaTokenLimit <= 0 {
 			return fmt.Errorf("gateway.grok.free_quota_token_limit must be positive")
 		}
+		// The soft gate compares rolling free-tier token usage with this fraction of
+		// the configured token limit.
 		if c.Gateway.Grok.FreeQuotaSoftGatePercent < 1 || c.Gateway.Grok.FreeQuotaSoftGatePercent > 100 {
 			return fmt.Errorf("gateway.grok.free_quota_soft_gate_percent must be between 1 and 100")
 		}
@@ -3422,6 +4181,206 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// validateLog checks logger formats, destinations, rotation, and sampling
+// controls in their startup order. It returns the first invalid field and leaves
+// configured values unchanged, including sampling values while sampling is
+// disabled.
+func (c *Config) validateLog() error {
+	switch c.Log.Level {
+	case "debug", "info", "warn", "error":
+	case "":
+		return fmt.Errorf("log.level is required")
+	default:
+		return fmt.Errorf("log.level must be one of: debug/info/warn/error")
+	}
+	switch c.Log.Format {
+	case "json", "console":
+	case "":
+		return fmt.Errorf("log.format is required")
+	default:
+		return fmt.Errorf("log.format must be one of: json/console")
+	}
+	switch c.Log.StacktraceLevel {
+	case "none", "error", "fatal":
+	case "":
+		return fmt.Errorf("log.stacktrace_level is required")
+	default:
+		return fmt.Errorf("log.stacktrace_level must be one of: none/error/fatal")
+	}
+	if !c.Log.Output.ToStdout && !c.Log.Output.ToFile {
+		return fmt.Errorf("log.output.to_stdout and log.output.to_file cannot both be false")
+	}
+	if c.Log.Rotation.MaxSizeMB <= 0 {
+		return fmt.Errorf("log.rotation.max_size_mb must be positive")
+	}
+	if c.Log.Rotation.MaxBackups < 0 {
+		return fmt.Errorf("log.rotation.max_backups must be non-negative")
+	}
+	if c.Log.Rotation.MaxAgeDays < 0 {
+		return fmt.Errorf("log.rotation.max_age_days must be non-negative")
+	}
+	if c.Log.Sampling.Enabled {
+		if c.Log.Sampling.Initial <= 0 {
+			return fmt.Errorf("log.sampling.initial must be positive when sampling is enabled")
+		}
+		if c.Log.Sampling.Thereafter <= 0 {
+			return fmt.Errorf("log.sampling.thereafter must be positive when sampling is enabled")
+		}
+	} else {
+		if c.Log.Sampling.Initial < 0 {
+			return fmt.Errorf("log.sampling.initial must be non-negative")
+		}
+		if c.Log.Sampling.Thereafter < 0 {
+			return fmt.Errorf("log.sampling.thereafter must be non-negative")
+		}
+	}
+	return nil
+}
+
+// validateWebAuthn checks the enabled relying-party identity and browser origins.
+// Disabled passkey settings remain untouched. For enabled settings, it trims the
+// display name, lowercases the relying-party ID, and replaces nonempty origin
+// input with a trimmed list before checking required fields.
+//
+// The method then canonicalizes accepted origins in order. A failure leaves
+// these mutations visible, including earlier accepted origins, while later
+// origins retain their trimmed input spelling. Callers serialize access to the
+// receiver during validation.
+func (c *Config) validateWebAuthn() error {
+	if c.WebAuthn.Enabled {
+		c.WebAuthn.RPDisplayName = strings.TrimSpace(c.WebAuthn.RPDisplayName)
+		c.WebAuthn.RPID = strings.ToLower(strings.TrimSpace(c.WebAuthn.RPID))
+		c.WebAuthn.RPOrigins = normalizeStringSlice(c.WebAuthn.RPOrigins)
+		if c.WebAuthn.RPDisplayName == "" {
+			return fmt.Errorf("webauthn.rp_display_name is required when passkeys are enabled")
+		}
+		if c.WebAuthn.RPID == "" {
+			return fmt.Errorf("webauthn.rp_id is required when passkeys are enabled")
+		}
+		if strings.Contains(c.WebAuthn.RPID, "://") || strings.ContainsAny(c.WebAuthn.RPID, "/:") {
+			return fmt.Errorf("webauthn.rp_id must be a domain without scheme, port, or path")
+		}
+		if len(c.WebAuthn.RPOrigins) == 0 {
+			return fmt.Errorf("webauthn.rp_origins must contain at least one origin when passkeys are enabled")
+		}
+		for i, origin := range c.WebAuthn.RPOrigins {
+			u, err := url.Parse(origin)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				return fmt.Errorf("webauthn.rp_origins contains invalid origin %q", origin)
+			}
+			if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
+				return fmt.Errorf("webauthn.rp_origins entry %q must not include userinfo, path, query, or fragment", origin)
+			}
+			u.Scheme = strings.ToLower(u.Scheme)
+			u.Host = strings.ToLower(u.Host)
+			host := strings.ToLower(u.Hostname())
+			localDevelopment := host == "localhost" || host == "127.0.0.1" || host == "::1"
+			// Passkey origins require HTTPS in the deployment rule. Permit HTTP for the
+			// exact localhost and loopback host forms so a local development relying
+			// party can use a plain HTTP origin.
+			if u.Scheme != "https" && (u.Scheme != "http" || !localDevelopment) {
+				return fmt.Errorf("webauthn.rp_origins entry %q must use HTTPS (HTTP is allowed only for localhost)", origin)
+			}
+			if host != c.WebAuthn.RPID && !strings.HasSuffix(host, "."+c.WebAuthn.RPID) {
+				return fmt.Errorf("webauthn.rp_origins entry %q is not within relying party ID %q", origin, c.WebAuthn.RPID)
+			}
+			c.WebAuthn.RPOrigins[i] = u.Scheme + "://" + u.Host
+		}
+	}
+	return nil
+}
+
+// validateOIDC checks enabled login credentials, scopes, and endpoints in their
+// startup order. Disabled settings pass unchanged. Validation reads trimmed
+// views of strings, keeps the configured values, and emits HTTP warnings only
+// after all OIDC checks succeed.
+func (c *Config) validateOIDC() error {
+	if c.OIDC.Enabled {
+		if strings.TrimSpace(c.OIDC.ClientID) == "" {
+			return fmt.Errorf("oidc_connect.client_id is required when oidc_connect.enabled=true")
+		}
+		if strings.TrimSpace(c.OIDC.IssuerURL) == "" {
+			return fmt.Errorf("oidc_connect.issuer_url is required when oidc_connect.enabled=true")
+		}
+		if strings.TrimSpace(c.OIDC.RedirectURL) == "" {
+			return fmt.Errorf("oidc_connect.redirect_url is required when oidc_connect.enabled=true")
+		}
+		if strings.TrimSpace(c.OIDC.FrontendRedirectURL) == "" {
+			return fmt.Errorf("oidc_connect.frontend_redirect_url is required when oidc_connect.enabled=true")
+		}
+		if !scopeContainsOpenID(c.OIDC.Scopes) {
+			return fmt.Errorf("oidc_connect.scopes must contain openid")
+		}
+
+		method := strings.ToLower(strings.TrimSpace(c.OIDC.TokenAuthMethod))
+		switch method {
+		case "", "client_secret_post", "client_secret_basic", "none":
+		default:
+			return fmt.Errorf("oidc_connect.token_auth_method must be one of: client_secret_post/client_secret_basic/none")
+		}
+		if (method == "" || method == "client_secret_post" || method == "client_secret_basic") &&
+			strings.TrimSpace(c.OIDC.ClientSecret) == "" {
+			return fmt.Errorf("oidc_connect.client_secret is required when oidc_connect.enabled=true and token_auth_method is client_secret_post/client_secret_basic")
+		}
+		// Enabled OIDC bounds this tolerance even when ID-token validation is
+		// disabled.
+		if c.OIDC.ClockSkewSeconds < 0 || c.OIDC.ClockSkewSeconds > 600 {
+			return fmt.Errorf("oidc_connect.clock_skew_seconds must be between 0 and 600")
+		}
+		if c.OIDC.ValidateIDToken && strings.TrimSpace(c.OIDC.AllowedSigningAlgs) == "" {
+			return fmt.Errorf("oidc_connect.allowed_signing_algs is required when oidc_connect.validate_id_token=true")
+		}
+
+		if err := ValidateAbsoluteHTTPURL(c.OIDC.IssuerURL); err != nil {
+			return fmt.Errorf("oidc_connect.issuer_url invalid: %w", err)
+		}
+		if v := strings.TrimSpace(c.OIDC.DiscoveryURL); v != "" {
+			if err := ValidateAbsoluteHTTPURL(v); err != nil {
+				return fmt.Errorf("oidc_connect.discovery_url invalid: %w", err)
+			}
+		}
+		if v := strings.TrimSpace(c.OIDC.AuthorizeURL); v != "" {
+			if err := ValidateAbsoluteHTTPURL(v); err != nil {
+				return fmt.Errorf("oidc_connect.authorize_url invalid: %w", err)
+			}
+		}
+		if v := strings.TrimSpace(c.OIDC.TokenURL); v != "" {
+			if err := ValidateAbsoluteHTTPURL(v); err != nil {
+				return fmt.Errorf("oidc_connect.token_url invalid: %w", err)
+			}
+		}
+		if v := strings.TrimSpace(c.OIDC.UserInfoURL); v != "" {
+			if err := ValidateAbsoluteHTTPURL(v); err != nil {
+				return fmt.Errorf("oidc_connect.userinfo_url invalid: %w", err)
+			}
+		}
+		if v := strings.TrimSpace(c.OIDC.JWKSURL); v != "" {
+			if err := ValidateAbsoluteHTTPURL(v); err != nil {
+				return fmt.Errorf("oidc_connect.jwks_url invalid: %w", err)
+			}
+		}
+		if err := ValidateAbsoluteHTTPURL(c.OIDC.RedirectURL); err != nil {
+			return fmt.Errorf("oidc_connect.redirect_url invalid: %w", err)
+		}
+		if err := ValidateFrontendRedirectURL(c.OIDC.FrontendRedirectURL); err != nil {
+			return fmt.Errorf("oidc_connect.frontend_redirect_url invalid: %w", err)
+		}
+
+		warnIfInsecureURL("oidc_connect.issuer_url", c.OIDC.IssuerURL)
+		warnIfInsecureURL("oidc_connect.discovery_url", c.OIDC.DiscoveryURL)
+		warnIfInsecureURL("oidc_connect.authorize_url", c.OIDC.AuthorizeURL)
+		warnIfInsecureURL("oidc_connect.token_url", c.OIDC.TokenURL)
+		warnIfInsecureURL("oidc_connect.userinfo_url", c.OIDC.UserInfoURL)
+		warnIfInsecureURL("oidc_connect.jwks_url", c.OIDC.JWKSURL)
+		warnIfInsecureURL("oidc_connect.redirect_url", c.OIDC.RedirectURL)
+		warnIfInsecureURL("oidc_connect.frontend_redirect_url", c.OIDC.FrontendRedirectURL)
+	}
+	return nil
+}
+
+// normalizeStringSlice returns trimmed nonblank entries in their supplied
+// order. Empty input retains its nil or allocated-empty shape; nonempty input
+// gets new outer storage and can return an allocated empty result.
 func normalizeStringSlice(values []string) []string {
 	if len(values) == 0 {
 		return values
@@ -3437,6 +4396,9 @@ func normalizeStringSlice(values []string) []string {
 	return normalized
 }
 
+// isWeakJWTSecret reports blank or known weak-secret spellings after trimming
+// and lowercasing. It is a warning-list comparison rather than an entropy or
+// cryptographic strength measurement; other text returns false.
 func isWeakJWTSecret(secret string) bool {
 	lower := strings.ToLower(strings.TrimSpace(secret))
 	if lower == "" {
@@ -3456,6 +4418,10 @@ func isWeakJWTSecret(secret string) bool {
 	return exists
 }
 
+// generateJWTSecret returns lowercase hexadecimal text from byteLength random
+// bytes, selecting thirty-two bytes for nonpositive input. Encoded text
+// contains twice the selected byte count and returns with nil error.
+// crypto/rand.Read terminates the process when io.ReadFull reports an error.
 func generateJWTSecret(byteLength int) (string, error) {
 	if byteLength <= 0 {
 		byteLength = 32
@@ -3467,21 +4433,26 @@ func generateJWTSecret(byteLength int) (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// GetServerAddress 在完整配置校验前读取服务监听地址，供安装向导等启动阶段使用。
-// 优先级为环境变量、配置文件、默认值。
+// GetServerAddress reads the listener through a separate Viper instance before
+// complete startup validation. Environment values precede selected YAML and
+// defaults, and configuration-file read errors are discarded here so full
+// loading can report them later. Host formatting performs no validation or IPv6
+// bracketing.
 func GetServerAddress() string {
 	v := viper.New()
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
 	configureConfigSource(v.SetConfigFile, v.AddConfigPath)
 
-	// 支持用环境变量覆盖配置文件中的监听地址。
+	// Environment variables can override the file's listen address.
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8080)
 
-	// 轻量读取保持容错；完整 Load 会对显式文件缺失或不可读返回错误。
+	// Startup needs a listener address before complete setup is available. Discard
+	// file-read errors in this lightweight lookup; the full loader reports invalid
+	// explicit files when startup reaches configuration validation.
 	_ = v.ReadInConfig()
 
 	host := v.GetString("server.host")
@@ -3489,20 +4460,35 @@ func GetServerAddress() string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
-// ValidateAbsoluteHTTPURL 验证是否为有效的绝对 HTTP(S) URL。
+// ValidateAbsoluteHTTPURL delegates trimmed HTTP(S) endpoint-shape checking to
+// identity authconfig. It requires an absolute URL with a host and no fragment;
+// callers retain input and separately decide allowed userinfo, ports, paths, or
+// reachability.
 func ValidateAbsoluteHTTPURL(raw string) error { return authconfig.ValidateAbsoluteHTTPURL(raw) }
 
-// ValidateFrontendRedirectURL 验证前端重定向 URL（可以是绝对 URL 或相对路径）。
+// ValidateFrontendRedirectURL delegates callback-shape checking to identity
+// authconfig. It accepts a trimmed single-slash path or absolute HTTP(S)
+// endpoint, rejects remaining line breaks and protocol-relative prefixes, and
+// leaves the caller's input unchanged.
 func ValidateFrontendRedirectURL(raw string) error {
 	return authconfig.ValidateFrontendRedirectURL(raw)
 }
 
+// scopeContainsOpenID reports whether lowercased whitespace-separated scope
+// text contains the exact openid token.
 func scopeContainsOpenID(scopes string) bool {
 	return slices.Contains(strings.Fields(strings.ToLower(strings.TrimSpace(scopes))), "openid")
 }
 
+// warnIfInsecureURL logs a field-name warning for parsed HTTP URLs, ignoring
+// case in the scheme. Parse failures return silently and non-HTTP schemes
+// produce no warning; this helper does not validate or reject the configured
+// value.
 func warnIfInsecureURL(field, raw string) {
 	u, err := url.Parse(strings.TrimSpace(raw))
+	// A malformed URL supplies no reliable scheme for this warning helper. Leave
+	// rejection to the caller's validator and return without emitting a misleading
+	// transport warning.
 	if err != nil {
 		return
 	}
@@ -3511,12 +4497,28 @@ func warnIfInsecureURL(field, raw string) {
 	}
 }
 
-// normalizePricingCatalogSource 迁移已知公共旧源及缺失的旧打包资源，不改写部署文件。
+// normalizePricingCatalogSource rewrites recognized catalog URLs and absent
+// known packaged supplement paths in the receiver. Custom inputs remain as
+// supplied, and the mounted configuration and filesystem contents are not
+// rewritten.
+//
+// The exact unqualified models.dev URL gains type=all. Recognized GitHub legacy
+// repository paths select that catalog and add its host once to pricing
+// admission settings. Only known packaged supplement paths migrate when Stat
+// reports nonexistence; existing paths and other stat errors retain their
+// supplied text. The next catalog loader owns missing-file behavior after this
+// in-memory selection.
 func (c *Config) normalizePricingCatalogSource() {
+	// The exact older official catalog URL omits the all-model query selection.
+	// Add that selection in memory while keeping URLs with existing query choices
+	// under their configured source spelling.
 	if strings.TrimSpace(c.Pricing.RemoteURL) == "https://models.dev/catalog.json" {
 		c.Pricing.RemoteURL = "https://models.dev/catalog.json?type=all"
 	}
 
+	// Recognize known public legacy repositories by host, scheme, absent userinfo,
+	// and normalized path. Custom source identities stay available for the
+	// configured catalog downloader.
 	source, err := url.Parse(c.Pricing.RemoteURL)
 	if err == nil && strings.EqualFold(source.Host, "raw.githubusercontent.com") && source.User == nil && (source.Scheme == "https" || source.Scheme == "http") {
 		sourcePath := strings.ToLower(path.Clean(source.Path))
@@ -3529,15 +4531,24 @@ func (c *Config) normalizePricingCatalogSource() {
 		}
 	}
 	fallback := filepath.Clean(c.Pricing.FallbackFile)
+	// Recognized packaged supplement filenames can move to the current sibling
+	// name when the old file is absent. Other paths remain owned by the deployment
+	// and keep their configured spelling.
 	if fallback != "resources/model-pricing/model_prices_and_context_window.json" && fallback != "/app/resources/model-pricing/model_prices_and_context_window.json" {
 		return
 	}
+	// Use confirmed nonexistence of the old filename as the migration signal.
+	// Supplement loading later checks the replacement and can use embedded data
+	// when that file is also absent.
 	if _, err := os.Stat(fallback); os.IsNotExist(err) {
 		c.Pricing.FallbackFile = filepath.Join(filepath.Dir(fallback), "model_pricing_supplements.json")
 	}
 }
 
-// ValidateDingTalkConfig 使用身份配置的规则校验钉钉登录参数。
+// ValidateDingTalkConfig delegates DingTalk deployment rule checking to
+// identity authconfig. Disabled settings are accepted, and recognized mode/type
+// failures retain shared sentinel identity for callers using errors.Is across
+// this facade.
 func ValidateDingTalkConfig(value DingTalkConnectConfig) error {
 	return authconfig.ValidateDingTalkConfig(value)
 }

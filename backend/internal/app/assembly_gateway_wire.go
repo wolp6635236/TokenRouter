@@ -11,8 +11,17 @@ import (
 	gatewaysession "github.com/TokenFlux/TokenRouter/internal/gateway/session"
 )
 
+// assembly_gateway_wire.go registers gateway handlers, execution adapters,
+// completion resources, and error-rule dependencies with Wire.
+// Text, media, and live requests reach platform execution through handlers
+// assembled around shared request activity and completion records. Persisted
+// error rules and their Redis cache join the same graph, connecting gateway
+// failure handling to administrator rule editing.
+
 var (
-	// gatewayAssemblyProviders 汇总网关协议入口和执行器的 Wire provider。
+	// gatewayAssemblyProviders supplies gateway HTTP handlers, platform execution
+	// adapters, request activity, and completion dependencies to
+	// initializeApplication.
 	gatewayAssemblyProviders = wire.NewSet(
 		gatewaysession.NewDigestSessionStore,
 		provideQoderRuntime,
@@ -58,5 +67,7 @@ var (
 		gatewayhttp.NewRuntimeSettingsHandler,
 	)
 
+	// gatewayErrorRulesProviders joins persisted error rules, their Redis cache,
+	// and administrator HTTP access in the gateway graph.
 	gatewayErrorRulesProviders = wire.NewSet(provideGatewayErrorRules, gatewaypg.NewErrorPassthroughRepository, gatewayredis.NewErrorPassthroughCache, gatewayhttp.NewErrorPassthroughHandler)
 )

@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"crypto/subtle"
-	"errors"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,10 +10,29 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 )
 
-// AdminAuth 管理员认证中间件实现
-// 支持两种认证方式（通过不同的 header 区分）：
-// 1. Admin API Key: x-api-key: <admin-api-key>
-// 2. JWT Token: Authorization: Bearer <jwt-token> (需要管理员角色)。
+// admin_auth.go authenticates administrator requests using management keys or
+// current-account JWTs.
+// Administrator requests can authenticate with a configured management key or
+// a JWT tied to a current administrator account. Browser WebSocket upgrades
+// first read a jwt. subprotocol entry; other requests prefer x-api-key over
+// Authorization, and a rejected supplied credential stops that request.
+//
+// JWT admission reloads user status and credential version, applies optional
+// session binding, and then checks the administrator role. Management-key
+// admission compares the configured secret and resolves the first
+// administrator account for Gin context. The recorded credential kind lets
+// sensitive-operation step-up refuse management keys, whose principal has no
+// refresh-family session ID.
+
+// AdminAuth builds middleware for administrator credentials in WebSocket
+// subprotocols, x-api-key, or Bearer headers. Supply authentication,
+// current-user, and settings readers before serving requests.
+//
+// A nonempty JWT subprotocol entry on an upgrade takes precedence over both
+// headers. Otherwise a supplied management key takes precedence over the
+// Bearer token; rejection does not try the lower-priority credential. Accepted
+// validators populate Gin authentication data before downstream handlers run.
+// Audit recording is optional and participates in JWT binding rejection.
 func AdminAuth(
 	authService SessionAuth,
 	userService AdminUserReader,
@@ -22,8 +40,8 @@ func AdminAuth(
 	auditService AuthObserver,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 浏览器 WebSocket 无法设置 Authorization，管理员 JWT 通过独立协议项传递。
-		// 例如 Sec-WebSocket-Protocol: tokenrouter-admin, jwt.<token>；旧基础协议同样可用。
+		// Browser WebSockets carry the administrator JWT in a separate subprotocol
+		// item. For example: Sec-WebSocket-Protocol: tokenrouter-admin, jwt.<token>.
 		if IsWebSocketUpgradeRequest(c) {
 			if token := ExtractJWTFromWebSocketSubprotocol(c); token != "" {
 				if !ValidateJWTForAdmin(c, token, authService, userService, settingService, auditService) {
@@ -34,7 +52,6 @@ func AdminAuth(
 			}
 		}
 
-		// 检查 x-api-key header（Admin API Key 认证）
 		apiKey := c.GetHeader("x-api-key")
 		if apiKey != "" {
 			if !ValidateAdminAPIKey(c, apiKey, settingService, userService) {
@@ -44,7 +61,6 @@ func AdminAuth(
 			return
 		}
 
-		// 检查 Authorization header（JWT 认证）
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			parts := strings.SplitN(authHeader, " ", 2)
@@ -62,18 +78,21 @@ func AdminAuth(
 			}
 		}
 
-		// 无有效认证信息
 		AbortWithError(c, 401, "UNAUTHORIZED", "Authorization required")
 	}
 }
 
+// IsWebSocketUpgradeRequest reports whether headers resemble a WebSocket
+// upgrade request. Nil contexts or requests return false; Upgrade is trimmed
+// and compared case-insensitively, and Connection is checked for an upgrade
+// substring.
 func IsWebSocketUpgradeRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
 	}
-	// RFC6455 handshake uses:
-	//   Connection: Upgrade
-	//   Upgrade: websocket
+	// Browser upgrade requests use the same administrator credential validator.
+	// These header checks choose the subprotocol credential path before ordinary
+	// key and Bearer-header selection.
 	upgrade := strings.ToLower(strings.TrimSpace(c.GetHeader("Upgrade")))
 	if upgrade != "websocket" {
 		return false
@@ -82,6 +101,10 @@ func IsWebSocketUpgradeRequest(c *gin.Context) bool {
 	return strings.Contains(connection, "upgrade")
 }
 
+// ExtractJWTFromWebSocketSubprotocol returns the first nonempty credential in
+// a case-sensitive jwt. subprotocol entry. It trims comma-separated entries
+// and their credentials; missing headers or a nil context return an empty
+// string.
 func ExtractJWTFromWebSocketSubprotocol(c *gin.Context) string {
 	if c == nil {
 		return ""
@@ -91,8 +114,9 @@ func ExtractJWTFromWebSocketSubprotocol(c *gin.Context) string {
 		return ""
 	}
 
-	// The header is a comma-separated list of tokens. We reserve the prefix "jwt."
-	// for carrying the admin JWT.
+	// Browsers can supply credentials through WebSocket subprotocol entries. Read
+	// the separate jwt. entry so the application protocol name can be negotiated
+	// independently of the token.
 	for part := range strings.SplitSeq(raw, ",") {
 		p := strings.TrimSpace(part)
 		if after, ok := strings.CutPrefix(p, "jwt."); ok {
@@ -105,7 +129,10 @@ func ExtractJWTFromWebSocketSubprotocol(c *gin.Context) string {
 	return ""
 }
 
-// ValidateAdminAPIKey 验证管理员 API Key。
+// ValidateAdminAPIKey compares the supplied credential with runtime settings
+// and records the first administrator as an API-key principal. False means an
+// error response was written and Gin aborted; this path leaves the session ID
+// empty and performs no separate user-status or binding check.
 func ValidateAdminAPIKey(
 	c *gin.Context,
 	key string,
@@ -118,13 +145,14 @@ func ValidateAdminAPIKey(
 		return false
 	}
 
-	// 未配置或不匹配，统一返回相同错误（避免信息泄露）
+	// An absent configured secret and an unequal supplied credential share the
+	// same rejection, so key admission requires a stored matching value.
 	if storedKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(storedKey)) != 1 {
 		AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
 		return false
 	}
 
-	// 获取真实的管理员用户
+	// Resolve a stored administrator account for the API key principal.
 	admin, err := userService.GetFirstAdmin(c.Request.Context())
 	if err != nil {
 		AbortWithError(c, 500, "INTERNAL_ERROR", "No admin user found")
@@ -136,7 +164,10 @@ func ValidateAdminAPIKey(
 	return true
 }
 
-// ValidateJWTForAdmin 验证 JWT 并检查管理员权限。
+// ValidateJWTForAdmin verifies access claims against the current active
+// administrator and configured session binding. False means the request was
+// aborted with its authentication error; success records a JWT principal and
+// auth_method before the caller runs downstream handlers.
 func ValidateJWTForAdmin(
 	c *gin.Context,
 	token string,
@@ -145,42 +176,11 @@ func ValidateJWTForAdmin(
 	settingService AuthSettings,
 	auditService AuthObserver,
 ) bool {
-	// 验证 JWT token
-	claims, err := authService.ValidateToken(token)
-	if err != nil {
-		if errors.Is(err, identity.ErrTokenExpired) {
-			AbortWithError(c, 401, "TOKEN_EXPIRED", "Token has expired")
-			return false
-		}
-		AbortWithError(c, 401, "INVALID_TOKEN", "Invalid token")
+	claims, user, ok := validateCurrentJWT(c, token, authService, userService, settingService, auditService)
+	if !ok {
 		return false
 	}
 
-	// 从数据库获取用户
-	user, err := userService.GetByID(c.Request.Context(), claims.UserID)
-	if err != nil {
-		AbortWithError(c, 401, "USER_NOT_FOUND", "User not found")
-		return false
-	}
-
-	// 检查用户状态
-	if !user.IsActive() {
-		AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
-		return false
-	}
-
-	// 校验 TokenVersion，确保管理员改密后旧 token 失效
-	if claims.TokenVersion != user.TokenVersion {
-		AbortWithError(c, 401, "TOKEN_REVOKED", "Token has been revoked (password changed)")
-		return false
-	}
-
-	// 会话绑定校验：IP/UA 任一变化即撤销会话（功能可在系统设置中关闭）
-	if !EnforceSessionBinding(c, authService, settingService, auditService, claims) {
-		return false
-	}
-
-	// 检查管理员权限
 	if !user.IsAdmin() {
 		AbortWithError(c, 403, "FORBIDDEN", "Admin access required")
 		return false

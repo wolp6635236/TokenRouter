@@ -13,12 +13,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// grok_missing_usage.go records and constructs a Grok failover failure when
+// Chat output lacks billable usage.
+// Grok Chat paths requiring billable usage need positive aggregate token counts
+// before ordinary billing and client delivery can proceed. Missing usage becomes a
+// stable failover error with an upstream request ID, and Ops records the same
+// reason for the selected provider.
+
+// These values give missing billable Chat usage a stable client code and Ops
+// message, allowing request orchestration to recognize the failover consistently.
 const (
 	grokMissingUsageErrorCode = "grok_missing_usage"
 	grokMissingUsageMessage   = "xAI upstream returned a successful chat completion without billable usage"
 )
 
-// NewGrokMissingUsageFailure 构造稳定的缺失用量故障转移错误并写入 Grok Ops 诊断。
+// NewGrokMissingUsageFailure records missing Grok Chat usage and creates a 502
+// failover error. A nil provider contributes zero/empty identity; a trimmed
+// upstream request ID is retained in both the Ops event and response headers.
 func NewGrokMissingUsageFailure(c *gin.Context, provider *gatewayprovider.ExecutionProvider, upstreamRequestID string) *forwardcore.UpstreamFailoverError {
 	providerID := int64(0)
 	providerName := ""
@@ -37,6 +48,8 @@ func NewGrokMissingUsageFailure(c *gin.Context, provider *gatewayprovider.Execut
 		Message:            grokMissingUsageMessage,
 	})
 
+	// This fixed string-only envelope can be marshalled directly; its bytes carry
+	// the stable missing-usage reason into provider failover and final presentation.
 	body, _ := json.Marshal(gin.H{
 		"error": gin.H{
 			"type":    "upstream_error",

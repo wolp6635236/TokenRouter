@@ -17,14 +17,40 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// anthropic_flows.go forwards Messages requests and converts OpenAI requests
+// through Anthropic endpoints.
+// Native Anthropic targets can serve Messages clients directly or convert
+// Responses and Chat requests through Messages. Direct Messages retains the
+// client stream choice, while both OpenAI conversion routes request an upstream
+// stream and choose buffered or streaming conversion from the saved client
+// preference.
+//
+// Billing and vendor models are kept separate from the client response
+// identity. Responses tool lowering retains a restoration mapping until output
+// conversion, while Chat passes through an intermediate Responses request. The
+// selected attempt owns response cleanup and performs provider failure
+// classification before client error presentation; conversion readers retain
+// observed usage and the vendor-declared model in their result.
+
+// NativeAnthropicKind values select the client error writer and output conversion
+// used by adapters sharing one selected native Anthropic provider attempt.
 const (
-	NativeMessages NativeAnthropicKind = iota
-	NativeResponses
-	NativeChat
+	NativeMessages  NativeAnthropicKind = iota // direct Messages output
+	NativeResponses                            // Responses conversion output
+	NativeChat                                 // Chat conversion output
 )
 
+// NativeAnthropicKind identifies the client protocol for a native Anthropic attempt.
 type NativeAnthropicKind uint8
 
+// ForwardNativeMessages executes a direct Messages attempt against the selected
+// Anthropic-compatible endpoint. A nonblank model and protocol credential are
+// required, model attributes are applied before text and search-history
+// cleanup, and the client stream choice selects native output reading. The
+// runner closes the successful response after output or error presentation.
+// Output effort observed after model preparation is retained separately from
+// its thinking-derived display value, and reader observations can accompany a
+// failure.
 func ForwardNativeMessages(ctx context.Context, body []byte, defaultMappedModel string, p NativeAnthropicPorts) (*Result, error) {
 	profile := p.Profile()
 	startTime := time.Now()
@@ -36,6 +62,9 @@ func ForwardNativeMessages(ctx context.Context, body []byte, defaultMappedModel 
 	}
 	clientStream := gjson.GetBytes(body, "stream").Bool()
 
+	// Retain the caller model for output while patching the mapped vendor model
+	// into Messages bytes; native preparation then evaluates controls for that
+	// selected upstream identity.
 	billingModel := p.BillingModel(originalModel, defaultMappedModel)
 	upstreamModel := p.UpstreamModel(billingModel)
 	if upstreamModel != originalModel {
@@ -45,13 +74,15 @@ func ForwardNativeMessages(ctx context.Context, body []byte, defaultMappedModel 
 		}
 		body = rewritten
 	}
-	if normalized, changed := p.NormalizeThinking(body, upstreamModel); changed {
-		body = normalized
+	body, err := p.PrepareModel(ctx, body, upstreamModel)
+	if err != nil {
+		return nil, err
 	}
 
-	// 记录客户端请求的推理强度：优先 Claude 协议的 output_config.effort；
-	// thinking 已启用且缺少 effort 时，为国产 passback-required 模型记录 high。
-	// Anthropic 网关的同类请求也使用此记录规则。
+	// Capture output_config.effort after model preparation. When no effort is
+	// captured, enabled thinking can select high for passback families that
+	// lack native effort; the result keeps that display default separate from
+	// the captured request control.
 	requestedReasoningEffort := protocol.NormalizeClaudeOutputEffort(gjson.GetBytes(body, "output_config.effort").String())
 	reasoningEffort := p.ThinkingFallback(
 		requestedReasoningEffort,
@@ -59,12 +90,12 @@ func ForwardNativeMessages(ctx context.Context, body []byte, defaultMappedModel 
 		billingModel,
 	)
 
-	// 与 Anthropic 平台 passthrough 相同的 pre-filter：剥离空文本块与上游
-	// 无法接受的 web-search 历史块（GLM/Kimi/DeepSeek 对 server_tool_use 400）。
+	// Apply the Messages passthrough filters: empty text and unsupported search history
+	// can cause compatible upstreams to reject the request.
 	body = p.StripEmpty(body)
 	body = p.FilterSearch(body, upstreamModel)
 
-	p.Log("[CN Anthropic 直通] provider=%d(%s) platform=%s model=%s upstream=%s stream=%v",
+	p.Log("[CN Anthropic passthrough] provider=%d(%s) platform=%s model=%s upstream=%s stream=%v",
 		profile.ID, profile.Name, profile.Platform, originalModel, upstreamModel, clientStream)
 
 	apiKey := strings.TrimSpace(p.ProtocolAPIKey())
@@ -96,8 +127,8 @@ func ForwardNativeMessages(ctx context.Context, body []byte, defaultMappedModel 
 		if foErr := p.FailoverHTTP(ctx, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}
-		// 非 failover 错误：经共享 compat handler 以 Anthropic 格式回写
-		// （透传规则、ops 记录、cyber_policy 与 CC 回退路径一致）。
+		// Use the shared Anthropic error formatter, passthrough rules, Ops observations,
+		// and cyber-policy detection when failover is not requested.
 		return p.ErrorResponse(resp, billingModel)
 	}
 
@@ -115,18 +146,29 @@ func ForwardNativeMessages(ctx context.Context, body []byte, defaultMappedModel 
 	return result, err
 }
 
+// ForwardNativeResponses converts Responses input for a native Anthropic
+// exchange and restores Responses output. Client tools are lowered before typed
+// conversion and their mapping stays with the output reader so tool identities
+// can be reconstructed. A nonblank model and protocol key are required.
+//
+// The vendor exchange always requests a stream, while the saved client
+// preference selects streaming output or buffered reconstruction. Empty text,
+// search history, and cache breakpoints are filtered before construction. The
+// runner owns response closure and returns failover guidance before protocol
+// error output when health handling requests it.
 func ForwardNativeResponses(ctx context.Context, body []byte, defaultMappedModel string, p NativeAnthropicPorts) (*Result, error) {
 	profile := p.Profile()
 	startTime := time.Now()
 
-	// 1. 把 Codex 客户端工具降级为 Anthropic 可识别的函数工具。
+	// Lower Responses client tools before typed conversion, retaining the mapping
+	// that output readers need to reconstruct the caller's custom and namespace
+	// tool forms.
 	adaptedBody, clientToolMapping, err := p.AdaptResponsesTools(body)
 	if err != nil {
 		p.Error(http.StatusBadRequest, "invalid_request_error", "Failed to adapt request tools")
 		return nil, fmt.Errorf("adapt responses client tools: %w", err)
 	}
 
-	// 2. 解析 Responses 请求。
 	var responsesReq protocolopenai.ResponsesRequest
 	if err := json.Unmarshal(adaptedBody, &responsesReq); err != nil {
 		p.Error(http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
@@ -139,14 +181,15 @@ func ForwardNativeResponses(ctx context.Context, body []byte, defaultMappedModel
 	}
 	clientStream := responsesReq.Stream
 
-	// 3. 把 Responses 请求转换为 Anthropic 请求。
 	anthropicReq, err := p.ResponsesToAnthropic(&responsesReq)
 	if err != nil {
 		p.Error(http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
 		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
 	}
 
-	// 4. 应用 OpenAI 网关入口的模型映射。
+	// Retain the caller model for converted output while assigning the mapped
+	// vendor model to the Anthropic request; the separate billing identity
+	// remains available for completion.
 	billingModel := p.BillingModel(originalModel, defaultMappedModel)
 	upstreamModel := p.UpstreamModel(billingModel)
 	anthropicReq.Model = upstreamModel
@@ -154,8 +197,9 @@ func ForwardNativeResponses(ctx context.Context, body []byte, defaultMappedModel
 	reasoningEffort := p.ResponsesEffort(body, upstreamModel, billingModel, originalModel)
 	reasoningEffort = p.ThinkingFallback(reasoningEffort, body, billingModel)
 
-	// 5. Force upstream streaming（客户端原始终决定响应格式；
-	// 上游恒为流式，非流式由缓冲路径组装）。
+	// Request streaming Anthropic events for both client modes so conversion can
+	// reconstruct content blocks and usage before choosing buffered JSON or
+	// incremental client output.
 	anthropicReq.Stream = true
 	reqStream := true
 
@@ -172,7 +216,9 @@ func ForwardNativeResponses(ctx context.Context, body []byte, defaultMappedModel
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
 	}
 
-	// 与 /v1/messages 直通路径相同的 pre-filter。
+	// Remove empty text and incompatible search history, then enforce cache
+	// breakpoint limits before native construction receives the converted
+	// Anthropic body.
 	anthropicBody = p.StripEmpty(anthropicBody)
 	anthropicBody = p.FilterSearch(anthropicBody, upstreamModel)
 	anthropicBody = p.CacheLimit(anthropicBody)
@@ -216,11 +262,21 @@ func ForwardNativeResponses(ctx context.Context, body []byte, defaultMappedModel
 	return ResponsesFromAnthropicBuffered(resp, upstream.NewDeferredOutputContext(p.Sink()), p.OutputOptions(), originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
 }
 
+// ForwardNativeChat converts Chat through Responses into a native Anthropic
+// request and restores Chat output. It saves the caller model, stream choice,
+// and optional usage request before mapping billing and vendor identities. A
+// nonblank model and protocol key are required before exchange.
+//
+// The vendor request always streams so either client mode can be produced by
+// the corresponding conversion reader. Request cleanup removes empty text,
+// search-history incompatibilities, and excess cache breakpoints before
+// construction. The runner closes the response after reading and returns
+// converted observations beside any reader error, leaving completion
+// eligibility to its caller.
 func ForwardNativeChat(ctx context.Context, body []byte, defaultMappedModel string, p NativeAnthropicPorts) (*Result, error) {
 	profile := p.Profile()
 	startTime := time.Now()
 
-	// 1. 解析 Chat Completions 请求。
 	var ccReq protocolopenai.ChatCompletionsRequest
 	if err := json.Unmarshal(body, &ccReq); err != nil {
 		p.Error(http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
@@ -234,7 +290,9 @@ func ForwardNativeChat(ctx context.Context, body []byte, defaultMappedModel stri
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 
-	// 2. 按 CC → Responses → Anthropic 做链式转换。
+	// Use the existing Chat-to-Responses conversion before Anthropic lowering so
+	// the request shares the bridge's model-sensitive history and tool-call
+	// representation.
 	responsesReq, err := p.ChatToResponses(&ccReq)
 	if err != nil {
 		p.Error(http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
@@ -246,13 +304,16 @@ func ForwardNativeChat(ctx context.Context, body []byte, defaultMappedModel stri
 		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
 	}
 
-	// 3. 应用 OpenAI 网关入口的模型映射。
+	// Retain the caller model for converted output while assigning the mapped
+	// vendor model to the Anthropic request; the separate billing identity
+	// remains available for completion.
 	billingModel := p.BillingModel(originalModel, defaultMappedModel)
 	upstreamModel := p.UpstreamModel(billingModel)
 	anthropicReq.Model = upstreamModel
 
-	// 4. Force upstream streaming（客户端原始终决定响应格式；
-	// 上游恒为流式，非流式由缓冲路径组装）。
+	// Request streaming Anthropic events for both client modes so conversion can
+	// reconstruct content blocks and usage before choosing buffered JSON or
+	// incremental client output.
 	anthropicReq.Stream = true
 	reqStream := true
 
@@ -269,7 +330,9 @@ func ForwardNativeChat(ctx context.Context, body []byte, defaultMappedModel stri
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
 	}
 
-	// 与 /v1/messages 直通路径相同的 pre-filter。
+	// Remove empty text and incompatible search history, then enforce cache
+	// breakpoint limits before native construction receives the converted
+	// Anthropic body.
 	anthropicBody = p.StripEmpty(anthropicBody)
 	anthropicBody = p.FilterSearch(anthropicBody, upstreamModel)
 	anthropicBody = p.CacheLimit(anthropicBody)

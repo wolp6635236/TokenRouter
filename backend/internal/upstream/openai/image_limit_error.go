@@ -8,12 +8,26 @@ import (
 	"time"
 )
 
-// openAIImageTryAgainPattern 依次提取重试提示中的数值和时间单位。
+// image_limit_error.go recognizes image capability and throttling errors and
+// parses upstream cooldown hints.
+// Image-specific throttling is distinguished from ordinary text rate limits by
+// a 429 response containing image markers. A separate 400 predicate recognizes
+// loss of a declared image_generation tool, allowing gateway-built image
+// requests to identify capability rejection.
+//
+// Cooldown readers accept Retry-After seconds or dates and image-message delays
+// with millisecond, second, or minute units. Missing and unusable values return
+// no reset or a zero duration. These parsers extract upstream evidence; callers
+// decide whether it applies to the selected image model or provider.
+
+// openAIImageTryAgainPattern captures decimal image retry hints with supported
+// unit spellings, allowing cooldown consumers to interpret the vendor message duration.
 var openAIImageTryAgainPattern = regexp.MustCompile(`(?i)try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)`)
 
-// IsImageCapabilityLossError 判断上游是否拒绝了 tokenrouter 自己写入请求体的 image_generation 工具选择。
-// 该判定仅对自构造图片请求有意义，因为这类请求始终包含匹配的 image_generation 项；
-// 上游仍称其不存在即表示提供商失去该能力。
+// IsImageCapabilityLossError recognizes a 400 rejection of image_generation in
+// tool choice. Use it for gateway-built image requests with a matching tool
+// declaration, where missing-tool evidence can represent provider capability
+// loss.
 func IsImageCapabilityLossError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusBadRequest || len(body) == 0 {
 		return false
@@ -23,6 +37,10 @@ func IsImageCapabilityLossError(statusCode int, body []byte) bool {
 		strings.Contains(lower, "not found in 'tools' parameter")
 }
 
+// IsImageRateLimitError reports whether a nonempty 429 body contains recognized
+// image-limit markers. Other status codes and text-only throttling evidence
+// return false so image-specific cooldown handling remains limited to matching
+// responses.
 func IsImageRateLimitError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests || len(body) == 0 {
 		return false
@@ -41,6 +59,10 @@ func IsImageRateLimitError(statusCode int, body []byte) bool {
 	return false
 }
 
+// ParseRetryAfterResetTime reads a numeric seconds delay or HTTP-date from
+// Retry-After. Missing or unparseable values return nil; parsed numeric values
+// are applied as supplied, so callers handle nonfuture or unsuitable reset
+// times.
 func ParseRetryAfterResetTime(headers http.Header, now time.Time) *time.Time {
 	if headers == nil {
 		return nil
@@ -50,6 +72,7 @@ func ParseRetryAfterResetTime(headers http.Header, now time.Time) *time.Time {
 		return nil
 	}
 	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+		// Retry-After numeric values are seconds relative to the supplied clock.
 		resetAt := now.Add(time.Duration(seconds * float64(time.Second)))
 		return &resetAt
 	}
@@ -59,6 +82,10 @@ func ParseRetryAfterResetTime(headers http.Header, now time.Time) *time.Time {
 	return nil
 }
 
+// ParseImageTryAgainCooldown extracts a positive decimal delay from image
+// retry-message text. Recognized units become a duration, while missing,
+// unparseable, nonpositive, or unsupported values return zero for the caller to
+// handle.
 func ParseImageTryAgainCooldown(body []byte) time.Duration {
 	if len(body) == 0 {
 		return 0
@@ -71,6 +98,7 @@ func ParseImageTryAgainCooldown(body []byte) time.Duration {
 	if err != nil || value <= 0 {
 		return 0
 	}
+	// Convert the vendor unit into nanosecond duration precision.
 	switch strings.ToLower(string(match[2])) {
 	case "ms":
 		return time.Duration(value * float64(time.Millisecond))

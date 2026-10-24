@@ -9,42 +9,101 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// StreamClient 发送一次已准备的 Qoder 请求。
+// execute.go executes Qoder requests with conversation planning, credential
+// acquisition, protocol conversion, and completion evidence.
+// Qoder execution converts three client protocols into one signed upstream
+// stream while retaining conversation identity. The original request context
+// controls preparation and credential waits. Streaming inference uses a
+// detached context with a separate execution budget so trailing usage can
+// arrive after client disconnection.
+//
+// Transport acceptance publishes a versioned history snapshot. Stream or
+// conversion failures roll it back and return partial evidence when output and
+// usage were both observed. Completed non-streaming work and streams reporting
+// output commit history after conversion; Responses aliases register after
+// successful handling. The output observer records semantic timing before
+// writes and marks disconnects, letting completion distinguish upstream
+// service from downstream delivery. The request owner releases provider and
+// user leases.
+
+// StreamClient sends the prepared inference request and returns its live
+// response body.
 type StreamClient interface {
+	// StreamRequestContext sends an inference request using the supplied context
+	// and session. An empty path selects the generation endpoint in Client; callers
+	// consume and close successful response bodies through their stream reader.
 	StreamRequestContext(context.Context, *SessionContext, string, []byte, map[string]string) (*http.Response, error)
 }
+
+// streamClientWithDoer supports provider-specific transport selection for an
+// inference request.
 type streamClientWithDoer interface {
+	// StreamRequestContextWithDoer sends inference through a caller-selected
+	// request transport. Callers consume and close successful response bodies; the
+	// supplied doer carries the provider proxy and TLS selection for this attempt.
 	StreamRequestContextWithDoer(context.Context, *SessionContext, string, []byte, map[string]string, RequestDoer) (*http.Response, error)
 }
 
-// Target 保存本次 Qoder 请求的站点、元数据和会话获取函数。
+// Target binds site metadata and provider callbacks needed by one Qoder attempt.
 type Target struct {
-	ProviderID int64
-	Site       Site
-	UserType   string
-	Metadata   RequestMetadata
-	Session    func(context.Context) (*SessionContext, error)
-	Client     func() (StreamClient, error)
-	Doer       RequestDoer
+	// Attributes resolves the mapped route for this attempt. Nil keeps the site
+	// capability snapshot used by payload construction.
+	Attributes func(context.Context, string, protocol.ProtocolID) (modelcatalog.Resolution, error) // route attribute resolver
+	ProviderID int64                                                                               // selected provider identifier
+	Site       Site                                                                                // selected credential site
+	UserType   string                                                                              // Qoder account classification
+	Metadata   RequestMetadata                                                                     // inbound session metadata
+	// Session obtains credentials with the original request context. The callback
+	// is required and cancellation can stop the wait before inference starts.
+	Session func(context.Context) (*SessionContext, error) // credential session getter
+	// Client constructs the inference transport after credentials are ready. The
+	// required callback returns a usable StreamClient on success; its error
+	// prevents upstream dispatch.
+	Client func() (StreamClient, error) // inference client factory
+	// Doer supplies the provider transport when Client implements
+	// streamClientWithDoer. Other clients use StreamRequestContext and the
+	// transport retained by their client implementation.
+	Doer RequestDoer // provider request transport
 }
 
-// ExecuteOptions 配置会话存储、执行超时和活动登记函数。
+// ExecuteOptions supplies shared conversation storage, timeout, and attempt
+// activity registration.
 type ExecuteOptions struct {
-	Conversations *QoderConversationStore
-	Timeout       time.Duration
-	Enter         func() (func(), error)
-}
-type Executor struct {
-	conversations *QoderConversationStore
-	timeout       time.Duration
-	enter         func() (func(), error)
+	// Conversations is shared across attempts to resolve response aliases and
+	// history. Nil in NewExecutor allocates a store with the default TTL.
+	Conversations *QoderConversationStore // shared conversation store
+	// Timeout bounds the execution context created before protocol parsing.
+	// Credential waits still use the original request context, so preparation can
+	// consume this upstream budget before dispatch.
+	Timeout time.Duration // upstream execution duration
+	// Enter registers active execution. A successful call supplies a nonnil
+	// release function that Execute invokes on exit; a nil Enter callback skips
+	// activity registration.
+	Enter func() (func(), error) // attempt activity registrar
 }
 
+// Executor converts client requests and coordinates upstream output with
+// conversation state.
+type Executor struct {
+	// conversations retains the store selected by NewExecutor. Concurrent requests
+	// coordinate history and aliases through that store's mutex and snapshot rules.
+	conversations *QoderConversationStore // shared conversation store
+	timeout       time.Duration           // upstream execution duration
+	// enter retains the activity callback selected at construction. Execute invokes
+	// it before preparation and releases the returned activity registration when
+	// the attempt exits.
+	enter func() (func(), error) // attempt activity registrar
+}
+
+// TargetID returns the provider identifier carried by this attempt target.
+// A nil target returns zero so diagnostic formatting can identify absent
+// configuration before execution validates it.
 func (t *Target) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -52,9 +111,15 @@ func (t *Target) TargetID() int64 {
 	return t.ProviderID
 }
 
-// String 防止诊断格式化展开闭包、代理及凭据。
+// String formats the target's provider identifier for diagnostic output and
+// logging. A nil receiver uses TargetID's zero result, allowing failed
+// configuration paths to format the target safely.
 func (t *Target) String() string { return fmt.Sprintf("qoder target provider=%d", t.TargetID()) }
 
+// NewExecutor creates an executor with conversation storage and an execution
+// timeout. Nil storage allocates the default store, nonpositive timeout selects
+// QoderStreamTimeout, and the optional Enter callback is retained for attempt
+// activity registration.
 func NewExecutor(options ExecuteOptions) *Executor {
 	if options.Conversations == nil {
 		options.Conversations = NewQoderConversationStore(QoderConversationTTL)
@@ -65,7 +130,11 @@ func NewExecutor(options ExecuteOptions) *Executor {
 	return &Executor{conversations: options.Conversations, timeout: options.Timeout, enter: options.Enter}
 }
 
-// PrepareConversation 只推进请求计划；成功接受与完成的提交分别由 Execute 驱动。
+// PrepareConversation builds a payload and a conversation plan for one selected
+// target. Target site and user type replace request values before session-key
+// selection. Responses requests with previous_response_id permit append-style
+// reuse; the caller publishes acceptance and completion after transport and
+// output outcomes are known.
 func (e *Executor) PrepareConversation(target *Target, wireProtocol protocol.ProtocolID, request QoderPayloadRequest) (map[string]any, string, *QoderConversationPlan) {
 	request.UserType = target.UserType
 	request.Site = target.Site
@@ -76,9 +145,23 @@ func (e *Executor) PrepareConversation(target *Target, wireProtocol protocol.Pro
 	return payload, model, plan
 }
 
-// Execute 是三种客户端 wire 的唯一执行实现；错误不抹掉已确认的部分用量。
+// Execute serves one Qoder attempt and returns observed service and usage
+// evidence. The caller supplies a configured Target and usable synchronous
+// sink. Preparation and credential waits observe the original context;
+// streaming inference detaches parent cancellation while retaining request
+// values and the internal abort signal. The execution timeout starts before
+// parsing and bounds the upstream context.
+//
+// A returned response publishes conversation acceptance. Stream failures roll
+// it back and return partial evidence when the converter observed both output
+// and usage. Completed non-streaming work stays served when the sink fails.
+// History commits for non-streaming completion or when a stream converter
+// reports output; Responses aliases register after successful handling,
+// including empty streams. The execution owner closes the response through
+// stream reading, while the request owner releases provider and user leases.
 // @project-doc docs/interfaces/qoder_upstream.md#qoder_execution_boundary
 func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, executionErr error) {
+	defer func() { result.Finish(ctx, executionErr) }()
 	if e.enter != nil {
 		done, err := e.enter()
 		if err != nil {
@@ -87,11 +170,11 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 		defer done()
 	}
 	start := time.Now()
-	observed := &executionOutput{sink: sink, started: start}
+	observed := &executionOutput{sink: sink}
 	sink = observed
 	defer func() {
 		result.ClientDisconnect = result.ClientDisconnect || observed.disconnected
-		result.FirstSemanticOutput = observed.firstSemantic
+
 		if ctx != nil && ctx.Err() != nil {
 			result.Cancelled = true
 			result.ClientDisconnect = result.ClientDisconnect || result.Stream
@@ -118,6 +201,9 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 		return upstream.AttemptResult{}, errors.New("qoder gateway service is not configured")
 	}
 	executionCtx := ctx
+	// A disconnected client can precede the final usage event. Detach its stop
+	// signal while retaining the server abort signal, then bound collection with
+	// this timeout.
 	if input.Stream {
 		executionCtx = requestcontext.Detach(ctx)
 	}
@@ -142,12 +228,22 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 	if responseModel == "" {
 		responseModel = request.Model
 	}
+	if target.Attributes != nil {
+		modelKey := ResolveQoderModelForSite(target.Site, request.Model).Key
+		attributes, resolveErr := target.Attributes(ctx, modelKey, input.Protocol)
+		if resolveErr != nil {
+			return upstream.AttemptResult{}, resolveErr
+		}
+		request.Capabilities = &attributes
+	}
 	payload, model, plan := e.PrepareConversation(target, input.Protocol, request)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return upstream.AttemptResult{}, fmt.Errorf("marshal qoder payload: %w", err)
 	}
-	// 凭据等待使用原请求取消；仅已进入推理的流继续有界收集尾部用量。
+	// The original context controls credential waits and pre-dispatch checks.
+	// Recheck it before starting inference so detached stream collection cannot
+	// launch work for a request already cancelled during preparation.
 	if err := ctx.Err(); err != nil {
 		return upstream.AttemptResult{}, err
 	}
@@ -175,6 +271,9 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 	if err != nil {
 		return upstream.AttemptResult{}, err
 	}
+	// Transport acceptance can later fail during SSE decoding or protocol output.
+	// Publish a versioned accepted state now so those paths can roll back this
+	// attempt.
 	plan.CommitAccepted()
 	result = upstream.AttemptResult{Model: responseModel, UpstreamModel: model, Stream: input.Stream, UpstreamHeaders: response.Header.Clone()}
 	if input.Protocol == protocol.ProtocolOpenAIResponses {
@@ -202,6 +301,9 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 			commitComplete = stream.HasOutput
 		}
 		if err != nil {
+			// Failed stream conversion makes this attempt unsuitable for continuation.
+			// Revert its accepted history while returning the already observed evidence
+			// to the completion owner.
 			plan.RollbackAccepted()
 			result.Duration = time.Since(start)
 			return result, err
@@ -209,6 +311,8 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 	} else {
 		events, readErr := ReadQoderSSEEventsContext(executionCtx, response, nil)
 		if readErr != nil {
+			// SSE reading failed before a complete protocol response was built. Revert
+			// this accepted attempt before returning the read failure to the request owner.
 			plan.RollbackAccepted()
 			return upstream.AttemptResult{}, readErr
 		}
@@ -227,11 +331,16 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 			responseBody, err = BuildQoderAnthropicMessage(responseModel, QoderEventsWithUsage(events, nativeUsage), mapper)
 		}
 		if err != nil {
+			// Client response construction failed after upstream collection. Roll back
+			// this acceptance so a subsequent continuation cannot treat the failed
+			// conversion as completed history.
 			plan.RollbackAccepted()
 			return upstream.AttemptResult{}, err
 		}
 		result.Served = true
-		// 非流式输出写入失败时，已完成的上游服务仍进入结算。
+		// Upstream generation and usage collection have completed before client
+		// output. Keep Served and Usage when the sink fails so completion can account
+		// for that work.
 		if writeErr := sink.Begin(upstream.OutputHead{Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}}); writeErr != nil {
 			result.ClientDisconnect = true
 		} else if writeErr = sink.Emit(upstream.OutputEvent{Data: responseBody, Semantic: true, CommitForRetry: true, Terminal: true}); writeErr != nil {
@@ -239,9 +348,14 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 		}
 	}
 	plan.LogUsage(target.Metadata, target.ProviderID, nativeUsage, result.Usage)
+	// Commit completed history after generation and output handling. The store
+	// records native usage with that history for later session diagnostics.
 	if commitComplete {
 		plan.Commit(nativeUsage)
 	}
+	// Responses IDs resolve to the provider-scoped conversation selected above.
+	// Register the returned ID after output handling so later previous_response_id
+	// requests can find that session.
 	if input.Protocol == protocol.ProtocolOpenAIResponses && request.ResponseID != "" {
 		plan.AddAlias(QoderProviderScopedConversationKey(target.ProviderID, QoderConversationExplicitSessionKey(target.Metadata, request.ResponseID)))
 	}

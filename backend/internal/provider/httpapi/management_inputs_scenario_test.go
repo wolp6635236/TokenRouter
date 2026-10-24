@@ -1,7 +1,5 @@
 package httpapi
 
-// 本文件检查 management_write.go、management_bulk.go、management_create.go、archive.go、codex_import.go、openai_oauth.go 和 grok_oauth.go 的请求字段处理。
-
 import (
 	"bytes"
 	"encoding/json"
@@ -14,16 +12,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Strict provider write and import binding rejects retired structured group
+// fields before domain work. Scenarios cover management_write.go,
+// management_bulk.go, management_create.go, archive.go, codex_import.go,
+// openai_oauth.go and grok_oauth.go, while dynamic Extra drops only the
+// selected retired billing key and keeps its neighboring value.
+
+// TestProviderAdminBoundariesDiscardDeprecatedLongContextBillingExtra submits
+// malformed retired billing configuration through create, update, bulk edit and
+// batch creation. Each admitted input drops the retired key and forwards the
+// neighboring retained Extra value.
 func TestProviderAdminBoundariesDiscardDeprecatedLongContextBillingExtra(t *testing.T) {
 	const malformedExtra = `"extra":{"openai_long_context_billing_enabled":{"malformed":true},"preserved":"value"}`
 
 	tests := []struct {
-		name          string
-		method        string
-		path          string
-		body          string
-		mount         func(*gin.Engine, *ManagementHandler)
-		capturedExtra func(*managementMutationFixture) map[string]any
+		name   string // request scenario description
+		method string // HTTP operation method
+		path   string // mounted HTTP request path
+		body   string // submitted request JSON text
+		// mount and capturedExtra are required callbacks for each admitted scenario.
+		// The fixture registers its one route before the request, then reads captured
+		// Extra after synchronous handler completion.
+		mount         func(*gin.Engine, *ManagementHandler)           // scenario route registration callback
+		capturedExtra func(*managementMutationFixture) map[string]any // admitted Extra observation callback
 	}{
 		{
 			name:   "create",
@@ -95,9 +106,13 @@ func TestProviderAdminBoundariesDiscardDeprecatedLongContextBillingExtra(t *test
 	}
 }
 
-// TestProviderManagementRejectsRetiredGroupInputs 检查下线路由返回 404，废弃确认和默认组字段在写入前被拒绝。
+// TestProviderManagementRejectsRetiredGroupInputs adds retired confirmation and
+// default-group fields to provider mutations. Strict binding returns 400 naming
+// those fields, and the retired mixed-channel check route remains unmounted.
 func TestProviderManagementRejectsRetiredGroupInputs(t *testing.T) {
-	for _, endpoint := range []struct{ method, path, body string }{
+	for _, endpoint := range []struct {
+		method, path, body string // method: HTTP operation method; path: mounted request path; body: submitted JSON text
+	}{
 		{http.MethodPost, "/api/v1/admin/providers", `{"name":"mixed","platform":"openai","type":"apikey","credentials":{"api_key":"test"}}`},
 		{http.MethodPut, "/api/v1/admin/providers/3", `{"group_ids":[27]}`},
 		{http.MethodPost, "/api/v1/admin/providers/bulk-update", `{"provider_ids":[1],"group_ids":[27]}`},
@@ -126,7 +141,9 @@ func TestProviderManagementRejectsRetiredGroupInputs(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }
 
-// TestProviderImportsRejectRetiredGroupInputs 检查 OAuth 和导入入口在创建提供商或交换凭据前拒绝废弃字段。
+// TestProviderImportsRejectRetiredGroupInputs submits retired group fields to
+// batch, archive, Codex, PAT, OAuth, shadow and Grok import routes. Every route
+// returns 400 before its empty dependency can perform creation or exchange.
 func TestProviderImportsRejectRetiredGroupInputs(t *testing.T) {
 	router := gin.New()
 	router.POST("/batch", (&ManagementHandler{}).BatchCreate)

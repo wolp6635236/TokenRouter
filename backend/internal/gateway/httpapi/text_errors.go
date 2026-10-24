@@ -19,28 +19,45 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// text_errors.go presents gateway streaming errors and translates billing
+// failures into HTTP status, message and retry details.
+// Gateway errors may occur after a wait heartbeat has committed a streaming
+// response. Final output then uses the inbound protocol's error event, while
+// funding and rate failures retain a safe status, code and message and can
+// supply the remaining RPM-window seconds.
+
+// WriteAnthropicStreamError writes a protocol error using streamStarted to
+// choose SSE or JSON. Started Responses paths receive a terminal
+// response.failed event; other started streams use Anthropic error data when
+// Flush is available. The optional observer records intended error status
+// before output, and callers end processing after the helper returns.
 func WriteAnthropicStreamError(c *gin.Context, status int, errType, code, message string, streamStarted bool, observe func(*gin.Context, string, string, int)) {
 	if streamStarted {
-		// ping 或部分数据 Flush 后，状态码已提交为 200，错误通过 SSE 返回。
-		// 标记流内错误，ops_error_logger 据此补记 status < 400 的失败，例如并发限流。
+		// A flushed keepalive or data frame commits the status, so subsequent errors use SSE.
+		// Record stream errors so Ops can account for failures whose HTTP status is below 400.
 		if observe != nil {
 			observe(c, errType, message, status)
 		}
 
-		// Codex CLI 接受 response.completed、failed、incomplete 或 cancelled 终止事件，Anthropic 上游的 Responses 也按此格式输出。
+		// Responses clients recognize stream completion through terminal response
+		// events, so select that envelope even when this caller uses Anthropic output.
 		if InboundIsResponses(c) {
 			if WriteResponsesFailedSSE(c, errType, code, message, ErrorRequestID(c), ErrorRequestModel(c)) {
 				return
 			}
 		}
-		// Stream already started, send error as SSE event then close
+		// Anthropic error data also requires http.Flusher on this same writer.
+		// A Responses failure rejected for missing Flush therefore emits nothing
+		// here; non-Responses streams use this Anthropic path directly.
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
-			// SSE 错误事件使用固定 schema，通过 Quote 拼接 JSON。
+			// Quote variable strings when constructing the fixed SSE error schema.
 			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if code != "" {
 				errorObject := gin.H{"type": errType, "code": code, "message": message}
 				payload, err := json.Marshal(gin.H{"type": "error", "error": errorObject})
+				// Keep the quoted fixed error event if structured encoding fails, so
+				// variable text still has escaped JSON in the started SSE response.
 				if err == nil {
 					errorEvent = "data: " + string(payload) + "\n\n"
 				}
@@ -53,7 +70,7 @@ func WriteAnthropicStreamError(c *gin.Context, status int, errType, code, messag
 		return
 	}
 
-	// Normal case: return JSON response with proper status code
+	// Before streaming starts, return JSON with the requested error status.
 	if code == "" {
 		WriteAnthropicError(c, status, errType, "", message)
 	} else {
@@ -61,6 +78,9 @@ func WriteAnthropicStreamError(c *gin.Context, status int, errType, code, messag
 	}
 }
 
+// WriteAnthropicError writes an Anthropic JSON error with the supplied status.
+// A nonempty code adds its machine-readable field; callers choose the status
+// and retain responsibility for any separate Ops or stream observation.
 func WriteAnthropicError(c *gin.Context, status int, errType, code, message string) {
 	errorObject := gin.H{"type": errType, "message": message}
 	if code != "" {
@@ -72,6 +92,12 @@ func WriteAnthropicError(c *gin.Context, status int, errType, code, message stri
 	})
 }
 
+// BillingErrorDetails maps funding and rate failures to client status, code,
+// message and retry seconds. RPM limits count seconds until the next
+// Unix-minute boundary; rolling Key limits omit Retry-After. An unavailable
+// service with no message uses fixed unavailable text. Remaining failures use
+// 403, logging an absent application message before returning generic billing
+// text.
 func BillingErrorDetails(err error) (status int, code, message string, retryAfter int) {
 	if errors.Is(err, billing.ErrBillingServiceUnavailable) {
 		msg := apperror.Message(err)
@@ -92,8 +118,8 @@ func BillingErrorDetails(err error) (status int, code, message string, retryAfte
 		msg := apperror.Message(err)
 		return http.StatusTooManyRequests, "rate_limit_exceeded", msg, 0
 	}
-	// 用户/分组 RPM 超限统一映射为 HTTP 429；保留与其它 rate_limit 一致的错误码便于客户端分类。
-	// 返回 Retry-After 秒数（当前分钟剩余秒数），让 SDK 自动退避。
+	// User and group RPM limits return 429 with the shared rate_limit_exceeded code.
+	// Retry-After is the number of seconds remaining in the current minute.
 	if errors.Is(err, scheduler.ErrGroupRPMExceeded) || errors.Is(err, scheduler.ErrUserRPMExceeded) {
 		msg := apperror.Message(err)
 		retrySeconds := 60 - int(time.Now().Unix()%60)
@@ -101,6 +127,8 @@ func BillingErrorDetails(err error) (status int, code, message string, retryAfte
 	}
 
 	msg := apperror.Message(err)
+	// A failure with no safe application message is logged for diagnosis and
+	// receives generic billing text rather than exposing its raw error.
 	if msg == "" {
 		logging.L().With(
 			zap.String("component", "handler.gateway.billing"),
@@ -111,7 +139,9 @@ func BillingErrorDetails(err error) (status int, code, message string, retryAfte
 	return http.StatusForbidden, "billing_error", msg, 0
 }
 
-// ErrorRequestID、ErrorRequestModel 读取原观测字段，不推断或恢复业务状态。
+// ErrorRequestID returns the telemetry request correlation value as a string. A
+// missing Gin request or a context value of another type yields empty, allowing
+// protocol error writers to generate their own response identifier.
 func ErrorRequestID(c *gin.Context) string {
 	if c != nil && c.Request != nil {
 		value, _ := c.Request.Context().Value(telemetry.RequestID).(string)
@@ -120,6 +150,10 @@ func ErrorRequestID(c *gin.Context) string {
 	return ""
 }
 
+// ErrorRequestModel returns the trimmed model retained for Ops error
+// presentation. Nil context or an absent string yields empty, which lets
+// terminal Responses failures omit the model field when request metadata is
+// unavailable.
 func ErrorRequestModel(c *gin.Context) string {
 	if c == nil {
 		return ""

@@ -10,10 +10,22 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	groktestkit "github.com/TokenFlux/TokenRouter/internal/upstream/grok/testkit"
 )
 
+// Grok patching needs replay images and client-tool identity to survive
+// adaptation while unsupported request controls disappear. These fixtures
+// inspect extracted image messages, namespace/custom/search mappings, promoted
+// tool precedence and schema repair, then distinguish known reasoning capability
+// limits from unknown vendor-qualified model identities.
+
+// TestPatchGrokResponsesBodyPreservesGrokShellFunctionOutputImages supplies
+// shell-style output text with a separate image array. Patching must retain
+// function output text and append a user image message containing the same
+// encoded image URL.
 func TestPatchGrokResponsesBodyPreservesGrokShellFunctionOutputImages(t *testing.T) {
 	t.Parallel()
 
@@ -34,6 +46,10 @@ func TestPatchGrokResponsesBodyPreservesGrokShellFunctionOutputImages(t *testing
 	require.Equal(t, "data:image/png;base64,QUE=", gjson.GetBytes(patched, "input.2.content.1.image_url").String())
 }
 
+// TestPatchGrokResponsesBodyPreservesGrok105StructuredFunctionOutputImages
+// supplies structured text and image parts inside a tool output. Patching must
+// extract the text into function output and retain the image URL in the appended
+// input_image part.
 func TestPatchGrokResponsesBodyPreservesGrok105StructuredFunctionOutputImages(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +71,10 @@ func TestPatchGrokResponsesBodyPreservesGrok105StructuredFunctionOutputImages(t 
 	require.Equal(t, "data:image/png;base64,QUE=", gjson.GetBytes(patched, "input.2.content.1.image_url").String())
 }
 
+// TestPatchGrokResponsesBodyFlattensNamespaceTools combines a default-scope
+// function with flat function and shell tools. Patching keeps its declaration
+// and choice bare, records default-scope restoration, and applies the selected
+// upstream model while retaining all three supported tools.
 func TestPatchGrokResponsesBodyFlattensNamespaceTools(t *testing.T) {
 	t.Parallel()
 
@@ -69,7 +89,7 @@ func TestPatchGrokResponsesBodyFlattensNamespaceTools(t *testing.T) {
 		"tool_choice": {"type": "function", "namespace": "functions", "name": "inner"}
 	}`)
 
-	patched, _, err := (BodyCodec{NewID: uuid.NewString}).PatchGrokResponsesBodyWithClientTools(body, "grok-4.3")
+	patched, mapping, err := (BodyCodec{NewID: uuid.NewString}).PatchGrokResponsesBodyWithClientTools(body, "grok-4.3")
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 	require.Equal(t, "grok-4.3", gjson.GetBytes(patched, "model").String())
@@ -77,11 +97,16 @@ func TestPatchGrokResponsesBodyFlattensNamespaceTools(t *testing.T) {
 	require.False(t, gjson.GetBytes(patched, `tools.#(type=="namespace")`).Exists())
 	require.True(t, gjson.GetBytes(patched, `tools.#(type=="function")`).Exists())
 	require.True(t, gjson.GetBytes(patched, `tools.#(type=="shell")`).Exists())
-	require.Equal(t, "functions__inner", gjson.GetBytes(patched, "tools.0.name").String())
-	require.Equal(t, "functions__inner", gjson.GetBytes(patched, "tool_choice.name").String())
+	require.Equal(t, "inner", gjson.GetBytes(patched, "tools.0.name").String())
+	require.Equal(t, "inner", gjson.GetBytes(patched, "tool_choice.name").String())
 	require.False(t, gjson.GetBytes(patched, "tool_choice.namespace").Exists())
+	require.Equal(t, bridge.ResponsesNamespaceName{Name: "inner"}, mapping.NamespaceTools["inner"])
 }
 
+// TestSanitizeGrokResponsesToolsRemovesDeferredFlagsWithToolSearch supplies an
+// unsupported raw tool_search type and a deferred function. Sanitization must
+// remove the raw search tool and the shell defer_loading field, and retain the
+// apply_patch declaration.
 func TestSanitizeGrokResponsesToolsRemovesDeferredFlagsWithToolSearch(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"tool_search"},{"type":"function","name":"shell","defer_loading":true},{"type":"function","name":"apply_patch"}]}`)
 
@@ -92,6 +117,10 @@ func TestSanitizeGrokResponsesToolsRemovesDeferredFlagsWithToolSearch(t *testing
 	require.True(t, gjson.GetBytes(patched, `tools.#(name=="apply_patch")`).Exists())
 }
 
+// TestSanitizeGrokResponsesToolsSimplifiesInvalidRootUnion compares a mixed
+// object/null union with an object-only union. The mixed schema must become
+// permissive object parameters with strict=false. The object-only fixture must
+// still have an anyOf field and strict=true.
 func TestSanitizeGrokResponsesToolsSimplifiesInvalidRootUnion(t *testing.T) {
 	body := []byte(`{"tools":[
 		{"type":"function","name":"mcp__codex_app__automation_update","strict":true,"parameters":{"oneOf":[{"type":"object","properties":{"id":{"type":"string"}}},{"type":"null"}]}},
@@ -114,6 +143,10 @@ func TestSanitizeGrokResponsesToolsSimplifiesInvalidRootUnion(t *testing.T) {
 	require.Equal(t, gjson.True, objectOnly.Get("strict").Type)
 }
 
+// TestPatchGrokResponsesBodySimplifiesTypedInvalidRootUnion nests a
+// reference/null union inside a namespace tool with metadata. Patching must
+// flatten its name, remove metadata, replace the schema and definitions with
+// permissive object parameters, and disable strict.
 func TestPatchGrokResponsesBodySimplifiesTypedInvalidRootUnion(t *testing.T) {
 	body := []byte(`{
 		"model":"grok-4.6",
@@ -148,14 +181,22 @@ func TestPatchGrokResponsesBodySimplifiesTypedInvalidRootUnion(t *testing.T) {
 	require.Equal(t, gjson.False, tool.Get("strict").Type)
 }
 
+// TestSanitizeGrokResponsesToolsKeepsToolChoiceOnlyWithSupportedTools compares
+// absent, empty, unsupported, supported and malformed declaration sets. It
+// asserts tools-field presence independently from tool_choice presence,
+// including retained empty/malformed fields after their orphan controls
+// disappear.
 func TestSanitizeGrokResponsesToolsKeepsToolChoiceOnlyWithSupportedTools(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		body           string
-		wantTools      bool
-		wantToolChoice bool
+		name string // scenario display label
+		body string // supplied request JSON
+		// wantTools and wantToolChoice describe independent field-presence assertions.
+		// Empty or malformed tools can remain in the request while their orphan tool
+		// choice has already been removed.
+		wantTools      bool // expected tools-field presence
+		wantToolChoice bool // expected choice-field presence
 	}{
 		{
 			name: "missing tools with string tool choice",
@@ -201,6 +242,10 @@ func TestSanitizeGrokResponsesToolsKeepsToolChoiceOnlyWithSupportedTools(t *test
 	}
 }
 
+// TestPatchGrokResponsesBodyPromotesCodexAdditionalTools combines top-level
+// declarations with duplicated and new carried tools. Patching must keep earlier
+// definitions first, lower the custom tool, remove carrier items and retain
+// ordinary developer/user messages and automatic choice.
 func TestPatchGrokResponsesBodyPromotesCodexAdditionalTools(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +307,25 @@ func TestPatchGrokResponsesBodyPromotesCodexAdditionalTools(t *testing.T) {
 	require.Equal(t, "hello", gjson.GetBytes(patched, "input.1.content.0.text").String())
 }
 
+// TestPatchGrokResponsesBodyWithClientToolsReplaysUndeclaredHistory supplies
+// retained MCP history after its declaration disappears. Grok preparation keeps
+// the call and result paired without adding that historical tool to callable state.
+func TestPatchGrokResponsesBodyWithClientToolsReplaysUndeclaredHistory(t *testing.T) {
+	body := []byte(`{"model":"grok","input":[{"type":"function_call","namespace":"mcp__cua_proxy","name":"js","call_id":"old","arguments":"{}"},{"type":"function_call_output","call_id":"old","output":"ok"}],"tools":[{"type":"tool_search"}]}`)
+	patched, mapping, err := (BodyCodec{NewID: uuid.NewString}).PatchGrokResponsesBodyWithClientTools(body, "grok-4.6")
+	require.NoError(t, err)
+	require.Equal(t, "mcp__cua_proxy__js", gjson.GetBytes(patched, "input.0.name").String())
+	require.False(t, gjson.GetBytes(patched, "input.0.namespace").Exists())
+	require.Equal(t, "old", gjson.GetBytes(patched, "input.1.call_id").String())
+	require.Equal(t, int64(1), gjson.GetBytes(patched, "tools.#").Int())
+	require.True(t, mapping.ToolSearch)
+	require.NotContains(t, mapping.NamespaceTools, "mcp__cua_proxy__js")
+}
+
+// TestPatchGrokResponsesBodyWithClientToolsLowersCodexProtocol uses the shared
+// custom, search and namespace replay fixture. It asserts matching restoration
+// maps, function declarations and choice, serialized call arguments/outputs,
+// qualified names and removal of client-only protocol fields.
 func TestPatchGrokResponsesBodyWithClientToolsLowersCodexProtocol(t *testing.T) {
 	t.Parallel()
 
@@ -305,6 +369,10 @@ func TestPatchGrokResponsesBodyWithClientToolsLowersCodexProtocol(t *testing.T) 
 	require.False(t, gjson.GetBytes(patched, "input.4.namespace").Exists())
 }
 
+// TestPatchGrokResponsesBodyWithClientToolsLowersDiscoveredToolsOutput supplies
+// namespaced declarations discovered by a prior client search. Patching must add
+// flattened functions and restoration mappings while retaining the discovered
+// namespace payload as serialized function output with matching call IDs.
 func TestPatchGrokResponsesBodyWithClientToolsLowersDiscoveredToolsOutput(t *testing.T) {
 	t.Parallel()
 
@@ -352,15 +420,24 @@ func TestPatchGrokResponsesBodyWithClientToolsLowersDiscoveredToolsOutput(t *tes
 	}`, string(patched))
 }
 
+// TestPatchGrokResponsesBodyWithClientToolsRewritesEveryToolChoice compares
+// custom, search and namespace function selections. Each choice must become the
+// matching function name/type, and the namespace selection must lose its
+// separate namespace field.
 func TestPatchGrokResponsesBodyWithClientToolsRewritesEveryToolChoice(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		choice   string
-		wantName string
-		wantType string
-		wantNoNS bool
+		name   string // scenario display label
+		choice string // client choice JSON
+		// wantName and wantType identify the rewritten function choice together. The
+		// cases compare each client's custom, search or namespace selection with the
+		// function shape forwarded upstream.
+		wantName string // expected function identity
+		wantType string // expected choice type
+		// wantNoNS requires the namespace field to disappear for the namespaced
+		// fixture; other cases assert the rewritten name and type.
+		wantNoNS bool // namespace-field absence expected
 	}{
 		{
 			name:     "custom",
@@ -407,6 +484,9 @@ func TestPatchGrokResponsesBodyWithClientToolsRewritesEveryToolChoice(t *testing
 	}
 }
 
+// TestPatchGrokResponsesBodyWithClientToolsRejectsTrailingJSONDocument appends
+// another object after an otherwise usable request. Preparation must report
+// invalid JSON, return no patched body and leave the custom-tool mapping empty.
 func TestPatchGrokResponsesBodyWithClientToolsRejectsTrailingJSONDocument(t *testing.T) {
 	t.Parallel()
 
@@ -419,6 +499,9 @@ func TestPatchGrokResponsesBodyWithClientToolsRejectsTrailingJSONDocument(t *tes
 	require.Empty(t, mapping.CustomTools)
 }
 
+// mustMarshalJSONForTest encodes a string as JSON for nested expected-response
+// text. It marks the call as a test helper and stops the test on encoding
+// failure; callers use the bytes to preserve string escaping in JSONEq fixtures.
 func mustMarshalJSONForTest(t *testing.T, value string) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(value)
@@ -426,13 +509,19 @@ func mustMarshalJSONForTest(t *testing.T, value string) []byte {
 	return encoded
 }
 
-// TestQualifiedGrokReasoningPreservesModel 验证能力识别不会改写供应商限定 ID。
+// TestQualifiedGrokReasoningPreservesModel compares known and unknown
+// vendor-qualified 4.6 model spellings through the offline catalog. Capability
+// reports must match known identities while Responses/Chat normalization retains
+// the full model and explicit high/xhigh effort values.
 func TestQualifiedGrokReasoningPreservesModel(t *testing.T) {
-	codec := BodyCodec{}
+	codec := BodyCodec{Attributes: func(model string) modelcatalog.Attributes {
+		return testkit.OfflineView().Resolve(modelcatalog.Target{Platform: "grok", Model: model}, modelcatalog.Attributes{}).Attributes
+	}}
 	for _, model := range []string{"grok-4.6", "xai/grok-4.6", "x-ai/grok-4.6", "grok/grok-4.6", "X-AI/GROK-4.6"} {
 		t.Run(model, func(t *testing.T) {
-			require.True(t, codec.GrokSupportsReasoningEffort(model))
-			require.True(t, codec.GrokSupportsXHighReasoningEffort(model))
+			known := model == "grok-4.6" || model == "xai/grok-4.6"
+			require.Equal(t, known, codec.GrokSupportsReasoningEffort(model))
+			require.Equal(t, known, codec.GrokSupportsXHighReasoningEffort(model))
 			responses, err := codec.PatchGrokResponsesBody([]byte(`{"model":"client-alias","input":"hello","reasoning":{"effort":"xhigh"}}`), model)
 			require.NoError(t, err)
 			require.Equal(t, model, gjson.GetBytes(responses, "model").String())
@@ -451,19 +540,24 @@ func TestQualifiedGrokReasoningPreservesModel(t *testing.T) {
 	}
 }
 
-// TestQualifiedGrokReasoningKeepsCapabilityBounds 验证前缀不会扩大档位能力或生成隐式型号。
+// TestQualifiedGrokReasoningKeepsCapabilityBounds compares a known 4.5 limit
+// with unknown qualified model identities. Known xhigh must become high, unknown
+// effort must remain, complete model IDs must stay supplied, and absent effort
+// must remain absent.
 func TestQualifiedGrokReasoningKeepsCapabilityBounds(t *testing.T) {
-	codec := BodyCodec{}
+	codec := BodyCodec{Attributes: func(model string) modelcatalog.Attributes {
+		return testkit.OfflineView().Resolve(modelcatalog.Target{Platform: "grok", Model: model}, modelcatalog.Attributes{}).Attributes
+	}}
 	for _, tc := range []struct {
-		model string
-		want  string
+		model string // qualified model fixture
+		want  string // expected normalized effort
 	}{
 		{model: "xai/grok-4.5", want: "high"},
-		{model: "x-ai/grok-composer-2.5-fast"},
-		{model: "xai/grok-4.6-high"},
-		{model: "unknown/grok-4.6"},
-		{model: "xai/custom/grok-4.6"},
-		{model: "xai/gpt-5.6-sol"},
+		{model: "x-ai/grok-composer-2.5-fast", want: "xhigh"},
+		{model: "xai/grok-4.6-high", want: "xhigh"},
+		{model: "unknown/grok-4.6", want: "xhigh"},
+		{model: "xai/custom/grok-4.6", want: "xhigh"},
+		{model: "xai/gpt-5.6-sol", want: "xhigh"},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			responses, err := codec.PatchGrokResponsesBody([]byte(`{"input":"hello","reasoning":{"effort":"xhigh"}}`), tc.model)

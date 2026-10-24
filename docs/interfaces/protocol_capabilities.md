@@ -9,6 +9,7 @@
 
 - 提供商 profile 按平台、类型和认证方式列出原生选项。
 - `groups` 是数组，只有一个不带 `platform` 的通用 profile，列出所有分组可用的入口、默认集合、转换目标和默认映射。`defaults` 只包含 Messages、Responses、Chat 三个文本入口，`default_fallbacks` 为 `{}`。
+- 分组 profile 的 `probe_protocols` 来自提供商测试能力，包含 Messages、Responses、Chat Completions、Gemini GenerateContent、SystemOne 和图片生成。探针协议下拉取它与分组当前 `allowed_protocols` 的交集，并提供「自动」选项；Compact 等专项测试不在这个集合中。
 - 目录里没有凭据。前端共用这份只读结果，不维护自己的平台白名单。
 
 Responses WebSocket 的客户端许可在分组协议控制中设置，提供商协议集合声明上游能力。连接方式和在线调参见 [Responses 长连接与在线参数](openai_upstream.md#responses_ws_runtime)。
@@ -72,6 +73,10 @@ Antigravity 对 Google 内部接口的封装，算作 `gemini_generate_content` 
 这些判断是纯计算，不读取凭据、配置或请求 Context；每次判断候选都重新计算，明确设为空的集合不会被默认值补上。RoutePlan 负责候选协议这一部分，模型改写、最终的权限和资金检查、重试的时机，由调用链按既定顺序执行。
 
 `credentials.upstream_protocols` 是原生协议 ID 的数组，空数组表示这个提供商不再承接新的调用。创建、编辑、复制、导入和批量编辑使用同一套校验：不允许重复、未知，或者提供商认证方式不支持的项，出错时返回 HTTP 400 / `UPSTREAM_PROTOCOLS_INVALID`。批量更新先验证全部提供商，再用同一条 SQL 原子地写入每个提供商的协议补丁。显式协议集合在旧 WS 桥接配置转换之前完成类型、重复项和选项校验。连接方式的完整保存、批量更新和 Extra 按键更新共用枚举校验，非法值在写入前返回错误。
+
+OpenAI API Key 提供商的 `credentials.images_generations_mode` 和 `credentials.images_edits_mode` 分别声明生成、编辑端点接受的请求模式：`non_streaming`、`streaming`、`both`，缺省为 `both`。模式配置不会开启协议，关闭协议时保存的模式仍可保留。管理端创建、编辑、批量更新、复制和导入共用保存校验，非法枚举或不适用的提供商类型返回 `IMAGE_STREAM_MODE_INVALID`。两个字段按独立的顶层键合并，批量修改生成模式不会覆盖编辑模式。
+
+客户端的 `stream` 决定返回 JSON 还是 SSE。选中提供商后，原生支持该模式就直接使用，否则网关自动双向转换；这些转换属于 Images 协议内部处理，不受分组 `protocol_fallbacks` 控制。OpenAI OAuth 继续使用 Responses 图片工具适配，Grok 使用自己的媒体执行器。转换规则见 [图片结果回填与模式转换](openai_upstream.md#images_url_backfill)。
 
 各平台的原生协议：
 

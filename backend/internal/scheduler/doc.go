@@ -1,17 +1,33 @@
-// Package scheduler 选择提供商，维护调度快照，并管理请求的并发槽位和会话限制。
+// Package scheduler chooses eligible providers and manages the capacity and
+// cache state that selection needs. Gateway adapters supply admitted groups,
+// platform checks, and execution-record associations; the scheduler orders
+// metadata, owns acquired resources, and returns either a usable provider or a
+// waiting plan.
 //
-// 阅读入口：
-//   - selection.go：按候选顺序申请槽位、复核提供商并登记尝试租约。
-//   - snapshot.go：读取和重建提供商快照，消费调度 outbox 事件。
-//   - concurrency.go：申请提供商和用户槽位，跟踪 API Key 并发数与等待队列。
+// Start with selection.go for acquire, fresh-read, and database-recheck
+// ownership, snapshot.go for rebuild and outbox recovery, and concurrency.go
+// for request slots and connection leases. Basic and advanced selection share
+// eligibility supplied by their adapters, while scoring and feedback use
+// credential-free metadata. A returned candidate remains subject to the
+// execution caller's completion, cancellation, and retry rules.
 //
-// 文件分组：
-//   - basic_selection.go、scoring.go、generic_selection*.go、platform_selection*.go、platform_basic_selection.go、gemini_selection.go：筛选候选并按平台和评分策略选择提供商。
-//   - selection.go、selection_context.go、lease.go、runtime.go、bucket_lease.go、live_lease.go：传递选择参数，管理请求资源与后台任务的启停。
-//   - snapshot*.go、bucket.go、outbox.go：定义快照读写接口、桶标识和事件，发布与重建调度数据。
-//   - concurrency.go、wait*.go、image_limiter.go、message_queue*.go：限制并发，处理等待与消息队列。
-//   - session*.go、sticky.go：跟踪会话，维护粘性绑定并判断是否需要切换提供商。
-//   - rpm*.go、provider_rpm.go、user_rpm_cache.go：检查用户、分组和提供商的每分钟请求限制。
-//   - admin_settings*.go、settings*.go、parameters.go、validation_weights.go：读取和校验管理设置，合并运行时参数。
-//   - diagnostics.go、diagnostic_service.go：发送日志并生成调度诊断结果。
+// File groups:
+//   - basic_selection.go, scoring.go, generic_selection*.go,
+//     platform_selection*.go, platform_basic_selection.go, and
+//     gemini_selection.go order eligible metadata.
+//   - selection.go, selection_context.go, lease.go, runtime.go,
+//     bucket_lease.go, and live_lease.go own selection inputs, request
+//     resources, and worker lifetimes.
+//   - snapshot*.go, bucket.go, and outbox.go manage snapshots, bucket identity,
+//     event consumption, and rebuilding.
+//   - concurrency.go, wait*.go, image_limiter.go, and message_queue*.go manage
+//     request admission and waiting.
+//   - session*.go and sticky.go track session limits, provider bindings, and
+//     escape decisions.
+//   - rpm*.go, provider_rpm.go, and user_rpm_cache.go control
+//     request-per-minute admission and spacing.
+//   - admin_settings*.go, settings*.go, parameters.go, and
+//     validation_weights.go read, validate, and merge scheduler policy.
+//   - diagnostics.go and diagnostic_service.go observe operations and explain
+//     administrative scores.
 package scheduler

@@ -6,12 +6,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Known sensitive credential spellings must disappear from administrator output
+// even when their values are empty. These tests cover nil map handling,
+// presence rules and retained source values in credentials.go, using permitted
+// metadata alongside tokens to distinguish response fields.
+
+// TestRedactCredentials_NilInput checks absent credential input through the
+// redaction helper. Both output maps remain nil so response encoding can retain
+// omission instead of inventing empty configuration objects.
 func TestRedactCredentials_NilInput(t *testing.T) {
 	out, status := RedactCredentials(nil)
 	require.Nil(t, out)
 	require.Nil(t, status)
 }
 
+// TestRedactCredentials_StripsSensitiveKeysAndReportsStatus supplies secret
+// tokens, keys and permitted configuration together. Secret values disappear
+// from output, configured flags are true and ordinary configuration remains
+// visible without secret-status flags.
 func TestRedactCredentials_StripsSensitiveKeysAndReportsStatus(t *testing.T) {
 	in := map[string]any{
 		"refresh_token":             "rt-secret",
@@ -22,7 +34,7 @@ func TestRedactCredentials_StripsSensitiveKeysAndReportsStatus(t *testing.T) {
 		"service_account_json":      map[string]any{"private_key": "..."},
 		"private_key":               "raw-key",
 		"agent_private_key":         "agent-key-secret",
-		// 非敏感
+		// Non-sensitive values remain visible.
 		"base_url":      "https://api.example.com",
 		"model_mapping": map[string]any{"foo": "bar"},
 		"project_id":    "proj-1",
@@ -54,11 +66,14 @@ func TestRedactCredentials_StripsSensitiveKeysAndReportsStatus(t *testing.T) {
 	require.True(t, status["has_private_key"])
 	require.True(t, status["has_agent_private_key"])
 
-	// 状态 map 不应携带非敏感键的 has_*
+	// Presence flags are reserved for sensitive keys.
 	require.NotContains(t, status, "has_base_url")
 	require.NotContains(t, status, "has_project_id")
 }
 
+// TestRedactCredentials_EmptyValuesNotMarkedPresent supplies empty, nil and
+// false sensitive values alongside an ID token. Every secret key disappears,
+// while only the configured ID token receives a true presence flag.
 func TestRedactCredentials_EmptyValuesNotMarkedPresent(t *testing.T) {
 	in := map[string]any{
 		"refresh_token": "",
@@ -74,6 +89,9 @@ func TestRedactCredentials_EmptyValuesNotMarkedPresent(t *testing.T) {
 	require.True(t, status["has_id_token"])
 }
 
+// TestRedactCredentials_DoesNotMutateInput redacts a map containing secret and
+// ordinary scalar values. The caller's source retains both entries after the
+// helper returns its response objects.
 func TestRedactCredentials_DoesNotMutateInput(t *testing.T) {
 	in := map[string]any{
 		"refresh_token": "secret",
@@ -84,6 +102,9 @@ func TestRedactCredentials_DoesNotMutateInput(t *testing.T) {
 	require.Equal(t, "x", in["base_url"])
 }
 
+// TestRedactCredentials_AllKnownSensitiveKeys fills each listed token and key
+// spelling with a configured value. The output is empty and each listed
+// sensitive key has its configured-presence flag.
 func TestRedactCredentials_AllKnownSensitiveKeys(t *testing.T) {
 	keys := []string{
 		"access_token", "refresh_token", "id_token",

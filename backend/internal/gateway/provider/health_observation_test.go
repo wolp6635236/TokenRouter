@@ -11,7 +11,10 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// TestUpdateSessionWindow_EmptyHeadersSkipsOptionalDependencies 验证空响应头必须先短路；未装配健康服务的请求仍可完成正常输出与会话释放。
+// TestUpdateSessionWindow_EmptyHeadersSkipsOptionalDependencies passes nil,
+// empty, and unrelated headers with no health service or provider. Each call
+// completes without panicking because no session-window observation needs
+// recording.
 func TestUpdateSessionWindow_EmptyHeadersSkipsOptionalDependencies(t *testing.T) {
 	var service *provideradapter.UpstreamHealth
 
@@ -26,7 +29,10 @@ func TestUpdateSessionWindow_EmptyHeadersSkipsOptionalDependencies(t *testing.T)
 	}
 }
 
-// TestHealthObservationKeepsRawAndEffectiveModel 检查空模型与缺省模型的区别，供应商解析使用原始模型，冷却使用规范模型。
+// TestHealthObservationKeepsRawAndEffectiveModel supplies absent, empty, and
+// padded model inputs alongside request health hints. The observation retains
+// input presence and raw text, resolves its effective model, and carries
+// image-endpoint and false thinking signals.
 func TestHealthObservationKeepsRawAndEffectiveModel(t *testing.T) {
 	ctx := requeststate.WithHealthModel(context.Background(), []string{"stored-model"})
 	ctx = requeststate.WithOpenAIImagesEndpoint(requeststate.WithThinkingEnabled(ctx, false))

@@ -8,13 +8,20 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 )
 
-// parseFailureSnippetLen 限制解析失败日志中的首尾片段；256 字节足以观察结构，
-// 同时避免输出完整用户请求体。
+// request_parse_log.go logs malformed request bodies using bounded, escaped
+// excerpts and the full byte length.
+// Invalid JSON can result from malformed values or a body cut off in transit.
+// Parse diagnostics retain the byte length and bounded beginning and ending
+// excerpts, escaping their contents so each field remains one log value.
+
+// parseFailureSnippetLen limits each logged body excerpt in bytes, bounding
+// the request data copied into parsing diagnostics for large invalid bodies.
 const parseFailureSnippetLen = 256
 
-// LogRequestBodyParseFailure 记录 JSON 解析或校验错误，客户端收到固定错误文案。
-// 日志包含底层错误、字节偏移、长度和转义后的首尾片段，用于区分非法 JSON、截断和正文已被消费的情况。
-// 使用 gjson.ValidBytes 校验的调用方可传 nil，函数从 body 推导诊断错误。
+// LogRequestBodyParseFailure logs parsing diagnostics with escaped body
+// excerpts and total byte length. A nil logger skips reporting; a nil error
+// asks requeststate to diagnose malformed JSON. Large bodies retain separate
+// bounded beginning and ending excerpts.
 func LogRequestBodyParseFailure(reqLog *zap.Logger, body []byte, err error) {
 	if reqLog == nil {
 		return
@@ -25,6 +32,8 @@ func LogRequestBodyParseFailure(reqLog *zap.Logger, body []byte, err error) {
 
 	head := body
 	var tail []byte
+	// Keep both ends when the full body exceeds the excerpt budget; the length
+	// field still reports the original byte count.
 	if len(body) > parseFailureSnippetLen {
 		head = body[:parseFailureSnippetLen]
 		tail = body[len(body)-parseFailureSnippetLen:]
@@ -41,7 +50,8 @@ func LogRequestBodyParseFailure(reqLog *zap.Logger, body []byte, err error) {
 	reqLog.Warn("parse request body failed", fields...)
 }
 
-// SanitizeBodySnippet 转义控制字符和非法 UTF-8，返回可打印的单行日志片段。
+// SanitizeBodySnippet returns a quoted string with escaped controls and invalid
+// UTF-8.
 func SanitizeBodySnippet(b []byte) string {
 	return strconv.Quote(string(b))
 }

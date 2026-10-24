@@ -10,24 +10,68 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// SelectedProviderSlot 不携带凭据或可变提供商实体。
+// selected_provider_slot.go acquires or adopts selected-provider capacity and
+// binds its release lifetime to the HTTP request.
+// A selected provider may already hold capacity or carry a plan for waiting.
+// HTTP adoption keeps that resource attached to the request, with cancellation
+// cleanup normally enabled and a completion mode available for callers
+// collecting tail usage after client disconnect. An acquired selection uses the
+// scheduler's existing sticky binding.
+//
+// Waiting first retries immediate acquisition, then asks the queue counter for
+// admission before using the scheduler wait loop. Counter failures allow the
+// wait to proceed; confirmed admitted counts are released when waiting ends.
+// Acquisition observations and later sticky binding happen after that cleanup,
+// while a sticky write failure does not discard a usable provider slot.
+
+// SelectedProviderSlot carries the selected provider's slot ownership and wait plan.
 type SelectedProviderSlot struct {
-	// CompleteBeforeRelease 用于流式请求在客户端断开后仍需收集原生用量的提供商。
+	// CompleteBeforeRelease selects caller completion cleanup so tail usage can
+	// be collected after client cancellation; callers then invoke the returned release.
 	CompleteBeforeRelease bool
-	ProviderID            int64
-	Acquired              bool
-	ReleaseFunc           func()
-	WaitPlan              *scheduler.ProviderWaitPlan
-}
-type SlotStickyBinder interface {
-	BindStickySession(context.Context, *int64, string, int64) error
-}
-type ProviderSlotHooks struct {
-	Acquired        func(*gin.Context)
-	CapacityLimited func(*gin.Context)
+	ProviderID            int64 // selected provider identity
+	Acquired              bool  // selection already owns capacity
+	// ReleaseFunc belongs to an acquired selection and is adopted with
+	// lease-managed cleanup. Waiting acquisition replaces it with the newly
+	// acquired provider callback.
+	ReleaseFunc func()
+	// WaitPlan supplies capacity, queue and timeout limits when Acquired is false.
+	// A missing plan in that state produces an immediate no-provider error.
+	WaitPlan *scheduler.ProviderWaitPlan
 }
 
-// AcquireSelectedProviderSlot 将取得的槽位交给请求释放。
+// SlotStickyBinder publishes provider affinity after HTTP waiting acquires
+// capacity.
+type SlotStickyBinder interface {
+	// BindStickySession records provider affinity for the supplied group and
+	// session. Acquisition callers treat errors as diagnostics and keep the usable
+	// slot; implementations return the storage result for that observation.
+	BindStickySession(context.Context, *int64, string, int64) error
+}
+
+// ProviderSlotHooks records acquired capacity or an unavailable selection
+// during admission.
+type ProviderSlotHooks struct {
+	// Acquired and CapacityLimited are required observation callbacks for their
+	// respective admission paths. They run synchronously with the request before
+	// the helper returns ownership or writes its capacity error.
+	Acquired        func(*gin.Context) // required acquired-capacity observation callback
+	CapacityLimited func(*gin.Context) // required no-capacity observation callback
+}
+
+// AcquireSelectedProviderSlot adopts an acquired provider slot or waits using
+// the selected plan and returns a lease-managed release. Missing selections or
+// wait plans write a capacity error. Callers provide hooks, error output and a
+// request context; cancellation normally releases ownership, while
+// CompleteBeforeRelease retains it until caller cleanup.
+//
+// A waiting selection gets an immediate acquisition attempt before queue
+// admission. Queue-counter failure is logged and acquisition continues; denied
+// admission ends with 429. Successful waiting removes its owned wait count
+// before reporting acquisition and binding stickiness. Sticky-binding failure
+// remains diagnostic, and an already acquired selection keeps the scheduler's
+// existing binding. Nonnil returned releases are idempotent across cancellation
+// and explicit cleanup; an adopted nil source callback remains nil.
 func AcquireSelectedProviderSlot(c *gin.Context, groupID *int64, sessionHash string, selection *SelectedProviderSlot, reqStream bool, streamStarted *bool, reqLog *zap.Logger, writeError func(int, string, string, string), concurrency *ConcurrencyHelper, sticky SlotStickyBinder, hooks ProviderSlotHooks) (func(), bool) {
 	if selection == nil {
 		hooks.CapacityLimited(c)
@@ -37,6 +81,9 @@ func AcquireSelectedProviderSlot(c *gin.Context, groupID *int64, sessionHash str
 
 	ctx := c.Request.Context()
 	mode := scheduler.ReleaseOnCancel
+	// Tail-usage callers keep provider ownership until explicit completion
+	// cleanup, allowing upstream accounting work to outlive cancellation of the
+	// client request.
 	if selection.CompleteBeforeRelease {
 		mode = scheduler.ReleaseOnCompletion
 	}
@@ -62,6 +109,8 @@ func AcquireSelectedProviderSlot(c *gin.Context, groupID *int64, sessionHash str
 		writeError(status, errType, code, message)
 		return nil, false
 	}
+	// Bind stickiness after obtaining usable capacity; a failed affinity write is
+	// logged while this request still retains its acquired slot.
 	if fastAcquired {
 		hooks.Acquired(c)
 		if err := sticky.BindStickySession(ctx, groupID, sessionHash, providerID); err != nil {
@@ -72,6 +121,8 @@ func AcquireSelectedProviderSlot(c *gin.Context, groupID *int64, sessionHash str
 
 	waitEntry, waitErr := concurrency.EnterProviderWait(ctx, providerID, selection.WaitPlan.MaxWaiting)
 	canWait := waitEntry.Allowed
+	// Failure entering the wait registration leaves no owned waiting entry.
+	// Log it and continue to slot acquisition, which retains its own request budget.
 	if waitErr != nil {
 		reqLog.Warn("openai.provider_wait_counter_increment_failed", zap.Int64("provider_id", providerID), zap.Error(waitErr))
 	} else if !canWait {
@@ -84,6 +135,8 @@ func AcquireSelectedProviderSlot(c *gin.Context, groupID *int64, sessionHash str
 	}
 
 	providerWaitCounted := waitErr == nil && canWait
+	// Invoke cleanup for allowed registrations and clear the local flag before
+	// deferred exit repeats it. WaitResult itself skips unconfirmed counter decrements.
 	releaseWait := func() {
 		if providerWaitCounted {
 			waitEntry.Release()
@@ -107,9 +160,12 @@ func AcquireSelectedProviderSlot(c *gin.Context, groupID *int64, sessionHash str
 		return nil, false
 	}
 
-	// Slot acquired: no longer waiting in queue.
+	// Remove confirmed queue occupancy before acquired hooks and sticky writes,
+	// so subsequent observers no longer count this admitted request as waiting.
 	releaseWait()
 	hooks.Acquired(c)
+	// A failed sticky write after waiting remains diagnostic; the acquired
+	// provider slot remains usable and returns with its normal request cleanup.
 	if err := sticky.BindStickySession(ctx, groupID, sessionHash, providerID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("provider_id", providerID), zap.Error(err))
 	}

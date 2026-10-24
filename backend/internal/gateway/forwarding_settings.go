@@ -3,12 +3,30 @@ package gateway
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 )
 
+// forwarding_settings.go reads and publishes forwarding-policy snapshots and
+// paired Claude version bounds. Forwarding settings combine exact-string
+// toggles, prompt values, and the selected TTFT interpretation into one cached
+// snapshot. Missing fingerprint, prompt-injection, and dateline toggles default
+// to enabled; other switches are disabled unless their value is exactly "true".
+// Version bounds have a separate cache because callers retrieve their minimum
+// and maximum together.
+//
+// Shared refreshes use bounded reads that retain context values after request
+// cancellation. Storage failures temporarily publish default forwarding values
+// or empty version bounds and retry after five seconds; successful reads last
+// sixty seconds. Administrative publication replaces the relevant cache entries
+// separately and forgets shared keys for future work. Already-running refreshes
+// can still publish after that replacement, and invalidation likewise expires
+// the stored entry without cancelling an older database read.
+
+// Forwarding setting keys and mode values define the persisted controls read
+// by protocol adapters and the cache/read timing used to interpret them.
 const (
-	// 转发设置的持久化键和 TTFT 模式值如下。
 	SettingKeyClaudeOAuthSystemPrompt                = "claude_oauth_system_prompt"
 	SettingKeyClaudeOAuthSystemPromptBlocks          = "claude_oauth_system_prompt_blocks"
 	SettingKeyEnableAnthropicCacheTTL1hInjection     = "enable_anthropic_cache_ttl_1h_injection"
@@ -19,99 +37,144 @@ const (
 	SettingKeyEnableMetadataPassthrough              = "enable_metadata_passthrough"
 	SettingKeyMaxClaudeCodeVersion                   = "max_claude_code_version"
 	SettingKeyMinClaudeCodeVersion                   = "min_claude_code_version"
-	SettingKeyOpenAITTFTMode                         = "openai_ttft_mode"
+	SettingKeyTTFTMode                               = "ttft_mode"
 	SettingKeyRewriteMessageCacheControl             = "rewrite_message_cache_control"
-	OpenAITTFTModeSemantic                           = "semantic"
-	OpenAITTFTModeVisible                            = "visible"
+	TTFTModeFirstEvent                               = timing.FirstEvent  // first upstream event selection
+	TTFTModeFirstOutput                              = timing.FirstOutput // first useful content selection
 
-	// versionBoundsCacheTTL 缓存有效期。
+	// versionBoundsCacheTTL retains successfully loaded version bounds until a
+	// later gateway read needs to refresh their paired values.
 	versionBoundsCacheTTL = 60 * time.Second
 
-	// versionBoundsErrorTTL DB 错误时的短缓存，快速重试。
+	// versionBoundsErrorTTL shortens retry delay after a batch settings-read
+	// failure leaves client version checks with an unrestricted range.
 	versionBoundsErrorTTL = 5 * time.Second
 
-	// versionBoundsDBTimeout singleflight 内 DB 查询超时，独立于请求 context。
+	// versionBoundsDBTimeout limits the batch database read while the initiating
+	// request's cancellation and deadline are detached from shared refresh work.
 	versionBoundsDBTimeout = 5 * time.Second
 
 	gatewayForwardingCacheTTL = 60 * time.Second
 	gatewayForwardingErrorTTL = 5 * time.Second
 
-	// ForwardingSettingsReadTimeout 限制转发设置读取的回源时长。
+	// ForwardingSettingsReadTimeout limits forwarding lookups and the Grok startup
+	// migration's shared budget for reading and writing its default model setting.
 	ForwardingSettingsReadTimeout = 5 * time.Second
 	gatewayForwardingDBTimeout    = ForwardingSettingsReadTimeout
 )
 
-// cachedVersionBounds 缓存 Claude Code 版本号上下限（进程内缓存，60s TTL）。
+// cachedVersionBounds holds a pair of version bounds and its expiration deadline.
 type cachedVersionBounds struct {
-	min       string // 空字符串 = 不检查
-	max       string // 空字符串 = 不检查
+	// min and max come from the same returned settings map and define the
+	// accepted client-version range. An empty value disables its corresponding
+	// bound for callers performing version checks.
+	min       string // lower client version bound
+	max       string // upper client version bound
 	expiresAt int64  // unix nano
 }
 
-// cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）。
+// cachedGatewayForwardingSettings holds interpreted forwarding values with their cache deadline.
 type cachedGatewayForwardingSettings struct {
-	openAITTFTMode                   string
-	fingerprintUnification           bool
-	metadataPassthrough              bool
-	cchSigning                       bool
+	ttftMode string // stored TTFT mode string
+	// provider fingerprint unification toggle
+	fingerprintUnification bool
+	// client metadata passthrough toggle
+	metadataPassthrough bool
+	// billing attribution signing toggle
+	cchSigning bool
+	// Anthropic system injection toggle
 	claudeOAuthSystemPromptInjection bool
-	claudeOAuthSystemPrompt          string
-	claudeOAuthSystemPromptBlocks    string
-	anthropicCacheTTL1hInjection     bool
-	rewriteMessageCacheControl       bool
-	clientDatelineNormalization      bool
-	expiresAt                        int64 // unix nano
+	// configured Anthropic system text
+	claudeOAuthSystemPrompt       string
+	claudeOAuthSystemPromptBlocks string // JSON system content blocks
+	// one-hour cache injection toggle
+	anthropicCacheTTL1hInjection bool
+	// message cache-control rewrite toggle
+	rewriteMessageCacheControl bool
+	// client dateline normalization toggle
+	clientDatelineNormalization bool
+	expiresAt                   int64 // unix nano
 }
 
+// gatewayForwardingSettingsResult is the forwarding value tuple returned from cache reads.
 type gatewayForwardingSettingsResult struct {
-	openAITTFTMode                                                                        string
+	ttftMode string // stored TTFT mode string
+	// fp selects provider fingerprint unification, mp client metadata passthrough,
+	// cch billing attribution signing, claudeOAuthSystemPromptInjection Anthropic
+	// system injection, cacheTTL1h one-hour cache injection, and
+	// rewriteMessageCacheControl message cache-control rewriting.
 	fp, mp, cch, claudeOAuthSystemPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
-	clientDatelineNormalization                                                           bool
-	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                string
+	// client dateline normalization toggle
+	clientDatelineNormalization bool
+	// configured system prompt text and configured JSON content blocks
+	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks string
 }
 
-// ForwardingSnapshot 是综合设置提交后的只读发布输入。
+// ForwardingSnapshot holds persisted settings to publish to the local cache.
 type ForwardingSnapshot struct {
-	OpenAITTFTMode                   string
-	FingerprintUnification           bool
-	MetadataPassthrough              bool
-	CCHSigning                       bool
+	// TTFTMode is stored as supplied by PublishForwarding. The TTFT getter
+	// normalizes this string when choosing the shared upstream event classification.
+	TTFTMode string
+	// provider fingerprint unification toggle
+	FingerprintUnification bool
+	// client metadata passthrough toggle
+	MetadataPassthrough bool
+	// billing attribution signing toggle
+	CCHSigning bool
+	// Anthropic system injection toggle
 	ClaudeOAuthSystemPromptInjection bool
-	ClaudeOAuthSystemPrompt          string
-	ClaudeOAuthSystemPromptBlocks    string
-	AnthropicCacheTTL1hInjection     bool
-	RewriteMessageCacheControl       bool
-	ClientDatelineNormalization      bool
+	// configured Anthropic system text
+	ClaudeOAuthSystemPrompt       string
+	ClaudeOAuthSystemPromptBlocks string // JSON system content blocks
+	// one-hour cache injection toggle
+	AnthropicCacheTTL1hInjection bool
+	// message cache-control rewrite toggle
+	RewriteMessageCacheControl bool
+	// client dateline normalization toggle
+	ClientDatelineNormalization bool
 }
 
-// GetGrokDefaultBaseURLMode 在读取预算内查询 Grok Base URL 模式，缺省使用 CLI。
+// GetGrokDefaultBaseURLMode reads and normalizes the persisted Grok endpoint
+// mode using an independent five-second budget. A nil receiver, missing
+// repository, read error, or unknown value returns cli; a read requires a nonnil context.
 func (s *RuntimeSettings) GetGrokDefaultBaseURLMode(ctx context.Context) string {
 	if s == nil || s.settingRepo == nil {
 		return "cli"
 	}
+	// Endpoint mode has its own read deadline. A cancelled request can still
+	// obtain the configured mode before its caller resolves the provider base URL.
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewayForwardingDBTimeout)
 	defer cancel()
 	raw, err := s.settingRepo.GetValue(dbCtx, SettingKeyGrokDefaultBaseURLMode)
 	if err != nil {
+		// Endpoint selection keeps its CLI default when the mode cannot be read,
+		// allowing the caller to resolve a supported base URL during settings failure.
 		return "cli"
 	}
 	return NormalizeGrokDefaultBaseURLMode(raw)
 }
 
-// NormalizeOpenAITTFTMode 接受 visible，其他值使用 semantic。
-func NormalizeOpenAITTFTMode(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), OpenAITTFTModeVisible) {
-		return OpenAITTFTModeVisible
-	}
-	return OpenAITTFTModeSemantic
-}
+// NormalizeTTFTMode applies the shared upstream event selection to stored settings.
+// First-event spelling is case insensitive; an absent or unsupported value selects
+// first useful output, matching new installations and request collector defaults.
+func NormalizeTTFTMode(mode string) string { return timing.NormalizeMode(mode) }
 
-// getGatewayForwardingSettingsCached 读取实例内的转发设置缓存，过期后合并并发查询。
+// getGatewayForwardingSettingsCached returns interpreted forwarding values from
+// the current unexpired cache or a shared refresh. Supply a nonnil runtime,
+// repository, and context; refreshes have a five-second budget detached from
+// request cancellation while retaining its values.
+//
+// A successful batch read interprets absent and empty switches using their
+// individual defaults, then publishes one snapshot for sixty seconds. A failed
+// read publishes first-output mode, enabled fingerprint/prompt/dateline switches,
+// and otherwise zero values for five seconds. This distinguishes an unavailable
+// settings store from a successfully read explicit false toggle; future callers
+// recheck the store after the shorter error deadline.
 func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
 	if cached, ok := s.gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return gatewayForwardingSettingsResult{
-				openAITTFTMode:                   cached.openAITTFTMode,
+				ttftMode:                         cached.ttftMode,
 				fp:                               cached.fingerprintUnification,
 				mp:                               cached.metadataPassthrough,
 				cch:                              cached.cchSigning,
@@ -128,7 +191,7 @@ func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context
 		if cached, ok := s.gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return gatewayForwardingSettingsResult{
-					openAITTFTMode:                   cached.openAITTFTMode,
+					ttftMode:                         cached.ttftMode,
 					fp:                               cached.fingerprintUnification,
 					mp:                               cached.metadataPassthrough,
 					cch:                              cached.cchSigning,
@@ -141,10 +204,13 @@ func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context
 				}, nil
 			}
 		}
+		// Coalesced callers need the refresh after the initiating request cancels.
+		// An independent read budget bounds the shared database operation while
+		// retaining that request's context values.
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewayForwardingDBTimeout)
 		defer cancel()
 		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
-			SettingKeyOpenAITTFTMode,
+			SettingKeyTTFTMode,
 			SettingKeyEnableFingerprintUnification,
 			SettingKeyEnableMetadataPassthrough,
 			SettingKeyEnableCCHSigning,
@@ -156,9 +222,12 @@ func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context
 			SettingKeyEnableClientDatelineNormalization,
 		})
 		if err != nil {
+			// A failed batch read provides one default snapshot to its waiting
+			// callers. The shorter deadline permits another lookup soon after storage
+			// recovers instead of retaining these defaults for the normal lifetime.
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
 			s.gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-				openAITTFTMode:                   OpenAITTFTModeSemantic,
+				ttftMode:                         TTFTModeFirstOutput,
 				fingerprintUnification:           true,
 				metadataPassthrough:              false,
 				cchSigning:                       false,
@@ -169,14 +238,14 @@ func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context
 				expiresAt:                        time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
 			return gatewayForwardingSettingsResult{
-				openAITTFTMode:                   OpenAITTFTModeSemantic,
+				ttftMode:                         TTFTModeFirstOutput,
 				fp:                               true,
 				claudeOAuthSystemPromptInjection: true,
 				rewriteMessageCacheControl:       false,
 				clientDatelineNormalization:      true,
 			}, nil
 		}
-		ttftMode := NormalizeOpenAITTFTMode(values[SettingKeyOpenAITTFTMode])
+		ttftMode := NormalizeTTFTMode(values[SettingKeyTTFTMode])
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 			fp = v == "true"
@@ -198,8 +267,10 @@ func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context
 		if v, ok := values[SettingKeyEnableClientDatelineNormalization]; ok && v != "" {
 			clientDatelineNormalization = v == "true"
 		}
+		// Interpret every field before replacing the cache with this batch's tuple
+		// and deadline, so one accessor call cannot combine different refresh results.
 		s.gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-			openAITTFTMode:                   ttftMode,
+			ttftMode:                         ttftMode,
 			fingerprintUnification:           fp,
 			metadataPassthrough:              mp,
 			cchSigning:                       cch,
@@ -212,7 +283,7 @@ func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context
 			expiresAt:                        time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
-			openAITTFTMode:                   ttftMode,
+			ttftMode:                         ttftMode,
 			fp:                               fp,
 			mp:                               mp,
 			cch:                              cch,
@@ -227,58 +298,93 @@ func (s *RuntimeSettings) getGatewayForwardingSettingsCached(ctx context.Context
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
+	// An unexpected shared value uses the same interpreted defaults as storage
+	// failure, so forwarding accessors receive a defined tuple rather than
+	// unresolved switch values.
+	return gatewayForwardingSettingsResult{ttftMode: TTFTModeFirstOutput, fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
 }
 
-// GetOpenAITTFTMode 从转发设置缓存读取并规范化首 token 计时模式。
-func (s *RuntimeSettings) GetOpenAITTFTMode(ctx context.Context) string {
-	return NormalizeOpenAITTFTMode(s.getGatewayForwardingSettingsCached(ctx).openAITTFTMode)
+// GetTTFTMode returns the normalized time-to-first-token interpretation
+// from the forwarding cache. Missing or failed reads select first useful output, and
+// expired entries use the shared refresh rules documented by
+// getGatewayForwardingSettingsCached.
+func (s *RuntimeSettings) GetTTFTMode(ctx context.Context) string {
+	return NormalizeTTFTMode(s.getGatewayForwardingSettingsCached(ctx).ttftMode)
 }
 
-// GetGatewayForwardingSettings 返回指纹统一、元数据透传和 CCH 签名开关。
+// GetGatewayForwardingSettings returns fingerprint, metadata passthrough, and CCH signing switches.
+// The three values come from one interpreted forwarding snapshot. Missing or
+// failed reads enable fingerprint unification and disable the two other switches;
+// expiration triggers the shared refresh.
 func (s *RuntimeSettings) GetGatewayForwardingSettings(ctx context.Context) (fingerprintUnification, metadataPassthrough, cchSigning bool) {
 	result := s.getGatewayForwardingSettingsCached(ctx)
 	return result.fp, result.mp, result.cch
 }
 
-// IsAnthropicCacheTTL1hInjectionEnabled 读取 Anthropic 一小时缓存 TTL 注入开关。
+// IsAnthropicCacheTTL1hInjectionEnabled reports whether to inject the one-hour Anthropic cache TTL.
+// Missing or failed forwarding reads return false. The value comes from the
+// shared snapshot, whose expiration and refresh rules apply to this accessor.
 func (s *RuntimeSettings) IsAnthropicCacheTTL1hInjectionEnabled(ctx context.Context) bool {
 	return s.getGatewayForwardingSettingsCached(ctx).cacheTTL1h
 }
 
-// IsRewriteMessageCacheControlEnabled 读取消息 cache_control 改写开关。
+// IsRewriteMessageCacheControlEnabled reports whether to rewrite message cache_control.
+// Missing or failed forwarding reads return false. This accessor uses the shared
+// interpreted snapshot, with refresh and default selection delegated to
+// getGatewayForwardingSettingsCached.
 func (s *RuntimeSettings) IsRewriteMessageCacheControlEnabled(ctx context.Context) bool {
 	return s.getGatewayForwardingSettingsCached(ctx).rewriteMessageCacheControl
 }
 
-// IsClientDatelineNormalizationEnabled 读取客户端日期行规范化开关。
+// IsClientDatelineNormalizationEnabled reports whether to normalize client datelines.
+// Missing, empty, or failed forwarding reads return true. Explicit nonempty
+// values enable normalization only for the literal "true", using the shared
+// forwarding cache's refresh rules.
 func (s *RuntimeSettings) IsClientDatelineNormalizationEnabled(ctx context.Context) bool {
 	return s.getGatewayForwardingSettingsCached(ctx).clientDatelineNormalization
 }
 
-// GetClaudeOAuthSystemPromptInjectionSettings 返回 Claude OAuth 提示词注入开关、文本和内容块。
+// GetClaudeOAuthSystemPromptInjectionSettings returns the injection switch, text, and content blocks.
+// All three values come from one forwarding snapshot. Missing or failed reads
+// enable injection with empty prompt values; configured text and JSON block
+// strings are retained for the Anthropic injector to interpret.
 func (s *RuntimeSettings) GetClaudeOAuthSystemPromptInjectionSettings(ctx context.Context) (enabled bool, prompt string, blocks string) {
 	result := s.getGatewayForwardingSettingsCached(ctx)
 	return result.claudeOAuthSystemPromptInjection, result.claudeOAuthSystemPrompt, result.claudeOAuthSystemPromptBlocks
 }
 
-// GetClaudeCodeVersionBounds 读取版本范围缓存，过期后查询 Claude Code 的最低和最高允许版本。
+// GetClaudeCodeVersionBounds returns the configured minimum and maximum from an
+// unexpired snapshot or shared refresh. Supply a nonnil runtime, repository,
+// and context; empty bounds disable the corresponding client range check.
+//
+// Concurrent expired-cache callers share a read that retains context values
+// after request cancellation and has its own five-second budget. Successful
+// reads cache the returned bounds for sixty seconds. Storage failure publishes
+// empty bounds for five seconds, letting requests continue through range checking
+// while allowing a later request to retry the settings read.
 func (s *RuntimeSettings) GetClaudeCodeVersionBounds(ctx context.Context) (min, max string) {
 	if cached, ok := s.versionBoundsCache.Load().(*cachedVersionBounds); ok {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return cached.min, cached.max
 		}
 	}
-	// singleflight: 同一时刻只有一个 goroutine 查询 DB，其余复用结果
-	type bounds struct{ min, max string }
+	// bounds carries the paired version values returned by a shared refresh.
+	type bounds struct {
+		// min and max come from the same cache or batch read. Empty values leave
+		// their corresponding client range limits unset when callers run validation.
+		min, max string // lower version bound; upper version bound
+	}
 	result, err, _ := s.versionBoundsSF.Do("version_bounds", func() (any, error) {
-		// 进入合并查询后再次检查缓存，前一个查询可能已填充结果。
+		// A preceding query or administration publication may populate the cache
+		// before this callback starts. Reuse that valid pair before issuing another read.
 		if cached, ok := s.versionBoundsCache.Load().(*cachedVersionBounds); ok {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return bounds{cached.min, cached.max}, nil
 			}
 		}
-		// 使用独立 context 完成配置查询，客户端断开后仍可取得有效值并填充缓存。
+		// Keep the shared read alive after client cancellation so its result can
+		// populate the version cache for other callers, with an independent timeout
+		// bounding the database operation.
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), versionBoundsDBTimeout)
 		defer cancel()
 		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
@@ -286,7 +392,9 @@ func (s *RuntimeSettings) GetClaudeCodeVersionBounds(ctx context.Context) (min, 
 			SettingKeyMaxClaudeCodeVersion,
 		})
 		if err != nil {
-			// fail-open: DB 错误时不阻塞请求，但记录日志并使用短 TTL 快速重试
+			// Empty bounds disable range restrictions after a settings read fails.
+			// A short expiration keeps that permissive result available briefly while
+			// allowing storage recovery to be observed on the next refresh.
 			slog.Warn("failed to get claude code version bounds setting, skipping version check", "error", err)
 			s.versionBoundsCache.Store(&cachedVersionBounds{
 				min:       "",
@@ -299,6 +407,8 @@ func (s *RuntimeSettings) GetClaudeCodeVersionBounds(ctx context.Context) (min, 
 			min: values[SettingKeyMinClaudeCodeVersion],
 			max: values[SettingKeyMaxClaudeCodeVersion],
 		}
+		// Cache both bounds with this read's deadline in one replacement, allowing
+		// later range checks to use the returned pair as a complete snapshot.
 		s.versionBoundsCache.Store(&cachedVersionBounds{
 			min:       b.min,
 			max:       b.max,
@@ -307,22 +417,38 @@ func (s *RuntimeSettings) GetClaudeCodeVersionBounds(ctx context.Context) (min, 
 		return b, nil
 	})
 	if err != nil {
+		// A failed shared result cannot supply usable range data. Empty bounds
+		// let the version-check caller use its documented unrestricted range result.
 		return "", ""
 	}
 	b, ok := result.(bounds)
 	if !ok {
+		// Only the paired bounds result can populate range checks. An unexpected
+		// shared value returns empty bounds so callers have a defined default.
 		return "", ""
 	}
 	return b.min, b.max
 }
 
-// PublishForwarding 按原更新顺序发布已持久化值，TTL 和 singleflight 行为保持。
+// PublishForwarding installs persisted version bounds and a forwarding snapshot
+// with fresh sixty-second deadlines. TTFT mode is stored as supplied and
+// normalized by its getter. The two caches are replaced separately, and an
+// already-running refresh can still store its result after a shared key is
+// forgotten.
+//
+// Each replacement publishes one complete cache object. Callers needing both
+// caches from one revision coordinate those reads separately, because this
+// method supplies neither a combined cache object nor a revision check across
+// the two replacements.
 func (s *RuntimeSettings) PublishForwarding(minVersion, maxVersion string, value ForwardingSnapshot) {
+	// Forget shared keys for future reads, then install the persisted values.
+	// Existing callbacks continue independently, and version bounds and forwarding
+	// values each have their own cache replacement.
 	s.versionBoundsSF.Forget("version_bounds")
 	s.versionBoundsCache.Store(&cachedVersionBounds{min: minVersion, max: maxVersion, expiresAt: time.Now().Add(versionBoundsCacheTTL).UnixNano()})
 	s.gatewayForwardingSF.Forget("gateway_forwarding")
 	s.gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-		openAITTFTMode:                   value.OpenAITTFTMode,
+		ttftMode:                         value.TTFTMode,
 		fingerprintUnification:           value.FingerprintUnification,
 		metadataPassthrough:              value.MetadataPassthrough,
 		cchSigning:                       value.CCHSigning,
@@ -336,25 +462,39 @@ func (s *RuntimeSettings) PublishForwarding(minVersion, maxVersion string, value
 	})
 }
 
-// InvalidateForwarding 使当前实例的缓存失效，下次读取重新查询存储。
+// InvalidateForwarding expires this instance's forwarding snapshot so a later
+// reader queries the store. It forgets future shared work but leaves an already-running
+// refresh able to store its result; the separate version-bounds cache is unaffected.
 func (s *RuntimeSettings) InvalidateForwarding() {
+	// Store an expired zero snapshot to force a later reader through refresh.
+	// Forgetting the key permits new shared work without cancelling callbacks
+	// already reading a prior settings value.
 	s.gatewayForwardingSF.Forget("gateway_forwarding")
 	s.gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{})
 }
 
-// IsIdentityPatchEnabled 在请求时读取身份修补开关，读取失败时返回 true。
+// IsIdentityPatchEnabled reads the switch per request and returns true on read failure.
+// A successful read enables it only for the literal "true", including false
+// for an empty value. The caller supplies the request context directly to
+// storage, and this setting is not cached.
 func (s *RuntimeSettings) IsIdentityPatchEnabled(ctx context.Context) bool {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyEnableIdentityPatch)
 	if err != nil {
+		// A missing or failed read keeps identity patching enabled for this
+		// request, while a successful empty value remains the explicit disabled result.
 		return true
 	}
 	return value == "true"
 }
 
-// GetIdentityPatchPrompt 读取身份修补提示词，读取失败时返回空字符串。
+// GetIdentityPatchPrompt reads the identity patch prompt and returns empty on read failure.
+// A successful read returns the stored text unchanged. It uses the request's
+// context directly and performs a new storage lookup on every call.
 func (s *RuntimeSettings) GetIdentityPatchPrompt(ctx context.Context) string {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyIdentityPatchPrompt)
 	if err != nil {
+		// An unavailable custom prompt supplies no replacement text. Returning
+		// empty leaves the downstream identity patcher responsible for its default prompt.
 		return ""
 	}
 	return value

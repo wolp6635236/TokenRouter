@@ -12,18 +12,30 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
-// recoveryFundsFixture 记录资金释放请求、模拟释放错误并按请求去重。
+// A reserved submission becomes stale only while no provider name has been
+// saved and its activity is old. The recovery cases contrast an abandoned
+// record with a submitted or freshly heartbeated job, then verify failed
+// refunds remain reachable through a recording queue.
+
+// recoveryFundsFixture records release commands, injects errors and tracks
+// repeated action identities.
 type recoveryFundsFixture struct {
-	releases   []*billing.TaskFundsCommand
-	releaseErr error
-	seen       map[string]struct{}
+	releases   []*billing.TaskFundsCommand // observed refund command pointers
+	releaseErr error                       // injected refund operation failure
+	seen       map[string]struct{}         // accepted release action identities
 }
 
+// recordingBatchImageQueue records release-recovery publication while
+// embedding the worker queue fixture.
 type recordingBatchImageQueue struct {
-	*fakeBatchImageQueue
-	enqueued []string
+	*fakeBatchImageQueue          // inherited recording queue operations
+	enqueued             []string // published terminal retry identities
 }
 
+// TestBatchImageBillingRecoveryService_ReleasesStaleUnsubmittedHold scans an
+// old created job beside an already submitted provider task. It checks one
+// failed stale record and one stable release action while the submitted task
+// keeps its status.
 func TestBatchImageBillingRecoveryService_ReleasesStaleUnsubmittedHold(t *testing.T) {
 	repo := newFakeBatchImageRepository()
 	apiKeyID := int64(22)
@@ -65,11 +77,15 @@ func TestBatchImageBillingRecoveryService_ReleasesStaleUnsubmittedHold(t *testin
 	require.Equal(t, batchimage.BatchImageJobStatusSubmitted, repo.jobs[active.BatchID].Status)
 }
 
+// TestBatchImageBillingRecoveryService_SkipsJobRefreshedByHeartbeat uses an
+// old-created uploading job whose latest activity is fresh. The scan returns
+// no release and leaves uploading state intact, protecting submission
+// liveness based on UpdatedAt.
 func TestBatchImageBillingRecoveryService_SkipsJobRefreshedByHeartbeat(t *testing.T) {
 	repo := newFakeBatchImageRepository()
 	apiKeyID := int64(22)
 	holdAmount := 0.5
-	// updated_at 在 cutoff 之后（慢提交心跳持续续期）：不得误杀退款。
+	// A heartbeat after cutoff keeps the slow submission alive and its funds reserved.
 	fresh := &batchimage.BatchImageJob{
 		BatchID:       "imgbatch_fresh_uploading",
 		UserID:        11,
@@ -91,6 +107,10 @@ func TestBatchImageBillingRecoveryService_SkipsJobRefreshedByHeartbeat(t *testin
 	require.Empty(t, billing.releases)
 }
 
+// TestBatchImageBillingRecoveryService_EnqueuesRetryWhenReleaseFails injects
+// a refund failure after a stale job is marked failed. The released count
+// stays zero, the error returns and the batch is enqueued for terminal
+// funding recovery.
 func TestBatchImageBillingRecoveryService_EnqueuesRetryWhenReleaseFails(t *testing.T) {
 	repo := newFakeBatchImageRepository()
 	apiKeyID := int64(22)
@@ -111,22 +131,30 @@ func TestBatchImageBillingRecoveryService_EnqueuesRetryWhenReleaseFails(t *testi
 	svc := &batchimage.BillingRecovery{Repo: repo, Funding: batchimage.Funding{Store: billing}, Queue: queue, StaleAfter: time.Minute, Limit: 10}
 
 	released, err := svc.ReleaseStaleUnsubmittedOnce(context.Background())
-	// job 已转 failed、不会再出现在 stale 列表：释放失败必须入队重试
-	// （由 worker 的 releaseTerminalHold 兜底），否则冻结余额永久泄漏。
+	// A failed job disappears from the stale list; enqueue a failed release so
+	// ReleaseTerminalHold can retry it and return the reserved funds.
 	require.Error(t, err)
 	require.Equal(t, 0, released)
 	require.Equal(t, batchimage.BatchImageJobStatusFailed, repo.jobs[stale.BatchID].Status)
 	require.Equal(t, []string{stale.BatchID}, queue.enqueued)
 }
 
+// Reserve panics when recovery unexpectedly attempts to create a funding
+// reservation.
 func (r *recoveryFundsFixture) Reserve(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error) {
 	panic("unexpected Reserve")
 }
 
+// Capture panics when recovery unexpectedly attempts to charge a task
+// reservation.
 func (r *recoveryFundsFixture) Capture(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error) {
 	panic("unexpected Capture")
 }
 
+// Release records the supplied command and returns an injected failure or a
+// deduplicated result. Successful commands are normalized in place, and
+// repeat request IDs return Applied false while their invocation is still
+// recorded.
 func (r *recoveryFundsFixture) Release(_ context.Context, cmd *billing.TaskFundsCommand) (*billing.TaskFundsResult, error) {
 	if r.releaseErr != nil {
 		r.releases = append(r.releases, cmd)
@@ -147,6 +175,7 @@ func (r *recoveryFundsFixture) Release(_ context.Context, cmd *billing.TaskFunds
 	return &billing.TaskFundsResult{Applied: true}, nil
 }
 
+// Enqueue records the batch identity selected for terminal refund recovery.
 func (q *recordingBatchImageQueue) Enqueue(_ context.Context, batchID string) error {
 	q.enqueued = append(q.enqueued, batchID)
 	return nil

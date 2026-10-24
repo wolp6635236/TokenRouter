@@ -65,6 +65,8 @@
       响应模型元数据恢复与 Ops 完成采集
 ```
 
+HTTP 文本请求在鉴权之前安装请求级计时，覆盖复合 Key 提前读取正文。首次提供商准入前的正文读取、前置处理和两类槽位排队分别统计；首次准入后发生的提供商排队独立记录。事件时间线保留从入口起算的时刻。各平台流式响应通过共享 HTTP 观察边界记录上游事件、成功交付的有效内容和首次响应数据 Flush，计时判断与计费、重试的语义输出标志分开。上游输出通过 `NewResponseSink` 绑定计时来源；最终 HTTP writer 在成功写入后记录，保留中间的模型恢复和响应采集。网关本地错误直接使用普通 writer，不继承上游输出来源。详见 [HTTP 接口](../interfaces/http_api.md#response_errors)。
+
 管线里有几条顺序约束：
 
 - 复合 Key 先用客户端传来的完整 `前缀/模型` 选出分组，Key 级模型重定向再处理去掉前缀后的模型。
@@ -192,7 +194,7 @@ OpenAI 兼容计数、Grok 本地估算和 Responses 输入 token 预检，由 a
 
 AlphaSearch 和 Embeddings 也复用固定的请求实例和响应实例，搜索授权的元数据由 `provider.OpenAIAuthorization` 提供。
 
-Live 和 sideband 的 HTTP 入口由 app 直接构造，`LivePorts` 共用审核、资金准入和并发服务。分组的协议和功能门禁在读取请求体之前执行；先审核，再检查资金，然后立即拿用户槽。会话创建、身份归属和 relay 绑定 `OpenAILiveExecutor`；纯会话编排在 `gateway/live`，存储、租约和拨号器与其他入口共用。observer 的取消表和等待计数由这个执行器持有，app 把它登记在对应的关闭阶段。Live 记录的用量费用为零。报文之外的模型重定向由 HTTP 适配层的一个函数统一提供，Live 和 WS 使用同样的一跳映射和追踪规则。
+Live 和 sideband 的 HTTP 入口由 app 直接构造，`LivePorts` 共用审核、资金准入和并发服务。分组的协议和功能门禁在读取请求体之前执行；先审核，再检查资金，然后立即拿用户槽。会话创建、身份归属和 relay 绑定 `OpenAILiveExecutor`；纯会话编排在 `gateway/live`，存储、租约和拨号器与其他入口共用。observer 的取消表和等待计数由 `gateway/live.ObserverManager` 持有，`OpenAILiveExecutor` 和它创建的运行时引用同一个管理器；app 把执行器登记在对应的关闭阶段。Live 记录的用量费用为零。报文之外的模型重定向由 HTTP 适配层的一个函数统一提供，Live 和 WS 使用同样的一跳映射和追踪规则。
 
 ### 会话哈希
 
@@ -316,7 +318,7 @@ OpenAI 兼容文本的单次执行由 `OpenAITextExecutor` 组合各协议执行
 
 上游风控警告统一用 `gateway/forward.UpstreamWarning` 传递，HTTP、WS 和 Grok 适配层共用这个值类型和错误链格式。收到警告不代表请求可以结算，完成资格、失败状态和通知按各入口的规则决定。
 
-Compact/SSE 的注释心跳、非流式图片 JSON 的空白心跳，以及扣除心跳字节后的输出判定，由 `gateway/httpapi` 管理。图片的第一次心跳会提交 200，之后到达的错误仍以合法 JSON 写回；这些空白不会关闭安全重试窗口。TTFT 按语义输出还是可见输出计算，由 gateway/provider 根据平台事件解析决定，它和 HTTP 提交、重试窗口是三个独立的判断。写入包装器只在 HTTP 内部使用，停止和写入之间互斥。
+Compact、图片的前置 SSE 注释心跳、非流式图片 JSON 的空白心跳，以及扣除心跳字节后的输出判定，由 `gateway/httpapi` 管理。流式图片取得提供商槽后，在实际 HTTP 发送前开始保活；上游 SSE 在返回响应头后交给流读取器接续，普通 JSON 和 HTTP 错误则继续保活到有大小限制的读体结束。OpenAI API Key 的客户端模式与提供商端点模式分别解析。标准图片 JSON 的每个 `data[]` 条目转换成相应的完成事件，只有 URL 时先下载为 Base64；SSE 也能聚合为非流式 JSON。图片和 usage 从原始响应观察一次，总 usage 只随最后一张图片输出，转换失败后已经观测到的完成图片仍参与完成处理。跨尝试保留的注释字节不算实际输出。首次心跳提交 200 后，流式图片错误以 SSE 错误事件写回，非流式图片仍以合法 JSON 写回。TTFT 由统一性能快照按全局首事件／首有效内容设置派生，它与 HTTP 提交、重试窗口分别判断。完成任务把完整性能和 usage 一次写入；请求摘要保留生命周期和失败诊断，详情按请求 ID 关联 usage。写入包装器只在 HTTP 内部使用，停止和写入之间互斥。
 
 OpenAI `cyber_policy` 事件的识别在 gateway/provider，当前 HTTP 或 WS turn 的第一个标记和清除由 `gateway/httpapi` 管理，直接调用 `moderationflow.Mark`。标记键、正文截断和已观测的用量照原样记录；清除之后，下一个 turn 才能接受新的证据。已经透传的错误通过 forward 的哨兵错误通知收尾，换号、响应写入和扣费资格都不受影响。
 

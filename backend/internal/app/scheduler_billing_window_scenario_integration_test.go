@@ -2,8 +2,6 @@
 
 package app
 
-// 本文件检查 scheduler.go 与 billing.go 对会话窗口缓存的共用。
-
 import (
 	"context"
 	"testing"
@@ -16,17 +14,33 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
-// TestSessionAndWindowCachesKeepIndependentState 检查会话与窗口缓存使用各自的键，数据彼此独立。
+// Session and billing-window caches use independent Redis keys for the same
+// provider identity. The scenario writes both, releases the session, and checks
+// the cost remains available with its bounded TTL before another session is
+// admitted through the shared client.
+
+// TestSessionAndWindowCachesKeepIndependentState writes a session and window
+// cost through application cache constructors. It checks Redis cost keys and
+// TTL, session counts, retained cost after release, missing batch entries, and
+// a subsequent successful claim.
 func TestSessionAndWindowCachesKeepIndependentState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
+	// Register any created container before startup errors can stop this test.
+	// Later client cleanups run first because testing reverses registration order.
+	if container != nil {
+		t.Cleanup(func() {
+			// Setup or test cancellation must not cancel Docker removal. Start the
+			// bounded cleanup context when this callback runs.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := container.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate Redis container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)
-		defer stop()
-		require.NoError(t, container.Terminate(cleanup))
-	})
 	endpoint, err := container.ConnectionString(ctx)
 	require.NoError(t, err)
 	options, err := redis.ParseURL(endpoint)

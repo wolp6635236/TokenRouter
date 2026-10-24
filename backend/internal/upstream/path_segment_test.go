@@ -6,9 +6,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSanitizedUpstreamPathSuffixRejectsNonConformingSegments 验证上游路径后缀拒绝不合规的路径段。
+// TestSanitizedUpstreamPathSuffixRejectsNonConformingSegments supplies
+// navigation, separator, punctuation, and Unicode suffixes alongside valid
+// identifiers. It checks rejection returns empty and accepted paths retain
+// their supplied spelling.
 func TestSanitizedUpstreamPathSuffixRejectsNonConformingSegments(t *testing.T) {
-	// 到达业务代码的 URL.Path 已是百分号解码后的结果，因此用例按解码后的形态书写。
+	// The validator receives URL.Path after URL parsing. Include decoded
+	// structural characters and literal percent text so neither form can alter
+	// the constructed upstream path.
 	rejected := []string{
 		"/..",
 		"/../..",
@@ -35,7 +40,7 @@ func TestSanitizedUpstreamPathSuffixRejectsNonConformingSegments(t *testing.T) {
 		"/a,b",
 		"/a=b",
 		"/a&b",
-		// 路径段字符允许 `\w`、`-` 和 `.`，其余字符拒绝。
+		// Only ASCII letters, digits, underscore, hyphen, and dot are accepted.
 		"/a~b",
 		"/a@b",
 		"/a+b",
@@ -50,7 +55,8 @@ func TestSanitizedUpstreamPathSuffixRejectsNonConformingSegments(t *testing.T) {
 		"/a b",
 		"/a∕b", // DIVISION SLASH
 		"/a／b", // FULLWIDTH SOLIDUS
-		// 只由点组成的片段一律拒绝（各实现对其解释不一致）。
+		// These dot-only spellings cover normalization differences between URL and
+		// proxy handling; accepting any of them would permit an ambiguous request path.
 		"/...",
 		"/....",
 		"/compact/...",
@@ -80,6 +86,9 @@ func TestSanitizedUpstreamPathSuffixRejectsNonConformingSegments(t *testing.T) {
 	}
 }
 
+// TestSanitizedUpstreamPathSuffixEnforcesBounds builds one segment and one
+// suffix deeper than their respective limits. It checks that both excessive
+// inputs are rejected before forwarding.
 func TestSanitizedUpstreamPathSuffixEnforcesBounds(t *testing.T) {
 	longSegment := "/"
 	for range MaxUpstreamPathSegmentLen + 1 {

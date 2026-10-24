@@ -12,72 +12,73 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// RPM 计数器缓存常量定义
-//
-// 设计说明：
-// 使用 Redis 简单计数器跟踪每个提供商每分钟的请求数：
-// - Key: rpm:{providerID}:{minuteTimestamp}
-// - Value: 当前分钟内的请求计数
-// - TTL: 120 秒（覆盖当前分钟 + 一定冗余）
-//
-// 使用 TxPipeline（MULTI/EXEC）执行 INCR + EXPIRE，保证原子性且兼容 Redis Cluster。
-// 通过 rdb.Time() 取得服务端时间，各实例共用该时间源。
-//
-// 设计决策：
-//   - TxPipeline vs Pipeline：Pipeline 仅合并发送但不保证原子，TxPipeline 使用 MULTI/EXEC 事务保证原子执行。
-//   - rdb.Time() 单独调用：Pipeline/TxPipeline 中无法引用前一命令的结果，因此 TIME 必须单独调用（2 RTT）。
-//     Lua 脚本可以做到 1 RTT，但在 Redis Cluster 中动态拼接 key 存在 CROSSSLOT 风险，选择安全性优先。
-const (
-	// RPM 计数器键前缀
-	// 格式: rpm:{providerID}:{minuteTimestamp}。
-	rpmKeyPrefix = "rpm:"
+// rpm_cache.go increments and reads provider request counts in Redis minute
+// buckets.
+// Provider request counts are keyed by the minute sampled from Redis TIME, so
+// instances use one shared clock for RPM observations. INCR and EXPIRE run in
+// one transaction after the key is known, and old minute keys expire after
+// two minutes.
 
-	// RPM 计数器 TTL（120 秒，覆盖当前分钟窗口 + 冗余）。
-	rpmKeyTTL = 120 * time.Second
+// Provider RPM keys encode provider identity and Redis minute index; their
+// lifetime retains the active minute and lets older observations expire.
+const (
+	rpmKeyPrefix = "rpm:" // provider minute counter namespace
+
+	rpmKeyTTL = 120 * time.Second // counter retention duration
 )
 
-// RPMCacheImpl RPM 计数器缓存 Redis 实现。
+// RPMCacheImpl records provider requests in Redis-clock minute counter keys.
 type RPMCacheImpl struct {
-	rdb *redis.Client
+	// rdb is borrowed from the application; TIME, counter writes and reads
+	// require it to stay usable for this cache's callers.
+	rdb *redis.Client // shared provider counter client
 }
 
-// NewRPMCache 创建 RPM 计数器缓存。
+// NewRPMCache constructs provider RPM storage over the supplied Redis client.
+// The caller retains that client, and writes use Redis time to choose their
+// minute keys.
 func NewRPMCache(rdb *redis.Client) scheduler.RPMCache {
 	return &RPMCacheImpl{rdb: rdb}
 }
 
-// currentMinuteKey 获取当前分钟的完整 Redis key
-// 通过 rdb.Time() 取得 Redis 服务端时间，各实例共用该时间源。
+// currentMinuteKey reads Redis TIME and returns this provider's key for its
+// current minute index. A clock-read error aborts key selection before any
+// counter write or lookup.
 func (c *RPMCacheImpl) currentMinuteKey(ctx context.Context, providerID int64) (string, error) {
 	serverTime, err := c.rdb.Time(ctx).Result()
 	if err != nil {
 		return "", fmt.Errorf("redis TIME: %w", err)
 	}
+	// Divide Redis Unix seconds into sixty-second bucket indexes.
 	minuteTS := serverTime.Unix() / 60
 	return fmt.Sprintf("%s%d:%d", rpmKeyPrefix, providerID, minuteTS), nil
 }
 
-// currentMinuteSuffix 获取当前分钟时间戳后缀（供批量操作使用）
-// 使用 rdb.Time() 获取 Redis 服务端时间。
+// currentMinuteSuffix reads Redis TIME and returns one minute index for a
+// batch of provider keys. Reusing this result keeps every requested provider
+// in the same sampled minute.
 func (c *RPMCacheImpl) currentMinuteSuffix(ctx context.Context) (string, error) {
 	serverTime, err := c.rdb.Time(ctx).Result()
 	if err != nil {
 		return "", fmt.Errorf("redis TIME: %w", err)
 	}
+	// Divide Redis Unix seconds into sixty-second bucket indexes.
 	minuteTS := serverTime.Unix() / 60
 	return strconv.FormatInt(minuteTS, 10), nil
 }
 
-// IncrementRPM 原子递增并返回当前分钟的计数
-// 使用 TxPipeline (MULTI/EXEC) 执行 INCR + EXPIRE，保证原子性且兼容 Redis Cluster。
+// IncrementRPM increments this provider's sampled minute counter and returns
+// its recorded count. The transaction refreshes the two-minute expiry; a
+// Redis response error leaves the increment result unconfirmed for callers.
 func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, providerID int64) (int, error) {
 	key, err := c.currentMinuteKey(ctx, providerID)
 	if err != nil {
 		return 0, fmt.Errorf("rpm increment: %w", err)
 	}
 
-	// 使用 TxPipeline (MULTI/EXEC) 保证 INCR + EXPIRE 原子执行
-	// 每次执行 EXPIRE 刷新计数键的有效期。
+	// Queue expiry with the increment so EXEC applies both commands together;
+	// the minute was resolved beforehand because transaction commands need their
+	// final key.
 	pipe := c.rdb.TxPipeline()
 	incrCmd := pipe.Incr(ctx, key)
 	pipe.Expire(ctx, key, rpmKeyTTL)
@@ -89,7 +90,9 @@ func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, providerID int64) (int,
 	return int(incrCmd.Val()), nil
 }
 
-// GetRPM 获取当前分钟的 RPM 计数。
+// GetRPM reads the provider counter for the current sampled Redis minute. A
+// missing key returns zero for that minute; TIME, read and integer-conversion
+// failures remain errors.
 func (c *RPMCacheImpl) GetRPM(ctx context.Context, providerID int64) (int, error) {
 	key, err := c.currentMinuteKey(ctx, providerID)
 	if err != nil {
@@ -97,8 +100,10 @@ func (c *RPMCacheImpl) GetRPM(ctx context.Context, providerID int64) (int, error
 	}
 
 	val, err := c.rdb.Get(ctx, key).Int()
+	// An absent Redis-clock minute key means no requests have been recorded for
+	// that minute, so report zero to RPM selection consumers.
 	if errors.Is(err, redis.Nil) {
-		return 0, nil // 当前分钟无记录
+		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("rpm get: %w", err)
@@ -106,19 +111,25 @@ func (c *RPMCacheImpl) GetRPM(ctx context.Context, providerID int64) (int, error
 	return val, nil
 }
 
-// GetRPMBatch 批量获取多个提供商的 RPM 计数（使用 Pipeline）。
+// GetRPMBatch reads requested providers using one Redis minute sample and
+// returns counts by provider ID. Empty input returns an empty map; the
+// pipeline's first error aborts the batch unless it is redis.Nil.
+//
+// When that error is absent or denotes a missing key, individual command and
+// integer-conversion failures become zero. A missing key reported first can
+// therefore conceal a later command failure while other counts remain usable.
 func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, providerIDs []int64) (map[int64]int, error) {
 	if len(providerIDs) == 0 {
 		return map[int64]int{}, nil
 	}
 
-	// 获取当前分钟后缀
+	// Resolve one minute before constructing provider keys so a batch crossing a
+	// clock rollover still queries a common sampled counter interval.
 	minuteSuffix, err := c.currentMinuteSuffix(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("rpm batch get: %w", err)
 	}
 
-	// 使用 Pipeline 批量 GET
 	pipe := c.rdb.Pipeline()
 	cmds := make(map[int64]*redis.StringCmd, len(providerIDs))
 	for _, id := range providerIDs {
@@ -135,6 +146,9 @@ func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, providerIDs []int64) (ma
 		if val, err := cmd.Int(); err == nil {
 			result[id] = val
 		} else {
+			// Missing or unparsable individual counters contribute zero while
+			// retaining other provider observations, so one conversion failure does
+			// not discard the successful batch values.
 			result[id] = 0
 		}
 	}

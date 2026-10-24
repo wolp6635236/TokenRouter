@@ -14,7 +14,30 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
-// platformSelector 的关联表只存在于本次调用；缓存、Grok 资格观测和 EWMA 均复用原唯一实例。
+// compatible_ports.go binds compatible provider policy and execution targets
+// to the platform scheduler.
+// Compatible scheduling needs provider policy and credentials again after
+// ranking candidate metadata. One invocation-scoped lookup associates every
+// candidate, fresh read, and database read with its exact execution target, so
+// same-ID records stay distinct through rechecks and completion.
+//
+// The adapter binds shared concurrency, performance statistics, sticky state,
+// and the advanced picker's Grok quota cache to scheduler.PlatformSelector.
+// Protocol, privacy, parent health, model, and transport callbacks read their
+// associated target at the stage the core requests. Credential hydration and
+// result conversion use the same lookup, carrying release handles and wait
+// plans back to the gateway after selection.
+
+// platformSelector builds a compatible scheduler adapter with a new per-call
+// target lookup. Callers supply a picker with its constructed Compatible
+// service; optional repository, cache, and snapshot flags describe which reads
+// the core can perform.
+//
+// Callbacks convert target records through the returned scope before invoking
+// platform eligibility and hydration. Statistics, metrics, concurrency, and the
+// picker's published free-quota gate remain shared across invocations. The
+// scope distinguishes repeated persisted IDs so a selected database record
+// resolves to that record when the gateway restores the result.
 func (s *compatiblePicker) platformSelector() (*schedulercore.PlatformSelector, *projectionScope) {
 	scope := &projectionScope{providers: map[uint64]*gatewayprovider.ExecutionProvider{}, groups: map[uint64]*routing.Group{}}
 	available := s != nil && s.service != nil
@@ -94,8 +117,7 @@ func (s *compatiblePicker) platformSelector() (*schedulercore.PlatformSelector, 
 		},
 		BindSticky: s.service.BindStickySession, DeleteSticky: s.service.deleteStickySessionProviderID, GetSticky: s.service.getStickySessionProviderID, RefreshSticky: s.service.refreshStickySessionTTL, StickyTTL: s.service.SessionStickyTTL,
 		Options: func() schedulercore.FlowOptions {
-			v := s.service.schedulingConfig()
-			return schedulercore.FlowOptions{LoadBatchEnabled: v.LoadBatchEnabled, PreferSoonestReset: v.PreferSoonestReset, FallbackMaxWaiting: v.FallbackMaxWaiting, StickySessionMaxWaiting: v.StickySessionMaxWaiting, FallbackSelectionMode: v.FallbackSelectionMode, FallbackWaitTimeout: v.FallbackWaitTimeout, StickySessionWaitTimeout: v.StickySessionWaitTimeout}
+			return s.service.schedulingConfig()
 		},
 		GetSchedulable: func(ctx context.Context, id int64) (*schedulercore.FlowProvider, error) {
 			v, err := s.service.getSchedulableProvider(ctx, id)

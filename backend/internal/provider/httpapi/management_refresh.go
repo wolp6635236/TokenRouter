@@ -9,14 +9,27 @@ import (
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// ApplyOAuthCredentialsRequest 是重新授权后保存 OAuth 凭据的专用请求体。
+// management_refresh.go handles manual credential refresh and reauthorization
+// through managed provider maintenance.
+// Manual credential refresh and reauthorization share ManagedRefreshService,
+// which owns platform eligibility, persistence and recovery. The HTTP wrapper
+// maps a temporary Antigravity project-discovery warning to a message response;
+// otherwise it presents the record returned by the maintenance use case.
+
+// ApplyOAuthCredentialsRequest carries required authorization values and
+// optional Extra updates from reauthorization.
 type ApplyOAuthCredentialsRequest struct {
-	Type        string         `json:"type" binding:"required,oneof=oauth setup-token"`
-	Credentials map[string]any `json:"credentials" binding:"required"`
-	Extra       map[string]any `json:"extra"`
+	Type        string         `json:"type" binding:"required,oneof=oauth setup-token"` // replacement authorization kind
+	Credentials map[string]any `json:"credentials" binding:"required"`                  // exchanged authorization values
+	// Extra supplies a selected patch after the credential update. ManagedRefreshService
+	// merges these values separately, retaining unrelated stored configuration when
+	// the patch is absent.
+	Extra map[string]any `json:"extra"` // additional reauthorization settings
 }
 
-// Refresh 返回管理刷新结果和原项目缺失警告。
+// Refresh loads a provider before managed credential exchange and returns the
+// resulting runtime view. Every lookup failure returns 404; the missing-project
+// warning instead produces the dedicated message and warning response.
 // POST /api/v1/admin/providers/:id/refresh
 func (h *ManagementHandler) Refresh(c *gin.Context) {
 	providerID, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -25,7 +38,7 @@ func (h *ManagementHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	// 读取提供商，缺失时返回 404。
+	// Provider lookup failures return 404.
 	provider, err := h.adminService.GetProvider(c.Request.Context(), providerID)
 	if err != nil {
 		response.NotFound(c, "Provider not found")
@@ -49,13 +62,11 @@ func (h *ManagementHandler) Refresh(c *gin.Context) {
 	response.Success(c, h.presenter.Present(c.Request.Context(), updatedProvider))
 }
 
-// ApplyOAuthCredentials 保存重新授权得到的新凭据，并增量合并 Extra。
+// ApplyOAuthCredentials strictly binds reauthorization values and delegates
+// saving, Extra merging and recovery to ManagedRefreshService. Deprecated
+// settings are removed before dispatch; lookup failure returns 404 and
+// completed use-case results receive runtime presentation.
 // POST /api/v1/admin/providers/:id/apply-oauth-credentials
-//
-// 该接口刻意不复用通用 Update：
-// - 接收 type、credentials 和 extra 字段。
-// - Extra 按 JSONB 键合并，base_rpm、quota_*、privacy_mode 等其他配置保持当前值。
-// - 清理错误状态并使 token 缓存失效，后续请求读取新凭据。
 func (h *ManagementHandler) ApplyOAuthCredentials(c *gin.Context) {
 	providerID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -68,6 +79,8 @@ func (h *ManagementHandler) ApplyOAuthCredentials(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	// Reauthorization accepts historical Extra payloads. Remove retired keys
+	// before the selected patch reaches managed maintenance, keeping retained neighboring settings eligible.
 	providercore.DiscardDeprecatedProviderExtra(req.Extra)
 
 	ctx := c.Request.Context()

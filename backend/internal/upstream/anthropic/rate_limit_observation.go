@@ -7,22 +7,55 @@ import (
 	"time"
 )
 
-// FableWindowReason 保留模型窗口持久化原因。
+// rate_limit_observation.go selects Anthropic quota cooldown endpoints from
+// reset times and exhaustion observations.
+// Anthropic quota signals can describe a five-hour window, a seven-day window,
+// or a Fable-specific weekly window. Selection keeps the five-hour reset
+// separately when a weekly limit controls cooldown, so session accounting can
+// retain its shorter endpoint.
+//
+// Successful-response window checks require a future reset within the relevant
+// window horizon and accept seconds or milliseconds. The older 429 calculation
+// instead parses window resets directly as Unix seconds and chooses among them
+// from exhaustion flags, retaining its different validation behavior. Fable
+// selection can use the aggregate reset when its own reset is unusable. These
+// parsers return observations; provider health code decides persistence, model
+// scope, and recovery.
+
+// FableWindowReason identifies exhausted model-specific weekly quota
+// observations passed to provider health for persistence and recovery
+// decisions.
 const FableWindowReason = "anthropic_7d_oi_window_exhausted"
 
-// RateLimitReset 表达供应商限流头的重置观测，不执行提供商状态写入。
+// RateLimitReset separates selected cooldown timing from five-hour session
+// timing.
 type RateLimitReset struct {
-	ResetAt       time.Time  // 限流重置时间
-	FiveHourReset *time.Time // 五小时窗口重置时间，缺失时为 nil
+	ResetAt time.Time // selected cooldown endpoint
+	// FiveHourReset retains a parsed session endpoint even when ResetAt follows a
+	// weekly cooldown; nil means no five-hour reset was parsed.
+	FiveHourReset *time.Time // optional session endpoint
 }
 
+// WindowLimit identifies an exhausted quota window and its usable reset.
 type WindowLimit struct {
-	Window        string
-	ResetAt       time.Time
-	FiveHourReset *time.Time
-	Reason        string
+	Window  string    // selected quota label
+	ResetAt time.Time // validated reset endpoint
+	// FiveHourReset carries a valid short-window reset alongside provider
+	// exhaustion; Fable-only results leave it nil because their window is
+	// model-specific.
+	FiveHourReset *time.Time // optional session endpoint
+	Reason        string     // persisted exhaustion reason
 }
 
+// SelectExhaustedWindow returns a usable exhausted five-hour or seven-day
+// observation at now. Rejected status contributes only to the five-hour branch,
+// while surpassed-threshold and utilization can mark either window exhausted.
+//
+// A valid exhausted weekly window takes precedence and retains any valid
+// five-hour reset separately. If its reset is unusable, a valid exhausted
+// five-hour window can still win. Per-window resets need to lie within the
+// future horizon before selection; no eligible window returns nil for the
+// provider health caller.
 func SelectExhaustedWindow(headers http.Header, now time.Time) *WindowLimit {
 	reset5h, ok5hReset := parseWindowReset(headers, "5h", now)
 	reset7d, ok7dReset := parseWindowReset(headers, "7d", now)
@@ -30,6 +63,9 @@ func SelectExhaustedWindow(headers http.Header, now time.Time) *WindowLimit {
 	exceeded5h := isFiveHourRejected(headers) || isWindowExceeded(headers, "5h")
 	exceeded7d := isWindowExceeded(headers, "7d")
 
+	// A usable exhausted weekly window takes precedence over a usable session
+	// window, while carrying the shorter reset separately for session accounting
+	// in the health caller.
 	if exceeded7d && ok7dReset {
 		limit := &WindowLimit{
 			Window:  "7d",
@@ -52,24 +88,34 @@ func SelectExhaustedWindow(headers http.Header, now time.Time) *WindowLimit {
 	return nil
 }
 
+// isFiveHourRejected reports whether the five-hour Header status is rejected.
 func isFiveHourRejected(headers http.Header) bool {
 	return isWindowRejected(headers, "5h")
 }
 
+// isWindowRejected reports a trimmed, case-insensitive rejected status for
+// window.
 func isWindowRejected(headers http.Header, window string) bool {
 	return strings.EqualFold(strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-"+window+"-status")), "rejected")
 }
 
+// parseWindowReset parses a window's reset using its future horizon. The
+// five-hour window permits six hours ahead, while other windows permit eight
+// days; invalid or out-of-range reset values return false.
 func parseWindowReset(headers http.Header, window string, now time.Time) (time.Time, bool) {
+	// The default horizon accepts one day beyond a seven-day window.
 	maxAge := 8 * 24 * time.Hour
 	if window == "5h" {
+		// Five-hour validation accepts one additional hour beyond that window.
 		maxAge = 6 * time.Hour
 	}
 	return parseResetTimestamp(headers.Get("anthropic-ratelimit-unified-"+window+"-reset"), now, maxAge)
 }
 
-// parseResetTimestamp 解析 Anthropic reset 头的 Unix 时间戳（自动识别毫秒），
-// 并校验落在 (now, now+maxAge] 的合理区间内。
+// parseResetTimestamp accepts trimmed integer timestamps within (now,
+// now+maxAge]. Integers above the milliseconds threshold are reduced to
+// seconds, and malformed, expired, or too-distant values return a zero time and
+// false.
 func parseResetTimestamp(raw string, now time.Time, maxAge time.Duration) (time.Time, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -79,6 +125,9 @@ func parseResetTimestamp(raw string, now time.Time, maxAge time.Duration) (time.
 	if err != nil {
 		return time.Time{}, false
 	}
+	// Values classified as milliseconds would otherwise enter validation as
+	// far-future seconds; reduce their precision before comparing the accepted
+	// reset horizon.
 	if ts > 1e11 {
 		ts /= 1000
 	}
@@ -89,14 +138,23 @@ func parseResetTimestamp(raw string, now time.Time, maxAge time.Duration) (time.
 	return resetAt, true
 }
 
-// SelectFableWindowLimit 解析 Anthropic 7d_oi 响应头，返回 Fable 家族的限额窗口。
-// surpassed-threshold 为浮点数，status=rejected 或 utilization >= 1.0 时视为超限。
-// 缺少模型窗口 reset 时使用聚合 reset，其他模型按各自的窗口调度。
+// SelectFableWindowLimit returns a Fable weekly limit when rejection status or
+// utilization indicates exhaustion. Its own future reset is preferred; a
+// missing or unusable value tries the aggregate reset under the same eight-day
+// horizon.
+//
+// No exhaustion or no usable reset returns nil, letting the provider health
+// caller leave that window unobserved. The result names 7d_oi and carries
+// FableWindowReason but has no five-hour reset, because this model-specific
+// window is separate from session accounting.
 func SelectFableWindowLimit(headers http.Header, now time.Time) *WindowLimit {
 	if !isWindowRejected(headers, "7d_oi") && !isWindowExceeded(headers, "7d_oi") {
 		return nil
 	}
 	resetAt, ok := parseWindowReset(headers, "7d_oi", now)
+	// An exhausted Fable signal can lack a usable dedicated reset. Try the
+	// aggregate endpoint under the same future horizon before withholding the
+	// observation.
 	if !ok {
 		resetAt, ok = parseAggregateReset(headers, now)
 	}
@@ -110,12 +168,23 @@ func SelectFableWindowLimit(headers http.Header, now time.Time) *WindowLimit {
 	}
 }
 
-// parseAggregateReset 按 7 天窗口的合理范围解析聚合 reset 响应头。
+// parseAggregateReset reads the aggregate reset with an eight-day future
+// horizon. It delegates seconds or milliseconds conversion and rejects
+// malformed, expired, and more distant values through parseResetTimestamp.
 func parseAggregateReset(headers http.Header, now time.Time) (time.Time, bool) {
 	return parseResetTimestamp(headers.Get("anthropic-ratelimit-unified-reset"), now, 8*24*time.Hour)
 }
 
-// CalculateRateLimitReset 解析 5h/7d 响应头；缺少窗口时由调用方保留聚合头回退。
+// CalculateRateLimitReset selects a cooldown observation from five-hour and
+// seven-day Headers and retains the parsed five-hour reset. It reads integer
+// Unix seconds directly, without the future-horizon or milliseconds validation
+// used by successful-response window selection.
+//
+// When both windows are exceeded, weekly reset wins if parsed, otherwise
+// five-hour reset is used. A single exceeded window selects its own reset, even
+// when that yields nil; without exhaustion, the earlier parsed reset wins.
+// Optional logging reports the analyzed signals, and nil lets the caller
+// consider its aggregate Header.
 func CalculateRateLimitReset(headers http.Header, info func(string, ...any)) *RateLimitReset {
 	reset5hStr := headers.Get("anthropic-ratelimit-unified-5h-reset")
 	reset7dStr := headers.Get("anthropic-ratelimit-unified-7d-reset")
@@ -125,6 +194,9 @@ func CalculateRateLimitReset(headers http.Header, info func(string, ...any)) *Ra
 	}
 
 	var reset5h, reset7d *time.Time
+	// Unparseable per-window timestamps remain absent observations. Selection can
+	// still use the other parsed window, or return nil for the caller's aggregate
+	// reset handling.
 	if ts, err := strconv.ParseInt(reset5hStr, 10, 64); err == nil {
 		t := time.Unix(ts, 0)
 		reset5h = &t
@@ -145,11 +217,12 @@ func CalculateRateLimitReset(headers http.Header, info func(string, ...any)) *Ra
 			"reset_7d", reset7dStr,
 		)
 	}
-	// 按实际耗尽窗口选择重置时间。
 	var chosen *time.Time
 	switch {
 	case is5hExceeded && is7dExceeded:
-		// 两个窗口均耗尽时优先 7d，缺失则回退 5h。
+		// Weekly exhaustion can outlast the session reset, so select its parsed
+		// endpoint first and retain the five-hour value separately for provider
+		// session handling.
 		chosen = reset7d
 		if chosen == nil {
 			chosen = reset5h
@@ -159,7 +232,9 @@ func CalculateRateLimitReset(headers http.Header, info func(string, ...any)) *Ra
 	case is7dExceeded:
 		chosen = reset7d
 	default:
-		// 没有明确耗尽标记时沿用更早的重置时间。
+		// Without an exhausted-window signal, the earlier parsed endpoint limits the
+		// selected cooldown while the full five-hour observation remains available in
+		// the result.
 		chosen = pickSooner(reset5h, reset7d)
 	}
 
@@ -169,19 +244,20 @@ func CalculateRateLimitReset(headers http.Header, info func(string, ...any)) *Ra
 	return &RateLimitReset{ResetAt: *chosen, FiveHourReset: reset5h}
 }
 
-// isWindowExceeded 保留 surpassed-threshold 和 utilization 的原判定容差。
+// isWindowExceeded reports surpassed-threshold=true or utilization at least one
+// minus the rounding tolerance. Threshold text is case-insensitive but
+// untrimmed, and missing or malformed utilization leaves that numeric test
+// false.
 func isWindowExceeded(headers http.Header, window string) bool {
 	prefix := "anthropic-ratelimit-unified-" + window + "-"
 
-	// 优先读取明确的超限标记。
 	if st := headers.Get(prefix + "surpassed-threshold"); strings.EqualFold(st, "true") {
 		return true
 	}
 
-	// 再读取利用率。
 	if utilStr := headers.Get(prefix + "utilization"); utilStr != "" {
 		if util, err := strconv.ParseFloat(utilStr, 64); err == nil && util >= 1.0-1e-9 {
-			// 保留浮点容差。
+			// Numeric exhaustion still applies when surpassed-threshold is absent or false.
 			return true
 		}
 	}
@@ -189,7 +265,9 @@ func isWindowExceeded(headers http.Header, window string) bool {
 	return false
 }
 
-// pickSooner 返回非空且更早的时间；均缺失时返回 nil。
+// pickSooner returns the earlier available time pointer, preferring b on
+// equality. A missing pointer selects the other, both missing yields nil, and
+// the selected pointer remains shared with its caller.
 func pickSooner(a, b *time.Time) *time.Time {
 	switch {
 	case a != nil && b != nil:

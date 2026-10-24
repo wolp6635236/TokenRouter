@@ -9,16 +9,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// contextResult 保存异步查询返回给主测试协程的结果。
+// contextResult carries a snapshot and error from an asynchronous cache-call
+// fixture.
 type contextResult struct {
-	entry Entry
-	err   error
+	entry Entry // asynchronous snapshot result
+	err   error // asynchronous call error
 }
 
-// awaitContextWaiters 等待调用方完成登记，取消顺序不依赖调度时机。
+// awaitContextWaiters waits until a registered query flight has the expected
+// waiter count. It inspects the registry under loadMu for up to one second,
+// failing the test when cancellation setup cannot reach that state.
 func awaitContextWaiters(t *testing.T, c *Cache, key string, count int) *contextLoad {
 	t.Helper()
 	var flight *contextLoad
+	// Poll registry state before cancelling callers so the test establishes how
+	// many waiters are sharing the flight at the cancellation decision being asserted.
 	require.Eventually(t, func() bool {
 		c.loadMu.Lock()
 		defer c.loadMu.Unlock()
@@ -28,14 +33,21 @@ func awaitContextWaiters(t *testing.T, c *Cache, key string, count int) *context
 	return flight
 }
 
-// startContextLoad 将测试结果传回主测试协程。
+// startContextLoad starts one context-aware cache call and returns its result
+// channel. A single buffered publication lets the goroutine finish before the
+// test receives the result; the channel remains open afterward.
 func startContextLoad(c *Cache, ctx context.Context, key string, load func(context.Context) (any, error)) <-chan contextResult {
+	// Buffer the sole result so completion does not depend on the test receiving
+	// immediately; callers can coordinate registry state before reading this outcome.
 	done := make(chan contextResult, 1)
 	go func() { entry, _, err := c.GetOrLoadContext(ctx, key, load); done <- contextResult{entry, err} }()
 	return done
 }
 
-// TestContextLoadCallerCancellationKeepsWaiters 覆盖首个请求和后加入请求的独立取消。
+// TestContextLoadCallerCancellationKeepsWaiters registers two callers and
+// cancels either the first or later waiter. The shared context must remain live
+// for the survivor, execute one load, and return independently mutable payload
+// data.
 func TestContextLoadCallerCancellationKeepsWaiters(t *testing.T) {
 	for _, cancelFirst := range []bool{true, false} {
 		c := NewCache(time.Minute)
@@ -54,6 +66,8 @@ func TestContextLoadCallerCancellationKeepsWaiters(t *testing.T) {
 				return nil, ctx.Err()
 			}
 		}
+		// Register both waiters before cancellation so either caller can leave while
+		// a confirmed peer still needs the flight and keeps its shared context alive.
 		a := startContextLoad(c, first, "key", load)
 		awaitContextWaiters(t, c, "key", 1)
 		b := startContextLoad(c, second, "key", load)
@@ -82,7 +96,10 @@ func TestContextLoadCallerCancellationKeepsWaiters(t *testing.T) {
 	}
 }
 
-// TestContextLoadLastWaiterCancelsAndDiscardsLateValue 后续请求不会加入已取消的查询。
+// TestContextLoadLastWaiterCancelsAndDiscardsLateValue abandons an
+// uncooperative loader before registering a replacement for its key. The
+// abandoned context must cancel, and its late value must leave the replacement
+// cached.
 func TestContextLoadLastWaiterCancelsAndDiscardsLateValue(t *testing.T) {
 	c := NewCache(time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,6 +113,8 @@ func TestContextLoadLastWaiterCancelsAndDiscardsLateValue(t *testing.T) {
 	entry, _, err := c.GetOrLoadContext(context.Background(), "key", func(context.Context) (any, error) { return "new", nil })
 	require.NoError(t, err)
 	require.Equal(t, "new", entry.Payload)
+	// Release the abandoned loader after the replacement is cached, then wait
+	// for its publication path so the next cache read observes the late-result decision.
 	close(release)
 	<-flight.done
 	entry, ok := c.Get("key")
@@ -103,7 +122,10 @@ func TestContextLoadLastWaiterCancelsAndDiscardsLateValue(t *testing.T) {
 	require.Equal(t, "new", entry.Payload)
 }
 
-// TestContextLoadDeadlineAndErrors 覆盖已过期调用、独立截止时间及失败后的重新加载。
+// TestContextLoadDeadlineAndErrors supplies an expired caller, a
+// deadline-limited waiter, a failing loader, and a panicking loader.
+// Cancellation must respect live peers, failures must stay uncached, and a
+// later call must recover by loading successfully.
 func TestContextLoadDeadlineAndErrors(t *testing.T) {
 	c := NewCache(time.Minute)
 	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
@@ -120,6 +142,8 @@ func TestContextLoadDeadlineAndErrors(t *testing.T) {
 		}
 	})
 	flight := awaitContextWaiters(t, c, "deadline", 1)
+	// Give the second registered call a short deadline while the first stays
+	// active, making its timeout exercise waiter departure from an existing flight.
 	short, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer stop()
 	_, _, err = c.GetOrLoadContext(short, "deadline", func(context.Context) (any, error) { t.Error("重复启动查询"); return nil, nil })

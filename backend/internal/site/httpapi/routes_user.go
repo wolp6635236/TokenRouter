@@ -2,7 +2,16 @@ package httpapi
 
 import "github.com/gin-gonic/gin"
 
-// RegisterUserRoutes 注册所属用户接口，共享鉴权、限流和审计已由 app 安装。
+// routes_user.go registers authenticated announcement listing and read
+// acknowledgements.
+// Logged-in users query announcements and acknowledge visible records through
+// the same authenticated route family. app prepares authentication, rate limiting,
+// and auditing on the supplied parent group before these handlers are bound,
+// keeping read acknowledgements subject to that shared request policy.
+
+// RegisterUserRoutes installs announcement listing and read acknowledgement under authenticated.
+// app supplies user authentication, rate limiting, and auditing on the group.
+// The child announcement routes inherit those middleware and the configured URL prefix.
 func RegisterUserRoutes(authenticated *gin.RouterGroup, endpoint *AnnouncementHandler) {
 	announcements := authenticated.Group("/announcements")
 	{

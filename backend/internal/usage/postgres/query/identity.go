@@ -13,7 +13,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
-// IdentityUserLastUsedAtOrder 按事务内维护的用户活动时间排序，无记录用户按空值排序。
+// identity.go orders identity queries by usage activity and reads users' latest
+// usage timestamps.
+// User activity reads come from usage_user_activity, whose timestamps are
+// maintained with usage-record changes. Identity ordering joins that summary so
+// users without usage activity participate with null values, while a batch
+// lookup returns UTC timestamps only for users with stored activity.
+
+// IdentityUserLastUsedAtOrder builds user ordering by the persisted activity
+// summary. Ascending order puts missing activity first and breaks ties by
+// ascending user ID; every other sortOrder selects descending values, missing
+// activity last, and descending IDs.
 // @project-doc docs/operations/observability_and_data_lifecycle.md#user_activity_summary
 func IdentityUserLastUsedAtOrder(sortOrder string) []func(*entsql.Selector) {
 	orderExpr := func(direction, nulls string, tieOrder func(string) string) func(*entsql.Selector) {
@@ -35,7 +45,10 @@ func IdentityUserLastUsedAtOrder(sortOrder string) []func(*entsql.Selector) {
 	}
 }
 
-// GetLatestUsedAtByUserIDs 批量读取用户活动汇总，缺少记录的用户不进入结果。
+// GetLatestUsedAtByUserIDs returns UTC activity timestamps for the requested
+// users. Empty IDs produce an allocated empty map before executor validation;
+// absent summary rows are omitted, and a nil executor with nonempty IDs returns
+// an error.
 func GetLatestUsedAtByUserIDs(ctx context.Context, db infra.Executor, userIDs []int64) (map[int64]*time.Time, error) {
 	result := make(map[int64]*time.Time, len(userIDs))
 	if len(userIDs) == 0 {
@@ -55,6 +68,8 @@ func GetLatestUsedAtByUserIDs(ctx context.Context, db infra.Executor, userIDs []
 	if err != nil {
 		return nil, err
 	}
+	// Release the acquired result rows on every exit. Close errors are ignored
+	// here; query, scan, and iteration errors still reach identity callers.
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
@@ -65,6 +80,8 @@ func GetLatestUsedAtByUserIDs(ctx context.Context, db infra.Executor, userIDs []
 		if scanErr := rows.Scan(&userID, &lastUsedAt); scanErr != nil {
 			return nil, scanErr
 		}
+		// Normalize each stored instant to UTC so identity views share one
+		// representation regardless of the SQL connection's returned timezone.
 		ts := lastUsedAt.UTC()
 		result[userID] = &ts
 	}

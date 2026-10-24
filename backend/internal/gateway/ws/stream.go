@@ -8,11 +8,41 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// RelayTurn 处理 ctx_pool 的单轮帧循环，记录输出、usage、首 token 时间和错误。
+// stream.go relays pooled upstream events while collecting usage and
+// classifying recoverable turn failures.
+// A pooled response turn can fail before any client frame, after leading
+// events, or after the client disconnects. Provider policy is evaluated on
+// observed upstream data before model, tool, and capacity-code rewrites prepare
+// the client copy, preserving failure classification separately from output
+// presentation.
+//
+// RelayTurn permits first-turn pre-output failures to return for generic close
+// or provider failover and suppresses an eligible missing-continuation error
+// for ingress recovery. After output begins it keeps terminal handling inside
+// the current stream. A recognized client disconnect stops further writes but
+// continues collecting upstream usage and images until terminal, then marks the
+// lease broken. The shared performance observer classifies upstream payloads
+// before client rewriting. Final results retain those arrival observations,
+// upstream model and tier, and successful downstream delivery separately.
+
+// RelayTurn forwards one normalized pooled request and returns its terminal
+// observations or final classified error. The caller owns the lease and
+// release; Port, its image and replay collectors, and adapter-owned downstream
+// write controls are required.
+//
+// Write and read errors retain the I/O stage and successful downstream-write
+// state for ingress retry decisions. First-turn generic and failover policy can
+// return before output; eligible missing-response recovery also returns before
+// exposing its error event. Later failures finish through the active output
+// path. A recognized downstream disconnect drains usage and image observations
+// until terminal and marks the lease broken. Performance captures useful upstream
+// content independently of diagnostic event-label counts. Model and tier are
+// observed before client rewriting.
 func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input ClientPayload, turn int, o StreamOptions, hooks *StreamHooks) (*ForwardResult, error) {
 	payload, payloadBytes, originalModel, routingModel := input.PayloadRaw, input.PayloadBytes, input.OriginalModel, input.RoutingModel
 	imageBillingModel, imageSizeTier, imageInputSize := input.ImageBillingModel, input.ImageSizeTier, input.ImageInputSize
@@ -23,7 +53,10 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 		return nil, errors.New("upstream websocket lease is nil")
 	}
 	turnStart := time.Now()
+	performance := timing.BeginPerformance(ctx, o.ProviderID, turnStart)
 	wroteDownstream := false
+	// Send the normalized request before observing events; a write failure records
+	// the pre-output stage so ingress can consider its bounded connection retry.
 	if err := lease.WriteRequest(ctx, payload, o.WriteTimeout); err != nil {
 		return nil, WrapIngressTurnError(
 			"write_upstream",
@@ -44,7 +77,7 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 	responseID := ""
 	usage := wire.ForwardUsage{}
 	imageCounter := p.ImageCounter()
-	var firstTokenMs *int
+
 	reqStream := p.Streaming(payload)
 	turnPreviousResponseID := payloadString(payload, "previous_response_id")
 	turnPreviousResponseIDKind := p.ClassifyPrevious(turnPreviousResponseID)
@@ -70,6 +103,9 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 	}
 	for {
 		upstreamMessage, readErr := lease.ReadEvent(ctx, o.ReadTimeout)
+		// A failed upstream reader leaves connection health uncertain, so mark the
+		// lease broken before returning its output-aware retry stage for session
+		// cleanup.
 		if readErr != nil {
 			lease.MarkBroken()
 			return nil, WrapIngressTurnError(
@@ -78,6 +114,9 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 				wroteDownstream,
 			)
 		}
+		// Repair compatible terminal envelopes before event observation and
+		// classification, keeping model, usage, warning, and client output consumers
+		// on the same normalized event form.
 		if normalized, changed := p.NormalizeCompleted(upstreamMessage); changed {
 			upstreamMessage = normalized
 		}
@@ -95,7 +134,9 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 			}
 			lastEventType = eventType
 		}
-		// 先保存用量和风控证据，错误提前返回后 AfterTurn 仍可完成风控处理。
+		// Update usage before saving risk evidence, so marked policy handling sees
+		// current counts even when a pre-output failure returns no terminal
+		// ForwardResult.
 		// @project-doc docs/domains/content_moderation.md#upstream_cyber_policy
 		if p.ShouldParseUsage(eventType) {
 			p.ParseUsage(upstreamMessage, &usage)
@@ -110,7 +151,9 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 			errorStatus := p.ErrorStatus(upstreamMessage)
 			fallbackReason, _ := p.ClassifyError(errCodeRaw, errTypeRaw, errMsgRaw)
 			if fallbackReason == "invalid_encrypted_content" {
-				// 记录被上游拒绝的密文摘要；错误照旧透传，下一轮进场时按摘要预剥离。
+				// Remember ciphertext rejected in this request under the scoped session
+				// before error output, allowing later turns to strip that lineage from
+				// payload and replay history.
 				if digests := p.EncryptedDigests(payload); len(digests) > 0 {
 					p.MarkEncrypted(digests)
 					p.Log(fmt.Sprintf(
@@ -128,7 +171,8 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 				o.PreviousRecovery &&
 				!wroteDownstream
 			if recoverablePrevNotFound {
-				// 可恢复事件的日志避开 error 词，LegacyPrintf 会根据该词判断 ERROR 级别。
+				// Keep the recoverable log label free of error, because LegacyPrintf uses
+				// that spelling to raise severity even when ingress can still recover.
 				p.Log(fmt.Sprintf(
 					"ingress_ws_prev_response_recoverable provider_id=%d turn=%d conn_id=%s idx=%d reason=%s code=%s type=%s message=%s previous_response_id=%s previous_response_id_kind=%s response_id=%s store_disabled=%v has_prompt_cache_key=%v",
 					o.ProviderID,
@@ -163,8 +207,8 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 					turnPromptCacheKey != "",
 				))
 			}
-			// previous_response_not_found 在 ingress 模式支持单次恢复重试：
-			// 不把该 error 直接下发客户端，而是由上层去掉 previous_response_id 后重放当前 turn。
+			// Suppress a recoverable previous_response_not_found event while ingress
+			// removes previous_response_id and replays the current turn once.
 			if recoverablePrevNotFound {
 				lease.MarkBroken()
 				errMsg := strings.TrimSpace(errMsgRaw)
@@ -177,6 +221,9 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 					false,
 				)
 			}
+			// A first-turn error before output can escape as generic close or provider
+			// failover. Mark that transport broken because this attempt will not consume
+			// its remaining events.
 			if turn == 1 && !wroteDownstream && errorDecision.Generic {
 				lease.MarkBroken()
 				return nil, p.GenericError(errorStatus)
@@ -197,10 +244,10 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 		if isTerminalEvent {
 			terminalEventCount++
 		}
-		if firstTokenMs == nil && isTokenEvent {
-			ms := int(time.Since(turnStart).Milliseconds())
-			firstTokenMs = &ms
-		}
+		// Record the first label selected by the gateway token predicate. That
+		// predicate can accept empty delta or structural output labels, so this
+		// timestamp is not a content-validity check.
+		performance.ObserveAt(string(upstreamMessage), eventType, time.Now())
 		imageCounter.AddSSEData(upstreamMessage)
 		terminalPolicy := TerminalPolicy{
 			TerminalEvent: p.NormalizeTerminal(eventType),
@@ -211,6 +258,9 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 			terminalPolicy = p.TerminalDecision(ctx, canonicalModel, lease.Headers(), upstreamMessage)
 		}
 		if eventType == "response.failed" {
+			// Use the terminal provider decision before client presentation; first-turn
+			// pre-output failure can return, while an active stream retains its already
+			// delivered prefix.
 			if turn == 1 && !wroteDownstream && terminalPolicy.Decision.Generic {
 				lease.MarkBroken()
 				return nil, p.GenericError(terminalPolicy.StatusCode)
@@ -226,11 +276,16 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 				)
 			}
 			if terminalPolicy.Decision.Generic {
-				// 已发送前导事件时无法切换 HTTP 状态，改用通用 WS 错误结束当前 turn。
+				// Keep prior delivered events and replace the selected failure payload with
+				// the generic client event, while terminalPolicy retains the original
+				// classified completion outcome.
 				upstreamMessage = p.GenericEvent()
 			}
 		}
 
+		// Restore client model and tool identities before collecting forwarded replay
+		// output, while independent upstream observers retain the provider
+		// declarations used by completion.
 		if !clientDisconnected {
 			if needModelReplace && len(mappedModelBytes) > 0 && p.MayContainModel(eventType) && bytes.Contains(upstreamMessage, mappedModelBytes) {
 				upstreamMessage = p.ReplaceModel(upstreamMessage, mappedModel, originalModel)
@@ -241,9 +296,10 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 				}
 			}
 			replayCollector.AddEvent(eventType, upstreamMessage)
-			// 输出给客户端的副本改写 server_is_overloaded 和 slow_down，使 Codex 执行退避重试。
-			// Codex 会将原错误码判为致命错误并结束会话，HTTP/SSE 和 HTTP bridge 使用同样的改写。
-			// upstreamMessage 保留上游原始报文，客户端失败和瞬时终态的健康处理据此判断提供商状态。
+			// Rewrite capacity codes in the client copy for Codex retry presentation.
+			// Provider policy has already classified the upstream event; changing this
+			// outgoing copy leaves that earlier decision and observed error evidence
+			// available for completion.
 			clientMessage := upstreamMessage
 			if eventType == "error" || eventType == "response.failed" {
 				if rewritten, changed := p.CapacityShed(clientMessage); changed {
@@ -251,8 +307,12 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 				}
 			}
 			if err := p.WriteClient(clientMessage); err != nil {
+				// A recognized client disconnect ends downstream delivery but keeps
+				// upstream reads active, preserving terminal usage and generated image
+				// counts before releasing this turn.
 				if p.IsDisconnect(err) {
 					clientDisconnected = true
+					timing.ObserveClientDisconnect(ctx, time.Now())
 					closeStatus, closeReason := p.SummarizeClose(err)
 					p.Log(fmt.Sprintf(
 						"ingress_ws_client_disconnected_drain provider_id=%d turn=%d conn_id=%s close_status=%s close_reason=%s",
@@ -271,20 +331,19 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 				}
 			} else {
 				wroteDownstream = true
+				performance.Delivered(string(upstreamMessage), time.Now())
 			}
 		}
 		if isTerminalEvent {
-			// 客户端断开后将上游连接标记为 broken，连接池丢弃该连接。
+			// Discard a disconnected client's connection after terminal drain, because
+			// this session can no longer use the transport for subsequent client turn
+			// delivery.
 			if clientDisconnected {
 				lease.MarkBroken()
 			}
-			firstTokenMsValue := -1
-			if firstTokenMs != nil {
-				firstTokenMsValue = *firstTokenMs
-			}
 			if o.Debug {
 				p.Debug(fmt.Sprintf(
-					"ingress_ws_turn_completed provider_id=%d turn=%d conn_id=%s response_id=%s duration_ms=%d events=%d token_events=%d terminal_events=%d first_event=%s last_event=%s first_token_ms=%d client_disconnected=%v",
+					"ingress_ws_turn_completed provider_id=%d turn=%d conn_id=%s response_id=%s duration_ms=%d events=%d token_events=%d terminal_events=%d first_event=%s last_event=%s client_disconnected=%v",
 					o.ProviderID,
 					turn,
 					p.Truncate(lease.ConnID(), 64),
@@ -295,11 +354,11 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 					terminalEventCount,
 					p.Truncate(firstEventType, 160),
 					p.Truncate(lastEventType, 160),
-					firstTokenMsValue,
 					clientDisconnected,
 				))
 			}
 			imageCount := imageCounter.Count()
+			performance.FinishAt(time.Now())
 			result := &ForwardResult{
 				RequestID:                   responseID,
 				Usage:                       usage,
@@ -315,7 +374,7 @@ func RelayTurn(ctx context.Context, p StreamPort, lease StreamLease, input Clien
 				UpstreamTerminalEvent:       terminalPolicy.TerminalEvent,
 				ResponseHeaders:             lease.Headers(),
 				Duration:                    time.Since(turnStart),
-				FirstTokenMs:                firstTokenMs,
+				Timings:                     performance.Clone(),
 			}
 			if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 				result.WSReplayInput = replayInput

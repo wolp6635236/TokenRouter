@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCreativeRunsWorkspaceMigration 校验创作台任务的浏览器工作区隔离迁移。
+// TestCreativeRunsWorkspaceMigration inspects workspace and idempotency index SQL.
+// It requires replacing user-wide uniqueness with the user-workspace-key index,
+// its non-null workspace predicate, and the workspace history index declaration.
 func TestCreativeRunsWorkspaceMigration(t *testing.T) {
 	content, err := FS.ReadFile("256_creative_runs_workspace.sql")
 	require.NoError(t, err)

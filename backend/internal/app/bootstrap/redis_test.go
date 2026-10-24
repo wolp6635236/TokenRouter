@@ -9,6 +9,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/config"
 )
 
+// Redis client options are derived from deployment fields before connections
+// are used. The fixture checks credentials, database selection, timeout units,
+// and pool sizes, then enables TLS to check that the configured host becomes
+// the certificate server name.
+
+// TestBuildRedisOptions supplies explicit deployment settings and compares the
+// derived Redis options. A second TLS-enabled configuration must supply TLS
+// settings with the configured host as ServerName.
 func TestBuildRedisOptions(t *testing.T) {
 	cfg := &config.Config{
 		Redis: config.RedisConfig{
@@ -37,7 +45,6 @@ func TestBuildRedisOptions(t *testing.T) {
 	require.Equal(t, 10, opts.MinIdleConns)
 	require.Nil(t, opts.TLSConfig)
 
-	// Test case with TLS enabled
 	cfgTLS := &config.Config{
 		Redis: config.RedisConfig{
 			Host:      "localhost",

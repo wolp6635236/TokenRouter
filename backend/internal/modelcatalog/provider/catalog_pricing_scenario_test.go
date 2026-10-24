@@ -1,7 +1,5 @@
 package provider
 
-// 本场景检查 service.go、catalog.go 提供的目录价格与 billing 计算器、pricing 解析和价格换算的协作。
-
 import (
 	"context"
 	"encoding/json"
@@ -17,7 +15,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 )
 
-// gpt56LadderCatalogJSON 为 GPT-5.6 型号配置上下文阶梯价格。
+// Long-context billing counts cache tokens together with ordinary input when
+// selecting a price tier. The scenarios compare that threshold choice with
+// service-tier scaling, media token splits, manual image rates, and explicit
+// zero prices so display and charge calculations retain the same known values.
+
+// gpt56LadderCatalogJSON supplies concrete GPT-5.6 standard, priority, cache,
+// Flex, and long-context rates for billing fixtures.
 const gpt56LadderCatalogJSON = `{
 	"gpt-5.6-sol": {"provider": "openai", "mode": "chat", "cache_write_multiplier": 1.25, "flex_multiplier": 0.5,
 		"input_cost_per_token": 5e-06, "input_cost_per_token_priority": 1e-05,
@@ -42,6 +46,10 @@ const gpt56LadderCatalogJSON = `{
 		"cache_read_input_token_cost_above_272k_tokens": 4e-08}
 }`
 
+// TestParsePricingData_DerivesLongContextFromAboveTierFields compares context
+// price fields, explicit rules, unchanged rates, and several thresholds. Parsing
+// must derive the asserted surcharge threshold and multipliers while retaining
+// explicit precedence and the first effective tier.
 func TestParsePricingData_DerivesLongContextFromAboveTierFields(t *testing.T) {
 	data, err := parsePricingFixture([]byte(`{
 		"gpt-above": {"provider": "openai", "mode": "chat",
@@ -78,6 +86,10 @@ func TestParsePricingData_DerivesLongContextFromAboveTierFields(t *testing.T) {
 	require.Equal(t, 128000, data["multi-threshold"].LongContextInputTokenThreshold)
 }
 
+// TestGetModelPricing_XAIThresholdInclusive resolves an xAI price carrying
+// above-200k fields. Billing metadata must retain the threshold and mark it
+// inclusive for subsequent context selection; this test checks the metadata
+// values used by that selection.
 func TestGetModelPricing_XAIThresholdInclusive(t *testing.T) {
 	service := newBillingFixture(newStubCatalogFromJSON(t, `{
 		"grok-4.5": {"provider": "xai", "mode": "chat",
@@ -91,6 +103,10 @@ func TestGetModelPricing_XAIThresholdInclusive(t *testing.T) {
 	require.True(t, pricing.LongContextThresholdInclusive)
 }
 
+// TestParsePricingData_ExplicitZeroThresholdDisablesLadder supplies above-tier
+// prices alongside an explicit zero threshold. Parsing must retain zero
+// threshold and multiplier values, keeping that manual rule from creating an
+// inferred surcharge.
 func TestParsePricingData_ExplicitZeroThresholdDisablesLadder(t *testing.T) {
 	data, err := parsePricingFixture([]byte(`{
 		"gpt-5.5": {"provider": "openai", "mode": "chat",
@@ -104,6 +120,10 @@ func TestParsePricingData_ExplicitZeroThresholdDisablesLadder(t *testing.T) {
 	require.Zero(t, data["gpt-5.5"].LongContextInputCostMultiplier)
 }
 
+// TestCalculateCost_PartialLongContextMultiplierDefaultsToOne crosses a
+// threshold with only one surcharge multiplier configured. Calculations must
+// scale the supplied side and its related cache rates while the missing side
+// keeps its base rate.
 func TestCalculateCost_PartialLongContextMultiplierDefaultsToOne(t *testing.T) {
 	tokens := billingpricing.UsageTokens{InputTokens: 300000, OutputTokens: 1000, CacheReadTokens: 10000}
 
@@ -138,7 +158,10 @@ func TestCalculateCost_PartialLongContextMultiplierDefaultsToOne(t *testing.T) {
 	})
 }
 
-// TestDisplayPricing_PartialLongContextMultiplierDefaultsToOne 检查展示和结算使用相同的缺省倍率，未配置的一侧使用倍率 1。
+// TestDisplayPricing_PartialLongContextMultiplierDefaultsToOne displays a price
+// with an input-only context multiplier. The higher interval must double input
+// price while retaining the base output price, matching the missing-side
+// default.
 func TestDisplayPricing_PartialLongContextMultiplierDefaultsToOne(t *testing.T) {
 	service := newBillingFixture(newStubCatalogFromJSON(t, `{
 		"partial-display": {"provider": "openai", "mode": "chat",
@@ -152,6 +175,10 @@ func TestDisplayPricing_PartialLongContextMultiplierDefaultsToOne(t *testing.T) 
 	require.InDelta(t, 1e-5, display.ContextIntervals[1].OutputPricePerToken, 1e-12)
 }
 
+// TestCalculateCost_ClaudeSonnetCatalogLadderIsDataDriven loads explicit Claude
+// above-tier prices and crosses their threshold. Billing metadata must use an
+// exclusive boundary, and the asserted input and output surcharges come from
+// the supplied record.
 func TestCalculateCost_ClaudeSonnetCatalogLadderIsDataDriven(t *testing.T) {
 	service := newBillingFixture(newStubCatalogFromJSON(t, `{
 		"claude-sonnet-4-5": {"provider": "anthropic", "mode": "chat",
@@ -172,6 +199,10 @@ func TestCalculateCost_ClaudeSonnetCatalogLadderIsDataDriven(t *testing.T) {
 	require.InDelta(t, 1000*1.5e-5*1.5, cost.OutputCost, 1e-10)
 }
 
+// TestParsePricingData_ParsesPriorityAndServiceTierFields loads standard,
+// priority, cache, and context rule fields from JSON. The decoded record must
+// retain its asserted priority rates, threshold, multipliers, and declared
+// service-tier support.
 func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	body := []byte(`{
 		"gpt-5.4": {
@@ -207,6 +238,9 @@ func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	require.True(t, pricing.SupportsServiceTier)
 }
 
+// TestParsePricingData_ParsesImageInputTokenPrice decodes an image input token
+// rate and resolves it into billing data. The catalog and billing
+// representations must retain the same asserted image input rate.
 func TestParsePricingData_ParsesImageInputTokenPrice(t *testing.T) {
 	pricingSvc := newModelCatalogFixture(modelCatalogFixture{})
 	data, err := parsePricingFixture([]byte(`{
@@ -231,24 +265,31 @@ func TestParsePricingData_ParsesImageInputTokenPrice(t *testing.T) {
 	require.InDelta(t, 8e-6, pricing.ImageInputPricePerToken, 1e-12)
 }
 
+// TestBillingService_GPT56UsesLongContextPricingAcrossModelsAndTiers combines
+// input, cache-write, and cache-read tokens above the shared threshold. Each
+// concrete model and service tier must apply the asserted context and tier
+// multipliers to its rate dimensions.
 func TestBillingService_GPT56UsesLongContextPricingAcrossModelsAndTiers(t *testing.T) {
 	models := []struct {
-		name               string
-		input, cached      float64
-		cacheWrite, output float64
+		name               string  // complete fixture model identity
+		input, cached      float64 // USD/token
+		cacheWrite, output float64 // USD/token
 	}{
 		{name: "gpt-5.6-sol", input: 5e-6, cached: 0.5e-6, cacheWrite: 6.25e-6, output: 30e-6},
 		{name: "gpt-5.6-terra", input: 2e-6, cached: 0.2e-6, cacheWrite: 2.5e-6, output: 12e-6},
 		{name: "gpt-5.6-luna", input: 0.2e-6, cached: 0.02e-6, cacheWrite: 0.25e-6, output: 1.2e-6},
 	}
 	tiers := []struct {
-		name       string
-		priceScale float64
+		name       string  // selected fixture service tier
+		priceScale float64 // expected service tier multiplier
 	}{
 		{name: "standard", priceScale: 1},
 		{name: "priority", priceScale: 2},
 		{name: "flex", priceScale: 0.5},
 	}
+	// Ordinary input, cache creation, and cache read together cross the threshold
+	// even though InputTokens alone is below it, selecting the context rates in
+	// these tier assertions.
 	tokens := billingpricing.UsageTokens{
 		InputTokens:         100000,
 		CacheCreationTokens: 100000,
@@ -275,6 +316,9 @@ func TestBillingService_GPT56UsesLongContextPricingAcrossModelsAndTiers(t *testi
 	}
 }
 
+// TestBillingService_GPT56LongContextBoundaryIsExclusive combines input and
+// cache tokens exactly at the configured threshold. Input and both cache costs,
+// together with output cost, must retain their base rates at that boundary.
 func TestBillingService_GPT56LongContextBoundaryIsExclusive(t *testing.T) {
 	svc := newBillingFixture(newStubCatalogFromJSON(t, gpt56LadderCatalogJSON))
 	tokens := billingpricing.UsageTokens{InputTokens: 100000, CacheCreationTokens: 100000, CacheReadTokens: 72000, OutputTokens: 10}
@@ -287,13 +331,18 @@ func TestBillingService_GPT56LongContextBoundaryIsExclusive(t *testing.T) {
 	require.InDelta(t, 10*30e-6, cost.OutputCost, 1e-12)
 }
 
+// TestDefaultPricingIncludesModelsDevGPT56Rates resolves concrete GPT-5.6
+// records from the embedded publication. Standard and priority token rates,
+// cache rates, and the higher context tier must match each asserted snapshot
+// value.
 func TestDefaultPricingIncludesModelsDevGPT56Rates(t *testing.T) {
 	pricingSvc := newOfflinePricingFixture(t)
 	billingSvc := newBillingFixture(pricingSvc)
 
 	tests := []struct {
-		model                                                             string
-		input, cached, cacheWrite, output                                 float64
+		model                             string  // complete embedded model identity
+		input, cached, cacheWrite, output float64 // USD/token
+		// USD/token
 		inputPriority, cachedPriority, cacheWritePriority, outputPriority float64
 	}{
 		{model: "gpt-5.6-sol", input: 4e-6, cached: 0.4e-6, cacheWrite: 5e-6, output: 20e-6, inputPriority: 8e-6, cachedPriority: 0.8e-6, cacheWritePriority: 10e-6, outputPriority: 40e-6},
@@ -320,6 +369,10 @@ func TestDefaultPricingIncludesModelsDevGPT56Rates(t *testing.T) {
 	}
 }
 
+// TestDefaultPricingIncludesModelsDevGPT6AstraRates loads GPT-6 Astra from
+// embedded catalog data. Billing must retain the asserted base and context
+// rates, and pricing-derived modalities must remain text/image input with text
+// output.
 func TestDefaultPricingIncludesModelsDevGPT6AstraRates(t *testing.T) {
 	pricingSvc := newOfflinePricingFixture(t)
 	billingSvc := newBillingFixture(pricingSvc)
@@ -339,6 +392,9 @@ func TestDefaultPricingIncludesModelsDevGPT6AstraRates(t *testing.T) {
 	require.Equal(t, []string{"text"}, outputModalities)
 }
 
+// TestParsePricingData_KeepsImageOnlyPricing parses a record with an image unit
+// price and no token rates. Its media price and mode must remain available
+// while TokenPricingAbsent records the missing token dimension.
 func TestParsePricingData_KeepsImageOnlyPricing(t *testing.T) {
 	body := []byte(`{
 		"image-only-model": {
@@ -354,10 +410,16 @@ func TestParsePricingData_KeepsImageOnlyPricing(t *testing.T) {
 	require.NotNil(t, pricing)
 	require.InDelta(t, 0.034, pricing.OutputCostPerImage, 1e-12)
 	require.Equal(t, "image_generation", pricing.Mode)
-	// 仅有图片价的条目标记为 token 价缺失，token 计费据此拒绝计价。
+	// The media price remains available while this marker records absent token
+	// prices, giving token billing an unavailable result for the separate token
+	// dimension.
 	require.True(t, pricing.TokenPricingAbsent)
 }
 
+// TestBillingService_GetModelPricing_FailsClosedForImageOnlyEntries compares an
+// image-only price with explicit free token rates. Token lookup must reject the
+// missing token dimension, accept declared zero prices, and retain its separate
+// image unit price.
 func TestBillingService_GetModelPricing_FailsClosedForImageOnlyEntries(t *testing.T) {
 	pricingSvc := newModelCatalogFixture(modelCatalogFixture{})
 	data, err := parsePricingFixture([]byte(`{
@@ -378,22 +440,27 @@ func TestBillingService_GetModelPricing_FailsClosedForImageOnlyEntries(t *testin
 	setPricingFixtureData(pricingSvc, data)
 	billingSvc := newBillingFixture(pricingSvc)
 
-	// image-only 条目的 token 计费返回 ErrModelPricingUnavailable。
+	// Token billing rejects image-only entries with ErrModelPricingUnavailable.
 	_, err = billingSvc.GetModelPricing("imagen-9.0-generate")
 	require.ErrorIs(t, err, billingpricing.ErrModelPricingUnavailable)
 
-	// token 价配置为 0 的免费条目正常返回。
+	// Explicit zero token prices remain valid free prices.
 	pricing, err := billingSvc.GetModelPricing("gemini-image-with-token-price")
 	require.NoError(t, err)
 	require.Zero(t, pricing.InputPricePerToken)
 
-	// 图片计费读取 image-only 条目的图片单价。
+	// The raw catalog entry keeps its image unit price after token resolution
+	// fails, leaving that priced media dimension available to the image billing
+	// path.
 	raw := pricingSvc.GetModelPricing("imagen-9.0-generate")
 	require.NotNil(t, raw)
 	require.InDelta(t, 0.04, raw.OutputCostPerImage, 1e-12)
 }
 
-// TestBillingService_GetDisplayPricing_ChatImageMetadataKeepsTokenMode 验证聊天模型携带按图元数据时仍展示 token 价格。
+// TestBillingService_GetDisplayPricing_ChatImageMetadataKeepsTokenMode displays
+// a chat record with image metadata beside an image-generation record. The
+// asserted prices must use their respective token and image modes with each
+// supplied display multiplier.
 func TestBillingService_GetDisplayPricing_ChatImageMetadataKeepsTokenMode(t *testing.T) {
 	pricingSvc := newModelCatalogFixture(modelCatalogFixture{pricingData: map[string]*billingpricing.CatalogModelPricing{
 		"gemini-3.1-pro-high": {
@@ -409,21 +476,28 @@ func TestBillingService_GetDisplayPricing_ChatImageMetadataKeepsTokenMode(t *tes
 	}})
 	billingSvc := newBillingFixture(pricingSvc)
 
-	// 聊天模型优先展示 token 价格。
+	// The chat record has token rates beside its separate image metadata. The
+	// display therefore uses those token rates with the supplied group multiplier
+	// for this request.
 	chatPricing := billingSvc.DisplayPricing("gemini-3.1-pro-high", 8)
 	require.Equal(t, "token", chatPricing.PricingMode)
 	require.Equal(t, "priced", chatPricing.PriceStatus)
 	require.InDelta(t, 16e-6, chatPricing.InputPricePerToken, 1e-12)
 	require.InDelta(t, 96e-6, chatPricing.OutputPricePerToken, 1e-12)
 
-	// 图片生成模型按图片单价展示。
+	// The image-generation record has a unit image price with no token rates.
+	// Its display applies the supplied multiplier to that separately priced image
+	// dimension.
 	imagePricing := billingSvc.DisplayPricing("gemini-3.1-flash-image", 2)
 	require.Equal(t, "image", imagePricing.PricingMode)
 	require.Equal(t, "priced", imagePricing.PriceStatus)
 	require.InDelta(t, 0.1344, imagePricing.ImagePrice1K, 1e-12)
 }
 
-// TestBillingService_Gemini35FlashTiersRequireOwnPricing 检查未配置完整档位价格时返回缺价。
+// TestBillingService_Gemini35FlashTiersRequireOwnPricing queries Gemini 3.5
+// Flash suffixes with no catalog source. Billing must return
+// ErrModelPricingUnavailable and nil for every complete tier identity,
+// exposing the missing token prices to its caller.
 func TestBillingService_Gemini35FlashTiersRequireOwnPricing(t *testing.T) {
 	svc := newBillingFixture(nil)
 	for _, model := range []string{"gemini-3.5-flash-high", "gemini-3.5-flash-low", "gemini-3.5-flash-medium", "gemini-3.5-flash-tiered"} {
@@ -433,6 +507,9 @@ func TestBillingService_Gemini35FlashTiersRequireOwnPricing(t *testing.T) {
 	}
 }
 
+// TestBillingService_Gemini36FlashTiersRequireOwnPricing queries Gemini 3.6
+// Flash suffixes without a catalog source. Every asserted complete tier name
+// must return the pricing-unavailable error and no resolved billing price.
 func TestBillingService_Gemini36FlashTiersRequireOwnPricing(t *testing.T) {
 	svc := newBillingFixture(nil)
 	for _, model := range []string{"gemini-3.6-flash-high", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"} {
@@ -442,6 +519,10 @@ func TestBillingService_Gemini36FlashTiersRequireOwnPricing(t *testing.T) {
 	}
 }
 
+// TestParsePricingData_PreservesPriorityAndServiceTierFields round-trips
+// standard and priority fixture prices through JSON encoding and parsing.
+// Input, output, cache-read, and service-tier fields must retain the asserted
+// values in the decoded record.
 func TestParsePricingData_PreservesPriorityAndServiceTierFields(t *testing.T) {
 	raw := map[string]any{
 		"gpt-5.4": map[string]any{
@@ -474,6 +555,10 @@ func TestParsePricingData_PreservesPriorityAndServiceTierFields(t *testing.T) {
 	require.True(t, pricing.SupportsServiceTier)
 }
 
+// TestParsePricingData_PreservesServiceTierPriorityFields decodes a price
+// record with explicit standard and priority rates. Each input, output, and
+// cache-read rate and the service-tier flag must remain available for later
+// billing resolution.
 func TestParsePricingData_PreservesServiceTierPriorityFields(t *testing.T) {
 	pricingData, err := parsePricingFixture([]byte(`{
 		"gpt-5.4": {
@@ -501,6 +586,9 @@ func TestParsePricingData_PreservesServiceTierPriorityFields(t *testing.T) {
 	require.True(t, pricing.SupportsServiceTier)
 }
 
+// TestParsePricingData_ParsesModalityFields decodes explicit input/output lists
+// and vision/audio flags with a token price. Those declarations must retain
+// their asserted values, including absent audio output support remaining false.
 func TestParsePricingData_ParsesModalityFields(t *testing.T) {
 	data, err := parsePricingFixture([]byte(`{
 		"gemini-2.5-flash": {
@@ -524,8 +612,14 @@ func TestParsePricingData_ParsesModalityFields(t *testing.T) {
 	require.False(t, parsed.SupportsAudioOutput)
 }
 
-// TestEmbeddedSupplementsWithoutResources 验证空工作目录、离线启动及缺失外部文件都保留官方价格。
+// TestEmbeddedSupplementsWithoutResources initializes from a temporary working
+// directory with empty or nonexistent custom paths. Embedded image and
+// operation prices must remain available across manual update, and no resources
+// directory is created.
 func TestEmbeddedSupplementsWithoutResources(t *testing.T) {
+	// Start in an empty working directory so a prior checkout's resource files
+	// cannot satisfy these pricing queries; testing restores the working directory
+	// during fixture cleanup.
 	t.Chdir(t.TempDir())
 	for _, path := range []string{"", "./resources/model-pricing/model_pricing_supplements.json"} {
 		service := NewService(Options{DataDir: t.TempDir(), FallbackFile: path}, nil)
@@ -543,12 +637,16 @@ func TestEmbeddedSupplementsWithoutResources(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "加载默认价格不应创建外部资源")
 }
 
+// TestModelsCatalogEmbeddingDefaultPricing bills one million input tokens
+// against embedded OpenAI embedding records. Each complete model must produce
+// the asserted total cost, verifying catalog unit conversion through the
+// billing representation.
 func TestModelsCatalogEmbeddingDefaultPricing(t *testing.T) {
 	service := NewService(Options{DataDir: t.TempDir()}, nil)
 	require.NoError(t, service.Initialize())
 	for _, tc := range []struct {
-		model string
-		price float64
+		model string  // complete embedding model identity
+		price float64 // USD/million-tokens
 	}{
 		{"text-embedding-3-small", 0.02},
 		{"text-embedding-3-large", 0.13},
@@ -562,6 +660,10 @@ func TestModelsCatalogEmbeddingDefaultPricing(t *testing.T) {
 	}
 }
 
+// TestModelsCatalogMediaSupplementAliases supplies an image token rate to one
+// first-party model. Bare and matching qualified records must receive the rate
+// and source label, while relay and snapshot identities retain separate pricing
+// fields.
 func TestModelsCatalogMediaSupplementAliases(t *testing.T) {
 	dir := t.TempDir()
 	supplement := filepath.Join(dir, "supplement.json")
@@ -579,15 +681,18 @@ func TestModelsCatalogMediaSupplementAliases(t *testing.T) {
 	}
 }
 
-// TestModelsCatalogGeminiImageTextPricing 同时验证内嵌目录、媒体补充和实际用量拆分。
+// TestModelsCatalogGeminiImageTextPricing splits total output usage into text
+// and image token components for embedded Gemini image records. Billing and
+// display must retain the distinct asserted rates across bare and qualified
+// identities.
 func TestModelsCatalogGeminiImageTextPricing(t *testing.T) {
 	service := NewService(Options{
 		DataDir: t.TempDir(),
 	}, nil)
 	require.NoError(t, service.Initialize())
 	for _, tc := range []struct {
-		model                 string
-		textPrice, imagePrice float64
+		model                 string  // complete Gemini image identity
+		textPrice, imagePrice float64 // USD/token
 	}{
 		{"gemini-3-pro-image", 12e-6, 120e-6},
 		{"gemini-2.5-flash-image", 2.5e-6, 30e-6},
@@ -609,9 +714,15 @@ func TestModelsCatalogGeminiImageTextPricing(t *testing.T) {
 	}
 }
 
+// TestModelsCatalogGeminiImageSupplementPrecedence adds a free text output rate
+// to an original Google image record. Existing catalog image pricing must win
+// over the custom image rate, while relay text prices remain separate.
 func TestModelsCatalogGeminiImageSupplementPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	supplement := filepath.Join(dir, "supplement.json")
+	// fixture gives the original Google record an image bucket and the relay
+	// a separate ordinary output rate for checking supplement precedence across
+	// those services.
 	const fixture = `{"providers":{
 		"google":{"models":{"gemini-image-test":{"cost":{"input":2,"output":150},"modalities":{"output":["text","image"]}}}},
 		"openrouter":{"models":{"gemini-image-test":{"cost":{"input":1,"output":9},"modalities":{"output":["text","image"]}}}}
@@ -622,7 +733,9 @@ func TestModelsCatalogGeminiImageSupplementPrecedence(t *testing.T) {
 		FallbackFile: supplement,
 	}, &catalogRemoteFixture{body: []byte(fixture)})
 	require.NoError(t, service.ForceUpdate())
-	// 缺少文本费率时，文本报价为未定价。
+	// The original record's output rate belongs to its image bucket. Text
+	// resolution remains unavailable until the supplement supplies that missing
+	// token rate below.
 	_, err := billingpricing.ResolveModelPricing("gemini-image-test", service.GetModelPricing("gemini-image-test"))
 	require.ErrorIs(t, err, billingpricing.ErrModelPricingUnavailable)
 	require.InDelta(t, 150e-6, service.GetModelPricing("gemini-image-test").OutputCostPerImageToken, 1e-12)
@@ -633,10 +746,15 @@ func TestModelsCatalogGeminiImageSupplementPrecedence(t *testing.T) {
 		require.Zero(t, value.OutputPricePerToken)
 		require.InDelta(t, 150e-6, value.ImageOutputPricePerToken, 1e-12)
 	}
-	// 文本补充按原厂模型名匹配。
+	// The custom text rate belongs to the original Google identity and its
+	// equivalent qualified key, leaving this relay's separate ordinary output rate
+	// in its own record.
 	require.InDelta(t, 9e-6, catalogPriceForTest(t, service, "openrouter/gemini-image-test").OutputPricePerToken, 1e-12)
 }
 
+// TestModelsCatalogImagePriceOverrideAcrossContextTiers applies one manual
+// image input rate to a catalog with context tiers. Image input cost must stay
+// at the asserted amount below, at, and above the token threshold.
 func TestModelsCatalogImagePriceOverrideAcrossContextTiers(t *testing.T) {
 	service := NewService(Options{DataDir: t.TempDir()}, nil)
 	require.NoError(t, service.Initialize())
@@ -655,7 +773,10 @@ func TestModelsCatalogImagePriceOverrideAcrossContextTiers(t *testing.T) {
 	}
 }
 
-// TestModelsCatalogGrokInclusiveContextBoundary 覆盖实际目录的阈值前、阈值处及缓存混合输入。
+// TestModelsCatalogGrokInclusiveContextBoundary compares usage below and at xAI
+// context limits, including cached input. Costs and display intervals must
+// switch at the inclusive boundary, while disabling context pricing retains the
+// base cost.
 func TestModelsCatalogGrokInclusiveContextBoundary(t *testing.T) {
 	service := NewService(Options{DataDir: t.TempDir()}, nil)
 	require.NoError(t, service.Initialize())
@@ -663,9 +784,9 @@ func TestModelsCatalogGrokInclusiveContextBoundary(t *testing.T) {
 		t.Run(model, func(t *testing.T) {
 			base := catalogPriceForTest(t, service, model)
 			for _, tc := range []struct {
-				tokens billingpricing.UsageTokens
-				want   float64
-				long   bool
+				tokens billingpricing.UsageTokens // ordinary and cached usage counts
+				want   float64                    // USD
+				long   bool                       // expected context surcharge activation
 			}{
 				{billingpricing.UsageTokens{InputTokens: 199999, OutputTokens: 1000}, 0.405998, false},
 				{billingpricing.UsageTokens{InputTokens: 200000, OutputTokens: 1000}, 0.812, true},
@@ -676,6 +797,9 @@ func TestModelsCatalogGrokInclusiveContextBoundary(t *testing.T) {
 				require.InDelta(t, tc.want, cost.TotalCost, 1e-12)
 				require.Equal(t, tc.long, cost.LongContextBillingApplied)
 			}
+			// Display ranges use exclusive lower limits and inclusive upper limits.
+			// Ending the base range at 199,999 places 200,000 in the higher range,
+			// matching this model's billing switch.
 			intervals := billingpricing.LongContextDisplayPricingIntervals(base, 1)
 			require.Len(t, intervals, 2)
 			require.Equal(t, 199999, *intervals[0].MaxTokens)
@@ -686,6 +810,9 @@ func TestModelsCatalogGrokInclusiveContextBoundary(t *testing.T) {
 	}
 }
 
+// TestModelsCatalogExplicitZeroImageOutput combines a catalog image output rate
+// of zero with a supplemented text rate. Split output billing must charge text
+// tokens and retain free image tokens with their explicit-price flag.
 func TestModelsCatalogExplicitZeroImageOutput(t *testing.T) {
 	dir := t.TempDir()
 	supplement := filepath.Join(dir, "supplement.json")
@@ -704,7 +831,10 @@ func TestModelsCatalogExplicitZeroImageOutput(t *testing.T) {
 	require.True(t, base.ImageOutputPriceExplicit)
 }
 
-// TestSupplementRulesPublishAtomically 覆盖目录优先、独立单位、操作默认价及失败保留。
+// TestSupplementRulesPublishAtomically publishes model rules and operation
+// defaults before supplying invalid media data. Rejection must retain prices,
+// defaults, and timestamp, while later 304 responses apply valid zero overrides
+// and removed fields.
 func TestSupplementRulesPublishAtomically(t *testing.T) {
 	dir := t.TempDir()
 	supplement := filepath.Join(dir, "supplement.json")
@@ -723,6 +853,9 @@ func TestSupplementRulesPublishAtomically(t *testing.T) {
 	require.NotContains(t, service.Snapshot().Data, billingpricing.BillingDefaultsKey)
 	require.NotContains(t, service.ListModelNamesByProvider(""), billingpricing.BillingDefaultsKey)
 	require.Equal(t, service.GetModelPricing("anthropic/claude-test").ImagePrices, raw.ImagePrices)
+	// Fix the clock inside the supplied UTC price period so token cost assertions
+	// apply its multiplier along with the request's Fast and Max rules from the
+	// same publication.
 	calc := billing.NewCalculator(service, billing.CalculatorOptions{Now: func() time.Time { return time.Date(2026, 10, 1, 2, 0, 0, 0, time.UTC) }})
 	unit, err := calc.DefaultImagePrice("claude-test", "1K")
 	require.NoError(t, err)
@@ -739,7 +872,9 @@ func TestSupplementRulesPublishAtomically(t *testing.T) {
 	require.Equal(t, 0.5, calc.CalculateWebSearchCost(2, nil, 1).ActualCost)
 	zero := 0.0
 	require.Zero(t, calc.CalculateWebSearchCost(2, &zero, 1).ActualCost)
-	// 无长上下文和自定义价卡时，时段与推理倍率取自同一目录数据。
+	// Ten input tokens stay below the first configured context tier. The priority
+	// request combines Fast, Max, and active UTC period multipliers on the
+	// catalog's base token rate.
 	resolver := billing.NewPriceResolver(nil, calc, nil, nil)
 	cost, err := calc.CalculateCostUnified(billing.CostInput{Ctx: context.Background(), Model: "claude-test", Tokens: billingpricing.UsageTokens{InputTokens: 10}, RateMultiplier: 1, ServiceTier: "priority", ReasoningEffort: "max", Resolver: resolver})
 	require.NoError(t, err)
@@ -750,7 +885,9 @@ func TestSupplementRulesPublishAtomically(t *testing.T) {
 	require.Equal(t, before.Data, service.Snapshot().Data)
 	require.Equal(t, before.BillingDefaults, service.BillingDefaults())
 	require.Equal(t, before.LastUpdated, service.Snapshot().LastUpdated)
-	// 304 时仍重读补充文件，配置为零的价格和已删除字段同时生效。
+	// The retained remote body stays unchanged while this custom layer changes.
+	// Its new fingerprint requires validation before zero prices and removed
+	// fields replace the prior supplement data.
 	require.NoError(t, os.WriteFile(supplement, []byte(`{"claude-test":{"cache_creation_input_token_cost_above_1hr":0,"image_prices":{"1K":0}},"_billing_defaults":{"audio_tts_price_per_million_chars":0}}`), 0o600))
 	remote.unchanged = true
 	require.NoError(t, service.syncWithRemote())
@@ -761,14 +898,19 @@ func TestSupplementRulesPublishAtomically(t *testing.T) {
 	require.NoError(t, service.syncWithRemote())
 	require.Empty(t, service.GetModelPricing("claude-test").ImagePrices)
 	require.Equal(t, 0.01, *service.BillingDefaults().WebSearchPricePerCall)
-	// 发布后的快照可独立修改。
+	// Change the earlier snapshot after later publications have removed image
+	// prices, checking that its retained map cannot add that image dimension to
+	// the live service.
 	snap := before
 	snap.BillingDefaults.WebSearchPricePerCall = new(float64)
 	snap.Data["claude-test"].ImagePrices["1K"] = 99
 	require.Empty(t, service.GetModelPricing("claude-test").ImagePrices)
 }
 
-// TestShippedSupplementsAreMinimalAndDocumented 验证分发数据没有混入旧展示字段。
+// TestShippedSupplementsAreMinimalAndDocumented inspects embedded model records
+// and operation defaults. Models must retain verification source fields while
+// obsolete top-level display fields are absent, and operation defaults retain
+// their sources object.
 func TestShippedSupplementsAreMinimalAndDocumented(t *testing.T) {
 	body := modelcatalog.Supplements()
 	var records map[string]map[string]json.RawMessage
@@ -786,7 +928,10 @@ func TestShippedSupplementsAreMinimalAndDocumented(t *testing.T) {
 	}
 }
 
-// TestModelRulesReturnIndependentValues 防止调用方修改可空倍率或分时数组污染已发布目录。
+// TestModelRulesReturnIndependentValues mutates a resolved Fast multiplier and
+// time period after loading catalog rules. Subsequent resolution must retain
+// the asserted multiplier, period, and derived five-minute and one-hour cache
+// prices.
 func TestModelRulesReturnIndependentValues(t *testing.T) {
 	entries, diagnostics, err := billingpricing.ParsePricingEntries(map[string]json.RawMessage{"model": json.RawMessage(`{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002,"cache_write_multiplier":1.25,"cache_write_1h_multiplier":2,"fast_multiplier":3,"flex_multiplier":0.5,"max_reasoning_effort_multiplier":4,"time_pricing":{"timezone":"UTC","periods":[{"start_time":"01:00","end_time":"03:00","multiplier":2}]}}`)})
 	require.NoError(t, err)
@@ -805,7 +950,10 @@ func TestModelRulesReturnIndependentValues(t *testing.T) {
 	require.InDelta(t, 2e-6, second.CacheCreation1hPrice, 1e-12)
 }
 
-// TestJevOfflineCatalogPricesKeepProviderIdentity 检查 TypeSafe 直连与渠道免费型号各自查价。
+// TestJevOfflineCatalogPricesKeepProviderIdentity loads supplemented TypeSafe
+// identities alongside a free relay model. Asserted original rates and text
+// attributes remain available, relay rates stay free, and an unconfigured
+// version remains unresolved.
 func TestJevOfflineCatalogPricesKeepProviderIdentity(t *testing.T) {
 	service := newOfflinePricingFixture(t)
 	for _, model := range []string{"jev-latest", "jev-preview", "jev-1.13.0"} {
@@ -832,7 +980,9 @@ func TestJevOfflineCatalogPricesKeepProviderIdentity(t *testing.T) {
 	require.Nil(t, service.GetModelPricing("jev-unknown-version"))
 }
 
-// TestJevCatalogPricesOverrideSupplement 检查原厂目录报价和零价优先，渠道报价各自生效。
+// TestJevCatalogPricesOverrideSupplement publishes original TypeSafe prices and
+// a separately priced relay record. Catalog input values, including zero, must
+// win over embedded supplementation while the relay keeps its own input price.
 func TestJevCatalogPricesOverrideSupplement(t *testing.T) {
 	remote := &catalogRemoteFixture{body: []byte(`{"providers":{"typesafe":{"models":{"jev-latest":{"cost":{"input":0.084,"output":0}},"jev-preview":{"cost":{"input":0,"output":0}}}},"relay":{"models":{"jev-preview":{"cost":{"input":5,"output":2}}}}}}`)}
 	service := NewService(Options{DataDir: t.TempDir(), RemoteURL: "https://models.dev/catalog.json?type=all"}, remote)
@@ -844,7 +994,10 @@ func TestJevCatalogPricesOverrideSupplement(t *testing.T) {
 	require.InDelta(t, 5e-6, service.GetModelPricing("relay/jev-preview").InputCostPerToken, 1e-15)
 }
 
-// TestUnifiedModelSupplementPublishesPriceAndAttributes 检查同一补充文件的属性和价格一起发布，坏属性拒绝整次更新。
+// TestUnifiedModelSupplementPublishesPriceAndAttributes initializes a model
+// with custom price and attributes, then submits an invalid modality. Initial
+// values must resolve together, and rejection must retain the asserted price
+// and display name.
 func TestUnifiedModelSupplementPublishesPriceAndAttributes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"jev-preview":{"provider":"typesafe","input_cost_per_token":0.0000001,"output_cost_per_token":0,"attributes":{"display_name":"Custom preview","context":128000,"input_modalities":["text"]}}}`), 0o600))

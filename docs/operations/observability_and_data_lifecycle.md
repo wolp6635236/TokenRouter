@@ -29,6 +29,8 @@
 
 `usage`、`audit`、`ops` 分别负责各自的记录、用例和存储适配层；生产实例统一由 app 持有。供应商用量的解析、请求 ID 的选择、结算和 `UsageRecordWorkerPool` 的完成任务在网关；资金去重的归档由 billing 的专门能力执行。
 
+标准库日志和 `LegacyPrintf` 共用级别解析规则：开头的 `[DEBUG]`、`[INFO]`、`[WARN]`、`[ERROR]` 或对应的 `debug:`、`info:`、`warn:`、`error:` 优先决定级别，之后才对未标记的消息按英文关键词推断。显式前缀也覆盖插值参数中的错误词。需要保持既定级别的旧式消息应带前缀，避免文案翻译或错误详情改变 stdout/stderr 分流和 Ops 系统日志的收录范围。
+
 用量的生产使用方，直接使用 `usage.UsageLog`、查询接口和同一个 PostgreSQL Store，用量记录和展示数据分开。关联的用户、Key、提供商只用于展示。网关的完成记录在写入之前，保留客户端模型的展示覆盖，它只影响 `requested_model`，实际的模型、映射链和计费输入不变。
 
 用量日志不是扣费账本，Ops 事件也不是请求成功的唯一证据。结算失败时保留的用量日志，仍然包含计算出的成本，但用 `actual_cost=0` 标明没有扣费成功；这类记录要和结算表对账，不能作为扣费成功的证据。排查金额时，以结算事务和账单分配为准，再用 `request_id`、用户、Key、提供商和时间窗口关联用量和 Ops 数据。清理分析记录不会退款，也修复不了一笔错误的结算。
@@ -46,7 +48,13 @@
 
 请求 ID 的生成、别名、计费关联和查询规则见[请求 ID 与请求查询](request_lookup.md)。入口生成的 ID 贯穿各类诊断记录。供应商和调用方的 ID 保存为外部别名，权限由认证主体和记录归属决定。使用记录的 `billing_key` 负责兼容历史资金去重值，用户界面展示 `request_id`。
 
-流式网关的 `http.access` 记录，还会尽力写入以下阶段字段：`request_content_length`、`provider_slot_acquired_ms`、`upstream_get_conn_ms`、`upstream_got_conn_ms`、`upstream_wrote_request_ms`、`upstream_first_response_byte_ms`、`upstream_first_sse_data_ms`、`first_visible_output_ms` 和 `first_downstream_flush_ms`。`upstream_attempt_count`、各阶段的计数、连接复用和写入错误字段，用来识别连接池等待、重试和传输异常。这些字段只有时间、计数和连接复用状态，不包含请求体和凭据。
+`usage_logs.timings` 是使用记录性能的唯一持久化来源。完成任务冻结对应尝试的观测，和 usage 一次写入；用量列表、导出、TTFT/TPS 和性能聚合都从它读取。Ops 关闭或访问日志被采样，不影响已经写入 usage 的指标。字段定义见 [HTTP 接口](../interfaces/http_api.md#response_errors)。
+
+`request_records` 保存整个请求的状态、起止时间、关系、上游尝试和完成写入结果。鉴权失败、准入拒绝、排队超时、连接失败等没有 usage 的请求，保留必要的失败阶段计时。A 失败后 B 产生 usage 时，A 的失败仍可查询，B 的性能通过 usage 关联。请求摘要不保存完整成功性能快照，失败诊断也不作为性能报表的替代来源。
+
+`http.access` 保留状态、访问生命周期耗时、路由、请求大小、身份关联和错误上下文。它不再自动附加完整阶段性能快照；其他日志中的独立操作耗时和错误字段继续保留。`ops_system_logs.extra` 不参与使用记录计时查询。
+
+入队表示待处理，数据库回执才表示已确认写入。等待超时后仍在执行的批量写入记为结果未知，详情查询随后通过正常 usage 关联确认数据是否出现。队列拒绝、任务异常和最终写入失败保留诊断，不创建额外 usage，也不重做资金处理。完整性能快照由已有内存任务和写入队列持有；进程崩溃和数据库持续不可用仍可能丢失尚未持久化的观测。
 
 凭据、Authorization、Cookie、refresh token、支付密钥、对象存储 secret、完整的上游 body 和用户的提示词，都不会直接写进日志。上游错误只透传允许的安全字段；系统日志 sink 在写库之前再整理一次字段并限制长度。新增日志字段时，同时检查：结构化 logger、Ops sink 的字段白名单和脱敏、管理端 DTO、导出和测试夹具。
 
@@ -124,7 +132,9 @@ Usage cleanup 是管理员手动创建的持久任务，需要提供时间范围
 
 ## 备份与恢复范围
 
-backup 使用 PostgreSQL dump，把产物流式写到本地或 S3 兼容存储；配置、记录、定时调度和恢复都受维护锁保护。默认的内容策略，会排除 `backupContentTableDataGroups` 里归类的 usage records、Ops logs、专项 audit history 和 runtime data，这四类都需要手动选择。备份显示 completed，只说明已经写出了所选的内容，不代表这四类都在文件里。
+backup 使用 PostgreSQL dump，把产物流式写到本地或 S3 兼容存储；配置、记录、定时调度和恢复都受维护锁保护。默认的内容策略，会排除 `backupContentTableDataGroups` 里归类的 usage records、Ops logs、专项 audit history 和 runtime data，这四类都需要手动选择。提供商余额提醒的最近轮次和下次检查时间属于 `runtime_data`，配置仍保存在提供商 Extra 中；恢复时没有运行状态会在下一轮扫描重新检查。备份显示 completed，只说明已经写出了所选的内容，不代表这四类都在文件里。
+
+新建备份的文件名统一为 `tr_YYYYMMDD_HHMMSS.sql.gz`，前缀固定为 `tr`。本地和 S3 存储使用这个文件名生成对象路径，下载和恢复读取备份记录中保存的名称与对象键；已有的 `sub2api` 前缀备份继续按原记录访问。
 
 S3 的 `multipart` 上传模式，把 gzip 流作为一个对象、以较低的内存上传，适合兼容标准 multipart 签名的存储；`spooled_put` 面向只能可靠接受已知长度 `PutObject` 的兼容服务。后者超过 4 GiB 时，边压缩边封装成独立的分卷，临时磁盘上只保留当前的一卷；备份记录保存每一卷的顺序、对象键、大小和 SHA-256。任何一卷上传失败、服务重启或删除失败时，尝试清理全部已经登记的对象，清理不完整时保留可以诊断的记录。
 

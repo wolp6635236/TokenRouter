@@ -6,13 +6,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestConvertClaudeToolsToGeminiTools_CustomType 测试 custom 类型工具转换。
+// Native tool conversion groups accepted client functions and retains a
+// separate typed search declaration. Schema fixtures check recursive key
+// removal, type normalization, scalar enum spelling and representable integer
+// minimum conversion, keeping their asserted cases distinct from general
+// vendor validation.
+
+// TestConvertClaudeToolsToGeminiTools_CustomType supplies ordinary, nested
+// custom, mixed, and malformed custom declarations. It checks nil output for
+// the malformed fixture and counts the grouped functions for accepted
+// fixtures.
 func TestConvertClaudeToolsToGeminiTools_CustomType(t *testing.T) {
 	tests := []struct {
-		name        string
-		tools       any
+		name  string // fixture subtest display name
+		tools any    // JSON-shaped client tool declarations
+		// expectedLen selects nil-output validation at zero; positive fixtures then
+		// check one grouped declaration and the accepted function count.
 		expectedLen int
-		description string
+		description string // fixture failure context text
 	}{
 		{
 			name: "Standard tools",
@@ -89,11 +100,11 @@ func TestConvertClaudeToolsToGeminiTools_CustomType(t *testing.T) {
 				map[string]any{
 					"type": "custom",
 					"name": "invalid_custom",
-					// 缺少 custom 字段
+					// The nested custom specification is deliberately absent.
 				},
 			},
 
-			expectedLen: 0, // 应该被跳过
+			expectedLen: 0, // Invalid custom tools are skipped.
 
 			description: "缺少custom字段的custom工具应该被跳过",
 		},
@@ -134,7 +145,6 @@ func TestConvertClaudeToolsToGeminiTools_CustomType(t *testing.T) {
 			for _, tool := range toolsArr {
 				toolMap, _ := tool.(map[string]any)
 				if toolMap["name"] != "" {
-					// 检查是否为有效的 custom 工具
 					if toolMap["type"] == "custom" {
 						if toolMap["custom"] != nil {
 							expectedFuncCount++
@@ -153,6 +163,9 @@ func TestConvertClaudeToolsToGeminiTools_CustomType(t *testing.T) {
 	}
 }
 
+// TestCleanToolSchema_NormalizesGeminiUnsupportedSchemaFields supplies nested
+// type arrays and both definition-key spellings. It checks definition removal,
+// uppercase first non-null types, and omission of a null-only type field.
 func TestCleanToolSchema_NormalizesGeminiUnsupportedSchemaFields(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",
@@ -202,7 +215,10 @@ func TestCleanToolSchema_NormalizesGeminiUnsupportedSchemaFields(t *testing.T) {
 	require.NotContains(t, emptySchema, "type")
 }
 
-// TestCleanToolSchema_ConvertsNestedIntegerExclusiveMinimum 验证嵌套整数独占下界可无损转换。
+// TestCleanToolSchema_ConvertsNestedIntegerExclusiveMinimum places integer
+// exclusive bounds in array items and sibling properties. It checks
+// incremented inclusive minima and retention of an existing stricter minimum
+// in these fixtures.
 func TestCleanToolSchema_ConvertsNestedIntegerExclusiveMinimum(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",
@@ -253,7 +269,10 @@ func TestCleanToolSchema_ConvertsNestedIntegerExclusiveMinimum(t *testing.T) {
 	require.Equal(t, 3, weak["minimum"])
 }
 
-// TestCleanToolSchema_DropsAmbiguousExclusiveMinimumWithoutConversion 检查无法等价转换的 exclusiveMinimum 是否被删除。
+// TestCleanToolSchema_DropsAmbiguousExclusiveMinimumWithoutConversion supplies
+// a number schema and an integer schema with a fractional exclusive bound.
+// Both fixtures must lose exclusiveMinimum without gaining an invented
+// minimum.
 func TestCleanToolSchema_DropsAmbiguousExclusiveMinimumWithoutConversion(t *testing.T) {
 	for name, schema := range map[string]map[string]any{
 		"number schema": {
@@ -275,6 +294,10 @@ func TestCleanToolSchema_DropsAmbiguousExclusiveMinimumWithoutConversion(t *test
 	}
 }
 
+// TestCleanToolSchema_RemovesNestedDeprecatedAndNormalizesMixedScalarEnum
+// supplies two anyOf branches with deprecated metadata and mixed scalar enum
+// values. It checks nested removal and JSON-spelled string enum entries while
+// retaining both branches.
 func TestCleanToolSchema_RemovesNestedDeprecatedAndNormalizesMixedScalarEnum(t *testing.T) {
 	schema := map[string]any{
 		"anyOf": []any{
@@ -304,6 +327,9 @@ func TestCleanToolSchema_RemovesNestedDeprecatedAndNormalizesMixedScalarEnum(t *
 	require.Equal(t, []any{"enabled", "false", "1", "null"}, enumSchema["enum"])
 }
 
+// TestCleanToolSchema_DropsEnumWithNonScalarValue combines a string and a map
+// in one enum. It checks removal of the entire enum rather than partial
+// retention of its scalar entry.
 func TestCleanToolSchema_DropsEnumWithNonScalarValue(t *testing.T) {
 	schema := map[string]any{
 		"enum": []any{"valid", map[string]any{"invalid": true}},
@@ -314,6 +340,10 @@ func TestCleanToolSchema_DropsEnumWithNonScalarValue(t *testing.T) {
 	require.NotContains(t, cleaned, "enum")
 }
 
+// TestConvertClaudeToolsToGeminiTools_PreservesWebSearchAlongsideFunctions
+// combines a client function with a typed server search tool. It checks one
+// grouped function declaration and a separate empty built-in Google Search
+// declaration.
 func TestConvertClaudeToolsToGeminiTools_PreservesWebSearchAlongsideFunctions(t *testing.T) {
 	tools := []any{
 		map[string]any{

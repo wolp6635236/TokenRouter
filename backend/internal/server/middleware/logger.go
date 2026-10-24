@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -9,23 +8,36 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
-// Logger 请求日志中间件。
+// logger.go records completed HTTP access events and samples admission rejections.
+// Access logging observes the handler's final status, selected provider, and
+// access lifetime after downstream execution. Health and setup probes are
+// skipped. Expected admission rejections reach the aggregate recorder first,
+// then a shared sampler decides whether to emit their access event and
+// occasional dropped-count summary.
+
+// Logger emits access metadata after downstream handlers return, skipping
+// /health and /setup/status. Install the request's forwarding-policy snapshot
+// beforehand when access logging should use the same client-address policy as
+// security consumers.
+//
+// Marked admission rejections are recorded before their access-event sampling
+// decision; sampled events and dropped summaries request exclusion from the Ops
+// system-log sink. Overall access latency starts at this middleware's entry
+// and ends when handlers return. Request identifiers, provider metadata and
+// errors remain available for log correlation; detailed performance belongs to usage.
 func Logger() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 开始时间
 		startTime := time.Now()
 
-		// 请求路径
 		path := c.Request.URL.Path
 
-		// 处理请求
 		c.Next()
 
-		// 跳过健康检查等高频探针路径的日志
+		// Health and setup status responses describe service readiness. Skipping
+		// these known probe paths keeps routine checks out of request access output.
 		if path == "/health" || path == "/setup/status" {
 			return
 		}
@@ -42,8 +54,14 @@ func Logger() gin.HandlerFunc {
 		model, _ := c.Request.Context().Value(telemetry.Model).(string)
 		reason, rejected := GetIngressRejectReason(c)
 		if rejected {
+			// Record the marked rejection before spending its access-event budget.
+			// Aggregate admission counts therefore remain available even when the access
+			// log is sampled away.
 			recordIngressReject(c, reason)
 			allowed, droppedSummary := globalIngressRejectAccessSampler.allow(endTime)
+			// The sampler returns a completed skipped-event count for occasional
+			// reporting. Mark the summary to skip the Ops sink so rejection volume does
+			// not reappear there.
 			if droppedSummary > 0 {
 				logging.FromContext(c.Request.Context()).Info("ingress rejection access logs dropped",
 					zap.String("component", "http.access"),
@@ -56,6 +74,8 @@ func Logger() gin.HandlerFunc {
 			}
 		}
 
+		// Access latency uses whole milliseconds; submillisecond portions are
+		// truncated.
 		fields := []zap.Field{
 			zap.String("component", "http.access"),
 			zap.Int("status_code", statusCode),
@@ -83,15 +103,6 @@ func Logger() gin.HandlerFunc {
 		if c.Request.ContentLength >= 0 {
 			fields = append(fields, zap.Int64("request_content_length", c.Request.ContentLength))
 		}
-		fields = appendRequestStageFields(fields, c)
-		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) {
-			record.Timings = make(map[string]int64)
-			for _, field := range fields {
-				if strings.HasSuffix(field.Key, "_ms") && field.Key != "latency_ms" {
-					record.Timings[field.Key] = field.Integer
-				}
-			}
-		})
 
 		l := logging.FromContext(c.Request.Context()).With(fields...)
 		l.Info("http request completed", zap.Time("completed_at", endTime))
@@ -100,59 +111,4 @@ func Logger() gin.HandlerFunc {
 			l.Warn("http request contains gin errors", zap.String("errors", c.Errors.String()))
 		}
 	}
-}
-
-// appendRequestStageFields 将请求入口、提供商槽位和出站 HTTP 阶段写入访问日志。
-// 这些字段记录各阶段耗时与计数。
-func appendRequestStageFields(fields []zap.Field, c *gin.Context) []zap.Field {
-	if c == nil || c.Request == nil {
-		return fields
-	}
-	ctx := c.Request.Context()
-	startedAt, _ := ctx.Value(telemetry.RequestStartedAt).(time.Time)
-	appendTimestamp := func(key telemetry.ContextKey, name string) {
-		at, ok := ctx.Value(key).(time.Time)
-		if !ok || startedAt.IsZero() || at.Before(startedAt) {
-			return
-		}
-		fields = append(fields, zap.Int64(name, at.Sub(startedAt).Milliseconds()))
-	}
-	appendTimestamp(telemetry.ProviderSlotAcquiredAt, "provider_slot_acquired_ms")
-	appendTimestamp(telemetry.FirstSSEDataAt, "upstream_first_sse_data_ms")
-	appendTimestamp(telemetry.FirstVisibleOutputAt, "first_visible_output_ms")
-	appendTimestamp(telemetry.FirstDownstreamFlushAt, "first_downstream_flush_ms")
-
-	if snapshot, ok := timing.HTTPTraceSnapshotFromContext(ctx); ok {
-		if elapsed, valid := timing.HTTPTraceElapsedMs(snapshot, snapshot.GetConnAt); valid {
-			fields = append(fields, zap.Int64("upstream_get_conn_ms", elapsed))
-		}
-		if elapsed, valid := timing.HTTPTraceElapsedMs(snapshot, snapshot.GotConnAt); valid {
-			fields = append(fields, zap.Int64("upstream_got_conn_ms", elapsed))
-		}
-		if elapsed, valid := timing.HTTPTraceElapsedMs(snapshot, snapshot.WroteRequestAt); valid {
-			fields = append(fields, zap.Int64("upstream_wrote_request_ms", elapsed))
-		}
-		if elapsed, valid := timing.HTTPTraceElapsedMs(snapshot, snapshot.GotFirstResponseByteAt); valid {
-			fields = append(fields, zap.Int64("upstream_first_response_byte_ms", elapsed))
-		}
-		if snapshot.GotConnCount > 0 {
-			fields = append(fields, zap.Int("upstream_got_conn_count", snapshot.GotConnCount))
-		}
-		if snapshot.GetConnCount > 0 {
-			fields = append(fields, zap.Int("upstream_get_conn_count", snapshot.GetConnCount))
-		}
-		if snapshot.WroteRequestCount > 0 {
-			fields = append(fields, zap.Int("upstream_attempt_count", snapshot.WroteRequestCount))
-		}
-		if snapshot.FirstResponseByteCount > 0 {
-			fields = append(fields, zap.Int("upstream_first_response_byte_count", snapshot.FirstResponseByteCount))
-		}
-		if snapshot.ConnectionReused {
-			fields = append(fields, zap.Bool("upstream_connection_reused", true))
-		}
-		if snapshot.WroteRequestErrorObserved {
-			fields = append(fields, zap.Bool("upstream_wrote_request_error", true))
-		}
-	}
-	return fields
 }

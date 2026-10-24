@@ -6,10 +6,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestNormalizeClaudeOutputEffort supplies recognized, differently cased,
+// padded, empty, and unknown effort labels. Normalization must retain xhigh
+// separately from max and return nil for unsupported or absent choices.
 func TestNormalizeClaudeOutputEffort(t *testing.T) {
 	tests := []struct {
-		input string
-		want  *string
+		input string  // supplied effort label
+		want  *string // expected normalized effort
 	}{
 		{"low", thinkingStringPointer("low")},
 		{"medium", thinkingStringPointer("medium")},
@@ -36,5 +39,5 @@ func TestNormalizeClaudeOutputEffort(t *testing.T) {
 	}
 }
 
-// thinkingStringPointer 返回档位字符串的指针。
+// thinkingStringPointer returns a pointer to an effort string.
 func thinkingStringPointer(value string) *string { return &value }

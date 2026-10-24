@@ -14,6 +14,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
+// TestIsQueryTimeoutErr supplies direct and wrapped deadline and cancellation
+// errors. It protects recognition of deadline expiry alone, which controls
+// optional raw-query degradation in dashboard summaries.
 func TestIsQueryTimeoutErr(t *testing.T) {
 	if !isQueryTimeoutErr(context.DeadlineExceeded) {
 		t.Fatalf("context.DeadlineExceeded should be treated as query timeout")
@@ -29,6 +32,10 @@ func TestIsQueryTimeoutErr(t *testing.T) {
 	}
 }
 
+// TestAggregateHourlyRowsWeightsTTFTBySampleCount supplies hours with opposite
+// success and first-token sample weights. It protects distinct rounded
+// duration/first-token weighting and retention of the greatest first-token 95th
+// percentile.
 func TestAggregateHourlyRowsWeightsTTFTBySampleCount(t *testing.T) {
 	rows := []opsHourlyMetricsRow{
 		{
@@ -72,11 +79,13 @@ func TestAggregateHourlyRowsWeightsTTFTBySampleCount(t *testing.T) {
 	require.Equal(t, int64(101), got.successCount)
 	require.Equal(t, int64(100), got.ttftSampleCount)
 
-	// 请求耗时仍按 success_count 加权。
+	// Request duration is weighted by success_count.
 	require.NotNil(t, got.duration.P50)
 	require.Equal(t, 109, *got.duration.P50)
 
-	// 首 token 延迟按 ttft_sample_count 加权，不能被第一桶的大量非流式成功请求稀释。
+	// Use one versus ninety-nine measured first-token samples despite the opposite
+	// success counts, so the fixture distinguishes latency weights from total
+	// usage observations.
 	require.NotNil(t, got.ttft.P50)
 	require.Equal(t, 20, *got.ttft.P50)
 	require.NotNil(t, got.ttft.P90)
@@ -87,6 +96,10 @@ func TestAggregateHourlyRowsWeightsTTFTBySampleCount(t *testing.T) {
 	require.Equal(t, 1300, *got.ttft.P95)
 }
 
+// TestCombineApproxPercentilesUsesProvidedWeightsForTTFT combines two supplied
+// percentile segments with weights one and ninety-nine. It protects rounded
+// median, 90th percentile, and mean plus weight-independent 95th percentile
+// maximum.
 func TestCombineApproxPercentilesUsesProvidedWeightsForTTFT(t *testing.T) {
 	got := combineApproxPercentiles([]opsPercentileSegment{
 		{
@@ -119,11 +132,15 @@ func TestCombineApproxPercentilesUsesProvidedWeightsForTTFT(t *testing.T) {
 	require.Equal(t, 1300, *got.P95)
 }
 
+// intValuePtr allocates a scalar pointer for supplied fixture millisecond
+// measurements.
 func intValuePtr(v int) *int {
 	return &v
 }
 
-// TestOpsHourlyMetricsCoverageRequiresEveryBucket 检查缺少时间桶时返回覆盖不完整。
+// TestOpsHourlyMetricsCoverageRequiresEveryBucket supplies twenty-three then
+// twenty-four global rows for a full-day range. It protects row-count coverage
+// rejection and acceptance for the aligned-hour assumption used by aggregation.
 func TestOpsHourlyMetricsCoverageRequiresEveryBucket(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{db: db}

@@ -4,22 +4,38 @@ import (
 	"errors"
 )
 
-// ErrCyberPolicyForwarded 表示拒绝响应已经输出，调用方应进入错误收尾。
+// upstream_warning.go extracts captured policy warnings from error chains and
+// copies their response bodies. Policy warnings can accompany a successful
+// transport exchange and still require refusal handling. Error-chain extraction
+// retains the warning's captured body and message for HTTP and completion
+// callers, which separately decide policy classification, client output,
+// settlement, and cleanup.
+
+// ErrCyberPolicyForwarded marks the refusal-handling outcome so execution callers
+// can perform error cleanup after that output path has been selected.
 var ErrCyberPolicyForwarded = errors.New("openai cyber_policy forwarded to client")
 
-// UpstreamWarning 保存上游风控警告，完成器决定是否结算，HTTP 层决定响应方式。
+// UpstreamWarning holds a policy warning; completion decides billing and HTTP decides response output.
 type UpstreamWarning struct {
-	StatusCode   int
+	StatusCode int // observed upstream HTTP status
+	// ResponseBody retains captured policy evidence. WarningFromError clones its
+	// bytes, while direct result assignments can retain the producer's body slice.
 	ResponseBody []byte
-	Message      string
+	Message      string // captured upstream warning text
 }
 
-// UpstreamWarningCarrier 从错误链提供上游警告。
+// UpstreamWarningCarrier exposes an upstream warning through an error chain.
 type UpstreamWarningCarrier interface {
+	// OpenAIUpstreamWarning returns the warning attached to this error, or nil
+	// when no warning is available. Extraction reads it synchronously and clones
+	// its body before returning evidence to a caller.
 	OpenAIUpstreamWarning() *UpstreamWarning
 }
 
-// WarningFromError 从转发错误链中提取上游 cyber 风控警告。
+// WarningFromError extracts a carrier-provided warning from an error chain and
+// copies its metadata and response bytes. Nil errors, absent carriers, and nil
+// warning values return nil and false; the helper does not independently classify
+// the supplied warning as a cyber-policy refusal.
 func WarningFromError(err error) (*UpstreamWarning, bool) {
 	if err == nil {
 		return nil, false
@@ -35,6 +51,9 @@ func WarningFromError(err error) (*UpstreamWarning, bool) {
 	return cloneWarning(warning), true
 }
 
+// cloneWarning copies warning metadata and allocates independent storage for
+// nonempty response bytes. Nil input returns nil, and an empty nonnil body can
+// become nil because the copy appends zero bytes to a nil slice.
 func cloneWarning(warning *UpstreamWarning) *UpstreamWarning {
 	if warning == nil {
 		return nil

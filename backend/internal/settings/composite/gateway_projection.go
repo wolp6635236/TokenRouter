@@ -4,7 +4,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
 )
 
-// GatewayAdminSettings 从综合快照提取网关设置。
+// gateway_projection.go extracts gateway update settings and assigns gateway
+// read results to the snapshot.
+// Gateway administrator values mix model defaults, request header choices,
+// and prompt rules in the combined Snapshot. Extraction supplies the gateway
+// preparer with those fields, and readback transfers the gateway reader's result;
+// the prompt-replacement pointer remains shared during either transfer.
+
+// GatewayAdminSettings returns forwarding, model, and prompt controls for gateway
+// preparation. UserPromptReplacementConfig retains the Snapshot's pointer and nested
+// rules; callers keep that object stable while it is encoded or compared for audit.
 func (s *Snapshot) GatewayAdminSettings() gateway.AdminSettings {
 	return gateway.AdminSettings{
 		AntigravityUserAgentVersion:            s.AntigravityUserAgentVersion,
@@ -25,13 +34,16 @@ func (s *Snapshot) GatewayAdminSettings() gateway.AdminSettings {
 		MinClaudeCodeVersion:                   s.MinClaudeCodeVersion,
 		OpenAIAllowClaudeCodeCodexPlugin:       s.OpenAIAllowClaudeCodeCodexPlugin,
 		OpenAICodexUserAgent:                   s.OpenAICodexUserAgent,
-		OpenAITTFTMode:                         s.OpenAITTFTMode,
+		TTFTMode:                               s.TTFTMode,
 		RewriteMessageCacheControl:             s.RewriteMessageCacheControl,
 		UserPromptReplacementConfig:            s.UserPromptReplacementConfig,
 	}
 }
 
-// ApplyGatewayAdminReadSettings 将网关请求处理和模型默认设置写入快照。
+// ApplyGatewayAdminReadSettings transfers gateway model defaults and request
+// processing fields from a nonnil read result. Prompt replacement retains the
+// returned configuration pointer, while scalar header and prompt text values are
+// assigned into the combined Snapshot.
 func (s *Snapshot) ApplyGatewayAdminReadSettings(value *gateway.AdminReadSettings) {
 	s.AntigravityUserAgentVersion = value.AntigravityUserAgentVersion
 	s.BackendModeEnabled = value.BackendModeEnabled
@@ -51,7 +63,7 @@ func (s *Snapshot) ApplyGatewayAdminReadSettings(value *gateway.AdminReadSetting
 	s.MinClaudeCodeVersion = value.MinClaudeCodeVersion
 	s.OpenAIAllowClaudeCodeCodexPlugin = value.OpenAIAllowClaudeCodeCodexPlugin
 	s.OpenAICodexUserAgent = value.OpenAICodexUserAgent
-	s.OpenAITTFTMode = value.OpenAITTFTMode
+	s.TTFTMode = value.TTFTMode
 	s.RewriteMessageCacheControl = value.RewriteMessageCacheControl
 	s.UserPromptReplacementConfig = value.UserPromptReplacementConfig
 }

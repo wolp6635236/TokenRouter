@@ -7,7 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGroupClientProtocolMigrationBackfillMatrix 锁定六个平台及 OpenAI 旧开关的回填语义。
+// TestGroupClientProtocolMigrationBackfillMatrix inspects protocol backfill branches.
+// It requires the platform-specific protocol arrays, the legacy messages-dispatch
+// branch, NULL-only backfill condition, and final empty-array default and
+// not-null declaration in the embedded SQL.
 func TestGroupClientProtocolMigrationBackfillMatrix(t *testing.T) {
 	content, err := FS.ReadFile("235_add_group_allowed_client_protocols.sql")
 	require.NoError(t, err)

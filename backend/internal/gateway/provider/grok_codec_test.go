@@ -12,9 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// TestPatchGrokResponsesBodySetsMappedModelAndDropsUnsupportedFields patches a
+// Responses body with a supplied Grok model and unsupported cache/safety
+// fields. The final model and reasoning effort remain while those unsupported
+// fields disappear.
 func TestPatchGrokResponsesBodySetsMappedModelAndDropsUnsupportedFields(t *testing.T) {
 	t.Parallel()
 
@@ -26,7 +32,7 @@ func TestPatchGrokResponsesBodySetsMappedModelAndDropsUnsupportedFields(t *testi
 		"reasoning": {"effort": "high"}
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.3")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.3")
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 	require.Equal(t, "grok-4.3", gjson.GetBytes(patched, "model").String())
@@ -35,12 +41,16 @@ func TestPatchGrokResponsesBodySetsMappedModelAndDropsUnsupportedFields(t *testi
 	require.Equal(t, "high", gjson.GetBytes(patched, "reasoning.effort").String())
 }
 
+// TestPatchGrokResponsesBodyDropsRedundantViewImageForCurrentInlineImage
+// supplies current inline image content with view_image and shell declarations
+// in regular/Lite tool forms. The patched tools retain shell_command and
+// remove redundant view_image.
 func TestPatchGrokResponsesBodyDropsRedundantViewImageForCurrentInlineImage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		body string
+		name string // Grok normalization scenario label
+		body string // incoming Grok request JSON
 	}{
 		{
 			name: "top-level tools",
@@ -77,7 +87,7 @@ func TestPatchGrokResponsesBodyDropsRedundantViewImageForCurrentInlineImage(t *t
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			patched, err := GrokBodyCodec().PatchGrokResponsesBody([]byte(tt.body), "grok-4.6")
+			patched, err := grokAttributeCodec().PatchGrokResponsesBody([]byte(tt.body), "grok-4.6")
 			require.NoError(t, err)
 			require.False(t, gjson.GetBytes(patched, `tools.#(name=="view_image")`).Exists())
 			require.Equal(t, "shell_command", gjson.GetBytes(patched, "tools.0.name").String())
@@ -85,12 +95,16 @@ func TestPatchGrokResponsesBodyDropsRedundantViewImageForCurrentInlineImage(t *t
 	}
 }
 
+// TestPatchGrokResponsesBodyKeepsNonRedundantViewImage varies absent current
+// image, historical image, explicit view_image selection, and required
+// single-tool choice. Patching retains view_image in each case where the
+// test's intent needs it.
 func TestPatchGrokResponsesBodyKeepsNonRedundantViewImage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		body string
+		name string // Grok normalization scenario label
+		body string // incoming Grok request JSON
 	}{
 		{
 			name: "current turn has no inline image",
@@ -113,13 +127,16 @@ func TestPatchGrokResponsesBodyKeepsNonRedundantViewImage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			patched, err := GrokBodyCodec().PatchGrokResponsesBody([]byte(tt.body), "grok-4.6")
+			patched, err := grokAttributeCodec().PatchGrokResponsesBody([]byte(tt.body), "grok-4.6")
 			require.NoError(t, err)
 			require.Equal(t, "view_image", gjson.GetBytes(patched, "tools.0.name").String())
 		})
 	}
 }
 
+// TestPatchGrokResponsesBodyDropsViewImageOnlyToolMetadata supplies an inline
+// image and a sole passive view_image tool with auto/parallel controls.
+// Patching removes the redundant tool list and both orphan controls.
 func TestPatchGrokResponsesBodyDropsViewImageOnlyToolMetadata(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{
@@ -129,20 +146,24 @@ func TestPatchGrokResponsesBodyDropsViewImageOnlyToolMetadata(t *testing.T) {
 		"parallel_tool_calls":true
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.6")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.6")
 	require.NoError(t, err)
 	require.False(t, gjson.GetBytes(patched, "tools").Exists())
 	require.False(t, gjson.GetBytes(patched, "tool_choice").Exists())
 	require.False(t, gjson.GetBytes(patched, "parallel_tool_calls").Exists())
 }
 
+// TestPatchGrokResponsesBodySanitizesComposerReasoningParameters compares
+// Composer aliases and prefixed identities with Grok reasoning models.
+// Composer requests lose reasoning fields, while tested Grok models retain
+// supported medium values and remove camel-case effort.
 func TestPatchGrokResponsesBodySanitizesComposerReasoningParameters(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		upstreamModel string
-		wantReasoning bool
+		name          string // mapped model normalization case
+		upstreamModel string // final upstream model identity
+		wantReasoning bool   // expected reasoning field retention
 	}{
 		{name: "composer fast", upstreamModel: "grok-composer-2.5-fast"},
 		{name: "composer shorthand", upstreamModel: "grok-composer"},
@@ -163,7 +184,7 @@ func TestPatchGrokResponsesBodySanitizesComposerReasoningParameters(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			patched, err := GrokBodyCodec().PatchGrokResponsesBody(append([]byte(nil), bodyTemplate...), tt.upstreamModel)
+			patched, err := grokAttributeCodec().PatchGrokResponsesBody(append([]byte(nil), bodyTemplate...), tt.upstreamModel)
 			require.NoError(t, err)
 			require.True(t, json.Valid(patched))
 			require.Equal(t, tt.upstreamModel, gjson.GetBytes(patched, "model").String())
@@ -182,6 +203,9 @@ func TestPatchGrokResponsesBodySanitizesComposerReasoningParameters(t *testing.T
 	}
 }
 
+// TestPatchGrokResponsesBodyDropsGrok45ReasoningUnsupportedFields supplies
+// penalty aliases and stop fields for Grok 4.5. Patching keeps the selected
+// model but removes every listed unsupported sampling/stop field.
 func TestPatchGrokResponsesBodyDropsGrok45ReasoningUnsupportedFields(t *testing.T) {
 	t.Parallel()
 
@@ -195,7 +219,7 @@ func TestPatchGrokResponsesBodyDropsGrok45ReasoningUnsupportedFields(t *testing.
 		"stop": ["done"]
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.5")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.5")
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 	require.Equal(t, "grok-4.5", gjson.GetBytes(patched, "model").String())
@@ -206,6 +230,9 @@ func TestPatchGrokResponsesBodyDropsGrok45ReasoningUnsupportedFields(t *testing.
 	require.False(t, gjson.GetBytes(patched, "stop").Exists())
 }
 
+// TestPatchGrokResponsesBodyKeepsPenaltyAndStopFieldsForNon45Models uses a
+// Grok 4.3 body carrying penalties and stop. The patched model and listed
+// sampling values survive as valid JSON.
 func TestPatchGrokResponsesBodyKeepsPenaltyAndStopFieldsForNon45Models(t *testing.T) {
 	t.Parallel()
 
@@ -217,7 +244,7 @@ func TestPatchGrokResponsesBodyKeepsPenaltyAndStopFieldsForNon45Models(t *testin
 		"stop": ["done"]
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.3")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.3")
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 	require.Equal(t, "grok-4.3", gjson.GetBytes(patched, "model").String())
@@ -226,24 +253,31 @@ func TestPatchGrokResponsesBodyKeepsPenaltyAndStopFieldsForNon45Models(t *testin
 	require.Len(t, gjson.GetBytes(patched, "stop").Array(), 1)
 }
 
+// TestPatchGrokResponsesBodyDropsLogprobsForGrok420Family supplies both
+// logprobs and top_logprobs on an explicit Grok 4.20 reasoning model request.
+// Patching removes the two fields from the final response-generation body.
 func TestPatchGrokResponsesBodyDropsLogprobsForGrok420Family(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"model":"grok-4.20-0309-reasoning","input":"hello","logprobs":true,"top_logprobs":5}`)
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.20-0309-reasoning")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.20-0309-reasoning")
 	require.NoError(t, err)
 	require.False(t, gjson.GetBytes(patched, "logprobs").Exists())
 	require.False(t, gjson.GetBytes(patched, "top_logprobs").Exists())
 }
 
+// TestPatchGrokResponsesBodyNormalizesReasoningEffortAliases supplies
+// minimal/xhigh spellings through nested and flat fields for two Grok
+// families. Resolved attributes choose the expected family-specific effort and
+// remove camel-case encoding.
 func TestPatchGrokResponsesBodyNormalizesReasoningEffortAliases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		body          string
-		upstreamModel string
-		path          string
-		want          string
+		name          string // mapped model normalization case
+		body          string // incoming reasoning request JSON
+		upstreamModel string // final upstream model identity
+		path          string // checked outgoing effort path
+		want          string // expected outgoing field value
 	}{
 		{name: "minimal nested", body: `{"input":"hi","reasoning":{"effort":"minimal"}}`, upstreamModel: "grok-4.5", path: "reasoning.effort", want: "low"},
 		{name: "xhigh stays high for 4.5", body: `{"input":"hi","reasoning_effort":"xhigh"}`, upstreamModel: "grok-4.5", path: "reasoning_effort", want: "high"},
@@ -252,7 +286,7 @@ func TestPatchGrokResponsesBodyNormalizesReasoningEffortAliases(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			patched, err := GrokBodyCodec().PatchGrokResponsesBody([]byte(tt.body), tt.upstreamModel)
+			patched, err := grokAttributeCodec().PatchGrokResponsesBody([]byte(tt.body), tt.upstreamModel)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, gjson.GetBytes(patched, tt.path).String(), string(patched))
 			require.False(t, gjson.GetBytes(patched, "reasoningEffort").Exists())
@@ -260,8 +294,11 @@ func TestPatchGrokResponsesBodyNormalizesReasoningEffortAliases(t *testing.T) {
 	}
 }
 
+// TestPatchGrokResponsesBodyAddsDefaultFunctionParameters supplies absent/null
+// function parameters beside a large numeric tool value. Patching creates
+// object/properties defaults while retaining the exact large number encoding.
 func TestPatchGrokResponsesBodyAddsDefaultFunctionParameters(t *testing.T) {
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(
 		[]byte(`{"input":"hi","tools":[{"type":"function","name":"lookup","large_id":9007199254740993},{"type":"function","name":"wait","parameters":null}]}`),
 		"grok-4.5",
 	)
@@ -273,21 +310,28 @@ func TestPatchGrokResponsesBodyAddsDefaultFunctionParameters(t *testing.T) {
 	require.Equal(t, "9007199254740993", gjson.GetBytes(patched, "tools.0.large_id").Raw)
 }
 
+// TestNormalizeGrokChatReasoningEffort compares camel ultra, supported xhigh,
+// and Composer high in Chat. Normalization uses the expected snake-case value
+// or removes unsupported Composer effort.
 func TestNormalizeGrokChatReasoningEffort(t *testing.T) {
-	patched, err := GrokBodyCodec().NormalizeGrokChatReasoningEffort([]byte(`{"reasoningEffort":"ultra"}`), "grok-4.3")
+	patched, err := grokAttributeCodec().NormalizeGrokChatReasoningEffort([]byte(`{"reasoningEffort":"ultra"}`), "grok-4.3")
 	require.NoError(t, err)
 	require.Equal(t, "high", gjson.GetBytes(patched, "reasoning_effort").String())
 	require.False(t, gjson.GetBytes(patched, "reasoningEffort").Exists())
 
-	patched, err = GrokBodyCodec().NormalizeGrokChatReasoningEffort([]byte(`{"reasoning_effort":"xhigh"}`), "grok-4.6")
+	patched, err = grokAttributeCodec().NormalizeGrokChatReasoningEffort([]byte(`{"reasoning_effort":"xhigh"}`), "grok-4.6")
 	require.NoError(t, err)
 	require.Equal(t, "xhigh", gjson.GetBytes(patched, "reasoning_effort").String())
 
-	patched, err = GrokBodyCodec().NormalizeGrokChatReasoningEffort([]byte(`{"reasoning_effort":"high"}`), "grok-composer-2.5-fast")
+	patched, err = grokAttributeCodec().NormalizeGrokChatReasoningEffort([]byte(`{"reasoning_effort":"high"}`), "grok-composer-2.5-fast")
 	require.NoError(t, err)
 	require.False(t, gjson.GetBytes(patched, "reasoning_effort").Exists())
 }
 
+// TestPatchGrokResponsesBodyDropsNestedUnsupportedFields places
+// external_web_access throughout tools, schema, metadata, and the body.
+// Patching removes that unsupported text, retains the named function, and
+// drops metadata.
 func TestPatchGrokResponsesBodyDropsNestedUnsupportedFields(t *testing.T) {
 	t.Parallel()
 
@@ -301,7 +345,7 @@ func TestPatchGrokResponsesBodyDropsNestedUnsupportedFields(t *testing.T) {
 		"metadata": {"external_web_access": false, "large_id": 9007199254740993}
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.3")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.3")
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 	require.False(t, strings.Contains(string(patched), "external_web_access"))
@@ -309,6 +353,9 @@ func TestPatchGrokResponsesBodyDropsNestedUnsupportedFields(t *testing.T) {
 	require.False(t, gjson.GetBytes(patched, "metadata").Exists())
 }
 
+// TestPatchGrokResponsesBodyDropsToolChoiceWhenNoSupportedToolsRemain supplies
+// namespace and foreign image tools with namespace choice. Patching removes
+// the empty supported tool list and its remaining tool choice.
 func TestPatchGrokResponsesBodyDropsToolChoiceWhenNoSupportedToolsRemain(t *testing.T) {
 	t.Parallel()
 
@@ -322,13 +369,17 @@ func TestPatchGrokResponsesBodyDropsToolChoiceWhenNoSupportedToolsRemain(t *test
 		"tool_choice": {"type": "namespace", "namespace": "functions"}
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.3")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.3")
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 	require.False(t, gjson.GetBytes(patched, "tools").Exists())
 	require.False(t, gjson.GetBytes(patched, "tool_choice").Exists())
 }
 
+// TestPatchGrokResponsesBodyRestoresCompactInput supplies a compaction item
+// with encrypted state and visible summary before user input. Patching
+// converts encrypted history to reasoning and inserts the summary before the
+// continuing user message.
 func TestPatchGrokResponsesBodyRestoresCompactInput(t *testing.T) {
 	body := []byte(`{
 		"model":"grok-4.5",
@@ -338,7 +389,7 @@ func TestPatchGrokResponsesBodyRestoresCompactInput(t *testing.T) {
 		]
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.5")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.5")
 	require.NoError(t, err)
 	require.Equal(t, "reasoning", gjson.GetBytes(patched, "input.0.type").String())
 	require.Equal(t, "grok-encrypted-state", gjson.GetBytes(patched, "input.0.encrypted_content").String())
@@ -347,6 +398,9 @@ func TestPatchGrokResponsesBodyRestoresCompactInput(t *testing.T) {
 	require.Equal(t, "continue", gjson.GetBytes(patched, "input.2.content.0.text").String())
 }
 
+// TestParseGrokMediaRequestBuildsMultipartModerationBody creates a multipart
+// image edit with prompt/model and PNG bytes. Parsing retains prompt/model,
+// and moderation encoding exposes the image as a data URL.
 func TestParseGrokMediaRequestBuildsMultipartModerationBody(t *testing.T) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -359,6 +413,8 @@ func TestParseGrokMediaRequestBuildsMultipartModerationBody(t *testing.T) {
 	require.NoError(t, err)
 	_, err = part.Write([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
 	require.NoError(t, err)
+	// Close the multipart writer before parsing to append its terminating boundary;
+	// the fixture then represents a complete media upload for moderation-body extraction.
 	require.NoError(t, writer.Close())
 
 	info := GrokMediaCodec().ParseGrokMediaRequest(writer.FormDataContentType(), buf.Bytes())
@@ -371,6 +427,9 @@ func TestParseGrokMediaRequestBuildsMultipartModerationBody(t *testing.T) {
 	require.True(t, strings.HasPrefix(gjson.GetBytes(moderationBody, "images.0.image_url").String(), "data:image/"))
 }
 
+// TestParseGrokMediaVideoRequestResolution parses a JSON video request with
+// explicit 720p resolution. The media request observation retains both the
+// video model and supplied resolution.
 func TestParseGrokMediaVideoRequestResolution(t *testing.T) {
 	info := GrokMediaCodec().ParseGrokMediaRequest("application/json", []byte(`{"model":"grok-imagine-video","prompt":"waves","resolution":"720p"}`))
 
@@ -378,6 +437,9 @@ func TestParseGrokMediaVideoRequestResolution(t *testing.T) {
 	require.Equal(t, "720p", info.Resolution)
 }
 
+// TestParseGrokMediaRequestAcceptsOfficialImageURLFields supplies official url
+// objects in the direct image and reference_images fields of a video request.
+// Media parsing collects both source URLs in encounter order.
 func TestParseGrokMediaRequestAcceptsOfficialImageURLFields(t *testing.T) {
 	body := []byte(`{
 		"model":"grok-imagine-video-1.5",
@@ -393,6 +455,9 @@ func TestParseGrokMediaRequestAcceptsOfficialImageURLFields(t *testing.T) {
 	}, info.InputImageURLs)
 }
 
+// TestNormalizeGrokMediaForwardBodyCanonicalizesImageURLAlias uses image_url
+// on a video input image object. Forwarding moves it to image.url, retains
+// model/content type, and removes the alias field.
 func TestNormalizeGrokMediaForwardBodyCanonicalizesImageURLAlias(t *testing.T) {
 	body := []byte(`{
 		"model":"grok-imagine-video-1.5",
@@ -410,6 +475,10 @@ func TestNormalizeGrokMediaForwardBodyCanonicalizesImageURLAlias(t *testing.T) {
 	require.False(t, gjson.GetBytes(out, "image.image_url").Exists())
 }
 
+// TestNormalizeGrokMediaForwardBodyPreservesImageToVideoModelForOfficialURL
+// supplies a Grok video 1.5 request with prompt and an official image.url.
+// Forward normalization retains the complete image-to-video model and its
+// input source URL.
 func TestNormalizeGrokMediaForwardBodyPreservesImageToVideoModelForOfficialURL(t *testing.T) {
 	body := []byte(`{
 		"model":"grok-imagine-video-1.5",
@@ -424,6 +493,10 @@ func TestNormalizeGrokMediaForwardBodyPreservesImageToVideoModelForOfficialURL(t
 	require.Equal(t, "https://example.com/source.png", gjson.GetBytes(out, "image.url").String())
 }
 
+// TestCanonicalizeGrokMediaImageURLFieldsPreservesOfficialURL mixes official
+// and legacy URLs across image, images, references, and mask. Canonicalization
+// prefers nonblank official URL and transfers aliases before removing their
+// fields.
 func TestCanonicalizeGrokMediaImageURLFieldsPreservesOfficialURL(t *testing.T) {
 	body := []byte(`{
 		"image":{"url":"https://example.com/official.png","image_url":"https://example.com/legacy.png"},
@@ -449,6 +522,10 @@ func TestCanonicalizeGrokMediaImageURLFieldsPreservesOfficialURL(t *testing.T) {
 	require.False(t, gjson.GetBytes(out, "mask.image_url").Exists())
 }
 
+// TestCanonicalizeGrokMediaImageURLFieldsReplacesEmptyOfficialURL supplies a
+// whitespace-only official image URL beside a nonblank legacy image_url alias.
+// Canonicalization selects the alias value under url and removes the legacy
+// field.
 func TestCanonicalizeGrokMediaImageURLFieldsReplacesEmptyOfficialURL(t *testing.T) {
 	body := []byte(`{"image":{"url":" ","image_url":"https://example.com/legacy.png"}}`)
 
@@ -459,6 +536,10 @@ func TestCanonicalizeGrokMediaImageURLFieldsReplacesEmptyOfficialURL(t *testing.
 	require.False(t, gjson.GetBytes(out, "image.image_url").Exists())
 }
 
+// TestPrepareGrokImageEditNormalizesOfficialImageObjects mixes nested
+// image_url, string array source, and mask aliases in an image edit.
+// Preparation produces typed image_url objects with nonblank url and removes
+// nested aliases.
 func TestPrepareGrokImageEditNormalizesOfficialImageObjects(t *testing.T) {
 	body := []byte(`{
 		"model":"grok-imagine-image-quality",
@@ -477,6 +558,9 @@ func TestPrepareGrokImageEditNormalizesOfficialImageObjects(t *testing.T) {
 	}
 }
 
+// TestPrepareGrokImageEditRejectsMoreThanThreeSources supplies four source
+// images to Grok edit preparation. It returns a source-count error with nil
+// output and the maximum-of-three explanation.
 func TestPrepareGrokImageEditRejectsMoreThanThreeSources(t *testing.T) {
 	body := []byte(`{"images":["https://example.com/1.png","https://example.com/2.png","https://example.com/3.png","https://example.com/4.png"]}`)
 
@@ -486,14 +570,17 @@ func TestPrepareGrokImageEditRejectsMoreThanThreeSources(t *testing.T) {
 	require.Contains(t, err.Error(), "maximum of 3 source images")
 }
 
-// TestGrokMediaForwardBodyPreservesModel 检查媒体转发中的完整型号和图片输入。
+// TestGrokMediaForwardBodyPreservesModel varies image/video endpoint aliases
+// and optional input image across explicit media models. Forward normalization
+// retains each complete model identity and canonicalizes the tested image URL.
 func TestGrokMediaForwardBodyPreservesModel(t *testing.T) {
 	tests := []struct {
-		name          string
+		name string // mapped model normalization case
+		// selected media generation endpoint
 		endpoint      grok.GrokMediaEndpoint
-		model         string
-		hasInputImage bool
-		want          string
+		model         string // complete requested media model
+		hasInputImage bool   // source image fixture inclusion
+		want          string // expected outgoing field value
 	}{
 		{name: "image generation alias", endpoint: grok.GrokMediaEndpointImagesGenerations, model: "grok-imagine", want: "grok-imagine"},
 		{name: "image edit alias", endpoint: grok.GrokMediaEndpointImagesEdits, model: "grok-imagine", want: "grok-imagine"},
@@ -522,6 +609,9 @@ func TestGrokMediaForwardBodyPreservesModel(t *testing.T) {
 	}
 }
 
+// TestExtractGrokMediaVideoRequestIDPreservesExistingPrecedence supplies
+// direct and nested request, task, and generic IDs together. Extraction
+// selects the top-level request_id over the other candidates.
 func TestExtractGrokMediaVideoRequestIDPreservesExistingPrecedence(t *testing.T) {
 	body := []byte(`{
 		"request_id":"request-id",
@@ -534,16 +624,23 @@ func TestExtractGrokMediaVideoRequestIDPreservesExistingPrecedence(t *testing.T)
 	require.Equal(t, "request-id", GrokMediaCodec().ExtractGrokMediaVideoRequestID(body))
 }
 
+// TestGrokCompactionBlobRecoveryStripsCompactionItem detects a compaction
+// decoding rejection and constructs its retry body. The compaction item
+// disappears while the following message becomes the first input item.
 func TestGrokCompactionBlobRecoveryStripsCompactionItem(t *testing.T) {
 	body := []byte(`{"model":"grok","input":[{"type":"compaction","id":"cmp_1","encrypted_content":"blob"},{"type":"message","role":"user","content":"hi"}]}`)
-	require.True(t, GrokBodyCodec().IsGrokInvalidEncryptedContentResponse(http.StatusUnprocessableEntity, []byte(`{"code":"invalid_compaction","error":"could not decode the compaction blob"}`)))
-	retry, changed, err := GrokBodyCodec().TrimGrokInvalidEncryptedContentRetryBody(body)
+	require.True(t, grokAttributeCodec().IsGrokInvalidEncryptedContentResponse(http.StatusUnprocessableEntity, []byte(`{"code":"invalid_compaction","error":"could not decode the compaction blob"}`)))
+	retry, changed, err := grokAttributeCodec().TrimGrokInvalidEncryptedContentRetryBody(body)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, "message", gjson.GetBytes(retry, "input.0.type").String())
 	require.False(t, gjson.GetBytes(retry, "input.#(type==\"compaction\")").Exists())
 }
 
+// TestPatchGrokResponsesBody_StripsReasoningContentNull supplies reasoning
+// summary with null content between ordinary messages. Patching keeps all
+// three input items and reasoning summary while removing the null content
+// field.
 func TestPatchGrokResponsesBody_StripsReasoningContentNull(t *testing.T) {
 	t.Parallel()
 
@@ -556,7 +653,7 @@ func TestPatchGrokResponsesBody_StripsReasoningContentNull(t *testing.T) {
 		]
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.5")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.5")
 	require.NoError(t, err)
 	require.True(t, json.Valid(patched))
 
@@ -572,6 +669,9 @@ func TestPatchGrokResponsesBody_StripsReasoningContentNull(t *testing.T) {
 	require.False(t, reasoning.Get("content").Exists(), "content: null should be stripped")
 }
 
+// TestPatchGrokResponsesBody_KeepsReasoningContentNonNull supplies a reasoning
+// item whose content is a nonnull string. Patching retains that exact content
+// value in the resulting history.
 func TestPatchGrokResponsesBody_KeepsReasoningContentNonNull(t *testing.T) {
 	t.Parallel()
 
@@ -582,13 +682,16 @@ func TestPatchGrokResponsesBody_KeepsReasoningContentNonNull(t *testing.T) {
 		]
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.5")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.5")
 	require.NoError(t, err)
 
 	reasoning := gjson.GetBytes(patched, "input.0")
 	require.Equal(t, "real content", reasoning.Get("content").String(), "non-null content must not be stripped")
 }
 
+// TestPatchGrokResponsesBody_MultipleReasoningContentNull places null content
+// on two reasoning items around a user message. Patching retains all three
+// items and removes both null fields.
 func TestPatchGrokResponsesBody_MultipleReasoningContentNull(t *testing.T) {
 	t.Parallel()
 
@@ -601,7 +704,7 @@ func TestPatchGrokResponsesBody_MultipleReasoningContentNull(t *testing.T) {
 		]
 	}`)
 
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.5")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.5")
 	require.NoError(t, err)
 
 	items := gjson.GetBytes(patched, "input").Array()
@@ -611,45 +714,83 @@ func TestPatchGrokResponsesBody_MultipleReasoningContentNull(t *testing.T) {
 	require.False(t, items[2].Get("content").Exists())
 }
 
-// TestPatchGrokResponsesBodyCombinesAdditionalToolsAndDropsOrphanControls 验证 Grok 请求合并附加工具并移除孤立的控制字段。
+// TestPatchGrokResponsesBodyCombinesAdditionalToolsAndDropsOrphanControls
+// duplicates a function across regular and Lite tool lists, then tests
+// absent/malformed tools. Patching deduplicates the function and removes
+// controls when no usable tools remain.
 func TestPatchGrokResponsesBodyCombinesAdditionalToolsAndDropsOrphanControls(t *testing.T) {
 	body := []byte(`{
 		"input":[{"type":"additional_tools","tools":[{"type":"function","name":"lookup"}]},{"role":"user","content":"hi"}],
 		"tools":[{"type":"function","name":"lookup"}],
 		"tool_choice":"auto","parallel_tool_calls":true
 	}`)
-	patched, err := GrokBodyCodec().PatchGrokResponsesBody(body, "grok-4.5")
+	patched, err := grokAttributeCodec().PatchGrokResponsesBody(body, "grok-4.5")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), gjson.GetBytes(patched, "tools.#").Int())
 	require.Equal(t, "lookup", gjson.GetBytes(patched, "tools.0.name").String())
 	require.Equal(t, "message", gjson.GetBytes(patched, "input.0.type").String())
 
-	withoutTools, err := GrokBodyCodec().PatchGrokResponsesBody([]byte(`{"input":"hi","tool_choice":"auto","parallel_tool_calls":true}`), "grok-4.5")
+	withoutTools, err := grokAttributeCodec().PatchGrokResponsesBody([]byte(`{"input":"hi","tool_choice":"auto","parallel_tool_calls":true}`), "grok-4.5")
 	require.NoError(t, err)
 	require.False(t, gjson.GetBytes(withoutTools, "tool_choice").Exists())
 	require.False(t, gjson.GetBytes(withoutTools, "parallel_tool_calls").Exists())
 
 	for _, malformedTools := range []string{"null", `{}`, `"invalid"`} {
 		malformedBody := []byte(`{"input":"hi","tools":` + malformedTools + `,"tool_choice":"auto","parallel_tool_calls":true}`)
-		patched, err := GrokBodyCodec().PatchGrokResponsesBody(malformedBody, "grok-4.5")
+		patched, err := grokAttributeCodec().PatchGrokResponsesBody(malformedBody, "grok-4.5")
 		require.NoError(t, err)
 		require.False(t, gjson.GetBytes(patched, "tool_choice").Exists(), string(patched))
 		require.False(t, gjson.GetBytes(patched, "parallel_tool_calls").Exists(), string(patched))
 	}
 }
 
+// TestSanitizeGrokCompactionReplayBodyPreservesVisibleSummary supplies opaque
+// compaction plus visible summary and previous-response ID. Sanitation removes
+// the continuation/reasoning state, retains summary and user history, and
+// recognizes the tested decoder errors.
 func TestSanitizeGrokCompactionReplayBodyPreservesVisibleSummary(t *testing.T) {
 	body := []byte(`{
 		"previous_response_id":"resp_stale",
 		"input":[{"type":"compaction","encrypted_content":"opaque","summary":[{"type":"summary_text","text":"visible history"}]},{"type":"message","role":"user","content":"continue"}]
 	}`)
-	patched, changed, err := GrokBodyCodec().SanitizeGrokCompactionReplayBody(body)
+	patched, changed, err := grokAttributeCodec().SanitizeGrokCompactionReplayBody(body)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.False(t, gjson.GetBytes(patched, "previous_response_id").Exists())
 	require.False(t, gjson.GetBytes(patched, `input.#(type=="reasoning")`).Exists())
 	require.Contains(t, gjson.GetBytes(patched, "input.0.content.0.text").String(), "visible history")
 	require.Equal(t, "continue", gjson.GetBytes(patched, "input.1.content").String())
-	require.True(t, GrokBodyCodec().IsGrokCompactionReplayDecodeError(http.StatusBadRequest, []byte(`{"error":{"message":"failed to deserialize compaction summary history"}}`)))
-	require.True(t, GrokBodyCodec().IsGrokCompactionReplayDecodeError(http.StatusBadRequest, []byte(`{"error":{"type":"invalid_request_error"},"detail":"could not decode compaction blob"}`)))
+	require.True(t, grokAttributeCodec().IsGrokCompactionReplayDecodeError(http.StatusBadRequest, []byte(`{"error":{"message":"failed to deserialize compaction summary history"}}`)))
+	require.True(t, grokAttributeCodec().IsGrokCompactionReplayDecodeError(http.StatusBadRequest, []byte(`{"error":{"type":"invalid_request_error"},"detail":"could not decode compaction blob"}`)))
+}
+
+// grokAttributeCodec binds offline resolved Grok attributes to the gateway
+// body codec for tests. Each lookup uses the supplied final model identity and
+// an empty attribute override.
+func grokAttributeCodec() grok.BodyCodec {
+	codec := GrokBodyCodec()
+	codec.Attributes = func(model string) modelcatalog.Attributes {
+		return testkit.OfflineView().Resolve(modelcatalog.Target{Platform: "grok", Model: model}, modelcatalog.Attributes{}).Attributes
+	}
+	return codec
+}
+
+// TestGrokVideoCustomResolutionAndLongDuration parses JSON and multipart task
+// submissions. Both formats retain the custom video price label and all requested
+// seconds while still exposing recognized image geometry to image endpoints.
+func TestGrokVideoCustomResolutionAndLongDuration(t *testing.T) {
+	codec := GrokMediaCodec()
+	info := codec.ParseGrokMediaRequest("application/json", []byte(`{"model":"custom-video","resolution":"2K","duration":60}`))
+	require.Equal(t, "2k", info.Resolution)
+	require.Equal(t, "2k", info.ImageResolution)
+	require.Equal(t, 60, info.DurationSeconds)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "custom-video"))
+	require.NoError(t, writer.WriteField("resolution", "768P"))
+	require.NoError(t, writer.WriteField("duration", "999"))
+	require.NoError(t, writer.Close())
+	info = codec.ParseGrokMediaRequest(writer.FormDataContentType(), body.Bytes())
+	require.Equal(t, "768p", info.Resolution)
+	require.Equal(t, 999, info.DurationSeconds)
 }

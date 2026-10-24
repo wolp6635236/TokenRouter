@@ -18,15 +18,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
-// availabilityProviderStore 按测试提供商的持久配置筛选候选。
+// availabilityProviderStore filters test records by persistent configuration
+// for model diagnosis.
 type availabilityProviderStore struct {
-	providers      []ExecutionProvider
+	// providers supplies source targets for persistent candidate filtering. Keep
+	// these values stable during reads, which return ExecutionRecord copies and
+	// retain their transient windows for model diagnosis.
+	providers []ExecutionProvider
+	// fixture target lookup references
 	providersByID  map[int64]*ExecutionProvider
-	calls          int
-	includeGrouped bool
-	platforms      []string
+	calls          int      // observed persistent candidate queries
+	includeGrouped bool     // last ungrouped selection flag
+	platforms      []string // copied queried platform names
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_NoModel_AlwaysAvailable diagnoses
+// an empty pool with blank model input. Both support flags return true to
+// retain the conservative unknown-model diagnosis.
 func TestDiagnoseModelAvailabilityForPlatform_NoModel_AlwaysAvailable(t *testing.T) {
 	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*ExecutionProvider{}}
 	svc := newAvailabilityForTest(repo, nil, false)
@@ -37,6 +45,9 @@ func TestDiagnoseModelAvailabilityForPlatform_NoModel_AlwaysAvailable(t *testing
 	require.True(t, diag.HasModelSupport, "空模型必须保守返回 HasModelSupport=true，让调用方继续走 503")
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_EmptyPlatformKeepsEmptyGroupEmpty
+// queries a nonblank model and explicit fixture group with empty platform and
+// no providers. Both configured-pool and model-support flags remain false.
 func TestDiagnoseModelAvailabilityForPlatform_EmptyPlatformKeepsEmptyGroupEmpty(t *testing.T) {
 	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*ExecutionProvider{}}
 	svc := newAvailabilityForTest(repo, nil, false)
@@ -47,6 +58,9 @@ func TestDiagnoseModelAvailabilityForPlatform_EmptyPlatformKeepsEmptyGroupEmpty(
 	require.False(t, diag.HasModelSupport)
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_NilReceiver calls diagnosis on a
+// nil availability service with a model and group. Both flags return true for
+// that unavailable diagnostic dependency.
 func TestDiagnoseModelAvailabilityForPlatform_NilReceiver(t *testing.T) {
 	var svc *routing.ModelAvailability
 
@@ -56,6 +70,9 @@ func TestDiagnoseModelAvailabilityForPlatform_NilReceiver(t *testing.T) {
 	require.True(t, diag.HasModelSupport)
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_NoProvidersInPool queries a
+// nonblank GPT model and explicit group against an empty OpenAI provider
+// fixture. Neither configured pool presence nor model support is reported.
 func TestDiagnoseModelAvailabilityForPlatform_NoProvidersInPool(t *testing.T) {
 	repo := &availabilityProviderStore{providers: nil, providersByID: map[int64]*ExecutionProvider{}}
 	svc := newAvailabilityForTest(repo, nil, false)
@@ -66,6 +83,9 @@ func TestDiagnoseModelAvailabilityForPlatform_NoProvidersInPool(t *testing.T) {
 	require.False(t, diag.HasModelSupport, "没有提供商表示没有模型支持；调用方会走空池 503 分支")
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_ExplicitMappingMatches supplies one
+// active provider with an explicit self mapping. Diagnosis reports both
+// configured pool presence and support for that requested model.
 func TestDiagnoseModelAvailabilityForPlatform_ExplicitMappingMatches(t *testing.T) {
 	repo := &availabilityProviderStore{
 		providers: []ExecutionProvider{
@@ -94,10 +114,13 @@ func TestDiagnoseModelAvailabilityForPlatform_ExplicitMappingMatches(t *testing.
 	require.True(t, diag.HasModelSupport)
 }
 
+// TestDiagnoseModelAvailabilityAllowsUnknownModelForEmptyScope uses an active
+// provider with an empty whitelist. Diagnosis retains support for both tested
+// models without catalogue membership restricting them.
 func TestDiagnoseModelAvailabilityAllowsUnknownModelForEmptyScope(t *testing.T) {
 	repo := &availabilityProviderStore{
 		providers: []ExecutionProvider{
-			{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI, Status: billing.StatusActive, Schedulable: true} /* 空白名单允许目录未知型号 */},
+			{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI, Status: billing.StatusActive, Schedulable: true} /* An empty allowlist permits models unknown to the catalogue. */},
 		},
 		providersByID: map[int64]*ExecutionProvider{},
 	}
@@ -113,6 +136,9 @@ func TestDiagnoseModelAvailabilityAllowsUnknownModelForEmptyScope(t *testing.T) 
 	require.True(t, diag.HasModelSupport)
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_WildcardMappingMatches supplies an
+// active provider with a catch-all mapping. Diagnosis reports support for the
+// requested model through that configured target.
 func TestDiagnoseModelAvailabilityForPlatform_WildcardMappingMatches(t *testing.T) {
 	repo := &availabilityProviderStore{
 		providers: []ExecutionProvider{
@@ -140,6 +166,9 @@ func TestDiagnoseModelAvailabilityForPlatform_WildcardMappingMatches(t *testing.
 	require.True(t, diag.HasModelSupport, "通配符映射必须把请求模型视为可服务")
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSignal
+// uses two group providers whose nonempty whitelists exclude the requested
+// model. The pool exists while model support is false for rejection handling.
 func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSignal(t *testing.T) {
 	groupID := int64(42)
 	repo := &availabilityProviderStore{
@@ -182,6 +211,10 @@ func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSig
 	require.False(t, diag.HasModelSupport, "没有提供商白名单允许该模型时 handler 应返回 404")
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemainsConfigured
+// supplies an Anthropic provider cooling through rate, overload, and temporary
+// windows. Ordinary scheduling rejects it while persistent diagnosis still
+// reports its configured model support.
 func TestDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemainsConfigured(t *testing.T) {
 	groupID := int64(42)
 	cooldownUntil := time.Now().Add(time.Hour)
@@ -208,7 +241,7 @@ func TestDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemai
 	require.False(t, repo.providers[0].View().IsSchedulable(), "test provider must be excluded from normal scheduling while cooling down")
 	svc := newAvailabilityForTest(repo, nil, false)
 
-	// 诊断必须绕过只反映瞬时状态的快照。
+	// Diagnosis uses persistent configuration so temporary cooldowns do not hide model support.
 
 	diag := svc.DiagnoseGeneral(context.Background(), &groupID, "claude-opus-4-8", capability.PlatformAnthropic)
 
@@ -216,6 +249,10 @@ func TestDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemai
 	require.True(t, diag.HasModelSupport, "a configured model remains supported while every matching provider is temporarily cooling down")
 }
 
+// TestOpenAIDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemainsConfigured
+// supplies a compatible OpenAI provider with future health windows and model
+// mapping. Scheduling rejects the record while compatible diagnosis retains
+// configured pool/model support.
 func TestOpenAIDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProviderRemainsConfigured(t *testing.T) {
 	groupID := int64(43)
 	cooldownUntil := time.Now().Add(time.Hour)
@@ -242,7 +279,7 @@ func TestOpenAIDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProvide
 	require.False(t, repo.providers[0].View().IsSchedulable(), "test provider must be excluded from normal scheduling while cooling down")
 	svc := newAvailabilityForTest(repo, nil, true)
 
-	// 诊断必须绕过只反映瞬时状态的快照。
+	// Diagnosis uses persistent configuration so temporary cooldowns do not hide model support.
 
 	diag := svc.DiagnoseCompatible(context.Background(), &groupID, "claude-opus-4-8", capability.PlatformOpenAI)
 
@@ -250,9 +287,13 @@ func TestOpenAIDiagnoseModelAvailabilityForPlatform_RateLimitedSupportingProvide
 	require.True(t, diag.HasModelSupport, "OpenAI-compatible diagnosis must keep transiently limited supporting providers in the configured pool")
 }
 
+// TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut queries a
+// GPT model under OpenAI platform against an Anthropic-only group fixture.
+// Platform filtering leaves both configured-pool and model-support
+// observations false.
 func TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut(t *testing.T) {
-	// 分组里只有 Anthropic 提供商，但用户路由到 OpenAI 网关。
-	// 诊断必须按平台过滤掉 Anthropic 提供商，因此 HasProvidersInPool=false，调用方保留 503。
+	// The group contains Anthropic providers while the request targets OpenAI.
+	// Platform filtering leaves HasProvidersInPool false, allowing the caller to retain its 503 response.
 	repo := &availabilityProviderStore{
 		providers: []ExecutionProvider{
 			{
@@ -278,6 +319,10 @@ func TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut(t *testing
 	require.False(t, diag.HasModelSupport)
 }
 
+// TestOpenAIGatewayDiagnoseModelAvailabilityForPlatform_GrokPlatformFiltersOpenAIProviders
+// queries a Grok model and platform against an active OpenAI-only group
+// fixture. Compatible diagnosis excludes the other platform from both
+// configured-pool and model-support flags.
 func TestOpenAIGatewayDiagnoseModelAvailabilityForPlatform_GrokPlatformFiltersOpenAIProviders(t *testing.T) {
 	repo := &availabilityProviderStore{
 		providers: []ExecutionProvider{
@@ -304,6 +349,16 @@ func TestOpenAIGatewayDiagnoseModelAvailabilityForPlatform_GrokPlatformFiltersOp
 	require.False(t, diag.HasModelSupport)
 }
 
+// ListModelAvailabilityCandidates records query shape and returns copied
+// eligible fixture records for the selected group/platform set. Persistent
+// active status and scheduling switch qualify; transient cooldowns are
+// ignored.
+//
+// Group membership accepts either GroupIDs or ProviderGroups, while ungrouped
+// selection excludes both forms when includeGrouped is false. ExecutionRecord
+// supplies supported-container copying before the record enters the result
+// slice. Calls are sequential in these tests, and the fixture does not model
+// database ordering, transaction isolation, or distributed publication.
 func (m *availabilityProviderStore) ListModelAvailabilityCandidates(_ context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]providercore.Record, error) {
 	m.calls++
 	m.includeGrouped = includeGrouped
@@ -336,9 +391,13 @@ func (m *availabilityProviderStore) ListModelAvailabilityCandidates(_ context.Co
 	return result, nil
 }
 
+// availabilityFixtureGroupID returns separately allocated storage for the test
+// group ID 71.
 func availabilityFixtureGroupID() *int64 { id := int64(71); return &id }
 
-// newAvailabilityForTest 为模型诊断用例配置测试分组和模型范围。
+// newAvailabilityForTest assigns group 71 to ungrouped fixtures and fills
+// missing credential type with API Key. It then binds persistent diagnosis
+// with the optional group-policy service and compatible flag.
 func newAvailabilityForTest(repo *availabilityProviderStore, policies *routing.PricingConfigService, compatible bool) *routing.ModelAvailability {
 	for i := range repo.providers {
 		value := &repo.providers[i].Record
@@ -352,7 +411,10 @@ func newAvailabilityForTest(repo *availabilityProviderStore, policies *routing.P
 	return NewModelAvailability(repo, policies, compatible)
 }
 
-// TestModelAvailabilityUsesExplicitGroupAcrossPlatforms 验证模型可用性只诊断明确分组的提供商，空平台聚合各提供商平台。
+// TestModelAvailabilityUsesExplicitGroupAcrossPlatforms mixes same-group
+// Claude/GPT providers with another group's Gemini provider. Diagnosis
+// aggregates only admitted membership, avoids reads without group ID, and
+// obeys explicit or forced platform filtering.
 func TestModelAvailabilityUsesExplicitGroupAcrossPlatforms(t *testing.T) {
 	groupID := int64(71)
 	otherGroup := int64(72)
@@ -385,7 +447,10 @@ func TestModelAvailabilityUsesExplicitGroupAcrossPlatforms(t *testing.T) {
 	}
 }
 
-// TestModelAvailabilityChecksProtocolWithoutTreatingCooldownAsMissingModel 验证模型诊断复用协议资格，同时忽略提供商的临时冷却状态。
+// TestModelAvailabilityChecksProtocolWithoutTreatingCooldownAsMissingModel
+// combines a cooling provider with native-only Messages policy before
+// permitting conversion. Pool presence remains while protocol denial removes
+// support, then allowed conversion restores support despite cooldown.
 func TestModelAvailabilityChecksProtocolWithoutTreatingCooldownAsMissingModel(t *testing.T) {
 	group := &routing.Group{ID: 71, Hydrated: true, Status: routing.StatusActive, ProtocolFallbacks: map[protocol.ProtocolID][]protocol.ProtocolID{protocol.ProtocolAnthropicMessages: {}}}
 	until := time.Now().Add(time.Hour)
@@ -400,6 +465,9 @@ func TestModelAvailabilityChecksProtocolWithoutTreatingCooldownAsMissingModel(t 
 	require.True(t, service.DiagnoseCompatible(ctx, &group.ID, "gpt-test", "").HasModelSupport)
 }
 
+// TestAvailableRequestModelsFromProvidersUsesQoderProviderSite builds CN and
+// Global Qoder providers separately and together. Rejection-model candidates
+// follow each site's defaults and their mixed union.
 func TestAvailableRequestModelsFromProvidersUsesQoderProviderSite(t *testing.T) {
 	newProvider := func(id int64, site string) providercore.Record {
 		return providercore.Record{
@@ -423,6 +491,10 @@ func TestAvailableRequestModelsFromProvidersUsesQoderProviderSite(t *testing.T) 
 	require.ElementsMatch(t, qoder.DefaultRequestModelIDs(), mixedModels)
 }
 
+// TestAvailableRequestModelsFromProvidersFiltersConfiguredQoderModels supplies
+// site-specific whitelist and mapping overrides across CN/Global providers.
+// Candidate lists retain supported site names, reject invalid CN aliases, and
+// combine valid configured names across sites.
 func TestAvailableRequestModelsFromProvidersFiltersConfiguredQoderModels(t *testing.T) {
 	newProvider := func(id int64, site string, credentials map[string]any) providercore.Record {
 		credentials["site"] = site
@@ -455,7 +527,8 @@ func TestAvailableRequestModelsFromProvidersFiltersConfiguredQoderModels(t *test
 	require.ElementsMatch(t, []string{"claude-opus-4-6", "qwen3.6-flash"}, mixedModels)
 }
 
-// rejectedModelsForContract 根据测试记录调用 routing 的模型拒绝规则。
+// rejectedModelsForContract adapts supplied records to routing model-rejection
+// candidate sources.
 func rejectedModelsForContract(values []providercore.Record, platform string) []string {
 	sources := make([]routing.ModelRejectionSource, len(values))
 	for i := range values {

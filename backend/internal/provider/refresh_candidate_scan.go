@@ -6,38 +6,85 @@ import (
 	"time"
 )
 
-// OAuthRefreshCandidatePager 按页面大小和记录 ID 游标扫描刷新候选。
+// refresh_candidate_scan.go scans refresh candidates in ID order and retains
+// the last completed page cursor.
+// A periodic refresh scan resumes by provider ID when its budget expires during
+// a page. Storage supplies cursor metadata independently of loaded records,
+// allowing the scan to advance past IDs whose details disappeared between
+// selection and loading. Returned records still need strictly increasing IDs
+// above the preceding cursor.
+//
+// The scan advances only after processing returns with a live context, so an
+// interrupted page is visited again on the next cycle. Coordinated exchanges
+// reread eligibility and expiry before another exchange. Reaching the final page
+// resets the cursor to begin the next complete pass, while repository errors and
+// invalid metadata leave the last completed position available. The mutex
+// protects cursor access; callers coordinate overlapping Run invocations.
+
+// OAuthRefreshCandidatePager supplies ID-ordered candidate records with
+// independently selected page metadata.
 type OAuthRefreshCandidatePager interface {
+	// ListOAuthRefreshCandidatePage loads eligible candidates after the supplied
+	// ID cursor within its page limit. NextAfterID reflects selected IDs even if
+	// details disappear, and HasMore tells callers whether another selected page
+	// may remain.
 	ListOAuthRefreshCandidatePage(context.Context, OAuthRefreshPageOptions) (*OAuthRefreshCandidatePage, error)
 }
 
-// RefreshScanOptions 提供单轮扫描的配置值和记录函数。
+// RefreshScanOptions supplies the budget, page size, platforms, and log
+// callbacks for one scan.
 type RefreshScanOptions struct {
-	Timeout                  time.Duration
-	PageSize                 int
-	Platforms                []string
+	Timeout  time.Duration // complete scan cancellation budget
+	PageSize int           // repository candidate page limit
+	// Platforms is borrowed through repository paging; callers keep its entries
+	// stable for the scan so every page uses the same registered candidates.
+	Platforms []string
+	// Debug reports a cycle with no needed refresh or failure. Info reports other
+	// cycle totals. Warn reports cancellation before another page, and Error reports
+	// missing configuration, repository reads and invalid page data. Run replaces
+	// each nil callback with a no-op before scanning, allowing these independent
+	// observation levels to be omitted together or separately.
 	Debug, Info, Warn, Error func(string, ...any)
 }
 
-// RefreshCandidateScan 持有唯一恢复游标；周期由 app 注入的提供商刷新循环驱动。
+// RefreshCandidateScan retains the last completed cursor position between
+// periodic scan cycles.
 type RefreshCandidateScan struct {
-	mu      sync.Mutex
-	afterID int64
+	// mu protects afterID for observation and publication. Zero starts a complete
+	// pass; the mutex does not serialize entire Run calls, which callers
+	// coordinate.
+	mu      sync.Mutex // resume cursor synchronization
+	afterID int64      // last completed selected ID
 }
 
+// RefreshPageStats records eligibility counts and worker outcomes for one
+// processed candidate page.
 type RefreshPageStats struct {
-	Total        int
-	OAuth        int
-	NeedsRefresh int
-	Refreshed    int
-	Skipped      int
-	Failed       int
+	Total        int // loaded candidate record count
+	OAuth        int // records accepted by CanRefresh
+	NeedsRefresh int // eligible records requiring exchange
+	Refreshed    int // worker results classified successful
+	Skipped      int // worker results classified skipped
+	Failed       int // worker results classified failed
 }
 
-func (s *RefreshCandidateScan) Position() int64      { s.mu.Lock(); defer s.mu.Unlock(); return s.afterID }
+// Position reads the current resume cursor under its mutex.
+func (s *RefreshCandidateScan) Position() int64 { s.mu.Lock(); defer s.mu.Unlock(); return s.afterID }
+
+// SetPosition publishes the supplied resume cursor under its mutex.
 func (s *RefreshCandidateScan) SetPosition(id int64) { s.mu.Lock(); s.afterID = id; s.mu.Unlock() }
 
-// Run 执行一次有界且可从游标恢复的刷新周期。
+// Run processes ID-ordered pages until the scan budget, repository failure or
+// final page ends the cycle. Nil parent selects context.Background, loggers
+// default to no-ops, and callers supply a usable page size, positive timeout and
+// callable process callback.
+//
+// Page metadata must advance beyond the prior cursor, and every loaded record ID
+// must increase above it. The cursor advances after process returns with an
+// uncanceled context; interruption retains that page for another cycle. Empty
+// terminal metadata resets the pass, as does a processed final page. Errors are
+// logged with partial statistics, and overlapping Run calls require caller
+// coordination because cursor locking covers individual reads and writes.
 func (s *RefreshCandidateScan) Run(parent context.Context, pager OAuthRefreshCandidatePager, options RefreshScanOptions, process func(context.Context, []Record) RefreshPageStats) {
 	noop := func(string, ...any) {}
 	if options.Debug == nil {
@@ -94,6 +141,9 @@ func (s *RefreshCandidateScan) Run(parent context.Context, pager OAuthRefreshCan
 			break
 		}
 		providers := page.Providers
+		// A terminal empty SQL page means the pass reached its end. Reset before
+		// the next cycle so providers with smaller IDs are eligible for another
+		// scan.
 		if !page.HasMore && page.NextAfterID == 0 && len(providers) == 0 {
 			s.SetPosition(0)
 			break
@@ -115,12 +165,17 @@ func (s *RefreshCandidateScan) Run(parent context.Context, pager OAuthRefreshCan
 		stats.Skipped += pageStats.Skipped
 		stats.Failed += pageStats.Failed
 
-		// 页面未完整处理时不得推进游标；OAuthRefreshAPI 会重读数据库并复查过期时间，因此重读页面是安全的。
+		// Leave an interrupted page at its prior cursor so unprocessed candidates
+		// remain reachable next cycle; OAuthRefreshAPI rereads expiry and eligibility
+		// before exchanging any credentials from the repeated page.
 		if ctx.Err() != nil {
 			break
 		}
 		afterID = page.NextAfterID
 		s.SetPosition(afterID)
+		// The final processed page completes this pass; reset its cursor so the
+		// next cycle revisits earlier providers whose credentials may need
+		// refresh.
 		if !page.HasMore {
 			s.SetPosition(0)
 			break
@@ -140,6 +195,9 @@ func (s *RefreshCandidateScan) Run(parent context.Context, pager OAuthRefreshCan
 	}
 }
 
+// IsStrictlyIncreasingProviderPage reports whether all record IDs increase above
+// afterID. An empty page returns true, leaving metadata validation to the caller
+// because selected rows can disappear before detail loading.
 func IsStrictlyIncreasingProviderPage(providers []Record, afterID int64) bool {
 	previous := afterID
 	for i := range providers {

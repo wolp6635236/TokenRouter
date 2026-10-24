@@ -10,30 +10,62 @@ import (
 	"time"
 )
 
-// ErrRuntimeStopped 表示不能在已停止的实例中重新认领资源。
+// runtime.go tracks scheduler workers and request operations through startup,
+// admission, and bounded shutdown.
+// Scheduler workers and request operations share a shutdown context and
+// admission lock. Start registers each worker before launching it, while Enter
+// registers request work before returning its context. Stop closes that
+// admission gate before beginning its wait, so later operations cannot extend
+// the shutdown workload.
+//
+// Periodic tasks run sequentially within one worker, and request operation
+// completion remains the caller responsibility. Stop cancels the shared
+// context and waits within its caller budget, retaining the first shutdown
+// result for repeated calls. A callback that ignores cancellation can remain
+// active after a timeout; task names are reported from the active-count
+// snapshot, and the runtime cannot be restarted after stopping.
+
+// ErrRuntimeStopped identifies request operations rejected after the scheduler
+// runtime closes admission permanently.
 var ErrRuntimeStopped = errors.New("scheduler runtime stopped")
 
-// RuntimeTask 声明初始任务或周期任务，Run 由 Start 调用。
+// RuntimeTask describes one-shot or periodic work launched by Start.
 type RuntimeTask struct {
-	Name      string
-	Interval  time.Duration
-	Immediate bool
-	Run       func(context.Context)
+	Name string // shutdown diagnostic task name
+	// Interval and Immediate control the first execution. A positive
+	// Interval creates periodic ticks and Immediate requests one initial
+	// run; a nonpositive Interval runs once regardless of Immediate.
+	Interval  time.Duration // periodic callback interval
+	Immediate bool          // run before first tick
+	// Run receives the shared runtime context and executes serially for
+	// this task. Nil callbacks are skipped; callbacks need to return for
+	// shutdown waiting to complete.
+	Run func(context.Context) // worker operation callback
 }
 
-// WorkerRuntime 拥有调度后台任务的启动屏障、取消和等待；零值可用。
+// WorkerRuntime coordinates worker startup, cancellation, and shutdown waiting. Its zero value is ready to use.
 type WorkerRuntime struct {
-	mu       sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	started  bool
-	stopped  bool
-	active   map[string]int
-	wg       sync.WaitGroup
-	stopOnce sync.Once
-	stopErr  error
+	// mu protects ctx, cancel, started, stopped, and active. Start and
+	// Enter register wg work under this same lock before Stop closes
+	// admission and starts waiting. stopOnce publishes stopErr after the
+	// first stop execution.
+	mu      sync.Mutex         // protects runtime admission state
+	ctx     context.Context    // shared shutdown cancellation context
+	cancel  context.CancelFunc // shared context cancellation function
+	started bool               // worker startup has occurred
+	stopped bool               // new admission is closed
+	active  map[string]int     // registered counts by task name
+	wg      sync.WaitGroup     // tracks registered work completion
+	// stopOnce serializes the first shutdown and publishes stopErr to
+	// later callers. A timeout result remains retained after work
+	// eventually finishes, so subsequent stops return that result.
+	stopOnce sync.Once // serializes first stop execution
+	stopErr  error     // retained first shutdown result
 }
 
+// initializeLocked creates the shared cancellation context and active-count
+// map on first use. The caller holds mu; later calls retain the same context,
+// including its canceled state after stopping.
 func (r *WorkerRuntime) initializeLocked() {
 	if r.ctx == nil {
 		r.ctx, r.cancel = context.WithCancel(context.Background())
@@ -41,7 +73,9 @@ func (r *WorkerRuntime) initializeLocked() {
 	}
 }
 
-// Context 在首次运行前也可供同步维护使用，停止后始终返回已取消的同一个上下文。
+// Context returns the shared runtime context, initializing it before Start if
+// needed. Stop cancels this context permanently; consumers can use it to
+// observe shutdown even when workers have not started.
 func (r *WorkerRuntime) Context() context.Context {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -49,7 +83,15 @@ func (r *WorkerRuntime) Context() context.Context {
 	return r.ctx
 }
 
-// Start 只启动一次；所有 WaitGroup 登记在停止屏障之前完成。
+// Start launches the supplied non-nil tasks on the first accepted call.
+// Repeated starts and starts after Stop do nothing.
+//
+// Each task is registered under the admission mutex before its goroutine
+// launches, so shutdown waiting includes the worker even when execution has
+// not begun. Duplicate task names share an active count for diagnostics. A
+// nonpositive interval produces one execution, while periodic workers use Run
+// and Immediate according to RuntimeTask and remain tracked until their worker
+// returns.
 func (r *WorkerRuntime) Start(tasks ...RuntimeTask) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -62,13 +104,28 @@ func (r *WorkerRuntime) Start(tasks ...RuntimeTask) {
 		if task.Run == nil {
 			continue
 		}
+		// Register before launching while the admission lock is held.
+		// Stop can then close the gate and wait without racing a new
+		// zero-to-positive wait-group transition.
 		r.wg.Add(1)
 		r.active[task.Name]++
 		go r.run(task)
 	}
 }
 
+// run executes one registered task until its one-shot work finishes or runtime
+// cancellation is observed. It owns active-count and wait-group completion for
+// that worker.
+//
+// The ticker is created before optional immediate execution, so a slow first
+// run can leave a tick ready for the next execution. Periodic callbacks
+// execute sequentially, and cancellation is rechecked after receiving a tick.
+// A callback already running must observe its context or otherwise return; the
+// loop cannot interrupt that callback itself.
 func (r *WorkerRuntime) run(task RuntimeTask) {
+	// Return diagnostic registration before signaling wait-group
+	// completion. Shutdown can report the remaining task names while other
+	// workers are still active.
 	defer func() {
 		r.mu.Lock()
 		r.active[task.Name]--
@@ -79,7 +136,9 @@ func (r *WorkerRuntime) run(task RuntimeTask) {
 	if ctx.Err() != nil {
 		return
 	}
-	// 先建立周期计时器再执行立即首轮，首轮耗时超过周期时下一次 tick 已可读取。
+	// Create periodic timing before immediate execution. A slow first
+	// callback can leave a tick ready, and the worker still runs
+	// subsequent callbacks sequentially.
 	var ticks <-chan time.Time
 	if task.Interval > 0 {
 		ticker := time.NewTicker(task.Interval)
@@ -105,14 +164,28 @@ func (r *WorkerRuntime) run(task RuntimeTask) {
 	}
 }
 
-// StopContext 保存首次停止结果，超时时报告尚未完成的任务。
+// StopContext permanently closes admission, cancels shared work, and waits
+// using the supplied non-nil shutdown context. The first call determines the
+// retained result; later calls wait for and return that same result.
+//
+// Admission closes under the mutex used by Start and Enter before waiting
+// for registered work. If the shutdown context ends first, active task names
+// are sampled and sorted, with an error retained when names remain. Work can
+// continue after that timeout until its callbacks return; a later StopContext
+// does not replace the first result with a fresh wait.
 func (r *WorkerRuntime) StopContext(ctx context.Context) error {
 	r.stopOnce.Do(func() {
 		r.mu.Lock()
 		r.initializeLocked()
+		// Close admission before signaling cancellation. An operation
+		// awakened by shutdown then sees the stopped gate before it can
+		// register replacement work during draining.
 		r.stopped = true
 		r.cancel()
 		r.mu.Unlock()
+		// Admission has closed before starting the wait. The waiter
+		// closes done when registered work finishes, even if the
+		// caller budget ends earlier.
 		done := make(chan struct{})
 		go func() { r.wg.Wait(); close(done) }()
 		select {
@@ -135,8 +208,20 @@ func (r *WorkerRuntime) StopContext(ctx context.Context) error {
 	return r.stopErr
 }
 
-// Enter 将按需操作登记到同一停止屏障。取消只终止等待/I/O，已取得资源仍由租约完成释放。
+// Enter registers an operation and returns its cancellation context and
+// idempotent completion callback. Nil parent uses a background context, and
+// stopped runtimes return ErrRuntimeStopped.
+//
+// Registration joins the wait group under the admission lock before shutdown
+// can begin waiting. The operation context follows parent cancellation and is
+// also canceled through the shared runtime context. Call done after releasing
+// any acquired resources, because done ends shutdown tracking as well as
+// detaching the cancellation callback. Forgetting it leaves the named
+// operation active even after its context has been canceled.
 func (r *WorkerRuntime) Enter(parent context.Context, name string) (context.Context, func(), error) {
+	// Count the operation before exposing its context. If shutdown starts
+	// while the cancellation link is being installed, its wait still
+	// includes this caller-owned completion.
 	r.mu.Lock()
 	r.initializeLocked()
 	if r.stopped {
@@ -151,6 +236,9 @@ func (r *WorkerRuntime) Enter(parent context.Context, name string) (context.Cont
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
+	// Link runtime shutdown to this operation without changing the parent
+	// context. The returned done callback detaches this link before ending
+	// registration, even after cancellation has fired.
 	stop := context.AfterFunc(runtimeContext, cancel)
 	var once sync.Once
 	done := func() {

@@ -17,20 +17,52 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
 )
 
+// provider_data.go creates provider records and hydrates database results with
+// proxies and group memberships.
+// Provider reads combine database rows with proxy details and group
+// memberships before returning records to management and scheduling callers.
+// Batched lookups keep the caller's first-occurrence ID order and omit
+// missing rows, while conversion copies supported JSON containers and
+// hydration adds the remaining associations.
+//
+// Creation has two persistence paths. A bare create saves the provider and
+// attempts its event separately; creation with groups saves the row,
+// memberships, and outbox event through one Ent transaction. Input records
+// receive generated identity and timestamps before commit, so callers must
+// account for those mutations if a later step rolls back.
+
+// Create saves the supplied provider row and then attempts a provider-change
+// event through r.sql. Creation mutates the input's ID and timestamps; group
+// IDs describe event payload only, and an event error is observed after the
+// row save.
 func (r *ProviderStore) Create(ctx context.Context, record *provider.Record) error {
 	if err := CreateRecord(ctx, r.client, record); err != nil {
 		return err
 	}
+	// A bare row save has completed through the supplied client; event failure is
+	// reported separately because group-aware creation owns its own transactional path.
 	if err := r.publish(ctx, r.sql, record.ID, record.GroupIDs); err != nil {
 		r.observe("[SchedulerOutbox] enqueue provider create failed: provider=%d err=%v", record.ID, err)
 	}
 	return nil
 }
 
+// CreateRecord saves one provider through the supplied Ent client and fills
+// its generated ID and timestamps into record. Nil input returns
+// ErrProviderNilInput; deprecated Extra keys are removed from the supplied
+// map before saving, including when a later database step fails.
+//
+// Optional scalar pointers select fields to set, while the schema supplies
+// defaults for omitted values and quota dimension is normalized. This helper
+// uses the supplied client's transaction ownership and performs no group or
+// event write. The caller therefore coordinates associations and publication
+// around this mutable record result.
 func CreateRecord(ctx context.Context, client *dbent.Client, record *provider.Record) error {
 	if record == nil {
 		return provider.ErrProviderNilInput
 	}
+	// Remove retired keys from the submitted map before persistence, matching the
+	// dedicated patch paths even when later database validation rejects the row.
 	provider.DiscardDeprecatedExtra(record.Extra)
 
 	builder := client.Provider.Create().
@@ -98,8 +130,16 @@ func CreateRecord(ctx context.Context, client *dbent.Client, record *provider.Re
 	return nil
 }
 
-// CreateWithProviderGroups 在同一事务中持久化提供商、分组绑定，
-// 以及用于发布新路由快照的调度 outbox 事件。
+// CreateWithProviderGroups saves a provider, its memberships, and its change
+// event through one Ent transaction client. A locally opened transaction is
+// committed here; ErrTxStarted reuses a transaction-bound store client and
+// leaves completion to its caller.
+//
+// Generated ID and timestamps are installed before memberships and the event
+// finish. Each supplied membership is assigned that provider ID, and the
+// record receives copied membership rows and group IDs before commit. A later
+// error can leave those input values populated even when a locally owned
+// transaction rolls back.
 func (r *ProviderStore) CreateWithProviderGroups(ctx context.Context, record *provider.Record, groups []provider.GroupMembership) error {
 	if record == nil {
 		return provider.ErrProviderNilInput
@@ -111,10 +151,14 @@ func (r *ProviderStore) CreateWithProviderGroups(ctx context.Context, record *pr
 
 	var txClient *dbent.Client
 	if err == nil {
+		// Finish only the transaction opened here; rollback also covers later link
+		// or outbox failure after generated IDs have already changed the input record.
 		defer func() { _ = tx.Rollback() }()
 		txClient = tx.Client()
 	} else {
-		// 仓储已处于事务中时，复用调用方持有的事务。
+		// ErrTxStarted identifies a client already held by the outer owner. Use
+		// that connection for the row, links, and event, leaving completion
+		// to its caller.
 		txClient = r.client
 	}
 
@@ -138,6 +182,9 @@ func (r *ProviderStore) CreateWithProviderGroups(ctx context.Context, record *pr
 	}
 	record.GroupIDs = groupIDs
 	record.ProviderGroups = append([]provider.GroupMembership(nil), groups...)
+	// Enlist the event after the membership writes on the same connection so a
+	// failed event cannot commit a locally owned creation that lacks
+	// its group notification.
 	if err := r.publish(ctx, txClient, record.ID, groupIDs); err != nil {
 		return err
 	}
@@ -150,6 +197,10 @@ func (r *ProviderStore) CreateWithProviderGroups(ctx context.Context, record *pr
 	return nil
 }
 
+// GetByID loads one provider and hydrates its proxy and group associations.
+// Missing rows return ErrProviderNotFound; normal Ent queries hide retained
+// deletions, and RecordsFromEntities clones supported nested data and scalar
+// pointers before the record is returned.
 func (r *ProviderStore) GetByID(ctx context.Context, id int64) (*provider.Record, error) {
 	m, err := r.client.Provider.Query().Where(dbprovider.IDEQ(id)).Only(ctx)
 	if err != nil {
@@ -166,12 +217,23 @@ func (r *ProviderStore) GetByID(ctx context.Context, id int64) (*provider.Record
 	return &providers[0], nil
 }
 
+// GetByIDs returns hydrated records in the first-occurrence order of positive
+// supplied IDs. Duplicates, nonpositive values, and missing rows are omitted;
+// empty or wholly absent input produces an allocated empty slice.
+//
+// The provider query preloads proxy edges and group associations are read in
+// batches. Records are indexed by ID before reconstructing input order, so
+// database row order cannot misassociate a result with the caller's
+// selection. CloneRecord copies supported collections and scalar pointers at
+// the return point; arbitrary mutable values outside CloneValues's supported
+// shapes can remain shared.
 func (r *ProviderStore) GetByIDs(ctx context.Context, ids []int64) ([]*provider.Record, error) {
 	if len(ids) == 0 {
 		return []*provider.Record{}, nil
 	}
 
-	// De-duplicate while preserving order of first occurrence.
+	// Keep positive first occurrences as the reconstruction order; the database ID
+	// query below can return rows in another order or omit records deleted meanwhile.
 	uniqueIDs := make([]int64, 0, len(ids))
 	seen := make(map[int64]struct{}, len(ids))
 	for _, id := range ids {
@@ -219,7 +281,8 @@ func (r *ProviderStore) GetByIDs(ctx context.Context, ids []int64) ([]*provider.
 			continue
 		}
 
-		// Prefer the preloaded proxy edge when available.
+		// The eager edge already uses this query's context and deletion filtering;
+		// convert that observed proxy before the final record copy isolates its fields.
 		if entAcc.Edges.Proxy != nil {
 			out.Proxy = r.options.Proxy(entAcc.Edges.Proxy)
 		}
@@ -236,7 +299,8 @@ func (r *ProviderStore) GetByIDs(ctx context.Context, ids []int64) ([]*provider.
 		outByID[entAcc.ID] = out
 	}
 
-	// Preserve input order (first occurrence), and ignore missing IDs.
+	// Reconstruct from IDs rather than database positions so associations stay with
+	// their provider and missing rows leave a gap instead of shifting later results.
 	out := make([]*provider.Record, 0, len(uniqueIDs))
 	for _, id := range uniqueIDs {
 		if _, ok := entByID[id]; !ok {
@@ -250,6 +314,17 @@ func (r *ProviderStore) GetByIDs(ctx context.Context, ids []int64) ([]*provider.
 	return out, nil
 }
 
+// RecordsFromEntities hydrates each supplied nonnil Ent row with current
+// proxy and group data, retaining input row order. Empty input returns an
+// allocated empty slice; callers supply rows rather than nil entries because
+// ID collection dereferences every entry.
+//
+// Proxy lookup includes current and fallback-origin IDs, allowing the
+// management view to name the original proxy while forwarding uses the
+// selected one. Group IDs and membership rows are retained even when their
+// group lookup is absent. Each assembled result passes through CloneRecord
+// before return, isolating supported containers and scalar pointers from the
+// temporary association maps.
 func (r *ProviderStore) RecordsFromEntities(ctx context.Context, providers []*dbent.Provider) ([]provider.Record, error) {
 	if len(providers) == 0 {
 		return []provider.Record{}, nil
@@ -309,6 +384,10 @@ func (r *ProviderStore) RecordsFromEntities(ctx context.Context, providers []*db
 	return outProviders, nil
 }
 
+// LoadProxies returns converted proxies indexed by their positive unique IDs.
+// Invalid and duplicate IDs are omitted before bounded query batches; missing
+// rows simply lack a map entry, and conversion requires the configured Proxy
+// callback for every loaded row.
 func (r *ProviderStore) LoadProxies(ctx context.Context, proxyIDs []int64) (map[int64]*egress.Proxy, error) {
 	proxyMap := make(map[int64]*egress.Proxy)
 	proxyIDs = UniquePositiveInt64s(proxyIDs)
@@ -316,6 +395,7 @@ func (r *ProviderStore) LoadProxies(ctx context.Context, proxyIDs []int64) (map[
 		return proxyMap, nil
 	}
 
+	// Bound the IN parameters before proxy conversion and record hydration.
 	for start := 0; start < len(proxyIDs); start += postgresParameterBatchSize {
 		end := min(start+postgresParameterBatchSize, len(proxyIDs))
 		proxies, err := r.client.Proxy.Query().Where(dbproxy.IDIn(proxyIDs[start:end]...)).All(ctx)
@@ -329,6 +409,16 @@ func (r *ProviderStore) LoadProxies(ctx context.Context, proxyIDs []int64) (map[
 	return proxyMap, nil
 }
 
+// LoadProviderGroups returns parallel maps of group records, group IDs, and
+// membership rows for the requested providers. Positive unique provider IDs
+// are queried in bounded batches and membership ordering follows provider ID
+// then group ID.
+//
+// A missing group record leaves its membership and ID visible while the
+// full-group list omits that record. Those three outputs therefore describe
+// related but different views of the same stored links. Group pointers within
+// the outputs are shared with the converted lookup map; hydrated callers
+// apply CloneRecord when returning their assembled provider records.
 func (r *ProviderStore) LoadProviderGroups(ctx context.Context, providerIDs []int64) (map[int64][]*accessview.GroupConfig, map[int64][]int64, map[int64][]provider.GroupMembership, error) {
 	groupsByProvider := make(map[int64][]*accessview.GroupConfig)
 	groupIDsByProvider := make(map[int64][]int64)
@@ -339,6 +429,7 @@ func (r *ProviderStore) LoadProviderGroups(ctx context.Context, providerIDs []in
 		return groupsByProvider, groupIDsByProvider, providerGroupsByProvider, nil
 	}
 
+	// Keep provider-ID batches below the parameter limit before loading memberships.
 	for start := 0; start < len(providerIDs); start += postgresParameterBatchSize {
 		end := min(start+postgresParameterBatchSize, len(providerIDs))
 		entries, err := r.client.ProviderGroup.Query().
@@ -377,6 +468,9 @@ func (r *ProviderStore) LoadProviderGroups(ctx context.Context, providerIDs []in
 	return groupsByProvider, groupIDsByProvider, providerGroupsByProvider, nil
 }
 
+// LoadGroups converts existing groups and indexes them by positive unique ID.
+// Empty input returns an empty map; each bounded Ent batch uses the
+// configured Group callback, and missing group IDs are omitted.
 func (r *ProviderStore) LoadGroups(ctx context.Context, groupIDs []int64) (map[int64]*accessview.GroupConfig, error) {
 	groupMap := make(map[int64]*accessview.GroupConfig)
 	groupIDs = UniquePositiveInt64s(groupIDs)
@@ -384,6 +478,7 @@ func (r *ProviderStore) LoadGroups(ctx context.Context, groupIDs []int64) (map[i
 		return groupMap, nil
 	}
 
+	// Bound group-ID parameters while retaining all loaded groups in one map.
 	for start := 0; start < len(groupIDs); start += postgresParameterBatchSize {
 		end := min(start+postgresParameterBatchSize, len(groupIDs))
 		groups, err := r.client.Group.Query().Where(dbgroup.IDIn(groupIDs[start:end]...)).All(ctx)
@@ -397,6 +492,10 @@ func (r *ProviderStore) LoadGroups(ctx context.Context, groupIDs []int64) (map[i
 	return groupMap, nil
 }
 
+// UniquePositiveInt64s returns positive IDs in their first-occurrence order
+// using new slice storage. Empty input returns nil; a nonempty input
+// containing no positive values returns an allocated empty slice, and the
+// supplied slice is retained unchanged.
 func UniquePositiveInt64s(ids []int64) []int64 {
 	if len(ids) == 0 {
 		return nil
@@ -416,6 +515,11 @@ func UniquePositiveInt64s(ids []int64) []int64 {
 	return out
 }
 
+// RecordFromEntity converts a nonnil Ent row into the provider
+// representation, copying supported credential and Extra containers. Nil
+// returns nil; RateMultiplier receives fresh storage, while other nullable
+// scalar pointers remain borrowed from the Ent row until a caller performs
+// CloneRecord.
 func RecordFromEntity(m *dbent.Provider) *provider.Record {
 	if m == nil {
 		return nil
@@ -458,15 +562,16 @@ func RecordFromEntity(m *dbent.Provider) *provider.Record {
 	}
 }
 
-// translatePersistenceError 将未找到和唯一约束错误映射为调用方提供的领域错误。
-// 对应的目标错误为 nil 或类型未匹配时返回输入错误，映射结果保留数据库错误原因。
+// translatePersistenceError attaches matching database failures to the
+// supplied application error while retaining their cause. Nil targets disable
+// their mapping; not-found covers sql.ErrNoRows and Ent NotFound, unique
+// violations use the PostgreSQL classifier, and unmatched failures pass
+// through.
 func translatePersistenceError(err error, notFound, conflict *infraerrors.ApplicationError) error {
 	if err == nil {
 		return nil
 	}
 
-	// 兼容 Ent ORM 和标准 database/sql 的 NotFound 行为。
-	// Ent 使用自定义的 NotFoundError，而标准库使用 sql.ErrNoRows。
 	if notFound != nil && (errors.Is(err, sql.ErrNoRows) || dbent.IsNotFound(err)) {
 		return notFound.WithCause(err)
 	}

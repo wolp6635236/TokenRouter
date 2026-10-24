@@ -10,7 +10,30 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
-// AwaitGrokRealtimeAudioObserved 在任一中继方向结束时返回本次会话是否真正传输过音频。
+// audio_usage.go recognizes realtime audio events and estimates Grok Voice
+// usage in endpoint-specific billing units.
+// Voice endpoints meter millions of TTS characters, STT hours, and realtime
+// session minutes after callers confirm audio observation. An audio event
+// requires a nonempty string payload and an audio
+// type that is not a transcript. Relay completion is received before its
+// audio flag is read, giving the caller the observation available after one
+// relay result.
+//
+// STT duration can come from the response, elapsed request time, client
+// input, or a body-size estimate. A selected duration equal to a positive
+// client value is compared with elapsed time and the estimate to correct
+// unusually small values. These estimates include request overhead; content
+// type does not select a different formula.
+
+// AwaitGrokRealtimeAudioObserved returns one received relay error and the
+// audio flag sampled afterward. A nil flag reports false with that error.
+// A nil channel blocks, and an exhausted closed channel yields nil error.
+//
+// RelayRealtime stores audio observations before sending terminal errors,
+// so receipt precedes the flag load. The other direction may still progress
+// during that sample; this helper neither joins goroutines nor cancels work.
+// Callers use the same publication ordering with other producers and retain
+// cancellation and connection cleanup responsibility.
 func AwaitGrokRealtimeAudioObserved(errCh <-chan error, audioObserved *atomic.Bool) (bool, error) {
 	err := <-errCh
 	if audioObserved == nil {
@@ -19,7 +42,9 @@ func AwaitGrokRealtimeAudioObserved(errCh <-chan error, audioObserved *atomic.Bo
 	return audioObserved.Load(), err
 }
 
-// GrokRealtimeEventHasAudio 仅把包含非空音频负载的事件视为可计费音频，转录文本不计入。
+// GrokRealtimeEventHasAudio reports whether a valid JSON event contains audio
+// data in audio, delta, or data. The trimmed type must contain audio and
+// exclude transcript, and the selected payload must be a nonblank string.
 func GrokRealtimeEventHasAudio(msg []byte) bool {
 	if !gjson.ValidBytes(msg) {
 		return false
@@ -37,12 +62,25 @@ func GrokRealtimeEventHasAudio(msg []byte) bool {
 	return false
 }
 
-// EstimateGrokVoiceAudioUsage 从请求和响应推导计费单位：TTS 按百万字符，
-// STT 在时长未知时按请求体大小估算小时数，自定义 Voice 不产生用量。
+// EstimateGrokVoiceAudioUsage derives billing units for tts, stt, or
+// realtime. Unsupported endpoints and quantities that remain nonpositive
+// return nil. For valid JSON, TTS counts the first nonblank trimmed gjson
+// string conversion of input, text, or prompt in runes, returning millions of
+// characters. It uses raw body bytes when those fields supply no text.
+// Realtime uses elapsed minutes; callers establish audio observation before
+// billing those minutes.
+//
+// STT prefers positive response seconds, then elapsed seconds, client
+// seconds, and a request-size estimate. When the chosen seconds equal a
+// positive client duration below half the larger size or elapsed estimate,
+// that larger estimate wins. The result is expressed in hours, and
+// contentType does not affect this calculation. Callers supply request timing
+// and retain responsibility for when an exchange is billable.
 func EstimateGrokVoiceAudioUsage(endpoint string, reqBody []byte, contentType string, respBody []byte, elapsed time.Duration) *protocol.AudioUsage {
 	switch strings.TrimSpace(endpoint) {
 	case "tts":
-		// 优先读取 JSON input/text 字段，否则回退到原始请求体长度。
+		// Read supported JSON text first so Unicode characters count as one unit;
+		// raw body length supplies an estimate when the request exposes no usable text.
 		chars := 0
 		if gjson.ValidBytes(reqBody) {
 			for _, key := range []string{"input", "text", "prompt"} {
@@ -52,15 +90,19 @@ func EstimateGrokVoiceAudioUsage(endpoint string, reqBody []byte, contentType st
 				}
 			}
 		}
+		// The raw-body estimate keeps non-JSON or missing-text inputs measurable;
+		// its byte count can differ from the rune count used for recognized JSON text.
 		if chars <= 0 {
 			chars = len(reqBody)
 		}
 		if chars <= 0 {
 			return nil
 		}
+		// TTS prices consume millions of character units.
 		return &protocol.AudioUsage{Mode: "tts", DurationOrUnits: float64(chars) / 1_000_000.0}
 	case "stt":
-		// 优先采用响应时长，不能只信任客户端 duration_seconds；同时以请求体估算和实际耗时作为下限。
+		// A positive response duration is upstream evidence for STT billing. Other
+		// timing sources are considered when the response exposes none of these fields.
 		secs := 0.0
 		if gjson.ValidBytes(respBody) {
 			for _, path := range []string{"duration", "duration_seconds", "audio_duration", "usage.seconds"} {
@@ -70,7 +112,8 @@ func EstimateGrokVoiceAudioUsage(endpoint string, reqBody []byte, contentType st
 				}
 			}
 		}
-		// multipart 请求按压缩语音约 16KB/s 估算保守下限。
+		// This byte-rate estimate includes multipart framing and JSON overhead,
+		// providing a final duration source when response and timing evidence are absent.
 		sizeFloor := 0.0
 		if len(reqBody) > 0 {
 			sizeFloor = float64(len(reqBody)) / 16000.0
@@ -81,6 +124,8 @@ func EstimateGrokVoiceAudioUsage(endpoint string, reqBody []byte, contentType st
 				clientSecs = v.Float()
 			}
 		}
+		// With no positive response duration, use elapsed time, client input, then
+		// the size estimate so missing evidence follows one consistent billing precedence.
 		if secs <= 0 {
 			secs = elapsed.Seconds()
 		}
@@ -90,7 +135,9 @@ func EstimateGrokVoiceAudioUsage(endpoint string, reqBody []byte, contentType st
 		if secs <= 0 {
 			secs = sizeFloor
 		}
-		// 客户端时长明显低于请求体或实际耗时下限时，采用更大的下限防止少计费。
+		// Equality with the client value activates this floor even if another source
+		// selected the same number. Comparing against elapsed time and body size limits
+		// unusually small client durations under this estimate.
 		if clientSecs > 0 && secs == clientSecs {
 			floor := sizeFloor
 			if elapsed.Seconds() > floor {
@@ -103,8 +150,10 @@ func EstimateGrokVoiceAudioUsage(endpoint string, reqBody []byte, contentType st
 		if secs <= 0 {
 			return nil
 		}
+		// STT prices consume hours of selected audio duration.
 		return &protocol.AudioUsage{Mode: "stt", DurationOrUnits: secs / 3600.0}
 	case "realtime":
+		// Realtime prices consume minutes of the observed audio session duration.
 		mins := elapsed.Minutes()
 		if mins <= 0 {
 			return nil

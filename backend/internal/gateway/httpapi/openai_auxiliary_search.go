@@ -30,24 +30,56 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// openai_auxiliary_search.go executes AlphaSearch through standalone search or
+// PAT Responses requests and captures per-call usage.
+// Standalone Alpha Search and PAT hosted search produce client search output
+// through different upstream protocols. Provider mapping supplies the upstream
+// model while the requested name remains available for completion. PAT
+// credentials lacking account identity can acquire metadata before
+// construction, and a failed durable write can leave request-local credentials
+// updated.
+//
+// The native executor owns response resources and conversion. Error callbacks
+// may install replay readers for health handling, so cleanup targets the
+// original acquired body. Successful searches carry one per-call billing unit;
+// handled HTTP errors return no completion result. API-key missing endpoints
+// and other classified failures can switch providers before output, while the
+// shared error resolver excludes authentication and endpoint-compatibility
+// statuses from health side effects.
+
+// chatgptCodexAlphaSearchURL and openAIPlatformAlphaSearchURL are default
+// standalone search targets, selected by credential type before API-key base
+// validation and incoming query handling.
 const (
-	chatgptCodexAlphaSearchURL   = "https://chatgpt.com/backend-api/codex/alpha/search"
+	// chatgptCodexAlphaSearchURL is the standalone Codex search target.
+	chatgptCodexAlphaSearchURL = "https://chatgpt.com/backend-api/codex/alpha/search"
+	// openAIPlatformAlphaSearchURL is the public API-key search target.
 	openAIPlatformAlphaSearchURL = "https://api.openai.com/v1/alpha/search"
 )
 
-// OpenAIAuxiliary 绑定搜索、嵌入和计数请求的出站能力。
+// OpenAIAuxiliary binds shared execution services for selected-provider
+// auxiliary HTTP exchanges.
 type OpenAIAuxiliary struct {
-	Requests      *OpenAIRequests
-	Output        *OpenAIResponseOutput
-	CodexUsage    *provideradapter.CodexUsageObserver
-	Authorization *providercore.OpenAIAuthorization
-	Enter         func() (func(), error)
+	Requests      *OpenAIRequests                     // shared outgoing request services
+	Output        *OpenAIResponseOutput               // shared response and health adapters
+	CodexUsage    *provideradapter.CodexUsageObserver // Codex quota-header observation service
+	Authorization *providercore.OpenAIAuthorization   // PAT account-metadata discovery service
+	// Enter optionally registers application work before the native
+	// exchange. Successful admission returns cleanup that execution invokes
+	// after original response-body closure.
+	Enter func() (func(), error)
 }
 
-// ForwardAlphaSearch 透传 Codex 独立网页搜索，不绑定仍在演进的 alpha 请求和响应结构。
+// ForwardAlphaSearch executes standalone search or the selected PAT's
+// hosted-search path. It requires a service, Gin context, provider, and string
+// model before preparing credential identity, provider mapping, sanitized
+// input, and authentication metadata. Native execution owns the original
+// upstream body throughout HTTP handling.
 //
-// 仅当上游返回 2xx 时返回带 WebSearchCalls=1 的结果供按次计费；上游错误原样透传时
-// 返回 nil 结果，不产生费用。
+// PAT providers use Responses web_search; other supported credentials use Alpha
+// Search. Success returns one WebSearchCalls unit for outer completion billing.
+// A handled upstream error can return nil result and nil error, so callers use
+// result availability to decide whether to record a search charge.
 func (s *OpenAIAuxiliary) ForwardAlphaSearch(
 	ctx context.Context,
 	c *gin.Context,
@@ -91,8 +123,9 @@ func (s *OpenAIAuxiliary) ForwardAlphaSearch(
 	}
 	SetOpsUpstreamModel(c, upstreamModel)
 
-	// Codex Personal Access Token（at-...）可访问 ChatGPT Codex /responses，standalone /alpha/search 会返回 no_matching_rule。
-	// PAT 提供商通过 Responses 的 hosted web_search 执行搜索。
+	// PAT credentials select hosted web_search through the Responses
+	// builder, which converts alpha input and maps the successful Responses
+	// events back to search JSON.
 	if provider.View().IsOpenAIPersonalAccessToken() {
 		return s.forwardAlphaSearchViaResponsesWebSearch(ctx, c, provider, body, token, proxyURL, requestedModel, upstreamModel, tlsRouterMatch...)
 	}
@@ -121,12 +154,21 @@ func (s *OpenAIAuxiliary) ForwardAlphaSearch(
 					return gatewayprovider.ShouldFailoverOpenAIResponse(resp.StatusCode, upstreamMessage, respBody)
 				},
 				EndpointUnsupported: func() bool { return isOpenAIAlphaSearchEndpointUnsupported(provider, resp.StatusCode) },
-				Prepare:             func() { resp.Body = io.NopCloser(bytes.NewReader(respBody)) },
+				// Health handling can reread captured errors;
+				// native execution still closes the originally
+				// acquired body after this replay reader
+				// replaces resp.Body.
+				Prepare: func() { resp.Body = io.NopCloser(bytes.NewReader(respBody)) },
 				ApplySideEffects: func() bool {
 					return s.Output.ApplyHTTPFailure(ctx, resp, provider, respBody, openAIAlphaSearchSchedulingModel(provider, requestedModel)).StopScheduling
 				},
 				NewFailover: func(shouldDisable bool) error {
 					retryableOnSameProvider := !shouldDisable && provider.View().IsPoolMode() && provider.View().IsPoolModeRetryableStatus(resp.StatusCode)
+					// OAuth-like 429 and access-state
+					// evidence carry typed recovery
+					// metadata; ordinary failures return
+					// the status/body shape expected by
+					// outer search retry handling.
 					if provider.View().IsOpenAIOAuthLike() && resp.StatusCode == http.StatusTooManyRequests {
 						return (gatewayprovider.OpenAIFailoverPolicy{Health: s.Output.Health}).NewProviderFailure(provider, resp.StatusCode, resp.Header, respBody, upstreamMessage, shouldDisable, retryableOnSameProvider)
 					}
@@ -138,6 +180,9 @@ func (s *OpenAIAuxiliary) ForwardAlphaSearch(
 			})
 		},
 		UpdateQuota: func(headers http.Header) {
+			// Shadow quota state comes from its dedicated usage
+			// query, so these response headers update only the
+			// selected nonshadow provider's Codex snapshot here.
 			if !provider.View().IsShadow() {
 				s.CodexUsage.Headers(ctx, provider.Record.ID, headers)
 			}
@@ -150,13 +195,34 @@ func (s *OpenAIAuxiliary) ForwardAlphaSearch(
 	if err != nil {
 		return nil, err
 	}
+	// A handled upstream error may already have been forwarded. Without a
+	// successful search count, return no completion result for the outer
+	// per-call billing entry.
 	if result.SearchCount == 0 {
 		return nil, nil
 	}
-	output := &forwardcore.OpenAIResult{RequestID: result.RequestID, UpstreamHeaders: result.UpstreamHeaders, Model: requestedModel, UpstreamModel: upstreamModel, Duration: result.Duration, WebSearchCalls: 1}
+	output := &forwardcore.OpenAIResult{
+		RequestAttempt:  result.RequestAttempt,
+		RequestID:       result.RequestID,
+		UpstreamHeaders: result.UpstreamHeaders,
+		Model:           requestedModel,
+		UpstreamModel:   upstreamModel,
+		Duration:        result.Duration,
+		WebSearchCalls:  1,
+	}
 	return output, nil
 }
 
+// forwardAlphaSearchViaResponsesWebSearch executes a PAT search through
+// Responses web_search. The supplied alpha input becomes hosted-search input
+// sent to Codex. Empty upstream model uses the requested name; successful
+// conversion returns one search-call unit and Responses endpoint/header
+// metadata for outer completion.
+//
+// HTTP failures follow the shared search recovery rules. Native execution
+// closes its original response body even when error handling installs a replay
+// reader. Handled responses with no successful search return nil result,
+// leaving completion eligibility to the outer media caller.
 func (s *OpenAIAuxiliary) forwardAlphaSearchViaResponsesWebSearch(
 	ctx context.Context,
 	c *gin.Context,
@@ -200,12 +266,21 @@ func (s *OpenAIAuxiliary) forwardAlphaSearchViaResponsesWebSearch(
 					return gatewayprovider.ShouldFailoverOpenAIResponse(resp.StatusCode, upstreamMessage, respBody)
 				},
 				EndpointUnsupported: func() bool { return false },
-				Prepare:             func() { resp.Body = io.NopCloser(bytes.NewReader(respBody)) },
+				// Health handling can reread captured errors;
+				// native execution still closes the originally
+				// acquired body after this replay reader
+				// replaces resp.Body.
+				Prepare: func() { resp.Body = io.NopCloser(bytes.NewReader(respBody)) },
 				ApplySideEffects: func() bool {
 					return s.Output.ApplyHTTPFailure(ctx, resp, provider, respBody, openAIAlphaSearchSchedulingModel(provider, requestedModel)).StopScheduling
 				},
 				NewFailover: func(shouldDisable bool) error {
 					retryableOnSameProvider := !shouldDisable && provider.View().IsPoolMode() && provider.View().IsPoolModeRetryableStatus(resp.StatusCode)
+					// OAuth-like 429 and access-state
+					// evidence carry typed recovery
+					// metadata; ordinary failures return
+					// the status/body shape expected by
+					// outer search retry handling.
 					if provider.View().IsOpenAIOAuthLike() && resp.StatusCode == http.StatusTooManyRequests {
 						return (gatewayprovider.OpenAIFailoverPolicy{Health: s.Output.Health}).NewProviderFailure(provider, resp.StatusCode, resp.Header, respBody, upstreamMessage, shouldDisable, retryableOnSameProvider)
 					}
@@ -217,6 +292,9 @@ func (s *OpenAIAuxiliary) forwardAlphaSearchViaResponsesWebSearch(
 			})
 		},
 		UpdateQuota: func(headers http.Header) {
+			// Shadow quota state comes from its dedicated usage
+			// query, so these response headers update only the
+			// selected nonshadow provider's Codex snapshot here.
 			if !provider.View().IsShadow() {
 				s.CodexUsage.Headers(ctx, provider.Record.ID, headers)
 			}
@@ -229,19 +307,36 @@ func (s *OpenAIAuxiliary) forwardAlphaSearchViaResponsesWebSearch(
 	if err != nil {
 		return nil, err
 	}
+	// A handled upstream error may already have been forwarded. Without a
+	// successful search count, return no completion result for the outer
+	// per-call billing entry.
 	if result.SearchCount == 0 {
 		return nil, nil
 	}
-	output := &forwardcore.OpenAIResult{RequestID: result.RequestID, UpstreamHeaders: result.UpstreamHeaders, Model: requestedModel, UpstreamModel: upstreamModel, Duration: result.Duration, WebSearchCalls: 1}
+	output := &forwardcore.OpenAIResult{
+		RequestAttempt:  result.RequestAttempt,
+		RequestID:       result.RequestID,
+		UpstreamHeaders: result.UpstreamHeaders,
+		Model:           requestedModel,
+		UpstreamModel:   upstreamModel,
+		Duration:        result.Duration,
+		WebSearchCalls:  1,
+	}
 	output.UpstreamEndpoint = "/v1/responses"
 	output.ResponseHeaders = result.UpstreamHeaders.Clone()
 	return output, nil
 }
 
+// openAIAlphaSearchSchedulingModel returns the provider's canonical model for
+// search health feedback.
 func openAIAlphaSearchSchedulingModel(provider *gatewayprovider.ExecutionProvider, requestedModel string) string {
 	return gatewayprovider.ExecutionModelPolicy(provider).CanonicalSchedulingModel(requestedModel)
 }
 
+// buildOpenAIAlphaSearchResponsesWebSearchRequest constructs a Codex
+// hosted-search POST. It binds current identity and passthrough user-agent
+// callbacks, optional inbound query/header readers, and delegates session
+// metadata and capability filtering to the selected upstream request builder.
 func (s *OpenAIAuxiliary) buildOpenAIAlphaSearchResponsesWebSearchRequest(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, alphaBody []byte, body []byte, token string, tlsRouterMatch ...egress.TLSFingerprintRouterMatchResult) (*http.Request, error) {
 	targetURL := ChatgptCodexURL
 	options := s.Requests.ResponseOptions(ctx, c, provider, token, targetURL, true, tlsRouterMatch...)
@@ -263,6 +358,10 @@ func (s *OpenAIAuxiliary) buildOpenAIAlphaSearchResponsesWebSearchRequest(ctx co
 	})
 }
 
+// buildOpenAIAlphaSearchRequest constructs the selected provider's standalone
+// search POST. Target validation precedes construction. The upstream builder
+// receives inbound query and trimmed header values, OAuth eligibility, and the
+// current provider's identity callbacks.
 func (s *OpenAIAuxiliary) buildOpenAIAlphaSearchRequest(
 	ctx context.Context,
 	c *gin.Context,
@@ -294,6 +393,9 @@ func (s *OpenAIAuxiliary) buildOpenAIAlphaSearchRequest(
 	})
 }
 
+// openAIAlphaSearchInboundHeader returns a trimmed inbound value for search
+// construction. A nil context returns empty text, allowing the upstream request
+// builder to select its normal metadata defaults for that request.
 func openAIAlphaSearchInboundHeader(c *gin.Context, key string) string {
 	if c == nil {
 		return ""
@@ -301,6 +403,11 @@ func openAIAlphaSearchInboundHeader(c *gin.Context, key string) string {
 	return strings.TrimSpace(c.GetHeader(key))
 }
 
+// ensureOpenAIAlphaSearchAuthMetadata fills missing account identity for
+// selected PAT credentials. Absent authorization capability or existing account
+// metadata skips lookup. Callers hold exclusive execution-record access; local
+// credentials are applied before optional storage, and storage errors can leave
+// that local update visible.
 func (s *OpenAIAuxiliary) ensureOpenAIAlphaSearchAuthMetadata(ctx context.Context, provider *gatewayprovider.ExecutionProvider, token string, proxyURL string) error {
 	if s == nil || provider == nil || !provider.View().IsOpenAIPersonalAccessToken() {
 		return nil
@@ -312,6 +419,9 @@ func (s *OpenAIAuxiliary) ensureOpenAIAlphaSearchAuthMetadata(ctx context.Contex
 	if oauthService == nil {
 		return nil
 	}
+	// Request-visible metadata is applied before optional persistence.
+	// Shallow credential copies separate top-level maps while retaining
+	// shared nested values from existing configuration.
 	ports := providercore.OpenAIAlphaMetadataPorts{
 		Apply: func(credentials map[string]any) { provider.Record.Credentials = querycache.ShallowMap(credentials) },
 	}
@@ -323,11 +433,18 @@ func (s *OpenAIAuxiliary) ensureOpenAIAlphaSearchAuthMetadata(ctx context.Contex
 	return oauthService.EnsureAlphaSearchMetadata(ctx, gatewayprovider.ExecutionRecord(provider), token, proxyURL, ports)
 }
 
+// isOpenAIAlphaSearchEndpointUnsupported reports API-key search endpoint
+// compatibility failures. The shared predicate checks absent-endpoint statuses
+// for API-key targets; OAuth and missing providers do not select this
+// endpoint-recovery rule.
 func isOpenAIAlphaSearchEndpointUnsupported(provider *gatewayprovider.ExecutionProvider, statusCode int) bool {
 	return gatewaymedia.AlphaEndpointUnsupported(provider != nil && provider.Record.Type == capability.ProviderTypeAPIKey, statusCode)
 }
 
-// openAIAlphaSearchURL 按提供商类型选择 ChatGPT Codex 或 API-key 搜索端点。
+// openAIAlphaSearchURL selects a standalone target for supported credential
+// types. OAuth and setup tokens use Codex; API keys use the public default or a
+// validated protocol base. Missing providers and unsupported types return
+// errors.
 func (s *OpenAIAuxiliary) openAIAlphaSearchURL(provider *gatewayprovider.ExecutionProvider) (string, error) {
 	if provider == nil {
 		return "", fmt.Errorf("provider is required")

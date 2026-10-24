@@ -13,6 +13,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 )
 
+// A timing collector can be selected by a UI path or marker while disclosure
+// still depends on role and user-path scope. The fixture sets role before
+// output and exercises status-only, early-commit, flush, cache-outcome, and
+// explicit WebSocket header paths.
+
+// runServerTimingRequest serves a chosen path with optional UI markers and a
+// role injected before handler output. It returns the recorder after timing
+// middleware finishes; callers supply a nonnil handler to choose the commitment
+// operation.
 func runServerTimingRequest(
 	t *testing.T,
 	enabled bool,
@@ -45,15 +54,19 @@ func runServerTimingRequest(
 	return recorder
 }
 
+// TestServerTimingScopesAndRoleGate varies collection enablement, path, marker
+// values, and injected roles. Header presence protects the separate collection
+// and disclosure gates, including excluded payment and unrecognized marker
+// cases.
 func TestServerTimingScopesAndRoleGate(t *testing.T) {
 	tests := []struct {
-		name        string
-		enabled     bool
-		path        string
-		adminMarker string
-		userMarker  string
-		role        string
-		wantHeader  bool
+		name        string // timing scenario label
+		enabled     bool   // collector enablement under test
+		path        string // request URL path
+		adminMarker string // administrator UI marker value
+		userMarker  string // user UI marker value
+		role        string // injected authentication role
+		wantHeader  bool   // expected timing header presence
 	}{
 		{name: "disabled", enabled: false, path: "/api/v1/admin/users", role: "admin"},
 		{name: "admin API path", enabled: true, path: "/api/v1/admin/users", role: "admin", wantHeader: true},
@@ -93,10 +106,13 @@ func TestServerTimingScopesAndRoleGate(t *testing.T) {
 	}
 }
 
+// TestIsUserTimingPath compares the listed user resources with administrator,
+// login, public-payment, and webhook paths. The predicate accepts the intended
+// user categories while denying the excluded categories represented here.
 func TestIsUserTimingPath(t *testing.T) {
 	tests := []struct {
-		path string
-		want bool
+		path string // request URL path
+		want bool   // expected user path eligibility
 	}{
 		{"/api/v1/auth/me", true},
 		{"/api/v1/auth/revoke-all-sessions", true},
@@ -133,6 +149,9 @@ func TestIsUserTimingPath(t *testing.T) {
 	}
 }
 
+// TestServerTimingCollectorIsRequestScoped serves an eligible request that
+// selects a status without writing a body. Its handler sees an active collector
+// and the completed response still receives a timing header.
 func TestServerTimingCollectorIsRequestScoped(t *testing.T) {
 	active := false
 	recorder := runServerTimingRequest(t, true, "/api/v1/keys", "1", "", "admin", func(c *gin.Context) {
@@ -147,9 +166,14 @@ func TestServerTimingCollectorIsRequestScoped(t *testing.T) {
 	}
 }
 
+// TestServerTimingCollectorForUserUIMarker uses a path outside user disclosure
+// categories with an administrator role. A user UI marker installs collection,
+// and the administrator role permits the resulting header.
 func TestServerTimingCollectorForUserUIMarker(t *testing.T) {
 	active := false
-	// 使用 allowlist 外的路径，确保采集行为只由用户端 UI 标记触发。
+	// Choose an otherwise uncollected path so this request isolates the user
+	// marker's collection effect. The administrator role separately controls
+	// whether the header is disclosed.
 	recorder := runServerTimingRequest(t, true, "/api/v1/settings/public", "", "1", "admin", func(c *gin.Context) {
 		active = timing.Active(c.Request.Context())
 		c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -157,12 +181,15 @@ func TestServerTimingCollectorForUserUIMarker(t *testing.T) {
 	if !active {
 		t.Fatal("collector was not attached for user UI marker")
 	}
-	// 即使路径不在用户 allowlist 内，管理员角色仍可收到耗时响应头。
+	// Administrators can receive collected timings outside the user allowlist.
 	if recorder.Header().Get(timing.HeaderName) == "" {
 		t.Fatal("admin timing header missing for user-UI-marked request")
 	}
 }
 
+// TestServerTimingFinalizesBeforeEarlyCommit asks the handler to commit its
+// selected status immediately. After the request finishes, the returned
+// recorder's mutable header map contains the rendered timing value.
 func TestServerTimingFinalizesBeforeEarlyCommit(t *testing.T) {
 	recorder := runServerTimingRequest(t, true, "/api/v1/admin/stream", "", "", "admin", func(c *gin.Context) {
 		c.Status(http.StatusAccepted)
@@ -173,6 +200,9 @@ func TestServerTimingFinalizesBeforeEarlyCommit(t *testing.T) {
 	}
 }
 
+// TestServerTimingFinalizesOnFlush flushes an eligible administrator response
+// before writing a body. After the request finishes, the returned recorder's
+// mutable header map contains the rendered timing value.
 func TestServerTimingFinalizesOnFlush(t *testing.T) {
 	recorder := runServerTimingRequest(t, true, "/api/v1/admin/export", "", "", "admin", func(c *gin.Context) {
 		c.Writer.Flush()
@@ -182,10 +212,13 @@ func TestServerTimingFinalizesOnFlush(t *testing.T) {
 	}
 }
 
+// TestServerTimingStatusResponses returns status-only cache-validation and
+// server-error responses from eligible administrator paths. Both statuses
+// remain intact and middleware return still supplies their timing headers.
 func TestServerTimingStatusResponses(t *testing.T) {
 	tests := []struct {
-		name   string
-		status int
+		name   string // timing scenario label
+		status int    // selected response status code
 	}{
 		{name: "not modified", status: http.StatusNotModified},
 		{name: "internal error", status: http.StatusInternalServerError},
@@ -205,6 +238,9 @@ func TestServerTimingStatusResponses(t *testing.T) {
 	}
 }
 
+// TestServerTimingResponseWriterUnwraps places a Gin writer inside the timing
+// wrapper. Unwrap returns that same object so response-controller capability
+// traversal can reach the underlying writer.
 func TestServerTimingResponseWriterUnwraps(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -215,12 +251,15 @@ func TestServerTimingResponseWriterUnwraps(t *testing.T) {
 	}
 }
 
+// TestServerTimingCacheOutcome supplies recognized and invalid handler cache
+// headers before response output. Timing rendering normalizes the cache label
+// and uses bypass for the invalid observation.
 func TestServerTimingCacheOutcome(t *testing.T) {
 	tests := []struct {
-		name       string
-		headerName string
-		value      string
-		want       string
+		name       string // timing scenario label
+		headerName string // handler cache header name
+		value      string // handler cache observation value
+		want       string // expected rendered cache label
 	}{
 		{name: "snapshot hit", headerName: snapshotCacheHeader, value: "hit", want: "hit"},
 		{name: "usage miss", headerName: usageCacheHeader, value: "MISS", want: "miss"},
@@ -240,6 +279,9 @@ func TestServerTimingCacheOutcome(t *testing.T) {
 	}
 }
 
+// TestServerTimingResponseHeaderForWebSocket renders an explicit upgrade-header
+// map from an active administrator collector. Changing the role to user on that
+// administrator path suppresses the returned map.
 func TestServerTimingResponseHeaderForWebSocket(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)

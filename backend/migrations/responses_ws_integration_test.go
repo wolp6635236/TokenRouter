@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
@@ -15,16 +16,32 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// TestResponsesWSMigration 验证旧模式转换、空协议集合和重复执行。
+// TestResponsesWSMigration converts five legacy WebSocket configuration fixtures
+// in PostgreSQL and replays the conversion. It checks selected connection modes,
+// removal of bridge WebSocket capability, retained empty protocol arrays and
+// existing mode choices, plus deletion of obsolete mode keys.
 func TestResponsesWSMigration(t *testing.T) {
 	ctx := context.Background()
 	pg, err := tcpostgres.Run(ctx, "postgres:18.1-alpine3.23", tcpostgres.WithDatabase("responses_ws"), tcpostgres.WithUsername("postgres"), tcpostgres.WithPassword("postgres"), tcpostgres.BasicWaitStrategies())
+	// Run may return a container alongside a startup error. Register cleanup
+	// before checking the error, and give termination its own deadline so test
+	// cancellation still allows Docker to remove the partially started instance.
+	if pg != nil {
+		t.Cleanup(func() {
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancelCleanup()
+			if err := pg.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate PostgreSQL container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, pg.Terminate(ctx)) })
 	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
+	// Deferred pool closure runs before testing cleanup terminates the container,
+	// releasing the fixture's SQL connections after all conversion assertions finish.
 	defer func() { require.NoError(t, db.Close()) }()
 	require.NoError(t, postgres.ApplyMigrations(ctx, db, migrations.FS))
 	require.NoError(t, postgres.ApplyMigrations(ctx, db, migrations.FS))
@@ -37,13 +54,18 @@ func TestResponsesWSMigration(t *testing.T) {
 	require.NoError(t, err)
 	migration, err := migrations.FS.ReadFile("292_responses_ws_connection_settings.sql")
 	require.NoError(t, err)
+	// Run the conversion again after legacy fields have been removed. The
+	// expected modes and protocol arrays below must remain stable under replay.
 	for range 2 {
 		_, err = db.ExecContext(ctx, string(migration))
 		require.NoError(t, err)
 	}
+	// id selects the seeded provider; mode and protocols are the expected
+	// persisted connection setting and upstream allowlist after both conversion
+	// executions, checked alongside removal of obsolete keys.
 	for _, tc := range []struct {
-		id              int
-		mode, protocols string
+		id              int    // seeded provider identity
+		mode, protocols string // mode: expected connection behavior; protocols: expected JSON allowlist
 	}{
 		{9201, "per_session", `["openai_responses_websocket"]`},
 		{9202, "pooled", `["openai_responses"]`},

@@ -6,7 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在测试进程运行前设置 Gin 的测试模式。
+// TestMain selects Gin test mode before body and response helpers build request contexts.
+// Running the package after this setup keeps Gin's diagnostic mode consistent
+// across the HTTP helper fixtures.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	m.Run()

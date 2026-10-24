@@ -11,8 +11,24 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
+// runtime_auth.go registers authentication caches, platform authorization
+// maintenance, and credential-session cleanup with the lifecycle manager.
+// Authentication caches and platform authorization maintenance start before
+// HTTP serving and stop before shared storage. Qoder credential builds have an
+// earlier stop phase than authorization-store maintenance, letting managed
+// session work finish before completion queues and connection resources are
+// closed.
+
+// authRuntimeReady marks registration of authentication, authorization, and
+// TLS subscription lifecycle hooks.
 type authRuntimeReady struct{}
 
+// provideAuthRuntime registers authentication caches, authorization
+// maintenance, TLS subscriptions, and credential-session cleanup. Call before
+// manager startup or shutdown. Most callbacks skip service calls when their
+// dependency is nil; all hooks remain registered. Qoder credential and
+// error-rule callbacks are bound directly and retain
+// their implementations' nil and stop behavior.
 func provideAuthRuntime(
 	apiKeyService *apikey.APIKeyService,
 	errorPassthrough *errorpolicy.ErrorPassthroughService,
@@ -28,7 +44,7 @@ func provideAuthRuntime(
 	tlsFingerprintRouter *egress.TLSFingerprintRouterService,
 	manager *lifecycle.Manager,
 ) *authRuntimeReady {
-	manager.Register(lifecycle.Hook{Name: "APIKeyService", StartOrder: 195, StopOrder: 805, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "APIKeyService", StartOrder: 195, StopOrder: shutdownStageAPIKeys, Start: func(ctx context.Context) error {
 		if apiKeyService != nil {
 			apiKeyService.Start()
 		}
@@ -40,7 +56,7 @@ func provideAuthRuntime(
 		return nil
 	}})
 
-	manager.Register(lifecycle.Hook{Name: "OAuthService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "OAuthService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if oauth != nil {
 			oauth.Start()
 		}
@@ -51,7 +67,7 @@ func provideAuthRuntime(
 		}
 		return nil
 	}})
-	manager.Register(lifecycle.Hook{Name: "OpenAIOAuthService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "OpenAIOAuthService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if openaiOAuth != nil {
 			openaiOAuth.Start()
 		}
@@ -62,7 +78,7 @@ func provideAuthRuntime(
 		}
 		return nil
 	}})
-	manager.Register(lifecycle.Hook{Name: "GeminiOAuthService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "GeminiOAuthService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if geminiOAuth != nil {
 			geminiOAuth.Start()
 		}
@@ -73,7 +89,7 @@ func provideAuthRuntime(
 		}
 		return nil
 	}})
-	manager.Register(lifecycle.Hook{Name: "AntigravityOAuthService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "AntigravityOAuthService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if antigravityOAuth != nil {
 			antigravityOAuth.Start()
 		}
@@ -84,9 +100,11 @@ func provideAuthRuntime(
 		}
 		return nil
 	}})
-	// 凭据构建在生产者停止后取消并等待，先于完成队列与共享连接释放。
-	manager.Register(lifecycle.Hook{Name: "QoderCredentialSessions", StopOrder: 30, Stop: qoderTokens.StopContext})
-	manager.Register(lifecycle.Hook{Name: "QoderOAuthService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	// Credential builds are managed operations started on demand. Cancel and
+	// wait for them after earlier request barriers and before completion consumers
+	// or shared connections enter their stop phases.
+	manager.Register(lifecycle.Hook{Name: "QoderCredentialSessions", StopOrder: shutdownStageAggregatesSessionsAndSearch, Stop: qoderTokens.StopContext})
+	manager.Register(lifecycle.Hook{Name: "QoderOAuthService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if qoderOAuth != nil {
 			qoderOAuth.Core.Start()
 		}
@@ -97,7 +115,7 @@ func provideAuthRuntime(
 		}
 		return nil
 	}})
-	manager.Register(lifecycle.Hook{Name: "GrokOAuthService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "GrokOAuthService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if grokOAuth != nil {
 			grokOAuth.Start()
 		}
@@ -109,7 +127,7 @@ func provideAuthRuntime(
 		return nil
 	}})
 
-	manager.Register(lifecycle.Hook{Name: "TLSFingerprintProfileService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "TLSFingerprintProfileService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if tlsFingerprintProfile != nil {
 			tlsFingerprintProfile.Start()
 		}
@@ -120,7 +138,7 @@ func provideAuthRuntime(
 		}
 		return nil
 	}})
-	manager.Register(lifecycle.Hook{Name: "TLSFingerprintRouterService", StartOrder: 190, StopOrder: 810, Start: func(ctx context.Context) error {
+	manager.Register(lifecycle.Hook{Name: "TLSFingerprintRouterService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions, Start: func(ctx context.Context) error {
 		if tlsFingerprintRouter != nil {
 			tlsFingerprintRouter.Start()
 		}
@@ -133,7 +151,7 @@ func provideAuthRuntime(
 	}})
 
 	manager.Register(lifecycle.Hook{
-		Name: "ErrorPassthroughService", StartOrder: 190, StopOrder: 810,
+		Name: "ErrorPassthroughService", StartOrder: 190, StopOrder: shutdownStageAuthAndSubscriptions,
 		Start: errorPassthrough.StartContext,
 		Stop:  errorPassthrough.StopContext,
 	})

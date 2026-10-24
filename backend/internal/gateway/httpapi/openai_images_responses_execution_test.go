@@ -17,6 +17,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	providerimages "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -24,21 +25,36 @@ import (
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// openAIImagesReadErrorBody returns one configured failure on every image
+// body read.
 type openAIImagesReadErrorBody struct {
-	err error
+	err error // configured image read failure
 }
 
-// countingModelRateLimitRepo 记录 SetModelRateLimit 调用，用于断言"没写提供商状态"。
+// countingModelRateLimitRepo captures image cooldown writes for
+// provider-state assertions.
 type countingModelRateLimitRepo struct {
+	// ExecutionProviderStore leaves unused operations unset. Cooldown policy uses
+	// the SetModelRateLimit override to observe its selected image scope.
 	gatewayprovider.ExecutionProviderStore
-	calls  int
-	scopes []string
+	// calls and scopes describe the same SetModelRateLimit invocations. Each
+	// accepted fixture call increments the count and appends its scope, allowing
+	// tests to check both cardinality and capability isolation.
+	calls  int      // observed cooldown write count
+	scopes []string // captured cooldown scope names
 }
 
+// Read returns the configured failure before accepting any image response
+// bytes.
 func (b *openAIImagesReadErrorBody) Read([]byte) (int, error) { return 0, b.err }
 
+// Close completes the stateless failing image body without another error.
 func (b *openAIImagesReadErrorBody) Close() error { return nil }
 
+// TestOpenAIImagesOAuthBodyReadTransportErrorFailover injects a classified
+// HTTP/2 body failure after status 200 and before output. Policy returns a
+// sanitized 502 failover envelope with independently cloned headers and
+// correlated Ops diagnostics.
 func TestOpenAIImagesOAuthBodyReadTransportErrorFailover(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -77,11 +93,13 @@ func TestOpenAIImagesOAuthBodyReadTransportErrorFailover(t *testing.T) {
 	require.Equal(t, "Upstream HTTP/2 stream failed", events[0].Message)
 }
 
-// TestOpenAIImagesOAuthBodyReadErrorsNotMisclassified 验证本地取消、超限和业务错误不会伪装成传输故障。
+// TestOpenAIImagesOAuthBodyReadErrorsNotMisclassified compares cancellation,
+// body-size and semantic image failures. Each retains its original error
+// identity and remains outside the tested transport-read failover conversion.
 func TestOpenAIImagesOAuthBodyReadErrorsNotMisclassified(t *testing.T) {
 	tests := []struct {
-		name string
-		err  error
+		name string // response error classification case
+		err  error  // supplied image read error
 	}{
 		{name: "context canceled", err: context.Canceled},
 		{name: "response too large", err: fmt.Errorf("%w: limit=1", httpclient.ErrResponseBodyTooLarge)},
@@ -107,7 +125,10 @@ func TestOpenAIImagesOAuthBodyReadErrorsNotMisclassified(t *testing.T) {
 	}
 }
 
-// TestOpenAIImagesOAuthTransportErrorAfterDownstreamWriteDoesNotFailover 验证下游开始输出后出现传输错误时停止换号。
+// TestOpenAIImagesOAuthTransportErrorAfterDownstreamWriteDoesNotFailover
+// records image output before a classified body failure. The original error
+// remains terminal for that attempt, and Ops marks the exhausted retry
+// opportunity.
 func TestOpenAIImagesOAuthTransportErrorAfterDownstreamWriteDoesNotFailover(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -132,6 +153,9 @@ func TestOpenAIImagesOAuthTransportErrorAfterDownstreamWriteDoesNotFailover(t *t
 	require.Equal(t, "retry_exhausted_failover", events[0].Kind)
 }
 
+// TestBuildOpenAIImagesResponsesRequest_PassesThroughNForMultiImageModels
+// converts a two-image parsed request into Responses tool input. The tool
+// receives the count, selected image model and supplied prompt.
 func TestBuildOpenAIImagesResponsesRequest_PassesThroughNForMultiImageModels(t *testing.T) {
 	parsed := &media.ImageRequest{
 		Endpoint: upstreamcore.OpenAIImagesGenerationsEndpoint,
@@ -148,6 +172,10 @@ func TestBuildOpenAIImagesResponsesRequest_PassesThroughNForMultiImageModels(t *
 	require.Equal(t, "draw a cat", gjson.GetBytes(body, "input.0.content.0.text").String())
 }
 
+// TestBuildOpenAIImagesResponsesRequest_ForcesImageToolChoice builds a
+// prompt-only parsed generation request. Responses selects the
+// image_generation tool and retains the same tool type and image model in its
+// declaration.
 func TestBuildOpenAIImagesResponsesRequest_ForcesImageToolChoice(t *testing.T) {
 	parsed := &media.ImageRequest{
 		Endpoint: upstreamcore.OpenAIImagesGenerationsEndpoint,
@@ -163,6 +191,9 @@ func TestBuildOpenAIImagesResponsesRequest_ForcesImageToolChoice(t *testing.T) {
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(body, "tools.0.model").String())
 }
 
+// TestBuildOpenAIImagesResponsesRequest_DoesNotPassNForDallE3 converts a
+// DALL-E 3 request with count two. The native compatibility rule omits n
+// while retaining the selected tool model.
 func TestBuildOpenAIImagesResponsesRequest_DoesNotPassNForDallE3(t *testing.T) {
 	parsed := &media.ImageRequest{
 		Endpoint: upstreamcore.OpenAIImagesGenerationsEndpoint,
@@ -178,6 +209,9 @@ func TestBuildOpenAIImagesResponsesRequest_DoesNotPassNForDallE3(t *testing.T) {
 	require.Equal(t, "dall-e-3", gjson.GetBytes(body, "tools.0.model").String())
 }
 
+// TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity converts an
+// editing request with explicit input fidelity and source URL. The OAuth tool
+// uses edit action and omits the unsupported fidelity field.
 func TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity(t *testing.T) {
 	parsed := &media.ImageRequest{
 		Endpoint:      upstreamcore.OpenAIImagesEditsEndpoint,
@@ -196,6 +230,10 @@ func TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity(t *testing.T) {
 	require.Equal(t, "edit", gjson.GetBytes(body, "tools.0.action").String())
 }
 
+// TestBuildOpenAIImagesResponsesRequest_RequiresVerbatimUserPrompt supplies
+// Unicode wording, capitalization and quotes in a parsed prompt. Construction
+// retains that text and adds the dedicated verbatim-prompt instruction
+// string.
 func TestBuildOpenAIImagesResponsesRequest_RequiresVerbatimUserPrompt(t *testing.T) {
 	prompt := "画一个蓝色马克杯，杯身只写“SkelOT”，保持大小写；白色背景，不要增加其他文字。"
 	parsed := &media.ImageRequest{
@@ -211,12 +249,17 @@ func TestBuildOpenAIImagesResponsesRequest_RequiresVerbatimUserPrompt(t *testing
 	require.Equal(t, prompt, gjson.GetBytes(body, "input.0.content.0.text").String())
 }
 
+// SetModelRateLimit records call count and each supplied scope for cooldown
+// assertions.
 func (r *countingModelRateLimitRepo) SetModelRateLimit(_ context.Context, _ int64, scope string, _ time.Time, _ ...string) error {
 	r.calls++
 	r.scopes = append(r.scopes, scope)
 	return nil
 }
 
+// newImagesCooldownContext creates a fresh image request context with a
+// response recorder. The fixture has no request body because the tests
+// exercise already observed error policy and output state.
 func newImagesCooldownContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 
@@ -226,15 +269,21 @@ func newImagesCooldownContext(t *testing.T) (*gin.Context, *httptest.ResponseRec
 	return c, rec
 }
 
+// imagesCooldownProvider supplies an OpenAI OAuth target for image cooldown
+// policy tests.
 func imagesCooldownProvider() *gatewayprovider.ExecutionProvider {
 	return &gatewayprovider.ExecutionProvider{Record: providerimages.Record{LoadLocation: time.LoadLocation, ID: 77, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth, Name: "img-oauth"}}
 }
 
+// TestShouldCoolOpenAIImagesToolForError compares nil, text-derived and
+// structured unavailable-tool observations. The predicate rejects absent or
+// synthesized evidence and accepts the structured fixture for its caller's
+// code-specific cooldown check.
 func TestShouldCoolOpenAIImagesToolForError(t *testing.T) {
 	cases := []struct {
-		name string
-		err  *upstreamopenai.OpenAIImagesUpstreamError
-		want bool
+		name string                                    // cooldown evidence case label
+		err  *upstreamopenai.OpenAIImagesUpstreamError // supplied unavailable-image error evidence
+		want bool                                      // expected structured-evidence predicate result
 	}{
 		{
 			name: "nil_error",
@@ -242,7 +291,8 @@ func TestShouldCoolOpenAIImagesToolForError(t *testing.T) {
 			want: false,
 		},
 		{
-			// 网关从模型文字里推断出来的判据：只说明这一轮没出图。
+			// Text-derived absence describes this attempt rather than confirmed provider
+			// capability, so the unavailable-tool caller should not persist cooldown for it.
 			name: "synthesized_from_model_text",
 			err: &upstreamopenai.OpenAIImagesUpstreamError{
 				StatusCode:               http.StatusBadGateway,
@@ -252,7 +302,8 @@ func TestShouldCoolOpenAIImagesToolForError(t *testing.T) {
 			want: false,
 		},
 		{
-			// 上游自己在 error 帧里点名该状态：这才是提供商级证据，保持冷却。
+			// Structured upstream data supplies the provider evidence required by the
+			// unavailable-tool branch before it can persist an image capability cooldown.
 			name: "structured_upstream_error_frame",
 			err: &upstreamopenai.OpenAIImagesUpstreamError{
 				StatusCode: http.StatusBadGateway,
@@ -269,7 +320,10 @@ func TestShouldCoolOpenAIImagesToolForError(t *testing.T) {
 	}
 }
 
-// TestHandleOpenAIImagesOAuthResponseError_TextFallbackDoesNotCoolProvider 验证仅返回文字时提供商冷却状态保持原样。
+// TestHandleOpenAIImagesOAuthResponseError_TextFallbackDoesNotCoolProvider
+// supplies missing image evidence inferred from model text. Policy writes no
+// image cooldown and still returns the tested provider failover
+// classification.
 func TestHandleOpenAIImagesOAuthResponseError_TextFallbackDoesNotCoolProvider(t *testing.T) {
 	c, _ := newImagesCooldownContext(t)
 	repo := &countingModelRateLimitRepo{}
@@ -287,12 +341,15 @@ func TestHandleOpenAIImagesOAuthResponseError_TextFallbackDoesNotCoolProvider(t 
 
 	require.Zero(t, repo.calls, "模型闲聊不构成提供商级证据，不得写 30 分钟冷却")
 
-	// 仅返回文字时仍触发换号。
+	// Text-only output still permits provider failover.
 	var failover *forwardcore.UpstreamFailoverError
 	require.True(t, errors.As(err, &failover), "仍应触发换号，got %T", err)
 }
 
-// TestHandleOpenAIImagesOAuthResponseError_StructuredUnavailableStillCoolsProvider 验证对照不变式：上游 error 帧点名该状态时仍然冷却，否则等于把功能整个废掉。
+// TestHandleOpenAIImagesOAuthResponseError_StructuredUnavailableStillCoolsProvider
+// supplies an explicit upstream image-tool-unavailable error. Policy writes
+// one cooldown under the image-generation scope retained by the provider
+// fixture.
 func TestHandleOpenAIImagesOAuthResponseError_StructuredUnavailableStillCoolsProvider(t *testing.T) {
 	c, _ := newImagesCooldownContext(t)
 	repo := &countingModelRateLimitRepo{}
@@ -306,6 +363,9 @@ func TestHandleOpenAIImagesOAuthResponseError_StructuredUnavailableStillCoolsPro
 		Message:    "image generation tool is not available for this provider",
 	}
 
+	// Discard the response verdict because this fixture checks persisted
+	// capability state; the neighboring text-fallback test separately inspects
+	// the returned failover classification.
 	_ = svc.handleOpenAIImagesOAuthResponseError(
 		context.Background(), c, provider, "gpt-image-2", "https://upstream.example/v1/responses",
 		&http.Response{StatusCode: http.StatusOK, Header: http.Header{}}, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), upstreamErr,
@@ -315,7 +375,10 @@ func TestHandleOpenAIImagesOAuthResponseError_StructuredUnavailableStillCoolsPro
 	require.Equal(t, []string{providerimages.OpenAIImageGenerationRateLimitKey}, repo.scopes)
 }
 
-// TestOpenAIImagesTextFallback_MarksSynthesizedVerdicts 验证两个文字响应入口添加合成判定标记，违规拦截分支保持自身判定。
+// TestOpenAIImagesTextFallback_MarksSynthesizedVerdicts compares text-derived
+// missing-image errors with policy refusal and blank text. Only missing-image
+// inference receives the synthesis marker, while refusal retains its separate
+// tested code.
 func TestOpenAIImagesTextFallback_MarksSynthesizedVerdicts(t *testing.T) {
 	t.Run("plain_text_reply_is_synthesized", func(t *testing.T) {
 		err := upstreamopenai.OpenAIImagesTextFallbackErrorForText("Here's a polished image prompt for your request.")
@@ -340,8 +403,8 @@ func TestOpenAIImagesTextFallback_MarksSynthesizedVerdicts(t *testing.T) {
 		require.NotNil(t, err)
 		require.Equal(t, "content_policy_violation", err.Code)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-		// 该分支本来就不走冷却（Code 不匹配），标记与否都不改变行为；
-		// 违规拦截结果的合成判定标记为 false。
+		// Policy refusals have a different code and do not enter image-unavailable cooldown.
+		// Their synthesized-from-text marker remains false.
 		require.False(t, err.SynthesizedFromModelText)
 	})
 
@@ -350,11 +413,46 @@ func TestOpenAIImagesTextFallback_MarksSynthesizedVerdicts(t *testing.T) {
 	})
 }
 
-// TestOpenAIImagesTextFallback_RemainsRetryableAndThusCascades 验证级联的前提条件：该错误确实是可重试的，所以会带着"已写冷却"的副作用换号。
-// 此用例检查 502 的重试资格。
+// TestOpenAIImagesTextFallback_RemainsRetryableAndThusCascades builds a
+// missing-image error from plain model text. Its 502 classification is
+// retryable, supporting request recovery while other tests separately protect
+// the absence of provider cooldown.
 func TestOpenAIImagesTextFallback_RemainsRetryableAndThusCascades(t *testing.T) {
 	err := upstreamopenai.OpenAIImagesTextFallbackErrorForText("Here's a polished image prompt for your request.")
 	require.NotNil(t, err)
 	require.True(t, upstreamopenai.IsOpenAIImagesRetryableUpstreamError(err),
 		"文字兜底判据是可重试的——正因如此，写提供商冷却会沿号池级联")
+}
+
+// TestImageStreamFailureUsesResponseDispatch reports an older image stream error
+// after a replacement exchange starts. The production error adapter must attach
+// its response reference so only the interrupted attempt receives the failure.
+func TestImageStreamFailureUsesResponseDispatch(t *testing.T) {
+	var saved telemetry.RequestRecord
+	ctx := telemetry.WithRequestCapture(t.Context(), telemetry.RequestRecord{RequestID: "local"}, func(r telemetry.RequestRecord) { saved = r })
+	ctx = telemetry.WithRequestProvider(ctx, 5400, "X-Custom")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil).WithContext(ctx)
+	first := telemetry.BeginRequestAttempt(ctx, 0)
+	headers := http.Header{"X-Custom": {"shared"}, "X-Request-Id": {"unselected"}}
+	telemetry.ObserveRequestHeaders(first, telemetry.RequestAttemptFromContext(first), headers, 200)
+	second := telemetry.BeginRequestAttempt(ctx, 0)
+	telemetry.ObserveRequestHeaders(second, telemetry.RequestAttemptFromContext(second), headers, 200)
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     headers,
+		Request:    httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(first),
+		Body:       &openAIImagesReadErrorBody{err: errors.New("stream error: stream ID 11; INTERNAL_ERROR; received from peer")},
+	}
+	target := &gatewayprovider.ExecutionProvider{Record: providerimages.Record{LoadLocation: time.LoadLocation, ID: 5400, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth}}
+	svc := newImagesFixture(imagesFixtureInputs{})
+	_, _, _, readErr := upstreamopenai.ReadImagesOAuthNonStreaming(resp, ResponseSink{Writer: c.Writer}, svc.Output.ImageOptions(c), "b64_json", "gpt-image-2")
+	require.Error(t, readErr)
+	require.Error(t, svc.handleOpenAIImagesOAuthResponseError(ctx, c, target, "gpt-image-2", "", resp, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), readErr))
+	require.Equal(t, "failed", saved.Attempts[0].Outcome)
+	require.Equal(t, 502, saved.Attempts[0].Status)
+	require.Equal(t, "running", saved.Attempts[1].Outcome)
+	require.Equal(t, 200, saved.Attempts[1].Status)
+	require.Equal(t, "shared", saved.Attempts[0].RequestID)
+	require.Len(t, saved.Aliases, 2)
 }

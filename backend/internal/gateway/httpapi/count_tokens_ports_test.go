@@ -20,6 +20,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// Count preparation and failed-attempt cleanup share HTTP state with the retry
+// loop. These cases observe cancellation status and provider callback order,
+// verifying mapped bodies are rebuilt from base input and a failed target's
+// session is released before the next provider is used.
+
+// TestFailoverClientGone compares active, canceled, and already written requests.
+// Active input must stay unchanged, unwritten canceled input must select 499,
+// and written canceled input must retain its prior status while reporting completion of the retry window.
 func TestFailoverClientGone(t *testing.T) {
 	t.Run("活跃请求返回false", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -58,7 +66,11 @@ func TestFailoverClientGone(t *testing.T) {
 	})
 }
 
-// TestCountTokensNativeHTTPAttemptContract 验证无槽计数保留资金预检、逐次原报文改写和失败会话释放，不提交费用或完成任务。
+// TestCountTokensNativeHTTPAttemptContract checks funding preflight, fresh body rewrites, and failed-session release
+// for slot-free counts.
+// Its callback trace must put funding before planning and selection, release
+// the first failed target before reselection, and forward each attempt's own
+// mapped model before returning the asserted count and synchronous request type.
 func TestCountTokensNativeHTTPAttemptContract(t *testing.T) {
 	fixture := &countHTTPContract{t: t, group: 42}
 	key := &apikey.APIKey{ID: 7, GroupID: &fixture.group, Group: &routing.Group{}}

@@ -9,14 +9,29 @@ import (
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// BatchUpdateCredentialsRequest represents batch credentials update request.
+// management_credential_fields.go binds batch credential-field edits and
+// formats their per-provider update results.
+// Credential-field maintenance validates each selected provider before applying
+// per-provider patches. The HTTP layer permits the declared string or boolean
+// fields and reports partial write failures as item results, while a missing
+// prevalidation record ends the request with 404.
+
+// BatchUpdateCredentialsRequest selects providers and one supported credential
+// field for value replacement.
 type BatchUpdateCredentialsRequest struct {
+	// credential patch target identifiers
 	ProviderIDs []int64 `json:"provider_ids" binding:"required,min=1"`
-	Field       string  `json:"field" binding:"required,oneof=account_uuid org_uuid intercept_warmup_requests"`
-	Value       any     `json:"value"`
+	// selected credential field name
+	Field string `json:"field" binding:"required,oneof=account_uuid org_uuid intercept_warmup_requests"`
+	// Value follows Field's string or boolean type. Null clears the two UUID
+	// fields, while intercept_warmup_requests requires a boolean value.
+	Value any `json:"value"` // replacement credential field value
 }
 
-// BatchUpdateCredentials 保留类型校验、预验证 404 和逐项结果格式。
+// BatchUpdateCredentials strictly binds a supported credential field and
+// validates its value before batch maintenance. Missing providers during
+// prevalidation return 404; per-item write failures remain in the successful
+// HTTP result.
 func (h *ManagementHandler) BatchUpdateCredentials(c *gin.Context) {
 	var req BatchUpdateCredentialsRequest
 	if err := response.BindJSONStrict(c, &req); err != nil {

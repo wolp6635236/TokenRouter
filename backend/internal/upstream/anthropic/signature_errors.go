@@ -2,7 +2,17 @@ package anthropic
 
 import "strings"
 
-// MatchSignaturePatterns 检查响应体是否匹配自定义关键词列表（不区分大小写）。
+// signature_errors.go classifies signature and malformed-thinking errors for
+// request recovery decisions.
+// Thinking recovery is selected from upstream error text using configurable
+// substrings and built-in message patterns. Broad signature matches and several
+// malformed-history cases report eligibility to the exchange caller, which
+// separately controls whether a repair attempt can run.
+
+// MatchSignaturePatterns reports a case-insensitive substring match for any
+// nonblank configured pattern. Pattern whitespace is trimmed, empty patterns
+// are skipped, and arbitrary response bytes are interpreted as text for
+// matching.
 func MatchSignaturePatterns(respBody []byte, patterns []string) bool {
 	if len(patterns) == 0 {
 		return false
@@ -20,44 +30,42 @@ func MatchSignaturePatterns(respBody []byte, patterns []string) bool {
 	return false
 }
 
-// IsThinkingBlockSignatureError 检测是否是 thinking block 相关错误
-// 这类错误可以通过过滤 thinking blocks 并重试来解决。
+// IsThinkingBlockSignatureError classifies broad signature and
+// malformed-thinking history messages for exchange recovery. Blank or unmatched
+// text returns false and empty diagnostic; signature matches also return empty
+// diagnostic, while other recognized families provide a fixed message.
 func IsThinkingBlockSignatureError(message string) (bool, string) {
 	msg := strings.ToLower(strings.TrimSpace(message))
 	if msg == "" {
 		return false, ""
 	}
 
-	// 检测 signature 相关的错误（更宽松的匹配）
-	// 例如: "Invalid `signature` in `thinking` block", "***.signature" 等
+	// These textual families admit the exchange's history repair path, including
+	// broad signature mentions and empty content; the exchange separately decides
+	// retry eligibility and attempt limits.
+	// Signature errors include invalid thinking signatures and nested signature paths.
 	if strings.Contains(msg, "signature") {
 		return true, ""
 	}
 
-	// 检测 thinking block 顺序/类型错误
-	// 例如: "Expected `thinking` or `redacted_thinking`, but found `text`"
+	// Match errors expecting thinking or redacted_thinking before other content.
 	if strings.Contains(msg, "expected") && (strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking")) {
 		return true, "[SignatureCheck] Detected thinking block type error"
 	}
 
-	// 检测 thinking block 被修改的错误
-	// 例如: "thinking or redacted_thinking blocks in the latest assistant message cannot be modified"
+	// Match rejection of modified thinking blocks in assistant history.
 	if strings.Contains(msg, "cannot be modified") && (strings.Contains(msg, "thinking") || strings.Contains(msg, "redacted_thinking")) {
 		return true, "[SignatureCheck] Detected thinking block modification error"
 	}
 
-	// 检测空消息内容错误（可能是过滤 thinking blocks 后导致的，或客户端发送了空 text block）
-	// 例如: "all messages must have non-empty content"
-	//       "messages: text content blocks must be non-empty"
+	// Filtering or empty client text can leave messages without valid content.
 	if strings.Contains(msg, "non-empty content") || strings.Contains(msg, "empty content") ||
 		strings.Contains(msg, "content blocks must be non-empty") {
 		return true, "[SignatureCheck] Detected empty content error"
 	}
 
-	// 检测 thinking block 缺少 thinking 字段的错误（跨模型切换时常见：
-	// 其他模型回过的 assistant 历史里有 type=thinking 但没有 thinking 文本，
-	// 喂给开启 extended thinking 的 claude 时会被拒）
-	// 例如: "messages.1.content.0.thinking: each thinking block must contain thinking"
+	// A missing-content message is another malformed-history signal admitted by
+	// this classifier, allowing the exchange to consider the same repair path.
 	if strings.Contains(msg, "thinking block must contain") {
 		return true, "[SignatureCheck] Detected thinking block missing content error"
 	}

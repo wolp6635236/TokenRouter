@@ -20,42 +20,69 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache/codec"
 )
 
+// Provider and proxy tests connect persistence to the scheduler outbox and
+// snapshot publisher through small adapters. SQL recorders expose emitted
+// statements and arguments, while the store factories choose the existing
+// provider, proxy, group, and Ollama adapters used by repository tests.
+
+// Retired billing-probe keys identify fixture input that provider writes must
+// discard while retaining supported Extra fields used by current consumers.
 const (
-	// deprecatedUpstreamBillingProbeExtraKey 是历史上游计费探测快照键。
+	// deprecatedUpstreamBillingProbeExtraKey identifies the retired upstream billing snapshot.
 	deprecatedUpstreamBillingProbeExtraKey = "upstream_billing_probe"
 
-	// deprecatedUpstreamBillingProbeEnabledExtraKey 是历史上游计费探测开关键。
+	// deprecatedUpstreamBillingProbeEnabledExtraKey identifies the retired billing probe switch.
 	deprecatedUpstreamBillingProbeEnabledExtraKey = "upstream_billing_probe_enabled"
 )
 
-// captureEntQueryMatcher 记录 Ent 发出的 SQL。
+// captureEntQueryMatcher records Ent query text for later SQL-shape assertions.
 type captureEntQueryMatcher struct {
+	// actual receives every matched query, so callers retain this pointer until
+	// the SQL mock operation finishes. A nil target makes Match fail.
 	actual *string
 }
 
-// captureQuerySQL 在执行查询时记录 SQL 和参数。
+// captureQuerySQL executes database queries while exposing optional SQL and
+// argument captures.
 type captureQuerySQL struct {
-	db       *sql.DB
+	db *sql.DB // fixture query database
+	// captured receives query text when configured; nil disables text capture
+	// while execution still delegates to the same fixture database.
 	captured *string
-	args     *[]any
+	// args receives a copied argument slice when configured, retaining its
+	// element references so tests can inspect the submitted values after execution.
+	args *[]any
 }
 
-// rowsAffectedResult 提供固定影响行数的 SQL 执行结果。
+// rowsAffectedResult supplies a fixed affected-row count for synthetic write
+// results.
 type rowsAffectedResult int64
 
-// recordingSQLExecutor 记录写入 SQL，并模拟错误和执行后的回调。
+// recordingSQLExecutor records write arguments and returns configured results
+// for mutation assertions.
 type recordingSQLExecutor struct {
-	result      sql.Result
-	err         error
-	afterExec   func()
-	execQueries []string
-	execArgs    [][]any
+	// result, err, and afterExec govern the recorded write outcome. err stops
+	// execution before afterExec; successful writes invoke the callback before
+	// returning result to the repository under test.
+	result    sql.Result // configured write result
+	err       error      // configured write error
+	afterExec func()     // successful write callback
+	// execQueries and execArgs align in call order, including writes returning a
+	// configured error. Only the outer argument slices are copied; mutable argument
+	// values remain shared with their callers.
+	execQueries []string // recorded write statements
+	execArgs    [][]any  // copied write argument slices
 }
 
-// providerEventsFixture 将提供商事件写入调度 outbox 并发布快照。
-type providerEventsFixture struct{ publisher scheduler.SnapshotPublisher }
+// providerEventsFixture maps provider storage events to scheduler persistence
+// and snapshot publication.
+type providerEventsFixture struct {
+	publisher scheduler.SnapshotPublisher // scheduler record publication adapter
+}
 
-// Match 保存待断言的查询文本。
+// Match stores the actual SQL text for later assertions regardless of the
+// expected pattern. A missing capture target returns an error; callers provide
+// storage that remains valid through the mock query.
 func (m captureEntQueryMatcher) Match(_, actual string) error {
 	if m.actual == nil {
 		return fmt.Errorf("query capture target is nil")
@@ -64,7 +91,10 @@ func (m captureEntQueryMatcher) Match(_, actual string) error {
 	return nil
 }
 
-// newProxyStoreContract 将代理变更与提供商快照清理绑定到同一个事务。
+// newProxyStoreContract constructs proxy storage with provider cleanup and
+// scheduler-event participants. The store's transaction path supplies executors
+// to those participants; callers own cleanup of the Ent client and any outer
+// transaction used by the fixture.
 func newProxyStoreContract(client *dbent.Client, exec postgresinfra.Executor) *egresspostgres.ProxyStore {
 	return egresspostgres.NewProxyStore(client, exec, egresspostgres.ProxyStoreOptions{
 		Providers: func(tx postgresinfra.Executor) egresspostgres.ProxyProviderParticipant {
@@ -76,12 +106,14 @@ func newProxyStoreContract(client *dbent.Client, exec postgresinfra.Executor) *e
 	})
 }
 
-// ExecContext 将写操作交给数据库执行。
+// ExecContext executes the supplied write directly on the fixture database.
 func (c captureQuerySQL) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return c.db.ExecContext(ctx, query, args...)
 }
 
-// QueryContext 记录查询文本和参数后执行查询。
+// QueryContext records SQL and a copy of its argument slice before delegating
+// to the database. Either capture pointer may be nil; callers close the
+// returned rows after their assertions or scans.
 func (c captureQuerySQL) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	if c.captured != nil {
 		*c.captured = query
@@ -92,18 +124,22 @@ func (c captureQuerySQL) QueryContext(ctx context.Context, query string, args ..
 	return c.db.QueryContext(ctx, query, args...)
 }
 
-// normalizeSQLWhitespace 将连续空白压缩为一个空格。
+// normalizeSQLWhitespace trims SQL and collapses whitespace for stable clause
+// assertions.
 func normalizeSQLWhitespace(sql string) string {
 	return strings.Join(regexp.MustCompile(`\s+`).Split(strings.TrimSpace(sql), -1), " ")
 }
 
-// LastInsertId 返回测试占位值。
+// LastInsertId returns zero as the fixture's unused insert identifier.
 func (r rowsAffectedResult) LastInsertId() (int64, error) { return 0, nil }
 
-// RowsAffected 返回指定的影响行数。
+// RowsAffected returns the fixed affected-row count represented by the fixture.
 func (r rowsAffectedResult) RowsAffected() (int64, error) { return int64(r), nil }
 
-// ExecContext 记录写操作并返回配置的结果。
+// ExecContext records a statement and copied argument slice before returning
+// the configured result. A configured error ends the call before afterExec;
+// successful calls invoke that callback synchronously before exposing the
+// result.
 func (e *recordingSQLExecutor) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	e.execQueries = append(e.execQueries, query)
 	e.execArgs = append(e.execArgs, append([]any(nil), args...))
@@ -116,12 +152,17 @@ func (e *recordingSQLExecutor) ExecContext(ctx context.Context, query string, ar
 	return e.result, nil
 }
 
-// QueryContext 返回无结果错误。
+// QueryContext returns nil rows and sql.ErrNoRows for every query through this
+// write recorder. Use it for mutation paths; callers that attempt a read
+// receive the synthetic error and no fixture records.
 func (e *recordingSQLExecutor) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	return nil, sql.ErrNoRows
 }
 
-// newProviderStoreContract 绑定提供商存储的 outbox 写入器和传入的调度缓存。
+// newProviderStoreContract constructs provider storage with group, proxy,
+// Ollama, and scheduling adapters. It binds snapshot publication after
+// construction; a nil cache skips immediate publication, while the store's
+// transaction path determines completion of persistence and event writes.
 func newProviderStoreContract(client *dbent.Client, exec postgresinfra.Executor, cache scheduler.SnapshotPublicationCache) *providerpostgres.ProviderStore {
 	store := providerpostgres.NewProviderStore(client, exec, providerpostgres.ProviderStoreOptions{
 		Group: func(g *dbent.Group) *accessview.GroupConfig {
@@ -135,7 +176,9 @@ func newProviderStoreContract(client *dbent.Client, exec postgresinfra.Executor,
 	return store
 }
 
-// Name 将提供商事件转换为调度 outbox 事件名。
+// Name returns the scheduler event name for a recognized provider event. An
+// unknown enum value panics, so fixture callers pass the provider store's
+// declared change kinds.
 func (providerEventsFixture) Name(event providerpostgres.ProviderEvent) string {
 	switch event {
 	case providerpostgres.ProviderChanged:
@@ -151,26 +194,39 @@ func (providerEventsFixture) Name(event providerpostgres.ProviderEvent) string {
 	}
 }
 
-// Write 使用传入事务写入调度事件。
+// Write enqueues the mapped scheduler event through the supplied SQL executor.
+// When that executor is a transaction, its caller determines commit or rollback
+// and when publication may follow.
 func (f providerEventsFixture) Write(ctx context.Context, exec postgresinfra.Executor, event providerpostgres.ProviderEvent, id, group *int64, payload any) error {
 	return schedulerpostgres.EnqueueSchedulerChange(ctx, exec, f.Name(event), id, group, payload)
 }
 
-// GroupPayload 构造分组事件的数据。
+// GroupPayload delegates group-event encoding to scheduler.GroupPayload. Empty
+// IDs yield an untyped nil payload; otherwise the returned map retains the input
+// slice, which callers keep stable until event persistence completes.
 func (providerEventsFixture) GroupPayload(ids []int64) any { return scheduler.GroupPayload(ids) }
 
-// SyncOne 发布指定提供商的快照。
+// SyncOne asks the configured publisher to read and cache one provider. An
+// absent cache or nonpositive ID skips publication; read and cache errors
+// follow the publisher's diagnostics path.
 func (f providerEventsFixture) SyncOne(ctx context.Context, id int64) { f.publisher.Publish(ctx, id) }
 
-// SyncMany 批量发布提供商快照。
+// SyncMany asks the configured publisher to read and cache distinct positive
+// provider IDs. An absent cache or empty eligible set skips the operation; the
+// publisher logs failures while processing the returned records.
 func (f providerEventsFixture) SyncMany(ctx context.Context, ids []int64) {
 	f.publisher.PublishMany(ctx, ids)
 }
 
-// Drop 删除提供商快照。
+// Drop asks the configured publisher to remove a provider's cached record. An
+// absent cache or nonpositive ID skips removal; cache errors follow the
+// publisher's diagnostics path.
 func (f providerEventsFixture) Drop(ctx context.Context, id int64) { f.publisher.Drop(ctx, id) }
 
-// providerPublicationEvents 将提供商存储的 outbox 连接到调度快照发布器。
+// providerPublicationEvents binds snapshot publication to current records read
+// from store. The supplied cache receives codec-wrapped records; a nil batch
+// result passes through with its error, and store reads determine record
+// freshness.
 func providerPublicationEvents(store *providerpostgres.ProviderStore, cache scheduler.SnapshotPublicationCache) providerEventsFixture {
 	return providerEventsFixture{publisher: scheduler.SnapshotPublisher{
 		Cache: cache,
@@ -180,6 +236,8 @@ func providerPublicationEvents(store *providerpostgres.ProviderStore, cache sche
 		},
 		ReadMany: func(ctx context.Context, ids []int64) ([]scheduler.SnapshotProvider, error) {
 			values, err := store.GetByIDs(ctx, ids)
+			// Pass nil through with the accompanying read error; the publisher
+			// uses that error to choose failure diagnostics or an empty successful batch.
 			if values == nil {
 				return nil, err
 			}

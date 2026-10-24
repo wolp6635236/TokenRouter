@@ -6,7 +6,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBedrockModelRegionRules_DefaultCatalogAndSourceConsistency 检查默认模型对应的区域规则和来源记录。
+// TestBedrockModelRegionRules_DefaultCatalogAndSourceConsistency checks every
+// default alias against the static model table. It checks nonempty source-link
+// metadata, base-ID agreement, source-set membership, and unique geographic
+// routing within each recorded model.
 func TestBedrockModelRegionRules_DefaultCatalogAndSourceConsistency(t *testing.T) {
 	t.Parallel()
 	for _, modelID := range DefaultBedrockModelMapping {
@@ -36,6 +39,10 @@ func TestBedrockModelRegionRules_DefaultCatalogAndSourceConsistency(t *testing.T
 	}
 }
 
+// TestDefaultBedrockModelMapping_ContainsNewClaudeModels compares selected
+// public aliases with their expected vendor IDs. It checks exact version/date
+// suffixes and suffix-free entries so alias changes cannot silently invent a
+// different resource identity.
 func TestDefaultBedrockModelMapping_ContainsNewClaudeModels(t *testing.T) {
 	t.Parallel()
 
@@ -46,7 +53,7 @@ func TestDefaultBedrockModelMapping_ContainsNewClaudeModels(t *testing.T) {
 		"claude-opus-4-8":  "us.anthropic.claude-opus-4-8",
 		"claude-opus-4-7":  "us.anthropic.claude-opus-4-7",
 		"claude-sonnet-5":  "us.anthropic.claude-sonnet-5",
-		// 这些型号的 Bedrock ID 包含版本或日期后缀。
+		// These model IDs retain their version or date suffixes.
 		"claude-opus-4-6":          "us.anthropic.claude-opus-4-6-v1",
 		"claude-opus-4-5-20251101": "us.anthropic.claude-opus-4-5-20251101-v1:0",
 	}

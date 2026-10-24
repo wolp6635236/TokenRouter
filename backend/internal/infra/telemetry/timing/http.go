@@ -7,13 +7,26 @@ import (
 	"time"
 )
 
+// http.go records external HTTP durations under normalized dependency labels.
+// External HTTP timing ends when Do or RoundTrip returns a response or error,
+// leaving body reads to the caller. A context override selects a sanitized
+// dependency label; otherwise ordered hostname substring checks choose a
+// fixed label, so the raw URL never becomes a metric name.
+
+// dependencyModuleKey identifies the optional package-private HTTP dependency label override.
 type dependencyModuleKey struct{}
 
+// timingRoundTripper records a transport call's elapsed interval through response return.
 type timingRoundTripper struct {
+	// base retains the caller's transport and response-body ownership rules;
+	// this wrapper delegates each request without closing that transport's resources.
 	base http.RoundTripper
 }
 
-// WithDependencyModule 覆盖出站请求使用的安全模块名。
+// WithDependencyModule attaches a sanitized dependency label to ctx, using
+// background for nil. Blank sanitized input leaves the context unchanged,
+// including any inherited override; one existing dep_ prefix is removed
+// before storage.
 func WithDependencyModule(ctx context.Context, module string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -25,7 +38,10 @@ func WithDependencyModule(ctx context.Context, module string) context.Context {
 	return context.WithValue(ctx, dependencyModuleKey{}, module)
 }
 
-// WrapRoundTripper 为启用采集的请求记录出站响应头延迟。
+// WrapRoundTripper records active requests around base.RoundTrip and returns
+// the wrapper. Nil base selects http.DefaultTransport; an existing
+// timingRoundTripper is reused, while callers retain ownership of response
+// bodies and transport lifecycle.
 func WrapRoundTripper(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
@@ -36,7 +52,10 @@ func WrapRoundTripper(base http.RoundTripper) http.RoundTripper {
 	return &timingRoundTripper{base: base}
 }
 
-// InstrumentClient 返回装配了耗时采集 Transport 的客户端浅拷贝。
+// InstrumentClient returns a shallow client copy with its transport wrapped
+// for request timing. Nil input uses an empty client; the copied client
+// retains shared transport resources, while its configuration can be set
+// separately by the caller.
 func InstrumentClient(client *http.Client) *http.Client {
 	if client == nil {
 		client = &http.Client{}
@@ -46,8 +65,10 @@ func InstrumentClient(client *http.Client) *http.Client {
 	return &copyClient
 }
 
-// Do 在不改变客户端 Transport 类型的前提下记录响应头延迟，适用于调用方需要检查或配置
-// *http.Transport 的客户端。
+// Do records one active dependency interval around client.Do, including
+// failure and redirects, using http.DefaultClient for nil. Body consumption
+// remains caller-owned; using an already instrumented transport can record
+// additional counts inside the same observed call.
 func Do(client *http.Client, req *http.Request) (*http.Response, error) {
 	if client == nil {
 		client = http.DefaultClient
@@ -62,6 +83,10 @@ func Do(client *http.Client, req *http.Request) (*http.Response, error) {
 	return response, err
 }
 
+// RoundTrip delegates req to the underlying transport and records its
+// completed interval when timing is active, including errors. The returned
+// body remains unread by this wrapper and retains the base transport's
+// cleanup requirements.
 func (t *timingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil || !Active(req.Context()) {
 		return t.base.RoundTrip(req)
@@ -72,6 +97,10 @@ func (t *timingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return response, err
 }
 
+// dependencyModule returns a context override or a fixed label chosen by
+// ordered hostname substring checks. Missing URL information and unmatched
+// hosts select http; matches are classification hints rather than validation
+// of a service's ownership.
 func dependencyModule(req *http.Request) string {
 	if req != nil {
 		if module, ok := req.Context().Value(dependencyModuleKey{}).(string); ok && module != "" {
@@ -81,6 +110,8 @@ func dependencyModule(req *http.Request) string {
 	if req == nil || req.URL == nil {
 		return "http"
 	}
+	// Check Google-hosted Gemini and Antigravity names before the broader Google
+	// substring, so those dependency observations retain their more specific platform label.
 	host := strings.ToLower(req.URL.Hostname())
 	switch {
 	case strings.Contains(host, "github"):

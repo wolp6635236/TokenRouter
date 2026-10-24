@@ -1,26 +1,33 @@
 package gemini
 
-// ImageGenerationConfig 是创作台 Gemini generateContent 的生成配置。
+// images.go defines Gemini image generation requests and their nested image
+// and thinking settings.
+// Creative image requests carry prompt and reference-image parts with
+// generateContent configuration. Image size and aspect ratio are nested in
+// imageConfig, while optional reasoning settings occupy thinkingConfig; keeping
+// those objects separate supplies the request shape used by BuildImageRequest.
+
+// ImageGenerationConfig contains creative generateContent output and image-generation settings.
 type ImageGenerationConfig struct {
-	ResponseModalities []string             `json:"responseModalities"`
-	ImageConfig        *ImageConfig         `json:"imageConfig,omitempty"`
-	ThinkingConfig     *ImageThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseModalities []string             `json:"responseModalities"`       // requested output modalities
+	ImageConfig        *ImageConfig         `json:"imageConfig,omitempty"`    // optional image settings
+	ThinkingConfig     *ImageThinkingConfig `json:"thinkingConfig,omitempty"` // optional reasoning settings
 }
 
-// ImageConfig 是 Gemini 图片生成专用配置；imageSize 必须位于 imageConfig 内。
+// ImageConfig contains image settings; imageSize belongs inside this object.
 type ImageConfig struct {
-	ImageSize   string `json:"imageSize,omitempty"`
-	AspectRatio string `json:"aspectRatio,omitempty"`
+	ImageSize   string `json:"imageSize,omitempty"`   // requested size label
+	AspectRatio string `json:"aspectRatio,omitempty"` // requested aspect ratio
 }
 
-// ImageThinkingConfig 控制 Gemini 图片模型的思考强度；中间思考内容固定不返回。
+// ImageThinkingConfig controls image-model reasoning effort and whether thoughts are returned.
 type ImageThinkingConfig struct {
-	ThinkingLevel   string `json:"thinkingLevel"`
-	IncludeThoughts bool   `json:"includeThoughts"`
+	ThinkingLevel   string `json:"thinkingLevel"`   // requested reasoning level
+	IncludeThoughts bool   `json:"includeThoughts"` // reasoning output selection
 }
 
-// ImageGenerateRequest 是创作台 Gemini generateContent 请求体。
+// ImageGenerateRequest is the creative workspace generateContent request body.
 type ImageGenerateRequest struct {
-	Contents         []BatchContent        `json:"contents"`
-	GenerationConfig ImageGenerationConfig `json:"generationConfig"`
+	Contents         []BatchContent        `json:"contents"`         // prompt and image parts
+	GenerationConfig ImageGenerationConfig `json:"generationConfig"` // creative generation settings
 }

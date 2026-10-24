@@ -30,21 +30,41 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// liveModerationSettings 只供应原 HTTP 测试的设置快照，实际审核仍执行原生服务与 HTTP 客户端。
+// liveModerationSettings supplies fixed configuration values to the
+// production moderation service.
 type liveModerationSettings struct {
+	// Repository leaves unneeded fixture operations unset. The implemented read
+	// methods supply every configuration access used by this moderation scenario.
 	settings.Repository
+	// values is shared with the production service's reads. The test prepares
+	// these strings before Start and keeps the map unchanged through cleanup.
 	values map[string]string
 }
 
-// liveModerationLogs 为测试提供无历史违规记录的查询结果。
+// liveModerationLogs supplies empty violation history and accepts moderation
+// audit writes.
 type liveModerationLogs struct {
+	// ContentModerationRepository leaves unneeded persistence operations unset.
+	// This fixture implements log acceptance and empty historical violation counts.
 	moderation.ContentModerationRepository
 }
 
-// newLiveModerationRuntime 仅装配实际审核核心与本地协议客户端；后台工作由当前测试等待。
+// newLiveModerationRuntime constructs production moderation with local-client
+// and error-classification bindings. It returns an unstarted service; the
+// test starts it after preparing settings and registers cleanup for both the
+// service and its background callbacks.
+//
+// Cleanup callbacks run in reverse registration order, so core.Stop finishes
+// before the wait group drains accepted background work. The Background
+// function adds each callback through WaitGroup.Go, keeping asynchronous
+// audit work tracked until test exit. Stop errors fail the test, and the
+// final wait prevents retained callbacks from reading fixture state after its
+// owner finishes.
 func newLiveModerationRuntime(t *testing.T, settings moderation.SettingRepository, repo moderation.ContentModerationRepository) *moderation.ContentModerationService {
 	t.Helper()
 	var background sync.WaitGroup
+	// Cleanup is registered before core.Stop below so reverse callback ordering
+	// stops work producers before waiting for already accepted background callbacks.
 	t.Cleanup(background.Wait)
 	core := moderation.NewContentModerationService(settings, repo, nil, nil, nil, nil, nil, moderation.Runtime{
 		Audit:         moderationadapter.NewAuditClient(),
@@ -64,6 +84,9 @@ func newLiveModerationRuntime(t *testing.T, settings moderation.SettingRepositor
 	return core
 }
 
+// GetValue returns the fixture value for a present setting, including a
+// present empty value. Missing keys return ErrSettingNotFound, so production
+// moderation can distinguish absence from configured text during reads.
 func (s *liveModerationSettings) GetValue(_ context.Context, key string) (string, error) {
 	if v, ok := s.values[key]; ok {
 		return v, nil
@@ -71,6 +94,9 @@ func (s *liveModerationSettings) GetValue(_ context.Context, key string) (string
 	return "", settings.ErrSettingNotFound
 }
 
+// Get constructs a setting value using the fixture's configured key and text.
+// Missing keys retain GetValue's error; successful results use a fresh
+// Setting while the underlying immutable strings remain values.
 func (s *liveModerationSettings) Get(ctx context.Context, key string) (*settings.Setting, error) {
 	v, e := s.GetValue(ctx, key)
 	if e != nil {
@@ -79,6 +105,9 @@ func (s *liveModerationSettings) Get(ctx context.Context, key string) (*settings
 	return &settings.Setting{Key: key, Value: v}, nil
 }
 
+// GetMultiple builds a fresh map of configured values for the supplied keys.
+// Missing settings are omitted and existing values, including empty strings,
+// are retained for production configuration reads.
 func (s *liveModerationSettings) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, k := range keys {
@@ -89,14 +118,23 @@ func (s *liveModerationSettings) GetMultiple(_ context.Context, keys []string) (
 	return out, nil
 }
 
+// CreateLog accepts production moderation audit records without storing
+// fixture history.
 func (*liveModerationLogs) CreateLog(context.Context, *moderation.ContentModerationLog) error {
 	return nil
 }
 
+// CountFlaggedByUserSince supplies zero historical violations for every
+// tested user and time window. This fixture keeps the content-blocking test
+// focused on the current configured moderation decision, with no prior-strike
+// contribution.
 func (*liveModerationLogs) CountFlaggedByUserSince(context.Context, int64, time.Time) (int, error) {
 	return 0, nil
 }
 
+// TestParseLiveCallRequestMultipartPreservesSession supplies multipart SDP
+// and a session containing delegation and Unicode instructions. Parsing
+// retains the SDP text and session fields before any model rewrite occurs.
 func TestParseLiveCallRequestMultipartPreservesSession(t *testing.T) {
 	session := `{"model":"gpt-live-test","delegation":{"type":"client"},"instructions":"你好"}`
 	var body bytes.Buffer
@@ -117,6 +155,9 @@ func TestParseLiveCallRequestMultipartPreservesSession(t *testing.T) {
 	require.Equal(t, "client", jsonPathString(t, parsed.Session, "delegation", "type"))
 }
 
+// TestParseLiveCallRequestJSONPreservesSessionWithoutDelegation parses JSON
+// session instructions on the Codex creation route. The supplied instructions
+// survive, and parsing leaves the absent delegation field absent.
 func TestParseLiveCallRequestJSONPreservesSessionWithoutDelegation(t *testing.T) {
 	body := `{"sdp":"v=0\\r\\n","session":{"model":"gpt-live-test","instructions":"standalone"}}`
 	request := httptest.NewRequest(http.MethodPost, "/backend-api/codex/realtime/calls", bytes.NewBufferString(body))
@@ -130,6 +171,9 @@ func TestParseLiveCallRequestJSONPreservesSessionWithoutDelegation(t *testing.T)
 	require.Equal(t, "standalone", jsonPathString(t, parsed.Session, "instructions"))
 }
 
+// TestParseLiveCallRequestRejectsInvalidJSONShape supplies missing SDP, array
+// or null session values and a second JSON object. Each invalid creation
+// shape returns an error instead of a usable Live request.
 func TestParseLiveCallRequestRejectsInvalidJSONShape(t *testing.T) {
 	testCases := []string{
 		`{"session":{"type":"quicksilver"}}`,
@@ -147,6 +191,9 @@ func TestParseLiveCallRequestRejectsInvalidJSONShape(t *testing.T) {
 	}
 }
 
+// TestLiveSidebandLocationMatchesCreateRoute builds control locations for
+// ordinary and Codex creation paths. Each resulting URL uses the matching
+// public route family with the same call identifier.
 func TestLiveSidebandLocationMatchesCreateRoute(t *testing.T) {
 	require.Equal(t, "/v1/live/call_123", LiveSidebandLocation("/v1/live", "call_123"))
 	require.Equal(
@@ -156,6 +203,9 @@ func TestLiveSidebandLocationMatchesCreateRoute(t *testing.T) {
 	)
 }
 
+// TestLiveEnabledForAPIKey checks missing Key, missing group, disabled policy
+// and enabled group views. Admission follows the group Live flag and rejects
+// the unavailable group cases.
 func TestLiveEnabledForAPIKey(t *testing.T) {
 	require.False(t, liveEnabledForAPIKey(nil))
 	require.False(t, liveEnabledForAPIKey(&LiveAPIKey{}))
@@ -170,6 +220,10 @@ func TestLiveEnabledForAPIKey(t *testing.T) {
 	}))
 }
 
+// TestLiveContentModerationBlocksBeforeBilling sends Live content to the
+// production moderation service backed by a local response fixture. Its
+// blocking decision arrives before unavailable funding and records the Live
+// request type.
 func TestLiveContentModerationBlocksBeforeBilling(t *testing.T) {
 	moderationServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/v1/moderations", r.URL.Path)
@@ -215,7 +269,7 @@ func TestLiveContentModerationBlocksBeforeBilling(t *testing.T) {
 	context.Set(string(keyhttp.ContextKeyAPIKey), apiKey)
 	context.Set(string(authctx.ContextKeyUser), authctx.AuthSubject{UserID: 1, Concurrency: 1})
 
-	// 不注入计费服务，以状态码证明内容审核在计费检查之前完成阻断。
+	// Omit funding services so the forbidden response proves moderation blocks before billing checks.
 	NewLiveHandler(LivePorts{Moderation: moderationSvc}).Live(context)
 
 	require.Equal(t, http.StatusForbidden, recorder.Code)
@@ -226,6 +280,9 @@ func TestLiveContentModerationBlocksBeforeBilling(t *testing.T) {
 	require.Equal(t, int16(usage.RequestTypeLive), requestType)
 }
 
+// TestLiveAttestationErrorIsExplicit presents a typed attestation-unavailable
+// error through Live creation handling. The response uses temporary-service
+// status and retains its supported platform reason for the client.
 func TestLiveAttestationErrorIsExplicit(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
@@ -238,6 +295,9 @@ func TestLiveAttestationErrorIsExplicit(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), "TokenRouter runs on macOS")
 }
 
+// jsonPathString extracts a string by traversing JSON object keys in fixture
+// session bytes. Every intermediate value must be an object and the final
+// value a string; failed shape checks stop the test.
 func jsonPathString(t *testing.T, raw json.RawMessage, keys ...string) string {
 	t.Helper()
 	var value any

@@ -11,14 +11,17 @@ import (
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// TestOpenAIResponsesRequestPathSuffix supplies root paths, aliases and nested
+// operations. It requires normalized suffixes for Responses markers and an
+// empty suffix for unrelated paths.
 func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
 	tests := []struct {
-		name string
-		path string
-		want string
+		name string // path scenario label
+		path string // inbound request path
+		want string // normalized suffix expectation
 	}{
 		{name: "exact v1 responses", path: "/v1/responses", want: ""},
 		{name: "compact v1 responses", path: "/v1/responses/compact", want: "/compact"},
@@ -35,9 +38,9 @@ func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
 	}
 }
 
-// TestOpenAIResponsesRequestPathSuffixRejectsNonConformingSubpaths 锁定不变式：
-// /responses/*subpath 的子路径不得改变上游请求的路径结构；不合规时既不参与拼接，
-// 也不会被误判成 compact 请求。
+// TestOpenAIResponsesRequestPathSuffixRejectsNonConformingSubpaths checks that
+// malformed suffixes cannot alter the upstream path or be classified as compact requests.
+// Validation applies before a suffix is appended to the upstream endpoint.
 func TestOpenAIResponsesRequestPathSuffixRejectsNonConformingSubpaths(t *testing.T) {
 	nonConformingPaths := []string{
 		"/v1/responses/../../x/y",
@@ -64,7 +67,7 @@ func TestOpenAIResponsesRequestPathSuffixRejectsNonConformingSubpaths(t *testing
 		})
 	}
 
-	// 合法子路径原样转发。
+	// Valid subpaths retain their normalized suffix.
 	for path, want := range map[string]string{
 		"/v1/responses":                        "",
 		"/v1/responses/input_tokens":           "/input_tokens",
@@ -80,6 +83,9 @@ func TestOpenAIResponsesRequestPathSuffixRejectsNonConformingSubpaths(t *testing
 	}
 }
 
+// TestIsOpenAIResponsesInputTokensRequestPath checks token preflight across
+// versioned, bare and Codex aliases. Each valid input_tokens suffix is
+// recognized while a compact suffix remains excluded.
 func TestIsOpenAIResponsesInputTokensRequestPath(t *testing.T) {
 	for _, path := range []string{"/v1/responses/input_tokens", "/responses/input_tokens", "/backend-api/codex/responses/input_tokens"} {
 		c := newResponsesSuffixTestContext(t, path)
@@ -89,6 +95,7 @@ func TestIsOpenAIResponsesInputTokensRequestPath(t *testing.T) {
 	require.False(t, IsOpenAIResponsesInputTokensRequestPath(c))
 }
 
+// newResponsesSuffixTestContext builds a Gin request with the supplied path.
 func newResponsesSuffixTestContext(t *testing.T, path string) *gin.Context {
 	t.Helper()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

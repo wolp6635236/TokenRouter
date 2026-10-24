@@ -14,18 +14,25 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
-// TestHeaderOverrideResultIsolation 验证临时修改覆写结果不能影响另一个请求的配置。
+// TestHeaderOverrideResultIsolation mutates the map returned by one provider
+// override read. A later read must retain the configured marker value from an
+// independent result.
 func TestHeaderOverrideResultIsolation(t *testing.T) {
 	provider := headerOverrideProvider()
 	provider.HeaderOverrides()["x-test-marker"] = "changed-by-caller"
 	require.Equal(t, "configured", provider.HeaderOverrides()["x-test-marker"])
 }
 
-// TestHeaderOverrideConcurrentReads 验证并发解析不可变配置不得回写共享提供商字段。
+// TestHeaderOverrideConcurrentReads starts concurrent readers of one stable
+// override configuration. Every read must return the configured marker while no
+// reader changes the shared provider credentials.
 func TestHeaderOverrideConcurrentReads(t *testing.T) {
 	provider := headerOverrideProvider()
 	start := make(chan struct{})
 	var wg sync.WaitGroup
+	// Release the readers together through start and wait for all of them before
+	// final assertions, so shared configuration is observed under concurrent read
+	// pressure.
 	for range 16 {
 		wg.Go(func() {
 			<-start
@@ -40,12 +47,15 @@ func TestHeaderOverrideConcurrentReads(t *testing.T) {
 	wg.Wait()
 }
 
+// TestIsHeaderOverrideEligible compares supported platform and authentication
+// pairs, plus a nil record. Eligibility must follow those categories, while
+// the nil record's getters disable overrides and return no override map.
 func TestIsHeaderOverrideEligible(t *testing.T) {
 	tests := []struct {
-		name     string
-		platform string
-		accType  string
-		want     bool
+		name     string // override eligibility scenario label
+		platform string // provider platform under test
+		accType  string // provider authentication type
+		want     bool   // expected override eligibility result
 	}{
 		{"anthropic apikey", capability.PlatformAnthropic, capability.ProviderTypeAPIKey, true},
 		{"openai apikey", capability.PlatformOpenAI, capability.ProviderTypeAPIKey, true},
@@ -76,13 +86,16 @@ func TestIsHeaderOverrideEligible(t *testing.T) {
 	require.Nil(t, nilProvider.HeaderOverrides())
 }
 
+// TestIsHeaderOverrideEnabled supplies true, absent, malformed, and false
+// enabled settings on multiple record types. Only an eligible record with a
+// boolean true flag must enable overrides.
 func TestIsHeaderOverrideEnabled(t *testing.T) {
 	acc := headerOverrideTestProvider(capability.PlatformAnthropic, capability.ProviderTypeAPIKey, map[string]any{
 		"header_override_enabled": true,
 	})
 	require.True(t, acc.IsHeaderOverrideEnabled())
 
-	// 未配置 / 非 bool / false 均视为未启用
+	// Absent, non-boolean, and false values disable overrides.
 	require.False(t, headerOverrideTestProvider(capability.PlatformAnthropic, capability.ProviderTypeAPIKey, nil).IsHeaderOverrideEnabled())
 	require.False(t, headerOverrideTestProvider(capability.PlatformAnthropic, capability.ProviderTypeAPIKey, map[string]any{
 		"header_override_enabled": "true",
@@ -91,7 +104,7 @@ func TestIsHeaderOverrideEnabled(t *testing.T) {
 		"header_override_enabled": false,
 	}).IsHeaderOverrideEnabled())
 
-	// 不符合平台/类型条件时即使配置了 true 也不启用
+	// Unsupported platform/type combinations ignore the enabled flag.
 	require.False(t, headerOverrideTestProvider(capability.PlatformAnthropic, capability.ProviderTypeOAuth, map[string]any{
 		"header_override_enabled": true,
 	}).IsHeaderOverrideEnabled())
@@ -100,16 +113,20 @@ func TestIsHeaderOverrideEnabled(t *testing.T) {
 	}).IsHeaderOverrideEnabled())
 }
 
+// TestGetHeaderOverrides reads stored values containing padding, empty
+// placeholders, invalid names, protected keys, and excessive lengths. Results
+// must normalize usable entries while disabled or wholly unusable
+// configurations return nil.
 func TestGetHeaderOverrides(t *testing.T) {
 	acc := headerOverrideTestProvider(capability.PlatformOpenAI, capability.ProviderTypeAPIKey, map[string]any{
 		"header_override_enabled": true,
 		"header_overrides": map[string]any{
-			"User-Agent":    "my-agent/1.0",  // 大写 key 归一化为小写
-			" X-App ":       "cli",           // 名称去空白
-			"x-empty":       "",              // 空 value（模板占位）跳过
-			"authorization": "Bearer leaked", // 禁止覆写的头跳过
-			"bad name":      "value",         // 非法 header 名跳过
-			"x-padded":      "  padded  ",    // value 去空白
+			"User-Agent":    "my-agent/1.0",  // Normalize uppercase names to lowercase.
+			" X-App ":       "cli",           // Trim header names.
+			"x-empty":       "",              // Skip empty template placeholders.
+			"authorization": "Bearer leaked", // Skip forbidden overrides.
+			"bad name":      "value",         // Skip invalid header names.
+			"x-padded":      "  padded  ",    // Trim values.
 		},
 	})
 	overrides := acc.HeaderOverrides()
@@ -119,27 +136,27 @@ func TestGetHeaderOverrides(t *testing.T) {
 		"x-padded":   "padded",
 	}, overrides)
 
-	// 未启用时返回 nil
+	// Disabled overrides return nil.
 	disabled := headerOverrideTestProvider(capability.PlatformOpenAI, capability.ProviderTypeAPIKey, map[string]any{
 		"header_overrides": map[string]any{"user-agent": "x"},
 	})
 	require.Nil(t, disabled.HeaderOverrides())
 
-	// 启用但全部为空 value 时返回 nil
+	// An enabled configuration with only empty values returns nil.
 	empty := headerOverrideTestProvider(capability.PlatformOpenAI, capability.ProviderTypeAPIKey, map[string]any{
 		"header_override_enabled": true,
 		"header_overrides":        map[string]any{"user-agent": ""},
 	})
 	require.Nil(t, empty.HeaderOverrides())
 
-	// 未经 Normalize 落库的超长数据 / WebSocket 握手头在应用时被防御性跳过
+	// Reject oversized values and WebSocket handshake headers even when storage bypassed normalization.
 	oversizedValue := strings.Repeat("a", 8192+1)
 	defensive := headerOverrideTestProvider(capability.PlatformOpenAI, capability.ProviderTypeAPIKey, map[string]any{
 		"header_override_enabled": true,
 		"header_overrides": map[string]any{
 			"x-big":                    oversizedValue,
 			"sec-websocket-key":        "forged",
-			"content-type":             "application/json", // 名单扩充前落库的数据也要被拦截
+			"content-type":             "application/json", // Reject stored headers that became forbidden after the configuration was saved.
 			"x-claude-code-session-id": "pinned-session",
 			"x-ok":                     "ok",
 		},
@@ -147,6 +164,9 @@ func TestGetHeaderOverrides(t *testing.T) {
 	require.Equal(t, map[string]string{"x-ok": "ok"}, defensive.HeaderOverrides())
 }
 
+// TestApplyHeaderOverrides starts with mixed canonical and wire-cased header
+// keys. Applying permitted overrides must replace values with the expected wire
+// spelling and leave one key per overridden header.
 func TestApplyHeaderOverrides(t *testing.T) {
 	acc := headerOverrideTestProvider(capability.PlatformAnthropic, capability.ProviderTypeAPIKey, map[string]any{
 		"header_override_enabled": true,
@@ -158,24 +178,24 @@ func TestApplyHeaderOverrides(t *testing.T) {
 	})
 
 	h := http.Header{}
-	// 模拟转发链路：canonical key 与 wire casing 原样 key 混合存在
+	// Model forwarded headers containing both canonical and wire-cased keys.
 	h.Set("User-Agent", "claude-cli/2.1.161 (external, cli)")
-	h["anthropic-beta"] = []string{"claude-code-20250219,oauth-2025-04-20"} // 非 canonical 原样 key
+	h["anthropic-beta"] = []string{"claude-code-20250219,oauth-2025-04-20"} // noncanonical wire key
 	h.Set("Content-Type", "application/json")
 	ApplyProviderHeaderOverrides(acc, h)
 
-	// user-agent 覆盖且只有一个值（已知头恢复 wire casing）
+	// The UA override replaces all existing values and uses the known wire casing.
 	require.Equal(t, []string{"override-agent/2.0"}, h["User-Agent"])
-	// anthropic-beta：非 canonical 旧值被清除，写入 wire casing（小写）
+	// Remove noncanonical anthropic-beta entries and write one lowercase wire key.
 	require.Equal(t, []string{"custom-beta-1"}, map[string][]string(h)["anthropic-beta"])
 	require.Empty(t, h["Anthropic-Beta"])
-	// 新增头（未知头以小写原样键写入，与转发链路 wire casing 约定一致）
+	// Unknown header names use lowercase wire keys.
 	require.Equal(t, []string{"custom-value"}, map[string][]string(h)["x-custom"])
 	require.Equal(t, "custom-value", anthropic.GetHeaderRaw(h, "x-custom"))
-	// 未覆写的头不受影响
+	// Unchanged headers retain their values.
 	require.Equal(t, "application/json", h.Get("Content-Type"))
 
-	// 覆盖后不存在任何大小写重复
+	// Overrides leave no duplicate keys with different casing.
 	count := 0
 	for k := range h {
 		if k == "anthropic-beta" || k == "Anthropic-Beta" {
@@ -185,6 +205,9 @@ func TestApplyHeaderOverrides(t *testing.T) {
 	require.Equal(t, 1, count)
 }
 
+// TestApplyHeaderOverridesNoOpPaths covers unsupported authentication, disabled
+// settings, protected credential keys, and nil headers. Application must retain
+// existing authentication and client values on those skipped paths.
 func TestApplyHeaderOverridesNoOpPaths(t *testing.T) {
 	baseline := func() http.Header {
 		h := http.Header{}
@@ -192,7 +215,7 @@ func TestApplyHeaderOverridesNoOpPaths(t *testing.T) {
 		return h
 	}
 
-	// OAuth 提供商：即使配置了覆写也不生效
+	// OAuth providers ignore configured overrides.
 	oauth := headerOverrideTestProvider(capability.PlatformAnthropic, capability.ProviderTypeOAuth, map[string]any{
 		"header_override_enabled": true,
 		"header_overrides":        map[string]any{"user-agent": "hacked"},
@@ -201,7 +224,7 @@ func TestApplyHeaderOverridesNoOpPaths(t *testing.T) {
 	ApplyProviderHeaderOverrides(oauth, h)
 	require.Equal(t, "orig", h.Get("User-Agent"))
 
-	// 未启用开关
+	// Overrides disabled.
 	off := headerOverrideTestProvider(capability.PlatformAnthropic, capability.ProviderTypeAPIKey, map[string]any{
 		"header_overrides": map[string]any{"user-agent": "hacked"},
 	})
@@ -209,7 +232,7 @@ func TestApplyHeaderOverridesNoOpPaths(t *testing.T) {
 	ApplyProviderHeaderOverrides(off, h)
 	require.Equal(t, "orig", h.Get("User-Agent"))
 
-	// 禁止覆写的头（authorization / x-api-key / host 等）不会被应用
+	// Authentication and host headers cannot be overridden.
 	blocked := headerOverrideTestProvider(capability.PlatformOpenAI, capability.ProviderTypeAPIKey, map[string]any{
 		"header_override_enabled": true,
 		"header_overrides": map[string]any{
@@ -226,10 +249,14 @@ func TestApplyHeaderOverridesNoOpPaths(t *testing.T) {
 	require.Empty(t, h.Get("X-Api-Key"))
 	require.Empty(t, h.Get("Host"))
 
-	// nil header 不 panic
+	// A nil header map is safe.
 	ApplyProviderHeaderOverrides(blocked, nil)
 }
 
+// TestNormalizeHeaderOverrideCredentials validates stored override shapes,
+// names, values, and configured limits. Normalization must accept supported
+// maps and tabs while rejecting duplicate, protected, malformed, or oversized
+// entries.
 func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 	t.Run("nil credentials no-op", func(t *testing.T) {
 		require.NoError(t, egress.NormalizeHeaderOverrideCredentials(nil))
@@ -248,7 +275,7 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 			"header_overrides": map[string]any{
 				" User-Agent ": " my-agent ",
 				"X-App":        "",
-				"":             "", // 完全空行被丢弃
+				"":             "", // Drop entirely empty rows.
 			},
 		}
 		require.NoError(t, egress.NormalizeHeaderOverrideCredentials(creds))
@@ -344,6 +371,7 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 	})
 
 	t.Run("rejects too many entries", func(t *testing.T) {
+		// Sixty-five entries exceed the allowed header override count.
 		entries := make(map[string]any, 64+1)
 		for i := range 65 {
 			entries["x-h-"+string(rune('a'+i%26))+string(rune('a'+(i/26)%26))+string(rune('a'+(i/676)%26))] = "v"
@@ -355,6 +383,7 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 	})
 
 	t.Run("rejects oversized value", func(t *testing.T) {
+		// One extra byte exceeds the allowed override value size.
 		big := make([]byte, 8192+1)
 		for i := range big {
 			big[i] = 'a'
@@ -366,12 +395,18 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 	})
 }
 
+// headerOverrideProvider creates an OpenAI API-key record with an enabled
+// marker override. Each call allocates its own credentials and header map for
+// result-isolation and stable concurrent-read tests.
 func headerOverrideProvider() *provider.Record {
 	return &provider.Record{Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{
 		"header_override_enabled": true, "header_overrides": map[string]any{"x-test-marker": "configured"},
 	}}
 }
 
+// headerOverrideTestProvider creates a record with the supplied platform,
+// authentication type, and credential map. The map is retained by reference,
+// allowing each sequential test to exercise its exact stored configuration.
 func headerOverrideTestProvider(platform, providerType string, credentials map[string]any) *provider.Record {
 	return &provider.Record{
 		Platform:    platform,

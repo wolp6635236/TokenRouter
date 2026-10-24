@@ -12,22 +12,47 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// AllowsCompatibleCompact 保留 Grok 与 OpenAI 的 Compact 资格差异。
+// compatible_eligibility.go evaluates provider eligibility and reports the
+// first failed request requirement.
+// Compatible selection rejects targets in a fixed order so diagnostics
+// identify the first unavailable condition. Protocol and model-window
+// permission precede quota pause observations, model support, persistent quota
+// exhaustion, endpoint capability, and optional Compact qualification. The
+// returned strings describe this ordering rather than an exhaustive list of
+// every failing condition.
+//
+// OpenAI quota thresholds come from the request's execution hints, while Grok
+// windows use provider-owned rules. Context hints are replaced by value when
+// thresholds are bound, so a derived attempt can use different thresholds
+// while keeping its parent context intact. Parent credential health for Spark
+// remains a separate lookup, and protocol-specific WS/Compact routes can
+// qualify without ordinary HTTP text support.
+
+// AllowsCompatibleCompact permits Grok or provider-declared OpenAI Compact
+// execution targets. Nil targets fail, while the provider policy supplies the
+// OpenAI capability decision used by compatible selection.
 func AllowsCompatibleCompact(provider *ExecutionProvider) bool {
 	return provider != nil && (provider.View().IsGrok() || provider.View().AllowsOpenAICompact())
 }
 
-// CompatibleProviderEligible 判断 OpenAI 兼容提供商是否满足本次请求的调度条件。
-// 检查内容包括：平台匹配、提供商可用性、quota 自动暂停、spark 路由限制、模型支持及端点能力。
-//
-// 注意：对 spark 影子提供商，调用方还须额外调用 parentHealthyForShadow(provider, lookup)
-// 检查母提供商凭据可用性；该检查未内置于本函数，以避免注入 DB 依赖。
+// CompatibleProviderEligible reports whether CompatibleEligibilityReason
+// returns no rejection for this request. Selection callers additionally check
+// a Spark parent's credential health; that storage lookup is separate from
+// these target-local eligibility rules.
 func CompatibleProviderEligible(ctx context.Context, provider *ExecutionProvider, platform string, requestedModel string, requireCompact bool, requiredCapability providercore.OpenAIEndpointCapability) bool {
 	return CompatibleEligibilityReason(ctx, provider, platform, requestedModel, requireCompact, requiredCapability) == ""
 }
 
-// CompatibleEligibilityReason 返回兼容性判断结果和首个拦截原因。
-// 负载批处理根据拒绝原因生成服务端的无可用提供商诊断。
+// CompatibleEligibilityReason returns the first rejection token, or empty when
+// the target passes request eligibility. It checks the optional platform
+// constraint and ModelPolicy.Schedulable before quota pause, supported models,
+// persistent quota, capability, and Compact.
+//
+// A schedulable provider failing the first model policy stage is reported as
+// model_rate_limited, even if protocol policy caused the failure. Quota pause
+// reasons identify their observed window when available. Diagnostics use this
+// ordered result to explain selection, and callers retain the separate parent
+// credential-health check for shadows.
 // @project-doc docs/architecture/provider_scheduling_and_cache.md#advanced_scheduler_selection
 func CompatibleEligibilityReason(ctx context.Context, provider *ExecutionProvider, platform string, requestedModel string, requireCompact bool, requiredCapability providercore.OpenAIEndpointCapability) string {
 	platform = strings.TrimSpace(platform)
@@ -37,6 +62,8 @@ func CompatibleEligibilityReason(ctx context.Context, provider *ExecutionProvide
 	if platform != "" && provider.Record.Platform != platform {
 		return "platform_mismatch"
 	}
+	// Eligibility stages short-circuit for stable diagnostic ordering. A healthy
+	// record rejected by protocol or model policy uses this existing model-window reason.
 	if !ExecutionModelPolicy(provider).Schedulable(ctx, requestedModel) {
 		if provider.View().IsSchedulable() {
 			return "model_rate_limited"
@@ -90,12 +117,17 @@ func CompatibleEligibilityReason(ctx context.Context, provider *ExecutionProvide
 	return ""
 }
 
-// OpenAIQuotaPause 使用当前时刻和本次请求阈值读取提供商派生状态。
+// OpenAIQuotaPause evaluates current OpenAI quota observations against
+// request-bound global thresholds and provider overrides. It uses time.Now for
+// window expiry; the provider core returns both pause state and diagnostic
+// evidence.
 func OpenAIQuotaPause(ctx context.Context, provider *ExecutionProvider) (bool, providercore.QuotaAutoPauseDecision) {
 	return evaluateOpenAIQuotaPause(ctx, provider, time.Now())
 }
 
-// evaluateOpenAIQuotaPause 将提供商记录和请求阈值交给提供商模块判断自动暂停。
+// evaluateOpenAIQuotaPause delegates quota pause using provider platform,
+// extras, request thresholds, and now. Nil targets return unpaused with empty
+// evidence, leaving provider lookup failure to the caller's eligibility path.
 func evaluateOpenAIQuotaPause(ctx context.Context, v *ExecutionProvider, now time.Time) (bool, providercore.QuotaAutoPauseDecision) {
 	if v == nil {
 		return false, providercore.QuotaAutoPauseDecision{}
@@ -103,8 +135,10 @@ func evaluateOpenAIQuotaPause(ctx context.Context, v *ExecutionProvider, now tim
 	return providercore.EvaluateQuotaAutoPause(v.Record.Platform, v.Record.Extra, QuotaAutoPauseSettings(ctx), now)
 }
 
-// WithQuotaAutoPauseSettings 把 OpenAI 配额自动暂停全局设置放进 context，
-// 让调度、展示和容量统计复用完全一致的阈值解析逻辑。
+// WithQuotaAutoPauseSettings stores global five-hour and seven-day thresholds
+// in a derived execution-hint context. Nil context becomes Background;
+// existing hints survive, and the prior context keeps its own threshold
+// values.
 func WithQuotaAutoPauseSettings(ctx context.Context, settings providercore.QuotaAutoPauseSettings) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -115,23 +149,40 @@ func WithQuotaAutoPauseSettings(ctx context.Context, settings providercore.Quota
 	return requeststate.WithExecutionHints(ctx, hints)
 }
 
-// QuotaAutoPauseSettings 读取选择和固定提供商复核共享的请求快照。
+// QuotaAutoPauseSettings extracts both global window thresholds from the
+// request execution hints. Missing values remain zero for provider policy to
+// interpret; the returned settings value can be used independently of the
+// context.
 func QuotaAutoPauseSettings(ctx context.Context) providercore.QuotaAutoPauseSettings {
 	hints := requeststate.ExecutionHintsFromContext(ctx)
 	return providercore.QuotaAutoPauseSettings{DefaultThreshold5h: hints.QuotaAutoPauseThreshold5h, DefaultThreshold7d: hints.QuotaAutoPauseThreshold7d}
 }
 
-// GrokQuotaPause 调用 provider 的 Grok 配额窗口规则。
+// GrokQuotaPause delegates provider-specific Grok quota-window evaluation
+// using an execution-record copy and the current clock. Provider rules own
+// absent observation, threshold, reset, and platform handling for the returned
+// decision.
 func GrokQuotaPause(value *ExecutionProvider) (bool, providercore.QuotaAutoPauseDecision) {
 	return providercore.EvaluateGrokQuotaAutoPause(ExecutionRecord(value), time.Now)
 }
 
-// SupportsRequestCapability 依次检查 WS、Compact 和普通 HTTP 的协议资格。
+// SupportsRequestCapability checks requested endpoint capability using the
+// admitted protocol route where that route supplies the relevant
+// qualification. Nil targets fail, and noncompatible platforms can qualify
+// text through their allowed native or converted protocol.
+//
+// When no client protocol is stored, that branch tries Messages, Responses,
+// and Chat routes against the group. WS and Compact source protocols use route
+// permission for text/Responses and additionally require native compaction
+// permission for remote compaction v2. Remaining capabilities use provider
+// endpoint policy on the current reduced record.
 func SupportsRequestCapability(ctx context.Context, provider *ExecutionProvider, capability providercore.OpenAIEndpointCapability) bool {
 	if provider == nil {
 		return false
 	}
 	source, _ := requeststate.ClientProtocolFromContext(ctx)
+	// Noncompatible platforms can serve text through an allowed conversion route;
+	// endpoint checks must follow the admitted protocol rather than require OpenAI HTTP support.
 	if !provider.View().IsOpenAICompatible() && (capability == "" || capability == providercore.OpenAIEndpointCapabilityTextGeneration || capability == providercore.OpenAIEndpointCapabilityResponses) {
 		policy := ExecutionModelPolicy(provider)
 		if source != "" {
@@ -145,6 +196,8 @@ func SupportsRequestCapability(ctx context.Context, provider *ExecutionProvider,
 		}
 		return false
 	}
+	// WS and Compact have separate declared protocols. Their Responses route can
+	// qualify even when the provider has no ordinary HTTP text generation capability.
 	if source == protocolcore.ProtocolResponsesWebSocket || source == protocolcore.ProtocolResponsesCompact {
 		if capability == providercore.OpenAIEndpointCapabilityTextGeneration || capability == providercore.OpenAIEndpointCapabilityResponses {
 			return ExecutionModelPolicy(provider).AllowsProtocol(ctx)

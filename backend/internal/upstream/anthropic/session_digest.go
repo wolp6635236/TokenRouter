@@ -10,23 +10,49 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// Anthropic 会话 Fallback 相关常量。
+// session_digest.go builds conversation digest chains and shortened Anthropic
+// session cache keys.
+// Conversation digests encode system content followed by each message's role
+// and content hash. Per-message entries keep earlier content at the same chain
+// positions when a later turn is appended, allowing callers to compare prefixes
+// from unchanged conversation history.
+//
+// Canonical JSON decoding removes object key order and spacing before hashing,
+// while decoding failures use the supplied bytes. This representation uses
+// encoding/json's ordinary numeric decoding and hashes content rather than
+// every message field. Session keys then shorten both a caller-supplied prefix
+// hash and UUID; equal retained prefixes can therefore produce equal keys. The
+// helpers describe this representation independently of the caller's cache
+// lookup and identity decisions.
+
+// Digest session constants select the textual cache-key namespace and the
+// five-minute lifetime returned to callers that store conversation bindings.
 const (
-	// AnthropicSessionTTLSeconds Anthropic 会话缓存 TTL（5 分钟）。
+	// AnthropicSessionTTLSeconds is the five-minute session cache TTL.
 	AnthropicSessionTTLSeconds = 300
 
-	// AnthropicDigestSessionKeyPrefix Anthropic 摘要 fallback 会话 key 前缀。
+	// AnthropicDigestSessionKeyPrefix identifies digest-derived session keys.
 	AnthropicDigestSessionKeyPrefix = "anthropic:digest:"
 )
 
-// AnthropicSessionTTL 返回 Anthropic 会话缓存 TTL。
+// AnthropicSessionTTL returns the configured digest-cache lifetime as a
+// duration.
 func AnthropicSessionTTL() time.Duration {
+	// time.Duration counts nanoseconds, so the stored seconds need this scale.
 	return AnthropicSessionTTLSeconds * time.Second
 }
 
-// BuildAnthropicDigestChain 根据 Anthropic 请求生成摘要链
-// 格式: s:<hash>-u:<hash>-a:<hash>-u:<hash>-...
-// s = system, u = user, a = assistant.
+// BuildAnthropicDigestChain returns ordered system and message content hashes
+// with role prefixes. Nonempty nonliteral-null system bytes come first,
+// assistant messages use a, and other roles use u; empty inputs can produce an
+// empty chain.
+//
+// Each content value is canonicalized before hashing, so earlier entries retain
+// their positions when unchanged turns gain later messages. Only role and
+// content determine a message entry; other fields are outside that hash.
+// Callers supply messages as a JSON array because this helper traverses gjson
+// results without checking the root shape. They decide how the textual chain
+// participates in cache lookup.
 func BuildAnthropicDigestChain(systemRaw, messages []byte) string {
 	var parts []string
 
@@ -46,23 +72,32 @@ func BuildAnthropicDigestChain(systemRaw, messages []byte) string {
 	return strings.Join(parts, "-")
 }
 
-// CanonicalAnthropicDigestJSON 保持 digest 对 JSON key 顺序和空白不敏感。
+// CanonicalAnthropicDigestJSON decodes and re-encodes JSON to normalize spacing
+// and object key order. Empty input or a decode/encode failure returns the
+// supplied bytes; ordinary encoding/json decoding represents numbers as
+// float64.
 func CanonicalAnthropicDigestJSON(raw []byte) []byte {
 	if len(raw) == 0 {
 		return raw
 	}
 	var value any
+	// Unusable JSON retains its supplied bytes as the hash input, so a decode
+	// failure still contributes deterministic data to its conversation entry.
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return raw
 	}
 	canonical, err := json.Marshal(value)
+	// If re-encoding fails, keep the supplied representation for hashing rather
+	// than replacing the content with an empty or partially constructed value.
 	if err != nil {
 		return raw
 	}
 	return canonical
 }
 
-// RolePrefix 将 Anthropic 的 role 映射为单字符前缀。
+// RolePrefix maps assistant to a and every other string, including unknown or
+// empty roles, to u. Digest callers validate role input separately if
+// additional categories need distinct prefixes.
 func RolePrefix(role string) string {
 	switch role {
 	case "assistant":
@@ -72,14 +107,18 @@ func RolePrefix(role string) string {
 	}
 }
 
-// GenerateAnthropicDigestSessionKey 生成 Anthropic 摘要 fallback 的 sessionKey
-// 组合 prefixHash 前 8 位 + uuid 前 8 位，确保不同会话产生不同的 sessionKey。
+// GenerateAnthropicDigestSessionKey joins the digest namespace with up to eight
+// bytes each from prefixHash and uuid. Shorter values remain intact; callers
+// account for collisions when distinct inputs share the retained prefixes.
 func GenerateAnthropicDigestSessionKey(prefixHash, uuid string) string {
 	prefix := prefixHash
+	// Equal hash prefixes share this component even when their later bytes differ.
 	if len(prefixHash) >= 8 {
 		prefix = prefixHash[:8]
 	}
 	uuidPart := uuid
+	// UUID suffix bytes are discarded here, so distinct caller identities need
+	// different retained prefixes to distinguish this component of a cache key.
 	if len(uuid) >= 8 {
 		uuidPart = uuid[:8]
 	}

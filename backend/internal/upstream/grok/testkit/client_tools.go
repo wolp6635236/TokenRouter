@@ -2,7 +2,15 @@ package testkit
 
 import "fmt"
 
-// ClientToolsRequest 提供跨平台解析与 HTTP 转发共用的原始工具报文。
+// client_tools.go supplies a Grok request fixture containing client tools and
+// matching replay history.
+// Client-tool round trips need replayed calls and outputs that still match their
+// declarations after conversion. The shared fixture combines custom patch input,
+// client tool search and a namespaced function with matching historical call
+// IDs, letting protocol and HTTP tests inspect one consistent conversation.
+
+// ClientToolsRequest returns fresh JSON bytes with declared client tools and
+// matched replay history, using stream as the encoded streaming flag.
 func ClientToolsRequest(stream bool) []byte {
 	return []byte(fmt.Sprintf(`{
 		"model":"grok","stream":%t,

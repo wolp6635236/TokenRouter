@@ -8,13 +8,16 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// TestSyncBillingHeaderVersion covers fingerprinted markers, plain markers,
+// absent system content, and unusable User-Agent values. Matching inputs update
+// version text, while identity cases keep the supplied body bytes.
 func TestSyncBillingHeaderVersion(t *testing.T) {
 	tests := []struct {
-		name      string
-		body      string
-		userAgent string
-		wantSub   string // substring expected in result
-		unchanged bool   // expect body to remain the same
+		name      string // case display name
+		body      string // request JSON input
+		userAgent string // candidate User-Agent value
+		wantSub   string // expected marker substring
+		unchanged bool   // expected identity outcome
 	}{
 		{
 			name:      "replaces cc_version and recomputes message-derived suffix",
@@ -61,14 +64,16 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 				assert.Equal(t, tt.body, string(result), "body should remain unchanged")
 			} else {
 				assert.Contains(t, string(result), tt.wantSub)
-				// Ensure old semver is gone
 				assert.NotContains(t, string(result), "cc_version=2.1.81")
 			}
 		})
 	}
 }
 
-// TestSyncBillingHeaderVersion_RecomputesSuffixAndIsIdempotent 验证版本变化后重算后缀，重复处理稳定且不修改用户消息。
+// TestSyncBillingHeaderVersion_RecomputesSuffixAndIsIdempotent updates a
+// fingerprinted system marker for a fixed user message. The suffix matches the
+// selected version, user messages remain equal, and repeating synchronization
+// returns the same body.
 func TestSyncBillingHeaderVersion_RecomputesSuffixAndIsIdempotent(t *testing.T) {
 	body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli;"}],"messages":[{"role":"user","content":"hello world"}]}`)
 	version := "2.1.22"
@@ -78,5 +83,3 @@ func TestSyncBillingHeaderVersion_RecomputesSuffixAndIsIdempotent(t *testing.T) 
 	require.Equal(t, string(result), string(SyncBillingHeaderVersion(result, "claude-cli/"+version)))
 	require.JSONEq(t, gjson.GetBytes(body, "messages").Raw, gjson.GetBytes(result, "messages").Raw)
 }
-
-// 两个 OAuth 出站入口都须使计费标记与真正发送的 User-Agent 一致。

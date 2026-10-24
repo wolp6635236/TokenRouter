@@ -6,17 +6,46 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GroupAssignmentAccess 是 HTTP 门禁使用的只读分组资格数据。
+// group_assignment.go enforces group assignment after key authentication while
+// allowing eligible composite-key requests.
+// Group-consuming routes need a selected group after authentication and
+// composite selection. Some composite endpoints intentionally work with no
+// selected group, so admission combines loaded-key state with that exception
+// before invoking the protocol error writer.
+//
+// The middleware advances when authentication has not supplied a key, leaving
+// that earlier admission layer to handle missing identity. A loaded key is
+// rejected only when it lacks both an assigned group and the composite
+// no-group exception. That exception requires a composite key and presence of the
+// request marker; ordinary keys cannot gain it from the marker alone.
+// Rejection records the optional observation before writing and aborting the
+// request.
+
 type (
-	GroupAssignmentAccess  struct{ Loaded, Assigned, CompositeNoGroup bool }
+	// GroupAssignmentAccess represents the selected-group eligibility checked during HTTP request admission.
+	GroupAssignmentAccess struct {
+		// Loaded, Assigned and CompositeNoGroup are read together by the gate:
+		// a missing key, selected group or allowed composite exception continues.
+		// Loaded indicates an effective key; Assigned indicates a selected group;
+		// CompositeNoGroup indicates a composite endpoint allowing no selected group.
+		Loaded, Assigned, CompositeNoGroup bool
+	}
+	// GroupAssignmentOptions supplies state reading and protocol-specific rejection reporting.
 	GroupAssignmentOptions struct {
-		Access     func(*gin.Context) GroupAssignmentAccess
-		WriteError func(*gin.Context, int, string)
-		Rejected   func(*gin.Context)
+		// Access and WriteError are required by the returned middleware. Access
+		// reads effective eligibility, and WriteError presents denial before Abort.
+		Access     func(*gin.Context) GroupAssignmentAccess // effective group-state reader
+		WriteError func(*gin.Context, int, string)          // required protocol error writer
+		// Rejected marks a denied request before output; nil omits this optional
+		// observation while the mandatory error writer still reports the denial.
+		Rejected func(*gin.Context)
 	}
 )
 
-// RequireGroupAssignment 保留未分组裁决与错误顺序，普通 Key 不读取请求体。
+// RequireGroupAssignment rejects loaded keys lacking an assigned group unless
+// the composite endpoint permits that state. Access and WriteError callbacks
+// are required. Rejected runs when supplied before the 403 is written and the
+// Gin chain is aborted; admitted requests continue without body inspection.
 func RequireGroupAssignment(options GroupAssignmentOptions) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		access := options.Access(c)
@@ -32,7 +61,10 @@ func RequireGroupAssignment(options GroupAssignmentOptions) gin.HandlerFunc {
 	}
 }
 
-// EffectiveGroupAssignment 读取已完成 Key 认证和复合选组后的原生请求快照。
+// EffectiveGroupAssignment reads the effective key after authentication and
+// composite selection. Missing keys return empty eligibility; a GroupID pointer
+// establishes assignment, and the no-group marker applies only to composite
+// keys.
 func EffectiveGroupAssignment(c *gin.Context) GroupAssignmentAccess {
 	key, ok := EffectiveAPIKey(c)
 	if !ok || key == nil {

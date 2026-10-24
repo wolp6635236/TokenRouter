@@ -6,7 +6,15 @@ import (
 	"github.com/google/wire"
 )
 
-// backupAssemblyProviders 汇总 backup 模块的 Wire provider。
+// assembly_backup_wire.go registers backup and data-management administration
+// constructors with Wire.
+// Backup HTTP operations use the application backup service and its archive
+// resources. Data-management HTTP constructs a separate service; grouping both
+// constructors lets the administration routes resolve their respective
+// dependencies through the same application graph.
+
+// backupAssemblyProviders supplies the backup service and the constructors for
+// backup and data-management HTTP administration.
 var backupAssemblyProviders = wire.NewSet(
 	provideBackup,
 	provideBackupHTTP,

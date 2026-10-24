@@ -7,6 +7,39 @@ import (
 	"time"
 )
 
+// ops_repo_preagg.go refreshes hourly and daily Ops aggregates from request
+// observations and saved hourly summaries.
+// Hourly Ops metrics retain separate global, platform, and platform-plus-group
+// rows. Usage observations supply success, token, and latency measurements;
+// saved error observations supply classification counts after count-token
+// probes are excluded. Null dimensions identify broader summaries, and the
+// migration's coalesced unique index makes those summaries addressable by the
+// conflict target.
+//
+// Hourly refresh replaces values for dimensions present in the scanned range,
+// then independently inserts missing global zero buckets so dashboard coverage
+// can distinguish empty hours from unprocessed hours. An error in the second
+// statement can leave the first committed, and conflict suppression on the zero
+// insert keeps existing values. Daily refresh combines saved hourly summaries:
+// low percentiles and averages use weights, while high percentiles use maxima.
+// These estimates cannot reconstruct the original request-level percentile
+// distribution.
+
+// UpsertHourlyMetrics recomputes hourly summaries for a half-open
+// raw-observation range using supplied ignored status codes. Zero or unordered
+// endpoints return successfully without writes; the aggregation service
+// supplies aligned UTC hours so the later coverage buckets match the scanned
+// range. Input times are converted to UTC but are not rounded here.
+//
+// The first statement replaces metrics for observed global, platform, and
+// platform-plus-group dimensions through the migration's coalesced unique
+// index. Error observations exclude count-token probes and use the shared
+// business/SLA classification rules; final-error totals require client failure,
+// while eligible recovered provider attempts can contribute upstream counts.
+// The second statement inserts missing global zero buckets independently. Its
+// failure leaves the completed first write committed, and ON CONFLICT DO
+// NOTHING retains earlier values for an already existing zero-insert target;
+// dimensions absent from the new observations are not deleted.
 func (r *Store) UpsertHourlyMetrics(ctx context.Context, startTime, endTime time.Time, ignoredStatusCodes []int) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")
@@ -20,15 +53,11 @@ func (r *Store) UpsertHourlyMetrics(ctx context.Context, startTime, endTime time
 	businessLimitedSQL := opsBusinessLimitedSQL("client_status_code", "upstream_status_code", "upstream_errors", "error_owner", "is_business_limited", ignoredStatusCodes)
 	slaCountableSQL := opsSLACountableSQL("client_status_code", "upstream_status_code", "upstream_errors", "error_owner", "is_business_limited", ignoredStatusCodes)
 
-	// NOTE:
-	// - We aggregate usage_logs + ops_error_logs into ops_metrics_hourly.
-	// - We emit three dimension granularities via GROUPING SETS:
-	//   1) overall: (bucket_start)
-	//   2) platform: (bucket_start, platform)
-	//   3) group: (bucket_start, platform, group_id)
-	//
-	// IMPORTANT: Postgres UNIQUE treats NULLs as distinct, so the table uses a COALESCE-based
-	// unique index; our ON CONFLICT target must match that expression set.
+	// GROUPING SETS computes global, platform, and platform-plus-group rows from
+	// the same usage and error inputs. The conflict expressions match
+	// migration033's unique index, which maps null dimensions to empty platform
+	// and zero group. Percentiles and maxima become integer milliseconds while
+	// average columns retain fractional values.
 	q := `
 WITH usage_base AS (
   SELECT
@@ -36,7 +65,7 @@ WITH usage_base AS (
     ul.platform AS platform,
     ul.group_id AS group_id,
     ul.duration_ms AS duration_ms,
-    ul.first_token_ms AS first_token_ms,
+    ` + usageTTFTSQL("ul") + ` AS ttft_ms,
     (ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens) AS tokens
   FROM usage_logs ul
   WHERE ul.created_at >= $1 AND ul.created_at < $2
@@ -47,7 +76,7 @@ usage_agg AS (
     CASE WHEN GROUPING(platform) = 1 THEN NULL ELSE platform END AS platform,
     CASE WHEN GROUPING(group_id) = 1 THEN NULL ELSE group_id END AS group_id,
     COUNT(*) AS success_count,
-    COUNT(*) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_sample_count,
+    COUNT(*) FILTER (WHERE ttft_ms IS NOT NULL) AS ttft_sample_count,
     COALESCE(SUM(tokens), 0) AS token_consumed,
 
     percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS duration_p50_ms,
@@ -57,12 +86,12 @@ usage_agg AS (
     AVG(duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS duration_avg_ms,
     MAX(duration_ms) AS duration_max_ms,
 
-    percentile_cont(0.50) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p50_ms,
-    percentile_cont(0.90) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p90_ms,
-    percentile_cont(0.95) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p95_ms,
-    percentile_cont(0.99) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_p99_ms,
-    AVG(first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS ttft_avg_ms,
-    MAX(first_token_ms) AS ttft_max_ms
+    percentile_cont(0.50) WITHIN GROUP (ORDER BY ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS ttft_p50_ms,
+    percentile_cont(0.90) WITHIN GROUP (ORDER BY ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS ttft_p90_ms,
+    percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS ttft_p95_ms,
+    percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS ttft_p99_ms,
+    AVG(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS ttft_avg_ms,
+    MAX(ttft_ms) AS ttft_max_ms
   FROM usage_base
   GROUP BY GROUPING SETS (
     (bucket_start),
@@ -227,10 +256,15 @@ ON CONFLICT (bucket_start, COALESCE(platform, ''), COALESCE(group_id, 0)) DO UPD
   computed_at = NOW()
 `
 
+	// Finish the observed-dimension UPSERT before adding empty-hour markers. The
+	// statements commit independently, so marker failure does not roll back
+	// refreshed metrics.
 	if _, err := r.db.ExecContext(ctx, q, start, end); err != nil {
 		return err
 	}
-	// 即使某小时没有任何请求，也写入全局零值桶，供自动查询可靠判断连续覆盖。
+	// Dashboard coverage counts global rows for every full hour. Insert missing
+	// markers after refresh; conflicting existing metrics remain unchanged even
+	// when this scan found no observations.
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO ops_metrics_hourly (bucket_start, platform, group_id)
 		SELECT bucket_start, NULL, NULL
@@ -240,6 +274,22 @@ ON CONFLICT (bucket_start, COALESCE(platform, ''), COALESCE(group_id, 0)) DO UPD
 	return err
 }
 
+// UpsertDailyMetrics recomputes saved daily summaries from hourly rows in the
+// supplied half-open range. Zero or unordered endpoints return successfully
+// without writing. The aggregation service supplies whole UTC days; this method
+// converts times to UTC but groups every included hour by its UTC date even
+// when a direct caller supplies a partial day.
+//
+// Counts and tokens are summed, duration low percentiles and averages use
+// success counts, and TTFT measurements use nonnull sample counts.
+// Missing component statistics are excluded from their own denominators.
+// Duration weights include every success in a contributing hour despite missing
+// request durations, and maxima are selected independently of weights. High
+// percentiles and maxima use the greatest available hourly value, so daily
+// percentile values are approximations rather than exact request-level
+// quantiles. One statement replaces each observed date/dimension through the
+// coalesced unique index; previously stored dimensions with no included hourly
+// rows remain untouched.
 func (r *Store) UpsertDailyMetrics(ctx context.Context, startTime, endTime time.Time) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")
@@ -348,10 +398,17 @@ ON CONFLICT (bucket_date, COALESCE(platform, ''), COALESCE(group_id, 0)) DO UPDA
   computed_at = NOW()
 `
 
+	// Replace each observed daily dimension in one statement. Hourly metrics are
+	// read as saved, so this calculation inherits their coverage and approximated
+	// percentile values.
 	_, err := r.db.ExecContext(ctx, q, start, end)
 	return err
 }
 
+// GetLatestHourlyBucketStart returns the greatest stored hourly timestamp
+// across all dimensions, converted to UTC. Empty storage returns false without
+// error; the aggregation service uses this value as a resume hint, while
+// dashboard coverage checks global buckets separately.
 func (r *Store) GetLatestHourlyBucketStart(ctx context.Context) (time.Time, bool, error) {
 	if r == nil || r.db == nil {
 		return time.Time{}, false, fmt.Errorf("nil ops repository")
@@ -367,6 +424,10 @@ func (r *Store) GetLatestHourlyBucketStart(ctx context.Context) (time.Time, bool
 	return value.Time.UTC(), true, nil
 }
 
+// GetLatestDailyBucketDate returns the greatest saved daily date across all
+// dimensions as UTC midnight. Empty storage returns false without error; the
+// aggregation service uses this result as a resume hint rather than a
+// continuous historical coverage marker.
 func (r *Store) GetLatestDailyBucketDate(ctx context.Context) (time.Time, bool, error) {
 	if r == nil || r.db == nil {
 		return time.Time{}, false, fmt.Errorf("nil ops repository")

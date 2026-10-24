@@ -12,24 +12,44 @@ import (
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 )
 
+// history.go removes emulated or selected upstream search blocks from replayed
+// message history. ToolUseIDPrefix distinguishes those synthetic call/results
+// from upstream-issued search identities, while retained summary text keeps
+// their readable context.
+//
+// Filtering removes synthetic pairs, or all supported server-search blocks when
+// callers select stripAll for mapped-model rules. Empty messages receive
+// role-specific text to retain their conversation positions. Declined and
+// failed rewrites return supplied bytes; changed messages use encoding/json
+// float64 decoding, so numbers inside that replaced messages array can lose
+// precision. The surrounding top-level body is patched at messages after its
+// replacement array is prepared, retaining other raw top-level fields.
+
+// These type labels identify paired search invocation/result blocks whose
+// replay eligibility follows their source IDs or the caller's stripAll rule.
 const (
-	blockTypeServerToolUse       = "server_tool_use"
-	blockTypeWebSearchToolResult = "web_search_tool_result"
+	blockTypeServerToolUse       = "server_tool_use"        // server search invocation block
+	blockTypeWebSearchToolResult = "web_search_tool_result" // server search result block
 )
 
-// 两种块类型只会作为带引号的 JSON 字符串值出现，因此可用原始子串做快速预检，
-// 不受键值空格格式影响。
+// These quoted type names screen for supported search blocks before message
+// decoding, letting unrelated history retain its supplied bytes and formatting.
 var (
 	patternServerToolUse       = []byte(`"server_tool_use"`)
 	patternWebSearchToolResult = []byte(`"web_search_tool_result"`)
 )
 
-// FilterWebSearchHistoryBlocks 从历史消息移除目标上游拒绝的搜索块。
-// tool-use ID 带 ToolUseIDPrefix 的 server_tool_use 和 web_search_tool_result 由网关模拟，转发时全部移除。
-// 要求思考内容回传的 DeepSeek、Kimi、GLM 等兼容上游接受 text、thinking、image、tool_use 和 tool_result，
-// 因此移除全部搜索块；Anthropic strict 和未知协议族保留上游签发的搜索块。
-// 模拟响应的文本摘要继续保留搜索上下文，剥空的消息按 FilterThinkingBlocksForRetry 的方式补占位文本。
-// 无需修改时返回原 body。
+// FilterWebSearchHistoryBlocks removes synthetic server-search calls/results
+// and optionally upstream-issued equivalents. Callers select stripAll from
+// mapped-model replay rules and keep body storage stable while the byte view
+// is inspected.
+//
+// Invocation id and result tool_use_id use ToolUseIDPrefix to identify
+// emulated blocks. Other blocks and summary text retain their order; empty
+// messages receive a role-specific placeholder. Changed message arrays use
+// float64 number decoding, while other top-level bytes bypass that encoding.
+// Missing arrays, no eligible removal, and decode/marshal/patch failures
+// return the original body without adopting a replacement.
 func FilterWebSearchHistoryBlocks(body []byte, stripAll bool) []byte {
 	if !bytes.Contains(body, patternServerToolUse) && !bytes.Contains(body, patternWebSearchToolResult) {
 		return body
@@ -42,6 +62,8 @@ func FilterWebSearchHistoryBlocks(body []byte, stripAll bool) []byte {
 	}
 
 	var messages []any
+	// Prepare the selected message array before making content changes. Decode
+	// failure retains the complete supplied body for later protocol or error handling.
 	if err := json.Unmarshal(wire.SliceRawFromBody(body, msgsRes), &messages); err != nil {
 		return body
 	}
@@ -57,7 +79,8 @@ func FilterWebSearchHistoryBlocks(body []byte, stripAll bool) []byte {
 			continue
 		}
 
-		// 延迟分配：只有命中需剥离的块才构建新 slice。
+		// Keep content intact until an excluded block is found. Copy its retained
+		// prefix once so later removals leave the remaining block order available for replay.
 		var newContent []any
 		for i, block := range content {
 			blockMap, isMap := block.(map[string]any)
@@ -76,6 +99,8 @@ func FilterWebSearchHistoryBlocks(body []byte, stripAll bool) []byte {
 			continue
 		}
 		modified = true
+		// Retain the message's conversation position after every block was removed.
+		// Role-specific placeholder text supplies a nonempty replay content array.
 		if len(newContent) == 0 {
 			role, _ := msgMap["role"].(string)
 			placeholder := "(content removed)"
@@ -93,15 +118,23 @@ func FilterWebSearchHistoryBlocks(body []byte, stripAll bool) []byte {
 
 	msgsBytes, err := json.Marshal(messages)
 	if err != nil {
+		// Filtering changed the temporary array, but encoding did not produce its
+		// replacement. Retain the original body so callers adopt no incomplete rewrite.
 		return body
 	}
 	out, err := sjson.SetRawBytes(body, "messages", msgsBytes)
 	if err != nil {
+		// The prepared array could not be installed into the request. Keep the
+		// complete original representation for the caller's unchanged forwarding path.
 		return body
 	}
 	return out
 }
 
+// shouldStripWebSearchBlock reports whether a supported server-search block is
+// excluded by stripAll or its synthetic prefix. It reads invocation id and
+// result tool_use_id; unrelated block types stay eligible regardless of their
+// names.
 func shouldStripWebSearchBlock(block map[string]any, stripAll bool) bool {
 	blockType, _ := block["type"].(string)
 	switch blockType {

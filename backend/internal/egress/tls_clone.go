@@ -4,7 +4,16 @@ import (
 	"slices"
 )
 
-// CloneTLSFingerprintProfile 隔离配置来源、缓存和请求所持有的可变字段。
+// tls_clone.go copies TLS profiles and routers for cache publication and
+// request selection.
+// TLS profile slices and optional router values can be retained by caches and
+// returned to request selection. Cloning allocates storage for those mutable
+// values, including ordered router rules, while retaining the distinction
+// between absent and present empty lists.
+
+// CloneTLSFingerprintProfile copies a profile and allocates its optional
+// description and every slice. Nil input returns nil, and nil slices remain
+// nil; the resulting collections can be changed independently of the input.
 func CloneTLSFingerprintProfile(p *TLSFingerprintProfile) *TLSFingerprintProfile {
 	if p == nil {
 		return nil
@@ -23,7 +32,9 @@ func CloneTLSFingerprintProfile(p *TLSFingerprintProfile) *TLSFingerprintProfile
 	return &copied
 }
 
-// CloneTLSFingerprintRouter 保持 nil/空集合差异，并隔离可空配置和规则数组。
+// CloneTLSFingerprintRouter copies the description, optional token/reset
+// profile IDs, and ordered rules into new storage. Nil input returns nil, and
+// the Rules slice retains its nil or present empty form.
 func CloneTLSFingerprintRouter(p *TLSFingerprintRouter) *TLSFingerprintRouter {
 	if p == nil {
 		return nil
@@ -36,6 +47,9 @@ func CloneTLSFingerprintRouter(p *TLSFingerprintRouter) *TLSFingerprintRouter {
 	return &copied
 }
 
+// clonePointer allocates a shallow copy of the pointed-to value. Nil input
+// returns nil; reference-bearing members of T remain shared, while current
+// callers use string and integer values.
 func clonePointer[T any](p *T) *T {
 	if p == nil {
 		return nil
@@ -44,7 +58,9 @@ func clonePointer[T any](p *T) *T {
 	return &copied
 }
 
-// CloneTLSProfiles 为缓存序列化复制 TLS 配置数组，区分 nil 和空数组。
+// CloneTLSProfiles allocates a profile slice and clones each element through
+// CloneTLSFingerprintProfile. Nil input remains nil, an empty nonnil slice
+// remains present, and nil profile entries retain their positions.
 func CloneTLSProfiles(values []*TLSFingerprintProfile) []*TLSFingerprintProfile {
 	if values == nil {
 		return nil
@@ -56,7 +72,9 @@ func CloneTLSProfiles(values []*TLSFingerprintProfile) []*TLSFingerprintProfile 
 	return out
 }
 
-// CloneTLSRouters 为缓存序列化复制 TLS 路由数组，区分 nil 和空数组。
+// CloneTLSRouters allocates a router slice and clones each element through
+// CloneTLSFingerprintRouter. Nil input remains nil, an empty nonnil slice
+// remains present, and nil router entries retain their positions.
 func CloneTLSRouters(values []*TLSFingerprintRouter) []*TLSFingerprintRouter {
 	if values == nil {
 		return nil

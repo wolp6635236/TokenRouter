@@ -7,9 +7,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// ProviderStatsSource 提供共享价格配置，billing 据此计算提供商成本。
-type ProviderStatsSource struct{ Service *routing.PricingConfigService }
+// stats_pricing.go supplies group-linked provider cost rules to billing
+// statistics.
+// Provider cost statistics use the price configuration linked to a group,
+// independent of model authorization. The adapter exposes that configuration's
+// cost rules to billing and carries a missing configuration through as a nil
+// result so the caller can apply its pricing policy.
 
+// ProviderStatsSource adapts group pricing configuration to billing's
+// provider-cost rule reader.
+type ProviderStatsSource struct {
+	// group price configuration reader
+	Service *routing.PricingConfigService
+}
+
+// ProviderStatsGroup retrieves the price configuration attached to id and
+// exposes its provider-statistics rules to billing. The service must be
+// configured; missing price configuration returns nil, while lookup errors are
+// returned to the caller.
 func (s ProviderStatsSource) ProviderStatsGroup(ctx context.Context, id int64) (*billing.ProviderStatsPricingConfig, error) {
 	pricingConfig, err := s.Service.GetPricingConfigForGroup(ctx, id)
 	if err != nil || pricingConfig == nil {

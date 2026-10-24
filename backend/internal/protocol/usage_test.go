@@ -4,13 +4,38 @@ import (
 	"testing"
 )
 
-// TestApplyCacheTTLOverrideContract 检查各 TTL 分桶的值，补齐明细时返回值仍为 false。
+// Cache-write usage can arrive as an aggregate or separate TTL counts, while
+// reasoning observations can overlap reported output. The fixtures compare TTL
+// movement and inclusive output results, with separate assertions protecting
+// unrelated usage fields during cache reclassification.
+
+// TestApplyCacheTTLOverrideContract reclassifies absent, mixed, and already
+// classified cache-write details with known and unknown TTL targets. The changed
+// flag must distinguish category movement from initial aggregate filling, and
+// unrelated usage fields must retain their values.
 func TestApplyCacheTTLOverrideContract(t *testing.T) {
 	tests := []struct {
-		name, target          string
+		// target supplies the exact TTL selection passed to ApplyCacheTTLOverride.
+		// Only 1h selects the hour category; other spellings in these fixtures
+		// select the five-minute category.
+		// name: fixture subtest display label
+		// target: requested cache-write TTL category
+		name, target string
+		// aggregate supplies CacheCreationInputTokens while five and hour
+		// initialize the two TTL detail counters. Existing detail totals take
+		// precedence; a positive aggregate fills five only when both detail counts
+		// are zero.
+		// aggregate: initial aggregate cache-write tokens
+		// five: initial five-minute cache-write tokens
+		// hour: initial one-hour cache-write tokens
 		aggregate, five, hour int
-		wantFive, wantHour    int
-		changed               bool
+		// wantFive and wantHour are compared after reclassification and default to
+		// zero when omitted by a fixture. Their expected details are separate from
+		// changed, which reports category movement.
+		// wantFive: expected five-minute cache-write tokens
+		// wantHour: expected one-hour cache-write tokens
+		wantFive, wantHour int
+		changed            bool // expected category movement
 	}{
 		{name: "empty", target: "1h"},
 		{name: "aggregate fills 5m without reporting override", target: "5m", aggregate: 9, wantFive: 9},
@@ -41,13 +66,16 @@ func TestApplyCacheTTLOverrideContract(t *testing.T) {
 	}
 }
 
-// TestIncludeIndependentReasoningTokens 检查独立推理用量的输出计数。
+// TestIncludeIndependentReasoningTokens supplies separate reasoning counts,
+// inclusive output, incomplete gaps, and inconsistent totals. Added reasoning
+// must fit the observed gap and its own count, while unusable totals leave
+// the supplied output unchanged.
 func TestIncludeIndependentReasoningTokens(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name                         string
-		input, output, total, reason int64
-		want                         int64
+		name                         string // reasoning usage scenario
+		input, output, total, reason int64  // supplied token observations
+		want                         int64  // expected inclusive output
 	}{
 		{name: "xAI chat example", input: 32, output: 9, total: 135, reason: 94, want: 103},
 		{name: "xAI responses example", input: 32, output: 9, total: 151, reason: 110, want: 119},

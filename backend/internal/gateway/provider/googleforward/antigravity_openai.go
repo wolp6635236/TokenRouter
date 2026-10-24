@@ -11,6 +11,7 @@ import (
 	protocolforward "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
@@ -24,36 +25,100 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
+// antigravity_openai.go converts Chat and Responses requests for Antigravity
+// and restores client output identities.
+// Antigravity OpenAI compatibility retains original client bytes beside an
+// intermediate Anthropic request. Final model family chooses native Gemini
+// conversion or Claude transformation, and final-route attributes read the
+// original controls when that representation is supplied.
+//
+// Chat preserves its positive token limit after bridge conversion, while
+// Responses keeps a client tool restoration map for namespaces. Every attempt
+// replaces its tool rewrite map before response handling. Both client protocols
+// use the streaming v1internal action with synchronous output adaptation. HTTP
+// authorization failure carries a provider-scoped credential reason and safe
+// client status in the gateway failover error; the prepared call retains a
+// request copy separately from the entry request used for returned effort
+// metadata.
+
+// These modes select the Antigravity response adapter and client wire protocol
+// used after compatible request conversion and exchange.
 const (
-	antigravityCompatChatCompletions antigravityCompatProtocol = iota
-	antigravityCompatResponses
+	antigravityCompatChatCompletions antigravityCompatProtocol = iota // Chat completion response mode
+	antigravityCompatResponses                                        // OpenAI Responses output mode
 )
 
+// antigravityModelAttributes supplies optional final-route attributes and
+// original request controls.
+type antigravityModelAttributes struct {
+	// Resolution is optional; absent input leaves capability application to
+	// the selected conversion defaults used by the platform body builder.
+	Resolution *modelcatalog.Resolution // final route attribute resolution
+	// Controls defaults to the Anthropic body when nil; a supplied slice
+	// retains the original client protocol controls for final attribute
+	// application.
+	Controls []byte // original client control bytes
+}
+
+// antigravityCompatProtocol identifies the client format restored after
+// Antigravity execution.
 type antigravityCompatProtocol uint8
 
+// antigravityCompatRequest retains client identity, intermediate input, and
+// response restoration choices.
 type antigravityCompatRequest struct {
-	protocol          antigravityCompatProtocol
-	originalBody      []byte
-	claudeBody        []byte
-	originalModel     string
-	clientStream      bool
-	includeUsage      bool
-	startTime         time.Time
-	reasoningEffort   *string
+	// originalBody supplies client control syntax while claudeBody carries
+	// intermediate Anthropic input. originalModel and clientStream retain
+	// client identity and mode as the selected route builds different
+	// upstream bytes.
+	//
+	// selected client output protocol
+	protocol      antigravityCompatProtocol
+	originalBody  []byte    // original client request bytes
+	claudeBody    []byte    // converted Anthropic request bytes
+	originalModel string    // logical client model identifier
+	clientStream  bool      // client streaming response flag
+	includeUsage  bool      // Chat usage chunk permission
+	startTime     time.Time // compatibility attempt start time
+	// reasoningEffort is nil when client extraction finds no value;
+	// preparation can replace this pointer in its copied request before
+	// building the call.
+	reasoningEffort *string // recorded client effort value
+	// clientToolMapping accompanies Responses output; synchronous conversion
+	// uses it to restore flattened client tool names and namespaces while the
+	// executor emits protocol events.
+	//
+	// Responses tool restoration mapping
 	clientToolMapping protocolbridge.ResponsesClientToolMapping
 }
 
+// antigravityCompatUpstreamCall holds prepared credentials and body for one
+// provider exchange.
 type antigravityCompatUpstreamCall struct {
-	request      antigravityCompatRequest
+	// request is a value copy with any prepared effort fallback; its other
+	// reference-valued members remain shared with the entry request during
+	// execution.
+	//
+	// prepared compatibility request value
+	request antigravityCompatRequest
+	// thinking-qualified request execution context
 	ctx          context.Context
-	billingModel string
-	prefix       string
-	proxyURL     string
-	accessToken  string
-	geminiBody   []byte
+	billingModel string // selected final upstream model
+	prefix       string // provider attempt log prefix
+	proxyURL     string // selected transport proxy URL
+	accessToken  string // resolved OAuth access token
+	geminiBody   []byte // prepared v1internal request bytes
 }
 
-// ForwardAsChatCompletions 使用 Antigravity 原生 OAuth 提供商转发 Chat Completions 请求。
+// ForwardAsChatCompletions converts one Chat body into a selected Antigravity
+// OAuth attempt. It validates provider kind and input model before creating
+// intermediate Responses and Anthropic forms.
+//
+// The positive client token limit is reapplied after bridge conversion, and
+// tool rewriting records the response map for this attempt. Original client
+// bytes, model, stream mode, and include_usage choice accompany execution. The
+// parsed-request parameter is unused because this path derives its preparation
+// state from the supplied body.
 func (s *Antigravity) ForwardAsChatCompletions(
 	ctx context.Context,
 	output Output,
@@ -61,6 +126,7 @@ func (s *Antigravity) ForwardAsChatCompletions(
 	body []byte,
 	_ *requeststate.ParsedRequest,
 ) (*protocolforward.MessagesResult, error) {
+	ctx = requeststate.WithClientProtocol(ctx, protocol.ProtocolOpenAIChatCompletions)
 	c := &attempt{Output: output}
 
 	if err := s.validateAntigravityCompatProvider(c, provider); err != nil {
@@ -83,6 +149,9 @@ func (s *Antigravity) ForwardAsChatCompletions(
 	if err != nil {
 		return nil, c.AntigravityCompatError(http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
+	// Reapply the positive Chat completion limit after bridge conversion so
+	// its precedence and platform ceiling remain the upstream max-token
+	// input, including small requested limits.
 	antigravity.PreserveChatCompletionTokenLimit(&request, claudeRequest)
 	claudeRequest.Stream = request.Stream
 	claudeBody, err := json.Marshal(claudeRequest)
@@ -92,25 +161,26 @@ func (s *Antigravity) ForwardAsChatCompletions(
 	claudeBody = prepareAntigravityCompatTools(c, claudeBody)
 
 	return s.forwardAntigravityCompat(ctx, c, provider, antigravityCompatRequest{
-		protocol: antigravityCompatChatCompletions,
-
-		originalBody: body,
-
-		claudeBody: claudeBody,
-
-		originalModel: request.Model,
-
-		clientStream: request.Stream,
-
-		includeUsage: request.StreamOptions != nil && request.StreamOptions.IncludeUsage,
-
-		startTime: time.Now(),
-
+		protocol:        antigravityCompatChatCompletions,
+		originalBody:    body,
+		claudeBody:      claudeBody,
+		originalModel:   request.Model,
+		clientStream:    request.Stream,
+		includeUsage:    request.StreamOptions != nil && request.StreamOptions.IncludeUsage,
+		startTime:       time.Now(),
 		reasoningEffort: protocolforward.ExtractEffort(body, true, capability.NormalizeRecordedOpenAIEffortForModel),
 	})
 }
 
-// ForwardAsResponses 使用 Antigravity 原生 OAuth 提供商转发 Responses 请求。
+// ForwardAsResponses converts one Responses body into a selected Antigravity
+// OAuth attempt. It adapts client tools before typed conversion and retains
+// that mapping for namespace restoration.
+//
+// Original client bytes remain alongside the Anthropic body for final-model
+// control resolution. Model and stream choice remain logical client metadata as
+// the mapped provider route prepares the upstream request. The parsed-request
+// parameter is unused; execution and response handling use the supplied body
+// and fresh attempt state.
 func (s *Antigravity) ForwardAsResponses(
 	ctx context.Context,
 	output Output,
@@ -118,6 +188,7 @@ func (s *Antigravity) ForwardAsResponses(
 	body []byte,
 	_ *requeststate.ParsedRequest,
 ) (*protocolforward.MessagesResult, error) {
+	ctx = requeststate.WithClientProtocol(ctx, protocol.ProtocolOpenAIResponses)
 	c := &attempt{Output: output}
 
 	if err := s.validateAntigravityCompatProvider(c, provider); err != nil {
@@ -149,24 +220,20 @@ func (s *Antigravity) ForwardAsResponses(
 	claudeBody = prepareAntigravityCompatTools(c, claudeBody)
 
 	return s.forwardAntigravityCompat(ctx, c, provider, antigravityCompatRequest{
-		protocol: antigravityCompatResponses,
-
-		originalBody: body,
-
-		claudeBody: claudeBody,
-
-		originalModel: request.Model,
-
-		clientStream: request.Stream,
-
-		startTime: time.Now(),
-
-		reasoningEffort: protocolforward.ExtractEffort(body, false, capability.NormalizeRecordedOpenAIEffortForModel),
-
+		protocol:          antigravityCompatResponses,
+		originalBody:      body,
+		claudeBody:        claudeBody,
+		originalModel:     request.Model,
+		clientStream:      request.Stream,
+		startTime:         time.Now(),
+		reasoningEffort:   protocolforward.ExtractEffort(body, false, capability.NormalizeRecordedOpenAIEffortForModel),
 		clientToolMapping: clientToolMapping,
 	})
 }
 
+// validateAntigravityCompatProvider admits a nonnil Antigravity OAuth target
+// before conversion. Other targets receive a local compatible status-400 error
+// through the current output adapter, ending this preparation path.
 func (s *Antigravity) validateAntigravityCompatProvider(c *attempt, provider *gatewayprovider.ExecutionProvider) error {
 	if provider != nil && provider.Record.Platform == capability.PlatformAntigravity && provider.Record.Type == capability.ProviderTypeOAuth {
 		return nil
@@ -177,16 +244,30 @@ func (s *Antigravity) validateAntigravityCompatProvider(c *attempt, provider *ga
 	)
 }
 
-// prepareAntigravityCompatTools 处理工具名混淆和缓存断点，并更新响应的工具名映射。
+// prepareAntigravityCompatTools rewrites client tool names and replaces the
+// attempt response map. A nil attempt still returns delegated rewritten bytes;
+// a nil rewrite clears any map retained by a supplied attempt.
 func prepareAntigravityCompatTools(c *attempt, body []byte) []byte {
 	rewrite := anthropic.BuildToolNameRewriteFromBody(body)
 	if c != nil {
-		// 每次尝试覆盖自己的工具映射，本次不改名时也不能保留先前映射。
+		// Assign the current rewrite result even when it is nil so a
+		// reused attempt output cannot restore names with a mapping
+		// from an earlier body.
 		c.ToolNames = rewrite
 	}
 	return anthropic.ApplyToolNameRewriteToBody(body, rewrite)
 }
 
+// forwardAntigravityCompat executes the prepared call using the requested Chat
+// or Responses output mode. The executor owns final response closure; client
+// identity and mode come from the entry request, while the prepared call
+// supplies the thinking context, credential, upstream body, and final model.
+//
+// Successful result effort comes from this function's request parameter.
+// prepareAntigravityCompatCall stores its effort fallback in call.request, a
+// separate value copy, so assigning that fallback does not update the effort
+// pointer used here. Error observation reads call.request's original model,
+// while completion retains the entry model beside the final upstream model.
 func (s *Antigravity) forwardAntigravityCompat(
 	ctx context.Context,
 	c *attempt,
@@ -199,35 +280,21 @@ func (s *Antigravity) forwardAntigravityCompat(
 	}
 
 	retry, params := s.antigravityRetryAdapter(antigravityRetryLoopParams{
-		ctx: call.ctx,
-
-		prefix: call.prefix,
-
-		provider: provider,
-
-		proxyURL: call.proxyURL,
-
-		accessToken: call.accessToken,
-
-		action: "streamGenerateContent",
-
-		body: call.geminiBody,
-
-		c: c,
-
-		httpUpstream: s.Transport,
-
-		providerRepo: s.Store,
-
-		handleError: s.handleUpstreamError,
-
-		requestedModel: request.originalModel,
-
+		ctx:             call.ctx,
+		prefix:          call.prefix,
+		provider:        provider,
+		proxyURL:        call.proxyURL,
+		accessToken:     call.accessToken,
+		action:          "streamGenerateContent",
+		body:            call.geminiBody,
+		c:               c,
+		httpUpstream:    s.Transport,
+		providerRepo:    s.Store,
+		handleError:     s.handleUpstreamError,
+		requestedModel:  request.originalModel,
 		isStickySession: false,
-
-		groupID: 0,
-
-		sessionHash: "",
+		groupID:         0,
+		sessionHash:     "",
 	})
 	mode := antigravity.ModeChatResponse
 	wireProtocol := protocol.ProtocolOpenAIChatCompletions
@@ -279,12 +346,22 @@ func (s *Antigravity) forwardAntigravityCompat(
 		UpstreamModel:         call.billingModel,
 		Stream:                request.clientStream,
 		Duration:              result.Duration,
-		FirstTokenMs:          result.FirstTokenMs,
+		Timings:               result.Timings,
 		ReasoningEffort:       request.reasoningEffort,
 		ClientDisconnect:      result.ClientDisconnect,
 	}, nil
 }
 
+// prepareAntigravityCompatCall resolves a thinking-qualified final model and
+// prepares selected-provider credentials and bytes. Missing whitelist
+// admission, token service, or project data returns the corresponding local or
+// failover error.
+//
+// Original client control bytes accompany the intermediate Claude request when
+// final attributes are applied. The returned call stores a request copy
+// containing any prepared effort fallback, alongside the thinking context and
+// selected billing model. The caller retains its separate entry request value,
+// including the effort used by its result assembly.
 func (s *Antigravity) prepareAntigravityCompatCall(
 	ctx context.Context,
 	c *attempt,
@@ -322,36 +399,55 @@ func (s *Antigravity) prepareAntigravityCompatCall(
 		_ = c.AntigravityCompatError(http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
-	geminiBody, err := s.buildAntigravityCompatGeminiBody(modelCtx, request.claudeBody, &claudeRequest, projectID, mappedModel)
+	attributes, attributesErr := gatewayprovider.ResolveModelAttributes(modelCtx, provider, mappedModel, s.Attributes, "gemini_generate_content")
+	if attributesErr != nil {
+		return nil, attributesErr
+	}
+	geminiBody, err := s.buildAntigravityCompatGeminiBody(modelCtx, request.claudeBody, &claudeRequest, projectID, mappedModel, antigravityModelAttributes{Resolution: &attributes, Controls: request.originalBody})
 	if err != nil {
 		return nil, c.AntigravityCompatError(http.StatusBadRequest, "invalid_request_error", "Invalid request")
 	}
 
 	request.reasoningEffort = gatewayprovider.ApplyThinkingEnabledFallback(request.reasoningEffort, request.originalBody, mappedModel)
 	return &antigravityCompatUpstreamCall{
-		request: request,
-
-		ctx: modelCtx,
-
+		request:      request,
+		ctx:          modelCtx,
 		billingModel: mappedModel,
-
-		prefix: logPrefix(c.GetHeader("session_id"), provider.Record.Name),
-
-		proxyURL: antigravityCompatProxyURL(provider),
-
-		accessToken: accessToken,
-
-		geminiBody: geminiBody,
+		prefix:       logPrefix(c.GetHeader("session_id"), provider.Record.Name),
+		proxyURL:     antigravityCompatProxyURL(provider),
+		accessToken:  accessToken,
+		geminiBody:   geminiBody,
 	}, nil
 }
 
+// buildAntigravityCompatGeminiBody chooses native Gemini or Claude
+// transformation from the final mapped model family. The first optional
+// attribute input supplies resolution and controls, with Claude bytes as the
+// nil-control default.
+//
+// Gemini input receives mixed-tool compatibility, signature completion,
+// identity injection, and accepted schema cleanup before final attribute
+// application and v1internal wrapping. Claude-family input uses transform
+// options with identity enabled and resolved thinking when supplied. These
+// branches retain the selected project/model envelope while applying controls
+// from the input representation chosen by the caller.
 func (s *Antigravity) buildAntigravityCompatGeminiBody(
 	ctx context.Context,
 	claudeBody []byte,
 	claudeRequest *protocolanthropic.ClaudeRequest,
 	projectID string,
 	mappedModel string,
+	inputs ...antigravityModelAttributes,
 ) ([]byte, error) {
+	var resolved *modelcatalog.Resolution
+	controls := claudeBody
+	if len(inputs) > 0 {
+		resolved = inputs[0].Resolution
+		if inputs[0].Controls != nil {
+			controls = inputs[0].Controls
+		}
+	}
+
 	if strings.HasPrefix(strings.ToLower(mappedModel), "gemini-") {
 		body, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
 		if err != nil {
@@ -366,17 +462,39 @@ func (s *Antigravity) buildAntigravityCompatGeminiBody(
 		if err != nil {
 			return nil, err
 		}
+		// Accept schema cleanup when it succeeds; a cleanup error
+		// leaves the current converted bytes available for attribute
+		// application and upstream request validation.
 		if cleaned, cleanErr := antigravity.CleanGeminiRequest(body); cleanErr == nil {
 			body = cleaned
 		}
+		if resolved != nil {
+			body, err = applyGeminiModelParameters(body, controls, *resolved, true)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		return antigravity.WrapV1InternalRequest(projectID, mappedModel, body)
 	}
 
 	options := s.getClaudeTransformOptions(ctx)
+	if resolved != nil {
+		options.Capabilities = resolved
+		var err error
+		options.Thinking, err = gatewayprovider.GeminiThinking(*resolved, controls)
+		if err != nil {
+			return nil, err
+		}
+		options.ThinkingResolved = true
+	}
 	options.EnableIdentityPatch = true
 	return antigravity.TransformClaudeToGeminiWithOptions(claudeRequest, projectID, mappedModel, options)
 }
 
+// antigravityCompatProxyURL returns the attached provider proxy URL when both
+// references exist. Otherwise it returns empty for direct transport; callers
+// provide a selected provider before preparing the compatible call.
 func antigravityCompatProxyURL(provider *gatewayprovider.ExecutionProvider) string {
 	if provider.Record.ProxyID == nil || provider.Record.Proxy == nil {
 		return ""
@@ -384,6 +502,10 @@ func antigravityCompatProxyURL(provider *gatewayprovider.ExecutionProvider) stri
 	return provider.Record.Proxy.URL()
 }
 
+// handleAntigravityCompatTransportError translates provider-switch signals with
+// their sticky billing hint. Other retry failures use inbound request
+// cancellation to select client-disconnected or exhausted-upstream compatible
+// error presentation.
 func (s *Antigravity) handleAntigravityCompatTransportError(c *attempt, err error) error {
 	if switchErr, ok := antigravity.IsAntigravityProviderSwitchError(err); ok {
 		return &protocolforward.UpstreamFailoverError{
@@ -398,6 +520,10 @@ func (s *Antigravity) handleAntigravityCompatTransportError(c *attempt, err erro
 	return c.AntigravityCompatError(http.StatusBadGateway, "upstream_error", "Upstream request failed after retries")
 }
 
+// handleAntigravityCompatHTTPError observes provider health before selecting
+// failover or compatible presentation. Qualifying status 401 supplies
+// credential-failure metadata and safe client output; other qualifying statuses
+// retain cloned response headers in failover.
 func (s *Antigravity) handleAntigravityCompatHTTPError(
 	ctx context.Context,
 	c *attempt,
@@ -421,21 +547,14 @@ func (s *Antigravity) handleAntigravityCompatHTTPError(
 	if s.shouldFailoverUpstreamError(resp.StatusCode) {
 		message := logredact.SanitizeUpstreamQueries(strings.TrimSpace(google.ExtractPlatformMessage(body)))
 		event := ops.OpsUpstreamErrorEvent{
-			Platform: provider.Record.Platform,
-
-			ProviderID: provider.Record.ID,
-
-			ProviderName: provider.Record.Name,
-
+			Platform:           provider.Record.Platform,
+			ProviderID:         provider.Record.ID,
+			ProviderName:       provider.Record.Name,
 			UpstreamStatusCode: resp.StatusCode,
-
-			UpstreamRequestID: resp.Header.Get("x-request-id"),
-
-			Kind: "failover",
-
-			Message: message,
-
-			Detail: s.getUpstreamErrorDetail(body),
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               "failover",
+			Message:            message,
+			Detail:             s.getUpstreamErrorDetail(body),
 		}
 		if resp.StatusCode == http.StatusUnauthorized {
 			event.Stage = string(protocolforward.GatewayFailureStageProviderAuth)
@@ -456,22 +575,20 @@ func (s *Antigravity) handleAntigravityCompatHTTPError(
 	return c.MappedAntigravityCompatError(provider, resp.StatusCode, resp.Header.Get("x-request-id"), body)
 }
 
+// antigravityCredentialRejectedError returns provider-auth failure metadata
+// with cloned headers and shared diagnostic bytes. Outer handling receives
+// next-provider replay, safe status 502, and the credential-rejection client
+// message instead of raw authorization text.
 func antigravityCredentialRejectedError(resp *http.Response, body []byte) *protocolforward.UpstreamFailoverError {
 	return &protocolforward.UpstreamFailoverError{
-		StatusCode: resp.StatusCode,
-
-		ResponseBody: body,
-
-		ResponseHeaders: resp.Header.Clone(),
-
-		Stage: protocolforward.GatewayFailureStageProviderAuth,
-
-		Scope: protocolforward.GatewayFailureScopeProvider,
-
+		StatusCode:         resp.StatusCode,
+		ResponseBody:       body,
+		ResponseHeaders:    resp.Header.Clone(),
+		Stage:              protocolforward.GatewayFailureStageProviderAuth,
+		Scope:              protocolforward.GatewayFailureScopeProvider,
 		Reason:             protocolforward.AntigravityCredentialRejectedReason,
 		NextProviderAction: protocolforward.NextProviderRetry,
 		ClientStatusCode:   http.StatusBadGateway,
-
-		ClientMessage: protocolforward.AntigravityCredentialRejectedClientMessage,
+		ClientMessage:      protocolforward.AntigravityCredentialRejectedClientMessage,
 	}
 }

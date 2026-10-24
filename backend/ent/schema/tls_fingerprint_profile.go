@@ -10,88 +10,91 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/schema/mixins"
 )
 
-// TLSFingerprintProfile 定义 TLS 指纹配置模板的 schema。
-//
-// TLS 指纹模板用于模拟特定客户端（如 Claude Code / Node.js）的 TLS 握手特征。
-// 每个模板包含完整的 ClientHello 参数：加密套件、曲线、扩展等。
-// 通过 Provider.Extra.tls_fingerprint_profile_id 绑定到具体提供商。
+// tls_fingerprint_profile.go defines stored ClientHello templates with ordered
+// TLS parameters. Stored profiles let egress construct a fingerprint for
+// providers or router selections, using cipher suites, groups, and extensions
+// supplied by administrators.
+
+// TLSFingerprintProfile stores the configurable parameters of a TLS ClientHello.
 type TLSFingerprintProfile struct {
-	ent.Schema
+	ent.Schema // generated entity definition
 }
 
-// Annotations 返回 schema 的注解配置。
+// Annotations maps profile queries and mutations to the tls_fingerprint_profiles table.
 func (TLSFingerprintProfile) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "tls_fingerprint_profiles"},
 	}
 }
 
-// Mixin 返回该 schema 使用的混入组件。
+// Mixin adds creation and update timestamps to stored TLS profiles.
 func (TLSFingerprintProfile) Mixin() []ent.Mixin {
 	return []ent.Mixin{
 		mixins.TimeMixin{},
 	}
 }
 
-// Fields 定义 TLS 指纹模板实体的所有字段。
+// Fields describes a named TLS profile and its ClientHello parameter lists.
+// Lists use PostgreSQL JSONB columns and may be omitted; GREASE is disabled
+// until enabled for the profile.
 func (TLSFingerprintProfile) Fields() []ent.Field {
 	return []ent.Field{
-		// name: 模板名称，唯一标识
+		// Unique profile name.
 		field.String("name").
 			MaxLen(100).
 			NotEmpty().
 			Unique(),
 
-		// description: 模板描述
+		// Administrator profile description.
 		field.Text("description").
 			Optional().
 			Nillable(),
 
-		// enable_grease: 是否启用 GREASE 扩展（Chrome 使用，Node.js 不使用）
+		// GREASE extension preference.
 		field.Bool("enable_grease").
 			Default(false),
 
-		// cipher_suites: TLS 加密套件列表（顺序敏感，影响 JA3）
+		// Cipher suite order affects the JA3 fingerprint.
 		field.JSON("cipher_suites", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// curves: 椭圆曲线/支持的组列表
+		// Supported elliptic curves and groups.
 		field.JSON("curves", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// point_formats: EC 点格式列表
+		// EC point formats.
 		field.JSON("point_formats", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// signature_algorithms: 签名算法列表
+		// Signature algorithm identifiers.
 		field.JSON("signature_algorithms", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// alpn_protocols: ALPN 协议列表（如 ["http/1.1"]）
+		// ALPN protocols, such as ["http/1.1"].
 		field.JSON("alpn_protocols", []string{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// supported_versions: 支持的 TLS 版本列表（如 [0x0304, 0x0303]）
+		// TLS versions, such as [0x0304, 0x0303].
 		field.JSON("supported_versions", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// key_share_groups: Key Share 中发送的曲线组（如 [29] 即 X25519）
+		// Groups sent in Key Share; 29 is X25519.
 		field.JSON("key_share_groups", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// psk_modes: PSK 密钥交换模式（如 [1] 即 psk_dhe_ke）
+		// PSK key exchange modes; 1 is psk_dhe_ke.
 		field.JSON("psk_modes", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// extensions: TLS 扩展类型 ID 列表，按发送顺序排列
+		// TLS extension type IDs in wire order.
 		field.JSON("extensions", []uint16{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),

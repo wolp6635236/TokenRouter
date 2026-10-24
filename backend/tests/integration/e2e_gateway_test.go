@@ -15,41 +15,57 @@ import (
 	"time"
 )
 
+// Gateway E2E requests target an already running deployment whose keys, allowed
+// models and mappings are configured externally. Lists check response shape,
+// generation probes check message or candidate envelopes, and streaming probes
+// sample initial data lines; these observations do not identify the selected
+// upstream model.
+
 const (
-	// claudeAPIKeyEnv 指定 Claude E2E 测试读取密钥的环境变量。
+	// claudeAPIKeyEnv selects the TokenRouter credential used by live
+	// Claude-format gateway E2E requests against the configured deployment.
 	claudeAPIKeyEnv = "CLAUDE_API_KEY"
 
-	// geminiAPIKeyEnv 指定 Gemini E2E 测试读取密钥的环境变量。
+	// geminiAPIKeyEnv selects the TokenRouter credential used by live
+	// Gemini-format gateway E2E requests against the configured deployment.
 	geminiAPIKeyEnv = "GEMINI_API_KEY"
 )
 
 var (
+	// baseURL, endpointPrefix and testInterval select the deployment,
+	// gateway path family and request spacing. The default address uses
+	// local port 8080; spacing reduces pressure during sequential model
+	// probes.
 	baseURL = getEnv("BASE_URL", "http://localhost:8080")
-	// ENDPOINT_PREFIX: 端点前缀，支持混合模式和非混合模式测试
-	// - "" (默认): 使用 /v1/messages, /v1beta/models（混合模式，可调度 antigravity 提供商）
-	// - "/antigravity": 使用 /antigravity/v1/messages, /antigravity/v1beta/models（非混合模式，仅 antigravity 提供商）。
+	// endpointPrefix is concatenated before gateway paths. Empty selects
+	// ordinary routes, while /antigravity enables the cross-family probes
+	// that require that exact prefix.
 	endpointPrefix = getEnv("ENDPOINT_PREFIX", "")
-	testInterval   = 1 * time.Second // 测试间隔，防止限流
+	testInterval   = 1 * time.Second // Delay between requests to reduce rate-limit pressure.
 
-	// Claude 模型列表。
+	// claudeModels supplies Messages request names that the chosen
+	// deployment must admit or map for these acceptance probes; returned
+	// model identity is not asserted.
 	claudeModels = []string{
-		// Opus 系列
-		"claude-opus-4-5-thinking", // 直接支持
-		"claude-opus-4",            // 映射到 claude-opus-4-5-thinking
-		"claude-opus-4-5-20251101", // 映射到 claude-opus-4-5-thinking
-		// Sonnet 系列
-		"claude-sonnet-4-5",          // 直接支持
-		"claude-sonnet-4-5-thinking", // 直接支持
-		"claude-sonnet-4-5-20250929", // 映射到 claude-sonnet-4-5-thinking
-		"claude-3-5-sonnet-20241022", // 映射到 claude-sonnet-4-5
-		// Haiku 系列（映射到 gemini-3-flash）
+		// Opus fixtures.
+		"claude-opus-4-5-thinking",
+		"claude-opus-4",
+		"claude-opus-4-5-20251101",
+		// Sonnet fixtures.
+		"claude-sonnet-4-5",
+		"claude-sonnet-4-5-thinking",
+		"claude-sonnet-4-5-20250929",
+		"claude-3-5-sonnet-20241022",
+		// Haiku request-name probes.
 		"claude-haiku-4",
 		"claude-haiku-4-5",
 		"claude-haiku-4-5-20251001",
 		"claude-3-haiku-20240307",
 	}
 
-	// Gemini 模型列表。
+	// geminiModels supplies GenerateContent request names for the chosen
+	// deployment; success is checked through HTTP and response shape rather
+	// than resolved upstream identity.
 	geminiModels = []string{
 		"gemini-2.5-flash",
 		"gemini-2.5-flash-lite",
@@ -59,6 +75,9 @@ var (
 	}
 )
 
+// requireClaudeAPIKey reads and trims the Messages test credential, skipping
+// the current test when it is empty. The returned value is sent as a Bearer
+// credential to the configured TokenRouter deployment.
 func requireClaudeAPIKey(t *testing.T) string {
 	t.Helper()
 	key := strings.TrimSpace(os.Getenv(claudeAPIKeyEnv))
@@ -68,6 +87,9 @@ func requireClaudeAPIKey(t *testing.T) string {
 	return key
 }
 
+// requireGeminiAPIKey reads and trims the GenerateContent test credential,
+// skipping the current test when it is empty. The returned value is sent as a
+// Bearer credential to the configured TokenRouter deployment.
 func requireGeminiAPIKey(t *testing.T) string {
 	t.Helper()
 	key := strings.TrimSpace(os.Getenv(geminiAPIKeyEnv))
@@ -77,22 +99,34 @@ func requireGeminiAPIKey(t *testing.T) string {
 	return key
 }
 
-// TestClaudeModelsList 测试 GET /v1/models。
+// TestClaudeModelsList requests the configured Messages-family model list with
+// a gateway key. It requires HTTP 200, object=list and an array-valued data
+// field, then logs the array length.
 func TestClaudeModelsList(t *testing.T) {
 	claudeKey := requireClaudeAPIKey(t)
 	url := baseURL + endpointPrefix + "/v1/models"
 
+	// The fixture assumes the configured address and gateway path form a
+	// valid URL. Request-construction errors are discarded before headers
+	// are assigned, so malformed configuration can panic.
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Authorization", "Bearer "+claudeKey)
 
+	// Bound model-list reads when the deployment cannot finish its
+	// response.
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
+	// Close the list response after decoding or an early HTTP failure so the
+	// model-array probe releases its body; cleanup discards close errors.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		// Retain bytes received for HTTP diagnostics; body-read errors
+		// are discarded, with the received status or later envelope
+		// check determining this probe's result.
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
@@ -113,22 +147,34 @@ func TestClaudeModelsList(t *testing.T) {
 	t.Logf("✅ 返回 %d 个模型", len(data))
 }
 
-// TestGeminiModelsList 测试 GET /v1beta/models。
+// TestGeminiModelsList requests the configured Gemini-family model list with a
+// gateway key. It requires HTTP 200 and an array-valued models field, leaving
+// the specific deployment model set unconstrained.
 func TestGeminiModelsList(t *testing.T) {
 	geminiKey := requireGeminiAPIKey(t)
 	url := baseURL + endpointPrefix + "/v1beta/models"
 
+	// The fixture assumes the configured address and gateway path form a
+	// valid URL. Request-construction errors are discarded before headers
+	// are assigned, so malformed configuration can panic.
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Authorization", "Bearer "+geminiKey)
 
+	// Bound model-list reads when the deployment cannot finish its
+	// response.
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
+	// Close the response after inspecting the models array or failing on
+	// status, releasing this list request's body; cleanup discards close errors.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		// Retain bytes received for HTTP diagnostics; body-read errors
+		// are discarded, with the received status or later envelope
+		// check determining this probe's result.
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
@@ -145,16 +191,24 @@ func TestGeminiModelsList(t *testing.T) {
 	t.Logf("✅ 返回 %d 个模型", len(models))
 }
 
-// TestClaudeMessages 测试 Claude /v1/messages 接口。
+// TestClaudeMessages sends each configured model name through both Messages
+// response modes. Nonstreaming checks a message envelope; streaming requires
+// initial SSE data after a successful HTTP response.
 func TestClaudeMessages(t *testing.T) {
 	claudeKey := requireClaudeAPIKey(t)
 	for i, model := range claudeModels {
 		if i > 0 {
+			// Space model probes so a preceding request does not
+			// immediately add pressure to the deployment's
+			// credential or provider request limits.
 			time.Sleep(testInterval)
 		}
 		t.Run(model+"_非流式", func(t *testing.T) {
 			testClaudeMessage(t, claudeKey, model, false)
 		})
+		// Separate nonstreaming and streaming probes with the
+		// configured delay so each mode can report its own response
+		// without an immediate burst of paired requests.
 		time.Sleep(testInterval)
 		t.Run(model+"_流式", func(t *testing.T) {
 			testClaudeMessage(t, claudeKey, model, true)
@@ -162,6 +216,9 @@ func TestClaudeMessages(t *testing.T) {
 	}
 }
 
+// testClaudeMessage posts one short Messages prompt with the supplied gateway
+// key and model. HTTP 200 is required; stream mode samples at most three data
+// lines, while JSON mode checks type=message.
 func testClaudeMessage(t *testing.T, claudeKey string, model string, stream bool) {
 	url := baseURL + endpointPrefix + "/v1/messages"
 
@@ -173,27 +230,42 @@ func testClaudeMessage(t *testing.T, claudeKey string, model string, stream bool
 			{"role": "user", "content": "Say 'hello' in one word."},
 		},
 	}
+	// These literal payload values are supported by encoding/json.
+	// Discarding the marshal error relies on that fixed fixture shape
+	// before making the deployment request.
 	body, _ := json.Marshal(payload)
 
+	// The fixture assumes the configured address and gateway path form a
+	// valid URL. Request-construction errors are discarded before headers
+	// are assigned, so malformed configuration can panic.
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+claudeKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
+	// Bound generation probes, including a stream that sends no initial
+	// data.
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
+	// Close the response when this model-mode probe exits, including an early
+	// stop after its third raw data line; cleanup discards close errors.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		// Retain bytes received for HTTP diagnostics; body-read errors
+		// are discarded, with the received status or later envelope
+		// check determining this probe's result.
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Fatalf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	if stream {
-		// 流式：读取 SSE 事件
+		// Limit the probe to three data lines so acceptance needs no
+		// complete generation. Any positive count passes; terminal
+		// events and scanner errors are outside this assertion.
 		scanner := bufio.NewScanner(resp.Body)
 		eventCount := 0
 		for scanner.Scan() {
@@ -210,7 +282,7 @@ func testClaudeMessage(t *testing.T, claudeKey string, model string, stream bool
 		}
 		t.Logf("✅ 收到 %d+ 个 SSE 事件", eventCount)
 	} else {
-		// 非流式：解析 JSON 响应
+		// A non-streaming response must decode as a message.
 		var result map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatalf("解析响应失败: %v", err)
@@ -222,16 +294,24 @@ func testClaudeMessage(t *testing.T, claudeKey string, model string, stream bool
 	}
 }
 
-// TestGeminiGenerateContent 测试 Gemini /v1beta/models/:model 接口。
+// TestGeminiGenerateContent probes each configured Gemini name through
+// generateContent and streamGenerateContent. Successful responses must expose
+// candidates in JSON mode or initial SSE data in streaming mode.
 func TestGeminiGenerateContent(t *testing.T) {
 	geminiKey := requireGeminiAPIKey(t)
 	for i, model := range geminiModels {
 		if i > 0 {
+			// Space model probes so a preceding request does not
+			// immediately add pressure to the deployment's
+			// credential or provider request limits.
 			time.Sleep(testInterval)
 		}
 		t.Run(model+"_非流式", func(t *testing.T) {
 			testGeminiGenerate(t, geminiKey, model, false)
 		})
+		// Separate nonstreaming and streaming probes with the
+		// configured delay so each mode can report its own response
+		// without an immediate burst of paired requests.
 		time.Sleep(testInterval)
 		t.Run(model+"_流式", func(t *testing.T) {
 			testGeminiGenerate(t, geminiKey, model, true)
@@ -239,12 +319,18 @@ func TestGeminiGenerateContent(t *testing.T) {
 	}
 }
 
+// testGeminiGenerate chooses the generation action and SSE query from stream,
+// then posts one short prompt. HTTP 200 is required; JSON checks candidates
+// presence, and streaming checks initial data-line arrival.
 func testGeminiGenerate(t *testing.T, geminiKey string, model string, stream bool) {
 	action := "generateContent"
 	if stream {
 		action = "streamGenerateContent"
 	}
 	url := fmt.Sprintf("%s%s/v1beta/models/%s:%s", baseURL, endpointPrefix, model, action)
+	// Gemini streaming requests select the SSE wire form through alt=sse so
+	// the shared data-line assertion reads events rather than a JSON
+	// response array.
 	if stream {
 		url += "?alt=sse"
 	}
@@ -262,26 +348,42 @@ func testGeminiGenerate(t *testing.T, geminiKey string, model string, stream boo
 			"maxOutputTokens": 50,
 		},
 	}
+	// These literal payload values are supported by encoding/json.
+	// Discarding the marshal error relies on that fixed fixture shape
+	// before making the deployment request.
 	body, _ := json.Marshal(payload)
 
+	// The fixture assumes the configured address and gateway path form a
+	// valid URL. Request-construction errors are discarded before headers
+	// are assigned, so malformed configuration can panic.
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+geminiKey)
 
+	// Bound generation probes, including a stream that sends no initial
+	// data.
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
+	// Close this generation response after the sampled SSE prefix or JSON
+	// candidates check, releasing even partly read bodies; cleanup discards
+	// close errors.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		// Retain bytes received for HTTP diagnostics; body-read errors
+		// are discarded, with the received status or later envelope
+		// check determining this probe's result.
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Fatalf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	if stream {
-		// 流式：读取 SSE 事件
+		// Limit the probe to three data lines so acceptance needs no
+		// complete generation. Any positive count passes; terminal
+		// events and scanner errors are outside this assertion.
 		scanner := bufio.NewScanner(resp.Body)
 		eventCount := 0
 		for scanner.Scan() {
@@ -298,7 +400,7 @@ func testGeminiGenerate(t *testing.T, geminiKey string, model string, stream boo
 		}
 		t.Logf("✅ 收到 %d+ 个 SSE 事件", eventCount)
 	} else {
-		// 非流式：解析 JSON 响应
+		// A non-streaming response must contain candidates.
 		var result map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatalf("解析响应失败: %v", err)
@@ -310,18 +412,24 @@ func testGeminiGenerate(t *testing.T, geminiKey string, model string, stream boo
 	}
 }
 
-// TestClaudeMessagesWithComplexTools 测试带复杂工具 schema 的请求
-// 模拟 Claude Code 发送的请求，包含需要清理的 JSON Schema 字段。
+// TestClaudeMessagesWithComplexTools submits nested schemas and schemas
+// omitting selected declarations under two Messages model names. HTTP 200 must
+// contain type=message; a received 429 or 503 skips that model's probe.
 func TestClaudeMessagesWithComplexTools(t *testing.T) {
 	claudeKey := requireClaudeAPIKey(t)
-	// 测试模型列表（只测试几个代表性模型）
+	// Probe both a dated Opus name and a Haiku name. The deployment
+	// selects any required mapping, while this probe observes status and
+	// the message envelope without inspecting the mapping decision.
 	models := []string{
-		"claude-opus-4-5-20251101",  // Claude 模型
-		"claude-haiku-4-5-20251001", // 映射到 Gemini
+		"claude-opus-4-5-20251101",
+		"claude-haiku-4-5-20251001",
 	}
 
 	for i, model := range models {
 		if i > 0 {
+			// Space model probes so a preceding request does not
+			// immediately add pressure to the deployment's
+			// credential or provider request limits.
 			time.Sleep(testInterval)
 		}
 		t.Run(model+"_复杂工具", func(t *testing.T) {
@@ -330,11 +438,15 @@ func TestClaudeMessagesWithComplexTools(t *testing.T) {
 	}
 }
 
+// testClaudeMessageWithTools posts the supplied tool schema variants and
+// checks the returned message envelope. HTTP 400 fails the scenario; 429 and
+// 503 skip it, and other non-200 statuses fail.
 func testClaudeMessageWithTools(t *testing.T, claudeKey string, model string) {
 	url := baseURL + endpointPrefix + "/v1/messages"
 
-	// 构造包含复杂 schema 的工具定义（模拟 Claude Code 的工具）
-	// 这些字段需要被 cleanJSONSchema 清理
+	// Nested schema keywords and missing declarations probe how the chosen
+	// deployment accepts tool definitions. The HTTP response supplies
+	// acceptance evidence; the test does not capture the upstream schema.
 	tools := []map[string]any{
 		{
 			"name":        "read_file",
@@ -435,7 +547,7 @@ func testClaudeMessageWithTools(t *testing.T, claudeKey string, model string) {
 				},
 			},
 		},
-		// 测试 required 引用不存在的属性（应被自动过滤）
+		// Exercise a required name absent from properties.
 		{
 			"name":        "invalid_required_tool",
 			"description": "Tool with invalid required field",
@@ -446,11 +558,14 @@ func testClaudeMessageWithTools(t *testing.T, claudeKey string, model string) {
 						"type": "string",
 					},
 				},
-				// "nonexistent_field" 不存在于 properties 中，应被过滤掉
+				// The required list mentions a field with no
+				// declared property schema. This input probes
+				// whether the deployment accepts that tool
+				// definition before returning a message.
 				"required": []string{"name", "nonexistent_field"},
 			},
 		},
-		// 测试没有 properties 的 schema（应自动添加空 properties）
+		// Exercise an object schema with no properties.
 		{
 			"name":        "no_properties_tool",
 			"description": "Tool without properties",
@@ -459,7 +574,8 @@ func testClaudeMessageWithTools(t *testing.T, claudeKey string, model string) {
 				"required": []string{"should_be_removed"},
 			},
 		},
-		// 测试没有 type 的 schema（应自动添加 type: OBJECT）
+		// Supply properties with an omitted object type for the
+		// acceptance probe.
 		{
 			"name":        "no_type_tool",
 			"description": "Tool without type",
@@ -482,33 +598,51 @@ func testClaudeMessageWithTools(t *testing.T, claudeKey string, model string) {
 		},
 		"tools": tools,
 	}
+	// These literal payload values are supported by encoding/json.
+	// Discarding the marshal error relies on that fixed fixture shape
+	// before making the deployment request.
 	body, _ := json.Marshal(payload)
 
+	// The fixture assumes the configured address and gateway path form a
+	// valid URL. Request-construction errors are discarded before headers
+	// are assigned, so malformed configuration can panic.
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+claudeKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
+	// The one-minute client budget bounds this nonstreaming request and its
+	// response-body read before the message envelope is checked.
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
+	// Close the tool-schema response after envelope checking or a 429/503
+	// skip, releasing the body on every reached response path; cleanup
+	// discards close errors.
 	defer resp.Body.Close()
 
+	// Retain bytes received for HTTP diagnostics; body-read errors are
+	// discarded, with the received status or later envelope check
+	// determining this probe's result.
 	respBody, _ := io.ReadAll(resp.Body)
 
-	// 400 错误说明 schema 清理不完整
+	// Treat HTTP 400 as failure of this tool-schema acceptance probe.
 	if resp.StatusCode == 400 {
 		t.Fatalf("Schema 清理失败，收到 400 错误: %s", string(respBody))
 	}
 
-	// 此测试将 503 作为可重试的服务不可用结果。
+	// HTTP 503 supplies no accepted message for this probe. Skip the
+	// attempt while retaining the received status and response bytes in the
+	// deployment test report.
 	if resp.StatusCode == 503 {
 		t.Skipf("提供商暂时不可用 (503): %s", string(respBody))
 	}
 
-	// 429 是限流
+	// HTTP 429 reports a rate-limited attempt, so the helper skips message
+	// acceptance checks and retains the received status and response bytes
+	// for diagnosis.
 	if resp.StatusCode == 429 {
 		t.Skipf("请求被限流 (429): %s", string(respBody))
 	}
@@ -528,16 +662,19 @@ func testClaudeMessageWithTools(t *testing.T, claudeKey string, model string) {
 	t.Logf("✅ 复杂工具 schema 测试通过, id=%v", result["id"])
 }
 
-// TestClaudeMessagesWithThinkingAndTools 测试 thinking 模式下带工具调用的场景
-// 验证：当历史 assistant 消息包含 tool_use 但没有 signature 时，
-// 系统应补充 dummy thought_signature，使 Gemini 接受工具调用。
+// TestClaudeMessagesWithThinkingAndTools sends thinking-enabled assistant
+// tool history with an omitted signature and a matching tool_result. It checks
+// HTTP 200 and type=message when the helper receives neither 429 nor 503.
 func TestClaudeMessagesWithThinkingAndTools(t *testing.T) {
 	claudeKey := requireClaudeAPIKey(t)
 	models := []string{
-		"claude-haiku-4-5-20251001", // gemini-3-flash
+		"claude-haiku-4-5-20251001",
 	}
 	for i, model := range models {
 		if i > 0 {
+			// Space model probes so a preceding request does not
+			// immediately add pressure to the deployment's
+			// credential or provider request limits.
 			time.Sleep(testInterval)
 		}
 		t.Run(model+"_thinking模式工具调用", func(t *testing.T) {
@@ -546,16 +683,20 @@ func TestClaudeMessagesWithThinkingAndTools(t *testing.T) {
 	}
 }
 
+// testClaudeThinkingWithToolHistory sends an unsigned tool call paired with its
+// user result and enables thinking. The response must be a message at HTTP 200;
+// 429 or 503 skip the probe.
 func testClaudeThinkingWithToolHistory(t *testing.T, claudeKey string, model string) {
 	url := baseURL + endpointPrefix + "/v1/messages"
 
-	// 模拟历史对话：用户请求 → assistant 调用工具 → 工具返回 → 继续对话
-	// tool_use 块省略 signature，检查系统补充的 dummy signature。
+	// The assistant tool_use and following tool_result share one ID, so
+	// this probe sends a matched exchange with thinking enabled and no
+	// signature field on the tool call.
 	payload := map[string]any{
 		"model":      model,
 		"max_tokens": 200,
 		"stream":     false,
-		// 开启 thinking 模式
+		// Enable thinking for the continuation.
 		"thinking": map[string]any{
 			"type":          "enabled",
 			"budget_tokens": 1024,
@@ -565,7 +706,8 @@ func testClaudeThinkingWithToolHistory(t *testing.T, claudeKey string, model str
 				"role":    "user",
 				"content": "List files in the current directory",
 			},
-			// assistant 消息包含 tool_use 但没有 signature
+			// The assistant history contains an unsigned tool_use
+			// block.
 			map[string]any{
 				"role": "assistant",
 				"content": []map[string]any{
@@ -578,11 +720,12 @@ func testClaudeThinkingWithToolHistory(t *testing.T, claudeKey string, model str
 						"id":    "toolu_01XGmNv",
 						"name":  "Bash",
 						"input": map[string]any{"command": "ls -la"},
-						// 故意不包含 signature
+						// Signature intentionally
+						// omitted.
 					},
 				},
 			},
-			// 工具结果
+			// Supply the result of the preceding tool call.
 			map[string]any{
 				"role": "user",
 				"content": []map[string]any{
@@ -610,33 +753,52 @@ func testClaudeThinkingWithToolHistory(t *testing.T, claudeKey string, model str
 			},
 		},
 	}
+	// These literal payload values are supported by encoding/json.
+	// Discarding the marshal error relies on that fixed fixture shape
+	// before making the deployment request.
 	body, _ := json.Marshal(payload)
 
+	// The fixture assumes the configured address and gateway path form a
+	// valid URL. Request-construction errors are discarded before headers
+	// are assigned, so malformed configuration can panic.
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+claudeKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
+	// The one-minute client budget bounds this nonstreaming request and its
+	// response-body read before the message envelope is checked.
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
+	// Close the history-continuation response after the message check or a
+	// status-triggered skip; its body is owned by this helper, which discards
+	// close errors.
 	defer resp.Body.Close()
 
+	// Retain bytes received for HTTP diagnostics; body-read errors are
+	// discarded, with the received status or later envelope check
+	// determining this probe's result.
 	respBody, _ := io.ReadAll(resp.Body)
 
-	// 400 错误说明 thought_signature 处理失败
+	// Treat a bad request as a failure of this unsigned-tool-history
+	// scenario.
 	if resp.StatusCode == 400 {
 		t.Fatalf("thought_signature 处理失败，收到 400 错误: %s", string(respBody))
 	}
 
-	// 此测试将 503 作为可重试的服务不可用结果。
+	// HTTP 503 supplies no accepted message for this probe. Skip the
+	// attempt while retaining the received status and response bytes in the
+	// deployment test report.
 	if resp.StatusCode == 503 {
 		t.Skipf("提供商暂时不可用 (503): %s", string(respBody))
 	}
 
-	// 429 是限流
+	// HTTP 429 reports a rate-limited attempt, so the helper skips message
+	// acceptance checks and retains the received status and response bytes
+	// for diagnosis.
 	if resp.StatusCode == 429 {
 		t.Skipf("请求被限流 (429): %s", string(respBody))
 	}
@@ -656,31 +818,38 @@ func testClaudeThinkingWithToolHistory(t *testing.T, claudeKey string, model str
 	t.Logf("✅ thinking 模式工具调用测试通过, id=%v", result["id"])
 }
 
-// TestClaudeMessagesWithGeminiModel 测试在 Claude 端点使用 Gemini 模型
-// 验证：通过 /v1/messages 端点传入 gemini 模型名的场景（含前缀映射）
-// 仅在 Antigravity 模式下运行（ENDPOINT_PREFIX="/antigravity"）。
+// TestClaudeMessagesWithGeminiModel probes Gemini request names through the
+// Antigravity Messages route in both response modes. The exact /antigravity
+// prefix is required, with envelope or initial stream-data assertions delegated
+// to the common helper.
 func TestClaudeMessagesWithGeminiModel(t *testing.T) {
 	if endpointPrefix != "/antigravity" {
 		t.Skip("仅在 Antigravity 模式下运行")
 	}
 	claudeKey := requireClaudeAPIKey(t)
 
-	// 测试通过 Claude 端点调用 Gemini 模型
+	// Gemini names sent through the Messages endpoint.
 	geminiViaClaude := []string{
-		"gemini-3-flash",       // 直接支持
-		"gemini-3-pro-low",     // 直接支持
-		"gemini-3-pro-high",    // 直接支持
-		"gemini-3-pro",         // 前缀映射 -> gemini-3-pro-high
-		"gemini-3-pro-preview", // 前缀映射 -> gemini-3-pro-high
+		"gemini-3-flash",
+		"gemini-3-pro-low",
+		"gemini-3-pro-high",
+		"gemini-3-pro",
+		"gemini-3-pro-preview",
 	}
 
 	for i, model := range geminiViaClaude {
 		if i > 0 {
+			// Space model probes so a preceding request does not
+			// immediately add pressure to the deployment's
+			// credential or provider request limits.
 			time.Sleep(testInterval)
 		}
 		t.Run(model+"_通过Claude端点", func(t *testing.T) {
 			testClaudeMessage(t, claudeKey, model, false)
 		})
+		// Separate nonstreaming and streaming probes with the
+		// configured delay so each mode can report its own response
+		// without an immediate burst of paired requests.
 		time.Sleep(testInterval)
 		t.Run(model+"_通过Claude端点_流式", func(t *testing.T) {
 			testClaudeMessage(t, claudeKey, model, true)
@@ -688,15 +857,19 @@ func TestClaudeMessagesWithGeminiModel(t *testing.T) {
 	}
 }
 
-// TestClaudeMessagesWithNoSignature 测试历史 thinking block 不带 signature 的场景
-// 验证：Gemini 模型接受没有 signature 的 thinking block。
+// TestClaudeMessagesWithNoSignature continues an assistant thinking block
+// whose signature is absent. HTTP 200 must contain type=message; received 429
+// or 503 responses skip the model's acceptance probe.
 func TestClaudeMessagesWithNoSignature(t *testing.T) {
 	claudeKey := requireClaudeAPIKey(t)
 	models := []string{
-		"claude-haiku-4-5-20251001", // gemini-3-flash - 支持无 signature
+		"claude-haiku-4-5-20251001",
 	}
 	for i, model := range models {
 		if i > 0 {
+			// Space model probes so a preceding request does not
+			// immediately add pressure to the deployment's
+			// credential or provider request limits.
 			time.Sleep(testInterval)
 		}
 		t.Run(model+"_无signature", func(t *testing.T) {
@@ -705,15 +878,20 @@ func TestClaudeMessagesWithNoSignature(t *testing.T) {
 	}
 }
 
+// testClaudeWithNoSignature posts unsigned thinking history and checks HTTP
+// acceptance plus type=message. HTTP 400 fails the scenario, 429 and 503 skip
+// it, and remaining non-200 responses fail.
 func testClaudeWithNoSignature(t *testing.T, claudeKey string, model string) {
 	url := baseURL + endpointPrefix + "/v1/messages"
 
-	// 模拟历史对话包含 thinking block 但没有 signature
+	// Omit signature metadata from the earlier thinking block, then ask
+	// another question. HTTP status and the returned message envelope
+	// observe acceptance of that supplied continuation on this deployment.
 	payload := map[string]any{
 		"model":      model,
 		"max_tokens": 200,
 		"stream":     false,
-		// 开启 thinking 模式
+		// Enable thinking for the continuation.
 		"thinking": map[string]any{
 			"type":          "enabled",
 			"budget_tokens": 1024,
@@ -723,14 +901,16 @@ func testClaudeWithNoSignature(t *testing.T, claudeKey string, model string) {
 				"role":    "user",
 				"content": "What is 2+2?",
 			},
-			// assistant 消息包含 thinking block 但没有 signature
+			// The assistant history contains an unsigned thinking
+			// block.
 			map[string]any{
 				"role": "assistant",
 				"content": []map[string]any{
 					{
 						"type":     "thinking",
 						"thinking": "Let me calculate 2+2...",
-						// 故意不包含 signature
+						// Signature intentionally
+						// omitted.
 					},
 					{
 						"type": "text",
@@ -744,30 +924,50 @@ func testClaudeWithNoSignature(t *testing.T, claudeKey string, model string) {
 			},
 		},
 	}
+	// These literal payload values are supported by encoding/json.
+	// Discarding the marshal error relies on that fixed fixture shape
+	// before making the deployment request.
 	body, _ := json.Marshal(payload)
 
+	// The fixture assumes the configured address and gateway path form a
+	// valid URL. Request-construction errors are discarded before headers
+	// are assigned, so malformed configuration can panic.
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+claudeKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
+	// The one-minute client budget bounds this nonstreaming request and its
+	// response-body read before the message envelope is checked.
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
+	// Close the unsigned-thinking response after envelope checking or a
+	// status-triggered skip so this probe releases its body; cleanup discards
+	// close errors.
 	defer resp.Body.Close()
 
+	// Retain bytes received for HTTP diagnostics; body-read errors are
+	// discarded, with the received status or later envelope check
+	// determining this probe's result.
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == 400 {
 		t.Fatalf("无 signature thinking 处理失败，收到 400 错误: %s", string(respBody))
 	}
 
+	// HTTP 503 supplies no accepted message for this probe. Skip the
+	// attempt while retaining the received status and response bytes in the
+	// deployment test report.
 	if resp.StatusCode == 503 {
 		t.Skipf("提供商暂时不可用 (503): %s", string(respBody))
 	}
 
+	// HTTP 429 reports a rate-limited attempt, so the helper skips message
+	// acceptance checks and retains the received status and response bytes
+	// for diagnosis.
 	if resp.StatusCode == 429 {
 		t.Skipf("请求被限流 (429): %s", string(respBody))
 	}
@@ -787,15 +987,17 @@ func testClaudeWithNoSignature(t *testing.T, claudeKey string, model string) {
 	t.Logf("✅ 无 signature thinking 处理测试通过, id=%v", result["id"])
 }
 
-// TestGeminiEndpointWithClaudeModel 测试通过 Gemini 端点调用 Claude 模型
-// 仅在 Antigravity 模式下运行（ENDPOINT_PREFIX="/antigravity"）。
+// TestGeminiEndpointWithClaudeModel probes Claude request names through the
+// Antigravity Gemini route in both response modes. The exact /antigravity
+// prefix is required; candidates presence and initial stream data are checked
+// separately.
 func TestGeminiEndpointWithClaudeModel(t *testing.T) {
 	if endpointPrefix != "/antigravity" {
 		t.Skip("仅在 Antigravity 模式下运行")
 	}
 	geminiKey := requireGeminiAPIKey(t)
 
-	// 测试通过 Gemini 端点调用 Claude 模型
+	// Claude names sent through the Gemini endpoint.
 	claudeViaGemini := []string{
 		"claude-sonnet-4-5",
 		"claude-opus-4-5-thinking",
@@ -803,11 +1005,17 @@ func TestGeminiEndpointWithClaudeModel(t *testing.T) {
 
 	for i, model := range claudeViaGemini {
 		if i > 0 {
+			// Space model probes so a preceding request does not
+			// immediately add pressure to the deployment's
+			// credential or provider request limits.
 			time.Sleep(testInterval)
 		}
 		t.Run(model+"_通过Gemini端点", func(t *testing.T) {
 			testGeminiGenerate(t, geminiKey, model, false)
 		})
+		// Separate nonstreaming and streaming probes with the
+		// configured delay so each mode can report its own response
+		// without an immediate burst of paired requests.
 		time.Sleep(testInterval)
 		t.Run(model+"_通过Gemini端点_流式", func(t *testing.T) {
 			testGeminiGenerate(t, geminiKey, model, true)

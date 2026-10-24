@@ -14,183 +14,267 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
-// UsageLog 定义使用日志实体的 schema。
-//
-// 使用日志记录每次 API 调用的详细信息，包括 token 使用量、成本计算等。
-// UsageLog 用于追加用量记录。
+// usage_log.go defines completed request records containing execution, usage,
+// and funding facts for statistics and audits. User-side funding amounts can
+// differ from the provider pricing base, and separate request and billing
+// identifiers keep query correlation distinct from financial deduplication.
+
+// UsageLog declares historical request attribution, measured usage, and calculated billing facts.
 type UsageLog struct {
-	ent.Schema
+	ent.Schema // generated entity definition
 }
 
-// Annotations 返回 schema 的注解配置。
+// Annotations maps completed request facts to the usage_logs database table.
 func (UsageLog) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "usage_logs"},
 	}
 }
 
-// Fields 定义使用日志实体的所有字段。
+// Fields declares attribution, token and media dimensions, costs, and
+// request metadata. Generated inserts default usage and costs to zero;
+// current SQL writers also populate migrated columns beyond this Ent
+// schema and preserve supplied historical attribution.
 func (UsageLog) Fields() []ent.Field {
 	return []ent.Field{
-		// 关联字段
+		// user_id, billing_user_id, team_id, and api_key_id separate the acting
+		// user, recorded payer, optional team scope, and credential. Historical
+		// payer writes are supported by migration 221, while current repositories
+		// write their resolved payer snapshot.
+		// Acting request user.
 		field.Int64("user_id"),
-		// 原始 SQL 写入由触发器兼容旧路径，仓储层仍会显式写入付款人快照。
+		// Recorded request payer.
 		field.Int64("billing_user_id").Optional(),
+		// Optional request team scope.
 		field.Int64("team_id").Optional().Nillable(),
+		// Authenticated request key.
 		field.Int64("api_key_id"),
+		// Selected execution provider.
 		field.Int64("provider_id"),
-		// 平台随使用事实保存，提供商或分组变动不会改变历史统计。
+		// platform snapshots the execution platform so later provider changes
+		// do not rewrite historical attribution. The generated default is unknown;
+		// repository insertion normalizes supplied reporting platform values.
 		field.String("platform").MaxLen(64).Default("unknown"),
-		// billing_key 保存资金操作的稳定去重值，旧记录为空时使用 request_id。
+		// billing_key identifies the financial operation independently of the
+		// request identifier. Migration 293 deduplicates COALESCE(billing_key,
+		// request_id) with api_key_id, allowing older rows to retain their
+		// request-based financial identity.
 		field.String("billing_key").MaxLen(255).Optional().Nillable(),
+		// Local request correlation identifier.
 		field.String("request_id").
 			MaxLen(64).
 			NotEmpty(),
+		// Recorded request model.
 		field.String("model").
 			MaxLen(100).
 			NotEmpty(),
-		// RequestedModel stores the client-requested model name for stable display and analytics.
-		// NULL means historical rows written before requested_model dual-write was introduced.
+		// requested_model retains the client model for display and analytics.
+		// Current usage insertion substitutes model when this input is empty;
+		// historical rows can remain null and use display-time compatibility rules.
 		field.String("requested_model").
 			MaxLen(100).
 			Optional().
 			Nillable(),
-		// UpstreamModel stores the actual upstream model name when model mapping
-		// is applied. NULL means no mapping — the requested model was used as-is.
+		// upstream_model retains the model sent to the provider when recorded.
+		// An absent value means that no upstream model was stored for the row;
+		// model mapping and response-model observations remain separate facts.
 		field.String("upstream_model").
 			MaxLen(100).
 			Optional().
 			Nillable(),
-		// 上游响应模型用于管理员审计；历史与缺失观测保持为空。
+		// upstream_response_model and upstream_model_mismatch retain the directly
+		// observed response declaration and its comparison result for administrator
+		// audits. Missing observations and legacy rows can leave both values
+		// null; these fields do not select the billing price.
+		// Observed response model.
 		field.String("upstream_response_model").MaxLen(200).Optional().Nillable(),
+		// Observed model-comparison result.
 		field.Bool("upstream_model_mismatch").Optional().Nillable(),
-		field.Int64("pricing_config_id").Optional().Nillable().Comment("共享价格配置 ID"),
-		field.String("model_mapping_chain").MaxLen(500).Optional().Nillable().Comment("模型映射链"),
-		field.String("billing_tier").MaxLen(50).Optional().Nillable().Comment("计费层级标签"),
-		field.String("billing_mode").MaxLen(20).Optional().Nillable().Comment("计费模式：token/per_request/image"),
+		// Resolved shared pricing configuration.
+		field.Int64("pricing_config_id").Optional().Nillable().Comment("Shared pricing configuration ID"),
+		// Recorded model transformation chain.
+		field.String("model_mapping_chain").MaxLen(500).Optional().Nillable().Comment("Model mapping chain"),
+		// Selected price-tier label.
+		field.String("billing_tier").MaxLen(50).Optional().Nillable().Comment("Billing tier label"),
+		// Selected pricing calculation mode.
+		field.String("billing_mode").MaxLen(20).Optional().Nillable().Comment("Billing mode: token/per_request/image"),
+		// Optional final request group.
 		field.Int64("group_id").
 			Optional().
 			Nillable(),
+		// Optional recorded funding subscription.
 		field.Int64("subscription_id").
 			Optional().
 			Nillable(),
 
-		// Token 计数字段
+		// input_tokens, output_tokens, cache_creation_tokens, and cache_read_tokens
+		// retain the aggregate token dimensions. cache_creation_5m_tokens and
+		// cache_creation_1h_tokens separately retain TTL detail; UsageLog.TotalTokens
+		// adds the aggregate dimensions, so those TTL fields are not added again.
+		// Uncached input token count.
 		field.Int("input_tokens").
 			Default(0),
+		// Generated output token count.
 		field.Int("output_tokens").
 			Default(0),
+		// Aggregate cache-creation token count.
 		field.Int("cache_creation_tokens").
 			Default(0),
+		// Reused cache token count.
 		field.Int("cache_read_tokens").
 			Default(0),
+		// Five-minute cache-creation token count.
 		field.Int("cache_creation_5m_tokens").
 			Default(0),
+		// One-hour cache-creation token count.
 		field.Int("cache_creation_1h_tokens").
 			Default(0),
 
-		// 成本字段
+		// USD input-token cost.
 		field.Float("input_cost").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// USD output-token cost.
 		field.Float("output_cost").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// USD cache-creation cost.
 		field.Float("cache_creation_cost").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// USD cache-read cost.
 		field.Float("cache_read_cost").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// total_cost retains the pricing cost before funding multipliers, while
+		// actual_cost records the user-side amount. Free-OpenAI-Fast policy can
+		// reprice user funding at Standard while retaining the upstream Fast
+		// base for provider statistics.
+		// USD pricing-base total.
 		field.Float("total_cost").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// USD user-side total.
 		field.Float("actual_cost").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// subscription_amount_usd, balance_amount_usd, and billing_allocations
+		// retain funding outcomes by source. Individual allocations can identify
+		// several subscriptions and source-specific multipliers; the single
+		// subscription_id remains the row-level attribution value.
+		// USD subscription-funded amount.
 		field.Float("subscription_amount_usd").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// USD balance-funded amount.
 		field.Float("balance_amount_usd").
 			Default(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
+		// Recorded per-source funding allocations.
 		field.JSON("billing_allocations", []billing.BillingAllocation{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
+		// rate_multiplier records the selected user pricing multiplier. When
+		// settlement returns an effective multiplier for positive base cost,
+		// ApplyResultToLog replaces it with the total funded amount divided by
+		// that base, reflecting mixed subscription and balance funding.
 		field.Float("rate_multiplier").
 			Default(1).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}),
+		// long_context_billing_applied records whether the resolved long-context
+		// rules increased this request's cost. Merely crossing a configured context
+		// threshold does not establish an increase when the resulting price is free.
 		field.Bool("long_context_billing_applied").
 			Default(false).
-			Comment("该请求是否因长上下文规则实际增加费用"),
+			Comment("Records whether long-context rules increased this request's cost"),
 
-		// provider_rate_multiplier: 提供商计费倍率快照（NULL 表示按 1.0 处理）
+		// provider_rate_multiplier snapshots the provider cost multiplier. Usage
+		// statistics treat historical null values as one, independently of the
+		// user-side amounts recorded in the funding fields.
 		field.Float("provider_rate_multiplier").
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}),
 
-		// 其他字段
+		// Legacy funding category: zero for balance, one for subscription.
 		field.Int8("billing_type").
 			Default(0),
+		// Recorded streaming-response flag.
 		field.Bool("stream").
 			Default(false),
+		// Elapsed request duration, milliseconds.
 		field.Int("duration_ms").
 			Optional().
 			Nillable(),
-		field.Int("first_token_ms").
-			Optional().
-			Nillable(),
+		// Timings stores the immutable performance observations owned by this usage row.
+		field.JSON("timings", map[string]any{}).Optional(),
+		// Recorded client user agent.
 		field.String("user_agent").
 			MaxLen(512).
 			Optional().
 			Nillable(),
+		// Recorded client IP address.
 		field.String("ip_address").
-			MaxLen(45). // 支持 IPv6
+			MaxLen(45). // Accommodate IPv6 text that contains embedded IPv4 octets.
 			Optional().
 			Nillable(),
 
-		// 图片生成字段（仅 gemini-3-pro-image 等图片模型使用）
+		// Generated image output count.
 		field.Int("image_count").
 			Default(0),
+		// Selected image billing size.
 		field.String("image_size").
 			MaxLen(10).
 			Optional().
 			Nillable(),
+		// Recorded input image size.
 		field.String("image_input_size").
 			MaxLen(32).
 			Optional().
 			Nillable(),
+		// Recorded output image size.
 		field.String("image_output_size").
 			MaxLen(32).
 			Optional().
 			Nillable(),
+		// Recorded billing-size selection source.
 		field.String("image_size_source").
 			MaxLen(16).
 			Optional().
 			Nillable(),
+		// Image counts by billing size.
 		field.JSON("image_size_breakdown", map[string]int{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// 视频生成字段（Grok 视频按秒计费；billing_mode 走 token/其他模式时这些列仍标记视频用量）
+		// video_count identifies generated video usage when positive. Analytics
+		// can recognize such rows independently of billing_mode, while Grok
+		// video pricing uses the separately recorded duration in seconds.
 		field.Int("video_count").
 			Default(0).
-			Comment("视频生成数量；>0 表示本行是视频生成用量"),
+			Comment("Generated video count; a positive value identifies video usage"),
+		// The normalized video label selects a configured per-second price. Custom
+		// labels share the fifty-character limit of pricing interval labels.
 		field.String("video_resolution").
-			MaxLen(10).
+			MaxRuneLen(50).
 			Optional().
 			Nillable().
-			Comment("计费用视频分辨率 480p/720p/1080p"),
+			Comment("Normalized video resolution label used for per-second billing"),
+		// video_duration_seconds records the duration selected for video billing.
+		// Grok completion prefers a positive duration from the status response,
+		// then the creation snapshot, and uses the pricing default when both
+		// sources omit a usable duration.
 		field.Int("video_duration_seconds").
 			Optional().
 			Nillable().
-			Comment("提交时请求的视频时长（秒），按秒计费的乘数"),
-		// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
+			Comment("Billable video seconds from completion, submission, or the missing-duration default"),
+		// Administrator cache-TTL billing override.
 		field.Bool("cache_ttl_overridden").
 			Default(false),
 
-		// 时间戳（只有 created_at，日志不可修改）
+		// created_at is immutable and defaults to time.Now for generated Ent
+		// inserts. The raw SQL usage repository can retain a supplied request
+		// time; this declaration supplies no updated_at field.
 		field.Time("created_at").
 			Default(time.Now).
 			Immutable().
@@ -198,7 +282,7 @@ func (UsageLog) Fields() []ent.Field {
 	}
 }
 
-// Edges 定义使用日志实体的关联关系。
+// Edges links request records to users, credentials, providers, and optional funding scope.
 func (UsageLog) Edges() []ent.Edge {
 	return []ent.Edge{
 		edge.From("user", User.Type).
@@ -231,7 +315,10 @@ func (UsageLog) Edges() []ent.Edge {
 	}
 }
 
-// Indexes 定义数据库索引，优化查询性能。
+// Indexes declares attribution, model, request, and time-range lookups
+// for Ent. Production migrations additionally define partial group
+// indexes and billing-key deduplication, so callers use the deployed
+// migration schema when evaluating uniqueness.
 func (UsageLog) Indexes() []ent.Index {
 	return []ent.Index{
 		index.Fields("user_id"),
@@ -245,10 +332,8 @@ func (UsageLog) Indexes() []ent.Index {
 		index.Fields("model"),
 		index.Fields("requested_model"),
 		index.Fields("request_id"),
-		// 复合索引用于时间范围查询
 		index.Fields("user_id", "created_at"),
 		index.Fields("api_key_id", "created_at"),
-		// 分组维度时间范围查询（线上由 SQL 迁移创建 group_id IS NOT NULL 的部分索引）
 		index.Fields("group_id", "created_at"),
 	}
 }

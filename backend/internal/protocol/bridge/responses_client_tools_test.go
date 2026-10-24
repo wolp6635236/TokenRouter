@@ -8,6 +8,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// TestAdaptResponsesClientTools_LowersDeclarationsHistoryChoiceAndNamespaces
+// combines custom, discovery, and namespace declarations with calls/results
+// and choice. It checks selected mappings, wrapper schema/arguments, names,
+// types, and item-ID conversion/removal.
 func TestAdaptResponsesClientTools_LowersDeclarationsHistoryChoiceAndNamespaces(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{
@@ -66,6 +70,9 @@ func TestAdaptResponsesClientTools_LowersDeclarationsHistoryChoiceAndNamespaces(
 	require.Equal(t, "team__send", namespaceCall["name"])
 }
 
+// TestAdaptResponsesClientTools_RemovesDeferredFlagsWhenToolSearchIsLowered
+// lowers discovery beside a deferred function. The proxy name is retained and
+// the asserted defer_loading key disappears from the function declaration.
 func TestAdaptResponsesClientTools_RemovesDeferredFlagsWhenToolSearchIsLowered(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{
@@ -83,6 +90,9 @@ func TestAdaptResponsesClientTools_RemovesDeferredFlagsWhenToolSearchIsLowered(t
 	require.NotContains(t, requireResponsesClientToolValue[map[string]any](t, tools[1]), "defer_loading")
 }
 
+// TestStripResponsesDeferredToolFlags_PreservesFlagsWithBuiltInToolSearch
+// keeps a built-in search declaration beside a deferred function. The helper
+// reports no change and retains that function's true loading flag.
 func TestStripResponsesDeferredToolFlags_PreservesFlagsWithBuiltInToolSearch(t *testing.T) {
 	tools := []any{
 		map[string]any{"type": "tool_search"},
@@ -93,6 +103,10 @@ func TestStripResponsesDeferredToolFlags_PreservesFlagsWithBuiltInToolSearch(t *
 	require.Equal(t, true, requireResponsesClientToolValue[map[string]any](t, tools[1])["defer_loading"])
 }
 
+// TestAdaptResponsesClientTools_LowersDiscoveredToolSearchOutput promotes
+// namespace children from one discovery result. It checks declaration order,
+// returned pairs, normalized call/output fields, repeatable output encoding,
+// and restoration of the asserted namespace call.
 func TestAdaptResponsesClientTools_LowersDiscoveredToolSearchOutput(t *testing.T) {
 	requestJSON := `{
 		"tools":[{"type":"tool_search"}],
@@ -108,9 +122,13 @@ func TestAdaptResponsesClientTools_LowersDiscoveredToolSearchOutput(t *testing.T
 		]
 	}`
 
+	// adaptedRequest pairs one converted fixture request with its response-restoration mapping.
 	type adaptedRequest struct {
-		req     map[string]any
-		mapping ResponsesClientToolMapping
+		// req and mapping belong to the same fresh adaptation. The paired values
+		// let assertions compare encoded history across requests and restore a
+		// response using identities from the selected conversion.
+		req     map[string]any             // converted decoded fixture request
+		mapping ResponsesClientToolMapping // corresponding client restoration mapping
 	}
 	adapt := func() adaptedRequest {
 		var req map[string]any
@@ -169,6 +187,136 @@ func TestAdaptResponsesClientTools_LowersDiscoveredToolSearchOutput(t *testing.T
 	require.JSONEq(t, `{"output":[{"type":"function_call","name":"spawn_agent","namespace":"multi_agent_v1","call_id":"call_spawn","arguments":"{\"message\":\"work\"}"}]}`, string(restored))
 }
 
+// TestAdaptResponsesClientTools_DiscoveredFunctionPreservesIdentity lowers a
+// plain discovered function with an explicit call namespace. Its request uses
+// the bare upstream name and its response restores the discovered identity.
+func TestAdaptResponsesClientTools_DiscoveredFunctionPreservesIdentity(t *testing.T) {
+	var request map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"tools":[{"type":"tool_search"}],"input":[{"type":"tool_search_output","call_id":"search_1","tools":[{"type":"function","name":"js","parameters":{"type":"object"}}]},{"type":"function_call","name":"js","namespace":"js","call_id":"call_1","arguments":"{}"}]}`), &request))
+	mapping, changed, err := AdaptResponsesClientTools(request)
+	require.NoError(t, err)
+	require.True(t, changed)
+	encoded, err := json.Marshal(request)
+	require.NoError(t, err)
+	require.Equal(t, "js", gjson.GetBytes(encoded, "input.1.name").String())
+	require.False(t, gjson.GetBytes(encoded, "input.1.namespace").Exists())
+	restored, _, err := RestoreResponsesClientToolPayload([]byte(`{"output":[{"type":"function_call","name":"js","call_id":"call_2","arguments":"{}"}]}`), mapping)
+	require.NoError(t, err)
+	require.Equal(t, "js", gjson.GetBytes(restored, "output.0.namespace").String())
+	require.Equal(t, "call_2", gjson.GetBytes(restored, "output.0.call_id").String())
+}
+
+// TestAdaptResponsesClientToolsWithInheritedMappingKeepsDiscoveredBareAlias
+// continues a discovered plain function without resending its declaration.
+// Both outgoing history and restored output retain its original tool identity.
+func TestAdaptResponsesClientToolsWithInheritedMappingKeepsDiscoveredBareAlias(t *testing.T) {
+	var first map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"tools":[{"type":"tool_search"}],"input":[{"type":"tool_search_output","call_id":"search_1","tools":[{"type":"function","name":"js","parameters":{"type":"object"}}]}]}`), &first))
+	inherited, _, err := AdaptResponsesClientTools(first)
+	require.NoError(t, err)
+	var followup map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"input":[{"type":"function_call","name":"js","namespace":"js","call_id":"call_1","arguments":"{}"}]}`), &followup))
+	mapping, changed, err := AdaptResponsesClientToolsWithInheritedMapping(followup, inherited, requireResponsesClientToolValue[[]any](t, first["tools"]))
+	require.NoError(t, err)
+	require.True(t, changed)
+	body, err := json.Marshal(followup)
+	require.NoError(t, err)
+	require.Equal(t, "js", gjson.GetBytes(body, "input.0.name").String())
+	require.False(t, gjson.GetBytes(body, "input.0.namespace").Exists())
+	require.Equal(t, ResponsesNamespaceName{Namespace: "js", Name: "js"}, mapping.NamespaceTools["js"])
+}
+
+// TestAdaptResponsesClientToolsWithInheritedMappingResetsFutureToolsOnly clears
+// active declarations while replaying a previously mapped function call.
+// History retains its executable identity and the returned future mapping clears.
+func TestAdaptResponsesClientToolsWithInheritedMappingResetsFutureToolsOnly(t *testing.T) {
+	var request map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"tools":[],"input":[{"type":"function_call","name":"js","namespace":"browser","call_id":"call_1","arguments":"{}"}]}`), &request))
+	inherited := ResponsesClientToolMapping{NamespaceTools: map[string]ResponsesNamespaceName{"browser__js": {Namespace: "browser", Name: "js"}}}
+	mapping, changed, err := AdaptResponsesClientToolsWithInheritedMapping(request, inherited)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Empty(t, mapping)
+	body, err := json.Marshal(request)
+	require.NoError(t, err)
+	require.Empty(t, gjson.GetBytes(body, "tools").Array())
+	require.Equal(t, "browser__js", gjson.GetBytes(body, "input.0.name").String())
+	require.False(t, gjson.GetBytes(body, "input.0.namespace").Exists())
+}
+
+// TestAdaptResponsesClientToolsWithInheritedMappingReplaysUnknownHistory supplies
+// known and undeclared historical calls across omitted, reset, and replaced tools.
+// The shared inherited mapping stays unchanged and missing history never becomes callable.
+func TestAdaptResponsesClientToolsWithInheritedMappingReplaysUnknownHistory(t *testing.T) {
+	inherited := ResponsesClientToolMapping{
+		NamespaceTools: map[string]ResponsesNamespaceName{"known__run": {Namespace: "known", Name: "run"}},
+	}
+	for _, toolField := range []string{"", `,"tools":[]`, `,"tools":null`, `,"tools":[{"type":"function","name":"current"}]`} {
+		var request map[string]any
+		require.NoError(t, json.Unmarshal([]byte(`{"input":[{"type":"function_call","namespace":"known","name":"run","call_id":"k","arguments":"{}"},{"type":"function_call_output","call_id":"k","output":"known"},{"type":"function_call","namespace":"missing","name":"run","call_id":"m","arguments":"{}"},{"type":"function_call_output","call_id":"m","output":"missing"}]`+toolField+`}`), &request))
+		mapping, changed, err := AdaptResponsesClientToolsWithInheritedMapping(request, inherited)
+		require.NoError(t, err)
+		require.True(t, changed)
+		encoded, err := json.Marshal(request)
+		require.NoError(t, err)
+		require.Equal(t, "known__run", gjson.GetBytes(encoded, "input.0.name").String())
+		require.Equal(t, "missing__run", gjson.GetBytes(encoded, "input.2.name").String())
+		require.NotContains(t, mapping.NamespaceTools, "missing__run")
+		require.False(t, gjson.GetBytes(encoded, `tools.#(name=="missing__run")`).Exists())
+		require.Equal(t, map[string]ResponsesNamespaceName{"known__run": {Namespace: "known", Name: "run"}}, inherited.NamespaceTools)
+		require.Empty(t, inherited.CallNames)
+	}
+}
+
+// TestAdaptResponsesClientToolsWithInheritedMappingRejectsAliasReplacement
+// discovers an explicit namespace colliding with a previously loaded plain
+// function. The continuation fails before the inherited alias can replace
+// the newly declared tool's executable identity.
+func TestAdaptResponsesClientToolsWithInheritedMappingRejectsAliasReplacement(t *testing.T) {
+	inherited := ResponsesClientToolMapping{
+		FunctionTools:  map[string]bool{"js": true},
+		NamespaceTools: map[string]ResponsesNamespaceName{"js": {Namespace: "js", Name: "js"}},
+		ToolSearch:     true,
+	}
+	var request map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"input":[{"type":"tool_search_output","call_id":"search_2","tools":[{"type":"namespace","name":"js","tools":[{"type":"function","name":"js","parameters":{"type":"object"}}]}]}]}`), &request))
+	_, _, err := AdaptResponsesClientToolsWithInheritedMapping(request, inherited, []any{
+		map[string]any{"type": "function", "name": "tool_search"},
+		map[string]any{"type": "function", "name": "js", "parameters": map[string]any{"type": "object"}},
+	})
+	require.ErrorContains(t, err, "conflicts")
+}
+
+// TestAdaptResponsesClientToolsPromotesAdditionalNamespaceTools converts an
+// additional_tools declaration and matching history for function-only execution.
+// The declared and called names agree and the declaration item is consumed.
+func TestAdaptResponsesClientToolsPromotesAdditionalNamespaceTools(t *testing.T) {
+	var request map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"browser","tools":[{"type":"function","name":"js","parameters":{"type":"object"}}]}]},{"type":"function_call","name":"js","namespace":"browser","call_id":"call_1","arguments":"{}"}]}`), &request))
+	mapping, changed, err := AdaptResponsesClientTools(request)
+	require.NoError(t, err)
+	require.True(t, changed)
+	body, err := json.Marshal(request)
+	require.NoError(t, err)
+	require.Equal(t, "browser__js", gjson.GetBytes(body, "tools.0.name").String())
+	require.Equal(t, "browser__js", gjson.GetBytes(body, "input.0.name").String())
+	require.False(t, gjson.GetBytes(body, "input.0.namespace").Exists())
+	require.Equal(t, ResponsesNamespaceName{Namespace: "browser", Name: "js"}, mapping.NamespaceTools["browser__js"])
+}
+
+// TestAdaptResponsesClientToolsRejectsUndeclaredNamespaceChoice selects a group
+// absent from otherwise valid namespace declarations. Lowering rejects that
+// selector before flattening can silently replace it with automatic selection.
+func TestAdaptResponsesClientToolsRejectsUndeclaredNamespaceChoice(t *testing.T) {
+	var request map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"tools":[{"type":"namespace","name":"browser","tools":[{"type":"function","name":"js"}]}],"tool_choice":{"type":"namespace","name":"unknown"}}`), &request))
+	_, _, err := AdaptResponsesClientTools(request)
+	require.ErrorContains(t, err, "without a declared group")
+}
+
+// TestAdaptResponsesClientTools_LowersToolSearchDiscoveryPayloadWithoutOutput
+// supplies discovery tools with no output value. The lowered result retains
+// its call ID, serializes the tool list, and removes tools/status/execution.
 func TestAdaptResponsesClientTools_LowersToolSearchDiscoveryPayloadWithoutOutput(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{map[string]any{"type": "tool_search"}},
@@ -195,6 +343,9 @@ func TestAdaptResponsesClientTools_LowersToolSearchDiscoveryPayloadWithoutOutput
 	require.NotContains(t, item, "execution")
 }
 
+// TestAdaptResponsesClientTools_ToolSearchExplicitOutputTakesPriority supplies
+// both output and a discovery tools list. Lowering keeps the authoritative
+// output text and removes the tools key from the inspected result.
 func TestAdaptResponsesClientTools_ToolSearchExplicitOutputTakesPriority(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{map[string]any{"type": "tool_search"}},
@@ -212,6 +363,9 @@ func TestAdaptResponsesClientTools_ToolSearchExplicitOutputTakesPriority(t *test
 	require.NotContains(t, item, "tools")
 }
 
+// TestAdaptResponsesClientTools_DoesNotInventMissingToolSearchOutput supplies
+// neither output nor tools on an incomplete discovery result. Its type lowers,
+// while output stays absent and asserted status/execution values remain.
 func TestAdaptResponsesClientTools_DoesNotInventMissingToolSearchOutput(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{map[string]any{"type": "tool_search"}},
@@ -231,6 +385,10 @@ func TestAdaptResponsesClientTools_DoesNotInventMissingToolSearchOutput(t *testi
 	require.Equal(t, "client", item["execution"])
 }
 
+// TestAdaptResponsesClientTools_RejectsAmbiguousNames supplies
+// custom/function, reserved discovery/function, and flat namespace/function
+// name conflicts. Every supplied declaration set must return an error from
+// adaptation.
 func TestAdaptResponsesClientTools_RejectsAmbiguousNames(t *testing.T) {
 	cases := []map[string]any{
 		{"tools": []any{map[string]any{"type": "custom", "name": "same"}, map[string]any{"type": "function", "name": "same"}}},
@@ -243,6 +401,10 @@ func TestAdaptResponsesClientTools_RejectsAmbiguousNames(t *testing.T) {
 	}
 }
 
+// TestAdaptResponsesClientToolsWithInheritedMapping_LowersFollowupHistoryWithoutTools
+// omits declarations while inheriting a custom identity. It checks the
+// retained mapping, wrapped call input, lowered result/ID removal, and
+// unchanged supported content array.
 func TestAdaptResponsesClientToolsWithInheritedMapping_LowersFollowupHistoryWithoutTools(t *testing.T) {
 	req := map[string]any{
 		"input": []any{
@@ -281,11 +443,18 @@ func TestAdaptResponsesClientToolsWithInheritedMapping_LowersFollowupHistoryWith
 	require.Equal(t, []any{map[string]any{"type": "input_text", "text": "ok"}}, output["output"])
 }
 
+// TestAdaptResponsesClientTools_NormalizesCustomToolOutput compares recognized
+// content arrays with ordinary, empty, mixed, and unsupported typed outputs.
+// Every result type lowers and its value matches the fixture's retained array
+// or encoded string.
 func TestAdaptResponsesClientTools_NormalizesCustomToolOutput(t *testing.T) {
 	tests := []struct {
-		name       string
-		output     any
-		wantOutput any
+		name string // client-tool fixture case label
+		// output and wantOutput pair source shape with its expected representation.
+		// Recognized block arrays remain arrays, while unsupported fixture shapes
+		// are compared with their exact encoded string form.
+		output     any // supplied client output value
+		wantOutput any // expected normalized output value
 	}{
 		{
 			name: "supported content parts remain an array",
@@ -329,6 +498,10 @@ func TestAdaptResponsesClientTools_NormalizesCustomToolOutput(t *testing.T) {
 	}
 }
 
+// TestAdaptResponsesClientToolsWithInheritedMapping_PromotesOmittedToolsDiscoveryIntoEffectiveDeclarations
+// restores omitted tools from inherited lowered declarations before promotion.
+// It checks static-first names, old/new namespace mappings, search enablement,
+// and lowered discovery output fields.
 func TestAdaptResponsesClientToolsWithInheritedMapping_PromotesOmittedToolsDiscoveryIntoEffectiveDeclarations(t *testing.T) {
 	req := map[string]any{
 		"input": []any{map[string]any{
@@ -370,6 +543,10 @@ func TestAdaptResponsesClientToolsWithInheritedMapping_PromotesOmittedToolsDisco
 	require.NotContains(t, output, "execution")
 }
 
+// TestAdaptResponsesClientToolsWithInheritedMapping_ExplicitToolsReplaceInheritedMapping
+// supplies an explicit empty declarations array beside inherited custom
+// identity. The mapping clears, the change flag is false, and the inspected
+// call keeps its client type.
 func TestAdaptResponsesClientToolsWithInheritedMapping_ExplicitToolsReplaceInheritedMapping(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{},
@@ -395,6 +572,10 @@ func TestAdaptResponsesClientToolsWithInheritedMapping_ExplicitToolsReplaceInher
 	require.Equal(t, "custom_tool_call", inputType)
 }
 
+// TestAdaptResponsesClientToolsWithInheritedMapping_ExplicitToolResetDoesNotPromoteDiscovery
+// supplies explicit null or empty tools beside inherited search and discovery
+// history. Both resets return no change, clear mappings, and keep the
+// inspected discovery type.
 func TestAdaptResponsesClientToolsWithInheritedMapping_ExplicitToolResetDoesNotPromoteDiscovery(t *testing.T) {
 	for _, reset := range []any{nil, []any{}} {
 		req := map[string]any{
@@ -417,6 +598,10 @@ func TestAdaptResponsesClientToolsWithInheritedMapping_ExplicitToolResetDoesNotP
 	}
 }
 
+// TestRestoreResponsesClientToolPayload_RestoresClientAndNamespaceCalls
+// combines three function proxies with custom/search/namespace mapping.
+// Complete JSON equality checks client kinds, freeform/object arguments,
+// identity fields, and restored namespace/name pairs.
 func TestRestoreResponsesClientToolPayload_RestoresClientAndNamespaceCalls(t *testing.T) {
 	mapping := ResponsesClientToolMapping{
 		CustomTools: map[string]bool{"exec": true}, ToolSearch: true,
@@ -430,6 +615,10 @@ func TestRestoreResponsesClientToolPayload_RestoresClientAndNamespaceCalls(t *te
 	require.JSONEq(t, `{"id":"resp","output":[{"type":"custom_tool_call","id":"i1","call_id":"c1","name":"exec","input":"dir"},{"type":"tool_search_call","id":"i2","call_id":"s1","execution":"client","arguments":{"query":"git"}},{"type":"function_call","id":"i3","call_id":"n1","name":"send","namespace":"team","arguments":"{}"}]}`, string(restored))
 }
 
+// TestResponsesClientToolStreamRestorer_CustomToolBuffersWrapperAndSequences
+// splits custom wrapper arguments across delta/done events. It checks
+// suppressed delta output, expanded input events, their sequence numbers, and
+// the closing item's restored kind/input.
 func TestResponsesClientToolStreamRestorer_CustomToolBuffersWrapperAndSequences(t *testing.T) {
 	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}})
 	added := restorer.Restore(ResponsesStreamEvent{Type: "response.output_item.added", SequenceNumber: 7, OutputIndex: 0, Item: &ResponsesOutput{Type: "function_call", ID: "i1", CallID: "c1", Name: "exec", Status: "in_progress"}})
@@ -451,6 +640,10 @@ func TestResponsesClientToolStreamRestorer_CustomToolBuffersWrapperAndSequences(
 	require.Equal(t, "dir", closed[0].Item.Input)
 }
 
+// TestResponsesClientToolStreamRestorer_ToolSearchAndFunction buffers
+// discovery arguments until item completion, then sends an unrelated ordinary
+// argument event. Assertions check suppression, restored search arguments, and
+// consecutive emitted sequence values.
 func TestResponsesClientToolStreamRestorer_ToolSearchAndFunction(t *testing.T) {
 	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{ToolSearch: true})
 	search := restorer.Restore(ResponsesStreamEvent{Type: "response.output_item.added", SequenceNumber: 0, OutputIndex: 0, Item: &ResponsesOutput{Type: "function_call", ID: "s1", CallID: "c1", Name: "tool_search", Status: "in_progress"}})
@@ -468,6 +661,9 @@ func TestResponsesClientToolStreamRestorer_ToolSearchAndFunction(t *testing.T) {
 	require.Equal(t, 2, function[0].SequenceNumber)
 }
 
+// TestResponsesClientToolStreamRestorer_RestoresNamespaceLifecycle supplies
+// added, delta, and done JSON payloads with one mapped flat name. It checks
+// one changed payload per event and the asserted child name/namespace fields.
 func TestResponsesClientToolStreamRestorer_RestoresNamespaceLifecycle(t *testing.T) {
 	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{
 		NamespaceTools: map[string]ResponsesNamespaceName{
@@ -495,6 +691,10 @@ func TestResponsesClientToolStreamRestorer_RestoresNamespaceLifecycle(t *testing
 	require.Equal(t, "open", gjson.GetBytes(done[0], "name").String())
 }
 
+// TestResponsesClientToolStreamRestorer_RawEventsPreserveUnknownFieldsAndOutputFallback
+// first passes an in-sequence raw event containing an extension, then uses
+// index-only argument fragments. The extension remains, deltas suppress, and
+// completed custom input matches buffered text.
 func TestResponsesClientToolStreamRestorer_RawEventsPreserveUnknownFieldsAndOutputFallback(t *testing.T) {
 	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}})
 	passthrough, changed, err := restorer.RestoreEvent([]byte(`{"type":"response.created","sequence_number":4,"response":{"id":"r"},"upstream_extension":{"keep":true}}`))
@@ -504,13 +704,18 @@ func TestResponsesClientToolStreamRestorer_RawEventsPreserveUnknownFieldsAndOutp
 	require.Contains(t, string(passthrough[0]), `"upstream_extension":{"keep":true}`)
 
 	restorer.Restore(ResponsesStreamEvent{Type: "response.output_item.added", SequenceNumber: 5, OutputIndex: 9, Item: &ResponsesOutput{Type: "function_call", ID: "item", CallID: "call", Name: "exec"}})
-	// 部分上游会在后续参数分片中省略所有工具身份字段。
+	// Omit item/call/name fields in these fragments to exercise output-index
+	// lookup against the registered item, while its buffered wrapper supplies the final input.
 	require.Empty(t, restorer.Restore(ResponsesStreamEvent{Type: "response.function_call_arguments.delta", SequenceNumber: 6, OutputIndex: 9, Delta: `{"input":"pwd"}`}))
 	done := restorer.Restore(ResponsesStreamEvent{Type: "response.function_call_arguments.done", SequenceNumber: 7, OutputIndex: 9})
 	require.Len(t, done, 2)
 	require.Equal(t, "pwd", done[1].Input)
 }
 
+// TestResponsesClientToolStreamRestorer_RestoresAllTerminalEvents supplies six
+// terminal JSON kinds carrying a custom proxy call. Each output retains
+// type/sequence and exposes custom kind/input while omitting the inspected
+// argument field.
 func TestResponsesClientToolStreamRestorer_RestoresAllTerminalEvents(t *testing.T) {
 	for _, eventType := range []string{
 		"response.completed",
@@ -538,12 +743,18 @@ func TestResponsesClientToolStreamRestorer_RestoresAllTerminalEvents(t *testing.
 	}
 }
 
+// TestRetypedResponsesToolCallItemID compares known-family conversions with
+// correct, unknown, unprefixed, empty, and unsupported-type values. Each
+// result must match its expected suffix-preserving or unchanged ID spelling.
 func TestRetypedResponsesToolCallItemID(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		id       string
-		itemType string
-		want     string
+		name string // client-tool fixture case label
+		// id, itemType, and want select one prefix conversion and its expected
+		// spelling. The table compares suffix retention and passthrough conditions
+		// without imposing another call/result correlation rule.
+		id       string // supplied item ID spelling
+		itemType string // target output kind label
+		want     string // expected item ID spelling
 	}{
 		{name: "function to custom", id: "fc_abc", itemType: "custom_tool_call", want: "ctc_abc"},
 		{name: "function to search", id: "fc_abc", itemType: "tool_search_call", want: "tsc_abc"},
@@ -560,8 +771,10 @@ func TestRetypedResponsesToolCallItemID(t *testing.T) {
 	}
 }
 
-// TestRestoreResponsesClientToolPayloadRetypesItemIDs 验证 function-only 上游返回 fc_ ID；若还原为 custom_tool_call 仍保留该前缀，
-// 客户端下一次重放历史时会被 Responses API 拒绝。
+// TestRestoreResponsesClientToolPayloadRetypesItemIDs restores custom,
+// discovery, and namespace proxies with function-prefixed IDs. Complete JSON
+// equality checks retyped custom/search prefixes, retained suffixes/call IDs,
+// and the namespace function's unchanged ID.
 func TestRestoreResponsesClientToolPayloadRetypesItemIDs(t *testing.T) {
 	mapping := ResponsesClientToolMapping{
 		CustomTools: map[string]bool{"exec": true}, ToolSearch: true,
@@ -582,6 +795,9 @@ func TestRestoreResponsesClientToolPayloadRetypesItemIDs(t *testing.T) {
 		string(restored))
 }
 
+// TestRestoreResponsesOutputClientToolsRetypesItemIDs converts typed
+// custom/search outputs in place. Assertions check both client kinds, their
+// changed known prefixes, and the two unchanged call IDs after restoration.
 func TestRestoreResponsesOutputClientToolsRetypesItemIDs(t *testing.T) {
 	mapping := ResponsesClientToolMapping{CustomTools: map[string]bool{"exec": true}, ToolSearch: true}
 	outputs := []ResponsesOutput{
@@ -599,6 +815,9 @@ func TestRestoreResponsesOutputClientToolsRetypesItemIDs(t *testing.T) {
 	require.Equal(t, "call_2", outputs[1].CallID)
 }
 
+// TestResponsesClientToolStreamRestorerRetypesCustomItemID tracks one function
+// ID through custom add, argument completion, and item completion. Assertions
+// keep upstream lookup working while emitted item IDs use the custom prefix.
 func TestResponsesClientToolStreamRestorerRetypesCustomItemID(t *testing.T) {
 	const upstreamID = "fc_09f77ac43cf7db36016a8920e7934487"
 	const clientID = "ctc_09f77ac43cf7db36016a8920e7934487"
@@ -613,7 +832,8 @@ func TestResponsesClientToolStreamRestorerRetypesCustomItemID(t *testing.T) {
 	require.Equal(t, "custom_tool_call", added[0].Item.Type)
 	require.Equal(t, clientID, added[0].Item.ID)
 
-	// 后续事件仍通过上游 ID 匹配，但发给客户端的事件使用重 typed ID。
+	// Argument events keep the upstream lookup ID after the emitted item ID
+	// changes prefix. This fixture catches using the client ID for subsequent record lookup.
 	require.Empty(t, restorer.Restore(ResponsesStreamEvent{
 		Type: "response.function_call_arguments.delta", SequenceNumber: 1, ItemID: upstreamID, Delta: `{"input":"di`,
 	}))
@@ -638,6 +858,9 @@ func TestResponsesClientToolStreamRestorerRetypesCustomItemID(t *testing.T) {
 	require.Equal(t, "dir", closed[0].Item.Input)
 }
 
+// TestResponsesClientToolStreamRestorerRetypesToolSearchItemID opens a mapped
+// discovery proxy with a function-prefixed ID. The single emitted added event
+// must have discovery kind and the corresponding discovery-prefixed ID.
 func TestResponsesClientToolStreamRestorerRetypesToolSearchItemID(t *testing.T) {
 	restorer := NewResponsesClientToolStreamRestorer(ResponsesClientToolMapping{ToolSearch: true})
 
@@ -650,7 +873,9 @@ func TestResponsesClientToolStreamRestorerRetypesToolSearchItemID(t *testing.T) 
 	require.Equal(t, "tsc_search1", added[0].Item.ID)
 }
 
-// TestAdaptResponsesClientToolsRecoversRetypedItemID 验证 WS bridge 会把客户端还原后的项目再次发回上游，因此 ctc_/tsc_ 必须恢复为 fc_。
+// TestAdaptResponsesClientToolsRecoversRetypedItemID replays known
+// custom/search IDs and an incompatible result ID. It checks call type/prefix
+// recovery, retained input length, and removal of the inspected output ID.
 func TestAdaptResponsesClientToolsRecoversRetypedItemID(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{
@@ -681,6 +906,9 @@ func TestAdaptResponsesClientToolsRecoversRetypedItemID(t *testing.T) {
 	require.NotContains(t, customOutput, "id")
 }
 
+// requireResponsesClientToolValue requires the fixture value's runtime type to
+// match T and returns it. A mismatch fails the test through require.True, so
+// callers can use the returned typed value after the assertion.
 func requireResponsesClientToolValue[T any](t *testing.T, value any) T {
 	t.Helper()
 	typed, ok := value.(T)
@@ -688,12 +916,16 @@ func requireResponsesClientToolValue[T any](t *testing.T, value any) T {
 	return typed
 }
 
-// responsesClientToolNames 从测试中的工具声明 map 提取名称。
+// responsesClientToolNames returns names from required map declarations in
+// input order. A nonmap fails the test; a missing or nonstring name
+// contributes an empty label, and string values are retained without trimming.
 func responsesClientToolNames(t *testing.T, tools []any) []string {
 	t.Helper()
 	names := make([]string, 0, len(tools))
 	for _, raw := range tools {
 		tool := requireResponsesClientToolValue[map[string]any](t, raw)
+		// Record an empty label for a missing or nonstring name so the later
+		// ordered-list assertion can expose the fixture's mismatch at that position.
 		name, _ := tool["name"].(string)
 		names = append(names, name)
 	}

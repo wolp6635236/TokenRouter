@@ -19,17 +19,31 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// failConfigurationOutbox 模拟调度 outbox 写入失败。
-type failConfigurationOutbox struct{ providerEventsFixture }
+// PostgreSQL fixtures write through the Ent client supplied by each test.
+// Creation helpers fill domain objects with saved identities and timestamps,
+// while transaction helpers register rollback cleanup and the failing outbox
+// adapter injects a database error on the transaction connection.
 
-// Write 返回用于触发事务回滚的错误。
+// failConfigurationOutbox injects a database error through the configuration
+// transaction's event writer.
+type failConfigurationOutbox struct {
+	providerEventsFixture // other provider event operations
+}
+
+// Write executes an insert into a nonexistent table on the supplied executor.
+// Using the same transaction connection makes PostgreSQL abort the enclosing
+// configuration transaction so rollback assertions can observe its unchanged
+// row.
 func (failConfigurationOutbox) Write(ctx context.Context, exec postgresinfra.Executor, _ providerpostgres.ProviderEvent, _, _ *int64, _ any) error {
-	// 在事务连接写入 outbox 时返回错误，检查配置更新随事务回滚。
+	// Use the configuration transaction's executor for this missing-table insert
+	// so PostgreSQL aborts that transaction and the test can inspect rollback.
 	_, err := exec.ExecContext(ctx, "INSERT INTO test_missing_outbox_fixture DEFAULT VALUES")
 	return err
 }
 
-// mustCreateGroup 使用 Ent 默认值和传入字段创建测试分组。
+// mustCreateGroup creates a group with default protocols and active status when
+// those inputs are absent. It mutates the supplied group with saved identity
+// and timestamps; the test's transaction or cleanup owns the inserted row.
 func mustCreateGroup(t *testing.T, client *dbent.Client, g *routing.Group) *routing.Group {
 	t.Helper()
 	ctx := context.Background()
@@ -67,7 +81,9 @@ func mustCreateGroup(t *testing.T, client *dbent.Client, g *routing.Group) *rout
 	return g
 }
 
-// mustBindProviderToGroup 创建提供商与分组的关系。
+// mustBindProviderToGroup persists a membership between existing provider and
+// group IDs. It fails the test on a database error; cleanup belongs to the
+// transaction or test that created those records.
 func mustBindProviderToGroup(t *testing.T, client *dbent.Client, providerID, groupID int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -79,7 +95,10 @@ func mustBindProviderToGroup(t *testing.T, client *dbent.Client, providerID, gro
 	require.NoError(t, err, "create provider_group")
 }
 
-// mustCreateProxy 使用给定字段创建代理并回填数据库字段。
+// mustCreateProxy creates a proxy with HTTP, loopback, port, and active
+// defaults for empty inputs. It updates the caller's object with saved identity
+// and timestamps. Cleanup belongs to the caller's transaction or an explicitly
+// registered teardown for committed rows.
 func mustCreateProxy(t *testing.T, client *dbent.Client, p *egress.Proxy) *egress.Proxy {
 	t.Helper()
 	ctx := context.Background()
@@ -125,7 +144,10 @@ func mustCreateProxy(t *testing.T, client *dbent.Client, p *egress.Proxy) *egres
 	return p
 }
 
-// mustCreateProvider 使用给定字段创建提供商并回填数据库字段。
+// mustCreateProvider inserts a provider after applying platform, type, status,
+// concurrency, priority, and map defaults. It forces Schedulable true, so tests
+// needing a paused fixture update that field after creation; the supplied
+// object receives saved identity and timestamps.
 func mustCreateProvider(t *testing.T, client *dbent.Client, a *providercore.Record) *providercore.Record {
 	t.Helper()
 	ctx := context.Background()
@@ -213,17 +235,22 @@ func mustCreateProvider(t *testing.T, client *dbent.Client, a *providercore.Reco
 	return a
 }
 
-// testEntTx 创建在测试结束时回滚的事务。
-// 提交事务的竞争测试自行删除测试行。
+// testEntTx begins an Ent transaction and registers rollback at test cleanup.
+// Tests that commit this transaction to expose changes to other connections
+// take responsibility for deleting their committed fixture rows.
 func testEntTx(t *testing.T) *dbent.Tx {
 	t.Helper()
 	tx, err := integrationEntClient.Tx(context.Background())
 	require.NoError(t, err)
+	// Rollback cleanup is best effort because a test can complete the transaction
+	// itself; tests committing their fixture rows still register separate row removal.
 	t.Cleanup(func() { _ = tx.Rollback() })
 	return tx
 }
 
-// testEntClient 返回本测试进程共用的 Ent 客户端。
+// testEntClient returns the migrated Ent client shared by integration tests. It
+// creates no transaction; callers isolate their writes or register cleanup for
+// any rows that they commit.
 func testEntClient(t *testing.T) *dbent.Client {
 	t.Helper()
 	return integrationEntClient

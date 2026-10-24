@@ -16,23 +16,49 @@ import (
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
+// setup_connections.go probes setup database and Redis connections and
+// initializes the target schema and administrator.
+// Setup tests the PostgreSQL maintenance database before accessing a target
+// that may not exist. It checks for the target name, creates the database when
+// absent, closes the maintenance pool, and opens the target to verify its
+// access separately. Creation survives a later target connection failure
+// because these steps are not one transaction.
+//
+// Maintenance work and target verification each have a fresh five-second
+// context. Setup migration and administrator creation use their own temporary
+// pools and operation budgets. These adapters close acquired pools on return,
+// with close errors either logged or discarded as stated by their entry
+// points. HTTP and CLI setup validate the host, port, user, database name, and
+// SSL mode before probing; automatic setup passes its environment values directly.
+// Callers provide a valid database identifier and libpq-compatible field text
+// because these adapters interpolate the supplied values.
+
+// SetupRedisConfig carries temporary Redis probe settings from setup input.
 type SetupRedisConfig struct {
-	Host      string `json:"host" yaml:"host"`
-	Port      int    `json:"port" yaml:"port"`
-	Username  string `json:"username" yaml:"username"`
-	Password  string `json:"password" yaml:"password"`
-	DB        int    `json:"db" yaml:"db"`
-	EnableTLS bool   `json:"enable_tls" yaml:"enable_tls"`
-}
-type SetupDatabaseConfig struct {
-	Host     string `json:"host" yaml:"host"`
-	Port     int    `json:"port" yaml:"port"`
-	User     string `json:"user" yaml:"user"`
-	Password string `json:"password" yaml:"password"`
-	DBName   string `json:"dbname" yaml:"dbname"`
-	SSLMode  string `json:"sslmode" yaml:"sslmode"`
+	Host     string `json:"host" yaml:"host"`         // connection server hostname
+	Port     int    `json:"port" yaml:"port"`         // connection server port
+	Username string `json:"username" yaml:"username"` // Redis authentication username
+	Password string `json:"password" yaml:"password"` // connection authentication secret
+	DB       int    `json:"db" yaml:"db"`             // selected Redis database
+	// EnableTLS applies TLS 1.2 or newer and verifies the configured Host
+	// as the server name when the setup Redis connection is probed.
+	EnableTLS bool `json:"enable_tls" yaml:"enable_tls"`
 }
 
+// SetupDatabaseConfig carries PostgreSQL credentials and target settings for setup operations.
+type SetupDatabaseConfig struct {
+	Host     string `json:"host" yaml:"host"`         // connection server hostname
+	Port     int    `json:"port" yaml:"port"`         // connection server port
+	User     string `json:"user" yaml:"user"`         // PostgreSQL authentication username
+	Password string `json:"password" yaml:"password"` // connection authentication secret
+	DBName   string `json:"dbname" yaml:"dbname"`     // target database identifier
+	SSLMode  string `json:"sslmode" yaml:"sslmode"`   // libpq TLS mode
+}
+
+// BuildPostgresDSN interpolates setup connection fields into a libpq keyword
+// DSN using the supplied dbName. Values are inserted as supplied, so callers
+// provide text valid for that format; this helper performs no quoting or
+// validation.
 func BuildPostgresDSN(cfg *SetupDatabaseConfig, dbName string) string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
@@ -40,13 +66,27 @@ func BuildPostgresDSN(cfg *SetupDatabaseConfig, dbName string) string {
 	)
 }
 
+// BuildDatabaseConnectionDSNs returns maintenance and target DSNs using the
+// same credentials. The first names postgres so setup can check or create
+// cfg.DBName; the second names that configured target for its independent
+// connectivity probe.
 func BuildDatabaseConnectionDSNs(cfg *SetupDatabaseConfig) (bootstrapDSN, targetDSN string) {
 	return BuildPostgresDSN(cfg, "postgres"), BuildPostgresDSN(cfg, cfg.DBName)
 }
 
-// TestSetupDatabaseConnection 检查数据库连接，并在目标数据库不存在时创建它。
+// TestSetupDatabaseConnection probes maintenance access, creates cfg.DBName
+// when absent, then probes target access. Callers validate the target
+// identifier before CREATE DATABASE interpolation; this function performs no
+// identifier validation.
+//
+// Maintenance ping, existence lookup, and creation share one five-second
+// context. The target pool receives a separate five-second probe after the
+// maintenance pool is closed. A database successfully created before a later
+// failure remains present. Pool-close errors are logged and do not replace the
+// connectivity or creation result returned to setup.
 func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
-	// 先连接维护数据库，否则目标数据库尚未创建时会直接连接失败。
+	// The target can be absent during first setup. Probe the maintenance
+	// database before its existence query and creation, using separate target access afterward.
 	defaultDSN, targetDSN := BuildDatabaseConnectionDSNs(cfg)
 
 	db, err := postgresinfra.Open(defaultDSN, false)
@@ -54,6 +94,8 @@ func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
+	// Retain maintenance-pool ownership until return or the explicit close clears
+	// db. Deferred close failures are logged while the probe result remains authoritative.
 	defer func() {
 		if db == nil {
 			return
@@ -70,16 +112,15 @@ func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 		return fmt.Errorf("ping failed: %w", err)
 	}
 
-	// 查询目标数据库是否存在。
 	var exists bool
 	row := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", cfg.DBName)
 	if err := row.Scan(&exists); err != nil {
 		return fmt.Errorf("failed to check database existence: %w", err)
 	}
 
-	// 目标数据库不存在时创建它。
 	if !exists {
-		// 数据库名通过前置输入校验后写入 SQL，驱动的参数绑定用于值参数。
+		// CREATE interpolates the target identifier, so callers validate DBName
+		// before probing. HTTP and CLI setup do so; automatic setup supplies raw environment input.
 		_, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", cfg.DBName))
 		if err != nil {
 			return fmt.Errorf("failed to create database '%s': %w", cfg.DBName, err)
@@ -87,7 +128,8 @@ func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 		logger.LegacyPrintf("setup", "Database '%s' created successfully", cfg.DBName)
 	}
 
-	// 连接目标数据库，检查创建结果。
+	// Release maintenance access before acquiring the target pool, then verify
+	// target connectivity independently. Close failures are logged while target probing proceeds.
 	if err := db.Close(); err != nil {
 		logger.LegacyPrintf("setup", "failed to close postgres connection: %v", err)
 	}
@@ -98,6 +140,8 @@ func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 		return fmt.Errorf("failed to connect to database '%s': %w", cfg.DBName, err)
 	}
 
+	// The target pool belongs to this independent connectivity probe. Close it
+	// on every return, logging failures while retaining the probe's result.
 	defer func() {
 		if err := targetDB.Close(); err != nil {
 			logger.LegacyPrintf("setup", "failed to close postgres connection: %v", err)
@@ -114,7 +158,16 @@ func TestSetupDatabaseConnection(cfg *SetupDatabaseConfig) error {
 	return nil
 }
 
-// TestSetupRedisConnection 检查 Redis 连接。
+// TestSetupRedisConnection pings a temporary Redis client with a supplied
+// five-second context. Enabled TLS selects TLS 1.2 or newer and cfg.Host as
+// ServerName; the acquired client is closed on return, with close failures logged.
+//
+// Its options leave ContextTimeoutEnabled false and retain go-redis's default
+// network timeouts. Command socket reads and writes therefore use option-based
+// budgets, so the supplied context is not a strict end-to-end Ping deadline.
+// Pool waits and retry delays still observe that context's cancellation. The
+// omitted MaxRetries option permits three eligible retries after the initial
+// command attempt, so one Ping call can send more than one probe command.
 func TestSetupRedisConnection(cfg *SetupRedisConfig) error {
 	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -123,6 +176,8 @@ func TestSetupRedisConnection(cfg *SetupRedisConfig) error {
 		DB:       cfg.DB,
 	}
 
+	// Use normal bootstrap's TLS minimum and host verification for this temporary
+	// probe, so setup checks those connection requirements before installing configuration.
 	if cfg.EnableTLS {
 		opts.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
@@ -131,6 +186,8 @@ func TestSetupRedisConnection(cfg *SetupRedisConfig) error {
 	}
 
 	rdb := redis.NewClient(opts)
+	// The temporary Redis client stays within this probe. Close it on return
+	// and log cleanup failures while preserving the connection-check result.
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.LegacyPrintf("setup", "failed to close redis client: %v", err)
@@ -147,31 +204,46 @@ func TestSetupRedisConnection(cfg *SetupRedisConfig) error {
 	return nil
 }
 
-// InitializeSetupDatabase 执行迁移，并在返回前关闭连接。
+// InitializeSetupDatabase applies embedded migrations over a temporary target
+// pool with a timeout derived from ctx. It attempts pool closure on return and
+// discards close errors; migration or connection errors determine the returned
+// result.
 func InitializeSetupDatabase(ctx context.Context, cfg *SetupDatabaseConfig, timeout time.Duration) error {
 	db, err := postgresinfra.Open(BuildPostgresDSN(cfg, cfg.DBName), false)
 	if err != nil {
 		return err
 	}
+	// This migration helper owns its temporary target pool. Attempt closure on
+	// every return; close errors are discarded and the migration result is retained.
 	defer func() { _ = db.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return ApplyMigrations(ctx, db)
 }
 
-// InitializeSetupAdmin 用独立连接初始化管理员，操作预算为五秒。
+// InitializeSetupAdmin opens a temporary target pool and delegates bootstrap
+// administrator creation within five seconds derived from ctx. It returns the
+// creation flag and decision reason from identity storage, and discards
+// pool-close errors on return.
 func InitializeSetupAdmin(ctx context.Context, cfg *SetupDatabaseConfig, input identity.InitialAdminInput, password func() (string, error)) (bool, string, error) {
 	db, err := postgresinfra.Open(BuildPostgresDSN(cfg, cfg.DBName), false)
 	if err != nil {
 		return false, "", err
 	}
+	// This administrator helper owns its temporary target pool. Attempt closure
+	// on every return and retain identity storage's creation result as the outcome.
 	defer func() { _ = db.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return CreateInitialAdmin(ctx, db, input, password)
 }
 
-// CreateInitialAdmin 装配安装所需的身份存储并创建管理员。
+// CreateInitialAdmin delegates to identity storage using the supplied pool,
+// which remains caller-owned. The result reports whether an administrator was
+// created and the decision reason. When creation proceeds, input.Now must be
+// callable; an empty or whitespace-only password also requires a callable
+// password generator. Existing-user decisions return before invoking either
+// callback.
 func CreateInitialAdmin(ctx context.Context, db *sql.DB, input identity.InitialAdminInput, password func() (string, error)) (bool, string, error) {
 	return ip.CreateInitialAdmin(ctx, db, input, password)
 }

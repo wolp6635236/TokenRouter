@@ -9,18 +9,30 @@ import (
 	"golang.org/x/mod/semver"
 )
 
+// claude_version.go extracts Claude CLI versions, validates overrides, and
+// reports configured version-range rejections. Headers can report release
+// components before a trailing suffix, while overrides need a complete release
+// version; configured range checks compare three numeric components and ignore
+// a leading lowercase v.
+
+// claudeUAVersionPattern captures the release components of a leading CLI
+// User-Agent for client reporting and configured ingress version checks.
 var claudeUAVersionPattern = regexp.MustCompile(`(?i)^claude-cli/(\d+\.\d+\.\d+)`)
 
-// IsSupportedClaudeCLIVersion 校验运维设置的版本覆盖值。
-// 版本需要为三段纯数字（如 2.1.251），并且不低于内置基线 CLICurrentVersion。
-// -local、-dev、+build 等后缀会被 fingerprintUserAgentPattern 拒绝，写入持久指纹后可能持续触发上游 429，系统没有指纹重置入口。
-// 降低版本基线也会降低身份服务检查客户端主版本超前时使用的基准。
+// IsSupportedClaudeCLIVersion validates an operational version override.
+// The version must contain three numeric components and meet the supplied minimum.
+// Prerelease and build suffixes are rejected because persisted client
+// fingerprints require a release version.
+// Pass minimum as a valid three-component release without a leading v; it is
+// prefixed directly for semver comparison with the normalized override.
 func IsSupportedClaudeCLIVersion(version, minimum string) bool {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		return false
 	}
-	// Canonical 相等检查排除 v1.2 等省略段版本，再分别检查预发布和构建元数据。
+	// Persisted fingerprint overrides use complete release versions. Canonical
+	// equality rejects shortened spellings, and the following suffix checks keep
+	// prerelease and build metadata out of that stored identity.
 	canonical := "v" + version
 	if !semver.IsValid(canonical) || semver.Canonical(canonical) != canonical {
 		return false
@@ -31,8 +43,9 @@ func IsSupportedClaudeCLIVersion(version, minimum string) bool {
 	return semver.Compare(canonical, "v"+minimum) >= 0
 }
 
-// CompareVersions 比较两个 semver 版本号
-// 返回: -1 (a < b), 0 (a == b), 1 (a > b)。
+// CompareVersions compares three numeric version components.
+// It returns -1, 0, or 1 after ignoring a leading lowercase v and components
+// beyond patch. Missing, nonnumeric, or overflowing components count as zero.
 func CompareVersions(a, b string) int {
 	aParts := parseSemver(a)
 	bParts := parseSemver(b)
@@ -47,11 +60,16 @@ func CompareVersions(a, b string) int {
 	return 0
 }
 
-// parseSemver 解析 semver 版本号为 [major, minor, patch]。
+// parseSemver reads major, minor, and patch numbers, treating missing or invalid
+// components as zero.
+// It removes one leading lowercase v and ignores further components; callers
+// use the resulting numeric tuple for permissive client range comparisons.
 func parseSemver(v string) [3]int {
 	v = strings.TrimPrefix(v, "v")
 	parts := strings.Split(v, ".")
 	result := [3]int{0, 0, 0}
+	// Range comparison treats unusable components as zero, allowing partial
+	// client versions to reach a numeric ordering while override validation remains stricter.
 	for i := 0; i < len(parts) && i < 3; i++ {
 		if parsed, err := strconv.Atoi(parts[i]); err == nil {
 			result[i] = parsed
@@ -60,6 +78,9 @@ func parseSemver(v string) [3]int {
 	return result
 }
 
+// ExtractClaudeCLIVersion returns three numeric components from a leading CLI
+// User-Agent. The prefix is case insensitive and may have trailing client or
+// prerelease text; unmatched input returns an empty string.
 func ExtractClaudeCLIVersion(ua string) string {
 	matches := claudeUAVersionPattern.FindStringSubmatch(ua)
 	if len(matches) >= 2 {
@@ -68,7 +89,9 @@ func ExtractClaudeCLIVersion(ua string) string {
 	return ""
 }
 
-// ClaudeVersionRejection 根据传入的版本范围生成拒绝消息。
+// ClaudeVersionRejection returns a client update or downgrade message for a
+// missing version or a violated configured range. Empty minimum and maximum
+// values omit those checks; a missing client version is rejected before either.
 func ClaudeVersionRejection(clientVersion, minVersion, maxVersion string) string {
 	if clientVersion == "" {
 		return "Unable to determine Claude Code version. Please update Claude Code: npm update -g @anthropic-ai/claude-code"

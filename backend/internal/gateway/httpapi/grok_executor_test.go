@@ -18,6 +18,15 @@ import (
 	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// Grok OAuth requests use CLI identity and cache headers while API Key
+// requests retain ordinary API authentication. These construction tests
+// inspect endpoint selection and provider overrides, including protected
+// credential/session headers and the wire casing seen by the request Header
+// map.
+
+// TestBuildGrokResponsesRequestPinsOAuthBaseURLAndUsesBearerToken supplies an
+// allowed custom OAuth URL and cache identity. It checks the POST endpoint,
+// bearer token, CLI headers and unchanged request body built for Responses.
 func TestBuildGrokResponsesRequestPinsOAuthBaseURLAndUsesBearerToken(t *testing.T) {
 	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
 
@@ -46,6 +55,9 @@ func TestBuildGrokResponsesRequestPinsOAuthBaseURLAndUsesBearerToken(t *testing.
 	require.Equal(t, `{"model":"grok-4.3"}`, strings.TrimSpace(string(data)))
 }
 
+// TestBuildGrokResponsesRequestAllowsPublicAPIKeyBaseURLByDefault uses a
+// custom API Key relay URL. It checks bearer authentication and verifies the
+// request omits the OAuth CLI client-version identity in this fixture.
 func TestBuildGrokResponsesRequestAllowsPublicAPIKeyBaseURLByDefault(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -65,6 +77,10 @@ func TestBuildGrokResponsesRequestAllowsPublicAPIKeyBaseURLByDefault(t *testing.
 	require.NotEqual(t, xai.DefaultGrokUpstreamUserAgent(), req.Header.Get("User-Agent"))
 }
 
+// TestBuildGrokResponsesRequestHonorsOAuthOfficialEndpointSwitch configures
+// the official OAuth API URL. It checks that request construction keeps that
+// configured endpoint when runtime-default route replacement is disabled for
+// the call.
 func TestBuildGrokResponsesRequestHonorsOAuthOfficialEndpointSwitch(t *testing.T) {
 	t.Parallel()
 
@@ -83,6 +99,10 @@ func TestBuildGrokResponsesRequestHonorsOAuthOfficialEndpointSwitch(t *testing.T
 	require.Equal(t, xai.DefaultBaseURL+"/responses", req.URL.String())
 }
 
+// TestBuildGrokResponsesRequestAppliesHeaderOverridesLast supplies CLI
+// identity overrides and a relay header. It checks their final values and wire
+// casing while retained authorization and conversation identity remain
+// protected.
 func TestBuildGrokResponsesRequestAppliesHeaderOverridesLast(t *testing.T) {
 	t.Parallel()
 
@@ -105,16 +125,20 @@ func TestBuildGrokResponsesRequestAppliesHeaderOverridesLast(t *testing.T) {
 	req, err := (&GrokExecutor{Routes: gatewayprovider.GrokRoutes{Validate: xai.ValidateBaseURL}}).BuildResponsesRequest(context.Background(), nil, provider, []byte(`{"model":"grok-4.3"}`), "access-token", "conv-1", false)
 	require.NoError(t, err)
 	require.Equal(t, "https://relay.example.test/v1/responses", req.URL.String())
-	// 覆写值优先于内置 CLI 身份头。wire casing 映射外的覆写头按小写键写入，测试检查写入后的形式。
+	// Overrides replace default CLI identity headers. Headers outside the wire-casing map use lowercase keys.
 	require.Equal(t, "relay-client/2.0", req.Header.Get("User-Agent"))
 	require.Equal(t, []string{"9.9.9"}, map[string][]string(req.Header)["x-grok-client-version"])
 	require.Empty(t, req.Header.Get("X-Grok-Client-Version"))
 	require.Equal(t, []string{"relay-secret"}, map[string][]string(req.Header)["x-relay-token"])
-	// 会话路由头与认证头不受覆写影响。
+	// Session-routing and authorization headers are protected from overrides.
 	require.Equal(t, "conv-1", req.Header.Get(GrokConversationIDHeader))
 	require.Equal(t, "Bearer access-token", req.Header.Get("Authorization"))
 }
 
+// TestBuildGrokResponsesRequestIgnoresBlockedHeaderOverrides attempts to
+// replace credential and conversation headers. It checks that the supplied
+// token and isolated conversation value survive the configured provider
+// overrides in the constructed request.
 func TestBuildGrokResponsesRequestIgnoresBlockedHeaderOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -138,6 +162,9 @@ func TestBuildGrokResponsesRequestIgnoresBlockedHeaderOverrides(t *testing.T) {
 	require.Equal(t, "conv-2", req.Header.Get(GrokConversationIDHeader))
 }
 
+// TestApplyDefaultGrokUpstreamHeadersUsesCLIUserAgent begins with unrelated
+// client headers and an empty version override. It checks the default CLI
+// version, user agent and client identifier after Grok header application.
 func TestApplyDefaultGrokUpstreamHeadersUsesCLIUserAgent(t *testing.T) {
 	t.Setenv(xai.CLIVersionEnv, "")
 
@@ -153,6 +180,9 @@ func TestApplyDefaultGrokUpstreamHeadersUsesCLIUserAgent(t *testing.T) {
 	require.Equal(t, xai.CLIClientIdentifier, req.Header.Get("x-grok-client-identifier"))
 }
 
+// TestApplyDefaultGrokUpstreamHeadersHonorsCLIVersionOverride supplies a
+// process version override to the header helper. It checks that the explicit
+// version and corresponding CLI user agent replace prior client identity.
 func TestApplyDefaultGrokUpstreamHeadersHonorsCLIVersionOverride(t *testing.T) {
 	t.Setenv(xai.CLIVersionEnv, "0.2.95")
 
@@ -167,6 +197,9 @@ func TestApplyDefaultGrokUpstreamHeadersHonorsCLIVersionOverride(t *testing.T) {
 	require.Equal(t, "grok-shell", req.Header.Get("x-grok-client-identifier"))
 }
 
+// TestResolveGrokUpstreamUserAgentNeverPassthrough compares a supplied Claude
+// HTTP context with an absent context. It checks both OAuth requests use the
+// Grok CLI user agent under the empty override fixture.
 func TestResolveGrokUpstreamUserAgentNeverPassthrough(t *testing.T) {
 	t.Setenv(xai.CLIVersionEnv, "")
 
@@ -185,6 +218,9 @@ func TestResolveGrokUpstreamUserAgentNeverPassthrough(t *testing.T) {
 	require.Equal(t, xai.CLIUserAgent(xai.CLIClientVersion), request.Header.Get("User-Agent"))
 }
 
+// TestApplyGrokRuntimeHeadersKeepsCLIUserAgent supplies a runtime originator
+// beside an unrelated user agent. It checks the originator is retained while
+// Grok CLI version and user agent describe the upstream client.
 func TestApplyGrokRuntimeHeadersKeepsCLIUserAgent(t *testing.T) {
 	t.Setenv(xai.CLIVersionEnv, "")
 
@@ -199,6 +235,9 @@ func TestApplyGrokRuntimeHeadersKeepsCLIUserAgent(t *testing.T) {
 	require.Equal(t, xai.CLIClientVersion, req.Header.Get("x-grok-client-version"))
 }
 
+// TestApplyGrokTLSProfileHeadersAlwaysUsesCLIUserAgent applies the Grok HTTP
+// header helper to an ordinary API request. It checks default CLI identity
+// headers; the test does not create a TLS connection.
 func TestApplyGrokTLSProfileHeadersAlwaysUsesCLIUserAgent(t *testing.T) {
 	t.Setenv(xai.CLIVersionEnv, "")
 
@@ -206,7 +245,7 @@ func TestApplyGrokTLSProfileHeadersAlwaysUsesCLIUserAgent(t *testing.T) {
 	require.NoError(t, err)
 	req.Header.Set("User-Agent", "grok-native/1.0")
 
-	// 当前 Profile 保存 TLS 信息。Originator 和 UserAgent 由 HTTP 请求头提供。
+	// The profile supplies TLS settings; HTTP headers supply Originator and User-Agent.
 	xai.ApplyDefaultGrokUpstreamHeaders(req)
 
 	require.Equal(t, xai.CLIUserAgent(xai.CLIClientVersion), req.Header.Get("User-Agent"))

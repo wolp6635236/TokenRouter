@@ -18,7 +18,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// New 应用真实迁移，并在测试结束时先关闭连接、再销毁容器。
+// postgres.go starts a dedicated PostgreSQL test container and applies
+// application migrations.
+// PostgreSQL storage fixtures apply the application's embedded migrations
+// before domain records are read or written. New starts a dedicated container,
+// obtains a UTC connection, and registers cleanup so the SQL pool closes before
+// container termination at test completion.
+
+// New returns a pool for a dedicated migrated PostgreSQL fixture or fails the
+// calling test. Container startup, connection-string discovery, and migrations
+// share a two-minute context; TOKENROUTER_TEST_POSTGRES_IMAGE can replace the
+// default image. Cleanup closes the pool before terminating any created
+// container with a fresh thirty-second context, including after startup errors.
 func New(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -32,8 +43,20 @@ func New(t *testing.T) *sql.DB {
 		tcpostgres.WithUsername("postgres"),
 		tcpostgres.WithPassword("postgres"),
 		tcpostgres.BasicWaitStrategies())
+	// Register any created container before startup errors can stop this test.
+	// Later client cleanups run first because testing reverses registration order.
+	if container != nil {
+		t.Cleanup(func() {
+			// Setup or test cancellation must not cancel Docker removal. Start the
+			// bounded cleanup context when this callback runs.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := container.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate PostgreSQL container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	dsn, err := container.ConnectionString(ctx, "sslmode=disable", "TimeZone=UTC")
 	require.NoError(t, err)
 	db, err := sql.Open("postgres", dsn)

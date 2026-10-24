@@ -13,19 +13,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
-	catalogprovider "github.com/TokenFlux/TokenRouter/internal/modelcatalog/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// provideBatchPublic 装配批量图片提交用例，共享任务、提供商、资金和模型配置读取实例。
-func provideBatchPublic(catalog *catalogprovider.Service, repo batchimage.BatchImageRepository, providers *providerpostgres.ProviderStore, modelConfigs *routing.PricingConfigService, groups routing.GroupRepository, rates billing.UserGroupRateRepository, queue batchimage.BatchImageQueue, pricing *batchimage.Pricing, funds *billing.Funds, subscriptions *billingpostgres.SettlementStore, auth apikey.APIKeyAuthCacheInvalidator, cfg *config.Config, registry *batchimage.Registry[batchprovider.BatchImageProvider]) *batchimage.Public {
+// batch_image_public.go constructs batch image submission services with
+// provider, model, subscription, and funding callbacks.
+// Batch image submissions use the application's provider registry and funding
+// services. Subscription lookup and rate selection receive the job owner's
+// billing identity, while model tracing records the client name and group
+// mapping used for submission.
+
+// provideBatchPublic constructs batch submission dependencies and owner-aware
+// subscription callbacks. A nil cfg leaves PublicOptions unset for the batch
+// service to interpret; optional pricing and authentication invalidation are
+// bound when supplied, while registry and subscription storage remain required
+// by their callbacks.
+func provideBatchPublic(attributes *routing.ModelAttributeService, repo batchimage.BatchImageRepository, providers *providerpostgres.ProviderStore, modelConfigs *routing.PricingConfigService, groups routing.GroupRepository, rates billing.UserGroupRateRepository, queue batchimage.BatchImageQueue, pricing *batchimage.Pricing, funds *billing.Funds, subscriptions *billingpostgres.SettlementStore, auth apikey.APIKeyAuthCacheInvalidator, cfg *config.Config, registry *batchimage.Registry[batchprovider.BatchImageProvider]) *batchimage.Public {
 	core := &batchimage.Public{
-		ModelOutputModalities: func(model string) *[]string {
-			return catalog.ModelEntry(model).Attributes.OutputModalities
-		},
-		Now:  time.Now,
-		Repo: repo,
+		Attributes: attributes,
+		Now:        time.Now,
+		Repo:       repo,
 		ProviderRepo: &batchprovider.Candidates{
 			Source:       providers,
 			Registry:     registry,

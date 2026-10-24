@@ -3,15 +3,39 @@ package dto
 import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	billinghttpapi "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
-	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// mappers.go maps usage records and cleanup tasks into user and administrator
+// HTTP responses.
+// Usage detail responses display the client model while administrator
+// responses add outbound observations and provider costs. Request categories
+// also supply older transport flags, so converting a record resolves those
+// representations before filling the response.
+//
+// The mappers keep absent observations absent and restrict administrator
+// additions to AdminUsageLog. Billing allocations receive their own entries
+// and copied subscription and plan identifiers. TTFT, TPS and detailed timing
+// use copied scalar values derived from the usage snapshot. Other optional log
+// values and image-size maps retain their source references, which callers
+// treat as immutable while a response is being encoded.
+
+// usageLogFromServiceUser builds the common usage response from a nonnil
+// record and optional display language. It selects RequestedModel when
+// present, otherwise Model, and resolves the effective request category
+// before deriving the legacy stream and WebSocket flags.
+//
+// These choices let client-facing names and older transport fields remain
+// useful together. Billing allocations are copied by
+// cloneBillingAllocationsDTO; other optional pointers and ImageSizeBreakdown
+// remain shared with l. Administrator additions are supplied later by
+// FromUsageAdmin.
 func usageLogFromServiceUser(l *usage.UsageLog, language ...string) UsageLog {
-	// 普通用户 DTO：严禁包含管理员字段（例如 provider_rate_multiplier、provider、upstream_model）。
 	requestType := l.EffectiveRequestType()
 	stream, openAIWSMode := usage.ApplyLegacyRequestFields(requestType, l.Stream, l.OpenAIWSMode)
 	requestedModel := l.RequestedModel
+	// Historical records can lack the client display name. Use their stored model
+	// so both user and administrator responses still identify the recorded request.
 	if requestedModel == "" {
 		requestedModel = l.Model
 	}
@@ -53,7 +77,9 @@ func usageLogFromServiceUser(l *usage.UsageLog, language ...string) UsageLog {
 		OpenAIWSMode:              openAIWSMode,
 		NativeCompactionV2:        l.NativeCompactionV2,
 		DurationMs:                l.DurationMs,
-		FirstTokenMs:              l.FirstTokenMs,
+		TTFTMs:                    l.Timings.TTFTMs(),
+		TPS:                       l.Timings.TPS(l.OutputTokens),
+		TTFTMode:                  recordedTimingMode(l),
 		ImageCount:                l.ImageCount,
 		ImageSize:                 l.ImageSize,
 		ImageInputSize:            l.ImageInputSize,
@@ -78,6 +104,10 @@ func usageLogFromServiceUser(l *usage.UsageLog, language ...string) UsageLog {
 	}
 }
 
+// cloneBillingAllocationsDTO copies allocation entries and their optional
+// SubscriptionID and PlanID values. Empty input returns nil, while each
+// populated identifier gets independent storage for the response's billing
+// details.
 func cloneBillingAllocationsDTO(allocations []billing.BillingAllocation) []billing.BillingAllocation {
 	if len(allocations) == 0 {
 		return nil
@@ -98,9 +128,9 @@ func cloneBillingAllocationsDTO(allocations []billing.BillingAllocation) []billi
 	return out
 }
 
-// FromUsage converts a service UsageLog to DTO for regular users.
-// FromUsage 转换普通用户可见的用量日志 DTO。
-// 该 DTO 保留用户计费和请求元数据，但排除管理员专用的提供商/上游内部字段。
+// FromUsage builds the regular user's usage response, returning nil for a nil
+// record. The response retains optional log pointers and the image-size map;
+// callers treat those shared values as immutable during encoding.
 func FromUsage(l *usage.UsageLog, language ...string) *UsageLog {
 	if l == nil {
 		return nil
@@ -109,8 +139,9 @@ func FromUsage(l *usage.UsageLog, language ...string) *UsageLog {
 	return &u
 }
 
-// FromUsageAdmin converts a service UsageLog to DTO for admin users.
-// It includes minimal Provider info (ID, Name only) and IP address.
+// FromUsageAdmin builds an administrator response, returning nil for a nil
+// record. It adds outbound observations, provider costs and the provider
+// identity; optional source pointers remain shared during response encoding.
 func FromUsageAdmin(l *usage.UsageLog) *AdminUsageLog {
 	if l == nil {
 		return nil
@@ -119,6 +150,7 @@ func FromUsageAdmin(l *usage.UsageLog) *AdminUsageLog {
 	usageLog.UpstreamEndpoint = l.UpstreamEndpoint
 	return &AdminUsageLog{
 		UsageLog:               usageLog,
+		DetailedTiming:         TimingFromUsage(l),
 		UpstreamModel:          l.UpstreamModel,
 		UpstreamResponseModel:  l.UpstreamResponseModel,
 		UpstreamModelMismatch:  l.UpstreamModelMismatch,
@@ -133,30 +165,9 @@ func FromUsageAdmin(l *usage.UsageLog) *AdminUsageLog {
 	}
 }
 
-// TimingFromOps 转换管理员使用记录需要展示的阶段耗时，避免暴露系统日志其它字段。
-func TimingFromOps(timing *ops.OpsRequestTiming) *UsageLogTiming {
-	if timing == nil {
-		return nil
-	}
-	return &UsageLogTiming{
-		RequestContentLength:           timing.RequestContentLength,
-		ProviderSlotAcquiredMs:         timing.ProviderSlotAcquiredMs,
-		UpstreamGetConnMs:              timing.UpstreamGetConnMs,
-		UpstreamGotConnMs:              timing.UpstreamGotConnMs,
-		UpstreamWroteRequestMs:         timing.UpstreamWroteRequestMs,
-		UpstreamFirstResponseByteMs:    timing.UpstreamFirstResponseByteMs,
-		UpstreamFirstSSEDataMs:         timing.UpstreamFirstSSEDataMs,
-		FirstVisibleOutputMs:           timing.FirstVisibleOutputMs,
-		FirstDownstreamFlushMs:         timing.FirstDownstreamFlushMs,
-		UpstreamGetConnCount:           timing.UpstreamGetConnCount,
-		UpstreamGotConnCount:           timing.UpstreamGotConnCount,
-		UpstreamAttemptCount:           timing.UpstreamAttemptCount,
-		UpstreamFirstResponseByteCount: timing.UpstreamFirstResponseByteCount,
-		UpstreamConnectionReused:       timing.UpstreamConnectionReused,
-		UpstreamWroteRequestError:      timing.UpstreamWroteRequestError,
-	}
-}
-
+// CleanupFromUsage builds a cleanup-task response, returning nil for a nil
+// task. It maps the DTO's declared filter fields and converts request type to
+// text; other filter and lifecycle pointers remain shared.
 func CleanupFromUsage(task *usage.UsageCleanupTask) *UsageCleanupTask {
 	if task == nil {
 		return nil
@@ -188,10 +199,79 @@ func CleanupFromUsage(task *usage.UsageCleanupTask) *UsageCleanupTask {
 	}
 }
 
+// RequestTypeStringPtr returns a new display-string pointer for a stored
+// request category. Nil input returns nil, while invalid stored integers
+// normalize to unknown before their lowercase label is produced.
 func RequestTypeStringPtr(requestType *int16) *string {
 	if requestType == nil {
 		return nil
 	}
 	value := usage.RequestTypeFromInt16(*requestType).String()
 	return &value
+}
+
+// TimingFromUsage presents only measurements retained by this usage record.
+// Every returned pointer owns a copied scalar; absent observations remain absent
+// and cannot fall back to unrelated access-log or historical SSE values.
+func TimingFromUsage(log *usage.UsageLog) *UsageLogTiming {
+	if log == nil || log.Timings == nil {
+		return nil
+	}
+	p := log.Timings
+	value := func(key string) *int64 {
+		v, ok := p.Values[key]
+		if !ok {
+			return nil
+		}
+		return &v
+	}
+	flag := func(key string) *bool {
+		v, ok := p.Values[key]
+		if !ok {
+			return nil
+		}
+		result := v == 1
+		return &result
+	}
+	return &UsageLogTiming{
+		UpstreamStream:                 p.Stream,
+		UpstreamComplete:               p.Complete,
+		UsageComplete:                  p.UsageComplete,
+		UpstreamFinishedMs:             value("upstream_finished_ms"),
+		UpstreamStartedMs:              value("upstream_started_ms"),
+		UpstreamFirstOutputMs:          value("upstream_first_output_ms"),
+		UpstreamLastOutputMs:           value("upstream_last_output_ms"),
+		UpstreamCompletedMs:            value("upstream_completed_ms"),
+		AttemptNumber:                  value("attempt_number"),
+		RequestContentLength:           value("request_content_length"),
+		TimingStream:                   value("timing_stream"),
+		TimingAdmitted:                 value("timing_admitted"),
+		RequestBodyReadMs:              value("request_body_read_ms"),
+		PreprocessMs:                   value("preprocess_ms"),
+		UserSlotWaitMs:                 value("user_slot_wait_ms"),
+		ProviderSlotWaitMs:             value("provider_slot_wait_ms"),
+		RetryProviderSlotWaitMs:        value("retry_provider_slot_wait_ms"),
+		ProviderSlotAcquiredMs:         value("provider_slot_acquired_ms"),
+		UpstreamGetConnMs:              value("upstream_get_conn_ms"),
+		UpstreamGotConnMs:              value("upstream_got_conn_ms"),
+		UpstreamWroteRequestMs:         value("upstream_wrote_request_ms"),
+		UpstreamFirstResponseByteMs:    value("upstream_first_response_byte_ms"),
+		UpstreamFirstEventMs:           value("upstream_first_event_ms"),
+		FirstVisibleOutputMs:           value("first_visible_output_ms"),
+		FirstDownstreamFlushMs:         value("first_downstream_flush_ms"),
+		UpstreamGetConnCount:           value("upstream_get_conn_count"),
+		UpstreamGotConnCount:           value("upstream_got_conn_count"),
+		UpstreamAttemptCount:           value("upstream_attempt_count"),
+		UpstreamFirstResponseByteCount: value("upstream_first_response_byte_count"),
+		UpstreamConnectionReused:       flag("upstream_connection_reused"),
+		UpstreamWroteRequestError:      flag("upstream_wrote_request_error"),
+	}
+}
+
+// recordedTimingMode reports the captured policy without inventing historical defaults.
+func recordedTimingMode(log *usage.UsageLog) string {
+	if log == nil || log.Timings == nil {
+		return ""
+	}
+	return log.Timings.Mode
 }

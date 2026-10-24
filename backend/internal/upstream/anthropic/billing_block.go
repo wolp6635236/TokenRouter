@@ -8,21 +8,36 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// FingerprintSalt 是计算 cc_version 后缀指纹的盐值。
-// 其值与 Parrot src/transform/cc_mimicry.py 的 FINGERPRINT_SALT 一致，
-// 修改后会使指纹偏离 Claude Code CLI，并触发上游的第三方客户端检测。
+// billing_block.go builds Claude billing attribution text from CLI version and
+// user-message bytes.
+// Claude billing text carries a CLI version together with a suffix derived from
+// selected bytes of the first user message. String content and text-block
+// arrays supply that text, while absent bytes contribute ASCII zero to the hash
+// input.
+//
+// The version participates in the same hash as the message bytes and salt, so a
+// changed version requires recomputing the suffix even when the conversation is
+// unchanged. Billing text is built separately from the system prompt cache
+// breakpoint, allowing request preparation to place the marker ahead of
+// cacheable instructions. The implementation's byte positions matter for
+// multibyte text: these offsets index UTF-8 bytes, not characters.
+
+// FingerprintSalt participates in the billing suffix hash together with
+// selected first-user bytes and the CLI version.
 const FingerprintSalt = "59cf53e54c78"
 
-// ComputeClaudeCodeFingerprint 复刻 Claude Code CLI 的 cc_version 指纹算法：
+// ComputeClaudeCodeFingerprint returns three lowercase hexadecimal digits from
+// the CLI version and first user text. It samples byte offsets four, seven, and
+// twenty, with ASCII zero substituted when a position is absent.
 //
-//  1. 取 messages 中第一条 role=user 的首块纯文本。
-//  2. 取该文本索引为 4、7、20 的字节，不足时用 '0' 补齐。
-//  3. 计算 SHA256(SALT + chars + cc_version)，取十六进制结果的前 3 位。
-//
-// 算法来自 Parrot src/transform/cc_mimicry.py:compute_fingerprint，与官方 CLI 字节对齐。
-// 任何偏差都会导致 cc_version=X.Y.Z.{fp} 在上游侧与真实 CLI 不一致。
+// The salt, selected bytes, and supplied version are concatenated before
+// SHA-256. UTF-8 text is indexed as bytes, so selecting characters instead
+// would alter the marker. The version is an input even for empty text, which is
+// why billing version synchronization recomputes the suffix.
 func ComputeClaudeCodeFingerprint(body []byte, version string) string {
 	firstText := ExtractFirstUserText(body)
+	// These fixed positions select UTF-8 bytes from the first user text. Missing
+	// positions use ASCII zero so short or absent text still forms the hash input.
 	indices := []int{4, 7, 20}
 	chars := make([]byte, 0, 3)
 	for _, i := range indices {
@@ -33,11 +48,14 @@ func ComputeClaudeCodeFingerprint(body []byte, version string) string {
 		}
 	}
 	sum := sha256.Sum256([]byte(FingerprintSalt + string(chars) + version))
+	// Billing synchronization recognizes exactly three hexadecimal suffix digits,
+	// so keep this digest fragment aligned with its marker pattern.
 	return hex.EncodeToString(sum[:])[:3]
 }
 
-// ExtractFirstUserText 提取 messages 中第一条 user 消息的首段 text 内容。
-// 兼容 string 和 []block 两种 content 格式。
+// ExtractFirstUserText reads string content or the first text block in the
+// first user message. It stops at that message even when no text is available
+// and then returns an empty string.
 func ExtractFirstUserText(body []byte) string {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
@@ -68,16 +86,9 @@ func ExtractFirstUserText(body []byte) string {
 	return first
 }
 
-// BuildBillingAttributionText 构造 system 数组的 billing attribution 文本。
-//
-// 形态对齐真实 Claude Code CLI：
-//
-//	x-anthropic-billing-header: cc_version=2.1.220.{fp}; cc_entrypoint=cli;
-//
-// Claude Code CLI 使用 cc_version 和 cc_entrypoint=cli，客户端识别
-// （claude_code_validator）与 Anthropic 第一方判定依赖这两个字段。
-// cch=... 已从 CLI 请求中移除（issue #3358），构造时按当前 CLI 格式输出。
-// 缓存断点放在后续的 Claude Code prompt block 上。
+// BuildBillingAttributionText builds a CLI system billing marker using the
+// supplied version and message-derived suffix. An empty version returns an
+// error; callers place cache control on a subsequent prompt block.
 func BuildBillingAttributionText(body []byte, cliVersion string) (string, error) {
 	if cliVersion == "" {
 		return "", fmt.Errorf("cliVersion required")

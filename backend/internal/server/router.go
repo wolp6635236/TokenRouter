@@ -6,14 +6,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// RouterRuntime 包含 app 提供的中间件、前端处理器和路由注册函数。
+// router.go assembles middleware and module routes on a shared Gin engine.
+// Public health and setup-status endpoints remain available alongside module
+// routes. App supplies one ordered middleware chain and an optional frontend
+// handler, then module registration callbacks add their endpoints to the same
+// Gin engine after the common routes.
+
+// RouterRuntime holds app's ordered middleware and module registrations for one engine.
 type RouterRuntime struct {
-	Middleware []gin.HandlerFunc
-	Frontend   gin.HandlerFunc
-	Register   []func(*gin.Engine)
+	Middleware []gin.HandlerFunc // global middleware in execution order
+	// Frontend is installed after Middleware when nonnil, so SPA serving sees
+	// the same request context before common and module routes run.
+	Frontend gin.HandlerFunc
+	Register []func(*gin.Engine) // module route registration callbacks
 }
 
-// SetupRouter 依次挂载全局中间件、前端处理器和路由。
+// SetupRouter installs middleware, optional frontend serving, and all routes.
+// Callers provide a nonnil runtime and engine before serving requests; registration
+// callbacks run in slice order after the common endpoints have been registered.
 func SetupRouter(r *gin.Engine, runtime *RouterRuntime) *gin.Engine {
 	r.Use(runtime.Middleware...)
 	if runtime.Frontend != nil {
@@ -26,19 +36,20 @@ func SetupRouter(r *gin.Engine, runtime *RouterRuntime) *gin.Engine {
 	return r
 }
 
-// RegisterCommonRoutes 注册健康检查、遥测接收和初始化状态路由。
+// RegisterCommonRoutes adds public health, telemetry acknowledgement, and setup status.
+// The setup response describes an already configured process; callers register
+// these routes once per engine because Gin rejects duplicate method/path pairs.
 func RegisterCommonRoutes(r *gin.Engine) {
-	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// Claude Code 遥测请求直接返回 200。
+	// Acknowledge Claude Code telemetry requests without processing their payload.
 	r.POST("/api/event_logging/batch", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
-	// 正常运行时返回已完成的初始化状态，前端据此判断初始化后服务已重启。
+	// The frontend uses this completed status to detect the restart after setup.
 	r.GET("/setup/status", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"code": 0,

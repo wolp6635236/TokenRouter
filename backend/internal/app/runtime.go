@@ -2,9 +2,18 @@ package app
 
 import "github.com/TokenFlux/TokenRouter/internal/gateway/promptpolicy"
 
-// runtimeReady 让 Wire 在返回应用前登记所有运行资源。
+// runtime.go requires subsystem lifecycle registration and HTTP idempotency
+// binding before application construction. The readiness arguments make Wire
+// resolve those constructors before provideApplication receives its runtime
+// marker; creating the marker itself starts no subsystem.
+
+// runtimeReady marks resolution of application runtime registration dependencies for Wire.
 type runtimeReady struct{}
 
+// provideRuntime returns the application readiness marker after Wire resolves
+// its registration dependencies. The marker orders construction of the graph;
+// actual loading and background startup occur when the lifecycle manager runs
+// the registered hooks.
 func provideRuntime(
 	_ *modelCatalogRuntimeReady,
 	_ *settingsRuntimeReady,

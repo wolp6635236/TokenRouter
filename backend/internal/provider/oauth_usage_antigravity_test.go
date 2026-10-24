@@ -9,6 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestAntigravitySharedUsageRejectsDifferentIdentity blocks an old-credential
+// query while a changed record joins its flight. It checks one fetch,
+// successful original completion, and identity-change rejection for the second
+// caller.
 func TestAntigravitySharedUsageRejectsDifferentIdentity(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var calls atomic.Int32
@@ -29,7 +33,9 @@ func TestAntigravitySharedUsageRejectsDifferentIdentity(t *testing.T) {
 		fresh.Credentials = map[string]any{"access_token": "new"}
 		second := make(chan error, 1)
 		go func() { _, err := core.GetAntigravityUsage(context.Background(), fresh); second <- err }()
-		// 等待两个 goroutine 均阻塞，明确验证第二身份正在等待原 flight。
+		// Wait for both callers to block before releasing the first fetch. This
+		// fixes the cross-credential join so the completed identity check rejects
+		// the changed record.
 		synctest.Wait()
 		require.Equal(t, int32(1), calls.Load())
 		close(release)

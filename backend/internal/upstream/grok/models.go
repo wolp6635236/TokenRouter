@@ -5,29 +5,44 @@ import (
 	"sync/atomic"
 )
 
+// models.go resolves Grok model defaults and publishes the runtime text-model
+// setting for callers.
+// Missing model IDs use different defaults for Responses normalization and
+// general text requests. Nonblank model IDs retain their full spelling after
+// trimming, while video pricing normalization lowercases the full ID. Runtime
+// settings publish a separate text default that callers choose to read.
+
+// Endpoint defaults apply when model text is blank; these full IDs also name
+// the image and video models selected by media request callers.
 const (
-	// DefaultResponsesModel 是 Grok Responses 请求未指定模型时使用的默认模型。
+	// DefaultResponsesModel applies when a Responses request omits its model.
 	DefaultResponsesModel = "grok-4.5"
 
-	// DefaultTextModel 是允许省略模型的文本请求使用的默认型号。
+	// DefaultTextModel applies to text endpoints that allow an omitted model.
 	DefaultTextModel = "grok-4.6"
 
-	// 以下为官方 Imagine 模型 ID。
-	DefaultImagineImageQualityModel = "grok-imagine-image-quality"
-	DefaultImagineImageFastModel    = "grok-imagine-image"
-	DefaultImagineImage20Model      = "grok-imagine-image-2.0"
-	DefaultImagineVideoModel        = "grok-imagine-video"
-	DefaultImagineVideo15Model      = "grok-imagine-video-1.5"
+	// Imagine model IDs used by media requests.
+	DefaultImagineImageQualityModel = "grok-imagine-image-quality" // quality image model ID
+	DefaultImagineImageFastModel    = "grok-imagine-image"         // fast image model ID
+	DefaultImagineImage20Model      = "grok-imagine-image-2.0"     // image 2.0 model ID
+	DefaultImagineVideoModel        = "grok-imagine-video"         // default video model ID
+	DefaultImagineVideo15Model      = "grok-imagine-video-1.5"     // video 1.5 model ID
 )
 
+// runtimeDefaultTextModel publishes complete configured strings to concurrent
+// readers; endpoint callers decide whether an empty setting needs a default.
 var runtimeDefaultTextModel atomic.Pointer[string]
 
-// SetRuntimeDefaultTextModel 发布允许省略模型的请求所用的默认文本型号。
+// SetRuntimeDefaultTextModel atomically publishes the supplied string as the
+// runtime text default. The value is stored without trimming or validation;
+// readers observe one complete stored value, including an empty string.
 func SetRuntimeDefaultTextModel(model string) {
 	runtimeDefaultTextModel.Store(&model)
 }
 
-// RuntimeDefaultTextModel 返回配置的默认文本型号，空值交由调用方选择默认值。
+// RuntimeDefaultTextModel returns the atomically published text default, or
+// empty when none has been stored. The result is returned as supplied;
+// callers resolve blanks through their endpoint's default-model rules.
 func RuntimeDefaultTextModel() string {
 	if model := runtimeDefaultTextModel.Load(); model != nil {
 		return *model
@@ -35,7 +50,9 @@ func RuntimeDefaultTextModel() string {
 	return ""
 }
 
-// NormalizeModelID 保留完整模型 ID，允许省略模型的入口使用协议默认值。
+// NormalizeModelID trims a model ID and selects DefaultResponsesModel for
+// blank input. Nonblank IDs keep their complete spelling and case, so callers
+// can pass vendor aliases and suffixed IDs through unchanged.
 func NormalizeModelID(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -44,23 +61,18 @@ func NormalizeModelID(model string) string {
 	return model
 }
 
-// grokReasoningModelID 只读识别推理能力，结果不得用于转发、查价或额度键。
-func grokReasoningModelID(model string) string {
-	model = strings.ToLower(strings.TrimSpace(model))
-	for _, prefix := range []string{"xai/", "x-ai/", "grok/"} {
-		if native, found := strings.CutPrefix(model, prefix); found {
-			return strings.TrimSpace(native)
-		}
-	}
-	return model
-}
-
-// ResolveGrokTextResponsesModelID 仅为空模型选用默认值，非空 ID 原样保留。
+// ResolveGrokTextResponsesModelID resolves a text model through
+// ResolveDefaultTextModel. Blank input considers the first optional default,
+// then DefaultTextModel; it does not read the runtime default unless callers
+// pass that value.
 func ResolveGrokTextResponsesModelID(model string, defaultText ...string) string {
 	return ResolveDefaultTextModel(model, defaultText...)
 }
 
-// ResolveDefaultTextModel 在模型为空时返回 defaultText，未提供则返回 DefaultTextModel。
+// ResolveDefaultTextModel selects a trimmed explicit model, a nonblank
+// trimmed first optional default, or DefaultTextModel. Additional defaultText
+// arguments are ignored even when the first is blank, so callers put the
+// desired endpoint default in the first position.
 func ResolveDefaultTextModel(model string, defaultText ...string) string {
 	if trimmed := strings.TrimSpace(model); trimmed != "" {
 		return trimmed
@@ -71,7 +83,10 @@ func ResolveDefaultTextModel(model string, defaultText ...string) string {
 	return DefaultTextModel
 }
 
-// CanonicalImagineVideoModel 使用完整视频型号查询价格，缺省请求使用默认型号。
+// CanonicalImagineVideoModel trims and lowercases the complete video pricing
+// ID. Blank input selects DefaultImagineVideoModel; nonblank suffixed or
+// vendor-qualified IDs retain their full identity after that case
+// normalization.
 func CanonicalImagineVideoModel(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {

@@ -8,7 +8,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGroupModelUnsupportedErrorPresentation 验证原错误值的空值、截断与展示字段在移除旧类型后保持一致。
+// A group-model error needs stable public text for empty and large suggestion
+// lists. These cases check nil receivers, trimming of the requested identity,
+// and a twenty-name list followed by an omitted count while retaining the
+// original source slice.
+
+// TestGroupModelUnsupportedErrorPresentation formats nil errors,
+// whitespace-padded requests, and twenty-one suggestions. Text must use the
+// expected trimmed identity and omitted count while the source list retains its
+// final element.
 func TestGroupModelUnsupportedErrorPresentation(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
 		var err *GroupModelUnsupportedError

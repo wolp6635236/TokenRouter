@@ -21,7 +21,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// ChatURL 解析提供商的（非 Grok）Chat Completions 上游端点。
+// openai_request_targets.go resolves protocol URLs and builds Chat and
+// Anthropic upstream requests.
+// Protocol targets follow the selected provider's configured base and
+// credentials. Raw Chat has a Grok-specific route, native Anthropic uses its
+// protocol base, and images choose generation or edit endpoints; each request
+// path applies the matching body attributes and outgoing transport policy.
+
+// ChatURL builds a validated Chat Completions URL for a non-Grok provider. An
+// empty protocol base uses https://api.openai.com. The endpoint helper handles
+// versioned bases, and validation failures are returned with base-URL context.
 func (s *OpenAIRequests) ChatURL(provider *gatewayprovider.ExecutionProvider) (string, error) {
 	baseURL := gatewayprovider.ExecutionProtocolTarget(provider).GetOpenAIBaseURL()
 	if baseURL == "" {
@@ -34,10 +43,15 @@ func (s *OpenAIRequests) ChatURL(provider *gatewayprovider.ExecutionProvider) (s
 	return httpclient.BuildOpenAIEndpointURL(validatedURL, "/v1/chat/completions"), nil
 }
 
-// ChatFallbackTarget 为两条 Chat Completions 回退路径解析提供商凭据和端点。
-// Grok 使用 Grok OAuth/API Key 认证和 CLI 端点。
+// ChatFallbackTarget resolves credentials and a URL for the Chat fallback
+// execution. Grok uses execution credentials and its CLI-compatible route.
+// Other providers need a nonblank protocol API key and pass their base URL
+// through ChatURL validation.
 func (s *OpenAIRequests) ChatFallbackTarget(ctx context.Context, provider *gatewayprovider.ExecutionProvider) (apiKey string, targetURL string, err error) {
 	if provider.View().IsGrok() {
+		// Grok fallback can use OAuth execution credentials; a protocol
+		// API-key lookup would omit that credential path and select the
+		// wrong request target.
 		apiKey, _, err = s.Credentials.Resolve(ctx, gatewayprovider.ExecutionRecord(provider))
 		if err != nil {
 			return "", "", err
@@ -56,6 +70,15 @@ func (s *OpenAIRequests) ChatFallbackTarget(ctx context.Context, provider *gatew
 	return apiKey, targetURL, nil
 }
 
+// SendChat prepares and sends Chat input using the selected provider's
+// transport. It applies model attributes first and returns attribute errors
+// before sending. The upstream sender detaches its request context through
+// DetachUpstreamContext; callers read and close any returned response body.
+//
+// Transport preparation resolves TLS routing when a match was not supplied,
+// applies platform user-agent and Grok cache headers, then finalizes provider
+// overrides and the trusted OpenCode session. Exchange failures use the shared
+// HTTP failure adapter.
 func (s *OpenAIRequests) SendChat(
 	ctx context.Context,
 	c *gin.Context,
@@ -68,12 +91,20 @@ func (s *OpenAIRequests) SendChat(
 	grokCacheIdentity string,
 	tlsRouterMatch ...egress.TLSFingerprintRouterMatchResult,
 ) (*http.Response, error) {
+	var err error
+	body, err = s.applyModelAttributes(ctx, provider, body, "openai_chat_completions")
+	if err != nil {
+		return nil, err
+	}
 	return openai.SendChatRequest(ctx, body, openai.CCRequestOptions{
 		URL: targetURL, Token: bearerToken, Stream: stream, Headers: c.Request.Header,
 		RequestContext:  gatewayprovider.DetachUpstreamContext,
 		ObserveEndpoint: func() { SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions") },
 		AllowHeader:     func(name string) bool { return openaiCCRawAllowedHeaders[name] },
 		PrepareTransport: func(upstreamReq *http.Request) {
+			// Direct Chat callers may omit a router match. Resolve
+			// it before applying the user-agent policy and choosing
+			// the profile for this exchange.
 			if len(tlsRouterMatch) == 0 {
 				tlsRouterMatch = []egress.TLSFingerprintRouterMatchResult{s.MatchTLS(c, provider)}
 			}
@@ -83,6 +114,9 @@ func (s *OpenAIRequests) SendChat(
 				s.ApplyUserAgent(c.Request.Context(), c, provider, upstreamReq, false, tlsRouterMatch[0])
 			}
 
+			// Grok OAuth requires its CLI request headers, and its
+			// cache identity follows the prepared Chat conversation
+			// independently of generic OpenAI headers.
 			if provider.Record.Platform == capability.PlatformGrok {
 				if provider.View().IsGrokOAuth() {
 					grok.ApplyCLIHeaders(upstreamReq.Header)
@@ -105,13 +139,25 @@ func (s *OpenAIRequests) SendChat(
 	})
 }
 
-// AnthropicURL 保留旧入口，目标校验与路径拼接由唯一实现执行。
+// AnthropicURL builds the selected provider's validated native Anthropic
+// Messages target. It delegates protocol-base and default-target handling to
+// NativeAnthropicTargetURL; configuration errors reach the caller before
+// request construction.
 func (s *OpenAIRequests) AnthropicURL(provider *gatewayprovider.ExecutionProvider) (string, error) {
 	return forward.NativeAnthropicTargetURL(provider.Record.ID, gatewayprovider.ExecutionProtocolTarget(provider).GetAnthropicProtocolBaseURL(), s.ValidateBaseURL)
 }
 
-// BuildAnthropic 从当前请求 Header 和提供商策略构造请求。
+// BuildAnthropic constructs native Messages input with provider authentication
+// and header policy. It applies model attributes before forwarding the inbound
+// headers, if present. The returned body reflects beta sanitization used by the
+// constructed request; callers retain both for the exchange and response
+// processing.
 func (s *OpenAIRequests) BuildAnthropic(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, body []byte, apiKey, targetURL string) (*http.Request, []byte, error) {
+	var err error
+	body, err = s.applyModelAttributes(ctx, provider, body, "anthropic_messages")
+	if err != nil {
+		return nil, nil, err
+	}
 	var headers http.Header
 	if c != nil && c.Request != nil {
 		headers = c.Request.Header
@@ -126,6 +172,10 @@ func (s *OpenAIRequests) BuildAnthropic(ctx context.Context, c *gin.Context, pro
 	})
 }
 
+// RawChatURL resolves the selected provider's native Chat endpoint before
+// execution. Grok delegates to its CLI-compatible route and wraps target errors
+// with Grok context. Other providers use ChatURL's protocol base and URL
+// validation.
 func (s *OpenAIRequests) RawChatURL(provider *gatewayprovider.ExecutionProvider) (string, error) {
 	if provider.Record.Platform == capability.PlatformGrok {
 		targetURL, err := s.GrokRoutes.Chat(provider, true)
@@ -138,7 +188,10 @@ func (s *OpenAIRequests) RawChatURL(provider *gatewayprovider.ExecutionProvider)
 	return s.ChatURL(provider)
 }
 
-// ImagesURL 保留默认端点、第三方 base 和编辑路径的选择顺序。
+// ImagesURL selects an image-generation or image-edit target for the provider.
+// Without a configured base, only the edits endpoint changes the generation
+// default. A configured base is validated and combined with the caller's
+// endpoint string.
 func (s *OpenAIRequests) ImagesURL(provider *gatewayprovider.ExecutionProvider, endpoint string) (string, error) {
 	targetURL := openAIImagesGenerationsURL
 	if endpoint == upstream.OpenAIImagesEditsEndpoint {

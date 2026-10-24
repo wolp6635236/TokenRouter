@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestUserPlatformQuotasCNProvidersMigration 校验 248 号迁移把 kimi/zhipu/deepseek
-// 加入 user_platform_quotas.platform 的 CHECK 约束（对照 157 号 grok 迁移）。
-// 约束未放宽时，注册预填充 9 平台默认配额会整条 INSERT 中止 → 新用户零配额行
-// （缺失配额行 = 无限额），管理端设置国产平台配额直接 500。
+// TestUserPlatformQuotasCNProvidersMigration inspects the platform quota constraint
+// update. It requires dropping the previous constraint and the complete accepted
+// platform list including Kimi, Zhipu, and DeepSeek, protecting the SQL used for
+// their quota configuration.
 func TestUserPlatformQuotasCNProvidersMigration(t *testing.T) {
 	content, err := FS.ReadFile("248_allow_cn_user_platform_quotas.sql")
 	require.NoError(t, err)

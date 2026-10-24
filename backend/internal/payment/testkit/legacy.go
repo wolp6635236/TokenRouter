@@ -12,13 +12,27 @@ import (
 	paymentpostgres "github.com/TokenFlux/TokenRouter/internal/payment/postgres"
 )
 
+// legacy.go exposes named historical ciphertext fixtures and constructs a load
+// balancer with their matching encryption key.
+// Historical payment instance ciphertext uses a fixed thirty-two-byte key and
+// named stored configuration examples. The embedded fixture lets compatibility
+// tests read those strings directly, while LegacyLoadBalancer supplies the
+// matching raw key bytes to the production configuration reader.
+
+// LegacyEncryptionKey supplies the thirty-two ASCII key bytes used by the
+// embedded historical provider ciphertext fixtures.
 const LegacyEncryptionKey = "0123456789abcdef0123456789abcdef"
 
-// 固定历史密文保留旧格式解密契约，不重新调用旧加密入口生成。
+// legacyConfigsJSON embeds fixed historical provider ciphertext strings for
+// named compatibility scenarios. Fixtures remain independent of encryption
+// performed during the current test run.
 //
 //go:embed testdata/legacy_webhook_configs.json
 var legacyConfigsJSON []byte
 
+// LegacyConfig decodes and returns the named historical ciphertext fixture for
+// a test. JSON errors or unknown names fail through require assertions
+// attributed to the caller, and the stored string is returned as supplied.
 func LegacyConfig(t *testing.T, name string) string {
 	t.Helper()
 	var fixtures map[string]string
@@ -28,7 +42,9 @@ func LegacyConfig(t *testing.T, name string) string {
 	return value
 }
 
-// LegacyLoadBalancer 使用上述历史密文对应的固定测试密钥。
+// LegacyLoadBalancer builds the production selector with an Ent instance
+// reader and LegacyEncryptionKey as raw key bytes. Stored encrypted instances
+// can then be read using the fixture's matching deployment key.
 func LegacyLoadBalancer(client *dbent.Client) payment.LoadBalancer {
 	return payment.NewDefaultLoadBalancer(paymentpostgres.NewInstanceStore(client), []byte(LegacyEncryptionKey))
 }

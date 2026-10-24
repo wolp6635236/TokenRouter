@@ -5,29 +5,49 @@ import (
 	"strings"
 )
 
+// interception.go classifies Claude auxiliary requests that can receive fixed
+// local answers. Single-token Haiku probes require a validated Claude client
+// and take precedence; suggestion and warmup recognition inspect structured
+// message and system text after a quick raw-body marker check.
+//
+// Suggestion recognition considers the first text block of the final request
+// message when its role is user, while warmup scans all text blocks for title
+// requests or a fixed warmup value. Malformed JSON yields ordinary forwarding.
+// This ordering keeps probe identification independent of JSON
+// shape and keeps suggestion classification ahead of title or warmup markers
+// elsewhere in an otherwise valid request.
+
+// Interception kinds select the fixed local reply emitted by the Messages
+// entrypoint when a recognized auxiliary request bypasses upstream execution.
 const (
-	InterceptTypeNone              InterceptType = iota
-	InterceptTypeWarmup                          // 预热请求（返回 "New Conversation"）
-	InterceptTypeSuggestionMode                  // SUGGESTION MODE（返回空字符串）
-	InterceptTypeMaxTokensOneHaiku               // max_tokens=1 + haiku 探测请求（返回 "#"）
+	InterceptTypeNone              InterceptType = iota // ordinary upstream forwarding
+	InterceptTypeWarmup                                 // Warmup request; reply with "New Conversation".
+	InterceptTypeSuggestionMode                         // Suggestion mode; reply with an empty string.
+	InterceptTypeMaxTokensOneHaiku                      // Single-token Haiku probe; reply with "#".
 )
 
-// InterceptType 表示请求拦截类型。
+// InterceptType classifies auxiliary requests eligible for fixed local responses.
 type InterceptType int
 
-// DetectInterceptType 检测请求是否需要拦截，返回拦截类型
-// 参数说明：
-//   - body: 请求体字节
-//   - model: 请求的模型名称
-//   - maxTokens: max_tokens 值
-//   - isClaudeCodeClient: 是否已通过 Claude Code 客户端校验
+// DetectInterceptType classifies probe, suggestion, and warmup requests for local responses.
+// Haiku probe detection requires a validated Claude Code client.
+// Probes take precedence over body markers, suggestion mode precedes warmup,
+// and malformed JSON or an unmatched payload returns InterceptTypeNone. The
+// caller owns client validation and supplies its result with model and maxTokens.
+//
+// Suggestion markers qualify at the start of the final message's first text
+// block when that message has the user role.
+// Title or fixed warmup text can occur in earlier messages or system blocks,
+// but those markers are consulted after suggestion recognition.
 func DetectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeClient bool) InterceptType {
-	// 优先检查 max_tokens=1 + haiku 探测请求（流式/非流式均适用）
+	// A validated single-token Haiku probe can omit ordinary Messages payload
+	// features. Identify it before parsing so both streaming and buffered probes
+	// receive the same local classification.
 	if isClaudeCodeClient && IsHaikuProbe(model, maxTokens) {
 		return InterceptTypeMaxTokensOneHaiku
 	}
 
-	// 快速检查：如果不包含任何关键字，直接返回
+	// Skip JSON parsing when no suggestion or warmup marker is present.
 	bodyStr := string(body)
 	hasSuggestionMode := strings.Contains(bodyStr, "[SUGGESTION MODE:")
 	hasWarmupKeyword := strings.Contains(bodyStr, "title") || strings.Contains(bodyStr, "Warmup")
@@ -36,24 +56,26 @@ func DetectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeC
 		return InterceptTypeNone
 	}
 
-	// 解析请求（只解析一次）
 	var req struct {
 		Messages []struct {
-			Role    string `json:"role"`
+			Role    string `json:"role"` // request message role
 			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"messages"`
+				Type string `json:"type"` // content block type
+				Text string `json:"text"` // content block text
+			} `json:"content"` // ordered message content
+		} `json:"messages"` // ordered request messages
 		System []struct {
-			Text string `json:"text"`
-		} `json:"system"`
+			Text string `json:"text"` // system block text
+		} `json:"system"` // supplied system blocks
 	}
+	// An undecodable payload provides no reliable message positions or text
+	// blocks for auxiliary recognition. Return the ordinary classification so the
+	// entrypoint keeps its normal handling path.
 	if err := json.Unmarshal(body, &req); err != nil {
 		return InterceptTypeNone
 	}
 
-	// 检查 SUGGESTION MODE（最后一条 user 消息）
+	// Suggestion mode must begin the first text block of the final user message.
 	if hasSuggestionMode && len(req.Messages) > 0 {
 		lastMsg := req.Messages[len(req.Messages)-1]
 		if lastMsg.Role == "user" && len(lastMsg.Content) > 0 &&
@@ -63,9 +85,8 @@ func DetectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeC
 		}
 	}
 
-	// 检查 Warmup 请求
 	if hasWarmupKeyword {
-		// 检查 messages 中的标题提示模式
+		// Recognize conversation-title prompts and the fixed warmup message.
 		for _, msg := range req.Messages {
 			for _, content := range msg.Content {
 				if content.Type == "text" {
@@ -76,7 +97,7 @@ func DetectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeC
 				}
 			}
 		}
-		// 检查 system 中的标题提取模式
+		// Recognize title extraction in the system prompt.
 		for _, sys := range req.System {
 			if strings.Contains(sys.Text, "nalyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title") {
 				return InterceptTypeWarmup

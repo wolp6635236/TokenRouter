@@ -7,15 +7,24 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// TestAnthropicBetaTokensContains_EmptyInputs supplies an empty Header and an
+// empty sought token in separate checks. Each input reports false so missing
+// data cannot enable a gated request field.
 func TestAnthropicBetaTokensContains_EmptyInputs(t *testing.T) {
 	require.False(t, AnthropicBetaTokensContains("", "context-management-2025-06-27"))
 	require.False(t, AnthropicBetaTokensContains("oauth-2025-04-20", ""))
 }
 
+// TestAnthropicBetaTokensContains_SingleToken uses one complete
+// context-management token as the whole Header. Exact equality reports true so
+// a lone accepted token can retain its corresponding field.
 func TestAnthropicBetaTokensContains_SingleToken(t *testing.T) {
 	require.True(t, AnthropicBetaTokensContains("context-management-2025-06-27", "context-management-2025-06-27"))
 }
 
+// TestAnthropicBetaTokensContains_MultiTokenComma looks up present and absent
+// tokens in a comma-separated Header. Membership succeeds for complete entries
+// and fails for a different capability that the list lacks.
 func TestAnthropicBetaTokensContains_MultiTokenComma(t *testing.T) {
 	header := "oauth-2025-04-20,context-management-2025-06-27,interleaved-thinking-2025-05-14"
 	require.True(t, AnthropicBetaTokensContains(header, "context-management-2025-06-27"))
@@ -23,19 +32,27 @@ func TestAnthropicBetaTokensContains_MultiTokenComma(t *testing.T) {
 	require.False(t, AnthropicBetaTokensContains(header, "fast-mode-2026-02-01"))
 }
 
+// TestAnthropicBetaTokensContains_ToleratesWhitespace places spaces around
+// comma-separated beta entries in a client Header. The complete
+// context-management token still matches after entry trimming so whitespace
+// does not disable its gate.
 func TestAnthropicBetaTokensContains_ToleratesWhitespace(t *testing.T) {
 	header := "oauth-2025-04-20 , context-management-2025-06-27 ,  interleaved-thinking-2025-05-14"
 	require.True(t, AnthropicBetaTokensContains(header, "context-management-2025-06-27"))
 }
 
+// TestAnthropicBetaTokensContains_SubstringNotMatched looks for a base token
+// inside a longer revision token. Membership remains false so sharing a prefix
+// does not grant the capability represented by the shorter token.
 func TestAnthropicBetaTokensContains_SubstringNotMatched(t *testing.T) {
-	// token 按完整字符串匹配。
+	// Match complete tokens, including their version suffix.
 	require.False(t, AnthropicBetaTokensContains("context-management-2025-06-27-rev2", "context-management-2025-06-27"),
 		"必须按 token 边界匹配，不允许 prefix 子串误命中")
 }
 
-// sanitizeAnthropicBodyForBetaTokens
-
+// TestSanitizeAnthropicBodyForBetaTokens_NoFieldNoChange provides a body
+// containing no beta-gated extension fields and an OAuth Header. It reports no
+// change and retains the exact request bytes.
 func TestSanitizeAnthropicBodyForBetaTokens_NoFieldNoChange(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, "oauth-2025-04-20")
@@ -43,6 +60,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_NoFieldNoChange(t *testing.T) {
 	require.Equal(t, string(body), string(out))
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FieldKeptWhenBetaPresent supplies
+// context management with its complete token among other client betas. The
+// field and edit type remain present, and the changed flag stays false.
 func TestSanitizeAnthropicBodyForBetaTokens_FieldKeptWhenBetaPresent(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-7","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body,
@@ -53,6 +73,10 @@ func TestSanitizeAnthropicBodyForBetaTokens_FieldKeptWhenBetaPresent(t *testing.
 		gjson.GetBytes(out, "context_management.edits.0.type").String())
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FieldStrippedWhenBetaMissing supplies
+// context management with OAuth and thinking tokens but no context token.
+// Successful sanitation reports a change and removes the gated field from the
+// body.
 func TestSanitizeAnthropicBodyForBetaTokens_FieldStrippedWhenBetaMissing(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, "oauth-2025-04-20,interleaved-thinking-2025-05-14")
@@ -61,6 +85,10 @@ func TestSanitizeAnthropicBodyForBetaTokens_FieldStrippedWhenBetaMissing(t *test
 		"header 不含 context-management beta 时必须 strip 同名字段")
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FieldStrippedWhenBetaEmpty supplies
+// context management with an empty final beta Header. Sanitation reports a
+// change and deletes the field because no accepted context-management token
+// remains.
 func TestSanitizeAnthropicBodyForBetaTokens_FieldStrippedWhenBetaEmpty(t *testing.T) {
 	body := []byte(`{"context_management":{"edits":[]},"messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, "")
@@ -68,6 +96,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_FieldStrippedWhenBetaEmpty(t *testin
 	require.False(t, gjson.GetBytes(out, "context_management").Exists())
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_EmptyBody passes both an empty slice
+// and nil with an empty Header. Each result stays empty and reports false so
+// absent request bytes do not claim successful deletion.
 func TestSanitizeAnthropicBodyForBetaTokens_EmptyBody(t *testing.T) {
 	out, changed := SanitizeAnthropicBodyForBetaTokens([]byte{}, "")
 	require.False(t, changed)
@@ -78,11 +109,13 @@ func TestSanitizeAnthropicBodyForBetaTokens_EmptyBody(t *testing.T) {
 	require.Empty(t, out)
 }
 
-// TestSanitizeAnthropicBodyForBetaTokens_HaikuRealCCClientPreservesField 检查 Haiku 请求在 header 含 context-management beta 时保留该字段。
-
+// TestSanitizeAnthropicBodyForBetaTokens_HaikuRealCCClientPreservesField
+// supplies a Haiku body with context management and a client-enabled context
+// token. The field remains present and unchanged despite the selected model
+// name.
 func TestSanitizeAnthropicBodyForBetaTokens_HaikuRealCCClientPreservesField(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},"messages":[]}`)
-	// 真 Claude Code CLI 2.1.87+ 客户端 header 含 context-management beta
+	// A Claude Code client supplies the context-management beta.
 	clientBeta := "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27"
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, clientBeta)
 	require.False(t, changed,
@@ -90,6 +123,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_HaikuRealCCClientPreservesField(t *t
 	require.True(t, gjson.GetBytes(out, "context_management").Exists())
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_NoFallbackFieldsNoChange supplies a
+// model and messages with no refusal fallback fields. The result reports no
+// changes and retains the request bytes under an OAuth Header.
 func TestSanitizeAnthropicBodyForBetaTokens_NoFallbackFieldsNoChange(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, "oauth-2025-04-20")
@@ -97,6 +133,10 @@ func TestSanitizeAnthropicBodyForBetaTokens_NoFallbackFieldsNoChange(t *testing.
 	require.Equal(t, string(body), string(out))
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FallbacksKeptWhenBetaPresent supplies
+// the default refusal fallback value with its server-side token. The field
+// retains that value and sanitation reports false rather than replacing the
+// request.
 func TestSanitizeAnthropicBodyForBetaTokens_FallbacksKeptWhenBetaPresent(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-7","fallbacks":"default","messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body,
@@ -106,15 +146,19 @@ func TestSanitizeAnthropicBodyForBetaTokens_FallbacksKeptWhenBetaPresent(t *test
 	require.Equal(t, "default", gjson.GetBytes(out, "fallbacks").String())
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FallbacksStrippedWhenBetaMissing
+// covers both string and model-array fallback values under unrelated beta
+// tokens. Each fallback field is removed while the messages field remains
+// available in the result.
 func TestSanitizeAnthropicBodyForBetaTokens_FallbacksStrippedWhenBetaMissing(t *testing.T) {
-	// 客户端透传的两种形态：字符串 "default" 与模型数组
+	// Clients can supply either "default" or a model list.
 	for name, fallbacks := range map[string]string{
 		"string_default": `"fallbacks":"default"`,
 		"model_array":    `"fallbacks":["claude-opus-4-6","claude-sonnet-4-6"]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			body := []byte(`{"model":"claude-haiku-4-5",` + fallbacks + `,"messages":[]}`)
-			// OAuth mimic 和默认 API-key beta 使用 oauth/interleaved。
+			// Neither of these headers enables server-side fallback.
 			out, changed := SanitizeAnthropicBodyForBetaTokens(body,
 				"oauth-2025-04-20,interleaved-thinking-2025-05-14")
 			require.True(t, changed)
@@ -125,6 +169,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_FallbacksStrippedWhenBetaMissing(t *
 	}
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FallbacksStrippedWhenHeaderEmpty
+// provides a default fallback field and an empty final Header. Sanitation
+// reports a deletion and removes that field from the returned request body.
 func TestSanitizeAnthropicBodyForBetaTokens_FallbacksStrippedWhenHeaderEmpty(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","fallbacks":"default","messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, "")
@@ -132,6 +179,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_FallbacksStrippedWhenHeaderEmpty(t *
 	require.False(t, gjson.GetBytes(out, "fallbacks").Exists())
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FallbackCreditTokenStrippedWhenCreditBetaMissing
+// supplies a credit token with OAuth and thinking betas alone. The returned
+// body drops the credit field and reports a successful sanitation change.
 func TestSanitizeAnthropicBodyForBetaTokens_FallbackCreditTokenStrippedWhenCreditBetaMissing(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","fallback_credit_token":"tok_123","messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, "oauth-2025-04-20,interleaved-thinking-2025-05-14")
@@ -140,9 +190,12 @@ func TestSanitizeAnthropicBodyForBetaTokens_FallbackCreditTokenStrippedWhenCredi
 		"缺 credit/fallback beta 时必须 strip fallback_credit_token")
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_FallbackCreditTokenKeptWithAnyAcceptedBeta
+// tries each of the three accepted tokens against one credit field. Every
+// individual accepted beta keeps the field and leaves the changed flag false.
 func TestSanitizeAnthropicBodyForBetaTokens_FallbackCreditTokenKeptWithAnyAcceptedBeta(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","fallback_credit_token":"tok_123","messages":[]}`)
-	// 三个 beta token 任意一个在 header 中都必须保留字段
+	// Any one of the three accepted betas keeps the credit field.
 	for _, beta := range []string{
 		BetaServerSideFallback,
 		BetaFallbackCredit,
@@ -155,8 +208,10 @@ func TestSanitizeAnthropicBodyForBetaTokens_FallbackCreditTokenKeptWithAnyAccept
 	}
 }
 
-// TestSanitizeAnthropicBodyForBetaTokens_StripsFallbacksKeepsContextManagement 检查 context-management beta 对应字段的保留和 fallbacks 的删除。
-
+// TestSanitizeAnthropicBodyForBetaTokens_StripsFallbacksKeepsContextManagement
+// supplies context management and fallback fields with only the context token.
+// It removes fallbacks, retains context management, and reports that at least
+// one deletion occurred.
 func TestSanitizeAnthropicBodyForBetaTokens_StripsFallbacksKeepsContextManagement(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"fallbacks":"default","messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body, "context-management-2025-06-27")
@@ -167,6 +222,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_StripsFallbacksKeepsContextManagemen
 		"context-management beta 在 header 中 → context_management 不得被误删")
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_KeepsBothWhenBothBetasPresent supplies
+// context management, fallbacks, and a credit field with context and
+// server-side tokens. All fields survive and the changed flag remains false.
 func TestSanitizeAnthropicBodyForBetaTokens_KeepsBothWhenBothBetasPresent(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-7","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"fallbacks":"default","fallback_credit_token":"tok_123","messages":[]}`)
 	out, changed := SanitizeAnthropicBodyForBetaTokens(body,
@@ -177,6 +235,9 @@ func TestSanitizeAnthropicBodyForBetaTokens_KeepsBothWhenBothBetasPresent(t *tes
 	require.True(t, gjson.GetBytes(out, "fallback_credit_token").Exists())
 }
 
+// TestSanitizeAnthropicBodyForBetaTokens_EmptyBodyUnchanged passes nil and an
+// empty slice with a fallback-enabling token. Each call returns empty output
+// and false because there are no fields to remove.
 func TestSanitizeAnthropicBodyForBetaTokens_EmptyBodyUnchanged(t *testing.T) {
 	out, changed := SanitizeAnthropicBodyForBetaTokens([]byte{}, "server-side-fallback-2026-07-01")
 	require.False(t, changed)

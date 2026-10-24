@@ -4,19 +4,28 @@ import (
 	"strings"
 )
 
-// 推理档位是 wire 值，管理员映射和排序策略由 routing 拥有。
+// reasoning.go defines ordered reasoning effort vocabularies and normalizes
+// supported Claude output-effort values.
+// Reasoning effort labels are exchanged as strings, but the comparable sets
+// differ between OpenAI and Messages requests. Claude normalization accepts
+// xhigh and max as separate levels; none is an administrator mapping value
+// outside the ascending effort list used for limit comparisons.
+
+// These wire labels identify reasoning levels consumed by request normalization
+// and administrator mappings; routing chooses mapping and upper-limit policy.
 const (
-	ReasoningNone    = "none"
-	ReasoningMinimal = "minimal"
-	ReasoningLow     = "low"
-	ReasoningMedium  = "medium"
-	ReasoningHigh    = "high"
-	ReasoningXHigh   = "xhigh"
-	ReasoningMax     = "max"
+	ReasoningNone    = "none"    // noncomparable mapping choice
+	ReasoningMinimal = "minimal" // lowest comparable effort
+	ReasoningLow     = "low"     // low reasoning effort
+	ReasoningMedium  = "medium"  // medium reasoning effort
+	ReasoningHigh    = "high"    // high reasoning effort
+	ReasoningXHigh   = "xhigh"   // extra-high reasoning effort
+	ReasoningMax     = "max"     // maximum comparable effort
 )
 
-// NormalizeClaudeOutputEffort 规范化 Claude 的 output_config.effort 值。
-// 空值和无法识别的值返回 nil。
+// NormalizeClaudeOutputEffort trims and lowercases recognized Messages output
+// efforts. Empty or unsupported input returns nil; low, medium, high, xhigh,
+// and max return a pointer to their normalized wire label.
 func NormalizeClaudeOutputEffort(raw string) *string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	if value == "" {
@@ -26,21 +35,29 @@ func NormalizeClaudeOutputEffort(raw string) *string {
 	case "low", "medium", "high", "xhigh", "max":
 		return &value
 	default:
+		// Unsupported labels cannot provide a resolved Claude effort. Return nil
+		// so callers can distinguish missing normalization from a recognized requested level.
 		return nil
 	}
 }
 
-// OpenAIReasoningEfforts 返回可比较档位的独立副本。
+// OpenAIReasoningEfforts returns comparable effort levels in ascending order,
+// from minimal through max. Each call creates a fresh slice so callers can
+// adjust their local supported-level list without modifying another caller's list.
 func OpenAIReasoningEfforts() []string {
 	return []string{ReasoningMinimal, ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMax}
 }
 
-// AnthropicReasoningEfforts 列出 Anthropic 支持的推理档位。
+// AnthropicReasoningEfforts returns the ordered Messages effort levels from
+// low through max, including xhigh as a distinct value. Each call creates a
+// fresh slice that the caller can modify independently.
 func AnthropicReasoningEfforts() []string {
 	return []string{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMax}
 }
 
-// OpenAIReasoningMappingValues 包含关闭推理的 none，其余值按推理上限排序。
+// OpenAIReasoningMappingValues returns none followed by the ascending OpenAI
+// effort levels for administrator mapping choices. The returned slice is fresh;
+// none represents a mapping option outside the comparable effort ordering.
 func OpenAIReasoningMappingValues() []string {
 	return append([]string{ReasoningNone}, OpenAIReasoningEfforts()...)
 }

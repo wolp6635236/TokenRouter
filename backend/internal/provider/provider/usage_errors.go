@@ -10,7 +10,25 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
-// AntigravityDegradedUsage 从 FetchQuota 错误构建降级 UsageInfo。
+// usage_errors.go builds degraded usage responses and overlays stored provider
+// restriction evidence.
+// Usage display can combine a failed quota fetch with an existing provider
+// restriction. Antigravity fetch errors distinguish authentication, rate
+// limiting, and network classification, while an error-state record can
+// separately carry forbidden or verification evidence.
+//
+// Stored forbidden evidence takes precedence when the response is enriched,
+// including over a fetch error that requested reauthorization. The resulting
+// flags point administrators toward verification or a ban instead of another
+// token refresh. Enrichment requires both the provider error state and
+// recognized restriction text; ordinary provider errors leave the existing
+// usage result unchanged, and the caller retains ownership of that result for
+// mutation.
+
+// AntigravityDegradedUsage builds a partial usage response from a nonnil
+// quota-fetch error and the supplied observation time. It logs the failure and
+// classifies authentication or rate-limit fragments, treating other messages as
+// network errors.
 func AntigravityDegradedUsage(err error, now time.Time) *providercore.UsageInfo {
 	errMsg := fmt.Sprintf("usage API error: %v", err)
 	slog.Warn("antigravity usage fetch failed, returning degraded response", "error", err)
@@ -20,8 +38,8 @@ func AntigravityDegradedUsage(err error, now time.Time) *providercore.UsageInfo 
 		Error:     errMsg,
 	}
 
-	// 从错误信息推断 error_code 和状态标记
-	// 错误格式来自 antigravity/client.go: "fetchAvailableModels 失败 (HTTP %d): ..."
+	// Classify the text returned by the Antigravity quota client.
+	// HTTP status fragments survive the client's contextual error wrapping.
 	errStr := err.Error()
 	switch {
 	case strings.Contains(errStr, "HTTP 401") ||
@@ -38,14 +56,16 @@ func AntigravityDegradedUsage(err error, now time.Time) *providercore.UsageInfo 
 	return info
 }
 
-// EnrichUsageWithProviderError 结合提供商错误状态修正 UsageInfo
-// 场景 1（成功路径）：FetchAvailableModels 正常返回，但提供商已因 403 被标记为 error，
+// EnrichUsageWithProviderError overlays stored forbidden evidence onto the
+// caller's mutable usage response. Nil inputs, records outside error state, and
+// messages without recognized restriction fragments leave the response
+// unchanged.
 //
-//	需要在正常 usage 数据上附加 forbidden/validation 信息。
-//
-// 场景 2（降级路径）：被封号的提供商 OAuth token 失效，FetchAvailableModels 返回 401，
-//
-//	降级逻辑设置了 needs_reauth，但提供商实际是 403 封号/需验证，需覆盖为正确状态。
+// A matched message supplies the forbidden type, reason, and validation URL.
+// Its ban or verification classification replaces the response error code and
+// clears NeedsReauth, so an existing known restriction remains visible even
+// when a concurrent quota fetch succeeds or reports an authentication error.
+// Other usage measurements and fetch timestamps remain in the response.
 func EnrichUsageWithProviderError(info *providercore.UsageInfo, value *providercore.Record) {
 	if info == nil || value == nil || value.Status != providercore.StatusError {
 		return

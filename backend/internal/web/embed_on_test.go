@@ -21,18 +21,31 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 )
 
-// mockSettingsProvider 返回测试配置并记录读取次数。
+// mockSettingsProvider supplies configured public-data results and a serial
+// call count for HTML fixtures.
 type mockSettingsProvider struct {
-	settings any
-	err      error
-	called   int
+	// settings and err are supplied together as the next provider result; serial
+	// tests replace them between completed requests. called records each invocation
+	// and needs the same serial access because it has no synchronization.
+	settings any   // supplied public settings payload
+	err      error // supplied public settings error
+	called   int   // serial provider invocation count
 }
 
+// blockingPublic delays its first public-data result to expose rendering across
+// cache invalidation.
 type blockingPublic struct {
-	entered, release chan struct{}
-	calls            atomic.Int64
+	// entered announces the first blocked read and release lets it return old
+	// data. The test invalidates between those signals, and calls atomically identifies
+	// that first invocation before later callers receive new data.
+	entered, release chan struct{} // entered: first read started; release: continue first read
+	calls            atomic.Int64  // concurrent provider invocation count
 }
 
+// TestInjectSiteTitle supplies configured names, HTML delimiters, invalid
+// settings, and characters requiring escaping. Replacement must use the fixed
+// suffix, retain surrounding elements, and leave unmatched title forms
+// unchanged.
 func TestInjectSiteTitle(t *testing.T) {
 	t.Run("replaces_title_with_site_name", func(t *testing.T) {
 		html := []byte(`<html><head><title>TokenRouter - AI API Gateway</title></head><body></body></html>`)
@@ -81,13 +94,12 @@ func TestInjectSiteTitle(t *testing.T) {
 	})
 
 	t.Run("returns_unchanged_when_title_has_attributes", func(t *testing.T) {
-		// index.html 使用无属性的 <title> 标签，标题替换按该标签匹配。
+		// Title replacement matches the attribute-free title tag emitted in index.html.
 		html := []byte(`<html><head><title lang="en">TokenRouter</title></head><body></body></html>`)
 		settingsJSON := []byte(`{"site_name":"NewSite"}`)
 
 		result := injectSiteTitle(html, settingsJSON)
 
-		// 带属性的标题标签返回输入 HTML。
 		assert.Equal(t, string(html), string(result))
 	})
 
@@ -123,6 +135,9 @@ func TestInjectSiteTitle(t *testing.T) {
 	})
 }
 
+// TestInjectSiteFavicon supplies HTTP, relative, data-image, and rejected logo
+// URLs to known icon markup. Replacement must select accepted text, escape
+// attribute separators, and retain the input when the URL is rejected.
 func TestInjectSiteFavicon(t *testing.T) {
 	t.Run("replaces_favicon_with_site_logo", func(t *testing.T) {
 		html := []byte(`<html><head><link rel="icon" type="image/png" href="/logo.png" /></head></html>`)
@@ -158,6 +173,9 @@ func TestInjectSiteFavicon(t *testing.T) {
 	})
 }
 
+// TestReplaceNoncePlaceholder supplies single and repeated placeholders with
+// populated and empty nonces. Replacement must substitute every occurrence and
+// retain equivalent bytes for empty or placeholder-free input.
 func TestReplaceNoncePlaceholder(t *testing.T) {
 	t.Run("replaces_single_placeholder", func(t *testing.T) {
 		html := []byte(`<script nonce="__CSP_NONCE_VALUE__">console.log('test');</script>`)
@@ -207,12 +225,19 @@ func TestReplaceNoncePlaceholder(t *testing.T) {
 	})
 }
 
+// TestNonceHTMLPlaceholder inspects the exact marker used by reusable script
+// markup. The constant must match the nonce-placeholder spelling embedded in
+// test HTML and used for response substitution.
 func TestNonceHTMLPlaceholder(t *testing.T) {
 	t.Run("constant_value", func(t *testing.T) {
 		assert.Equal(t, "__CSP_NONCE_VALUE__", NonceHTMLPlaceholder)
 	})
 }
 
+// TestFrontendServer_InjectSettings uses the embedded entry with simple and
+// nested settings JSON. The returned markup must insert the supplied
+// configuration before head closure and retain the unresolved nonce
+// placeholder.
 func TestFrontendServer_InjectSettings(t *testing.T) {
 	t.Run("injects_settings_with_nonce_placeholder", func(t *testing.T) {
 		provider := &mockSettingsProvider{
@@ -225,7 +250,7 @@ func TestFrontendServer_InjectSettings(t *testing.T) {
 		settingsJSON := []byte(`{"test":"data"}`)
 		result := server.injectSettings(settingsJSON)
 
-		// 注入脚本包含 nonce 占位符。
+		// The cached script retains a placeholder for the request's nonce.
 		assert.Contains(t, string(result), `<script nonce="__CSP_NONCE_VALUE__">`)
 		assert.Contains(t, string(result), `window.__APP_CONFIG__={"test":"data"};`)
 		assert.Contains(t, string(result), `</script></head>`)
@@ -242,7 +267,6 @@ func TestFrontendServer_InjectSettings(t *testing.T) {
 		settingsJSON := []byte(`{}`)
 		result := server.injectSettings(settingsJSON)
 
-		// 脚本注入在 </head> 之前。
 		headCloseIndex := bytes.Index(result, []byte("</head>"))
 		scriptIndex := bytes.Index(result, []byte(`<script nonce="`))
 
@@ -268,6 +292,10 @@ func TestFrontendServer_InjectSettings(t *testing.T) {
 	})
 }
 
+// TestFrontendServer_ServeIndexHTML renders configured pages, repeats cache
+// reads with different nonces, revalidates an ETag, and injects a provider
+// error. Responses must expose expected status, HTML, nonce, cache-read count,
+// and rendering headers.
 func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 	t.Run("serves_html_with_nonce", func(t *testing.T) {
 		provider := &mockSettingsProvider{
@@ -277,12 +305,11 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		server, err := NewFrontendServer(provider)
 		require.NoError(t, err)
 
-		// 请求上下文携带本次响应的 nonce。
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-		// 使用 SecurityHeaders 中间件约定的上下文键。
+		// Simulate the context value supplied by SecurityHeaders.
 		testNonce := "test-nonce-12345"
 		c.Set(middleware.CSPNonceKey, testNonce)
 
@@ -292,7 +319,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
 
 		body := w.Body.String()
-		// 响应使用请求上下文中的 nonce。
+
 		assert.NotContains(t, body, NonceHTMLPlaceholder)
 		assert.Contains(t, body, `nonce="`+testNonce+`"`)
 	})
@@ -313,17 +340,17 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		server.serveIndexHTML(c1)
 		assert.Equal(t, 1, provider.called)
 
-		// 第二次请求复用缓存。
+		// The second request reuses the cached template.
 		w2 := httptest.NewRecorder()
 		c2, _ := gin.CreateTestContext(w2)
 		c2.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 		c2.Set(middleware.CSPNonceKey, "nonce2")
 
 		server.serveIndexHTML(c2)
-		// 缓存命中后的配置读取次数保持一致。
+		// A cache hit avoids another settings read.
 		assert.Equal(t, 1, provider.called)
 
-		// 每个请求使用自己的 nonce。
+		// The cached template still receives a fresh nonce per request.
 		assert.Contains(t, w2.Body.String(), `nonce="nonce2"`)
 	})
 
@@ -356,7 +383,6 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		server, err := NewFrontendServer(provider)
 		require.NoError(t, err)
 
-		// 使用 Gin 路由器处理 304 响应。
 		router := gin.New()
 		router.Use(func(c *gin.Context) {
 			c.Set(middleware.CSPNonceKey, "test-nonce")
@@ -364,14 +390,14 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		})
 		router.Use(server.Middleware())
 
-		// 首次请求填充缓存并取得 ETag。
+		// Prime the cache and obtain its ETag.
 		w1 := httptest.NewRecorder()
 		req1 := httptest.NewRequest(http.MethodGet, "/", nil)
 		router.ServeHTTP(w1, req1)
 		etag := w1.Header().Get("ETag")
 		require.NotEmpty(t, etag)
 
-		// 第二次请求携带 If-None-Match。
+		// Revalidate the cached response using the ETag.
 		w2 := httptest.NewRecorder()
 		req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 		req2.Header.Set("If-None-Match", etag)
@@ -407,7 +433,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		server, err := NewFrontendServer(provider)
 		require.NoError(t, err)
 
-		// 失效后重新读取设置。
+		// Force a settings read after invalidation.
 		server.InvalidateCache()
 
 		w := httptest.NewRecorder()
@@ -417,12 +443,15 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 
 		server.serveIndexHTML(c)
 
-		// 设置读取失败时返回基础 HTML 和 200 状态。
+		// A settings failure leaves the base page available with status 200.
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
 	})
 }
 
+// TestFrontendServer_InvalidateCache primes a rendered page and then changes
+// settings after invalidation. A following page request must read the provider
+// again, while nil server and cache notifications must not panic.
 func TestFrontendServer_InvalidateCache(t *testing.T) {
 	t.Run("invalidates_cache", func(t *testing.T) {
 		provider := &mockSettingsProvider{
@@ -432,7 +461,7 @@ func TestFrontendServer_InvalidateCache(t *testing.T) {
 		server, err := NewFrontendServer(provider)
 		require.NoError(t, err)
 
-		// 首次请求填充缓存。
+		// Prime the cache before changing settings.
 		w1 := httptest.NewRecorder()
 		c1, _ := gin.CreateTestContext(w1)
 		c1.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -445,7 +474,7 @@ func TestFrontendServer_InvalidateCache(t *testing.T) {
 
 		provider.settings = map[string]string{"test": "new_value"}
 
-		// 第二次请求读取新设置。
+		// Invalidation forces the next request to read the new settings.
 		w2 := httptest.NewRecorder()
 		c2, _ := gin.CreateTestContext(w2)
 		c2.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -457,7 +486,7 @@ func TestFrontendServer_InvalidateCache(t *testing.T) {
 
 	t.Run("handles_nil_server", func(t *testing.T) {
 		var server *FrontendServer
-		// nil 接收者的失效调用可以直接返回。
+
 		assert.NotPanics(t, func() {
 			server.InvalidateCache()
 		})
@@ -465,44 +494,108 @@ func TestFrontendServer_InvalidateCache(t *testing.T) {
 
 	t.Run("handles_nil_cache", func(t *testing.T) {
 		server := &FrontendServer{}
-		// 缓存尚未初始化时，失效调用可以直接返回。
+
 		assert.NotPanics(t, func() {
 			server.InvalidateCache()
 		})
 	})
 }
 
+// TestOverrideFilesNeverReceiveImmutableCacheHeaders exercises disk replacements
+// through both frontend middleware entry points and an override-disabled server.
+// It checks response bytes, status, Gin termination, and embedded caching when
+// replacements are missing or directories.
 func TestOverrideFilesNeverReceiveImmutableCacheHeaders(t *testing.T) {
-	t.Parallel()
+	// ServeEmbeddedFrontend resolves overrides relative to the process working
+	// directory. A temporary working directory isolates disk fixtures for both entry points.
+	t.Chdir(t.TempDir())
 
-	overrideDir := t.TempDir()
-	cleanPath := "assets/index-AbCd1234.js"
+	distFS, err := fs.Sub(frontendFS, "dist")
+	require.NoError(t, err)
+	entries, err := fs.ReadDir(distFS, "assets")
+	require.NoError(t, err)
+	cleanPath := ""
+	for _, entry := range entries {
+		candidate := "assets/" + entry.Name()
+		if !entry.IsDir() && isFingerprintedEmbeddedAssetPath(candidate) {
+			cleanPath = candidate
+			break
+		}
+	}
+	require.NotEmpty(t, cleanPath)
+	embeddedContents, err := fs.ReadFile(distFS, cleanPath)
+	require.NoError(t, err)
+
+	overrideDir := filepath.Join("data", "public")
 	filePath := filepath.Join(overrideDir, cleanPath)
-	require.NoError(t, os.MkdirAll(filepath.Dir(filePath), 0o755))
-	require.NoError(t, os.WriteFile(filePath, []byte("override"), 0o644))
+	server := &FrontendServer{
+		distFS:      distFS,
+		fileServer:  http.FileServer(http.FS(distFS)),
+		overrideDir: overrideDir,
+	}
+	disabledServer := &FrontendServer{
+		distFS:     distFS,
+		fileServer: http.FileServer(http.FS(distFS)),
+	}
 
-	t.Run("frontend_server_override", func(t *testing.T) {
-		t.Parallel()
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodGet, "/"+cleanPath, nil)
+	for _, entryPoint := range []struct {
+		name             string          // middleware entry label
+		middleware       gin.HandlerFunc // static response entry
+		overridesEnabled bool            // disk overrides enabled
+	}{
+		{"frontend_server", server.Middleware(), true},
+		{"direct_bundle", ServeEmbeddedFrontend(), true},
+		{"frontend_server_disabled", disabledServer.Middleware(), false},
+	} {
+		t.Run(entryPoint.name, func(t *testing.T) {
+			for _, candidateKind := range []string{"file", "missing", "directory"} {
+				t.Run(candidateKind, func(t *testing.T) {
+					require.NoError(t, os.RemoveAll(overrideDir))
+					switch candidateKind {
+					case "file":
+						require.NoError(t, os.MkdirAll(filepath.Dir(filePath), 0o755))
+						require.NoError(t, os.WriteFile(filePath, []byte("override"), 0o644))
+					case "directory":
+						require.NoError(t, os.MkdirAll(filePath, 0o755))
+					}
 
-		server := &FrontendServer{overrideDir: overrideDir}
-		assert.True(t, server.tryServeOverride(c, cleanPath))
-		assert.Empty(t, w.Header().Get("Cache-Control"))
-	})
+					nextCalled := false
+					aborted := false
+					router := gin.New()
+					router.Use(func(c *gin.Context) {
+						c.Next()
+						aborted = c.IsAborted()
+					})
+					router.Use(entryPoint.middleware)
+					router.GET("/"+cleanPath, func(c *gin.Context) {
+						nextCalled = true
+						c.String(http.StatusTeapot, "next handler")
+					})
 
-	t.Run("legacy_override", func(t *testing.T) {
-		t.Parallel()
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodGet, "/"+cleanPath, nil)
+					w := httptest.NewRecorder()
+					req := httptest.NewRequest(http.MethodGet, "/"+cleanPath, nil)
+					router.ServeHTTP(w, req)
 
-		assert.True(t, tryServeOverrideFile(c, overrideDir, cleanPath))
-		assert.Empty(t, w.Header().Get("Cache-Control"))
-	})
+					assert.Equal(t, http.StatusOK, w.Code)
+					assert.False(t, nextCalled)
+					assert.True(t, aborted)
+					if entryPoint.overridesEnabled && candidateKind == "file" {
+						assert.Equal(t, "override", w.Body.String())
+						assert.Empty(t, w.Header().Get("Cache-Control"))
+					} else {
+						assert.Equal(t, string(embeddedContents), w.Body.String())
+						assert.Equal(t, staticAssetsCacheControl, w.Header().Get("Cache-Control"))
+					}
+				})
+			}
+		})
+	}
 }
 
+// TestFrontendServer_Middleware routes injected pages, existing assets,
+// marketplace navigation, and reserved gateway paths through Gin. API handlers
+// must remain reachable, SPA routes must receive HTML, and discovered
+// fingerprinted assets must receive the immutable cache policy.
 func TestFrontendServer_Middleware(t *testing.T) {
 	t.Run("skips_api_routes", func(t *testing.T) {
 		provider := &mockSettingsProvider{
@@ -514,6 +607,7 @@ func TestFrontendServer_Middleware(t *testing.T) {
 
 		apiPaths := []string{
 			"/api/v1/users",
+			"/mcp",
 			"/v1/models",
 			"/models",
 			"/v1beta/chat",
@@ -563,7 +657,7 @@ func TestFrontendServer_Middleware(t *testing.T) {
 
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/models", nil)
-		// 模拟浏览器地址栏导航，请求应由 SPA 接管。
+		// Simulate address-bar navigation so the SPA handles the request.
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		router.ServeHTTP(w, req)
 
@@ -700,6 +794,10 @@ func TestFrontendServer_Middleware(t *testing.T) {
 	})
 }
 
+// TestEmbeddedFrontendBypassesBareVideoAPIRoutes supplies generation, edit,
+// extension, and request-specific paths under the bare video API prefix. Every
+// path must bypass frontend handling so a registered video handler can receive
+// it.
 func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/videos/generations",
@@ -712,13 +810,16 @@ func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 	}
 }
 
+// TestEmbeddedFrontendModelsRouteNegotiation combines browser Accept text with
+// model API version, credential, and JSON-preference hints. Each fixture must
+// choose its expected frontend-bypass result for the shared /models route.
 func TestEmbeddedFrontendModelsRouteNegotiation(t *testing.T) {
 	tests := []struct {
-		name       string
-		path       string
-		accept     string
-		headers    map[string]string
-		wantBypass bool
+		name       string            // subtest display name
+		path       string            // supplied request path and query
+		accept     string            // supplied media preference header
+		headers    map[string]string // supplied credential header values
+		wantBypass bool              // expected API forwarding choice
 	}{
 		{
 			name:       "浏览器页面导航",
@@ -768,6 +869,9 @@ func TestEmbeddedFrontendModelsRouteNegotiation(t *testing.T) {
 	}
 }
 
+// TestNewFrontendServer constructs the server with a public-data fixture and
+// reads its compiled entry. Construction must retain that provider and
+// initialize filesystem, asset handler, base bytes, and language cache.
 func TestNewFrontendServer(t *testing.T) {
 	t.Run("creates_server_successfully", func(t *testing.T) {
 		provider := &mockSettingsProvider{
@@ -798,6 +902,9 @@ func TestNewFrontendServer(t *testing.T) {
 	})
 }
 
+// TestHasEmbeddedFrontend reads the build's compiled frontend availability
+// flag. The embed fixture must report true because its dist entry is present
+// and readable in the built test bundle.
 func TestHasEmbeddedFrontend(t *testing.T) {
 	t.Run("returns_true_when_frontend_embedded", func(t *testing.T) {
 		result := HasEmbeddedFrontend()
@@ -805,7 +912,9 @@ func TestHasEmbeddedFrontend(t *testing.T) {
 	})
 }
 
-// TestServeEmbeddedFrontend 验证内嵌前端的请求处理。
+// TestServeEmbeddedFrontend sends static, root, SPA, marketplace, and reserved
+// API requests through the direct bundle entry point. HTML and asset responses
+// must remain available while reserved routes reach their registered handlers.
 func TestServeEmbeddedFrontend(t *testing.T) {
 	t.Run("serves_static_files", func(t *testing.T) {
 		middleware := ServeEmbeddedFrontend()
@@ -869,7 +978,7 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/models", nil)
-		// 兼容入口将浏览器页面导航交给 SPA。
+		// The entry point without settings injection also serves browser navigation through the SPA.
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		router.ServeHTTP(w, req)
 
@@ -885,6 +994,7 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 
 		apiPaths := []string{
 			"/api/users",
+			"/mcp",
 			"/v1/models",
 			"/models",
 			"/v1beta/chat",
@@ -917,7 +1027,34 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 	})
 }
 
-// BenchmarkReplaceNoncePlaceholder 测量 nonce 占位符替换的开销。
+// TestMCPRoutesBypassEmbeddedFrontend exercises Streamable HTTP methods in both
+// embedded serving modes. Even a browser Accept header must reach the MCP
+// handler instead of receiving the application's HTML entry page.
+func TestMCPRoutesBypassEmbeddedFrontend(t *testing.T) {
+	server, err := NewFrontendServer(&mockSettingsProvider{settings: map[string]string{}})
+	require.NoError(t, err)
+	for name, frontend := range map[string]gin.HandlerFunc{"injected": server.Middleware(), "static": ServeEmbeddedFrontend()} {
+		for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+			t.Run(name+method, func(t *testing.T) {
+				router := gin.New()
+				router.Use(frontend)
+				router.Any("/mcp", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"transport": "mcp"}) })
+				request := httptest.NewRequest(method, "/mcp", nil)
+				request.Header.Set("Accept", "text/html, application/json")
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, request)
+				require.Equal(t, http.StatusOK, response.Code)
+				require.Contains(t, response.Header().Get("Content-Type"), "application/json")
+				require.JSONEq(t, `{"transport":"mcp"}`, response.Body.String())
+			})
+		}
+	}
+}
+
+// BenchmarkReplaceNoncePlaceholder repeatedly substitutes one marker in a fixed
+// HTML payload after setup is excluded from timing. It measures
+// replacement-call cost and leaves output validation to the dedicated nonce
+// tests.
 func BenchmarkReplaceNoncePlaceholder(b *testing.B) {
 	html := []byte(`<!DOCTYPE html><html><head><script nonce="__CSP_NONCE_VALUE__">window.__APP_CONFIG__={"test":"data"};</script></head><body></body></html>`)
 	nonce := "abcdefghijklmnop123456=="
@@ -928,11 +1065,17 @@ func BenchmarkReplaceNoncePlaceholder(b *testing.B) {
 	}
 }
 
+// BenchmarkFrontendServerServeIndexHTML repeatedly renders the root entry with
+// a fixed provider and nonce after construction leaves the timed region. Its
+// measured calls include recorder/context construction, initial cache
+// population, and later cache-hit page serving.
 func BenchmarkFrontendServerServeIndexHTML(b *testing.B) {
 	provider := &mockSettingsProvider{
 		settings: map[string]string{"test": "value"},
 	}
 
+	// This benchmark relies on the embed fixture having a readable entry. It
+	// discards the construction error before timing; ordinary constructor tests validate those initialized fields.
 	server, _ := NewFrontendServer(provider)
 
 	b.ResetTimer()
@@ -946,7 +1089,9 @@ func BenchmarkFrontendServerServeIndexHTML(b *testing.B) {
 	}
 }
 
-// TestFrontendServerLateHTMLPublication 检查后续请求使用失效之后读取的新设置。
+// TestFrontendServerLateHTMLPublication blocks the first settings read,
+// invalidates the page cache, and releases that old result. A following request
+// must read and return the newer site name rather than reuse the stale render.
 func TestFrontendServerLateHTMLPublication(t *testing.T) {
 	p := &blockingPublic{entered: make(chan struct{}), release: make(chan struct{})}
 	s, err := NewFrontendServer(p)
@@ -959,6 +1104,8 @@ func TestFrontendServerLateHTMLPublication(t *testing.T) {
 		return w
 	}
 	done := make(chan struct{})
+	// Wait for the first provider read to block before invalidating. Join its
+	// render completion after release so the next request tests the late-publication decision.
 	go func() { call(); close(done) }()
 	<-p.entered
 	s.InvalidateCache()
@@ -968,12 +1115,28 @@ func TestFrontendServerLateHTMLPublication(t *testing.T) {
 	require.True(t, strings.Contains(w.Body.String(), "NEW-TEST"), "旧回源覆盖失效，后续请求未取得新配置")
 }
 
+// GetPublicSettingsForInjection increments the fixture's unsynchronized call
+// count and returns settings and err as configured. It ignores ctx; use this
+// fixture serially, keeping shared settings stable while rendering encodes
+// them.
 func (m *mockSettingsProvider) GetPublicSettingsForInjection(ctx context.Context) (any, error) {
 	m.called++
 	return m.settings, m.err
 }
 
+// GetPublicSettingsForInjection returns old settings after its first-call gate
+// is released and new settings thereafter. The fixture owner initializes
+// entered and release before use, then closes release to let that first call
+// finish.
+//
+// An atomic invocation count identifies the first caller, which closes entered
+// to notify the controlling test before waiting. The supplied context is
+// ignored, so cancellation cannot unblock the gate; the test owns its release
+// even when request cancellation occurs. Later calls return new settings
+// immediately.
 func (p *blockingPublic) GetPublicSettingsForInjection(context.Context) (any, error) {
+	// Let the first caller announce its blocked read before returning old settings.
+	// The controlling test releases it after invalidation, while later calls return the newer fixture.
 	if p.calls.Add(1) == 1 {
 		close(p.entered)
 		<-p.release

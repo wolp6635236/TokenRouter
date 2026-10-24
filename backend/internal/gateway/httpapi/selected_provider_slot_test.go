@@ -11,7 +11,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestSelectedProviderSlotOwnsOnlyAcquiredResource 验证已取得槽位直接复用，粘性绑定保持原样，重复清理释放一次。
+// TestSelectedProviderSlotOwnsOnlyAcquiredResource supplies an already acquired
+// selection with a release counter and no sticky service. The acquired hook
+// runs once and repeated returned releases invoke underlying cleanup once.
 func TestSelectedProviderSlotOwnsOnlyAcquiredResource(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -28,6 +30,9 @@ func TestSelectedProviderSlotOwnsOnlyAcquiredResource(t *testing.T) {
 	require.EqualValues(t, 1, released.Load())
 }
 
+// TestSelectedProviderSlotMissingWaitPlanKeepsErrorShape supplies a selection
+// with no acquired slot or wait plan. It requires the capacity observation and
+// unchanged 503 error category, message and empty code.
 func TestSelectedProviderSlotMissingWaitPlanKeepsErrorShape(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)

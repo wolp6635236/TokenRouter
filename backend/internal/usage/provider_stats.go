@@ -1,14 +1,22 @@
 package usage
 
-// ProviderStats 提供商使用统计
-//
-// cost: 提供商口径费用（使用 COALESCE(provider_stats_cost, total_cost) * provider_rate_multiplier）
-// standard_cost: 标准费用（使用 total_cost，不含倍率）
-// user_cost: 用户/API Key 口径费用（使用 actual_cost，受分组倍率影响）。
+// provider_stats.go defines provider request, token, and cost totals for
+// reporting.
+// Provider reports keep execution cost, unmultiplied standard cost, and user
+// charges as distinct measures. The same request and token counts accompany
+// those amounts, so filtering by provider does not change the meaning of the
+// user-charge column.
+
+// ProviderStats summarizes one provider's matching usage records with three
+// separate monetary measures.
 type ProviderStats struct {
-	Requests     int64   `json:"requests"`
-	Tokens       int64   `json:"tokens"`
-	Cost         float64 `json:"cost"`
-	StandardCost float64 `json:"standard_cost"`
-	UserCost     float64 `json:"user_cost"`
+	Requests int64 `json:"requests"` // matching usage record count
+	Tokens   int64 `json:"tokens"`   // input output and cache tokens
+	// Cost, StandardCost, and UserCost use different stored amounts. Cost sums
+	// COALESCE(provider_stats_cost, total_cost) times
+	// COALESCE(provider_rate_multiplier, 1);
+	// StandardCost sums total_cost, and UserCost sums actual_cost.
+	Cost         float64 `json:"cost"`          // multiplied provider cost amount
+	StandardCost float64 `json:"standard_cost"` // unmultiplied recorded total cost
+	UserCost     float64 `json:"user_cost"`     // recorded actual user charges
 }

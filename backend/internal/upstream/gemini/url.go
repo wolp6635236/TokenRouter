@@ -8,20 +8,25 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// geminiAIStudioActions 是允许出现在上游 URL 里的 action 集合，与 ForwardNative
-// 的入站校验保持一致，同时避免 compat 侧把可变字符串直接拼进 path。
+// url.go builds validated AI Studio model-action URLs for generation,
+// streaming, and token counting.
+// AI Studio model actions share the v1beta resource path while selecting
+// generation, streaming generation, or token counting. Model names can
+// originate in client input or mapping, so the builder validates their trimmed
+// path segment before appending it to the caller-validated base URL.
+
+// geminiAIStudioActions is the operation allowlist used before model URL
+// construction, covering both generation actions and token counting.
 var geminiAIStudioActions = map[string]struct{}{
 	"generateContent":       {},
 	"streamGenerateContent": {},
 	"countTokens":           {},
 }
 
-// BuildGeminiAIStudioModelActionURL 组装 AI Studio 的
-// /v1beta/models/{model}:{action} 上游 URL。
-//
-// model 是客户端可控的（native 路由取自 URL 片段，compat 路由取自请求体的 model
-// 字段，之后可能再经分组映射），因此必须先过路径片段护栏才能拼进 path，
-// 见 upstream_path_guard.go。新增 AI Studio 端点请一律走本函数。
+// BuildGeminiAIStudioModelActionURL constructs a validated model-action path
+// under the supplied base URL. It trims base, model, and action; callers
+// validate base URL policy, while this builder rejects unsafe model segments
+// and unsupported actions. stream adds alt=sse independently of action.
 func BuildGeminiAIStudioModelActionURL(baseURL, model, action string, stream bool) (string, error) {
 	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if trimmedBase == "" {
@@ -31,6 +36,9 @@ func BuildGeminiAIStudioModelActionURL(baseURL, model, action string, stream boo
 	if trimmedModel == "" {
 		return "", errors.New("gemini model is required")
 	}
+	// Mapped or client-supplied model text becomes one URL segment. Validate it
+	// before concatenation so navigation and URL delimiters cannot select a
+	// different upstream resource.
 	if err := upstream.ValidateUpstreamPathSegment("gemini model", trimmedModel); err != nil {
 		return "", err
 	}
@@ -46,8 +54,10 @@ func BuildGeminiAIStudioModelActionURL(baseURL, model, action string, stream boo
 	return fullURL, nil
 }
 
-// IsSafeGeminiModelPathSegment 供 handler 层在解析出 URL 里的模型名后立刻校验，
-// 模型名非法时在 handler 返回 400。
+// IsSafeGeminiModelPathSegment reports whether the trimmed model passes the
+// shared upstream segment allowlist. Empty, oversized, dot-only, or
+// delimiter-bearing values fail, allowing handlers to reject those names
+// before constructing a request.
 func IsSafeGeminiModelPathSegment(model string) bool {
 	return upstream.IsSafeUpstreamPathSegment(strings.TrimSpace(model))
 }

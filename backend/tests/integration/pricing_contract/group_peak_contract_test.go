@@ -8,19 +8,26 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 )
 
-// TestPeakMultiplier_GatewayBillingSequence 调用 gateway_service.recordUsageCore 与
-// openai_gateway_service.RecordUsage 共用的 computePeakAwareMultipliers，验证计费叠加顺序：
-// 图片按次倍率基于基础倍率算出且不受高峰影响，高峰因子只乘入 token 倍率。
-// 若有人调换叠加顺序或把高峰并入 imageMultiplier，此测试会失败。
+// Peak settings change the token funding multiplier while images keep the
+// supplied base multiplier. A fixed UTC key snapshot separates the peak window
+// from the process timezone and checks peak, off-peak, and missing-key results
+// through the completion helper.
+
+// TestPeakMultiplier_GatewayBillingSequence evaluates a fixed peak window
+// through the completion multiplier helper. It checks token amplification, the
+// base image rate, and base rates outside the window or with a nil key.
 func TestPeakMultiplier_GatewayBillingSequence(t *testing.T) {
 	const baseMultiplier = 0.8
 	keySnapshot := &completion.KeySnapshot{Group: newPeakGroup(true, "14:00", "18:00", 3.0)}
-	// 原合同在 UTC 运行，显式指定快照时区，避免改变同进程其他测试。
+	// The snapshot's explicit UTC location evaluates these clock-only peak
+	// settings against at's UTC instants independently of
+	// the process calendar.
 	keySnapshot.Group.Location = time.UTC
+	// Allow a small absolute residue when comparing dimensionless factors.
 	approxEq := func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 	t.Run("peak hour amplifies token multiplier only", func(t *testing.T) {
-		now := at(15, 30) // 处于 [14:00, 18:00)
+		now := at(15, 30) // Inside [14:00, 18:00).
 		tokenMultiplier, imageMultiplier := completion.ComputePeakAwareMultipliers(keySnapshot, baseMultiplier, now)
 		if !approxEq(imageMultiplier, baseMultiplier) {
 			t.Fatalf("image multiplier must not be affected by peak: got %v, want %v", imageMultiplier, baseMultiplier)
@@ -53,10 +60,9 @@ func TestPeakMultiplier_GatewayBillingSequence(t *testing.T) {
 	})
 }
 
-// TestPeakMultiplier_SnapshotRoundTrip 防回归：认证缓存快照（APIKeyAuthGroupSnapshot）
-// 必须携带高峰倍率 4 字段，否则扣费路径拿到的 apiKey.Group 会缺字段、PeakMultiplierAt 恒降级为 1.0。
-// 调用真实链路 snapshotFromAPIKey → snapshotToAPIKey，验证 peak 配置经快照往返后仍生效。
-
+// newPeakGroup constructs a completion group with the supplied peak schedule.
+// Location remains unset so each caller chooses the timezone before evaluating
+// these wall-clock start and end values.
 func newPeakGroup(enabled bool, start, end string, mult float64) *completion.GroupSnapshot {
 	return &completion.GroupSnapshot{
 		PeakRateEnabled:    enabled,
@@ -66,6 +72,7 @@ func newPeakGroup(enabled bool, start, end string, mult float64) *completion.Gro
 	}
 }
 
+// at returns a UTC instant on the peak fixture's date.
 func at(hour, min int) time.Time {
 	return time.Date(2026, 6, 29, hour, min, 0, 0, time.UTC)
 }

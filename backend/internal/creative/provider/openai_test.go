@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -12,16 +13,29 @@ import (
 	"testing/synctest"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/TokenFlux/TokenRouter/internal/creative"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
-// creativeImageResponseBody 记录生图响应关闭时点，验证下载前已释放连接。
+// OpenAI image fixtures simulate response bodies and download callbacks to
+// observe delivery order without real transport. Tests inspect exact request
+// fields, base64 preference, signed URL preservation, bounded download counts,
+// and fixed result errors under synctest timing and injected cancellation.
+
+// creativeImageResponseBody wraps the fixture reader and records
+// close-before-download observations.
 type creativeImageResponseBody struct {
-	io.Reader
-	closed bool
+	io.Reader // simulated response body reader
+	// closed records the simulated body Close call. The download fixture checks
+	// this flag to observe cleanup order before fetching the returned image URL.
+	closed bool // fixture body close observed flag
 }
 
+// TestParseCreativeOpenAIImageOutputs supplies two encoded results and then an
+// empty array. It checks the first decoded bytes and zero index, while empty
+// data returns the asserted retryable 502 error.
 func TestParseCreativeOpenAIImageOutputs(t *testing.T) {
 	img1 := base64.StdEncoding.EncodeToString([]byte("png-bytes-1"))
 	img2 := base64.StdEncoding.EncodeToString([]byte("png-bytes-2"))
@@ -40,7 +54,7 @@ func TestParseCreativeOpenAIImageOutputs(t *testing.T) {
 	require.Equal(t, 0, outputs[0].Index)
 	require.Equal(t, []byte("png-bytes-1"), outputs[0].Bytes)
 	require.Equal(t, "image/png", outputs[0].Mime)
-	// 空 data 报 502 可重试上游错误。
+	// Empty data produces a retryable 502 upstream error.
 	_, err = ParseCreativeOpenAIImageOutputs([]byte(`{"data":[]}`))
 	require.Error(t, err)
 	var upstreamErr *creative.CreativeUpstreamError
@@ -49,9 +63,11 @@ func TestParseCreativeOpenAIImageOutputs(t *testing.T) {
 	require.True(t, upstreamErr.Retryable)
 }
 
-// TestBuildCreativeOpenAIRequestBody 校验编辑端点、鉴权请求和 b64 输出解析。
+// TestBuildCreativeOpenAIRequestBody inspects JSON generation and multipart
+// inpaint fields using a two-output run. Requests still use one PNG output;
+// the fixture checks DALL-E response_format and the listed four-K dimensions.
 func TestBuildCreativeOpenAIRequestBody(t *testing.T) {
-	// generate：JSON。
+	// Generation uses JSON.
 	run := creative.CreativeRun{Operation: creative.CreativeOperationGenerate, ImageSize: "1K", RequestedOutputCount: 2}
 	payload := creative.CreativeRunPayload{
 		Prompt:     "hello",
@@ -70,21 +86,21 @@ func TestBuildCreativeOpenAIRequestBody(t *testing.T) {
 	require.Equal(t, "png", generateBody["output_format"])
 	require.NotContains(t, generateBody, "output_compression")
 	require.Equal(t, "opaque", generateBody["background"])
-	// DALL-E 使用 response_format 字段选择响应格式。
+	// DALL-E selects Base64 with response_format.
 	dalleBody, _, err := BuildCreativeOpenAIRequestBody(run, payload, "dall-e-3")
 	require.NoError(t, err)
 	var dalleJSON map[string]any
 	require.NoError(t, json.Unmarshal(dalleBody, &dalleJSON))
 	require.Equal(t, "b64_json", dalleJSON["response_format"])
 
-	// GPT Image 2 的 4K 横向尺寸使用 3840x2160 像素值。
+	// GPT Image 2 uses 3840x2160 for landscape 4K output.
 	run = creative.CreativeRun{Operation: creative.CreativeOperationGenerate, ImageSize: "4K", AspectRatio: "16:9", RequestedOutputCount: 1}
 	body, contentType, err = BuildCreativeOpenAIRequestBody(run, payload, "gpt-image-2")
 	require.NoError(t, err)
 	require.Equal(t, "application/json", contentType)
 	require.Contains(t, string(body), `"size":"3840x2160"`)
 
-	// inpaint：multipart，含 image/mask/model/prompt 字段。
+	// Inpaint uses multipart image, mask, model, and prompt fields.
 	run = creative.CreativeRun{Operation: creative.CreativeOperationInpaint, ImageSize: "1K", AspectRatio: "1:1", RequestedOutputCount: 2}
 	payload = creative.CreativeRunPayload{
 		Prompt:     "inpaint me",
@@ -108,12 +124,17 @@ func TestBuildCreativeOpenAIRequestBody(t *testing.T) {
 	require.Contains(t, string(body), `name="background"`)
 }
 
+// Close records that the fixture response body was closed and returns success.
+// URL-download callbacks inspect this flag to establish cleanup ordering after
+// generation reads in the simulated exchange.
 func (b *creativeImageResponseBody) Close() error {
 	b.closed = true
 	return nil
 }
 
-// TestOpenAIImageURLResults 检查两种模型变体和三种操作的下载重试次数与生图次数。
+// TestOpenAIImageURLResults injects one failed download followed by usable
+// bytes for the listed models and operations. Assertions require a closed
+// generation body, preserved signed URL, one generation, and two fetches.
 func TestOpenAIImageURLResults(t *testing.T) {
 	for _, model := range []string{"gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
 		for _, operation := range []string{"generate", "edit", "inpaint"} {
@@ -154,12 +175,17 @@ func TestOpenAIImageURLResults(t *testing.T) {
 	}
 }
 
-// TestOpenAIImageResultFailures 检查结果错误的分类和敏感下载地址过滤。
+// TestOpenAIImageResultFailures supplies malformed responses and failed or
+// cancelled URL fetching under synctest. It checks result codes, nonretryable
+// classification, exact fetch counts, and omission of the supplied secret
+// text.
 func TestOpenAIImageResultFailures(t *testing.T) {
 	for _, test := range []struct {
+		// name labels the case; body supplies response text; code names expected
+		// failure
 		name, body, code string
-		cancel           bool
-		wantDownloads    int
+		cancel           bool // cancel injected during image fetch
+		wantDownloads    int  // expected image fetch call count
 	}{
 		{name: "download exhausted", body: `{"data":[{"url":"https://cdn.example.com/private?sig=secret"}]}`, code: "IMAGE_DOWNLOAD_FAILED", wantDownloads: 3},
 		{name: "cancelled download", body: `{"data":[{"url":"https://cdn.example.com/private?sig=secret"}]}`, code: "IMAGE_DOWNLOAD_FAILED", cancel: true, wantDownloads: 1},
@@ -170,10 +196,19 @@ func TestOpenAIImageResultFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
+				// This scenario owns the cancellable context.
+				// Release that lifetime on exit;
+				// the fetch hook can also cancel it earlier to
+				// stop further download retries.
 				defer cancel()
 				downloads := 0
 				target := &Target{OpenAI: &OpenAIOptions{FetchImage: func(context.Context, string) (string, error) {
 					downloads++
+					// Cancel from the first injected fetch
+					// so the adapter context, not a
+					// generation retry, stops later
+					// download attempts in this fixture
+					// case.
 					if test.cancel {
 						cancel()
 					}
@@ -191,7 +226,9 @@ func TestOpenAIImageResultFailures(t *testing.T) {
 	}
 }
 
-// TestOpenAIImageBase64Preferred 验证已有 Base64 时无需下载 URL。
+// TestOpenAIImageBase64Preferred supplies both a URL and decodable base64 in
+// one item. The returned bytes match base64 and the download callback fails
+// the test if unexpectedly invoked.
 func TestOpenAIImageBase64Preferred(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		target := &Target{OpenAI: &OpenAIOptions{FetchImage: func(context.Context, string) (string, error) {
@@ -202,4 +239,63 @@ func TestOpenAIImageBase64Preferred(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []byte("image"), outputs[0].Bytes)
 	})
+}
+
+// TestCreativeOpenAIStreamingMode adapts a streaming-only provider for creative
+// generation and editing. The adapter submits one stream request, aggregates its
+// final image, and classifies truncated streams as nonretryable delivery failures.
+// An unsolicited expired preview is ignored before final-image aggregation.
+func TestCreativeOpenAIStreamingMode(t *testing.T) {
+	for _, operation := range []string{"generate", "edit"} {
+		for _, failed := range []bool{false, true} {
+			calls := 0
+			target := &Target{OpenAI: &OpenAIOptions{
+				ImageMode: func(id protocol.ProtocolID) (protocol.ImageStreamMode, error) {
+					if operation == "edit" {
+						require.Equal(t, protocol.ProtocolImagesEdits, id)
+					} else {
+						require.Equal(t, protocol.ProtocolImagesGenerations, id)
+					}
+					return protocol.ImageModeStreaming, nil
+				},
+				Token:        func(context.Context) (string, error) { return "token", nil },
+				URL:          func(endpoint string) (string, error) { return "https://relay.invalid" + endpoint, nil },
+				Prepare:      func(req *http.Request) *http.Request { return req },
+				AuthHeaders:  func(context.Context, string) (http.Header, error) { return http.Header{}, nil },
+				ApplyHeaders: func(http.Header) {},
+				Do: func(req *http.Request) (*http.Response, error) {
+					calls++
+					raw, err := io.ReadAll(req.Body)
+					require.NoError(t, err)
+					if operation == "generate" {
+						require.True(t, gjson.GetBytes(raw, "stream").Bool())
+						require.EqualValues(t, 0, gjson.GetBytes(raw, "partial_images").Int())
+					} else {
+						require.Contains(t, string(raw), "name=\"stream\"\r\n\r\ntrue")
+					}
+					family := "image_generation"
+					if operation == "edit" {
+						family = "image_edit"
+					}
+					body := "data: {\"type\":\"image_generation.partial_image\",\"url\":\"https://preview.invalid/expired\"}\n\n" + fmt.Sprintf("data: {\"type\":%q,\"b64_json\":\"aW1hZ2U=\"}\n\n", family+".completed")
+					if failed {
+						body += "data: {"
+					}
+					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+				},
+			}}
+			outputs, err := target.ExecuteOpenAI(t.Context(), creative.CreativeRun{Operation: operation, ImageSize: "1K"}, creative.CreativeRunPayload{Prompt: "test"}, "gpt-image-2")
+			require.Equal(t, 1, calls)
+			if failed {
+				require.Error(t, err)
+				var failure *creative.CreativeUpstreamError
+				require.ErrorAs(t, err, &failure)
+				require.False(t, failure.Retryable)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, outputs, 1)
+				require.Equal(t, []byte("image"), outputs[0].Bytes)
+			}
+		}
+	}
 }

@@ -20,16 +20,32 @@ import (
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+// trace.go captures gateway request identity summaries and optional header and
+// body snapshots for debugging.
+// Gateway diagnostics compare inbound and outbound Messages requests using
+// compact identity lines or complete file snapshots. Authorization and
+// x-api-key values are redacted; other header values, request bodies, and selected
+// metadata remain available for inspecting protocol preparation and client
+// fingerprints.
+
+// debugGatewayBodyDefaultFilename names the append log selected by a true-like path setting or an existing directory.
 const debugGatewayBodyDefaultFilename = "gateway_debug.log"
 
-// Trace 由 app 共享。请求结束后才关闭文件，Close 的重复调用共用结果。
+// Trace holds the application-owned diagnostic log and mimic logging switch.
+// Drain requests and background users before Close, because snapshots borrow the
+// open file while closeOnce records a single close result.
 type Trace struct {
-	file      *os.File
-	mimic     bool
-	closeOnce sync.Once
-	closeErr  error
+	// file, closeOnce, and closeErr share the log lifetime: open assigns file,
+	// Close records its result once, and Snapshot borrows it until users drain.
+	file      *os.File  // opened append log
+	mimic     bool      // compact mimic logging
+	closeOnce sync.Once // one close attempt
+	closeErr  error     // retained close result
 }
 
+// New configures request diagnostics from the path and mimic settings. A blank
+// path disables file snapshots; opening failures are logged and leave file
+// snapshots disabled while the mimic switch remains usable.
 func New(path, mimic string) *Trace {
 	trace := &Trace{mimic: parseDebugEnvBool(mimic)}
 	if path = strings.TrimSpace(path); path != "" {
@@ -38,6 +54,9 @@ func New(path, mimic string) *Trace {
 	return trace
 }
 
+// Close releases the diagnostic file and returns its retained close error. Call
+// it after all capture users have finished; repeated calls share the result of
+// the first close attempt.
 func (s *Trace) Close() error {
 	s.closeOnce.Do(func() {
 		if s.file != nil {
@@ -47,7 +66,9 @@ func (s *Trace) Close() error {
 	return s.closeErr
 }
 
-// Capture 只在需要保留错误诊断或启用日志时读取报文。
+// Capture returns a compact identity line when retention or configured mimic
+// logging requests it. A nil Trace can still produce retained diagnostics, and
+// enabled mimic logging also writes nonempty lines through LegacyPrintf.
 func (s *Trace) Capture(req *http.Request, body []byte, target *gatewayprovider.ExecutionProvider, tokenType string, mimic, retain bool) string {
 	if !retain && (s == nil || !s.mimic) {
 		return ""
@@ -59,6 +80,8 @@ func (s *Trace) Capture(req *http.Request, body []byte, target *gatewayprovider.
 	return line
 }
 
+// parseDebugEnvBool reports whether trimmed, case-insensitive text enables
+// debug logging.
 func parseDebugEnvBool(raw string) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "on":
@@ -68,18 +91,25 @@ func parseDebugEnvBool(raw string) bool {
 	}
 }
 
+// redactAuthHeaderValue replaces nonempty credentials with a redaction marker.
+// Bearer values keep a recognizable scheme for comparing authentication modes;
+// blank values remain blank after whitespace trimming.
 func redactAuthHeaderValue(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return ""
 	}
-	// 保留认证方案名称，隐藏凭据。
+	// Bearer diagnostics retain the authentication scheme so request comparisons
+	// can distinguish token authentication while concealing the token value.
 	if strings.HasPrefix(strings.ToLower(v), "bearer ") {
 		return "Bearer [redacted]"
 	}
 	return "[redacted]"
 }
 
+// safeHeaderValueForLog trims values and redacts Authorization and x-api-key
+// headers. Names are matched after trimming and lowercasing; all other header
+// values retain their content after surrounding whitespace is removed.
 func safeHeaderValueForLog(key string, v string) string {
 	key = strings.ToLower(strings.TrimSpace(key))
 	switch key {
@@ -90,6 +120,9 @@ func safeHeaderValueForLog(key string, v string) string {
 	}
 }
 
+// extractSystemPreviewFromBody selects a system string or the first nonblank
+// text block. Missing, empty, or differently shaped system values produce an
+// empty preview, and returned text keeps its original whitespace.
 func extractSystemPreviewFromBody(body []byte) string {
 	if len(body) == 0 {
 		return ""
@@ -119,12 +152,16 @@ func extractSystemPreviewFromBody(body []byte) string {
 	}
 }
 
+// CaptureLine builds one request identity line with selected fingerprint
+// headers and a system preview. A nil request returns an empty string; callers
+// supply a request with a URL, and the preview is trimmed and bounded before
+// line escaping.
 func CaptureLine(req *http.Request, body []byte, provider *gatewayprovider.ExecutionProvider, tokenType string, mimicClaudeCode bool) string {
 	if req == nil {
 		return ""
 	}
 
-	// 读取指纹字段，认证 Header 使用脱敏值。
+	// Capture fingerprint headers with redacted authentication values.
 	interesting := []string{
 		"user-agent",
 		"x-app",
@@ -156,7 +193,8 @@ func CaptureLine(req *http.Request, body []byte, provider *gatewayprovider.Execu
 	metaUserID := strings.TrimSpace(gjson.GetBytes(body, "metadata.user_id").String())
 	sysPreview := strings.TrimSpace(extractSystemPreviewFromBody(body))
 
-	// 系统提示预览最多显示 300 字节。
+	// Bound the preview before escaping so full system prompts do not dominate the
+	// compact identity line; the bound counts bytes.
 	if len(sysPreview) > 300 {
 		sysPreview = sysPreview[:300] + "..."
 	}
@@ -183,18 +221,23 @@ func CaptureLine(req *http.Request, body []byte, provider *gatewayprovider.Execu
 	)
 }
 
+// open selects an append log from a path, directory, or true-like debug
+// setting. Directory creation and file-opening failures are logged and
+// suppressed so diagnostic setup leaves forwarding available with file
+// snapshots disabled.
 func (s *Trace) open(path string) {
 	if parseDebugEnvBool(path) {
 		path = debugGatewayBodyDefaultFilename
 	}
 
-	// 如果 path 指向一个已存在的目录，自动追加默认文件名
-
+	// A directory setting identifies the capture location, so append the
+	// conventional filename before creating parents and opening the log.
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		path = filepath.Join(path, debugGatewayBodyDefaultFilename)
 	}
 
-	// 确保父目录存在
+	// Prepare nested capture paths before opening the append file; a creation
+	// failure disables snapshots and is reported through ordinary logging.
 	if dir := filepath.Dir(path); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			slog.Error("failed to create gateway debug log directory", "dir", dir, "error", err)
@@ -211,15 +254,12 @@ func (s *Trace) open(path string) {
 	slog.Info("gateway debug logging enabled", "path", path)
 }
 
-// Snapshot 将网关请求的完整快照（headers + body）写入独立的调试日志文件，
-// 用于对比客户端原始请求和上游转发请求。
-//
-// 启用方式（环境变量）：
-//
-//	TOKENROUTER_DEBUG_GATEWAY_BODY=1                          # 写入 gateway_debug.log
-//	TOKENROUTER_DEBUG_GATEWAY_BODY=/tmp/gateway_debug.log     # 写入指定路径
-//
-// tag: "CLIENT_ORIGINAL" 或 "UPSTREAM_FORWARD"
+// Snapshot appends a complete request capture to the configured log after
+// building context, headers, and body in memory. An unopened file skips
+// capture, malformed JSON is written as supplied, and write failures are
+// discarded. Callers keep the Trace open until snapshots finish. Authorization
+// and x-api-key values are masked; other headers, body bytes, and extra context
+// retain the caller-supplied data.
 func (s *Trace) Snapshot(tag string, headers http.Header, body []byte, extra map[string]string) {
 	f := s.file
 	if f == nil {
@@ -230,7 +270,7 @@ func (s *Trace) Snapshot(tag string, headers http.Header, body []byte, extra map
 	ts := time.Now().Format("2006-01-02 15:04:05.000")
 	fmt.Fprintf(&buf, "\n========== [%s] %s ==========\n", ts, tag)
 
-	// 按键排序输出请求上下文。
+	// Sort context keys for repeatable output.
 	if len(extra) > 0 {
 		fmt.Fprint(&buf, "--- context ---\n")
 		extraKeys := make([]string, 0, len(extra))
@@ -243,7 +283,9 @@ func (s *Trace) Snapshot(tag string, headers http.Header, body []byte, extra map
 		}
 	}
 
-	// 2. headers（按 Claude CLI 的发送顺序排列，便于与抓包对比，auth 脱敏）
+	// Claude CLI ordering helps compare header placement with packet captures;
+	// mask Authorization and x-api-key values while keeping other supplied headers
+	// available for comparison.
 	fmt.Fprint(&buf, "--- headers ---\n")
 	for _, k := range claude.SortHeadersByWireOrder(headers) {
 		for _, v := range headers[k] {
@@ -251,7 +293,7 @@ func (s *Trace) Snapshot(tag string, headers http.Header, body []byte, extra map
 		}
 	}
 
-	// 3. body（完整输出，格式化 JSON 便于 diff）
+	// Pretty-print the full JSON body for comparison.
 	fmt.Fprint(&buf, "--- body ---\n")
 	if len(body) == 0 {
 		fmt.Fprint(&buf, "  (empty)\n")
@@ -260,11 +302,13 @@ func (s *Trace) Snapshot(tag string, headers http.Header, body []byte, extra map
 		if json.Indent(&pretty, body, "  ", "  ") == nil {
 			fmt.Fprintf(&buf, "  %s\n", pretty.Bytes())
 		} else {
-			// JSON 格式化失败时原样输出
+			// Keep malformed or non-JSON payload bytes available for comparison because
+			// formatting failure is itself evidence about the request being forwarded.
 			fmt.Fprintf(&buf, "  %s\n", body)
 		}
 	}
 
-	// 写入调试文件，并发写入的内容可能交错。
+	// Submit the assembled capture as one file write; discarded write errors keep
+	// optional diagnostics from becoming request-forwarding failures.
 	_, _ = f.WriteString(buf.String())
 }

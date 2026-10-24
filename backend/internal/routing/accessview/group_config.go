@@ -8,138 +8,198 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
-// GroupConfig 保存分组配置值，供提供商等模块读取。
-type GroupConfig struct {
-	Localization GroupLocalization
-	// DisplayName 是请求生成的展示值，持久化继续使用 Name。
-	DisplayName   string
-	RoutingPolicy GroupRoutingPolicy
-	ID            int64
-	Name          string
-	Description   string
-	// Models 是控制台查询时填充的可请求模型目录。
-	Models         []string
-	ModelProtocols map[string][]protocol.ProtocolID
+// group_config.go defines the group configuration shared by routing,
+// authentication snapshots, and console queries.
+// A group carries request policy separately from pricing and provider
+// credentials. Storage hydration supplies trusted routing fields, while console
+// queries can add localized names and a requestable model catalogue to the same
+// value. Consumers therefore choose the policy or display fields appropriate to
+// their operation.
 
-	// SchedulerType 决定该分组使用基础或高级调度器。
-	SchedulerType GroupSchedulerType
-	// AdvancedSchedulerOverrides 仅对高级调度分组生效，未设置字段继承网关通用设置。
+// GroupConfig contains persisted group policy and query-specific display
+// information. CloneGroupConfig detaches its declared collections and optional
+// scalar pointers for retained snapshots; nested feature values follow
+// GroupRoutingPolicy.Clone's supported copying cases.
+type GroupConfig struct {
+	Localization GroupLocalization // stored translatable group copy
+	// DisplayName is resolved for a display query's language. Name remains the
+	// persisted business identifier used by management and routing consumers.
+	DisplayName   string
+	RoutingPolicy GroupRoutingPolicy // group model and feature rules
+	ID            int64              // persisted group row identifier
+	Name          string             // persisted group business name
+	Description   string             // persisted group description text
+	// Models and ModelProtocols are populated for console catalogue queries. They
+	// describe locally eligible request names and their entry protocols; requests
+	// still perform current authorization and provider checks.
+	Models         []string                         // resolved client request identifiers
+	ModelProtocols map[string][]protocol.ProtocolID // protocols per displayed model
+
+	SchedulerType GroupSchedulerType // basic or advanced selection
+	// AdvancedSchedulerOverrides applies when SchedulerType selects advanced
+	// scheduling. Unset pointer fields inherit gateway settings; validated
+	// supplied values, including false and permitted zeros, take precedence during
+	// parameter merging.
 	AdvancedSchedulerOverrides GroupAdvancedSchedulerOverrides
-	DisplayBrand               string
-	RateMultiplier             float64
-	IsExclusive                bool
-	Status                     string
-	Hydrated                   bool // 表示分组已从可信存储加载。
-	// DuplicateOperationID 用于恢复已提交的分组复制结果，存于内部配置。
+	DisplayBrand               string  // administrator-selected display brand
+	RateMultiplier             float64 // group user-price multiplier
+	IsExclusive                bool    // restricted group access flag
+	Status                     string  // persisted group availability status
+	// Hydrated marks a value loaded with routing fields from trusted storage.
+	// IsGroupContextValid requires this marker before accepting a group context.
+	Hydrated bool
+	// DuplicateOperationID identifies a persisted duplication attempt. The
+	// duplication store uses it to recover the committed target group when
+	// completion is retried.
 	DuplicateOperationID string
 
-	// SessionIsolationEnabled 表示目标分组是否拒绝已归属其他分组的指定会话。
+	// SessionIsolationEnabled enables session.EnsureIsolation to reject a
+	// user/source/hash session whose recorded first group differs from this
+	// target. Gateway callers supply that identity and the target group's flag.
 	SessionIsolationEnabled bool
 
-	// 图片生成权限独立于共享价格配置。
-	AllowImageGeneration      bool
-	AllowBatchImageGeneration bool
+	AllowImageGeneration      bool // legacy image-generation permission
+	AllowBatchImageGeneration bool // legacy batch-generation permission
 
-	// Claude Code 客户端限制
-	ClaudeCodeOnly  bool
-	FallbackGroupID *int64
-	// Anthropic 无效请求的回退分组。
+	// ClaudeCodeOnly triggers client checks before selection; FallbackGroupID
+	// supplies the next group when the client is rejected. The entry reauthorizes
+	// a selected target group before execution.
+	ClaudeCodeOnly  bool   // Claude Code client restriction
+	FallbackGroupID *int64 // client-restriction fallback group
+	// FallbackGroupIDOnInvalidRequest supplies the configured target for invalid
+	// Anthropic requests. Its entry consumer determines whether the specific
+	// failure permits this fallback.
 	FallbackGroupIDOnInvalidRequest *int64
-	// UnavailableFallbackGroupID 表示当前分组停用时 API Key 优先回退到的分组。
+	// UnavailableFallbackGroupID supplies the administrator's preferred target
+	// when this group is unavailable. API-key admission also checks the key's
+	// permission to use that fallback.
 	UnavailableFallbackGroupID *int64
 
-	// 模型路由配置
-	// key: 模型匹配模式（支持 * 通配符，如 "claude-opus-*"）
-	// value: 优先提供商 ID 列表
-	ModelRouting        map[string][]int64
-	ModelRoutingEnabled bool
+	// ModelRouting and ModelRoutingEnabled select preferred providers for matching
+	// request models. Exact populated entries precede trailing-wildcard entries,
+	// and each value retains its configured provider order. Overlapping populated
+	// patterns use the first map-iteration match, so their selection has no saved
+	// wildcard priority.
+	ModelRouting        map[string][]int64 // preferred provider identifier lists
+	ModelRoutingEnabled bool               // preferred-provider selection switch
 
-	// MCP XML 协议注入开关（仅 antigravity 平台使用）
-	MCPXMLInject bool
+	MCPXMLInject bool // retained legacy injection setting
 
-	// 支持的模型系列（仅 antigravity 平台使用）
-	// 可选值: claude, gemini_text, gemini_image
-	SupportedModelScopes []string
+	SupportedModelScopes []string // retained legacy model-family selections
 
-	// 分组排序
-	SortOrder int
+	SortOrder int // administrator-selected display order
 
-	// AllowedProtocols 是分组允许的完整客户端协议与业务入口集合，空集合表示全部关闭。
-	AllowedProtocols     []protocol.ProtocolID
+	// AllowedProtocols admits new client operations; an empty selection closes
+	// those entries. ProtocolFallbacks independently selects their conversions, so
+	// a conversion target need not be admitted as a client entry.
+	AllowedProtocols []protocol.ProtocolID // admitted client protocol identifiers
+	// ProtocolFallbacks uses a missing key for automatic conversion matching. A
+	// present empty list requires native execution, and a nonempty list fixes
+	// permitted targets and order.
 	ProtocolFallbacks    map[protocol.ProtocolID][]protocol.ProtocolID
-	ResponsesImagePolicy string
-	// AllowMessagesDispatch 是从协议集合派生并持久化的弃用兼容镜像。
+	ResponsesImagePolicy string // Responses image-tool policy selection
+	// AllowMessagesDispatch is retained for persisted compatibility. Group
+	// administration derives it from AllowedProtocols so complete protocol
+	// selections govern Messages admission.
 	AllowMessagesDispatch bool
-	AllowLive             bool
-	// ForceOpenAIFast 强制 OpenAI 分组请求使用 service_tier=priority。
-	ForceOpenAIFast bool
-	// OpenAIFastPolicy 保存管理员选择的互斥加速策略。
-	OpenAIFastPolicy string
+	AllowLive             bool // retained legacy Live permission
+	// ForceOpenAIFast represents the legacy priority request. Group administration
+	// derives it from OpenAIFastPolicy when saving the mutually exclusive
+	// acceleration policy.
+	ForceOpenAIFast  bool
+	OpenAIFastPolicy string // selected OpenAI acceleration policy
 
-	RequireOAuthOnly   bool // 仅允许非 apikey 类型提供商关联（OpenAI/Antigravity/Anthropic/Gemini）
-	RequirePrivacySet  bool // 调度时仅允许 privacy 已成功设置的提供商（OpenAI/Antigravity/Anthropic/Gemini）
-	DefaultMappedModel string
-	ModelsListConfig   GroupModelsListConfig
-	// AvailabilityProbeConfig 控制该分组的主动可用性探测。
-	AvailabilityProbeConfig GroupAvailabilityProbeConfig
+	// RequireOAuthOnly rejects runtime candidates outside the provider's OAuth or
+	// Setup Token classification. Association validation and catalogue filtering
+	// apply their own authentication checks around this saved requirement.
+	RequireOAuthOnly bool // provider authentication restriction
+	// RequirePrivacySet requires the candidate's saved privacy result to pass
+	// provider.IsPrivacySet. OpenAI and Antigravity use their successful platform
+	// markers; other platforms pass that check.
+	RequirePrivacySet       bool                         // verified privacy setting requirement
+	DefaultMappedModel      string                       // retained default model setting
+	ModelsListConfig        GroupModelsListConfig        // custom displayed model selections
+	AvailabilityProbeConfig GroupAvailabilityProbeConfig // active group probe settings
 
-	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
-	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。
+	// RPMLimit supplies the per-user allowance within this group when no
+	// user-group override is present. Nonpositive values disable that default
+	// group counter; admission still checks a positive total-user RPM limit
+	// separately.
 	RPMLimit int
 
-	// MaxReasoningEffort 限制实际生效的 OpenAI/Anthropic 推理强度。
-	// 空字符串表示不限制；Anthropic 不支持 minimal。
+	// MaxReasoningEffort caps ranked effort after request mappings. Empty means no
+	// ceiling; the execution consumer checks the selected provider's supported
+	// effort values.
 	MaxReasoningEffort string
-	// MaxReasoningEffortOverLimit 控制请求指定的推理强度超过上限时降档或拒绝。
+	// MaxReasoningEffortOverLimit chooses how the reasoning policy handles a
+	// ranked request above MaxReasoningEffort. Empty configuration resolves to
+	// downgrade during policy normalization.
 	MaxReasoningEffortOverLimit string
-	// ReasoningEffortMappings 在应用上限前改写请求指定的推理强度。
+	// ReasoningEffortMappings rewrites client effort before the group ceiling is
+	// compared. Model scopes choose exact matches before prefix or suffix matches
+	// and global rules.
 	ReasoningEffortMappings []ReasoningEffortMapping
 
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-	ProviderCount            int64
-	ActiveProviderCount      int64
-	RateLimitedProviderCount int64
+	CreatedAt                time.Time // group row creation time
+	UpdatedAt                time.Time // last persisted group update
+	ProviderCount            int64     // total associated provider count
+	ActiveProviderCount      int64     // active associated provider count
+	RateLimitedProviderCount int64     // rate-limited associated provider count
 }
 
-// GroupAdvancedSchedulerOverrides 使用 policy 包定义的分组高级调度配置。
+// GroupAdvancedSchedulerOverrides aliases the scheduler policy's optional group
+// parameter overrides.
 type GroupAdvancedSchedulerOverrides = policy.GroupAdvancedSchedulerOverrides
 
-// GroupAvailabilityProbeConfig 是分组主动可用性探测配置。
-// 配置挂在 groups 表上，便于每个分组独立控制探测模型、提示词和频率。
+// GroupAvailabilityProbeConfig records the model, schedule, and attempt budget
+// for probes.
 type GroupAvailabilityProbeConfig struct {
-	Enabled         bool   `json:"enabled"`
-	IntervalMinutes int    `json:"interval_minutes,omitempty"`
-	ModelID         string `json:"model_id,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
-	TimeoutSeconds  int    `json:"timeout_seconds,omitempty"`
-	// MaxRetries 表示首次探测失败后允许重试的最大次数；nil 使用服务端默认值。
+	// Protocol selects a group entry for every attempt. Empty retains automatic
+	// provider selection and test inference for configurations saved without it.
+	Protocol        protocol.ProtocolID `json:"protocol,omitempty"`
+	Enabled         bool                `json:"enabled"`                    // active probe scheduling switch
+	IntervalMinutes int                 `json:"interval_minutes,omitempty"` // minutes
+	ModelID         string              `json:"model_id,omitempty"`         // probe request model identifier
+	Prompt          string              `json:"prompt,omitempty"`           // probe request prompt text
+	TimeoutSeconds  int                 `json:"timeout_seconds,omitempty"`  // seconds
+	// MaxRetries counts attempts after the first failed probe. Nil selects the
+	// server default, while a supplied zero executes only the first attempt.
 	MaxRetries *int   `json:"max_retries,omitempty"`
-	UserAgent  string `json:"user_agent,omitempty"`
+	UserAgent  string `json:"user_agent,omitempty"` // probe request User-Agent override
 }
 
-// GroupCopy 保存面向用户的展示名称和描述。
+// GroupCopy contains the group text resolved for a requested language.
 type GroupCopy struct {
-	DisplayName string `json:"display_name"`
-	Description string `json:"description"`
+	DisplayName string `json:"display_name"` // localized group display name
+	Description string `json:"description"`  // localized group description text
 }
 
-// GroupLocalization 与分组的业务名称分别持久化。
+// GroupLocalization stores group translations independently from its persisted
+// business name.
 type GroupLocalization locale.Content[GroupCopy]
 
-// GroupModelsListConfig 控制可选的自定义 /v1/models 响应列表。
+// GroupModelsListConfig selects the ordered custom model catalogue exposed to
+// clients.
 type GroupModelsListConfig struct {
-	Enabled bool     `json:"enabled"`
-	Models  []string `json:"models,omitempty"`
+	// Enabled applies the custom Models list when it contains entries; an empty
+	// list leaves the catalogue unfiltered. RequestableResolver still validates
+	// those names against group and provider eligibility.
+	Enabled bool     `json:"enabled"`          // custom catalogue selection switch
+	Models  []string `json:"models,omitempty"` // ordered custom request names
 }
 
-// ReasoningEffortMapping 按模型和匹配方式改写推理强度。
+// ReasoningEffortMapping describes one effort rewrite and its optional
+// request-model scope.
 type ReasoningEffortMapping struct {
-	From      string `json:"from"`
-	To        string `json:"to"`
+	From string `json:"from"` // requested effort to match
+	To   string `json:"to"`   // mapped effort to apply
+	// MatchType scopes Model matching; normalization makes a populated model
+	// default to exact. An empty Model selects a global mapping regardless of the
+	// supplied match type.
 	MatchType string `json:"match_type,omitempty"`
-	Model     string `json:"model,omitempty"`
+	Model     string `json:"model,omitempty"` // optional request-model match pattern
 }
 
-// GroupSchedulerType 表示分组使用的提供商调度器类型。
+// GroupSchedulerType names the selection strategy applied after provider
+// eligibility checks.
 type GroupSchedulerType string

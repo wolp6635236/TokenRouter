@@ -16,42 +16,83 @@ import (
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-const (
-	DingTalkOAuthCookiePath         = "/api/v1/auth/oauth/dingtalk"
-	DingTalkOAuthStateCookieName    = "dingtalk_oauth_state"
-	DingTalkOAuthRedirectCookie     = "dingtalk_oauth_redirect"
-	DingTalkOAuthIntentCookieName   = "dingtalk_oauth_intent"
-	DingTalkOAuthBindUserCookieName = "dingtalk_oauth_bind_user"
-	DingTalkOAuthCookieMaxAgeSec    = 600 // 10 分钟
-	DingTalkOAuthDefaultRedirectTo  = "/dashboard"
-	DingTalkOAuthDefaultFrontendCB  = "/auth/dingtalk/callback"
+// dingtalk_oauth.go handles DingTalk authorization, browser continuation, and
+// registration completion.
+// DingTalk login uses unionID as the stable provider subject while
+// organization and staff data feed policy checks and profile hints. Browser
+// state preserves login or signed current-user binding intent, and callback
+// verifies that state before token exchange and directory lookup.
+//
+// Organization policy decides whether staff lookup failures reject login or
+// continue with an empty profile. Existing provider ownership enters pending
+// login with asynchronous profile synchronization; optional-email and
+// required-email branches prepare different pending completion controls.
+// Compatibility email lookup errors are discarded here, so later pending
+// binding owns the definitive identity check. Legacy invitation completion can
+// issue credentials before adoption-and-consumption persistence, and
+// successful account resolution starts synchronization before the token
+// response.
 
-	DingTalkLevelThreeEnabled = true
+// DingTalk browser values, frontend defaults, and the compiled compatibility
+// gate retain authorization state, account intent, and real-email
+// account-choice behavior across callback navigation.
+const (
+	DingTalkOAuthCookiePath         = "/api/v1/auth/oauth/dingtalk" // DingTalk browser cookie path
+	DingTalkOAuthStateCookieName    = "dingtalk_oauth_state"        // DingTalk authorization state cookie
+	DingTalkOAuthRedirectCookie     = "dingtalk_oauth_redirect"     // DingTalk local return cookie
+	DingTalkOAuthIntentCookieName   = "dingtalk_oauth_intent"       // DingTalk account intent cookie
+	DingTalkOAuthBindUserCookieName = "dingtalk_oauth_bind_user"    // signed target account cookie
+	DingTalkOAuthCookieMaxAgeSec    = 600                           // seconds
+	DingTalkOAuthDefaultRedirectTo  = "/dashboard"                  // default local login destination
+	DingTalkOAuthDefaultFrontendCB  = "/auth/dingtalk/callback"     // default DingTalk browser callback
+
+	DingTalkLevelThreeEnabled = true // compiled real-email compatibility gate
 )
 
-// DingTalkHTTPOptions 保持配置热读取与注册开关的读取顺序。
+// DingTalkHTTPOptions supplies current provider configuration and the optional
+// registration decision.
 type DingTalkHTTPOptions struct {
-	LoadConfig          func(context.Context) (identity.DingTalkOAuthOptions, error)
-	RegistrationEnabled func(context.Context) bool
+	LoadConfig func(context.Context) (identity.DingTalkOAuthOptions, error) // current DingTalk configuration callback
+	// RegistrationEnabled is optional in the local signup-block helper. A missing
+	// callback leaves that helper unblocked; configured observations are
+	// interpreted with provider bypass settings by identity rules.
+	RegistrationEnabled func(context.Context) bool // optional global registration reader
 }
+
+// DingTalkHandler resolves DingTalk unionID and organization policy into
+// browser pending authentication.
 type DingTalkHandler struct {
-	*PendingHandler
-	binding         *OAuthBindHandler
-	syncer          *identity.DingTalkSyncRuntime
-	dingTalkOptions DingTalkHTTPOptions
+	*PendingHandler                               // shared browser pending authentication
+	binding         *OAuthBindHandler             // signed current-account binding helper
+	syncer          *identity.DingTalkSyncRuntime // provider profile synchronization runtime
+	dingTalkOptions DingTalkHTTPOptions           // retained DingTalk HTTP configuration
 }
 
+// CompleteDingTalkOAuthRequest carries invitation and profile choices for
+// legacy DingTalk pending signup.
 type CompleteDingTalkOAuthRequest struct {
-	InvitationCode   string `json:"invitation_code" binding:"required"`
-	AffCode          string `json:"aff_code,omitempty"`
-	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
-	AdoptAvatar      *bool  `json:"adopt_avatar,omitempty"`
+	InvitationCode string `json:"invitation_code" binding:"required"` // required registration invitation code
+	AffCode        string `json:"aff_code,omitempty"`                 // optional signup affiliate code
+	// AdoptDisplayName and AdoptAvatar keep omitted choices as nil and supplied
+	// false values as refusals. The helper retains saved values for omitted
+	// flags and otherwise defaults those flags to false before applying supplied
+	// choices.
+	AdoptDisplayName *bool `json:"adopt_display_name,omitempty"` // optional provider-name adoption choice
+	AdoptAvatar      *bool `json:"adopt_avatar,omitempty"`       // optional provider-avatar adoption choice
 }
 
+// NewDingTalkHandler retains pending and binding handlers, synchronization
+// runtime, and HTTP callbacks. Initialize the configuration reader and
+// provider synchronization capability before serving exposed authorization and
+// completion routes.
 func NewDingTalkHandler(p *PendingHandler, b *OAuthBindHandler, s *identity.DingTalkSyncRuntime, o DingTalkHTTPOptions) *DingTalkHandler {
 	return &DingTalkHandler{p, b, s, o}
 }
 
+// isDingTalkSignupBlocked combines configured provider registration policy
+// with the optional global switch. Missing registration callback returns
+// false; the identity helper interprets any configured provider bypass for the
+// selected observation.
 func (h *DingTalkHandler) isDingTalkSignupBlocked(ctx context.Context, cfg identity.DingTalkOAuthOptions) bool {
 	if h.dingTalkOptions.RegistrationEnabled == nil {
 		return false
@@ -59,6 +100,9 @@ func (h *DingTalkHandler) isDingTalkSignupBlocked(ctx context.Context, cfg ident
 	return identity.DingTalkSignupBlocked(cfg, h.dingTalkOptions.RegistrationEnabled(ctx))
 }
 
+// findDingTalkCompatEmailUser delegates real-email account lookup when the
+// compiled compatibility gate permits it. A disabled gate returns nil with no
+// error, leaving callback account choice without a matched local user.
 func (h *DingTalkHandler) findDingTalkCompatEmailUser(ctx context.Context, email string) (*identity.User, error) {
 	if !DingTalkLevelThreeEnabled {
 		return nil, nil
@@ -66,8 +110,10 @@ func (h *DingTalkHandler) findDingTalkCompatEmailUser(ctx context.Context, email
 	return h.flow.Database.FindDingTalkCompatEmailUser(ctx, email)
 }
 
-// DingTalkUpstreamRedirect 在 4 步链上游调用失败时记录详细错误日志并跳错误页。
-// 把钉钉 errcode/errmsg 写进 backend log + URL fragment，避免被泛 "internal error" 吞掉。
+// DingTalkUpstreamRedirect diagnoses a nonnil upstream failure and writes a
+// frontend error fragment. Structured DingTalk errors supply provider code and
+// message; other errors use application text, with the fragment helper
+// applying its byte bound.
 func DingTalkUpstreamRedirect(c *gin.Context, frontendCallback, step string, err error) {
 	dtCode := ""
 	dtMsg := ""
@@ -85,6 +131,9 @@ func DingTalkUpstreamRedirect(c *gin.Context, frontendCallback, step string, err
 		"error", err.Error(),
 	)
 	msg := dtMsg
+	// A structured provider failure can omit message text. Application error
+	// mapping then supplies the description used by the bounded frontend error
+	// fragment.
 	if strings.TrimSpace(msg) == "" {
 		msg = infraerrors.Message(err)
 	}
@@ -94,6 +143,9 @@ func DingTalkUpstreamRedirect(c *gin.Context, frontendCallback, step string, err
 	RedirectOAuthError(c, frontendCallback, identity.DingTalkErrorCode(err), msg, "")
 }
 
+// SetDingTalkCookie emits a supplied encoded browser value at the DingTalk
+// path with a seconds-based lifetime. The caller supplies HTTPS state;
+// HttpOnly and SameSite Lax support provider callback navigation.
 func SetDingTalkCookie(c *gin.Context, name string, value string, maxAgeSec int, secure bool) {
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     name,
@@ -106,6 +158,9 @@ func SetDingTalkCookie(c *gin.Context, name string, value string, maxAgeSec int,
 	})
 }
 
+// ClearDingTalkCookie expires a named browser value at the matching DingTalk
+// path. The caller supplies HTTPS state, while HttpOnly and SameSite Lax match
+// the retained callback cookie.
 func ClearDingTalkCookie(c *gin.Context, name string, secure bool) {
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     name,
@@ -118,14 +173,24 @@ func ClearDingTalkCookie(c *gin.Context, name string, secure bool) {
 	})
 }
 
-// DingTalkOAuthStart 启动 DingTalk Connect OAuth 登录流程。
-// GET /api/v1/auth/oauth/dingtalk/start?redirect=/dashboard&intent=login
+// DingTalkOAuthStart verifies action CAPTCHA and prepares state, intent,
+// return path, and browser proof before authorization. Configuration-read
+// failures use the default frontend disabled-provider redirect.
+//
+// Current-user binding signs a target cookie; other starts expire a preceding
+// target. Browser and provider cookies are emitted before later target or
+// authorize URL failure, so those errors can leave partial start state. Signup
+// promotion context is captured separately. Successful POST returns an
+// authorize URL envelope, while accepted navigation requests redirect.
 func (h *DingTalkHandler) DingTalkOAuthStart(c *gin.Context) {
 	if !h.RequireActionCaptchaForOAuthLoginStart(c) {
 		return
 	}
 	cfg, err := h.dingTalkOptions.LoadConfig(c.Request.Context())
 	if err != nil {
+		// A configuration failure supplies no current authorize URL. Use the fixed
+		// DingTalk callback to report disabled-provider status for every such read
+		// error before start cookies are emitted.
 		frontendCB := DingTalkOAuthDefaultFrontendCB
 		RedirectOAuthError(c, frontendCB, "dingtalk_not_enabled", "", "")
 		return
@@ -149,6 +214,9 @@ func (h *DingTalkHandler) DingTalkOAuthStart(c *gin.Context) {
 	}
 
 	secureCookie := IsRequestHTTPS(c)
+	// Save DingTalk start context and fresh browser proof before signed-target
+	// and authorize URL work. These cookie headers survive a later preparation
+	// failure, while the preceding pending token cookie is expired.
 	SetDingTalkCookie(c, DingTalkOAuthStateCookieName, EncodeCookieValue(state), DingTalkOAuthCookieMaxAgeSec, secureCookie)
 	SetDingTalkCookie(c, DingTalkOAuthRedirectCookie, EncodeCookieValue(redirectTo), DingTalkOAuthCookieMaxAgeSec, secureCookie)
 
@@ -179,8 +247,18 @@ func (h *DingTalkHandler) DingTalkOAuthStart(c *gin.Context) {
 	RespondOAuthStart(c, authURL)
 }
 
-// DingTalkOAuthCallback 处理钉钉授权回调。
-// GET /api/v1/auth/oauth/dingtalk/callback?code=...&state=...
+// DingTalkOAuthCallback verifies browser state and exchanges authorization
+// before enforcing organization policy and resolving unionID. Staff lookup can
+// return empty profile data when policy tolerates provider failures.
+//
+// Signed targets enter pending binding, while resolved existing identities
+// enter pending login and start asynchronous synchronization.
+// Existing-identity lookup errors are ignored here and behave like no selected
+// account. Optional-email policy uses a synthetic address or binding-login
+// continuation; required missing email enters completion unless signup is
+// blocked. Real-email matching feeds account choice, with its lookup errors
+// also discarded. Cookie cleanup begins after code/state presence; the
+// bind-target cookie is cleared on its successful binding branch.
 func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 	cfg, cfgErr := h.dingTalkOptions.LoadConfig(c.Request.Context())
 	if cfgErr != nil {
@@ -206,6 +284,9 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 	}
 
 	secureCookie := IsRequestHTTPS(c)
+	// Expire state, return, intent, and promotion cookies on later callback exits
+	// after code/state presence. The signed bind target is expired separately
+	// after successful binding continuation.
 	defer func() {
 		ClearDingTalkCookie(c, DingTalkOAuthStateCookieName, secureCookie)
 		ClearDingTalkCookie(c, DingTalkOAuthRedirectCookie, secureCookie)
@@ -218,9 +299,15 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		RedirectOAuthError(c, frontendCallback, "csrf", "state mismatch", "")
 		return
 	}
+	// Return and intent cookies supply optional callback context, so failed reads
+	// produce empty strings. Intent normalization then selects login, while the
+	// browser proof below still needs to be present.
 	redirectTo, _ := ReadCookieDecoded(c, DingTalkOAuthRedirectCookie)
 	intent, _ := ReadCookieDecoded(c, DingTalkOAuthIntentCookieName)
 	intent = NormalizeOAuthIntent(intent)
+	// Unreadable browser proof becomes empty and rejects continuation. Optional
+	// return and intent defaults cannot replace the browser key required before
+	// provider exchange.
 	browserSessionKey, _ := ReadOAuthPendingBrowserCookie(c)
 	if strings.TrimSpace(browserSessionKey) == "" {
 		RedirectOAuthError(c, frontendCallback, "missing_browser_session", "missing browser session cookie", "")
@@ -228,7 +315,8 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 	}
 	forceEmailOnSignup := h.isForceEmailOnThirdPartySignup(c.Request.Context())
 
-	// 4 步链（Step 1 + Step 2 必须；Step 3/4 按需 + 跨组织降级）
+	// Token exchange and unionID lookup are required; staff lookup follows the
+	// organization policy.
 	client := h.syncer.Client(cfg)
 	userToken, err := client.ExchangeCodeForUserToken(c.Request.Context(), code)
 	if err != nil {
@@ -236,15 +324,19 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// D：corp 校验提前到第 1 步之后、第 2 步之前，减少不必要的上游调用
+	// Check organization policy before making further provider calls.
 	corpID := strings.TrimSpace(userToken.CorpID)
 	if !identity.DingTalkCorpAllowed(cfg, corpID) {
-		// 不在 URL 中透传 corpID，避免内部企业标识泄露给前端
+		// Organization rejection uses a fixed frontend code with blank details,
+		// keeping the observed corporation ID out of this rejection redirect while
+		// the policy decision remains server-side.
 		RedirectOAuthError(c, frontendCallback, "corp_rejected", "", "")
 		return
 	}
 
-	// 第 2 步：必须执行；UnionID 全局唯一，可作为 subject 与合成邮箱种子；nick 是用户在 App 自设的昵称
+	// The returned unionID becomes the provider subject and the seed for
+	// synthetic email. The nickname contributes profile metadata, while account
+	// ownership uses that stable subject.
 	unionID, oauthNick, err := client.GetUnionIdByUserToken(c.Request.Context(), userToken.AccessToken)
 	if err != nil {
 		DingTalkUpstreamRedirect(c, frontendCallback, "get_union_id", err)
@@ -259,21 +351,25 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// nick 来自 OIDC /contact/users/me，优先作为钉钉昵称（user/get.nickname 多数为空）。
+	// A nonblank personal OAuth nickname overrides the directory nickname, so
+	// later provider claims and account synchronization observe that profile
+	// value even when staff lookup supplied a different name.
 	if staff != nil && strings.TrimSpace(oauthNick) != "" {
 		staff.Nickname = strings.TrimSpace(oauthNick)
 	}
 
 	upstreamClaims := identity.DingTalkUpstreamClaims(staff, unionID, corpID)
 
-	// S1 主动绑定分支
+	// Bind the external identity to the authenticated user.
 	if intent == OauthIntentBindCurrentUser {
 		targetUserID, err := h.binding.ReadOAuthBindUserIDFromCookie(c, DingTalkOAuthBindUserCookieName)
 		if err != nil {
 			RedirectOAuthError(c, frontendCallback, "invalid_state", "invalid bind user cookie", "")
 			return
 		}
-		// policy=none 跨组织用户绑定时 staff.Email=""，用合成邮箱占位（用于 audit log，不用于注册）
+		// Cross-organization staff profiles can lack email. Use the unionID-derived
+		// synthetic address as pending context while the signed target, rather than
+		// that address, selects the binding account.
 		bindResolvedEmail := staff.Email
 		if bindResolvedEmail == "" {
 			bindResolvedEmail = identity.DingTalkSyntheticEmail(unionID)
@@ -293,10 +389,12 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// 第一级：命中 auth_identities
+	// Existing-identity lookup failures are discarded in this callback and select
+	// no existing account. Later pending identity binding still owns the
+	// definitive provider-subject ownership validation.
 	if existing, _ := h.flow.Database.FindOAuthIdentityUser(c.Request.Context(), identityKey); existing != nil {
-		// 身份同步：已登录用户，直接同步（user_id 已知）。
-		// 异步执行避免上游钉钉接口（GetStaffInfoByUserId / 部门递归）阻塞登录跳转。
+		// The existing user ID permits profile synchronization immediately.
+		// Run it asynchronously so department lookups do not delay the login redirect.
 		h.syncer.Async(c.Request.Context(), cfg, client, existing.ID, staff, false)
 		if err := h.CreateOAuthPendingSession(c, OauthPendingSessionPayload{
 			Intent: OauthIntentLogin, Identity: identityKey, TargetUserID: &existing.ID,
@@ -313,10 +411,14 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 
 	signupBlocked := h.isDingTalkSignupBlocked(c.Request.Context(), cfg)
 
-	// 非命中：require_email=false 走 synthetic email 直接登录
+	// Optional-email login retains subject-based continuation even when staff
+	// supplied a real email. The synthetic address enters pending state for
+	// new-account handling, while blocked signup selects existing-account proof.
 	if !cfg.RequireEmail {
 		if signupBlocked {
-			// 注册被拦 + 无邮箱可输：唯一出路是绑定已有账户
+			// Blocked registration leaves external identity ownership unresolved. Ask
+			// for an existing-account login with no target or resolved email, allowing
+			// credential proof to choose the eligible account.
 			if err := h.CreateOAuthPendingSession(c, OauthPendingSessionPayload{
 				Intent: OauthIntentLogin, Identity: identityKey, TargetUserID: nil,
 				ResolvedEmail: "", RedirectTo: redirectTo, BrowserSessionKey: browserSessionKey,
@@ -343,7 +445,9 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// require_email=true 且 staff.Email 空 → 补邮箱（默认）或直接 bind_login（注册被拦时）
+	// Missing required email leaves no real address for new-account creation.
+	// Prepare email completion as the next browser step, then let
+	// blocked-registration policy choose existing-account proof instead.
 	if staff.Email == "" {
 		completionResponse := map[string]any{
 			"step":                      "email_completion",
@@ -351,7 +455,9 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 			"redirect":                  redirectTo,
 		}
 		if signupBlocked {
-			// 注册被全局关闭且未豁免：跳过补邮箱页，直接进 bind_login 让用户输入已有账户
+			// When registration is blocked, collecting a new address cannot complete
+			// signup. Replace email-completion instructions with existing-account
+			// binding so the next browser request supplies account credentials.
 			completionResponse = identity.DingTalkBindLoginCompletionResponse(redirectTo)
 		}
 		if err := h.CreateOAuthPendingSession(c, OauthPendingSessionPayload{
@@ -367,9 +473,12 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// L3/L4 有邮箱：统一 choice pending session
+	// A provider email enters the account-choice flow.
 	var compatEmailUser *identity.User
 	if DingTalkLevelThreeEnabled && staff.Email != "" {
+		// Compatibility email is an optional account-choice hint. Discard lookup
+		// failure and let pending account proof and later identity persistence
+		// decide the continuation.
 		compatEmailUser, _ = h.findDingTalkCompatEmailUser(c.Request.Context(), staff.Email)
 	}
 	if err := h.CreateDingTalkChoiceSession(
@@ -384,7 +493,10 @@ func (h *DingTalkHandler) DingTalkOAuthCallback(c *gin.Context) {
 	RedirectToFrontendCallback(c, frontendCallback)
 }
 
-// BuildDingTalkAuthorizeURL 根据配置和 state 构建钉钉 OAuth 授权 URL。
+// BuildDingTalkAuthorizeURL encodes client, callback, state, scopes, and
+// consent prompt into the configured provider URL. Blank scopes select openid;
+// missing authorize/callback text and parse failures return application
+// errors.
 func BuildDingTalkAuthorizeURL(cfg identity.DingTalkOAuthOptions, state string) (string, error) {
 	base := strings.TrimSpace(cfg.AuthorizeURL)
 	if base == "" {
@@ -417,8 +529,16 @@ func BuildDingTalkAuthorizeURL(cfg identity.DingTalkOAuthOptions, state string) 
 	return u.String(), nil
 }
 
-// CompleteDingTalkOAuthRegistration 校验邀请码并创建用户，完成待处理的钉钉 OAuth 注册。
-// POST /api/v1/auth/oauth/dingtalk/complete-registration
+// CompleteDingTalkOAuthRegistration completes legacy browser signup or returns
+// updated account-choice progression. Missing stored username falls back to
+// the email local part before account and provider-identity checks.
+//
+// Invitation-based authentication produces credentials before adoption and
+// browser consumption are committed together. Successful persistence starts
+// profile synchronization when configuration can be read, then records login
+// and expires pending proof before writing top-level token JSON.
+// Synchronization setup configuration errors are ignored, so that optional
+// work does not change the completed registration response.
 func (h *DingTalkHandler) CompleteDingTalkOAuthRegistration(c *gin.Context) {
 	var req CompleteDingTalkOAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -473,7 +593,9 @@ func (h *DingTalkHandler) CompleteDingTalkOAuthRegistration(c *gin.Context) {
 
 	email := strings.TrimSpace(session.ResolvedEmail)
 	username := PendingSessionStringValue(session.UpstreamIdentityClaims, "username")
-	// E：username 空时退到 email local part（跨组织用户没拿到 staff.Name 也能注册）
+	// Missing stored provider username falls back to the email local part for
+	// legacy invitation completion. If no usable separator exists, retain the
+	// whole stored email as that account-name input.
 	if username == "" {
 		if at := strings.Index(email, "@"); at > 0 {
 			username = email[:at]
@@ -507,12 +629,16 @@ func (h *DingTalkHandler) CompleteDingTalkOAuthRegistration(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	// Credentials have already been issued before this combined pending write.
+	// Commit adoption and browser consumption before optional synchronization and
+	// delivery; failure cannot undo the preceding authentication operation.
 	if err := h.flow.Database.ApplyAdoptionAndConsume(c.Request.Context(), session, decision, user.ID); err != nil {
 		RespondPendingOAuthBindingApplyError(c, err)
 		return
 	}
-	// 新用户注册完成后执行身份同步（user_id 现在已知）。
-	// 异步执行避免阻塞 token 响应。
+	// A committed account can start asynchronous profile synchronization when
+	// configuration is available. Skip a failed settings read as optional work;
+	// pending completion already succeeded and the token response still follows.
 	if completionCfg, cfgErr := h.dingTalkOptions.LoadConfig(c.Request.Context()); cfgErr == nil {
 		dtClient := h.syncer.Client(completionCfg)
 		claims := session.UpstreamIdentityClaims
@@ -530,18 +656,21 @@ func (h *DingTalkHandler) CompleteDingTalkOAuthRegistration(c *gin.Context) {
 	})
 }
 
-// CreateDingTalkOAuthAccount 从待处理的钉钉 OAuth 会话创建新用户。
-// POST /api/v1/auth/oauth/dingtalk/create-account
+// CreateDingTalkOAuthAccount delegates local account registration for the
+// browser pending DingTalk provider.
 func (h *DingTalkHandler) CreateDingTalkOAuthAccount(c *gin.Context) {
 	h.CreatePendingAccountForProvider(c, "dingtalk")
 }
 
-// BindDingTalkOAuthLogin 处理已有账户绑定钉钉 OAuth 登录。
-// POST /api/v1/auth/oauth/dingtalk/bind-login
+// BindDingTalkOAuthLogin delegates existing-account proof and binding for the
+// pending DingTalk provider.
 func (h *DingTalkHandler) BindDingTalkOAuthLogin(c *gin.Context) {
 	h.BindPendingLoginForProvider(c, "dingtalk")
 }
 
+// CreateDingTalkChoiceSession prepares account choice from staff email, local
+// match, signup, and email policies. The identity helper owns those controls
+// before the shared pending writer persists the browser draft.
 func (h *DingTalkHandler) CreateDingTalkChoiceSession(
 	c *gin.Context,
 	identityKey identity.PendingAuthIdentityKey,
@@ -559,8 +688,15 @@ func (h *DingTalkHandler) CreateDingTalkChoiceSession(
 	return h.CreateOAuthPendingSession(c, draft)
 }
 
-// loadDingTalkStaff 执行企业用户和资料查询；企业内登录要求成功，其他策略允许跨组织查询失败后降级。
-// require_email 由调用方在查询结束后处理，不影响这里的查询顺序。
+// loadDingTalkStaff resolves the staff ID and profile after unionID lookup.
+// Exact internal_only policy returns the failing stage and error; callers
+// handle later email requirements independently.
+//
+// The user-ID request runs first, and a failure stops the profile lookup.
+// Other policies diagnose either stage failure and return an allocated empty
+// profile with no error label, allowing claim and email-policy processing to
+// continue. Successful calls retain the client profile pointer, which callback
+// callers require to be nonnil.
 func loadDingTalkStaff(ctx context.Context, client identity.DingTalkOAuthClient, policy, unionID, corpID string) (*identity.DingTalkProfileSnapshot, string, error) {
 	upstreamUserID, err := client.GetUserIdByUnionId(ctx, unionID)
 	if err != nil {
@@ -568,6 +704,9 @@ func loadDingTalkStaff(ctx context.Context, client identity.DingTalkOAuthClient,
 			return nil, "get_user_id", err
 		}
 		slog.Debug("dingtalk step3 fallback (none/cross-org)", "corp_id", corpID, "union_id", unionID, "err", err)
+		// This organization policy permits continuation without directory details
+		// after provider failure. Return an allocated empty profile so subsequent
+		// email policy and claim preparation can inspect it safely.
 		return &identity.DingTalkProfileSnapshot{}, "", nil
 	}
 	staff, err := client.GetStaffInfoByUserId(ctx, upstreamUserID)
@@ -576,6 +715,9 @@ func loadDingTalkStaff(ctx context.Context, client identity.DingTalkOAuthClient,
 			return nil, "get_staff_info", err
 		}
 		slog.Debug("dingtalk step4 fallback (none/cross-org)", "corp_id", corpID, "union_id", unionID, "err", err)
+		// This organization policy permits continuation without directory details
+		// after provider failure. Return an allocated empty profile so subsequent
+		// email policy and claim preparation can inspect it safely.
 		return &identity.DingTalkProfileSnapshot{}, "", nil
 	}
 	return staff, "", nil

@@ -1,7 +1,5 @@
 package creative_test
 
-// 本文件覆盖 public.go 创建任务与 queries.go 查询、读取输出时的工作区隔离。
-
 import (
 	"context"
 	"testing"
@@ -12,7 +10,16 @@ import (
 	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
-// TestCreativeWorkspaceScopeIsolation 校验同一用户的不同浏览器工作区互不可见且幂等键隔离。
+// Browser workspaces partition task creation and user-facing reads for the
+// same authenticated user. The fixture compares two tasks sharing an
+// idempotency key across different workspaces and verifies that legacy rows
+// lacking a workspace stay hidden from public access. The scenario combines
+// creation in public.go, access checks in queries.go, and scope conversion in
+// run.go through shared in-memory stores.
+
+// TestCreativeWorkspaceScopeIsolation creates two tasks for one user in
+// different workspaces with the same idempotency key. It checks separate IDs
+// and lists, cross-workspace denial, and hidden legacy task access.
 func TestCreativeWorkspaceScopeIsolation(t *testing.T) {
 	svc := newCreativeTestService()
 	ctx := context.Background()

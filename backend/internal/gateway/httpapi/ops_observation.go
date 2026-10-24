@@ -1,100 +1,138 @@
 package httpapi
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 )
 
+// ops_observation.go records request and WebSocket-turn failure observations
+// separately from wire status.
+// A committed HTTP status can remain successful while an in-band failure ends a
+// stream. Ops retains intended failure status separately from wire status, and
+// WebSocket turns keep their own captured provider and upstream evidence so
+// later context reuse does not change earlier attribution. Ordinary stream
+// markers and SLA-counted failures use different status rules.
+//
+// Marker handling is a serial request/turn operation. Ordered turn setup resets
+// specific rule and upstream keys, the first marker is retained for the current
+// observation scope, and recent WebSocket failures are kept in a bounded outer
+// list. Event snapshots copy struct fields, while getters share nested storage.
+// Callers serialize updates and keep retrieved event data immutable; individual
+// Gin key locks do not establish one atomic turn transition.
+
 const (
 	// Gin context keys used by Ops error logger for capturing upstream error details.
-	// These keys are set by gateway services and consumed by handler/ops_error_logger.go.
+	// Gateway adapters set these keys; OpsErrorLoggerMiddleware reads them.
 	OpsUpstreamStatusCodeKey   = "ops_upstream_status_code"
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
 	OpsUpstreamModelKey        = "ops_upstream_model"
 
-	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
-	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
-	OpsRoutingLatencyMsKey   = "ops_routing_latency_ms"
-	OpsUpstreamLatencyMsKey  = "ops_upstream_latency_ms"
-	OpsResponseLatencyMsKey  = "ops_response_latency_ms"
-	OpsTimeToFirstTokenMsKey = "ops_time_to_first_token_ms"
-	// OpenAI WS 关键观测字段。
+	// These keys store optional nonnegative millisecond stage observations read
+	// by final error capture to locate time spent in failed request stages.
+	OpsAuthLatencyMsKey     = "ops_auth_latency_ms"
+	OpsRoutingLatencyMsKey  = "ops_routing_latency_ms"
+	OpsUpstreamLatencyMsKey = "ops_upstream_latency_ms"
+	OpsResponseLatencyMsKey = "ops_response_latency_ms"
+	// These keys associate WebSocket queue/pick timing and connection reuse with
+	// request diagnostics set by the transport observation adapters.
 	OpsOpenAIWSQueueWaitMsKey = "ops_openai_ws_queue_wait_ms"
 	OpsOpenAIWSConnPickMsKey  = "ops_openai_ws_conn_pick_ms"
 	OpsOpenAIWSConnReusedKey  = "ops_openai_ws_conn_reused"
 	OpsOpenAIWSConnIDKey      = "ops_openai_ws_conn_id"
 
-	// OpsSkipPassthroughKey 由 applyErrorPassthroughRule 在命中 skip_monitoring=true 的规则时设置。
-	// ops_error_logger 中间件检查此 key，为 true 时跳过错误记录。
+	// OpsSkipPassthroughKey records a matched skip_monitoring=true passthrough rule.
+	// The error logger checks this flag before recording the final failure.
 	OpsSkipPassthroughKey = "ops_skip_passthrough"
 
-	// OpsStreamErrorKey 保存 handleStreamingAwareError 在「响应已固化为 HTTP 200 的 SSE 流」
-	// 上就地补发错误帧时记录的 OpsStreamError。因为实际状态码停留在 200，
-	// ops_error_logger 的 status>=400 采集路径永远不会触发，这类流内失败
-	// （例如等待并发槽位超时后回退的限流、Wait 后二次计费校验失败）本会在错误看板里隐形。
+	// OpsStreamErrorKey stores an in-band error after HTTP status commitment.
+	// The error logger reads this marker when the wire status remains below 400.
+	// Examples include concurrency wait timeouts and funds recheck failures
+	// after a heartbeat has already committed HTTP 200.
 	OpsStreamErrorKey  = "ops_stream_error"
 	OpsStreamErrorsKey = "ops_stream_errors"
 	OpsStreamTurnKey   = "ops_stream_turn"
 
-	// 客户端配置限制写入 ops_error_logs，SLA 和错误率统计排除此类失败。
-	// handleErrorResponse 写完错误响应后设置 ResponseCommittedKey，ensureForwardErrorResponse 据此结束输出。
+	// ResponseCommittedKey records handled error output so later writers avoid
+	// duplicate presentation. Some callers set it before delivery, which can still fail.
 	ResponseCommittedKey = "response_committed"
 
+	// Client business restrictions are logged but excluded from SLA and error-rate statistics.
 	OpsClientBusinessLimitedKey                           = "ops_client_business_limited"
 	OpsClientBusinessLimitedReasonKey                     = "ops_client_business_limited_reason"
-	OpsClientBusinessLimitedReasonIPRestriction           = "api_key_ip_restriction"
-	OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable  = "api_key_group_unavailable"
-	OpsClientBusinessLimitedReasonAPIKeyGroupUnassigned   = "api_key_group_unassigned"
-	OpsClientBusinessLimitedReasonLocalFeatureGate        = "local_feature_gate"
-	OpsClientBusinessLimitedReasonLocalPolicyDenied       = "local_policy_denied"
-	OpsClientBusinessLimitedReasonLocalModelConfiguration = "local_model_configuration"
+	OpsClientBusinessLimitedReasonIPRestriction           = "api_key_ip_restriction"    // caller address rejected by Key policy
+	OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable  = "api_key_group_unavailable" // assigned group unavailable for this Key
+	OpsClientBusinessLimitedReasonAPIKeyGroupUnassigned   = "api_key_group_unassigned"  // Key has no assigned routing group
+	OpsClientBusinessLimitedReasonLocalFeatureGate        = "local_feature_gate"        // request blocked by local feature settings
+	OpsClientBusinessLimitedReasonLocalPolicyDenied       = "local_policy_denied"       // request denied by local policy evaluation
+	OpsClientBusinessLimitedReasonLocalModelConfiguration = "local_model_configuration" // model has invalid local routing configuration
 
+	// maxOpsStreamErrorsPerRequest bounds retained failures from a long-lived
+	// WebSocket connection, keeping recent turn snapshots available without
+	// unbounded request history.
 	maxOpsStreamErrorsPerRequest = 64
 )
 
-// OpsStreamError 描述网关在「响应状态已固化为 200」之后（keepalive ping 或部分数据
-// 已 flush）就地以 SSE error 帧形式返回的错误。由于 HTTP 状态码停留在 200，
-// 而 ops_error_logger 以 status>=400 为采集触发条件，这类流内失败
-// （并发限流回退、Wait 后二次计费校验失败、流开始后才无可用提供商等）本会在错误看板里
-// 完全隐形。handler.handleStreamingAwareError 负责标记，ops_error_logger 中间件在
-// status<400 分支消费它并补记一条错误日志。
+// OpsStreamError describes a client-visible failure after stream commitment.
+// A keepalive or partial output can leave the HTTP status at 200 despite failure.
+// The error logger uses the intended status and error details to record that failure.
+// Examples include concurrency limits, funds rechecks after waiting,
+// and exhausted provider selection after output starts.
+// WebSocket turns retain separate snapshots; HTTP/SSE uses turn zero.
 type OpsStreamError struct {
-	// ErrType 是写入 SSE 帧的对客错误类型（如 rate_limit_error / upstream_error / api_error）。
-	ErrType string
-	// Code 是可选的稳定错误分类；用于既保留通用 OpenAI error.type，又向客户端和 Ops
-	// 暴露可编程判断的细分类（如 upstream_http2_stream_error）。
-	Code string
-	// Message 是写入 SSE 帧的对客错误消息。
-	Message string
-	// IntendedStatus 是流若未固化本应返回的 HTTP 状态码（如并发限流的 429）。
-	// 默认仅用于错误分级；CountTowardsSLA=true 时也作为 Ops 的逻辑状态码。
+	ErrType string // client error category label
+	Code    string // optional client error code
+	Message string // trimmed client failure message
+	// IntendedStatus supplies severity classification when positive, otherwise
+	// logging uses wire status. CountTowardsSLA can also select it as the recorded
+	// failure status after commitment.
 	IntendedStatus int
-	// CountTowardsSLA 表示 HTTP 状态已提交为 200 后发生请求失败，Ops 按 IntendedStatus 统计错误率和 SLA。
+	// CountTowardsSLA asks logging to record an IntendedStatus of at least 400 as
+	// the logical failure status, while ordinary markers keep the committed wire
+	// status.
 	CountTowardsSLA bool
-	// Turn identifies a WebSocket turn. HTTP/SSE requests leave it at zero.
+	// Turn identifies the captured WebSocket turn; zero denotes ordinary HTTP/SSE.
+	// Serial marker handling compares the last retained turn before accepting
+	// another failure snapshot.
 	Turn int
-	// SkipMonitoring snapshots the rule decision for this visible failure.
-	SkipMonitoring  bool
-	ProviderID      int64
-	UpstreamModel   string
-	UpstreamStatus  int
-	UpstreamMessage string
-	UpstreamDetail  string
-	UpstreamErrors  []*ops.OpsUpstreamErrorEvent
+	// SkipMonitoring captures the current rule decision when this failure is
+	// marked. WebSocket logging uses this value even after another turn replaces
+	// live request rule state.
+	SkipMonitoring bool
+	// ProviderID, UpstreamModel, UpstreamStatus, UpstreamMessage and
+	// UpstreamDetail capture the selected execution evidence when marking this
+	// failure. Later turn updates replace live context values while these scalar
+	// fields retain that earlier attribution.
+	ProviderID      int64  // captured selected provider identity
+	UpstreamModel   string // captured effective upstream model
+	UpstreamStatus  int    // captured upstream HTTP status
+	UpstreamMessage string // captured upstream diagnostic message
+	UpstreamDetail  string // captured upstream diagnostic detail
+	// UpstreamErrors owns copied event structs at initial capture. Getter values
+	// later share this slice and its pointers, so consumers keep those captured
+	// events immutable.
+	UpstreamErrors []*ops.OpsUpstreamErrorEvent
 }
 
+// MarkResponseCommitted marks error output handled in a required Gin context.
+// Adapters can call it before delivery, so this marker prevents duplicate
+// presentation but does not confirm that client bytes were successfully
+// written.
 func MarkResponseCommitted(c *gin.Context) { c.Set(ResponseCommittedKey, true) }
 
+// IsResponseCommitted reads the handled-output marker from a required Gin
+// context. Missing or differently typed values return false; this observation
+// remains separate from the HTTP writer's actual status or byte commitment.
 func IsResponseCommitted(c *gin.Context) bool {
 	v, ok := c.Get(ResponseCommittedKey)
 	if !ok {
@@ -104,6 +142,9 @@ func IsResponseCommitted(c *gin.Context) bool {
 	return b
 }
 
+// SetOpsLatencyMs stores a nonnegative millisecond observation under the
+// supplied Gin key. Missing context, whitespace-only keys and negative values
+// are ignored; accepted key spelling is retained rather than normalized.
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
 	if c == nil || strings.TrimSpace(key) == "" || value < 0 {
 		return
@@ -111,26 +152,21 @@ func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
 	c.Set(key, value)
 }
 
-// MarkOpsTimestamp 记录请求阶段的绝对时间，供访问日志计算相对入口的耗时。
-func MarkOpsTimestamp(c *gin.Context, key telemetry.ContextKey) {
-	if c == nil || c.Request == nil || key == "" {
-		return
-	}
-	ctx := c.Request.Context()
-	if _, exists := ctx.Value(key).(time.Time); exists {
-		return
-	}
-	ctx = context.WithValue(ctx, key, time.Now())
-	c.Request = c.Request.WithContext(ctx)
-}
-
-// MarkOpsProviderSlotAcquired 标记提供商并发槽位成功获取的时间。
+// MarkOpsProviderSlotAcquired freezes initial admission in the HTTP text collector.
+// Requests outside that scope have no admission observation. Repeated provider
+// acquisitions during retries leave the first successful admission endpoint unchanged.
 func MarkOpsProviderSlotAcquired(c *gin.Context) {
-	MarkOpsTimestamp(c, telemetry.ProviderSlotAcquiredAt)
+	if c != nil && c.Request != nil {
+		if stages := timing.StagesFromContext(c.Request.Context()); stages != nil {
+			stages.Admit()
+		}
+	}
 }
 
-// SetOpsUpstreamModel stores only the effective model slug for final Ops
-// attribution. Call it immediately before an upstream attempt is dispatched.
+// SetOpsUpstreamModel stores a nonblank trimmed effective model before an
+// upstream attempt. Nil context and blank values retain existing attribution;
+// callers clear the prior attempt separately before selected-provider
+// preparation should replace it.
 func SetOpsUpstreamModel(c *gin.Context, model string) {
 	if c == nil {
 		return
@@ -140,8 +176,10 @@ func SetOpsUpstreamModel(c *gin.Context, model string) {
 	}
 }
 
-// ClearOpsUpstreamModel invalidates attempt-scoped model attribution before a
-// newly selected provider starts credential resolution or upstream dispatch.
+// ClearOpsUpstreamModel clears retained model attribution before another
+// provider's credentials or dispatch. Nil context is ignored; assigning an
+// empty value prevents error capture from borrowing the previous attempt's
+// upstream model.
 func ClearOpsUpstreamModel(c *gin.Context) {
 	if c == nil {
 		return
@@ -149,6 +187,10 @@ func ClearOpsUpstreamModel(c *gin.Context) {
 	c.Set(OpsUpstreamModelKey, "")
 }
 
+// MarkOpsClientBusinessLimited marks a client business restriction and stores a
+// nonblank trimmed reason. Nil context skips updates; blank reason keeps any
+// earlier reason, so callers choose the appropriate observation scope before
+// reusing context state.
 func MarkOpsClientBusinessLimited(c *gin.Context, reason string) {
 	if c == nil {
 		return
@@ -159,7 +201,9 @@ func MarkOpsClientBusinessLimited(c *gin.Context, reason string) {
 	}
 }
 
-// HasOpsClientBusinessLimited 返回当前请求是否已标记为客户端侧业务限制。
+// HasOpsClientBusinessLimited reports the typed client-restriction marker for
+// this request. Nil context, absent values or a different stored type return
+// false, leaving the error classifier to interpret its other evidence.
 func HasOpsClientBusinessLimited(c *gin.Context) bool {
 	if c == nil {
 		return false
@@ -172,6 +216,9 @@ func HasOpsClientBusinessLimited(c *gin.Context) bool {
 	return marked
 }
 
+// OpsClientBusinessLimitedReason returns the trimmed stored client restriction
+// reason. Missing context, absent values or a nonstring returns empty; reason
+// text is read separately from the boolean marker needed by classification.
 func OpsClientBusinessLimitedReason(c *gin.Context) string {
 	if c == nil {
 		return ""
@@ -184,13 +231,24 @@ func OpsClientBusinessLimitedReason(c *gin.Context) string {
 	return strings.TrimSpace(reason)
 }
 
-// BeginOpsStreamTurn scopes first-wins deduplication to one WebSocket turn.
+// BeginOpsStreamTurn establishes the next positive WebSocket turn number and
+// clears its rule/error observations before execution. Nil context or
+// nonpositive turn makes no change. The retained stream-error list and other
+// provider/model state remain available for their own owners.
+//
+// Callers serialize this setup before recording events for the new turn. It
+// resets the current skip flag, upstream events, status, message and detail
+// through separate Gin writes; it does not publish an atomic multi-key
+// snapshot. Unique ordered turn numbers keep the following first-marker check
+// scoped to the last retained turn while previous failure snapshots survive for
+// final error logging.
 func BeginOpsStreamTurn(c *gin.Context, turn int) {
 	if c == nil || turn <= 0 {
 		return
 	}
 	c.Set(OpsStreamTurnKey, turn)
-	// Rule and attempt state is turn-scoped on a long-lived WS connection.
+	// Reset current rule and upstream-error keys before this serial turn runs,
+	// retaining earlier failure snapshots and other attribution until their owners update it.
 	c.Set(OpsSkipPassthroughKey, false)
 	c.Set(OpsUpstreamErrorsKey, []*ops.OpsUpstreamErrorEvent{})
 	c.Set(OpsUpstreamStatusCodeKey, 0)
@@ -198,8 +256,10 @@ func BeginOpsStreamTurn(c *gin.Context, turn int) {
 	c.Set(OpsUpstreamErrorDetailKey, "")
 }
 
-// MarkOpsStreamError 记录流内 SSE 错误，供 Ops 日志采集。
-// 同一请求发送多帧错误时保存首个标记，后续通用 Upstream request failed 保留该标记。
+// MarkOpsStreamError records the first ordinary in-band failure through shared
+// marker handling. Serial HTTP observations retain one marker; WebSocket
+// observations use the current turn and keep recent snapshots. Intended status
+// affects severity while ordinary logging retains wire status.
 func MarkOpsStreamError(c *gin.Context, errType, message string, intendedStatus int) {
 	markOpsStreamError(c, OpsStreamError{
 		ErrType:        errType,
@@ -208,7 +268,10 @@ func MarkOpsStreamError(c *gin.Context, errType, message string, intendedStatus 
 	})
 }
 
-// MarkOpsStreamFailure 记录应计入 Ops 错误率/SLA 的流内失败，即使 wire 状态已固化为 200。
+// MarkOpsStreamFailure records in-band failure with an explicit code and SLA
+// accounting request. Shared handling marks telemetry failed before
+// deduplication; an already stored first marker can remain unchanged even when
+// this later observation updates request failure telemetry.
 func MarkOpsStreamFailure(c *gin.Context, errType, code, message string, intendedStatus int) {
 	markOpsStreamError(c, OpsStreamError{
 		ErrType:         errType,
@@ -219,10 +282,24 @@ func MarkOpsStreamFailure(c *gin.Context, errType, code, message string, intende
 	})
 }
 
+// markOpsStreamError captures failure metadata and applies serial HTTP or
+// WebSocket marker retention. Callers serialize updates and establish ordered
+// turn state; Gin locking around individual keys does not make this whole
+// read-and-publish sequence atomic.
+//
+// SLA observations update request failure telemetry before first-marker checks.
+// HTTP retains the first present marker. WebSocket suppresses another marker
+// matching the last retained turn, appends a new turn snapshot and caps its
+// history to recent entries. Provider and upstream evidence are captured before
+// publication so later serial turns can reuse live context fields without
+// rewriting those stored values.
 func markOpsStreamError(c *gin.Context, streamErr OpsStreamError) {
 	if c == nil {
 		return
 	}
+	// Update request failure telemetry before marker deduplication, so a later SLA
+	// observation can mark failure while the original client-visible marker
+	// remains first.
 	if streamErr.CountTowardsSLA && c.Request != nil {
 		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) { record.State = "failed"; record.ErrorCode = "stream_error" })
 	}
@@ -239,10 +316,16 @@ func markOpsStreamError(c *gin.Context, streamErr OpsStreamError) {
 		if value, ok := c.Get(OpsStreamErrorsKey); ok {
 			errorsForRequest, _ = value.([]OpsStreamError)
 		}
+		// The serial flow checks the last stored turn to keep its first visible
+		// failure; callers advance turn numbers before later observations can append
+		// another snapshot.
 		if len(errorsForRequest) > 0 && errorsForRequest[len(errorsForRequest)-1].Turn == streamErr.Turn {
 			return
 		}
 		errorsForRequest = append(errorsForRequest, streamErr)
+		// Retain the most recent turn failures at the connection history cap,
+		// preventing a long-lived client from growing this request list without
+		// bound.
 		if len(errorsForRequest) > maxOpsStreamErrorsPerRequest {
 			errorsForRequest = append([]OpsStreamError(nil), errorsForRequest[len(errorsForRequest)-maxOpsStreamErrorsPerRequest:]...)
 		}
@@ -250,12 +333,25 @@ func markOpsStreamError(c *gin.Context, streamErr OpsStreamError) {
 		c.Set(OpsStreamErrorKey, streamErr)
 		return
 	}
+	// An existing HTTP marker keeps the first visible failure even when its stored
+	// type is unexpected; later generic observations cannot replace that request
+	// evidence.
 	if _, exists := c.Get(OpsStreamErrorKey); exists {
 		return
 	}
 	c.Set(OpsStreamErrorKey, streamErr)
 }
 
+// snapshotOpsStreamErrorContext captures provider and upstream evidence in one
+// failure value. Nil context or destination is ignored. Positive telemetry
+// provider identity and the supported Gin status/string values supply the
+// scalar fields.
+//
+// Each upstream event struct is copied into new pointer storage, retaining nil
+// entries and order. Those independent values keep the captured turn's attempt
+// details stable when later serial turn setup replaces live context keys or
+// changes the original event fields. Callers serialize this multi-key read with
+// other observation updates.
 func snapshotOpsStreamErrorContext(c *gin.Context, streamErr *OpsStreamError) {
 	if c == nil || streamErr == nil {
 		return
@@ -293,6 +389,9 @@ func snapshotOpsStreamErrorContext(c *gin.Context, streamErr *OpsStreamError) {
 					streamErr.UpstreamErrors = append(streamErr.UpstreamErrors, nil)
 					continue
 				}
+				// Copy each event value before retaining its pointer in this turn snapshot,
+				// preventing later event-field updates from rewriting the failure already
+				// captured.
 				copyOfEvent := *event
 				streamErr.UpstreamErrors = append(streamErr.UpstreamErrors, &copyOfEvent)
 			}
@@ -300,6 +399,15 @@ func snapshotOpsStreamErrorContext(c *gin.Context, streamErr *OpsStreamError) {
 	}
 }
 
+// currentOpsFailureSkipMonitoring selects suppression from request and
+// final-attempt observations. Nil context or no usable evidence returns false.
+// A true typed request flag wins immediately; an absent or false flag lets the
+// last nonnil upstream event decide.
+//
+// Earlier attempt decisions can differ from the final one when failover
+// recovers or another provider fails. When the request flag has not already
+// selected suppression, using the last event prevents an earlier hidden
+// attempt's event flag from suppressing this later client-visible failure.
 func currentOpsFailureSkipMonitoring(c *gin.Context) bool {
 	if c == nil {
 		return false
@@ -321,7 +429,9 @@ func currentOpsFailureSkipMonitoring(c *gin.Context) bool {
 	return false
 }
 
-// GetOpsStreamError 返回本请求记录的就地 SSE 错误（若有）。
+// GetOpsStreamError returns the current typed marker and whether one was found.
+// Missing or mistyped state yields false; its nested event slice and pointers
+// remain shared with the stored marker, so callers keep them immutable.
 func GetOpsStreamError(c *gin.Context) (OpsStreamError, bool) {
 	if c == nil {
 		return OpsStreamError{}, false
@@ -334,6 +444,10 @@ func GetOpsStreamError(c *gin.Context) (OpsStreamError, bool) {
 	return se, ok
 }
 
+// GetOpsStreamErrors copies the retained outer WebSocket failure list, or wraps
+// the current typed marker when no nonempty list exists. Missing context yields
+// nil. Nested event slices and pointers stay shared, requiring immutable access
+// after retrieval.
 func GetOpsStreamErrors(c *gin.Context) []OpsStreamError {
 	if c == nil {
 		return nil
@@ -343,13 +457,18 @@ func GetOpsStreamErrors(c *gin.Context) []OpsStreamError {
 			return append([]OpsStreamError(nil), errorsForRequest...)
 		}
 	}
+	// When no nonempty turn list is available, expose the current typed marker
+	// so final logging can still consume retained failure evidence through one list.
 	if streamErr, ok := GetOpsStreamError(c); ok {
 		return []OpsStreamError{streamErr}
 	}
 	return nil
 }
 
-// SetOpsUpstreamError 保留上游实际状态与安全错误详情，供 HTTP 采集。
+// SetOpsUpstreamError stores positive upstream status and nonblank trimmed
+// diagnostic strings. Missing context skips updates, while zero/blank inputs
+// retain earlier fields. Callers supply appropriately sanitized text because
+// this setter performs trimming rather than credential or URL redaction.
 func SetOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
 	if c == nil {
 		return
@@ -365,8 +484,24 @@ func SetOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 	}
 }
 
-// AppendOpsUpstreamError 固化单次尝试观测及匹配结果，不改变请求错误展示。
-func AppendOpsUpstreamError(c *gin.Context, ev ops.OpsUpstreamErrorEvent) {
+// AppendOpsUpstreamError appends one attempt value and updates request
+// correlation observations. Missing context skips processing; nonpositive
+// timestamps receive current Unix milliseconds, string fields are trimmed, and
+// Message receives query sanitization. Detail, URL and response body remain for
+// later queue preparation.
+//
+// Request telemetry retains bounded attempt outcome and provider evidence
+// before the event pointer is published in Gin. Header observers own identifiers;
+// errors never replace them with their separately collected Ops values.
+// The first optional dispatch reference identifies an HTTP response or captured
+// result even after another attempt starts; a conflicting provider is rejected.
+// Authentication failures without an upstream status remain unnumbered beside
+// earlier exchanges. A usage_invalid event reports
+// unknown usage rather than failed inference. Rule matching then updates that
+// published event's suppression flag, so callers serialize observation until
+// this function returns and keep retained event values immutable for later
+// snapshots.
+func AppendOpsUpstreamError(c *gin.Context, ev ops.OpsUpstreamErrorEvent, dispatch ...telemetry.RequestAttemptRef) {
 	if c == nil {
 		return
 	}
@@ -395,28 +530,65 @@ func AppendOpsUpstreamError(c *gin.Context, ev ops.OpsUpstreamErrorEvent) {
 	}
 
 	if c.Request != nil {
+		number := 0
+		beforeDispatch := ev.Stage == string(forward.GatewayFailureStageProviderAuth) && ev.UpstreamStatusCode == 0
+		bound := len(dispatch) > 0 && dispatch[0].Number > 0
+		if !beforeDispatch {
+			if bound {
+				number = dispatch[0].Number
+			} else if stages := timing.StagesFromContext(c.Request.Context()); stages != nil {
+				number = int(stages.Attempt())
+			} else {
+				number = telemetry.FindRequestAttempt(c.Request.Context(), 0, ev.ProviderID).Number
+			}
+		}
 		telemetry.UpdateRequest(c.Request.Context(), func(record *telemetry.RequestRecord) {
-			if len(record.Attempts) < 256 {
-				outcome := "failed"
-				if ev.Kind == "usage_invalid" {
-					outcome = "usage_unknown"
+			// A response-owned reference takes precedence over mutable timing state.
+			// Reject provider conflicts instead of attributing this event to a different exchange.
+			if bound && dispatch[0].ProviderID != ev.ProviderID {
+				return
+			}
+			// Match provider and ordinal before updating diagnostic outcome. An
+			// unattributed error remains in Ops instead of creating a conflicting attempt.
+			outcome := "failed"
+			if ev.Kind == "usage_invalid" {
+				outcome = "usage_unknown"
+			}
+			matched := false
+			providerObserved := false
+			for i := range record.Attempts {
+				attempt := &record.Attempts[i]
+				providerObserved = providerObserved || attempt.ProviderID == ev.ProviderID
+				if attempt.Number == number && attempt.ProviderID == ev.ProviderID && (number > 0 || attempt.RequestID == ev.UpstreamRequestID) {
+					// Headers already selected the diagnostic ID before this error event.
+					// Ops may carry another upstream header, so it cannot overwrite that identity.
+					attempt.Outcome, attempt.Status = outcome, ev.UpstreamStatusCode
+					attempt.Stage, attempt.Reason = ev.Stage, ev.Reason
+					matched = true
+					break
 				}
-				record.Attempts = append(record.Attempts, telemetry.RequestAttempt{Number: len(record.Attempts) + 1, ProviderID: ev.ProviderID, RequestID: ev.UpstreamRequestID, Status: ev.UpstreamStatusCode, Outcome: outcome})
+			}
+			if !matched && len(record.Attempts) < 256 && (beforeDispatch || !providerObserved) {
+				// Credential failures have no dispatch ordinal. Keep their provider evidence
+				// beside earlier exchanges, while late errors for observed providers remain in Ops.
+				record.Attempts = append(record.Attempts, telemetry.RequestAttempt{Number: 0, ProviderID: ev.ProviderID, Status: ev.UpstreamStatusCode, Outcome: outcome, Stage: ev.Stage, Reason: ev.Reason})
 			}
 		})
-		telemetry.AddRequestAlias(c.Request.Context(), "upstream", ev.UpstreamRequestID)
 	}
 	evCopy := ev
 	existing = append(existing, &evCopy)
 	c.Set(OpsUpstreamErrorsKey, existing)
 
+	// Match suppression after publishing the event pointer; serial callers
+	// complete this decision before another observer captures the retained attempt
+	// for logging.
 	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
 }
 
-// checkSkipMonitoringForUpstreamEvent snapshots whether this attempt matches a
-// skip_monitoring passthrough rule. The final failure decides whether the
-// request error is hidden; an intermediate recovered attempt cannot suppress a
-// later client-visible failure.
+// checkSkipMonitoringForUpstreamEvent marks an attempt when a bound final-error
+// rule requests monitoring suppression. The event is required; status zero or
+// no rule service skips lookup. Detail precedes Message for keyword evidence,
+// and empty text still permits status-only matching.
 func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *ops.OpsUpstreamErrorEvent) {
 	if ev.UpstreamStatusCode == 0 {
 		return

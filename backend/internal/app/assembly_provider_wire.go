@@ -12,7 +12,16 @@ import (
 	providerredis "github.com/TokenFlux/TokenRouter/internal/provider/rediscache"
 )
 
-// providerAssemblyProviders 汇总 provider 模块的 Wire provider。
+// assembly_provider_wire.go registers provider authorization, maintenance,
+// health, and administration dependencies with Wire.
+// Provider maintenance and credential refresh share runtime blocking state.
+// The graph binds RuntimeBlockState as both RefreshFailureObserver and
+// RuntimeUnblocker, so refresh failures and recovery operations reach the same
+// instance alongside platform authorization and management services.
+
+// providerAssemblyProviders assembles provider authorization, credentials,
+// health, maintenance, and administration dependencies for the application
+// graph.
 var providerAssemblyProviders = wire.NewSet(
 	providerauth.NewOAuthUsageCache,
 	provideGeminiAuthorization,
@@ -78,6 +87,7 @@ var providerAssemblyProviders = wire.NewSet(
 	provideProviderImportProbes,
 	provideGrokOAuthWithImports,
 	provideCNUsageMonitor,
+	provideBalanceAlertMonitor,
 	provideProviderTestHTTP,
 	provideUpstreamUsageHTTP,
 	provideUpstreamUsage,

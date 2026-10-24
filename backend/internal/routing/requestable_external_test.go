@@ -8,24 +8,40 @@ import (
 	"github.com/stretchr/testify/require"
 
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// countedCataloguePolicies 统计每次目录解析取得计费来源的次数。
+// Finite request catalogues combine saved model mappings with group
+// restrictions and provider eligibility. These fixtures measure policy read
+// reuse and selected-target checks while retaining Compact's dedicated final
+// model identity for attributes; the benchmark includes preparation of a fixed
+// multi-provider workload.
+
+// countedCataloguePolicies embeds group policy and counts independent
+// pricing-source reads.
 type countedCataloguePolicies struct {
-	*routing.PricingConfigService
-	pricingReads int
+	*routing.PricingConfigService     // group policy fixture implementation
+	pricingReads                  int // counted pricing-source query calls
 }
 
-// countedCatalogueRules 记录有限目录和指定型号查询的资格检查次数。
+// countedCatalogueRules wraps prepared provider rules and records model
+// eligibility checks.
 type countedCatalogueRules struct {
-	routing.CatalogueRules
+	routing.CatalogueRules // wrapped prepared eligibility rules
+	// checks points to the test's eligibility count. Supports updates it
+	// synchronously during resolution so the test can compare selected-name work
+	// with full candidate enumeration.
 	checks *int
 }
 
-// TestCatalogueIncludesGroupMappingTargets 分组映射中的具体目标参与目录和单型号查询，并接受资格检查。
+// TestCatalogueIncludesGroupMappingTargets supplies exact and wildcard group
+// mappings with a concrete target. The target must enter eligibility checks,
+// then disappear when requested-stage restrictions or provider whitelists
+// reject it.
 func TestCatalogueIncludesGroupMappingTargets(t *testing.T) {
 	for _, source := range []string{"client-alias", "client-*"} {
 		t.Run(source, func(t *testing.T) {
@@ -60,7 +76,9 @@ func TestCatalogueIncludesGroupMappingTargets(t *testing.T) {
 	}
 }
 
-// TestCatalogueReadsGroupOnce 大目录和限制阶段均使用本次查询的分组快照。
+// TestCatalogueReadsGroupOnce evaluates a large candidate list under each model
+// restriction stage. The allowed result must retain its pricing identity while
+// group and pricing policy are each read once.
 func TestCatalogueReadsGroupOnce(t *testing.T) {
 	for _, stage := range []string{routing.BillingModelSourceRequested, routing.BillingModelSourceGroupMapped, routing.BillingModelSourceUpstream} {
 		t.Run(stage, func(t *testing.T) {
@@ -85,19 +103,31 @@ func TestCatalogueReadsGroupOnce(t *testing.T) {
 	}
 }
 
-// GetPricingConfigForGroup 记录计费来源的读取次数。
+// GetPricingConfigForGroup counts a pricing read and returns upstream billing
+// identity for the fixture. The group ID is ignored so each test can isolate
+// read reuse from repository behavior.
 func (p *countedCataloguePolicies) GetPricingConfigForGroup(context.Context, int64) (*routing.PricingConfig, error) {
 	p.pricingReads++
 	return &routing.PricingConfig{BillingModelSource: routing.BillingModelSourceUpstream}, nil
 }
 
+// Supports increments the fixture counter before delegating prepared model
+// eligibility. The counter pointer must remain available during resolution, and
+// only selected names should contribute checks in the selected-query test.
 func (r countedCatalogueRules) Supports(ctx context.Context, model string) bool {
 	*r.checks++
 	return r.CatalogueRules.Supports(ctx, model)
 }
 
+// SupportsClientProtocol delegates invocation-shape checks when the wrapped
+// rules provide that capability. Otherwise it permits the protocol so this
+// counting wrapper retains the optional behavior expected by catalogue
+// resolution.
 func (r countedCatalogueRules) SupportsClientProtocol(model string, source protocol.ProtocolID) bool {
 	if rules, ok := r.CatalogueRules.(interface {
+		// SupportsClientProtocol reports invocation-shape eligibility for a mapped
+		// name and entry. The wrapper forwards this optional check before allowing
+		// its counted model-support callback to contribute a route.
 		SupportsClientProtocol(string, protocol.ProtocolID) bool
 	}); ok {
 		return rules.SupportsClientProtocol(model, source)
@@ -105,7 +135,9 @@ func (r countedCatalogueRules) SupportsClientProtocol(model string, source proto
 	return true
 }
 
-// TestSelectedCatalogueChecksOnlyTargets 别名目标与请求名称复用一次策略读取，其他候选不做资格检查。
+// TestSelectedCatalogueChecksOnlyTargets requests a mapping target, a custom
+// name, and an undeclared name. Only the two declared targets must reach
+// eligibility checks, with one group and one pricing read.
 func TestSelectedCatalogueChecksOnlyTargets(t *testing.T) {
 	groupID := int64(1)
 	reads := 0
@@ -127,7 +159,9 @@ func TestSelectedCatalogueChecksOnlyTargets(t *testing.T) {
 	require.ElementsMatch(t, []string{"alias", "target", "manual"}, routing.RequestableModelIDs(result.Models))
 }
 
-// BenchmarkRequestableConfiguredProviders 测量 65 个提供商和 186 项配置的冷解析，包含规则准备。
+// BenchmarkRequestableConfiguredProviders measures cold resolution of 186
+// concrete names across 65 providers. Rule preparation stays inside the timer,
+// and each iteration checks that the complete configured catalogue is returned.
 func BenchmarkRequestableConfiguredProviders(b *testing.B) {
 	whitelist := make([]any, 186)
 	mapping := map[string]any{}
@@ -153,4 +187,80 @@ func BenchmarkRequestableConfiguredProviders(b *testing.B) {
 			b.Fatalf("models=%d", len(result.Models))
 		}
 	}
+}
+
+// TestRequestableCompactAttributesUseFinalModel supplies an OpenAI OAuth
+// Compact mapping distinct from its ordinary requested model. The retained
+// attribute target must equal the final model selected by runtime Compact
+// mapping.
+func TestRequestableCompactAttributesUseFinalModel(t *testing.T) {
+	ctx := context.Background()
+	id := int64(1)
+	record := provider.Record{ID: 1, Platform: "openai", Type: "oauth", Credentials: map[string]any{"model_whitelist": []string{"gpt-5.4", "gpt-5.6-sol"}, "compact_model_mapping": map[string]any{"gpt-5.4": "gpt-5.6-sol"}}}
+	group := &routing.Group{ID: id, AllowedProtocols: []protocol.ProtocolID{protocol.ProtocolResponsesCompact}}
+	policies := routing.NewPricingConfigService(nil, nil, routing.PricingConfigOptions{ReadGroup: func(context.Context, int64) (*routing.Group, error) { return group, nil }})
+	resolver := routing.RequestableResolver{GroupPolicies: &countedCataloguePolicies{PricingConfigService: policies}}
+	result := resolver.ResolveSelectedWithProviders(ctx, &id, "", []string{"gpt-5.4"}, gatewayprovider.CatalogueProviders([]provider.Record{record}))
+	require.Len(t, result.Models, 1)
+	require.Len(t, result.Models[0].AttributeTargets, 1)
+	_, runtimeModel := (gatewayprovider.ModelPolicy{Record: &record}).ForwardMappedModels("gpt-5.4", true)
+	require.Equal(t, "gpt-5.6-sol", runtimeModel)
+	require.Equal(t, runtimeModel, result.Models[0].AttributeTargets[0].Model)
+}
+
+// TestCatalogueUsesFinalRouteOutput combines an unknown provider route with a
+// configured image route behind the same alias. Image eligibility must follow
+// each final model, retain the supported route, and keep mixed outputs on Chat.
+func TestCatalogueUsesFinalRouteOutput(t *testing.T) {
+	groupID := int64(1)
+	group := &routing.Group{ID: groupID, AllowedProtocols: []protocol.ProtocolID{protocol.ProtocolImagesGenerations, protocol.ProtocolOpenAIChatCompletions}}
+	policies := &countedCataloguePolicies{PricingConfigService: routing.NewPricingConfigService(nil, nil, routing.PricingConfigOptions{ReadGroup: func(context.Context, int64) (*routing.Group, error) { return group, nil }})}
+	image, text, mixed := []string{"image"}, []string{"text"}, []string{"text", "image"}
+	attributes := &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{Lookup: func(model string) modelcatalog.Attributes {
+		switch model {
+		case "canvas":
+			return modelcatalog.Attributes{OutputModalities: &image}
+		case "image-named-text":
+			return modelcatalog.Attributes{OutputModalities: &text}
+		case "mixed":
+			return modelcatalog.Attributes{OutputModalities: &mixed}
+		default:
+			return modelcatalog.Attributes{}
+		}
+	}}}
+	records := []provider.Record{
+		{Platform: "openai", Type: "apikey", Credentials: map[string]any{"model_mapping": map[string]any{"alias": "unknown"}, "model_whitelist": []string{"unknown"}}},
+		{Platform: "openai", Type: "apikey", Credentials: map[string]any{"model_mapping": map[string]any{"alias": "canvas"}, "model_whitelist": []string{"canvas", "image-named-text", "mixed"}}},
+	}
+	resolver := routing.RequestableResolver{GroupPolicies: policies, Attributes: attributes}
+	result := resolver.ResolveWithProviders(context.Background(), &groupID, "", nil, gatewayprovider.CatalogueProviders(records))
+	require.NoError(t, result.Err)
+	byID := map[string]routing.RequestableModel{}
+	for _, model := range result.Models {
+		byID[model.ID] = model
+	}
+	require.Contains(t, byID["alias"].Protocols, protocol.ProtocolImagesGenerations)
+	require.NotContains(t, byID["image-named-text"].Protocols, protocol.ProtocolImagesGenerations)
+	require.Contains(t, byID["mixed"].Protocols, protocol.ProtocolOpenAIChatCompletions)
+	require.Contains(t, byID["mixed"].Protocols, protocol.ProtocolImagesGenerations)
+	for _, target := range byID["alias"].AttributeTargets {
+		if target.ClientProtocol == string(protocol.ProtocolImagesGenerations) {
+			require.Equal(t, "canvas", target.Model)
+		}
+	}
+}
+
+// TestCatalogueRecognizesGeminiLiteImage resolves the shipped Gemini Lite
+// image record for batch execution. Its image protocol must come from catalog
+// output metadata even though the former family-prefix classifier omitted it.
+func TestCatalogueRecognizesGeminiLiteImage(t *testing.T) {
+	groupID := int64(1)
+	group := &routing.Group{ID: groupID, AllowedProtocols: []protocol.ProtocolID{protocol.ProtocolImageBatches}}
+	policies := &countedCataloguePolicies{PricingConfigService: routing.NewPricingConfigService(nil, nil, routing.PricingConfigOptions{ReadGroup: func(context.Context, int64) (*routing.Group, error) { return group, nil }})}
+	record := provider.Record{Platform: "gemini", Type: "apikey", Credentials: map[string]any{"model_whitelist": []string{"gemini-3.1-flash-lite-image"}}}
+	resolver := routing.RequestableResolver{GroupPolicies: policies, Attributes: &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}}
+	result := resolver.ResolveWithProviders(context.Background(), &groupID, "", nil, gatewayprovider.CatalogueProviders([]provider.Record{record}))
+	require.NoError(t, result.Err)
+	require.Len(t, result.Models, 1)
+	require.Contains(t, result.Models[0].Protocols, protocol.ProtocolImageBatches)
 }

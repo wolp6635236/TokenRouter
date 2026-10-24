@@ -16,28 +16,43 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// InitEnt 初始化 Ent ORM 客户端并返回客户端实例和底层的 *sql.DB。
+// database.go initializes PostgreSQL, applies migrations, and loads persistent
+// secrets before returning shared database clients.
+// Database initialization fixes the process timezone before constructing the
+// shared PostgreSQL pool. Migrations run before persistent system secrets are
+// loaded, and complete configuration validation runs after those secrets have
+// populated cfg. A ten-minute context bounds migration retries and secret
+// initialization while retaining the caller's cancellation signal.
 //
-// 初始化使用 cfg 中的时区和数据库连接配置，依次设置时区、连接数据库、执行 SQL 迁移并创建 Ent 客户端。
+// Ent and direct SQL consumers use the same pool, so successful construction
+// transfers closing responsibility to the returned Ent client. Failed
+// initialization closes the acquired pool and joins any close error with the
+// original failure. This prevents a migration or secret failure from leaving
+// an application connection pool open during aborted startup.
+
+// InitEnt initializes the timezone and database, then returns an Ent client and
+// its shared SQL pool. Migrations complete before secret loading updates cfg,
+// and full configuration validation follows that update.
 //
-// 调用方需要关闭返回的 ent.Client，这会同时关闭底层 driver 和数据库连接。
-//
-// 底层 *sql.DB 可用于直接执行 SQL，初始化失败时返回错误。
+// Migration retries and secret initialization share a ten-minute budget derived
+// from ctx. The caller closes the Ent client on success, which also closes the
+// pool used by direct SQL consumers. Failure closes an acquired pool before
+// returning and retains cleanup errors in the returned error chain.
 func InitEnt(ctx context.Context, cfg *config.Config) (_ *ent.Client, _ *sql.DB, resultErr error) {
-	// 先设置应用时区，后续数据库连接使用同一时区。
 	if err := InitTimezone(cfg.Timezone); err != nil {
 		return nil, nil, err
 	}
 
-	// DSN 将配置的时区传给 PostgreSQL。
+	// Pass the configured timezone to PostgreSQL through the DSN.
 	dsn := cfg.Database.DSNWithTimezone(cfg.Timezone)
 
-	// 连接 PostgreSQL，随后将连接交给 Ent 的 SQL 驱动。
 	db, err := postgresinfra.Open(dsn, cfg.Server.EnableServerTiming)
 	if err != nil {
 		return nil, nil, err
 	}
-	// 取得连接后登记失败回收，成功返回后由 Ent 关闭底层 SQL 连接。
+	// Construction has not transferred ownership while a named error is present.
+	// Close the pool and join cleanup failures so the initialization cause remains
+	// observable through the returned error chain.
 	defer func() {
 		if resultErr != nil {
 			resultErr = errors.Join(resultErr, db.Close())
@@ -46,7 +61,8 @@ func InitEnt(ctx context.Context, cfg *config.Config) (_ *ent.Client, _ *sql.DB,
 	drv := entsql.OpenDB(dialect.Postgres, db)
 	applyDBPoolSettings(drv.DB(), cfg)
 
-	// 按 SQL 迁移文件更新数据库结构，迁移和重试共用十分钟预算。
+	// Bound retries and secret initialization together so repeated migration
+	// failures cannot consume a fresh full deadline before secret loading starts.
 	migrationCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	if err := postgresinfra.InitializeWithRetry(migrationCtx, func(ctx context.Context) error {
@@ -55,15 +71,16 @@ func InitEnt(ctx context.Context, cfg *config.Config) (_ *ent.Client, _ *sql.DB,
 		return nil, nil, err
 	}
 
-	// 创建 Ent 客户端，绑定到已配置的数据库驱动。
 	client := ent.NewClient(ent.Driver(drv))
 
-	// 从配置或数据库中取得系统密钥。
+	// Persistent secrets use tables installed by migrations, so resolve them
+	// after schema initialization and before validation requires the JWT secret.
 	if err := ensureBootstrapSecrets(migrationCtx, client, cfg); err != nil {
 		return nil, nil, err
 	}
 
-	// 密钥补齐后校验完整配置，JWT 密钥缺失等错误会在启动阶段返回。
+	// Bootstrap loading permits a missing persisted secret. Validate cfg after
+	// secret resolution so the complete application receives a usable secret.
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("validate config after secret bootstrap: %w", err)
 	}
@@ -71,7 +88,7 @@ func InitEnt(ctx context.Context, cfg *config.Config) (_ *ent.Client, _ *sql.DB,
 	return client, drv.DB(), nil
 }
 
-// postgresPoolOptions 将数据库配置转换为连接池选项。
+// postgresPoolOptions converts deployment database configuration to pool settings.
 func postgresPoolOptions(cfg *config.Config) postgresinfra.PoolOptions {
 	return postgresinfra.PoolOptions{
 		MaxOpenConns:           cfg.Database.MaxOpenConns,
@@ -81,12 +98,16 @@ func postgresPoolOptions(cfg *config.Config) postgresinfra.PoolOptions {
 	}
 }
 
-// applyDBPoolSettings 设置数据库连接池。
+// applyDBPoolSettings applies deployment connection limits to the shared SQL
+// pool. PostgreSQL infrastructure resolves nonpositive or excessive connection
+// ages to its default lifetimes before configuring this pool.
 func applyDBPoolSettings(db *sql.DB, cfg *config.Config) {
 	postgresinfra.ApplyPoolSettings(db, postgresPoolOptions(cfg))
 }
 
-// ApplyMigrations 执行数据库迁移。
+// ApplyMigrations runs the embedded migration files through the PostgreSQL
+// migration implementation using db and ctx. The caller supplies and owns the
+// database pool and receives migration failures directly.
 func ApplyMigrations(ctx context.Context, db *sql.DB) error {
 	return postgresinfra.ApplyMigrations(ctx, db, migrations.FS)
 }

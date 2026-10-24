@@ -14,8 +14,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// GrokPreviousResponseSeed 根据 Responses 的 previous_response_id 返回稳定的粘性种子。
-// resp_* 响应 ID 可生成种子，消息 ID 和未知格式返回空字符串。
+// hash.go derives gateway session affinity from request metadata, cache-marked
+// content, and visible text. Those sources have different scope: metadata
+// returns its parsed session ID, marked content hashes alone, and the text path
+// includes client-source fields when SessionContext is present. A supplied
+// context can therefore produce a hash even when there is no message text.
+//
+// Messages and Gemini fallback hashing includes all extracted message text, so
+// a longer transcript can change the hash. Responses uses leading instruction
+// text and the first user or input-text anchor when no message text was
+// appended, keeping later turns out of that seed. Text is concatenated without
+// delimiters between content pieces, and roles or nontext media do not enter
+// this fallback. HTTP callers apply their own explicit-session and
+// platform-specific priority rules.
+
+// GrokPreviousResponseSeed labels a recognized previous_response_id for Grok routing.
+// Blank input, message IDs, and unknown formats return empty. The classifier
+// requires the exact resp_ prefix and its bounded ASCII suffix; the trimmed ID
+// is retained in the labelled seed.
 func GrokPreviousResponseSeed(body []byte) string {
 	id := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
 	if id == "" {
@@ -24,11 +40,14 @@ func GrokPreviousResponseSeed(body []byte) string {
 	if protocolopenai.ClassifyOpenAIPreviousResponseIDKind(id) != protocolopenai.OpenAIPreviousResponseIDKindResponseID {
 		return ""
 	}
-	// 为内容种子添加前缀，与响应 ID 区分。
+	// Label recognized response IDs so the Grok previous-response path can
+	// remain distinct from an explicit session whose text is the same raw ID.
 	return "grok-prev-resp:" + id
 }
 
-// GrokStickyAffinitySeed 用模型和会话 ID 构造粘性路由种子。
+// GrokStickyAffinitySeed combines a trimmed session ID with the body's normalized
+// model for HTTP affinity. Blank session text returns empty; absent model uses
+// the versioned session label alone, and model text is trimmed and lowercased.
 func GrokStickyAffinitySeed(sessionID string, body []byte) string {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -44,7 +63,22 @@ func GrokStickyAffinitySeed(sessionID string, body []byte) string {
 	return "grok-affinity:v1:" + model + ":" + sessionID
 }
 
-// GenerateSessionHash 从预解析请求计算粘性会话 hash。
+// GenerateSessionHash returns the strongest available sticky identity from a
+// parsed request. Nil input returns empty, and a nil observer suppresses its
+// synchronous diagnostics. A recognized metadata.user_id session is returned
+// before content hashing; invalid metadata lets the next evidence source proceed.
+//
+// Nonempty ephemeral content is hashed without SessionContext. Otherwise the seed
+// contains supplied client IP, normalized User-Agent, API Key ID, system text, and
+// message text. Responses input contributes an anchor only when message extraction
+// added no text. A present SessionContext still contributes separators and a key
+// ID when its other fields are empty, distinguishing it from a nil context.
+//
+// The fallback concatenates text pieces without encoding roles or nontext items.
+// Messages growth can change its hash; Responses anchoring stops at the first
+// user or input-text item after leading instructions. This value supplies affinity
+// evidence, and callers apply tenant or platform isolation appropriate to their
+// routing path. Keep parsed request bytes stable while these views are read.
 func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string, ...any)) string {
 	if observe == nil {
 		observe = func(string, ...any) {}
@@ -53,7 +87,8 @@ func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string
 		return ""
 	}
 
-	// 1. 最高优先级：从 metadata.user_id 提取 session_xxx
+	// Recognized metadata identifies the declared conversation before content
+	// and client-source hashing, allowing message growth to retain that session ID.
 	if parsed.MetadataUserID != "" {
 		uid := anthropic.ParseMetadataUserID(parsed.MetadataUserID)
 		if uid != nil && uid.SessionID != "" {
@@ -71,7 +106,8 @@ func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string
 		)
 	}
 
-	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
+	// A selected nonempty ephemeral anchor defines cache affinity independently
+	// of request source, so shared marked content wins before client-context hashing.
 	cacheableContent := ExtractCacheableContent(parsed)
 	if cacheableContent != "" {
 		hash := HashContent(cacheableContent)
@@ -82,9 +118,11 @@ func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string
 		return hash
 	}
 
-	// 3. 最后 fallback: 使用 session 上下文 + system + 所有消息的完整摘要串
+	// With no declared session or marked text, combine source and readable
+	// content evidence; the fallback still permits a source-only seed when context exists.
 	var combined strings.Builder
-	// 哈希中加入请求来源，使不同用户的相同消息生成不同哈希。
+	// A present context contributes source identity even with empty text fields,
+	// so identical unmarked content can differ by client source or API Key.
 	if parsed.SessionContext != nil {
 		_, _ = combined.WriteString(parsed.SessionContext.ClientIP)
 		_, _ = combined.WriteString(":")
@@ -98,6 +136,8 @@ func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string
 	}
 	contentStart := combined.Len()
 	AppendMessageTextsFromRaw(&combined, parsed.MessagesRaw())
+	// Messages text takes precedence; use the Responses anchor only when that
+	// extraction added nothing, retaining one selected content representation in the fallback.
 	if combined.Len() == contentStart {
 		AppendResponsesSessionAnchorFromRaw(&combined, parsed.InputRaw())
 	}
@@ -114,6 +154,15 @@ func GenerateSessionHash(parsed *requeststate.ParsedRequest, observe func(string
 	return ""
 }
 
+// ExtractCacheableContent returns nonempty text from the first message containing
+// an ephemeral marker, otherwise concatenated marked system text. Nil requests
+// return empty. The chosen message contributes all its text blocks, including
+// unmarked text alongside the marker.
+//
+// Message selection stops at the first marked message even when its extracted
+// text is empty. In that case system text can win, but later marked messages are
+// not tried. This priority supports GenerateSessionHash's cache-content path,
+// which hashes this selected content before considering client-source identity.
 func ExtractCacheableContent(parsed *requeststate.ParsedRequest) string {
 	if parsed == nil {
 		return ""
@@ -123,11 +172,19 @@ func ExtractCacheableContent(parsed *requeststate.ParsedRequest) string {
 	if messageText := ExtractCacheableTextFromMessagesRaw(parsed.MessagesRaw()); messageText != "" {
 		return messageText
 	}
+	// An empty first marked message supplies no text; use marked system text
+	// rather than searching later messages that were outside the selected cache anchor.
 	return systemText
 }
 
+// ParseRawJSONView returns a gjson view over the supplied raw byte storage.
+// Empty input yields an empty view; callers keep bytes unchanged while the view
+// or derived strings are used, and validate JSON separately.
 func ParseRawJSONView(raw []byte) gjson.Result { return wirejson.ParseView(raw) }
 
+// ExtractTextFromSystemRaw reads a system string or concatenates array text fields.
+// Other representations return empty. Array parts need no particular type label;
+// text fields use gjson string conversion and are joined without separators.
 func ExtractTextFromSystemRaw(raw []byte) string {
 	system := ParseRawJSONView(raw)
 	switch system.Type {
@@ -149,6 +206,9 @@ func ExtractTextFromSystemRaw(raw []byte) string {
 	return ""
 }
 
+// ExtractTextFromContentRaw reads string content or joins exact text-typed array
+// blocks. Other shapes and other block types return empty or contribute nothing;
+// accepted text fields use gjson conversion and no separators are inserted.
 func ExtractTextFromContentRaw(content gjson.Result) string {
 	switch content.Type {
 	case gjson.String:
@@ -171,6 +231,10 @@ func ExtractTextFromContentRaw(content gjson.Result) string {
 	return ""
 }
 
+// AppendMessageTextsFromRaw appends readable message text in supplied order.
+// Nil builders, empty bytes, and non-array views are ignored. An existing content
+// field takes precedence over Gemini parts, even when it yields no text; roles
+// are omitted from this concatenated fallback seed.
 func AppendMessageTextsFromRaw(builder *strings.Builder, raw []byte) {
 	if builder == nil || len(raw) == 0 {
 		return
@@ -184,6 +248,8 @@ func AppendMessageTextsFromRaw(builder *strings.Builder, raw []byte) {
 			_, _ = builder.WriteString(ExtractTextFromContentRaw(content))
 			return true
 		}
+		// Gemini stores content in parts. Use those text fields when content is
+		// absent so the shared fallback can read that protocol's parsed message range.
 		parts := msg.Get("parts")
 		if parts.IsArray() {
 			parts.ForEach(func(_, part gjson.Result) bool {
@@ -197,6 +263,16 @@ func AppendMessageTextsFromRaw(builder *strings.Builder, raw []byte) {
 	})
 }
 
+// AppendResponsesSessionAnchorFromRaw appends instruction text and the first
+// Responses user anchor to a caller's builder. Nil builders, empty bytes, and
+// unusable views are ignored. String input appends directly, while array input
+// accepts string items, exact role labels, and exact input_text item labels.
+//
+// System and developer content before the stopping anchor contributes text. The
+// first string, user, or input_text item stops traversal even when it supplies
+// empty text, so later history does not change this selected prefix. Other items
+// are skipped. Content pieces are concatenated without delimiters; callers keep
+// this affinity representation distinct from full transcript identity.
 func AppendResponsesSessionAnchorFromRaw(builder *strings.Builder, raw []byte) {
 	if builder == nil || len(raw) == 0 {
 		return
@@ -210,6 +286,8 @@ func AppendResponsesSessionAnchorFromRaw(builder *strings.Builder, raw []byte) {
 		return
 	}
 
+	// Stop at the initial user-like item after leading instructions so appended
+	// response history keeps using the same chosen conversation anchor on later turns.
 	input.ForEach(func(_, item gjson.Result) bool {
 		if item.Type == gjson.String {
 			_, _ = builder.WriteString(item.String())
@@ -234,6 +312,9 @@ func AppendResponsesSessionAnchorFromRaw(builder *strings.Builder, raw []byte) {
 	})
 }
 
+// AppendResponsesContentText appends string content or text/input_text array
+// blocks to the supplied builder. Nil builders and absent content are ignored;
+// other block labels contribute nothing, and accepted text is joined without separators.
 func AppendResponsesContentText(builder *strings.Builder, content gjson.Result) {
 	if builder == nil || !content.Exists() {
 		return
@@ -256,6 +337,9 @@ func AppendResponsesContentText(builder *strings.Builder, content gjson.Result) 
 	})
 }
 
+// ExtractCacheableTextFromSystemRaw joins text from system-array parts carrying
+// an exact ephemeral cache-control label. String systems and other representations
+// return empty; marked part text uses gjson conversion and is joined without separators.
 func ExtractCacheableTextFromSystemRaw(raw []byte) string {
 	system := ParseRawJSONView(raw)
 	if !system.IsArray() {
@@ -273,6 +357,16 @@ func ExtractCacheableTextFromSystemRaw(raw []byte) string {
 	return builder.String()
 }
 
+// ExtractCacheableTextFromMessagesRaw returns text from the first message whose
+// content array contains an exact ephemeral marker. Non-array history or no marked
+// message returns empty. All text blocks of the selected message contribute,
+// including those without a marker.
+//
+// The first marker determines the selected message even if it is attached to a
+// nontext block. ExtractTextFromContentRaw may then produce empty, and later marked
+// messages are not examined. GenerateSessionHash's caller can use marked system
+// text after this empty result, so selection and text availability remain separate
+// decisions that affect the chosen cache identity.
 func ExtractCacheableTextFromMessagesRaw(raw []byte) string {
 	messages := ParseRawJSONView(raw)
 	if !messages.IsArray() {
@@ -301,16 +395,26 @@ func ExtractCacheableTextFromMessagesRaw(raw []byte) string {
 	return text
 }
 
+// HashContent returns the unsigned XXHash64 value encoded in Base36 text.
 func HashContent(content string) string {
 	h := xxhash.Sum64String(content)
 	return strconv.FormatUint(h, 36)
 }
 
-// MessagesMetadataSession 从 Claude 会话 ID、已有散列或 metadata.user_id 选择粘性会话标识。
+// MessagesMetadataSession returns a sticky hash and the supplied prompt cache key.
+// A nonempty Claude session wins when promptCacheKey is exactly empty; otherwise
+// an existing sessionHash wins before metadata.user_id is considered. Inputs are
+// used as supplied except the metadata value, which is trimmed.
+//
+// When no earlier hash wins, model text and raw metadata.user_id form the
+// scheduler seed. The metadata need not parse as a Claude session here. This
+// helper leaves promptCacheKey unchanged because upstream cache derivation happens
+// in the execution adapter; local provider affinity and the upstream prompt key
+// can therefore advance according to different evidence.
 func MessagesMetadataSession(claudeSessionID, sessionHash, promptCacheKey, reqModel string, body []byte) (string, string) {
-	// Anthropic metadata.user_id 和 X-Claude-Code-Session-Id 用于本地提供商粘性，后者比内容摘要更稳定。
-	// 上游 GPT/Codex 的 prompt_cache_key 和 session_id 由 ForwardAsAnthropic 根据 cache_control 或完整消息摘要派生，
-	// 使后续 turn 的缓存键随内容滚动。
+	// A Claude session is selected here when no prompt key was already supplied.
+	// Upstream cache derivation stays with the execution adapter, keeping local
+	// affinity and cache input separate.
 	if promptCacheKey == "" {
 		if claudeSessionID != "" {
 			return currentSessionHash(claudeSessionID), promptCacheKey
@@ -326,7 +430,9 @@ func MessagesMetadataSession(claudeSessionID, sessionHash, promptCacheKey, reqMo
 	return sessionHash, promptCacheKey
 }
 
-// currentSessionHash 按调度会话的格式计算哈希。
+// currentSessionHash returns the scheduler's current hash for the supplied seed.
+// The scheduler trims input and returns empty for blank text; this helper discards
+// the legacy hash because MessagesMetadataSession consumes the current value.
 func currentSessionHash(seed string) string {
 	current, _ := scheduler.DeriveSessionHashes(seed)
 	return current

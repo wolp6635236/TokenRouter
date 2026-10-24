@@ -1,20 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import QualityProbeLogsView from '../QualityProbeLogsView.vue'
-import { QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY } from '@/components/admin/provider/qualityProbeLogsColumns'
+import { QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY } from '../qualityProbeLogsColumns'
+
+// QualityProbeLogsView.columns.spec.ts checks persisted quality-probe log column visibility. The table stub exposes ordered column keys without depending on rendered table internals.
 
 const listQualityProbeLogs = vi.fn()
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     settings: {
-      listQualityProbeLogs: (...args: unknown[]) => listQualityProbeLogs(...args)
-    }
-  }
+      listQualityProbeLogs: (...args: unknown[]) => listQualityProbeLogs(...args),
+    },
+  },
 }))
 
 vi.mock('@/stores/app', () => ({
-  useAppStore: () => ({ showError: vi.fn() })
+  useAppStore: () => ({ showError: vi.fn() }),
 }))
 
 vi.mock('vue-i18n', async () => {
@@ -22,8 +24,8 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
-    })
+      t: (key: string) => key,
+    }),
   }
 })
 
@@ -35,14 +37,15 @@ const mountView = () =>
         TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /></div>' },
         DataTable: {
           props: ['columns'],
-          template: '<div data-test="columns">{{ columns.map(column => column.key).join(",") }}</div>'
+          template:
+            '<div data-test="columns">{{ columns.map(column => column.key).join(",") }}</div>',
         },
         Pagination: true,
         BaseDialog: true,
         QualityProbeSamples: true,
-        Icon: true
-      }
-    }
+        Icon: true,
+      },
+    },
   })
 
 describe('QualityProbeLogsView columns', () => {
@@ -61,14 +64,18 @@ describe('QualityProbeLogsView columns', () => {
     expect(columnText()).toContain('actions')
 
     await wrapper.get('button[aria-label="admin.providers.viewColumns"]').trigger('click')
-    const timeToggle = wrapper.findAll('button').find(button => button.text().includes('admin.providers.qualityProbeLogs.time'))
+    const timeToggle = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('admin.providers.qualityProbeLogs.time'))
     expect(timeToggle).toBeDefined()
     expect(wrapper.text()).not.toContain('admin.providers.qualityProbeLogs.provider')
     await timeToggle!.trigger('click')
 
     expect(columnText()).not.toContain('at')
     expect(columnText().startsWith('provider_name,')).toBe(true)
-    expect(JSON.parse(localStorage.getItem(QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY) || '[]')).toEqual(['at'])
+    expect(JSON.parse(localStorage.getItem(QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY) || '[]')).toEqual(
+      ['at'],
+    )
     wrapper.unmount()
   })
 })

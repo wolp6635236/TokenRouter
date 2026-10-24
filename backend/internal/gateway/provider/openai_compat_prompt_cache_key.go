@@ -11,15 +11,45 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// openai_compat_prompt_cache_key.go derives stable compatibility cache keys
+// from conversation prefixes and cache anchors.
+// Compatibility cache identity follows stable request content rather than the
+// entire growing conversation. Chat seeds include system text, the first user
+// content, and selected model/tool configuration; ordinary Anthropic seeds use
+// the same opening-content approach, while explicit ephemeral anchors select a
+// separate identity path.
+//
+// Anchor identity includes all qualifying system and assistant text blocks
+// plus one first-user text anchor, and it excludes model/configuration fields.
+// That distinction lets callers recognize bridge keys by prefix but does not
+// make every pair of different requests distinct. JSON normalization and
+// hashing happen after seed selection; unencodable tool declarations or
+// malformed anchor content are omitted so remaining evidence can still produce
+// a key.
+
+// compatPromptCacheKeyPrefix identifies hashes derived from compatibility opening
+// content and configuration, distinguishing them from explicit Anthropic anchor keys.
 const compatPromptCacheKeyPrefix = "compat_cc_"
 
-// ShouldAutoInjectPromptCacheKeyForCompat 判断兼容请求是否自动生成提示缓存键。
+// ShouldAutoInjectPromptCacheKeyForCompat recognizes automatic-key model
+// identities after trimming and case folding. Exact gpt-6-astra, gpt-5
+// prefixes, and names containing codex qualify; other GPT-6 spellings and
+// vendor-prefixed Astra names do not.
 func ShouldAutoInjectPromptCacheKeyForCompat(model string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(model))
 	return trimmed == "gpt-6-astra" || strings.HasPrefix(trimmed, "gpt-5") || strings.Contains(trimmed, "codex")
 }
 
-// DeriveCompatPromptCacheKey 从原首轮稳定内容派生兼容缓存键，不引入新状态。
+// DeriveCompatPromptCacheKey hashes opening Chat content and selected request
+// configuration for compatibility caching. Nil requests return empty, and a
+// blank mappedModel uses the trimmed request model.
+//
+// The seed includes effort, tool choice, serializable tool/function
+// declarations, every system message, and the first user message. Later user
+// and assistant turns stay outside this seed so appended history can reuse a
+// stable opening identity. Failed declaration encoding omits that seed
+// component, while NormalizeCompatSeedJSON defines how each accepted JSON
+// component is normalized before hashing.
 func DeriveCompatPromptCacheKey(req *protocolopenai.ChatCompletionsRequest, mappedModel string) string {
 	if req == nil {
 		return ""
@@ -37,11 +67,15 @@ func DeriveCompatPromptCacheKey(req *protocolopenai.ChatCompletionsRequest, mapp
 	if len(req.ToolChoice) > 0 {
 		seedParts = append(seedParts, "tool_choice="+protocolopenai.NormalizeCompatSeedJSON(req.ToolChoice))
 	}
+	// Tool declarations participate when serializable; a failed JSON encoding leaves
+	// the remaining opening-content seed usable, with no declaration component added.
 	if len(req.Tools) > 0 {
 		if raw, err := json.Marshal(req.Tools); err == nil {
 			seedParts = append(seedParts, "tools="+protocolopenai.NormalizeCompatSeedJSON(raw))
 		}
 	}
+	// Legacy function declarations use the same serializable-seed rule as tools;
+	// encoding failure retains the other seed parts instead of rejecting cache identity.
 	if len(req.Functions) > 0 {
 		if raw, err := json.Marshal(req.Functions); err == nil {
 			seedParts = append(seedParts, "functions="+protocolopenai.NormalizeCompatSeedJSON(raw))
@@ -64,11 +98,22 @@ func DeriveCompatPromptCacheKey(req *protocolopenai.ChatCompletionsRequest, mapp
 	return compatPromptCacheKeyPrefix + upstream.HashSensitiveValueForLog(strings.Join(seedParts, "|"))
 }
 
-// DeriveAnthropicCompatPromptCacheKey 优先根据 cache_control 派生缓存键，缺少标记时使用兼容种子。
+// DeriveAnthropicCompatPromptCacheKey prefers an ephemeral-text anchor key
+// before deriving a configuration/opening-content key. Nil requests return
+// empty, and nonempty anchor output is returned without adding the model or
+// other configuration seed fields.
+//
+// The ordinary seed uses mapped model or request model, explicit effort, tool
+// choice, serializable tools, system content, and the first user message.
+// Later history is excluded from that path. Anchor selection uses its own
+// role/text rules, so callers distinguish the resulting anthropic-cache prefix
+// from the compat_cc prefix when identifying bridge requests.
 func DeriveAnthropicCompatPromptCacheKey(req *protocolanthropic.AnthropicRequest, mappedModel string) string {
 	if req == nil {
 		return ""
 	}
+	// Explicit text anchors select their own content-only namespace before model
+	// and configuration seeds are assembled for the ordinary compatibility key.
 	if anchorKey := DeriveAnthropicCacheControlPromptCacheKey(req); anchorKey != "" {
 		return anchorKey
 	}
@@ -85,6 +130,8 @@ func DeriveAnthropicCompatPromptCacheKey(req *protocolanthropic.AnthropicRequest
 	if len(req.ToolChoice) > 0 {
 		seedParts = append(seedParts, "tool_choice="+protocolopenai.NormalizeCompatSeedJSON(req.ToolChoice))
 	}
+	// Tool declarations participate when serializable; a failed JSON encoding leaves
+	// the remaining opening-content seed usable, with no declaration component added.
 	if len(req.Tools) > 0 {
 		if raw, err := json.Marshal(req.Tools); err == nil {
 			seedParts = append(seedParts, "tools="+protocolopenai.NormalizeCompatSeedJSON(raw))
@@ -106,7 +153,16 @@ func DeriveAnthropicCompatPromptCacheKey(req *protocolanthropic.AnthropicRequest
 	return compatPromptCacheKeyPrefix + upstream.HashSensitiveValueForLog(strings.Join(seedParts, "|"))
 }
 
-// DeriveAnthropicCacheControlPromptCacheKey 从请求中标有 cache_control 的内容派生缓存键。
+// DeriveAnthropicCacheControlPromptCacheKey hashes selected nonblank ephemeral
+// text anchors and returns empty when none are found. Malformed system/content
+// JSON contributes no blocks, leaving other decodable messages eligible.
+//
+// All qualifying system and assistant text anchors are retained in encounter
+// order, while the first user anchor is appended after them. Role and text
+// values are trimmed; block type and cache-control spelling require their
+// supported exact values. The key uses the first sixteen SHA-256 bytes over
+// this text seed and intentionally omits model identity and nontext anchor
+// data.
 func DeriveAnthropicCacheControlPromptCacheKey(req *protocolanthropic.AnthropicRequest) string {
 	if req == nil {
 		return ""
@@ -114,6 +170,8 @@ func DeriveAnthropicCacheControlPromptCacheKey(req *protocolanthropic.AnthropicR
 
 	var parts []string
 	var systemBlocks []protocolanthropic.AnthropicContentBlock
+	// Malformed system blocks cannot supply typed text anchors. Ignore that
+	// component while decodable message anchors still contribute to the cache key.
 	if len(req.System) > 0 && json.Unmarshal(req.System, &systemBlocks) == nil {
 		for _, block := range systemBlocks {
 			if block.Type == "text" &&
@@ -128,6 +186,8 @@ func DeriveAnthropicCacheControlPromptCacheKey(req *protocolanthropic.AnthropicR
 	firstUserAnchor := ""
 	for _, msg := range req.Messages {
 		var blocks []protocolanthropic.AnthropicContentBlock
+		// Unreadable message content supplies no reliable anchor blocks; continue with
+		// other decodable history so one malformed message does not abort key derivation.
 		if len(msg.Content) == 0 || json.Unmarshal(msg.Content, &blocks) != nil {
 			continue
 		}
@@ -156,5 +216,6 @@ func DeriveAnthropicCacheControlPromptCacheKey(req *protocolanthropic.AnthropicR
 		return ""
 	}
 	sum := sha256.Sum256([]byte("anthropic-cache:" + strings.Join(parts, "\n")))
+	// Hex encoding this prefix keeps the digest suffix at 32 characters.
 	return fmt.Sprintf("anthropic-cache-%x", sum[:16])
 }

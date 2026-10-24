@@ -6,24 +6,62 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// GrokTierRules 提供供应商档位解析函数。
+// grok_media_eligibility.go evaluates Grok media eligibility from
+// administrator overrides, billing observations, and subscription evidence.
+// New Grok media generation applies an OAuth billing gate, while text
+// forwarding and existing media queries apply their own eligibility rules. An
+// administrator override is evaluated before OAuth billing evidence. OAuth
+// accounts with absent, forbidden, free, or inconclusive billing are excluded
+// from this generation decision, and non-OAuth Grok accounts pass its billing
+// gate.
+//
+// Free classification combines several observations with defined precedence. A
+// nonempty tier returned by the current access-token parser decides
+// immediately. Otherwise explicit paid evidence from billing, quota, or
+// credentials overrides free and inferred signals. A weekly observation
+// lacking accepted plan, percentage, or positive monthly-limit evidence
+// supplies no accepted quota signal by its window label alone. Accepted signal
+// presence still needs the separate forbidden and free checks.
+
+// GrokTierRules supplies platform parsers used to classify subscription
+// evidence.
 type GrokTierRules struct {
-	SubscriptionTierFromJWT   func(string) string
-	NormalizeSubscriptionTier func(string) string
-	IsFreeRollingTokenLimit   func(int64) bool
+	// SubscriptionTierFromJWT, NormalizeSubscriptionTier, and
+	// IsFreeRollingTokenLimit are required for reached classification
+	// paths. The
+	// caller supplies consistent platform rules so JWT and stored
+	// observations use
+	// the same tier meanings.
+	SubscriptionTierFromJWT   func(string) string // current access-token tier parser
+	NormalizeSubscriptionTier func(string) string // canonical subscription label parser
+	IsFreeRollingTokenLimit   func(int64) bool    // free token allowance recognizer
 }
 
+// KnownGrokFreeProvider reports whether a Grok OAuth row has free evidence
+// without an overriding paid signal. Nil and other provider kinds return false;
+// callers supply usable parsing callbacks.
+//
+// A nonempty current JWT tier determines the result first. Otherwise billing,
+// rolling quota, and subscription_tier credentials contribute explicit free or
+// paid evidence, while recognized small token limits and monthly observations
+// can infer free status. Paid signals win across those sources. Parsing
+// failures omit their source, so the result describes accepted evidence rather
+// than authenticating or checking the age of every observation.
 func KnownGrokFreeProvider(provider *Record, rules GrokTierRules) bool {
 	if provider == nil || !provider.IsGrokOAuth() {
 		return false
 	}
-	// 实时访问令牌 JWT 优先于陈旧的账单或凭据快照，令牌刷新后可立即反映降级到免费档位。
+	// The current access token's tier overrides older billing and
+	// credential snapshots after a tier change.
 	if jwtTier := rules.SubscriptionTierFromJWT(provider.GetCredential("access_token")); jwtTier != "" {
 		return isGrokFreeSubscriptionTier(jwtTier, rules)
 	}
 	freeSignal := false
 	paidSignal := false
 	inferredFreeSignal := false
+	// A billing decode failure contributes no tier evidence. Continue with
+	// the rolling snapshot and credentials so those accepted sources can
+	// determine classification.
 	if billing, err := ParseGrokBillingSnapshot(provider.Extra); err == nil && billing != nil {
 		if tier := strings.TrimSpace(billing.Plan); tier != "" {
 			if isGrokFreeSubscriptionTier(tier, rules) {
@@ -32,20 +70,31 @@ func KnownGrokFreeProvider(provider *Record, rules GrokTierRules) bool {
 				paidSignal = true
 			}
 		}
-		// 用量百分比或月度美元上限可以证明提供商属于付费计划。
+		// Populated percentage pointers also represent zero usage.
+		// Their presence
+		// or a positive monthly allowance supplies paid evidence even
+		// when another
+		// stored source still says free.
 		if billing.UsagePercent != nil || billing.UsedPercent != nil ||
 			(billing.MonthlyLimitCents != nil && *billing.MonthlyLimitCents > 0) {
 			paidSignal = true
 		}
-		// xAI 会故意为 Free 提供商返回空 plan，只有付费订阅才带 SuperGrok plan/月度限额。
-		// 因此，成功且没有付费信号的月度账单按 Free 判断，
-		// 部分探测仍按关闭策略处理。
+		// Nonblank MonthlyUpdatedAt selects monthly inference without
+		// timestamp
+		// parsing. A complete 2xx summary can also infer free status
+		// after the
+		// final paid-signal precedence is applied.
 		if strings.TrimSpace(billing.MonthlyUpdatedAt) != "" ||
 			(billing.StatusCode >= 200 && billing.StatusCode < 300 &&
 				!billing.Partial && len(billing.FailedWindows) == 0) {
 			inferredFreeSignal = true
 		}
 	}
+	// An undecodable quota representation cannot contribute its plan or
+	// free
+	// token limit; retained credential evidence still participates in the
+	// final
+	// precedence decision.
 	if snapshot, err := GrokQuotaSnapshotFromExtra(provider.Extra); err == nil && snapshot != nil {
 		if tier := strings.TrimSpace(snapshot.SubscriptionTier); tier != "" {
 			if isGrokFreeSubscriptionTier(tier, rules) {
@@ -59,7 +108,8 @@ func KnownGrokFreeProvider(provider *Record, rules GrokTierRules) bool {
 			inferredFreeSignal = true
 		}
 	}
-	// 此处仅凭证中的 subscription_tier 具有权威性，不采用 plan_type 或扩展字段。
+	// Use the credential subscription_tier here; plan_type and arbitrary
+	// extra fields are not tier evidence.
 	if tier := strings.TrimSpace(provider.GetCredential("subscription_tier")); tier != "" {
 		if isGrokFreeSubscriptionTier(tier, rules) {
 			freeSignal = true
@@ -67,10 +117,15 @@ func KnownGrokFreeProvider(provider *Record, rules GrokTierRules) bool {
 			paidSignal = true
 		}
 	}
-	// 付费证据优先于推断的 Free 档位，即使快照仍包含历史 200 万 Free token 限额，也按付费处理。
+	// Paid evidence takes precedence over free signals; the stored
+	// free-token
+	// allowance participates without a freshness check in this
+	// classification.
 	return !paidSignal && (freeSignal || inferredFreeSignal)
 }
 
+// isGrokFreeSubscriptionTier reports whether platform normalization classifies
+// the tier as free or x_basic.
 func isGrokFreeSubscriptionTier(tier string, rules GrokTierRules) bool {
 	switch rules.NormalizeSubscriptionTier(tier) {
 	case "free", "x_basic":
@@ -80,6 +135,8 @@ func isGrokFreeSubscriptionTier(tier string, rules GrokTierRules) bool {
 	}
 }
 
+// isGrokUnknownSubscriptionTier recognizes blank and case-insensitive
+// placeholder subscription labels.
 func isGrokUnknownSubscriptionTier(tier string) bool {
 	switch strings.ToLower(strings.TrimSpace(tier)) {
 	case "", "unknown", "n/a", "none":
@@ -89,6 +146,16 @@ func isGrokUnknownSubscriptionTier(tier string) bool {
 	}
 }
 
+// GrokMediaGenerationEligibility returns whether this Grok row can start media
+// generation and a machine-readable reason. Nil or non-Grok records fail before
+// overrides; a recognized override then decides, and other Grok credential
+// types pass the OAuth billing gate.
+//
+// OAuth requires decoded billing without any recorded 403, no winning free
+// signal, and an authoritative quota signal. Those checks are ordered so a
+// paid-looking summary with forbidden access remains excluded. This function
+// interprets the supplied record only; refreshing absent billing is a separate
+// probe, and scheduling/status obligations belong to its caller.
 func GrokMediaGenerationEligibility(a *Record, rules GrokTierRules) (bool, string) {
 	if a == nil || !a.IsGrok() {
 		return false, "not_grok"
@@ -103,6 +170,10 @@ func GrokMediaGenerationEligibility(a *Record, rules GrokTierRules) (bool, strin
 		return true, "non_oauth"
 	}
 
+	// New OAuth media generation needs accepted billing evidence even when
+	// a
+	// token names a paid tier; decode errors remain an unobserved-billing
+	// rejection for the probe caller.
 	billing, err := ParseGrokBillingSnapshot(a.Extra)
 	if err != nil || billing == nil {
 		return false, "billing_unobserved"

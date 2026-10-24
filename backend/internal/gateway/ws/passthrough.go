@@ -14,15 +14,55 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// Run 执行双向 relay，按轮处理策略检查、完成和失败。
+// passthrough.go runs dedicated WebSocket sessions and coordinates turn
+// admission with terminal delivery.
+// A dedicated WebSocket relays client frames and upstream events concurrently.
+// Completion and delivery consume request metadata at different points when a
+// bare error waits for later settlement evidence. PassthroughSession queues
+// copied turn bodies and policy values, then retains a dequeued snapshot for
+// response-terminal rewriting while paired write callbacks govern later
+// admission. Immediate terminal settlement can prepare that snapshot before
+// its write; a bare error may already have been delivered.
+//
+// Admission and terminal delivery share TurnLifecycle. The client filter
+// reserves response.create before validation and cancels that reservation on
+// preforward rejection; a successful terminal write publishes idle state and
+// releases admission. Request timing and per-turn read/write parameters are
+// captured for accepted turns, while session.update separately changes the
+// omitted-model default. A provider handshake gets one eligible identity
+// recovery attempt. Upstream first-output and active-read timeouts are managed
+// by DeadlineConn; first-turn pre-output timeout can fail over, but later
+// timeout closes for reconnection because entry's ordinary replay bytes belong
+// to the initial request.
+
+// Run filters and relays a dedicated provider connection while capturing
+// accepted-turn completion metadata. Callers supply initialized Port, a usable
+// client socket and context, and an embedded IngressHooks pointer whenever
+// Hooks is present.
+//
+// The first request is normalized and written through DeadlineConn before
+// bidirectional relay starts. Later response.create reservations reject
+// overlap, apply current model and policy rules, acquire turn admission, and
+// publish copied snapshots before upstream forwarding. Immediate terminal
+// settlement dequeues metadata before its client write; a bare error can
+// already have been sent when later evidence settles its turn. The saved
+// snapshot supports response rewriting, while paired lifecycle writes govern
+// admission after a response terminal. Runtime read and write budgets refresh
+// on accepted turns; client idle budget refreshes on
+// each wait. Non-control relay failures report a still-queued turn; parent
+// control causes return before that completion path. Initial pre-output timeout
+// can replace the provider, while later timeout requires reconnection.
 func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, firstClientMessage []byte) error {
 	p, o, hooks := s.Port, s.Options, s.Hooks
 	var turnParameters atomic.Pointer[Parameters]
 	initial := DefaultParameters()
+	// Truncate static durations to whole-second fallback parameters, dropping
+	// sub-second remainders before accepted-turn budget readers consume them.
 	initial.ReadTimeoutSeconds = int(o.IdleTimeout / time.Second)
 	initial.WriteTimeoutSeconds = int(o.WriteTimeout / time.Second)
 	if s.Parameters != nil {
@@ -67,7 +107,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	if hooks != nil {
 		initialRequestModel = hooks.InitialRequestModel
 	}
-	// usage 元数据必须在改写为 U 前捕获客户端模型 R。
+	// Initialize the shared omitted-model default from entry or first-frame
+	// metadata, then capture requested effort before reasoning and provider-model
+	// rewrites affect accounting inputs.
 	usageMeta := NewUsageMeta(initialRequestModel, firstClientMessage, p)
 	usageMeta.CaptureRequestedReasoningEffort(originalFirstClientMessage)
 	p.Log(fmt.Sprintf(
@@ -79,14 +121,21 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		len(firstClientMessage),
 	))
 
-	// 首个 response.create 在此应用 Fast 策略，后续帧通过 FrameConn 包装器使用相同评估、规范化和适用范围规则。
-	// 首帧分别保存分组模型 G 和上游模型 U，后续省略 model 时复用。Realtime 可通过 session.update 协商模型，
-	// 策略仍需具体模型才能检查管理员白名单。
+	// Resolve first-turn routing and provider models before Fast policy, so
+	// administrator model rules see the actual upstream identifier. Later requests
+	// inherit UsageMeta's client default, and session.update can replace that
+	// default before resolving new routing and provider forms.
 	firstRoutingModel, firstUpstreamModel, resolveModelErr := p.Models(1, requestModel, firstClientMessage)
 	if resolveModelErr != nil {
 		return resolveModelErr
 	}
-	// passthrough 的上下游 relay 分属两个 goroutine，逐轮模型快照必须原子发布。
+	firstClientMessage, resolveModelErr = p.ModelAttributes(ctx, 1, firstUpstreamModel, firstClientMessage)
+	if resolveModelErr != nil {
+		return resolveModelErr
+	}
+	// Opposite relay directions read these model defaults concurrently. Publish
+	// each pointer atomically, while TurnPayloadQueue captures the combined values
+	// for a specific accepted request.
 	var capturedSessionRequestedModel atomic.Pointer[string]
 	var capturedSessionRoutingModel atomic.Pointer[string]
 	var capturedSessionUpstreamModel atomic.Pointer[string]
@@ -123,7 +172,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	} else if compatibilityChanged {
 		firstClientMessage = normalized
 	}
-	// API Key 兼容清理会移除无工具请求的 parallel_tool_calls，Lite 请求随后将该字段设置为 false。
+	// Compatibility can remove parallel_tool_calls when tools are absent. Reapply
+	// marked Lite requirements afterward so this request still sends its required
+	// false value.
 	if firstMessageResponsesLite {
 		liteFirstMessage, liteErr := p.NormalizeLite(firstClientMessage)
 		if liteErr != nil {
@@ -131,6 +182,8 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		}
 		firstClientMessage = liteFirstMessage
 	}
+	// Scope first-request identity after compatibility processing, so handshake
+	// preparation receives this selected provider's namespace for session reuse.
 	providerScopedFirst, providerScoped, scopeErr := p.ScopeIdentity(firstClientMessage)
 	if scopeErr != nil {
 		return p.CloseError(1008, "invalid websocket identity metadata", scopeErr)
@@ -145,13 +198,8 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	}
 	if blocked != nil {
 		p.PolicyDenied()
-		// coder/websocket@v1.8.14 Conn.Write is synchronous: it acquires
-		// writeFrameMu, writes the entire frame, and Flushes the underlying
-		// bufio writer before returning (write.go:42 → write.go:307-311).
-		// The subsequent close handshake re-acquires the same writeFrameMu
-		// to send the close frame, so the error event is guaranteed to
-		// reach the kernel send buffer before any close frame is queued.
-		// No explicit flush hop is required here.
+		// Attempt the policy event before returning the close instruction.
+		// A successful synchronous Write orders the error event before the close frame.
 		eventBytes := p.BlockedEvent(blocked)
 		if eventBytes != nil {
 			writeCtx, cancelWrite := context.WithTimeout(ctx, o.WriteTimeout)
@@ -162,10 +210,10 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	}
 	firstClientMessage = updatedFirst
 
-	// 策略 filter 后提取 service_tier 和 reasoning_effort 供用量记录使用，档位被删除时记录 nil。
-	// 响应声明的档位另存于 UpstreamResponseServiceTier，完成阶段据此结算。
-	// 同一连接各轮 response.create 可设置不同档位（见 codex-rs 的 build_responses_request）。
-	// filter 为每轮保存快照，原子值保存最新会话状态，供快照缺失时和最终汇总使用。
+	// Capture accepted service tier and recorded effort after policy filtering;
+	// field removal becomes nil metadata rather than an earlier turn's value.
+	// Queue snapshots retain each turn's choices, while the terminal response tier
+	// remains separate for completion-time billing.
 	usageMeta.InitFromFirstFrame(firstClientMessage)
 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
 	turnPayloads := NewTurnPayloadQueue()
@@ -185,6 +233,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	if err := p.PrepareDial(ctx, firstClientMessage, promptCacheKey); err != nil {
 		return err
 	}
+	// Give an eligible handshake failure one provider-identity repair opportunity,
+	// consuming that opportunity before repair so another failed handshake cannot
+	// reopen the same recovery loop.
 	agentTaskRecoveryTried := false
 	var dialResult DialResult
 	var dialErr error
@@ -209,6 +260,8 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	if upstreamFrameConn == nil {
 		return errors.New("openai ws passthrough upstream connection does not support frame relay")
 	}
+	// Close the dedicated upstream transport on every later exit. Cleanup is best
+	// effort and its error does not replace the selected relay or policy result.
 	defer func() { _ = upstreamFrameConn.Close() }()
 	handshakeHeaders := dialResult.Headers
 
@@ -219,6 +272,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				reasoningEffort = *current
 			}
 			timeout := p.FirstOutputTimeout(reasoningEffort)
+			// Use this accepted turn's read budget when effort-specific first-output
+			// timing is disabled, retaining the separate active-read budget for after
+			// qualifying output.
 			if timeout <= 0 {
 				timeout = time.Duration(turnParameters.Load().ReadTimeoutSeconds) * time.Second
 			}
@@ -240,7 +296,7 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 
 	completedTurns := atomic.Int32{}
 	var acceptedTurnStartedAt atomic.Pointer[time.Time]
-	var terminalWritePayload atomic.Pointer[TurnPayload]
+
 	turnLifecycle := NewTurnLifecycle(true)
 	clientFrameConn := &clientFrameConn{
 		closeError: p.CloseError, closedError: p.ClosedError(), normalizeCompleted: p.NormalizeCompleted,
@@ -268,13 +324,14 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	policyClientConn := &policyFrameConn{
 		closeError: p.CloseError, closedError: p.ClosedError(),
 		inner: clientFrameConn,
-		// filter 仅在 runClientToUpstream 这一条 goroutine 中执行；
-		// 会话模型还会被上游回调读取，因此通过上方原子快照同步。
+		// The client-to-upstream goroutine owns this filter.
+		// Upstream callbacks also read session models through the atomic snapshots.
 		filter: func(msgType int, payload []byte) (out []byte, blocked *PolicyBlocked, filterErr error) {
 			if msgType != TextFrame && msgType != 2 {
 				return payload, nil, nil
 			}
-			// 后续 response.create 帧在策略过滤和上游转发前执行同一套用户提示词替换。
+			// Apply user replacements before later-frame policy checks, so moderation
+			// and provider normalization inspect the content selected for forwarding.
 			payload = p.PromptReplace(ctx, payload)
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			isResponseCreate := eventType == "response.create"
@@ -284,6 +341,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			}
 			acceptedTurn := false
 			if isResponseCreate {
+				// Reserve admission before validating this frame, preventing another
+				// response.create from entering while preforward checks run; rejection
+				// releases only that provisional reservation.
 				if !turnLifecycle.BeginResponseCreate(clientFrameConn.markTurnStarted) {
 					err := errors.New("overlapping response.create is not supported")
 					return payload, nil, p.CloseError(1008, err.Error(), err)
@@ -309,6 +369,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 					payload = normalized
 				}
 				if responsesLite {
+					// Restore Lite-required fields after per-turn provider compatibility,
+					// because its field removal can otherwise erase parameters required by
+					// this marked request.
 					litePayload, liteErr := p.NormalizeLite(payload)
 					if liteErr != nil {
 						return payload, nil, p.CloseError(1008, liteErr.Error(), liteErr)
@@ -316,6 +379,8 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 					payload = litePayload
 				}
 			}
+			// Scope response and session identity with this provider's namespace so
+			// shared client identity does not select another provider's upstream state.
 			if isResponseCreate || eventType == "session.update" {
 				providerScopedPayload, providerScoped, scopeErr := p.ScopeIdentity(payload)
 				if scopeErr != nil {
@@ -325,6 +390,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 					payload = providerScopedPayload
 				}
 			}
+			// Retain requested effort before applying group reasoning rules on this
+			// frame, keeping completion's client intent separate from its accepted
+			// recorded effort.
 			originalResponseCreate := payload
 			if isResponseCreate {
 				requestModelForPolicy := usageMeta.RequestModelForFrame(payload)
@@ -337,6 +405,8 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			if isResponseCreate {
 				usageMeta.CaptureRequestedReasoningEffort(originalResponseCreate)
 			}
+			// The first request is already accepted. Later request numbering starts at
+			// two even when no completion callback has advanced the shared counter.
 			turnNo := max(int(completedTurns.Load())+1, 2)
 			if isResponseCreate && hooks != nil && hooks.BeforeRequest != nil {
 				requestModel := usageMeta.RequestModelForFrame(payload)
@@ -353,7 +423,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				}
 			}
 
-			// 写入上游模型 U 前保存客户端模型 R，后续省略 model 时从 R 重新映射。
+			// Publish a session.update default before mapping and later policy checks;
+			// rejection does not roll back that atomic value. Each response.create uses
+			// its explicit model or this default before provider-model serialization.
 			usageMeta.UpdateSessionRequestModel(payload)
 			requestModelForThisFrame := usageMeta.RequestModelForFrame(payload)
 			routingModel := loadCapturedModel(&capturedSessionRoutingModel)
@@ -388,10 +460,13 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				}
 			}
 			out, blocked, policyErr := p.FastPolicy(ctx, turnNo, model, payload, eventType == "response.create")
+			if policyErr == nil && blocked == nil && isResponseCreate {
+				out, policyErr = p.ModelAttributes(ctx, turnNo, model, out)
+			}
 
-			// 通过策略检查的 response.create 使用 filter 后的 payload 更新 usageMeta，与首帧处理相同。
-			// 其他事件、策略拒绝和策略错误保持前一轮 metadata。
-			// 本轮省略 service_tier 时写入 nil，表示上游使用默认档位。
+			// Publish accepted tier and recorded effort only after policy and admission
+			// succeed. Rejected frames retain those two fields, while requested effort
+			// was captured earlier and can already reflect this rejected request.
 			if policyErr == nil && blocked == nil && isResponseCreate {
 				if hooks != nil && hooks.BeforeTurn != nil {
 					if err := hooks.BeforeTurn(turnNo); err != nil {
@@ -399,10 +474,16 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 					}
 				}
 				usageMeta.UpdateFromResponseCreate(out)
+				// Capture one parameter value after later-turn admission succeeds, so relay
+				// write selection and upstream read timing use this accepted turn's
+				// effective budgets.
 				if s.Parameters != nil {
 					next := s.Parameters()
 					turnParameters.Store(&next)
 				}
+				// Queue accepted bytes and optional accounting values before the relay
+				// forwards the request, allowing upstream completion to consume an
+				// immutable snapshot for that same turn.
 				turnPayloads.Push(TurnPayload{
 					StartedAt:                responseCreateAt,
 					RequestBody:              out,
@@ -424,21 +505,21 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			}
 			return out, blocked, policyErr
 		},
-		// 客户端事件继续展示该轮请求模型 R，最终上游模型 U 只保留在内部结果和用量字段中。
+		// Select this filter's model rewrite from queued turn metadata. The inner
+		// clientFrameConn subsequently applies its separate session-default model
+		// restoration, while completion retains the queue's upstream identity.
 		writeFilter: func(msgType int, payload []byte) ([]byte, error) {
 			if msgType != TextFrame {
 				return payload, nil
 			}
 			eventType := p.EventType(payload)
 			turnPayload := turnPayloads.Peek()
-			if p.IsTerminal(eventType) {
-				if completed := terminalWritePayload.Swap(nil); completed != nil {
-					turnPayload = *completed
-				}
-			}
 			if !p.MayContainModel(eventType) {
 				return payload, nil
 			}
+			// Missing queued identity falls back to independently loaded session
+			// defaults. Those atomic fields can reflect separate publications; captured
+			// turn metadata supplies the preferred request-specific identities.
 			requestedModel := strings.TrimSpace(turnPayload.OriginalModel)
 			upstreamModel := strings.TrimSpace(turnPayload.UpstreamModel)
 			if requestedModel == "" {
@@ -454,7 +535,8 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		},
 		onBlock: func(blocked *PolicyBlocked) {
 			p.PolicyDenied()
-			// Conn.Write 同步发送帧，错误事件在关闭帧之前到达客户端。
+			// Attempt the policy event before returning its close instruction, ignoring
+			// write failure because the local block still requires the request to end.
 			eventBytes := p.BlockedEvent(blocked)
 			if eventBytes == nil {
 				return
@@ -464,6 +546,16 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			cancel()
 		},
 	}
+	// Write the first request through DeadlineConn before starting relay, arming
+	// first-output timing and setting FirstMessageSent so the relay does not send
+	// that request again.
+	beginPerformance := func(turn int, started time.Time) *timing.Performance {
+		if hooks != nil && hooks.BeginPerformance != nil {
+			return hooks.BeginPerformance(turn, started)
+		}
+		return timing.NewPerformanceAt(timing.ModeFromContext(ctx), started, started)
+	}
+	firstPerformance := beginPerformance(1, time.Now())
 	upstreamFirstMessageSent := false
 	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, o.WriteTimeout)
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, TextFrame, firstClientMessage)
@@ -477,6 +569,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	}
 	upstreamFirstMessageSent = true
 
+	// Forward auxiliary client events while waiting for the next response.create.
+	// Only an accepted request returns to the relay's per-turn timing and request
+	// write path.
 	readNextClientFrame := func(readCtx context.Context, conn FrameConn) (int, []byte, error) {
 		for {
 			msgType, payload, readErr := conn.ReadFrame(readCtx)
@@ -498,6 +593,12 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		UpstreamConn:       relayUpstreamFrameConn,
 		FirstClientMessage: firstClientMessage,
 		Options: RelayOptions{
+			BeginPerformance: func(turn int, started time.Time) *timing.Performance {
+				if turn == 1 {
+					return firstPerformance
+				}
+				return beginPerformance(turn, started)
+			},
 			WriteTimeout:        o.WriteTimeout,
 			WriteTimeoutForTurn: currentWriteTimeout,
 			FirstTurnStartedAt:  firstTurnStartedAt,
@@ -508,8 +609,8 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				}
 				return *startedAt
 			},
-			// passthrough 的空闲超时仅由 clientFrameConn 在一轮完成后检测；
-			// relay 全局活动看门狗会误终止仍在正常处理的上游轮次。
+			// clientFrameConn measures idle time after each completed turn.
+			// A relay-wide watchdog could terminate an upstream turn still processing normally.
 			IdleTimeout:                     0,
 			FirstMessageType:                TextFrame,
 			FirstMessageSent:                upstreamFirstMessageSent,
@@ -531,13 +632,18 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				}
 			},
 			OnTurnComplete: func(turn RelayTurnResult) {
+				// Settlement consumes one request snapshot for completion. An immediate
+				// response terminal uses the saved copy at its following write; a pending
+				// bare error can already have been sent when this callback runs. Paired
+				// response-terminal writes separately control next-turn admission.
 				turnNo := int(completedTurns.Add(1))
 				turnPayload := turnPayloads.Pop()
 				if !turn.StartedAt.IsZero() {
 					turnPayload.StartedAt = turn.StartedAt
 				}
-				turnPayloadForWrite := turnPayload
-				terminalWritePayload.Store(&turnPayloadForWrite)
+
+				// Missing queue metadata leaves the relay's initial request model as the
+				// completion fallback; its terminal response model remains a separate field.
 				turnOriginalModel := strings.TrimSpace(turnPayload.OriginalModel)
 				if turnOriginalModel == "" {
 					turnOriginalModel = turn.RequestModel
@@ -563,16 +669,16 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 					UpstreamTerminalEvent:       p.NormalizeTerminal(turn.TerminalEventType),
 					ResponseHeaders:             cloneHeaders(handshakeHeaders),
 					Duration:                    turn.Duration,
-					FirstTokenMs:                turn.FirstTokenMs,
+					Timings:                     turn.Timings,
+					ClientDisconnect:            turn.Timings != nil && turn.Timings.Values["client_disconnected"] == 1,
 				}
 				p.Log(fmt.Sprintf(
-					"relay_turn_completed provider_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
+					"relay_turn_completed provider_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
 					o.ProviderID,
 					turnNo,
 					p.Truncate(turnResult.RequestID, 64),
 					p.Truncate(turn.TerminalEventType, 160),
 					turnResult.Duration.Milliseconds(),
-					firstTokenForLog(turnResult.FirstTokenMs),
 					turnResult.Usage.InputTokens,
 					turnResult.Usage.OutputTokens,
 					turnResult.Usage.CacheReadInputTokens,
@@ -589,6 +695,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 					})
 				}
 			},
+			// Bracket response terminal delivery with the shared admission mutex. Failed
+			// delivery keeps inFlight set, while success publishes the idle flag before
+			// unlocking the next request.
 			BeforeClientWrite: func(msgType int, payload []byte) {
 				if msgType == TextFrame && IsTerminalOutput(payload) {
 					turnLifecycle.BeginTerminalWrite()
@@ -600,6 +709,17 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				}
 			},
 			BeforeRelayCancel: func(exit RelayExit) {
+				if (exit.Stage == "read_client" || exit.Stage == "write_client") && hooks != nil && hooks.ClientDisconnected != nil {
+					stoppedAt := time.Now()
+					turnLifecycle.ObserveActive(func() {
+						if !turnPayloads.Peek().StartedAt.IsZero() {
+							hooks.ClientDisconnected(int(completedTurns.Load())+1, stoppedAt)
+						}
+					})
+				}
+				// Parent control cancellation has its own lease-aware close handling after
+				// relay returns; skip this ordinary exit close so it cannot replace that
+				// control reason.
 				if context.Cause(ctx) != nil {
 					return
 				}
@@ -607,8 +727,12 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 				if !ok {
 					return
 				}
-				// 关闭原因限制在 WebSocket 控制帧允许的大小内。超长原因会使 coder/websocket 跳过关闭帧，客户端收到 EOF。
+				// Cap the close reason before transport closure, because an oversized
+				// control-frame payload can prevent delivery of the selected close status.
 				reason = p.TruncateReason(reason, 120)
+				// Attempt the selected close code, then force cleanup even if that
+				// handshake fails. Cleanup errors leave the relay's exit classification
+				// available to the surrounding session.
 				_ = clientConn.Close(status, reason)
 				_ = clientConn.CloseNow()
 			},
@@ -639,6 +763,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			},
 		},
 	})
+	// After relay stops, give parent control cause precedence over aggregate
+	// success, using the ingress-lease reconnect status when that specific
+	// cancellation is retained.
 	if cause := context.Cause(ctx); cause != nil {
 		status := 1001
 		reason := "websocket request canceled"
@@ -646,6 +773,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			status = 1013
 			reason = "websocket ingress capacity lease lost; please reconnect"
 		}
+		// Parent cancellation ends this connection. Attempt its selected close
+		// instruction before force cleanup, retaining the control cause when either
+		// transport close reports an error.
 		_ = clientConn.Close(status, reason)
 		_ = clientConn.CloseNow()
 		return p.CloseError(status, reason, cause)
@@ -671,7 +801,7 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		UpstreamTerminalEvent:       p.NormalizeTerminal(relayResult.TerminalEventType),
 		ResponseHeaders:             cloneHeaders(handshakeHeaders),
 		Duration:                    relayResult.Duration,
-		FirstTokenMs:                relayResult.FirstTokenMs,
+		Timings:                     relayResult.Timings,
 	}
 
 	turnCount := int(completedTurns.Load())
@@ -687,7 +817,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 			relayResult.DroppedDownstreamFrames,
 			turnCount,
 		))
-		// 每个 turn 的 terminal 事件触发回调，零 turn 时在此回调一次。
+		// A graceful relay can return without observing a terminal turn. Report its
+		// aggregate result once through the retained first snapshot when no
+		// completion callback consumed it.
 		if turnCount == 0 && hooks != nil && hooks.AfterTurn != nil {
 			turnPayload := turnPayloads.Pop()
 			hooks.AfterTurn(TurnCapture{
@@ -718,13 +850,15 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	relayErr := relayExit.Err
 	if firstOutputTimeoutErr, ok := errors.AsType[*FirstOutputTimeoutError](relayErr); ok {
 		deadline := firstOutputTimeoutErr.Deadline
+		// Record timeout observations and provider effects before choosing the
+		// returned error. Later-turn reconnect presentation still keeps those effects.
 		failoverErr := p.FirstOutputFailure(ctx, deadline, handshakeHeaders)
 
 		if turnCount == 0 && !relayExit.WroteDownstream {
 			relayErr = failoverErr
 		} else {
-			// handler 在提供商重试之间只保留首个 response.create；后续轮次超时后重放它
-			// 会重复执行首轮，因此后续轮次直接结束客户端会话。
+			// Entry's ordinary replay retains the first request. A later timeout closes
+			// the session because sending those bytes again would repeat turn one.
 			relayErr = p.CloseError(
 				1001,
 				"upstream produced no semantic output; please reconnect",
@@ -751,6 +885,9 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 		relayErr,
 		relayExit.WroteDownstream,
 	)
+	// Report only a still-queued accepted turn on final failure, so already
+	// observed terminal completions are not submitted again from the relay exit
+	// path.
 	if hooks != nil && hooks.AfterTurn != nil && turnPayloads.Len() > 0 {
 		turnPayload := turnPayloads.Pop()
 		hooks.AfterTurn(TurnCapture{
@@ -766,8 +903,14 @@ func (s *PassthroughSession) Run(ctx context.Context, clientConn ClientSocket, f
 	return turnErr
 }
 
+// replaceRequestModel writes model into session.model for session.update and
+// top-level model otherwise. The caller supplies the resolved provider
+// identifier and closeError constructor; mutation failure returns a local
+// invalid-payload close instruction.
 func replaceRequestModel(payload []byte, eventType, model string, closeError func(int, string, error) error) ([]byte, error) {
 	path := "model"
+	// Session updates place their model inside session; patch that location so
+	// the provider default follows the event's schema rather than a root field.
 	if eventType == "session.update" {
 		path = "session.model"
 	}
@@ -778,6 +921,9 @@ func replaceRequestModel(payload []byte, eventType, model string, closeError fun
 	return out, nil
 }
 
+// cloneHeaders copies the header map and each value slice for completion
+// snapshots. Nil headers return nil; returned map and slice edits are
+// independent of the handshake map, while immutable string values are reused.
 func cloneHeaders(headers map[string][]string) map[string][]string {
 	if headers == nil {
 		return nil
@@ -789,13 +935,9 @@ func cloneHeaders(headers map[string][]string) map[string][]string {
 	return out
 }
 
-func firstTokenForLog(value *int) int {
-	if value == nil {
-		return -1
-	}
-	return *value
-}
-
+// errorText returns the supplied error's message for relay failure diagnostics.
+// Nil returns empty, and callers apply their own truncation to the returned
+// text before including it in log fields.
 func errorText(err error) string {
 	if err == nil {
 		return ""

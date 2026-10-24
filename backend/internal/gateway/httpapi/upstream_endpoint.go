@@ -11,21 +11,42 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// upstream_endpoint.go resolves the selected OpenAI text protocol and records
+// its upstream endpoint for attempt attribution.
+// An attempt can fail before a forwarding result supplies its actual endpoint.
+// Recording the selected Chat or Responses endpoint in request-local state lets
+// failure capture attribute that attempt; clearing the value keeps subsequent
+// attempts from inheriting stale attribution.
+//
+// The default protocol is Responses. API Key targets can choose a protocol
+// through provider configuration, and a selected route for Chat or Responses
+// overrides that preference. Recording follows that final decision so an early
+// failure refers to the endpoint actually chosen for the attempt. Setters
+// ignore blank input, while the dedicated clear operation stores an empty
+// value before another attempt can reuse the request.
+
+// openAIUpstreamEndpointContextKey names the request-local endpoint value read by
+// failure capture when execution returns no result carrying upstream metadata.
 const openAIUpstreamEndpointContextKey = "openai_actual_upstream_endpoint"
 
-// resolveOpenAITextProtocolForAttempt 解析当前提供商的文本协议，并在转发前写入当前尝试的端点元数据。
+// resolveOpenAITextProtocolForAttempt chooses this attempt's text protocol and
+// records its endpoint for errors with no forwarding result. API Key settings
+// interpret preferred; an already resolved Chat or Responses route then takes
+// precedence over that choice. Other targets begin with Responses.
 func resolveOpenAITextProtocolForAttempt(
 	c *gin.Context,
 	provider *gatewayprovider.ExecutionProvider,
 	preferred providercore.TextProtocol,
 ) providercore.TextProtocol {
-	// OAuth 等专用提供商始终保留既有 Responses 桥；只有 API Key 提供商参与
-	// “客户端首选协议 + 路由模式 + 探测状态”的普通文本协议解析。
+	// API key providers resolve the preferred protocol through configured route mode.
+	// Other provider types default to Responses; a resolved Chat route overrides that default below.
 	protocol := providercore.TextProtocolResponses
 	if provider != nil && provider.Record.Type == capability.ProviderTypeAPIKey {
 		protocol = providercore.ResolveUpstreamTextProtocol(provider.Record.Extra, preferred)
 	}
 
+	// Use the resolved route ahead of raw provider preferences, because scheduling
+	// may have selected a different protocol conversion path for this attempt.
 	if provider != nil && provider.Route.Protocol() == protocolcore.ProtocolOpenAIChatCompletions {
 		protocol = providercore.TextProtocolChatCompletions
 	}
@@ -40,8 +61,10 @@ func resolveOpenAITextProtocolForAttempt(
 	return protocol
 }
 
-// SetActualOpenAIUpstreamEndpoint 记录当前转发尝试选择的端点，供无法取得
-// OpenAIForwardResult 的错误路径记录用量和运维日志。
+// SetActualOpenAIUpstreamEndpoint records a nonblank trimmed endpoint for this
+// attempt. Nil contexts and blank values are ignored; callers clear prior
+// attempt state separately before forwarding so omitted updates cannot reuse
+// it.
 func SetActualOpenAIUpstreamEndpoint(c *gin.Context, endpoint string) {
 	if c == nil {
 		return
@@ -51,8 +74,10 @@ func SetActualOpenAIUpstreamEndpoint(c *gin.Context, endpoint string) {
 	}
 }
 
-// ClearActualOpenAIUpstreamEndpoint 清除当前转发尝试记录的端点。
-// Gin context 在提供商尝试间复用，每次转发前清理上一次的端点。
+// ClearActualOpenAIUpstreamEndpoint clears the endpoint retained across
+// attempts in Gin context. Call before starting another forwarding attempt so
+// failure capture cannot attribute an unset endpoint to the previous provider
+// exchange.
 func ClearActualOpenAIUpstreamEndpoint(c *gin.Context) {
 	if c == nil {
 		return
@@ -60,7 +85,9 @@ func ClearActualOpenAIUpstreamEndpoint(c *gin.Context) {
 	c.Set(openAIUpstreamEndpointContextKey, "")
 }
 
-// GetActualOpenAIUpstreamEndpoint 返回该请求最近一次转发尝试记录的端点。
+// GetActualOpenAIUpstreamEndpoint returns the trimmed endpoint retained for the
+// current attempt. A missing context, absent value or value of another type
+// yields empty, allowing error capture to use its protocol default.
 func GetActualOpenAIUpstreamEndpoint(c *gin.Context) string {
 	if c == nil {
 		return ""

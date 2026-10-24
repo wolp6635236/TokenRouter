@@ -9,11 +9,21 @@ import (
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 )
 
-// OpenAICompatibleRequestPlatform 不从分组推断平台，空值表示按提供商能力选择。
+// request_platform.go resolves route-forced platform restrictions for
+// OpenAI-compatible provider selection. OpenAI-compatible entry points can
+// select providers from several platforms according to their protocol
+// capabilities. Dedicated route middleware can constrain that selection with a
+// forced platform; ordinary API Key group data leaves the platform
+// unspecified.
+
+// OpenAICompatibleRequestPlatform returns an unspecified platform for
+// capability-based provider selection.
 func OpenAICompatibleRequestPlatform(_ *apikey.APIKey) string { return "" }
 
-// EffectiveAPIKeyPlatform 返回当前 API key 在 handler 层应使用的平台。
-// 强制平台路由由中间件单独处理；未强制平台时由候选提供商决定。
+// EffectiveAPIKeyPlatform returns a nonblank route-forced platform after
+// trimming it. A missing context or blank forced value leaves the platform
+// unspecified, allowing compatible selection to inspect candidate capabilities
+// across platforms.
 func EffectiveAPIKeyPlatform(c *gin.Context, apiKey *apikey.APIKey) string {
 	if c != nil {
 		if forced, ok := keyhttp.GetForcePlatformFromContext(c); ok && strings.TrimSpace(forced) != "" {

@@ -6,7 +6,16 @@ import (
 	"github.com/google/wire"
 )
 
-// tasksAssemblyProviders 汇总 tasks 模块的 Wire provider。
+// assembly_tasks_wire.go registers creative and batch-image task services,
+// workers, HTTP handlers, and activity tracking with Wire.
+// Creative and batch image handlers participate in task activity tracking, so
+// shutdown can wait for submissions, downloads, and management calls. Their
+// workers and public services use application-assembled pricing, funding, and
+// task storage dependencies.
+
+// tasksAssemblyProviders supplies creative and batch-image HTTP, worker,
+// download, cleanup, activity, and runtime-settings constructors for the
+// application.
 var tasksAssemblyProviders = wire.NewSet(
 	provideTaskActivity,
 	provideCreativePublic,

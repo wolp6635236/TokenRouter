@@ -1,112 +1,90 @@
 package provider
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
+// openai_sessions.go retains OpenAI PKCE proof and the parameters selected for
+// authorization code exchange. Its typed store delegates expiry and cleanup to
+// authorizationSessionStore, and the session records client, proxy, and
+// redirect
+// choices consumed by OpenAIAuthorization.
+
+// OpenAISessionTTL limits PKCE session age for both lookups and periodic
+// eviction
+// from the in-memory authorization store.
 const OpenAISessionTTL = 30 * time.Minute
 
-// OpenAIOAuthSession stores OAuth flow state for OpenAI.
+// OpenAIOAuthSession retains immutable PKCE proof and exchange parameters for
+// one authorization session.
 type OpenAIOAuthSession struct {
-	State        string    `json:"state"`
-	CodeVerifier string    `json:"code_verifier"`
-	ClientID     string    `json:"client_id,omitempty"`
-	ProxyURL     string    `json:"proxy_url,omitempty"`
-	RedirectURI  string    `json:"redirect_uri"`
-	CreatedAt    time.Time `json:"created_at"`
+	State        string `json:"state"`         // generated authorization state proof
+	CodeVerifier string `json:"code_verifier"` // stored PKCE verifier secret
+	// ClientID stores the authorization client's identity. Exchange trims it and
+	// uses the configured default when this session value is empty after trimming.
+	ClientID string `json:"client_id,omitempty"`
+	// ProxyURL records the resolved authorization proxy. A found input proxy
+	// overrides it during exchange; an absent lookup retains this stored URL.
+	ProxyURL string `json:"proxy_url,omitempty"`
+	// RedirectURI records the authorization redirect selected at URL generation.
+	// Exchange retains it unless its input supplies a nonempty override value.
+	RedirectURI string `json:"redirect_uri"`
+	// CreatedAt starts the entry's TTL calculation in Get and cleanup. Callers
+	// initialize it before publishing the immutable session pointer through Set.
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// OpenAISessionStore manages OAuth sessions in memory.
+// OpenAISessionStore retains typed authorization proof with a stoppable cleanup
+// worker.
 type OpenAISessionStore struct {
-	runtimeMu      sync.Mutex
-	runtimeStarted bool
-	runtimeStopped bool
-	runtimeWG      sync.WaitGroup
-
-	mu       sync.RWMutex
-	sessions map[string]*OpenAIOAuthSession
-
-	stopCh chan struct{}
+	// authorizationSessionStore owns locking, expiration, and cleanup for these
+	// sessions. Construct the enclosing platform store before invoking its methods.
+	authorizationSessionStore[OpenAIOAuthSession]
 }
 
-// NewOpenAISessionStore creates a new session store.
+// NewOpenAISessionStore creates empty authorization storage with cleanup idle.
+// Call Start to begin periodic removal and Stop to join that worker; lookup
+// checks creation-time expiry even before Start.
 func NewOpenAISessionStore() *OpenAISessionStore {
-	store := &OpenAISessionStore{
-		sessions: make(map[string]*OpenAIOAuthSession),
-		stopCh:   make(chan struct{}),
+	return &OpenAISessionStore{
+		authorizationSessionStore: newAuthorizationSessionStore(
+			OpenAISessionTTL,
+			func(session *OpenAIOAuthSession) time.Time { return session.CreatedAt },
+		),
 	}
-	// Start cleanup goroutine
-
-	return store
 }
 
-// Set stores a session.
+// Set retains session under sessionID, replacing any previous pointer for that
+// identifier. Supply a nonnil session and keep its fields stable while stored
+// or borrowed by a reader, including after Stop.
 func (s *OpenAISessionStore) Set(sessionID string, session *OpenAIOAuthSession) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[sessionID] = session
+	s.set(sessionID, session)
 }
 
-// Get retrieves a session.
+// Get returns the stored pointer when its creation age is at most
+// OpenAISessionTTL.
+// Missing or older entries return nil and false; expired entries remain stored
+// until deletion or cleanup, and returned fields remain shared.
 func (s *OpenAISessionStore) Get(sessionID string) (*OpenAIOAuthSession, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	session, ok := s.sessions[sessionID]
-	if !ok {
-		return nil, false
-	}
-	// Check if expired
-	if time.Since(session.CreatedAt) > OpenAISessionTTL {
-		return nil, false
-	}
-	return session, true
+	return s.get(sessionID)
 }
 
-// Delete removes a session.
+// Delete removes sessionID from subsequent lookups and accepts an absent ID.
+// Borrowers retain previously returned pointers, so callers coordinate
+// exclusive
+// exchange separately from the store's Get and Delete operations.
 func (s *OpenAISessionStore) Delete(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, sessionID)
+	s.delete(sessionID)
 }
 
-// Start 启动当前会话实例的清理循环。
+// Start admits periodic expiry cleanup once for a constructed store.
+// Repeated calls leave the running worker unchanged, and calls after Stop
+// return with cleanup permanently disabled for this instance.
 func (s *OpenAISessionStore) Start() {
-	s.runtimeMu.Lock()
-	defer s.runtimeMu.Unlock()
-	if s.runtimeStarted || s.runtimeStopped {
-		return
-	}
-	s.runtimeStarted = true
-	s.runtimeWG.Go(func() { ; s.cleanup() })
+	s.start()
 }
 
-// Stop 幂等停止并等待清理循环，未启动实例也可安全关闭。
+// Stop closes cleanup admission and waits for any admitted worker to exit.
+// Repeated calls and calls before Start are supported; Set, Get, and Delete
+// remain available after cleanup stops.
 func (s *OpenAISessionStore) Stop() {
-	s.runtimeMu.Lock()
-	if !s.runtimeStopped {
-		s.runtimeStopped = true
-		close(s.stopCh)
-	}
-	s.runtimeMu.Unlock()
-	s.runtimeWG.Wait()
-}
-
-func (s *OpenAISessionStore) cleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.mu.Lock()
-			for id, session := range s.sessions {
-				if time.Since(session.CreatedAt) > OpenAISessionTTL {
-					delete(s.sessions, id)
-				}
-			}
-			s.mu.Unlock()
-		}
-	}
+	s.stop()
 }

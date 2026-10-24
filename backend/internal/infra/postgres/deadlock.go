@@ -8,21 +8,35 @@ import (
 	logger "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
+// deadlock.go retries operations that fail with PostgreSQL deadlock errors.
+// A PostgreSQL deadlock aborts the attempted statement or transaction, so
+// retrying requires a complete fresh operation. The helper permits two
+// retries with bounded jitter, reports retry activity, and stops a failed
+// deadlock attempt when its context is canceled.
+
+// Deadlock retry limits bound complete operation attempts and add short random
+// jitter to the two base delays so competing transactions can retry at different times.
 const (
 	postgresDeadlockMaxRetries  = 2
 	postgresDeadlockMaxAttempts = postgresDeadlockMaxRetries + 1
 	postgresDeadlockRetryJitter = 30 * time.Millisecond
 
-	// DeadlockMaxAttempts 供调用方在降级日志中记录整段重试次数。
+	// DeadlockMaxAttempts includes the initial attempt and all permitted retries.
 	DeadlockMaxAttempts = postgresDeadlockMaxAttempts
 )
 
+// postgresDeadlockRetryBaseDelays provides each permitted retry's base pause,
+// before jitter is added and the caller's cancellation budget is applied.
 var postgresDeadlockRetryBaseDelays = [...]time.Duration{
 	20 * time.Millisecond,
 	50 * time.Millisecond,
 }
 
-// RetryDeadlock 对完整操作做有界重试；调用方必须确保每次 fn 都创建独立事务或语句。
+// RetryDeadlock calls fn immediately and retries PostgreSQL SQLSTATE 40P01 at
+// most twice. Each call must start a fresh transaction or statement because
+// the failed database operation has been aborted; operation and batchSize
+// label retry logs. Cancellation is checked after a deadlock and during
+// backoff, while fn owns cancellation during its own execution.
 func RetryDeadlock[T any](ctx context.Context, operation string, batchSize int, fn func() (T, error)) (T, error) {
 	var zero T
 	startedAt := time.Now()
@@ -63,18 +77,25 @@ func RetryDeadlock[T any](ctx context.Context, operation string, batchSize int, 
 		if !retryAvailable {
 			return zero, err
 		}
+		// The failed transaction is aborted. Pause before fn creates its next
+		// complete operation, allowing conflicting work to advance and cancellation to stop retrying.
 		if waitErr := WaitDeadlockRetry(ctx, attempt-1); waitErr != nil {
 			return zero, waitErr
 		}
 	}
 }
 
-// WaitDeadlockRetry 使用可取消计时器等待，避免调用方超时后仍继续重试。
+// WaitDeadlockRetry waits for the indexed retry delay plus bounded random
+// jitter, returning the context error when canceled. An out-of-range index
+// returns immediately; callers supply a non-nil context for an applicable
+// delay.
 func WaitDeadlockRetry(ctx context.Context, retryIndex int) error {
 	if retryIndex < 0 || retryIndex >= len(postgresDeadlockRetryBaseDelays) {
 		return nil
 	}
 	delay := postgresDeadlockRetryBaseDelays[retryIndex]
+	// Add up to thirty milliseconds so callers contending on the same rows
+	// need not resume all permitted retries at identical base-delay intervals.
 	if postgresDeadlockRetryJitter > 0 {
 		delay += time.Duration(rand.Int64N(int64(postgresDeadlockRetryJitter) + 1))
 	}

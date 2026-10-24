@@ -19,6 +19,16 @@ import (
 	middleware2 "github.com/TokenFlux/TokenRouter/internal/server/middleware"
 )
 
+// Ops error observation uses the effective request Key or separately loaded
+// rejection data while leaving authentication state unchanged. These tests
+// inspect dedicated Cyber recording, middleware compatibility, Key precedence,
+// and typed ingress-rejection markers through the application's observation
+// binding.
+
+// TestOpsErrorLoggerMiddleware_DedicatedCyberSessionBlockRecordsExactlyOnce
+// queues a dedicated Cyber denial and passes it through outer error middleware.
+// It checks Forbidden, one captured queue entry, and that entry's dedicated
+// error type and status.
 func TestOpsErrorLoggerMiddleware_DedicatedCyberSessionBlockRecordsExactlyOnce(t *testing.T) {
 	queue := newOpsCaptureQueue(3)
 
@@ -44,6 +54,9 @@ func TestOpsErrorLoggerMiddleware_DedicatedCyberSessionBlockRecordsExactlyOnce(t
 	require.Equal(t, http.StatusForbidden, job.entry.StatusCode)
 }
 
+// TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares runs a handler
+// under recovery, request logging, access logging, and nil Ops error services.
+// The request must avoid panic and retain the handler's NoContent status.
 func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 	r := gin.New()
 	r.Use(middleware2.Recovery())
@@ -62,14 +75,17 @@ func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+// TestGetOpsAPIKeyFallsBackToOpsFallbackKey loads observation-only Key data
+// after an empty effective lookup. It checks the Key, user, and group remain
+// readable while no authenticated principal is created.
 func TestGetOpsAPIKeyFallsBackToOpsFallbackKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
-	// 主 key 缺席（鉴权早退场景）：返回 nil。
+	// An early authentication exit can leave the primary Key absent.
 	require.Nil(t, provideOpsObservationAccess().APIKey(c))
 
-	// 写入 ops 专用 fallback key 后应能取到，且带齐 user/group。
+	// The Ops-specific Key includes its loaded user and group for error recording.
 	groupID := int64(55)
 	apiKey := &apikey.APIKey{
 		ID:      100,
@@ -89,6 +105,9 @@ func TestGetOpsAPIKeyFallsBackToOpsFallbackKey(t *testing.T) {
 	require.False(t, authenticated, "读取失败 Key 的观测投影不能创建认证主体")
 }
 
+// TestGetOpsAPIKeyPrefersPrimaryContextKey installs different effective and
+// rejection-observation Keys. The application observation reader must return
+// the effective Key's identity so later reporting uses the active request view.
 func TestGetOpsAPIKeyPrefersPrimaryContextKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -103,7 +122,9 @@ func TestGetOpsAPIKeyPrefersPrimaryContextKey(t *testing.T) {
 	require.Equal(t, int64(1), got.ID, "已鉴权请求应优先使用正式 api key")
 }
 
-// TestOpsObservationAccessUsesTypedIngressMarker 检查拒绝标记按类型识别，普通字符串被忽略。
+// TestOpsObservationAccessUsesTypedIngressMarker supplies an ordinary string
+// and then a typed rejection marker. It checks only the marker written by
+// middleware causes the observation access to report rejection.
 func TestOpsObservationAccessUsesTypedIngressMarker(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	access := provideOpsObservationAccess()

@@ -10,7 +10,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestProviderRoutingSnapshotExcludesCredentialsAndCopies 验证候选快照只输出声明字段，修改快照不会反向污染持久配置或关联指针。
+// Routing snapshots expose candidate metadata while credential values remain
+// in the source record. The fixture serializes a snapshot and mutates its
+// protocol and pointer fields, checking the visible payload and source values
+// separately.
+
+// TestProviderRoutingSnapshotExcludesCredentialsAndCopies captures a provider
+// with credential and Extra markers. The payload must exclude those markers,
+// and protocol, parent, and expiry mutations must leave the asserted source values intact.
 func TestProviderRoutingSnapshotExcludesCredentialsAndCopies(t *testing.T) {
 	parent := int64(2)
 	expires := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)

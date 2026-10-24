@@ -2,8 +2,21 @@ package requeststate
 
 import "github.com/tidwall/gjson"
 
-// IsRealUserMessage 判断最后一条消息是否为用户输入，与 claude-relay-service 使用相同条件：
-// messages 非空，最后一条 role 为 user，且数组 content 中没有 tool_result 或 tool_use_result。
+// user_message.go classifies the final Anthropic message as a user turn or
+// tool-result reply. The final message supplies this content classification;
+// earlier tool results leave a later ordinary user turn eligible for that
+// content check.
+
+// IsRealUserMessage reports whether the final captured message is an exact
+// user-role object suitable for ordinary serial-queue input. Missing requests,
+// unavailable message arrays, empty arrays, and nonobject final entries return
+// false.
+//
+// Missing or nonarray content counts as ordinary user input. Array content is
+// rejected when any block has exact type tool_result or tool_use_result,
+// regardless of accompanying text. Earlier messages do not participate in that
+// decision, so the entry can admit a later user turn after historical tool
+// replies.
 func IsRealUserMessage(parsed *ParsedRequest) bool {
 	if parsed == nil {
 		return false

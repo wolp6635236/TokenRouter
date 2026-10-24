@@ -6,17 +6,45 @@ import (
 	"fmt"
 )
 
-// ErrClaudeCodeOnly 表示该分组仅允许 Claude Code 客户端。
+// client_group.go follows client-restriction fallback groups and detects
+// cycles before provider selection.
+// A Claude Code restriction can move a request through configured fallback
+// groups before provider selection. Reading each group first keeps client
+// detection tied to its current policy, and unrestricted groups stop the chain
+// before client detection runs.
+//
+// Visited identifiers stop fallback cycles even when each group is individually
+// readable. Callers choose whether a missing snapshot may retain its ID and
+// whether a nonpositive fallback is rejected before a read. The result
+// identifies the selected group; gateway entries still authorize that target's
+// permissions and funding before routing it.
+
+// ErrClaudeCodeOnly identifies a client-restricted group whose configured
+// fallback cannot be followed under the selected resolution policy.
 var ErrClaudeCodeOnly = errors.New("this group only allows Claude Code clients")
 
-// ClientGroupPolicy 明确保留两个已有入口的快照缺失与回退 ID 差异。
+// ClientGroupPolicy configures missing snapshot and invalid fallback identifier
+// handling.
 type ClientGroupPolicy struct {
-	KeepMissingSnapshot       bool
+	// KeepMissingSnapshot accepts a nil group returned with no error and retains
+	// its ID. When false, the reader is responsible for returning a group or
+	// error.
+	KeepMissingSnapshot bool
+	// RejectNonPositiveFallback stops the chain with ErrClaudeCodeOnly for a
+	// nonpositive configured target. Otherwise the target is passed to read and
+	// its error wins.
 	RejectNonPositiveFallback bool
 }
 
-// ResolveClientGroup 按原顺序读取并跟随客户端限制回退，不新增提供商或资金查询。
-// 通用入口的读取端口必须返回有效分组或错误；快照入口可明确保留未解析分组。
+// ResolveClientGroup reads and follows Claude Code fallback groups until the
+// client is accepted or a failure stops resolution. Nil groupID returns no
+// group, ID, or error; reader errors pass through before client checks.
+//
+// KeepMissingSnapshot permits a nil group with no reader error to return its
+// unresolved ID. Otherwise read must return a nonnil group. Visited IDs detect
+// cycles before rereading, and RejectNonPositiveFallback decides whether an
+// invalid target returns ErrClaudeCodeOnly or reaches the reader. Callers
+// authorize the returned target before provider selection.
 // @project-doc docs/domains/gateway_policy_controls.md#gateway_policy_layers
 func ResolveClientGroup(ctx context.Context, groupID *int64, read func(context.Context, int64) (*Group, error), isClient func(context.Context) bool, policy ClientGroupPolicy) (*Group, *int64, error) {
 	if groupID == nil {
@@ -42,6 +70,8 @@ func ResolveClientGroup(ctx context.Context, groupID *int64, read func(context.C
 		if group.FallbackGroupID == nil || (policy.RejectNonPositiveFallback && *group.FallbackGroupID <= 0) {
 			return nil, nil, ErrClaudeCodeOnly
 		}
+		// Client rejection chooses the next group; rereading on the next iteration
+		// applies that group's own restriction and detects repeated IDs.
 		currentID = *group.FallbackGroupID
 	}
 }

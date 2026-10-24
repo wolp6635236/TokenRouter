@@ -12,23 +12,53 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
 )
 
+// request_limits.go manages API key request admission and the lifetime of
+// renewable concurrency leases.
+// A consuming request reserves the Key's configured active-request and rolling
+// RPM capacity before forwarding. Unlimited keys proceed directly, while a
+// limited Key requires the cache's atomic reservation operations. The admission
+// gate remains counted for the lifetime of an active concurrency lease so
+// service shutdown waits for the request's cleanup.
+//
+// Renewal continues after client cancellation because handlers can collect
+// upstream results after disconnect. The returned context carries a separate
+// server-abort signal for that detached work; renewal failure aborts it, and
+// the caller releases the lease after processing finishes. Release runs once,
+// stops and joins renewal work, then removes the Redis active member using an
+// independent cleanup timeout. RPM records remain counted after completion.
+
+// Admission errors distinguish exhausted request capacity from unavailable
+// limiter storage so gateway callers can select retry or service-failure responses.
 var (
-	// ErrKeyConcurrencyExceeded 表示该 Key 的活跃请求已达到上限。
+	// ErrKeyConcurrencyExceeded reports that the key has reached its active request limit.
 	ErrKeyConcurrencyExceeded = errors.New("API key concurrency limit exceeded")
-	// ErrKeyRPMExceeded 表示该 Key 在最近一分钟的请求已达到上限。
+	// ErrKeyRPMExceeded reports that the key has reached its rolling one-minute request limit.
 	ErrKeyRPMExceeded = errors.New("API key RPM limit exceeded")
-	// ErrKeyLimiterUnavailable 表示请求限制存储不可用。
+	// ErrKeyLimiterUnavailable reports an unavailable request-limit store or lease.
 	ErrKeyLimiterUnavailable = errors.New("API key request limiter unavailable")
 )
 
-// RequestLimitCache 原子预占 Key 的请求额度，并维护活跃请求租约。
+// RequestLimitCache reserves admitted requests and maintains their active
+// concurrency leases.
 type RequestLimitCache interface {
+	// ReserveRequest atomically checks configured limits for a Key and request
+	// identity, returning a retry delay on rejection. Replays retain the original
+	// admission result while its records remain available.
 	ReserveRequest(context.Context, int64, string, int, int) (time.Duration, error)
+	// RefreshRequest renews an existing unexpired active lease for the supplied
+	// Key and request identity. A missing or elapsed lease reports unavailable
+	// capacity so processing can stop using its lost reservation.
 	RefreshRequest(context.Context, int64, string) error
+	// ReleaseRequest removes the active lease for the Key and request identity.
+	// RPM history remains counted for its window; callers may retry cleanup
+	// when the removal result is uncertain.
 	ReleaseRequest(context.Context, int64, string) error
 }
 
-// ValidateRequestLimits 校验 PostgreSQL integer 能保存的非负请求上限。
+// ValidateRequestLimits rejects negative request limits or values outside the
+// PostgreSQL int32 range. Nil values mean omitted configuration and zero
+// disables a limit; when both supplied fields are invalid, map iteration
+// determines the reported field.
 func ValidateRequestLimits(concurrency, rpm *int) error {
 	for field, value := range map[string]*int{"concurrency_limit": concurrency, "rpm_limit": rpm} {
 		if value != nil && (*value < 0 || int64(*value) > math.MaxInt32) {
@@ -38,8 +68,17 @@ func ValidateRequestLimits(concurrency, rpm *int) error {
 	return nil
 }
 
-// AcquireRequest 在准入时计入 RPM，并让并发租约存续到 release 被调用。
-// 续租失败会取消返回的上下文，调用方应停止处理请求。
+// AcquireRequest reserves the Key's request limits and returns an admitted
+// context, release callback and retry delay. Unlimited keys return a no-op
+// release; rejected or unavailable reservations return an error and no release
+// callback. Callers supply a nonnil Key and service.
+//
+// For concurrency-limited work, callers release after all request processing
+// finishes, including detached result collection. Renewal uses
+// client-independent timeouts, and failures cancel the server-abort signal
+// carried by the returned context. Release is idempotent, joins renewal before
+// independent cleanup, and completes operation-gate accounting even when Redis
+// removal fails. RPM-only requests need no renewal callback work.
 // @project-doc docs/domains/routing_and_billing.md#api_key_request_limits
 func (s *APIKeyService) AcquireRequest(ctx context.Context, key *APIKey) (context.Context, func(), time.Duration, error) {
 	if key.ConcurrencyLimit <= 0 && key.RPMLimit <= 0 {
@@ -57,7 +96,8 @@ func (s *APIKeyService) AcquireRequest(ctx context.Context, key *APIKey) (contex
 	retry, err := cache.ReserveRequest(reserveCtx, key.ID, id, key.ConcurrencyLimit, key.RPMLimit)
 	cancelReserve()
 	if err != nil {
-		// 响应丢失时 Redis 可能已经预占，使用独立上下文清理本次并发槽。
+		// A transport failure can follow successful Redis reservation. Attempt
+		// independent cleanup by request ID to remove an uncertain active lease.
 		if !errors.Is(err, ErrKeyConcurrencyExceeded) && !errors.Is(err, ErrKeyRPMExceeded) {
 			releaseCtx, cancelRelease := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = cache.ReleaseRequest(releaseCtx, key.ID, id)
@@ -73,8 +113,11 @@ func (s *APIKeyService) AcquireRequest(ctx context.Context, key *APIKey) (contex
 	requestCtx, abort := requestcontext.WithAbort(ctx)
 	stop := make(chan struct{})
 	done := make(chan struct{})
+	// This worker retains the service operation count until the caller
+	// releases. Client cancellation alone therefore cannot return an occupied lease.
 	go func() {
 		defer close(done)
+		// Renew before the adapter's two-minute lease duration elapses.
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -82,10 +125,13 @@ func (s *APIKeyService) AcquireRequest(ctx context.Context, key *APIKey) (contex
 			case <-stop:
 				return
 			case <-ticker.C:
-				// 图片等处理器可能在断连后继续收集结果，租约维持到处理器返回。
+				// Detached handlers can still collect admitted upstream results after
+				// disconnect. Renewal retains the slot until their release callback runs.
 				refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 				err := cache.RefreshRequest(refreshCtx, key.ID, id)
 				cancelRefresh()
+				// A lost or uncertain lease ends both ordinary and detached processing
+				// through the server signal; the caller still performs final release.
 				if err != nil {
 					abort()
 					return
@@ -95,12 +141,15 @@ func (s *APIKeyService) AcquireRequest(ctx context.Context, key *APIKey) (contex
 	}()
 	var once sync.Once
 	release := func() {
+		// Completion and error cleanup can both reach release. Join renewal
+		// once before deleting the lease so a later refresh cannot extend it again.
 		once.Do(func() {
 			defer s.operations.leave()
 			close(stop)
 			abort()
 			<-done
-			// 客户端断开后仍需归还租约，清理使用独立的超时预算。
+			// Cleanup proceeds after client cancellation under its own timeout.
+			// Failed removal leaves expiration to reclaim this active request member.
 			releaseCtx, cancelRelease := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancelRelease()
 			_ = cache.ReleaseRequest(releaseCtx, key.ID, id)

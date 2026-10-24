@@ -19,18 +19,28 @@ import (
 	usagepostgres "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
 
-// provideKeyStore 为 Key 事务存储绑定 usage 批量统计查询。
+// apikey.go constructs API key storage and services with billing, routing,
+// team, and concurrency dependencies.
+// API key authentication needs group policy, user funding, and live concurrency
+// information from other services. Application construction supplies those
+// readers and cache settings before lifecycle startup creates authentication
+// caches and subscriptions used by gateway requests.
+
+// provideKeyStore binds bulk usage queries to the API key transaction store.
 func provideKeyStore(client *dbent.Client, db *sql.DB, settings *preaggregation.PreAggregationSettingsService) *keypostgres.KeyStore {
 	return keypostgres.NewKeyStore(client, db, func(ctx context.Context, ids []int64) (map[int64]float64, error) {
 		return usagepostgres.ReadAPIKeyUsageTotals(ctx, db, settings, ids)
 	})
 }
 
+// provideKeyRepository exposes the shared key store through the key repository interface.
 func provideKeyRepository(keys *keypostgres.KeyStore) apikey.APIKeyRepository {
 	return keys
 }
 
-// provideKeys 注入路由策略和资金接口，L1 缓存和订阅在启动时创建。
+// provideKeys constructs the key service with process cache settings and the
+// application calendar. It connects billing invalidation, live concurrency, and
+// team reads before the service starts its authentication cache lifecycle.
 func provideKeys(
 	keys *keypostgres.KeyStore,
 	users *identitypostgres.UserStore,
@@ -68,6 +78,7 @@ func provideKeys(
 	return core
 }
 
+// provideKeyInvalidator exposes the assembled key service for authentication cache invalidation.
 func provideKeyInvalidator(core *apikey.APIKeyService) apikey.APIKeyAuthCacheInvalidator {
 	return core
 }

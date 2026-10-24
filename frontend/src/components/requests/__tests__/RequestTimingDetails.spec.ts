@@ -1,0 +1,110 @@
+import { describe, expect, it, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+import RequestTimingDetails from '../RequestTimingDetails.vue'
+
+// RequestTimingDetails.spec.ts tests compact timing presentation for missing observations,
+// failed admission, and stream-mode uncertainty. Component mounts use persisted timing
+// fixtures and optional caller rows so assertions cover rendered grouping and display
+// precedence.
+
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+
+describe('request timing grid', () => {
+  // A failed admission contains measured zero alongside an unavailable slot observation.
+  // The test protects displaying zero and naming the unacquired slot under the request-end
+  // heading.
+  it('marks a failed admission at the slot row and keeps measured zero', () => {
+    const wrapper = mount(RequestTimingDetails, {
+      props: {
+        timing: {
+          timing_admitted: 0,
+          timing_stream: 1,
+          user_slot_wait_ms: 0,
+          request_body_read_ms: 3,
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('requests.timing.untilEnd')
+    expect(wrapper.text()).not.toContain('requests.timing.beforeSlot')
+    expect(wrapper.text()).not.toContain('requests.timing.totalIsSlot')
+    expect(wrapper.text()).toContain('0ms')
+    expect(wrapper.text()).toContain('requests.timing.notAdmitted')
+    wrapper.unmount()
+  })
+
+  // Historical input contains a retired SSE timing observation. The test protects ignoring
+  // that observation and retaining current event labels without inventing admission status
+  // from old fields.
+  it('does not recover retired SSE timing from historical records', () => {
+    const wrapper = mount(RequestTimingDetails, {
+      props: { timing: { upstream_first_sse_data_ms: 1500 }, stream: true },
+    })
+    expect(wrapper.text()).not.toContain('1.50s')
+    expect(wrapper.text()).not.toContain('requests.timing.beforeSlot')
+    expect(wrapper.text()).not.toContain('requests.timing.notAdmitted')
+    expect(wrapper.text()).toContain('requests.timingNames.first_visible_output_ms')
+    wrapper.unmount()
+  })
+
+  // A synchronous request contains a stream-only event observation. The test protects
+  // hiding that event while retaining a recorded stage applicable to synchronous request
+  // timing.
+  it('hides stream-only stages for synchronous requests', () => {
+    const wrapper = mount(RequestTimingDetails, {
+      props: {
+        timing: { timing_stream: 0, first_visible_output_ms: 1200, upstream_wrote_request_ms: 40 },
+        stream: true,
+      },
+    })
+    expect(wrapper.text()).not.toContain('requests.timingNames.first_visible_output_ms')
+    expect(wrapper.text()).not.toContain('1.20s')
+    expect(wrapper.text()).toContain('40ms')
+    wrapper.unmount()
+  })
+
+  // Successful admission records its component durations and slot observation. The test
+  // protects the before-slot heading and the label explaining the relationship between
+  // their total and slot timing.
+  it('titles the durations with their total before the slot row', () => {
+    const wrapper = mount(RequestTimingDetails, {
+      props: {
+        timing: {
+          timing_admitted: 1,
+          request_body_read_ms: 12,
+          preprocess_ms: 4,
+          user_slot_wait_ms: 0,
+          provider_slot_wait_ms: 104,
+          provider_slot_acquired_ms: 120,
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('requests.timing.beforeSlot')
+    expect(wrapper.text()).toContain('requests.timing.totalIsSlot')
+    wrapper.unmount()
+  })
+
+  // Neither the timing record nor the caller supplies stream mode. The test protects
+  // retaining stream-only observations instead of treating the omitted boolean as a
+  // synchronous request.
+  it('keeps stream-only stages when neither the record nor the caller knows the mode', () => {
+    const wrapper = mount(RequestTimingDetails, {
+      props: { timing: { first_visible_output_ms: 1060 } },
+    })
+    expect(wrapper.text()).toContain('requests.timingNames.first_visible_output_ms')
+    expect(wrapper.text()).toContain('1.06s')
+    wrapper.unmount()
+  })
+
+  // The caller supplies an additional measurement row through the component slot. The test
+  // protects placing that content before the standard timing event groups in rendered
+  // order.
+  it('renders caller rows before the timing groups', () => {
+    const wrapper = mount(RequestTimingDetails, {
+      props: { timing: { upstream_wrote_request_ms: 40 } },
+      slots: { default: '<span>size</span><span>8KB</span>' },
+    })
+    const text = wrapper.text()
+    expect(text.indexOf('8KB')).toBeLessThan(text.indexOf('requests.timing.events'))
+    wrapper.unmount()
+  })
+})

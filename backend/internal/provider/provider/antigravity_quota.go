@@ -9,7 +9,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
-// AntigravityQuotaOptions 绑定供应商查询和错误解析，app 传入配置与代理读取函数。
+// antigravity_quota.go supplies upstream clients and forbidden-response
+// classifiers to provider quota queries. Antigravity quota responses can
+// represent verification requirements or policy violations as well as
+// remaining model capacity. The options connect the provider quota reader to
+// bounded upstream queries and typed forbidden errors, with platform parsers
+// supplying the corresponding display category and URL.
+
+// AntigravityQuotaOptions supplies upstream quota clients and
+// forbidden-response parsing.
+// The returned ReadLimit callback captures limit exactly, while ResolveProxy
+// retains the supplied resolver. Wrapped ForbiddenError values expose their body
+// to the provider's quota-state display.
 func AntigravityQuotaOptions(limit int64, resolveProxy func(context.Context, int64) (string, bool)) provider.AntigravityQuotaOptions {
 	return provider.AntigravityQuotaOptions{
 		NewClient:    func(proxy string) (provider.AntigravityQuotaClient, error) { return antigravity.NewClient(proxy) },

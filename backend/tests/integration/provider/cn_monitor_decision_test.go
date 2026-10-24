@@ -13,7 +13,15 @@ import (
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 )
 
-// TestCNMonitorDecisionCAS 验证真实 PostgreSQL 校验版本条件、同身份恢复、旧观测拒绝以及原尽力通知边界。
+// CN monitoring decisions use the observed database timestamp and suspension
+// reason to qualify health writes. Sequential PostgreSQL updates exercise stale
+// observations, shorter windows, ownership of a suspension, and recovery whose
+// notification write fails after the health update.
+
+// TestCNMonitorDecisionCAS advances a provider timestamp before applying an old
+// observation, then tests current suspension and recovery. Shorter windows and
+// foreign reasons are rejected, while a failed event leaves successful recovery
+// committed.
 func TestCNMonitorDecisionCAS(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)
@@ -28,6 +36,7 @@ func TestCNMonitorDecisionCAS(t *testing.T) {
 		return n
 	}
 	before := count()
+	// Match stored microsecond precision for the exact cooldown deadline assertion.
 	until := time.Now().Add(time.Hour).Truncate(time.Microsecond)
 	reason := "cn_usage_monitor:fixture: 余额低于监控阈值"
 	_, err = integrationDB.ExecContext(ctx, `UPDATE providers SET credentials='{"api_key":"new-fixture"}'::jsonb,updated_at=updated_at+interval '1 second' WHERE id=$1`, row.ID)
@@ -52,7 +61,8 @@ func TestCNMonitorDecisionCAS(t *testing.T) {
 	wrote, err = store.SetCNUsageDecisionCAS(ctx, row.ID, current.UpdatedAt, time.Time{}, "other-monitor", true)
 	require.NoError(t, err)
 	require.False(t, wrote)
-	// 相同时间版本仍必须检查原因，不能清除其它监控的停调。
+	// Keep updated_at equal to the observation while replacing the reason,
+	// so this rejection specifically tests ownership of the stored suspension.
 	_, err = integrationDB.ExecContext(ctx, "UPDATE providers SET temp_unschedulable_reason='manual-cooldown' WHERE id=$1", row.ID)
 	require.NoError(t, err)
 	wrote, err = store.SetCNUsageDecisionCAS(ctx, row.ID, current.UpdatedAt, time.Time{}, reason, true)
@@ -60,7 +70,8 @@ func TestCNMonitorDecisionCAS(t *testing.T) {
 	require.False(t, wrote)
 	_, err = integrationDB.ExecContext(ctx, "UPDATE providers SET temp_unschedulable_reason=$2 WHERE id=$1", row.ID, reason)
 	require.NoError(t, err)
-	// outbox 失败继续保留原先已提交的健康写入，不升级成回滚条件。
+	// Inject notification failure after the health statement's autocommit write;
+	// the following read checks recovery even though no new event is accepted.
 	store.SetEvents(failConfigurationOutbox{})
 	wrote, err = store.SetCNUsageDecisionCAS(ctx, row.ID, current.UpdatedAt, time.Time{}, reason, true)
 	require.NoError(t, err)

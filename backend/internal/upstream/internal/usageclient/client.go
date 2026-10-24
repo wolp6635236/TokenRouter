@@ -13,11 +13,41 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
+// client.go sends usage-adapter HTTP requests with selected credentials and
+// returns bounded response bodies and statuses.
+// Usage adapters query fixed provider endpoints through a supplied request
+// snapshot. A forwarding URL builder handles versioned API bases, while root
+// management paths remove a trailing OpenAI version segment and discard
+// credential-bearing URL components. The client returns the raw HTTP status
+// for the adapter to interpret after the body has been read.
+//
+// Provider header overrides run before adapter credentials. Fixed-header
+// requests remove matching case variants for each supplied protected header;
+// bearer requests replace canonical Authorization and New-Api-User values
+// while retaining other overrides. Body reads reserve one byte beyond the
+// display limit so an oversized response is rejected instead of silently
+// normalized from a truncated prefix. The request callbacks own transport
+// policy, including redirect restrictions.
+
+// MaxBodyBytes bounds usage-response bytes before adapters decode and
+// normalize a remote balance or quota response.
 const MaxBodyBytes = 512 * 1024
 
-type Client struct{ *usagecontract.Request }
+// Client reads usage responses through the callbacks in a borrowed request snapshot.
+type Client struct {
+	// Request retains the supplied snapshot pointer. Configure its callbacks
+	// before querying and keep credentials and callbacks stable while a query runs.
+	*usagecontract.Request // shared usage request snapshot
+}
 
+// New creates a usage client borrowing input and its callback functions. It
+// performs no snapshot validation; query methods require the fields and
+// callbacks used by their selected request path.
 func New(input *usagecontract.Request) *Client { return &Client{Request: input} }
+
+// Get builds an adapter path using the configured forwarding endpoint builder
+// and sends a bounded GET. authenticated selects APIKey as the bearer token;
+// endpoint construction errors become configuration errors.
 func (c *Client) Get(ctx context.Context, path string, authenticated bool) ([]byte, int, error) {
 	endpoint, err := UpstreamUsageEndpoint(c.BaseURL, path, c.Endpoint)
 	if err != nil {
@@ -30,21 +60,24 @@ func (c *Client) Get(ctx context.Context, path string, authenticated bool) ([]by
 	return c.GetURLWithBearer(ctx, endpoint, token, "")
 }
 
+// UpstreamUsageEndpoint delegates path joining to the supplied nonnil
+// forwarding builder after checking base scheme and host. It checks the
+// resulting endpoint again, strips userinfo, query, and fragment, and removes
+// trailing slashes. Callers enforce destination policy separately.
 func UpstreamUsageEndpoint(base, path string, build func(string, string) string) (string, error) {
 	parsed, err := url.Parse(base)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", errors.New("invalid base URL")
 	}
-	// 提供商 Base URL 沿用 OpenAI 兼容端点约定：/v1、/v4、/v1beta
-	// 等版本段作为根路径，不能再重复拼接一个 /v1。复用现有端点
-	// 构造器，确保用量查询和转发对同一类 Base URL 的解释一致。
+	// Versioned bases already supply the API prefix. Delegating to the forwarding
+	// builder keeps usage paths aligned with the provider base used for model requests.
 	endpoint := build(base, path)
 	parsedEndpoint, err := url.Parse(endpoint)
 	if err != nil || parsedEndpoint.Scheme == "" || parsedEndpoint.Host == "" {
 		return "", errors.New("invalid endpoint URL")
 	}
-	// 调用方已经校验过 Base URL；这里再次清理非路径部分，避免未来新增
-	// 调用路径时把历史查询串、片段或用户信息带到上游请求。
+	// Usage adapters authenticate through headers. Remove stored URL credentials
+	// and non-path components before this endpoint reaches the query transport.
 	parsedEndpoint.User = nil
 	parsedEndpoint.RawQuery = ""
 	parsedEndpoint.ForceQuery = false
@@ -52,40 +85,60 @@ func UpstreamUsageEndpoint(base, path string, build func(string, string) string)
 	return strings.TrimRight(parsedEndpoint.String(), "/"), nil
 }
 
+// UpstreamUsageStatusEndpoint builds /api/status relative to the management
+// root. The root helper removes a recognized trailing OpenAI version segment,
+// retains other prefix paths, and validates URL scheme and host.
 func UpstreamUsageStatusEndpoint(base string) (string, error) {
 	return UpstreamUsageRootEndpoint(base, "/api/status")
 }
 
-// UpstreamUsageTokenEndpoint 构造 New API Token 专用端点并保留尾斜杠，
-// 避免部分实例把无尾斜杠请求重定向后被客户端的禁止重定向策略拦截。
+// UpstreamUsageTokenEndpoint appends a slash to the formatted New API token
+// endpoint. Query-free bases produce the required path slash for transports
+// that disable redirects. A base ending in a bare question mark retains
+// ForceQuery through the root helper, so the appended slash becomes query
+// text rather than a path delimiter; callers avoid that base spelling.
 func UpstreamUsageTokenEndpoint(base string) (string, error) {
 	endpoint, err := UpstreamUsageRootEndpoint(base, "/api/usage/token")
 	if err != nil {
 		return "", err
 	}
+	// New API can redirect the token path without its trailing slash. Restore
+	// that slash before a credential-bearing query uses a redirect-disabled transport.
 	return strings.TrimRight(endpoint, "/") + "/", nil
 }
 
-// UpstreamUsageWalletEndpoint 构造兼容 New API 分支的钱包余额端点。
-// 该端点固定为 /user/balance，不允许管理员从配置中注入路径。
+// UpstreamUsageWalletEndpoint builds /user/balance for compatible New API
+// wallet queries. The path is fixed by the adapter; the root helper handles
+// configured prefix paths and URL component cleanup.
 func UpstreamUsageWalletEndpoint(base string) (string, error) {
 	return UpstreamUsageRootEndpoint(base, "/user/balance")
 }
 
-// UpstreamUsageUserSelfEndpoint 构造官方 New API 用户自查询端点。
-// 该端点使用用户级 Access Token 认证。
+// UpstreamUsageUserSelfEndpoint builds /api/user/self for a New API user
+// wallet query. The caller supplies the separate wallet access token when
+// sending this management request through the client.
 func UpstreamUsageUserSelfEndpoint(base string) (string, error) {
 	return UpstreamUsageRootEndpoint(base, "/api/user/self")
 }
 
-// UpstreamUsageRootEndpoint 从提供商 Base URL 去掉末尾的 OpenAI 版本段，
-// 用于 New API 这类挂在站点根路径下的管理接口。
+// UpstreamUsageRootEndpoint appends a fixed management path after removing a
+// recognized final OpenAI version segment. It requires a parseable scheme and
+// host and keeps any preceding base path.
+//
+// Path rewriting clears RawPath so a stale escaped path cannot select the
+// earlier endpoint. Userinfo, query contents, and fragments are removed before
+// formatting; ForceQuery remains, so a forced empty query can retain its bare
+// question mark. Terminal slash characters are trimmed from the formatted URL
+// text for the caller to restore when needed. Destination-policy validation
+// remains with the request builder.
 func UpstreamUsageRootEndpoint(base, path string) (string, error) {
 	parsed, err := url.Parse(base)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", errors.New("invalid base URL")
 	}
 	rootPath := strings.TrimRight(parsed.Path, "/")
+	// Management paths live above the final API version component. Keep any
+	// deployment prefix while removing the recognized suffix used for model forwarding.
 	if httpclient.OpenAIBaseURLHasVersionSuffix(rootPath) {
 		if index := strings.LastIndex(rootPath, "/"); index >= 0 {
 			rootPath = rootPath[:index]
@@ -94,6 +147,9 @@ func UpstreamUsageRootEndpoint(base, path string) (string, error) {
 		}
 	}
 	parsed.Path = strings.TrimRight(rootPath, "/") + "/" + strings.TrimLeft(path, "/")
+	// A rewritten Path needs matching URL formatting. Clear the retained escape
+	// spelling and credential-bearing components so they cannot restore the
+	// earlier target.
 	parsed.RawPath = ""
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
@@ -101,6 +157,9 @@ func UpstreamUsageRootEndpoint(base, path string) (string, error) {
 	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
+// UpstreamUsageHTTPError maps an HTTP status to a shared usage-query error,
+// with 2xx returning nil. unsupported controls whether 404 and 405 mean
+// unsupported adapter; other unmatched statuses mean invalid response.
 func UpstreamUsageHTTPError(status int, unsupported bool) error {
 	if status >= http.StatusOK && status < http.StatusMultipleChoices {
 		return nil
@@ -118,6 +177,16 @@ func UpstreamUsageHTTPError(status int, unsupported bool) error {
 	return usageview.ErrUpstreamUsageInvalidResponse
 }
 
+// UpstreamUsageOperationError classifies a transport or body-read failure
+// using err and the original nonnil query context. A deadline reported by
+// either source selects timeout, so an expired caller still receives that
+// category when the transport callback reports a different failure.
+//
+// Request callbacks can substitute the HTTP request's context. Passing the
+// original context here retains caller deadline evidence across that
+// substitution. Cancellation and remaining operation failures select the
+// request-failed category, while adapters classify successfully read response
+// content separately.
 func UpstreamUsageOperationError(ctx context.Context, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return usageview.ErrUpstreamUsageTimeout
@@ -125,6 +194,9 @@ func UpstreamUsageOperationError(ctx context.Context, err error) error {
 	return usageview.ErrUpstreamUsageRequestFailed
 }
 
+// GetURL sends a bounded GET to an already-built endpoint using the configured
+// request callbacks. authenticated selects APIKey as the bearer token; false
+// sends no canonical Authorization value after overrides.
 func (c *Client) GetURL(ctx context.Context, endpoint string, authenticated bool) ([]byte, int, error) {
 	token := ""
 	if authenticated {
@@ -133,8 +205,15 @@ func (c *Client) GetURL(ctx context.Context, endpoint string, authenticated bool
 	return c.GetURLWithBearer(ctx, endpoint, token, "")
 }
 
-// GetURLWithHeaders 请求内置适配器声明的固定请求头。
-// 提供商级覆写先应用、再被固定头覆盖，避免探测请求改变认证或团队身份。
+// GetURLWithHeaders sends a bounded GET with adapter-defined headers after
+// provider overrides. Blank fixed names or values are skipped, and CR/LF in a
+// retained name or value rejects the request.
+//
+// For each supplied header, case-insensitive map entries are removed before
+// its canonical value is set. Callers supply at most one spelling of each
+// fixed header name because competing map entries have no iteration priority.
+// Canonical Authorization and api-key are removed first; the response status
+// remains for adapter validation.
 func (c *Client) GetURLWithHeaders(ctx context.Context, endpoint string, fixedHeaders map[string]string) ([]byte, int, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -147,7 +226,9 @@ func (c *Client) GetURLWithHeaders(ctx context.Context, endpoint string, fixedHe
 	req = req.WithContext(c.Context(req.Context()))
 	req.Header.Set("Accept", "application/json")
 	c.ApplyHeaders(req.Header)
-	// 提供商级覆写不得改变内置适配器的认证身份。
+	// Fixed-header adapters choose their query authentication separately from
+	// forwarding credentials. Remove canonical authorization headers before the
+	// adapter applies its selected values.
 	req.Header.Del("Authorization")
 	req.Header.Del("api-key")
 	for headerName, headerValue := range fixedHeaders {
@@ -159,7 +240,9 @@ func (c *Client) GetURLWithHeaders(ctx context.Context, endpoint string, fixedHe
 		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
 			return nil, 0, usageview.ErrUpstreamUsageConfigInvalid
 		}
-		// 固定头不允许被提供商覆写；先删除所有大小写变体，再写入规范值。
+		// Header override callbacks can insert map keys with noncanonical casing.
+		// Remove every spelling of this fixed name so the adapter value reaches
+		// transport.
 		for existing := range req.Header {
 			if strings.EqualFold(existing, name) {
 				delete(req.Header, existing)
@@ -170,14 +253,21 @@ func (c *Client) GetURLWithHeaders(ctx context.Context, endpoint string, fixedHe
 	return c.readResponse(ctx, req)
 }
 
-// GetURLWithBearer 使用固定的 Bearer 令牌和可选用户 ID 请求管理端点。
-// 用户 ID 只会写入适配器定义的 New-Api-User 头，不接受任意 Header 配置。
+// GetURLWithBearer sends a bounded management GET with a supplied bearer token
+// and optional user ID. It requires configured request callbacks and an
+// endpoint with scheme and host.
+//
+// Provider overrides are applied first, then canonical Authorization and
+// New-Api-User entries are replaced by trimmed query credentials. Empty
+// arguments remove those canonical entries. Other override headers, including
+// api-key, remain present; callers providing noncanonical header map keys
+// account for that behavior. The returned HTTP status is interpreted by the
+// selected adapter.
 func (c *Client) GetURLWithBearer(ctx context.Context, endpoint, bearerToken, userID string) ([]byte, int, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, 0, usageview.ErrUpstreamUsageConfigInvalid
 	}
-	// 复用统一请求实现，但不再拼接路径。
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, 0, usageview.ErrUpstreamUsageRequestFailed
@@ -185,11 +275,15 @@ func (c *Client) GetURLWithBearer(ctx context.Context, endpoint, bearerToken, us
 	req = req.WithContext(c.Context(req.Context()))
 	req.Header.Set("Accept", "application/json")
 	c.ApplyHeaders(req.Header)
-	// Header Override 不能改变管理查询实际使用的认证身份。
+	// Management queries can use a wallet token instead of the forwarding key.
+	// Install that canonical Authorization value after overrides; other header
+	// names remain.
 	req.Header.Del("Authorization")
 	if strings.TrimSpace(bearerToken) != "" {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearerToken))
 	}
+	// The optional wallet user ID belongs to this query. Clear the canonical
+	// override first so an absent argument does not inherit another user identity.
 	req.Header.Del("New-Api-User")
 	if strings.TrimSpace(userID) != "" {
 		req.Header.Set("New-Api-User", strings.TrimSpace(userID))
@@ -197,7 +291,12 @@ func (c *Client) GetURLWithBearer(ctx context.Context, endpoint, bearerToken, us
 	return c.readResponse(ctx, req)
 }
 
-// readResponse 读取有长度上限的用量响应，并在读取后关闭响应体。
+// readResponse reads a bounded body after a successful transport result and
+// returns its HTTP status. It rejects nil responses, nil bodies, and oversized
+// payloads; transport and read errors are classified using the original
+// context. Every nonnil body reached after a successful Do is closed, with
+// close errors discarded; responses returned alongside transport errors remain
+// the transport callback's responsibility.
 func (c *Client) readResponse(ctx context.Context, req *http.Request) ([]byte, int, error) {
 	resp, err := c.Do(req)
 	if err != nil {
@@ -206,6 +305,9 @@ func (c *Client) readResponse(ctx context.Context, req *http.Request) ([]byte, i
 	if resp == nil || resp.Body == nil {
 		return nil, 0, usageview.ErrUpstreamUsageInvalidResponse
 	}
+	// Read one extra byte to distinguish an exactly bounded response from an
+	// oversized one, then release the body even when reading failed. Close errors
+	// do not replace the payload read result or its operation classification.
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
 	_ = resp.Body.Close()
 	if readErr != nil {

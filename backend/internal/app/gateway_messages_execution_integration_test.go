@@ -17,13 +17,33 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
-// TestErrorRulesStorageAndSubscription 使用迁移后的数据库和 Redis 检查规则发布、兼容键及写入失败的处理。
+// Error-rule updates propagate through PostgreSQL and Redis subscriptions to
+// another runtime instance. The scenario checks compatible cache keys and TTL,
+// returned-snapshot isolation, failed persistence, successful disable
+// publication, and deletion through the same persistent rule service.
+
+// TestErrorRulesStorageAndSubscription starts two error-rule subscribers over
+// migrated PostgreSQL and Redis. It checks cross-instance publication, cache
+// representation and expiry, isolated returned data, unchanged published rules
+// after failed writes, and stored disable/delete results.
 func TestErrorRulesStorageAndSubscription(t *testing.T) {
 	f := newDatabaseFixture(t)
 	ctx := context.Background()
 	container, err := rediscontainer.Run(ctx, "redis:8.4-alpine")
+	// Register any created container before startup errors can stop this test.
+	// Later client cleanups run first because testing reverses registration order.
+	if container != nil {
+		t.Cleanup(func() {
+			// Setup or test cancellation must not cancel Docker removal. Start the
+			// bounded cleanup context when this callback runs.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := container.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate Redis container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	addr, err := container.Endpoint(ctx, "")
 	require.NoError(t, err)
 	rdb := redis.NewClient(&redis.Options{Addr: addr})
@@ -31,6 +51,8 @@ func TestErrorRulesStorageAndSubscription(t *testing.T) {
 	repo := gatewaypg.NewErrorPassthroughRepository(f.client)
 	a := errorpolicy.NewErrorPassthroughService(repo, gatewayredis.NewErrorPassthroughCache(rdb))
 	b := errorpolicy.NewErrorPassthroughService(repo, gatewayredis.NewErrorPassthroughCache(rdb))
+	// Cleanup runs in reverse registration order. Stop both subscribers before
+	// closing the Redis client and container so final subscription callbacks retain their dependencies.
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
@@ -39,6 +61,8 @@ func TestErrorRulesStorageAndSubscription(t *testing.T) {
 	})
 	require.NoError(t, a.StartContext(ctx))
 	require.NoError(t, b.StartContext(ctx))
+	// Subscription setup completes asynchronously. Wait for both registrations
+	// before publishing so the cross-instance assertion observes the active listener path.
 	require.Eventually(t, func() bool {
 		counts, e := rdb.PubSubNumSub(ctx, "error_passthrough_rules_updated").Result()
 		return e == nil && counts["error_passthrough_rules_updated"] == 2

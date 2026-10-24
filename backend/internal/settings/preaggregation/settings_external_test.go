@@ -12,13 +12,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings/preaggregation"
 )
 
-// preaggregationFixture 保存设置值和读取次数，更新通知由控制器触发。
+// preaggregationFixture stores runtime JSON and counts synchronous reads for controller tests.
+// The controller publishes update notifications after this fixture accepts writes.
 type preaggregationFixture struct {
-	values        map[string]string
-	getValueCalls int
+	values        map[string]string // saved fixture setting values
+	getValueCalls int               // observed GetValue invocation count
 }
 
-// TestPreAggregationSettingsDefaultsFromDeployment 验证新设置缺失时只采用部署能力默认值。
+// TestPreAggregationSettingsDefaultsFromDeployment leaves the unified runtime
+// key absent while obsolete Ops controls are present. One storage read returns
+// the deployment-derived usage cadence and enabled task switches.
 func TestPreAggregationSettingsDefaultsFromDeployment(t *testing.T) {
 	repo := newPreaggregationFixture()
 	repo.values[ops.SettingKeyOpsAdvancedSettings] = `{"aggregation":{"aggregation_enabled":false}}`
@@ -33,7 +36,9 @@ func TestPreAggregationSettingsDefaultsFromDeployment(t *testing.T) {
 	require.Equal(t, 1, repo.getValueCalls)
 }
 
-// TestPreAggregationSettingsDeploymentCeiling 验证数据库设置不能绕过部署层硬开关。
+// TestPreAggregationSettingsDeploymentCeiling stores enabled runtime switches
+// under deployment-disabled usage and Ops capabilities. Get and the boolean
+// readers return disabled decisions, protecting the deployment availability ceiling.
 func TestPreAggregationSettingsDeploymentCeiling(t *testing.T) {
 	repo := newPreaggregationFixture()
 	repo.values[preaggregation.SettingKeyPreAggregationSettings] = `{"usage":{"enabled":true,"interval_seconds":60},"ops":{"enabled":true}}`
@@ -48,7 +53,9 @@ func TestPreAggregationSettingsDeploymentCeiling(t *testing.T) {
 	require.False(t, service.OpsEnabled(context.Background()))
 }
 
-// TestPreAggregationSettingsUpdateNotifies 验证完整更新会规范化周期并立即通知任务。
+// TestPreAggregationSettingsUpdateNotifies submits disabled controls with a short
+// usage interval. The normalized persisted result uses the minimum cadence and
+// reaches the listener synchronously with the previous enabled usage state.
 func TestPreAggregationSettingsUpdateNotifies(t *testing.T) {
 	repo := newPreaggregationFixture()
 	cfg := &preaggregation.Options{Usage: preaggregation.UsageOptions{Enabled: true, IntervalSeconds: 60}, OpsEnabled: true, OpsAggregationEnabled: true}
@@ -76,10 +83,15 @@ func TestPreAggregationSettingsUpdateNotifies(t *testing.T) {
 	require.Equal(t, updated, persisted)
 }
 
+// newPreaggregationFixture allocates empty saved state for synchronous
+// preaggregation controller tests.
 func newPreaggregationFixture() *preaggregationFixture {
 	return &preaggregationFixture{values: map[string]string{}}
 }
 
+// GetValue counts the read and returns saved fixture text or ErrSettingNotFound.
+// The fixture ignores contexts and uses no lock, so tests keep its map and
+// read count within their synchronous controller calls.
 func (r *preaggregationFixture) GetValue(_ context.Context, key string) (string, error) {
 	r.getValueCalls++
 	if value, ok := r.values[key]; ok {
@@ -88,6 +100,9 @@ func (r *preaggregationFixture) GetValue(_ context.Context, key string) (string,
 	return "", settings.ErrSettingNotFound
 }
 
+// Set replaces one fixture value for controller persistence assertions. Contexts
+// are ignored and writes have no injected failure; tests use the allocated map
+// synchronously before examining the normalized saved JSON.
 func (r *preaggregationFixture) Set(_ context.Context, key, value string) error {
 	r.values[key] = value
 	return nil

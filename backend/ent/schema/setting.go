@@ -10,35 +10,41 @@ import (
 	"entgo.io/ent/schema/field"
 )
 
-// Setting holds the schema definition for the Setting entity.
+// setting.go defines runtime settings as one stored text value per key.
+// Removing a row lets that setting's reader apply its own default, and the
+// table retains the latest value and update time rather than a history of
+// earlier values.
+
+// Setting represents the current persisted value of one runtime setting.
 //
-// 删除策略：硬删除
-// Setting 使用硬删除：
-//   - 系统设置是简单的键值对，删除即意味着恢复默认值
-//   - 设置变更通常通过应用日志追踪，无需在数据库层面保留历史
-//   - 保持表结构简洁，避免无效数据积累
-//
-// 如需设置变更审计，建议在更新/删除前将变更记录写入审计日志表。
+// Callers that need a change history store those records separately from this table.
 type Setting struct {
-	ent.Schema
+	ent.Schema // generated entity definition
 }
 
+// Annotations maps generated runtime-setting operations to the shared settings table.
 func (Setting) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "settings"},
 	}
 }
 
+// Fields declares the unique setting key, text value, and update timestamp.
+// Timestamp defaults use application time on insertion and Ent updates; each
+// reader interprets the stored text for its setting.
 func (Setting) Fields() []ent.Field {
 	return []ent.Field{
+		// Runtime setting name.
 		field.String("key").
 			MaxLen(100).
 			NotEmpty().
 			Unique(),
+		// Serialized setting value.
 		field.String("value").
 			SchemaType(map[string]string{
 				dialect.Postgres: "text",
 			}),
+		// Latest value timestamp.
 		field.Time("updated_at").
 			Default(time.Now).
 			UpdateDefault(time.Now).
@@ -48,7 +54,8 @@ func (Setting) Fields() []ent.Field {
 	}
 }
 
+// Indexes returns no additional indexes beyond the unique key declared by Fields.
 func (Setting) Indexes() []ent.Index {
-	// key 字段已在 Fields() 中声明 Unique()，无需额外索引
+	// Fields declares the unique key constraint.
 	return nil
 }

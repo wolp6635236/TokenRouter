@@ -8,8 +8,21 @@ import (
 	"strings"
 )
 
+// voice_request.go validates Grok Voice route shapes and builds authenticated
+// requests for their endpoints.
+// Grok Voice subpaths belong to custom-Voice management and optional audio
+// downloads; TTS and STT each use one base endpoint. Endpoint validation keeps
+// those route shapes distinct, and request construction carries the caller's
+// chosen HTTP method, bearer token, content type and header policy.
+
+// supportedVoiceHTTPEndpoints names the three Voice route families admitted
+// before path validation and upstream request construction.
 var supportedVoiceHTTPEndpoints = map[string]struct{}{"tts": {}, "stt": {}, "custom-voices": {}}
 
+// ValidateVoiceEndpoint trims the route and returns its normalized path plus
+// base operation. TTS and STT accept no subpath; custom-voices accepts an
+// identifier and optional audio suffix. Empty, dot, traversal and query-like
+// subsegments are rejected before URL construction.
 func ValidateVoiceEndpoint(endpoint string) (string, string, error) {
 	endpoint = strings.Trim(strings.TrimSpace(endpoint), "/")
 	parts := strings.Split(endpoint, "/")
@@ -33,7 +46,10 @@ func ValidateVoiceEndpoint(endpoint string) (string, string, error) {
 	return endpoint, baseEndpoint, nil
 }
 
-// BuildVoiceRequest 接收完成 egress 校验后的 URL 与本次认证头，不读取提供商或配置。
+// BuildVoiceRequest builds the supplied method with bearer authentication and
+// JSON/audio response acceptance. A blank contentType becomes application/json
+// and applyHeaders runs last. Callers validate targetURL against outbound policy
+// and keep body bytes stable while the HTTP request uses them.
 func BuildVoiceRequest(ctx context.Context, method, targetURL, token, contentType string, body []byte, applyHeaders func(http.Header)) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(body))
 	if err != nil {

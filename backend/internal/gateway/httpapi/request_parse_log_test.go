@@ -10,6 +10,9 @@ import (
 	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
+// loggedFields extracts fields from exactly one captured parsing diagnostic. It
+// converts the body length to int and the stored error to its message;
+// unexpected log counts fail the calling test.
 func loggedFields(t *testing.T, logs *observer.ObservedLogs) map[string]any {
 	t.Helper()
 	entries := logs.All()
@@ -28,6 +31,9 @@ func loggedFields(t *testing.T, logs *observer.ObservedLogs) map[string]any {
 	return fields
 }
 
+// TestLogRequestBodyParseFailure_DerivesErrorWhenNil reports malformed JSON
+// with no supplied error. The captured diagnostic must retain body length and
+// identify the invalid token offset.
 func TestLogRequestBodyParseFailure_DerivesErrorWhenNil(t *testing.T) {
 	log, logs := newObservedLogger(t)
 	body := []byte(`{"model": bad}`)
@@ -40,6 +46,9 @@ func TestLogRequestBodyParseFailure_DerivesErrorWhenNil(t *testing.T) {
 	require.Contains(t, fields["error"], "offset=11")
 }
 
+// TestLogRequestBodyParseFailure_ShortBodyHasNoTail reports a body shorter than
+// the excerpt budget. It requires an escaped head field and excludes a
+// redundant tail field.
 func TestLogRequestBodyParseFailure_ShortBodyHasNoTail(t *testing.T) {
 	log, logs := newObservedLogger(t)
 	body := []byte(`{"broken":`)
@@ -52,9 +61,12 @@ func TestLogRequestBodyParseFailure_ShortBodyHasNoTail(t *testing.T) {
 	require.Contains(t, testassert.MustType[string](fields["body_head"]), `{\"broken\":`)
 }
 
+// TestLogRequestBodyParseFailure_LargeBodyBoundedSnippets reports a large
+// unterminated JSON string. The logged length remains complete while bounded
+// excerpts retain distinct beginning and ending content.
 func TestLogRequestBodyParseFailure_LargeBodyBoundedSnippets(t *testing.T) {
 	log, logs := newObservedLogger(t)
-	// 约 1MB 的请求体只记录受限的首尾片段，头部保留结构前缀，尾部保留末端字节。
+	// The roughly 1 MiB body checks bounded snippets that retain the beginning and ending bytes.
 	body := []byte(`{"model":"claude-sonnet-4-6","big":"` + strings.Repeat("A", 1<<20) + `"`)
 
 	LogRequestBodyParseFailure(log, body, nil)
@@ -66,11 +78,14 @@ func TestLogRequestBodyParseFailure_LargeBodyBoundedSnippets(t *testing.T) {
 	require.Contains(t, head, "claude-sonnet-4-6")
 	require.Contains(t, tail, "AAA")
 	require.NotContains(t, tail, "claude-sonnet-4-6")
-	// strconv.Quote 会增加外层引号和转义，四倍长度是宽松上限。
+	// strconv.Quote adds quotes and escapes; four times the snippet size is a loose bound for this fixture.
 	require.LessOrEqual(t, len(head), parseFailureSnippetLen*4)
 	require.LessOrEqual(t, len(tail), parseFailureSnippetLen*4)
 }
 
+// TestLogRequestBodyParseFailure_EscapesControlCharacters includes newline and
+// control bytes in malformed JSON. It requires escaped spellings in the excerpt
+// and rejects literal controls in the logged field.
 func TestLogRequestBodyParseFailure_EscapesControlCharacters(t *testing.T) {
 	log, logs := newObservedLogger(t)
 	body := []byte("{\"model\":\x01\n\"x\"}")
@@ -85,6 +100,9 @@ func TestLogRequestBodyParseFailure_EscapesControlCharacters(t *testing.T) {
 	require.Contains(t, head, `\x01`)
 }
 
+// TestLogRequestBodyParseFailure_NilLoggerNoPanic calls the reporter without a
+// logger or explicit error. The missing logging dependency must leave this
+// diagnostic path safe to invoke.
 func TestLogRequestBodyParseFailure_NilLoggerNoPanic(t *testing.T) {
 	require.NotPanics(t, func() {
 		LogRequestBodyParseFailure(nil, []byte(`{`), nil)

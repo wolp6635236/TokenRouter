@@ -10,7 +10,30 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
-// geminiSelector 的关联表只存在于本次调用，返回值继续使用原提供商读取快照。
+// gemini_ports.go connects Gemini scheduling callbacks to the execution
+// targets associated with each candidate.
+// Gemini scheduling ranks metadata while the gateway retains the provider
+// targets needed for quota checks and forwarding. A new scope per selection
+// associates each conversion with its source target, including hydrated records
+// that share the candidate's persisted ID.
+//
+// Quota eligibility, sticky lookup, advanced ordering, unsupported-model
+// diagnosis, and hydration callbacks recover their corresponding target through
+// that scope. The scheduler receives cloned group scheduling data and returns
+// metadata carrying the same per-call association. After the core completes,
+// the caller resolves that metadata to the execution provider produced by the
+// successful read, while shared sticky and quota services remain bound to the
+// selector.
+
+// geminiSelector creates the Gemini scheduling core and a fresh target lookup
+// for one call. Callers use the returned scope to recover the selected
+// execution provider after the slot-free core completes.
+//
+// Group resolution, sticky hits, candidate lists, quota filtering, advanced
+// ordering, and hydration callbacks register their results in that scope.
+// Separate identifiers retain successive reads of the same provider ID instead
+// of replacing prior associations. The constructed Gemini selector supplies its
+// shared cache, parameters, feedback, and quota precheck to those callbacks.
 func (s *Gemini) geminiSelector() (*scheduler.GeminiSelector, *projectionScope) {
 	scope := &projectionScope{providers: map[uint64]*gatewayadapter.ExecutionProvider{}, groups: map[uint64]*routing.Group{}}
 	ports := scheduler.GeminiSelectionPorts{

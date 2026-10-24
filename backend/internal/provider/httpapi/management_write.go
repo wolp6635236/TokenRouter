@@ -14,44 +14,132 @@ import (
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// CreateProviderRequest 保留创建提供商的 HTTP 输入。
+// management_write.go handles provider creation, duplication, and
+// configuration updates through administrator HTTP requests.
+// Provider creation can finish before response idempotency storage succeeds.
+// Creation and duplication use the shared executor, while duplication also
+// passes its administrator operation identity to durable storage so the handler
+// can recover a completed copy after an uncertain executor outcome. Replay
+// responses bypass the creation closure and therefore have no newly captured
+// provider.
+//
+// Creation normalizes deprecated settings before computing its fingerprint and
+// applies platform privacy observations after the administrative create.
+// Follow-up callbacks receive the captured result after the executor returns.
+// Ordinary editing instead forwards selected fields to administration, where
+// pointer omission, sensitive credentials and explicit clearing values have
+// different meanings; its response is built from the updated record.
+
+// CreateProviderRequest carries provider configuration and authorization values
+// for strict creation binding.
 type CreateProviderRequest struct {
-	Name               string         `json:"name" binding:"required"`
-	Notes              *string        `json:"notes"`
-	Platform           string         `json:"platform" binding:"required"`
-	Type               string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock service_account cosy"`
-	Credentials        map[string]any `json:"credentials" binding:"required"`
-	Extra              map[string]any `json:"extra"`
-	ProxyID            *int64         `json:"proxy_id"`
-	Concurrency        int            `json:"concurrency"`
-	Priority           int            `json:"priority"`
-	RateMultiplier     *float64       `json:"rate_multiplier"`
-	LoadFactor         *int           `json:"load_factor"`
-	GroupIDs           []int64        `json:"group_ids"`
-	ExpiresAt          *int64         `json:"expires_at"`
-	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
+	Name string `json:"name" binding:"required"` // provider display name
+	// Notes optionally supplies administrator description text. Creation
+	// normalizes the supplied text; nil leaves this description absent in the
+	// newly constructed provider.
+	// optional administrator description text
+	Notes *string `json:"notes"`
+	// upstream platform identifier
+	Platform string `json:"platform" binding:"required"`
+	// provider authentication kind
+	Type string `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock service_account cosy"`
+	// Credentials is the required authorization object passed to creation.
+	// Administration validates platform-specific values and may normalize this
+	// borrowed map before constructing the stored provider.
+	Credentials map[string]any `json:"credentials" binding:"required" jsonschema:"API Key providers use api_key and base_url. Optional upstream_protocols contains IDs from protocol_capabilities.list, such as openai_responses or openai_chat_completions. OpenAI API Key credentials may set images_generations_mode and images_edits_mode to both, streaming, or non_streaming. Complete OAuth authorization in provider management."` // platform authorization creation values
+	// Extra optionally supplies provider configuration. Deprecated keys are
+	// discarded in place before idempotency fingerprinting, and creation validates
+	// its platform-specific configuration before storage.
+	Extra map[string]any `json:"extra"` // provider creation configuration values
+	// ProxyID optionally selects the provider's egress proxy for administrative
+	// creation. The selected pointer is forwarded to validation and construction;
+	// nil supplies no explicit proxy binding.
+	ProxyID *int64 `json:"proxy_id"` // optional creation proxy identifier
+	// Concurrency is forwarded to administrative creation as supplied.
+	// NormalizeProviderConcurrency applies the platform and authentication rules
+	// when constructing the provider's effective request capacity.
+	Concurrency int `json:"concurrency"` // supplied provider request capacity
+	Priority    int `json:"priority"`    // scheduler priority value
+	// RateMultiplier supplies a nonnegative billing multiplier. Nil delegates
+	// creation defaults or preserves the stored update value, and an explicit zero
+	// remains a supplied value.
+	RateMultiplier *float64 `json:"rate_multiplier"` // provider billing multiplier
+	// LoadFactor supplies an optional scheduler capacity override during creation.
+	// Nonpositive values leave the override absent; administrative validation
+	// rejects positive values above 10000.
+	LoadFactor *int `json:"load_factor"` // optional scheduler capacity override
+	// GroupIDs supplies creation group associations for administrator validation
+	// and binding. An omitted or empty selection creates a provider with no
+	// automatically selected default group.
+	GroupIDs []int64 `json:"group_ids"` // requested routing group associations
+	// ExpiresAt supplies optional provider expiry in Unix seconds. Administrative
+	// creation installs a timestamp for positive values, while omission and
+	// nonpositive input leave expiry absent.
+	ExpiresAt *int64 `json:"expires_at"` // Unix seconds
+	// AutoPauseOnExpired distinguishes a supplied false from omission. Creation
+	// defaults omission to true, while updates preserve the stored policy when
+	// this pointer is nil.
+	AutoPauseOnExpired *bool `json:"auto_pause_on_expired"` // pause on expiry
 }
 
-// UpdateProviderRequest 保留编辑提供商的 HTTP 输入。
-// 使用指针类型来区分"未提供"和"设置为 0"。
+// UpdateProviderRequest carries selected provider edits, with pointer fields
+// distinguishing supplied zero values from omission.
 type UpdateProviderRequest struct {
-	Name               string         `json:"name"`
-	Notes              *string        `json:"notes"`
-	Type               string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account cosy"`
-	Credentials        map[string]any `json:"credentials"`
-	Extra              map[string]any `json:"extra"`
-	ProxyID            *int64         `json:"proxy_id"`
-	Concurrency        *int           `json:"concurrency"`
-	Priority           *int           `json:"priority"`
-	RateMultiplier     *float64       `json:"rate_multiplier"`
-	LoadFactor         *int           `json:"load_factor"`
-	Status             string         `json:"status" binding:"omitempty,oneof=active inactive error"`
-	GroupIDs           *[]int64       `json:"group_ids"`
-	ExpiresAt          *int64         `json:"expires_at"`
-	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
+	Name string `json:"name"` // provider display name
+	// Notes preserves the stored description when nil. A supplied empty or
+	// whitespace-only string is normalized by administration when replacing the
+	// description.
+	// optional administrator description edit
+	Notes *string `json:"notes"`
+	// provider authentication kind
+	Type string `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account cosy"`
+	// Credentials follows administrative merge rules for redacted edits. Omitted
+	// sensitive keys inherit stored values, and an empty map skips ordinary
+	// credential replacement; shadows have their own allowed-field rules.
+	Credentials map[string]any `json:"credentials"` // redacted authorization configuration edit
+	// Extra is interpreted as selected provider configuration. Omission leaves
+	// settings unchanged; explicit empty input can clear configuration, while a
+	// deprecated-only object becomes nil before administration.
+	Extra map[string]any `json:"extra"` // selected provider configuration edit
+	// ProxyID selects an egress proxy. Nil preserves update selection; a supplied
+	// zero is passed to administration for its proxy clearing rules.
+	ProxyID *int64 `json:"proxy_id"` // selected egress proxy
+	// Concurrency and Priority use pointer presence to distinguish omission from
+	// supplied zero values. Nil preserves the corresponding stored value;
+	// administration normalizes concurrency according to provider rules.
+	Concurrency *int `json:"concurrency"` // optional provider request capacity
+	Priority    *int `json:"priority"`    // scheduler priority value
+	// RateMultiplier supplies a nonnegative billing multiplier. Nil delegates
+	// creation defaults or preserves the stored update value, and an explicit zero
+	// remains a supplied value.
+	RateMultiplier *float64 `json:"rate_multiplier"` // provider billing multiplier
+	// LoadFactor supplies a scheduler capacity override. Nonpositive updates clear
+	// the override; positive values are limited to 10000 by administration.
+	LoadFactor *int   `json:"load_factor"`                                            // scheduler capacity override
+	Status     string `json:"status" binding:"omitempty,oneof=active inactive error"` // stored provider state
+	// GroupIDs selects provider group associations. Update omission preserves
+	// them, while a supplied empty collection requests clearing through the
+	// administrator use case.
+	GroupIDs *[]int64 `json:"group_ids"` // associated routing groups
+	// ExpiresAt supplies provider expiry in Unix seconds. Nil leaves update expiry
+	// unchanged; a supplied nonpositive update clears the stored expiry.
+	ExpiresAt *int64 `json:"expires_at"` // Unix seconds
+	// AutoPauseOnExpired distinguishes a supplied false from omission. Creation
+	// defaults omission to true, while updates preserve the stored policy when
+	// this pointer is nil.
+	AutoPauseOnExpired *bool `json:"auto_pause_on_expired"` // pause on expiry
 }
 
-// Create 在原幂等范围内创建提供商。
+// Create validates the strict creation body and returns an idempotent
+// management response. Deprecated Extra keys are removed before fingerprinting,
+// and privacy observations run inside the creation closure after storage
+// succeeds. Request cancellation and persistence failures are returned through
+// the shared executor.
+//
+// The closure captures its created record for AfterCreate. A replay skips that
+// closure but still reaches the callback with nil; application callbacks need
+// to handle that value. Follow-up work therefore depends on actual creation,
+// while the response may come from stored idempotency data.
 // POST /api/v1/admin/providers
 func (h *ManagementHandler) Create(c *gin.Context) {
 	var req CreateProviderRequest
@@ -59,20 +147,23 @@ func (h *ManagementHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	// Retired Extra settings are ignored by creation. Remove them before the
+	// idempotency fingerprint so their supplied values cannot distinguish the same admitted configuration.
 	providercore.DiscardDeprecatedProviderExtra(req.Extra)
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
-	// base_rpm 输入校验：负值归零，超过 10000 截断
+	// Normalize the managed request-rate setting before fingerprinting so the
+	// idempotency payload records the same supported value passed to administration.
 	SanitizeExtraBaseRPM(req.Extra)
 	if err := providercore.ValidateUpstreamRequestIDHeaderExtra(req.Extra); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	// 捕获闭包内创建的提供商引用，用于创建成功后触发仍受支持的能力探测。
-	// 幂等重放时跳过闭包，createdProvider 为 nil，因此跳过后续调度。
+	// The closure captures a record after durable creation for the configured
+	// follow-up callback. A response replay skips this closure and supplies nil later.
 	var createdProvider *providercore.Record
 
 	result, err := h.ExecuteAdminIdempotent(c, "admin.providers.create", req, h.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
@@ -96,9 +187,9 @@ func (h *ManagementHandler) Create(c *gin.Context) {
 			return nil, execErr
 		}
 		createdProvider = provider
-		// Antigravity OAuth: 新提供商直接设置隐私
+		// Privacy observation follows durable creation. Its platform eligibility
+		// checks permit both calls, and an empty observation leaves creation successful.
 		h.privacy.ForceAntigravityPrivacy(ctx, provider)
-		// OpenAI OAuth: 新提供商直接设置隐私
 		h.privacy.ForceOpenAIPrivacy(ctx, provider)
 		return h.presenter.Present(ctx, provider), nil
 	})
@@ -119,7 +210,16 @@ func (h *ManagementHandler) Create(c *gin.Context) {
 	response.Success(c, result.Data)
 }
 
-// Duplicate 根据已有提供商配置创建独立复制件。
+// Duplicate creates a source provider copy within the administrator idempotency
+// scope. The source ID supplies the payload fingerprint, while actor scope and
+// operation key are also passed to the durable duplication operation.
+// Successful replay returns the stored response.
+//
+// An in-progress or unavailable idempotency store can follow a completed
+// provider creation. Those two failures trigger recovery by the same source,
+// actor and key, and a found record returns a recovered response. A failed or
+// empty recovery retains the original executor error so uncertainty cannot
+// become another immediate creation.
 // POST /api/v1/admin/providers/:id/duplicate
 func (h *ManagementHandler) Duplicate(c *gin.Context) {
 	providerID, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -133,7 +233,7 @@ func (h *ManagementHandler) Duplicate(c *gin.Context) {
 		c,
 		"admin.providers.duplicate",
 		struct {
-			ProviderID int64 `json:"provider_id"`
+			ProviderID int64 `json:"provider_id"` // source duplicate provider
 		}{ProviderID: providerID},
 		h.DefaultWriteIdempotencyTTL(),
 		func(ctx context.Context) (any, error) {
@@ -151,6 +251,8 @@ func (h *ManagementHandler) Duplicate(c *gin.Context) {
 			if recoverErr != nil {
 				slog.Warn("provider_duplicate_recovery_failed", "provider_id", providerID, "actor_scope", actorScope, "reason", reason, "error", recoverErr)
 			} else if recovered != nil {
+				// A durable duplicate supplies a reviewable result after response-cache
+				// uncertainty; return it so this path does not execute creation again.
 				c.Header("X-Idempotency-Recovered", "true")
 				response.Success(c, h.presenter.Present(c.Request.Context(), recovered))
 				return
@@ -166,7 +268,10 @@ func (h *ManagementHandler) Duplicate(c *gin.Context) {
 	response.Success(c, result.Data)
 }
 
-// Update 编辑请求提供的字段，省略项保持当前值。
+// Update strictly binds supplied configuration fields and returns the updated
+// runtime view. Deprecated-only Extra becomes an omitted update; administration
+// interprets pointer omission, sensitive credential retention and explicit
+// clearing values.
 // PUT /api/v1/admin/providers/:id
 func (h *ManagementHandler) Update(c *gin.Context) {
 	providerID, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -180,6 +285,8 @@ func (h *ManagementHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	// A payload containing only retired keys means no Extra update. Keeping
+	// nil here lets administration retain the currently stored configuration.
 	if normalizedExtra, shouldReplaceExtra := providercore.NormalizeDeprecatedProviderExtraUpdate(req.Extra); shouldReplaceExtra {
 		req.Extra = normalizedExtra
 	} else {
@@ -189,7 +296,8 @@ func (h *ManagementHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
-	// base_rpm 输入校验：负值归零，超过 10000 截断
+	// Normalize the supplied managed request-rate setting before administration,
+	// whose configuration writes consume an integer value within the supported range.
 	SanitizeExtraBaseRPM(req.Extra)
 	if err := providercore.ValidateUpstreamRequestIDHeaderExtra(req.Extra); err != nil {
 		response.ErrorFrom(c, err)
@@ -203,8 +311,8 @@ func (h *ManagementHandler) Update(c *gin.Context) {
 		Credentials:        req.Credentials,
 		Extra:              req.Extra,
 		ProxyID:            req.ProxyID,
-		Concurrency:        req.Concurrency, // 指针类型，nil 表示未提供
-		Priority:           req.Priority,    // 指针类型，nil 表示未提供
+		Concurrency:        req.Concurrency, // nil means omitted.
+		Priority:           req.Priority,    // nil means omitted.
 		RateMultiplier:     req.RateMultiplier,
 		LoadFactor:         req.LoadFactor,
 		Status:             req.Status,
@@ -220,4 +328,8 @@ func (h *ManagementHandler) Update(c *gin.Context) {
 	response.Success(c, h.presenter.Present(c.Request.Context(), provider))
 }
 
+// SanitizeExtraBaseRPM mutates the supplied Extra map through provider
+// sanitation. Missing or nil maps are unchanged; supported numeric
+// representations are converted to an integer and clamped between zero and
+// 10000.
 func SanitizeExtraBaseRPM(extra map[string]any) { providercore.SanitizeManagedBaseRPM(extra) }

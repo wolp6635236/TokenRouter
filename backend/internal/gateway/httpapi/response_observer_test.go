@@ -9,6 +9,10 @@ import (
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 )
 
+// TestResolvedOpenAIUpstreamServiceTier combines outbound priority with absent
+// and differing execution-tier observations. The outbound value remains
+// unchanged while observed evidence stays separately readable, and an untiered
+// request remains nil.
 func TestResolvedOpenAIUpstreamServiceTier(t *testing.T) {
 	t.Parallel()
 
@@ -70,7 +74,9 @@ func TestResolvedOpenAIUpstreamServiceTier(t *testing.T) {
 	})
 }
 
-// TestResponseModelRetryClearsPreviousObservation 验证失败尝试不会污染缺失模型的下一响应。
+// TestResponseModelRetryClearsPreviousObservation records a failed attempt
+// model and resets recovery observation. It requires that the previous model
+// disappear before a terminal declaration supplies the final model.
 func TestResponseModelRetryClearsPreviousObservation(t *testing.T) {
 	c, _ := gin.CreateTestContext(nil)
 	o := BeginUpstreamResponseModelObservation(c)

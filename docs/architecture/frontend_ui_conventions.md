@@ -37,10 +37,11 @@
 ## 间距约定
 
 - 所有间距都落在 Tailwind 的 4px 网格上。`mt-[2px]`、`padding-left: 17px` 这类任意值会被门禁拦截。
-- 页面布局有两档间距。独立大卡片、统计卡、图表卡、移动端数据卡之间，以及工具栏、控件组和卡片之间，用 16px（`gap-4` / `space-y-4`）；工具栏和控件组内部用 8px（`gap-2` / `space-y-2`）。横向网格和纵向堆叠用同样的档位，加载骨架和实际内容的间距一致。`TablePageLayout` 里相邻的工具组之间 8px，最后一组工具到表格 16px。API 密钥页的端点条例外，它到表格也是 8px，和它到上方工具栏的间距相同。移动端数据卡和分页器之间也是 16px。`RuleListEditor` 的标题操作区到卡片列表 16px，卡片行之间 16px，线形行和它的标题操作区之间 8px。
+- 页面布局有两档间距。独立大卡片、统计卡、图表卡、移动端数据卡之间，以及工具栏、控件组和卡片之间，用 16px（`gap-4` / `space-y-4`）；工具栏和控件组内部用 8px（`gap-2` / `space-y-2`）。横向网格和纵向堆叠用同样的档位，加载骨架和实际内容的间距一致。`TablePageLayout` 里相邻的工具组之间 8px，最后一组工具到表格 16px。API 密钥页和 MCP 管理页的端点条例外，它到表格也是 8px，和它到上方工具栏的间距相同。移动端数据卡和分页器之间也是 16px。`RuleListEditor` 的标题操作区到卡片列表 16px，卡片行之间 16px，线形行和它的标题操作区之间 8px。
 - 列表的搜索、筛选、刷新和批量操作工具栏都用 `gap-2`（8px），包括工具栏外层、左侧筛选组和右侧操作组；共用组件和加载骨架也用这个间距。窄屏换行时行间距同样是 8px。筛选弹层里带标签的字段按表单间距排列；分页摘要、正文信息组和卡片区块各用自己的间距。
 - 页面或卡片的标题带说明文字时，同一行的操作区和整块标题说明的底部对齐。`AppLayout` 页头用 `items-end`，自绘页头和带说明的卡片标题行也这样对齐。页头的补充信息放在可选的 `page-heading-meta` 插槽，位于说明下方 8px，参与同一个底部对齐，例如用户仪表盘的实时状态条。先纵向堆叠、宽屏再横排的布局，只在横排断点开启底部对齐，窄屏的控件正常换行。
 - 卡片 padding 有两档：独立卡片 `p-6`，嵌套面板、网格卡和统计卡 `p-4`。
+- 用户仪表盘的页头由标题、实时状态和筛选工具组成。手机指标卡收紧内部间距，环比保留“较上期”说明；请求数、Token 和消费的涨跌使用中性色，缓存命中率的升降使用状态色。快捷操作在窄屏和文档顺序中位于公告之前，桌面上仍排在公告右侧。公告标题最多两行，摘要跳过表格和代码块，优先取首段正文，详情展示完整内容。
 - header 和 main 的水平 padding 完全一致，都是 `px-4 md:px-6 lg:px-8`，两侧边缘在所有断点上对齐。
 - 默认首页和控制台共用 `AppHeader`，品牌、工具按钮、余额和用户菜单都在这里。首页通过 `public-page` 隐藏侧栏开关，保留模型广场和访客登录入口，并为固定顶栏预留高度；自定义 HTML 或 iframe 首页使用全页模式。操作台的返回仪表盘图标在品牌右侧。
 - 布局尺寸 token 在 `style.css` 的 `:root` 里定义，各有一份：`--header-h`（3.5rem，顶栏高度）、`--sidebar-w`（14rem，侧栏展开宽度）、`--sidebar-w-collapsed`（4.5rem，侧栏折叠宽度）。顶栏高度、主区 `padding-top`、侧栏遮罩 `top`、侧栏宽度和主区 `lg:ml-*` 偏移都引用这些变量（例如 `h-[var(--header-h)]`），`h-14`、`top-14`、`w-56` 这类字面量会和变量脱节。吸顶偏移和锚点 `scroll-margin-top` 写成 `calc(var(--header-h) + 余量)`（参考 SettingsView 的 tabs 吸顶），并在注释里写明余量由什么组成。
@@ -121,10 +122,11 @@
 ## 弹窗
 
 - 默认使用 `BaseDialog`：宽度档位有 narrow、normal、wide、extra-wide、full；Escape 关闭、点击外部关闭、焦点管理和背景滚动锁定都已内置。新弹窗直接用它，手写 `fixed inset-0` 外壳会缺少这些行为。
+- 输入法组词期间按 Escape 取消当前输入时，`BaseDialog` 保持打开，普通 Escape 按 `closeOnEscape` 设置关闭最上层弹窗。
 - 标题需要说明或图标时，用 `subtitle` 在标题下加一行 `text-xs` 说明，用 `header-icon` 插槽在标题左侧放图标块。标题右侧的模式切换等控件放进 `header-actions` 插槽，排在关闭按钮之前。头部结构由这些插槽组成。
 - 贴边分栏的工作区弹窗：传 `flush` 去掉内容区内边距，再配合 `bodyScroll=false`，由各栏自己滚动。侧栏用浅底（浅色 `gray-50/70`，深色 `dark-950`）和单侧分隔线贴住弹窗边缘，外面不再包卡片。底部操作区放在内容里，用同样的浅底和 `rounded-b-surface sm:rounded-b-dialog`，这样不会盖住弹窗的圆角。窄屏下分栏改成上下堆叠、由外层整体滚动时，各栏按内容撑高，`min-h-0 flex-1` 只在分栏断点（`md:`）生效；否则栏会被压缩，内容溢出后底部留白消失，内容贴住底栏。提供商连接测试弹窗是这种布局的参考实现。
 - 提供商测试共用标题、侧栏宽度、三列指标和结果面板。`ProviderTestResultView` 管理复制、日志和外层滚动，决策测试的空态与答案由 `SystemOneTestAnswers` 按问题类型展示。测试类型决定输入字段和指标内容；决策输入的格式选择放在字段标签旁，问题标识及补充条件折叠显示。批量测试详情使用同一个结果组件。
-- 分页表单可以设置 `BaseDialog` 的 `bodyScroll=false`，由表单内部管理滚动，标题、页签和底部操作区始终可见。默认由弹窗内容区滚动。分组的创建和编辑（`GroupSettingsForm`）、提供商的创建、编辑和批量编辑，都按[设置表单](#settings_form)的约定分页。
+- 分页表单可以设置 `BaseDialog` 的 `bodyScroll=false`，由表单内部管理滚动，标题、页签和底部操作区始终可见。默认由弹窗内容区滚动。分组的创建和编辑（`GroupSettingsForm`）、提供商的创建、编辑和批量编辑，以及属性配置的编辑，都按[设置表单](#settings_form)的约定分页。
 - 安全凭证流程（TOTP 设置、禁用、登录验证、提权）使用 `AuthCardDialog`：居中的图标头，右上角没有关闭按钮，整张卡片 p-6，是和 BaseDialog 并存的另一种风格。它不 teleport，在原位置渲染，嵌套时的层级由 `z-index` prop 决定。
 - 手写弹窗的处理方式：结构是"标题头、内容、按钮行"的，迁移到 BaseDialog；有特殊视觉结构的继续手写，并登记在下面的[合法例外](#合法例外)里。
 
@@ -141,7 +143,7 @@
 - 整页设置：系统设置页这类整页表单，每组设置放在 `SettingsCard` 里。卡片头部是 `text-lg` 标题和说明，内容区 `p-6`，`SettingsSection` 之间相隔 24px。卡片里不放保存按钮。刷新、测试连接这类工具按钮和控制整张卡片的总开关放在 `actions` 插槽，显示在标题右侧。设置行下方需要提醒权限或风险时，在 `SettingToggleRow` 的 `hint` 插槽里放 `SettingsNotice`。
 - 字段布局：开关、选择框和短数字用 `SettingRow`，标题在左，控件在右。设置行没有说明文字时，标题和控件垂直居中。URL、密钥、长文本和多行文本用上下布局：`.input-label` 在上，输入框占满宽度，`.input-hint` 在输入框下方。两个以上这样的字段可以放进 `md:grid-cols-2` 网格。一组同类的短字段（各平台的阈值、调度权重、和提供商弹窗对应的默认值）也用上下布局的网格并排。
 - 多语言字段：面向用户的运营文案用 `LocalizedEditor`（传 `label`）或 `LocalizedFieldsEditor`，表单里和普通输入框一样只编辑原文。翻译入口是标签行右侧的 `text-xs` 小链接，显示已有语言；有译文过期或需要选择原文语言时变成琥珀色。翻译弹窗是贴边分栏的工作区弹窗，左栏是语言列表，右栏编辑选中的语言；它用 `modal-nested` 层级，可以叠在公告、套餐等弹窗上。占位文字、等宽字体和栅格布局分别通过 `placeholder`、`inputClass` 和 `layout` 传入。
-- 标签输入：逐个录入的字符串列表（邮箱后缀白名单、转发 IP 请求头）用 `SettingsTagInput`。组件负责展示标签和转发输入事件，分隔、去重和规范化由调用方处理。
+- 标签输入：逐个录入的字符串列表（邮箱后缀白名单、转发 IP 请求头、模型属性的媒体参数）用 `SettingsTagInput`。组件负责展示标签和转发输入事件，分隔、去重和规范化由调用方处理。
 - 整页保存：页面里所有设置都通过 `SettingsSaveBar` 保存。有未保存的修改时，视口底部居中浮出一条深色浮条（浅色模式 `gray-900` 底，深色模式 `dark-900` 底加 `dark-500` 边线），上面是提示文字和“放弃”“保存设置”两个标准尺寸按钮。浮条用 `rounded-dialog`（16px）和 8px 内边距，里面 `rounded-control`（8px）的按钮与外框弧度同心。每块设置用 `useDirtyTracker` 记录加载或保存后的快照，数据源各自加载完成后调用 `markClean(key)`。快照里去掉只读的展示数据，例如联网搜索的已用额度。页面用 `provideSettingsSaveRegistry` 创建登记表，本页的表单和子组件（子组件调用 `useSettingsSaveTarget`）把修改状态和返回是否成功的保存函数登记进去。每块登记时同时提供 `discard`，从服务器重新加载这块设置。点保存时按登记顺序只提交有修改的几块，某一块失败时其余几块照常保存，全部成功后提示一次。点放弃时，有修改的几块各自重新加载。
 - 批量编辑：每个可以修改的项用 `BulkApplyField` 包裹，左侧的复选框（`${id}-enabled`）决定是否提交。未勾选时内容区加 `inert` 并置灰，键盘也进不去。布尔值放在 `control` 插槽的开关里，界面上只有这一个开关，左侧复选框负责是否提交。
 
@@ -165,6 +167,8 @@
 | `dark-950` | `#141416` | 控件底：输入框、次级按钮、Tab 轨道、行内代码 |
 
 页面底色引用 `--page-bg`：浅色 `#FCFCFE`，深色在 `html.dark` 里覆盖为 `#0A0A0B`。`html`、`body`、主题外壳和背景层都用这个纯色背景，深色页面的滚动条轨道也引用它；页面背景没有渐变。
+
+Vue 的 `<style scoped>` 中，深色后代规则写成 `.dark .component-class`，由编译器给组件选择器添加作用域属性。`:global(.dark) .component-class` 会被编译成单独的 `.dark`，使组件背景、边框或阴影作用到页面根元素；滚动条伪元素也要保留组件选择器。
 
 深色模式下，侧栏和顶栏同样使用不透明的 `--page-bg`，和页面同色。控制台、首页和公开模型广场的顶栏共用 `.site-header`；深色模式关闭顶栏的背景模糊，滚动内容和移动端侧栏遮罩都不会改变它的底色。浅色模式下，顶栏是 80% 透明度的白色并带背景模糊，侧栏是白色。
 
@@ -239,7 +243,7 @@
 普通交互使用 `style.css` 里的动效变量，Tailwind 的 `duration-fast/normal/layout` 只引用这些变量。按钮、提示和内容淡入用 `--motion-fast`（150ms）；菜单、开关和短列表用 `--motion-normal`（200ms）；折叠、侧栏和弹窗进入用 `--motion-layout`（220ms）；浮层退出用 `--motion-exit`（150ms）。缓动用 `--motion-ease`，浮层退出用 `--motion-ease-exit`，菜单位移是 `--motion-shift`（4px）。调用方直接引用变量，普通动效的时长不在调用处重复写。
 
 - Vue 在运行时添加过渡类，所以这些样式写在 Tailwind 的 `@layer` 之外，以免被静态类名扫描裁掉。全局显隐样式有：`fade` 和 `fade-slow`（只有透明度）、`dropdown-fade` 和 `pop-float`（透明度加短距离位移）、`modal` 和 `pop-fade`（遮罩和面板，面板从 0.98 缩放进入）。`fade-slow` 保留现有的调用名，使用内容淡入的档位。向上打开的菜单用 `--dropdown-shift` 调整方向。定位用的 top、left、bottom 不参与浮层过渡；带定位 transform 的提示只用 fade。调用方直接使用这些全局样式，组件里不再保留 scoped 副本。
-- 显隐入口用 `MotionTransition`。它把 Vue Transition 的属性和事件原样传下去，并在退出时给旧节点设置 inert，旧节点不再响应操作。当前校验不通过的表单控件会被暂时禁用，以免打断浏览器的原生校验；其他控件保持原样，退出动画里不会闪出禁用状态的底色。`v-show` 的调用处要传 `persisted`。菜单的点击捕获层在关闭时立即移除，面板等退出动画结束再移除。Select、HelpTooltip 等通过 `useFloatingMotion` 跟随正在折叠的触发器，祖先变成 inert 时同步关闭 Teleport 浮层。
+- 显隐入口用 `MotionTransition`。它把 Vue Transition 的属性和事件原样传下去，并在退出时给旧节点设置 inert，旧节点不再响应操作。当前校验不通过的表单控件会被暂时禁用，以免打断浏览器的原生校验；其他控件保持原样，退出动画里不会闪出禁用状态的底色。`v-show` 的调用处要传 `persisted`。菜单的点击捕获层在关闭时立即移除，面板等退出动画结束再移除。Select、HelpTooltip 等通过 `useFloatingMotion` 跟随正在折叠的触发器，祖先变成 inert、带 hidden 属性或通过样式设为 display: none 时同步关闭浮层。Select、日期选择器和 FilterDropdown 在 document 的捕获阶段监听外部点击，弹窗内的点击停止冒泡时也能关闭面板；触发器和面板内部的操作按组件所属区域判断。
 - 纵向展开用 `Collapse`：`open` 控制显隐，内容默认保留。`unmountOnHide` 让按需挂载的内容在退出后卸载，退出期间显示上一帧的 slot 数据。`animate=false` 跳过动效，`appear` 控制首次挂载时是否播放，`after-enter` 和 `after-leave` 通知动画完成。Grid 行高自动适应内容，过渡期间裁剪溢出，展开结束后恢复正常溢出；收起的内容设置 inert。表格明细用 `ExpandableTableRow`，保持 tr 和 td 结构，关闭后不留空行。
 - 原生 details 的交互改用 `Disclosure`，折叠头是一个按钮，带 `aria-expanded` 和 `aria-controls`。校验和引导通过 `form-field-reveal`、`onboarding-reveal` 展开字段时，Collapse 跳过动画，下一次 DOM 更新后就能定位到字段。
 - 分段切换用 `vSegmented` 定位轨道 `::before` 的背景，位置、宽度和高度以 `--motion-normal`（200ms）和公共缓动过渡。选中项由调用方的 `.segmented-item-active` 标记，点击、键盘和 ARIA 属性由调用方提供；指令不增加可聚焦节点。首屏显示和隐藏后重新出现时直接定位，没有选中项时移除背景。指令在 Vue 更新和 ResizeObserver 通知时重新测量，能处理宽度不同的文案、换行、字体和尺寸变化，卸载时释放观察器。快速连续切换时，CSS 从当前位置继续过渡；减少动态效果时，按公共时长变量立即完成。
@@ -328,15 +332,19 @@
 - 营销页和落地页（`HomeView`、`KeyUsageView` 等公开页）的 hero 标题可以用展示级字号。
 - `onboarding.css` 覆盖 driver.js 第三方样式时使用的 `!important`。
 - i18n 文案里内嵌的导览 HTML（`src/i18n/**`）属于内容字符串，它的 inline style 不参与 token 校验。
-- 测试文件里断言"某个类名不存在"的负断言会被扫描命中，在行尾加 `check-ui-allow` 豁免。
-- 保留手写外壳的弹窗：BackupView 的 R2Guide 和 SubscriptionsView 的指南弹窗（max-w-2xl，BaseDialog 没有对应档位）、AnnouncementPopup 和 AnnouncementBell 的弹窗（独立的层级和定制过渡）、ProviderTestModal 的图片灯箱（媒体覆盖层，用强遮罩档）。新增弹窗默认用 BaseDialog，不要照搬这些结构。
+- 测试文件里断言"某个类名不存在"的负断言会被扫描命中，在该语句旁加 `check-ui-allow` 注释豁免。
+- 保留手写外壳的弹窗：BackupSettings 的 R2Guide 和 SubscriptionsView 的指南弹窗（max-w-2xl，BaseDialog 没有对应档位）、AnnouncementPopup 和 AnnouncementBell 的弹窗（独立的层级和定制过渡）、ProviderTestModal 的图片灯箱（媒体覆盖层，用强遮罩档）。新增弹窗默认用 BaseDialog，不要照搬这些结构。
 - RiskControlView 搜索框的 `pl-9` 图标留白（和 `input-icon-*` 的各档数值都不同，局部保留）。
 - ProvidersView 跟随鼠标的操作菜单（定位方式特殊，不使用 `getFloatingPanelPosition`）。
 - textarea 按内容决定高度、GroupBadge 的方角造型、OpsDashboard 250ms 的路由同步防抖（用途和搜索防抖不同）、CreativeCanvas 工具条和 CreativeRunHistory 条目详情的结构性展开动画，都是局部写法，保持原样。
 
 ## 校验
 
-在 `frontend/` 下运行 `npm run check:ui`（`scripts/check-ui-tokens.mjs`）检查上述规则，它和 `lint:check` 一起作为提交前检查。具体的拦截规则和正则写在脚本头部的注释里，包括：旧圆角、任意值的圆角、字号和 z 值、36px 冗余、手写开关、max-h 任意像素、非响应式的暗色判断、z-index 字面量、JS 断点字面量和 `tailwind.config` 的键约束。新增组件样式前对照本文；确实需要偏离时，在 PR 里说明理由，并考虑把它补进例外清单。
+在 `frontend/` 下运行 `npm run check:ui`（`scripts/check-ui-tokens.mjs`）检查上述规则，`lint:check`、推送检查和 CI 都会执行。具体规则维护在脚本的规则表中，包括旧圆角、任意值的圆角、字号和 z 值、36px 冗余、手写开关、max-h 任意像素、非响应式的暗色判断、z-index 字面量、JS 断点字面量和 `tailwind.config` 的键约束。
+
+`check-ui-allow` 必须写在真实注释中，并附英文理由。解析器把注释绑定到对应的 HTML 元素起始标签、CSS 声明或 apply 指令、JavaScript 语句；绑定范围可以跨行，父元素的豁免不会传给子元素。格式化前后应覆盖同一处语法，字符串中的标记不产生豁免。新增特殊写法时核对作用范围，并在 PR 中解释其实际约束。
+
+HTML 注释放在元素起始标签后时，绑定该起始标签；放在同级元素之间时，优先绑定后一个元素。JavaScript 语句之间的块注释同样优先绑定后一个语句；要豁免前一个语句，使用行尾 `// check-ui-allow: ...`。这项约定避免格式化把块注释移到下一行后改变豁免对象。CSS 豁免放在目标声明行尾或紧前方；新增回归测试应比较实际被报告的语句或元素，不能只比较违规数量。
 
 ## 相关文档
 

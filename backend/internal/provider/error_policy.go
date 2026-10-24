@@ -6,31 +6,60 @@ import (
 	"time"
 )
 
+// error_policy.go classifies upstream failures under administrator policy and
+// applies authentication and overload health updates.
+// Administrator code lists and pool mode change which upstream failures request
+// failover or provider health updates. A custom-code skip suppresses switching,
+// while a matching code or temporary pause selects failover. Pool bypass
+// retains the upstream pool retry-status rule, so forwarding cannot infer its
+// action from the scheduling-stop flag alone.
+//
+// The policy checker gives custom codes precedence and can apply configured
+// temporary pauses before returning its result. Authentication, custom-code and
+// overload commands synchronously notify the configured blocker before calling
+// storage. Those repository calls publish persistent health separately; logged
+// failures can leave runtime notification and stored state with different
+// outcomes for the current attempt and later selection.
+
+// Policy results tell forwarding whether administrator codes matched, a pause was
+// applied, or pool mode delegates later health classification to its upstream.
 const (
-	ErrorPolicyNone            ErrorPolicyResult = iota // 未命中任何策略，继续默认逻辑
-	ErrorPolicyCustomSkipped                            // 自定义错误码开启但未命中，返回通用错误
-	ErrorPolicyCustomMatched                            // 自定义错误码命中，停止调度
-	ErrorPolicyTempUnscheduled                          // 临时不可调度规则命中
-	ErrorPolicyPoolBypassed                             // 池模式跳过默认本地状态，继续响应分类
+	ErrorPolicyNone            ErrorPolicyResult = iota // No configured policy matched; continue default handling.
+	ErrorPolicyCustomSkipped                            // Custom codes are enabled but unmatched; return a generic error.
+	ErrorPolicyCustomMatched                            // A custom code or direct 529 check matched; request failover.
+	ErrorPolicyTempUnscheduled                          // A temporary scheduling-pause rule matched.
+	ErrorPolicyPoolBypassed                             // Pool mode bypasses default local state updates; continue classifying the response.
 )
 
-// ErrorPolicyResult 表示错误策略检查的结果。
+// ErrorPolicyResult distinguishes administrator policy actions from default
+// health classification.
 type ErrorPolicyResult int
 
-// UpstreamErrorDecision 汇总配置的错误策略和默认的提供商状态处理结果。
-// 网关必须使用 Policy 区分池模式绕过与自定义错误码未命中，不能只依赖 StopScheduling。
+// UpstreamErrorDecision holds policy classification and the scheduling effect
+// of one upstream failure.
 type UpstreamErrorDecision struct {
-	Policy         ErrorPolicyResult
-	StopScheduling bool
+	// Policy and StopScheduling carry policy classification and a separate health
+	// effect. Forwarding helpers give configured skips and pool retry rules
+	// precedence over the stop flag.
+	Policy         ErrorPolicyResult // selected upstream error policy
+	StopScheduling bool              // health requested scheduling stop
 }
 
-// ShouldReturnGenericError 表示应按自定义错误码约定返回通用 500，且不切换提供商。
+// ShouldReturnGenericError reports whether an unmatched custom code selects a
+// generic error.
 func (d UpstreamErrorDecision) ShouldReturnGenericError() bool {
 	return d.Policy == ErrorPolicyCustomSkipped
 }
 
-// ShouldFailover 表示当前请求应切换提供商。池模式配置的重试状态码可以把原本的
-// 配置的错误策略命中时切换提供商，其他状态按入口的默认规则处理。
+// ShouldFailover combines configured policy, pool retry status and the ordinary
+// caller default. Unmatched custom codes prevent failover, while matched codes
+// and temporary pauses require it. Callers pass the provider that produced this
+// response.
+//
+// Pool bypass uses defaultFailover or the provider pool retry-status rule. Other
+// policies use that default or StopScheduling. Keeping the policy result
+// separate prevents a false scheduling-stop bit from erasing the special
+// no-failover decision for unmatched administrator codes.
 func (d UpstreamErrorDecision) ShouldFailover(provider *Record, statusCode int, defaultFailover bool) bool {
 	if d.Policy == ErrorPolicyCustomSkipped {
 		return false
@@ -44,8 +73,15 @@ func (d UpstreamErrorDecision) ShouldFailover(provider *Record, statusCode int, 
 	return defaultFailover || d.StopScheduling
 }
 
-// ShouldFailoverWithDefaults 分别保留普通提供商的入口既有切号规则和池模式的上游错误分类。
-// 各入口共用配置的错误策略，默认规则决定其他错误是否切换提供商。
+// ShouldFailoverWithDefaults selects caller defaults after applying the
+// configured policy result. Unmatched custom codes prevent switching, and
+// matched codes or temporary pauses require it. Callers supply independently
+// computed pool and non-pool defaults for this response.
+//
+// Pool bypass accepts poolDefault or the provider pool retry-status rule.
+// Remaining results use nonPoolDefault directly; this helper does not add
+// StopScheduling in that branch. That distinction lets the caller retain its
+// endpoint-specific default classification.
 func (d UpstreamErrorDecision) ShouldFailoverWithDefaults(
 	provider *Record,
 	statusCode int,
@@ -64,13 +100,22 @@ func (d UpstreamErrorDecision) ShouldFailoverWithDefaults(
 	}
 }
 
-// RetryableOnSameProvider 判断池模式错误能否在当前提供商重试，配置的错误策略命中时返回 false。
+// RetryableOnSameProvider reports whether a pool-bypassed response matches the
+// provider retry-status rule. Nil providers or other policy results return
+// false, leaving same-provider retry distinct from the failover decision.
 func (d UpstreamErrorDecision) RetryableOnSameProvider(provider *Record, statusCode int) bool {
 	return d.Policy == ErrorPolicyPoolBypassed && provider != nil && provider.IsPoolModeRetryableStatus(statusCode)
 }
 
-// ErrorDecisionWithoutPersistence 在错误状态服务未注入时保留纯配置决策。
-// 此处通过自定义错误码和池模式判断重试资格，持久化由后续错误处理完成。
+// ErrorDecisionWithoutPersistence classifies custom-code and pool policy when
+// health storage is unavailable. Nil records yield ErrorPolicyNone. Custom-code
+// configuration takes precedence: a matched status sets StopScheduling, while
+// an unmatched status selects CustomSkipped and leaves that bit false.
+//
+// Pool mode returns PoolBypassed after custom-code handling has been skipped.
+// Ordinary records retain None. The caller can use the same forwarding decision
+// helpers even though this classifier performs no health command or
+// temporary-rule write.
 func ErrorDecisionWithoutPersistence(provider *Record, statusCode int) UpstreamErrorDecision {
 	decision := UpstreamErrorDecision{Policy: ErrorPolicyNone}
 	if provider == nil {
@@ -91,8 +136,16 @@ func ErrorDecisionWithoutPersistence(provider *Record, statusCode int) UpstreamE
 	return decision
 }
 
-// CheckErrorPolicy 检查自定义错误码和临时不可调度规则。
-// 自定义错误码开启时覆盖后续所有逻辑（包括临时不可调度）。
+// CheckErrorPolicy applies administrator policy before default upstream health
+// classification. Nil records return none, and enabled custom codes return
+// matched or skipped before any pause rule is tested. The caller decides whether
+// a returned match needs a later health command.
+//
+// Pool mode still applies configured temporary pauses with repeated-401
+// escalation disabled. Ordinary 529 responses select matched before temporary
+// rules, while other ordinary responses can apply those rules using the supplied
+// escalation flag and model. A temporary match may already have attempted its
+// health write.
 func (s *HealthService) CheckErrorPolicy(ctx context.Context, provider *Record, statusCode int, responseBody []byte, model string, escalateRepeated401 bool) ErrorPolicyResult {
 	if provider == nil {
 		return ErrorPolicyNone
@@ -105,13 +158,17 @@ func (s *HealthService) CheckErrorPolicy(ctx context.Context, provider *Record, 
 		return ErrorPolicyCustomSkipped
 	}
 	if provider.IsPoolMode() {
-		// 池模式命中管理员配置的临时停调规则时，按该规则处理 401。
+		// Configured pause rules still define local admission in pool mode. Disable
+		// repeated-401 escalation here because the upstream pool retains
+		// responsibility for ordinary credential recovery.
 		if s.TryTempUnschedulable(ctx, provider, statusCode, responseBody, false, model) {
 			return ErrorPolicyTempUnscheduled
 		}
 		return ErrorPolicyPoolBypassed
 	}
-	// 普通提供商使用全局过载处理规则，提供商配置的策略优先。
+	// Direct policy callers interpret ordinary 529 as matched here. Production
+	// default handling dispatches ordinary 529 through ApplyOverload before
+	// reaching this policy helper.
 	if statusCode == 529 {
 		return ErrorPolicyCustomMatched
 	}
@@ -121,8 +178,20 @@ func (s *HealthService) CheckErrorPolicy(ctx context.Context, provider *Record, 
 	return ErrorPolicyNone
 }
 
-// ApplyAuthenticationFailure 处理认证类错误(401/403)，停止提供商调度。
+// ApplyAuthenticationFailure notifies the configured scheduling blocker and
+// attempts to store the provider error message. Supply a usable service and
+// provider record. Storage failure is logged after the notification and returns
+// without reporting persistent success.
+//
+// The blocker receives a zero deadline and the auth_error reason; its
+// implementation decides platform eligibility and any default runtime lifetime.
+// The store owns error status, scheduling effects and publication. This command
+// neither rolls back an earlier notification nor returns storage failure to its
+// caller.
 func (s *HealthService) ApplyAuthenticationFailure(ctx context.Context, provider *Record, errorMsg string) {
+	// The repository also disables the stored scheduling switch and publishes
+	// health separately. Notify first so the configured blocker can act before
+	// those storage and publication operations complete.
 	s.notifyProviderSchedulingBlocked(provider, time.Time{}, "auth_error")
 	if err := s.providerRepo.SetError(ctx, provider.ID, errorMsg); err != nil {
 		s.options.Warn("provider_set_error_failed", "provider_id", provider.ID, "error", err)
@@ -131,9 +200,20 @@ func (s *HealthService) ApplyAuthenticationFailure(ctx context.Context, provider
 	s.options.Warn("provider_disabled_auth_error", "provider_id", provider.ID, "error", errorMsg)
 }
 
-// ApplyCustomErrorCode 处理自定义错误码，停止提供商调度。
+// ApplyCustomErrorCode prefixes the upstream message with its matched status and
+// attempts a persistent provider error. Call after the configured code policy
+// selects a match. The configured blocker is notified first, so its runtime
+// effect can survive a later store failure.
+//
+// Storage owns the resulting error status and scheduling publication. This
+// command logs both persistence failures and completed custom-error updates,
+// returning no error to its caller. The caller retains the already-selected
+// failover action independently of that persistent write outcome.
 func (s *HealthService) ApplyCustomErrorCode(ctx context.Context, provider *Record, statusCode int, errorMsg string) {
 	msg := "Custom error code " + strconv.Itoa(statusCode) + ": " + errorMsg
+	// The repository also disables the stored scheduling switch and publishes
+	// health separately. Notify first so the configured blocker can act before
+	// those storage and publication operations complete.
 	s.notifyProviderSchedulingBlocked(provider, time.Time{}, "custom_error_code")
 	if err := s.providerRepo.SetError(ctx, provider.ID, msg); err != nil {
 		s.options.Warn("provider_set_error_failed", "provider_id", provider.ID, "status_code", statusCode, "error", err)
@@ -142,8 +222,15 @@ func (s *HealthService) ApplyCustomErrorCode(ctx context.Context, provider *Reco
 	s.options.Warn("provider_disabled_custom_error", "provider_id", provider.ID, "status_code", statusCode, "error", errorMsg)
 }
 
-// ApplyOverload 处理 529 过载错误
-// 根据配置决定是否暂停提供商调度及冷却时长。
+// ApplyOverload reads runtime policy and attempts a provider overload deadline
+// for HTTP 529. A disabled policy leaves health unchanged. Missing or failed
+// runtime reads use enabled process configuration, with ten minutes selected
+// when its duration is nonpositive.
+//
+// An enabled nonpositive loaded duration also uses ten minutes. The configured
+// blocker is notified before persistence, so a store failure can leave its
+// runtime effect installed. The caller receives no error; logging distinguishes
+// ignored policy, failed persistence and a completed overload update.
 func (s *HealthService) ApplyOverload(ctx context.Context, provider *Record) {
 	var settings *OverloadCooldownSettings
 	if s.options.OverloadSettings != nil {
@@ -154,7 +241,9 @@ func (s *HealthService) ApplyOverload(ctx context.Context, provider *Record) {
 			settings = nil
 		}
 	}
-	// 回退到配置文件
+	// Missing readers, nil results and failed reads reach the same process-policy
+	// path. An unavailable runtime policy therefore still gives overload handling
+	// an enabled cooldown.
 	if settings == nil {
 		cooldown := s.options.OverloadMinutes
 		if cooldown <= 0 {
@@ -173,7 +262,12 @@ func (s *HealthService) ApplyOverload(ctx context.Context, provider *Record) {
 		cooldownMinutes = 10
 	}
 
+	// Loaded or process policy supplies minutes; resolve the absolute stored
+	// overload deadline from the health service's clock.
 	until := s.options.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+	// SetOverloaded replaces the stored deadline and then publishes its state. The
+	// blocker runs before that work; a logged store failure leaves any earlier
+	// runtime notification in effect.
 	s.notifyProviderSchedulingBlocked(provider, until, "529")
 	if err := s.providerRepo.SetOverloaded(ctx, provider.ID, until); err != nil {
 		s.options.Warn("overload_set_failed", "provider_id", provider.ID, "error", err)

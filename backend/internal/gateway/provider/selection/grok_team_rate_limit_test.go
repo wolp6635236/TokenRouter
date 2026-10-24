@@ -11,8 +11,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// TestGrokTeamModelRateLimit_MarksAndFiltersSiblings records one OAuth
+// provider's team-model cooldown. Its sibling is filtered for that model while
+// another model, another team, and a missing team remain eligible.
 func TestGrokTeamModelRateLimit_MarksAndFiltersSiblings(t *testing.T) {
-	// 使用唯一团队 ID，避免与其他测试相互影响。
+	// The provider store is process-global. A time-qualified team ID separates
+	// this fixture's cooldown observations from those established by other tests.
 	team := "team-test-" + time.Now().Format("150405.000")
 	a1 := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -55,6 +59,9 @@ func TestGrokTeamModelRateLimit_MarksAndFiltersSiblings(t *testing.T) {
 	require.Contains(t, ids, int64(104))
 }
 
+// TestGrokTeamModelRateLimit_Expires supplies a deadline that is already in the
+// past. The provider rule substitutes its default cooldown, so the observation
+// remains active when selection checks it immediately.
 func TestGrokTeamModelRateLimit_Expires(t *testing.T) {
 	team := "team-expire-" + time.Now().Format("150405.000")
 	a := &gatewayprovider.ExecutionProvider{
@@ -65,11 +72,13 @@ func TestGrokTeamModelRateLimit_Expires(t *testing.T) {
 	}
 	past := time.Now().Add(-time.Minute)
 	providercore.MarkGrokTeamModelRateLimit(gatewayprovider.ExecutionRecord(a), "grok-4.5", past)
-	// mark 会把已过期截止时间校正为从当前时间起的默认 TTL，因此通过直接写入存储验证过期清理。
-	// 传入过去时间时不会采用 resolveGrokTeamRateLimitUntil 路径，mark 会在截止时间不晚于当前时间时使用当前时间加默认时长。
 	require.True(t, isGrokTeamModelRateLimited(a, "grok-4.5", time.Now()))
 }
 
+// TestGrokTeamModelRateLimitFilterUsesMappedUpstreamModel maps a client
+// wildcard onto an observed Grok team cooldown. The candidate is removed
+// through its canonical upstream identity, protecting team limits across
+// aliases.
 func TestGrokTeamModelRateLimitFilterUsesMappedUpstreamModel(t *testing.T) {
 	now := time.Now()
 	provider := &gatewayprovider.ExecutionProvider{

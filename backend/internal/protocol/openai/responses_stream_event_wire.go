@@ -5,18 +5,35 @@ import (
 	"strings"
 )
 
-// MarshalJSON 将 ResponsesStreamEvent 渲染成实际传输的 wire 结构。
+// responses_stream_event_wire.go encodes Responses stream events with the
+// fields and empty values required by each event kind.
+// Responses deltas need zero-valued position indexes, and newly opened items
+// need empty argument strings or arrays before content arrives. Ordinary
+// omitempty tags would remove these fields, so event-kind selection constructs
+// maps whose required values stay present. Function, custom, and discovery
+// calls also use different parameter fields even though the bridge accumulates
+// argument text for them.
 //
-// OpenAI Responses 流式协议要求某些字段即使为零值也必须存在：
-// output_index/content_index/summary_index 的 0 是有效索引；function_call
-// item 必须始终带 call_id/name/arguments（arguments 可以是空字符串）；
-// message item 必须带 content:[]；output_text part 必须带
-// text/annotations/logprobs。Go 的 `omitempty` 会刚好丢掉这些零值，严格的
-// Codex CLI 会拒绝缺少必需字段的 item/delta。
+// Known item and part helpers retain the fields represented by their emitted
+// shape. Empty message and reasoning arrays remain arrays, while a nil item
+// becomes an empty object. Lifecycle events continue through ordinary struct
+// encoding; callers that need unknown item extensions keep raw event data
+// rather than relying on the reduced typed shapes assembled here.
+
+// MarshalJSON selects the fields required for each recognized Responses event
+// kind. Text, content, reasoning, item, and tool events include their relevant
+// zero indexes and empty strings or arrays instead of relying on the struct's
+// omitempty tags. Every selected map includes the sequence number, including
+// zero.
 //
-// 此处逐种构造流式事件，Chat 转 Responses 和 Anthropic 转 Responses 共用这些字段规则。
-// 未列出的 event type 使用默认结构体序列化。
+// The item and part helpers construct known wire shapes, so their supported
+// fields determine what survives serialization. Lifecycle and unlisted events
+// use an alias of the ordinary struct and its field tags. Returned encoding
+// errors propagate to the caller, which owns stream ordering and writing; this
+// codec supplies JSON bytes for one event.
 func (e ResponsesStreamEvent) MarshalJSON() ([]byte, error) {
+	// Each mapped case selects its own fields, so retained Response or other
+	// unrelated state cannot be emitted as part of a delta for another item.
 	switch e.Type {
 	case "response.output_text.delta", "response.output_text.done":
 		m := e.wireBase()
@@ -99,13 +116,15 @@ func (e ResponsesStreamEvent) MarshalJSON() ([]byte, error) {
 		return json.Marshal(m)
 
 	default:
-		// response.created / completed / done / failed / incomplete 等未单独
-		// 建模的事件继续保留默认结构体序列化。
+		// alias exposes lifecycle and unlisted event fields with ordinary tags,
+		// bypassing this event method so default serialization cannot call itself recursively.
 		type alias ResponsesStreamEvent
 		return json.Marshal(alias(e))
 	}
 }
 
+// wireBase builds an event map with its type and unconditional sequence
+// number.
 func (e ResponsesStreamEvent) wireBase() map[string]any {
 	m := map[string]any{
 		"type":            e.Type,
@@ -114,14 +133,18 @@ func (e ResponsesStreamEvent) wireBase() map[string]any {
 	return m
 }
 
+// putItemID adds a nonempty item identity to the supplied event map. Empty
+// identity leaves that map unchanged; callers pass a writable map when the
+// event has an item ID.
 func (e ResponsesStreamEvent) putItemID(m map[string]any) {
 	if e.ItemID != "" {
 		m["item_id"] = e.ItemID
 	}
 }
 
-// outputTextPartWire 渲染 message output_text content part，并始终带上
-// text/annotations/logprobs。
+// outputTextPartWire builds the output-text shape with text and empty
+// annotations/logprobs arrays. Nil parts use empty text, and a supplied part
+// contributes its Text only; the emitted type remains output_text.
 func outputTextPartWire(part *ResponsesContentPart) map[string]any {
 	text := ""
 	if part != nil {
@@ -135,7 +158,9 @@ func outputTextPartWire(part *ResponsesContentPart) map[string]any {
 	}
 }
 
-// summaryTextPartWire 渲染 reasoning summary part。
+// summaryTextPartWire builds a summary-text shape using the supplied part's
+// Text. Nil parts select empty text, and the returned object uses summary_text
+// regardless of the source part's type or other fields.
 func summaryTextPartWire(part *ResponsesContentPart) map[string]any {
 	text := ""
 	if part != nil {
@@ -147,8 +172,17 @@ func summaryTextPartWire(part *ResponsesContentPart) map[string]any {
 	}
 }
 
-// responsesItemWire 渲染 output_item，并按 item type 补齐必需字段，包括
-// omitempty 原本会丢掉的空数组和空字符串。
+// responsesItemWire builds the known output-item shape for a lifecycle event.
+// Nil items produce an empty object; other items include type and ID even when
+// empty, with status added when supplied. Message items default a blank role
+// and retain their known content type/text fields.
+//
+// Reasoning uses an array summary, and function/custom calls include the
+// identity and input fields their client dispatch requires. Namespace is
+// retained on function calls; discovery calls include client execution and
+// argument-value conversion. Fields outside the selected item shape are
+// dropped, so callers needing arbitrary vendor items retain their raw JSON
+// before this typed encoding.
 func responsesItemWire(item *ResponsesOutput) map[string]any {
 	if item == nil {
 		return map[string]any{}
@@ -160,6 +194,8 @@ func responsesItemWire(item *ResponsesOutput) map[string]any {
 	if item.Status != "" {
 		m["status"] = item.Status
 	}
+	// Fill fields by the client-visible item kind, because freeform input and
+	// discovery argument values cannot use ordinary function-call string fields.
 	switch item.Type {
 	case "message":
 		role := item.Role
@@ -177,20 +213,20 @@ func responsesItemWire(item *ResponsesOutput) map[string]any {
 		m["call_id"] = item.CallID
 		m["name"] = item.Name
 		m["arguments"] = item.Arguments
-		// namespace 子工具的还原调用：codex 按 namespace+name 路由，缺少该字段
-		// 会被判为 unsupported call。
+		// Restored namespace calls need both identity components. Retain namespace
+		// beside name so the client can dispatch the recorded child tool.
 		if item.Namespace != "" {
 			m["namespace"] = item.Namespace
 		}
 	case "custom_tool_call":
-		// custom/freeform 工具调用（如 codex 的 exec）：input 为自由文本。缺少
-		// call_id/name 时 codex 无法路由该调用（表现为 unsupported call）。
+		// Custom calls carry freeform input instead of serialized function arguments.
+		// Keep name and call_id so the client can dispatch and correlate its result.
 		m["call_id"] = item.CallID
 		m["name"] = item.Name
 		m["input"] = item.Input
 	case "tool_search_call":
-		// tool_search 调用还原项：execution 必须为 "client"（否则 codex 忽略该
-		// 调用），传输报文中的 arguments 为 JSON 对象。
+		// Discovery is dispatched on the client and accepts argument JSON values.
+		// Convert the bridge's accumulated argument text before emitting this call.
 		m["call_id"] = item.CallID
 		m["execution"] = "client"
 		m["arguments"] = ToolSearchCallArgumentsJSON(item.Arguments)
@@ -198,7 +234,9 @@ func responsesItemWire(item *ResponsesOutput) map[string]any {
 	return m
 }
 
-// messageContentWire 渲染 message item 的 content 数组，空输入返回空数组。
+// messageContentWire builds a nonnil array of content type/text maps,
+// including an empty array for no parts. Blank types become output_text;
+// image, file, and other source fields are outside these emitted maps.
 func messageContentWire(parts []ResponsesContentPart) []map[string]any {
 	out := make([]map[string]any, 0, len(parts))
 	for _, p := range parts {
@@ -211,7 +249,10 @@ func messageContentWire(parts []ResponsesContentPart) []map[string]any {
 	return out
 }
 
-// reasoningSummaryWire 渲染 reasoning item 的 summary 数组；结果永远是数组。
+// reasoningSummaryWire builds a nonnil array of summary type/text maps,
+// including an empty array for no blocks. Blank block types become
+// summary_text, while supplied nonempty type labels remain in the returned
+// maps.
 func reasoningSummaryWire(summary []ResponsesSummary) []map[string]any {
 	out := make([]map[string]any, 0, len(summary))
 	for _, s := range summary {
@@ -224,9 +265,9 @@ func reasoningSummaryWire(summary []ResponsesSummary) []map[string]any {
 	return out
 }
 
-// ToolSearchCallArgumentsJSON 把降级 function 调用累积的 arguments 字符串还原为
-// tool_search_call 线上要求的 JSON 对象；模型未按 schema 输出（非法 JSON）时按
-// 字符串返回，由 Codex 解析并报告错误后让模型重试。
+// ToolSearchCallArgumentsJSON encodes discovery arguments as a JSON value.
+// Blank text becomes an empty object, any valid trimmed JSON value stays raw,
+// and invalid JSON becomes a quoted string of the supplied text.
 func ToolSearchCallArgumentsJSON(arguments string) json.RawMessage {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {
@@ -235,6 +276,8 @@ func ToolSearchCallArgumentsJSON(arguments string) json.RawMessage {
 	if json.Valid([]byte(trimmed)) {
 		return json.RawMessage(trimmed)
 	}
+	// A string encoder has no unsupported-value or cycle error path. Quoting
+	// this text yields valid JSON even when the attempted raw argument value is invalid.
 	fallback, _ := json.Marshal(arguments)
 	return fallback
 }

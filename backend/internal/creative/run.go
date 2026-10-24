@@ -14,56 +14,121 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+// run.go defines creative task metadata, allowed state transitions, and public
+// response conversion.
+// Creative task rows distinguish public request identity, execution provider
+// identity, funding snapshots, and transient output metadata. User-facing
+// access pairs the owner with a normalized browser workspace; background
+// recovery uses the run ID directly. Plaintext prompts and image bytes belong
+// in temporary payload or media storage, while persistent rows retain their
+// hashes and delivery state.
+//
+// Task status tracks execution and funds recovery separately from per-output
+// receipt. A succeeded task can later become result_lost when its transient
+// image disappears, while other terminal states cannot restart through the
+// transition helper. Optional amounts and timestamps retain their absent state
+// in public conversion, which allocates public output records but keeps the
+// run ActualCost pointer. Reservation, capture, release, and usage identities
+// are formed outside these metadata structures.
+
 const (
-	// 创作台（Creative Studio）操作类型。
+	// Creative operations identify generation, reference-image editing, and
+	// masked inpainting for model admission and selected platform request
+	// construction.
+	// prompt image generation operation.
 	CreativeOperationGenerate = "generate"
-	CreativeOperationEdit     = "edit"
-	CreativeOperationInpaint  = "inpaint"
+	// reference image editing operation.
+	CreativeOperationEdit = "edit"
+	// masked image editing operation.
+	CreativeOperationInpaint = "inpaint"
 
-	// 创作台创建 saga 阶段，按顺序持久化推进，便于进程崩溃后继续执行。
-	CreativeProvisioningPhaseCreated        = "created"
-	CreativeProvisioningPhaseHoldReserved   = "hold_reserved"
+	// Provisioning phases are persisted after each step so recovery can resume or
+	// release a partial task.
+	// initial task metadata recorded.
+	CreativeProvisioningPhaseCreated = "created"
+	// funding reservation step completed.
+	CreativeProvisioningPhaseHoldReserved = "hold_reserved"
+	// temporary input writes completed.
 	CreativeProvisioningPhaseTransientSaved = "transient_saved"
-	CreativeProvisioningPhaseEnqueued       = "enqueued"
-	CreativeProvisioningPhaseFailed         = "failed"
-	CreativeProvisioningPhaseComplete       = "complete"
+	// task queue admission completed.
+	CreativeProvisioningPhaseEnqueued = "enqueued"
+	// provisioning failure phase marker.
+	CreativeProvisioningPhaseFailed = "failed"
+	// provisioning recovery completion marker.
+	CreativeProvisioningPhaseComplete = "complete"
 
-	// 创作台任务状态。
-	CreativeRunStatusQueued            = "queued"
-	CreativeRunStatusRunning           = "running"
+	// Task states distinguish queued execution, recorded provider work, funding
+	// recovery, and terminal delivery results used by workers and public queries.
+	// awaiting execution admission state.
+	CreativeRunStatusQueued = "queued"
+	// provider attempt in progress.
+	CreativeRunStatusRunning = "running"
+	// provider work durably recorded.
 	CreativeRunStatusProviderSucceeded = "provider_succeeded"
+	// provider work awaiting settlement.
 	CreativeRunStatusSettlementPending = "settlement_pending"
-	CreativeRunStatusReleasePending    = "release_pending"
-	CreativeRunStatusSucceeded         = "succeeded"
-	CreativeRunStatusFailed            = "failed"
-	CreativeRunStatusCancelled         = "cancelled"
-	CreativeRunStatusResultLost        = "result_lost"
+	// unused funds awaiting release.
+	CreativeRunStatusReleasePending = "release_pending"
+	// settled successful delivery state.
+	CreativeRunStatusSucceeded = "succeeded"
+	// terminal failed task state.
+	CreativeRunStatusFailed = "failed"
+	// terminal cancelled task state.
+	CreativeRunStatusCancelled = "cancelled"
+	// terminal lost result state.
+	CreativeRunStatusResultLost = "result_lost"
 
-	// 创作台输出状态。
-	CreativeRunOutputStatusPending   = "pending"
+	// Output states distinguish execution metadata from client receipt, allowing
+	// acknowledgment and transient cleanup to progress independently of task
+	// funds.
+	// awaiting provider output metadata.
+	CreativeRunOutputStatusPending = "pending"
+	// provider output success metadata.
 	CreativeRunOutputStatusSucceeded = "succeeded"
-	CreativeRunOutputStatusFailed    = "failed"
-	CreativeRunOutputStatusLost      = "lost"
-	CreativeRunOutputStatusAcked     = "acked"
+	// provider output failure metadata.
+	CreativeRunOutputStatusFailed = "failed"
+	// unavailable output state marker.
+	CreativeRunOutputStatusLost = "lost"
+	// client output receipt recorded.
+	CreativeRunOutputStatusAcked = "acked"
 
-	// CreativeManagedBy 是 api_keys.managed_by 的取值，标记创作台隐藏执行 Key。
+	// CreativeManagedBy identifies hidden creative execution Keys in managed_by,
+	// which normal Key APIs exclude from user listing and direct management.
 	CreativeManagedBy = "creative_studio"
 
-	// CreativeWorkspaceHeader 是创作台浏览器工作区请求头名称。
+	// CreativeWorkspaceHeader selects the browser workspace UUID header used with
+	// authenticated user identity to scope task creation, queries, output, and
+	// receipt.
 	CreativeWorkspaceHeader = "X-Creative-Workspace-ID"
 
+	// recover creation input provisioning. Recovery operations persist creation,
+	// capture, or release work separately from queued execution so durable
+	// actions can restore their next phase.
 	CreativeRunOutboxProvision CreativeRunOutboxOperation = "provision"
-	CreativeRunOutboxSettle    CreativeRunOutboxOperation = "settle"
-	CreativeRunOutboxRelease   CreativeRunOutboxOperation = "release"
+	// recover confirmed work settlement.
+	CreativeRunOutboxSettle CreativeRunOutboxOperation = "settle"
+	// recover unused reservation release.
+	CreativeRunOutboxRelease CreativeRunOutboxOperation = "release"
 
-	CreativeRunOutboxPending   CreativeRunOutboxStatus = "pending"
-	CreativeRunOutboxLeased    CreativeRunOutboxStatus = "leased"
-	CreativeRunOutboxDone      CreativeRunOutboxStatus = "done"
+	// Outbox statuses distinguish due work, claimed ownership, and terminal
+	// actions so claim and repeated Ensure operations retain the correct recovery
+	// lifetime.
+	// available recovery action state.
+	CreativeRunOutboxPending CreativeRunOutboxStatus = "pending"
+	// claimed recovery action state.
+	CreativeRunOutboxLeased CreativeRunOutboxStatus = "leased"
+	// completed recovery action state.
+	CreativeRunOutboxDone CreativeRunOutboxStatus = "done"
+	// cancelled recovery action state.
 	CreativeRunOutboxCancelled CreativeRunOutboxStatus = "cancelled"
 )
 
+// Creative errors classify feature and access gates, invalid inputs, delivery
+// availability, and funds failures so handlers and workers can select the
+// matching response or recovery path.
 var (
-	// transient store 的三类错误必须由 worker 分别处理，不能把基础设施故障当作结果丢失。
+	// Workers distinguish missing, unavailable, and corrupt data; storage outages
+	// must remain retryable.
 	ErrCreativeTransientNotFound    = errors.New("creative transient data is missing or expired")
 	ErrCreativeTransientUnavailable = errors.New("creative transient store is unavailable")
 	ErrCreativeTransientCorrupt     = errors.New("creative transient data is corrupt")
@@ -99,339 +164,531 @@ var (
 	ErrCreativeSettlementBillingFail = infraerrors.New(infraerrors.CategoryBadGateway, "CREATIVE_SETTLEMENT_BILLING_FAILED", "creative settlement billing failed")
 )
 
-// CreativeRunScope 将用户身份与浏览器工作区绑定，所有用户侧任务访问都必须携带。
+// CreativeRunScope pairs an authenticated owner with the normalized browser
+// workspace used for task access.
 type CreativeRunScope struct {
-	UserID      int64
-	WorkspaceID string
+	// UserID and WorkspaceID jointly scope public task access. The workspace UUID
+	// is normalized separately from authentication and cannot grant another user
+	// access to a task whose owner does not match.
+	UserID      int64  // authenticated task owner identifier
+	WorkspaceID string // browser workspace UUID
 }
 
-// CreativeRun 是创作台异步任务的元数据。
-// 隐私红线：结构体中禁止出现 prompt 明文、图片字节、mask 或 platform 响应本体。
+// CreativeRun retains persistent identity, hashed inputs, price snapshots, and
+// asynchronous recovery metadata. Plaintext prompts, source bytes, masks, and
+// generated bytes belong in transient payload or media storage.
 type CreativeRun struct {
-	ID     int64
-	RunID  string
-	UserID int64
-	// WorkspaceID 为空表示迁移前旧任务，用户侧工作区查询会将其隐藏。
-	WorkspaceID          *string
-	GroupID              int64
-	APIKeyID             int64
-	ProviderID           *int64
-	Platform             string
-	Model                string
-	RequestedModel       string
-	Operation            string
-	RequestedOutputCount int
-	ImageSize            string
-	AspectRatio          string
-	ResponseMIMEType     string
+	ID     int64  // stored metadata row identifier
+	RunID  string // public creative task identifier
+	UserID int64  // authenticated task owner identifier
+	// WorkspaceID is absent for legacy tasks. Scoped public queries exclude those
+	// rows, while internal background lookup can still recover their task state.
+	WorkspaceID *string // browser workspace UUID
+	GroupID     int64   // saved target group identifier
+	APIKeyID    int64   // managed execution Key identifier
+	// ProviderID is absent before provider selection. Worker preparation saves the
+	// chosen identifier before transport, and outcome recovery retains that fact.
+	ProviderID *int64 // selected execution provider identifier
+	// Platform confines preparation to the saved execution family when nonempty.
+	// Legacy tasks with an empty value try the executor supported platform order.
+	Platform             string // saved execution route platform
+	Model                string // normalized public request model
+	RequestedModel       string // supplied request model spelling
+	Operation            string // creative image operation name
+	RequestedOutputCount int    // saved requested output count
+	ImageSize            string // selected image size tier
+	AspectRatio          string // selected image aspect ratio
+	// ResponseMIMEType supplies the task OutputFormat during public conversion.
+	// Actual provider image MIME belongs to each indexed output metadata record.
+	ResponseMIMEType string // saved default response MIME
 
-	PromptHash         string
-	RequestFingerprint string
-	IdempotencyKey     *string
+	PromptHash         string // SHA-256 prompt digest
+	RequestFingerprint string // SHA-256 normalized request digest
+	// IdempotencyKey identifies replay within this run user and browser workspace.
+	// An absent key leaves creation outside the scoped client replay lookup.
+	IdempotencyKey *string // optional client replay key
 
-	Status string
+	Status string // persisted creative task state
 
-	EstimatedCost               float64
-	HoldAmount                  *float64
-	ActualCost                  *float64
-	BalanceHoldAmount           float64
+	// EstimatedCost, HoldAmount, ActualCost, BalanceHoldAmount, BaseUnitPrice,
+	// SubscriptionHoldAllocations, SubscriptionRateMultiplier, and
+	// BalanceRateMultiplier retain the pricing and funding snapshot. Reservation
+	// can update hold amounts, while later capture uses the saved base price and
+	// source multipliers.
+	EstimatedCost     float64  // USD
+	HoldAmount        *float64 // USD
+	ActualCost        *float64 // USD
+	BalanceHoldAmount float64  // USD
+	// reserved subscription funding allocation records
 	SubscriptionHoldAllocations []billing.BillingAllocation
-	// AllowanceReserved 与 batch_image_jobs.allowance_reserved 同语义：额度预记标记。
-	AllowanceReserved          bool
-	BaseUnitPrice              float64
-	SubscriptionRateMultiplier float64
-	BalanceRateMultiplier      float64
-	PlanGroupRateEnabled       bool
+	// AllowanceReserved records whether reservation pre-counted task allowances.
+	// Capture and release pass it to billing and clear the stored marker after
+	// completing the corresponding funds action.
+	AllowanceReserved          bool    // funding allowance reservation marker
+	BaseUnitPrice              float64 // USD per image
+	SubscriptionRateMultiplier float64 // saved subscription price multiplier
+	BalanceRateMultiplier      float64 // saved balance price multiplier
+	PlanGroupRateEnabled       bool    // plan group multiplier enabled flag
 
-	ErrorCode           *string
-	ErrorMessage        *string
-	ReleaseTargetStatus string
-	AttemptCount        int
-	ProvisioningPhase   string
-	// SettlementAttemptCount 与 ReleaseAttemptCount 分离执行重试和资金补偿重试。
-	SettlementAttemptCount   int
-	ReleaseAttemptCount      int
-	ProviderResultRecordedAt *time.Time
-	NextReconcileAt          *time.Time
-	LastReconcileError       *string
+	ErrorCode           *string // optional public failure classification
+	ErrorMessage        *string // optional formatted public failure text
+	ReleaseTargetStatus string  // terminal target after funds release
+	AttemptCount        int     // retryable execution failure count
+	ProvisioningPhase   string  // last saved provisioning step
+	// SettlementAttemptCount and ReleaseAttemptCount count separate funding
+	// recovery failures, while AttemptCount tracks retryable preparation or
+	// execution failures; neither funding counter limits another provider call.
+	SettlementAttemptCount   int        // failed settlement recovery count
+	ReleaseAttemptCount      int        // failed release recovery count
+	ProviderResultRecordedAt *time.Time // provider work recorded time
+	NextReconcileAt          *time.Time // saved next recovery time hint
+	LastReconcileError       *string    // saved recovery diagnostic text
 
-	Version int64
+	// Version fences status transitions and provider outcome updates that compare
+	// a previously read value. Specialized identity writes use their own predicates.
+	Version int64 // optimistic transition version counter
 
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	StartedAt   *time.Time
-	CompletedAt *time.Time
-	CancelledAt *time.Time
+	CreatedAt   time.Time  // task metadata creation time
+	UpdatedAt   time.Time  // latest metadata update time
+	StartedAt   *time.Time // first execution admission time
+	CompletedAt *time.Time // terminal task completion time
+	CancelledAt *time.Time // task cancellation transition time
 }
 
-// CreativeRunOutput 是创作台单个输出的元数据；图片本体只存在临时存储中。
+// CreativeRunOutput retains delivery metadata and client receipt for an
+// indexed transient image result.
 type CreativeRunOutput struct {
-	ID                 int64
-	RunID              string
-	OutputIndex        int
-	Status             string
-	MimeType           *string
-	ByteSize           *int64
-	TransientExpiresAt *time.Time
-	AckedAt            *time.Time
-	ErrorCode          *string
-	ErrorMessage       *string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID          int64   // stored metadata row identifier
+	RunID       string  // public creative task identifier
+	OutputIndex int     // zero-based image delivery index
+	Status      string  // provider output delivery state
+	MimeType    *string // stored image MIME label
+	ByteSize    *int64  // bytes
+	// TransientExpiresAt is the TTL upper bound for stored bytes, while AckedAt
+	// records client receipt that can delete bytes sooner. Metadata persists
+	// after byte removal so history can identify an unavailable or received
+	// image.
+	TransientExpiresAt *time.Time // temporary image expiry upper bound
+	AckedAt            *time.Time // client image receipt time
+	ErrorCode          *string    // optional public failure classification
+	ErrorMessage       *string    // optional formatted public failure text
+	CreatedAt          time.Time  // output metadata creation time
+	UpdatedAt          time.Time  // latest output metadata update time
 }
 
-// CreateCreativeRunParams 创建创作台任务及其输出行。
+// CreateCreativeRunParams supplies validated task metadata and its initial
+// pending output count for persistence.
 type CreateCreativeRunParams struct {
-	Platform                   string
-	RunID                      string
-	UserID                     int64
-	WorkspaceID                string
-	GroupID                    int64
-	APIKeyID                   int64
-	Model                      string
-	RequestedModel             string
-	Operation                  string
-	RequestedOutputCount       int
-	ImageSize                  string
-	AspectRatio                string
-	ResponseMIMEType           string
-	PromptHash                 string
-	RequestFingerprint         string
-	IdempotencyKey             *string
-	EstimatedCost              float64
-	HoldAmount                 float64
-	BaseUnitPrice              float64
-	SubscriptionRateMultiplier float64
-	BalanceRateMultiplier      float64
-	PlanGroupRateEnabled       bool
+	Platform                   string  // saved execution route platform
+	RunID                      string  // public creative task identifier
+	UserID                     int64   // authenticated task owner identifier
+	WorkspaceID                string  // browser workspace UUID
+	GroupID                    int64   // saved target group identifier
+	APIKeyID                   int64   // managed execution Key identifier
+	Model                      string  // normalized public request model
+	RequestedModel             string  // supplied request model spelling
+	Operation                  string  // creative image operation name
+	RequestedOutputCount       int     // saved requested output count
+	ImageSize                  string  // selected image size tier
+	AspectRatio                string  // selected image aspect ratio
+	ResponseMIMEType           string  // saved default response MIME
+	PromptHash                 string  // SHA-256 prompt digest
+	RequestFingerprint         string  // SHA-256 normalized request digest
+	IdempotencyKey             *string // optional client replay key
+	EstimatedCost              float64 // USD
+	HoldAmount                 float64 // USD
+	BaseUnitPrice              float64 // USD per image
+	SubscriptionRateMultiplier float64 // saved subscription price multiplier
+	BalanceRateMultiplier      float64 // saved balance price multiplier
+	PlanGroupRateEnabled       bool    // plan group multiplier enabled flag
 }
 
-// CreativeRunTransitionOptions 携带状态转换的可选上下文。
+// CreativeRunTransitionOptions supplies error details, a release target, and
+// an optional transition clock.
 type CreativeRunTransitionOptions struct {
-	ErrorCode           *string
-	ErrorMessage        *string
-	ReleaseTargetStatus string
-	Now                 *time.Time
+	ErrorCode           *string // optional public failure classification
+	ErrorMessage        *string // optional formatted public failure text
+	ReleaseTargetStatus string  // terminal target after funds release
+	// Now overrides the transition clock when supplied. A nil value lets the
+	// persistence implementation use system time for state and event timestamps.
+	Now *time.Time // optional transition clock value
 }
 
-// CreativeRunOutboxOperation 是创作台可恢复后台动作类型。
+// CreativeRunOutboxOperation identifies durable provisioning, settlement, or
+// unused-funds recovery work for a task.
 type CreativeRunOutboxOperation string
 
-// CreativeRunOutboxStatus 是 outbox 记录状态。
+// CreativeRunOutboxStatus identifies pending, leased, completed, or cancelled
+// processing of a recovery action.
 type CreativeRunOutboxStatus string
 
-// CreativeRunOutbox 保存创作台后台补偿动作的持久记录。
+// CreativeRunOutbox carries a persisted recovery action and its currently
+// assigned claim identity.
 type CreativeRunOutbox struct {
-	ID           int64
-	RunID        string
-	Operation    CreativeRunOutboxOperation
-	Status       CreativeRunOutboxStatus
-	AvailableAt  time.Time
-	LeaseToken   string
-	LeaseUntil   *time.Time
-	AttemptCount int
-	LastError    string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID        int64                      // stored metadata row identifier
+	RunID     string                     // public creative task identifier
+	Operation CreativeRunOutboxOperation // persisted task recovery operation
+	// LeaseToken and LeaseUntil identify the current leased claim; Status
+	// distinguishes it from pending and terminal actions. AvailableAt governs due
+	// selection, while matching row/token ownership gates completion, retry, and
+	// cancellation.
+	Status       CreativeRunOutboxStatus // recovery action processing state
+	AvailableAt  time.Time               // recovery action claim eligibility time
+	LeaseToken   string                  // recovery action claim token
+	LeaseUntil   *time.Time              // recovery claim expiration time
+	AttemptCount int                     // recovery action claim attempt count
+	LastError    string                  // latest recovery attempt error text
+	CreatedAt    time.Time               // recovery action creation time
+	UpdatedAt    time.Time               // latest recovery action update time
 }
 
-// CreativeRunOutboxRepository 持久化并领取创作台补偿动作。
+// CreativeRunOutboxRepository persists recovery actions and fences updates
+// using their claimed lease token.
 type CreativeRunOutboxRepository interface {
+	// Ensure records recovery work for the run and operation at the supplied
+	// availability. Implementations retain terminal or already leased actions
+	// when a repeated request should not replace their processing state.
 	Ensure(ctx context.Context, runID string, operation CreativeRunOutboxOperation, availableAt time.Time) error
+	// Claim leases due recovery actions and returns their row/token identities
+	// for later updates. Limit and lease inputs select a bounded batch; abandoned
+	// leased rows become eligible when their lease expires. Callers complete,
+	// retry, or cancel each claimed action with its returned token, and errors
+	// during event processing leave persistent lease or retry state available to
+	// another recovery attempt.
 	Claim(ctx context.Context, workerID string, limit int, lease time.Duration) ([]CreativeRunOutbox, error)
+	// Complete marks a leased action done using the claimed row ID and token.
+	// Missing or replaced ownership is reported as an error so an old worker
+	// cannot report another owner action complete.
 	Complete(ctx context.Context, id int64, leaseToken string) error
+	// Retry restores a matching leased action to pending at the supplied
+	// availability with its latest error. Stale ownership remains an error,
+	// allowing a later claimant to keep its processing state.
 	Retry(ctx context.Context, id int64, leaseToken string, availableAt time.Time, lastError string) error
+	// Cancel marks a matching leased action cancelled and removes claim
+	// ownership. Missing or replaced tokens remain errors so a worker cannot
+	// cancel a claim now owned by another processor.
 	Cancel(ctx context.Context, id int64, leaseToken string) error
 }
 
-// CreativeRunFilter 是用户侧任务列表过滤条件。
+// CreativeRunFilter supplies an exact or active status selection with limit
+// and offset pagination.
 type CreativeRunFilter struct {
-	Status string
-	Limit  int
-	Offset int
+	// Status selects an exact task state or the active shortcut used by history
+	// readers. Empty selects the repository unfiltered task list.
+	Status string // task status selection
+	// Limit is normalized by Queries to twenty when outside one through one
+	// hundred before it reaches the task repository.
+	Limit int // requested maximum page row count
+	// Offset is normalized by Queries to zero when negative before it reaches
+	// the task repository, keeping public pages at a valid starting position.
+	Offset int // requested number of skipped rows
 }
 
-// CreativeRunOutputBatchReader 可选的批量输出元数据读取接口，避免历史列表产生 N+1 查询。
+// CreativeRunOutputBatchReader supplies page-wide output metadata for history
+// and active task queries.
 type CreativeRunOutputBatchReader interface {
+	// ListCreativeRunOutputsForRuns returns indexed metadata grouped by supplied
+	// run IDs for a public page. A run with no output rows can be absent from the
+	// returned map, and callers do not issue separate reads for missing entries.
 	ListCreativeRunOutputsForRuns(ctx context.Context, runIDs []string) (map[string][]*CreativeRunOutput, error)
 }
 
-// CreativeRunAllowanceMarker 持久化余额/额度预占事实，供补偿流程重启后判断是否需要释放。
+// CreativeRunAllowanceMarker persists the reserved allowance flag used after
+// capture or release recovery.
 type CreativeRunAllowanceMarker interface {
+	// SetCreativeRunAllowanceReserved persists whether funds allowances remain
+	// reserved for this task. Capture and release callers clear the marker after
+	// their funds action so later recovery uses current reservation metadata.
 	SetCreativeRunAllowanceReserved(ctx context.Context, runID string, reserved bool) error
 }
 
-// CreativeRunRepository 持久化创作台任务元数据。
+// CreativeRunRepository persists task metadata, indexed outputs, and worker
+// recovery state for creative processing.
 type CreativeRunRepository interface {
+	// CreateCreativeRun persists validated task metadata and initial output
+	// indexes for worker processing. The resulting run is queued with creation
+	// recovery available; plaintext prompts and media bytes are supplied through
+	// separate transient storage.
 	CreateCreativeRun(ctx context.Context, params CreateCreativeRunParams) (*CreativeRun, error)
+	// GetCreativeRunByRunID reads an internal run identifier for worker and
+	// recovery processing. This operation has no user/workspace gate, so public
+	// access uses the owner-scoped lookup instead.
 	GetCreativeRunByRunID(ctx context.Context, runID string) (*CreativeRun, error)
+	// GetCreativeRunByRunIDForOwner reads an exact run only within the supplied
+	// user/workspace scope. Missing or mismatched ownership is reported as
+	// absent, and callers normalize the scope before lookup.
 	GetCreativeRunByRunIDForOwner(ctx context.Context, scope CreativeRunScope, runID string) (*CreativeRun, error)
+	// GetCreativeRunByIdempotencyKey reads the task associated with a key in the
+	// supplied user/workspace scope. Missing keys remain absent, and callers
+	// compare request fingerprints before accepting an existing task replay.
 	GetCreativeRunByIdempotencyKey(ctx context.Context, scope CreativeRunScope, key string) (*CreativeRun, error)
+	// ListCreativeRunsForOwner returns task rows within the supplied
+	// user/workspace scope and filter. The repository applies status and
+	// pagination rules; callers load corresponding output metadata separately
+	// before public conversion.
 	ListCreativeRunsForOwner(ctx context.Context, scope CreativeRunScope, filter CreativeRunFilter) ([]*CreativeRun, error)
-	// TransitionCreativeRunStatus 带 version 乐观锁与 CanTransitionCreativeRun 校验。
+	// TransitionCreativeRunStatus checks the allowed status pair and fences the
+	// update against the read version. Invalid or displaced transitions remain
+	// errors, so callers reread current state before choosing recovery.
 	TransitionCreativeRunStatus(ctx context.Context, runID, toStatus string, opts CreativeRunTransitionOptions) error
-	// MarkCreativeRunRunning 幂等地把任务标记为执行中并回填提供商，重复调用不产生副作用。
+	// MarkCreativeRunRunning records execution admission and optional provider
+	// identity for the task. Repeated running calls follow repository update
+	// rules, while invalid source states remain transition errors for the caller.
 	MarkCreativeRunRunning(ctx context.Context, runID string, providerID int64, now time.Time) error
-	// SetCreativeRunExecution 在执行结果确定后补写真实上游提供商，避免 worker 先推进状态时丢失提供商信息。
+	// SetCreativeRunExecution records the selected provider and platform before
+	// the worker upstream call. This saved identity supports later output-based
+	// recovery independently from the original public request model.
 	SetCreativeRunExecution(ctx context.Context, runID string, providerID int64, platform string, now time.Time) error
-	// MarkCreativeRunSucceeded 记录实际成本并进入终态，仅在 running 时生效。
+	// MarkCreativeRunSucceeded records cost and completion for a supported
+	// execution or settlement state. Repeated completion and concurrent
+	// cancellation follow repository rules rather than restarting a completed
+	// task.
 	MarkCreativeRunSucceeded(ctx context.Context, runID string, actualCost float64, now time.Time) error
-	// UpdateCreativeRunOutput 幂等更新输出行；已 acked 的行不允许被覆盖。
+	// UpdateCreativeRunOutput applies indexed delivery metadata while retaining
+	// acknowledged receipt. Callers supply optional values according to
+	// repository presence rules; empty error text can retain an earlier stored
+	// code or message.
 	UpdateCreativeRunOutput(ctx context.Context, runID string, outputIndex int, status, mimeType string, byteSize int64, transientExpiresAt *time.Time, errorCode, errorMessage string) error
+	// GetCreativeRunOutput reads exact indexed output metadata after the caller
+	// establishes task access. Internal worker calls can use it directly, while
+	// public queries verify user and workspace ownership first.
 	GetCreativeRunOutput(ctx context.Context, runID string, outputIndex int) (*CreativeRunOutput, error)
+	// ListCreativeRunOutputs returns indexed metadata for a run after caller
+	// access checks when public. Worker and result recovery use the same internal
+	// operation for counting succeeded provider work.
 	ListCreativeRunOutputs(ctx context.Context, runID string) ([]*CreativeRunOutput, error)
-	// MarkCreativeRunOutputAcked 幂等标记客户端已确认接收。
+	// MarkCreativeRunOutputAcked persists receipt for a succeeded indexed output
+	// and accepts repeated acknowledgment. Callers perform this metadata
+	// operation before deleting its transient bytes so a failed write cannot
+	// remove unrecorded delivery.
 	MarkCreativeRunOutputAcked(ctx context.Context, runID string, outputIndex int, now time.Time) error
-	// ListCreativeRunsDueForTransientCleanup 返回已进入终态且超过清理时限的任务。
+	// ListCreativeRunsDueForTransientCleanup selects terminal tasks completed by
+	// the cutoff for a bounded cleanup batch. The read leaves metadata eligible,
+	// and callers delete transient keys while retaining run and output rows.
 	ListCreativeRunsDueForTransientCleanup(ctx context.Context, cutoff time.Time, limit int) ([]*CreativeRun, error)
-	// IncrementCreativeRunAttempt 原子递增执行尝试次数并返回最新值。
+	// IncrementCreativeRunAttempt adds one retryable execution failure and
+	// returns the subsequently read count. The value can include a later
+	// concurrent increment, so callers treat it as the stored retry count.
 	IncrementCreativeRunAttempt(ctx context.Context, runID string) (int, error)
-	// IncrementCreativeRunSettlementAttempt 原子递增结算尝试次数并返回最新值。
+	// IncrementCreativeRunSettlementAttempt adds one funding-capture recovery
+	// failure and returns its subsequently read count. This counter remains
+	// separate from execution retries and serves repeated-settlement diagnostics
+	// in the worker.
 	IncrementCreativeRunSettlementAttempt(ctx context.Context, runID string) (int, error)
-	// IncrementCreativeRunReleaseAttempt 原子递增释放尝试次数并返回最新值。
+	// IncrementCreativeRunReleaseAttempt adds one unused-funds recovery failure
+	// and returns its subsequently read count. Its failures propagate for retry,
+	// while this counter remains independent from another provider execution
+	// attempt.
 	IncrementCreativeRunReleaseAttempt(ctx context.Context, runID string) (int, error)
-	// SetCreativeRunProvisioningPhase 持久化创建 saga 的最后完成阶段。
+	// SetCreativeRunProvisioningPhase persists a provisioning progress marker
+	// after its caller completes a creation step. Recovery reads that marker to
+	// decide whether transient input can resume queue admission or funds release.
 	SetCreativeRunProvisioningPhase(ctx context.Context, runID, phase string) error
-	// MarkCreativeRunProviderSucceeded 记录 platform 已成功且输出已写入临时存储。
+	// MarkCreativeRunProviderSucceeded persists confirmed provider work and
+	// identity for settlement recovery. Callers use completed output metadata to
+	// restore this phase and then ensure settlement recovery instead of
+	// submitting generation again.
 	MarkCreativeRunProviderSucceeded(ctx context.Context, runID string, providerID int64, now time.Time) error
-	// SetCreativeRunReconcileError 记录最近一次后台补偿错误。
+	// SetCreativeRunReconcileError records the latest recovery diagnostic and
+	// next-attempt hint. Callers can clear either value using blank message or
+	// zero time after funds recovery finishes successfully.
 	SetCreativeRunReconcileError(ctx context.Context, runID, message string, next time.Time) error
 }
 
-// CreativeRunPayload 是保存在临时 Redis 存储中的任务载荷。
-// 只有这里和 worker 执行期间允许出现 prompt 明文与图片字节。
-// Sources/Mask 是 worker 内存字段（json:"-"），图片字节在 Redis 的 input/mask 键中单独保存。
+// CreativeRunPayload stores plaintext execution input temporarily with
+// references to separately stored media. Sources and Mask are excluded from
+// JSON and rebuilt by the worker before provider execution.
 type CreativeRunPayload struct {
-	RunID              string `json:"run_id"`
-	UserID             int64  `json:"user_id"`
-	GroupID            int64  `json:"group_id"`
-	APIKeyID           int64  `json:"api_key_id"`
-	Model              string `json:"model"`
-	Operation          string `json:"operation"`
-	Prompt             string `json:"prompt"`
-	ImageSize          string `json:"image_size"`
-	AspectRatio        string `json:"aspect_ratio"`
-	Background         string `json:"background,omitempty"`
-	ThinkingLevel      string `json:"thinking_level,omitempty"`
-	Quality            string `json:"quality,omitempty"`
-	SourceCount        int    `json:"source_count"`
-	HasMask            bool   `json:"has_mask"`
+	// SourceCount and HasMask identify separate input keys used to reconstruct
+	// Sources and Mask for execution. Prompt remains plaintext here only for the
+	// transient lifetime; persistent task metadata stores its digest.
+	RunID       string `json:"run_id"`       // public creative task identifier
+	UserID      int64  `json:"user_id"`      // authenticated task owner identifier
+	GroupID     int64  `json:"group_id"`     // saved target group identifier
+	APIKeyID    int64  `json:"api_key_id"`   // managed execution Key identifier
+	Model       string `json:"model"`        // normalized public request model
+	Operation   string `json:"operation"`    // creative image operation name
+	Prompt      string `json:"prompt"`       // trimmed plaintext execution prompt
+	ImageSize   string `json:"image_size"`   // selected image size tier
+	AspectRatio string `json:"aspect_ratio"` // selected image aspect ratio
+	// selected image background option
+	Background string `json:"background,omitempty"`
+	// selected image reasoning option
+	ThinkingLevel string `json:"thinking_level,omitempty"`
+	// selected image quality option
+	Quality string `json:"quality,omitempty"`
+	// separately stored input image count
+	SourceCount int  `json:"source_count"`
+	HasMask     bool `json:"has_mask"` // separately stored mask presence flag
+	// SHA-256 normalized request digest
 	RequestFingerprint string `json:"request_fingerprint"`
 
-	// Sources/Mask 由 worker 从临时存储加载后填充，仅存在于进程内。
+	// Sources and Mask retain reconstructed transient byte storage during execution.
+	// Worker Process fills these values after loading the SourceCount input keys
+	// and optional HasMask key, then provider builders read the retained bytes.
+	// loaded execution source image values
 	Sources []CreativeInputImage `json:"-"`
-	Mask    *CreativeInputImage  `json:"-"`
+	Mask    *CreativeInputImage  `json:"-"` // optional loaded mask image value
 }
 
-// CreativeInputImage 是客户端上传的源图/mask 输入。
+// CreativeInputImage pairs caller-owned image bytes with the MIME label used
+// by provider request builders.
 type CreativeInputImage struct {
-	Bytes []byte
-	Mime  string
+	// Bytes remains caller-owned through normalization, which retains the same
+	// storage. Keep it stable until request construction and transient saving
+	// finish reading the image.
+	Bytes []byte // caller supplied image byte buffer
+	Mime  string // source image MIME label
 }
 
-// CreateCreativeRunParamsPublic 是 CreateRun 的入参（由 handler 解析 multipart 后组装）。
+// CreateCreativeRunParamsPublic supplies user-submitted fields and uploaded
+// media for creative task validation.
 type CreateCreativeRunParamsPublic struct {
-	GroupID       int64
-	Model         string
-	Operation     string
-	Prompt        string
-	SourceImages  []CreativeInputImage
-	Mask          *CreativeInputImage
-	ImageSize     string
-	AspectRatio   string
-	Quality       string
-	Background    string
-	ThinkingLevel string
-	OutputCount   int
+	GroupID   int64  // submitted target group identifier
+	Model     string // submitted public model spelling
+	Operation string // submitted image operation spelling
+	Prompt    string // submitted plaintext prompt text
+	// SourceImages and Mask retain caller-owned byte slices. Validation returns
+	// those bytes with normalized MIME labels, so callers keep the uploads stable
+	// until creation finishes its separate transient storage writes.
+	SourceImages  []CreativeInputImage // submitted image reference values
+	Mask          *CreativeInputImage  // submitted optional mask image
+	ImageSize     string               // submitted image size tier
+	AspectRatio   string               // submitted image shape option
+	Quality       string               // submitted image quality option
+	Background    string               // submitted image background option
+	ThinkingLevel string               // submitted image reasoning option
+	// OutputCount requests the image count; zero selects one before validation
+	// checks the chosen operation route maximum and rejects unsupported counts.
+	OutputCount int // submitted requested output count
 }
 
-// CreativeRunPublic 是任务对客户端的展示结构。
+// CreativeRunPublic exposes task metadata with optional amounts and
+// Unix-second timestamps for the client.
 type CreativeRunPublic struct {
-	ID                   string                    `json:"id"`
-	Status               string                    `json:"status"`
-	Model                string                    `json:"model"`
-	RequestedModel       string                    `json:"requested_model"`
-	Operation            string                    `json:"operation"`
-	RequestedOutputCount int                       `json:"requested_output_count"`
-	ImageSize            string                    `json:"image_size"`
-	AspectRatio          string                    `json:"aspect_ratio"`
-	OutputFormat         string                    `json:"output_format"`
-	GroupID              int64                     `json:"group_id"`
-	EstimatedCost        float64                   `json:"estimated_cost"`
-	HoldAmount           float64                   `json:"hold_amount"`
-	ActualCost           *float64                  `json:"actual_cost,omitempty"`
-	ErrorCode            string                    `json:"error_code,omitempty"`
-	ErrorMessage         string                    `json:"error_message,omitempty"`
-	Outputs              []CreativeRunOutputPublic `json:"outputs,omitempty"`
-	CreatedAt            int64                     `json:"created_at"`
-	StartedAt            *int64                    `json:"started_at,omitempty"`
-	CompletedAt          *int64                    `json:"completed_at,omitempty"`
-	CancelledAt          *int64                    `json:"cancelled_at,omitempty"`
-	// IdempotentReplay 为 true 时表示该响应来自幂等键重放。
+	ID     string `json:"id"`     // public creative task identifier
+	Status string `json:"status"` // client creative task state
+	Model  string `json:"model"`  // normalized public request model
+	// supplied request model spelling
+	RequestedModel string `json:"requested_model"`
+	Operation      string `json:"operation"` // creative image operation name
+	// saved requested output count
+	RequestedOutputCount int    `json:"requested_output_count"`
+	ImageSize            string `json:"image_size"`   // selected image size tier
+	AspectRatio          string `json:"aspect_ratio"` // selected image aspect ratio
+	// format from task default MIME
+	OutputFormat  string  `json:"output_format"`
+	GroupID       int64   `json:"group_id"`       // saved target group identifier
+	EstimatedCost float64 `json:"estimated_cost"` // USD
+	HoldAmount    float64 `json:"hold_amount"`    // USD
+	// ActualCost retains the task cost pointer during conversion. Callers keep
+	// that amount immutable while sharing this response with the task record.
+	ActualCost *float64 `json:"actual_cost,omitempty"` // USD
+	// optional public failure classification
+	ErrorCode string `json:"error_code,omitempty"`
+	// optional formatted public failure text
+	ErrorMessage string `json:"error_message,omitempty"`
+	// client indexed output metadata values
+	Outputs []CreativeRunOutputPublic `json:"outputs,omitempty"`
+	// CreatedAt, StartedAt, CompletedAt, and CancelledAt use Unix seconds. The
+	// optional event pointers retain absent timestamps while conversion allocates
+	// each present event value independently from the task time pointers.
+	// task metadata creation time
+	CreatedAt int64 `json:"created_at"`
+	// first execution admission time
+	StartedAt *int64 `json:"started_at,omitempty"`
+	// terminal task completion time
+	CompletedAt *int64 `json:"completed_at,omitempty"`
+	// task cancellation transition time
+	CancelledAt *int64 `json:"cancelled_at,omitempty"`
+	// IdempotentReplay reports whether the response reuses a task for the
+	// supplied idempotency key and normalized request fingerprint in this scope.
 	IdempotentReplay bool `json:"idempotent_replay,omitempty"`
 }
 
-// CreativeRunOutputPublic 是输出元数据对客户端的展示结构。
+// CreativeRunOutputPublic exposes indexed output metadata and Unix-second
+// expiry or client receipt timestamps.
 type CreativeRunOutputPublic struct {
-	Index              int    `json:"output_index"`
-	Status             string `json:"status"`
-	MimeType           string `json:"mime_type,omitempty"`
-	ByteSize           int64  `json:"byte_size,omitempty"`
+	Index    int    `json:"output_index"`        // zero-based client output index
+	Status   string `json:"status"`              // client output delivery state
+	MimeType string `json:"mime_type,omitempty"` // stored image MIME label
+	ByteSize int64  `json:"byte_size,omitempty"` // bytes
+	// temporary image expiry upper bound
 	TransientExpiresAt *int64 `json:"transient_expires_at,omitempty"`
-	AckedAt            *int64 `json:"acked_at,omitempty"`
-	ErrorCode          string `json:"error_code,omitempty"`
-	ErrorMessage       string `json:"error_message,omitempty"`
+	AckedAt            *int64 `json:"acked_at,omitempty"` // client image receipt time
+	// optional public failure classification
+	ErrorCode string `json:"error_code,omitempty"`
+	// optional formatted public failure text
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
-// CreativeModelPublic 是 ListModels 返回的可用模型条目。
+// CreativeModelPublic exposes one admitted group/model route, supported
+// parameters, and size-specific display prices.
 type CreativeModelPublic struct {
-	GroupID            int64                 `json:"group_id"`
-	GroupName          string                `json:"group_name"`
-	Model              string                `json:"model"`
-	Operations         []string              `json:"operations"`
-	ImageSizes         []string              `json:"image_sizes"`
-	AspectRatios       []string              `json:"aspect_ratios"`
-	Qualities          []string              `json:"qualities"`
-	OutputFormats      []string              `json:"output_formats"`
-	OutputCompression  *CreativeNumericRange `json:"output_compression"`
-	BackgroundOptions  []string              `json:"background_options"`
-	ThinkingLevels     []string              `json:"thinking_levels"`
-	MaxOutputCount     int                   `json:"max_output_count"`
-	MaxReferenceImages int                   `json:"max_reference_images"`
-	Price512           float64               `json:"price_512"`
-	Price1K            float64               `json:"price_1k"`
-	Price2K            float64               `json:"price_2k"`
-	Price4K            float64               `json:"price_4k"`
+	GroupID   int64  `json:"group_id"`   // saved target group identifier
+	GroupName string `json:"group_name"` // current group display name
+	Model     string `json:"model"`      // normalized public request model
+	// admitted model operation names
+	Operations []string `json:"operations"`
+	// supported image size tier names
+	ImageSizes []string `json:"image_sizes"`
+	// supported image shape option names
+	AspectRatios []string `json:"aspect_ratios"`
+	Qualities    []string `json:"qualities"` // supported quality option names
+	// exposed output format option names
+	OutputFormats []string `json:"output_formats"`
+	// optional compression option numeric range
+	OutputCompression *CreativeNumericRange `json:"output_compression"`
+	// supported background option names
+	BackgroundOptions []string `json:"background_options"`
+	// supported reasoning option names
+	ThinkingLevels []string `json:"thinking_levels"`
+	// maximum admitted image output count
+	MaxOutputCount int `json:"max_output_count"`
+	// maximum admitted source reference count
+	MaxReferenceImages int     `json:"max_reference_images"`
+	Price512           float64 `json:"price_512"` // USD per image
+	Price1K            float64 `json:"price_1k"`  // USD per image
+	Price2K            float64 `json:"price_2k"`  // USD per image
+	Price4K            float64 `json:"price_4k"`  // USD per image
 }
 
-// CreativeNumericRange 描述创作台数值参数的闭区间和步长。
+// CreativeNumericRange represents inclusive minimum and maximum values with a
+// declared numeric option step.
 type CreativeNumericRange struct {
-	Min  int `json:"min"`
-	Max  int `json:"max"`
-	Step int `json:"step"`
+	Min  int `json:"min"`  // inclusive numeric option minimum
+	Max  int `json:"max"`  // inclusive numeric option maximum
+	Step int `json:"step"` // numeric option increment value
 }
 
-// CreativeModelsResponse 是 ListModels 的响应体。
+// CreativeModelsResponse contains the admitted creative model entries returned
+// by public discovery.
 type CreativeModelsResponse struct {
-	Data []CreativeModelPublic `json:"data"`
+	Data []CreativeModelPublic `json:"data"` // admitted model directory entries
 }
 
-// CreativeCapabilitiesResponse 返回创作台上传和文本校验的服务端限制。
+// CreativeCapabilitiesResponse exposes server upload byte limits and
+// Unicode-code-point prompt limits to clients.
 type CreativeCapabilitiesResponse struct {
-	MaxPromptChars     int      `json:"max_prompt_chars"`
-	MaxAssetBytes      int64    `json:"max_asset_bytes"`
-	MaxTotalInputBytes int64    `json:"max_total_input_bytes"`
-	MaxMaskBytes       int64    `json:"max_mask_bytes"`
-	AllowedMIMETypes   []string `json:"allowed_mime_types"`
+	MaxPromptChars     int   `json:"max_prompt_chars"`      // Unicode code points
+	MaxAssetBytes      int64 `json:"max_asset_bytes"`       // bytes
+	MaxTotalInputBytes int64 `json:"max_total_input_bytes"` // bytes
+	MaxMaskBytes       int64 `json:"max_mask_bytes"`        // bytes
+	// accepted uploaded image MIME labels
+	AllowedMIMETypes []string `json:"allowed_mime_types"`
 }
 
-// CreativeListRunsResponse 是任务列表响应体。
+// CreativeListRunsResponse contains one scoped history page and whether it
+// filled the selected limit.
 type CreativeListRunsResponse struct {
-	Data    []*CreativeRunPublic `json:"data"`
-	HasMore bool                 `json:"has_more"`
+	Data    []*CreativeRunPublic `json:"data"`     // returned public task metadata
+	HasMore bool                 `json:"has_more"` // page filled selected limit flag
 }
 
-// NormalizeCreativeWorkspaceID 校验并规范化创作台工作区 UUID。
+// NormalizeCreativeWorkspaceID returns the canonical lowercase form of a
+// nonzero UUID after trimming. Blank input reports workspace required, while
+// malformed or nil UUID values report workspace invalid for public request
+// handling.
 func NormalizeCreativeWorkspaceID(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -444,7 +701,10 @@ func NormalizeCreativeWorkspaceID(raw string) (string, error) {
 	return strings.ToLower(parsed.String()), nil
 }
 
-// NormalizeCreativeRunScope 校验用户身份并将工作区 UUID 规范化为小写。
+// NormalizeCreativeRunScope returns a positive-user scope with a canonical
+// workspace UUID. Nonpositive users report run not found before workspace
+// validation, while workspace errors retain their distinct required or invalid
+// classification.
 func NormalizeCreativeRunScope(scope CreativeRunScope) (CreativeRunScope, error) {
 	if scope.UserID <= 0 {
 		return CreativeRunScope{}, ErrCreativeRunNotFound
@@ -457,7 +717,9 @@ func NormalizeCreativeRunScope(scope CreativeRunScope) (CreativeRunScope, error)
 	return scope, nil
 }
 
-// NewCreativeRunID 生成 'crun_' + 16 字节 hex 的任务 ID。
+// NewCreativeRunID returns crun_ followed by sixteen random bytes encoded as
+// lowercase hex. A returned identifier has a nil error. crypto/rand.Read
+// terminates the process when its io.ReadFull operation reports an error.
 func NewCreativeRunID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -466,12 +728,15 @@ func NewCreativeRunID() (string, error) {
 	return "crun_" + hex.EncodeToString(b[:]), nil
 }
 
-// IsValidCreativeRunID 校验任务 ID 格式，防止队列被注入非法 payload。
+// IsValidCreativeRunID reports whether the supplied value has crun_ and a
+// nonempty suffix. It does not validate the suffix alphabet or length, so
+// callers use NewCreativeRunID for constructed task identities.
 func IsValidCreativeRunID(runID string) bool {
 	return len(runID) > len("crun_") && runID[:len("crun_")] == "crun_"
 }
 
-// IsTerminalCreativeRunStatus 判断任务是否已进入终态。
+// IsTerminalCreativeRunStatus reports whether status is succeeded, failed,
+// cancelled, or result_lost.
 func IsTerminalCreativeRunStatus(status string) bool {
 	switch status {
 	case CreativeRunStatusSucceeded, CreativeRunStatusFailed, CreativeRunStatusCancelled, CreativeRunStatusResultLost:
@@ -481,21 +746,31 @@ func IsTerminalCreativeRunStatus(status string) bool {
 	}
 }
 
-// IsCreativeRunSettlementPending 判断任务是否仍需后台结算或释放。
+// IsCreativeRunSettlementPending reports whether provider success, settlement,
+// or release recovery remains pending.
 func IsCreativeRunSettlementPending(status string) bool {
 	return status == CreativeRunStatusProviderSucceeded ||
 		status == CreativeRunStatusSettlementPending ||
 		status == CreativeRunStatusReleasePending
 }
 
-// CanTransitionCreativeRun 校验创作台任务状态机；platform 成功与结算/释放阶段均可恢复，
-// 只有 succeeded 在临时输出过期时允许降级为 result_lost，其余终态不可逆。
+// CanTransitionCreativeRun reports whether the exact source and destination
+// pair is allowed. Blank states fail before any status selection.
+//
+// Terminal states permit only succeeded to result_lost, allowing delivery loss
+// after completed execution. Every other nonempty source permits failed,
+// including an unrecognized source label. Remaining transitions follow the
+// listed execution and funding-recovery paths, which prevent completed tasks
+// from restarting. Repository callers separately compare the stored version
+// when applying an admitted pair.
 func CanTransitionCreativeRun(from, to string) bool {
 	if from == "" || to == "" {
 		return false
 	}
 	if IsTerminalCreativeRunStatus(from) {
-		// 唯一允许的终态转换：成功任务的临时结果过期，降级为 result_lost。
+		// Delivery bytes can expire after successful settlement. Permit only the
+		// success-to-loss terminal transition so public retrieval can report that
+		// later loss while completed execution and funds state remain terminal.
 		return from == CreativeRunStatusSucceeded && to == CreativeRunStatusResultLost
 	}
 	if to == CreativeRunStatusFailed {
@@ -503,7 +778,7 @@ func CanTransitionCreativeRun(from, to string) bool {
 	}
 	switch from {
 	case CreativeRunStatusQueued:
-		// result_lost 允许从 queued 直接进入：worker 恢复发现载荷已过期时无需先推进 running。
+		// A queued task can lose its payload before it ever reaches running.
 		return to == CreativeRunStatusRunning || to == CreativeRunStatusCancelled || to == CreativeRunStatusResultLost || to == CreativeRunStatusFailed || to == CreativeRunStatusReleasePending
 	case CreativeRunStatusRunning:
 		switch to {
@@ -523,7 +798,10 @@ func CanTransitionCreativeRun(from, to string) bool {
 	}
 }
 
-// CreativeRunToPublic 把领域对象转换为客户端展示结构。
+// CreativeRunToPublic converts task and output metadata with Unix-second
+// timestamps and a MIME-derived format. Nil input returns nil, missing
+// HoldAmount uses EstimatedCost, output records are newly allocated, and
+// ActualCost retains its supplied pointer.
 func CreativeRunToPublic(run *CreativeRun, outputs []*CreativeRunOutput) *CreativeRunPublic {
 	if run == nil {
 		return nil
@@ -548,10 +826,13 @@ func CreativeRunToPublic(run *CreativeRun, outputs []*CreativeRunOutput) *Creati
 		ActualCost:           run.ActualCost,
 		ErrorCode:            CreativeDerefString(run.ErrorCode),
 		ErrorMessage:         CreativeDerefString(run.ErrorMessage),
-		CreatedAt:            run.CreatedAt.Unix(),
-		StartedAt:            CreativeUnixPtr(run.StartedAt),
-		CompletedAt:          CreativeUnixPtr(run.CompletedAt),
-		CancelledAt:          CreativeUnixPtr(run.CancelledAt),
+		// Public timestamps use whole Unix seconds so HTTP metadata
+		// matches browser
+		// task time fields; optional events retain nil through CreativeUnixPtr.
+		CreatedAt:   run.CreatedAt.Unix(),
+		StartedAt:   CreativeUnixPtr(run.StartedAt),
+		CompletedAt: CreativeUnixPtr(run.CompletedAt),
+		CancelledAt: CreativeUnixPtr(run.CancelledAt),
 	}
 	if len(outputs) > 0 {
 		out.Outputs = make([]CreativeRunOutputPublic, 0, len(outputs))
@@ -562,7 +843,9 @@ func CreativeRunToPublic(run *CreativeRun, outputs []*CreativeRunOutput) *Creati
 	return out
 }
 
-// CreativeRunOutputToPublic 把输出行转换为客户端展示结构。
+// CreativeRunOutputToPublic converts one indexed metadata record and allocates
+// optional Unix timestamp values. Nil input yields a zero public output;
+// optional strings and byte size become their empty or zero scalar values.
 func CreativeRunOutputToPublic(output *CreativeRunOutput) CreativeRunOutputPublic {
 	if output == nil {
 		return CreativeRunOutputPublic{}
@@ -580,6 +863,9 @@ func CreativeRunOutputToPublic(output *CreativeRunOutput) CreativeRunOutputPubli
 	return out
 }
 
+// CreativeDerefString returns the pointed-to text or empty when the optional
+// pointer is nil. Public metadata conversion uses that scalar result, so an
+// absent pointer and present empty text have the same returned value.
 func CreativeDerefString(v *string) string {
 	if v == nil {
 		return ""
@@ -587,6 +873,9 @@ func CreativeDerefString(v *string) string {
 	return *v
 }
 
+// CreativeDerefInt64 returns the pointed-to number or zero when the optional
+// pointer is nil. Public output conversion uses that scalar result, so an
+// absent pointer and a present zero have the same returned value.
 func CreativeDerefInt64(v *int64) int64 {
 	if v == nil {
 		return 0
@@ -594,6 +883,9 @@ func CreativeDerefInt64(v *int64) int64 {
 	return *v
 }
 
+// CreativeUnixPtr returns a newly allocated Unix-second value for the supplied
+// time. Nil input remains nil so public conversion retains the absence of an
+// observed task or delivery event.
 func CreativeUnixPtr(t *time.Time) *int64 {
 	if t == nil {
 		return nil
@@ -602,6 +894,9 @@ func CreativeUnixPtr(t *time.Time) *int64 {
 	return &v
 }
 
+// CreativeStringPtr returns a pointer to nonempty text or nil for an empty
+// string. Metadata callers use nil to leave optional error or idempotency
+// fields absent.
 func CreativeStringPtr(v string) *string {
 	if v == "" {
 		return nil
@@ -609,7 +904,12 @@ func CreativeStringPtr(v string) *string {
 	return &v
 }
 
+// OutputFormatFromMIME returns a client format label from trimmed lowercase
+// MIME. JPEG and JPG map to jpeg, WebP maps to webp, and every other spelling
+// uses png.
 func OutputFormatFromMIME(mime string) string {
+	// Public task metadata uses format names. Normalize JPEG aliases and select
+	// PNG when the saved MIME supplies no recognized JPEG or WebP label.
 	switch strings.ToLower(strings.TrimSpace(mime)) {
 	case "image/jpeg", "image/jpg":
 		return "jpeg"

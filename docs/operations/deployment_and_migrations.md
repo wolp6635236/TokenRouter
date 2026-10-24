@@ -15,7 +15,9 @@
 
 标准发布先生成一次前端静态资源，再由独立的 runner 把同一份前端嵌进各平台的 Go 二进制，并行交叉编译；最后的发布阶段统一归档二进制，并用 Linux `amd64` 和 `arm64` 的产物组装多架构镜像和必要的运行时工具。GitHub Release 同时发布 Linux `amd64`、Linux `arm64` 等产物，具体的矩阵以 [release workflow](../../.github/workflows/release.yml) 为准。
 
-源码镜像的前端阶段校验 `.node-version`，再按 `frontend/package.json` 的 `packageManager` 字段安装 pnpm，本地和 CI 读取同样的版本声明。默认 Node 镜像使用 26.10.0，覆盖 `NODE_IMAGE` 时仍需满足完整版本检查。Node 26 镜像通过 npm 安装声明的 pnpm 版本，冻结安装前复制 workspace 配置。
+源码镜像的前端阶段校验 `.node-version`，再按 `frontend/package.json` 的 `packageManager` 字段安装 pnpm，本地和 CI 读取同样的版本声明。默认 Node 镜像使用 26.12.1，覆盖 `NODE_IMAGE` 时仍需满足完整版本检查。Node 26 镜像通过 npm 安装声明的 pnpm 版本，冻结安装前复制 workspace 配置。
+
+Go 构建使用 1.27.3，后端模块、两个开发工具模块和三份源码 Dockerfile 同步声明该版本。Go 标准库的安全修复需要重新编译并部署应用二进制才能生效。Node.js 用于依赖安装、前端构建和开发工具；标准生产镜像由 Go 进程提供嵌入的静态资源。
 
 前端构建会导入 `backend/internal/pkg/locale/manifest.json` 和 `error_messages.json`。根目录和 `deploy/` 的 Dockerfile 在前端构建阶段将这些文件复制到 `/app/backend/internal/pkg/locale/`，与源码中的相对导入路径一致。
 
@@ -71,7 +73,7 @@ Apple container 的新栈使用 `org.tokenrouter.stack` 标签；已有的 `sub2
 
 - 已经进入任何环境的文件，不能修改、删除或改名；修正需要新建迁移。
 - 文件里不放可执行的 Down 段；runner 不解析 Goose 的 Up 和 Down 标记。
-- 普通迁移尽量写成幂等的，并在 SQL 里用中文注释说明变更原因和兼容窗口。
+- 普通迁移尽量写成幂等的，并在 SQL 里用英文注释说明变更原因和兼容窗口。
 - schema、数据回填、Repository 查询和 Ent schema 的变化，放在同一个兼容序列里设计；确实无法让新旧二进制共存时，在[版本升级说明](upgrade_notes.md)里写明停机升级、备份和回滚的步骤。
 
 ## 新增与同步迁移
@@ -109,3 +111,15 @@ Apple container 的新栈使用 `org.tokenrouter.stack` 标签；已有的 `sub2
 系统维护锁使用幂等表和 scope、key；processing 记录的 response_body 里保存一个独立的所有者令牌，续租和释放时，同时比较业务操作 ID 和令牌。旧的、没有令牌的记录，在原来的锁窗口内继续阻止认领，过期后可以被接管；普通的 HTTP 幂等记录不使用这套维护认领接口。回退旧二进制之前，先停止并等待维护操作完成，数据库恢复或二进制替换进行到一半时，不要切换实现。
 
 相关文档：[系统架构](../architecture/system_architecture.md)、[配置](../interfaces/configuration.md)、[版本升级说明](upgrade_notes.md)、[运维目录](index.md)。
+
+## MCP 管理接入
+
+迁移 300 创建独立的 MCP 令牌表，保存认证摘要和加密凭据，迁移 301 增加默认关闭的跳过浏览器确认设置。服务沿用现有 PostgreSQL、Redis 和持久加密密钥；创建与复制令牌要求配置固定的 `TOTP_ENCRYPTION_KEY`（或 `totp.encryption_key`），所有实例使用相同值，并与数据库一起备份。入口与网页使用同一监听端口，反向代理需要允许 `/mcp`。浏览器确认链接使用 `frontend_url`，原生客户端通过专用 Bearer 令牌连接，部署时按需限制管理入口的网络可达范围。令牌迁移、回退和临时数据规则见 [MCP 管理接口](../interfaces/mcp_management.md#client_setup)。
+
+### MCP OAuth 部署
+
+迁移 302 创建 OAuth 客户端、应用授权、短期请求和凭据表。单实例部署同步升级前后端；已有有效 `frontend_url` 的部署升级后即可使用 OAuth，无需新增环境变量。地址缺失或无效时，在原系统设置中补全前端地址即可，无需重启。MCP 接入配置显示当前地址或需要修正的原因，手工 Token 表及接入方式保持原结构。
+
+`frontend_url` 对应的公开入口必须将 `/mcp`、`/mcp/oauth/*` 和 `/.well-known/oauth-*` 转发到后端，并提供 `/admin/mcp/authorize` 网页。即使前后端物理分开部署，也使用这个统一公开入口。嵌入前端的发行构建保留这些后端路径；跨域浏览器接入按 CORS 配置放行 Origin，并暴露 `WWW-Authenticate`。
+
+备份包含 OAuth 表及 `security_secrets` 内独立的 `mcp_oauth_secret`。该密钥在后端重启后继续使用；固定 TOTP 加密密钥缺省时，MCP 临时文件加密密钥从该持久值独立派生。固定 TOTP 密钥已配置时沿用原文件加密方式。变更前端 origin 后，旧地址的 OAuth 凭据被拒绝，客户端需要重新连接。回退到不支持 OAuth 的版本时保留新增表。ChatGPT 联调需要可公开访问的 HTTPS 部署，不能由本地协议夹具测试代替。

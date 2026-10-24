@@ -15,13 +15,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// 模型查询测试在读取正文、取得槽位或检查资金时失败。
+// modelForbiddenBody rejects unexpected body reads during model catalogue
+// requests.
 type modelForbiddenBody struct{}
 
+// Read panics on any catalogue request-body access by the handler. The model
+// tests install this body to detect unwanted input consumption before their
+// status and catalogue assertions can pass.
 func (modelForbiddenBody) Read([]byte) (int, error) { panic("models endpoint read request body") }
 
+// Close finishes the stateless forbidden body without an error.
 func (modelForbiddenBody) Close() error { return nil }
 
+// modelsContext creates a GET model request with a body that panics if read.
+// It returns a fresh Gin context and recorder so each test can set route
+// parameters and inspect presentation.
 func modelsContext() (*gin.Context, *httptest.ResponseRecorder) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -30,6 +38,9 @@ func modelsContext() (*gin.Context, *httptest.ResponseRecorder) {
 	return c, w
 }
 
+// TestModelsBoundEmptyDoesNotFallBackOrConsume supplies an authenticated
+// bound Key and empty eligibility result. The ordinary list remains empty,
+// and the fixture records no upstream model resource query.
 func TestModelsBoundEmptyDoesNotFallBackOrConsume(t *testing.T) {
 	p := &modelsBackendStub{key: prefaceKey()}
 	c, w := modelsContext()
@@ -39,7 +50,9 @@ func TestModelsBoundEmptyDoesNotFallBackOrConsume(t *testing.T) {
 	require.Empty(t, p.paths)
 }
 
-// TestGeminiModelsEmptyCapabilityDoesNotQueryUpstream 验证空能力目录不能用任何上游目录或内置模型补全。
+// TestGeminiModelsEmptyCapabilityDoesNotQueryUpstream supplies an empty
+// capability catalogue beside a configured upstream response. Gemini returns
+// an empty local list and never asks that upstream reader for resources.
 func TestGeminiModelsEmptyCapabilityDoesNotQueryUpstream(t *testing.T) {
 	p := &modelsBackendStub{key: prefaceKey(), response: &ModelHTTPResponse{StatusCode: 200, Body: []byte(`{"models":[{"name":"models/phantom"}]}`)}}
 	c, w := modelsContext()
@@ -49,6 +62,10 @@ func TestGeminiModelsEmptyCapabilityDoesNotQueryUpstream(t *testing.T) {
 	require.Empty(t, p.paths)
 }
 
+// TestGeminiModelsUseUnifiedProtocolCapabilities mixes Responses-only,
+// concrete Gemini-capable and wildcard candidates with Key mappings. The list
+// contains the concrete Gemini model and its eligible exact alias, with no
+// upstream query.
 func TestGeminiModelsUseUnifiedProtocolCapabilities(t *testing.T) {
 	p := &modelsBackendStub{key: prefaceKey(), selectErr: errors.New("must not select an upstream"), result: routing.RequestableModelsResult{Models: []routing.RequestableModel{
 		{ID: "gpt-5.4", Protocols: []protocol.ProtocolID{protocol.ProtocolOpenAIResponses}},
@@ -63,6 +80,10 @@ func TestGeminiModelsUseUnifiedProtocolCapabilities(t *testing.T) {
 	require.Empty(t, p.paths)
 }
 
+// TestGeminiModelGetRequiresRequestableModel requests known, unknown and
+// unsafe model URL names. Their statuses distinguish available resources,
+// missing eligibility and invalid segments, and no case queries upstream
+// model resources.
 func TestGeminiModelGetRequiresRequestableModel(t *testing.T) {
 	for _, name := range []string{"known", "unknown", "bad/model"} {
 		t.Run(name, func(t *testing.T) {
@@ -77,6 +98,10 @@ func TestGeminiModelGetRequiresRequestableModel(t *testing.T) {
 	}
 }
 
+// TestGeminiModelsCompositePermissionsAndForcedPlatform combines a permitted
+// Gemini binding with a text-only binding under forced Antigravity. List and
+// resource lookup retain the permitted prefix, and platform forcing cannot
+// bypass denied group protocol permission.
 func TestGeminiModelsCompositePermissionsAndForcedPlatform(t *testing.T) {
 	allowed := &routing.Group{ID: 1, Status: "active", AllowedProtocols: []protocol.ProtocolID{protocol.ProtocolGeminiGenerateContent}}
 	disabled := &routing.Group{ID: 2, Status: "active", AllowedProtocols: []protocol.ProtocolID{protocol.ProtocolOpenAIResponses}}
@@ -96,4 +121,14 @@ func TestGeminiModelsCompositePermissionsAndForcedPlatform(t *testing.T) {
 	c, w = modelsContext()
 	handler.GeminiV1BetaListModels(c)
 	require.Equal(t, 403, w.Code, "强制提供商平台不能绕过分组协议权限")
+}
+
+// TestGeminiListPropagatesAttributeError supplies failed catalogue resolution.
+// The list endpoint returns unavailable so clients cannot mistake a configuration
+// outage for a successfully resolved empty model list.
+func TestGeminiListPropagatesAttributeError(t *testing.T) {
+	p := &modelsBackendStub{key: prefaceKey(), result: routing.RequestableModelsResult{Restricted: true, Err: errors.New("attribute configuration unavailable")}}
+	c, w := modelsContext()
+	NewModelsHandler(p, &modelsCatalogStub{}).GeminiV1BetaListModels(c)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 }

@@ -11,18 +11,45 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// anthropic_prompt_cache.go derives Anthropic digest identities and stores
+// prompt cache keys for matching continuations. Bindings include both provider
+// and API Key IDs, so identical content sent through another provider or key
+// has its own cache identity. Lookup walks complete chain components from the
+// longest candidate to shorter prefixes and removes unusable entries that it
+// encounters.
+//
+// A replacement publishes the new chain before deleting a different old chain,
+// keeping the continuation available during that sequence. Each map operation
+// is concurrent-safe, but lookup cleanup and replacement are separate
+// operations: cleanup can delete a concurrently replaced entry. Expiration
+// occurs at the deadline, and entries receive no background cleanup.
+
+// anthropicPromptBinding holds a prompt key and its lookup expiration deadline.
 type anthropicPromptBinding struct {
-	PromptCacheKey string
-	ExpiresAt      time.Time
+	PromptCacheKey string // trimmed prompt cache identity
+	// ExpiresAt ends validity at its deadline; a zero value keeps lookup validity unbounded.
+	ExpiresAt time.Time
 }
 
-// AnthropicPromptCache 独占提供商与 Key 隔离的摘要绑定；没有后台清理或额外存储。
+// AnthropicPromptCache keeps process-local provider/key digest bindings for Messages conversion.
+// The clock is used by concurrent reads and writes, so an injected clock needs
+// its own synchronization when its state can change during those calls.
 type AnthropicPromptCache struct {
-	entries sync.Map
-	clock   func() time.Time
+	entries sync.Map // namespaced digest binding entries
+	// clock supplies concurrent lookup and binding time; injected mutable state
+	// requires caller synchronization.
+	clock func() time.Time
 }
 
-// BuildAnthropicDigestChain 保持 system 与逐条消息的原摘要编码。
+// BuildAnthropicDigestChain hashes supplied system and message JSON bytes into an
+// ordered, role-labelled chain. A nil request or absent usable content returns an
+// empty chain. System null is omitted; messages with empty bytes are omitted,
+// while other message bytes, including null, participate.
+//
+// Only the exact trimmed assistant role receives an assistant prefix. Every
+// other role receives a user prefix, and the raw content representation affects
+// each hash. Callers use this chain for prefix continuity, so reformatting JSON
+// or changing role classification can change which binding matches.
 func BuildAnthropicDigestChain(req *protocolanthropic.AnthropicRequest) string {
 	if req == nil {
 		return ""
@@ -46,6 +73,9 @@ func BuildAnthropicDigestChain(req *protocolanthropic.AnthropicRequest) string {
 	return strings.Join(parts, "-")
 }
 
+// anthropicDigestNamespace separates provider/key pairs with decimal IDs and delimiters.
+// A nonpositive provider ID disables binding; the API Key ID is included as
+// supplied, including zero or a negative value.
 func anthropicDigestNamespace(providerID int64, cAPIKeyID int64) string {
 	if providerID <= 0 {
 		return ""
@@ -53,7 +83,9 @@ func anthropicDigestNamespace(providerID int64, cAPIKeyID int64) string {
 	return fmt.Sprintf("%d|%d|", providerID, cAPIKeyID)
 }
 
-// NewAnthropicPromptCache 使用 app 传入的时钟构造提示缓存。
+// NewAnthropicPromptCache constructs an empty process-local digest binding cache.
+// A nil clock selects time.Now; an injected clock is called by concurrent cache
+// operations and must support that use.
 func NewAnthropicPromptCache(clock func() time.Time) *AnthropicPromptCache {
 	if clock == nil {
 		clock = time.Now
@@ -61,7 +93,15 @@ func NewAnthropicPromptCache(clock func() time.Time) *AnthropicPromptCache {
 	return &AnthropicPromptCache{clock: clock}
 }
 
-// Find 逐级回退到最长有效摘要，保持到期清理时点。
+// Find returns the prompt key and longest live component prefix in a provider/key
+// namespace. A nil cache, empty chain, or nonpositive provider returns two empty
+// strings. Keys are trimmed before acceptance, and expiration rejects at the exact
+// deadline unless the stored deadline is zero.
+//
+// Each rejected map value is deleted before trying a shorter prefix. The chain
+// is shortened at its final hyphen, so callers supply BuildAnthropicDigestChain's
+// component format. Lookup and deletion are separate map operations; a concurrent
+// replacement at that key can be deleted by cleanup of an older loaded value.
 func (s *AnthropicPromptCache) Find(providerID int64, cAPIKeyID int64, digestChain string) (promptCacheKey string, matchedChain string) {
 	if s == nil || digestChain == "" {
 		return "", ""
@@ -80,8 +120,12 @@ func (s *AnthropicPromptCache) Find(providerID int64, cAPIKeyID int64, digestCha
 					}
 				}
 			}
+			// Remove unusable prefixes so later lookups can reach a live ancestor;
+			// this separate delete can race with replacement of the loaded entry.
 			s.entries.Delete(ns + chain)
 		}
+		// Remove a complete final digest component to reuse an earlier stored
+		// conversation prefix; slicing inside a content hash would create unrelated candidates.
 		i := strings.LastIndex(chain, "-")
 		if i < 0 {
 			return "", ""
@@ -90,7 +134,15 @@ func (s *AnthropicPromptCache) Find(providerID int64, cAPIKeyID int64, digestCha
 	}
 }
 
-// Bind 为当前绑定设置 TTL，替换时先删除旧续接链，其他绑定使用各自的到期时间。
+// Bind publishes a trimmed prompt key for the supplied provider/key digest chain.
+// Nil caches, empty chains or keys, and nonpositive providers are ignored. TTL is
+// added as supplied, so nonpositive durations normally expire by the next lookup.
+//
+// The new chain is stored before a different old chain is removed. This order
+// makes a growing continuation discoverable before its old prefix disappears,
+// while readers can still observe either map operation independently. Callers
+// supply the old chain from the same namespace; concurrent same-key replacement
+// or lookup cleanup is not one atomic transaction.
 func (s *AnthropicPromptCache) Bind(providerID int64, cAPIKeyID int64, digestChain, promptCacheKey, oldDigestChain string, ttl time.Duration) {
 	if s == nil || digestChain == "" || strings.TrimSpace(promptCacheKey) == "" {
 		return
@@ -103,13 +155,17 @@ func (s *AnthropicPromptCache) Bind(providerID int64, cAPIKeyID int64, digestCha
 		PromptCacheKey: strings.TrimSpace(promptCacheKey),
 		ExpiresAt:      s.now().Add(ttl),
 	}
+	// Publish the continuation before retiring its prior prefix so extension
+	// lookup can find the new chain while these separate map mutations proceed.
 	s.entries.Store(ns+digestChain, binding)
 	if oldDigestChain != "" && oldDigestChain != digestChain {
 		s.entries.Delete(ns + oldDigestChain)
 	}
 }
 
-// AnthropicDigestPromptCacheKey 使用既有摘要命名空间。
+// AnthropicDigestPromptCacheKey derives a labelled hash from a trimmed digest
+// chain. Whitespace-only input returns empty; HashSensitiveValueForLog trims
+// nonblank input too, so adding surrounding whitespace retains the same key.
 func AnthropicDigestPromptCacheKey(digestChain string) string {
 	if strings.TrimSpace(digestChain) == "" {
 		return ""
@@ -117,14 +173,25 @@ func AnthropicDigestPromptCacheKey(digestChain string) string {
 	return "anthropic-digest-" + upstream.HashSensitiveValueForLog(digestChain)
 }
 
-// AnthropicMetadataPromptCacheKey 对客户端元数据会话标识计算缓存键。
+// AnthropicMetadataPromptCacheKey derives a prompt key from parsed client identity.
+// A nil request, malformed metadata, unrecognized user_id, or blank session ID
+// returns empty. Device, account, and session components are trimmed before joining.
+//
+// The seed includes an anthropic-metadata label and separates the three identity
+// components with vertical bars before hashing. Component values are unescaped,
+// so embedded bars can give distinct identity tuples the same seed. Compatible
+// Messages requests can use this declared identity independently of content changes.
+// The parser defines accepted user_id formats; callers still apply their provider
+// and API Key isolation when using the resulting key.
 func AnthropicMetadataPromptCacheKey(req *protocolanthropic.AnthropicRequest) string {
 	if req == nil || len(req.Metadata) == 0 {
 		return ""
 	}
 	var metadata struct {
-		UserID string `json:"user_id"`
+		UserID string `json:"user_id"` // encoded client identity string
 	}
+	// Malformed metadata cannot identify a reusable session; let the caller
+	// choose its other prompt-key evidence by returning an empty candidate.
 	if err := json.Unmarshal(req.Metadata, &metadata); err != nil {
 		return ""
 	}
@@ -141,7 +208,9 @@ func AnthropicMetadataPromptCacheKey(req *protocolanthropic.AnthropicRequest) st
 	return "anthropic-metadata-" + upstream.HashSensitiveValueForLog(seed)
 }
 
-// CloneAnthropicDigestRequest 仅复制原摘要计算会改写的请求容器。
+// CloneAnthropicDigestRequest returns a shallow request copy with separate nonempty
+// system bytes and message-slice storage. Nil returns nil; message content,
+// metadata, and other nested values remain shared and need caller-controlled mutation.
 func CloneAnthropicDigestRequest(req *protocolanthropic.AnthropicRequest) *protocolanthropic.AnthropicRequest {
 	if req == nil {
 		return nil
@@ -156,6 +225,9 @@ func CloneAnthropicDigestRequest(req *protocolanthropic.AnthropicRequest) *proto
 	return &cp
 }
 
+// now returns the configured clock reading for cache expiration calculations.
+// A missing clock uses time.Now, including a manually constructed cache whose
+// clock field was left nil.
 func (s *AnthropicPromptCache) now() time.Time {
 	if s.clock != nil {
 		return s.clock()

@@ -9,12 +9,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// TestBuildSelectedSet supplies absent, empty, populated, and duplicate
+// source-ID selections. It asserts nil and nonnil empty maps retain distinct
+// creation meaning and every unique supplied ID appears in the result.
 func TestBuildSelectedSet(t *testing.T) {
 	tests := []struct {
-		name     string
-		ids      []string
-		wantNil  bool
-		wantSize int
+		name     string   // table case display name
+		ids      []string // supplied source identity selection
+		wantNil  bool     // expect absent selection sentinel
+		wantSize int      // expected unique membership count
 	}{
 		{
 			name:    "nil input returns nil (backward compatible: create all)",
@@ -62,7 +65,7 @@ func TestBuildSelectedSet(t *testing.T) {
 			if len(got) != tt.wantSize {
 				t.Errorf("buildSelectedSet(%v) has %d entries, want %d", tt.ids, len(got), tt.wantSize)
 			}
-			// 检查结果包含全部去重后的 ID。
+			// Every distinct input ID appears in the result.
 			for _, id := range tt.ids {
 				if _, ok := got[id]; !ok {
 					t.Errorf("buildSelectedSet(%v) missing key %q", tt.ids, id)
@@ -72,12 +75,20 @@ func TestBuildSelectedSet(t *testing.T) {
 	}
 }
 
+// TestShouldCreateProvider checks exact ID membership under absent, empty, and
+// populated creation selections. It asserts nil admits every ID, explicit empty
+// admits none, and unmatched IDs are rejected.
 func TestShouldCreateProvider(t *testing.T) {
 	tests := []struct {
-		name        string
-		crsID       string
+		name  string // table case display name
+		crsID string // queried source account identity
+		// selectedSet chooses absent, explicit empty, or populated
+		// membership
+		// fixtures; each case exercises a distinct creation choice
+		// returned by
+		// CRSShouldCreateProvider.
 		selectedSet map[string]struct{}
-		want        bool
+		want        bool // expected new creation eligibility
 	}{
 		{
 			name:        "nil set allows all (backward compatible)",
@@ -116,8 +127,10 @@ func TestShouldCreateProvider(t *testing.T) {
 	}
 }
 
-// TestGuardCRSShadowParentInvariant 有 spark 影子的母提供商经 CRS 任意分支更新后,目标结果
-// 必须仍是 OpenAI OAuth;否则(改 api_key 或跨平台 Anthropic/Gemini)影子读透母凭据失败、spark 全崩。
+// TestGuardCRSShadowParentInvariant adds a Spark shadow to an OpenAI OAuth
+// parent after checking unrestricted target conversion. It asserts incompatible
+// platform/type targets are rejected while OpenAI OAuth remains accepted; this
+// exercises the guard directly.
 func TestGuardCRSShadowParentInvariant(t *testing.T) {
 	ctx := context.Background()
 	repo := newCRSShadowStore()
@@ -126,11 +139,11 @@ func TestGuardCRSShadowParentInvariant(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, mother))
 	parentID := mother.ID
 
-	// 无影子:任何目标都放行(含改离 OpenAI OAuth)。
+	// Without shadows, platform and credential type may change.
 	require.NoError(t, GuardCRSShadowParentInvariant(ctx, repo, mother, capability.PlatformOpenAI, capability.ProviderTypeAPIKey))
 	require.NoError(t, GuardCRSShadowParentInvariant(ctx, repo, mother, capability.PlatformAnthropic, capability.ProviderTypeOAuth))
 
-	// 建一个影子后:
+	// Add a shadow before checking the restrictions.
 	shadow := &Record{
 		Platform:         capability.PlatformOpenAI,
 		Type:             capability.ProviderTypeOAuth,
@@ -139,18 +152,18 @@ func TestGuardCRSShadowParentInvariant(t *testing.T) {
 	}
 	require.NoError(t, repo.Create(ctx, shadow))
 
-	// 翻成 OpenAI api_key 被拒。
+	// Reject conversion to an OpenAI API Key provider.
 	err := GuardCRSShadowParentInvariant(ctx, repo, mother, capability.PlatformOpenAI, capability.ProviderTypeAPIKey)
 	require.Error(t, err, "must reject converting a shadow parent to openai api_key")
 	require.Contains(t, err.Error(), "spark-shadow parent")
 
-	// 跨平台改成 Anthropic OAuth(Type 仍 OAuth、仅 Platform 变)也被拒，验证平台和类型必须同时满足约束。
+	// Reject an Anthropic target even when its type remains OAuth.
 	require.Error(t, GuardCRSShadowParentInvariant(ctx, repo, mother, capability.PlatformAnthropic, capability.ProviderTypeOAuth),
 		"must reject moving a shadow parent to a non-OpenAI platform even if type stays oauth")
 
-	// 改成 Gemini api_key 被拒。
+	// Reject a Gemini API Key target.
 	require.Error(t, GuardCRSShadowParentInvariant(ctx, repo, mother, capability.PlatformGemini, capability.ProviderTypeAPIKey))
 
-	// 保持 OpenAI OAuth(重新同步母提供商)放行,即便仍有影子。
+	// Allow OpenAI OAuth resynchronization while shadows exist.
 	require.NoError(t, GuardCRSShadowParentInvariant(ctx, repo, mother, capability.PlatformOpenAI, capability.ProviderTypeOAuth))
 }

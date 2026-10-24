@@ -6,9 +6,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// benchmarkOpenAIWSBytesSink 保存模型替换基准的结果。
+// benchmarkOpenAIWSBytesSink retains bytes returned by model-replacement
+// benchmarks, including unchanged delta frames and patched root/nested model
+// payloads after each timed call completes.
 var benchmarkOpenAIWSBytesSink []byte
 
+// TestOpenAIWSPayloadString_OnlyAcceptsStringValues supplies nil, numeric, string,
+// and byte-slice values. Extraction must reject the first two and trim the
+// asserted cache key and previous-response text from the accepted string forms.
 func TestOpenAIWSPayloadString_OnlyAcceptsStringValues(t *testing.T) {
 	payload := map[string]any{
 		"type":                 nil,
@@ -23,10 +28,14 @@ func TestOpenAIWSPayloadString_OnlyAcceptsStringValues(t *testing.T) {
 	require.Equal(t, "resp_1", WSPayloadString(payload, "previous_response_id"))
 }
 
+// TestPopulateOpenAIUsageFromResponseJSONAcceptsChatUsageShape supplies Chat
+// prompt/completion counters and nested cached-token detail. Population must
+// produce the asserted input, output, and cache-read counts in the forwarded
+// usage destination.
 func TestPopulateOpenAIUsageFromResponseJSONAcceptsChatUsageShape(t *testing.T) {
 	usage := &ForwardUsage{}
 
-	// 非流式 WS 结果可能直接带 Chat Completions usage 字段，必须参与计费。
+	// Non-streaming WebSocket results may use Chat Completions usage fields for billing.
 	PopulateUsageFromResponseJSON(
 		[]byte(`{"id":"resp_1","usage":{"prompt_tokens":23,"completion_tokens":6,"prompt_tokens_details":{"cached_tokens":5}}}`),
 		usage,
@@ -36,6 +45,10 @@ func TestPopulateOpenAIUsageFromResponseJSONAcceptsChatUsageShape(t *testing.T) 
 	require.Equal(t, 5, usage.CacheReadInputTokens)
 }
 
+// TestReplaceOpenAIWSMessageModel_OptimizedStillCorrect compares no-match, root,
+// nested-response, and dual-model payloads. Replacement must retain the no-model
+// fixture and produce the exact asserted bytes with requested names at every
+// matching model path.
 func TestReplaceOpenAIWSMessageModel_OptimizedStillCorrect(t *testing.T) {
 	noModel := []byte(`{"type":"response.output_text.delta","delta":"hello"}`)
 	require.Equal(t, string(noModel), string(ReplaceWSMessageModel(noModel, "gpt-5.1", "custom-model")))
@@ -50,14 +63,15 @@ func TestReplaceOpenAIWSMessageModel_OptimizedStillCorrect(t *testing.T) {
 	require.Equal(t, `{"model":"custom-model","response":{"model":"custom-model"}}`, string(ReplaceWSMessageModel(both, "gpt-5.1", "custom-model")))
 }
 
-// TestIsOpenAIWSTokenEvent_TerminalEventsExcluded 检查终止事件返回 false。
-// 将 response.completed 或 response.done 计为 token 事件，会在缺少 delta 时
-// 把终止时刻写入 firstTokenMs，误报首 token 延迟（issue #2651）。
+// TestIsOpenAIWSTokenEvent_TerminalEventsExcluded compares progress, terminal,
+// delta, output, and unmatched labels. Classification must return the asserted
+// label decisions, including output annotations, while completed/done labels
+// remain excluded from gateway first-token timing.
 func TestIsOpenAIWSTokenEvent_TerminalEventsExcluded(t *testing.T) {
 	cases := []struct {
-		name      string
-		eventType string
-		want      bool
+		name      string // token-label classification scenario
+		eventType string // supplied event label
+		want      bool   // expected token selection
 	}{
 		{name: "empty", eventType: "", want: false},
 		{name: "whitespace_trimmed_empty", eventType: "   ", want: false},
@@ -95,8 +109,10 @@ func TestIsOpenAIWSTokenEvent_TerminalEventsExcluded(t *testing.T) {
 	}
 }
 
-// TestIsOpenAIWSTokenEvent_DisjointWithTerminal 检查终止事件与 token 事件互斥。
-// firstTokenMs 依赖这一区分，交集会导致 issue #2651 中的延迟误报。
+// TestIsOpenAIWSTokenEvent_DisjointWithTerminal supplies each supported response
+// terminal label to both classifiers. Every label must count as terminal and
+// return false from the token predicate so terminal-only frames do not select
+// gateway first-token timing.
 func TestIsOpenAIWSTokenEvent_DisjointWithTerminal(t *testing.T) {
 	terminalEvents := []string{
 		"response.completed",
@@ -114,6 +130,9 @@ func TestIsOpenAIWSTokenEvent_DisjointWithTerminal(t *testing.T) {
 	}
 }
 
+// BenchmarkReplaceOpenAIWSMessageModel_NoMatchFastPath measures a text-delta
+// frame with no model marker. Each iteration retains its returned bytes in
+// the package sink while the timed loop reports allocation behavior.
 func BenchmarkReplaceOpenAIWSMessageModel_NoMatchFastPath(b *testing.B) {
 	event := []byte(`{"type":"response.output_text.delta","delta":"hello world"}`)
 	b.ReportAllocs()
@@ -124,6 +143,9 @@ func BenchmarkReplaceOpenAIWSMessageModel_NoMatchFastPath(b *testing.B) {
 	}
 }
 
+// BenchmarkReplaceOpenAIWSMessageModel_DualReplace measures a completed frame
+// with matching root and nested models. Each iteration retains the returned
+// bytes in a package sink so both field patches remain part of the measured path.
 func BenchmarkReplaceOpenAIWSMessageModel_DualReplace(b *testing.B) {
 	event := []byte(`{"type":"response.completed","model":"gpt-5.1","response":{"id":"resp_1","model":"gpt-5.1"}}`)
 	b.ReportAllocs()

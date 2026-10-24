@@ -2,23 +2,42 @@ package provider
 
 import "maps"
 
+// credentials_redact.go classifies credential secrets, merges redacted edits,
+// and removes temporary login material.
+// Administrator credential objects omit secrets before reaching the UI, so
+// submitting one back requires a distinction between an omitted secret and a
+// supplied empty value. The shared key list identifies fields for redaction and
+// update merging, while storage sanitization removes temporary login material
+// regardless of platform.
+//
+// MergePreservingSensitiveCreds builds a new top-level map from incoming fields
+// and inherits only omitted sensitive entries from existing. Its nested values
+// remain shared. SanitizeStoredCredentials instead mutates its supplied map in
+// place, removing password, SSO, and cookie keys after a credential exchange so
+// those temporary values cannot reappear through a later omitted-secret merge.
+
 var (
-	// SensitiveCredentialKeys 列出向前端返回凭据时需要移除的敏感字段。
-	// dto 响应脱敏和服务更新合并共用此清单，添加凭据类型时需要同步更新。
+	// SensitiveCredentialKeys lists secrets omitted by UI DTOs and inherited
+	// when redacted input leaves them absent. DTO membership is captured at
+	// package initialization, while merge helpers iterate this slice; keep it
+	// unchanged during request handling.
 	SensitiveCredentialKeys = []string{
-		// OAuth
+		// OAuth tokens and signing material are private authentication inputs.
 		"access_token", "refresh_token", "id_token", "agent_private_key",
-		// Qoder COSY 凭据
+		// Qoder COSY credentials.
 		"pat", "security_oauth_token", "machine_token",
-		// API Key 类及 New API 用户钱包查询凭据
+		// API keys and New API user-wallet query credentials.
 		"api_key", "session_key", "cookie", "new_api_user_access_token",
-		// Grok Web SSO 与密码在兑换 Build OAuth 后不得持久化或回显。
+		// Login passwords and Web SSO fields are redacted even for older records.
 		"password", "sso_token", "sso", "sso-rw", "clearTextPassword",
-		// 云服务凭据
+		// Cloud credentials.
 		"aws_secret_access_key", "aws_session_token",
 		"service_account_json", "service_account", "private_key",
 	}
 
+	// sensitiveCredentialKeySet captures SensitiveCredentialKeys during package
+	// initialization for repeated membership reads. Runtime changes to the
+	// exported slice do not rebuild this lookup.
 	sensitiveCredentialKeySet = func() map[string]struct{} {
 		m := make(map[string]struct{}, len(SensitiveCredentialKeys))
 		for _, k := range SensitiveCredentialKeys {
@@ -28,15 +47,22 @@ var (
 	}()
 )
 
-// IsSensitiveCredentialKey 判断指定键是否为敏感凭证子键。
+// IsSensitiveCredentialKey reports membership in the startup-built sensitive
+// credential key set.
 func IsSensitiveCredentialKey(key string) bool {
 	_, ok := sensitiveCredentialKeySet[key]
 	return ok
 }
 
-// MergePreservingSensitiveCreds 将 incoming 复制为新 map，并从 existing 补齐省略的敏感字段。
-// 前端提交脱敏后的完整对象时，已有 token 通过此规则保留。
-// 非敏感字段以 incoming 为准，敏感字段在 incoming 携带该键时按输入覆盖。
+// MergePreservingSensitiveCreds builds a new top-level credential object from
+// incoming and inherits omitted sensitive values from existing. A supplied
+// secret key wins even when empty or nil.
+//
+// Nonsensitive fields omitted from incoming disappear, which lets a redacted
+// form replace its ordinary configuration fields. Both input maps remain
+// unchanged, but their nested mutable values are shared with the returned map.
+// Callers that need separate ownership copy those supported values with
+// CloneValues before later mutation.
 func MergePreservingSensitiveCreds(existing, incoming map[string]any) map[string]any {
 	out := make(map[string]any, len(incoming)+len(SensitiveCredentialKeys))
 	maps.Copy(out, incoming)
@@ -51,8 +77,9 @@ func MergePreservingSensitiveCreds(existing, incoming map[string]any) map[string
 	return out
 }
 
-// SanitizeStoredCredentials 移除 OAuth 兑换后不得写入提供商凭据的 Grok SSO、密码和 cookie。
-// 批量操作可能缺少平台标识，所有平台都清理 cookie。
+// SanitizeStoredCredentials removes temporary password, SSO, and cookie keys in
+// place and returns the same map. Nil remains nil, and platform is ignored so
+// bulk changes that omit platform still sanitize credentials.
 func SanitizeStoredCredentials(platform string, creds map[string]any) map[string]any {
 	if creds == nil {
 		return nil

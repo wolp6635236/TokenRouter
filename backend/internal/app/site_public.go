@@ -16,11 +16,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// siteBillingSubscriptions 将 billing 的有效订阅转换为公告资格判断需要的数据。
+// site_public.go assembles public site settings, page storage, and announcement
+// subscription eligibility. Public site settings expose selected authentication
+// and usage choices from one raw settings snapshot. OAuth, team, and ranking
+// parsers interpret their own values before the site service receives its
+// display shape, while announcement eligibility adapts active subscription plan
+// IDs and page storage uses the configured data directory.
+
+// siteBillingSubscriptions narrows active subscriptions to announcement plan
+// eligibility data.
 type siteBillingSubscriptions struct {
-	repo billing.UserSubscriptionRepository
+	repo billing.UserSubscriptionRepository // active subscription reads
 }
 
+// ListActiveByUserID returns plan identities from the payer's active billing
+// subscriptions.
 func (a siteBillingSubscriptions) ListActiveByUserID(ctx context.Context, id int64) ([]site.SubscriptionSnapshot, error) {
 	subs, err := a.repo.ListActiveByUserID(ctx, id)
 	if err != nil {
@@ -33,19 +43,28 @@ func (a siteBillingSubscriptions) ListActiveByUserID(ctx context.Context, id int
 	return out, nil
 }
 
+// provideAnnouncementSubscriptions binds active billing subscription reads for
+// announcement eligibility.
 func provideAnnouncementSubscriptions(repo billing.UserSubscriptionRepository) site.SubscriptionReader {
 	return siteBillingSubscriptions{repo: repo}
 }
 
-// provideAnnouncementExpiry 创建每分钟检查公告过期状态的服务。
+// provideAnnouncementExpiry constructs one-minute announcement expiration
+// checks for lifecycle startup.
 func provideAnnouncementExpiry(repo site.AnnouncementRepository) *site.AnnouncementExpiryService {
 	return site.NewAnnouncementExpiryService(repo, time.Minute)
 }
 
+// provideSitePages binds page storage and display settings using the configured
+// pricing data directory.
 func provideSitePages(cfg *config.Config, settings *site.DisplaySettings) *sitehttp.PageHandler {
 	return sitehttp.NewPageHandler(site.NewPages(filesystem.New(cfg.Pricing.DataDir), settings))
 }
 
+// provideSitePublic binds public authentication, team, and ranking
+// interpretation to shared settings. cfg, oauth, and store are required;
+// version comes from the store, while timezone display uses the supplied
+// calendar and configured timezone text.
 func provideSitePublic(store *settings.Store, oauth *identity.OAuthSettings, cfg *config.Config, calendar timezone.Calendar) *site.PublicService {
 	p := site.NewPublicService(site.NewInputSource(store, site.PublicInputOptions{Auth: func(raw map[string]string) site.PublicAuth {
 		value := oauth.PublicSettingsFromValues(raw)
@@ -58,11 +77,14 @@ func provideSitePublic(store *settings.Store, oauth *identity.OAuthSettings, cfg
 	return p
 }
 
-// provideSiteDisplay 按需读取前端回退地址，站点名称通过单键查询取得。
+// provideSiteDisplay binds site names and a callback for the current frontend
+// URL. cfg is retained by that callback, which the display reader invokes when
+// its own fallback rule needs it.
 func provideSiteDisplay(store *settings.Store, cfg *config.Config) *site.DisplaySettings {
 	return site.NewDisplaySettings(store, func() string { return cfg.Server.FrontendURL })
 }
 
+// provideSitePublicHTTP supplies public site data and running version to HTTP.
 func provideSitePublicHTTP(s *site.PublicService, info BuildInfo) *sitehttp.PublicHandler {
 	return sitehttp.NewPublicHandler(s, info.Version)
 }

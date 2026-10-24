@@ -5,15 +5,37 @@ import (
 	"strings"
 )
 
-// BuildOpenAIEndpointURL 按 OpenAI 兼容上游 base_url 形态拼出目标端点。
-// 已包含完整端点时原样返回；base_url 以 /v1、/v4、/v1beta 等版本段结尾时，
-// 直接追加不带 /v1 前缀的相对端点；其它情况追加完整默认端点。
+// endpoint.go constructs OpenAI-compatible endpoint URLs from configured base
+// paths and requested routes.
+// OpenAI-compatible servers can expose a root URL, a prefixed API path, a
+// different version, or an already complete endpoint. Endpoint construction
+// separates the parsed path from its query so adding a route does not turn
+// query text into part of that path. Recognized version suffixes keep the
+// server's selected version while receiving the endpoint's relative route.
+//
+// Parsed results clear fragments and RawPath after editing Path, letting
+// url.URL encode the resulting path consistently. Invalid URL syntax uses
+// textual concatenation as a compatibility result. Responses token-count
+// construction has a separate shortcut for supplied text ending in
+// /responses; other inputs use the same parsed endpoint rules.
+
+// BuildOpenAIEndpointURL appends endpoint to a trimmed OpenAI-compatible base
+// and returns the resulting URL text. An existing full or relative endpoint
+// suffix is reused; a recognized versioned base receives the route after its
+// leading /v1 prefix.
+//
+// URL parsing keeps queries attached to the URL while the path changes,
+// clears fragments, and rebuilds path escaping. If parsing fails, textual
+// concatenation appends the full endpoint to the trailing-slash-trimmed base
+// instead.
 func BuildOpenAIEndpointURL(base string, endpoint string) string {
 	normalized := strings.TrimSpace(base)
 	endpoint = "/" + strings.TrimLeft(strings.TrimSpace(endpoint), "/")
 	relative := strings.TrimPrefix(endpoint, "/v1")
 	parsed, err := url.Parse(normalized)
 	if err != nil {
+		// Parsing cannot separate this base into components. Retain the supplied
+		// text and append the complete endpoint for compatibility with such input.
 		return strings.TrimRight(normalized, "/") + endpoint
 	}
 	path := strings.TrimRight(parsed.Path, "/")
@@ -25,11 +47,17 @@ func BuildOpenAIEndpointURL(base string, endpoint string) string {
 		}
 	}
 	parsed.Path = path
+	// Path has changed, so reuse of its prior escaped spelling could identify
+	// a different route. Queries survive while fragments are removed here.
 	parsed.RawPath = ""
 	parsed.Fragment = ""
 	return parsed.String()
 }
 
+// BuildOpenAIResponsesInputTokensURL returns the Responses token-count
+// endpoint for base. Trimmed text ending in /responses receives /input_tokens
+// directly; other input goes through BuildOpenAIEndpointURL and its version,
+// query, and fragment handling.
 func BuildOpenAIResponsesInputTokensURL(base string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
 	if strings.HasSuffix(normalized, "/responses") {
@@ -38,7 +66,9 @@ func BuildOpenAIResponsesInputTokensURL(base string) string {
 	return BuildOpenAIEndpointURL(base, "/v1/responses/input_tokens")
 }
 
-// OpenAIBaseURLHasVersionSuffix 判断 base_url 路径最后一段是否是 API 版本段。
+// OpenAIBaseURLHasVersionSuffix reports whether the final nonempty path
+// segment is a recognized API version. Full URLs use their parsed path; other
+// input uses text from its first slash, with trailing slashes removed.
 func OpenAIBaseURLHasVersionSuffix(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -64,7 +94,9 @@ func OpenAIBaseURLHasVersionSuffix(raw string) bool {
 	return IsOpenAIAPIVersionSegment(segment)
 }
 
-// IsOpenAIAPIVersionSegment 识别 v1、v4、v1.1、v1beta、v1-preview 等版本段。
+// IsOpenAIAPIVersionSegment reports whether trimmed, case-insensitive text
+// matches a supported version shape. It accepts v followed by digits, a
+// single decimal part, or suffix text beginning alpha, beta, or preview.
 func IsOpenAIAPIVersionSegment(segment string) bool {
 	s := strings.ToLower(strings.TrimSpace(segment))
 	if len(s) < 2 || s[0] != 'v' || !IsASCIIDigit(s[1]) {
@@ -95,6 +127,7 @@ func IsOpenAIAPIVersionSegment(segment string) bool {
 		strings.HasPrefix(suffix, "preview")
 }
 
+// IsASCIIDigit reports whether b is a decimal ASCII digit.
 func IsASCIIDigit(b byte) bool {
 	return b >= '0' && b <= '9'
 }

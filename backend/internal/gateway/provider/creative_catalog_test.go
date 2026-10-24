@@ -7,17 +7,27 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/creative"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-type creativeCatalogRows struct{ values []creative.CatalogProvider }
+// creativeCatalogRows supplies configured provider adapters to creative model
+// catalogue tests.
+type creativeCatalogRows struct {
+	values []creative.CatalogProvider /* returned catalogue provider rows */
+}
 
+// ListSchedulableByGroupIDAndPlatform returns the fixture's configured
+// catalogue providers for creative queries. The slice remains shared with
+// values, so fixture callers keep its entries stable during catalogue reads.
 func (s creativeCatalogRows) ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]creative.CatalogProvider, error) {
 	return s.values, nil
 }
 
-// TestCreativeCatalogUsesExecutionModelPolicy 检查透传开启时，目录和执行是否仍应用模型映射。
+// TestCreativeCatalogUsesExecutionModelPolicy lists an image alias mapped to a
+// whitelisted upstream model with passthrough both disabled and enabled. Both
+// catalogue queries retain the alias and report the same mapped image model.
 func TestCreativeCatalogUsesExecutionModelPolicy(t *testing.T) {
 	for _, passthrough := range []bool{false, true} {
 		value := &provider.Record{
@@ -25,7 +35,7 @@ func TestCreativeCatalogUsesExecutionModelPolicy(t *testing.T) {
 			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-image-1": "gpt-image-2"}},
 			Extra:       map[string]any{"openai_passthrough": passthrough},
 		}
-		public := creative.Public{ProviderRepo: creativeCatalogRows{[]creative.CatalogProvider{CreativeCatalogProvider(value)}}}
+		public := creative.Public{Attributes: &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}, ProviderRepo: creativeCatalogRows{[]creative.CatalogProvider{CreativeCatalogProvider(value)}}}
 		group := &creative.GroupView{ID: 12, Operations: creative.OperationsForGroup(false, nil), RoutingPolicy: routing.GroupRoutingPolicy{
 			Enabled: true, RestrictModels: true, RestrictionModelSource: routing.BillingModelSourceUpstream,
 			AllowedModels: []string{"gpt-image-2"},

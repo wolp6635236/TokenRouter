@@ -10,22 +10,40 @@ import (
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// CodexImportHandler 只拥有管理 HTTP 和原幂等响应。
+// codex_import.go validates Codex session import requests and delegates
+// accepted entries through response idempotency.
+// Codex session imports accept token text or structured session entries,
+// including Agent Identity material. The handler removes retired Extra values
+// before response idempotency, rejects invalid numeric options and empty parsed
+// input, and leaves per-entry normalization, identity matching and provider
+// writes to CodexImporter.
+
+// CodexImportHandler binds strict Codex import requests and returns idempotent
+// item outcomes.
 type CodexImportHandler struct {
-	idempotencyhttp.Executor
-	core *provider.CodexImporter
+	idempotencyhttp.Executor                         // administrator write idempotency binding
+	core                     *provider.CodexImporter // borrowed credential import use case
 }
 
+// NewCodexImportHandler borrows the Codex importer for administrator credential
+// imports. Bind response idempotency separately when desired, and keep importer
+// dependencies available until mounted HTTP requests have completed.
 func NewCodexImportHandler(core *provider.CodexImporter) *CodexImportHandler {
 	return &CodexImportHandler{core: core}
 }
 
+// ImportCodexSession strictly binds and validates numeric import options before
+// parsing the supplied session content. Retired Extra keys are removed before
+// fingerprinting; empty parsed entries return 400 and admitted requests use
+// administrator response idempotency.
 func (h *CodexImportHandler) ImportCodexSession(c *gin.Context) {
 	var req provider.CodexSessionImportRequest
 	if err := response.BindJSONStrict(c, &req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	// Retired Extra content is ignored by import. Remove it before fingerprinting
+	// so malformed historical values do not distinguish otherwise equivalent requests.
 	provider.DiscardDeprecatedExtra(req.Extra)
 	if req.Concurrency != nil && *req.Concurrency < 0 {
 		response.BadRequest(c, "concurrency must be >= 0")
@@ -50,7 +68,7 @@ func (h *CodexImportHandler) ImportCodexSession(c *gin.Context) {
 		return
 	}
 	if len(entries) == 0 {
-		response.BadRequest(c, "请输入 accessToken 或 Codex session JSON")
+		response.BadRequest(c, "Enter an accessToken or Codex session JSON")
 		return
 	}
 

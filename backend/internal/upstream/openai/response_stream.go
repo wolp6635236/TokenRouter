@@ -19,92 +19,259 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-const (
-	StreamTimeFlush   StreamTime = "first_downstream_flush"
-	StreamTimeVisible StreamTime = "first_visible_output"
-	StreamTimeData    StreamTime = "first_sse_data"
-)
+// response_stream.go reads Responses streams and coordinates first-output
+// staging, terminal handling, usage observation, and downstream delivery.
+// HTTP Responses progress, visible content, flush policy, and client
+// commitment advance through different checks. Native OpenAI attempts can stage
+// initial SSE bytes and provider headers so pre-content failure remains
+// recoverable. Event separators complete staged progress and stop its deadline,
+// while visible-payload observation can happen before those bytes reach the
+// sink. Heartbeat comments can commit HTTP independently of the caller's retry
+// commitment.
+//
+// The timed reader queues scanner lines and acknowledges each guarded token
+// before further reading, limiting pre-content read-ahead. First-output expiry
+// closes the body and consumes queued acknowledgments through channel closure
+// before returning its classification. Other exits stop sends and leave body
+// closure to the executor. Bare errors wait for an authoritative failed
+// terminal or EOF synthesis; usage and tool/image/search observations occur
+// before delivery restoration and error trimming.
+// Locally generated read and timeout errors drain pending upstream bytes before
+// using the caller's local error writer, keeping their delivery provenance
+// separate from the upstream events whose output they terminate.
 
-type StreamTime string
-
+// CyberObservation carries policy failure evidence and usage observed before
+// client error presentation.
 type CyberObservation struct {
-	Code           string
-	Message        string
-	Body           string
+	Code    string // upstream cyber policy code
+	Message string // upstream cyber failure message
+	// Body contains caller-truncated policy evidence; the stream readers request a
+	// four-KiB prefix before their caller decides diagnostic storage and redaction.
+	Body string
+	// UpstreamStatus is the transport status assigned to this observation; stream
+	// cyber paths use HTTP 200 while code/message carry the policy failure.
 	UpstreamStatus int
-	UpstreamInTok  int
-	UpstreamOutTok int
+	// UpstreamInTok and UpstreamOutTok snapshot the usage accumulator after failure
+	// parsing, before client trimming can remove the terminal usage record; absent
+	// observations can still leave either count zero.
+	UpstreamInTok  int // observed input token count
+	UpstreamOutTok int // observed output token count
 }
 
-// StreamOptions 配置本次流读取的超时、输出和观测回调。
+// StreamOptions selects attempt timing, staging, restoration, and caller-owned
+// output/failure observation policies.
 type StreamOptions struct {
-	ProviderID                                                           int64
+	ProviderID int64 // selected provider diagnostic identity
+	// NativeOpenAI selects native empty-completion rejection and capacity diagnostics
+	// after client output. StageFirstOutput retains initial SSE bytes and selects
+	// deferred provider-header application during progress completion before HTTP
+	// commitment. CodexFailureTerminal holds bare errors for an authoritative failed
+	// terminal or EOF synthesis, keeping its provider effects pending. GrokIdlePolicy
+	// enables idle cooldown before recovery selection and later client stream failure.
+	// These four values stay fixed per call; the gateway pairs NativeOpenAI with
+	// StageFirstOutput, while Codex terminal and Grok idle flags follow provider rules.
 	NativeOpenAI, StageFirstOutput, CodexFailureTerminal, GrokIdlePolicy bool
-	FirstOutputTimeout, StreamInterval, KeepaliveInterval                time.Duration
-	MaxLineSize                                                          int
-	TTFTMode                                                             func() string
-	PrepareHeaders                                                       func(http.Header, bool, http.Header) http.Header
-	StagedHeadersCommitted                                               func(http.Header)
-	Observe                                                              func([]byte, string)
-	Logf                                                                 func(string, ...any)
-	MarkTime                                                             func(StreamTime)
-	IsCommitted                                                          func() bool
-	MarkCommitted                                                        func()
-	ClientOutputStarted                                                  func(bool) bool
-	ClearDisconnect                                                      func()
-	RecordDisconnect                                                     func(error, string)
-	TerminalSideEffects                                                  func([]byte, string, http.Header, string)
-	Failover                                                             func(string, []byte, string) error
-	FailoverWithModel                                                    func(string, []byte, string, string, http.Header) error
-	MarkSafeFailover                                                     func(error)
-	RecordError                                                          func(string, string, []byte, string)
-	CompactFallback                                                      func([]byte, string) error
-	ErrorRule                                                            func([]byte, string) (int, string, string, bool)
-	CapacitySuppressed                                                   func(string, string)
-	MarkCyber                                                            func(CyberObservation)
-	ToolCorrector                                                        *CodexToolCorrector
-	RestoreClientTools, RestoreNamespace                                 func([]byte) ([]byte, error)
-	RestoreToolNames                                                     func([]byte, string) []byte
-	EmptyCompleted                                                       func(string) error
-	CountSearch                                                          func([]byte, map[string]struct{}) int
-	StreamTimeout                                                        func(string)
-	IdleCooldown                                                         func()
-	IdleFailover                                                         func(time.Duration) error
-	FirstOutputError                                                     func(time.Time, string, string, time.Duration, string, http.Header) error
-	KeepaliveBytes                                                       func(int)
-	BuildOpenAIResponseFailedSSE                                         func(string, string, []byte, string) string
-	WrapOpenAIUpstreamWarningIfCyber                                     func(int, []byte, string, error) error
-	TruncateString                                                       func(string, int) string
-	OpenAIStreamDataStartsTTFT                                           func(string, string, bool, string) bool
-	OpenAIStreamEventIsTerminalWithType                                  func(string, string) bool
+	// FirstOutputTimeout measures an elapsed budget from startTime and needs staged
+	// progress completion to stop its deadline. StreamInterval checks inactivity
+	// from producer read arrival, independently of time spent in client conversion.
+	// KeepaliveInterval checks successful downstream write inactivity and skips
+	// heartbeat insertion while an SSE event remains open. Nonpositive values
+	// disable each respective timer; the first uses one deadline, while the other
+	// two use ticks and their independently updated activity clocks.
+	FirstOutputTimeout, StreamInterval, KeepaliveInterval time.Duration
+	// MaxLineSize sets scanner token growth in bytes; the initial pooled
+	// sixty-four-KiB buffer can accept a token larger than a smaller configured
+	// budget.
+	MaxLineSize int
+
+	// PrepareHeaders receives upstream headers, staging selection, and current
+	// client headers; its returned attempt header map stays available until a
+	// progress-event commit opportunity.
+	PrepareHeaders func(http.Header, bool, http.Header) http.Header
+	// StagedHeadersCommitted observes header application during progress completion
+	// when the staged map is nonempty and the writer is still uncommitted; it has
+	// no independent once guard.
+	StagedHeadersCommitted func(http.Header)
+	// Observe sees raw upstream data and effective event type before lifecycle
+	// normalization, model rewriting, client-tool restoration, or delivery trimming
+	// occurs.
+	Observe func([]byte, string)
+	Logf    func(string, ...any) // attempt diagnostic log callback
+	// MarkTime receives data, visible, or flush observations from the reader; the
+	// gateway recorder decides whether repeated observations replace an existing
+	// timestamp.
+
+	// WriteLocalStreamError synchronously writes an already-framed local SSE
+	// failure. ReadStreamingResponse drains pending upstream bytes first and
+	// flushes afterward; the writer keeps local errors outside upstream timing.
+	WriteLocalStreamError func([]byte) (int, error)
+	// IsCommitted supplies caller retry commitment for result snapshots; physical
+	// HTTP writer commitment and visible-payload evidence are measured separately
+	// by this reader.
+	IsCommitted func() bool
+	// MarkCommitted records caller retry commitment before a matched error rule
+	// writes JSON, preventing that custom presentation from remaining
+	// replay-eligible.
+	MarkCommitted func()
+	// ClientOutputStarted combines the local delivery flag with caller writer
+	// observations; the gateway can exclude tracked heartbeat bytes when deciding
+	// safe pre-output recovery.
+	ClientOutputStarted func(bool) bool
+	// ClearDisconnect clears caller disconnect policy when terminal evidence exists
+	// and no failed-event flag is set, including a scan error after that terminal.
+	ClearDisconnect func()
+	// RecordDisconnect records incomplete post-output transport evidence;
+	// cancellation and known client sink failure use their separate returned-error
+	// paths.
+	RecordDisconnect func(error, string)
+	// TerminalSideEffects applies post-output provider policy; Codex bare errors
+	// defer it until response.failed or EOF synthesis supplies the selected
+	// terminal outcome.
+	TerminalSideEffects func([]byte, string, http.Header, string)
+	// Failover classifies missing-terminal, pre-output read, or staging failures
+	// from request ID, optional body, and message; the outer executor chooses
+	// actual retry.
+	Failover func(string, []byte, string) error
+	// FailoverWithModel classifies a pre-output error event with raw failure bytes,
+	// mapped model, and response headers before client error trimming occurs.
+	FailoverWithModel func(string, []byte, string, string, http.Header) error
+	// MarkSafeFailover annotates guarded staging/scanner failure as safe recovery
+	// under caller policy, including when HTTP heartbeat bytes have already been
+	// written.
+	MarkSafeFailover func(error)
+	// RecordError retains upstream failure evidence before a matched error rule
+	// writes its client JSON, keeping monitoring separate from customized
+	// presentation.
+	RecordError func(string, string, []byte, string)
+	// CompactFallback can classify an error for configured Compact recovery before
+	// client output; a nonnil result ends this reader's attempt immediately.
+	CompactFallback func([]byte, string) error
+	// ErrorRule supplies selected client status/type/message when matched before
+	// output; the reader records evidence and marks retry commitment before writing
+	// that JSON.
+	ErrorRule func([]byte, string) (int, string, string, bool)
+	// CapacitySuppressed records one native OpenAI capacity failure after output
+	// has made failover unavailable; this reader suppresses repeated logging for
+	// the same attempt.
+	CapacitySuppressed func(string, string)
+	// MarkCyber receives policy evidence after terminal usage parsing and before
+	// client error trimming; caller storage/redaction policy remains outside the
+	// reader.
+	MarkCyber func(CyberObservation)
+	// ToolCorrector runs after native image/search observation; mapped renames
+	// require a usable constructor-initialized corrector and its statistics
+	// storage.
+	ToolCorrector *CodexToolCorrector
+	// RestoreClientTools restores provider-adapted client tools. RestoreNamespace
+	// restores flattened namespace identity. They run in that order before reserved
+	// name restoration; a failure stops delivery with observed usage retained, and
+	// callback inputs remain within this attempt's serialized consumer.
+	RestoreClientTools, RestoreNamespace func([]byte) ([]byte, error)
+	// RestoreToolNames restores reserved client names after RestoreClientTools and
+	// RestoreNamespace, using the effective event type for that delivered
+	// representation.
+	RestoreToolNames func([]byte, string) []byte
+	// EmptyCompleted classifies a native OpenAI terminal lacking output/usage/error
+	// before prior content, keeping that attempt out of ordinary successful
+	// zero-usage settlement.
+	EmptyCompleted func(string) error
+	// CountSearch receives each payload with one attempt-local seen map before
+	// client restoration; the callback supplies deduplication and any
+	// provider-specific search policy.
+	CountSearch func([]byte, map[string]struct{}) int
+	// StreamTimeout records provider policy for an actual idle interval before
+	// optional Grok cooldown/recovery and the reader's client stream error outcome.
+	StreamTimeout func(string)
+	// IdleCooldown applies the selected Grok idle policy before its pre-output
+	// recovery check; post-output timeout keeps accounting and presents stream
+	// failure.
+	IdleCooldown func()
+	// IdleFailover supplies Grok pre-output idle classification after Body is
+	// closed, using the configured interval while retaining observed usage for the
+	// return.
+	IdleFailover func(time.Duration) error
+	// FirstOutputError classifies elapsed first-output budget after Body closure
+	// and queued-event acknowledgment; it receives start, model, reasoning level,
+	// budget, label, and headers.
+	FirstOutputError func(time.Time, string, string, time.Duration, string, http.Header) error
+	// KeepaliveBytes records actual comment-write bytes outside the native attempt
+	// stage, allowing caller output policy to distinguish heartbeat commitment from
+	// content.
+	KeepaliveBytes func(int)
+	// BuildOpenAIResponseFailedSSE builds a failed terminal for a retained Codex
+	// bare error when no authoritative response.failed arrived, using its retained
+	// error evidence.
+	BuildOpenAIResponseFailedSSE func(string, string, []byte, string) string
+	// WrapOpenAIUpstreamWarningIfCyber classifies a selected failed return using
+	// status, retained failure bytes, message, and error; passthrough supplies its
+	// own narrower payload state.
+	WrapOpenAIUpstreamWarningIfCyber func(int, []byte, string, error) error
+	// TruncateString limits cyber diagnostic payload text to the requested budget;
+	// the gateway binds its byte-oriented UTF-8 truncation helper for this
+	// callback.
+	TruncateString func(string, int) string
+
+	// OpenAIStreamEventIsTerminalWithType recognizes terminal evidence using
+	// normalized payload/type; lifecycle headers and duplicate delivery remain
+	// coordinated by the reader.
+	OpenAIStreamEventIsTerminalWithType func(string, string) bool
 }
 
-// StreamingResult streaming response result.
+// StreamingResult records independently observed content, usage, commitment,
+// and reader-specific completion metadata.
 type StreamingResult struct {
-	// 分别记录内容输出、用量是否存在、HTTP 提交和重试窗口关闭状态。
+	// Served records visible-payload evidence, which can precede delivery. HasUsage
+	// records successful usage parsing. HttpCommitted reads physical writer state.
+	// RetryCommitted reads caller retry commitment. ClientDisconnected records output
+	// write/flush failure. ObservedOnly marks a later nil-result failure salvaged
+	// after observation state is installed. Each flag describes its
+	// own observation; first visible data, HTTP heartbeat writes, and retry policy
+	// can advance independently, and passthrough readers leave this group zero.
 	Served, HasUsage, HttpCommitted, RetryCommitted, ClientDisconnected, ObservedOnly bool
-	FirstSemanticOutput                                                               *time.Duration
-	Usage                                                                             *wire.ForwardUsage
-	FirstTokenMs                                                                      *int
-	ResponseID                                                                        string
-	ImageCount                                                                        int
-	ImageOutputSizes                                                                  []string
-	SearchCount                                                                       int
+
+	// Usage shares the attempt's mutable accumulator; HasUsage tracks parsing
+	// evidence separately because zero counters alone cannot establish absence of
+	// upstream usage.
+	Usage *wire.ForwardUsage
+
+	ResponseID string // observed upstream Responses identity
+	ImageCount int    // observed completed image count
+	// ImageOutputSizes contains known image dimensions from the counter snapshot;
+	// missing metadata is omitted, so its positions need not correspond to every
+	// counted image.
+	ImageOutputSizes []string
+	SearchCount      int // observed deduplicated search calls
 }
 
+// ReadStreamingResponse observes and delivers Responses SSE using one attempt's
+// selected staging and failure policies. Supply usable response/output objects
+// and callbacks used by those policies. Pair a positive FirstOutputTimeout with
+// StageFirstOutput, as the gateway does, because deadline progress is completed
+// through staged events. The ctx argument is unused; response-body and callback
+// contexts govern cancellation.
+//
+// Visible content, completed staging progress, HTTP commitment, and retry
+// commitment remain separate observations. Visible payload can set Served
+// before delivery succeeds. Timed producers stop sends on return; first-output
+// expiry additionally closes Body and waits for event-channel closure,
+// requiring Close to unblock reading. Results salvage observed state on later
+// failure, but the unsupported-flusher return occurs before that defer is
+// installed. The executor retains final body ownership.
 func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream.OutputContext, options StreamOptions, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (observed *StreamingResult, failure error) {
 	firstOutputTimeout := options.FirstOutputTimeout
 	guardFirstOutput := firstOutputTimeout > 0
 	stageFirstOutput := options.StageFirstOutput
 	attemptResponseHeaders := options.PrepareHeaders(resp.Header, stageFirstOutput, c.Writer.Header())
 
-	// Set SSE response headers
+	// Stable SSE framing headers are applied independently of provider header
+	// staging, so retries do not inherit a prior attempt's content-type/cache policy.
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	// Pass through other headers
+	// Unstaged attempts can expose request ID immediately; staged headers wait
+	// for progress and cannot be applied after the client writer has committed.
 	if !stageFirstOutput && resp.Header.Get("x-request-id") != "" {
 		v := resp.Header.Get("x-request-id")
 		c.Header("x-request-id", v)
@@ -119,7 +286,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			}
 		}
 		options.StagedHeadersCommitted(attemptResponseHeaders)
-		// 这些 header 描述网关自己的 SSE 流，跨提供商尝试保持稳定，优先级高于上游值。
+		// Reapply framing headers after approved provider values, preventing
+		// an upstream content type or cache setting from replacing the gateway's SSE format.
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
@@ -132,13 +300,17 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 		return nil, errors.New("streaming not supported")
 	}
 	maxLineSize := options.MaxLineSize
-	var firstTokenMs *int
-	ttftMode := options.TTFTMode()
+	firstOutputFlushed := false
+
 	firstOutputProgressObserved := false
+	// Four KiB batches ordinary writes; guarded first output uses its separate
+	// bounded stage so early bytes can remain recoverable before sink delivery.
 	bufferedWriter := bufio.NewWriterSize(w, 4*1024)
 	var firstOutputStage *OpenAIFirstOutputStage
 	if stageFirstOutput {
 		firstOutputStage = NewDefaultOpenAIFirstOutputStage()
+		// Release the attempt spool on all exits; cleanup failure is logged
+		// separately and does not replace the selected stream result or failure.
 		defer func() {
 			if err := firstOutputStage.Close(); err != nil {
 				options.Logf("OpenAI first-output staging cleanup failed: provider=%d model=%s error=%v", options.ProviderID, originalModel, err)
@@ -158,8 +330,6 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 		return int64(bufferedWriter.Buffered())
 	}
 	flushBuffered := func() error {
-		// 缓冲区有数据时，刷新才算向下游写出响应。
-		hadPendingBytes := pendingBytes() > 0
 		if firstOutputStage != nil && !firstOutputStage.Closed() {
 			if err := firstOutputStage.CommitTo(w); err != nil {
 				return err
@@ -170,15 +340,12 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			}
 		}
 		flusher.Flush()
-		if hadPendingBytes {
-			options.MarkTime(StreamTimeFlush)
-		}
 		return nil
 	}
 
 	usage := &wire.ForwardUsage{}
 	hasObservedUsage := false
-	var firstSemanticOutput *time.Duration
+	semanticOutputSeen := false
 	imageCounter := wire.NewOpenAIImageOutputCounter()
 	responseID := ""
 	var firstOutputScanGuard atomic.Bool
@@ -192,7 +359,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	documentScanner := wire.NewSSEJSONDocumentScanner(scanner)
 
 	streamInterval := options.StreamInterval
-	// 按上游数据到达间隔监控超时，下游写入耗时单独处理
+	// Idle checks use producer arrival timestamps, so time spent in downstream
+	// conversion/write work cannot alone make recent upstream data look absent.
 	var intervalTicker *time.Ticker
 	if streamInterval > 0 {
 		intervalTicker = time.NewTicker(streamInterval)
@@ -204,7 +372,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	}
 
 	keepaliveInterval := options.KeepaliveInterval
-	// 下游 keepalive 仅用于防止代理空闲断开
+	// Client heartbeat ticks use successful downstream writes as their clock,
+	// allowing activity during upstream preamble staging without redefining retry commitment.
 	var keepaliveTicker *time.Ticker
 	if keepaliveInterval > 0 {
 		keepaliveTicker = time.NewTicker(keepaliveInterval)
@@ -219,6 +388,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	var firstOutputCh <-chan time.Time
 	if firstOutputTimeout > 0 {
 		remaining := time.Until(startTime.Add(firstOutputTimeout))
+		// An elapsed budget schedules a near-immediate timer with a one-nanosecond
+		// delay; ready-event selection still decides which observation the consumer handles first.
 		if remaining <= 0 {
 			remaining = time.Nanosecond
 		}
@@ -226,6 +397,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 		firstOutputCh = firstOutputTimer.C
 		defer firstOutputTimer.Stop()
 	}
+	// Stop and drain a pending deadline before disabling its select channel,
+	// preventing completed progress from later selecting an already expired first-output timer.
 	stopFirstOutputTimer := func() {
 		if firstOutputTimer == nil {
 			return
@@ -244,11 +417,10 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	// based on downstream idle time.
 	lastDownstreamWriteAt := time.Now()
 
-	// 仅发送一次错误事件，避免多次写入导致协议混乱。
-	// 注意：OpenAI `/v1/responses` streaming 事件必须符合 OpenAI Responses schema；
-	// 否则下游 SDK（例如 OpenCode）会因为类型校验失败而报错。
+	// Latch error delivery before flushing/writing a Responses-shaped event,
+	// so another read or timeout failure cannot attempt a duplicate error after partial delivery.
 	errorEventSent := false
-	clientDisconnected := false // 客户端断开后继续 drain 上游以收集 usage
+	clientDisconnected := false
 	sawTerminalEvent := false
 	sawFailedEvent := false
 	sawBareError := false
@@ -269,9 +441,10 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	pendingSSEEventType := ""
 	eventInProgress := false
 	eventStartsClientOutput := false
-	eventStartsVisibleOutput := false
-	eventStartsTTFTOutput := false
+	eventStartsFirstFlush := false
 	eventShouldFlush := false
+	// A write rejected by the open stage remains recoverable: classify it,
+	// annotate safe failover, and close upstream reading before any attempt bytes are committed.
 	handlePendingWriteError := func(err error) {
 		if firstOutputStage != nil && !firstOutputStage.Closed() {
 			message := "OpenAI first-output staging failed"
@@ -288,10 +461,12 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 		clientDisconnected = true
 		options.Logf("Client disconnected during streaming, continuing to drain upstream for billing")
 	}
+	// Complete one framed event before stopping its progress deadline or taking
+	// staged headers into the live writer; payload observation and successful
+	// delivery remain separate.
 	completeGuardedEvent := func(queueDrained bool) {
 		completedProgressEvent := eventStartsClientOutput
-		completedVisibleEvent := eventStartsVisibleOutput
-		completedTTFTEvent := eventStartsTTFTOutput
+		completedFirstFlushEvent := eventStartsFirstFlush
 		shouldFlush := eventShouldFlush || (queueDrained && clientOutputStarted)
 		eventInProgress = false
 		if !clientDisconnected {
@@ -313,16 +488,12 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			firstOutputProgressObserved = true
 			stopFirstOutputTimer()
 		}
-		if completedVisibleEvent && firstTokenMs == nil {
-			options.MarkTime(StreamTimeVisible)
-		}
-		if completedTTFTEvent && firstTokenMs == nil {
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
+		if completedFirstFlushEvent && !firstOutputFlushed {
+			// Semantic progress ends the initial flush guard for subsequent stream events.
+			firstOutputFlushed = true
 		}
 		eventStartsClientOutput = false
-		eventStartsVisibleOutput = false
-		eventStartsTTFTOutput = false
+		eventStartsFirstFlush = false
 		eventShouldFlush = false
 	}
 	sendErrorEvent := func(reason string) {
@@ -335,7 +506,10 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			clientDisconnected = true
 			return
 		}
-		if _, err := writePendingString("data: " + payload + "\n\n"); err != nil {
+		// Pending upstream bytes have been delivered before this local failure.
+		// Keep its write outside upstream buffering so the error cannot establish
+		// an upstream delivery timestamp or become mixed with genuine response data.
+		if _, err := options.WriteLocalStreamError([]byte("data: " + payload + "\n\n")); err != nil {
 			clientDisconnected = true
 			return
 		}
@@ -353,21 +527,18 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	streamImageOutputs := make([]json.RawMessage, 0, 1)
 	streamSeenImages := make(map[string]struct{})
 	searchCounter := 0
-	// 对 SSE 事件中的搜索工具调用去重，例如 item.done 与 response.completed
-	// 可能包含同一 call_id，重复统计会使附加费接近翻倍。
+	// Retain one search identity set across completed-item and terminal copies,
+	// allowing the callback to avoid duplicate surcharge observations within this attempt.
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *StreamingResult {
 		return &StreamingResult{
-			Served:              firstSemanticOutput != nil,
-			HasUsage:            hasObservedUsage,
-			HttpCommitted:       c.Writer.Written(),
-			RetryCommitted:      options.IsCommitted(),
-			ClientDisconnected:  clientDisconnected,
-			FirstSemanticOutput: firstSemanticOutput,
+			Served:             semanticOutputSeen,
+			HasUsage:           hasObservedUsage,
+			HttpCommitted:      c.Writer.Written(),
+			RetryCommitted:     options.IsCommitted(),
+			ClientDisconnected: clientDisconnected,
 
 			Usage: usage,
-
-			FirstTokenMs: firstTokenMs,
 
 			ResponseID: responseID,
 
@@ -378,7 +549,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			SearchCount: searchCounter,
 		}
 	}
-	// 读取失败时返回已收集的用量，并标记 ObservedOnly。
+	// Once observation state exists, salvage a nil-result failure as ObservedOnly;
+	// early unsupported-writer rejection above occurs before this defer is registered.
 	defer func() {
 		if observed == nil && failure != nil {
 			observed = resultWithUsage()
@@ -419,7 +591,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	}
 	finalizeStream := func() (*StreamingResult, error) {
 		if stageFirstOutput && eventInProgress {
-			// 即使没有结尾空行，EOF 也会派发最后一个 SSE 事件。
+			// EOF can finish data without a separator; complete its staged state
+			// before terminal selection so available event evidence is not left waiting
+			// for another line.
 			completeGuardedEvent(true)
 		}
 		synthesizeBareErrorFailure()
@@ -474,8 +648,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			result, err := finalizeStream()
 			return result, err, true
 		}
-		// 客户端断开/取消请求时，上游读取往往会返回 context canceled。
-		// /v1/responses 的 SSE 事件必须符合 OpenAI 协议；这里不注入自定义 error event，避免下游 SDK 解析失败。
+		// Cancellation/deadline reads retain incomplete accounting and optional
+		// pending delivery, while selected transport/size failures use their separate
+		// error-event paths.
 		if errors.Is(scanErr, context.Canceled) || errors.Is(scanErr, context.DeadlineExceeded) {
 			if eventShouldFlush {
 				flushPending("Client disconnected during canceled stream flush, returning collected usage")
@@ -494,7 +669,7 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			}
 			return resultWithUsage(), options.Failover(upstreamRequestID, nil, msg), true
 		}
-		// 客户端已断开时，上游出错仅影响体验，不影响计费；返回已收集 usage
+		// After disconnect, return collected usage with the upstream read error.
 		if clientDisconnected {
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete after disconnect: %w", scanErr), true
 		}
@@ -513,14 +688,16 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			eventType = strings.TrimSpace(eventType)
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
 			if wire.IsResponseLifecycleEvent(eventType) {
-				// 等 data 到达后再写事件头，确保 done 改名和重复终态过滤覆盖整个事件。
+				// Keep lifecycle header and data together through normalization, so
+				// renaming or duplicate-terminal suppression cannot leave an orphan event
+				// header downstream.
 				pendingLifecycleHeader = line
 				return
 			}
 		}
-		// Extract data from SSE line (supports both "data: " and "data:" formats)
+		// Observe upstream data before lifecycle or client-identity repair, keeping
+		// model/tier evidence tied to the provider representation rather than the delivered copy.
 		if data, ok := wire.ExtractSSEDataLine(line); ok {
-			options.MarkTime(StreamTimeData)
 			dataBytes := []byte(data)
 			eventType := wire.EffectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
 			options.Observe(dataBytes, eventType)
@@ -533,7 +710,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			eventType = normalizedType
 			if codexFailureTerminal && sawBareError && !sawResponseFailed &&
 				eventType == "response.completed" {
-				// 只有规范化后确认成功的终态才能覆盖此前暂存的独立错误。
+				// A normalized completed terminal resolves a retained bare error as
+				// success; clear its pending delivery and provider effects before ordinary
+				// terminal accounting.
 				sawBareError = false
 				sawFailedEvent = false
 				terminalFailurePending = false
@@ -542,9 +721,12 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				bareErrorProviderSideEffectsPending = false
 				failedMessage = ""
 			}
-			// 失败终态需要清除旧事件头的抑制状态，避免误丢收尾事件。
+			// Recompute suppression from normalized identity because legacy done can
+			// become failed; an earlier event-header classification must not hide its
+			// authoritative terminal.
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
-			// 使用规范化后的类型判定终态，兼容 data 中缺少 type 的生命周期事件。
+			// Terminal detection uses normalized type, allowing a lifecycle event
+			// declared in the event line to supply terminal evidence when JSON omitted type.
 			if options.OpenAIStreamEventIsTerminalWithType(data, eventType) {
 				sawTerminalEvent = true
 			}
@@ -572,23 +754,17 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				if failedMessage == "" {
 					failedMessage = "Upstream response failed"
 				}
-				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
-				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
-				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
+				// Snapshot failure usage before policy recording and client trimming;
+				// the later delivery copy can lose usage while monitoring retains consumed-token evidence.
 				hasObservedUsage = wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage) || hasObservedUsage
 				if hit, code, msg := DetectOpenAICyberPolicy(dataBytes); hit {
 					cyberHit = true
 					options.MarkCyber(CyberObservation{
-						Code: code,
-
-						Message: msg,
-
-						Body: options.TruncateString(string(dataBytes), 4096),
-
+						Code:           code,
+						Message:        msg,
+						Body:           options.TruncateString(string(dataBytes), 4096),
 						UpstreamStatus: http.StatusOK,
-
-						UpstreamInTok: usage.InputTokens,
-
+						UpstreamInTok:  usage.InputTokens,
 						UpstreamOutTok: usage.OutputTokens,
 					})
 				}
@@ -602,8 +778,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				}
 				if outputStarted && !cyberHit {
 					if codexFailureTerminal && eventType == "error" {
-						// OpenAI commonly follows a bare error with response.failed.
-						// Defer provider health updates so the pair is applied once.
+						// Defer provider effects for a retained bare error until failed
+						// terminal or EOF synthesis, keeping the paired failure frames from
+						// applying the same outcome twice.
 						bareErrorProviderSideEffectsPending = true
 					} else {
 						options.TerminalSideEffects(dataBytes, failedMessage, resp.Header, mappedModel)
@@ -627,8 +804,7 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 					if !cyberHit && !sawBareError {
 						if status, errType, errMsg, matched := options.ErrorRule(dataBytes, failedMessage); matched {
 							sawFailedEvent = true
-							// 命中透传规则也要记录 ops 上游错误事件（对齐 CC/Messages 与
-							// antigravity 先例），否则透传命中的 failed 在监控中不可见。
+							// Record upstream errors even when a passthrough rule handles the client response.
 							options.RecordError(upstreamRequestID, "http_error", dataBytes, failedMessage)
 							options.MarkCommitted()
 							c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -656,7 +832,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			imageCounter.AddSSEData(dataBytes)
 			searchCounter += options.CountSearch(dataBytes, streamSearchSeen)
 
-			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
+			// Observe native image/search counters before tool repair, then apply
+			// Codex names/arguments before client tool and namespace restoration sees
+			// those output nodes.
 			if correctedData, corrected := options.ToolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
 				dataBytes = correctedData
 				data = string(correctedData)
@@ -705,22 +883,19 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				data = string(sanitizedData)
 				line = "data: " + data
 			}
-			// Replace model in response if needed.
-			// Fast path: most events do not contain model field values.
+			// Model replacement follows client identity restoration and operates on
+			// delivery text; provider observations already consumed the pre-replacement
+			// upstream payload.
 			if needModelReplace && mappedModel != "" && strings.Contains(line, mappedModel) {
 				line = wire.ReplaceModelInSSELine(line, mappedModel, originalModel)
 			}
 			startsClientOutput := forceFlushFailedEvent || OpenAIStreamDataStartsClientOutput(data, eventType)
 			startsVisibleOutput := wire.StreamDataStartsVisibleOutput(data, eventType)
-			if startsVisibleOutput && firstSemanticOutput == nil {
-				elapsed := time.Since(startTime)
-				firstSemanticOutput = &elapsed
-			}
-			startsTTFTOutput := options.OpenAIStreamDataStartsTTFT(data, eventType, forceFlushFailedEvent, ttftMode)
+			semanticOutputSeen = semanticOutputSeen || startsVisibleOutput
+			startsFirstFlush := forceFlushFailedEvent || OpenAIStreamDataStartsFirstFlush(data, eventType)
 			if stageFirstOutput {
 				eventStartsClientOutput = eventStartsClientOutput || startsClientOutput
-				eventStartsVisibleOutput = eventStartsVisibleOutput || startsVisibleOutput
-				eventStartsTTFTOutput = eventStartsTTFTOutput || startsTTFTOutput
+				eventStartsFirstFlush = eventStartsFirstFlush || startsFirstFlush
 				if startsClientOutput {
 					firstOutputScanGuard.Store(false)
 				}
@@ -728,10 +903,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			if startsClientOutput && !wire.OpenAIStreamEventTypeIsTerminal(eventType) {
 				responsesSemanticOutputSeen = true
 			}
-			// OpenAI Responses streams that terminate with an empty
-			// response.completed (no output, no usage, no error, nothing sent
-			// to the client) are silent upstream refusals: fail over instead of
-			// recording a successful 0/0 usage turn (issue #5009).
+			// Native empty completion before content is a recoverable missing-output
+			// outcome; output, usage, error, or prior accepted content keeps it out of
+			// this classification.
 			if options.NativeOpenAI &&
 				(eventType == "response.completed" || eventType == "response.done") &&
 				!sawFailedEvent && !responsesSemanticOutputSeen && !clientOutputStarted &&
@@ -750,11 +924,13 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				pendingLifecycleHeader = ""
 			}
 			suppressCurrentEvent = suppressCurrentEvent || duplicateTerminal
-			// 写入客户端（客户端断开后继续 drain 上游）
+			// Delivery failure suppresses subsequent writes while usage and terminal
+			// observation remain active; suppressed bare errors and duplicate terminals
+			// also retain that accounting path.
 			if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
 				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
-				if firstTokenMs == nil && startsTTFTOutput {
-					// 保证首个 token 事件尽快出站，避免影响 TTFT。
+				if !firstOutputFlushed && startsFirstFlush {
+					// Flush semantic progress promptly so initial buffering does not delay downstream delivery.
 					shouldFlush = true
 				}
 				eventShouldFlush = eventShouldFlush || shouldFlush
@@ -767,20 +943,17 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				}
 			}
 
-			// Record first token time
-			if startsVisibleOutput {
-				options.MarkTime(StreamTimeVisible)
-			}
-			if !guardFirstOutput && firstTokenMs == nil && startsTTFTOutput {
-				ms := int(time.Since(startTime).Milliseconds())
-				firstTokenMs = &ms
+			if !guardFirstOutput && !firstOutputFlushed && startsFirstFlush {
+				// Semantic progress ends the initial flush guard for subsequent stream events.
+				firstOutputFlushed = true
 				stopFirstOutputTimer()
 			}
 			hasObservedUsage = wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage) || hasObservedUsage
 			return
 		}
 
-		// A blank line dispatches a guarded event from the attempt-local stage.
+		// An event separator completes guarded state and its flush decision;
+		// suppressing a whole event clears pending progress so headers and content remain paired.
 		if stageFirstOutput && line == "" {
 			pendingLifecycleHeader = ""
 			pendingSSEEventType = ""
@@ -789,7 +962,6 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				terminalFailurePending = false
 				eventInProgress = false
 				eventStartsClientOutput = false
-				eventStartsVisibleOutput = false
 				eventShouldFlush = false
 				return
 			}
@@ -797,7 +969,6 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				terminalFailurePending = false
 				eventInProgress = false
 				eventStartsClientOutput = false
-				eventStartsVisibleOutput = false
 				eventShouldFlush = false
 				return
 			}
@@ -858,7 +1029,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 		}
 	}
 
-	// 无超时/无 keepalive 的常见路径走同步扫描，减少 goroutine 与 channel 开销。
+	// With all timers disabled, direct scanning uses the same processing and
+	// failure machinery while returning its pooled buffer only after the synchronous reader exits.
 	if streamInterval <= 0 && keepaliveInterval <= 0 && firstOutputTimeout <= 0 {
 		defer httpclient.PutSSEScannerBuf64K(scanBuf)
 		for documentScanner.Scan() {
@@ -873,14 +1045,17 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 		return finalizeStream()
 	}
 
+	// scanEvent transfers a scanner token or failure to the timed consumer.
 	type scanEvent struct {
-		line      string
-		err       error
+		line string // upstream scanner token
+		err  error  // upstream scanner failure
+		// processed is allocated while the guard is active; the consumer closes
+		// it once after handling this event, permitting the producer to read onward.
 		processed chan struct{}
 	}
-	// 独立 goroutine 读取上游，避免读取阻塞影响 keepalive/超时处理
-	// 保护模式允许一个排队 token 和一个正在处理的 token；配合 scanner 上限，
-	// scanner/channel 保留量约束在 16 MiB 附近。禁用超时时队列深度为 16。
+	// First-output timeout selects a one-entry queue, while other timed modes
+	// use sixteen entries. Active staging adds a per-token acknowledgment so producer
+	// read-ahead cannot pass a guard decision still being handled by the consumer.
 	events := make(chan scanEvent, OpenAIFirstOutputEventQueueSize(guardFirstOutput))
 	done := make(chan struct{})
 	sendEvent := func(ev scanEvent) bool {
@@ -909,6 +1084,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 	}
 	var lastReadAt int64
 	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+	// The producer owns scanner buffer return and channel closure; publishing
+	// closure precedes its deferred buffer return, so closure alone is not a goroutine join.
 	go func(scanBuf *httpclient.SSEScannerBuf64K) {
 		defer httpclient.PutSSEScannerBuf64K(scanBuf)
 		defer close(events)
@@ -922,6 +1099,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			_ = sendEvent(scanEvent{err: err})
 		}
 	}(scanBuf)
+	// Release producer sends and acknowledgment waits on exit; ordinary body
+	// read interruption still depends on executor closure except the explicit
+	// timeout branches below.
 	defer close(done)
 
 	for {
@@ -929,8 +1109,7 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 		case ev, ok := <-events:
 			if !ok {
 				if stageFirstOutput && eventInProgress {
-					// 即使没有结尾空行，EOF 也会派发最后一个 SSE 事件；
-					// 不在下游线路上合成额外字节。
+					// Dispatch the last staged event at EOF without adding a synthetic blank line.
 					completeGuardedEvent(true)
 				}
 				return finalizeStream()
@@ -961,10 +1140,12 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				return resultWithUsage(), fmt.Errorf("stream usage incomplete after timeout")
 			}
 			options.Logf("Stream data interval timeout: provider=%d model=%s interval=%s", options.ProviderID, originalModel, streamInterval)
-			// 处理流超时，可能标记提供商为临时不可调度或错误状态
+			// Record timeout policy before optional Grok recovery, keeping its
+			// provider observation present whether the attempt fails over or emits a client error.
 			options.StreamTimeout(originalModel)
-			// Grok 在尚未向客户端提交可见字节时执行短期冷却与提供商故障转移。
-			// 输出开始后按 stream_timeout 处理，已发送的 SSE 保持原样。
+			// Grok cooldown precedes pre-output eligibility. If output already
+			// started, retain accounting and finish through the stream-timeout error
+			// path rather than replay.
 			if options.GrokIdlePolicy {
 				options.IdleCooldown()
 				if !options.ClientOutputStarted(clientOutputStarted) && !eventShouldFlush {
@@ -980,6 +1161,8 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 
 		case <-firstOutputCh:
+			// Closing Body releases blocked scanning; draining and acknowledging
+			// queued tokens lets the producer publish channel closure before this deadline return.
 			if firstOutputProgressObserved {
 				stopFirstOutputTimer()
 				continue
@@ -1011,8 +1194,9 @@ func ReadStreamingResponse(ctx context.Context, resp *http.Response, c *upstream
 				continue
 			}
 			if stageFirstOutput {
-				// 绕过当前尝试的本地缓冲帧；稳定 SSE 注释可以提交，
-				// 但提供商相关 header 在出现语义输出前仍保持私有。
+				// Send stable comments outside attempt storage and record actual bytes;
+				// caller retry policy excludes them, while physical HTTP commitment can
+				// prevent later provider-header application.
 				n, err := w.Write([]byte(":\n\n"))
 				options.KeepaliveBytes(n)
 				if err != nil {

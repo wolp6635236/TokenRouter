@@ -5,44 +5,67 @@ import (
 	"time"
 )
 
-// StreamTimeoutAction 流超时处理方式常量。
+// health_options.go defines stream-timeout and overload policies and the
+// shared timeout-counter interface.
+// Stream timeout policy decides whether observed failures are counted and how a
+// reached threshold affects provider health. The timeout detector supplies the
+// failure itself; these values govern temporary pauses, account errors or a
+// skipped action, while 529 overload uses a separate enabled/duration policy.
+
+// Stream timeout action values distinguish a temporary pause, account error or
+// skipped health command after policy evaluation selects an action.
 const (
-	StreamTimeoutActionTempUnsched = "temp_unsched" // 临时不可调度
-	StreamTimeoutActionError       = "error"        // 标记为错误状态
-	StreamTimeoutActionNone        = "none"         // 不处理
+	StreamTimeoutActionTempUnsched = "temp_unsched" // Temporarily pause scheduling.
+	StreamTimeoutActionError       = "error"        // Mark the provider as errored.
+	StreamTimeoutActionNone        = "none"         // Leave provider state unchanged.
 )
 
-// StreamTimeoutSettings 流超时处理配置（仅控制超时后的处理方式，超时判定由网关配置控制）。
+// StreamTimeoutSettings supplies counting and resulting health-action policy
+// for detected stream timeouts.
 type StreamTimeoutSettings struct {
-	// Enabled 是否启用流超时处理
-	Enabled bool `json:"enabled"`
-	// Action 超时后的处理方式: "temp_unsched" | "error" | "none"
-	Action string `json:"action"`
-	// TempUnschedMinutes 临时不可调度持续时间（分钟）
+	// Enabled and Action decide whether HandleStreamTimeout records a failure at
+	// all. Disabled policy or the none action returns before counter access; other
+	// actions can proceed to threshold evaluation.
+	Enabled bool   `json:"enabled"` // timeout handling enabled
+	Action  string `json:"action"`  // selected health action
+	// TempUnschedMinutes supplies the pause duration when Action selects temporary
+	// suspension; error handling uses an account-error command instead.
 	TempUnschedMinutes int `json:"temp_unsched_minutes"`
-	// ThresholdCount 触发阈值次数（累计多少次超时才触发）
-	ThresholdCount int `json:"threshold_count"`
-	// ThresholdWindowMinutes 阈值窗口时间（分钟）
-	ThresholdWindowMinutes int `json:"threshold_window_minutes"`
+	// ThresholdCount and ThresholdWindowMinutes describe the shared counter
+	// decision. The production Redis cache fixes expiry at the first increment;
+	// policy changes during that lifetime do not extend its end.
+	ThresholdCount         int `json:"threshold_count"`          // timeout trip count
+	ThresholdWindowMinutes int `json:"threshold_window_minutes"` // minutes
 }
 
-// TimeoutCounterCache 超时计数器缓存接口。
+// TimeoutCounterCache supplies expiring provider timeout counts and independent
+// history cleanup operations.
 type TimeoutCounterCache interface {
-	// IncrementTimeoutCount 增加提供商的超时计数，返回当前计数值
-	// windowMinutes 是计数窗口时间（分钟），超过此时间计数器会自动重置
+	// IncrementTimeoutCount records a timeout and returns the count used for
+	// health thresholds. The production Redis adapter gives the first increment a
+	// fixed window, with a one-minute minimum; later increments retain its expiry.
 	IncrementTimeoutCount(ctx context.Context, providerID int64, windowMinutes int) (int64, error)
-	// GetTimeoutCount 获取提供商当前的超时计数
+	// GetTimeoutCount reads the selected provider's shared timeout count,
+	// returning zero for an absent history. Backend errors remain separate so
+	// consumers can distinguish no observations from an unavailable counter.
 	GetTimeoutCount(ctx context.Context, providerID int64) (int64, error)
-	// ResetTimeoutCount 重置提供商的超时计数
+	// ResetTimeoutCount removes the selected provider's shared history after
+	// health handling or recovery. Missing history succeeds, while deletion errors
+	// remain available for callers to log incomplete cleanup.
 	ResetTimeoutCount(ctx context.Context, providerID int64) error
-	// GetTimeoutCountTTL 获取计数器剩余过期时间
+	// GetTimeoutCountTTL returns the counter's remaining backend lifetime for
+	// status presentation. Nonpositive values indicate a backend sentinel or
+	// absent live countdown; storage errors are returned separately from that
+	// duration.
 	GetTimeoutCountTTL(ctx context.Context, providerID int64) (time.Duration, error)
 }
 
-// OverloadCooldownSettings 529 过载冷却配置。
+// OverloadCooldownSettings supplies the enabled switch and duration for
+// provider-wide HTTP 529 handling.
 type OverloadCooldownSettings struct {
-	// Enabled 是否在收到 529 时暂停提供商调度
-	Enabled bool `json:"enabled"`
-	// CooldownMinutes 冷却时长（分钟）
-	CooldownMinutes int `json:"cooldown_minutes"`
+	// Enabled and CooldownMinutes control ApplyOverload together. Disabled policy
+	// returns before a health write; enabled policy uses the duration or resolves
+	// a built-in value when it is nonpositive.
+	Enabled         bool `json:"enabled"`          // overload handling enabled
+	CooldownMinutes int  `json:"cooldown_minutes"` // minutes
 }

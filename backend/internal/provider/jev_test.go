@@ -8,7 +8,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestJevCredentialsAndProtocols 覆盖统一保存校验、默认协议和关闭协议。
+// TestJevCredentialsAndProtocols builds a Jev API Key record and normalizes its
+// protocol choices. It checks SystemOne defaults, explicit disablement,
+// rejected protocol and credential combinations, and opt-in upstream usage
+// querying.
 func TestJevCredentialsAndProtocols(t *testing.T) {
 	value := &Record{Platform: PlatformJev, Type: ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "test"}}
 	require.NoError(t, NormalizeProviderProtocols(value))

@@ -6,16 +6,42 @@ import (
 	"time"
 )
 
-// CNConcurrencyLimitReason 保留并发限制状态的原来源标记。
+// cn_health.go applies CN concurrency, balance, and Coding Plan cooldowns to
+// runtime scheduling and stored provider state.
+// CN rejection handling keeps concurrency, balance, and Coding Plan pauses
+// distinct. A concurrency response uses the shared 403 cooldown length without
+// updating the forbidden-response counter. A balance response carries the
+// current query fingerprint in its stored reason so the monitor can recognize
+// the identity responsible for the pause.
+//
+// Runtime block notification precedes both temporary-pause and rate-limit
+// persistence. Failed writes therefore leave any immediate scheduling block
+// installed. Coding Plan rate limits use the earliest future reset in a
+// matching limits snapshot, even when another window resets later; the caller
+// receives a handled result once that deadline is selected.
+
+// CNConcurrencyLimitReason labels the runtime scheduling block raised for a CN
+// concurrency rejection. The stored pause receives the caller's reason
+// separately.
 const CNConcurrencyLimitReason = "cn_concurrency_limit"
 
-// ApplyCNConcurrencyLimit 将 Kimi 并发限制写为短期临时不可调度，
-// 当前请求继续切换提供商，此类错误的累计 403 次数保持不变。
+// ApplyCNConcurrencyLimit notifies scheduling and attempts a temporary pause
+// after a concurrency rejection. Callers provide a valid provider and store;
+// the deadline uses the shared ten-minute 403 cooldown duration, while the
+// reason supplied to persistence can contain the upstream explanation.
+//
+// The scheduling callback runs before the store write. A failed write logs a
+// warning and leaves any callback-installed block in place, so the caller can
+// switch providers immediately even when persistence fails.
 func (s *HealthService) ApplyCNConcurrencyLimit(
 	ctx context.Context,
 	provider *Record, reason string,
 ) {
+	// Interpret the shared 403 cooldown in minutes.
 	until := s.options.Now().Add(time.Duration(OpenAI403CooldownMinutesDefault) * time.Minute)
+	// Notify the request-side blocker before persistence so store failure
+	// still
+	// leaves the observed provider temporarily excluded.
 	s.notifyProviderSchedulingBlocked(provider, until, CNConcurrencyLimitReason)
 	if err := s.providerRepo.SetTempUnschedulable(ctx, provider.ID, until, reason); err != nil {
 		s.options.Warn("cn_concurrency_limit_set_temp_unschedulable_failed", "provider_id", provider.ID, "error", err)
@@ -28,9 +54,17 @@ func (s *HealthService) ApplyCNConcurrencyLimit(
 	)
 }
 
-// ApplyCNInsufficientBalance 把余额不足标记为可恢复的临时停调：
-// 写入绑定身份的临时停调，冷却覆盖两个余额检测周期，
-// 由周期任务在余额恢复后清除。返回前已通知调度阻塞。
+// ApplyCNInsufficientBalance notifies scheduling and attempts an identity-
+// labelled pause for an insufficient-balance response. Callers provide the
+// observed provider; an unavailable CN query fingerprint is represented by
+// "unknown", and trimmed upstream text is appended to the stored reason.
+//
+// The deadline spans two configured monitor intervals, using
+// CNBalanceCooldownDuration for defaults. Notification precedes persistence, so
+// a failed store write leaves any runtime block in effect. Later balance
+// monitoring clears a pause only when its reason exactly matches the monitor
+// reason for that fingerprint. An appended upstream explanation leaves this
+// request-side reason different, so that recovery branch does not clear it.
 func (s *HealthService) ApplyCNInsufficientBalance(
 	ctx context.Context,
 	provider *Record,
@@ -38,6 +72,10 @@ func (s *HealthService) ApplyCNInsufficientBalance(
 ) {
 	identityHash := CNUsageMonitorIdentityFingerprint(provider)
 	if identityHash == "" {
+		// Fingerprint validation can fail for unsupported query
+		// identities;
+		// retain a recognizable balance reason for this request-side
+		// pause.
 		identityHash = "unknown"
 	}
 	msg := CNUsageMonitorReason(identityHash)
@@ -46,6 +84,8 @@ func (s *HealthService) ApplyCNInsufficientBalance(
 	}
 
 	until := s.options.Now().Add(CNBalanceCooldownDuration(s.options.CNIntervalMinutes))
+	// Publish the immediate block before storing its fingerprint reason; a
+	// failed write cannot retract the callback result.
 	s.notifyProviderSchedulingBlocked(provider, until, "cn_insufficient_balance")
 	if err := s.providerRepo.SetTempUnschedulable(ctx, provider.ID, until, msg); err != nil {
 		s.options.Warn("cn_balance_set_temp_unschedulable_failed", "provider_id", provider.ID, "error", err)
@@ -58,26 +98,32 @@ func (s *HealthService) ApplyCNInsufficientBalance(
 	)
 }
 
-// CNBalanceCooldownDuration 返回余额不足临时停调的持续时长（= 2× 余额检测周期，
-// 默认 20 分钟）。周期任务会在余额恢复后提前清除，故此处只需保证冷却覆盖到下一次
-// 周期检测即可。
+// CNBalanceCooldownDuration returns twice a positive monitoring interval in
+// minutes, defaulting to twenty minutes. A computed duration below one minute
+// is replaced by ten minutes before the caller stores a balance pause.
 func CNBalanceCooldownDuration(intervalMinutes int) time.Duration {
 	minutes := 10
 	if intervalMinutes > 0 {
 		minutes = intervalMinutes
 	}
+	// Cover two polling intervals before the pause expires.
 	cooldown := time.Duration(minutes) * time.Minute * 2
 	if cooldown < time.Minute {
+		// Replace an undersized computed pause with ten minutes.
 		cooldown = 10 * time.Minute
 	}
 	return cooldown
 }
 
-// CNProviderQuotaSnapshotReset 读取 Coding Plan 统一快照中最早一个仍在未来的窗口
-// 重置时间（5h / weekly）。429 多数由 5h 滚动窗口触发，取较早的重置点可避免
-// 把提供商冷却到 weekly 重置（可达数天）的过度停调；如果确是 weekly 窗口耗尽，
-// 周期额度探测刷新快照后阈值评估会再次停调到正确的时间点。
-// 无快照或均已过期返回 nil。
+// CNProviderQuotaSnapshotReset returns a copied earliest future reset from an
+// identity-valid CN Coding Plan limits snapshot. Nil, other platforms, pay-as-
+// you-go records, and snapshots with another mode return nil.
+//
+// All windows contribute reset times regardless of their recorded utilization.
+// Expired or missing resets are skipped, so a short-window reset can end the
+// pause before a later weekly reset. Callers can reevaluate remaining quota
+// after that earlier deadline; nil means this snapshot supplies no future
+// deadline.
 func CNProviderQuotaSnapshotReset(provider *Record, now time.Time) *time.Time {
 	if provider == nil || !provider.IsCNProvider() || !provider.IsCodingPlan() {
 		return nil
@@ -87,6 +133,9 @@ func CNProviderQuotaSnapshotReset(provider *Record, now time.Time) *time.Time {
 		return nil
 	}
 	var earliest *time.Time
+	// Include every observed window because a 429 response does not
+	// identify
+	// which window exhausted its allocation here.
 	for _, limit := range snapshot.Limits {
 		t := clonePointer(limit.ResetAt)
 		if t == nil || !t.After(now) {
@@ -99,14 +148,30 @@ func CNProviderQuotaSnapshotReset(provider *Record, now time.Time) *time.Time {
 	return earliest
 }
 
+// ApplyCNQuotaSnapshotCooldown applies a Coding Plan snapshot deadline and
+// reports whether that path handled the response. Nil or non-CN providers, pay-
+// as-you-go records, and snapshots without a future reset return false for the
+// caller's other rate-limit handling.
+//
+// A selected deadline is sent to the scheduling callback before persistence.
+// Store failure is logged and still returns true, because this snapshot path
+// already issued its block notification. Success records the rate-limit
+// deadline and logs the selected reset.
 func (s *HealthService) ApplyCNQuotaSnapshotCooldown(ctx context.Context, provider *Record) bool {
 	if provider == nil || !provider.IsCNProvider() {
 		return false
 	}
-	// 2) Coding Plan 窗口耗尽：冷却到快照中最早的窗口重置点（见
-	// CNProviderQuotaSnapshotReset 取较早窗口的重置时间，429 通常来自 5h 窗口。
+	// For Coding Plans, pause until the earliest future reset in the
+	// snapshot.
+	// Periodic quota monitoring reevaluates whether a later window still
+	// blocks
+	// scheduling.
 	if provider.IsCodingPlan() {
 		if until := CNProviderQuotaSnapshotReset(provider, s.options.Now()); until != nil {
+			// Issue the scheduling block first; a persistence
+			// failure still
+			// counts as handling this snapshot-derived rate-limit
+			// response.
 			s.notifyProviderSchedulingBlocked(provider, *until, "429")
 			if err := s.providerRepo.SetRateLimited(ctx, provider.ID, *until); err != nil {
 				s.options.Warn("rate_limit_set_failed", "provider_id", provider.ID, "error", err)

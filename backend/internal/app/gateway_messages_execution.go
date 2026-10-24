@@ -26,18 +26,35 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+// gateway_messages_execution.go constructs Messages execution, error rules,
+// debug tracing, and prompt replacement services.
+// Messages execution receives platform credentials, model pricing, search,
+// health, and transport through one runtime. Startup options control response
+// limits and network policy, while runtime readers and the optional trace
+// supply request-time settings, model attributes, and debug output.
+
+// provideGatewayErrorRules binds persisted error rules, cache, and gateway
+// telemetry.
 func provideGatewayErrorRules(repo errorpolicy.ErrorPassthroughRepository, cache errorpolicy.ErrorPassthroughCache) *errorpolicy.ErrorPassthroughService {
 	return errorpolicy.NewErrorPassthroughService(repo, cache, telemetry.ErrorRules)
 }
 
-// provideGatewayRequestDebug 调试输出共享一个句柄；请求与完成工作退出后再关闭。
+// provideGatewayRequestDebug constructs the shared trace from gateway debug
+// environment settings. Call before lifecycle startup; its registered stop hook
+// closes the trace after earlier request and completion shutdown levels.
 func provideGatewayRequestDebug(manager *lifecycle.Manager) *requestdebug.Trace {
 	trace := requestdebug.New(productEnv("DEBUG_GATEWAY_BODY"), productEnv("DEBUG_CLAUDE_MIMIC"))
+	// The trace can be used by in-flight platform and completion work. Register
+	// its close after those shutdown levels so their final diagnostics remain writable.
 	manager.Register(lifecycle.Hook{Name: "GatewayRequestDebug", StopOrder: 90, Stop: func(context.Context) error { return trace.Close() }})
 	return trace
 }
 
-// provideMessagesExecution 绑定 Messages 转发、兼容转换和 token 计数组件。
+// provideMessagesExecution assembles Messages forwarding, compatible
+// conversions, and counting dependencies. Optional readers, model
+// configuration, trace, and activity add their capabilities when present;
+// startup options are captured by messageExecutionOptions and the returned
+// executor uses the supplied response-header filter.
 // @project-doc docs/architecture/system_architecture.md#dependency_layers
 func provideMessagesExecution(credentials *provider.MessageCredentialSource, fingerprint *anthropic.RequestFingerprint, transport httpclient.UpstreamTransport, health *provideradapter.UpstreamHealth, tls *egressprovider.TLSProfiles, readers *gatewayadapter.RuntimeReaders, prices *billing.PriceResolver, search *searchtools.Emulator, activity *gatewayRequestActivity, debug *requestdebug.Trace, providers gatewayadapter.ExecutionProviderStore, deferred *provider.DeferredService, cfg *config.Config, filter *egress.CompiledHeaderFilter, modelConfigs *routing.PricingConfigService) *gatewayhttp.MessagesExecutor {
 	deps := messageforward.Dependencies{Credentials: credentials, Fingerprint: fingerprint, Transport: transport, Health: health, TLS: tls, Prices: prices, Search: search, ProviderState: providers, Deferred: deferred}
@@ -49,6 +66,7 @@ func provideMessagesExecution(credentials *provider.MessageCredentialSource, fin
 	}
 	if readers != nil {
 		deps.Settings = readers.Gateway
+		deps.Attributes = readers.Attributes
 	}
 	if activity != nil {
 		deps.Enter = activity.Enter
@@ -56,7 +74,10 @@ func provideMessagesExecution(credentials *provider.MessageCredentialSource, fin
 	return gatewayhttp.NewMessagesExecutor(messageforward.NewRuntime(deps, messageExecutionOptions(cfg)), filter)
 }
 
-// messageExecutionOptions 在装配时读取静态参数，动态设置在请求中读取。
+// messageExecutionOptions captures response, compatibility, stream, and
+// destination settings at assembly. Nil cfg returns the default read limit;
+// positive configured bytes replace it, stream values become seconds, and
+// URLValidation retains the configured host slice.
 func messageExecutionOptions(cfg *config.Config) messageforward.Options {
 	options := messageforward.Options{ResponseReadLimit: config.DefaultUpstreamResponseReadMaxBytes}
 	if cfg == nil {
@@ -69,6 +90,7 @@ func messageExecutionOptions(cfg *config.Config) messageforward.Options {
 	options.FailoverOn400 = cfg.Gateway.FailoverOn400
 	options.GeminiDebugHeaders = cfg.Gateway.GeminiDebugResponseHeaders
 	options.MaxLineSize = cfg.Gateway.MaxLineSize
+	// Stream intervals and keepalives use durations converted from configured seconds.
 	options.StreamInterval = time.Duration(cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	options.StreamKeepalive = time.Duration(cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	if cfg.Gateway.UpstreamResponseReadMaxBytes > 0 {
@@ -81,7 +103,8 @@ func messageExecutionOptions(cfg *config.Config) messageforward.Options {
 	return options
 }
 
-// provideGatewayPromptPolicy 绑定设置表和诊断日志，提示词策略由服务缓存并更新。
+// provideGatewayPromptPolicy binds cached prompt replacement to shared settings
+// and diagnostics.
 func provideGatewayPromptPolicy(store *settings.Store) *promptpolicy.Service {
 	return promptpolicy.New(store, settings.ErrSettingNotFound, slog.Warn)
 }

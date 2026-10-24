@@ -16,16 +16,33 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// Raw usage decoding must keep positional fields aligned while transport
+// compatibility and display-model selection interpret older records. SQL-mock
+// cases check filter precedence, request-ID lookup, internal-model predicates,
+// and personal scopes; typed scanner fixtures exercise nullable metadata without
+// relying on driver conversions.
+
+// usageLogScannerStub supplies already typed positional values to raw-row
+// decoding tests.
 type usageLogScannerStub struct {
+	// values retains the test's ordered storage without driver conversion. Each
+	// element's type must match Scan's writable destination before reflection
+	// assigns it.
 	values []any
 }
 
+// TestCoalesceTrimmedString supplies null, whitespace-only, and populated
+// display strings. It checks missing/blank text uses the fallback and a valid
+// populated value reaches the result.
 func TestCoalesceTrimmedString(t *testing.T) {
 	require.Equal(t, "fallback", coalesceTrimmedString(sql.NullString{}, "fallback"))
 	require.Equal(t, "fallback", coalesceTrimmedString(sql.NullString{Valid: true, String: "   "}, "fallback"))
 	require.Equal(t, "value", coalesceTrimmedString(sql.NullString{Valid: true, String: "value"}, "fallback"))
 }
 
+// TestUsageLogRepositoryListWithFiltersRequestTypePriority supplies an explicit
+// WebSocket type with conflicting stream selection. It checks counted and listed
+// SQL use request-type compatibility without an extra stream argument.
 func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{sql: db}
@@ -53,7 +70,9 @@ func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestUsageLogRepositoryListWithFiltersRequestID 验证请求 ID 使用裁剪后的参数做精确查询。
+// TestUsageLogRepositoryListWithFiltersRequestID supplies padded request
+// identity in a broad listing. It checks trimmed lookup input, the
+// exact-local/upstream predicate, and fast pagination's extra-row limit.
 func TestUsageLogRepositoryListWithFiltersRequestID(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{sql: db}
@@ -71,6 +90,9 @@ func TestUsageLogRepositoryListWithFiltersRequestID(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUsageLogRepositoryListWithFiltersInternalModelSource selects
+// requested/internal model filtering. It checks the generated compatibility
+// expression and bound model value on the fast listing query.
 func TestUsageLogRepositoryListWithFiltersInternalModelSource(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{sql: db}
@@ -91,6 +113,9 @@ func TestUsageLogRepositoryListWithFiltersInternalModelSource(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUsageLogRepositoryListPersonalOnlyExcludesTeamUsage selects one actor with
+// personal-only scope. It checks both count and list predicates require a null
+// team ID and decode an empty page.
 func TestUsageLogRepositoryListPersonalOnlyExcludesTeamUsage(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{sql: db}
@@ -112,7 +137,9 @@ func TestUsageLogRepositoryListPersonalOnlyExcludesTeamUsage(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestBuildUsageLogScopeSource 验证 Owner 团队范围使用两个去重的索引分支。
+// TestBuildUsageLogScopeSource supplies a current team owner and existing SQL
+// argument. It checks disjoint actor/team branches, alias placement, empty
+// external predicate, and appended parameter order.
 func TestBuildUsageLogScopeSource(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &Store{sql: db}
@@ -130,6 +157,10 @@ func TestBuildUsageLogScopeSource(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestScanUsageLogRequestTypeAndLegacyFallback provides typed rows with image
+// metadata, service tiers, explicit transport, and legacy flags. It checks
+// decoded media/tier fields and request-type/legacy normalization for each
+// fixture.
 func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 	t.Run("image_size_metadata_is_scanned", func(t *testing.T) {
 		now := time.Now().UTC()
@@ -147,8 +178,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullInt64{},
 			sql.NullInt64{},
 			0, 0, 0, 0, 0, 0,
-			0, 0.0, // 图片输出 token 和图片输出成本
-			0, 0.0, // 图片输入 token 和图片输入成本
+			0, 0.0, // Image output tokens and cost
+			0, 0.0, // Image input tokens and cost
 			0.0, 0.0, 0.0, 0.0, 0.8, 0.8,
 			0.0, 0.0, []byte("[]"),
 			1.0,
@@ -158,7 +189,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false,
 			false,
 			sql.NullInt64{},
-			sql.NullInt64{},
+			[]byte(nil),
 			sql.NullString{},
 			sql.NullString{},
 			2,
@@ -186,7 +217,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			now,
 			sql.NullString{}, // requested_reasoning_effort
 			false,            // native_compaction_v2
-			"unknown",        // 平台快照
+			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
 		}})
@@ -224,10 +255,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			4,                 // cache_read_tokens
 			5,                 // cache_creation_5m_tokens
 			6,                 // cache_creation_1h_tokens
-			0,                 // 图片输出 token
-			0.0,               // 图片输出成本
-			0,                 // 图片输入 token
-			0.0,               // 图片输入成本
+			0,                 // image_output_tokens
+			0.0,               // image_output_cost
+			0,                 // image_input_tokens
+			0.0,               // image_input_cost
 			0.1,               // input_cost
 			0.2,               // output_cost
 			0.3,               // cache_creation_cost
@@ -244,18 +275,18 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false, // legacy stream
 			false, // legacy openai ws
 			sql.NullInt64{},
-			sql.NullInt64{},
+			[]byte(nil),
 			sql.NullString{},
 			sql.NullString{},
 			0,
 			sql.NullString{},
-			sql.NullString{}, // 图片输入尺寸
-			sql.NullString{}, // 图片输出尺寸
-			sql.NullString{}, // 图片尺寸来源
-			sql.NullString{}, // 图片尺寸明细
-			0,                // 视频数量
-			sql.NullString{}, // 视频分辨率
-			sql.NullInt64{},  // 视频时长
+			sql.NullString{}, // image_input_size
+			sql.NullString{}, // image_output_size
+			sql.NullString{}, // image_size_source
+			sql.NullString{}, // image_size_breakdown
+			0,                // video_count
+			sql.NullString{}, // video_resolution
+			sql.NullInt64{},  // video_duration_seconds
 			sql.NullString{Valid: true, String: "priority"},
 			sql.NullString{},
 			sql.NullString{},
@@ -272,7 +303,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			now,
 			sql.NullString{}, // requested_reasoning_effort
 			false,            // native_compaction_v2
-			"unknown",        // 平台快照
+			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
 		}})
@@ -300,8 +331,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullInt64{},
 			sql.NullInt64{},
 			1, 2, 3, 4, 5, 6,
-			0, 0.0, // 图片输出 token 和图片输出成本
-			0, 0.0, // 图片输入 token 和图片输入成本
+			0, 0.0, // Image output tokens and cost
+			0, 0.0, // Image input tokens and cost
 			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
 			0.0, 0.0, []byte("[]"),
 			1.0,
@@ -311,18 +342,18 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			true,
 			false,
 			sql.NullInt64{},
-			sql.NullInt64{},
+			[]byte(nil),
 			sql.NullString{},
 			sql.NullString{},
 			0,
 			sql.NullString{},
-			sql.NullString{}, // 图片输入尺寸
-			sql.NullString{}, // 图片输出尺寸
-			sql.NullString{}, // 图片尺寸来源
-			sql.NullString{}, // 图片尺寸明细
-			0,                // 视频数量
-			sql.NullString{}, // 视频分辨率
-			sql.NullInt64{},  // 视频时长
+			sql.NullString{}, // image_input_size
+			sql.NullString{}, // image_output_size
+			sql.NullString{}, // image_size_source
+			sql.NullString{}, // image_size_breakdown
+			0,                // video_count
+			sql.NullString{}, // video_resolution
+			sql.NullInt64{},  // video_duration_seconds
 			sql.NullString{Valid: true, String: "flex"},
 			sql.NullString{},
 			sql.NullString{},
@@ -339,7 +370,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			now,
 			sql.NullString{}, // requested_reasoning_effort
 			false,            // native_compaction_v2
-			"unknown",        // 平台快照
+			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
 		}})
@@ -367,8 +398,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullInt64{},
 			sql.NullInt64{},
 			1, 2, 3, 4, 5, 6,
-			0, 0.0, // 图片输出 token 和图片输出成本
-			0, 0.0, // 图片输入 token 和图片输入成本
+			0, 0.0, // Image output tokens and cost
+			0, 0.0, // Image input tokens and cost
 			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
 			0.0, 0.0, []byte("[]"),
 			1.0,
@@ -378,18 +409,18 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false,
 			false,
 			sql.NullInt64{},
-			sql.NullInt64{},
+			[]byte(nil),
 			sql.NullString{},
 			sql.NullString{},
 			0,
 			sql.NullString{},
-			sql.NullString{}, // 图片输入尺寸
-			sql.NullString{}, // 图片输出尺寸
-			sql.NullString{}, // 图片尺寸来源
-			sql.NullString{}, // 图片尺寸明细
-			0,                // 视频数量
-			sql.NullString{}, // 视频分辨率
-			sql.NullInt64{},  // 视频时长
+			sql.NullString{}, // image_input_size
+			sql.NullString{}, // image_output_size
+			sql.NullString{}, // image_size_source
+			sql.NullString{}, // image_size_breakdown
+			0,                // video_count
+			sql.NullString{}, // video_resolution
+			sql.NullInt64{},  // video_duration_seconds
 			sql.NullString{Valid: true, String: "priority"},
 			sql.NullString{},
 			sql.NullString{},
@@ -406,7 +437,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			now,
 			sql.NullString{}, // requested_reasoning_effort
 			false,            // native_compaction_v2
-			"unknown",        // 平台快照
+			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
 		}})
@@ -416,6 +447,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 	})
 }
 
+// Scan assigns already typed fixture values into the positional destinations.
+// Count mismatch or a nonpointer destination returns an error; callers supply
+// writable nonnil pointers with matching types, because reflection can panic for
+// unusable destinations.
 func (s usageLogScannerStub) Scan(dest ...any) error {
 	if len(dest) != len(s.values) {
 		return fmt.Errorf("scan arg count mismatch: got %d want %d", len(dest), len(s.values))
@@ -425,6 +460,9 @@ func (s usageLogScannerStub) Scan(dest ...any) error {
 		if dv.Kind() != reflect.Pointer {
 			return fmt.Errorf("dest[%d] is not pointer", i)
 		}
+		// The fixture already carries destination-compatible types. Reflection assigns
+		// them directly, so this stub exercises column wiring rather than SQL
+		// conversions.
 		dv.Elem().Set(reflect.ValueOf(s.values[i]))
 	}
 	return nil

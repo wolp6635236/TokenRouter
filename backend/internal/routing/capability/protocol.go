@@ -6,48 +6,97 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
+// protocol.go defines the protocol catalogue and computes native options and
+// conversion targets.
+// Client entry protocols and provider upstream protocols share stable
+// identifiers, but their permitted uses differ. Catalogue entries mark
+// dedicated upstream operations separately so group admission can expose public
+// entries while native provider selections include batch or Qoder execution.
+//
+// Platform adapter ranges determine the conversions available for each client
+// source. Provider type and OpenAI authentication mode then narrow native
+// options and special conversion cases; an enabled declaration alone cannot
+// override those restrictions. Automatic fallback order combines the
+// implemented platform targets deterministically, while callers can supply
+// their own permitted ordering. Catalogue reads copy platform slices so
+// administrative consumers can edit returned descriptions independently.
+
+// Protocol aliases share the persisted protocol package identifiers across
+// client admission, upstream capability declarations, and conversion lookup.
 const (
-	ProtocolAnthropicMessages     = protocol.ProtocolAnthropicMessages
-	ProtocolOpenAIResponses       = protocol.ProtocolOpenAIResponses
+	// Anthropic Messages entry identity.
+	ProtocolAnthropicMessages = protocol.ProtocolAnthropicMessages
+	// OpenAI Responses entry identity.
+	ProtocolOpenAIResponses = protocol.ProtocolOpenAIResponses
+	// Chat Completions entry identity.
 	ProtocolOpenAIChatCompletions = protocol.ProtocolOpenAIChatCompletions
+	// Gemini GenerateContent entry identity.
 	ProtocolGeminiGenerateContent = protocol.ProtocolGeminiGenerateContent
-	ProtocolSystemOne             = protocol.ProtocolSystemOne
-	ProtocolEmbeddings            = protocol.ProtocolEmbeddings
-	ProtocolImagesGenerations     = protocol.ProtocolImagesGenerations
-	ProtocolImagesEdits           = protocol.ProtocolImagesEdits
-	ProtocolImageBatches          = protocol.ProtocolImageBatches
-	ProtocolVideosGenerations     = protocol.ProtocolVideosGenerations
-	ProtocolVideosEdits           = protocol.ProtocolVideosEdits
-	ProtocolVideosExtensions      = protocol.ProtocolVideosExtensions
-	ProtocolTTS                   = protocol.ProtocolTTS
-	ProtocolSTT                   = protocol.ProtocolSTT
-	ProtocolCustomVoices          = protocol.ProtocolCustomVoices
-	ProtocolVoiceRealtime         = protocol.ProtocolVoiceRealtime
-	ProtocolResponsesWebSocket    = protocol.ProtocolResponsesWebSocket
-	ProtocolLive                  = protocol.ProtocolLive
-	ProtocolResponsesCompact      = protocol.ProtocolResponsesCompact
-	ProtocolAlphaSearch           = protocol.ProtocolAlphaSearch
-	ProtocolWebSearch             = protocol.ProtocolWebSearch
-	ProtocolXSearch               = protocol.ProtocolXSearch
-	ProtocolQoderChat             = protocol.ProtocolQoderChat
-	ProtocolGeminiBatch           = protocol.ProtocolGeminiBatch
-	ProtocolVertexBatch           = protocol.ProtocolVertexBatch
+	// SystemOne decision entry identity.
+	ProtocolSystemOne = protocol.ProtocolSystemOne
+	// OpenAI Embeddings entry identity.
+	ProtocolEmbeddings = protocol.ProtocolEmbeddings
+	// image generation entry identity.
+	ProtocolImagesGenerations = protocol.ProtocolImagesGenerations
+	// image editing entry identity.
+	ProtocolImagesEdits = protocol.ProtocolImagesEdits
+	// batch image job entry.
+	ProtocolImageBatches = protocol.ProtocolImageBatches
+	// video generation entry identity.
+	ProtocolVideosGenerations = protocol.ProtocolVideosGenerations
+	// video editing entry identity.
+	ProtocolVideosEdits = protocol.ProtocolVideosEdits
+	// video extension entry identity.
+	ProtocolVideosExtensions = protocol.ProtocolVideosExtensions
+	// text-to-speech entry identity.
+	ProtocolTTS = protocol.ProtocolTTS
+	// speech-to-text entry identity.
+	ProtocolSTT = protocol.ProtocolSTT
+	// custom voice resource entry.
+	ProtocolCustomVoices = protocol.ProtocolCustomVoices
+	// realtime voice entry identity.
+	ProtocolVoiceRealtime = protocol.ProtocolVoiceRealtime
+	// Responses WebSocket entry identity.
+	ProtocolResponsesWebSocket = protocol.ProtocolResponsesWebSocket
+	ProtocolLive               = protocol.ProtocolLive // OpenAI Live entry identity
+	// Responses Compact entry identity.
+	ProtocolResponsesCompact = protocol.ProtocolResponsesCompact
+	// Alpha Search entry identity.
+	ProtocolAlphaSearch = protocol.ProtocolAlphaSearch
+	ProtocolWebSearch   = protocol.ProtocolWebSearch // Grok web search entry
+	ProtocolXSearch     = protocol.ProtocolXSearch   // Grok X search entry
+	// dedicated Qoder upstream identity.
+	ProtocolQoderChat = protocol.ProtocolQoderChat
+	// dedicated Gemini batch identity.
+	ProtocolGeminiBatch = protocol.ProtocolGeminiBatch
+	// dedicated Vertex batch identity.
+	ProtocolVertexBatch = protocol.ProtocolVertexBatch
 )
 
+// protocolCatalog retains the ordered protocol descriptors used by group
+// validation, native option ordering, and administrative capability queries.
 var protocolCatalog = buildProtocolCatalog()
 
-// Protocol 描述协议标识、名称、适用平台及是否专供上游使用。
+// Protocol describes one stable protocol identifier and its client adapter
+// range.
 // @project-doc docs/interfaces/protocol_capabilities.md#protocol_catalog
 type Protocol struct {
-	ID           ProtocolID `json:"id"`
-	Name         string     `json:"name"`
-	UpstreamOnly bool       `json:"upstream_only"`
-	Platforms    []string   `json:"platforms"`
+	ID   ProtocolID `json:"id"`   // stable persisted protocol identifier
+	Name string     `json:"name"` // administrative protocol display name
+	// UpstreamOnly excludes dedicated execution protocols from
+	// canonicalGroupClientProtocols. Provider-native option selection can still
+	// include them for batch jobs or platform-specific upstream exchanges.
+	UpstreamOnly bool     `json:"upstream_only"`
+	Platforms    []string `json:"platforms"` // platforms with corresponding adapters
 }
 
-// ProtocolID 引用 protocol 包的协议标识类型。
+// ProtocolID aliases the protocol package's shared persisted protocol
+// identifier type.
 type ProtocolID = protocol.ProtocolID
 
+// buildProtocolCatalog returns ordered protocol descriptors with their platform
+// adapter ranges. Dedicated Qoder and batch entries are marked upstream-only so
+// they remain outside group client admission choices.
 func buildProtocolCatalog() []Protocol {
 	all := []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformQoder, PlatformKimi, PlatformZhipu, PlatformDeepseek}
 	openai := []string{PlatformOpenAI}
@@ -82,7 +131,10 @@ func buildProtocolCatalog() []Protocol {
 	}
 }
 
-// NativeProtocolOptions 返回该认证方式直接支持的协议。
+// NativeProtocolOptions returns a new catalogue-ordered list supported by a
+// platform, provider type, and OpenAI authentication mode. Unsupported
+// combinations produce an allocated empty list; enabled provider selections are
+// applied separately.
 func NativeProtocolOptions(platform, providerType, authMode string) []ProtocolID {
 	var selected []ProtocolID
 	switch platform {
@@ -145,7 +197,9 @@ func NativeProtocolOptions(platform, providerType, authMode string) []ProtocolID
 	return out
 }
 
-// ProtocolFallbackTargets 返回适配器支持的单步转换目标，并跳过与来源相同的协议。
+// ProtocolFallbackTargets returns implemented single-step target choices for a
+// platform and client source. It excludes the source itself and returns an
+// allocated empty list when the platform has no corresponding client adapter.
 func ProtocolFallbackTargets(platform string, source ProtocolID) []ProtocolID {
 	if !platformSupportsClientProtocol(platform, source) {
 		return []ProtocolID{}
@@ -187,21 +241,31 @@ func ProtocolFallbackTargets(platform string, source ProtocolID) []ProtocolID {
 	return out
 }
 
-// SupportsProtocolConversion 根据提供商平台、认证类型和认证模式判断是否支持单步转换。
+// SupportsProtocolConversion reports whether the supplied platform,
+// authentication, source, and target have an implemented conversion. OAuth
+// images and PAT Alpha Search have dedicated authentication checks; other
+// targets require native-option support.
 func SupportsProtocolConversion(platform, providerType, authMode string, source, target ProtocolID) bool {
 	if !slices.Contains(ProtocolFallbackTargets(platform, source), target) {
 		return false
 	}
+	// OAuth image requests execute through Responses; API-key image selections use
+	// their native image endpoints, so this conversion is reserved for OAuth.
 	if source == ProtocolImagesGenerations || source == ProtocolImagesEdits {
 		return platform == PlatformOpenAI && providerType == ProviderTypeOAuth
 	}
+	// PAT lacks the native Alpha Search option and uses its hosted-search
+	// Responses path. Other authentication modes do not acquire that conversion
+	// here.
 	if source == ProtocolAlphaSearch {
 		return platform == PlatformOpenAI && providerType == ProviderTypeOAuth && authMode == "personalAccessToken"
 	}
 	return slices.Contains(NativeProtocolOptions(platform, providerType, authMode), target)
 }
 
-// ProtocolCatalog 返回协议目录的深复制副本，调用方修改副本时目录保持原值。
+// ProtocolCatalog copies the descriptor slice and every Platforms slice for
+// caller mutation. Strings and identifiers retain their values, and changes to
+// the returned platform lists leave the retained catalogue unchanged.
 func ProtocolCatalog() []Protocol {
 	out := slices.Clone(protocolCatalog)
 	for i := range out {
@@ -210,7 +274,9 @@ func ProtocolCatalog() []Protocol {
 	return out
 }
 
-// platformSupportsClientProtocol 校验具体上游已有的入口实现，独立于分组准入。
+// platformSupportsClientProtocol reports whether a catalogue entry lists the
+// supplied platform as an adapter. UpstreamOnly is not considered here; callers
+// select the appropriate client source before checking.
 func platformSupportsClientProtocol(platform string, source ProtocolID) bool {
 	for _, entry := range protocolCatalog {
 		if entry.ID == source {
@@ -220,7 +286,10 @@ func platformSupportsClientProtocol(platform string, source ProtocolID) bool {
 	return false
 }
 
-// AutomaticProtocolFallbackTargets 是所有候选共用的稳定转换顺序，只包含已实现的单步路线。
+// AutomaticProtocolFallbackTargets returns unique conversion targets in the
+// fixed platform traversal order. First appearance determines target order,
+// giving automatic mixed-group resolution a stable sequence across repeated
+// catalogue queries.
 func AutomaticProtocolFallbackTargets(source ProtocolID) []ProtocolID {
 	targets := []ProtocolID{}
 	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformQoder, PlatformKimi, PlatformZhipu, PlatformDeepseek} {

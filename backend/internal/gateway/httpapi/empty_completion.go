@@ -11,17 +11,32 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// empty_completion.go constructs failover errors and Ops observations for
+// empty OpenAI completion streams.
+// Chat silent refusal and empty Responses completion share the same failure
+// encoding while retaining different Ops explanations. The caller establishes
+// that output and usage are absent before invoking these constructors, which
+// record failure evidence and retain the trimmed upstream request identifier.
+
+// Empty-completion messages distinguish the two upstream response shapes for Ops
+// while their constructed failures use the common silent-refusal classification.
 const (
-	openAISilentRefusalUpstreamMessage   = "OpenAI upstream returned an empty completion stream with finish_reason=stop and no usage"
+	// openAISilentRefusalUpstreamMessage describes empty stopped Chat output without usage.
+	openAISilentRefusalUpstreamMessage = "OpenAI upstream returned an empty completion stream with finish_reason=stop and no usage"
+	// openAIResponsesEmptyCompletedMessage describes empty Responses terminal output without usage.
 	openAIResponsesEmptyCompletedMessage = "OpenAI upstream returned an empty response.completed stream with no output and no usage"
 )
 
-// UpstreamErrorProvider 只传递已选提供商的安全观测字段。
+// UpstreamErrorProvider contains the selected provider's ID, name, and platform for error observation.
 type UpstreamErrorProvider struct {
-	ID             int64
-	Name, Platform string
+	ID             int64  // selected provider identifier
+	Name, Platform string // Name: diagnostic display name; Platform: provider protocol family
 }
 
+// NewOpenAISilentRefusalFailoverError records Chat silent refusal and returns a failover signal.
+// Callers establish the empty response condition before invocation. Nil provider
+// uses zero identity and OpenAI platform; an upstream request ID is trimmed
+// into the observation and returned response headers for later failure handling.
 func NewOpenAISilentRefusalFailoverError(c *gin.Context, provider *UpstreamErrorProvider, upstreamRequestID string) *forwardcore.UpstreamFailoverError {
 	providerID := int64(0)
 	providerName := ""
@@ -53,8 +68,11 @@ func NewOpenAISilentRefusalFailoverError(c *gin.Context, provider *UpstreamError
 	}
 }
 
-// NewOpenAIResponsesEmptyCompletedFailoverError 将空 Responses 终态标记为可重试的上游异常。
-// 这类响应没有任何可见输出、用量或错误，不应作为成功请求结算。
+// NewOpenAIResponsesEmptyCompletedFailoverError marks an empty Responses terminal event as a retryable upstream
+// failure. Callers establish absent visible output, usage, and error before invocation.
+// Nil provider uses zero identity and OpenAI platform. It records the distinct
+// empty-completed explanation while returning the same silent-refusal body and
+// trimmed upstream request header used by the Chat constructor.
 func NewOpenAIResponsesEmptyCompletedFailoverError(c *gin.Context, provider *UpstreamErrorProvider, upstreamRequestID string) *forwardcore.UpstreamFailoverError {
 	providerID := int64(0)
 	providerName := ""

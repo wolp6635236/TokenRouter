@@ -10,14 +10,33 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// AvailabilityProviders 读取持久配置中的候选提供商。
+// model_availability.go supplies persistent provider candidates and
+// protocol-aware model checks for availability diagnosis.
+// Model-availability diagnosis reads persistently active, schedulable
+// providers even when transient health windows prevent execution. The adapter
+// narrows platforms for forced entries, applies request protocol policy, and
+// lets routing distinguish a missing model from temporary capacity using
+// provider model rules.
+
+// AvailabilityProviders supplies persistent candidate records for
+// model-availability diagnosis and display.
 type AvailabilityProviders interface {
+	// ListModelAvailabilityCandidates reads active, schedulable records for diagnosis.
+	// The optional group scopes memberships; with no group, grouped chooses all
+	// matching records or those without memberships, while transient windows remain unfiltered.
 	ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]provider.Record, error)
 }
 
-type modelRejectionRules struct{ *provider.Record }
+// modelRejectionRules adapts provider model configuration to routing rejection
+// diagnostics.
+type modelRejectionRules struct {
+	*provider.Record /* borrowed provider diagnostic record */
+}
 
-// NewModelAvailability 绑定提供商查询和分组映射读取接口。
+// NewModelAvailability binds group model mapping and optional persistent
+// provider reads for diagnosis. A nil source leaves only mapping configured;
+// forced request platforms replace the requested platform list before each
+// read, and lookup errors propagate.
 // @project-doc docs/architecture/provider_scheduling_and_cache.md#advanced_scheduler_selection
 func NewModelAvailability(source AvailabilityProviders, groupPolicies *routing.PricingConfigService, compatible bool) *routing.ModelAvailability {
 	result := &routing.ModelAvailability{
@@ -56,7 +75,10 @@ func NewModelAvailability(source AvailabilityProviders, groupPolicies *routing.P
 	return result
 }
 
-// SupportsCompatibleRouting 使用提供商平台的模型能力规则，透传提供商也受模型范围约束。
+// SupportsCompatibleRouting trims the candidate model before applying
+// execution support rules. A blank model returns true even with a missing
+// record; nonblank models require a record and its platform-specific support
+// decision.
 func (p ModelPolicy) SupportsCompatibleRouting(ctx context.Context, model string) bool {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -68,15 +90,21 @@ func (p ModelPolicy) SupportsCompatibleRouting(ctx context.Context, model string
 	return p.Supports(ctx, model)
 }
 
+// GetConfiguredRequestModels returns provider-configured candidates using the
+// shared platform model defaults.
 func (r modelRejectionRules) GetConfiguredRequestModels() []string {
 	return r.Record.GetConfiguredRequestModels(provideradapter.ModelDefaults())
 }
 
+// IsModelSupported delegates provider support checks using current defaults
+// and platform rules.
 func (r modelRejectionRules) IsModelSupported(model string) bool {
 	return r.Record.IsModelSupported(model, provideradapter.ModelDefaults(), provideradapter.ModelRules(r.Record))
 }
 
-// ModelRejectionProvider 为 routing 提供模型拒绝判断所需的提供商信息。
+// ModelRejectionProvider binds a nonnil provider's platform and current model
+// rules for routing diagnosis. Its default-model callback closes over that
+// record; callers keep its configuration stable while rejection checks run.
 func ModelRejectionProvider(value *provider.Record) routing.ModelRejectionSource {
 	return routing.ModelRejectionSource{Platform: value.Platform, Rules: modelRejectionRules{value}, Defaults: func(platform string) ([]string, error) {
 		return provideradapter.DefaultProviderModels(value), nil

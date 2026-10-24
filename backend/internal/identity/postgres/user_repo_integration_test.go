@@ -21,7 +21,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
 )
 
-// TestUserListSearchAndActivityOrder 对照跨表搜索结果，并检查空值排序和分页。
+// PostgreSQL account list queries combine cross-table search with
+// current/deleted account selection and activity-based ordering. The fixture
+// compares returned IDs and counts against Ent queries, then checks null
+// placement, ID tie breaks, pagination, and every supplied five-filter
+// intersection.
+
+// TestUserListSearchAndActivityOrder seeds PostgreSQL accounts, keys, activity
+// summaries, and attribute/group data. It compares search results and totals,
+// activity null/tie ordering with one-row pages, and all five-filter
+// intersections.
 func TestUserListSearchAndActivityOrder(t *testing.T) {
 	db := postgrescontainer.New(t)
 	client := ent.NewClient(ent.Driver(sql.OpenDB(dialect.Postgres, db)))
@@ -57,13 +66,13 @@ func TestUserListSearchAndActivityOrder(t *testing.T) {
 			require.Equal(t, want, actual, search)
 		}
 	}
-	// 相同活动时间由用户 ID 决定顺序；无记录用户的空值位置随方向变化。
+	// User IDs break activity-time ties; null placement follows the sort direction.
 	stamp := time.Now().UTC().Truncate(time.Second)
 	_, err = db.Exec("INSERT INTO usage_user_activity(user_id,last_used_at) VALUES($1,$3),($2,$3)", ids[0], ids[1], stamp)
 	require.NoError(t, err)
 	for _, tc := range []struct {
-		order string
-		want  []int64
+		order string  // requested activity sort direction
+		want  []int64 // expected sorted account identifiers
 	}{
 		{"asc", []int64{ids[2], ids[0], ids[1]}},
 		{"desc", []int64{ids[1], ids[0], ids[2]}},
@@ -76,7 +85,7 @@ func TestUserListSearchAndActivityOrder(t *testing.T) {
 			require.Equal(t, id, got[0].ID)
 		}
 	}
-	// 搜索与五类筛选的全部开关组合都应按交集计数和分页。
+	// Search and all combinations of the five filters must count and page their intersection.
 	var groupID, attributeID int64
 	require.NoError(t, db.QueryRow("INSERT INTO groups(name) VALUES('activity-filter') RETURNING id").Scan(&groupID))
 	require.NoError(t, db.QueryRow("INSERT INTO user_attribute_definitions(key,name,type) VALUES('activity-filter','筛选','text') RETURNING id").Scan(&attributeID))
@@ -90,6 +99,9 @@ func TestUserListSearchAndActivityOrder(t *testing.T) {
 	require.NoError(t, err)
 	_, err = db.Exec("UPDATE users SET status='disabled' WHERE id=$1", ids[1])
 	require.NoError(t, err)
+	// Five independent filter switches produce thirty-two combinations. Compare
+	// each complete intersection with both returned account IDs and the
+	// pagination total.
 	for mask := range 32 {
 		filters := identity.UserListFilters{Search: "Mixed", IncludeSubscriptions: &noSubscriptions}
 		if mask&1 != 0 {

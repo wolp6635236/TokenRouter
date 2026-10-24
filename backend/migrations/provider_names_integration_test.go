@@ -18,17 +18,36 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// TestProviderNamesMigration 使用历史 schema 验证锁失败回滚、数据保留和物理文件不变。
+// TestProviderNamesMigration upgrades a historical account schema in PostgreSQL.
+// It checks rollback after blocked renaming and conflicting credentials, retained
+// usage totals, relfilenode comparisons, targeted configuration/template updates,
+// unrelated names, and replay. The test then applies current migrations and
+// rebuilds an empty schema to check fresh provider installation.
 func TestProviderNamesMigration(t *testing.T) {
 	ctx := context.Background()
 	pg, err := tcpostgres.Run(ctx, "postgres:18.1-alpine3.23", tcpostgres.WithDatabase("provider_names"), tcpostgres.WithUsername("postgres"), tcpostgres.WithPassword("postgres"), tcpostgres.BasicWaitStrategies())
+	// Run may return a container alongside a startup error. Register cleanup
+	// before checking the error, and give termination its own deadline so test
+	// cancellation still allows Docker to remove the partially started instance.
+	if pg != nil {
+		t.Cleanup(func() {
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancelCleanup()
+			if err := pg.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate PostgreSQL container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, pg.Terminate(ctx)) })
 	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
+	// Register the SQL pool after container cleanup so reverse cleanup order
+	// closes its connections before terminating the PostgreSQL instance hosting this fixture.
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	// Stop before migration 282 so the fixture can seed account-named tables
+	// and settings before exercising the provider rename and its compatibility rules.
 	historical := fstest.MapFS{}
 	entries, err := fs.ReadDir(migrations.FS, ".")
 	require.NoError(t, err)
@@ -61,8 +80,12 @@ func TestProviderNamesMigration(t *testing.T) {
 	require.NoError(t, err)
 	migration, err := migrations.FS.ReadFile("282_rename_accounts_to_providers.sql")
 	require.NoError(t, err)
-	// 改名断言使用截至 282 的迁移，后续迁移可以删除这些历史配置。
+	// Stop the rename assertions at migration 282. Subsequent migrations retire
+	// the OAuth import defaults that this historical fixture still needs to inspect.
 	historical["282_rename_accounts_to_providers.sql"] = &fstest.MapFile{Data: migration}
+	// Direct execution begins a transaction, applies the rename, and commits its
+	// successful changes together. Deferred rollback clears a failed attempt;
+	// the completed-transaction rollback error after commit is discarded.
 	apply := func() error {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
@@ -74,19 +97,27 @@ func TestProviderNamesMigration(t *testing.T) {
 		}
 		return tx.Commit()
 	}
-	// 读事务阻止大表改名；超时后整个迁移必须回滚，包括已改名的小表。
+	// Hold a reader lock on usage_logs so the rename's exclusive lock cannot
+	// be granted. The attempted transaction must time out and leave accounts
+	// available under its historical name.
 	holder, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	_, err = holder.ExecContext(ctx, "LOCK TABLE usage_logs IN ACCESS SHARE MODE")
 	require.NoError(t, err)
 	started := time.Now()
 	require.ErrorContains(t, apply(), "lock timeout")
+	// Migration 282 sets a ten-second lock timeout; this thirty-second bound
+	// checks that the blocked attempt returns before the longer statement budget.
 	require.Less(t, time.Since(started), 30*time.Second)
 	var oldExists bool
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT to_regclass('accounts') IS NOT NULL").Scan(&oldExists))
 	require.True(t, oldExists)
+	// Release the reader before exercising configuration conflicts and successful
+	// upgrade, so subsequent attempts can acquire the table-rename lock normally.
 	require.NoError(t, holder.Rollback())
-	// 自有配置存在新旧键冲突时回滚整个迁移，不覆盖任何一方。
+	// Seed different account_mode and provider_mode values to make conversion
+	// ambiguous. The failed attempt must retain the historical table and both
+	// conflicting credential values for an administrator to resolve.
 	_, err = db.ExecContext(ctx, `UPDATE accounts SET credentials = credentials || '{"provider_mode":"coding"}'::jsonb WHERE id=71`)
 	require.NoError(t, err)
 	require.ErrorContains(t, apply(), "provider configuration key conflict: provider_mode")
@@ -100,7 +131,9 @@ func TestProviderNamesMigration(t *testing.T) {
 	started = time.Now()
 	require.NoError(t, infra.ApplyMigrations(ctx, db, historical))
 	t.Logf("provider migration took %s", time.Since(started))
-	// runner 重试不执行已提交迁移；SQL 自身重放也不覆盖配置。
+	// Retry through the runner and then execute rename SQL directly. Subsequent
+	// data and configuration assertions must observe the same completed conversion
+	// after both forms of replay.
 	require.NoError(t, infra.ApplyMigrations(ctx, db, historical))
 	require.NoError(t, apply())
 	var count, changed int
@@ -127,10 +160,13 @@ func TestProviderNamesMigration(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key='notification_email_template:content_moderation.account_disabled:en'").Scan(&setting))
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT to_regclass('unrelated_accounts_pkey') IS NOT NULL AND to_regclass('unrelated_accounts_id_seq') IS NOT NULL").Scan(&oldExists))
 	require.True(t, oldExists)
-	// 继续升级到当前版本后，全局导入模板应被清理。
+	// Advance beyond the historical rename assertions to current migrations.
+	// The later retirement script must remove the OAuth import template that
+	// the migration-282 fixture retained during rename and replay checks.
 	require.NoError(t, infra.ApplyMigrations(ctx, db, migrations.FS))
 	require.ErrorIs(t, db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key='openai_oauth_import_defaults'").Scan(&setting), sql.ErrNoRows)
-	// 在相同隔离实例中重建空 schema，验证全新安装可执行全部历史迁移。
+	// Rebuild an empty schema in the same isolated instance to check a fresh
+	// installation of all migrations.
 	_, err = db.ExecContext(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public")
 	require.NoError(t, err)
 	require.NoError(t, infra.ApplyMigrations(ctx, db, migrations.FS))

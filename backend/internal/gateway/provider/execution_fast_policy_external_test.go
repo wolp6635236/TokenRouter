@@ -23,6 +23,9 @@ import (
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+// TestOpenAIAPIKeyFastModeForceOnAndOff applies Key force-on and force-off to
+// a priced OpenAI API Key model. The first adds priority and the second
+// removes the requested Fast tier.
 func TestOpenAIAPIKeyFastModeForceOnAndOff(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	svc.Prices = fastModeTestResolver()
@@ -39,7 +42,9 @@ func TestOpenAIAPIKeyFastModeForceOnAndOff(t *testing.T) {
 	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
 }
 
-// TestOpenAIGroupFastForcesHTTPAndWS 验证没有客户端输入时，组级策略会同时注入 HTTP body 和 WS response.create 帧。
+// TestOpenAIGroupFastForcesHTTPAndWS binds an admitted hydrated group forcing
+// Fast when client tier is omitted. Both HTTP body and WS frame receive
+// priority without a blocking result.
 func TestOpenAIGroupFastForcesHTTPAndWS(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
@@ -56,7 +61,9 @@ func TestOpenAIGroupFastForcesHTTPAndWS(t *testing.T) {
 	require.Equal(t, tierpolicy.OpenAIFastTierPriority, gjson.GetBytes(frame, "service_tier").String())
 }
 
-// TestOpenAIGroupFastStillHonorsGlobalAndKeyPolicy 验证组级强制不会绕过全局过滤或 API Key ForceOff 策略。
+// TestOpenAIGroupFastStillHonorsGlobalAndKeyPolicy combines group forced Fast
+// with global filtering or Key force-off. Each policy removes tier injection
+// despite the group's Fast request.
 func TestOpenAIGroupFastStillHonorsGlobalAndKeyPolicy(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
 	group := &routing.Group{ID: 13, Status: billingcore.StatusActive, Hydrated: true, ForceOpenAIFast: true}
@@ -74,13 +81,15 @@ func TestOpenAIGroupFastStillHonorsGlobalAndKeyPolicy(t *testing.T) {
 	require.False(t, gjson.GetBytes(body, "service_tier").Exists())
 }
 
-// TestOpenAIGroupFastRequiresTrustedContextAndCapableProvider 验证分组可信状态与实际提供商能力分别校验，分组没有平台限制。
+// TestOpenAIGroupFastRequiresTrustedContextAndCapableProvider varies group
+// hydration and provider platform with group force enabled. Injection occurs
+// only for the hydrated OpenAI case in this matrix.
 func TestOpenAIGroupFastRequiresTrustedContextAndCapableProvider(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	for _, tc := range []struct {
-		hydrated bool
-		platform string
-		want     bool
+		hydrated bool   // group authorization hydration flag
+		platform string // selected provider platform name
+		want     bool   // expected Fast field injection
 	}{
 		{false, capability.PlatformOpenAI, false},
 		{true, capability.PlatformOpenAI, true},
@@ -94,6 +103,9 @@ func TestOpenAIGroupFastRequiresTrustedContextAndCapableProvider(t *testing.T) {
 	}
 }
 
+// TestOpenAIAPIKeyFastModeIgnoresUnsupportedModel forces Fast on for an OpenAI
+// API Key model absent from the price fixture. Body policy succeeds while the
+// resulting service_tier field stays absent.
 func TestOpenAIAPIKeyFastModeIgnoresUnsupportedModel(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	svc.Prices = fastModeTestResolver()
@@ -105,7 +117,9 @@ func TestOpenAIAPIKeyFastModeIgnoresUnsupportedModel(t *testing.T) {
 	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
 }
 
-// TestOpenAIAPIKeyFastModeForceOffIgnoresMissingCapabilityMetadata 验证强制关闭是请求净化策略，不应受模型定价能力元数据影响。
+// TestOpenAIAPIKeyFastModeForceOffIgnoresMissingCapabilityMetadata forces Fast
+// off for a model lacking price metadata. HTTP and WS remove priority without
+// needing capability evidence or producing a block.
 func TestOpenAIAPIKeyFastModeForceOffIgnoresMissingCapabilityMetadata(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	svc.Prices = fastModeTestResolver()
@@ -122,7 +136,9 @@ func TestOpenAIAPIKeyFastModeForceOffIgnoresMissingCapabilityMetadata(t *testing
 	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
 }
 
-// TestOpenAIAPIKeyFastModeForceOffPreservesNonFastTiers 检查强制关闭 Fast 时，其他官方服务层级是否原样保留。
+// TestOpenAIAPIKeyFastModeForceOffPreservesNonFastTiers supplies flex, auto,
+// default, and scale on an unknown-model request under Key force-off. HTTP
+// bodies and WS frames retain each listed non-Fast tier.
 func TestOpenAIAPIKeyFastModeForceOffPreservesNonFastTiers(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
@@ -144,7 +160,9 @@ func TestOpenAIAPIKeyFastModeForceOffPreservesNonFastTiers(t *testing.T) {
 	}
 }
 
-// TestOpenAIAPIKeyFastModeForceOffRemovesFastAlias 验证客户端别名 fast 归一化后仍属于 priority，强制关闭必须将其删除。
+// TestOpenAIAPIKeyFastModeForceOffRemovesFastAlias supplies the fast alias
+// under force-off for an unknown model. Body policy removes the normalized
+// Fast field without a price lookup requirement.
 func TestOpenAIAPIKeyFastModeForceOffRemovesFastAlias(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
@@ -155,6 +173,9 @@ func TestOpenAIAPIKeyFastModeForceOffRemovesFastAlias(t *testing.T) {
 	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
 }
 
+// TestOpenAIAPIKeyFastModeCannotBypassSystemPolicy combines Key forcing with
+// global filter, block, and force-priority actions. Global filtering/blocking
+// still applies, and an earlier global flex rewrite precedes Key force-off.
 func TestOpenAIAPIKeyFastModeCannotBypassSystemPolicy(t *testing.T) {
 	svc := newFastPolicyContract(t, openAIFastFilterPriorityPolicy())
 	svc.Prices = fastModeTestResolver()
@@ -175,7 +196,7 @@ func TestOpenAIAPIKeyFastModeCannotBypassSystemPolicy(t *testing.T) {
 	var blocked *tierpolicy.BlockedError
 	require.ErrorAs(t, err, &blocked)
 
-	// 系统强制 priority 命中原始 flex 后，单 Key force_off 不能删除它。
+	// A global rule forcing priority from flex takes precedence over Key force_off.
 	svc = newFastPolicyContract(t, &tierpolicy.OpenAIFastPolicySettings{Rules: []tierpolicy.OpenAIFastPolicyRule{{
 		ServiceTier: tierpolicy.OpenAIFastTierFlex,
 		Action:      tierpolicy.OpenAIFastPolicyActionForcePriority,
@@ -188,6 +209,9 @@ func TestOpenAIAPIKeyFastModeCannotBypassSystemPolicy(t *testing.T) {
 	require.Equal(t, tierpolicy.OpenAIFastTierPriority, gjson.GetBytes(updated, "service_tier").String())
 }
 
+// TestOpenAIAPIKeyFastModeAppliesToRealtimeFrames applies Key force-on/off
+// through response.create frame policy for a priced model. Frames receive or
+// lose priority with no blocking observation.
 func TestOpenAIAPIKeyFastModeAppliesToRealtimeFrames(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	svc.Prices = fastModeTestResolver()
@@ -206,11 +230,17 @@ func TestOpenAIAPIKeyFastModeAppliesToRealtimeFrames(t *testing.T) {
 	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
 }
 
-// TestGroupOpenAIFastPolicyHTTPAndWS 验证分组加速、单 Key 和全局规则在 HTTP/WS 中必须保持一致。
+// TestGroupOpenAIFastPolicyHTTPAndWS compares group policies, incoming tiers,
+// Key overrides, and global actions. HTTP and WS produce matching tier
+// presence/value or their corresponding block results.
 func TestGroupOpenAIFastPolicyHTTPAndWS(t *testing.T) {
 	for _, tt := range []struct {
+		// group: configured group policy. tier: requested tier value.
+		// key: Key override policy. action: global rule action. want:
+		// expected outgoing tier.
 		group, tier, key, action, want string
-		blocked                        bool
+		// expected policy block result
+		blocked bool
 	}{
 		{group: "follow_request", tier: "ultrafast", want: "ultrafast"},
 		{group: "force_priority", tier: "ultrafast", want: "priority"},
@@ -237,6 +267,8 @@ func TestGroupOpenAIFastPolicyHTTPAndWS(t *testing.T) {
 			if tt.tier != "" {
 				payload["service_tier"] = tt.tier
 			}
+			// This fixture map contains string fields, so encoding cannot introduce
+			// unsupported values or cycles; body policy then receives the same serialized frame input.
 			body, _ := json.Marshal(payload)
 			provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
 			httpBody, httpErr := tierpolicy.ApplyBody(body, svc.Input(ctx, provider, "gpt-5.5"))
@@ -257,6 +289,8 @@ func TestGroupOpenAIFastPolicyHTTPAndWS(t *testing.T) {
 	}
 }
 
+// openAIFastFilterPriorityPolicy constructs a global priority-filter fixture
+// with pass as its model fallback.
 func openAIFastFilterPriorityPolicy() *tierpolicy.OpenAIFastPolicySettings {
 	return &tierpolicy.OpenAIFastPolicySettings{
 		Rules: []tierpolicy.OpenAIFastPolicyRule{{
@@ -269,6 +303,10 @@ func openAIFastFilterPriorityPolicy() *tierpolicy.OpenAIFastPolicySettings {
 	}
 }
 
+// TestApplyOpenAIFastPolicyToBody_DefaultPassesPriorityAndFast uses default
+// rules for priority, fast alias, an ordinary model, and omitted tier. Known
+// priority remains, fast canonicalizes to priority, and omitted tier leaves
+// bytes unchanged.
 func TestApplyOpenAIFastPolicyToBody_DefaultPassesPriorityAndFast(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
@@ -288,13 +326,16 @@ func TestApplyOpenAIFastPolicyToBody_DefaultPassesPriorityAndFast(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, string(body), string(updated))
 
-	// 缺少 service_tier 时返回输入。
+	// Missing service_tier leaves the body unchanged.
 	body = []byte(`{"model":"gpt-5.5"}`)
 	updated, err = tierpolicy.ApplyBody(body, svc.Input(context.Background(), provider, "gpt-5.5"))
 	require.NoError(t, err)
 	require.Equal(t, string(body), string(updated))
 }
 
+// TestApplyOpenAIFastPolicyToBody_ExplicitFilterRemovesField filters priority
+// through an explicit global rule. Both priority and the fast alias disappear
+// from the resulting request body.
 func TestApplyOpenAIFastPolicyToBody_ExplicitFilterRemovesField(t *testing.T) {
 	svc := newFastPolicyContract(t, openAIFastFilterPriorityPolicy())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
@@ -310,6 +351,9 @@ func TestApplyOpenAIFastPolicyToBody_ExplicitFilterRemovesField(t *testing.T) {
 	require.NotContains(t, string(updated), `"service_tier"`)
 }
 
+// TestApplyOpenAIFastPolicyToBody_UserScopedRuleOverridesGlobalRule places a
+// payer-specific pass rule after a global filter. The matching payer retains
+// priority while another payer receives filtered output.
 func TestApplyOpenAIFastPolicyToBody_UserScopedRuleOverridesGlobalRule(t *testing.T) {
 	settings := &tierpolicy.OpenAIFastPolicySettings{
 		Rules: []tierpolicy.OpenAIFastPolicyRule{
@@ -341,6 +385,9 @@ func TestApplyOpenAIFastPolicyToBody_UserScopedRuleOverridesGlobalRule(t *testin
 	require.NotContains(t, string(updated), `"service_tier"`)
 }
 
+// TestApplyOpenAIFastPolicyToBody_PriorityFilterLeavesUltrafast applies a
+// priority-only filtering rule to a GPT model request carrying ultrafast. The
+// different tier remains in the resulting body without a blocking error.
 func TestApplyOpenAIFastPolicyToBody_PriorityFilterLeavesUltrafast(t *testing.T) {
 	svc := newFastPolicyContract(t, openAIFastFilterPriorityPolicy())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
@@ -351,6 +398,10 @@ func TestApplyOpenAIFastPolicyToBody_PriorityFilterLeavesUltrafast(t *testing.T)
 	require.Equal(t, tierpolicy.OpenAIFastTierUltrafast, gjson.GetBytes(updated, "service_tier").String())
 }
 
+// TestApplyOpenAIFastPolicyToBody_ForcePriorityRewritesKnownTier applies an
+// all-tier force-priority action to the listed recognized tier values and fast
+// alias. Every resulting GPT request carries canonical priority after body
+// policy.
 func TestApplyOpenAIFastPolicyToBody_ForcePriorityRewritesKnownTier(t *testing.T) {
 	settings := &tierpolicy.OpenAIFastPolicySettings{
 		Rules: []tierpolicy.OpenAIFastPolicyRule{{
@@ -371,8 +422,9 @@ func TestApplyOpenAIFastPolicyToBody_ForcePriorityRewritesKnownTier(t *testing.T
 	}
 }
 
-// TestApplyOpenAIFastPolicyToBody_OfficialTiersBypassDefaultRule 验证默认配置
-// 下，客户端发送的合法 OpenAI tier 会透传到上游。
+// TestApplyOpenAIFastPolicyToBody_OfficialTiersBypassDefaultRule checks auto,
+// default, and scale through body policy and direct evaluation with default
+// settings. Body values survive and direct evaluation returns pass.
 func TestApplyOpenAIFastPolicyToBody_OfficialTiersBypassDefaultRule(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
@@ -385,16 +437,16 @@ func TestApplyOpenAIFastPolicyToBody_OfficialTiersBypassDefaultRule(t *testing.T
 			"tier %q should be preserved in body under default policy", tier)
 	}
 
-	// evaluate 层也应判定为 pass（默认配置没有内置规则）。
+	// Default settings contain no rules, so evaluation returns pass.
 	for _, tier := range []string{"auto", "default", "scale"} {
 		action, _ := svc.Evaluate(context.Background(), provider, "gpt-5.5", tier)
 		require.Equal(t, claude.BetaPolicyActionPass, action, "tier %q should evaluate to pass", tier)
 	}
 }
 
-// TestApplyOpenAIFastPolicyToBody_AllRuleStripsOfficialTiers 检查管理员配置
-// ServiceTier=all + Action=filter 规则后，auto/default/scale 等官方 tier 也会
-// 被剥离。首条匹配规则生效，all 匹配所有已识别的 tier。
+// TestApplyOpenAIFastPolicyToBody_AllRuleStripsOfficialTiers uses an all-tier
+// global filtering action with auto, default, scale, priority, and flex on a
+// GPT request. Each resulting body omits the supplied service_tier field.
 func TestApplyOpenAIFastPolicyToBody_AllRuleStripsOfficialTiers(t *testing.T) {
 	settings := &tierpolicy.OpenAIFastPolicySettings{
 		Rules: []tierpolicy.OpenAIFastPolicyRule{{
@@ -415,25 +467,28 @@ func TestApplyOpenAIFastPolicyToBody_AllRuleStripsOfficialTiers(t *testing.T) {
 	}
 }
 
-// TestApplyOpenAIFastPolicyToBody_UnknownTierStripped 验证真未知 tier 仍被剥离
-// （normalize 返回 nil → normalizeResponsesBodyServiceTier 删除字段；
-// applyOpenAIFastPolicyToBody 在 normTier 为空时直接 no-op，因为字段已不可能存在
-// 于经过前置归一化的请求里。这里直接调 apply 验证它对未识别值不会异常）。
+// TestApplyOpenAIFastPolicyToBody_UnknownTierStripped distinguishes
+// service-tier normalization from policy body application for xxx.
+// Normalization returns nil, while default body policy leaves the original
+// unknown field unchanged.
 func TestApplyOpenAIFastPolicyToBody_UnknownTierStripped(t *testing.T) {
 	svc := newFastPolicyContract(t, tierpolicy.Default())
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}
 
-	// normalize 阶段会将未知值剥离
+	// Normalization rejects unknown values.
 	require.Nil(t, protocolopenai.NormalizeServiceTier("xxx"))
 
-	// applyOpenAIFastPolicyToBody 收到未识别 tier 时不报错，body 透传不变
-	// （上层 normalizeResponsesBodyServiceTier 已剥离此字段）
+	// Policy application alone accepts the body unchanged.
+	// Request preparation is responsible for removing the unknown field.
 	body := []byte(`{"model":"gpt-5.5","service_tier":"xxx"}`)
 	updated, err := tierpolicy.ApplyBody(body, svc.Input(context.Background(), provider, "gpt-5.5"))
 	require.NoError(t, err)
 	require.Equal(t, string(body), string(updated))
 }
 
+// TestApplyOpenAIFastPolicyToBody_BlockReturnsTypedError blocks priority on a
+// whitelisted model with configured text. Body application returns a typed
+// BlockedError carrying that text and retains the original body.
 func TestApplyOpenAIFastPolicyToBody_BlockReturnsTypedError(t *testing.T) {
 	settings := &tierpolicy.OpenAIFastPolicySettings{
 		Rules: []tierpolicy.OpenAIFastPolicyRule{{

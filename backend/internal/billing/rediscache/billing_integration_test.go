@@ -16,14 +16,25 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
+// BillingCacheSuite exercises billing balance operations against the embedded
+// Redis container fixture.
 type BillingCacheSuite struct {
-	rediscontainer.Suite
+	// Suite owns Redis fixture setup, context and cleanup for these cases.
+	// Embedded methods remain available to establish isolated clients and assert
+	// TTL bounds.
+	rediscontainer.Suite // inherited Redis fixture lifecycle
 }
 
+// TestUserBalance exercises missing, stored, deducted and invalidated balance
+// keys against Redis. It checks numeric values and TTL bounds before/after
+// deduction; those bounds do not independently prove expiry increased relative
+// to its earlier value.
 func (s *BillingCacheSuite) TestUserBalance() {
 	tests := []struct {
-		name string
-		fn   func(ctx context.Context, rdb *redis.Client, cache billing.BillingCache)
+		name string // test case display name
+		// fn runs this case's assertions with the freshly selected fixture client
+		// and cache. The owning suite controls execution and client cleanup.
+		fn func(ctx context.Context, rdb *redis.Client, cache billing.BillingCache) // supplied fixture case callback
 	}{
 		{
 			name: "missing_key_returns_redis_nil",
@@ -132,17 +143,21 @@ func (s *BillingCacheSuite) TestUserBalance() {
 	}
 }
 
-// TestDeductUserBalance_ErrorPropagation 检查 Redis 错误向调用方返回，键不存在时返回 nil。
+// TestDeductUserBalance_ErrorPropagation exercises missing and stored balances
+// plus an already-cancelled context. It checks no-error missing updates, the
+// resulting stored amount and an error from the cancelled operation.
 func (s *BillingCacheSuite) TestDeductUserBalance_ErrorPropagation() {
 	tests := []struct {
-		name      string
-		fn        func(ctx context.Context, cache billing.BillingCache)
-		expectErr bool
+		name string // test case display name
+		// fn runs this case's assertions with the freshly selected fixture client
+		// and cache. The owning suite controls execution and client cleanup.
+		fn        func(ctx context.Context, cache billing.BillingCache) // supplied fixture case callback
+		expectErr bool                                                  // unused expected error flag
 	}{
 		{
 			name: "key_not_exists_returns_nil",
 			fn: func(ctx context.Context, cache billing.BillingCache) {
-				// key 不存在时，Lua 脚本返回 0（redis.Nil），方法返回 nil。
+				// For a missing key, Lua returns integer zero and DeductUserBalance returns nil.
 				err := cache.DeductUserBalance(ctx, 99999, 1.0)
 				require.NoError(s.T(), err, "DeductUserBalance on non-existent key should return nil")
 			},
@@ -165,7 +180,10 @@ func (s *BillingCacheSuite) TestDeductUserBalance_ErrorPropagation() {
 				require.NoError(s.T(), cache.SetUserBalance(ctx, 201, 50.0))
 
 				cancelCtx, cancel := context.WithCancel(ctx)
-				cancel() // 立即取消
+				// Cancel before invoking the cache so this case exercises the
+				// already-cancelled operation path, independently of racing a Redis
+				// response.
+				cancel()
 
 				err := cache.DeductUserBalance(cancelCtx, 201, 10.0)
 				require.Error(s.T(), err, "cancelled context should propagate error")
@@ -183,6 +201,9 @@ func (s *BillingCacheSuite) TestDeductUserBalance_ErrorPropagation() {
 	}
 }
 
+// TestBillingCacheSuite runs the Redis-backed balance suite under integration
+// setup. The embedded fixture supplies isolated clients so its balance
+// mutation and cancellation cases can execute against a real server.
 func TestBillingCacheSuite(t *testing.T) {
 	suite.Run(t, new(BillingCacheSuite))
 }

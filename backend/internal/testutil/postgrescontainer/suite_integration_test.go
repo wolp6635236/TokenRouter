@@ -15,7 +15,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// TestSuiteIsolation 验证并行测试使用相同数据仍能独立提交和回滚。
+// TestSuiteIsolation runs parallel clones with identical table names and
+// committed and rolled-back rows. Each clone must retain one row, test cleanup
+// must remove clones, and repeated Close must leave the container unavailable.
 func TestSuiteIsolation(t *testing.T) {
 	var suite Suite
 	t.Cleanup(func() { require.NoError(t, suite.Close()) })
@@ -26,6 +28,8 @@ func TestSuiteIsolation(t *testing.T) {
 				db := suite.New(t)
 				_, err := db.Exec("CREATE TABLE isolation_fixture (id integer PRIMARY KEY)")
 				require.NoError(t, err)
+				// Commit one row and roll back the next in each isolated clone. Identical
+				// fixture IDs then expose accidental sharing while the final count checks transaction effects.
 				tx, err := db.Begin()
 				require.NoError(t, err)
 				_, err = tx.Exec("INSERT INTO isolation_fixture VALUES (1)")
@@ -52,7 +56,10 @@ func TestSuiteIsolation(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestSuiteMatchesMigrations 对照完整迁移与模板克隆的结构和迁移校验和。
+// TestSuiteMatchesMigrations compares a cloned database with an independently
+// migrated container across recorded checksums, columns, indexes, and
+// constraints. The clone must use UTC and the migrated template must reject
+// connections.
 func TestSuiteMatchesMigrations(t *testing.T) {
 	var suite Suite
 	t.Cleanup(func() { require.NoError(t, suite.Close()) })
@@ -76,11 +83,15 @@ func TestSuiteMatchesMigrations(t *testing.T) {
 	require.Error(t, blocked.Ping())
 }
 
-// queryStrings 读取排序后的数据库结构，保留每一项供差异断言。
+// queryStrings collects one string column from query in result order for
+// fixture comparisons. It fails the test on query, scan, iteration, or close
+// errors, and empty result sets return nil.
 func queryStrings(t *testing.T, db *sql.DB, query string) []string {
 	t.Helper()
 	rows, err := db.Query(query)
 	require.NoError(t, err)
+	// Release rows on every return from this helper. Closing before fixture pool
+	// cleanup lets schema comparison finish using the same database connection resources.
 	defer func() { require.NoError(t, rows.Close()) }()
 	var values []string
 	for rows.Next() {
@@ -92,7 +103,9 @@ func queryStrings(t *testing.T, db *sql.DB, query string) []string {
 	return values
 }
 
-// TestSuiteDropWithOpenConnection 验证仍有连接时数据库也能删除。
+// TestSuiteDropWithOpenConnection opens and pings a clone before forcing its
+// deletion. The database must disappear from pg_database even while the fixture
+// pool still refers to the removed database.
 func TestSuiteDropWithOpenConnection(t *testing.T) {
 	var suite Suite
 	t.Cleanup(func() { require.NoError(t, suite.Close()) })
@@ -103,7 +116,8 @@ func TestSuiteDropWithOpenConnection(t *testing.T) {
 	require.NoError(t, err)
 	leaked, err := sql.Open("postgres", suite.databaseDSN("verification_leak"))
 	require.NoError(t, err)
-	// 连接已被 DROP ... WITH (FORCE) 终止，关闭时的错误与本测试无关。
+	// Forced deletion can terminate the opened connection before local pool cleanup.
+	// Discard that cleanup error so the test's database-existence assertion determines the observed result.
 	defer func() { _ = leaked.Close() }()
 	require.NoError(t, leaked.PingContext(ctx))
 	require.NoError(t, suite.drop(ctx, "verification_leak"))
@@ -112,7 +126,10 @@ func TestSuiteDropWithOpenConnection(t *testing.T) {
 	require.False(t, exists)
 }
 
-// TestSuiteMigrationFailure 验证初始化错误返回后仍可回收已启动容器。
+// TestSuiteMigrationFailure initializes a template using a deliberately invalid
+// SQL migration. Initialization must fail while retaining its container
+// reference, and Close must make that container unavailable to later state
+// lookup.
 func TestSuiteMigrationFailure(t *testing.T) {
 	var suite Suite
 	t.Cleanup(func() { require.NoError(t, suite.Close()) })

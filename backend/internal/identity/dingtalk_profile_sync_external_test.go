@@ -9,7 +9,9 @@ import (
 	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
 )
 
-// TestDingTalkStaffFromClaims_RoundTrip 验证 dingTalkStaffFromClaims 能从 claims 恢复 staff 信息。
+// TestDingTalkStaffFromClaims_RoundTrip builds upstream claims from one DingTalk
+// staff snapshot and reconstructs that profile. It checks the name, email,
+// organization-local user ID and first department retained by this representation.
 func TestDingTalkStaffFromClaims_RoundTrip(t *testing.T) {
 	staff := &identityprovider.DingTalkStaffInfo{UserID: "u3", Name: "王五", Email: "ww@corp.com", DeptIDs: []int64{55}}
 	claims := identitycore.DingTalkUpstreamClaims(staff, "uid3", "corpZ")

@@ -4,11 +4,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 )
 
+// header_eligibility.go checks header-override eligibility and resolves
+// enabled provider headers through egress filtering.
+// Provider Header overrides are available for selected platform and credential
+// types. The enabled flag is read as a boolean, then egress filters stored names
+// and values before a new request map is returned, keeping administrator
+// configuration separate from outgoing headers.
+
+// credKeyHeaderOverrideEnabled selects the saved boolean flag checked after
+// platform and credential-type eligibility before outgoing overrides are resolved.
 const credKeyHeaderOverrideEnabled = "header_override_enabled"
 
-// IsHeaderOverrideEligible 报告提供商类型是否支持请求头覆写。
-// Anthropic、OpenAI、国产供应商和 Jev 向 API Key 提供商开放 Header 覆盖，Grok 还支持 OAuth 提供商。
-// 订阅流量改发自定义转发地址时，通常需要补充中间层要求的准入头。
+// IsHeaderOverrideEligible reports whether administrator Header overrides apply
+// to this provider. API Keys qualify on Anthropic, OpenAI, Kimi, Zhipu,
+// DeepSeek, Jev and Grok; Grok OAuth also qualifies, while nil records return
+// false.
 func (r *Record) IsHeaderOverrideEligible() bool {
 	if r == nil {
 		return false
@@ -23,7 +33,9 @@ func (r *Record) IsHeaderOverrideEligible() bool {
 	}
 }
 
-// IsHeaderOverrideEnabled 报告提供商是否启用了请求头覆写。
+// IsHeaderOverrideEnabled reports whether an eligible provider has a true
+// boolean override flag. Missing credentials, unsupported providers and flags
+// stored with another type return false before Header values are read.
 func (r *Record) IsHeaderOverrideEnabled() bool {
 	if !r.IsHeaderOverrideEligible() || r.Credentials == nil {
 		return false
@@ -32,8 +44,9 @@ func (r *Record) IsHeaderOverrideEnabled() bool {
 	return ok && enabled
 }
 
-// HeaderOverrides 由提供商决定适用性，名称/值安全规则由 egress 唯一执行。
-// 返回的 map 是 credentials 中 Header 配置的独立副本。
+// HeaderOverrides returns a new map of enabled overrides accepted by egress
+// validation. Unsupported, disabled or entirely filtered configuration returns
+// nil; callers keep credentials stable during synchronous filtering.
 func (r *Record) HeaderOverrides() map[string]string {
 	if !r.IsHeaderOverrideEnabled() {
 		return nil

@@ -9,7 +9,21 @@ import (
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth provider
+// management_privacy.go requests provider privacy updates and presents the
+// stored or locally observed mode.
+// Privacy requests produce an upstream mode observation for eligible OpenAI or
+// Antigravity OAuth providers. The mode may be returned after a persistence
+// error, and response rereading distinguishes the current stored view from a
+// locally applied observation when that reread fails.
+//
+// A nonempty upstream mode allows response presentation even when the privacy
+// callback could not persist it. A successful reread supplies the response
+// record; when rereading fails, the handler adds the observed mode to the
+// earlier record. That local response field does not confirm a durable write.
+
+// SetPrivacy requests a fresh eligible OAuth privacy mode and rereads the
+// provider for response presentation. A nonempty mode is an observation that
+// may outlive a write error; failed rereads apply it locally.
 // POST /api/v1/admin/providers/:id/set-privacy
 func (h *ManagementHandler) SetPrivacy(c *gin.Context) {
 	providerID, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -40,10 +54,12 @@ func (h *ManagementHandler) SetPrivacy(c *gin.Context) {
 		response.BadRequest(c, "Cannot set privacy: missing access_token")
 		return
 	}
-	// 从数据库重新读取最新状态。
+	// Read current stored state after the upstream observation. A returned mode
+	// can survive a write error, so the reread supplies authoritative response fields.
 	updated, err := h.adminService.GetProvider(c.Request.Context(), providerID)
 	if err != nil {
-		// 隐私已设置成功但读取失败，回退到内存更新
+		// When rereading fails, retain a useful upstream observation in the borrowed
+		// response record; this local assignment does not establish durable privacy storage.
 		if provider.Extra == nil {
 			provider.Extra = make(map[string]any)
 		}

@@ -10,8 +10,10 @@ import (
 	openaiupstream "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// TestCalculateOpenAI429ResetTime_7dExhausted supplies an exhausted weekly
+// window and lightly used short window. The selected reset must fall within the
+// weekly interval measured around the call.
 func TestCalculateOpenAI429ResetTime_7dExhausted(t *testing.T) {
-	// Simulate headers when 7d limit is exhausted (100% used)
 	// Primary = 7d (10080 minutes), Secondary = 5h (300 minutes)
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "100")
@@ -29,7 +31,6 @@ func TestCalculateOpenAI429ResetTime_7dExhausted(t *testing.T) {
 		t.Fatal("expected non-nil resetAt")
 	}
 
-	// Should be approximately 384607 seconds from now
 	expectedDuration := 384607 * time.Second
 	minExpected := before.Add(expectedDuration)
 	maxExpected := after.Add(expectedDuration)
@@ -39,8 +40,10 @@ func TestCalculateOpenAI429ResetTime_7dExhausted(t *testing.T) {
 	}
 }
 
+// TestCalculateOpenAI429ResetTime_5hExhausted supplies an exhausted short
+// window with a later nonexhausted weekly reset. The selected deadline must
+// follow the exhausted five-hour window's reported reset.
 func TestCalculateOpenAI429ResetTime_5hExhausted(t *testing.T) {
-	// Simulate headers when 5h limit is exhausted (100% used)
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "50")
 	headers.Set("x-codex-primary-reset-after-seconds", "500000")
@@ -57,7 +60,6 @@ func TestCalculateOpenAI429ResetTime_5hExhausted(t *testing.T) {
 		t.Fatal("expected non-nil resetAt")
 	}
 
-	// Should be approximately 3600 seconds from now
 	expectedDuration := 3600 * time.Second
 	minExpected := before.Add(expectedDuration)
 	maxExpected := after.Add(expectedDuration)
@@ -67,8 +69,11 @@ func TestCalculateOpenAI429ResetTime_5hExhausted(t *testing.T) {
 	}
 }
 
+// TestCalculateOpenAI429ResetTime_NeitherExhausted_UsesMax supplies reset
+// intervals for two nonexhausted windows. The reset calculation must choose the
+// later supplied deadline when neither utilization reaches exhaustion.
 func TestCalculateOpenAI429ResetTime_NeitherExhausted_UsesMax(t *testing.T) {
-	// Neither limit at 100%, should use the longer reset time
+	// Neither window is exhausted, so use the later reset.
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "80")
 	headers.Set("x-codex-primary-reset-after-seconds", "100000")
@@ -85,7 +90,6 @@ func TestCalculateOpenAI429ResetTime_NeitherExhausted_UsesMax(t *testing.T) {
 		t.Fatal("expected non-nil resetAt")
 	}
 
-	// Should use the max (100000 seconds from 7d window)
 	expectedDuration := 100000 * time.Second
 	minExpected := before.Add(expectedDuration)
 	maxExpected := after.Add(expectedDuration)
@@ -95,8 +99,10 @@ func TestCalculateOpenAI429ResetTime_NeitherExhausted_UsesMax(t *testing.T) {
 	}
 }
 
+// TestCalculateOpenAI429ResetTime_NoCodexHeaders supplies unrelated response
+// headers with no Codex measurements. The reset calculation must return nil so
+// callers retain their separate no-reset handling.
 func TestCalculateOpenAI429ResetTime_NoCodexHeaders(t *testing.T) {
-	// No codex headers at all
 	headers := http.Header{}
 	headers.Set("content-type", "application/json")
 
@@ -107,15 +113,18 @@ func TestCalculateOpenAI429ResetTime_NoCodexHeaders(t *testing.T) {
 	}
 }
 
+// TestCalculateOpenAI429ResetTime_ReversedWindowOrder places the five-hour
+// window in primary and the weekly window in secondary. Exhaustion must follow
+// the duration-associated window and select its shorter reset.
 func TestCalculateOpenAI429ResetTime_ReversedWindowOrder(t *testing.T) {
-	// Test when OpenAI sends primary as 5h and secondary as 7d (reversed)
+	// Window identity follows duration even when primary and secondary are reversed.
 	headers := http.Header{}
-	headers.Set("x-codex-primary-used-percent", "100")         // This is 5h
+	headers.Set("x-codex-primary-used-percent", "100")
 	headers.Set("x-codex-primary-reset-after-seconds", "3600") // 1 hour
-	headers.Set("x-codex-primary-window-minutes", "300")       // 5 hours - smaller!
+	headers.Set("x-codex-primary-window-minutes", "300")       // 5 hours
 	headers.Set("x-codex-secondary-used-percent", "50")
 	headers.Set("x-codex-secondary-reset-after-seconds", "500000")
-	headers.Set("x-codex-secondary-window-minutes", "10080") // 7 days - larger!
+	headers.Set("x-codex-secondary-window-minutes", "10080") // 7 days
 
 	before := time.Now()
 	resetAt := providercore.OpenAI429ResetTime(openaiupstream.ParseCodexRateLimitHeaders(headers), time.Now, func(string, ...any) {})
@@ -125,7 +134,6 @@ func TestCalculateOpenAI429ResetTime_ReversedWindowOrder(t *testing.T) {
 		t.Fatal("expected non-nil resetAt")
 	}
 
-	// Should correctly identify that primary is 5h (smaller window) and use its reset time
 	expectedDuration := 3600 * time.Second
 	minExpected := before.Add(expectedDuration)
 	maxExpected := after.Add(expectedDuration)
@@ -135,16 +143,12 @@ func TestCalculateOpenAI429ResetTime_ReversedWindowOrder(t *testing.T) {
 	}
 }
 
+// TestCalculateOpenAI429ResetTime_UserProvidedScenario reproduces exhausted
+// weekly quota with three-percent short-window use. The deadline must follow
+// the weekly reset and retain its approximately four-and-a-half-day duration.
 func TestCalculateOpenAI429ResetTime_UserProvidedScenario(t *testing.T) {
-	// This is the exact scenario from the user:
-	// codex_7d_used_percent: 100
-	// codex_7d_reset_after_seconds: 384607 (约 4.5 天后重置)
-	// codex_5h_used_percent: 3
-	// codex_5h_reset_after_seconds: 17369 (约 4.8 小时后重置)
+	// The exhausted weekly window determines the reset even when five-hour usage is low.
 
-	// Simulate headers matching user's data
-	// Note: We need to map the canonical 5h/7d back to primary/secondary
-	// Based on typical OpenAI behavior: primary=7d (larger window), secondary=5h (smaller window)
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "100")
 	headers.Set("x-codex-primary-reset-after-seconds", "384607")
@@ -161,7 +165,6 @@ func TestCalculateOpenAI429ResetTime_UserProvidedScenario(t *testing.T) {
 		t.Fatal("expected non-nil resetAt for user scenario")
 	}
 
-	// Should use the 7d reset time (384607 seconds) since 7d limit is exhausted (100%)
 	expectedDuration := 384607 * time.Second
 	minExpected := before.Add(expectedDuration)
 	maxExpected := after.Add(expectedDuration)
@@ -170,11 +173,11 @@ func TestCalculateOpenAI429ResetTime_UserProvidedScenario(t *testing.T) {
 		t.Errorf("resetAt %v not in expected range [%v, %v]", resetAt, minExpected, maxExpected)
 	}
 
-	// Verify it's approximately 4.45 days (384607 seconds)
 	duration := resetAt.Sub(before)
+	// Convert elapsed hours to days for the reported weekly-reset duration.
 	actualDays := duration.Hours() / 24.0
 
-	// 384607 / 86400 = ~4.45 days
+	// The supplied weekly reset is about 4.45 days.
 	if actualDays < 4.4 || actualDays > 4.5 {
 		t.Errorf("expected ~4.45 days, got %.2f days", actualDays)
 	}
@@ -182,35 +185,33 @@ func TestCalculateOpenAI429ResetTime_UserProvidedScenario(t *testing.T) {
 	t.Logf("User scenario: reset_at=%v, duration=%.2f days", resetAt, actualDays)
 }
 
+// TestCalculateOpenAI429ResetTime_5MinFallbackWhenNoReset provides an exhausted
+// utilization percentage without a reset interval. The calculation must return
+// nil, leaving any fallback cooldown choice to its caller.
 func TestCalculateOpenAI429ResetTime_5MinFallbackWhenNoReset(t *testing.T) {
-	// Test that we return nil when there's used_percent but no reset_after_seconds
-	// This should cause the caller to use the default 5-minute fallback
+	// Usage percentages alone cannot provide a reset time.
 
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "100")
-	// No reset_after_seconds!
 
 	resetAt := providercore.OpenAI429ResetTime(openaiupstream.ParseCodexRateLimitHeaders(headers), time.Now, func(string, ...any) {})
 
-	// Should return nil since there's no reset time available
 	if resetAt != nil {
 		t.Errorf("expected nil when no reset_after_seconds, got %v", resetAt)
 	}
 }
 
+// TestHandle429_AnthropicPlatformUnaffected provides an Anthropic reset header
+// to the Codex parser. The OpenAI reset calculation must return nil because no
+// Codex window was observed.
 func TestHandle429_AnthropicPlatformUnaffected(t *testing.T) {
-	// Verify that Anthropic platform providers still use the original logic
-	// This test ensures we don't break existing Claude provider rate limiting
+	// Anthropic reset headers are ignored by the Codex header parser.
 
-	// Simulate Anthropic 429 headers
 	headers := http.Header{}
-	headers.Set("anthropic-ratelimit-unified-reset", "1737820800") // A future Unix timestamp
+	headers.Set("anthropic-ratelimit-unified-reset", "1737820800") // Unix seconds.
 
-	// For Anthropic platform, calculateOpenAI429ResetTime should return nil
-	// because it only handles OpenAI platform
 	resetAt := providercore.OpenAI429ResetTime(openaiupstream.ParseCodexRateLimitHeaders(headers), time.Now, slog.Info)
 
-	// Should return nil since there are no x-codex-* headers
 	if resetAt != nil {
 		t.Errorf("expected nil for Anthropic headers, got %v", resetAt)
 	}

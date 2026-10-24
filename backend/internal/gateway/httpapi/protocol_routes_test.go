@@ -9,11 +9,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestProtocolRouteMethodAndResourceBoundaries 验证准入按方法和子资源区分，已有任务操作使用自己的开关。
+// TestProtocolRouteMethodAndResourceBoundaries supplies methods and paths for
+// generation, WebSocket and resource operations. It requires separate protocol
+// admission for new work while existing-task paths remain outside those
+// generation switches.
 func TestProtocolRouteMethodAndResourceBoundaries(t *testing.T) {
 	for _, tc := range []struct {
+		// method is the HTTP verb; path is its normalized resource target.
 		method, path string
-		want         ProtocolID
+		want         ProtocolID // expected admission protocol identifier
 	}{
 		{http.MethodGet, "/responses", ProtocolResponsesWebSocket},
 		{http.MethodPost, "/responses", ""},
@@ -40,7 +44,9 @@ func TestProtocolRouteMethodAndResourceBoundaries(t *testing.T) {
 	}
 }
 
-// TestProtocolCatalogRoutesAreIndependent 验证返回目录可由调用方持有，但不得反向改写全局路由准入定义。
+// TestProtocolCatalogRoutesAreIndependent mutates a route returned by the
+// catalogue accessor. Global admission matching must retain the original path,
+// and embedding capability remains present for both checked platforms.
 func TestProtocolCatalogRoutesAreIndependent(t *testing.T) {
 	for _, protocol := range ProtocolEndpoints() {
 		if protocol.ID == ProtocolEmbeddings {

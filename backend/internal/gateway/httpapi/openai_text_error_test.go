@@ -11,6 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestOpenAIRecoverResponsesPanic_WritesFallbackResponse panics inside a
+// deferred Responses recovery call before output. It checks recovery without
+// another panic and a JSON 502 upstream-error fallback.
 func TestOpenAIRecoverResponsesPanic_WritesFallbackResponse(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -37,6 +40,9 @@ func TestOpenAIRecoverResponsesPanic_WritesFallbackResponse(t *testing.T) {
 	assert.Equal(t, "Upstream request failed", errorObj["message"])
 }
 
+// TestOpenAIRecoverResponsesPanic_NoPanicNoWrite runs deferred Responses
+// recovery on a normally returning call. It checks absence of a panic and that
+// no response bytes or status are committed.
 func TestOpenAIRecoverResponsesPanic_NoPanicNoWrite(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -54,7 +60,9 @@ func TestOpenAIRecoverResponsesPanic_NoPanicNoWrite(t *testing.T) {
 	assert.Equal(t, "", w.Body.String())
 }
 
-// TestOpenAIRecoverResponsesPanic_AppendsResponseFailedAfterWritten 验证 /v1/responses 流 Flush 后发生 panic 时追加 response.failed，保留已提交状态码。
+// TestOpenAIRecoverResponsesPanic_AppendsResponseFailedAfterWritten panics
+// after text has committed HTTP 418 on the Responses route. It checks retained
+// prior text and status plus an appended response.failed event.
 func TestOpenAIRecoverResponsesPanic_AppendsResponseFailedAfterWritten(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

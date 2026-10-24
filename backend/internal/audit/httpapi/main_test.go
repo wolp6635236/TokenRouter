@@ -6,7 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在测试进程运行前设置 Gin 测试模式。
+// TestMain sets Gin test mode before executing the audit HTTP test suite.
+// Handler and middleware scenarios therefore run with the same global router mode.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	m.Run()

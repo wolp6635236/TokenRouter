@@ -20,9 +20,21 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
+// provider_antigravity_probe.go assembles Antigravity authorization, retry
+// health, probes, and quota queries. Antigravity probes and forwarding share
+// retry health, transport, and request activity. Assembly supplies paid-tier
+// endpoint choice, bounded response inspection, rate-limit reset parsing, and
+// quota proxy lookup, keeping their request-time callbacks attached to the same
+// provider services.
+
+// provideAntigravityAuthorization binds platform authorization to stored proxy
+// lookup. Its callback returns an empty URL and false for failed or absent
+// proxy reads; proxies is required when that callback is invoked.
 func provideAntigravityAuthorization(proxies egress.ProxyRepository) *provider.AntigravityAuthorization {
 	options := provideradapter.AntigravityAuthorizationOptions(func(ctx context.Context, id int64) (string, bool) {
 		proxy, err := proxies.GetByID(ctx, id)
+		// Authorization treats an unreadable or absent selected proxy as unavailable.
+		// Return the callback's availability flag with an empty URL for the platform flow to handle.
 		if err != nil || proxy == nil {
 			return "", false
 		}
@@ -31,7 +43,10 @@ func provideAntigravityAuthorization(proxies egress.ProxyRepository) *provider.A
 	return provider.NewAntigravityAuthorization(options)
 }
 
-// provideAntigravityRetry 在健康配置绑定完成后构造平台重试组件，网关共用该实例。
+// provideAntigravityRetry constructs shared platform retry with provider health
+// and transport callbacks. runtime and cfg are required; snapshot publication
+// is added when supplied, and response inspection keeps at least 512 KiB or the
+// larger enabled diagnostic limit.
 func provideAntigravityRetry(store *providerpostgres.ProviderStore, counter provider.Internal500CounterCache, runtime *providerHealthRuntime, snapshots *scheduler.SnapshotService, transport httpclient.UpstreamTransport, cfg *config.Config) *provideradapter.AntigravityRetry {
 	health := &provider.AntigravityHealth{
 		Store:     store,
@@ -60,6 +75,7 @@ func provideAntigravityRetry(store *providerpostgres.ProviderStore, counter prov
 		},
 
 		BodyLimit: func() int64 {
+			// Retry classification reads response bodies independently of whether detailed logging is enabled.
 			limit := int64(512 << 10)
 			if cfg.Gateway.LogUpstreamErrorBody && cfg.Gateway.LogUpstreamErrorBodyMaxBytes > int(limit) {
 				return int64(cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -75,12 +91,16 @@ func provideAntigravityRetry(store *providerpostgres.ProviderStore, counter prov
 	return core
 }
 
-// provideAntigravityProbe 与转发共用重试、提供商健康状态和请求跟踪器。
+// provideAntigravityProbe shares tokens and retry with the gateway request
+// activity barrier.
 func provideAntigravityProbe(tokens *provider.AntigravityTokenSource, retry *provideradapter.AntigravityRetry, activity *gatewayRequestActivity) *provideradapter.AntigravityProbe {
 	return &provideradapter.AntigravityProbe{Tokens: tokens, Retry: retry, Enter: activity.Enter}
 }
 
-// provideAntigravityErrorObserver 使用重试器的健康状态组件，按错误处理顺序更新提供商状态。
+// provideAntigravityErrorObserver binds retry health and provider updates with
+// request-time diagnostics. cfg supplies a positive error-body limit or the
+// 2048-byte default, while Gemini parsing and Antigravity cooldown resolution
+// supply platform-specific fallback rules.
 func provideAntigravityErrorObserver(core *provideradapter.AntigravityRetry, store *providerpostgres.ProviderStore, runtime *providerHealthRuntime, cfg *config.Config) *provideradapter.AntigravityErrorObserver {
 	health := core.Health
 
@@ -98,6 +118,8 @@ func provideAntigravityErrorObserver(core *provideradapter.AntigravityRetry, sto
 		TruncateString: logredact.TruncateUTF8,
 
 		ResetTime: func(body []byte) *int64 {
+			// Missing reset details use Gemini's daily deadline as a Unix-second value.
+			// This keeps the observer's reset callback in the timestamp representation expected by its consumer.
 			return gemini.ParseGeminiRateLimitResetTime(body, func() *int64 { v := provider.GeminiDailyResetTime(time.Now(), geminiQuotaLocation()).Unix(); return &v })
 		},
 
@@ -110,7 +132,10 @@ func provideAntigravityErrorObserver(core *provideradapter.AntigravityRetry, sto
 	}
 }
 
-// provideAntigravityQuota 为额度查询绑定模型响应读取上限和代理查询，代理缺失或读取失败时返回空地址与 false。
+// provideAntigravityQuota binds bounded model reads and optional proxy lookup
+// to quota queries. Missing repository, failed lookup, and absent proxy return
+// an empty URL with false, leaving the authorization adapter to interpret proxy
+// availability.
 func provideAntigravityQuota(cfg *config.Config, proxies egress.ProxyRepository) *provider.AntigravityQuota {
 	limit := resolveModelsListReadLimit(cfg)
 	options := provideradapter.AntigravityQuotaOptions(limit, func(ctx context.Context, id int64) (string, bool) {
@@ -118,6 +143,8 @@ func provideAntigravityQuota(cfg *config.Config, proxies egress.ProxyRepository)
 			return "", false
 		}
 		proxy, err := proxies.GetByID(ctx, id)
+		// Authorization treats an unreadable or absent selected proxy as unavailable.
+		// Return the callback's availability flag with an empty URL for the platform flow to handle.
 		if err != nil || proxy == nil {
 			return "", false
 		}

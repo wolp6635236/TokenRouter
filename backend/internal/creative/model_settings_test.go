@@ -7,7 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNormalizeCreativeModelSettings 检查白名单字段校验、去重和排序。
+// Administrator model settings need stable operation ordering and exact
+// group/model uniqueness. These fixtures inspect normalized values and
+// rejection cases, then use repository counters to distinguish one shared
+// group query from repeated catalogue enumeration during a settings save.
+
+// TestNormalizeCreativeModelSettings supplies whitespace, repeated operations,
+// and invalid group/model entries. It checks normalized ordering and requires
+// errors for the listed malformed or duplicate settings cases.
 func TestNormalizeCreativeModelSettings(t *testing.T) {
 	settings, err := NormalizeCreativeModelSettings([]CreativeModelSetting{{
 		GroupID:    12,
@@ -38,7 +45,9 @@ func TestNormalizeCreativeModelSettings(t *testing.T) {
 	}
 }
 
-// TestCreativeSettingsReuseGroupQuery 同组多项设置共用一次分组和提供商读取。
+// TestCreativeSettingsReuseGroupQuery saves two models belonging to one group
+// through a counting fixture. Both survive while group and provider reads
+// occur once and candidate inventory remains unread.
 func TestCreativeSettingsReuseGroupQuery(t *testing.T) {
 	fixture := &targetQueryFixture{}
 	service := newTargetQueryPublic(fixture)

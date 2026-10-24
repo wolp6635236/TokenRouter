@@ -4,7 +4,16 @@ import (
 	"fmt"
 )
 
-// canonicalGroupClientProtocols 从唯一目录派生顺序，避免新增协议遗漏校验。
+// group.go defines and validates the client protocols available for group
+// admission.
+// Group client admission is independent of provider platform selection. Public
+// entries come from the protocol catalogue, excluding upstream-only operations,
+// so mixed groups can expose the same ordered choices while provider route
+// resolution decides which candidates can execute each request.
+
+// canonicalGroupClientProtocols retains public protocol catalogue order for
+// group selection and validation; upstream-only identifiers stay outside this
+// admission list.
 var canonicalGroupClientProtocols = func() []ProtocolID {
 	out := []ProtocolID{}
 	for _, protocol := range protocolCatalog {
@@ -15,17 +24,23 @@ var canonicalGroupClientProtocols = func() []ProtocolID {
 	return out
 }()
 
-// SupportedGroupClientProtocols 返回所有公开入口；上游资格在逐提供商选路时判断。
+// SupportedGroupClientProtocols returns a new slice of public protocol
+// identifiers in catalogue order. The platform argument is retained for
+// callers, and every group receives the same choices.
 func SupportedGroupClientProtocols(_ string) []ProtocolID {
 	return append([]ProtocolID{}, canonicalGroupClientProtocols...)
 }
 
-// DefaultGroupClientProtocols 只默认开放三个文本入口，其余能力由管理员显式启用。
+// DefaultGroupClientProtocols returns the three initially admitted text entries
+// in a new slice. The platform argument does not affect these defaults;
+// administrators separately enable other operations.
 func DefaultGroupClientProtocols(_ string) []ProtocolID {
 	return []ProtocolID{ProtocolAnthropicMessages, ProtocolOpenAIResponses, ProtocolOpenAIChatCompletions}
 }
 
-// ValidateGroupClientProtocols 校验完整协议集合并返回固定顺序的副本。
+// ValidateGroupClientProtocols rejects unknown or duplicate client identifiers
+// and returns a new slice in catalogue order. Platform does not restrict group
+// admission, and an empty input produces an allocated empty selection.
 func ValidateGroupClientProtocols(platform string, protocols []ProtocolID) ([]ProtocolID, error) {
 	supported := make(map[ProtocolID]struct{})
 	for _, protocol := range SupportedGroupClientProtocols(platform) {
@@ -58,7 +73,9 @@ func ValidateGroupClientProtocols(platform string, protocols []ProtocolID) ([]Pr
 	return out, nil
 }
 
-// SetGroupClientProtocol 更新单个协议，并按协议目录顺序返回集合。
+// SetGroupClientProtocol enables or removes target and returns a new
+// catalogue-ordered selection. Input duplicates and unknown identifiers are
+// discarded during rebuilding, and the input slice remains unchanged.
 func SetGroupClientProtocol(protocols []ProtocolID, target ProtocolID, enabled bool) []ProtocolID {
 	selected := make(map[ProtocolID]struct{}, len(protocols)+1)
 	for _, protocol := range protocols {
@@ -78,7 +95,10 @@ func SetGroupClientProtocol(protocols []ProtocolID, target ProtocolID, enabled b
 	return out
 }
 
-// DefaultProtocolFallbacks 省略入口表示自动匹配，显式空目标列表表示仅原生。
+// DefaultProtocolFallbacks returns a new empty conversion map for
+// platform-independent group defaults. Missing source entries allow automatic
+// conversion matching; callers insert an explicit empty list to require native
+// execution.
 func DefaultProtocolFallbacks(_ string) map[ProtocolID][]ProtocolID {
 	return map[ProtocolID][]ProtocolID{}
 }

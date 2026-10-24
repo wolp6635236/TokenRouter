@@ -8,42 +8,44 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/clientmeta"
 )
 
-// CLIVersionEnv 是 CLICurrentVersion 的可选运维覆盖。
-//
-// 存在的理由：Anthropic 会对新模型设客户端版本下限（例如 claude-fable-5-1 要求
-// claude-cli >= 2.1.251），命中时上游直接返回
-// `Claude Code X.Y.Z does not support this model; version A.B.C or newer is required`。
-// 在没有本开关之前，这类模型必须等 tokenrouter 发一个新版本才能使用，
-// 而改动本身只是一个常量。xai 包的 XAI_GROK_CLI_VERSION 已经是同样的做法。
+// cli_version.go resolves the Claude CLI version from deployment overrides or
+// the built-in pin.
+// The CLI version is resolved during package initialization and feeds both
+// User-Agent defaults and billing templates. Deployment variables can select a
+// supported release, while invalid overrides return the built-in pin and
+// produce a warning for a nonempty rejected value.
+
+// CLIVersionEnv names the startup override for the CLI version used in both
+// request Headers and billing marker templates.
 const CLIVersionEnv = "TOKENROUTER_CLAUDE_CLI_VERSION"
 
-// resolvedCLIVersion 在包初始化时解析一次。
-//
-// 伪装版本在进程内固定，环境变量在包初始化时读取。
-// User-Agent 头与请求体 billing attribution 块里的 cc_version 由不同代码路径写入，
-// 若两次读到不同的值（例如进程运行中有人改了环境变量），同一个请求就会自相矛盾，
-// 被上游判为非正版客户端。
+// resolvedCLIVersion stores the startup-selected release so separately
+// constructed User-Agent and billing values use one process-wide version.
 var resolvedCLIVersion = resolveCLIVersion(cliVersionOverride())
 
-// CLIVersion 返回对外伪装的 Claude Code CLI 版本号（三段 semver）。
-//
-// 调用方需要通过本函数读取版本号，CLICurrentVersion 是未配置覆盖时的默认值。
+// CLIVersion returns the process-wide version resolved during package
+// initialization.
 func CLIVersion() string {
 	return resolvedCLIVersion
 }
 
-// IsSupportedCLIVersion 使用内置版本检查版本号是否受支持。
+// IsSupportedCLIVersion delegates strict release-version validation against
+// CLICurrentVersion. It accepts complete three-part releases at or above that
+// pin and rejects prerelease, build metadata, and shortened version spellings.
 func IsSupportedCLIVersion(version string) bool {
 	return clientmeta.IsSupportedClaudeCLIVersion(version, CLICurrentVersion)
 }
 
-// resolveCLIVersion 把环境变量的原始值解析成可用的版本号。
-// 空值使用内置版本，非空非法值使用内置版本并记录告警。
+// resolveCLIVersion trims and validates an operational override, returning the
+// built-in pin when absent or invalid. A nonempty invalid override also logs
+// its rejected value and the selected built-in version.
 func resolveCLIVersion(raw string) string {
 	version := strings.TrimSpace(raw)
 	if version == "" {
 		return CLICurrentVersion
 	}
+	// Rejected operational text cannot enter the initialized CLI Header templates,
+	// so return the built-in release after recording the value that was ignored.
 	if !IsSupportedCLIVersion(version) {
 		slog.Warn("ignoring invalid Claude CLI version override; falling back to the built-in pin",
 			"env", CLIVersionEnv,
@@ -55,10 +57,14 @@ func resolveCLIVersion(raw string) string {
 	return version
 }
 
-// cliVersionOverride 兼容旧部署变量，新变量非空时始终优先。
+// cliVersionOverride reads the current environment variable before the legacy
+// variable. Any nonempty current value takes precedence, including whitespace
+// that resolveCLIVersion subsequently treats as an absent version.
 func cliVersionOverride() string {
 	if value := os.Getenv(CLIVersionEnv); value != "" {
 		return value
 	}
+	// Read the legacy deployment name when the current variable is empty, allowing
+	// either naming scheme to supply the startup version override.
 	return os.Getenv("SUB2API_CLAUDE_CLI_VERSION")
 }

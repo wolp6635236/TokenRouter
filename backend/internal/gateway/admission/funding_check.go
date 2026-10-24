@@ -8,28 +8,47 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// FundingCheck 根据计费检查输入验证权益。
+// funding_check.go checks initial funding before counting RPM and exposes a
+// funding-only recheck for requests that waited for capacity. Payer eligibility
+// can change during that wait, and the recheck avoids counting one request
+// twice.
+
+// FundingCheck supplies payer, key, and subscription eligibility checks for admission.
 type FundingCheck interface {
+	// Check rejects requests whose supplied funding snapshot cannot cover admission.
+	// The context belongs to the request, and callers run this check again after
+	// waiting because funding eligibility can change during that wait.
 	Check(context.Context, billing.CheckInput) error
 }
 
-// RPMCheck 由调度模块拥有计数与覆盖规则。
+// RPMCheck applies scheduler-owned request counts and group overrides.
 type RPMCheck interface {
+	// Check admits a request using the user's and optional group's RPM settings.
+	// A successful call consumes request capacity, so FundingAdmission invokes it
+	// after funding succeeds and skips it during post-wait rechecks.
 	Check(context.Context, *scheduler.RPMUser, *scheduler.RPMGroup) error
 }
 
-// FundingAdmission 固定绑定两个用例，保持资金错误先于 RPM 消费。
+// FundingAdmission checks funds before consuming initial request RPM capacity.
 type FundingAdmission struct {
+	// funds is required for initial admission and post-wait checks. The application
+	// supplies the billing eligibility service when constructing this checker.
 	funds FundingCheck
-	rpm   RPMCheck
+	// rpm counts initially admitted requests when configured and payer data exists.
+	// A nil checker permits funding-only admission without a request-counting call.
+	rpm RPMCheck
 }
 
-// NewFundingAdmission 固定资金与 RPM 检查依赖。
+// NewFundingAdmission binds a required funding checker and an optional RPM
+// checker for gateway admission. Construction performs no checks; a nil RPM
+// checker leaves request-count admission disabled.
 func NewFundingAdmission(funds FundingCheck, rpm RPMCheck) *FundingAdmission {
 	return &FundingAdmission{funds: funds, rpm: rpm}
 }
 
-// Check 首先检查资金，通过后执行 RPM；不在资金拒绝时累计次数。
+// Check validates funding and then consumes the request's RPM capacity.
+// Funding errors return before RPM accounting; a nil RPM checker or user skips
+// counting. Use CheckFunding for a request already counted before waiting.
 func (a *FundingAdmission) Check(ctx context.Context, input billing.CheckInput, user *scheduler.RPMUser, group *scheduler.RPMGroup) error {
 	if err := a.CheckFunding(ctx, input); err != nil {
 		return err
@@ -40,12 +59,16 @@ func (a *FundingAdmission) Check(ctx context.Context, input billing.CheckInput, 
 	return a.rpm.Check(ctx, user, group)
 }
 
-// CheckFunding 在等待结束后复查权益，RPM 已在进入等待前累计。
+// CheckFunding validates the supplied funding snapshot without counting another
+// RPM request. Gateway callers use it after obtaining a waited-for slot, because
+// balance or subscription eligibility may have changed during the wait.
 func (a *FundingAdmission) CheckFunding(ctx context.Context, input billing.CheckInput) error {
 	return a.funds.Check(ctx, input)
 }
 
-// CheckKey 从已认证并完成最终分组授权的 Key 提取资金和 RPM 检查字段。
+// CheckKey builds billing and RPM inputs from an authenticated key whose final
+// group is already authorized. Supply a nonnil key and the resolved subscription;
+// afterWait selects a funding-only recheck for a request counted before waiting.
 func (a *FundingAdmission) CheckKey(ctx context.Context, key *apikey.APIKey, subscription *billing.UserSubscription, platform string, afterWait bool) error {
 	var payer *billing.UserSummary
 	var user *scheduler.RPMUser

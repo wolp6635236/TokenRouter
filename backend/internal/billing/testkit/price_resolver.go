@@ -16,12 +16,24 @@ import (
 	routingtestkit "github.com/TokenFlux/TokenRouter/internal/routing/testkit"
 )
 
-// ResolverCalculator 为区间用例提供独立的基础价输入。
+// price_resolver.go builds configured price resolvers and calculator fixtures
+// for billing tests.
+// Configured-card tests use group 100 and a fixed Claude base price to observe
+// inheritance and interval selection. Resolver fixtures build the shared
+// configuration service with production model-identity lookup, so manual
+// cards, catalog base prices and provider statistics follow the same
+// resolution entry points as application wiring.
+
+// ResolverCalculator returns a production calculator using a fresh Claude
+// fallback-price fixture.
 func ResolverCalculator() *billing.Calculator {
 	return Calculator(nil, ResolverFallbackPrices())
 }
 
-// ResolverFallbackPrices 每个夹具独立持有输入，避免从计算器读取私有状态。
+// ResolverFallbackPrices returns fresh normalized Claude amounts for
+// card-inheritance tests. The map and price record are allocated for each
+// call, allowing callers to modify those fixture values without affecting
+// later fixtures.
 func ResolverFallbackPrices() map[string]*billingpricing.ModelPricing {
 	return map[string]*billingpricing.ModelPricing{"claude-sonnet-4": {
 		InputPricePerToken:         3e-6,
@@ -32,7 +44,10 @@ func ResolverFallbackPrices() map[string]*billingpricing.ModelPricing {
 	}}
 }
 
-// ResolverWithCards 使用指定的基础定价构造共享价格配置解析器。
+// ResolverWithCards constructs a resolver for group 100 with the supplied
+// configured cards and base calculator. The repository fixture exposes one
+// active configuration; production identity lookup and pricing location
+// loading are retained for these card-resolution tests.
 func ResolverWithCards(t *testing.T, bs *billing.Calculator, pricing []routing.ModelPricingEntry) *billing.PriceResolver {
 	t.Helper()
 	const groupID = 100
@@ -62,10 +77,13 @@ func ResolverWithCards(t *testing.T, bs *billing.Calculator, pricing []routing.M
 	return PriceResolver(cs, bs)
 }
 
-// GroupID 返回约定的测试分组编号。
+// GroupID returns a fresh pointer to the resolver fixture's group identifier.
 func GroupID() *int64 { v := int64(100); return &v }
 
-// PriceResolver 仅组合测试输入，测试直接使用原生解析器。
+// PriceResolver binds the supplied configuration service and calculator into a
+// production resolver. Nil configuration omits both card and statistics
+// sources; model identity lookup and unavailable-base observation remain wired
+// through production adapters.
 func PriceResolver(pricingConfigs *routing.PricingConfigService, calculator *billing.Calculator) *billing.PriceResolver {
 	var source billing.ConfigPrices
 	var stats billing.ProviderStatsSource
@@ -78,7 +96,10 @@ func PriceResolver(pricingConfigs *routing.PricingConfigService, calculator *bil
 	}, stats)
 }
 
-// SharedPriceResolver 用真实配置服务为单个测试分组提供价卡和计费设置。
+// SharedPriceResolver constructs an active configuration containing the
+// supplied group, settings and cards. Its configuration service supplies both
+// effective user cards and provider statistics, while the caller-provided
+// calculator remains the catalog base source.
 func SharedPriceResolver(calculator *billing.Calculator, groupID int64, settings billingpricing.BillingSettings, cards []routing.ModelPricingEntry) *billing.PriceResolver {
 	rows := []routingtestkit.Configuration{{ID: groupID, Status: routing.StatusActive, GroupIDs: []int64{groupID}, BillingSettings: &settings, ModelPricing: cards}}
 	configs := routingtestkit.ModelConfigFromData(routingtestkit.ModelConfigDataFromRows(rows, nil))

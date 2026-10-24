@@ -11,20 +11,48 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 )
 
-// fallbackCounter 降级伪随机 ID 的全局计数器，混入 seed 避免高并发下 UnixNano 相同导致碰撞。
+// response_transformer.go converts wrapped or direct Gemini responses to
+// Claude responses with generated identifiers.
+// Antigravity response conversion accepts wrapped or direct Gemini JSON and
+// delegates content/usage mapping to the shared Anthropic processor. Absent
+// inner candidates select the direct shape when an otherwise decoded envelope
+// is empty, and processor diagnostics are logged beside the response.
+//
+// Runtime ID callbacks use cryptographic bytes mapped into an alphanumeric
+// alphabet with a small remainder bias. Time/counter branches remain defensive
+// temporary-ID logic. The current crypto/rand runtime terminates on read
+// failure before returning an error, so those branches are not a live recovery
+// guarantee or authentication mechanism.
+
+// fallbackCounter supplies atomic per-call variation to the defensive
+// time-seeded identifier branch when a random reader returns an error to that
+// branch.
 var fallbackCounter uint64
 
-// NonStreamingProcessor 只适配旧构造及诊断，响应状态由 bridge 唯一持有。
+// NonStreamingProcessor adds platform diagnostic logging to shared buffered
+// Gemini-to-Anthropic conversion.
 type NonStreamingProcessor struct {
+	// The embedded processor retains content and diagnostics across calls; use a
+	// fresh instance for each answer and serialize access.
 	*bridge.GeminiToAnthropicResponseProcessor
 }
 
-// TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）。
+// TransformGeminiToClaude returns Claude JSON and usage using originalModel as
+// the client model identity. It accepts a v1internal envelope or direct Gemini
+// data; undecodable input and output serialization failures return errors.
+//
+// An envelope decoding error selects direct decoding. A successful envelope
+// with no inner candidates also selects the direct shape, because unknown
+// direct fields can otherwise decode into an empty envelope. Both direct paths
+// move response ID and model-version observations beside the selected response
+// before the shared processor maps its content and usage. Processor
+// diagnostics are logged.
 func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *ClaudeUsage, error) {
-	// 解包 v1internal 响应
 	var v1Resp V1InternalResponse
 	if err := json.Unmarshal(geminiResp, &v1Resp); err != nil {
-		// 尝试直接解析为 GeminiResponse
+		// Try direct decoding after an envelope error so an upstream returning
+		// unwrapped generation data can still enter the same shared response
+		// conversion processor.
 		var directResp GeminiResponse
 		if err2 := json.Unmarshal(geminiResp, &directResp); err2 != nil {
 			return nil, nil, fmt.Errorf("parse gemini response: %w", err)
@@ -33,7 +61,9 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 		v1Resp.ResponseID = directResp.ResponseID
 		v1Resp.ModelVersion = directResp.ModelVersion
 	} else if len(v1Resp.Response.Candidates) == 0 {
-		// 第一次解析成功但 candidates 为空，说明是直接的 GeminiResponse 格式
+		// A direct object can decode into an empty envelope without error because
+		// unknown fields are ignored; inspect that shape when inner candidates are
+		// absent.
 		var directResp GeminiResponse
 		if err2 := json.Unmarshal(geminiResp, &directResp); err2 != nil {
 			return nil, nil, fmt.Errorf("parse gemini response as direct: %w", err2)
@@ -43,11 +73,9 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 		v1Resp.ModelVersion = directResp.ModelVersion
 	}
 
-	// 使用处理器转换
 	processor := NewNonStreamingProcessor()
 	claudeResp := processor.Process(&v1Resp.Response, v1Resp.ResponseID, originalModel)
 
-	// 序列化
 	respBytes, err := json.Marshal(claudeResp)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal claude response: %w", err)
@@ -56,14 +84,20 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 	return respBytes, &claudeResp.Usage, nil
 }
 
-// generateRandomID 生成密码学安全的随机 ID。
+// generateRandomID returns twelve alphanumeric characters using
+// remainder-mapped random bytes. The defensive time/counter path lies outside
+// current crypto/rand returned-error behavior; these temporary IDs have
+// possible collisions and serve response identity rather than authentication.
 func generateRandomID() string {
 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// Allocate the fixed temporary-ID width before mapping random bytes into the
+	// protocol alphabet.
 	id := make([]byte, 12)
 	randBytes := make([]byte, 12)
 	if _, err := rand.Read(randBytes); err != nil {
-		// 避免在请求路径里 panic：极端情况下熵源不可用时降级为伪随机。
-		// 这里主要用于生成响应/工具调用的临时 ID，安全要求不高但需尽量避免碰撞。
+		// Retain this defensive generator for a returned reader error; the current
+		// Go runtime terminates on entropy failure before returning one to this
+		// branch.
 		cnt := atomic.AddUint64(&fallbackCounter, 1)
 		seed := uint64(time.Now().UnixNano()) ^ cnt
 		seed ^= uint64(len(err.Error())) << 32
@@ -75,17 +109,27 @@ func generateRandomID() string {
 		}
 		return string(id)
 	}
+	// Map fixed random bytes into the temporary response alphabet by remainder,
+	// retaining a small bias and possible collisions rather than establishing
+	// unique identity.
 	for i, b := range randBytes {
 		id[i] = chars[int(b)%len(chars)]
 	}
 	return string(id)
 }
 
-// generateAnthropicMsgID 生成 Anthropic 官方格式的消息 ID：msg_01 + 22 位 Base62。
+// generateAnthropicMsgID returns msg_01 followed by twenty-two alphanumeric
+// characters from random bytes. Its defensive helper fallback shares
+// temporary-ID behavior; callers use the value for message identity rather
+// than authentication.
 func generateAnthropicMsgID() string {
 	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	// Message IDs reserve twenty-two characters after the Anthropic prefix.
 	const idLen = 22
 	randomBytes := make([]byte, idLen)
+	// Retain helper-based temporary IDs for a returned entropy error; current
+	// crypto/rand runtime failure terminates before this defensive branch can
+	// execute.
 	if _, err := rand.Read(randomBytes); err != nil {
 		return "msg_01" + generateRandomID() + generateRandomID()[:10]
 	}
@@ -96,10 +140,18 @@ func generateAnthropicMsgID() string {
 	return "msg_01" + string(b)
 }
 
+// NewNonStreamingProcessor constructs one buffered-answer converter using
+// platform ID callbacks. Use a fresh instance per answer, and serialize
+// processing while returned content is read or serialized because content
+// shares processor storage.
 func NewNonStreamingProcessor() *NonStreamingProcessor {
 	return &NonStreamingProcessor{bridge.NewGeminiToAnthropicResponseProcessor(geminiConversionRuntime())}
 }
 
+// Process converts a nonnil response and drains diagnostics into platform
+// logs. Use one processor per answer; returned content shares processor
+// storage and tool arguments retain decoded references, which callers keep
+// stable through serialization.
 func (p *NonStreamingProcessor) Process(response *GeminiResponse, responseID, model string) *ClaudeResponse {
 	result := p.GeminiToAnthropicResponseProcessor.Process(response, responseID, model)
 	for _, message := range p.TakeDiagnostics() {
@@ -108,7 +160,8 @@ func (p *NonStreamingProcessor) Process(response *GeminiResponse, responseID, mo
 	return result
 }
 
-// geminiConversionRuntime 为响应转换提供随机 ID 和消息 ID 生成函数。
+// geminiConversionRuntime supplies platform response and tool ID callbacks to
+// shared conversion.
 func geminiConversionRuntime() bridge.GeminiConversionRuntime {
 	return bridge.GeminiConversionRuntime{RandomID: generateRandomID, MessageID: generateAnthropicMsgID}
 }

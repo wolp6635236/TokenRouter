@@ -10,11 +10,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
+// TestDiagnosticPolicySignalsOnlyReturnsContextualOrEnabledStrategies compares
+// an empty baseline with session affinity and active subscription policy. It
+// checks signal counts, order, and states while the baseline retains only the
+// unevaluated capability signal.
 func TestDiagnosticPolicySignalsOnlyReturnsContextualOrEnabledStrategies(t *testing.T) {
 	group := &DiagnosticGroup{ID: 601, Advanced: true}
 	effective := policy.EffectiveSettings{}
 
-	// 基准诊断明确标出请求未提供、因而无法评估的能力门禁。
+	// Baseline diagnostics mark capability checks as unevaluated when their
+	// request inputs are missing.
 	baselineSignals := diagnosticPolicySignals(group, AdvancedSchedulerScoreDiagnosticRequest{}, effective, diagnosticPolicyOutcome{})
 	require.Len(t, baselineSignals, 1)
 	require.Equal(t, "request_capabilities", baselineSignals[0].Key)
@@ -33,6 +38,10 @@ func TestDiagnosticPolicySignalsOnlyReturnsContextualOrEnabledStrategies(t *test
 	require.Equal(t, "active_pool", signals[1].State)
 }
 
+// TestDiagnosticWeightedPreviousResponseIsIgnoredOutsideOpenAI supplies a
+// Gemini provider as both simulated affinities under weighted policy. It
+// checks ignored previous-response affinity, weighted session affinity, and
+// the absence of a forced provider.
 func TestDiagnosticWeightedPreviousResponseIsIgnoredOutsideOpenAI(t *testing.T) {
 	group := &DiagnosticGroup{ID: 602, Advanced: true}
 	outcome := diagnosticHardStickyPolicyOutcome(
@@ -49,7 +58,9 @@ func TestDiagnosticWeightedPreviousResponseIsIgnoredOutsideOpenAI(t *testing.T) 
 	require.Equal(t, "weighted", outcome.sessionStickyState)
 }
 
-// TestDiagnosticDisabledProviderReason 验证关闭调度的原因码与管理端提供商诊断翻译保持一致。
+// TestDiagnosticDisabledProviderReason supplies an active group member whose
+// scheduling flag is false. It requires the provider_disabled reason,
+// protecting the identifier used to explain that eligibility rejection.
 func TestDiagnosticDisabledProviderReason(t *testing.T) {
 	value := &DiagnosticProvider{ID: 7, Status: "active", Schedulable: false, GroupIDs: []int64{1}}
 	require.Equal(t, "provider_disabled", diagnosticBaseHardFilterReason(value, &DiagnosticGroup{ID: 1}, time.Now()))

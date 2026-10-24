@@ -13,22 +13,42 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// grok_failure_policy.go classifies Grok failover and same-provider retry
+// eligibility from response evidence.
+// Grok response failures separate request-content refusal, temporary model
+// capacity, exhausted quota, and provider endpoint compatibility.
+// Same-provider retries use platform classification before pool defaults, with
+// a single explicit retry cap for capacity. Idle-stream errors carry replay
+// eligibility separately from provider-health scope so the caller can budget
+// recovery after empty output.
+//
+// Custom handled error codes prevent same-provider retry before capacity and
+// pool rules are considered. A capacity rejection with status 429 permits a
+// bounded retry even outside the pool rule, while billing, Free usage, and
+// compatibility failures do not. Retry metadata carries its delay and deadline
+// separately so the outer provider loop can apply its request budget.
+
+// GrokContentPolicyClientMessage extracts and sanitizes upstream text before
+// applying Grok content-refusal wording.
 func GrokContentPolicyClientMessage(responseBody []byte) string {
 	return grok.GrokContentPolicyClientMessage(logredact.SanitizeUpstreamQueries(strings.TrimSpace(upstream.ExtractErrorMessage(responseBody))))
 }
 
-// ShouldFailoverGrokResponse 在状态码之外结合响应体判断是否故障转移。
-// Grok 内容拒绝由当前提供商返回调用方。
+// ShouldFailoverGrokResponse classifies response eligibility for another
+// provider from status and body. Content-policy refusals stay on the current
+// request; decoder compatibility, method rejection, and selected Grok failure
+// classes permit their specific failover decisions.
 func ShouldFailoverGrokResponse(statusCode int, responseBody []byte) bool {
 	if grok.IsGrokContentPolicyRejection(statusCode, responseBody) {
 		return false
 	}
-	// ModelInput 解码返回 422 时，请求可切换到兼容的提供商。
+	// Decoder rejection identifies a wire compatibility issue for this endpoint;
+	// another compatible target can use a different decoder for the same request.
 	if grok.IsGrokDecoderCompatibilityError(statusCode, responseBody) {
 		return true
 	}
-	// xAI 某些兼容端点用 405 表示当前提供商不支持该接口；切换提供商后仍可能
-	// 命中另一种能力配置，因此不能沿用 OpenAI 通用状态码集合将其留在原提供商。
+	// Some xAI-compatible endpoints use 405 for unsupported interfaces.
+	// Another provider may support the interface, so permit failover.
 	if statusCode == http.StatusMethodNotAllowed {
 		return true
 	}
@@ -40,20 +60,24 @@ func ShouldFailoverGrokResponse(statusCode int, responseBody []byte) bool {
 	return ShouldFailoverUpstreamStatus(statusCode)
 }
 
-// GrokRetryableOnSameProvider 标记共享 failover 循环可在同提供商重试的瞬态错误。
-// 模型容量压力允许有限重试；免费额度和计费耗尽属于提供商状态，应立即切换提供商。
+// GrokRetryableOnSameProvider checks Grok-specific same-provider eligibility
+// before pool defaults. Custom handled codes, Free quota, billing, and
+// compatibility failures reject replay, while HTTP 429 model capacity permits
+// bounded retry even outside pool mode.
 func GrokRetryableOnSameProvider(provider *ExecutionProvider, statusCode int, responseBody []byte) bool {
 	if provider == nil || !provider.View().IsGrok() {
 		return false
 	}
-	// 配置的错误码策略优先于池模式默认状态列表，命中后交给外层故障转移处理。
+	// A configured handled status already selects explicit provider error policy.
+	// Keep that policy ahead of pool defaults so this failure cannot silently replay.
 	if provider.View().IsCustomErrorCodesEnabled() && provider.View().ShouldHandleErrorCode(statusCode) {
 		return false
 	}
 	decision := grok.ClassifyGrokUpstreamFailure(statusCode, responseBody, "")
 	switch decision.Class {
 	case grok.GrokFailureFreeUsage, grok.GrokFailureBilling, grok.GrokFailureCompatibility:
-		// 额度和权益耗尽不能靠同提供商重放恢复。
+		// These failures identify quota, billing, or compatibility conditions that
+		// another attempt on the same target does not resolve through pool retry policy.
 		return false
 	case grok.GrokFailureModelCapacity:
 		if statusCode == http.StatusTooManyRequests {
@@ -63,6 +87,10 @@ func GrokRetryableOnSameProvider(provider *ExecutionProvider, statusCode int, re
 	return provider.View().IsPoolMode() && provider.View().IsPoolModeRetryableStatus(statusCode)
 }
 
+// GrokSameProviderRetryMetadata returns same-provider eligibility plus
+// optional delay, deadline, and explicit retry cap. Ineligible failures return
+// empty metadata; eligible ordinary pool failures use caller budgets, while
+// model capacity adds 500 milliseconds, thirty seconds, and one retry.
 func GrokSameProviderRetryMetadata(provider *ExecutionProvider, statusCode int, responseBody []byte) (bool, time.Duration, time.Time, int) {
 	if !GrokRetryableOnSameProvider(provider, statusCode, responseBody) {
 		return false, 0, time.Time{}, 0
@@ -71,25 +99,28 @@ func GrokSameProviderRetryMetadata(provider *ExecutionProvider, statusCode int, 
 	if decision.Class != grok.GrokFailureModelCapacity {
 		return true, 0, time.Time{}, 0
 	}
-	// 每次上游尝试都会重新构造错误，因此错误上的截止时间不能覆盖整个请求；
-	// 容量错误最多重放一次，首次尝试超过 30 秒时也适用。
+	// Each failed attempt creates another deadline, which cannot by itself bound
+	// the whole request. The explicit one-retry cap limits capacity replay across attempts.
 	return true, 500 * time.Millisecond, time.Now().Add(30 * time.Second), 1
 }
 
-// GrokStreamIdleFailure 构造响应提交前可见的切换错误，使挂起 Grok 流能更换 OAuth 提供商。
+// GrokStreamIdleFailure constructs an empty-upstream failover error for a
+// stream with no data. Grok platform targets allow one same-provider replay
+// before a deadline measured by idle from now; the handler also enforces its
+// request-wide budget.
 func GrokStreamIdleFailure(provider *ExecutionProvider, idle time.Duration) *forwardcore.UpstreamFailoverError {
 	msg := fmt.Sprintf("Grok stream idle timeout after %s with no upstream data", idle.Round(time.Second))
 	return &forwardcore.UpstreamFailoverError{
 		StatusCode:               502,
 		ResponseBody:             []byte(`{"error":{"code":"empty_upstream","message":"` + strings.ReplaceAll(msg, `"`, `'`) + `"}}`),
 		SafeToFailoverAfterWrite: true,
-		// 空闲上游流属于瞬时故障，先使用同提供商重试预算再切换凭据；
-		// handler 仍负责执行请求级重试上限。
+		// Grok platform targets permit one bounded replay for this empty-stream
+		// observation; the request owner retains its separate retry and provider-switch limits.
 		RetryableOnSameProvider: provider != nil && provider.Record.Platform == capability.PlatformGrok,
 		RequestScopedTransient:  true,
-		// 空闲失败后最多重放一次，截止时间从失败时刻计算。
-		// 超时后切换提供商。
-		SameProviderRetryMax:      1,
+		SameProviderRetryMax:    1,
+		// The deadline starts at failure observation using idle as its allowance.
+		// Eligibility after that deadline is decided by the caller's provider loop.
 		SameProviderRetryDeadline: time.Now().Add(idle),
 	}
 }

@@ -14,106 +14,26 @@ import (
 	upstreamollama "github.com/TokenFlux/TokenRouter/internal/upstream/ollama"
 )
 
-// ollamaMaxTokensCapTestProvider 构造带自定义 cap 的 Ollama Cloud usage 提供商。
+// ollamaMaxTokensCapTestProvider builds a cloud fixture with the supplied
+// output cap in Extra.
 func ollamaMaxTokensCapTestProvider(id int64, cap any) *ExecutionProvider {
 	provider := ollamaUsageProvider(id)
 	provider.Record.Extra[upstreamollama.MaxTokensCapExtraKey] = cap
 	return provider
 }
 
-func TestOllamaCloudMaxTokensClamp(t *testing.T) {
-	ollama := ollamaUsageProvider(101)
-
-	tests := []struct {
-		name     string
-		provider *ExecutionProvider
-		body     string
-		want     string
-		raw      bool // want 非法 JSON 时按原始字节比较
-	}{
-		{
-			name:     "max_tokens above default cap is clamped",
-			provider: ollama,
-			body:     `{"model":"gpt-oss:120b-cloud","max_tokens":70000}`,
-			want:     `{"model":"gpt-oss:120b-cloud","max_tokens":65535}`,
-		},
-		{
-			name:     "max_completion_tokens above default cap is clamped",
-			provider: ollama,
-			body:     `{"model":"gpt-oss:120b-cloud","max_completion_tokens":131072}`,
-			want:     `{"model":"gpt-oss:120b-cloud","max_completion_tokens":65535}`,
-		},
-		{
-			name:     "both fields above cap are clamped",
-			provider: ollama,
-			body:     `{"model":"m","max_tokens":80000,"max_completion_tokens":90000}`,
-			want:     `{"model":"m","max_tokens":65535,"max_completion_tokens":65535}`,
-		},
-		{
-			name:     "values at or below default cap are kept",
-			provider: ollama,
-			body:     `{"model":"m","max_tokens":65535,"max_completion_tokens":4096}`,
-			want:     `{"model":"m","max_tokens":65535,"max_completion_tokens":4096}`,
-		},
-		{
-			name:     "custom extra cap is applied",
-			provider: ollamaMaxTokensCapTestProvider(102, 32768),
-			body:     `{"model":"m","max_tokens":50000}`,
-			want:     `{"model":"m","max_tokens":32768}`,
-		},
-		{
-			name:     "extra cap zero disables clamping",
-			provider: ollamaMaxTokensCapTestProvider(103, 0),
-			body:     `{"model":"m","max_tokens":50000}`,
-			want:     `{"model":"m","max_tokens":50000}`,
-		},
-		{
-			name:     "non-numeric extra cap falls back to default",
-			provider: ollamaMaxTokensCapTestProvider(104, "abc"),
-			body:     `{"model":"m","max_tokens":100000}`,
-			want:     `{"model":"m","max_tokens":65535}`,
-		},
-		{
-			name:     "invalid json is left untouched",
-			provider: ollama,
-			body:     `{"model":"m","max_tokens":`,
-			want:     `{"model":"m","max_tokens":`,
-			raw:      true,
-		},
-		{
-			name:     "non-integer max_tokens is left untouched",
-			provider: ollama,
-			body:     `{"model":"m","max_tokens":1.5}`,
-			want:     `{"model":"m","max_tokens":1.5}`,
-		},
-		{
-			name:     "missing max_tokens is left untouched",
-			provider: ollama,
-			body:     `{"model":"m"}`,
-			want:     `{"model":"m"}`,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got := ClampOllamaCloudMaxTokens(test.provider, []byte(test.body))
-			if test.raw {
-				require.Equal(t, test.want, string(got))
-				return
-			}
-			require.JSONEq(t, test.want, string(got))
-		})
-	}
-}
-
+// TestOllamaCloudMaxTokensCap supplies supported numeric types, invalid
+// values, and nonpositive configured caps. Numeric values survive, invalid or
+// missing data uses the default, and nonpositive values remain available to
+// disable clamping.
 func TestOllamaCloudMaxTokensCap(t *testing.T) {
 	require.Equal(t, int64(65535), OllamaCloudMaxTokensCap(nil))
 	require.Equal(t, int64(65535), OllamaCloudMaxTokensCap(ollamaUsageProvider(201)))
 
 	tests := []struct {
-		name string
-		cap  any
-		want int64
+		name string // output cap representation case
+		cap  any    // configured output cap value
+		want int64  // expected output cap tokens
 	}{
 		{"float64", float64(32768), 32768},
 		{"int", 40000, 40000},
@@ -133,19 +53,19 @@ func TestOllamaCloudMaxTokensCap(t *testing.T) {
 	}
 }
 
-// TestApplyOllamaCloudRawChatCompletionsRequestClampsMaxTokens 验证 max_tokens clamp
-// 已接入组合钩子 gatewayprovider.ApplyOllamaCloudRawChatCompletionsRequest，并遵循该钩子的提供商判定门槛
-// （gatewayprovider.IsOllamaCloudRawChatCompletionsProvider：platform openai + type apikey +
-// force_chat_completions + ollama.com 或 Ollama usage extra）。
-func TestApplyOllamaCloudRawChatCompletionsRequestClampsMaxTokens(t *testing.T) {
+// TestApplyOllamaCloudRawChatCompletionsRequestPreservesOutputBeforeResolution
+// supplies an oversized output request before final attribute resolution.
+// Ollama normalization keeps its output limit, while ordinary endpoints,
+// absent Chat routing, and empty bodies retain their existing representation.
+func TestApplyOllamaCloudRawChatCompletionsRequestPreservesOutputBeforeResolution(t *testing.T) {
 	body := []byte(`{"model":"deepseek-chat","max_tokens":100000}`)
 
-	// Ollama Cloud 提供商（ollama.com + force_chat_completions）→ clamp 到 65535。
+	// Output caps are applied after the final capabilities are resolved.
 	ollama := ollamaCloudRawChatCompletionsTestProvider()
-	require.JSONEq(t, `{"model":"deepseek-chat","max_tokens":65535}`,
+	require.JSONEq(t, `{"model":"deepseek-chat","max_tokens":100000}`,
 		string(ApplyOllamaCloudRawChatCompletionsRequest(ollama, body)))
 
-	// 官方 DeepSeek（api.deepseek.com + force_chat_completions）→ 字节级不变。
+	// The official DeepSeek endpoint stays byte-for-byte unchanged even when Chat is forced.
 	official := rawChatCompletionsTestProvider()
 	official.Record.Credentials["base_url"] = "https://api.deepseek.com"
 	official.Record.Extra = map[string]any{
@@ -153,16 +73,19 @@ func TestApplyOllamaCloudRawChatCompletionsRequestClampsMaxTokens(t *testing.T) 
 	}
 	require.Equal(t, body, ApplyOllamaCloudRawChatCompletionsRequest(official, body))
 
-	// ollama.com 但无 force_chat_completions（Extra 缺键）→ 不通过钩子判定门槛，字节级不变。
+	// An Ollama endpoint without a Chat routing override skips normalization.
 	noForce := ollamaCloudRawChatCompletionsTestProvider()
 	noForce.Record.Extra = nil
 	require.Equal(t, body, ApplyOllamaCloudRawChatCompletionsRequest(noForce, body))
 
-	// 空 body → 原样返回。
+	// Empty bodies retain their nil or empty representation.
 	require.Equal(t, []byte(nil), ApplyOllamaCloudRawChatCompletionsRequest(ollama, nil))
 	require.Equal(t, []byte{}, ApplyOllamaCloudRawChatCompletionsRequest(ollama, []byte{}))
 }
 
+// ollamaUsageProvider builds an active OpenAI API Key fixture with an Ollama
+// URL and fresh Extra map. Its positive concurrency and deterministic name/key
+// values support output-cap policy tests.
 func ollamaUsageProvider(id int64) *ExecutionProvider {
 	return &ExecutionProvider{
 		Record: providercore.Record{
@@ -173,6 +96,8 @@ func ollamaUsageProvider(id int64) *ExecutionProvider {
 	}
 }
 
+// ollamaCloudRawChatCompletionsTestProvider constructs a cloud API Key target
+// with explicit forced Chat routing.
 func ollamaCloudRawChatCompletionsTestProvider() *ExecutionProvider {
 	return &ExecutionProvider{
 		Record: providercore.Record{
@@ -191,6 +116,8 @@ func ollamaCloudRawChatCompletionsTestProvider() *ExecutionProvider {
 	}
 }
 
+// rawChatCompletionsTestProvider constructs an OpenAI API Key fixture with a
+// custom upstream URL.
 func rawChatCompletionsTestProvider() *ExecutionProvider {
 	return &ExecutionProvider{
 		Record: providercore.Record{

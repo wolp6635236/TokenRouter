@@ -13,13 +13,26 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
+// aliyun_captcha_verifier.go submits Aliyun CAPTCHA proofs and translates SDK
+// responses and errors for the identity service.
+// Aliyun challenge decisions arrive inside an SDK response whose transport and
+// API errors use different representations. The adapter supplies current
+// credentials on each call and converts known SDK API errors for the identity
+// service, which decides whether the returned challenge result permits the action.
+
+// aliyunCaptchaTimeoutMillis bounds the SDK connection and response-read waits
+// in milliseconds for each newly created verification client.
 const aliyunCaptchaTimeoutMillis = 10_000
 
+// aliyunCaptchaVerifier configures the SDK transport used for each challenge check.
 type aliyunCaptchaVerifier struct {
-	protocol      string // "HTTPS"；测试注入 "HTTP" 指向 httptest.Server
-	timeoutMillis int
+	protocol      string // SDK request protocol selection
+	timeoutMillis int    // milliseconds
 }
 
+// NewAliyunCaptchaVerifier constructs an HTTPS challenge adapter with ten-second
+// SDK connection and read budgets. Credentials and the regional endpoint are
+// supplied to VerifyCaptcha separately for each attempt.
 func NewAliyunCaptchaVerifier() identity.AliyunCaptchaVerifier {
 	return &aliyunCaptchaVerifier{
 		protocol:      "HTTPS",
@@ -27,9 +40,12 @@ func NewAliyunCaptchaVerifier() identity.AliyunCaptchaVerifier {
 	}
 }
 
-// VerifyCaptcha 调用阿里云验证码 2.0 VerifyIntelligentCaptcha。
-// AK/SK 是可热更的后台设置，每次调用按当前凭证新建 client。
+// VerifyCaptcha sends the supplied scene and challenge parameter to Aliyun using
+// that call's credentials. It returns the provider decision for the identity
+// service to interpret; a missing body result keeps the false, empty decision.
 func (v *aliyunCaptchaVerifier) VerifyCaptcha(ctx context.Context, cred identity.AliyunCaptchaCredentials, captchaVerifyParam string) (*identity.AliyunCaptchaVerifyResult, error) {
+	// Construct per call so an administrator's credential or endpoint update is
+	// used by the next challenge, rather than a previously initialized SDK client.
 	client, err := captcha.NewClient(&openapiutil.Config{
 		AccessKeyId:     dara.String(cred.AccessKeyID),
 		AccessKeySecret: dara.String(cred.AccessKeySecret),
@@ -49,6 +65,8 @@ func (v *aliyunCaptchaVerifier) VerifyCaptcha(ctx context.Context, cred identity
 
 	response, err := client.VerifyIntelligentCaptchaWithContext(ctx, request, &dara.RuntimeOptions{})
 	if err != nil {
+		// Normalize known SDK API failures because the core distinguishes provider
+		// configuration errors from challenge rejection using the returned error code.
 		return nil, normalizeAliyunCaptchaError(err)
 	}
 
@@ -60,8 +78,9 @@ func (v *aliyunCaptchaVerifier) VerifyCaptcha(ctx context.Context, cred identity
 	return result, nil
 }
 
-// normalizeAliyunCaptchaError 把 SDK 的两种错误类型归一化为 identity.AliyunCaptchaAPIError，
-// 其余错误（网络/超时等）原样返回。
+// normalizeAliyunCaptchaError extracts the code and message from either supported
+// SDK API error representation. Matching wrappers are inspected with errors.AsType;
+// other failures are returned as received for the core's transport-error handling.
 func normalizeAliyunCaptchaError(err error) error {
 	if teaErr, ok := errors.AsType[*tea.SDKError](err); ok {
 		return &identity.AliyunCaptchaAPIError{

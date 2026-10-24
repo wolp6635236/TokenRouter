@@ -9,23 +9,57 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// UnauthorizedObservation 只含经供应商 Adapter 识别的认证失败信号。
+// health_unauthorized.go resolves credential ownership and selects
+// account-error or refresh-pause handling for unauthorized responses. A 401 on
+// a Spark shadow can belong to its credential parent, so account handling
+// resolves that owner before choosing recovery. Failed or incompatible parent
+// resolution retains the supplied record for this command. OpenAI revocation
+// and permanent-unauthorized classifications select account error before OAuth
+// token invalidation or refresh-pause handling.
+//
+// Other OAuth records first attempt optional token invalidation. Missing
+// refresh credentials select account error; usable refresh credentials choose
+// a temporary pause whose production write leaves status unchanged. Active
+// records can therefore remain candidates for refresh maintenance.
+// Antigravity's force-refresh Extra write precedes its pause independently and
+// updates the request record only when that write succeeds. Runtime
+// notification precedes temporary persistence, and logged
+// invalidation/Extra/pause failures retain the selected handled result. These
+// writes use provider IDs; identity-conditioned refresh publication belongs to
+// its separate coordinator.
+
+// UnauthorizedObservation holds adapter-classified authentication failure
+// evidence for credential-owner health handling.
 type UnauthorizedObservation struct {
-	Message                 string
-	TokenRevoked            bool
-	PermanentlyUnauthorized bool
+	Message string // classified upstream diagnostic
+	// TokenRevoked and PermanentlyUnauthorized select OpenAI account-error paths
+	// before OAuth refresh handling. TokenRevoked wins when both flags are set;
+	// other platforms continue their ordinary type-based handling.
+	TokenRevoked            bool // revoked token classification
+	PermanentlyUnauthorized bool // permanent denial classification
 }
 
-// ApplyUnauthorized 保留凭据母提供商解析、令牌失效与刷新冷却的原次序。
+// ApplyUnauthorized handles a classified 401 through its resolved credential
+// owner and returns true for the chosen health path. Supply a usable service,
+// provider and stable mutable record data. Parent lookup failure or
+// incompatibility retains the original record; OpenAI revoked/permanent
+// classifications precede OAuth invalidation.
+//
+// An OAuth owner attempts optional cache invalidation, then selects account
+// error when its refresh token is blank. Otherwise Antigravity first attempts
+// its force-refresh Extra marker and mirrors a successful marker into the
+// record. A temporary pause uses the configured minutes or ten for a
+// nonpositive duration, with runtime notification before storage. Logged
+// auxiliary failures leave the handled result true; the command does not roll
+// earlier effects back if a later write fails.
 func (s *HealthService) ApplyUnauthorized(ctx context.Context, provider *Record, observation UnauthorizedObservation) bool {
-	// Spark 影子共用母提供商凭据。401 的缓存失效、refresh_token 检查、禁用和冷却均作用于母提供商，
-	// 避免因影子没有 refresh_token 而误将其永久禁用。母提供商进入冷却后，调度健康检查会排除其影子。
-	// 非影子直接使用自身记录；母提供商查找失败或不存在时，回退到当前记录。
+	// Resolve the one credential-parent link before examining refresh data. A
+	// missing or incompatible parent returns an error; retaining the input keeps
+	// this failure on a usable record instead of discarding health handling.
 	authProvider := provider
 	if resolved, rerr := ResolveCredentialRecord(ctx, func(ctx context.Context, id int64) (*Record, error) { return s.providerRepo.GetByID(ctx, id) }, provider); rerr == nil && resolved != nil {
 		authProvider = resolved
 	}
-	// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
 	if authProvider.Platform == capability.PlatformOpenAI && observation.TokenRevoked {
 		msg := "Token revoked (401): provider authentication permanently revoked"
 		if observation.Message != "" {
@@ -34,7 +68,6 @@ func (s *HealthService) ApplyUnauthorized(ctx context.Context, provider *Record,
 		s.ApplyAuthenticationFailure(ctx, authProvider, msg)
 		return true
 	}
-	// OpenAI: {"detail":"Unauthorized"} 表示 token 完全无效（非标准 OpenAI 错误格式），直接标记 error
 	if authProvider.Platform == capability.PlatformOpenAI && observation.PermanentlyUnauthorized {
 		msg := "Unauthorized (401): provider authentication failed permanently"
 		if observation.Message != "" {
@@ -43,16 +76,18 @@ func (s *HealthService) ApplyUnauthorized(ctx context.Context, provider *Record,
 		s.ApplyAuthenticationFailure(ctx, authProvider, msg)
 		return true
 	}
-	// OAuth 提供商收到 401 后临时停调，等待 token 刷新，其他类型调用 SetError。
 	if authProvider.Type == capability.ProviderTypeOAuth {
-		// 1. 失效缓存
+		// Token invalidation is attempted before refresh eligibility is checked. A
+		// failed invalidation is logged, and the owner still proceeds to
+		// account-error or temporary-pause handling.
 		if s.options.InvalidateUnauthorizedToken != nil {
 			if err := s.options.InvalidateUnauthorizedToken(ctx, authProvider); err != nil {
 				s.options.Warn("oauth_401_invalidate_cache_failed", "provider_id", authProvider.ID, "error", err)
 			}
 		}
-		// 缺少 refresh_token 的 OAuth 提供商无法在冷却期内自愈（后台刷新服务也会跳过），
-		// 调用 SetError 禁用该提供商，后续调度将其排除。
+		// A blank refresh_token cannot enter this command's refresh-pause path.
+		// Select account-error handling so the missing exchange input is recorded for
+		// the provider's administrative recovery.
 		if strings.TrimSpace(authProvider.GetCredential("refresh_token")) == "" {
 			msg := "Authentication failed (401): refresh_token missing, cannot recover"
 			if observation.Message != "" {
@@ -61,13 +96,17 @@ func (s *HealthService) ApplyUnauthorized(ctx context.Context, provider *Record,
 			s.ApplyAuthenticationFailure(ctx, authProvider, msg)
 			return true
 		}
-		// 临时停调时保持 status=active，刷新任务仍可认领该提供商。
-		// 此处使 token 缓存失效，凭据更新由刷新协调器在分布式锁内完成。
-		// 请求开始时的凭据可能已过期，整列写回会覆盖并发刷新得到的 refresh_token。
+		// Pause storage leaves status and credentials unchanged, allowing an already
+		// active owner to remain a refresh candidate. Writing the request's
+		// credential map here would compete with token rotation performed by the
+		// refresh coordinator.
 		msg := "Authentication failed (401): invalid or expired credentials"
 		if observation.Message != "" {
 			msg = "OAuth 401: " + observation.Message
 		}
+		// Persist the Antigravity refresh marker separately before the pause. Mirror
+		// only a successful marker into this record; a logged Extra error still
+		// leaves the later pause attempt available.
 		if authProvider.Platform == capability.PlatformAntigravity {
 			extraUpdates := AntigravityForceTokenRefreshExtra("401_invalid")
 			if err := s.options.SessionWindows.UpdateExtra(ctx, authProvider.ID, extraUpdates); err != nil {
@@ -85,13 +124,15 @@ func (s *HealthService) ApplyUnauthorized(ctx context.Context, provider *Record,
 			cooldownMinutes = 10
 		}
 		until := s.options.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+		// Notify the blocker before the pause write, whose production path leaves
+		// status untouched. Failed persistence leaves earlier invalidation and any
+		// successful force-refresh marker intact.
 		s.notifyProviderSchedulingBlocked(authProvider, until, "oauth_401")
 		if err := s.providerRepo.SetTempUnschedulable(ctx, authProvider.ID, until, msg); err != nil {
 			s.options.Warn("oauth_401_set_temp_unschedulable_failed", "provider_id", authProvider.ID, "error", err)
 		}
 		return true
 	}
-	// 非 OAuth：保持 SetError 行为
 	msg := "Authentication failed (401): invalid or expired credentials"
 	if observation.Message != "" {
 		msg = "Authentication failed (401): " + observation.Message

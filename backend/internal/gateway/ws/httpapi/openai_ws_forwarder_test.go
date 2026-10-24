@@ -26,12 +26,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// openAIWSPolicyRepo 记录 WebSocket 配置策略触发的提供商错误写入。
+// openAIWSPolicyRepo records provider error writes triggered by WebSocket policy.
 type openAIWSPolicyRepo struct {
-	transientCooldownProviderRepo
-	setErrorCalls int
+	transientCooldownProviderRepo     // default health repository test behavior
+	setErrorCalls                 int // provider error write count
 }
 
+// TestOpenAIWSTerminalEvent_ResponseFailedRecordsModelTransient applies the
+// same server-error terminal twice for an API Key provider. Both decisions
+// retain response.failed and 502, and the selected model becomes blocked.
 func TestOpenAIWSTerminalEvent_ResponseFailedRecordsModelTransient(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{})
 	setWSFixtureHealth(svc, newUpstreamHealthForTest(transientCooldownProviderRepo{}, &wsFixtureOptions{}, nil, providercore.HealthOptions{}, nil))
@@ -48,8 +51,10 @@ func TestOpenAIWSTerminalEvent_ResponseFailedRecordsModelTransient(t *testing.T)
 	require.True(t, wsFixtureModelBlocked(svc, provider, "gpt-5.5"))
 }
 
-// TestOpenAIWSTerminalFailureReturnsExplicitPolicyDecision 验证 response.failed
-// 写入提供商状态后，将策略结果返回给客户端事件写入方。
+// TestOpenAIWSTerminalFailureReturnsExplicitPolicyDecision configures custom
+// handling for status 422 and submits a failed terminal. The returned
+// custom-match decision permits failover and records one provider error
+// alongside the supplied terminal status.
 func TestOpenAIWSTerminalFailureReturnsExplicitPolicyDecision(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{})
 	repo := &openAIWSPolicyRepo{}
@@ -79,7 +84,10 @@ func TestOpenAIWSTerminalFailureReturnsExplicitPolicyDecision(t *testing.T) {
 	require.Equal(t, 1, repo.setErrorCalls)
 }
 
-// TestOpenAIWSTerminalContentPolicyBypassesProviderPolicy 验证内容安全拒绝即使映射为 502，也会跳过提供商自定义错误码策略。
+// TestOpenAIWSTerminalContentPolicyBypassesProviderPolicy submits a
+// content-policy failed terminal with a custom-rule repository. Its derived
+// 502 receives ErrorPolicyNone, remains ineligible for failover, and writes no
+// provider error.
 func TestOpenAIWSTerminalContentPolicyBypassesProviderPolicy(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{})
 	repo := &openAIWSPolicyRepo{}
@@ -110,6 +118,9 @@ func TestOpenAIWSTerminalContentPolicyBypassesProviderPolicy(t *testing.T) {
 	require.Zero(t, repo.setErrorCalls)
 }
 
+// TestOpenAIWSErrorEvent_ServerErrorRecordsModelTransient applies a standalone
+// server-error frame twice for an API Key provider. The health observations
+// mark the selected model blocked under the WS error policy.
 func TestOpenAIWSErrorEvent_ServerErrorRecordsModelTransient(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{})
 	setWSFixtureHealth(svc, newUpstreamHealthForTest(transientCooldownProviderRepo{}, &wsFixtureOptions{}, nil, providercore.HealthOptions{}, nil))
@@ -124,17 +135,29 @@ func TestOpenAIWSErrorEvent_ServerErrorRecordsModelTransient(t *testing.T) {
 	require.True(t, wsFixtureModelBlocked(svc, provider, "gpt-5.5"))
 }
 
+// TestOpenAIWSPayloadTransientStatus_Explicit529IsNotModelTransient combines
+// an explicit 529 status with a server-error code in a failed terminal.
+// Transient-status extraction returns zero, protecting numeric status
+// precedence over the text classifier.
 func TestOpenAIWSPayloadTransientStatus_Explicit529IsNotModelTransient(t *testing.T) {
 	payload := []byte(`{"type":"response.failed","response":{"error":{"status_code":529,"code":"server_error","message":"overloaded"}}}`)
 
 	require.Zero(t, openAIWSPayloadTransientStatus(payload))
 }
 
+// TestOpenAIWSErrorPolicyStatus_PreservesExplicitStatusAndFallbackMapping
+// compares a failed terminal carrying 529 with a standalone server-error type
+// carrying no status. Policy extraction retains 529 and maps the latter event
+// to 502.
 func TestOpenAIWSErrorPolicyStatus_PreservesExplicitStatusAndFallbackMapping(t *testing.T) {
 	require.Equal(t, 529, openAIWSErrorPolicyStatus([]byte(`{"type":"response.failed","response":{"error":{"status_code":529,"code":"server_error"}}}`)))
 	require.Equal(t, http.StatusBadGateway, openAIWSErrorPolicyStatus([]byte(`{"type":"error","error":{"type":"server_error"}}`)))
 }
 
+// TestOpenAIWSDial5xxRecordsModelTransient applies repeated 502 handshake
+// failures with response diagnostics to an API Key provider. The selected
+// model becomes blocked within the polling window after these health
+// observations.
 func TestOpenAIWSDial5xxRecordsModelTransient(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{})
 	setWSFixtureHealth(svc, newUpstreamHealthForTest(transientCooldownProviderRepo{}, &wsFixtureOptions{}, nil, providercore.HealthOptions{}, nil))
@@ -155,7 +178,10 @@ func TestOpenAIWSDial5xxRecordsModelTransient(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
-// TestOpenAIWSPoolModeErrorUsesConfiguredRetry 验证 WebSocket 错误使用池模式重试规则，模型的默认瞬态冷却状态保持原样。
+// TestOpenAIWSPoolModeErrorUsesConfiguredRetry submits 502 under a pool-mode
+// provider's configured retry list. Policy reports PoolBypassed and
+// same-provider retry eligibility while leaving the selected model outside the
+// default transient block.
 func TestOpenAIWSPoolModeErrorUsesConfiguredRetry(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{})
 	setWSFixtureHealth(svc, newUpstreamHealthForTest(transientCooldownProviderRepo{}, &wsFixtureOptions{}, nil, providercore.HealthOptions{}, nil))
@@ -181,13 +207,15 @@ func TestOpenAIWSPoolModeErrorUsesConfiguredRetry(t *testing.T) {
 	require.False(t, wsFixtureModelBlocked(svc, provider, "gpt-5.5"))
 }
 
+// SetError counts provider error writes made by the WS policy fixtures.
 func (r *openAIWSPolicyRepo) SetError(context.Context, int64, string) error {
 	r.setErrorCalls++
 	return nil
 }
 
-// TestOpenAIWSCustomNonFailoverStatusStopsScheduling 验证 WebSocket 派生出的
-// 非默认故障转移状态按管理员配置执行策略，同提供商重试标记为 false。
+// TestOpenAIWSCustomNonFailoverStatusStopsScheduling combines pool mode with a
+// custom 422 policy match. The administrator's match stops scheduling,
+// disables same-provider retry, and writes the provider error exactly once.
 func TestOpenAIWSCustomNonFailoverStatusStopsScheduling(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{})
 	repo := &openAIWSPolicyRepo{}
@@ -216,12 +244,18 @@ func TestOpenAIWSCustomNonFailoverStatusStopsScheduling(t *testing.T) {
 	require.Equal(t, 1, repo.setErrorCalls)
 }
 
+// fastModeTestContext returns a fresh context carrying the supplied Key Fast
+// policy, group 11, and model. These inputs let Fast policy fixtures resolve
+// group prices and policy precedence as an authenticated turn would.
 func fastModeTestContext(policy, model string) context.Context {
 	ctx := apikey.WithFastModePolicy(context.Background(), policy)
 	ctx = requeststate.WithGroup(ctx, &routing.Group{ID: 11})
 	return context.WithValue(ctx, telemetry.Model, model)
 }
 
+// fastModeTestResolver returns a calculator-backed resolver with fixed GPT and
+// Claude tier-capable catalog prices. The resolver has no repositories, so
+// Fast policy checks use those test prices and cannot read live pricing state.
 func fastModeTestResolver() *billingcore.PriceResolver {
 	pricing := catalogprovider.NewServiceFromSnapshot(catalogprovider.Options{ModelLookupCandidates: modelidentity.CandidatesFactory}, nil, catalogprovider.Snapshot{Data: map[string]*billingpricing.CatalogModelPricing{
 		"gpt-5.5": {
@@ -241,7 +275,10 @@ func fastModeTestResolver() *billingcore.PriceResolver {
 	return billingtestkit.PriceResolver(nil, billing)
 }
 
-// TestOpenAIWSFastModePolicyContextRefreshesEachTurn 验证 WebSocket 每个 turn 都应读取最新策略，不能永久复用握手时的策略快照。
+// TestOpenAIWSFastModePolicyContextRefreshesEachTurn supplies force-on then
+// force-off from the turn policy hook over a force-on base context. The first
+// frame receives priority, and the second frame loses its supplied
+// service_tier.
 func TestOpenAIWSFastModePolicyContextRefreshesEachTurn(t *testing.T) {
 	svc := newWSFastPolicy(t, tierpolicy.Default())
 	svc.Prices = fastModeTestResolver()

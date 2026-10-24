@@ -13,22 +13,50 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageview"
 )
 
-const (
-	CnZhipuWindowUnknown CnZhipuWindow = iota
-	CnZhipuWindow5h
-	CnZhipuWindowWeekly
+// usage.go queries Zhipu coding usage and assigns reported allowances to
+// display windows.
+// Zhipu token windows carry unit identifiers that can establish five-hour and
+// weekly identity independently of reset chronology. The parser reserves those
+// identified slots first, then uses remaining entries to fill vacant slots.
+// Entries marked without reset evidence precede those marked with it, and
+// the integer reset value orders each group. Positive numeric resets count
+// as present before shared normalization checks the formatted date; normalized
+// string resets retain their text and leave the numeric sort field at zero.
+//
+// Token and credit allowances feed different source lists. Credit entries use
+// reset-based candidate ordering only when the response has no token entry,
+// even when some identified token slots would otherwise remain vacant. The
+// query adds a raw API key and optional team identity to its fixed management
+// endpoint, then
+// passes the selected observations through shared percentage-limit
+// normalization for display and monitoring.
 
-	// DefaultTestModel 是智谱提供商的默认探测型号。
+// Window tags reserve known coding slots before reset-based classification; the
+// probe model separately selects the model used by provider connectivity
+// checks.
+const (
+	// CnZhipuWindowUnknown: classify from remaining reset evidence.
+	CnZhipuWindowUnknown CnZhipuWindow = iota
+	CnZhipuWindow5h                    // five-hour usage observation slot
+	CnZhipuWindowWeekly                // weekly usage observation slot
+
+	// DefaultTestModel selects the model used by Zhipu connection probes,
+	// independently of coding quota-window queries.
 	DefaultTestModel = "glm-4.7"
 )
 
-// CnZhipuWindow 标识智谱 TOKENS_LIMIT 条目所属窗口。
+// CnZhipuWindow identifies the observation slot selected by a coding quota
+// unit.
 type CnZhipuWindow int
 
+// ZhipuCodingUsageAdapter reads coding quota observations through the
+// configured usage-query transport.
 type ZhipuCodingUsageAdapter struct{}
 
-// ClassifyZhipuWindowUnit 按 unit 字段判定窗口类型（3=5h，6=7d）。
-// unit 缺失或未识别时返回 Unknown，由调用方走 reset 时间启发式兜底。
+// ClassifyZhipuWindowUnit maps unit 3 to the five-hour slot and unit 6 to the
+// weekly slot. Other units return CnZhipuWindowUnknown, leaving
+// ParseZhipuTokenTiers to classify a remaining observation using reset
+// metadata.
 func ClassifyZhipuWindowUnit(unit int64) CnZhipuWindow {
 	switch unit {
 	case 3:
@@ -40,24 +68,36 @@ func ClassifyZhipuWindowUnit(unit int64) CnZhipuWindow {
 	}
 }
 
-// ParseZhipuTokenTiers 解析智谱额度响应 data.limits 为 5h + weekly 两档。
+// ParseZhipuTokenTiers returns up to two percentage observations from
+// TOKENS_LIMIT entries, or CREDIT_LIMIT entries when token entries are absent.
+// Token unit 3 reserves the five-hour slot and unit 6 reserves the weekly slot;
+// later entries for an occupied unit join the unclassified candidates. Credit
+// entries use reset ordering regardless of their unit fields.
 //
-// 分类优先级（对齐 cc-switch parse_zhipu_token_tiers，issue #3036）：
-//  1. 按 unit 字段分类（3=5h / 6=weekly）。周期末尾周窗口会比 5h 更早重置，
-//     按 reset 排序会把两类窗口标反。
-//  2. unit 缺失/未识别：无 nextResetTime 的条目优先归 5h（0% 状态下 5h 桶可能
-//     没有 reset），其余按 reset 升序依次填入仍空缺的槽位。
+// Vacant slots are filled five-hour first after a stable ordering of
+// candidates: missing resets precede present resets, then gjson integer reset
+// values sort ascending. Parsed string resets retain a zero numeric sort value,
+// so the ordering is a heuristic rather than a comparison of every normalized
+// date. Explicit unit identities therefore survive a weekly reset preceding a
+// short window's reset.
 //
-// CREDIT_LIMIT（信用额度）与 TOKENS_LIMIT（token 窗口）度量不同：两者同时返回时
-// 只让 TOKENS_LIMIT 参与 5h/weekly 槽位竞争，避免信用额度百分比污染阈值停调
-// 快照；仅当无任何 TOKENS_LIMIT 条目时才降级用 CREDIT_LIMIT 展示。
-// 老套餐只回 1 条 TOKENS_LIMIT，自然降级为仅 5h；新套餐回 2 条。
+// Missing or unparseable percentage values become zero. The returned values and
+// optional reset text are passed to CnUsageLimits by Query, which rejects
+// negative or nonfinite percentages, retains values above one hundred, and
+// omits unparseable reset text.
 func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
+	// entry keeps one allowance's percentage and separate
+	// reset-classification evidence.
 	type entry struct {
-		resetMs    int64
-		hasReset   bool
-		percentage float64
-		resetISO   string
+		// resetMs and resetISO retain integer ordering evidence and
+		// formatted text. Positive resetMs values and nonempty string
+		// resets set hasReset before CnUsageLimits checks the date text.
+		// String parsing leaves resetMs zero, so its displayed reset and
+		// its ordering value remain separate observations.
+		resetMs    int64   // sortable numeric reset value
+		hasReset   bool    // parser reset presence marker
+		percentage float64 // selected used percentage
+		resetISO   string  // normalized reset time text
 	}
 	var (
 		fiveHour     entry
@@ -93,6 +133,9 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 		if limitType != "TOKENS_LIMIT" && limitType != "CREDIT_LIMIT" {
 			return true
 		}
+		// An absent or unreadable percentage contributes zero here.
+		// CnUsageLimits later validates retained numeric observations,
+		// while this parser retains the candidate's window metadata.
 		percentage := 0.0
 		if p, ok := usageclient.CnParseF64(item.Get("percentage").Value()); ok {
 			percentage = p
@@ -107,8 +150,15 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 			case gjson.Number:
 				resetMs = nr.Int()
 				hasReset = resetMs > 0
+				// Normalize numeric epoch text for the usage
+				// result while retaining its integer reset value
+				// as the reset heuristic's ordering key.
 				resetISO = usageclient.CnMillisToRFC3339(resetMs)
 			case gjson.String:
+				// A string timestamp can establish reset
+				// presence and display text even though it
+				// contributes no parsed epoch to numeric
+				// candidate ordering.
 				resetISO = usageclient.CnNormalizeResetTime(nr.String())
 				hasReset = resetISO != ""
 			}
@@ -123,12 +173,16 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 		return true
 	})
 
-	// 无任何 TOKENS_LIMIT 条目（部分套餐只报信用额度）：降级用 CREDIT_LIMIT 展示。
+	// Credit-only responses still supply percentage observations to the
+	// shared normalizer. Keep them out of slot selection when any token
+	// entry has established that token allowances are present.
 	if !hasTokensLimit {
 		unclassified = append(unclassified, creditFallback...)
 	}
 
-	// 无 reset 的条目排前，再按 reset 升序，依次填入仍空缺的槽位。
+	// Reserve identified unit slots before considering these candidates.
+	// Missing-reset entries fill vacant slots first, and equal numeric keys
+	// retain response order through the stable sort.
 	sort.SliceStable(unclassified, func(i, j int) bool {
 		if unclassified[i].hasReset != unclassified[j].hasReset {
 			return !unclassified[i].hasReset
@@ -154,21 +208,34 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 	return tiers
 }
 
+// Name returns the registry identifier for Zhipu coding quota queries.
 func (*ZhipuCodingUsageAdapter) Name() string { return usageview.UpstreamUsageAdapterZhipuCoding }
+
+// Query reads the fixed coding quota endpoint with the raw API key and returns
+// normalized percentage windows. It requires a stable request with usable
+// callbacks; a nonempty organization selects type=2 and team headers, with an
+// optional project included only for that team request.
 func (*ZhipuCodingUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {
 	client := usageclient.New(input)
 	endpoint, err := usageclient.CnUsageEndpoint(client.BaseURL, "/api/monitor/usage/quota/limit", false)
 	if err != nil {
 		return nil, usageview.ErrUpstreamUsageConfigInvalid.WithCause(err)
 	}
-	// 智谱 Coding Plan 额度接口使用裸 API key，不是 Bearer token。
+	// Install the coding query's raw-key header after provider overrides
+	// through GetURLWithHeaders, so forwarding Bearer formatting cannot
+	// select a different credential representation.
 	teamHeaders := map[string]string{"Authorization": client.APIKey}
 	organization := strings.TrimSpace(client.ZhipuOrganization)
 	if organization != "" {
+		// Reject line breaks before inserting organization identity
+		// into HTTP headers, so the selected team value cannot
+		// introduce another header line.
 		if strings.ContainsAny(organization, "\r\n") {
 			return nil, usageview.ErrUpstreamUsageConfigInvalid
 		}
-		// 团队版接口通过 type=2 和组织请求头区分个人 Coding Plan。
+		// Couple team mode to the organization identity in both the URL
+		// and headers. This keeps the selected quota scope aligned with
+		// the supplied team credentials.
 		parsed, parseErr := url.Parse(endpoint)
 		if parseErr != nil || parsed.Scheme == "" || parsed.Host == "" {
 			return nil, usageview.ErrUpstreamUsageConfigInvalid
@@ -179,6 +246,9 @@ func (*ZhipuCodingUsageAdapter) Query(ctx context.Context, input *usagecontract.
 		endpoint = parsed.String()
 		teamHeaders["bigmodel-organization"] = organization
 		if project := strings.TrimSpace(client.ZhipuProject); project != "" {
+			// Validate the optional team project before it becomes
+			// a header value, using the same line-break restriction
+			// as the organization identity.
 			if strings.ContainsAny(project, "\r\n") {
 				return nil, usageview.ErrUpstreamUsageConfigInvalid
 			}

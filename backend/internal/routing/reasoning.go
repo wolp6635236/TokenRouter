@@ -10,31 +10,61 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// reasoning.go normalizes group reasoning controls and selects model-scoped
+// effort mappings.
+// Group reasoning policy maps a client's supplied effort before comparing its
+// ranked ceiling. OpenAI and Anthropic expose different declared effort sets,
+// and none is accepted as an OpenAI mapping choice while remaining outside the
+// ceiling ordering.
+//
+// Model-scoped mappings choose exact matches first, then the longer matching
+// prefix or suffix, and finally unscoped rules. Saved order breaks ties within
+// the same strength and pattern length so overlapping rules produce a
+// deterministic choice. Administrative normalization rejects duplicate
+// source-and-scope keys and bounds configuration size; request mapping keeps
+// unknown or unmatched supplied values trimmed so the downstream execution
+// resolver can interpret them.
+
+// Reasoning configuration limits bound accepted mapping payloads; action labels
+// choose over-limit handling, and match labels define supported model-scope
+// comparisons.
 const (
-	MaxReasoningEffortMappings = 64
-	MaxReasoningEffortValueLen = 64
-	MaxReasoningEffortModelLen = 200
+	// Mapping limits bound saved entry counts and normalized string bytes before
+	// the administrator's ordered rewrite rules can reach request policy.
+	MaxReasoningEffortMappings = 64  // maximum mapping entry count
+	MaxReasoningEffortValueLen = 64  // maximum normalized effort bytes
+	MaxReasoningEffortModelLen = 200 // maximum scoped model bytes
 
-	// ReasoningEffortOverLimitDowngrade 表示超出上限时改写为上限值。
-	ReasoningEffortOverLimitDowngrade = "downgrade"
-	// ReasoningEffortOverLimitDeny 表示超出上限时拒绝请求。
-	ReasoningEffortOverLimitDeny = "deny"
+	// ReasoningEffortOverLimitDowngrade and ReasoningEffortOverLimitDeny select
+	// whether the group ceiling clamps or rejects excessive ranked requests.
+	ReasoningEffortOverLimitDowngrade = "downgrade" // clamp to group ceiling
+	ReasoningEffortOverLimitDeny      = "deny"      // reject above group ceiling
 
-	// 推理强度映射支持精确、前缀和后缀匹配。
-	ReasoningEffortMatchExact  = "exact"
-	ReasoningEffortMatchPrefix = "prefix"
-	ReasoningEffortMatchSuffix = "suffix"
+	// ReasoningEffortMatchExact, ReasoningEffortMatchPrefix, and
+	// ReasoningEffortMatchSuffix name the supported comparisons used to scope
+	// effort rules to request model identities.
+	ReasoningEffortMatchExact  = "exact"  // equal full request identity
+	ReasoningEffortMatchPrefix = "prefix" // matching request name prefix
+	ReasoningEffortMatchSuffix = "suffix" // matching request name suffix
 )
 
-// ReasoningEffortOverLimitError 表示请求的推理强度超过分组上限且策略要求拒绝。
+// ReasoningEffortOverLimitError reports the requested effort and group ceiling
+// under rejection policy.
 type ReasoningEffortOverLimitError struct {
-	Requested string
-	Max       string
+	// Requested and Max describe the ranked effort comparison that caused a deny
+	// decision. Error uses whichever labels are present to produce the public
+	// rejection detail.
+	Requested string // requested ranked effort label
+	Max       string // group ranked effort ceiling
 }
 
-// ReasoningEffortMapping 在应用分组上限前，改写请求中的 OpenAI/Codex 推理强度值。
+// ReasoningEffortMapping aliases the group's request-effort rewrite and
+// model-scope configuration.
 type ReasoningEffortMapping = accessview.ReasoningEffortMapping
 
+// Error formats an over-limit rejection using trimmed request and ceiling
+// labels. A nil receiver or absent labels uses the generic message; a single
+// populated label contributes its corresponding detail.
 func (e *ReasoningEffortOverLimitError) Error() string {
 	if e == nil {
 		return "reasoning effort exceeds this group's limit"
@@ -53,8 +83,9 @@ func (e *ReasoningEffortOverLimitError) Error() string {
 	return fmt.Sprintf("reasoning effort %q exceeds this group's limit of %q", requested, max)
 }
 
-// NormalizeMaxReasoningEffort 校验并标准化分组策略值。
-// 空字符串表示分组不设置上限。
+// NormalizeMaxReasoningEffort trims, lowercases, and removes separators from
+// recognized ranked effort labels. Unknown and empty values return empty,
+// representing no group ceiling when used as configuration.
 func NormalizeMaxReasoningEffort(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
@@ -78,8 +109,10 @@ func NormalizeMaxReasoningEffort(raw string) string {
 	}
 }
 
-// NormalizeReasoningEffortMappingValue 标准化映射规则使用的值。none 只表示
-// 上游协议中的关闭推理状态，不能参与分组上限的强度比较。
+// NormalizeReasoningEffortMappingValue normalizes mapping labels and
+// additionally accepts none. That label can disable request reasoning, but
+// ReasoningEffortRank leaves it outside the ordering used for group ceiling
+// comparisons.
 func NormalizeReasoningEffortMappingValue(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
@@ -89,12 +122,16 @@ func NormalizeReasoningEffortMappingValue(raw string) string {
 	return NormalizeMaxReasoningEffort(value)
 }
 
-// NormalizeRequestedOpenAIReasoningEffort 规范化客户端请求中的推理强度值。
-// none 表示关闭推理，请求审计记录该值，分组上限使用可比较的强度排名。
+// NormalizeRequestedOpenAIReasoningEffort applies mapping-value normalization
+// to a client effort, including none. Unknown values return empty; request
+// auditing retains recognized none separately from ranked group ceiling checks.
 func NormalizeRequestedOpenAIReasoningEffort(raw string) string {
 	return NormalizeReasoningEffortMappingValue(raw)
 }
 
+// ReasoningEffortValuesForPlatform returns the platform's declared comparable
+// effort labels in a fresh slice. OpenAI and Anthropic use their protocol sets,
+// while other platforms return nil for unsupported ceiling configuration.
 func ReasoningEffortValuesForPlatform(platform string) []string {
 	switch platform {
 	case capability.PlatformOpenAI:
@@ -106,6 +143,9 @@ func ReasoningEffortValuesForPlatform(platform string) []string {
 	}
 }
 
+// ReasoningEffortMappingValuesForPlatform returns declared mapping labels for
+// OpenAI or Anthropic in fresh storage. OpenAI includes none, Anthropic uses
+// its ranked set, and unsupported platforms return nil.
 func ReasoningEffortMappingValuesForPlatform(platform string) []string {
 	switch platform {
 	case capability.PlatformOpenAI:
@@ -117,6 +157,10 @@ func ReasoningEffortMappingValuesForPlatform(platform string) []string {
 	}
 }
 
+// NormalizeMaxReasoningEffortForPlatform validates a normalized ceiling against
+// the platform's declared ranked values. Blank input returns no ceiling even
+// for other platforms; populated unsupported labels or platforms return an
+// error.
 func NormalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return "", nil
@@ -139,6 +183,10 @@ func NormalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 	)
 }
 
+// NormalizeReasoningEffortMappingValueForPlatform validates a normalized
+// rewrite value against the platform's declared mapping set. Blank input
+// returns empty, and a nonblank value on an unsupported platform produces a
+// configuration error.
 func NormalizeReasoningEffortMappingValueForPlatform(platform, raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return "", nil
@@ -161,7 +209,9 @@ func NormalizeReasoningEffortMappingValueForPlatform(platform, raw string) (stri
 	)
 }
 
-// NormalizeMaxReasoningEffortOverLimit 将超限动作归一化；空值兼容历史默认降档。
+// NormalizeMaxReasoningEffortOverLimit trims and lowercases the configured
+// action, defaulting blank input to downgrade. Deny remains distinct, and
+// unknown actions return empty so callers can reject invalid settings.
 func NormalizeMaxReasoningEffortOverLimit(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", ReasoningEffortOverLimitDowngrade:
@@ -173,8 +223,10 @@ func NormalizeMaxReasoningEffortOverLimit(raw string) string {
 	}
 }
 
-// NormalizeMaxReasoningEffortOverLimitForPlatform 校验动作是否能用于目标平台。
-// 降档是无副作用的兼容默认值；拒绝仅对当前 fork 支持的 OpenAI 分组开放。
+// NormalizeMaxReasoningEffortOverLimitForPlatform validates the normalized
+// action for its platform. Downgrade is accepted for every platform, including
+// blank defaults, while deny requires either OpenAI or Anthropic as the
+// configured platform.
 func NormalizeMaxReasoningEffortOverLimitForPlatform(platform, raw string) (string, error) {
 	value := NormalizeMaxReasoningEffortOverLimit(raw)
 	if value == "" {
@@ -198,6 +250,9 @@ func NormalizeMaxReasoningEffortOverLimitForPlatform(platform, raw string) (stri
 	return value, nil
 }
 
+// ReasoningEffortRank returns ascending ranks from minimal through max after
+// label normalization. Unknown labels and none return zero with false, keeping
+// them outside group effort comparisons.
 func ReasoningEffortRank(raw string) (int, bool) {
 	switch NormalizeMaxReasoningEffort(raw) {
 	case "minimal":
@@ -217,7 +272,9 @@ func ReasoningEffortRank(raw string) (int, bool) {
 	}
 }
 
-// NormalizeReasoningEffortMatchType 校验并规范化模型匹配类型；模型为空时返回空类型。
+// NormalizeReasoningEffortMatchType normalizes exact, prefix, or suffix scopes
+// and defaults a populated model to exact. An empty model returns an empty
+// global scope even when matchType contains other text.
 func NormalizeReasoningEffortMatchType(matchType, model string) (string, error) {
 	model = strings.TrimSpace(model)
 	matchType = strings.ToLower(strings.TrimSpace(matchType))
@@ -236,10 +293,17 @@ func NormalizeReasoningEffortMatchType(matchType, model string) (string, error) 
 	}
 }
 
+// ReasoningEffortMappingDuplicateKey joins source effort, match type, and
+// normalized model with NUL separators. Callers normalize the first two values
+// before using this case-insensitive model key to reject duplicate scopes.
 func ReasoningEffortMappingDuplicateKey(from, matchType, model string) string {
 	return from + "\x00" + matchType + "\x00" + strings.ToLower(strings.TrimSpace(model))
 }
 
+// RequestModelMatchesReasoningEffortMapping compares trimmed lowercase model
+// text under the supplied normalized match type. Empty match type accepts every
+// request; populated scopes need nonempty names, and unknown match types
+// reject.
 func RequestModelMatchesReasoningEffortMapping(requestModel, matchType, mappingModel string) bool {
 	scope := strings.ToLower(strings.TrimSpace(mappingModel))
 	req := strings.ToLower(strings.TrimSpace(requestModel))
@@ -257,12 +321,22 @@ func RequestModelMatchesReasoningEffortMapping(requestModel, matchType, mappingM
 	}
 }
 
+// SelectReasoningEffortMapping chooses a matching rewrite for a normalized
+// source effort and request model. Invalid match-type rules are skipped, and
+// matching rules compete by scope strength before specificity.
+//
+// Exact rules beat prefix or suffix rules, which beat global rules. Longer
+// scoped patterns win within the same strength, and earlier configured indices
+// break remaining ties, keeping overlap decisions independent of incidental
+// candidate traversal. With no matching candidate, the result is a zero
+// mapping with false; a selected value retains its configured target text.
 func SelectReasoningEffortMapping(mappings []ReasoningEffortMapping, from, requestModel string) (ReasoningEffortMapping, bool) {
+	// candidate records a matched rewrite and its deterministic precedence inputs.
 	type candidate struct {
-		mapping       ReasoningEffortMapping
-		matchStrength int
-		patternLen    int
-		index         int
+		mapping       ReasoningEffortMapping // matched configured rewrite value
+		matchStrength int                    // exact scoped or global precedence
+		patternLen    int                    // case-folded model pattern bytes
+		index         int                    // original configured rule position
 	}
 	candidates := make([]candidate, 0, len(mappings))
 	for i, mapping := range mappings {
@@ -272,6 +346,8 @@ func SelectReasoningEffortMapping(mappings []ReasoningEffortMapping, from, reque
 		model := strings.TrimSpace(mapping.Model)
 		matchType, err := NormalizeReasoningEffortMatchType(mapping.MatchType, model)
 		if err != nil {
+			// Runtime inputs can include unvalidated saved rules. Skip an invalid match
+			// type so it cannot override another usable configured effort mapping.
 			continue
 		}
 		if !RequestModelMatchesReasoningEffortMapping(requestModel, matchType, model) {
@@ -317,7 +393,19 @@ func SelectReasoningEffortMapping(mappings []ReasoningEffortMapping, from, reque
 	return best.mapping, true
 }
 
+// NormalizeReasoningEffortMappings validates and returns a new ordered slice of
+// canonical rewrite rules. It limits entry count, normalizes source and target
+// effort for the platform, and trims model scope text before checking its byte
+// length.
+//
+// A populated model defaults to exact matching; an empty model discards its
+// match type and becomes global. Duplicate keys combine normalized source,
+// scope type, and case-folded model, so the same source can remain in distinct
+// scopes. The first invalid rule rejects the entire result, and an empty input
+// returns an allocated empty slice.
 func NormalizeReasoningEffortMappings(platform string, raw []ReasoningEffortMapping) ([]ReasoningEffortMapping, error) {
+	// Bound administrator rule count before allocating the normalized mapping
+	// slice.
 	if len(raw) > MaxReasoningEffortMappings {
 		return nil, fmt.Errorf("reasoning effort mappings cannot exceed %d entries", MaxReasoningEffortMappings)
 	}
@@ -330,6 +418,7 @@ func NormalizeReasoningEffortMappings(platform string, raw []ReasoningEffortMapp
 		if from == "" || to == "" {
 			return nil, fmt.Errorf("reasoning effort mapping %d contains an empty or unknown value", i+1)
 		}
+		// These limits count bytes in normalized effort labels.
 		if len(from) > MaxReasoningEffortValueLen || len(to) > MaxReasoningEffortValueLen {
 			return nil, fmt.Errorf("reasoning effort mapping %d values cannot exceed %d characters", i+1, MaxReasoningEffortValueLen)
 		}
@@ -340,6 +429,7 @@ func NormalizeReasoningEffortMappings(platform string, raw []ReasoningEffortMapp
 			return nil, fmt.Errorf("reasoning effort mapping %d target: %w", i+1, err)
 		}
 		model := strings.TrimSpace(mapping.Model)
+		// Scoped model limits count UTF-8 bytes after trimming.
 		if len(model) > MaxReasoningEffortModelLen {
 			return nil, fmt.Errorf("reasoning effort mapping %d model cannot exceed %d characters", i+1, MaxReasoningEffortModelLen)
 		}
@@ -365,6 +455,9 @@ func NormalizeReasoningEffortMappings(platform string, raw []ReasoningEffortMapp
 	return normalized, nil
 }
 
+// MapReasoningEffort applies one selected rewrite to a recognized client effort
+// and request model. Unknown or unmatched inputs return their trimmed supplied
+// text with false; matched targets are trimmed without another rewrite.
 func MapReasoningEffort(raw string, mappings []ReasoningEffortMapping, requestModel string) (string, bool) {
 	value := strings.TrimSpace(raw)
 	canonical := NormalizeReasoningEffortMappingValue(value)

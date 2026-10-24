@@ -19,6 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestLoadDefaultModelsListReadMaxBytes loads configuration with the standard
+// fixture JWT secret. The model-list body limit must equal the named default
+// used for upstream model responses.
 func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -26,6 +29,8 @@ func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	require.Equal(t, DefaultModelsListReadMaxBytes, cfg.Gateway.ModelsListReadMaxBytes)
 }
 
+// TestLoadDefaultUpdateGitHubRepo verifies that an omitted update repository
+// selects this fork's release feed before the administrator update service starts.
 func TestLoadDefaultUpdateGitHubRepo(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -33,6 +38,8 @@ func TestLoadDefaultUpdateGitHubRepo(t *testing.T) {
 	require.Equal(t, DefaultUpdateGitHubRepo, cfg.Update.GitHubRepo)
 }
 
+// TestNormalizeUpdateGitHubRepo verifies accepted owner/repository forms and
+// rejects malformed values before release requests can target an unintended path.
 func TestNormalizeUpdateGitHubRepo(t *testing.T) {
 	got, err := NormalizeUpdateGitHubRepo("")
 	require.NoError(t, err)
@@ -42,17 +49,20 @@ func TestNormalizeUpdateGitHubRepo(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "acme/router", got)
 
-	_, err = NormalizeUpdateGitHubRepo("not a repo")
+	_, err = NormalizeUpdateGitHubRepo("not a repository")
 	require.Error(t, err)
 }
 
+// TestLoadTimezonePrecedence combines a file zone with TIMEZONE, TZ, and absent
+// values. The decoded zone must follow standard TZ, legacy environment, file,
+// and default precedence in the supplied cases.
 func TestLoadTimezonePrecedence(t *testing.T) {
 	tests := []struct {
-		name         string
-		fileTimezone string
-		timezoneEnv  string
-		tzEnv        string
-		want         string
+		name         string // subtest display name
+		fileTimezone string // supplied YAML timezone name
+		timezoneEnv  string // supplied legacy timezone value
+		tzEnv        string // supplied standard timezone value
+		want         string // expected decoded configuration value
 	}{
 		{name: "默认值", want: "Asia/Shanghai"},
 		{name: "配置文件", fileTimezone: "Europe/London", want: "Europe/London"},
@@ -78,6 +88,9 @@ func TestLoadTimezonePrecedence(t *testing.T) {
 	}
 }
 
+// TestLoadServerTimingConfig loads the default server settings and then
+// supplies ENABLE_SERVER_TIMING. Timing must start disabled and become enabled
+// through that explicitly bound environment variable.
 func TestLoadServerTimingConfig(t *testing.T) {
 	t.Run("disabled by default", func(t *testing.T) {
 		resetViperWithJWTSecret(t)
@@ -95,6 +108,9 @@ func TestLoadServerTimingConfig(t *testing.T) {
 	})
 }
 
+// TestLoadAdvancedSchedulerStickyEscapeZeroBoundaries supplies zero error-rate
+// and TTFT thresholds through YAML and environment sources. Loading must retain
+// zero error rate while reporting the invalid zero TTFT limit.
 func TestLoadAdvancedSchedulerStickyEscapeZeroBoundaries(t *testing.T) {
 	t.Run("YAML 保留显式零错误率", func(t *testing.T) {
 		resetViperWithJWTSecret(t)
@@ -133,6 +149,10 @@ func TestLoadAdvancedSchedulerStickyEscapeZeroBoundaries(t *testing.T) {
 	}
 }
 
+// TestLoadAdvancedSchedulerEWMAAlphaFromYAMLAndEnvironment supplies separate
+// smoothing values through YAML and environment input. Both feedback alpha
+// fields must receive their expected values, including the valid upper endpoint
+// one.
 func TestLoadAdvancedSchedulerEWMAAlphaFromYAMLAndEnvironment(t *testing.T) {
 	t.Run("YAML", func(t *testing.T) {
 		resetViperWithJWTSecret(t)
@@ -158,6 +178,9 @@ func TestLoadAdvancedSchedulerEWMAAlphaFromYAMLAndEnvironment(t *testing.T) {
 	})
 }
 
+// TestLoadRedisUsernameFromEnvironment supplies a Redis authentication username
+// after resetting the configuration fixture. Loading must retain that username,
+// protecting environment-only access to the Redis ACL field.
 func TestLoadRedisUsernameFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("REDIS_USERNAME", "app-user")
@@ -167,6 +190,10 @@ func TestLoadRedisUsernameFromEnvironment(t *testing.T) {
 	require.Equal(t, "app-user", cfg.Redis.Username)
 }
 
+// TestLoadHTTPIngressSafetyDefaults inspects default header budgets, proxy
+// presence, forwarding trust, text-body size, and invalid-auth limits. The
+// decoded values must match those defaults and keep an absent trusted list
+// distinguishable.
 func TestLoadHTTPIngressSafetyDefaults(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -182,6 +209,9 @@ func TestLoadHTTPIngressSafetyDefaults(t *testing.T) {
 	require.Equal(t, 16384, cfg.APIKeyAuth.InvalidAbuse.Capacity)
 }
 
+// TestNormalizeForwardedClientIPHeaders supplies padded and differently cased
+// names plus an invalid field spelling. Normalization must retain ordered
+// canonical unique names and return the expected error for malformed syntax.
 func TestNormalizeForwardedClientIPHeaders(t *testing.T) {
 	headers, err := NormalizeForwardedClientIPHeaders([]string{
 		" x-cdn-client-ip ",
@@ -195,6 +225,9 @@ func TestNormalizeForwardedClientIPHeaders(t *testing.T) {
 	require.ErrorContains(t, err, "invalid HTTP header field name")
 }
 
+// TestNormalizeForwardedClientIPHeadersLimit supplies one more distinct source
+// name than the configured maximum. Normalization must report the unique-header
+// limit instead of accepting an unbounded discovery list.
 func TestNormalizeForwardedClientIPHeadersLimit(t *testing.T) {
 	headers := make([]string, 0, MaxForwardedClientIPHeaders+1)
 	for i := 0; i <= MaxForwardedClientIPHeaders; i++ {
@@ -205,6 +238,10 @@ func TestNormalizeForwardedClientIPHeadersLimit(t *testing.T) {
 	require.ErrorContains(t, err, "at most 16 unique names")
 }
 
+// TestLoadForwardedClientIPHeadersNormalizesAndSnapshots loads duplicate and
+// padded header names and mutates the returned list. Later snapshots must
+// retain the canonical stored values, protecting independent caller ownership
+// of header storage.
 func TestLoadForwardedClientIPHeadersNormalizesAndSnapshots(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	viper.Set("security.forwarded_client_ip_headers", []string{" x-cdn-ip ", "X-CDN-IP", "true-client-ip"})
@@ -218,11 +255,18 @@ func TestLoadForwardedClientIPHeadersNormalizesAndSnapshots(t *testing.T) {
 	require.Equal(t, []string{"X-Cdn-Ip", "True-Client-Ip"}, cfg.ForwardedClientIPSettings().Headers)
 }
 
+// TestForwardedClientIPSettingsConcurrentPublication initializes the live
+// pointer before concurrent writers publish two whole policies and readers
+// inspect them. Every observation must match one complete flag/header pair,
+// with no mixed result.
 func TestForwardedClientIPSettingsConcurrentPublication(t *testing.T) {
 	cfg := &Config{}
 	cfg.SetForwardedClientIPSettings(true, []string{"X-Public-A"})
 
+	// Repeat reads and publications to expose mixed flag/header observations.
 	const iterations = 2000
+	// Initialize live storage before the gate releases writers and readers. Each
+	// reader reports at most one error into a buffer sized for all reader goroutines.
 	start := make(chan struct{})
 	errCh := make(chan error, 8)
 	var wg sync.WaitGroup
@@ -254,6 +298,8 @@ func TestForwardedClientIPSettingsConcurrentPublication(t *testing.T) {
 		})
 	}
 
+	// Release every worker, then wait before closing error publication. The final
+	// range can consume all reader errors after no goroutine can send another one.
 	close(start)
 	wg.Wait()
 	close(errCh)
@@ -262,6 +308,9 @@ func TestForwardedClientIPSettingsConcurrentPublication(t *testing.T) {
 	}
 }
 
+// TestLoadForwardedClientIPHeadersFromEnvironment supplies a comma-separated
+// header list containing padding and case duplicates. The live policy must
+// expose ordered canonical unique names after environment decoding.
 func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", " x-cdn-ip , X-CDN-IP, true-client-ip ")
@@ -271,6 +320,9 @@ func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {
 	require.Equal(t, []string{"X-Cdn-Ip", "True-Client-Ip"}, cfg.ForwardedClientIPSettings().Headers)
 }
 
+// TestLoadExplicitEmptyForwardedClientIPHeadersFromEnvironment places a header
+// in Viper and sets its list environment variable to empty text. Loading must
+// treat that variable as supplied and publish an empty header list.
 func TestLoadExplicitEmptyForwardedClientIPHeadersFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	viper.Set("security.forwarded_client_ip_headers", []string{"X-Yaml-IP"})
@@ -281,6 +333,9 @@ func TestLoadExplicitEmptyForwardedClientIPHeadersFromEnvironment(t *testing.T) 
 	require.Empty(t, cfg.ForwardedClientIPSettings().Headers)
 }
 
+// TestLoadRejectsInvalidForwardedClientIPHeaderFromEnvironment combines a valid
+// header with invalid environment-provided syntax. Loading must reject the list
+// with its configuration field named in the returned error.
 func TestLoadRejectsInvalidForwardedClientIPHeaderFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", "X-Valid-IP, X Invalid")
@@ -289,6 +344,9 @@ func TestLoadRejectsInvalidForwardedClientIPHeaderFromEnvironment(t *testing.T) 
 	require.ErrorContains(t, err, "security.forwarded_client_ip_headers")
 }
 
+// TestLoadRejectsInvalidForwardedClientIPHeader supplies malformed header text
+// through Viper configuration. Loading must return an error naming the header
+// list, protecting rejection of this invalid input at the loader check.
 func TestLoadRejectsInvalidForwardedClientIPHeader(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	viper.Set("security.forwarded_client_ip_headers", []string{"X Invalid"})
@@ -297,6 +355,9 @@ func TestLoadRejectsInvalidForwardedClientIPHeader(t *testing.T) {
 	require.ErrorContains(t, err, "security.forwarded_client_ip_headers")
 }
 
+// TestLoadExplicitEmptyTrustedProxiesEnablesConfiguredMode supplies an empty
+// trusted-proxy list through Viper. Loading must retain emptiness and set the
+// presence flag, separating this input from an omitted policy.
 func TestLoadExplicitEmptyTrustedProxiesEnablesConfiguredMode(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	viper.Set("server.trusted_proxies", []string{})
@@ -307,6 +368,9 @@ func TestLoadExplicitEmptyTrustedProxiesEnablesConfiguredMode(t *testing.T) {
 	require.True(t, cfg.Server.TrustedProxiesConfigured)
 }
 
+// TestLoadExplicitTrustedProxiesEnablesConfiguredMode supplies one trusted
+// loopback range through Viper. Loading must retain the range and mark the
+// trusted-proxy policy as configured for downstream address selection.
 func TestLoadExplicitTrustedProxiesEnablesConfiguredMode(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	viper.Set("server.trusted_proxies", []string{"127.0.0.1/32"})
@@ -317,6 +381,9 @@ func TestLoadExplicitTrustedProxiesEnablesConfiguredMode(t *testing.T) {
 	require.True(t, cfg.Server.TrustedProxiesConfigured)
 }
 
+// TestLoadTrustedProxiesFromEnvironment supplies IPv4 and IPv6 trusted ranges
+// in a comma-separated variable. Loading must split and trim both entries and
+// set the configured-presence flag.
 func TestLoadTrustedProxiesFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("SERVER_TRUSTED_PROXIES", "127.0.0.1/32, ::1/128")
@@ -327,6 +394,9 @@ func TestLoadTrustedProxiesFromEnvironment(t *testing.T) {
 	require.True(t, cfg.Server.TrustedProxiesConfigured)
 }
 
+// TestLoadExplicitEmptyTrustedProxiesFromEnvironment assigns empty text to the
+// trusted-list environment variable. Loading must retain an empty list while
+// identifying the variable as a supplied proxy policy.
 func TestLoadExplicitEmptyTrustedProxiesFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("SERVER_TRUSTED_PROXIES", "")
@@ -337,12 +407,15 @@ func TestLoadExplicitEmptyTrustedProxiesFromEnvironment(t *testing.T) {
 	require.True(t, cfg.Server.TrustedProxiesConfigured)
 }
 
+// TestLoadTrustedProxiesPresenceFromYAML supplies omitted, empty, and populated
+// lists through temporary YAML files. Decoded entries and the presence flag
+// must distinguish all three tested configuration shapes.
 func TestLoadTrustedProxiesPresenceFromYAML(t *testing.T) {
 	tests := []struct {
-		name       string
-		yaml       string
-		want       []string
-		configured bool
+		name       string   // subtest display name
+		yaml       string   // supplied YAML configuration text
+		want       []string // expected decoded configuration value
+		configured bool     // expected explicit proxy presence
 	}{
 		{name: "absent", yaml: "server:\n  mode: debug\n", configured: false},
 		{name: "explicit empty", yaml: "server:\n  trusted_proxies: []\n", want: []string{}, configured: true},
@@ -369,7 +442,9 @@ func TestLoadTrustedProxiesPresenceFromYAML(t *testing.T) {
 	}
 }
 
-// TestLoadTrustedProxiesFromConfigFile 验证显式配置文件参与完整配置加载。
+// TestLoadTrustedProxiesFromConfigFile selects a named YAML file containing a
+// listener and multiple trusted ranges. Loading must read that file and retain
+// its host, range order, and configured flag.
 func TestLoadTrustedProxiesFromConfigFile(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	configFile := filepath.Join(t.TempDir(), "reporter-config.yaml")
@@ -390,7 +465,9 @@ func TestLoadTrustedProxiesFromConfigFile(t *testing.T) {
 	require.True(t, cfg.Server.TrustedProxiesConfigured)
 }
 
-// TestConfigFileTakesPrecedenceOverDataDir 验证显式文件优先于 DATA_DIR 搜索结果。
+// TestConfigFileTakesPrecedenceOverDataDir provides different listener hosts in
+// an explicit file and DATA_DIR configuration. Loading must select the explicit
+// file and return its host.
 func TestConfigFileTakesPrecedenceOverDataDir(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	dataDir := t.TempDir()
@@ -405,7 +482,9 @@ func TestConfigFileTakesPrecedenceOverDataDir(t *testing.T) {
 	require.Equal(t, "192.0.2.30", cfg.Server.Host)
 }
 
-// TestLoadReturnsErrorForMissingConfigFile 验证显式路径错误不会静默回退到默认配置。
+// TestLoadReturnsErrorForMissingConfigFile selects an explicit path that does
+// not exist in a temporary directory. Loading must return a configuration-read
+// error, preventing silent startup from other search paths.
 func TestLoadReturnsErrorForMissingConfigFile(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing.yaml"))
@@ -414,6 +493,9 @@ func TestLoadReturnsErrorForMissingConfigFile(t *testing.T) {
 	require.ErrorContains(t, err, "read config error")
 }
 
+// TestLoadForBootstrapAllowsMissingJWTSecret clears the JWT environment value
+// before bootstrap loading. The call must succeed and return an empty secret,
+// leaving persistent secret selection to database bootstrap.
 func TestLoadForBootstrapAllowsMissingJWTSecret(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -430,6 +512,9 @@ func TestLoadForBootstrapAllowsMissingJWTSecret(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultSchedulingConfig inspects sticky and alternative wait budgets,
+// queue sizes, batched load cache duration, and cleanup interval. Default
+// loading must return the expected values with batching enabled.
 func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -461,6 +546,9 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultOpenAIFirstOutputTimeoutsDisabled loads the default OpenAI
+// semantic-output budgets. Both ordinary and high-effort timeout fields must
+// remain zero, leaving those configured first-output deadlines disabled.
 func TestLoadDefaultOpenAIFirstOutputTimeoutsDisabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -470,6 +558,9 @@ func TestLoadDefaultOpenAIFirstOutputTimeoutsDisabled(t *testing.T) {
 	require.Zero(t, cfg.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds)
 }
 
+// TestLoadOpenAIFirstOutputTimeoutsFromEnv supplies separate ordinary and
+// high-effort timeout variables. Loading must retain ninety and 240 seconds in
+// their respective fields for later OpenAI option construction.
 func TestLoadOpenAIFirstOutputTimeoutsFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_SECONDS", "90")
@@ -481,6 +572,9 @@ func TestLoadOpenAIFirstOutputTimeoutsFromEnv(t *testing.T) {
 	require.Equal(t, 240, cfg.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds)
 }
 
+// TestValidateOpenAIFirstOutputTimeoutMinimum changes a valid configuration to
+// the thirty-second ordinary first-output threshold. Validation must accept
+// that positive minimum so the endpoint of the permitted range remains usable.
 func TestValidateOpenAIFirstOutputTimeoutMinimum(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -489,6 +583,10 @@ func TestValidateOpenAIFirstOutputTimeoutMinimum(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
+// TestLoadDefaultOpenAIWSConfig inspects connection scaling, pool limits,
+// ingress budgets, sticky compatibility flags, metadata, and scheduler
+// defaults. Each observed field must match the supplied default expectations
+// after loading.
 func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -567,6 +665,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	}
 }
 
+// TestLoadOpenAIWSClientFirstMessageTimeoutFromEnv supplies a positive ingress
+// first-message timeout through its environment key. Loading must return that
+// selected value in the deployment defaults used for Responses WS.
 func TestLoadOpenAIWSClientFirstMessageTimeoutFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_CLIENT_FIRST_MESSAGE_TIMEOUT_SECONDS", "120")
@@ -576,6 +677,10 @@ func TestLoadOpenAIWSClientFirstMessageTimeoutFromEnv(t *testing.T) {
 	require.Equal(t, 120, cfg.Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds)
 }
 
+// TestLoadIgnoresRemovedOpenAIWSSwitch supplies the retired force_http
+// environment setting. Loading must still succeed with the default provider
+// connection limit, showing that this removed field does not replace that
+// limit.
 func TestLoadIgnoresRemovedOpenAIWSSwitch(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_FORCE_HTTP", "true")
@@ -585,6 +690,9 @@ func TestLoadIgnoresRemovedOpenAIWSSwitch(t *testing.T) {
 	require.Equal(t, 128, cfg.Gateway.OpenAIWS.MaxConnsPerProvider)
 }
 
+// TestLoadDefaultOpenAIHTTP2Enabled reads the default transport preference and
+// proxy-stream isolation settings. HTTP/2 preference, permitted HTTP/1
+// recovery, and the expected enabled circuit thresholds must remain configured.
 func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -598,6 +706,9 @@ func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {
 	require.Equal(t, 600, cfg.Gateway.OpenAIProxyStreamCircuit.TTLSeconds)
 }
 
+// TestLoadOpenAIProxyStreamCircuitFromEnv supplies the disabling flag, failure
+// count, observation window, and isolation lifetime. Loading must retain those
+// independent values for the proxy-stream circuit defaults.
 func TestLoadOpenAIProxyStreamCircuitFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_PROXY_STREAM_CIRCUIT_DISABLED", "true")
@@ -613,6 +724,9 @@ func TestLoadOpenAIProxyStreamCircuitFromEnv(t *testing.T) {
 	require.Equal(t, 420, cfg.Gateway.OpenAIProxyStreamCircuit.TTLSeconds)
 }
 
+// TestLoadOpenAIHTTP2DisabledFromEnv supplies false for the OpenAI HTTP/2
+// preference variable. Loading must retain false even though the default is
+// true, protecting an explicit transport opt-out.
 func TestLoadOpenAIHTTP2DisabledFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_HTTP2_ENABLED", "false")
@@ -622,6 +736,9 @@ func TestLoadOpenAIHTTP2DisabledFromEnv(t *testing.T) {
 	require.False(t, cfg.Gateway.OpenAIHTTP2.Enabled)
 }
 
+// TestLoadDefaultOpenAIResponseHeaderTimeoutUnlimited reads OpenAI header-wait
+// settings from default configuration. The field must remain zero, keeping its
+// disabled timeout distinguishable from the generic gateway header budget.
 func TestLoadDefaultOpenAIResponseHeaderTimeoutUnlimited(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -630,6 +747,9 @@ func TestLoadDefaultOpenAIResponseHeaderTimeoutUnlimited(t *testing.T) {
 	require.Equal(t, 0, cfg.Gateway.OpenAIResponseHeaderTimeout)
 }
 
+// TestLoadOpenAIResponseHeaderTimeoutFromEnv supplies an 1800-second OpenAI
+// header-wait value through environment input. Loading must retain that
+// override in the platform-specific configuration field.
 func TestLoadOpenAIResponseHeaderTimeoutFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT", "1800")
@@ -639,6 +759,9 @@ func TestLoadOpenAIResponseHeaderTimeoutFromEnv(t *testing.T) {
 	require.Equal(t, 1800, cfg.Gateway.OpenAIResponseHeaderTimeout)
 }
 
+// TestLoadImageNonstreamKeepaliveFromEnv supplies a fifteen-second image JSON
+// keepalive interval. Loading must retain the value for the nonstreaming image
+// path rather than applying the default disabled setting.
 func TestLoadImageNonstreamKeepaliveFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_IMAGE_NONSTREAM_KEEPALIVE_INTERVAL", "15")
@@ -648,6 +771,9 @@ func TestLoadImageNonstreamKeepaliveFromEnv(t *testing.T) {
 	require.Equal(t, 15, cfg.Gateway.ImageNonstreamKeepaliveInterval)
 }
 
+// TestLoadOpenAIWSStickyTTLCompatibility supplies zero for the current
+// response-ID lifetime and a positive retired lifetime. Loading must use the
+// retired 7200-second value to fill the nonpositive current field.
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_STICKY_RESPONSE_ID_TTL_SECONDS", "0")
@@ -663,6 +789,9 @@ func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultIdempotencyConfig reads the default missing-key observation
+// flag and record retention values. Loading must enable observation and retain
+// distinct ordinary and system-operation lifetimes.
 func TestLoadDefaultIdempotencyConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -682,6 +811,9 @@ func TestLoadDefaultIdempotencyConfig(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultBatchImageQueueDisabled reads batch worker queue settings
+// after default loading. The queue flag must remain false, protecting the
+// deployment default that leaves that queue disabled.
 func TestLoadDefaultBatchImageQueueDisabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -690,6 +822,9 @@ func TestLoadDefaultBatchImageQueueDisabled(t *testing.T) {
 	require.False(t, cfg.BatchImage.QueueEnabled)
 }
 
+// TestLoadIdempotencyConfigFromEnv overrides missing-key observation and
+// ordinary record retention through environment variables. Loading must retain
+// false and the 600-second value in the decoded coordinator settings.
 func TestLoadIdempotencyConfigFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("IDEMPOTENCY_OBSERVE_ONLY", "false")
@@ -707,6 +842,9 @@ func TestLoadIdempotencyConfigFromEnv(t *testing.T) {
 	}
 }
 
+// TestLoadSchedulingConfigFromEnv supplies a custom sticky-provider waiter
+// limit through environment input. Loading must retain five waiters in the
+// scheduler deployment settings rather than its default count.
 func TestLoadSchedulingConfigFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_SCHEDULING_STICKY_SESSION_MAX_WAITING", "5")
@@ -721,6 +859,10 @@ func TestLoadSchedulingConfigFromEnv(t *testing.T) {
 	}
 }
 
+// TestLoadWeChatConnectConfigFromLegacyEnv supplies complete retired Open and
+// MP credentials plus a callback route. Loading must enable both corresponding
+// modes, choose Open presentation, and retain the selected credential and
+// redirect values.
 func TestLoadWeChatConnectConfigFromLegacyEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("WECHAT_OAUTH_OPEN_APP_ID", "wx-open-app")
@@ -743,6 +885,9 @@ func TestLoadWeChatConnectConfigFromLegacyEnv(t *testing.T) {
 	require.Equal(t, "/auth/wechat/legacy-callback", cfg.WeChat.FrontendRedirectURL)
 }
 
+// TestLoadDefaultOIDCSecurityDefaults reads OIDC bootstrap security flags
+// without supplied overrides. PKCE and ID-token validation must be enabled
+// while their explicit-presence flags remain false.
 func TestLoadDefaultOIDCSecurityDefaults(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -754,6 +899,9 @@ func TestLoadDefaultOIDCSecurityDefaults(t *testing.T) {
 	require.False(t, cfg.OIDC.ValidateIDTokenExplicit)
 }
 
+// TestLoadExplicitOIDCSecurityDefaultsFromEnvMarksFlagsExplicit supplies false
+// for both OIDC security variables. Loading must retain those values and set
+// both presence flags, distinguishing deliberate overrides from defaults.
 func TestLoadExplicitOIDCSecurityDefaultsFromEnvMarksFlagsExplicit(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("OIDC_CONNECT_USE_PKCE", "false")
@@ -767,6 +915,9 @@ func TestLoadExplicitOIDCSecurityDefaultsFromEnvMarksFlagsExplicit(t *testing.T)
 	require.True(t, cfg.OIDC.ValidateIDTokenExplicit)
 }
 
+// TestLoadForcedCodexInstructionsTemplate supplies a YAML template path whose
+// file contains an existing-instructions placeholder. Loading must retain the
+// selected path and cache the complete file text for request-time rendering.
 func TestLoadForcedCodexInstructionsTemplate(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -785,6 +936,10 @@ func TestLoadForcedCodexInstructionsTemplate(t *testing.T) {
 	require.Equal(t, "server-prefix\n\n{{ .ExistingInstructions }}", cfg.Gateway.ForcedCodexInstructionsTemplate)
 }
 
+// TestLoadDefaultSecurityToggles inspects URL allowlist switches, configured
+// supplier hosts, and response-header filtering. Loading must expose the
+// expected disabled allowlist, permitted private/HTTP options, host entries,
+// and enabled header filter.
 func TestLoadDefaultSecurityToggles(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -802,7 +957,7 @@ func TestLoadDefaultSecurityToggles(t *testing.T) {
 	if !cfg.Security.URLAllowlist.AllowPrivateHosts {
 		t.Fatalf("URLAllowlist.AllowPrivateHosts = false, want true")
 	}
-	// 国产供应商的官方站点都应允许作为默认上游。
+	// Default upstream hosts include the Chinese suppliers' official endpoints.
 	for _, host := range []string{
 		"api.kimi.com",
 		"api.moonshot.ai",
@@ -818,6 +973,9 @@ func TestLoadDefaultSecurityToggles(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultServerMode reads the default listener settings from the
+// fixture loader. Its Gin mode must remain release, protecting the configured
+// default before application HTTP server construction.
 func TestLoadDefaultServerMode(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -831,6 +989,9 @@ func TestLoadDefaultServerMode(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultJWTAccessTokenExpireMinutes reads legacy hours and the minute
+// override after default loading. The hour value must be twenty-four and the
+// minute field zero, retaining hour-based expiry selection.
 func TestLoadDefaultJWTAccessTokenExpireMinutes(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -847,6 +1008,9 @@ func TestLoadDefaultJWTAccessTokenExpireMinutes(t *testing.T) {
 	}
 }
 
+// TestLoadJWTAccessTokenExpireMinutesFromEnv supplies a positive ninety-minute
+// access-token expiry through environment input. Loading must retain the minute
+// override for consumers that prefer it over legacy hours.
 func TestLoadJWTAccessTokenExpireMinutesFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "90")
@@ -861,6 +1025,9 @@ func TestLoadJWTAccessTokenExpireMinutesFromEnv(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultDatabaseSSLMode reads the normal startup PostgreSQL settings.
+// The TLS mode must default to prefer, keeping this loader default observable
+// separately from the installer's disable default.
 func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -874,6 +1041,9 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
 	}
 }
 
+// TestValidateLinuxDoFrontendRedirectURL enables otherwise populated LinuxDo
+// settings with a JavaScript callback scheme. Validation must reject the
+// frontend redirect and identify that field in its error.
 func TestValidateLinuxDoFrontendRedirectURL(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -899,6 +1069,9 @@ func TestValidateLinuxDoFrontendRedirectURL(t *testing.T) {
 	}
 }
 
+// TestValidateLinuxDoAllowsDisablingPKCEForCompatibility supplies enabled
+// LinuxDo settings with no client secret, auth method none, and PKCE disabled.
+// Validation must accept that supported compatibility configuration.
 func TestValidateLinuxDoAllowsDisablingPKCEForCompatibility(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -921,6 +1094,9 @@ func TestValidateLinuxDoAllowsDisablingPKCEForCompatibility(t *testing.T) {
 	}
 }
 
+// TestValidateOIDCScopesMustContainOpenID enables a populated OIDC fixture
+// whose scopes omit openid. Validation must return a scope error so the
+// required OIDC scope is checked before startup proceeds.
 func TestValidateOIDCScopesMustContainOpenID(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -950,6 +1126,10 @@ func TestValidateOIDCScopesMustContainOpenID(t *testing.T) {
 	}
 }
 
+// TestValidateOIDCAllowsIssuerOnlyEndpointsWithDiscoveryFallback supplies an
+// issuer and required callbacks while individual endpoint fields remain empty.
+// Validation must accept the object for consumers that discover endpoints from
+// that issuer.
 func TestValidateOIDCAllowsIssuerOnlyEndpointsWithDiscoveryFallback(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -977,6 +1157,9 @@ func TestValidateOIDCAllowsIssuerOnlyEndpointsWithDiscoveryFallback(t *testing.T
 	}
 }
 
+// TestValidateOIDCAllowsExplicitCompatibilityOverridesForPKCEAndIDTokenValidation
+// disables both checks and omits signing algorithm and JWKS text in populated
+// OIDC settings. Validation must accept those supplied compatibility choices.
 func TestValidateOIDCAllowsExplicitCompatibilityOverridesForPKCEAndIDTokenValidation(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1006,6 +1189,9 @@ func TestValidateOIDCAllowsExplicitCompatibilityOverridesForPKCEAndIDTokenValida
 	}
 }
 
+// TestLoadDefaultDashboardCacheConfig reads the enabled flag, Redis key prefix,
+// freshness lifetime, total lifetime, and refresh budget. Default loading must
+// return the exact dashboard values used by the fixture.
 func TestLoadDefaultDashboardCacheConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1031,6 +1217,9 @@ func TestLoadDefaultDashboardCacheConfig(t *testing.T) {
 	}
 }
 
+// TestValidateDashboardCacheConfigEnabled sets freshness longer than the total
+// cache lifetime on an enabled configuration. Validation must reject that
+// relationship and name the freshness field in its error.
 func TestValidateDashboardCacheConfigEnabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1051,6 +1240,9 @@ func TestValidateDashboardCacheConfigEnabled(t *testing.T) {
 	}
 }
 
+// TestValidateDashboardCacheConfigDisabled disables caching while supplying a
+// negative total lifetime. Validation must still reject the negative field,
+// retaining numeric checks even when the feature is disabled.
 func TestValidateDashboardCacheConfigDisabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1070,6 +1262,9 @@ func TestValidateDashboardCacheConfigDisabled(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultDashboardAggregationConfig reads polling, lookback, backfill,
+// and raw and aggregate retention defaults. Loading must retain the expected
+// values, with aggregation enabled and full backfill disabled.
 func TestLoadDefaultDashboardAggregationConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1110,6 +1305,9 @@ func TestLoadDefaultDashboardAggregationConfig(t *testing.T) {
 	}
 }
 
+// TestValidateDashboardAggregationConfigDisabled disables aggregation and
+// supplies a negative polling interval. Validation must reject the negative
+// duration and identify that configuration field despite the disabled job.
 func TestValidateDashboardAggregationConfigDisabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1129,6 +1327,9 @@ func TestValidateDashboardAggregationConfigDisabled(t *testing.T) {
 	}
 }
 
+// TestValidateDashboardAggregationBackfillMaxDays enables full backfill with a
+// zero permitted day range. Validation must reject that relationship and
+// identify the backfill range before a backfill can be configured.
 func TestValidateDashboardAggregationBackfillMaxDays(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1148,6 +1349,9 @@ func TestValidateDashboardAggregationBackfillMaxDays(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultUsageCleanupConfig inspects enabled state, range, batch size,
+// polling interval, and task budget. Loading must retain the expected cleanup
+// defaults, including its thirty-minute task timeout.
 func TestLoadDefaultUsageCleanupConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1173,6 +1377,9 @@ func TestLoadDefaultUsageCleanupConfig(t *testing.T) {
 	}
 }
 
+// TestValidateUsageCleanupConfigEnabled enables cleanup with a zero allowed
+// date range. Validation must reject that value and identify the range field
+// required for an active cleanup executor.
 func TestValidateUsageCleanupConfigEnabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1192,6 +1399,9 @@ func TestValidateUsageCleanupConfigEnabled(t *testing.T) {
 	}
 }
 
+// TestValidateUsageCleanupConfigDisabled leaves cleanup disabled while
+// supplying a negative batch size. Validation must reject the negative value
+// and identify its field for the inactive configuration as well.
 func TestValidateUsageCleanupConfigDisabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1211,6 +1421,9 @@ func TestValidateUsageCleanupConfigDisabled(t *testing.T) {
 	}
 }
 
+// TestConfigAddressHelpers constructs server, Redis, and PostgreSQL settings
+// with empty and populated passwords and zones. Address text and DSN fragments
+// must reflect the selected port, password omission, and timezone behavior.
 func TestConfigAddressHelpers(t *testing.T) {
 	server := ServerConfig{Host: "127.0.0.1", Port: 9000}
 	if server.Address() != "127.0.0.1:9000" {
@@ -1253,6 +1466,9 @@ func TestConfigAddressHelpers(t *testing.T) {
 	}
 }
 
+// TestNormalizeStringSlice supplies padded entries, empty strings,
+// whitespace-only strings, and nil input. Returned entries must remain ordered
+// after trimming and blank removal, while nil input must remain nil.
 func TestNormalizeStringSlice(t *testing.T) {
 	values := normalizeStringSlice([]string{" a ", "", "b", "   ", "c"})
 	if len(values) != 3 || values[0] != "a" || values[1] != "b" || values[2] != "c" {
@@ -1263,6 +1479,9 @@ func TestNormalizeStringSlice(t *testing.T) {
 	}
 }
 
+// TestGetServerAddressFromEnv supplies host and port variables to lightweight
+// startup lookup. The returned address must use those values before the
+// complete configuration loader or secret validation runs.
 func TestGetServerAddressFromEnv(t *testing.T) {
 	t.Setenv("CONFIG_FILE", "")
 	t.Setenv("DATA_DIR", "")
@@ -1275,7 +1494,9 @@ func TestGetServerAddressFromEnv(t *testing.T) {
 	}
 }
 
-// TestGetServerAddressFromConfigFile 验证启动阶段地址读取使用同一显式配置源。
+// TestGetServerAddressFromConfigFile selects a named YAML file with listener
+// settings while environment listener text is empty. Lightweight lookup must
+// return that file's host and port.
 func TestGetServerAddressFromConfigFile(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "setup.yaml")
 	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  host: 192.0.2.40\n  port: 9191\n"), 0o600))
@@ -1287,6 +1508,9 @@ func TestGetServerAddressFromConfigFile(t *testing.T) {
 	require.Equal(t, "192.0.2.40:9191", GetServerAddress())
 }
 
+// TestValidateAbsoluteHTTPURL supplies an absolute HTTPS URL, empty and
+// relative text, another scheme, and a fragment. The valid endpoint must pass,
+// while the tested invalid forms must return errors.
 func TestValidateAbsoluteHTTPURL(t *testing.T) {
 	if err := ValidateAbsoluteHTTPURL("https://example.com/path"); err != nil {
 		t.Fatalf("ValidateAbsoluteHTTPURL valid url error: %v", err)
@@ -1305,6 +1529,9 @@ func TestValidateAbsoluteHTTPURL(t *testing.T) {
 	}
 }
 
+// TestValidateServerFrontendURL supplies a host, optional path, query,
+// userinfo, and relative forms on a valid configuration. Validation must accept
+// host/path values and reject the tested unsafe frontend-base shapes.
 func TestValidateServerFrontendURL(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1339,6 +1566,9 @@ func TestValidateServerFrontendURL(t *testing.T) {
 	}
 }
 
+// TestValidateFrontendRedirectURL supplies a single-slash callback, an absolute
+// HTTPS callback, and malformed or unsupported alternatives. The accepted forms
+// must pass, while protocol-relative and JavaScript forms must fail.
 func TestValidateFrontendRedirectURL(t *testing.T) {
 	if err := ValidateFrontendRedirectURL("/auth/callback"); err != nil {
 		t.Fatalf("ValidateFrontendRedirectURL relative error: %v", err)
@@ -1357,12 +1587,19 @@ func TestValidateFrontendRedirectURL(t *testing.T) {
 	}
 }
 
+// TestWarnIfInsecureURL calls the warning helper with HTTP, non-HTTP, and
+// malformed address text. The test exercises warning and ignored-parse paths
+// for completion; it does not capture or compare logger output.
 func TestWarnIfInsecureURL(t *testing.T) {
 	warnIfInsecureURL("test", "http://example.com")
 	warnIfInsecureURL("test", "bad://url")
 	warnIfInsecureURL("test", "://invalid")
 }
 
+// TestGenerateJWTSecretDefaultLength requests secret generation with a zero
+// byte-count argument. Generation must succeed and return nonempty text,
+// exercising default-size selection without asserting the returned encoded
+// length.
 func TestGenerateJWTSecretDefaultLength(t *testing.T) {
 	secret, err := generateJWTSecret(0)
 	if err != nil {
@@ -1373,6 +1610,9 @@ func TestGenerateJWTSecretDefaultLength(t *testing.T) {
 	}
 }
 
+// TestValidateOpsCleanupScheduleRequired enables Ops cleanup with an empty
+// schedule string. Validation must reject the configuration and identify the
+// schedule field required before periodic cleanup can be configured.
 func TestValidateOpsCleanupScheduleRequired(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1391,6 +1631,9 @@ func TestValidateOpsCleanupScheduleRequired(t *testing.T) {
 	}
 }
 
+// TestValidateConcurrencyPingInterval supplies a three-second queue keepalive
+// interval on otherwise valid settings. Validation must reject the value and
+// name the concurrency ping field in its error.
 func TestValidateConcurrencyPingInterval(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1408,6 +1651,9 @@ func TestValidateConcurrencyPingInterval(t *testing.T) {
 	}
 }
 
+// TestProvideConfig supplies the standard reset fixture and invokes bootstrap
+// configuration loading. The call must succeed, exercising the entry point used
+// before database-backed JWT secret selection.
 func TestProvideConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	if _, err := LoadForBootstrap(); err != nil {
@@ -1415,6 +1661,9 @@ func TestProvideConfig(t *testing.T) {
 	}
 }
 
+// TestValidateConfigWithLinuxDoEnabled populates LinuxDo credentials, endpoint
+// URLs, callback paths, auth method, and PKCE along with CSP. Validation must
+// accept that combined enabled-provider configuration.
 func TestValidateConfigWithLinuxDoEnabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -1442,6 +1691,9 @@ func TestValidateConfigWithLinuxDoEnabled(t *testing.T) {
 	}
 }
 
+// TestValidateJWTSecretStrength supplies one known weak-secret spelling and one
+// string absent from the warning list. The predicate must recognize the known
+// spelling and leave the other string unflagged.
 func TestValidateJWTSecretStrength(t *testing.T) {
 	if !isWeakJWTSecret("change-me-in-production") {
 		t.Fatalf("isWeakJWTSecret should detect weak secret")
@@ -1451,6 +1703,9 @@ func TestValidateJWTSecretStrength(t *testing.T) {
 	}
 }
 
+// TestGenerateJWTSecretWithLength requests generation from sixteen random bytes
+// through the private helper. The call must return no error and nonempty text;
+// this fixture does not compare the encoded length.
 func TestGenerateJWTSecretWithLength(t *testing.T) {
 	secret, err := generateJWTSecret(16)
 	if err != nil {
@@ -1461,6 +1716,9 @@ func TestGenerateJWTSecretWithLength(t *testing.T) {
 	}
 }
 
+// TestDatabaseDSNWithTimezone_WithPassword supplies PostgreSQL credentials and
+// an explicit UTC timezone. The resulting DSN text must contain the password
+// and zone parameters, protecting both populated-field formatting paths.
 func TestDatabaseDSNWithTimezone_WithPassword(t *testing.T) {
 	d := &DatabaseConfig{
 		Host:     "localhost",
@@ -1479,12 +1737,18 @@ func TestDatabaseDSNWithTimezone_WithPassword(t *testing.T) {
 	}
 }
 
+// TestValidateAbsoluteHTTPURLMissingHost supplies an HTTPS scheme whose host is
+// absent. Validation must return an error so a scheme alone cannot be accepted
+// as a usable absolute endpoint shape.
 func TestValidateAbsoluteHTTPURLMissingHost(t *testing.T) {
 	if err := ValidateAbsoluteHTTPURL("https://"); err == nil {
 		t.Fatalf("ValidateAbsoluteHTTPURL should reject missing host")
 	}
 }
 
+// TestValidateFrontendRedirectURLInvalidChars supplies an embedded line break,
+// an HTTP scheme with no host, and a mailto value. Every tested form must fail
+// callback validation.
 func TestValidateFrontendRedirectURLInvalidChars(t *testing.T) {
 	if err := ValidateFrontendRedirectURL("/auth/\ncallback"); err == nil {
 		t.Fatalf("ValidateFrontendRedirectURL should reject invalid chars")
@@ -1497,10 +1761,16 @@ func TestValidateFrontendRedirectURLInvalidChars(t *testing.T) {
 	}
 }
 
+// TestWarnIfInsecureURLHTTPS calls the warning helper with an HTTPS endpoint.
+// The test exercises successful parsing and completion on that secure-scheme
+// path, while leaving logging assertions to other consumers.
 func TestWarnIfInsecureURLHTTPS(t *testing.T) {
 	warnIfInsecureURL("secure", "https://example.com")
 }
 
+// TestValidateJWTSecret_UTF8Bytes supplies ASCII secrets of thirty-one and
+// thirty-two bytes on valid configuration. The shorter secret must report the
+// byte minimum, and the exact minimum must validate successfully.
 func TestValidateJWTSecret_UTF8Bytes(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -1508,7 +1778,8 @@ func TestValidateJWTSecret_UTF8Bytes(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	// 31 bytes (< 32) even though it's 31 characters.
+	// An ASCII fixture gives equal character and byte counts below the minimum.
+	// This assertion checks the byte threshold but does not exercise multibyte text.
 	cfg.JWT.Secret = strings.Repeat("a", 31)
 	err = cfg.Validate()
 	if err == nil {
@@ -1518,7 +1789,8 @@ func TestValidateJWTSecret_UTF8Bytes(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	// 32 bytes OK.
+	// Raise the same ASCII fixture to the exact minimum so acceptance contrasts
+	// with the preceding short input under otherwise unchanged loaded configuration.
 	cfg.JWT.Secret = strings.Repeat("a", 32)
 	err = cfg.Validate()
 	if err != nil {
@@ -1526,6 +1798,9 @@ func TestValidateJWTSecret_UTF8Bytes(t *testing.T) {
 	}
 }
 
+// TestValidateConfigErrors starts each case from loaded defaults and mutates
+// one field or a coupled setting relationship. Validation must return an error
+// containing the named field fragment for each supplied invalid configuration.
 func TestValidateConfigErrors(t *testing.T) {
 	buildValid := func(t *testing.T) *Config {
 		t.Helper()
@@ -1538,9 +1813,9 @@ func TestValidateConfigErrors(t *testing.T) {
 	}
 
 	cases := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr string
+		name    string        // subtest display name
+		mutate  func(*Config) // fixture configuration mutation callback
+		wantErr string        // expected validation error fragment
 	}{
 		{
 			name:    "server read header timeout",
@@ -2144,6 +2419,10 @@ func TestValidateConfigErrors(t *testing.T) {
 	}
 }
 
+// TestValidateConfig_OpenAIWSRules supplies invalid WS limits, EWMA values,
+// scheduler weights, and sticky thresholds plus valid single-weight cases.
+// Validation must retain old-TTL compatibility, reject invalid values, and
+// accept the tested scoring choices.
 func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 	buildValid := func(t *testing.T) *Config {
 		t.Helper()
@@ -2163,9 +2442,9 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 	})
 
 	cases := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr string
+		name    string        // subtest display name
+		mutate  func(*Config) // fixture configuration mutation callback
+		wantErr string        // expected validation error fragment
 	}{
 		{
 			name:    "max_conns_per_provider 必须为正数",
@@ -2394,6 +2673,10 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 	})
 }
 
+// TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields disables
+// autoscaling and supplies otherwise invalid autoscaling-only settings with a
+// positive worker count. Validation must accept those inactive controls while
+// keeping ordinary worker settings usable.
 func TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -2404,7 +2687,8 @@ func TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields(t *testing.T) {
 	cfg.Gateway.UsageRecord.AutoScaleEnabled = false
 	cfg.Gateway.UsageRecord.WorkerCount = 64
 
-	// 自动扩缩容关闭时，这些字段应被忽略，不应导致校验失败。
+	// The disabled control should leave inactive scaling limits unchecked. Supply
+	// invalid values across those fields while retaining the separately validated positive worker count.
 	cfg.Gateway.UsageRecord.AutoScaleMinWorkers = 0
 	cfg.Gateway.UsageRecord.AutoScaleMaxWorkers = 0
 	cfg.Gateway.UsageRecord.AutoScaleUpQueuePercent = 0
@@ -2419,13 +2703,16 @@ func TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields(t *testing.T) {
 	}
 }
 
+// TestValidateConfig_LogRequiredAndRotationBounds clears logging enums and
+// supplies negative rotation or disabled-sampling values. Each serial case must
+// identify its invalid field in the returned validation error.
 func TestValidateConfig_LogRequiredAndRotationBounds(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
 	cases := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr string
+		name    string        // subtest display name
+		mutate  func(*Config) // fixture configuration mutation callback
+		wantErr string        // expected validation error fragment
 	}{
 		{
 			name: "log level required",
@@ -2487,6 +2774,10 @@ func TestValidateConfig_LogRequiredAndRotationBounds(t *testing.T) {
 	}
 }
 
+// TestLoad_DefaultGatewayUsageRecordConfig inspects worker count, queue
+// capacity, task timeout, overflow behavior, and autoscaling parameters.
+// Default loading must retain the exact execution and scaling values asserted
+// by the fixture.
 func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -2537,6 +2828,10 @@ func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
 	}
 }
 
+// TestLoad_DefaultGatewayImageStreamConfig compares ordinary and image stream
+// budgets with image keepalive and concurrency defaults. Loading must keep the
+// image data gap longer, nonstream keepalive disabled, and separate image
+// concurrency disabled.
 func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -2578,9 +2873,14 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 }
 
-// TestLoadIgnoresLegacyRunMode 验证旧部署参数作为未知键忽略，不改变任何启动配置。
+// TestLoadIgnoresLegacyRunMode compares default loading with retired YAML and
+// environment run-mode values. JSON-visible configuration must stay equivalent
+// after fixing TOTP generation, while internal atomic snapshot identity is
+// excluded from comparison.
 func TestLoadIgnoresLegacyRunMode(t *testing.T) {
-	for _, legacy := range []struct{ name, env, yaml string }{
+	for _, legacy := range []struct {
+		name, env, yaml string // name: displayed case name; env: supplied retired environment value; yaml: supplied retired YAML text
+	}{
 		{name: "未设置"},
 		{name: "旧环境变量", env: "simple"},
 		{name: "旧配置文件", yaml: "run_mode: simple\n"},
@@ -2600,7 +2900,9 @@ func TestLoadIgnoresLegacyRunMode(t *testing.T) {
 			require.NoError(t, os.WriteFile(file, []byte("timezone: UTC\n"+legacy.yaml), 0o600))
 			actual, err := Load()
 			require.NoError(t, err)
-			// 配置内含原子缓存指针，只比较对外配置值。
+			// The two loads construct separate live snapshot cells. Compare serialized
+			// exported data after fixing the TOTP input so internal pointer identity and random key generation
+			// do not obscure the retired run-mode setting's effect being tested.
 			before, err := json.Marshal(baseline)
 			require.NoError(t, err)
 			after, err := json.Marshal(actual)
@@ -2610,7 +2912,10 @@ func TestLoadIgnoresLegacyRunMode(t *testing.T) {
 	}
 }
 
-// TestLoadIgnoresRetiredSubscriptionMaintenance 验证旧队列配置不会阻止正常启动。
+// TestLoadIgnoresRetiredSubscriptionMaintenance supplies malformed retired
+// worker limits alongside a current server setting. Loading must retain the
+// current port and still reject a later invalid JWT lifetime through active
+// validation.
 func TestLoadIgnoresRetiredSubscriptionMaintenance(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	configFile := filepath.Join(t.TempDir(), "config.yaml")
@@ -2625,7 +2930,9 @@ func TestLoadIgnoresRetiredSubscriptionMaintenance(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "jwt.expire_hour")
 }
 
-// TestLoadIgnoresRetiredOpenAIWSFallbackCooldown 验证旧冷却键被忽略，重试配置仍按原规则读取和校验。
+// TestLoadIgnoresRetiredOpenAIWSFallbackCooldown supplies a negative retired
+// cooldown variable. Loading must succeed and keep the default WS dialing
+// budget, showing the tested current field is unaffected.
 func TestLoadIgnoresRetiredOpenAIWSFallbackCooldown(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_FALLBACK_COOLDOWN_SECONDS", "-2")
@@ -2634,7 +2941,10 @@ func TestLoadIgnoresRetiredOpenAIWSFallbackCooldown(t *testing.T) {
 	require.Equal(t, 10, cfg.Gateway.OpenAIWS.DialTimeoutSeconds)
 }
 
-// TestProductConfigDirectories 验证显式路径不回退，默认搜索同时兼容新旧系统目录。
+// TestProductConfigDirectories records search-path callbacks with DATA_DIR,
+// then switches to an explicit configuration file. Paths must retain current
+// and legacy order, while explicit selection must invoke only the file
+// callback.
 func TestProductConfigDirectories(t *testing.T) {
 	t.Setenv("CONFIG_FILE", "")
 	t.Setenv("DATA_DIR", "/fixture/data")
@@ -2652,9 +2962,10 @@ func TestProductConfigDirectories(t *testing.T) {
 	}
 }
 
-// TestConfigKeysAreEnvReachable 检查配置标量字段是否注册为 Viper 可读取的键。
-// Unmarshal 根据 AllKeys 返回的默认值、文件和 BindEnv 键解码，AutomaticEnv 覆盖已注册键。
-// 缺失键需要在 setEnvReachableDefaults 注册零值默认项。map 和结构体切片由配置文件设置。
+// TestConfigKeysAreEnvReachable reflects scalar configuration keys and compares
+// them with Viper defaults and bindings. Every collected key must be registered
+// for environment-only decoding, while dynamic maps and struct slices are
+// excluded.
 func TestConfigKeysAreEnvReachable(t *testing.T) {
 	bound := map[string]string{}
 	collectMapstructureKeys(reflect.TypeFor[Config](), "", bound)
@@ -2681,7 +2992,10 @@ func TestConfigKeysAreEnvReachable(t *testing.T) {
 	}
 }
 
-// TestPricingCatalogLegacySourceMigration 检查公共旧价格源的地址转换，以及自定义地址的读取。
+// TestPricingCatalogLegacySourceMigration supplies known old GitHub catalog
+// paths and custom or deceptive-host alternatives. Known sources must migrate
+// idempotently with one permitted host entry, while the tested custom inputs
+// remain unchanged.
 func TestPricingCatalogLegacySourceMigration(t *testing.T) {
 	for _, source := range []string{
 		"https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
@@ -2707,11 +3021,15 @@ func TestPricingCatalogLegacySourceMigration(t *testing.T) {
 	}
 }
 
-// TestPricingCatalogConfigAliases 检查别名、环境变量优先级和退役键的加载。
+// TestPricingCatalogConfigAliases combines retired and current interval keys,
+// environment overrides, zero values, and removed pricing fields. Loading must
+// retain expected interval precedence and leave the mounted YAML unchanged.
 func TestPricingCatalogConfigAliases(t *testing.T) {
 	for _, tc := range []struct {
+		// name identifies the case; yaml supplies its configuration layer. oldEnv
+		// and newEnv supply the retired and current environment overrides to compare.
 		name, yaml, oldEnv, newEnv string
-		want                       int
+		want                       int // expected decoded configuration value
 	}{
 		{"default", "", "", "", 10},
 		{"old yaml", "  hash_check_interval_minutes: 17\n", "", "", 17},
@@ -2737,7 +3055,9 @@ func TestPricingCatalogConfigAliases(t *testing.T) {
 	}
 }
 
-// TestPricingCatalogPackagedFallbackMigration 检查缺失的打包路径迁移，以及管理员已有文件的保留。
+// TestPricingCatalogPackagedFallbackMigration first points to a missing known
+// packaged file, then creates it and supplies a custom path. In-memory
+// selection must migrate the missing path and retain existing or custom files.
 func TestPricingCatalogPackagedFallbackMigration(t *testing.T) {
 	t.Chdir(t.TempDir())
 	old := "./resources/model-pricing/model_prices_and_context_window.json"
@@ -2754,10 +3074,12 @@ func TestPricingCatalogPackagedFallbackMigration(t *testing.T) {
 	require.Equal(t, "./custom/model_prices_and_context_window.json", cfg.Pricing.FallbackFile)
 }
 
-// TestPricingCatalogSupplementConfig 检查空的默认补充路径、自定义路径与环境变量优先级。
+// TestPricingCatalogSupplementConfig combines omitted and custom supplement
+// paths with an environment override. Loading must return the expected selected
+// path and retain the mounted document bytes.
 func TestPricingCatalogSupplementConfig(t *testing.T) {
 	for _, tc := range []struct {
-		name, yaml, env, want string
+		name, yaml, env, want string // name: displayed case name; yaml: supplied YAML text; env: supplied supplement environment value; want: expected supplement file path
 	}{
 		{"default", "", "", ""},
 		{"custom yaml", "  fallback_file: ./custom/prices.json\n", "", "./custom/prices.json"},
@@ -2778,7 +3100,9 @@ func TestPricingCatalogSupplementConfig(t *testing.T) {
 	}
 }
 
-// TestRetiredPricingOverrideWarnsWithoutRewritingFiles 检查旧键的迁移提示与配置文件内容。
+// TestRetiredPricingOverrideWarnsWithoutRewritingFiles supplies a retired
+// override through YAML or environment and captures the process logger. Loading
+// must warn, normalize the catalog URL, and leave both input files unchanged.
 func TestRetiredPricingOverrideWarnsWithoutRewritingFiles(t *testing.T) {
 	for _, env := range []bool{false, true} {
 		t.Run(fmt.Sprint(env), func(t *testing.T) {
@@ -2795,6 +3119,8 @@ func TestRetiredPricingOverrideWarnsWithoutRewritingFiles(t *testing.T) {
 			}
 			t.Setenv("PRICING_OVERRIDE_FILE", value)
 			var logs bytes.Buffer
+			// Capture serial loader warnings in a local buffer and restore the process
+			// logger at cleanup so later fixtures do not write into this case's captured evidence.
 			previous := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 			t.Cleanup(func() { slog.SetDefault(previous) })
@@ -2812,6 +3138,9 @@ func TestRetiredPricingOverrideWarnsWithoutRewritingFiles(t *testing.T) {
 	}
 }
 
+// TestNormalizeProxyProbeURLs supplies a padded endpoint and uppercase parser
+// alongside a second query URL. Normalization must trim the endpoint, lowercase
+// the parser, and retain target order and query text.
 func TestNormalizeProxyProbeURLs(t *testing.T) {
 	t.Parallel()
 
@@ -2826,13 +3155,16 @@ func TestNormalizeProxyProbeURLs(t *testing.T) {
 	}, got)
 }
 
+// TestNormalizeProxyProbeURLsRejectsInvalidEntries supplies absent URL/parser
+// values, an unknown parser, a relative path, and FTP text. Each fixture must
+// return the expected entry validation fragment.
 func TestNormalizeProxyProbeURLsRejectsInvalidEntries(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		target  ProbeURLConfig
-		wantErr string
+		name    string         // subtest display name
+		target  ProbeURLConfig // supplied proxy probe target
+		wantErr string         // expected validation error fragment
 	}{
 		{name: "missing URL", target: ProbeURLConfig{Parser: "ipify"}, wantErr: "url is required"},
 		{name: "missing parser", target: ProbeURLConfig{URL: "https://example.com"}, wantErr: "parser is required"},
@@ -2850,10 +3182,16 @@ func TestNormalizeProxyProbeURLsRejectsInvalidEntries(t *testing.T) {
 	}
 }
 
+// TestValidateDingTalkConfig_Disabled_Skip supplies disabled DingTalk settings
+// with the remaining fields unset. Validation must accept that object, allowing
+// disabled provider parameters to remain empty in the configuration.
 func TestValidateDingTalkConfig_Disabled_Skip(t *testing.T) {
 	require.NoError(t, ValidateDingTalkConfig(DingTalkConnectConfig{Enabled: false}))
 }
 
+// TestValidateDingTalkConfig_V4_DingTalkAppKind enables the unsupported
+// third-party enterprise app kind. Validation must return the shared app-kind
+// sentinel so callers can identify this rejection through errors.Is.
 func TestValidateDingTalkConfig_V4_DingTalkAppKind(t *testing.T) {
 	err := ValidateDingTalkConfig(DingTalkConnectConfig{
 		Enabled:               true,
@@ -2863,6 +3201,10 @@ func TestValidateDingTalkConfig_V4_DingTalkAppKind(t *testing.T) {
 	require.ErrorIs(t, err, ErrDingTalkV4InvalidAppKind)
 }
 
+// TestValidateDingTalkConfig_V1_InternalOnlyRequiresInternalAppType combines
+// internal_only corporation restriction with public app type. Validation must
+// return the shared type-mismatch sentinel despite a supplied corporation
+// identifier.
 func TestValidateDingTalkConfig_V1_InternalOnlyRequiresInternalAppType(t *testing.T) {
 	err := ValidateDingTalkConfig(DingTalkConnectConfig{
 		Enabled:               true,
@@ -2874,8 +3216,10 @@ func TestValidateDingTalkConfig_V1_InternalOnlyRequiresInternalAppType(t *testin
 	require.ErrorIs(t, err, ErrDingTalkV1AppTypeMismatch)
 }
 
-// TestValidateDingTalkConfig_V3_InternalOnlyAllowsEmptyCorpID 检查 internal_only 策略接受空的企业 ID。
-// 企业隔离由钉钉的 internal 应用类型提供。
+// TestValidateDingTalkConfig_V3_InternalOnlyAllowsEmptyCorpID combines the
+// supported internal app kind and type with internal_only restriction.
+// Validation must accept an empty corporation identifier in that tested mode
+// combination.
 func TestValidateDingTalkConfig_V3_InternalOnlyAllowsEmptyCorpID(t *testing.T) {
 	err := ValidateDingTalkConfig(DingTalkConnectConfig{
 		Enabled:               true,
@@ -2887,6 +3231,9 @@ func TestValidateDingTalkConfig_V3_InternalOnlyAllowsEmptyCorpID(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestValidateDingTalkConfig_HappyPath_None supplies an enabled internal app
+// kind with public app type and no corporation restriction. Validation must
+// accept that supported combination without requiring further restriction data.
 func TestValidateDingTalkConfig_HappyPath_None(t *testing.T) {
 	require.NoError(t, ValidateDingTalkConfig(DingTalkConnectConfig{
 		Enabled:               true,
@@ -2896,10 +3243,16 @@ func TestValidateDingTalkConfig_HappyPath_None(t *testing.T) {
 	}))
 }
 
+// TestValidateWebAuthnConfig supplies production and localhost relying-party
+// origins plus missing, malformed, insecure, and mismatched identities.
+// Validation must accept the valid cases and identify the expected invalid
+// WebAuthn field in other cases.
 func TestValidateWebAuthnConfig(t *testing.T) {
 	tests := []struct {
-		name      string
-		configure func(*Config)
+		name      string        // subtest display name
+		configure func(*Config) // fixture WebAuthn configuration callback
+		// wantError supplies the expected error fragment. Empty text makes this case
+		// require successful validation instead of an error containing the named fragment.
 		wantError string
 	}{
 		{
@@ -2991,11 +3344,443 @@ func TestValidateWebAuthnConfig(t *testing.T) {
 	}
 }
 
-// collectMapstructureKeys 遍历配置结构，返回 viper 填充结构所需的全部点分键。
+// TestValidateLogFirstErrorOrder supplies invalid logging controls together
+// with an incomplete Gemini credential pair. Repairing one failure at a time
+// must expose the next exact error before validation reaches Gemini.
+func TestValidateLogFirstErrorOrder(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Log.Level = "invalid"
+	cfg.Log.Format = "invalid"
+	cfg.Log.StacktraceLevel = "invalid"
+	cfg.Log.Output.ToStdout = false
+	cfg.Log.Output.ToFile = false
+	cfg.Log.Rotation.MaxSizeMB = 0
+	cfg.Log.Rotation.MaxBackups = -1
+	cfg.Log.Rotation.MaxAgeDays = -1
+	cfg.Log.Sampling.Enabled = true
+	cfg.Log.Sampling.Initial = 0
+	cfg.Log.Sampling.Thereafter = 0
+	cfg.Gemini.OAuth.ClientID = "client"
+	cfg.Gemini.OAuth.ClientSecret = ""
+
+	steps := []struct {
+		wantError string        // expected first validation error
+		repair    func(*Config) // correction exposing the next failure
+	}{
+		{
+			wantError: "log.level must be one of: debug/info/warn/error",
+			repair: func(c *Config) {
+				c.Log.Level = "info"
+			},
+		},
+		{
+			wantError: "log.format must be one of: json/console",
+			repair: func(c *Config) {
+				c.Log.Format = "json"
+			},
+		},
+		{
+			wantError: "log.stacktrace_level must be one of: none/error/fatal",
+			repair: func(c *Config) {
+				c.Log.StacktraceLevel = "none"
+			},
+		},
+		{
+			wantError: "log.output.to_stdout and log.output.to_file cannot both be false",
+			repair: func(c *Config) {
+				c.Log.Output.ToStdout = true
+			},
+		},
+		{
+			wantError: "log.rotation.max_size_mb must be positive",
+			repair: func(c *Config) {
+				c.Log.Rotation.MaxSizeMB = 1
+			},
+		},
+		{
+			wantError: "log.rotation.max_backups must be non-negative",
+			repair: func(c *Config) {
+				c.Log.Rotation.MaxBackups = 0
+			},
+		},
+		{
+			wantError: "log.rotation.max_age_days must be non-negative",
+			repair: func(c *Config) {
+				c.Log.Rotation.MaxAgeDays = 0
+			},
+		},
+		{
+			wantError: "log.sampling.initial must be positive when sampling is enabled",
+			repair: func(c *Config) {
+				c.Log.Sampling.Initial = 1
+			},
+		},
+		{
+			wantError: "log.sampling.thereafter must be positive when sampling is enabled",
+			repair: func(c *Config) {
+				c.Log.Sampling.Thereafter = 1
+			},
+		},
+		{
+			wantError: "gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty",
+			repair: func(c *Config) {
+				c.Gemini.OAuth.ClientID = ""
+			},
+		},
+	}
+	for _, step := range steps {
+		require.EqualError(t, cfg.Validate(), step.wantError)
+		step.repair(cfg)
+	}
+	require.NoError(t, cfg.Validate())
+
+	cfg.Log.Sampling.Enabled = false
+	cfg.Log.Sampling.Initial = -1
+	cfg.Log.Sampling.Thereafter = -1
+	require.EqualError(t, cfg.Validate(), "log.sampling.initial must be non-negative")
+	cfg.Log.Sampling.Initial = 0
+	require.EqualError(t, cfg.Validate(), "log.sampling.thereafter must be non-negative")
+}
+
+// TestValidateDomainFirstErrorOrder combines invalid logging and authentication
+// inputs with neighboring startup checks. The first error must follow the
+// startup sequence even when another domain is also invalid.
+func TestValidateDomainFirstErrorOrder(t *testing.T) {
+	tests := []struct {
+		name      string        // subtest display name
+		configure func(*Config) // simultaneous invalid configuration inputs
+		wantError string        // expected first validation error
+	}{
+		{
+			name: "JWT secret before logging",
+			configure: func(c *Config) {
+				c.JWT.Secret = ""
+				c.Log.Level = ""
+			},
+			wantError: "jwt.secret is required",
+		},
+		{
+			name: "Gemini before WebAuthn",
+			configure: func(c *Config) {
+				c.Gemini.OAuth.ClientID = "client"
+				c.Gemini.OAuth.ClientSecret = ""
+				c.WebAuthn = WebAuthnConfig{Enabled: true}
+			},
+			wantError: "gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty",
+		},
+		{
+			name: "frontend URL before WebAuthn",
+			configure: func(c *Config) {
+				c.Server.FrontendURL = "https://user@example.com"
+				c.WebAuthn = WebAuthnConfig{Enabled: true}
+			},
+			wantError: "server.frontend_url invalid: must not include userinfo",
+		},
+		{
+			name: "WebAuthn before JWT lifetime",
+			configure: func(c *Config) {
+				c.WebAuthn = WebAuthnConfig{Enabled: true}
+				c.JWT.ExpireHour = 0
+			},
+			wantError: "webauthn.rp_display_name is required when passkeys are enabled",
+		},
+		{
+			name: "LinuxDo before OIDC",
+			configure: func(c *Config) {
+				c.LinuxDo.Enabled = true
+				c.LinuxDo.ClientID = ""
+				c.OIDC = OIDCConnectConfig{Enabled: true}
+			},
+			wantError: "linuxdo_connect.client_id is required when linuxdo_connect.enabled=true",
+		},
+		{
+			name: "OIDC before billing",
+			configure: func(c *Config) {
+				c.OIDC = OIDCConnectConfig{Enabled: true}
+				c.Billing.MinimumBalanceReserve = -1
+			},
+			wantError: "oidc_connect.client_id is required when oidc_connect.enabled=true",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			cfg, err := Load()
+			require.NoError(t, err)
+			tt.configure(cfg)
+			require.EqualError(t, cfg.Validate(), tt.wantError)
+		})
+	}
+}
+
+// TestValidateWebAuthnNormalizationOnError supplies padded identities and an
+// invalid second origin. Failures before, within, and after WebAuthn must retain
+// the corresponding normalization progress while leaving the supplied slice intact.
+func TestValidateWebAuthnNormalizationOnError(t *testing.T) {
+	tests := []struct {
+		name        string        // subtest display name
+		configure   func(*Config) // validation failure location selection
+		wantError   string        // expected first validation error
+		wantName    string        // resulting relying party name
+		wantID      string        // resulting relying party identifier
+		wantOrigins []string      // resulting normalized origin sequence
+	}{
+		{
+			name:        "earlier logging failure",
+			configure:   func(c *Config) { c.Log.Level = "" },
+			wantError:   "log.level is required",
+			wantName:    " TokenRouter ",
+			wantID:      " EXAMPLE.COM ",
+			wantOrigins: []string{" HTTPS://APP.EXAMPLE.COM ", " ", " https://BAD.EXAMPLE.COM/path ", " HTTPS://LAST.EXAMPLE.COM "},
+		},
+		{
+			name:        "missing name after initial normalization",
+			configure:   func(c *Config) { c.WebAuthn.RPDisplayName = " " },
+			wantError:   "webauthn.rp_display_name is required when passkeys are enabled",
+			wantName:    "",
+			wantID:      "example.com",
+			wantOrigins: []string{"HTTPS://APP.EXAMPLE.COM", "https://BAD.EXAMPLE.COM/path", "HTTPS://LAST.EXAMPLE.COM"},
+		},
+		{
+			name:        "invalid second origin after first canonicalization",
+			configure:   func(c *Config) {},
+			wantError:   "webauthn.rp_origins entry \"https://BAD.EXAMPLE.COM/path\" must not include userinfo, path, query, or fragment",
+			wantName:    "TokenRouter",
+			wantID:      "example.com",
+			wantOrigins: []string{"https://app.example.com", "https://BAD.EXAMPLE.COM/path", "HTTPS://LAST.EXAMPLE.COM"},
+		},
+		{
+			name: "later JWT lifetime failure",
+			configure: func(c *Config) {
+				c.WebAuthn.RPOrigins = []string{" HTTPS://APP.EXAMPLE.COM ", " ", " HTTPS://LAST.EXAMPLE.COM "}
+				c.JWT.ExpireHour = 0
+			},
+			wantError:   "jwt.expire_hour must be positive",
+			wantName:    "TokenRouter",
+			wantID:      "example.com",
+			wantOrigins: []string{"https://app.example.com", "https://last.example.com"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			cfg, err := Load()
+			require.NoError(t, err)
+			cfg.WebAuthn = WebAuthnConfig{
+				Enabled:       true,
+				RPDisplayName: " TokenRouter ",
+				RPID:          " EXAMPLE.COM ",
+				RPOrigins:     []string{" HTTPS://APP.EXAMPLE.COM ", " ", " https://BAD.EXAMPLE.COM/path ", " HTTPS://LAST.EXAMPLE.COM "},
+			}
+			tt.configure(cfg)
+			supplied := cfg.WebAuthn.RPOrigins
+			before := append([]string(nil), supplied...)
+			require.EqualError(t, cfg.Validate(), tt.wantError)
+			require.Equal(t, tt.wantName, cfg.WebAuthn.RPDisplayName)
+			require.Equal(t, tt.wantID, cfg.WebAuthn.RPID)
+			require.Equal(t, tt.wantOrigins, cfg.WebAuthn.RPOrigins)
+			require.Equal(t, before, supplied)
+			require.EqualError(t, cfg.Validate(), tt.wantError)
+			require.Equal(t, tt.wantOrigins, cfg.WebAuthn.RPOrigins)
+		})
+	}
+}
+
+// TestValidateOIDCFirstErrorOrder combines missing credentials and invalid
+// authentication controls with enabled token validation. Each correction must
+// reveal the next exact failure while leaving the supplied OIDC text unchanged.
+func TestValidateOIDCFirstErrorOrder(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.OIDC = OIDCConnectConfig{
+		Enabled:             true,
+		IssuerURL:           "https://issuer.example.com",
+		RedirectURL:         "https://example.com/callback",
+		FrontendRedirectURL: "/auth/callback",
+		Scopes:              "profile",
+		TokenAuthMethod:     " INVALID ",
+		ClockSkewSeconds:    -1,
+		ValidateIDToken:     true,
+	}
+	steps := []struct {
+		wantError string        // expected first validation error
+		repair    func(*Config) // correction exposing the next failure
+	}{
+		{
+			wantError: "oidc_connect.client_id is required when oidc_connect.enabled=true",
+			repair: func(c *Config) {
+				c.OIDC.ClientID = " client "
+			},
+		},
+		{
+			wantError: "oidc_connect.scopes must contain openid",
+			repair: func(c *Config) {
+				c.OIDC.Scopes = " OPENID profile "
+			},
+		},
+		{
+			wantError: "oidc_connect.token_auth_method must be one of: client_secret_post/client_secret_basic/none",
+			repair: func(c *Config) {
+				c.OIDC.TokenAuthMethod = " CLIENT_SECRET_POST "
+			},
+		},
+		{
+			wantError: "oidc_connect.client_secret is required when oidc_connect.enabled=true and token_auth_method is client_secret_post/client_secret_basic",
+			repair: func(c *Config) {
+				c.OIDC.ClientSecret = " secret "
+			},
+		},
+		{
+			wantError: "oidc_connect.clock_skew_seconds must be between 0 and 600",
+			repair: func(c *Config) {
+				c.OIDC.ClockSkewSeconds = 0
+			},
+		},
+		{
+			wantError: "oidc_connect.allowed_signing_algs is required when oidc_connect.validate_id_token=true",
+			repair: func(c *Config) {
+				c.OIDC.AllowedSigningAlgs = " RS256 "
+			},
+		},
+	}
+	for _, step := range steps {
+		before := cfg.OIDC
+		require.EqualError(t, cfg.Validate(), step.wantError)
+		require.Equal(t, before, cfg.OIDC)
+		step.repair(cfg)
+	}
+	before := cfg.OIDC
+	require.NoError(t, cfg.Validate())
+	require.Equal(t, before, cfg.OIDC)
+}
+
+// TestValidateOIDCWarningOrder supplies HTTP endpoints and long JWT lifetimes.
+// OIDC failures must suppress its endpoint warnings, while later failures and
+// repeated calls emit those warnings after the preceding domain warnings.
+func TestValidateOIDCWarningOrder(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Server.FrontendURL = "http://example.com"
+	cfg.JWT.ExpireHour = 25
+	cfg.OIDC = OIDCConnectConfig{
+		Enabled:             true,
+		ClientID:            "client",
+		TokenAuthMethod:     "none",
+		IssuerURL:           "http://issuer.example.com",
+		DiscoveryURL:        "http://issuer.example.com/discovery",
+		AuthorizeURL:        "http://issuer.example.com/auth",
+		TokenURL:            "http://issuer.example.com/token",
+		UserInfoURL:         "http://issuer.example.com/userinfo",
+		JWKSURL:             "http://issuer.example.com/jwks",
+		RedirectURL:         "http://example.com/callback",
+		FrontendRedirectURL: "http://example.com/auth/callback",
+	}
+	cfg.Billing.MinimumBalanceReserve = -1
+	var logs bytes.Buffer
+	// Capture warnings after loading so validation ordering is measured separately
+	// from loader diagnostics, then restore the shared logger before later tests run.
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	want := []string{
+		"server.frontend_url",
+		"jwt.expire_hour is high; consider shorter expiration for security",
+	}
+	for call := range 3 {
+		logs.Reset()
+		if call == 0 {
+			require.EqualError(t, cfg.Validate(), "oidc_connect.scopes must contain openid")
+		} else {
+			require.EqualError(t, cfg.Validate(), "billing.minimum_balance_reserve must be non-negative")
+		}
+		var got []string
+		decoder := json.NewDecoder(&logs)
+		for decoder.More() {
+			var record map[string]any
+			require.NoError(t, decoder.Decode(&record))
+			if field, ok := record["field"].(string); ok {
+				got = append(got, field)
+			} else {
+				message, ok := record["msg"].(string)
+				require.True(t, ok)
+				got = append(got, message)
+			}
+		}
+		require.Equal(t, want, got)
+		if call == 0 {
+			cfg.OIDC.Scopes = "openid"
+			want = append(want,
+				"oidc_connect.issuer_url",
+				"oidc_connect.discovery_url",
+				"oidc_connect.authorize_url",
+				"oidc_connect.token_url",
+				"oidc_connect.userinfo_url",
+				"oidc_connect.jwks_url",
+				"oidc_connect.redirect_url",
+				"oidc_connect.frontend_redirect_url",
+			)
+		}
+	}
+}
+
+// TestValidateAfterBootstrapNormalizesAgain loads enabled authentication while
+// deferring JWT selection. Supplying the persisted secret must permit repeated
+// validation, retain normalized domain values, and republish static forwarding
+// settings.
+func TestValidateAfterBootstrapNormalizesAgain(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("JWT_SECRET", "")
+	viper.Set("webauthn.enabled", true)
+	viper.Set("webauthn.rp_display_name", " TokenRouter ")
+	viper.Set("webauthn.rp_id", " EXAMPLE.COM ")
+	viper.Set("webauthn.rp_origins", []string{" HTTPS://APP.EXAMPLE.COM "})
+	viper.Set("oidc_connect.enabled", true)
+	viper.Set("oidc_connect.client_id", "client")
+	viper.Set("oidc_connect.client_secret", "secret")
+	viper.Set("oidc_connect.issuer_url", "https://issuer.example.com")
+	viper.Set("oidc_connect.redirect_url", "https://example.com/callback")
+	viper.Set("oidc_connect.frontend_redirect_url", "/auth/callback")
+	cfg, err := LoadForBootstrap()
+	require.NoError(t, err)
+	require.Empty(t, cfg.JWT.Secret)
+	require.Equal(t, "TokenRouter", cfg.WebAuthn.RPDisplayName)
+	require.Equal(t, "example.com", cfg.WebAuthn.RPID)
+	require.Equal(t, []string{"https://app.example.com"}, cfg.WebAuthn.RPOrigins)
+
+	webAuthn := cfg.WebAuthn
+	oidc := cfg.OIDC
+	logging := cfg.Log
+	forwarding := cfg.ForwardedClientIPSettings()
+	cfg.JWT.Secret = strings.Repeat("persisted", 4)
+	for range 2 {
+		cfg.SetForwardedClientIPSettings(!cfg.Security.TrustForwardedIPForAPIKeyACL, []string{"X-Runtime-IP"})
+		require.NoError(t, cfg.Validate())
+		require.Equal(t, webAuthn, cfg.WebAuthn)
+		require.Equal(t, oidc, cfg.OIDC)
+		require.Equal(t, logging, cfg.Log)
+		require.Equal(t, forwarding, cfg.ForwardedClientIPSettings())
+	}
+}
+
+// collectMapstructureKeys records dotted scalar keys and their value types from
+// an acyclic struct type into a nonnil output map. Private fields and
+// mapstructure exclusions are skipped, while tag names supply field identity
+// before lowercase normalization.
+//
+// Pointer layers are removed before classifying a field. Nested structs recurse
+// into their dotted path, maps and slices of structs stay outside the fixed-key
+// check, and scalar slices remain leaves. This lets
+// TestConfigKeysAreEnvReachable compare finite decoded fields with registered
+// Viper keys without treating arbitrary map entries as configuration fields.
 func collectMapstructureKeys(t reflect.Type, prefix string, out map[string]string) {
 	for field := range t.Fields() {
 		if field.PkgPath != "" {
-			continue // 跳过未导出字段
+			continue // Skip unexported fields.
 		}
 		tag := field.Tag.Get("mapstructure")
 		name, _, _ := strings.Cut(tag, ",")
@@ -3019,7 +3804,8 @@ func collectMapstructureKeys(t reflect.Type, prefix string, out map[string]strin
 			continue
 		}
 		if ft.Kind() == reflect.Map {
-			// map 字段由配置文件解码。
+			// Map entries have caller-defined keys rather than a finite scalar field list.
+			// Exclude them from this fixed registration check and leave their contents to file decoding.
 			continue
 		}
 		if ft.Kind() == reflect.Slice {
@@ -3028,7 +3814,8 @@ func collectMapstructureKeys(t reflect.Type, prefix string, out map[string]strin
 				elem = elem.Elem()
 			}
 			if elem.Kind() == reflect.Struct {
-				// 结构体切片由配置文件解码。
+				// Structured list entries have indexed paths supplied by file input. Keep
+				// them outside this check so only stable scalar and scalar-slice keys require registration.
 				continue
 			}
 		}
@@ -3036,7 +3823,9 @@ func collectMapstructureKeys(t reflect.Type, prefix string, out map[string]strin
 	}
 }
 
-// TestPricingCatalogIncludesDecisionModels 检查旧官方地址升级和自定义查询参数。
+// TestPricingCatalogIncludesDecisionModels supplies the exact official catalog
+// URL, URLs with existing query choices, and a mirror. Normalization must add
+// type=all only to the exact unqualified official value.
 func TestPricingCatalogIncludesDecisionModels(t *testing.T) {
 	for _, source := range []string{"https://models.dev/catalog.json", "https://models.dev/catalog.json?type=all", "https://models.dev/catalog.json?type=language", "https://mirror.example/catalog.json"} {
 		cfg := Config{Pricing: PricingConfig{RemoteURL: source}}

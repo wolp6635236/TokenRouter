@@ -1,7 +1,5 @@
 package httpapi
 
-// WS 关闭归因场景覆盖 gateway/httpapi/ws_errors.go 和 gateway/ws/entry_rules.go，检查关闭分类与提供商故障上报的配合。
-
 import (
 	"context"
 	"errors"
@@ -15,7 +13,15 @@ import (
 	gatewayws "github.com/TokenFlux/TokenRouter/internal/gateway/ws"
 )
 
-// TestOpenAIWSIngressEndedByClient_GoingAwayWithoutCancellationStillReported 检查上游主动关闭时记录提供商故障。
+// A WS going-away status can describe either client termination or an upstream
+// session failure depending on its cause. These scenarios combine close
+// presentation with provider-reporting checks so a status alone does not hide
+// stalled or abnormal upstream work.
+
+// TestOpenAIWSIngressEndedByClient_GoingAwayWithoutCancellationStillReported
+// wraps an upstream-going-away cause without a canceled context. The close
+// remains an upstream failure: client-ending classification is false and
+// provider reporting is true.
 func TestOpenAIWSIngressEndedByClient_GoingAwayWithoutCancellationStillReported(t *testing.T) {
 	err := gatewayhttp.NewOpenAIWSClientCloseError(
 		coderws.StatusGoingAway, "upstream going away", errors.New("upstream closed session"))
@@ -24,11 +30,14 @@ func TestOpenAIWSIngressEndedByClient_GoingAwayWithoutCancellationStillReported(
 	require.True(t, gatewayws.EntryShouldReportFailure(err), "真实上游故障仍须归因提供商")
 }
 
-// TestOpenAIWSIngressEndedByClient_AbnormalClosuresStillReportProviderFailure 检查异常关闭进入提供商故障判断。
+// TestOpenAIWSIngressEndedByClient_AbnormalClosuresStillReportProviderFailure
+// compares policy, internal, abnormal, generic-read and untyped deadline
+// failures. Each remains outside clean client termination and continues to
+// count as provider failure.
 func TestOpenAIWSIngressEndedByClient_AbnormalClosuresStillReportProviderFailure(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
+		name string // failure scenario diagnostic label
+		err  error  // wrapped upstream failure input
 	}{
 		{
 			name: "upstream_policy_violation",
@@ -50,7 +59,8 @@ func TestOpenAIWSIngressEndedByClient_AbnormalClosuresStillReportProviderFailure
 			err:  errors.New("upstream websocket read failed"),
 		},
 		{
-			// 空闲超时之外的 deadline 按停滞故障处理。
+			// This deadline has no normal inter-turn close wrapper, so classification
+			// retains an upstream stall rather than treating the session as clean client exit.
 			name: "deadline_without_normal_close",
 			err:  fmt.Errorf("upstream stalled: %w", context.DeadlineExceeded),
 		},

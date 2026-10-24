@@ -9,107 +9,149 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
+// group.go defines user and administrator group response structures for the
+// HTTP API.
+// User-facing group JSON exposes protocol admission and product limits while
+// administrator responses add scheduling policy and provider counts. Image
+// and Live compatibility flags stay internal, so JSON clients read the
+// unified protocol fields for those entry permissions.
+
+// Group contains the product settings and model choices exposed to users.
 type Group struct {
-	LocalizationResolution *locale.Resolution                   `json:"localization_resolution,omitempty"`
-	SearchTerms            []string                             `json:"search_terms,omitempty"`
-	DisplayName            string                               `json:"display_name,omitempty"`
-	ModelAttributes        map[string]modelcatalog.Presentation `json:"model_attributes,omitempty"`
-	Models                 []string                             `json:"models"`
-	ModelProtocols         map[string][]protocol.ProtocolID     `json:"model_protocols,omitempty"`
-	ID                     int64                                `json:"id"`
-	Name                   string                               `json:"name"`
-	Description            string                               `json:"description"`
-	DisplayBrand           string                               `json:"display_brand"`
-	RateMultiplier         float64                              `json:"rate_multiplier"`
-	Capacity               *GroupCapacity                       `json:"capacity,omitempty"`
-	IsExclusive            bool                                 `json:"is_exclusive"`
-	Status                 string                               `json:"status"`
-	// 会话隔离开启后，目标分组会拒绝其它分组已归属的显式会话切入。
-	SessionIsolationEnabled bool `json:"session_isolation_enabled"`
+	// LocalizationResolution describes the language used for display text when
+	// localization is requested; mapping without a language leaves this value
+	// absent.
+	LocalizationResolution *locale.Resolution                   `json:"localization_resolution,omitempty"` // resolved display language metadata
+	SearchTerms            []string                             `json:"search_terms,omitempty"`            // localized display search texts
+	DisplayName            string                               `json:"display_name,omitempty"`            // resolved group display name
+	ModelAttributes        map[string]modelcatalog.Presentation `json:"model_attributes,omitempty"`        // request-model display attribute map
+	Models                 []string                             `json:"models"`                            // requestable model ID list
+	ModelProtocols         map[string][]protocol.ProtocolID     `json:"model_protocols,omitempty"`         // request-model client protocol choices
+	ID                     int64                                `json:"id"`                                // stored group identifier
+	Name                   string                               `json:"name"`                              // persisted group business name
+	Description            string                               `json:"description"`                       // group display description
+	DisplayBrand           string                               `json:"display_brand"`                     // configured display brand
+	RateMultiplier         float64                              `json:"rate_multiplier"`                   // group user price factor
+	// Capacity is attached by capacity-aware group responses; absent
+	// observations leave it nil and omit the JSON member.
+	Capacity    *GroupCapacity `json:"capacity,omitempty"` // optional current group capacity
+	IsExclusive bool           `json:"is_exclusive"`       // exclusive group membership flag
+	Status      string         `json:"status"`             // stored group activation state
+	// SessionIsolationEnabled rejects a designated session when its existing
+	// assignment belongs to another group.
+	SessionIsolationEnabled bool `json:"session_isolation_enabled"` // cross-group session isolation flag
 
-	// 图片生成权限独立于共享价格配置。
-	AllowImageGeneration      bool `json:"-"`
-	AllowBatchImageGeneration bool `json:"-"`
+	// AllowImageGeneration and AllowBatchImageGeneration mirror image admission
+	// derived from protocol settings for internal compatibility consumers. Both
+	// fields are excluded from serialized Group responses.
+	AllowImageGeneration      bool `json:"-"` // derived image permission mirror
+	AllowBatchImageGeneration bool `json:"-"` // derived image-batch permission mirror
 
-	// Claude Code 客户端限制
-	ClaudeCodeOnly  bool   `json:"claude_code_only"`
-	FallbackGroupID *int64 `json:"fallback_group_id"`
-	// 无效请求兜底分组
-	FallbackGroupIDOnInvalidRequest *int64 `json:"fallback_group_id_on_invalid_request"`
-	// 当前分组不可用时 API Key 优先回退到的分组。
-	UnavailableFallbackGroupID *int64 `json:"unavailable_fallback_group_id"`
+	// ClaudeCodeOnly and FallbackGroupID describe the Claude Code restriction
+	// and its alternate group for rejected clients. A nil FallbackGroupID leaves
+	// that alternate group unconfigured.
+	ClaudeCodeOnly  bool   `json:"claude_code_only"`  // Claude Code client restriction
+	FallbackGroupID *int64 `json:"fallback_group_id"` // client restriction fallback group
+	// FallbackGroupIDOnInvalidRequest supplies the alternate group for
+	// qualifying invalid Anthropic requests; nil leaves that recovery selection
+	// unconfigured.
+	FallbackGroupIDOnInvalidRequest *int64 `json:"fallback_group_id_on_invalid_request"` // invalid Anthropic request fallback
+	// UnavailableFallbackGroupID supplies the preferred API-key alternate when
+	// this group is unavailable; nil leaves that preference unconfigured.
+	UnavailableFallbackGroupID *int64 `json:"unavailable_fallback_group_id"` // unavailable group fallback preference
 
-	// AllowedProtocols 是分组允许的完整客户端协议与业务入口集合。
-	AllowedProtocols     []protocol.ProtocolID                         `json:"allowed_protocols"`
-	ProtocolFallbacks    map[protocol.ProtocolID][]protocol.ProtocolID `json:"protocol_fallbacks"`
-	ResponsesImagePolicy string                                        `json:"responses_image_policy"`
-	// AllowMessagesDispatch 是从协议集合派生的弃用兼容字段。
-	AllowMessagesDispatch bool `json:"-"`
-	// OpenAI Live 接口开关
-	AllowLive bool `json:"-"`
+	// AllowedProtocols lists permitted client entries; an empty set disables new
+	// calls through every entry controlled by the group.
+	AllowedProtocols []protocol.ProtocolID `json:"allowed_protocols"` // permitted client protocol set
+	// ProtocolFallbacks uses an absent source for automatic conversion, an empty
+	// target slice for native-only routing, and an ordered nonempty slice for
+	// restricted conversion choices.
+	ProtocolFallbacks    map[protocol.ProtocolID][]protocol.ProtocolID `json:"protocol_fallbacks"`     // ordered per-entry conversion restrictions
+	ResponsesImagePolicy string                                        `json:"responses_image_policy"` // Responses image tool policy
+	// AllowMessagesDispatch reflects membership of Messages in AllowedProtocols
+	// for internal compatibility consumers and is excluded from serialized Group
+	// responses.
+	AllowMessagesDispatch bool `json:"-"` // derived Messages permission mirror
+	// AllowLive mirrors the normalized Live protocol permission for internal
+	// consumers; serialized Group responses expose that admission through
+	// AllowedProtocols instead.
+	AllowLive bool `json:"-"` // derived Live permission mirror
 
-	// 提供商过滤控制（仅 OpenAI/Antigravity 平台有效）
-	RequireOAuthOnly  bool `json:"require_oauth_only"`
-	RequirePrivacySet bool `json:"require_privacy_set"`
+	// RequireOAuthOnly admits runtime candidates with OAuth or Setup Token
+	// credentials; other credential types fail the group qualification check.
+	RequireOAuthOnly bool `json:"require_oauth_only"` // OAuth or Setup Token requirement
+	// RequirePrivacySet checks saved privacy readiness for OpenAI and
+	// Antigravity providers. Other platforms pass Record.IsPrivacySet without a
+	// saved privacy requirement.
+	RequirePrivacySet bool `json:"require_privacy_set"` // provider privacy readiness requirement
 
-	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
-	RPMLimit int `json:"rpm_limit"`
-	// MaxReasoningEffort OpenAI/Codex 请求的推理强度上限，空字符串表示不限制。
-	MaxReasoningEffort string `json:"max_reasoning_effort"`
-	// MaxReasoningEffortOverLimit 超过上限时的访问控制：downgrade（默认）或 deny。
-	MaxReasoningEffortOverLimit string `json:"max_reasoning_effort_over_limit"`
-	// ReasoningEffortMappings OpenAI/Codex 推理强度映射，可按模型精确名、前缀或后缀限定。
-	ReasoningEffortMappings []routing.ReasoningEffortMapping `json:"reasoning_effort_mappings"`
+	// RPMLimit supplies each user's allowance in this group when positive.
+	// A user-group override takes precedence; nonpositive values disable this
+	// group gate, while scheduler.RPMAdmission still checks a positive user-wide
+	// allowance.
+	RPMLimit int `json:"rpm_limit"` // group requests per minute
+	// MaxReasoningEffort caps effort from supported OpenAI or Anthropic request
+	// fields; an empty value leaves requested effort uncapped by this group.
+	MaxReasoningEffort string `json:"max_reasoning_effort"` // requested reasoning effort ceiling
+	// MaxReasoningEffortOverLimit selects downgrade or deny when requested
+	// effort exceeds the cap; downgrade is the default action.
+	MaxReasoningEffortOverLimit string `json:"max_reasoning_effort_over_limit"` // effort ceiling excess action
+	// ReasoningEffortMappings rewrites requested effort before the cap; rules
+	// can apply generally or match exact, prefix, and suffix model names.
+	ReasoningEffortMappings []routing.ReasoningEffortMapping `json:"reasoning_effort_mappings"` // model-scoped effort rewrite rules
 
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt time.Time `json:"created_at"` // stored group creation time
+	UpdatedAt time.Time `json:"updated_at"` // stored group update time
 }
 
+// GroupCapacity reports aggregated concurrency, session, and request-rate
+// observations for a group.
 type GroupCapacity struct {
-	ConcurrencyUsed int `json:"concurrency_used"`
-	ConcurrencyMax  int `json:"concurrency_max"`
-	SessionsUsed    int `json:"sessions_used"`
-	SessionsMax     int `json:"sessions_max"`
-	RPMUsed         int `json:"rpm_used"`
-	RPMMax          int `json:"rpm_max"`
+	ConcurrencyUsed int `json:"concurrency_used"` // occupied provider concurrency slots
+	ConcurrencyMax  int `json:"concurrency_max"`  // aggregate provider concurrency capacity
+	SessionsUsed    int `json:"sessions_used"`    // occupied provider session slots
+	SessionsMax     int `json:"sessions_max"`     // aggregate provider session capacity
+	RPMUsed         int `json:"rpm_used"`         // observed requests per minute
+	RPMMax          int `json:"rpm_max"`          // aggregate provider RPM capacity
 }
 
-// AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
-// 注意：普通用户接口不得返回 model_routing/provider_count/provider_groups 等内部信息。
+// AdminGroup adds editable routing settings and provider details to
+// user-visible fields. User-facing handlers return Group because
+// administrator settings include internal provider selection and scheduling
+// information.
 type AdminGroup[A any] struct {
-	Localization routing.GroupLocalization `json:"localization"`
-	Group
-	// ForceOpenAIFast 仅管理端可见，用于控制 OpenAI 分组的 Fast 策略。
-	ForceOpenAIFast bool `json:"force_openai_fast"`
-	// OpenAIFastPolicy 保存管理员选择的互斥加速策略。
-	OpenAIFastPolicy string `json:"openai_fast_policy"`
+	Localization routing.GroupLocalization `json:"localization"` // editable localized group content
+	Group                                  // user-visible shared group fields
+	// ForceOpenAIFast mirrors the legacy forced-priority setting; the effective
+	// OpenAIFastPolicy expresses the complete administrator acceleration
+	// selection.
+	ForceOpenAIFast  bool   `json:"force_openai_fast"`  // legacy forced-priority policy mirror
+	OpenAIFastPolicy string `json:"openai_fast_policy"` // effective OpenAI acceleration policy
 
-	// SchedulerType 仅管理端可见，用于配置分组调度器。
-	SchedulerType string `json:"scheduler_type"`
-	// AdvancedSchedulerOverrides 仅管理端可见；空字段继承网关通用设置。
-	AdvancedSchedulerOverrides routing.GroupAdvancedSchedulerOverrides `json:"advanced_scheduler_overrides"`
-	RoutingPolicy              routing.GroupRoutingPolicy              `json:"routing_policy"`
+	SchedulerType string `json:"scheduler_type"` // provider scheduler selection
+	// AdvancedSchedulerOverrides contains optional advanced scheduling values;
+	// fields absent from the configuration inherit the corresponding gateway
+	// settings.
+	AdvancedSchedulerOverrides routing.GroupAdvancedSchedulerOverrides `json:"advanced_scheduler_overrides"` // per-group advanced scheduler settings
+	RoutingPolicy              routing.GroupRoutingPolicy              `json:"routing_policy"`               // group model and feature rules
 
-	// 模型路由配置（仅 anthropic 平台使用）
-	ModelRouting        map[string][]int64 `json:"model_routing"`
-	ModelRoutingEnabled bool               `json:"model_routing_enabled"`
+	// ModelRouting and ModelRoutingEnabled define optional preferred-provider
+	// selection. Enabled rules map request model patterns to ordered provider
+	// IDs; exact and trailing-wildcard rules are evaluated by group routing.
+	ModelRouting        map[string][]int64 `json:"model_routing"`         // model-pattern preferred provider lists
+	ModelRoutingEnabled bool               `json:"model_routing_enabled"` // preferred provider routing switch
 
-	// MCP XML 协议注入（仅 antigravity 平台使用）
-	MCPXMLInject bool `json:"mcp_xml_inject"`
+	MCPXMLInject bool `json:"mcp_xml_inject"` // legacy Antigravity XML setting
 
-	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	DefaultMappedModel string                        `json:"default_mapped_model"`
-	ModelsListConfig   routing.GroupModelsListConfig `json:"models_list_config"`
-	// AvailabilityProbeConfig 控制分组主动可用性探测，仅管理员接口返回。
-	AvailabilityProbeConfig routing.GroupAvailabilityProbeConfig `json:"availability_probe_config"`
+	DefaultMappedModel      string                               `json:"default_mapped_model"`      // configured default mapped model
+	ModelsListConfig        routing.GroupModelsListConfig        `json:"models_list_config"`        // custom request-model catalog settings
+	AvailabilityProbeConfig routing.GroupAvailabilityProbeConfig `json:"availability_probe_config"` // active availability probe settings
 
-	// 支持的模型系列（仅 antigravity 平台使用）
-	SupportedModelScopes     []string `json:"supported_model_scopes"`
-	ProviderGroups           []A      `json:"provider_groups,omitempty"`
-	ProviderCount            int64    `json:"provider_count,omitempty"`
-	ActiveProviderCount      int64    `json:"active_provider_count,omitempty"`
-	RateLimitedProviderCount int64    `json:"rate_limited_provider_count,omitempty"`
+	SupportedModelScopes     []string `json:"supported_model_scopes"`                // legacy Antigravity family metadata
+	ProviderGroups           []A      `json:"provider_groups,omitempty"`             // optional linked provider details
+	ProviderCount            int64    `json:"provider_count,omitempty"`              // total linked provider count
+	ActiveProviderCount      int64    `json:"active_provider_count,omitempty"`       // active linked provider count
+	RateLimitedProviderCount int64    `json:"rate_limited_provider_count,omitempty"` // rate-limited linked provider count
 
-	// 分组排序
-	SortOrder int `json:"sort_order"`
+	SortOrder int `json:"sort_order"` // manual group display order
 }

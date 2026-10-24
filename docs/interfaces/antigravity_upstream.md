@@ -64,7 +64,9 @@ Chat Completions / Responses
 
 每次 failover attempt 都从原始请求重新转换，并刷新工具名的回程映射。流开始之后，遵守共同的"不再切换"规则。Gemini v1beta 专用入口保持 Google 的错误和流格式，不经过 OpenAI 的 envelope。
 
-兼容层把 Chat 请求里正数的 `max_completion_tokens`（没有时用 `max_tokens`），在转换成 Anthropic 请求之前封顶为 64000；零、负数或没填时，使用转换器已有的默认上限。这样客户端传来的超大参数不会被上游拒绝。
+Chat 的输出转换上限为 64000。Messages 的 Claude 路线为 64000，其他模型为 65000，并取目录更小值。Gemini 直通入口读取其本身的能力。管理员覆盖与路线条件通过[统一解析器](model_catalog_and_marketplace.md#model_attributes)生效。
+
+转换器根据已解析的预算或档位集合发送 thinking 控制。已登记 Opus 4.6/4.7/4.8 的 adaptive 编码使用 24576 预算；客户端给出的 effort 单独转换。签名恢复时清除恢复阶段禁用的 thinking 控制，预算恢复使用修正后的预算。
 
 ## 跨平台分组选号
 
@@ -84,7 +86,7 @@ Antigravity 的名称和通用候选来自统一目录。默认映射保留 `gem
 
 - `RetryInfo` 给出的等待时间较短时，可以在同一提供商上做一次有上限的等待；模型限流的时间较长时，标记模型或提供商，并请求调度层换号。
 - 单提供商模式允许退避重试，总等待时间有上限；多提供商模式优先换号。Context 取消时立即停止。
-- `MODEL_CAPACITY_EXHAUSTED` 视为共享的模型容量问题，使用全局去重和有上限的重试；快速轮换提供商只会放大上游的压力。
+- `MODEL_CAPACITY_EXHAUSTED` 视为共享的模型容量问题，在当前提供商内有限重试。重试耗尽后，按非空模型名在进程内记录 10 秒冷却，命中冷却的后续请求跳过容量重试。冷却写入前的并发请求仍可各自重试；快速轮换提供商会继续访问同一共享容量池。
 - 粘性会话换提供商时，可以把普通输入按 cache-read 计费，反映缓存失效的成本；这个标志要传进结算的输入。
 - OAuth 凭据刷新后仍被拒绝时，返回脱敏的提示，要求重新授权并检查 project ID，同时把提供商标记为可恢复的错误。
 - 只有白名单里的安全上游提示可以透传；记录响应体日志受开关、字节上限和脱敏的约束。
@@ -94,7 +96,7 @@ Antigravity 的名称和通用候选来自统一目录。默认映射保留 `gem
 <a id="antigravity_native_execution"></a>
 ## 平台执行与提供商职责
 
-`upstream/antigravity.Executor` 处理 Claude、Gemini、Chat 和 Responses 请求，完成一次平台交换、恢复和输出，并关闭最终的响应体。它负责提供商内的普通重试、智能重试、credits 请求和共享模型容量去重。网关编排负责提供商切换、付款主体和资金完成。`gateway/provider/googleforward.Antigravity` 传入本次凭据、转换选项和同步输出。`Probe` 复用平台重试并测试指定的提供商，探测请求无需获取用户或提供商的请求槽。
+`upstream/antigravity.Executor` 处理 Claude、Gemini、Chat 和 Responses 请求，完成一次平台交换、恢复和输出，并关闭最终的响应体。它负责提供商内的普通重试、智能重试、credits 请求和进程内的模型容量冷却。网关编排负责提供商切换、付款主体和资金完成。`gateway/provider/googleforward.Antigravity` 传入本次凭据、转换选项和同步输出。`Probe` 复用平台重试并测试指定的提供商，探测请求无需获取用户或提供商的请求槽。
 
 流通过同步的 `OutputSink` 输出，每种协议的前导缓冲、非流式收集、心跳、首 token 和断开后的尾部读取规则各自保持。结果区分已观测的 usage、是否已经服务和错误；HTTP 提交和重试窗口的关闭，与语义输出分开判断，失败时的结算按 Antigravity 入口的完成资格判断。使用记录在请求期间固定实际提供商的平台，后台完成器只使用这份固定下来的结果。
 

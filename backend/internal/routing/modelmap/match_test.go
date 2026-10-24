@@ -4,18 +4,26 @@ import (
 	"testing"
 )
 
+// Trailing-star model patterns accept both populated and empty suffixes while
+// ordinary text requires exact equality. Mapping fixtures check overlapping
+// source selection and unmatched-name retention by calling MatchWildcard
+// directly, including exact strings that the matcher accepts.
+
+// TestMatchWildcard compares exact text, trailing-star prefixes, empty inputs,
+// and a universal star. Each supplied pattern must produce the expected
+// boolean, including acceptance of an empty suffix after its prefix.
 func TestMatchWildcard(t *testing.T) {
 	tests := []struct {
-		name     string
-		pattern  string
-		str      string
-		expected bool
+		name     string // subtest case display name
+		pattern  string // model pattern under test
+		str      string // candidate model string
+		expected bool   // expected pattern match result
 	}{
-		// 精确匹配
+		// Exact matches.
 		{"exact match", "claude-sonnet-4-5", "claude-sonnet-4-5", true},
 		{"exact mismatch", "claude-sonnet-4-5", "claude-opus-4-5", false},
 
-		// 通配符匹配
+		// Trailing wildcards.
 		{"wildcard prefix match", "claude-*", "claude-sonnet-4-5", true},
 		{"wildcard prefix match 2", "claude-*", "claude-opus-4-5-thinking", true},
 		{"wildcard prefix mismatch", "claude-*", "gemini-3-flash", false},
@@ -23,7 +31,7 @@ func TestMatchWildcard(t *testing.T) {
 		{"wildcard partial match 2", "gemini-3*", "gemini-3-pro-image", true},
 		{"wildcard partial mismatch", "gemini-3*", "gemini-2.5-flash", false},
 
-		// 空字符串和空模式。
+		// Empty strings and patterns.
 		{"empty pattern exact", "", "", true},
 		{"empty pattern mismatch", "", "claude", false},
 		{"single star", "*", "anything", true},
@@ -41,15 +49,18 @@ func TestMatchWildcard(t *testing.T) {
 	}
 }
 
+// TestMatchWildcardMappingResult calls MatchWildcard with exact and overlapping
+// prefix entries. It must choose the longest matching source, retain unmatched
+// names, and return the expected match flag for each supplied map.
 func TestMatchWildcardMappingResult(t *testing.T) {
 	tests := []struct {
-		name           string
-		mapping        map[string]string
-		requestedModel string
-		expected       string
-		matched        bool
+		name           string            // mapping subtest display name
+		mapping        map[string]string // configured source target pairs
+		requestedModel string            // input model for mapping
+		expected       string            // expected selected model name
+		matched        bool              // expected mapping match flag
 	}{
-		// 精确匹配优先于通配符
+		// This exact key wins over the shorter matching prefix in this map.
 		{
 			name: "exact match takes precedence",
 			mapping: map[string]string{
@@ -61,7 +72,7 @@ func TestMatchWildcardMappingResult(t *testing.T) {
 			matched:        true,
 		},
 
-		// 最长通配符优先
+		// The longest matching wildcard wins.
 		{
 			name: "longer wildcard takes precedence",
 			mapping: map[string]string{
@@ -74,7 +85,7 @@ func TestMatchWildcardMappingResult(t *testing.T) {
 			matched:        true,
 		},
 
-		// 单个通配符
+		// A single wildcard.
 		{
 			name: "single wildcard",
 			mapping: map[string]string{
@@ -85,7 +96,7 @@ func TestMatchWildcardMappingResult(t *testing.T) {
 			matched:        true,
 		},
 
-		// 无匹配返回原始模型
+		// An unmatched model retains its name.
 		{
 			name: "no match returns original",
 			mapping: map[string]string{
@@ -96,7 +107,7 @@ func TestMatchWildcardMappingResult(t *testing.T) {
 			matched:        false,
 		},
 
-		// 空映射返回原始模型
+		// An empty map leaves the model unchanged.
 		{
 			name:           "empty mapping returns original",
 			mapping:        map[string]string{},
@@ -105,7 +116,7 @@ func TestMatchWildcardMappingResult(t *testing.T) {
 			matched:        false,
 		},
 
-		// Gemini 模型映射
+		// Gemini model mappings.
 		{
 			name: "gemini wildcard mapping",
 			mapping: map[string]string{

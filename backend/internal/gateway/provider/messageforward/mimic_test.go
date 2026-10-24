@@ -15,6 +15,9 @@ import (
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+// TestApplyClaudeCodeOAuthMimicryToBody_HaikuRewritesSystem converts a Haiku
+// OAuth request carrying a client system string. The billing and Claude Code
+// system blocks appear, and the client instructions move into messages.
 func TestApplyClaudeCodeOAuthMimicryToBody_HaikuRewritesSystem(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 405, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}
 	body := []byte(`{"model":"claude-haiku-4-5","system":"Pi project instructions","messages":[{"role":"user","content":"hello"}]}`)
@@ -34,6 +37,10 @@ func TestApplyClaudeCodeOAuthMimicryToBody_HaikuRewritesSystem(t *testing.T) {
 	require.Equal(t, "claude-haiku-4-5", gjson.GetBytes(out, "model").String())
 }
 
+// TestApplyClaudeCodeOAuthMimicryToBody_FableOmitsRefusedExpansion converts a
+// Fable OAuth request carrying a client system string. Two identity blocks
+// remain, the expansion is absent, and inserted instruction history precedes
+// the user message.
 func TestApplyClaudeCodeOAuthMimicryToBody_FableOmitsRefusedExpansion(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 406, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}
 	body := []byte(`{"model":"claude-fable-5","system":"Project instructions","messages":[{"role":"user","content":"hello"}]}`)
@@ -55,35 +62,42 @@ func TestApplyClaudeCodeOAuthMimicryToBody_FableOmitsRefusedExpansion(t *testing
 	require.Equal(t, "hello", gjson.GetBytes(out, "messages.2.content").String())
 }
 
-// TestGatewayClientDatelineNormalization_Scope 覆盖提供商类型与开关组合：
-// 只有开关开启时 Anthropic OAuth/SetupToken 才会通过，API-Key 与非 Anthropic
-// 平台始终跳过。
+// TestGatewayClientDatelineNormalization_Scope compares provider eligibility
+// with absent, disabled, and reenabled settings. OAuth and Setup Token
+// normalize only while the setting allows the eligible Anthropic path.
 func TestGatewayClientDatelineNormalization_Scope(t *testing.T) {
 	repo := &betaSettingsFixture{values: map[string]string{}}
 	svc := NewRuntime(Dependencies{Settings: newBetaRuntime(repo.values)}, Options{})
 	ctx := context.Background()
 
-	// 默认缺省：parseSettings 与缓存加载器的 fallback 都是 true。
+	// An absent setting enables normalization by default.
 	require.True(t, svc.shouldNormalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}))
 	require.True(t, svc.shouldNormalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeSetupToken}}))
 	require.False(t, svc.shouldNormalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeAPIKey}}))
 	require.False(t, svc.shouldNormalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth}}))
 
-	// 关闭开关：任何提供商都不归一化。
+	// Disabling the setting excludes both eligible credential types.
 	repo.values[gateway.SettingKeyEnableClientDatelineNormalization] = "false"
+	// Invalidate the settings snapshot after changing the fixture value so
+	// the next eligibility check reads the updated flag during the same
+	// test.
 	svc.dependencies.Settings.InvalidateForwarding()
 	require.False(t, svc.shouldNormalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}))
 	require.False(t, svc.shouldNormalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeSetupToken}}))
 
-	// 重新开启开关：OAuth 再次通过。
+	// Re-enabling the setting takes effect after invalidation.
 	repo.values[gateway.SettingKeyEnableClientDatelineNormalization] = "true"
+	// Invalidate the settings snapshot after changing the fixture value so
+	// the next eligibility check reads the updated flag during the same
+	// test.
 	svc.dependencies.Settings.InvalidateForwarding()
 	require.True(t, svc.shouldNormalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}))
 }
 
-// TestGatewayClientDatelineNormalization_HelperNoRewrite 覆盖 Forward 使用的辅助路径：
-// 开关关闭、API-Key、空提供商或请求体没有指纹 dateline 时返回 ok=false；
-// 开关开启且提供商为 Anthropic OAuth/SetupToken 并实际改写时返回 ok=true 和新请求体。
+// TestGatewayClientDatelineNormalization_HelperNoRewrite combines disabled and
+// ineligible paths with recognized and ordinary user text. The helper reports
+// nil and false for unchanged bodies, and returns normalized dates for eligible
+// requests.
 func TestGatewayClientDatelineNormalization_HelperNoRewrite(t *testing.T) {
 	repo := &betaSettingsFixture{values: map[string]string{
 		gateway.SettingKeyEnableClientDatelineNormalization: "true",
@@ -94,22 +108,22 @@ func TestGatewayClientDatelineNormalization_HelperNoRewrite(t *testing.T) {
 	dirty := []byte(`{"messages":[{"role":"user","content":"<system-reminder>\nToday’s date is 2026/07/01.\n</system-reminder>"}]}`)
 	clean := []byte(`{"messages":[{"role":"user","content":"just hello"}]}`)
 
-	// API-Key 提供商：即使请求体包含指纹也不改写。
+	// API key requests keep the fingerprint text unchanged.
 	next, ok := svc.normalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeAPIKey}}, dirty)
 	require.False(t, ok)
 	require.Nil(t, next)
 
-	// 空提供商：安全跳过。
+	// A missing provider skips normalization.
 	next, ok = svc.normalizeDateline(ctx, nil, dirty)
 	require.False(t, ok)
 	require.Nil(t, next)
 
-	// OAuth 提供商 + 干净请求体：没有变化，ok=false。
+	// An eligible provider with no dateline reports no change.
 	next, ok = svc.normalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}, clean)
 	require.False(t, ok)
 	require.Nil(t, next)
 
-	// OAuth 提供商 + 带指纹请求体：完成改写，ok=true。
+	// OAuth requests normalize the dateline.
 	next, ok = svc.normalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}, dirty)
 	require.True(t, ok)
 	require.NotNil(t, next)
@@ -117,20 +131,26 @@ func TestGatewayClientDatelineNormalization_HelperNoRewrite(t *testing.T) {
 	require.NotContains(t, string(next), "2026/07/01")
 	require.NotContains(t, string(next), "Today’s date is")
 
-	// SetupToken 提供商 + 带指纹请求体：完成改写，ok=true。
+	// Setup Token requests also normalize the dateline.
 	next, ok = svc.normalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeSetupToken}}, dirty)
 	require.True(t, ok)
 	require.Contains(t, string(next), "Today's date is 2026-07-01.")
 
-	// 关闭开关：即使 OAuth 提供商也不改写。
+	// The disabled setting overrides provider eligibility.
 	repo.values[gateway.SettingKeyEnableClientDatelineNormalization] = "false"
+	// Invalidate the settings snapshot after changing the fixture value so
+	// the next eligibility check reads the updated flag during the same
+	// test.
 	svc.dependencies.Settings.InvalidateForwarding()
 	next, ok = svc.normalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}, dirty)
 	require.False(t, ok)
 	require.Nil(t, next)
 }
 
-// TestGatewayClientDatelineNormalization_LeavesUserProseUntouched 检查日期规范化后 <system-reminder> 外的用户文本逐字节保持一致。
+// TestGatewayClientDatelineNormalization_LeavesUserProseUntouched uses
+// fingerprint-like date prose outside a system-reminder block on an eligible
+// provider. Both runtime and protocol normalizer report unchanged bytes and no
+// detected datelines.
 func TestGatewayClientDatelineNormalization_LeavesUserProseUntouched(t *testing.T) {
 	repo := &betaSettingsFixture{values: map[string]string{
 		gateway.SettingKeyEnableClientDatelineNormalization: "true",
@@ -138,13 +158,15 @@ func TestGatewayClientDatelineNormalization_LeavesUserProseUntouched(t *testing.
 	svc := NewRuntime(Dependencies{Settings: newBetaRuntime(repo.values)}, Options{})
 	ctx := context.Background()
 
-	// 用户文本如果只是在 <system-reminder> 外碰巧包含类似指纹的句子，必须逐字节保留。
+	// User prose resembling a fingerprint remains unchanged outside
+	// system-reminder blocks.
 	body := []byte(`{"messages":[{"role":"user","content":"I wrote: Today’s date is 2026/07/01. What do you think?"}]}`)
 	next, ok := svc.normalizeDateline(ctx, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformAnthropic, Type: capability.ProviderTypeOAuth}}, body)
 	require.False(t, ok, "must not rewrite user prose outside <system-reminder>")
 	require.Nil(t, next)
 
-	// 日期转换仅扫描 <system-reminder> 内的内容。
+	// The underlying normalizer also limits its scan to system-reminder
+	// blocks.
 	out, hits, changed := claude.NormalizeDateline(body)
 	require.False(t, changed)
 	require.Empty(t, hits)

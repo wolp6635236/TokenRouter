@@ -9,7 +9,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestRoutePlanCandidateRecalculationAndIsolation 验证每个候选独立验证启用集合，旧计划不受之后的配置或返回切片修改影响。
+// Retained group plans isolate client policy from later administrative edits
+// while provider attempts use current snapshots. These cases check copied
+// protocol settings and fixed model-stage values, then compare an attempt's
+// one-hop mapping with a freshly captured provider mapping.
+
+// TestRoutePlanCandidateRecalculationAndIsolation mutates group conversion
+// settings and a returned admission slice after planning. The existing plan
+// must retain its route, while a newly built plan observes the updated
+// conversion target.
 func TestRoutePlanCandidateRecalculationAndIsolation(t *testing.T) {
 	group := &Group{
 		ID: 7, SchedulerType: GroupSchedulerTypeAdvanced,
@@ -40,7 +48,10 @@ func TestRoutePlanCandidateRecalculationAndIsolation(t *testing.T) {
 	require.Equal(t, []capability.ProtocolID{capability.ProtocolAnthropicMessages}, plan.AllowedProtocols())
 }
 
-// TestRoutePlanModelChainAndAttemptSnapshots 验证模型链的客户端/Key/分组模型事实固定，但提供商映射在每次匹配时读取独立快照。
+// TestRoutePlanModelChainAndAttemptSnapshots changes input group IDs and model
+// mappings after snapshot creation. Retained plan identities must stay fixed,
+// and each candidate copy must use one provider mapping from its supplied
+// snapshot.
 func TestRoutePlanModelChainAndAttemptSnapshots(t *testing.T) {
 	groupID := int64(7)
 	mapping := GroupMappingResult{MappedModel: "group-model", PricingConfigID: 9, Mapped: true, BillingModelSource: "requested", RestrictModels: true, RestrictionModelSource: BillingModelSourceUpstream, ClientModel: "prefix/client-model", APIKeyRedirected: true}

@@ -20,20 +20,72 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// PassthroughOptions 配置响应透传的观测、HTTP 输出和心跳。
+// response_passthrough.go forwards passthrough Responses output while
+// repairing lifecycle events, terminal output, and client identities.
+// Passthrough Responses streams keep provider framing while normalizing
+// lifecycle payloads, tool identity, model spelling, and reconstructed terminal
+// output. Preamble lines wait until content or a selected failure starts
+// delivery. Headers are copied at entry, and the gateway heartbeat binding can
+// commit them before content; client-output policy separately excludes
+// configured heartbeat bytes from its recovery decision.
+//
+// NativeOpenAI selects this reader's bare-error terminal mode. Error evidence
+// is observed before client trimming, and a missing response.failed can be
+// synthesized after a retained bare error. Ordinary content takeover stops
+// active heartbeat writes before the loop writes pending lines; synthetic EOF
+// and deferred flush paths still precede deferred heartbeat cleanup. Returned
+// streaming results contain usage/timing/ID/image observations, while the
+// shared delivery/commit flags remain their zero values.
+
+// PassthroughOptions binds passthrough readers to model observation, output,
+// keepalive, and failure policy.
 type PassthroughOptions struct {
-	// ObserveModel 在恢复响应模型前读取上游模型声明。
+	// ObserveModel optionally sees streaming upstream payload/model evidence before
+	// lifecycle normalization and client model replacement; buffered readers use
+	// their NonStream observation callbacks.
 	ObserveModel func([]byte, string)
+	// StreamOptions supplies selected observation/restoration/failure hooks;
+	// passthrough uses NativeOpenAI for terminal mode and retains its separate
+	// heartbeat mechanism instead of the standard reader's timeout/staging execution.
 	StreamOptions
-	NonStream                    NonStreamOptions
-	Headers                      func(http.Header, http.Header)
-	StartKeepalive               func(http.Header) func()
-	MissingUsage                 func(*http.Response, *wire.ForwardUsage, string, bool)
-	MissingTerminal              func(string)
+	// NonStream supplies buffered body reading, terminal failure, restoration, and
+	// Compact delivery policy; the passthrough reader keeps the executor's
+	// response-body ownership.
+	NonStream NonStreamOptions
+	// Headers copies approved provider headers into output at entry; the gateway
+	// heartbeat binding copies them to its live writer before a beat can commit.
+	Headers func(http.Header, http.Header)
+	// StartKeepalive returns a usable idempotent stop callback, including when
+	// disabled; gateway stopping waits for an active beat write before ordinary
+	// content takeover.
+	StartKeepalive func(http.Header) func()
+	// MissingUsage observes retained usage with response, terminal label, and
+	// disconnect evidence on normal return; early failed paths return before this
+	// callback.
+	MissingUsage func(*http.Response, *wire.ForwardUsage, string, bool)
+	// MissingTerminal records clean EOF without terminal evidence when ctx is
+	// active and client delivery is connected; the reader then applies
+	// output-specific failure policy.
+	MissingTerminal func(string)
+	// PassthroughFailoverWithModel proposes pre-output recovery using upstream
+	// request ID, failure bytes/message, and mapped model; caller policy decides
+	// the actual retry.
 	PassthroughFailoverWithModel func(string, []byte, string, string) error
 }
 
-// ReadPassthroughStreaming 透传 SSE，并记录用量和终态。
+// ReadPassthroughStreaming normalizes and forwards Responses SSE while
+// observing usage and completed images. Supply a nonnil ctx, response,
+// output context, and callbacks used by this reader; the executor owns body
+// closure. NativeOpenAI selects bare-error terminal handling, and configured
+// standard-reader timeout/staging fields are not executed here.
+//
+// Raw model observation precedes lifecycle normalization and client
+// restoration. Preamble remains buffered until output policy permits delivery,
+// and ordinary content takeover stops the heartbeat callback before writes. The
+// result populates usage, ResponseID, and image fields, leaving
+// other StreamingResult flags zero. Synthetic EOF writes and the final deferred
+// flush occur before deferred heartbeat cleanup; callers use the request
+// writer's own observations for commitment and output state.
 func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstream.OutputContext, options PassthroughOptions, startTime time.Time, originalModel, mappedModel string) (*StreamingResult, error) {
 	options.Headers(c.Writer.Header(), resp.Header)
 
@@ -53,8 +105,7 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 
 	usage := &wire.ForwardUsage{}
 	imageCounter := wire.NewOpenAIImageOutputCounter()
-	var firstTokenMs *int
-	ttftMode := options.TTFTMode()
+
 	responseID := ""
 	clientDisconnected := false
 	sawDone := false
@@ -66,6 +117,8 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 	semanticOutputSeen := false
 	capacityFailoverSuppressedLogged := false
 	failedMessage := ""
+	// Failed-return warning classification receives a nil body in this reader;
+	// live failure processing observes its actual payload and retains the message separately.
 	var failedPayload []byte
 	clientOutputStarted := false
 	codexFailureTerminal := options.NativeOpenAI
@@ -75,22 +128,19 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 	var bareErrorPayload []byte
 	bareErrorProviderSideEffectsPending := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
-	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
+	// Hold preamble lines before content, so caller output policy can classify
+	// empty terminal failure while semantic delivery remains eligible for request recovery.
 	pendingLines := make([]string, 0, 8)
 
-	// pendingLines 在首段内容前缓冲事件，首次写入前 HTTP 响应头也处于待提交状态。
-	// 推理等待期间发送 SSE 注释心跳，提交响应头并刷新中间代理的空闲超时。
-	// 某生产部署在 12 小时内有 44 个 /v1/responses 请求等待 600~900s 才产生输出，
-	// 每个请求生成 3~5 万 output token，均被 nginx 的 proxy_read_timeout(600s) 中断为 504。
-	// proxy_read_timeout 衡量两次读取的间隔，心跳可维持这些长推理请求的连接。
-	// pendingLines 和提供商请求头在内容开始时交付，心跳字节由
-	// OpenAICompactKeepaliveAdjustedWrittenSize 排除（#3887），首输出前仍可切换提供商。
-	// 此处上游已返回 text/event-stream，使用普通 SSE 心跳；Compact 心跳还要求 compact 标记。
+	// Prepared headers are already copied above. The gateway heartbeat binding
+	// can commit them during a reasoning wait and excludes its recorded comment
+	// bytes from client-output recovery policy; preamble body lines remain here.
 	stopKeepalive := options.StartKeepalive(c.Writer.Header())
-	// 任何返回路径都要停拍。Stop 与心跳 goroutine 之间有互斥锁，
-	// 返回后不会再有字节写出。
+	// Deferred cleanup stops active heartbeat writes, but executes after the
+	// later-registered pending flush; ordinary content takeover calls stop sooner below.
 	defer stopKeepalive()
-	// flushPending 标记尚未遇到 SSE 空行的写入。函数退出时刷新残留数据，已断连时跳过。
+	// Retain the pending flush decision across lines until an event separator
+	// or return; disconnected sinks skip that delivery while usage observations remain available.
 	flushPending := false
 	pendingSSEEventType := ""
 	flushPendingOutput := func() {
@@ -98,7 +148,6 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 			return
 		}
 		flusher.Flush()
-		options.MarkTime(StreamTimeFlush)
 		flushPending = false
 	}
 	defer flushPendingOutput()
@@ -113,6 +162,8 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 		pendingLines = pendingLines[:0]
 		return true
 	}
+	// A retained bare error can end without response.failed; settle pending
+	// provider effects and emit a failed terminal before deferred heartbeat cleanup runs.
 	ensureResponseFailedTerminal := func() {
 		if !sawBareError || sawResponseFailed || failureDelivered {
 			return
@@ -146,10 +197,11 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 	streamDoneItems := bridge.NewResponsesStreamOutputItems()
 	streamImageOutputs := make([]json.RawMessage, 0, 1)
 	streamSeenImages := make(map[string]struct{})
+	// These snapshots populate observation fields only; caller writer/policy
+	// state supplies commitment because the shared StreamingResult flags stay zero here.
 	resultWithUsage := func() *StreamingResult {
 		return &StreamingResult{
 			Usage:            usage,
-			FirstTokenMs:     firstTokenMs,
 			ResponseID:       responseID,
 			ImageCount:       imageCounter.Count(),
 			ImageOutputSizes: imageCounter.Sizes(),
@@ -165,7 +217,9 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 			eventType = strings.TrimSpace(eventType)
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
 			if wire.IsResponseLifecycleEvent(eventType) {
-				// 生命周期事件头与 data 一起下发，避免留下已过滤终态的孤立 event 行。
+				// Retain lifecycle headers with their data until normalization decides
+				// type and duplication, preventing an orphaned header when its terminal
+				// payload is suppressed.
 				pendingLifecycleHeader = line
 				continue
 			}
@@ -173,7 +227,6 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 		lineStartsClientOutput := false
 		forceFlushFailedEvent := false
 		if data, ok := wire.ExtractSSEDataLine(line); ok {
-			options.MarkTime(StreamTimeData)
 			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
 			rawEventType := wire.EffectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
@@ -218,7 +271,8 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 				}
 			}
 			eventType := wire.EffectiveOpenAISSEEventType(dataBytes, rawEventType)
-			// 按规范化后的类型重新裁决，清除旧 done 事件头留下的抑制标记。
+			// Lifecycle normalization can turn done into failed; recompute suppression
+			// using that terminal identity so a stale event-line decision cannot hide the failure.
 			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
 			if !capacityFailoverSuppressedLogged && options.NativeOpenAI &&
 				(eventType == "error" || eventType == "response.failed") &&
@@ -241,9 +295,8 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 				if failedMessage == "" {
 					failedMessage = "Upstream response failed"
 				}
-				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
-				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
-				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
+				// Observe terminal usage before policy recording and client trimming,
+				// retaining consumed-token evidence even when the failure copy later loses its usage field.
 				wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage)
 				if hit, code, msg := DetectOpenAICyberPolicy(dataBytes); hit {
 					cyberHit = true
@@ -264,8 +317,8 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 				}
 				if outputStarted && !cyberHit {
 					if codexFailureTerminal && eventType == "error" {
-						// Wait for the authoritative response.failed before mutating
-						// provider health; EOF synthesis applies the pending effect.
+						// Retain provider effects until the authoritative failed terminal
+						// arrives, or apply them during bare-error EOF synthesis if no such terminal follows.
 						bareErrorProviderSideEffectsPending = true
 					} else {
 						options.TerminalSideEffects(dataBytes, failedMessage, resp.Header, mappedModel)
@@ -287,8 +340,9 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 					}
 					if !cyberHit && !sawBareError {
 						if status, errType, errMsg, matched := options.ErrorRule(dataBytes, failedMessage); matched {
-							// 命中透传规则也要记录 ops 上游错误事件（对齐 CC/Messages 与
-							// antigravity 先例），否则透传命中的 failed 在监控中不可见。
+							// A matched rule commits its JSON client error after recording
+							// upstream evidence, keeping observation available despite customized
+							// status/type/message presentation.
 							options.RecordError(upstreamRequestID, "http_error", dataBytes, failedMessage)
 							options.MarkCommitted()
 							c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -347,19 +401,13 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 			if lineStartsClientOutput && trimmedData != "[DONE]" && !wire.OpenAIStreamEventTypeIsTerminal(eventType) {
 				semanticOutputSeen = true
 			}
-			// 透传流在写出前也要识别空 completed，确保仍可安全切换提供商。
+			// This emptiness check applies to passthrough providers generally, before
+			// content commitment, so a lifecycle-only empty completion cannot settle as
+			// an ordinary success.
 			if (eventType == "response.completed" || eventType == "response.done") &&
 				!sawFailedEvent && !semanticOutputSeen && !clientOutputStarted &&
 				wire.OpenAIResponsesCompletedEventIsEmpty(dataBytes, usage) {
 				return resultWithUsage(), options.EmptyCompleted(upstreamRequestID)
-			}
-			startsVisibleOutput := wire.StreamDataStartsVisibleOutput(trimmedData, eventType)
-			if startsVisibleOutput {
-				options.MarkTime(StreamTimeVisible)
-			}
-			if firstTokenMs == nil && options.OpenAIStreamDataStartsTTFT(trimmedData, eventType, forceFlushFailedEvent, ttftMode) {
-				ms := int(time.Since(startTime).Milliseconds())
-				firstTokenMs = &ms
 			}
 			wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage)
 			if pendingLifecycleHeader != "" {
@@ -387,8 +435,9 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 				pendingLines = append(pendingLines, line)
 				continue
 			}
-			// 内容输出开始时停止心跳。停止操作可重复调用，并等待心跳 goroutine 完成写入，
-			// 此后 ResponseWriter 由本循环独占。
+			// Stop the controller and wait for an active beat before ordinary
+			// content writes take over; this callback is repeatable and does not join
+			// the worker goroutine.
 			if !clientOutputStarted {
 				stopKeepalive()
 			}
@@ -415,6 +464,9 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 	}
 	ensureResponseFailedTerminal()
 	if err := documentScanner.Err(); err != nil {
+		// Terminal success takes precedence over a later scan failure, retaining
+		// observed usage and clearing disconnect policy instead of reclassifying the
+		// completed response.
 		if (sawDone || sawTerminalEvent) && !sawFailedEvent {
 			options.ClearDisconnect()
 			return resultWithUsage(), nil
@@ -442,7 +494,7 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete after disconnect: %w", err)
 		}
 		options.RecordDisconnect(err, upstreamRequestID)
-		options.Logf("[OpenAI passthrough] 流读取异常中断: provider=%d request_id=%s err=%v",
+		options.Logf("[INFO] [OpenAI passthrough] Stream read interrupted by an error: provider=%d request_id=%s err=%v",
 			options.ProviderID,
 			upstreamRequestID,
 			err,
@@ -470,7 +522,19 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 	return resultWithUsage(), nil
 }
 
-// ReadPassthroughNonStreaming 读取并透传非流式响应。
+// ReadPassthroughNonStreaming reads a body through NonStream limit policy,
+// observes usage, and forwards the restored representation with the upstream
+// status. Explicit event-stream content type selects SSEAsJSON; other bodies
+// first use JSON usage and then an SSE usage alternative. The executor retains
+// body ownership.
+//
+// Model replacement precedes namespace, reserved-name, and OpenAI client-tool
+// restoration in that order. JSON header preparation precedes these required
+// callbacks. A Compact bridge can consume delivery; otherwise OutputContext.Data
+// writes with upstream content type or the JSON default. The result returns
+// usage, response ID, and image observations while shared Served and SearchCount
+// fields remain zero. The ctx parameter is retained by the interface but unused
+// here.
 func ReadPassthroughNonStreaming(ctx context.Context, resp *http.Response, sink upstream.OutputSink, options PassthroughOptions, originalModel, mappedModel string) (*NonStreamingResult, error) {
 	body, err := options.NonStream.ReadBody(resp.Body)
 	if err != nil {
@@ -491,6 +555,8 @@ func ReadPassthroughNonStreaming(ctx context.Context, resp *http.Response, sink 
 			usageParsed = true
 		}
 	}
+	// A non-JSON usage representation can still accompany the buffered body;
+	// retain SSE-observed counters when ordinary JSON paths did not supply a record.
 	if !usageParsed {
 		usage = wire.ParseSSEUsageFromBody(string(body))
 	}
@@ -506,14 +572,9 @@ func ReadPassthroughNonStreaming(ctx context.Context, resp *http.Response, sink 
 	if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 		body = wire.ReplaceModelInResponseBody(body, mappedModel, originalModel)
 	}
-	body, err = options.RestoreNamespace(body)
+	body, err = restoreBufferedPassthroughTools(body, options)
 	if err != nil {
-		return nil, fmt.Errorf("restore OpenAI passthrough namespace response: %w", err)
-	}
-	body = options.NonStream.RestoreToolNames(body)
-	body, err = options.NonStream.RestoreOpenAITools(body)
-	if err != nil {
-		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
+		return nil, err
 	}
 	if !options.NonStream.WriteCompactBridge(resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
@@ -526,7 +587,19 @@ func ReadPassthroughNonStreaming(ctx context.Context, resp *http.Response, sink 
 	}, nil
 }
 
-// ReadPassthroughSSEAsJSON 收集 SSE 终态并输出 JSON 响应。
+// ReadPassthroughSSEAsJSON converts buffered SSE to terminal JSON when a final
+// response is available. Failed/bare-error terminals run Compact recovery,
+// terminal failover, then protocol-error policy before output. Callers provide
+// the already read body and retain executor response ownership.
+//
+// Empty final output can be reconstructed from deltas; failed optional
+// reconstruction keeps the terminal bytes. Compaction supplementation and tool
+// restoration precede header preparation and delivery. Final JSON requires the
+// namespace, reserved-name, and OpenAI client-tool restoration callbacks.
+// Without final JSON, the body stays SSE with compatible model replacement and
+// its content type. Image counts/sizes use the original SSE observation, while
+// the returned response ID follows delivered body extraction. Served and
+// SearchCount remain zero in this result.
 func ReadPassthroughSSEAsJSON(resp *http.Response, sink upstream.OutputSink, options PassthroughOptions, body []byte, originalModel, mappedModel string) (*NonStreamingResult, error) {
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := wire.ExtractOpenAISSETerminalEvent(bodyText)
@@ -551,6 +624,8 @@ func ReadPassthroughSSEAsJSON(resp *http.Response, sink upstream.OutputSink, opt
 			*usage = parsedUsage
 		}
 
+		// An empty terminal output can have earlier deltas; reconstruction is
+		// optional, and a failed raw output patch leaves the selected terminal metadata intact.
 		if len(gjson.GetBytes(finalResponse, "output").Array()) == 0 {
 			if outputJSON, reconstructed := bridge.ReconstructResponseOutputFromSSE(bodyText); reconstructed {
 				if patched, err := sjson.SetRawBytes(finalResponse, "output", outputJSON); err == nil {
@@ -565,20 +640,17 @@ func ReadPassthroughSSEAsJSON(resp *http.Response, sink upstream.OutputSink, opt
 		}
 
 		body = options.NonStream.CorrectToolCalls(body)
-		restoredBody, restoreErr := options.RestoreNamespace(body)
+		restoredBody, restoreErr := restoreBufferedPassthroughTools(body, options)
 		if restoreErr != nil {
-			return nil, fmt.Errorf("restore OpenAI passthrough namespace response: %w", restoreErr)
+			return nil, restoreErr
 		}
-		restoredBody = options.NonStream.RestoreToolNames(restoredBody)
 		body = restoredBody
-		body, restoreErr = options.NonStream.RestoreOpenAITools(body)
-		if restoreErr != nil {
-			return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", restoreErr)
-		}
 	} else {
 		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 			bodyText = wire.ReplaceModelInSSEBody(bodyText, mappedModel, originalModel)
 		}
+		// Missing final JSON retains the framed SSE response, so its original
+		// content type remains meaningful for clients even though this is buffered handling.
 		body = []byte(bodyText)
 	}
 
@@ -603,4 +675,23 @@ func ReadPassthroughSSEAsJSON(resp *http.Response, sink upstream.OutputSink, opt
 		ImageCount:       wire.CountOpenAIImageOutputsFromSSEBody(bodyText),
 		ImageOutputSizes: wire.CollectOpenAIImageOutputSizesFromSSEBody(bodyText),
 	}, nil
+}
+
+// restoreBufferedPassthroughTools restores tool identities in one passthrough
+// JSON body. Callers supply all three callbacks; each receives its predecessor's
+// returned slice, including nil or empty results, and the first error stops
+// restoration with response-specific context.
+func restoreBufferedPassthroughTools(body []byte, options PassthroughOptions) ([]byte, error) {
+	// Namespace restoration precedes reserved-name restoration and client-tool
+	// schema restoration, so each callback consumes the bytes produced by its predecessor.
+	body, err := options.RestoreNamespace(body)
+	if err != nil {
+		return nil, fmt.Errorf("restore OpenAI passthrough namespace response: %w", err)
+	}
+	body = options.NonStream.RestoreToolNames(body)
+	body, err = options.NonStream.RestoreOpenAITools(body)
+	if err != nil {
+		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
+	}
+	return body, nil
 }

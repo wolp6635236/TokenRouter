@@ -24,12 +24,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
+// TestIsPromptTooLongError compares nested and top-level prompt-length messages
+// with another error message. The classifier recognizes the two prompt-length
+// fixtures and rejects the unrelated message input.
 func TestIsPromptTooLongError(t *testing.T) {
 	require.True(t, antigravity.IsPromptTooLongError([]byte(`{"error":{"message":"Prompt is too long"}}`)))
 	require.True(t, antigravity.IsPromptTooLongError([]byte(`{"message":"Prompt is too long"}`)))
 	require.False(t, antigravity.IsPromptTooLongError([]byte(`{"error":{"message":"other"}}`)))
 }
 
+// TestAntigravityGatewayService_Forward_PromptTooLong returns a prompt-length
+// status-400 error during Claude forwarding. The result is nil, typed error
+// retains body/status/request identity, and one prompt_too_long event appears
+// in diagnostics.
 func TestAntigravityGatewayService_Forward_PromptTooLong(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -106,9 +113,10 @@ func TestAntigravityGatewayService_Forward_PromptTooLong(t *testing.T) {
 	require.Equal(t, "prompt_too_long", events[0].Kind)
 }
 
-// TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover
-// 验证：当提供商存在模型限流且剩余时间 >= antigravityRateLimitThreshold 时，
-// Forward 方法应返回 UpstreamFailoverError，触发 Handler 切换提供商。
+// TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover supplies
+// Claude input with an existing long model cooldown. The returned gateway
+// failure is status 503 and leaves forced cache billing false for this
+// nonsticky attempt.
 func TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -129,14 +137,14 @@ func TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover(t *tes
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	c.Request = req
 
-	// 不需要真正调用上游，因为预检查会直接返回切换信号
+	// The precheck requests a provider switch before transport.
 	svc := newAntigravityFixture(antigravityDependencies{
 		tokenProvider: newAntigravityTokenSourceForTest(nil),
 
 		httpUpstream: &httpUpstreamStub{resp: nil, err: nil},
 	})
 
-	// 设置模型限流：剩余时间 30 秒（> antigravityRateLimitThreshold 7s）
+	// The 30-second cooldown exceeds the seven-second retry threshold.
 	futureResetAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -172,16 +180,17 @@ func TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover(t *tes
 	require.Nil(t, result, "Forward should not return result when model rate limited")
 	require.NotNil(t, err, "Forward should return error")
 
-	// 检查错误类型是否为 UpstreamFailoverError。
 	var failoverErr *forwardcore.UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr, "error should be UpstreamFailoverError to trigger provider switch")
 	require.Equal(t, http.StatusServiceUnavailable, failoverErr.StatusCode)
-	// 非粘性会话请求，ForceCacheBilling 应为 false
+	// A non-sticky switch does not force cache billing.
 	require.False(t, failoverErr.ForceCacheBilling, "ForceCacheBilling should be false for non-sticky session")
 }
 
-// TestAntigravityGatewayService_Forward_StickySessionForceCacheBilling
-// 验证：粘性会话切换时，UpstreamFailoverError.ForceCacheBilling 应为 true。
+// TestAntigravityGatewayService_Forward_StickySessionForceCacheBilling supplies
+// Claude input with a long model cooldown and sticky selection. The gateway
+// status-503 failover retains forced cache billing for the subsequent provider
+// choice.
 func TestAntigravityGatewayService_Forward_StickySessionForceCacheBilling(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -201,7 +210,7 @@ func TestAntigravityGatewayService_Forward_StickySessionForceCacheBilling(t *tes
 		httpUpstream: &httpUpstreamStub{resp: nil, err: nil},
 	})
 
-	// 设置模型限流：剩余时间 30 秒（> antigravityRateLimitThreshold 7s）
+	// The 30-second cooldown exceeds the seven-second retry threshold.
 	futureResetAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -233,20 +242,22 @@ func TestAntigravityGatewayService_Forward_StickySessionForceCacheBilling(t *tes
 		},
 	}
 
-	// 传入 isStickySession = true
+	// Mark the request as sticky.
 	result, err := svc.Forward(context.Background(), gatewayhttp.NewGoogleBoundary(c, svc.Options, true), provider, body, true)
 	require.Nil(t, result, "Forward should not return result when model rate limited")
 	require.NotNil(t, err, "Forward should return error")
 
-	// 核心验证：粘性会话切换时，ForceCacheBilling 应为 true
+	// A sticky-provider switch forces cache billing.
 	var failoverErr *forwardcore.UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr, "error should be UpstreamFailoverError to trigger provider switch")
 	require.Equal(t, http.StatusServiceUnavailable, failoverErr.StatusCode)
 	require.True(t, failoverErr.ForceCacheBilling, "ForceCacheBilling should be true for sticky session switch")
 }
 
-// TestAntigravityGatewayService_Forward_BillsWithMappedModel
-// 验证：Antigravity Claude 转发返回的计费模型使用映射后的模型。
+// TestAntigravityGatewayService_Forward_BillsWithMappedModel maps a Claude
+// request onto another provider model before successful forwarding. Completion
+// metadata retains the original client model and reports the selected mapped
+// UpstreamModel.
 func TestAntigravityGatewayService_Forward_BillsWithMappedModel(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)

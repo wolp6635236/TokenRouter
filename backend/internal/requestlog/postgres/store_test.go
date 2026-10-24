@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -11,14 +12,26 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/requestlog"
 )
 
-// TestSaveClassifiesInvalidRecords 数据错误可丢弃，连接故障和数据库约束错误保留重试。
+// SQL-mock cases check permanent snapshot classification and the arguments
+// shared by sequential detail queries. They isolate transaction rollback,
+// unencodable timestamps, administrator versus ordinary lookup, and exact-local
+// flags without executing PostgreSQL's lookup function or planner.
+
+// TestSaveClassifiesInvalidRecords injects wrapped PostgreSQL SQLSTATEs through
+// mocked upsert execution. Class-22 failures retain their cause and add
+// ErrInvalidRecord; other classes remain retryable, with rollback expectations
+// satisfied.
 func TestSaveClassifiesInvalidRecords(t *testing.T) {
 	for _, test := range []struct {
-		code    string
-		invalid bool
+		// code selects the wrapped SQLSTATE and invalid selects whether Save must add
+		// ErrInvalidRecord. The cases distinguish data exceptions from connection,
+		// constraint, and serialization outcomes.
+		code    string // injected PostgreSQL error code
+		invalid bool   // expected permanent-content classification
 	}{
 		{"22P05", true},
 		{"22001", true},
@@ -29,6 +42,9 @@ func TestSaveClassifiesInvalidRecords(t *testing.T) {
 		t.Run(test.code, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
+			// Close the fixture database after checking expected SQL operations; the
+			// deferred close result is suppressed and does not change asserted
+			// transaction or lookup outcomes.
 			defer func() { _ = db.Close() }()
 			failure := fmt.Errorf("write: %w", &pq.Error{Code: pq.ErrorCode(test.code)})
 			mock.ExpectBegin()
@@ -46,10 +62,15 @@ func TestSaveClassifiesInvalidRecords(t *testing.T) {
 	}
 }
 
-// TestSaveRejectsUnencodableRecord 超出 JSON 时间范围的快照可以被队列识别为无效。
+// TestSaveRejectsUnencodableRecord passes a timestamp beyond JSON's supported
+// year range into a mocked transaction. Save reports ErrInvalidRecord and rolls
+// back before an upsert execution is expected.
 func TestSaveRejectsUnencodableRecord(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close the mock pool after the scenario finishes, suppressing its deferred
+	// error while explicit SQL expectations and returned error assertions
+	// determine the result.
 	defer func() { _ = db.Close() }()
 	mock.ExpectBegin()
 	mock.ExpectPrepare("INSERT INTO request_records")
@@ -59,12 +80,18 @@ func TestSaveRejectsUnencodableRecord(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestFindResolvesIDsOnce 检查同一详情查询共用候选 ID，并保留各来源的权限参数。
+// TestFindResolvesIDsOnce returns a fixed candidate array for
+// administrator/user and exact/external cases. Every subsequent mocked source
+// receives the same IDs and its expected flags, with audits queried for
+// administrators.
 func TestFindResolvesIDsOnce(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		admin bool
-		exact bool
+		// name labels the combination of admin and exact used by each lookup
+		// expectation. Admin selects audit attachment, and exact disables
+		// source-specific external-ID compatibility matching.
+		name  string // lookup policy scenario label
+		admin bool   // trusted administrator access flag
+		exact bool   // resolved local-match lookup flag
 	}{
 		{"user external", false, false},
 		{"admin external", true, false},
@@ -74,6 +101,9 @@ func TestFindResolvesIDsOnce(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
+			// Close the fixture database after checking expected SQL operations; the
+			// deferred close result is suppressed and does not change asserted
+			// transaction or lookup outcomes.
 			defer func() { _ = db.Close() }()
 			ids := pq.Array([]string{"local-request", "client:legacy"})
 			mock.ExpectQuery(`SELECT ARRAY\(SELECT id FROM request_lookup_ids\(\$1\)\)`).
@@ -96,13 +126,58 @@ func TestFindResolvesIDsOnce(t *testing.T) {
 	}
 }
 
-// TestFindStopsWhenLookupIsCanceled ID 解析被取消时结束查询，后续来源不继续读库。
+// TestFindStopsWhenLookupIsCanceled makes the initial candidate-resolution
+// query return context cancellation. Find returns that cause and satisfies the
+// mock with no subsequent source query expected.
 func TestFindStopsWhenLookupIsCanceled(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close the mock pool after the scenario finishes, suppressing its deferred
+	// error while explicit SQL expectations and returned error assertions
+	// determine the result.
 	defer func() { _ = db.Close() }()
 	mock.ExpectQuery(`SELECT ARRAY`).WithArgs("id").WillReturnError(context.Canceled)
 	_, err = NewStore(db).Find(t.Context(), "id", 42, false)
 	require.ErrorIs(t, err, context.Canceled)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestFindUsagePerformanceUsesOneBatch reads two logical requests through one usage
+// query. Each row keeps its own attempt, selected latency and throughput while the
+// enclosing request lifecycle remains unchanged and receives no performance copy.
+func TestFindUsagePerformanceUsesOneBatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { mock.ExpectClose(); require.NoError(t, db.Close()) }()
+	p := timing.NewPerformance(timing.FirstEvent, 100)
+	p.Stream, p.Complete, p.UsageComplete = true, true, true
+	p.Values["upstream_first_event_ms"] = 150
+	p.Values["upstream_first_output_ms"] = 300
+	p.Values["upstream_last_output_ms"] = 800
+	p.Values["upstream_output_event_count"] = 2
+	p.Values["attempt_number"] = 2
+	first, err := json.Marshal(p)
+	require.NoError(t, err)
+	p.Mode = timing.FirstOutput
+	p.Values["attempt_number"] = 1
+	second, err := json.Marshal(p)
+	require.NoError(t, err)
+	ids := []string{"first", "second"}
+	rows := sqlmock.NewRows([]string{"id", "request_id", "created_at", "user_id", "team_id", "api_key_id", "model", "input_tokens", "output_tokens", "actual_cost", "duration_ms", "timings"}).
+		AddRow(1, "first", time.Now(), 101, 0, 201, "model", 20, 10, 0.5, 1000, first).
+		AddRow(2, "second", time.Now(), 101, 0, 201, "model", 20, 10, 0.5, 1000, second)
+	mock.ExpectQuery("SELECT id,COALESCE\\(request_id").WithArgs(pq.Array(ids), int64(101), true, "first", true).WillReturnRows(rows)
+	result := []requestlog.Detail{
+		{RequestRecord: telemetry.RequestRecord{RequestID: "first", DurationMs: 3000}},
+		{RequestRecord: telemetry.RequestRecord{RequestID: "second", DurationMs: 4000}},
+	}
+	require.NoError(t, NewStore(db).findUsage(t.Context(), ids, "first", 101, true, true, &result, map[string]int{"first": 0, "second": 1}))
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.Equal(t, 50, *result[0].Usage[0].TTFTMs)
+	require.Equal(t, 200, *result[1].Usage[0].TTFTMs)
+	require.Equal(t, 20.0, *result[0].Usage[0].TPS)
+	require.Equal(t, int64(2), result[0].Usage[0].Timings.Values["attempt_number"])
+	require.Equal(t, int64(1000), *result[0].Usage[0].DurationMs)
+	require.Equal(t, int64(3000), result[0].DurationMs)
+	require.Nil(t, result[0].FailureTimings)
 }

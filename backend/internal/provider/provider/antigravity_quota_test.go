@@ -18,9 +18,20 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
-// 固定本地供应商响应，使用相同缓存键检查凭据变化后的查询结果。
-type agUsageIdentityTransport struct{ calls atomic.Int32 }
+// Antigravity quota display depends on bounded model responses, forbidden-error
+// classification and cache identity. These cases exercise antigravity_quota.go
+// options and upstream parsers, then change access credentials under one provider
+// ID to check that cached usage does not cross identities.
 
+// agUsageIdentityTransport counts quota exchanges and returns
+// endpoint-specific fixture JSON.
+type agUsageIdentityTransport struct {
+	calls atomic.Int32 /* concurrent-safe request count */
+}
+
+// TestFetchQuotaUsesConfiguredModelsListBodyLimit serves a models response beyond
+// the configured eight-byte allowance. It checks that the bound quota options
+// propagate the size error from the upstream reader.
 func TestFetchQuotaUsesConfiguredModelsListBodyLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -30,6 +41,9 @@ func TestFetchQuotaUsesConfiguredModelsListBodyLimit(t *testing.T) {
 
 	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
 	oldAvailability := antigravity.DefaultURLAvailability
+	// Restore both process-wide endpoint selectors after the local server case;
+	// subsequent quota tests depend on their original URL ordering and
+	// availability state.
 	t.Cleanup(func() {
 		antigravity.BaseURLs = oldBaseURLs
 		antigravity.DefaultURLAvailability = oldAvailability
@@ -49,15 +63,17 @@ func TestFetchQuotaUsesConfiguredModelsListBodyLimit(t *testing.T) {
 	require.ErrorContains(t, err, "response exceeds 8 bytes")
 }
 
+// TestFetchQuota_ForbiddenReturnsIsForbidden constructs the typed forbidden error
+// used by quota parsing. It checks errors.As, status and body retention together
+// with a status-bearing diagnostic string.
 func TestFetchQuota_ForbiddenReturnsIsForbidden(t *testing.T) {
-	// 模拟 FetchQuota 遇到 403 时的行为：
-	// FetchAvailableModels 返回 ForbiddenError → FetchQuota 应返回 is_forbidden=true
+	// Check the typed 403 error that quota queries use to classify forbidden
+	// responses.
 	forbiddenErr := &antigravity.ForbiddenError{
 		StatusCode: 403,
 		Body:       "Access denied",
 	}
 
-	// 验证 ForbiddenError 满足 errors.As
 	var target *antigravity.ForbiddenError
 	require.True(t, errors.As(forbiddenErr, &target))
 	require.Equal(t, 403, target.StatusCode)
@@ -65,11 +81,14 @@ func TestFetchQuota_ForbiddenReturnsIsForbidden(t *testing.T) {
 	require.Contains(t, forbiddenErr.Error(), "403")
 }
 
+// TestClassifyForbiddenType supplies validation, violation and generic forbidden
+// texts to the platform classifier. It checks the display category returned
+// for structured hints, plain messages and an empty body.
 func TestClassifyForbiddenType(t *testing.T) {
 	tests := []struct {
-		name     string
-		body     string
-		expected string
+		name     string // subtest display label
+		body     string // upstream forbidden-response text
+		expected string // expected parsed display value
 	}{
 		{
 			name:     "VALIDATION_REQUIRED keyword",
@@ -116,11 +135,15 @@ func TestClassifyForbiddenType(t *testing.T) {
 	}
 }
 
+// TestExtractValidationURL compares structured verification and appeal links
+// with plain error text. It checks structured precedence, keyword-based URL
+// extraction, escaped ampersands, and empty results when verification evidence
+// is absent.
 func TestExtractValidationURL(t *testing.T) {
 	tests := []struct {
-		name     string
-		body     string
-		expected string
+		name     string // subtest display label
+		body     string // upstream forbidden-response text
+		expected string // expected parsed display value
 	}{
 		{
 			name:     "structured validation_url",
@@ -172,10 +195,16 @@ func TestExtractValidationURL(t *testing.T) {
 	}
 }
 
+// TestAntigravityUsageCacheDoesNotCrossCredentialIdentity changes an access token
+// while retaining the provider ID. It checks that the second usage lookup repeats
+// both platform queries instead of using the first identity's cached result.
 func TestAntigravityUsageCacheDoesNotCrossCredentialIdentity(t *testing.T) {
 	transport := &agUsageIdentityTransport{}
 	old := http.DefaultTransport
 	http.DefaultTransport = transport
+	// The platform client uses the process-wide default transport. Restore it after
+	// both credential identities have been observed so later clients use their
+	// own transport.
 	t.Cleanup(func() { http.DefaultTransport = old })
 	quota := &providercore.AntigravityQuota{Options: AntigravityQuotaOptions(8*1024*1024, nil)}
 	svc := providercore.NewOAuthUsageService(nil, providercore.NewOAuthUsageCache(), nil, providercore.OAuthUsageOptions{Antigravity: providercore.AntigravityUsageOptions{
@@ -199,6 +228,9 @@ func TestAntigravityUsageCacheDoesNotCrossCredentialIdentity(t *testing.T) {
 	require.Equal(t, int32(4), transport.calls.Load())
 }
 
+// RoundTrip counts a request and returns tier or model JSON for its endpoint.
+// The returned response retains the request and has a caller-owned body. It
+// supplies no transport error or additional quota headers.
 func (t *agUsageIdentityTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	t.calls.Add(1)
 	body := `{"models":{}}`

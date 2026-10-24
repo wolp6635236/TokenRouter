@@ -7,9 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCatalogProviderCompatibility 检查 litellm_provider 读取兼容、provider 优先级和序列化字段。
+// TestCatalogProviderCompatibility supplies legacy provider names beside
+// absent, populated, empty, and null current fields. Decoding and serialization
+// must use provider, retain its precedence, and remove litellm_provider.
 func TestCatalogProviderCompatibility(t *testing.T) {
-	for _, tc := range []struct{ fields, want string }{
+	for _, tc := range []struct {
+		fields, // submitted provider JSON fields
+		want string // expected decoded provider label
+	}{
 		{`"litellm_provider":"openai"`, "openai"},
 		{`"litellm_provider":"old","provider":"new"`, "new"},
 		{`"litellm_provider":"old","provider":""`, ""},
@@ -27,4 +32,21 @@ func TestCatalogProviderCompatibility(t *testing.T) {
 		require.NotContains(t, string(output), "litellm_provider")
 		require.Contains(t, string(output), `"provider":`)
 	}
+}
+
+// TestCatalogVideoDimensionsNormalizeBeforePublication parses custom video rates
+// and conflicting aliases. Valid tables retain free dimensions; conflicts become
+// publication diagnostics instead of selecting a map iteration winner.
+func TestCatalogVideoDimensionsNormalizeBeforePublication(t *testing.T) {
+	entries, err := DecodeCatalogEntries([]byte(`{"video":{"video_prices":{"768P":0.12,"2K":0}}}`))
+	require.NoError(t, err)
+	values, diagnostics, err := ParsePricingEntries(entries)
+	require.NoError(t, err)
+	require.NoError(t, diagnostics.ValidationError())
+	require.Equal(t, MediaPrices{"768p": 0.12, "2k": 0}, values["video"].VideoPrices)
+	entries, err = DecodeCatalogEntries([]byte(`{"video":{"video_prices":{"HD":0.1,"720p":0.2}}}`))
+	require.NoError(t, err)
+	_, diagnostics, err = ParsePricingEntries(entries)
+	require.Error(t, err)
+	require.ErrorContains(t, diagnostics.ValidationError(), "duplicate video resolution")
 }

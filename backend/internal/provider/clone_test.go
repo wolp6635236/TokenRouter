@@ -13,7 +13,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/accessview"
 )
 
-// TestCloneValuesPreservesShapesAndIsolation 检查复制保留载荷和值类型，共享前缀但长度不同的切片各自复制。
+// Copying provider snapshots needs to retain supported JSON shapes while
+// separating mutable values from their source. These tests compare encodings
+// and types, mutate copied values, and exercise cycle and self-reference
+// handling for both new and existing destination records.
+
+// TestCloneValuesPreservesShapesAndIsolation copies nested objects,
+// slice-prefix views, nil/empty slices, and raw bytes. It compares JSON,
+// retains json.Number, and checks that mutations of copied values leave the
+// source values intact.
 func TestCloneValuesPreservesShapesAndIsolation(t *testing.T) {
 	nested := []any{map[string]any{"number": json.Number("1.123456789")}, "second"}
 	values := map[string]any{"short": nested[:1], "long": nested, "nil": []any(nil), "empty": []any{}, "raw": json.RawMessage(`{"ok":true}`)}
@@ -40,6 +48,9 @@ func TestCloneValuesPreservesShapesAndIsolation(t *testing.T) {
 	require.Equal(t, byte('{'), originalRaw[0])
 }
 
+// TestCloneValuesRetainsInvalidCycleForEncodingError builds a self-referential
+// credential object and copies it. JSON encoding of the result must still fail,
+// keeping invalid cycles visible to validation.
 func TestCloneValuesRetainsInvalidCycleForEncodingError(t *testing.T) {
 	values := map[string]any{}
 	values["self"] = values
@@ -47,6 +58,10 @@ func TestCloneValuesRetainsInvalidCycleForEncodingError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestCloneRecordIsolatesRelationsAndPrivateValues copies a provider with
+// credentials, group routing, proxy data, and a root membership. It checks
+// copied root identity, selected mutation isolation, and private-value
+// exclusion from formatting and JSON.
 func TestCloneRecordIsolatesRelationsAndPrivateValues(t *testing.T) {
 	expires := time.Now()
 	source := &Record{ID: 1, GroupIDs: []int64{3}, Credentials: map[string]any{"token": "private-token"}, Extra: map[string]any{"cookie": "private-cookie"}, Proxy: &egress.Proxy{Password: "private-password", ExpiresAt: &expires}, Groups: []*accessview.GroupConfig{{ID: 3, ModelRouting: map[string][]int64{"model": {1}}}}}
@@ -68,7 +83,9 @@ func TestCloneRecordIsolatesRelationsAndPrivateValues(t *testing.T) {
 	require.NotContains(t, string(payload), "private-")
 }
 
-// TestCloneValuesCopiesNormalizedProtocolIDs 验证统一协议规范化会产生具名切片，复制不能只覆盖 JSON 解码得到的 []any。
+// TestCloneValuesCopiesNormalizedProtocolIDs supplies a named protocol-ID slice
+// inside a configuration object. The clone retains that slice type, and
+// changing its element leaves the original protocol selection intact.
 func TestCloneValuesCopiesNormalizedProtocolIDs(t *testing.T) {
 	protocols := []protocol.ProtocolID{protocol.ProtocolOpenAIResponses}
 	cloned := CloneValues(map[string]any{"upstream_protocols": protocols})
@@ -82,7 +99,10 @@ func TestCloneValuesCopiesNormalizedProtocolIDs(t *testing.T) {
 	}
 }
 
-// TestCopyRecordIntoKeepsRootAndSupportsSameRecord 检查原地复制保持根对象自引用，已绑定的方法读取更新后的记录。
+// TestCopyRecordIntoKeepsRootAndSupportsSameRecord copies into an existing
+// address, then copies that record into itself. Root membership links follow
+// the destination, supported credentials remain usable, and nil input clears
+// the destination.
 func TestCopyRecordIntoKeepsRootAndSupportsSameRecord(t *testing.T) {
 	source := &Record{ID: 1, Credentials: map[string]any{"token": "source"}}
 	source.ProviderGroups = []GroupMembership{{Provider: source}}

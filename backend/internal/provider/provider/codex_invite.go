@@ -13,15 +13,48 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// CodexInviteFactory 在准备邀请操作时解析凭据、代理和专用 TLS 配置。
+// codex_invite.go constructs invitation and reset-credit clients with provider
+// authentication and transport settings. Codex invitation and reset-credit
+// requests use OAuth credentials with their own User-Agent and TLS settings. A
+// shared token source can refresh the token before client construction, while
+// a blank token falls back to the record's stored access token; the proxy is
+// read separately from its ID.
+//
+// An enabled TLS router can override the invitation User-Agent and token TLS
+// profile. A missing router profile resolves through the record's request TLS
+// selection. The constructed client supplies account headers and, when a
+// transport is configured, sends every invitation request through the chosen
+// proxy and profile with provider-specific concurrency.
+
+// CodexInviteFactory prepares authenticated invitation clients from provider
+// records and transport dependencies.
 type CodexInviteFactory struct {
-	Token     *provider.OpenAITokenSource
-	Proxy     func(context.Context, int64) (*egress.Proxy, error)
+	// Token optionally obtains a refreshed access token. Client uses the record
+	// credential when the source is absent or returns blank.
+	Token *provider.OpenAITokenSource
+	// Proxy resolves a configured ProxyID. Supply this callback when the record
+	// selects a proxy; Client propagates lookup errors.
+	Proxy func(context.Context, int64) (*egress.Proxy, error)
+	// Transport sends invitation requests through the selected proxy and profile.
+	// When absent, the upstream client uses its default sender.
 	Transport QoderTransport
-	Profiles  *egressprovider.TLSProfiles
-	Routers   OpenAITokenRouterReader
+	// Profiles resolves invitation and direct request fingerprints. A nil service
+	// leaves the constructed client's selected TLS profile unset.
+	Profiles *egressprovider.TLSProfiles
+	// Routers optionally reads the configured runtime router. Client ignores
+	// missing or disabled routers and keeps invitation defaults.
+	Routers OpenAITokenRouterReader
 }
 
+// Client prepares a Codex invitation client for a nonnil provider record. It
+// consults Token when configured and propagates refresh or proxy lookup errors;
+// an empty resulting access token produces a bad-request error.
+//
+// An enabled router supplies invitation-specific User-Agent and TLS overrides,
+// with record TLS selection used when its profile cannot be resolved. The
+// client retains the record for account-header and transport callbacks, so
+// callers keep that record stable while requests use the selected proxy,
+// profile, ID, and concurrency.
 func (f CodexInviteFactory) Client(ctx context.Context, value *provider.Record) (provider.CodexInviteClient, error) {
 	token := ""
 	if f.Token != nil {
@@ -31,6 +64,9 @@ func (f CodexInviteFactory) Client(ctx context.Context, value *provider.Record) 
 			return nil, err
 		}
 	}
+	// A blank result still permits stored OAuth credentials to authenticate
+	// invitations, including factories built without the shared token source.
+	// Token-source errors have already returned.
 	if strings.TrimSpace(token) == "" {
 		token = value.GetOpenAIAccessToken()
 	}
@@ -73,7 +109,10 @@ func (f CodexInviteFactory) Client(ctx context.Context, value *provider.Record) 
 	return client, nil
 }
 
-// resolveCodexInviteTLS 优先读取邀请重置路由配置，缺省时读取提供商的 TLS 配置。
+// resolveCodexInviteTLS chooses an invitation-specific router profile when it
+// resolves successfully. Otherwise it uses the record's enabled request TLS
+// selection; absent profile services return nil and leave transport
+// fingerprinting unconfigured.
 func resolveCodexInviteTLS(profiles *egressprovider.TLSProfiles, value *provider.Record, router *egress.TLSFingerprintRouter) *tlsfingerprint.Profile {
 	if profiles == nil {
 		return nil
@@ -83,6 +122,9 @@ func resolveCodexInviteTLS(profiles *egressprovider.TLSProfiles, value *provider
 			return profile
 		}
 	}
+	// An unresolved invitation profile uses the provider's request TLS selection,
+	// so a missing router profile does not discard a configured direct
+	// fingerprint.
 	return profiles.ResolveRequestTLS(egress.TLSSelection{
 		Enabled: value.IsTLSFingerprintEnabled(), DirectProfileID: value.GetTLSFingerprintProfileID(),
 	})

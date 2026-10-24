@@ -22,12 +22,22 @@ import (
 	settingspostgres "github.com/TokenFlux/TokenRouter/internal/settings/postgres"
 )
 
-// provideCalendar 在 bootstrap 完成时区初始化后固定日期计算位置；依赖关系保证装配顺序。
+// storage.go constructs shared database and Redis resources, registers their
+// cleanup, and supplies settings storage. Redis runtime-key migration finishes
+// before the client is returned to worker constructors, and calendar capture
+// depends on Ent bootstrap so business date calculations use the initialized
+// process timezone.
+
+// provideCalendar captures bootstrap's process location in the shared calendar.
+// The Ent argument is a Wire ordering dependency, requiring database bootstrap
+// before this constructor reads time.Local.
 func provideCalendar(_ *ent.Client) timezone.Calendar {
 	return timezone.NewCalendar(time.Local)
 }
 
-// databaseAdvisoryLease 绑定数据库连接来源，调用方决定锁身份和失败时的处理方式。
+// databaseAdvisoryLease returns nil when no SQL pool is supplied. Its callback
+// hashes the requested lock key, and callers handle the acquisition flag and
+// invoke the returned release after owned work finishes.
 func databaseAdvisoryLease(db *sql.DB) func(context.Context, string) (func(), bool) {
 	if db == nil {
 		return nil
@@ -37,6 +47,9 @@ func databaseAdvisoryLease(db *sql.DB) func(context.Context, string) (func(), bo
 	}
 }
 
+// provideEnt runs Ent bootstrap and registers the acquired client for lifecycle
+// closure. Call before manager startup; bootstrap failure returns immediately,
+// while the registered client owns the shared SQL pool released at level 910.
 func provideEnt(ctx context.Context, cfg *config.Config, manager *lifecycle.Manager) (*ent.Client, error) {
 	client, _, err := bootstrap.InitEnt(ctx, cfg)
 	if err != nil {
@@ -46,12 +59,21 @@ func provideEnt(ctx context.Context, cfg *config.Config, manager *lifecycle.Mana
 	return client, nil
 }
 
+// provideRedis constructs Redis and passes a two-minute child context to
+// runtime-key migration. Socket operations retain the client timeout policy
+// established by bootstrap.InitRedis, so this context is not a strict I/O
+// deadline. Migration failure closes the unregistered client and returns its
+// cause; success registers Redis closure before returning the client to
+// dependent constructors.
 func provideRedis(ctx context.Context, cfg *config.Config, manager *lifecycle.Manager) (*redis.Client, error) {
 	client := bootstrap.InitRedis(cfg)
-	// 运行状态迁移完成后再构造后台任务和开放流量，限额从迁移后的键读取。
+	// Migrate runtime keys before returning Redis to dependent constructors.
+	// Workers and traffic then read the migrated names instead of mixing old and current limit namespaces.
 	migrationCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	if err := redisinfra.MigrateProviderNames(migrationCtx, client); err != nil {
+		// Migration failed before lifecycle ownership was registered. Close this
+		// acquired client locally and retain the migration error, discarding any separate close failure.
 		_ = client.Close()
 		return nil, err
 	}
@@ -59,18 +81,22 @@ func provideRedis(ctx context.Context, cfg *config.Config, manager *lifecycle.Ma
 	return client, nil
 }
 
-// provideSettingsStore 直接构造唯一设置实例，所有接口共享版本、通知与更新协调器。
+// provideSettingsStore constructs shared settings storage, version,
+// notifications, and update coordination.
 // @project-doc docs/interfaces/configuration.md#runtime_settings
 func provideSettingsStore(client *ent.Client) *settings.Store {
 	return settings.New(settingspostgres.NewSettingRepository(client))
 }
 
-// provideIdempotencyRepository 使用应用共享的 SQL 连接池构造幂等存储。
+// provideIdempotencyRepository binds command idempotency persistence to the
+// application SQL pool.
 func provideIdempotencyRepository(db *sql.DB) idempotency.IdempotencyRepository {
 	return idempotencypostgres.NewIdempotencyRepository(db)
 }
 
-// provideSQLDB 返回 Ent 的连接池，连接池随 Ent 关闭。
+// provideSQLDB returns the pool exposed by the Ent SQL driver. Nil client or
+// another driver type returns an error; callers borrow this pool while Ent
+// retains its lifecycle ownership and closure.
 func provideSQLDB(client *ent.Client) (*sql.DB, error) {
 	if client == nil {
 		return nil, errors.New("nil ent client")

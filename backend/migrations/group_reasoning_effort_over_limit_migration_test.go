@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGroupReasoningEffortOverLimitMigration 锁定新字段的类型、默认值和说明。
+// TestGroupReasoningEffortOverLimitMigration reads the maximum-reasoning policy SQL.
+// It requires the non-null downgrade default and a column comment describing
+// deny as rejection, protecting the persisted setting's documented choices.
 func TestGroupReasoningEffortOverLimitMigration(t *testing.T) {
 	content, err := FS.ReadFile("263_group_reasoning_effort_over_limit.sql")
 	require.NoError(t, err)

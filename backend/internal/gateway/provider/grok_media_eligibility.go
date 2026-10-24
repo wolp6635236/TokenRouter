@@ -8,12 +8,26 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// GrokMediaEligibilityProber 在缺少计费资格观测时探测媒体资格。
+// grok_media_eligibility.go checks media eligibility and probes providers with
+// unobserved billing state.
+// Grok media generation uses provider overrides and observed billing
+// eligibility before an upstream attempt. Missing OAuth billing observations
+// trigger an active probe; other eligibility decisions return directly, and an
+// absent probe dependency keeps the unobserved target rejected.
+
+// GrokMediaEligibilityProber supplies an active eligibility observation for a
+// selected provider.
 type GrokMediaEligibilityProber interface {
+	// ProbeMediaEligibility checks the selected provider when local billing data
+	// is unobserved. It returns eligibility, its reason, and the probe error for
+	// forwarding callers to handle before generation begins.
 	ProbeMediaEligibility(context.Context, int64) (bool, string, error)
 }
 
-// CheckGrokMediaEligibility 根据提供商配置检查媒体资格，缺少观测时调用探测器。
+// CheckGrokMediaEligibility evaluates provider media policy, probing only when
+// its reason is billing_unobserved. Nil targets and missing required probes
+// return errors; all other policy results return directly, and probe outcomes
+// pass through unchanged.
 func CheckGrokMediaEligibility(ctx context.Context, value *ExecutionProvider, probe GrokMediaEligibilityProber) (bool, string, error) {
 	if value == nil {
 		return false, "missing_provider", errors.New("grok media provider is required")
@@ -22,6 +36,8 @@ func CheckGrokMediaEligibility(ctx context.Context, value *ExecutionProvider, pr
 	if eligible || reason != "billing_unobserved" {
 		return eligible, reason, nil
 	}
+	// Existing policy decisions already carry their reason. Probe only unobserved
+	// billing so forwarding cannot treat absent account evidence as media approval.
 	if probe == nil {
 		return false, "billing_probe_unavailable", errors.New("grok media eligibility probe is not configured")
 	}

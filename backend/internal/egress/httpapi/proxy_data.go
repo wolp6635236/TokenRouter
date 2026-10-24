@@ -12,6 +12,18 @@ import (
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
+// proxy_data.go handles administrator proxy backup import and export requests.
+// Proxy backup export supports selected IDs or filtered ordering and includes
+// connection credentials in its administrator payload. Import validates the
+// shared transfer envelope before delegating partial item processing, so
+// endpoint responses can report reused, created, and rejected proxies from one
+// submitted batch.
+
+// ExportData returns an administrator proxy backup envelope containing
+// credentials and an export timestamp. Selected positive IDs bypass filters;
+// otherwise search is trimmed and capped at one hundred bytes before
+// protocol/status/order values reach transfer export. The route owns step-up
+// authentication.
 func (h *ProxyHandler) ExportData(c *gin.Context) {
 	ids, err := parseProxyIDs(c)
 	if err != nil {
@@ -19,6 +31,8 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 		return
 	}
 	search := strings.TrimSpace(c.Query("search"))
+	// Match the listing endpoint's byte cap for stored-name search. Slicing
+	// may split UTF-8, and the repository receives that same bounded search text.
 	if len(search) > 100 {
 		search = search[:100]
 	}
@@ -30,10 +44,12 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 	response.Success(c, transfer.DataPayload{Type: transfer.DataType, Version: transfer.DataVersion, ExportedAt: exported, Proxies: proxies, Providers: []transfer.DataProvider{}})
 }
 
+// ImportData binds and validates a proxy transfer envelope before processing
+// its proxy collection. Invalid JSON or envelope headers return bad request;
+// successful batch processing returns partial creation/reuse/failure counts and
+// diagnostics while repository-load failure uses the shared error response.
 func (h *ProxyHandler) ImportData(c *gin.Context) {
-	var req struct {
-		Data transfer.DataPayload `json:"data"`
-	}
+	var req ProxyDataImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
@@ -50,6 +66,10 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 	response.Success(c, transfer.DataImportResult{ProxyCreated: result.ProxyCreated, ProxyReused: result.ProxyReused, ProxyFailed: result.ProxyFailed, Errors: result.Errors})
 }
 
+// parseProxyIDs parses repeated ids query values and comma-separated parts into
+// positive integer IDs. Empty input returns nil, blank parts are ignored, and
+// repeated IDs retain input order; any invalid or nonpositive part rejects the
+// entire selection.
 func parseProxyIDs(c *gin.Context) ([]int64, error) {
 	values := c.QueryArray("ids")
 	if len(values) == 0 {

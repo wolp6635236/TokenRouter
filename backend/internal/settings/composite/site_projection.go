@@ -2,7 +2,18 @@ package composite
 
 import "github.com/TokenFlux/TokenRouter/internal/site"
 
-// SiteAdminSettings 从综合快照提取站点设置。
+// site_projection.go transfers site display and content settings through the
+// combined administrator snapshot.
+// Site settings collect display text, legal documents, and navigation JSON
+// for administrator reads and updates. Extraction passes those values to site
+// preparation, then normalization assigns the selected result back into the
+// combined Snapshot; table-choice slices, legal records, and localized editor
+// maps keep their supplied nested references during these value transfers.
+
+// SiteAdminSettings returns display, legal, and navigation values for site
+// preparation. TablePageSizeOptions, LoginAgreementDocuments, and SiteTexts retain
+// the Snapshot's collection references, including nested localization pointers,
+// so callers keep them stable while preparing the batch.
 func (s *Snapshot) SiteAdminSettings() site.AdminSettings {
 	return site.AdminSettings{
 		APIBaseURL:                  s.APIBaseURL,
@@ -32,7 +43,10 @@ func (s *Snapshot) SiteAdminSettings() site.AdminSettings {
 	}
 }
 
-// ApplySiteAdminSettings 将站点设置写入综合快照。
+// ApplySiteAdminSettings writes normalized site fields into the Snapshot. Its
+// table choices, legal documents, and localized text map retain the supplied
+// value's references, allowing subsequent persistence to read that prepared
+// representation before the caller changes it.
 func (s *Snapshot) ApplySiteAdminSettings(value site.AdminSettings) {
 	s.APIBaseURL = value.APIBaseURL
 	s.ContactInfo = value.ContactInfo
@@ -60,7 +74,10 @@ func (s *Snapshot) ApplySiteAdminSettings(value site.AdminSettings) {
 	s.TablePageSizeOptions = value.TablePageSizeOptions
 }
 
-// ApplySiteAdminReadSettings 将站点展示、订阅入口和登录协议设置写入快照。
+// ApplySiteAdminReadSettings transfers a nonnil site reader result for display
+// and later partial merging. The table choices, legal records, and SiteTexts
+// map remain shared with that result; these assignments introduce no additional
+// copy of their nested localization values.
 func (s *Snapshot) ApplySiteAdminReadSettings(value *site.AdminReadSettings) {
 	s.APIBaseURL = value.APIBaseURL
 	s.ContactInfo = value.ContactInfo

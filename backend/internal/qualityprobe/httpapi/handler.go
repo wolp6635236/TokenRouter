@@ -8,22 +8,27 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/qualityprobe"
+	"github.com/TokenFlux/TokenRouter/internal/server/adminapi"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
 const manualProbeTimeout = 3 * time.Minute
 
-// Handler 管理降智探测设置和手动探测。
+// handler.go exposes administrator settings, manual runs, provider status, and
+// paginated quality-probe logs. Manual requests keep their work after a browser
+// cancels the response so completed probes still update provider Extra history.
+
+// Handler serves administrator quality-probe HTTP requests through the engine.
 type Handler struct {
 	engine *qualityprobe.Engine
 }
 
+// New retains the engine used by registered quality-probe administrator routes.
 func New(engine *qualityprobe.Engine) *Handler {
 	return &Handler{engine: engine}
 }
 
-// GetSettings 返回当前的降智探测设置。
-// GET /api/v1/admin/quality-probe/settings
+// GetSettings returns the current quality-probe settings to an administrator.
 func (h *Handler) GetSettings(c *gin.Context) {
 	cfg, err := h.engine.LoadSettings(c.Request.Context())
 	if err != nil {
@@ -33,8 +38,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	response.Success(c, qualityprobe.SettingsDTO(cfg))
 }
 
-// PutSettings 保存降智探测设置。
-// PUT /api/v1/admin/quality-probe/settings
+// PutSettings validates, persists, and returns quality-probe settings for an administrator.
 func (h *Handler) PutSettings(c *gin.Context) {
 	var payload qualityprobe.SettingsPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -53,15 +57,17 @@ func (h *Handler) PutSettings(c *gin.Context) {
 	response.Success(c, qualityprobe.SettingsDTO(cfg))
 }
 
-// Run 对单个提供商手动执行一次探测。
-// POST /api/v1/admin/providers/:id/quality-probe
+// Run executes one manual probe for a provider and returns its report. Browser
+// cancellation does not stop the detached request because history persistence
+// must reflect a probe that already reached its upstream account.
 func (h *Handler) Run(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid provider ID")
 		return
 	}
-	// 关掉弹窗会取消 HTTP 请求。探测和写 Extra 继续跑完，记录页才能看到这一轮。
+	// The browser can close the modal before the probe finishes. Detach request
+	// cancellation so the completed result still reaches provider Extra history.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), manualProbeTimeout)
 	defer cancel()
 	var payload struct {
@@ -76,8 +82,7 @@ func (h *Handler) Run(c *gin.Context) {
 	response.Success(c, report)
 }
 
-// Status 返回单个提供商的探测状态和最近记录。
-// GET /api/v1/admin/providers/:id/quality-probe
+// Status returns one provider's quality-probe state and recent history.
 func (h *Handler) Status(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -92,7 +97,7 @@ func (h *Handler) Status(c *gin.Context) {
 	response.Success(c, state)
 }
 
-// ListLogs GET /api/v1/admin/quality-probe/logs，按 page、page_size 分页，单页最多 100 条。
+// ListLogs returns quality-probe history in pages of at most one hundred records.
 func (h *Handler) ListLogs(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
 	if pageSize > 100 {
@@ -106,11 +111,11 @@ func (h *Handler) ListLogs(c *gin.Context) {
 	response.Paginated(c, logs, int64(total), page, pageSize)
 }
 
-// RegisterRoutes 挂到管理员路由组。
+// RegisterRoutes mounts quality-probe endpoints beneath an authenticated administrator group.
 func RegisterRoutes(admin *gin.RouterGroup, endpoint *Handler) {
-	admin.GET("/quality-probe/settings", endpoint.GetSettings)
-	admin.PUT("/quality-probe/settings", endpoint.PutSettings)
-	admin.GET("/quality-probe/logs", endpoint.ListLogs)
-	admin.GET("/providers/:id/quality-probe", endpoint.Status)
-	admin.POST("/providers/:id/quality-probe", endpoint.Run)
+	adminapi.Register(admin, ManagementOperations["quality_probe.settings.get"], endpoint.GetSettings)
+	adminapi.Register(admin, ManagementOperations["quality_probe.settings.update"], endpoint.PutSettings)
+	adminapi.Register(admin, ManagementOperations["quality_probe.logs.list"], endpoint.ListLogs)
+	adminapi.Register(admin, ManagementOperations["quality_probe.provider.get"], endpoint.Status)
+	adminapi.Register(admin, ManagementOperations["quality_probe.provider.run"], endpoint.Run)
 }

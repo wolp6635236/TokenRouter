@@ -6,6 +6,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestFlattenResponsesNamespacesDefaultScopeRoundTrip lowers a default function
+// declaration and its qualified history. The upstream uses one bare name and
+// restored output omits namespace while retaining call correlation and arguments.
+func TestFlattenResponsesNamespacesDefaultScopeRoundTrip(t *testing.T) {
+	request := map[string]any{
+		"tools": []any{map[string]any{"type": "namespace", "name": "functions", "tools": []any{map[string]any{"type": "function", "name": "wait"}}}},
+		"input": []any{map[string]any{"type": "function_call", "name": "wait", "namespace": "functions", "call_id": "call_1", "arguments": "{}"}},
+	}
+	names, changed, err := FlattenResponsesNamespaces(request)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, ResponsesNamespaceName{Name: "wait"}, names["wait"])
+	restored, _, err := RestoreResponsesNamespaceCalls([]byte(`{"output":[{"type":"function_call","name":"wait","namespace":"functions","call_id":"call_2","arguments":"{}"}]}`), names)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"output":[{"type":"function_call","name":"wait","call_id":"call_2","arguments":"{}"}]}`, string(restored))
+}
+
+// TestFlattenResponsesNamespaces_RewritesDeclarationHistoryAndChoice flattens
+// one namespace beside a plain function. It checks the returned identity pair,
+// renamed declaration/call/choice, retained message metadata, and model value.
 func TestFlattenResponsesNamespaces_RewritesDeclarationHistoryAndChoice(t *testing.T) {
 	req := map[string]any{
 		"model": "gpt-5.5",
@@ -61,6 +81,9 @@ func TestFlattenResponsesNamespaces_RewritesDeclarationHistoryAndChoice(t *testi
 	require.Equal(t, "gpt-5.5", req["model"])
 }
 
+// TestFlattenResponsesNamespaces_RejectsFlatNameCollision supplies a namespace
+// child whose joined name matches a top-level function. Conversion must return
+// an error identifying that top-level conflict.
 func TestFlattenResponsesNamespaces_RejectsFlatNameCollision(t *testing.T) {
 	req := map[string]any{"tools": []any{
 		map[string]any{"type": "function", "name": "collaboration__spawn_agent"},
@@ -73,6 +96,9 @@ func TestFlattenResponsesNamespaces_RejectsFlatNameCollision(t *testing.T) {
 	require.ErrorContains(t, err, "conflicts with a top-level tool")
 }
 
+// TestFlattenResponsesNamespaces_NamespaceGroupChoiceFallsBackToAuto selects a
+// namespace containing two functions. Flattening reports a change and replaces
+// the removed group choice with the auto string.
 func TestFlattenResponsesNamespaces_NamespaceGroupChoiceFallsBackToAuto(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{map[string]any{
@@ -90,6 +116,10 @@ func TestFlattenResponsesNamespaces_NamespaceGroupChoiceFallsBackToAuto(t *testi
 	require.Equal(t, "auto", req["tool_choice"])
 }
 
+// TestFlattenResponsesNamespacesExcept_PreservesBuiltInNamespaceAndChoice
+// exempts image_gen while flattening another namespace. It checks both
+// resulting declarations, the returned mapping, and the unchanged choice of
+// the exempt group.
 func TestFlattenResponsesNamespacesExcept_PreservesBuiltInNamespaceAndChoice(t *testing.T) {
 	req := map[string]any{
 		"tools": []any{
@@ -121,6 +151,9 @@ func TestFlattenResponsesNamespacesExcept_PreservesBuiltInNamespaceAndChoice(t *
 	require.Equal(t, map[string]any{"type": "namespace", "name": "image_gen"}, req["tool_choice"])
 }
 
+// TestFlattenResponsesNamespaces_RejectsNamespaceCollision supplies two
+// different namespace/name pairs that join to the same flat name. Conversion
+// must return an error identifying the ambiguous joined identity.
 func TestFlattenResponsesNamespaces_RejectsNamespaceCollision(t *testing.T) {
 	req := map[string]any{"tools": []any{
 		map[string]any{"type": "namespace", "name": "a", "tools": []any{
@@ -135,6 +168,9 @@ func TestFlattenResponsesNamespaces_RejectsNamespaceCollision(t *testing.T) {
 	require.ErrorContains(t, err, "both flatten")
 }
 
+// TestRestoreResponsesNamespaceCalls_RewritesOnlyFunctionCalls restores one
+// mapped function in a mixed output list. JSON equality checks other
+// calls/message data, and literal HTML characters remain unescaped.
 func TestRestoreResponsesNamespaceCalls_RewritesOnlyFunctionCalls(t *testing.T) {
 	payload := []byte(`{"type":"response.completed","response":{"output":[{"type":"function_call","name":"collaboration__spawn_agent","call_id":"call_1","arguments":"{}","extra":"keep"},{"type":"function_call","name":"plain","arguments":"{}"},{"type":"message","name":"collaboration__spawn_agent","content":"<tag>&value</tag>"}]}}`)
 	names := map[string]ResponsesNamespaceName{
@@ -149,6 +185,9 @@ func TestRestoreResponsesNamespaceCalls_RewritesOnlyFunctionCalls(t *testing.T) 
 	require.NotContains(t, string(got), `\u003c`)
 }
 
+// TestRestoreResponsesNamespaceCalls_RewritesLifecycleItems supplies added and
+// done lifecycle payloads with a mapped flat function name. Both decoded
+// shapes must restore the child name and its namespace.
 func TestRestoreResponsesNamespaceCalls_RewritesLifecycleItems(t *testing.T) {
 	for _, eventType := range []string{"response.output_item.added", "response.output_item.done"} {
 		t.Run(eventType, func(t *testing.T) {

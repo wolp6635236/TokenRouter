@@ -10,8 +10,17 @@ import (
 	"testing"
 )
 
+// Logger fixtures replace process stdout and stderr serially, routing
+// accepted messages into pipes and optional temporary files. They close pipe
+// writers before reading so reads can reach EOF, then inspect severity
+// routing, legacy markers, component attributes, and caller metadata rather
+// than flushing a still-open pipe.
+
+// TestInit_DualOutput initializes JSON logging with standard streams and a
+// temporary rotating file. It requires info on stdout, warning on stderr, and
+// both messages in the file after closing captured pipe writers.
 func TestInit_DualOutput(t *testing.T) {
-	// lumberjack 在 Windows 上持有文件句柄，使用 MkdirTemp 创建目录并由测试清理。
+	// Use best-effort directory cleanup because lumberjack may retain an open handle on Windows.
 	tmpDir, err := os.MkdirTemp("", "logger-test-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
@@ -21,6 +30,9 @@ func TestInit_DualOutput(t *testing.T) {
 	})
 	logPath := filepath.Join(tmpDir, "logs", "tokenrouter.log")
 
+	// This serial fixture owns the process stream replacement until cleanup
+	// restores stdout and stderr. Its logger core retains the pipe writer
+	// selected during Init.
 	origStdout := os.Stdout
 	origStderr := os.Stderr
 	stdoutR, stdoutW, err := os.Pipe()
@@ -66,8 +78,9 @@ func TestInit_DualOutput(t *testing.T) {
 	L().Info("dual-output-info")
 	L().Warn("dual-output-warn")
 
-	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
-	// 日志已经写入管道缓冲区，关闭写端后即可读取。
+	// Close both pipe writers so captured reads can reach EOF. The logger keeps
+	// the handles selected during Init, and Windows Sync can wait inside
+	// FlushFileBuffers until a pipe consumer reads its buffered bytes.
 
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
@@ -93,7 +106,14 @@ func TestInit_DualOutput(t *testing.T) {
 	}
 }
 
+// TestInit_FileOutputFailureDowngrade uses an impossible directory beneath
+// os.DevNull for file output. It requires successful logger initialization
+// and a direct stderr setup warning, protecting availability when the file
+// core cannot be built.
 func TestInit_FileOutputFailureDowngrade(t *testing.T) {
+	// This serial fixture owns the process stream replacement until cleanup
+	// restores stdout and stderr. Its logger core retains the pipe writer
+	// selected during Init.
 	origStdout := os.Stdout
 	origStderr := os.Stderr
 	_, stdoutW, err := os.Pipe()
@@ -132,14 +152,23 @@ func TestInit_FileOutputFailureDowngrade(t *testing.T) {
 		t.Fatalf("Init() should downgrade instead of failing, got: %v", err)
 	}
 
+	// Finish the captured stderr stream before reading its setup warning, so
+	// the assertion can reach EOF even while the process logger still retains
+	// its selected output handle.
 	_ = stderrW.Close()
 	stderrBytes, _ := io.ReadAll(stderrR)
-	if !strings.Contains(string(stderrBytes), "日志文件输出初始化失败") {
+	if !strings.Contains(string(stderrBytes), "Failed to initialize file logging") {
 		t.Fatalf("stderr should contain fallback warning, got: %s", string(stderrBytes))
 	}
 }
 
+// TestInit_CallerShouldPointToCallsite writes one JSON entry with caller
+// metadata enabled. It requires the logged caller to reference this test file
+// after captured stdout is closed and decoded.
 func TestInit_CallerShouldPointToCallsite(t *testing.T) {
+	// This serial fixture owns the process stream replacement until cleanup
+	// restores stdout and stderr. Its logger core retains the pipe writer
+	// selected during Init.
 	origStdout := os.Stdout
 	origStderr := os.Stderr
 	stdoutR, stdoutW, err := os.Pipe()
@@ -176,7 +205,9 @@ func TestInit_CallerShouldPointToCallsite(t *testing.T) {
 	}
 
 	L().Info("caller-check")
-	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
+	// Close the captured writer so its reader can reach EOF. Windows Sync can
+	// wait inside FlushFileBuffers for a pipe consumer, so the assertions inspect
+	// completed writes after closing the captured handle.
 	os.Stdout = origStdout
 	os.Stderr = origStderr
 	_ = stdoutW.Close()
@@ -203,7 +234,9 @@ func TestInit_CallerShouldPointToCallsite(t *testing.T) {
 	}
 }
 
-// TestLegacyPrintfCaller 检查日志记录的调用者文件名。
+// TestLegacyPrintfCaller writes a compatibility message to a temporary JSON
+// log with caller capture enabled. It requires the stored caller text to
+// identify this test file after a synchronization attempt.
 func TestLegacyPrintfCaller(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "caller.json")
 	err := Init(InitOptions{
@@ -226,10 +259,14 @@ func TestLegacyPrintfCaller(t *testing.T) {
 	}
 }
 
+// TestInferStdLogLevel supplies ordinary, explicitly leveled, failure, and
+// retry messages to severity inference. Explicit levels must override failure
+// words in English diagnostic messages, while unmarked messages retain the
+// keyword-based selection used by legacy callers.
 func TestInferStdLogLevel(t *testing.T) {
 	cases := []struct {
-		msg  string
-		want Level
+		msg  string // supplied legacy message text
+		want Level  // expected inferred zap severity
 	}{
 		{msg: "Warning: queue full", want: LevelWarn},
 		{msg: "Forward request failed: timeout", want: LevelError},
@@ -237,6 +274,11 @@ func TestInferStdLogLevel(t *testing.T) {
 		{msg: "[OpenAI WS Mode] reconnect_retry provider_id=22 retry=1 max_retries=5", want: LevelInfo},
 		{msg: "service started", want: LevelInfo},
 		{msg: "debug: cache miss", want: LevelDebug},
+		{msg: "[INFO] [PreAggregation] Failed to read runtime configuration, using deployment defaults: context deadline exceeded", want: LevelInfo},
+		{msg: "[info] refresh failed: upstream error", want: LevelInfo},
+		{msg: "info: operation failed with a warning", want: LevelInfo},
+		{msg: "[WARN] refresh failed: upstream error", want: LevelWarn},
+		{msg: "[DEBUG] refresh failed: upstream error", want: LevelDebug},
 	}
 
 	for _, tc := range cases {
@@ -247,6 +289,10 @@ func TestInferStdLogLevel(t *testing.T) {
 	}
 }
 
+// TestNormalizeStdLogMessage supplies multiline legacy text with repeated
+// surrounding and internal whitespace. It requires one trimmed line with
+// single separators, protecting the message spelling used by compatibility
+// logging.
 func TestNormalizeStdLogMessage(t *testing.T) {
 	raw := "  [TokenRefresh]  cycle complete \n total=1   failed=0 \n"
 	got := normalizeStdLogMessage(raw)
@@ -256,7 +302,15 @@ func TestNormalizeStdLogMessage(t *testing.T) {
 	}
 }
 
+// TestStdLogBridgeRoutesLevels sends ordinary, warning, and failed
+// standard-log messages after Init. It requires severity-specific captured
+// streams and the legacy_stdlog marker on warning/error output after pipe
+// writers close. An explicit info prefix keeps a translated failure and its
+// error detail on stdout.
 func TestStdLogBridgeRoutesLevels(t *testing.T) {
+	// This serial fixture owns the process stream replacement until cleanup
+	// restores stdout and stderr. Its logger core retains the pipe writer
+	// selected during Init.
 	origStdout := os.Stdout
 	origStderr := os.Stderr
 	stdoutR, stdoutW, err := os.Pipe()
@@ -295,7 +349,10 @@ func TestStdLogBridgeRoutesLevels(t *testing.T) {
 	log.Printf("service started")
 	log.Printf("Warning: queue full")
 	log.Printf("Forward request failed: timeout")
-	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
+	log.Printf("[INFO] [PreAggregation] Failed to read runtime configuration: %s", "upstream error")
+	// Close both pipe writers so captured reads can reach EOF. The logger keeps
+	// the handles selected during Init, and Windows Sync can wait inside
+	// FlushFileBuffers until a pipe consumer reads its buffered bytes.
 
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
@@ -306,6 +363,9 @@ func TestStdLogBridgeRoutesLevels(t *testing.T) {
 
 	if !strings.Contains(stdoutText, "service started") {
 		t.Fatalf("stdout missing info log: %s", stdoutText)
+	}
+	if !strings.Contains(stdoutText, "[INFO] [PreAggregation] Failed to read runtime configuration: upstream error") || strings.Contains(stderrText, "[PreAggregation]") {
+		t.Fatalf("explicit info log routed incorrectly: stdout=%s stderr=%s", stdoutText, stderrText)
 	}
 	if !strings.Contains(stderrText, "Warning: queue full") {
 		t.Fatalf("stderr missing warn log: %s", stderrText)
@@ -318,7 +378,15 @@ func TestStdLogBridgeRoutesLevels(t *testing.T) {
 	}
 }
 
+// TestLegacyPrintfRoutesLevels sends ordinary, warning, and failed printf
+// messages through one component label. It requires severity routing,
+// legacy_printf markers, and that component attribute in captured
+// warning/error output. An explicit info prefix keeps translated cache
+// failures on stdout even when their formatted detail contains error keywords.
 func TestLegacyPrintfRoutesLevels(t *testing.T) {
+	// This serial fixture owns the process stream replacement until cleanup
+	// restores stdout and stderr. Its logger core retains the pipe writer
+	// selected during Init.
 	origStdout := os.Stdout
 	origStderr := os.Stderr
 	stdoutR, stdoutW, err := os.Pipe()
@@ -357,7 +425,10 @@ func TestLegacyPrintfRoutesLevels(t *testing.T) {
 	LegacyPrintf("service.test", "request started")
 	LegacyPrintf("service.test", "Warning: queue full")
 	LegacyPrintf("service.test", "forward failed: timeout")
-	// Windows 对管道执行 Sync 会阻塞在 FlushFileBuffers，关闭写端后直接读取日志。
+	LegacyPrintf("service.test", "[INFO] [Dashboard] Failed to read dashboard cache: %s", "upstream error")
+	// Close both pipe writers so captured reads can reach EOF. The logger keeps
+	// the handles selected during Init, and Windows Sync can wait inside
+	// FlushFileBuffers until a pipe consumer reads its buffered bytes.
 
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
@@ -368,6 +439,9 @@ func TestLegacyPrintfRoutesLevels(t *testing.T) {
 
 	if !strings.Contains(stdoutText, "request started") {
 		t.Fatalf("stdout missing info log: %s", stdoutText)
+	}
+	if !strings.Contains(stdoutText, "[INFO] [Dashboard] Failed to read dashboard cache: upstream error") || strings.Contains(stderrText, "[Dashboard]") {
+		t.Fatalf("explicit info log routed incorrectly: stdout=%s stderr=%s", stdoutText, stderrText)
 	}
 	if !strings.Contains(stderrText, "Warning: queue full") {
 		t.Fatalf("stderr missing warn log: %s", stderrText)

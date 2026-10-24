@@ -14,12 +14,26 @@ import (
 	ippkg "github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
-// fakeFixedWindow 为 HTTP 限流测试提供可控的计数和错误。
+// HTTP rate limiting separates route-and-client buckets and exposes rejection
+// through status, JSON, and retry headers. A deterministic counter fixture
+// keeps counts indefinitely so these tests can isolate failure policy and the
+// request's captured forwarding mode.
+
+// fakeFixedWindow supplies serial, nonexpiring request counts or one injected
+// counter failure.
 type fakeFixedWindow struct {
-	counts  map[string]int64
+	// counts retains every call per exact key and never expires. Tests allocate
+	// the map before successful counting and use the fixture serially.
+	counts map[string]int64
+	// failure is returned before counts is accessed. Set it during fixture setup
+	// to exercise HTTP counter-error policy independently of admitted counts.
 	failure error
 }
 
+// Allow increments the serial fixture's exact-key count and compares it with
+// limit, including rejected calls. counts must be initialized and calls
+// serialized; failure returns immediately. Rejection returns window as its
+// retry delay because this fixture does not track expiry.
 func (f *fakeFixedWindow) Allow(_ context.Context, key string, limit int, window time.Duration) (bool, int64, time.Duration, error) {
 	if f.failure != nil {
 		return false, 0, 0, f.failure
@@ -32,7 +46,9 @@ func (f *fakeFixedWindow) Allow(_ context.Context, key string, limit int, window
 	return true, count, 0, nil
 }
 
-// TestRateLimiterFailureModes 保留默认故障放行及认证入口显式故障关闭。
+// TestRateLimiterFailureModes injects a counter error into each supported HTTP
+// failure policy. Fail-close returns 429 while fail-open allows the successful
+// endpoint to run.
 func TestRateLimiterFailureModes(t *testing.T) {
 	for _, mode := range []RateLimitFailureMode{RateLimitFailOpen, RateLimitFailClose} {
 		limiter := NewRateLimiter(&fakeFixedWindow{failure: errors.New("redis unavailable")})
@@ -51,6 +67,9 @@ func TestRateLimiterFailureModes(t *testing.T) {
 	}
 }
 
+// TestRateLimiterDifferentIPsIndependent sends two client addresses through one
+// route limiter. Each address starts with its own budget, and a repeated
+// request exhausts only the first client's counter.
 func TestRateLimiterDifferentIPsIndependent(t *testing.T) {
 	callCounts := make(map[string]int64)
 	limiter := NewRateLimiter(&fakeFixedWindow{counts: callCounts})
@@ -61,21 +80,21 @@ func TestRateLimiterDifferentIPsIndependent(t *testing.T) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	// 第一个 IP 的请求应通过
+	// The first IP starts with an unused bucket.
 	req1 := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req1.RemoteAddr = "10.0.0.1:1234"
 	rec1 := httptest.NewRecorder()
 	router.ServeHTTP(rec1, req1)
 	require.Equal(t, http.StatusOK, rec1.Code, "第一个 IP 的第一次请求应通过")
 
-	// 第二个 IP 的请求应独立通过（不受第一个 IP 的计数影响）
+	// The second IP has an independent bucket.
 	req2 := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req2.RemoteAddr = "10.0.0.2:5678"
 	rec2 := httptest.NewRecorder()
 	router.ServeHTTP(rec2, req2)
 	require.Equal(t, http.StatusOK, rec2.Code, "第二个 IP 的第一次请求应独立通过")
 
-	// 第一个 IP 的第二次请求应被限流
+	// The first IP has exhausted its limit.
 	req3 := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req3.RemoteAddr = "10.0.0.1:1234"
 	rec3 := httptest.NewRecorder()
@@ -83,12 +102,17 @@ func TestRateLimiterDifferentIPsIndependent(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, rec3.Code, "第一个 IP 的第二次请求应被限流")
 }
 
+// TestRateLimiterHonorsForwardedIPSnapshot pins compatibility forwarding policy
+// before HTTP limiting behind one shared peer address. Forwarded clients get
+// distinct buckets, and a repeated forwarded address exhausts its own budget.
 func TestRateLimiterHonorsForwardedIPSnapshot(t *testing.T) {
 	callCounts := make(map[string]int64)
 	limiter := NewRateLimiter(&fakeFixedWindow{counts: callCounts})
 
 	router := gin.New()
-	// 模拟 SessionBindingContext：开启转发 IP 兼容模式快照
+	// Pin compatibility policy before limiting so request consumers resolve
+	// forwarded clients using one captured mode, as they do after
+	// SessionBindingContext in application assembly.
 	router.Use(func(c *gin.Context) {
 		ippkg.SetForwardedIPSettings(c, true, nil)
 		c.Next()
@@ -100,7 +124,7 @@ func TestRateLimiterHonorsForwardedIPSnapshot(t *testing.T) {
 
 	send := func(xff string) int {
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		// 所有请求都来自同一个反代地址
+		// Both clients connect through the same reverse proxy.
 		req.RemoteAddr = "127.0.0.1:5678"
 		req.Header.Set("X-Forwarded-For", xff)
 		rec := httptest.NewRecorder()
@@ -108,17 +132,19 @@ func TestRateLimiterHonorsForwardedIPSnapshot(t *testing.T) {
 		return rec.Code
 	}
 
-	// 反代后两个不同的真实客户端应各自独立计数，不因共享代理地址被合并限流
+	// Forwarded client addresses select independent buckets behind the proxy.
 	require.Equal(t, http.StatusOK, send("198.51.100.1"))
 	require.Equal(t, http.StatusOK, send("198.51.100.2"))
-	// 同一真实客户端第二次请求应被限流
+	// The same forwarded client still exhausts its own limit.
 	require.Equal(t, http.StatusTooManyRequests, send("198.51.100.1"))
 
 	require.Contains(t, callCounts, "fwd:198.51.100.1")
 	require.Contains(t, callCounts, "fwd:198.51.100.2")
 }
 
-// TestRateLimiterSuccessAndLimit 验证计数超限后的响应与 Retry-After。
+// TestRateLimiterSuccessAndLimit sends two requests into a one-request client
+// budget. The second response protects the 429 JSON shape and the integer retry
+// delay.
 func TestRateLimiterSuccessAndLimit(t *testing.T) {
 	limiter := NewRateLimiter(&fakeFixedWindow{counts: map[string]int64{}})
 	router := gin.New()

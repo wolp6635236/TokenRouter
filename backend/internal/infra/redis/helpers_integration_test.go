@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -16,19 +17,38 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/rediscontainer"
 )
 
-// redisImageTag 指定集成测试的 Redis 镜像。
+// Integration fixtures start a dedicated Redis container and register its
+// client for cleanup after tests finish. Docker availability is inferred from
+// configuration or path existence before startup; local absence skips the
+// test, while CI or strict verification treats it as failure.
+
+// redisImageTag pins the Redis container image used by these integration
+// fixtures so their script and session checks run against the selected server.
 const redisImageTag = "redis:8.4-alpine"
 
-// startRedis 启动 Redis 容器并注册客户端与容器的清理操作。
+// startRedis launches the selected Redis container, resolves its address, and
+// returns a pinged client. Test cleanup closes the client before terminating
+// any created container with a fresh thirty-second context. The supplied
+// context governs setup, and cleanup failures are reported to t.
 func startRedis(t *testing.T, ctx context.Context) *redis.Client {
 	t.Helper()
 	ensureDockerAvailable(t)
 
 	redisContainer, err := rediscontainer.Run(ctx, redisImageTag)
+	// Register any created container before startup errors can stop this test.
+	// Later client cleanups run first because testing reverses registration order.
+	if redisContainer != nil {
+		t.Cleanup(func() {
+			// Setup or test cancellation must not cancel Docker removal. Start the
+			// bounded cleanup context when this callback runs.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := redisContainer.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate Redis container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = redisContainer.Terminate(ctx)
-	})
 
 	redisHost, err := redisContainer.Host(ctx)
 	require.NoError(t, err)
@@ -39,16 +59,21 @@ func startRedis(t *testing.T, ctx context.Context) *redis.Client {
 		Addr: fmt.Sprintf("%s:%d", redisHost, redisPort.Int()),
 		DB:   0,
 	})
-	require.NoError(t, rdb.Ping(ctx).Err())
-
+	// Register the client before ping can fail so setup failures release its
+	// connections while the earlier container cleanup still waits its turn.
 	t.Cleanup(func() {
-		_ = rdb.Close()
+		if err := rdb.Close(); err != nil {
+			t.Errorf("close Redis client: %v", err)
+		}
 	})
+	require.NoError(t, rdb.Ping(ctx).Err())
 
 	return rdb
 }
 
-// ensureDockerAvailable 在 Docker 不可用时按 CI 和严格验证开关决定失败或跳过。
+// ensureDockerAvailable accepts Docker configuration or a detected candidate
+// path. If neither is found, CI or TOKENROUTER_VERIFY_STRICT=1 fails the
+// test; other local runs skip before creating a container.
 func ensureDockerAvailable(t *testing.T) {
 	t.Helper()
 	if dockerAvailable() {
@@ -60,7 +85,9 @@ func ensureDockerAvailable(t *testing.T) {
 	t.Skip("Docker 未启用，跳过依赖 testcontainers 的集成测试")
 }
 
-// dockerAvailable 检查 Docker 主机变量或常见 socket 路径。
+// dockerAvailable reports a nonempty DOCKER_HOST or an existing candidate
+// Docker path. Path checks do not verify a daemon or socket type; failed Stat
+// calls continue through later platform locations.
 func dockerAvailable() bool {
 	if os.Getenv("DOCKER_HOST") != "" {
 		return true
@@ -74,6 +101,9 @@ func dockerAvailable() bool {
 		filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "docker.sock"),
 	}
 
+	// Missing or inaccessible candidates do not establish Docker availability.
+	// Continue through the remaining locations so one absent platform path
+	// cannot prevent detection.
 	for _, socket := range socketCandidates {
 		if socket == "" {
 			continue
@@ -85,10 +115,14 @@ func dockerAvailable() bool {
 	return false
 }
 
-// userHomeDir 返回用户目录，读取失败时返回空字符串。
+// userHomeDir returns the process home directory for Docker path candidates.
+// A lookup error becomes empty text, allowing callers to continue checking
+// their remaining configured and platform-specific locations.
 func userHomeDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		// Home lookup is optional detection evidence. Keep the other Docker
+		// paths available by returning empty text when this lookup cannot contribute.
 		return ""
 	}
 	return home

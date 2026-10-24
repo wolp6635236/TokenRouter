@@ -9,23 +9,61 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// headers.go builds WebSocket handshake headers from authentication, session
+// identity, fingerprint, and routing options.
+// WebSocket handshake identity includes selected authentication, isolated
+// sessions, device headers, and beta features used by connection compatibility.
+// Agent Identity leaves bearer Authorization absent here for the selected
+// dial-time authentication path, while ordinary credentials supply the prepared
+// token.
+//
+// Codex session isolation runs before provider scoping and precomputed attempt
+// fingerprints. Final User-Agent selection precedes originator pairing, and
+// allowed provider overrides run before beta negotiation, routing hints, and
+// diagnostics. The resolved turn state and metadata are written before those
+// identity transformations. This ordering lets the pool compare the handshake
+// features and fingerprint identity actually sent when deciding whether an
+// existing connection can be reused.
+
+// WSTurnStateHeader names the opaque continuation state written into a prepared
+// handshake after the gateway has selected its valid source for this turn.
 const WSTurnStateHeader = "x-codex-turn-state"
 
+// WSHeaderOptions supplies selected WebSocket authentication, session, and
+// handshake identity sources.
 type WSHeaderOptions struct {
-	openai.ResponsesRequestOptions
-	AgentIdentity           bool
-	Token                   string `json:"-"`
+	openai.ResponsesRequestOptions        // shared Responses header callback sources
+	AgentIdentity                  bool   // agent assertion authentication selection
+	Token                          string `json:"-"` // prepared bearer access token
+	// TurnState carries opaque continuation state, and TurnMetadata carries its
+	// JSON identity text. Both are trimmed and written before credential scoping
+	// and fingerprint transformation for this selected handshake.
 	TurnState, TurnMetadata string
-	ResolveSession          func() (string, string)
-	InboundHeaders          func() http.Header
-	UserAgent               func() string
-	ApplyWSUserAgent        func(http.Header)
+	ResolveSession          func() (string, string) // required session/conversation identity reader
+	InboundHeaders          func() http.Header      // required stable inbound-header reader
+	UserAgent               func() string           // required preferred User-Agent reader
+	ApplyWSUserAgent        func(http.Header)       // required routed User-Agent writer
 }
 
-func (WSHeaderOptions) String() string     { return "openai websocket header options" }
+// String returns a fixed WebSocket option label that omits credentials.
+func (WSHeaderOptions) String() string { return "openai websocket header options" }
+
+// GoString returns the redacted WebSocket option label for Go-syntax
+// formatting.
 func (v WSHeaderOptions) GoString() string { return v.String() }
 
-// BuildWSHeaders 根据 WSHeaderOptions 构造握手请求头。
+// BuildWSHeaders constructs handshake headers from prepared provider and client
+// identity callbacks. All callbacks used by the selected branch are required,
+// and eligibility/session readers stay stable during this build. AgentIdentity
+// suppresses bearer-token construction here, while the transport can supply its
+// assertion through the acquisition HeadersFactory or gateway refresh step.
+//
+// Inbound beta features and known device/session headers are retained before
+// key isolation, turn metadata, credential scoping, and attempt fingerprints.
+// Codex account headers and originator follow, then the WS beta marker,
+// User-Agent routing, and official pairing. Overrides precede beta capability
+// negotiation and diagnostics, so connection compatibility can use the final
+// handshake identity and features.
 func BuildWSHeaders(ctx context.Context, options WSHeaderOptions) (http.Header, error) {
 	headers := make(http.Header)
 	if !options.AgentIdentity {
@@ -37,13 +75,13 @@ func BuildWSHeaders(ctx context.Context, options WSHeaderOptions) (http.Header, 
 		if v := strings.TrimSpace(options.InboundHeaders().Get("accept-language")); v != "" {
 			headers.Set("accept-language", v)
 		}
-		// Codex beta feature 会参与上游 WS 握手，也用于连接池兼容性隔离。
+		// Retain beta features in the handshake because pool compatibility uses
+		// their final value to prevent reuse across requests negotiating different upstream capabilities.
 		for _, value := range options.InboundHeaders().Values("x-codex-beta-features") {
 			if value = strings.TrimSpace(value); value != "" {
 				headers.Add("x-codex-beta-features", value)
 			}
 		}
-		// 按下方清单透传 Codex 的窗口与安装身份请求头。
 		for _, name := range [...]string{
 			"x-codex-window-id",
 			"x-codex-installation-id",
@@ -56,7 +94,7 @@ func BuildWSHeaders(ctx context.Context, options WSHeaderOptions) (http.Header, 
 			}
 		}
 	}
-	// OAuth 提供商：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
+	// Codex sessions include the API key ID to prevent collisions across users.
 	if options.UsesCodex() {
 		apiKeyID := options.APIKeyID()
 		if sessionID != "" {
@@ -96,17 +134,18 @@ func BuildWSHeaders(ctx context.Context, options WSHeaderOptions) (http.Header, 
 	}
 	options.ApplyWSUserAgent(headers)
 
-	// originator 与最终 user-agent 首段使用配套的官方身份，非官方 UA 使用默认 Codex TUI 身份。
-	// 两个字段错配会导致上游 404，详见 issue #3901。
+	// Pair originator with the selected User-Agent before overrides; an
+	// unrecognized identity receives the configured canonical Codex pair.
 	if options.UsesCodex() {
 		openai.EnforceCodexIdentityHeadersWithUA(headers, "")
 	}
 
-	// 提供商级请求头覆写（仅 openai api_key 提供商启用时生效；OAuth 路径 no-op）。
-	// 覆盖所有 WS 模式（ctx_pool/dedicated/passthrough）的握手头。
+	// Apply eligible provider values after identity pairing in every WS mode.
+	// OpenAI OAuth has no override map; Grok OAuth uses its supported header
+	// policy at the shared gateway binding.
 	options.OverrideHeaders(headers)
-	// HTTP 与 WebSocket 共用同一份 Codex 会话级能力协商，连接池也会据此
-	// 隔离不兼容握手。
+	// HTTP and WebSocket share Codex session capability negotiation; the pool uses
+	// these headers to separate incompatible connections.
 	options.BetaFeatures(headers)
 	options.RoutingHint(headers, nil)
 	options.Diagnostics(headers, nil)

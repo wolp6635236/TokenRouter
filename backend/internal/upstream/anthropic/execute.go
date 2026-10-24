@@ -10,29 +10,76 @@ import (
 
 	"github.com/tidwall/gjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	protocolwire "github.com/TokenFlux/TokenRouter/internal/protocol/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// execute.go executes Messages attempts and combines response usage, output,
+// and timing observations.
+// A Messages attempt reports usage presence, semantic output, and elapsed data
+// arrival separately. Explicit zero-token usage is observable, and an upstream
+// model declaration is recorded before downstream rewriting can restore the
+// client's model name.
+//
+// Executor holds an optional activity entry through response processing and
+// closes the selected response body before releasing that entry. Response
+// inspection runs before acceptance and can end the attempt before output
+// starts. Standard and passthrough readers supply observations and partial
+// usage through callbacks and returned state; failures retain those
+// observations along with cancellation and timing information.
+
+// Target supplies one provider's Messages exchange, response rules, and ordered
+// observation hooks. Callers keep its callbacks and referenced options usable
+// through the synchronous attempt.
 type Target struct {
-	ProviderID                   int64
-	Model                        string
-	Exchange                     ExchangeOptions
-	Response                     ResponseOptions
-	StartedAt                    time.Time
-	Passthrough, MimicClaudeCode bool
-	Enter                        func() (func(), error)
-	// BeforeResponse 衔接 HTTP 错误处理与提供商观测；stop 表示外层已处理响应。
+	ProviderID int64           // selected provider record ID
+	Model      string          // selected upstream model name
+	Exchange   ExchangeOptions // provider exchange preparation options
+	Response   ResponseOptions // response read and presentation options
+	// StartedAt anchors response arrival and semantic timing. A zero value
+	// selects the time after Enter succeeds, while early failures use Execute's
+	// entry time.
+	StartedAt time.Time
+	// Passthrough selects passthrough exchange and response readers together.
+	// MimicClaudeCode is passed to the standard stream reader; the selected
+	// Exchange builder separately controls request preparation for this
+	// attempt.
+	Passthrough, MimicClaudeCode bool // Passthrough: raw response mode; MimicClaudeCode: CLI request mode
+	// Enter optionally acquires an activity entry before exchange. Success
+	// returns a callable release that Execute defers until after the selected
+	// response body is closed.
+	Enter func() (func(), error)
+	// BeforeResponse inspects the selected response and wire bytes before
+	// acceptance. A true stop or error ends processing before readers run;
+	// Execute still closes the body.
 	BeforeResponse func(context.Context, *http.Response, []byte) (stop bool, err error)
-	BeforeStream   func()
-	OnStream       func(*StreamResult, error)
-	OnWireBody     func([]byte)
-	Accepted       func()
+	// BeforeStream runs synchronously after acceptance and output-context
+	// construction, immediately before the selected streaming reader. It is
+	// unused for buffered response paths.
+	BeforeStream func()
+	// OnStream receives the selected reader's result and error before Execute
+	// merges returned stream state. Partial results can contain usage and
+	// disconnect observations after a reader failure.
+	OnStream func(*StreamResult, error)
+	// OnWireBody receives the exchange's recorded wire bytes before its error
+	// is handled. Early build failures can leave the supplied attempt body as
+	// that recorded value.
+	OnWireBody func([]byte)
+	// Accepted runs after exchange returns a usable response and BeforeResponse
+	// permits processing, before response reading begins. A configured hook
+	// also runs on passthrough targets; callers choose whether to bind it.
+	Accepted func()
 }
 
+// Executor runs a prepared Messages provider attempt through synchronous output
+// and response observations.
 type Executor struct{}
 
+// TargetID returns the selected provider identifier, or zero for a nil target.
+// Callers can identify an unconfigured target while using the same method for
+// configured attempt records.
 func (t *Target) TargetID() int64 {
 	if t == nil {
 		return 0
@@ -40,11 +87,30 @@ func (t *Target) TargetID() int64 {
 	return t.ProviderID
 }
 
-func (t *Target) String() string   { return fmt.Sprintf("anthropic target provider=%d", t.TargetID()) }
+// String returns a diagnostic description containing the target's provider ID.
+func (t *Target) String() string { return fmt.Sprintf("anthropic target provider=%d", t.TargetID()) }
+
+// GoString returns the same provider description for Go-syntax diagnostic
+// formatting.
 func (t *Target) GoString() string { return t.String() }
 
+// Execute runs one Anthropic Messages attempt through the target's exchange and
+// response reader. It validates target and protocol, holds an optional Enter
+// release, reports constructed wire bytes, and closes a selected response body
+// before returning. BeforeResponse may stop processing before Accepted and
+// output.
+//
+// Response observations retain usage presence even for zero counts, the first
+// upstream model, semantic output, and timing separately from client writes.
+// Readers can return partial usage after stream failure or disconnection; that
+// state is merged with callback observations. A missing usage speed can use the
+// request's fast marker. Failures retain cancellation classification and
+// duration, including failures that occur before any usage is observed.
 func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink upstream.OutputSink) (result upstream.AttemptResult, failure error) {
-	// 失败路径也返回取消与耗时分类；未发生服务时不生成用量或成功结果。
+	defer func() { result.Finish(ctx, failure) }()
+	// Failure can occur before a response supplies usage or a start timestamp.
+	// Classify cancellation and fill missing failure timing at return so these
+	// early attempts remain observable.
 	enteredAt := time.Now()
 	defer func() {
 		if failure != nil {
@@ -69,6 +135,9 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 		if err != nil {
 			return upstream.AttemptResult{}, err
 		}
+		// Hold the acquired activity entry through exchange and response
+		// processing. Later response cleanup is deferred after this release, so
+		// its body closes before the entry is returned.
 		defer done()
 	}
 	started := target.StartedAt
@@ -92,6 +161,9 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 	if resp == nil || resp.Body == nil {
 		return upstream.AttemptResult{}, errors.New("upstream request failed: empty response")
 	}
+	// The executor owns the selected response after exchange handoff. Close it
+	// on every following return, including response interception and reader
+	// failure, to release its transport resources.
 	defer func() { _ = resp.Body.Close() }()
 	if target.BeforeResponse != nil {
 		stop, err := target.BeforeResponse(ctx, resp, wire)
@@ -106,6 +178,9 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 
 	response := target.Response
 	priorObserve := response.Observe
+	// Retain the existing observer while accumulating attempt evidence from raw
+	// upstream payloads. Semantic timing records observation independently of
+	// the sink's eventual write result.
 	response.Observe = func(observation protocolwire.Observation) {
 		if priorObserve != nil {
 			priorObserve(observation)
@@ -115,20 +190,18 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 		}
 		result.HasUsage = result.HasUsage || observation.HasUsage
 		result.Served = result.Served || observation.Semantic
-		if observation.Semantic && result.FirstSemanticOutput == nil {
-			elapsed := time.Since(started)
-			result.FirstSemanticOutput = &elapsed
-		}
 	}
 	priorState := response.ObserveState
-	response.ObserveState = func(usage *upstream.TokenUsage, first *int) {
+	// Readers update usage incrementally, including after a downstream
+	// disconnect. Copy their current counters into the attempt result while
+	// retaining the existing state-observation callback.
+	response.ObserveState = func(usage *upstream.TokenUsage) {
 		if priorState != nil {
-			priorState(usage, first)
+			priorState(usage)
 		}
 		if usage != nil {
 			result.Usage = *usage
 		}
-		result.FirstTokenMs = first
 	}
 	output := upstream.NewOutputContext(sink)
 	if input.Stream {
@@ -141,6 +214,9 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 		} else {
 			stream, err = StreamResponse(ctx, resp, output, response.StreamOptions, started, input.ResponseModel, target.Model, target.MimicClaudeCode)
 		}
+		if stages := timing.StagesFromContext(ctx); stages != nil {
+			stages.FinishAttempt(stages.Attempt())
+		}
 		if target.OnStream != nil {
 			target.OnStream(stream, err)
 		}
@@ -148,7 +224,7 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 			if stream.Usage != nil {
 				result.Usage = *stream.Usage
 			}
-			result.FirstTokenMs = stream.FirstTokenMs
+
 			result.ClientDisconnect = stream.ClientDisconnect
 		}
 	} else {
@@ -162,6 +238,9 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 			result.Usage = *usage
 		}
 	}
+	// A response can omit speed even when the sent request selected fast
+	// processing. Use that wire marker only for an empty observed speed,
+	// leaving reported response values authoritative.
 	if strings.TrimSpace(result.Usage.Speed) == "" && strings.EqualFold(strings.TrimSpace(gjson.GetBytes(wire, "speed").String()), "fast") {
 		result.Usage.Speed = "fast"
 	}

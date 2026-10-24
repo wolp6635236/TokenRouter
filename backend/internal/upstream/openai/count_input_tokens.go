@@ -13,37 +13,73 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// count_input_tokens.go builds input-token requests and returns counts through
+// compatibility or native Responses output.
+// Input-token queries have two response forms: a compatibility path extracts
+// one count, and the native Responses path forwards the complete upstream JSON.
+// The native reader requires a numeric input_tokens field, while the
+// compatibility path accepts an existing field and converts it through gjson's
+// integer reader.
+//
+// Both paths hold optional admission until response processing finishes and
+// close the acquired response body on every exit. The caller supplies
+// authentication, transport, upstream-status handling, and error output
+// callbacks. Request construction forwards only the supplied User-Agent and
+// language values before custom User-Agent selection and provider overrides,
+// keeping inference-session headers out of the token-query request.
+// Each returned HTTP response also fixes the diagnostic dispatch reference;
+// finalization records validation and read failures even though counts produce
+// no usage record that could otherwise close the attempt.
+
+// InputTokensOptions supplies admission, transport, and error output for
+// compatibility token counting.
 type InputTokensOptions struct {
+	// Enter optionally admits the query and returns a release callback; the caller
+	// remains admitted through response reading, output, and body cleanup.
 	Enter          func() (func(), error)
-	Do             func(*http.Request) (*http.Response, error)
-	TransportError func(error) error
-	HTTPError      func(*http.Response, []byte) error
-	WriteError     func(int, string, string)
+	Do             func(*http.Request) (*http.Response, error) // required HTTP exchange callback
+	TransportError func(error) error                           // required transport error translator
+	HTTPError      func(*http.Response, []byte) error          // required upstream status handler
+	WriteError     func(int, string, string)                   // required local error writer
 }
 
-// NativeInputTokensOptions 配置原生 token 查询的请求、响应读取和错误处理。
+// NativeInputTokensOptions supplies transport and body reading for native token
+// queries.
 type NativeInputTokensOptions struct {
+	// Enter optionally admits the query and returns a release callback; the caller
+	// remains admitted through response reading, output, and body cleanup.
 	Enter          func() (func(), error)
-	Do             func(*http.Request) (*http.Response, error)
-	TransportError func(error) error
-	ReadBody       func(*http.Response) ([]byte, error)
-	HTTPError      func(*http.Response, []byte) error
-	WriteError     func(int, string, string)
+	Do             func(*http.Request) (*http.Response, error) // required HTTP exchange callback
+	TransportError func(error) error                           // required transport error translator
+	ReadBody       func(*http.Response) ([]byte, error)        // required native response reader
+	HTTPError      func(*http.Response, []byte) error          // required upstream status handler
+	WriteError     func(int, string, string)                   // required local error writer
 }
 
-// CountInputTokens 查询输入 token 数并输出响应，查询结束时关闭响应体。
-func CountInputTokens(request *http.Request, options InputTokensOptions, sink upstream.OutputSink) error {
+// CountInputTokens sends request, extracts input_tokens, and writes a
+// compatibility count response. Enter is optional; all other callbacks and
+// request are required, response ownership stays here, and missing counts or
+// read failures also invoke WriteError. The response's fixed dispatch is finished
+// on return, including handled HTTP failures whose presenter returns nil.
+func CountInputTokens(request *http.Request, options InputTokensOptions, sink upstream.OutputSink) (failure error) {
 	if options.Enter != nil {
 		done, err := options.Enter()
 		if err != nil {
 			return err
 		}
+		// Hold admission through token response processing; deferred release runs
+		// after the response-body cleanup registered below, including upstream error exits.
 		defer done()
 	}
 	resp, err := options.Do(request)
 	if err != nil {
 		return options.TransportError(err)
 	}
+	var attempt upstream.AttemptResult
+	attempt.CaptureRequestAttempt(resp)
+	defer func() { attempt.Finish(request.Context(), failure) }()
+	// Release the acquired response on status, field-validation, and read exits
+	// so token-query failures do not keep an HTTP transport connection occupied.
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -58,11 +94,15 @@ func CountInputTokens(request *http.Request, options InputTokensOptions, sink up
 		options.WriteError(http.StatusBadGateway, "upstream_error", "Upstream response missing input_tokens")
 		return fmt.Errorf("input_tokens response missing input_tokens field")
 	}
+	// Compatibility output materializes the observed field as an integer count.
 	upstream.NewDeferredOutputContext(sink).JSON(http.StatusOK, map[string]any{"input_tokens": int(tokens.Int())})
 	return nil
 }
 
-// BuildInputTokensRequest 保持独立查询的精简 Header 白名单和认证顺序。
+// BuildInputTokensRequest constructs an authenticated JSON POST for the
+// input-token endpoint. The options callbacks and customUserAgent reader are
+// required; forwarding keeps User-Agent and Accept-Language, custom UA follows
+// them, and provider overrides run last.
 func BuildInputTokensRequest(ctx context.Context, body []byte, options ResponsesRequestOptions, customUserAgent func() string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.URL, bytes.NewReader(body))
 	if err != nil {
@@ -96,25 +136,37 @@ func BuildInputTokensRequest(ctx context.Context, body []byte, options Responses
 		req.Header.Set("user-agent", customUA)
 	}
 
-	// 提供商级请求头覆写（仅 openai api_key 提供商启用时生效；OAuth 路径 no-op）
+	// Provider overrides run after permitted inbound and custom User-Agent values,
+	// so enabled API-key configuration gets the final choice of allowed header values.
 	options.OverrideHeaders(req.Header)
 
 	return req, nil
 }
 
-// CountNativeInputTokens 保持数值类型验证，并原样输出供应商完整 JSON。
-func CountNativeInputTokens(request *http.Request, options NativeInputTokensOptions, sink upstream.OutputSink) error {
+// CountNativeInputTokens sends request and forwards complete JSON after
+// validating a numeric input_tokens field. Enter is optional and other
+// callbacks are required; this function closes the response, while ReadBody
+// determines its read budget and WriteError emits local failures. Finalization
+// uses the response's dispatch reference to close its diagnostic attempt.
+func CountNativeInputTokens(request *http.Request, options NativeInputTokensOptions, sink upstream.OutputSink) (failure error) {
 	if options.Enter != nil {
 		done, err := options.Enter()
 		if err != nil {
 			return err
 		}
+		// Hold admission through token response processing; deferred release runs
+		// after the response-body cleanup registered below, including upstream error exits.
 		defer done()
 	}
 	resp, err := options.Do(request)
 	if err != nil {
 		return options.TransportError(err)
 	}
+	var attempt upstream.AttemptResult
+	attempt.CaptureRequestAttempt(resp)
+	defer func() { attempt.Finish(request.Context(), failure) }()
+	// Release the acquired response on status, field-validation, and read exits
+	// so token-query failures do not keep an HTTP transport connection occupied.
 	defer func() { _ = resp.Body.Close() }()
 	body, err := options.ReadBody(resp)
 	if err != nil {
@@ -131,6 +183,8 @@ func CountNativeInputTokens(request *http.Request, options NativeInputTokensOpti
 	}
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
+		// A native token response lacking a media type still contains the checked
+		// JSON field, so downstream clients receive the JSON type expected here.
 		contentType = "application/json"
 	}
 	upstream.NewDeferredOutputContext(sink).Data(http.StatusOK, contentType, body)

@@ -5,7 +5,17 @@ import (
 	"strings"
 )
 
-// IsBatchImageManagementRequest 标识不会创建新生成任务的批任务管理请求。
+// endpoint_intent.go classifies endpoint paths and methods for funding bypass
+// and non-consuming request admission.
+// Existing batch resources and usage reads have different admission needs from
+// new inference. Path and method classifiers identify those operations before
+// consumption checks, while the batch-model catalog still requires funding eligibility
+// even though broader request-limit classification treats model lists as non-consuming.
+
+// IsBatchImageManagementRequest identifies batch reads, deletion, and cancellation.
+// It removes trailing slashes before checking method and path. GET accepts
+// the batch root or descendants, DELETE requires a descendant, and POST requires
+// the descendant cancel suffix.
 func IsBatchImageManagementRequest(method, path string) bool {
 	path = strings.TrimRight(path, "/")
 	const root = "/v1/images/batches"
@@ -18,14 +28,20 @@ func IsBatchImageManagementRequest(method, path string) bool {
 	return method == http.MethodPost && strings.HasPrefix(path, root+"/") && strings.HasSuffix(path, "/cancel")
 }
 
-// IsBatchImageBillingBypassRequest 排除模型列表，仅让既有批任务的查询和管理绕过计费。
+// IsBatchImageBillingBypassRequest identifies batch management that skips funding enforcement.
+// It excludes the exact batch-model catalog after removing trailing slashes.
+// Other paths follow IsBatchImageManagementRequest, keeping model discovery subject
+// to the funding checks performed by authentication.
 func IsBatchImageBillingBypassRequest(method, path string) bool {
 	path = strings.TrimRight(path, "/")
 	return path != "/v1/images/batches/models" && IsBatchImageManagementRequest(method, path)
 }
 
-// IsAPIKeyNonConsumingRequest 标识只读取已有状态或释放资源的网关请求。
-// 未知路径按消费请求检查团队限额。
+// IsAPIKeyNonConsumingRequest identifies routes exempt from member and key request-limit checks.
+// Unknown paths retain those checks. Matching removes
+// trailing slashes; GET model suffixes and existing-resource operations qualify,
+// as do batch deletion or cancellation and POST Messages count-token suffixes.
+// This classification is separate from the narrower billing-bypass selection.
 func IsAPIKeyNonConsumingRequest(method, path string) bool {
 	path = strings.TrimRight(path, "/")
 	if IsAPIKeyUsageRequest(method, path) {
@@ -45,8 +61,10 @@ func IsAPIKeyNonConsumingRequest(method, path string) bool {
 	return false
 }
 
-// IsAPIKeyUsageRequest 识别两套 Claude 风格的 Key 用量查询入口。
-// 查询读取 Key 自身状态，订阅或 Key 配额耗尽时仍可查询。
+// IsAPIKeyUsageRequest identifies the two Claude-style key usage endpoints.
+// They expose key state even when subscription or key quotas are exhausted.
+// Only GET on the supported usage paths qualifies after trailing slashes are
+// removed; other methods or similar endpoint names keep their ordinary admission path.
 func IsAPIKeyUsageRequest(method, path string) bool {
 	if method != http.MethodGet {
 		return false

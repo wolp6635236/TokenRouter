@@ -13,7 +13,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/requestlog"
 )
 
-// TestRequestLogRoutesAdminOnly 检查用户 URL 已移除，管理员入口经过认证、审计和限流中间件。
+// Request diagnostics are mounted under administrator URLs and reject a user
+// principal at the handler. Recording middleware fixtures verify their
+// execution order, while an administrator principal exercises the mounted
+// writer-health route and receives a successful response.
+
+// TestRequestLogRoutesAdminOnly mounts diagnostics with observable middleware
+// callbacks. User URLs must return 404, mounted routes must reject a user role
+// after admin/audit/limit callbacks, and the health route must accept an
+// administrator role.
 func TestRequestLogRoutesAdminOnly(t *testing.T) {
 	router := gin.New()
 	var chain []string

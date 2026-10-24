@@ -10,8 +10,29 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// StreamPayload 将 unary 压缩结果转换为顺序 SSE 事件，保留未知字段。
-// 仅缺失合法响应 ID 时才调用外层生成器，保持原生成时点。
+// stream.go converts a completed Compact JSON response into Responses SSE
+// events. Legacy compact exchanges return one JSON response even when the
+// downstream client requests Responses streaming. The bridge emits an
+// output-item event for each object in output, followed by a completed event
+// containing the full response. Unknown JSON fields remain in the completed
+// response and copied output objects.
+//
+// SSE data occupies one line, so JSON is compacted before event framing. A
+// missing or unusable response ID is replaced through the caller's generator,
+// and usage is retained only when all required token counts parse as unsigned
+// decimal integers. These patches keep the generated response shape usable
+// while leaving other captured fields available to downstream consumers.
+
+// StreamPayload converts a unary compact JSON object into ordered SSE events.
+// Invalid or nonobject input returns nil and false; callers provide newID when
+// the response lacks a nonempty string ID, and the function returns false if
+// any JSON patch fails.
+//
+// Output-item events retain each object and assign sequential indexes while
+// skipping nonobject array entries. The completed event contains the compacted
+// response, including unknown fields, with its ID patched when needed. Usage
+// that fails the unsigned-integer shape check is removed before emission so
+// malformed token counts do not reach the generated completed event.
 func StreamPayload(finalResponse []byte, newID func() string) ([]byte, bool) {
 	if len(finalResponse) == 0 || !gjson.ValidBytes(finalResponse) {
 		return nil, false
@@ -19,8 +40,8 @@ func StreamPayload(finalResponse []byte, newID func() string) ([]byte, bool) {
 	if !gjson.ParseBytes(finalResponse).IsObject() {
 		return nil, false
 	}
-	// SSE 的 data 行不允许出现裸换行：上游 JSON 可能是 pretty-printed 形态，
-	// 嵌入前必须压缩为单行。
+	// SSE treats each raw newline as a framing break. Compact pretty-printed
+	// JSON onto one data line so the downstream decoder receives the complete object.
 	var compacted bytes.Buffer
 	if err := json.Compact(&compacted, finalResponse); err != nil {
 		return nil, false
@@ -28,6 +49,8 @@ func StreamPayload(finalResponse []byte, newID func() string) ([]byte, bool) {
 	response := compacted.Bytes()
 	root := gjson.ParseBytes(response)
 	responseID := root.Get("id")
+	// Use the caller's generator when the captured response lacks a usable
+	// string ID. Patch the response before embedding it in the completed event.
 	if responseID.Type != gjson.String || strings.TrimSpace(responseID.String()) == "" {
 		next, err := sjson.SetBytes(response, "id", newID())
 		if err != nil {
@@ -36,6 +59,8 @@ func StreamPayload(finalResponse []byte, newID func() string) ([]byte, bool) {
 		response = next
 	}
 	if usage := gjson.GetBytes(response, "usage"); usage.Exists() && !UsageParsableByCodex(usage) {
+		// The completed event uses the unsigned token-count shape. Omit unusable
+		// usage while retaining the response's output and unknown metadata fields.
 		next, err := sjson.DeleteBytes(response, "usage")
 		if err != nil {
 			return nil, false
@@ -53,6 +78,8 @@ func StreamPayload(finalResponse []byte, newID func() string) ([]byte, bool) {
 		_, _ = buf.WriteString("\n\n")
 	}
 	for _, item := range gjson.GetBytes(response, "output").Array() {
+		// Output-item events carry objects, so skip scalar candidates here while
+		// the completed event still retains the captured output value, including those entries.
 		if !item.IsObject() {
 			continue
 		}
@@ -76,6 +103,9 @@ func StreamPayload(finalResponse []byte, newID func() string) ([]byte, bool) {
 	return buf.Bytes(), true
 }
 
+// UsageParsableByCodex reports whether usage contains all three required token
+// counts as unsigned decimal uint64 literals. Nonobjects, absent or nonnumeric
+// fields, negative values, fractions, exponent notation, and overflow return false.
 func UsageParsableByCodex(usage gjson.Result) bool {
 	if !usage.IsObject() {
 		return false
@@ -85,8 +115,9 @@ func UsageParsableByCodex(usage gjson.Result) bool {
 		if value.Type != gjson.Number {
 			return false
 		}
-		// Codex 使用无符号整数解析 token 数；小数、负数和指数形式都会让
-		// response.completed 整体反序列化失败，因此按 JSON 原始字面量校验。
+		// The numeric JSON type alone admits fractions and exponent notation.
+		// Parsing the raw literal enforces the unsigned decimal form used when
+		// deciding whether the completed event can retain these counts.
 		if _, err := strconv.ParseUint(value.Raw, 10, 64); err != nil {
 			return false
 		}

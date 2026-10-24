@@ -9,7 +9,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
-// ApplyProviderHeaderOverrides 在原调用位置应用提供商策略，保留 wire 大小写和后续会话头覆盖顺序。
+// request_headers.go applies filtered provider header overrides and reads
+// individual normalized overrides.
+// Provider header overrides pass through egress policy before reaching an
+// upstream request. The provider record supplies an enabled, filtered map, and
+// the applicator uses Anthropic wire casing so permitted replacements retain
+// the platform's expected header spelling.
+
+// ApplyProviderHeaderOverrides applies the record's filtered header policy with
+// Anthropic wire casing. Nil destination headers are skipped; allowed keys can
+// replace existing values, while protected keys are excluded by provider and
+// egress filtering.
 func ApplyProviderHeaderOverrides(value *provider.Record, headers http.Header) {
 	if headers == nil {
 		return
@@ -18,7 +28,9 @@ func ApplyProviderHeaderOverrides(value *provider.Record, headers http.Header) {
 	egressprovider.ApplyRequestHeaders(headers, policy, anthropic.ResolveWireCasing)
 }
 
-// HeaderOverrideValue 让协议适配在原 body 净化时点读取一项覆写值。
+// HeaderOverrideValue returns one enabled override under its normalized
+// lowercase key. The lookup uses the record's filtered map and reports false
+// for absent entries; callers supply the lowercase spelling.
 func HeaderOverrideValue(value *provider.Record, lowerName string) (string, bool) {
 	result, ok := value.HeaderOverrides()[lowerName]
 	return result, ok

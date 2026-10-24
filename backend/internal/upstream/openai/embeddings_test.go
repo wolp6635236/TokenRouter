@@ -13,30 +13,41 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// embeddingsTestSink records synchronous response headers and bytes for
+// embedding assertions.
 type embeddingsTestSink struct {
-	head upstream.OutputHead
-	body bytes.Buffer
+	head upstream.OutputHead // captured synchronous response head
+	body bytes.Buffer        // captured response event bytes
 }
 
+// embeddingsTestBody counts closure of the original acquired HTTP response
+// body.
 type embeddingsTestBody struct {
-	io.ReadCloser
-	closed *atomic.Int32
+	io.ReadCloser               // wrapped acquired response body
+	closed        *atomic.Int32 // original response close counter
 }
 
+// Begin records the embedding response head for later assertions.
 func (s *embeddingsTestSink) Begin(head upstream.OutputHead) error { s.head = head; return nil }
 
+// Emit appends event bytes to the fixture response buffer.
 func (s *embeddingsTestSink) Emit(event upstream.OutputEvent) error {
 	_, err := s.body.Write(event.Data)
 	return err
 }
 
+// Close increments the fixture close count before delegating body closure.
 func (b *embeddingsTestBody) Close() error { b.closed.Add(1); return b.ReadCloser.Close() }
 
-// TestEmbeddingsExecutorLocalTLSAndResourceOwnership 通过本地 TLS 服务检查请求和同步输出，以及响应体先于活动登记释放的顺序。
+// TestEmbeddingsExecutorLocalTLSAndResourceOwnership serves success and
+// rate-limit responses from a local TLS endpoint. It checks request bytes and
+// header precedence, usage and model results, redacted diagnostics, and body
+// closure before activity release.
 func TestEmbeddingsExecutorLocalTLSAndResourceOwnership(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusTooManyRequests} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -60,6 +71,8 @@ func TestEmbeddingsExecutorLocalTLSAndResourceOwnership(t *testing.T) {
 				w.WriteHeader(status)
 				_, _ = io.WriteString(w, responseBody)
 			}))
+			// Close the local TLS fixture after the attempt and resource assertions,
+			// ensuring this case releases its listener before the next status fixture runs.
 			defer server.Close()
 			failure := errors.New("fixture classified response")
 			target := &EmbeddingsTarget{
@@ -109,12 +122,14 @@ func TestEmbeddingsExecutorLocalTLSAndResourceOwnership(t *testing.T) {
 				WriteHeaders: func(output, input http.Header) { output.Set("x-request-id", input.Get("x-request-id")) },
 			}
 			sink := &embeddingsTestSink{}
-			result, err := (EmbeddingsExecutor{}).Execute(context.Background(), upstream.AttemptInput{Protocol: protocol.ProtocolEmbeddings, Body: requestBody, ResponseModel: "client-alias", Target: target}, sink)
+			ctx := telemetry.BeginRequestAttempt(telemetry.WithRequestProvider(t.Context(), 7, "X-Custom"), 2)
+			result, err := (EmbeddingsExecutor{}).Execute(ctx, upstream.AttemptInput{Protocol: protocol.ProtocolEmbeddings, Body: requestBody, ResponseModel: "client-alias", Target: target}, sink)
 			require.EqualValues(t, 1, requests.Load())
 			require.EqualValues(t, 1, closed.Load())
 			require.EqualValues(t, 1, released.Load())
 			if status == http.StatusOK {
 				require.NoError(t, err)
+				require.Equal(t, telemetry.RequestAttemptFromContext(ctx), result.RequestAttempt)
 				require.True(t, result.HasUsage)
 				require.True(t, result.Served)
 				require.Equal(t, 7, result.Usage.InputTokens)

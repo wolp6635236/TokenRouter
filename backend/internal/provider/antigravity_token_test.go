@@ -9,6 +9,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// TestAntigravityTokenProvider_GetAccessToken_Guards supplies nil, another
+// platform, API Key, and Upstream records. Each case checks its rejection
+// message and an empty token, establishing OAuth-only lookup admission.
 func TestAntigravityTokenProvider_GetAccessToken_Guards(t *testing.T) {
 	tokenSource := &AntigravityTokenSource{}
 
@@ -30,7 +33,7 @@ func TestAntigravityTokenProvider_GetAccessToken_Guards(t *testing.T) {
 		require.Empty(t, token)
 	})
 
-	// 静态密钥即使存在，也不能作为 OAuth token 使用。
+	// Static keys are not accepted as OAuth access tokens.
 	for _, kind := range []string{capability.ProviderTypeAPIKey, capability.ProviderTypeUpstream} {
 		t.Run(kind, func(t *testing.T) {
 			provider := &Record{
@@ -46,11 +49,14 @@ func TestAntigravityTokenProvider_GetAccessToken_Guards(t *testing.T) {
 	}
 }
 
+// TestAntigravityTokenCacheKey supplies populated, padded, blank, absent, and
+// nil project credentials. It checks trimmed project keys and row-ID fallback
+// keys for these configured record cases.
 func TestAntigravityTokenCacheKey(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider *Record
-		expected string
+		name     string  // cache identity case name
+		provider *Record // input provider credential record
+		expected string  // expected complete cache key
 	}{
 		{
 			name: "with_project_id",

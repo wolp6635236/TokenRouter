@@ -16,13 +16,39 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
+// public.go validates and submits batch-image jobs, lists owned resources, and
+// requests cancellation.
+// A submitted batch fixes its expanded custom IDs, routed model stages,
+// execution provider and funding settings before contacting the upstream
+// platform. The public API checks group permission, prices the normalized
+// output workload and creates its persistent record before reserving funds.
+// Provider results, later cancellation and settlement continue using those
+// stored choices.
+//
+// Submission spans database, funds, upstream execution and Redis publication
+// as separate operations. Failure before a usable upstream name releases the
+// hold, while a failed local save after provider creation attempts
+// cancellation and input cleanup. A submission heartbeat protects slow
+// uploads from stale recovery. Idempotent replay compares the normalized
+// request hash and can retry queue publication for a submitted job. Submitted
+// and running cancellation requests retain funds until polling confirms their
+// outcome; indexing visits continue reading saved results.
+
+// Submission defaults define workload caps, omitted output preferences and
+// funding multipliers before normalized items are saved or sent to a
+// provider.
 const (
+	// PlatformGemini selects the provider routing platform shared by both
+	// backend implementations during group-scoped candidate lookup.
 	PlatformGemini = "gemini"
 
+	// BillingModelSourceUpstream selects the final execution model for a group's
+	// upstream-stage restriction check after provider mapping is resolved.
 	BillingModelSourceUpstream = routing.BillingModelSourceUpstream
 
 	DefaultBatchImageMaxItems           = 200
@@ -34,121 +60,268 @@ const (
 	DefaultBatchImageDiscountMultiplier = 0.5
 	DefaultBatchImageHoldMultiplier     = 0.6
 
+	// Inline reference limits bound each decoded attachment and the repeated
+	// workload sent upstream, with job totals enforced after output expansion.
 	MaxBatchImageReferenceImageBytes    = 10 * 1024 * 1024
 	DefaultBatchImageMaxReferenceImages = 1000
 	DefaultBatchImageMaxReferenceBytes  = 128 * 1024 * 1024
 )
 
 type (
+	// GroupMappingResult retains the shared routing mapping and chosen
+	// billing-model source.
 	GroupMappingResult = routing.GroupMappingResult
+	// GroupMappingReader supplies group mapping, restriction and pricing-source
+	// information for batch selection.
 	GroupMappingReader interface {
+		// ResolveGroupMapping returns the selected group mapping and billing-model
+		// stages for a requested model. Submit retains trace information around
+		// this result and uses the mapped spelling for provider selection.
 		ResolveGroupMapping(context.Context, int64, string) GroupMappingResult
+		// IsModelRestricted reports whether the group rejects the supplied model
+		// spelling. Its caller selects the restriction stage first, so requested,
+		// group-mapped and upstream checks use their own resolved model identities.
 		IsModelRestricted(context.Context, int64, string) bool
+		// GetGroupPolicy reads the group model policy used during one catalogue
+		// query. Callers retain that view across candidate evaluation so mapping
+		// and restriction decisions use the same returned rules.
 		GetGroupPolicy(context.Context, int64) (*routing.GroupPolicyView, error)
+		// GetPricingConfigForGroup reads the billing-model source linked to this
+		// group. ListModels retains that source for its query and keeps the
+		// group-mapped default when this optional lookup fails or returns no
+		// config.
 		GetPricingConfigForGroup(context.Context, int64) (*routing.PricingConfig, error)
 	}
 )
 
+// CandidateRules exposes scheduling, model mapping and billing-rate decisions
+// for one provider snapshot.
 type CandidateRules interface {
+	// IsSchedulable reports whether this provider snapshot is available for
+	// selection.
 	IsSchedulable() bool
+	// IsModelSupported checks the supplied routing-model spelling through
+	// prepared provider rules. Selection invokes it before resolving the final
+	// upstream model, keeping provider whitelist handling with the provider's
+	// own model rules.
 	IsModelSupported(string) bool
+	// GetModelMapping returns the prepared provider model mapping used by
+	// catalogue candidates.
 	GetModelMapping() map[string]string
+	// ResolveMappedModel returns one provider mapping target and whether a rule
+	// matched the supplied spelling. Catalogue resolution keeps the input when
+	// no usable mapping is selected, preserving its group-routing stage.
 	ResolveMappedModel(string) (string, bool)
+	// BillingRateMultiplier returns the provider price scaling used in submitted
+	// batch estimates.
 	BillingRateMultiplier() float64
 }
+
+// ExecutionProvider binds provider operations and a registry name to the
+// selected execution snapshot.
 type ExecutionProvider interface {
-	BoundProvider
+	BoundProvider // inherited provider operation set
+	// Name returns the registered backend name saved as the submitted job
+	// platform.
 	Name() string
 }
+
+// Candidate combines a prepared provider snapshot with model and execution
+// selection callbacks.
 type Candidate struct {
-	ID       int64
-	Priority int
-	CandidateRules
-	ProtocolEnabled  func() bool
-	SupportsProvider func(string) bool
-	ResolveUpstream  func(context.Context, string) string
-	Bind             func(string) ExecutionProvider
+	// AttributeTarget optionally replaces the default Gemini catalogue target.
+	// modelAttributeTarget still assigns the image_batches client protocol after
+	// that callback returns.
+	AttributeTarget func(string) modelcatalog.Target // final model attribute target builder
+	ID              int64                            // database record identity
+	Priority        int                              // provider selection priority
+	CandidateRules                                   // prepared provider selection rules
+	// ProtocolEnabled, SupportsProvider, ResolveUpstream and Bind are supplied
+	// together by candidate preparation. Selection invokes them in that order
+	// after scheduling and model checks before using the returned provider
+	// operations.
+	ProtocolEnabled  func() bool                          // batch protocol permission check
+	SupportsProvider func(string) bool                    // backend credential compatibility check
+	ResolveUpstream  func(context.Context, string) string // final execution model resolver
+	Bind             func(string) ExecutionProvider       // provider snapshot operation binder
 }
+
+// ProviderReader supplies batch candidates by bound provider identity or
+// routing membership.
 type ProviderReader interface {
+	// GetByID reads the provider candidate bound to an existing job identity.
+	// Existing-job cancellation uses that binding rather than choosing another
+	// provider from the owner's current group membership.
 	GetByID(context.Context, int64) (*Candidate, error)
+	// ListSchedulableByPlatform returns provider candidates in the requested
+	// routing platform.
 	ListSchedulableByPlatform(context.Context, string) ([]Candidate, error)
+	// ListSchedulableByGroupIDAndPlatform returns candidates associated with the
+	// selected positive group and platform. Public selection applies model,
+	// protocol and backend checks after this membership lookup before binding
+	// one provider.
 	ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]Candidate, error)
 }
+
+// GroupView supplies batch permission and submission multipliers for one
+// routing group.
 type GroupView struct {
-	ID                                                                     int64
-	AllowBatchImageGeneration                                              bool
+	ID                        int64 // database record identity
+	AllowBatchImageGeneration bool  // group batch submission permission
+	// RateMultiplier, BatchImageDiscountMultiplier and BatchImageHoldMultiplier
+	// are read from one view for submission estimates. ResolvePricingSnapshot
+	// clamps negative base and discount rates to zero and uses its default when
+	// the stored hold rate is negative.
+	// RateMultiplier: base group price scale; BatchImageDiscountMultiplier:
+	// group batch discount scale; BatchImageHoldMultiplier: group batch
+	// reservation scale
 	RateMultiplier, BatchImageDiscountMultiplier, BatchImageHoldMultiplier float64
 }
+
+// GroupReader reads the group view used for permission and pricing snapshots.
 type GroupReader interface {
+	// GetByIDLite reads permission and batch pricing multipliers for a selected
+	// group. Missing or unavailable data prevents public submission and
+	// catalogue access; callers retain the returned view through their rate
+	// calculations.
 	GetByIDLite(context.Context, int64) (*GroupView, error)
 }
+
+// BatchImagePriceInput identifies the billing model, selected group and
+// requested output size.
 type BatchImagePriceInput struct {
-	Model     string
-	GroupID   *int64
-	Group     *GroupView
-	ImageSize string
+	Model   string // selected billing model
+	GroupID *int64 // selected routing group
+	// Group carries the submission view supplied by ResolvePricingSnapshot for
+	// an injected price lookup. The configured Pricing wrapper currently
+	// forwards Model and GroupID to billing and does not read this view.
+	Group     *GroupView // optional selected group view
+	ImageSize string     // requested output size
 }
+
+// ImagePricer supplies the per-image base price used by submission and
+// catalogue filtering.
 type ImagePricer interface {
+	// BatchImageUnitPrice resolves the per-image base price for a billing model,
+	// group and output size. Zero is a valid configured price, while missing
+	// pricing rejects submission and filters catalogue entries.
 	BatchImageUnitPrice(context.Context, BatchImagePriceInput) (float64, error)
 }
+
+// PublicOptions configures request admission, byte limits and omitted output
+// preferences.
 type PublicOptions struct {
-	Enabled                                                                                                                                                                       bool
+	Enabled bool // global batch admission flag
+	// StaleActiveAfterSeconds: silent submission window seconds;
+	// MaxItemsPerJobDefault: submitted prompt entry cap; MaxOutputImagesPerJob:
+	// expanded output request cap; MaxOutputImagesPerItem: per prompt repetition
+	// cap; MaxPromptCharsPerItem: prompt UTF-8 byte cap;
+	// MaxReferenceImagesPerJob: expanded reference attachment cap;
+	// MaxReferenceInlineBytesPerJob: expanded inline reference byte cap
 	StaleActiveAfterSeconds, MaxItemsPerJobDefault, MaxOutputImagesPerJob, MaxOutputImagesPerItem, MaxPromptCharsPerItem, MaxReferenceImagesPerJob, MaxReferenceInlineBytesPerJob int
-	DefaultResponseMimeType, DefaultImageSize                                                                                                                                     string
+	// DefaultResponseMimeType: omitted output MIME preference; DefaultImageSize:
+	// omitted output size preference
+	DefaultResponseMimeType, DefaultImageSize string
 }
+
+// Public coordinates owner operations, request validation, provider selection
+// and submission-time reservations.
 type Public struct {
-	// ModelOutputModalities 按最终型号查询输出模态，nil 表示未知。
-	ModelOutputModalities  func(string) *[]string
-	Now                    func() time.Time
-	Repo                   BatchImageRepository
-	ProviderRepo           ProviderReader
-	PricingConfigService   GroupMappingReader
-	GroupRepo              GroupReader
-	UserGroupRateRepo      BatchImageUserGroupRateRepository
-	Queue                  BatchImageQueue
-	Pricing                ImagePricer
-	Funding                Funding
-	Options                PublicOptions
-	ProviderExists         func(string) bool
-	InvalidateAuth         func(context.Context, int64)
-	Observe                func(string, ...any)
-	ClientModel            func(context.Context) string
-	WithModelTrace         func(context.Context, GroupMappingResult, string) GroupMappingResult
-	RegisterModel          func(context.Context, string)
-	AutoSubscription       func(context.Context, int64, *int64) *billing.UserSubscription
-	PreferredSubscription  func(context.Context, int64, int64, *int64) *billing.UserSubscription
+	// Attributes takes precedence over ModelOutputModalities for catalogue
+	// lookups when configured. The callback evaluates final upstream models when
+	// the attribute service is absent.
+	Attributes *routing.ModelAttributeService // optional shared model attribute resolver
+	// ModelOutputModalities supplies final-model output information when
+	// Attributes is absent. Nil output information means unknown and excludes
+	// the route from image listings until a declaration becomes available.
+	ModelOutputModalities func(string) *[]string            // optional final model modality lookup
+	Now                   func() time.Time                  // injected current time
+	Repo                  BatchImageRepository              // persistent batch state store
+	ProviderRepo          ProviderReader                    // prepared provider candidate reader
+	PricingConfigService  GroupMappingReader                // group routing and pricing reader
+	GroupRepo             GroupReader                       // group permission and multiplier reader
+	UserGroupRateRepo     BatchImageUserGroupRateRepository // optional payer wallet multiplier reader
+	Queue                 BatchImageQueue                   // optional batch visit publisher
+	Pricing               ImagePricer                       // per image base price resolver
+	Funding               Funding                           // shared task funding adapter
+	Options               PublicOptions                     // public request admission settings
+	// ProviderExists checks the registered backends during catalogue queries,
+	// provider selection and existing-job cancellation. Configure this callback
+	// before enabling operations because those call sites invoke it directly.
+	ProviderExists func(string) bool            // registered backend presence check
+	InvalidateAuth func(context.Context, int64) // optional payer cache invalidation
+	Observe        func(string, ...any)         // optional public diagnostic callback
+	// ClientModel, WithModelTrace and RegisterModel are construction-time
+	// callbacks used by Submit and provider selection. Configure them before
+	// serving requests because these call sites invoke them directly.
+	ClientModel    func(context.Context) string                                         // original client model reader
+	WithModelTrace func(context.Context, GroupMappingResult, string) GroupMappingResult // group model trace recorder
+	RegisterModel  func(context.Context, string)                                        // selected execution model recorder
+	// AutoSubscription, PreferredSubscription and SubscriptionMultiplier resolve
+	// source-specific estimate rates. Construction supplies the callbacks before
+	// funding modes requiring them can submit a pricing snapshot.
+	// AutoSubscription supplies the subscription used for an automatic estimate.
+	AutoSubscription func(context.Context, int64, *int64) *billing.UserSubscription
+	// PreferredSubscription supplies the selected subscription used for an estimate.
+	PreferredSubscription func(context.Context, int64, int64, *int64) *billing.UserSubscription
+	// SubscriptionMultiplier selects the estimate rate for the resolved subscription.
 	SubscriptionMultiplier func(context.Context, BatchImageOwner, *GroupView, float64, *billing.UserSubscription) float64
 }
 
+// warn sends a public-operation diagnostic through the configured observation
+// callback.
 func (s *Public) warn(event string, values ...any) {
 	if s.Observe != nil {
 		s.Observe(event, values...)
 	}
 }
 
+// mappedCandidateModel returns the trimmed mapped target selected by this
+// candidate. A nil candidate returns empty text, and an unmatched or blank
+// mapping leaves the supplied routing model unchanged.
 func mappedCandidateModel(c *Candidate, m string) string {
 	if c == nil {
 		return ""
 	}
 	value, matched := c.ResolveMappedModel(m)
 	if !matched || strings.TrimSpace(value) == "" {
+		// A missing or blank mapped target cannot supply a callable model; retain
+		// the routing spelling for catalogue restrictions and pricing-stage
+		// selection.
 		return m
 	}
 	return strings.TrimSpace(value)
 }
 
-// Submit 批量图片作业的提交、预占和后续状态生命周期由对应工程文档维护。
+// Submit validates and persists a normalized batch, reserves its funding and
+// submits it to the selected backend. Group permission, model attributes,
+// provider selection and pricing are checked before job creation. Idempotent
+// replay requires the same normalized hash and can retry enqueueing an
+// already submitted job. Retries supply a stable TaskName because omitted
+// titles use the current clock and participate in that fingerprint.
+//
+// The saved job precedes reserve and pending item creation. Uploading state
+// and its heartbeat cover the provider call; the caller joins that heartbeat
+// before saving returned resources. Pre-upstream failures release funds,
+// while a failed local save after upstream creation attempts orphan
+// cancellation and input cleanup. References are persisted before queue
+// publication, so a queue error retains the submitted job and reservation for
+// a later retry.
 // @project-doc docs/domains/batch_image_jobs.md#job_lifecycle
 func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchImageSubmitRequest, idempotencyKey string) (*BatchImagePublicBatch, error) {
 	if !s.Enabled() {
 		return nil, ErrBatchImageDisabled
 	}
+	if routing.ModelAttributesFromContext(ctx) == nil {
+		ctx = routing.WithModelAttributes(ctx, s.Attributes)
+	}
+	attributeSession := routing.ModelAttributesFromContext(ctx)
 	normalized, err := s.ValidateSubmitRequest(req)
 	if err != nil {
 		return nil, err
 	}
-	// 与 ListModels 使用同一鉴权谓词（AllowBatchImageGeneration），
-	// 避免两个入口校验口径不一致留下防御纵深缺口。
+	// Apply the same AllowBatchImageGeneration check as ListModels so submission
+	// enforces the group permission advertised by the model catalogue.
 	if err := s.EnsureGroupAllowsBatchImage(ctx, owner.GroupID); err != nil {
 		return nil, err
 	}
@@ -157,6 +330,8 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 		requestedModel = strings.TrimSpace(clientModel)
 	}
 	requestHash := HashBatchImageSubmitRequest(normalized)
+	// The client spelling can differ from the normalized model. Include the
+	// selected group so equal normalized content cannot replay into another group.
 	if requestedModel != normalized.Model {
 		requestHash = HashCompositeBatchImageSubmitRequest(normalized, owner.GroupID)
 	}
@@ -167,6 +342,9 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 			if BatchImageDerefString(existing.RequestHash) != requestHash {
 				return nil, ErrBatchImageIdempotencyConflict
 			}
+			// An earlier submit can save its provider job before Redis publication
+			// fails; replay the queue publication so the persisted task can resume
+			// processing.
 			if existing.Status == BatchImageJobStatusSubmitted && s.Queue != nil {
 				if enqueueErr := s.Queue.Enqueue(ctx, existing.BatchID); enqueueErr != nil && !errors.Is(enqueueErr, ErrBatchImageAlreadyQueued) {
 					_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, existing.BatchID, "QUEUE_FAILED", SanitizeBatchImagePublicMessage(enqueueErr.Error()), false)
@@ -194,6 +372,9 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 	if err != nil {
 		return nil, err
 	}
+	if err := s.validateModelAttributes(ctx, attributeSession, owner.GroupID, provider, upstreamModel, normalized); err != nil {
+		return nil, err
+	}
 	pricingRequest := normalized
 	pricingRequest.Model = BatchImagePricingModel(groupMapping, normalized.Model, routingModel, upstreamModel)
 	pricingSnapshot, err := s.ResolvePricingSnapshot(ctx, owner, pricingRequest, platform.Name(), provider)
@@ -218,6 +399,9 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 	providerID := provider.ID
 	holdID := BatchImageHoldRequestID(batchID)
 	holdAmount := pricingSnapshot.HoldAmount
+	// Save model, ownership and price snapshots before reserving funds; the
+	// billing participant needs this job row when its reservation transaction
+	// records allocations.
 	job, err := s.Repo.CreateBatchImageJob(ctx, CreateBatchImageJobParams{
 		BatchID:                    batchID,
 		UserID:                     owner.UserID,
@@ -259,20 +443,23 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 		return nil, err
 	}
 	telemetry.RecordRelatedRequest(ctx, telemetry.RequestRecord{RequestID: telemetry.StableRequestID(BatchImageCaptureRequestID(job.BatchID)), State: "running", Model: job.Model, StartedAt: job.CreatedAt, Aliases: []telemetry.RequestAlias{{Kind: "task", Value: job.BatchID}, {Kind: "billing", Value: BatchImageCaptureRequestID(job.BatchID)}}})
+	// The job now exists before funding begins; require reserve success before
+	// creating provider inputs that can incur upstream execution costs.
 	if err := s.Funding.Reserve(ctx, job, owner.GroupID, requestHash); err != nil {
+		// Reserve rejection prevents upstream work. Diagnostic and hiding writes
+		// are best effort while the funding category remains the submit result.
 		code := BatchImageBillingHoldFailureCode(err)
 		_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, code, SanitizeBatchImagePublicMessage(err.Error()), true)
 		s.HidePreUpstreamSubmitFailure(ctx, owner, job)
 		return nil, err
 	}
 	s.InvalidateAuthCache(ctx, owner.EffectiveBillingUserID())
+	// Item persistence is still before upstream creation. Refund the hold before
+	// recording and hiding a failed submission that cannot provide result identities.
 	if err := s.CreatePendingItems(ctx, job.BatchID, requestHash, normalized.Items); err != nil {
-		if releaseErr := s.ReleaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
-			return nil, releaseErr
-		}
-		_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, "ITEM_CREATE_FAILED", SanitizeBatchImagePublicMessage(err.Error()), true)
-		s.HidePreUpstreamSubmitFailure(ctx, owner, job)
-		return nil, ErrBatchImageQueueFailed
+		return nil, s.compensateFailedSubmit(ctx, owner, job, requestHash, func() (string, string, error) {
+			return "ITEM_CREATE_FAILED", SanitizeBatchImagePublicMessage(err.Error()), ErrBatchImageQueueFailed
+		})
 	}
 
 	input := BatchImageInput{
@@ -297,9 +484,9 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 		})
 	}
 
-	// 上游提交（上传参考图 + 创建批任务）可能长达数分钟且不刷新 updated_at，
-	// 会被 stale 恢复扫描误判为滞留并退款。提交前转入 uploading 刷新时间戳，
-	// 提交期间用心跳持续续期。
+	// Provider submission can outlive a stale recovery interval. Enter uploading
+	// and refresh updated_at while the call is in progress so the conditional
+	// recovery update can reject recently heartbeated jobs.
 	if err := s.Repo.TransitionBatchImageJobStatus(ctx, job.BatchID, BatchImageJobStatusUploading, BatchImageTransitionOptions{
 		EventType:    "upload_started",
 		EventPayload: map[string]any{"batch_id": job.BatchID},
@@ -307,7 +494,8 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 		if releaseErr := s.ReleaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
 			return nil, releaseErr
 		}
-		// 并发 Cancel 等导致的非法转换：job 已处于终态，不再覆盖其状态。
+		// Concurrent cancellation can reject uploading. Keep that current state so
+		// failure recording cannot overwrite the outcome already selected by its caller.
 		if !errors.Is(err, ErrBatchImageInvalidTransition) {
 			_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, "UPLOAD_TRANSITION_FAILED", SanitizeBatchImagePublicMessage(err.Error()), true)
 			s.HidePreUpstreamSubmitFailure(ctx, owner, job)
@@ -316,31 +504,32 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 	}
 	job.Status = BatchImageJobStatusUploading
 
+	// Slow provider creation needs submission activity while it runs; cancel and
+	// join this heartbeat before saving the returned job or handling its
+	// failure.
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	hbDone := make(chan struct{})
 	go s.RunSubmitHeartbeat(hbCtx, job.BatchID, hbDone)
 	providerJob, err := platform.Submit(ctx, job, input)
 	hbCancel()
 	<-hbDone
+	// An error or unusable creation result cannot be queued for normal polling.
+	// Refund before recording and hiding failure; a failed refund schedules recovery.
 	if err != nil {
-		if releaseErr := s.ReleaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
-			return nil, releaseErr
-		}
-		publicErr := BatchImageProviderSubmitPublicError(err)
-		reason := BatchImageProviderSubmitRecordCode(publicErr)
-		_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, reason, SanitizeBatchImagePublicMessage(err.Error()), true)
-		s.HidePreUpstreamSubmitFailure(ctx, owner, job)
-		return nil, publicErr
+		return nil, s.compensateFailedSubmit(ctx, owner, job, requestHash, func() (string, string, error) {
+			publicErr := BatchImageProviderSubmitPublicError(err)
+			reason := BatchImageProviderSubmitRecordCode(publicErr)
+			return reason, SanitizeBatchImagePublicMessage(err.Error()), publicErr
+		})
 	}
 	if providerJob == nil || strings.TrimSpace(providerJob.ProviderJobName) == "" {
-		if releaseErr := s.ReleaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
-			return nil, releaseErr
-		}
-		_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, "PROVIDER_SUBMIT_FAILED", "platform job name missing", true)
-		s.HidePreUpstreamSubmitFailure(ctx, owner, job)
-		return nil, ErrBatchImageProviderSubmitFailed
+		return nil, s.compensateFailedSubmit(ctx, owner, job, requestHash, func() (string, string, error) {
+			return "PROVIDER_SUBMIT_FAILED", "platform job name missing", ErrBatchImageProviderSubmitFailed
+		})
 	}
 
+	// Persist the newly created upstream identity and references before queue
+	// publication so later worker visits can locate that same provider task.
 	if err := s.Repo.UpdateBatchImageJobProviderSubmit(ctx, UpdateBatchImageJobProviderSubmitParams{
 		BatchID:           job.BatchID,
 		ProviderJobName:   providerJob.ProviderJobName,
@@ -350,12 +539,14 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 		GCSOutputURI:      BatchImageGCSRef(platform.Name(), providerJob.ProviderOutputRef),
 		EventPayload:      map[string]any{"platform": platform.Name()},
 	}); err != nil {
-		// job 可能已被恢复扫描转 failed 并退款：上游批任务已创建成功，
-		// 必须尽力取消并清理输入，否则上游照常产生成本（孤儿任务）。
+		// Recovery may already have failed and refunded this job. Cancel the newly created
+		// upstream job and clean up its inputs to limit orphaned provider costs.
 		s.AbortOrphanProviderJob(ctx, platform, job, providerJob)
 		return nil, err
 	}
 
+	// Upstream resources are saved before queue publication. Keep submitted
+	// state and the hold when publication fails so an idempotent retry can wake it.
 	if s.Queue != nil {
 		if err := s.Queue.Enqueue(ctx, job.BatchID); err != nil && !errors.Is(err, ErrBatchImageAlreadyQueued) {
 			_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, "QUEUE_FAILED", SanitizeBatchImagePublicMessage(err.Error()), false)
@@ -370,7 +561,37 @@ func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchIma
 	return BatchImageJobToPublic(created), nil
 }
 
-// BatchImageBillingHoldFailureCode 将冻结失败映射为可诊断且稳定的任务错误码。
+// compensateFailedSubmit refunds a reserved job after item creation or upstream
+// submission cannot continue. The caller supplies failureDetails to choose its
+// diagnostic and public error after the refund succeeds; release failure skips
+// that callback and leaves the retry record visible.
+//
+// After a successful refund, the diagnostic write precedes owner hiding. Both
+// writes are best effort, so their errors cannot replace the caller-selected
+// submission failure. The refund uses the original request hash, and persistent
+// operations reuse the supplied submission context.
+func (s *Public) compensateFailedSubmit(
+	ctx context.Context,
+	owner BatchImageOwner,
+	job *BatchImageJob,
+	requestHash string,
+	failureDetails func() (code, message string, publicErr error),
+) error {
+	// Failed releases already attempt a billing diagnostic and retry publication.
+	// Return before owner hiding so the pending refund remains visible to callers.
+	if releaseErr := s.ReleaseFailedSubmitHold(ctx, job, requestHash); releaseErr != nil {
+		return releaseErr
+	}
+	code, message, publicErr := failureDetails()
+	// Once funds are returned, attempt both state marking and owner hiding even
+	// when recording the diagnostic fails.
+	_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, code, message, true)
+	s.HidePreUpstreamSubmitFailure(ctx, owner, job)
+	return publicErr
+}
+
+// BatchImageBillingHoldFailureCode selects a stable job diagnostic for a
+// funding reservation failure.
 func BatchImageBillingHoldFailureCode(err error) string {
 	switch {
 	case errors.Is(err, ErrBatchImageInsufficientBalance):
@@ -386,7 +607,20 @@ func BatchImageBillingHoldFailureCode(err error) string {
 	}
 }
 
+// ReleaseFailedSubmitHold returns the reservation after submission cannot
+// continue and invalidates the payer cache on success. The caller supplies
+// the original request fingerprint, shared by cancellation and recovery
+// releases. Funding errors are translated into the hold-failed result.
+//
+// A failed release first attempts to record a failed job before enqueueing a
+// normal processor retry. That ordering gives ReleaseTerminalHold an eligible
+// state when the worker reads it. Diagnostic persistence is best effort, and
+// enqueue errors are observed through EnqueueBillingRetry while the original
+// release failure still reaches the submit caller.
 func (s *Public) ReleaseFailedSubmitHold(ctx context.Context, job *BatchImageJob, requestHash string) error {
+	// A failed refund needs a terminal record before its retry can use
+	// ReleaseTerminalHold. Attempt that write even though its diagnostic error
+	// cannot replace the refund failure.
 	if err := s.Funding.Release(ctx, job, requestHash); err != nil {
 		_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, job.BatchID, "BILLING_RELEASE_FAILED", SanitizeBatchImagePublicMessage(err.Error()), true)
 		s.EnqueueBillingRetry(ctx, job.BatchID)
@@ -396,8 +630,10 @@ func (s *Public) ReleaseFailedSubmitHold(ctx context.Context, job *BatchImageJob
 	return nil
 }
 
-// RunSubmitHeartbeat 在 platform.Submit 期间周期性刷新 job 的 updated_at，
-// 使 stale 恢复扫描能区分"仍在慢提交"与"进程死亡后的滞留"。
+// RunSubmitHeartbeat refreshes persisted activity at SubmitHeartbeatInterval
+// until its context is cancelled, then closes done. Submit owns this
+// goroutine and waits for its completion after the provider call; heartbeat
+// failures are observed and polling continues.
 func (s *Public) RunSubmitHeartbeat(ctx context.Context, batchID string, done chan<- struct{}) {
 	defer close(done)
 	interval := s.SubmitHeartbeatInterval()
@@ -408,6 +644,8 @@ func (s *Public) RunSubmitHeartbeat(ctx context.Context, batchID string, done ch
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// A failed heartbeat does not confirm submission has stopped. Observe the
+			// failure and keep trying while the provider call and context remain active.
 			if err := s.Repo.TouchBatchImageJobSubmitting(ctx, batchID); err != nil && ctx.Err() == nil {
 				s.warn("batch_image.submit_heartbeat_failed",
 					"batch_id", batchID,
@@ -418,17 +656,31 @@ func (s *Public) RunSubmitHeartbeat(ctx context.Context, batchID string, done ch
 	}
 }
 
+// SubmitHeartbeatInterval chooses one third of the stale-submission window,
+// using ten minutes when no positive setting is supplied. A fifteen-second
+// floor limits write frequency even when the configured stale window is
+// shorter.
 func (s *Public) SubmitHeartbeatInterval() time.Duration {
 	staleAfter := 10 * time.Minute
 	if s != nil && s.Options.StaleActiveAfterSeconds > 0 {
 		staleAfter = time.Duration(s.Options.StaleActiveAfterSeconds) * time.Second
 	}
+	// Three opportunities fit the stale window, subject to the fifteen-second
+	// write-frequency floor that can exceed a very short configured window.
 	interval := max(staleAfter/3, 15*time.Second)
 	return interval
 }
 
-// AbortOrphanProviderJob 在上游任务创建成功但本地状态推进失败时，
-// 尽力取消上游批任务并清理已上传的输入文件，避免孤儿任务持续产生成本。
+// AbortOrphanProviderJob attempts cancellation and input cleanup after a
+// provider job was created but its local submission save failed. It copies
+// the local job and attaches the resource references returned by that
+// provider call. Missing dependencies or records return immediately.
+//
+// Cancellation runs before input cleanup, and either failure is observed
+// while the other attempt still proceeds. The final audit append records the
+// attempted abort using the same caller context. These best-effort operations
+// limit orphan resources but can still fail after request cancellation or an
+// unavailable provider; the failed save remains the caller's result.
 func (s *Public) AbortOrphanProviderJob(ctx context.Context, platform ExecutionProvider, job *BatchImageJob, providerJob *BatchProviderJob) {
 	if s == nil || platform == nil || job == nil || providerJob == nil {
 		return
@@ -437,6 +689,8 @@ func (s *Public) AbortOrphanProviderJob(ctx context.Context, platform ExecutionP
 	orphan.ProviderJobName = BatchImageOptionalStringPtr(providerJob.ProviderJobName)
 	orphan.ProviderInputRef = BatchImageOptionalStringPtr(providerJob.ProviderInputRef)
 	orphan.GCSInputURI = BatchImageOptionalStringPtr(BatchImageGCSRef(platform.Name(), providerJob.ProviderInputRef))
+	// Attempt cancellation before removing input resources, but continue cleanup
+	// even if cancellation fails so the newly returned references remain actionable.
 	if err := platform.Cancel(ctx, &orphan); err != nil {
 		s.warn("batch_image.orphan_provider_job_cancel_failed",
 			"batch_id", job.BatchID,
@@ -451,6 +705,8 @@ func (s *Public) AbortOrphanProviderJob(ctx context.Context, platform ExecutionP
 			"error", err,
 		)
 	}
+	// The abort event describes attempted provider operations. An audit failure
+	// is observed while the submission-save error remains the caller's result.
 	if err := s.Repo.AppendBatchImageEvent(ctx, job.BatchID, "provider_job_aborted_after_submit", map[string]any{
 		"batch_id": job.BatchID,
 		"platform": platform.Name(),
@@ -462,6 +718,10 @@ func (s *Public) AbortOrphanProviderJob(ctx context.Context, platform ExecutionP
 	}
 }
 
+// CreatePendingItems stores the expanded custom IDs, shared request hash and
+// byte-capped prompt previews before upstream submission. Missing service,
+// repository or items returns immediately; the caller releases reserved
+// funding if this write fails.
 func (s *Public) CreatePendingItems(ctx context.Context, batchID, requestHash string, items []BatchImageSubmitItem) error {
 	if s == nil || s.Repo == nil || len(items) == 0 {
 		return nil
@@ -481,15 +741,23 @@ func (s *Public) CreatePendingItems(ctx context.Context, batchID, requestHash st
 	return s.Repo.BulkCreateBatchImageItems(ctx, params)
 }
 
+// EnqueueBillingRetry schedules a processor visit to return a failed
+// submission's hold. Missing queues return immediately and duplicate
+// membership is accepted; other failures are observed and recorded through a
+// best-effort audit append.
 func (s *Public) EnqueueBillingRetry(ctx context.Context, batchID string) {
 	if s == nil || s.Queue == nil {
 		return
 	}
+	// Existing membership already supplies a refund visit. Other queue failures
+	// are observed because the caller still needs to return its original funding error.
 	if err := s.Queue.Enqueue(ctx, batchID); err != nil && !errors.Is(err, ErrBatchImageAlreadyQueued) {
 		s.warn("batch_image.billing_retry_enqueue_failed",
 			"batch_id", batchID,
 			"error", err,
 		)
+		// This audit is diagnostic after queue failure; it cannot publish a worker
+		// visit or resolve the held funds, so its failure is reported separately.
 		if eventErr := s.Repo.AppendBatchImageEvent(ctx, batchID, "billing_retry_enqueue_failed", map[string]any{
 			"batch_id": batchID,
 			"error":    SanitizeBatchImagePublicMessage(err.Error()),
@@ -502,10 +770,16 @@ func (s *Public) EnqueueBillingRetry(ctx context.Context, batchID string) {
 	}
 }
 
+// HidePreUpstreamSubmitFailure attempts to hide a failed job whose
+// provider-name pointer is absent. Its metadata remains available to internal
+// recovery; ownership or repository rejection is observed while the original
+// submission failure is returned.
 func (s *Public) HidePreUpstreamSubmitFailure(ctx context.Context, owner BatchImageOwner, job *BatchImageJob) {
 	if s == nil || s.Repo == nil || job == nil || job.ProviderJobName != nil {
 		return
 	}
+	// Keep failed metadata reachable to internal recovery while hiding it from
+	// owner listings. A rejected hide is observed after the original submit failure.
 	if err := s.Repo.MarkBatchImageJobUserDeleted(ctx, owner.UserID, owner.APIKeyID, job.BatchID, s.now()); err != nil {
 		s.warn("batch_image.hide_pre_upstream_failure_failed",
 			"batch_id", job.BatchID,
@@ -514,6 +788,9 @@ func (s *Public) HidePreUpstreamSubmitFailure(ctx context.Context, owner BatchIm
 	}
 }
 
+// Get reads a batch after the repository checks both submitting user and API
+// key. The returned value contains public status and model data, while
+// missing or mismatched ownership uses the repository not-found result.
 func (s *Public) Get(ctx context.Context, owner BatchImageOwner, batchID string) (*BatchImagePublicBatch, error) {
 	job, err := s.Repo.GetBatchImageJobByBatchIDForOwner(ctx, owner.UserID, owner.APIKeyID, batchID)
 	if err != nil {
@@ -522,6 +799,10 @@ func (s *Public) Get(ctx context.Context, owner BatchImageOwner, batchID string)
 	return BatchImageJobToPublic(job), nil
 }
 
+// List returns an owner-scoped page of public batches with normalized status,
+// title, download and creation filters. Invalid downloaded values reject the
+// query; invalid limits use twenty, and HasMore reports a page filled to its
+// limit.
 func (s *Public) List(ctx context.Context, owner BatchImageOwner, query BatchImageJobsQuery) (*BatchImagePublicListResponse, error) {
 	filter := BatchImageJobFilter{Limit: query.Limit, Offset: ParseBatchImageCursor(query.Cursor), ExcludeDeleted: true}
 	filter.TaskNameLike = strings.TrimSpace(query.TaskName)
@@ -577,6 +858,9 @@ func (s *Public) List(ctx context.Context, owner BatchImageOwner, query BatchIma
 	}, nil
 }
 
+// MarkDownloaded authorizes the user and API key before recording the current
+// time as a download acknowledgement. Repository rules retain the first saved
+// acknowledgement; this method does not check whether generation is complete.
 func (s *Public) MarkDownloaded(ctx context.Context, owner BatchImageOwner, batchID string) error {
 	job, err := s.Repo.GetBatchImageJobByBatchIDForOwner(ctx, owner.UserID, owner.APIKeyID, batchID)
 	if err != nil {
@@ -585,6 +869,10 @@ func (s *Public) MarkDownloaded(ctx context.Context, owner BatchImageOwner, batc
 	return s.Repo.MarkBatchImageDownloaded(ctx, job.BatchID, s.now())
 }
 
+// DeleteRecord authorizes the owner and attempts to hide a job once provider
+// processing is done, including settling. The repository applies its own
+// deletion state guard, so a settling record can still return
+// ErrBatchImageRecordDeleteNotReady.
 func (s *Public) DeleteRecord(ctx context.Context, owner BatchImageOwner, batchID string) error {
 	job, err := s.Repo.GetBatchImageJobByBatchIDForOwner(ctx, owner.UserID, owner.APIKeyID, batchID)
 	if err != nil {
@@ -596,6 +884,17 @@ func (s *Public) DeleteRecord(ctx context.Context, owner BatchImageOwner, batchI
 	return s.Repo.MarkBatchImageJobUserDeleted(ctx, owner.UserID, owner.APIKeyID, job.BatchID, s.now())
 }
 
+// ListModels returns priced concrete request names supported by the owner's
+// group and available batch backends. Its configured reader fetches group policy
+// and billing source at most once per catalogue call. Each candidate passes
+// group mapping, provider mapping, stage-specific restrictions and per-image
+// pricing.
+//
+// Final output modalities must explicitly include image. Unknown modalities
+// exclude the route even when configuration and image prices are present;
+// attribute-read errors stop listing. Results are deduplicated within
+// each backend and sorted by request name. Provider protocol enablement is
+// checked separately during submission selection.
 func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchImagePublicModelsResponse, error) {
 	if !s.Enabled() {
 		return nil, ErrBatchImageDisabled
@@ -616,6 +915,9 @@ func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchI
 		if err != nil {
 			return nil, err
 		}
+		// Keep group-mapped pricing as the default when optional config lookup
+		// fails; each catalogue entry still needs its resolved per-image price
+		// before admission.
 		if config, err := s.PricingConfigService.GetPricingConfigForGroup(ctx, *owner.GroupID); err == nil && config != nil {
 			billingMapping.PricingConfigID = config.ID
 			billingMapping.BillingModelSource = config.BillingModelSource
@@ -628,8 +930,9 @@ func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchI
 			candidates = append(candidates, source, target)
 		}
 	}
-	// 多个来源可以映射到同一上游型号，每次查询复用它的模态结果。
+	// Several names can map to one upstream model; reuse its modalities within this query.
 	outputs := make(map[string]*[]string)
+	attributeSession := s.Attributes.NewSession()
 	modelsByProvider := make(map[string]map[string]struct{})
 	for _, providerName := range BatchImageProviderSelectionOrder("") {
 		if !s.ProviderExists(providerName) {
@@ -644,7 +947,6 @@ func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchI
 			if !provider.IsSchedulable() || !provider.SupportsProvider(providerName) {
 				continue
 			}
-			configured := batchImageConfiguredModels(&provider, policy)
 			for _, model := range BatchImageModelsFromProviderMapping(&provider, candidates...) {
 				if err := ctx.Err(); err != nil {
 					return nil, err
@@ -662,20 +964,30 @@ func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchI
 					continue
 				}
 				modalities, found := outputs[upstreamModel]
-				if !found && s.ModelOutputModalities != nil {
+				if s.Attributes != nil {
+					target := provider.modelAttributeTarget(upstreamModel)
+					var groupID int64
+					if owner.GroupID != nil {
+						groupID = *owner.GroupID
+					}
+					resolved, err := attributeSession.Resolve(ctx, groupID, target)
+					if err == nil {
+						modalities = resolved.Attributes.OutputModalities
+					} else {
+						return nil, err
+					}
+				} else if !found && s.ModelOutputModalities != nil {
 					modalities = s.ModelOutputModalities(upstreamModel)
 					outputs[upstreamModel] = modalities
 				}
-				if modalities != nil {
-					if !slices.Contains(*modalities, "image") {
-						continue
-					}
-				} else if !configured[model] && !configured[routingModel] && !configured[upstreamModel] {
+				if modalities == nil || !slices.Contains(*modalities, "image") {
 					continue
 				}
 				mapping := billingMapping
 				mapping.MappedModel = routingModel
 				pricingModel := BatchImagePricingModel(mapping, model, routingModel, upstreamModel)
+				// An image-capable mapping can still lack an applicable image price; omit
+				// that catalogue entry before clients choose an unpriceable batch model.
 				if _, err := s.Pricing.BatchImageUnitPrice(ctx, BatchImagePriceInput{Model: pricingModel, GroupID: owner.GroupID, ImageSize: "1K"}); err != nil {
 					continue
 				}
@@ -705,6 +1017,10 @@ func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchI
 	return &BatchImagePublicModelsResponse{Object: "list", Data: out}, nil
 }
 
+// ListItems authorizes the batch owner and returns a normalized
+// status-filtered item page. Succeeded and success select stored successful
+// items, invalid filters reject the query, and invalid limits use one
+// hundred; HasMore reports a full page.
 func (s *Public) ListItems(ctx context.Context, owner BatchImageOwner, batchID string, query BatchImageItemsQuery) (*BatchImagePublicItemsResponse, error) {
 	filter := BatchImageItemFilter{Limit: query.Limit, Offset: ParseBatchImageCursor(query.Cursor)}
 	switch strings.TrimSpace(query.Status) {
@@ -736,6 +1052,16 @@ func (s *Public) ListItems(ctx context.Context, owner BatchImageOwner, batchID s
 	}, nil
 }
 
+// Cancel authorizes the owner and requests cancellation according to the
+// job's stored progress. Processor-done jobs return their current public state;
+// failed and cancelled jobs also retry reservation release. Settling belongs to
+// funding completion and returns its saved state.
+//
+// A saved provider name sends cancellation to the bound backend and requests a
+// queue visit. Submitted and running visits poll for the outcome, but indexing
+// visits reopen saved output directly and can still proceed to capture. A job
+// with no saved provider name is marked cancelled before refund; failed release
+// is enqueued so a later terminal visit can finish that cleanup.
 func (s *Public) Cancel(ctx context.Context, owner BatchImageOwner, batchID string) (*BatchImagePublicBatch, error) {
 	job, err := s.Repo.GetBatchImageJobByBatchIDForOwner(ctx, owner.UserID, owner.APIKeyID, batchID)
 	if err != nil {
@@ -765,6 +1091,8 @@ func (s *Public) Cancel(ctx context.Context, owner BatchImageOwner, batchID stri
 		if err := provider.Bind(job.Platform).Cancel(ctx, job); err != nil {
 			return nil, ErrBatchImageCancelFailed
 		}
+		// Provider cancellation has already been requested. Observe a failed audit
+		// independently so queue publication can still arrange the next owned visit.
 		if eventErr := s.Repo.AppendBatchImageEvent(ctx, job.BatchID, "job_cancel_requested", map[string]any{"batch_id": job.BatchID}); eventErr != nil {
 			s.warn("batch_image.cancel_event_failed",
 				"batch_id", job.BatchID,
@@ -782,6 +1110,8 @@ func (s *Public) Cancel(ctx context.Context, owner BatchImageOwner, batchID stri
 		}
 		return BatchImageJobToPublic(updated), nil
 	}
+	// With no upstream binding to poll, publish cancellation before refund. A
+	// later terminal visit can finish release if this funding attempt fails.
 	if err := s.Repo.TransitionBatchImageJobStatus(ctx, job.BatchID, BatchImageJobStatusCancelled, BatchImageTransitionOptions{
 		EventType:    "job_cancelled",
 		EventPayload: map[string]any{"batch_id": job.BatchID},
@@ -800,6 +1130,17 @@ func (s *Public) Cancel(ctx context.Context, owner BatchImageOwner, batchID stri
 	return BatchImageJobToPublic(updated), nil
 }
 
+// ValidateSubmitRequest normalizes a batch and expands OutputCount
+// repetitions into independent custom IDs. It supplies a title, MIME type,
+// size and missing IDs, requires 1K output, and rejects empty prompts or
+// workloads above configured caps. Prompt and title limits measure bytes.
+//
+// The request value retains shared item storage, so trimming original items
+// can modify the caller's slice before the returned request receives a new
+// expanded slice. Reference byte buffers remain shared across repeats.
+// Reference counts and inline byte totals are multiplied by each output
+// count, and collisions are checked after ID suffix expansion. The resulting
+// title, metadata and expanded items feed the submission fingerprint.
 func (s *Public) ValidateSubmitRequest(req BatchImageSubmitRequest) (BatchImageSubmitRequest, error) {
 	req.Model = strings.TrimSpace(req.Model)
 	req.TaskName = strings.TrimSpace(req.TaskName)
@@ -814,6 +1155,8 @@ func (s *Public) ValidateSubmitRequest(req BatchImageSubmitRequest) (BatchImageS
 	if req.TaskName == "" {
 		req.TaskName = DefaultBatchImageTaskName(s.now())
 	}
+	// Byte-cap long task titles before they enter persistent records and the
+	// normalized request fingerprint.
 	if len(req.TaskName) > 255 {
 		req.TaskName = TruncateBatchImageMessage(req.TaskName, 255)
 	}
@@ -833,6 +1176,8 @@ func (s *Public) ValidateSubmitRequest(req BatchImageSubmitRequest) (BatchImageS
 	if req.ImageSize == "" {
 		req.ImageSize = s.DefaultImageSize()
 	}
+	// Case-insensitive 1K preferences share one normalized spelling, keeping
+	// size-dependent pricing and request fingerprints consistent across valid retries.
 	if !strings.EqualFold(req.ImageSize, DefaultBatchImageImageSize) {
 		return req, ErrBatchImageInvalidItems
 	}
@@ -864,13 +1209,18 @@ func (s *Public) ValidateSubmitRequest(req BatchImageSubmitRequest) (BatchImageS
 		if req.Items[i].Prompt == "" {
 			return req, ErrBatchImageInvalidItems
 		}
+		// The prompt budget measures storage bytes, so multibyte text consumes more
+		// of the configured limit than the same number of ASCII characters.
 		if len(req.Items[i].Prompt) > s.MaxPromptChars() {
 			return req, ErrBatchImagePromptTooLong
 		}
-		referenceCount, inlineReferenceBytes, err := NormalizeBatchImageReferenceInputs(req.Model, &req.Items[i])
+		referenceCount, inlineReferenceBytes, err := NormalizeBatchImageReferenceInputs(&req.Items[i])
 		if err != nil {
 			return req, err
 		}
+		// Each repeated output sends the same references again; charge expanded
+		// attachment and byte totals against the whole-job caps before generating
+		// those request IDs.
 		totalReferenceImages += referenceCount * outputCount
 		if totalReferenceImages > s.MaxReferenceImagesPerJob() {
 			return req, ErrBatchImageTooManyReferenceImages
@@ -879,6 +1229,8 @@ func (s *Public) ValidateSubmitRequest(req BatchImageSubmitRequest) (BatchImageS
 		if totalInlineReferenceBytes > s.MaxReferenceInlineBytesPerJob() {
 			return req, ErrBatchImageReferenceImagesTooLarge
 		}
+		// Expand before checking uniqueness: a repeated "cover" can collide with a
+		// caller-supplied "cover_01", making provider results ambiguous after submission.
 		for repeatIndex := 1; repeatIndex <= outputCount; repeatIndex++ {
 			expanded := req.Items[i]
 			expanded.OutputCount = 0
@@ -896,17 +1248,19 @@ func (s *Public) ValidateSubmitRequest(req BatchImageSubmitRequest) (BatchImageS
 	return req, nil
 }
 
-func NormalizeBatchImageReferenceInputs(model string, item *BatchImageSubmitItem) (int, int, error) {
+// NormalizeBatchImageReferenceInputs validates and replaces an item's
+// reference slice with normalized values, retaining shared byte buffers. Each
+// reference needs an accepted image MIME and exactly one inline or gs://
+// source; the result counts attachments and inline bytes.
+func NormalizeBatchImageReferenceInputs(item *BatchImageSubmitItem) (int, int, error) {
 	if item == nil || len(item.ReferenceImages) == 0 {
 		return 0, 0, nil
-	}
-	maxRefs := MaxBatchImageReferenceImagesForModel(model)
-	if maxRefs <= 0 || len(item.ReferenceImages) > maxRefs {
-		return 0, 0, ErrBatchImageTooManyReferenceImages
 	}
 	out := make([]BatchImageReferenceInput, 0, len(item.ReferenceImages))
 	inlineBytes := 0
 	for _, ref := range item.ReferenceImages {
+		// Bound reference labels before provider input and hashing so optional
+		// identifying text cannot enlarge the normalized request indefinitely.
 		ref.ID = TruncateBatchImageMessage(strings.TrimSpace(ref.ID), 80)
 		ref.Type = TruncateBatchImageMessage(strings.TrimSpace(ref.Type), 40)
 		ref.MimeType = NormalizeBatchImageReferenceMimeType(ref.MimeType)
@@ -920,6 +1274,8 @@ func NormalizeBatchImageReferenceInputs(model string, item *BatchImageSubmitItem
 		if len(ref.Data) > 0 && ref.FileURI != "" {
 			return 0, 0, ErrBatchImageInvalidReferenceImage
 		}
+		// Reject oversized decoded attachments before repeated-work byte totals
+		// are calculated for the entire batch.
 		if len(ref.Data) > MaxBatchImageReferenceImageBytes {
 			return 0, 0, ErrBatchImageInvalidReferenceImage
 		}
@@ -933,6 +1289,9 @@ func NormalizeBatchImageReferenceInputs(model string, item *BatchImageSubmitItem
 	return len(out), inlineBytes, nil
 }
 
+// BatchImageRepeatSuffixWidth returns the decimal width used for expanded
+// output IDs. Counts below ten use two digits, making repeated custom IDs
+// readable and consistent with the public submission examples.
 func BatchImageRepeatSuffixWidth(count int) int {
 	if count < 10 {
 		return 2
@@ -940,18 +1299,10 @@ func BatchImageRepeatSuffixWidth(count int) int {
 	return len(strconv.Itoa(count))
 }
 
-func MaxBatchImageReferenceImagesForModel(model string) int {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if strings.Contains(model, "pro-image") {
-		return 14
-	}
-	if strings.Contains(model, "flash-image") {
-		return 3
-	}
-	return 0
-}
-
-// ResolveBatchImageGroupModel 执行批量图片的分组映射和分组模型白名单。
+// ResolveBatchImageGroupModel applies group mapping and the selected model
+// restriction stage while retaining trace information. Callers supply a nonnil
+// service and WithModelTrace callback. An absent group or mapping service keeps
+// the requested model; an applicable restriction rejects provider selection.
 func (s *Public) ResolveBatchImageGroupModel(ctx context.Context, groupID *int64, requestedModel string) (GroupMappingResult, string, error) {
 	mapping := s.WithModelTrace(ctx, GroupMappingResult{MappedModel: requestedModel}, requestedModel)
 	if s == nil || s.PricingConfigService == nil || groupID == nil || *groupID <= 0 {
@@ -969,18 +1320,39 @@ func (s *Public) ResolveBatchImageGroupModel(ctx context.Context, groupID *int64
 	return mapping, routingModel, nil
 }
 
+// BatchImagePricingModel selects the billing model stage through the shared
+// routing pricing rule.
 func BatchImagePricingModel(mapping GroupMappingResult, requestedModel, groupMappedModel, upstreamModel string) string {
 	return routing.BillingModelForPrice(mapping, requestedModel, groupMappedModel, upstreamModel)
 }
 
-// SelectProviderAndProvider 按分组映射模型选择提供商，并返回提供商映射后的实际上游模型。
+// SelectProviderAndProvider returns a bound execution backend, candidate and
+// final upstream model for the requested route. An explicit backend is tried
+// alone; automatic selection tries Gemini API before Vertex. Within a
+// backend, greater priority wins and equal priorities use the smaller
+// provider ID.
+//
+// Candidates need group membership, current scheduling eligibility,
+// routing-model support, protocol permission and backend credential
+// compatibility. ResolveUpstream supplies the final execution model, which is
+// checked again when group restriction uses the upstream stage. The selected
+// model is registered for tracing before the returned backend binds the
+// provider snapshot; no acceptable candidate returns the unavailable-provider
+// category.
 func (s *Public) SelectProviderAndProvider(
 	ctx context.Context,
 	owner BatchImageOwner,
 	requestedProvider, routingModel string,
 	mapping GroupMappingResult,
 ) (ExecutionProvider, *Candidate, string, error) {
+	session := routing.ModelAttributesFromContext(ctx)
+	if session == nil {
+		session = s.Attributes.NewSession()
+	}
+	var capabilityErr error
 	providers := BatchImageProviderSelectionOrder(requestedProvider)
+	// Automatic selection tries backends in its fixed order; only the requested
+	// backend participates when the caller supplied an explicit platform.
 	for _, providerName := range providers {
 		if !s.ProviderExists(providerName) {
 			continue
@@ -1015,9 +1387,24 @@ func (s *Public) SelectProviderAndProvider(
 				s.PricingConfigService.IsModelRestricted(ctx, *owner.GroupID, upstreamModel) {
 				continue
 			}
+			var groupID int64
+			if owner.GroupID != nil {
+				groupID = *owner.GroupID
+			}
+			attributes, err := session.Resolve(ctx, groupID, provider.modelAttributeTarget(upstreamModel))
+			if err != nil {
+				return nil, nil, "", err
+			}
+			if err := routing.RequireImageOutput(attributes.Attributes); err != nil {
+				capabilityErr = err
+				continue
+			}
 			s.RegisterModel(ctx, upstreamModel)
 			return provider.Bind(providerName), &provider, upstreamModel, nil
 		}
+	}
+	if capabilityErr != nil {
+		return nil, nil, "", capabilityErr
 	}
 	if requestedProvider != "" {
 		return nil, nil, "", ErrBatchImageNoProviderAvailable
@@ -1025,6 +1412,10 @@ func (s *Public) SelectProviderAndProvider(
 	return nil, nil, "", ErrBatchImageNoProviderAvailable
 }
 
+// ListCandidateProviders requests provider candidates for a positive bound
+// group and platform. A missing repository or group returns the
+// unavailable-provider result, so batch submission never widens selection to
+// a global provider pool.
 func (s *Public) ListCandidateProviders(ctx context.Context, groupID *int64, platform string) ([]Candidate, error) {
 	if s.ProviderRepo == nil {
 		return nil, ErrBatchImageNoProviderAvailable
@@ -1035,6 +1426,10 @@ func (s *Public) ListCandidateProviders(ctx context.Context, groupID *int64, pla
 	return nil, ErrBatchImageNoProviderAvailable
 }
 
+// EnsureGroupAllowsBatchImage requires a positive group identity and its
+// batch generation permission. Missing group data returns the pricing
+// category; a disabled group returns the permission category before
+// submission or model catalogue work.
 func (s *Public) EnsureGroupAllowsBatchImage(ctx context.Context, groupID *int64) error {
 	if groupID == nil || *groupID <= 0 {
 		return ErrBatchImageGroupDisabled
@@ -1052,6 +1447,19 @@ func (s *Public) EnsureGroupAllowsBatchImage(ctx context.Context, groupID *int64
 	return nil
 }
 
+// ResolvePricingSnapshot computes submission-time image prices and separate
+// source rates for the owner's selected funding mode. It validates the mode
+// and requires a preferred subscription identity for subscription funding.
+// One GroupView supplies its permission, base rate, discount and hold
+// multiplier.
+//
+// The user-specific rate affects wallet funding; subscription selection can
+// determine the displayed group estimate while newer funding commands retain
+// distinct subscription and wallet rates. The hold multiplier is raised to
+// the discount when necessary to cover a wholly successful batch. Per-image
+// pricing is resolved through the injected pricer, provider scaling is
+// applied, and the expanded item count produces the estimated charge and
+// hold.
 func (s *Public) ResolvePricingSnapshot(ctx context.Context, owner BatchImageOwner, req BatchImageSubmitRequest, platform string, provider *Candidate) (*BatchImagePricingSnapshot, error) {
 	billingMode, ok := billing.NormalizeAPIKeyBillingMode(owner.BillingMode)
 	if !ok {
@@ -1060,7 +1468,9 @@ func (s *Public) ResolvePricingSnapshot(ctx context.Context, owner BatchImageOwn
 	if billingMode == billing.APIKeyBillingModeSubscription && (owner.PreferredSubscriptionID == nil || *owner.PreferredSubscriptionID <= 0) {
 		return nil, apikey.ErrPreferredSubscriptionRequired
 	}
-	// 同一次提交复用同一份分组配置，避免并发修改时混用旧倍率与新价格。
+	// Reuse one GroupView for permission and multiplier calculations. The
+	// injected pricer resolves its image price separately, so passing this view
+	// does not establish an atomic rate-and-price snapshot.
 	var pricingGroup *GroupView
 	unit := -1.0
 	groupMultiplier := 1.0
@@ -1097,7 +1507,8 @@ func (s *Public) ResolvePricingSnapshot(ctx context.Context, owner BatchImageOwn
 			}
 		}
 		effectiveGroupMultiplier := balanceRateMultiplier
-		// 自动模式沿用套餐优先；指定订阅只读取该订阅，余额模式完全跳过套餐。
+		// The funding mode chooses which subscription may supply the estimate rate.
+		// A preferred subscription cannot be replaced by the auto resolver or wallet.
 		var subscription *billing.UserSubscription
 		switch billingMode {
 		case billing.APIKeyBillingModeSubscription:
@@ -1142,9 +1553,9 @@ func (s *Public) ResolvePricingSnapshot(ctx context.Context, owner BatchImageOwn
 		}
 		unit = resolvedUnit
 	}
-	// 定价不变式：hold 比例不得低于 discount 比例，否则成功率足够高时
-	// actualCost > holdAmount，结算永远失败、冻结余额无法解冻。
-	// 管理端已校验新配置，此处兜底钳制存量脏数据。
+	// The hold multiplier must cover the discount multiplier; otherwise enough successful
+	// images can make actualCost exceed holdAmount and prevent settlement.
+	// Clamp invalid stored settings as well as validating new settings in the admin API.
 	if holdMultiplier < discountMultiplier {
 		s.warn("batch_image.hold_multiplier_below_discount_clamped",
 			"hold_multiplier", holdMultiplier,
@@ -1178,16 +1589,26 @@ func (s *Public) ResolvePricingSnapshot(ctx context.Context, owner BatchImageOwn
 	}, nil
 }
 
+// Enabled reports whether public operations have both required repositories
+// and the global enable flag. Nil services return false; funding, pricing and
+// selection callback availability is checked or required by the invoked
+// operation.
 func (s *Public) Enabled() bool {
 	return s != nil && s.Repo != nil && s.ProviderRepo != nil && s.Options.Enabled
 }
 
+// InvalidateAuthCache invokes the optional payer invalidation callback for a
+// positive user identity. Absent callbacks and nonpositive identities return
+// immediately, allowing funding paths to share this cache refresh step.
 func (s *Public) InvalidateAuthCache(ctx context.Context, userID int64) {
 	if s != nil && s.InvalidateAuth != nil && userID > 0 {
 		s.InvalidateAuth(ctx, userID)
 	}
 }
 
+// MaxItems returns the positive configured cap on submitted prompt entries. A
+// nil service or nonpositive setting uses two hundred; repetition expansion
+// is governed separately by the output image cap.
 func (s *Public) MaxItems() int {
 	if s != nil && s.Options.MaxItemsPerJobDefault > 0 {
 		return s.Options.MaxItemsPerJobDefault
@@ -1195,6 +1616,10 @@ func (s *Public) MaxItems() int {
 	return DefaultBatchImageMaxItems
 }
 
+// MaxOutputImagesPerJob returns the positive configured cap on expanded
+// outputs across one submission. Missing or nonpositive settings use two
+// hundred, and validation counts every OutputCount repetition against this
+// total.
 func (s *Public) MaxOutputImagesPerJob() int {
 	if s != nil && s.Options.MaxOutputImagesPerJob > 0 {
 		return s.Options.MaxOutputImagesPerJob
@@ -1202,6 +1627,9 @@ func (s *Public) MaxOutputImagesPerJob() int {
 	return DefaultBatchImageMaxOutputImages
 }
 
+// MaxOutputImagesPerItem returns the positive configured repetition cap for
+// each submitted prompt. Missing or nonpositive settings use four, while a
+// zero OutputCount is normalized to one before checking this cap.
 func (s *Public) MaxOutputImagesPerItem() int {
 	if s != nil && s.Options.MaxOutputImagesPerItem > 0 {
 		return s.Options.MaxOutputImagesPerItem
@@ -1209,6 +1637,9 @@ func (s *Public) MaxOutputImagesPerItem() int {
 	return DefaultBatchImageMaxOutputCount
 }
 
+// MaxPromptChars returns the configured positive byte cap used for prompts
+// and stored previews. Missing or nonpositive settings use eight thousand,
+// and validation applies len(string) rather than counting Unicode characters.
 func (s *Public) MaxPromptChars() int {
 	if s != nil && s.Options.MaxPromptCharsPerItem > 0 {
 		return s.Options.MaxPromptCharsPerItem
@@ -1216,6 +1647,10 @@ func (s *Public) MaxPromptChars() int {
 	return DefaultBatchImageMaxPromptChars
 }
 
+// MaxReferenceImagesPerJob returns the configured positive attachment cap for
+// the expanded batch workload. Missing or nonpositive settings use one
+// thousand; references repeated by OutputCount contribute once per expanded
+// output.
 func (s *Public) MaxReferenceImagesPerJob() int {
 	if s != nil && s.Options.MaxReferenceImagesPerJob > 0 {
 		return s.Options.MaxReferenceImagesPerJob
@@ -1223,6 +1658,10 @@ func (s *Public) MaxReferenceImagesPerJob() int {
 	return DefaultBatchImageMaxReferenceImages
 }
 
+// MaxReferenceInlineBytesPerJob returns the configured positive decoded
+// inline-byte cap for the expanded workload. Missing or nonpositive settings
+// use 128 MiB, and repeated attachments contribute their byte length for
+// every output.
 func (s *Public) MaxReferenceInlineBytesPerJob() int {
 	if s != nil && s.Options.MaxReferenceInlineBytesPerJob > 0 {
 		return s.Options.MaxReferenceInlineBytesPerJob
@@ -1230,6 +1669,9 @@ func (s *Public) MaxReferenceInlineBytesPerJob() int {
 	return DefaultBatchImageMaxReferenceBytes
 }
 
+// DefaultResponseMimeType returns a trimmed configured output MIME value when
+// it is present. A nil service or blank setting uses image/png, which request
+// normalization applies when the caller omitted its preference.
 func (s *Public) DefaultResponseMimeType() string {
 	if s != nil && strings.TrimSpace(s.Options.DefaultResponseMimeType) != "" {
 		return strings.TrimSpace(s.Options.DefaultResponseMimeType)
@@ -1237,6 +1679,9 @@ func (s *Public) DefaultResponseMimeType() string {
 	return DefaultBatchImageResponseMime
 }
 
+// DefaultImageSize returns a trimmed configured size when it is present.
+// Missing or blank settings use 1K; ValidateSubmitRequest then checks that
+// the selected default satisfies the supported batch size.
 func (s *Public) DefaultImageSize() string {
 	if s != nil && strings.TrimSpace(s.Options.DefaultImageSize) != "" {
 		return strings.TrimSpace(s.Options.DefaultImageSize)
@@ -1244,28 +1689,49 @@ func (s *Public) DefaultImageSize() string {
 	return DefaultBatchImageImageSize
 }
 
+// HashBatchImageSubmitRequest returns hexadecimal SHA-256 of the request JSON
+// after metadata sanitation. Callers supply the normalized request; SessionID
+// is JSON-excluded, while the normalized title, item IDs and input data
+// affect the fingerprint.
 func HashBatchImageSubmitRequest(req BatchImageSubmitRequest) string {
 	req.Metadata = SanitizeBatchImageMetadata(req.Metadata)
+	// These request fields are JSON-encodable strings, byte slices and containers.
+	// Discard the encoding error before hashing the resulting request representation.
 	b, _ := json.Marshal(req)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
 
-// HashCompositeBatchImageSubmitRequest 将复合路由分组纳入幂等指纹，前缀大小写不改变请求身份。
+// HashCompositeBatchImageSubmitRequest fingerprints the normalized request
+// and selected group identity. Submit retains the original client spelling
+// separately, so aliases selecting the same internal model and group can share
+// this content fingerprint. Another group changes the encoded payload even
+// when prompts and the internal model match.
+//
+// The group pointer is copied before JSON encoding, and metadata uses the same
+// sanitation as ordinary submission hashing. SessionID remains excluded by its
+// request tag. The hexadecimal digest lets an owner-scoped idempotency key
+// reject a retry whose normalized content has moved into another group.
 func HashCompositeBatchImageSubmitRequest(req BatchImageSubmitRequest, groupID *int64) string {
 	payload := struct {
-		Request BatchImageSubmitRequest `json:"request"`
-		GroupID *int64                  `json:"group_id"`
+		Request BatchImageSubmitRequest `json:"request"`  // normalized submission request snapshot
+		GroupID *int64                  `json:"group_id"` // selected routing group
 	}{
 		Request: req,
 		GroupID: CloneInt64Ptr(groupID),
 	}
 	payload.Request.Metadata = SanitizeBatchImageMetadata(payload.Request.Metadata)
+	// The wrapper contains the JSON-encodable request and one optional integer.
+	// Encoding retains group identity alongside the normalized request fields.
 	b, _ := json.Marshal(payload)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
 
+// BatchImageProviderPlatform returns the Gemini routing platform for batch
+// backend lookup and usage reporting. Both supported backends and
+// unrecognized labels select that same value; backend admission is checked
+// separately by callers.
 func BatchImageProviderPlatform(platform string) string {
 	switch platform {
 	case BatchImageProviderGeminiAPI, BatchImageProviderVertex:
@@ -1275,6 +1741,9 @@ func BatchImageProviderPlatform(platform string) string {
 	}
 }
 
+// BatchImageProviderSelectionOrder returns a trimmed explicit backend as the
+// only candidate when supplied. Blank input selects Gemini API followed by
+// Vertex, defining automatic selection order and public catalogue ordering.
 func BatchImageProviderSelectionOrder(requestedProvider string) []string {
 	if strings.TrimSpace(requestedProvider) != "" {
 		return []string{strings.TrimSpace(requestedProvider)}
@@ -1282,47 +1751,22 @@ func BatchImageProviderSelectionOrder(requestedProvider string) []string {
 	return []string{BatchImageProviderGeminiAPI, BatchImageProviderVertex}
 }
 
-// batchImageConfiguredModels 收集管理员声明的具体型号，供未知模态的候选使用。
-func batchImageConfiguredModels(provider *Candidate, policy *routing.GroupPolicyView) map[string]bool {
-	ids := make(map[string]bool)
-	add := func(id string) {
-		id = strings.TrimSpace(id)
-		if id != "" && !strings.ContainsAny(id, "*?") {
-			ids[id] = true
-		}
-	}
-	if configured, ok := provider.CandidateRules.(interface{ GetConfiguredRequestModels() []string }); ok {
-		for _, id := range configured.GetConfiguredRequestModels() {
-			add(id)
-		}
-	}
-	for source, target := range provider.GetModelMapping() {
-		add(source)
-		add(target)
-	}
-	if policy != nil {
-		for _, id := range policy.ModelsList {
-			add(id)
-		}
-		for _, id := range policy.AllowedModels {
-			add(id)
-		}
-		for source, target := range policy.ModelMapping {
-			add(source)
-			add(target)
-		}
-	}
-	return ids
-}
-
-// BatchImageModelsFromProviderMapping 合并提供商及分组配置中的具体型号。
+// BatchImageModelsFromProviderMapping merges supplied candidates with concrete
+// provider names and mapping sources, then sorts distinct spellings. Nil
+// providers return nil. Supplied candidates are filtered as written, while
+// mapping source names are trimmed before wildcard screening; prepared target
+// names arrive through the optional candidate interface.
 func BatchImageModelsFromProviderMapping(provider *Candidate, candidates ...string) []string {
 	if provider == nil {
 		return nil
 	}
 	mapping := provider.GetModelMapping()
 	models := make(map[string]struct{})
-	if configured, ok := provider.CandidateRules.(interface{ GetConfiguredRequestModels() []string }); ok {
+	if configured, ok := provider.CandidateRules.(interface {
+		// GetConfiguredRequestModels supplies concrete request names prepared from
+		// provider configuration.
+		GetConfiguredRequestModels() []string
+	}); ok {
 		candidates = append(candidates, configured.GetConfiguredRequestModels()...)
 	}
 	for _, id := range candidates {
@@ -1348,6 +1792,10 @@ func BatchImageModelsFromProviderMapping(provider *Candidate, candidates ...stri
 	return out
 }
 
+// BatchImageProviderSubmitPublicError maps known credential and
+// managed-bucket failures to public application errors. Other reasons become
+// the generic submit failure, limiting exposure of provider resource
+// diagnostics returned by the failed operation.
 func BatchImageProviderSubmitPublicError(err error) error {
 	reason := strings.TrimSpace(infraerrors.Reason(err))
 	switch reason {
@@ -1364,6 +1812,10 @@ func BatchImageProviderSubmitPublicError(err error) error {
 	}
 }
 
+// BatchImageProviderSubmitRecordCode returns the application reason used for
+// a saved submission diagnostic. Blank or generic submit reasons become
+// PROVIDER_SUBMIT_FAILED, while specific mapped credential and bucket reasons
+// remain available.
 func BatchImageProviderSubmitRecordCode(err error) string {
 	reason := strings.TrimSpace(infraerrors.Reason(err))
 	if reason == "" || reason == "BATCH_IMAGE_PROVIDER_SUBMIT_FAILED" {
@@ -1372,6 +1824,9 @@ func BatchImageProviderSubmitRecordCode(err error) string {
 	return reason
 }
 
+// ParseBatchImageListTime accepts positive Unix seconds, RFC3339 timestamps
+// or date-only text after trimming. Date-only values use UTC midnight; empty
+// or invalid inputs return nil so List omits that creation filter.
 func ParseBatchImageListTime(raw string) *time.Time {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1387,9 +1842,20 @@ func ParseBatchImageListTime(raw string) *time.Time {
 	if t, err := time.Parse("2006-01-02", raw); err == nil {
 		return &t
 	}
+	// An unrecognized time filter becomes absent, letting the list query proceed
+	// with its remaining validated owner and pagination restrictions.
 	return nil
 }
 
+// SanitizeBatchImageMetadata builds a fresh map of trimmed labels by visiting
+// input keys in sorted order. Nil or empty input returns nil. Blank keys and
+// keys above 64 bytes are skipped, values are capped at 256 bytes, and at most
+// twenty normalized keys survive.
+//
+// Trimming can merge distinct input keys: " title" and "title" address the same
+// output entry. The later sorted input replaces that value if the cap has not
+// already stopped traversal. Sorting therefore fixes both collision precedence
+// and the selected subset used by submission hashing.
 func SanitizeBatchImageMetadata(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -1407,9 +1873,13 @@ func SanitizeBatchImageMetadata(in map[string]string) map[string]string {
 		}
 		value := strings.TrimSpace(in[k])
 		if len(value) > 256 {
+			// Metadata values retain a bounded byte prefix before hashing and provider
+			// submission, even for long caller-supplied labels.
 			value = value[:256]
 		}
 		out[key] = value
+		// Sorted input keys determine which normalized labels survive the
+		// twenty-entry request metadata cap.
 		if len(out) >= 20 {
 			break
 		}
@@ -1417,15 +1887,22 @@ func SanitizeBatchImageMetadata(in map[string]string) map[string]string {
 	return out
 }
 
+// ParseBatchImageCursor parses a trimmed decimal page offset. Invalid or
+// negative text becomes zero, so owner and item listings restart at their
+// first page rather than rejecting an unusable cursor.
 func ParseBatchImageCursor(cursor string) int {
 	offset, err := strconv.Atoi(strings.TrimSpace(cursor))
+	// Invalid cursors restart pagination at zero, leaving owner and status
+	// restrictions in effect for the first returned page.
 	if err != nil || offset < 0 {
 		return 0
 	}
 	return offset
 }
 
-// now 保持各原取时点，构造时可注入同一时钟来源。
+// now reads the public service clock when a callback was injected at
+// construction. Otherwise it uses time.Now, supplying request titles and
+// owner acknowledgement timestamps from the current system time.
 func (s *Public) now() time.Time {
 	if s.Now != nil {
 		return s.Now()

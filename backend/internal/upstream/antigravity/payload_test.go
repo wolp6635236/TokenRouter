@@ -4,21 +4,30 @@ import (
 	"testing"
 )
 
-// TestDefaultMappingOnlyRewritesRouteKeys 检查默认映射中的模型路由键。
+// The public Gemini 3.1 Pro High alias selects one internal agent route before
+// payload construction. Thinking-name selection changes only the enabled
+// Sonnet 4.5 base case, and table fixtures retain already suffixed or
+// unrelated model names.
+
+// TestDefaultMappingOnlyRewritesRouteKeys checks the complete configured
+// public-to-internal mapping. It requires exactly one route and verifies the
+// Gemini alias selects the agent-model constant.
 func TestDefaultMappingOnlyRewritesRouteKeys(t *testing.T) {
 	if len(DefaultAntigravityModelMapping) != 1 || DefaultAntigravityModelMapping["gemini-3.1-pro-high"] != AntigravityGemini31ProAgentModel {
 		t.Fatal("unexpected execution mapping")
 	}
 }
 
+// TestApplyThinkingModelSuffix compares enabled and disabled thinking across
+// base, suffixed, and unrelated models. Only the enabled Sonnet base name
+// gains a suffix in these fixtures.
 func TestApplyThinkingModelSuffix(t *testing.T) {
 	tests := []struct {
-		name            string
-		mappedModel     string
-		thinkingEnabled bool
-		expected        string
+		name            string // human-readable table case name
+		mappedModel     string // input mapped model name
+		thinkingEnabled bool   // input thinking selection flag
+		expected        string // expected selected model name
 	}{
-		// Thinking 未开启：保持原样
 		{
 			name:            "thinking disabled - claude-sonnet-4-5 unchanged",
 			mappedModel:     "claude-sonnet-4-5",
@@ -32,7 +41,6 @@ func TestApplyThinkingModelSuffix(t *testing.T) {
 			expected:        "claude-opus-4-6-thinking",
 		},
 
-		// Thinking 开启 + claude-sonnet-4-5：自动添加后缀
 		{
 			name:            "thinking enabled - claude-sonnet-4-5 becomes thinking version",
 			mappedModel:     "claude-sonnet-4-5",
@@ -40,7 +48,6 @@ func TestApplyThinkingModelSuffix(t *testing.T) {
 			expected:        "claude-sonnet-4-5-thinking",
 		},
 
-		// Thinking 开启 + 其他模型：保持原样
 		{
 			name:            "thinking enabled - claude-sonnet-4-5-thinking unchanged",
 			mappedModel:     "claude-sonnet-4-5-thinking",

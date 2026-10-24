@@ -7,69 +7,122 @@ import (
 	"time"
 )
 
+// grok_model_quota_block.go stores provider-and-model Grok cooldowns and
+// distinguishes long quota pauses from transient blocks.
+// Grok exhaustion can affect one model while other models on the same provider
+// remain usable. Local blocks therefore key a normalized model together with
+// provider ID. Long quota pauses and short capacity pauses apply distinct
+// deadline ranges before reaching the same process-local store.
+//
+// Concurrent observations can request different deadlines for that key. The
+// store compares and installs under one mutex, retaining an already longer
+// deadline and pruning expired entries during installation. Reads remove only
+// their expired key. These observations stay within the process that received
+// them, and the direct store helper trusts caller-supplied identity and timing;
+// the public marking helpers supply their own validation and duration limits.
+
 const (
+	// Quota durations replace short reset evidence and cap long model
+	// exhaustion pauses before storing provider-specific deadlines.
 	grokModelQuotaBlockDefaultTTL = 2 * time.Hour
 	grokModelQuotaBlockMaxTTL     = 6 * time.Hour
 	grokModelQuotaBlockMinTTL     = 20 * time.Minute
 
+	// Transient durations bound capacity pauses independently from the
+	// longer quota policy while sharing the same provider/model map.
 	grokModelTransientBlockMinTTL = 500 * time.Millisecond
 	grokModelTransientBlockMaxTTL = 5 * time.Minute
 )
 
+// globalGrokModelQuotaBlocks retains this process's provider/model observations
+// for request admission and expiry cleanup under its store mutex.
 var globalGrokModelQuotaBlocks = &grokModelQuotaBlockStore{
 	items: make(map[string]grokModelQuotaBlock),
 }
 
-// 此结构保存进程内按提供商和模型划分的 Grok 免费额度软性阻断记录。
-// 当错误明确指出某个模型额度耗尽时，同一提供商的其他模型仍可调度；
-// 多实例部署中，每个进程分别从自身收到的上游错误学习该状态。
+// grokModelQuotaBlock records one provider/model cooldown deadline observed by
+// this process.
 type grokModelQuotaBlock struct {
-	Until time.Time
-}
-type grokModelQuotaBlockStore struct {
-	mu    sync.Mutex
-	items map[string]grokModelQuotaBlock // 键格式为 providerID|model。
+	Until time.Time // exclusive block expiry instant
 }
 
+// grokModelQuotaBlockStore serializes deadline comparison, installation, and
+// expiry removal.
+type grokModelQuotaBlockStore struct {
+	// mu protects items through comparison, installation, and expiry
+	// removal.
+	// Marking an existing key retains a longer deadline, so independently
+	// arriving
+	// observations cannot shorten that stored pause.
+	mu    sync.Mutex                     // deadline comparison and mutation lock
+	items map[string]grokModelQuotaBlock // normalized model and provider deadlines
+}
+
+// GrokModelQuotaBlockKey joins a trimmed lowercase model and decimal provider
+// ID.
 func GrokModelQuotaBlockKey(providerID int64, model string) string {
 	return strings.TrimSpace(strings.ToLower(model)) + "|" + strconv.FormatInt(providerID, 10)
 }
 
-// MarkGrokModelQuotaBlock 将提供商指定模型软性阻断到给定时间。
+// MarkGrokModelQuotaBlock validates a positive provider ID, nonblank model, and
+// nonzero deadline before storing quota exhaustion. Deadlines at or below the
+// twenty-minute threshold select two hours, and later deadlines cap at six
+// hours.
 func MarkGrokModelQuotaBlock(providerID int64, model string, until time.Time) {
 	model = strings.TrimSpace(model)
 	if providerID <= 0 || model == "" || until.IsZero() {
 		return
 	}
 	now := time.Now()
+	// The quota policy substitutes its standard pause for short reset
+	// evidence, then bounds that result before publishing it to local
+	// storage.
 	if !until.After(now.Add(grokModelQuotaBlockMinTTL)) {
 		until = now.Add(grokModelQuotaBlockDefaultTTL)
 	}
+	// Bound model quota isolation using its six-hour policy maximum.
 	if max := now.Add(grokModelQuotaBlockMaxTTL); until.After(max) {
 		until = max
 	}
 	StoreGrokModelQuotaBlock(providerID, model, until, now)
 }
 
-// MarkGrokModelTransientBlock 在短时容量波动时仅软阻断单个模型，
-// 不使用免费额度的 20 分钟下限，也不暂停整个提供商。
+// MarkGrokModelTransientBlock validates provider/model identity and stores a
+// short capacity pause. A nonzero deadline at or below the half-second
+// threshold is raised to that minimum; later deadlines cap at five minutes.
 func MarkGrokModelTransientBlock(providerID int64, model string, until time.Time) {
 	model = strings.TrimSpace(model)
 	if providerID <= 0 || model == "" || until.IsZero() {
 		return
 	}
 	now := time.Now()
+	// Capacity pauses retain at least half a second of spacing.
 	if !until.After(now.Add(grokModelTransientBlockMinTTL)) {
 		until = now.Add(grokModelTransientBlockMinTTL)
 	}
+	// Bound capacity isolation separately from the longer quota policy.
 	if max := now.Add(grokModelTransientBlockMaxTTL); until.After(max) {
 		until = max
 	}
 	StoreGrokModelQuotaBlock(providerID, model, until, now)
 }
 
+// StoreGrokModelQuotaBlock installs a caller-supplied provider/model deadline
+// while retaining a longer existing observation. Callers validate the identity
+// and choose duration policy before using this low-level helper.
+//
+// Comparison and installation share the store mutex with reads and cleanup, so
+// two observations cannot compare against the same old value and then publish a
+// shorter winner. Successful installation prunes every expired key using now.
+// Returning early for a longer existing value skips that pruning pass; expiry
+// checks still remove the requested key during reads.
 func StoreGrokModelQuotaBlock(providerID int64, model string, until, now time.Time) {
 	key := GrokModelQuotaBlockKey(providerID, model)
+	// Hold comparison and replacement together so a concurrent shorter
+	// notice
+	// cannot overwrite a longer deadline; the following pruning uses the
+	// same
+	// protected map.
 	globalGrokModelQuotaBlocks.mu.Lock()
 	defer globalGrokModelQuotaBlocks.mu.Unlock()
 	if cur, ok := globalGrokModelQuotaBlocks.items[key]; ok && cur.Until.After(until) {
@@ -83,7 +136,9 @@ func StoreGrokModelQuotaBlock(providerID int64, model string, until, now time.Ti
 	}
 }
 
-// IsGrokModelQuotaBlocked 判断提供商当前是否无法服务指定模型。
+// IsGrokModelQuotaBlocked reports whether a valid provider/model key has a
+// deadline after now. Expired matching entries are removed under the store
+// mutex; absent or invalid identity returns false.
 func IsGrokModelQuotaBlocked(providerID int64, model string, now time.Time) bool {
 	model = strings.TrimSpace(model)
 	if providerID <= 0 || model == "" {
@@ -96,6 +151,8 @@ func IsGrokModelQuotaBlocked(providerID int64, model string, now time.Time) bool
 	if !ok {
 		return false
 	}
+	// Remove this expired observation while retaining the lock used by
+	// installation, so this read cannot erase a concurrently extended key.
 	if !cur.Until.After(now) {
 		delete(globalGrokModelQuotaBlocks.items, key)
 		return false
@@ -103,8 +160,10 @@ func IsGrokModelQuotaBlocked(providerID int64, model string, now time.Time) bool
 	return true
 }
 
-// IsGrokModelSpecificFreeUsage 判断免费额度耗尽是否仅针对指定模型，
-// 此时提供商仍可能服务其他模型。
+// IsGrokModelSpecificFreeUsage classifies a caller-lowercased message as
+// model-specific exhaustion. It accepts a generic model phrase or Chinese model
+// marker, or free-usage text containing the normalized model; callers decide
+// the resulting cooldown.
 func IsGrokModelSpecificFreeUsage(low, model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" || low == "" {
@@ -113,7 +172,8 @@ func IsGrokModelSpecificFreeUsage(low, model string) bool {
 	if strings.Contains(low, "for model") || strings.Contains(low, "模型") {
 		return true
 	}
-	// 兼容形如“used all the included free usage for model grok-4.5”的上游错误。
+	// Also accept messages such as "used all the included free usage for
+	// model grok-4.5".
 	if strings.Contains(low, "free usage") && strings.Contains(low, model) {
 		return true
 	}

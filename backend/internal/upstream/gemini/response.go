@@ -19,32 +19,67 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// response.go reads Gemini responses, collects streamed content, and writes
+// native or Messages output.
+// Gemini output may arrive as ordinary JSON or one JSON payload per SSE data
+// line, with an optional Code Assist response wrapper. Native output retains
+// the original REST payload, while Messages conversion delegates its event and
+// content rules to the protocol bridge. Observers receive raw payloads before
+// converted output is emitted.
+//
+// Buffered stream collection retains content-bearing payloads and combines
+// adjacent text parts with matching thought flags. It copies modified map
+// containers during merging but keeps nested values shared, and merging text
+// retains the earlier part metadata. Stream adapters differ in their handling
+// of decode errors and write failures; those rules belong
+// to their methods, while the executor owns response-body closing.
+
+// ResponseOptions supplies payload observers, response readers, header
+// handling, and protocol error mapping.
 type ResponseOptions struct {
-	ObserveRaw                    func([]byte)
-	ObserveState                  func(*upstream.TokenUsage, *int)
-	GoogleError                   func(int, string) error
-	ReadBody                      func(io.Reader) ([]byte, error)
-	WriteHeaders                  func(http.Header, http.Header)
+	// ObserveRaw receives upstream payload bytes synchronously before conversion.
+	// Its callback leaves borrowed input unchanged and copies bytes retained after returning.
+	ObserveRaw func([]byte) // raw payload observation callback
+
+	// GoogleError, ReadBody, WriteHeaders, ObserveImages, ReverseTools,
+	// ClaudeError, ChatError, and CompatError are supplied for the output paths
+	// that invoke them; these adapters call applicable handlers directly.
+	GoogleError func(int, string) error // native response error mapping
+	// caller-bounded response body reader
+	ReadBody     func(io.Reader) ([]byte, error)
+	WriteHeaders func(http.Header, http.Header) // response header forwarding callback
+	// DebugHeaders selects rate-header logging; HasHeaderFilter selects streaming
+	// header forwarding.
 	DebugHeaders, HasHeaderFilter bool
-	ObserveImages                 func([]byte)
-	ReverseTools                  func([]byte) []byte
-	ClaudeError, ChatError        func(int, string, string) error
-	CompatError                   func(OpenAICompatProtocol, int, string, string) error
+	ObserveImages                 func([]byte)        // inline image observation callback
+	ReverseTools                  func([]byte) []byte // upstream tool-name reversal callback
+	// ClaudeError maps Messages errors; ChatError maps Chat errors.
+	ClaudeError, ChatError func(int, string, string) error
+	// selected OpenAI protocol error mapping
+	CompatError func(OpenAICompatProtocol, int, string, string) error
 }
 type (
-	ResponseAdapter struct{ Options ResponseOptions }
-	StreamResult    struct {
-		Usage        *upstream.TokenUsage
-		FirstTokenMs *int
+	// ResponseAdapter reads Gemini payloads and delivers one selected client
+	// protocol through its options.
+	ResponseAdapter struct{ Options ResponseOptions } // Options supplies conversion and output callbacks.
+	// StreamResult holds normalized usage collected during converted stream delivery.
+	StreamResult struct {
+		Usage *upstream.TokenUsage // observed normalized token usage
 	}
 )
 
+// NativeStreamResult holds normalized usage collected from Gemini stream payloads.
 type NativeStreamResult struct {
-	Usage        *upstream.TokenUsage
-	FirstTokenMs *int
+	Usage *upstream.TokenUsage // observed normalized token usage
 }
 
+// HandleNonStreamingResponse reads at most eight MiB, unwraps Gemini JSON, and
+// writes a Messages response with inline images omitted. It observes raw/image
+// data before conversion; callers own the source body and inspect
+// OutputContext for downstream write errors.
 func (s *ResponseAdapter) HandleNonStreamingResponse(c *upstream.OutputContext, resp *http.Response, originalModel string) (*upstream.TokenUsage, error) {
+	// Retain a bounded prefix for buffered Messages conversion; an oversized JSON
+	// body can fail decoding when the prefix ends within a value.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, s.Options.ClaudeError(http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
@@ -73,6 +108,15 @@ func (s *ResponseAdapter) HandleNonStreamingResponse(c *upstream.OutputContext, 
 	return usage, nil
 }
 
+// HandleStreamingResponse converts Gemini data lines into synchronous Messages
+// SSE events and returns the bridge's accumulated usage. Callers close
+// the source response body and supply a flusher-capable output context.
+//
+// The bridge opens the message before payload reads and owns block ordering
+// and final events. Invalid decoded payloads are skipped; non-EOF read errors
+// abort with an error. OutputContext records writer failures even though
+// WriteSSE ignores individual writes. Each data line is processed separately, including a final
+// line without a trailing newline.
 func (s *ResponseAdapter) HandleStreamingResponse(c *upstream.OutputContext, resp *http.Response, startTime time.Time, originalModel string) (*StreamResult, error) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -86,15 +130,8 @@ func (s *ResponseAdapter) HandleStreamingResponse(c *upstream.OutputContext, res
 	}
 
 	state := bridge.NewNativeGeminiMessagesStream(bridge.NativeGeminiRuntime{RandomHex: upstream.RandomHex, MessageID: upstream.GenerateAnthropicMsgID})
-	var firstTokenMs *int
+
 	writeEvent := func(event bridge.NativeMessageEvent) {
-		if event.FirstToken && firstTokenMs == nil {
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-			if s.Options.ObserveState != nil {
-				s.Options.ObserveState(nil, firstTokenMs)
-			}
-		}
 		if event.Name != "" {
 			WriteSSE(c.Writer, event.Name, event.Data, func(payload []byte) {
 				semantic, terminal := bridge.CompatOutputMeaning(append([]byte("data: "), payload...))
@@ -136,6 +173,9 @@ func (s *ResponseAdapter) HandleStreamingResponse(c *upstream.OutputContext, res
 		s.observeRaw(unwrappedBytes)
 		s.Options.ObserveImages(unwrappedBytes)
 
+		// Discard a malformed decoded payload before bridge processing so a
+		// partially decoded content map cannot alter the Messages event state for
+		// this line.
 		var geminiResp map[string]any
 		if err := json.Unmarshal(unwrappedBytes, &geminiResp); err != nil {
 			continue
@@ -145,7 +185,7 @@ func (s *ResponseAdapter) HandleStreamingResponse(c *upstream.OutputContext, res
 			writeEvent(event)
 		}
 
-		// EOF 前最后一行即使没有换行符也要处理。
+		// Process a final data line even when EOF arrives without a trailing newline.
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -154,13 +194,23 @@ func (s *ResponseAdapter) HandleStreamingResponse(c *upstream.OutputContext, res
 	for event := range state.Finish() {
 		writeEvent(event)
 	}
-	return &StreamResult{Usage: LegacyNativeGeminiUsage(state.Usage()), FirstTokenMs: firstTokenMs}, nil
+	return &StreamResult{Usage: LegacyNativeGeminiUsage(state.Usage())}, nil
 }
 
+// WriteSSE serializes data into an event/data frame and invokes optional
+// payload observers before the data write. JSON and writer errors are
+// discarded; OutputContext writers can retain their own error state, and
+// callers supply safe event labels.
 func WriteSSE(w io.Writer, event string, data any, observers ...func([]byte)) {
+	// Continue formatting the frame after write failure. OutputContext retains
+	// disconnects for executor accounting; ordinary writers receive no returned
+	// error from this helper.
 	if event != "" {
 		_, _ = fmt.Fprintf(w, "event: %s\n", event)
 	}
+	// Observers and the data writer receive the marshaled bytes even after an
+	// encoding failure; a nil byte result therefore still produces the
+	// surrounding SSE frame.
 	b, _ := json.Marshal(data)
 	for _, observe := range observers {
 		if observe != nil {
@@ -170,6 +220,9 @@ func WriteSSE(w io.Writer, event string, data any, observers ...func([]byte)) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", string(b))
 }
 
+// UnwrapIfNeeded returns an extracted response only for OAuth payloads and
+// otherwise returns raw. Paths returning raw share its byte slice; an
+// extracted object or array uses the bytes produced by UnwrapGeminiResponse.
 func UnwrapIfNeeded(isOAuth bool, raw []byte) []byte {
 	if !isOAuth {
 		return raw
@@ -181,9 +234,25 @@ func UnwrapIfNeeded(isOAuth bool, raw []byte) []byte {
 	return inner
 }
 
+// CollectGeminiSSE collects decoded map payloads from individual data
+// lines into one response and returns the latest extracted usage. Callers own
+// the reader; DONE or EOF finishes collection. A DONE line returns before
+// pending read-error handling; otherwise non-EOF errors discard the returned
+// snapshots.
+//
+// JSON decode errors are ignored, so a partially decoded nonnil map can
+// participate in collection. Content-bearing payloads are preferred over later
+// metadata-only payloads, and their parts accumulate in encounter order.
+// Adjacent same-thought text is joined before containers are merged into the
+// selected response. Optional raw observers run synchronously for each
+// participating map and can retain accounting observations even when a later
+// read fails.
 func CollectGeminiSSE(body io.Reader, isOAuth bool, observers ...func([]byte)) (map[string]any, *upstream.TokenUsage, error) {
 	reader := bufio.NewReader(body)
 
+	// Keep content and metadata observations separately because a terminal
+	// usage-only payload can follow text; conversion still needs the content
+	// snapshot alongside its latest usage.
 	var last map[string]any
 	var lastWithParts map[string]any
 	var collectedParts []any
@@ -204,6 +273,9 @@ func CollectGeminiSSE(body io.Reader, isOAuth bool, observers ...func([]byte)) (
 					var parsed map[string]any
 					var rawBytes []byte
 					if isOAuth {
+						// Use the extracted OAuth response bytes before map decoding so
+						// collection sees inner generation content; decode errors are ignored
+						// and the nonnil map check decides participation.
 						innerBytes, err := UnwrapGeminiResponse([]byte(payload))
 						if err == nil {
 							rawBytes = innerBytes
@@ -213,6 +285,9 @@ func CollectGeminiSSE(body io.Reader, isOAuth bool, observers ...func([]byte)) (
 						rawBytes = []byte(payload)
 						_ = json.Unmarshal(rawBytes, &parsed)
 					}
+					// A nonnil decoded map participates even after a JSON error, matching
+					// this collector partial-map behavior; observers see the corresponding
+					// raw payload before merging.
 					if parsed != nil {
 						for _, observe := range observers {
 							if observe != nil {
@@ -243,11 +318,23 @@ func CollectGeminiSSE(body io.Reader, isOAuth bool, observers ...func([]byte)) (
 	return MergeCollectedGeminiParts(PickGeminiCollectResult(last, lastWithParts), collectedParts), usage, nil
 }
 
+// PickGeminiCollectResult selects the nonnil content-bearing snapshot before
+// the last snapshot through the bridge. Supplied maps remain shared; when
+// neither exists, the bridge returns a fresh empty object for conversion.
 func PickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) map[string]any {
 	return bridge.NativePickGeminiCollectResult(last, lastWithParts)
 }
 
-// AppendCollectedGeminiParts 聚合 SSE 增量，同时保持 reasoning 与普通文本的边界。
+// AppendCollectedGeminiParts shallow-copies incoming parts and joins adjacent
+// text when incoming text is nonempty and boolean thought flags match. The
+// returned slice can reuse collected storage, so callers use the returned
+// value and serialize mutation.
+//
+// Joining copies the preceding map, appends new text, and retains its
+// metadata; other attributes on the incoming text part are not merged.
+// Nontext, empty incoming text, and differently flagged parts remain separate
+// shallow copies, while nested values stay shared. This represents ordered
+// text deltas and does not deduplicate cumulative payloads.
 func AppendCollectedGeminiParts(collected []any, parts []map[string]any) []any {
 	for _, part := range parts {
 		partCopy := make(map[string]any, len(part))
@@ -259,6 +346,9 @@ func AppendCollectedGeminiParts(collected []any, parts []map[string]any) []any {
 				previousText, previousHasText := previous["text"].(string)
 				previousThought, _ := previous["thought"].(bool)
 				currentThought, _ := partCopy["thought"].(bool)
+				// Join text only across adjacent matching thought channels so reasoning
+				// and visible text remain distinct; keep earlier metadata when adding the
+				// next delta text.
 				if previousHasText && previousThought == currentThought {
 					previousCopy := make(map[string]any, len(previous))
 					maps.Copy(previousCopy, previous)
@@ -274,17 +364,28 @@ func AppendCollectedGeminiParts(collected []any, parts []map[string]any) []any {
 	return collected
 }
 
-// MergeCollectedGeminiParts 将完整 SSE part 序列写回最终 Gemini 响应。
+// MergeCollectedGeminiParts places collected parts in the first candidate of a
+// shallowly copied response. Empty parts returns the supplied response
+// directly; otherwise callers receive copied modified containers and a new
+// parts slice.
+//
+// The response map, candidates slice, first candidate map, and its content map
+// are copied before replacement, retaining unrelated entries and nested
+// references. Missing or unsuitable containers are created, with model role
+// used for new content. Part values themselves stay shared, so the returned
+// structure supports container replacement rather than arbitrary independent
+// mutation of nested data.
 func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) map[string]any {
 	if len(collectedParts) == 0 {
 		return response
 	}
 
-	// 浅拷贝外层响应，避免直接改动调用方保留的 map。
+	// Copy each container changed by first-candidate replacement, while leaving
+	// unrelated nested values shared, so assigning collected parts does not
+	// overwrite the source response containers.
 	result := make(map[string]any)
 	maps.Copy(result, response)
 
-	// 取出或创建 candidates。
 	candidates, ok := result["candidates"].([]any)
 	if !ok || len(candidates) == 0 {
 		candidates = []any{map[string]any{}}
@@ -292,7 +393,6 @@ func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) ma
 		candidates = append([]any(nil), candidates...)
 	}
 
-	// 取出第一个 candidate。
 	candidate, ok := candidates[0].(map[string]any)
 	if !ok {
 		candidate = make(map[string]any)
@@ -304,7 +404,6 @@ func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) ma
 		candidates[0] = candidate
 	}
 
-	// 取出或创建 content。
 	content, ok := candidate["content"].(map[string]any)
 	if !ok {
 		content = map[string]any{"role": "model"}
@@ -322,6 +421,10 @@ func MergeCollectedGeminiParts(response map[string]any, collectedParts []any) ma
 	return result
 }
 
+// HandleNativeNonStreamingResponse reads through the caller body limiter,
+// optionally unwraps OAuth data, and forwards status, content type, and
+// filtered headers. It observes raw/image data before output; absent usage
+// returns zero counters, and callers inspect output errors separately.
 func (s *ResponseAdapter) HandleNativeNonStreamingResponse(c *upstream.OutputContext, resp *http.Response, isOAuth bool) (*upstream.TokenUsage, error) {
 	if s.Options.DebugHeaders {
 		logger.LegacyPrintf("service.gemini_messages_compat", "[GeminiAPI] ========== Response Headers ==========")
@@ -362,6 +465,15 @@ func (s *ResponseAdapter) HandleNativeNonStreamingResponse(c *upstream.OutputCon
 	return &upstream.TokenUsage{}, nil
 }
 
+// HandleNativeStreamingResponse forwards native data lines and returns the
+// latest parsed usage. Callers close resp.Body and supply a
+// flusher-capable OutputContext; header forwarding follows HasHeaderFilter.
+//
+// OAuth data lines are unwrapped and rewritten as complete data frames, while
+// REST lines retain their incoming spelling. Empty data and DONE pass through,
+// and nondata lines are also forwarded. Writer failures remain in OutputContext
+// while reading continues; non-EOF read errors return an
+// error and discard the returned stream snapshot.
 func (s *ResponseAdapter) HandleNativeStreamingResponse(c *upstream.OutputContext, resp *http.Response, startTime time.Time, isOAuth bool) (*NativeStreamResult, error) {
 	if s.Options.DebugHeaders {
 		logger.LegacyPrintf("service.gemini_messages_compat", "[GeminiAPI] ========== Streaming Response Headers ==========")
@@ -395,7 +507,6 @@ func (s *ResponseAdapter) HandleNativeStreamingResponse(c *upstream.OutputContex
 
 	reader := bufio.NewReader(resp.Body)
 	usage := &upstream.TokenUsage{}
-	var firstTokenMs *int
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -403,7 +514,9 @@ func (s *ResponseAdapter) HandleNativeStreamingResponse(c *upstream.OutputContex
 			trimmed := strings.TrimRight(line, "\r\n")
 			if after, ok0 := strings.CutPrefix(trimmed, "data:"); ok0 {
 				payload := strings.TrimSpace(after)
-				// keepalive 和结束标记直接透传。
+				// Keep empty data and DONE lines as received because they describe stream
+				// framing and completion independently of JSON payload conversion and
+				// usage extraction.
 				if payload == "[DONE]" {
 					c.NextEvent(false, true)
 				}
@@ -431,21 +544,17 @@ func (s *ResponseAdapter) HandleNativeStreamingResponse(c *upstream.OutputContex
 					s.observeRaw(rawBytes)
 					s.Options.ObserveImages(rawBytes)
 
-					if firstTokenMs == nil {
-						ms := int(time.Since(startTime).Milliseconds())
-						firstTokenMs = &ms
-						if s.Options.ObserveState != nil {
-							s.Options.ObserveState(nil, firstTokenMs)
-						}
-					}
-
 					observed := geminiwire.ObservePayload(rawBytes)
 					c.NextEvent(observed.Semantic, observed.Terminal)
 					if isOAuth {
-						// SSE 格式需要双换行分隔事件。
+						// The unwrapped OAuth payload is a rebuilt event rather than the source
+						// line; terminate it with a blank line so native clients receive a
+						// complete frame.
 						_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", rawToWrite)
 					} else {
-						// AI Studio 响应直接透传。
+						// REST output keeps the original data line because it already carries
+						// the native payload spelling and its newline framing from the selected
+						// upstream.
 						_, _ = io.WriteString(c.Writer, line)
 					}
 					flusher.Flush()
@@ -464,11 +573,13 @@ func (s *ResponseAdapter) HandleNativeStreamingResponse(c *upstream.OutputContex
 		}
 	}
 
-	return &NativeStreamResult{Usage: usage, FirstTokenMs: firstTokenMs}, nil
+	return &NativeStreamResult{Usage: usage}, nil
 }
 
-// UnwrapGeminiResponse 解包 Gemini OAuth 响应中的 response 字段
-// 使用 gjson 零拷贝提取，避免完整 Unmarshal+Marshal。
+// UnwrapGeminiResponse extracts the raw object or array in response as new
+// bytes, otherwise returning the supplied slice with nil error. Field
+// extraction preserves nested JSON spelling and does not validate the complete
+// outer document.
 func UnwrapGeminiResponse(raw []byte) ([]byte, error) {
 	result := gjson.GetBytes(raw, "response")
 	if result.Exists() && result.Type == gjson.JSON {
@@ -477,26 +588,39 @@ func UnwrapGeminiResponse(raw []byte) ([]byte, error) {
 	return raw, nil
 }
 
-// ConvertGeminiToClaudeMessage 使用上游 ID 生成器转换响应，并转换网关用量类型。
+// ConvertGeminiToClaudeMessage delegates buffered response conversion with
+// generated message and tool identifiers. rawData supplies usage independently
+// of the decoded map, and includeInlineData selects the bridge image-text
+// representation in the returned Messages body.
 func ConvertGeminiToClaudeMessage(geminiResp map[string]any, originalModel string, rawData []byte, includeInlineData bool) (map[string]any, *upstream.TokenUsage) {
 	result, usage := bridge.NativeConvertGeminiToClaudeMessage(bridge.NativeGeminiRuntime{MessageID: upstream.GenerateAnthropicMsgID, RandomHex: upstream.RandomHex}, geminiResp, originalModel, rawData, includeInlineData)
 	return result, LegacyNativeGeminiUsage(usage)
 }
 
-// ExtractGeminiUsage 调用协议桥接解析用量，并转换为上游用量类型。
+// ExtractGeminiUsage copies bridge token buckets into upstream usage,
+// returning nil for absent metadata. Explicit null or zero metadata yields
+// zero counters; cached input is separated from prompt input and thinking
+// joins candidate output.
 func ExtractGeminiUsage(data []byte) *upstream.TokenUsage {
 	return LegacyNativeGeminiUsage(bridge.NativeExtractGeminiUsage(data))
 }
 
-// ExtractGeminiParts 调用 Gemini 协议转换提取响应内容。
+// ExtractGeminiParts returns the bridge-selected first-candidate part maps
+// from a decoded response. The maps retain shared nested values, and
+// unsuitable candidate/content/part shapes yield an empty result.
 func ExtractGeminiParts(geminiResp map[string]any) []map[string]any {
 	return bridge.NativeExtractGeminiParts(geminiResp)
 }
 
+// LegacyNativeGeminiUsage copies the bridge token counters into a fresh
+// upstream usage value. Nil input returns nil, and the four integer buckets
+// retain their supplied accounting values.
 func LegacyNativeGeminiUsage(usage *bridge.NativeGeminiUsage) *upstream.TokenUsage {
 	return bridge.NativeUsageProjection(usage)
 }
 
+// observeRaw synchronously invokes the optional raw observer with the supplied
+// payload bytes.
 func (s *ResponseAdapter) observeRaw(payload []byte) {
 	if s.Options.ObserveRaw != nil {
 		s.Options.ObserveRaw(payload)

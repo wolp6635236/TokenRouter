@@ -10,34 +10,49 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// endpoint.go normalizes inbound endpoint labels and resolves the upstream
+// endpoint reported for each request.
+// Endpoint observations distinguish a client route from the protocol path
+// eventually used by a selected provider. Canonical inbound labels collapse
+// aliases and resource details, but retain Compact and input-token identities
+// that would be lost if every Responses path were labeled as its root.
+//
+// Upstream inference combines that inbound label with provider platform and the
+// raw Responses suffix. Explicit runtime endpoint records take precedence when
+// execution chose another protocol, including failures that return no result.
+// Middleware uses the actual request URL before Gin's wildcard template and
+// publishes the normalized label for authentication and later Ops consumers.
+
+// Canonical endpoint values label inbound protocol families and inferred upstream
+// paths, allowing request observations to use the same spelling across aliases.
 const (
-	// 入站和上游端点路径常量，供路径规范化与推导使用。新增 API 路径时在此登记。
+	// Protocol labels below distinguish generation, auxiliary counts, media operations,
+	// and model families while normalization applies each path family's matching rules.
 
-	EndpointMessages             = "/v1/messages"
-	EndpointChatCompletions      = "/v1/chat/completions"
-	EndpointSystemOne            = "/v1/systemone"
-	EndpointEmbeddings           = "/v1/embeddings"
-	EndpointAlphaSearch          = "/v1/alpha/search"
-	EndpointResponses            = "/v1/responses"
-	EndpointResponsesInputTokens = "/v1/responses/input_tokens"
-	EndpointResponsesCompact     = "/v1/responses/compact"
-	EndpointImagesGenerations    = "/v1/images/generations"
-	EndpointImagesEdits          = "/v1/images/edits"
-	EndpointVideosGenerations    = "/v1/videos/generations"
-	EndpointVideosEdits          = "/v1/videos/edits"
-	EndpointVideosExtensions     = "/v1/videos/extensions"
-	EndpointVideos               = "/v1/videos"
-	EndpointGeminiModels         = "/v1beta/models"
+	EndpointMessages             = "/v1/messages"               // Messages inference endpoint
+	EndpointChatCompletions      = "/v1/chat/completions"       // Chat inference endpoint
+	EndpointSystemOne            = "/v1/systemone"              // SystemOne decision endpoint
+	EndpointEmbeddings           = "/v1/embeddings"             // vector embedding endpoint
+	EndpointAlphaSearch          = "/v1/alpha/search"           // Alpha search endpoint
+	EndpointResponses            = "/v1/responses"              // Responses inference endpoint
+	EndpointResponsesInputTokens = "/v1/responses/input_tokens" // Responses token preflight
+	EndpointResponsesCompact     = "/v1/responses/compact"      // legacy compaction endpoint
+	EndpointImagesGenerations    = "/v1/images/generations"     // image generation endpoint
+	EndpointImagesEdits          = "/v1/images/edits"           // image editing endpoint
+	EndpointVideosGenerations    = "/v1/videos/generations"     // video generation endpoint
+	EndpointVideosEdits          = "/v1/videos/edits"           // video editing endpoint
+	EndpointVideosExtensions     = "/v1/videos/extensions"      // video extension endpoint
+	EndpointVideos               = "/v1/videos"                 // video resource operations
+	EndpointGeminiModels         = "/v1beta/models"             // Gemini model family
 
-	// EndpointAntigravityGenerateContent 是 Antigravity 原生流式生成端点。
+	// EndpointAntigravityGenerateContent is Antigravity's native streaming generation endpoint.
 	EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
 
-	// gin.Context keys used by the middleware and helpers below.
-	ctxKeyInboundEndpoint        = "_gateway_inbound_endpoint"
-	ctxKeyActualUpstreamEndpoint = "_gateway_actual_upstream_endpoint"
+	// Endpoint context keys retain the canonical inbound observation and a chosen
+	// upstream attempt path; a nonempty actual path overrides platform-based inference.
+	ctxKeyInboundEndpoint        = "_gateway_inbound_endpoint"         // normalized client endpoint
+	ctxKeyActualUpstreamEndpoint = "_gateway_actual_upstream_endpoint" // actual attempt endpoint
 )
-
-// Normalization functions
 
 // NormalizeInboundEndpoint maps a raw request path (which may carry
 // prefixes like /antigravity, /openai) to its canonical form.
@@ -47,11 +62,11 @@ const (
 //	"/openai/v1/responses/foo"   → "/v1/responses"
 //	"/v1beta/models/gemini:gen"  → "/v1beta/models"
 //
-// OpenAI Responses API 还通过若干不带 "/v1/" 前缀的裸路径或别名路径暴露，
-// 包括顶级裸路径和 Codex 直连路径。"/responses/compact" 与
-// "/backend-api/codex/responses/compact" 是独立的 Compact 客户端端点，
-// 应归一化为 EndpointResponsesCompact，不能并入根 Responses 端点。
-// 其他裸路径或别名路径下的子路径仍作为根 Responses 端点的子资源后缀：
+// Responses also has bare and Codex aliases. Their /compact paths and subpaths
+// normalize to EndpointResponsesCompact so logs distinguish compact requests
+// from the Responses root. Input-token endpoints likewise have their own constant.
+// Other Responses subpaths normalize to the root endpoint.
+// Examples:
 //
 //	"/v1/responses/compact"                         → EndpointResponsesCompact
 //	"/v1/responses/compact/detail"                  → EndpointResponsesCompact
@@ -66,7 +81,10 @@ const (
 //	"/responses"                                    → EndpointResponses
 //	"/backend-api/codex/responses"                  → EndpointResponses
 //
-// 先检查 Compact，再检查根 Responses，因为 /v1/responses 是 Compact 路径的前缀。
+// Check compact paths before Responses roots because their prefixes overlap.
+// Unknown results return path after surrounding whitespace is trimmed. Versioned
+// families use the branch's substring or suffix tests, while bare Responses
+// aliases use root-anchored helpers; this labels observations rather than validating a routed request.
 func NormalizeInboundEndpoint(path string) string {
 	path = strings.TrimSpace(path)
 	switch {
@@ -105,6 +123,10 @@ func NormalizeInboundEndpoint(path string) string {
 	}
 }
 
+// isResponsesInputTokensAliasPath matches bare and Codex input-token paths or descendants.
+// It trims whitespace and trailing slashes before root-anchored comparison.
+// Matching precedes Responses-root classification so auxiliary counting keeps its
+// own observation label on those aliases.
 func isResponsesInputTokensAliasPath(path string) bool {
 	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
 	if trimmed == "" {
@@ -114,8 +136,10 @@ func isResponsesInputTokensAliasPath(path string) bool {
 		isBareOrSubpathOf(trimmed, "/backend-api/codex/responses/input_tokens")
 }
 
-// isResponsesCompactAliasPath 匹配 /responses/compact、/backend-api/codex/responses/compact 及其子路径，例如 compact/detail。
-// 匹配顺序先于 isResponsesRootAliasPath，因为 /responses 是 Compact 路径的前缀。
+// isResponsesCompactAliasPath matches bare and Codex compact aliases, including subpaths.
+// Call it before isResponsesRootAliasPath, which also matches compact subpaths.
+// Surrounding whitespace and trailing slashes are trimmed, while unknown prefixes
+// remain outside this alias match even when they contain a Responses suffix.
 func isResponsesCompactAliasPath(path string) bool {
 	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
 	if trimmed == "" {
@@ -124,8 +148,9 @@ func isResponsesCompactAliasPath(path string) bool {
 	return isBareOrSubpathOf(trimmed, "/responses/compact") || isBareOrSubpathOf(trimmed, "/backend-api/codex/responses/compact")
 }
 
-// isResponsesRootAliasPath 匹配 /responses、/backend-api/codex/responses 及它们除 Compact 外的子路径。
-// 匹配从路径开头开始，/foo/responses 等其他前缀返回 false。
+// isResponsesRootAliasPath matches /responses and /backend-api/codex/responses, including all subpaths.
+// Matching starts at the path root, so unrelated prefixes such as /foo/responses are rejected.
+// It trims surrounding whitespace and trailing slashes before comparing the supported roots.
 func isResponsesRootAliasPath(path string) bool {
 	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
 	if trimmed == "" {
@@ -134,18 +159,26 @@ func isResponsesRootAliasPath(path string) bool {
 	return isBareOrSubpathOf(trimmed, "/responses") || isBareOrSubpathOf(trimmed, "/backend-api/codex/responses")
 }
 
-// isBareOrSubpathOf 判断 path 是否等于 root，或是否为 root 下的子路径。
-// 匹配从路径开头锚定，避免命中嵌套在其他无关前缀下的同名路径。
+// isBareOrSubpathOf reports whether path equals root or lies below root.
+// Root-anchored matching excludes identical names nested under unrelated prefixes.
+// Inputs are compared as supplied; callers pass normalized paths and nonempty
+// roots when they need the alias matching used by endpoint observation.
 func isBareOrSubpathOf(path, root string) bool {
 	return path == root || strings.HasPrefix(path, root+"/")
 }
 
-// DeriveUpstreamEndpoint 根据提供商平台和归一化后的入站端点推导上游端点。
+// DeriveUpstreamEndpoint derives an upstream endpoint from the provider platform and canonical inbound endpoint.
 //
-// 平台规则：OpenAI 与 Grok 默认转到 /v1/responses，并保留 /compact 等子路径；
-// Grok 原始 Chat 请求会由转发结果覆盖实际上游端点。embeddings、alpha search 等
-// 原生端点保留自身路径；Anthropic 转到 /v1/messages；Gemini 转到
-// /v1beta/models；Antigravity 根据入站端点区分 Claude 与 Gemini。
+// OpenAI and Grok default to Responses and retain subpaths such as /compact.
+// Grok Chat execution can override this estimate with its actual endpoint. Media,
+// embeddings, and search keep their endpoints. Anthropic uses Messages; Gemini
+// uses /v1beta/models. Antigravity chooses between them from the inbound endpoint.
+//
+// For Responses families, a raw suffix preserves resource detail that canonical
+// inbound labeling intentionally collapsed. When no raw suffix exists, a Compact
+// inbound label still retains compaction identity. Unknown platforms return the
+// trimmed inbound label. This is an observation estimate; execution can publish
+// its actual protocol through the runtime override read by GetUpstreamEndpoint.
 func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	inbound = strings.TrimSpace(inbound)
 
@@ -154,13 +187,15 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 		if inbound == EndpointSystemOne || inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointResponsesInputTokens || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideosEdits || inbound == EndpointVideosExtensions || inbound == EndpointVideos {
 			return inbound
 		}
-		// OpenAI 的非原生端点统一转到 Responses API。
-		// 保留从原始路径派生的子资源后缀，例如 /compact 或 /compact/detail。
+		// Other OpenAI and Grok requests default to the Responses observation.
+		// Retain subresource suffixes such as /compact or /compact/detail so the
+		// inferred observation keeps the selected resource after inbound labeling collapsed its detail.
 		if suffix := responsesSubpathSuffix(rawRequestPath); suffix != "" {
 			return EndpointResponses + suffix
 		}
-		// 原始路径无法派生后缀时，若入站端点已识别为 Compact，则回退到规范
-		// Compact 端点，避免静默降级为根 Responses 端点。
+		// When the raw path has no suffix, retain a canonical Compact inbound endpoint
+		// so upstream observations retain compaction identity even when no matching raw
+		// Responses suffix is available from the caller's request path.
 		if inbound == EndpointResponsesCompact {
 			return EndpointResponsesCompact
 		}
@@ -173,20 +208,25 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 		return EndpointGeminiModels
 
 	case capability.PlatformAntigravity:
-		// Antigravity 提供商支持 Claude 与 Gemini。
+		// The Gemini inbound family selects Antigravity's model-path estimate.
+		// Other families use Messages until execution publishes the actual upstream
+		// endpoint, allowing inference before a provider result is available.
 		if inbound == EndpointGeminiModels {
 			return EndpointGeminiModels
 		}
 		return EndpointMessages
 	}
 
-	// 未知平台回退到入站端点。
+	// An unknown platform supplies no protocol-specific inference. Keep its inbound
+	// label as the observation available until execution records a more specific endpoint.
 	return inbound
 }
 
 // responsesSubpathSuffix extracts the part after "/responses" in a raw
 // request path, e.g. "/openai/v1/responses/compact" → "/compact".
-// Returns "" when there is no meaningful suffix.
+// Returns "" when there is no meaningful suffix. Extraction trims surrounding
+// whitespace and trailing slashes and uses the last Responses fragment; callers
+// validate forwarding paths elsewhere before using any suffix for an actual request.
 func responsesSubpathSuffix(rawPath string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(rawPath), "/")
 	_, after, ok := strings.CutLast(trimmed, "/responses")
@@ -203,13 +243,13 @@ func responsesSubpathSuffix(rawPath string) string {
 	return suffix
 }
 
-// Middleware
-
 // InboundEndpointMiddleware normalizes the request path and stores the
 // canonical inbound endpoint in gin.Context so that every handler in
 // the chain can read it via GetInboundEndpoint.
 //
-// Apply this middleware to all gateway route groups.
+// Apply this middleware before authentication on gateway route groups. The
+// request URL takes precedence over FullPath so wildcard templates do not erase
+// Compact identity; missing URL path uses the matched route template instead.
 func InboundEndpointMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := ""
@@ -222,7 +262,8 @@ func InboundEndpointMiddleware() gin.HandlerFunc {
 		normalized := NormalizeInboundEndpoint(path)
 		c.Set(ctxKeyInboundEndpoint, normalized)
 		if c.Request != nil {
-			// 同时写入 request.Context，方便认证阶段在进入 Handler 前完成明确配置的分组回退。
+			// Authentication can resolve a configured group fallback before protocol handling.
+			// Publish the same normalized label in typed request context for that earlier decision.
 			ctx := apikey.WithInboundEndpoint(c.Request.Context(), normalized)
 			c.Request = c.Request.WithContext(ctx)
 		}
@@ -230,17 +271,17 @@ func InboundEndpointMiddleware() gin.HandlerFunc {
 	}
 }
 
-// 请求上下文辅助函数，供 handler 构造用量记录快照。
-
-// GetInboundEndpoint 返回中间件保存的规范端点。
-// 中间件未运行时先规范化 c.Request.URL.Path，再使用 c.FullPath()，通配路由据此区分 Compact 和根端点。
+// GetInboundEndpoint returns the canonical endpoint saved by middleware.
+// If absent, it normalizes the request URL before trying FullPath, preserving compact identity on wildcard routes.
+// Callers supply a nonnil context because stored-value lookup occurs before
+// fallback path checks. Empty or mistyped stored values select on-demand normalization.
 func GetInboundEndpoint(c *gin.Context) string {
 	if v, ok := c.Get(ctxKeyInboundEndpoint); ok {
 		if s, ok := v.(string); ok && s != "" {
 			return s
 		}
 	}
-	// Fallback: normalize on the fly.
+
 	path := ""
 	if c != nil {
 		if c.Request != nil && c.Request.URL != nil {
@@ -253,13 +294,15 @@ func GetInboundEndpoint(c *gin.Context) string {
 	return NormalizeInboundEndpoint(path)
 }
 
-// GetUpstreamEndpoint derives the upstream endpoint from the context
-// and the provider platform. Handlers call this after scheduling an
-// provider, passing provider.Platform.
+// GetUpstreamEndpoint returns the actual endpoint when recorded, otherwise deriving it
+// from the inbound request and selected provider platform.
+// Callers provide a nonnil HTTP context for the fallback lookup. OpenAI, Grok,
+// and CN providers first consult the OpenAI runtime override, then the generic
+// attempt override; other platforms consult the generic override directly.
 func GetUpstreamEndpoint(c *gin.Context, platform string) string {
-	// OpenAI 转发服务维护独立的运行时端点上下文，覆盖普通入站推导。
-	// 这对 force_chat_completions 的错误路径尤为重要：此时可能没有
-	// ForwardResult，不能把入站 /v1/responses 误报成上游端点。
+	// Runtime endpoint state takes precedence over inbound-path inference.
+	// A force_chat_completions failure may have no ForwardResult, so this state is
+	// needed to avoid reporting the inbound Responses path as the upstream endpoint.
 	if platform == capability.PlatformOpenAI || platform == capability.PlatformGrok || providererrors.IsCNProvider(platform) {
 		if endpoint := GetActualOpenAIUpstreamEndpoint(c); endpoint != "" {
 			return endpoint
@@ -280,7 +323,9 @@ func GetUpstreamEndpoint(c *gin.Context, platform string) string {
 	return DeriveUpstreamEndpoint(inbound, rawPath, platform)
 }
 
-// SetActualUpstreamEndpoint 记录本次尝试实际使用的上游端点。
+// SetActualUpstreamEndpoint records the upstream endpoint used by this attempt.
+// A nil context is ignored. Values are trimmed, and an empty value leaves
+// future readers using inference rather than a usable explicit override.
 func SetActualUpstreamEndpoint(c *gin.Context, endpoint string) {
 	if c != nil {
 		c.Set(ctxKeyActualUpstreamEndpoint, strings.TrimSpace(endpoint))

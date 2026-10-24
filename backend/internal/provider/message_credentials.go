@@ -8,17 +8,42 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// MessageCredentialSource 绑定共享的 Claude 和 Vertex 凭据源。
+// message_credentials.go selects authentication credentials and downstream
+// authentication labels for Messages forwarding.
+// Messages forwarding uses provider type to choose both an authentication value
+// and the label expected by downstream adapters. Bedrock returns the bedrock
+// label with an empty credential so its forwarder can supply SigV4 signing or
+// API Key authentication.
+//
+// Anthropic OAuth and service accounts use the injected Claude token source
+// when their branches permit it. Setup Tokens use their stored access token,
+// and Grok OAuth uses its stored-token validator. Other OAuth cases use the
+// stored access_token, including Anthropic OAuth when no source is configured.
+// These precedence rules keep each credential lifecycle with its owning
+// provider implementation.
+
+// MessageCredentialSource selects Messages credentials using the injected
+// Claude/Vertex token source when applicable.
 type MessageCredentialSource struct {
+	// Claude supplies cached or refreshed Anthropic OAuth and Vertex credentials.
+	// Resolve requires it for service accounts and uses stored OAuth credentials
+	// when this source is absent from the ordinary Anthropic OAuth branch.
 	Claude func(context.Context, *Record) (string, error)
 }
 
-// Resolve 在原调用时点选择凭据来源，保留 Messages 与其他入口的资格差异。
+// Resolve returns the provider credential and downstream authentication label
+// for Messages execution. Supply a nonnil record; API Keys require a stored
+// api_key, while Bedrock returns an empty credential with its bedrock label.
+//
+// Anthropic service accounts require the configured Claude source and return
+// service_account authentication. OAuth and Setup Token handling delegates to
+// oauth, which selects refreshed or stored credentials by platform and type.
+// Unsupported types and non-Anthropic service accounts return errors before
+// forwarding begins.
 // @project-doc docs/interfaces/anthropic_upstream.md#anthropic_account_and_transport
 func (s *MessageCredentialSource) Resolve(ctx context.Context, provider *Record) (string, string, error) {
 	switch provider.Type {
 	case capability.ProviderTypeOAuth, capability.ProviderTypeSetupToken:
-		// 分别按 OAuth 与 setup-token 的认证规则读取凭据。
 		return s.oauth(ctx, provider)
 	case capability.ProviderTypeAPIKey:
 		apiKey := provider.GetCredential("api_key")
@@ -27,7 +52,10 @@ func (s *MessageCredentialSource) Resolve(ctx context.Context, provider *Record)
 		}
 		return apiKey, "apikey", nil
 	case capability.ProviderTypeBedrock:
-		return "", "bedrock", nil // Bedrock 使用 SigV4 签名或 API Key，由 forwardBedrock 处理
+		// Bedrock selects signing or API-key authentication downstream. Return its
+		// label with no token so the forwarder resolves that provider-specific
+		// authentication using the complete record.
+		return "", "bedrock", nil
 	case capability.ProviderTypeServiceAccount:
 		if provider.Platform != capability.PlatformAnthropic {
 			return "", "", fmt.Errorf("unsupported service account platform: %s", provider.Platform)
@@ -45,8 +73,19 @@ func (s *MessageCredentialSource) Resolve(ctx context.Context, provider *Record)
 	}
 }
 
+// oauth selects the access token used by OAuth-like Messages requests. An
+// Anthropic OAuth record uses the injected Claude source when configured; Setup
+// Token records keep their stored token.
+//
+// Grok OAuth delegates to GrokStoredAccessToken for its missing-token error.
+// Remaining cases use GetCredential directly, including Anthropic OAuth with an
+// absent source. Source errors are returned to the caller, and a missing direct
+// access_token fails instead of producing an empty successful authentication
+// value.
 func (s *MessageCredentialSource) oauth(ctx context.Context, provider *Record) (string, string, error) {
-	// 对于 Anthropic OAuth 提供商，使用 ClaudeTokenProvider 获取缓存的 token
+	// The injected source owns Anthropic OAuth refresh and cache access. Setup
+	// Tokens bypass this branch because their stored inference token has a
+	// separate lifecycle from refreshable OAuth credentials.
 	if provider.Platform == capability.PlatformAnthropic && provider.Type == capability.ProviderTypeOAuth && s != nil && s.Claude != nil {
 		accessToken, err := s.Claude(ctx, provider)
 		if err != nil {
@@ -55,7 +94,9 @@ func (s *MessageCredentialSource) oauth(ctx context.Context, provider *Record) (
 		return accessToken, "oauth", nil
 	}
 
-	// Grok OAuth 优先使用凭据中的 access_token，后台刷新器负责保持其有效。
+	// Grok's stored-token helper supplies its platform-specific missing-token
+	// failure. It leaves renewal with the Grok token lifecycle rather than
+	// asking the Anthropic source to interpret this credential.
 	if provider.Platform == capability.PlatformGrok && provider.Type == capability.ProviderTypeOAuth {
 		accessToken, err := GrokStoredAccessToken(provider)
 		if err != nil {
@@ -64,11 +105,12 @@ func (s *MessageCredentialSource) oauth(ctx context.Context, provider *Record) (
 		return accessToken, "oauth", nil
 	}
 
-	// 其他情况（Gemini 有自己的 TokenProvider，setup-token 类型等）直接从提供商读取
+	// Stored-token resolution keeps Setup Tokens usable with an absent source
+	// and also supports the compatibility Anthropic OAuth path when no Claude
+	// source was bound by the caller.
 	accessToken := provider.GetCredential("access_token")
 	if accessToken == "" {
 		return "", "", errors.New("access_token not found in credentials")
 	}
-	// Token 刷新由后台 TokenRefreshService 处理，此处只返回当前 token
 	return accessToken, "oauth", nil
 }

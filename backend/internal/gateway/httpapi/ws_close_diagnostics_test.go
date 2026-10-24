@@ -10,7 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOpenAIWSIngressEndedByClient_MatchesCloseCodeReportedInLog 检查关闭码、客户端结束原因与诊断结果。
+// TestOpenAIWSIngressEndedByClient_MatchesCloseCodeReportedInLog includes bare,
+// wrapped and gateway control errors in close diagnostics. Whenever logging
+// reports normal closure, termination classification must attribute the
+// connection to the client.
 func TestOpenAIWSIngressEndedByClient_MatchesCloseCodeReportedInLog(t *testing.T) {
 	errs := []error{
 		coderws.CloseError{Code: coderws.StatusNormalClosure, Reason: "client done"},

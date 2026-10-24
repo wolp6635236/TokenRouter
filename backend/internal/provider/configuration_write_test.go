@@ -7,7 +7,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestConfigurationUsesCurrentWindowAndIsolatedValues 验证配置替换基于锁内最新累计，仍按原取时点处理真正跨越的资金窗口。
+// A configuration edit can carry older usage totals or redacted credentials
+// than the locked current provider record. These tests supply both snapshots
+// and inspect the merge result, covering captured-time window reconciliation,
+// sensitive-key intent, temporary-secret removal, and supported output
+// isolation.
+
+// TestConfigurationUsesCurrentWindowAndIsolatedValues merges quota
+// configuration against current usage in active and expired daily windows. It
+// checks retained total consumption, appropriate daily rollover, and selected
+// output mutations leaving both inputs intact.
 func TestConfigurationUsesCurrentWindowAndIsolatedValues(t *testing.T) {
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	for _, currentDay := range []bool{false, true} {
@@ -42,7 +51,9 @@ func TestConfigurationUsesCurrentWindowAndIsolatedValues(t *testing.T) {
 	}
 }
 
-// TestConfigurationSensitiveCredentialIntent 检查省略的密钥继承最新值，传入的空值或新密钥按输入保存。
+// TestConfigurationSensitiveCredentialIntent submits an omitted, cleared, or
+// replaced API Key against a newer stored secret. The merge follows submitted
+// key presence and leaves the current record's secret unchanged.
 func TestConfigurationSensitiveCredentialIntent(t *testing.T) {
 	for _, mode := range []string{"omitted", "clear", "rotate"} {
 		t.Run(mode, func(t *testing.T) {
@@ -68,7 +79,10 @@ func TestConfigurationSensitiveCredentialIntent(t *testing.T) {
 	}
 }
 
-// TestConfigurationDoesNotRestoreTemporaryCredentials 验证最新秘密的继承不能撤销编辑入口已经完成的临时认证材料清理。
+// TestConfigurationDoesNotRestoreTemporaryCredentials starts with current Grok
+// login material and an edit omitting secrets. The renewed object retains
+// access_token while removing password, SSO, and cookie keys, leaving current
+// input intact.
 func TestConfigurationDoesNotRestoreTemporaryCredentials(t *testing.T) {
 	current := &Record{Platform: PlatformGrok, Credentials: map[string]any{
 		"access_token": "current-token", "password": "old-password", "sso_token": "old-sso", "cookie": "old-cookie",
@@ -81,4 +95,23 @@ func TestConfigurationDoesNotRestoreTemporaryCredentials(t *testing.T) {
 		require.NotContains(t, out.Credentials, key)
 		require.Contains(t, current.Credentials, key)
 	}
+}
+
+// TestConfigurationRetainsCurrentMonthlyUsage submits stale monthly usage while
+// editing its ceiling. The locked current counter and start survive replacement,
+// so an administrative limit edit cannot restore a prior consumption value.
+func TestConfigurationRetainsCurrentMonthlyUsage(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	current := &Record{LoadLocation: time.LoadLocation, Extra: map[string]any{
+		"quota_monthly_used": 70.0, "quota_monthly_start": now.Format(time.RFC3339),
+	}}
+	desired := &Record{Extra: map[string]any{
+		"quota_monthly_limit": 200.0, "quota_monthly_used": 5.0,
+		"quota_monthly_start": now.Add(-time.Hour).Format(time.RFC3339),
+	}}
+	out, err := ApplyConfigurationChange(current, desired, ConfigurationChange{Fields: ConfigExtra})
+	require.NoError(t, err)
+	require.Equal(t, 70.0, out.Extra["quota_monthly_used"])
+	require.Equal(t, now.Format(time.RFC3339), out.Extra["quota_monthly_start"])
+	require.Equal(t, 200.0, out.Extra["quota_monthly_limit"])
 }

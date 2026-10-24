@@ -13,14 +13,26 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// Buffered usage fixtures can expose a canonical cache-read count or a
+// compatible cached_tokens alias. These tests check JSON presentation after
+// input reclassification and the inlined reconciliation cases, distinguishing
+// those helper assertions from full response-reader execution.
+
+// TestForceCacheBilling_TokenConversion checks helper-level downstream usage
+// presentation for enabled, disabled, and zero-input cases. It reparses the
+// edited JSON and asserts both input and cache-read counters against the table.
 func TestForceCacheBilling_TokenConversion(t *testing.T) {
 	tests := []struct {
-		name                    string
-		forceCacheBilling       bool
-		inputTokens             int
-		cacheReadInputTokens    int
-		expectedInputTokens     int
-		expectedCacheReadTokens int
+		name              string // table scenario display name
+		forceCacheBilling bool   // enable input reclassification path
+		// inputTokens and cacheReadInputTokens supply the upstream counters.
+		// When forceCacheBilling is true and inputTokens is positive,
+		// expectedInputTokens is zero and expectedCacheReadTokens is their sum;
+		// other cases retain the supplied counters.
+		inputTokens             int // initial ordinary input count
+		cacheReadInputTokens    int // initial cache-read token count
+		expectedInputTokens     int // expected reclassified input count
+		expectedCacheReadTokens int // expected reclassified cache-read count
 	}{
 		{
 			name:                    "force cache billing converts input to cache_read",
@@ -58,15 +70,16 @@ func TestForceCacheBilling_TokenConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 根据输入用量构造待转换的响应报文。
+			// Build a response from the input usage to exercise
+			// reclassification.
 			usage := upstream.TokenUsage{
 				InputTokens:          tt.inputTokens,
 				CacheReadInputTokens: tt.cacheReadInputTokens,
 			}
 
-			// ParseClaudeUsageFromResponseBody 读取转换后的响应用量。
+			// Read the reclassified response usage.
 			body, err := json.Marshal(struct {
-				Usage upstream.TokenUsage `json:"usage"`
+				Usage upstream.TokenUsage `json:"usage"` // serialized response token usage
 			}{Usage: usage})
 			if err != nil {
 				t.Fatal(err)
@@ -89,10 +102,11 @@ func TestForceCacheBilling_TokenConversion(t *testing.T) {
 	}
 }
 
-// 非流式响应 reconcile 测试
-
+// TestNonStreamingReconcile_KimiResponse decodes a compatible cached_tokens
+// fixture and performs the inlined nonstream reconciliation. It checks local
+// input/output/cache-read counts and the added canonical cache-read JSON field.
 func TestNonStreamingReconcile_KimiResponse(t *testing.T) {
-	// 模拟 Kimi 非流式响应
+	// This compatible fixture supplies cache hits under cached_tokens.
 	body := []byte(`{
 		"id": "msg_123",
 		"type": "message",
@@ -110,13 +124,15 @@ func TestNonStreamingReconcile_KimiResponse(t *testing.T) {
 		}
 	}`)
 
-	// 模拟 handleNonStreamingResponse 中的逻辑
+	// Exercise the nonstream cache-read reconciliation.
 	var response struct {
-		Usage upstream.TokenUsage `json:"usage"`
+		Usage upstream.TokenUsage `json:"usage"` // serialized response token usage
 	}
 	require.NoError(t, json.Unmarshal(body, &response))
 
-	// reconcile
+	// The decoded fixture has no canonical cache-read count. A positive alias
+	// can fill that selected usage and client path; an unsuccessful path edit
+	// retains the prior response bytes.
 	if response.Usage.CacheReadInputTokens == 0 {
 		cachedTokens := gjson.GetBytes(body, "usage.cached_tokens").Int()
 		if cachedTokens > 0 {
@@ -127,17 +143,20 @@ func TestNonStreamingReconcile_KimiResponse(t *testing.T) {
 		}
 	}
 
-	// 验证内部 usage（计费用）
+	// Check internal billing usage.
 	assert.Equal(t, 23, response.Usage.CacheReadInputTokens)
 	assert.Equal(t, 23, response.Usage.InputTokens)
 	assert.Equal(t, 7, response.Usage.OutputTokens)
 
-	// 验证返回给客户端的 JSON body
+	// Check the client-visible JSON.
 	assert.Equal(t, int64(23), gjson.GetBytes(body, "usage.cache_read_input_tokens").Int())
 }
 
+// TestNonStreamingReconcile_NativeClaude decodes a fixture containing a nonzero
+// canonical cache-read count. It checks that decoded value is present and
+// equals thirty, protecting the native-count precondition for reconciliation.
 func TestNonStreamingReconcile_NativeClaude(t *testing.T) {
-	// 原生 Claude 响应：cache_read_input_tokens 已有值
+	// An existing Anthropic cache-read count takes precedence.
 	body := []byte(`{
 		"usage": {
 			"input_tokens": 100,
@@ -148,17 +167,22 @@ func TestNonStreamingReconcile_NativeClaude(t *testing.T) {
 	}`)
 
 	var response struct {
-		Usage upstream.TokenUsage `json:"usage"`
+		Usage upstream.TokenUsage `json:"usage"` // serialized response token usage
 	}
 	require.NoError(t, json.Unmarshal(body, &response))
 
-	// CacheReadInputTokens == 30，条件不成立，整个 reconcile 分支不会执行
+	// These assertions inspect the decoded native count directly, supplying
+	// the nonzero precondition used by the response reader's reconciliation
+	// branch.
 	assert.NotZero(t, response.Usage.CacheReadInputTokens)
 	assert.Equal(t, 30, response.Usage.CacheReadInputTokens)
 }
 
+// TestNonStreamingReconcile_NoCachedTokens applies the inlined reconciliation
+// to a fixture lacking the compatible alias. It checks local and client-path
+// cache-read counts stay zero for that response.
 func TestNonStreamingReconcile_NoCachedTokens(t *testing.T) {
-	// 没有 cached_tokens 字段
+	// A response without cached_tokens keeps zero cache-read usage.
 	body := []byte(`{
 		"usage": {
 			"input_tokens": 100,
@@ -169,10 +193,13 @@ func TestNonStreamingReconcile_NoCachedTokens(t *testing.T) {
 	}`)
 
 	var response struct {
-		Usage upstream.TokenUsage `json:"usage"`
+		Usage upstream.TokenUsage `json:"usage"` // serialized response token usage
 	}
 	require.NoError(t, json.Unmarshal(body, &response))
 
+	// The decoded fixture has no canonical cache-read count. A positive alias
+	// can fill that selected usage and client path; an unsuccessful path edit
+	// retains the prior response bytes.
 	if response.Usage.CacheReadInputTokens == 0 {
 		cachedTokens := gjson.GetBytes(body, "usage.cached_tokens").Int()
 		if cachedTokens > 0 {
@@ -183,7 +210,6 @@ func TestNonStreamingReconcile_NoCachedTokens(t *testing.T) {
 		}
 	}
 
-	// cache_read_input_tokens 应保持为 0
 	assert.Equal(t, 0, response.Usage.CacheReadInputTokens)
 	assert.Equal(t, int64(0), gjson.GetBytes(body, "usage.cache_read_input_tokens").Int())
 }

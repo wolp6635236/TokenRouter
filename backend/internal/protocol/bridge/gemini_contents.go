@@ -6,12 +6,38 @@ import (
 	"strings"
 )
 
-// DummyThoughtSignature 用于跳过 Gemini 3 thought_signature 验证
-// 参考: https://ai.google.dev/gemini-api/docs/thought-signatures
-// 导出供跨包使用（如 gemini_native_signature_cleaner 跨提供商修复）。
+// gemini_contents.go converts Messages history into internal Gemini content
+// and system instructions.
+// Internal Gemini history uses model roles and function names where Messages
+// history uses assistant roles and tool-use IDs. A shared call-ID map connects
+// later results to earlier names while system turns become separate
+// systemInstruction parts, allowing the Antigravity request assembler to
+// combine them with its own instruction text.
+//
+// Thinking history follows the caller's signature policy. Signed blocks keep
+// their signatures; unsigned or dummy-signed blocks are downgraded when dummy
+// signatures are disabled, and the returned flag tells the assembler to remove
+// thinking controls. Dummy-enabled conversion can add a thought before a final
+// assistant prefill. Conversion keeps chronological parts and reports errors
+// with message position, while map updates from earlier parts remain visible
+// to the caller.
+
+// DummyThoughtSignature is the marker inserted by dummy-enabled BuildParts and
+// final assistant prefill handling. Cross-provider signature repair uses the
+// same literal. See https://ai.google.dev/gemini-api/docs/thought-signatures.
 const DummyThoughtSignature = "skip_thought_signature_validator"
 
-// BuildContents 构建 contents。
+// BuildContents converts Messages history into Gemini contents and separate
+// system parts, reporting whether thinking was downgraded. Supply a writable
+// toolIDToName map and reuse it across the history so later tool results can
+// resolve prior call names.
+//
+// Assistant turns become model turns, system parts leave ordinary history, and
+// other roles retain their spelling. Dummy-enabled thinking inserts a leading
+// thought only into a nonempty final model turn lacking a thought part. A
+// malformed message returns an indexed error and discards output slices, while
+// prior call-map updates remain. The Antigravity assembler uses the downgrade
+// flag to disable request thinking controls.
 func BuildContents(messages []ClaudeMessage, toolIDToName map[string]string, isThinkingEnabled, allowDummyThought bool) ([]GeminiContent, []GeminiPart, bool, error) {
 	var contents []GeminiContent
 	var systemParts []GeminiPart
@@ -19,6 +45,8 @@ func BuildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 
 	for i, msg := range messages {
 		role := msg.Role
+		// Messages assistant turns use Gemini's model role, while exact system turns
+		// are separated later and all other role spellings remain unchanged.
 		if role == "assistant" {
 			role = "model"
 		}
@@ -31,15 +59,17 @@ func BuildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 			strippedThinking = true
 		}
 
-		// Claude Code 可能把 system prompt 放进 messages，需并入 Gemini systemInstruction。
+		// Embedded system turns contribute parts to systemInstruction instead of
+		// conversational contents; the request assembler merges these parts with its
+		// separately supplied system text.
 		if role == "system" {
 			systemParts = append(systemParts, parts...)
 			continue
 		}
 
-		// 只有 Gemini 模型支持 dummy thinking block workaround
-		// 只对最后一条 assistant 消息添加（Pre-fill 场景）
-		// 历史 assistant 消息不能添加没有 signature 的 dummy thinking block
+		// Only a final model turn is treated as assistant prefill for dummy thought
+		// insertion. Earlier turns keep the signature handling applied by
+		// BuildParts.
 		if allowDummyThought && role == "model" && isThinkingEnabled && i == len(messages)-1 {
 			hasThoughtPart := false
 			for _, p := range parts {
@@ -49,7 +79,8 @@ func BuildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 				}
 			}
 			if !hasThoughtPart && len(parts) > 0 {
-				// 在开头添加 dummy thinking block
+				// Place the synthetic thought before nonempty prefill parts so the final
+				// model turn begins with a signed thought under the selected policy.
 				parts = append([]GeminiPart{{
 					Text:             "Thinking...",
 					Thought:          true,
@@ -71,13 +102,25 @@ func BuildContents(messages []ClaudeMessage, toolIDToName map[string]string, isT
 	return contents, systemParts, strippedThinking, nil
 }
 
-// BuildParts 构建消息的 parts
-// allowDummyThought: 只有 Gemini 模型支持 dummy thought signature。
+// BuildParts converts string or block-array Messages content into Gemini parts
+// and reports signature-based thinking downgrade. Initialize toolIDToName
+// before calls with nonempty IDs and names; the map is updated during
+// traversal and belongs to the caller.
+//
+// String content is trimmed and suppresses blank or no-content placeholders,
+// while accepted text blocks keep their whitespace. Signature checks use exact
+// strings and leave validation upstream. With dummy signatures disabled,
+// unsigned or dummy-signed thinking becomes visible text and sets the
+// downgrade flag; tools simply omit that marker. Results prefer a supplied
+// name, then the prior call map, then the call ID. Array decoding failure
+// returns an error.
 func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDummyThought bool) ([]GeminiPart, bool, error) {
 	var parts []GeminiPart
 	strippedThinking := false
 
-	// 尝试解析为字符串
+	// Try scalar content first: trimming suppresses blank and no-content
+	// placeholders here, while the array path below keeps accepted text block
+	// whitespace.
 	var textContent string
 	if err := json.Unmarshal(content, &textContent); err == nil {
 		if textContent != "(no content)" && strings.TrimSpace(textContent) != "" {
@@ -86,7 +129,9 @@ func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 		return parts, false, nil
 	}
 
-	// 解析为内容块数组
+	// A failed scalar decode can still represent Messages block-array content;
+	// decode that representation before treating the content as a conversion
+	// error.
 	var blocks []ContentBlock
 	if err := json.Unmarshal(content, &blocks); err != nil {
 		return nil, false, fmt.Errorf("parse content blocks: %w", err)
@@ -104,25 +149,31 @@ func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 				Text:    block.Thinking,
 				Thought: true,
 			}
-			// signature 处理：
-			// - Claude 模型（allowDummyThought=false）使用上游返回的 signature，dummy 按缺失处理。
-			// - Gemini 模型（allowDummyThought=true）优先使用上游 signature，缺失时使用 dummy signature。
+			// The caller's dummy policy distinguishes supplied nonmarker signatures from
+			// placeholders; nonempty strings remain attached in either policy unless they
+			// exactly equal the disabled dummy marker.
 			if block.Signature != "" && (allowDummyThought || block.Signature != DummyThoughtSignature) {
 				part.ThoughtSignature = block.Signature
 			} else if !allowDummyThought {
-				// Claude 模型需要有效 signature；在缺失时降级为普通文本，并在上层禁用 thinking mode。
+				// Unsigned or dummy-signed thinking becomes visible text under this
+				// policy; report the downgrade so the assembler removes thinking controls
+				// for this history.
 				if strings.TrimSpace(block.Thinking) != "" {
 					parts = append(parts, GeminiPart{Text: block.Thinking})
 				}
 				strippedThinking = true
 				continue
 			} else {
-				// Gemini 模型使用 dummy signature
+				// Dummy-enabled conversion supplies the configured marker for missing
+				// thought signatures, allowing the request assembler to keep the block as
+				// thinking.
 				part.ThoughtSignature = DummyThoughtSignature
 			}
 			parts = append(parts, part)
 
 		case "image":
+			// Base64 Messages images become inlineData with their supplied MIME type
+			// and encoded bytes; URL sources contribute no image part on this path.
 			if block.Source != nil && block.Source.Type == "base64" {
 				parts = append(parts, GeminiPart{
 					InlineData: &GeminiInlineData{
@@ -133,7 +184,8 @@ func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			}
 
 		case "tool_use":
-			// 存储 id -> name 映射
+			// Record nonempty call IDs and names before emitting the call, because a
+			// later Messages result can identify the call by ID alone.
 			if block.ID != "" && block.Name != "" {
 				toolIDToName[block.ID] = block.Name
 			}
@@ -145,9 +197,9 @@ func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 					ID:   block.ID,
 				},
 			}
-			// tool_use 的 signature 处理：
-			// - Claude 模型（allowDummyThought=false）使用上游返回的 signature，dummy 按缺失处理。
-			// - Gemini 模型（allowDummyThought=true）优先使用上游 signature，缺失时使用 dummy signature。
+			// Calls keep nonempty supplied signatures under the same exact marker check.
+			// Dummy-enabled conversion fills missing signatures; disabling that policy
+			// leaves unsigned or dummy-signed calls without thoughtSignature.
 			if block.Signature != "" && (allowDummyThought || block.Signature != DummyThoughtSignature) {
 				part.ThoughtSignature = block.Signature
 			} else if allowDummyThought {
@@ -156,7 +208,8 @@ func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 			parts = append(parts, part)
 
 		case "tool_result":
-			// 获取函数名
+			// Gemini function responses need a name: prefer the result's supplied name,
+			// then the matching call's name, and finally its Messages call ID.
 			funcName := block.Name
 			if funcName == "" {
 				if name, ok := toolIDToName[block.ToolUseID]; ok {
@@ -166,7 +219,9 @@ func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 				}
 			}
 
-			// 解析 content
+			// The internal request wraps tool results in a result string, so flatten
+			// text blocks and supply success/error placeholders before constructing
+			// functionResponse.
 			resultContent := ParseToolResultContent(block.Content, block.IsError)
 
 			parts = append(parts, GeminiPart{
@@ -184,8 +239,14 @@ func BuildParts(content json.RawMessage, toolIDToName map[string]string, allowDu
 	return parts, strippedThinking, nil
 }
 
-// ParseToolResultContent 解析 tool_result 的 content。
+// ParseToolResultContent returns tool-result text for an internal Gemini
+// function response. Strings retain supplied whitespace when nonblank, arrays
+// join string text fields with newlines, and other JSON shapes keep their
+// serialized text. Empty or whitespace-only supported content selects an
+// isError-dependent placeholder.
 func ParseToolResultContent(content json.RawMessage, isError bool) string {
+	// Missing result content needs a printable result string; isError chooses a
+	// failure placeholder so an empty failure is distinguishable from success.
 	if len(content) == 0 {
 		if isError {
 			return "Tool execution failed with no output."
@@ -193,7 +254,8 @@ func ParseToolResultContent(content json.RawMessage, isError bool) string {
 		return "Command executed successfully."
 	}
 
-	// 尝试解析为字符串
+	// Attempt the scalar representation first, retaining nonblank supplied text
+	// and selecting the same status placeholder for blank strings or JSON null.
 	var str string
 	if err := json.Unmarshal(content, &str); err == nil {
 		if strings.TrimSpace(str) == "" {
@@ -205,7 +267,8 @@ func ParseToolResultContent(content json.RawMessage, isError bool) string {
 		return str
 	}
 
-	// 尝试解析为数组
+	// Array results expose their string text fields in order; joining with
+	// newlines gives functionResponse one string while omitting nontext entries.
 	var arr []map[string]any
 	if err := json.Unmarshal(content, &arr); err == nil {
 		var texts []string
@@ -215,6 +278,9 @@ func ParseToolResultContent(content json.RawMessage, isError bool) string {
 			}
 		}
 		result := strings.Join(texts, "\n")
+		// A textless or whitespace-only decoded array still needs the status
+		// placeholder; its successful decode does not establish meaningful tool
+		// output.
 		if strings.TrimSpace(result) == "" {
 			if isError {
 				return "Tool execution failed with no output."
@@ -224,6 +290,7 @@ func ParseToolResultContent(content json.RawMessage, isError bool) string {
 		return result
 	}
 
-	// 返回原始 JSON
+	// Keep unrecognized or undecodable result bytes as text so this conversion
+	// can deliver the tool's supplied payload instead of discarding it.
 	return string(content)
 }

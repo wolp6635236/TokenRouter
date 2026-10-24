@@ -2,7 +2,17 @@ package httpapi
 
 import "github.com/gin-gonic/gin"
 
-// RegisterGatewayRoutes 复用网关已安装的 Key 与协议门禁，拥有批量图片子路径。
+// routes.go registers batch-image submission, discovery, management, and
+// download endpoints on the gateway router.
+// Batch image management and download paths share the gateway router group's
+// middleware. Static model discovery is registered alongside job IDs, and the
+// handler applies owner-scoped use cases to submission, queries, cancellation,
+// record hiding, and output deletion.
+
+// RegisterGatewayRoutes installs batch image endpoints on the supplied gateway
+// group. The caller provides its authentication and protocol middleware and
+// a configured handler before serving; downloads and management inherit that
+// group's request context.
 func RegisterGatewayRoutes(gateway *gin.RouterGroup, endpoint *BatchImageHandler) {
 	gateway.POST("/images/batches", endpoint.Submit)
 	gateway.GET("/images/batches", endpoint.List)

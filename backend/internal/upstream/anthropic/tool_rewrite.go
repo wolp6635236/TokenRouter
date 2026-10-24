@@ -8,18 +8,39 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson" // StaticToolNameRewrites 是"静态前缀映射"，与 Parrot src/transform/cc_mimicry.py
+	"github.com/tidwall/sjson"
 )
 
-// DynamicToolMapThreshold 与 Parrot 一致：tools 数量超过 5 才启用动态映射。
-// 少量工具不需要混淆（一般是 Claude Code 自己的核心工具 bash/edit/read 等）。
+// tool_rewrite.go rewrites tool names across request declarations and history,
+// then restores response aliases.
+// CLI-mimicked tools need the same alias in their declarations, named choices,
+// and historical calls. Request-local mappings pair outbound aliases with
+// response replacements, while server-defined tool types keep their declared
+// names during preparation.
+//
+// Ordered tool names seed dynamic alias selection above the configured
+// threshold; smaller lists can still use static session prefixes. Reverse
+// replacements are ordered by alias length so overlapping names are restored in
+// a usable sequence. Body edits also remove cache markers from literally
+// deferred tools and select the last eligible tool for a cache breakpoint.
+// Response restoration replaces matching bytes throughout the payload,
+// including text and identifiers, so its mapping scope is broader than the JSON
+// name paths used on requests.
+
+// DynamicToolMapThreshold is the greatest eligible tool count that skips
+// dynamic alias selection, while matching static session prefixes can still be
+// rewritten.
 const DynamicToolMapThreshold = 5
 
 var (
+	// StaticToolNameRewrites pairs client session prefixes with CLI aliases for
+	// outbound selection and global response-byte restoration after
+	// request-specific aliases.
 	StaticToolNameRewrites = map[string]string{"sessions_": "cc_sess_", "session_": "cc_ses_"}
 
-	// FakeToolNamePrefixes 是"动态映射"的前缀池，与 Parrot _FAKE_PREFIXES 一致。
-	// 当 tools 数量 > DynamicToolMapThreshold 时随机选用其中前缀生成可读假名。
+	// FakeToolNamePrefixes supplies the dynamic alias prefix pool whose copied
+	// values are deterministically shuffled from the ordered tool-name hash
+	// during request preparation.
 	FakeToolNamePrefixes = []string{
 		"analyze_", "compute_", "fetch_", "generate_", "lookup_", "modify_",
 		"process_", "query_", "render_", "resolve_", "sync_", "update_",
@@ -28,34 +49,42 @@ var (
 	}
 )
 
-// ToolNameRewrite 是单次请求内的工具名混淆映射。
-//   - Forward: real → fake，请求阶段在 body 上应用。
-//   - Reverse: fake → real，响应阶段对每个 chunk 做 bytes.Replace 还原。
-//
-// ReverseOrdered 是按假名长度倒序的 (fake, real) 列表，用于防止短假名是长假名的
-// 子串时 bytes.Replace 先被吃掉（对齐 Parrot _restore_tool_names_in_chunk 的
-// `sorted(..., key=lambda x: len(x[1]), reverse=True)`）。
+// ToolNameRewrite holds request-local aliases used across outbound tool paths
+// and response restoration. Callers retain the mapping paired with the prepared
+// request until its response is processed.
 type ToolNameRewrite struct {
-	Forward        map[string]string
-	Reverse        map[string]string
+	// Forward maps client names to outbound aliases, while Reverse maps
+	// selected aliases back to client names. BuildToolNameRewriteFromBody
+	// creates both for one request, and its response uses the same mapping.
+	Forward map[string]string // original tool names to aliases
+	Reverse map[string]string // tool aliases to original names
+	// ReverseOrdered holds alias/original pairs in descending alias byte length
+	// when built by BuildToolNameRewriteFromBody. Restoration consumes that
+	// order so a shorter match cannot replace part of a longer alias first.
 	ReverseOrdered [][2]string
 }
 
-// BuildDynamicToolMap 构造 tools 的动态假名映射。
+// BuildDynamicToolMap returns dynamic aliases when toolNames exceeds the
+// configured threshold; smaller lists return nil. The supplied order determines
+// the hash, shuffled prefixes, and indexed names, so identical ordered input
+// yields the same mapping within this implementation.
 //
-// 与 Parrot _build_dynamic_tool_map 语义等价：
-//   - tools 数量 ≤ DynamicToolMapThreshold 时返回 nil（不做动态映射，走静态 fallback）
-//   - 同一组 tool_names 在同进程内映射稳定（保证 cache 命中）
-//
-// Parrot 用 `random.Random(hash(tuple(tool_names)))` 作 seed + shuffle 前缀池；
-// Go 无法字节级复刻 Python hash，但"稳定性"和"前缀池打散"两个不变量都保留：
-// 用 fnv64a(strings.Join(names, "\x00")) 作 seed 喂 math/rand.New。
-// 字节级不同不影响上游判定（Anthropic 不会验证我们的随机种子算法）。
+// Zero-byte separators mark ordered name boundaries while hashing. Each alias
+// uses a selected prefix, up to three leading name bytes, and a decimal
+// position with at least two digits. Repeated client names overwrite earlier
+// map entries. Callers keep the same ordered names when preparing related
+// history and cache inputs.
 func BuildDynamicToolMap(toolNames []string) map[string]string {
+	// Small catalogs skip dynamic identity assignment and keep static prefix
+	// selection for matching names, reducing the set of request-local reverse
+	// aliases needed for their responses.
 	if len(toolNames) <= DynamicToolMapThreshold {
 		return nil
 	}
 	h := fnv.New64a()
+	// Separators distinguish adjacent name lists such as ab,c and a,bc during
+	// hashing. That ordered hash chooses the deterministic prefix shuffle used
+	// by related prompt preparation.
 	for i, n := range toolNames {
 		if i > 0 {
 			_, _ = h.Write([]byte{0})
@@ -71,6 +100,7 @@ func BuildDynamicToolMap(toolNames []string) map[string]string {
 	mapping := make(map[string]string, len(toolNames))
 	for i, name := range toolNames {
 		prefix := available[i%len(available)]
+		// Alias heads keep up to three bytes of the supplied name.
 		headLen := min(len(name), 3)
 		fake := fmt.Sprintf("%s%s%02d", prefix, name[:headLen], i)
 		mapping[name] = fake
@@ -78,14 +108,19 @@ func BuildDynamicToolMap(toolNames []string) map[string]string {
 	return mapping
 }
 
-// SanitizeToolName 把真名转成假名。
-// 与 Parrot _sanitize_tool_name 语义一致：动态映射优先，再走静态前缀映射。
+// SanitizeToolName selects a dynamic alias when name has a supplied entry.
+// Otherwise it applies a matching static session prefix or returns name.
+// Dynamic mappings take precedence even when the original name also matches a
+// static prefix.
 func SanitizeToolName(name string, dynamic map[string]string) string {
 	if dynamic != nil {
 		if fake, ok := dynamic[name]; ok {
 			return fake
 		}
 	}
+	// Names absent from the dynamic map can still use CLI session aliases.
+	// Consult static prefixes before returning an unchanged name so both
+	// supported alias paths remain available.
 	for prefix, replacement := range StaticToolNameRewrites {
 		if strings.HasPrefix(name, prefix) {
 			return replacement + name[len(prefix):]
@@ -94,9 +129,9 @@ func SanitizeToolName(name string, dynamic map[string]string) string {
 	return name
 }
 
-// ShouldMimicToolName 指示某个 tool 是否需要重命名。
-// server tool（type != "" 且不是 "function" / "custom"）是 Anthropic 协议语义的一部分，
-// 比如 "web_search_20250305" / "computer_20250124"；误改会导致上游拒绝。
+// ShouldMimicToolName reports whether an empty, function, or custom tool type
+// permits aliasing. Other tool types retain their declaration names in request
+// preparation, including server-defined tool forms.
 func ShouldMimicToolName(toolType string) bool {
 	if toolType == "" || toolType == "function" || toolType == "custom" {
 		return true
@@ -104,10 +139,16 @@ func ShouldMimicToolName(toolType string) bool {
 	return false
 }
 
-// BuildToolNameRewriteFromBody 扫描 body 的 tools[*].name，构造 ToolNameRewrite
-// 并返回它。若不需要混淆（tools 数量不足 + 没有匹配静态前缀的工具）返回 nil。
+// BuildToolNameRewriteFromBody builds request-local forward and reverse aliases
+// from named eligible tools. Missing tools arrays or unchanged names return
+// nil. The selected name order is passed to dynamic mapping, while
+// server-defined tool types are excluded from that list.
 //
-// 注意：只扫描，不改 body。真正的 body 改写在 ApplyToolNameRewriteToBody。
+// Forward entries support declaration, tool_choice, and history edits. Reverse
+// pairs are sorted by descending alias byte length so response restoration can
+// replace a longer overlapping alias before its shorter prefix. Callers retain
+// the resulting mapping for the response associated with this prepared request;
+// the method constructs state and leaves body edits to its consumer.
 func BuildToolNameRewriteFromBody(body []byte) *ToolNameRewrite {
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.IsArray() {
@@ -117,6 +158,9 @@ func BuildToolNameRewriteFromBody(body []byte) *ToolNameRewrite {
 	mimicableNames := make([]string, 0)
 	toolsArr := tools.Array()
 	for _, t := range toolsArr {
+		// Exclude server-defined tool forms from the alias map so their
+		// declarations stay under the names supplied in the request while
+		// eligible user tools can change.
 		if !ShouldMimicToolName(t.Get("type").String()) {
 			continue
 		}
@@ -149,6 +193,9 @@ func BuildToolNameRewriteFromBody(body []byte) *ToolNameRewrite {
 	for fake, real := range rw.Reverse {
 		rw.ReverseOrdered = append(rw.ReverseOrdered, [2]string{fake, real})
 	}
+	// A shorter alias can be a prefix inside another alias. Restore the longer
+	// matching bytes first so the shorter replacement cannot corrupt that later
+	// reverse match.
 	sort.SliceStable(rw.ReverseOrdered, func(i, j int) bool {
 		return len(rw.ReverseOrdered[i][0]) > len(rw.ReverseOrdered[j][0])
 	})
@@ -156,15 +203,22 @@ func BuildToolNameRewriteFromBody(body []byte) *ToolNameRewrite {
 	return rw
 }
 
-// ApplyToolNameRewriteToBody 把已构造的 ToolNameRewrite 应用到 body 上：
+// ApplyToolNameRewriteToBody applies request-local aliases to eligible
+// declarations, named tool_choice, and historical tool_use names. A nil or
+// empty mapping still applies the last eligible tool cache breakpoint. JSON
+// update failures retain the most recently prepared body and later edits
+// continue.
 //
-//   - 改写 $.tools[*].name（仅对 ShouldMimicToolName 通过的 tool）
-//   - 改写 $.tool_choice.name（仅当 $.tool_choice.type == "tool"）
-//   - 改写 $.messages[*].content[*].name（仅当 type == "tool_use"）
-//   - 在 $.tools[last].cache_control 上打 ephemeral 缓存断点
-//
-// 响应侧 bytes.Replace 会连带还原假名 → 真名。
+// Declaration and history names need the same mapping so a prior call remains
+// recognizable after outbound aliases are selected. Tool-result IDs and other
+// content paths retain their own fields. The final cache pass removes deferred
+// markers and fills the selected eligible breakpoint. Callers retain rw for
+// response-byte restoration, whose matching scope includes all occurrences of
+// its aliases.
 func ApplyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
+	// Cache-breakpoint eligibility is independent of tool aliasing. Even a
+	// request with no changed names runs cache preparation so literal deferred
+	// flags and the final eligible tool receive their rules.
 	if rw == nil || len(rw.Forward) == 0 {
 		body = ApplyToolsLastCacheBreakpoint(body)
 		return body
@@ -175,6 +229,9 @@ func ApplyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 		idx := -1
 		tools.ForEach(func(_, t gjson.Result) bool {
 			idx++
+			// Request declarations reuse the mapper's tool-type selection.
+			// Leave excluded server-defined names intact while path edits apply
+			// the request-local aliases to eligible declarations.
 			if !ShouldMimicToolName(t.Get("type").String()) {
 				return true
 			}
@@ -186,6 +243,9 @@ func ApplyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 			if !ok {
 				return true
 			}
+			// Declaration edits are best effort for each mapped name. Keep the
+			// current body after a failed path update so other declaration and
+			// history edits can still proceed.
 			if next, err := sjson.SetBytes(body, fmt.Sprintf("tools.%d.name", idx), fake); err == nil {
 				body = next
 			}
@@ -193,6 +253,9 @@ func ApplyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 		})
 	}
 
+	// A named tool_choice refers to the selected declaration, so use its alias
+	// as well. Failed editing retains the current body while history
+	// preparation continues.
 	if tc := gjson.GetBytes(body, "tool_choice"); tc.Exists() && tc.Get("type").String() == "tool" {
 		name := tc.Get("name").String()
 		if fake, ok := rw.Forward[name]; ok {
@@ -202,8 +265,9 @@ func ApplyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 		}
 	}
 
-	// 历史消息里的 tool_use.name 也要同步改写，否则 tools[] 已声明假名，
-	// 但 messages 仍引用原名时，Anthropic 会因为工具名不一致拒绝请求。
+	// Historical tool_use names refer to the same declarations sent upstream.
+	// Apply the request-local aliases at those paths while leaving tool-result
+	// IDs and neighboring content fields available.
 	messages := gjson.GetBytes(body, "messages")
 	if messages.IsArray() {
 		messages.ForEach(func(msgKey, msg gjson.Result) bool {
@@ -223,6 +287,9 @@ func ApplyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 				}
 				if fake, ok := rw.Forward[name]; ok {
 					path := fmt.Sprintf("messages.%d.content.%d.name", msgIdx, blkIdx)
+					// A failed historical name edit retains the body selected
+					// by earlier edits. Continue other history paths and cache
+					// preparation using those available bytes.
 					if next, err := sjson.SetBytes(body, path, fake); err == nil {
 						body = next
 					}
@@ -237,16 +304,21 @@ func ApplyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 	return body
 }
 
-// ApplyToolsLastCacheBreakpoint 在最后一个非延迟加载工具上注入 cache_control
-// 断点。Anthropic 不允许 defer_loading=true 的工具携带 cache_control，
-// 因此先清理延迟加载工具上的客户端断点；其余行为对齐 Parrot
-// `tools[-1]["cache_control"] = {"type":"ephemeral","ttl":"1h"}`，
-// 但 ttl 按本仓规则：
-//   - 客户端已为该 tool 显式设置 cache_control.ttl → 完全透传不覆盖
-//   - 否则注入 {"type":"ephemeral","ttl": DefaultCacheControlTTL}
+// ApplyToolsLastCacheBreakpoint removes deferred-tool cache markers and returns
+// a body with a breakpoint on the last non-deferred tool when one exists.
+// Missing tool arrays, empty arrays, or wholly deferred lists return the body
+// available after cleanup.
 //
-// 纯副作用函数，tools 不存在或为空数组时 no-op。
+// A nonempty client TTL takes precedence. An existing cache_control value
+// without TTL receives a ttl path update using DefaultCacheControlTTL; an
+// absent value receives the ephemeral object with that default. Existing
+// values are not validated as objects before editing. Earlier eligible tools
+// retain their markers, and failed JSON edits keep current bytes. Only literal
+// JSON true in either defer_loading location selects deferred handling.
 func ApplyToolsLastCacheBreakpoint(body []byte) []byte {
+	// Deferred definitions are skipped when selecting the final ordinary
+	// breakpoint. Remove their markers first so cache selection uses eligible
+	// tools while earlier ordinary controls remain available.
 	body = StripDeferredToolCacheControl(body)
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.IsArray() {
@@ -272,6 +344,9 @@ func ApplyToolsLastCacheBreakpoint(body []byte) []byte {
 		return body
 	}
 
+	// Existence selects a ttl path edit even for a nonobject cache_control
+	// value; only an absent value receives the complete ephemeral object.
+	// Failed edits keep the available body for request preparation.
 	if existingCC.Exists() {
 		if next, err := sjson.SetBytes(body, fmt.Sprintf("tools.%d.cache_control.ttl", lastIdx), DefaultCacheControlTTL); err == nil {
 			body = next
@@ -286,13 +361,18 @@ func ApplyToolsLastCacheBreakpoint(body []byte) []byte {
 	return body
 }
 
+// IsDeferredLoadingTool reports whether either supported defer_loading path
+// contains literal JSON true. Strings, numbers, and other JSON values remain
+// ordinary tools for cache-control cleanup and breakpoint selection.
 func IsDeferredLoadingTool(tool gjson.Result) bool {
 	return tool.Get("defer_loading").Type == gjson.True ||
 		tool.Get("custom.defer_loading").Type == gjson.True
 }
 
-// StripDeferredToolCacheControl 删除 Anthropic 不接受的延迟工具缓存标记；
-// 只有 JSON 布尔值 true 才视为延迟加载，避免误伤其它客户端字段。
+// StripDeferredToolCacheControl removes cache_control from literally deferred
+// tools and returns the prepared body. Missing tool arrays or absent markers
+// retain their bytes. Failed path deletions keep the current body and allow
+// later tools to be processed.
 func StripDeferredToolCacheControl(body []byte) []byte {
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.IsArray() {
@@ -302,6 +382,9 @@ func StripDeferredToolCacheControl(body []byte) []byte {
 		if !IsDeferredLoadingTool(tool) || !tool.Get("cache_control").Exists() {
 			continue
 		}
+		// Literal deferred tools are excluded from this cache-control
+		// preparation. Delete their marker by path; if deletion fails, retain
+		// the current body and continue checking later definitions.
 		if next, err := sjson.DeleteBytes(body, fmt.Sprintf("tools.%d.cache_control", idx)); err == nil {
 			body = next
 		}
@@ -309,12 +392,16 @@ func StripDeferredToolCacheControl(body []byte) []byte {
 	return body
 }
 
-// RestoreToolNamesInBytes 对 bytes chunk 做逆向还原：假名 → 真名。
-// 按 ReverseOrdered 的假名长度倒序逐个 bytes.Replace，防止子串冲突
-// （与 Parrot _restore_tool_names_in_chunk 的 sorted(..., reverse=True) 等价）。
-// 再做静态前缀还原（cc_sess_ → sessions_ / cc_ses_ → session_）。
+// RestoreToolNamesInBytes restores dynamic aliases in their supplied reverse
+// order, then reverses static session prefixes. Nil rw still applies static
+// restoration. Callers provide longest-first ReverseOrdered pairs when aliases
+// overlap and retain request-local mapping through response delivery.
 //
-// rw 可为 nil；nil 时仍会做静态前缀还原。
+// Each replacement matches all bytes, so text and identifiers can change along
+// with JSON tool names. This differs from outbound path edits and allows a
+// static CLI prefix in another field to be restored as well. Empty or identity
+// reverse pairs are skipped, and later replacements consume the bytes from
+// earlier ones.
 func RestoreToolNamesInBytes(data []byte, rw *ToolNameRewrite) []byte {
 	if rw != nil {
 		for _, pair := range rw.ReverseOrdered {
@@ -325,13 +412,19 @@ func RestoreToolNamesInBytes(data []byte, rw *ToolNameRewrite) []byte {
 			data = ReplaceAllBytes(data, fake, real)
 		}
 	}
+	// Static restoration also runs for nil request mappings. Its global byte
+	// matching can restore a CLI session prefix inside text or IDs, as well as
+	// tool-name fields.
 	for prefix, replacement := range StaticToolNameRewrites {
 		data = ReplaceAllBytes(data, replacement, prefix)
 	}
 	return data
 }
 
-// ReplaceAllBytes 是 bytes.ReplaceAll 的便捷封装，避免每个调用点各自做 []byte 转换。
+// ReplaceAllBytes replaces every matching occurrence of from with to. Empty
+// data, equal strings, or an absent match returns the supplied slice; a
+// replacement allocates bytes from the resulting string. Empty from follows
+// strings.ReplaceAll insertion behavior.
 func ReplaceAllBytes(data []byte, from, to string) []byte {
 	if len(data) == 0 || from == to || !strings.Contains(string(data), from) {
 		return data

@@ -4,15 +4,25 @@ import (
 	"strings"
 )
 
-// API Key 结算模式常量。auto 保持存量 Key 的订阅优先、余额补足行为。
+// mode.go defines and normalizes API-key funding mode names.
+// API keys can use automatic funding, one selected subscription, or wallet
+// balance. Missing mode input selects automatic funding for older callers,
+// while unsupported text remains distinguishable from that default so
+// validation can reject an unrecognized user choice.
+
+// Funding-mode strings are persisted on keys and read by admission and
+// settlement to choose subscription quota, wallet balance, or automatic
+// source allocation.
 const (
-	APIKeyBillingModeAuto         = "auto"
-	APIKeyBillingModeSubscription = "subscription"
-	APIKeyBillingModeBalance      = "balance"
+	APIKeyBillingModeAuto         = "auto"         // subscriptions then wallet
+	APIKeyBillingModeSubscription = "subscription" // selected subscription funding
+	APIKeyBillingModeBalance      = "balance"      // wallet balance funding
 )
 
-// NormalizeAPIKeyBillingMode 校验并规范化 API Key 结算模式。
-// 空值兼容旧客户端，按自动选择处理。
+// NormalizeAPIKeyBillingMode trims and lowercases a supported funding mode.
+// Empty input returns auto with true for callers that omit the selection;
+// unsupported input returns an empty mode with false so callers can reject
+// it or choose their own compatibility handling.
 func NormalizeAPIKeyBillingMode(value string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {

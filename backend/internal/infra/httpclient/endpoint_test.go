@@ -6,26 +6,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Endpoint fixtures exercise complete routes, root and prefixed bases,
+// alternate versions, and parsed URL components. Expected strings show
+// whether the supplied base keeps its selected version, query, and IPv6
+// authority while endpoint composition clears a parsed fragment.
+
+// TestBuildOpenAIChatCompletionsURL supplies complete chat routes, root URLs,
+// prefixed paths, and alternate API versions. It requires the expected
+// endpoint spelling after trimming while parallel cases operate on
+// independent values.
 func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		base string
-		want string
+		name string // case display name
+		base string // supplied upstream base
+		want string // expected complete endpoint
 	}{
-		// 已是 /chat/completions：原样返回
+		// Reuse a complete chat/completions endpoint.
 		{"already chat/completions", "https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1/chat/completions"},
-		// 以 /v1 结尾：追加 /chat/completions
+		// Append the relative endpoint to a versioned base.
 		{"bare /v1", "https://api.openai.com/v1", "https://api.openai.com/v1/chat/completions"},
-		// 其他情况：追加 /v1/chat/completions
+		// Append the full endpoint to an unversioned base.
 		{"bare domain", "https://api.openai.com", "https://api.openai.com/v1/chat/completions"},
 		{"domain with trailing slash", "https://api.openai.com/", "https://api.openai.com/v1/chat/completions"},
-		// 第三方上游常见形式
+		// Cover third-party path prefixes and version segments.
 		{"third-party bare domain", "https://api.deepseek.com", "https://api.deepseek.com/v1/chat/completions"},
 		{"third-party with path prefix", "https://api.gptgod.online/api", "https://api.gptgod.online/api/v1/chat/completions"},
 		{"third-party versioned path", "https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
-		// 带空白字符
+		// Trim surrounding whitespace.
 		{"whitespace trimmed", "  https://api.openai.com/v1  ", "https://api.openai.com/v1/chat/completions"},
 	}
 
@@ -38,11 +47,15 @@ func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
 	}
 }
 
+// TestBuildOpenAIResponsesInputTokensURL supplies root, versioned, Responses,
+// and already complete token-count bases. It requires one complete
+// input_tokens route for each supported construction shape without adding a
+// duplicate suffix.
 func TestBuildOpenAIResponsesInputTokensURL(t *testing.T) {
 	tests := []struct {
-		name string
-		base string
-		want string
+		name string // case display name
+		base string // supplied upstream base
+		want string // expected complete endpoint
 	}{
 		{
 			name: "root base",
@@ -75,12 +88,16 @@ func TestBuildOpenAIResponsesInputTokensURL(t *testing.T) {
 	}
 }
 
+// TestBuildOpenAIEndpointURLPreservesURLComponents supplies root, prefixed,
+// queried, fragmented, and IPv6 bases. It requires parsed queries and
+// authorities to survive route construction while fragments are removed in
+// the expected strings.
 func TestBuildOpenAIEndpointURLPreservesURLComponents(t *testing.T) {
 	tests := []struct {
-		name     string
-		base     string
-		endpoint string
-		want     string
+		name     string // case display name
+		base     string // supplied upstream base
+		endpoint string // route to append
+		want     string // expected complete endpoint
 	}{
 		{name: "root", base: "https://upstream.example", endpoint: "/v1/models", want: "https://upstream.example/v1/models"},
 		{name: "v1", base: "https://upstream.example/v1", endpoint: "/v1/responses", want: "https://upstream.example/v1/responses"},
@@ -99,14 +116,16 @@ func TestBuildOpenAIEndpointURLPreservesURLComponents(t *testing.T) {
 	}
 }
 
-// TestBuildOpenAIResponsesURL_ProbeURL 检查不同 OpenAI base URL 的探测端点均为 /v1/responses。
+// TestBuildOpenAIResponsesURL_ProbeURL supplies Responses probe bases with
+// root, alternate version, complete endpoint, and absent scheme forms. It
+// requires the configured endpoint spelling in parallel independent cases.
 func TestBuildOpenAIResponsesURL_ProbeURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		base string
-		want string
+		name string // case display name
+		base string // supplied upstream base
+		want string // expected complete endpoint
 	}{
 		{"bare domain", "https://api.openai.com", "https://api.openai.com/v1/responses"},
 		{"domain trailing slash", "https://api.openai.com/", "https://api.openai.com/v1/responses"},

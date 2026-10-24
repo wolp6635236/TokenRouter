@@ -11,8 +11,16 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// Run 等待 Redis 开始监听并输出就绪日志，启动上限为一分钟。
-// Docker 在并发创建容器时可能较慢，调用方的 context 仍可提前取消启动。
+// run.go starts Redis containers with listening-port and readiness-log checks.
+// A container listener can appear before Redis announces readiness for command
+// handling. Run delegates startup to Testcontainers with both a listening-port
+// wait and the readiness-log wait, giving fixture callers one returned
+// container after both conditions are met.
+
+// Run starts the supplied Redis image and waits for its port and readiness log.
+// Each wait strategy has a one-minute startup timeout and observes ctx; callers
+// own termination of any container returned by Testcontainers, including a
+// nonnil container accompanying an error.
 func Run(ctx context.Context, image string) (*redis.RedisContainer, error) {
 	return redis.Run(ctx, image, testcontainers.WithWaitStrategy(
 		wait.ForListeningPort("6379/tcp").WithStartupTimeout(time.Minute),

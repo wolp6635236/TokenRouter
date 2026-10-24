@@ -2,7 +2,18 @@ package httpapi
 
 import "github.com/gin-gonic/gin"
 
-// RegisterUserRoutes 注册所属用户接口，共享鉴权、限流和审计已由 app 安装。
+// routes_user.go registers authenticated affiliate detail and quota-transfer
+// endpoints.
+// Authenticated users can read their own invitation details and transfer
+// their own available rebate quota. The application guards the parent group,
+// and the mounted handlers obtain the affected account from the authenticated
+// subject.
+
+// RegisterUserRoutes mounts affiliate detail and transfer endpoints under the
+// authenticated user group.
+//
+// Callers provide a usable handler and install application authentication,
+// backend-user admission, panel limits, and audit middleware first.
 func RegisterUserRoutes(authenticated *gin.RouterGroup, endpoint *UserHandler) {
 	user := authenticated.Group("/user")
 	user.GET("/aff", endpoint.GetAffiliate)

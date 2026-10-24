@@ -7,17 +7,38 @@ import (
 	"time"
 )
 
+// subscription_tier.go resolves Grok plan labels from billing amounts,
+// reported tiers, and fresh quota signals.
+// A reported tier can be ambiguous even when billing and quota observations
+// are available. Recognized monthly cent limits determine a plan first, while
+// explicit Free and SuperGrok Lite, Plus, and Heavy tiers retain their own
+// classifications. Other recognized paid labels can use fresh Grok 4.5
+// Responses evidence to resolve Heavy; unsupported labels remain
+// unclassified.
+//
+// Quota hints keep an observation timestamp separate from later snapshot
+// writes. A Grok 4.5 limit observation records a local plan signal, while
+// other models carry its prior time forward. Freshness prefers the last
+// header time and allows bounded future skew, preventing a newer snapshot
+// write from refreshing an old header observation. JWT decoding reads claims
+// without signature verification, so these display signals do not
+// authenticate a token.
+
+// Plan inference limits the age of Grok 4.5 evidence and recognizes Heavy
+// from either configured request-count or token-count thresholds for that model.
 const (
-	// GrokQuotaSignalMaxAge 限制 grok-4.5 Responses 额度窗口影响 SuperGrok/Heavy 推断的最长时间。
+	// GrokQuotaSignalMaxAge bounds the age of Grok 4.5 quota evidence used to infer a plan.
 	GrokQuotaSignalMaxAge = 24 * time.Hour
 
-	grok45ResponsesModel             = "grok-4.5"
-	grokHeavyQuotaRequestLimit int64 = 8_300
-	grokHeavyQuotaTokenLimit   int64 = 53_000_000
+	grok45ResponsesModel             = "grok-4.5" // quota inference model ID
+	grokHeavyQuotaRequestLimit int64 = 8_300      // Heavy request limit threshold
+	grokHeavyQuotaTokenLimit   int64 = 53_000_000 // Heavy token limit threshold
 )
 
-// MapJWTSubscriptionTier 将 prod_auth.SubscriptionTier 的数字 JWT 声明映射为
-// Grok Build 和 Mixpanel 使用的稳定 snake_case 标识。
+// MapJWTSubscriptionTier maps locally recognized numeric tier IDs to named
+// labels. Unknown IDs are returned as decimal text, preserving an
+// unrecognized claim for callers instead of assigning a known subscription
+// category.
 func MapJWTSubscriptionTier(tier uint64) string {
 	switch tier {
 	case 0:
@@ -41,7 +62,10 @@ func MapJWTSubscriptionTier(tier uint64) string {
 	}
 }
 
-// NormalizeSubscriptionTier 将展示名称、/user 字符串和 JWT 标识统一为 snake_case。
+// NormalizeSubscriptionTier trims and lowercases tier text, replaces hyphens,
+// and joins whitespace with underscores before applying known aliases.
+// Unrecognized values retain the resulting text; numeric text is not mapped
+// through the JWT numeric tier table here.
 func NormalizeSubscriptionTier(raw string) string {
 	t := strings.ToLower(strings.TrimSpace(raw))
 	t = strings.ReplaceAll(t, "-", "_")
@@ -70,7 +94,18 @@ func NormalizeSubscriptionTier(raw string) string {
 	}
 }
 
-// SubscriptionTierFromJWT 解码访问令牌载荷（不校验签名），并映射数字或字符串 tier 声明。
+// SubscriptionTierFromJWT decodes an unverified JWT tier claim into local
+// tier text. Missing, malformed, unsupported, or negative float claims return
+// empty. Numeric strings map through the numeric tier table; other strings
+// use alias normalization.
+//
+// Decoded float64 claims convert to uint64 after the negative check, with
+// fractional parts truncated for representable nonnegative values. The helper
+// does not check the uint64 range. json.Number values use integer parsing
+// when possible and otherwise normalize their text. The helper verifies no
+// signature, issuer, expiry, or token authorization; callers use the result
+// as metadata from their already chosen
+// credential.
 func SubscriptionTierFromJWT(jwt string) string {
 	claims := DecodeJWTClaims(jwt)
 	if claims == nil {
@@ -106,10 +141,20 @@ func SubscriptionTierFromJWT(jwt string) string {
 	}
 }
 
-// CanonicalGrokPlan 在供应商返回含糊的 SuperGrokPro 时区分 SuperGrok 与 Heavy。
-// 调用方应先应用 JWT 数字档位；存在每月 $150/$1500 限额时仍以限额为准；
-// 只有来自 grok-4.5 Responses 的限流窗口才参与推断。
+// CanonicalGrokPlan resolves local plan text from monthly amounts, reported
+// tier, and quota metadata. A recognized rounded monthly limit wins before
+// any tier signal. Free and x_basic become free; explicit SuperGrok Heavy,
+// Lite, and Plus remain their named classifications.
+//
+// Ambiguous paid labels consult Grok45ResponsesPlanHint and otherwise become
+// supergrok. Unknown labels return empty, so an unrelated tier cannot gain
+// paid classification from quota alone. Quota inference uses fresh retained
+// hints or Grok 4.5 model observations; a zero time passed to that helper
+// uses the current wall clock. Callers select which credential tier reaches
+// this resolver.
 func CanonicalGrokPlan(monthlyLimitCents *float64, subscriptionTier string, quota *QuotaSnapshot) string {
+	// Recognized monthly included amounts outrank reported tier and quota hints,
+	// giving callers one consistent plan when those independent observations disagree.
 	if plan := resolvePlan(monthlyLimitCents); plan != "" {
 		return NormalizeSubscriptionTier(plan)
 	}
@@ -126,6 +171,8 @@ func CanonicalGrokPlan(monthlyLimitCents *float64, subscriptionTier string, quot
 		return "supergrok_plus"
 	}
 
+	// Quota evidence refines recognized ambiguous paid labels only; clear free
+	// or named paid tiers have already returned, and unknown labels remain unclassified.
 	if isAmbiguousGrokPaidPlan(normalized) {
 		if hint := Grok45ResponsesPlanHint(quota, time.Time{}); hint != "" {
 			return hint
@@ -135,6 +182,8 @@ func CanonicalGrokPlan(monthlyLimitCents *float64, subscriptionTier string, quot
 	return ""
 }
 
+// isAmbiguousGrokPaidPlan reports whether normalized text is a recognized
+// ambiguous paid label.
 func isAmbiguousGrokPaidPlan(normalized string) bool {
 	switch normalized {
 	case "supergrok", "supergrok_pro", "paid", "pro":
@@ -144,18 +193,29 @@ func isAmbiguousGrokPaidPlan(normalized string) bool {
 	}
 }
 
-// IsGrok45ResponsesQuotaModel 判断模型是否为 grok-4.5 Responses 标识或其日期快照变体。
+// IsGrok45ResponsesQuotaModel reports whether a trimmed, lowercased model is
+// grok-4.5 or has its hyphenated suffix. Vendor-qualified IDs do not match
+// this local evidence rule; callers pass the model that produced the headers.
 func IsGrok45ResponsesQuotaModel(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	return m == grok45ResponsesModel || strings.HasPrefix(m, grok45ResponsesModel+"-")
 }
 
-// Grok45ResponsesPlanHint 根据 grok-4.5 Responses 窗口推断 SuperGrok 或 Heavy，
-// 其他模型的额度不会参与判断。
+// Grok45ResponsesPlanHint returns a fresh carried supergrok or
+// supergrok_heavy hint before inspecting the current model. A carried hint
+// retains its own timestamp, so snapshots from another model can reuse it
+// without making its observation newer.
+//
+// Otherwise the snapshot must identify Grok 4.5 and have fresh observation
+// time; a Heavy-sized request or token limit then yields supergrok_heavy.
+// Smaller windows return no direct hint in this path. Nil snapshots or
+// unusable times return empty, and zero now selects the current wall clock.
 func Grok45ResponsesPlanHint(quota *QuotaSnapshot, now time.Time) string {
 	if quota == nil {
 		return ""
 	}
+	// A carried hint keeps the originating model's timestamp, allowing reuse after
+	// other-model snapshots while preventing their later writes from renewing that evidence.
 	if plan := NormalizeSubscriptionTier(quota.PlanFrom45Responses); plan == "supergrok" || plan == "supergrok_heavy" {
 		if isQuotaTimestampFresh(quota.PlanFrom45ResponsesAt, now) {
 			return plan
@@ -170,8 +230,16 @@ func Grok45ResponsesPlanHint(quota *QuotaSnapshot, now time.Time) string {
 	return ""
 }
 
-// ApplyGrok45ResponsesPlanSignal 记录 grok-4.5 的 Heavy/SuperGrok 提示；
-// 当前观察来自其他模型时，延续此前的 4.5 提示。
+// ApplyGrok45ResponsesPlanSignal mutates a snapshot's retained plan hint. A
+// Grok 4.5 observation with at least one limit records Heavy when either
+// local threshold is met and supergrok otherwise. Its timestamp comes from
+// the first nonblank LastHeadersSeenAt or UpdatedAt.
+//
+// A snapshot without that model/limit evidence carries a previous nonblank
+// hint and its original timestamp forward. This path does not refresh or
+// validate the carried hint's age; readers apply freshness later. Nil target
+// snapshots are ignored, and callers serialize mutation when snapshots are
+// shared.
 func ApplyGrok45ResponsesPlanSignal(s, prev *QuotaSnapshot) {
 	if s == nil {
 		return
@@ -187,14 +255,23 @@ func ApplyGrok45ResponsesPlanSignal(s, prev *QuotaSnapshot) {
 		s.PlanFrom45ResponsesAt = observedAt
 		return
 	}
+	// Carry the previous timestamp with its hint when this observation lacks a
+	// Grok 4.5 limit, so the new snapshot cannot extend the hint's freshness lifetime.
 	if prev != nil && strings.TrimSpace(prev.PlanFrom45Responses) != "" {
 		s.PlanFrom45Responses = prev.PlanFrom45Responses
 		s.PlanFrom45ResponsesAt = prev.PlanFrom45ResponsesAt
 	}
 }
 
-// QuotaSnapshotObservedAt 优先使用 LastHeadersSeenAt，避免后续重写快照时
-// 用 UpdatedAt 错误刷新已经过期的 Heavy 窗口。
+// QuotaSnapshotObservedAt parses LastHeadersSeenAt before UpdatedAt. The
+// first nonblank timestamp wins, including when it is malformed; nil
+// snapshots or parse failure return false so callers do not refresh evidence
+// from another timestamp.
+//
+// Choosing header time keeps a later snapshot write from renewing an older
+// header observation. The parsed time can still be stale, and readers apply
+// freshness separately. Source selection precedes parsing, so a malformed
+// header time does not fall through to an otherwise valid update timestamp.
 func QuotaSnapshotObservedAt(snapshot *QuotaSnapshot) (time.Time, bool) {
 	if snapshot == nil {
 		return time.Time{}, false
@@ -202,7 +279,10 @@ func QuotaSnapshotObservedAt(snapshot *QuotaSnapshot) (time.Time, bool) {
 	return parseQuotaTimestamp(firstNonEmptyQuotaTime(snapshot.LastHeadersSeenAt, snapshot.UpdatedAt))
 }
 
-// IsQuotaSnapshotFresh 判断额度信号是否足够新，可用于区分 SuperGrok 与 Heavy。
+// IsQuotaSnapshotFresh reports whether the chosen quota observation time is
+// within GrokQuotaSignalMaxAge and at most five minutes ahead of now. Missing
+// or invalid observation times return false; zero now uses the current wall
+// clock.
 func IsQuotaSnapshotFresh(snapshot *QuotaSnapshot, now time.Time) bool {
 	observedAt, ok := QuotaSnapshotObservedAt(snapshot)
 	if !ok {
@@ -211,6 +291,9 @@ func IsQuotaSnapshotFresh(snapshot *QuotaSnapshot, now time.Time) bool {
 	return isTimeFresh(observedAt, now)
 }
 
+// isQuotaTimestampFresh parses one RFC3339 timestamp before applying the
+// quota freshness rule. Blank or invalid input returns false, and zero now
+// uses the current wall clock through isTimeFresh.
 func isQuotaTimestampFresh(raw string, now time.Time) bool {
 	parsed, ok := parseQuotaTimestamp(raw)
 	if !ok {
@@ -219,11 +302,16 @@ func isQuotaTimestampFresh(raw string, now time.Time) bool {
 	return isTimeFresh(parsed, now)
 }
 
+// parseQuotaTimestamp parses trimmed RFC3339 observation text into a time.
+// Blank or malformed text returns false, preserving missing evidence rather
+// than substituting the current time or another source timestamp.
 func parseQuotaTimestamp(raw string) (time.Time, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return time.Time{}, false
 	}
+	// Invalid observation text cannot establish freshness. Return no parsed time
+	// so plan inference cannot treat a malformed timestamp as current evidence.
 	parsed, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
 		return time.Time{}, false
@@ -231,14 +319,22 @@ func parseQuotaTimestamp(raw string) (time.Time, bool) {
 	return parsed, true
 }
 
+// isTimeFresh accepts observations no older than GrokQuotaSignalMaxAge and no
+// more than five minutes in the future. Zero now reads the wall clock;
+// callers parse or select the observation timestamp before applying it.
 func isTimeFresh(observedAt, now time.Time) bool {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	// Limited future skew tolerates nearby observation clocks while rejecting distant
+	// future timestamps that would otherwise keep a hint fresh for an excessive period.
 	age := now.Sub(observedAt)
 	return age <= GrokQuotaSignalMaxAge && age >= -5*time.Minute
 }
 
+// quotaHasLimitWindow reports whether request or token limit pointers are
+// present. Nil snapshots or missing limits return false; a pointed zero still
+// counts as observed limit evidence for plan-signal recording.
 func quotaHasLimitWindow(quota *QuotaSnapshot) bool {
 	if quota == nil {
 		return false
@@ -249,6 +345,15 @@ func quotaHasLimitWindow(quota *QuotaSnapshot) bool {
 	return quota.Tokens != nil && quota.Tokens.Limit != nil
 }
 
+// quotaLooksLikeGrokHeavy reports whether either retained limit meets its
+// local Heavy threshold. Missing request and token limits contribute zero,
+// and nil snapshots return false. A request limit can qualify by itself, as
+// can a token limit, so a smaller or missing companion window does not cancel
+// a qualifying observation.
+//
+// Model eligibility and observation age belong to Grok45ResponsesPlanHint
+// and ApplyGrok45ResponsesPlanSignal. This helper evaluates the numeric
+// windows supplied by those callers.
 func quotaLooksLikeGrokHeavy(quota *QuotaSnapshot) bool {
 	if quota == nil {
 		return false
@@ -263,6 +368,9 @@ func quotaLooksLikeGrokHeavy(quota *QuotaSnapshot) bool {
 	return requestLimit >= grokHeavyQuotaRequestLimit || tokenLimit >= grokHeavyQuotaTokenLimit
 }
 
+// firstNonEmptyQuotaTime returns the first nonblank trimmed timestamp text.
+// It does not validate that text, so a malformed earlier value can suppress a
+// later valid timestamp; all blank values return empty.
 func firstNonEmptyQuotaTime(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

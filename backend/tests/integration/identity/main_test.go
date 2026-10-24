@@ -8,7 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在 HTTP 与存储组合测试的进程启动时设置一次模式。
+// Identity HTTP and storage cases share UTC timestamp interpretation and Gin's
+// test mode for their process. TestMain sets both before selecting the
+// build-specific runner, which either runs ordinary cases directly or adds
+// PostgreSQL suite cleanup for integration builds.
+
+// TestMain selects UTC and Gin test mode before invoking the build-specific
+// identity runner. It exits with that runner's status after any integration
+// suite resource cleanup completes.
 func TestMain(m *testing.M) {
 	time.Local = time.UTC
 	gin.SetMode(gin.TestMode)

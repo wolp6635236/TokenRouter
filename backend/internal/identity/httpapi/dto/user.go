@@ -7,61 +7,105 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
+// user.go constructs ordinary and administrator account responses from
+// identity data.
+// User JSON combines account fields with caller-supplied API Key data and
+// converted subscription values. Ordinary responses use User, while
+// administrator responses add account notes, last use, and group rate
+// overrides; callers choose the response type appropriate for their route.
+
+// User represents panel account data with the caller-selected API Key element
+// type.
 type User[K any] struct {
+	// PreferredLocale retains the account language pointer. Nil serializes as
+	// null so clients can distinguish an unset preference from a selected
+	// language.
 	PreferredLocale *string `json:"preferred_locale"`
-	ID              int64   `json:"id"`
-	Email           string  `json:"email"`
-	Username        string  `json:"username"`
-	Role            string  `json:"role"`
-	Balance         float64 `json:"balance"`
-	FrozenBalance   float64 `json:"frozen_balance"`
-	Concurrency     int     `json:"concurrency"`
-	Status          string  `json:"status"`
-	AllowedGroups   []int64 `json:"allowed_groups"`
-	// DisabledPublicGroups 为管理员显式禁止该用户使用的公开分组 ID。
-	DisabledPublicGroups []int64    `json:"disabled_public_groups"`
-	LastActiveAt         *time.Time `json:"last_active_at,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	DeletedAt            *time.Time `json:"deleted_at,omitempty"`
+	ID              int64   `json:"id"`             // account row identifier
+	Email           string  `json:"email"`          // account email address
+	Username        string  `json:"username"`       // account display name
+	Role            string  `json:"role"`           // global account role
+	Balance         float64 `json:"balance"`        // USD
+	FrozenBalance   float64 `json:"frozen_balance"` // USD
+	Concurrency     int     `json:"concurrency"`    // account concurrency allowance
+	Status          string  `json:"status"`         // account lifecycle status
+	// AllowedGroups retains the account slice of exclusive-group grants. Callers
+	// treating response data as mutable must copy this slice before changing its
+	// elements.
+	AllowedGroups []int64 `json:"allowed_groups"`
+	// DisabledPublicGroups retains the account slice of administrator-denied
+	// public group IDs. Mutating the response slice changes the supplied account
+	// slice unless the caller copies it.
+	DisabledPublicGroups []int64 `json:"disabled_public_groups"`
+	// LastActiveAt shares the account timestamp pointer. Copy the pointed-to time
+	// before modifying a response that needs independent timestamp storage.
+	LastActiveAt *time.Time `json:"last_active_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"` // account creation timestamp
+	UpdatedAt    time.Time  `json:"updated_at"` // account update timestamp
+	// DeletedAt shares the account deletion-time pointer. Nil omits the JSON
+	// field; copy the time before changing it through a mutable response.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 
-	// 余额不足通知
-	BalanceNotifyEnabled       bool               `json:"balance_notify_enabled"`
-	BalanceNotifyThresholdType string             `json:"balance_notify_threshold_type"`
-	BalanceNotifyThreshold     *float64           `json:"balance_notify_threshold"`
-	BalanceNotifyExtraEmails   []NotifyEmailEntry `json:"balance_notify_extra_emails"`
-	TotalRecharged             float64            `json:"total_recharged"`
+	// BalanceNotifyEnabled gates account alerts. BalanceNotifyThresholdType
+	// selects fixed or percentage interpretation of BalanceNotifyThreshold;
+	// TotalRecharged supplies the percentage base, and BalanceNotifyExtraEmails
+	// lists additional saved recipients.
+	BalanceNotifyEnabled bool `json:"balance_notify_enabled"` // balance alert switch
+	// Fixed or percentage interpretation.
+	BalanceNotifyThresholdType string `json:"balance_notify_threshold_type"`
+	// BalanceNotifyThreshold retains the optional account threshold pointer. Nil
+	// lets billing select its global threshold; the selected type determines
+	// amount or percentage interpretation.
+	BalanceNotifyThreshold *float64 `json:"balance_notify_threshold"`
+	// Copied notification recipient entries.
+	BalanceNotifyExtraEmails []NotifyEmailEntry `json:"balance_notify_extra_emails"`
+	TotalRecharged           float64            `json:"total_recharged"` // USD
 
-	// RPMLimit 用户级每分钟请求数上限（0 = 不限制），仅在所用分组未设置 rpm_limit 时作为兜底生效。
+	// RPMLimit is the user RPM limit, with zero meaning unlimited. Gateway checks
+	// use it when the selected group and user/group override supply no RPM limit.
 	RPMLimit int `json:"rpm_limit"`
-	// APIKeyLimit 用户可创建的 API Key 数量上限，0 表示不限制。
+	// APIKeyLimit caps account-owned API Key creation. Zero permits any count;
+	// changing runtime creation defaults does not rewrite this stored user limit.
 	APIKeyLimit int `json:"api_key_limit"`
 
-	APIKeys       []K                               `json:"api_keys,omitempty"`
+	// APIKeys uses the caller-supplied slice directly and is omitted from JSON
+	// when empty. Callers retain responsibility for its element ownership and
+	// contents.
+	APIKeys []K `json:"api_keys,omitempty"`
+	// Subscriptions contains converted loaded account subscriptions and is
+	// omitted when empty. UserFromIdentity allocates the outer slice, while
+	// nested pointer fields follow the subscription converter.
 	Subscriptions []billinghttpapi.UserSubscription `json:"subscriptions,omitempty"`
 }
 
-// AdminUser 是管理员接口使用的 user DTO（包含敏感/内部字段）。
-// 注意：普通用户接口不得返回 notes 等管理员备注信息。
+// AdminUser adds administrator-visible notes and activity data to the account
+// response.
 type AdminUser[K any] struct {
-	User[K]
+	User[K] // ordinary account response
 
-	Notes      string     `json:"notes"`
+	Notes string `json:"notes"` // administrator account note
+	// LastUsedAt shares the account's latest request-use timestamp pointer. Nil
+	// serializes as null, and response mutations need an independent time copy.
 	LastUsedAt *time.Time `json:"last_used_at"`
-	// GroupRates 用户专属分组倍率配置
-	// map[groupID]rateMultiplier
+	// GroupRates retains the account map from group IDs to rate multipliers.
+	// Administrator DTO consumers must copy it before changing values or
+	// retaining an independent mutable response.
 	GroupRates map[int64]float64 `json:"group_rates,omitempty"`
 }
 
-// AuthResponse 保留认证响应字段和省略条件。
+// AuthResponse combines issued credentials with panel account data after
+// authentication.
 type AuthResponse[K any] struct {
-	AccessToken  string   `json:"access_token"`
-	RefreshToken string   `json:"refresh_token,omitempty"`
-	ExpiresIn    int      `json:"expires_in,omitempty"`
-	TokenType    string   `json:"token_type"`
-	User         *User[K] `json:"user"`
+	AccessToken  string   `json:"access_token"`            // signed access credential
+	RefreshToken string   `json:"refresh_token,omitempty"` // optional rotating refresh credential
+	ExpiresIn    int      `json:"expires_in,omitempty"`    // seconds
+	TokenType    string   `json:"token_type"`              // Bearer authorization scheme
+	User         *User[K] `json:"user"`                    // authenticated account response
 }
 
+// UserFromIdentityShallow maps account fields to panel JSON and returns nil
+// for a nil user. Pointer fields and group slices remain shared; notification
+// entries receive a new slice, while keys and subscriptions remain unset.
 func UserFromIdentityShallow[K any](u *identity.User) *User[K] {
 	if u == nil {
 		return nil
@@ -92,7 +136,10 @@ func UserFromIdentityShallow[K any](u *identity.User) *User[K] {
 	}
 }
 
-// UserFromIdentity 将用户、订阅和调用方提供的 Key 展示值转换为响应。
+// UserFromIdentity maps account data, caller-supplied keys, and loaded
+// subscriptions to panel JSON. Nil input returns nil; key data is retained
+// directly, subscription elements are converted, and the shallow account
+// fields retain their documented sharing.
 func UserFromIdentity[K any](u *identity.User, keys []K) *User[K] {
 	out := UserFromIdentityShallow[K](u)
 	if out == nil {
@@ -108,6 +155,9 @@ func UserFromIdentity[K any](u *identity.User, keys []K) *User[K] {
 	return out
 }
 
+// AdminUserFromIdentity adds administrator notes, last use, and group rate
+// data to the user response. Nil input returns nil; the group-rate map and
+// activity pointers remain shared with the supplied account.
 func AdminUserFromIdentity[K any](u *identity.User, keys []K) *AdminUser[K] {
 	base := UserFromIdentity(u, keys)
 	if base == nil {

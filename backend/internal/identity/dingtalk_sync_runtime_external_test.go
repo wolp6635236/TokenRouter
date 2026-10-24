@@ -10,7 +10,10 @@ import (
 	identityprovider "github.com/TokenFlux/TokenRouter/internal/identity/provider"
 )
 
-// TestSyncDingTalkIdentity_UsesCfgAttrKeys_NoopWithNilService 检查使用自定义属性键且用户属性服务为空时，同步调用完成。
+// TestSyncDingTalkIdentity_UsesCfgAttrKeys_NoopWithNilService enables all
+// profile switches with custom keys and an unavailable attribute service. It
+// requires Sync to return without panic before the nil directory client can be
+// used.
 func TestSyncDingTalkIdentity_UsesCfgAttrKeys_NoopWithNilService(t *testing.T) {
 	syncer := &identitycore.DingTalkSyncRuntime{Profiles: &identitycore.DingTalkProfileSync{}}
 
@@ -19,7 +22,7 @@ func TestSyncDingTalkIdentity_UsesCfgAttrKeys_NoopWithNilService(t *testing.T) {
 		SyncCorpEmail:         true,
 		SyncDisplayName:       true,
 		SyncDept:              true,
-		// 自定义 attr key（非默认值）
+		// Non-default attribute keys.
 		SyncCorpEmailAttrKey:   "custom_email_key",
 		SyncDisplayNameAttrKey: "custom_name_key",
 		SyncDeptAttrKey:        "custom_dept_key",
@@ -30,13 +33,18 @@ func TestSyncDingTalkIdentity_UsesCfgAttrKeys_NoopWithNilService(t *testing.T) {
 		Email: "zhangsan@example.com",
 	}
 
-	// 调用不应 panic（userAttributeService 为 nil 时走 warn 跳过路径）
+	// This fixture has no attribute service or observer, so the skip path must
+	// finish before department synchronization could use its unconfigured
+	// directory client.
 	require.NotPanics(t, func() {
 		syncer.Sync(context.Background(), cfg, nil, 42, staff, false)
 	})
 }
 
-// TestSyncDingTalkIdentity_DefaultAttrKeys_NoopWithNilService 检查使用默认属性键且用户属性服务为空时，同步调用完成。
+// TestSyncDingTalkIdentity_DefaultAttrKeys_NoopWithNilService supplies
+// canonical attribute keys and an unavailable attribute service. It checks that
+// enabled name and email options still skip safely through the synchronous
+// runtime entry.
 func TestSyncDingTalkIdentity_DefaultAttrKeys_NoopWithNilService(t *testing.T) {
 	syncer := &identitycore.DingTalkSyncRuntime{Profiles: &identitycore.DingTalkProfileSync{}}
 
@@ -45,7 +53,7 @@ func TestSyncDingTalkIdentity_DefaultAttrKeys_NoopWithNilService(t *testing.T) {
 		SyncCorpEmail:         true,
 		SyncDisplayName:       true,
 		SyncDept:              false,
-		// 配置读取阶段填充的默认属性键。
+		// Canonical attribute key strings used in this fixture.
 		SyncCorpEmailAttrKey:   "dingtalk_email",
 		SyncDisplayNameAttrKey: "dingtalk_name",
 		SyncDeptAttrKey:        "dingtalk_department",

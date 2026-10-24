@@ -7,6 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestResponsesToAnthropic_TextOnly converts one text output with input/output
+// usage. Assertions check response identity, caller model, end-turn reason,
+// text block shape/content, and both usage counts.
 func TestResponsesToAnthropic_TextOnly(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_123",
@@ -34,6 +37,9 @@ func TestResponsesToAnthropic_TextOnly(t *testing.T) {
 	assert.Equal(t, 5, anth.Usage.OutputTokens)
 }
 
+// TestResponsesToAnthropic_CachedTokensUseAnthropicInputSemantics supplies
+// cached input within total input. Returned usage must subtract it from
+// uncached input while retaining the cache-read and output counts.
 func TestResponsesToAnthropic_CachedTokensUseAnthropicInputSemantics(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_cached",
@@ -63,6 +69,9 @@ func TestResponsesToAnthropic_CachedTokensUseAnthropicInputSemantics(t *testing.
 	assert.Equal(t, 123, anth.Usage.OutputTokens)
 }
 
+// TestResponsesToAnthropic_CachedTokensClampInputTokens supplies cached input
+// greater than total input. Uncached usage must clamp to zero while cache-read
+// and output counts retain their supplied values.
 func TestResponsesToAnthropic_CachedTokensClampInputTokens(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_cached_clamp",
@@ -83,6 +92,9 @@ func TestResponsesToAnthropic_CachedTokensClampInputTokens(t *testing.T) {
 	assert.Equal(t, 5, anth.Usage.OutputTokens)
 }
 
+// TestResponsesToAnthropic_ToolUse converts text followed by a function call.
+// It checks tool-use stop reason, block order, correlation/name, and decoded
+// argument equality in the returned tool block.
 func TestResponsesToAnthropic_ToolUse(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_456",
@@ -114,6 +126,9 @@ func TestResponsesToAnthropic_ToolUse(t *testing.T) {
 	assert.JSONEq(t, `{"city":"NYC"}`, string(anth.Content[1].Input))
 }
 
+// TestResponsesToAnthropic_ToolUseStopReasonDoesNotDependOnLastBlock places a
+// function call before later text. Output keeps both block kinds in order, and
+// the stop reason still indicates tool use.
 func TestResponsesToAnthropic_ToolUseStopReasonDoesNotDependOnLastBlock(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_tool_then_text",
@@ -142,6 +157,9 @@ func TestResponsesToAnthropic_ToolUseStopReasonDoesNotDependOnLastBlock(t *testi
 	assert.Equal(t, "text", anth.Content[1].Type)
 }
 
+// TestResponsesToAnthropic_ReadToolDropsEmptyPages converts Read arguments
+// with empty pages beside other fields. The tool block remains, and JSON
+// equality checks removal of pages with retained file/limit/offset values.
 func TestResponsesToAnthropic_ReadToolDropsEmptyPages(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_read",
@@ -163,6 +181,9 @@ func TestResponsesToAnthropic_ReadToolDropsEmptyPages(t *testing.T) {
 	assert.JSONEq(t, `{"file_path":"/tmp/demo.py","limit":2000,"offset":0}`, string(anth.Content[0].Input))
 }
 
+// TestResponsesToAnthropic_PreservesEmptyStringsForOtherTools supplies an
+// empty query to Search. The single converted block retains that argument
+// string through JSON equality, isolating the narrow Read repair.
 func TestResponsesToAnthropic_PreservesEmptyStringsForOtherTools(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_other",
@@ -183,6 +204,9 @@ func TestResponsesToAnthropic_PreservesEmptyStringsForOtherTools(t *testing.T) {
 	assert.JSONEq(t, `{"query":""}`, string(anth.Content[0].Input))
 }
 
+// TestResponsesToAnthropic_Reasoning converts summary/encrypted reasoning
+// before text. Assertions check two ordered thinking/text blocks, retained
+// summary and signature, and final text in the returned Messages content.
 func TestResponsesToAnthropic_Reasoning(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_789",
@@ -214,6 +238,9 @@ func TestResponsesToAnthropic_Reasoning(t *testing.T) {
 	assert.Equal(t, "42", anth.Content[1].Text)
 }
 
+// TestResponsesToAnthropic_StreamEmitsThinkingSignature adds reasoning, ends
+// its summary, then supplies completed encrypted content. The collected stream
+// must contain a signature delta with the expected completed-item value.
 func TestResponsesToAnthropic_StreamEmitsThinkingSignature(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	var all []AnthropicStreamEvent
@@ -233,7 +260,7 @@ func TestResponsesToAnthropic_StreamEmitsThinkingSignature(t *testing.T) {
 		Delta:        "thinking...",
 		SummaryIndex: 0,
 	}, state))
-	// encrypted_content 到达前，summary.done 不得关闭 thinking 块。
+	// Keep thinking open at summary.done until encrypted_content arrives.
 	appendAll(ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:         "response.reasoning_summary_text.done",
 		OutputIndex:  0,
@@ -260,6 +287,9 @@ func TestResponsesToAnthropic_StreamEmitsThinkingSignature(t *testing.T) {
 	require.True(t, sawSignature, "expected signature_delta with encrypted_content")
 }
 
+// TestResponsesToAnthropic_Incomplete converts a response with
+// max_output_tokens details and partial text. Its Messages stop reason must be
+// max_tokens for that supplied incomplete-status combination.
 func TestResponsesToAnthropic_Incomplete(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_inc",
@@ -280,6 +310,9 @@ func TestResponsesToAnthropic_Incomplete(t *testing.T) {
 	assert.Equal(t, "max_tokens", AnthropicStopReasonString(anth.StopReason))
 }
 
+// TestResponsesToAnthropic_EmptyOutput supplies a completed reply with no
+// output items. Conversion must return one text block whose text is empty,
+// retaining the buffered reply's modeled content shape.
 func TestResponsesToAnthropic_EmptyOutput(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_empty",
@@ -294,6 +327,9 @@ func TestResponsesToAnthropic_EmptyOutput(t *testing.T) {
 	assert.Equal(t, "", anth.Content[0].Text)
 }
 
+// TestStreamingTextOnly feeds creation, message addition, two text deltas,
+// text completion, and terminal usage. Assertions check lazy block creation,
+// delta reuse, block stop, final end-turn usage, and message stop.
 func TestStreamingTextOnly(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -359,6 +395,9 @@ func TestStreamingTextOnly(t *testing.T) {
 	assert.Equal(t, "message_stop", events[1].Type)
 }
 
+// TestResponsesEventToAnthropicEvents_ResponseDone supplies a completed legacy
+// done event without preceding creation. It checks end-turn usage/message stop
+// and confirms later finalization emits nothing.
 func TestResponsesEventToAnthropicEvents_ResponseDone(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.Model = "gpt-4o"
@@ -379,6 +418,9 @@ func TestResponsesEventToAnthropicEvents_ResponseDone(t *testing.T) {
 	assert.Nil(t, FinalizeResponsesAnthropicStream(state))
 }
 
+// TestResponsesEventToAnthropicEvents_TopLevelTerminalUsage omits nested usage
+// while supplying event-level input/cache/output. The emitted usage must
+// separate uncached/cache counts and retain output before message stop.
 func TestResponsesEventToAnthropicEvents_TopLevelTerminalUsage(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.Model = "gpt-4o"
@@ -406,6 +448,9 @@ func TestResponsesEventToAnthropicEvents_TopLevelTerminalUsage(t *testing.T) {
 	assert.Equal(t, "message_stop", events[1].Type)
 }
 
+// TestResponsesEventToAnthropicEvents_ResponseDoneIncomplete supplies legacy
+// done with token-limit incomplete details. It checks max-token message
+// termination and that EOF finalization adds no further events.
 func TestResponsesEventToAnthropicEvents_ResponseDoneIncomplete(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.Model = "gpt-4o"
@@ -425,6 +470,10 @@ func TestResponsesEventToAnthropicEvents_ResponseDoneIncomplete(t *testing.T) {
 	assert.Nil(t, FinalizeResponsesAnthropicStream(state))
 }
 
+// TestStreamingCachedTokensUseAnthropicInputSemantics finishes a created
+// stream with cached terminal input. The emitted usage must subtract cache
+// reads from uncached input and retain cache/output counts before message
+// stop.
 func TestStreamingCachedTokensUseAnthropicInputSemantics(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
@@ -455,6 +504,9 @@ func TestStreamingCachedTokensUseAnthropicInputSemantics(t *testing.T) {
 	assert.Equal(t, "message_stop", events[1].Type)
 }
 
+// TestStreamingToolCall opens a function, streams a partial argument fragment,
+// closes arguments, and completes. It checks tool block correlation, immediate
+// fragment emission, block stop, and the final tool-use reason.
 func TestStreamingToolCall(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -505,6 +557,9 @@ func TestStreamingToolCall(t *testing.T) {
 	assert.Equal(t, "tool_use", events[0].Delta.StopReason)
 }
 
+// TestStreamingToolCallStopReasonSurvivesLaterText completes a tool's packed
+// arguments before a text delta. It checks new text block events and final
+// closure with a tool-use stop reason.
 func TestStreamingToolCallStopReasonSurvivesLaterText(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -552,6 +607,9 @@ func TestStreamingToolCallStopReasonSurvivesLaterText(t *testing.T) {
 	assert.Equal(t, "message_stop", events[2].Type)
 }
 
+// TestStreamingToolCallDoneWithoutDeltaEmitsArguments opens a Bash call
+// without argument deltas. Packed completion must emit the inspected input
+// JSON once and then close the tool block.
 func TestStreamingToolCallDoneWithoutDeltaEmitsArguments(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -580,6 +638,9 @@ func TestStreamingToolCallDoneWithoutDeltaEmitsArguments(t *testing.T) {
 	assert.Equal(t, "content_block_stop", events[1].Type)
 }
 
+// TestStreamingReadToolStreamsSanitizedCompleteDelta supplies complete Read
+// JSON in one delta. The emitted arguments omit empty pages, and the later
+// done event produces a block stop without another delta.
 func TestStreamingReadToolStreamsSanitizedCompleteDelta(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -615,6 +676,9 @@ func TestStreamingReadToolStreamsSanitizedCompleteDelta(t *testing.T) {
 	assert.Equal(t, "content_block_stop", events[0].Type)
 }
 
+// TestStreamingReasoning opens thinking, emits summary text, ends the summary,
+// and completes with a signature. It checks wire empty thinking, retained
+// text, delayed closure, signature delta, and block stop order.
 func TestStreamingReasoning(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -648,7 +712,7 @@ func TestStreamingReasoning(t *testing.T) {
 	assert.Equal(t, "thinking_delta", events[0].Delta.Type)
 	assert.Equal(t, "Let me think...", events[0].Delta.Thinking)
 
-	// summary.done 保持 thinking 块开启，直到携带签名的 output_item.done 到达。
+	// summary.done leaves thinking open for the signed output_item.done event.
 	events = ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type: "response.reasoning_summary_text.done",
 	}, state)
@@ -670,6 +734,9 @@ func TestStreamingReasoning(t *testing.T) {
 	assert.Equal(t, "content_block_stop", events[1].Type)
 }
 
+// TestStreamingIncomplete opens text before a token-limit terminal event.
+// Conversion must close that block, emit max_tokens in message_delta, and then
+// emit message_stop in the asserted order.
 func TestStreamingIncomplete(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -700,12 +767,18 @@ func TestStreamingIncomplete(t *testing.T) {
 	assert.Equal(t, "message_stop", events[2].Type)
 }
 
+// TestFinalizeStream_NeverStarted finalizes a newly constructed state that
+// received no creation event. The returned event slice must be nil for that
+// unstarted stream.
 func TestFinalizeStream_NeverStarted(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	events := FinalizeResponsesAnthropicStream(state)
 	assert.Nil(t, events)
 }
 
+// TestFinalizeStream_AlreadyCompleted sets both message lifecycle flags before
+// finalization. The helper must return nil, protecting the no-additional-
+// events result for an already stopped state.
 func TestFinalizeStream_AlreadyCompleted(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.MessageStartSent = true
@@ -714,6 +787,9 @@ func TestFinalizeStream_AlreadyCompleted(t *testing.T) {
 	assert.Nil(t, events)
 }
 
+// TestFinalizeStream_AbnormalTermination ends a created text stream before
+// terminal response. Finalization must emit block stop, end-turn
+// message_delta, and message_stop in the inspected order.
 func TestFinalizeStream_AbnormalTermination(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -737,6 +813,9 @@ func TestFinalizeStream_AbnormalTermination(t *testing.T) {
 	assert.Equal(t, "message_stop", events[2].Type)
 }
 
+// TestFinalizeStream_ToolCallAbnormalTerminationKeepsToolUseStopReason ends
+// after a client tool opens without terminal response. Finalization must close
+// that block and emit tool-use termination followed by message stop.
 func TestFinalizeStream_ToolCallAbnormalTerminationKeepsToolUseStopReason(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -758,6 +837,9 @@ func TestFinalizeStream_ToolCallAbnormalTerminationKeepsToolUseStopReason(t *tes
 	assert.Equal(t, "message_stop", events[2].Type)
 }
 
+// TestStreamingEmptyResponse completes a created stream without content
+// deltas. The result must contain two termination events, with the inspected
+// message_delta using end_turn and no block-close event.
 func TestStreamingEmptyResponse(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -779,6 +861,9 @@ func TestStreamingEmptyResponse(t *testing.T) {
 	assert.Equal(t, "end_turn", events[0].Delta.StopReason)
 }
 
+// TestResponsesAnthropicEventToSSE serializes a message-start fixture. The
+// returned frame must include its event line, data prefix, and response
+// identity in the inspected JSON text.
 func TestResponsesAnthropicEventToSSE(t *testing.T) {
 	evt := AnthropicStreamEvent{
 		Type: "message_start",
@@ -795,6 +880,9 @@ func TestResponsesAnthropicEventToSSE(t *testing.T) {
 	assert.Contains(t, sse, `"resp_1"`)
 }
 
+// TestStreamingFailed supplies text before a failed terminal carrying error
+// and usage. It checks block closure followed by end-turn termination,
+// retained input/output usage, and message stop.
 func TestStreamingFailed(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -830,6 +918,9 @@ func TestStreamingFailed(t *testing.T) {
 	assert.Equal(t, "message_stop", events[2].Type)
 }
 
+// TestStreamingFailedNoOutput fails a created stream before content starts.
+// The two emitted events must terminate with end_turn and message_stop, with
+// no content-block closure in the returned slice.
 func TestStreamingFailedNoOutput(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -856,6 +947,9 @@ func TestStreamingFailedNoOutput(t *testing.T) {
 	assert.Equal(t, "message_stop", events[1].Type)
 }
 
+// TestResponsesToAnthropic_Failed supplies failed status, error, and empty
+// output. The buffered conversion must use end_turn and return one text block
+// in the asserted fallback content shape.
 func TestResponsesToAnthropic_Failed(t *testing.T) {
 	resp := &ResponsesResponse{
 		ID:     "resp_fail_3",
@@ -874,6 +968,9 @@ func TestResponsesToAnthropic_Failed(t *testing.T) {
 	assert.Equal(t, "text", anth.Content[0].Type)
 }
 
+// TestMessageStartSSE_StopReasonIsJSONNull creates a Messages stream from a
+// Responses creation event. It checks nil typed stop reason and JSON null
+// presence, excluding the empty-string representation.
 func TestMessageStartSSE_StopReasonIsJSONNull(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.Model = "grok-4.5"
@@ -891,11 +988,14 @@ func TestMessageStartSSE_StopReasonIsJSONNull(t *testing.T) {
 
 	sse, err := ResponsesAnthropicEventToSSE(events[0])
 	require.NoError(t, err)
-	// Anthropic 官方线路格式应为 "stop_reason":null。
+	// Anthropic message_start serializes stop_reason as null.
 	require.Contains(t, sse, `"stop_reason":null`)
 	require.NotContains(t, sse, `"stop_reason":""`)
 }
 
+// TestAnthropicUsageFromResponsesUsage_CacheCreation supplies read/write cache
+// buckets within total input. Converted usage must subtract both and retain
+// output plus the separate read/write counts.
 func TestAnthropicUsageFromResponsesUsage_CacheCreation(t *testing.T) {
 	usage := &ResponsesUsage{
 		InputTokens:              20,
@@ -914,6 +1014,9 @@ func TestAnthropicUsageFromResponsesUsage_CacheCreation(t *testing.T) {
 	assert.Equal(t, 6, got.CacheCreationInputTokens, "cache creation must be preserved")
 }
 
+// TestAnthropicUsageFromResponsesUsage_NoCacheCreation supplies cached input
+// while omitting writes. It checks uncached subtraction, retained reads, and
+// the zero cache-creation field in the result.
 func TestAnthropicUsageFromResponsesUsage_NoCacheCreation(t *testing.T) {
 	usage := &ResponsesUsage{
 		InputTokens:  10,
@@ -930,6 +1033,10 @@ func TestAnthropicUsageFromResponsesUsage_NoCacheCreation(t *testing.T) {
 	assert.Equal(t, 0, got.CacheCreationInputTokens)
 }
 
+// TestResponsesEventToAnthropicEvents_StreamingCacheCreation terminates a
+// started state with nested read/write usage. Its message_delta must expose
+// retained cache creation, uncached input after both subtractions, and cache
+// reads.
 func TestResponsesEventToAnthropicEvents_StreamingCacheCreation(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.MessageStartSent = true
@@ -965,58 +1072,58 @@ func TestResponsesEventToAnthropicEvents_StreamingCacheCreation(t *testing.T) {
 	assert.Equal(t, 4, deltaEvt.Usage.CacheReadInputTokens)
 }
 
-// TestStreamingParallelToolUseSecondToolPackedArgsDone 检查首个工具块关闭后，后续工具在 .done 中携带的参数仍发到对应块索引。
+// TestStreamingParallelToolUseSecondToolPackedArgsDone streams first-call
+// arguments before opening a second packed-only call. First completion emits
+// no duplicate delta; second arguments and stop must target its own block
+// index.
 func TestStreamingParallelToolUseSecondToolPackedArgsDone(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
-	// 先建立 response.created 状态。
 	ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:     "response.created",
 		Response: &ResponsesResponse{ID: "resp_par", Model: "glm-5.2"},
 	}, state)
 
-	// 工具 1 在索引 0 发出 output_item.added。
 	ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:        "response.output_item.added",
 		OutputIndex: 0,
 		Item:        &ResponsesOutput{Type: "function_call", CallID: "call_a", Name: "tool_a"},
 	}, state)
 
-	// 工具 1 通过 delta 流式输出参数，因此 CurrentToolHadDelta 为 true。
+	// The first tool streams its arguments, setting CurrentToolHadDelta.
 	ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:        "response.function_call_arguments.delta",
 		OutputIndex: 0,
 		Delta:       `{"x":1}`,
 	}, state)
 
-	// 工具 1 的 arguments.done 关闭当前 block，ContentBlockIndex 从 0 递增到 1。
+	// Closing the first tool advances ContentBlockIndex to 1.
 	eventsTool1Done := ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:        "response.function_call_arguments.done",
 		OutputIndex: 0,
 		Arguments:   `{"x":1}`,
 	}, state)
-	// 参数 delta 已输出，此处只应产生 content_block_stop。
+	// The done event must not repeat already streamed arguments.
 	for _, e := range eventsTool1Done {
 		assert.NotEqual(t, "content_block_delta", e.Type,
 			"tool 1 .done should not re-emit delta (args already streamed)")
 	}
 
-	// 工具 2 在索引 1 发出 output_item.added，并打开 ContentBlockIndex=1 的 block。
 	ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:        "response.output_item.added",
 		OutputIndex: 1,
 		Item:        &ResponsesOutput{Type: "function_call", CallID: "call_b", Name: "tool_b"},
 	}, state)
 
-	// 工具 2 没有 delta，参数只打包在 .done 中，这正是触发幽灵 delta 的场景。
+	// The second tool delivers arguments only in done; its delta must target its
+	// own block.
 	eventsTool2Done := ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:        "response.function_call_arguments.done",
 		OutputIndex: 1,
 		Arguments:   `{"y":2}`,
 	}, state)
 
-	// 工具 2 的 delta 应指向它的 block 索引 1。
-	// 检查 delta 位于索引 1，随后同一索引收到 content_block_stop。
+	// Both the argument delta and block stop must use index 1.
 	var sawDelta, sawStop bool
 	var deltaIndex, stopIndex int
 	for _, e := range eventsTool2Done {
@@ -1037,7 +1144,10 @@ func TestStreamingParallelToolUseSecondToolPackedArgsDone(t *testing.T) {
 	assert.Equal(t, deltaIndex, stopIndex, "delta and stop must be on the same block")
 }
 
-// TestStreamingThreeParallelToolsAllPackedDone 检查三个并行工具的完整参数分别发到对应块索引。
+// TestStreamingThreeParallelToolsAllPackedDone opens three tool blocks before
+// their packed done events. Every emitted delta must target its corresponding
+// known index, and emitted stops must reference known indexes; argument
+// emission for every tool is not required.
 func TestStreamingThreeParallelToolsAllPackedDone(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -1046,7 +1156,7 @@ func TestStreamingThreeParallelToolsAllPackedDone(t *testing.T) {
 		Response: &ResponsesResponse{ID: "resp_3par", Model: "glm-5.2"},
 	}, state)
 
-	// 在索引 0、1、2 上打开三个工具 block。
+	// Open each tool in turn, advancing through indexes 0, 1, and 2.
 	for i, name := range []string{"tool_a", "tool_b", "tool_c"} {
 		ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 			Type:        "response.output_item.added",
@@ -1055,10 +1165,9 @@ func TestStreamingThreeParallelToolsAllPackedDone(t *testing.T) {
 		}, state)
 	}
 
-	// 记录已启动的 block。
 	started := map[int]bool{0: true, 1: true, 2: true}
 
-	// 三个 .done 都携带打包参数，之前均没有 delta。
+	// Each done event carries complete arguments with no preceding argument delta.
 	for i, args := range []string{`{"a":1}`, `{"b":2}`, `{"c":3}`} {
 		events := ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 			Type:        "response.function_call_arguments.done",
@@ -1083,6 +1192,10 @@ func TestStreamingThreeParallelToolsAllPackedDone(t *testing.T) {
 	}
 }
 
+// TestResToAnthFuncArgsDelta_ReadToolWaitsForCompleteJSON splits Read
+// arguments into incomplete and completing fragments. It checks buffering,
+// sanitized emission, stored raw text, delta evidence, closure, and no output
+// for a repeated done event.
 func TestResToAnthFuncArgsDelta_ReadToolWaitsForCompleteJSON(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.MessageStartSent = true
@@ -1127,6 +1240,10 @@ func TestResToAnthFuncArgsDelta_ReadToolWaitsForCompleteJSON(t *testing.T) {
 	assert.Empty(t, events, "duplicate done must be idempotent")
 }
 
+// TestResponsesEventToAnthropicEvents_ReadToolWithoutArgumentsDoneClosesOnCompleted
+// streams complete Read arguments without a done event. It checks sanitized
+// immediate input, terminal block closure/tool-use stop, and empty later
+// finalization.
 func TestResponsesEventToAnthropicEvents_ReadToolWithoutArgumentsDoneClosesOnCompleted(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 
@@ -1169,6 +1286,9 @@ func TestResponsesEventToAnthropicEvents_ReadToolWithoutArgumentsDoneClosesOnCom
 	assert.Empty(t, FinalizeResponsesAnthropicStream(state), "terminal event already finalized the stream")
 }
 
+// TestResToAnthFuncArgsDelta_NonReadToolStreamsPartialJSONImmediately sets
+// tool kind/name and an output mapping while leaving the open flag unset. A
+// partial fragment must emit immediately and set delta evidence in that state.
 func TestResToAnthFuncArgsDelta_NonReadToolStreamsPartialJSONImmediately(t *testing.T) {
 	state := NewResponsesEventToAnthropicState(testRuntime())
 	state.MessageStartSent = true

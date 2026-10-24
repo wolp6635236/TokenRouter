@@ -7,40 +7,82 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider/httpapi/dto"
 )
 
-// ProviderWithConcurrency 包含管理端的实时并发与调度展示字段。
+// runtime_presenter.go builds administrator provider responses from runtime
+// observations and parent account hints.
+// Provider administration combines redacted configuration with runtime fields
+// calculated by the provider use cases. Parent account hints are filled in
+// place for loaded credential shadows; failed parent lookup leaves the response
+// usable with its existing fields, while Ollama presentation enriches the
+// already mapped usage state.
+
+// ProviderWithConcurrency combines a redacted provider view with live
+// scheduling and usage display observations.
 type ProviderWithConcurrency struct {
-	*dto.Provider
-	CurrentConcurrency int                           `json:"current_concurrency"`
-	SchedulerScore     *ProviderSchedulerScore       `json:"scheduler_score,omitempty"`
-	SchedulerScores    []ProviderSchedulerGroupScore `json:"scheduler_scores,omitempty"`
-	// 以下字段仅对 Anthropic OAuth/SetupToken 提供商有效，且仅在启用相应功能时返回
-	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // 当前窗口费用
-	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
-	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
+	// Provider is shared when this wrapper is copied. Parent enrichment mutates
+	// the pointed-to DTO, so callers finish those edits before encoding any copy.
+	*dto.Provider          // shared redacted provider view
+	CurrentConcurrency int `json:"current_concurrency"` // current occupied provider request slots
+	// SchedulerScore, SchedulerScores, CurrentWindowCost, ActiveSessions and
+	// CurrentRPM retain pointers or slice storage from the loaded RuntimeStatus.
+	// Callers keep all five observations stable until response encoding finishes.
+	// optional filter-pool scheduler score
+	SchedulerScore *ProviderSchedulerScore `json:"scheduler_score,omitempty"`
+	// optional per-group scheduler scores
+	SchedulerScores []ProviderSchedulerGroupScore `json:"scheduler_scores,omitempty"`
+	// CurrentWindowCost, ActiveSessions and CurrentRPM appear when the runtime use
+	// case obtains their configured Anthropic OAuth or Setup Token observations.
+	// Missing optional observations remain omitted in JSON.
+	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // USD
+	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // current active session count
+	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // current counted requests per minute
 }
 
-// 提供商管理用例计算调度展示值，HTTP 将其编码为 JSON。
+// Provider use cases calculate these scheduler observations before the
+// presenter borrows them for administrator JSON output, with no further scoring.
 type (
-	ProviderSchedulerScore      = providercore.ProviderSchedulerScore
+	// ProviderSchedulerScore is the provider use case's filter-pool scheduling
+	// observation, reused here for administrator response encoding.
+	ProviderSchedulerScore = providercore.ProviderSchedulerScore
+	// ProviderSchedulerGroupScore is the provider use case's group-specific
+	// scheduling observation, reused here for administrator response encoding.
 	ProviderSchedulerGroupScore = providercore.ProviderSchedulerGroupScore
 )
 
-// RuntimePresenter 将运行数据和母提供商信息转换为管理 DTO，查询和阈值计算由提供商用例执行。
+// RuntimePresenter borrows status readers and parent lookup to build
+// administrator provider responses. Its status, parents and optional ollama
+// dependencies stay usable until presentation calls finish; their owners manage
+// shutdown separately.
 type RuntimePresenter struct {
-	status  *providercore.RuntimeStatusReader
-	parents interface {
+	status *providercore.RuntimeStatusReader // borrowed runtime observation reader
+	// parents is borrowed for shadow hints. Lookup failures are suppressed, so
+	// omitted hints do not prevent a provider list or detail response.
+	parents interface { // borrowed batch parent reader
+		// GetProvidersByIDs reads loaded parent records for the requested identifiers.
+		// Missing records are skipped during enrichment, and a read error leaves
+		// existing response hints unchanged in the presenter.
 		GetProvidersByIDs(context.Context, []int64) ([]*providercore.Record, error)
 	}
-	ollama *providercore.OllamaCloudUsageService
+	ollama *providercore.OllamaCloudUsageService // optional Ollama response-state enrichment
 }
 
+// NewRuntimePresenter borrows runtime status, parent reads and optional Ollama
+// usage enrichment. The caller keeps these dependencies available while
+// responses are built; this constructor neither loads provider data nor starts
+// maintenance.
 func NewRuntimePresenter(status *providercore.RuntimeStatusReader, parents interface {
+	// GetProvidersByIDs reads loaded parent records for the requested identifiers.
+	// Missing records are skipped during enrichment, and a read error leaves
+	// existing response hints unchanged in the presenter.
 	GetProvidersByIDs(context.Context, []int64) ([]*providercore.Record, error)
 }, ollama *providercore.OllamaCloudUsageService,
 ) *RuntimePresenter {
 	return &RuntimePresenter{status, parents, ollama}
 }
 
+// Present reads runtime observations and returns a redacted management view for
+// the supplied provider. Parent enrichment uses a copied wrapper with the same
+// embedded DTO pointer, so its in-place hint updates are visible in the
+// returned item.
 func (p *RuntimePresenter) Present(ctx context.Context, v *providercore.Record) ProviderWithConcurrency {
 	state := p.status.Read(ctx, v)
 	item := p.Project(state)
@@ -48,8 +90,11 @@ func (p *RuntimePresenter) Present(ctx context.Context, v *providercore.Record) 
 	return item
 }
 
-// EnrichShadowParentInfo 把母提供商的展示信息回填到影子行的 parent_* 字段。
-// 纯函数：仅依赖传入的母提供商 map，便于单测；非影子或母提供商缺失时优雅留空。
+// EnrichShadowParentInfo fills parent account and privacy hints in matching
+// shadow DTOs. Nil DTOs, ordinary providers and missing parents are skipped;
+// matching fields are overwritten from the supplied parent record. Wrapper
+// copies share those DTOs, so callers synchronize edits and keep parent maps
+// and records stable throughout enrichment.
 func EnrichShadowParentInfo(items []ProviderWithConcurrency, parents map[int64]*providercore.Record) {
 	for i := range items {
 		a := items[i].Provider
@@ -68,8 +113,10 @@ func EnrichShadowParentInfo(items []ProviderWithConcurrency, parents map[int64]*
 	}
 }
 
-// EnrichShadowParents 收集本批影子的母提供商 ID，批量查询后回填展示数据。
-// 解析失败时不报错（parent_* 留空，降级）。
+// EnrichShadowParents reads distinct parent IDs as one batch and updates
+// matching DTO pointers in place. A failed parent read is suppressed, leaving
+// existing hint fields available; callers synchronize mutable item and record
+// access.
 func (p *RuntimePresenter) EnrichShadowParents(ctx context.Context, items []ProviderWithConcurrency) {
 	seen := make(map[int64]struct{})
 	for i := range items {
@@ -88,6 +135,8 @@ func (p *RuntimePresenter) EnrichShadowParents(ctx context.Context, items []Prov
 	}
 	parents, err := p.parents.GetProvidersByIDs(ctx, parentIDs)
 	if err != nil {
+		// Parent hints supplement the usable provider view. Retain existing fields
+		// when a batch read fails so optional account metadata cannot suppress the response.
 		return
 	}
 	pmap := make(map[int64]*providercore.Record, len(parents))
@@ -97,7 +146,10 @@ func (p *RuntimePresenter) EnrichShadowParents(ctx context.Context, items []Prov
 	EnrichShadowParentInfo(items, pmap)
 }
 
-// Project 将已读取的运行状态转换为管理展示字段。
+// Project maps loaded runtime state to a management view and applies optional
+// Ollama display enrichment. A nil mapped record returns the wrapper as built;
+// runtime pointer and slice observations remain borrowed during response
+// encoding.
 func (p *RuntimePresenter) Project(state providercore.RuntimeStatus) ProviderWithConcurrency {
 	item := ProviderWithConcurrency{Provider: dto.ProviderFromRecord(state.Record), CurrentConcurrency: state.CurrentConcurrency, CurrentWindowCost: state.CurrentWindowCost, ActiveSessions: state.ActiveSessions, CurrentRPM: state.CurrentRPM, SchedulerScore: state.SchedulerScore, SchedulerScores: state.SchedulerScores}
 	if item.Provider == nil {

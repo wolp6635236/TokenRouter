@@ -10,12 +10,38 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// values.go maps creative image options to provider wire values and supplies
+// bounded response decoding.
+// Creative image tiers and aspect-ratio labels need concrete wire values for
+// each provider. OpenAI combines the tier and orientation into fixed pixel
+// dimensions, while Grok receives one of its resolution strings and a
+// supported Imagine ratio. Several ratio labels intentionally select the same
+// dimensions, so these mappings describe request choices rather than exact
+// aspect-ratio arithmetic.
+//
+// The four-K OpenAI cases choose explicit landscape, portrait, and square
+// dimensions. Other tiers use a fixed base and a three-to-two orientation
+// shape, with unknown ratios choosing square. Shared byte helpers bound
+// response reads and decode provider base64, leaving complete image validation
+// to consumers that require it. Multipart file extensions follow the source
+// MIME label and default to PNG.
+
+// ReadCreativeUpstreamBody delegates a bounded read and returns at most limit
+// bytes from body. Nonpositive limits use sixty-four MiB; reaching the cap
+// returns the prefix successfully rather than an oversize error.
 func ReadCreativeUpstreamBody(body io.Reader, limit int64) ([]byte, error) {
 	return upstream.ReadLimitedBody(body, limit)
 }
 
-// CreativeOpenAIImageSize 把创作台尺寸档位映射为 OpenAI images 协议支持的像素尺寸。
-// 4K 档位遵守 GPT Image 2 的 3840 最大边长和约 8.3MP 总像素上限。
+// CreativeOpenAIImageSize chooses fixed pixel dimensions from the normalized
+// image tier and trimmed ratio. Four-K has explicit 16:9, 9:16, 4:3, and 3:4
+// cases, with all other ratios choosing 2880 square.
+//
+// Other tiers use 1024 for one-K and 1536 otherwise, selecting square or a
+// three-to-two orientation from the supported ratio labels. Consequently
+// several labels such as 16:9 and 4:3 map to the same oriented dimensions.
+// Callers treat the returned size as this adapter request mapping, not an
+// exact ratio conversion.
 func CreativeOpenAIImageSize(imageSize, aspectRatio string) string {
 	tier := pricing.NormalizeImageBillingTierOrDefault(imageSize)
 	ratio := strings.TrimSpace(aspectRatio)
@@ -33,6 +59,9 @@ func CreativeOpenAIImageSize(imageSize, aspectRatio string) string {
 			return "2880x2880"
 		}
 	}
+	// Non-four-K orientation groups use a fixed base, so the returned dimensions
+	// share a three-to-two shape across several ratio labels rather than deriving
+	// an exact ratio from the label text.
 	base := 1024
 	if tier != pricing.ImageBillingSize1K {
 		base = 1536
@@ -47,7 +76,9 @@ func CreativeOpenAIImageSize(imageSize, aspectRatio string) string {
 	}
 }
 
-// CreativeGrokImageResolution 把尺寸档位映射为 grok imagine 的 resolution（1k/2k）。
+// CreativeGrokImageResolution returns the xAI resolution string for a
+// normalized image tier. One-K maps to 1k, and every other normalized tier
+// maps to 2k for the generation adapter.
 func CreativeGrokImageResolution(imageSize string) string {
 	if pricing.NormalizeImageBillingTierOrDefault(imageSize) == pricing.ImageBillingSize1K {
 		return "1k"
@@ -55,15 +86,24 @@ func CreativeGrokImageResolution(imageSize string) string {
 	return "2k"
 }
 
+// CreativeGrokAspectRatio delegates xAI Imagine ratio normalization for the
+// supplied value. Unsupported or blank ratios return empty, allowing creative
+// request builders to omit the optional aspect_ratio field.
 func CreativeGrokAspectRatio(aspectRatio string) string {
 	return grok.NormalizeImagineAspectRatio(aspectRatio)
 }
 
+// DecodeBase64Image delegates padded and unpadded standard base64 image
+// decoding. The shared helper sniffs a MIME label and defaults unknown
+// signatures to image/png; decoding success does not establish complete image
+// validity.
 func DecodeBase64Image(raw string) (upstream.DecodedImage, error) {
 	return upstream.DecodeBase64Image(raw)
 }
 
-// CreativeFileExtension 返回 MIME 对应的文件扩展名（用于 multipart 文件名）。
+// CreativeFileExtension chooses the multipart filename suffix from the trimmed
+// lowercase MIME label. JPEG uses jpg, WebP uses webp, and every other label
+// selects the png default.
 func CreativeFileExtension(mime string) string {
 	switch strings.ToLower(strings.TrimSpace(mime)) {
 	case "image/jpeg":

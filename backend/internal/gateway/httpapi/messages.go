@@ -27,75 +27,211 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
+// messages.go prepares Messages requests for policy checks, user admission,
+// session selection, and text execution.
+// Messages admission keeps the client model and rewritten body available while
+// preparing provider execution. Prompt replacement precedes parsing,
+// moderation and session hashing; client-group resolution and reasoning policy
+// establish the route plan before the selected text executor receives the
+// request.
+//
+// Funding is checked after the user-slot wait because eligibility can change
+// while the request is queued. Explicit metadata session identity is checked
+// for ownership, while content/session hashing supplies sticky selection
+// hints. The original model, group mapping, provider binding and optional
+// Gemini attempt body remain separate fields so conversion and completion can
+// interpret each representation after provider selection.
+
+// MessagesHTTPOptions retains body normalization, provider-switch limits, and
+// the client preparation settings used when selecting compatible Responses routes.
 type MessagesHTTPOptions struct {
-	MaxBodyBytes                   int64
+	ForceCodexCLI bool // configured Codex client preparation
+	// MaxBodyBytes limits lenient JSON normalization output, after the shared
+	// body reader runs. Nonpositive selects the protocol normalizer's 64 MiB default.
+	MaxBodyBytes int64
+	// MaxSwitches and MaxGeminiSwitches retain configured switch counts from
+	// assembly. Messages HTTP preparation stores them while execution owns attempt loops.
+	// MaxSwitches: general provider switch allowance.
+	// MaxGeminiSwitches: Gemini provider switch allowance.
 	MaxSwitches, MaxGeminiSwitches int
 }
+
+// MessagesPrompt supplies request-body prompt replacement before admission
+// reads its contents.
 type MessagesPrompt interface {
+	// ApplyUserPromptReplacementToBody returns request bytes with the configured
+	// user-prompt policy applied for its protocol. Admission uses those bytes for
+	// parsing, moderation and hashing, so callers pass the returned body onward.
 	ApplyUserPromptReplacementToBody(context.Context, []byte, string) []byte
 }
 
-// MessagesCall 不携带旧实体或完整配置，单次请求的派生值不会写入共享缓存。
+// MessagesCall holds identity, routing, and execution state for one request.
 type MessagesCall struct {
-	Key                                      *apikey.APIKey
-	Subject                                  authctx.AuthSubject
-	Subscription                             *billing.UserSubscription
-	Parsed                                   *requeststate.ParsedRequest
-	Body, GeminiBody                         []byte
+	Key     *apikey.APIKey      // effective authenticated request key
+	Subject authctx.AuthSubject // authenticated request subject
+	// Subscription carries the request's optional funding choice; nil permits
+	// balance-funded eligibility and completion through the corresponding services.
+	Subscription *billing.UserSubscription
+	Parsed       *requeststate.ParsedRequest // parsed client request
+	// Body and GeminiBody retain client input and the separately prepared
+	// attempt for forced Gemini execution. Group mapping can change GeminiBody
+	// while Body remains available for request metadata and completion input.
+	// Body: retained client request bytes.
+	// GeminiBody: prepared group-mapped attempt bytes.
+	Body, GeminiBody []byte
+	// Model and GeminiModel distinguish client identity from the prepared mapped
+	// target. Platform is empty for ordinary mixed-provider selection; SessionKey
+	// retains the sticky lookup identity independently of either model name.
+	// Model: original client model. GeminiModel: prepared mapped model.
+	// Platform: optional forced platform. SessionKey: sticky provider key.
 	Model, GeminiModel, Platform, SessionKey string
-	Stream, ClaudeCode, HasBoundSession      bool
-	BoundProviderID                          int64
-	StreamStarted                            *bool
-	Log                                      *zap.Logger
-	Route                                    routing.RoutePlan
-	Mapping                                  routing.GroupMappingResult
+	// HasBoundSession relates SessionKey to BoundProviderID: Messages admission sets
+	// it after a nonempty key and positive provider lookup, while Stream and
+	// ClaudeCode retain independent client execution and detection flags.
+	// Stream: client streaming intent. ClaudeCode: detected client flag.
+	// HasBoundSession: observed sticky provider presence.
+	Stream, ClaudeCode, HasBoundSession bool
+	BoundProviderID                     int64 // cached sticky provider identity
+	// StreamStarted is shared with the synchronous HTTP output adapter; slot
+	// waits can update it before later error handling selects its protocol response.
+	StreamStarted *bool
+	Log           *zap.Logger                // request diagnostic logger
+	Route         routing.RoutePlan          // resolved request routing plan
+	Mapping       routing.GroupMappingResult // group model mapping
 }
 
-// MessagesBackend 提供用例的逐步执行接口和同步观测。
+// MessagesBackend supplies admission, routing, and observation operations for Messages requests.
 type MessagesBackend interface {
+	// Access returns the effective authenticated key and presence flag. Messages
+	// requires a usable nonnil key when that flag is true because it immediately
+	// reads key identity and group; a type-presence flag alone cannot establish
+	// that requirement for a typed nil pointer.
 	Access(*gin.Context) (*apikey.APIKey, bool)
+	// CompatibilityMetrics records compatibility observations when Messages
+	// returns after authentication created request logging. Admission can fail
+	// after that point, so this observation also covers parse, policy, funding
+	// and isolation rejection paths.
 	CompatibilityMetrics(*zap.Logger)
+	// ObserveRequest records the current client model and streaming intent for
+	// Ops.
 	ObserveRequest(*gin.Context, string, bool)
+	// ObserveEndpoint records the normalized request endpoint and execution
+	// category for Ops.
 	ObserveEndpoint(*gin.Context, bool)
+	// Reasoning applies group reasoning policy and returns body, changed flag and
+	// error. A changed body must replace ParsedRequest state; an error rejects
+	// admission before route execution begins.
 	Reasoning(*gin.Context, *apikey.APIKey, []byte) ([]byte, bool, error)
+	// PolicyDenied records local policy rejection as a client business
+	// limitation.
 	PolicyDenied(*gin.Context)
+	// Plan resolves routing from the current Key and client-requested model. Its
+	// returned plan describes requested and group-mapped identities retained for
+	// selection and completion, without provider-specific mapping at this
+	// admission stage.
 	Plan(context.Context, *apikey.APIKey, string) routing.RoutePlan
+	// BindPlan installs the resolved route plan on the active HTTP request
+	// context. The handler calls it before execution so selection and completion
+	// read the same group/model decision and existing request values remain
+	// available.
 	BindPlan(*gin.Context, routing.RoutePlan)
+	// BindProbe installs the recognized one-token Haiku probe marker before
+	// client detection. The detector receives that true marker to distinguish
+	// already recognized probes from ordinary request validation and associated
+	// client checks.
 	BindProbe(*gin.Context)
+	// Probe returns the one-token Haiku marker installed for this request, or
+	// false when absent. The handler passes this value into client detection so
+	// the marked probe can follow its applicable validation path.
 	Probe(*gin.Context) bool
+	// BindClient stores detected Claude identity and any usable client version.
+	// Version storage is conditional on a nonempty version for a Claude client,
+	// while the client flag is installed for every detection.
 	BindClient(*gin.Context, ClientDetection)
+	// BindThinking stores parsed thinking intent before provider execution reads
+	// the request context. Antigravity model identity and health handling use
+	// that flag to interpret the final target and applicable model-rate
+	// observations.
 	BindThinking(*gin.Context, bool)
+	// ClientVersion returns the client version installed on this request context.
+	// A missing value is empty, leaving version rejection to the configured bound
+	// rules interpreted by the HTTP handler.
 	ClientVersion(*gin.Context) string
+	// ClientVersionBounds returns configured minimum and maximum Claude client
+	// versions. Empty values disable their respective bounds, and both empty let
+	// the HTTP handler skip version rejection for this request.
 	ClientVersionBounds(context.Context) (string, string)
+	// Moderate checks the rewritten Messages body with its authenticated key and
+	// subject. Nil or an unblocked decision permits execution; a blocked decision
+	// supplies the client status/message before provider selection.
 	Moderate(*gin.Context, *zap.Logger, *apikey.APIKey, authctx.AuthSubject, string, []byte) *moderation.Decision
+	// BindErrors binds final response rules when that service is configured. It
+	// can leave request state unchanged when rules are absent, allowing ordinary
+	// protocol error defaults to apply.
 	BindErrors(*gin.Context)
+	// Eligibility checks current funding after the user-slot wait with an
+	// optional subscription. A returned billing error stops execution and can
+	// carry Retry-After guidance for the HTTP response.
 	Eligibility(context.Context, *apikey.APIKey, *billing.UserSubscription) error
+	// ForcedPlatform returns the platform restriction installed by API-key
+	// middleware, if present. An absent restriction permits the ordinary
+	// cross-platform selection route; the handler treats forced Gemini as a
+	// separate preparation kind.
 	ForcedPlatform(*gin.Context) (string, bool)
+	// Isolate checks explicit metadata-session ownership under the current key
+	// and subject. Nil permits admission; conflict and other errors produce
+	// different client responses, and an absent bound isolation callback can
+	// permit requests.
 	Isolate(context.Context, *apikey.APIKey, int64, string) error
+	// CachedSession returns the provider associated with this group and sticky
+	// key. Messages ignores the returned error; the returned positive identity
+	// controls whether provider/group selection hints are installed.
 	CachedSession(context.Context, *int64, string) (int64, error)
+	// Prefetch installs a returned sticky provider/group pair on this request
+	// context before execution starts. Selection reads that pair as request-local
+	// hints while the resolved route and caller identity stay available.
 	Prefetch(*gin.Context, int64, int64)
+	// PrepareGemini builds the separately group-mapped attempt for forced Gemini
+	// Messages. It receives retained client body/model and key, returning parsed
+	// attempt data or an admission error before the shared executor starts.
 	PrepareGemini(context.Context, MessagesCall) (*requeststate.ParsedRequest, error)
+	// MarkStream records protocol-stream error metadata after HTTP output has
+	// begun.
 	MarkStream(*gin.Context, string, string, int)
+	// FailoverObservation records provider-switch diagnostics using request
+	// context and supplied values.
 	FailoverObservation(context.Context, string, map[string]any)
 }
 
-// MessagesHandler 的依赖在 app 一次绑定；每次调用只创建本请求数据。
+// MessagesHandler uses application-bound dependencies and allocates execution state per request.
 type MessagesHandler struct {
-	executor execution.Executor
-	RequestLifetime
+	executor        execution.Executor // shared text execution
+	RequestLifetime                    // application request barrier
 
-	options     MessagesHTTPOptions
-	backend     MessagesBackend
-	prompt      MessagesPrompt
-	concurrency *ConcurrencyHelper
+	options     MessagesHTTPOptions // retained HTTP admission settings
+	backend     MessagesBackend     // bound admission and observation
+	prompt      MessagesPrompt      // request prompt replacement
+	concurrency *ConcurrencyHelper  // shared user concurrency support
 }
 
+// NewMessagesHandler retains HTTP admission and execution dependencies for
+// Messages requests. Callers supply usable backend, prompt, concurrency and
+// executor services; the handler allocates request-specific state while
+// retaining the bound shared services.
 func NewMessagesHandler(options MessagesHTTPOptions, backend MessagesBackend, prompt MessagesPrompt, concurrency *ConcurrencyHelper, executor execution.Executor) *MessagesHandler {
 	return &MessagesHandler{options: options, backend: backend, prompt: prompt, concurrency: concurrency, executor: executor}
 }
 
-// Messages handles Claude API compatible messages endpoint
-// POST /v1/messages
+// Messages prepares a Claude-compatible request after middleware
+// authentication and subject binding. Prompt replacement precedes parsing,
+// client detection, reasoning policy and moderation. The user slot is acquired
+// before the final funding check and released on request exit or cancellation.
+//
+// Metadata identity supplies session isolation, while the generated session
+// key and advisory provider lookup establish sticky hints. Forced Gemini
+// retains its own prepared model/body beside the client request; other routes
+// pass parsed Messages input. The shared executor owns provider attempts and
+// completion using the captured route, funding and client state.
 func (h *MessagesHandler) Messages(c *gin.Context) {
 	done, accepted := h.BeginRequest(c, "anthropic")
 	if !accepted {
@@ -103,7 +239,7 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 	}
 	defer done()
 
-	// 从 context 获取 apiKey 和 user（ApiKeyAuth 中间件已设置）
+	// Authentication middleware supplies the key and user context.
 	apiKey, ok := h.backend.Access(c)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
@@ -124,7 +260,6 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 	)
 	defer h.backend.CompatibilityMetrics(reqLog)
 
-	// 读取请求体
 	body, err := ReadLenientJSONRequestBodyWithPrealloc(c.Request, h.options.MaxBodyBytes)
 	if err != nil {
 		if maxErr, ok := errors.AsType[*http.MaxBytesError](err); ok {
@@ -142,7 +277,8 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 
 	h.backend.ObserveRequest(c, "", false)
 
-	// 在解析、内容审计和会话 hash 计算前替换用户提示词，后续步骤共用改写后的请求体。
+	// Apply prompt replacement before constructing parsed state so moderation and
+	// sticky identity both describe the content later forwarded for this request.
 	body = h.prompt.ApplyUserPromptReplacementToBody(c.Request.Context(), body, "anthropic_messages")
 
 	bodyRef := requeststate.NewRequestBodyRef(body)
@@ -157,18 +293,17 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 	reqStream := parsedReq.Stream
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
-	// 设置 max_tokens=1 + haiku 探测请求标识到 context 中
-	// 在 SetClaudeCodeClientContext 前设置，ClaudeCodeValidator 根据此标识判断是否跳过验证。
+	// Mark max_tokens=1 Haiku probes before client detection.
+	// The Claude Code validator uses this marker to skip probe validation.
 	if clientmeta.IsHaikuProbe(reqModel, parsedReq.MaxTokens) {
 		h.backend.BindProbe(c)
 	}
 
-	// 复用已解析的请求识别 Claude Code 客户端，将结果写入 context。
 	detection := DetectClaudeCodeRequest(c, body, parsedReq, h.backend.Probe(c))
 	h.backend.BindClient(c, detection)
 	isClaudeCodeClient := detection.ClaudeCode
 
-	// 版本检查：仅对 Claude Code 客户端，拒绝低于最低版本的请求
+	// Apply configured version bounds to Claude Code clients.
 	if !h.checkClientVersion(c, detection) {
 		return
 	}
@@ -189,19 +324,17 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 		}
 		body = parsedReq.Body.Bytes()
 	}
-	// 解析分组模型映射
-	// 当前分组和分组映射结果进入独立计划，不改变原解析位置。
+	// Capture the group and model mapping in this request's route plan.
 	groupMappingRoutePlan := h.backend.Plan(c.Request.Context(), apiKey, reqModel)
 	groupMapping := groupMappingRoutePlan.Mapping()
 	h.backend.BindPlan(c, groupMappingRoutePlan)
 
-	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
+	// Antigravity uses thinking state to derive the final model key and model rate limits.
 	h.backend.BindThinking(c, parsedReq.ThinkingEnabled)
 
 	h.backend.ObserveRequest(c, reqModel, reqStream)
 	h.backend.ObserveEndpoint(c, reqStream)
 
-	// 验证 model 必填
 	if reqModel == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
@@ -212,29 +345,29 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	// Track if we've started streaming (for error handling)
 	streamStarted := false
 
-	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
+	// Bind error rules for failures that do not trigger provider failover.
 	h.backend.BindErrors(c)
 
-	// 获取订阅信息（可能为 nil）- 提前获取用于后续检查
+	// The subscription may be nil for balance-funded requests.
 	subscription, _ := SubscriptionFromContext(c)
 
-	// 1. 首先获取用户并发槽位
 	userReleaseFunc, err := h.concurrency.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
 	if err != nil {
 		reqLog.Warn("gateway.user_slot_acquire_failed", zap.Error(err))
 		h.concurrencyError(c, err, "user", streamStarted)
 		return
 	}
-	// 请求结束或 Context 取消时释放槽位。
+	// Request exit and client cancellation can both release this user slot;
+	// the wrapped callback makes those cleanup paths share one release operation.
 	userReleaseFunc = scheduler.WrapRelease(c.Request.Context(), scheduler.ReleaseOnCancel, userReleaseFunc)
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
 
-	// 2. 【新增】Wait 后二次检查余额/订阅
+	// Check funding after admission to the user slot so a balance or subscription
+	// change during that wait can stop the request before provider execution.
 	if err := h.backend.Eligibility(c.Request.Context(), apiKey, subscription); err != nil {
 		reqLog.Info("gateway.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := BillingErrorDetails(err)
@@ -245,10 +378,9 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	// 设置请求所属分组 ID（用于分组功能判断，如 WebSearch 模拟）
+	// Group features such as web search emulation read this ID.
 	parsedReq.GroupID = apiKey.GroupID
 
-	// 计算粘性会话 hash
 	parsedReq.SessionContext = &requeststate.SessionContext{
 		ClientIP:  clientip.GetClientIP(c),
 		UserAgent: c.GetHeader("User-Agent"),
@@ -256,13 +388,12 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 	}
 	sessionHash := session.GenerateSessionHash(parsedReq, slog.Info)
 
-	// [DEBUG-STICKY] 打印会话 hash 生成结果
 	reqLog.Info("sticky.session_hash_generated",
 		zap.String("session_hash", sessionHash),
 		zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
 	)
 
-	// 专用入口读取强制平台过滤，普通入口不预设提供商平台
+	// Dedicated endpoints can force a platform; ordinary requests select across platforms.
 	platform := ""
 	if forcePlatform, ok := h.backend.ForcedPlatform(c); ok {
 		platform = forcePlatform
@@ -270,6 +401,8 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 		platform = ""
 	}
 	sessionKey := sessionHash
+	// Separate forced Gemini sticky identities from the ordinary Messages cache
+	// namespace while retaining the same underlying conversation hash for this route.
 	if platform == capability.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
@@ -279,11 +412,11 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 		}
 	}
 
-	// 查询粘性会话绑定的提供商 ID
 	var sessionBoundProviderID int64
 	if sessionKey != "" {
+		// Sticky lookup is advisory: discard its error and use the returned identity
+		// to prefetch a bound provider when one is available for this request.
 		sessionBoundProviderID, _ = h.backend.CachedSession(c.Request.Context(), apiKey.GroupID, sessionKey)
-		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
 			zap.String("session_key", sessionKey),
 			zap.Int64("bound_provider_id", sessionBoundProviderID),
@@ -298,11 +431,12 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 	} else {
 		reqLog.Info("sticky.no_session_key", zap.String("session_hash", sessionHash))
 	}
-	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个提供商
 	hasBoundSession := sessionKey != "" && sessionBoundProviderID > 0
 
 	call := MessagesCall{Key: apiKey, Subject: subject, Subscription: subscription, Parsed: parsedReq, Body: body, Model: reqModel, Stream: reqStream, ClaudeCode: isClaudeCodeClient, Platform: platform, SessionKey: sessionKey, BoundProviderID: sessionBoundProviderID, HasBoundSession: hasBoundSession, StreamStarted: &streamStarted, Log: reqLog, Route: groupMappingRoutePlan, Mapping: groupMapping}
 	kind := execution.TextMessages
+	// Forced Gemini forwards a separately prepared group-mapped representation;
+	// retaining the client body and model lets execution record the original request.
 	if platform == capability.PlatformGemini {
 		attempt, err := h.backend.PrepareGemini(c.Request.Context(), call)
 		if err != nil {
@@ -322,23 +456,39 @@ func (h *MessagesHandler) Messages(c *gin.Context) {
 		Metadata: execution.RequestMetadata{ClaudeCode: isClaudeCodeClient},
 		Text:     execution.TextState{Kind: kind, Parsed: parsedReq, Platform: platform, BoundProviderID: sessionBoundProviderID, HasBoundSession: hasBoundSession, GeminiBody: call.GeminiBody, GeminiModel: call.GeminiModel},
 	}
-	output := &MessagesOutput{ResponseSink: ResponseSink{Writer: c.Writer}, HTTP: c, Log: reqLog, StreamStarted: &streamStarted}
+	output := &MessagesOutput{ResponseSink: NewResponseSink(c), HTTP: c, Log: reqLog, StreamStarted: &streamStarted}
+	// The bound executor is responsible for completion and terminal protocol
+	// output. This admission adapter supplies active HTTP output and discards
+	// the returned result and error after execution finishes.
 	_, _ = h.executor.Execute(c.Request.Context(), request, output)
 }
 
+// errorResponse writes the supplied Anthropic JSON error through shared
+// presentation. The caller supplies client status and category, while the
+// shared writer applies any model-attribute error override before delivery.
 func (h *MessagesHandler) errorResponse(c *gin.Context, status int, kind, message string) {
 	WriteAnthropicError(c, status, kind, "", message)
 }
 
+// streamingError delegates protocol error output using the supplied
+// stream-started flag. The shared writer chooses JSON or route-appropriate SSE
+// and records stream error observation through the bound backend callback.
 func (h *MessagesHandler) streamingError(c *gin.Context, status int, kind, message string, started bool) {
 	WriteAnthropicStreamError(c, status, kind, "", message, started, h.backend.MarkStream)
 }
 
+// concurrencyError maps a slot-acquisition failure and delegates
+// Anthropic-compatible error output. It retains the slot-specific code and
+// stream-started state so queue/admission errors use the client's current
+// response format.
 func (h *MessagesHandler) concurrencyError(c *gin.Context, err error, slot string, started bool) {
 	status, kind, code, message := ConcurrencyErrorResponse(err, slot)
 	WriteAnthropicStreamError(c, status, kind, code, message, started, h.backend.MarkStream)
 }
 
+// isolationError reports whether a supplied isolation failure was presented.
+// Nil permits admission, a known session conflict writes 403 and other
+// failures write 503, using current streaming state for output.
 func (h *MessagesHandler) isolationError(c *gin.Context, err error, started bool) bool {
 	if err == nil {
 		return false
@@ -351,6 +501,10 @@ func (h *MessagesHandler) isolationError(c *gin.Context, err error, started bool
 	return true
 }
 
+// checkClientVersion permits non-Claude clients, count_tokens paths and absent
+// configured bounds. Otherwise the stored version is checked against current
+// bounds; rejection writes a 400 error and returns false before further
+// admission.
 func (h *MessagesHandler) checkClientVersion(c *gin.Context, detected ClientDetection) bool {
 	if !detected.ClaudeCode || strings.HasSuffix(c.Request.URL.Path, "/count_tokens") {
 		return true
@@ -367,7 +521,10 @@ func (h *MessagesHandler) checkClientVersion(c *gin.Context, detected ClientDete
 	return false
 }
 
-// SubscriptionFromContext 从 HTTP 请求上下文读取订阅。
+// SubscriptionFromContext returns the stored subscription pointer and whether
+// its type matches. Missing or differently typed values return false; a stored
+// typed-nil pointer returns nil with true, allowing callers to retain optional
+// funding.
 func SubscriptionFromContext(c *gin.Context) (*billing.UserSubscription, bool) {
 	value, exists := c.Get("subscription")
 	if !exists {
@@ -377,15 +534,25 @@ func SubscriptionFromContext(c *gin.Context) (*billing.UserSubscription, bool) {
 	return sub, ok
 }
 
+// MetadataSessionID returns the trimmed session identity from recognized
+// Anthropic metadata text. Empty, malformed or unrecognized metadata returns
+// empty, so the handler can skip explicit-session ownership checks for that
+// input.
 func MetadataSessionID(raw string) string {
 	parsed := anthropic.ParseMetadataUserID(raw)
+	// Unrecognized metadata supplies no explicit session identity, leaving this
+	// handler to rely on ordinary sticky hashing without an ownership check.
 	if parsed == nil {
 		return ""
 	}
 	return strings.TrimSpace(parsed.SessionID)
 }
 
+// ModerationHTTPStatus returns the decision's HTTP error status when it is
+// between 400 and 599. Nil or out-of-range status uses 403; callers separately
+// decide whether the decision blocks the request.
 func ModerationHTTPStatus(decision *moderation.Decision) int {
+	// Accept only HTTP error statuses from moderation decisions.
 	if decision == nil || decision.StatusCode < 400 || decision.StatusCode > 599 {
 		return http.StatusForbidden
 	}

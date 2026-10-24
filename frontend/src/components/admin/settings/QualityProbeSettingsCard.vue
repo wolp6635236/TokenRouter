@@ -1,3 +1,4 @@
+<!-- QualityProbeSettingsCard.vue loads and saves automatic OpenAI quality-probe settings. The card keeps an editable draft for schedules, groups, and degraded-provider handling. -->
 <template>
   <SettingsCard
     data-testid="quality-probe-settings"
@@ -30,10 +31,7 @@
         :label="t('admin.settings.qualityProbe.scheduleEnabled')"
         :hint="t('admin.settings.qualityProbe.scheduleEnabledHint')"
       />
-      <div
-        v-if="form.schedule_enabled"
-        class="grid gap-4 sm:grid-cols-2"
-      >
+      <div v-if="form.schedule_enabled" class="grid gap-4 sm:grid-cols-2">
         <SettingRow
           id="quality-probe-schedule-start"
           field
@@ -76,22 +74,42 @@
           </p>
           <p class="input-hint">{{ t('admin.settings.qualityProbe.groupsHint') }}</p>
         </div>
-        <div class="max-h-40 overflow-auto rounded-control border border-gray-200 p-3 dark:border-dark-600">
-          <p v-if="groupsLoading" class="py-2 text-center text-xs text-gray-500">{{ t('common.loading') }}</p>
-          <p v-else-if="!groups.length" class="py-2 text-center text-xs text-gray-500">{{ t('admin.pricing.form.noGroupsAvailable') }}</p>
+        <div
+          class="max-h-40 overflow-auto rounded-control border border-gray-200 p-3 dark:border-dark-600"
+        >
+          <p v-if="groupsLoading" class="py-2 text-center text-xs text-gray-500">{{
+            t('common.loading')
+          }}</p>
+          <p v-else-if="!groups.length" class="py-2 text-center text-xs text-gray-500">{{
+            t('admin.pricing.form.noGroupsAvailable')
+          }}</p>
           <div v-else class="flex flex-wrap gap-2">
             <label
               v-for="group in groups"
               :key="group.id"
               class="inline-flex max-w-full cursor-pointer items-center gap-2 rounded-control p-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-dark-700"
               :class="[
-                form.group_ids.includes(group.id) ? 'bg-primary-50 dark:bg-primary-500/8 dark:text-primary-500' : '',
+                form.group_ids.includes(group.id)
+                  ? 'bg-primary-50 dark:bg-primary-500/8 dark:text-primary-500'
+                  : '',
                 group.status === 'inactive' ? 'opacity-60' : '',
               ]"
             >
-              <input v-model="form.group_ids" type="checkbox" :value="group.id" class="h-4 w-4 shrink-0 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500" />
-              <GroupBadge :name="group.name" :display-brand="group.display_brand" :rate-multiplier="group.rate_multiplier" class="min-w-0" />
-              <span v-if="group.status === 'inactive'" class="shrink-0 text-xs text-gray-400">{{ t('admin.settings.qualityProbe.groupInactive') }}</span>
+              <input
+                v-model="form.group_ids"
+                type="checkbox"
+                :value="group.id"
+                class="h-4 w-4 shrink-0 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500"
+              />
+              <GroupBadge
+                :name="group.name"
+                :display-brand="group.display_brand"
+                :rate-multiplier="group.rate_multiplier"
+                class="min-w-0"
+              />
+              <span v-if="group.status === 'inactive'" class="shrink-0 text-xs text-gray-400">{{
+                t('admin.settings.qualityProbe.groupInactive')
+              }}</span>
             </label>
           </div>
         </div>
@@ -165,12 +183,7 @@
         :label="t('admin.settings.qualityProbe.notifyEmail')"
         :hint="t('admin.settings.qualityProbe.notifyEmailHint')"
       >
-        <input
-          id="quality-probe-email"
-          v-model="form.notify_email"
-          type="email"
-          class="input"
-        />
+        <input id="quality-probe-email" v-model="form.notify_email" type="email" class="input" />
       </SettingRow>
     </SettingsSection>
   </SettingsCard>
@@ -190,7 +203,7 @@ import SettingToggleRow from '@/components/common/settings/SettingToggleRow.vue'
 import SettingsCard from '@/components/common/settings/SettingsCard.vue'
 import SettingsSection from '@/components/common/settings/SettingsSection.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
-import type { AdminGroup } from '@/types'
+import type { AdminGroup } from '@/api/groups.types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -209,7 +222,7 @@ const form = reactive<QualityProbeSettings>({
   schedule_enabled: true,
   schedule_start: '08:00',
   schedule_end: '00:00',
-  unschedule_on_degraded: true
+  unschedule_on_degraded: true,
 })
 const snapshot = ref('')
 
@@ -218,7 +231,7 @@ function normalizeClock(value: string | undefined, fallback: string) {
   if (/^\d{2}:\d{2}$/.test(raw)) {
     return raw
   }
-  // type=time 有时带秒，保存前收成 HH:MM
+  // Native time controls can include seconds. Persist HH:MM because the server schedule parser uses minute precision.
   if (/^\d{2}:\d{2}:\d{2}$/.test(raw)) {
     return raw.slice(0, 5)
   }
@@ -230,7 +243,7 @@ function serialize(value: QualityProbeSettings) {
     ...value,
     schedule_start: normalizeClock(value.schedule_start, '08:00'),
     schedule_end: normalizeClock(value.schedule_end, '00:00'),
-    group_ids: [...(value.group_ids || [])].sort((a, b) => a - b)
+    group_ids: [...(value.group_ids || [])].sort((a, b) => a - b),
   })
 }
 
@@ -246,7 +259,7 @@ async function load() {
       schedule_start: normalizeClock(data.schedule_start, '08:00'),
       schedule_end: normalizeClock(data.schedule_end, '00:00'),
       unschedule_on_degraded: data.unschedule_on_degraded !== false,
-      group_ids: [...(data.group_ids || [])]
+      group_ids: [...(data.group_ids || [])],
     })
     snapshot.value = serialize(form)
     loaded.value = true
@@ -271,7 +284,7 @@ async function save() {
       ...form,
       schedule_start: normalizeClock(form.schedule_start, '08:00'),
       schedule_end: normalizeClock(form.schedule_end, '00:00'),
-      group_ids: [...form.group_ids]
+      group_ids: [...form.group_ids],
     })
     Object.assign(form, {
       ...data,
@@ -279,7 +292,7 @@ async function save() {
       schedule_start: normalizeClock(data.schedule_start, '08:00'),
       schedule_end: normalizeClock(data.schedule_end, '00:00'),
       unschedule_on_degraded: data.unschedule_on_degraded !== false,
-      group_ids: [...(data.group_ids || [])]
+      group_ids: [...(data.group_ids || [])],
     })
     snapshot.value = serialize(form)
     return true

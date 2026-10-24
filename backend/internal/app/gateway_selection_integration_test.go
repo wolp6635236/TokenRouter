@@ -13,17 +13,28 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// NewModelAvailabilityForTest 为集成测试构造模型诊断组件。
+// Model diagnostics read persistent configured providers even while their
+// transient health windows prevent execution. A grouped, allowlisted provider
+// remains visible for its configured model, while a missing model, absent
+// group, or administratively disabled provider produces the tested diagnostic
+// distinctions.
+
+// NewModelAvailabilityForTest uses production diagnostic assembly with the
+// persistent provider store in this scenario.
 var NewModelAvailabilityForTest = provideGatewayModelAvailability
 
-// TestModelAvailabilityUsesPersistentProviderStore 检查诊断读取持久配置，处于瞬时冷却的已配置模型仍可被查到。
+// TestModelAvailabilityUsesPersistentProviderStore persists a grouped provider
+// with active rate, overload, and pause windows. It checks configured-model
+// support, missing-model diagnosis, explicit-group requirements, and exclusion
+// after the provider is administratively disabled.
 func TestModelAvailabilityUsesPersistentProviderStore(t *testing.T) {
 	f := newDatabaseFixture(t)
 	ctx := t.Context()
 	group, err := f.client.Group.Create().SetName("test-diagnostic-group").SetAllowedProtocols([]protocol.ProtocolID{protocol.ProtocolOpenAIResponses}).Save(ctx)
 	require.NoError(t, err)
 	cooldown := time.Now().Add(time.Hour)
-	// 白名单限定可诊断型号，模型映射负责上游名称转换。
+	// The mapping and whitelist make public-known the configured diagnostic model.
+	// Active cooldown columns distinguish persistent model support from immediate provider execution eligibility.
 	row, err := f.client.Provider.Create().
 		SetName("test-diagnostic-provider").
 		SetPlatform(capability.PlatformOpenAI).
@@ -64,7 +75,7 @@ func TestModelAvailabilityUsesPersistentProviderStore(t *testing.T) {
 		require.True(t, result.HasProvidersInPool)
 		require.True(t, result.HasModelSupport)
 	})
-	// 管理禁用的提供商从诊断候选中排除。
+	// Administratively disabled providers are excluded from diagnostic candidates.
 	require.NoError(t, f.client.Provider.UpdateOneID(row.ID).SetStatus(provider.StatusDisabled).Exec(ctx))
 	result := diagnoser.Compatible.DiagnoseModelAvailabilityForPlatform(ctx, &group.ID, "public-known", capability.PlatformOpenAI)
 	require.False(t, result.HasProvidersInPool)

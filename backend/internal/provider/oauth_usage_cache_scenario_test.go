@@ -1,7 +1,5 @@
 package provider
 
-// 本文件检查 oauth_usage_cache.go、oauth_usage_antigravity.go 与 oauth_usage_qoder.go 的缓存查询副本。
-
 import (
 	"context"
 	"testing"
@@ -13,7 +11,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestOAuthUsageCachedResultsAreIndependent 检查缓存命中返回独立副本，修改倒计时和嵌套配置后缓存保持不变。
+// TestOAuthUsageCachedResultsAreIndependent exercises cached Antigravity and
+// Qoder service reads. It mutates returned redirect and quota values, then
+// checks later results and the original cached countdown for retained
+// observations.
 func TestOAuthUsageCachedResultsAreIndependent(t *testing.T) {
 	for _, platform := range []string{capability.PlatformAntigravity, capability.PlatformQoder} {
 		t.Run(platform, func(t *testing.T) {
@@ -48,6 +49,9 @@ func TestOAuthUsageCachedResultsAreIndependent(t *testing.T) {
 	}
 }
 
+// TestOAuthUsageSharedResultsAreIndependent holds one fetch while two callers
+// join its query. It checks one upstream call, independent returned
+// redirect/quota values, and an unchanged subsequent cached observation.
 func TestOAuthUsageSharedResultsAreIndependent(t *testing.T) {
 	for _, platform := range []string{capability.PlatformAntigravity, capability.PlatformQoder} {
 		t.Run(platform, func(t *testing.T) {
@@ -89,7 +93,10 @@ func TestOAuthUsageSharedResultsAreIndependent(t *testing.T) {
 				go call()
 				<-entered
 				go call()
-				// 两个请求都阻塞后释放抓取，两个返回值来自同一次共享查询。
+				// Wait until both callers have joined the
+				// blocked flight before release. This fixes the
+				// shared-fetch interleaving so one query feeds
+				// independently copied results.
 				synctest.Wait()
 				require.Equal(t, 1, calls)
 				close(release)

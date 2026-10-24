@@ -1,30 +1,32 @@
+<!-- QualityProbeSamples.vue renders prompts and bounded answers captured by a quality-probe run. Sample names map to candy and trace labels while unrecognized names remain visible for later probe variants. -->
 <template>
   <div v-if="samples.length" class="space-y-4">
-    <section
-      v-for="sample in samples"
-      :key="sample.name"
-      class="space-y-2"
-    >
+    <section v-for="sample in samples" :key="sample.name" class="space-y-2">
       <div class="flex items-center justify-between gap-2">
         <p class="font-medium text-gray-900 dark:text-white">{{ sampleLabel(sample.name) }}</p>
-        <span
-          class="badge"
-          :class="sample.ok ? 'badge-success' : 'badge-warning'"
-        >
-          {{ sample.ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}
+        <span class="badge" :class="sample.ok ? 'badge-success' : 'badge-warning'">
+          {{
+            sample.ok
+              ? t('admin.providers.qualityProbeDialog.pass')
+              : t('admin.providers.qualityProbeDialog.fail')
+          }}
         </span>
       </div>
       <div>
         <p class="mb-1 text-xs text-gray-500 dark:text-dark-400">
           {{ t('admin.providers.qualityProbeLogs.prompt') }}
         </p>
-        <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-surface bg-gray-50 p-3 text-xs text-gray-800 dark:bg-dark-800 dark:text-dark-100">{{ sample.prompt || '—' }}</pre>
+        <pre
+          class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-surface bg-gray-50 p-3 text-xs text-gray-800 dark:bg-dark-800 dark:text-dark-100"
+          >{{ sample.prompt || '—' }}</pre>
       </div>
       <div>
         <p class="mb-1 text-xs text-gray-500 dark:text-dark-400">
           {{ t('admin.providers.qualityProbeLogs.answer') }}
         </p>
-        <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-surface bg-gray-50 p-3 text-xs text-gray-800 dark:bg-dark-800 dark:text-dark-100">{{ sample.answer || '—' }}</pre>
+        <pre
+          class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-surface bg-gray-50 p-3 text-xs text-gray-800 dark:bg-dark-800 dark:text-dark-100"
+          >{{ sample.answer || '—' }}</pre>
       </div>
       <p v-if="sample.error" class="break-words text-xs text-red-600 dark:text-red-400">
         {{ sample.error }}

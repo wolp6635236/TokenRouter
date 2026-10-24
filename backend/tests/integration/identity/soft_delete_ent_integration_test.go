@@ -20,12 +20,23 @@ import (
 	billingpostgres "github.com/TokenFlux/TokenRouter/internal/billing/postgres"
 )
 
+// Ent queries normally hide soft-deleted keys and subscriptions, while
+// SkipSoftDelete exposes their retained rows or enables physical deletion.
+// PostgreSQL cases inspect repository and direct Ent reads, repeated deletion,
+// hard deletion, and owner subscription lists after one of two grants is
+// removed.
+
+// uniqueSoftDeleteValue returns a prefix and test-derived fixture name after
+// replacing slashes and spaces with underscores.
 func uniqueSoftDeleteValue(t *testing.T, prefix string) string {
 	t.Helper()
 	safeName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
 	return fmt.Sprintf("%s-%s", prefix, safeName)
 }
 
+// createEntUser inserts a user with the supplied email and a fixture password
+// hash using ctx. Save failures fail the current test before its key or
+// subscription is constructed.
 func createEntUser(t *testing.T, ctx context.Context, client *dbent.Client, email string) *dbent.User {
 	t.Helper()
 
@@ -37,9 +48,12 @@ func createEntUser(t *testing.T, ctx context.Context, client *dbent.Client, emai
 	return u
 }
 
+// TestEntSoftDelete_ApiKey_DefaultFilterAndSkip deletes a committed key through
+// its repository. Default repository and Ent reads report absence, while
+// SkipSoftDelete returns the row with its deletion timestamp.
 func TestEntSoftDelete_ApiKey_DefaultFilterAndSkip(t *testing.T) {
 	ctx := context.Background()
-	// 使用独立 Ent 连接，确保软删除验证在实际持久化数据上进行。
+	// Use an isolated database to check soft deletion against committed rows.
 	integrationDB, client := identityDatabase(t)
 
 	u := createEntUser(t, ctx, client, uniqueSoftDeleteValue(t, "sd-user")+"@example.com")
@@ -69,9 +83,12 @@ func TestEntSoftDelete_ApiKey_DefaultFilterAndSkip(t *testing.T) {
 	require.NotNil(t, got.DeletedAt, "deleted_at should be set after soft delete")
 }
 
+// TestEntSoftDelete_ApiKey_DeleteIdempotent creates a committed key and calls
+// repository deletion twice. Both calls succeed for that row after the first
+// has already soft deleted it.
 func TestEntSoftDelete_ApiKey_DeleteIdempotent(t *testing.T) {
 	ctx := context.Background()
-	// 使用全局 ent client，避免事务回滚影响幂等性验证。
+	// Use an isolated database so repeated deletion observes committed rows.
 	integrationDB, client := identityDatabase(t)
 
 	u := createEntUser(t, ctx, client, uniqueSoftDeleteValue(t, "sd-user2")+"@example.com")
@@ -89,9 +106,46 @@ func TestEntSoftDelete_ApiKey_DeleteIdempotent(t *testing.T) {
 	require.NoError(t, repo.Delete(ctx, key.ID), "second delete should be idempotent")
 }
 
+// TestEntSoftDelete_ApiKey_RollbackUsesTransactionClient deletes a committed key
+// through an Ent transaction. The deletion is visible inside that transaction,
+// stays invisible to another connection, and disappears when the transaction rolls back.
+func TestEntSoftDelete_ApiKey_RollbackUsesTransactionClient(t *testing.T) {
+	ctx := context.Background()
+	db, client := identityDatabase(t)
+	user := createEntUser(t, ctx, client, uniqueSoftDeleteValue(t, "rollback-user")+"@example.com")
+	key := &apikeyerrors.APIKey{
+		UserID: user.ID,
+		Key:    uniqueSoftDeleteValue(t, "rollback-key"),
+		Name:   "rollback",
+		Status: billing.StatusActive,
+	}
+	require.NoError(t, newKeyStoreFixture(client, db).Create(ctx, key))
+	tx, err := client.Tx(ctx)
+	require.NoError(t, err)
+	// Retain rollback cleanup until assertions finish, including early failures,
+	// so the independently committed fixture remains available after transaction-local deletion.
+	defer func() { _ = tx.Rollback() }()
+	require.NoError(t, tx.Client().APIKey.DeleteOneID(key.ID).Exec(ctx))
+	_, err = tx.Client().APIKey.Get(ctx, key.ID)
+	require.True(t, dbent.IsNotFound(err))
+	deleted, err := tx.Client().APIKey.Get(mixins.SkipSoftDelete(ctx), key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, deleted.DeletedAt)
+	outside, err := client.APIKey.Get(ctx, key.ID)
+	require.NoError(t, err)
+	require.Nil(t, outside.DeletedAt)
+	require.NoError(t, tx.Rollback())
+	restored, err := client.APIKey.Get(ctx, key.ID)
+	require.NoError(t, err)
+	require.Nil(t, restored.DeletedAt)
+}
+
+// TestEntSoftDelete_ApiKey_HardDeleteViaSkipSoftDelete first soft deletes a
+// key, then physically deletes through the bypass context. A bypass query also
+// reports absence after the hard deletion.
 func TestEntSoftDelete_ApiKey_HardDeleteViaSkipSoftDelete(t *testing.T) {
 	ctx := context.Background()
-	// 使用全局 ent client，确保 SkipSoftDelete 的硬删除语义可验证。
+	// Use an isolated database to check physical deletion through SkipSoftDelete.
 	integrationDB, client := identityDatabase(t)
 
 	u := createEntUser(t, ctx, client, uniqueSoftDeleteValue(t, "sd-user3")+"@example.com")
@@ -107,7 +161,9 @@ func TestEntSoftDelete_ApiKey_HardDeleteViaSkipSoftDelete(t *testing.T) {
 
 	require.NoError(t, repo.Delete(ctx, key.ID), "soft delete api key")
 
-	// Hard delete using SkipSoftDelete so the hook doesn't convert it to update-deleted_at.
+	// Bypass the soft-delete hook for this physical removal so the following
+	// bypass query can distinguish an absent row from a retained row with
+	// deleted_at.
 	_, err := client.APIKey.Delete().Where(apikey.IDEQ(key.ID)).Exec(mixins.SkipSoftDelete(ctx))
 	require.NoError(t, err, "hard delete")
 
@@ -117,8 +173,9 @@ func TestEntSoftDelete_ApiKey_HardDeleteViaSkipSoftDelete(t *testing.T) {
 	require.True(t, dbent.IsNotFound(err), "expected row to be hard deleted")
 }
 
-// --- UserSubscription 软删除测试 ---
-
+// createEntPlan inserts a thirty-day subscription plan for sale using the
+// supplied name and context. Save failures fail the test before dependent
+// subscription fixture creation continues.
 func createEntPlan(t *testing.T, ctx context.Context, client *dbent.Client, name string) *dbent.SubscriptionPlan {
 	t.Helper()
 
@@ -137,6 +194,9 @@ func createEntPlan(t *testing.T, ctx context.Context, client *dbent.Client, name
 	return plan
 }
 
+// TestEntSoftDelete_UserSubscription_DefaultFilterAndSkip deletes a committed
+// subscription through its repository. Default reads hide the grant, while an
+// Ent bypass query exposes its row and deletion timestamp.
 func TestEntSoftDelete_UserSubscription_DefaultFilterAndSkip(t *testing.T) {
 	ctx := context.Background()
 	_, client := identityDatabase(t)
@@ -169,6 +229,9 @@ func TestEntSoftDelete_UserSubscription_DefaultFilterAndSkip(t *testing.T) {
 	require.NotNil(t, got.DeletedAt, "deleted_at should be set after soft delete")
 }
 
+// TestEntSoftDelete_UserSubscription_DeleteIdempotent creates a committed grant
+// for one user and plan, then calls repository deletion twice. Both calls
+// succeed after the grant is soft deleted.
 func TestEntSoftDelete_UserSubscription_DeleteIdempotent(t *testing.T) {
 	ctx := context.Background()
 	_, client := identityDatabase(t)
@@ -189,6 +252,9 @@ func TestEntSoftDelete_UserSubscription_DeleteIdempotent(t *testing.T) {
 	require.NoError(t, repo.Delete(ctx, sub.ID), "second delete should be idempotent")
 }
 
+// TestEntSoftDelete_UserSubscription_ListExcludesDeleted creates two owner
+// subscriptions and soft deletes one through storage. Listing by that user
+// returns one row with the surviving grant ID.
 func TestEntSoftDelete_UserSubscription_ListExcludesDeleted(t *testing.T) {
 	ctx := context.Background()
 	_, client := identityDatabase(t)
@@ -215,10 +281,9 @@ func TestEntSoftDelete_UserSubscription_ListExcludesDeleted(t *testing.T) {
 	}
 	require.NoError(t, repo.Create(ctx, sub2), "create subscription 2")
 
-	// 软删除 sub1
 	require.NoError(t, repo.Delete(ctx, sub1.ID), "soft delete subscription 1")
 
-	// ListByUserID 应只返回未删除的订阅
+	// ListByUserID must exclude the soft-deleted subscription.
 	subs, err := repo.ListByUserID(ctx, u.ID)
 	require.NoError(t, err, "ListByUserID")
 	require.Len(t, subs, 1, "should only return non-deleted subscriptions")

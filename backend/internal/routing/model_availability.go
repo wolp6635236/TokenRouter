@@ -7,18 +7,41 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// ModelAvailabilityDiagnosis 描述请求模型是否被分组内任一持久可用提供商支持。
-// 持久可用指提供商为 active 且启用 schedulable；诊断忽略限流、过载、临时不可调度和
-// 运行时阻断等瞬时状态，供 handler 区分 404 model_not_found 与 503 service_unavailable。
+// model_availability.go diagnoses provider-pool presence and configured model
+// support after selection failures.
+// A failed provider selection can mean either an unsupported model or
+// temporarily exhausted capacity. Availability diagnosis reads persistent group
+// candidates and delegates model support to the supplied provider checks,
+// letting handlers classify missing configuration separately from transient
+// execution state.
+//
+// The production reader filters on saved active and schedulable flags while
+// leaving transient windows unchecked for this diagnostic query. Unknown
+// evidence, including a missing reader or query failure, returns both flags
+// true so handlers keep the unavailable response. An empty or
+// platform-filtered-empty pool returns both flags false; a populated
+// unsupported pool retains provider presence with model support false.
+// Requested-model helpers map the group once; the routing-model helper accepts
+// that prior result to keep one-hop mapping intact.
+
+// ModelAvailabilityDiagnosis records persistent provider membership and locally
+// configured model support for error classification.
 type ModelAvailabilityDiagnosis struct {
-	// HasProvidersInPool 表示分组内、满足专用入口平台过滤的持久可用提供商存在。
-	HasProvidersInPool bool
-	// HasModelSupport 表示至少有一个提供商的模型映射允许请求模型。
-	HasModelSupport bool
+	// HasProvidersInPool and HasModelSupport distinguish an empty persistent pool
+	// from an unsupported model in a populated pool. Unknown evidence keeps both
+	// true; an empty pool clears both, and a populated unsupported pool clears
+	// HasModelSupport alone.
+	HasProvidersInPool bool // matching persistent provider presence
+	HasModelSupport    bool // configured model support evidence
 }
 
-// ModelAvailabilityDiagnoser 提供模型静态可用性的窄读取能力，供入口复用同一分类器。
+// ModelAvailabilityDiagnoser supplies group model support evidence for
+// selection-failure classification.
 type ModelAvailabilityDiagnoser interface {
+	// DiagnoseModelAvailabilityForPlatform evaluates the supplied group, model,
+	// and optional forced platform for error classification. Implementations
+	// represent unknown evidence conservatively so temporary selection failure
+	// does not become a false missing-model response.
 	DiagnoseModelAvailabilityForPlatform(
 		ctx context.Context,
 		groupID *int64,
@@ -27,28 +50,51 @@ type ModelAvailabilityDiagnoser interface {
 	) ModelAvailabilityDiagnosis
 }
 
-// AvailabilityProvider 包含提供商平台和模型支持判断函数。
+// AvailabilityProvider pairs one provider platform with its configured model
+// support callback.
 type AvailabilityProvider struct {
-	Platform string
+	Platform string // configured provider platform name
+	// Supports checks a routing model against this candidate's supplied rules.
+	// Readers supply a nonnil callback for each returned provider; the production
+	// adapter created by NewModelAvailability also includes protocol eligibility.
 	Supports func(context.Context, string) bool
 }
+
+// AvailabilityReader supplies persistent candidate records for a group and
+// platform query.
 type AvailabilityReader func(context.Context, *int64, []string, bool) ([]AvailabilityProvider, error)
 
-// ModelAvailability 用已有查询边界区分永久模型缺失和暂时容量不足；自身无缓存。
+// ModelAvailability diagnoses group model configuration through its injected
+// persistent reader and mapping helper.
 type ModelAvailability struct {
-	Read     AvailabilityReader
+	// Read supplies the candidate population and defines its persistent-state
+	// filtering. Production wiring ignores transient execution blocks so diagnosis
+	// can separate temporary capacity loss from model configuration.
+	Read AvailabilityReader
+	// MapModel applies the configured group rewrite to requested model input.
+	// DiagnoseCompatibleRouting accepts an already mapped model and leaves this
+	// callback unused.
 	MapModel func(context.Context, *int64, string) string
 }
 
-// ModelAvailabilityDiagnoserFunc 将已绑定诊断意图交给消费者，不新增查询或缓存。
+// ModelAvailabilityDiagnoserFunc adapts a callback to the shared model
+// diagnosis interface.
 type ModelAvailabilityDiagnoserFunc func(context.Context, *int64, string, string) ModelAvailabilityDiagnosis
 
-// DiagnoseGeneral 通过专用持久配置查询检查指定平台的提供商，
-// 判断请求模型是否被配置支持。该查询绕过调度快照，忽略限流、过载、临时不可调度、
-// 到期窗口、额度和运行时阻断等瞬时状态。
+// DiagnoseGeneral reads persistent group candidates and checks the requested
+// model after one optional group mapping. Nil service, blank model, missing
+// reader, or query failure returns both flags true to keep error classification
+// on the unavailable path.
 //
-// 该方法用于错误路径：内部失败或输入无法诊断时返回 {true,true}，
-// 让调用方保守地继续走 503 分支，避免误报 404。
+// A nil or nonpositive group returns both flags false before reading providers.
+// Read occurs before mapping, and the optional platform filters each returned
+// candidate as well as the reader query. The reader defines persistent
+// eligibility and each Supports callback defines model rules; production wiring
+// excludes transient state from those inputs.
+//
+// Callers use the empty string for an unrestricted platform. A nonempty
+// whitespace-only value compares against an empty platform after trimming, so
+// real platform records are excluded.
 func (s *ModelAvailability) DiagnoseGeneral(
 	ctx context.Context,
 	groupID *int64,
@@ -60,7 +106,9 @@ func (s *ModelAvailability) DiagnoseGeneral(
 	}
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
-		// 空模型无法判断 model_not_found，交给调用方回落到 503。
+		// Blank input supplies no model-absence evidence, so return conservative
+		// support flags and let the handler retain its service-unavailable
+		// classification.
 		return ModelAvailabilityDiagnosis{HasProvidersInPool: true, HasModelSupport: true}
 	}
 	if groupID == nil || *groupID <= 0 {
@@ -71,6 +119,8 @@ func (s *ModelAvailability) DiagnoseGeneral(
 	}
 	providers, err := s.Read(ctx, groupID, availabilityPlatforms(platform), false)
 	if err != nil {
+		// Candidate reads can fail independently of model support. Treat that missing
+		// evidence as unknown so a storage outage is not reported as model absence.
 		return ModelAvailabilityDiagnosis{HasProvidersInPool: true, HasModelSupport: true}
 	}
 
@@ -92,12 +142,9 @@ func (s *ModelAvailability) DiagnoseGeneral(
 	return diag
 }
 
-// DiagnoseCompatible 判断请求模型是否被分组内指定 OpenAI 兼容平台提供商配置支持。
-// platform 非空时附加强制平台过滤；为空时检查同组全部平台的静态能力。
-// 诊断使用持久配置查询，绕过调度快照并忽略瞬时运行状态。
-//
-// 该方法用于错误路径：内部失败、空模型或 nil service 时返回 {true,true}，
-// 让调用方保守地继续走 503 分支。
+// DiagnoseCompatible applies the optional group mapping once and delegates
+// diagnosis of that routing model. Nil service or blank requested model keeps
+// both flags true; an invalid group returns both false before mapping.
 func (s *ModelAvailability) DiagnoseCompatible(
 	ctx context.Context,
 	groupID *int64,
@@ -121,8 +168,20 @@ func (s *ModelAvailability) DiagnoseCompatible(
 	return s.DiagnoseCompatibleRouting(ctx, groupID, routingModel, platform)
 }
 
-// DiagnoseCompatibleRouting 直接诊断已经完成分组映射及协议专用映射的提供商层模型。
-// Messages 错误路径使用该入口，避免把 D 再次当作客户端模型执行分组映射。
+// DiagnoseCompatibleRouting checks a model that has already passed group
+// mapping, allowing Messages error handling to retain one-hop model identity.
+// Blank models, missing service or reader, and read failures retain both flags
+// true for unavailable classification.
+//
+// Invalid group identifiers return both flags false. Otherwise the persistent
+// reader is queried within the group, then platform filtering and each
+// provider's Supports callback distinguish an empty pool from configured model
+// absence. A supporting provider ends the search immediately; transient runtime
+// behavior belongs to the injected reader and support adapter.
+//
+// Callers use the empty string for an unrestricted platform. A nonempty
+// whitespace-only value compares against an empty platform after trimming, so
+// real platform records are excluded.
 func (s *ModelAvailability) DiagnoseCompatibleRouting(
 	ctx context.Context,
 	groupID *int64,
@@ -145,7 +204,9 @@ func (s *ModelAvailability) DiagnoseCompatibleRouting(
 
 	providers, err := s.Read(ctx, groupID, availabilityPlatforms(platform), false)
 	if err != nil {
-		// 查询失败时保守返回 503 分支，避免临时查询错误误判为 404 model_not_found。
+		// A failed query supplies no proof of configured model absence. Return
+		// conservative support flags so the entry keeps its service-unavailable
+		// response.
 		return ModelAvailabilityDiagnosis{HasProvidersInPool: true, HasModelSupport: true}
 	}
 
@@ -155,7 +216,6 @@ func (s *ModelAvailability) DiagnoseCompatibleRouting(
 			continue
 		}
 		diag.HasProvidersInPool = true
-		// 与提供商选择共用默认目录、显式模型范围和协议资格。
 		if providers[i].Supports(ctx, routingModel) {
 			diag.HasModelSupport = true
 			return diag
@@ -164,11 +224,16 @@ func (s *ModelAvailability) DiagnoseCompatibleRouting(
 	return diag
 }
 
+// DiagnoseModelAvailabilityForPlatform passes diagnosis inputs directly to the
+// wrapped callback and returns its evidence. The adapter requires a nonnil
+// function; group and platform interpretation remain with that function.
 func (f ModelAvailabilityDiagnoserFunc) DiagnoseModelAvailabilityForPlatform(ctx context.Context, group *int64, model, platform string) ModelAvailabilityDiagnosis {
 	return f(ctx, group, model, platform)
 }
 
-// availabilityPlatforms 与调度使用同一提供商平台目录，候选始终限定在分组成员内。
+// availabilityPlatforms returns a trimmed forced-platform singleton or a fresh
+// list of every provider platform. Blank and whitespace-only platform filters
+// therefore let the persistent reader inspect cross-platform group candidates.
 func availabilityPlatforms(platform string) []string {
 	if platform = strings.TrimSpace(platform); platform != "" {
 		return []string{platform}

@@ -7,11 +7,19 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TestParseZhipuTokenTiers_UnitClassification 检查 unit 字段优先决定窗口类型（3=5h，6=weekly）。
-// 周期末尾周窗口会更早重置，此时仍按 unit 分类。
+// A weekly reset can appear before a five-hour reset in the same quota
+// response. The fixtures check that explicit units retain window identity,
+// while missing-unit observations use the vacant-slot heuristic and unrelated
+// allowance types produce no token window.
+
+// TestParseZhipuTokenTiers_UnitClassification places the weekly reset before
+// the five-hour reset. It checks that explicit units still select the correct
+// window order and percentage values.
 func TestParseZhipuTokenTiers_UnitClassification(t *testing.T) {
 	t.Parallel()
-	// weekly 的 nextResetTime 早于 5h，模拟周期末尾的时间顺序。
+	// Reverse chronological order in the fixture so reset sorting would
+	// assign the wrong windows if it overrode the explicit unit
+	// identifiers.
 	data := gjson.Parse(`{
 		"limits": [
 			{"type":"TOKENS_LIMIT","unit":6,"percentage":70,"nextResetTime":1700000000000},
@@ -21,12 +29,16 @@ func TestParseZhipuTokenTiers_UnitClassification(t *testing.T) {
 	tiers := ParseZhipuTokenTiers(data)
 	require.Len(t, tiers, 2)
 	require.Equal(t, "5h", tiers[0].Window)
+	// Use an absolute tolerance for the decoded percentage comparison.
 	require.InDelta(t, 20.0, tiers[0].UsedPercent, 1e-9)
 	require.Equal(t, "7d", tiers[1].Window)
+	// Compare the weekly percentage with the same absolute tolerance.
 	require.InDelta(t, 70.0, tiers[1].UsedPercent, 1e-9)
 }
 
-// TestParseZhipuTokenTiers_SingleTierOldPlan 检查单条 5h 额度响应的窗口类型。
+// TestParseZhipuTokenTiers_SingleTierOldPlan supplies one explicitly identified
+// five-hour token entry. It checks that the parser returns exactly one
+// observation in that slot, so a weekly entry is optional.
 func TestParseZhipuTokenTiers_SingleTierOldPlan(t *testing.T) {
 	t.Parallel()
 	data := gjson.Parse(`{"limits":[{"type":"TOKENS_LIMIT","unit":3,"percentage":15,"nextResetTime":1700000000000}]}`)
@@ -35,11 +47,14 @@ func TestParseZhipuTokenTiers_SingleTierOldPlan(t *testing.T) {
 	require.Equal(t, "5h", tiers[0].Window)
 }
 
-// TestParseZhipuTokenTiers_FallbackHeuristic unit 缺失时：无 reset 的条目优先归 5h，
-// 其余按 reset 升序填入剩余槽位。
+// TestParseZhipuTokenTiers_FallbackHeuristic omits both units and supplies a
+// reset for just one entry. It checks that the missing-reset entry fills the
+// five-hour slot and the remaining entry fills weekly.
 func TestParseZhipuTokenTiers_FallbackHeuristic(t *testing.T) {
 	t.Parallel()
-	// 无 unit：A 无 reset、B 有 reset。A 先填 5h，B 填 weekly。
+	// Omit both unit identities and one reset so classification has to
+	// exercise missing-reset precedence while filling the two initially
+	// vacant slots.
 	data := gjson.Parse(`{
 		"limits": [
 			{"type":"TOKENS_LIMIT","percentage":50,"nextResetTime":1700000000000},
@@ -49,12 +64,17 @@ func TestParseZhipuTokenTiers_FallbackHeuristic(t *testing.T) {
 	tiers := ParseZhipuTokenTiers(data)
 	require.Len(t, tiers, 2)
 	require.Equal(t, "5h", tiers[0].Window)
-	require.InDelta(t, 10.0, tiers[0].UsedPercent, 1e-9) // 无 reset 优先 5h
+	// Check the short-window percentage with the fixture's floating-point
+	// tolerance.
+	require.InDelta(t, 10.0, tiers[0].UsedPercent, 1e-9)
 	require.Equal(t, "7d", tiers[1].Window)
+	// Apply the same absolute tolerance to the weekly observation.
 	require.InDelta(t, 50.0, tiers[1].UsedPercent, 1e-9)
 }
 
-// TestParseZhipuTokenTiers_IgnoresNonTokenEntries 非 TOKENS_LIMIT/CREDIT_LIMIT 条目跳过。
+// TestParseZhipuTokenTiers_IgnoresNonTokenEntries supplies an OTHER_LIMIT entry
+// with a recognized unit. It checks that an unrelated allowance type cannot
+// create a percentage observation despite that unit value.
 func TestParseZhipuTokenTiers_IgnoresNonTokenEntries(t *testing.T) {
 	t.Parallel()
 	data := gjson.Parse(`{"limits":[{"type":"OTHER_LIMIT","unit":3,"percentage":99}]}`)

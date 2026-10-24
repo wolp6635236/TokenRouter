@@ -6,8 +6,19 @@ import (
 	"testing"
 )
 
+// Historical configuration ciphertext needs round trips across text lengths
+// and Unicode while rejecting unusable keys and tested format errors. These
+// tests compare restored plaintext and three serialized fields, using fresh
+// random keys per test; wrong decoded nonce length is outside this fixture
+// set.
+
+// makeKey returns a fresh thirty-two-byte cryptographic key for one test. The
+// returned bytes are independent storage used by Encrypt and Decrypt. An
+// io.ReadFull error in crypto/rand.Read terminates the test process before the
+// defensive Fatalf branch.
 func makeKey(t *testing.T) []byte {
 	t.Helper()
+	// Allocate the exact AES-256 key size in bytes.
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		t.Fatalf("generate random key: %v", err)
@@ -15,6 +26,9 @@ func makeKey(t *testing.T) []byte {
 	return key
 }
 
+// TestEncryptDecryptRoundTrip encrypts varied ASCII, JSON, Unicode and longer
+// plaintext with one test key. Each decrypted result must equal its supplied
+// bytes, protecting historical ciphertext round trips across these fixtures.
 func TestEncryptDecryptRoundTrip(t *testing.T) {
 	t.Parallel()
 	key := makeKey(t)
@@ -28,6 +42,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		strings.Repeat("x", 10000),
 	}
 
+	// Bound plaintext failure excerpts to thirty bytes for diagnostics.
 	for _, pt := range plaintexts {
 		encrypted, err := Encrypt(pt, key)
 		if err != nil {
@@ -43,6 +58,9 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEncryptProducesDifferentCiphertexts encrypts the same plaintext twice
+// with one key. The serialized results must differ, exercising the fresh nonce
+// behavior for this pair of calls.
 func TestEncryptProducesDifferentCiphertexts(t *testing.T) {
 	t.Parallel()
 	key := makeKey(t)
@@ -60,6 +78,9 @@ func TestEncryptProducesDifferentCiphertexts(t *testing.T) {
 	}
 }
 
+// TestDecryptWithWrongKeyFails decrypts one ciphertext using a separately
+// generated key. Authentication must report an error, protecting the tested
+// wrong-key path from returning accepted plaintext.
 func TestDecryptWithWrongKeyFails(t *testing.T) {
 	t.Parallel()
 	key1 := makeKey(t)
@@ -76,6 +97,9 @@ func TestDecryptWithWrongKeyFails(t *testing.T) {
 	}
 }
 
+// TestEncryptRejectsInvalidKeyLength supplies nil, empty and several
+// short/long key sizes. Every tested Encrypt call must return an error before
+// producing a usable historical ciphertext value.
 func TestEncryptRejectsInvalidKeyLength(t *testing.T) {
 	t.Parallel()
 	badKeys := [][]byte{
@@ -94,6 +118,9 @@ func TestEncryptRejectsInvalidKeyLength(t *testing.T) {
 	}
 }
 
+// TestDecryptRejectsInvalidKeyLength supplies nil, short and long keys with
+// dummy ciphertext text. Each tested call must report a key-length error
+// rather than attempting that ciphertext as a usable configuration.
 func TestDecryptRejectsInvalidKeyLength(t *testing.T) {
 	t.Parallel()
 	badKeys := [][]byte{
@@ -109,6 +136,9 @@ func TestDecryptRejectsInvalidKeyLength(t *testing.T) {
 	}
 }
 
+// TestEncryptEmptyPlaintext encrypts an empty value with a valid test key.
+// Decrypt must restore empty text successfully, protecting the distinction
+// between valid empty plaintext and invalid ciphertext format.
 func TestEncryptEmptyPlaintext(t *testing.T) {
 	t.Parallel()
 	key := makeKey(t)
@@ -126,6 +156,9 @@ func TestEncryptEmptyPlaintext(t *testing.T) {
 	}
 }
 
+// TestEncryptDecryptUnicodeJSON uses JSON text containing Chinese characters
+// and numeric content. The decrypted string must retain the complete supplied
+// bytes, including its Unicode and literal number spelling.
 func TestEncryptDecryptUnicodeJSON(t *testing.T) {
 	t.Parallel()
 	key := makeKey(t)
@@ -144,6 +177,9 @@ func TestEncryptDecryptUnicodeJSON(t *testing.T) {
 	}
 }
 
+// TestDecryptInvalidFormat supplies empty, missing-delimiter, two-field and
+// bad-base64 values with a valid key. Each listed case must return an error;
+// this fixture set does not exercise a validly decoded wrong-size nonce.
 func TestDecryptInvalidFormat(t *testing.T) {
 	t.Parallel()
 	key := makeKey(t)
@@ -162,6 +198,9 @@ func TestDecryptInvalidFormat(t *testing.T) {
 	}
 }
 
+// TestCiphertextFormat encrypts nonempty text and splits its serialized
+// representation into three fields. It requires three nonblank parts,
+// protecting nonce/tag/ciphertext transport structure for this input.
 func TestCiphertextFormat(t *testing.T) {
 	t.Parallel()
 	key := makeKey(t)

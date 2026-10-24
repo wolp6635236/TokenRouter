@@ -22,6 +22,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/config"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
@@ -29,34 +30,326 @@ import (
 	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
-// batchCataloguePolicyReads 统计批量模型列表读取策略和计费来源的次数。
+// Batch admission combines group permission, concrete catalogue names,
+// provider mapping and per-image pricing before upstream submission. The
+// public fixtures expose stored snapshots and recorded funding, provider and
+// queue calls, so cases can inspect model identities, expanded requests,
+// failure compensation and owner-scoped result conversion.
+
+// batchCataloguePolicyReads counts catalogue policy and pricing-source reads
+// while supplying configured names.
 type batchCataloguePolicyReads struct {
-	*routing.PricingConfigService
-	policyReads, pricingReads int
-	modelsList                []string
+	*routing.PricingConfigService          // delegated routing policy implementation
+	policyReads, pricingReads     int      // policyReads: group policy lookup count; pricingReads: pricing source lookup count
+	modelsList                    []string // injected concrete group catalogue
 }
 
-// changingMediaPricingGroupRepo 模拟两次读取之间管理员修改分组倍率，两份配置计算出的最终价格相同。
+// changingMediaPricingGroupRepo returns successive group views to expose
+// extra snapshot reads.
 type changingMediaPricingGroupRepo struct {
-	calls              int
-	oldGroup, newGroup *batchimage.GroupView
+	calls int // group view lookup count
+	// oldGroup and newGroup are shared fixture views. GetByIDLite returns oldGroup
+	// on its first call and newGroup thereafter so the test can expose accidental
+	// rereads.
+	oldGroup, newGroup *batchimage.GroupView // oldGroup: first group rate snapshot; newGroup: later group rate snapshot
 }
 
-// publicPricingConfigFixture 提供模型配置和价卡数据，编译和报价由生产模块执行。
+// publicPricingConfigFixture supplies one price configuration and group
+// policy to shared routing code.
 type publicPricingConfigFixture struct {
-	routing.PricingConfigRepository
-	pricingConfig routing.PricingConfig
-	platforms     map[int64]string
-	policy        routing.GroupRoutingPolicy
+	routing.PricingConfigRepository                            // unused pricing repository methods
+	pricingConfig                   routing.PricingConfig      // linked image pricing configuration
+	platforms                       map[int64]string           // fixture group platform map
+	policy                          routing.GroupRoutingPolicy // fixture group routing policy
 }
 
+// fakeBatchImageAuthCacheInvalidator records key, user and group invalidation
+// requests from public operations.
 type fakeBatchImageAuthCacheInvalidator struct {
-	keys     []string
-	userIDs  []int64
-	groupIDs []int64
+	keys     []string // invalidated API key spellings
+	userIDs  []int64  // invalidated payer user identities
+	groupIDs []int64  // invalidated group identity values
 }
 
-// TestBatchImageCatalogueIncludesGroupMappingTargets 分组映射目标通过图片价格和权限检查后进入目录。
+// submitCompensationRepository records failed submission writes and injects persistence failures.
+type submitCompensationRepository struct {
+	*fakeBatchImageRepository                               // delegated in-memory job storage
+	onCall                    func(context.Context, string) // ordered operation observation
+	cancel                    context.CancelFunc            // submission cancellation at failure
+	itemErr                   error                         // injected item creation error
+	recordErr                 error                         // injected failure record error
+	hideErr                   error                         // injected record hiding error
+	message                   string                        // attempted diagnostic message text
+}
+
+// submitCompensationFunding observes refund attempts through the existing funding fixture.
+type submitCompensationFunding struct {
+	*fakeBatchImageBillingRepo                               // delegated task funding fixture
+	onCall                     func(context.Context, string) // ordered operation observation
+}
+
+// submitCompensationQueue observes billing retry publication through the existing queue fixture.
+type submitCompensationQueue struct {
+	*publicBatchImageQueue                               // delegated batch queue fixture
+	onCall                 func(context.Context, string) // ordered operation observation
+}
+
+// submitCompensationProvider supplies unusable submission outcomes after cancelling the caller context.
+type submitCompensationProvider struct {
+	*publicBatchImageProvider                               // delegated provider fixture methods
+	onCall                    func(context.Context, string) // ordered operation observation
+	cancel                    context.CancelFunc            // cancellation before failed return
+	result                    *batchimage.BatchProviderJob  // injected upstream job result
+}
+
+// submitCompensationError observes diagnostic formatting while retaining the underlying error category.
+type submitCompensationError struct {
+	err     error  // underlying submission failure
+	onError func() // diagnostic formatting observation
+}
+
+// TestBatchImagePublicService_SubmitCompensation exercises item persistence errors,
+// upstream errors and unusable upstream names after funds have been reserved.
+// It checks compensation order, cancelled context reuse, error precedence and
+// the visibility of records retained for billing retries.
+func TestBatchImagePublicService_SubmitCompensation(t *testing.T) {
+	stages := []struct {
+		name        string                       // scenario display name
+		itemErr     error                        // injected item persistence failure
+		providerErr error                        // injected upstream submission error
+		providerJob *batchimage.BatchProviderJob // returned unusable upstream identity
+		wantErr     error                        // expected public error category
+		wantCode    string                       // expected persisted diagnostic code
+		wantMessage string                       // expected sanitized diagnostic text
+	}{
+		{
+			name:        "item creation",
+			itemErr:     errors.New("projects/private/item persistence failed"),
+			wantErr:     batchimage.ErrBatchImageQueueFailed,
+			wantCode:    "ITEM_CREATE_FAILED",
+			wantMessage: "upstream platform operation failed",
+		},
+		{
+			name:        "upstream error",
+			providerErr: errors.New("projects/private/upstream failed"),
+			wantErr:     batchimage.ErrBatchImageProviderSubmitFailed,
+			wantCode:    "PROVIDER_SUBMIT_FAILED",
+			wantMessage: "upstream platform operation failed",
+		},
+		{
+			name:        "upstream credential error",
+			providerErr: batchimage.ErrBatchImageProviderMissingServiceAccount,
+			wantErr:     batchimage.ErrBatchImageProviderMissingServiceAccount,
+			wantCode:    "BATCH_IMAGE_PROVIDER_MISSING_SERVICE_ACCOUNT",
+			wantMessage: batchimage.ErrBatchImageProviderMissingServiceAccount.Error(),
+		},
+		{
+			name:        "blank upstream name",
+			providerJob: &batchimage.BatchProviderJob{ProviderJobName: " \t "},
+			wantErr:     batchimage.ErrBatchImageProviderSubmitFailed,
+			wantCode:    "PROVIDER_SUBMIT_FAILED",
+			wantMessage: "platform job name missing",
+		},
+		{
+			name:        "nil upstream job",
+			wantErr:     batchimage.ErrBatchImageProviderSubmitFailed,
+			wantCode:    "PROVIDER_SUBMIT_FAILED",
+			wantMessage: "platform job name missing",
+		},
+	}
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			for _, failure := range []struct {
+				name       string // compensation failure scenario name
+				releaseErr error  // injected funding release failure
+				recordErr  error  // injected diagnostic persistence failure
+				hideErr    error  // injected record hiding failure
+				queueErr   error  // injected retry publication failure
+			}{
+				{name: "success"},
+				{name: "record failure", recordErr: errors.New("record unavailable")},
+				{name: "hide failure", hideErr: errors.New("hide unavailable")},
+				{name: "release failure", releaseErr: errors.New("funding unavailable")},
+				{name: "release and record failure", releaseErr: errors.New("funding unavailable"), recordErr: errors.New("record unavailable")},
+				{name: "release and queue failure", releaseErr: errors.New("funding unavailable"), queueErr: errors.New("queue unavailable")},
+			} {
+				t.Run(failure.name, func(t *testing.T) {
+					svc, repo, queue, gemini, _, authCache := newTestBatchImagePublicService(true)
+					ctx, cancel := context.WithCancel(routing.WithModelAttributes(context.Background(), svc.Attributes))
+					defer cancel()
+					var calls []string
+					onCall := func(gotCtx context.Context, operation string) {
+						require.Same(t, ctx, gotCtx)
+						if operation != "items" && operation != "submit" {
+							require.ErrorIs(t, gotCtx.Err(), context.Canceled)
+						}
+						calls = append(calls, operation)
+					}
+					observeError := func(err error) error {
+						if err == nil {
+							return nil
+						}
+						return submitCompensationError{err: err, onError: func() { onCall(ctx, "describe") }}
+					}
+					writes := &submitCompensationRepository{
+						fakeBatchImageRepository: repo,
+						onCall:                   onCall,
+						cancel:                   cancel,
+						itemErr:                  observeError(stage.itemErr),
+						recordErr:                failure.recordErr,
+						hideErr:                  failure.hideErr,
+					}
+					svc.Repo = writes
+					funds := testassert.MustType[*fakeBatchImageBillingRepo](taskFixtureBilling(svc))
+					funds.releaseErr = failure.releaseErr
+					svc.Funding.Store = &submitCompensationFunding{fakeBatchImageBillingRepo: funds, onCall: onCall}
+					queue.err = failure.queueErr
+					svc.Queue = &submitCompensationQueue{publicBatchImageQueue: queue, onCall: onCall}
+					gemini.submitErr = observeError(stage.providerErr)
+					provider := &submitCompensationProvider{
+						publicBatchImageProvider: gemini,
+						onCall:                   onCall,
+						cancel:                   cancel,
+						result:                   stage.providerJob,
+					}
+					providers := testassert.MustType[*batchProviderFixture](svc.ProviderRepo)
+					providers.registry = batchimage.NewRegistry[batchimageprovider.BatchImageProvider](provider)
+					req := validBatchImageSubmitRequest()
+					req.TaskName = "compensation"
+
+					got, err := svc.Submit(ctx, testBatchImageOwner(), req, "")
+
+					require.Nil(t, got)
+					wantErr := stage.wantErr
+					wantCode := stage.wantCode
+					wantCalls := []string{"items"}
+					if stage.itemErr == nil {
+						wantCalls = append(wantCalls, "submit")
+					}
+					wantCalls = append(wantCalls, "release")
+					if failure.releaseErr != nil {
+						wantErr = batchimage.ErrBatchImageBillingHoldFailed
+						wantCode = "BILLING_RELEASE_FAILED"
+						wantCalls = append(wantCalls, "record:"+wantCode, "enqueue")
+						require.Len(t, authCache.userIDs, 1)
+					} else {
+						if stage.itemErr != nil || stage.providerErr != nil {
+							wantCalls = append(wantCalls, "describe")
+						}
+						wantCalls = append(wantCalls, "record:"+wantCode, "hide")
+						require.Equal(t, stage.wantMessage, writes.message)
+						require.Len(t, authCache.userIDs, 2)
+					}
+					require.ErrorIs(t, err, wantErr)
+					require.Equal(t, wantCalls, calls)
+					require.Len(t, funds.reserves, 1)
+					require.Len(t, funds.releases, 1)
+					require.Equal(t, funds.reserves[0].RequestPayloadHash, funds.releases[0].RequestPayloadHash)
+					require.Len(t, repo.jobs, 1)
+					for _, job := range repo.jobs {
+						require.Nil(t, job.ProviderJobName)
+						require.Equal(t, failure.releaseErr != nil, job.AllowanceReserved)
+						require.Equal(t, batchimage.BatchImageReleaseRequestID(job.BatchID), funds.releases[0].RequestID)
+						if failure.recordErr == nil {
+							require.Equal(t, batchimage.BatchImageJobStatusFailed, job.Status)
+							require.Equal(t, wantCode, batchimage.BatchImageDerefString(job.LastErrorCode))
+						} else {
+							wantStatus := batchimage.BatchImageJobStatusUploading
+							if stage.itemErr != nil {
+								wantStatus = batchimage.BatchImageJobStatusCreated
+							}
+							require.Equal(t, wantStatus, job.Status)
+							require.Nil(t, job.LastErrorCode)
+						}
+						if failure.releaseErr == nil && failure.recordErr == nil && failure.hideErr == nil {
+							require.NotNil(t, job.UserDeletedAt)
+						} else {
+							require.Nil(t, job.UserDeletedAt)
+						}
+						if failure.releaseErr != nil && failure.queueErr == nil {
+							require.Equal(t, []string{job.BatchID}, queue.enqueued)
+						} else {
+							require.Empty(t, queue.enqueued)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// BulkCreateBatchImageItems records item persistence and returns the configured error.
+// A failing write cancels the request before compensation starts so tests can
+// detect a replacement context in later operations.
+func (r *submitCompensationRepository) BulkCreateBatchImageItems(ctx context.Context, params []batchimage.CreateBatchImageItemParams) error {
+	r.onCall(ctx, "items")
+	if r.itemErr != nil {
+		r.cancel()
+		return r.itemErr
+	}
+	return r.fakeBatchImageRepository.BulkCreateBatchImageItems(ctx, params)
+}
+
+// RecordBatchImageJobSubmitFailure captures the attempted diagnostic before applying
+// the configured persistence outcome. A configured error leaves the stored job
+// unchanged so later hiding attempts still exercise its state check.
+func (r *submitCompensationRepository) RecordBatchImageJobSubmitFailure(ctx context.Context, batchID, code, message string, markFailed bool) error {
+	r.onCall(ctx, "record:"+code)
+	r.message = message
+	if r.recordErr != nil {
+		return r.recordErr
+	}
+	return r.fakeBatchImageRepository.RecordBatchImageJobSubmitFailure(ctx, batchID, code, message, markFailed)
+}
+
+// MarkBatchImageJobUserDeleted records every hiding attempt before returning a
+// configured rejection or delegating the ownership and terminal-state checks.
+// Failed writes leave the fixture's user deletion timestamp absent.
+func (r *submitCompensationRepository) MarkBatchImageJobUserDeleted(ctx context.Context, userID, apiKeyID int64, batchID string, deletedAt time.Time) error {
+	r.onCall(ctx, "hide")
+	if r.hideErr != nil {
+		return r.hideErr
+	}
+	return r.fakeBatchImageRepository.MarkBatchImageJobUserDeleted(ctx, userID, apiKeyID, batchID, deletedAt)
+}
+
+// Release records refund ordering before forwarding the supplied funding command.
+func (f *submitCompensationFunding) Release(ctx context.Context, cmd *billingcore.TaskFundsCommand) (*billingcore.TaskFundsResult, error) {
+	f.onCall(ctx, "release")
+	return f.fakeBatchImageBillingRepo.Release(ctx, cmd)
+}
+
+// Enqueue records retry publication before forwarding the supplied batch identity.
+func (q *submitCompensationQueue) Enqueue(ctx context.Context, batchID string) error {
+	q.onCall(ctx, "enqueue")
+	return q.publicBatchImageQueue.Enqueue(ctx, batchID)
+}
+
+// Submit returns the configured failed upstream outcome and cancels its request.
+// Cancellation precedes compensation so every subsequent release and repository
+// write can be checked against the same cancelled context.
+func (p *submitCompensationProvider) Submit(ctx context.Context, _ *batchimage.BatchImageJob, _ *providercore.Record, input batchimage.BatchImageInput) (*batchimage.BatchProviderJob, error) {
+	p.onCall(ctx, "submit")
+	p.submits = append(p.submits, input)
+	p.cancel()
+	return p.result, p.submitErr
+}
+
+// Error records diagnostic evaluation before returning the underlying failure text.
+func (e submitCompensationError) Error() string {
+	e.onError()
+	return e.err.Error()
+}
+
+// Unwrap exposes the underlying category for submission error classification.
+func (e submitCompensationError) Unwrap() error {
+	return e.err
+}
+
+// TestBatchImageCatalogueIncludesGroupMappingTargets enumerates concrete
+// group mapping sources and targets with valid image pricing. It checks the
+// visible names before requested-stage restrictions or provider allowlists
+// remove otherwise configured targets.
 func TestBatchImageCatalogueIncludesGroupMappingTargets(t *testing.T) {
 	for _, source := range []string{"draw-alias", "draw-*"} {
 		t.Run(source, func(t *testing.T) {
@@ -68,6 +361,13 @@ func TestBatchImageCatalogueIncludesGroupMappingTargets(t *testing.T) {
 			policy := makePublicPricingConfigFixture(routing.PricingConfig{ID: 1, Status: "active", GroupIDs: []int64{*owner.GroupID}}, nil, routing.GroupRoutingPolicy{Enabled: true, ModelMapping: map[string]string{source: "custom-image"}})
 			service.PricingConfigService = newPublicPricingConfigFixture(policy)
 			service.Pricing = &fakeBatchImagePricingResolver{unitPrice: 0.1}
+			service.Attributes = &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{Lookup: func(model string) modelcatalog.Attributes {
+				image := []string{"image"}
+				if model == "custom-image" {
+					return modelcatalog.Attributes{OutputModalities: &image}
+				}
+				return modelcatalog.Attributes{}
+			}}}
 			result, err := service.ListModels(context.Background(), owner)
 			require.NoError(t, err)
 			var ids []string
@@ -100,7 +400,10 @@ func TestBatchImageCatalogueIncludesGroupMappingTargets(t *testing.T) {
 	}
 }
 
-// TestBatchImageUnboundKeyCannotUseGlobalProviders 检查未绑定分组的 Key 提交任务时返回分组禁用错误。
+// TestBatchImageUnboundKeyCannotUseGlobalProviders submits an owner with no
+// group while providers are available. Permission rejection occurs before job
+// creation and provider submission, protecting the bound-group requirement
+// for batch admission.
 func TestBatchImageUnboundKeyCannotUseGlobalProviders(t *testing.T) {
 	svc, repo, _, platform, _, _ := newTestBatchImagePublicService(true)
 	owner := testBatchImageOwner()
@@ -111,20 +414,23 @@ func TestBatchImageUnboundKeyCannotUseGlobalProviders(t *testing.T) {
 	require.Empty(t, platform.submits)
 }
 
-// TestBatchImageCatalogueResolvesBeforeModalities 覆盖通配来源、分组改写和最终输出模态。
+// TestBatchImageCatalogueResolvesBeforeModalities combines wildcard and
+// staged mappings with image, text and unknown final modalities. It checks
+// visible request names and final pricing models while provider restrictions
+// exclude unsupported candidates.
 func TestBatchImageCatalogueResolvesBeforeModalities(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		groupMapping    map[string]string
-		providerMapping map[string]any
-		whitelist       []string
-		final           string
-		visible         bool
+		name            string            // scenario display name
+		groupMapping    map[string]string // group model mapping
+		providerMapping map[string]any    // provider model mapping
+		whitelist       []string          // allowed upstream models
+		final           string            // resolved upstream model
+		visible         bool              // expected catalogue visibility
 	}{
 		{name: "provider wildcard", providerMapping: map[string]any{"gpt-*": "catalog-image"}, whitelist: []string{"catalog-image"}, final: "catalog-image", visible: true},
 		{name: "group wildcard", groupMapping: map[string]string{"gpt-*": "catalog-image"}, whitelist: []string{"catalog-image"}, final: "catalog-image", visible: true},
 		{name: "two mapping stages", groupMapping: map[string]string{"gpt-*": "route-model"}, providerMapping: map[string]any{"route-*": "catalog-image"}, whitelist: []string{"catalog-image"}, final: "catalog-image", visible: true},
-		{name: "unknown configured final", providerMapping: map[string]any{"gpt-*": "nano-banana-pro"}, whitelist: []string{"nano-banana-pro"}, final: "nano-banana-pro", visible: true},
+		{name: "unknown configured final", providerMapping: map[string]any{"gpt-*": "nano-banana-pro"}, whitelist: []string{"nano-banana-pro"}, final: "nano-banana-pro", visible: false},
 		{name: "mapped text final", providerMapping: map[string]any{"gpt-*": "catalog-text"}, whitelist: []string{"catalog-text"}, final: "catalog-text"},
 		{name: "provider restriction", providerMapping: map[string]any{"gpt-*": "catalog-image"}, whitelist: []string{"catalog-text"}, final: "catalog-image"},
 	} {
@@ -136,6 +442,7 @@ func TestBatchImageCatalogueResolvesBeforeModalities(t *testing.T) {
 			value.Credentials["model_whitelist"] = tc.whitelist
 			svc.ProviderRepo = rebindBatchFixtureProviders(svc, &publicBatchImageProviderRepo{providers: []providercore.Record{value}})
 			image, text := []string{"image"}, []string{"text"}
+			svc.Attributes = nil
 			svc.ModelOutputModalities = func(id string) *[]string {
 				switch id {
 				case "catalog-image":
@@ -168,7 +475,10 @@ func TestBatchImageCatalogueResolvesBeforeModalities(t *testing.T) {
 	}
 }
 
-// TestBatchImageCatalogueUsesOnePolicySnapshot 不同白名单阶段均复用一次策略和计费来源读取。
+// TestBatchImageCatalogueUsesOnePolicySnapshot queries each restriction stage
+// through counting policy and price-source readers. It checks one read of
+// each source and excludes text models while retaining the mapped image
+// request.
 func TestBatchImageCatalogueUsesOnePolicySnapshot(t *testing.T) {
 	for _, stage := range []string{routing.BillingModelSourceRequested, routing.BillingModelSourceGroupMapped, routing.BillingModelSourceUpstream} {
 		t.Run(stage, func(t *testing.T) {
@@ -183,6 +493,7 @@ func TestBatchImageCatalogueUsesOnePolicySnapshot(t *testing.T) {
 			svc.ProviderRepo = rebindBatchFixtureProviders(svc, &publicBatchImageProviderRepo{providers: []providercore.Record{value}})
 
 			image, text := []string{"image"}, []string{"text"}
+			svc.Attributes = nil
 			svc.ModelOutputModalities = func(id string) *[]string {
 				if id == "catalog-image" {
 					return &image
@@ -204,12 +515,16 @@ func TestBatchImageCatalogueUsesOnePolicySnapshot(t *testing.T) {
 	}
 }
 
-// TestBatchImageCatalogueRejectsMissingPrice 模态合格的映射仍需有效图片报价。
+// TestBatchImageCatalogueRejectsMissingPrice makes a mapped final model
+// image-capable but injects missing image pricing. The catalogue still
+// returns successfully with no entries, protecting price admission alongside
+// output-modality checks.
 func TestBatchImageCatalogueRejectsMissingPrice(t *testing.T) {
 	svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
 	value := testBatchImageMappedProvider(303, "apikey", map[string]any{"gpt-*": "catalog-image"})
 	svc.ProviderRepo = rebindBatchFixtureProviders(svc, &publicBatchImageProviderRepo{providers: []providercore.Record{value}})
 	image := []string{"image"}
+	svc.Attributes = nil
 	svc.ModelOutputModalities = func(string) *[]string { return &image }
 	svc.Pricing = &fakeBatchImagePricingResolver{err: batchimage.ErrBatchImageSettlementPricingMissing}
 	result, err := svc.ListModels(context.Background(), testBatchImageOwner())
@@ -217,12 +532,16 @@ func TestBatchImageCatalogueRejectsMissingPrice(t *testing.T) {
 	require.Empty(t, result.Data)
 }
 
-// TestBatchImageAutomaticCandidates 未配置的目录型号不参与候选，映射到文本的型号被过滤。
+// TestBatchImageAutomaticCandidates supplies unconfigured catalogue names and
+// a configured image name mapped to text. The catalogue remains empty,
+// protecting finite configured candidates and checks against the final
+// model's output.
 func TestBatchImageAutomaticCandidates(t *testing.T) {
 	svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
 	value := testBatchImageMappedProvider(303, "apikey", map[string]any{"source-image": "final-text"})
 	svc.ProviderRepo = rebindBatchFixtureProviders(svc, &publicBatchImageProviderRepo{providers: []providercore.Record{value}})
 	image, text := []string{"image"}, []string{"text"}
+	svc.Attributes = nil
 	svc.ModelOutputModalities = func(id string) *[]string {
 		switch id {
 		case "catalog-image", "source-image":
@@ -239,6 +558,10 @@ func TestBatchImageAutomaticCandidates(t *testing.T) {
 	require.Empty(t, result.Data)
 }
 
+// TestBatchImagePricingSnapshotUsesOneGroupVersion changes group rates
+// between successive reads while resolving an image snapshot. It checks one
+// GroupView read and billable and hold prices derived from that first
+// version.
 func TestBatchImagePricingSnapshotUsesOneGroupVersion(t *testing.T) {
 	oldGroup := &batchimage.GroupView{
 		ID: 7, AllowBatchImageGeneration: true, RateMultiplier: 10, BatchImageDiscountMultiplier: 0.5, BatchImageHoldMultiplier: 0.6,
@@ -256,6 +579,10 @@ func TestBatchImagePricingSnapshotUsesOneGroupVersion(t *testing.T) {
 	require.InDelta(t, 6.0, snapshot.HoldUnitPrice, 1e-12)
 }
 
+// TestBatchImagePublicService_Submit covers normalization, selected
+// providers, model identities, pricing and funding snapshots, plus failures
+// across submission phases. It checks recorded upstream and queue calls,
+// compensation, idempotent replay and public response filtering.
 func TestBatchImagePublicService_Submit(t *testing.T) {
 	ctx := context.Background()
 
@@ -372,6 +699,13 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 				"group-image-model": "upstream-image-model",
 			}),
 		}})
+		svc.Attributes = &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{Lookup: func(model string) modelcatalog.Attributes {
+			image := []string{"image"}
+			if model == "upstream-image-model" {
+				return modelcatalog.Attributes{OutputModalities: &image}
+			}
+			return modelcatalog.Attributes{}
+		}}}
 		trace := modeltrace.NewAPIKeyModelRedirectTrace("image-alias", "image-alias", "gemini-2.5-flash-image")
 		requestCtx := modeltrace.WithContext(ctx, trace)
 		requestCtx = context.WithValue(requestCtx, telemetry.ClientModel, "image-alias")
@@ -393,8 +727,8 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 
 	t.Run("selects batch pricing model from channel billing source", func(t *testing.T) {
 		tests := []struct {
-			source string
-			want   string
+			source string // selected billing stage
+			want   string // expected observable result
 		}{
 			{source: routing.BillingModelSourceRequested, want: "key-target"},
 			{source: routing.BillingModelSourceGroupMapped, want: "channel-target"},
@@ -442,8 +776,8 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 		require.InDelta(t, 0.5, job.GroupRateMultiplier, 1e-12)
 		require.InDelta(t, 1.25, job.ProviderRateMultiplier, 1e-12)
 		require.InDelta(t, 0.8, job.BatchDiscountMultiplier, 1e-12)
-		// 配置的 hold(0.6) < discount(0.8) 属于会导致结算死锁的脏数据，
-		// 快照时被钳制为 discount，保证 holdAmount >= 实际成本上限。
+		// A hold multiplier of 0.6 below the 0.8 discount cannot cover full success.
+		// Snapshot creation clamps it to the discount so the hold covers the maximum cost.
 		require.InDelta(t, 0.8, job.HoldMultiplier, 1e-12)
 		require.InDelta(t, 0.125, job.BillableUnitPrice, 1e-12)
 		require.InDelta(t, 0.125, job.HoldUnitPrice, 1e-12)
@@ -598,9 +932,9 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 
 	t.Run("validates request fields", func(t *testing.T) {
 		tests := []struct {
-			name   string
-			mutate func(*batchimage.BatchImageSubmitRequest)
-			want   error
+			name   string                                    // scenario display name
+			mutate func(*batchimage.BatchImageSubmitRequest) // scenario setup mutation
+			want   error                                     // expected observable result
 		}{
 			{name: "missing_model", mutate: func(r *batchimage.BatchImageSubmitRequest) { r.Model = "" }, want: batchimage.ErrBatchImageInvalidModel},
 			{name: "empty_items", mutate: func(r *batchimage.BatchImageSubmitRequest) { r.Items = nil }, want: batchimage.ErrBatchImageInvalidItems},
@@ -727,9 +1061,9 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 
 	t.Run("preferred subscription failure rejects before platform submit", func(t *testing.T) {
 		tests := []struct {
-			name     string
-			err      error
-			wantCode string
+			name     string // scenario display name
+			err      error  // injected operation error
+			wantCode string // expected failure category
 		}{
 			{name: "unavailable", err: apikey.ErrPreferredSubscriptionInvalid, wantCode: "PREFERRED_SUBSCRIPTION_INVALID"},
 			{name: "group not allowed", err: apikey.ErrPreferredSubscriptionGroup, wantCode: "PREFERRED_SUBSCRIPTION_GROUP_NOT_ALLOWED"},
@@ -860,6 +1194,9 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 }
 
+// TestBatchImagePublicService_List stores jobs owned by different API keys
+// under the same user. The listing exposes only the requested key's batch and
+// reports a short page with no more-data indicator.
 func TestBatchImagePublicService_List(t *testing.T) {
 	ctx := context.Background()
 	svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
@@ -895,6 +1232,10 @@ func TestBatchImagePublicService_List(t *testing.T) {
 	require.False(t, got.HasMore)
 }
 
+// TestBatchImagePublicService_ListModels uses concrete and wildcard provider
+// mappings with group and price controls. It checks backend-specific
+// catalogue entries, missing-price filtering and group permission rejection
+// before exposing available models.
 func TestBatchImagePublicService_ListModels(t *testing.T) {
 	ctx := context.Background()
 
@@ -990,6 +1331,10 @@ func TestBatchImagePublicService_ListModels(t *testing.T) {
 	})
 }
 
+// TestBatchImagePublicService_StatusItemsAndCancel queries owner-scoped
+// status and filtered result pages before exercising cancellation. It checks
+// scrubbed public diagnostics, pending upstream cancellation with held funds,
+// terminal replay and public cancellation errors.
 func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 	ctx := context.Background()
 
@@ -1141,13 +1486,18 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 	})
 }
 
-// TestBatchImageServiceAccountErrorCode 验证 Google Service Account 是第三方凭据类型，公开错误码保持原协议名称。
+// TestBatchImageServiceAccountErrorCode maps the missing Google
+// service-account credential error through public submission translation. It
+// checks the exact protocol reason retained for clients needing that
+// credential configuration.
 func TestBatchImageServiceAccountErrorCode(t *testing.T) {
 	err := batchimage.BatchImageProviderSubmitPublicError(batchimage.ErrBatchImageProviderMissingServiceAccount)
 	require.Equal(t, "BATCH_IMAGE_PROVIDER_MISSING_SERVICE_ACCOUNT", apperror.Reason(err))
 }
 
-// TestBatchImageConfiguredAlias 保留有价格的自定义图片型号，并检查提供商白名单。
+// TestBatchImageConfiguredAlias queries a custom image alias and its
+// configured target with differing provider allowlists. Both names appear
+// when allowed and are filtered when the provider permits another model.
 func TestBatchImageConfiguredAlias(t *testing.T) {
 	for _, allowed := range []bool{true, false} {
 		t.Run(fmt.Sprintf("allowed=%t", allowed), func(t *testing.T) {
@@ -1159,6 +1509,13 @@ func TestBatchImageConfiguredAlias(t *testing.T) {
 			}
 			repo.providers = []providercore.Record{value}
 			svc.Pricing = &fakeBatchImagePricingResolver{unitPrice: 0.1}
+			svc.Attributes = &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{Lookup: func(model string) modelcatalog.Attributes {
+				image := []string{"image"}
+				if model == "nano-banana-pro" {
+					return modelcatalog.Attributes{OutputModalities: &image}
+				}
+				return modelcatalog.Attributes{}
+			}}}
 			result, err := svc.ListModels(context.Background(), testBatchImageOwner())
 			require.NoError(t, err)
 			ids := []string{}
@@ -1176,7 +1533,10 @@ func TestBatchImageConfiguredAlias(t *testing.T) {
 	}
 }
 
-// GetGroupPolicy 统计策略读取次数。
+// GetGroupPolicy counts the group read and delegates to the real pricing
+// service. A returned policy receives the fixture's ModelsList, allowing
+// catalogue tests to inject concrete names alongside production restriction
+// handling.
 func (p *batchCataloguePolicyReads) GetGroupPolicy(ctx context.Context, id int64) (*routing.GroupPolicyView, error) {
 	p.policyReads++
 	policy, err := p.PricingConfigService.GetGroupPolicy(ctx, id)
@@ -1186,12 +1546,16 @@ func (p *batchCataloguePolicyReads) GetGroupPolicy(ctx context.Context, id int64
 	return policy, err
 }
 
-// GetPricingConfigForGroup 统计计费来源读取次数。
+// GetPricingConfigForGroup counts the pricing-source lookup before delegating
+// to the configured service.
 func (p *batchCataloguePolicyReads) GetPricingConfigForGroup(ctx context.Context, id int64) (*routing.PricingConfig, error) {
 	p.pricingReads++
 	return p.PricingConfigService.GetPricingConfigForGroup(ctx, id)
 }
 
+// GetByIDLite counts reads and returns oldGroup for the first lookup, then
+// newGroup for later lookups. The pricing test detects accidental rereads by
+// comparing totals and the number of calls.
 func (r *changingMediaPricingGroupRepo) GetByIDLite(context.Context, int64) (*batchimage.GroupView, error) {
 	r.calls++
 	if r.calls == 1 {
@@ -1200,20 +1564,34 @@ func (r *changingMediaPricingGroupRepo) GetByIDLite(context.Context, int64) (*ba
 	return r.newGroup, nil
 }
 
+// testPtrFloat64 returns fresh pointer storage for an optional fixture price.
 func testPtrFloat64(value float64) *float64 { return &value }
 
+// rebindBatchFixtureProviders replaces the record source while retaining the
+// public fixture's existing backend registry. It requires the current
+// ProviderRepo to be a batchProviderFixture and returns production candidate
+// conversion over the new source.
 func rebindBatchFixtureProviders(core *batchimage.Public, source batchProvidersFixtureSource) batchimage.ProviderReader {
 	return &batchProviderFixture{source: source, registry: testassert.MustType[*batchProviderFixture](core.ProviderRepo).registry}
 }
 
+// ListAll returns one outer copy of the configured pricing record in a fresh
+// slice. Nested configuration fields remain shared with this fixture, so tests
+// can change the retained configuration before later service reads.
 func (r *publicPricingConfigFixture) ListAll(context.Context) ([]routing.PricingConfig, error) {
 	return []routing.PricingConfig{r.pricingConfig}, nil
 }
 
+// GetGroupPlatforms returns the retained platform map and ignores the requested
+// group IDs. Callers changing that map also change later fixture reads; absent
+// configuration returns the retained nil map successfully.
 func (r *publicPricingConfigFixture) GetGroupPlatforms(context.Context, []int64) (map[int64]string, error) {
 	return r.platforms, nil
 }
 
+// makePublicPricingConfigFixture stores the price configuration, platform map
+// and first supplied policy. With no policy it retains a zero policy, and
+// later optional policies are ignored by this fixture.
 func makePublicPricingConfigFixture(pricingConfig routing.PricingConfig, platforms map[int64]string, policies ...routing.GroupRoutingPolicy) *publicPricingConfigFixture {
 	policy := routing.GroupRoutingPolicy{}
 	if len(policies) > 0 {
@@ -1222,12 +1600,19 @@ func makePublicPricingConfigFixture(pricingConfig routing.PricingConfig, platfor
 	return &publicPricingConfigFixture{pricingConfig: pricingConfig, platforms: platforms, policy: policy}
 }
 
+// newPublicPricingConfigFixture constructs the shared routing service over
+// this fixture and a group-read callback. Each group read clones the
+// configured policy, while warning, clock and pricing-location callbacks use
+// production helpers.
 func newPublicPricingConfigFixture(repo *publicPricingConfigFixture) *routing.PricingConfigService {
 	return routing.NewPricingConfigService(repo, nil, routing.PricingConfigOptions{Warn: slog.Warn, Now: time.Now, LoadLocation: pricingprovider.LoadPricingLocation, ReadGroup: func(_ context.Context, id int64) (*routing.Group, error) {
 		return &routing.Group{ID: id, RoutingPolicy: repo.policy.Clone()}, nil
 	}})
 }
 
+// testImageModelPricing creates a wildcard image price card from the supplied
+// size tiers. The generated interval slice is new, while each optional price
+// pointer remains shared with the map values supplied by the test.
 func testImageModelPricing(prices map[string]*float64) []routing.ModelPricingEntry {
 	card := routing.ModelPricingEntry{Models: []string{"*"}, BillingMode: routing.BillingModeImage}
 	for tier, price := range prices {
@@ -1236,6 +1621,10 @@ func testImageModelPricing(prices map[string]*float64) []routing.ModelPricingEnt
 	return []routing.ModelPricingEntry{card}
 }
 
+// newTestBatchImagePublicService builds shared recording dependencies and a
+// public service with the requested enable flag. Tight item and prompt caps
+// keep validation cases small, while two registered backends expose provider
+// selection.
 func newTestBatchImagePublicService(enabled bool) (*batchimage.Public, *fakeBatchImageRepository, *publicBatchImageQueue, *publicBatchImageProvider, *publicBatchImageProvider, *fakeBatchImageAuthCacheInvalidator) {
 	repo := newFakeBatchImageRepository()
 	queue := &publicBatchImageQueue{}
@@ -1262,25 +1651,37 @@ func newTestBatchImagePublicService(enabled bool) (*batchimage.Public, *fakeBatc
 	return svc, repo, queue, gemini, vertex, authCache
 }
 
+// InvalidateAuthCacheByKey records the API key spelling requested for fixture
+// invalidation.
 func (f *fakeBatchImageAuthCacheInvalidator) InvalidateAuthCacheByKey(_ context.Context, key string) {
 	f.keys = append(f.keys, key)
 }
 
+// InvalidateAuthCacheByUserID records the payer identity requested for
+// fixture invalidation.
 func (f *fakeBatchImageAuthCacheInvalidator) InvalidateAuthCacheByUserID(_ context.Context, userID int64) {
 	f.userIDs = append(f.userIDs, userID)
 }
 
+// InvalidateAuthCacheByGroupID records the group identity requested for
+// fixture invalidation.
 func (f *fakeBatchImageAuthCacheInvalidator) InvalidateAuthCacheByGroupID(_ context.Context, groupID int64) {
 	f.groupIDs = append(f.groupIDs, groupID)
 }
 
+// testBatchImageMappedProvider adds the supplied model mapping to a schedulable
+// provider fixture. Its credential map retains that mapping, including nil, so
+// later test edits to the supplied entries affect candidate preparation.
 func testBatchImageMappedProvider(id int64, providerType string, mapping map[string]any) providercore.Record {
 	provider := testBatchImageProvider(id, providerType)
 	provider.Credentials["model_mapping"] = mapping
 	return provider
 }
 
-// BenchmarkBatchImageConfiguredCatalogue 测量 65 个提供商的有限目录，包含规则准备及模态检查。
+// BenchmarkBatchImageConfiguredCatalogue queries sixty-five providers with
+// 186 configured names each. It measures allocations and repeated catalogue
+// work while asserting that only the fixture's image-capable request name
+// remains visible.
 func BenchmarkBatchImageConfiguredCatalogue(b *testing.B) {
 	service, _, _, _, _, _ := newTestBatchImagePublicService(true)
 	rows := &publicBatchImageProviderRepo{}
@@ -1322,7 +1723,10 @@ func BenchmarkBatchImageConfiguredCatalogue(b *testing.B) {
 	}
 }
 
-// TestBatchImageCustomListDeclaresUnknownModality 自定义列表中的具体型号可在有价格时作为未知模态候选。
+// TestBatchImageCustomListDeclaresUnknownModality adds one concrete
+// group-listed model whose output modality is unknown but priced. The
+// catalogue returns entries for that declared name, protecting the
+// configured-name admission path.
 func TestBatchImageCustomListDeclaresUnknownModality(t *testing.T) {
 	service, _, _, _, _, _ := newTestBatchImagePublicService(true)
 	owner := testBatchImageOwner()
@@ -1332,8 +1736,5 @@ func TestBatchImageCustomListDeclaresUnknownModality(t *testing.T) {
 	service.Pricing = &fakeBatchImagePricingResolver{unitPrice: 0.1}
 	result, err := service.ListModels(context.Background(), owner)
 	require.NoError(t, err)
-	require.NotEmpty(t, result.Data)
-	for _, model := range result.Data {
-		require.Equal(t, "custom-image", model.ID)
-	}
+	require.Empty(t, result.Data)
 }

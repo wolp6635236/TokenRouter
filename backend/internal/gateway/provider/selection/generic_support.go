@@ -9,14 +9,28 @@ import (
 	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-const stickySessionTTL = time.Hour // 粘性会话TTL
+// generic_support.go reads and updates generic session bindings and checks
+// whether retained affinity should be cleared.
+// Sticky billing and provider selection can reuse a prefetched group binding
+// when it belongs to the current request. Provider unschedulability and an
+// active model cooldown decide whether a binding should be cleared, while cache
+// operations use the shared generic session lifetime.
 
-// providerWithLoad 提供商与负载信息的组合，用于负载感知调度。
+// stickySessionTTL controls the generic session binding lifetime supplied to
+// the shared sticky cache.
+const stickySessionTTL = time.Hour
+
+// providerWithLoad pairs a provider with its load snapshot for selection.
 type providerWithLoad struct {
-	provider *gatewayprovider.ExecutionProvider
-	loadInfo *schedulercore.ProviderLoadInfo
+	// provider and loadInfo are observations for the same candidate during one
+	// selection pass; a missing loadInfo lets scheduler rules supply their missing-load behavior.
+	provider *gatewayprovider.ExecutionProvider // candidate execution target
+	loadInfo *schedulercore.ProviderLoadInfo    // observed candidate load
 }
 
+// shortSessionHash returns at most eight bytes for bounded session diagnostics.
+// Empty input remains empty and short inputs pass through; callers supply the
+// encoded session hash when logging the returned prefix.
 func shortSessionHash(sessionHash string) string {
 	if sessionHash == "" {
 		return ""
@@ -24,10 +38,13 @@ func shortSessionHash(sessionHash string) string {
 	if len(sessionHash) <= 8 {
 		return sessionHash
 	}
+	// Bound diagnostic output to the hash prefix.
 	return sessionHash[:8]
 }
 
-// derefGroupID safely dereferences *int64 to int64, returning 0 if nil.
+// derefGroupID returns the supplied group identifier or zero for a nil pointer.
+// Sticky-cache callers use that zero as their missing-group namespace input;
+// membership predicates separately require a positive group.
 func derefGroupID(groupID *int64) int64 {
 	if groupID == nil {
 		return 0
@@ -35,6 +52,10 @@ func derefGroupID(groupID *int64) int64 {
 	return *groupID
 }
 
+// prefetchedStickyProviderIDFromContext returns a positive prefetched provider
+// belonging to the requested group. Missing group or provider hints, mismatched
+// group IDs, and captured nonpositive results return zero for normal cache
+// lookup.
 func prefetchedStickyProviderIDFromContext(ctx context.Context, groupID *int64) int64 {
 	prefetchedGroupID, ok := requeststate.PrefetchedStickyGroupIDFromContext(ctx)
 	if !ok || prefetchedGroupID != derefGroupID(groupID) {
@@ -46,13 +67,10 @@ func prefetchedStickyProviderIDFromContext(ctx context.Context, groupID *int64) 
 	return 0
 }
 
-// shouldClearStickySession 检查提供商是否处于不可调度状态，需要清理粘性会话绑定。
-// 委托 IsSchedulable() 判断提供商级可调度性（状态、配额、过载、限流等），
-// 额外检查模型级限流。
-//
-// shouldClearStickySession 检查提供商是否处于不可调度状态。
-// and the sticky session binding should be cleared.
-// Delegates to IsSchedulable() for provider-level checks, plus model-level rate limiting.
+// shouldClearStickySession reports whether provider unschedulability or an
+// active model cooldown invalidates a binding. A nil provider returns false for
+// separate missing-record handling, and cooldown duration is checked against
+// the provider's model policy.
 func shouldClearStickySession(provider *gatewayprovider.ExecutionProvider, requestedModel string) bool {
 	if provider == nil {
 		return false
@@ -66,7 +84,9 @@ func shouldClearStickySession(provider *gatewayprovider.ExecutionProvider, reque
 	return false
 }
 
-// BindStickySession sets session -> provider binding with standard TTL.
+// BindStickySession writes the provider into the generic group-scoped session
+// cache for one hour. Empty sessions, nonpositive provider IDs, or an
+// unavailable cache are ignored; cache write errors propagate to the caller.
 func (s *Generic) BindStickySession(ctx context.Context, groupID *int64, sessionHash string, providerID int64) error {
 	if sessionHash == "" || providerID <= 0 || s.cache == nil {
 		return nil
@@ -74,8 +94,9 @@ func (s *Generic) BindStickySession(ctx context.Context, groupID *int64, session
 	return s.cache.SetSessionProviderID(ctx, derefGroupID(groupID), sessionHash, providerID, stickySessionTTL)
 }
 
-// GetCachedSessionProviderID retrieves the provider ID bound to a sticky session.
-// Returns 0 if no binding exists or on error.
+// GetCachedSessionProviderID reads the generic group's provider binding for
+// sessionHash. Empty session input or an absent cache returns zero without
+// error; a cache failure returns zero and the read error.
 func (s *Generic) GetCachedSessionProviderID(ctx context.Context, groupID *int64, sessionHash string) (int64, error) {
 	if sessionHash == "" || s.cache == nil {
 		return 0, nil

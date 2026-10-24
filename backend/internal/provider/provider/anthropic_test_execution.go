@@ -12,6 +12,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	claude "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
@@ -19,34 +20,73 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/vertex"
 )
 
-// AnthropicProviderTest 绑定供应商接口，凭据和健康状态通过提供商接口读写。
+// anthropic_test_execution.go executes Anthropic probes through Messages,
+// Vertex, and Bedrock request formats. API-key mappings choose the tested
+// target before request construction, Vertex can normalize an unmapped model
+// into its service spelling, and Bedrock resolves a model together with its
+// invocation region.
+//
+// The chosen service model also drives sampling capability checks, keeping
+// temperature and top_p removal aligned with the target sent upstream.
+// Messages and Vertex stream test content; Bedrock uses a nonstreaming
+// invocation and converts its first content block into test events. Token
+// acquisition is required for Vertex, while ordinary OAuth reads its stored
+// access token. Forbidden Messages and Vertex responses attempt an error-state
+// write before reporting the probe failure.
+
+// AnthropicProviderTest prepares provider-authenticated Messages, Vertex, and
+// Bedrock connection probes.
 type AnthropicProviderTest struct {
-	Tokens      *providercore.ClaudeTokenSource
-	Transport   QoderTransport
+	// Attributes resolves sampling permissions for the final model and probe group.
+	// A nil callback uses catalogue defaults, and lookup errors stop the request.
+	Attributes ModelAttributeLookup
+	// Tokens supplies Vertex service-account access tokens. A missing source makes
+	// the Vertex path emit a configuration failure.
+	Tokens    *providercore.ClaudeTokenSource
+	Transport QoderTransport // provider-aware probe HTTP sender
+	// Profiles optionally resolves request fingerprints for Messages and Vertex.
+	// Bedrock sends a nil profile through its dedicated invocation path.
 	Profiles    *egressprovider.TLSProfiles
-	ValidateURL func(string) (string, error)
-	Store       interface {
+	ValidateURL func(string) (string, error) // API-key upstream root validator
+	// Store records forbidden Messages and Vertex probe failures. Configure it for
+	// those paths, which invoke SetError without a nil-store guard.
+	Store interface {
+		// SetError records the supplied provider authentication or access failure.
+		// Probe execution ignores storage errors and still returns the upstream
+		// failure to its test caller.
 		SetError(context.Context, int64, string) error
 	}
+	// UserAgent replaces the prepared request agent when its trimmed value is
+	// nonempty. Automatic targets install this on an executor copy.
 	UserAgent string
 }
 
-// Execute 保留 Anthropic、Vertex 与 Bedrock 各自的测试路径。
+// Execute selects the provider's Anthropic transport and emits probe events for
+// the selected model. An empty model uses the Claude test default, and API-key
+// records apply one provider mapping before request preparation.
+//
+// Bedrock and service-account records delegate to their dedicated request
+// paths. Ordinary OAuth reads the stored access token, while API keys use a
+// validated configured root and selected authentication header scheme. Sampling
+// controls follow the service model; responses are closed here, and forbidden
+// Messages replies attempt a best-effort provider error write before returning
+// their diagnostic failure.
 func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, modelID string, prompt string) error {
 	ctx := c.Context
 
-	// 保留缺省模型及原映射时机。
 	testModelID := modelID
 	if testModelID == "" {
 		testModelID = claude.DefaultTestModel
 	}
 
-	// API Key 提供商测试连接时也需要应用通配符模型映射。
+	// Apply the API-key mapping before sampling and payload construction, so the
+	// test observes the configured upstream target under the same alias rules as
+	// requests.
 	if value.Type == "apikey" {
 		testModelID = mappedTestModel(value, testModelID)
 	}
 
-	// Bedrock 使用独立签名和非流式请求。
+	// Bedrock uses a signed, non-streaming invocation.
 	if value.IsBedrock() {
 		return s.ExecuteBedrock(c, ctx, value, testModelID, prompt)
 	}
@@ -54,7 +94,6 @@ func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, 
 		return s.executeVertex(c, ctx, value, testModelID, prompt)
 	}
 
-	// 按原凭据类型构造认证与端点。
 	var authToken string
 	var apiURL string
 
@@ -83,17 +122,20 @@ func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, 
 		return (TestStreamOutput{}).Error(c, fmt.Sprintf("Unsupported provider type: %s", value.Type))
 	}
 
-	// 保留事件流开始时机。
 	c.Begin(true)
 
-	// 所有类型复用原 Claude Code 测试报文。
 	payload, err := claude.TestPayloadWithPrompt(testModelID, prompt)
 	if err != nil {
 		return (TestStreamOutput{}).Error(c, "Failed to create test payload")
 	}
+	if err := s.applyModelAttributes(ctx, value, c.GroupID, testModelID, payload); err != nil {
+		return (TestStreamOutput{}).Error(c, err.Error())
+	}
+	// The probe builder returns JSON-compatible scalar and collection values.
+	// Sampling removal retains that shape, so encoding cannot encounter an
+	// unsupported value type here.
 	payloadBytes, _ := json.Marshal(payload)
 
-	// 报文构造完成后发布开始事件。
 	(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{Type: "test_start", Model: testModelID})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
@@ -101,16 +143,13 @@ func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, 
 		return (TestStreamOutput{}).Error(c, "Failed to create request")
 	}
 
-	// 设置共同协议 Header。
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	// 应用原 Claude Code 客户端 Header。
 	for key, value := range claude.DefaultHeaders {
 		req.Header.Set(key, value)
 	}
 
-	// 保留认证 Header 的原顺序。
 	if value.IsOAuth() {
 		req.Header.Set("anthropic-beta", claude.DefaultBetaHeader)
 		req.Header.Set("Authorization", "Bearer "+authToken)
@@ -120,10 +159,9 @@ func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, 
 	}
 	s.applyUserAgent(req)
 
-	// 测试与转发按相同顺序应用提供商请求头覆盖。
+	// Apply provider header overrides after defaults and authentication, as forwarding does.
 	applyGrokQuotaHeaders(value, req.Header)
 
-	// 使用提供商配置的代理。
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {
 		proxyURL = value.Proxy.URL()
@@ -136,25 +174,41 @@ func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Keep the available non-OK body for endpoint diagnostics even when reading
+		// fails; this path reports the upstream status as its probe failure.
 		body, _ := io.ReadAll(resp.Body)
 		errMsg := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body))
 
-		// 403 表示提供商被上游封禁，标记为 error 状态
 		if resp.StatusCode == http.StatusForbidden {
+			// The forbidden reply is already the probe failure. Attempt to retain
+			// provider error state, but return that reply even when its storage update
+			// fails.
 			_ = s.Store.SetError(ctx, value.ID, errMsg)
 		}
 
 		return (TestStreamOutput{}).Error(c, errMsg)
 	}
 
-	// 逐事件解析流。
 	return (TestStreamOutput{}).Anthropic(c, resp.Body)
 }
 
+// executeVertex sends a streaming Anthropic probe through Vertex using
+// service-account authentication. Explicit provider mapping wins; an unmapped
+// test model uses Vertex's normalized model ID before sampling resolution and
+// resource URL construction.
+//
+// The model resides in the resource URL, so body conversion removes its
+// duplicate field and sets Vertex's Anthropic version. Tokens supplies the
+// access token, and proxy and request TLS choices come from the record. The
+// method closes its response and attempts provider error persistence for
+// forbidden replies before emitting the probe failure.
 func (s *AnthropicProviderTest) executeVertex(c *TestRun, ctx context.Context, value *providercore.Record, testModelID string, prompt string) error {
 	if mappedModel, matched := providercore.ResolveMappedModel(providercore.ResolveModelMapping(value, ModelDefaults()), testModelID); matched {
 		testModelID = mappedModel
 	} else {
+		// An unmapped Claude ID needs Vertex's service spelling for its resource URL.
+		// Explicit administrator targets have already won and bypass this
+		// normalization.
 		testModelID = vertex.NormalizeVertexAnthropicModelID(testModelID)
 	}
 
@@ -164,7 +218,15 @@ func (s *AnthropicProviderTest) executeVertex(c *TestRun, ctx context.Context, v
 	if err != nil {
 		return (TestStreamOutput{}).Error(c, "Failed to create test payload")
 	}
+	if err := s.applyModelAttributes(ctx, value, c.GroupID, testModelID, payload); err != nil {
+		return (TestStreamOutput{}).Error(c, err.Error())
+	}
+	// The probe builder returns JSON-compatible scalar and collection values.
+	// Sampling removal retains that shape, so encoding cannot encounter an
+	// unsupported value type here.
 	payloadBytes, _ := json.Marshal(payload)
+	// Vertex carries the model in the resource URL. Convert the probe body to its
+	// Anthropic version and remove the duplicate body model field before sending.
 	vertexBody, err := vertex.BuildVertexAnthropicRequestBody(payloadBytes)
 	if err != nil {
 		return (TestStreamOutput{}).Error(c, fmt.Sprintf("Failed to create Vertex request body: %s", err.Error()))
@@ -205,9 +267,14 @@ func (s *AnthropicProviderTest) executeVertex(c *TestRun, ctx context.Context, v
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Keep the available non-OK body for endpoint diagnostics even when reading
+		// fails; this path reports the upstream status as its probe failure.
 		body, _ := io.ReadAll(resp.Body)
 		errMsg := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body))
 		if resp.StatusCode == http.StatusForbidden {
+			// The forbidden reply is already the probe failure. Attempt to retain
+			// provider error state, but return that reply even when its storage update
+			// fails.
 			_ = s.Store.SetError(ctx, value.ID, errMsg)
 		}
 		return (TestStreamOutput{}).Error(c, errMsg)
@@ -216,7 +283,16 @@ func (s *AnthropicProviderTest) executeVertex(c *TestRun, ctx context.Context, v
 	return (TestStreamOutput{}).Anthropic(c, resp.Body)
 }
 
-// ExecuteBedrock 以非流式 invoke 验证 SigV4 或 API Key。
+// ExecuteBedrock sends a nonstreaming probe using the resolved Bedrock model
+// and source region. It applies provider mapping before route resolution, then
+// authenticates with an API key or signs the exact request body with the
+// record's AWS credentials.
+//
+// A blank prompt becomes hi, and service sampling rules can remove unsupported
+// controls from the fixed payload. The upstream response is closed and its
+// first text block becomes test content, with an empty-response label when
+// absent. Test events retain the streaming UI format despite the nonstreaming
+// invocation.
 func (s *AnthropicProviderTest) ExecuteBedrock(c *TestRun, ctx context.Context, value *providercore.Record, testModelID string, prompt string) error {
 	route, err := bedrock.ResolveBedrockModelRoute(&bedrock.RouteInput{Region: value.GetCredential("aws_region"), ForceGlobal: value.GetCredential("aws_force_global") == "true", Model: mappedTestModel(value, testModelID)}, testModelID)
 	if err != nil {
@@ -225,10 +301,14 @@ func (s *AnthropicProviderTest) ExecuteBedrock(c *TestRun, ctx context.Context, 
 	region := route.SourceRegion
 	testModelID = route.ModelID
 
-	// 保留事件流开始时机。 (test UI expects SSE)
+	// The test sink consumes typed streaming events for every platform. Commit
+	// output before the nonstreaming invocation so its final content uses that
+	// same presentation path.
 	c.Begin(true)
 
-	// 保留无 stream 与 cache_control 的最小 Bedrock 报文。
+	// Bedrock's nonstreaming invoke payload uses its own Anthropic version and
+	// carries the routed model in the URL, so the streaming probe fields are
+	// omitted.
 	testPrompt := strings.TrimSpace(prompt)
 	if testPrompt == "" {
 		testPrompt = "hi"
@@ -246,12 +326,18 @@ func (s *AnthropicProviderTest) ExecuteBedrock(c *TestRun, ctx context.Context, 
 				},
 			},
 		},
+		// Bound the Bedrock probe output to 256 tokens.
 		"max_tokens":  256,
 		"temperature": 1,
 	}
+	if err := s.applyModelAttributes(ctx, value, c.GroupID, testModelID, bedrockPayload); err != nil {
+		return (TestStreamOutput{}).Error(c, err.Error())
+	}
+	// The fixed Bedrock payload contains strings, numbers, and JSON collections.
+	// Sampling removal retains those supported types before the body is signed or
+	// authenticated.
 	bedrockBody, _ := json.Marshal(bedrockPayload)
 
-	// 上游非流式响应仍按 Claude JSON 处理。
 	apiURL := bedrock.BuildBedrockURL(region, testModelID, false)
 
 	(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{Type: "test_start", Model: testModelID})
@@ -262,7 +348,6 @@ func (s *AnthropicProviderTest) ExecuteBedrock(c *TestRun, ctx context.Context, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// 按提供商类型设置 Bearer 或 SigV4 签名。
 	if value.IsBedrockAPIKey() {
 		apiKey := value.GetCredential("api_key")
 		if apiKey == "" {
@@ -291,16 +376,23 @@ func (s *AnthropicProviderTest) ExecuteBedrock(c *TestRun, ctx context.Context, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// The available response prefix is parsed even if its read fails. Status
+	// errors use that prefix for diagnostics; successful replies proceed through
+	// JSON decoding.
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return (TestStreamOutput{}).Error(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
-	// 从原非流式 Claude JSON 提取第一段文字。
+	// Convert the first nonstreaming content block into one test event. Additional
+	// blocks remain outside this preview, and an absent first text receives the
+	// empty-response label below.
 	var result struct {
+		// Content holds the nonstreaming response blocks in their supplied order.
+		// ExecuteBedrock previews the first block and ignores later content.
 		Content []struct {
-			Text string `json:"text"`
+			Text string `json:"text"` // content block text value
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -311,6 +403,9 @@ func (s *AnthropicProviderTest) ExecuteBedrock(c *TestRun, ctx context.Context, 
 	if len(result.Content) > 0 {
 		text = result.Content[0].Text
 	}
+	// A successful invocation can have no first text block. Supply a visible
+	// placeholder while keeping the success event tied to the accepted HTTP
+	// response.
 	if text == "" {
 		text = "(empty response)"
 	}
@@ -320,12 +415,18 @@ func (s *AnthropicProviderTest) ExecuteBedrock(c *TestRun, ctx context.Context, 
 	return nil
 }
 
+// applyUserAgent writes the trimmed executor agent when it is nonblank. Blank
+// configuration leaves the request's existing agent intact, and callers provide
+// a request with writable headers.
 func (s *AnthropicProviderTest) applyUserAgent(req *http.Request) {
 	if agent := strings.TrimSpace(s.UserAgent); agent != "" {
 		req.Header.Set("User-Agent", agent)
 	}
 }
 
+// resolveTLSProfile resolves request fingerprinting from the record's enabled
+// setting and direct profile ID. A nil Profiles service returns nil; callers
+// supply a nonnil record when fingerprint selection is configured.
 func (s *AnthropicProviderTest) resolveTLSProfile(value *providercore.Record) *tlsfingerprint.Profile {
 	if s.Profiles == nil {
 		return nil
@@ -333,8 +434,42 @@ func (s *AnthropicProviderTest) resolveTLSProfile(value *providercore.Record) *t
 	return s.Profiles.ResolveRequestTLS(egress.TLSSelection{Enabled: value.IsTLSFingerprintEnabled(), DirectProfileID: value.GetTLSFingerprintProfileID()})
 }
 
-// mappedTestModel 对提供商测试模型执行一次映射。
+// mappedTestModel returns the result of one provider mapping for a probe model.
+// Unmatched input is retained, and mapped targets are returned directly so
+// alias chains are not applied repeatedly during preparation.
 func mappedTestModel(value *providercore.Record, model string) string {
 	mapped, _ := providercore.ResolveMappedModel(providercore.ResolveModelMapping(value, ModelDefaults()), model)
 	return mapped
+}
+
+// applyModelAttributes removes sampling fields whose resolved service
+// capability is false from the mutable payload. It uses the selected Anthropic
+// model and group; absent capability flags leave existing temperature and
+// top_p fields intact. Routed probes also validate text output on their selected
+// endpoint. Profile lookup errors propagate before payload changes.
+func (s *AnthropicProviderTest) applyModelAttributes(ctx context.Context, value *providercore.Record, groupID int64, model string, payload map[string]any) error {
+	if providercore.TestProtocolRouteFromContext(ctx).ClientProtocol != "" {
+		if _, err := resolveProbeType(ctx, s.Attributes, value, groupID, model, "anthropic_messages", providercore.ProviderTestTypeText); err != nil {
+			return err
+		}
+	}
+	resolved := modelcatalog.View{}.Resolve(value.ModelAttributeTarget(model, "anthropic_messages"), modelcatalog.Attributes{})
+	if s.Attributes != nil {
+		var err error
+		resolved, err = s.Attributes(ctx, value, groupID, model, "anthropic_messages")
+		if err != nil {
+			return err
+		}
+	}
+	resolved = resolved.ForRequest(modelcatalog.RequestState{})
+	// The selected service model supplies these sampling permissions. Remove
+	// explicitly disallowed fields while unknown flags retain the probe builder's
+	// defaults for that target.
+	if resolved.Attributes.Temperature != nil && !*resolved.Attributes.Temperature {
+		delete(payload, "temperature")
+	}
+	if resolved.Attributes.TopP != nil && !*resolved.Attributes.TopP {
+		delete(payload, "top_p")
+	}
+	return nil
 }

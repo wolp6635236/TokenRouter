@@ -9,6 +9,14 @@ import (
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
+// Audit output retains operational names and identifiers while removing
+// sensitive values from structured request bodies. These cases cover nested
+// provider credentials, normalized payment-secret names, browser sessions,
+// unsupported form bodies, empty input, and the assembled sensitive-key tables.
+
+// TestRedactAuditBody_JSONRedactsSecrets supplies nested credential and
+// identity secrets in JSON. It checks valid output with every canary removed
+// while operational base URL and name remain available for audit attribution.
 func TestRedactAuditBody_JSONRedactsSecrets(t *testing.T) {
 	redactor := provideAuditRedactor()
 	raw := []byte(`{
@@ -27,13 +35,13 @@ func TestRedactAuditBody_JSONRedactsSecrets(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
 
-	// 敏感字段被擦除。
+	// Sensitive values must be removed.
 	for _, secret := range []string{"sk-secret-123", "google-id-token-canary", "hunter2", "123456", "tok_abc"} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("redacted body still contains secret %q: %s", secret, out)
 		}
 	}
-	// 非敏感字段（base_url、name）保留以便追责。
+	// Keep base_url and name for audit attribution.
 	if !strings.Contains(out, "evil.example.com") {
 		t.Fatalf("base_url should be preserved for providerability: %s", out)
 	}
@@ -42,8 +50,9 @@ func TestRedactAuditBody_JSONRedactsSecrets(t *testing.T) {
 	}
 }
 
-// TestRedactAuditBody_BareSessionKeyRedacted 检查 session 字段中的 Ollama Cloud 浏览器 Cookie 被整段脱敏。
-// session_id 等运行状态标识保留在审计记录中，供追溯使用。
+// TestRedactAuditBody_BareSessionKeyRedacted supplies a browser cookie under
+// session beside session_id. It checks the cookie canary is removed while the
+// operational session identifier remains in the audit body.
 func TestRedactAuditBody_BareSessionKeyRedacted(t *testing.T) {
 	redactor := provideAuditRedactor()
 	raw := []byte(`{"session": "wos-session=cookie-canary", "session_id": "sid-visible"}`)
@@ -57,9 +66,10 @@ func TestRedactAuditBody_BareSessionKeyRedacted(t *testing.T) {
 	}
 }
 
-// TestRedactAuditBody_AuthoritativeTablesSynced 检查以下凭据字段的脱敏：
-// 提供商 credentials 敏感子键、支付渠道无分隔符密钥、字符串值内嵌凭证的 proxy_key / custom_key，
-// 以及 camelCase 等命名变体（归一化比对）。
+// TestRedactAuditBody_AuthoritativeTablesSynced supplies credential blobs,
+// proxy strings, and normalized payment-secret fields. It checks every secret
+// canary is removed while payment provider_key and the instance name remain
+// available.
 func TestRedactAuditBody_AuthoritativeTablesSynced(t *testing.T) {
 	redactor := provideAuditRedactor()
 	raw := []byte(`{
@@ -92,7 +102,7 @@ func TestRedactAuditBody_AuthoritativeTablesSynced(t *testing.T) {
 			t.Fatalf("redacted body still contains secret %q: %s", secret, out)
 		}
 	}
-	// provider_key 是渠道标识，保留在审计记录中供追溯使用。
+	// provider_key identifies the payment channel and remains available for audit tracing.
 	if !strings.Contains(out, `"provider_key":"stripe"`) {
 		t.Fatalf("provider_key should be preserved for providerability: %s", out)
 	}
@@ -101,7 +111,10 @@ func TestRedactAuditBody_AuthoritativeTablesSynced(t *testing.T) {
 	}
 }
 
-// TestAuditSensitiveKeys_CoverCredentialTable 检查 SensitiveCredentialKeys 中的每个键都在审计脱敏范围内。
+// TestAuditSensitiveKeys_CoverCredentialTable reads the declared provider and
+// payment sensitive-key tables. Every listed key must be recognized by the
+// application-assembled audit redactor so another declared secret cannot
+// silently escape coverage.
 func TestAuditSensitiveKeys_CoverCredentialTable(t *testing.T) {
 	redactor := provideAuditRedactor()
 	for _, k := range providercore.SensitiveCredentialKeys {
@@ -118,6 +131,9 @@ func TestAuditSensitiveKeys_CoverCredentialTable(t *testing.T) {
 	}
 }
 
+// TestRedactAuditBody_NonJSONOmitted supplies a form body containing a password
+// canary. The redactor must omit its content, exclude the canary, and return
+// the omission marker.
 func TestRedactAuditBody_NonJSONOmitted(t *testing.T) {
 	redactor := provideAuditRedactor()
 	out := redactor.RedactBody([]byte("username=admin&password=secret"), "application/x-www-form-urlencoded")
@@ -129,6 +145,9 @@ func TestRedactAuditBody_NonJSONOmitted(t *testing.T) {
 	}
 }
 
+// TestRedactAuditBody_Empty supplies a nil body with JSON content type. It
+// checks the audit redactor returns an empty string for absent content rather
+// than a populated audit value.
 func TestRedactAuditBody_Empty(t *testing.T) {
 	redactor := provideAuditRedactor()
 	if got := redactor.RedactBody(nil, "application/json"); got != "" {

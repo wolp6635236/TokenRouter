@@ -10,7 +10,16 @@ import (
 	keyredis "github.com/TokenFlux/TokenRouter/internal/apikey/rediscache"
 )
 
-// apikeyAssemblyProviders 汇总 apikey 模块的 Wire provider。
+// assembly_apikey_wire.go registers API key service, storage, authentication,
+// and invalidation constructors with Wire.
+// Gateway keys depend on both persistent records and authentication caches.
+// The application graph supplies their administration and HTTP entry points
+// together with cache invalidation resources, so handlers and the invalidation
+// worker receive the same assembled dependencies.
+
+// apikeyAssemblyProviders supplies key administration, authentication,
+// persistence, and invalidation constructors to the application dependency
+// graph.
 var apikeyAssemblyProviders = wire.NewSet(
 	provideKeyAdminHTTP,
 	provideKeyHTTP,

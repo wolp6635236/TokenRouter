@@ -5,7 +5,15 @@ import (
 	"testing"
 )
 
-// TestBuildDatabaseConnectionDSNsUsesPostgresForBootstrap 验证创建目标库之前连接默认 postgres 库。
+// Database creation requires a maintenance connection before the target
+// exists. This fixture gives setup a distinct target name and checks the two
+// DSNs, keeping maintenance access on postgres and the later verification
+// connection on the requested database.
+
+// TestBuildDatabaseConnectionDSNsUsesPostgresForBootstrap supplies a target
+// database name with shared credentials. The maintenance DSN must name
+// postgres, exclude the target name, and leave the target DSN pointing at the
+// configured database.
 func TestBuildDatabaseConnectionDSNsUsesPostgresForBootstrap(t *testing.T) {
 	cfg := &SetupDatabaseConfig{
 		Host:     "db",

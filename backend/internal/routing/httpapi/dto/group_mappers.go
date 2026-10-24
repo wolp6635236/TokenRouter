@@ -6,6 +6,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
+// group_mappers.go converts routing groups into administrative and localized
+// user response values.
+// Group responses carry requestable model choices and effective protocol
+// admission alongside stored product settings. Administrative mapping adds
+// editable policy and provider counts, while optional language resolution
+// replaces user-facing text and records which language supplied it for the
+// caller.
+
+// GroupFromRoutingBase maps a nonnil routing group into user-visible fields.
+// It allocates Models and effective AllowedProtocols slices, while
+// model/protocol maps, reasoning mappings, and fallback pointers retain
+// source storage. Treat those retained values as read-only during response
+// use.
 func GroupFromRoutingBase(g *routing.Group) Group {
 	return Group{
 		Models: append([]string{}, g.Models...), ModelProtocols: g.ModelProtocols,
@@ -40,7 +53,13 @@ func GroupFromRoutingBase(g *routing.Group) Group {
 	}
 }
 
-// AdminGroupFromRouting 将分组转换为管理员 DTO，包含 model_routing 和 provider_count 等内部字段。
+// AdminGroupFromRouting returns administrator settings and provider counts,
+// or nil for a nil source. It copies scheduler override pointers and the
+// routing policy's model map, allowlist, and recognized feature collections.
+// Localization translations, model routing, custom-list and legacy-scope
+// slices, probe pointers, unsupported dynamic feature values, and storage
+// retained by GroupFromRoutingBase can remain shared. Callers treat those
+// retained values as read-only during response use.
 func AdminGroupFromRouting[A any](g *routing.Group) *AdminGroup[A] {
 	if g == nil {
 		return nil
@@ -69,7 +88,11 @@ func AdminGroupFromRouting[A any](g *routing.Group) *AdminGroup[A] {
 	return out
 }
 
-// GroupFromRouting 将分组转换为用户或管理员的 DTO 字段。
+// GroupFromRouting returns the user-visible DTO, or nil when the source group
+// is nil. When language is supplied, its first value resolves display name
+// and description and adds resolution metadata and saved search texts;
+// otherwise input display text is used. Collection ownership follows
+// GroupFromRoutingBase.
 func GroupFromRouting(g *routing.Group, language ...string) *Group {
 	if g == nil {
 		return nil
@@ -85,7 +108,9 @@ func GroupFromRouting(g *routing.Group, language ...string) *Group {
 	return &out
 }
 
-// GroupCapacityFromSummary 将容量摘要转换为响应字段，nil 返回 nil，零值保持为零。
+// GroupCapacityFromSummary returns a new capacity DTO from aggregate
+// observations. A nil summary remains nil so callers can omit unavailable
+// capacity, while a present summary retains all six values including zero.
 func GroupCapacityFromSummary(v *routing.GroupCapacitySummary) *GroupCapacity {
 	if v == nil {
 		return nil

@@ -13,12 +13,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// A failed provider attempt needs to release its registered session before
+// the idle window expires, letting another session use max_sessions capacity.
+// Redis-backed scenarios check immediate replacement, targeted deletion and
+// successful batch/individual reads after the script cache is flushed.
+
+// SessionLimitCacheSuite exercises session registration cleanup against
+// isolated Redis key namespaces.
 type SessionLimitCacheSuite struct {
-	IntegrationRedisSuite
-	cache scheduler.SessionLimitCache
+	IntegrationRedisSuite // namespaced Redis test fixture
+	// cache is recreated after the namespaced client in SetupTest, giving each
+	// method independent session keys with a five-minute default.
+	cache scheduler.SessionLimitCache // session limit test subject
 }
 
-// TestSessionBatchAfterScriptFlush 检查 Redis 丢失脚本缓存后，批量读取仍返回已有的活动会话。
+// TestSessionBatchAfterScriptFlush registers a session before clearing
+// Redis's script cache. It checks batch counts for present and absent
+// providers, followed by a successful individual refresh and count.
 func TestSessionBatchAfterScriptFlush(t *testing.T) {
 	ctx := context.Background()
 	rdb := testRedis(t)
@@ -26,6 +37,8 @@ func TestSessionBatchAfterScriptFlush(t *testing.T) {
 	allowed, err := cache.RegisterSession(ctx, 91001, "session-a", 2, time.Minute)
 	require.NoError(t, err)
 	require.True(t, allowed)
+	// Clear loaded scripts while leaving the registered member in Redis so the
+	// next queries exercise script-cache recovery with existing session state.
 	require.NoError(t, rdb.ScriptFlush(ctx).Err())
 
 	counts, err := cache.GetActiveSessionCountBatch(ctx, []int64{91001, 91002}, nil)
@@ -33,39 +46,42 @@ func TestSessionBatchAfterScriptFlush(t *testing.T) {
 	require.Equal(t, 1, counts[91001])
 	require.Equal(t, 0, counts[91002])
 
-	// 后续单次活动刷新复用该注册项和空闲窗口。
+	// A subsequent individual refresh keeps the same registration active.
 	require.NoError(t, cache.RefreshSession(ctx, 91001, "session-a", time.Minute))
 	count, err := cache.GetActiveSessionCount(ctx, 91001)
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
 }
 
+// SetupTest creates this method's namespaced Redis fixture and session cache
+// with a five-minute default. The embedded fixture registers client and key
+// cleanup with the current test.
 func (s *SessionLimitCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
 	s.cache = NewSessionLimitCache(s.rdb, 5)
 }
 
-// TestUnregisterSession_FreesSlotForNewSession 检查 max_sessions=1 时释放会话 A 后，会话 B 能立即注册。
-// 转发失败的请求若未注销，会话槽会占用整个空闲超时窗口（默认 5 分钟）。
+// TestUnregisterSession_FreesSlotForNewSession registers session A at
+// capacity one and initially rejects B. It checks that deleting A lets B
+// register immediately and leaves one active session.
 func (s *SessionLimitCacheSuite) TestUnregisterSession_FreesSlotForNewSession() {
 	const providerID = int64(101)
 	maxSessions := 1
 	idleTimeout := 5 * time.Minute
 
-	// 会话 A 注册成功（请求开始转发）
 	allowed, err := s.cache.RegisterSession(s.ctx, providerID, "session-A", maxSessions, idleTimeout)
 	s.RequireNoError(err, "RegisterSession A")
 	s.True(allowed, "首个会话应被允许")
 
-	// A 仍占用会话槽，空闲超时窗口内的新会话 B 被拒。
 	allowed, err = s.cache.RegisterSession(s.ctx, providerID, "session-B", maxSessions, idleTimeout)
 	s.RequireNoError(err, "RegisterSession B before release")
 	s.False(allowed, "槽位被 A 占用时新会话应被拒绝")
 
-	// 请求最终失败：立即释放 A 的会话注册（不等待空闲超时）
+	// Model a failed forwarding attempt by removing A's registration
+	// immediately; the next B admission verifies this cleanup releases
+	// idle-window capacity.
 	s.RequireNoError(s.cache.UnregisterSession(s.ctx, providerID, "session-A"), "UnregisterSession A")
 
-	// A 释放后 B 立即可注册，无需等待空闲超时
 	allowed, err = s.cache.RegisterSession(s.ctx, providerID, "session-B", maxSessions, idleTimeout)
 	s.RequireNoError(err, "RegisterSession B after release")
 	s.True(allowed, "释放后新会话应立即可注册")
@@ -75,8 +91,9 @@ func (s *SessionLimitCacheSuite) TestUnregisterSession_FreesSlotForNewSession() 
 	s.Equal(1, count, "释放后活跃会话数应为 1（仅 B）")
 }
 
-// TestUnregisterSession_IdempotentAndMissing 验证释放操作幂等：
-// 重复释放与释放不存在的会话均不应报错。
+// TestUnregisterSession_IdempotentAndMissing releases a missing session twice
+// and also releases an empty ID. It checks successful cleanup calls for those
+// inputs through the Redis adapter.
 func (s *SessionLimitCacheSuite) TestUnregisterSession_IdempotentAndMissing() {
 	const providerID = int64(102)
 
@@ -86,7 +103,9 @@ func (s *SessionLimitCacheSuite) TestUnregisterSession_IdempotentAndMissing() {
 	s.RequireNoError(s.cache.UnregisterSession(s.ctx, providerID, ""), "空 sessionUUID 应为 no-op")
 }
 
-// TestUnregisterSession_OnlyTargetsSpecifiedSession 检查指定会话被移除后，同提供商的其他会话仍然活跃。
+// TestUnregisterSession_OnlyTargetsSpecifiedSession registers two sessions
+// before removing one of them. It checks that the removed member is inactive
+// while the peer registration remains active.
 func (s *SessionLimitCacheSuite) TestUnregisterSession_OnlyTargetsSpecifiedSession() {
 	const providerID = int64(103)
 	maxSessions := 2
@@ -109,6 +128,9 @@ func (s *SessionLimitCacheSuite) TestUnregisterSession_OnlyTargetsSpecifiedSessi
 	s.True(active, "B 不应受影响")
 }
 
+// TestSessionLimitCacheSuite runs the Redis-backed registration and
+// unregistration scenarios in the suite. Its per-method fixture isolates
+// session keys and owns their cleanup after each test.
 func TestSessionLimitCacheSuite(t *testing.T) {
 	suite.Run(t, new(SessionLimitCacheSuite))
 }

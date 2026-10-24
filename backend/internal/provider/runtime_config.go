@@ -10,26 +10,52 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 )
 
+// runtime_config.go interprets provider session, spending, RPM, and queue
+// settings for runtime consumers.
+// Anthropic session, spending, and RPM eligibility read scalar settings from
+// each provider's Extra map. Spending-window and RPM classifications share
+// the billing allowance values, letting consumers distinguish ordinary
+// admission from capacity reserved for existing sessions. The readers return
+// parsed configuration for the scheduler and administrative display to apply.
+//
+// Extra contains both current queue modes and a legacy enable flag. A
+// recognized current mode selects its policy, an invalid nonempty current
+// mode falls back to global configuration. An absent, empty, or non-string
+// current mode permits the legacy flag to select serialization. Numeric
+// readers also retain their own default rules: RPM activation requires a
+// positive base, while reserve calculation can honor a positive override even
+// with a disabled base.
+
+// These billing allowance aliases give provider RPM callers the same
+// ordinary, sticky-session, and blocked categories used for spending-window
+// decisions.
 const (
-	WindowCostSchedulable    = billing.WindowCostSchedulable
-	WindowCostStickyOnly     = billing.WindowCostStickyOnly
-	WindowCostNotSchedulable = billing.WindowCostNotSchedulable
+	WindowCostSchedulable    = billing.WindowCostSchedulable    // ordinary requests admitted
+	WindowCostStickyOnly     = billing.WindowCostStickyOnly     // existing sessions admitted
+	WindowCostNotSchedulable = billing.WindowCostNotSchedulable // all requests blocked
 )
 
-// RuntimeConfig 为规则计算提供当前配置和窗口数据。
-// 凭据不会进入这个只读配置输入。
+// RuntimeConfig borrows provider scheduling settings and recorded spending
+// bounds for local policy readers. Keep Extra and pointed-to bounds stable
+// while a reader evaluates them.
 type RuntimeConfig struct {
-	Extra              map[string]any `json:"-"`
-	Concurrency        int
-	SessionWindowStart *time.Time
-	SessionWindowEnd   *time.Time
+	Extra       map[string]any `json:"-"` // borrowed provider scheduling settings
+	Concurrency int            // configured provider concurrency capacity
+	// SessionWindowStart and SessionWindowEnd supply the stored spending
+	// interval. Billing retains the start only when both pointers exist and the
+	// end is future relative to its supplied clock.
+	SessionWindowStart *time.Time // recorded spending-window start instant
+	SessionWindowEnd   *time.Time // recorded spending-window end instant
 }
 
-// WindowCostSchedulability 窗口费用调度状态。
+// WindowCostSchedulability aliases billing's ordinary, sticky-session, and
+// blocked admission categories.
 type WindowCostSchedulability = billing.WindowCostSchedulability
 
-// SanitizeManagedBaseRPM 对 extra map 中的 base_rpm 值进行范围校验和归一化。
-// 负值归零，超过 10000 截断为 10000。extra 为 nil 或不含 base_rpm 时无操作。
+// SanitizeManagedBaseRPM replaces an existing base_rpm value with its parsed
+// integer bounded to zero through ten thousand. Nil maps and absent keys stay
+// unchanged; callers synchronize access because the supplied map is modified
+// directly.
 func SanitizeManagedBaseRPM(extra map[string]any) {
 	if extra == nil {
 		return
@@ -38,6 +64,8 @@ func SanitizeManagedBaseRPM(extra map[string]any) {
 	if !ok {
 		return
 	}
+	// Managed provider writes bound this setting before storing Extra so later
+	// rate eligibility receives the administration-supported RPM range.
 	v := ParseExtraInt(raw)
 	if v < 0 {
 		v = 0
@@ -47,8 +75,10 @@ func SanitizeManagedBaseRPM(extra map[string]any) {
 	extra["base_rpm"] = v
 }
 
-// GetMaxSessions 获取最大并发会话数
-// 返回 0 表示未启用。
+// GetMaxSessions returns the parsed max_sessions setting or zero when absent
+// or unsupported. Selection and administrative consumers activate their
+// session-count checks for positive limits; this reader passes negative
+// parsed values through.
 func (a *RuntimeConfig) GetMaxSessions() int {
 	if a.Extra == nil {
 		return 0
@@ -59,8 +89,10 @@ func (a *RuntimeConfig) GetMaxSessions() int {
 	return 0
 }
 
-// GetSessionIdleTimeoutMinutes 获取会话空闲超时分钟数
-// 默认值为 5 分钟。
+// GetSessionIdleTimeoutMinutes returns a positive parsed idle duration in
+// minutes, defaulting to five. Positive values are unbounded here, so session
+// consumers keep the minute-to-duration conversion representable before
+// counting retained provider activity.
 func (a *RuntimeConfig) GetSessionIdleTimeoutMinutes() int {
 	if a.Extra == nil {
 		return 5
@@ -74,8 +106,9 @@ func (a *RuntimeConfig) GetSessionIdleTimeoutMinutes() int {
 	return 5
 }
 
-// GetBaseRPM 获取基础 RPM 限制
-// 返回 0 表示未启用（负数视为无效配置，按 0 处理）。
+// GetBaseRPM returns a positive parsed requests-per-minute base or zero when
+// absent, unsupported, or nonpositive. A zero result lets RPM consumers skip
+// their observed-rate eligibility check.
 func (a *RuntimeConfig) GetBaseRPM() int {
 	if a.Extra == nil {
 		return 0
@@ -89,8 +122,10 @@ func (a *RuntimeConfig) GetBaseRPM() int {
 	return 0
 }
 
-// GetRPMStrategy 获取 RPM 策略
-// "tiered" = 三区模型（默认）, "sticky_exempt" = 粘性豁免。
+// GetRPMStrategy selects sticky_exempt only for that exact stored string,
+// defaulting to tiered. The exempt strategy keeps affinity requests eligible
+// after the base rate is reached; tiered admission also applies the reserve
+// ceiling.
 func (a *RuntimeConfig) GetRPMStrategy() string {
 	if a.Extra == nil {
 		return "tiered"
@@ -103,9 +138,12 @@ func (a *RuntimeConfig) GetRPMStrategy() string {
 	return "tiered"
 }
 
-// GetRPMStickyBuffer 获取 RPM 粘性缓冲数量
-// Cache-driven: buffer = concurrency + maxSessions（覆盖幽灵窗口 + 稳态会话需求）
-// floor = baseRPM / 5（向后兼容 maxSessions=0 且 concurrency=0 场景）。
+// GetRPMStickyBuffer returns the RPM reserve calculated from provider
+// capacity or a positive override. Nil Extra returns zero before policy
+// evaluation; a positive override wins even with a disabled base. Otherwise a
+// nonpositive base returns zero, and nonnegative capacity inputs are summed
+// with a floor of one fifth of base or one request. Supply capacity inputs
+// whose sum fits int because the delegated policy adds them directly.
 func (a *RuntimeConfig) GetRPMStickyBuffer() int {
 	if a.Extra == nil {
 		return 0
@@ -117,14 +155,19 @@ func (a *RuntimeConfig) GetRPMStickyBuffer() int {
 	return policy.RPMStickyBuffer(a.GetBaseRPM(), a.Concurrency, a.GetMaxSessions(), override)
 }
 
-// CheckRPMSchedulability 根据当前 RPM 计数检查调度状态
-// 复用 WindowCostSchedulability 三态：Schedulable / StickyOnly / NotSchedulable。
+// CheckRPMSchedulability classifies an observed request count using the
+// provider's base, reserve, and strategy. Callers decide whether the request
+// qualifies for sticky admission and record selected requests separately from
+// this observation. Supply configuration whose base-plus-reserve sum fits int,
+// as the delegated policy computes that ceiling directly.
 func (a *RuntimeConfig) CheckRPMSchedulability(current int) WindowCostSchedulability {
 	return WindowCostSchedulability(policy.CheckRPM(current, a.GetBaseRPM(), a.GetRPMStickyBuffer(), a.GetRPMStrategy()))
 }
 
-// GetWindowCostLimit 获取 5h 窗口费用阈值（美元）
-// 返回 0 表示未启用。
+// GetWindowCostLimit returns the parsed local spending limit in USD or zero
+// when unavailable. Scheduling and status readers enable their window-cost
+// lookup when the result is positive; parsing does not establish finite-value
+// validity.
 func (a *RuntimeConfig) GetWindowCostLimit() float64 {
 	if a.Extra == nil {
 		return 0
@@ -135,8 +178,10 @@ func (a *RuntimeConfig) GetWindowCostLimit() float64 {
 	return 0
 }
 
-// GetWindowCostStickyReserve 获取粘性会话预留额度（美元）
-// 默认值为 10。
+// GetWindowCostStickyReserve returns a positive parsed sticky spending
+// reserve in USD, defaulting to ten. Billing adds this reserve to the regular
+// limit when classifying admission for sessions already bound to the
+// provider.
 func (a *RuntimeConfig) GetWindowCostStickyReserve() float64 {
 	if a.Extra == nil {
 		return 10.0
@@ -150,15 +195,17 @@ func (a *RuntimeConfig) GetWindowCostStickyReserve() float64 {
 	return 10.0
 }
 
-// GetCurrentWindowStartTime 获取当前有效的窗口开始时间
-// 逻辑：
-// 1. 如果窗口未过期（SessionWindowEnd 存在且在当前时间之后），使用记录的 SessionWindowStart
-// 2. 否则（窗口过期或未设置），使用新的预测窗口开始时间（从当前整点开始）。
+// GetCurrentWindowStartTime returns the recorded start when both bounds exist
+// and the end is future. Otherwise billing selects the current hour in now's
+// location; a retained start passes through even when zero or future.
 func (a *RuntimeConfig) GetCurrentWindowStartTime(now time.Time) time.Time {
 	return billing.CurrentCostWindowStart(a.SessionWindowStart, a.SessionWindowEnd, now)
 }
 
-// ParseExtraFloat64 从 extra 字段解析 float64 值。
+// ParseExtraFloat64 reads supported native numbers, JSON numbers, and trimmed
+// floating-point strings, returning zero for unsupported or unparseable
+// values. Successful parsing retains NaN and infinity, so consumers validate
+// any finite-value requirement separately.
 func ParseExtraFloat64(value any) float64 {
 	switch v := value.(type) {
 	case float64:
@@ -170,10 +217,14 @@ func ParseExtraFloat64(value any) float64 {
 	case int64:
 		return float64(v)
 	case json.Number:
+		// A failed numeric representation supplies zero so consumers can apply
+		// their own disabled-limit or positive-reserve default rule.
 		if f, err := v.Float64(); err == nil {
 			return f
 		}
 	case string:
+		// Malformed string settings supply zero for the same consumer-specific
+		// activation and reserve-default decisions as unsupported numeric values.
 		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
 			return f
 		}
@@ -181,8 +232,13 @@ func ParseExtraFloat64(value any) float64 {
 	return 0
 }
 
+// ParseExtraTime returns a time from an RFC3339Nano or RFC3339 string, trying
+// those layouts in order. Other types, whitespace-wrapped strings, and parse
+// failures return the zero time for the caller's absent-value handling.
 func ParseExtraTime(value any) time.Time {
 	if s, ok := value.(string); ok {
+		// Try both supported stored timestamp layouts before returning the
+		// zero-time marker that callers use for an absent window observation.
 		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
 			return t
 		}
@@ -193,6 +249,10 @@ func ParseExtraTime(value any) time.Time {
 	return time.Time{}
 }
 
+// ParseExtraInt converts supported int, int64, float64, json.Number values
+// accepted by Int64, and trimmed integer strings to int. In-range finite
+// floats truncate fractional parts; unsupported or failed parsing returns
+// zero, while native conversions perform no range validation.
 func ParseExtraInt(value any) int {
 	switch v := value.(type) {
 	case int:
@@ -200,12 +260,17 @@ func ParseExtraInt(value any) int {
 	case int64:
 		return int(v)
 	case float64:
+		// Whole-number settings discard an in-range float's fractional remainder.
 		return int(v)
 	case json.Number:
+		// Integer syntax is required for whole-number settings; a failed
+		// JSON-number parse becomes zero for the owning reader's default rule.
 		if i, err := v.Int64(); err == nil {
 			return int(i)
 		}
 	case string:
+		// A malformed string cannot supply a whole-number setting, so zero lets the
+		// owning getter select its disabled limit or positive default.
 		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
 			return i
 		}
@@ -213,20 +278,30 @@ func ParseExtraInt(value any) int {
 	return 0
 }
 
-// GetUserMsgQueueMode 获取用户消息队列模式
-// "serialize" = 串行队列, "throttle" = 软性限速, "" = 未设置（使用全局配置）。
+// GetUserMsgQueueMode returns a recognized provider message queue mode or an
+// empty string for global configuration. Serialize and throttle strings are
+// accepted exactly; a nil Extra map also selects the global value.
+//
+// A nonempty current user_msg_queue_mode takes precedence over the legacy
+// boolean, even when the current mode is invalid. Only an empty or
+// unavailable string permits user_msg_queue_enabled=true to select serialize.
+// This distinction prevents an explicitly invalid current choice from
+// accidentally reviving an older enable flag.
 func (a *RuntimeConfig) GetUserMsgQueueMode() string {
 	if a.Extra == nil {
 		return ""
 	}
-	// 优先读取新字段 user_msg_queue_mode（白名单校验，非法值视为未设置）
+	// A nonempty current choice suppresses the legacy flag even when invalid,
+	// keeping the current configuration's global fallback from reviving old
+	// provider-level serialization.
 	if mode, ok := a.Extra["user_msg_queue_mode"].(string); ok && mode != "" {
 		if mode == "serialize" || mode == "throttle" {
 			return mode
 		}
-		return "" // 非法值 fallback 到全局配置
+		return ""
 	}
-	// 向后兼容: user_msg_queue_enabled: true → "serialize"
+	// Consult the legacy boolean after the current string is absent or empty so
+	// persisted older provider settings can still request serialization.
 	if enabled, ok := a.Extra["user_msg_queue_enabled"].(bool); ok && enabled {
 		return "serialize"
 	}

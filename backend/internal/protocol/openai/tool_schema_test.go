@@ -9,8 +9,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_TopLevelFunctionTool 验证 issue #5364 的最小复现体：Codex Desktop 内置 automation_update 带
-// parameters.type = null，upstream 回 400 invalid_function_parameters。
+// TestSanitizeOpenAIResponsesToolParameterTypes_TopLevelFunctionTool supplies
+// a function with null parameter type. Repair selects object while retaining
+// the asserted tool name/description, properties object, model, and request
+// input.
 func TestSanitizeOpenAIResponsesToolParameterTypes_TopLevelFunctionTool(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.6-sol",
@@ -31,16 +33,19 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_TopLevelFunctionTool(t *testi
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.parameters.type").String())
-	// 只改 type，工具其余定义原样保留。
+	// Check the tool name, description, and property-container shape.
 	require.Equal(t, "automation_update", gjson.GetBytes(sanitized, "tools.0.name").String())
 	require.Equal(t, "Update an automation.", gjson.GetBytes(sanitized, "tools.0.description").String())
 	require.True(t, gjson.GetBytes(sanitized, "tools.0.parameters.properties").IsObject())
-	// 请求体其余字段不受影响。
+	// Check the model and input values supplied by this fixture.
 	require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(sanitized, "model").String())
 	require.Equal(t, "Reply with OK.", gjson.GetBytes(sanitized, "input").String())
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_ValidSchemaUntouched 检查合法 Schema 返回 changed=false 和原字节，保留 prompt cache 前缀。
+// TestSanitizeOpenAIResponsesToolParameterTypes_ValidSchemaUntouched supplies
+// an already-object parameter root. The sanitizer reports no change and
+// returns exactly equal bytes, preserving this fixture's serialized request
+// prefix.
 func TestSanitizeOpenAIResponsesToolParameterTypes_ValidSchemaUntouched(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","name":"ok","parameters":{"type":"object","properties":{}}}]}`)
 
@@ -51,7 +56,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_ValidSchemaUntouched(t *testi
 	require.Equal(t, string(body), string(sanitized))
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_MissingTypeNotInvented 检查缺失 type 的 Schema 保持原样，缺失表示允许任意类型。
+// TestSanitizeOpenAIResponsesToolParameterTypes_MissingTypeNotInvented
+// supplies properties without a root type or union. Sanitization reports no
+// change, and the resulting root still has no type key.
 func TestSanitizeOpenAIResponsesToolParameterTypes_MissingTypeNotInvented(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","name":"ok","parameters":{"properties":{}}}]}`)
 
@@ -62,6 +69,10 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_MissingTypeNotInvented(t *tes
 	require.False(t, gjson.GetBytes(sanitized, "tools.0.parameters.type").Exists())
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_ObjectOnlyRootUnion supplies
+// three function roots with qualifying explicit or nested object unions. Each
+// gains object type, and the asserted nested string-property type remains
+// unchanged.
 func TestSanitizeOpenAIResponsesToolParameterTypes_ObjectOnlyRootUnion(t *testing.T) {
 	body := []byte(`{"tools":[
 		{"type":"function","name":"automation_update","parameters":{"oneOf":[{"type":"object","properties":{"id":{"type":"string"}}},{"anyOf":[{"type":"object"},{"type":"object","properties":{}}]}]}},
@@ -79,6 +90,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_ObjectOnlyRootUnion(t *testin
 	require.Equal(t, "string", gjson.GetBytes(sanitized, "tools.0.parameters.oneOf.0.properties.id.type").String())
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_EscapedUnionKeyword escapes
+// part of the root oneOf key in raw JSON. The decoded union still qualifies
+// and produces a reported object-type insertion.
 func TestSanitizeOpenAIResponsesToolParameterTypes_EscapedUnionKeyword(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","name":"other","parameters":{"one\u004ff":[{"type":"object"}]}}]}`)
 
@@ -89,10 +103,14 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_EscapedUnionKeyword(t *testin
 	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.parameters.type").String())
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_ObjectUnionMissingTypeSafetyBoundary
+// supplies mixed, unproven, empty, and existing-null union roots. The first
+// three retain equal bytes; the existing null follows the separate object
+// replacement rule.
 func TestSanitizeOpenAIResponsesToolParameterTypes_ObjectUnionMissingTypeSafetyBoundary(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
+		name string // schema sanitizer fixture label
+		body string // raw request JSON fixture
 	}{
 		{name: "mixed union", body: `{"tools":[{"type":"function","name":"automation_update","parameters":{"oneOf":[{"type":"object"},{"type":"string"}]}}]}`},
 		{name: "unproven branch", body: `{"tools":[{"type":"function","name":"automation_update","parameters":{"oneOf":[{"properties":{}}]}}]}`},
@@ -115,8 +133,10 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_ObjectUnionMissingTypeSafetyB
 	}
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_NestedHistoryTools 验证多轮历史：工具定义沉进 input 后，upstream 报错路径形如
-// input[N].tools[i].tools[j].parameters，两层都要修。
+// TestSanitizeOpenAIResponsesToolParameterTypes_NestedHistoryTools places
+// declarations under an additional_tools input item and namespace. Selected
+// null roots become object, while the carrier parameter, valid neighbor, and
+// message text stay unchanged.
 func TestSanitizeOpenAIResponsesToolParameterTypes_NestedHistoryTools(t *testing.T) {
 	body := []byte(`{
 		"input": [
@@ -147,13 +167,14 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_NestedHistoryTools(t *testing
 	require.Equal(t, "object", gjson.GetBytes(sanitized, "input.1.tools.0.tools.1.parameters.type").String())
 	require.Equal(t, "object", gjson.GetBytes(sanitized, "input.1.tools.1.parameters.type").String())
 	require.Equal(t, "null", gjson.GetBytes(sanitized, "input.1.parameters.type").Raw)
-	// 原本合法的兄弟条目保持不变。
+	// Check the valid neighbor's type and the preceding message text.
 	require.Equal(t, "object", gjson.GetBytes(sanitized, "input.1.tools.0.tools.0.parameters.type").String())
 	require.Equal(t, "hi", gjson.GetBytes(sanitized, "input.0.content").String())
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_ChatCompletionsShape 验证 ChatCompletions 形态的工具（{type:"function", function:{...}}）同样可能出现在
-// Responses 请求里，见 normalizeCodexTools。
+// TestSanitizeOpenAIResponsesToolParameterTypes_ChatCompletionsShape wraps a
+// function definition inside a Chat-style function object. Its null parameter
+// type becomes object, and the wrapped function name remains equal.
 func TestSanitizeOpenAIResponsesToolParameterTypes_ChatCompletionsShape(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"legacy","parameters":{"type":null}}}]}`)
 
@@ -165,6 +186,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_ChatCompletionsShape(t *testi
 	require.Equal(t, "legacy", gjson.GetBytes(sanitized, "tools.0.function.name").String())
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_InputItemShapes places direct
+// and wrapped functions in the input array. Both root parameter types become
+// object even when type follows parameters in member order.
 func TestSanitizeOpenAIResponsesToolParameterTypes_InputItemShapes(t *testing.T) {
 	body := []byte(`{"input":[{"parameters":{"type":null},"name":"direct","type":"function"},{"function":{"name":"wrapped","parameters":{"type":null}},"type":"function"}]}`)
 
@@ -176,6 +200,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_InputItemShapes(t *testing.T)
 	require.Equal(t, "object", gjson.GetBytes(sanitized, "input.1.function.parameters.type").String())
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_DoesNotTreatMessagesAsTools
+// puts familiar parameter/function keys in a message and its metadata. The
+// sanitizer reports no change and returns exactly equal request bytes.
 func TestSanitizeOpenAIResponsesToolParameterTypes_DoesNotTreatMessagesAsTools(t *testing.T) {
 	body := []byte(`{"input":[{"type":"message","role":"user","parameters":{"type":null},"function":{"parameters":{"type":null}},"metadata":{"parameters":{"type":null}}}]}`)
 
@@ -186,6 +213,10 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_DoesNotTreatMessagesAsTools(t
 	require.Equal(t, string(body), string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_PreservesUntouchedBytes mixes
+// large numeric spelling and escaped text with one null root. Exact equality
+// requires the expected single replacement while retaining all other
+// serialized bytes.
 func TestSanitizeOpenAIResponsesToolParameterTypes_PreservesUntouchedBytes(t *testing.T) {
 	body := []byte("{\n  \"z\":1e+999, \"integer\":900719925474099312345, \"escaped\":\"\\u003chtml\\u003e\", \"tools\":[{\"parameters\":{\"properties\":{}, \"type\" : null},\"name\":\"x\"}], \"a\":-0.00\n}")
 	want := []byte("{\n  \"z\":1e+999, \"integer\":900719925474099312345, \"escaped\":\"\\u003chtml\\u003e\", \"tools\":[{\"parameters\":{\"properties\":{}, \"type\" : \"object\"},\"name\":\"x\"}], \"a\":-0.00\n}")
@@ -197,6 +228,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_PreservesUntouchedBytes(t *te
 	require.Equal(t, string(want), string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_EscapedKey escapes a letter in
+// the parameter type key. Exact output equality checks that the key spelling
+// remains and its null value becomes object.
 func TestSanitizeOpenAIResponsesToolParameterTypes_EscapedKey(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","parameters":{"ty\u0070e":null}}]}`)
 
@@ -207,6 +241,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_EscapedKey(t *testing.T) {
 	require.Equal(t, `{"tools":[{"type":"function","parameters":{"ty\u0070e":"object"}}]}`, string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolParameterTypes_DuplicateTypeIsAmbiguousNoOp
+// supplies repeated type keys, including an escaped duplicate and repeated
+// nulls. Every fixture reports no change and retains exact source bytes.
 func TestSanitizeOpenAIResponsesToolParameterTypes_DuplicateTypeIsAmbiguousNoOp(t *testing.T) {
 	for _, body := range [][]byte{
 		[]byte(`{"tools":[{"type":"function","parameters":{"type":null,"type":"string"}}]}`),
@@ -220,11 +257,15 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_DuplicateTypeIsAmbiguousNoOp(
 	}
 }
 
+// TestSanitizeOpenAIResponsesToolSchemas_InvalidAndTrailingJSON combines
+// trailing garbage and invalid UTF-8 with sanitizer-eligible fixtures. Each
+// selected sanitizer returns an error and reports that no valid repair was
+// published.
 func TestSanitizeOpenAIResponsesToolSchemas_InvalidAndTrailingJSON(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		body []byte
-		call func([]byte) ([]byte, bool, error)
+		name string                             // schema sanitizer fixture label
+		body []byte                             // raw request JSON fixture
+		call func([]byte) ([]byte, bool, error) // selected schema sanitizer function
 	}{
 		{"null_type_trailing", []byte(`{"tools":[{"parameters":{"type":null}}]} trailing`), SanitizeToolParameterTypes},
 		{"pattern_trailing", []byte(`{"tools":[{"parameters":{"pattern":"(?=x)"}}]} trailing`), SanitizeToolSchemaPatterns},
@@ -238,7 +279,9 @@ func TestSanitizeOpenAIResponsesToolSchemas_InvalidAndTrailingJSON(t *testing.T)
 	}
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_OnlyOffendingIndexRewritten 验证索引映射：只有坏条目被改，前后兄弟条目按原下标保持不变。
+// TestSanitizeOpenAIResponsesToolParameterTypes_OnlyOffendingIndexRewritten
+// places one null root between two valid declarations. It checks that root's
+// replacement, all three names, and the unchanged declaration count.
 func TestSanitizeOpenAIResponsesToolParameterTypes_OnlyOffendingIndexRewritten(t *testing.T) {
 	body := []byte(`{"tools":[
 		{"type":"function","name":"a","parameters":{"type":"object"}},
@@ -257,11 +300,14 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_OnlyOffendingIndexRewritten(t
 	require.Equal(t, 3, int(gjson.GetBytes(sanitized, "tools.#").Int()))
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_MalformedShapesAreNoOps 验证畸形/非常规形态不得 panic，且一律按不变处理。
+// TestSanitizeOpenAIResponsesToolParameterTypes_MalformedShapesAreNoOps
+// supplies empty input and JSON with unsupported containers, absent roots, or
+// supported type forms. Every fixture returns equal text, no error, and a
+// false change flag.
 func TestSanitizeOpenAIResponsesToolParameterTypes_MalformedShapesAreNoOps(t *testing.T) {
 	cases := []struct {
-		name string
-		body string
+		name string // schema sanitizer fixture label
+		body string // raw request JSON fixture
 	}{
 		{"empty_body", ``},
 		{"no_tools", `{"model":"gpt-5.6-sol","input":"hi"}`},
@@ -285,7 +331,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_MalformedShapesAreNoOps(t *te
 	}
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_DepthGuard 检查超深嵌套在深度上限处停止处理并成功返回。
+// TestSanitizeOpenAIResponsesToolParameterTypes_DepthGuard nests a function
+// inside twelve namespace declarations within the ordinary parser budget.
+// Sanitization must complete without a panic or returned error.
 func TestSanitizeOpenAIResponsesToolParameterTypes_DepthGuard(t *testing.T) {
 	tool := map[string]any{"type": "function", "name": "deep", "parameters": map[string]any{"type": nil}}
 	for range 12 {
@@ -300,7 +348,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_DepthGuard(t *testing.T) {
 	})
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_OutputStaysValidJSON 检查输出为合法 JSON，目标字段之外的内容与输入相同。
+// TestSanitizeOpenAIResponsesToolParameterTypes_OutputStaysValidJSON repairs
+// one null root in a request with unrelated controls. Decoding must succeed,
+// and the asserted model, tool choice, and false storage value remain equal.
 func TestSanitizeOpenAIResponsesToolParameterTypes_OutputStaysValidJSON(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","tool_choice":"none","store":false,"tools":[{"type":"function","name":"automation_update","parameters":{"type":null,"properties":{}}}]}`)
 
@@ -315,8 +365,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_OutputStaysValidJSON(t *testi
 	require.Equal(t, false, decoded["store"])
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_DoesNotMutateInputBody 验证输入 body 是调用方持有的缓冲区（Forward 里 canonicalImageIntentBody 与它同源），
-// 净化返回新切片，输入切片保留原字节。
+// TestSanitizeOpenAIResponsesToolParameterTypes_DoesNotMutateInputBody
+// snapshots caller bytes before a successful null-root repair. The input
+// remains equal to that snapshot while the returned result differs.
 func TestSanitizeOpenAIResponsesToolParameterTypes_DoesNotMutateInputBody(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","tools":[{"type":"function","name":"a","parameters":{"type":null}}]}`)
 	original := append([]byte(nil), body...)
@@ -329,6 +380,9 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_DoesNotMutateInputBody(t *tes
 	require.NotEqual(t, string(original), string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_RemovesLookaroundOnly mixes
+// two lookaround constraints with an ordinary pattern. Both selected pattern
+// keys disappear, and the ordinary pattern keeps its exact string value.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_RemovesLookaroundOnly(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","name":"search","parameters":{"type":"object","properties":{"q":{"type":"string","pattern":"^(?=.*foo)[a-z]+$"},"id":{"type":"string","pattern":"^[a-z]+$"},"z":{"type":"string","pattern":"(?<!bad)ok"}}}}]}`)
 
@@ -340,6 +394,10 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_RemovesLookaroundOnly(t *test
 	require.Equal(t, "^[a-z]+$", gjson.GetBytes(sanitized, "tools.0.parameters.properties.id.pattern").String())
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_PreservesRawDocumentRepresentation
+// combines large numeric spelling, escaped text, whitespace, and one selected
+// pattern. Exact output equality checks the deletion and every retained byte
+// range.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_PreservesRawDocumentRepresentation(t *testing.T) {
 	body := []byte("{\n \"number\":1e+999,\n \"tools\":[{\"parameters\":{\"pattern\":\"(?=drop)\", \"description\":\"\\u003ctag\\u003e\", \"type\":\"string\"}}],\n \"tail\":-0.00\n}")
 	want := []byte("{\n \"number\":1e+999,\n \"tools\":[{\"parameters\":{ \"description\":\"\\u003ctag\\u003e\", \"type\":\"string\"}}],\n \"tail\":-0.00\n}")
@@ -351,6 +409,9 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_PreservesRawDocumentRepresent
 	require.Equal(t, string(want), string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_AllMemberPositions puts a
+// selected pattern first, middle, last, or alone in schema objects. All four
+// pattern keys disappear, while their containing values remain objects.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_AllMemberPositions(t *testing.T) {
 	body := []byte(`{"tools":[{"parameters":{"properties":{"first":{"pattern":"(?=a)","type":"string"},"middle":{"title":"x","pattern":"(?!b)","type":"string"},"last":{"type":"string","pattern":"(?<=c)"},"only":{"pattern":"(?<!d)"}}}}]}`)
 
@@ -364,6 +425,10 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_AllMemberPositions(t *testing
 	}
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_TraversesConservativeSchemaKeywords
+// places lookaround under direct/wrapped history functions and selected schema
+// keywords. The five asserted anyOf/items/$defs/additionalProperties/oneOf
+// paths must lose their pattern keys.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_TraversesConservativeSchemaKeywords(t *testing.T) {
 	body := []byte(`{"input":[{"type":"function","name":"direct","parameters":{"type":"object","properties":{"p":{"anyOf":[{"pattern":"(?=any)"}],"items":{"pattern":"(?!item)"}}},"$defs":{"d":{"pattern":"(?<=def)"}},"additionalProperties":{"pattern":"(?<!additional)"}}},{"type":"function","function":{"name":"wrapped","parameters":{"oneOf":[{"pattern":"(?=wrapped)"}]}}}]}`)
 
@@ -382,6 +447,9 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_TraversesConservativeSchemaKe
 	}
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTraverseMessageMetadata
+// uses familiar schema keys in an untyped input object, a message, and
+// metadata. Sanitization reports no change and retains exact bytes.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTraverseMessageMetadata(t *testing.T) {
 	body := []byte(`{"input":[{"parameters":{"pattern":"(?=missing-type)"}},{"type":"message","parameters":{"pattern":"(?=parameters)"},"function":{"parameters":{"pattern":"(?=function)"}},"metadata":{"tools":[{"type":"function","parameters":{"pattern":"(?=metadata)"}}]}}]}`)
 
@@ -392,6 +460,9 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTraverseMessageMetadat
 	require.Equal(t, string(body), string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_DecodesEscapedLookaround
+// escapes the parenthesis or later lookahead marker characters in two JSON
+// pattern strings. Both fixtures report a change and remove their pattern key.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_DecodesEscapedLookaround(t *testing.T) {
 	for _, pattern := range []string{`\u0028?\u003dfoo`, `(\u003f\u003dfoo)`} {
 		body := []byte(`{"tools":[{"parameters":{"type":"string","pattern":"` + pattern + `"}}]}`)
@@ -402,6 +473,9 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_DecodesEscapedLookaround(t *t
 	}
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_EscapedKey escapes letters in
+// tools, parameters, and pattern keys. Exact output equality checks selected
+// member removal while retaining the surrounding escaped key spellings.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_EscapedKey(t *testing.T) {
 	body := []byte(`{"to\u006fls":[{"par\u0061meters":{"type":"string","pat\u0074ern":"(?=drop)"}}]}`)
 
@@ -412,10 +486,16 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_EscapedKey(t *testing.T) {
 	require.Equal(t, `{"to\u006fls":[{"par\u0061meters":{"type":"string"}}]}`, string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_DuplicateKeysStayValid
+// supplies duplicate patterns with retained or removable values. Both results
+// validate as JSON and match the exact expected retained-member bytes.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_DuplicateKeysStayValid(t *testing.T) {
 	for _, tc := range []struct {
-		body string
-		want string
+		// body and want compare complete byte representations for duplicate-key
+		// pattern deletion. The expected document selects retained members while
+		// keeping punctuation and spelling outside the removed spans.
+		body string // raw request JSON fixture
+		want string // expected patched request bytes
 	}{
 		{
 			`{"tools":[{"parameters":{"pattern":"(?=drop)","pattern":"^[a-z]+$","type":"string"}}]}`,
@@ -434,6 +514,9 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_DuplicateKeysStayValid(t *tes
 	}
 }
 
+// TestSanitizeOpenAIResponsesToolSchemas_DepthLimitReturnsOriginal builds
+// valid JSON nested beyond the parser limit. Sanitization returns no error,
+// reports no change, and keeps the complete source bytes.
 func TestSanitizeOpenAIResponsesToolSchemas_DepthLimitReturnsOriginal(t *testing.T) {
 	body := []byte(`{"tools":[{"parameters":`)
 	for range openAIResponsesToolSchemaMaxDepth + 2 {
@@ -453,6 +536,10 @@ func TestSanitizeOpenAIResponsesToolSchemas_DepthLimitReturnsOriginal(t *testing
 	require.Equal(t, string(body), string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTouchUserInputPattern
+// puts lookaround-like values in ordinary input and metadata objects.
+// Sanitization returns no error, reports no change, and retains exact request
+// bytes.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTouchUserInputPattern(t *testing.T) {
 	body := []byte(`{"input":{"pattern":"(?=keep)"},"metadata":{"pattern":"(?!keep)"}}`)
 	sanitized, changed, err := SanitizeToolSchemaPatterns(body)
@@ -461,6 +548,10 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTouchUserInputPattern(
 	require.Equal(t, string(body), string(sanitized))
 }
 
+// TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTraverseInstanceData
+// surrounds default/example/const/enum data with one editable schema pattern.
+// That pattern disappears, while every asserted instance-data pattern retains
+// its exact string.
 func TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTraverseInstanceData(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","parameters":{"type":"object","properties":{"config":{"type":"object","pattern":"(?=remove)","default":{"pattern":"(?=keep-default)"},"examples":[{"pattern":"(?=keep-example)"}],"const":{"pattern":"(?=keep-const)"},"enum":[{"pattern":"(?=keep-enum)"}]}}}}]}`)
 
@@ -474,6 +565,9 @@ func TestSanitizeOpenAIResponsesToolSchemaPatterns_DoesNotTraverseInstanceData(t
 	require.Equal(t, "(?=keep-enum)", gjson.GetBytes(sanitized, "tools.0.parameters.properties.config.enum.0.pattern").String())
 }
 
+// buildToolSchemaNullTypeBody builds and encodes the requested number of
+// identical null-root function declarations. Callers pass a nonnegative count;
+// encoding failure stops the test before the returned fixture is used.
 func buildToolSchemaNullTypeBody(t *testing.T, hits int) []byte {
 	t.Helper()
 	tools := make([]any, 0, hits)
@@ -489,16 +583,17 @@ func buildToolSchemaNullTypeBody(t *testing.T, hits int) []byte {
 	return body
 }
 
-// TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits 检查命中数增加时，重写次数保持固定。
-//
-// 逐个 sjson.SetBytes 的写法每命中一处就重扫并全量拷贝一次文档，命中 N 处即 N 次
-// 全量拷贝；/v1/responses 的 body 上限是 gateway.max_body_size（默认 256MB），
-// 构造请求可以塞进百万级命中，会被放大成 TB 级 memcpy。这里用分配次数锁死该行为：
-// 命中数放大 500 倍，分配次数不得随之增长。
+// TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits
+// observes allocations for four-tool and two-thousand-tool fixtures. The large
+// case stays below the asserted allocation ceiling and repairs every checked
+// root while retaining its declaration count.
 func TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits(t *testing.T) {
 	small := buildToolSchemaNullTypeBody(t, 4)
 	large := buildToolSchemaNullTypeBody(t, 2000)
 
+	// These bounded valid fixtures exercise successful parsing during allocation
+	// measurement. Later assertions inspect the large result, while these calls
+	// discard values to keep allocation observations focused on the sanitizer.
 	smallAllocs := testing.AllocsPerRun(2, func() {
 		_, _, _ = SanitizeToolParameterTypes(small)
 	})
@@ -506,13 +601,13 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits
 		_, _, _ = SanitizeToolParameterTypes(large)
 	})
 
-	// 命中切片扩容是对数级，留出充裕余量；线性写法在这里会是 2000 量级。
-	// 干净环境实测 large 约 17 allocs，200 是 10 倍余量，同时容忍 CI 慢 pod 上
-	// 包内后台 goroutine（日志/ticker）对进程级 Mallocs 的噪声污染。
+	// Allow room for edit-slice growth while rejecting one allocation per hit.
+	// The ceiling includes headroom for process-wide allocation noise from background
+	// goroutines during AllocsPerRun.
 	require.Less(t, largeAllocs, 200.0,
 		"分配次数随命中数线性增长，说明退回了逐路径全量重写 (small=%v large=%v)", smallAllocs, largeAllocs)
 
-	// 同时确认大 body 的结果确实全部修好了。
+	// Check that the large fixture actually repairs every null type.
 	sanitized, changed, err := SanitizeToolParameterTypes(large)
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -523,6 +618,10 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits
 	})
 }
 
+// BenchmarkSanitizeOpenAIResponsesToolSchemaPatterns_ByteSpanPatch measures
+// repeated removal from a two-thousand-tool request. Input construction
+// finishes before timing, while allocation and byte-throughput reporting cover
+// each sanitizer invocation.
 func BenchmarkSanitizeOpenAIResponsesToolSchemaPatterns_ByteSpanPatch(b *testing.B) {
 	var tools []any
 	for range 2000 {
@@ -535,15 +634,23 @@ func BenchmarkSanitizeOpenAIResponsesToolSchemaPatterns_ByteSpanPatch(b *testing
 			},
 		})
 	}
+	// This fixture contains fresh string-keyed maps, slices, and strings with
+	// no unsupported values or cycles, so standard JSON encoding cannot return an error.
 	body, _ := json.Marshal(map[string]any{"model": "gpt-5.6", "tools": tools})
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
 	b.ResetTimer()
+	// The fixed declaration fixture is valid and within parser safety limits.
+	// Discard results here so timing measures the parsing and patch-building call.
 	for range b.N {
 		_, _, _ = SanitizeToolSchemaPatterns(body)
 	}
 }
 
+// BenchmarkSanitizeOpenAIResponsesToolParameterTypes_ByteSpanPatch measures
+// repeated null-root repair on a two-thousand-tool byte fixture. Construction
+// finishes before timing, while allocation and byte-throughput reporting cover
+// each sanitizer invocation.
 func BenchmarkSanitizeOpenAIResponsesToolParameterTypes_ByteSpanPatch(b *testing.B) {
 	body := make([]byte, 0, 256*2000)
 	body = append(body, []byte(`{"tools":[`)...)
@@ -557,6 +664,8 @@ func BenchmarkSanitizeOpenAIResponsesToolParameterTypes_ByteSpanPatch(b *testing
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
 	b.ResetTimer()
+	// The fixed declaration fixture is valid and within parser safety limits.
+	// Discard results here so timing measures the parsing and patch-building call.
 	for range b.N {
 		_, _, _ = SanitizeToolParameterTypes(body)
 	}

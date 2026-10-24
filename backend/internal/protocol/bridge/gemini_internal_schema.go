@@ -7,18 +7,46 @@ import (
 	"strings"
 )
 
-// CleanJSONSchema 清理 JSON Schema，移除 Antigravity/Gemini 不支持的字段
-// 参考 Antigravity-Manager/src-tauri/src/proxy/common/json_schema.rs 实现
-// 按 JSON Schema draft 2020-12 清理 schema，并适配 Gemini v1internal。
+// gemini_internal_schema.go adapts JSON tool schemas to the restricted
+// internal Gemini schema shape.
+// Internal Gemini function schemas use a restricted shape, so richer JSON
+// Schema input is approximated before becoming a declaration. Root definitions
+// expand through their final reference component, allOf contributes fields,
+// and unions or tuple items select one ranked representative instead of
+// retaining every possible validation branch.
+//
+// Cleaning mutates supplied maps and can retain shared values from allOf
+// branches. Unsupported constraints become description hints before the field
+// whitelist removes them; exact lower-case empty objects gain a required
+// reason string. Type normalization and enum conversion then adapt the
+// selected shape. Traversal gives properties priority over items and other
+// containers, and branch fields introduced later are not revisited, so callers
+// cannot treat this conversion as equivalent schema validation or a universal
+// recursive normalizer.
+
+// CleanJSONSchema adapts a caller-owned schema map for internal Gemini
+// function declarations and returns the mutated map, or nil for nil input.
+// Root definitions are removed and used for expansion before recursive
+// approximation.
+//
+// Reference expansion, allOf merging, branch selection, and constraint hints
+// deliberately narrow or loosen the represented validation rules. Input needs
+// acyclic maps/arrays and terminating reference chains because these routines
+// have no cycle guard. Properties-first traversal and later branch insertion
+// can leave some nested constructs unvisited. Union required arrays need
+// comparable values for membership checks; malformed repeated map/slice values
+// can panic before the later string-name filter. Existing aliases observe
+// in-place changes, and merged values can remain shared with source branches.
+// Adapted from Antigravity-Manager/src-tauri/src/proxy/common/json_schema.rs.
 func CleanJSONSchema(schema map[string]any) map[string]any {
 	if schema == nil {
 		return nil
 	}
-	// 0. 预处理：展开 $ref (Schema Flattening)
-	// (Go map 是引用的，直接修改 schema)
+	// Collect and remove root definitions before expansion, so nested references
+	// can use that lookup even after the declaration's definition fields
+	// disappear.
 	flattenRefs(schema, extractDefs(schema))
 
-	// 递归清理
 	cleaned := cleanJSONSchemaRecursive(schema)
 	result, ok := cleaned.(map[string]any)
 	if !ok {
@@ -28,7 +56,10 @@ func CleanJSONSchema(schema map[string]any) map[string]any {
 	return result
 }
 
-// extractDefs 提取并移除定义的 helper。
+// extractDefs removes map-valued root $defs and definitions entries and
+// returns their combined name lookup. Legacy definitions overwrite duplicate
+// $defs names; definition values are shared with their source maps, and
+// differently typed entries remain untouched here.
 func extractDefs(schema map[string]any) map[string]any {
 	defs := make(map[string]any)
 	if d, ok := schema["$defs"].(map[string]any); ok {
@@ -42,34 +73,43 @@ func extractDefs(schema map[string]any) map[string]any {
 	return defs
 }
 
-// flattenRefs 递归展开 $ref。
+// flattenRefs expands references in a caller-owned map using the supplied root
+// definition lookup. It resolves the final slash component, removes a string
+// $ref when definitions exist, and fills keys absent from the referencing map.
+//
+// Copied ordinary JSON maps/arrays isolate expanded values before later
+// cleanup, while other dynamic values remain shared through deepCopy.
+// Expansion continues through nested maps and map members of arrays. Missing
+// definitions leave the removed reference unrepresented, and an empty lookup
+// skips traversal. Callers supply terminating reference chains and acyclic
+// containers because recursive references are not tracked.
 func flattenRefs(schema map[string]any, defs map[string]any) {
 	if len(defs) == 0 {
-		return // 无需展开
+		return
 	}
 
-	// 检查并替换 $ref
 	if ref, ok := schema["$ref"].(string); ok {
 		delete(schema, "$ref")
-		// 解析引用名 (例如 #/$defs/MyType -> MyType)
+		// Use the final slash component as a root definition name; prefixes and JSON
+		// Pointer escaping are not interpreted by this internal lookup.
 		parts := strings.Split(ref, "/")
 		refName := parts[len(parts)-1]
 
 		if defSchema, exists := defs[refName]; exists {
 			if defMap, ok := defSchema.(map[string]any); ok {
-				// 合并定义内容 (不覆盖现有 key)
+				// Keep keys already supplied at the reference site, and copy recognized
+				// nested JSON containers from missing definition fields before recursive
+				// cleanup mutates them.
 				for k, v := range defMap {
 					if _, has := schema[k]; !has {
-						schema[k] = deepCopy(v) // 深复制后各属性独立修改。
+						schema[k] = deepCopy(v)
 					}
 				}
-				// 递归处理刚刚合并进来的内容
 				flattenRefs(schema, defs)
 			}
 		}
 	}
 
-	// 遍历子节点
 	for _, v := range schema {
 		if subMap, ok := v.(map[string]any); ok {
 			flattenRefs(subMap, defs)
@@ -83,7 +123,10 @@ func flattenRefs(schema map[string]any, defs map[string]any) {
 	}
 }
 
-// deepCopy 深拷贝 (简单实现，仅针对 JSON 类型)。
+// deepCopy recursively copies ordinary map[string]any and []any containers for
+// reference expansion and branch insertion. Other dynamic values are returned
+// as supplied, including shared pointers or named containers; callers supply
+// acyclic JSON-shaped input.
 func deepCopy(src any) any {
 	if src == nil {
 		return nil
@@ -106,40 +149,55 @@ func deepCopy(src any) any {
 	}
 }
 
-// cleanJSONSchemaRecursive 递归清理 JSON Schema。
-// 返回处理后的值 (通常是 input map，但可能修改内部结构)。
+// cleanJSONSchemaRecursive approximates a schema map in place and returns
+// other values unchanged. It merges allOf first, recursively visits properties
+// when present, otherwise items, otherwise generic nested containers, then
+// selects an eligible union branch.
+//
+// Schema-like keys activate constraint hints and a field whitelist. Exact
+// lower-case empty object types gain a required reason parameter before type
+// normalization; required names then retain only string keys present in
+// properties. Recognized type strings/arrays choose a lower-case non-null
+// representation and append a nullable hint. Nonstring enum values become
+// formatted strings and switch the type to string. Fields copied from a
+// selected union after traversal are not recursively cleaned again.
 func cleanJSONSchemaRecursive(value any) any {
 	schemaMap, ok := value.(map[string]any)
 	if !ok {
 		return value
 	}
 
-	// 合并 allOf 的约束。
+	// Merge immediate allOf fields before traversing properties, so newly
+	// contributed properties and required names participate in the following
+	// cleanup phases.
 	mergeAllOf(schemaMap)
 
-	// 递归清理子项。
+	// A properties map selects property traversal even when empty; items and
+	// generic sibling containers are visited only when that properties shape is
+	// absent.
 	if props, ok := schemaMap["properties"].(map[string]any); ok {
 		for _, v := range props {
 			cleanJSONSchemaRecursive(v)
 		}
-		// 子项清理同时更新 type 和 description。
 	} else if items, ok := schemaMap["items"]; ok {
-		// Gemini 的 items 使用单个 Schema 对象进行列表验证。
+		// Internal item conversion replaces tuple arrays with one representative
+		// schema, so positional tuple constraints do not survive as separate element
+		// validators.
 		if itemsArr, ok := items.([]any); ok {
-			// 策略：将元组 [A, B] 视为 A、B 中的最佳匹配项。
+			// Use the highest-ranked member as the shared item shape; first-rank ties
+			// retain input order and may select a malformed or nil value.
 			best := extractBestSchemaFromUnion(itemsArr)
 			if best == nil {
-				// 回退到通用字符串
+				// A nil selected member needs a concrete item object for this converter;
+				// substitute string when an empty or zero-ranked selection provides none.
 				best = map[string]any{"type": "string"}
 			}
-			// 用选出的 Schema 对象替换元组数组。
 			cleanedBest := cleanJSONSchemaRecursive(best)
 			schemaMap["items"] = cleanedBest
 		} else {
 			cleanJSONSchemaRecursive(items)
 		}
 	} else {
-		// 遍历所有值递归
 		for _, v := range schemaMap {
 			if _, isMap := v.(map[string]any); isMap {
 				cleanJSONSchemaRecursive(v)
@@ -151,7 +209,9 @@ func cleanJSONSchemaRecursive(value any) any {
 		}
 	}
 
-	// 合并 anyOf/oneOf 联合类型的属性。
+	// Missing, nonstring, or empty type and exact object permit anyOf, then oneOf,
+	// representative selection; other type strings keep their own fields until
+	// the whitelist removes union keys.
 	var unionArray []any
 	typeStr, _ := schemaMap["type"].(string)
 	if typeStr == "" || typeStr == "object" {
@@ -162,10 +222,12 @@ func cleanJSONSchemaRecursive(value any) any {
 		}
 	}
 
+	// The selected map contributes missing fields and properties while required
+	// names are combined; parent fields win, and introduced branch fields receive
+	// no second recursive pass.
 	if len(unionArray) > 0 {
 		if bestBranch := extractBestSchemaFromUnion(unionArray); bestBranch != nil {
 			if bestMap, ok := bestBranch.(map[string]any); ok {
-				// 合并分支内容
 				for k, v := range bestMap {
 					if k == "properties" {
 						targetProps, _ := schemaMap["properties"].(map[string]any)
@@ -183,8 +245,9 @@ func cleanJSONSchemaRecursive(value any) any {
 					} else if k == "required" {
 						targetReq, _ := schemaMap["required"].([]any)
 						if sourceReq, ok := v.([]any); ok {
+							// Membership compares interface values before the later required-name
+							// filter; valid string entries avoid equality panics from repeated compound values.
 							for _, rv := range sourceReq {
-								// 简单的去重添加
 								exists := slices.Contains(targetReq, rv)
 								if !exists {
 									targetReq = append(targetReq, rv)
@@ -200,7 +263,9 @@ func cleanJSONSchemaRecursive(value any) any {
 		}
 	}
 
-	// 3. [SAFETY] 检查当前对象是否为 JSON Schema 节点
+	// Apply the whitelist only after merging/selection leaves schema-like keys;
+	// generic container maps keep unrelated entries so their property names are
+	// not uniformly filtered.
 	looksLikeSchema := hasKey(schemaMap, "type") ||
 		hasKey(schemaMap, "properties") ||
 		hasKey(schemaMap, "items") ||
@@ -210,10 +275,11 @@ func cleanJSONSchemaRecursive(value any) any {
 		hasKey(schemaMap, "allOf")
 
 	if looksLikeSchema {
-		// 4. [ROBUST] 约束迁移
+		// Record unsupported constraint values as model-readable description hints
+		// before removing their validation fields; the resulting declaration cannot
+		// enforce those original restrictions.
 		migrateConstraints(schemaMap)
 
-		// 按允许的属性集合过滤。
 		allowedFields := map[string]bool{
 			"type":        true,
 			"description": true,
@@ -229,7 +295,8 @@ func cleanJSONSchemaRecursive(value any) any {
 			}
 		}
 
-		// 6. [SAFETY] 处理空 Object
+		// An exact lower-case object with no nonempty property map gains a required
+		// reason string, giving this internal tool declaration one named argument.
 		if t, _ := schemaMap["type"].(string); t == "object" {
 			hasProps := false
 			if props, ok := schemaMap["properties"].(map[string]any); ok && len(props) > 0 {
@@ -246,7 +313,9 @@ func cleanJSONSchemaRecursive(value any) any {
 			}
 		}
 
-		// 7. [SAFETY] Required 字段对齐
+		// Keep required entries only when they are strings naming an existing
+		// property, so removed or malformed names cannot demand an undeclared
+		// argument.
 		if props, ok := schemaMap["properties"].(map[string]any); ok {
 			if req, ok := schemaMap["required"].([]any); ok {
 				var validReq []any
@@ -265,7 +334,9 @@ func cleanJSONSchemaRecursive(value any) any {
 			}
 		}
 
-		// 8. 处理 type 字段 (Lowercase + Nullable 提取)
+		// Choose one lower-case type and represent null alternatives as description
+		// text; type conversion happens after empty-object repair, so later object
+		// defaults do not trigger it.
 		isEffectivelyNullable := false
 		if typeVal, exists := schemaMap["type"]; exists {
 			var selectedType string
@@ -274,12 +345,14 @@ func cleanJSONSchemaRecursive(value any) any {
 				lower := strings.ToLower(v)
 				if lower == "null" {
 					isEffectivelyNullable = true
-					selectedType = "string" // fallback
+					selectedType = "string"
 				} else {
 					selectedType = lower
 				}
 			case []any:
-				// ["string", "null"]
+				// A type array chooses its first non-null string while remembering every
+				// null member; an array containing no usable non-null string becomes
+				// string.
 				for _, t := range v {
 					if ts, ok := t.(string); ok {
 						lower := strings.ToLower(ts)
@@ -296,10 +369,15 @@ func cleanJSONSchemaRecursive(value any) any {
 			}
 			schemaMap["type"] = selectedType
 		} else {
-			// Gemini 需要明确的 type，没有 type 的 schema 按 object 处理。
+			// Schema-like maps lacking type receive object here, after empty-object
+			// argument repair; that late default can therefore leave an object without
+			// a reason property.
 			schemaMap["type"] = "object"
 		}
 
+		// Carry lost null alternatives into a textual nullable hint, reusing
+		// descriptions that already contain the exact lower-case substring to avoid
+		// adding it again.
 		if isEffectivelyNullable {
 			desc, _ := schemaMap["description"].(string)
 			if !strings.Contains(desc, "nullable") {
@@ -311,7 +389,9 @@ func cleanJSONSchemaRecursive(value any) any {
 			}
 		}
 
-		// 9. Enum 值强制转字符串
+		// Convert every nonstring enum member with display formatting, using literal
+		// null for nil; compound members are formatted here rather than rejected as
+		// in native cleanup.
 		if enumVals, ok := schemaMap["enum"].([]any); ok {
 			hasNonString := false
 			for i, val := range enumVals {
@@ -324,7 +404,9 @@ func cleanJSONSchemaRecursive(value any) any {
 					}
 				}
 			}
-			// If we mandated string values, we must ensure type is string
+			// Any converted enum member changes the schema type to string because the
+			// declaration now carries formatted text values, even when its former type
+			// was numeric.
 			if hasNonString {
 				schemaMap["type"] = "string"
 			}
@@ -334,15 +416,29 @@ func cleanJSONSchemaRecursive(value any) any {
 	return schemaMap
 }
 
+// hasKey reports whether a map contains the supplied key, including a key with
+// a nil value.
 func hasKey(m map[string]any, k string) bool {
 	_, ok := m[k]
 	return ok
 }
 
+// migrateConstraints appends present nonnil constraint values to the schema
+// description in a fixed key order. The caller subsequently removes
+// unsupported validation fields, so these hints retain readable restrictions
+// for the model rather than machine-enforced validation.
+//
+// The exact generated suffix is added once, while existing string description
+// text remains ahead of it. Nonstring descriptions contribute no existing text
+// through the string assertion. Values use display formatting and can describe
+// richer structures, but this conversion does not evaluate those constraints
+// or reconstruct equivalent schema fields.
 func migrateConstraints(m map[string]any) {
 	constraints := []struct {
-		key   string
-		label string
+		// key selects the validator value; label names that value in the generated
+		// suffix. The list order determines the hint order within description text.
+		key   string // source schema constraint key
+		label string // generated description hint label
 	}{
 		{"minLength", "minLen"},
 		{"maxLength", "maxLen"},
@@ -365,6 +461,9 @@ func migrateConstraints(m map[string]any) {
 		}
 	}
 
+	// Append the complete ordered hint suffix only when that exact text is
+	// absent, letting repeated cleanup retain one copy of an unchanged constraint
+	// set.
 	if len(hints) > 0 {
 		suffix := fmt.Sprintf(" [Constraint: %s]", strings.Join(hints, ", "))
 		desc, _ := m["description"].(string)
@@ -374,7 +473,16 @@ func migrateConstraints(m map[string]any) {
 	}
 }
 
-// mergeAllOf 合并 allOf。
+// mergeAllOf removes an array-valued allOf and combines its immediate map
+// branches into the parent. Existing parent fields and properties win; later
+// branches win property conflicts, while the first branch supplies other
+// missing fields.
+//
+// Required names are combined as strings with existing string entries kept in
+// order and new names appended in map iteration order. Merged values remain
+// shared with branch maps, and nested allOf keys inside these immediate
+// branches are skipped. This approximates intersecting schemas; later cleanup
+// filters required names against resulting properties.
 func mergeAllOf(m map[string]any) {
 	allOf, ok := m["allOf"].([]any)
 	if !ok {
@@ -386,13 +494,14 @@ func mergeAllOf(m map[string]any) {
 	mergedReq := make(map[string]bool)
 	otherFields := make(map[string]any)
 
+	// Later immediate branches overwrite earlier property values, while
+	// first-seen nonproperty fields are retained; the parent's existing values
+	// take precedence when these collections are applied.
 	for _, sub := range allOf {
 		if subMap, ok := sub.(map[string]any); ok {
-			// Props
 			if props, ok := subMap["properties"].(map[string]any); ok {
 				maps.Copy(mergedProps, props)
 			}
-			// Required
 			if reqs, ok := subMap["required"].([]any); ok {
 				for _, r := range reqs {
 					if s, ok := r.(string); ok {
@@ -400,7 +509,6 @@ func mergeAllOf(m map[string]any) {
 					}
 				}
 			}
-			// Others
 			for k, v := range subMap {
 				if k != "properties" && k != "required" && k != "allOf" {
 					if _, exists := otherFields[k]; !exists {
@@ -411,7 +519,6 @@ func mergeAllOf(m map[string]any) {
 		}
 	}
 
-	// Apply
 	for k, v := range otherFields {
 		if _, exists := m[k]; !exists {
 			m[k] = v
@@ -429,16 +536,18 @@ func mergeAllOf(m map[string]any) {
 			}
 		}
 	}
+	// Keep existing string required names in order and append remaining branch
+	// names once; new-name order follows map iteration, then recursive cleanup
+	// validates membership.
 	if len(mergedReq) > 0 {
 		existReq, _ := m["required"].([]any)
 		var validReqs []any
 		for _, r := range existReq {
 			if s, ok := r.(string); ok {
 				validReqs = append(validReqs, s)
-				delete(mergedReq, s) // already exists
+				delete(mergedReq, s)
 			}
 		}
-		// append new
 		for r := range mergedReq {
 			validReqs = append(validReqs, r)
 		}
@@ -446,11 +555,21 @@ func mergeAllOf(m map[string]any) {
 	}
 }
 
-// extractBestSchemaFromUnion 从 anyOf/oneOf 中选取最佳分支。
+// extractBestSchemaFromUnion returns the first supplied value with the highest
+// scoreSchemaOption rank. Empty input returns nil, and the selected value
+// remains shared with the supplied union array.
+//
+// Structural object hints outrank array hints, then other exact non-null type
+// strings; malformed and untyped values can still win a zero-score tie. A nil
+// first member can therefore remain the result when every member scores zero.
+// Tuple conversion substitutes a string schema for a nil result, while union
+// conversion copies fields only from a selected map.
 func extractBestSchemaFromUnion(unionArray []any) any {
 	var bestOption any
 	bestScore := -1
 
+	// Replace the current selection only for a strictly higher score, so
+	// equal-ranked candidates retain input order and nil can win an all-zero tie.
 	for _, item := range unionArray {
 		score := scoreSchemaOption(item)
 		if score > bestScore {
@@ -461,6 +580,17 @@ func extractBestSchemaFromUnion(unionArray []any) any {
 	return bestOption
 }
 
+// scoreSchemaOption ranks a map for internal tuple and union approximation,
+// using object hints before arrays and other non-null type labels. Non-map
+// values score zero, and structural key presence counts even when its value
+// is nil.
+//
+// properties or exact object yields rank three; items or exact array yields
+// two. Remaining nonempty types other than exact lower-case null yield one,
+// so case and unsupported spellings can affect selection.
+// extractBestSchemaFromUnion keeps the first equal-ranked value, and the
+// selected shape can discard alternatives whose validation differs despite
+// their lower score.
 func scoreSchemaOption(val any) int {
 	m, ok := val.(map[string]any)
 	if !ok {
@@ -468,6 +598,7 @@ func scoreSchemaOption(val any) int {
 	}
 	typeStr, _ := m["type"].(string)
 
+	// Structural hints outrank scalar labels during branch approximation.
 	if hasKey(m, "properties") || typeStr == "object" {
 		return 3
 	}
@@ -480,7 +611,10 @@ func scoreSchemaOption(val any) int {
 	return 0
 }
 
-// DeepCleanUndefined 深度清理值为 "[undefined]" 的字段。
+// DeepCleanUndefined removes map entries whose value is the exact string
+// [undefined] while visiting ordinary nested maps and arrays in place. Array
+// scalar values retain their positions, other dynamic containers are
+// unchanged, and callers supply acyclic shared input.
 func DeepCleanUndefined(value any) {
 	if value == nil {
 		return
@@ -488,6 +622,9 @@ func DeepCleanUndefined(value any) {
 	switch v := value.(type) {
 	case map[string]any:
 		for k, val := range v {
+			// Omit map entries carrying this sentinel from the shared schema; scalar
+			// array sentinels keep their positions because only map entries are
+			// removed.
 			if s, ok := val.(string); ok && s == "[undefined]" {
 				delete(v, k)
 				continue

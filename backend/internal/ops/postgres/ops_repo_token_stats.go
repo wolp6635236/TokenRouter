@@ -9,6 +9,35 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 )
 
+// ops_repo_token_stats.go queries model token statistics with ranked or
+// paginated results and nullable latency measurements.
+// Model rankings count saved usage rows by execution model while token-rate and
+// TTFT measurements use different sample sets. TPS requires complete streaming
+// usage and a positive interval between at least two useful content events.
+// Rows without an estimate still contribute to request and output-token totals.
+// TTFT uses each row's captured event mode and includes measured zero latency.
+//
+// The grouped statistics CTE supplies both the ranked selection and the model
+// total in one statement. A left join keeps that total available when
+// pagination selects no model, with has_item distinguishing the synthetic row
+// from actual items. Nullable rate and TTFT averages remain absent in
+// the response, so callers can distinguish missing measurements from recorded
+// zero. Repository calls expect pagination already normalized by OpsService.
+
+// GetTokenStats returns raw usage statistics grouped by saved execution model,
+// ordered by descending request count and then ascending model. Nonzero ordered
+// endpoints are required, equality is accepted, and platform is trimmed and
+// lowercased. OpsService supplies positive pagination values or a positive
+// TopN; direct repository calls receive no limit normalization. GroupID is
+// retained in the response, while only a positive value adds a SQL predicate.
+// Callers treat that pointed-to identity as read-only while sharing the result.
+//
+// The total counts all grouped models before limiting. A synthetic row
+// preserves that total for an empty page and is excluded from Items, whose
+// empty slice remains available. Token rate averages the usage-derived TPS
+// estimates, latency averages nonnull TTFT values, and nullable averages become
+// nil pointers. Query and scan failures reject the
+// response; the supplied filter is read without mutation.
 func (r *Store) GetTokenStats(ctx context.Context, filter *ops.OpsTokenStatsFilter) (*ops.OpsTokenStatsResponse, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("nil ops repository")
@@ -19,7 +48,7 @@ func (r *Store) GetTokenStats(ctx context.Context, filter *ops.OpsTokenStatsFilt
 	if filter.StartTime.IsZero() || filter.EndTime.IsZero() {
 		return nil, fmt.Errorf("start_time/end_time required")
 	}
-	// 允许 start_time == end_time（结果为空），与 service 层校验口径保持一致。
+	// An empty time range is valid, matching service validation.
 	if filter.StartTime.After(filter.EndTime) {
 		return nil, fmt.Errorf("start_time must be <= end_time")
 	}
@@ -33,6 +62,9 @@ func (r *Store) GetTokenStats(ctx context.Context, filter *ops.OpsTokenStatsFilt
 
 	join, where, baseArgs, next := buildUsageWhere(dashboardFilter, dashboardFilter.StartTime, dashboardFilter.EndTime, 1)
 
+	// Shared expressions apply the same content-window and captured-mode rules as
+	// usage DTOs. SQL averages their eligible samples independently, rounding rate
+	// and TTFT means to two decimals and duration means to whole milliseconds.
 	baseCTE := `
 WITH stats AS (
   SELECT
@@ -40,17 +72,14 @@ WITH stats AS (
     COUNT(*)::bigint AS request_count,
     ROUND(
       AVG(
-        CASE
-          WHEN ul.duration_ms > 0 AND ul.output_tokens > 0
-          THEN ul.output_tokens * 1000.0 / ul.duration_ms
-        END
+        ` + usageTPSSQL("ul") + `
       )::numeric,
       2
     )::float8 AS avg_tokens_per_sec,
-    ROUND(AVG(ul.first_token_ms)::numeric, 2)::float8 AS avg_first_token_ms,
+    ROUND(AVG(` + usageTTFTSQL("ul") + `)::numeric, 2)::float8 AS avg_ttft_ms,
     COALESCE(SUM(ul.output_tokens), 0)::bigint AS total_output_tokens,
     COALESCE(ROUND(AVG(ul.duration_ms)::numeric, 0), 0)::bigint AS avg_duration_ms,
-    COUNT(CASE WHEN ul.first_token_ms IS NOT NULL THEN 1 END)::bigint AS requests_with_first_token
+    COUNT(CASE WHEN ` + usageTTFTSQL("ul") + ` IS NOT NULL THEN 1 END)::bigint AS requests_with_first_token
   FROM usage_logs ul
   ` + join + `
   ` + where + `
@@ -64,7 +93,7 @@ SELECT
   model,
   request_count,
   avg_tokens_per_sec,
-  avg_first_token_ms,
+  avg_ttft_ms,
   total_output_tokens,
   avg_duration_ms,
   requests_with_first_token
@@ -83,14 +112,15 @@ ORDER BY request_count DESC, model ASC`
 		args = append(args, filter.PageSize, offset)
 	}
 
-	// 聚合结果只计算一次；LEFT JOIN 保证空页仍能回传模型总数。
+	// Read the complete model count from the same statistics as the page. LEFT
+	// JOIN supplies one sentinel row when the page contains no model.
 	querySQL += `
 )
 SELECT
   p.model,
   p.request_count,
   p.avg_tokens_per_sec,
-  p.avg_first_token_ms,
+  p.avg_ttft_ms,
   p.total_output_tokens,
   p.avg_duration_ms,
   p.requests_with_first_token,
@@ -104,6 +134,8 @@ ORDER BY p.request_count DESC NULLS LAST, p.model ASC`
 	if err != nil {
 		return nil, err
 	}
+	// Close the cursor after scanning or an early failure; cleanup errors are
+	// suppressed, while query, scan, and iteration errors determine the response.
 	defer func() { _ = rows.Close() }()
 
 	items := make([]*ops.OpsTokenStatsItem, 0, 32)
@@ -132,6 +164,8 @@ ORDER BY p.request_count DESC NULLS LAST, p.model ASC`
 			return nil, err
 		}
 		total = rowTotal
+		// The left-join sentinel carries the total for an empty page. Its nullable
+		// item columns are discarded before constructing a model entry.
 		if !hasItem {
 			continue
 		}
@@ -149,7 +183,7 @@ ORDER BY p.request_count DESC NULLS LAST, p.model ASC`
 		}
 		if avgFirstToken.Valid {
 			v := avgFirstToken.Float64
-			item.AvgFirstTokenMs = &v
+			item.AvgTTFTMs = &v
 		}
 		items = append(items, item)
 	}

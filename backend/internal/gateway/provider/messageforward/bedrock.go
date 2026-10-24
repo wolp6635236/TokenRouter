@@ -13,6 +13,7 @@ import (
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
@@ -21,7 +22,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/bedrock"
 )
 
-// bedrock 转发请求到 AWS Bedrock。
+// bedrock.go prepares Bedrock Messages routes, authentication, beta policy,
+// and response handling.
+// Bedrock model routing selects a source region and an exact upstream
+// identifier before attributes or credentials are prepared. Requests use either
+// an API key or a SigV4 signer, while the executor keeps the selected route
+// through request exchange and response adaptation.
+//
+// Beta policy checks the client header before platform translation, then checks
+// tokens inferred from the translated features before filtering the result.
+// Optional group compatibility rewrites the body and its beta header together.
+// HTTP failures return through the Messages health and error adapter after the
+// platform retry budget, retaining the requested client model separately from
+// the mapped Bedrock model in successful completion metadata.
+
+// bedrock prepares the resolved AWS route, model attributes, beta tokens, and
+// credentials for one Messages attempt. The executor owns successful response
+// cleanup; HTTP failures are classified by the runtime before result
+// conversion.
 func (r *Runtime) bedrock(
 	ctx context.Context,
 	output HTTPBoundary, state *AttemptState,
@@ -39,6 +57,14 @@ func (r *Runtime) bedrock(
 		return nil, err
 	}
 	region, mappedModel := route.SourceRegion, route.ModelID
+	attributes, attributesErr := gatewayprovider.ResolveModelAttributes(ctx, provider, mappedModel, r.dependencies.Attributes, "anthropic_messages")
+	if attributesErr != nil {
+		return nil, attributesErr
+	}
+	body, err = gatewayprovider.ApplyModelAttributeParameters(body, attributes)
+	if err != nil {
+		return nil, err
+	}
 	if mappedModel != reqModel {
 		logging.LegacyPrintf("service.gateway", "[Bedrock] Model mapping: %s -> %s (provider: %s)", reqModel, mappedModel, provider.Record.Name)
 	}
@@ -48,13 +74,15 @@ func (r *Runtime) bedrock(
 		betaHeader = output.RequestHeaders().Get("anthropic-beta")
 	}
 
-	// 准备请求体（注入 anthropic_version/anthropic_beta，移除 Bedrock 不支持的字段，清理 cache_control）
-	betaTokens, err := r.bedrockBetaTokens(ctx, provider, betaHeader, body, mappedModel)
+	// Resolve beta policy before translating the body so blocked client
+	// tokens and inferred platform tokens are checked before the Bedrock
+	// payload is sent.
+	betaTokens, err := r.bedrockBetaTokens(ctx, provider, betaHeader, body, mappedModel, attributes.Rules)
 	if err != nil {
 		return nil, err
 	}
 
-	bedrockBody, err := bedrock.PrepareBedrockRequestBodyWithTokens(body, mappedModel, betaTokens, false)
+	bedrockBody, err := bedrock.PrepareBedrockRequestBodyWithTokens(body, mappedModel, betaTokens, false, attributes.Rules)
 	if err != nil {
 		return nil, fmt.Errorf("prepare bedrock request body: %w", err)
 	}
@@ -64,10 +92,9 @@ func (r *Runtime) bedrock(
 		proxyURL = provider.Record.Proxy.URL()
 	}
 
-	logging.LegacyPrintf("service.gateway", "[Bedrock] 命中 Bedrock 分支: provider=%d name=%s model=%s->%s stream=%v",
+	logging.LegacyPrintf("service.gateway", "[Bedrock] Selected Bedrock forwarding: provider=%d name=%s model=%s->%s stream=%v",
 		provider.Record.ID, provider.Record.Name, reqModel, mappedModel, reqStream)
 
-	// 根据提供商类型选择认证方式
 	var signer *bedrock.BedrockSigner
 	var bedrockAPIKey string
 	if provider.View().IsBedrockAPIKey() {
@@ -116,7 +143,15 @@ func (r *Runtime) bedrock(
 	return converted, nil
 }
 
-// bedrockError 处理 Bedrock 上游 4xx/5xx 错误（failover + 错误响应）。
+// bedrockError selects outer replay or client presentation after a Bedrock HTTP
+// failure. Retry-eligible statuses use exhausted-retry health policy, while
+// other failover statuses use ordinary health policy. A generic provider
+// decision takes precedence over the status-based failover choice.
+//
+// The failover branches retain captured bytes for the returned error and
+// rebuild the reader before health inspection. Health consumes that rebuilt
+// reader, so a subsequent handleError call receives its remaining bytes. The
+// executor owns response cleanup after this callback returns.
 func (r *Runtime) bedrockError(
 	ctx context.Context,
 	resp *http.Response,
@@ -124,7 +159,9 @@ func (r *Runtime) bedrockError(
 	provider *gatewayprovider.ExecutionProvider,
 	mappedModel string,
 ) (*forward.Result, error) {
-	// 同提供商重试耗尽后判断是否切换提供商。
+	// Retain error bytes for the failover signal and rebuild the reader for
+	// health inspection after retry exhaustion. Health can consume that
+	// reader before generic presentation reads it again.
 	if forward.ShouldRetry(provider.View().IsOAuth(), resp.StatusCode) {
 		if forward.ShouldFailover(resp.StatusCode) {
 			respBody, _ := r.readErrorBody(resp)
@@ -155,7 +192,9 @@ func (r *Runtime) bedrockError(
 		return r.handleError(ctx, output, state, provider, resp, true, mappedModel)
 	}
 
-	// 无法在当前提供商重试时，返回换号决定。
+	// Capture this nonretry status for outer replay and rebuild its reader
+	// for failoverHealth. A generic decision then passes the reader's
+	// remaining bytes to handleError.
 	if forward.ShouldFailover(resp.StatusCode) {
 		respBody, _ := r.readErrorBody(resp)
 		_ = resp.Body.Close()
@@ -180,10 +219,13 @@ func (r *Runtime) bedrockError(
 		}
 	}
 
-	// 其余错误按原协议输出。
 	return r.handleError(ctx, output, state, provider, resp, false, mappedModel)
 }
 
+// bedrockOptions binds AWS request credentials and transport to bounded retry
+// callbacks for this provider. Diagnostics use sanitized URLs and optional body
+// detail, while the upstream executor implements retry timing and response
+// closure.
 func (r *Runtime) bedrockOptions(ctx context.Context, output HTTPBoundary, state *AttemptState, provider *gatewayprovider.ExecutionProvider, modelID, region string, stream bool, signer *bedrock.BedrockSigner, apiKey, proxyURL string) (bedrock.RequestOptions, bedrock.RetryPolicy) {
 	options := bedrock.RequestOptions{ModelID: modelID, Region: region, Stream: stream, Signer: signer, APIKey: apiKey, APIKeyMode: provider.View().IsBedrockAPIKey(), Do: func(req *http.Request) (*http.Response, error) {
 		return r.dependencies.Transport.DoWithTLS(req, proxyURL, provider.Record.ID, provider.Record.Concurrency, nil)
@@ -201,28 +243,52 @@ func (r *Runtime) bedrockOptions(ctx context.Context, output HTTPBoundary, state
 	return options, policy
 }
 
-// bedrockBetaTokens 依次校验 Header、转换平台 token，并再次校验转换结果。
-func (r *Runtime) bedrockBetaTokens(ctx context.Context, target *gatewayprovider.ExecutionProvider, header string, body []byte, model string) ([]string, error) {
+// bedrockBetaTokens returns platform beta tokens admitted by the current header
+// and feature policy. Client header blocks are checked before translation,
+// allowing the policy to recognize the client spelling.
+//
+// Bedrock token resolution can translate a beta or infer one from a tool in the
+// body. The resolved token set is checked again for blocks before filtering, so
+// a body-implied feature receives the same policy check as a header feature and
+// the final removal set applies to platform spelling.
+func (r *Runtime) bedrockBetaTokens(ctx context.Context, target *gatewayprovider.ExecutionProvider, header string, body []byte, model string, rules ...modelcatalog.ExecutionRules) ([]string, error) {
 	policy := r.evaluateBeta(ctx, target, header, model)
 	if policy.BlockErr != nil {
 		return nil, policy.BlockErr
 	}
-	tokens := bedrock.ResolveBedrockBetaTokens(header, body, model)
+	// Resolve platform tokens from both the client header and body before
+	// checking injected features, so body-implied beta requirements also
+	// receive block policy evaluation.
+	tokens := bedrock.ResolveBedrockBetaTokens(header, body, model, rules...)
 	if err := r.checkBetaTokens(ctx, tokens, target, model); err != nil {
 		return nil, err
 	}
 	return anthropic.FilterBetaTokens(tokens, policy.FilterSet), nil
 }
 
-// PrepareBedrockCompatibility 在分组映射后清理请求体，并原地更新 Header。
+// PrepareBedrockCompatibility rewrites body and headers when the selected group
+// enables Bedrock compatibility. Nil group, absent policy reader, lookup
+// failure, and disabled policy retain the supplied body and current headers.
+//
+// Body preparation removes unsupported Claude Code fields, adjusts
+// model-specific thinking, applies matching character replacement to tool calls
+// and results, and resolves body beta tokens. The existing nonempty header is
+// then resolved against that prepared body and replaced or removed. Callers
+// supply writable headers and retain the returned bytes for the same request.
 func (r *Runtime) PrepareBedrockCompatibility(ctx context.Context, headers http.Header, body []byte, model string, target *gatewayprovider.ExecutionProvider, groupID *int64) []byte {
 	if groupID == nil || r.dependencies.GroupPolicies == nil {
 		return body
 	}
+	// Read the group compatibility opt-in before rewriting body or headers
+	// so unavailable policy leaves the client preparation input available
+	// for the ordinary path.
 	policy, err := r.dependencies.GroupPolicies.GetGroupPolicy(ctx, *groupID)
 	if err != nil || policy == nil || !policy.IsBedrockCCCompatEnabled(target.Record.Platform) {
 		return body
 	}
+	// Apply the group compatibility body sequence before recomputing its
+	// beta header so fields, thinking blocks, and tool identities use the
+	// Bedrock representation together.
 	body = bedrock.SanitizeBedrockCCFields(body)
 	body = bedrock.SanitizeBedrockThinking(body, model)
 	body = bedrock.SanitizeBedrockToolUseIDs(body)

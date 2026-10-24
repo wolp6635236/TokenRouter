@@ -4,11 +4,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 )
 
+// pricing.go selects charge modes and calculates costs from captured token,
+// media, and search usage. Observed media counts do not by themselves select
+// the charge mode. An effective configured token card can charge image or video
+// usage as tokens, while ordinary media cards charge image units or video
+// seconds. The OpenAI path selects dedicated Alpha Search and audio operations
+// before general token-plus-search handling; the native path gives positive
+// image usage its own first decision.
+//
+// OpenAI token pricing tries the supplied candidates in order, then reports the
+// last failure if none produces a cost. The production candidate selector normally
+// supplies one configured billing identity. A search surcharge cannot conceal a
+// missing model price, while an entirely model-free tool request can charge search
+// alone. Native helpers log calculation errors and return zero-cost placeholders;
+// OpenAI helpers return errors for the recorder's pricing-failure policy.
+
+// CalculateRecordUsageCost selects native-bucket pricing from captured media,
+// audio, or token observations. Callers provide a nonnil result and calculator;
+// a bound resolver also requires a nonnil key when token pricing can be selected.
+// Nil options use a zero pricing instant.
+//
+// Positive image counts prefer configured token mode, another configured mode,
+// then catalogue token evidence or per-image pricing. Audio can use configured
+// per-request units and falls back to operation prices when that configured
+// calculation fails. Other results combine model costs with positive search costs.
+// The supplied multiplier handles token, audio, and search work; imageMultiplier
+// is the separate media factor, so callers choose their applicable funding factors.
 func (s *Recorder) CalculateRecordUsageCost(
 	ctx context.Context,
 	result *Result,
@@ -25,7 +50,8 @@ func (s *Recorder) CalculateRecordUsageCost(
 	if opts == nil {
 		opts = &PricingOptions{}
 	}
-	// 图片生成：共享价格配置定价为令牌计费时走令牌路径，否则走图片计费
+	// The configured mode determines whether counts or measured tokens are charged;
+	// retain image units only after the token-card and catalogue-evidence decisions decline.
 	if result.ImageCount > 0 {
 		if resolved, pricingModel := s.resolveConfigPricingForUsage(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {
 			return s.CalculateTokenCost(ctx, result, apiKey, provider, billingModel, requestedModel, billingModelSource, groupMappedModel, multiplier, opts)
@@ -38,7 +64,8 @@ func (s *Recorder) CalculateRecordUsageCost(
 		return s.CalculateImageCost(ctx, result, apiKey, provider, billingModel, requestedModel, billingModelSource, groupMappedModel, billingModel, nil, imageMultiplier, opts.PricingAt)
 	}
 
-	// 语音用量优先按价格配置的连续单位价格结算，未配置时沿用价格配置通用音频价。
+	// Audio result units already use the operation's measurement scale; a configured
+	// request card can price those units before operation-default resolution is needed.
 	if result.AudioUsage != nil {
 		resolved, pricingModel := s.resolveConfigPricingForUsage(
 			ctx, billingModel, apiKey,
@@ -61,11 +88,14 @@ func (s *Recorder) CalculateRecordUsageCost(
 				return cost
 			}
 		}
+		// Absent or failed native configured audio pricing uses the operation settings
+		// and catalogue defaults, whose missing-price handling remains with the calculator.
 		cfg := groupAudioPriceConfigFromAPIKey(apiKey)
 		return s.billingService.CalculateAudioCost(result.AudioUsage.Mode, result.AudioUsage.DurationOrUnits, cfg, multiplier)
 	}
 
-	// Token 费用与搜索附加费分别计算，搜索不会替代模型本身的 token 费用。
+	// Search retains its own measured operation cost after native model pricing;
+	// positive surcharges add to totals even when that model yielded a zero placeholder.
 	tokenCost := s.CalculateTokenCost(ctx, result, apiKey, provider, billingModel, requestedModel, billingModelSource, groupMappedModel, multiplier, opts)
 	if result.SearchCount > 0 {
 		price := groupSearchPricePer1kFromAPIKey(apiKey)
@@ -84,6 +114,9 @@ func (s *Recorder) CalculateRecordUsageCost(
 	return tokenCost
 }
 
+// ResolveConfigPricing returns configured pricing for the selected model and
+// the key's group snapshot ID. Missing resolver, key, or group yields nil; a
+// catalogue-only resolution also returns nil for caller-specific catalogue handling.
 func (s *Recorder) ResolveConfigPricing(ctx context.Context, billingModel string, apiKey *KeySnapshot) *ResolvedPricing {
 	if s.resolver == nil || apiKey == nil || apiKey.Group == nil {
 		return nil
@@ -96,6 +129,11 @@ func (s *Recorder) ResolveConfigPricing(ctx context.Context, billingModel string
 	return nil
 }
 
+// CalculateImageCost charges native image usage through supplied or resolved
+// configured pricing, then catalogue per-image rates when unconfigured. Callers
+// provide a nonnil result and calculator; configured pricing also requires key.Group.
+// Errors are logged and converted to zero-cost placeholders, whose mode is image
+// on the catalogue-error path.
 func (s *Recorder) CalculateImageCost(
 	ctx context.Context,
 	result *Result,
@@ -135,6 +173,8 @@ func (s *Recorder) CalculateImageCost(
 			Resolved:       resolved,
 		})
 		if err != nil {
+			// Keep an analysis-compatible zero placeholder after configured image failure;
+			// the recorder can retain the image count even though this price was unavailable.
 			s.printf("service.gateway", "Calculate image token cost failed: %v", err)
 			return &CostBreakdown{ActualCost: 0}
 		}
@@ -143,12 +183,24 @@ func (s *Recorder) CalculateImageCost(
 
 	cost, err := s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, multiplier)
 	if err != nil {
+		// Missing catalogue image pricing retains image mode for the measured output
+		// row, leaving the actual charge at zero and reporting the failed price lookup.
 		s.printf("service.gateway", "Calculate image cost failed: %v", err)
 		return &CostBreakdown{BillingMode: string(BillingModeImage)}
 	}
 	return cost
 }
 
+// CalculateTokenCost prices separate native input, cache, output, and image-output
+// buckets for the selected billing model. Nil options use a zero supplied pricing
+// instant, and callers provide a nonnil result and calculator. A bound resolver
+// also requires a nonnil key for its group/catalogue selection.
+//
+// Configured pricing or an available group resolver uses CalculateCostUnified with
+// service tier and final effort. The catalogue path applies a separate max-effort
+// factor after service-tier pricing; a failed second price read leaves that factor
+// at its default. Calculation errors are logged and return a zero token-mode
+// placeholder, allowing measured work to continue into record construction.
 func (s *Recorder) CalculateTokenCost(
 	ctx context.Context,
 	result *Result,
@@ -178,7 +230,8 @@ func (s *Recorder) CalculateTokenCost(
 		opts = &PricingOptions{}
 	}
 
-	// 共享价格配置中的价格优先，计费模型也按该配置选择。
+	// Use the selected model's configured card before catalogue-only calculation;
+	// another route identity cannot supply its price after this source was selected.
 	if resolved, resolvedModel := s.resolveConfigPricingForUsage(ctx, billingModel, apiKey); resolved != nil {
 		gid := apiKey.Group.ID
 		cost, err = s.billingService.CalculateCostUnified(CostInput{
@@ -215,12 +268,16 @@ func (s *Recorder) CalculateTokenCost(
 		default:
 			cost, err = s.billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, serviceTier)
 			if err == nil {
+				// The successful base cost remains usable if this later catalogue read fails;
+				// nil price evidence leaves the optional max-effort factor at one.
 				price, _ := s.billingService.GetModelPricing(billingModel)
 				applyCostBreakdownMultiplier(cost, maxReasoningEffortBillingMultiplier(billingModel, stringValueOrEmpty(result.ReasoningEffort), price))
 			}
 		}
 	}
 	if err != nil {
+		// Preserve measured native usage after a pricing error with a token-mode
+		// zero cost, so record construction can still retain a reconcilable request fact.
 		s.printf("service.gateway", "Calculate cost failed: %v", err)
 		return &CostBreakdown{BillingMode: string(BillingModeToken)}
 	}
@@ -230,6 +287,21 @@ func (s *Recorder) CalculateTokenCost(
 	return cost
 }
 
+// CalculateOpenAIRecordUsageCostAt selects a charge from already separated token
+// buckets and captured operation quantities. Positive Alpha Search calls take the
+// dedicated per-call path before media, audio, or general token processing.
+// Callers provide a calculator and a key when token pricing can use a bound
+// resolver; a nil result still permits supplied model candidates and token buckets.
+//
+// Video and image observations use media pricing unless configured token mode,
+// or qualifying catalogue image-token evidence, chooses tokens. Audio uses
+// configured per-request units or operation prices. These paths use the supplied
+// media/base factors; general token costs use multiplier and pricingAt.
+//
+// Token candidates are tried in order, retaining the last error. Positive search
+// cost is added only after a token cost succeeds when a model was supplied; a
+// model-free tool request can return search cost alone. A wholly unpriced selected
+// model therefore reports an error even when a search surcharge is available.
 func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 	ctx context.Context,
 	result *Result,
@@ -245,8 +317,9 @@ func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 ) (*CostBreakdown, error) {
 	billingModel := firstUsageBillingModel(billingModels)
 	if result != nil && result.WebSearchCalls > 0 {
-		// Codex alpha/search 网页搜索按次计费，使用配置单价，nil 时默认 0.01（$10/1000 次）。
-		// 上游缺少 usage/token 字段，价格单独配置。倍率与图片和视频按次计费相同，按用户专属、分组、系统默认的顺序选择基础倍率，高峰因子在此处排除。
+		// Alpha Search calls select their dedicated operation charge even if other
+		// quantities are present. The calculator reads configured or catalogue defaults;
+		// absent defaults are warned and yield zero rather than a fixed built-in rate.
 		return s.billingService.CalculateWebSearchCost(result.WebSearchCalls, webSearchPricePerCallFromAPIKey(apiKey), webSearchMultiplier), nil
 	}
 	if IsGrokVideoUsageResult(result, billingModels) {
@@ -269,7 +342,8 @@ func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 	}
 
 	if result != nil && result.ImageCount > 0 {
-		// 共享价格配置定价为令牌计费时走令牌路径，否则走图片计费
+		// Positive image quantity can still use a token card; catalogue token pricing
+		// requires observed usage and a failed per-image lookup before this media path declines.
 		resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey)
 		if resolved != nil && resolved.Mode != BillingModeToken {
 			return s.CalculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier)
@@ -279,7 +353,8 @@ func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 		}
 	}
 
-	// Token 成本与搜索附加费分开计算，搜索费不得掩盖 token 定价失败。
+	// Keep the last candidate failure until a model cost succeeds, so a positive
+	// search surcharge cannot turn missing selected-model pricing into a priced request.
 	var tokenCost *CostBreakdown
 	var lastErr error
 	if len(billingModels) > 0 && billingModel != "" {
@@ -326,7 +401,8 @@ func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 			}
 			return nil, fmt.Errorf("calculate OpenAI usage cost failed for billing models %s: %w", strings.Join(billingModels, ","), lastErr)
 		}
-		// 仅搜索且没有模型的纯工具路径允许单独计算搜索费用。
+		// No model was offered for token pricing, so search can describe the complete
+		// tool-only charge; a supplied but unpriced model took the earlier error branch.
 		if searchCost != nil {
 			return searchCost, nil
 		}
@@ -338,30 +414,22 @@ func (s *Recorder) CalculateOpenAIRecordUsageCostAt(
 	if searchCost == nil || (searchCost.TotalCost == 0 && searchCost.ActualCost == 0) {
 		return tokenCost, nil
 	}
-	// 费用由令牌费用与搜索附加费相加。
+
 	tokenCost.TotalCost += searchCost.TotalCost
 	tokenCost.ActualCost += searchCost.ActualCost
 	return tokenCost, nil
 }
 
-func IsGrokVideoBillingModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "grok-imagine-video")
-}
-
+// IsGrokVideoUsageResult reports whether a nonnil result has positive VideoCount.
+// Positive video quantity also qualifies results whose billing model was renamed
+// or whose candidate names identify an unknown model family.
 func IsGrokVideoUsageResult(result *Result, billingModels []string) bool {
-	if result == nil || result.VideoCount <= 0 {
-		return false
-	}
-	// VideoCount 本身就是异步视频完成计费的权威依据。
-	// 存在模型族时优先匹配，但不得因重命名或映射丢失视频计费模式。
-	candidates := append([]string{}, billingModels...)
-	candidates = append(candidates, result.BillingModel, result.Model, result.UpstreamModel)
-	if slices.ContainsFunc(candidates, IsGrokVideoBillingModel) {
-		return true
-	}
-	return true
+	return result != nil && result.VideoCount > 0
 }
 
+// IsUsagePricingUnavailableError recognizes the shared missing-price sentinel
+// through error wrapping and two case-folded legacy message phrases. Nil returns
+// false; other errors are distinguished so RecordOpenAI can return them before settlement.
 func IsUsagePricingUnavailableError(err error) bool {
 	if err == nil {
 		return false
@@ -373,6 +441,11 @@ func IsUsagePricingUnavailableError(err error) bool {
 	return strings.Contains(msg, "no pricing available") || strings.Contains(msg, "pricing not found")
 }
 
+// CalculateOpenAIRecordUsageTokenCostAt delegates one candidate's measured buckets
+// to unified pricing with service tier and final effort. An available group
+// resolver receives pricingAt; the catalogue-only call omits that supplied instant.
+// Callers provide a calculator and handle the returned pricing error. A bound
+// resolver also requires a nonnil key before checking its group.
 func (s *Recorder) CalculateOpenAIRecordUsageTokenCostAt(
 	ctx context.Context,
 	apiKey *KeySnapshot,
@@ -405,6 +478,9 @@ func (s *Recorder) CalculateOpenAIRecordUsageTokenCostAt(
 	})
 }
 
+// ForwardResultReasoningEffort reads the captured final effort as supplied.
+// Nil result or effort pointer returns empty, and this helper does not trim or
+// normalize it; the pricing consumer applies its own effort rules.
 func ForwardResultReasoningEffort(result *Result) string {
 	if result == nil || result.ReasoningEffort == nil {
 		return ""
@@ -412,8 +488,14 @@ func ForwardResultReasoningEffort(result *Result) string {
 	return *result.ReasoningEffort
 }
 
-// imageUsesTokenPricing 仅在上游报告 token 用量且没有按张价时使用该型号的 token 报价。
-// 固定单张预留仍要求按张价，不能把 token 单价当作单张价格。
+// imageUsesTokenPricing reports whether image helpers should select catalogue
+// token pricing when configured pricing is unavailable. Callers provide a
+// calculator and a selected billing model alongside captured size and usage evidence.
+//
+// At least one ordinary, cache, or image bucket must be positive. A successful
+// per-image lookup keeps media pricing; a failed lookup permits token selection
+// only when GetModelPricing succeeds. That successful lookup is enough for this
+// availability check, even when the later token calculation can still fail.
 func (s *Recorder) imageUsesTokenPricing(model, size string, usage TokenUsage) bool {
 	if usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.CacheReadInputTokens <= 0 && usage.CacheCreationInputTokens <= 0 && usage.ImageInputTokens <= 0 && usage.ImageOutputTokens <= 0 {
 		return false
@@ -425,6 +507,9 @@ func (s *Recorder) imageUsesTokenPricing(model, size string, usage TokenUsage) b
 	return err == nil
 }
 
+// CalculateOpenAIImageCost prices a nonnil image result using normalized size,
+// configured card units, or catalogue per-image rates. Callers supply the key and
+// calculator; failures return both a mode-tagged zero breakdown and the pricing error.
 func (s *Recorder) CalculateOpenAIImageCost(ctx context.Context, billingModel string, apiKey *KeySnapshot, result *Result, multiplier float64) (*CostBreakdown, error) {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
 	resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey)
@@ -435,6 +520,8 @@ func (s *Recorder) CalculateOpenAIImageCost(ctx context.Context, billingModel st
 			Resolver: s.resolver, Resolved: resolved,
 		})
 		if err != nil {
+			// Return the attempted card mode with the error so missing-price recording
+			// can retain image metadata while the caller decides whether zero charging applies.
 			s.printf("service.openai_gateway", "Calculate image model card cost failed: %v", err)
 			return &CostBreakdown{BillingMode: string(resolved.Mode)}, err
 		}
@@ -442,11 +529,21 @@ func (s *Recorder) CalculateOpenAIImageCost(ctx context.Context, billingModel st
 	}
 	cost, err := s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, multiplier)
 	if err != nil {
+		// Retain image mode beside the catalogue failure so the recorder can classify
+		// measured media while choosing whether this pricing error allows zero charging.
 		return &CostBreakdown{BillingMode: string(BillingModeImage)}, err
 	}
 	return cost, nil
 }
 
+// CalculateOpenAIVideoCost prices video quantity and normalized resolution or
+// duration. Nonpositive VideoCount defaults to one for direct callers; duration
+// uses eight seconds when absent and retains every positive observed second.
+//
+// A configured video card measures total seconds across outputs, while other card
+// modes receive output count as units. With no configured card, catalogue pricing
+// uses count and duration together. The key and result must be nonnil; failures
+// return a zero breakdown retaining the attempted mode with the pricing error.
 func (s *Recorder) CalculateOpenAIVideoCost(ctx context.Context, billingModel string, apiKey *KeySnapshot, result *Result, multiplier float64) (*CostBreakdown, error) {
 	videoCount := result.VideoCount
 	if videoCount <= 0 {
@@ -457,6 +554,8 @@ func (s *Recorder) CalculateOpenAIVideoCost(ctx context.Context, billingModel st
 	resolved := s.ResolveConfigPricing(ctx, billingModel, apiKey)
 	if resolved != nil {
 		units := float64(videoCount)
+		// Video cards price seconds for each output; count alone is the unit for
+		// other configured modes, so multiply duration only for the video card here.
 		if resolved.Mode == BillingModeVideo {
 			units *= float64(durationSeconds)
 		}
@@ -466,6 +565,8 @@ func (s *Recorder) CalculateOpenAIVideoCost(ctx context.Context, billingModel st
 			Resolver: s.resolver, Resolved: resolved,
 		})
 		if err != nil {
+			// Keep the attempted card mode beside the pricing error, allowing the recorder
+			// to retain completed video dimensions and duration under its missing-price policy.
 			s.printf("service.openai_gateway", "Calculate video model card cost failed: %v", err)
 			return &CostBreakdown{BillingMode: string(resolved.Mode)}, err
 		}
@@ -473,11 +574,17 @@ func (s *Recorder) CalculateOpenAIVideoCost(ctx context.Context, billingModel st
 	}
 	cost, err := s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, multiplier)
 	if err != nil {
+		// Retain video mode beside the catalogue failure so missing-price handling can
+		// keep completed output count, normalized resolution, and duration in its row.
 		return &CostBreakdown{BillingMode: string(BillingModeVideo)}, err
 	}
 	return cost, nil
 }
 
+// FilterCNProviderBillingModelCandidates filters compatible CN pricing candidates
+// that resemble Claude identities unless effective configured overrides exist.
+// Other providers retain the supplied slice; CN processing trims nonblank entries
+// into new slice storage and can return an empty candidate list.
 func (s *Recorder) FilterCNProviderBillingModelCandidates(
 	ctx context.Context,
 	provider *ProviderSnapshot,
@@ -494,7 +601,8 @@ func (s *Recorder) FilterCNProviderBillingModelCandidates(
 			continue
 		}
 		if IsCNProviderClaudeFallbackCandidate(candidate) {
-			// 纯倍率可用于媒体计费，国产模型的 Claude 基础价仍需单独配置。
+			// A compatible CN route must not inherit a Claude-family catalogue price solely
+			// from the caller alias; keep it only when an effective override supplies pricing.
 			resolved := s.ResolveConfigPricing(ctx, candidate, apiKey)
 			if !resolved.HasEffectiveOverridePricing() {
 				continue
@@ -505,6 +613,9 @@ func (s *Recorder) FilterCNProviderBillingModelCandidates(
 	return filtered
 }
 
+// IsCNProviderClaudeFallbackCandidate reports whether a trimmed, case-folded name
+// contains claude, opus, sonnet, or haiku. These substring heuristics identify
+// candidates requiring an effective override for CN billing, including larger custom names.
 func IsCNProviderClaudeFallbackCandidate(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	return strings.Contains(model, "claude") ||
@@ -513,6 +624,16 @@ func IsCNProviderClaudeFallbackCandidate(model string) bool {
 		strings.Contains(model, "haiku")
 }
 
+// OpenAIUsageBillingModel selects the price identity from captured result and
+// routing evidence. Nil result returns empty; a nonblank explicit BillingModel
+// replaces the initial logical/outbound candidate before configured source rules.
+//
+// Upstream source retains that explicit identity when positive image usage can
+// name an image model distinct from the outbound text model. Changed nonblank
+// group mapping and nonblank requested-source evidence can override it. An
+// unchanged group mapping leaves the explicit candidate available, while unknown
+// source values retain the initial choice. Display and raw response model metadata
+// remain separate from this returned pricing identity.
 func OpenAIUsageBillingModel(result *Result, fields PricingUsageFields) string {
 	if result == nil {
 		return ""
@@ -525,7 +646,8 @@ func OpenAIUsageBillingModel(result *Result, fields PricingUsageFields) string {
 
 	switch fields.BillingModelSource {
 	case BillingModelSourceUpstream:
-		// 图片计价使用解析出的图片模型，上游文本模型用于文本处理。
+		// Image output can have a distinct explicit pricing identity from the sent
+		// text model, so positive image usage keeps that candidate under upstream source.
 		if upstreamModel := strings.TrimSpace(result.UpstreamModel); upstreamModel != "" && (result.ImageCount <= 0 || explicitBillingModel == "") {
 			billingModel = upstreamModel
 		}
@@ -542,6 +664,10 @@ func OpenAIUsageBillingModel(result *Result, fields PricingUsageFields) string {
 	return billingModel
 }
 
+// GroupBillsOpenAIFastAtStandard reports eligibility for standard-priced premium
+// OpenAI usage. The key group must enable free Fast and support it, the billing
+// provider must be OpenAI, and the normalized tier must be priority or fast.
+// Missing key, group, or provider evidence returns false.
 func GroupBillsOpenAIFastAtStandard(apiKey *KeySnapshot, provider *ProviderSnapshot, serviceTier string) bool {
 	if apiKey == nil || apiKey.Group == nil || !apiKey.Group.FreeOpenAIFast {
 		return false

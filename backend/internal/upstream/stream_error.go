@@ -8,10 +8,20 @@ import (
 	"syscall"
 )
 
-// SanitizeStreamError 返回不含网络地址的客户端可见错误描述。
-// 默认 (*net.OpError).Error() 会拼接 Source/Addr 字段，泄露内部 IP/端口与上游
-// 服务器地址（例如 "read tcp 10.0.0.1:54321->52.1.2.3:443: read: connection
-// reset by peer"）。该函数只保留可识别的错误类别，原始 err 仍在调用点写入日志。
+// stream_error.go reduces upstream stream failures to client-facing error
+// labels.
+// Network error strings can include the local address and the upstream
+// destination in a client-facing disconnect message. Known causes are reduced
+// to stable labels, and unrecognized errors receive a generic category while
+// callers retain the original error for diagnostics.
+
+// SanitizeStreamError returns a client-facing category for a stream failure,
+// or empty for nil. Known causes are matched through wrapping before
+// net.OpError timeout or operation labels; other errors receive a generic
+// connection label. Callers can log the original error separately. A
+// net.OpError operation string is carried through verbatim, so callers
+// constructing such errors supply an operation label suitable for client
+// output.
 func SanitizeStreamError(err error) string {
 	if err == nil {
 		return ""
@@ -47,5 +57,7 @@ func SanitizeStreamError(err error) string {
 			return netErr.Op + " network error"
 		}
 	}
+	// Arbitrary error strings can expose connection details. Use one generic
+	// client label when neither a known cause nor a usable network operation applies.
 	return "upstream connection error"
 }

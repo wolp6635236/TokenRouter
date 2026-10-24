@@ -11,30 +11,54 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// DecisionInput 保存平台和分组，按评估顺序按需读取设置和价格能力。
+// decision.go resolves client, group, system, and API Key service-tier choices
+// for request execution. A system action on the initial tier ends the decision
+// before key policy or pricing eligibility is read, and a group force_off also
+// stops a later key override.
+//
+// When the system passes the initial tier, an eligible key may inject priority
+// or remove an accelerated request. A newly injected tier is checked against
+// system policy again so key force_on cannot bypass a block or filter. The
+// result keeps rejection, field removal, and tier replacement distinct for both
+// HTTP bodies and WebSocket frames.
+
+// DecisionInput supplies platform and group policy, with lazy policy and
+// pricing checks.
 type DecisionInput struct {
-	Model            string
-	GroupPolicy      string
-	OpenAI           bool
-	Evaluate         func(string) (string, string)
-	KeyPolicy        func() string
-	ForceOnSupported func() bool
+	Model       string // model used for policy diagnostics
+	GroupPolicy string // selected group Fast policy
+	OpenAI      bool   // provider is an OpenAI target
+	// Evaluate, KeyPolicy, and ForceOnSupported are invoked lazily in policy order.
+	// Callers supply each callback that the selected branch can reach; early system
+	// and group decisions can avoid both the key read and its eligibility check.
+	Evaluate         func(string) (string, string) // system action and message reader
+	KeyPolicy        func() string                 // authenticated key policy reader
+	ForceOnSupported func() bool                   // key force_on eligibility check
 }
 
-// Decision 描述最终应写入、删除或拒绝的 OpenAI Fast 决策。
+// Decision describes the service tier to write, remove, or reject.
 type Decision struct {
-	Tier        string
-	DeleteField bool
-	Blocked     *BlockedError
+	// Tier is a nonempty replacement when selected. An empty tier with neither
+	// DeleteField nor Blocked leaves the caller's existing JSON field unchanged.
+	Tier        string        // selected normalized tier value
+	DeleteField bool          // remove supplied service_tier field
+	Blocked     *BlockedError // client-facing policy rejection error
 }
 
-// IsAcceleratedTier 同时覆盖 Fast 和 Ultra Fast。
+// IsAcceleratedTier reports whether the tier is Fast or Ultra Fast.
 func IsAcceleratedTier(tier string) bool {
 	return tier == OpenAIFastTierPriority || tier == OpenAIFastTierUltrafast
 }
 
-// Resolve 解析系统策略和单 Key 策略。
-// 先对请求档位应用系统策略，Key 改写后再次应用系统策略，使 filter/block 对 force_on 结果也生效。
+// Resolve selects a tier replacement, field removal, or policy rejection from
+// the client, group, system, and key inputs. Callers provide callbacks for
+// reachable policy reads; hasField records whether removal has an existing
+// field to target.
+//
+// Group forcing precedes the first system check. A handled system action ends
+// resolution, while a passing action permits group force_off or key policy to
+// run. Key force_on retains a group-forced ultrafast tier, and a changed
+// nonempty candidate receives a second system check before being returned.
 func Resolve(input DecisionInput, rawTier string, hasField bool) Decision {
 	normTier := openai.ServiceTierValue(rawTier)
 	groupPolicy := input.GroupPolicy
@@ -63,14 +87,16 @@ func Resolve(input DecisionInput, rawTier string, hasField bool) Decision {
 		}
 	}
 
-	// 原始请求已命中的非 pass 系统动作直接生效，Key 策略不能覆盖。
+	// Return a handled system action before reading key settings, so its block or
+	// filter determines this request even when the key would enable acceleration.
 	if normTier != "" {
 		if decision, handled := applySystemAction(normTier); handled {
 			return decision
 		}
 	}
 
-	// 全局先裁决；分组关闭后，单 Key 不得重新开启。
+	// Stop at the group prohibition after system evaluation; key policy and its
+	// pricing eligibility read cannot reopen acceleration for this decision.
 	if groupPolicy == routing.GroupOpenAIFastPolicyForceOff {
 		if IsAcceleratedTier(normTier) {
 			return Decision{DeleteField: hasField}
@@ -84,19 +110,21 @@ func Resolve(input DecisionInput, rawTier string, hasField bool) Decision {
 	case apikey.APIKeyFastModePolicyForceOn:
 		keyPolicyApplicable = input.ForceOnSupported()
 	case apikey.APIKeyFastModePolicyForceOff:
-		// 强制关闭时清除 priority，其他档位保持原值。
+		// Key force_off applies to OpenAI accelerated tiers.
 		keyPolicyApplicable = input.OpenAI
 	}
 	candidateChanged := false
 	if keyPolicyApplicable {
 		switch policy {
 		case apikey.APIKeyFastModePolicyForceOn:
-			// 单 Key 开启 Fast 不降低分组强制的 Ultra Fast。
+			// A group-selected ultrafast request keeps that higher tier when the key
+			// asks for priority, so this override does not discard the group choice.
 			if groupPolicy != routing.GroupOpenAIFastPolicyForceUltrafast {
 				candidateTier = OpenAIFastTierPriority
 			}
 		case apikey.APIKeyFastModePolicyForceOff:
-			// flex 是低优先级模式，auto/default/scale 也是官方合法 tier，均需保留。
+			// Remove accelerated tiers while retaining recognized alternatives such as
+			// flex and scale; key force_off does not require deleting those values.
 			if IsAcceleratedTier(normTier) {
 				candidateTier = ""
 			}
@@ -104,7 +132,8 @@ func Resolve(input DecisionInput, rawTier string, hasField bool) Decision {
 		candidateChanged = candidateTier != normTier
 	}
 
-	// Key 注入或改写出的 tier 必须重新接受系统策略裁决。
+	// Evaluate a newly introduced nonempty tier against the same system rules,
+	// preventing key force_on from enabling a tier those rules block or filter.
 	if candidateTier != "" {
 		if candidateChanged {
 			if decision, handled := applySystemAction(candidateTier); handled {
@@ -119,9 +148,10 @@ func Resolve(input DecisionInput, rawTier string, hasField bool) Decision {
 	return Decision{}
 }
 
-// ApplyBody 对请求体应用系统和单 Key Fast 策略，并规范化 service_tier。
-// Chat 和 Messages 入口此前已规范化，透传和 Responses 入口由此处完成。
-// fast 需要转换为 priority，上游直接收到 fast 会返回 400。
+// ApplyBody applies the resolved Fast policy to the service_tier JSON field
+// and writes canonical labels such as priority for fast. Empty bodies bypass
+// all callbacks; blocking or JSON mutation errors return the supplied body
+// with an error.
 func ApplyBody(body []byte, input DecisionInput) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil

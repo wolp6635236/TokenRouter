@@ -1,8 +1,5 @@
 package team_test
 
-// 本场景覆盖 team.go、internal/apikey/service.go 和 internal/billing/member_quota.go。
-// 团队成员额度快照经 KeyCheckTeamMemberLimitSnapshot 交给 Billing 校验。
-
 import (
 	"testing"
 
@@ -12,11 +9,26 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/team"
 )
 
+// Team Key admission passes ordinary-member spending snapshots to billing for
+// positive daily, weekly and monthly quota checks. Owners bypass that
+// snapshot check, and zero limits leave their represented periods unlimited
+// before any request-specific spending is added.
+
+// TestCheckTeamMemberLimitSnapshot submits owner and ordinary-member quota
+// values through the API Key admission helper. It observes unlimited/owner
+// success, daily/weekly/monthly exhaustion errors and success when all
+// represented usage stays below limits.
 func TestCheckTeamMemberLimitSnapshot(t *testing.T) {
 	tests := []struct {
-		name   string
-		member *team.TeamMembership
-		want   error
+		name string // descriptive quota scenario name
+		// member points to the role/limit/usage observation passed to Key
+		// admission. The check reads it synchronously and leaves the supplied
+		// fixture value unchanged.
+		member *team.TeamMembership // supplied membership quota snapshot
+		// want selects the asserted rejection sentinel when nonnil. Nil selects
+		// successful admission for unlimited, owner and below-limit cases in this
+		// table.
+		want error // expected quota rejection sentinel
 	}{
 		{name: "unlimited", member: &team.TeamMembership{Role: team.TeamRoleMember}},
 		{name: "owner_ignores_limits", member: &team.TeamMembership{Role: team.TeamRoleOwner, DailyLimitUSD: 1, DailyUsageUSD: 1}},

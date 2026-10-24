@@ -7,10 +7,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// TestCreativeExecutorGroupPolicyUsesFinalModel 通过两跳陷阱检查出站模型的分组和提供商映射次数。
+// Chained mapping fixtures distinguish the public request name, group mapping,
+// and final upstream image name. Selection and release counters show which
+// restriction stage rejects a route, while executing a prepared target checks
+// that later mapping mutation cannot change its fixed model.
+
+// TestCreativeExecutorGroupPolicyUsesFinalModel prepares chained group and
+// provider mappings for each image platform. Executing after the mapping
+// changes still sends the prepared final model and resolves it only once.
 func TestCreativeExecutorGroupPolicyUsesFinalModel(t *testing.T) {
 	for _, platform := range []string{PlatformOpenAI, PlatformGemini, PlatformGrok} {
 		t.Run(platform, func(t *testing.T) {
@@ -25,6 +34,9 @@ func TestCreativeExecutorGroupPolicyUsesFinalModel(t *testing.T) {
 			selectProvider := func(_ context.Context, run CreativeRun) (*Selection, error) {
 				require.Equal(t, "draw", run.Model, "调度器仍从原始请求模型解析分组规则")
 				return &Selection{
+					ResolveAttributes: func(_ context.Context, model string) (modelcatalog.Resolution, error) {
+						return testkit.OfflineView().Resolve(modelcatalog.Target{Model: model}, modelcatalog.Attributes{}), nil
+					},
 					ProviderID: 55, Platform: platform, Acquired: true,
 					ResolveModel: func(_ context.Context, model string) string {
 						require.Equal(t, "provider-alias", model)
@@ -46,7 +58,10 @@ func TestCreativeExecutorGroupPolicyUsesFinalModel(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, final, prepared.UpstreamModel)
 			require.Equal(t, platform, prepared.Platform)
-			// 准备阶段固定执行模型，后续执行使用该模型。
+			// Change the provider mapping after preparation to
+			// detect any remapping during
+			// execution; the target callback still expects the
+			// final model already selected.
 			mapping["provider-alias"] = "changed-after-prepare"
 			_, err = prepared.Target.Execute(context.Background(), run, CreativeRunPayload{})
 			require.NoError(t, err)
@@ -55,13 +70,16 @@ func TestCreativeExecutorGroupPolicyUsesFinalModel(t *testing.T) {
 	}
 }
 
-// TestCreativeExecutorGroupPolicyRestrictionStages 检查排队后策略变更的白名单校验和槽位释放。
+// TestCreativeExecutorGroupPolicyRestrictionStages exercises requested,
+// group-mapped, upstream, empty-list, and disabled policies during
+// preparation. Rejected upstream routes release the acquired slot, while
+// earlier restriction failures skip provider selection.
 func TestCreativeExecutorGroupPolicyRestrictionStages(t *testing.T) {
 	for _, tc := range []struct {
-		name, source string
-		allowed      []string
-		blocked      bool
-		disabled     bool
+		name, source string   // name labels the case; source selects restriction stage
+		allowed      []string // configured group model allowlist
+		blocked      bool     // expected route rejection flag
+		disabled     bool     // disabled policy draft flag
 	}{
 		{name: "请求阶段允许", source: routing.BillingModelSourceRequested, allowed: []string{"GPT-IMAGE-1"}},
 		{name: "请求阶段拒绝", source: routing.BillingModelSourceRequested, allowed: []string{"gpt-image-2"}, blocked: true},
@@ -84,6 +102,9 @@ func TestCreativeExecutorGroupPolicyRestrictionStages(t *testing.T) {
 				OpenAI: func(context.Context, CreativeRun) (*Selection, error) {
 					selected++
 					return &Selection{
+						ResolveAttributes: func(_ context.Context, model string) (modelcatalog.Resolution, error) {
+							return testkit.OfflineView().Resolve(modelcatalog.Target{Model: model}, modelcatalog.Attributes{}), nil
+						},
 						Acquired: true, Platform: PlatformOpenAI,
 						Release: func() { released++ },
 						ResolveModel: func(_ context.Context, model string) string {
@@ -118,6 +139,9 @@ func TestCreativeExecutorGroupPolicyRestrictionStages(t *testing.T) {
 	}
 }
 
+// TestCreativeExecutorPolicyReadFailureStopsSelection makes the current group
+// reader fail before admission. Preparation returns a policy-unavailable error
+// and the provider-selection callback fails the test if invoked.
 func TestCreativeExecutorPolicyReadFailureStopsSelection(t *testing.T) {
 	executor := &Executor{Group: func(context.Context, int64) (*ExecutionGroup, error) {
 		return nil, errors.New("group store unavailable")

@@ -1,21 +1,35 @@
 package app
 
 import (
+	"context"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	keyhttp "github.com/TokenFlux/TokenRouter/internal/apikey/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/config"
+	"github.com/TokenFlux/TokenRouter/internal/gateway"
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
 )
 
-// provideGatewayRouteMiddleware 为网关路由绑定鉴权、分组检查和请求记录中间件。
+// gateway_middleware.go constructs gateway route middleware for authorization,
+// request context, diagnostics, and group assignment.
+// Gateway route registration shares authentication and group checks across
+// endpoint families. The bound middleware installs model attributes and the
+// final group into request context, while protocol-specific guards record
+// group-assignment rejection before platform handlers begin execution.
+
+// provideGatewayRouteMiddleware binds authentication, body limits, diagnostics,
+// and request context installation. cfg is required; optional client bindings
+// supply group fallback, and each route later chooses the protocol-specific
+// guards and middleware from this assembled value.
 func provideGatewayRouteMiddleware(
 	apiKeyAuth keyhttp.APIKeyAuthMiddleware,
 	apiKeyService *apikey.APIKeyService,
@@ -24,12 +38,23 @@ func provideGatewayRouteMiddleware(
 	cfg *config.Config,
 	queue *ops.ErrorLogQueue,
 	clients *messageHTTPBindings,
+	attributes *routing.ModelAttributeService,
+	settings *gateway.RuntimeSettings,
 ) gatewayhttp.RouteMiddleware {
 	var clientFallback gatewayhttp.ClientGroupFallbackResolver
 	if clients != nil {
 		clientFallback = clients.bindings.ClientGroupFallback
 	}
+	var ttftMode func(context.Context) string
+	if settings != nil {
+		ttftMode = settings.GetTTFTMode
+	}
 	return gatewayhttp.RouteMiddleware{
+		TTFTMode: ttftMode,
+		ModelAttributes: func(c *gin.Context) {
+			c.Request = c.Request.WithContext(routing.WithModelAttributes(c.Request.Context(), attributes))
+			c.Next()
+		},
 		ClientGroupFallback:   clientFallback,
 		APIKeyAuth:            gin.HandlerFunc(apiKeyAuth),
 		GoogleAPIKeyAuth:      newGatewayAuthorization(apiKeyService, subscriptionService, cfg, true),
@@ -65,7 +90,10 @@ func provideGatewayRouteMiddleware(
 	}
 }
 
-// provideGroupAssignmentGuard 为分组检查绑定 Key 读取和拒绝请求的记录函数。
+// provideGroupAssignmentGuard constructs group rejection using the supplied
+// protocol error writer. Rejected calls are recorded as both an Ops client-
+// business limit and an ingress group-assignment rejection before the error
+// is written and the Gin chain is aborted.
 func provideGroupAssignmentGuard(writer func(*gin.Context, int, string)) gin.HandlerFunc {
 	return gatewayhttp.RequireGroupAssignment(gatewayhttp.GroupAssignmentOptions{
 		Access:     gatewayhttp.EffectiveGroupAssignment,

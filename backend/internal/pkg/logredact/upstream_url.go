@@ -5,15 +5,28 @@ import (
 	"strings"
 )
 
-// upstreamQueryPattern 匹配查询参数中的密钥和令牌值。
+// upstream_url.go removes or masks credential-bearing URL suffixes in
+// diagnostic output.
+// Upstream diagnostic messages can include query credentials embedded in URLs.
+// SafeUpstreamURL removes whole query and fragment suffixes for endpoint
+// display, while SanitizeUpstreamQueries masks a fixed set of query assignments
+// inside larger messages where surrounding diagnostic text remains useful.
+
+// upstreamQueryPattern recognizes nonempty credential values following
+// question-mark or ampersand query delimiters, retaining the matched key and
+// delimiter for diagnostic text replacement.
 var upstreamQueryPattern = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
 
-// SafeUpstreamURL 去掉首尾空白、查询参数和片段，返回用于观测记录的 URL。
+// SafeUpstreamURL trims endpoint text and removes query and fragment suffixes
+// by delimiter position. It does not parse the URL; callers remove credentials
+// in userinfo or paths before logging its result.
 func SafeUpstreamURL(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return ""
 	}
+	// Endpoint display omits query and fragment contents because query parameters
+	// can contain credentials and fragment text is unnecessary for locating the endpoint.
 	if idx := strings.IndexByte(rawURL, '?'); idx >= 0 {
 		rawURL = rawURL[:idx]
 	}
@@ -23,7 +36,10 @@ func SafeUpstreamURL(rawURL string) string {
 	return rawURL
 }
 
-// SanitizeUpstreamQueries 将消息内查询参数中的密钥和令牌值替换为 ***。
+// SanitizeUpstreamQueries masks nonempty key, client_secret, access_token, and
+// refresh_token query assignments inside diagnostic text. Matching is
+// case-insensitive and stops at ampersands, quotes, or whitespace; other
+// credential forms require separate redaction.
 func SanitizeUpstreamQueries(msg string) string {
 	if msg == "" {
 		return msg

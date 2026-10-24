@@ -16,18 +16,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
-// TestUserRepository_DeleteUser_AtomicWithAPIKeys 复现 AdminService.DeleteUser 的事务编排场景：
-// 把"tombstone 并删 API Key"(apiKeyRepo.DeleteWithAudit) 与"删 User"(userRepo.Delete) 放进同一个外部事务时，
-// userRepo.Delete 必须复用 context 中的事务，而不是用 base client 自起一个独立事务并提前提交。
-//
-// 用例用"回滚外层事务"来模拟 commit 失败 / 中止：
-//   - 修复前：userRepo.Delete 用 base client 自起独立事务并 commit，回滚外层事务后用户仍被删除，
-//     而 API Key 随外层事务回滚 → Case 1 断言失败，暴露原子性缺陷（即 issue #3021 的不可恢复状态）。
-//   - 修复后：两者落在同一事务，回滚后用户与 API Key 一起恢复。
-//
-// 关键点：repo 必须用 base client 构造（NewUserRepository/NewAPIKeyRepository），并由本测试手动
-// 开启外层事务，这与生产环境 wire 注入的方式一致；不能复用 APIKeyRepoSuite 的 testEntTx
-// （那会让 repo 持有 tx client，走的是另一条 ErrTxStarted 复用路径，无法覆盖本场景）。
+// User deletion and credential tombstoning can join an Ent transaction carried
+// in context even when stores retain the base client. The PostgreSQL scenario
+// first rolls back both writes and checks visible user and key rows, then
+// commits the same deletion sequence and checks that queries hide both
+// resources and retain no deleted-key audit rows.
+
+// TestUserRepository_DeleteUser_AtomicWithAPIKeys supplies an outer context
+// transaction to base-client stores for user and key deletion. Rollback retains
+// visible rows, commit hides them, and neither path leaves deleted-key audits.
 func TestUserRepository_DeleteUser_AtomicWithAPIKeys(t *testing.T) {
 	ctx := context.Background()
 	integrationDB, client := identityDatabase(t)
@@ -40,7 +37,9 @@ func TestUserRepository_DeleteUser_AtomicWithAPIKeys(t *testing.T) {
 	key2 := mustCreateApiKey(t, client, &apikey.APIKey{UserID: user.ID, Key: fmt.Sprintf("sk-atomic-b-%d", user.ID)})
 
 	t.Cleanup(func() {
-		// 集成测试使用全局客户端，补充清理避免残留数据影响后续用例。
+		// Attempt hard removal of legacy audits and dependent keys before their user
+		// owner. Cleanup errors are discarded, and normal progress completes both
+		// outer transactions first.
 		_, _ = integrationDB.Exec(`DELETE FROM deleted_api_key_audits WHERE user_id = $1`, user.ID)
 		_, _ = integrationDB.Exec(`DELETE FROM api_keys WHERE user_id = $1`, user.ID)
 		_, _ = integrationDB.Exec(`DELETE FROM users WHERE id = $1`, user.ID)
@@ -50,12 +49,17 @@ func TestUserRepository_DeleteUser_AtomicWithAPIKeys(t *testing.T) {
 
 	tx, err := client.Tx(ctx)
 	require.NoError(t, err, "开启外层事务")
+	// Carry the outer transaction through context while stores retain their base
+	// client so this sequence exercises context participation rather than
+	// transaction-client reuse.
 	opCtx := dbent.NewTxContext(ctx, tx)
 
 	require.NoError(t, apiKeyRepo.DeleteWithAudit(opCtx, key1.ID))
 	require.NoError(t, apiKeyRepo.DeleteWithAudit(opCtx, key2.ID))
 	require.NoError(t, userRepo.Delete(opCtx, user.ID))
 
+	// Roll back after all three deletion calls, then read through the base stores
+	// to reveal any key or user write committed outside this chosen transaction.
 	require.NoError(t, tx.Rollback(), "回滚外层事务")
 
 	gotUser, err := userRepo.GetByID(ctx, user.ID)
@@ -79,6 +83,9 @@ func TestUserRepository_DeleteUser_AtomicWithAPIKeys(t *testing.T) {
 	require.NoError(t, apiKeyRepo.DeleteWithAudit(opCtx2, key2.ID))
 	require.NoError(t, userRepo.Delete(opCtx2, user.ID))
 
+	// Commit the repeated deletion sequence before its external visibility checks;
+	// the same base-client stores should then hide both the user and its
+	// credential rows.
 	require.NoError(t, tx2.Commit(), "提交外层事务")
 
 	_, err = userRepo.GetByID(ctx, user.ID)

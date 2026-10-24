@@ -6,8 +6,7 @@
 
 - [配置分层](#配置分层)：先确定一个选项属于哪一层。
 - [进程配置来源](#进程配置来源)：修改默认值、YAML 或环境变量时读取。
-- [产品名称兼容](#产品名称兼容)：修改默认产品名、调试变量或旧品牌兼容时读取。
-- [在线更新仓库](#在线更新仓库)：修改面板更新读取的 GitHub 仓库时读取。
+- [在线更新仓库](#在线更新仓库)：修改管理后台更新来源时读取。
 - [首次初始化](#首次初始化)：修改 setup 和安全密钥引导时读取。
 - [数据库运行时设置](#数据库运行时设置)：修改管理员设置和热更新时读取。
 - [领域配置](#领域配置)：业务实体用专用表，不放进通用键值设置。
@@ -63,7 +62,7 @@
 
 ### 模型目录与价格补充
 
-模型目录使用 `pricing.remote_url`（默认 `https://models.dev/catalog.json?type=all`）和 `pricing.check_interval_minutes`（默认 10 分钟），自动同步价格和展示属性。旧的 `pricing.hash_check_interval_minutes` 和对应的环境变量，按下面的兼容键优先级映射到新键。
+模型目录使用 `pricing.remote_url`（默认 `https://models.dev/catalog.json?type=all`）和 `pricing.check_interval_minutes`（默认 10 分钟），自动同步价格和模型属性。旧的 `pricing.hash_check_interval_minutes` 和对应的环境变量，按下面的兼容键优先级映射到新键。
 
 已知的 Wei-Shaw、BerriAI 公共旧价格地址，在内存里转换为 models.dev 地址，并补上新的下载域名；自定义地址保持不变，需要返回 models.dev 的目录格式。配置文件不会被改写。官方模型补充通过 `go:embed` 编进二进制，同一个型号条目包含价格字段和 `attributes`。`pricing.fallback_file` 默认为空，用于指定相同格式的自定义补充。旧的相对资源路径和 `/app/resources/` 打包路径，只在原文件不存在时，迁移到同目录的 `model_pricing_supplements.json`；已存在的文件和其他自定义路径保持不变。路径只在内存里解析，部署文件不会被改写或创建；目标文件也不存在时，使用内嵌的补充。旧的目录缓存不再加载，也不会被删除。
 
@@ -74,6 +73,8 @@
 本地 JSON 使用 `provider` 字段，读取时兼容 `litellm_provider`；同一条目两者都有时，以新字段为准，包括空值和 `null`。内部的价格类型和来源分类使用目录通用的名称，实际报价来自哪里，由 `source` 和 `price_sources` 区分。
 
 `gateway.models_list_cache_ttl_seconds` 已弃用，保留配置解析和 10 到 30 秒的合法值校验。目录查询使用本次读取的提供商配置，该值已停止控制运行时缓存。
+
+模型属性档案的 rules JSONB 同时用于展示、客户端导出和请求参数处理。每条规则可增加可选的路线匹配条件，已有规则默认适用于所有路线。编辑器保存字段覆盖；停用档案或移除字段后恢复目录与平台默认值。完整解析顺序与预览接口见[模型属性配置](model_catalog_and_marketplace.md#model_attributes)。
 
 精确配置为旧官方目录地址 `https://models.dev/catalog.json` 时，加载器补上 `?type=all`。带查询参数的地址和自定义镜像按配置读取。
 
@@ -114,7 +115,18 @@
 
 ### 在线更新仓库
 
-`update.github_repo`（环境变量 `UPDATE_GITHUB_REPO`）指定管理后台检测更新和下载 Release 时使用的 GitHub `owner/repo`。缺省是 `wolp6635236/TokenRouter`。空值按缺省处理。值必须是 `owner/repo`，也可以写成带或不带 `.git` 的 GitHub HTTPS URL。修改后需要重启进程。官方仓库 `TokenFlux/TokenRouter` 由 `tools/check-upstream-release.sh` 对照 `tools/upstream-release.seen` 感知新 Release，流程见[开发、验证与上游同步](../operations/development_workflow.md#同步上游)。
+`update.github_repo` 和环境变量 `UPDATE_GITHUB_REPO` 指定管理后台检测更新和下载 Release 时使用的 GitHub `owner/repo`。默认值为 `wolp6635236/TokenRouter`。空值使用默认值；配置也接受带或不带 `.git` 后缀的 GitHub HTTPS URL。值在进程启动时读取，修改后重启服务。
+
+官方 Release 检查使用 `TokenFlux/TokenRouter` 和
+`tools/check-upstream-release.sh`，它与本 fork 的管理后台更新来源相互独立。已并入的上游 tag 记录在 `tools/upstream-release.seen`；本 fork 发布后再更新该文件，详见[开发、验证与上游同步](../operations/development_workflow.md#同步上游)。
+
+### MCP OAuth
+
+MCP OAuth 的公开地址使用现有 `frontend_url`，后台保存的非空值优先，部署 `server.frontend_url` 其次。仅接受不含路径、查询、片段或用户信息的 HTTPS origin，回环 HTTP 可用于本地开发。地址缺失或不适用时 OAuth 不可用，管理员可以在 MCP 接入配置中查看原因并前往原前端地址设置。`api_base_url` 继续用于客户端接入展示。
+
+有效前端地址使 OAuth 自动可用。后台修改前端地址无需重启；每个请求读取当前值，数据库读取失败时拒绝 OAuth 访问。前端 origin 变化后，旧地址的 OAuth 连接需要重新授权。
+
+启动时始终在 `security_secrets` 中生成或读取独立 OAuth 签名密钥，以支持后续通过后台配置前端地址直接启用。授权页面同样使用已校验的前端 origin。手工 MCP 令牌的固定 TOTP 加密密钥要求继续适用。具体端点、期限及客户端约束见 [MCP OAuth 应用授权](mcp_management.md#oauth_authorization)。
 
 ## 首次初始化
 
@@ -128,6 +140,8 @@ setup 的数据库和 Redis 连接测试由精简版 bootstrap 执行，输入�
 
 <a id="runtime_settings"></a>
 ## 数据库运行时设置
+
+全局 `ttft_mode` 位于网关通用设置：`first_output` 表示首有效内容，`first_event` 表示首个非心跳上游事件，新安装默认 `first_output`。每个 HTTP 请求或 WS 逻辑回合在开始时固定当次有效配置，重试沿用该选择；修改设置按现有缓存发布和刷新规则影响新请求，不重算历史记录，也不改变 TPS。
 
 `settings` 是一张 `key/value/updated_at` 表，删除某个键表示恢复它的 getter 的默认行为。`settings.Store` 和它的 PostgreSQL 适配层负责通用的读写、版本字段和更新通知。身份的注册、安全和验证码设置，OAuth 配置的解释，提供商冷却，推广开关，用量排行，审计保留期和网关策略，分别由所属模块读取和解释；面板限流的配置和缓存在 `server/runtimeconfig`。
 
@@ -206,7 +220,7 @@ SMTP 的测试连接和实际发送共用同一条建连路径和超时：
 
 `search.ConfigService` 持有唯一的配置缓存、singleflight 和当前的 Manager 注册表。供应商的选择、额度和停机见[搜索编排](../domains/search_orchestration.md)。保存成功时，推进本进程的发布代次，之前开始的回源和 Manager 构建无法覆盖新保存的结果。这个代次不写入数据库或 Redis。保存、读取、展示和 provider 配置都会复制所有可变的指针和 slice，读取方修改副本不会影响运行中的快照。
 
-缺键时、错误缓存的 TTL、空 API Key 保留原值、管理字段和专门的脱敏处理，都按既有规则执行；管理测试不占额度。代理无法解析时，跳过这个供应商，请求不会改走直连；提供商代理优先于供应商代理。搜索配置的变化只影响 Brave 和 Tavily，Grok 和 AlphaSearch 的原生搜索策略不受影响。
+空 API Key 可保留已存密钥。搜索配置的专用管理 GET/PUT 接口返回包含 `api_key` 的配置和用量；`SanitizeWebSearchConfig` 提供清空密钥的副本，需要脱敏的调用方自行选择。管理测试不占额度。代理无法解析时，跳过这个供应商，请求不会改走直连；提供商代理优先于供应商代理。搜索配置的变化只影响 Brave 和 Tavily，Grok 和 AlphaSearch 的原生搜索策略不受影响。
 
 ### 首页、创作台和用量排行
 
@@ -252,7 +266,7 @@ base URL 模式只在提供商没有保存手动端点时生效，可以选 CLI 
 
 `gateway.grok` 属于启动时的进程配置。`password_auth_enabled` 默认关闭，控制从邮箱密码到 SSO 或 OAuth 的敏感入口；Free OAuth 的本地软门禁由 `free_quota_soft_gate_enabled`、`free_quota_token_limit`、`free_quota_soft_gate_percent`、`free_quota_window_hours` 和 `free_quota_stats_cache_seconds` 控制。所有数值在启动时校验，修改后需要重启。统计缓存未命中或查询故障时按 fail-open 处理，OAuth state 的一次性消费、凭据持久化和 URL 信任检查照常执行。
 
-`provider_scheduling_thresholds` 是整体替换的 JSON map，只允许 OpenAI、Anthropic 和 Grok 的 1 到 100 的整数，100 表示关闭这个平台的自动停调；提供商可以在自己的凭据里覆盖。管理设置的部分更新省略这个字段时，保留数据库里的值和进程缓存，前端的初始默认值不会被当成一次更新。
+`provider_scheduling_thresholds` 是整体替换的 JSON map，允许 OpenAI、Anthropic、Grok、Kimi 和 Zhipu 的 1 到 100 的整数，100 表示关闭这个平台的自动停调；提供商可以在自己的凭据里覆盖。管理设置的部分更新省略这个字段时，保留数据库里的值和进程缓存，前端的初始默认值不会被当成一次更新。
 
 ## 领域配置
 

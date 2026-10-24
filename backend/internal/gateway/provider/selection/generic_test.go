@@ -30,51 +30,77 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// usageLogWindowBatchRepoStub supplies distinct batch and individual usage
+// results with atomic read counters.
 type usageLogWindowBatchRepoStub struct {
-	usage.UsageLogRepository
+	usage.UsageLogRepository // unused usage operations panic
 
-	batchResult map[int64]*usage.ProviderStats
-	batchErr    error
-	batchCalls  atomic.Int64
+	// batchResult, batchErr, and batchCalls describe grouped usage reads, while
+	// singleResult, singleErr, and singleCalls describe individual recovery reads.
+	// Returned statistics pointers stay shared with these configured inputs.
+	batchResult map[int64]*usage.ProviderStats // shared batched usage result pointers
+	// batchErr supplies the grouped usage failure. A nonnil value is returned
+	// after incrementing batchCalls and before consulting batchResult.
+	batchErr   error        // configured batch usage failure
+	batchCalls atomic.Int64 // atomic batch read count
 
-	singleResult map[int64]*usage.ProviderStats
-	singleErr    error
-	singleCalls  atomic.Int64
+	singleResult map[int64]*usage.ProviderStats // shared individual usage result pointers
+	// singleErr supplies the individual usage failure. A nonnil value returns
+	// after incrementing singleCalls and bypasses both configured results and the
+	// fresh zero-statistics result.
+	singleErr   error        // configured individual usage failure
+	singleCalls atomic.Int64 // atomic individual read count
 }
 
+// sessionLimitCacheHotpathStub supplies batch window costs and records cache
+// writes for prefetch scenarios.
 type sessionLimitCacheHotpathStub struct {
-	billing.WindowCostCache
+	billing.WindowCostCache // unused window cache operations
 
-	batchData map[int64]float64
-	batchErr  error
+	batchData map[int64]float64 // configured provider window cost observations
+	// batchErr supplies the cost-cache query failure. A nonnil value returns
+	// before reading batchData or allocating the requested-observation result map.
+	batchErr error // configured cost batch failure
 
-	setData map[int64]float64
-	setErr  error
+	setData map[int64]float64 // recorded provider cost writes
+	// setErr supplies the cache-publication failure. A nonnil value returns
+	// before allocating or updating setData, leaving the fixture write trace intact.
+	setErr error // configured cost write failure
 }
 
+// stickyGatewayCacheHotpathStub supplies one sticky target and counts reads for
+// prefetch reuse assertions.
 type stickyGatewayCacheHotpathStub struct {
-	session.GatewayCache
+	session.GatewayCache // unused ownership operations panic
 
-	stickyID int64
-	getCalls atomic.Int64
+	stickyID int64        // configured sticky provider identifier
+	getCalls atomic.Int64 // atomic sticky lookup count
 }
 
-// sessionLimitReleaseCacheStub 记录 UnregisterSession 调用，用于验证释放逻辑。
+// sessionLimitReleaseCacheStub records per-provider session removal calls or
+// returns a configured failure.
 type sessionLimitReleaseCacheStub struct {
-	schedulercore.SessionLimitCache
+	schedulercore.SessionLimitCache // unused registration operations panic
 
-	unregistered map[int64][]string
-	err          error
+	unregistered map[int64][]string // recorded provider session removal calls
+	// err supplies the unregister failure. A nonnil value returns before
+	// appending to unregistered, so failed removals leave no entry in that trace.
+	err error // configured session removal failure
 }
 
+// TestCollectSelectionFailureStats supplies one provider for each diagnostic
+// rejection category and one passing target. The resulting counts partition the
+// whole pool, protecting exclusive category accounting for these separately
+// constructed outcomes.
 func TestCollectSelectionFailureStats(t *testing.T) {
 	svc := NewGeneric(GenericDependencies{}, DefaultOptions())
 	model := "gpt-5.4"
 	resetAt := time.Now().Add(2 * time.Minute).Format(time.RFC3339)
 
 	providers := []gatewayprovider.
-		// excluded
 		ExecutionProvider{
+		// This record otherwise passes the diagnostic gates. Its explicit request
+		// exclusion makes it contribute to the excluded count in this fixture.
 		{
 			Record: providercore.Record{
 				Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, ID: 1,
@@ -169,6 +195,10 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 	}
 }
 
+// TestDiagnoseSelectionFailure_UnschedulableDetail disables scheduling on an
+// otherwise active provider. Diagnosis reports the unschedulable category and
+// record-state detail, protecting the specific explanation emitted for this
+// otherwise eligible fixture's disabled scheduling state.
 func TestDiagnoseSelectionFailure_UnschedulableDetail(t *testing.T) {
 	svc := NewGeneric(GenericDependencies{}, DefaultOptions())
 	acc := &gatewayprovider.ExecutionProvider{
@@ -189,6 +219,10 @@ func TestDiagnoseSelectionFailure_UnschedulableDetail(t *testing.T) {
 	}
 }
 
+// TestDiagnoseSelectionFailure_ModelRateLimitedDetail records a future cooldown
+// for the requested model. Diagnosis reports model_rate_limited with a
+// remaining-duration detail, protecting the explanation for temporary model
+// unavailability.
 func TestDiagnoseSelectionFailure_ModelRateLimitedDetail(t *testing.T) {
 	svc := NewGeneric(GenericDependencies{}, DefaultOptions())
 	model := "gpt-5.4"
@@ -218,9 +252,10 @@ func TestDiagnoseSelectionFailure_ModelRateLimitedDetail(t *testing.T) {
 	}
 }
 
+// TestGetSchedulableProvider_AppliesGrokFreeSoftGate supplies explicit Free
+// OAuth usage above the configured soft threshold. Initial unknown usage admits
+// the target, then tracked refresh makes the generic lookup reject it.
 func TestGetSchedulableProvider_AppliesGrokFreeSoftGate(t *testing.T) {
-	// 缓存预热后，粘性或非列表路径不得返回超过门禁的免费 OAuth 提供商。
-	// 首次粘性命中失败开放并安排异步刷新，后续命中使用缓存。
 	cfg := &config.Config{}
 	cfg.Gateway.Grok.FreeQuotaSoftGateEnabled = true
 	cfg.Gateway.Grok.FreeQuotaTokenLimit = 500_000
@@ -239,7 +274,8 @@ func TestGetSchedulableProvider_AppliesGrokFreeSoftGate(t *testing.T) {
 	usageRepo := &grokFreeQuotaUsageRepoStub{stats: map[int64]*usage.ProviderStats{
 		provider.Record.ID: {Tokens: 480_000}, // above 95% of 500k
 	}}
-	// 清理共享网关免费层门禁缓存，保证测试结果稳定。
+	// This gate owns an independent usage cache. Track its accepted background
+	// queries so test cleanup waits for fixture reads after the first admission check.
 	var tasks sync.WaitGroup
 	t.Cleanup(tasks.Wait)
 	gate := newGrokFreeQuotaTestGate(cfg, usageRepo, func(_ string, work func()) bool {
@@ -258,12 +294,22 @@ func TestGetSchedulableProvider_AppliesGrokFreeSoftGate(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "over free soft-gate sticky hit must miss after cache warm")
 }
 
+// advancedSchedulerRegressionBool returns a pointer representing a supplied
+// boolean group override.
 func advancedSchedulerRegressionBool(value bool) *bool { return &value }
 
+// advancedSchedulerRegressionInt returns a pointer representing a supplied
+// integer group override.
 func advancedSchedulerRegressionInt(value int) *int { return &value }
 
+// advancedSchedulerRegressionFloat returns a pointer representing a supplied
+// scoring-weight override.
 func advancedSchedulerRegressionFloat(value float64) *float64 { return &value }
 
+// advancedSchedulerRegressionOverrides returns explicit zero weights with
+// weighted stickiness and Top-K one. Callers change individual fields for each
+// scenario, allowing the tests to distinguish supplied zero overrides from
+// inheritance.
 func advancedSchedulerRegressionOverrides() routing.GroupAdvancedSchedulerOverrides {
 	return routing.GroupAdvancedSchedulerOverrides{
 		StickyWeightedEnabled:  advancedSchedulerRegressionBool(true),
@@ -280,6 +326,10 @@ func advancedSchedulerRegressionOverrides() routing.GroupAdvancedSchedulerOverri
 	}
 }
 
+// advancedSchedulerRegressionGroup creates an active hydrated advanced group
+// with supplied overrides. The platform compatibility input is unused, so the
+// fixture's group mode applies independently of later forced-platform
+// filtering.
 func advancedSchedulerRegressionGroup(id int64, platform string, overrides routing.GroupAdvancedSchedulerOverrides) *routing.Group {
 	return &routing.Group{
 		ID: id, Name: "advanced", Status: billing.StatusActive, Hydrated: true,
@@ -287,6 +337,10 @@ func advancedSchedulerRegressionGroup(id int64, platform string, overrides routi
 	}
 }
 
+// advancedSchedulerRegressionProviderRepo retains the candidate slice and
+// indexes its element pointers for full reads. Fixture modifications remain
+// visible through both queries, letting tests supply the same records to
+// ranking and hydration.
 func advancedSchedulerRegressionProviderRepo(providers []gatewayprovider.ExecutionProvider) *mockProviderRepoForPlatform {
 	repo := &mockProviderRepoForPlatform{providers: providers, providersByID: make(map[int64]*gatewayprovider.ExecutionProvider, len(providers))}
 	for index := range repo.providers {
@@ -295,6 +349,10 @@ func advancedSchedulerRegressionProviderRepo(providers []gatewayprovider.Executi
 	return repo
 }
 
+// TestGatewayAdvancedSchedulerKeepsFullLoadCandidatesForWaitAndNoSlotSelection
+// supplies eligible providers with full load and failed acquisition. Advanced
+// generation returns a wait plan, while auxiliary selection chooses from that
+// pool without another slot acquisition.
 func TestGatewayAdvancedSchedulerKeepsFullLoadCandidatesForWaitAndNoSlotSelection(t *testing.T) {
 	overrides := advancedSchedulerRegressionOverrides()
 	overrides.WeightPriority = advancedSchedulerRegressionFloat(1)
@@ -326,7 +384,7 @@ func TestGatewayAdvancedSchedulerKeepsFullLoadCandidatesForWaitAndNoSlotSelectio
 
 	ctx := requeststate.WithGroup(context.Background(), group)
 
-	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "", "claude-sonnet-4", nil, "", 0)
+	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "", "claude-sonnet-4", nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, selection)
@@ -343,6 +401,10 @@ func TestGatewayAdvancedSchedulerKeepsFullLoadCandidatesForWaitAndNoSlotSelectio
 	require.Equal(t, acquireCalls, concurrencyCache.acquireProviderCalls, "无槽选择不得申请真实并发槽")
 }
 
+// TestGatewayAdvancedSchedulerForcePlatformUsesGroupOverrides forces
+// Antigravity inside an advanced group whose override favors lower load.
+// Selection and result feedback follow that group policy, protecting
+// forced-platform scheduling and observation alignment.
 func TestGatewayAdvancedSchedulerForcePlatformUsesGroupOverrides(t *testing.T) {
 	overrides := advancedSchedulerRegressionOverrides()
 	overrides.WeightLoad = advancedSchedulerRegressionFloat(1)
@@ -375,7 +437,7 @@ func TestGatewayAdvancedSchedulerForcePlatformUsesGroupOverrides(t *testing.T) {
 	ctx := requeststate.WithGroup(context.Background(), group)
 	ctx = apikey.WithForcePlatform(ctx, capability.PlatformAntigravity)
 
-	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "force", "gemini-2.5-pro", nil, "", 0)
+	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "force", "gemini-2.5-pro", nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, selection)
@@ -386,6 +448,10 @@ func TestGatewayAdvancedSchedulerForcePlatformUsesGroupOverrides(t *testing.T) {
 	require.Zero(t, svc.advancedSchedulerStats().FeedbackSnapshot(14011).ErrorSamples)
 }
 
+// TestGatewayAdvancedSchedulerWeightedStickyKeepsStickyOnlyProvider puts the
+// bound provider's cost inside its reserved sticky allowance. Advanced weighted
+// selection retains that eligible candidate, protecting sticky reserve handling
+// before score-based choice.
 func TestGatewayAdvancedSchedulerWeightedStickyKeepsStickyOnlyProvider(t *testing.T) {
 	overrides := advancedSchedulerRegressionOverrides()
 	overrides.WeightSessionSticky = advancedSchedulerRegressionFloat(1)
@@ -420,7 +486,7 @@ func TestGatewayAdvancedSchedulerWeightedStickyKeepsStickyOnlyProvider(t *testin
 
 	ctx := requeststate.WithGroup(context.Background(), group)
 
-	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "sticky", "claude-sonnet-4", nil, "", 0)
+	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "sticky", "claude-sonnet-4", nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, selection)
@@ -428,6 +494,10 @@ func TestGatewayAdvancedSchedulerWeightedStickyKeepsStickyOnlyProvider(t *testin
 	require.True(t, selection.AdvancedScheduler)
 }
 
+// TestGatewayAdvancedSchedulerEscapesNonOpenAIHardSticky raises failure
+// feedback beyond the group's escape threshold for a Gemini binding. Advanced
+// choice uses the healthy member while retaining the stored affinity,
+// protecting request-local escape.
 func TestGatewayAdvancedSchedulerEscapesNonOpenAIHardSticky(t *testing.T) {
 	overrides := advancedSchedulerRegressionOverrides()
 	overrides.StickyWeightedEnabled = advancedSchedulerRegressionBool(false)
@@ -466,7 +536,7 @@ func TestGatewayAdvancedSchedulerEscapesNonOpenAIHardSticky(t *testing.T) {
 	}
 	ctx := requeststate.WithGroup(context.Background(), group)
 
-	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "sticky", "gemini-3-pro", nil, "", 0)
+	selection, err := svc.SelectProviderWithLoadAwareness(ctx, &group.ID, "sticky", "gemini-3-pro", nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, selection)
@@ -475,6 +545,9 @@ func TestGatewayAdvancedSchedulerEscapesNonOpenAIHardSticky(t *testing.T) {
 	require.True(t, selection.AdvancedScheduler)
 }
 
+// TestIsProviderInGroup varies absent groups, nil providers, and one or several
+// stored memberships. A positive matching request group is required, protecting
+// selection from implicit membership or ungrouped admission.
 func TestIsProviderInGroup(t *testing.T) {
 	svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{}, Shared: Shared{}},
 
@@ -484,12 +557,12 @@ func TestIsProviderInGroup(t *testing.T) {
 	groupID200 := int64(200)
 
 	tests := []struct {
-		name     string
-		provider *gatewayprovider.ExecutionProvider
-		groupID  *int64
-		expected bool
+		name     string                             // named eligibility scenario
+		provider *gatewayprovider.ExecutionProvider // configured provider policy fixture
+		groupID  *int64                             // requested fixture group identifier
+		expected bool                               // expected eligibility result
 	}{
-		// groupID == nil（无分组 API Key）
+		// A request with no group ID.
 		{
 			"nil_groupID_ungrouped_provider_nil_groups",
 			&gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, ID: 1, ProviderGroups: nil}},
@@ -510,7 +583,7 @@ func TestIsProviderInGroup(t *testing.T) {
 			&gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, ID: 4, ProviderGroups: []providercore.GroupMembership{{GroupID: 100}, {GroupID: 200}}}},
 			nil, false,
 		},
-		// groupID != nil（有分组 API Key）
+		// A request with a group ID.
 		{
 			"with_groupID_provider_in_group",
 			&gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, ID: 5, ProviderGroups: []providercore.GroupMembership{{GroupID: 100}}}},
@@ -536,7 +609,7 @@ func TestIsProviderInGroup(t *testing.T) {
 			&gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, ID: 9, ProviderGroups: []providercore.GroupMembership{{GroupID: 300}, {GroupID: 400}}}},
 			&groupID100, false,
 		},
-		// 提供商或分组 ID 为 nil 的场景。
+		// Nil provider or group ID cases.
 		{
 			"nil_provider_nil_groupID",
 			nil,
@@ -557,6 +630,10 @@ func TestIsProviderInGroup(t *testing.T) {
 	}
 }
 
+// TestSelectProviderForModelWithExclusions_UsesAdmittedFallbackGroupForGroupRestriction
+// supplies matching fallback group state and route plan as admission inputs.
+// Slot-free selection returns the expected provider for the model allowed by
+// that fixture's group policy.
 func TestSelectProviderForModelWithExclusions_UsesAdmittedFallbackGroupForGroupRestriction(t *testing.T) {
 	t.Parallel()
 
@@ -611,7 +688,6 @@ func TestSelectProviderForModelWithExclusions_UsesAdmittedFallbackGroupForGroupR
 		Shared: Shared{GroupPolicies: pricingConfigSvc},
 	}, testConfig())
 
-	// 入口已完成回退授权，选择器只使用最终分组及其模型限制。
 	ctx := requeststate.WithGroup(context.Background(), groupRepo.groups[fallbackID])
 	ctx = requeststate.WithRoutePlan(ctx, routing.Plan(routing.PlanInput{Group: groupRepo.groups[fallbackID]}))
 	provider, err := svc.SelectProviderForModelWithExclusions(ctx, &fallbackID, "", "claude-sonnet-4-6", nil)
@@ -620,6 +696,10 @@ func TestSelectProviderForModelWithExclusions_UsesAdmittedFallbackGroupForGroupR
 	require.Equal(t, int64(1), provider.Record.ID)
 }
 
+// TestSelectProviderWithLoadAwareness_UsesAdmittedFallbackGroupForGroupRestriction
+// supplies matching fallback group state and route plan as admission inputs.
+// Load-aware selection returns the expected provider for the model allowed by
+// that fixture's group policy.
 func TestSelectProviderWithLoadAwareness_UsesAdmittedFallbackGroupForGroupRestriction(t *testing.T) {
 	t.Parallel()
 
@@ -674,16 +754,19 @@ func TestSelectProviderWithLoadAwareness_UsesAdmittedFallbackGroupForGroupRestri
 		Shared: Shared{GroupPolicies: pricingConfigSvc},
 	}, testConfig())
 
-	// 入口已完成回退授权，选择器只使用最终分组及其模型限制。
 	ctx := requeststate.WithGroup(context.Background(), groupRepo.groups[fallbackID])
 	ctx = requeststate.WithRoutePlan(ctx, routing.Plan(routing.PlanInput{Group: groupRepo.groups[fallbackID]}))
-	result, err := svc.SelectProviderWithLoadAwareness(ctx, &fallbackID, "", "claude-sonnet-4-6", nil, "", 0)
+	result, err := svc.SelectProviderWithLoadAwareness(ctx, &fallbackID, "", "claude-sonnet-4-6", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.Provider)
 	require.Equal(t, int64(1), result.Provider.Record.ID)
 }
 
+// TestIsModelSupportedByProviderWithContext_QoderUsesGroupMappedProviderLayerModel
+// maps a client alias through group and Qoder provider names. Support checks
+// the allowed final identity, protecting model-stage order in provider
+// eligibility.
 func TestIsModelSupportedByProviderWithContext_QoderUsesGroupMappedProviderLayerModel(t *testing.T) {
 	t.Parallel()
 	ch := routingtestkit.Configuration{
@@ -715,6 +798,10 @@ func TestIsModelSupportedByProviderWithContext_QoderUsesGroupMappedProviderLayer
 		"provider whitelist should be checked after channel mapping and provider mapping")
 }
 
+// GetProviderWindowStatsBatch increments its atomic batch counter and returns
+// configured statistics for requested IDs. Configured errors return first;
+// result maps are new, while stored statistics pointers remain shared with the
+// fixture.
 func (s *usageLogWindowBatchRepoStub) GetProviderWindowStatsBatch(ctx context.Context, providerIDs []int64, startTime time.Time) (map[int64]*usage.ProviderStats, error) {
 	s.batchCalls.Add(1)
 	if s.batchErr != nil {
@@ -729,6 +816,9 @@ func (s *usageLogWindowBatchRepoStub) GetProviderWindowStatsBatch(ctx context.Co
 	return out, nil
 }
 
+// GetProviderWindowStats increments the individual-read counter and returns its
+// configured result or error. Missing IDs get a fresh zero statistics value,
+// distinguishing an empty observation from unavailable fixture storage.
 func (s *usageLogWindowBatchRepoStub) GetProviderWindowStats(ctx context.Context, providerID int64, startTime time.Time) (*usage.ProviderStats, error) {
 	s.singleCalls.Add(1)
 	if s.singleErr != nil {
@@ -740,6 +830,9 @@ func (s *usageLogWindowBatchRepoStub) GetProviderWindowStats(ctx context.Context
 	return &usage.ProviderStats{}, nil
 }
 
+// GetWindowCostBatch returns configured cost entries for requested IDs in a new
+// map. Configured errors take precedence, while missing entries are omitted so
+// prefetch can obtain those provider windows from usage storage.
 func (s *sessionLimitCacheHotpathStub) GetWindowCostBatch(ctx context.Context, providerIDs []int64) (map[int64]float64, error) {
 	if s.batchErr != nil {
 		return nil, s.batchErr
@@ -753,6 +846,9 @@ func (s *sessionLimitCacheHotpathStub) GetWindowCostBatch(ctx context.Context, p
 	return out, nil
 }
 
+// SetWindowCost records the provider cost in fixture storage unless setErr is
+// configured. It allocates the write map when needed, allowing assertions on
+// best-effort prefetch cache publication.
 func (s *sessionLimitCacheHotpathStub) SetWindowCost(ctx context.Context, providerID int64, cost float64) error {
 	if s.setErr != nil {
 		return s.setErr
@@ -764,6 +860,9 @@ func (s *sessionLimitCacheHotpathStub) SetWindowCost(ctx context.Context, provid
 	return nil
 }
 
+// GetSessionProviderID counts reads atomically and returns the configured
+// positive sticky ID. Nonpositive IDs produce a cache-miss error, while group
+// and hash inputs are ignored by this single-binding fixture.
 func (s *stickyGatewayCacheHotpathStub) GetSessionProviderID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
 	s.getCalls.Add(1)
 	if s.stickyID > 0 {
@@ -772,30 +871,53 @@ func (s *stickyGatewayCacheHotpathStub) GetSessionProviderID(ctx context.Context
 	return 0, errors.New("not found")
 }
 
+// SetSessionProviderID accepts sticky fixture writes and returns success. The
+// configured stickyID remains its read result, letting prefetch tests measure
+// cache reads independently of any later affinity update.
 func (s *stickyGatewayCacheHotpathStub) SetSessionProviderID(ctx context.Context, groupID int64, sessionHash string, providerID int64, ttl time.Duration) error {
 	return nil
 }
 
+// RefreshSessionTTL accepts sticky fixture expiration calls and returns
+// success. This fixture retains one configured ID with no expiry state, so
+// refresh does not alter the read-count scenario's target.
 func (s *stickyGatewayCacheHotpathStub) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
 	return nil
 }
 
+// DeleteSessionProviderID accepts cleanup for this single-binding fixture and
+// returns success. It keeps the configured read ID intact, leaving prefetch
+// scenarios governed by their supplied hint and lookup counter.
 func (s *stickyGatewayCacheHotpathStub) DeleteSessionProviderID(ctx context.Context, groupID int64, sessionHash string) error {
 	return nil
 }
 
+// SetSessionOwnerGroupID supplies successful owner admission for this
+// sticky-read fixture. Ownership is unmodeled, allowing provider-prefetch
+// scenarios to bind sessions without adding user/source persistence
+// observations.
 func (s *stickyGatewayCacheHotpathStub) SetSessionOwnerGroupID(ctx context.Context, userID int64, source, sessionHash string, groupID int64, ttl time.Duration) (bool, error) {
 	return true, nil
 }
 
+// GetSessionOwnerGroupID returns a cache-miss error because this fixture stores
+// no owner records. Prefetch scenarios therefore receive an absent owner even
+// after the fixture's permissive write path admits binding.
 func (s *stickyGatewayCacheHotpathStub) GetSessionOwnerGroupID(ctx context.Context, userID int64, source, sessionHash string) (int64, error) {
 	return 0, errors.New("not found")
 }
 
+// RefreshSessionOwnerTTL accepts owner refresh and returns success in this
+// fixture. It stores no ownership expiration data, leaving the configured
+// sticky target and lookup counter unchanged for later assertions.
 func (s *stickyGatewayCacheHotpathStub) RefreshSessionOwnerTTL(ctx context.Context, userID int64, source, sessionHash string, ttl time.Duration) error {
 	return nil
 }
 
+// resetGatewayHotpathStatsForTest resets shared cost-window and group-rate
+// counters used by these assertions. Callers serialize scenarios using those
+// global observations so another test's reads do not replace the measured
+// baseline.
 func resetGatewayHotpathStatsForTest() {
 	billing.SharedWindowCostMetrics().Hit.Store(0)
 	billing.SharedWindowCostMetrics().Miss.Store(0)
@@ -810,9 +932,14 @@ func resetGatewayHotpathStatsForTest() {
 	billing.SharedGroupRateMetrics().Fallback.Store(0)
 }
 
+// TestWithWindowCostPrefetch_BatchReadAndContextReuse supplies one cached
+// Anthropic cost and one usage-store miss beside an inapplicable target.
+// Prefetch reuses cache, batches the miss, publishes its result, and returns
+// request-scoped observations.
 func TestWithWindowCostPrefetch_BatchReadAndContextReuse(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
+	// Use an hourly fixture anchor for cost-window prefetch grouping.
 	windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
 	windowEnd := windowStart.Add(5 * time.Hour)
 	providers := []gatewayprovider.ExecutionProvider{
@@ -863,8 +990,6 @@ func TestWithWindowCostPrefetch_BatchReadAndContextReuse(t *testing.T) {
 		WindowPrefetchAvailable: true,
 	}, nil)
 
-	// 预取结果中缺少提供商时，重新读取提供商。
-
 	outCtx := svc.withWindowCostPrefetch(context.Background(), providers)
 	require.NotNil(t, outCtx)
 
@@ -890,9 +1015,13 @@ func TestWithWindowCostPrefetch_BatchReadAndContextReuse(t *testing.T) {
 	require.Equal(t, int64(0), errCount)
 }
 
+// TestWithWindowCostPrefetch_AllHitNoSQL gives every applicable provider a
+// cached window cost. Prefetch returns both observations and makes no usage
+// queries, protecting the all-hit batch path and its metrics.
 func TestWithWindowCostPrefetch_AllHitNoSQL(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
+	// Use an hourly fixture anchor for cost-window prefetch grouping.
 	windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
 	windowEnd := windowStart.Add(5 * time.Hour)
 	providers := []gatewayprovider.ExecutionProvider{
@@ -950,9 +1079,14 @@ func TestWithWindowCostPrefetch_AllHitNoSQL(t *testing.T) {
 	require.Equal(t, int64(0), errCount)
 }
 
+// TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery injects failed batch
+// usage reading with an available individual result. Prefetch retains that cost
+// and records fallback/error counters, protecting recovery after the grouped
+// query fails.
 func TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
+	// Use an hourly fixture anchor for cost-window prefetch grouping.
 	windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
 	windowEnd := windowStart.Add(5 * time.Hour)
 	providers := []gatewayprovider.ExecutionProvider{
@@ -994,6 +1128,10 @@ func TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery(t *testing.T) {
 	require.Equal(t, int64(1), errCount)
 }
 
+// TestSelectProviderWithLoadAwareness_StickyReadReuse varies absent, matching,
+// and mismatched group-prefetch hints. Basic selection reads affinity once when
+// needed and skips it for matching prefetch, protecting group-specific request
+// observation reuse.
 func TestSelectProviderWithLoadAwareness_StickyReadReuse(t *testing.T) {
 	now := time.Now().Add(-time.Minute)
 	provider := gatewayprovider.ExecutionProvider{
@@ -1039,7 +1177,7 @@ func TestSelectProviderWithLoadAwareness_StickyReadReuse(t *testing.T) {
 			Shared: Shared{Cache: cache, Concurrency: concurrency},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(baseCtx, selectionFixtureGroupID(baseCtx), "sess-hash", "", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(baseCtx, selectionFixtureGroupID(baseCtx), "sess-hash", "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1056,7 +1194,7 @@ func TestSelectProviderWithLoadAwareness_StickyReadReuse(t *testing.T) {
 		}, cfg)
 
 		ctx := requeststate.WithPrefetchedStickySession(baseCtx, provider.Record.ID, *selectionFixtureGroupID(baseCtx))
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sess-hash", "", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sess-hash", "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1073,7 +1211,7 @@ func TestSelectProviderWithLoadAwareness_StickyReadReuse(t *testing.T) {
 		}, cfg)
 
 		ctx := requeststate.WithPrefetchedStickySession(baseCtx, 999, 77)
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sess-hash", "", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sess-hash", "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1082,12 +1220,17 @@ func TestSelectProviderWithLoadAwareness_StickyReadReuse(t *testing.T) {
 	})
 }
 
-// windowMetricsForTest 读取资金窗口的调用统计。
+// windowMetricsForTest reads shared hit, miss, batch-query, fallback, and error
+// counters in assertion order.
 func windowMetricsForTest() (int64, int64, int64, int64, int64) {
 	m := billing.SharedWindowCostMetrics()
 	return m.Hit.Load(), m.Miss.Load(), m.BatchSQL.Load(), m.Fallback.Load(), m.Errors.Load()
 }
 
+// TestGatewayService_SelectProviderForModelWithExclusions_ForcePlatform
+// supplies Anthropic and Antigravity candidates with authenticated
+// forced-platform context. Selection returns the Antigravity member, protecting
+// that filter before the normal group model choice.
 func TestGatewayService_SelectProviderForModelWithExclusions_ForcePlatform(t *testing.T) {
 	ctx := context.Background()
 	ctx = apikey.WithForcePlatform(ctx, capability.PlatformAntigravity)
@@ -1114,12 +1257,16 @@ func TestGatewayService_SelectProviderForModelWithExclusions_ForcePlatform(t *te
 	require.Equal(t, capability.PlatformAntigravity, acc.Record.Platform)
 }
 
+// TestGatewayService_isModelSupportedByProvider varies platform defaults,
+// custom mapping, and unmatched names with empty scopes. Provider policy
+// returns each expected support result, protecting the configured eligibility
+// cases independently of selection.
 func TestGatewayService_isModelSupportedByProvider(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider *gatewayprovider.ExecutionProvider
-		model    string
-		expected bool
+		name     string                             // named eligibility scenario
+		provider *gatewayprovider.ExecutionProvider // configured provider policy fixture
+		model    string                             // requested model support identity
+		expected bool                               // expected eligibility result
 	}{
 		{
 			name:     "Antigravity平台-支持默认映射中的claude模型",
@@ -1217,7 +1364,10 @@ func TestGatewayService_isModelSupportedByProvider(t *testing.T) {
 	}
 }
 
-// TestGenericGroupIncludesAntigravityWithoutMixedFlag 测试混合调度。
+// TestGenericGroupIncludesAntigravityWithoutMixedFlag supplies Antigravity with
+// a false retired mixed-scheduling flag inside a normal group. It participates
+// in selection, while forcing Anthropic still narrows the same group to that
+// platform.
 func TestGenericGroupIncludesAntigravityWithoutMixedFlag(t *testing.T) {
 	groupID := int64(1)
 	values := []gatewayprovider.ExecutionProvider{
@@ -1239,6 +1389,10 @@ func TestGenericGroupIncludesAntigravityWithoutMixedFlag(t *testing.T) {
 	require.Equal(t, int64(1), selected.Record.ID)
 }
 
+// TestSelectProviderWithLoadAwareness_FiltersUpstreamRestrictedProviders gives
+// sticky and model-preferred shortcuts different final provider mappings. Both
+// batch and basic paths choose the allowed upstream identity, protecting group
+// restrictions before acquisition.
 func TestSelectProviderWithLoadAwareness_FiltersUpstreamRestrictedProviders(t *testing.T) {
 	for _, loadBatchEnabled := range []bool{false, true} {
 		loadMode := "旧版调度"
@@ -1330,7 +1484,7 @@ func TestSelectProviderWithLoadAwareness_FiltersUpstreamRestrictedProviders(t *t
 					},
 				}, cfg)
 
-				result, err := svc.SelectProviderWithLoadAwareness(context.Background(), &groupID, "sticky", "client-alias", nil, "", 0)
+				result, err := svc.SelectProviderWithLoadAwareness(context.Background(), &groupID, "sticky", "client-alias", nil)
 				require.NoError(t, err)
 				require.NotNil(t, result)
 				require.Equal(t, int64(2), result.Provider.Record.ID)
@@ -1339,7 +1493,10 @@ func TestSelectProviderWithLoadAwareness_FiltersUpstreamRestrictedProviders(t *t
 	}
 }
 
-// TestSelectProviderWithLoadAwareness_AppliesGroupMappingOnce 验证调度入口只把客户端模型 R 映射为一次 C。
+// TestSelectProviderWithLoadAwareness_AppliesGroupMappingOnce supplies a client
+// alias and a second-hop group-mapping trap. Selection uses the provider
+// supporting the first intermediate identity, protecting single-hop group
+// routing before provider policy.
 func TestSelectProviderWithLoadAwareness_AppliesGroupMappingOnce(t *testing.T) {
 	groupID := int64(4212)
 	pricingConfig := routingtestkit.Configuration{
@@ -1384,14 +1541,17 @@ func TestSelectProviderWithLoadAwareness_AppliesGroupMappingOnce(t *testing.T) {
 			capability.PlatformGemini, pricingConfig)},
 	}, testConfig())
 
-	result, err := svc.SelectProviderWithLoadAwareness(context.Background(), &groupID, "", "client-alias", nil, "", 0)
+	result, err := svc.SelectProviderWithLoadAwareness(context.Background(), &groupID, "", "client-alias", nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, provider.Record.ID, result.Provider.Record.ID)
 }
 
-// TestGatewayService_SelectProviderWithLoadAwareness tests load-aware provider selection.
+// TestGatewayService_SelectProviderWithLoadAwareness varies sticky affinity,
+// model preferences, status, slot outcomes, load observations, and admitted
+// groups. Results choose eligible members or wait plans, protecting basic
+// ordering, fallback, and resource preparation across those paths.
 func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 	ctx := context.Background()
 
@@ -1414,9 +1574,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 
 		svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{Providers: repo}, Shared: Shared{Cache: cache, Concurrency: nil}}, cfg)
 
-		// No concurrency service
-
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1466,9 +1624,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			Shared: Shared{Cache: cache, Concurrency: nil},
 		}, cfg)
 
-		// legacy path
-
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-b", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-b", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1495,7 +1651,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 
 		svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{Providers: repo}, Shared: Shared{Cache: cache, Concurrency: nil}}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1522,7 +1678,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 		svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{Providers: repo}, Shared: Shared{Concurrency: nil, Cache: cache}}, cfg)
 
 		excludedIDs := map[int64]struct{}{1: {}}
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", excludedIDs, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", excludedIDs)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1559,7 +1715,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sticky", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sticky", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1598,7 +1754,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sticky", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sticky", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1642,7 +1798,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(testCtx, selectionFixtureGroupID(testCtx), "sticky", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(testCtx, selectionFixtureGroupID(testCtx), "sticky", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1665,7 +1821,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 
 		svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{Providers: repo}, Shared: Shared{Concurrency: nil, Cache: cache}}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil)
 		require.Error(t, err)
 		require.Nil(t, result)
 		require.ErrorIs(t, err, schedulercore.ErrNoAvailableProviders)
@@ -1692,7 +1848,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 
 		svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{Providers: repo}, Shared: Shared{Cache: cache, Concurrency: nil}}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1720,7 +1876,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 
 		svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{Providers: repo}, Shared: Shared{Concurrency: nil, Cache: cache}}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1761,7 +1917,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sticky", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "sticky", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.WaitPlan)
@@ -1800,7 +1956,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "legacy", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "legacy", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1864,7 +2020,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.WaitPlan)
@@ -1919,7 +2075,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -1977,7 +2133,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -2040,7 +2196,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "route", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "route", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -2103,7 +2259,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "route-full", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "route-full", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.WaitPlan)
@@ -2162,7 +2318,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "fallback", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "fallback", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -2202,7 +2358,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.WaitPlan)
@@ -2255,7 +2411,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "gemini", "gemini-2.5-pro", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "gemini", "gemini-2.5-pro", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -2339,7 +2495,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 		}, cfg)
 
 		excluded := map[int64]struct{}{1: {}}
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "", "claude-3-5-sonnet-20241022", excluded, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "", "claude-3-5-sonnet-20241022", excluded)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -2394,7 +2550,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 
 		admitted := requeststate.WithGroup(ctx, groupRepo.groups[fallbackID])
 		admitted = requeststate.WithRoutePlan(admitted, routing.Plan(routing.PlanInput{Group: groupRepo.groups[fallbackID]}))
-		result, err := svc.SelectProviderWithLoadAwareness(admitted, &fallbackID, "", "gemini-2.5-pro", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(admitted, &fallbackID, "", "gemini-2.5-pro", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -2424,7 +2580,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			Shared: Shared{Cache: &mockGatewayCacheForPlatform{}, Concurrency: nil},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 		require.Error(t, err)
 		require.Nil(t, result)
 		require.ErrorIs(t, err, routing.ErrClaudeCodeOnly)
@@ -2465,7 +2621,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "wait", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "wait", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.WaitPlan)
@@ -2506,7 +2662,7 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 			},
 		}, cfg)
 
-		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "missing-load", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		result, err := svc.SelectProviderWithLoadAwareness(ctx, selectionFixtureGroupID(ctx), "missing-load", "claude-3-5-sonnet-20241022", nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Provider)
@@ -2514,6 +2670,10 @@ func TestGatewayService_SelectProviderWithLoadAwareness(t *testing.T) {
 	})
 }
 
+// TestGatewayService_GroupResolution_ReusesContextGroup supplies a valid
+// hydrated request group. Selection avoids a lightweight admission read while
+// retaining the separate full privacy-policy read, protecting the distinction
+// between those group consumers.
 func TestGatewayService_GroupResolution_ReusesContextGroup(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(42)
@@ -2544,10 +2704,14 @@ func TestGatewayService_GroupResolution_ReusesContextGroup(t *testing.T) {
 	provider, err := svc.SelectProviderForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 1, groupRepo.getByIDCalls) // The separate privacy check reads the full group.
 	require.Equal(t, 0, groupRepo.getByIDLiteCalls)
 }
 
+// TestGatewayService_GroupResolution_IgnoresInvalidContextGroup supplies an
+// incomplete group snapshot and a hydrated repository record. Selection fetches
+// lightweight admission data and the full privacy rule, protecting
+// incomplete-context replacement at each consumer.
 func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(42)
@@ -2583,10 +2747,14 @@ func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T)
 	provider, err := svc.SelectProviderForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 1, groupRepo.getByIDCalls) // The separate privacy check reads the full group.
 	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
 }
 
+// TestGatewayService_GroupContext_OverwritesInvalidContextGroup replaces a
+// partial request group with hydrated data. Request state returns equal values
+// through a separate snapshot pointer, protecting group copying before
+// selection uses its settings.
 func TestGatewayService_GroupContext_OverwritesInvalidContextGroup(t *testing.T) {
 	groupID := int64(42)
 	invalidGroup := &routing.Group{
@@ -2612,6 +2780,10 @@ func TestGatewayService_GroupContext_OverwritesInvalidContextGroup(t *testing.T)
 	require.NotSame(t, hydratedGroup, got, "分组状态保存独立快照")
 }
 
+// TestGatewayService_GroupResolution_RejectsImplicitFallback supplies a
+// restricted source group with an unadmitted fallback. Selection rejects the
+// client and makes no fallback group reads, protecting entry ownership of
+// fallback admission.
 func TestGatewayService_GroupResolution_RejectsImplicitFallback(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10)
@@ -2651,13 +2823,16 @@ func TestGatewayService_GroupResolution_RejectsImplicitFallback(t *testing.T) {
 	provider, err := svc.SelectProviderForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.ErrorIs(t, err, routing.ErrClaudeCodeOnly)
 	require.Nil(t, provider)
-	// 回退目标还未准入，不读取它的策略或提供商池。
 	require.Zero(t, groupRepo.getByIDCalls)
 	require.Zero(t, groupRepo.getByIDLiteCalls)
 }
 
+// TestGatewayService_isModelSupportedByProvider_AntigravityModelMapping
+// supplies wildcard mappings with a narrow final-model allowlist. Matched
+// aliases pass and unrelated names fail, protecting the final identity checked
+// by provider support rules.
 func TestGatewayService_isModelSupportedByProvider_AntigravityModelMapping(t *testing.T) {
-	// 使用 model_mapping 作为白名单（通配符匹配）
+	// Wildcard mappings resolve to models on the provider allowlist.
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation, Platform: capability.PlatformAntigravity,
@@ -2671,28 +2846,32 @@ func TestGatewayService_isModelSupportedByProvider_AntigravityModelMapping(t *te
 		},
 	}
 
-	// claude-* 通配符匹配
+	// claude-* maps to an allowed model.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-sonnet-4-5"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-haiku-4-5"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-opus-4-6"))
 
-	// gemini-3-* 通配符匹配
+	// gemini-3-* maps to an allowed model.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gemini-3-flash"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gemini-3-pro-high"))
 
-	// gemini-2.5-* 不匹配（不在 model_mapping 中）
+	// gemini-2.5-* has no mapping to an allowed model.
 	require.False(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gemini-2.5-flash"))
 	require.False(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gemini-2.5-pro"))
 
-	// 其他平台模型不支持
+	// The unrelated platform model is excluded.
 	require.False(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gpt-4"))
 
-	// 空模型允许
+	// An empty model skips filtering.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), ""))
 }
 
+// TestGatewayService_isModelSupportedByProvider_AntigravityNoMapping supplies
+// neither a custom mapping nor explicit allowlist. Default-mapped and unmatched
+// names pass, protecting the provider policy's empty-scope behavior for these
+// inputs.
 func TestGatewayService_isModelSupportedByProvider_AntigravityNoMapping(t *testing.T) {
-	// 未配置白名单时，默认映射中的模型和未命中映射的模型均可通过。
+	// Without an allowlist, both default-mapped and unmapped models pass.
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation, Platform: capability.PlatformAntigravity,
@@ -2700,36 +2879,38 @@ func TestGatewayService_isModelSupportedByProvider_AntigravityNoMapping(t *testi
 		},
 	}
 
-	// 默认映射中的模型应该被支持
+	// Default-mapped models are accepted.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-sonnet-4-5"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gemini-3-flash"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gemini-2.5-pro"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-haiku-4-5"))
 
-	// 未命中默认映射的模型按请求名称通过。
+	// Unmapped models pass with their requested names.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-3-5-sonnet-20241022"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-unknown-model"))
 
-	// 空白名单也允许其他平台风格的模型名。
+	// An empty allowlist also admits names associated with other platforms.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gpt-4"))
 }
 
-// TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode 测试 thinking 模式下的模型支持检查
-// 验证调度时使用映射后的最终模型名（包括 thinking 后缀）来检查 model_mapping 支持。
+// TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode varies
+// thinking context, mappings, and allowed Sonnet or Opus identities. Support
+// follows each platform's actual suffix rule and final scope, protecting
+// context-sensitive eligibility.
 func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *testing.T) {
 	svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{}, Shared: Shared{}},
 
 		nil)
 
 	tests := []struct {
-		name            string
-		modelMapping    map[string]any
-		requestedModel  string
-		thinkingEnabled bool
-		expected        bool
+		name            string         // named thinking scenario
+		modelMapping    map[string]any // configured provider model mapping
+		requestedModel  string         // requested client model identity
+		thinkingEnabled bool           // request thinking mode flag
+		expected        bool           // expected model support result
 	}{
-		// 场景 1: 只配置 claude-sonnet-4-5-thinking，请求 claude-sonnet-4-5 + thinking=true
-		// 白名单按规范化后的最终模型判断。
+		// A thinking-enabled Sonnet request with only the thinking variant configured.
+		// The allowlist uses the normalized final model.
 		{
 			name: "thinking_enabled_matches_final_whitelist",
 			modelMapping: map[string]any{
@@ -2739,8 +2920,8 @@ func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *te
 			thinkingEnabled: true,
 			expected:        true,
 		},
-		// 场景 2: 只配置 claude-sonnet-4-5-thinking，请求 claude-sonnet-4-5 + thinking=false
-		// 白名单按规范化后的最终模型判断。
+		// A thinking-disabled Sonnet request with only the thinking variant configured.
+		// The base model is absent from the final-model allowlist.
 		{
 			name: "thinking_disabled_no_base_mapping_returns_false",
 			modelMapping: map[string]any{
@@ -2750,8 +2931,8 @@ func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *te
 			thinkingEnabled: false,
 			expected:        false,
 		},
-		// 场景 3: 配置 claude-sonnet-4-5（非 thinking），请求 claude-sonnet-4-5 + thinking=true
-		// 最终模型名 = claude-sonnet-4-5-thinking，不在 mapping 中，应该不匹配
+		// A thinking-enabled Sonnet request with only the base model configured.
+		// The final thinking variant is absent from the allowlist.
 		{
 			name: "thinking_enabled_no_match_non_thinking_mapping",
 			modelMapping: map[string]any{
@@ -2761,7 +2942,7 @@ func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *te
 			thinkingEnabled: true,
 			expected:        false,
 		},
-		// 场景 4: 配置两种模型，请求 claude-sonnet-4-5 + thinking=true，应该匹配 thinking 版本
+		// With both models configured, enabled thinking selects the thinking variant.
 		{
 			name: "both_models_thinking_enabled_matches_thinking",
 			modelMapping: map[string]any{
@@ -2772,7 +2953,7 @@ func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *te
 			thinkingEnabled: true,
 			expected:        true,
 		},
-		// 场景 5: 配置两种模型，请求 claude-sonnet-4-5 + thinking=false，应该匹配非 thinking 版本
+		// With both models configured, disabled thinking selects the base model.
 		{
 			name: "both_models_thinking_disabled_matches_non_thinking",
 			modelMapping: map[string]any{
@@ -2783,7 +2964,7 @@ func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *te
 			thinkingEnabled: false,
 			expected:        true,
 		},
-		// 场景 6: 通配符 claude-* 应该同时匹配 thinking 和非 thinking
+		// The claude-* wildcard admits both base and thinking variants.
 		{
 			name: "wildcard_matches_thinking",
 			modelMapping: map[string]any{
@@ -2791,10 +2972,10 @@ func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *te
 			},
 			requestedModel:  "claude-sonnet-4-5",
 			thinkingEnabled: true,
-			expected:        true, // claude-sonnet-4-5-thinking 匹配 claude-*
+			expected:        true, // The thinking variant matches claude-*.
 		},
-		// 场景 7: 只配置 thinking 变体但没有基础模型映射 → 返回 false
-		// Opus 4.6 不自动追加 thinking 后缀，基础名称仍须在白名单内。
+		// A thinking-only Opus allowlist does not admit the base model.
+		// Opus 4.6 does not gain a thinking suffix automatically.
 		{
 			name: "opus_without_suffix_rewrite_does_not_match_thinking_only_scope",
 			modelMapping: map[string]any{
@@ -2840,10 +3021,12 @@ func TestGatewayService_isModelSupportedByProviderWithContext_ThinkingMode(t *te
 	}
 }
 
-// TestGatewayService_isModelSupportedByProvider_CustomMappingNotInDefault 测试自定义模型映射中
-// 不在 DefaultAntigravityModelMapping 中的模型能通过调度。
+// TestGatewayService_isModelSupportedByProvider_CustomMappingNotInDefault
+// supplies custom model aliases with no explicit allowlist. Custom targets and
+// unmatched names remain supported, protecting mapping extension alongside
+// empty-scope passthrough.
 func TestGatewayService_isModelSupportedByProvider_CustomMappingNotInDefault(t *testing.T) {
-	// 自定义映射中包含不在默认映射中的模型
+	// The custom mapping includes models absent from the defaults.
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation, Platform: capability.PlatformAntigravity,
@@ -2858,28 +3041,30 @@ func TestGatewayService_isModelSupportedByProvider_CustomMappingNotInDefault(t *
 		},
 	}
 
-	// 自定义模型应该通过（不在 DefaultAntigravityModelMapping 中也可以）
+	// Models outside the default mapping are accepted.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "my-custom-model"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gpt-4o"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "llama-3-70b"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "claude-sonnet-4-5"))
 
-	// 未命中自定义映射的模型按请求名称通过。
+	// Unmapped names pass through when no allowlist is configured.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "gpt-3.5-turbo"))
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), "unknown-model"))
 
-	// 空模型允许
+	// An empty model skips filtering.
 	require.True(t, gatewayprovider.ExecutionModelPolicy(provider).Supports(context.Background(), ""))
 }
 
 // TestGatewayService_isModelSupportedByProviderWithContext_CustomMappingThinking
-// 测试自定义映射 + thinking 模式的交互。
+// supplies base and thinking Sonnet mappings plus an unrelated custom name.
+// Support returns true in both thinking contexts and for the custom request,
+// covering the positive results from this empty-allowlist fixture.
 func TestGatewayService_isModelSupportedByProviderWithContext_CustomMappingThinking(t *testing.T) {
 	svc := newGenericSelectionForTest(GenericDependencies{Reads: Reads{}, Shared: Shared{}},
 
 		nil)
 
-	// 自定义映射同时配置基础模型和 thinking 变体
+	// Configure both base and thinking variants.
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation, Platform: capability.PlatformAntigravity,
@@ -2893,19 +3078,20 @@ func TestGatewayService_isModelSupportedByProviderWithContext_CustomMappingThink
 		},
 	}
 
-	// thinking=true: claude-sonnet-4-5 → mapped=claude-sonnet-4-5 → +thinking → check IsModelSupported(claude-sonnet-4-5-thinking)=true
 	ctx := requeststate.WithThinkingEnabled(context.Background(), true)
 	require.True(t, svc.isModelSupportedByProviderWithContext(ctx, provider, "claude-sonnet-4-5"))
 
-	// thinking=false: claude-sonnet-4-5 → mapped=claude-sonnet-4-5 → check IsModelSupported(claude-sonnet-4-5)=true
 	ctx = requeststate.WithThinkingEnabled(context.Background(), false)
 	require.True(t, svc.isModelSupportedByProviderWithContext(ctx, provider, "claude-sonnet-4-5"))
 
-	// 自定义模型（非 claude）不受 thinking 后缀影响，mapped 成功即通过
 	ctx = requeststate.WithThinkingEnabled(context.Background(), true)
 	require.True(t, svc.isModelSupportedByProviderWithContext(ctx, provider, "my-custom-model"))
 }
 
+// TestGatewayServiceIsModelSupportedByProvider_BedrockDefaultMappingRestrictsModels
+// supplies a US-region Bedrock target using default routes. A recognized alias
+// passes while an unsupported dated alias fails, protecting verified regional
+// model support.
 func TestGatewayServiceIsModelSupportedByProvider_BedrockDefaultMappingRestrictsModels(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -2926,6 +3112,10 @@ func TestGatewayServiceIsModelSupportedByProvider_BedrockDefaultMappingRestricts
 	}
 }
 
+// TestGatewayServiceIsModelSupportedByProvider_BedrockCustomMappingStillActsAsAllowlist
+// adds a wildcard mapping in a configured region. The custom route and a
+// default alias pass while an unsupported dated name fails, protecting default
+// route availability alongside mapping.
 func TestGatewayServiceIsModelSupportedByProvider_BedrockCustomMappingStillActsAsAllowlist(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -2953,11 +3143,16 @@ func TestGatewayServiceIsModelSupportedByProvider_BedrockCustomMappingStillActsA
 	}
 }
 
-// selectionWindowForTest 根据测试依赖构造资金窗口守卫。
+// selectionWindowForTest constructs a billing window guard with fixture cache
+// and usage readers.
 func selectionWindowForTest(cache billing.WindowCostCache, source usage.UsageLogRepository) *billing.WindowCostGuard {
 	return billing.NewWindowCostGuard(cache, gatewaytestkit.WindowCosts(source), billing.WindowCostGuardOptions{Now: time.Now, Stats: billing.SharedWindowCostMetrics(), Log: func(string, ...any) {}, Debug: func(string, ...any) {}})
 }
 
+// TestGatewayProviderLayerUsesGroupMappedModelForSupportAndRateLimit maps an
+// alias through group and provider to a cooled-down allowed model. Support
+// passes, scheduling fails, and sticky invalidation follows that final
+// identity.
 func TestGatewayProviderLayerUsesGroupMappedModelForSupportAndRateLimit(t *testing.T) {
 	groupID := int64(4201)
 	pricingConfig := routingtestkit.Configuration{
@@ -3001,6 +3196,10 @@ func TestGatewayProviderLayerUsesGroupMappedModelForSupportAndRateLimit(t *testi
 	require.True(t, svc.shouldClearStickySessionForProviderLayer(ctx, provider, "client-alias"))
 }
 
+// TestGatewayService_ListSchedulableProviders_DoesNotFilterUnsupportedThresholdPlatforms
+// supplies utilization extras on a platform outside threshold support.
+// Candidate reads retain both targets and perform no pause writes, protecting
+// the adapter's supported-platform scope.
 func TestGatewayService_ListSchedulableProviders_DoesNotFilterUnsupportedThresholdPlatforms(t *testing.T) {
 	settingsRepo := settingstestkit.NewMemory()
 	settingsRepo.Data[providercore.SettingKeyProviderSchedulingThresholds] = `{"openai":90}`
@@ -3051,6 +3250,10 @@ func TestGatewayService_ListSchedulableProviders_DoesNotFilterUnsupportedThresho
 	require.Equal(t, 0, providerRepo.TempCalls)
 }
 
+// TestGatewaySelectProviderWithLoadAwareness_HydratesSelectedProviderFromSchedulerSnapshot
+// ranks a lightweight Anthropic candidate with no execution key. Selection
+// returns its full cached key, protecting snapshot-only credential preparation
+// before forwarding.
 func TestGatewaySelectProviderWithLoadAwareness_HydratesSelectedProviderFromSchedulerSnapshot(t *testing.T) {
 	cache := &snapshotHydrationCache{
 		snapshot: []*gatewayprovider.ExecutionProvider{
@@ -3091,7 +3294,7 @@ func TestGatewaySelectProviderWithLoadAwareness_HydratesSelectedProviderFromSche
 		Shared: Shared{Cache: &mockGatewayCacheForPlatform{}},
 	}, testConfig())
 
-	result, err := svc.SelectProviderWithLoadAwareness(context.Background(), selectionFixtureGroupID(context.Background()), "", "claude-3-5-sonnet-20241022", nil, "", 0)
+	result, err := svc.SelectProviderWithLoadAwareness(context.Background(), selectionFixtureGroupID(context.Background()), "", "claude-3-5-sonnet-20241022", nil)
 	if err != nil {
 		t.Fatalf("SelectProviderWithLoadAwareness error: %v", err)
 	}
@@ -3103,6 +3306,10 @@ func TestGatewaySelectProviderWithLoadAwareness_HydratesSelectedProviderFromSche
 	}
 }
 
+// TestGatewaySelectProviderWithLoadAwareness_SkipsAntigravityGeminiFamilyRateLimitedSnapshot
+// applies a Gemini-family cooldown to the preferred Antigravity snapshot.
+// Selection chooses the eligible backup, protecting family-scoped model
+// eligibility before hydration.
 func TestGatewaySelectProviderWithLoadAwareness_SkipsAntigravityGeminiFamilyRateLimitedSnapshot(t *testing.T) {
 	resetAt := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
 	cache := &snapshotHydrationCache{
@@ -3168,7 +3375,7 @@ func TestGatewaySelectProviderWithLoadAwareness_SkipsAntigravityGeminiFamilyRate
 		FallbackWaitTimeout: time.Second, FallbackMaxWaiting: 10,
 	}}})
 
-	result, err := svc.SelectProviderWithLoadAwareness(context.Background(), &groupID, "", "gemini-3-flash-preview", nil, "", 0)
+	result, err := svc.SelectProviderWithLoadAwareness(context.Background(), &groupID, "", "gemini-3-flash-preview", nil)
 	if err != nil {
 		t.Fatalf("SelectProviderWithLoadAwareness error: %v", err)
 	}
@@ -3180,7 +3387,10 @@ func TestGatewaySelectProviderWithLoadAwareness_SkipsAntigravityGeminiFamilyRate
 	}
 }
 
-// TestGatewayNewSelectionResultReleasesSlotWhenHydrationFails 检查取得槽位后读取完整提供商失败时归还槽位。
+// TestGatewayNewSelectionResultReleasesSlotWhenHydrationFails omits the full
+// record for an acquired target. Preparation returns an error and releases
+// capacity once, protecting attempt cleanup when lightweight selection cannot
+// become execution.
 func TestGatewayNewSelectionResultReleasesSlotWhenHydrationFails(t *testing.T) {
 	cache := &snapshotHydrationCache{providers: map[int64]*gatewayprovider.ExecutionProvider{}}
 	snapshot := newHydrationSnapshotForTest(cache, selectionProviderFixture{})
@@ -3199,12 +3409,17 @@ func TestGatewayNewSelectionResultReleasesSlotWhenHydrationFails(t *testing.T) {
 	}
 }
 
+// newSessionLimitReleaseCacheStub allocates an empty trace of per-provider
+// session removals.
 func newSessionLimitReleaseCacheStub() *sessionLimitReleaseCacheStub {
 	return &sessionLimitReleaseCacheStub{
 		unregistered: make(map[int64][]string),
 	}
 }
 
+// UnregisterSession appends the provider's session to the fixture removal trace
+// unless an error is configured. It does not deduplicate calls, allowing tests
+// to observe cleanup delegation separately from cache idempotence.
 func (s *sessionLimitReleaseCacheStub) UnregisterSession(_ context.Context, providerID int64, sessionUUID string) error {
 	if s.err != nil {
 		return s.err
@@ -3213,6 +3428,8 @@ func (s *sessionLimitReleaseCacheStub) UnregisterSession(_ context.Context, prov
 	return nil
 }
 
+// newSessionLimitTestProvider constructs an Anthropic OAuth fixture with one
+// allowed active session.
 func newSessionLimitTestProvider() *gatewayprovider.ExecutionProvider {
 	return &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -3224,9 +3441,10 @@ func newSessionLimitTestProvider() *gatewayprovider.ExecutionProvider {
 	}
 }
 
-// TestReleaseProviderSession_ReleasesRegisteredSlot 验证：
-// 对启用会话限制的 Anthropic OAuth 提供商，ReleaseProviderSession 必须立即移除
-// 该提供商上注册的会话（不等待空闲超时）。
+// TestReleaseProviderSession_ReleasesRegisteredSlot supplies an applicable
+// Anthropic OAuth target with a configured session limit. Cleanup reaches the
+// cache immediately, protecting release before the session's idle lifetime can
+// expire.
 func TestReleaseProviderSession_ReleasesRegisteredSlot(t *testing.T) {
 	cache := newSessionLimitReleaseCacheStub()
 	svc := newGenericSelectionForTest(GenericDependencies{
@@ -3241,11 +3459,10 @@ func TestReleaseProviderSession_ReleasesRegisteredSlot(t *testing.T) {
 		"应立即移除注册的会话槽")
 }
 
-// TestReleaseProviderSession_NoOpForInapplicableProviders 验证：
-// - 非 Anthropic OAuth/SetupToken 提供商
-// - 未启用 max_sessions 的提供商
-// - 空 sessionID
-// 这些输入的会话注销调用次数为零。
+// TestReleaseProviderSession_NoOpForInapplicableProviders supplies API Key,
+// disabled-limit, blank-session, and nil target cases. Cleanup makes no
+// unregister calls, protecting the eligibility rules shared by session
+// registration and removal.
 func TestReleaseProviderSession_NoOpForInapplicableProviders(t *testing.T) {
 	apiKeyAcc := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -3265,9 +3482,9 @@ func TestReleaseProviderSession_NoOpForInapplicableProviders(t *testing.T) {
 	enabledAcc := newSessionLimitTestProvider()
 
 	cases := []struct {
-		name      string
-		provider  *gatewayprovider.ExecutionProvider
-		sessionID string
+		name      string                             // named cleanup scenario
+		provider  *gatewayprovider.ExecutionProvider // configured cleanup target fixture
+		sessionID string                             // supplied session hash identity
 	}{
 		{"api_key_provider", apiKeyAcc, "session-hash"},
 		{"max_sessions_disabled", noLimitAcc, "session-hash"},
@@ -3288,17 +3505,19 @@ func TestReleaseProviderSession_NoOpForInapplicableProviders(t *testing.T) {
 	}
 }
 
-// TestReleaseProviderSession_NilCacheAndErrorTolerance 验证：
-// sessionLimitCache 不可用时 no-op；UnregisterSession 返回错误时不 panic（仅记录日志）。
+// TestReleaseProviderSession_NilCacheAndErrorTolerance exercises omitted
+// storage and a configured unregister failure. Cleanup returns to the caller in
+// both cases, protecting optional-cache and logged-failure handling of session
+// removal.
 func TestReleaseProviderSession_NilCacheAndErrorTolerance(t *testing.T) {
-	// nil cache：no-op
+	// A nil cache is a no-op.
 	svc := newGenericSelectionForTest(GenericDependencies{
 		Reads: Reads{}, Shared: Shared{},
 	}, nil)
 
 	svc.ReleaseProviderSession(context.Background(), newSessionLimitTestProvider(), "session-hash")
 
-	// 底层错误：不 panic
+	// A cache error does not panic.
 	cache := &sessionLimitReleaseCacheStub{err: errors.New("redis down")}
 	svc = newGenericSelectionForTest(GenericDependencies{
 		Reads: Reads{}, Shared: Shared{}, Sessions: cache,
@@ -3307,8 +3526,10 @@ func TestReleaseProviderSession_NilCacheAndErrorTolerance(t *testing.T) {
 	svc.ReleaseProviderSession(context.Background(), newSessionLimitTestProvider(), "session-hash")
 }
 
-// TestReleaseProviderSession_Idempotent 验证释放操作幂等，可安全重复调用
-// （failover 的逐次释放和 defer 都可能释放同一提供商）。
+// TestReleaseProviderSession_Idempotent releases one applicable session twice
+// through a tracing cache. Both calls reach storage, protecting delegated
+// repeated removal rather than claiming the selector deduplicates release calls
+// itself.
 func TestReleaseProviderSession_Idempotent(t *testing.T) {
 	cache := newSessionLimitReleaseCacheStub()
 	svc := newGenericSelectionForTest(GenericDependencies{
@@ -3320,6 +3541,5 @@ func TestReleaseProviderSession_Idempotent(t *testing.T) {
 	svc.ReleaseProviderSession(context.Background(), acc, "session-hash")
 	svc.ReleaseProviderSession(context.Background(), acc, "session-hash")
 
-	// 两次调用都透传到缓存层（Redis ZREM 本身幂等，重复移除无副作用）
 	require.Len(t, cache.unregistered[42], 2)
 }

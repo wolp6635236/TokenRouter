@@ -5,6 +5,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 )
 
+// logging.go converts process logging configuration into initialization options
+// for sinks, rotation, and sampling. OptionsFromConfig copies those settings
+// into logging.InitOptions, including megabyte and day limits, so
+// initialization receives the values selected during configuration loading.
+
+// OptionsFromConfig converts process log configuration into logger initialization options.
 func OptionsFromConfig(cfg config.LogConfig) logging.InitOptions {
 	return logging.InitOptions{
 		Level:           cfg.Level,

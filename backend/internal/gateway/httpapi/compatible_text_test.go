@@ -7,10 +7,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// Responses and Chat use different local error envelopes while sharing prompt,
+// policy, and moderation preparation. These fixtures record that sequence and
+// the model, route mapping, and user lease carried into execution when preparation
+// succeeds beyond its early rejection checks.
+
+// TestCompatiblePrefaceOrderingAndEnvelope blocks moderation after recording
+// each entry's preparation sequence. The asserted callback order and protocol
+// error field must match Responses or Chat, and the response must be unsuccessful.
 func TestCompatiblePrefaceOrderingAndEnvelope(t *testing.T) {
 	for _, responses := range []bool{true, false} {
 		name, protocol, field := "chat", "chat_completions", "type"
@@ -30,7 +39,7 @@ func TestCompatiblePrefaceOrderingAndEnvelope(t *testing.T) {
 			if responses {
 				prefix = append(prefix, "request:original", "endpoint", "plan", "bind", "image")
 			} else {
-				prefix = append(prefix, "plan", "bind", "image", "request:original", "endpoint")
+				prefix = append(prefix, "plan", "bind", "request:original", "endpoint")
 			}
 			moderationProtocol := moderation.ContentModerationProtocolOpenAIChat
 			if responses {
@@ -43,11 +52,16 @@ func TestCompatiblePrefaceOrderingAndEnvelope(t *testing.T) {
 	}
 }
 
+// TestCompatiblePrefaceValidationBeforeScheduling supplies malformed, missing,
+// oversized, and policy-rejected requests to both entries. Each response must
+// contain its expected validation message, and the callback trace must omit route planning.
 func TestCompatiblePrefaceValidationBeforeScheduling(t *testing.T) {
 	for _, tc := range []struct {
-		name, body, message string
-		limit               int64
-		policy              bool
+		// name labels the case, body supplies input, and message identifies the
+		// rejection expected before planning. The same values exercise both compatible entry envelopes.
+		name, body, message string // name: scenario label; body: request JSON; message: rejection text
+		limit               int64  // normalized body bytes
+		policy              bool   // inject reasoning-policy rejection
 	}{
 		{"empty", "", "Request body is empty", 1024, false},
 		{"json", "{", "Failed to parse request body", 1024, false},
@@ -76,6 +90,9 @@ func TestCompatiblePrefaceValidationBeforeScheduling(t *testing.T) {
 	}
 }
 
+// TestCompatiblePrefacePassesRequestLeaseAndOriginalModel allows both entries to
+// reach execution after admission. The recorded call must retain the client
+// model, mapped route model, and a request lease, with eligibility preceding execution.
 func TestCompatiblePrefacePassesRequestLeaseAndOriginalModel(t *testing.T) {
 	for _, responses := range []bool{true, false} {
 		p := &prefaceBackend{key: prefaceKey()}
@@ -91,5 +108,21 @@ func TestCompatiblePrefacePassesRequestLeaseAndOriginalModel(t *testing.T) {
 		require.Equal(t, "mapped-model", p.call.Mapping.MappedModel)
 		require.NotNil(t, scheduler.RequestLease(p.call.RequestContext))
 		require.Equal(t, []string{"eligibility", "execution"}, p.events[len(p.events)-2:])
+	}
+}
+
+// TestCompatibleImageSelectionUsesClientPreparation captures an admitted image
+// tool under ordinary and forced Codex configuration. Selection must receive
+// both the tool identity and the client policy that forwarding will apply.
+func TestCompatibleImageSelectionUsesClientPreparation(t *testing.T) {
+	for _, forced := range []bool{false, true} {
+		p := &prefaceBackend{key: prefaceKey()}
+		h := NewCompatibleTextHandler(MessagesHTTPOptions{MaxBodyBytes: 1024, ForceCodexCLI: forced}, p, p, prefaceConcurrency(), p)
+		c, w := prefaceContext(`{"model":"original","input":"draw","tools":[{"type":"image_generation","model":"canvas"}]}`)
+		h.Responses(c)
+		require.Equal(t, 200, w.Code, w.Body.String())
+		selected := media.ResponsesImageSelectionFromContext(p.call.RequestContext)
+		require.Equal(t, []string{"canvas"}, selected.Models)
+		require.Equal(t, forced, selected.Codex)
 	}
 }

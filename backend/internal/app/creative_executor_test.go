@@ -13,68 +13,105 @@ import (
 	creativeprovider "github.com/TokenFlux/TokenRouter/internal/creative/provider"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// creativeExecutionGroupProbe 提供分组读取函数，记录装配期间的读取次数。
-type creativeExecutionGroupProbe struct{ reads int }
+// Creative preparation reads a persisted group before choosing an eligible
+// image provider. These scenarios exercise deferred group reads, mapped
+// upstream models, and client restrictions, then inspect request bodies and
+// copied policies to check the assembled executor's behavior.
 
-type creativePolicyGroups struct{ group *routing.Group }
-
-type creativePolicyProviders struct {
-	selection.Providers
-	value *gatewayprovider.ExecutionProvider
+// creativeExecutionGroupProbe counts group reads performed while preparing
+// creative tasks.
+type creativeExecutionGroupProbe struct {
+	reads int // completed group reads
 }
 
-// 价格存储为空，验证分组策略不依赖价格配置关联。
+// creativePolicyGroups supplies a stored group for creative policy scenarios.
+type creativePolicyGroups struct {
+	group *routing.Group // configured policy group
+}
+
+// creativePolicyProviders supplies one execution provider to the image
+// scheduler.
+type creativePolicyProviders struct {
+	// Providers supplies unused methods; the fixture implements the two reads
+	// needed by these image-selection scenarios and leaves other calls unconfigured.
+	selection.Providers
+	value *gatewayprovider.ExecutionProvider // configured execution provider
+}
+
+// creativeNoPrices supplies empty pricing data for group-policy execution
+// scenarios.
 type creativeNoPrices struct {
+	// PricingConfigRepository supplies unused methods; the fixture implements
+	// empty configuration and platform reads for the pricing-service initialization.
 	routing.PricingConfigRepository
 }
 
+// GetByIDLite counts the lookup and returns an active Gemini image group.
 func (p *creativeExecutionGroupProbe) GetByIDLite(context.Context, int64) (*routing.Group, error) {
 	p.reads++
 	return &routing.Group{ID: 12, Status: "active", AllowedProtocols: []capability.ProtocolID{capability.ProtocolGeminiGenerateContent}, ResponsesImagePolicy: "inherit"}, nil
 }
 
+// TestCreativeExecutorNativeAssemblyPreservesPrepareReads assembles an executor
+// before preparing a Gemini task. It checks deferred group lookup, the
+// configured execution timeout, the unavailable-provider error, and the
+// default timeout of five minutes.
 func TestCreativeExecutorNativeAssemblyPreservesPrepareReads(t *testing.T) {
 	groups := &creativeExecutionGroupProbe{}
 	cfg := &config.Config{}
 	cfg.Creative.ExecuteTimeoutSeconds = 17
-	executor := provideCreativeExecutor(cfg, groups, nil, nil, nil)
+	executor := provideCreativeExecutor(cfg, groups, nil, nil, nil, nil)
 	require.Zero(t, groups.reads)
 	require.Equal(t, 17*time.Second, executor.Timeout)
 	_, err := executor.Prepare(context.Background(), creative.CreativeRun{GroupID: 12, Model: "gemini-3.1-flash-image", Operation: creative.CreativeOperationGenerate})
 	require.ErrorContains(t, err, "no compatible creative provider available")
 	require.Equal(t, 1, groups.reads, "一次读取完整策略用于全部候选")
-	require.Equal(t, 5*time.Minute, provideCreativeExecutor(nil, nil, nil, nil, nil).Timeout)
+	require.Equal(t, 5*time.Minute, provideCreativeExecutor(nil, nil, nil, nil, nil, nil).Timeout)
 }
 
+// GetByID returns a cloned fixture group for creative policy reads.
 func (s creativePolicyGroups) GetByID(context.Context, int64) (*routing.Group, error) {
 	return routing.CloneGroup(s.group), nil
 }
 
+// GetByIDLite delegates to the fixture's cloned full-group read.
 func (s creativePolicyGroups) GetByIDLite(ctx context.Context, id int64) (*routing.Group, error) {
 	return s.GetByID(ctx, id)
 }
 
+// GetByID returns the configured execution-provider pointer for scheduler
+// lookup.
 func (s creativePolicyProviders) GetByID(context.Context, int64) (*gatewayprovider.ExecutionProvider, error) {
 	return s.value, nil
 }
 
+// ListSchedulableByGroupIDAndPlatform returns a value copy of the fixture
+// provider.
 func (s creativePolicyProviders) ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]gatewayprovider.ExecutionProvider, error) {
 	return []gatewayprovider.ExecutionProvider{*s.value}, nil
 }
 
+// ListAll returns no pricing configurations for this group-policy fixture.
 func (creativeNoPrices) ListAll(context.Context) ([]routing.PricingConfig, error) {
 	return nil, nil
 }
 
+// GetGroupPlatforms returns no pricing-platform overrides for the requested
+// groups.
 func (creativeNoPrices) GetGroupPlatforms(context.Context, []int64) (map[int64]string, error) {
 	return nil, nil
 }
 
+// TestCreativeExecutorForwardsModelAllowedByGroupScheduler prepares an image
+// task whose group maps the client model. It checks the selected upstream model
+// and request body, then verifies copied catalog and execution policies leave
+// the stored group unchanged.
 func TestCreativeExecutorForwardsModelAllowedByGroupScheduler(t *testing.T) {
 	ctx := context.Background()
 	group := &routing.Group{ID: 12, Status: "active", AllowedProtocols: []capability.ProtocolID{capability.ProtocolImagesGenerations}, RoutingPolicy: routing.GroupRoutingPolicy{
@@ -91,7 +128,7 @@ func TestCreativeExecutorForwardsModelAllowedByGroupScheduler(t *testing.T) {
 	choices := selection.NewCompatible(selection.CompatibleDependencies{
 		Reads: selection.Reads{Providers: providers, Groups: groups}, Shared: selection.Shared{GroupPolicies: policies},
 	}, selection.DefaultOptions())
-	executor := provideCreativeExecutor(nil, groups, &gatewayprovider.CreativeTargets{}, nil, choices)
+	executor := provideCreativeExecutor(nil, groups, &gatewayprovider.CreativeTargets{}, nil, choices, &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}})
 	run := creative.CreativeRun{GroupID: group.ID, Model: "gpt-image-1", Operation: creative.CreativeOperationGenerate, ImageSize: "1K"}
 	prepared, err := executor.Prepare(ctx, run)
 	require.NoError(t, err)
@@ -101,7 +138,8 @@ func TestCreativeExecutorForwardsModelAllowedByGroupScheduler(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(body, "model").String())
 
-	// 模型目录和执行数据各自持有策略的深拷贝，修改副本后持久化分组的数据保持不变。
+	// Mutate different policy collections in the catalog and execution views to
+	// check both copies leave the repository group's mapping and allowlist intact.
 	view := creativeGroupView(group, "en")
 	executionGroup, err := executor.Group(ctx, group.ID)
 	require.NoError(t, err)
@@ -111,14 +149,17 @@ func TestCreativeExecutorForwardsModelAllowedByGroupScheduler(t *testing.T) {
 	require.Equal(t, []string{"gpt-image-2"}, group.RoutingPolicy.AllowedModels)
 }
 
-// TestCreativeExecutorKeepsPersistedGroupWhenClientRestricted 检查已保存的任务遇到客户端限制时仍使用原分组。
+// TestCreativeExecutorKeepsPersistedGroupWhenClientRestricted prepares a task
+// in a Claude-Code-only group with a fallback configured. Preparation must
+// reject the task before selection, and its catalog view must retain the
+// restriction.
 func TestCreativeExecutorKeepsPersistedGroupWhenClientRestricted(t *testing.T) {
 	fallback := int64(99)
 	group := &routing.Group{
 		ID: 12, Status: "active", ClaudeCodeOnly: true, FallbackGroupID: &fallback,
 		AllowedProtocols: []capability.ProtocolID{capability.ProtocolImagesGenerations},
 	}
-	executor := provideCreativeExecutor(nil, creativePolicyGroups{group}, nil, nil, nil)
+	executor := provideCreativeExecutor(nil, creativePolicyGroups{group}, nil, nil, nil, nil)
 	selected := false
 	executor.OpenAI = func(context.Context, creative.CreativeRun) (*creative.Selection, error) {
 		selected = true

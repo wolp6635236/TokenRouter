@@ -5,7 +5,10 @@ import (
 	"testing"
 )
 
-// TestCompiledRulesPreserveInvalidPatternCount 保留 ACL 区分空白名单和全部无效白名单所需的事实。
+// TestCompiledRulesPreserveInvalidPatternCount compiles invalid, trimmed IPv4,
+// and IPv6 CIDR patterns. Invalid entries must retain their supplied count,
+// compiled entries must match, and the single-pattern helper must reject
+// whitespace.
 func TestCompiledRulesPreserveInvalidPatternCount(t *testing.T) {
 	rules := CompileIPRules([]string{"invalid", ""})
 	if rules.PatternCount != 2 || MatchesCompiledRules(net.ParseIP("203.0.113.2"), rules) {

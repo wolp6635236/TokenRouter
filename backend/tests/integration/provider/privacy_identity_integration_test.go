@@ -11,7 +11,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// TestPrivacyObservationIdentityAndOutbox 检查隐私观测与 Extra/outbox 一起提交，身份变化或事件失败时拒绝成功模式写入。
+// OpenAI and Antigravity privacy observations are applied to the provider
+// identity used for the query. Fixture callbacks change credentials or status
+// before writeback, and a failing outbox adapter checks that rejected or
+// rolled-back results leave the existing privacy mode and event count
+// unchanged.
+
+// TestPrivacyObservationIdentityAndOutbox changes credentials or status during
+// a fixture privacy observation on OpenAI and Antigravity providers. Rejected
+// identities and failing event writes retain the previous privacy mode and
+// outbox count; the unchanged case commits both.
 func TestPrivacyObservationIdentityAndOutbox(t *testing.T) {
 	for _, platform := range []string{provider.PlatformOpenAI, provider.PlatformAntigravity} {
 		for _, scenario := range []string{"success", "credential_changed", "status_changed", "outbox_failure"} {
@@ -27,6 +36,8 @@ func TestPrivacyObservationIdentityAndOutbox(t *testing.T) {
 				}
 				v, err := store.GetByID(ctx, row.ID)
 				require.NoError(t, err)
+				// The observer returns a successful mode after committing the
+				// selected identity change, placing writeback behind that committed replacement.
 				observe := func() string {
 					switch scenario {
 					case "credential_changed":

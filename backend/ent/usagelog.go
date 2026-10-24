@@ -51,13 +51,13 @@ type UsageLog struct {
 	UpstreamResponseModel *string `json:"upstream_response_model,omitempty"`
 	// UpstreamModelMismatch holds the value of the "upstream_model_mismatch" field.
 	UpstreamModelMismatch *bool `json:"upstream_model_mismatch,omitempty"`
-	// 共享价格配置 ID
+	// Shared pricing configuration ID
 	PricingConfigID *int64 `json:"pricing_config_id,omitempty"`
-	// 模型映射链
+	// Model mapping chain
 	ModelMappingChain *string `json:"model_mapping_chain,omitempty"`
-	// 计费层级标签
+	// Billing tier label
 	BillingTier *string `json:"billing_tier,omitempty"`
-	// 计费模式：token/per_request/image
+	// Billing mode: token/per_request/image
 	BillingMode *string `json:"billing_mode,omitempty"`
 	// GroupID holds the value of the "group_id" field.
 	GroupID *int64 `json:"group_id,omitempty"`
@@ -95,7 +95,7 @@ type UsageLog struct {
 	BillingAllocations []billing.BillingAllocation `json:"billing_allocations,omitempty"`
 	// RateMultiplier holds the value of the "rate_multiplier" field.
 	RateMultiplier float64 `json:"rate_multiplier,omitempty"`
-	// 该请求是否因长上下文规则实际增加费用
+	// Records whether long-context rules increased this request's cost
 	LongContextBillingApplied bool `json:"long_context_billing_applied,omitempty"`
 	// ProviderRateMultiplier holds the value of the "provider_rate_multiplier" field.
 	ProviderRateMultiplier *float64 `json:"provider_rate_multiplier,omitempty"`
@@ -105,8 +105,8 @@ type UsageLog struct {
 	Stream bool `json:"stream,omitempty"`
 	// DurationMs holds the value of the "duration_ms" field.
 	DurationMs *int `json:"duration_ms,omitempty"`
-	// FirstTokenMs holds the value of the "first_token_ms" field.
-	FirstTokenMs *int `json:"first_token_ms,omitempty"`
+	// Timings holds the value of the "timings" field.
+	Timings map[string]interface{} `json:"timings,omitempty"`
 	// UserAgent holds the value of the "user_agent" field.
 	UserAgent *string `json:"user_agent,omitempty"`
 	// IPAddress holds the value of the "ip_address" field.
@@ -123,11 +123,11 @@ type UsageLog struct {
 	ImageSizeSource *string `json:"image_size_source,omitempty"`
 	// ImageSizeBreakdown holds the value of the "image_size_breakdown" field.
 	ImageSizeBreakdown map[string]int `json:"image_size_breakdown,omitempty"`
-	// 视频生成数量；>0 表示本行是视频生成用量
+	// Generated video count; a positive value identifies video usage
 	VideoCount int `json:"video_count,omitempty"`
-	// 计费用视频分辨率 480p/720p/1080p
+	// Normalized video resolution label used for per-second billing
 	VideoResolution *string `json:"video_resolution,omitempty"`
-	// 提交时请求的视频时长（秒），按秒计费的乘数
+	// Billable video seconds from completion, submission, or the missing-duration default
 	VideoDurationSeconds *int `json:"video_duration_seconds,omitempty"`
 	// CacheTTLOverridden holds the value of the "cache_ttl_overridden" field.
 	CacheTTLOverridden bool `json:"cache_ttl_overridden,omitempty"`
@@ -229,13 +229,13 @@ func (*UsageLog) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case usagelog.FieldBillingAllocations, usagelog.FieldImageSizeBreakdown:
+		case usagelog.FieldBillingAllocations, usagelog.FieldTimings, usagelog.FieldImageSizeBreakdown:
 			values[i] = new([]byte)
 		case usagelog.FieldUpstreamModelMismatch, usagelog.FieldLongContextBillingApplied, usagelog.FieldStream, usagelog.FieldCacheTTLOverridden:
 			values[i] = new(sql.NullBool)
 		case usagelog.FieldInputCost, usagelog.FieldOutputCost, usagelog.FieldCacheCreationCost, usagelog.FieldCacheReadCost, usagelog.FieldTotalCost, usagelog.FieldActualCost, usagelog.FieldSubscriptionAmountUsd, usagelog.FieldBalanceAmountUsd, usagelog.FieldRateMultiplier, usagelog.FieldProviderRateMultiplier:
 			values[i] = new(sql.NullFloat64)
-		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldBillingUserID, usagelog.FieldTeamID, usagelog.FieldAPIKeyID, usagelog.FieldProviderID, usagelog.FieldPricingConfigID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldImageCount, usagelog.FieldVideoCount, usagelog.FieldVideoDurationSeconds:
+		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldBillingUserID, usagelog.FieldTeamID, usagelog.FieldAPIKeyID, usagelog.FieldProviderID, usagelog.FieldPricingConfigID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldImageCount, usagelog.FieldVideoCount, usagelog.FieldVideoDurationSeconds:
 			values[i] = new(sql.NullInt64)
 		case usagelog.FieldPlatform, usagelog.FieldBillingKey, usagelog.FieldRequestID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldUpstreamResponseModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource, usagelog.FieldVideoResolution:
 			values[i] = new(sql.NullString)
@@ -518,12 +518,13 @@ func (_m *UsageLog) assignValues(columns []string, values []any) error {
 				_m.DurationMs = new(int)
 				*_m.DurationMs = int(value.Int64)
 			}
-		case usagelog.FieldFirstTokenMs:
-			if value, ok := values[i].(*sql.NullInt64); !ok {
-				return fmt.Errorf("unexpected type %T for field first_token_ms", values[i])
-			} else if value.Valid {
-				_m.FirstTokenMs = new(int)
-				*_m.FirstTokenMs = int(value.Int64)
+		case usagelog.FieldTimings:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field timings", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Timings); err != nil {
+					return fmt.Errorf("unmarshal field timings: %w", err)
+				}
 			}
 		case usagelog.FieldUserAgent:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -827,10 +828,8 @@ func (_m *UsageLog) String() string {
 		builder.WriteString(fmt.Sprintf("%v", *v))
 	}
 	builder.WriteString(", ")
-	if v := _m.FirstTokenMs; v != nil {
-		builder.WriteString("first_token_ms=")
-		builder.WriteString(fmt.Sprintf("%v", *v))
-	}
+	builder.WriteString("timings=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Timings))
 	builder.WriteString(", ")
 	if v := _m.UserAgent; v != nil {
 		builder.WriteString("user_agent=")

@@ -5,40 +5,56 @@ import (
 	"strconv"
 )
 
-// PassiveUsageFields 从 Anthropic 响应头收集 5h/7d/7d_oi 的
-// utilization 与 reset 被动采样数据，合并为一次 Extra 写入。无数据时不写。
+// passive_usage_headers.go parses passive Anthropic quota headers into
+// provider observation fields.
+// Anthropic response headers supply passive utilization fractions and reset
+// timestamps for provider observations. The parser returns recognized values
+// under Extra field names, omits parse failures, and converts large integer
+// timestamps from milliseconds to seconds before the caller merges them.
+
+// PassiveUsageFields returns parsed utilization fractions and reset values
+// under provider Extra field names. Missing or malformed values are omitted;
+// large reset integers are divided into Unix seconds, while other numeric
+// values pass through without range checks.
 func PassiveUsageFields(headers http.Header) map[string]any {
+	// Retain each independently parseable observation and omit failures, allowing
+	// the provider merge to leave unrelated previously stored Extra values
+	// available when one Header is malformed.
 	extraUpdates := make(map[string]any, 6)
-	// 5h utilization（0-1 小数），供 estimateSetupTokenUsage 使用
+	// Five-hour utilization is a fraction, used for setup-token estimates.
 	if utilStr := headers.Get("anthropic-ratelimit-unified-5h-utilization"); utilStr != "" {
 		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
 			extraUpdates["session_window_utilization"] = util
 		}
 	}
-	// 7d utilization（0-1 小数）
+	// Seven-day utilization is a fraction.
 	if utilStr := headers.Get("anthropic-ratelimit-unified-7d-utilization"); utilStr != "" {
 		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
 			extraUpdates["passive_usage_7d_utilization"] = util
 		}
 	}
-	// 7d reset timestamp
+	// Normalize seconds or milliseconds to Unix seconds.
 	if resetStr := headers.Get("anthropic-ratelimit-unified-7d-reset"); resetStr != "" {
 		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
+			// BuildPassiveUsageWindow consumes stored resets as Unix seconds. Reduce
+			// millisecond Header values before writing the corresponding Extra field.
 			if ts > 1e11 {
 				ts /= 1000
 			}
 			extraUpdates["passive_usage_7d_reset"] = ts
 		}
 	}
-	// 7d_oi (Fable 专属 7d 窗口) utilization（0-1 小数）
+	// Fable-specific seven-day utilization is a fraction.
 	if utilStr := headers.Get("anthropic-ratelimit-unified-7d_oi-utilization"); utilStr != "" {
 		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
 			extraUpdates["passive_usage_7d_oi_utilization"] = util
 		}
 	}
-	// 7d_oi reset timestamp
+	// Normalize seconds or milliseconds to Unix seconds.
 	if resetStr := headers.Get("anthropic-ratelimit-unified-7d_oi-reset"); resetStr != "" {
 		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
+			// BuildPassiveUsageWindow consumes stored resets as Unix seconds. Reduce
+			// millisecond Header values before writing the corresponding Extra field.
 			if ts > 1e11 {
 				ts /= 1000
 			}

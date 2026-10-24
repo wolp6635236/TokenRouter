@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { displayTempUnschedErrorMessage } from '../tempUnschedErrorMessage'
 
+// tempUnschedErrorMessage.spec.ts checks translated, unknown, and absent temporary-unscheduling reasons. The fixture supplies one quality-degraded translation so each fallback stays observable.
+
 describe('displayTempUnschedErrorMessage', () => {
   const labels: Record<string, string> = {
     'admin.providers.tempUnschedulable.reasons.quality_degraded': '降智探测未通过',

@@ -6,7 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestContentReview 验证修改原文后，旧译文需重新核对才会显示。
+// TestContentReview approves an English translation, edits its Chinese source,
+// and submits a stale overall revision. Resolution must use the source until
+// review is renewed, and stale editing must conflict.
 func TestContentReview(t *testing.T) {
 	zh := "zh-Hans"
 	original := Original("原文")
@@ -35,9 +37,16 @@ func TestContentReview(t *testing.T) {
 	require.False(t, resolution.Fallback)
 }
 
-// TestLanguageNegotiation 覆盖权重、禁用语言和中文文字系统。
+// TestLanguageNegotiation supplies weighted headers, zero weights, unsupported
+// languages, and malformed text. Negotiation must return the expected canonical
+// supported language or the normalized fallback and default.
 func TestLanguageNegotiation(t *testing.T) {
-	for _, tc := range []struct{ header, fallback, want string }{
+	for _, tc := range []struct {
+		// header is the supplied Accept-Language text.
+		// fallback is the supplied default-language preference.
+		// want is the expected canonical locale asserted after negotiation.
+		header, fallback, want string
+	}{
 		{"zh", "en", "zh-Hans"},
 		{"en-US;q=0.2,zh-CN;q=0.9", "en", "zh-Hans"},
 		{"en-US;q=0,zh-Hans;q=1", "en", "zh-Hans"},
@@ -51,7 +60,9 @@ func TestLanguageNegotiation(t *testing.T) {
 	}
 }
 
-// TestUnknownOriginalLanguage 保留历史原文，不将未知语言伪装为请求语言。
+// TestUnknownOriginalLanguage resolves legacy content whose source has no
+// declared language. The source text must remain available, with nil actual
+// locale and a true fallback result.
 func TestUnknownOriginalLanguage(t *testing.T) {
 	value, resolution := Original("legacy").Resolve("zh-Hans")
 	require.Equal(t, "legacy", value)
@@ -59,7 +70,10 @@ func TestUnknownOriginalLanguage(t *testing.T) {
 	require.True(t, resolution.Fallback)
 }
 
-// TestTranslationDeletionRequiresOperation 覆盖部分提交、删除和语言别名重复。
+// TestTranslationDeletionRequiresOperation omits a saved translation, removes
+// it through DeletedLocales, and submits colliding aliases. Omission must
+// return equal saved translations; deletion must empty the new map and retain
+// the earlier map's one-entry count, while alias collisions must return an error.
 func TestTranslationDeletionRequiresOperation(t *testing.T) {
 	zh := "zh-Hans"
 	current := Content[string]{SourceLocale: &zh, Source: "中文", Revision: 3, SourceRevision: 2, Translations: map[string]Translation[string]{"en": {Value: "English", SourceRevision: 2}}}
@@ -80,7 +94,10 @@ func TestTranslationDeletionRequiresOperation(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestClientCannotForgeReview 检查客户端提交的版本标记不会使未核对译文生效。
+// TestClientCannotForgeReview supplies fabricated source revision numbers with
+// a new unreviewed translation. Resolution must return the source as a
+// fallback after that submission, keeping the submitted translation from
+// appearing as reviewed content.
 func TestClientCannotForgeReview(t *testing.T) {
 	en := "en"
 	current := Content[string]{SourceLocale: &en, Source: "Source", Revision: 2, SourceRevision: 2}
@@ -94,7 +111,9 @@ func TestClientCannotForgeReview(t *testing.T) {
 	require.True(t, result.Fallback)
 }
 
-// TestErrorMessagesTranslateLegacyChinese 检查英文账户不会收到历史中文系统错误。
+// TestErrorMessagesTranslateLegacyChinese supplies legacy Chinese errors and
+// specific English text. Error rendering must select the expected language,
+// maintain reason coverage, and reject malformed locale identifiers.
 func TestErrorMessagesTranslateLegacyChinese(t *testing.T) {
 	require.Equal(t, "Team not found.", ErrorText("en", "TEAM_NOT_FOUND", 404, "团队不存在"))
 	require.Equal(t, "团队不存在。", ErrorText("zh", "TEAM_NOT_FOUND", 404, "Team not found"))
@@ -107,14 +126,20 @@ func TestErrorMessagesTranslateLegacyChinese(t *testing.T) {
 	}
 }
 
-// TestSearchTextsExcludesStaleTranslations 搜索语料只包含原文和已核对译文。
+// TestSearchTextsExcludesStaleTranslations extracts text from a source and
+// translations with current and stale review versions. Search terms must be
+// sorted and include the source and current translation only.
 func TestSearchTextsExcludesStaleTranslations(t *testing.T) {
 	content := Content[string]{Source: "source", SourceRevision: 2, Translations: map[string]Translation[string]{"en": {Value: "current", SourceRevision: 2}, "zh-Hans": {Value: "stale", SourceRevision: 1}}}
 	require.Equal(t, []string{"current", "source"}, SearchTexts(content, func(value string) []string { return []string{value} }))
 }
 
-// TestCatalogExtension 检查增加测试语言后，别名、方向和内容回退由目录决定。
+// TestCatalogExtension temporarily adds an Arabic locale with an alias,
+// right-to-left direction, and English fallback. Negotiation, direction lookup,
+// and content resolution must use the added catalog rules.
 func TestCatalogExtension(t *testing.T) {
+	// The fixture changes the shared catalog synchronously. Restore it at cleanup
+	// and copy the locale slice before appending so other tests retain its storage.
 	previous := catalog
 	t.Cleanup(func() { catalog = previous })
 	catalog.Locales = append(append([]Definition(nil), catalog.Locales...), Definition{Code: "ar", Name: "Test RTL", Direction: "rtl", Aliases: []string{"ar-SA"}, Fallbacks: []string{"en"}})

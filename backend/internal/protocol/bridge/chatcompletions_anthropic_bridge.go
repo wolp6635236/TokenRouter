@@ -7,40 +7,80 @@ import (
 	"strings"
 )
 
-// ChatCompletionsToAnthropicStreamState 保存 Chat SSE chunk 直转 Anthropic SSE event 的状态，
-// 将原来的两个转换状态机合并为一个。
+// chatcompletions_anthropic_bridge.go converts Messages requests to Chat and
+// Chat replies back to Messages.
+// Messages history mixes text, thinking, media, and tool blocks inside roles,
+// while Chat carries reasoning and function calls in separate message fields.
+// Direct request conversion splits tool results from user media, replays
+// plaintext thinking only on assistant tool messages, and normalizes answered
+// call/result adjacency. Tool choices are limited to retained declarations,
+// with sampling and max-effort behavior supplied through conversion options.
+//
+// Chat response streams can deliver argument fragments before their call names
+// or IDs. Text/thinking blocks emit as they arrive, but calls are buffered by
+// tool index and emitted in sorted order during finalization. Each retained
+// call then gets start, joined-argument delta, and stop before message
+// termination. Joining does not validate JSON or required call metadata. All
+// choices share this state, usage observations replace whole counters, and
+// finish evidence plus any tool observation determines the final stop reason.
+
+// ChatCompletionsToAnthropicStreamState tracks direct conversion of Chat SSE
+// chunks into Anthropic SSE events.
 type ChatCompletionsToAnthropicStreamState struct {
-	MessageStartSent bool
-	MessageStopSent  bool
+	// MessageStartSent and MessageStopSent govern one-time start/finalization.
+	// Chunk processing still mutates state after stop, so callers end input
+	// before finalization and do not treat these flags as a global dispatch guard.
+	MessageStartSent bool // message start already produced
+	MessageStopSent  bool // message termination already produced
 
-	// 当前文本或思考内容块的生命周期状态。
-	ContentBlockIndex int
-	ContentBlockOpen  bool
-	CurrentBlockType  string // 内容块类型：text 或 thinking。
-	HasToolCall       bool
+	// ContentBlockIndex, ContentBlockOpen, and CurrentBlockType describe one
+	// immediate text/thinking block. Closing retains the old event index before
+	// advancing; buffered tool blocks use subsequent positions at finalization.
+	ContentBlockIndex int    // current or next block position
+	ContentBlockOpen  bool   // immediate content block active
+	CurrentBlockType  string // text or thinking
+	// HasToolCall remains true after any accepted buffer observation, even when
+	// name/arguments are absent. Stop selection consults it independently of
+	// record validation.
+	HasToolCall bool // any tool observation buffered
 
-	// 工具调用按上游 index 聚合。Chat Completions 允许多个工具的参数分片交错到达，
-	// Anthropic 内容块则必须在 stop 前收到全部 delta，因此统一在流收尾时顺序输出。
-	toolCalls             map[int]*ChatToolCall
-	toolArgumentFragments map[int][]string
+	// toolCalls and toolArgumentFragments share source tool-index keys across
+	// all choices; absent index selects zero. Metadata can arrive late while
+	// separate immutable strings retain argument fragments until final joining.
+	toolCalls             map[int]*ChatToolCall // accumulated tool metadata records
+	toolArgumentFragments map[int][]string      // ordered raw fragments per tool
 
-	// DeepSeek 风格 reasoning_content 先于正文到达；内容块按顺序生成，因此复用同一个 block index 计数器。
+	// FinishReason retains the last nonempty label across chunks and choices.
+	// Finalization combines it with HasToolCall, giving exact length precedence.
+	FinishReason string // retained nonempty finish evidence
 
-	FinishReason string
+	// InputTokens, OutputTokens, CacheReadInputTokens, and CacheCreationInputTokens
+	// are replaced together from each present chunk usage. Zero observations
+	// therefore replace earlier counts, including empty-choice usage chunks.
+	InputTokens              int // uncached input token count
+	OutputTokens             int // selected output token count
+	CacheReadInputTokens     int // cached input read count
+	CacheCreationInputTokens int // cached input write count
 
-	InputTokens              int
-	OutputTokens             int
-	CacheReadInputTokens     int
-	CacheCreationInputTokens int
-
-	ResponseID string
-	Model      string
-	Created    int64
+	// ResponseID and Model feed message_start. Nonempty chunk identity replaces
+	// generated identity, while a nonempty chosen model wins over later source models.
+	ResponseID string // current message response identity
+	Model      string // selected client message model
+	Created    int64  // captured Unix seconds
 }
 
-// AnthropicToChatCompletionsRequest 直接把 Anthropic Messages 请求转换为 Chat Completions 请求。
-// 结果等价于依次调用 AnthropicToResponses 和 ResponsesToChatCompletionsRequest，
-// 但不会创建中间 ResponsesRequest，也省去额外的序列化往返。
+// AnthropicToChatCompletionsRequest converts Messages history directly to Chat
+// fields, returning an error for nil input. Sampling pointers are retained
+// unless options drop them; positive token limits receive the shared
+// completion floor. System and message decode errors abort the request.
+//
+// Hosted web-search declarations are removed, while other tools become
+// nonstrict functions with repaired parameters. Choice conversion runs only
+// when tools remain, and unnamed/undeclared selections can be omitted while
+// parallelism still follows a decoded disable flag. Effort defaults medium,
+// max support controls max-to-xhigh mapping, and ultra is rejected. The
+// request does not retain every source option or perform complete
+// schema/history validation.
 func AnthropicToChatCompletionsRequest(req *AnthropicRequest, options RequestOptions) (*ChatCompletionsRequest, error) {
 	if req == nil {
 		return nil, fmt.Errorf("anthropic request is nil")
@@ -57,19 +97,22 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest, options RequestOpt
 		Stream:   req.Stream,
 	}
 
-	// reasoning 模型（如 gpt-5.x）拒绝 temperature/top_p 采样参数。
-	if !options.DropSampling {
+	if !options.DropSampling && !options.DropTemperature {
 		out.Temperature = req.Temperature
+	}
+	if !options.DropSampling && !options.DropTopP {
 		out.TopP = req.TopP
 	}
 
 	if req.MaxTokens > 0 {
+		// Positive completion limits use the shared Chat/Responses token floor.
 		v := max(req.MaxTokens, minMaxOutputTokens)
 		out.MaxCompletionTokens = &v
 	}
 
-	// Anthropic input_schema 本身就是 JSON Schema，可直接作为 Chat function parameters。
-	// web_search_* 等服务端工具在 Chat Completions 中缺少对应表示，转换时丢弃。
+	// Hosted search has no retained function declaration on this direct route.
+	// Other tool schemas use the same parameter repair as Responses function
+	// conversion.
 	if len(req.Tools) > 0 {
 		tools := anthropicToolsToChatTools(req.Tools)
 		if len(tools) > 0 {
@@ -78,9 +121,9 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest, options RequestOpt
 	}
 
 	parallelToolCalls := true
-	// 只有转换后仍存在 tools 时才转发 tool_choice；具名选择还必须指向已声明工具，
-	// 否则严格 Chat 上游会因未知工具返回 400。Anthropic 的并行禁用标记需要
-	// 同时映射到 Chat Completions 顶层 parallel_tool_calls。
+	// A named selector needs a retained function identity after tool filtering.
+	// Decode selection only when tools remain, and carry its disable flag into
+	// the separate parallel field.
 	if len(out.Tools) > 0 && len(req.ToolChoice) > 0 {
 		declared := make(map[string]bool, len(out.Tools))
 		for _, tool := range out.Tools {
@@ -98,7 +141,9 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest, options RequestOpt
 		}
 	}
 
-	// 根据模型映射 output_config.effort，推理档位由该字段决定。
+	// output_config selects effort independently of thinking budgets. Normalize
+	// it with supplied max support and reject ultra before producing the outbound
+	// Chat fields.
 	effort := "medium"
 	if req.OutputConfig != nil && req.OutputConfig.Effort != "" {
 		effort = req.OutputConfig.Effort
@@ -113,11 +158,22 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest, options RequestOpt
 	return out, nil
 }
 
-// anthropicToChatMessages 把 Anthropic system 与消息列表直接转换为 ChatMessage。
+// anthropicToChatMessages appends accepted system text before per-message
+// conversion, then normalizes call/result history. Billing-header system text
+// is filtered by the shared parser; invalid system or message decoding returns
+// an error.
+//
+// Per-message expansion can put tool results before ordinary user content.
+// Normalization then indexes replies, keeps the last duplicate, and places
+// answered replies beside calls in call order. Unanswered calls and orphan
+// replies with IDs are removed; ID-less tool messages remain. This helper
+// delegates that repair rather than promising untouched source ordering or
+// complete upstream request validation.
 func anthropicToChatMessages(system json.RawMessage, msgs []AnthropicMessage) ([]ChatMessage, error) {
 	var messages []ChatMessage
 
-	// parseAnthropicSystemContentParts 同时处理字符串和 block 数组，并过滤计费 header。
+	// System text stays before conversation history. Reuse the billing-aware
+	// parser so private system markers do not become ordinary Chat instruction text.
 	if len(system) > 0 {
 		sysParts, err := parseAnthropicSystemContentParts(system)
 		if err != nil {
@@ -126,6 +182,8 @@ func anthropicToChatMessages(system json.RawMessage, msgs []AnthropicMessage) ([
 		if len(sysParts) > 0 {
 			text := joinResponsesContentPartText(sysParts)
 			if text != "" {
+				// Joined system content contains only a constructed string. Its encoder
+				// cannot fail from unsupported values or malformed raw argument members.
 				content, _ := json.Marshal(text)
 				messages = append(messages, ChatMessage{Role: "system", Content: content})
 			}
@@ -143,28 +201,46 @@ func anthropicToChatMessages(system json.RawMessage, msgs []AnthropicMessage) ([
 	return normalizeChatMessages(messages), nil
 }
 
-// anthropicMsgToChatMessages 把一条 Anthropic 消息转换为一条或多条 Chat 消息。
-// tool_result 独立成为 tool 角色消息，text/image 留在 user 消息，assistant tool_use 转为 tool_calls。
+// anthropicMsgToChatMessages sends exact assistant roles through assistant
+// conversion and every other role through user conversion. The selected
+// converter's errors propagate, and unsupported source roles therefore become
+// user/tool target messages.
 func anthropicMsgToChatMessages(m AnthropicMessage) ([]ChatMessage, error) {
 	switch m.Role {
 	case "assistant":
 		return anthropicAssistantToChatMessages(m.Content)
-	default: // user 与未知角色均按 user 处理。
+	default:
+		// An unrecognized role can still contain accepted text, media, or results.
+		// User conversion gives those parts a recognized target role and the same
+		// result-splitting rules.
 		return anthropicUserToChatMessages(m.Content)
 	}
 }
 
-// anthropicUserToChatMessages 处理字符串或 block 数组形式的 Anthropic user 消息。
-// tool_result 会拆成独立 tool 消息，其中的图片提升到后续 user 消息的 image_url；
-// function_call_output 使用字符串，图片单独传递。
+// anthropicUserToChatMessages converts string-decodable content to one user
+// message, or separates block-array results from user text/images. Decode
+// errors abort the result. Tool output text uses its source correlation ID,
+// while extracted result images are held for later user content.
+//
+// Results are emitted first. Without usable images, ordinary text blocks join
+// with blank lines into scalar content; with images, their part order is
+// retained and result images follow ordinary parts. Unsupported or empty
+// blocks can contribute no user message. The owning history normalizer can
+// subsequently move or discard tool replies according to answered-call
+// pairing.
 func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
-	// 纯字符串直接生成单条 user 消息。
+	// A string becomes a single user message.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
+		// Scalar content is a decoded string, including null's empty value. Encoding
+		// that string cannot fail through unsupported values or retained raw JSON.
 		content, _ := json.Marshal(s)
 		return []ChatMessage{{Role: "user", Content: content}}, nil
 	}
 
+	// When scalar decoding fails, block arrays retain distinct text/tool/media
+	// fields. Decode that alternative before mapping supported fields to their
+	// target representation.
 	var blocks []AnthropicContentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return nil, err
@@ -173,12 +249,15 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 	var out []ChatMessage
 	var toolResultImageParts []ChatContentPart
 
-	// tool_result 的文本先生成 tool 消息，图片延后并入 user 消息。
+	// Tool output stays scalar text with its correlation key. Hold extracted
+	// images separately so the later user message still carries their visual content.
 	for _, b := range blocks {
 		if b.Type != "tool_result" {
 			continue
 		}
 		text, imageParts := convertToolResultOutput(b)
+		// Result/text extraction supplies a string, including its empty placeholder.
+		// The discarded encoding error is nil for this supported scalar value.
 		content, _ := json.Marshal(text)
 		out = append(out, ChatMessage{
 			Role:       "tool",
@@ -193,8 +272,9 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 		}
 	}
 
-	// 剩余 text/image 组成 user 消息。纯文本用空行拼接为字符串，含图片时使用 parts 数组。
-	// 部分 Chat 上游会拒绝没有图片的数组 content。
+	// Scalar text and multimodal arrays use distinct target shapes here. Keep
+	// text-only content scalar; when usable images exist, retain ordered parts
+	// and append extracted result images.
 	var textParts []string
 	var parts []ChatContentPart
 	hasImage := false
@@ -222,6 +302,8 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 
 	if !hasImage {
 		if len(textParts) > 0 {
+			// Paragraph joining produces one string for text-only content. Its encoding
+			// cannot fail because no unsupported or raw-JSON value enters this scalar.
 			content, _ := json.Marshal(strings.Join(textParts, "\n\n"))
 			out = append(out, ChatMessage{Role: "user", Content: content})
 		}
@@ -237,16 +319,30 @@ func anthropicUserToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
 	return out, nil
 }
 
-// anthropicAssistantToChatMessages 把文本与 tool_use 合并到 assistant 消息的 content/tool_calls；
-// 同一消息包含工具调用时，将 thinking 块写入 reasoning_content。
+// anthropicAssistantToChatMessages returns one assistant message from scalar
+// or block content. Scalar decoding wins, including null as empty text; block
+// decode errors propagate. Nonempty text joins with paragraph separators, and
+// tool uses retain IDs/names with empty-object argument text when input is
+// absent.
+//
+// Plaintext thinking is copied into reasoning_content only when the converted
+// message has tool calls. Signatures and redacted thinking do not enter that
+// field, and supplied raw argument JSON is not validated here. Empty block
+// content can still produce an empty assistant value for the owning history
+// pass to handle.
 func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error) {
-	// 纯字符串直接生成单条 assistant 消息。
+	// A string becomes a single assistant message.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
+		// Scalar content is a decoded string, including null's empty value. Encoding
+		// that string cannot fail through unsupported values or retained raw JSON.
 		content, _ := json.Marshal(s)
 		return []ChatMessage{{Role: "assistant", Content: content}}, nil
 	}
 
+	// When scalar decoding fails, block arrays retain distinct text/tool/media
+	// fields. Decode that alternative before mapping supported fields to their
+	// target representation.
 	var blocks []AnthropicContentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return nil, err
@@ -255,6 +351,8 @@ func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error
 	msg := ChatMessage{Role: "assistant"}
 	text := extractAnthropicTextFromBlocks(blocks)
 	if text != "" {
+		// Accepted text blocks have already become one nonempty string. Its encoding
+		// cannot fail through unsupported values or retained raw argument JSON.
 		content, _ := json.Marshal(text)
 		msg.Content = content
 	}
@@ -263,6 +361,9 @@ func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error
 		if b.Type != "tool_use" {
 			continue
 		}
+		// Chat stores tool input as argument text. An absent input still needs an
+		// object-shaped string, while supplied raw bytes remain available for
+		// downstream validation.
 		args := "{}"
 		if len(b.Input) > 0 {
 			args = string(b.Input)
@@ -282,15 +383,16 @@ func anthropicAssistantToChatMessages(raw json.RawMessage) ([]ChatMessage, error
 	return []ChatMessage{msg}, nil
 }
 
-// anthropicThinkingToReasoningContent 将 thinking 块回填到 Chat Completions 的 reasoning_content 字段。
+// anthropicThinkingToReasoningContent joins nonempty exact thinking plaintext
+// with newlines when hasToolCalls is true. False returns empty text regardless
+// of block content; redacted/signature-only blocks have no selected plaintext,
+// and whitespace-only nonempty thinking is retained.
 //
-// chatMessageToAnthropicBlocks 出站时会把上游 reasoning_content 生成 thinking 块，
-// 多轮客户端随后会原样回传；此处丢弃会使桥接丢失刚生成的内容。DeepSeek thinking 模式要求
-// 产生工具调用的 assistant 消息回传 reasoning_content，否则响应 400；Responses→Chat 桥
-// 已通过 pendingReasoning 实现同样行为。hasToolCalls 保证范围一致：reasoning 仅随工具调用传递。
-//
-// redacted_thinking 与仅含签名的占位块没有明文，不参与拼接；多个块用 "\n" 连接，
-// 与 extractResponsesReasoningText 保持一致。
+// The outbound Chat-to-Messages block converter represents reasoning as
+// thinking, so this selection restores its plaintext on replayed assistant
+// tool messages. Ordinary assistant messages omit that replay field. It does
+// not decode signatures, select a model, or validate upstream reasoning
+// requirements; the caller derives hasToolCalls from its converted message.
 func anthropicThinkingToReasoningContent(blocks []AnthropicContentBlock, hasToolCalls bool) string {
 	if !hasToolCalls {
 		return ""
@@ -304,10 +406,17 @@ func anthropicThinkingToReasoningContent(blocks []AnthropicContentBlock, hasTool
 	return strings.Join(parts, "\n")
 }
 
-// anthropicToolsToChatTools 把 Anthropic 工具映射为 Chat function tools，
-// 并丢弃没有 Chat Completions 等价表示的 web_search_* 等 server tool。
+// anthropicToolsToChatTools skips exact web_search-prefixed source types and
+// converts every other declaration to a nonstrict Chat function.
+// Names/descriptions remain supplied, parameters receive partial
+// normalization, and unfamiliar kinds or blank names are not independently
+// rejected. Unchanged schema bytes can share source storage, so callers
+// preserve them during serialization.
 func anthropicToolsToChatTools(tools []AnthropicTool) []ChatTool {
 	var out []ChatTool
+	// Hosted search is not retained as a client function on this direct route.
+	// Convert other definitions with repaired parameters and leave their
+	// required-field validation to the caller.
 	for _, t := range tools {
 		if strings.HasPrefix(t.Type, "web_search") {
 			continue
@@ -325,24 +434,31 @@ func anthropicToolsToChatTools(tools []AnthropicTool) []ChatTool {
 	return out
 }
 
-// convertAnthropicToolChoiceToChat 映射 Anthropic tool_choice；返回 nil 表示丢弃选择。
-// 未知类型或指向未声明工具的具名选择返回 nil。
-//
-//	{"type":"auto"}            → "auto"
-//	{"type":"any"}             → "required"
-//	{"type":"none"}            → "none"
-//	{"type":"tool","name":"X"} → {"type":"function","function":{"name":"X"}}（X 已声明）
+// convertAnthropicToolChoiceToChat translates decoded auto/any/none or
+// declared named selectors and returns the inverse disable-parallel flag.
+// Decode errors return an error with parallel allowed. Unknown kinds and
+// empty/undeclared exact names return nil choice while retaining decoded
+// parallelism; strings and names are not trimmed.
 func convertAnthropicToolChoiceToChat(raw json.RawMessage, declared map[string]bool) (json.RawMessage, bool, error) {
 	var tc struct {
-		Type                   string `json:"type"`
-		Name                   string `json:"name"`
-		DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
+		// Type selects scalar or named conversion, while Name is used only for
+		// exact tool kind. It must match a retained declaration literally; unknown
+		// kinds or unmatched names omit choice while decoded parallelism still applies.
+		Type string `json:"type"` // source tool selection kind
+		Name string `json:"name"` // exact selected function name
+		// DisableParallelToolUse is inverted even when decoded choice is omitted.
+		// Missing/false allows parallel calls; the caller invokes this decoder only
+		// when at least one retained declaration exists.
+		DisableParallelToolUse bool `json:"disable_parallel_tool_use"` // source parallel-disable flag
 	}
 	if err := json.Unmarshal(raw, &tc); err != nil {
 		return nil, true, err
 	}
 	allowParallel := !tc.DisableParallelToolUse
 
+	// Scalar selectors use target vocabulary, and named selectors need a
+	// surviving declaration. Return the separate parallel decision even when
+	// selection is omitted.
 	switch tc.Type {
 	case "auto":
 		converted, err := json.Marshal("auto")
@@ -354,6 +470,8 @@ func convertAnthropicToolChoiceToChat(raw json.RawMessage, declared map[string]b
 		converted, err := json.Marshal("none")
 		return converted, allowParallel, err
 	case "tool":
+		// Filtered tools have no matching function identity. Decline this named
+		// selection so an unavailable declaration is not recreated by tool choice alone.
 		if tc.Name == "" || !declared[tc.Name] {
 			return nil, allowParallel, nil
 		}
@@ -367,7 +485,8 @@ func convertAnthropicToolChoiceToChat(raw json.RawMessage, declared map[string]b
 	}
 }
 
-// joinResponsesContentPartText 拼接 system prompt 中的 input_text parts。
+// joinResponsesContentPartText joins nonempty exact input_text parts with
+// paragraph separators.
 func joinResponsesContentPartText(parts []ResponsesContentPart) string {
 	var texts []string
 	for _, p := range parts {
@@ -378,8 +497,17 @@ func joinResponsesContentPartText(parts []ResponsesContentPart) string {
 	return strings.Join(texts, "\n\n")
 }
 
-// ChatCompletionsResponseToAnthropic 直接把 Chat Completions 响应转换为 Anthropic Messages 响应，
-// 结果等价于依次调用 ChatCompletionsResponseToResponses 和 ResponsesToAnthropic。
+// ChatCompletionsResponseToAnthropic converts only the first choice and its
+// usage into a Messages reply. Nil or choice-free responses receive empty text
+// and end-turn evidence. A supplied nonempty model wins; otherwise a nonnil
+// response supplies model. Missing identity uses the runtime random callback.
+//
+// Reasoning/text/tool fields become ordered blocks through the message
+// converter, including its reasoning-only text fallback and Read argument
+// repair. Finish length outranks tool evidence, while other reasons can infer
+// tool use from blocks. Source IDs and usage are retained through their
+// respective conversions; later choices do not contribute, and argument/schema
+// validity is not guaranteed by this response conversion.
 func ChatCompletionsResponseToAnthropic(runtime Runtime, resp *ChatCompletionsResponse, model string) *AnthropicResponse {
 	out := &AnthropicResponse{
 		Type:  "message",
@@ -396,8 +524,7 @@ func ChatCompletionsResponseToAnthropic(runtime Runtime, resp *ChatCompletionsRe
 		if len(resp.Choices) > 0 {
 			choice := resp.Choices[0]
 			out.Content = chatMessageToAnthropicBlocks(choice.Message)
-			out.StopReason = AnthropicStopReasonPtr(chatFinishReasonToAnthropicStopReason(choice.FinishReason, out.Content))
-			// length 由 stop_reason 表达为 max_tokens，不需要 incomplete_details 字段。
+			out.StopReason = AnthropicStopReasonPtr(chatFinishReasonToAnthropicStopReason(choice.FinishReason, containsAnthropicToolUseBlock(out.Content)))
 		}
 		if resp.Usage != nil {
 			out.Usage = chatUsageToAnthropicUsage(resp.Usage)
@@ -407,11 +534,14 @@ func ChatCompletionsResponseToAnthropic(runtime Runtime, resp *ChatCompletionsRe
 	if len(out.Content) == 0 {
 		out.Content = []AnthropicContentBlock{{Type: "text", Text: ""}}
 	}
-	// choices 为空或响应为 nil 时生成 end_turn，非流式完成响应需要有效的 stop_reason。
+	// Nil or choice-free replies still use the final Messages stop field. Select
+	// its modeled default from content rather than returning an empty stop
+	// string.
 	if AnthropicStopReasonString(out.StopReason) == "" {
-		out.StopReason = AnthropicStopReasonPtr(chatFinishReasonToAnthropicStopReason("", out.Content))
+		out.StopReason = AnthropicStopReasonPtr(chatFinishReasonToAnthropicStopReason("", containsAnthropicToolUseBlock(out.Content)))
 	}
-	// 上游省略响应 ID 时生成一个 ID，客户端需要该字段。
+	// A source without identity still needs reply metadata. Generate its label
+	// through the injected callback while retaining supplied IDs when they exist.
 	if out.ID == "" {
 		out.ID = generateResponsesID(runtime)
 	}
@@ -419,8 +549,17 @@ func ChatCompletionsResponseToAnthropic(runtime Runtime, resp *ChatCompletionsRe
 	return out
 }
 
-// chatMessageToAnthropicBlocks 把 reasoning、文本和 tool_calls 分别转换为
-// Anthropic thinking、text 与 tool_use blocks。
+// chatMessageToAnthropicBlocks emits selected reasoning first, visible text
+// next, then tool uses in call order. With no tool calls, absent text receives
+// nonblank reasoning as visible text; otherwise an empty text block still
+// represents a textless ordinary reply.
+//
+// Calls preserve correlation after known legacy reversal, use an empty object
+// for whitespace-only arguments, and apply the narrow Read pages repair. Their
+// supplied types, names, and nonempty argument text are not validated.
+// Reasoning becomes plaintext thinking with no replay signature synthesized,
+// and unsupported content parts contribute only what the shared text extractor
+// recognizes.
 func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 	var blocks []AnthropicContentBlock
 	reasoning := message.ReasoningText()
@@ -433,7 +572,9 @@ func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 	}
 
 	text := chatMessageContentText(message.Content)
-	// DeepSeek 仅返回 reasoning 且没有 tool call 时，将 reasoning 同时写入可见文本。
+	// A nonblank reasoning-only ordinary reply otherwise has no visible text.
+	// Reuse its reasoning in the text block while retaining the separate thinking
+	// block.
 	if text == "" && strings.TrimSpace(reasoning) != "" && len(message.ToolCalls) == 0 {
 		text = reasoning
 	}
@@ -441,8 +582,14 @@ func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: text})
 	}
 
+	// Tool input stays a raw argument value apart from visible text. Convert
+	// correlation/name together for each block so their pairing survives
+	// independent content grouping.
 	for _, toolCall := range message.ToolCalls {
 		arguments := toolCall.Function.Arguments
+		// Argument-free calls still need an object value inside tool_use input. Use
+		// the placeholder for blank text; other raw forms remain available for
+		// downstream validation.
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
@@ -457,28 +604,16 @@ func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 	return blocks
 }
 
-// chatFinishReasonToAnthropicStopReason 把 Chat finish_reason 映射为 Anthropic stop_reason。
+// chatUsageToAnthropicUsage separates Chat prompt input into
+// uncached/read/write Messages counters, returning zeros for nil usage. Prompt
+// details supply cached input and positive cache_write_tokens before the
+// creation alias; the aliases are not added together.
 //
-//	"length"     → "max_tokens"
-//	"tool_calls" → "tool_use"
-//	其它值       → "end_turn"（存在 tool_use block 时为 "tool_use"）
-//
-// stop、content_filter 和未知原因都按已完成响应处理，再根据 blocks 推导 stop_reason。
-func chatFinishReasonToAnthropicStopReason(reason string, blocks []AnthropicContentBlock) string {
-	switch reason {
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	default:
-		if containsAnthropicToolUseBlock(blocks) {
-			return "tool_use"
-		}
-		return "end_turn"
-	}
-}
-
-// chatUsageToAnthropicUsage 把 Chat token 用量转换为 Anthropic usage。
+// Selected cached/creation values are subtracted from PromptTokens and the
+// remainder is clamped to zero. Output preserves CompletionTokens, TotalTokens
+// is unused, and negative cache/output values are not otherwise validated.
+// This avoids double-counting overlapping write aliases while allowing callers
+// to inspect retained cache buckets independently of the uncached floor.
 func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 	if usage == nil {
 		return AnthropicUsage{}
@@ -488,8 +623,9 @@ func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 	cacheCreationTokens := 0
 	if usage.PromptTokensDetails != nil {
 		cachedTokens = usage.PromptTokensDetails.CachedTokens
-		// cache_write_tokens 与 cache_creation_tokens 是同一数量的两种字段名，不能相加；
-		// 优先读取 write，缺失时读取 creation。
+		// Write and creation describe overlapping cache input. Select positive write
+		// first, otherwise creation, so subtraction uses one cache-write
+		// observation.
 		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
 			cacheCreationTokens = usage.PromptTokensDetails.CacheWriteTokens
 		} else {
@@ -497,6 +633,9 @@ func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 		}
 	}
 
+	// Prompt totals include cache input counted separately by Messages. Remove
+	// selected read/write buckets once, clamping inconsistent excess at zero
+	// uncached input.
 	inputTokens := max(usage.PromptTokens-cachedTokens-cacheCreationTokens, 0)
 
 	return AnthropicUsage{
@@ -507,7 +646,10 @@ func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 	}
 }
 
-// NewChatCompletionsToAnthropicStreamState 返回已初始化的直转流状态。
+// NewChatCompletionsToAnthropicStreamState generates initial identity,
+// captures runtime time, and initializes call/fragment maps. Runtime callbacks
+// are required. The supplied model wins over later chunks when nonempty;
+// callers serialize one constructed state for each stream.
 func NewChatCompletionsToAnthropicStreamState(runtime Runtime, model string) *ChatCompletionsToAnthropicStreamState {
 	return &ChatCompletionsToAnthropicStreamState{
 		ResponseID:            generateResponsesID(runtime),
@@ -518,7 +660,18 @@ func NewChatCompletionsToAnthropicStreamState(runtime Runtime, model string) *Ch
 	}
 }
 
-// ChatCompletionsChunkToAnthropicEvents 把一个 Chat 流式 chunk 转为零个或多个 Anthropic event 并更新状态。
+// ChatCompletionsChunkToAnthropicEvents consumes all choices into one
+// constructed stream state and returns immediate text/thinking events. Nil
+// chunk/state returns nothing. Nonempty chunk ID replaces identity, empty
+// selected model takes a source model, and each present usage replaces all
+// converted counters before choice processing.
+//
+// Tool fragments are buffered rather than emitted, and finish reason retains
+// the last nonempty choice observation. Choice indexes do not separate
+// records: equal tool indexes across choices share one call buffer.
+// MessageStopSent is not checked here, so callers finish input before
+// finalization and stop feeding a terminated stream. The runtime supplies any
+// missing call identity during buffering.
 func ChatCompletionsChunkToAnthropicEvents(runtime Runtime,
 	chunk *ChatCompletionsChunk,
 	state *ChatCompletionsToAnthropicStreamState,
@@ -533,7 +686,8 @@ func ChatCompletionsChunkToAnthropicEvents(runtime Runtime,
 		state.Model = chunk.Model
 	}
 
-	// include_usage 通常以空 choices 的独立 chunk 到达，先保存供 finalize 的 message_delta 使用。
+	// Usage can arrive in a chunk with no choices. Replace counters before the
+	// choice loop so finalization still retains that complete observed usage selection.
 	if chunk.Usage != nil {
 		u := chatUsageToAnthropicUsage(chunk.Usage)
 		state.InputTokens = u.InputTokens
@@ -546,7 +700,9 @@ func ChatCompletionsChunkToAnthropicEvents(runtime Runtime,
 	events = append(events, ensureCCAnthropicMessageStart(state)...)
 
 	for _, choice := range chunk.Choices {
-		// reasoning content 写入 thinking block。
+		// Selected reasoning text opens/reuses thinking before its delta is emitted.
+		// Tool fragments remain buffered separately, so this visible block does not
+		// consume tool identities.
 		reasoning := choice.Delta.ReasoningText()
 		if reasoning != nil && *reasoning != "" {
 			events = append(events, ensureCCAnthropicThinkingBlock(state)...)
@@ -556,7 +712,8 @@ func ChatCompletionsChunkToAnthropicEvents(runtime Runtime,
 			})...)
 		}
 
-		// 正文写入 text block，开始前先关闭 thinking block。
+		// Text needs its own block kind/index. Stop any open thinking first so the
+		// following visible delta cannot be attached to that reasoning lifecycle.
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			events = append(events, closeCCAnthropicBlockIfOpen(state, "thinking")...)
 			events = append(events, ensureCCAnthropicTextBlock(state)...)
@@ -566,7 +723,9 @@ func ChatCompletionsChunkToAnthropicEvents(runtime Runtime,
 			})...)
 		}
 
-		// tool calls 仅按 index 聚合；等流结束后再生成完整且不交错的 tool_use blocks。
+		// Tool fragments can interleave independently of visible blocks. Keep their
+		// index association until finalization emits joined arguments with each
+		// stored identity.
 		for _, toolCall := range choice.Delta.ToolCalls {
 			bufferCCAnthropicToolCall(runtime, state, &toolCall)
 		}
@@ -579,7 +738,17 @@ func ChatCompletionsChunkToAnthropicEvents(runtime Runtime,
 	return events
 }
 
-// FinalizeChatCompletionsAnthropicStream 在流结束时关闭内容块并发出 message_delta/message_stop。
+// FinalizeChatCompletionsAnthropicStream emits message start if needed, closes
+// text/thinking, emits buffered tools, then sends final usage/stop once. Nil
+// or stopped state returns nothing; even a stream with no chunks receives
+// start and termination.
+//
+// Tool emission uses sorted source indexes and joined raw fragments, while
+// final stop reason combines retained finish evidence with HasToolCall.
+// MessageStopSent is set after constructing the result, so transport delivery
+// remains external. Buffered records remain in state, but the public finalizer
+// prevents their repeat emission. This helper does not recover source errors
+// or validate the completed argument JSON.
 func FinalizeChatCompletionsAnthropicStream(runtime Runtime, state *ChatCompletionsToAnthropicStreamState) []AnthropicStreamEvent {
 	if state == nil || state.MessageStopSent {
 		return nil
@@ -590,10 +759,12 @@ func FinalizeChatCompletionsAnthropicStream(runtime Runtime, state *ChatCompleti
 		events = append(events, ensureCCAnthropicMessageStart(state)...)
 	}
 
+	// Complete the active lifecycle before assigning another block position.
+	// The stop retains its old index and the following start uses the advanced counter.
 	events = append(events, closeCCAnthropicBlock(state)...)
 	events = append(events, finalizeCCAnthropicToolCalls(runtime, state)...)
 
-	stopReason := ccFinishReasonToAnthropicStopReason(state.FinishReason, state.HasToolCall)
+	stopReason := chatFinishReasonToAnthropicStopReason(state.FinishReason, state.HasToolCall)
 
 	events = append(events,
 		AnthropicStreamEvent{
@@ -614,7 +785,10 @@ func FinalizeChatCompletionsAnthropicStream(runtime Runtime, state *ChatCompleti
 	return events
 }
 
-// ensureCCAnthropicMessageStart 在首次事件前发出 message_start。
+// ensureCCAnthropicMessageStart emits the current identity/model with empty
+// content, null stop reason, and zero usage once. Nonnil state is required;
+// stored final usage is deliberately deferred to message_delta rather than
+// exposed in this start snapshot.
 func ensureCCAnthropicMessageStart(state *ChatCompletionsToAnthropicStreamState) []AnthropicStreamEvent {
 	if state.MessageStartSent {
 		return nil
@@ -623,22 +797,35 @@ func ensureCCAnthropicMessageStart(state *ChatCompletionsToAnthropicStreamState)
 	return []AnthropicStreamEvent{{
 		Type: "message_start",
 		Message: &AnthropicResponse{
-			ID:         state.ResponseID,
-			Type:       "message",
-			Role:       "assistant",
-			Content:    []AnthropicContentBlock{},
-			Model:      state.Model,
-			StopReason: nil, // 序列化为 JSON null，不能是空字符串。
+			ID:      state.ResponseID,
+			Type:    "message",
+			Role:    "assistant",
+			Content: []AnthropicContentBlock{},
+			Model:   state.Model,
+			// A nil stop pointer encodes as JSON null, representing unset stop evidence
+			// at message start before finalization supplies the terminal reason.
+			StopReason: nil,
 			Usage:      AnthropicUsage{InputTokens: 0, OutputTokens: 0},
 		},
 	}}
 }
 
-// ensureCCAnthropicThinkingBlock 在需要时打开 thinking block。
+// ensureCCAnthropicThinkingBlock reuses an open thinking block or closes
+// another kind before opening empty thinking. Consecutive reasoning fragments
+// therefore share an index, while a transition from text emits its stop before
+// the thinking start receives the advanced position.
+//
+// Nonnil state is required. The helper emits a start only and retains no
+// reasoning text or signature; the owning chunk converter sends the visible
+// delta afterward. Keeping that order prevents a fragment from addressing the
+// preceding text lifecycle while avoiding another start for each continued
+// thinking fragment.
 func ensureCCAnthropicThinkingBlock(state *ChatCompletionsToAnthropicStreamState) []AnthropicStreamEvent {
 	if state.ContentBlockOpen && state.CurrentBlockType == "thinking" {
 		return nil
 	}
+	// Complete the active lifecycle before assigning another block position.
+	// The stop retains its old index and the following start uses the advanced counter.
 	events := closeCCAnthropicBlock(state)
 	idx := state.ContentBlockIndex
 	state.ContentBlockOpen = true
@@ -654,11 +841,21 @@ func ensureCCAnthropicThinkingBlock(state *ChatCompletionsToAnthropicStreamState
 	return events
 }
 
-// ensureCCAnthropicTextBlock 在需要时打开 text block。
+// ensureCCAnthropicTextBlock reuses open text or closes another active kind
+// before opening empty text. Consecutive visible fragments therefore share one
+// index, while a transition from thinking emits its stop before text acquires
+// the advanced position.
+//
+// Nonnil state is required. The helper emits only the start, and the owning
+// chunk converter emits the supplied visible delta afterward. No whole-text
+// buffer or part identity is maintained here, so the block continues until a
+// later kind transition or finalization closes it.
 func ensureCCAnthropicTextBlock(state *ChatCompletionsToAnthropicStreamState) []AnthropicStreamEvent {
 	if state.ContentBlockOpen && state.CurrentBlockType == "text" {
 		return nil
 	}
+	// Complete the active lifecycle before assigning another block position.
+	// The stop retains its old index and the following start uses the advanced counter.
 	events := closeCCAnthropicBlock(state)
 	idx := state.ContentBlockIndex
 	state.ContentBlockOpen = true
@@ -674,12 +871,24 @@ func ensureCCAnthropicTextBlock(state *ChatCompletionsToAnthropicStreamState) []
 	return events
 }
 
-// bufferCCAnthropicToolCall 按上游 index 聚合工具 ID、名称和参数分片。
-// 首帧可能同时携带完整字段，也可能先到参数、后到名称或 ID。
+// bufferCCAnthropicToolCall stores observations by exact supplied index, with
+// absent index selecting zero. Nil state/call is ignored; accepted
+// observations require initialized maps. New records shallow-copy metadata and
+// generate missing ID; empty type selects function. Later nonempty
+// ID/type/name replaces stored values.
+//
+// First and later arguments enter the same fragment slice rather than
+// Function.Arguments, retaining early bytes until late metadata arrives.
+// Finalization joins them and ignores stored Type when producing tool_use.
+// Negative indexes are accepted and choice index is absent from the key.
+// HasToolCall becomes true even for unnamed/argument-free observations, and
+// metadata or JSON validity is not checked.
 func bufferCCAnthropicToolCall(runtime Runtime, state *ChatCompletionsToAnthropicStreamState, toolCall *ChatToolCall) {
 	if state == nil || toolCall == nil {
 		return
 	}
+	// Missing indexes select one shared zero slot, including later observations.
+	// Read the value as the key now; a retained Index pointer is only copied metadata.
 	idx := 0
 	if toolCall.Index != nil {
 		idx = *toolCall.Index
@@ -688,13 +897,18 @@ func bufferCCAnthropicToolCall(runtime Runtime, state *ChatCompletionsToAnthropi
 	stored, ok := state.toolCalls[idx]
 	if !ok {
 		copyCall := *toolCall
+		// A new index can precede upstream identity. Supply a temporary generated
+		// ID, then allow later nonempty ID/name observations to replace that record
+		// metadata.
 		if copyCall.ID == "" {
 			copyCall.ID = generateItemID(runtime)
 		}
 		if copyCall.Type == "" {
 			copyCall.Type = "function"
 		}
-		// 首帧参数和后续分片由下方代码一起累加。
+		// First arguments belong in the fragment log too. Clear the copied string so
+		// late metadata and later arguments share one deferred-join path at
+		// finalization.
 		copyCall.Function.Arguments = ""
 		state.toolCalls[idx] = &copyCall
 		stored = &copyCall
@@ -711,14 +925,25 @@ func bufferCCAnthropicToolCall(runtime Runtime, state *ChatCompletionsToAnthropi
 	}
 
 	if toolCall.Function.Arguments != "" {
-		// 参数分片暂存到收尾时一次拼接，减少大参数复制。
+		// Preserve each arriving argument string as a fragment until finalization.
+		// Deferred joining avoids constructing a full accumulated prefix at every
+		// new fragment.
 		state.toolArgumentFragments[idx] = append(state.toolArgumentFragments[idx], toolCall.Function.Arguments)
 	}
 	state.HasToolCall = true
 }
 
-// finalizeCCAnthropicToolCalls 按工具 index 生成连续、闭合的 Anthropic tool_use blocks。
-// 每个工具在自己的 block 内发送一个完整 JSON delta。
+// finalizeCCAnthropicToolCalls emits retained calls in sorted integer source-
+// index order, assigning successive Messages block indexes. Nil/no-call state
+// yields nothing and nil records are skipped. Missing record IDs are
+// generated, whitespace-only joined arguments become an empty object, and Read
+// receives its targeted repair.
+//
+// Each emitted block starts with empty-object input, receives one joined raw
+// argument delta, and stops at that same index before the counter advances.
+// Joining does not establish valid JSON or a usable name. Records are not
+// cleared, so invoking this private helper again emits them again; the public
+// finalizer owns one-time termination.
 func finalizeCCAnthropicToolCalls(runtime Runtime, state *ChatCompletionsToAnthropicStreamState) []AnthropicStreamEvent {
 	if state == nil || len(state.toolCalls) == 0 {
 		return nil
@@ -728,6 +953,9 @@ func finalizeCCAnthropicToolCalls(runtime Runtime, state *ChatCompletionsToAnthr
 	for idx := range state.toolCalls {
 		idxs = append(idxs, idx)
 	}
+	// Source indexes determine final tool order independently of fragment
+	// arrival. Sorting keeps each complete start/delta/stop group together before
+	// moving to another buffered call.
 	sort.Ints(idxs)
 
 	var events []AnthropicStreamEvent
@@ -736,10 +964,19 @@ func finalizeCCAnthropicToolCalls(runtime Runtime, state *ChatCompletionsToAnthr
 		if toolCall == nil {
 			continue
 		}
+		// A retained record can still lack source correlation at emission. Generate
+		// a label before constructing its tool block so the client receives an
+		// identity field.
 		if toolCall.ID == "" {
 			toolCall.ID = generateItemID(runtime)
 		}
+		// Join one call's stored fragments only after all input has arrived.
+		// Empty/blank text uses an object placeholder; nonempty JSON validity
+		// remains a caller concern.
 		arguments := strings.Join(state.toolArgumentFragments[idx], "")
+		// Argument-free calls still need an object value inside tool_use input. Use
+		// the placeholder for blank text; other raw forms remain available for
+		// downstream validation.
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
@@ -775,7 +1012,9 @@ func finalizeCCAnthropicToolCalls(runtime Runtime, state *ChatCompletionsToAnthr
 	return events
 }
 
-// ccAnthropicDelta 在当前内容块上发出 content_block_delta。
+// ccAnthropicDelta emits the supplied shared delta pointer at the current open
+// block index. Nonnil state is required; closed state returns no events, and
+// the helper does not validate delta kind or content.
 func ccAnthropicDelta(state *ChatCompletionsToAnthropicStreamState, delta *AnthropicDelta) []AnthropicStreamEvent {
 	if !state.ContentBlockOpen {
 		return nil
@@ -788,7 +1027,10 @@ func ccAnthropicDelta(state *ChatCompletionsToAnthropicStreamState, delta *Anthr
 	}}
 }
 
-// closeCCAnthropicBlockIfOpen 仅在当前块类型匹配时关闭，用于打开 text/tool 前结束 thinking。
+// closeCCAnthropicBlockIfOpen delegates closure only for an open exact
+// matching kind. Nonnil state is required; mismatched or closed blocks stay
+// unchanged, letting the caller limit a transition to its selected active
+// kind.
 func closeCCAnthropicBlockIfOpen(state *ChatCompletionsToAnthropicStreamState, blockType string) []AnthropicStreamEvent {
 	if !state.ContentBlockOpen || state.CurrentBlockType != blockType {
 		return nil
@@ -796,7 +1038,9 @@ func closeCCAnthropicBlockIfOpen(state *ChatCompletionsToAnthropicStreamState, b
 	return closeCCAnthropicBlock(state)
 }
 
-// closeCCAnthropicBlock 关闭当前文本或思考内容块。
+// closeCCAnthropicBlock emits stop at the current index, clears open/kind
+// state, and advances the index. Nonnil state is required; already-closed
+// state produces no event, and buffered tool records are unaffected.
 func closeCCAnthropicBlock(state *ChatCompletionsToAnthropicStreamState) []AnthropicStreamEvent {
 	if !state.ContentBlockOpen {
 		return nil
@@ -811,18 +1055,24 @@ func closeCCAnthropicBlock(state *ChatCompletionsToAnthropicStreamState) []Anthr
 	}}
 }
 
-// ccFinishReasonToAnthropicStopReason 把流中取得的 Chat finish_reason 映射为 message_delta 的 Anthropic stop_reason。
-func ccFinishReasonToAnthropicStopReason(reason string, hasToolCall bool) string {
+// chatFinishReasonToAnthropicStopReason combines an exact Chat finish label
+// with the caller's tool evidence. Length selects max_tokens before any tool
+// evidence is considered, and tool_calls selects tool_use. Other labels select
+// tool_use when hasToolCall is true and end_turn otherwise.
+//
+// Buffered responses derive the flag from converted tool_use blocks. Streaming
+// callers retain their accumulated observation flag, including calls whose name
+// has not arrived. These evidence sources determine continuation independently
+// of argument completeness. Source-failure classification remains the caller's
+// responsibility; this mapping selects the Messages stop vocabulary.
+func chatFinishReasonToAnthropicStopReason(reason string, hasToolCall bool) string {
+	// Messages uses a different stop vocabulary. Exact length outranks tool
+	// observations, while other labels can still describe a retained tool continuation.
 	switch reason {
 	case "length":
 		return "max_tokens"
 	case "tool_calls":
 		return "tool_use"
-	case "stop":
-		if hasToolCall {
-			return "tool_use"
-		}
-		return "end_turn"
 	default:
 		if hasToolCall {
 			return "tool_use"

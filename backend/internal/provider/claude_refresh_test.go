@@ -10,6 +10,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// TestBuildClaudeProviderCredentials_Full supplies renewal and scope alongside
+// exchanged token data. It checks every expected stored credential, including
+// decimal-second lifetime and absolute Unix expiry strings.
 func TestBuildClaudeProviderCredentials_Full(t *testing.T) {
 	tokenInfo := &ClaudeTokenInfo{
 		AccessToken:  "at-123",
@@ -30,6 +33,9 @@ func TestBuildClaudeProviderCredentials_Full(t *testing.T) {
 	require.Equal(t, "openid", creds["scope"])
 }
 
+// TestBuildClaudeProviderCredentials_Minimal omits refresh token and scope
+// from exchange data. It checks required token and expiry fields and verifies
+// that those optional credential keys are absent.
 func TestBuildClaudeProviderCredentials_Minimal(t *testing.T) {
 	tokenInfo := &ClaudeTokenInfo{
 		AccessToken: "at-789",
@@ -50,54 +56,57 @@ func TestBuildClaudeProviderCredentials_Minimal(t *testing.T) {
 	require.False(t, hasScope, "scope should not be set when empty")
 }
 
+// TestClaudeTokenRefresher_NeedsRefresh varies stored expiry encodings,
+// invalid values, and absent maps. It checks expired versus far-future
+// eligibility and rejection of unusable expiry for the configured window.
 func TestClaudeTokenRefresher_NeedsRefresh(t *testing.T) {
 	refresher := &ClaudeTokenRefresher{}
 	refreshWindow := 30 * time.Minute
 
 	tests := []struct {
-		name        string
-		credentials map[string]any
-		wantRefresh bool
+		name        string         // refresh qualification case name
+		credentials map[string]any // input stored credential values
+		wantRefresh bool           // expected expiry refresh decision
 	}{
 		{
 			name: "expires_at as string - expired",
 			credentials: map[string]any{
-				"expires_at": "1000", // 1970-01-01 00:16:40 UTC, 已过期
+				"expires_at": "1000", // 1970-01-01 00:16:40 UTC; expired.
 			},
 			wantRefresh: true,
 		},
 		{
 			name: "expires_at as float64 - expired",
 			credentials: map[string]any{
-				"expires_at": float64(1000), // 数字类型，已过期
+				"expires_at": float64(1000), // Numeric timestamp; expired.
 			},
 			wantRefresh: true,
 		},
 		{
 			name: "expires_at as RFC3339 - expired",
 			credentials: map[string]any{
-				"expires_at": "1970-01-01T00:00:00Z", // RFC3339 格式，已过期
+				"expires_at": "1970-01-01T00:00:00Z", // RFC3339 timestamp; expired.
 			},
 			wantRefresh: true,
 		},
 		{
 			name: "expires_at as string - far future",
 			credentials: map[string]any{
-				"expires_at": "9999999999", // 远未来
+				"expires_at": "9999999999", // Far-future timestamp.
 			},
 			wantRefresh: false,
 		},
 		{
 			name: "expires_at as float64 - far future",
 			credentials: map[string]any{
-				"expires_at": float64(9999999999), // 远未来，数字类型
+				"expires_at": float64(9999999999), // Numeric far-future timestamp.
 			},
 			wantRefresh: false,
 		},
 		{
 			name: "expires_at as RFC3339 - far future",
 			credentials: map[string]any{
-				"expires_at": "2099-12-31T23:59:59Z", // RFC3339 格式，远未来
+				"expires_at": "2099-12-31T23:59:59Z", // RFC3339 far-future timestamp.
 			},
 			wantRefresh: false,
 		},
@@ -141,16 +150,19 @@ func TestClaudeTokenRefresher_NeedsRefresh(t *testing.T) {
 	}
 }
 
+// TestClaudeTokenRefresher_NeedsRefresh_WithinWindow supplies a fifteen-minute
+// expiry as numeric text and float64. Both cases assert refresh eligibility
+// within a thirty-minute background qualification window.
 func TestClaudeTokenRefresher_NeedsRefresh_WithinWindow(t *testing.T) {
 	refresher := &ClaudeTokenRefresher{}
 	refreshWindow := 30 * time.Minute
 
-	// 设置一个在刷新窗口内的时间（当前时间 + 15 分钟）
+	// Expire in 15 minutes, within the refresh window.
 	expiresAt := time.Now().Add(15 * time.Minute).Unix()
 
 	tests := []struct {
-		name        string
-		credentials map[string]any
+		name        string         // refresh qualification case name
+		credentials map[string]any // input stored credential values
 	}{
 		{
 			name: "string type - within refresh window",
@@ -180,16 +192,19 @@ func TestClaudeTokenRefresher_NeedsRefresh_WithinWindow(t *testing.T) {
 	}
 }
 
+// TestClaudeTokenRefresher_NeedsRefresh_OutsideWindow supplies a one-hour
+// expiry in numeric text and float64 forms. Both cases assert ineligibility
+// within the configured thirty-minute refresh window.
 func TestClaudeTokenRefresher_NeedsRefresh_OutsideWindow(t *testing.T) {
 	refresher := &ClaudeTokenRefresher{}
 	refreshWindow := 30 * time.Minute
 
-	// 设置一个在刷新窗口外的时间（当前时间 + 1 小时）
+	// Expire in one hour, outside the refresh window.
 	expiresAt := time.Now().Add(1 * time.Hour).Unix()
 
 	tests := []struct {
-		name        string
-		credentials map[string]any
+		name        string         // refresh qualification case name
+		credentials map[string]any // input stored credential values
 	}{
 		{
 			name: "string type - outside refresh window",
@@ -219,14 +234,17 @@ func TestClaudeTokenRefresher_NeedsRefresh_OutsideWindow(t *testing.T) {
 	}
 }
 
+// TestClaudeTokenRefresher_CanRefresh varies platform and authentication type
+// across the table. It checks Anthropic OAuth and Setup Token acceptance and
+// API Key or other-platform rejection.
 func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 	refresher := &ClaudeTokenRefresher{}
 
 	tests := []struct {
-		name     string
-		platform string
-		accType  string
-		want     bool
+		name     string // refresh qualification case name
+		platform string // input provider platform name
+		accType  string // input provider authentication type
+		want     bool   // expected platform qualification decision
 	}{
 		{
 			name:     "anthropic oauth - can refresh",

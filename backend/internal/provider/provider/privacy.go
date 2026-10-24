@@ -8,7 +8,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// PrivacyOptions 组合供应商隐私请求，生命周期和条件写入由提供商用例拥有。
+// privacy.go connects OpenAI and Antigravity authorization clients to provider
+// privacy maintenance. Antigravity privacy is available from its authorization
+// options, and OpenAI privacy is installed when a client factory is supplied;
+// administration logs use the same provider privacy options.
+
+// PrivacyOptions supplies platform privacy calls and administrative log
+// callbacks to the provider service. A nil factory leaves the OpenAI callback
+// unset; Antigravity remains configured, and the owning service handles
+// lifecycle and identity-checked writes.
 func PrivacyOptions(factory openai.PrivacyClientFactory, endpoints openai.PrivacyEndpoints) provider.PrivacyOptions {
 	antigravity := provider.AntigravityAuthorization{Options: AntigravityAuthorizationOptions(nil)}
 	options := provider.PrivacyOptions{

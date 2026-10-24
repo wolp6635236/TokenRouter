@@ -6,20 +6,33 @@ import (
 	"errors"
 )
 
+// scan.go scans the first query result and combines scanning and row-cleanup
+// errors.
+// Transaction adapters can supply QueryContext rows without constructing
+// sql.Row. Single-row scanning consumes the first result and then closes the
+// obtained rows, combining cleanup failures with scan or iteration errors;
+// additional rows do not change the selected value.
+
+// Queryer supplies result rows from a caller-selected SQL connection or transaction.
 type Queryer interface {
+	// QueryContext returns rows for the selected SQL statement and arguments.
+	// Successful rows remain caller-owned until closed; query errors are returned
+	// before ScanSingleRow registers any result cleanup.
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// ScanSingleRow 执行查询并扫描第一行到 dest。
-// 若无结果，可通过 errors.Is(err, sql.ErrNoRows) 判断。
-// 如果 Close 失败，会与原始错误合并返回。
-// 设计目的：仅依赖 QueryContext，避免 QueryRowContext 对 *sql.Tx 的强绑定，
-// 让 ent.Tx 也能作为 sqlExecutor/Queryer 使用。
+// ScanSingleRow queries q, scans the first row into dest, and closes
+// successfully obtained rows. Query errors return before cleanup is
+// registered; an empty successful result returns sql.ErrNoRows unless
+// iteration failed. After row acquisition, Close errors join the returned
+// scan or row error, including an otherwise successful result.
 func ScanSingleRow(ctx context.Context, q Queryer, query string, args []any, dest ...any) (err error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
+	// Rows now belong to this scan. Join their cleanup failure with the
+	// chosen row result so a successful scan cannot hide a later Close error.
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)

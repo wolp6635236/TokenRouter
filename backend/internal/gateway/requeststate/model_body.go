@@ -6,10 +6,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// ModelBodyReplacer 由报文编码 Adapter 注入。
+// model_body.go selects group-mapped models and caches request body
+// replacements by target model. Serial retries reuse encoded bytes for the same
+// target, while an unmapped attempt continues using the supplied body. Callers
+// keep the source and returned slices stable throughout the cache lifetime.
+
+// ModelBodyReplacer encodes a supplied model into a caller-owned request body.
 type ModelBodyReplacer func([]byte, string) []byte
 
-// GroupMappedModel 返回分组映射模型 G；分组映射没有有效结果时保留客户端模型 R。
+// GroupMappedModel returns the trimmed group-mapped model when present,
+// otherwise the trimmed requested model. The mapping result supplies the
+// choice; this helper performs no additional mapping or model validation.
 func GroupMappedModel(requestedModel string, mapping routing.GroupMappingResult) string {
 	routingModel := strings.TrimSpace(mapping.MappedModel)
 	if routingModel == "" {
@@ -18,7 +25,9 @@ func GroupMappedModel(requestedModel string, mapping routing.GroupMappingResult)
 	return routingModel
 }
 
-// ModelMappedBody 在存在分组映射时返回替换模型后的请求体。
+// ModelMappedBody invokes replace when mapping is enabled and a replacer
+// exists. Otherwise it returns the supplied body slice, and the callback
+// defines the ownership and encoding of replacement bytes.
 func ModelMappedBody(body []byte, mapped bool, mappedModel string, replace ModelBodyReplacer) []byte {
 	if !mapped || replace == nil {
 		return body
@@ -26,7 +35,15 @@ func ModelMappedBody(body []byte, mapped bool, mappedModel string, replace Model
 	return replace(body, mappedModel)
 }
 
-// NewModelMappedBodyCache 缓存同一请求体的模型替换结果，切换提供商重试时复用已解析的 JSON。
+// NewModelMappedBodyCache returns a serial request-local lookup for model
+// replacement bytes. Unmapped calls return the supplied body, while mapped
+// calls reuse the result associated with that target model.
+//
+// The closure retains source and cached slices, including an unchanged source
+// returned by a nil replacer. Callers treat returned bytes as read-only and
+// keep the source stable throughout these attempts. It performs no invalidation
+// or locking, so a changed source requires a new cache and concurrent calls
+// require caller synchronization.
 func NewModelMappedBodyCache(body []byte, replace ModelBodyReplacer) func(bool, string) []byte {
 	replacedBodies := make(map[string][]byte)
 	return func(mapped bool, mappedModel string) []byte {

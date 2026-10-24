@@ -10,12 +10,32 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// BuildOpenAIResponseFailedSSE 构造可被客户端解析的 Responses 失败事件。
+// openai_failed_event.go builds Responses failure events from available
+// upstream error evidence.
+// Responses failures need a protocol event even when an upstream body lacks a
+// complete Response object. Event construction chooses a response ID and error
+// message, retains available code/type evidence, and emits a failed Response
+// in an SSE data frame.
+//
+// A supplied response ID is trimmed and reused, while a missing ID is
+// generated for the failed response. Error codes prefer the top-level error
+// and then the nested response error; the type comes from the top-level
+// error. Missing messages and codes receive defaults so the output
+// remains a usable failure event even when the upstream payload is incomplete.
+
+// BuildOpenAIResponseFailedSSE encodes a failed Response event with trimmed
+// model and response identity. A missing ID is generated, message extraction
+// precedes the supplied default, and missing error code or message receives a
+// stable generic value.
 func BuildOpenAIResponseFailedSSE(responseID, model string, source []byte, fallbackMessage string) string {
 	responseID = strings.TrimSpace(responseID)
+	// Failure sources can omit response identity; generate one for the emitted
+	// Response object so the terminal event still has a usable correlation key.
 	if responseID == "" {
 		responseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
+	// Prefer the source error over caller and generic defaults so a rebuilt
+	// terminal event continues to expose the observed failure to the client.
 	message := strings.TrimSpace(openai.ExtractOpenAISSEErrorMessage(source))
 	if message == "" {
 		message = strings.TrimSpace(fallbackMessage)
@@ -23,6 +43,8 @@ func BuildOpenAIResponseFailedSSE(responseID, model string, source []byte, fallb
 	if message == "" {
 		message = "Upstream response failed"
 	}
+	// Sources can wrap the Response error or expose it directly; read both forms
+	// before supplying the code used when no structured failure code was observed.
 	code := strings.TrimSpace(gjson.GetBytes(source, "error.code").String())
 	if code == "" {
 		code = strings.TrimSpace(gjson.GetBytes(source, "response.error.code").String())
@@ -41,6 +63,8 @@ func BuildOpenAIResponseFailedSSE(responseID, model string, source []byte, fallb
 		"status": "failed",
 		"error":  errorBody,
 	}
+	// The event map contains strings and nested string maps, whose JSON encoding
+	// cannot fail for unsupported values or cycles introduced by caller data.
 	body, _ := json.Marshal(map[string]any{"type": "response.failed", "response": response})
 	return "data: " + string(body) + "\n\n"
 }

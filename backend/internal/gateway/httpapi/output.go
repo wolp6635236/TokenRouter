@@ -9,19 +9,56 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// MessagesOutput 提供同步 HTTP 输出与请求观测字段。
-// 执行器通过 execution.Request 读取身份、路由、报文和资金状态。
+// output.go adapts synchronous upstream output events to the HTTP response
+// writer. Begin copies supplied header slices into the destination before
+// writing status, keeping those slices separate from the caller's header
+// storage. Emit writes event bytes before any requested flush and returns
+// write errors to the executor; flushing requires the writer to support
+// http.Flusher.
+//
+// InitialOutput clones headers before reading status and commitment because
+// keepalive-aware Header access can stop and join a pending heartbeat.
+// Reversing those reads could pair the headers with commitment state captured
+// before that handoff completed. Later OutputState calls inspect status and
+// commitment through the writer's optional interfaces without accessing
+// headers, so those observations do not repeat the heartbeat handoff.
+// Upstream sinks bind the request's timing writer before emission. Local HTTP
+// errors use the ordinary writer directly and cannot establish upstream delivery.
+
+// MessagesOutput supplies synchronous HTTP output and request observations.
+// Executors read identity, routing, body, and funding state through execution.Request.
 type MessagesOutput struct {
-	Concurrency *ConcurrencyHelper
-	ResponseSink
-	HTTP          *gin.Context
-	Log           *zap.Logger
+	Concurrency  *ConcurrencyHelper // shared HTTP capacity helper
+	ResponseSink                    // embedded synchronous output sink
+	HTTP         *gin.Context       // current Gin request context
+	Log          *zap.Logger        // request-scoped diagnostic logger
+	// StreamStarted is shared with queue and concurrency observers. Those
+	// callbacks set it when wait output starts, and callers read it when choosing
+	// later stream error presentation.
 	StreamStarted *bool
 }
 
-// ResponseSink 接收上游同步事件，负责下游写入和 Flush。
-type ResponseSink struct{ Writer http.ResponseWriter }
+// ResponseSink writes synchronous upstream events to the client and flushes when requested.
+type ResponseSink struct {
+	Writer http.ResponseWriter // required downstream HTTP writer
+	// timing identifies the final writer beneath optional HTTP wrappers. Nil
+	// disables source observation for requests outside HTTP text timing scope.
+	timing *timingWriter
+}
 
+// NewResponseSink binds upstream delivery to the current HTTP writer and timing.
+// Callers supply a live Gin context and emit synchronously. Writer wrappers stay
+// in place, so timing observes successfully delivered bytes after their rewrites.
+func NewResponseSink(c *gin.Context) ResponseSink {
+	value, _ := c.Get(requestTimingWriterKey)
+	writer, _ := value.(*timingWriter)
+	return ResponseSink{Writer: c.Writer, timing: writer}
+}
+
+// Begin copies response header value slices and writes the supplied status
+// synchronously. The bound writer is required; its own commitment rules decide
+// whether a status write takes effect, while input header slices remain
+// separate from the output map.
 func (s ResponseSink) Begin(head upstream.OutputHead) error {
 	for key, values := range head.Header {
 		s.Writer.Header()[key] = append([]string(nil), values...)
@@ -30,7 +67,19 @@ func (s ResponseSink) Begin(head upstream.OutputHead) error {
 	return nil
 }
 
+// Emit writes nonempty event bytes and returns a writer error before flushing.
+// It ignores the returned byte count, so a short write with nil error is not
+// detected here. A requested flush requires http.Flusher; callers retain event
+// storage and choose how a failed write affects upstream consumption.
+// The timing source scope lasts only for this emission; later local errors
+// cannot inherit it, even after an upstream write or flush fails.
 func (s ResponseSink) Emit(event upstream.OutputEvent) error {
+	if s.timing != nil {
+		// Source publication surrounds the existing writer chain rather than
+		// bypassing its transformations, capture, short-write handling or heartbeat locks.
+		s.timing.upstreamWrites.Add(1)
+		defer s.timing.upstreamWrites.Add(-1)
+	}
 	if len(event.Data) > 0 {
 		if _, err := s.Writer.Write(event.Data); err != nil {
 			return err
@@ -44,22 +93,35 @@ func (s ResponseSink) Emit(event upstream.OutputEvent) error {
 	return nil
 }
 
-// InitialOutput 只快照现有响应状态，保留等待心跳和先前中间件设置的 Header。
+// InitialOutput clones current headers before reading writer commitment and
+// status. Header access can stop a waiting keepalive writer, so reading state
+// afterward includes that handoff's final commitment; the returned header map
+// and value slices are independent.
 func (s ResponseSink) InitialOutput() upstream.OutputHead {
-	// 先读取 Header 再读取状态，因为 Header 可能暂停等待心跳。
+	// Header access can stop and join a keepalive before returning its map.
+	// Read commitment afterward so the captured state includes that final heartbeat.
 	headers := s.Writer.Header().Clone()
 	h := s.OutputState()
 	h.Header = headers
 	return h
 }
 
-// OutputState 直接读取提交状态，等待中的 keepalive 继续运行。
+// OutputState reads optional Written and Status interfaces from the bound
+// writer. Missing interfaces leave zero state fields, and this operation avoids
+// Header access so a waiting keepalive can continue until an output handoff is
+// requested.
 func (s ResponseSink) OutputState() upstream.OutputHead {
 	h := upstream.OutputHead{}
-	if w, ok := s.Writer.(interface{ Written() bool }); ok {
+	if w, ok := s.Writer.(interface {
+		// Written reports whether this response writer has committed HTTP output.
+		Written() bool
+	}); ok {
 		h.Committed = w.Written()
 	}
-	if w, ok := s.Writer.(interface{ Status() int }); ok {
+	if w, ok := s.Writer.(interface {
+		// Status returns the HTTP status currently retained by this writer.
+		Status() int
+	}); ok {
 		h.Status = w.Status()
 	}
 	return h

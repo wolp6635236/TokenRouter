@@ -16,34 +16,62 @@ import (
 	wire "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// CCResponseOptions 保持每次读取独立的档位观察器及原响应体限制。
+// response_cc_read.go reads Chat Completions JSON and stream chunks while
+// recording usage, processing tier, and output content.
+// Chat response scanning observes raw payloads before typed chunk conversion,
+// retaining the latest usage and processing tier for attempt finalization.
+// The shared upstream body observer captures content arrival before these
+// chunks undergo compatibility conversion and downstream buffering.
+//
+// Malformed chunks are logged and skipped so later output remains readable.
+// Scanner errors remain in returned state, letting conversion callers skip
+// successful finalization on interrupted reads; a clean missing DONE marker
+// instead has its own diagnostic helper. JSON reads use the configured body
+// reader and skip a second error write for its designated limit error. Both
+// readers leave response-body ownership with the executor or caller that
+// acquired it.
+
+// CCResponseOptions supplies Chat response observations, body limits, and local
+// error output.
 type CCResponseOptions struct {
-	MaxLineSize               int
+	MaxLineSize int // scanner growth byte budget
+	// ObserveChunk reads each raw SSE payload, and ObserveJSON reads complete
+	// decoded-response JSON. These callbacks update the attempt model/tier
+	// observations before its conversion caller consumes final usage.
 	ObserveChunk, ObserveJSON func([]byte)
-	ServiceTier               func() string
-	ReadBody                  func(io.Reader) ([]byte, error)
-	BodyLimitError            error
-	WriteError                func(int, string, string)
+	ServiceTier               func() string                   // observed upstream processing tier
+	ReadBody                  func(io.Reader) ([]byte, error) // required bounded body reader
+	// BodyLimitError designates a read failure whose HTTP error output is owned by
+	// ReadBody; ReadCCJSONResponse skips its additional WriteError for that cause.
+	BodyLimitError error
+	WriteError     func(int, string, string) // required local HTTP error writer
 }
 
-// CCStreamScanState 是 scanCCStream 返回的读取状态快照。
+// CCStreamScanState retains Chat usage and output observations for caller
+// finalization.
 type CCStreamScanState struct {
-	// Usage 为 include_usage chunk 中最近一次出现的用量（上游可能重复发送，
-	// 总是保留最新值）；终态事件中的用量由调用方在 finalize 阶段自行覆盖。
+	// Usage retains the latest parsed Chat usage; no observation leaves its
+	// counters zero, and conversion callers can apply their terminal usage precedence.
 	Usage wire.ForwardUsage
-	// FirstTokenMs 为首个实际输出 chunk（排除 usage-only chunk）的到达时延。
-	FirstTokenMs *int
-	// ServiceTier 为 SSE chunk 中无歧义的上游实际档位。
-	ServiceTier string
-	// SawDone 表示上游发出了 [DONE] 哨兵。
-	SawDone bool
-	// Err 为 scanner 读错误（客户端 context 取消不属于此类，会原样带出）。
-	// 非 nil 时调用方必须跳过 finalize 并返回 usage-incomplete 错误，避免
-	// 把上游截断伪装成正常收尾。
+
+	ServiceTier string // observed upstream processing tier
+	SawDone     bool   // observed Chat DONE marker
+	// Err is the scanner error, including context cancellation.
+	// Callers skip finalization on error so truncated streams cannot synthesize a successful ending.
 	Err error
 }
 
-// ScanCCStream 保持 CC 分片顺序、原用量覆盖与读取失败处理。
+// ScanCCStream reads Chat SSE, emits parsed chunks synchronously, and returns
+// observations and scanner failure. resp and its body are required, along with
+// callbacks used by scanning; callers close the body after processing. The
+// scanner uses the configured growth limit.
+//
+// Raw payload observation and usage extraction precede typed JSON decoding, so
+// malformed chunks can be observed before they are skipped. DONE ends
+// scanning, while absent DONE remains distinguishable from a scanner
+// error. Callers use Err to avoid synthesizing successful conversion
+// finalization after interruption and read the selected processing tier after
+// scanning.
 func ScanCCStream(resp *http.Response, options CCResponseOptions, logPrefix, requestID string, startTime time.Time, emit func(*wire.ChatCompletionsChunk)) CCStreamScanState {
 	var st CCStreamScanState
 
@@ -62,10 +90,9 @@ func ScanCCStream(resp *http.Response, options CCResponseOptions, logPrefix, req
 			st.SawDone = true
 			break
 		}
+		// Observe the echoed model and tier for billing. Chat chunks have no event type
+		// and therefore use the untyped-payload tier observation path.
 		options.ObserveChunk([]byte(payload))
-		// 观察上游 CC chunk 回显的 model / service_tier（计费以回显为准）。
-		// CC chunk 无 type 字段，按 untyped payload 观察（上游约束：只有终止
-		// 事件与无类型 body 报告实际处理档位）。
 
 		if u := wire.ExtractCCStreamUsage(payload); u != nil {
 			st.Usage = *u
@@ -77,14 +104,11 @@ func ScanCCStream(resp *http.Response, options CCResponseOptions, logPrefix, req
 				zap.Error(err),
 				zap.String("request_id", requestID),
 			)
-			// 单个无法解析的 chunk 不应阻断后续合法事件；最终工具参数由
-			// Responses 转换状态在收尾时单独校验。
+			// Malformed chunk JSON cannot become typed output, but later usable frames
+			// can still complete the response; conversion finalization separately validates assembled tool arguments.
 			continue
 		}
-		if st.FirstTokenMs == nil && !wire.IsOpenAIChatUsageOnlyStreamChunk(payload) && wire.ChatChunkStartsResponsesOutput(&chunk) {
-			ms := int(time.Since(startTime).Milliseconds())
-			st.FirstTokenMs = &ms
-		}
+
 		emit(&chunk)
 	}
 	st.ServiceTier = options.ServiceTier()
@@ -101,14 +125,18 @@ func ScanCCStream(resp *http.Response, options CCResponseOptions, logPrefix, req
 	return st
 }
 
-// LogCCStreamMissingDoneSentinel 保持 CC 分片顺序、原用量覆盖与读取失败处理。
+// LogCCStreamMissingDoneSentinel records a missing Chat DONE marker with
+// request diagnostics.
 func LogCCStreamMissingDoneSentinel(logPrefix, requestID string) {
 	logger.L().Debug(logPrefix+": upstream stream ended without done sentinel",
 		zap.String("request_id", requestID),
 	)
 }
 
-// ReadCCJSONResponse 保持 CC 分片顺序、原用量覆盖与读取失败处理。
+// ReadCCJSONResponse reads and decodes a Chat body, then observes the full JSON
+// and extracts usage. Required callbacks handle read/parse errors; designated
+// body-limit failures skip another WriteError call, and callers retain
+// response-body closure ownership.
 func ReadCCJSONResponse(resp *http.Response, options CCResponseOptions) (*wire.ChatCompletionsResponse, wire.ForwardUsage, error) {
 	respBody, err := options.ReadBody(resp.Body)
 	if err != nil {
@@ -124,8 +152,7 @@ func ReadCCJSONResponse(resp *http.Response, options CCResponseOptions) (*wire.C
 		return nil, wire.ForwardUsage{}, fmt.Errorf("parse chat completions response: %w", err)
 	}
 	options.ObserveJSON(respBody)
-	// 观察上游 CC JSON 回显的 model / service_tier（计费以回显为准）。
-	// CC JSON 无 type 字段，按 untyped payload 观察（上游约束）。
+	// Observe model and service_tier as an untyped Chat JSON payload for billing.
 
 	usage := wire.ForwardUsage{}
 	if parsed, ok := wire.ExtractOpenAIUsageFromJSONBytes(respBody); ok {

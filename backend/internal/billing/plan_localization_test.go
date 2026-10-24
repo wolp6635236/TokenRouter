@@ -9,7 +9,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// TestPlanTextRequiresLocalization 防止普通列更新成功后，购买页仍读取旧内容。
+// TestPlanTextRequiresLocalization supplies each legacy plan-text
+// pointer without a localization update. It checks LOCALIZATION_REQUIRED
+// before repository access, keeping source and translation updates
+// on the versioned plan-content path.
 func TestPlanTextRequiresLocalization(t *testing.T) {
 	text := "Updated"
 	for _, request := range []UpdatePlanRequest{

@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNormalizeRequestRecordRemovesUnstorableText 覆盖路径空字符、无效 UTF-8 和多字节截断。
+// Request-record tests exercise storage-safe text, exact capture identity,
+// and related request completion across lifecycle states. Assertions check
+// normalized bytes and retained caller inputs separately, then require child
+// records to inherit parent identity and receive terminal finish times when
+// appropriate.
+
+// TestNormalizeRequestRecordRemovesUnstorableText supplies NULs, invalid
+// UTF-8, oversized multibyte text, and invalid external IDs. It requires
+// storable normalized fields and unchanged selected input fields and attempts
+// after copying.
 func TestNormalizeRequestRecordRemovesUnstorableText(t *testing.T) {
 	input := RequestRecord{
 		RequestID: "local-id", Path: "/invalid\x00path", Model: "模型\x00" + strings.Repeat("模", 100),
@@ -35,7 +45,9 @@ func TestNormalizeRequestRecordRemovesUnstorableText(t *testing.T) {
 	require.Equal(t, "fail\x00ed", input.Attempts[0].Outcome)
 }
 
-// TestUpdateRequestForIDChecksCaptureIdentity 错配的任务 ID 保持发起请求的摘要不变。
+// TestUpdateRequestForIDChecksCaptureIdentity attempts updates without a
+// capture and with mismatched and matching IDs. It requires false results and
+// an untouched callback until the exact parent identity matches.
 func TestUpdateRequestForIDChecksCaptureIdentity(t *testing.T) {
 	ctx := WithRequestCapture(t.Context(), RequestRecord{RequestID: "parent"}, nil)
 	called := false
@@ -47,7 +59,10 @@ func TestUpdateRequestForIDChecksCaptureIdentity(t *testing.T) {
 	require.True(t, called)
 }
 
-// TestRecordRelatedRequestFinishesTerminalStates 失败和取消同样记录结束时间。
+// TestRecordRelatedRequestFinishesTerminalStates publishes running,
+// completed, failed, and canceled children through a sampled observer. It
+// requires inherited parent/key identity and a finish time for each terminal
+// state, with running left unfinished.
 func TestRecordRelatedRequestFinishesTerminalStates(t *testing.T) {
 	for _, state := range []string{"running", "completed", "failed", "canceled"} {
 		t.Run(state, func(t *testing.T) {
@@ -67,4 +82,42 @@ func TestRecordRelatedRequestFinishesTerminalStates(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMergeRequestRecordRetainsSparseTimingStages combines an earlier admission
+// breakdown with a later transport milestone. Neither input map is mutated,
+// and measured zero remains available after sparse completion enrichment.
+func TestMergeRequestRecordRetainsSparseTimingStages(t *testing.T) {
+	now := time.Now()
+	before := RequestRecord{UpdatedAt: now, FailureTimings: map[string]int64{"request_body_read_ms": 120, "provider_slot_wait_ms": 0}}
+	after := RequestRecord{UpdatedAt: now.Add(time.Second), FailureTimings: map[string]int64{"failed_at_ms": 500}}
+	got := MergeRequestRecord(before, after)
+	require.Equal(t, int64(120), got.FailureTimings["request_body_read_ms"])
+	require.Contains(t, got.FailureTimings, "provider_slot_wait_ms")
+	require.Equal(t, int64(500), got.FailureTimings["failed_at_ms"])
+	got.FailureTimings["provider_slot_wait_ms"] = 99
+	require.Zero(t, before.FailureTimings["provider_slot_wait_ms"])
+	require.Len(t, after.FailureTimings, 1)
+}
+
+// TestWithoutRequestCapturePreservesRequestContext masks model diagnostics for
+// delivery downloads. Their cancellation, deadline, and request identity remain
+// shared while header and failure observations cannot alter the parent capture.
+func TestWithoutRequestCapturePreservesRequestContext(t *testing.T) {
+	base, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	base = context.WithValue(base, RequestID, "parent")
+	var saved RequestRecord
+	base = WithRequestCapture(base, RequestRecord{RequestID: "parent"}, func(r RequestRecord) { saved = r })
+	base = WithRequestProvider(base, 7, "X-Custom")
+	hidden := WithoutRequestCapture(base)
+	require.Equal(t, "parent", RequestIDValue(hidden))
+	want, _ := base.Deadline()
+	got, _ := hidden.Deadline()
+	require.Equal(t, want, got)
+	dispatch := BeginRequestAttempt(hidden, 0)
+	ObserveRequestResult(dispatch, RequestAttemptFromContext(dispatch), errors.New("failed"))
+	require.Empty(t, saved.Attempts)
+	cancel()
+	require.ErrorIs(t, hidden.Err(), context.Canceled)
 }

@@ -16,8 +16,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// openai_request_client_policy.go enforces OAuth client restrictions and
+// resolves request TLS and user-agent policy.
+// OAuth client eligibility reads caller identity and current global permissions
+// before an auxiliary or long-lived entry sends upstream traffic. TLS routing
+// and user-agent policy use the selected provider, while rejection logging
+// records request metadata and HTTP enforcement leaves WebSocket error output
+// to its caller.
+
+// OpenAIClientPolicyForbiddenMessage returns client-facing text for the
+// configured restriction policy. Codex-only and TLS-router-only policies
+// receive specific messages; other policy values use the
+// configured-OpenAI-client message suitable for the rejection response.
 func OpenAIClientPolicyForbiddenMessage(result providercore.CodexClientRestrictionDetectionResult) string {
-	// 按客户端策略返回拒绝原因。
 	if result.Policy == providercore.OpenAIOAuthClientPolicyCodexOnly {
 		return "This provider only allows Codex official clients"
 	}
@@ -27,6 +38,9 @@ func OpenAIClientPolicyForbiddenMessage(result providercore.CodexClientRestricti
 	return "This provider only allows configured OpenAI OAuth clients"
 }
 
+// DetectClient checks provider restrictions using the HTTP user-agent and
+// originator. It uses the inbound context when available, otherwise background
+// context, and supplies empty identity strings when no Gin context is present.
 func (s *OpenAIRequests) DetectClient(c *gin.Context, provider *gatewayprovider.ExecutionProvider, tlsRouterMatch egress.TLSFingerprintRouterMatchResult) providercore.CodexClientRestrictionDetectionResult {
 	ctx := context.Background()
 	if c != nil && c.Request != nil {
@@ -40,7 +54,11 @@ func (s *OpenAIRequests) DetectClient(c *gin.Context, provider *gatewayprovider.
 	}, provider, tlsRouterMatch)
 }
 
-// DetectClientInput 保留动态全局设置的读取时机，仅分离客户端数据来源。
+// DetectClientInput checks the supplied client identity with current provider
+// restrictions. For Codex-only providers, configured runtime readers can add
+// the Claude Code plugin permission. The configured detector, or
+// clientDetector's default, evaluates the identity callback and TLS-router
+// match.
 func (s *OpenAIRequests) DetectClientInput(ctx context.Context, readClient func() (string, string), provider *gatewayprovider.ExecutionProvider, tlsRouterMatch egress.TLSFingerprintRouterMatchResult) providercore.CodexClientRestrictionDetectionResult {
 	var globalAllowedClients []string
 	if provider != nil && provider.View().IsCodexCLIOnlyEnabled() && s != nil && s.Readers != nil {
@@ -51,6 +69,10 @@ func (s *OpenAIRequests) DetectClientInput(ctx context.Context, readClient func(
 	return s.clientDetector().DetectClient(readClient, gatewayprovider.ExecutionRecord(provider), globalAllowedClients, tlsRouterMatch.Matched)
 }
 
+// LogCodexCLIOnlyDetection records the outcome of an enabled OAuth client
+// restriction. Disabled restrictions skip logging. Accepted requests use info
+// level; rejected requests use warning level with filtered request details, and
+// a nil context uses background logging.
 func LogCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, apiKeyID int64, result providercore.CodexClientRestrictionDetectionResult, body []byte) {
 	if !result.Enabled {
 		return
@@ -77,13 +99,16 @@ func LogCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, provider *gat
 	}
 	log := logging.FromContext(ctx).With(fields...)
 	if result.Matched {
-		log.Info("OpenAI codex_cli_only 放行请求")
+		log.Info("OpenAI codex_cli_only allowed request")
 		return
 	}
-	log.Warn("OpenAI codex_cli_only 拒绝非官方客户端请求")
+	log.Warn("OpenAI codex_cli_only rejected unofficial client request")
 }
 
-// EnforceClient 在非 /responses 主入口上复用 OpenAI OAuth 客户端访问策略。
+// EnforceClient rejects a disallowed OAuth client and records a local-policy
+// limitation. Disabled or matched restrictions return nil. HTTP requests
+// receive a 403 JSON response, while WebSocket callers receive the error for
+// their own frame handling.
 func (s *OpenAIRequests) EnforceClient(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, body []byte, tlsRouterMatch egress.TLSFingerprintRouterMatchResult) error {
 	result := s.DetectClient(c, provider, tlsRouterMatch)
 	apiKeyID := APIKeyIDFromContext(c)
@@ -103,7 +128,10 @@ func (s *OpenAIRequests) EnforceClient(ctx context.Context, c *gin.Context, prov
 	return errors.New("openai oauth client policy restriction: client is not allowed")
 }
 
-// ApplyUserAgentHeader 在 WebSocket 握手头上复用 HTTP 上游 UA 规则。
+// ApplyUserAgentHeader applies the HTTP user-agent policy to a handshake header
+// map. The supplied map is modified through a temporary request; nil headers
+// are ignored. Only the first optional router match is consumed by
+// ApplyUserAgent.
 func (s *OpenAIRequests) ApplyUserAgentHeader(
 	ctx context.Context,
 	c *gin.Context,
@@ -119,6 +147,10 @@ func (s *OpenAIRequests) ApplyUserAgentHeader(
 	s.ApplyUserAgent(ctx, c, provider, req, passthrough, routerMatch...)
 }
 
+// MatchTLS resolves the selected provider's TLS-router match from HTTP
+// User-Agent. A nil Gin context supplies an empty user-agent string;
+// MatchTLSInput defers that read until a configured router is actually
+// available.
 func (s *OpenAIRequests) MatchTLS(c *gin.Context, provider *gatewayprovider.ExecutionProvider) egress.TLSFingerprintRouterMatchResult {
 	return s.MatchTLSInput(func() string {
 		if c == nil {
@@ -128,7 +160,10 @@ func (s *OpenAIRequests) MatchTLS(c *gin.Context, provider *gatewayprovider.Exec
 	}, provider)
 }
 
-// MatchTLSInput 在提供商确有 Router 后才读取 User-Agent。
+// MatchTLSInput matches User-Agent against the selected provider's configured
+// TLS router. Unavailable service, router, provider, or router ID returns an
+// empty match before invoking readUserAgent. Callers provide that callback for
+// an enabled router.
 func (s *OpenAIRequests) MatchTLSInput(readUserAgent func() string, provider *gatewayprovider.ExecutionProvider) egress.TLSFingerprintRouterMatchResult {
 	if s == nil || s.Routers == nil || provider == nil || provider.View().GetTLSFingerprintRouterID() <= 0 {
 		return egress.TLSFingerprintRouterMatchResult{}
@@ -137,7 +172,10 @@ func (s *OpenAIRequests) MatchTLSInput(readUserAgent func() string, provider *ga
 	return s.Routers.MatchUserAgent(provider.View().GetTLSFingerprintRouterID(), userAgent)
 }
 
-// TLSProfile 保留未装配时的短路，选择规则唯一归 egress。
+// TLSProfile resolves outgoing TLS selection for the provider and optional
+// router match. A missing service or profile reader returns nil. The profile
+// service applies its provider defaults and router-to-fixed-profile recovery
+// rules.
 func (s *OpenAIRequests) TLSProfile(value *gatewayprovider.ExecutionProvider, routerMatch ...egress.TLSFingerprintRouterMatchResult) *tlsfingerprint.Profile {
 	if s == nil || s.Profiles == nil {
 		return nil
@@ -145,16 +183,26 @@ func (s *OpenAIRequests) TLSProfile(value *gatewayprovider.ExecutionProvider, ro
 	return s.Profiles.ResolveRequestTLS(gatewayprovider.ExecutionTLSSelection(value, routerMatch))
 }
 
+// WSTLSProfile resolves an HTTP/1-compatible WebSocket profile and its pool
+// identity. Unavailable profile selection returns nil and an empty identity.
+// The derived identity includes the HTTP/1 profile cache key so pooling follows
+// the applied profile.
 func (s *OpenAIRequests) WSTLSProfile(provider *gatewayprovider.ExecutionProvider, routerMatch ...egress.TLSFingerprintRouterMatchResult) (*tlsfingerprint.Profile, string) {
 	profile := s.TLSProfile(provider, routerMatch...)
 	if profile == nil {
 		return nil, ""
 	}
-	// Responses WebSocket 是 HTTP/1.1 Upgrade，连接池键也按剥离 h2 后的模板隔离。
+	// Responses WebSocket performs an HTTP/1.1 Upgrade. Remove h2 from the
+	// selected profile before deriving the identity used to distinguish
+	// pooled connections.
 	profile = tlsfingerprint.HTTP1OnlyProfile(profile)
 	return profile, egress.WebSocketTLSIdentity(gatewayprovider.ExecutionTLSSelection(provider, routerMatch), true, tlsfingerprint.CacheKey(profile))
 }
 
+// ApplyUserAgent applies the configured probe policy to the outgoing request
+// header. It forwards the current provider and first optional router match in
+// the supplied passthrough mode. Callers configure ClientPolicy before invoking
+// this helper.
 func (s *OpenAIRequests) ApplyUserAgent(ctx context.Context, _ *gin.Context, value *gatewayprovider.ExecutionProvider, req *http.Request, passthrough bool, matches ...egress.TLSFingerprintRouterMatchResult) {
 	var match egress.TLSFingerprintRouterMatchResult
 	if len(matches) > 0 {
@@ -163,10 +211,17 @@ func (s *OpenAIRequests) ApplyUserAgent(ctx context.Context, _ *gin.Context, val
 	s.ClientPolicy.ApplyUserAgent(ctx, gatewayprovider.ExecutionRecord(value), req, passthrough, match)
 }
 
+// clientDetector returns the injected client restriction detector or a
+// configured default. The default uses strict official-client checks and
+// allowed-client matching; it honors startup ForceCLI when a request service is
+// present.
 func (s *OpenAIRequests) clientDetector() providercore.ClientRestrictionDetector {
 	if s != nil && s.Detector != nil {
 		return s.Detector
 	}
+	// Direct request fixtures may omit a detector; derive the default from
+	// startup emulation and the same official-client predicates used by
+	// configured services.
 	force := s != nil && s.Options.ForceCLI
 	return &providercore.CodexClientDetector{Options: providercore.CodexClientOptions{ForceCLI: force, OfficialUserAgent: openai.IsCodexOfficialClientRequestStrict, OfficialOriginator: openai.IsCodexOfficialClientOriginator, AllowedClients: openai.MatchAllowedClients}}
 }

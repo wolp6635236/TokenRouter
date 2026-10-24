@@ -4,13 +4,35 @@ import (
 	"context"
 )
 
-// CheckTokenVersion 检查 provider 的 token 版本是否已过时，并返回最新的 provider
-// 用于解决异步刷新任务与请求线程的竞态条件：
-// 如果刷新任务已更新 token 并删除缓存，此时请求线程的旧 provider 对象不应写入缓存
+// token_version.go compares captured and stored token versions to detect
+// provider credentials superseded by refresh.
+// An OAuth request can retain a provider snapshot after another refresh has
+// stored a newer access token. Cache invalidation removes an existing token
+// entry, but a request still holding the older record could subsequently fill
+// that entry again. Comparing _token_version with a fresh repository
+// observation lets token sources detect that already recorded rotation before
+// deciding which access token to return.
 //
-// 返回值:
-//   - latestProvider: 从 DB 获取的最新 provider（如果查询失败则返回 nil）
-//   - isStale: true 表示 token 已过时（应使用 latestProvider），false 表示可以使用当前 provider
+// The comparison permits current credentials when storage cannot be read,
+// keeping a cache miss usable during repository failures. Versions are ordered
+// integers through GetCredentialAsInt64: missing or unparseable values become
+// zero, while supported float64 values convert directly to int64. The returned
+// record remains the repository's object. This observation and a caller's later
+// cache write are separate operations, so an intervening rotation remains possible.
+
+// CheckTokenVersion returns the repository observation and reports whether its
+// token version exceeds the supplied snapshot's version. A nil provider or
+// repository, a read error, or a nil row returns nil and false, permitting
+// callers to continue with their current credentials.
+//
+// Missing, nil, unsupported and unparseable _token_version values read as
+// zero. Supported float64 values convert directly to int64, so callers keep
+// that representation integer-valued, finite and within range for meaningful
+// version ordering. Equal versions and an older database version return false;
+// two unversioned records also remain usable. Only the first optional observer
+// is called for stale observations.
+// Callers borrow the returned record and decide whether to return its token or
+// populate a cache; this read does not coordinate a subsequent cache write.
 func CheckTokenVersion(ctx context.Context, provider *Record, repo RefreshRepository, observers ...func(string, ...any)) (latestProvider *Record, isStale bool) {
 	debug := func(string, ...any) {}
 	if len(observers) > 0 && observers[0] != nil {
@@ -25,14 +47,15 @@ func CheckTokenVersion(ctx context.Context, provider *Record, repo RefreshReposi
 
 	latestProvider, err := repo.GetByID(ctx, provider.ID)
 	if err != nil || latestProvider == nil {
-		// 查询失败，默认允许缓存，不返回 latestProvider
+		// A failed or missing repository observation supplies no replacement token;
+		// token sources continue from their request snapshot to keep this read path available.
 		return nil, false
 	}
 
 	latestVersion := latestProvider.GetCredentialAsInt64("_token_version")
 
-	// 情况 1: 当前 provider 没有版本号，但 DB 中已有版本号
-	// 说明异步刷新任务已更新 token，当前 provider 已过时
+	// A recorded version distinguishes a completed refresh from an unversioned
+	// request snapshot, so token sources choose the returned row for that observation.
 	if currentVersion == 0 && latestVersion > 0 {
 		debug("token_version_stale_no_current_version",
 			"provider_id", provider.ID,
@@ -40,12 +63,14 @@ func CheckTokenVersion(ctx context.Context, provider *Record, repo RefreshReposi
 		return latestProvider, true
 	}
 
-	// 情况 2: 两边都没有版本号，说明从未被异步刷新过，允许缓存
+	// Two unversioned observations provide no ordering evidence, so the caller
+	// keeps its supplied token even when storage returned a different record.
 	if currentVersion == 0 && latestVersion == 0 {
 		return latestProvider, false
 	}
 
-	// 情况 3: 比较版本号，如果 DB 中的版本更新，当前 provider 已过时
+	// A newer stored version identifies credentials rotated after this snapshot;
+	// callers use that row while leaving cache publication to their own path.
 	if latestVersion > currentVersion {
 		debug("token_version_stale",
 			"provider_id", provider.ID,

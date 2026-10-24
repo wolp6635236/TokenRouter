@@ -12,7 +12,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
-// TestManagedCredentialsDatabaseCAS 检查手动刷新时的管理校验和配置事务，并在锁内核对凭据交换身份。
+// Administrator refresh persistence compares the identity observed before
+// exchange with the record read under the configuration lock. Sequential
+// database changes separate harmless renames from credential, status, and proxy
+// conflicts, with additional cancellation and outbox-failure cases.
+
+// TestManagedCredentialsDatabaseCAS observes credentials before sequential
+// name, identity, or status changes and requests a replacement under the
+// configuration lock. Conflicts, cancellation, and outbox failure retain the
+// pre-write credentials and event count; a rename remains eligible.
 func TestManagedCredentialsDatabaseCAS(t *testing.T) {
 	for _, change := range []string{"none", "name", "credentials", "status", "proxy", "outbox_failure", "cancelled"} {
 		t.Run(change, func(t *testing.T) {
@@ -78,7 +86,8 @@ func TestManagedCredentialsDatabaseCAS(t *testing.T) {
 				require.Equal(t, before.Credentials, after.Credentials)
 				require.Equal(t, eventsBefore, eventsAfter)
 			}
-			// 同一 Admin 入口仍执行原凭据校验；明确冲突不会进入校验或写入。
+			// Exercise the administrator's early identity check with the same stale
+			// credentials, counting Site calls to detect any validation before rejection.
 			if change == "credentials" {
 				validations := 0
 				admin := provider.NewAdmin(store, provider.AdminOptions{Creation: provider.CreationOptions{Now: time.Now}, Credentials: provider.CreateCredentialHooks{Site: func(*provider.Record) (string, error) { validations++; return "", nil }}})

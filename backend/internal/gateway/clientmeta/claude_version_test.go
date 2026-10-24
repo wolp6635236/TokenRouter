@@ -6,19 +6,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestExtractVersion supplies CLI version headers with case variants, suffixes,
+// and malformed prefixes. Extraction returns three release components for
+// recognized headers and an empty string for unmatched client input.
 func TestExtractVersion(t *testing.T) {
 	v := NewClaudeCodeValidator()
 	tests := []struct {
-		ua   string
-		want string
+		ua   string // input User-Agent value
+		want string // expected extracted version
 	}{
 		{"claude-cli/2.1.22 (darwin; arm64)", "2.1.22"},
 		{"claude-cli/1.0.0", "1.0.0"},
-		{"Claude-CLI/3.10.5 (linux; x86_64)", "3.10.5"}, // 大小写不敏感
-		{"curl/8.0.0", ""},                              // 非 Claude CLI
-		{"", ""},                                        // 空字符串
-		{"claude-cli/", ""},                             // 无版本号
-		{"claude-cli/2.1.22-beta", "2.1.22"},            // 带后缀仍提取主版本号
+		{"Claude-CLI/3.10.5 (linux; x86_64)", "3.10.5"}, // Case-insensitive prefix.
+		{"curl/8.0.0", ""},                              // Different client.
+		{"", ""},                                        // Empty input.
+		{"claude-cli/", ""},                             // Missing version.
+		{"claude-cli/2.1.22-beta", "2.1.22"},            // Extract the release components before a suffix.
 	}
 	for _, tt := range tests {
 		got := v.ExtractVersion(tt.ua)
@@ -26,19 +29,22 @@ func TestExtractVersion(t *testing.T) {
 	}
 }
 
+// TestCompareVersions compares equal versions and changes in each numeric
+// component. The result protects numeric ordering, missing-input zero behavior,
+// and compatibility with a leading lowercase v.
 func TestCompareVersions(t *testing.T) {
 	tests := []struct {
-		a, b string
-		want int
+		a, b string // first comparison version; second comparison version
+		want int    // expected comparison ordering
 	}{
-		{"2.1.0", "2.1.0", 0},   // 相等
-		{"2.1.1", "2.1.0", 1},   // patch 更大
-		{"2.0.0", "2.1.0", -1},  // minor 更小
-		{"3.0.0", "2.99.99", 1}, // major 更大
-		{"1.0.0", "2.0.0", -1},  // major 更小
-		{"0.0.1", "0.0.0", 1},   // patch 差异
-		{"", "1.0.0", -1},       // 空字符串 vs 正常版本
-		{"v2.1.0", "2.1.0", 0},  // v 前缀处理
+		{"2.1.0", "2.1.0", 0},
+		{"2.1.1", "2.1.0", 1},
+		{"2.0.0", "2.1.0", -1},
+		{"3.0.0", "2.99.99", 1},
+		{"1.0.0", "2.0.0", -1},
+		{"0.0.1", "0.0.0", 1},
+		{"", "1.0.0", -1},      // Empty input is treated as zero.
+		{"v2.1.0", "2.1.0", 0}, // Leading v is ignored.
 	}
 	for _, tt := range tests {
 		got := CompareVersions(tt.a, tt.b)

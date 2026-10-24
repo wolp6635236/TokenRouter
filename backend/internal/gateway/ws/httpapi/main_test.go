@@ -6,7 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在运行测试前统一设置 Gin 的测试模式。
+// TestMain runs the package with Gin's test mode enabled. Setting the mode
+// before m.Run keeps HTTP and WebSocket fixtures from emitting Gin's
+// development-mode routing output.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	m.Run()

@@ -11,38 +11,57 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
+// tencent_captcha_service.go submits Tencent CAPTCHA tickets through a
+// per-call SDK client and returns provider verification results.
+// Tencent verification uses both cloud signing credentials and a CAPTCHA
+// application secret selected by the identity service. A fresh SDK client receives
+// that call's regional endpoint, and the returned code and message remain provider
+// results for the core to classify.
+
+// tencentCaptchaAPI exposes the SDK request used to verify one CAPTCHA ticket.
 type tencentCaptchaAPI interface {
+	// DescribeCaptchaResultWithContext submits the populated ticket request using
+	// the caller's context. Implementations return an SDK response or request error;
+	// the adapter rejects missing response envelopes before reading fields.
 	DescribeCaptchaResultWithContext(context.Context, *captcha.DescribeCaptchaResultRequest) (*captcha.DescribeCaptchaResultResponse, error)
 }
 
+// tencentCaptchaClientFactory constructs an API client from current credentials
+// and the endpoint selected for this verification attempt.
 type tencentCaptchaClientFactory func(secretID, secretKey, endpoint string) (tencentCaptchaAPI, error)
 
+// tencentCaptchaVerifier converts identity challenge inputs into Tencent SDK requests.
 type tencentCaptchaVerifier struct {
-	newClient tencentCaptchaClientFactory
+	newClient tencentCaptchaClientFactory // per-call SDK client constructor
 }
 
-// NewTencentCaptchaVerifier 创建腾讯云验证码票据校验适配器。
+// NewTencentCaptchaVerifier constructs a ticket adapter using the Tencent SDK factory.
 func NewTencentCaptchaVerifier() identity.TencentCaptchaVerifier {
 	return &tencentCaptchaVerifier{newClient: newTencentCaptchaSDKClient}
 }
 
-// newTencentCaptchaSDKClient 接入点由调用方按站点下发（中国站 / 国际站）。
-// service 层的 tencentCaptchaEndpoint 已保证 endpoint 非空；即便为空，
-// 腾讯 SDK 也会回落到服务默认域 captcha.tencentcloudapi.com（即中国站），不会失败。
+// newTencentCaptchaSDKClient creates a signed POST client with a five-second
+// request budget. The identity service supplies the region's endpoint; an empty
+// endpoint lets the SDK choose captcha.tencentcloudapi.com for the China region.
 func newTencentCaptchaSDKClient(secretID, secretKey, endpoint string) (tencentCaptchaAPI, error) {
 	clientProfile := profile.NewClientProfile()
 	clientProfile.HttpProfile.Endpoint = endpoint
 	clientProfile.HttpProfile.ReqMethod = "POST"
+	// Bound verification waits in the SDK's seconds unit.
 	clientProfile.HttpProfile.ReqTimeout = 5
 	return captcha.NewClient(common.NewCredential(secretID, secretKey), "", clientProfile)
 }
 
+// VerifyTicket submits the ticket, random string, and client IP with the supplied
+// application and cloud credentials. Missing response envelopes fail; absent code
+// or message pointers become zero or empty values for core classification.
 func (v *tencentCaptchaVerifier) VerifyTicket(ctx context.Context, credentials identity.TencentCaptchaCredentials, proof identity.TencentCaptchaProof, remoteIP string) (*identity.TencentCaptchaVerifyResponse, error) {
 	client, err := v.newClient(credentials.CloudSecretID, credentials.CloudSecretKey, credentials.Endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("create tencent captcha client: %w", err)
 	}
 	request := captcha.NewDescribeCaptchaResultRequest()
+	// The SDK request schema requires the fixed CAPTCHA type value 9.
 	request.CaptchaType = common.Uint64Ptr(9)
 	request.Ticket = common.StringPtr(proof.Ticket)
 	request.UserIp = common.StringPtr(remoteIP)
@@ -64,6 +83,9 @@ func (v *tencentCaptchaVerifier) VerifyTicket(ctx context.Context, credentials i
 	}, nil
 }
 
+// valueOrZero reads an optional SDK integer for identity response mapping. An
+// absent pointer becomes zero, which the core treats as a provider decision code
+// rather than a transport failure.
 func valueOrZero(value *int64) int64 {
 	if value == nil {
 		return 0
@@ -71,6 +93,9 @@ func valueOrZero(value *int64) int64 {
 	return *value
 }
 
+// valueOrEmpty reads an optional SDK message or request identifier for response
+// mapping. An absent pointer becomes empty text so the adapter can return the
+// available decision fields together.
 func valueOrEmpty(value *string) string {
 	if value == nil {
 		return ""

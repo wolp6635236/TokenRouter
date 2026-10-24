@@ -4,17 +4,28 @@ import (
 	"context"
 )
 
-// EntryInput 包含透传转发使用的连接、首帧和选项。
+// entry.go passes the first client frame after connection setup and both
+// transports to the shared bidirectional WebSocket relay. The wrapper keeps
+// the prepared context and options together, so initial model and usage
+// observation follows the same frame relay path as subsequent traffic.
+
+// EntryInput contains the prepared first frame and transport inputs for relay
+// execution.
 type EntryInput struct {
-	Ctx                context.Context
-	ClientConn         FrameConn
-	UpstreamConn       FrameConn
-	FirstClientMessage []byte
-	Options            RelayOptions
+	Ctx                context.Context // prepared relay operation context
+	ClientConn         FrameConn       // downstream client frame transport
+	UpstreamConn       FrameConn       // selected upstream frame transport
+	FirstClientMessage []byte          // already-read first client frame
+	Options            RelayOptions    // prepared bidirectional relay options
 }
 
-// runCaddyStyleRelay 采用 Caddy reverseproxy 的双向隧道思想：
-// 连接建立后并发复制两个方向，任一方向退出后关闭转发。
+// runCaddyStyleRelay forwards the prepared tunnel to the shared relay.
+// It retains the supplied context, connections, first frame, and options so
+// callers receive the same result and exit classification as Relay.
+//
+// The delegated Relay uses the first direction exit to select accounting
+// drain or cancellation. It joins the upstream observer before returning
+// collected usage and its selected exit classification.
 //
 // Reference:
 // - Project: caddyserver/caddy (Apache-2.0)
@@ -32,7 +43,9 @@ func runCaddyStyleRelay(
 	return Relay(ctx, clientConn, upstreamConn, firstClientMessage, options)
 }
 
-// RunEntry 是 openai_ws_v2 包对外的统一入口。
+// RunEntry forwards the prepared context, both connections, first frame, and
+// options to the shared relay. Nil connections return its initialization
+// failure, while nil context follows the relay Background default.
 func RunEntry(input EntryInput) (RelayResult, *RelayExit) {
 	return runCaddyStyleRelay(
 		input.Ctx,

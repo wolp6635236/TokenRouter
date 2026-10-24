@@ -17,94 +17,143 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/oauthpkce"
 )
 
+// oauth.go prepares Qoder device authorization and exchanges tokens while
+// normalizing expiry and identity representations.
+// Device authorization keeps a PKCE verifier and nonce while the browser
+// completes a site-specific login. Global and CN use different nonce and
+// machine-ID shapes, and the selected profile remains with the request so
+// authorization URLs and later polling share the same client identity.
+//
+// Token responses vary in access-token names and expiry representation. Expiry
+// parsing accepts numeric strings, absolute timestamps, and supported date
+// strings, then uses a positive expires_in when expires_at is invalid. CN token
+// exchange requires an access token, refresh token, and nonzero interpreted
+// expiry before Gateway status completion. User and organization JSON aliases
+// are resolved before constructing the identity returned to the provider owner.
+
+// OpenAPI aliases retain global defaults for legacy callers, while endpoint
+// paths select polling, identity lookup, organization metadata, and CN token
+// operations.
 const (
-	// OpenAPIBaseURL 是国际站 OpenAPI 地址，保留名称以兼容旧调用。
+	// OpenAPIBaseURL is the global OpenAPI URL.
 	OpenAPIBaseURL = GlobalOpenAPIBaseURL
 
-	// OAuthClientID 是国际站公开 client ID，保留名称以兼容旧调用。
+	// OAuthClientID is the global public OAuth client ID.
 	OAuthClientID = GlobalOAuthClientID
 
-	// DeviceAuthorizationURL 是国际站授权地址，保留名称以兼容旧调用。
+	// DeviceAuthorizationURL is the global browser authorization URL.
 	DeviceAuthorizationURL = GlobalDeviceAuthorizationURL
 
-	// DevicePollPath 是浏览器授权后轮询 device token 的端点。
+	// DevicePollPath polls for a token after browser authorization.
 	DevicePollPath = "/api/v1/deviceToken/poll"
 
-	// UserInfoPath 返回 access token 对应 Qoder 用户身份的端点。
+	// UserInfoPath returns the user identity for an access token.
 	UserInfoPath = "/api/v1/userinfo"
 
-	// OrganizationTagsPathPrefix 返回 Qoder 用户组织元数据的端点前缀。
+	// OrganizationTagsPathPrefix begins the user organization metadata endpoint.
 	OrganizationTagsPathPrefix = "/api/v1/organizations/"
 
-	// JobTokenExchangePath 是国内站现代 QODER_PAT 的交换端点。
+	// JobTokenExchangePath exchanges a CN QODER_PAT for tokens.
 	JobTokenExchangePath = "/api/v1/jobToken/exchange"
 
-	// DeviceTokenRefreshPath 是国内站 QoderCN20 token 刷新端点。
+	// DeviceTokenRefreshPath refreshes CN QoderCN20 tokens.
 	DeviceTokenRefreshPath = "/api/v1/deviceToken/refresh"
 )
 
+// DeviceAuthRequest retains the browser PKCE proof and selected site profile for
+// polling.
 type DeviceAuthRequest struct {
-	Nonce         string
-	CodeVerifier  string
-	CodeChallenge string
-	MachineID     string
-	ClientID      string
-	Profile       Profile
+	Nonce string // device polling nonce
+	// CodeVerifier and CodeChallenge represent one S256 proof. The browser receives
+	// the challenge and later polling submits the retained verifier for the same
+	// nonce.
+	CodeVerifier  string // private PKCE verifier
+	CodeChallenge string // public S256 challenge
+	MachineID     string // browser machine identifier
+	ClientID      string // public OAuth identifier
+	// Profile retains site endpoints and client metadata used during browser or
+	// request construction. Device authorization keeps its creation-time proof
+	// profile, while OAuthClient normalizes a copy for each request.
+	Profile Profile // retained site profile
 }
 
-// FlexibleInt64 兼容 Qoder API 中以 JSON 数字或字符串返回的整数。
+// FlexibleInt64 decodes number or string fields used by Qoder time metadata.
 type FlexibleInt64 int64
 
-// DeviceTokenResponse 兼容国际设备授权和国内 QoderCN20 token 响应。
+// DeviceTokenResponse accepts both sites' token names and supported expiry
+// representations.
 type DeviceTokenResponse struct {
-	ID           string        `json:"id"`
-	Token        string        `json:"token"`
-	AccessToken  string        `json:"access_token"`
-	RefreshToken string        `json:"refresh_token"`
-	UserID       string        `json:"user_id"`
-	UserName     string        `json:"user_name"`
-	Email        string        `json:"email"`
-	AvatarURL    string        `json:"avatar_url"`
-	ExpiresAt    FlexibleInt64 `json:"expires_at"`
-	ExpiresIn    FlexibleInt64 `json:"expires_in"`
-	Scope        string        `json:"scope"`
-	TokenType    string        `json:"token_type"`
-	Nonce        string        `json:"nonce"`
+	ID string `json:"id"` // alternate user identifier
+	// Token and AccessToken hold alternate OpenAPI access-token spellings.
+	// AccessTokenValue prefers trimmed AccessToken and uses trimmed Token when that
+	// preferred value is blank, including legacy polling responses.
+	Token        string `json:"token"`         // legacy access token
+	AccessToken  string `json:"access_token"`  // preferred access token
+	RefreshToken string `json:"refresh_token"` // credential refresh token
+	UserID       string `json:"user_id"`       // OpenAPI user identifier
+	UserName     string `json:"user_name"`     // OpenAPI user name
+	Email        string `json:"email"`         // user contact email
+	AvatarURL    string `json:"avatar_url"`    // user avatar URL
+	// ExpiresAt and ExpiresIn supply alternate expiry representations. ExpiryTime
+	// prefers positive ExpiresAt, interpreting its magnitude, then uses positive
+	// ExpiresIn relative to the supplied time.
+	ExpiresAt FlexibleInt64 `json:"expires_at"` // mixed-format token expiry
+	ExpiresIn FlexibleInt64 `json:"expires_in"` // relative expiry seconds
+	Scope     string        `json:"scope"`      // returned token scope
+	TokenType string        `json:"token_type"` // returned token type
+	Nonce     string        `json:"nonce"`      // device polling nonce
 }
 
-// UserInfo 兼容两站 userinfo 的 snake_case 与 camelCase 字段。
+// UserInfo holds user metadata normalized from supported OpenAPI JSON aliases.
 type UserInfo struct {
-	ID               string `json:"id"`
-	UserID           string `json:"user_id"`
-	Name             string `json:"name"`
-	UserName         string `json:"user_name"`
-	UserType         string `json:"userType"`
-	Email            string `json:"email"`
-	AvatarURL        string `json:"avatar_url"`
-	OrganizationID   string `json:"organization_id"`
-	OrganizationName string `json:"organization_name"`
+	ID               string `json:"id"`                // alternate user identifier
+	UserID           string `json:"user_id"`           // OpenAPI user identifier
+	Name             string `json:"name"`              // user display name
+	UserName         string `json:"user_name"`         // OpenAPI user name
+	UserType         string `json:"userType"`          // Qoder account classification
+	Email            string `json:"email"`             // user contact email
+	AvatarURL        string `json:"avatar_url"`        // user avatar URL
+	OrganizationID   string `json:"organization_id"`   // selected organization identifier
+	OrganizationName string `json:"organization_name"` // selected organization name
 }
 
+// OrganizationTags holds organization ID and name resolved from OpenAPI
+// metadata.
 type OrganizationTags struct {
-	OrganizationID   string `json:"organization_id"`
-	OrganizationName string `json:"organization_name"`
+	OrganizationID   string `json:"organization_id"`   // selected organization identifier
+	OrganizationName string `json:"organization_name"` // selected organization name
 }
 
+// OAuthClient retains site endpoints and transport choices for device and token
+// calls.
 type OAuthClient struct {
-	BaseURL    string
-	HTTPClient *http.Client
-	Profile    Profile
-	Doer       RequestDoer
+	BaseURL string // OpenAPI endpoint base
+	// HTTPClient is shared when provided at construction. Doer takes transport
+	// precedence; nil HTTPClient during construction selects a twenty-second
+	// client.
+	HTTPClient *http.Client // default HTTP transport
+	// Profile retains site endpoints and client metadata used during browser or
+	// request construction. Device authorization keeps its creation-time proof
+	// profile, while OAuthClient normalizes a copy for each request.
+	Profile Profile // retained site profile
+	// Doer overrides HTTPClient for every request. Nil keeps the client or global
+	// transport selected by the do helper.
+	Doer RequestDoer // override request transport
 }
 
-// OpenAPIError 表示 OpenAPI 返回的脱敏 HTTP 错误。
+// OpenAPIError carries operation, status, and redacted token-exchange failure
+// text.
 type OpenAPIError struct {
-	Operation  string
-	StatusCode int
-	Message    string
+	Operation  string // token operation label
+	StatusCode int    // effective HTTP status
+	Message    string // redacted failure text
 }
 
-// UnmarshalJSON 容错解析 JSON 数字、整数样式浮点数和数字字符串。
+// UnmarshalJSON accepts number or string fields through the flexible integer
+// parser. Finite, in-range fractional values truncate toward zero. JSON null,
+// empty byte input,
+// and an empty-string literal become zero; invalid numeric text returns an error
+// before receiver assignment.
 func (v *FlexibleInt64) UnmarshalJSON(data []byte) error {
 	parsed, err := parseFlexibleInt64(data)
 	if err != nil {
@@ -114,7 +163,10 @@ func (v *FlexibleInt64) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// parseFlexibleInt64 解析 Qoder API 常见的宽松整数表示。
+// parseFlexibleInt64 accepts trimmed integer text, JSON strings, or floating
+// numeric text. JSON null, empty byte input, and an empty-string literal become
+// zero. Integer parsing runs first, and float parsing permits fractional values
+// that truncate during conversion when finite and representable as int64.
 func parseFlexibleInt64(data []byte) (FlexibleInt64, error) {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" || trimmed == "null" || trimmed == `""` {
@@ -129,17 +181,31 @@ func parseFlexibleInt64(data []byte) (FlexibleInt64, error) {
 	}
 	parsed, err := strconv.ParseInt(trimmed, 10, 64)
 	if err != nil {
+		// Token metadata can encode integral values with a decimal point or exponent.
+		// Try floating parsing after integer parsing fails; this path also accepts
+		// nonfinite and out-of-range values before the direct int64 conversion.
 		floatValue, floatErr := strconv.ParseFloat(trimmed, 64)
 		if floatErr != nil {
 			return 0, fmt.Errorf("qoder: invalid integer %q", trimmed)
 		}
+		// Finite, representable fractional values truncate toward zero during conversion.
 		parsed = int64(floatValue)
 	}
 	return FlexibleInt64(parsed), nil
 }
 
-// UnmarshalJSON 单独兼容 expires_at 的日期格式，并允许由有效 expires_in 回退。
+// UnmarshalJSON decodes token fields while resolving the separate expires_at
+// representation. The numeric expiry field is removed before ordinary field
+// decoding so supported date strings can be interpreted independently. The
+// decoded receiver retains a zero expires_at when it was absent.
+//
+// An invalid expires_at is tolerated when decoded expires_in is positive,
+// leaving ExpiryTime to use that relative duration. Otherwise the parsing error
+// returns to the exchange caller. This keeps an alternate valid expiry from
+// being rejected by the ordinary numeric decoder.
 func (r *DeviceTokenResponse) UnmarshalJSON(data []byte) error {
+	// responseAlias permits ordinary token field decoding before separate
+	// expiry-format interpretation runs.
 	type responseAlias DeviceTokenResponse
 
 	var fields map[string]json.RawMessage
@@ -164,6 +230,9 @@ func (r *DeviceTokenResponse) UnmarshalJSON(data []byte) error {
 
 	expiresAt, err := parseFlexibleExpiresAt(rawExpiresAt)
 	if err != nil {
+		// A positive relative expiry remains usable when expires_at is malformed.
+		// Leave the absolute field zero so ExpiryTime chooses that validated
+		// alternative.
 		if int64(r.ExpiresIn) > 0 {
 			return nil
 		}
@@ -173,13 +242,19 @@ func (r *DeviceTokenResponse) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// parseFlexibleExpiresAt 将数字或常见 ISO 日期统一转换为 Unix 秒。
+// parseFlexibleExpiresAt accepts flexible numbers or supported date strings as
+// expiry values. Date parsing applies a supplied offset or UTC for zoneless
+// layouts, then returns whole Unix seconds, discarding fractional precision.
+// Unsupported numeric or date text returns an error for token decoding.
 func parseFlexibleExpiresAt(data []byte) (FlexibleInt64, error) {
 	parsed, err := parseFlexibleInt64(data)
 	if err == nil {
 		return parsed, nil
 	}
 
+	// A supported date string can fail numeric parsing. Try date layouts with
+	// their offset or UTC rule, then retain whole Unix seconds for the integer
+	// expiry representation.
 	var text string
 	if unmarshalErr := json.Unmarshal(data, &text); unmarshalErr != nil {
 		return 0, err
@@ -205,21 +280,29 @@ func parseFlexibleExpiresAt(data []byte) (FlexibleInt64, error) {
 	return 0, fmt.Errorf("qoder: invalid expiry %q", text)
 }
 
+// UnmarshalJSON decodes user metadata while resolving the supported JSON field
+// aliases. Snake_case avatar and organization fields take precedence over their
+// camelCase alternatives, and userType takes precedence over user_type.
+//
+// Aliased values use firstNonEmpty to select and trim the first nonblank spelling.
+// Direct ID, UserID, Name, UserName, and Email values retain their decoded text.
+// Assignment happens after successful decoding, so malformed JSON leaves the
+// previous receiver available to the caller.
 func (u *UserInfo) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID                    string `json:"id"`
-		UserID                string `json:"user_id"`
-		Name                  string `json:"name"`
-		UserName              string `json:"user_name"`
-		Email                 string `json:"email"`
-		AvatarURL             string `json:"avatar_url"`
-		AvatarURLCamel        string `json:"avatarUrl"`
-		UserType              string `json:"userType"`
-		UserTypeSnake         string `json:"user_type"`
-		OrganizationID        string `json:"organization_id"`
-		OrganizationName      string `json:"organization_name"`
-		OrganizationIDCamel   string `json:"organizationId"`
-		OrganizationNameCamel string `json:"organizationName"`
+		ID                    string `json:"id"`                // alternate user identifier
+		UserID                string `json:"user_id"`           // OpenAPI user identifier
+		Name                  string `json:"name"`              // user display name
+		UserName              string `json:"user_name"`         // OpenAPI user name
+		Email                 string `json:"email"`             // user contact email
+		AvatarURL             string `json:"avatar_url"`        // user avatar URL
+		AvatarURLCamel        string `json:"avatarUrl"`         // camelCase avatar URL
+		UserType              string `json:"userType"`          // Qoder account classification
+		UserTypeSnake         string `json:"user_type"`         // snake_case account classification
+		OrganizationID        string `json:"organization_id"`   // selected organization identifier
+		OrganizationName      string `json:"organization_name"` // selected organization name
+		OrganizationIDCamel   string `json:"organizationId"`    // camelCase organization identifier
+		OrganizationNameCamel string `json:"organizationName"`  // camelCase organization name
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -238,14 +321,24 @@ func (u *UserInfo) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// UnmarshalJSON decodes organization tags and fills omitted canonical fields
+// from supported aliases. A nonblank organization_id or organization_name retains
+// its decoded spelling even when another alias is present.
+//
+// Blank canonical values select trimmed camelCase fields and then generic id or
+// name. ID and name resolve independently, allowing a response to supply one
+// canonical value and one alternate value. JSON decoding completes before the
+// receiver is replaced, so a malformed object leaves its previous fields intact.
 func (o *OrganizationTags) UnmarshalJSON(data []byte) error {
+	// organizationTagsAlias decodes canonical organization fields before supported
+	// metadata aliases are considered.
 	type organizationTagsAlias OrganizationTags
 	var raw struct {
-		organizationTagsAlias
-		ID                    string `json:"id"`
-		Name                  string `json:"name"`
-		OrganizationIDCamel   string `json:"organizationId"`
-		OrganizationNameCamel string `json:"organizationName"`
+		organizationTagsAlias        // canonical organization fields
+		ID                    string `json:"id"`               // alternate organization identifier
+		Name                  string `json:"name"`             // alternate organization name
+		OrganizationIDCamel   string `json:"organizationId"`   // camelCase organization identifier
+		OrganizationNameCamel string `json:"organizationName"` // camelCase organization name
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -260,6 +353,9 @@ func (o *OrganizationTags) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// NewOAuthClient constructs a global OpenAPI client with an optional base-URL
+// override. The override is trimmed and loses trailing slashes, and nil HTTP
+// client selects the twenty-second default in NewOAuthClientForProfile.
 func NewOAuthClient(baseURL string, httpClient *http.Client) *OAuthClient {
 	profile := MustProfileForSite(SiteGlobal)
 	if strings.TrimSpace(baseURL) != "" {
@@ -268,9 +364,14 @@ func NewOAuthClient(baseURL string, httpClient *http.Client) *OAuthClient {
 	return NewOAuthClientForProfile(profile, httpClient)
 }
 
-// NewOAuthClientForProfile 使用站点 profile 创建 OpenAPI 客户端。
+// NewOAuthClientForProfile constructs an OpenAPI client from normalized site
+// defaults and overrides. Invalid site selects global defaults; nil HTTP client
+// creates a twenty-second client, while a supplied client remains shared.
 func NewOAuthClientForProfile(profile Profile, httpClient *http.Client) *OAuthClient {
 	normalized, err := NormalizeProfile(profile)
+	// An invalid override site has no coherent endpoint/client identity. Select the
+	// complete global defaults before applying the constructor's HTTP transport
+	// choice.
 	if err != nil {
 		normalized = MustProfileForSite(SiteGlobal)
 	}
@@ -284,7 +385,10 @@ func NewOAuthClientForProfile(profile Profile, httpClient *http.Client) *OAuthCl
 	}
 }
 
-// NewDeviceAuthRequestForSite 为指定站点生成设备授权参数。
+// NewDeviceAuthRequestForSite creates the site's nonce, PKCE proof, and machine
+// identifier. Unsupported sites return an error before proof generation; the
+// returned request retains the selected profile for authorization URL
+// construction.
 func NewDeviceAuthRequestForSite(site Site) (*DeviceAuthRequest, error) {
 	profile, err := ProfileForSite(site)
 	if err != nil {
@@ -293,7 +397,10 @@ func NewDeviceAuthRequestForSite(site Site) (*DeviceAuthRequest, error) {
 	return NewDeviceAuthRequestForProfile(profile)
 }
 
-// NewDeviceAuthRequestForProfile 使用冻结的站点 profile 生成设备授权参数。
+// NewDeviceAuthRequestForProfile generates one browser proof with a normalized
+// site profile. Global uses a UUID nonce and random URL-safe machine ID; CN uses
+// a hexadecimal nonce and UUID machine ID. The returned verifier stays with
+// later polling.
 func NewDeviceAuthRequestForProfile(profile Profile) (*DeviceAuthRequest, error) {
 	normalized, err := NormalizeProfile(profile)
 	if err != nil {
@@ -305,6 +412,9 @@ func NewDeviceAuthRequestForProfile(profile Profile) (*DeviceAuthRequest, error)
 	}
 	nonce := RandomUUIDLike()
 	machineID := RandomToken(50)
+	// CN browser proof uses a hexadecimal nonce and UUID machine ID. Keep both
+	// shapes together so its authorization URL and retained polling request
+	// describe one login.
 	if normalized.Site == SiteCN {
 		nonce = RandomHex(32)
 		machineID = RandomUUIDLike()
@@ -319,8 +429,14 @@ func NewDeviceAuthRequestForProfile(profile Profile) (*DeviceAuthRequest, error)
 	}, nil
 }
 
+// AuthorizationURL returns the browser URL containing nonce, PKCE challenge,
+// client ID, and machine ID. A missing authorization endpoint selects the
+// complete global profile, and an empty request client ID uses the selected
+// profile client ID.
 func (r *DeviceAuthRequest) AuthorizationURL() string {
 	profile := r.Profile
+	// A request built without an authorization endpoint uses a complete global
+	// profile, keeping its browser URL and default client identifier from one site.
 	if strings.TrimSpace(profile.DeviceAuthorizationURL) == "" {
 		profile = MustProfileForSite(SiteGlobal)
 	}
@@ -337,19 +453,31 @@ func (r *DeviceAuthRequest) AuthorizationURL() string {
 	return profile.DeviceAuthorizationURL + "?" + params.Encode()
 }
 
+// GenerateCodeVerifier returns the shared helper's forty-three-character
+// unpadded base64url PKCE verifier. The helper uses thirty-two random bytes and
+// returns a nil error; random-source failure terminates execution through
+// crypto/rand.Read.
 func GenerateCodeVerifier() (string, error) {
 	return oauthpkce.Verifier()
 }
 
+// GenerateCodeChallenge returns the shared unpadded S256 challenge for the
+// supplied verifier.
 func GenerateCodeChallenge(verifier string) string {
 	return oauthpkce.Challenge(verifier)
 }
 
-// RandomUUIDLike 生成官方客户端使用的 UUID v4 字符串。
+// RandomUUIDLike returns the uuid package's random version-four UUID string for
+// Qoder machine and nonce fields. The package panics when its UUID random reader
+// reports an error.
 func RandomUUIDLike() string {
 	return uuid.NewString()
 }
 
+// PollDeviceToken queries device-token readiness using the nonce and PKCE
+// verifier. Nil client selects global defaults. HTTP 404 or a successful
+// response without either token form returns ready=false; other failures return
+// errors. The response body is consumed and closed here.
 func (c *OAuthClient) PollDeviceToken(ctx context.Context, nonce, verifier string) (*DeviceTokenResponse, bool, error) {
 	if c == nil {
 		c = NewOAuthClient("", nil)
@@ -374,10 +502,16 @@ func (c *OAuthClient) PollDeviceToken(ctx context.Context, nonce, verifier strin
 		_ = resp.Body.Close()
 	}()
 
+	// The poll endpoint represents unfinished browser authorization with HTTP 404.
+	// Return a readiness marker so the session owner can poll again within its
+	// lifetime.
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		// Failed polls retain HTTP failure classification even when diagnostic reading
+		// fails. Bound and redact the captured response fragment before returning it
+		// to the authorization owner.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, false, fmt.Errorf("qoder: device token poll failed with status %d: %s", resp.StatusCode, RedactSensitiveText(string(body)))
 	}
@@ -386,12 +520,18 @@ func (c *OAuthClient) PollDeviceToken(ctx context.Context, nonce, verifier strin
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
 		return nil, false, fmt.Errorf("qoder: parse device token poll response: %w", err)
 	}
+	// A successful poll can still lack access credentials. Treat that response as
+	// pending so authorization completion cannot consume a tokenless identity.
 	if strings.TrimSpace(token.Token) == "" && strings.TrimSpace(token.AccessToken) == "" {
 		return nil, false, nil
 	}
 	return &token, true, nil
 }
 
+// GetUserInfo loads user metadata with the trimmed access token in Bearer
+// authentication. Nil client selects global defaults. Response bodies are
+// consumed and closed here, and bounded HTTP failure text is redacted before
+// returning.
 func (c *OAuthClient) GetUserInfo(ctx context.Context, token string) (*UserInfo, error) {
 	if c == nil {
 		c = NewOAuthClient("", nil)
@@ -413,6 +553,9 @@ func (c *OAuthClient) GetUserInfo(ctx context.Context, token string) (*UserInfo,
 	}()
 
 	if resp.StatusCode != http.StatusOK {
+		// Userinfo failure returns bounded diagnostic text with its HTTP status.
+		// Suppress diagnostic read failure and redact any captured credentials before
+		// the authorization caller handles the error.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("qoder: userinfo failed with status %d: %s", resp.StatusCode, RedactSensitiveText(string(body)))
 	}
@@ -424,6 +567,10 @@ func (c *OAuthClient) GetUserInfo(ctx context.Context, token string) (*UserInfo,
 	return &info, nil
 }
 
+// GetOrganizationTags loads organization metadata for a required OpenAPI user
+// identifier. Nil client selects global defaults, UID is trimmed and
+// path-escaped, and response bodies are consumed and closed here. HTTP failure
+// text is bounded and redacted.
 func (c *OAuthClient) GetOrganizationTags(ctx context.Context, token, uid string) (*OrganizationTags, error) {
 	if c == nil {
 		c = NewOAuthClient("", nil)
@@ -449,6 +596,9 @@ func (c *OAuthClient) GetOrganizationTags(ctx context.Context, token, uid string
 	}()
 
 	if resp.StatusCode != http.StatusOK {
+		// Organization lookup failure still reports its HTTP status when diagnostic
+		// reading fails. Bound and redact any captured fragment before it becomes an
+		// auxiliary warning.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("qoder: organization tags failed with status %d: %s", resp.StatusCode, RedactSensitiveText(string(body)))
 	}
@@ -460,7 +610,10 @@ func (c *OAuthClient) GetOrganizationTags(ctx context.Context, token, uid string
 	return &tags, nil
 }
 
-// ExchangeQoderCN20PAT 使用国内站现代 QODER_PAT 换取 OpenAPI token。
+// ExchangeQoderCN20PAT exchanges a trimmed nonempty CN personal token for
+// OpenAPI credentials. The token request validates access token, refresh token,
+// and interpreted expiry before returning; status completion remains a separate
+// step.
 func (c *OAuthClient) ExchangeQoderCN20PAT(ctx context.Context, pat string) (*DeviceTokenResponse, error) {
 	pat = strings.TrimSpace(pat)
 	if pat == "" {
@@ -473,7 +626,10 @@ func (c *OAuthClient) ExchangeQoderCN20PAT(ctx context.Context, pat string) (*De
 	return c.postTokenRequest(ctx, JobTokenExchangePath, body, "PAT exchange")
 }
 
-// RefreshQoderCN20Token 使用国内站 refresh token 换取新的 OpenAPI token。
+// RefreshQoderCN20Token exchanges a trimmed nonempty CN refresh token for
+// OpenAPI credentials. The token request validates the returned token pair and
+// interpreted expiry before callers perform userinfo and Gateway status
+// completion.
 func (c *OAuthClient) RefreshQoderCN20Token(ctx context.Context, refreshToken string) (*DeviceTokenResponse, error) {
 	refreshToken = strings.TrimSpace(refreshToken)
 	if refreshToken == "" {
@@ -486,7 +642,10 @@ func (c *OAuthClient) RefreshQoderCN20Token(ctx context.Context, refreshToken st
 	return c.postTokenRequest(ctx, DeviceTokenRefreshPath, body, "token refresh")
 }
 
-// CompleteQoderCN20Identity 使用本客户端冻结的 profile 与 transport 完成国内 COSY 身份交换。
+// CompleteQoderCN20Identity delegates Gateway completion using this client's
+// normalized profile and doer. The token and user metadata come from OpenAPI
+// exchange. The caller retains the machine used for status and later supplies
+// it when constructing an encrypted session.
 func (c *OAuthClient) CompleteQoderCN20Identity(
 	ctx context.Context,
 	token *DeviceTokenResponse,
@@ -496,6 +655,10 @@ func (c *OAuthClient) CompleteQoderCN20Identity(
 	return CompleteQoderCN20IdentityContext(ctx, c.profile(), token, user, machine, c.do)
 }
 
+// postTokenRequest posts one CN token operation and validates the returned
+// credentials. Nil client selects CN defaults. The response body is consumed and
+// closed here, HTTP failures become redacted OpenAPIError, and successful JSON
+// still requires the CN token pair and nonzero interpreted expiry.
 func (c *OAuthClient) postTokenRequest(ctx context.Context, path string, body []byte, operation string) (*DeviceTokenResponse, error) {
 	if c == nil {
 		c = NewOAuthClientForProfile(MustProfileForSite(SiteCN), nil)
@@ -518,6 +681,9 @@ func (c *OAuthClient) postTokenRequest(ctx context.Context, path string, body []
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
+		// Token rejection is classified by operation and HTTP status. Keep that
+		// classification even when diagnostic reading fails, and redact the bounded
+		// fragment in OpenAPIError.
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, &OpenAPIError{
 			Operation:  operation,
@@ -535,7 +701,9 @@ func (c *OAuthClient) postTokenRequest(ctx context.Context, path string, body []
 	return &token, nil
 }
 
-// Error 返回不包含原始凭据的错误文本。
+// Error formats the operation and HTTP status with its previously redacted
+// message. Nil receiver returns empty text; a blank message produces the
+// operation/status text alone for caller diagnostics.
 func (e *OpenAPIError) Error() string {
 	if e == nil {
 		return ""
@@ -547,7 +715,9 @@ func (e *OpenAPIError) Error() string {
 	return fmt.Sprintf("qoder: %s failed with status %d: %s", e.Operation, e.StatusCode, message)
 }
 
-// InvalidCredentials 判断 OpenAPI 错误是否明确表示 PAT 或 refresh token 已失效。
+// InvalidCredentials classifies rejection statuses according to the token
+// operation. PAT exchange treats 400, 401, and 403 as credential rejection,
+// while token refresh treats 400 and 401; other operations return false.
 func (e *OpenAPIError) InvalidCredentials() bool {
 	if e == nil {
 		return false
@@ -564,16 +734,24 @@ func (e *OpenAPIError) InvalidCredentials() bool {
 	}
 }
 
-// UpstreamFailure 判断 OpenAPI 错误是否为可重试的服务端故障。
+// UpstreamFailure reports whether the recorded HTTP status is at least 500.
+// A nil error reports false; provider retry classification uses this result
+// separately from credential rejection.
 func (e *OpenAPIError) UpstreamFailure() bool {
 	return e != nil && e.StatusCode >= http.StatusInternalServerError
 }
 
+// profile returns normalized profile metadata with the client's base-URL
+// override applied. Nil client or invalid site selects global defaults, and a
+// nonempty BaseURL replaces the normalized OpenAPI endpoint.
 func (c *OAuthClient) profile() Profile {
 	if c == nil {
 		return MustProfileForSite(SiteGlobal)
 	}
 	profile, err := NormalizeProfile(c.Profile)
+	// Profile consumers need a complete endpoint/version identity even when an
+	// override site is invalid. Resolve global defaults before retaining the
+	// client's explicit OpenAPI URL.
 	if err != nil {
 		profile = MustProfileForSite(SiteGlobal)
 	}
@@ -583,10 +761,16 @@ func (c *OAuthClient) profile() Profile {
 	return profile
 }
 
+// userAgent returns the product and version label from this client's effective
+// profile. Nil clients and invalid profile sites select global defaults through
+// profile before OpenAPIUserAgent constructs the header.
 func (c *OAuthClient) userAgent() string {
 	return c.profile().OpenAPIUserAgent()
 }
 
+// do sends a request through Doer, HTTPClient, or http.DefaultClient in that
+// order. The caller owns response handling and closure; the request already
+// contains the context used by the selected transport.
 func (c *OAuthClient) do(req *http.Request) (*http.Response, error) {
 	if c != nil && c.Doer != nil {
 		return c.Doer(req)
@@ -594,21 +778,37 @@ func (c *OAuthClient) do(req *http.Request) (*http.Response, error) {
 	if c != nil && c.HTTPClient != nil {
 		return c.HTTPClient.Do(req)
 	}
+	// A nil or zero-value client has no configured transport. Use the shared HTTP
+	// default so direct helper calls can still dispatch their prepared request.
 	return http.DefaultClient.Do(req)
 }
 
+// AccessTokenValue returns trimmed access_token before the legacy token field.
+// Nil response and absent token values return empty text; the CN workflow and
+// older responses therefore share one access-token reader.
 func (r *DeviceTokenResponse) AccessTokenValue() string {
 	if r == nil {
 		return ""
 	}
-	// 官方 Qoder CN 客户端优先使用 access_token，token 仅用于旧响应兼容回退。
+	// CN responses can include both token spellings. Prefer access_token so
+	// userinfo and status use the effective OpenAPI token while older responses
+	// remain readable.
 	if strings.TrimSpace(r.AccessToken) != "" {
 		return strings.TrimSpace(r.AccessToken)
 	}
 	return strings.TrimSpace(r.Token)
 }
 
-// ExpiryTime 将 token 响应中的绝对或相对有效期规范化为 UTC 时间。
+// ExpiryTime returns UTC expiry from absolute or relative token fields. Nil
+// response or absent positive expiry returns zero. Positive expires_at wins over
+// expires_in; values at least 10^12 are Unix milliseconds and values at least
+// 10^9 are Unix seconds.
+//
+// Smaller positive expires_at values are seconds relative to now, as are
+// positive expires_in values used when expires_at is absent. This threshold
+// interpretation keeps date-decoded Unix seconds and both numeric wire forms on
+// one path. It does not reject a positive absolute timestamp already in the
+// past.
 func (r *DeviceTokenResponse) ExpiryTime(now time.Time) time.Time {
 	if r == nil {
 		return time.Time{}
@@ -616,6 +816,7 @@ func (r *DeviceTokenResponse) ExpiryTime(now time.Time) time.Time {
 	expiresAt := int64(r.ExpiresAt)
 	if expiresAt > 0 {
 		switch {
+		// Millisecond timestamps exceed the second-scale threshold by three digits.
 		case expiresAt >= 1_000_000_000_000:
 			return time.UnixMilli(expiresAt).UTC()
 		case expiresAt >= 1_000_000_000:
@@ -631,7 +832,10 @@ func (r *DeviceTokenResponse) ExpiryTime(now time.Time) time.Time {
 	return now.Add(time.Duration(expiresIn) * time.Second).UTC()
 }
 
-// ValidateQoderCN20 校验国内标准 OAuth/PAT 返回并规范化过期时间。
+// ValidateQoderCN20 requires a usable access token, refresh token, and
+// interpreted nonzero expiry. It returns that expiry for provider persistence.
+// Validation checks presence and representation; a past absolute expiry still
+// passes.
 func (r *DeviceTokenResponse) ValidateQoderCN20(now time.Time) (time.Time, error) {
 	if r == nil {
 		return time.Time{}, fmt.Errorf("token response is empty")
@@ -649,6 +853,17 @@ func (r *DeviceTokenResponse) ValidateQoderCN20(now time.Time) (time.Time, error
 	return expiresAt, nil
 }
 
+// BuildIdentityFromDeviceToken assembles a global identity from a nonnil token
+// response and optional userinfo. The token supplies the access/refresh pair;
+// AccessTokenValue resolves its current and legacy token names. Userinfo
+// user_id/id takes precedence over token user_id for both user and account
+// fields.
+//
+// Userinfo supplies the display name, account classification, and organization
+// metadata when present. Without userinfo, the name stays empty and user type
+// selects personal_standard; token.UserName contributes to name selection only
+// when a userinfo object exists. This helper's global identity selection remains
+// separate from CN status completion.
 func BuildIdentityFromDeviceToken(user *UserInfo, token *DeviceTokenResponse) *AuthIdentity {
 	accessToken := token.AccessTokenValue()
 	userID := strings.TrimSpace(token.UserID)
@@ -679,6 +894,9 @@ func BuildIdentityFromDeviceToken(user *UserInfo, token *DeviceTokenResponse) *A
 	}
 }
 
+// firstNonEmpty selects the first candidate containing non-whitespace text and
+// returns its trimmed value. No candidates or an entirely blank list produces
+// empty text for the caller's next default.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

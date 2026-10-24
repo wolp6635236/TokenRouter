@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAccountGroupPriorityRemovalMigration 锁定关联优先级列与专用索引的清理边界。
+// TestAccountGroupPriorityRemovalMigration inspects the embedded priority-retirement SQL.
+// It requires removal statements for the priority column and all three named
+// indexes, protecting the migration's complete cleanup of that stored setting.
 func TestAccountGroupPriorityRemovalMigration(t *testing.T) {
 	content, err := FS.ReadFile("240_remove_account_group_priority.sql")
 	require.NoError(t, err)

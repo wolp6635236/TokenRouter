@@ -3,193 +3,71 @@ package timing
 import (
 	"context"
 	"net/http/httptrace"
-	"sync"
 	"time"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 )
 
-// HTTPTraceSnapshot 是一次出站 HTTP 请求的关键传输阶段快照。
-// 所有时间均相对于请求进入网关后的 started_at，便于和下游日志逐条对齐。
-type HTTPTraceSnapshot struct {
-	StartedAt                 time.Time
-	GetConnAt                 time.Time
-	GotConnAt                 time.Time
-	WroteRequestAt            time.Time
-	GotFirstResponseByteAt    time.Time
-	GetConnCount              int
-	GotConnCount              int
-	WroteRequestCount         int
-	FirstResponseByteCount    int
-	ConnectionReused          bool
-	WroteRequestErrorObserved bool
-}
+// httptrace.go attaches generation-exchange callbacks to the request collector.
+// Each outgoing request receives an attempt ordinal before connection acquisition.
+// The callbacks carry that ordinal, so delayed work from an abandoned connection
+// cannot replace the next provider's observations. Requests without the collector
+// keep their existing transport behavior and do not allocate performance state.
+//
+// A retry retains the prior attempt's bounded failure-location diagnostics in
+// the request record, while the current exchange writes directly into its sole
+// collector. Connection callbacks neither retain a second timestamp snapshot nor
+// publish performance through access logs. The completed usage row receives a
+// frozen copy after response reading and existing downstream writes finish.
 
-type httpTraceContextKey struct{}
-
-type httpTraceState struct {
-	mu                        sync.Mutex
-	startedAt                 time.Time
-	getConnAt                 time.Time
-	gotConnAt                 time.Time
-	wroteRequestAt            time.Time
-	gotFirstResponseByteAt    time.Time
-	getConnCount              int
-	gotConnCount              int
-	wroteRequestCount         int
-	firstResponseByteCount    int
-	connectionReused          bool
-	wroteRequestErrorObserved bool
-	upstreamStarted           bool
-}
-
-// WithHTTPTrace 为请求安装低开销的 net/http 阶段回调。
-// 同一个 context 重复调用时复用已有状态，避免覆盖其它请求链路信息。
-func WithHTTPTrace(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if _, ok := ctx.Value(httpTraceContextKey{}).(*httpTraceState); ok {
-		return ctx
-	}
-	state := &httpTraceState{startedAt: time.Now()}
-	ctx = context.WithValue(ctx, httpTraceContextKey{}, state)
-	return withHTTPTraceClient(ctx, state)
-}
-
-// BeginHTTPTrace 标记首次上游 HTTP 尝试并清除此前其它依赖请求的回调。
-// 后续重试复用同一状态，从而既不污染阶段数据又能统计尝试次数。
+// BeginHTTPTrace registers one actual exchange and binds its transport observations.
+// Call immediately before dispatch; request setup supplies provider observation policy.
+// Existing unrelated trace callbacks are composed by net/http, but performance writes
+// accept only the current ordinal. Repeated dispatch starts another isolated exchange
+// and preserves the previous attempt's diagnostic identity without joining timestamps
+// across providers. Nil context uses a background context with no performance observer.
 func BeginHTTPTrace(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	state, ok := ctx.Value(httpTraceContextKey{}).(*httpTraceState)
-	if !ok || state == nil {
-		ctx = WithHTTPTrace(ctx)
-		state, _ = ctx.Value(httpTraceContextKey{}).(*httpTraceState)
+	stages := StagesFromContext(ctx)
+	if stages == nil {
+		return telemetry.BeginRequestAttempt(ctx, 0)
 	}
-	if state == nil {
-		return ctx
-	}
-	state.mu.Lock()
-	if !state.upstreamStarted {
-		state.getConnAt = time.Time{}
-		state.gotConnAt = time.Time{}
-		state.wroteRequestAt = time.Time{}
-		state.gotFirstResponseByteAt = time.Time{}
-		state.getConnCount = 0
-		state.gotConnCount = 0
-		state.wroteRequestCount = 0
-		state.firstResponseByteCount = 0
-		state.connectionReused = false
-		state.wroteRequestErrorObserved = false
-		state.upstreamStarted = true
-	}
-	state.mu.Unlock()
-	return ctx
-}
-
-func withHTTPTraceClient(ctx context.Context, state *httpTraceState) context.Context {
-	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		GetConn: func(string) {
-			state.markGetConn(time.Now())
-		},
+	previousNumber := stages.Attempt()
+	previousFailure := stages.AttemptFailureSnapshot()
+	number := stages.BeginAttempt()
+	telemetry.UpdateRequest(ctx, func(record *telemetry.RequestRecord) {
+		usageOwned := record.UsageAttempt == previousNumber && (record.UsageWriteState == "pending" || record.UsageWriteState == "persisted")
+		// Completed or usage-owned exchanges retain their identity and outcome.
+		// Only an abandoned dispatch needs stage evidence before the collector begins another exchange.
+		for i := range record.Attempts {
+			attempt := &record.Attempts[i]
+			if previousNumber == 0 || int64(attempt.Number) != previousNumber || attempt.Outcome == "completed" || usageOwned {
+				continue
+			}
+			attempt.FailureTimings = previousFailure
+			if start, ok := previousFailure["upstream_started_ms"]; ok {
+				if end, known := previousFailure["failed_at_ms"]; known && end >= start {
+					duration := end - start
+					attempt.DurationMs = &duration
+				}
+			}
+			if attempt.Outcome == "running" {
+				attempt.Outcome = "failed"
+			}
+		}
+	})
+	ctx = telemetry.BeginRequestAttempt(ctx, int(number))
+	trace := &httptrace.ClientTrace{
+		GetConn: func(string) { stages.Transport(number, "upstream_get_conn_ms", time.Now(), false) },
 		GotConn: func(info httptrace.GotConnInfo) {
-			state.markGotConn(time.Now(), info.Reused)
+			stages.Transport(number, "upstream_got_conn_ms", time.Now(), info.Reused)
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			state.markWroteRequest(time.Now(), info.Err != nil)
+			stages.Transport(number, "upstream_wrote_request_ms", time.Now(), info.Err != nil)
 		},
-		GotFirstResponseByte: func() {
-			state.markFirstResponseByte(time.Now())
-		},
-	})
-}
-
-func (s *httpTraceState) markGetConn(at time.Time) {
-	if s == nil {
-		return
+		GotFirstResponseByte: func() { stages.Transport(number, "upstream_first_response_byte_ms", time.Now(), false) },
 	}
-	s.mu.Lock()
-	if s.getConnAt.IsZero() {
-		s.getConnAt = at
-	}
-	s.getConnCount++
-	s.mu.Unlock()
-}
-
-func (s *httpTraceState) markGotConn(at time.Time, reused bool) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	if s.gotConnAt.IsZero() {
-		s.gotConnAt = at
-	}
-	s.gotConnCount++
-	s.connectionReused = s.connectionReused || reused
-	s.mu.Unlock()
-}
-
-func (s *httpTraceState) markWroteRequest(at time.Time, hasError bool) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	if s.wroteRequestAt.IsZero() {
-		s.wroteRequestAt = at
-	}
-	s.wroteRequestCount++
-	s.wroteRequestErrorObserved = s.wroteRequestErrorObserved || hasError
-	s.mu.Unlock()
-}
-
-func (s *httpTraceState) markFirstResponseByte(at time.Time) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	if s.gotFirstResponseByteAt.IsZero() {
-		s.gotFirstResponseByteAt = at
-	}
-	s.firstResponseByteCount++
-	s.mu.Unlock()
-}
-
-// HTTPTraceSnapshotFromContext 返回当前请求已观测到的传输阶段。
-func HTTPTraceSnapshotFromContext(ctx context.Context) (HTTPTraceSnapshot, bool) {
-	if ctx == nil {
-		return HTTPTraceSnapshot{}, false
-	}
-	state, ok := ctx.Value(httpTraceContextKey{}).(*httpTraceState)
-	if !ok || state == nil {
-		return HTTPTraceSnapshot{}, false
-	}
-	state.mu.Lock()
-	snapshot := HTTPTraceSnapshot{
-		StartedAt:                 state.startedAt,
-		GetConnAt:                 state.getConnAt,
-		GotConnAt:                 state.gotConnAt,
-		WroteRequestAt:            state.wroteRequestAt,
-		GotFirstResponseByteAt:    state.gotFirstResponseByteAt,
-		GetConnCount:              state.getConnCount,
-		GotConnCount:              state.gotConnCount,
-		WroteRequestCount:         state.wroteRequestCount,
-		FirstResponseByteCount:    state.firstResponseByteCount,
-		ConnectionReused:          state.connectionReused,
-		WroteRequestErrorObserved: state.wroteRequestErrorObserved,
-	}
-	state.mu.Unlock()
-	if snapshot.GetConnAt.IsZero() && snapshot.GotConnAt.IsZero() &&
-		snapshot.WroteRequestAt.IsZero() && snapshot.GotFirstResponseByteAt.IsZero() &&
-		snapshot.GotConnCount == 0 && snapshot.WroteRequestCount == 0 {
-		return snapshot, false
-	}
-	return snapshot, true
-}
-
-// HTTPTraceElapsedMs 将阶段绝对时间转换为相对于 started_at 的毫秒数。
-func HTTPTraceElapsedMs(snapshot HTTPTraceSnapshot, at time.Time) (int64, bool) {
-	if snapshot.StartedAt.IsZero() || at.IsZero() || at.Before(snapshot.StartedAt) {
-		return 0, false
-	}
-	return at.Sub(snapshot.StartedAt).Milliseconds(), true
+	return httptrace.WithClientTrace(ctx, trace)
 }

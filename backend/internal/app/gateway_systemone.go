@@ -10,7 +10,17 @@ import (
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 )
 
-// provideSystemOneExecutor 为决策请求绑定共享传输、价格预检和提供商健康组件。
+// gateway_systemone.go constructs SystemOne decision execution with transport,
+// pricing checks, and request activity.
+// SystemOne decisions use the common transport, provider health, and pricing
+// preflight. Destination policy and read limits come from startup
+// configuration, with the allowed-host slice copied into the executor and
+// request activity shared with other gateway operations.
+
+// provideSystemOneExecutor binds decision execution to transport, price checks,
+// and request activity. activity is required; nil cfg selects the default
+// response-read limit, while positive configured bytes and copied URL-policy
+// hosts apply when supplied.
 func provideSystemOneExecutor(cfg *config.Config, transport httpclient.UpstreamTransport, headers *egress.CompiledHeaderFilter, health *provideradapter.UpstreamHealth, prices *billing.PriceResolver, activity *gatewayRequestActivity) *gatewayhttp.SystemOneExecutor {
 	executor := &gatewayhttp.SystemOneExecutor{
 		Transport:    transport,

@@ -20,36 +20,103 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// stream.go adapts Messages SSE frames and collects usage while coordinating
+// scanner delivery and keepalives.
+// Messages SSE events can report prompt usage before content and final output
+// usage after a downstream client stops accepting writes. StreamResponse keeps
+// those observations separate from delivery, continuing to parse upstream usage
+// after a write failure until completion, read failure, or idle timeout.
+//
+// A scanner goroutine sends complete lines while the main loop handles event
+// framing, timeout checks, and keepalives. Blank lines trigger processing of
+// the first nonempty data payload in the pending frame; cache categories,
+// matching model names, and tool aliases are adjusted for output. Raw
+// observations precede those edits. Terminal evidence controls whether EOF or a
+// later read error completes successfully, while pre-commitment read failures
+// can request failover. The reader signals scanner delivery to stop on return;
+// its caller closes the body to release any read still blocked in the
+// transport.
+
+// sseDataPattern identifies a data prefix after event lines are trimmed,
+// allowing the standard reader to select its first nonempty data payload from a
+// framed event.
 var sseDataPattern = regexp.MustCompile(`^data:\s*`)
 
+// StreamResult contains accumulated Messages usage
+// and the reader's downstream-disconnect observation.
 type StreamResult struct {
-	Usage            *upstream.TokenUsage
-	FirstTokenMs     *int
+	// Usage points to the counters accumulated by the selected reader.
+	// ObserveState receives the same mutable value during processing, and the
+	// returned result can retain partial counts after failure.
+	Usage *upstream.TokenUsage
+
+	// ClientDisconnect records ordinary stream or keepalive write failure, or
+	// a context-cancelled read before terminal completion. Synthesized error
+	// writes do not update it, so callers also inspect the returned error and
+	// accumulated usage.
 	ClientDisconnect bool
 }
+
+// StreamOptions supplies observations, presentation helpers, and timer settings
+// for one Messages reader. Callers retain these callbacks and serialize their
+// shared state while reading the response.
 type StreamOptions struct {
-	Observe             func(wire.Observation)
-	ObserveState        func(*upstream.TokenUsage, *int)
-	ProviderID          int64
-	MaxLineSize         int
-	Interval, Keepalive time.Duration
-	UserAgent           string
-	ToolNames           *ToolNameRewrite
-	UpdateWindow        func(context.Context, http.Header)
-	WriteHeaders        func(http.Header, http.Header)
-	OverrideCache       func(context.Context) (string, bool)
-	OnTimeout           func(context.Context, string)
-	Failover            func([]byte) error
+	// Observe receives raw data-payload evidence before that payload is edited
+	// or delivered. Passthrough event-name lines can already be written;
+	// Semantic describes observed content independently of successful delivery.
+	Observe func(wire.Observation)
+	// ObserveState receives accumulated mutable usage
+	// after a payload follows the selected reader's usage-processing path.
+	// Standard named error frames return before this callback. Consumers copy
+	// retained counters while later events can still update the shared usage.
+	ObserveState func(*upstream.TokenUsage)
+	ProviderID   int64 // selected provider record ID
+	// MaxLineSize selects Scanner's buffer-growth limit in bytes; nonpositive
+	// values use upstream.DefaultSSELineLimit. The initial pooled buffer is
+	// already 64 KiB, so smaller positive values can still accept tokens within
+	// that initial capacity.
+	MaxLineSize int
+	// Interval selects the idle duration compared against scanner reads, while
+	// Keepalive schedules downstream activity after completed writes.
+	// Nonpositive values disable their timer paths; the clocks serve separate
+	// purposes and are handled by the response loop.
+	Interval, Keepalive time.Duration // Interval: upstream idle duration; Keepalive: downstream heartbeat duration
+	// UserAgent supplies the inbound CLI version for standard no-op delta
+	// selection. Passthrough emits ordinary pings, so it does not use this
+	// version rule.
+	UserAgent    string
+	ToolNames    *ToolNameRewrite                   // request-local tool restoration mapping
+	UpdateWindow func(context.Context, http.Header) // optional response-header quota observation
+	WriteHeaders func(http.Header, http.Header)     // optional client header preparation
+	// OverrideCache resolves current TTL classification when the standard
+	// reader processes usage events. Absent callbacks retain observed
+	// categories; passthrough usage parsing does not consult this override.
+	OverrideCache func(context.Context) (string, bool)
+	// OnTimeout observes an idle failure while the client is still connected.
+	// After a write disconnect, timeout returns partial state without invoking
+	// this provider-update callback.
+	OnTimeout func(context.Context, string)
+	// Failover converts a standard read failure before recorded writer
+	// commitment into the caller's retry error. Absence selects
+	// StreamReadFailure holding the synthesized diagnostic bytes.
+	Failover func([]byte) error
 }
 
-type StreamReadFailure struct{ Body []byte }
+// StreamReadFailure carries a pre-output read failure body for default failover
+// handling by the caller.
+type StreamReadFailure struct {
+	Body []byte // synthesized retry error body
+}
 
-// StreamErrorEventError 表示上游 SSE 流体内出现 event:error 帧。
-// RawData 保留该事件 data: 行的原始内容，供上层写入 failover body 和 Ops 日志。
+// StreamErrorEventError reports a named upstream SSE error frame and retains
+// its raw data payload for the caller's error handling.
 type StreamErrorEventError struct {
-	RawData string
+	RawData string // raw upstream SSE payload
 }
 
+// override queries the optional cache-TTL classification callback for this
+// context. An absent callback returns an empty target and false, leaving
+// response usage under its observed categories.
 func (o StreamOptions) override(ctx context.Context) (string, bool) {
 	if o.OverrideCache == nil {
 		return "", false
@@ -57,6 +124,9 @@ func (o StreamOptions) override(ctx context.Context) (string, bool) {
 	return o.OverrideCache(ctx)
 }
 
+// failover constructs the configured pre-output read failure from body. When no
+// callback is supplied, it returns StreamReadFailure holding those bytes for
+// the caller's retry and diagnostic handling.
 func (o StreamOptions) failover(body []byte) error {
 	if o.Failover != nil {
 		return o.Failover(body)
@@ -64,9 +134,30 @@ func (o StreamOptions) failover(body []byte) error {
 	return &StreamReadFailure{Body: body}
 }
 
+// Error returns the fixed 502 failover description for a stream read failure.
 func (e *StreamReadFailure) Error() string { return "upstream error: 502 (failover)" }
+
+// StreamResponse forwards standard Messages SSE and returns usage, data-arrival
+// timing, and disconnect state. Callers serialize c, retain ownership of
+// resp.Body, and close it after the reader returns. The writer needs flushing
+// support; nonpositive MaxLineSize selects the shared default growth limit.
+//
+// A scanner goroutine timestamps complete lines before bounded-channel
+// delivery; a full channel pauses further reads. Idle checks use those read
+// timestamps and keepalives follow completed downstream writes. Each
+// blank-delimited event selects its first nonempty data payload, observes raw
+// data, applies presentation changes, and merges usage after write failure. EOF
+// requires DONE or a successfully decoded data frame recognized as
+// message_stop; pending unclosed frames remain unprocessed. Read failure
+// before recorded writer commitment can invoke Failover, while
+// later read failures return partial state and selected client error events.
+//
+// An event:error frame returns StreamErrorEventError with no StreamResult
+// before a recorded client write failure. After that disconnection it ends
+// draining with accumulated state and nil error. Previous callback observations
+// remain available on either path. The shared request collector observes
+// performance separately from this reader's usage and delivery policy.
 func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.OutputContext, options StreamOptions, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool) (*StreamResult, error) {
-	// 更新 5h 窗口状态
 	if options.UpdateWindow != nil {
 		options.UpdateWindow(ctx, resp.Header)
 	}
@@ -75,13 +166,11 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		options.WriteHeaders(c.Writer.Header(), resp.Header)
 	}
 
-	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	// 透传其他响应头
 	if v := resp.Header.Get("x-request-id"); v != "" {
 		c.Header("x-request-id", v)
 	}
@@ -93,9 +182,10 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 	}
 
 	usage := &upstream.TokenUsage{}
-	var firstTokenMs *int
+
 	scanner := bufio.NewScanner(resp.Body)
-	// 设置更大的 buffer 以处理长行
+	// Scanner grows only after its pooled 64 KiB storage fills; a smaller
+	// MaxLineSize does not shrink that initial capacity for accepted lines.
 	maxLineSize := options.MaxLineSize
 	if maxLineSize <= 0 {
 		maxLineSize = upstream.DefaultSSELineLimit
@@ -103,11 +193,14 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 	scanBuf := httpclient.GetSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 
+	// scanEvent carries one scanner line or read error to the response loop.
 	type scanEvent struct {
-		line string
-		err  error
+		line string // upstream scanner line text
+		err  error  // upstream scanner read failure
 	}
-	// 独立 goroutine 读取上游，避免读取阻塞导致超时/keepalive 无法处理
+	// The scanner sends lines through a bounded channel while the response loop
+	// handles timers and writes. Closing done makes delivery cancellable when
+	// the reader returns, leaving body closure to its caller.
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
 	sendEvent := func(ev scanEvent) bool {
@@ -118,6 +211,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 			return false
 		}
 	}
+	// The scanner publishes completed-read timestamps atomically for the
+	// response loop's idle checks. Downstream write delays can postpone
+	// dequeuing a line, so timer decisions use that independent read clock.
 	var lastReadAt int64
 	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 	go func(scanBuf *httpclient.SSEScannerBuf64K) {
@@ -133,10 +229,15 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 			_ = sendEvent(scanEvent{err: err})
 		}
 	}(scanBuf)
+	// Stop scanner delivery when response processing returns. A scanner blocked
+	// in Body.Read still needs the caller's body close; the pooled buffer stays
+	// with that goroutine until it exits.
 	defer close(done)
 
 	streamInterval := options.Interval
-	// 仅监控上游数据间隔超时，避免下游写入阻塞导致误判
+	// The idle ticker compares the scanner's last successful read time, so a
+	// slow downstream write does not redefine when upstream last supplied a
+	// complete line.
 	var intervalTicker *time.Ticker
 	if streamInterval > 0 {
 		intervalTicker = time.NewTicker(streamInterval)
@@ -147,7 +248,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		intervalCh = intervalTicker.C
 	}
 
-	// 下游 keepalive：防止代理/Cloudflare Tunnel 因连接空闲而断开
+	// Keepalive scheduling follows completed downstream output independently of
+	// upstream read timing. A positive interval permits idle client connections
+	// to receive a protocol-shaped heartbeat between processed events.
 	keepaliveInterval := options.Keepalive
 	var keepaliveTimer *time.Timer
 	if keepaliveInterval > 0 {
@@ -159,6 +262,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		keepaliveCh = keepaliveTimer.C
 	}
 	lastDataAt := time.Now()
+	// Completed output restarts the downstream idle wait. Stop and drain a
+	// fired timer before reset so an older tick cannot trigger a heartbeat
+	// immediately after fresh output.
 	resetKeepaliveTimer := func() {
 		if keepaliveTimer == nil {
 			return
@@ -172,10 +278,8 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		keepaliveTimer.Reset(keepaliveInterval)
 	}
 
-	// 仅发送一次错误事件，避免多次写入导致协议混乱（写失败时尽力通知客户端）。
-	// 事件格式遵循 Anthropic SSE 标准：{"type":"error","error":{"type":<reason>,"message":<message>}}
-	// 这样 Anthropic SDK / Claude Code 等客户端能按标准 error 类型解析，UI 能显示具体错误文案，
-	// 服务端 ExtractUpstreamErrorMessage 也能从透传的 body 中提取 message。
+	// Attempt one Anthropic error event, even if writing it fails. The envelope
+	// lets clients and error extraction read the same type and message fields.
 	errorEventSent := false
 	sendErrorEvent := func(reason, message string) {
 		if errorEventSent {
@@ -193,7 +297,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 			},
 		})
 		if err != nil {
-			// json.Marshal 不可能在已知 string-only 输入上失败，保守 fallback
+			// If structured error encoding fails, keep the selected reason and
+			// message in the manually formatted envelope so the attempted
+			// client error still uses those fields.
 			body = []byte(fmt.Sprintf(`{"type":"error","error":{"type":%q,"message":%q}}`, reason, message))
 		}
 		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", body)
@@ -201,7 +307,7 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 	}
 
 	needModelReplace := originalModel != mappedModel
-	clientDisconnected := false // 客户端断开标志，断开后继续读取上游以获取完整usage
+	clientDisconnected := false // downstream writes have not failed
 	sawTerminalEvent := false
 	useNoopDeltaKeepalive := ShouldUseClaudeCodeNoopDeltaKeepalive(options.UserAgent)
 	noopDeltaKeepaliveBlockIndex := -1
@@ -234,10 +340,18 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 			return nil, dataLine, nil, &StreamErrorEventError{RawData: dataLine}
 		}
 
+		// Frames with no selected nonempty payload retain their received
+		// lines, allowing comments and event-only activity to reach the client
+		// before any map-based presentation editing is possible. An event-only
+		// message_stop follows this path too and leaves terminal state
+		// unchanged.
 		if dataLine == "" {
 			return []string{strings.Join(lines, "\n") + "\n\n"}, "", nil, nil
 		}
 
+		// The DONE sentinel establishes completion before JSON decoding.
+		// Keep its selected event name when emitting it so sentinel-based
+		// closure survives the normalized block construction.
 		if dataLine == "[DONE]" {
 			sawTerminalEvent = true
 			block := ""
@@ -250,7 +364,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 
 		var event map[string]any
 		if err := json.Unmarshal([]byte(dataLine), &event); err != nil {
-			// JSON 解析失败，直接透传原始数据
+			// A malformed data payload still travels as its selected SSE block.
+			// Forward the original data instead of applying map-based
+			// presentation edits that require a decoded event.
 			block := ""
 			if eventName != "" {
 				block = "event: " + eventName + "\n"
@@ -260,11 +376,17 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		}
 
 		eventType, _ := event["type"].(string)
+		// A payload can omit the SSE event line while naming its JSON type.
+		// Use that type for the output event name after explicit named-error
+		// detection, which is based on the received event header.
 		if eventName == "" {
 			eventName = eventType
 		}
 		eventChanged := false
 
+		// Track the latest supported content block or delta for the selected
+		// CLI heartbeat shape. Matching block stop or message completion clears
+		// that choice so idle output no longer references a closed block.
 		if useNoopDeltaKeepalive {
 			switch eventType {
 			case "content_block_start":
@@ -300,7 +422,10 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 			}
 		}
 
-		// 兼容 Kimi cached_tokens → cache_read_input_tokens
+		// Compatible message_start and message_delta usage can report
+		// cached_tokens. Normalize those selected usage maps before TTL
+		// classification and patch extraction so the canonical cache-read
+		// observation is available.
 		if eventType == "message_start" {
 			if msg, ok := event["message"].(map[string]any); ok {
 				if u, ok := msg["usage"].(map[string]any); ok {
@@ -314,8 +439,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 			}
 		}
 
-		// Cache TTL Override: 重写 SSE 事件中的 cache_creation 分类。
-		// 提供商级设置优先；全局 1h 请求注入开启时，默认把 usage 计费归回 5m。
+		// Resolve current TTL classification while processing each event.
+		// Rewriting the selected usage map precedes patch extraction so output
+		// and local billing counts use the same classified detail buckets.
 		if overrideTarget, ok := options.override(ctx); ok {
 			if eventType == "message_start" {
 				if msg, ok := event["message"].(map[string]any); ok {
@@ -331,6 +457,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 			}
 		}
 
+		// Only a matching embedded message model uses the client's requested
+		// name. The raw model observation has already run, retaining upstream
+		// identity before this presentation edit.
 		if needModelReplace {
 			if msg, ok := event["message"].(map[string]any); ok {
 				if model, ok := msg["model"].(string); ok && model == mappedModel {
@@ -344,6 +473,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		if StreamEventIsTerminal(eventName, dataLine) {
 			sawTerminalEvent = true
 		}
+		// Keep selected JSON text in its received representation when no
+		// presentation edit changed the map. Re-encoding would otherwise
+		// reorder fields despite those unchanged values.
 		if !eventChanged {
 			block := ""
 			if eventName != "" {
@@ -355,7 +487,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 
 		newData, err := json.Marshal(event)
 		if err != nil {
-			// 序列化失败，直接透传原始数据
+			// Usage was already extracted from the decoded event. If
+			// re-encoding fails, forward the original payload while retaining
+			// that extracted local usage patch for accumulation.
 			block := ""
 			if eventName != "" {
 				block = "event: " + eventName + "\n"
@@ -376,36 +510,49 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				// 上游完成，返回结果
+				// The blank-line processor must have observed message_stop or
+				// DONE before EOF counts as complete. Pending unclosed frames
+				// do not supply that evidence, so return partial usage on
+				// incomplete closure.
 				if !sawTerminalEvent {
-					return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs, ClientDisconnect: clientDisconnected}, fmt.Errorf("stream usage incomplete: missing terminal event")
+					return &StreamResult{Usage: usage, ClientDisconnect: clientDisconnected}, fmt.Errorf("stream usage incomplete: missing terminal event")
 				}
-				return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs, ClientDisconnect: clientDisconnected}, nil
+				return &StreamResult{Usage: usage, ClientDisconnect: clientDisconnected}, nil
 			}
 			if ev.err != nil {
+				// Completion evidence was already processed before this scanner
+				// failure. Keep the accumulated result successful here so a
+				// later transport error does not erase that terminal
+				// observation.
 				if sawTerminalEvent {
-					return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs, ClientDisconnect: clientDisconnected}, nil
+					return &StreamResult{Usage: usage, ClientDisconnect: clientDisconnected}, nil
 				}
-				// 检测 context 取消（客户端断开会导致 context 取消，进而影响上游读取）
+				// A cancelled or expired read can interrupt the stream before
+				// terminal usage. Return observed counters with the wrapped
+				// context error and disconnect marker so completion can assess
+				// that partial attempt.
 				if errors.Is(ev.err, context.Canceled) || errors.Is(ev.err, context.DeadlineExceeded) {
-					return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs, ClientDisconnect: true}, fmt.Errorf("stream usage incomplete: %w", ev.err)
+					return &StreamResult{Usage: usage, ClientDisconnect: true}, fmt.Errorf("stream usage incomplete: %w", ev.err)
 				}
-				// 客户端已通过写入失败检测到断开，上游也出错了，返回已收集的 usage
+				// After a downstream failure, upstream parsing continues for
+				// usage. If that read also fails before completion, return
+				// those accumulated counters and mark the disconnected partial
+				// result.
 				if clientDisconnected {
-					return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs, ClientDisconnect: true}, fmt.Errorf("stream usage incomplete after disconnect: %w", ev.err)
+					return &StreamResult{Usage: usage, ClientDisconnect: true}, fmt.Errorf("stream usage incomplete after disconnect: %w", ev.err)
 				}
-				// 客户端未断开，正常的错误处理
+				// An oversized Scanner token cannot be processed as a complete
+				// event. Attempt the selected client error and return the
+				// original scan failure with any previously collected usage.
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.gateway", "SSE line too long: provider=%d max_size=%d error=%v", options.ProviderID, maxLineSize, ev.err)
 					sendErrorEvent("response_too_large", fmt.Sprintf("upstream SSE line exceeded %d bytes", maxLineSize))
-					return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs}, ev.err
+					return &StreamResult{Usage: usage}, ev.err
 				}
-				// 上游中途读错误（unexpected EOF / connection reset 等，常见于 HTTP/2 GOAWAY）：
-				// 若尚未向客户端写过任何字节，包成 UpstreamFailoverError 让 handler 层走 failover/重试。
-				// 已经开始写流时 SSE 协议无 resume，只能透传错误事件给客户端。
-				// 注意:面向客户端的 disconnectMsg 必须用 upstream.SanitizeStreamError 剥离地址,
-				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。完整 ev.err
-				// 仅在下方 LegacyPrintf 内部日志中保留供运维诊断。
+				// Writer commitment can originate from headers or a heartbeat
+				// before semantic content. An uncommitted writer permits
+				// Failover; after commitment, append a sanitized SSE error and
+				// return partial state. Internal logs retain transport details.
 				disconnectMsg := "upstream stream disconnected: " + upstream.SanitizeStreamError(ev.err)
 				if !c.Writer.Written() {
 					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (provider=%d), failing over: %v", options.ProviderID, ev.err)
@@ -419,7 +566,7 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 					return nil, options.failover(body)
 				}
 				sendErrorEvent("stream_read_error", disconnectMsg)
-				return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
+				return &StreamResult{Usage: usage}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 			line := ev.line
 			trimmed := strings.TrimSpace(line)
@@ -432,8 +579,12 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 				outputBlocks, data, usagePatch, err := processSSEEvent(pendingEventLines)
 				pendingEventLines = pendingEventLines[:0]
 				if err != nil {
+					// A named error frame ends a stream whose client already
+					// failed writing. Return the usage retained from earlier
+					// processed frames because further delivery cannot provide
+					// that client another event.
 					if clientDisconnected {
-						return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs, ClientDisconnect: true}, nil
+						return &StreamResult{Usage: usage, ClientDisconnect: true}, nil
 					}
 					return nil, err
 				}
@@ -445,9 +596,9 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 						if _, werr := fmt.Fprint(w, string(restored)); werr != nil {
 							clientDisconnected = true
 							logger.LegacyPrintf("service.gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
-							// 不 break：客户端断开后仍需继续合并本事件及后续事件的 usage，
-							// 否则会漏计当前事件携带的 usage 导致少计费。后续写入由
-							// clientDisconnected 守卫跳过。
+							// Keep processing this event and later usage after
+							// the write fails. Skipping this event could omit
+							// tokens already consumed upstream.
 						} else {
 							flusher.Flush()
 							lastDataAt = time.Now()
@@ -455,15 +606,11 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 						}
 					}
 					if data != "" {
-						if firstTokenMs == nil && data != "[DONE]" {
-							ms := int(time.Since(startTime).Milliseconds())
-							firstTokenMs = &ms
-						}
 						if usagePatch != nil {
 							wire.MergeSSEUsagePatch(usage, usagePatch)
 						}
 						if options.ObserveState != nil {
-							options.ObserveState(usage, firstTokenMs)
+							options.ObserveState(usage)
 						}
 					}
 				}
@@ -478,15 +625,17 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 				continue
 			}
 			if clientDisconnected {
-				return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs, ClientDisconnect: true}, fmt.Errorf("stream usage incomplete after timeout")
+				return &StreamResult{Usage: usage, ClientDisconnect: true}, fmt.Errorf("stream usage incomplete after timeout")
 			}
 			logger.LegacyPrintf("service.gateway", "Stream data interval timeout: provider=%d model=%s interval=%s", options.ProviderID, originalModel, streamInterval)
-			// 处理流超时，可能标记提供商为临时不可调度或错误状态
+			// This connected-client idle failure is reported through OnTimeout
+			// before the error frame. A disconnected-client timeout already
+			// returned partial usage above and skips this provider observation.
 			if options.OnTimeout != nil {
 				options.OnTimeout(ctx, originalModel)
 			}
 			sendErrorEvent("stream_timeout", fmt.Sprintf("upstream stream idle for %s", streamInterval))
-			return &StreamResult{Usage: usage, FirstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
+			return &StreamResult{Usage: usage}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
 			if clientDisconnected {
@@ -496,6 +645,10 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 				resetKeepaliveTimer()
 				continue
 			}
+			// A supported active block allows a version-selected empty delta;
+			// otherwise the heartbeat uses ping. This synthesized activity
+			// carries no parsed usage and does not start legacy data-arrival
+			// timing.
 			keepaliveBlock := "event: ping\ndata: {\"type\": \"ping\"}\n\n"
 			if useNoopDeltaKeepalive && noopDeltaKeepaliveBlockIndex >= 0 {
 				if block, ok := BuildClaudeCodeNoopDeltaKeepalive(noopDeltaKeepaliveBlockIndex, noopDeltaKeepaliveDeltaType); ok {
@@ -514,7 +667,10 @@ func StreamResponse(ctx context.Context, resp *http.Response, c *upstream.Output
 	}
 }
 
-// StreamEventIsTerminal 根据 SSE 事件名和数据判断响应是否结束。
+// StreamEventIsTerminal recognizes a message_stop name, JSON type, or DONE
+// sentinel. Event names are trimmed and case-insensitive; JSON type matching
+// remains exact. Empty data returns false unless its event name already
+// identifies message_stop.
 func StreamEventIsTerminal(eventName, data string) bool {
 	if strings.EqualFold(strings.TrimSpace(eventName), "message_stop") {
 		return true
@@ -529,4 +685,5 @@ func StreamEventIsTerminal(eventName, data string) bool {
 	return gjson.Get(trimmed, "type").String() == "message_stop"
 }
 
+// Error returns the fixed description for an observed upstream SSE error frame.
 func (e *StreamErrorEventError) Error() string { return "have error in stream" }

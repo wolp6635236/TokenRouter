@@ -9,7 +9,18 @@ import (
 	sitedto "github.com/TokenFlux/TokenRouter/internal/site/httpapi/dto"
 )
 
-// buildSystemSettingsResponse 将已读取的设置和支付配置转换为管理响应。
+// composite_response.go maps system and payment settings into the combined
+// administrator response.
+// The combined administrator response selects system controls and payment
+// configuration from separate reads. Credentials become configured-presence flags,
+// while connection details, public client IDs, and editor content remain available
+// for administration. GET and PUT callers supplement selected fields after this
+// shared mapper returns its value.
+
+// buildSystemSettingsResponse combines nonnil system and payment values with
+// prepared subscription DTOs and the startup TOTP-key flag. It retains most
+// assigned collection references, uses helpers for decoded navigation/legal data,
+// and leaves monitoring and provider thresholds for its calling endpoint.
 func buildSystemSettingsResponse(
 	settings *composite.Snapshot,
 	paymentCfg *payment.PaymentConfig,
@@ -196,7 +207,7 @@ func buildSystemSettingsResponse(
 		BackendModeEnabled:                               settings.BackendModeEnabled,
 		ResponsesWS:                                      settings.ResponsesWS,
 		ResponsesWSEffective:                             settings.ResponsesWSEffective,
-		OpenAITTFTMode:                                   settings.OpenAITTFTMode,
+		TTFTMode:                                         settings.TTFTMode,
 		EnableFingerprintUnification:                     settings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:                        settings.EnableMetadataPassthrough,
 		EnableCCHSigning:                                 settings.EnableCCHSigning,

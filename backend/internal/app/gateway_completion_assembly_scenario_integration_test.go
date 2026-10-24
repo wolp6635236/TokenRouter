@@ -2,8 +2,6 @@
 
 package app
 
-// 本文件检查 gateway_completion_billing.go 与 gateway_billing_rates.go 装配的计费记录器和持久化存储。
-
 import (
 	"context"
 	"database/sql"
@@ -25,22 +23,42 @@ import (
 	usagepg "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
 
-// 完成记录集成测试使用应用中的记录器和倍率缓存。
+// Completion replay reaches persistent billing and usage stores through the
+// application's recorder constructors. Both Messages and OpenAI scenarios
+// record one input twice, then inspect balance, Key quota, and usage-row counts
+// to check settlement deduplication.
+
+// The test constructor aliases use production recorder and rate-cache assembly
+// for the persistent replay scenarios.
 var (
 	NewCompletionRecordersForTest = ProvideGatewayCompletionRecorders
 	NewGatewayBillingRatesForTest = provideGatewayBillingRates
 )
 
-type nativeCompletionCatalog struct{ billing.PriceCatalog }
+// nativeCompletionCatalog supplies fixed token prices for persistent completion
+// replay.
+type nativeCompletionCatalog struct {
+	// PriceCatalog supplies unused catalog methods; this fixture implements
+	// the pricing lookup needed by the token settlement calculation exercised here.
+	billing.PriceCatalog
+}
 
-// 测试直接执行存储 SQL，写入按同步方式完成。
-type nativeCompletionSQL struct{ *sql.DB }
+// nativeCompletionSQL exposes test SQL methods for synchronous usage
+// persistence.
+type nativeCompletionSQL struct {
+	*sql.DB // fixture SQL connection
+}
 
+// GetModelPricing returns fixed input and output prices for the completion
+// fixture.
 func (nativeCompletionCatalog) GetModelPricing(string) *pricing.CatalogModelPricing {
 	return &pricing.CatalogModelPricing{InputCostPerToken: 0.01, OutputCostPerToken: 0.02}
 }
 
-// TestNativeCompletionRuntimeOneFinancialEffect 检查两种完成记录器调用结算和用量存储，重放后各保留一次资金变动和记录。
+// TestNativeCompletionRuntimeOneFinancialEffect records the same completion
+// twice through each application-assembled recorder. The database must show one
+// balance deduction, one Key quota increment, and one usage row for each
+// request identity.
 func TestNativeCompletionRuntimeOneFinancialEffect(t *testing.T) {
 	f := newDatabaseFixture(t)
 	ctx := t.Context()
@@ -54,6 +72,8 @@ func TestNativeCompletionRuntimeOneFinancialEffect(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
+		// Drain tracked settlement effects before deferred writes and the timing
+		// wheel stop, then close usage batchers while the fixture database remains open.
 		require.NoError(t, tasks.Stop(cleanup))
 		require.NoError(t, deferred.StopContext(cleanup))
 		wheel.Stop()
@@ -97,6 +117,7 @@ func TestNativeCompletionRuntimeOneFinancialEffect(t *testing.T) {
 			var balance, quota float64
 			require.NoError(t, f.db.QueryRowContext(ctx, "SELECT balance FROM users WHERE id=$1", user.ID).Scan(&balance))
 			require.NoError(t, f.db.QueryRowContext(ctx, "SELECT quota_used FROM api_keys WHERE id=$1", key.ID).Scan(&quota))
+			// Floating-point amounts allow a small comparison tolerance after SQL round trips.
 			require.InDelta(t, 9, balance, 1e-8)
 			require.InDelta(t, 1, quota, 1e-8)
 			var facts int

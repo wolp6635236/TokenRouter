@@ -8,8 +8,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
 )
 
-// databaseSuite 在当前测试进程内共享迁移模板。
+// Identity integration cases obtain independent databases from one lazily
+// created PostgreSQL container and migrated template. The integration runner
+// keeps that suite alive through all case cleanups, then returns the suite
+// result after closing its shared resources.
+
+// databaseSuite owns the process-wide migrated PostgreSQL template and creates
+// independent clones for identity cases.
 var databaseSuite postgrescontainer.Suite
 
-// runIdentityTests 在身份测试完成后回收共享容器。
+// runIdentityTests delegates the package runner and final shared-resource
+// cleanup to databaseSuite. A suite cleanup failure changes the exit result to
+// one after per-case clone cleanup has finished.
 func runIdentityTests(m *testing.M) int { return databaseSuite.Run(m) }

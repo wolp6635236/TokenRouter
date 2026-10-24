@@ -24,23 +24,45 @@ import (
 	openaierrors "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// support.go qualifies replay and captures scheduling, error and Cyber
+// completion evidence.
+// Retry readiness distinguishes HTTP commitment from actual output that makes
+// replay unsafe. The attempt supplies a pre-forward adjusted byte count;
+// unchanged output permits retry, while changed output requires classified
+// recovery permission. Terminal errors then use protocol-specific writers and
+// configured rules so already delivered semantic output is not mistaken for an
+// unwritten response.
+//
+// Scheduling and completion observations need the actual upstream model and
+// endpoint, which can differ from the client's entry or group alias. Result
+// metadata takes precedence over request observations and provider defaults.
+// Cyber policy captures funding and usage snapshots before delegating queued
+// recording, while selected-provider slot acquisition delegates wait and
+// release rules to the shared HTTP resource adapter.
+
+// cyberSessionBlockWritePlan pairs request-scoped block keys with their
+// transcript scope.
 type cyberSessionBlockWritePlan struct {
-	scopeKey string
-	keys     []string
+	scopeKey string   // transcript matching scope key
+	keys     []string // ordered session blocking keys
 }
 
-// Support 为文本、WS 和媒体适配提供共享的请求资源和用例接口。
+// Support binds app-owned HTTP resources and side effects for selected text
+// attempts.
 type Support struct {
-	Concurrency *gatewayhttp.ConcurrencyHelper
-	Sticky      gatewayhttp.SlotStickyBinder
-	Rules       *errorpolicy.ErrorPassthroughService
-	Cyber       *gatewayhttp.CyberHandler
-	Quota       gatewayprovider.QuotaUpdater
-	Moderation  gatewayhttp.ModerationPort
-	Submission  gatewayhttp.CompletionSubmission
+	Concurrency *gatewayhttp.ConcurrencyHelper       // shared selected-slot admission helper
+	Sticky      gatewayhttp.SlotStickyBinder         // selected-provider affinity write service
+	Rules       *errorpolicy.ErrorPassthroughService // optional terminal error-rule matcher
+	Cyber       *gatewayhttp.CyberHandler            // request Cyber-policy recording service
+	Quota       gatewayprovider.QuotaUpdater         // captured Key quota update service
+	Moderation  gatewayhttp.ModerationPort           // upstream warning moderation recorder
+	Submission  gatewayhttp.CompletionSubmission     // shared completion task submission service
 }
 
-// OpenAIProviderScheduleModel 依次读取输出模型、请求观测模型和提供商配置的上游模型。
+// OpenAIProviderScheduleModel chooses the model used for selected-provider
+// scheduling feedback. It prefers a nonblank result upstream model, then a
+// string Ops observation, then provider policy applied to forwardModel with the
+// Compact requirement.
 func OpenAIProviderScheduleModel(c *gin.Context, provider *gatewayprovider.ExecutionProvider, forwardModel string, requireCompact bool, result *forwardcore.OpenAIResult) string {
 	if result != nil {
 		if actual := strings.TrimSpace(result.UpstreamModel); actual != "" {
@@ -57,7 +79,10 @@ func OpenAIProviderScheduleModel(c *gin.Context, provider *gatewayprovider.Execu
 	return gatewayprovider.ExecutionModelPolicy(provider).OpenAIUpstream(forwardModel, requireCompact)
 }
 
-// AppendOpenAIProviderProxyLogFields 追加可公开的代理定位字段。
+// AppendOpenAIProviderProxyLogFields appends selected proxy ID, name, host, and
+// port observations. A missing loaded proxy can supply its reference ID alone;
+// missing provider returns fields unchanged. Appending can reuse the caller's
+// slice storage, and credentials are excluded from the fields constructed here.
 func AppendOpenAIProviderProxyLogFields(fields []zap.Field, provider *gatewayprovider.ExecutionProvider) []zap.Field {
 	if provider == nil {
 		return fields
@@ -76,14 +101,21 @@ func AppendOpenAIProviderProxyLogFields(fields []zap.Field, provider *gatewaypro
 	return fields
 }
 
-// HandleOpenAISelectionBusinessError 将选组业务错误写为 OpenAI 响应。
+// HandleOpenAISelectionBusinessError writes recognized group-selection errors
+// using OpenAI framing. Its return reports whether shared business-error
+// handling recognized the failure. Callers continue availability or
+// exhausted-retry classification only when this returns false.
 func (h *Support) HandleOpenAISelectionBusinessError(c *gin.Context, err error, streamStarted bool) bool {
 	return handleGroupSelectionBusinessError(c, err, streamStarted, func(status int, errType string, message string, streamStarted bool) {
 		gatewayhttp.DefaultOpenAIErrorOutput().StreamError(c, status, errType, message, streamStarted)
 	})
 }
 
-// HandleAnthropicFailoverExhausted 将上游切号错误转换为 Anthropic 格式。
+// HandleAnthropicFailoverExhausted writes terminal retry failure using Messages
+// error framing. Callers supply a nonnil failure and the current stream marker.
+// Oversized request classification takes precedence, followed by credential and
+// capacity failures with client-safe messages; remaining statuses use the
+// shared upstream-error mapping.
 func (h *Support) HandleAnthropicFailoverExhausted(c *gin.Context, failoverErr *forwardcore.UpstreamFailoverError, streamStarted bool) {
 	if failoverErr != nil && gatewayprovider.IsOpenAIRequestBodyTooLarge(failoverErr) {
 		gatewayhttp.SetOpsUpstreamError(c, http.StatusRequestEntityTooLarge, forwardcore.OpenAIRequestBodyTooLargeClientMessage, "")
@@ -116,7 +148,10 @@ func (h *Support) HandleAnthropicFailoverExhausted(c *gin.Context, failoverErr *
 	gatewayhttp.DefaultOpenAIErrorOutput().WriteAnthropicStreamingError(c, status, errType, errMsg, streamStarted)
 }
 
-// EnsureAnthropicErrorResponse 在尚未写出响应时补充 Anthropic 错误。
+// EnsureAnthropicErrorResponse supplies a default Messages upstream error when
+// output is unwritten. Nil context, missing writer, or committed headers return
+// false. A written fallback returns true so the attempt can report which
+// terminal response it supplied.
 func (h *Support) EnsureAnthropicErrorResponse(c *gin.Context, streamStarted bool) bool {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
@@ -125,6 +160,10 @@ func (h *Support) EnsureAnthropicErrorResponse(c *gin.Context, streamStarted boo
 	return true
 }
 
+// AcquireResponsesProviderSlot acquires selected capacity with the default
+// OpenAI error writer. It delegates waiting and cancellation to
+// AcquireOpenAIProviderSlot. The caller owns any returned release callback and
+// invokes it after its forwarding operation ends.
 func (h *Support) AcquireResponsesProviderSlot(
 	c *gin.Context,
 	groupID *int64,
@@ -138,8 +177,11 @@ func (h *Support) AcquireResponsesProviderSlot(
 	return release, result
 }
 
-// AcquireOpenAIProviderSlot 申请调度选中的提供商槽位，处理等待、取消和释放。
-// 调用方可传入错误写入函数，以输出对应协议的错误格式。
+// AcquireOpenAIProviderSlot adopts or waits for the selected provider's
+// capacity. Callers supply the active request, stream marker, logger, and
+// shared concurrency services. A nil error writer selects OpenAI output;
+// returned cleanup is owned by forwarding, with Qoder streams retained until
+// explicit completion cleanup.
 func (h *Support) AcquireOpenAIProviderSlot(
 	c *gin.Context,
 	groupID *int64,
@@ -156,6 +198,9 @@ func (h *Support) AcquireOpenAIProviderSlot(
 		}
 	}
 	var projected *gatewayhttp.SelectedProviderSlot
+	// Qoder streaming reads tail usage after client cancellation. Pass its
+	// completion-release choice to the common slot adapter while other
+	// attempts use cancellation cleanup.
 	if selection != nil && selection.Provider != nil {
 		projected = &gatewayhttp.SelectedProviderSlot{CompleteBeforeRelease: reqStream && selection.Provider.Record.Platform == capability.PlatformQoder, ProviderID: selection.Provider.Record.ID, Acquired: selection.Acquired, ReleaseFunc: selection.ReleaseFunc, WaitPlan: selection.WaitPlan}
 	}
@@ -166,7 +211,10 @@ func (h *Support) AcquireOpenAIProviderSlot(
 	return release, true
 }
 
-// GetContextInt64 将 HTTP 观测值中的 int、int32、int64 和 float64 转为 int64。
+// GetContextInt64 reads a numeric HTTP observation as an int64 value. It
+// accepts int, int32, int64, and float64, whose fractional part is discarded.
+// Nil context, empty key, absent values, and other types return zero with
+// false.
 func GetContextInt64(c *gin.Context, key string) (int64, bool) {
 	if c == nil || key == "" {
 		return 0, false
@@ -183,12 +231,19 @@ func GetContextInt64(c *gin.Context, key string) (int64, bool) {
 	case int32:
 		return int64(t), true
 	case float64:
+		// Numeric observations may be decoded as floating point.
+		// Discard fractions because these consumers record integral
+		// millisecond or status values in the request context.
 		return int64(t), true
 	default:
 		return 0, false
 	}
 }
 
+// HandleFailoverExhausted writes terminal OpenAI recovery output under
+// configured error rules. Rules are optional. The shared writer updates
+// upstream observations or skip-monitoring state through synchronous hooks,
+// using the supplied stream marker and projected failure.
 func (h *Support) HandleFailoverExhausted(c *gin.Context, failoverErr *forwardcore.UpstreamFailoverError, streamStarted bool) {
 	var rules gatewayhttp.ErrorRuleMatcher
 	if h.Rules != nil {
@@ -199,13 +254,19 @@ func (h *Support) HandleFailoverExhausted(c *gin.Context, failoverErr *forwardco
 	}, SkipMonitoring: func(c *gin.Context) { c.Set(gatewayhttp.OpsSkipPassthroughKey, true) }})
 }
 
-// HandleFailoverExhaustedSimple 根据上游状态码写出重试耗尽的错误。
+// HandleFailoverExhaustedSimple maps an upstream status to safe terminal OpenAI
+// output. It records that upstream status and mapped message before writing.
+// Callers use this path when no classified upstream failure is available.
 func (h *Support) HandleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
 	status, errType, errMsg := gatewayhttp.MapOpenAIUpstreamError(statusCode)
 	gatewayhttp.SetOpsUpstreamError(c, statusCode, errMsg, "")
 	gatewayhttp.DefaultOpenAIErrorOutput().StreamError(c, status, errType, errMsg, streamStarted)
 }
 
+// EnsureOpenAIStreamReadErrorResponse writes a recognized stream-read failure
+// when semantic output is uncommitted. Unrecognized errors or
+// unavailable/committed responses return false. Already-written HTTP headers
+// select streaming output; the returned true reports fallback emission.
 func (h *Support) EnsureOpenAIStreamReadErrorResponse(c *gin.Context, err error, streamStarted bool) bool {
 	code, message, ok := openaierrors.OpenAIUpstreamStreamReadErrorDetails(err)
 	if !ok || c == nil || c.Writer == nil || gatewayhttp.IsResponseCommitted(c) {
@@ -220,6 +281,16 @@ func (h *Support) EnsureOpenAIStreamReadErrorResponse(c *gin.Context, err error,
 	return true
 }
 
+// RecordCyberPolicyIfMarked captures the current HTTP Cyber mark for policy
+// recording. Absent marks return false. String block input supplies an explicit
+// key; byte input with an API key derives a scoped transcript plan for the
+// shared recorder.
+//
+// User, provider, subscription, endpoint, usage, and request observations are
+// captured before CyberHandler receives the call. The first optional compaction
+// flag overrides the request-context value. Callers supply request-local
+// metadata and configured Cyber support, and the returned bool reflects that
+// handler's policy processing rather than successful generation completion.
 func (h *Support) RecordCyberPolicyIfMarked(c *gin.Context, apiKey *apikey.APIKey, provider *gatewayprovider.ExecutionProvider, subscription *billing.UserSubscription, model string, forwardErrored bool, cyberBlockArg any, pricingFields routing.PricingUsageFields, requestPayloadHash string, nativeCompaction ...bool) bool {
 	mark := gatewayhttp.GetOpsCyberPolicy(c)
 	if mark == nil || c == nil {
@@ -244,7 +315,9 @@ func (h *Support) RecordCyberPolicyIfMarked(c *gin.Context, apiKey *apikey.APIKe
 			call.HasPlan = true
 		}
 	}
-	// 后台任务使用此处捕获的请求和用量快照。
+	// Capture request and usage values before handing the mark to
+	// CyberHandler, so queued policy recording uses these snapshots after
+	// the HTTP attempt finishes.
 	compaction := gatewayhttp.IsOpenAINativeCompactionV2(c)
 	if len(nativeCompaction) > 0 {
 		compaction = nativeCompaction[0]
@@ -276,6 +349,10 @@ func (h *Support) RecordCyberPolicyIfMarked(c *gin.Context, apiKey *apikey.APIKe
 	return h.Cyber.RecordPolicy(c, call)
 }
 
+// requestIsStream reports the boolean stream observation stored on the HTTP
+// request. Nil context, missing value, and nonboolean values return false,
+// giving Cyber usage capture a nonstreaming default when that observation is
+// unavailable.
 func requestIsStream(c *gin.Context) bool {
 	if c == nil {
 		return false
@@ -288,6 +365,16 @@ func requestIsStream(c *gin.Context) bool {
 	return false
 }
 
+// OpenAIForwardMayFailover evaluates retry permission against meaningful-output
+// size and explicit recovery evidence. Callers supply the adjusted size
+// captured before forwarding, using the same Compact keepalive accounting at
+// both points. Missing context or writer denies retry.
+//
+// An unchanged adjusted byte count permits replay even if headers were
+// committed. Changed bytes require SafeToFailoverAfterWrite from the classified
+// failure; the helper does not infer that permission from arbitrary content.
+// Request cancellation is checked separately by the attempt's replay guard
+// before entering another provider.
 func OpenAIForwardMayFailover(c *gin.Context, writerSizeBeforeForward int, failoverErr *forwardcore.UpstreamFailoverError) bool {
 	if c == nil || c.Writer == nil {
 		return false
@@ -298,6 +385,11 @@ func OpenAIForwardMayFailover(c *gin.Context, writerSizeBeforeForward int, failo
 	return failoverErr != nil && failoverErr.SafeToFailoverAfterWrite
 }
 
+// OpenAIRequestAllowsFailoverReplay reports whether the request remains
+// available for another attempt. Missing HTTP input returns false.
+// FailoverClientGone supplies the active cancellation and disconnection
+// decision; output-size eligibility is evaluated separately during retry
+// readiness.
 func OpenAIRequestAllowsFailoverReplay(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
@@ -305,14 +397,24 @@ func OpenAIRequestAllowsFailoverReplay(c *gin.Context) bool {
 	return !gatewayhttp.FailoverClientGone(c)
 }
 
+// EnsureOpenAIPoolModeSessionHash supplies a sticky seed when pool retries lack
+// one. Existing nonempty hashes and nonpool providers pass through. A new
+// UUID-based request key is returned for an unbound pool provider so later
+// retries can reuse it.
 func EnsureOpenAIPoolModeSessionHash(sessionHash string, provider *gatewayprovider.ExecutionProvider) string {
 	if sessionHash != "" || provider == nil || !provider.View().IsPoolMode() {
 		return sessionHash
 	}
-	// 为当前请求生成粘性会话键，同提供商重试复用该提供商。
+	// Create the seed once when the attempt first lacks a pool identity.
+	// Its returned value is retained by the request bridge for subsequent
+	// same-provider selections.
 	return "openai-pool-retry-" + uuid.NewString()
 }
 
+// buildCyberSessionBlockWritePlan derives explicit and transcript block keys
+// for the current key. Transcript keys receive the request's IP/user-agent
+// scope when present. BuildBlockPlan combines those inputs, and the result is
+// passed as the current Cyber recording plan.
 func buildCyberSessionBlockWritePlan(apiKeyID int64, c *gin.Context, body []byte) cyberSessionBlockWritePlan {
 	explicit := gatewayhttp.CyberSessionExplicitBlockKey(apiKeyID, c, body)
 	transcript := gatewaysession.CyberSessionTranscriptBlockKeys(apiKeyID, body)
@@ -324,6 +426,9 @@ func buildCyberSessionBlockWritePlan(apiKeyID int64, c *gin.Context, body []byte
 	return cyberSessionBlockWritePlan{scopeKey: plan.ScopeKey, keys: plan.Keys}
 }
 
+// cyberSessionScopeKey derives transcript scope from API-key identity, client
+// IP, and user-agent. Nil Gin context returns empty scope. The session helper
+// supplies the stable scope encoding used by the Cyber block plan.
 func cyberSessionScopeKey(apiKeyID int64, c *gin.Context) string {
 	if c == nil {
 		return ""
@@ -331,13 +436,18 @@ func cyberSessionScopeKey(apiKeyID int64, c *gin.Context) string {
 	return gatewaysession.CyberSessionScopeKey(apiKeyID, strings.TrimSpace(clientip.GetClientIP(c)), c.GetHeader("User-Agent"))
 }
 
-// handleGroupSelectionBusinessError 读取 Key 并使用平台目录生成业务错误响应。
+// handleGroupSelectionBusinessError delegates recognized selection failures to
+// the supplied protocol writer. It uses the authenticated context key and
+// model-display catalog for client text. False leaves further availability or
+// retry-exhaustion output to the caller.
 func handleGroupSelectionBusinessError(c *gin.Context, err error, started bool, write func(int, string, string, bool)) bool {
 	return gatewayhttp.WriteGroupSelectionBusinessError(c, err, started, keyhttp.GetAPIKeyFromContext, gatewayprovider.ModelDisplayCatalogue{}, write)
 }
 
-// ResolveOpenAIUpstreamEndpoint 返回 OpenAI 兼容提供商实际使用的上游端点。
-// 同一入站可选择 Chat 或 Responses，因此优先读取转发结果，缺失时读取当前尝试上下文，再使用平台规范端点。
+// ResolveOpenAIUpstreamEndpoint chooses endpoint metadata for compatible
+// execution completion. It prefers a nonblank result endpoint, then recorded
+// actual attempt context, then the selected provider's platform default.
+// Callers supply a provider for that last path.
 func ResolveOpenAIUpstreamEndpoint(c *gin.Context, provider *gatewayprovider.ExecutionProvider, result *forwardcore.OpenAIResult) string {
 	if result != nil {
 		if endpoint := strings.TrimSpace(result.UpstreamEndpoint); endpoint != "" {

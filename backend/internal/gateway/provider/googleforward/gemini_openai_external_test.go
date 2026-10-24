@@ -21,14 +21,25 @@ import (
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/googleforward"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// geminiResponsesFailingStream supplies one content event before a configured
+// read failure.
 type geminiResponsesFailingStream struct {
-	read bool
+	// read becomes true on the first invocation, so the fixture delivers
+	// one fitting event prefix before subsequent reads fail.
+	read bool // first-read completion marker
 }
 
+// TestGeminiForwardAsResponsesReturnsResponsesFormat maps an API key Responses
+// request and returns reasoning, text, tool calls, and usage. Client output
+// uses the logical model while completion and the captured endpoint retain the
+// mapped Gemini target.
 func TestGeminiForwardAsResponsesReturnsResponsesFormat(t *testing.T) {
 	upstreamBody := `{
 		"candidates":[{"content":{"parts":[
@@ -50,13 +61,9 @@ func TestGeminiForwardAsResponsesReturnsResponsesFormat(t *testing.T) {
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation,
 			ID:           201,
-
-			Platform: capability.PlatformGemini,
-
-			Type: capability.ProviderTypeAPIKey,
-
-			Concurrency: 1,
-
+			Platform:     capability.PlatformGemini,
+			Type:         capability.ProviderTypeAPIKey,
+			Concurrency:  1,
 			Credentials: map[string]any{
 				"api_key": "gemini-key",
 				"model_mapping": map[string]any{
@@ -88,18 +95,17 @@ func TestGeminiForwardAsResponsesReturnsResponsesFormat(t *testing.T) {
 	require.Contains(t, httpStub.lastReq.URL.String(), "/models/gemini-2.5-pro:generateContent")
 }
 
+// TestGeminiForwardAsResponsesOAuthCollectsReasoningTextAndTools collects
+// several wrapped OAuth stream payloads for a buffered Responses client.
+// Reasoning fragments join, text/tools remain separate output items, and final
+// usage and v1internal route match the fixture.
 func TestGeminiForwardAsResponsesOAuthCollectsReasoningTextAndTools(t *testing.T) {
 	upstreamBody := strings.Join([]string{
 		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"plan ","thought":true}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"thoughtsTokenCount":1}}}`,
-
 		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"carefully","thought":true}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"thoughtsTokenCount":2}}}`,
-
 		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"answer"}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"thoughtsTokenCount":2}}}`,
-
 		`data: {"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"id":42}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"thoughtsTokenCount":2}}}`,
-
 		"data: [DONE]",
-
 		"",
 	}, "\n\n")
 	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
@@ -120,13 +126,9 @@ func TestGeminiForwardAsResponsesOAuthCollectsReasoningTextAndTools(t *testing.T
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation,
 			ID:           204,
-
-			Platform: capability.PlatformGemini,
-
-			Type: capability.ProviderTypeOAuth,
-
-			Concurrency: 1,
-
+			Platform:     capability.PlatformGemini,
+			Type:         capability.ProviderTypeOAuth,
+			Concurrency:  1,
 			Credentials: map[string]any{
 				"access_token": "ya29.test-token",
 				"project_id":   "project-1",
@@ -151,16 +153,16 @@ func TestGeminiForwardAsResponsesOAuthCollectsReasoningTextAndTools(t *testing.T
 	require.Contains(t, httpStub.lastReq.URL.String(), "/v1internal:streamGenerateContent?alt=sse")
 }
 
+// TestGeminiForwardAsResponsesStreamsReasoningTextToolAndUsage reads native SSE
+// reasoning, text, and a function call for a streaming Responses client. Output
+// uses Responses lifecycle/delta/terminal events, retains usage, and omits Chat
+// DONE framing.
 func TestGeminiForwardAsResponsesStreamsReasoningTextToolAndUsage(t *testing.T) {
 	upstreamBody := strings.Join([]string{
 		`data: {"candidates":[{"content":{"parts":[{"text":"plan","thought":true}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"thoughtsTokenCount":1}}`,
-
 		`data: {"candidates":[{"content":{"parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":2,"thoughtsTokenCount":1}}`,
-
 		`data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"id":42}}}]} ,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":2,"thoughtsTokenCount":1}}`,
-
 		"data: [DONE]",
-
 		"",
 	}, "\n\n")
 	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
@@ -189,7 +191,7 @@ func TestGeminiForwardAsResponsesStreamsReasoningTextToolAndUsage(t *testing.T) 
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.True(t, result.Stream)
-	require.NotNil(t, result.FirstTokenMs)
+	require.Nil(t, result.Timings.TTFTMs())
 	require.Equal(t, 2, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
 	streamBody := recorder.Body.String()
@@ -204,6 +206,10 @@ func TestGeminiForwardAsResponsesStreamsReasoningTextToolAndUsage(t *testing.T) 
 	require.NotContains(t, streamBody, "data: [DONE]")
 }
 
+// TestGeminiForwardAsResponsesCommitsStreamBeforeReadFailure fails the upstream
+// reader after its first content frame. Forwarding returns a stream-read error
+// and the recorder confirms client bytes were already written before that
+// failure.
 func TestGeminiForwardAsResponsesCommitsStreamBeforeReadFailure(t *testing.T) {
 	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
 		StatusCode: http.StatusOK,
@@ -232,6 +238,10 @@ func TestGeminiForwardAsResponsesCommitsStreamBeforeReadFailure(t *testing.T) {
 	require.Positive(t, recorder.Body.Len(), "首个字节写出后 handler 必须禁止 failover")
 }
 
+// TestGeminiForwardAsResponsesMapsUpstreamError returns a Gemini status-400
+// generation error before output adaptation. The result is nil and client
+// output uses the expected Responses invalid_request_error code with its safe
+// message.
 func TestGeminiForwardAsResponsesMapsUpstreamError(t *testing.T) {
 	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
 		StatusCode: http.StatusBadRequest,
@@ -265,6 +275,10 @@ func TestGeminiForwardAsResponsesMapsUpstreamError(t *testing.T) {
 	require.Equal(t, "Invalid request", gjson.GetBytes(recorder.Body.Bytes(), "error.message").String())
 }
 
+// TestGeminiForwardAsResponsesReturnsFailoverBeforeResponseStarts returns an
+// insufficient-scope status 403 through an API key Responses attempt. Typed
+// failover retains the status and the client body remains empty for outer
+// provider selection.
 func TestGeminiForwardAsResponsesReturnsFailoverBeforeResponseStarts(t *testing.T) {
 	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
 		StatusCode: http.StatusForbidden,
@@ -302,6 +316,10 @@ func TestGeminiForwardAsResponsesReturnsFailoverBeforeResponseStarts(t *testing.
 	require.Zero(t, recorder.Body.Len())
 }
 
+// TestGeminiForwardAsChatCompletions_CustomCodesMiss400HiddenAs500 returns a
+// status-400 error outside an enabled custom-code set. Chat output uses the
+// generic status-500 api_error message and forwarding returns no completion
+// result.
 func TestGeminiForwardAsChatCompletions_CustomCodesMiss400HiddenAs500(t *testing.T) {
 	svc, _ := newGeminiErrorFixture(http.StatusBadRequest, geminiSkippedTestUpstreamBody())
 	rec := httptest.NewRecorder()
@@ -324,6 +342,10 @@ func TestGeminiForwardAsChatCompletions_CustomCodesMiss400HiddenAs500(t *testing
 	require.Equal(t, "Upstream gateway error", errObj["message"])
 }
 
+// TestGeminiForwardAsChatCompletions_PoolMode400KeepsUpstreamMessage returns
+// status 400 through a pool API key provider. Chat output retains the upstream
+// message with invalid_request_error classification and no completion result is
+// returned.
 func TestGeminiForwardAsChatCompletions_PoolMode400KeepsUpstreamMessage(t *testing.T) {
 	svc, _ := newGeminiErrorFixture(http.StatusBadRequest, geminiSkippedTestUpstreamBody())
 	rec := httptest.NewRecorder()
@@ -345,6 +367,10 @@ func TestGeminiForwardAsChatCompletions_PoolMode400KeepsUpstreamMessage(t *testi
 	require.Equal(t, geminiSkippedTestUpstreamMsg, errObj["message"], "应回传上游 message")
 }
 
+// TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat
+// maps an OAuth Chat request and collects a wrapped stream into buffered
+// output. Captured v1internal authorization/project/model and client Chat
+// envelope retain their separate expected values.
 func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(t *testing.T) {
 	upstreamBody := `data: {"response":{"candidates":[{"content":{"parts":[{"text":"hello from gemini"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}}` + "\n\n" +
 		"data: [DONE]\n\n"
@@ -368,11 +394,8 @@ func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation,
 			ID:           101,
-
-			Platform: capability.PlatformGemini,
-
-			Type: capability.ProviderTypeOAuth,
-
+			Platform:     capability.PlatformGemini,
+			Type:         capability.ProviderTypeOAuth,
 			Credentials: map[string]any{
 				"access_token": "ya29.test-token",
 
@@ -382,7 +405,6 @@ func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(
 					"gemini-2.5-flash": "gemini-2.5-flash-upstream",
 				},
 			},
-
 			Concurrency: 1,
 		},
 	}
@@ -436,6 +458,10 @@ func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(
 	require.Equal(t, float64(10), usage["total_tokens"])
 }
 
+// TestGeminiForwardAsChatCompletions_StreamsOpenAIChunksFromGeminiSSE reads
+// cumulative native text under a streaming Chat request with usage enabled.
+// Client chunks contain incremental suffixes, assistant role, final usage, and
+// the Chat DONE marker.
 func TestGeminiForwardAsChatCompletions_StreamsOpenAIChunksFromGeminiSSE(t *testing.T) {
 	upstreamBody := `data: {"candidates":[{"content":{"parts":[{"text":"hel"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1}}` + "\n\n" +
 		`data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":2}}` + "\n\n" +
@@ -457,15 +483,11 @@ func TestGeminiForwardAsChatCompletions_StreamsOpenAIChunksFromGeminiSSE(t *test
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation,
 			ID:           102,
-
-			Platform: capability.PlatformGemini,
-
-			Type: capability.ProviderTypeAPIKey,
-
+			Platform:     capability.PlatformGemini,
+			Type:         capability.ProviderTypeAPIKey,
 			Credentials: map[string]any{
 				"api_key": "gemini-api-key",
 			},
-
 			Concurrency: 1,
 		},
 	}
@@ -496,6 +518,10 @@ func TestGeminiForwardAsChatCompletions_StreamsOpenAIChunksFromGeminiSSE(t *test
 	require.Contains(t, out, "data: [DONE]")
 }
 
+// TestGeminiForwardAsChatCompletions_FunctionNamedWebSearchStaysClientSide
+// supplies two Chat function tools including one named web_search. Captured
+// native tools retain both function declarations and contain no built-in Google
+// search object.
 func TestGeminiForwardAsChatCompletions_FunctionNamedWebSearchStaysClientSide(t *testing.T) {
 	httpStub := &geminiCompatHTTPUpstreamStub{
 		response: &http.Response{
@@ -516,15 +542,11 @@ func TestGeminiForwardAsChatCompletions_FunctionNamedWebSearchStaysClientSide(t 
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation,
 			ID:           103,
-
-			Platform: capability.PlatformGemini,
-
-			Type: capability.ProviderTypeAPIKey,
-
+			Platform:     capability.PlatformGemini,
+			Type:         capability.ProviderTypeAPIKey,
 			Credentials: map[string]any{
 				"api_key": "gemini-api-key",
 			},
-
 			Concurrency: 1,
 		},
 	}
@@ -571,6 +593,9 @@ func TestGeminiForwardAsChatCompletions_FunctionNamedWebSearchStaysClientSide(t 
 	require.NotContains(t, functionTool, "google_search")
 }
 
+// Read copies the fitting content-frame prefix once, then returns the fixture
+// stream error. The first invocation sets read even if its buffer truncates the
+// payload; later calls report failure.
 func (r *geminiResponsesFailingStream) Read(p []byte) (int, error) {
 	if r.read {
 		return 0, errors.New("upstream stream failed")
@@ -579,4 +604,77 @@ func (r *geminiResponsesFailingStream) Read(p []byte) (int, error) {
 	return copy(p, []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n")), nil
 }
 
+// Close returns success because this failing-stream fixture owns no external
+// resource.
 func (r *geminiResponsesFailingStream) Close() error { return nil }
+
+// TestGeminiCompatibilityForwardsResolvedThinking crosses budget, level,
+// disabled, and unknown reasoning controls across Chat/Responses routes.
+// Captured thinkingConfig matches final mapped model capability and the client
+// receives response text.
+func TestGeminiCompatibilityForwardsResolvedThinking(t *testing.T) {
+	for _, tc := range []struct {
+		// name identifies the case, model selects the mapped Gemini
+		// target, body supplies client controls, and want is the
+		// expected thinkingConfig JSON for that same request.
+		//
+		// name: scenario label; model: wire target; body: client JSON;
+		// want: thinking JSON
+		name, model, body, want string
+		// Responses fixture invocation flag
+		responses bool
+	}{
+		{"chat budget", "gemini-2.5-flash", `{"model":"alias","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}`, `{"includeThoughts":true,"thinkingBudget":24576}`, false},
+		{"chat level", "gemini-3.1-pro-preview", `{"model":"alias","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`, `{"includeThoughts":true,"thinkingLevel":"high"}`, false},
+		{"responses disabled", "gemini-2.5-flash", `{"model":"alias","input":"hi","reasoning":{"effort":"none"}}`, `{"includeThoughts":false,"thinkingBudget":0}`, true},
+		{"unknown effort", "unlisted-model", `{"model":"alias","input":"hi","reasoning":{"effort":"future"}}`, `{"includeThoughts":true,"thinkingLevel":"future"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &geminiCompatHTTPUpstreamStub{response: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":"STOP"}]}`))}}
+			svc := newGeminiFixture(geminiDependencies{httpUpstream: stub, cfg: &googleforward.Options{}})
+			svc.Attributes = &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}
+			provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{ID: 1, Platform: "gemini", Type: "apikey", Credentials: map[string]any{"api_key": "test", "model_mapping": map[string]any{"alias": tc.model}}}}
+			body := []byte(tc.body)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			output := gatewayhttp.NewGoogleBoundary(c, svc.Options, false)
+			var err error
+			if tc.responses {
+				_, err = svc.ForwardAsResponses(context.Background(), output, provider, body, nil)
+			} else {
+				_, err = svc.ForwardAsChatCompletions(context.Background(), output, provider, body)
+			}
+			require.NoError(t, err)
+			require.Equal(t, 1, stub.calls)
+			wire, err := io.ReadAll(stub.lastReq.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, tc.want, gjson.GetBytes(wire, "generationConfig.thinkingConfig").Raw)
+			require.Contains(t, stub.lastReq.URL.Path, tc.model)
+			require.Contains(t, recorder.Body.String(), "answer")
+		})
+	}
+}
+
+// TestGeminiCompatibilityForwardsReasoningWithUnknownOptions supplies a catalog
+// model that supports reasoning while configurable options are absent. The
+// outgoing thinkingConfig retains the client high effort as thinkingLevel on
+// this Gemini compatibility request.
+func TestGeminiCompatibilityForwardsReasoningWithUnknownOptions(t *testing.T) {
+	catalog, err := modelcatalog.Parse([]byte(`{"providers":{"google":{"models":{"private-model":{"reasoning":true}}}}}`))
+	require.NoError(t, err)
+	stub := &geminiCompatHTTPUpstreamStub{response: &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":"STOP"}]}`))}}
+	svc := newGeminiFixture(geminiDependencies{httpUpstream: stub, cfg: &googleforward.Options{}})
+	svc.Attributes = &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: catalog.View}}
+	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{ID: 1, Platform: "gemini", Type: "apikey", Credentials: map[string]any{"api_key": "fixture"}}}
+	body := []byte(`{"model":"private-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	_, err = svc.ForwardAsChatCompletions(context.Background(), gatewayhttp.NewGoogleBoundary(c, svc.Options, false), provider, body)
+	require.NoError(t, err)
+	require.Equal(t, 1, stub.calls)
+	sent, err := io.ReadAll(stub.lastReq.Body)
+	require.NoError(t, err)
+	require.Equal(t, "high", gjson.GetBytes(sent, "generationConfig.thinkingConfig.thinkingLevel").String())
+}

@@ -14,7 +14,32 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// Messages 依次准备单个提供商的请求、执行上游调用并处理错误和部分用量。
+// messages.go prepares and executes a Messages attempt and returns usage or
+// classified failure evidence. A Messages attempt retains its client's logical
+// model while preparing a provider-mapped, platform-normalized request. Every
+// selected ordinary rewrite reparses shared request state before the next
+// preparation step. Alternate emulation, API-key passthrough, and Bedrock paths
+// return before this sequence; OAuth mimicry is gated by client-format evidence
+// and controls system/cache and tool-name handling independently of those
+// alternate paths.
+//
+// HTTP handling finishes before acceptance and response reading. Later stream
+// errors combine body evidence, health policy, byte progress, and writer
+// commitment: unchanged byte count can permit persisted observations, while an
+// uncommitted writer is required for replacement output or failover. Ordinary
+// reader failure may retain observed usage for completion when no failover
+// signal was selected; classified stream events use their own handling path.
+
+// Messages executes one selected-provider request and returns complete or
+// eligible partial observations. A nonnil parsed request and configured attempt
+// callbacks are required; alternate delegates return before ordinary Begin and
+// preparation, and successful Begin supplies the deferred release callback.
+//
+// Ordinary rewrites update parsed request state in sequence while retaining the
+// entry model for the result. The executor supplies serial hooks and owns body
+// closure. HTTP errors stop before acceptance; classified stream errors use
+// health plus writer commitment, and other stream failures retain positive usage
+// only when the error does not carry a failover signal.
 func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requeststate.ParsedRequest) (*Result, error) {
 	startTime := time.Now()
 	if parsed == nil {
@@ -35,6 +60,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 				passthroughModel = mappedModel
 			}
 		}
+		// The passthrough delegate receives the selected local body together with
+		// original parsed metadata. Its own preparation decides when filtered bytes
+		// are republished, keeping this early mapping separate from ordinary rewrites.
 		return p.Passthrough(ctx, PassthroughInput{Body: passthroughBody, Parsed: parsed, RequestModel: passthroughModel, OriginalModel: parsed.Model, Stream: parsed.Stream, StartedAt: startTime})
 	}
 
@@ -46,6 +74,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 	if err != nil {
 		return nil, err
 	}
+	// Keep the attempt registered through preparation, error policy, and
+	// response reading. This deferred release covers every return after Begin
+	// succeeds, including failures before any upstream exchange.
 	defer done()
 	if in.Platform == "anthropic" && in.HTTPPresent {
 		if err := p.Beta(ctx, parsed.Model); err != nil {
@@ -53,6 +84,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		}
 	}
 
+	// Reparse each selected body before following preparation steps use cached
+	// request fields. ParsedRequest may already hold replacement bytes on parse
+	// failure, so the error ends this attempt rather than implying rollback.
 	body := parsed.Body.Bytes()
 	replaceBody := func(next []byte) error {
 		if err := parsed.ReplaceBody(next); err != nil {
@@ -69,7 +103,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		p.DebugOriginal(body, reqModel, reqStream)
 	}
 
-	// 先应用提供商模型映射，再执行平台模型规范化，调度、限额检查和转发共用此顺序。
+	// Provider mapping establishes the model used by mimic and cache preparation.
+	// Platform normalization follows those steps and retains the entry model for
+	// returned client/billing metadata.
 	providerMappedModel := p.ProviderMappedModel(reqModel)
 	if providerMappedModel != reqModel {
 		if err := replaceBody(p.ReplaceModel(body, providerMappedModel)); err != nil {
@@ -80,12 +116,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		p.Log(fmt.Sprintf("Model mapping applied: %s -> %s (provider: %s, source=provider)", originalModel, providerMappedModel, in.ProviderName))
 	}
 
-	// Claude Code 客户端判定：UA 匹配 claude-cli/* 且携带 metadata.user_id。
-	// 真正的 Claude Code 客户端自带完整的 system prompt、cache_control 断点和 header，
-	// 不需要代理做任何 body 级别的 mimicry；强行替换反而会破坏客户端的缓存策略
-	// （长 system prompt 被替换为 ~45 tokens 的短 prompt，低于 Anthropic 1024 token
-	// 最低缓存门槛，导致系统级缓存失效）。
-	// 对于非 Claude Code 的第三方客户端（opencode 等），仍然走完整 mimicry。
+	// Client-format evidence disables OAuth mimicry, retaining that client's
+	// system/cache/tool preparation through this phase. Later shared cache limits
+	// and model-specific compatibility filters still apply to the selected body.
 	isClaudeCode := p.IsClaudeCode(ctx, body, parsed.MetadataUserID)
 
 	shouldMimicClaudeCode := in.OAuth && !isClaudeCode
@@ -93,6 +126,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 	if shouldMimicClaudeCode {
 		systemRewritten := false
 		systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := p.SystemSettings(ctx)
+		// The enabled branch records an invoked rewrite even when the callback
+		// returns unchanged bytes. This phase flag determines whether OAuth
+		// normalization strips system markers in the subsequent cache handling.
 		if systemPromptInjectionEnabled {
 			if err := replaceBody(p.RewriteSystem(body, parsed, systemPrompt, systemPromptBlocks)); err != nil {
 				return nil, err
@@ -100,8 +136,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 			systemRewritten = true
 		}
 
-		// system 改写后保留 CC prompt 的 cache_control: ephemeral；注入关闭时剥离客户端 cache_control。
-		// enforceCacheControlLimit 随后检查两种情况下的数量上限。
+		// Retain system markers after the enabled rewrite path; otherwise remove
+		// incoming system markers during OAuth normalization. CacheLimit later
+		// constrains the combined markers independently of this phase flag.
 		normalizeOpts := NormalizeOptions{StripSystemCacheControl: !systemRewritten}
 		if metadata := p.Metadata(ctx, parsed); metadata != "" {
 			normalizeOpts.InjectMetadata = true
@@ -116,6 +153,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		if err := replaceBody(p.RewriteCache(ctx, body)); err != nil {
 			return nil, err
 		}
+		// Publish adapted tool names before binding their response restoration
+		// state. When no rewrite is found, the alternate tool-side breakpoint
+		// operates on the normalized body without binding a new name mapping.
 		if next, found := p.RewriteTools(body); found {
 			if err := replaceBody(next); err != nil {
 				return nil, err
@@ -126,6 +166,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		}
 	}
 
+	// Dateline normalization is optional under provider/settings policy. Publish
+	// only its reported change so unchanged requests continue with the existing
+	// parsed body before total cache-marker enforcement.
 	if next, ok := p.NormalizeDateline(ctx, body); ok {
 		if err := replaceBody(next); err != nil {
 			return nil, err
@@ -136,6 +179,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		return nil, err
 	}
 
+	// Resolve the platform wire name after provider-specific preparation. The
+	// parsed model and outgoing JSON move together while originalModel remains
+	// available for the result's logical client identity.
 	mappedModel := p.PlatformModel(reqModel)
 	if mappedModel != reqModel {
 		if err := replaceBody(p.ReplaceModel(body, mappedModel)); err != nil {
@@ -146,6 +192,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		p.Log(fmt.Sprintf("Platform model normalization applied: %s -> %s (provider: %s)", providerMappedModel, mappedModel, in.ProviderName))
 	}
 
+	// TTL eligibility is resolved for this provider/request after model selection.
+	// Its rewrite follows total marker enforcement and is republished before
+	// credentials and exchange preparation read the selected body.
 	if p.InjectTTL(ctx) {
 		if err := replaceBody(p.CacheTTL(body)); err != nil {
 			return nil, err
@@ -157,6 +206,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 	}
 	p.Transport()
 
+	// Apply model-compatible empty-text, search-history, and thinking filters
+	// before exchange. Reparse each selected body so later filters and optional
+	// passback-mode normalization use the preceding transformation's request state.
 	if err := replaceBody(protocolanthropic.StripEmptyTextBlocks(body)); err != nil {
 		return nil, err
 	}
@@ -169,6 +221,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		return nil, err
 	}
 	if p.PassbackThinking(reqModel) {
+		// Passback-required models can need a different thinking mode in request
+		// JSON. Publish and log only a reported normalization before the executor
+		// uses those bytes, retaining the filtered body on the unapplied path.
 		if rewritten, applied := p.NormalizeThinking(body, reqModel); applied {
 			if err := replaceBody(rewritten); err != nil {
 				return nil, err
@@ -189,9 +244,13 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		early := func(result *Result, err error) (bool, error) { earlyResult = result; return true, err }
 		if resp.StatusCode >= 400 && ShouldRetry(in.OAuth, resp.StatusCode) {
 			if ShouldFailover(resp.StatusCode) {
+				// Retain even partial read evidence for an eligible exhausted 403.
+				// Reset supplies captured bytes to health, which can consume that
+				// reader again before subsequent generic error handling rereads it.
 				respBody, _ := p.ReadErrorBody()
 				p.ResetErrorBody(respBody)
 
+				// Bound this routine diagnostic independently of detailed-body policy.
 				p.Log(fmt.Sprintf("[Forward] Upstream error (retry exhausted, failover): Provider=%d(%s) Status=%d RequestID=%s Body=%s",
 					in.ProviderID, in.ProviderName, resp.StatusCode, resp.RequestID, p.Truncate(string(respBody), 1000)))
 
@@ -219,10 +278,17 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 			return early(p.HandleError(ctx, reqModel, true))
 		}
 
+		// Status eligibility selects this HTTP recovery path unless health asks
+		// for generic output. Failover itself remains subject to the surrounding
+		// request loop's output state and remaining provider budget.
 		if resp.StatusCode >= 400 && ShouldFailover(resp.StatusCode) {
+			// Preserve captured partial bytes despite a read error; resetting makes
+			// that evidence available for the policy reader before the selected
+			// failover error retains the local byte slice.
 			respBody, _ := p.ReadErrorBody()
 			p.ResetErrorBody(respBody)
 
+			// Bound routine failure logs separately from optional detailed observation.
 			p.Log(fmt.Sprintf("[Forward] Upstream error (failover): Provider=%d(%s) Status=%d RequestID=%s Body=%s",
 				in.ProviderID, in.ProviderName, resp.StatusCode, resp.RequestID, p.Truncate(string(respBody), 1000)))
 
@@ -249,17 +315,24 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		if resp.StatusCode >= 400 {
 			if resp.StatusCode == 400 && in.FailoverOn400 {
 				respBody, readErr := p.ReadErrorBody()
+				// Classification requires readable 400 evidence. Delegate a failed
+				// read to ordinary error handling; this branch has not installed a
+				// replacement reader, so the adapter determines any remaining bytes.
 				if readErr != nil {
 					return early(p.HandleError(ctx, reqModel, false))
 				}
 				p.ResetErrorBody(respBody)
 
+				// Recover only the recognized 400 body class under the enabled setting.
+				// Record a sanitized summary before health can select generic output
+				// or permit a failover signal from the captured source evidence.
 				if p.Failover400(respBody) {
 					upstreamMsg := strings.TrimSpace(upstream.ExtractErrorMessage(respBody))
 					upstreamMsg = p.Sanitize(upstreamMsg)
 					upstreamDetail := ""
 					if in.LogErrorBody {
 						maxBytes := in.LogErrorBodyMaxBytes
+						// A missing detail budget retains a bounded body excerpt.
 						if maxBytes <= 0 {
 							maxBytes = 2048
 						}
@@ -295,6 +368,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 			return early(p.HandleError(ctx, reqModel, false))
 		}
 
+		// Successful exchange may select different retry/signature bytes. Publish
+		// that wire body before acceptance so subsequent parsed-state consumers
+		// and completion hooks describe the request that was actually selected.
 		if !bytes.Equal(lastWireBody, body) {
 			if err := replaceBody(lastWireBody); err != nil {
 				return true, err
@@ -332,6 +408,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 				body := []byte(raw)
 				semanticStatus := 403
 				var semanticDecision ErrorDecision
+				// An overload event before any new stream bytes uses synthetic 529
+				// health policy. Size compares progress, while Written below separately
+				// determines whether client output or provider recovery remains possible.
 				if p.Size() == writerSizeBeforeStream && gjson.GetBytes(body, "error.type").String() == "overloaded_error" {
 					semanticStatus = 529
 					semanticDecision = p.Health(ctx, "failover_synthetic", semanticStatus, resp.Headers, body, reqModel)
@@ -341,6 +420,7 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 				upstreamDetail := ""
 				if in.LogErrorBody {
 					maxBytes := in.LogErrorBodyMaxBytes
+					// Retain bounded detail when no positive budget was configured.
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
@@ -358,6 +438,7 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 					Detail:             upstreamDetail,
 				})
 
+				// Bound routine stream-error logs separately from optional body detail.
 				p.Log(fmt.Sprintf(
 					"[Forward] SSE error event in stream: Provider=%d(%s) RequestID=%s Body=%s",
 					in.ProviderID, in.ProviderName, resp.RequestID,
@@ -365,12 +446,18 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 				))
 
 				decision := semanticDecision
+				// Other stream events receive volatile 403 treatment even after bytes
+				// have progressed. Persist the observation only with unchanged size;
+				// header commitment can still prevent the later failover/output path.
 				if semanticStatus != 529 {
 					decision = p.Health(ctx, "volatile", 403, resp.Headers, body, reqModel)
 					if p.Size() == writerSizeBeforeStream {
 						decision = p.Health(ctx, "persist", 403, resp.Headers, body, reqModel)
 					}
 				}
+				// Generic output precedes recovery and both require an uncommitted
+				// writer. Once committed, return the stream error so already emitted
+				// output is not followed by a replacement envelope or provider attempt.
 				if decision.Generic && !p.Written() {
 					p.GenericError()
 					return nil, fmt.Errorf("upstream SSE error not in custom error codes")
@@ -380,6 +467,9 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 				}
 				return nil, err
 			}
+			// Ordinary reader failure can retain positive usage from the same attempt.
+			// Failover suppresses that partial result, and requested speed comes from
+			// selected wire bytes rather than the earlier logical preparation body.
 			requestSpeed := gjson.GetBytes(lastWireBody, "speed").String()
 			if partial := PartialUsage(resp, streamResult, originalModel, mappedModel, startTime, requestSpeed, p.IsFailover(err)); partial != nil {
 				partial.UpstreamResponseModel = attempt.UpstreamResponseModel
@@ -391,7 +481,7 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		return nil, err
 	}
 	usage := &attempt.Usage
-	firstTokenMs := attempt.FirstTokenMs
+
 	clientDisconnect := attempt.ClientDisconnect
 	if resp == nil {
 		return nil, err
@@ -406,7 +496,7 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 		UpstreamResponseModel:       attempt.UpstreamResponseModel,
 		Stream:                      reqStream,
 		Duration:                    time.Since(startTime),
-		FirstTokenMs:                firstTokenMs,
+		Timings:                     nil,
 		ClientDisconnect:            clientDisconnect,
 	}, nil
 }

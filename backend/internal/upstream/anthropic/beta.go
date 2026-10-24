@@ -8,26 +8,41 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// 缺省 drop 集合只初始化一次，调用方需要扩展时使用副本。
+// beta.go selects Anthropic beta headers and applies authentication-specific
+// header defaults.
+// Anthropic beta headers depend on authentication, client tokens, and whether
+// the request imitates Claude Code. Messages mimic selects a fixed set, while
+// CountTokens mimic also keeps client tokens and adds the counting token before
+// configured drops apply.
+//
+// The returned boolean tells request builders whether to set a header,
+// including an empty value after filtering. OAuth passthrough can select model
+// defaults, and API Key injection requires both its switch and a tools or
+// thinking feature. Body sanitization consumes this final choice later, so
+// changing selection or filtering here also changes which extension fields can
+// be sent.
+
+// DefaultDroppedBetasSet contains static beta exclusions and is shared when
+// MergeDropSets receives no additions; callers copy it before mutation.
 var DefaultDroppedBetasSet = BuildBetaTokenSet(DroppedBetas)
 
-// GetBetaHeader 处理 anthropic-beta header
-// 对于 OAuth 提供商，需要确保包含 oauth-2025-04-20。
+// GetBetaHeader returns the OAuth beta header using client tokens or model
+// defaults. An existing OAuth substring keeps the client text unchanged;
+// otherwise OAuth follows Claude Code when that exact token is present.
 func GetBetaHeader(modelID string, clientBetaHeader string) string {
-	// 如果客户端传了 anthropic-beta
 	if clientBetaHeader != "" {
-		// 已包含 oauth beta 则直接返回
 		if strings.Contains(clientBetaHeader, BetaOAuth) {
 			return clientBetaHeader
 		}
 
-		// 需要添加 oauth beta
 		parts := strings.Split(clientBetaHeader, ",")
 		for i, p := range parts {
 			parts[i] = strings.TrimSpace(p)
 		}
 
-		// 在 claude-code-20250219 后面插入 oauth beta
+		// Locate the exact trimmed Claude Code token before inserting OAuth. The
+		// addition follows that token's supplied position, retaining surrounding
+		// capabilities in their client order.
 		claudeCodeIdx := -1
 		for i, p := range parts {
 			if p == BetaClaudeCode {
@@ -37,7 +52,6 @@ func GetBetaHeader(modelID string, clientBetaHeader string) string {
 		}
 
 		if claudeCodeIdx >= 0 {
-			// 在 claude-code 后面插入
 			newParts := make([]string, 0, len(parts)+1)
 			newParts = append(newParts, parts[:claudeCodeIdx+1]...)
 			newParts = append(newParts, BetaOAuth)
@@ -45,12 +59,12 @@ func GetBetaHeader(modelID string, clientBetaHeader string) string {
 			return strings.Join(newParts, ",")
 		}
 
-		// 没有 claude-code，放在第一位
 		return BetaOAuth + "," + clientBetaHeader
 	}
 
-	// OAuth 真实客户端透传且客户端没传 beta 时，根据模型生成默认值。
-	// Haiku 的透传默认值不补 claude-code beta；mimic 路径不会调用本分支。
+	// The absent-client Haiku path selects its reduced passthrough set here;
+	// ComputeFinalAnthropicBeta handles full mimic selection before reaching this
+	// helper.
 	if strings.Contains(strings.ToLower(modelID), "haiku") {
 		return HaikuBetaHeader
 	}
@@ -58,6 +72,8 @@ func GetBetaHeader(modelID string, clientBetaHeader string) string {
 	return DefaultBetaHeader
 }
 
+// RequestNeedsBetaFeatures reports a nonempty tools array or enabled/adaptive
+// thinking in the request.
 func RequestNeedsBetaFeatures(body []byte) bool {
 	tools := gjson.GetBytes(body, "tools")
 	if tools.Exists() && tools.IsArray() && len(tools.Array()) > 0 {
@@ -70,6 +86,9 @@ func RequestNeedsBetaFeatures(body []byte) bool {
 	return false
 }
 
+// DefaultAPIKeyBetaHeader selects the API Key default from the body's
+// configured model field. A case-insensitive Haiku substring chooses its
+// reduced header; all other model strings use APIKeyBetaHeader.
 func DefaultAPIKeyBetaHeader(body []byte) string {
 	modelID := gjson.GetBytes(body, "model").String()
 	if strings.Contains(strings.ToLower(modelID), "haiku") {
@@ -78,6 +97,10 @@ func DefaultAPIKeyBetaHeader(body []byte) string {
 	return APIKeyBetaHeader
 }
 
+// ApplyClaudeOAuthHeaderDefaults fills empty Accept and default fingerprint
+// values on the supplied req. Existing nonempty values found through
+// GetHeaderRaw take precedence, and a nil request produces no writes. Callers
+// initialize Header for each nonnil request before calling.
 func ApplyClaudeOAuthHeaderDefaults(req *http.Request) {
 	if req == nil {
 		return
@@ -95,6 +118,9 @@ func ApplyClaudeOAuthHeaderDefaults(req *http.Request) {
 	}
 }
 
+// MergeAnthropicBeta returns required tokens followed by unique incoming tokens
+// in encounter order. It trims token whitespace and skips empty values, using
+// case-sensitive equality for deduplication.
 func MergeAnthropicBeta(required []string, incoming string) string {
 	seen := make(map[string]struct{}, len(required)+8)
 	out := make([]string, 0, len(required)+8)
@@ -120,6 +146,9 @@ func MergeAnthropicBeta(required []string, incoming string) string {
 	return strings.Join(out, ",")
 }
 
+// MergeAnthropicBetaDropping merges required and incoming tokens before
+// applying exact drop membership. An empty drop map returns the merged header;
+// required tokens can also be removed by that map.
 func MergeAnthropicBetaDropping(required []string, incoming string, drop map[string]struct{}) string {
 	merged := MergeAnthropicBeta(required, incoming)
 	if merged == "" || len(drop) == 0 {
@@ -139,20 +168,15 @@ func MergeAnthropicBetaDropping(required []string, incoming string, drop map[str
 	return strings.Join(out, ",")
 }
 
-// ComputeFinalAnthropicBeta 计算发往上游的最终 anthropic-beta header 值。
+// ComputeFinalAnthropicBeta selects the Messages beta value and whether the
+// caller should set it. OAuth mimic uses the full built-in set, OAuth
+// passthrough uses client tokens or model defaults, and each of those paths
+// applies effectiveDropSet.
 //
-// 调用方在创建上游请求前计算最终 beta header，再据此清理不支持的 body 字段。
-// Claude Code CLI 已取消 cch 签名字段，本路径不对 body 做 CCH 签名。
-//
-// 返回 (value, shouldSet)：
-//   - shouldSet=false 表示不主动设置 anthropic-beta header。例如 API-key 提供商的客户端
-//     未传该 Header，且 InjectBetaForAPIKey 未开启或 RequestNeedsBetaFeatures=false。
-//   - shouldSet=true 时 value 可能为空字符串（例如客户端透传的 beta 被 dropSet
-//     全部过滤掉），调用方仍应设置该 Header。
-//
-// clientHeaders 是客户端原始 HTTP header（通常为 c.Request.Header）；nil 时按“客户端
-// 未传”处理。body 是已经 metadata 重写 / billing version sync 之后但未 sanitize 上游
-// 不兼容字段之前的版本。
+// API Key client headers also pass through the drop set. With no client value,
+// default injection requires injectAPIKeyBeta and tools or thinking; that
+// default branch returns its header directly. A true boolean can accompany an
+// empty filtered value, which callers still set before body sanitization.
 func ComputeFinalAnthropicBeta(
 	tokenType string,
 	mimicClaudeCode bool,
@@ -169,18 +193,19 @@ func ComputeFinalAnthropicBeta(
 
 	if tokenType == "oauth" {
 		if mimicClaudeCode {
-			// mimic 路径跳过白名单透传，incomingBeta 始终为空；所有模型都必须
-			// 携带完整 Claude Code beta 集合，避免 Haiku 被识别为第三方客户端。
+			// Messages mimic takes its configured identity capabilities from the full set,
+			// so unrelated incoming experiments do not enter this branch's selected Header.
 			return MergeAnthropicBetaDropping(FullClaudeCodeMimicryBetas(), "", effectiveDropSet), true
 		}
-		// 真 Claude Code 客户端透传路径
 		return StripBetaTokensWithSet(GetBetaHeader(modelID, clientBeta), effectiveDropSet), true
 	}
 
-	// API-key 提供商
 	if clientBeta != "" {
 		return StripBetaTokensWithSet(clientBeta, effectiveDropSet), true
 	}
+	// For API Key requests with no client Header, body features trigger defaults
+	// only when injection is enabled; the selected defaults return directly from
+	// this branch.
 	if injectAPIKeyBeta {
 		if RequestNeedsBetaFeatures(body) {
 			if beta := DefaultAPIKeyBetaHeader(body); beta != "" {
@@ -191,15 +216,16 @@ func ComputeFinalAnthropicBeta(
 	return "", false
 }
 
-// ComputeFinalCountTokensAnthropicBeta 是 count_tokens 路径上 anthropic-beta header 的
-// 计算函数，使用以下 count_tokens 规则：
+// ComputeFinalCountTokensAnthropicBeta selects the counting beta header and its
+// set flag. OAuth mimic merges the full mimic set and counting token with
+// client tokens before filtering; passthrough adds counting when its substring
+// is absent from the selected Header.
 //
-//   - OAuth mimic：requiredBetas 为 FullClaudeCodeMimicryBetas + BetaTokenCounting；
-//     count_tokens 另外保留客户端 beta，而 messages mimic 会忽略客户端 beta。
-//   - OAuth 透传 + 客户端未传 anthropic-beta：补齐 CountTokensBetaHeader
-//   - OAuth 透传 + 客户端传了：补齐 BetaTokenCounting（如果未含）
-//
-// 返回值含义见 ComputeFinalAnthropicBeta。
+// A missing OAuth passthrough Header returns CountTokensBetaHeader directly,
+// bypassing effectiveDropSet. API Key handling follows its client-Header or
+// feature-injection rules and does not add a counting token separately. The
+// caller uses the selected value to sanitize beta-dependent body fields before
+// building the request.
 func ComputeFinalCountTokensAnthropicBeta(
 	tokenType string,
 	mimicClaudeCode bool,
@@ -216,8 +242,8 @@ func ComputeFinalCountTokensAnthropicBeta(
 
 	if tokenType == "oauth" {
 		if mimicClaudeCode {
-			// count_tokens mimic 保留白名单中的客户端 beta；messages mimic 不透传它。
-			// 此处将客户端 beta 与计数所需的 beta 合并，再应用删除集合。
+			// Counting combines required capabilities with client tokens before drops apply,
+			// allowing the final body sanitizer to see the same merged set sent upstream.
 			requiredBetas := append(FullClaudeCodeMimicryBetas(), BetaTokenCounting)
 			return MergeAnthropicBetaDropping(requiredBetas, clientBeta, effectiveDropSet), true
 		}
@@ -231,10 +257,12 @@ func ComputeFinalCountTokensAnthropicBeta(
 		return StripBetaTokensWithSet(beta, effectiveDropSet), true
 	}
 
-	// API-key 提供商
 	if clientBeta != "" {
 		return StripBetaTokensWithSet(clientBeta, effectiveDropSet), true
 	}
+	// For API Key requests with no client Header, body features trigger defaults
+	// only when injection is enabled; the selected defaults return directly from
+	// this branch.
 	if injectAPIKeyBeta {
 		if RequestNeedsBetaFeatures(body) {
 			if beta := DefaultAPIKeyBetaHeader(body); beta != "" {
@@ -245,7 +273,9 @@ func ComputeFinalCountTokensAnthropicBeta(
 	return "", false
 }
 
-// StripBetaTokens removes the given beta tokens from a comma-separated header value.
+// StripBetaTokens removes exact tokens from a comma-separated header through a
+// constructed lookup set. An empty header or token list returns the supplied
+// header string unchanged.
 func StripBetaTokens(header string, tokens []string) string {
 	if header == "" || len(tokens) == 0 {
 		return header
@@ -253,10 +283,16 @@ func StripBetaTokens(header string, tokens []string) string {
 	return StripBetaTokensWithSet(header, BuildBetaTokenSet(tokens))
 }
 
+// StripBetaTokensWithSet filters exact tokens after trimming each
+// comma-separated part. Empty inputs leave the header unchanged; when every
+// part survives, its supplied spelling and spacing are retained.
 func StripBetaTokensWithSet(header string, drop map[string]struct{}) string {
 	if header == "" || len(drop) == 0 {
 		return header
 	}
+	// Rebuild a filtered Header from surviving complete tokens; when every part
+	// survives, keep the supplied formatting so mere whitespace does not force a
+	// rewrite.
 	parts := strings.Split(header, ",")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -270,13 +306,14 @@ func StripBetaTokensWithSet(header string, drop map[string]struct{}) string {
 		out = append(out, p)
 	}
 	if len(out) == len(parts) {
-		return header // no change, avoid allocation
+		return header // Return the original header when no token was removed.
 	}
 	return strings.Join(out, ",")
 }
 
-// MergeDropSets merges the static DefaultDroppedBetasSet with dynamic policy filter tokens.
-// Returns DefaultDroppedBetasSet directly when policySet is empty (zero allocation).
+// MergeDropSets combines static drops, policy drops, and optional exact tokens.
+// With no policy or extra tokens it returns the shared DefaultDroppedBetasSet,
+// which callers must treat as immutable.
 func MergeDropSets(policySet map[string]struct{}, extra ...string) map[string]struct{} {
 	if len(policySet) == 0 && len(extra) == 0 {
 		return DefaultDroppedBetasSet
@@ -294,7 +331,9 @@ func MergeDropSets(policySet map[string]struct{}, extra ...string) map[string]st
 	return m
 }
 
-// DroppedBetaSet returns DroppedBetas as a set, with optional extra tokens.
+// DroppedBetaSet returns a new mutable copy of the static drop set plus extra
+// tokens. Mutating this result does not change DefaultDroppedBetasSet, and
+// extra strings are inserted as supplied.
 func DroppedBetaSet(extra ...string) map[string]struct{} {
 	m := make(map[string]struct{}, len(DefaultDroppedBetasSet)+len(extra))
 	for t := range DefaultDroppedBetasSet {
@@ -306,7 +345,9 @@ func DroppedBetaSet(extra ...string) map[string]struct{} {
 	return m
 }
 
-// ContainsBetaToken checks if a comma-separated header value contains the given token.
+// ContainsBetaToken reports exact, case-sensitive membership among trimmed
+// header parts. Empty header or token strings return false, and a versioned
+// token cannot match a longer token by prefix.
 func ContainsBetaToken(header, token string) bool {
 	if header == "" || token == "" {
 		return false
@@ -319,6 +360,9 @@ func ContainsBetaToken(header, token string) bool {
 	return false
 }
 
+// FilterBetaTokens removes exact filter members while retaining supplied order.
+// Empty tokens or filters return the original slice, so callers requiring
+// private mutable storage must copy that result.
 func FilterBetaTokens(tokens []string, filterSet map[string]struct{}) []string {
 	if len(tokens) == 0 || len(filterSet) == 0 {
 		return tokens
@@ -332,6 +376,9 @@ func FilterBetaTokens(tokens []string, filterSet map[string]struct{}) []string {
 	return kept
 }
 
+// BuildBetaTokenSet returns a new case-sensitive set of nonempty strings. It
+// keeps token spelling as supplied, skips duplicates through map membership,
+// and leaves surrounding whitespace intact.
 func BuildBetaTokenSet(tokens []string) map[string]struct{} {
 	m := make(map[string]struct{}, len(tokens))
 	for _, t := range tokens {
@@ -343,30 +390,31 @@ func BuildBetaTokenSet(tokens []string) map[string]struct{} {
 	return m
 }
 
-// ApplyClaudeCodeMimicHeaders forces "Claude Code-like" request headers.
-// This mirrors opencode-anthropic-auth behavior: do not trust downstream
-// headers when using Claude Code-scoped OAuth credentials.
+// ApplyClaudeCodeMimicHeaders replaces default fingerprint values on a nonnil
+// request and selects JSON Accept for both response modes. Streaming adds the
+// helper marker, and a missing request identifier receives a UUID. Callers
+// initialize Header for each nonnil request before calling.
 func ApplyClaudeCodeMimicHeaders(req *http.Request, isStream bool) {
 	if req == nil {
 		return
 	}
-	// Start with the standard defaults (fill missing).
 	ApplyClaudeOAuthHeaderDefaults(req)
-	// Then force key headers to match Claude Code fingerprint regardless of what the client sent.
-	// 使用 ResolveWireCasing 恢复发送时的请求头大小写，例如 x-app。
+	// Replace forwarded fingerprint values under their selected wire spelling so
+	// the request uses one set of runtime CLI values after default filling.
 	for key, value := range DefaultHeaders {
 		if value == "" {
 			continue
 		}
 		SetHeaderRaw(req.Header, ResolveWireCasing(key), value)
 	}
-	// Real Claude CLI uses Accept: application/json (even for streaming).
+	// Accept remains JSON for both modes; the streaming helper marker identifies
+	// that mode separately, so an event-stream Accept value is not needed here.
 	SetHeaderRaw(req.Header, "Accept", "application/json")
 	if isStream {
 		SetHeaderRaw(req.Header, "x-stainless-helper-method", "stream")
 	}
-	// Real Claude CLI 每个请求都会生成一个新的 UUID 放在 x-client-request-id。
-	// 上游会以此作为会话/请求指纹的一部分，缺失或重复都可能触发第三方判定。
+	// Generate a request identifier after checking all recognized key forms, so
+	// a supplied identifier remains available for correlation on the outgoing request.
 	if GetHeaderRaw(req.Header, "x-client-request-id") == "" {
 		SetHeaderRaw(req.Header, "x-client-request-id", uuid.NewString())
 	}

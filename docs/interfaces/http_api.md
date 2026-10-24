@@ -55,6 +55,7 @@ RequestLogger
 | `/api/v1/auth/*` | 大多公开，账户管理的子流程按路由加 JWT 或短期状态 | `app/http_routes.go`；注册、登录、刷新、找回密码、OAuth、Passkey 登录和身份补全 |
 | `/api/v1/user/*`、`/keys`、`/team`、`/groups`、`/subscriptions`、`/redeem` 等 | 用户 JWT | `app/http_routes.go`；用户面板的资源、团队、Key、用量和权益查询 |
 | `/api/v1/admin/*` | 管理员 JWT 或受限的管理密钥；部分操作还需要 step-up | `app/http_routes_admin.go`；用户、分组、提供商、价格配置、设置、运维、备份、支付和安全管理 |
+| `/mcp` | 专用 MCP Bearer 令牌 | 四个通用管理工具，按具体操作授权；协议为 MCP JSON-RPC，见 [MCP 管理接口](mcp_management.md) |
 | `/api/v1/payment/*` | 用户 JWT | `app/http_routes.go`；读取配置和套餐、下单、查单、取消、invoice 和申请退款 |
 | `/api/v1/payment/public/*` | 签名的 resume token，或旧订单的验证约束 | 恢复支付结果；这组接口只服务已知订单，匿名列举订单是不允许的 |
 | `/api/v1/payment/webhook/*` | 提供商验签 | EasyPay、Alipay、WeChat Pay、Stripe、Airwallex 的通知 |
@@ -279,7 +280,7 @@ Key 自身的配额和滚动限额字段不受这些展示规则影响。
 - `POST /api/v1/admin/providers/:id/upstream-usage/query`
 - `POST /api/v1/admin/providers/upstream-usage/query/batch`，请求体的 `provider_ids` 最多 100 个正整数。
 
-接口只接受 `type=apikey` 的提供商（Bedrock 除外），使用管理员认证和审计中间件。可选的适配器有 `sub2api`、`new_api` 和 `zivv`（Kimi、Zhipu、DeepSeek 使用按平台固定的适配器），由提供商的配置明确选择。成功结果的顶层包含 `adapter`、`provider`、UTC 时间的 `observed_at`，以及余额、限额和订阅字段；批量接口把每个提供商的成功结果和结构化错误分开返回。错误 reason 使用 `UPSTREAM_USAGE_*` 命名空间，覆盖：提供商无效或已禁用、协议不支持、认证失败、钱包不可用、钱包认证失败、限流、超时、响应格式错误、网络错误和身份变化。
+接口只接受 `type=apikey` 的提供商（Bedrock 除外），使用管理员认证和审计中间件。可选的适配器有 `sub2api`、`new_api`、`zivv` 和 `derouter`（Kimi、Zhipu、DeepSeek 使用按平台固定的适配器），由提供商的配置明确选择。成功结果的顶层包含 `adapter`、`provider`、UTC 时间的 `observed_at`，以及余额、限额和订阅字段；批量接口把每个提供商的成功结果和结构化错误分开返回。错误 reason 使用 `UPSTREAM_USAGE_*` 命名空间，覆盖：提供商无效或已禁用、协议不支持、认证失败、钱包不可用、钱包认证失败、限流、超时、响应格式错误、网络错误和身份变化。
 
 查询只读：提供商、Extra、调度快照和计费记录都不会被写入，API Key 也不会出现在响应或审计 body 里。前端只在点击行内按钮或批量操作时发起请求，成功的结果在按管理员隔离的 `sessionStorage` 里缓存五分钟。缓存规则见 [API Key 上游用量查询](upstream_usage.md)。
 
@@ -318,7 +319,19 @@ app 为所有需要幂等的用户和管理员 HTTP 处理器绑定同一个协�
 
 错误实体只在 `pkg/apperror` 定义，HTTP 映射和面板 envelope 在 `server/httpx`。使用方直接使用具名的错误类别，code 数值、字段、`errors.Is/As`、cause 和 metadata 的复制方式都保持兼容；自定义状态码按原值映射。
 
-管理员 `GET /api/v1/admin/usage` 的每条记录可以带 `detailed_timing`。它通过同一个内部请求 ID 关联 `http.access` 日志得到，字段是相对于请求进入 TokenRouter 的毫秒时间点，包括：拿到提供商槽位、上游连接和写入、首字节、第一个 SSE、第一个可见输出和第一次下游 Flush。历史记录或观测日志缺失时，省略这个对象。
+使用记录的性能观测唯一保存在 `usage_logs.timings`。普通用量接口返回由该行派生的 `ttft_ms`、`tps` 和 `ttft_mode`；管理员接口另返回 `detailed_timing`。请求详情按已有请求 ID 批量关联 usage，分别展示每条 usage 的指标，不把这些指标再写回请求摘要，也不从 Ops 日志补值。历史 usage 没有新快照时显示未记录。
+
+`timings` 保存当次模式、上游流式与完成状态、usage 完整性，以及 `values` 中的毫秒观测。事件时刻以所属逻辑请求的入口为参考；`upstream_started_ms`、`upstream_first_event_ms`、`upstream_first_output_ms`、`upstream_last_output_ms` 和 `upstream_finished_ms` 属于产生该条 usage 的同一次尝试。首包和首字分别减去本次上游开始时刻，排队和之前提供商的失败不会进入该提供商的延迟。`duration_ms` 是该次上游尝试耗时，请求摘要里的总耗时则覆盖整个逻辑请求。
+
+`request_body_read_ms`、`preprocess_ms`、`user_slot_wait_ms`、`provider_slot_wait_ms` 分解 HTTP 首次准入前的耗时。原始 Body 的读取才计入读取时间，容量检查执行时间属于其他处理，等待只统计检查之间的排队。`retry_provider_slot_wait_ms` 单列后续等待。`provider_slot_acquired_ms` 是首次取得执行资格的时刻；它与连接、发送、响应和输出事件都不能作为时长相加。
+
+首事件允许正常元数据，排除心跳和空的保活 delta。有效内容包含正文、明文思考、工具名称及实际参数，排除单独的角色、ID、空占位、签名和密文；重复的完整终态不延长内容输出区间。`first_visible_output_ms` 表示成功写入最终下游 writer，`first_downstream_flush_ms` 表示包含上游事件的首次 HTTP Flush，可由元数据触发。二者不证明客户端已经收到或渲染内容，本地产生的错误与排队心跳不建立这些交付指标。
+
+TPS 使用同一上游尝试的 `输出 token × 1000 /（最后有效内容时刻 − 首个有效内容时刻）`，由服务端统一保留一位小数。上游须正常完成、usage 完整、输出 token 为正、至少有两次新增有效内容且时间区间为正，否则没有 TPS。它按数据块估算，受网络、背压、合并发送及未明文输出的思考影响，首字／首包设置不改变它的计算。
+
+Chat 流的非空 `finish_reason` 或最终输出 usage 可以确认完成，不要求额外的 `[DONE]`；缺少最终计数时仍不生成 TPS。Responses 的工具名称和输入参数分别记录是否已经到达，因此参数首次出现在 `.done`、完整 item 或完成快照中时仍计入有效输出，之后重复的同类字段不延长区间。
+
+HTTP 文本流、协议转换和文本 WebSocket 使用相同内容判定；WS 每轮请求及其重试保持各自归属。真正非流式上游没有首字、首事件或 TPS 观测；上游流式、下游缓冲时按各自模式展示。未知字段保持缺失，实测零保留为零，HTTP Flush 等协议不适用字段不补造。
 
 网关内置错误固定使用英文。网关错误使用调用方协议的格式：OpenAI 入口用 `error` 对象，Anthropic 用 `type: error` 加嵌套错误，Google 用 HTTP code、message 和 status。认证失败、未分组、复合 Key 和本地能力拒绝，都使用当前协议的 writer；Google 或 Anthropic 客户端收到面板 envelope 会无法解析。
 
@@ -383,3 +396,7 @@ Grok 请求缓存开关使用 `X-TokenRouter-Grok-Client-Tool-Cache`，没有新
 ## SystemOne
 
 `POST /v1/systemone` 使用网关 API Key 认证，支持普通 Key 和复合 Key。分组开放 `systemone` 后，调度到已启用该协议的 Jev API Key 提供商。请求字段、成功响应和用量异常处理见 [Jev 与 SystemOne](jev_upstream.md)。
+
+## MCP OAuth 接入
+
+`/mcp` 同时接受专用 Token 和 OAuth access token。OAuth 公开发现与协议端点使用标准响应，浏览器授权和应用管理位于 `/api/v1/admin/mcp/oauth`，要求管理员 JWT。端点清单、授权期限和刷新规则见 [MCP OAuth 应用授权](mcp_management.md#oauth_authorization)。

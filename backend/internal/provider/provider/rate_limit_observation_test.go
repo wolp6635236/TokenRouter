@@ -15,36 +15,47 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// updateExtraSpyRepo 记录 UpdateExtra 是否被调用,用于验证影子 codex_* 快照守卫。
+// updateExtraSpyRepo records whether global Codex snapshot persistence reached
+// its storage callback.
 type updateExtraSpyRepo struct {
-	*openAI429SnapshotRepo
-	updateExtraCalled bool
+	*openAI429SnapshotRepo      // embedded quota observation writer
+	updateExtraCalled      bool // snapshot write attempt observed
 }
 
+// openAI429SnapshotRepo captures provider limits, quota patches, and observed
+// plan writes for tests.
 type openAI429SnapshotRepo struct {
-	providercore.HealthStore
-	rateLimitedID      int64
-	updatedExtra       map[string]any
-	bulkUpdatedIDs     []int64
+	providercore.HealthStore       // unimplemented provider health methods
+	rateLimitedID            int64 // latest limited provider identifier
+	// updatedExtra retains the quota patch supplied to UpdateExtra. Sequential
+	// assertions share its map values with the caller.
+	updatedExtra   map[string]any
+	bulkUpdatedIDs []int64 // copied observed-plan target identifiers
+	// bulkUpdatedPayload retains the captured update value for plan assertions.
+	// Its credential map remains shared with the calling observation.
 	bulkUpdatedPayload providercore.ProviderBulkUpdate
 }
 
-// 观测替身记录本次字段写入，健康规则和平台解析使用生产实现。
+// openAI429Store combines health, session-window, and plan writes needed by the
+// observer fixture.
 type openAI429Store interface {
-	providercore.HealthStore
-	providercore.SessionWindowStore
-	providercore.OpenAIPlanWriter
+	providercore.HealthStore        // provider health observation methods
+	providercore.SessionWindowStore // Anthropic session-window observation methods
+	providercore.OpenAIPlanWriter   // observed OpenAI plan methods
 }
 
+// rateLimit429ProviderRepoStub captures the count and deadline of fallback
+// provider cooldown writes.
 type rateLimit429ProviderRepoStub struct {
-	providercore.HealthStore
-	rateLimitCalls     int
-	lastRateLimitID    int64
-	lastRateLimitReset time.Time
+	providercore.HealthStore           // unimplemented provider health methods
+	rateLimitCalls           int       // observed cooldown write count
+	lastRateLimitID          int64     // latest limited provider identifier
+	lastRateLimitReset       time.Time // latest provider cooldown deadline
 }
 
-// TestPersistOpenAI429PlanType_SkipsShadow 检查影子提供商跳过 429 响应中的 plan_type 写入。
-// 普通提供商通过 BulkUpdate 写入 credentials。
+// TestPersistOpenAI429PlanType_SkipsShadow supplies the same observed plan to a
+// shadow and ordinary OAuth record. Only the ordinary record must receive that
+// plan in its credentials.
 func TestPersistOpenAI429PlanType_SkipsShadow(t *testing.T) {
 	ctx := context.Background()
 	body := []byte(`{"error":{"type":"usage_limit_reached","plan_type":"pro"}}`)
@@ -65,8 +76,9 @@ func TestPersistOpenAI429PlanType_SkipsShadow(t *testing.T) {
 	})
 }
 
-// TestPersistOpenAICodexSnapshot_SkipsShadow 检查影子提供商跳过 429 响应中的全局额度头。
-// 影子 codex_* 快照由 QueryUsage 的 /wham/usage bengalfox 查询更新。
+// TestPersistOpenAICodexSnapshot_SkipsShadow supplies global Codex headers to
+// shadow and ordinary records. Snapshot storage must skip the shadow while
+// reaching the ordinary record's Extra writer.
 func TestPersistOpenAICodexSnapshot_SkipsShadow(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "50")
@@ -89,6 +101,9 @@ func TestPersistOpenAICodexSnapshot_SkipsShadow(t *testing.T) {
 	})
 }
 
+// TestHandle429_OpenAIPersistsCodexSnapshotImmediately supplies exhausted short
+// and weekly header windows. Observe429 must persist both canonical quota
+// measurements together with the provider's selected cooldown write.
 func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	repo := &openAI429SnapshotRepo{}
 	svc := newOpenAI429Observer(repo)
@@ -118,6 +133,9 @@ func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	}
 }
 
+// TestHandle429_OpenAISyncsObservedPlanType changes a stored plus plan through
+// a usage-limit error body. The bulk write and local credentials must carry the
+// observed free plan alongside the captured provider cooldown target.
 func TestHandle429_OpenAISyncsObservedPlanType(t *testing.T) {
 	repo := &openAI429SnapshotRepo{}
 	svc := newOpenAI429Observer(repo)
@@ -137,9 +155,9 @@ func TestHandle429_OpenAISyncsObservedPlanType(t *testing.T) {
 	require.Equal(t, provider.ID, repo.rateLimitedID)
 }
 
-// TestHandle429_SkipsSparkShadow spark 影子的限流状态只由 QueryUsage(/wham/usage
-// codex_bengalfox)维护;/responses 429 携带的 global x-codex-* 不得对影子做任何 DB 限流写入,
-// 否则会把 spark 误耦合到 global codex 窗口、冷却到 global reset。
+// TestHandle429_SkipsSparkShadow compares a Spark shadow and ordinary OAuth
+// provider under exhausted global headers. The shadow must receive no provider
+// limit or Extra snapshot, while the ordinary record is limited.
 func TestHandle429_SkipsSparkShadow(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "100")
@@ -165,7 +183,7 @@ func TestHandle429_SkipsSparkShadow(t *testing.T) {
 	require.Zero(t, shadowRepo.rateLimitedID, "spark shadow must not be SetRateLimited from /responses global 429")
 	require.Empty(t, shadowRepo.updatedExtra, "spark shadow must not get a codex snapshot from /responses 429")
 
-	// 反向对照:普通 OpenAI OAuth 提供商仍按 global 429 限流。
+	// Ordinary OpenAI OAuth providers still use the global 429 window.
 	normalRepo := &openAI429SnapshotRepo{}
 	normalSvc := newOpenAI429Observer(normalRepo)
 	normal := &providercore.Record{ID: 902, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth}
@@ -175,6 +193,9 @@ func TestHandle429_SkipsSparkShadow(t *testing.T) {
 	require.Equal(t, normal.ID, normalRepo.rateLimitedID, "normal OpenAI OAuth provider should still be rate limited")
 }
 
+// TestHandle429_FallbackUsesDBSeconds supplies a 429 without reset data and a
+// twelve-second database setting. The observer must write one cooldown whose
+// deadline follows that configured interval.
 func TestHandle429_FallbackUsesDBSeconds(t *testing.T) {
 	providerRepo := &rateLimit429ProviderRepoStub{}
 	settingRepo := newCooldownSettingsStore()
@@ -195,6 +216,9 @@ func TestHandle429_FallbackUsesDBSeconds(t *testing.T) {
 	require.True(t, !providerRepo.lastRateLimitReset.Before(before.Add(12*time.Second)) && !providerRepo.lastRateLimitReset.After(after.Add(12*time.Second)))
 }
 
+// TestHandle429_FallbackDisabledSkipsLocalMark disables fallback despite a
+// configured twelve-second duration. A no-reset 429 must produce no provider
+// cooldown write when the enabled flag is false.
 func TestHandle429_FallbackDisabledSkipsLocalMark(t *testing.T) {
 	providerRepo := &rateLimit429ProviderRepoStub{}
 	settingRepo := newCooldownSettingsStore()
@@ -211,7 +235,9 @@ func TestHandle429_FallbackDisabledSkipsLocalMark(t *testing.T) {
 	require.Zero(t, providerRepo.rateLimitCalls)
 }
 
-// TestHandle429_AnthropicNoResetTimeUsesFallbackCooldown 检查 Anthropic 的 429 缺少 reset 头时采用默认短冷却。
+// TestHandle429_AnthropicNoResetTimeUsesFallbackCooldown supplies an Extra
+// usage required response without reset headers. Anthropic handling must use
+// the enabled database duration for its provider cooldown.
 func TestHandle429_AnthropicNoResetTimeUsesFallbackCooldown(t *testing.T) {
 	providerRepo := &rateLimit429ProviderRepoStub{}
 	settingRepo := newCooldownSettingsStore()
@@ -232,7 +258,9 @@ func TestHandle429_AnthropicNoResetTimeUsesFallbackCooldown(t *testing.T) {
 	require.True(t, !providerRepo.lastRateLimitReset.Before(before.Add(12*time.Second)) && !providerRepo.lastRateLimitReset.After(after.Add(12*time.Second)))
 }
 
-// TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark 检查默认冷却关闭后，缺少 reset 头的 429 保持提供商状态不变。
+// TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark disables the
+// no-reset cooldown for Anthropic. An Extra usage required response must leave
+// captured provider limit writes at zero.
 func TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark(t *testing.T) {
 	providerRepo := &rateLimit429ProviderRepoStub{}
 	settingRepo := newCooldownSettingsStore()
@@ -249,6 +277,9 @@ func TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark(t *testing.T) {
 	require.Zero(t, providerRepo.rateLimitCalls)
 }
 
+// TestHandle429_FallbackUsesDefaultSecondsWhenSettingServiceMissing omits the
+// settings service when a Gemini 429 has no reset data. Health must write one
+// provider cooldown ending five seconds after observation.
 func TestHandle429_FallbackUsesDefaultSecondsWhenSettingServiceMissing(t *testing.T) {
 	providerRepo := &rateLimit429ProviderRepoStub{}
 	svc := &RateLimitObserver{Health: providercore.NewHealthService(providerRepo, nil, providercore.HealthOptions{})}
@@ -263,35 +294,50 @@ func TestHandle429_FallbackUsesDefaultSecondsWhenSettingServiceMissing(t *testin
 	require.True(t, !providerRepo.lastRateLimitReset.Before(before.Add(5*time.Second)) && !providerRepo.lastRateLimitReset.After(after.Add(5*time.Second)))
 }
 
+// UpdateExtra records that the observer attempted a quota snapshot write.
 func (r *updateExtraSpyRepo) UpdateExtra(_ context.Context, _ int64, _ map[string]any) error {
 	r.updateExtraCalled = true
 	return nil
 }
 
+// SetRateLimited captures the provider ID targeted by the cooldown write.
 func (r *openAI429SnapshotRepo) SetRateLimited(_ context.Context, id int64, _ time.Time) error {
 	r.rateLimitedID = id
 	return nil
 }
 
+// UpdateExtra retains the supplied quota patch for sequential assertions. The
+// map remains shared with the caller, and the fixture reports successful
+// storage without merging it into a record.
 func (r *openAI429SnapshotRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
 	r.updatedExtra = updates
 	return nil
 }
 
+// BulkUpdate copies target IDs and retains the supplied update value for plan
+// assertions. Its nested credential map remains shared, and the returned count
+// equals the number of supplied IDs.
 func (r *openAI429SnapshotRepo) BulkUpdate(_ context.Context, ids []int64, updates providercore.ProviderBulkUpdate) (int64, error) {
 	r.bulkUpdatedIDs = append([]int64(nil), ids...)
 	r.bulkUpdatedPayload = updates
 	return int64(len(ids)), nil
 }
 
+// newOpenAI429Observer builds production health and quota parsing around repo.
+// The same repository supplies health, session-window, and observed-plan
+// writes, allowing tests to inspect each captured observation effect.
 func newOpenAI429Observer(repo openAI429Store) *RateLimitObserver {
 	return &RateLimitObserver{Health: providercore.NewHealthService(repo, nil, providercore.HealthOptions{SessionWindows: repo}), Plans: repo}
 }
 
+// UpdateSessionWindow panics because these OpenAI-only fixtures expect no
+// session-window write.
 func (*openAI429SnapshotRepo) UpdateSessionWindow(context.Context, int64, *time.Time, *time.Time, string) error {
 	panic("unexpected session window")
 }
 
+// SetRateLimited counts and captures the fallback provider ID and reset
+// deadline.
 func (r *rateLimit429ProviderRepoStub) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitCalls++
 	r.lastRateLimitID = id

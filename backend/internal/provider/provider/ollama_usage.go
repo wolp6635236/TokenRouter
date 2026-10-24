@@ -9,7 +9,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/ollama"
 )
 
-// OllamaUsageFetcher 将 Cookie 和请求参数交给 Ollama 客户端，共用 HTTP 连接池。
+// ollama_usage.go binds provider transport to the managed-cookie Ollama Cloud
+// usage fetcher. The upstream fetcher reads a fixed browser settings page. The
+// adapter forwards the captured proxy, provider ID, and concurrency to the
+// shared sender, while the upstream fetcher receives a context that blocks
+// redirects and a stable unavailable error.
+
+// OllamaUsageFetcher returns a cookie-based usage fetch callback backed by the
+// supplied sender. A nil sender returns the unavailable error; requests pass
+// captured transport parameters and disable redirects through the upstream
+// fetch options.
 func OllamaUsageFetcher(do func(*http.Request, string, int64, int) (*http.Response, error)) func(context.Context, provider.OllamaUsageFetchInput) (*provider.OllamaUsageObservation, error) {
 	return func(ctx context.Context, input provider.OllamaUsageFetchInput) (*provider.OllamaUsageObservation, error) {
 		if do == nil {

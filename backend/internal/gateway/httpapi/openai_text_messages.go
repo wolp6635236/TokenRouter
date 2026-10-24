@@ -17,11 +17,42 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 )
 
+// openai_text_messages.go admits Messages requests and prepares group mapping
+// and session isolation.
+// Messages protocol permission is checked before body reading and dependency
+// processing in this entry. Admission reads streaming preference through gjson
+// coercion, while Chat uses a stricter field parser; later Messages conversion
+// still owns its own protocol decoding and compatibility decisions.
+//
+// Moderation precedes group route planning here, and the normalized group
+// model is retained for provider-layer mapping while client model identity
+// stays available for observations. User-slot admission precedes the
+// configured eligibility call. Selection and prompt-cache seeds can use Claude
+// Code metadata, but explicit session isolation follows its own
+// header/metadata precedence. The handler then passes this admitted state and
+// live output flag into synchronous execution, retaining request and slot
+// cleanup until return.
+
+// Messages admits HTTP Messages input for compatible text execution. It
+// validates key, acting subject and group protocol permission before body
+// reading, then prepares client identity and binds group effort policy for
+// later conversion. At this admission step, stream preference uses gjson Bool
+// coercion.
+//
+// Moderation runs before group model mapping and provider-layer model
+// preparation. After user-slot waiting, the configured Eligibility call checks
+// admission before cyber/session handling and Execute. Claude Code metadata
+// can refine affinity/cache identity, and missing explicit header identity can
+// use metadata session isolation under its gateway source. Client model,
+// mapped provider model and prompt-cache seed remain separate execution
+// values, with request and slot cleanup deferred through all exits.
 func (h *OpenAITextHandler) Messages(c *gin.Context) {
 	done, accepted := h.BeginRequest(c, "anthropic")
 	if !accepted {
 		return
 	}
+	// Request lifetime covers all admission callbacks and synchronous execution;
+	// deferred user cleanup runs before the entry leaves the application request barrier.
 	defer done()
 
 	streamStarted := false
@@ -48,7 +79,8 @@ func (h *OpenAITextHandler) Messages(c *gin.Context) {
 		zap.Any("group_id", apiKey.GroupID),
 	)
 
-	// 检查分组是否允许 /v1/messages 调度
+	// Group protocol permission precedes reading so a denied Messages entry
+	// cannot consume or validate the caller's body before its policy rejection.
 	if !h.backend.AllowsMessages(apiKey) {
 		h.backend.PolicyDenied(c)
 		h.anthropicErrorResponse(c, http.StatusForbidden, "permission_error",
@@ -79,7 +111,8 @@ func (h *OpenAITextHandler) Messages(c *gin.Context) {
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
-	// 在模型解析、内容审计和会话 hash 计算前替换用户提示词，后续步骤共用改写后的请求体。
+	// Replace user prompts before model resolution, moderation, and session hashing so later steps share the
+	// rewritten body.
 	body = h.prompt.ApplyUserPromptReplacementToBody(c.Request.Context(), body, "anthropic_messages")
 
 	modelResult := gjson.GetBytes(body, "model")
@@ -88,7 +121,12 @@ func (h *OpenAITextHandler) Messages(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	// Custom test/backends can omit the optional preparer. Use the shared
+	// client-context validation so this entry still binds identity before group selection.
 	if preparer, ok := h.backend.(interface {
+		// PrepareMessages binds and validates client identity before group fallback
+		// and provider selection. A returned error produces this entry's Messages
+		// validation rejection before moderation or the execution loop can run.
 		PrepareMessages(*gin.Context, []byte) error
 	}); ok {
 		if err := preparer.PrepareMessages(c, body); err != nil {
@@ -118,8 +156,8 @@ func (h *OpenAITextHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	// 解析分组模型映射
-	// 当前分组和分组映射结果进入独立计划，不改变原解析位置。
+	// Plan from admitted canonical input after moderation. Retain the group
+	// model for provider rules while the original model remains available for client attribution.
 	groupMappingMsgRoutePlan := h.backend.Plan(c.Request.Context(), apiKey, reqModel)
 	groupMappingMsg := groupMappingMsgRoutePlan.Mapping()
 	h.backend.BindPlan(c, groupMappingMsgRoutePlan)
@@ -129,7 +167,7 @@ func (h *OpenAITextHandler) Messages(c *gin.Context) {
 	}
 	providerLayerModel := h.backend.MessageProviderModel(c.Request.Context(), apiKey, groupMappedModel)
 
-	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
+	// Bind passthrough rules for downstream non-failover error handling.
 	h.backend.BindErrors(c)
 
 	subscription, _ := SubscriptionFromContext(c)
@@ -142,10 +180,14 @@ func (h *OpenAITextHandler) Messages(c *gin.Context) {
 	if !acquired {
 		return
 	}
+	// Hold the acquired user slot through eligibility and execution; resource
+	// cleanup also observes cancellation, and the returned callback tolerates completion cleanup.
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
 
+	// Admission values may change while waiting for user capacity. Run the
+	// configured funding/RPM checker before session handling and the provider loop begins.
 	if err := h.backend.Eligibility(c.Request.Context(), apiKey, subscription); err != nil {
 		reqLog.Info("openai_messages.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := BillingErrorDetails(err)
@@ -164,6 +206,8 @@ func (h *OpenAITextHandler) Messages(c *gin.Context) {
 	}
 	isolationSource := session.SessionIsolationSourceOpenAI
 	explicitSessionHash := h.backend.SessionHash(c, OpenAIExplicitSession, body)
+	// Header-based explicit identity takes precedence for isolation; Messages
+	// metadata can supply a gateway-source identity when that header seed is absent.
 	if explicitSessionHash == "" {
 		if isolationSessionID := MetadataSessionID(gjson.GetBytes(body, "metadata.user_id").String()); isolationSessionID != "" {
 			explicitSessionHash = isolationSessionID

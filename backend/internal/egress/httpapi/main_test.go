@@ -6,7 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestMain 在测试运行前设置 Gin 的测试模式。
+// TestMain switches Gin into test mode before running this package's handler
+// scenarios. It invokes the test runner with that shared mode, allowing fixture
+// routers to construct their responses under test configuration.
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 	m.Run()

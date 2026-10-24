@@ -12,34 +12,38 @@ import (
 	"testing"
 	"time"
 
-	utls "github.com/refraction-networking/utls" //nolint:revive // 包名是 tls，别名用来和 crypto/tls 区分。
+	utls "github.com/refraction-networking/utls" //nolint:revive // The package is named tls; the alias distinguishes it from crypto/tls.
 )
 
-// CapturedFingerprint 解码 tls-fingerprint-web 抓包服务返回的 JSON 指纹。
+// The external capture server reports profile fields observed on real TLS
+// handshakes for comparison with configured effective values. Integration
+// cases substitute the dialer's defaults before checking ordered lists and
+// omit variable GREASE IDs from extension-order comparison; recognized
+// external availability failures skip these observations.
+
+// CapturedFingerprint decodes profile observations returned by the external capture server.
 type CapturedFingerprint struct {
-	JA3Raw              string   `json:"ja3_raw"`
-	JA3Hash             string   `json:"ja3_hash"`
-	JA4                 string   `json:"ja4"`
-	HTTP2               string   `json:"http2"`
-	CipherSuites        []int    `json:"cipher_suites"`
-	Curves              []int    `json:"curves"`
-	PointFormats        []int    `json:"point_formats"`
-	Extensions          []int    `json:"extensions"`
-	SignatureAlgorithms []int    `json:"signature_algorithms"`
-	ALPNProtocols       []string `json:"alpn_protocols"`
-	SupportedVersions   []int    `json:"supported_versions"`
-	KeyShareGroups      []int    `json:"key_share_groups"`
-	PSKModes            []int    `json:"psk_modes"`
-	CompressCertAlgos   []int    `json:"compress_cert_algos"`
-	EnableGREASE        bool     `json:"enable_grease"`
+	JA3Raw              string   `json:"ja3_raw"`              // remote comma-separated JA3 text
+	JA3Hash             string   `json:"ja3_hash"`             // remote hexadecimal JA3 MD5
+	JA4                 string   `json:"ja4"`                  // remote structured JA4 text
+	HTTP2               string   `json:"http2"`                // remote HTTP/2 observation text
+	CipherSuites        []int    `json:"cipher_suites"`        // remote ordered cipher suite IDs
+	Curves              []int    `json:"curves"`               // remote ordered supported group IDs
+	PointFormats        []int    `json:"point_formats"`        // remote ordered point format IDs
+	Extensions          []int    `json:"extensions"`           // remote ordered extension type IDs
+	SignatureAlgorithms []int    `json:"signature_algorithms"` // remote ordered signature scheme IDs
+	ALPNProtocols       []string `json:"alpn_protocols"`       // remote ordered application protocol names
+	SupportedVersions   []int    `json:"supported_versions"`   // remote ordered TLS version IDs
+	KeyShareGroups      []int    `json:"key_share_groups"`     // remote ordered key share group IDs
+	PSKModes            []int    `json:"psk_modes"`            // remote ordered PSK mode IDs
+	CompressCertAlgos   []int    `json:"compress_cert_algos"`  // remote certificate compression algorithm IDs
+	EnableGREASE        bool     `json:"enable_grease"`        // remote recognized GREASE presence
 }
 
-// TestDialerAgainstCaptureServer 比较抓包服务收到的 TLS 指纹与配置模板。
-//
-// 默认抓包服务：https://tls.sub2api.org:8090
-// 可通过环境变量选择服务：TLSFINGERPRINT_CAPTURE_URL=https://localhost:8443
-//
-// 运行：go test -tags=integration -v -run TestDialerAgainstCaptureServer ./internal/infra/httpclient/tlsfingerprint/...
+// TestDialerAgainstCaptureServer sends configured profiles to the selected
+// capture endpoint, using the environment override or its default URL. It
+// requires effective profile list values, GREASE presence, and non-GREASE
+// extension order; unavailable remote samples can skip through the helper.
 func TestDialerAgainstCaptureServer(t *testing.T) {
 	captureURL := os.Getenv("TLSFINGERPRINT_CAPTURE_URL")
 	if captureURL == "" {
@@ -47,15 +51,15 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		profile *Profile
+		name    string   // case display name
+		profile *Profile // supplied TLS capture profile
 	}{
 		{
 			name: "default_profile",
 			profile: &Profile{
 				Name:         "default",
 				EnableGREASE: false,
-				// 空模板使用内置默认值。
+				// Empty fields use built-in defaults.
 			},
 		},
 		{
@@ -201,7 +205,8 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 			t.Logf("JA3 Hash: %s", captured.JA3Hash)
 			t.Logf("JA4:      %s", captured.JA4)
 
-			// 按拨号器规则补齐模板的默认值。
+			// Resolve omitted lists using the dialer's defaults before comparison, so
+			// an empty configured list is compared with its effective wire values.
 			effectiveCipherSuites := tc.profile.CipherSuites
 			if len(effectiveCipherSuites) == 0 {
 				effectiveCipherSuites = defaultCipherSuites
@@ -241,7 +246,6 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 				effectivePSKModes = []uint16{1} // psk_dhe_ke
 			}
 
-			// 比较抓包结果与模板字段。
 			assertIntSliceEqual(t, "cipher_suites", uint16sToInts(effectiveCipherSuites), captured.CipherSuites)
 			assertIntSliceEqual(t, "curves", uint16sToInts(effectiveCurves), captured.Curves)
 			assertIntSliceEqual(t, "point_formats", uint16sToInts(effectivePointFormats), captured.PointFormats)
@@ -257,13 +261,13 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 				t.Logf("  enable_grease: %v OK", captured.EnableGREASE)
 			}
 
-			// 检查扩展顺序。
-			// 未配置 Extensions 时使用 Node.js 24.x 的默认顺序。
+			// Empty Extensions selects the same built-in order used during dialing.
 			expectedExtOrder := uint16sToInts(defaultExtensionOrder)
 			if len(tc.profile.Extensions) > 0 {
 				expectedExtOrder = uint16sToInts(tc.profile.Extensions)
 			}
-			// 比较前从预期值和抓包结果中去除 GREASE。
+			// GREASE IDs vary per handshake. Compare the remaining ordered extension
+			// identities so per-connection randomization does not turn into a profile mismatch.
 			var filteredExpected, filteredActual []int
 			for _, e := range expectedExtOrder {
 				if !isGREASEValue(uint16(e)) {
@@ -277,13 +281,17 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 			}
 			assertIntSliceEqual(t, "extensions (order, non-GREASE)", filteredExpected, filteredActual)
 
-			// 输出抓包 JSON 供排查差异。
+			// Log the full capture to diagnose mismatches.
 			capturedJSON, _ := json.MarshalIndent(captured, "  ", "  ")
 			t.Logf("Full captured fingerprint:\n  %s", string(capturedJSON))
 		})
 	}
 }
 
+// fetchCapturedFingerprint posts a fixed capture request using profile and a
+// ten-second request budget. It returns decoded server fields, closes the
+// response, and fails t on read or JSON errors; recognized request
+// availability errors are delegated to the skip helper.
 func fetchCapturedFingerprint(t *testing.T, captureURL string, profile *Profile) *CapturedFingerprint {
 	t.Helper()
 
@@ -308,7 +316,7 @@ func fetchCapturedFingerprint(t *testing.T, captureURL string, profile *Profile)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// 公共采集服务可能因证书过期或网络波动不可用，此时跳过外部依赖测试。
+		// Skip known external certificate and connectivity failures.
 		skipIfExternalServiceUnavailable(t, err)
 		return nil
 	}
@@ -334,7 +342,10 @@ func fetchCapturedFingerprint(t *testing.T, captureURL string, profile *Profile)
 	return &fp
 }
 
-// skipIfExternalServiceUnavailable 在抓包服务不可达时跳过测试，其他错误直接失败。
+// skipIfExternalServiceUnavailable skips t when error text contains one of
+// the listed certificate or connectivity markers. Other non-nil errors fail t
+// and nil input returns normally; matching follows literal case-sensitive
+// substring checks.
 func skipIfExternalServiceUnavailable(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -355,6 +366,7 @@ func skipIfExternalServiceUnavailable(t *testing.T, err error) {
 	}
 }
 
+// uint16sToInts copies ordered unsigned IDs into fresh integer storage.
 func uint16sToInts(vals []uint16) []int {
 	result := make([]int, len(vals))
 	for i, v := range vals {
@@ -363,10 +375,15 @@ func uint16sToInts(vals []uint16) []int {
 	return result
 }
 
+// assertIntSliceEqual compares ordered integer lists and reports failures
+// through t. Length mismatch returns after optional short-list details;
+// equal-length comparison reports the first five differences and a later
+// summary when more differ.
 func assertIntSliceEqual(t *testing.T, name string, expected, actual []int) {
 	t.Helper()
 	if len(expected) != len(actual) {
 		t.Errorf("%s: length mismatch: got %d, want %d", name, len(actual), len(expected))
+		// Keep length-failure logs bounded; short lists include their full values.
 		if len(actual) < 20 && len(expected) < 20 {
 			t.Errorf("  got:  %v", actual)
 			t.Errorf("  want: %v", expected)
@@ -376,6 +393,7 @@ func assertIntSliceEqual(t *testing.T, name string, expected, actual []int) {
 	mismatches := 0
 	for i := range expected {
 		if expected[i] != actual[i] {
+			// Report only the first five entry differences before a count summary.
 			if mismatches < 5 {
 				t.Errorf("%s[%d]: got %d (0x%04x), want %d (0x%04x)", name, i, actual[i], actual[i], expected[i], expected[i])
 			}
@@ -389,6 +407,9 @@ func assertIntSliceEqual(t *testing.T, name string, expected, actual []int) {
 	}
 }
 
+// assertStringSliceEqual compares ordered string lists and reports length
+// mismatch or the first differing entry through t. Equal lists produce a
+// diagnostic success log; callers retain fixture assertion control.
 func assertStringSliceEqual(t *testing.T, name string, expected, actual []string) {
 	t.Helper()
 	if len(expected) != len(actual) {
@@ -404,9 +425,11 @@ func assertStringSliceEqual(t *testing.T, name string, expected, actual []string
 	t.Logf("  %s: %v OK", name, expected)
 }
 
-// TestBuildClientHelloSpecNewFields 检查模板的 ALPN、版本、密钥交换和 PSK 模式。
+// TestBuildClientHelloSpecNewFields builds a custom spec and inspects typed
+// extension contents. It requires sampled cipher, ALPN, version, and PSK
+// values, key-share and signature-list lengths, and all five extension types.
+// It then checks selected default extension values from a nil profile.
 func TestBuildClientHelloSpecNewFields(t *testing.T) {
-	// 设置自定义 ALPN、TLS 版本、密钥交换组和 PSK 模式。
 	profile := &Profile{
 		Name:                "custom_full",
 		EnableGREASE:        false,
@@ -422,12 +445,10 @@ func TestBuildClientHelloSpecNewFields(t *testing.T) {
 
 	spec := buildClientHelloSpecFromProfile(profile)
 
-	// 比较加密套件。
 	if len(spec.CipherSuites) != 2 || spec.CipherSuites[0] != 0x1301 {
 		t.Errorf("cipher suites: got %v", spec.CipherSuites)
 	}
 
-	// 检查扩展字段值。
 	var foundALPN, foundVersions, foundKeyShare, foundPSK, foundSigAlgs bool
 	for _, ext := range spec.Extensions {
 		switch e := ext.(type) {
@@ -468,7 +489,7 @@ func TestBuildClientHelloSpecNewFields(t *testing.T) {
 		}
 	}
 
-	// nil 模板使用默认配置。
+	// A nil profile uses built-in defaults.
 	specDefault := buildClientHelloSpecFromProfile(nil)
 	for _, ext := range specDefault.Extensions {
 		switch e := ext.(type) {

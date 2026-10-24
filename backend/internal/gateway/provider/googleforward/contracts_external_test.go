@@ -5,15 +5,18 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
+// TestCountGeminiInlineImageOutputs compares camel/snake image fields, mixed
+// parts, MIME variants, empty payloads, and malformed/error JSON. The returned
+// count matches each fixture while non-image and empty-data parts contribute
+// zero.
 func TestCountGeminiInlineImageOutputs(t *testing.T) {
 	cases := []struct {
-		name    string
-		payload string
-		want    int
+		name    string // table scenario name
+		payload string // upstream response fixture JSON
+		want    int    // expected inline image count
 	}{
 		{
 			name: "camelCase inlineData",
@@ -24,7 +27,8 @@ func TestCountGeminiInlineImageOutputs(t *testing.T) {
 		},
 
 		{
-			// 官方 SDK 与部分中转把字段回成 snake_case。
+			// Accept snake_case fields returned by SDKs and
+			// compatible gateways.
 
 			name: "snake_case inline_data",
 
@@ -66,7 +70,8 @@ func TestCountGeminiInlineImageOutputs(t *testing.T) {
 		},
 
 		{
-			// 非图片的内联附件（例如音频）不能按图片计费。
+			// Non-image attachments, such as audio, do not count as
+			// images.
 
 			name: "non image mime type",
 
@@ -97,8 +102,10 @@ func TestCountGeminiInlineImageOutputs(t *testing.T) {
 	}
 }
 
-// TestObserveGeminiImageOutputs_CumulativeChunksDoNotDoubleCount 验证累积式 SSE 会把同一张图在后续 chunk 里整段重发，逐 chunk 累加会重复计费。
-// 计数器取单个 payload 内的最大值，正是为了挡住这一点。
+// TestObserveGeminiImageOutputs_CumulativeChunksDoNotDoubleCount observes the
+// same one-image payload four times through fresh attempt state. The retained
+// image count remains one, protecting maximum-payload observation against
+// cumulative stream repetition.
 func TestObserveGeminiImageOutputs_CumulativeChunksDoNotDoubleCount(t *testing.T) {
 	c := newGeminiImageTestContext(t)
 	c.Images = 0
@@ -111,6 +118,9 @@ func TestObserveGeminiImageOutputs_CumulativeChunksDoNotDoubleCount(t *testing.T
 	require.Equal(t, 1, c.Images)
 }
 
+// TestObserveGeminiImageOutputs_KeepsLargestChunk observes text, a two-image
+// payload, and trailing usage-only input. The retained counter stays at the
+// largest payload count after the smaller trailing observation.
 func TestObserveGeminiImageOutputs_KeepsLargestChunk(t *testing.T) {
 	c := newGeminiImageTestContext(t)
 	c.Images = 0
@@ -119,14 +129,17 @@ func TestObserveGeminiImageOutputs_KeepsLargestChunk(t *testing.T) {
 	c.ObserveImagesForTest([]byte(geminiImageResponse(
 		`{"inlineData":{"mimeType":"image/png","data":"` + geminiTestPNG + `"}},` +
 			`{"inlineData":{"mimeType":"image/png","data":"` + geminiTestPNG + `"}}`)))
-	// 仅含 usageMetadata 的收尾 chunk 保持已累计图片数。
+	// A usage-only trailing chunk leaves the observed image count
+	// unchanged.
 	c.ObserveImagesForTest([]byte(`{"usageMetadata":{"promptTokenCount":9}}`))
 
 	require.Equal(t, 2, c.Images)
 }
 
-// TestBeginGeminiImageOutputObservation_ResetsPerForward 验证 failover 会拿同一个 gin.Context 重跑 Forward，计数器必须按次重置，
-// 否则失败提供商已经回吐的图会被叠加到成功提供商的账单上。
+// TestBeginGeminiImageOutputObservation_ResetsPerForward manually resets a
+// populated attempt counter before observing another payload. The assertions
+// check direct reset and new observation; this fixture does not invoke a
+// forwarding entry.
 func TestBeginGeminiImageOutputObservation_ResetsPerForward(t *testing.T) {
 	c := newGeminiImageTestContext(t)
 	oneImage := []byte(geminiImageResponse(`{"inlineData":{"mimeType":"image/png","data":"` + geminiTestPNG + `"}}`))
@@ -141,9 +154,10 @@ func TestBeginGeminiImageOutputObservation_ResetsPerForward(t *testing.T) {
 	require.Equal(t, 1, c.Images)
 }
 
-// TestResolveGeminiImageCount 验证 issue #5358：自定义模型名（客户端名与上游映射名都不在白名单里）走 Gemini 原生
-// generateContent 生图，改动前 ImageCount 恒为 0，calculateRecordUsageCost 的按次
-// 计费分支整条不触发，四次生图全部记 $0。
+// TestResolveGeminiImageCount compares observed images under custom names with
+// recognized-name inference and text-only input. Observed counts win,
+// mapped/request names supply the estimate when applicable, and unmatched text
+// models return zero.
 func TestResolveGeminiImageCount(t *testing.T) {
 	oneImage := []byte(geminiImageResponse(`{"inlineData":{"mimeType":"image/png","data":"` + geminiTestPNG + `"}}`))
 	textOnly := []byte(geminiImageResponse(`{"text":"hello"}`))
@@ -153,24 +167,23 @@ func TestResolveGeminiImageCount(t *testing.T) {
 		c.Images = 0
 		c.ObserveImagesForTest(oneImage)
 
-		require.False(t, antigravity.IsImageGenerationModel("nana-banana-2"), "前置条件：白名单判不出自定义名")
 		require.Equal(t, 1, c.ImageCountForTest("nana-banana-2", "nana-banana-2"))
 	})
 
-	t.Run("falls back to requested model name", func(t *testing.T) {
+	t.Run("requested model names do not fabricate output", func(t *testing.T) {
 		c := newGeminiImageTestContext(t)
 		c.Images = 0
 		c.ObserveImagesForTest(textOnly)
 
-		require.Equal(t, 1, c.ImageCountForTest("gemini-3-pro-image-preview", "gemini-3-pro-image-preview"))
+		require.Equal(t, 0, c.ImageCountForTest("gemini-3-pro-image-preview", "gemini-3-pro-image-preview"))
 	})
 
-	t.Run("falls back to mapped upstream model name", func(t *testing.T) {
+	t.Run("mapped model names do not fabricate output", func(t *testing.T) {
 		c := newGeminiImageTestContext(t)
 		c.Images = 0
 		c.ObserveImagesForTest(textOnly)
 
-		require.Equal(t, 1, c.ImageCountForTest("my-image-alias", "gemini-2.5-flash-image"))
+		require.Equal(t, 0, c.ImageCountForTest("my-image-alias", "gemini-2.5-flash-image"))
 	})
 
 	t.Run("text model stays unbilled", func(t *testing.T) {
@@ -181,9 +194,9 @@ func TestResolveGeminiImageCount(t *testing.T) {
 		require.Equal(t, 0, c.ImageCountForTest("gemini-2.5-pro", "gemini-2.5-pro"))
 	})
 
-	t.Run("no counter on context degrades to name heuristic", func(t *testing.T) {
+	t.Run("missing observations remain zero", func(t *testing.T) {
 		c := newGeminiImageTestContext(t)
 		require.Equal(t, 0, c.ImageCountForTest("nana-banana-2", "nana-banana-2"))
-		require.Equal(t, 1, c.ImageCountForTest("gemini-3-pro-image", "gemini-3-pro-image"))
+		require.Equal(t, 0, c.ImageCountForTest("gemini-3-pro-image", "gemini-3-pro-image"))
 	})
 }

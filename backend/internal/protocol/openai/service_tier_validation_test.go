@@ -8,6 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestValidateOpenAIServiceTierField supplies supported, aliased, absent, null,
+// empty, nonstring, and oversized tier fields. Validation must return canonical
+// labels or typed errors whose descriptions contain the bounded value or the
+// nonstring placeholder asserted by each case.
 func TestValidateOpenAIServiceTierField(t *testing.T) {
 	t.Parallel()
 
@@ -67,7 +71,7 @@ func TestValidateOpenAIServiceTierField(t *testing.T) {
 	})
 
 	t.Run("non-string service_tier rejected", func(t *testing.T) {
-		// service_tier 必须为字符串；数字/布尔/对象/数组等类型同样按非法值拒绝。
+		// Numbers, booleans, objects, and arrays are invalid service_tier values.
 		for _, raw := range []string{
 			`{"model":"gpt-5.5","service_tier":123}`,
 			`{"model":"gpt-5.5","service_tier":true}`,
@@ -114,6 +118,9 @@ func TestValidateOpenAIServiceTierField(t *testing.T) {
 	})
 }
 
+// TestNormalizeOpenAIServiceTier checks the fast alias, supported local labels,
+// and unknown strings. The alias must return priority, supported labels retain
+// their canonical value, and unknown labels return nil.
 func TestNormalizeOpenAIServiceTier(t *testing.T) {
 	t.Run("fast maps to priority", func(t *testing.T) {
 		got := NormalizeServiceTier(" fast ")
@@ -122,7 +129,7 @@ func TestNormalizeOpenAIServiceTier(t *testing.T) {
 	})
 
 	t.Run("openai official tiers preserved", func(t *testing.T) {
-		// 合法 service_tier 值原样保留，Codex 可发送 priority、flex 和 ultrafast。
+		// The local label vocabulary includes priority, flex, and ultrafast.
 		for _, tier := range []string{"priority", "flex", "auto", "default", "scale", "ultrafast"} {
 			got := NormalizeServiceTier(tier)
 			require.NotNil(t, got, "tier %q should not be normalized to nil", tier)

@@ -18,11 +18,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// TestOpenAIHandleStreamingAwareError_JSONEscaping supplies quoted, escaped
+// and control-character messages to started error output. It checks SSE frame
+// shape, parseable JSON and exact decoded type/message for each fixture.
 func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 	tests := []struct {
-		name    string
-		errType string
-		message string
+		name    string // fixture case name
+		errType string // client error category
+		message string // client error message
 	}{
 		{
 			name:    "包含双引号的消息",
@@ -61,23 +64,20 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 
 			body := w.Body.String()
 
-			// 验证 SSE 格式：event: error\ndata: {JSON}\n\n
+			// Check SSE framing: event: error\ndata: {JSON}\n\n.
 			assert.True(t, strings.HasPrefix(body, "event: error\n"), "应以 'event: error\\n' 开头")
 			assert.True(t, strings.HasSuffix(body, "\n\n"), "应以 '\\n\\n' 结尾")
 
-			// 提取 data 部分
 			lines := strings.Split(strings.TrimSuffix(body, "\n\n"), "\n")
 			require.Len(t, lines, 2, "应有 event 行和 data 行")
 			dataLine := lines[1]
 			require.True(t, strings.HasPrefix(dataLine, "data: "), "第二行应以 'data: ' 开头")
 			jsonStr := strings.TrimPrefix(dataLine, "data: ")
 
-			// 验证 JSON 合法性
 			var parsed map[string]any
 			err := json.Unmarshal([]byte(jsonStr), &parsed)
 			require.NoError(t, err, "JSON 应能被成功解析，原始 JSON: %s", jsonStr)
 
-			// 验证结构
 			errorObj, ok := parsed["error"].(map[string]any)
 			require.True(t, ok, "应包含 error 对象")
 			assert.Equal(t, tt.errType, errorObj["type"])
@@ -86,6 +86,9 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 	}
 }
 
+// TestOpenAIHandleStreamingAwareErrorWithCode_EmitsStableClassification writes
+// a classified HTTP/2 stream failure after output start. It checks stable
+// client code, absent stream-ID text and intended-status SLA observation.
 func TestOpenAIHandleStreamingAwareErrorWithCode_EmitsStableClassification(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -113,6 +116,9 @@ func TestOpenAIHandleStreamingAwareErrorWithCode_EmitsStableClassification(t *te
 	require.Equal(t, http.StatusBadGateway, streamErr.IntendedStatus)
 }
 
+// TestOpenAIHandleStreamingAwareError_NonStreaming writes an error before any
+// stream starts. It checks the requested HTTP 502 and decoded type/message in
+// the resulting OpenAI JSON envelope.
 func TestOpenAIHandleStreamingAwareError_NonStreaming(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -120,7 +126,6 @@ func TestOpenAIHandleStreamingAwareError_NonStreaming(t *testing.T) {
 
 	DefaultOpenAIErrorOutput().StreamError(c, http.StatusBadGateway, "upstream_error", "test error", false)
 
-	// 非流式应返回 JSON 响应
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 
 	var parsed map[string]any
@@ -132,6 +137,9 @@ func TestOpenAIHandleStreamingAwareError_NonStreaming(t *testing.T) {
 	assert.Equal(t, "test error", errorObj["message"])
 }
 
+// TestOpenAIEnsureForwardErrorResponse_WritesFallbackWhenNotWritten invokes
+// fallback on an empty writer with no upstream error. It checks true
+// invocation, HTTP 502 and the fixed generic error fields.
 func TestOpenAIEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -151,8 +159,9 @@ func TestOpenAIEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testin
 	assert.Equal(t, "Upstream request failed", errorObj["message"])
 }
 
-// TestOpenAIEnsureForwardErrorResponse_AppendsSSEAfterWritten 验证 Writer 写入后追加 SSE 错误，并将 streamStarted 设为 true。
-// 缺少终止事件会使 Codex CLI 报 stream closed before response.completed。
+// TestOpenAIEnsureForwardErrorResponse_AppendsSSEAfterWritten commits HTTP 418
+// and text before fallback. It checks the retained status/content and an
+// appended generic SSE error on that non-Responses route.
 func TestOpenAIEnsureForwardErrorResponse_AppendsSSEAfterWritten(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -162,19 +171,23 @@ func TestOpenAIEnsureForwardErrorResponse_AppendsSSEAfterWritten(t *testing.T) {
 	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
 
 	require.True(t, wrote, "must attempt to communicate the failure to the client via SSE")
-	// 状态码改不了（headers 已 flush），但 body 应该追加 SSE 错误事件。
+	// The committed HTTP status stays fixed while the SSE error is appended.
 	require.Equal(t, http.StatusTeapot, w.Code)
 	assert.Contains(t, w.Body.String(), "already written")
-	// 非 /responses 路径走 legacy event: error 分支。
+	// Non-Responses routes use event: error.
 	assert.Contains(t, w.Body.String(), "event: error\n")
 }
 
-// TestOpenAIEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed 验证 /responses 心跳 Flush 后，ensureForwardErrorResponse 写出 response.failed。
+// TestOpenAIEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed
+// writes literal heartbeat bytes on a Responses route before fallback. It
+// checks retained bytes and an appended failed terminal with the generic
+// classification/message.
 func TestOpenAIEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
-	// 模拟 ping 已 flush 的状态：Writer 已写过 1 个字节
+	// Literal comment bytes establish a started Responses writer here. This fixture
+	// exercises fallback framing directly, without starting the Compact heartbeat worker.
 	_, _ = c.Writer.WriteString(":\n\n")
 
 	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
@@ -188,18 +201,24 @@ func TestOpenAIEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsRespons
 	assert.Contains(t, body, "Upstream request failed")
 }
 
+// TestOpenAIEnsureForwardErrorResponse_CompactKeepaliveOnlyWritesResponseFailed
+// starts Compact heartbeats and sets commitment before protocol content. It
+// checks HTTP 200 and a failed Responses terminal rather than generic
+// event-error framing.
 func TestOpenAIEnsureForwardErrorResponse_CompactKeepaliveOnlyWritesResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
 	MarkOpenAICompactClientStream(c)
 
+	// Retain heartbeat cleanup through the response assertion so its worker cannot
+	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAICompactSSEKeepalive(c, 5*time.Millisecond)
 	defer stop()
 	before := OpenAICompactKeepaliveAdjustedWrittenSize(c)
 	require.Eventually(t, c.Writer.Written, time.Second, time.Millisecond)
 	require.Equal(t, before, OpenAICompactKeepaliveAdjustedWrittenSize(c))
-	// 模拟设置 committed 标记后尚未写出协议事件的错误路径。
+	// Simulate a commit marker set before any protocol event was delivered.
 	MarkResponseCommitted(c)
 
 	require.True(t, DefaultOpenAIErrorOutput().EnsureFallback(c, false))
@@ -208,7 +227,9 @@ func TestOpenAIEnsureForwardErrorResponse_CompactKeepaliveOnlyWritesResponseFail
 	require.NotContains(t, w.Body.String(), "event: error\n")
 }
 
-// TestOpenAIEnsureForwardErrorResponse_AfterDeltaAppendsSingleValidResponseFailed 确认流中只追加一个合法失败终态。
+// TestOpenAIEnsureForwardErrorResponse_AfterDeltaAppendsSingleValidResponseFailed
+// writes one text delta before fallback. It checks two valid JSON SSE frames
+// with matching types and exactly one failed terminal in that output.
 func TestOpenAIEnsureForwardErrorResponse_AfterDeltaAppendsSingleValidResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -233,6 +254,7 @@ func TestOpenAIEnsureForwardErrorResponse_AfterDeltaAppendsSingleValidResponseFa
 		data := strings.TrimPrefix(lines[1], "data: ")
 		require.True(t, json.Valid([]byte(data)), "each downstream SSE frame must contain valid JSON")
 		var event struct {
+			// decoded lifecycle event type
 			Type string `json:"type"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(data), &event))
@@ -244,11 +266,16 @@ func TestOpenAIEnsureForwardErrorResponse_AfterDeltaAppendsSingleValidResponseFa
 	require.Equal(t, 1, errorEvents)
 }
 
+// TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepaliveWritesSingleJSONFallback
+// commits image whitespace before error fallback. It checks HTTP 200, one
+// valid JSON error document and absence of SSE framing in the response.
 func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepaliveWritesSingleJSONFallback(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 
+	// Retain heartbeat cleanup through the response assertion so its worker cannot
+	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	defer stop()
 	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
@@ -272,11 +299,17 @@ func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepaliveWritesSingleJSONFall
 	require.Equal(t, "Upstream request failed", gjson.Get(w.Body.String(), "error.message").String())
 }
 
+// TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepalivePreservesCompletedJSON
+// writes an image result after whitespace heartbeat output. It checks
+// suppressed fallback, exact retained response bytes and one decoded image
+// JSON document.
 func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepalivePreservesCompletedJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 
+	// Retain heartbeat cleanup through the response assertion so its worker cannot
+	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	defer stop()
 	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
@@ -301,11 +334,17 @@ func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepalivePreservesCompletedJS
 	require.Equal(t, "aW1hZ2U=", gjson.Get(w.Body.String(), "data.0.b64_json").String())
 }
 
+// TestOpenAIEnsureForwardErrorResponse_FastImageJSONKeepalivePreservesCompletedJSON
+// completes image JSON before a delayed heartbeat can run. It checks
+// suppressed fallback, retained bytes and one image response document with no
+// appended SSE.
 func TestOpenAIEnsureForwardErrorResponse_FastImageJSONKeepalivePreservesCompletedJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 
+	// Retain heartbeat cleanup through the response assertion so its worker cannot
+	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAIImagesJSONKeepalive(c, time.Hour)
 	defer stop()
 	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)

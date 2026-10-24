@@ -8,8 +8,28 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// snapshot.go produces full provider payloads and filtered metadata for
+// scheduler cache readers.
+// Snapshot buckets read slim provider metadata before an execution adapter
+// obtains the full credential-bearing record. Metadata keeps the protocol,
+// model, quota and session inputs used before hydration, including selected
+// credential fields such as api_key, while dropping hydrated group graphs and
+// unrelated extra values.
+//
+// The filtered outer maps and membership slices are newly allocated, but
+// retained nested values and scalar pointers continue to refer to the
+// supplied Record. Callers treat those values as shared until encoding
+// completes. Group IDs combine valid direct IDs with membership IDs in
+// first-seen order. Both full and metadata payloads use the same storage wire
+// encoder so consumers see compatible field names and collection shapes.
+
+// ProviderCodec converts stored provider records into full and filtered
+// scheduler payloads.
 type ProviderCodec struct{}
 
+// Encode returns full and metadata JSON for a record wrapped by WrapRecord.
+// Unsupported snapshot implementations and nil records return errors; the
+// caller keeps the wrapped data stable until encoding finishes.
 func (ProviderCodec) Encode(value scheduler.SnapshotProvider) ([]byte, []byte, error) {
 	v, err := RecordValue(value)
 	if err != nil {
@@ -21,11 +41,17 @@ func (ProviderCodec) Encode(value scheduler.SnapshotProvider) ([]byte, []byte, e
 	return marshalSchedulerCacheProvider(*v)
 }
 
+// Decode accepts stored JSON as a string or byte slice and wraps the decoded
+// provider. Unsupported input types or invalid JSON return errors; JSON null
+// produces a wrapped zero record.
 func (ProviderCodec) Decode(raw any) (scheduler.SnapshotProvider, error) {
 	v, err := decodeCachedProvider(raw)
 	return WrapRecord(v), err
 }
 
+// LastUsedAt returns the wrapped record's shared last-used pointer for
+// comparison with the Redis side key. Nil snapshots produce nil, while
+// unsupported snapshot implementations return an error.
 func (ProviderCodec) LastUsedAt(value scheduler.SnapshotProvider) (*time.Time, error) {
 	v, err := RecordValue(value)
 	if err != nil || v == nil {
@@ -34,6 +60,9 @@ func (ProviderCodec) LastUsedAt(value scheduler.SnapshotProvider) (*time.Time, e
 	return v.LastUsedAt, nil
 }
 
+// SetLastUsedAt installs at directly on the wrapped record for a newer Redis
+// side-key observation. Nil snapshots are ignored, and callers treat the
+// installed time pointer as shared.
 func (ProviderCodec) SetLastUsedAt(value scheduler.SnapshotProvider, at *time.Time) error {
 	v, err := RecordValue(value)
 	if err != nil {
@@ -45,10 +74,16 @@ func (ProviderCodec) SetLastUsedAt(value scheduler.SnapshotProvider, at *time.Ti
 	return nil
 }
 
+// Metadata builds the provider data used for candidate filtering before full
+// hydration. New outer maps and membership slices hold retained values;
+// nested mutable values and scalar pointers remain shared with the input.
 func (ProviderCodec) Metadata(value providercore.Record) providercore.Record {
 	return buildSchedulerMetadataProvider(value)
 }
 
+// decodeCachedProvider accepts the string and byte-slice forms returned for
+// Redis provider JSON. Other input types return an error; decoding then uses
+// the complete storage wire representation.
 func decodeCachedProvider(val any) (*providercore.Record, error) {
 	var payload []byte
 	switch raw := val.(type) {
@@ -63,6 +98,9 @@ func decodeCachedProvider(val any) (*providercore.Record, error) {
 	return record, err
 }
 
+// marshalSchedulerCacheProvider encodes the full record and its filtered
+// metadata with the storage wire encoder. A failure in either encoding
+// returns an error, so callers publish only successful payload pairs.
 func marshalSchedulerCacheProvider(provider providercore.Record) ([]byte, []byte, error) {
 	fullPayload, err := MarshalProviderRecord(&provider)
 	if err != nil {
@@ -76,6 +114,17 @@ func marshalSchedulerCacheProvider(provider providercore.Record) ([]byte, []byte
 	return fullPayload, metaPayload, nil
 }
 
+// buildSchedulerMetadataProvider selects the record fields needed by
+// scheduler candidate checks before execution hydration. It retains selected
+// credential and extra values, including api_key, and removes hydrated group
+// graphs.
+//
+// Membership entries keep positive group IDs and scalar identities. The group
+// ID list merges direct IDs with those memberships to keep routing
+// association available when either source is incomplete. Filtering allocates
+// outer maps and slices, but retained nested values and scalar pointers stay
+// shared; consumers need their own recursive copy before mutating that data
+// independently.
 func buildSchedulerMetadataProvider(provider providercore.Record) providercore.Record {
 	return providercore.Record{
 		ID:                      provider.ID,
@@ -108,6 +157,10 @@ func buildSchedulerMetadataProvider(provider providercore.Record) providercore.R
 	}
 }
 
+// filterSchedulerProviderGroups copies positive-ID memberships as scalar
+// provider/group identities and creation times. Empty or wholly invalid input
+// returns nil; hydrated provider and group records are omitted from the new
+// entries.
 func filterSchedulerProviderGroups(providerGroups []providercore.GroupMembership) []providercore.GroupMembership {
 	if len(providerGroups) == 0 {
 		return nil
@@ -130,11 +183,23 @@ func filterSchedulerProviderGroups(providerGroups []providercore.GroupMembership
 	return filtered
 }
 
+// filterSchedulerGroupIDs combines direct group IDs and membership IDs into
+// one positive, duplicate-free routing list. Empty input or a list with no
+// positive identities returns nil.
+//
+// Direct IDs appear first in their supplied order; membership IDs append only
+// when they were not already encountered. A single seen set spans both
+// sources, keeping a provider's group association available when one
+// representation lacks an ID. The output slice is independent of the inputs
+// and preserves first-seen ordering for downstream bucket expansion.
 func filterSchedulerGroupIDs(groupIDs []int64, providerGroups []providercore.GroupMembership) []int64 {
 	if len(groupIDs) == 0 && len(providerGroups) == 0 {
 		return nil
 	}
 
+	// Use one identity set across direct IDs and memberships so the scheduler
+	// can expand groups without duplicate entries or losing membership-only
+	// identities.
 	seen := make(map[int64]struct{}, len(groupIDs)+len(providerGroups))
 	filtered := make([]int64, 0, len(groupIDs)+len(providerGroups))
 	for _, id := range groupIDs {
@@ -163,10 +228,16 @@ func filterSchedulerGroupIDs(groupIDs []int64, providerGroups []providercore.Gro
 	return filtered
 }
 
+// filterSchedulerCredentials copies selected non-nil credential entries into
+// a new outer map for pre-hydration checks. Nested values remain shared,
+// api_key is retained, and empty filtered output returns nil.
 func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
+	// Candidate filtering and Gemini quota prechecks run before full hydration;
+	// retain the configured identity, model and protocol fields their provider
+	// methods consume.
 	keys := []string{
 		"model_mapping",
 		"compact_model_mapping",
@@ -180,7 +251,9 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"api_key",
 		"project_id",
 		"oauth_type",
-		// Gemini 配额预检在补全凭据前执行，需要第三方来源和官方等级来选择配额策略。
+		// Gemini quota checks distinguish third-party providers and official tiers
+		// before hydration, so these credentials select the applicable local quota
+		// policy.
 		"provider_type",
 		"tier_id",
 		"plan_type",
@@ -197,10 +270,16 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	return filtered
 }
 
+// filterSchedulerExtra copies selected non-nil runtime and capability entries
+// into a new outer metadata map. Nested values remain shared; empty or wholly
+// unselected input returns nil.
 func filterSchedulerExtra(extra map[string]any) map[string]any {
 	if len(extra) == 0 {
 		return nil
 	}
+	// Metadata consumers evaluate quota windows, session capacity and protocol
+	// capabilities before hydration, so this allowlist carries the runtime
+	// observations used by those checks.
 	keys := []string{
 		"quota_limit",
 		"quota_used",
@@ -210,11 +289,17 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"quota_daily_reset_mode",
 		"quota_daily_reset_hour",
 		"quota_weekly_limit",
+		"quota_monthly_limit",
 		"quota_weekly_used",
+		"quota_monthly_used",
 		"quota_weekly_start",
+		"quota_monthly_start",
 		"quota_weekly_reset_mode",
+		"quota_monthly_reset_mode",
 		"quota_weekly_reset_day",
+		"quota_monthly_reset_day",
 		"quota_weekly_reset_hour",
+		"quota_monthly_reset_hour",
 		"quota_reset_timezone",
 		"window_cost_limit",
 		"window_cost_sticky_reserve",
@@ -225,9 +310,9 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_compact_mode",
 		"openai_native_compaction_v2_mode",
 		"openai_responses_continuation_supported",
-		// 候选过滤 ListSchedulableProviders 读取此快照，IsModelSupported 使用这两个透传开关决定是否跳过 model_mapping。
-		// 丢失开关会使选号退回白名单检查，即使提供商可透传，也可能被判为 model_not_supported，
-		// 导致单独测试提供商成功、网关返回 no available providers。
+		// Candidate filtering reads this snapshot, so retain the passthrough mode inputs
+		// used when evaluating a provider's protocol and model support.
+		// A snapshot missing these settings can disagree with the full provider record.
 		"openai_passthrough",
 		"openai_oauth_passthrough",
 		"codex_fingerprint_mode",
@@ -244,7 +329,9 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"auto_pause_5h_disabled",
 		"auto_pause_7d_disabled",
 		"model_rate_limits",
-		// 媒体资格检查使用管理员覆盖值和计费观测，调度缓存同时保存这两项。
+		// Grok media eligibility combines the administrator override with observed
+		// billing access, so retain both sources for pre-hydration candidate
+		// checks.
 		providercore.GrokMediaEligibleExtraKey,
 		"grok_billing_snapshot",
 	}

@@ -11,47 +11,50 @@ import (
 	"github.com/google/uuid"
 )
 
-// ResponsesFailedError 对齐 OpenAI Responses 协议 error 子对象。
+// stream_error.go writes terminal Responses failure events and derives their
+// response IDs and client error codes.
+// After Responses streaming begins, clients recognize failure through a
+// terminal response.failed object. That object carries an ID, creation
+// timestamp and empty output array so clients can complete their response state
+// even when generation never produced output.
+
+// ResponsesFailedError is the error object in an OpenAI Responses failure.
 type ResponsesFailedError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string `json:"code"`    // client machine-readable error code
+	Message string `json:"message"` // client-safe failure description text
 }
 
-// ResponsesFailedBody 使用 apicompat.makeResponsesCompletedEvent 的 response 字段。
-// Output 使用空切片，序列化为 []。CreatedAt 总是输出，缺失时严格客户端会报 missing field 'created_at'。
+// ResponsesFailedBody is the response object carried by a failure event. The
+// writer supplies an empty Output slice and CreatedAt for clients that require
+// these fields.
 type ResponsesFailedBody struct {
-	ID        string               `json:"id"`
-	Object    string               `json:"object"`
-	CreatedAt int64                `json:"created_at"`
-	Model     string               `json:"model,omitempty"`
-	Status    string               `json:"status"`
-	Output    []any                `json:"output"`
-	Error     ResponsesFailedError `json:"error"`
+	// synthetic response correlation identifier
+	ID        string `json:"id"`
+	Object    string `json:"object"`     // response object type label
+	CreatedAt int64  `json:"created_at"` // Unix seconds
+	// optional trimmed request model
+	Model  string `json:"model,omitempty"`
+	Status string `json:"status"` // failed response status label
+	// Output is an empty array in WriteResponsesFailedSSE, allowing clients
+	// to read the ordinary response output shape even when generation
+	// failed before content.
+	Output []any                `json:"output"`
+	Error  ResponsesFailedError `json:"error"` // terminal client error details
 }
 
-// ResponsesFailedEvent 是写入 SSE data 行的顶层结构。
-// 故意不带 sequence_number：spec 标记可选，且本函数被调用时无法可靠拿到 last seq。
+// ResponsesFailedEvent is the top-level JSON object on an SSE data line. It
+// omits sequence_number because this writer does not know the last emitted
+// sequence.
 type ResponsesFailedEvent struct {
-	Type     string              `json:"type"`
-	Response ResponsesFailedBody `json:"response"`
+	Type     string              `json:"type"`     // terminal failure event type
+	Response ResponsesFailedBody `json:"response"` // failed response metadata object
 }
 
-// WriteResponsesFailedSSE 在流已经开始后，按 OpenAI Responses 协议写出 response.failed SSE 事件。
-//
-// 必要性：一旦 SSE 头和任意数据（例如等待槽位时的 ping comment）已经 flush，
-// HTTP 200 状态码就被固化。此后若网关需要回报错误，只能继续通过 SSE 事件传达。
-// 通用的 `event: error` 帧不是 Responses 协议规定的终止事件，
-// Codex CLI 等严格 SDK 会因为没收到 `response.completed/failed/incomplete/cancelled`
-// 而抛出 "stream closed before response.completed"。
-//
-// 字段集对齐 apicompat.makeResponsesCompletedEvent：id/object/model/status/output/error。
-// 故意不写 sequence_number：本函数被调用时无法可靠拿到当前流的 last sequence，
-// 而 OpenAI spec 将 sequence_number 设为可选；省略避免破坏单调性约束。
-//
-// 返回 true 表示已尝试 SSE 写出（不论 Write 是否成功，caller 都应直接 return）。
-// 返回 false 表示 writer 不支持 Flusher，无法以 SSE 形式回报错误；
-// 此时 caller 也无法回退到 JSON（HTTP 200 已固化），通常意味着连接已经损坏，
-// 应当让请求处理函数 return，由上层关闭连接。
+// WriteResponsesFailedSSE handles a terminal response.failed event for an
+// already started stream. Callers provide a Gin writer and end the request
+// after true, including marshal or write failure attached to Gin. False means
+// Flush is unavailable, so the caller may choose another protocol error path;
+// committed HTTP status remains fixed.
 func WriteResponsesFailedSSE(c *gin.Context, errType, code, message, requestID, model string) bool {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -73,11 +76,17 @@ func WriteResponsesFailedSSE(c *gin.Context, errType, code, message, requestID, 
 			},
 		},
 	})
+	// Attach serialization failure to the request and return handled,
+	// preventing callers from appending a second incompatible envelope to
+	// the started stream.
 	if err != nil {
 		_ = c.Error(err)
 		return true
 	}
 
+	// Attach delivery failure and finish this error path; the committed
+	// stream cannot recover by switching to an ordinary JSON status
+	// response.
 	if _, err := fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", payload); err != nil {
 		_ = c.Error(err)
 		return true
@@ -86,14 +95,17 @@ func WriteResponsesFailedSSE(c *gin.Context, errType, code, message, requestID, 
 	return true
 }
 
-// InboundIsResponses 判断请求是否属于 Responses 路由，包括 root 和 compact。
-// FullPath 的后缀或 /responses/ 子串覆盖 /v1/responses、/responses、/backend-api/codex/responses 及其 compact 子路径。
-// 通配模式 /v1/responses/*action 同样包含 /responses/。GetInboundEndpoint 会区分 EndpointResponses 和 EndpointResponsesCompact，此处将两者都视为 Responses。
+// InboundIsResponses recognizes Responses roots and subpaths for terminal error
+// formatting. It prefers the matched Gin path, then falls back to URL.Path when
+// unmatched; nil contexts and empty paths do not identify a Responses entry.
 func InboundIsResponses(c *gin.Context) bool {
 	if c == nil {
 		return false
 	}
 	p := strings.TrimRight(c.FullPath(), "/")
+	// Unmatched test contexts and early error paths lack a Gin route
+	// pattern; use their URL path to select the same terminal Responses
+	// envelope.
 	if p == "" && c.Request != nil && c.Request.URL != nil {
 		p = strings.TrimRight(c.Request.URL.Path, "/")
 	}
@@ -103,8 +115,10 @@ func InboundIsResponses(c *gin.Context) bool {
 	return strings.HasSuffix(p, "/responses") || strings.Contains(p, "/responses/")
 }
 
-// MapResponsesErrorCode 把内部 errType 映射为 Responses 协议常见的 error.code。
-// 无明确映射时原样返回，保证至少可读。
+// MapResponsesErrorCode uses the first supplied code when that value is
+// nonempty. Later variadic entries are ignored; otherwise known error types are
+// mapped, unknown types pass through, and server or empty types use
+// server_error.
 func MapResponsesErrorCode(errType string, code ...string) string {
 	if len(code) > 0 && code[0] != "" {
 		return code[0]
@@ -127,10 +141,16 @@ func MapResponsesErrorCode(errType string, code ...string) string {
 	}
 }
 
-// SynthesizeResponseID 根据传入的关联 ID 生成响应 ID。
+// SynthesizeResponseID prefixes a trimmed telemetry request ID after removing
+// hyphens. Blank IDs use a newly generated UUID with its hyphens removed,
+// allowing a failure event to carry an ID even without request correlation
+// metadata.
 func SynthesizeResponseID(requestID string) string {
 	if requestID = strings.TrimSpace(requestID); requestID != "" {
 		return "resp_" + strings.ReplaceAll(requestID, "-", "")
 	}
+	// Generate a response identifier when correlation is absent, retaining
+	// the resp_ shape expected by clients reading terminal Responses
+	// events.
 	return "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 }

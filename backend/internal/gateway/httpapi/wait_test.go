@@ -15,9 +15,13 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	httptestkit "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// TestConcurrencyHelper_TryAcquireUserSlot injects successful user acquisition
+// through the hook store. The helper returns ownership and invoking its release
+// increments the underlying cleanup count.
 func TestConcurrencyHelper_TryAcquireUserSlot(t *testing.T) {
 	cache := &httptestkit.ConcurrencyHooks{
 		AcquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -39,6 +43,9 @@ func TestConcurrencyHelper_TryAcquireUserSlot(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.ReleaseUserCalled))
 }
 
+// TestConcurrencyHelper_TryAcquireProviderSlot_NotAcquired injects busy
+// provider capacity. It requires false admission, nil release and no cleanup
+// attempt when the fixture never granted a slot.
 func TestConcurrencyHelper_TryAcquireProviderSlot_NotAcquired(t *testing.T) {
 	cache := &httptestkit.ConcurrencyHooks{
 		AcquireProviderSlotFn: func(ctx context.Context, providerID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -58,6 +65,7 @@ func TestConcurrencyHelper_TryAcquireProviderSlot_NotAcquired(t *testing.T) {
 	require.Equal(t, int32(0), atomic.LoadInt32(&cache.ReleaseProviderCalled))
 }
 
+// newHelperTestContext builds a Gin HTTP request and response recorder.
 func newHelperTestContext(method, path string) (*gin.Context, *httptest.ResponseRecorder) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -65,6 +73,9 @@ func newHelperTestContext(method, path string) (*gin.Context, *httptest.Response
 	return c, rec
 }
 
+// TestWaitForSlotWithPingTimeout_ProviderAndUserAcquire supplies rejection
+// followed by admission for both slot kinds. Each wait retries acquisition and
+// returns a release while nonstreaming requests keep stream state unchanged.
 func TestWaitForSlotWithPingTimeout_ProviderAndUserAcquire(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		ProviderSeq: []bool{false, true},
@@ -102,6 +113,9 @@ func TestWaitForSlotWithPingTimeout_ProviderAndUserAcquire(t *testing.T) {
 	})
 }
 
+// TestAcquireUserSlotWithWait_ImmediateAcquireSkipsWaitQueue grants configured
+// user capacity on the first attempt. It requires one acquisition and release
+// while both queue-registration and queue-removal counters remain zero.
 func TestAcquireUserSlotWithWait_ImmediateAcquireSkipsWaitQueue(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		UserSeq: []bool{true},
@@ -115,6 +129,8 @@ func TestAcquireUserSlotWithWait_ImmediateAcquireSkipsWaitQueue(t *testing.T) {
 	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
 	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
 	streamStarted := false
+	ctx, stages := timing.WithStages(c.Request.Context(), time.Now(), nil)
+	c.Request = c.Request.WithContext(scheduler.WithWaitObservation(ctx, stages.Wait))
 
 	release, err := helper.AcquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
 	require.NoError(t, err)
@@ -127,6 +143,9 @@ func TestAcquireUserSlotWithWait_ImmediateAcquireSkipsWaitQueue(t *testing.T) {
 	require.Equal(t, 1, cache.UserReleaseCalls)
 }
 
+// TestAcquireUserSlotWithWait_TracksAPIKeySlot binds an effective Key before
+// user admission. It requires tracking that Key identity and releasing both
+// user capacity and Key statistics afterward.
 func TestAcquireUserSlotWithWait_TracksAPIKeySlot(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		UserSeq: []bool{true},
@@ -141,6 +160,8 @@ func TestAcquireUserSlotWithWait_TracksAPIKeySlot(t *testing.T) {
 	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
 	c.Set("gateway_effective_key", &apikey.APIKey{ID: 77})
 	streamStarted := false
+	ctx, stages := timing.WithStages(c.Request.Context(), time.Now(), nil)
+	c.Request = c.Request.WithContext(scheduler.WithWaitObservation(ctx, stages.Wait))
 
 	release, err := helper.AcquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
 	require.NoError(t, err)
@@ -154,6 +175,9 @@ func TestAcquireUserSlotWithWait_TracksAPIKeySlot(t *testing.T) {
 	require.Equal(t, 1, cache.APIKeyReleaseCalls)
 }
 
+// TestTryAcquireUserSlotForAPIKey_TracksAPIKeySlot passes a Key ID during
+// immediate user acquisition. It protects paired user and Key-statistics
+// ownership and cleanup through the returned callback.
 func TestTryAcquireUserSlotForAPIKey_TracksAPIKeySlot(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		UserSeq: []bool{true},
@@ -179,6 +203,9 @@ func TestTryAcquireUserSlotForAPIKey_TracksAPIKeySlot(t *testing.T) {
 	require.Equal(t, 1, cache.APIKeyReleaseCalls)
 }
 
+// TestAcquireUserSlotWithWait_WaitSuccessDecrementsBeforeReturn grants capacity
+// after one rejected attempt and admitted wait entry. Queue occupancy must be
+// removed before return, with user cleanup retained until release.
 func TestAcquireUserSlotWithWait_WaitSuccessDecrementsBeforeReturn(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		UserSeq:     []bool{false, true},
@@ -193,6 +220,8 @@ func TestAcquireUserSlotWithWait_WaitSuccessDecrementsBeforeReturn(t *testing.T)
 	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
 	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
 	streamStarted := false
+	ctx, stages := timing.WithStages(c.Request.Context(), time.Now(), nil)
+	c.Request = c.Request.WithContext(scheduler.WithWaitObservation(ctx, stages.Wait))
 
 	release, err := helper.AcquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
 	require.NoError(t, err)
@@ -200,6 +229,8 @@ func TestAcquireUserSlotWithWait_WaitSuccessDecrementsBeforeReturn(t *testing.T)
 
 	require.Equal(t, 2, cache.UserAcquireCalls)
 	require.Equal(t, 1, cache.WaitIncrementCalls)
+	require.GreaterOrEqual(t, stages.Snapshot()["user_slot_wait_ms"], int64(100))
+	require.Equal(t, int64(0), stages.Snapshot()["provider_slot_wait_ms"])
 	require.Equal(t, 20, cache.WaitMaxWait)
 	require.Equal(t, 1, cache.WaitDecrementCalls)
 
@@ -207,6 +238,9 @@ func TestAcquireUserSlotWithWait_WaitSuccessDecrementsBeforeReturn(t *testing.T)
 	require.Equal(t, 1, cache.UserReleaseCalls)
 }
 
+// TestAcquireUserSlotWithWait_WaitQueueFull rejects user capacity and queue
+// admission. It requires a user queue-full error and no decrement for the wait
+// count that was never acquired.
 func TestAcquireUserSlotWithWait_WaitQueueFull(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		UserSeq: []bool{false},
@@ -220,6 +254,8 @@ func TestAcquireUserSlotWithWait_WaitQueueFull(t *testing.T) {
 	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
 	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
 	streamStarted := false
+	ctx, stages := timing.WithStages(c.Request.Context(), time.Now(), nil)
+	c.Request = c.Request.WithContext(scheduler.WithWaitObservation(ctx, stages.Wait))
 
 	release, err := helper.AcquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
 	require.Nil(t, release)
@@ -230,6 +266,9 @@ func TestAcquireUserSlotWithWait_WaitQueueFull(t *testing.T) {
 	require.Equal(t, 0, cache.WaitDecrementCalls)
 }
 
+// TestAcquireUserSlotWithWait_TimeoutDecrementsWaitQueue keeps user capacity
+// busy through the timeout. It requires timed-out concurrency classification,
+// one queue removal and no user release for an unacquired slot.
 func TestAcquireUserSlotWithWait_TimeoutDecrementsWaitQueue(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		UserSeq:     []bool{false, false, false},
@@ -255,12 +294,17 @@ func TestAcquireUserSlotWithWait_TimeoutDecrementsWaitQueue(t *testing.T) {
 	require.Equal(t, 0, cache.UserReleaseCalls)
 }
 
+// TestAcquireUserSlotWithWait_RequestCancelDecrementsWaitQueue cancels from the
+// wait-registration hook. It requires the cancellation cause, confirmed queue
+// cleanup and no release of user capacity that was never acquired.
 func TestAcquireUserSlotWithWait_RequestCancelDecrementsWaitQueue(t *testing.T) {
 	cancelled := make(chan struct{})
 	var cancel context.CancelFunc
 	cache := &httptestkit.ConcurrencySequence{
 		UserSeq:     []bool{false, false},
 		WaitAllowed: true,
+		// Cancel at queue registration so the test observes cleanup of confirmed
+		// waiting ownership before any later capacity grant can occur.
 		WaitIncrementHook: func() {
 			cancel()
 			close(cancelled)
@@ -279,6 +323,8 @@ func TestAcquireUserSlotWithWait_RequestCancelDecrementsWaitQueue(t *testing.T) 
 	defer cancel()
 	c.Request = c.Request.WithContext(reqCtx)
 	streamStarted := false
+	ctx, stages := timing.WithStages(c.Request.Context(), time.Now(), nil)
+	c.Request = c.Request.WithContext(scheduler.WithWaitObservation(ctx, stages.Wait))
 
 	release, err := helper.AcquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
 	<-cancelled
@@ -289,6 +335,9 @@ func TestAcquireUserSlotWithWait_RequestCancelDecrementsWaitQueue(t *testing.T) 
 	require.Equal(t, 0, cache.UserReleaseCalls)
 }
 
+// TestWaitForSlotWithPingTimeout_TimeoutAndStreamPing keeps provider capacity
+// busy in ordinary and streaming waits. Both time out, while the streaming case
+// writes comment heartbeats and sets its commitment flag.
 func TestWaitForSlotWithPingTimeout_TimeoutAndStreamPing(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		ProviderSeq: []bool{false, false, false},
@@ -325,6 +374,9 @@ func TestWaitForSlotWithPingTimeout_TimeoutAndStreamPing(t *testing.T) {
 	})
 }
 
+// TestWaitForSlotWithPingTimeout_ParentContextCanceled starts with an already
+// canceled request. The helper must return context cancellation directly rather
+// than classify it as a concurrency timeout.
 func TestWaitForSlotWithPingTimeout_ParentContextCanceled(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		ProviderSeq: []bool{false},
@@ -349,6 +401,9 @@ func TestWaitForSlotWithPingTimeout_ParentContextCanceled(t *testing.T) {
 	require.False(t, errors.As(err, &cErr))
 }
 
+// TestWaitForSlotWithPingTimeout_AcquireError injects a Redis acquisition
+// failure. It requires nil ownership and preserves that error text instead of
+// waiting until a synthetic capacity timeout.
 func TestWaitForSlotWithPingTimeout_AcquireError(t *testing.T) {
 	errCache := &httptestkit.ConcurrencySequenceWithError{
 		Err: errors.New("redis unavailable"),
@@ -368,6 +423,9 @@ func TestWaitForSlotWithPingTimeout_AcquireError(t *testing.T) {
 	require.Contains(t, err.Error(), "redis unavailable")
 }
 
+// TestAcquireProviderSlotWithWaitTimeout_ImmediateAttemptBeforeBackoff sets a
+// budget shorter than initial scheduler backoff. At least one acquisition
+// attempt must occur before the wait returns its timeout error.
 func TestAcquireProviderSlotWithWaitTimeout_ImmediateAttemptBeforeBackoff(t *testing.T) {
 	cache := &httptestkit.ConcurrencySequence{
 		ProviderSeq: []bool{false},

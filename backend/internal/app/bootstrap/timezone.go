@@ -8,7 +8,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/timezone"
 )
 
-// InitTimezone 在进程引导时设置 time.Local，后续装配使用该时区构造 Calendar。
+// timezone.go initializes the process timezone used by application calendars.
+// Application calendars capture the process timezone after bootstrap. Loading
+// the configured location before publishing it leaves time.Local unchanged on
+// invalid names, while an empty setting selects Asia/Shanghai for subsequent
+// calendar construction and time reporting.
+
+// InitTimezone loads a location and publishes it through time.Local during
+// bootstrap. Empty names select Asia/Shanghai; invalid names return an error
+// before changing the process timezone, so call it before concurrent calendar
+// consumers start.
 func InitTimezone(name string) error {
 	if name == "" {
 		name = "Asia/Shanghai"

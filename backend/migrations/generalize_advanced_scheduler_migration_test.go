@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGeneralizeAdvancedSchedulerMigration 锁定调度器类型约束的目标表与类型。
+// TestGeneralizeAdvancedSchedulerMigration inspects the scheduler constraint update.
+// It requires lookup scoped to the groups table and check constraints, plus
+// the declaration permitting basic and advanced scheduler values.
 func TestGeneralizeAdvancedSchedulerMigration(t *testing.T) {
 	content, err := FS.ReadFile("238_generalize_advanced_scheduler.sql")
 	require.NoError(t, err)

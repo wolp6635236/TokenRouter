@@ -12,6 +12,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// TestBuildProviderForCreateRequiresCustomGeminiThirdPartyBaseURL supplies
+// third-party Gemini credentials with Google and custom endpoints. It checks the
+// required-base error reason for Google and successful record construction for
+// the custom endpoint.
 func TestBuildProviderForCreateRequiresCustomGeminiThirdPartyBaseURL(t *testing.T) {
 	invalidInput := &CreateProviderInput{
 		Name:     "third-party Gemini",
@@ -41,7 +45,10 @@ func TestBuildProviderForCreateRequiresCustomGeminiThirdPartyBaseURL(t *testing.
 	require.NotNil(t, provider)
 }
 
-// TestBuildProviderForCreateNormalizesLegacyOpenAIConfigurationForCreateAndImport 检查通用导入调用 CreateProvider，创建时清理废弃 OpenAI 配置。
+// TestBuildProviderForCreateNormalizesLegacyOpenAIConfigurationForCreateAndImport
+// supplies legacy workload and Responses fields to the shared constructor. It
+// checks migrated protocol selection, deprecated-key removal, false continuation,
+// and retention of an unrelated nested Extra value.
 func TestBuildProviderForCreateNormalizesLegacyOpenAIConfigurationForCreateAndImport(t *testing.T) {
 	input := &CreateProviderInput{
 		Name:     "legacy-openai",

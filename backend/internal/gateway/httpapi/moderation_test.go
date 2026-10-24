@@ -15,6 +15,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/team"
 )
 
+// TestBuildContentModerationInputTeamKeyUsesActorAndKeepsBillingAttribution
+// supplies distinct team actor and owner records. It requires actor risk
+// identity, owner billing identity and independently copied team ID storage in
+// the check input.
 func TestBuildContentModerationInputTeamKeyUsesActorAndKeepsBillingAttribution(t *testing.T) {
 	c := newContentModerationHelperTestContext()
 	teamID := int64(301)
@@ -32,10 +36,13 @@ func TestBuildContentModerationInputTeamKeyUsesActorAndKeepsBillingAttribution(t
 	require.Equal(t, "member@example.com", input.UserEmail)
 	require.Equal(t, int64(101), input.BillingUserID)
 	require.Equal(t, teamID, *input.TeamID)
-	// 风控快照复制团队 ID，使用独立指针。
+	// The moderation snapshot owns its copy of the team ID.
 	require.NotSame(t, apiKey.TeamID, input.TeamID)
 }
 
+// TestBuildOpenAICyberWarningInputTeamKeyUsesActorEmail supplies separate team
+// actor and billing owner evidence. The warning input must retain the member
+// email and actor ID while billing and team attribution remain distinct.
 func TestBuildOpenAICyberWarningInputTeamKeyUsesActorEmail(t *testing.T) {
 	c := newContentModerationHelperTestContext()
 	teamID := int64(301)
@@ -55,6 +62,9 @@ func TestBuildOpenAICyberWarningInputTeamKeyUsesActorEmail(t *testing.T) {
 	require.Equal(t, teamID, *input.TeamID)
 }
 
+// TestResolveContentModerationIdentityPersonalKeyFallsBackToBillingUser
+// supplies a personal Key and matching subject. It requires the same
+// risk/billing identity with its user email and no team identifier.
 func TestResolveContentModerationIdentityPersonalKeyFallsBackToBillingUser(t *testing.T) {
 	apiKey := &apikey.APIKey{
 		UserID: 303,
@@ -69,6 +79,9 @@ func TestResolveContentModerationIdentityPersonalKeyFallsBackToBillingUser(t *te
 	require.Nil(t, identity.TeamID)
 }
 
+// TestResolveContentModerationIdentityTeamKeyWithoutActorUsesKeyOwnerAndMembership
+// omits ActorUser but supplies Key user and membership evidence. It requires
+// member risk identity/email with the separately loaded owner billing ID.
 func TestResolveContentModerationIdentityTeamKeyWithoutActorUsesKeyOwnerAndMembership(t *testing.T) {
 	teamID := int64(404)
 	apiKey := &apikey.APIKey{
@@ -86,6 +99,9 @@ func TestResolveContentModerationIdentityTeamKeyWithoutActorUsesKeyOwnerAndMembe
 	require.Equal(t, teamID, *identity.TeamID)
 }
 
+// TestResolveContentModerationIdentityWithoutAPIKeyFallsBackToSubject supplies
+// subject identity with no Key evidence. It requires that subject in both
+// roles, empty email and no team attribution.
 func TestResolveContentModerationIdentityWithoutAPIKeyFallsBackToSubject(t *testing.T) {
 	identity := ResolveContentModerationIdentity(nil, authctx.AuthSubject{UserID: 707})
 
@@ -95,7 +111,8 @@ func TestResolveContentModerationIdentityWithoutAPIKeyFallsBackToSubject(t *test
 	require.Nil(t, identity.TeamID)
 }
 
-// newContentModerationHelperTestContext 构造具备请求路径的最小网关上下文。
+// newContentModerationHelperTestContext constructs a gateway request used for
+// moderation attribution assertions.
 func newContentModerationHelperTestContext() *gin.Context {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)

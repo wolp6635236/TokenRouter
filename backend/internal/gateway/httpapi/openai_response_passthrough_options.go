@@ -11,7 +11,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/moderationflow"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	gatewaytelemetry "github.com/TokenFlux/TokenRouter/internal/gateway/telemetry"
-	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/logredact"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
@@ -19,11 +18,37 @@ import (
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// openai_response_passthrough_options.go configures passthrough readers with
+// HTTP headers, keepalives and terminal-error callbacks.
+// Passthrough readers retain Responses framing while sharing HTTP health and
+// terminal-error decisions with ordinary output. Their stream bindings carry
+// the current provider and request observations, and their nonstream binding
+// changes the terminal failover observation to identify the passthrough path.
+//
+// Keepalive startup copies the reader's prepared header values onto the live
+// HTTP writer before a heartbeat can commit them. The returned stop callback
+// belongs to the reader's lifetime. Passthrough header relay includes quota
+// and turn-state policy, while model observation uses the request observer
+// established during attempt preparation. These choices keep timeout and error
+// handling attached to the response whose bytes the client receives.
+
+// PassthroughOptions binds passthrough stream and buffered readers to the
+// current HTTP attempt. Callers establish model observation during attempt
+// preparation and retain c, provider and dependencies until reading completes.
+// The reader owns its returned heartbeat-stop callback, while the execution
+// caller closes the response body.
+//
+// Startup copies prepared header slices before starting a configured
+// heartbeat, so the writer commits the reader's current metadata. Nonstream
+// terminal classification uses passthrough observations, and stream error
+// callbacks preserve that path marker for Ops. Model, missing-usage and
+// missing-terminal observations remain separate from the entry's completion
+// decision.
 func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider) upstreamopenai.PassthroughOptions {
 	stream := upstreamopenai.StreamOptions{
 		NativeOpenAI: provider != nil && provider.Record.Platform == capability.PlatformOpenAI,
 		MaxLineSize:  OpenAIResponseDefaultMaxLineSize,
-		TTFTMode:     func() string { return p.TTFTMode(ctx) },
+
 		Logf: func(format string, args ...any) {
 			logging.LegacyPrintf("service.openai_gateway", format, args...)
 		},
@@ -59,10 +84,10 @@ func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Co
 		EmptyCompleted: func(id string) error {
 			return NewOpenAIResponsesEmptyCompletedFailoverError(c, ExecutionErrorProvider(provider), id)
 		},
-		BuildOpenAIResponseFailedSSE:        gatewayprovider.BuildOpenAIResponseFailedSSE,
-		WrapOpenAIUpstreamWarningIfCyber:    gatewayprovider.WrapOpenAIUpstreamWarningIfCyber,
-		TruncateString:                      logredact.TruncateUTF8,
-		OpenAIStreamDataStartsTTFT:          gatewayprovider.OpenAIStreamDataStartsTTFT,
+		BuildOpenAIResponseFailedSSE:     gatewayprovider.BuildOpenAIResponseFailedSSE,
+		WrapOpenAIUpstreamWarningIfCyber: gatewayprovider.WrapOpenAIUpstreamWarningIfCyber,
+		TruncateString:                   logredact.TruncateUTF8,
+
 		OpenAIStreamEventIsTerminalWithType: openai.OpenAIStreamEventIsTerminalWithType,
 	}
 	if provider != nil {
@@ -71,19 +96,11 @@ func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Co
 	if p.Options.Configured && p.Options.MaxLineSize > 0 {
 		stream.MaxLineSize = p.Options.MaxLineSize
 	}
-	stream.MarkTime = func(moment upstreamopenai.StreamTime) {
-		switch moment {
-		case upstreamopenai.StreamTimeFlush:
-			MarkOpsTimestamp(c, telemetry.FirstDownstreamFlushAt)
-		case upstreamopenai.StreamTimeData:
-			MarkOpsTimestamp(c, telemetry.FirstSSEDataAt)
-		case upstreamopenai.StreamTimeVisible:
-			MarkOpsTimestamp(c, telemetry.FirstVisibleOutputAt)
-		}
-	}
 	nonstream := p.NonStreamOptions(ctx, c, provider)
 	nonstream.TerminalFailover = func(resp *http.Response, event string, body []byte, message, model string) error {
-		//nolint:revive // 函数返回具体指针类型，直接 return 会把 nil 指针包成非 nil 的 error。
+		// A nil concrete failure means no failover proposal. Return nil as an
+		// interface so the buffered reader can choose its remaining protocol-error path.
+		//nolint:revive // Returning the concrete pointer directly would wrap a nil pointer in a non-nil error.
 		if failure := p.nonStreamingTerminalFailure(c, resp, provider, true, event, body, message, model); failure != nil {
 			return failure
 		}
@@ -99,11 +116,14 @@ func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Co
 			WriteOpenAIPassthroughResponseHeaders(dst, src, p.Headers)
 		},
 		StartKeepalive: func(headers http.Header) func() {
-			// 原 Header 在启动心跳前已设置；这里只把本次输出适配中的元数据同步至 HTTP。
+			// Prepared headers must reach the live writer before a heartbeat can
+			// commit its status; copy value slices to keep later header-map edits separate.
 			for key, values := range headers {
 				c.Writer.Header()[key] = append([]string(nil), values...)
 			}
 			if p.Options.Configured && p.Options.StreamKeepaliveInterval > 0 {
+				// Heartbeat settings store seconds; the reader receives its stop callback
+				// and ends that writer before its own response lifetime finishes.
 				return StartOpenAISSEKeepalive(c, time.Duration(p.Options.StreamKeepaliveInterval)*time.Second)
 			}
 			return func() {}
@@ -119,7 +139,7 @@ func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Co
 			gatewaytelemetry.SuccessMissingUsage(ctx, id, resp.StatusCode, usage, event, disconnected)
 		},
 		MissingTerminal: func(id string) {
-			logging.FromContext(ctx).With(zap.String("component", "service.openai_gateway"), zap.Int64("provider_id", provider.Record.ID), zap.String("upstream_request_id", id)).Info("OpenAI passthrough 上游流在未收到 [DONE] 时结束，疑似断流")
+			logging.FromContext(ctx).With(zap.String("component", "service.openai_gateway"), zap.Int64("provider_id", provider.Record.ID), zap.String("upstream_request_id", id)).Info("OpenAI passthrough upstream stream ended without [DONE], possible interrupted stream")
 		},
 		PassthroughFailoverWithModel: func(id string, body []byte, message, model string) error {
 			return p.NewStreamFailureWithModel(c, provider, true, id, body, message, model)

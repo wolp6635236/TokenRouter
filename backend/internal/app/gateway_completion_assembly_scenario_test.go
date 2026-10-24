@@ -1,7 +1,5 @@
 package app
 
-// 本文件检查 gateway_completion_billing.go、gateway_message_attempts.go 与 gateway_openai_attempts.go 共用的记录器。
-
 import (
 	"context"
 	"testing"
@@ -15,19 +13,34 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
+// Completion and text-attempt assembly must agree on recorder instances while
+// maintaining distinct Messages and OpenAI rate caches. A counting rate
+// repository changes its value between reads, making cache separation visible
+// alongside shared price resolution and prompt-cache reuse.
+
+// completionRateScopeFixture counts rate reads and returns the current fixture
+// multiplier.
 type completionRateScopeFixture struct {
+	// UserGroupRateRepository supplies unused methods; this fixture implements
+	// the rate lookup exercised by both independently cached completion chains.
 	billing.UserGroupRateRepository
-	calls int
-	value float64
+	calls int     // completed rate lookups
+	value float64 // current rate multiplier
 }
 
+// GetByUserAndGroup counts a read and returns a pointer to the current
+// multiplier copy. User and group identifiers are ignored so the scenario can
+// change one source value between recorder-cache reads.
 func (r *completionRateScopeFixture) GetByUserAndGroup(context.Context, int64, int64) (*float64, error) {
 	r.calls++
 	value := r.value
 	return &value, nil
 }
 
-// TestCompletionRuntimeOwnsIsolatedRatesAndSharedRecorders 检查两种完成流程各有独立倍率缓存，执行入口共用 app 构造的完成实例。
+// TestCompletionRuntimeOwnsIsolatedRatesAndSharedRecorders assembles recorders
+// and platform-attempt bindings before any rate read. It checks shared recorder
+// and price-resolver instances, reused prompt-cache storage, and separate rate
+// caches that observe different repository values.
 func TestCompletionRuntimeOwnsIsolatedRatesAndSharedRecorders(t *testing.T) {
 	cfg := &config.Config{}
 	repo := &completionRateScopeFixture{value: 2}
@@ -45,7 +58,8 @@ func TestCompletionRuntimeOwnsIsolatedRatesAndSharedRecorders(t *testing.T) {
 
 	require.Same(t, recorders.Forward, forward.Recorder)
 	require.Same(t, recorders.OpenAI, openai.Recorder)
-	// 后续请求复用装配时创建的摘要缓存。
+	// Bind a digest and look it up through a longer chain to check the
+	// text bindings retain the prompt cache instance supplied during construction.
 	bindings := text.PromptCache
 	bindings.Bind(5, 7, "s:a-u:b", "cache-key", "", time.Hour)
 	require.Same(t, bindings, text.PromptCache)

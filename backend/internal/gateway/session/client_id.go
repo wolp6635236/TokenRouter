@@ -5,12 +5,18 @@ import (
 	"unicode/utf8"
 )
 
-// MaxPersistedSessionIDLength 保留既有数据库列宽；超长整值拒绝，不截断。
+// client_id.go validates client session IDs and selects them from ordered
+// request headers. Validation rejects malformed UTF-8 before trimming, then
+// rejects ASCII controls inside the remaining value and applies the database
+// limit in Unicode characters.
+
+// MaxPersistedSessionIDLength sets the database correlation-column capacity in Unicode
+// characters; validation rejects longer values rather than storing a truncated identity.
 const MaxPersistedSessionIDLength = 255
 
-// SanitizeClientSessionID 规范化客户端提供的原始会话标识：去除首尾空白，包含控制字符
-// （CR、LF、制表符、NUL 等）或超过数据库列上限时整值拒绝，防止日志或请求头
-// 注入内容进入关联数据。缺失或无效输入返回空字符串。
+// SanitizeClientSessionID returns a trimmed, valid correlation ID or empty on
+// rejection. It rejects malformed UTF-8 before trimming, ASCII controls within the
+// trimmed value, and values exceeding the database's Unicode-character capacity.
 func SanitizeClientSessionID(raw string) string {
 	if !utf8.ValidString(raw) {
 		return ""
@@ -22,10 +28,13 @@ func SanitizeClientSessionID(raw string) string {
 	count := 0
 	for _, r := range trimmed {
 		if r < 0x20 || r == 0x7f {
-			// 关联标识含控制字符时丢弃整个值。
+			// Reject the entire ID because storing a filtered value would change its
+			// correlation identity and retain attacker-selected header or log controls.
 			return ""
 		}
 		count++
+		// Reject excess characters so distinct long IDs cannot collapse into
+		// the same database-sized prefix during later persistence or correlation.
 		if count > MaxPersistedSessionIDLength {
 			return ""
 		}
@@ -33,8 +42,12 @@ func SanitizeClientSessionID(raw string) string {
 	return trimmed
 }
 
-// ExtractClientSessionID 按调用方指定的 Header 顺序读取会话 ID，Grok 扩展由对应入口启用。
+// ExtractClientSessionID returns the first valid session ID in the supplied header
+// order. Invalid values allow later names to be tried; grok enables the final
+// X-Grok-Conv-Id candidate, and header must be a nonnil reader.
 func ExtractClientSessionID(header func(string) string, names []string, grok bool) string {
+	// A malformed higher-priority header provides no usable correlation ID;
+	// continue through the caller's order before trying the Grok-specific name.
 	for _, name := range names {
 		if value := SanitizeClientSessionID(header(name)); value != "" {
 			return value

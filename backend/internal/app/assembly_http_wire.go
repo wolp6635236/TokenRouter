@@ -9,7 +9,15 @@ import (
 	serverhttp "github.com/TokenFlux/TokenRouter/internal/server/httpapi"
 )
 
-// httpAssemblyProviders 汇总 HTTP 入口的 Wire provider。
+// assembly_http_wire.go registers HTTP server construction, route mounts, and
+// runtime settings readers with Wire.
+// Panel, authentication, payment, and gateway routes are mounted on the
+// application HTTP server. The graph resolves each mount with its handlers and
+// supplies runtime panel settings, forwarded-header settings, and request
+// logging before server construction.
+
+// httpAssemblyProviders supplies server construction, route mounts, and the
+// runtime settings handlers used by the HTTP application.
 var httpAssemblyProviders = wire.NewSet(
 	nativeHTTPProviders,
 	server.ProviderSet,
@@ -25,4 +33,7 @@ var httpAssemblyProviders = wire.NewSet(
 	serverhttp.NewPanelSettingsHandler,
 	provideRouterRuntime,
 	provideRequestLog,
+	provideMCPOAuth,
+	provideMCPTokens,
+	provideMCPHTTP,
 )

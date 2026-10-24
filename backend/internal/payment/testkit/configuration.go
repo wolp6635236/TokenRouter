@@ -12,7 +12,17 @@ import (
 	paymentadapter "github.com/TokenFlux/TokenRouter/internal/payment/provider"
 )
 
-// Configuration 仅组装原生配置用例，保持测试的环境读取及渠道验证行为。
+// configuration.go assembles payment configuration readers and provider
+// validation for tests using production storage adapters.
+// Payment configuration scenarios reuse the production instance and billing
+// plan readers with their test settings. This helper also reads process
+// environment overrides and validates provider drafts through the production
+// factory, so tests exercise each constructor's actual validation depth.
+
+// Configuration binds Ent instance/plan readers, supplied settings, and legacy
+// key bytes to a payment configuration service. It uses process environment
+// lookup and the production provider factory; nil client supports pure parsing
+// paths, while persisted reads still require a usable client.
 func Configuration(client *dbent.Client, settings payment.ConfigurationSettings, key []byte) *payment.ConfigService {
 	var store payment.ConfigurationStore
 	if client != nil {

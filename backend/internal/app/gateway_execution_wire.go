@@ -8,7 +8,15 @@ import (
 	gatewayadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 )
 
-// gatewayExecutionProviders 绑定网关执行器、凭据、健康反馈和会话状态的构造函数。
+// gateway_execution_wire.go registers gateway platform executors, request
+// credentials, response adapters, and completion rate readers with Wire.
+// Gateway text and media entry points need platform executors with request
+// credentials and response-state adapters. Wire supplies those executors
+// alongside provider route planning and the separate Forward and OpenAI rate
+// resolvers used by completion recording.
+
+// gatewayExecutionProviders supplies platform execution, credentials, response
+// state, and rate-reader constructors used by the gateway graph.
 var gatewayExecutionProviders = wire.NewSet(
 	provideCodexTurnStateHeaders,
 	provideGrokCredentialRecovery,

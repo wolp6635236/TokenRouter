@@ -2,49 +2,76 @@ package ops
 
 import "time"
 
-// UserErrorRequest 是用户错误请求的脱敏视图，字段按白名单提供。
-// message 是网关标准化描述，key_name 是用户在 KeysView 中可见的自有 API Key 名称。
-// client_ip、user_agent、group_name、request_type 和 stream 是用户自己的请求属性，
-// 根据 2026-07-03 的产品决定开放，与用量明细展示的字段一致。
-// error_body 在详情接口 GetUserErrorRequestDetail 校验记录归属后返回。
-// provider、api_key_prefix、upstream_endpoint 和 user_email 属于内部敏感字段，输出时需要移除。
+// user_error.go converts internal error records and classifications into
+// user-facing request summaries and details.
+// User error responses copy a fixed set of request fields from internal error
+// logs and translate stored classifications into frontend category codes.
+// Ownership is checked by GetUserErrorRequestDetail before conversion; the
+// converters copy captured body text and retain selected pointers from the
+// supplied record.
+
+// UserErrorRequest carries the request fields selected for the owning user
+// response.
 type UserErrorRequest struct {
-	RequestID       string    `json:"request_id"`
-	ID              int64     `json:"id"`
-	CreatedAt       time.Time `json:"created_at"`
-	Model           string    `json:"model"`
-	InboundEndpoint string    `json:"inbound_endpoint"`
-	StatusCode      int       `json:"status_code"`
-	Category        string    `json:"category"`
-	Platform        string    `json:"platform"`
-	Message         string    `json:"message"`
-	KeyName         string    `json:"key_name"`
-	KeyDeleted      bool      `json:"key_deleted"`
-	ClientIP        string    `json:"client_ip,omitempty"`
-	GroupName       string    `json:"group_name,omitempty"`
-	RequestType     *int16    `json:"request_type,omitempty"`
-	Stream          bool      `json:"stream"`
-	UserAgent       string    `json:"user_agent,omitempty"`
+	RequestID string    `json:"request_id"` // stored platform request identifier
+	ID        int64     `json:"id"`         // persisted error observation identity
+	CreatedAt time.Time `json:"created_at"` // stored error creation time
+	// Model prefers nonempty RequestedModel from the internal error log and
+	// otherwise uses its execution Model. This keeps the response label tied to
+	// the recorded requested model when available.
+	Model           string `json:"model"`            // user-visible requested model label
+	InboundEndpoint string `json:"inbound_endpoint"` // observed incoming endpoint path
+	// StatusCode copies the internal query display status. PostgreSQL prefers a
+	// nonnull upstream status, then client status, then zero, so this value can
+	// differ from the final client response code.
+	StatusCode int    `json:"status_code"`
+	Category   string `json:"category"` // frontend error category code
+	Platform   string `json:"platform"` // recorded execution platform snapshot
+	Message    string `json:"message"`  // gateway error description text
+	KeyName    string `json:"key_name"` // owner-visible API-key name
+	// KeyDeleted copies the joined API-key soft-deletion flag. PostgreSQL sets it
+	// when api_keys.deleted_at is present; false also covers a missing joined key
+	// row.
+	KeyDeleted bool `json:"key_deleted"`
+	// ClientIP copies the address string from the internal pointer when present.
+	// An absent address becomes empty text and is omitted from JSON.
+	ClientIP  string `json:"client_ip,omitempty"`  // observed request client address
+	GroupName string `json:"group_name,omitempty"` // current joined group name
+	// RequestType retains the internal record pointer when present. Callers
+	// treating the DTO and source as separate values must leave this pointed-to
+	// code unchanged.
+	RequestType *int16 `json:"request_type,omitempty"` // stored request protocol code
+	Stream      bool   `json:"stream"`                 // observed streaming request flag
+	UserAgent   string `json:"user_agent,omitempty"`   // observed request user agent
 }
 
-// UserErrorRequestList 是用户错误请求分页结果。
+// UserErrorRequestList carries a page of owner-visible error observations and
+// its pagination.
 type UserErrorRequestList struct {
-	Items    []*UserErrorRequest `json:"items"`
-	Total    int                 `json:"total"`
-	Page     int                 `json:"page"`
-	PageSize int                 `json:"page_size"`
+	Items    []*UserErrorRequest `json:"items"`     // owner-visible error observation entries
+	Total    int                 `json:"total"`     // matching owner observation count
+	Page     int                 `json:"page"`      // one-based returned observation page
+	PageSize int                 `json:"page_size"` // returned observations per page
 }
 
-// UserErrorRequestDetail 是点击请求列表单行后展示的脱敏详情。
-// 它包含 UserErrorRequest 字段、上游错误正文 error_body 和 upstream_status_code。
+// UserErrorRequestDetail carries the owner-visible request and its captured
+// error response fields.
 type UserErrorRequestDetail struct {
-	UserErrorRequest
-	ErrorBody          string `json:"error_body"`
-	UpstreamStatusCode *int   `json:"upstream_status_code,omitempty"`
+	UserErrorRequest // owner-visible base request fields
+	// ErrorBody copies captured error response text from the internal detail.
+	// Conversion uses that text as supplied, so its redaction follows the earlier
+	// capture path.
+	ErrorBody string `json:"error_body"`
+	// UpstreamStatusCode retains the source pointer when present. Readers treat
+	// the pointed-to status as immutable while the internal detail and DTO are
+	// both used.
+	UpstreamStatusCode *int `json:"upstream_status_code,omitempty"`
 }
 
-// MapUserErrorCategory 把后端 error_phase + error_type 映射为用户侧粗分类码。
-// 返回稳定的分类码，前端通过 i18n 显示文案。
+// MapUserErrorCategory returns the frontend category for exact stored phase and
+// type labels. Request-phase categories depend on their error type, while
+// unrecognized phase/type combinations use other; the frontend localizes these
+// stable codes.
 func MapUserErrorCategory(phase, errType string) string {
 	switch phase {
 	case "auth":
@@ -70,8 +97,10 @@ func MapUserErrorCategory(phase, errType string) string {
 	return "other"
 }
 
-// CategoryToFilter 将用户分类转换为 phase 和 type 的 ANY 过滤条件。
-// other 和未知分类返回空切片，表示查询全部分类。
+// CategoryToFilter returns stored phase and type selections for a user-facing
+// category. The repository combines supplied phase and type lists as AND
+// predicates; other and unknown categories return nil lists, leaving all
+// categories eligible.
 func CategoryToFilter(category string) (phases []string, errorTypes []string) {
 	switch category {
 	case "auth":
@@ -95,12 +124,18 @@ func CategoryToFilter(category string) (phases []string, errorTypes []string) {
 	}
 }
 
-// ToUserErrorRequest 把内部 OpsErrorLog 裁剪为用户安全视图。
+// ToUserErrorRequest copies selected request fields from an internal error log
+// and returns nil for nil input. RequestedModel takes display precedence over
+// execution Model, category codes follow the stored classification, and
+// RequestType remains shared with the source. Authorization belongs to the
+// owning service caller.
 func ToUserErrorRequest(e *OpsErrorLog) *UserErrorRequest {
 	if e == nil {
 		return nil
 	}
 	model := e.RequestedModel
+	// When requested-model metadata is absent, use the execution model so the
+	// user-facing label still has its available recorded source.
 	if model == "" {
 		model = e.Model
 	}
@@ -128,7 +163,10 @@ func ToUserErrorRequest(e *OpsErrorLog) *UserErrorRequest {
 	}
 }
 
-// ToUserErrorRequestDetail 把内部 OpsErrorLogDetail 裁剪为用户安全详情视图。
+// ToUserErrorRequestDetail copies selected request and captured response
+// fields, returning nil for nil input. It performs no body redaction or
+// ownership check; callers use the capture policy and owning service
+// authorization, and UpstreamStatusCode and RequestType remain shared pointers.
 func ToUserErrorRequestDetail(e *OpsErrorLogDetail) *UserErrorRequestDetail {
 	if e == nil {
 		return nil

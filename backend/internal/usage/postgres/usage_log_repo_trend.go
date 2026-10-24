@@ -12,26 +12,59 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
-// TrendDataPoint represents a single point in trend data.
+// usage_log_repo_trend.go queries usage trends, distributions, and rankings
+// through analytics, legacy buckets, or raw records.
+// Usage distribution can group the internal request model, actual upstream
+// model, or their mapping path without splitting one internal model by a client
+// display prefix. Trends also select actor-visible scopes, while administrator
+// rankings merge payer identities so team-member activity belongs to its billing
+// owner.
+//
+// Multidimensional analytics combines covered UTC buckets and raw edges when
+// supported. Raw recovery keeps each method's filters and grouping SQL, while a
+// legacy global hourly/daily path uses its narrower selector set and dashboard
+// buckets. Date formatting comes from a fixed whitelist, but raw trends use the
+// SQL session timezone and analytics trends bind the resolved Calendar zone.
+// Ranking totals are calculated before limiting entries, and every monetary
+// result keeps base, charged, and provider amounts distinct.
+
+// TrendDataPoint records one date bucket of requests, tokens, and monetary
+// totals.
 type TrendDataPoint = usage.TrendDataPoint
 
-// ModelStat represents usage statistics for a single model.
+// ModelStat records requests, token buckets, and distinct costs for one model.
 type ModelStat = usage.ModelStat
 
-// UserUsageTrendPoint represents user usage trend data point.
+// UserUsageTrendPoint records date-bucket totals for a billing user with current
+// identity.
 type UserUsageTrendPoint = usage.UserUsageTrendPoint
 
-// UserSpendingRankingItem represents a user spending ranking row.
 type (
-	UserSpendingRankingItem     = usage.UserSpendingRankingItem
+	// UserSpendingRankingItem records a payer spending rank with current identity
+	// fields.
+	UserSpendingRankingItem = usage.UserSpendingRankingItem
+	// UserSpendingRankingResponse holds limited payer entries and complete
+	// selected-range totals.
 	UserSpendingRankingResponse = usage.UserSpendingRankingResponse
 )
 
-// APIKeyUsageTrendPoint represents API key usage trend data point.
+// APIKeyUsageTrendPoint records date-bucket requests and tokens with current key
+// display names.
 type APIKeyUsageTrendPoint = usage.APIKeyUsageTrendPoint
 
-// GetAPIKeyUsageTrend returns usage trend data grouped by API key and date.
+// GetAPIKeyUsageTrend returns date buckets for keys selected by range-wide token
+// totals. The caller supplies a positive limit for consistent behavior:
+// analytics defaults nonpositive values to twelve, while the raw branch binds
+// the supplied limit.
+//
+// Top-key selection happens before date grouping, following the same selected
+// keys across [startTime, endTime). Current key names provide display labels,
+// and cache tokens participate in selection and bucket sums. Analytics uses the
+// resolved named timezone; raw TO_CHAR uses the SQL session timezone. Failed
+// analytics logs a warning before the complete raw query.
 func (r *Store) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) (results []APIKeyUsageTrendPoint, err error) {
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getAPIKeyUsageTrendFromAnalytics(ctx, startTime, endTime, granularity, limit); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
@@ -67,8 +100,8 @@ func (r *Store) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time
 		return nil, err
 	}
 	defer func() {
-		// 保持主错误优先；仅在无错误时回传 Close 失败。
-		// 同时清空返回值，避免误用不完整结果。
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			results = nil
@@ -90,8 +123,18 @@ func (r *Store) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time
 	return results, nil
 }
 
-// GetUserUsageTrend 返回按付款主体和日期聚合的最活跃用户趋势。
+// GetUserUsageTrend returns date buckets for the most active billing users in
+// [startTime, endTime). Positive limits are caller-selected; analytics defaults
+// nonpositive values to twelve while the raw branch passes them to SQL directly.
+//
+// Both sources select payer identities by total tokens before date grouping,
+// combining team members under their billing_user_id with historical actor
+// recovery on raw rows. Current email and username provide display fields. Raw
+// date grouping uses the SQL session zone, analytics uses the resolved named
+// zone, and cost versus actual_cost retain base versus user-charge meanings.
 func (r *Store) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) (results []UserUsageTrendPoint, err error) {
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getUserUsageTrendFromAnalytics(ctx, startTime, endTime, granularity, limit); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
@@ -131,8 +174,8 @@ func (r *Store) GetUserUsageTrend(ctx context.Context, startTime, endTime time.T
 		return nil, err
 	}
 	defer func() {
-		// 保持主错误优先；仅在无错误时回传 Close 失败。
-		// 同时清空返回值，避免误用不完整结果。
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			results = nil
@@ -154,11 +197,21 @@ func (r *Store) GetUserUsageTrend(ctx context.Context, startTime, endTime time.T
 	return results, nil
 }
 
-// GetUserSpendingRanking 返回按付款主体聚合的消费排行；团队成员用团队 Key 的用量归到 Owner。
+// GetUserSpendingRanking returns payer spending ranks and full selected-range
+// totals. Nonpositive limits choose twelve, and unusable or failed analytics
+// causes a complete raw query.
+//
+// Raw rows group by billing_user_id with historical user_id recovery, so
+// team-member records contribute to their payer. Window totals precede LIMIT and
+// therefore cover every grouped payer even when only a few entries are returned.
+// Current email and username are presentation data, and ordering breaks charge
+// ties by tokens then user ID.
 func (r *Store) GetUserSpendingRanking(ctx context.Context, startTime, endTime time.Time, limit int) (result *UserSpendingRankingResponse, err error) {
 	if limit <= 0 {
 		limit = 12
 	}
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getUserSpendingRankingFromAnalytics(ctx, startTime, endTime, limit); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
@@ -214,6 +267,8 @@ func (r *Store) GetUserSpendingRanking(ctx context.Context, startTime, endTime t
 		return nil, err
 	}
 	defer func() {
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			result = nil
@@ -243,45 +298,76 @@ func (r *Store) GetUserSpendingRanking(ctx context.Context, startTime, endTime t
 	}, nil
 }
 
-// GetUserUsageTrendByUserID 获取指定用户的使用趋势。
+// GetUserUsageTrendByUserID returns trend buckets for the actor and current
+// owned-team scope. The half-open range and granularity pass through unchanged;
+// the richer helper handles source availability and prevents duplicate owner
+// rows.
 func (r *Store) GetUserUsageTrendByUserID(ctx context.Context, userID int64, startTime, endTime time.Time, granularity string) (results []TrendDataPoint, err error) {
-	return r.getUsageTrendWithFilters(ctx, startTime, endTime, granularity, userID, 0, 0, 0, 0, "", "", nil, nil, nil, "", false, true, nil)
+	return r.getUsageTrendWithFilters(ctx, startTime, endTime, granularity, UsageLogFilters{UserID: userID, IncludeOwnedTeam: true})
 }
 
-// GetUserModelStats 获取指定用户的模型统计。
+// GetUserModelStats groups actor and current owned-team records by internal
+// request model. The caller authorizes that scope and supplies a half-open
+// range; current client display prefixes remain in detail records rather than
+// model grouping.
 func (r *Store) GetUserModelStats(ctx context.Context, userID int64, startTime, endTime time.Time) (results []ModelStat, err error) {
-	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, 0, 0, 0, 0, "", nil, nil, nil, usage.ModelSourceRequested, "", false, true, nil)
+	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, UsageLogFilters{UserID: userID, IncludeOwnedTeam: true}, usage.ModelSourceRequested)
 }
 
-// GetUsageTrendWithFilters returns usage trend data with optional filters.
+// GetUsageTrendWithFilters returns buckets over a half-open range with the base
+// scalar selectors. Zero IDs and nil optional selectors leave dimensions
+// unrestricted; richer team/personal/request-ID scopes use the unified-filter
+// entry point.
 func (r *Store) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, providerID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) (results []TrendDataPoint, err error) {
-	return r.getUsageTrendWithFilters(ctx, startTime, endTime, granularity, userID, apiKeyID, providerID, groupID, 0, model, "", requestType, stream, billingType, "", false, false, nil)
+	return r.getUsageTrendWithFilters(ctx, startTime, endTime, granularity, UsageLogFilters{
+		UserID:      userID,
+		APIKeyID:    apiKeyID,
+		ProviderID:  providerID,
+		GroupID:     groupID,
+		Model:       model,
+		RequestType: requestType,
+		Stream:      stream,
+		BillingType: billingType,
+	})
 }
 
+// GetUsageTrendWithUsageFilters forwards the unified selectors with its supplied
+// range and granularity. StartTime/EndTime fields inside filters do not replace
+// those explicit arguments; the helper chooses analytics, legacy buckets, or raw
+// SQL.
 func (r *Store) GetUsageTrendWithUsageFilters(ctx context.Context, startTime, endTime time.Time, granularity string, filters UsageLogFilters) (results []TrendDataPoint, err error) {
-	return r.getUsageTrendWithFilters(ctx, startTime, endTime, granularity, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.ModelFilterSource, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2, filters.RequestID)
+	return r.getUsageTrendWithFilters(ctx, startTime, endTime, granularity, filters)
 }
 
-func (r *Store) getUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, providerID, groupID, teamID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool, requestIDs ...string) (results []TrendDataPoint, err error) {
-	requestID := ""
-	if len(requestIDs) > 0 {
-		requestID = strings.TrimSpace(requestIDs[0])
-	}
+// getUsageTrendWithFilters returns usage buckets after source selection for the
+// supplied range and selectors. RequestID is trimmed before querying;
+// compatible analytics is preferred, with failed attempts warning before later
+// query paths.
+//
+// A global legacy hour/day check considers the selectors in
+// shouldUsePreaggregatedTrend and a separate zero-team condition. Request ID is
+// applied when raw SQL executes, but is absent from that legacy eligibility
+// check. Raw actor/team branches stay disjoint, RequestType precedes Stream,
+// and dates use the SQL session zone. A request-ID-only query can consequently
+// return global legacy buckets when they are nonempty.
+func (r *Store) getUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, filters UsageLogFilters) (results []TrendDataPoint, err error) {
+	requestID := strings.TrimSpace(filters.RequestID)
 
-	analyticsFilters := UsageLogFilters{
-		RequestID: requestID,
-		UserID:    userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID,
-		TeamID: teamID, Model: model, ModelFilterSource: modelSource,
-		RequestType: requestType, Stream: stream, BillingType: billingType,
-		BillingMode: billingMode, PersonalOnly: personalOnly, IncludeOwnedTeam: includeOwnedTeam,
-		NativeCompactionV2: nativeCompactionV2,
-	}
+	analyticsFilters := filters
+	analyticsFilters.RequestID = requestID
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getUsageTrendFromAnalytics(ctx, startTime, endTime, granularity, analyticsFilters); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
 		r.logUsageAnalyticsFallback("usage_trend", aggregateErr)
 	}
-	if teamID == 0 && shouldUsePreaggregatedTrend(granularity, userID, apiKeyID, providerID, groupID, model, requestType, stream, billingType, billingMode, personalOnly, includeOwnedTeam, nativeCompactionV2) {
+	// Legacy buckets use this represented-selector check plus filters.TeamID. Request
+	// identity is absent from that check and reaches the raw predicate only if raw
+	// SQL executes.
+	if filters.TeamID == 0 && shouldUsePreaggregatedTrend(granularity, filters) {
+		// Legacy bucket errors or empty results move to raw SQL; only a nonempty
+		// successful bucket result ends this path before raw filtering.
 		aggregated, aggregatedErr := r.getUsageTrendFromAggregates(ctx, startTime, endTime, granularity)
 		if aggregatedErr == nil && len(aggregated) > 0 {
 			return aggregated, nil
@@ -290,7 +376,7 @@ func (r *Store) getUsageTrendWithFilters(ctx context.Context, startTime, endTime
 
 	dateFormat := safeDateFormat(granularity)
 	args := []any{startTime, endTime}
-	source, scopeCondition, args, scopeErr := r.buildUsageLogScopeSource(ctx, args, userID, includeOwnedTeam, "")
+	source, scopeCondition, args, scopeErr := r.buildUsageLogScopeSource(ctx, args, filters.UserID, filters.IncludeOwnedTeam, "")
 	if scopeErr != nil {
 		return nil, scopeErr
 	}
@@ -318,33 +404,33 @@ func (r *Store) getUsageTrendWithFilters(ctx context.Context, startTime, endTime
 	if scopeCondition != "" {
 		query += " AND " + scopeCondition
 	}
-	if apiKeyID > 0 {
+	if filters.APIKeyID > 0 {
 		query += fmt.Sprintf(" AND api_key_id = $%d", len(args)+1)
-		args = append(args, apiKeyID)
+		args = append(args, filters.APIKeyID)
 	}
-	if providerID > 0 {
+	if filters.ProviderID > 0 {
 		query += fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
-		args = append(args, providerID)
+		args = append(args, filters.ProviderID)
 	}
-	if groupID > 0 {
+	if filters.GroupID > 0 {
 		query += fmt.Sprintf(" AND group_id = $%d", len(args)+1)
-		args = append(args, groupID)
+		args = append(args, filters.GroupID)
 	}
-	if teamID > 0 {
+	if filters.TeamID > 0 {
 		query += fmt.Sprintf(" AND team_id = $%d", len(args)+1)
-		args = append(args, teamID)
+		args = append(args, filters.TeamID)
 	}
-	if personalOnly {
+	if filters.PersonalOnly {
 		query += " AND team_id IS NULL"
 	}
-	query, args = appendUsageLogModelQueryFilter(query, args, model, modelSource)
-	query, args = appendRequestTypeOrStreamQueryFilter(query, args, requestType, stream)
-	query, args = appendNativeCompactionV2QueryFilter(query, args, nativeCompactionV2, "")
-	if billingType != nil {
+	query, args = appendUsageLogModelQueryFilter(query, args, filters.Model, filters.ModelFilterSource)
+	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
+	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "")
+	if filters.BillingType != nil {
 		query += fmt.Sprintf(" AND billing_type = $%d", len(args)+1)
-		args = append(args, int16(*billingType))
+		args = append(args, int16(*filters.BillingType))
 	}
-	query, args = appendUsageLogBillingModeQueryFilter(query, args, billingMode, "")
+	query, args = appendUsageLogBillingModeQueryFilter(query, args, filters.BillingMode, "")
 	query += " GROUP BY date ORDER BY date ASC"
 
 	rows, err := r.sql.QueryContext(ctx, query, args...)
@@ -352,8 +438,8 @@ func (r *Store) getUsageTrendWithFilters(ctx context.Context, startTime, endTime
 		return nil, err
 	}
 	defer func() {
-		// 保持主错误优先；仅在无错误时回传 Close 失败。
-		// 同时清空返回值，避免误用不完整结果。
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			results = nil
@@ -367,24 +453,32 @@ func (r *Store) getUsageTrendWithFilters(ctx context.Context, startTime, endTime
 	return results, nil
 }
 
-func shouldUsePreaggregatedTrend(granularity string, userID, apiKeyID, providerID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool) bool {
+// shouldUsePreaggregatedTrend checks the represented selectors for legacy global
+// hour/day eligibility. It returns true only when those selectors are absent;
+// team and request identity are excluded from this check. The caller checks
+// team separately and applies request identity only on its raw path.
+func shouldUsePreaggregatedTrend(granularity string, filters UsageLogFilters) bool {
 	if granularity != "day" && granularity != "hour" {
 		return false
 	}
-	return !personalOnly &&
-		!includeOwnedTeam &&
-		userID == 0 &&
-		apiKeyID == 0 &&
-		providerID == 0 &&
-		groupID == 0 &&
-		model == "" &&
-		requestType == nil &&
-		stream == nil &&
-		billingType == nil &&
-		billingMode == "" &&
-		nativeCompactionV2 == nil
+	return !filters.PersonalOnly &&
+		!filters.IncludeOwnedTeam &&
+		filters.UserID == 0 &&
+		filters.APIKeyID == 0 &&
+		filters.ProviderID == 0 &&
+		filters.GroupID == 0 &&
+		filters.Model == "" &&
+		filters.RequestType == nil &&
+		filters.Stream == nil &&
+		filters.BillingType == nil &&
+		filters.BillingMode == "" &&
+		filters.NativeCompactionV2 == nil
 }
 
+// getUsageTrendFromAggregates returns legacy global hour/day dashboard buckets
+// in the supplied range. Bound settings disabling usage return nil; unsupported
+// granularities also return nil, and this reader performs no multidimensional
+// coverage validation.
 func (r *Store) getUsageTrendFromAggregates(ctx context.Context, startTime, endTime time.Time, granularity string) (results []TrendDataPoint, err error) {
 	if r.preAggregation != nil && !r.preAggregation.UsageEnabled(ctx) {
 		return nil, nil
@@ -435,6 +529,8 @@ func (r *Store) getUsageTrendFromAggregates(ctx context.Context, startTime, endT
 		return nil, err
 	}
 	defer func() {
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			results = nil
@@ -448,45 +544,77 @@ func (r *Store) getUsageTrendFromAggregates(ctx context.Context, startTime, endT
 	return results, nil
 }
 
-// GetModelStatsWithFilters returns model statistics with optional filters.
+// GetModelStatsWithFilters returns internal-request-model groups for base
+// selectors and a half-open range. Nil transport selectors leave them
+// unrestricted, and model dimensions or richer scope selectors use the
+// corresponding source/unified entry points.
 func (r *Store) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []ModelStat, err error) {
-	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, providerID, groupID, 0, "", requestType, stream, billingType, usage.ModelSourceRequested, "", false, false, nil)
+	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, UsageLogFilters{
+		UserID:      userID,
+		APIKeyID:    apiKeyID,
+		ProviderID:  providerID,
+		GroupID:     groupID,
+		RequestType: requestType,
+		Stream:      stream,
+		BillingType: billingType,
+	}, usage.ModelSourceRequested)
 }
 
-// GetModelStatsWithFiltersBySource returns model statistics with optional filters and model source dimension.
-// source: requested | upstream | mapping.
+// GetModelStatsWithFiltersBySource returns base-filter model groups using
+// requested, upstream, or mapping dimension. Invalid source labels normalize to
+// requested, and the caller authorizes the selected IDs before reading the
+// supplied half-open range.
 func (r *Store) GetModelStatsWithFiltersBySource(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID int64, requestType *int16, stream *bool, billingType *int8, source string) (results []ModelStat, err error) {
-	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, providerID, groupID, 0, "", requestType, stream, billingType, source, "", false, false, nil)
+	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, UsageLogFilters{
+		UserID:      userID,
+		APIKeyID:    apiKeyID,
+		ProviderID:  providerID,
+		GroupID:     groupID,
+		RequestType: requestType,
+		Stream:      stream,
+		BillingType: billingType,
+	}, source)
 }
 
+// GetModelStatsWithUsageFiltersBySource returns unified-filter model groups
+// using the explicit source argument. That source governs both grouping and
+// filters.Model matching; explicit start/end arguments govern the half-open
+// range.
 func (r *Store) GetModelStatsWithUsageFiltersBySource(ctx context.Context, startTime, endTime time.Time, filters UsageLogFilters, source string) (results []ModelStat, err error) {
-	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.RequestType, filters.Stream, filters.BillingType, source, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2, filters.RequestID)
+	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, filters, source)
 }
 
-func (r *Store) getModelStatsWithFiltersBySource(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID, teamID int64, model string, requestType *int16, stream *bool, billingType *int8, source string, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool, requestIDs ...string) (results []ModelStat, err error) {
-	requestID := ""
-	if len(requestIDs) > 0 {
-		requestID = strings.TrimSpace(requestIDs[0])
-	}
+// getModelStatsWithFiltersBySource groups usage by the selected internal,
+// upstream, or mapping expression. The source argument governs both grouping
+// and model matching, and compatible requested-model analytics can supply the
+// complete result.
+//
+// Raw scope construction keeps actor and owned-team branches disjoint. Model
+// equality uses the same expression as grouping, while RequestType takes
+// precedence over Stream and other selectors add bound restrictions. TotalCost
+// and ActualCost remain base and user charges; provider expense is computed
+// separately from its recorded base/multiplier. Scan, iteration, or
+// successful-path cleanup failures discard the result.
+func (r *Store) getModelStatsWithFiltersBySource(ctx context.Context, startTime, endTime time.Time, filters UsageLogFilters, source string) (results []ModelStat, err error) {
+	requestID := strings.TrimSpace(filters.RequestID)
 
-	analyticsFilters := UsageLogFilters{
-		RequestID: requestID,
-		UserID:    userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID,
-		TeamID: teamID, Model: model, ModelFilterSource: source,
-		RequestType: requestType, Stream: stream, BillingType: billingType,
-		BillingMode: billingMode, PersonalOnly: personalOnly, IncludeOwnedTeam: includeOwnedTeam,
-		NativeCompactionV2: nativeCompactionV2,
-	}
+	analyticsFilters := filters
+	analyticsFilters.RequestID = requestID
+	analyticsFilters.ModelFilterSource = source
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getModelStatsFromAnalytics(ctx, startTime, endTime, analyticsFilters); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
 		r.logUsageAnalyticsFallback("model_stats", aggregateErr)
 	}
-	// “实际”始终表示用户实际扣费，提供商成本由独立的 provider_cost 字段承载。
+	// Filtering by execution provider keeps user charges in actual_cost. Compute
+	// provider expense in its separate column from the recorded base and
+	// multiplier.
 	providerCostExpr := "COALESCE(SUM(COALESCE(provider_stats_cost, total_cost) * COALESCE(provider_rate_multiplier, 1)), 0) as provider_cost"
 	modelExpr := resolveModelDimensionExpression(source)
 	args := []any{startTime, endTime}
-	usageSource, scopeCondition, args, scopeErr := r.buildUsageLogScopeSource(ctx, args, userID, includeOwnedTeam, "")
+	usageSource, scopeCondition, args, scopeErr := r.buildUsageLogScopeSource(ctx, args, filters.UserID, filters.IncludeOwnedTeam, "")
 	if scopeErr != nil {
 		return nil, scopeErr
 	}
@@ -515,36 +643,36 @@ func (r *Store) getModelStatsWithFiltersBySource(ctx context.Context, startTime,
 	if scopeCondition != "" {
 		query += " AND " + scopeCondition
 	}
-	if apiKeyID > 0 {
+	if filters.APIKeyID > 0 {
 		query += fmt.Sprintf(" AND api_key_id = $%d", len(args)+1)
-		args = append(args, apiKeyID)
+		args = append(args, filters.APIKeyID)
 	}
-	if providerID > 0 {
+	if filters.ProviderID > 0 {
 		query += fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
-		args = append(args, providerID)
+		args = append(args, filters.ProviderID)
 	}
-	if groupID > 0 {
+	if filters.GroupID > 0 {
 		query += fmt.Sprintf(" AND group_id = $%d", len(args)+1)
-		args = append(args, groupID)
+		args = append(args, filters.GroupID)
 	}
-	if teamID > 0 {
+	if filters.TeamID > 0 {
 		query += fmt.Sprintf(" AND team_id = $%d", len(args)+1)
-		args = append(args, teamID)
+		args = append(args, filters.TeamID)
 	}
-	if personalOnly {
+	if filters.PersonalOnly {
 		query += " AND team_id IS NULL"
 	}
-	if strings.TrimSpace(model) != "" {
+	if strings.TrimSpace(filters.Model) != "" {
 		query += fmt.Sprintf(" AND %s = $%d", modelExpr, len(args)+1)
-		args = append(args, model)
+		args = append(args, filters.Model)
 	}
-	query, args = appendRequestTypeOrStreamQueryFilter(query, args, requestType, stream)
-	query, args = appendNativeCompactionV2QueryFilter(query, args, nativeCompactionV2, "")
-	if billingType != nil {
+	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
+	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "")
+	if filters.BillingType != nil {
 		query += fmt.Sprintf(" AND billing_type = $%d", len(args)+1)
-		args = append(args, int16(*billingType))
+		args = append(args, int16(*filters.BillingType))
 	}
-	query, args = appendUsageLogBillingModeQueryFilter(query, args, billingMode, "")
+	query, args = appendUsageLogBillingModeQueryFilter(query, args, filters.BillingMode, "")
 	query += fmt.Sprintf(" GROUP BY %s ORDER BY total_tokens DESC", modelExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, args...)
@@ -552,8 +680,8 @@ func (r *Store) getModelStatsWithFiltersBySource(ctx context.Context, startTime,
 		return nil, err
 	}
 	defer func() {
-		// 保持主错误优先；仅在无错误时回传 Close 失败。
-		// 同时清空返回值，避免误用不完整结果。
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			results = nil
@@ -567,36 +695,56 @@ func (r *Store) getModelStatsWithFiltersBySource(ctx context.Context, startTime,
 	return results, nil
 }
 
-// GetGroupStatsWithFilters returns group usage statistics with optional filters.
+// GetGroupStatsWithFilters returns group totals for the base selectors over a
+// half-open range. Zero IDs and nil selectors leave dimensions unrestricted;
+// current group names supply presentation labels and absent groups use zero
+// identity.
 func (r *Store) GetGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []usage.GroupStat, err error) {
-	return r.getGroupStatsWithFilters(ctx, startTime, endTime, userID, apiKeyID, providerID, groupID, 0, "", requestType, stream, billingType, "", false, false, nil)
+	return r.getGroupStatsWithFilters(ctx, startTime, endTime, UsageLogFilters{
+		UserID:      userID,
+		APIKeyID:    apiKeyID,
+		ProviderID:  providerID,
+		GroupID:     groupID,
+		RequestType: requestType,
+		Stream:      stream,
+		BillingType: billingType,
+	})
 }
 
+// GetGroupStatsWithUsageFilters returns group totals with unified ownership and
+// diagnostic selectors. The Model value selects the internal request-model
+// dimension, while explicit start/end arguments supply the half-open range for
+// this query.
 func (r *Store) GetGroupStatsWithUsageFilters(ctx context.Context, startTime, endTime time.Time, filters UsageLogFilters) (results []usage.GroupStat, err error) {
-	return r.getGroupStatsWithFilters(ctx, startTime, endTime, filters.UserID, filters.APIKeyID, filters.ProviderID, filters.GroupID, filters.TeamID, filters.Model, filters.RequestType, filters.Stream, filters.BillingType, filters.BillingMode, filters.PersonalOnly, filters.IncludeOwnedTeam, filters.NativeCompactionV2, filters.RequestID)
+	return r.getGroupStatsWithFilters(ctx, startTime, endTime, filters)
 }
 
-func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, providerID, groupID, teamID int64, model string, requestType *int16, stream *bool, billingType *int8, billingMode string, personalOnly bool, includeOwnedTeam bool, nativeCompactionV2 *bool, requestIDs ...string) (results []usage.GroupStat, err error) {
-	requestID := ""
-	if len(requestIDs) > 0 {
-		requestID = strings.TrimSpace(requestIDs[0])
-	}
+// getGroupStatsWithFilters returns routed-group totals for the supplied
+// ownership and diagnostic selectors. It tries compatible requested-model
+// analytics first, then executes a complete raw query when unavailable or
+// failed.
+//
+// The raw actor/team source remains disjoint and uses its explicit ul alias for
+// group joins. Model equality selects the internal requested dimension, and
+// current localized names participate in grouping when user presentation
+// requests them. Requests/tokens, base cost, user charges, and provider expense
+// remain distinct. An absent group ID becomes zero, and a trimmed RequestID
+// reaches raw lookup. The model filter source is the requested dimension.
+func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, filters UsageLogFilters) (results []usage.GroupStat, err error) {
+	requestID := strings.TrimSpace(filters.RequestID)
 
-	analyticsFilters := UsageLogFilters{
-		RequestID: requestID,
-		UserID:    userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID,
-		TeamID: teamID, Model: model, ModelFilterSource: usage.ModelSourceRequested,
-		RequestType: requestType, Stream: stream, BillingType: billingType,
-		BillingMode: billingMode, PersonalOnly: personalOnly, IncludeOwnedTeam: includeOwnedTeam,
-		NativeCompactionV2: nativeCompactionV2,
-	}
+	analyticsFilters := filters
+	analyticsFilters.RequestID = requestID
+	analyticsFilters.ModelFilterSource = usage.ModelSourceRequested
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getGroupStatsFromAnalytics(ctx, startTime, endTime, analyticsFilters); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
 		r.logUsageAnalyticsFallback("group_stats", aggregateErr)
 	}
 	args := []any{startTime, endTime}
-	usageSource, scopeCondition, args, scopeErr := r.buildUsageLogScopeSource(ctx, args, userID, includeOwnedTeam, "ul")
+	usageSource, scopeCondition, args, scopeErr := r.buildUsageLogScopeSource(ctx, args, filters.UserID, filters.IncludeOwnedTeam, "ul")
 	if scopeErr != nil {
 		return nil, scopeErr
 	}
@@ -622,37 +770,37 @@ func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime
 	if scopeCondition != "" {
 		query += " AND " + scopeCondition
 	}
-	if apiKeyID > 0 {
+	if filters.APIKeyID > 0 {
 		query += fmt.Sprintf(" AND ul.api_key_id = $%d", len(args)+1)
-		args = append(args, apiKeyID)
+		args = append(args, filters.APIKeyID)
 	}
-	if providerID > 0 {
+	if filters.ProviderID > 0 {
 		query += fmt.Sprintf(" AND ul.provider_id = $%d", len(args)+1)
-		args = append(args, providerID)
+		args = append(args, filters.ProviderID)
 	}
-	if groupID > 0 {
+	if filters.GroupID > 0 {
 		query += fmt.Sprintf(" AND ul.group_id = $%d", len(args)+1)
-		args = append(args, groupID)
+		args = append(args, filters.GroupID)
 	}
-	if teamID > 0 {
+	if filters.TeamID > 0 {
 		query += fmt.Sprintf(" AND ul.team_id = $%d", len(args)+1)
-		args = append(args, teamID)
+		args = append(args, filters.TeamID)
 	}
-	if personalOnly {
+	if filters.PersonalOnly {
 		query += " AND ul.team_id IS NULL"
 	}
-	if strings.TrimSpace(model) != "" {
+	if strings.TrimSpace(filters.Model) != "" {
 		modelExpr := resolveModelDimensionExpressionWithAlias(usage.ModelSourceRequested, "ul")
 		query += fmt.Sprintf(" AND %s = $%d", modelExpr, len(args)+1)
-		args = append(args, model)
+		args = append(args, filters.Model)
 	}
-	query, args = appendRequestTypeOrStreamQueryFilter(query, args, requestType, stream)
-	query, args = appendNativeCompactionV2QueryFilter(query, args, nativeCompactionV2, "ul")
-	if billingType != nil {
+	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
+	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "ul")
+	if filters.BillingType != nil {
 		query += fmt.Sprintf(" AND ul.billing_type = $%d", len(args)+1)
-		args = append(args, int16(*billingType))
+		args = append(args, int16(*filters.BillingType))
 	}
-	query, args = appendUsageLogBillingModeQueryFilter(query, args, billingMode, "ul")
+	query, args = appendUsageLogBillingModeQueryFilter(query, args, filters.BillingMode, "ul")
 	query += " GROUP BY ul.group_id, g.name"
 	if locale.UserPresentation(ctx) {
 		query += ", g.localization"
@@ -664,6 +812,8 @@ func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime
 		return nil, err
 	}
 	defer func() {
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			results = nil
@@ -692,8 +842,20 @@ func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime
 	return results, nil
 }
 
-// GetUserBreakdownStats 返回按付款主体聚合的管理员用量排行明细。
+// GetUserBreakdownStats ranks billing-user totals inside the supplied half-open
+// range and dimensional restrictions. A positive limit caps rows; unknown sort
+// labels choose actual_cost, and nonpositive limits leave the result
+// unrestricted.
+//
+// Compatible analytics supplies represented dimensions, while raw SQL also
+// supports provider and upstream/path selectors. dim.UserID filters actors
+// before payer grouping, so a member's selected activity can appear under its
+// owner. RequestType and Stream both apply when supplied here. Current email
+// belongs to the payer, and base cost, user charges, and provider expense retain
+// separate result columns.
 func (r *Store) GetUserBreakdownStats(ctx context.Context, startTime, endTime time.Time, dim usage.UserBreakdownDimension, limit int) (results []usage.UserBreakdownItem, err error) {
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getUserBreakdownStatsFromAnalytics(ctx, startTime, endTime, dim, limit); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
@@ -757,13 +919,15 @@ func (r *Store) GetUserBreakdownStats(ctx context.Context, startTime, endTime ti
 		args = append(args, *dim.BillingType)
 	}
 
-	// ORDER BY 列来自固定 allowlist(非用户原样字符串),避免 SQL 注入。
+	// Requested sort labels select fixed output metrics; any other label retains
+	// actual-charge ordering and cannot introduce SQL identifier text.
 	orderBy := "actual_cost"
 	switch dim.SortBy {
 	case "total_tokens", "input_tokens", "output_tokens", "cache_tokens", "requests", "cost", "actual_cost":
 		orderBy = dim.SortBy
 	}
-	// 排行按付款主体归属，团队成员使用团队 Key 时计入团队 Owner。
+	// Actor restrictions are already applied. Group the surviving rows by payer so
+	// selected team-member activity remains attributed to its billing owner.
 	query += " GROUP BY COALESCE(ul.billing_user_id, ul.user_id, 0), u.email ORDER BY " + orderBy + " DESC"
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
@@ -774,6 +938,8 @@ func (r *Store) GetUserBreakdownStats(ctx context.Context, startTime, endTime ti
 		return nil, err
 	}
 	defer func() {
+		// Keep an earlier query/scan error as the primary failure, while a successful
+		// scan can still be rejected when closing its result rows fails.
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
 			err = closeErr
 			results = nil
@@ -805,8 +971,19 @@ func (r *Store) GetUserBreakdownStats(ctx context.Context, startTime, endTime ti
 	return results, nil
 }
 
-// GetAllGroupUsageSummary 返回每个分组在服务端时区内的今日、昨日和累计实际扣费。
+// GetAllGroupUsageSummary returns existing groups with retained, today, and
+// yesterday user charges. Callers supply local midnight as todayStart; usable
+// analytics uses bounded current-time queries before raw recovery.
+//
+// Raw SQL keeps every existing group through a left join, including zero-usage
+// groups and soft-deleted rows still present in the groups table. Yesterday
+// starts one calendar date before todayStart and ends at todayStart, while raw
+// today and retained totals have no upper bound. Summed actual_cost remains
+// user charges even though the response calls these fields Cost, and historical
+// records for absent groups are omitted.
 func (r *Store) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usage.GroupUsageSummary, error) {
+	// Failed or unusable multidimensional analytics is discarded before the later
+	// source executes, keeping partial aggregate data out of raw report totals.
 	if aggregated, ok, aggregateErr := r.getAllGroupUsageSummaryFromAnalytics(ctx, todayStart); aggregateErr == nil && ok {
 		return aggregated, nil
 	} else if aggregateErr != nil {
@@ -828,6 +1005,8 @@ func (r *Store) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Tim
 	if err != nil {
 		return nil, err
 	}
+	// Release group-summary rows on completion or an early error. This helper
+	// ignores Close errors, while scan and iteration failures reject the result.
 	defer func() { _ = rows.Close() }()
 	var results []usage.GroupUsageSummary
 	for rows.Next() {
@@ -843,11 +1022,23 @@ func (r *Store) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Tim
 	return results, nil
 }
 
-// resolveModelDimensionExpression maps model source type to a safe SQL expression.
+// resolveModelDimensionExpression returns the fixed unqualified SQL expression
+// for a model dimension. Invalid labels normalize to requested, and callers use
+// the aliased helper when joins require qualified stored columns.
 func resolveModelDimensionExpression(modelType string) string {
 	return resolveModelDimensionExpressionWithAlias(modelType, "")
 }
 
+// resolveModelDimensionExpressionWithAlias returns a fixed model expression
+// using the trusted alias supplied by its caller. Unknown dimension labels
+// normalize to requested; alias text itself is not validated here.
+//
+// Requested grouping prefers trimmed internal model, then trimmed historical
+// requested_model, then empty text, so client prefixes do not split a recorded
+// internal model. Upstream grouping prefers trimmed upstream_model and otherwise
+// retains stored model. Mapping joins those two representations into one label,
+// keeping the request and execution evidence paired for model-distribution
+// readers.
 func resolveModelDimensionExpressionWithAlias(modelType, alias string) string {
 	column := func(name string) string {
 		if alias == "" {
@@ -855,13 +1046,16 @@ func resolveModelDimensionExpressionWithAlias(modelType, alias string) string {
 		}
 		return alias + "." + name
 	}
-	// 模型分布使用内部请求模型，避免复合 Key 的展示前缀把同一模型拆成多项；
-	// requested_model 仍保留在明细中，用于展示客户端实际提交的模型名。
+	// Prefer internal request model before historical display text, keeping a
+	// client composite-key prefix from separating rows that share one internal
+	// model identity.
 	requestedExpr := fmt.Sprintf(
 		"COALESCE(NULLIF(TRIM(%s), ''), NULLIF(TRIM(%s), ''), '')",
 		column("model"),
 		column("requested_model"),
 	)
+	// Historical rows can lack upstream_model. Keep their available stored model
+	// text so upstream and mapping distributions still have a label for those rows.
 	upstreamExpr := fmt.Sprintf("COALESCE(NULLIF(TRIM(%s), ''), %s)", column("upstream_model"), column("model"))
 	switch usage.NormalizeModelSource(modelType) {
 	case usage.ModelSourceUpstream:
@@ -873,6 +1067,9 @@ func resolveModelDimensionExpressionWithAlias(modelType, alias string) string {
 	}
 }
 
+// scanTrendRows decodes the nine-column trend shape into an allocated slice. The
+// caller owns and closes rows; scan or iteration errors discard the partial
+// result before it can enter a report.
 func scanTrendRows(rows *sql.Rows) ([]TrendDataPoint, error) {
 	results := make([]TrendDataPoint, 0)
 	for rows.Next() {
@@ -898,6 +1095,9 @@ func scanTrendRows(rows *sql.Rows) ([]TrendDataPoint, error) {
 	return results, nil
 }
 
+// scanModelStatsRows decodes model totals with separate base, charged, and
+// provider amounts. The caller owns row cleanup, while scan or iteration errors
+// discard the partially collected slice.
 func scanModelStatsRows(rows *sql.Rows) ([]ModelStat, error) {
 	results := make([]ModelStat, 0)
 	for rows.Next() {

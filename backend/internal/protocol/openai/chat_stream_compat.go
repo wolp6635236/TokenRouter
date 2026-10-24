@@ -9,25 +9,38 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// RawStreamTerminalState 记录 raw Chat Completions SSE 流是否收到终止信号。
-// HTTP 200 的流也可能中途断开，需要通过终止信号判断是否完成，以便报告截断错误并计入 SLA。
-// 下列任一信号都表示生成已结束：
-//   - [DONE]：OpenAI Chat Completions 的结束标记。
-//   - usage chunk：include_usage 开启后的末尾用量帧，网关会开启该选项。
-//   - finish_reason：stop、length、tool_calls 等生成结束原因。
+// chat_stream_compat.go repairs empty Chat tool-call identities and tracks
+// usage and terminal evidence in raw streams.
+// Tool-argument fragments can carry empty identity fields after a first chunk
+// supplied their ID and name. A client that overwrites every present field
+// would replace its stored identity with empty text, so raw Chat cleanup
+// removes those exact empty keys while retaining the argument fragments. The
+// repair is stateless and keeps every call's array position.
 //
-// 三类信号同时支持最后一帧后直接 EOF 和缺少 include_usage 的兼容上游。
+// Raw streams can terminate with a done sentinel, a usage object, or a
+// nonblank finish reason. Those observations accumulate independently.
+// Truncation also depends on whether data payloads were observed and whether
+// output began: an already forwarded non-SSE response can finish without SSE
+// markers, while an empty or unterminated SSE read lacks the required
+// evidence.
+
+// RawStreamTerminalState accumulates raw Chat stream terminal evidence for one
+// read. Callers trim each data payload and serialize state access; the zero
+// value is ready to observe a new stream.
 type RawStreamTerminalState struct {
-	// sawDataLine 表示上游至少发送过一行 data:，据此启用 SSE 截断检查。
-	// 上游返回裸 JSON 时直接透传。
-	sawDataLine     bool
-	sawDone         bool
-	sawUsage        bool
-	sawFinishReason bool
+	// sawDataLine records SSE participation. sawDone, sawUsage, and
+	// sawFinishReason accumulate independent termination signals; any one
+	// ends truncation detection, while data presence removes the non-SSE exemption.
+	sawDataLine     bool // observed SSE data payload
+	sawDone         bool // observed exact done sentinel
+	sawUsage        bool // observed usage object value
+	sawFinishReason bool // observed nonblank finish reason
 }
 
-// EnsureOpenAIChatStreamUsage 为 raw Chat Completions 流式请求开启 usage 返回。
-// usage 也会继续向下游透传，支持级联代理和下游计费系统。
+// EnsureOpenAIChatStreamUsage sets stream_options.include_usage to true for a
+// Chat request body. Existing false values are overwritten, and patch errors
+// return the supplied body; callers choose whether the request follows the raw
+// streaming path.
 func EnsureOpenAIChatStreamUsage(body []byte) ([]byte, error) {
 	updated, err := sjson.SetBytes(body, "stream_options.include_usage", true)
 	if err != nil {
@@ -36,6 +49,9 @@ func EnsureOpenAIChatStreamUsage(body []byte) ([]byte, error) {
 	return updated, nil
 }
 
+// IsOpenAIChatUsageOnlyStreamChunk reports an existing usage key with an empty
+// choices array. Key presence can include null usage, and path inspection does
+// not validate the complete document or its token counts.
 func IsOpenAIChatUsageOnlyStreamChunk(payload string) bool {
 	if strings.TrimSpace(payload) == "" {
 		return false
@@ -47,9 +63,10 @@ func IsOpenAIChatUsageOnlyStreamChunk(payload string) bool {
 	return choices.Exists() && choices.IsArray() && len(choices.Array()) == 0
 }
 
-// ExtractCCStreamUsage 从单个 CC 流式 chunk 的 payload 中提取 usage 字段。
-// CC 协议中 usage 仅出现在末尾 chunk（且仅当 include_usage 生效时），
-// 上游在多个 chunk 中重复该字段时，使用最新值。
+// ExtractCCStreamUsage reads an object-shaped usage value from one Chat
+// payload. Missing or nonobject usage returns nil; an empty object returns a
+// present zero-count observation. Values follow OpenAIUsageFromGJSON coercion,
+// and callers decide whether the observation replaces earlier stream counts.
 func ExtractCCStreamUsage(payload string) *ForwardUsage {
 	usageResult := gjson.Get(payload, "usage")
 	if !usageResult.Exists() || !usageResult.IsObject() {
@@ -62,6 +79,10 @@ func ExtractCCStreamUsage(payload string) *ForwardUsage {
 	return &u
 }
 
+// ChatChunkStartsResponsesOutput reports content/reasoning pointer presence or
+// any tool-call records in a choice. Empty pointed-to text still qualifies,
+// and a nil chunk returns false; this signal identifies structural output for
+// Responses conversion.
 func ChatChunkStartsResponsesOutput(chunk *ChatCompletionsChunk) bool {
 	if chunk == nil {
 		return false
@@ -74,7 +95,8 @@ func ChatChunkStartsResponsesOutput(chunk *ChatCompletionsChunk) bool {
 	return false
 }
 
-// ChatCompletionsChunkHasToolCallDelta 判断当前分片是否携带工具调用增量。
+// ChatCompletionsChunkHasToolCallDelta reports whether any choice contains
+// tool-call records in its delta.
 func ChatCompletionsChunkHasToolCallDelta(chunk *ChatCompletionsChunk) bool {
 	if chunk == nil {
 		return false
@@ -87,8 +109,10 @@ func ChatCompletionsChunkHasToolCallDelta(chunk *ChatCompletionsChunk) bool {
 	return false
 }
 
-// OpenAIChatCompletionServiceTierEventType 为 Chat Completions 的结束 chunk
-// 补上终止事件标记，使终态档位覆盖早期的请求档位回显。
+// OpenAIChatCompletionServiceTierEventType returns response.completed for
+// usage-only payloads or choices with a nonblank gjson finish-reason string.
+// Other payloads return empty text; this classification supplies metadata
+// precedence, rather than validating successful delivery.
 func OpenAIChatCompletionServiceTierEventType(payload []byte) string {
 	if len(payload) == 0 {
 		return ""
@@ -104,19 +128,10 @@ func OpenAIChatCompletionServiceTierEventType(payload []byte) string {
 	return ""
 }
 
-// StripEmptyChatToolCallIdentityFromSSELine 从 CC 流式 SSE 行中剔除
-// choices[*].delta.tool_calls[*] 上的空 id / 空 function.name 字段。
-//
-// DashScope/DeepSeek 等 OpenAI 兼容上游会把同一个 tool_calls[index]
-// 拆成多个 delta：首个 delta 带合法 id + function.name（arguments 可能
-// 为空），后续参数 delta 带 id:"" 与 function.name:"" 只追加 arguments
-// 碎片。dsh 等客户端按 `!== undefined` 合并字段，空串会被当成有效值
-// 覆盖首包合法 id/name，最终得到 {"id":"","name":"",...} 导致
-// ToolNotFoundError: unknown tool ""。这里无状态剔除空串字段（缺失
-// 即不覆盖），不补写、不记忆首包 id/name，适用于所有走 raw CC 直转
-// 路径的提供商（不限定 DeepSeek）。
-//
-// 处理对象为流式 chunk 的 delta.tool_calls。
+// StripEmptyChatToolCallIdentityFromSSELine delegates identity cleanup for an
+// SSE data payload and retains its exact line prefix. Non-data lines, blank
+// payloads, the done sentinel, and unchanged cleanup results keep the supplied
+// line.
 func StripEmptyChatToolCallIdentityFromSSELine(line string) string {
 	payload, ok := ExtractSSEDataLine(line)
 	if !ok {
@@ -137,19 +152,23 @@ func StripEmptyChatToolCallIdentityFromSSELine(line string) string {
 	return line[:prefixLen] + string(rewritten)
 }
 
-// StripEmptyChatToolCallIdentity 从单个 CC 流式 chunk payload 中删除
-// choices[*].delta.tool_calls[*] 上存在但为空字符串的 id 与
-// function.name 字段；arguments（即使是空串）、index、type 与其它字段
-// 一律保留，非空 id/name 不动。多 choice、多 index 都会处理。
+// StripEmptyChatToolCallIdentity removes exact empty-string tool IDs and
+// function names from choices[*].delta.tool_calls[*]. Null, whitespace-only,
+// and nonstring identities remain. It requires valid JSON after its literal
+// tool_calls screen; an escaped spelling that misses this screen is returned
+// unchanged.
 //
-// 返回 (原始 payload, false) 当：payload 为空、不含 "tool_calls"、
-// 非法 JSON、无 choices / delta / tool_calls 数组、或没有需要删除的
-// 字段。sjson 删除失败时 fail-closed 返回原始 payload。
+// Removing those keys lets a client that overwrites every present identity
+// keep its earlier ID and name while appending later argument fragments. Every
+// choice and call-array position is visited. Arguments, indexes, and other
+// fields remain in the raw JSON; any deletion failure returns the supplied
+// payload with false, discarding the candidate sequence.
 func StripEmptyChatToolCallIdentity(payload []byte) ([]byte, bool) {
 	if len(payload) == 0 {
 		return payload, false
 	}
-	// 热路径快速失败：绝大多数 chunk 没有 tool_calls。
+	// The literal screen avoids parsing ordinary content chunks. Escaped key
+	// spellings can miss this screen, so this helper is a targeted raw-stream repair.
 	if !bytes.Contains(payload, []byte("tool_calls")) {
 		return payload, false
 	}
@@ -160,6 +179,8 @@ func StripEmptyChatToolCallIdentity(payload []byte) ([]byte, bool) {
 	if !choices.Exists() || !choices.IsArray() {
 		return payload, false
 	}
+	// Keep candidate deletions separate from the result decision. A later error
+	// rejects all earlier removals and returns the source payload to the reader.
 	updated := payload
 	changed := false
 	for ci, choice := range choices.Array() {
@@ -196,7 +217,16 @@ func StripEmptyChatToolCallIdentity(payload []byte) ([]byte, bool) {
 	return updated, true
 }
 
-// ObserveDataLine 从单行 SSE `data:` 载荷中提取终止信号。payload 需已 TrimSpace。
+// ObserveDataLine records one caller-trimmed SSE payload and marks that data
+// was seen even when the payload is empty or malformed. Exact [DONE], an
+// object-shaped usage value, or a nonblank gjson finish-reason string each
+// supplies terminal evidence. A nil receiver has no effect.
+//
+// The flags accumulate across calls, so one later payload cannot erase a prior
+// terminal observation. Usage-object presence is sufficient even for an empty
+// object, and finish-reason path inspection does not validate the enclosing
+// JSON. IsTruncated combines this evidence with whether the caller already
+// forwarded output.
 func (t *RawStreamTerminalState) ObserveDataLine(payload string) {
 	if t == nil {
 		return
@@ -213,7 +243,8 @@ func (t *RawStreamTerminalState) ObserveDataLine(payload string) {
 		return
 	}
 	for _, choice := range gjson.Get(payload, "choices").Array() {
-		// finish_reason 为 null 时 String() 返回空串，不算终止。
+		// gjson string conversion maps null to empty text. Require a nonblank
+		// result so unfinished choice chunks cannot supply this terminal signal.
 		if strings.TrimSpace(choice.Get("finish_reason").String()) != "" {
 			t.sawFinishReason = true
 			return
@@ -221,14 +252,21 @@ func (t *RawStreamTerminalState) ObserveDataLine(payload string) {
 	}
 }
 
-// Terminated 表示上游给出过终止信号。
+// Terminated reports whether any done, usage-object, or finish-reason evidence
+// was recorded.
 func (t *RawStreamTerminalState) Terminated() bool {
 	return t != nil && (t.sawDone || t.sawUsage || t.sawFinishReason)
 }
 
-// IsTruncated 判定上游是否在任何终止信号之前结束。clientOutputStarted 用于放行
-// 非 SSE 响应体：那类响应本就没有 data: 行，既有行为是原样透传，不在本次判定范围内；
-// 但"一个字节都没收到"的空 200 依然算截断。
+// IsTruncated reports missing terminal evidence after data was observed or
+// before any client output began. Nil state and a recorded terminal signal
+// return false. The caller passes whether output actually started, since these
+// flags cannot detect a forwarded non-SSE body.
+//
+// A started response with no data observations is exempt: it can be plain JSON
+// returned for a streaming request. Once an SSE payload was seen, that
+// exemption ends, and a response lacking all three terminal signals is
+// considered truncated regardless of previously forwarded content.
 func (t *RawStreamTerminalState) IsTruncated(clientOutputStarted bool) bool {
 	if t == nil || t.Terminated() {
 		return false
@@ -236,5 +274,5 @@ func (t *RawStreamTerminalState) IsTruncated(clientOutputStarted bool) bool {
 	return t.sawDataLine || !clientOutputStarted
 }
 
-// SawDataLine 提供原截断日志所需的只读观测。
+// SawDataLine reports whether this state observed any SSE data payload at all.
 func (t *RawStreamTerminalState) SawDataLine() bool { return t != nil && t.sawDataLine }

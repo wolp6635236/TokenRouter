@@ -1,8 +1,18 @@
 package modelcatalog
 
-// Reader 提供当前统一目录的候选和元数据，读取失败后的有效快照由实现方保留。
+// reader.go defines model identity, metadata, and version access for catalog
+// consumers.
+// Catalog consumers read model identities, metadata, and a publication version
+// through the same small interface. Production implementations retain their
+// last valid publication after a failed update so consumers can continue
+// resolving metadata during refresh failures.
+
+// Reader exposes model identities, metadata, and the retained catalog publication version.
 type Reader interface {
+	// ModelIDs returns the model identities available from the current publication.
 	ModelIDs() []string
+	// ModelEntry returns catalog metadata for the requested complete model identity.
 	ModelEntry(string) Entry
+	// ModelVersion returns the content version identifying the current catalog publication.
 	ModelVersion() string
 }

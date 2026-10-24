@@ -9,7 +9,14 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestAntigravityFinalModelChecksWhitelistAfterThinking 检查 thinking 后缀作用于最终名称，映射在此前执行一次。
+// Antigravity aliases and thinking variants can have different final permissions.
+// These cases exercise antigravity_model.go with explicit and wildcard mappings,
+// unrestricted model scopes, and separate final whitelists to check the identity
+// returned to forwarding after one mapping step.
+
+// TestAntigravityFinalModelChecksWhitelistAfterThinking separates base and thinking
+// permissions for one public alias. It checks that the transformed name is
+// whitelisted once and is never passed through a second target mapping.
 func TestAntigravityFinalModelChecksWhitelistAfterThinking(t *testing.T) {
 	enabled := true
 	disabled := false
@@ -25,6 +32,9 @@ func TestAntigravityFinalModelChecksWhitelistAfterThinking(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4-5", MapAntigravityModel(value, "public"))
 }
 
+// TestAntigravityMappedTargetCannotBypassExplicitWhitelist maps an alias to an
+// unlisted custom target. It checks rejection until an explicit wildcard admits
+// that target, keeping mapping and permission as separate decisions.
 func TestAntigravityMappedTargetCannotBypassExplicitWhitelist(t *testing.T) {
 	value := &providercore.Record{Platform: providercore.PlatformAntigravity, Credentials: map[string]any{
 		"model_mapping":   map[string]any{"public": "custom-upstream"},
@@ -35,14 +45,17 @@ func TestAntigravityMappedTargetCannotBypassExplicitWhitelist(t *testing.T) {
 	require.Equal(t, "custom-upstream", MapAntigravityModel(value, "public"))
 }
 
+// TestAntigravityGatewayService_GetMappedModel covers configured aliases alongside
+// known and unknown unmapped names. It checks that saved targets win and that an
+// unrestricted provider returns every unmapped spelling as supplied.
 func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 	tests := []struct {
-		name            string
-		requestedModel  string
-		providerMapping map[string]string
-		expected        string
+		name            string            // subtest display label
+		requestedModel  string            // incoming model spelling
+		providerMapping map[string]string // configured alias targets
+		expected        string            // admitted upstream spelling
 	}{
-		// 1. 提供商级映射优先
+		// Configured mappings determine the upstream model.
 		{
 			name:            "提供商映射优先",
 			requestedModel:  "claude-3-5-sonnet-20241022",
@@ -62,7 +75,7 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:        "my-opus",
 		},
 
-		// 2. 默认映射（DefaultAntigravityModelMapping）
+		// Unmapped names pass through unchanged.
 		{
 			name:            "未配置映射时透传 claude-opus-4-6",
 			requestedModel:  "claude-opus-4-6",
@@ -100,7 +113,6 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:        "claude-sonnet-4-5-20250929",
 		},
 
-		// 3. 默认映射中的透传（映射到自己）
 		{
 			name:            "默认映射透传 - claude-fable-5-1",
 			requestedModel:  "claude-fable-5-1",
@@ -168,7 +180,7 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:        "gemini-3-flash",
 		},
 
-		// 未配置白名单的型号直接交给上游。
+		// An empty whitelist permits unknown upstream models.
 		{
 			name:            "未知模型 - claude-unknown 保持原 ID",
 			requestedModel:  "claude-unknown",
@@ -207,7 +219,10 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 				Platform: capability.PlatformAntigravity,
 			}
 			if tt.providerMapping != nil {
-				// GetModelMapping 期望 model_mapping 是 map[string]any 格式
+				// Encode the table mapping in the JSON-shaped container read
+				// by ResolveModelMapping;
+				// a map with a different concrete value type would exercise
+				// its default path.
 				mappingAny := make(map[string]any)
 				for k, v := range tt.providerMapping {
 					mappingAny[k] = v
@@ -223,13 +238,15 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 	}
 }
 
+// TestAntigravityGatewayService_GetMappedModel_EdgeCases supplies an empty name and
+// names from other model families. It checks that empty input is rejected while
+// unrestricted nonempty names pass through unchanged.
 func TestAntigravityGatewayService_GetMappedModel_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name           string
-		requestedModel string
-		expected       string
+		name           string // subtest display label
+		requestedModel string // incoming model spelling
+		expected       string // admitted upstream spelling
 	}{
-		// 空字符串保持为空，其他厂商型号交给上游。
 		{"空字符串", "", ""},
 		{"非claude/gemini前缀 - gpt", "gpt-4", "gpt-4"},
 		{"非claude/gemini前缀 - llama", "llama-3", "llama-3"},
@@ -244,14 +261,16 @@ func TestAntigravityGatewayService_GetMappedModel_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestMapAntigravityModel_WildcardTargetEqualsRequest 测试通配符映射目标恰好等于请求模型名的 edge case
-// 例如 {"claude-*": "claude-sonnet-4-5"}，请求 "claude-sonnet-4-5" 时应该通过。
+// TestMapAntigravityModel_WildcardTargetEqualsRequest compares wildcard and exact
+// identity targets with unmatched requests. It checks that matching the same
+// spelling still returns that target and that an unmatched customtools name
+// does not acquire another alias's mapping.
 func TestMapAntigravityModel_WildcardTargetEqualsRequest(t *testing.T) {
 	tests := []struct {
-		name           string
-		modelMapping   map[string]any
-		requestedModel string
-		expected       string
+		name           string         // subtest display label
+		modelMapping   map[string]any // decoded alias configuration
+		requestedModel string         // incoming model spelling
+		expected       string         // admitted upstream spelling
 	}{
 		{
 			name:           "wildcard target equals request model",

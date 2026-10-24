@@ -13,17 +13,35 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	openaiws "github.com/TokenFlux/TokenRouter/internal/upstream/openai/ws"
 )
 
-// provideGrokExecutor 复用凭据、HTTP 池、健康状态和应用活动屏障。
+// gateway_grok_execution.go constructs Grok execution, destination policy, and
+// provider health reporting.
+// Grok execution reuses request credentials, transport, output handling, and
+// WebSocket dialing from the application. Health reporting shares runtime
+// blocks and transient model state with provider selection, and ordinary quota
+// snapshots use a per-provider write throttle.
+
+// provideGrokExecutor combines Grok request execution with shared platform
+// resources and price policy. activity and connections provide required method
+// callbacks; attributes are taken from readers when supplied, and route
+// validation is built from startup configuration.
 func provideGrokExecutor(cfg *config.Config, credentials *gatewayadapter.RequestCredentials, transport httpclient.UpstreamTransport, output *gatewayhttp.OpenAIResponseOutput, health *provideradapter.GrokHealth, tls *egressprovider.TLSProfiles, readers *gatewayadapter.RuntimeReaders, blocks *provider.RuntimeBlockState, deferred *provider.DeferredService, store gatewayadapter.ExecutionProviderStore, activity *gatewayRequestActivity, prices *billing.PriceResolver, connections *openaiws.OpenAIWSConnections) *gatewayhttp.GrokExecutor {
 	routes := provideGrokRoutes(cfg, readers)
-	return &gatewayhttp.GrokExecutor{FastPolicy: &gatewayadapter.ExecutionFastPolicy{Readers: readers, Prices: prices}, Credentials: credentials, Transport: transport, Output: output, Health: health, Routes: routes, TLS: tls, Dialer: connections.Dialer(), Enter: activity.Enter, Failure: &gatewayhttp.UpstreamTransportFailure{Health: &provideradapter.TransportHealth{Runtime: blocks, Deferred: deferred, Store: store}}}
+	var attributes *routing.ModelAttributeService
+	if readers != nil {
+		attributes = readers.Attributes
+	}
+	return &gatewayhttp.GrokExecutor{Attributes: attributes, FastPolicy: &gatewayadapter.ExecutionFastPolicy{Readers: readers, Prices: prices}, Credentials: credentials, Transport: transport, Output: output, Health: health, Routes: routes, TLS: tls, Dialer: connections.Dialer(), Enter: activity.Enter, Failure: &gatewayhttp.UpstreamTransportFailure{Health: &provideradapter.TransportHealth{Runtime: blocks, Deferred: deferred, Store: store}}}
 }
 
-// provideGrokRoutes 绑定静态目标地址策略，默认模式在请求期间读取。
+// provideGrokRoutes supplies Grok destination validation and optional request-
+// time base-URL mode lookup. Nil cfg uses Grok's built-in validator; supplied
+// configuration binds operator URL policy, and readers enables the dynamic mode
+// callback.
 func provideGrokRoutes(cfg *config.Config, readers *gatewayadapter.RuntimeReaders) gatewayadapter.GrokRoutes {
 	routes := gatewayadapter.GrokRoutes{Validate: grok.ValidateBaseURL}
 	if cfg != nil {
@@ -35,7 +53,10 @@ func provideGrokRoutes(cfg *config.Config, readers *gatewayadapter.RuntimeReader
 	return routes
 }
 
-// provideGrokHealth 与 OpenAI 快照写入共享节流器，与选号共享运行阻断及模型冷却。
+// provideGrokHealth binds shared containment and model state with a thirty-
+// second ordinary-write throttle. GrokHealth applies that throttle per provider
+// and allows critical exhaustion or recovery observations to proceed during the
+// reserved interval.
 func provideGrokHealth(store *providerpostgres.ProviderStore, health *provideradapter.UpstreamHealth, blocks *provider.RuntimeBlockState, models *provider.ModelTransientState) *provideradapter.GrokHealth {
 	return &provideradapter.GrokHealth{
 		Store: store, Health: health, Runtime: blocks, ModelTransient: models,

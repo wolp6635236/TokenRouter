@@ -8,10 +8,24 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// 请求头覆写（header override）：对 Anthropic / OpenAI / 国产供应商平台的
-// api_key 提供商，以及 Grok 平台的 api_key / oauth 提供商生效。
-// 管理员在提供商上配置一组 header name -> value，转发到上游前用配置值覆盖同名请求头
-// （匹配不区分大小写）；value 为空的条目视为"未填写"，不参与覆盖。
+// header_overrides.go validates provider header overrides and constructs
+// normalized maps for outgoing requests.
+// Provider header overrides replace outgoing values case-insensitively after
+// platform authentication and client identity are prepared. Provider
+// eligibility allows API keys on Anthropic, OpenAI, Kimi, Zhipu, DeepSeek, and
+// Jev, plus API keys or OAuth on Grok. Egress validates syntax and blocks
+// credential, session, and framing names.
+//
+// Write validation normalizes names before duplicate detection so each accepted
+// header retains one value after conversion between supported map
+// representations. It builds a replacement table before changing credentials,
+// leaving the submitted table available on validation failure. Read-time
+// resolution filters stored values through the same entry rules and allocates a
+// request map, while empty stored values remain editable placeholders rather
+// than applied overrides.
+
+// Header override credential keys and size limits govern write validation and
+// request-time filtering of stored administrator values.
 const (
 	credKeyHeaderOverrideEnabled = "header_override_enabled"
 	credKeyHeaderOverrides       = "header_overrides"
@@ -21,15 +35,15 @@ const (
 	maxHeaderOverrideValueLength = 8192
 )
 
-// headerOverrideBlockedNames 禁止覆写的请求头（小写）。
-//   - 连接控制/逐跳头：由 HTTP 栈管理，覆写会破坏请求传输；
-//   - host/content-length：由 Go 的 Request.Host / ContentLength 字段管理，header 覆写不生效或产生冲突；
-//   - content-type：承载报文框架信息（multipart boundary 为每请求随机值），静态覆写必然与 body 不匹配；
-//   - authorization/x-api-key/cookie 等：上游认证头由提供商凭据统一注入，禁止通过覆写篡改或重新引入；
-//   - accept-encoding：强制压缩会破坏网关对上游流式响应（SSE/usage）的解析；
-//   - sec-websocket-*：WebSocket 握手头由拨号器管理（OpenAI WS 模式）；
-//   - session_id/x-claude-code-session-id/x-grok-conv-id 等：逐请求会话隔离头，
-//     固定值会造成会话串扰。
+// headerOverrideBlockedNames lists lowercase headers that providers cannot override.
+//   - Connection and hop-by-hop headers belong to the HTTP stack.
+//   - Host and content-length are controlled by Request.Host and ContentLength.
+//   - Content-type describes the body, including each request's multipart boundary.
+//   - Authorization, API keys, and cookies come from provider credentials.
+//   - Accept-encoding can force compression that breaks SSE and usage parsing.
+//   - WebSocket handshake headers belong to the dialer.
+//   - Session headers, such as session_id, x-claude-code-session-id, and x-grok-conv-id,
+//     isolate individual requests; static values can mix sessions.
 var headerOverrideBlockedNames = map[string]struct{}{
 	"host":                     {},
 	"content-length":           {},
@@ -63,13 +77,24 @@ var headerOverrideBlockedNames = map[string]struct{}{
 	"x-grok-conv-id":           {},
 }
 
+// IsHeaderOverrideBlockedName reports whether the supplied lowercase header
+// name is reserved by credential, session, or transport handling. The caller
+// lowercases its name first; this lookup performs an exact map-key comparison.
 func IsHeaderOverrideBlockedName(lowerName string) bool {
 	_, blocked := headerOverrideBlockedNames[lowerName]
 	return blocked
 }
 
-// ResolveHeaderOverrides 解析并防御性过滤原始覆写表：保存路径已做校验，
-// 这里兜底未经 Normalize 落库的数据（含名单扩充前保存的旧配置），非法条目直接跳过。
+// ResolveHeaderOverrides returns a new map of normalized permitted nonempty
+// header overrides, or nil when none survive. Invalid, blocked, and empty
+// entries are skipped during request-time reads, including values stored before
+// current write validation.
+//
+// Accepted names become lowercase map keys, keeping each request separate from
+// stored map storage. Legacy case-variant names can collide after normalization;
+// the last visited entry wins in Go map iteration order.
+// NormalizeHeaderOverrideCredentials rejects those collisions at write time, but
+// this read helper does not establish an ordering between legacy duplicates.
 func ResolveHeaderOverrides(raw map[string]string) map[string]string {
 	if len(raw) == 0 {
 		return nil
@@ -77,6 +102,8 @@ func ResolveHeaderOverrides(raw map[string]string) map[string]string {
 	result := make(map[string]string, len(raw))
 	for name, value := range raw {
 		lowerName, value, err := NormalizeHeaderOverrideEntry(name, value)
+		// Read-time filtering covers legacy or directly stored credentials, so a
+		// rejected entry cannot bypass the current override rules in a request.
 		if err != nil || lowerName == "" || value == "" {
 			continue
 		}
@@ -88,9 +115,16 @@ func ResolveHeaderOverrides(raw map[string]string) map[string]string {
 	return result
 }
 
-// NormalizeHeaderOverrideCredentials 校验并原地规范化 credentials 中的请求头覆写字段。
-// 供提供商创建/更新/批量更新的保存路径调用；credentials 未携带相关字段时为 no-op。
-// 规范化内容：header 名转小写并去除首尾空白，value 去除首尾空白，丢弃名和值均为空的条目。
+// NormalizeHeaderOverrideCredentials validates override fields and replaces the
+// credential entry with a normalized name-to-value object on success. Missing
+// or nil fields leave the supplied map unchanged, while a present enable flag
+// needs a boolean value.
+//
+// The function accepts either supported map representation, rejects excessive
+// entry counts, and normalizes every name and value before detecting duplicate
+// lowercase names. Named empty values remain editable placeholders. Validation
+// failure returns before replacing header_overrides, so callers can reject the
+// submitted credential object rather than persist a partially normalized table.
 func NormalizeHeaderOverrideCredentials(credentials map[string]any) error {
 	if credentials == nil {
 		return nil
@@ -136,8 +170,10 @@ func NormalizeHeaderOverrideCredentials(credentials map[string]any) error {
 		if err != nil {
 			return err
 		}
+		// Empty name-and-value rows are editor placeholders rather than headers.
+		// Omitting them prevents an empty map key from being persisted as an override.
 		if lowerName == "" {
-			continue // 丢弃完全为空的占位行
+			continue
 		}
 		if _, dup := normalized[lowerName]; dup {
 			return infraerrors.Newf(infraerrors.Category(400), "INVALID_HEADER_OVERRIDE",
@@ -149,9 +185,9 @@ func NormalizeHeaderOverrideCredentials(credentials map[string]any) error {
 	return nil
 }
 
-// NormalizeHeaderOverrideEntry 校验并规范化单个覆写条目，保存路径（Normalize，err → 400）
-// 与应用路径（ResolveHeaderOverrides，err → 跳过）共用同一套规则，避免两处校验漂移。
-// 名和值均为空表示空占位行，返回 ("", "", nil)；空 value 的具名条目合法（模板占位）。
+// NormalizeHeaderOverrideEntry validates one entry for both write-time rejection
+// and read-time filtering, keeping those paths on the same validation rules.
+// An empty name and value return ("", "", nil); a named empty value is a valid placeholder.
 func NormalizeHeaderOverrideEntry(name, value string) (string, string, error) {
 	lowerName := strings.ToLower(strings.TrimSpace(name))
 	value = strings.TrimSpace(value)
@@ -185,5 +221,7 @@ func NormalizeHeaderOverrideEntry(name, value string) (string, string, error) {
 	return lowerName, value, nil
 }
 
-// ValidHeaderName 校验 HTTP token 语法，提供商权限和覆写限制由调用方另行检查。
+// ValidHeaderName reports whether name has HTTP token syntax according to
+// httpguts. Callers separately determine provider eligibility and reject
+// reserved credential, session, and transport names before applying an override.
 func ValidHeaderName(name string) bool { return httpguts.ValidHeaderFieldName(name) }

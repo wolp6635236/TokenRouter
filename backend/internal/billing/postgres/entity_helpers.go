@@ -12,24 +12,36 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
 )
 
-// sqlExecutor 提供存储适配层使用的 SQL 执行和查询方法。
+// entity_helpers.go selects billing persistence clients, translates database
+// errors and maps user records.
+// Billing persistence adapters can join an Ent transaction passed in context
+// or use their configured client. These shared helpers select that connection,
+// translate known missing/unique errors to application errors, and map billing
+// user data while keeping undecodable notification contacts empty.
+//
+// User mapping carries the scalar billing fields and retained optional
+// pointers from the Ent entity; group permission slices are populated by other
+// readers. Database error mapping keeps the original cause when a supplied
+// application error matches, and unrelated failures stay available to the
+// caller.
+
+// sqlExecutor provides SQL execution and row queries for billing persistence
+// adapters.
 type sqlExecutor interface {
+	// ExecContext executes caller SQL with supplied arguments and returns its
+	// affected-row result. The owning adapter decides whether absence is a domain
+	// error and owns transaction lifecycle.
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	// QueryContext executes caller SQL and returns rows for the owning adapter to
+	// consume. That caller closes the rows, checks scan/iteration errors and
+	// interprets empty results.
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-// clientFromContext 从 context 中获取事务 client，如果不存在则返回默认 client。
-//
-// 这个辅助函数支持 repository 方法在事务上下文中工作：
-// - 如果 context 中存在事务（通过 ent.NewTxContext 设置），返回事务的 client
-// - 否则返回传入的默认 client
-//
-// 使用示例：
-//
-//	func (r *someRepo) SomeMethod(ctx context.Context) error {
-//	    client := clientFromContext(ctx, r.client)
-//	    return client.SomeEntity.Create().Save(ctx)
-//	}
+// clientFromContext returns the Ent transaction client from ctx when present,
+// otherwise defaultClient. Both connections remain caller-owned; this helper
+// performs no transaction creation, commit or rollback and requires a usable
+// context.
 func clientFromContext(ctx context.Context, defaultClient *dbent.Client) *dbent.Client {
 	if tx := dbent.TxFromContext(ctx); tx != nil {
 		return tx.Client()
@@ -37,44 +49,28 @@ func clientFromContext(ctx context.Context, defaultClient *dbent.Client) *dbent.
 	return defaultClient
 }
 
-// translatePersistenceError 将数据库层错误翻译为业务层错误。
-//
-// 这是 Repository 层的核心错误处理函数，确保数据库细节不会泄露到业务层。
-// 通过统一的错误翻译，业务层可以使用语义明确的错误类型（如 ErrUserNotFound）
-// sql.ErrNoRows 等数据库错误在此转换为业务错误。
-//
-// 参数：
-//   - err: 原始数据库错误
-//   - notFound: 当记录不存在时返回的业务错误（可为 nil 表示不处理）
-//   - conflict: 当违反唯一约束时返回的业务错误（可为 nil 表示不处理）
-//
-// 返回：
-//   - 翻译后的业务错误，或原始错误（如果不匹配任何规则）
-//
-// 示例：
-//
-//	err := translatePersistenceError(dbErr, service.ErrUserNotFound, service.ErrEmailExists)
+// translatePersistenceError maps missing-row and uniqueness errors to supplied
+// application errors, retaining the database error as the cause. Nil mappings
+// and unmatched errors leave the original error unchanged.
 func translatePersistenceError(err error, notFound, conflict *apperror.ApplicationError) error {
 	if err == nil {
 		return nil
 	}
 
-	// 兼容 Ent ORM 和标准 database/sql 的 NotFound 行为。
-	// Ent 使用自定义的 NotFoundError，而标准库使用 sql.ErrNoRows。
-	// 这里同时处理两种情况，保持业务错误映射一致。
 	if notFound != nil && (errors.Is(err, sql.ErrNoRows) || dbent.IsNotFound(err)) {
 		return notFound.WithCause(err)
 	}
 
-	// 处理唯一约束冲突（如邮箱已存在、名称重复等）
 	if conflict != nil && postgresinfra.IsUniqueConstraintViolation(err) {
 		return conflict.WithCause(err)
 	}
 
-	// 未匹配任何规则，返回原始错误
 	return err
 }
 
+// uniquePositiveInt64s returns distinct positive IDs in their first-supplied
+// order. Empty input yields nil; a nonempty input containing no usable IDs
+// yields an allocated empty slice for the owning query helper.
 func uniquePositiveInt64s(ids []int64) []int64 {
 	if len(ids) == 0 {
 		return nil
@@ -94,6 +90,9 @@ func uniquePositiveInt64s(ids []int64) []int64 {
 	return out
 }
 
+// derefString returns the pointed-to text or an empty string for nil.
+// Redemption and subscription conversion use it for optional stored notes,
+// making absent notes and an explicitly empty value share the domain string.
 func derefString(s *string) string {
 	if s == nil {
 		return ""
@@ -101,7 +100,10 @@ func derefString(s *string) string {
 	return *s
 }
 
-// userSummaryFromEntity 从预加载的用户实体提取权益查询资料，nil 返回 nil。
+// userSummaryFromEntity maps billing user data or returns nil for nil input.
+// Optional timestamps and threshold pointers remain shared with the entity;
+// notification contacts are parsed from saved text, while group permission
+// slices are left for other reader paths.
 func userSummaryFromEntity(u *dbent.User) *billing.UserSummary {
 	if u == nil {
 		return nil
@@ -131,11 +133,14 @@ func userSummaryFromEntity(u *dbent.User) *billing.UserSummary {
 	return out
 }
 
+// paginationResultFromTotal delegates page metadata construction using the
+// supplied count and parameters.
 func paginationResultFromTotal(total int64, params pagination.PaginationParams) *pagination.PaginationResult {
 	return pagination.ResultFromTotal(total, params)
 }
 
-// isUniqueConstraintViolation 复用 PostgreSQL 技术层的约束错误判断。
+// isUniqueConstraintViolation delegates recognition of PostgreSQL uniqueness
+// failures for billing error mapping.
 func isUniqueConstraintViolation(err error) bool {
 	return postgresinfra.IsUniqueConstraintViolation(err)
 }

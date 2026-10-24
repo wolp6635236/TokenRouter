@@ -13,6 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// A forwarding failure can occur before output, after ordinary response bytes,
+// or after a committed stream terminal. These cases protect Messages fallback
+// presentation and its byte/content-type predicate, including Responses
+// heartbeat output that still needs a route-specific failure event.
+
+// TestGatewayEnsureForwardErrorResponse_WritesFallbackWhenNotWritten supplies
+// a fresh writer with no semantic commitment. Fallback must report
+// presentation, return HTTP 502 and encode the expected Anthropic
+// upstream-error type and message.
 func TestGatewayEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -33,8 +42,9 @@ func TestGatewayEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testi
 	assert.Equal(t, "Upstream request failed", errorObj["message"])
 }
 
-// TestGatewayEnsureForwardErrorResponse_AppendsSSEAfterWritten 验证已写入响应后追加 SSE 错误。
-// 非 /responses 路径使用 data:{"type":"error"} 格式。
+// TestGatewayEnsureForwardErrorResponse_AppendsSSEAfterWritten first writes an
+// ordinary teapot response without semantic commitment. Fallback must retain
+// that HTTP status and body while appending an Anthropic SSE error frame.
 func TestGatewayEnsureForwardErrorResponse_AppendsSSEAfterWritten(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -49,6 +59,9 @@ func TestGatewayEnsureForwardErrorResponse_AppendsSSEAfterWritten(t *testing.T) 
 	assert.Contains(t, w.Body.String(), `data: {"type":"error"`)
 }
 
+// TestGatewayEnsureForwardErrorResponse_SkipsCommittedSSEError writes and
+// marks an existing SSE error as committed. Fallback must return false and
+// leave exactly one error event in the response body.
 func TestGatewayEnsureForwardErrorResponse_SkipsCommittedSSEError(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -63,8 +76,10 @@ func TestGatewayEnsureForwardErrorResponse_SkipsCommittedSSEError(t *testing.T) 
 	require.Equal(t, 1, strings.Count(w.Body.String(), "event: error"))
 }
 
-// TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed 验证 case B 回归：Anthropic-backed /responses，Writer 已被写过时
-// ensureForwardErrorResponse 仍要发 response.failed。
+// TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed
+// supplies a Responses request with only a written heartbeat. Fallback must
+// retain the heartbeat and append a response.failed event using the Responses
+// envelope.
 func TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsResponseFailed(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -80,6 +95,9 @@ func TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsRespon
 	assert.Contains(t, body, `"type":"response.failed"`)
 }
 
+// TestGatewayForwardErrorAlreadyCommunicated compares new JSON output, SSE
+// heartbeat and message output, unchanged writers and a nil forwarding error.
+// Only the new non-SSE error cases must count as communicated failures.
 func TestGatewayForwardErrorAlreadyCommunicated(t *testing.T) {
 	t.Run("json error already written", func(t *testing.T) {
 		w := httptest.NewRecorder()
@@ -124,7 +142,8 @@ func TestGatewayForwardErrorAlreadyCommunicated(t *testing.T) {
 		require.False(t, reported)
 	})
 
-	// API Key 上游 400 的 JSON 正文透传后返回错误，客户端已收到完整错误响应，此时结束输出。
+	// Passing upstream JSON through c.Data changes the non-SSE writer size, so
+	// outer failure handling recognizes delivered bytes and avoids an appended SSE error.
 	t.Run("upstream 400 json passthrough via c.Data", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
@@ -138,11 +157,11 @@ func TestGatewayForwardErrorAlreadyCommunicated(t *testing.T) {
 		require.True(t, reported)
 		body := w.Body.String()
 		assert.NotContains(t, body, `data: {"type":"error"`)
-		// 客户端收到一次上游错误。
 		assert.Equal(t, 1, strings.Count(body, `"type":"error"`))
 	})
 
-	// SSE 事件 Flush 后，上游返回 400 时 HTTP 状态仍为 200，handler 需要补充终止帧。
+	// A message-start event changes physical output without finishing the SSE
+	// response, so an upstream failure must remain eligible for outer terminal handling.
 	t.Run("streaming 400 mid-stream still needs fallback", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
@@ -156,7 +175,6 @@ func TestGatewayForwardErrorAlreadyCommunicated(t *testing.T) {
 		require.False(t, reported)
 	})
 
-	// err 为 nil 时返回“尚未告知”。
 	t.Run("nil error never reports communicated", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)

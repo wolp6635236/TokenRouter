@@ -14,6 +14,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// TestGatewayHotpathHelpers_CacheTTLAndStickyContext supplies present, missing,
+// and mismatched request prefetch hints. Sticky identifiers and cost
+// observations are reused only for their matching group or provider keys.
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {
 	t.Run("prefetched_sticky_provider_id_from_context", func(t *testing.T) {
 		require.Equal(t, int64(0), prefetchedStickyProviderIDFromContext(context.TODO(), nil))
@@ -54,23 +57,25 @@ func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {
 	})
 }
 
-// TestShouldClearStickySession tests sticky session clearing via IsSchedulable() delegation
-// plus model-level rate limiting.
+// TestShouldClearStickySession varies provider status, expiry, model cooldown,
+// and quota configuration. Binding invalidation follows schedulability and the
+// requested model's active cooldown, while nil and inapplicable OAuth quota
+// cases remain usable.
 func TestShouldClearStickySession(t *testing.T) {
 	now := time.Now()
 	future := now.Add(1 * time.Hour)
 	past := now.Add(-1 * time.Hour)
 
-	// 短限流时间（有限流即清除粘性会话）
+	// A short cooldown still clears stickiness.
 	shortRateLimitReset := now.Add(5 * time.Second).Format(time.RFC3339)
-	// 长限流时间（有限流即清除粘性会话）
+	// A long cooldown clears stickiness.
 	longRateLimitReset := now.Add(30 * time.Second).Format(time.RFC3339)
 
 	tests := []struct {
-		name           string
-		provider       *gatewayprovider.ExecutionProvider
-		requestedModel string
-		want           bool
+		name           string                             // named clearing scenario
+		provider       *gatewayprovider.ExecutionProvider // provider eligibility fixture
+		requestedModel string                             // requested cooldown identity
+		want           bool                               // expected binding invalidation
 	}{
 		{name: "nil provider", provider: nil, requestedModel: "", want: false},
 		{name: "status error", provider: &gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, Status: providercore.StatusError, Schedulable: true}}, requestedModel: "", want: true},
@@ -79,7 +84,7 @@ func TestShouldClearStickySession(t *testing.T) {
 		{name: "temp unschedulable", provider: &gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, Status: billing.StatusActive, Schedulable: true, TempUnschedulableUntil: &future}}, requestedModel: "", want: true},
 		{name: "temp unschedulable expired", provider: &gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, Status: billing.StatusActive, Schedulable: true, TempUnschedulableUntil: &past}}, requestedModel: "", want: false},
 		{name: "active schedulable", provider: &gatewayprovider.ExecutionProvider{Record: providercore.Record{Credentials: map[string]any{"model_whitelist": []string{"*"}}, LoadLocation: time.LoadLocation, Status: billing.StatusActive, Schedulable: true}}, requestedModel: "", want: false},
-		// 模型限流测试：有限流即清除
+		// Any active cooldown for the requested model clears stickiness.
 		{
 			name: "model rate limited short duration",
 			provider: &gatewayprovider.ExecutionProvider{
@@ -96,7 +101,7 @@ func TestShouldClearStickySession(t *testing.T) {
 				},
 			},
 			requestedModel: "claude-sonnet-4",
-			want:           true, // 有限流即清除
+			want:           true, // An active cooldown clears stickiness.
 		},
 		{
 			name: "model rate limited long duration",
@@ -114,7 +119,7 @@ func TestShouldClearStickySession(t *testing.T) {
 				},
 			},
 			requestedModel: "claude-sonnet-4",
-			want:           true, // 有限流即清除
+			want:           true, // An active cooldown clears stickiness.
 		},
 		{
 			name: "model rate limited different model",
@@ -131,8 +136,8 @@ func TestShouldClearStickySession(t *testing.T) {
 					},
 				},
 			},
-			requestedModel: "claude-opus-4", // 请求不同模型
-			want:           false,           // 不同模型不受影响
+			requestedModel: "claude-opus-4", // Request a different model.
+			want:           false,           // The other model's cooldown does not apply.
 		},
 		{
 			name: "apikey quota exceeded",

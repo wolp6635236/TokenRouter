@@ -9,49 +9,74 @@ import (
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// OpenAI Fast Policy 根据请求体的 service_tier 匹配策略。
-// priority 表示 Fast，客户端的 fast 会转换为 priority；ultrafast 为独立档位；flex 表示低优先级；省略时使用默认档位。
-// 策略动作和适用提供商类型使用 BetaPolicyAction 和 BetaPolicyScope 的取值。
-const (
-	OpenAIFastTierAny       = "all"                               // 匹配任意已识别的 service_tier
-	OpenAIFastTierPriority  = protocolopenai.ServiceTierPriority  // 仅匹配 fast（priority）
-	OpenAIFastTierUltrafast = protocolopenai.ServiceTierUltrafast // 仅匹配 ultrafast
-	OpenAIFastTierFlex      = protocolopenai.ServiceTierFlex      // 仅匹配 flex
+// settings.go validates and encodes administrator Fast policy rules with
+// provider and user scopes. Preparation copies the rule collections before
+// normalizing tier labels and model patterns, so validating saved JSON leaves
+// the supplied settings available to their current readers.
 
-	// OpenAIFastPolicyActionForcePriority 将已识别的 service_tier（如 flex、auto、default、scale）写为 priority。
+// Fast tier labels select rule matches; force actions choose the tier written
+// after scope and model qualification. The protocol normalizer owns accepted
+// aliases.
+const (
+	OpenAIFastTierAny       = "all"                               // Matches every caller-supplied tier label.
+	OpenAIFastTierPriority  = protocolopenai.ServiceTierPriority  // Matches the canonical priority tier.
+	OpenAIFastTierUltrafast = protocolopenai.ServiceTierUltrafast // Matches ultrafast.
+	OpenAIFastTierFlex      = protocolopenai.ServiceTierFlex      // Matches flex.
+
+	// OpenAIFastPolicyActionForcePriority rewrites recognized tiers, including
+	// flex, auto, default, and scale, to priority.
 	OpenAIFastPolicyActionForcePriority = "force_priority"
-	// Ultra Fast 共用既有作用域和模型回退规则。
+	// OpenAIFastPolicyActionForceUltrafast uses the same scope and model fallback
+	// rules as force_priority.
 	OpenAIFastPolicyActionForceUltrafast = "force_ultrafast"
 )
 
-// OpenAIFastPolicyRule 单条 OpenAI fast/flex 策略规则。
+// OpenAIFastPolicyRule matches a service tier and applies an action.
 type OpenAIFastPolicyRule struct {
-	ServiceTier          string   `json:"service_tier"`                     // "priority" | "ultrafast" | "flex" | "auto" | "default" | "scale" | "all"
-	Action               string   `json:"action"`                           // "pass" | "filter" | "block" | "force_priority"
-	Scope                string   `json:"scope"`                            // "all" | "oauth" | "apikey" | "bedrock"
-	UserIDs              []int64  `json:"user_ids,omitempty"`               // 空=所有 TokenRouter 用户；非空=仅指定 API Key 所属用户
-	ErrorMessage         string   `json:"error_message,omitempty"`          // 自定义错误消息 (action=block 时生效)
-	ModelWhitelist       []string `json:"model_whitelist,omitempty"`        // 模型匹配模式列表（为空=对所有模型生效）
-	FallbackAction       string   `json:"fallback_action,omitempty"`        // 未匹配白名单的模型的处理方式
-	FallbackErrorMessage string   `json:"fallback_error_message,omitempty"` // 未匹配白名单时的自定义错误消息 (fallback_action=block 时生效)
+	ServiceTier string `json:"service_tier"` // "priority" | "ultrafast" | "flex" | "all"
+	Action      string `json:"action"`       // "pass" | "filter" | "block" | "force_priority" | "force_ultrafast"
+	Scope       string `json:"scope"`        // "all" | "oauth" | "apikey" | "bedrock"
+	// UserIDs selects caller-supplied trusted user identities; an empty list makes
+	// the rule global. ExecutionFastPolicy supplies the authenticated payer user ID.
+	UserIDs []int64 `json:"user_ids,omitempty"` // scoped trusted user identifiers
+	// ErrorMessage accompanies the primary action. Resolve uses the message for
+	// a block result and supplies its own diagnostic when that message is empty.
+	ErrorMessage string `json:"error_message,omitempty"` // primary administrator refusal message
+	// ModelWhitelist chooses the primary action for an empty or matching list.
+	// An unmatched model uses FallbackAction, with an empty fallback selecting pass.
+	ModelWhitelist []string `json:"model_whitelist,omitempty"` // accepted model name patterns
+	// FallbackAction and FallbackErrorMessage replace the primary action and
+	// message when ModelWhitelist excludes the model. An empty fallback action
+	// selects pass with an empty message, regardless of the configured message.
+	FallbackAction       string `json:"fallback_action,omitempty"`        // action for unmatched models
+	FallbackErrorMessage string `json:"fallback_error_message,omitempty"` // message for unmatched models
 }
 
-// OpenAIFastPolicySettings OpenAI fast 策略配置。
+// OpenAIFastPolicySettings contains ordered administrator rules for Fast tier
+// evaluation.
 type OpenAIFastPolicySettings struct {
-	Rules []OpenAIFastPolicyRule `json:"rules"`
+	// Rules retains configuration order inside the user-scoped and global scans.
+	// Evaluate checks qualifying user rules before it visits qualifying global rules.
+	Rules []OpenAIFastPolicyRule `json:"rules"` // ordered administrator tier rules
 }
 
-// Default 返回空规则策略，上游档位按请求传递。
+// Default returns fresh empty settings that pass requested service tiers
+// unchanged.
 func Default() *OpenAIFastPolicySettings {
 	return &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{}}
 }
 
-// Prepare 仅校验和编码，调用者统一提交，输入不会被规范化过程修改。
+// Prepare validates and JSON-encodes a normalized settings copy for
+// persistence by its caller. Nil input is rejected; tier labels and model
+// patterns are trimmed, while actions and provider scopes require exact
+// configured values.
 func Prepare(settings *OpenAIFastPolicySettings) (string, error) {
 	if settings == nil {
 		return "", fmt.Errorf("settings cannot be nil")
 	}
 
+	// Copy both rule storage and nested slices before normalizing model patterns,
+	// because saved settings can also be retained by concurrent policy readers.
 	copySettings := *settings
 	copySettings.Rules = slices.Clone(settings.Rules)
 	for i := range copySettings.Rules {

@@ -68,6 +68,8 @@ OpenAI 的文本、Responses、WS、Images 和辅助执行器共用请求构造�
 
 领域错误由所属模块定义。HTTP 映射和跨模块判断传递原始错误对象，使用 `errors.Is/As` 和错误链判断；按文案新建一个同名错误会让这些判断失效。接口、存储和后台代码能依赖哪些包，由 `tools/architecture/` 的 arch-go 架构测试按角色和具体文件约束，见[依赖规则](../operations/development_workflow.md#backend_dependency_rules)。
 
+MCP 与普通管理 HTTP 共用业务 handler。app 装配专用令牌读取、Redis 确认和文件存储，并在全部管理路由挂载后检查操作目录；目录不完整时停止启动。内部请求通过私有 context 携带来源身份，进入管理链时重新核对权限。详见 [MCP 管理接口](../interfaces/mcp_management.md)。
+
 ### 传输与生成入口
 
 `app/http_transport.go` 把传输相关配置整理给下游，`gateway/provider/transport` 组合请求策略和各平台的传输能力。`infra/httpclient.UpstreamPool` 持有客户端缓存和请求占用计数，成功的请求在响应体关闭时归还占用。OpenAI 的 HTTP/2 回退由 egress 处理，Grok CLI Header 和可重放的 403 策略由 upstream/grok 处理。隐私请求使用共享的 req 客户端池，超时 30 秒，使用 Chrome 指纹。
@@ -106,6 +108,8 @@ Wire 构造完对象、登记完资源后，lifecycle 才启动后台工作，�
 `app/runtime_model_catalog.go` 登记目录生命周期，`app/runtime_settings.go` 用 `RuntimeSettingsInitialization` 登记转发设置的加载和 Grok 默认模型迁移。两者各有一个就绪标记参与装配，运行设置先于目录初始化。
 
 `billing/provider` 负责计费回退告警和时区适配。Calculator、PriceResolver 和 PricingConfigService 由 app 直接提供，计算和查价的使用方共享这些实例。平台模型别名和动态的 Grok 默认值由 `gateway/provider/modelidentity` 提供，每次查价只取一次快照。平台运行状态由 modelidentity 读取，纯定价代码只接收它给出的快照。Key 和分组的模型追踪由 `gateway/modeltrace` 组合。
+
+提供商的 `BalanceAlertMonitor` 由 app 绑定查询服务、PostgreSQL 运行状态和通知发送。它在 StartOrder 980 启动，在 StopOrder 20 取消并等待检查、发信和结果落库结束，结果落库在取消后仍有独立的五秒预算；随后 StopOrder 25 关闭共享上游查询。提醒运行状态属于备份的 `runtime_data` 选项。
 
 billing 的余额和 Key 缓存队列、订阅过期提醒由 app 接入生命周期。提醒任务启动后立即执行第一轮，之后每分钟扫描一次，用 Redis 或数据库选出 leader；停止时取消并等待正在执行的操作。
 

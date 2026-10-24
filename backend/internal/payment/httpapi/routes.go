@@ -2,29 +2,69 @@ package httpapi
 
 import (
 	"github.com/gin-gonic/gin"
+
+	billinghttpapi "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
+	"github.com/TokenFlux/TokenRouter/internal/server/adminapi"
 )
 
-// PlanEndpoints 是支付页面使用的套餐 HTTP 接口，由 billing 的处理器实现。
+// routes.go registers buyer, public recovery, webhook, and administrative
+// payment endpoints with their supplied guards.
+// Payment routes expose authenticated buyer operations, anonymous recovery and
+// provider callbacks under separate groups. RegisterRoutes applies the
+// supplied buyer and administrator guard sequences, while public recovery
+// reads and webhook signature verification are handled by their endpoints;
+// payment OAuth is attached separately to the identity route group.
+
+// PlanEndpoints supplies plan browsing and administrator mutations mounted by
+// payment route registration.
 type PlanEndpoints interface {
+	// GetPlans writes the available purchase plans for the buyer payment page.
 	GetPlans(*gin.Context)
+	// ListPlans writes the administrator listing of persisted subscription plans.
 	ListPlans(*gin.Context)
+	// CreatePlan validates and persists a subscription plan from the
+	// administrator request.
 	CreatePlan(*gin.Context)
+	// UpdatePlan applies the administrator request to its addressed subscription
+	// plan.
 	UpdatePlan(*gin.Context)
+	// DeletePlan removes the addressed subscription plan according to billing
+	// rules.
 	DeletePlan(*gin.Context)
 }
 
-// RouteMiddleware 提供支付路由使用的鉴权、限流和审计处理器。
+// RouteMiddleware contains the supplied guards applied to buyer and
+// administrator payment route groups.
 type RouteMiddleware struct {
+	// JWT, BackendMode and Panel run in that order for buyer payment routes.
+	// Admin, Panel and Audit run in that order for administrator payment routes.
+	// Public/callback groups add none of these guards here.
+	//
+	// JWT: buyer authentication handler. BackendMode: buyer backend access
+	// policy. Panel: panel request limiter. Admin: administrator access guard.
+	// Audit: administrator request audit handler.
 	JWT, BackendMode, Panel, Admin, Audit gin.HandlerFunc
 }
 
-// WeChatAuthEndpoints 提供支付 OAuth 的发起与回调处理方法。
+// WeChatAuthEndpoints supplies payment-specific OAuth redirects mounted on the
+// identity route group.
 type WeChatAuthEndpoints interface {
+	// WeChatPaymentOAuthStart stores payment OAuth context and redirects to
+	// WeChat authorization. It uses the request's payment method/order context;
+	// account login authentication remains separate from this route operation.
 	WeChatPaymentOAuthStart(*gin.Context)
+	// WeChatPaymentOAuthCallback validates payment OAuth callback context and
+	// returns a signed payment continuation to the result page. The endpoint owns
+	// its cookie cleanup and redirects; registration supplies no additional
+	// middleware here.
 	WeChatPaymentOAuthCallback(*gin.Context)
 }
 
-// RegisterRoutes 注册用户支付、公开查询、渠道回调和管理接口。
+// RegisterRoutes mounts buyer payment, public recovery, provider callback and
+// administrator handlers beneath v1. Supply nonnil handlers, plan endpoints
+// and usable guards; any middleware already on v1 also applies. Buyer routes
+// receive JWT/BackendMode/Panel, administrator routes receive
+// Admin/Panel/Audit, and public/callback groups rely on their endpoint rules.
 func RegisterRoutes(
 	v1 *gin.RouterGroup,
 	paymentHandler *PaymentHandler,
@@ -33,11 +73,9 @@ func RegisterRoutes(
 	planHandler PlanEndpoints,
 	guards RouteMiddleware,
 ) {
-	// 用户支付接口使用 JWT 鉴权。
 	authenticated := v1.Group("/payment")
 	authenticated.Use(guards.JWT)
 	authenticated.Use(guards.BackendMode)
-	// 面板全局按用户限流
 	authenticated.Use(guards.Panel)
 	{
 		authenticated.GET("/config", paymentHandler.GetPaymentConfig)
@@ -58,17 +96,20 @@ func RegisterRoutes(
 		}
 	}
 
-	// 公开查单优先使用签名恢复令牌。匿名订单号查单返回已保存的状态，供分批升级期间的客户端查询。
+	// Public token resolution and legacy merchant-number verification bypass
+	// buyer guards in this registration. Their handlers return selected saved
+	// fields according to each recovery input's validation.
 	public := v1.Group("/payment/public")
 	{
 		public.POST("/orders/verify", paymentHandler.VerifyOrderPublic)
 		public.POST("/orders/resolve", paymentHandler.ResolveOrderPublicByResumeToken)
 	}
 
-	// 渠道回调通过支付提供商的签名鉴权。
+	// Callback groups are public here because provider verification authenticates
+	// their payloads. EasyPay retains GET compatibility while the other listed
+	// provider callbacks read POST bodies.
 	webhook := v1.Group("/payment/webhook")
 	{
-		// EasyPay 的 GET 回调从查询参数读取通知。
 		webhook.GET("/easypay", webhookHandler.EasyPayNotify)
 		webhook.POST("/easypay", webhookHandler.EasyPayNotify)
 		webhook.POST("/alipay", webhookHandler.AlipayNotify)
@@ -77,55 +118,50 @@ func RegisterRoutes(
 		webhook.POST("/airwallex", webhookHandler.AirwallexWebhook)
 	}
 
-	// 支付管理接口使用管理员鉴权。
 	adminGroup := v1.Group("/admin/payment")
 	adminGroup.Use(guards.Admin)
-	// 支付管理路由独立注册，因此需要单独接入管理员面板限流。
 	adminGroup.Use(guards.Panel)
 	adminGroup.Use(guards.Audit)
 	{
-		// Dashboard
-		adminGroup.GET("/dashboard", adminPaymentHandler.GetDashboard)
+		adminapi.Register(adminGroup, ManagementOperations["payment.dashboard.list"], adminPaymentHandler.GetDashboard)
 
-		// Config
-		adminGroup.GET("/config", adminPaymentHandler.GetConfig)
-		adminGroup.PUT("/config", adminPaymentHandler.UpdateConfig)
+		adminapi.Register(adminGroup, ManagementOperations["payment.config.list"], adminPaymentHandler.GetConfig)
+		adminapi.Register(adminGroup, ManagementOperations["payment.config.update"], adminPaymentHandler.UpdateConfig)
 
-		// Orders
 		adminOrders := adminGroup.Group("/orders")
 		{
-			adminOrders.GET("", adminPaymentHandler.ListOrders)
-			adminOrders.GET("/:id", adminPaymentHandler.GetOrderDetail)
-			adminOrders.GET("/:id/invoice", adminPaymentHandler.GetOrderInvoice)
-			adminOrders.POST("/:id/cancel", adminPaymentHandler.CancelOrder)
-			adminOrders.POST("/:id/force-expire", adminPaymentHandler.ForceExpireOrder)
-			adminOrders.POST("/:id/retry", adminPaymentHandler.RetryFulfillment)
-			adminOrders.POST("/:id/refund", adminPaymentHandler.ProcessRefund)
-			adminOrders.POST("/:id/refund/query", adminPaymentHandler.QueryAndFinalizeRefund)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.list"], adminPaymentHandler.ListOrders)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.get"], adminPaymentHandler.GetOrderDetail)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.invoice.list"], adminPaymentHandler.GetOrderInvoice)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.cancel.create"], adminPaymentHandler.CancelOrder)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.force_expire.create"], adminPaymentHandler.ForceExpireOrder)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.retry.create"], adminPaymentHandler.RetryFulfillment)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.refund.create"], adminPaymentHandler.ProcessRefund)
+			adminapi.Register(adminOrders, ManagementOperations["payment.orders.refund.query.create"], adminPaymentHandler.QueryAndFinalizeRefund)
 		}
 
-		// Subscription Plans
 		plans := adminGroup.Group("/plans")
 		{
-			plans.GET("", planHandler.ListPlans)
-			plans.POST("", planHandler.CreatePlan)
-			plans.PUT("/:id", planHandler.UpdatePlan)
-			plans.DELETE("/:id", planHandler.DeletePlan)
+			adminapi.Register(plans, billinghttpapi.ManagementOperations["payment.plans.list"], planHandler.ListPlans)
+			adminapi.Register(plans, billinghttpapi.ManagementOperations["payment.plans.create"], planHandler.CreatePlan)
+			adminapi.Register(plans, billinghttpapi.ManagementOperations["payment.plans.update"], planHandler.UpdatePlan)
+			adminapi.Register(plans, billinghttpapi.ManagementOperations["payment.plans.delete"], planHandler.DeletePlan)
 		}
 
-		// Provider Instances
 		providers := adminGroup.Group("/providers")
 		{
-			providers.GET("", adminPaymentHandler.ListProviders)
-			providers.POST("", adminPaymentHandler.CreateProvider)
-			providers.POST("/test", adminPaymentHandler.TestProvider)
-			providers.PUT("/:id", adminPaymentHandler.UpdateProvider)
-			providers.DELETE("/:id", adminPaymentHandler.DeleteProvider)
+			adminapi.Register(providers, ManagementOperations["payment.providers.list"], adminPaymentHandler.ListProviders)
+			adminapi.Register(providers, ManagementOperations["payment.providers.create"], adminPaymentHandler.CreateProvider)
+			adminapi.Register(providers, ManagementOperations["payment.providers.test.create"], adminPaymentHandler.TestProvider)
+			adminapi.Register(providers, ManagementOperations["payment.providers.update"], adminPaymentHandler.UpdateProvider)
+			adminapi.Register(providers, ManagementOperations["payment.providers.delete"], adminPaymentHandler.DeleteProvider)
 		}
 	}
 }
 
-// RegisterWeChatAuthRoutes 在身份路由组上注册支付 OAuth 的发起与回调接口。
+// RegisterWeChatAuthRoutes mounts payment OAuth start/callback on the supplied
+// identity group. Supply a usable endpoint; registration inherits existing
+// group middleware and adds no guard handlers of its own.
 func RegisterWeChatAuthRoutes(auth *gin.RouterGroup, endpoint WeChatAuthEndpoints) {
 	auth.GET("/oauth/wechat/payment/start", endpoint.WeChatPaymentOAuthStart)
 	auth.GET("/oauth/wechat/payment/callback", endpoint.WeChatPaymentOAuthCallback)

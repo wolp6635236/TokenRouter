@@ -14,11 +14,104 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
 
+// localeDelivery captures selected language and rendered content for sequential event-send assertions.
 type localeDelivery struct {
+	// language, subject, and body record the last selected context and rendered
+	// message, while count records successful fixture invocations. Tests read these
+	// values after each synchronous service call returns.
+	// language: selected context locale.
+	// subject: captured message subject.
+	// body: captured HTML message body.
 	language, subject, body string
-	count                   int
+	count                   int // recorded send count
 }
 
+// service_test.go exercises notification rendering, recipient language selection,
+// stored overrides, and coordinated delivery. In-memory settings and captured
+// messages verify customer-visible content while local SMTP fixtures cover the
+// delivery outcomes used by deduplication and retry decisions.
+
+// TestBalanceNotificationDisplayUnits sends both account balance events in both
+// supported languages. It verifies configured symbols in actual delivery and
+// preview, localized names in saved templates, and compatibility with old dollar prefixes.
+func TestBalanceNotificationDisplayUnits(t *testing.T) {
+	for _, event := range []string{NotificationEmailEventBalanceRechargeSuccess, NotificationEmailEventBalanceLow} {
+		for _, language := range []string{"en", "zh-Hans"} {
+			t.Run(event+"/"+language, func(t *testing.T) {
+				ctx := context.Background()
+				repo := mailtest.NewMemorySettings()
+				require.NoError(t, repo.SetMultiple(ctx, map[string]string{
+					"balance_unit_symbol":         " C& ",
+					"balance_unit_name":           "Credits",
+					"balance_unit_name_localized": `{"source_locale":"en","source":"Credits","source_revision":1,"translations":{"zh-Hans":{"value":"积分","source_revision":1}}}`,
+				}))
+				sender := &localeDelivery{}
+				svc := NewNotificationEmailService(repo, sender)
+				variables := map[string]string{"current_balance": "81.25", "recharge_amount": "50.00", "threshold": "100.00"}
+				require.NoError(t, svc.Send(ctx, SendRequest{Event: event, Locale: language, RecipientEmail: "units@example.com", Variables: variables}))
+				require.Contains(t, sender.body, "C&amp;81.25")
+				require.NotContains(t, sender.body, "$81.25")
+				otherAmount := "50.00"
+				if event == NotificationEmailEventBalanceLow {
+					otherAmount = "100.00"
+				}
+				require.Contains(t, sender.body, "C&amp;"+otherAmount)
+				preview, err := svc.PreviewTemplate(ctx, NotificationEmailPreviewInput{Event: event, Locale: language, Variables: variables})
+				require.NoError(t, err)
+				require.Contains(t, preview.HTML, "C&amp;81.25")
+
+				_, err = svc.UpdateTemplate(ctx, event, language, "Balance ${{ current_balance }} {{balance_unit_name}}", "<p>${{current_balance}} {{balance_unit_name}}</p>")
+				require.NoError(t, err)
+				require.NoError(t, svc.Send(ctx, SendRequest{Event: event, Locale: language, RecipientEmail: "custom@example.com", Variables: variables}))
+				name := "Credits"
+				if language == "zh-Hans" {
+					name = "积分"
+				}
+				require.Equal(t, "Balance C&81.25 "+name, sender.subject)
+				require.Equal(t, "<p>C&amp;81.25 "+name+"</p>", sender.body)
+				require.NotContains(t, variables, "balance_unit_symbol")
+			})
+		}
+	}
+}
+
+// TestBalanceNotificationDefaultUnits renders a balance message with absent and
+// whitespace-only labels. Both cases retain USD defaults without modifying the
+// caller's variable map or interpreting inserted unit text as template syntax.
+func TestBalanceNotificationDefaultUnits(t *testing.T) {
+	for _, symbol := range []string{"", " \t", "<credit>{{current_balance}}"} {
+		variables := map[string]string{"current_balance": "2.50", "balance_unit_name": " ", "balance_unit_symbol": symbol}
+		preview, err := RenderNotificationEmail(NotificationEmailEventBalanceLow, "{{balance_unit_name}}", "<p>${{current_balance}}</p>", variables, nil)
+		require.NoError(t, err)
+		require.Equal(t, "USD", preview.Subject)
+		if strings.TrimSpace(symbol) == "" {
+			require.Equal(t, "<p>$2.50</p>", preview.HTML)
+		} else {
+			require.Equal(t, "<p>&lt;credit&gt;{{current_balance}}2.50</p>", preview.HTML)
+		}
+		require.Equal(t, symbol, variables["balance_unit_symbol"])
+	}
+}
+
+// TestBalanceNotificationLegacyTemplateSize renders saved templates at both
+// source-length limits. Adding an internal unit placeholder must not reject
+// previously valid template text before its amount values are substituted.
+func TestBalanceNotificationLegacyTemplateSize(t *testing.T) {
+	amount := "${{current_balance}}"
+	subject := strings.Repeat("s", notificationEmailMaxSubjectLength-len(amount)) + amount
+	body := strings.Repeat("b", notificationEmailMaxHTMLLength-len(amount)) + amount
+	preview, err := RenderNotificationEmail(NotificationEmailEventBalanceLow, subject, body, map[string]string{
+		"balance_unit_symbol": "C",
+		"current_balance":     "2.50",
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, strings.HasSuffix(preview.Subject, "C2.50"))
+	require.True(t, strings.HasSuffix(preview.HTML, "C2.50"))
+}
+
+// TestBuildVerifyCodeEmailBody_EscapesSiteName supplies script, entity, and ordinary branding values to the verification template.
+// It verifies escaped HTML for hostile text and retention of the normal site
+// name and supplied verification code in the rendered body.
 func TestBuildVerifyCodeEmailBody_EscapesSiteName(t *testing.T) {
 	t.Run("escapes_script_injection", func(t *testing.T) {
 		body := renderIdentityBody(t, NotificationEmailEventAuthVerifyCode, "123456", `</h1><script>alert(1)</script><h1>`)
@@ -41,6 +134,9 @@ func TestBuildVerifyCodeEmailBody_EscapesSiteName(t *testing.T) {
 	})
 }
 
+// TestBuildPasswordResetEmailBody_EscapesHTMLValues supplies hostile branding and reset links containing query separators.
+// It verifies escaped markup and URL ampersands while ordinary names and links
+// remain visible in the rendered password-reset template.
 func TestBuildPasswordResetEmailBody_EscapesHTMLValues(t *testing.T) {
 	t.Run("escapes_html_tags_in_site_name", func(t *testing.T) {
 		body := renderIdentityBody(t, NotificationEmailEventAuthPasswordReset, "https://example.com/reset?token=abc", `</h1><img src=x onerror=alert(1)>`)
@@ -72,13 +168,17 @@ func TestBuildPasswordResetEmailBody_EscapesHTMLValues(t *testing.T) {
 	})
 }
 
-// TestConcurrentNotificationDelivery 检查同一投递请求并发到达时发送一封邮件，并回收协调锁。
+// TestConcurrentNotificationDelivery starts sixteen same-source delivery calls against one shared service.
+// It verifies one SMTP message, successful call results, and cleanup of the
+// instance's delivery coordination entries after all calls return.
 func TestConcurrentNotificationDelivery(t *testing.T) {
 	repo := mailtest.NewMemorySettings()
 	server := mailtest.StartSMTPServer(t)
 	require.NoError(t, repo.SetMultiple(context.Background(), server.Settings()))
 	n := NewNotificationEmailService(repo, NewMailer(repo, smtp.New()))
 	input := SendRequest{Event: NotificationEmailEventSubscriptionExpiryReminder, RecipientEmail: "fixture@example.com", SourceType: "subscription", SourceID: "1", ReminderKey: "7d"}
+	// Release the goroutines together so equal identities contend for the shared
+	// coordinator rather than completing as a sequence of already-marked delivery calls.
 	start := make(chan struct{})
 	errs := make(chan error, 16)
 	for range 16 {
@@ -92,8 +192,13 @@ func TestConcurrentNotificationDelivery(t *testing.T) {
 	require.Empty(t, n.locks.entries)
 }
 
+// TestConcurrentFirstUnsubscribeSecret starts sixteen first-token requests before a signing secret exists.
+// It verifies every resulting token can be parsed using the saved secret and
+// that coordination entries are released after concurrent generation finishes.
 func TestConcurrentFirstUnsubscribeSecret(t *testing.T) {
 	n := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
+	// Release all token constructors together before the first secret is stored.
+	// Successful parsing afterward checks that each signed token uses the saved secret read by the parser.
 	start := make(chan struct{})
 	tokens := make(chan string, 16)
 	errs := make(chan error, 16)
@@ -115,7 +220,9 @@ func TestConcurrentFirstUnsubscribeSecret(t *testing.T) {
 	require.Empty(t, n.locks.entries)
 }
 
-// TestUserNotificationLocales 覆盖用户事件、非法自定义模板回退和事件语言优先级。
+// TestUserNotificationLocales supplies invalid overrides across user events with a Chinese account preference.
+// It verifies invalid override copy stays out of the delivered subject and body,
+// Chinese language is normalized, and an explicit English hint wins on the second send.
 func TestUserNotificationLocales(t *testing.T) {
 	events := []string{NotificationEmailEventAuthVerifyCode, NotificationEmailEventAuthPasswordReset, NotificationEmailEventNotificationEmailVerifyCode, NotificationEmailEventTeamInvitation, NotificationEmailEventTeamOwnershipTransfer, NotificationEmailEventSubscriptionPurchaseSuccess, NotificationEmailEventSubscriptionExpiryReminder, NotificationEmailEventBalanceLow, NotificationEmailEventBalanceRechargeSuccess, NotificationEmailEventContentModerationViolation, NotificationEmailEventContentModerationDisabled}
 	for _, event := range events {
@@ -139,7 +246,9 @@ func TestUserNotificationLocales(t *testing.T) {
 	}
 }
 
-// TestRecipientLocalePriority 检查账户、邮箱和站点默认语言的次序。
+// TestRecipientLocalePriority combines a site default, remembered recipient language, and assembled account reader.
+// It verifies each higher-priority source takes over recipient selection as it
+// is introduced into the same service instance.
 func TestRecipientLocalePriority(t *testing.T) {
 	ctx := context.Background()
 	repo := mailtest.NewMemorySettings()
@@ -152,6 +261,9 @@ func TestRecipientLocalePriority(t *testing.T) {
 	require.Equal(t, "zh-Hans", service.ResolveRecipientLocale(ctx, 5, "u@example.com"))
 }
 
+// TestNotificationEmailPreviewEscapesHTMLAndSanitizesSubject renders hostile recipient text and a JavaScript link in unsaved content.
+// It verifies subject line-separator removal, HTML escaping, and clearing the
+// unsupported URL while leaving its surrounding anchor present.
 func TestNotificationEmailPreviewEscapesHTMLAndSanitizesSubject(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -175,6 +287,9 @@ func TestNotificationEmailPreviewEscapesHTMLAndSanitizesSubject(t *testing.T) {
 	require.Contains(t, preview.HTML, `href=""`)
 }
 
+// TestNotificationEmailTemplateOverrideAndRestore saves a Chinese recharge template and then requests restoration through a locale alias.
+// It verifies custom metadata and save time, followed by a built-in selection
+// whose subject differs from the saved override.
 func TestNotificationEmailTemplateOverrideAndRestore(t *testing.T) {
 	ctx := context.Background()
 	repo := mailtest.NewMemorySettings()
@@ -205,6 +320,9 @@ func TestNotificationEmailTemplateOverrideAndRestore(t *testing.T) {
 	require.ErrorIs(t, err, ErrSettingNotFound)
 }
 
+// TestNotificationEmailTemplateRejectsUnsupportedPlaceholder submits a subscription-purchase subject containing an undeclared variable.
+// It checks that template updating returns an error containing the unsupported
+// placeholder category text for that submitted template.
 func TestNotificationEmailTemplateRejectsUnsupportedPlaceholder(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -220,6 +338,9 @@ func TestNotificationEmailTemplateRejectsUnsupportedPlaceholder(t *testing.T) {
 	require.Contains(t, err.Error(), "unsupported placeholder")
 }
 
+// TestNotificationEmailAuthTemplatesAreListedAndPreviewable inspects verification and reset event metadata and previews supplied credentials.
+// It verifies mandatory-event flags, required variable names, and the supplied
+// code and reset link in localized rendered preview content.
 func TestNotificationEmailAuthTemplatesAreListedAndPreviewable(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -261,6 +382,10 @@ func TestNotificationEmailAuthTemplatesAreListedAndPreviewable(t *testing.T) {
 	require.Contains(t, resetPreview.HTML, "https://example.com/reset?token=abc")
 }
 
+// TestNotificationEmailEventOrderAndCopies reads event metadata, mutates one returned value and placeholder, then lists templates.
+// It checks declared event order and that the sampled event/placeholder changes
+// do not appear in the next read. It also checks event-major language ordering
+// across the complete template listing.
 func TestNotificationEmailEventOrderAndCopies(t *testing.T) {
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
 	want := []string{
@@ -273,6 +398,7 @@ func TestNotificationEmailEventOrderAndCopies(t *testing.T) {
 		NotificationEmailEventSubscriptionExpiryReminder,
 		NotificationEmailEventBalanceLow,
 		NotificationEmailEventBalanceRechargeSuccess,
+		NotificationEmailEventProviderUpstreamBalanceLow,
 		NotificationEmailEventProviderQuotaAlert,
 		NotificationEmailEventContentModerationViolation,
 		NotificationEmailEventContentModerationDisabled,
@@ -308,6 +434,9 @@ func TestNotificationEmailEventOrderAndCopies(t *testing.T) {
 	}
 }
 
+// TestNotificationEmailAdditionalEventsAreListedAndPreviewable looks up the additional user, provider, moderation, and operations events.
+// It verifies mandatory flags, representative admitted placeholders, and nonempty
+// Chinese subject and body previews for each selected event.
 func TestNotificationEmailAdditionalEventsAreListedAndPreviewable(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -319,8 +448,8 @@ func TestNotificationEmailAdditionalEventsAreListedAndPreviewable(t *testing.T) 
 	}
 
 	checks := []struct {
-		event       string
-		placeholder string
+		event       string // selected notification event
+		placeholder string // expected admitted variable
 	}{
 		{NotificationEmailEventNotificationEmailVerifyCode, "verification_code"},
 		{NotificationEmailEventTeamInvitation, "invitation_url"},
@@ -344,6 +473,9 @@ func TestNotificationEmailAdditionalEventsAreListedAndPreviewable(t *testing.T) 
 	}
 }
 
+// TestNotificationEmailTeamInvitationTemplates previews English and Chinese invitations with a supplied team name and link.
+// It verifies built-in metadata admits invitation fields and rendered content
+// uses the supplied values instead of leaving the invitation placeholder visible.
 func TestNotificationEmailTeamInvitationTemplates(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -373,6 +505,9 @@ func TestNotificationEmailTeamInvitationTemplates(t *testing.T) {
 	}
 }
 
+// TestOpsScheduledReportTemplateExposesEditableSummaryMetrics inspects all summary fields in the English and Chinese report templates.
+// It verifies admitted placeholder names, rendered sample metrics, default hidden
+// detail display, and substitution of the total-request sample in preview output.
 func TestOpsScheduledReportTemplateExposesEditableSummaryMetrics(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -424,6 +559,9 @@ func TestOpsScheduledReportTemplateExposesEditableSummaryMetrics(t *testing.T) {
 	}
 }
 
+// TestOpsScheduledReportRuntimeVariablesDoNotLeakPreviewSamples builds an actual-report variable map with no caller metrics or detail body.
+// It verifies missing summary values become dashes, summary display is hidden,
+// and rendering cannot include the preview report's sample HTML body.
 func TestOpsScheduledReportRuntimeVariablesDoNotLeakPreviewSamples(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -450,6 +588,9 @@ func TestOpsScheduledReportRuntimeVariablesDoNotLeakPreviewSamples(t *testing.T)
 	require.NotContains(t, rendered.HTML, "<h2>Daily summary</h2>")
 }
 
+// TestNotificationEmailRawHTMLVariablesAreTrustedOnlyForHTMLPlaceholders supplies trusted report markup alongside hostile ordinary recipient text.
+// It verifies the admitted report field uses raw HTML while ordinary body
+// variables stay escaped and unauthorized raw recipient substitutions are ignored.
 func TestNotificationEmailRawHTMLVariablesAreTrustedOnlyForHTMLPlaceholders(t *testing.T) {
 	require.True(t, notificationEmailRawHTMLAllowed(NotificationEmailEventOpsScheduledReport, "report_html"))
 	require.False(t, notificationEmailRawHTMLAllowed(NotificationEmailEventOpsScheduledReport, "recipient_name"))
@@ -485,6 +626,9 @@ func TestNotificationEmailRawHTMLVariablesAreTrustedOnlyForHTMLPlaceholders(t *t
 	require.NotContains(t, preview.HTML, `<strong>raw</strong>`)
 }
 
+// TestNotificationEmailFallbackClassification constructs template, configuration, and delivery wrappers around ordinary failures.
+// It verifies the first two select fallback, the delivery wrapper is recognized
+// as a send failure, and nil selects no fallback.
 func TestNotificationEmailFallbackClassification(t *testing.T) {
 	templateErr := NotificationEmailTemplateErr(errors.New("bad template"))
 	configErr := NotificationEmailConfigErr(errors.New("missing email service"))
@@ -498,6 +642,9 @@ func TestNotificationEmailFallbackClassification(t *testing.T) {
 	require.False(t, ShouldFallbackNotificationEmail(nil))
 }
 
+// TestNotificationEmailUnsubscribeOnlyAllowsOptionalEvents uses signed tokens for a balance notice, recharge, and verification event.
+// It verifies balance preference persistence is case-insensitive for recipient
+// lookup and mandatory-event unsubscribe requests return their transactional restriction.
 func TestNotificationEmailUnsubscribeOnlyAllowsOptionalEvents(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -525,6 +672,9 @@ func TestNotificationEmailUnsubscribeOnlyAllowsOptionalEvents(t *testing.T) {
 	require.Contains(t, err.Error(), "transactional")
 }
 
+// TestNotificationEmailLocaleMemoryNormalizesAcceptLanguage remembers a weighted Chinese language hint for a mixed-case email.
+// It verifies the normalized Chinese choice is returned for both a positive
+// user identifier and an email-only recipient lookup.
 func TestNotificationEmailLocaleMemoryNormalizesAcceptLanguage(t *testing.T) {
 	ctx := context.Background()
 	svc := NewNotificationEmailService(mailtest.NewMemorySettings(), nil)
@@ -534,6 +684,9 @@ func TestNotificationEmailLocaleMemoryNormalizesAcceptLanguage(t *testing.T) {
 	require.Equal(t, "zh-Hans", svc.ResolveRecipientLocale(ctx, 0, "user@example.com"))
 }
 
+// TestNotificationEmailDeliveryKeyUsesShortStableHash builds current and legacy identities for a subscription reminder.
+// It verifies the current key's bounded length and version prefix, recipient
+// case normalization, and distinct keys when the reminder period changes.
 func TestNotificationEmailDeliveryKeyUsesShortStableHash(t *testing.T) {
 	key := notificationEmailDeliveryKey(
 		NotificationEmailEventSubscriptionExpiryReminder,
@@ -570,6 +723,9 @@ func TestNotificationEmailDeliveryKeyUsesShortStableHash(t *testing.T) {
 	require.Greater(t, len(legacyKey), 100)
 }
 
+// TestNotificationEmailPreferenceKeyUsesShortStableHashAndReadsLegacyKey constructs current preference keys and stores a legacy unsubscribe record.
+// It verifies bounded current-key length, recipient case normalization, and
+// successful preference lookup through the older stored key.
 func TestNotificationEmailPreferenceKeyUsesShortStableHashAndReadsLegacyKey(t *testing.T) {
 	ctx := context.Background()
 	repo := mailtest.NewMemorySettings()
@@ -590,6 +746,9 @@ func TestNotificationEmailPreferenceKeyUsesShortStableHashAndReadsLegacyKey(t *t
 	require.True(t, unsubscribed)
 }
 
+// TestNotificationEmailSendDeduplicatesSubscriptionExpiryReminder sends the same source-backed reminder twice through a local SMTP fixture.
+// It verifies the first send writes a current delivery marker and the second
+// call leaves the accepted message count at one.
 func TestNotificationEmailSendDeduplicatesSubscriptionExpiryReminder(t *testing.T) {
 	ctx := context.Background()
 	repo := mailtest.NewMemorySettings()
@@ -625,6 +784,9 @@ func TestNotificationEmailSendDeduplicatesSubscriptionExpiryReminder(t *testing.
 	require.Equal(t, int64(1), smtpServer.MessageCount())
 }
 
+// TestNotificationEmailSendRespectsLegacyDeliveryKey stores an older reminder marker before sending through a service with no sender.
+// It verifies the send returns success from legacy marker suppression before
+// reaching the missing-sender configuration check.
 func TestNotificationEmailSendRespectsLegacyDeliveryKey(t *testing.T) {
 	ctx := context.Background()
 	repo := mailtest.NewMemorySettings()
@@ -642,11 +804,17 @@ func TestNotificationEmailSendRespectsLegacyDeliveryKey(t *testing.T) {
 	require.NoError(t, svc.Send(ctx, input))
 }
 
+// TestNotificationEmailMemorySettingRepoSatisfiesInterface assigns the memory fixture to the settings repository interface at compile time.
+// It verifies the constructed preference key excludes the supplied mixed-case
+// email text while retaining repository compatibility for notification tests.
 func TestNotificationEmailMemorySettingRepoSatisfiesInterface(t *testing.T) {
 	var _ SettingRepository = (*mailtest.MemorySettings)(nil)
 	require.False(t, strings.Contains(notificationEmailPreferenceKey(NotificationEmailEventBalanceLow, "User@Example.com"), "User@Example.com"))
 }
 
+// TestEmailQueueTasksPreserveLocaleHints enqueues verification and reset intents with distinct language aliases.
+// It verifies both queued task kinds and the original hint strings before
+// workers or notification-language normalization consume those tasks.
 func TestEmailQueueTasksPreserveLocaleHints(t *testing.T) {
 	queue := &EmailQueueService{taskChan: make(chan EmailTask, 2)}
 	require.NoError(t, queue.EnqueueVerifyCode("user@example.com", "TokenRouter", "zh-CN"))
@@ -661,7 +829,9 @@ func TestEmailQueueTasksPreserveLocaleHints(t *testing.T) {
 	require.Equal(t, "en-US", resetTask.Locale)
 }
 
-// TestNotificationAccountPreference 验证交易请求记忆不会覆盖账户的主动语言选择。
+// TestNotificationAccountPreference installs an English account reader and remembers a Chinese request hint.
+// It verifies the assembled account selection wins when recipient language is
+// resolved for that user and email in the same service.
 func TestNotificationAccountPreference(t *testing.T) {
 	ctx := context.Background()
 	repo := mailtest.NewMemorySettings()
@@ -671,7 +841,9 @@ func TestNotificationAccountPreference(t *testing.T) {
 	require.Equal(t, "en", svc.ResolveRecipientLocale(ctx, 42, "user@example.com"))
 }
 
-// renderIdentityBody 使用实际发送的内置模板检查变量转义。
+// renderIdentityBody renders the Chinese built-in identity template for the selected event.
+// The fixture sets branding, code, and reset-link values, reports rendering failure
+// through an assertion on the owning test, and returns the resulting HTML for escaping checks.
 func renderIdentityBody(t *testing.T, event, value, siteName string) string {
 	t.Helper()
 	template := notificationEmailOfficialTemplates[event][notificationEmailLocaleChinese]
@@ -680,6 +852,9 @@ func renderIdentityBody(t *testing.T, event, value, siteName string) string {
 	return rendered.HTML
 }
 
+// SendEmail records the context language and rendered content before incrementing the fixture count.
+// It returns success and ignores the address. The fixture is used for sequential
+// calls and provides no synchronization for concurrent delivery capture.
 func (s *localeDelivery) SendEmail(ctx context.Context, _, subject, body string) error {
 	s.language, s.subject, s.body = locale.FromContext(ctx), subject, body
 	s.count++

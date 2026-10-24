@@ -11,20 +11,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pttlFailureHook 使独立 PTTL 查询失败，Lua 内的计数和 TTL 操作继续执行。
+// The unit fixture allows Lua counting while rejecting a standalone PTTL
+// command, separating admission from retry-delay lookup. It checks the exact
+// namespaced key and full-window delay after that lookup fails, then verifies
+// millisecond expiry conversion using small duration inputs.
+
+// pttlFailureHook fails standalone PTTL commands while allowing the Lua script to run.
 type pttlFailureHook struct{}
 
-// DialHook 返回客户端的连接钩子。
+// DialHook passes the fixture's connection setup to its original Redis dial
+// hook.
 func (pttlFailureHook) DialHook(next redis.DialHook) redis.DialHook {
 	return next
 }
 
-// ProcessPipelineHook 返回客户端的流水线钩子。
+// ProcessPipelineHook leaves pipeline execution unchanged so only standalone
+// PTTL is rejected.
 func (pttlFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return next
 }
 
-// ProcessHook 让独立 PTTL 命令返回查询失败。
+// ProcessHook wraps next and returns the fixture error for standalone pttl
+// commands. Other commands delegate unchanged, allowing script-internal TTL
+// calls to execute while Allow's separate delay lookup fails.
 func (pttlFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		if cmd.Name() == "pttl" {
@@ -34,7 +43,9 @@ func (pttlFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	}
 }
 
-// TestFixedWindowKeyAndRetryAfterFallback 检查键格式和 PTTL 查询失败时的等待时间。
+// TestFixedWindowKeyAndRetryAfterFallback counts two requests while an
+// injected hook rejects standalone PTTL. It requires the exact prefixed Redis
+// key, first admission, second rejection, and a full-window retry delay.
 func TestFixedWindowKeyAndRetryAfterFallback(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
@@ -59,6 +70,10 @@ func TestFixedWindowKeyAndRetryAfterFallback(t *testing.T) {
 	require.Equal(t, time.Minute, retry)
 }
 
+// TestWindowTTLMillis supplies half, one-and-a-half, and two-and-a-half
+// millisecond durations. It requires a one-millisecond minimum and
+// whole-millisecond truncation for the positive inputs used to expire
+// counters.
 func TestWindowTTLMillis(t *testing.T) {
 	require.Equal(t, int64(1), windowTTLMillis(500*time.Microsecond))
 	require.Equal(t, int64(1), windowTTLMillis(1500*time.Microsecond))

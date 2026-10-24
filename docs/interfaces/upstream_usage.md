@@ -1,6 +1,6 @@
 # API Key 上游用量查询
 
-本文定义 `type=apikey` 提供商的上游用量查询，以及国产供应商可选的周期监控。管理员手动查询只用于展示，和 TokenRouter 的调度、自动暂停、提供商倍率、本地配额和结算都无关；只有手动开启的 CN 周期监控，才会写入统一快照，并在余额过低时临时停调。`type=bedrock` 不在本文范围内；OAuth 和 Setup Token 的官方用量窗口由 `provider.OAuthUsageService` 单独维护。
+本文定义 `type=apikey` 提供商的上游用量查询、钱包余额邮件提醒，以及国产供应商可选的周期监控。管理员手动查询只用于展示，和 TokenRouter 的调度、自动暂停、提供商倍率、本地配额和结算都无关；只有手动开启的 CN 周期监控，才会写入统一快照，并在余额过低时临时停调。`type=bedrock` 不在本文范围内；OAuth 和 Setup Token 的官方用量窗口由 `provider.OAuthUsageService` 单独维护。
 
 ## 配置
 
@@ -14,7 +14,7 @@
 }
 ```
 
-普通 API Key 提供商没有这个对象时，按 `enabled=true`、`adapter=sub2api` 处理，根地址使用提供商现有的 API Base URL。Jev 缺少这个对象时默认关闭查询，管理员可配置兼容中继的查询适配器。其他 API Key 提供商通过 `enabled=false` 关闭查询。管理员可以选择的 `adapter` 只有 `sub2api`、`new_api` 和 `zivv`；Kimi、Zhipu、DeepSeek 忽略这个字段，按平台和 `provider_mode` 选择固定的内置适配器。`base_url` 只能覆盖查询的根地址，不能带用户信息、查询串或片段。后端照常执行 HTTPS、allowlist、私网地址和 URL 格式的校验。
+普通 API Key 提供商没有这个对象时，按 `enabled=true`、`adapter=sub2api` 处理，根地址使用提供商现有的 API Base URL。Jev 缺少这个对象时默认关闭查询，管理员可配置兼容中继的查询适配器。其他 API Key 提供商通过 `enabled=false` 关闭查询。管理员可以选择的 `adapter` 只有 `sub2api`、`new_api`、`zivv` 和 `derouter`；Kimi、Zhipu、DeepSeek 忽略这个字段，按平台和 `provider_mode` 选择固定的内置适配器。`base_url` 只能覆盖查询的根地址，不能带用户信息、查询串或片段。后端照常执行 HTTPS、allowlist、私网地址和 URL 格式的校验。`derouter` 的查询地址留空时使用 `https://cf-api.derouter.ai`；其他适配器留空时复用转发地址。
 
 API Key 始终从提供商的 `credentials` 读取，不会出现在 `extra`、接口响应、审计请求体、浏览器缓存和日志里。用户也无法配置任意的路径、方法、Header 模板或脚本。
 
@@ -48,6 +48,12 @@ New API 的钱包需要用户级认证时，可以在 `credentials` 里保存 `n
 
 Zivv 的公开开发者文档说明余额在控制台的钱包页面，适配器使用它前端生成的固定余额接口，不请求任意路径，也不执行脚本。参见 [Zivv 计费说明](https://docs.zivv.pro/billing/overview) 和 [API 端点](https://docs.zivv.pro/reference/endpoints)。
 
+### derouter.ai Account Key
+
+选择 `derouter` 后，使用提供商现有的 Account Key，以 `Authorization: Bearer <api_key>` 请求管理根地址下的 `GET /balance`。官方管理根地址为 `https://cf-api.derouter.ai`，与模型转发地址分别配置。自定义查询根地址经过相同的 URL 安全校验；固定管理路径复用根地址拼接规则，移除末尾版本段并保留部署前缀。本适配器支持 Account Key；Client Key 的 `/sub-key/balance` 需要另一种响应解析。
+
+响应中的 `balance`、`locked_balance`、`available` 接受十进制字符串或 JSON 数字，三个字段都必须存在且为有限数值，锁定金额要求非负，`available` 必须在金额比较容差内等于 `balance - locked_balance`。归一化结果为 `mode=balance`、`unit=USD`，`balance.remaining` 使用 `available`，供列表展示和余额提醒比较。零余额与负余额按实际值返回；缺失、null 或不一致的金额会导致查询失败。锁定金额不代表历史消费，因此结果省略 `used` 和 `total`。协议来源：[derouter.ai 管理 API](https://derouter.ai/docs/api)。
+
 ### 国产供应商
 
 国产供应商的适配器由提供商身份自动选择，管理表单里无法改成其他协议：
@@ -66,7 +72,7 @@ Zhipu payg 没有公开的余额协议，DeepSeek coding 也不是合法的提�
 <a id="native_usage_adapters"></a>
 ## 原生查询与提供商编排
 
-Sub2API、New API、Zivv 的固定查询和归一化在 `upstream/usageprovider`，Kimi、Zhipu、DeepSeek 分别在对应的 `upstream` 包里。`provider/provider.UpstreamUsageExecution` 持有唯一的适配器注册表，`NewUpstreamUsageHTTPExecution` 根据提供商记录构造凭据、代理、TLS 和 Header 的技术快照。app 只整理出站配置和共享的传输接口，直接绑定一个 `provider.UpstreamUsageService`。
+Sub2API、New API、Zivv、derouter.ai 的固定查询和归一化在 `upstream/usageprovider`，Kimi、Zhipu、DeepSeek 分别在对应的 `upstream` 包里。`provider/provider.UpstreamUsageExecution` 持有唯一的适配器注册表，`NewUpstreamUsageHTTPExecution` 根据提供商记录构造凭据、代理、TLS 和 Header 的技术快照。app 只整理出站配置和共享的传输接口，直接绑定一个 `provider.UpstreamUsageService`。
 
 `upstream/usageview` 保存归一化后的值、错误和验证规则，provider 通过类型别名复用它们。`upstream/usagecontract.Request` 是一次查询的技术快照，其中的敏感字段不会出现在 JSON 或普通的字符串格式化结果里。共享的 `upstream/internal/usageclient` 负责固定的读取上限、请求头覆盖顺序、状态映射和关闭响应体。这些原生包不读取提供商仓储，也不写健康、调度或资金数据。
 
@@ -114,3 +120,15 @@ API Key 提供商（包括 Kimi、Zhipu、DeepSeek）的用量栏，按以下顺
 官方域名可以直接监控；自定义中继只有在开启 URL allowlist、并且 host 命中 `security.url_allowlist.upstream_hosts` 时，后台才会自动访问。监控复用提供商的代理、TLS 指纹、受保护的 Header Override 和 `UpstreamUsageService`，没有 CN 专用的 HTTP 管理接口。
 
 旧的 `upstream_billing_probe` 是已经移除的自动倍率探测功能，本功能与它无关，不写它的旧快照，也不影响调度状态。
+
+## 钱包余额邮件提醒
+
+管理员在提供商创建或编辑页配置 `extra.upstream_balance_alert`：`enabled` 默认 false，`threshold` 默认 1000，`interval_minutes` 默认 60（范围 5 至 1440），`recipient_email` 为单个收件邮箱。只支持钱包查询适配器；OAuth、Coding Plan 周期额度和 Zhipu payg 不支持。编辑时省略该对象保留原配置，复制提供商时删除提醒配置。关闭上游查询或停用提供商会暂停检查。
+
+前端的规则在 `frontend/src/utils/upstreamBalanceAlert.ts`。创建页只在开启提醒时写入该对象。编辑页在提醒设置有改动时提交完整对象，关闭开关时阈值、间隔和邮箱随 `enabled=false` 一起保存；没有改动时保留已有对象，原本没有提醒配置的提供商不会新增默认对象。不支持的提供商开关置灰，提交时 `enabled` 写为 false。编辑页展开提醒设置后读取下面的状态接口，切换提供商或关闭提醒面板时，使尚未返回的状态请求失效，并清空旧的展示和加载状态。
+
+`provider.BalanceAlertMonitor` 每分钟扫描启用的 API Key 提供商，最多并行执行四个检查，单次检查和发信合计最多两分钟。`provider_balance_alert_states` 在查询前原子认领轮次并推进下次检查时间，多实例共享该记录。首次启用在下一次扫描检查，停机后只执行当前到期的一轮。进程中断或 SMTP 结果不确定时，本轮不重试，下次到期重新查询。查询或发信超时、服务停止取消任务后，结果落库仍有独立的五秒预算；应用等待这一步结束后再关闭共享存储。
+
+查询复用 `UpstreamUsageService`，地址校验与管理员手动查询相同：全局白名单关闭时采用配置的 URL 格式和 HTTP 规则，开启时检查上游域名白名单及私网地址权限。结果的 `balance.remaining` 严格小于阈值时，每轮向配置的邮箱发送一次 `provider.upstream_balance_low` 事件。币种只用于展示，不参与比较。查询失败或余额缺失不会当作零余额，也不会使用旧结果发信。查询身份和提醒配置在发送前复核；修改凭据、收件人或阈值后，旧结果失效。
+
+`GET /api/v1/admin/providers/:id/upstream-balance-alert` 返回最近轮次、检查时间、下次检查时间、余额、单位、观测时间、发送确认时间和脱敏错误码。尚无当前配置的观测时只返回提供商 ID。该接口读取持久状态，不发起查询或发送邮件。后台运行状态独立于提供商配置及调度快照，提醒任务不暂停或恢复提供商。

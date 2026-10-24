@@ -4,6 +4,9 @@ import (
 	"testing"
 )
 
+// TestSessionBindingHash compares identical fingerprints and changes each input
+// independently. It requires a nonempty digest for supplied client data and an
+// empty digest for both an empty binding and a nil pointer.
 func TestSessionBindingHash(t *testing.T) {
 	a := &SessionBinding{IP: "1.2.3.4", UserAgent: "Mozilla/5.0"}
 	b := &SessionBinding{IP: "1.2.3.4", UserAgent: "Mozilla/5.0"}
@@ -14,18 +17,18 @@ func TestSessionBindingHash(t *testing.T) {
 		t.Fatalf("non-empty binding must produce non-empty hash")
 	}
 
-	// IP 变化 → 哈希变化。
+	// Changing the IP changes the fingerprint.
 	c := &SessionBinding{IP: "5.6.7.8", UserAgent: "Mozilla/5.0"}
 	if a.Hash() == c.Hash() {
 		t.Fatalf("changing IP must change hash")
 	}
-	// UA 变化 → 哈希变化。
+	// Changing the User-Agent changes the fingerprint.
 	d := &SessionBinding{IP: "1.2.3.4", UserAgent: "curl/8.0"}
 	if a.Hash() == d.Hash() {
 		t.Fatalf("changing UA must change hash")
 	}
 
-	// 空指纹 → 空哈希（旧 token 兼容）。
+	// Empty fingerprints have no hash, allowing unbound legacy tokens.
 	empty := &SessionBinding{}
 	if empty.Hash() != "" {
 		t.Fatalf("empty binding must hash to empty string")

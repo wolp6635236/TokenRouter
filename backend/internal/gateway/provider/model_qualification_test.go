@@ -10,13 +10,20 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	protocolcore "github.com/TokenFlux/TokenRouter/internal/protocol"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+// TestProviderIsSchedulableForModel_AntigravityRateLimits sets and clears a
+// global limit on an active Antigravity target. Both Claude and Gemini model
+// scheduling are rejected during the future window and permitted after
+// removal.
 func TestProviderIsSchedulableForModel_AntigravityRateLimits(t *testing.T) {
 	now := time.Now()
 	future := now.Add(10 * time.Minute)
@@ -38,11 +45,17 @@ func TestProviderIsSchedulableForModel_AntigravityRateLimits(t *testing.T) {
 	require.True(t, (ModelPolicy{Record: provider}).Schedulable(context.Background(), "gemini-3-flash"))
 }
 
-// TestProtocolNativeMatrixAndSave 检查目录、保存和路线是否共用协议矩阵，并保留空协议集合与平台拒绝结果。
+// TestProtocolNativeMatrixAndSave enumerates native protocol options by
+// platform, credential type, and auth mode. Each valid saved option resolves
+// natively, empty sets remain empty, and unknown protocol names return HTTP
+// 400.
 func TestProtocolNativeMatrixAndSave(t *testing.T) {
 	for _, tc := range []struct {
+		// platform: provider platform name. kind: credential type
+		// choice. auth: OAuth authentication mode.
 		platform, kind, auth string
-		count                int
+		// expected native protocol option count
+		count int
 	}{
 		{capability.PlatformAnthropic, capability.ProviderTypeAPIKey, "", 1},
 		{capability.PlatformAnthropic, capability.ProviderTypeBedrock, "", 1},
@@ -83,16 +96,20 @@ func TestProtocolNativeMatrixAndSave(t *testing.T) {
 	}
 }
 
+// TestIsModelRateLimited compares direct/mapped windows, expiry, unrelated
+// scopes, Antigravity families, and OpenAI image scope. Active applicable keys
+// report limited while absent, expired, or other-family observations do not.
 func TestIsModelRateLimited(t *testing.T) {
 	now := time.Now()
 	future := now.Add(10 * time.Minute).Format(time.RFC3339)
 	past := now.Add(-10 * time.Minute).Format(time.RFC3339)
 
 	tests := []struct {
-		name           string
+		name string // model window scenario label
+		// provider model window fixture
 		provider       *providercore.Record
-		requestedModel string
-		expected       bool
+		requestedModel string // request model before provider mapping
+		expected       bool   // expected applicable model limit
 	}{
 		{
 			name: "official model ID hit - claude-sonnet-4-5",
@@ -239,7 +256,7 @@ func TestIsModelRateLimited(t *testing.T) {
 				},
 			},
 			requestedModel: "gemini-3-pro-preview",
-			expected:       false, // gemini 平台不走 antigravity 映射
+			expected:       false, // Gemini does not apply Antigravity model mapping.
 		},
 		{
 			name: "antigravity platform - claude-opus-4-5-thinking mapped to opus-4-6-thinking",
@@ -304,7 +321,7 @@ func TestIsModelRateLimited(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := (ModelPolicy{Record: tt.provider}).Limited(context.Background(), tt.requestedModel)
+			result := (ModelPolicy{Record: tt.provider}).Limited(routing.WithModelAttributes(context.Background(), &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}), tt.requestedModel)
 			if result != tt.expected {
 				t.Errorf("isModelRateLimited(%q) = %v, want %v", tt.requestedModel, result, tt.expected)
 			}
@@ -312,6 +329,10 @@ func TestIsModelRateLimited(t *testing.T) {
 	}
 }
 
+// TestIsModelRateLimited_OpenAIImageGenerationIntentBlocksTextModelImageTool
+// places an active shared image limit on an OpenAI text model. Ordinary text
+// remains unlimited, while request image intent makes that same model inherit
+// the image scope.
 func TestIsModelRateLimited_OpenAIImageGenerationIntentBlocksTextModelImageTool(t *testing.T) {
 	future := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
 	provider := &providercore.Record{
@@ -329,6 +350,9 @@ func TestIsModelRateLimited_OpenAIImageGenerationIntentBlocksTextModelImageTool(
 	require.True(t, (ModelPolicy{Record: provider}).Limited(requeststate.WithOpenAIImageGenerationIntent(context.Background()), "gpt-5.4"))
 }
 
+// TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey limits the
+// thinking variant of an Antigravity Claude model. A request context enabling
+// thinking resolves to that active window.
 func TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey(t *testing.T) {
 	now := time.Now()
 	future := now.Add(10 * time.Minute).Format(time.RFC3339)
@@ -350,6 +374,9 @@ func TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey(t *testing.T) {
 	}
 }
 
+// TestGetModelRateLimitRemainingTime compares missing, direct, mapped,
+// expired, and shared family windows. Remaining time falls within each
+// asserted duration range and stays zero for unmatched observations.
 func TestGetModelRateLimitRemainingTime(t *testing.T) {
 	now := time.Now()
 	future10m := now.Add(10 * time.Minute).Format(time.RFC3339)
@@ -357,11 +384,14 @@ func TestGetModelRateLimitRemainingTime(t *testing.T) {
 	past := now.Add(-10 * time.Minute).Format(time.RFC3339)
 
 	tests := []struct {
-		name           string
+		name string // model window scenario label
+		// provider model window fixture
 		provider       *providercore.Record
-		requestedModel string
-		minExpected    time.Duration
-		maxExpected    time.Duration
+		requestedModel string // request model before provider mapping
+		// minimum asserted remaining duration
+		minExpected time.Duration
+		// maximum asserted remaining duration
+		maxExpected time.Duration
 	}{
 		{
 			name:           "nil provider",
@@ -502,17 +532,23 @@ func TestGetModelRateLimitRemainingTime(t *testing.T) {
 	}
 }
 
+// TestGetRateLimitRemainingTime checks missing and active Antigravity
+// model-window observations. Remaining time matches the supplied model
+// deadlines within the tested ranges, with zero for absent state.
 func TestGetRateLimitRemainingTime(t *testing.T) {
 	now := time.Now()
 	future15m := now.Add(15 * time.Minute).Format(time.RFC3339)
 	future5m := now.Add(5 * time.Minute).Format(time.RFC3339)
 
 	tests := []struct {
-		name           string
+		name string // model window scenario label
+		// provider model window fixture
 		provider       *providercore.Record
-		requestedModel string
-		minExpected    time.Duration
-		maxExpected    time.Duration
+		requestedModel string // request model before provider mapping
+		// minimum asserted remaining duration
+		minExpected time.Duration
+		// maximum asserted remaining duration
+		maxExpected time.Duration
 	}{
 		{
 			name:           "nil provider",
@@ -574,6 +610,10 @@ func TestGetRateLimitRemainingTime(t *testing.T) {
 	}
 }
 
+// TestIsModelRateLimited_AnthropicFableFamilyKey uses one shared Fable window
+// with ordinary, extended, dated, folded, and other-family names. Fable
+// variants report a positive remaining limit while other Claude families stay
+// available.
 func TestIsModelRateLimited_AnthropicFableFamilyKey(t *testing.T) {
 	now := time.Now()
 	future := now.Add(48 * time.Hour).Format(time.RFC3339)
@@ -590,13 +630,13 @@ func TestIsModelRateLimited_AnthropicFableFamilyKey(t *testing.T) {
 	}
 
 	tests := []struct {
-		requestedModel string
-		expected       bool
+		requestedModel string // request model before provider mapping
+		expected       bool   // expected applicable model limit
 	}{
 		{"claude-fable-5", true},
-		{"claude-fable-5[1m]", true},      // 家族 key 覆盖变体
-		{"Claude-Fable-5-20260601", true}, // 大小写不敏感
-		{"claude-sonnet-4-6", false},      // 其他模型不受影响
+		{"claude-fable-5[1m]", true},      // The family key covers variants.
+		{"Claude-Fable-5-20260601", true}, // Case-insensitive match.
+		{"claude-sonnet-4-6", false},      // Other model families remain available.
 		{"claude-opus-4-8", false},
 	}
 
@@ -610,6 +650,9 @@ func TestIsModelRateLimited_AnthropicFableFamilyKey(t *testing.T) {
 	}
 }
 
+// TestIsAnthropicFableModel checks plain, extended, and folded Fable names
+// against Sonnet and empty input. The listed Fable identities match while the
+// unrelated names do not.
 func TestIsAnthropicFableModel(t *testing.T) {
 	require.True(t, anthropic.IsAnthropicFableModel("claude-fable-5"))
 	require.True(t, anthropic.IsAnthropicFableModel("claude-fable-5[1m]"))
@@ -618,11 +661,19 @@ func TestIsAnthropicFableModel(t *testing.T) {
 	require.False(t, anthropic.IsAnthropicFableModel(""))
 }
 
+// TestProtocolConversionProviderConstraints varies platform, credential kind,
+// auth mode, and source/target protocols. Conversion permission follows the
+// tested image, WS, search, embedding, and voice capability combinations.
 func TestProtocolConversionProviderConstraints(t *testing.T) {
 	for _, tc := range []struct {
+		// platform: provider platform name. kind: credential type
+		// choice. auth: OAuth authentication mode.
 		platform, kind, auth string
-		source, target       protocolcore.ProtocolID
-		want                 bool
+		// source: requested client protocol. target: selected upstream
+		// protocol.
+		source, target protocolcore.ProtocolID
+		// expected protocol conversion permission
+		want bool
 	}{
 		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, "", protocolcore.ProtocolImagesEdits, protocolcore.ProtocolOpenAIResponses, true},
 		{capability.PlatformOpenAI, capability.ProviderTypeAPIKey, "", protocolcore.ProtocolImagesEdits, protocolcore.ProtocolOpenAIResponses, false},
@@ -636,5 +687,22 @@ func TestProtocolConversionProviderConstraints(t *testing.T) {
 		t.Run(string(tc.source)+"/"+tc.platform+"/"+tc.kind+"/"+tc.auth, func(t *testing.T) {
 			require.Equal(t, tc.want, capability.SupportsProtocolConversion(tc.platform, tc.kind, tc.auth, tc.source, tc.target))
 		})
+	}
+}
+
+// TestMixedOutputKeepsTextRequestsOutsideImageCooldown supplies a model with
+// both text and image output behind an active image quota window. Only an
+// explicit image request should use that shared window; text remains eligible.
+func TestMixedOutputKeepsTextRequestsOutsideImageCooldown(t *testing.T) {
+	mixed := []string{"text", "image"}
+	service := &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{Lookup: func(string) modelcatalog.Attributes { return modelcatalog.Attributes{OutputModalities: &mixed} }}}
+	ctx := routing.WithModelAttributes(context.Background(), service)
+	value := &providercore.Record{Platform: "openai", Extra: map[string]any{"model_rate_limits": map[string]any{providercore.OpenAIImageGenerationRateLimitKey: map[string]any{"rate_limit_reset_at": time.Now().Add(time.Hour).Format(time.RFC3339)}}}}
+	policy := ModelPolicy{Record: value}
+	if policy.Limited(ctx, "mixed-output") {
+		t.Fatal("image capability alone restricted an ordinary text request")
+	}
+	if !policy.Limited(requeststate.WithOpenAIImageGenerationIntent(ctx), "mixed-output") {
+		t.Fatal("explicit image intent bypassed the shared image cooldown")
 	}
 }

@@ -7,8 +7,27 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
-// ensureQoderMachineCredentials 为新建 Qoder 提供商补齐并持久化站点对应的稳定机器身份。
-// direct token 提供商必须由调用方提供 machine_id；国内站不生成额外机器字段。
+// qoder_machine.go prepares site-specific Qoder machine credentials for Global
+// and CN exchanges. Qoder Global exchanges use machine_id, machine_token and
+// machine_type, while CN keeps machine_id alone. Imported CN credentials can
+// retain the additional Global fields, so preparation removes them before
+// later builders assemble the site-specific session. A supplied nonblank
+// machine_id stays on the record even when the helper fills other missing
+// Global fields.
+//
+// PAT input may create a missing ID; direct-token preparation starts when a
+// security token and machine_id are already present. The helper edits
+// Credentials in place, and creation hooks clone supported containers before
+// calling it. Unsupported site input takes the Global preparation path, with
+// site rejection performed separately during validation.
+
+// ensureQoderMachineCredentials fills supported machine fields in the supplied
+// record.
+// Nil records are ignored and missing credential maps are allocated. PAT input
+// can receive a generated machine_id; direct-token input requires an existing
+// machine_id before preparation. Invalid site values use Global preparation,
+// while CN removes legacy machine_token and machine_type. Callers serialize
+// mutation of the record and its credential map during this preparation.
 func ensureQoderMachineCredentials(provider *provider.Record) {
 	if provider == nil {
 		return
@@ -23,11 +42,17 @@ func ensureQoderMachineCredentials(provider *provider.Record) {
 		return
 	}
 	site, err := qoderSiteForRecord(provider)
+	// This preparation helper keeps the historical Global shape for invalid site
+	// input; creation and edit validation separately report unsupported site
+	// selections.
 	if err != nil {
 		site = qoder.SiteGlobal
 	}
 	if site == qoder.SiteCN {
-		// 国内客户端只持久化 machine_id，并清理旧版本曾写入的随机机器字段。
+		// The CN exchange uses its UUID machine_id and omits the other machine
+		// headers.
+		// Drop imported legacy fields so later credential builders use that
+		// site-specific shape.
 		delete(provider.Credentials, "machine_token")
 		delete(provider.Credentials, "machine_type")
 		if pat != "" && machineID == "" {

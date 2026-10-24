@@ -8,8 +8,9 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TestStripEmptyChatToolCallIdentity_FirstChunkIdentityUntouched 首包带合法
-// id/name 的 delta 返回 changed=false。
+// TestStripEmptyChatToolCallIdentity_FirstChunkIdentityUntouched supplies the
+// first delta with a nonempty ID and name. Bytes, identities, and the present
+// empty argument string remain unchanged.
 func TestStripEmptyChatToolCallIdentity_FirstChunkIdentityUntouched(t *testing.T) {
 	payload := []byte(`{"id":"chatcmpl_tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_example","type":"function","function":{"name":"web_search","arguments":""}}]}}]}`)
 	rewritten, changed := StripEmptyChatToolCallIdentity(payload)
@@ -17,14 +18,14 @@ func TestStripEmptyChatToolCallIdentity_FirstChunkIdentityUntouched(t *testing.T
 	require.Equal(t, string(payload), string(rewritten))
 	require.Equal(t, "call_example", gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.id").String())
 	require.Equal(t, "web_search", gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.function.name").String())
-	// 首包 arguments 为空串也不应被删除。
+	// An empty arguments string is still part of the first tool delta.
 	require.True(t, gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.function.arguments").Exists())
 	require.Equal(t, "", gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.function.arguments").String())
 }
 
-// TestStripEmptyChatToolCallIdentity_FollowingDelta 后续参数 delta 的
-// `"id":""` 与 `"function":{"name":""}` 应被删除；arguments 碎片、
-// index、type 保留。
+// TestStripEmptyChatToolCallIdentity_FollowingDelta supplies empty identities
+// beside an argument fragment. Cleanup removes both keys while retaining the
+// fragment, call index, and function type.
 func TestStripEmptyChatToolCallIdentity_FollowingDelta(t *testing.T) {
 	payload := []byte(`{"id":"chatcmpl_tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"{\"query\":"}}]}}]}`)
 	rewritten, changed := StripEmptyChatToolCallIdentity(payload)
@@ -34,13 +35,13 @@ func TestStripEmptyChatToolCallIdentity_FollowingDelta(t *testing.T) {
 	require.Equal(t, `{"query":`, gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.function.arguments").String())
 	require.Equal(t, int64(0), gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.index").Int())
 	require.Equal(t, "function", gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.type").String())
-	// 空串字段不得再出现在 payload 里。
 	require.NotContains(t, string(rewritten), `"id":""`)
 	require.NotContains(t, string(rewritten), `"name":""`)
 }
 
-// TestStripEmptyChatToolCallIdentity_OnlyEmptyName / _OnlyEmptyID 只删
-// 空的那一个，非空字段保持原值。
+// TestStripEmptyChatToolCallIdentity_OnlyEmptyName supplies a valid ID and an
+// empty function name. Cleanup removes the name key while keeping the ID and
+// exact argument text.
 func TestStripEmptyChatToolCallIdentity_OnlyEmptyName(t *testing.T) {
 	payload := []byte(`{"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"","arguments":"{}"}}]}}]}`)
 	rewritten, changed := StripEmptyChatToolCallIdentity(payload)
@@ -50,8 +51,9 @@ func TestStripEmptyChatToolCallIdentity_OnlyEmptyName(t *testing.T) {
 	require.Equal(t, "{}", gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.function.arguments").String())
 }
 
-// TestStripEmptyChatToolCallIdentity_OnlyEmptyID 覆盖 `"id": ""` 带空格的
-// JSON 形式，确认 gjson/sjson 均能识别。
+// TestStripEmptyChatToolCallIdentity_OnlyEmptyID includes whitespace around an
+// empty ID key/value. Cleanup removes that ID and retains the nonempty
+// function name and its argument text.
 func TestStripEmptyChatToolCallIdentity_OnlyEmptyID(t *testing.T) {
 	payload := []byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id" : "" , "type" : "function","function":{"name":"get_weather","arguments":"{}"}}]}}]}`)
 	rewritten, changed := StripEmptyChatToolCallIdentity(payload)
@@ -61,8 +63,9 @@ func TestStripEmptyChatToolCallIdentity_OnlyEmptyID(t *testing.T) {
 	require.Equal(t, "{}", gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.function.arguments").String())
 }
 
-// TestStripEmptyChatToolCallIdentity_EmptyArgumentsKept 空 arguments 不删，
-// 只有 id/name 空串被剔除。
+// TestStripEmptyChatToolCallIdentity_EmptyArgumentsKept supplies empty
+// identities and empty arguments in the same delta. Identity keys disappear,
+// while the argument key remains with its empty string.
 func TestStripEmptyChatToolCallIdentity_EmptyArgumentsKept(t *testing.T) {
 	payload := []byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":""}}]}}]}`)
 	rewritten, changed := StripEmptyChatToolCallIdentity(payload)
@@ -73,8 +76,9 @@ func TestStripEmptyChatToolCallIdentity_EmptyArgumentsKept(t *testing.T) {
 	require.Equal(t, "", gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.0.function.arguments").String())
 }
 
-// TestStripEmptyChatToolCallIdentity_TwoParallelToolCalls 两个并行 index 都要
-// 处理：合法的 index 0 保留，后续参数 delta 的 index 1 剔除空 id/name。
+// TestStripEmptyChatToolCallIdentity_TwoParallelToolCalls mixes a named call
+// with an empty-identity call in one array. Cleanup keeps the first identity
+// and both argument fragments while removing the second identity.
 func TestStripEmptyChatToolCallIdentity_TwoParallelToolCalls(t *testing.T) {
 	payload := []byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"tool_a","arguments":"{\"x\":"}},{"index":1,"id":"","type":"function","function":{"name":"","arguments":"{\"y\":"}}]}}]}`)
 	rewritten, changed := StripEmptyChatToolCallIdentity(payload)
@@ -87,12 +91,13 @@ func TestStripEmptyChatToolCallIdentity_TwoParallelToolCalls(t *testing.T) {
 	require.Equal(t, `{"y":`, gjson.GetBytes(rewritten, "choices.0.delta.tool_calls.1.function.arguments").String())
 }
 
-// TestStripEmptyChatToolCallIdentity_Passthrough 无 tool_calls、无 choices、
-// 非数组 tool_calls、非法 JSON 原样返回。
+// TestStripEmptyChatToolCallIdentity_Passthrough supplies unrelated,
+// malformed, empty, and unsupported call-array fixtures. Every case returns
+// equal source text and reports that no cleanup occurred.
 func TestStripEmptyChatToolCallIdentity_Passthrough(t *testing.T) {
 	tests := []struct {
-		name    string
-		payload string
+		name    string // stream cleanup fixture label
+		payload string // raw Chat chunk text
 	}{
 		{"no tool_calls", `{"choices":[{"index":0,"delta":{"content":"hi"}}]}`},
 		{"no choices", `{"id":"chatcmpl_x"}`},
@@ -110,12 +115,13 @@ func TestStripEmptyChatToolCallIdentity_Passthrough(t *testing.T) {
 	}
 }
 
-// TestStripEmptyChatToolCallIdentityFromSSELine_Passthrough SSE 行级：非
-// data 行、[DONE]、空行原样；data 行保留 `data: ` 前缀。
+// TestStripEmptyChatToolCallIdentityFromSSELine_Passthrough supplies the done
+// sentinel, comment/blank lines, and an ordinary content chunk. Each line
+// remains exactly equal after delegated cleanup.
 func TestStripEmptyChatToolCallIdentityFromSSELine_Passthrough(t *testing.T) {
 	tests := []struct {
-		name string
-		line string
+		name string // stream cleanup fixture label
+		line string // raw SSE line fixture
 	}{
 		{"done", "data: [DONE]"},
 		{"non-data line", ": keep-alive"},
@@ -130,8 +136,9 @@ func TestStripEmptyChatToolCallIdentityFromSSELine_Passthrough(t *testing.T) {
 	}
 }
 
-// TestStripEmptyChatToolCallIdentityFromSSELine_KeepsDataPrefix 改写后的
-// SSE 行带有 `data: ` 前缀。
+// TestStripEmptyChatToolCallIdentityFromSSELine_KeepsDataPrefix wraps an
+// empty-identity tool delta in a data line. The prefix remains, identity keys
+// disappear, and the argument string stays readable.
 func TestStripEmptyChatToolCallIdentityFromSSELine_KeepsDataPrefix(t *testing.T) {
 	line := `data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"{}"}}]}}]}`
 	got := StripEmptyChatToolCallIdentityFromSSELine(line)
@@ -143,9 +150,9 @@ func TestStripEmptyChatToolCallIdentityFromSSELine_KeepsDataPrefix(t *testing.T)
 	require.Equal(t, "{}", gjson.Get(payload, "choices.0.delta.tool_calls.0.function.arguments").String())
 }
 
-// TestStripEmptyChatToolCallIdentity_DshClientMerge 模拟 dsh rc.2 adapter 的
-// 合并逻辑（字段存在时覆盖，包括空串）：清理后再合并，最终 id/name 应
-// 仍是首包合法值，arguments 为各碎片拼接。
+// TestStripEmptyChatToolCallIdentity_DshClientMerge models a client that
+// overwrites present identity fields and appends argument fragments. Sanitized
+// deltas keep the initial ID/name and produce the joined JSON argument text.
 func TestStripEmptyChatToolCallIdentity_DshClientMerge(t *testing.T) {
 	lines := []string{
 		`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_example","type":"function","function":{"name":"web_search","arguments":""}}]}}]}`,
@@ -153,6 +160,8 @@ func TestStripEmptyChatToolCallIdentity_DshClientMerge(t *testing.T) {
 		`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"\"example\"}"}}]}}]}`,
 	}
 
+	// Overwrite identity only when its key exists, while appending arguments.
+	// Removed empty keys must therefore leave the initial call identity available.
 	var mergedID, mergedName, mergedArgs string
 	for _, line := range lines {
 		sanitized := StripEmptyChatToolCallIdentityFromSSELine(line)
@@ -176,15 +185,22 @@ func TestStripEmptyChatToolCallIdentity_DshClientMerge(t *testing.T) {
 	require.Equal(t, `{"query":"example"}`, mergedArgs)
 }
 
+// TestOpenAIRawStreamTerminalState combines terminal signals, null fields,
+// missing data, and client-output flags in fresh states. It checks accumulated
+// termination evidence and the corresponding truncation result for each
+// fixture.
 func TestOpenAIRawStreamTerminalState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		payloads       []string
-		clientStarted  bool
-		wantTerminated bool
-		wantTruncated  bool
+		name          string   // stream cleanup fixture label
+		payloads      []string // ordered observed data payloads
+		clientStarted bool     // client output already started
+		// wantTerminated and wantTruncated describe different observations from
+		// the same payload sequence. The latter also includes clientStarted, so
+		// a started non-SSE fixture can be unterminated without being truncated.
+		wantTerminated bool // expected terminal evidence flag
+		wantTruncated  bool // expected stream truncation result
 	}{
 		{
 			name:           "done sentinel",
@@ -217,7 +233,8 @@ func TestOpenAIRawStreamTerminalState(t *testing.T) {
 			wantTruncated: true,
 		},
 		{
-			// 上游对 stream 请求返回裸 JSON 时，按原字节透传。
+			// Model a raw body already delivered with no SSE data observations. The
+			// client-started flag makes this distinct from an entirely empty read.
 			name:          "non-sse body already forwarded",
 			payloads:      nil,
 			clientStarted: true,
@@ -243,6 +260,9 @@ func TestOpenAIRawStreamTerminalState(t *testing.T) {
 	}
 }
 
+// TestIsOpenAIChatUsageOnlyStreamChunk compares usage with empty choices,
+// nonempty choices, missing usage, and blank input. The predicate accepts the
+// empty-choice usage fixture and rejects the other supplied cases.
 func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {
 	t.Parallel()
 
@@ -252,6 +272,9 @@ func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {
 	require.False(t, IsOpenAIChatUsageOnlyStreamChunk(``))
 }
 
+// TestEnsureOpenAIChatStreamUsage supplies absent and explicitly false
+// usage-stream flags. Both patched request bodies must decode with
+// include_usage set to true and return no error.
 func TestEnsureOpenAIChatStreamUsage(t *testing.T) {
 	t.Parallel()
 

@@ -15,18 +15,22 @@ import (
 	"github.com/TokenFlux/TokenRouter/ent/intercept"
 )
 
-// SoftDeleteMixin 实现基于 deleted_at 时间戳的软删除功能。
+// soft_delete.go implements Ent query filtering and delete-to-update
+// conversion for entities with a deleted_at timestamp. Ordinary Ent queries
+// hide rows whose deletion timestamp is set, while maintenance callers can use
+// SkipSoftDelete to inspect deleted entities or remove them physically. Query
+// traversal and mutation hooks apply the same active-row condition across
+// schemas that include the mixin.
 //
-// 软删除特性：
-//   - 删除操作不会真正删除数据库记录，而是设置 deleted_at 时间戳
-//   - 所有查询默认自动过滤 deleted_at IS NULL，只返回"未删除"的记录
-//   - 通过 SkipSoftDelete(ctx) 可以绕过软删除过滤器，查询或真正删除记录
+// Delete builders are created for deletion, so changing a mutation's operation
+// also requires dispatching it through the generated client as an update. The
+// helper obtains that client through reflection because generated Ent code
+// imports the mixins package. The converted mutation retains its existing row
+// predicates and adds the active-row condition before assigning the timestamp.
+
+// SoftDeleteMixin implements retained deletion records and default active-row queries.
 //
-// 实现原理：
-//   - 使用 Ent 的 Interceptor 拦截所有查询，自动添加 deleted_at IS NULL 条件
-//   - 使用 Ent 的 Hook 拦截删除操作，将 DELETE 转换为 UPDATE SET deleted_at = NOW()
-//
-// 使用示例：
+// Example:
 //
 //	func (User) Mixin() []ent.Mixin {
 //	    return []ent.Mixin{
@@ -34,20 +38,19 @@ import (
 //	    }
 //	}
 type SoftDeleteMixin struct {
-	mixin.Schema
+	mixin.Schema // reusable schema definition
 }
 
-// softDeleteKey 是用于在 context 中标记跳过软删除的键类型。
-// 使用空结构体作为键可以避免与其他包的键冲突。
+// softDeleteKey marks contexts that bypass soft deletion.
+// Its private type prevents collisions with keys from other packages.
 type softDeleteKey struct{}
 
-// Fields 定义软删除所需的字段。
-// deleted_at 字段：
-//   - 类型为 TIMESTAMPTZ，精确记录删除时间
-//   - Optional 和 Nillable 确保新记录时该字段为 NULL
-//   - NULL 表示记录未被删除，非 NULL 表示已软删除
+// Fields defines the nullable timestamp distinguishing active from deleted rows.
+// Query filtering uses NULL as the active state; a retained deletion stores
+// the application time in this PostgreSQL time-zone-aware column.
 func (SoftDeleteMixin) Fields() []ent.Field {
 	return []ent.Field{
+		// Retained deletion timestamp.
 		field.Time("deleted_at").
 			Optional().
 			Nillable().
@@ -57,91 +60,144 @@ func (SoftDeleteMixin) Fields() []ent.Field {
 	}
 }
 
-// SkipSoftDelete 返回一个新的 context，用于跳过软删除的拦截器和变更器。
+// SkipSoftDelete derives a context that bypasses query filtering and delete conversion.
+// Ent operations using the derived context can read retained rows, and delete
+// operations remove their matching rows physically.
 //
-// 使用场景：
-//   - 查询已软删除的记录（如管理员查看回收站）
-//   - 执行真正的物理删除（如彻底清理数据）
-//   - 恢复软删除的记录
+// Example:
 //
-// 示例：
-//
-//	// 查询包含已删除记录的所有用户
+//	// Include soft-deleted users.
 //	users, err := client.User.Query().All(mixins.SkipSoftDelete(ctx))
 //
-//	// 真正删除记录
+//	// Physically delete the row.
 //	client.User.DeleteOneID(id).Exec(mixins.SkipSoftDelete(ctx))
 func SkipSoftDelete(parent context.Context) context.Context {
 	return context.WithValue(parent, softDeleteKey{}, true)
 }
 
-// Interceptors 返回查询拦截器列表。
-// 拦截器会自动为所有查询添加 deleted_at IS NULL 条件，
-// 确保软删除的记录不会出现在普通查询结果中。
+// Interceptors adds a filter for active rows to Ent query traversals.
+// The filter requires deleted_at IS NULL unless the context
+// was created with SkipSoftDelete.
 func (d SoftDeleteMixin) Interceptors() []ent.Interceptor {
 	return []ent.Interceptor{
 		intercept.TraverseFunc(func(ctx context.Context, q intercept.Query) error {
-			// 检查是否需要跳过软删除过滤
 			if skip, _ := ctx.Value(softDeleteKey{}).(bool); skip {
 				return nil
 			}
-			// 生成的 intercept.Query 包装层提供 WhereP，可对不同实体统一追加 SQL 谓词。
+			// Traversal applies the active-row condition to each participating entity
+			// query, including edges followed by a larger query over mixed schemas.
 			d.applyPredicate(q)
 			return nil
 		}),
 	}
 }
 
-// Hooks 返回变更钩子列表。
-// 钩子会拦截 DELETE 操作，将其转换为 UPDATE SET deleted_at = NOW()。
-// 删除操作将记录标记为已删除，数据仍保存在表中。
+// Hooks converts delete mutations into updates that set the deletion timestamp.
+// Non-delete operations and SkipSoftDelete contexts continue through the supplied
+// mutator. Converted deletes require a generated mutation exposing SetOp,
+// SetDeletedAt, and WhereP; an unexpected mutation type returns an error.
+//
+// The hook adds the active-row predicate before setting application time, so
+// already deleted rows retain their timestamp. It redispatches through the
+// mutation's generated client because the original builder still represents
+// a delete operation, while the modified mutation needs an update builder.
 func (d SoftDeleteMixin) Hooks() []ent.Hook {
 	return []ent.Hook{
 		func(next ent.Mutator) ent.Mutator {
 			return ent.MutateFunc(func(ctx context.Context, m ent.Mutation) (ent.Value, error) {
-				// 只处理删除操作
 				if m.Op() != ent.OpDelete && m.Op() != ent.OpDeleteOne {
 					return next.Mutate(ctx, m)
 				}
-				// 检查是否需要执行真正的删除
 				if skip, _ := ctx.Value(softDeleteKey{}).(bool); skip {
 					return next.Mutate(ctx, m)
 				}
-				// 类型断言，获取 mutation 的扩展接口
+				// Schemas using this mixin generate the timestamp setter and SQL
+				// predicate method needed to execute deletion as an active-row update.
 				mx, ok := m.(interface {
+					// SetOp selects the operation executed by the generated mutation client.
 					SetOp(ent.Op)
+					// SetDeletedAt supplies the timestamp stored by the converted update mutation.
 					SetDeletedAt(time.Time)
+					// WhereP appends SQL predicates restricting the rows changed by this mutation.
 					WhereP(...func(*sql.Selector))
 				})
 				if !ok {
 					return nil, fmt.Errorf("unexpected mutation type %T", m)
 				}
-				// 添加软删除过滤条件，确保不会影响已删除的记录
+				// Keep an existing deletion time when another delete targets the same
+				// retained row; the active-row predicate excludes that row from this update.
 				d.applyPredicate(mx)
-				// 将 DELETE 操作转换为 UPDATE 操作
 				mx.SetOp(ent.OpUpdate)
-				// 设置删除时间为当前时间
 				mx.SetDeletedAt(time.Now())
-				return mutateWithClient(ctx, m, next)
+				return mutateWithClient(ctx, m)
 			})
 		},
 	}
 }
 
-// applyPredicate 为查询添加 deleted_at IS NULL 条件。
-// 这是软删除过滤的核心实现。
-func (d SoftDeleteMixin) applyPredicate(w interface{ WhereP(...func(*sql.Selector)) }) {
+// applyPredicate restricts a query or mutation to rows with deleted_at IS NULL.
+func (d SoftDeleteMixin) applyPredicate(w interface {
+	// WhereP appends selector predicates used to restrict matching database rows.
+	WhereP(...func(*sql.Selector))
+},
+) {
 	w.WhereP(
 		sql.FieldIsNull(d.Fields()[0].Descriptor().Name),
 	)
 }
 
-func mutateWithClient(ctx context.Context, m ent.Mutation, fallback ent.Mutator) (ent.Value, error) {
+// mutateWithClient dispatches a converted mutation through its generated client.
+// Callers pass a non-nil context and mutation exposing Client(). The client
+// returned by that mutation retains its driver, including an active transaction.
+// A non-nil mutation error is propagated before checking the returned value. A
+// nil result interface is rejected; an interface containing a typed nil value is
+// returned.
+//
+// Reflection obtains Client() because the generated package imports mixins.
+// Generated clients implement ent.Mutator and dispatch through that interface.
+// Custom client signatures use reflected dispatch with their declared methods;
+// missing methods or unexpected argument and result counts return errors, while
+// incompatible argument types or unusable client values can panic.
+func mutateWithClient(ctx context.Context, m ent.Mutation) (ent.Value, error) {
 	clientMethod := reflect.ValueOf(m).MethodByName("Client")
 	if !clientMethod.IsValid() || clientMethod.Type().NumIn() != 0 || clientMethod.Type().NumOut() != 1 {
 		return nil, fmt.Errorf("soft delete: mutation client method not found for %T", m)
 	}
 	client := clientMethod.Call(nil)[0]
+	// The operation changed after the delete builder was constructed. Dispatching
+	// through Client.Mutate selects an update builder for that same mutation.
+	var value ent.Value
+	var err error
+	// The declared client type must expose Mutate. Its dynamic value can also
+	// implement ent.Mutator when Client() returns any, which hides the method.
+	mutator, ok := reflect.TypeAssert[ent.Mutator](client)
+	if ok && ctx != nil && client.Type().Implements(reflect.TypeFor[ent.Mutator]()) {
+		value, err = mutator.Mutate(ctx, m)
+	} else {
+		// Custom signatures can accept these arguments while returning concrete
+		// result types. Keep their declared method visibility and reflected checks,
+		// including the rejection of a nil context before the method is invoked.
+		value, err = mutateReflectedClient(ctx, m, client)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if value == nil {
+		return nil, fmt.Errorf("soft delete: mutation client returned nil for %T", m)
+	}
+	return value, nil
+}
+
+// mutateReflectedClient invokes a custom client's declared Mutate method.
+// Callers validate the returned value after handling its error, and the method
+// types must accept ctx and m with two results.
+//
+// The second result is checked for nil before conversion to error. A nil
+// concrete pointer therefore means success, while an error interface containing
+// that pointer remains non-nil. Non-nil second results that do not implement
+// error produce diagnostics; argument mismatches and non-nilable second results
+// can panic.
+func mutateReflectedClient(ctx context.Context, m ent.Mutation, client reflect.Value) (ent.Value, error) {
 	mutateMethod := client.MethodByName("Mutate")
 	if !mutateMethod.IsValid() {
 		return nil, fmt.Errorf("soft delete: mutation client missing Mutate for %T", m)
@@ -161,15 +217,5 @@ func mutateWithClient(ctx context.Context, m ent.Mutation, fallback ent.Mutator)
 		}
 		err = typedErr
 	}
-	if err != nil {
-		return nil, err
-	}
-	if value == nil {
-		return nil, fmt.Errorf("soft delete: mutation client returned nil for %T", m)
-	}
-	v, ok := value.(ent.Value)
-	if !ok {
-		return nil, fmt.Errorf("soft delete: unexpected value type %T for %T", value, m)
-	}
-	return v, nil
+	return value, err
 }

@@ -7,6 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestReplaceModelInBody_PreservesTopLevelFieldOrder changes a model between
+// other top-level fields. The resulting bytes must contain the requested model
+// and retain the asserted token positions for alpha, model, messages, and omega.
 func TestReplaceModelInBody_PreservesTopLevelFieldOrder(t *testing.T) {
 	body := []byte(`{"alpha":1,"model":"claude-3-5-sonnet-latest","messages":[],"omega":2}`)
 
@@ -17,12 +20,15 @@ func TestReplaceModelInBody_PreservesTopLevelFieldOrder(t *testing.T) {
 	require.Contains(t, resultStr, `"model":"claude-3-5-sonnet-20241022"`)
 }
 
+// TestReplaceModelInBody covers empty, matching, differing, and absent model
+// fields. The patch must retain untouched fixture bytes or insert the requested
+// model while retaining the asserted temperature field marker.
 func TestReplaceModelInBody(t *testing.T) {
 	tests := []struct {
-		name     string
-		body     []byte
-		newModel string
-		check    func(t *testing.T, result []byte)
+		name     string                            // model-patching input scenario
+		body     []byte                            // supplied request bytes
+		newModel string                            // requested replacement model
+		check    func(t *testing.T, result []byte) // case result assertions
 	}{
 		{
 			name:     "empty body",
@@ -68,19 +74,27 @@ func TestReplaceModelInBody(t *testing.T) {
 	}
 }
 
+// TestReplaceModelInBody_InvalidJSON attempts a model patch on a malformed
+// object and an array. The malformed case must return nonnil bytes, while an
+// unsupported array write must return the supplied array unchanged.
 func TestReplaceModelInBody_InvalidJSON(t *testing.T) {
-	// 损坏的对象缺少可读的 model，sjson 仍尝试写入并返回修改后的字节。
+	// This malformed object exercises an attempted field insertion. The
+	// assertion requires nonnil output and leaves complete JSON validity for
+	// the caller's separate request validation.
 	brokenBody := []byte("{broken")
 	result := ReplaceModelInBody(brokenBody, "new-model")
 	require.NotNil(t, result)
 
-	// 数组输入使 sjson.SetBytes 返回错误，函数返回原始 body。
+	// An array cannot receive the object model field through this patch.
+	// The helper returns its supplied bytes when sjson rejects that write.
 	arrayBody := []byte("[]")
 	result2 := ReplaceModelInBody(arrayBody, "new-model")
 	require.Equal(t, arrayBody, result2)
 }
 
-// assertJSONTokenOrder 按 JSON 原始字节中的位置检查字段顺序。
+// assertJSONTokenOrder requires each token's first byte-string occurrence to
+// follow the preceding token. Missing or out-of-order tokens fail the test;
+// the helper checks positions directly without decoding JSON field structure.
 func assertJSONTokenOrder(t *testing.T, body string, tokens ...string) {
 	t.Helper()
 

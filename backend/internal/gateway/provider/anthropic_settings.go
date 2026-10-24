@@ -7,7 +7,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
-// GatewayBetaPolicy 返回平台的 Beta 过滤规则。
+// anthropic_settings.go converts beta policy settings between gateway and
+// Anthropic types with copied rule collections.
+// Beta policy settings cross the gateway and Anthropic execution types with
+// the same rule fields. Each conversion allocates a rule slice and copies
+// model whitelists, so edits to those collections stay with the receiving
+// settings.
+
+// GatewayBetaPolicy converts Anthropic beta settings to gateway settings,
+// preserving nil settings and nil rule slices. Rules and model whitelist
+// slices are copied so the receiving configuration can edit those collections
+// independently.
 func GatewayBetaPolicy(value *anthropic.BetaPolicySettings) *gateway.BetaPolicySettings {
 	if value == nil {
 		return nil
@@ -23,7 +33,10 @@ func GatewayBetaPolicy(value *anthropic.BetaPolicySettings) *gateway.BetaPolicyS
 	return result
 }
 
-// AnthropicBetaPolicy 保留旧平台执行入口所需类型，规则存取由 gateway 拥有。
+// AnthropicBetaPolicy converts gateway beta settings to Anthropic execution
+// settings, preserving nil settings and nil rule slices. Rules and model
+// whitelist slices are copied before platform-specific request preparation
+// uses them.
 func AnthropicBetaPolicy(value *gateway.BetaPolicySettings) *anthropic.BetaPolicySettings {
 	if value == nil {
 		return nil

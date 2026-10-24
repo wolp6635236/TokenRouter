@@ -7,7 +7,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 )
 
-// CompactionTestPayload 构造 V2 流式 Responses 请求，最后一个 input 为 compaction_trigger。
+// test_compaction.go builds native and legacy compaction probes and detects
+// compaction output in their responses.
+// Native compaction probes use a streaming Responses request whose last input
+// item is compaction_trigger. Legacy probes use a separate unary request
+// without that trigger, and each form retains its own session identifier shape
+// for provider capability testing.
+
+// CompactionTestPayload builds a trimmed-model streaming V2 probe ending with
+// compaction_trigger. OAuth probes add store=false, while API-key probes leave
+// that field absent; callers select the corresponding Responses endpoint and
+// beta features.
 func CompactionTestPayload(model string, isOAuth bool) map[string]any {
 	payload := map[string]any{
 		"model":        strings.TrimSpace(model),
@@ -23,14 +33,16 @@ func CompactionTestPayload(model string, isOAuth bool) map[string]any {
 		"stream": true,
 	}
 	if isOAuth {
-		// ChatGPT 内部 Responses API 与正常 OAuth 转发保持相同的 store 约束。
+		// OAuth probes use the internal ChatGPT Responses shape, which disables
+		// storage; keeping the V2 trigger on that request tests native compaction output.
 		payload["store"] = false
 	}
 	return payload
 }
 
-// LegacyCompactionTestPayload 构造旧端点的 unary 请求，供管理员测试兼容性。
-// V2 能力需要通过 CompactionTestPayload 测试。
+// LegacyCompactionTestPayload builds a trimmed-model unary request for the
+// legacy compact endpoint. It contains one user message and no V2 trigger;
+// callers select the legacy endpoint and its session format.
 func LegacyCompactionTestPayload(model string) map[string]any {
 	return map[string]any{
 		"model":        strings.TrimSpace(model),
@@ -45,8 +57,9 @@ func LegacyCompactionTestPayload(model string) map[string]any {
 	}
 }
 
-// CompactionTestHasOutput 确认原生 V2 响应确实给出了 compaction
-// item。单纯 2xx 可能表示中间链路吞掉 trigger，不能将其报告为测试成功。
+// CompactionTestHasOutput reports whether SSE or JSON output contains a
+// compaction item. It checks raw SSE items, extracted final Responses JSON,
+// then the original body; status success by itself is insufficient evidence.
 func CompactionTestHasOutput(body []byte) bool {
 	if len(body) == 0 {
 		return false
@@ -61,16 +74,22 @@ func CompactionTestHasOutput(body []byte) bool {
 	return openai.ResponsesOutputHasCompactionItem(body)
 }
 
+// CompactionTestSessionID derives the stable V2 probe session for providerID.
+// Nonpositive IDs share an anonymous namespace, while positive IDs select
+// separate deterministic sessions under the fixed native-compaction probe
+// domain.
 func CompactionTestSessionID(providerID int64) string {
-	// 保留既有会话标识，避免重命名内部函数改变上游对测试请求的处理。
+	// The literal V2 probe domain keeps the same provider on a stable upstream
+	// session across repeated tests and distinguishes it from legacy compact probes.
 	if providerID <= 0 {
 		return DeriveStableUUIDv4("tokenrouter:openai-native-compaction-v2-probe:anonymous")
 	}
 	return DeriveStableUUIDv4("tokenrouter:openai-native-compaction-v2-probe:" + strconv.FormatInt(providerID, 10))
 }
 
-// LegacyCompactionTestSessionID 保持旧端点既有会话格式，避免兼容性测试本身改变
-// legacy 上游对请求形状的识别。
+// LegacyCompactionTestSessionID returns the legacy probe_compact spelling with
+// a positive provider suffix. Nonpositive IDs use the unsuffixed session,
+// allowing callers to keep legacy probe shape separate from the V2 namespace.
 func LegacyCompactionTestSessionID(providerID int64) string {
 	if providerID <= 0 {
 		return "probe_compact"

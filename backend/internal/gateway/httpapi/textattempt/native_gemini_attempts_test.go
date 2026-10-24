@@ -24,18 +24,24 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// nativeGeminiPricingFixture 记录转发、槽位释放和调度反馈的次数。
+// nativeGeminiPricingFixture counts forwarding, slot release, and scheduling feedback.
 type nativeGeminiPricingFixture struct {
-	bridge   *nativeGeminiAttemptBridge
-	response *httptest.ResponseRecorder
-	forwards int
-	releases int
-	reports  int
+	bridge   *nativeGeminiAttemptBridge // retained native attempt adapter
+	response *httptest.ResponseRecorder // captured Google HTTP output
+	forwards int                        // platform forwarding call count
+	releases int                        // provider cleanup call count
+	reports  int                        // scheduler feedback call count
 }
 
-// TestNativeGeminiForwardRejectsMissingPricing 覆盖两种生成动作及 Gemini 的三种凭据和 Antigravity。
+// TestNativeGeminiForwardRejectsMissingPricing spans generation actions and
+// Gemini or Antigravity credential kinds. Missing prices must stop before
+// forwarding and feedback, release the slot, and report local Google pricing
+// denial.
 func TestNativeGeminiForwardRejectsMissingPricing(t *testing.T) {
-	for _, target := range []struct{ platform, kind string }{
+	for _, target := range []struct {
+		// platform identifies the provider family; kind identifies its credential type.
+		platform, kind string
+	}{
 		{provider.PlatformGemini, "apikey"},
 		{provider.PlatformGemini, "oauth"},
 		{provider.PlatformGemini, "service_account"},
@@ -61,14 +67,20 @@ func TestNativeGeminiForwardRejectsMissingPricing(t *testing.T) {
 	}
 }
 
-// TestNativeGeminiForwardPricingModels 使用价卡和映射核对实际准入的计费型号。
+// TestNativeGeminiForwardPricingModels combines explicit cards and requested,
+// mapped or upstream billing sources on both platforms. It protects forwarding
+// and feedback only for an admitted priced model, while every attempt releases
+// capacity.
 func TestNativeGeminiForwardPricingModels(t *testing.T) {
 	input, zero, multiplier := 2e-6, 0.0, 2.0
 	for _, platform := range []string{provider.PlatformGemini, provider.PlatformAntigravity} {
 		for _, tc := range []struct {
+			// name labels the price scenario; requested is the client name; mapped is
+			// the group route; upstream is the provider target; source chooses the
+			// billing model origin.
 			name, requested, mapped, upstream, source string
-			card                                      *routing.ModelPricingEntry
-			missing                                   bool
+			card                                      *routing.ModelPricingEntry // optional explicit price card
+			missing                                   bool                       // expected price admission failure
 		}{
 			{name: "catalog", mapped: "gemini-2.5-flash"},
 			{name: "manual", card: &routing.ModelPricingEntry{InputPrice: &input}},
@@ -121,9 +133,14 @@ func TestNativeGeminiForwardPricingModels(t *testing.T) {
 	}
 }
 
-// TestNativeGeminiForwardPricingScope 计数和动作校验交给平台执行器，图片型号遵循共享检查规则。
+// TestNativeGeminiForwardPricingScope supplies countTokens, an unsupported
+// action and an image generation model. The text pricing preflight leaves those
+// cases to their platform or media rules and returns provider ownership.
 func TestNativeGeminiForwardPricingScope(t *testing.T) {
-	for _, tc := range []struct{ action, model string }{
+	for _, tc := range []struct {
+		// action names the Google method; model names the requested native model.
+		action, model string
+	}{
 		{"countTokens", "unpriced-gemini-model"},
 		{"unsupportedAction", "unpriced-gemini-model"},
 		{"generateContent", "gpt-image-1"},
@@ -132,6 +149,11 @@ func TestNativeGeminiForwardPricingScope(t *testing.T) {
 			fixture := newNativeGeminiPricingFixture(t, provider.PlatformGemini, tc.action)
 			fixture.bridge.modelName = tc.model
 			outcome := fixture.bridge.Forward(text.AttemptState{})
+			if tc.action == "generateContent" {
+				require.ErrorIs(t, outcome.Err, admission.ErrModelPricingRejected)
+				require.Zero(t, fixture.forwards)
+				return
+			}
 			require.NoError(t, outcome.Err)
 			require.False(t, outcome.Stop)
 			require.Equal(t, 1, fixture.forwards)
@@ -140,7 +162,10 @@ func TestNativeGeminiForwardPricingScope(t *testing.T) {
 	}
 }
 
-// TestNativeGeminiForwardRechecksProviderPricing 换号后按新提供商的映射再次查价。
+// TestNativeGeminiForwardRechecksProviderPricing first admits a provider
+// mapping to a priced model, then replaces the provider. The new unpriced
+// mapping must stop before another forward or feedback while releasing the
+// second attempt.
 func TestNativeGeminiForwardRechecksProviderPricing(t *testing.T) {
 	fixture := newNativeGeminiPricingFixture(t, provider.PlatformGemini, "generateContent")
 	bridge := fixture.bridge
@@ -157,7 +182,10 @@ func TestNativeGeminiForwardRechecksProviderPricing(t *testing.T) {
 	require.Equal(t, 2, fixture.releases)
 }
 
-// TestNativeGeminiForwardRouteErrorReleasesSlot 路由校验失败时结束尝试并归还已取得的槽位。
+// TestNativeGeminiForwardRouteErrorReleasesSlot selects unsupported Antigravity
+// API Key routing. It requires a safe server pricing-check error with the
+// original route cause, no forward or feedback, and returned provider
+// ownership.
 func TestNativeGeminiForwardRouteErrorReleasesSlot(t *testing.T) {
 	fixture := newNativeGeminiPricingFixture(t, provider.PlatformAntigravity, "generateContent")
 	bridge := fixture.bridge
@@ -176,7 +204,10 @@ func TestNativeGeminiForwardRouteErrorReleasesSlot(t *testing.T) {
 	require.False(t, bridge.c.GetBool(gatewayhttp.OpsClientBusinessLimitedKey))
 }
 
-// newNativeGeminiPricingFixture 用固定目录价和可选分组价卡构造单次尝试。
+// newNativeGeminiPricingFixture constructs native attempt state with fixed
+// catalogue pricing and optional group cards. Platform callbacks count
+// forwarding and enforce the expected platform; the fixture retains a response
+// recorder plus independent release and scheduling-feedback counts.
 func newNativeGeminiPricingFixture(t *testing.T, platform, action string, cards ...routing.ModelPricingEntry) *nativeGeminiPricingFixture {
 	t.Helper()
 	fixture := &nativeGeminiPricingFixture{response: httptest.NewRecorder()}

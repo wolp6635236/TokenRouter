@@ -6,7 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCNProviderResponseIndicatesInsufficientBalance 覆盖中英文余额不足文案与否定用例。
+// TestCNProviderResponseIndicatesInsufficientBalance checks Chinese and
+// English phrases in several raw response shapes. It also checks that
+// unrelated quota or rate-limit wording and empty input stay unmatched.
 func TestCNProviderResponseIndicatesInsufficientBalance(t *testing.T) {
 	t.Parallel()
 	positive := []string{
@@ -29,12 +31,14 @@ func TestCNProviderResponseIndicatesInsufficientBalance(t *testing.T) {
 	}
 }
 
-// TestIsHTMLResponse 检查 HTML 前缀识别及其他文本格式的拒绝。
+// TestIsHTMLResponse varies HTML prefix case and leading whitespace alongside
+// JSON, plain text, empty, and XML inputs. It checks prefix classification
+// against each expected result.
 func TestIsHTMLResponse(t *testing.T) {
 	cases := []struct {
-		name string
-		body string
-		want bool
+		name string // named response prefix scenario
+		body string // raw response text fixture
+		want bool   // expected HTML prefix classification
 	}{
 		{"doctype_lower", "<!doctype html><html></html>", true},
 		{"doctype_upper", "<!DOCTYPE HTML>", true},

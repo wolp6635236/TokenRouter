@@ -5,9 +5,30 @@ import (
 	"strings"
 )
 
-// ResolveModelPricing 将目录报价转换为模型计费单价。
+// model_price.go converts catalog token prices into calculation records.
+// A catalog media price does not by itself establish text-token pricing.
+// ResolveModelPricing rejects missing or marked-unpriced token records, then
+// carries the accepted entry's amount presence, service-tier rules, cache TTL
+// behavior, and context prices into calculation data.
+//
+// Catalog context tiers are recursively converted before use. xAI's inclusive
+// threshold is lowered by one in these absolute tiers so the calculation's
+// strict comparison and the displayed (min,max] ranges switch at the original
+// threshold. Time and multiplier rules are cloned from the source catalog
+// entry; failed nested conversions are skipped, while the valid base remains
+// available to its caller.
+
+// ResolveModelPricing returns calculation prices for the supplied catalog token
+// entry. Missing records, unpriced sources, and TokenPricingAbsent return
+// ErrModelPricingUnavailable. The model name is lowercased for diagnostics; the
+// supplied catalog identity already determines which prices are converted.
+//
+// Accepted context tiers are recursively copied, with xAI absolute thresholds
+// shifted for inclusive switching and failed tier conversions omitted. Presence
+// flags retain explicit zero priority and image-output prices. An explicitly
+// supplied hourly cache price enables TTL support even at zero; legacy entries
+// infer support from a positive hourly price above the short rate.
 func ResolveModelPricing(model string, catalogPrice *CatalogModelPricing) (*ModelPricing, error) {
-	// 标准化模型名称（转小写）
 	model = strings.ToLower(model)
 	if catalogPrice == nil || catalogPrice.Source == "unpriced" || catalogPrice.TokenPricingAbsent {
 		return nil, fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
@@ -22,17 +43,21 @@ func ResolveModelPricing(model string, catalogPrice *CatalogModelPricing) (*Mode
 			continue
 		}
 		price, err := ResolveModelPricing(model, tier.Pricing)
+		// Nested conversion errors omit that tier; the valid base remains usable
+		// instead of borrowing an incomplete tier's buckets.
 		if err == nil {
 			threshold := tier.Threshold
-			// 内部阶梯统一使用 (min,max]；xAI 达到阈值即切档，先转换成前一档的最大 token 数。
+			// Absolute tiers are selected strictly above their internal threshold. Lower
+			// xAI's value by one so an integer count at the catalog threshold selects
+			// its higher tier.
 			if inclusiveThreshold && threshold > 0 {
 				threshold--
 			}
 			contextPrices = append(contextPrices, ContextModelPrice{Threshold: threshold, Pricing: price})
 		}
 	}
-	// models.dev 明确给出 1h 单价时按 TTL 拆分，显式零价也有效。
-	// 旧格式沿用 1h 高于 5m 的兼容判断。
+	// An explicit 1h cache price enables TTL billing, including an explicit zero.
+	// Legacy entries infer TTL support when the 1h price exceeds the 5m price.
 	price5m := catalogPricing.CacheCreationInputTokenCost
 	price1h := catalogPricing.CacheCreationInputTokenCostAbove1hr
 	enableBreakdown := price1h > 0 && price1h > price5m || catalogPricing.CacheCreation1hPricePresent
@@ -59,14 +84,13 @@ func ResolveModelPricing(model string, catalogPrice *CatalogModelPricing) (*Mode
 		CacheCreation1hPrice:               price1h,
 		SupportsCacheBreakdown:             enableBreakdown,
 		SupportsServiceTier:                catalogPricing.SupportsServiceTier,
-		// xAI 的目录语义是达到阈值即进入高档，其他提供商保持严格大于。
-		LongContextThresholdInclusive: inclusiveThreshold,
-		LongContextInputThreshold:     catalogPricing.LongContextInputTokenThreshold,
-		LongContextInputMultiplier:    catalogPricing.LongContextInputCostMultiplier,
-		LongContextOutputMultiplier:   catalogPricing.LongContextOutputCostMultiplier,
-		ImageInputPricePerToken:       catalogPricing.InputCostPerImageToken,
-		ImageOutputPricePerToken:      catalogPricing.OutputCostPerImageToken,
-		ImageOutputPriceExplicit:      catalogPricing.ImageOutputPricePresent,
-		MaxReasoningEffortMultiplier:  rules.MaxReasoningEffortMultiplier,
+		LongContextThresholdInclusive:      inclusiveThreshold,
+		LongContextInputThreshold:          catalogPricing.LongContextInputTokenThreshold,
+		LongContextInputMultiplier:         catalogPricing.LongContextInputCostMultiplier,
+		LongContextOutputMultiplier:        catalogPricing.LongContextOutputCostMultiplier,
+		ImageInputPricePerToken:            catalogPricing.InputCostPerImageToken,
+		ImageOutputPricePerToken:           catalogPricing.OutputCostPerImageToken,
+		ImageOutputPriceExplicit:           catalogPricing.ImageOutputPricePresent,
+		MaxReasoningEffortMultiplier:       rules.MaxReasoningEffortMultiplier,
 	}, nil
 }

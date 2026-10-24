@@ -21,6 +21,9 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
+// TestIdempotencyRepo_CreateProcessing_CompeteSameKey inserts a claim and then
+// retries its scope/key pair with a different fingerprint. PostgreSQL must assign
+// the first record an ID and decline ownership for the second insert.
 func TestIdempotencyRepo_CreateProcessing_CompeteSameKey(t *testing.T) {
 	tx := idempotencyTestTx(t)
 	repo := NewIdempotencyRepository(tx)
@@ -53,6 +56,9 @@ func TestIdempotencyRepo_CreateProcessing_CompeteSameKey(t *testing.T) {
 	require.False(t, owner, "same scope+key hash should be de-duplicated")
 }
 
+// TestIdempotencyRepo_TryReclaim_StatusAndLockWindow retries failed records before
+// and after their backoff deadline. An expired lock must return the record to
+// processing with a future lock, while an active backoff must reject reclaim.
 func TestIdempotencyRepo_TryReclaim_StatusAndLockWindow(t *testing.T) {
 	tx := idempotencyTestTx(t)
 	repo := NewIdempotencyRepository(tx)
@@ -118,6 +124,9 @@ func TestIdempotencyRepo_TryReclaim_StatusAndLockWindow(t *testing.T) {
 	require.False(t, reclaimed, "within lock window should not reclaim")
 }
 
+// TestIdempotencyRepo_StatusTransition_ToSucceeded completes an inserted
+// processing record with a stored response. Its reloaded state must be succeeded,
+// retain the exact status and body, and release the processing lock.
 func TestIdempotencyRepo_StatusTransition_ToSucceeded(t *testing.T) {
 	tx := idempotencyTestTx(t)
 	repo := NewIdempotencyRepository(tx)
@@ -149,14 +158,30 @@ func TestIdempotencyRepo_StatusTransition_ToSucceeded(t *testing.T) {
 	require.Nil(t, got.LockedUntil)
 }
 
-// idempotencyTestTx 在隔离 PostgreSQL 中应用迁移，并为每个测试创建结束时回滚的事务。
+// idempotencyTestTx returns a transaction inside a fresh migrated PostgreSQL test
+// container. Setup uses a two-minute context, and cleanup rolls back the test
+// transaction before closing its pool and terminating the container, keeping
+// each repository scenario's state isolated from subsequent tests. Container
+// removal gets a fresh thirty-second context even when startup fails.
 func idempotencyTestTx(t *testing.T) *sql.Tx {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	container, err := tcpostgres.Run(ctx, "postgres:18.1-alpine3.23", tcpostgres.WithDatabase("idempotency_contracts"), tcpostgres.WithUsername("postgres"), tcpostgres.WithPassword("postgres"), tcpostgres.BasicWaitStrategies())
+	// Register any created container before startup errors can stop this test.
+	// Transaction and pool cleanup registered below runs before container removal.
+	if container != nil {
+		t.Cleanup(func() {
+			// Setup or test cancellation must not cancel Docker removal. Start the
+			// bounded cleanup context when this callback runs.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := container.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate PostgreSQL container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, container.Terminate(context.Background())) })
 	dsn, err := container.ConnectionString(ctx, "sslmode=disable", "TimeZone=UTC")
 	require.NoError(t, err)
 	db, err := sql.Open("postgres", dsn)
@@ -169,18 +194,21 @@ func idempotencyTestTx(t *testing.T) *sql.Tx {
 	return tx
 }
 
+// uniqueIdempotencyValue combines a fixture prefix with the normalized test name.
+// Slashes and spaces become underscores. Scope construction and hashedTestValue
+// use this same deterministic representation to identify their fixture's named scenario.
 func uniqueIdempotencyValue(t *testing.T, prefix string) string {
 	t.Helper()
 	safeName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
 	return fmt.Sprintf("%s-%s", prefix, safeName)
 }
 
-// hashedTestValue 根据测试名称生成包含 64 个字符的 SHA-256 十六进制字符串，用于 VARCHAR(64) 列。
+// hashedTestValue hashes the test name and prefix into 64 hex characters for VARCHAR(64) columns.
 func hashedTestValue(t *testing.T, prefix string) string {
 	t.Helper()
 	sum := sha256.Sum256([]byte(uniqueIdempotencyValue(t, prefix)))
 	return hex.EncodeToString(sum[:])
 }
 
-// ptrTime 返回时间值的指针。
+// ptrTime returns a pointer holding the supplied fixture timestamp value.
 func ptrTime(t time.Time) *time.Time { return &t }

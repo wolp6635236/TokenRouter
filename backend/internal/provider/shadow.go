@@ -9,17 +9,41 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
-// sparkShadowAllowedCredentialKeys 是 spark 影子提供商唯一可写的凭据键集合(仅模型映射)。
-// 凭据校验与清理共用此列表。
+// shadow.go creates Spark shadows, resolves their parent credentials, and
+// propagates parent proxy changes.
+// A Spark shadow uses its parent's OpenAI OAuth credentials and proxy while
+// carrying its own Spark quota dimension and scheduling controls. Credential
+// resolution follows one parent link and rejects a shadow parent, so stored
+// chains cannot select another shadow as the credential owner.
+//
+// Creating a shadow checks the parent and validates supplied groups when a
+// group reader is configured, then saves the row before binding groups. Binding
+// failure attempts compensating deletion with request cancellation and its
+// deadline removed. A created row that has committed can remain after failed
+// cleanup or a crash; the supplied repository determines transaction
+// completion. Database uniqueness handles competing creations after the
+// precheck. Proxy propagation updates shadows sequentially and stops on error,
+// leaving compensation and transaction completion to its caller. Parent health
+// checks share configured expiration and temporary cooldown, while Spark
+// scheduling evaluates its own independent quota and scheduling switch.
+
+// sparkShadowAllowedCredentialKeys lists writable Spark shadow credential
+// fields: model mappings.
+// Validation and sanitization share this allowlist.
 var sparkShadowAllowedCredentialKeys = map[string]struct{}{
 	"model_mapping":         {},
 	"compact_model_mapping": {},
 }
 
-// ResolveCredentialRecord 解析影子提供商到其母提供商，用于凭据/Token 透传。
-// - 普通提供商（非影子）：直接返回自身。
-// - 影子提供商：通过 repo 取母提供商，校验母提供商存在且为 OpenAI OAuth 类型，否则返回错误。
-// 凭据读取、额度查询和用量探测共用此入口校验母提供商。
+// ResolveCredentialRecord returns the credential owner for a provider. Nil and
+// ordinary records pass through unchanged; shadows require a callable read
+// function and a nonshadow OpenAI OAuth parent.
+//
+// Resolution follows one link so a corrupted or manually written shadow chain
+// cannot redirect authentication through another shadow. Lookup errors, absent
+// parents, and incompatible parent types prevent returning a credential owner.
+// The returned record is the supplied record or the reader's object directly,
+// so callers follow that source's sharing rules when modifying it.
 func ResolveCredentialRecord(ctx context.Context, read func(context.Context, int64) (*Record, error), provider *Record) (*Record, error) {
 	if provider == nil || !provider.IsCredentialShadow() {
 		return provider, nil
@@ -31,8 +55,8 @@ func ResolveCredentialRecord(ctx context.Context, read func(context.Context, int
 	if parent == nil {
 		return nil, fmt.Errorf("spark shadow parent %d not found", *provider.ParentProviderID)
 	}
-	// 创建入口禁止二级影子；此处也拒绝手工写入或损坏数据形成的影子链。
-	// 凭据解析读取一层母提供商，母提供商也是影子时返回错误。
+	// Manual writes can bypass creation's parent validation. Reject a shadow parent
+	// here because credential resolution uses that parent record as the owner.
 	if parent.IsCredentialShadow() {
 		return nil, fmt.Errorf("spark shadow parent %d is itself a shadow", parent.ID)
 	}
@@ -42,10 +66,29 @@ func ResolveCredentialRecord(ctx context.Context, read func(context.Context, int
 	return parent, nil
 }
 
-// CreateShadow 为指定 OpenAI OAuth 母提供商创建 spark 维度影子提供商（一母一影）。
-// 安全不变量：Credentials 恒不含 auth token（仅 model_mapping，守卫 isAllowedSparkShadowCredentialsUpdate 放行）。
+// CreateShadow creates a Spark shadow attached to an OpenAI OAuth parent.
+// Supplied groups are validated when a group reader is available; omitted
+// groups inherit the parent's existing IDs, and nonpositive concurrency or
+// priority inherits the parent value.
+//
+// A blank name derives from the parent, and the prepared name is capped at one
+// hundred runes. The PostgreSQL store's Ent validation rejects names exceeding
+// one hundred bytes. The returned shadow retains the map from ShadowModels and
+// shares ProxyID with the loaded parent; credential operations resolve to that
+// parent. Configure ShadowModels before creation and Error for reporting failed
+// compensating deletion.
+//
+// Creation precedes group binding; a bind error attempts deletion with request
+// cancellation and its deadline removed, then returns the binding failure.
+// This method opens no encompassing transaction, so the supplied repository
+// and any outer transaction owner determine commit and rollback. Failed
+// cleanup is logged. Returned GroupIDs share a supplied nonempty selection;
+// inherited group IDs are copied.
+//
+// An existing shadow returns a conflict. If creation fails after the precheck,
+// a reread finding a shadow also returns that conflict, covering the
+// competing-create path enforced by storage uniqueness.
 func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOptions) (*Record, error) {
-	// 1. 加载母提供商并校验平台/类型
 	parent, err := s.providerRepo.GetByID(ctx, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent provider: %w", err)
@@ -54,13 +97,13 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 		return nil, apperror.New(apperror.CategoryBadRequest, "SPARK_SHADOW_INVALID_PARENT",
 			"spark shadow requires an OpenAI OAuth parent provider")
 	}
-	// 母提供商需要持有独立凭据，resolveCredentialProvider 解析一层母提供商。
+	// A shadow parent can pass the OpenAI OAuth type check above. Reject it here
+	// so the new shadow resolves credentials through a direct owner.
 	if parent.IsCredentialShadow() {
 		return nil, apperror.New(apperror.CategoryBadRequest, "SPARK_SHADOW_PARENT_IS_SHADOW",
 			"spark shadow parent must be a real provider, not another spark shadow")
 	}
 
-	// 2. 一母一影校验
 	shadows, err := s.providerRepo.ListShadowsByParent(ctx, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("check existing spark shadows: %w", err)
@@ -70,8 +113,9 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 			"parent provider already has a spark shadow provider")
 	}
 
-	// 请求提供分组时先校验，省略时继承母提供商已有的分组。
-	// 母提供商没有分组时保持未分组，不按名称寻找其他组。
+	// Nonempty supplied groups take precedence and are validated when a reader
+	// is configured. An omitted or empty selection inherits the parent's IDs;
+	// an ungrouped parent stays ungrouped because names do not select defaults.
 	groupIDs := opts.GroupIDs
 	if len(groupIDs) > 0 {
 		if s.options.Groups != nil {
@@ -83,23 +127,19 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 		groupIDs = append([]int64(nil), parent.GroupIDs...)
 	}
 
-	// 4. 构造影子提供商。Credentials 仅保存 model_mapping，不保存认证令牌。
-	// 名称为空时使用“<母提供商名> (Spark)”，并按 rune 截取前 100 个字符。
 	name := strings.TrimSpace(opts.Name)
 	if name == "" {
 		name = parent.Name + " (Spark)"
 	}
+	// Rune truncation keeps multibyte characters intact in the prepared name.
+	// Ent's separate byte-length validation can still reject this result.
 	if runes := []rune(name); len(runes) > 100 {
 		name = string(runes[:100])
 	}
-	// 并发值小于等于零时继承母提供商的值，限流器将零解释为无限并发。
 	concurrency := opts.Concurrency
 	if concurrency <= 0 {
 		concurrency = parent.Concurrency
 	}
-	// 未指定优先级（<=0）时继承母提供商。前端只传名称创建时，Priority 的零值表示省略。
-	// 较小的调度优先级数值优先，SetPriority 会写入传入值并覆盖数据库默认值 50，因此使用母提供商的优先级。
-	// 代理始终继承母提供商，省略的分组和并发参数也沿用母提供商的值。
 	priority := opts.Priority
 	if priority <= 0 {
 		priority = parent.Priority
@@ -118,8 +158,10 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 		Schedulable:      true,
 	}
 
-	// 5. 持久化并填充 shadow.ID。预查后若有并发请求抢先创建，唯一索引会拒绝本次写入。
-	// 复查确认影子已经存在时返回结构化 409。
+	// Creation assigns the ID needed for binding, and the unique index can reject
+	// a competing Spark shadow after the precheck. A successful reread finding a
+	// shadow reports conflict for any creation error. If rereading fails or finds
+	// no shadow, retain the creation error because the duplicate is unconfirmed.
 	if err := s.providerRepo.Create(ctx, shadow); err != nil {
 		if existing, qerr := s.providerRepo.ListShadowsByParent(ctx, parentID); qerr == nil && len(existing) > 0 {
 			return nil, apperror.New(apperror.CategoryConflict, "SPARK_SHADOW_ALREADY_EXISTS",
@@ -128,8 +170,12 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 		return nil, fmt.Errorf("create spark shadow: %w", err)
 	}
 
-	// 6. 绑定分组。创建和绑定分两次提交，绑定失败时尝试删除刚创建的影子，释放唯一索引后可重试。
-	// 补偿删除使用独立取消上下文，请求取消或超时后仍会执行；进程崩溃时仍可能留下未完成的记录。
+	// Bind after creation has assigned the shadow ID. If binding fails, attempt
+	// deletion to release the parent's shadow slot, retaining application context
+	// values while removing cancellation and the deadline. Log failed cleanup and
+	// return the binding error so the caller receives the operation that rejected
+	// membership. An outer transaction, when present, owns completion of
+	// participating writes.
 	if len(groupIDs) > 0 {
 		if err := s.providerRepo.BindGroups(ctx, shadow.ID, groupIDs); err != nil {
 			if delErr := s.providerRepo.Delete(context.WithoutCancel(ctx), shadow.ID); delErr != nil {
@@ -144,21 +190,34 @@ func (s *Admin) CreateShadow(ctx context.Context, parentID int64, opts ShadowOpt
 	return shadow, nil
 }
 
-// propagateProxyToShadows syncs proxyID to all spark shadow providers of parentID.
-// It is called synchronously so that proxy changes are immediately consistent;
-// providerRepo.Update triggers the scheduler outbox + cache propagation internally.
-// Calling this for a non-parent provider is a harmless no-op.
+// propagateProxyToShadows sends the parent's proxy selection through the shared
+// shadow update path. That path writes synchronously and stops on the first
+// error; the supplied repository determines whether earlier writes have
+// committed or await an outer transaction's completion.
 func (s *Admin) propagateProxyToShadows(ctx context.Context, parentID int64, proxyID *int64) error {
 	return PropagateProviderProxyToShadows(ctx, s.providerRepo, parentID, proxyID)
 }
 
-// PropagateProviderProxyToShadows 将母提供商的代理同步到其 Spark 影子。
-// 管理编辑和 CRS 同步都调用此入口，影子的出站代理随母提供商更新。
+// PropagateProviderProxyToShadows applies proxyID to each shadow returned for
+// parentID. The caller supplies the proxy selection and handles any parent
+// update separately; parentID selects the children read here. Nil clears each
+// selected proxy. ConfigProxyID asks WriteConfiguration to update that field,
+// while stores exposing only Update receive the changed whole record.
+//
+// Updates run sequentially and stop on the first failure, reporting that
+// shadow's ID. Earlier successful writes receive no compensation here; their
+// durability depends on the repository and its transaction owner. Each returned
+// record receives the proxy pointer before writing, so errors can leave those
+// reader-supplied records changed. A provider with no returned shadows causes
+// no writes.
 func PropagateProviderProxyToShadows(ctx context.Context, repo ShadowProxyStore, parentID int64, proxyID *int64) error {
 	shadows, err := repo.ListShadowsByParent(ctx, parentID)
 	if err != nil {
 		return fmt.Errorf("list spark shadows for proxy propagation: %w", err)
 	}
+	// WriteConfiguration takes the selected proxy value from each shadow record,
+	// including when a compatibility store consumes the complete record through
+	// Update. Set that value before dispatching the write.
 	for _, shadow := range shadows {
 		shadow.ProxyID = proxyID
 		if err := WriteConfiguration(ctx, repo, shadow, ConfigurationChange{Fields: ConfigProxyID}); err != nil {
@@ -168,11 +227,23 @@ func PropagateProviderProxyToShadows(ctx context.Context, repo ShadowProxyStore,
 	return nil
 }
 
+// RevertProviderProxyFallback restores the parent's stored proxy selection
+// and propagates the proxy returned by the following parent read to its
+// shadows. Callers provide a repository whose restoration and reads observe
+// the same transaction state.
+//
+// Restoration and shadow updates use separate storage operations. A parent
+// lookup failure can be returned after restoration succeeds, and propagation
+// can fail after earlier shadow updates succeed. This function supplies no
+// compensation for those writes. Callers account for storage's transaction
+// completion rules and that partial progress before retrying.
 func (s *Admin) RevertProviderProxyFallback(ctx context.Context, id int64) error {
 	if err := s.providerRepo.RevertProxyFallback(ctx, id); err != nil {
 		return err
 	}
-	// 加载回退后的提供商以获取实际 ProxyID，再传播到影子提供商
+	// Storage chooses the restored proxy from its saved fallback origin. Reread
+	// after restoration to obtain that choice; when both operations share an
+	// outer transaction, this read can observe the result before commit.
 	provider, err := s.providerRepo.GetByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get provider after proxy revert: %w", err)
@@ -180,6 +251,9 @@ func (s *Admin) RevertProviderProxyFallback(ctx context.Context, id int64) error
 	return s.propagateProxyToShadows(ctx, id, provider.ProxyID)
 }
 
+// ValidateGroupIDs delegates a nonempty selection to the configured group
+// reader. Empty selections succeed immediately, while a nonempty selection with
+// no group reader returns a configuration error.
 func (s *Admin) ValidateGroupIDs(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
@@ -190,6 +264,9 @@ func (s *Admin) ValidateGroupIDs(ctx context.Context, ids []int64) error {
 	return s.options.Groups.ValidateGroups(ctx, ids)
 }
 
+// IsAllowedSparkShadowCredentialsUpdate reports whether every submitted key
+// names an allowed shadow model mapping. Nil and empty maps pass; each value
+// can have any type or be nil because the result depends on key membership.
 func IsAllowedSparkShadowCredentialsUpdate(credentials map[string]any) bool {
 	if credentials == nil {
 		return true
@@ -202,6 +279,9 @@ func IsAllowedSparkShadowCredentialsUpdate(credentials map[string]any) bool {
 	return true
 }
 
+// SanitizeSparkShadowCredentials returns a new top-level map of allowed entries
+// with nonnil interface values, including typed nils. Nil or empty input yields
+// an empty map; retained nested values remain shared with the caller's input.
 func SanitizeSparkShadowCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return map[string]any{}
@@ -215,12 +295,17 @@ func SanitizeSparkShadowCredentials(credentials map[string]any) map[string]any {
 	return out
 }
 
-// ParentHealthyForShadow 判断 Spark 影子共用的母提供商凭据是否可用于调度。
-// 非影子直接返回 true；lookup 从调度快照或存储取得母提供商。
-// 母提供商必须是 OpenAI OAuth、状态为 active、令牌未过期，且不处于 TempUnschedulableUntil 冷却期。
-// 该冷却可能来自认证失败、刷新耗尽或传输故障，会影响共用凭据的影子。
-// 母提供商的全局 RateLimitResetAt、OverloadUntil 和手动 Schedulable 开关不参与此判断，
-// Spark 用量窗口独立维护。母提供商缺失、类型不符或凭据不可用时，影子不能进入候选池。
+// ParentHealthyForShadow reports whether a shadow's parent passes the shared
+// credential-health checks. Nil and ordinary records pass immediately; shadows
+// require a callable lookup returning an OpenAI OAuth parent whose check
+// succeeds.
+//
+// That check requires active status, an unexpired ExpiresAt when
+// AutoPauseOnExpired is enabled, and an elapsed temporary cooldown. The
+// parent's manual scheduling switch, global rate-limit reset, and overload
+// window are omitted here because Spark uses its own scheduling and quota
+// state. Callers evaluate the shadow's eligibility separately after this parent
+// check.
 func ParentHealthyForShadow(provider *Record, lookup func(int64) *Record) bool {
 	if provider == nil || !provider.IsShadow() {
 		return true

@@ -9,7 +9,16 @@ import (
 	providerhttp "github.com/TokenFlux/TokenRouter/internal/provider/httpapi"
 )
 
-// providerAuthorizationHTTPProviders 汇总各平台授权 HTTP 构造函数。
+// provider_authorization_wire.go registers administrator authorization and
+// identity attribute handler constructors with Wire. Gemini and Antigravity
+// OAuth handlers consume authorization interfaces resolved by the provider
+// bindings. This HTTP set also supplies Claude and Qoder authorization handlers
+// and Codex invite reset for administrator route mounting, alongside the
+// identity user-attribute handler.
+
+// providerAuthorizationHTTPProviders supplies platform authorization, Codex
+// invite-reset, and identity attribute HTTP constructors used by administrator
+// routes.
 var providerAuthorizationHTTPProviders = wire.NewSet(
 	provideClaudeAuthorizationHTTP,
 	provideQoderAuthorizationHTTP,

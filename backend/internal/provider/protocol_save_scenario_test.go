@@ -1,7 +1,5 @@
 package provider_test
 
-// 本文件检查 create.go 与 admin_edit.go 的协议创建、更新和批量校验。
-
 import (
 	"context"
 	"net/http"
@@ -15,11 +13,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// cnProviderProtocolCases 明确列出对外承诺的组合，不从待测校验函数推导期望值。
+// CN legacy input becomes a unified native selection during saving. These
+// scenarios exercise creation, ordinary editing, credential replacement, and
+// bulk validation through the administrative service, with stored fields and
+// recorded bulk updates checked for the supplied platform combinations. The
+// save paths exercise create_record.go, admin_edit.go, protocol_legacy.go, and
+// protocols.go together.
+
+// cnProviderProtocolCases lists explicit platform/mode/legacy-variant combinations
+// for save scenarios, independently of the validator's own capability lookup.
 var cnProviderProtocolCases = []struct {
-	platform  string
-	mode      string
-	protocols []string
+	platform  string   // CN provider platform under test
+	mode      string   // configured provider billing mode
+	protocols []string // accepted legacy routing variants
 }{
 	{capability.PlatformDeepseek, provider.ProviderModePayG, []string{provider.APIProtocolAdaptive, provider.APIProtocolChatCompletions, provider.APIProtocolAnthropic, provider.APIProtocolResponses}},
 	{capability.PlatformKimi, provider.ProviderModePayG, []string{provider.APIProtocolAdaptive, provider.APIProtocolChatCompletions, provider.APIProtocolAnthropic, provider.APIProtocolResponses}},
@@ -28,7 +34,10 @@ var cnProviderProtocolCases = []struct {
 	{capability.PlatformZhipu, provider.ProviderModeCoding, []string{provider.APIProtocolAdaptive, provider.APIProtocolChatCompletions, provider.APIProtocolAnthropic}},
 }
 
-// TestCNProviderProviderProtocolPersistence 覆盖创建、编辑及批量凭据更新入口。
+// TestCNProviderProviderProtocolPersistence runs supported legacy variants through
+// creation, editing, and bulk credential updates. It checks stored canonical
+// protocols, fixed endpoint migration, ordinary-field retention, and the recorded
+// bulk protocol patch for each supplied platform/mode combination.
 func TestCNProviderProviderProtocolPersistence(t *testing.T) {
 	t.Parallel()
 	for _, tc := range cnProviderProtocolCases {
@@ -66,13 +75,15 @@ func TestCNProviderProviderProtocolPersistence(t *testing.T) {
 				require.Equal(t, wantProtocols, created.UpstreamProtocols())
 				require.Equal(t, wantCredentials, repo.providers[created.ID].Credentials)
 
-				// 普通字段编辑也会重新校验提供商，必须允许已有自适应提供商正常保存。
+				// Editing an ordinary field revalidates the existing protocol selection and
+				// keeps its endpoint slots available for the subsequent credential updates.
 				updated, err := svc.UpdateProvider(ctx, created.ID, &provider.UpdateProviderInput{Name: "已编辑"})
 				require.NoError(t, err)
 				require.Equal(t, "已编辑", repo.providers[created.ID].Name)
 				require.Equal(t, wantCredentials, updated.Credentials)
 
-				// 从传统 Chat 提供商切换到目标协议，覆盖编辑与批量更新的凭据合并。
+				// Switch to a legacy Chat record before applying new credentials so edit and
+				// bulk-update normalization derive selections from incoming protocol fields.
 				repo.providers[created.ID].Credentials = cnProviderTestCredentials(tc.platform, tc.mode, provider.APIProtocolChatCompletions)
 				updated, err = svc.UpdateProvider(ctx, created.ID, &provider.UpdateProviderInput{Credentials: credentials})
 				require.NoError(t, err)
@@ -90,7 +101,9 @@ func TestCNProviderProviderProtocolPersistence(t *testing.T) {
 	}
 }
 
-// TestCNProviderLegacyCredentialDefaults 保留历史读取默认值，普通编辑不补写缺失字段。
+// TestCNProviderLegacyCredentialDefaults compares editing a record with omitted
+// legacy fields against creating a new record. It checks payg/Chat defaults while
+// ordinary edits keep legacy keys absent and creation stores the provider mode.
 func TestCNProviderLegacyCredentialDefaults(t *testing.T) {
 	t.Parallel()
 	for _, platform := range []string{capability.PlatformDeepseek, capability.PlatformKimi, capability.PlatformZhipu} {
@@ -117,6 +130,10 @@ func TestCNProviderLegacyCredentialDefaults(t *testing.T) {
 	}
 }
 
+// TestProtocolSaveEntrypointsAndBulkRejectBeforeWrite creates and edits a unified
+// Kimi selection, then rotates credentials and attempts a cross-platform bulk
+// Responses patch. It checks the three-protocol count and endpoint retention,
+// followed by a 400 error code before any bulk update is recorded.
 func TestProtocolSaveEntrypointsAndBulkRejectBeforeWrite(t *testing.T) {
 	repo := &providerServiceTestRepo{providers: map[int64]*provider.Record{}}
 	svc := newProviderEditorForTest(repo)

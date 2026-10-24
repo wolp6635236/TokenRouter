@@ -10,11 +10,29 @@ import (
 	ip "github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
-// SessionBindingContext 全局中间件：将请求的客户端 IP 与 User-Agent 注入
-// request context，供 token 签发路径（登录 / 刷新 / OAuth 回调）读取并写入会话绑定，
-// 同时作为审计日志、会话绑定校验的统一客户端 IP 来源。
-// IP 取值与 API Key IP 限制共用转发 IP 开关：开启时旧版原始转发头逻辑
-// 接管解析，关闭时使用 Gin 的 server.trusted_proxies 可信代理链。
+// session_binding.go attaches request binding observations and enforces
+// access-token binding at HTTP authentication.
+// Access-token binding depends on the client address and User-Agent used
+// during issuance. Request middleware resolves the security address once and
+// normalizes the header before adding a SessionBinding, so later issuance,
+// verification, and audit records can read the same request values.
+//
+// Forwarded-address settings come from the gateway IP-restriction
+// configuration. Readers use the injected binding when present and the
+// trusted-proxy address otherwise. Binding enforcement accepts tokens with no
+// stored digest or no current digest, and rejects differing nonempty digests
+// after attempting refresh-family revocation. Revocation failure does not turn
+// that rejected request into an authenticated one.
+
+// SessionBindingContext resolves client-address settings and injects
+// normalized binding data before downstream handlers run. Supply a nonnil
+// settings callback; it is evaluated for each request.
+//
+// The normalized User-Agent replaces the request header as well as entering
+// the binding value, so issuance and audit consumers see the same bounded
+// text. Security IP resolution uses configured forwarding headers when enabled
+// and the trusted-proxy path otherwise. The request context carries these
+// values through authentication and token generation.
 func SessionBindingContext(settings func() ForwardedIPSettings) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		forwardedIPSettings := settings()
@@ -30,34 +48,44 @@ func SessionBindingContext(settings func() ForwardedIPSettings) gin.HandlerFunc 
 	}
 }
 
-// RequestSessionBinding 返回当前请求的会话指纹，优先取 SessionBindingContext
-// 注入的解析结果（保证与 token 签发路径取值一致）；注入缺失时使用安全回退。
+// RequestSessionBinding returns the binding injected into this request when
+// available. Otherwise it constructs a binding from the trusted-proxy address
+// and normalized User-Agent; callers receive the injected pointer directly.
 func RequestSessionBinding(c *gin.Context) *identity.SessionBinding {
 	if binding := identity.SessionBindingFromContext(c.Request.Context()); binding != nil {
 		return binding
 	}
+	// Direct handler calls have no captured forwarding policy. Use Gin's trusted
+	// proxy resolution so an unconfigured raw forwarding header cannot supply
+	// this binding's address.
 	return &identity.SessionBinding{
 		IP:        ip.GetTrustedClientIP(c),
 		UserAgent: normalizePersistentText(c.Request.UserAgent(), authctx.MaxPersistentUserAgentBytes),
 	}
 }
 
-// SecurityClientIP 返回当前请求用于安全敏感记录（审计日志等）的客户端 IP。
-// 与会话绑定、API Key IP 限制共用同一套客户端 IP 来源。
+// SecurityClientIP returns the address used by authentication and security
+// records. It uses a nonblank injected binding address, then the trusted-proxy
+// resolver when the binding is absent or its address is blank.
 func SecurityClientIP(c *gin.Context) string {
 	if binding := identity.SessionBindingFromContext(c.Request.Context()); binding != nil &&
 		strings.TrimSpace(binding.IP) != "" {
 		return binding.IP
 	}
+	// An absent or blank captured address cannot identify the request for security
+	// records, so Gin's configured proxy resolution supplies the usable address.
 	return ip.GetTrustedClientIP(c)
 }
 
-// EnforceSessionBinding 校验 access token 的会话指纹（IP/UA 绑定）。
-// 指纹不匹配时：撤销该会话家族的所有 refresh token、写入审计安全事件、返回 401。
-// 返回 false 表示请求已被中断。
+// EnforceSessionBinding reports whether an access token passes the enabled
+// request-binding check. Disabled settings, missing claims or stored hashes,
+// and an empty current hash pass; a mismatch writes a 401 response and returns
+// false.
 //
-// 兼容性：claims.BindingHash 为空（功能上线前签发的旧 token）时放行，
-// 该会话在下一次 refresh 轮转时会自动获得绑定。
+// On mismatch it attempts family revocation and optionally records the user
+// and request details for audit. The caller stops processing when false is
+// returned. Family-revocation errors are discarded, so the current request
+// remains denied even when session cleanup fails.
 func EnforceSessionBinding(
 	c *gin.Context,
 	authService SessionAuth,
@@ -77,12 +105,16 @@ func EnforceSessionBinding(
 		return true
 	}
 
+	// Deny this request independently of refresh-family cleanup; an unavailable
+	// revocation path leaves the mismatched access token rejected here.
 	if authService != nil {
 		_ = authService.RevokeSessionFamily(c.Request.Context(), claims.SessionID)
 	}
 	if auditService != nil {
 		uid := claims.UserID
 		path := c.FullPath()
+		// Unmatched routes have no registered pattern, so retain the actual URL path
+		// to keep the binding-mismatch audit attributable to this request.
 		if path == "" {
 			path = c.Request.URL.Path
 		}

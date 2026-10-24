@@ -11,16 +11,33 @@ import (
 	postgresinfra "github.com/TokenFlux/TokenRouter/internal/infra/postgres"
 )
 
+// user_group_rate_repo.go reads and updates per-user group rates and RPM
+// overrides.
+// User billing rates and RPM limits occupy separate nullable columns in the
+// same user/group row. Clearing one column needs to retain the other, while a
+// row with both columns NULL can be removed. User reads omit NULL rates; group
+// reads join non-deleted users for administrator display.
+//
+// Replacement operations first clear omitted values, remove empty rows and
+// then upsert supplied values. These writes use the bound SQL database through
+// separate statements, so an error can leave earlier steps persisted. Paired
+// arrays passed to unnest keep identifiers and values aligned during each bulk
+// insert.
+
+// GroupRateStore reads and mutates user/group multiplier and RPM override
+// rows.
 type GroupRateStore struct {
-	sql sqlExecutor
+	sql sqlExecutor // bound database SQL operations
 }
 
-// NewUserGroupRateRepository 创建用户专属分组倍率/RPM 仓储。
+// NewUserGroupRateRepository binds the supplied SQL database for group
+// override operations. The caller owns its lifetime; mutations issue separate
+// statements through this database and do not create a transaction themselves.
 func NewUserGroupRateRepository(sqlDB *sql.DB) *GroupRateStore {
 	return &GroupRateStore{sql: sqlDB}
 }
 
-// GetByUserID 获取用户所有专属分组 rate_multiplier（仅返回非 NULL 的条目）。
+// GetByUserID returns this user's non-NULL billing rates indexed by group ID.
 func (r *GroupRateStore) GetByUserID(ctx context.Context, userID int64) (map[int64]float64, error) {
 	query := `SELECT group_id, rate_multiplier FROM user_group_rate_multipliers WHERE user_id = $1 AND rate_multiplier IS NOT NULL`
 	rows, err := r.sql.QueryContext(ctx, query, userID)
@@ -44,7 +61,9 @@ func (r *GroupRateStore) GetByUserID(ctx context.Context, userID int64) (map[int
 	return result, nil
 }
 
-// GetByUserIDs 批量获取多个用户的专属分组 rate_multiplier（仅返回非 NULL 的条目）。
+// GetByUserIDs returns non-NULL billing rates for each distinct positive user
+// ID. Invalid IDs are ignored, valid IDs without rates receive allocated empty
+// maps, and query or row-decoding errors return an error.
 func (r *GroupRateStore) GetByUserIDs(ctx context.Context, userIDs []int64) (map[int64]map[int64]float64, error) {
 	result := make(map[int64]map[int64]float64, len(userIDs))
 	if len(userIDs) == 0 {
@@ -96,7 +115,8 @@ func (r *GroupRateStore) GetByUserIDs(ctx context.Context, userIDs []int64) (map
 	return result, nil
 }
 
-// GetByGroupID 获取指定分组下所有用户的专属配置（rate 与 rpm_override 任一非 NULL 即返回）。
+// GetByGroupID returns both overrides with non-deleted user display data
+// ordered by user ID.
 func (r *GroupRateStore) GetByGroupID(ctx context.Context, groupID int64) ([]billing.UserGroupRateEntry, error) {
 	query := `
 		SELECT ugr.user_id, u.username, u.email, COALESCE(u.notes, ''), u.status, ugr.rate_multiplier, ugr.rpm_override
@@ -135,11 +155,15 @@ func (r *GroupRateStore) GetByGroupID(ctx context.Context, groupID int64) ([]bil
 	return result, nil
 }
 
-// GetByUserAndGroup 获取用户在特定分组的专属 rate_multiplier（NULL 返回 nil）。
+// GetByUserAndGroup returns the stored billing multiplier for the user/group
+// pair. A missing row or SQL NULL returns nil with no error; callers select
+// the group default for that absence.
 func (r *GroupRateStore) GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error) {
 	query := `SELECT rate_multiplier FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`
 	var rate sql.NullFloat64
 	err := postgresinfra.ScanSingleRow(ctx, r.sql, query, []any{userID, groupID}, &rate)
+	// A missing user/group row represents an unset override, so return nil and
+	// let the consumer select its effective default.
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -153,11 +177,16 @@ func (r *GroupRateStore) GetByUserAndGroup(ctx context.Context, userID, groupID 
 	return &v, nil
 }
 
-// GetRPMOverrideByUserAndGroup 获取用户在特定分组的 rpm_override（NULL 返回 nil）。
+// GetRPMOverrideByUserAndGroup returns the stored RPM override for this
+// user/group pair. Missing rows and SQL NULL return nil; a stored zero returns
+// a pointer so scheduler admission can distinguish disabled group limiting
+// from inheritance.
 func (r *GroupRateStore) GetRPMOverrideByUserAndGroup(ctx context.Context, userID, groupID int64) (*int, error) {
 	query := `SELECT rpm_override FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`
 	var rpm sql.NullInt32
 	err := postgresinfra.ScanSingleRow(ctx, r.sql, query, []any{userID, groupID}, &rpm)
+	// A missing user/group row represents an unset override, so return nil and
+	// let the consumer select its effective default.
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -171,11 +200,19 @@ func (r *GroupRateStore) GetRPMOverrideByUserAndGroup(ctx context.Context, userI
 	return &v, nil
 }
 
-// SyncUserGroupRates 同步用户的分组专属 rate_multiplier。
-//   - 传入空 map：清空该用户所有行的 rate_multiplier；若 rpm_override 也为 NULL 则整行删除。
-//   - 值为 nil：清空对应行的 rate_multiplier（保留 rpm_override）。
-//   - 值非 nil：upsert rate_multiplier（保留已有 rpm_override）。
+// SyncUserGroupRates updates the supplied user rates while retaining RPM
+// values. An empty map clears all rates; a nonempty map clears nil entries,
+// upserts supplied amounts and leaves omitted groups unchanged. Rows with both
+// values unset are removed after clearing.
+//
+// The clear, cleanup and upsert statements run separately on the bound
+// database. Errors stop later statements, so earlier successful statements can
+// remain persisted. Group IDs and rate arrays are assembled together for SQL
+// unnest to keep each amount paired with its group.
 func (r *GroupRateStore) SyncUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
+	// Clearing every rate precedes empty-row cleanup; retaining RPM values keeps
+	// admission overrides readable after the user's billing defaults are
+	// restored.
 	if len(rates) == 0 {
 		if _, err := r.sql.ExecContext(ctx, `
 			UPDATE user_group_rate_multipliers
@@ -202,6 +239,8 @@ func (r *GroupRateStore) SyncUserGroupRates(ctx context.Context, userID int64, r
 		}
 	}
 
+	// Clear named nil rates and then remove rows with no remaining RPM override;
+	// omitted groups retain their stored values throughout this update.
 	if len(clearGroupIDs) > 0 {
 		if _, err := r.sql.ExecContext(ctx, `
 			UPDATE user_group_rate_multipliers
@@ -217,6 +256,8 @@ func (r *GroupRateStore) SyncUserGroupRates(ctx context.Context, userID int64, r
 		}
 	}
 
+	// Upsert the paired group IDs and amounts after clearing; conflict updates
+	// touch the rate column and timestamp while retaining existing RPM values.
 	if len(upsertGroupIDs) > 0 {
 		now := time.Now()
 		_, err := r.sql.ExecContext(ctx, `
@@ -241,17 +282,23 @@ func (r *GroupRateStore) SyncUserGroupRates(ctx context.Context, userID int64, r
 	return nil
 }
 
-// SyncGroupRateMultipliers 同步分组的 rate_multiplier 部分（不触动 rpm_override）。
-// 语义：
-//   - 未出现在 entries 中的用户行：rate_multiplier 归 NULL；若 rpm_override 也为 NULL 则整行删除。
-//   - 出现的用户行：upsert rate_multiplier。
+// SyncGroupRateMultipliers replaces the group's user billing rates while
+// retaining RPM values. Omitted users have their rates cleared, empty override
+// rows are removed, and supplied user amounts are upserted with one timestamp.
+// An empty entry list therefore clears every rate.
+//
+// These statements use the bound database separately. A later failure can
+// leave earlier clearing or cleanup persisted, and callers cannot infer an
+// all-or-nothing replacement from the error. Parallel SQL arrays retain the
+// supplied user and rate pairing.
 func (r *GroupRateStore) SyncGroupRateMultipliers(ctx context.Context, groupID int64, entries []billing.GroupRateMultiplierInput) error {
 	keepUserIDs := make([]int64, 0, len(entries))
 	for _, e := range entries {
 		keepUserIDs = append(keepUserIDs, e.UserID)
 	}
 
-	// 未在 entries 列表中的行：清空 rate_multiplier。
+	// Clear omitted user rates before cleanup and upsert; rows with configured
+	// RPM values remain available to scheduler admission.
 	if len(keepUserIDs) == 0 {
 		if _, err := r.sql.ExecContext(ctx, `
 			UPDATE user_group_rate_multipliers
@@ -270,7 +317,8 @@ func (r *GroupRateStore) SyncGroupRateMultipliers(ctx context.Context, groupID i
 		}
 	}
 
-	// 清空后若整行 NULL 则删除。
+	// After clearing, remove rows with neither override set; a row carrying the
+	// other setting remains to serve that consumer.
 	if _, err := r.sql.ExecContext(ctx, `
 		DELETE FROM user_group_rate_multipliers
 		WHERE group_id = $1 AND rate_multiplier IS NULL AND rpm_override IS NULL
@@ -299,10 +347,15 @@ func (r *GroupRateStore) SyncGroupRateMultipliers(ctx context.Context, groupID i
 	return err
 }
 
-// SyncGroupRPMOverrides 同步分组的 rpm_override 部分（不触动 rate_multiplier）。
-// 语义：
-//   - 未出现的用户行：rpm_override 归 NULL；若 rate_multiplier 也为 NULL 则整行删除。
-//   - 出现的用户行：若 RPMOverride 为 nil 则清空；非 nil 则 upsert。
+// SyncGroupRPMOverrides replaces the group's user RPM values while retaining
+// billing rates. Omitted users and supplied nil values are cleared, empty rows
+// are removed, and remaining supplied values are upserted. Present zero values
+// remain stored overrides.
+//
+// The statements execute separately on the bound database, so a failure can
+// retain earlier successful changes. RPM values are converted to int32 for SQL
+// integer arrays; callers must keep values representable in that type, since
+// this method does not check the upper bound.
 func (r *GroupRateStore) SyncGroupRPMOverrides(ctx context.Context, groupID int64, entries []billing.GroupRPMOverrideInput) error {
 	keepUserIDs := make([]int64, 0, len(entries))
 	var clearUserIDs []int64
@@ -314,11 +367,14 @@ func (r *GroupRateStore) SyncGroupRPMOverrides(ctx context.Context, groupID int6
 			clearUserIDs = append(clearUserIDs, e.UserID)
 		} else {
 			upsertUserIDs = append(upsertUserIDs, e.UserID)
+			// SQL stores RPM as an integer; this narrowing requires representable
+			// caller values, since larger Go ints can wrap during conversion.
 			upsertValues = append(upsertValues, int32(*e.RPMOverride))
 		}
 	}
 
-	// 未在 entries 列表中的行：清空 rpm_override。
+	// Clear omitted users' RPM values before processing supplied nil values,
+	// leaving billing multipliers available throughout the replacement sequence.
 	if len(keepUserIDs) == 0 {
 		if _, err := r.sql.ExecContext(ctx, `
 			UPDATE user_group_rate_multipliers
@@ -337,7 +393,8 @@ func (r *GroupRateStore) SyncGroupRPMOverrides(ctx context.Context, groupID int6
 		}
 	}
 
-	// 显式 clear 的行。
+	// Supplied nil values request clearing even though those users are in the
+	// keep list; their billing rates retain independent meaning.
 	if len(clearUserIDs) > 0 {
 		if _, err := r.sql.ExecContext(ctx, `
 			UPDATE user_group_rate_multipliers
@@ -348,7 +405,8 @@ func (r *GroupRateStore) SyncGroupRPMOverrides(ctx context.Context, groupID int6
 		}
 	}
 
-	// 清空后若整行 NULL 则删除。
+	// After clearing, remove rows with neither override set; a row carrying the
+	// other setting remains to serve that consumer.
 	if _, err := r.sql.ExecContext(ctx, `
 		DELETE FROM user_group_rate_multipliers
 		WHERE group_id = $1 AND rate_multiplier IS NULL AND rpm_override IS NULL
@@ -356,6 +414,8 @@ func (r *GroupRateStore) SyncGroupRPMOverrides(ctx context.Context, groupID int6
 		return err
 	}
 
+	// Upsert the remaining user/RPM pairs after clearing and cleanup; conflict
+	// updates retain existing billing rates and refresh the stored timestamp.
 	if len(upsertUserIDs) > 0 {
 		now := time.Now()
 		_, err := r.sql.ExecContext(ctx, `
@@ -373,8 +433,17 @@ func (r *GroupRateStore) SyncGroupRPMOverrides(ctx context.Context, groupID int6
 	return nil
 }
 
-// ClearGroupRPMOverrides 清空指定分组所有行的 rpm_override。
+// ClearGroupRPMOverrides clears the group RPM column and removes rows whose
+// rate is also NULL. Existing non-NULL billing rates retain their rows and
+// values, while later reads treat a cleared RPM as an inherited group setting.
+//
+// Clearing and cleanup are separate statements on the bound database. Cleanup
+// failure returns an error after the first statement may already have
+// persisted, so callers should reread state when they need the result of a
+// failed operation.
 func (r *GroupRateStore) ClearGroupRPMOverrides(ctx context.Context, groupID int64) error {
+	// Clear RPM first so inherited group limits become readable; the following
+	// cleanup deletes only rows that also lack a billing multiplier.
 	if _, err := r.sql.ExecContext(ctx, `
 		UPDATE user_group_rate_multipliers
 		SET rpm_override = NULL, updated_at = NOW()
@@ -389,13 +458,13 @@ func (r *GroupRateStore) ClearGroupRPMOverrides(ctx context.Context, groupID int
 	return err
 }
 
-// DeleteByGroupID 删除指定分组的所有用户专属条目。
+// DeleteByGroupID deletes every billing and RPM override row for the group.
 func (r *GroupRateStore) DeleteByGroupID(ctx context.Context, groupID int64) error {
 	_, err := r.sql.ExecContext(ctx, `DELETE FROM user_group_rate_multipliers WHERE group_id = $1`, groupID)
 	return err
 }
 
-// DeleteByUserID 删除指定用户的所有专属条目。
+// DeleteByUserID deletes every billing and RPM override row for the user.
 func (r *GroupRateStore) DeleteByUserID(ctx context.Context, userID int64) error {
 	_, err := r.sql.ExecContext(ctx, `DELETE FROM user_group_rate_multipliers WHERE user_id = $1`, userID)
 	return err

@@ -12,24 +12,43 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// Redis key 使用 providerID 作为 hash tag，同一提供商的键落在同一个 Redis Cluster slot。
-// 格式: umq:{providerID}:lock / umq:{providerID}:last。
-const (
-	umqKeyPrefix  = "umq:"
-	umqLockSuffix = ":lock" // STRING (requestID), PX lockTtlMs
-	umqLastSuffix = ":last" // STRING (毫秒时间戳), EX 60s
+// user_msg_queue_cache.go stores provider serialization locks, completion
+// times, and cleanup indexes in Redis.
+// Provider message serialization uses an owner-valued lock and a recent
+// completion timestamp under the same provider hash tag. The lock script
+// admits a free key or renews the same request, and release writes Redis's
+// completion time when the stored owner matches the releasing request.
+//
+// A separate sorted-set index lets cleanup find due locks without scanning
+// every lock key. Index writes happen after lock scripts, so a release can
+// remove a successor's index entry and index errors can leave a lock
+// undiscoverable. Later contention records the observed expiry to repair that
+// discovery state. Reconciliation rechecks PTTL, deletes persistent locks and
+// reschedules live locks whose index score is stale.
 
-	// 锁索引用来替代后台清理对 umq:*:lock 的全量 SCAN。
-	// member 是 providerID，score 是锁预计过期的 Redis Unix 毫秒时间戳。
-	umqLockIndexKey              = "umq:lock:index" // ZSET：member 为提供商 ID，score 为锁预计过期的 Unix 毫秒
-	umqLockIndexCleanupBatchSize = 1000
+// Message queue keys place each provider's lock and completion value in one
+// hash slot; the global index records expiry candidates for bounded
+// maintenance.
+const (
+	umqKeyPrefix  = "umq:"  // provider serialization key namespace
+	umqLockSuffix = ":lock" // request owner string suffix
+	umqLastSuffix = ":last" // completion millisecond string suffix
+
+	// umqLockIndexKey stores provider IDs scored by observed Redis expiry
+	// milliseconds; cleanup rechecks the lock because index updates are separate
+	// from ownership writes.
+	umqLockIndexKey              = "umq:lock:index" // provider expiry candidate sorted set
+	umqLockIndexCleanupBatchSize = 1000             // default reconciliation candidate count
 )
 
+// Serialization scripts resolve lock ownership and completion writes within
+// Redis; reconciliation repairs expiry anomalies before Go updates the
+// separate discovery index.
 var (
-	// acquireLockScript 原子获取串行锁，支持同一请求重入。
-	// 返回是否取得锁及 Redis 观测的到期毫秒数，获取失败时也返回到期时间，供 Go 侧回填索引。
-	// 升级遗留、索引写失败或释放竞态造成的索引缺项，在下一次争锁时补回。
-	// PTTL 为 -1 的锁返回当前时间，立即进入清理候选。
+	// acquireLockScript acquires a free lock or renews the same request owner
+	// and returns status with observed expiry milliseconds. Busy locks also
+	// return expiry so Go can repair their index entries; persistent locks are
+	// indexed as due immediately.
 	acquireLockScript = redis.NewScript(`
 redis.replicate_commands()
 local cur = redis.call('GET', KEYS[1])
@@ -55,7 +74,9 @@ local ms = tonumber(t[1])*1000 + math.floor(tonumber(t[2])/1000)
 return {1, ms + ttl}
 `)
 
-	// releaseLockScript 原子释放锁，并使用 Redis TIME 记录完成时间。
+	// releaseLockScript deletes a matching owner and stores its Redis completion
+	// milliseconds with a sixty-second lifetime. A different or missing owner
+	// returns zero and leaves the completion value unchanged.
 	releaseLockScript = redis.NewScript(`
 -- 兼容 3.2-4.x：脚本使用 TIME，需启用按效果复制，确保写入能同步到从库。
 -- 5.0 及以上默认按效果复制；保留调用不改变行为。
@@ -71,8 +92,9 @@ end
 return 0
 `)
 
-	// Lua 脚本：校验锁 TTL 状态，PTTL == -1 时原子删除异常锁。
-	// 返回状态: -2=锁不存在，-1=无 TTL 的异常锁已删除，1=锁仍存活并返回剩余 PTTL。
+	// reconcileLockScript rechecks PTTL and deletes a persistent lock within one
+	// Redis call. Missing, persistent and live locks return distinct
+	// status/remaining-TTL pairs for index cleanup.
 	reconcileLockScript = redis.NewScript(`
 local pttl = redis.call('PTTL', KEYS[1])
 if pttl == -2 then
@@ -86,28 +108,42 @@ return {1, pttl}
 `)
 )
 
+// userMsgQueueCache stores provider serialization ownership, completion times
+// and reconciliation candidates.
 type userMsgQueueCache struct {
-	rdb *redis.Client
+	// rdb remains caller-owned while lock holders may release or maintenance may
+	// reconcile index candidates through this shared client.
+	rdb *redis.Client // shared serialization storage client
 }
 
-// NewUserMsgQueueCache 创建用户消息队列缓存。
+// NewUserMsgQueueCache constructs provider serialization storage over the
+// supplied Redis client. The caller retains that client through lock release
+// and background reconciliation of provider expiry candidates.
 func NewUserMsgQueueCache(rdb *redis.Client) scheduler.UserMsgQueueCache {
 	return &userMsgQueueCache{rdb: rdb}
 }
 
+// umqLockKey returns the owner-lock key with the provider's shared hash tag.
 func umqLockKey(providerID int64) string {
-	// 格式为 umq:{123}:lock，花括号中的提供商 ID 是 Redis Cluster hash tag。
 	return umqKeyPrefix + "{" + strconv.FormatInt(providerID, 10) + "}" + umqLockSuffix
 }
 
+// umqLastKey returns the completion-time key using the lock's provider hash
+// tag.
 func umqLastKey(providerID int64) string {
-	// 格式为 umq:{123}:last，与 lockKey 位于同一个 hash slot。
 	return umqKeyPrefix + "{" + strconv.FormatInt(providerID, 10) + "}" + umqLastSuffix
 }
 
-// AcquireLock 尝试获取提供商级串行锁
-// 无论成功与否都尽力写入锁索引：成功时登记自己的锁，失败时回填观测到的持有者锁，
-// 后台 reconcile 根据索引发现被争用的锁。
+// AcquireLock attempts the provider lock or renews it when requestID is
+// already the owner. Callers supply a positive millisecond lifetime and
+// release successful ownership with the same request identity; a nonpositive
+// lifetime can delete a matching owner or make new-lock creation fail.
+//
+// The script returns the observed expiry for both acquired and busy locks.
+// After parsing both values, Go writes an index candidate so cleanup can find
+// an expired or persistent lock even after an earlier index loss. Index write
+// failures are logged and acquisition status still returns successfully; lock
+// mutation can already have happened before a response or parse error.
 func (c *userMsgQueueCache) AcquireLock(ctx context.Context, providerID int64, requestID string, lockTtlMs int) (bool, error) {
 	key := umqLockKey(providerID)
 	result, err := acquireLockScript.Run(ctx, c.rdb, []string{key}, requestID, lockTtlMs).Result()
@@ -122,6 +158,9 @@ func (c *userMsgQueueCache) AcquireLock(ctx context.Context, providerID int64, r
 	if err != nil {
 		return false, fmt.Errorf("umq parse acquire lock expire: %w", err)
 	}
+	// Record the observed lock as a cleanup candidate even on contention; losing
+	// an index write leaves ownership intact and later contenders can repair
+	// discovery.
 	if expireAtMs > 0 {
 		if err := c.rdb.ZAdd(ctx, umqLockIndexKey, redis.Z{
 			Score:  float64(expireAtMs),
@@ -133,8 +172,15 @@ func (c *userMsgQueueCache) AcquireLock(ctx context.Context, providerID int64, r
 	return acquired == 1, nil
 }
 
-// ReleaseLock 释放锁并记录完成时间
-// requestID 匹配时删除锁索引，其他请求写入的新锁继续保留。
+// ReleaseLock releases a matching request owner and records its completion
+// time using Redis's clock. Missing or different owners return false; a
+// successful script writes the recent completion key before Go removes the
+// index candidate.
+//
+// That index removal is a separate command and can race with a successor's
+// acquisition/index write. The successor lock remains held, but its discovery
+// entry can disappear until later contention repairs it. Index removal
+// failures are logged while the successful ownership release returns true.
 func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, providerID int64, requestID string) (bool, error) {
 	lockKey := umqLockKey(providerID)
 	lastKey := umqLastKey(providerID)
@@ -143,8 +189,9 @@ func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, providerID int64, r
 		return false, fmt.Errorf("umq release lock: %w", err)
 	}
 	if result == 1 {
-		// 与下一个 AcquireLock 的 ZAdd 存在竞态：可能误删新持有者刚写入的索引项。
-		// 该锁下次被争用时 AcquireLock 的回填路径会重新登记，无需在此加锁。
+		// Remove this provider's discovery member after ownership release; a
+		// successor may have indexed meanwhile, so later contention also repairs
+		// missing candidates.
 		if err := c.rdb.ZRem(ctx, umqLockIndexKey, strconv.FormatInt(providerID, 10)).Err(); err != nil {
 			logger.LegacyPrintf("repository.umq", "Warning: remove lock index for provider %d failed: %v", providerID, err)
 		}
@@ -152,10 +199,15 @@ func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, providerID int64, r
 	return result == 1, nil
 }
 
-// GetLastCompletedMs 获取上次完成时间（毫秒时间戳）。
+// GetLastCompletedMs reads this provider's completion time as Redis Unix
+// milliseconds. A missing or expired completion key returns zero; malformed
+// stored integers and Redis command errors remain failures.
 func (c *userMsgQueueCache) GetLastCompletedMs(ctx context.Context, providerID int64) (int64, error) {
 	key := umqLastKey(providerID)
 	val, err := c.rdb.Get(ctx, key).Result()
+	// An expired or absent completion key supplies no recent spacing
+	// observation, so scheduler message timing receives zero and can apply its
+	// admission policy.
 	if errors.Is(err, redis.Nil) {
 		return 0, nil
 	}
@@ -169,17 +221,28 @@ func (c *userMsgQueueCache) GetLastCompletedMs(ctx context.Context, providerID i
 	return ms, nil
 }
 
-// GetCurrentTimeMs 返回 Redis TIME 的服务器时间（毫秒），与锁记录共用时间源。
+// GetCurrentTimeMs returns Redis Unix milliseconds for comparison with
+// serialization completion times.
 func (c *userMsgQueueCache) GetCurrentTimeMs(ctx context.Context) (int64, error) {
 	t, err := c.rdb.Time(ctx).Result()
 	if err != nil {
 		return 0, fmt.Errorf("umq get redis time: %w", err)
 	}
+	// Use millisecond resolution to match the completion script's timestamps.
 	return t.UnixMilli(), nil
 }
 
-// ReconcileExpiredLockCandidates 只处理索引里已经到期的候选锁。
-// 候选到期不等于锁一定失效：可能是续租后索引滞后，所以必须再用 PTTL 二次确认。
+// ReconcileExpiredLockCandidates checks at most maxCount due index members
+// and returns the number of persistent locks deleted. Nonpositive counts
+// select the default batch, and an error may follow earlier completed
+// cleanups.
+//
+// Each candidate's current PTTL decides the action: absent locks lose their
+// stale index member, persistent locks are deleted, and live locks receive a
+// revised score. The returned count excludes naturally expired keys and
+// malformed IDs. Index repair failures are logged and processing continues,
+// while lock-script or decoding failures stop the batch with its completed
+// count.
 func (c *userMsgQueueCache) ReconcileExpiredLockCandidates(ctx context.Context, maxCount int) (int, error) {
 	if maxCount <= 0 {
 		maxCount = umqLockIndexCleanupBatchSize
@@ -200,6 +263,9 @@ func (c *userMsgQueueCache) ReconcileExpiredLockCandidates(ctx context.Context, 
 	cleaned := 0
 	for _, member := range members {
 		providerID, err := strconv.ParseInt(member, 10, 64)
+		// Malformed or nonpositive provider identities cannot locate a usable lock
+		// key; remove their discovery entries and continue checking valid
+		// candidates.
 		if err != nil || providerID <= 0 {
 			c.removeLockIndexMember(ctx, member)
 			continue
@@ -220,14 +286,18 @@ func (c *userMsgQueueCache) ReconcileExpiredLockCandidates(ctx context.Context, 
 
 		switch status {
 		case -2:
-			// 锁自然过期或已释放，只需移除索引残留。
+			// Redis reports no current lock, so this due index entry is stale;
+			// removing it does not count a persistent-lock deletion.
 			c.removeLockIndexMember(ctx, member)
 		case -1:
-			// 无 TTL 的锁会永久阻塞队列，Lua 已原子删除它，这里统计一次清理。
+			// The script deleted a lock with no expiry, freeing indefinite
+			// serialization blockage; count that deletion even when later index
+			// removal needs another attempt.
 			c.removeLockIndexMember(ctx, member)
 			cleaned++
 		case 1:
-			// 锁仍存活，说明索引过期时间滞后；按剩余 PTTL 重新排期。
+			// The lock still has a lifetime, so its due score was stale; reschedule
+			// from the sampled Redis time and rechecked remaining PTTL.
 			if err := c.rdb.ZAdd(ctx, umqLockIndexKey, redis.Z{
 				Score:  float64(nowMs + pttl),
 				Member: member,
@@ -239,14 +309,21 @@ func (c *userMsgQueueCache) ReconcileExpiredLockCandidates(ctx context.Context, 
 	return cleaned, nil
 }
 
-// removeLockIndexMember 移除锁索引残留；索引维护是 best-effort，失败只记日志。
+// removeLockIndexMember attempts to remove a stale discovery member and logs
+// Redis failures while the current caller continues. A failure leaves removal
+// unconfirmed; a candidate that remains stored is available to a later pass.
 func (c *userMsgQueueCache) removeLockIndexMember(ctx context.Context, member string) {
+	// Continue reconciliation after an index error because the primary lock
+	// decision is already complete. A lost response can follow successful
+	// removal, so logging reports an unconfirmed index result.
 	if err := c.rdb.ZRem(ctx, umqLockIndexKey, member).Err(); err != nil {
 		logger.LegacyPrintf("repository.umq", "Warning: remove lock index member %s failed: %v", member, err)
 	}
 }
 
-// redisScriptInt64At 兼容 go-redis 对 Lua 数组元素的不同返回类型。
+// redisScriptInt64At decodes one integer-like element from a Lua array
+// response. It accepts int64, int, decimal strings and decimal byte slices;
+// unsupported arrays, missing indexes and conversion failures return errors.
 func redisScriptInt64At(result any, index int) (int64, error) {
 	values, ok := result.([]any)
 	if !ok {

@@ -18,14 +18,25 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
-// TestResolveGrokStreamIdleTimeout 验证 Grok 流空闲超时的选择规则。
+// Responses replay must release the rejected body before another exchange, and
+// output reading can retain useful evidence while reporting a failure. A local
+// HTTP fixture checks two exchanges and cleanup counts, while injected
+// observations check usage, commitment and disconnect transfer on the error
+// path.
+
+// TestResolveGrokStreamIdleTimeout compares a positive setting with zero and
+// negative settings. The positive value must become seconds, while both
+// nonpositive cases must select DefaultStreamIdleTimeout.
 func TestResolveGrokStreamIdleTimeout(t *testing.T) {
 	require.Equal(t, 90*time.Second, ResolveStreamIdleTimeout(90))
 	require.Equal(t, DefaultStreamIdleTimeout, ResolveStreamIdleTimeout(0))
 	require.Equal(t, DefaultStreamIdleTimeout, ResolveStreamIdleTimeout(-1))
 }
 
-// TestGrokResponsesExecuteReplayAndResourceOwnership 验证本地 HTTP 验证原生恢复只重放一次，关闭前一响应后才读取后一响应。
+// TestGrokResponsesExecuteReplayAndResourceOwnership makes a local server reject
+// encrypted history before accepting its cleaned replay. It asserts two
+// exchanges and closes, first-body closure before replay, activity release,
+// request ID and usage, with response ID alone leaving Served false.
 func TestGrokResponsesExecuteReplayAndResourceOwnership(t *testing.T) {
 	var calls, closes, active atomic.Int64
 	var replay atomic.Bool
@@ -33,6 +44,8 @@ func TestGrokResponsesExecuteReplayAndResourceOwnership(t *testing.T) {
 		data, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		require.Equal(t, "Bearer fixture", r.Header.Get("Authorization"))
+		// Reject the first ciphertext payload so the second server call can assert
+		// stripping and closure before replay enters this same provider.
 		if calls.Add(1) == 1 {
 			require.Contains(t, string(data), "opaque-fixture")
 			w.WriteHeader(http.StatusBadRequest)
@@ -47,36 +60,31 @@ func TestGrokResponsesExecuteReplayAndResourceOwnership(t *testing.T) {
 	defer server.Close()
 	target := &ResponsesTarget{
 		ProviderID: 19,
-
-		Model: "grok-fixture",
-
+		Model:      "grok-fixture",
 		Enter: func() (func(), error) {
 			active.Add(1)
 			return func() { active.Add(-1) }, nil
 		},
-
 		Exchange: ResponsesExchange{
 			Build: func(body []byte) (*http.Request, error) {
 				return BuildResponsesRequest(context.Background(), body, ResponsesRequestOptions{URL: server.URL, Token: "fixture"})
 			},
-
 			Do: func(req *http.Request) (*http.Response, error) {
 				resp, err := server.Client().Do(req)
 				if resp != nil {
+					// Count body-close invocations through the shared fixture so the server can
+					// observe first-response cleanup before accepting the second exchange.
 					resp.Body = &voiceBody{ReadCloser: resp.Body, closed: &closes}
 				}
 				return resp, err
 			},
-
 			ReadError: func(resp *http.Response) []byte {
 				data, err := io.ReadAll(resp.Body)
 				require.NoError(t, err)
 				return data
 			},
-
 			OnReplay: func() { replay.Store(true) },
 		},
-
 		ReadResponse: func(resp *http.Response, _ upstream.AttemptInput, _ upstream.OutputSink) (upstream.ResponsesObservation, error) {
 			data, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
@@ -94,14 +102,19 @@ func TestGrokResponsesExecuteReplayAndResourceOwnership(t *testing.T) {
 	require.Equal(t, "fixture-id", result.RequestID)
 	require.Equal(t, 7, result.Usage.InputTokens)
 	require.True(t, result.HasUsage)
-	// 仅响应 ID 不证明实际语义输出。
+	// The reader supplies an identifier and usage but leaves Served false. Keep
+	// that independent observation so response identity cannot imply delivered
+	// output.
 	require.False(t, result.Served)
 }
 
-// TestGrokResponsesExecutePreservesPartialObservation 验证新接口保留与读取错误并存的事实；不把错误变成成功，不按 ID 推断已服务。
+// TestGrokResponsesExecutePreservesPartialObservation injects usage,
+// served/commitment/disconnect flags with a read error. The assertions retain
+// the error identity, input-token count, usage and output flags; the response
+// must still close once.
 func TestGrokResponsesExecutePreservesPartialObservation(t *testing.T) {
 	failure := errors.New("fixture read failure")
-	elapsed := 3 * time.Millisecond
+
 	var closed atomic.Int64
 	target := &ResponsesTarget{
 		Exchange: ResponsesExchange{
@@ -117,19 +130,12 @@ func TestGrokResponsesExecutePreservesPartialObservation(t *testing.T) {
 		},
 		ReadResponse: func(*http.Response, upstream.AttemptInput, upstream.OutputSink) (upstream.ResponsesObservation, error) {
 			return upstream.ResponsesObservation{
-				Usage: &wire.ForwardUsage{InputTokens: 11, OutputTokens: 3},
-
-				HasUsage: true,
-
-				Served: true,
-
-				HTTPCommitted: true,
-
-				RetryCommitted: true,
-
+				Usage:              &wire.ForwardUsage{InputTokens: 11, OutputTokens: 3},
+				HasUsage:           true,
+				Served:             true,
+				HTTPCommitted:      true,
+				RetryCommitted:     true,
 				ClientDisconnected: true,
-
-				FirstSemanticOutput: &elapsed,
 			}, failure
 		},
 	}
@@ -141,6 +147,6 @@ func TestGrokResponsesExecutePreservesPartialObservation(t *testing.T) {
 	require.True(t, result.HTTPCommitted)
 	require.True(t, result.RetryCommitted)
 	require.True(t, result.ClientDisconnect)
-	require.Equal(t, &elapsed, result.FirstSemanticOutput)
+	require.True(t, result.Served)
 	require.EqualValues(t, 1, closed.Load())
 }

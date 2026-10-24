@@ -13,7 +13,15 @@ import (
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 )
 
-// provideRetryCooldown 配置和日志在装配时固定，是否冷却由 provider 判断。
+// gateway_message_ports.go adapts retry cooldown, session isolation, and
+// digest-session storage for Messages attempts. These adapters translate
+// failure details for provider cooldown decisions and connect request group
+// and session identity to the shared stores, including the one-hour isolation
+// owner lifetime.
+
+// provideRetryCooldown constructs provider cooldown decisions with diagnostics
+// and optional storage. Nil store leaves the storage capability unset, and the
+// provider service owns the retry-exhaustion rule applied to each input.
 func provideRetryCooldown(store *providerpostgres.ProviderStore) *provider.RetryCooldown {
 	var source provider.RetryCooldownStore
 	if store != nil {
@@ -22,11 +30,14 @@ func provideRetryCooldown(store *providerpostgres.ProviderStore) *provider.Retry
 	return provider.NewRetryCooldown(source, provider.RetryCooldownOptions{
 		Logf: log.Printf,
 		LookupError: func(id int64, err error) {
-			logging.LegacyPrintf("service.gateway", "查询重试耗尽提供商失败: provider=%d error=%v", id, err)
+			logging.LegacyPrintf("service.gateway", "Failed to look up provider after retry exhaustion: provider=%d error=%v", id, err)
 		},
 	})
 }
 
+// messageRetryCooldown adapts upstream failure details into provider cooldown
+// input. Nil failure supplies the provider ID with zero failure flags, leaving
+// command.Apply to decide whether that observation warrants containment.
 func messageRetryCooldown(command *provider.RetryCooldown) func(context.Context, int64, *forward.UpstreamFailoverError) {
 	return func(ctx context.Context, id int64, failure *forward.UpstreamFailoverError) {
 		input := provider.RetryCooldownInput{ProviderID: id}
@@ -39,7 +50,9 @@ func messageRetryCooldown(command *provider.RetryCooldown) func(context.Context,
 	}
 }
 
-// messageSessionIsolation 从当前 Key 读取会话隔离参数，owner TTL 为一小时。
+// messageSessionIsolation returns a one-hour session ownership check for the
+// supplied cache. A nil Key succeeds immediately; absent GroupID selects zero,
+// and the current group controls whether isolation is enabled.
 func messageSessionIsolation(cache session.GatewayCache) func(context.Context, *apikey.APIKey, int64, string, string) error {
 	return func(ctx context.Context, key *apikey.APIKey, userID int64, source, hash string) error {
 		if key == nil {
@@ -53,13 +66,18 @@ func messageSessionIsolation(cache session.GatewayCache) func(context.Context, *
 	}
 }
 
-// messageDigestFind 使用共享内存存储，存储按自身的键规则和过期时间查询摘要。
+// messageDigestFind binds in-memory digest lookup to the shared store. The
+// returned callback ignores request cancellation because Find performs its
+// local lookup using the supplied ID, prefix, and chain.
 func messageDigestFind(store *session.DigestSessionStore) func(context.Context, int64, string, string) (string, int64, string, bool) {
 	return func(_ context.Context, id int64, prefix, chain string) (string, int64, string, bool) {
 		return store.Find(id, prefix, chain)
 	}
 }
 
+// messageDigestSave binds in-memory session saving to the shared digest store.
+// The callback ignores its context, passes the session identity and prior
+// digest to Save, and returns nil after that local operation.
 func messageDigestSave(store *session.DigestSessionStore) func(context.Context, int64, string, string, string, int64, string) error {
 	return func(_ context.Context, id int64, prefix, chain, uuid string, providerID int64, old string) error {
 		store.Save(id, prefix, chain, uuid, providerID, old)

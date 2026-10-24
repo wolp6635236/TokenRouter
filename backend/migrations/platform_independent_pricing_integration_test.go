@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
@@ -17,17 +18,37 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// TestPlatformIndependentPricingMigration 检查迁移 SQL 的价格合并、作用域隔离和冲突回滚。
+// TestPlatformIndependentPricingMigration converts historical cross-platform price
+// fixtures in PostgreSQL. It checks independent highest input/output prices,
+// NULL versus zero handling, per-rule isolation, interval and time-rule retention,
+// original archives, and edited-price replay. Incompatible fixtures must report
+// a migration conflict. Savepoint rollback must restore the captured price and
+// interval rows, retain the platform column, and remove the archive table.
 func TestPlatformIndependentPricingMigration(t *testing.T) {
 	ctx := context.Background()
 	container, err := tcpostgres.Run(ctx, "postgres:18.1-alpine3.23", tcpostgres.WithDatabase("pricing_migration"), tcpostgres.WithUsername("postgres"), tcpostgres.WithPassword("postgres"), tcpostgres.BasicWaitStrategies())
+	// Run may return a container alongside a startup error. Register cleanup
+	// before checking the error, and give termination its own deadline so test
+	// cancellation still allows Docker to remove the partially started instance.
+	if container != nil {
+		t.Cleanup(func() {
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancelCleanup()
+			if err := container.Terminate(cleanupCtx); err != nil {
+				t.Errorf("terminate PostgreSQL container: %v", err)
+			}
+		})
+	}
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, container.Terminate(ctx)) })
 	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err)
+	// Testing cleanup runs in reverse registration order. Close the SQL pool
+	// before terminating the PostgreSQL container that hosts these transactional scenarios.
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	// Stop before migration 276 so each scenario inserts platform-bearing prices
+	// into the historical schema that the conversion is expected to transform.
 	before := fstest.MapFS{}
 	files, err := fs.ReadDir(migrations.FS, ".")
 	require.NoError(t, err)
@@ -43,6 +64,8 @@ func TestPlatformIndependentPricingMigration(t *testing.T) {
 	migration, err := migrations.FS.ReadFile("276_platform_independent_pricing.sql")
 	require.NoError(t, err)
 	t.Run("highest_prices_and_scoped_costs", func(t *testing.T) {
+		// Roll back merged prices, archives, and schema changes with this fixture.
+		// The next scenario then starts from the same historical platform-bearing tables.
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { require.NoError(t, tx.Rollback()) }()
@@ -90,7 +113,9 @@ INSERT INTO groups(name,model_pricing) VALUES ('group price','[{"platform":"anth
 		var archivedConfig string
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT jsonb_agg(entry - 'intervals' ORDER BY ordinal)::TEXT FROM platform_independent_pricing_archive CROSS JOIN LATERAL jsonb_array_elements(entries) WITH ORDINALITY AS item(entry, ordinal) WHERE scope='config' AND scope_id=76001`).Scan(&archivedConfig))
 		require.JSONEq(t, originalConfig, archivedConfig)
-		// 再次执行迁移后，管理员修改的价格和条目 ID 保持不变。
+		// Edit a migrated price before replay so the second execution must retain
+		// its new amount and row identity, while the archive still describes
+		// the pre-conversion pricing entries.
 		var priceID int64
 		require.NoError(t, tx.QueryRowContext(ctx, `UPDATE pricing_config_model_pricing SET input_price=9 WHERE pricing_config_id=76001 AND models='["claude-test"]' RETURNING id`).Scan(&priceID))
 		_, err = tx.ExecContext(ctx, string(migration))
@@ -103,6 +128,9 @@ INSERT INTO groups(name,model_pricing) VALUES ('group price','[{"platform":"anth
 		require.JSONEq(t, originalConfig, archivedConfig)
 	})
 	t.Run("interval_prices_and_matching_time_rules", func(t *testing.T) {
+		// Keep interval conversion inside this subtest's transaction. Rollback
+		// removes its transformed tables and fixtures so later conflict cases
+		// can still create prices with historical platform columns.
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { require.NoError(t, tx.Rollback()) }()
@@ -132,7 +160,12 @@ INSERT INTO pricing_config_pricing_intervals(pricing_id,min_tokens,max_tokens,ti
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT entries::TEXT FROM platform_independent_pricing_archive WHERE scope='config' AND scope_id=79001`).Scan(&archived))
 		require.JSONEq(t, original, archived)
 	})
-	for _, tc := range []struct{ name, patch string }{
+	// name identifies the subtest's incompatibility, while patch changes its
+	// seeded price pair into that conflicting state. Every case compares the
+	// patched fixture before conversion with the state restored by savepoint rollback.
+	for _, tc := range []struct {
+		name, patch string /* name labels the scenario; patch supplies its conflicting fixture SQL. */
+	}{
 		{"inheritance", `UPDATE pricing_config_model_pricing SET input_price=NULL WHERE platform='openai'`},
 		{"billing_mode", `UPDATE pricing_config_model_pricing SET billing_mode='image',per_request_price=2 WHERE platform='openai'`},
 		{"multiplier", `UPDATE pricing_config_model_pricing SET price_multiplier=2 WHERE platform='openai'`},
@@ -143,6 +176,9 @@ INSERT INTO pricing_config_pricing_intervals(pricing_id,min_tokens,max_tokens,ti
 		{"overlapping_patterns", `UPDATE pricing_config_model_pricing SET models='["model*"]' WHERE platform='openai'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Roll back the case's patched fixtures when the subtest ends. This
+			// keeps the repeated identifiers and historical schema available for
+			// the next independently tested incompatibility.
 			tx, err := db.BeginTx(ctx, nil)
 			require.NoError(t, err)
 			defer func() { require.NoError(t, tx.Rollback()) }()
@@ -151,6 +187,8 @@ INSERT INTO pricing_config_pricing_intervals(pricing_id,min_tokens,max_tokens,ti
 			var original, after string
 			snapshotSQL := `SELECT jsonb_agg(to_jsonb(p) || jsonb_build_object('intervals', (SELECT jsonb_agg(to_jsonb(i) ORDER BY sort_order,id) FROM pricing_config_pricing_intervals i WHERE i.pricing_id=p.id)) ORDER BY p.id)::TEXT FROM pricing_config_model_pricing p WHERE pricing_config_id=77001`
 			require.NoError(t, tx.QueryRowContext(ctx, snapshotSQL).Scan(&original))
+			// Save the patched input before conversion so a migration error can
+			// roll back its schema changes while retaining this fixture for comparison.
 			_, err = tx.ExecContext(ctx, `SAVEPOINT before_migration`)
 			require.NoError(t, err)
 			_, err = tx.ExecContext(ctx, string(migration))
@@ -159,6 +197,9 @@ INSERT INTO pricing_config_pricing_intervals(pricing_id,min_tokens,max_tokens,ti
 				require.ErrorContains(t, err, "77001")
 				require.ErrorContains(t, err, "77002")
 			}
+			// PostgreSQL leaves the transaction aborted after the expected error.
+			// Restore the savepoint before reading the snapshot and schema assertions
+			// that must still describe the patched pre-conversion fixture.
 			_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT before_migration`)
 			require.NoError(t, err)
 			require.NoError(t, tx.QueryRowContext(ctx, snapshotSQL).Scan(&after))

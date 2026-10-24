@@ -8,20 +8,43 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// 本模块继续使用现有设置键。
+// settings_participant.go prepares moderation fields for combined administrator
+// updates while retaining which fields the request supplied. Decoding the input
+// map into AdminSettings gives omitted switches the same false value as an
+// explicit disabling request. The participant callback keeps the input map to
+// distinguish those cases after conversion.
+//
+// PrepareAdminSettings always produces both boolean keys and includes the
+// session lifetime only when positive. The callback then removes writes whose
+// fields were absent from the input map, so omission retains a stored switch
+// while supplied false disables it. A nonpositive lifetime produces no write
+// even when supplied. JSON conversion errors stop preparation before any values
+// reach the settings coordinator for persistence.
+
+// Cyber session-block keys store enablement and decimal lifetime seconds for the
+// combined administrator update participant and the cached gateway settings reader.
 const (
 	SettingKeyCyberSessionBlockEnabled    = "cyber_session_block_enabled"
 	SettingKeyCyberSessionBlockTTLSeconds = "cyber_session_block_ttl_seconds"
 )
 
-// AdminSettings 只包含本模块的管理开关与运行参数。
+// AdminSettings carries the moderation fields accepted by the combined
+// administrator settings participant.
 type AdminSettings struct {
-	RiskControlEnabled          bool `json:"risk_control_enabled"`
-	CyberSessionBlockEnabled    bool `json:"cyber_session_block_enabled"`
-	CyberSessionBlockTTLSeconds int  `json:"cyber_session_block_ttl_seconds"`
+	// risk center enablement switch
+	RiskControlEnabled bool `json:"risk_control_enabled"`
+	// Cyber session blocking switch
+	CyberSessionBlockEnabled bool `json:"cyber_session_block_enabled"`
+	// CyberSessionBlockTTLSeconds is written by PrepareAdminSettings only when
+	// positive. Omitted or nonpositive values leave the stored TTL key unchanged
+	// through this participant.
+	// seconds
+	CyberSessionBlockTTLSeconds int `json:"cyber_session_block_ttl_seconds"`
 }
 
-// PrepareAdminSettings 保留既有编码和合法范围，不启动任务或发布成功通知。
+// PrepareAdminSettings encodes both switches as boolean strings and a positive
+// TTL as decimal seconds. It returns the supplied value unchanged, omits a
+// nonpositive TTL key, and performs no storage write or validation failure.
 func PrepareAdminSettings(value AdminSettings) (AdminSettings, map[string]string, error) {
 	values := map[string]string{}
 	values[SettingKeyRiskControlEnabled] = strconv.FormatBool(value.RiskControlEnabled)
@@ -33,7 +56,14 @@ func PrepareAdminSettings(value AdminSettings) (AdminSettings, map[string]string
 	return value, values, nil
 }
 
-// SettingsParticipant 声明风险控制和 Cyber 会话封禁的存储键，并准备请求中提供的设置。
+// SettingsParticipant registers moderation fields and their storage keys for
+// combined administrator updates. Its callback converts supplied JSON fields to
+// AdminSettings, then removes generated keys whose corresponding field was
+// absent so partial updates retain other settings.
+//
+// A present false switch survives that presence check and is stored as "false".
+// A nonpositive TTL contributes no write even when present. JSON conversion
+// errors stop preparation before the coordinator persists the returned values.
 func SettingsParticipant() settings.Participant {
 	fields := []string{"risk_control_enabled", "cyber_session_block_enabled", "cyber_session_block_ttl_seconds"}
 	keys := []string{SettingKeyRiskControlEnabled, SettingKeyCyberSessionBlockEnabled, SettingKeyCyberSessionBlockTTLSeconds}
@@ -53,6 +83,8 @@ func SettingsParticipant() settings.Participant {
 		if err != nil {
 			return settings.PreparedChange{}, err
 		}
+		// Keep presence separate from decoded zero values: an omitted switch retains
+		// its stored value, while a supplied false switch contributes a disabling write.
 		for i, field := range fields {
 			if _, ok := input[field]; !ok {
 				delete(values, keys[i])

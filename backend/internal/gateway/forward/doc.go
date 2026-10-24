@@ -1,14 +1,32 @@
-// Package forward 编排单次上游转发，转换请求和响应，并记录失败与用量结果。
+// Package forward prepares one provider attempt, converts its protocol output,
+// and returns usage or failure observations to the surrounding gateway loop.
+// The loop owns provider selection and remaining retry budgets; forwarding
+// retains logical model input separately from selected upstream names and raw
+// response declarations. HTTP, credential, health, and output operations are
+// supplied by request adapters so these flows can run with their own captured
+// response state.
 //
-// 阅读入口：
-//   - messages.go：执行 Messages 转发与失败处理。
-//   - conversion.go：把客户端请求转换为上游协议并输出目标协议响应。
-//   - failure.go：描述失败分类、重试条件和客户端错误。
+// Response reading can retain usage alongside a failure, and a selected failover
+// signal changes whether that partial result is usable. Streaming conversion
+// also distinguishes produced terminal state, writer commitment, and byte
+// progress. These observations describe an attempt's handling; callers combine
+// them with their own completion and recovery rules. Protocol bridge algorithms
+// live in protocol/bridge, while this package orders preparation and selects the
+// response/output path.
 //
-// 文件分组：
-//   - messages*.go、gemini*.go 和 count*.go 处理各协议的转发和计数。
-//   - anthropic*.go 处理 Anthropic 透传和错误展示。
-//   - conversion*.go、output.go 和 mimic.go 处理协议转换、输出与请求伪装。
-//   - failure.go、grok_credential_failure.go、invalid_json.go、qoder_error.go 和 upstream_warning.go 处理错误与风控警告。
-//   - result.go、openai_result.go、messages_result.go 和 response_observer.go 保存转发结果和响应观察值。
+// Reading entrypoints:
+//   - messages.go orders Messages preparation, HTTP decisions, and stream outcomes.
+//   - conversion.go prepares OpenAI requests for Anthropic; conversion_output.go
+//     accumulates or streams the converted response.
+//   - failure.go defines classifications and retry instructions consumed by gateway/failover.
+//
+// File groups:
+//   - messages*.go, gemini*.go, and count*.go pair execution flows with adapter operations.
+//   - anthropic*.go handles API-key passthrough and health-before-display errors.
+//   - conversion*.go, output.go, and mimic.go handle request adaptation, SSE framing,
+//     downstream writing, and OAuth client preparation.
+//   - failure.go, grok_credential_failure.go, invalid_json.go, qoder_error.go, and
+//     upstream_warning.go carry classified failures or captured warning evidence.
+//   - result.go, openai_result.go, messages_result.go, and response_observer.go keep
+//     usage, replay values, and raw model/tier observations for completion.
 package forward

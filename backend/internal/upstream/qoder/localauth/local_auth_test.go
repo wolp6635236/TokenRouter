@@ -6,8 +6,18 @@ import (
 	"testing"
 )
 
-// TestReadLocalAuthFromDisk 从本地 Qoder 目录读取并解密认证信息。
+// Local import is tested only when its dedicated or real-API opt-in flag is
+// enabled. The fixture skips absent local machine data and checks identity plus
+// token presence after decryption, leaving credential values out of its
+// diagnostic log.
+
+// TestReadLocalAuthFromDisk imports saved local credentials when a local-auth or
+// real-API opt-in flag is enabled. It skips unavailable local data and requires
+// a UID plus an access or security token.
 func TestReadLocalAuthFromDisk(t *testing.T) {
+	// Local import reads user-owned credential files. Require a dedicated opt-in
+	// flag so ordinary unit runs do not depend on the developer's saved Qoder
+	// login.
 	if os.Getenv("QODER_RUN_LOCAL_AUTH_TESTS") != "1" && os.Getenv("QODER_RUN_REAL_API_TESTS") != "1" {
 		t.Skip("set QODER_RUN_LOCAL_AUTH_TESTS=1 to run local Qoder auth import test")
 	}

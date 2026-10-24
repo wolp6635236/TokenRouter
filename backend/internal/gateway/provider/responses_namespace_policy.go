@@ -2,13 +2,30 @@ package provider
 
 import (
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 )
 
-// ShouldFlattenOpenAIResponsesNamespaces 判定原生 Responses 转发前是否摊平
-// Codex namespace 工具。OAuth 普通 Responses 默认保留 namespace，避免破坏模型按
-// functions.<namespace>.<tool> 寻址的约定；compact 端点及提供商兼容开关保持旧行为。
-// WSv2 出口不经过 HTTP 回程还原，因此始终保持 namespace 原样。
+// responses_namespace_policy.go selects namespace flattening and history
+// retention rules for the chosen Responses transport.
+// Namespace tool declarations and historical calls need compatible naming on
+// the selected Responses path. OAuth-like requests normally retain namespaces,
+// Compact selects flattened declarations and stripped history, and API Key
+// requests retain call namespaces independently of where their declarations
+// appeared. A later turn can reuse tools loaded in earlier history or upstream
+// conversation state, so a missing current declaration cannot authorize
+// deleting the identity of an already executed call.
+//
+// Native WSv2 forwards its namespace representation when passthrough is
+// disabled, so the flattening gate leaves those declarations intact even when
+// the provider compatibility setting is enabled. HTTP-compatible paths can
+// restore flattened names through the response bridge. These decisions are
+// request hints for the shared protocol transformations, with separate gates
+// for declaration flattening, general input cleanup, and call-history
+// retention.
+
+// ShouldFlattenOpenAIResponsesNamespaces permits OAuth-like flattening for
+// Compact or the saved compatibility setting. Native WSv2 retains namespaces
+// unless passthrough selects its HTTP-compatible path, because HTTP tool-name
+// restoration is required for flattened declarations.
 func ShouldFlattenOpenAIResponsesNamespaces(
 	provider *ExecutionProvider,
 	transport egress.OpenAIUpstreamTransport,
@@ -21,44 +38,46 @@ func ShouldFlattenOpenAIResponsesNamespaces(
 	if !compactPath && !provider.View().IsOpenAIResponsesFlattenNamespacesEnabled() {
 		return false
 	}
+	// Native WS events bypass HTTP name restoration. Keep their namespace shape
+	// until the caller selects a passthrough path that performs HTTP-compatible restoration.
 	if transport == egress.OpenAIUpstreamTransportResponsesWebsocketV2 && !passthroughEnabled {
 		return false
 	}
 	return true
 }
 
-// ShouldStripOpenAIResponsesInputNamespaces 判定 HTTP 转发是否清理历史项的 namespace。
-// WSv2 原样发送该字段，错误按 WebSocket 的恢复规则处理。
+// ShouldStripOpenAIResponsesInputNamespaces selects history namespace cleanup
+// for OpenAI OAuth-like or API Key targets. Native WSv2 keeps the input
+// representation when passthrough is disabled, letting WS recovery handle
+// rejected namespace fields.
 func ShouldStripOpenAIResponsesInputNamespaces(provider *ExecutionProvider, transport egress.OpenAIUpstreamTransport, passthroughEnabled bool) bool {
 	if provider == nil || (!provider.View().IsOpenAIOAuthLike() && !provider.View().IsOpenAIApiKey()) {
 		return false
 	}
+	// Native WS events bypass HTTP name restoration. Keep their namespace shape
+	// until the caller selects a passthrough path that performs HTTP-compatible restoration.
 	if transport == egress.OpenAIUpstreamTransportResponsesWebsocketV2 && !passthroughEnabled {
 		return false
 	}
 	return true
 }
 
-// ShouldKeepOpenAIResponsesToolCallNamespaces 判定清理 input 残留 namespace 时是否
-// 保留工具调用项上的 namespace。
+// ShouldKeepOpenAIResponsesToolCallNamespaces chooses whether call history
+// retains namespaces while other items are cleaned. Nil targets and Compact
+// requests return false; ordinary API Key requests retain their supplied call
+// identities even when declarations belong to history or upstream state.
 //
-// 上游根据出口和端点对该字段提出两套要求：
-//   - /backend-api/codex/responses 会按 namespace 解析历史调用，缺字段直接 400
-//     `Missing namespace for function_call '...'. Round-trip the model's
-//     function_call item with its namespace field included.`（issue #4761 回帖），
-//     故 OAuth 非 compact 请求必须保留。
-//   - compact 端点的 schema 不含该字段，携带即 400 `Unknown parameter:
-//     input[N].namespace`（issue #4761 正文），故 compact 一律清理。
-//   - API Key 出口默认按标准 Responses API 处理并清理该字段；但当请求本身声明
-//     namespace 工具时，上游显然使用了 namespace 扩展，此时必须保留调用项上的
-//     namespace，否则声明与历史调用会失配并触发 Missing namespace。
-//   - 摊平模式下调用项已被改写成平名，残留 namespace 指向的声明已不存在，一律清理。
+// OAuth-like requests keep call namespaces when their declaration policy is
+// not flattened, including native WSv2 paths. Flattened declarations instead
+// use flat names and remove obsolete call namespaces. This pairing keeps
+// history names interpretable under the current declarations while Compact
+// uses its narrower input shape; the caller applies the actual byte
+// transformation through the protocol bridge.
 func ShouldKeepOpenAIResponsesToolCallNamespaces(
 	provider *ExecutionProvider,
 	transport egress.OpenAIUpstreamTransport,
 	passthroughEnabled bool,
 	compactPath bool,
-	body []byte,
 ) bool {
 	if provider == nil {
 		return false
@@ -67,7 +86,7 @@ func ShouldKeepOpenAIResponsesToolCallNamespaces(
 		return false
 	}
 	if provider.View().IsOpenAIApiKey() {
-		return protocolbridge.HasOpenAIResponsesNamespaceToolDeclaration(body)
+		return true
 	}
 	if !provider.View().IsOpenAIOAuthLike() {
 		return false

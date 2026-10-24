@@ -9,69 +9,95 @@ import (
 	"time"
 )
 
+// auth_status.go completes CN token identities through Gateway status and
+// refreshes imported COSY credentials.
+// CN OpenAPI tokens require Gateway status completion to obtain COSY user and
+// account identity before inference. That request uses pre-login Appcode signing
+// with the stored machine, while imported COSY credentials refresh through a
+// separate authenticated Gateway endpoint.
+//
+// Status requests carry string-valued JSON in an encodeVersion=1 envelope,
+// including empty token and authInfo fields required by the request shape.
+// Status identity fields can differ from OpenAPI user IDs, so completion uses
+// the device-token user ID for the status request and then keeps the effective
+// OpenAPI access and refresh tokens. Legacy COSY refresh instead accepts token
+// replacements from status and retains its old refresh token when omitted.
+
+// Gateway paths separate pre-login identity completion, authenticated legacy
+// refresh, and quota lookup so each caller selects its required authentication.
 const (
-	// AuthStatusPath 是 QoderCN20 OpenAPI 身份换取最终 COSY 身份的逻辑路径。
+	// AuthStatusPath completes QoderCN20 OpenAPI credentials into a COSY identity.
 	AuthStatusPath = "/api/v3/user/status"
-	// CosyRefreshTokenPath 是国内手动 COSY token 的旧式刷新逻辑路径。
+	// CosyRefreshTokenPath refreshes manually imported CN COSY tokens.
 	CosyRefreshTokenPath = "/api/v3/user/refresh_token"
-	// QuotaUsagePath 是两站额度查询使用的逻辑路径。
+	// QuotaUsagePath is the quota-query path for both sites.
 	QuotaUsagePath = "/api/v2/quota/usage"
 )
 
-// AuthStatusAuthInfo 是 Gateway 身份请求内嵌的可选提供商信息。
+// AuthStatusAuthInfo carries optional descriptive details inside a Gateway
+// identity request.
 type AuthStatusAuthInfo struct {
-	UserName       string `json:"userName,omitempty"`
-	OrganizationID string `json:"orgId,omitempty"`
+	UserName       string `json:"userName,omitempty"` // optional authenticated name
+	OrganizationID string `json:"orgId,omitempty"`    // selected organization identifier
 }
 
-// AuthStatusParams 完整对应官方 Gateway 身份请求结构；末尾三个零值字段也必须发送。
+// AuthStatusParams represents the identity and token fields serialized for
+// Gateway completion.
 type AuthStatusParams struct {
-	AccessKey          string             `json:"accessKey,omitempty"`
-	SecretKey          string             `json:"secretKey,omitempty"`
-	SecurityToken      string             `json:"securityToken,omitempty"`
-	UserID             string             `json:"userId,omitempty"`
-	OrganizationID     string             `json:"orgId,omitempty"`
-	Token              string             `json:"token,omitempty"`
-	PersonalToken      string             `json:"personalToken"`
-	SecurityOauthToken string             `json:"securityOauthToken"`
-	RefreshToken       string             `json:"refreshToken"`
-	NeedRefresh        bool               `json:"needRefresh"`
-	AuthInfo           AuthStatusAuthInfo `json:"authInfo"`
+	AccessKey      string `json:"accessKey,omitempty"`     // optional access key
+	SecretKey      string `json:"secretKey,omitempty"`     // optional secret key
+	SecurityToken  string `json:"securityToken,omitempty"` // optional security token
+	UserID         string `json:"userId,omitempty"`        // OpenAPI ownership identifier
+	OrganizationID string `json:"orgId,omitempty"`         // selected organization identifier
+	Token          string `json:"token,omitempty"`         // optional protocol token
+	// PersonalToken, SecurityOauthToken, RefreshToken, NeedRefresh, and AuthInfo
+	// are serialized even at their zero values. Gateway identity requests retain
+	// these keys as part of the request shape.
+	PersonalToken      string             `json:"personalToken"`      // personal token text
+	SecurityOauthToken string             `json:"securityOauthToken"` // inference access token
+	RefreshToken       string             `json:"refreshToken"`       // credential refresh token
+	NeedRefresh        bool               `json:"needRefresh"`        // refresh request marker
+	AuthInfo           AuthStatusAuthInfo `json:"authInfo"`           // embedded descriptive metadata
 }
 
-// gatewayHTTPPayload 对应官方 remoting.HttpPayload，是 Gateway 身份接口的外层载荷。
+// gatewayHTTPPayload wraps an inner JSON string for encoded Gateway identity
+// requests.
 type gatewayHTTPPayload struct {
-	Payload       string `json:"payload"`
-	EncodeVersion string `json:"encodeVersion"`
-	RequestID     string `json:"requestId,omitempty"`
+	Payload       string `json:"payload"`             // inner JSON text
+	EncodeVersion string `json:"encodeVersion"`       // body encoding version
+	RequestID     string `json:"requestId,omitempty"` // optional request identifier
 }
 
-// AuthStatusResult 兼容国内 Gateway status/refresh 返回的完整身份字段。
+// AuthStatusResult represents wire identity and quota metadata returned by CN
+// status.
 type AuthStatusResult struct {
-	Name                      string         `json:"name"`
-	ID                        string         `json:"id"`
-	ProviderID                string         `json:"accountId"`
-	StaffID                   string         `json:"staffId"`
-	Token                     string         `json:"token"`
-	Quota                     any            `json:"quota"`
-	WhitelistStatus           any            `json:"whitelistStatus"`
-	OrganizationID            string         `json:"orgId"`
-	OrganizationName          string         `json:"orgName"`
-	YxUID                     string         `json:"yxUid"`
-	AvatarURL                 string         `json:"avatarUrl"`
-	SecurityOauthToken        string         `json:"securityOauthToken"`
-	RefreshToken              string         `json:"refreshToken"`
-	ExpireTime                FlexibleInt64  `json:"expireTime"`
-	IsSubProvider             bool           `json:"isSubAccount"`
-	Email                     string         `json:"email"`
-	UserType                  string         `json:"userType"`
-	IsPrivacyPolicyModifiable bool           `json:"isPrivacyPolicyModifiable"`
-	IsQuotaExceeded           bool           `json:"isQuotaExceeded"`
-	FeatureSwitches           map[string]any `json:"featureSwitches"`
-	TeamSwitches              map[string]any `json:"teamSwitches"`
+	Name                      string         `json:"name"`                      // authenticated display name
+	ID                        string         `json:"id"`                        // COSY user identifier
+	ProviderID                string         `json:"accountId"`                 // COSY account identifier
+	StaffID                   string         `json:"staffId"`                   // status staff identifier
+	Token                     string         `json:"token"`                     // optional protocol token
+	Quota                     any            `json:"quota"`                     // raw quota metadata
+	WhitelistStatus           any            `json:"whitelistStatus"`           // raw whitelist metadata
+	OrganizationID            string         `json:"orgId"`                     // selected organization identifier
+	OrganizationName          string         `json:"orgName"`                   // selected organization name
+	YxUID                     string         `json:"yxUid"`                     // Gateway alternate UID
+	AvatarURL                 string         `json:"avatarUrl"`                 // user avatar URL
+	SecurityOauthToken        string         `json:"securityOauthToken"`        // inference access token
+	RefreshToken              string         `json:"refreshToken"`              // credential refresh token
+	ExpireTime                FlexibleInt64  `json:"expireTime"`                // status expiry value
+	IsSubProvider             bool           `json:"isSubAccount"`              // subaccount status marker
+	Email                     string         `json:"email"`                     // user contact email
+	UserType                  string         `json:"userType"`                  // Qoder account classification
+	IsPrivacyPolicyModifiable bool           `json:"isPrivacyPolicyModifiable"` // policy edit permission
+	IsQuotaExceeded           bool           `json:"isQuotaExceeded"`           // reported quota exhaustion
+	FeatureSwitches           map[string]any `json:"featureSwitches"`           // user feature switches
+	TeamSwitches              map[string]any `json:"teamSwitches"`              // team feature switches
 }
 
-// ExchangeQoderCN20PATContext 完成国内现代 PAT 的 exchange、userinfo 和 status 链路。
+// ExchangeQoderCN20PATContext completes CN PAT exchange, userinfo lookup, and
+// Gateway status. The profile must select CN, nil machine creates the CN shape,
+// and a supplied doer controls both OpenAPI and Gateway requests. The returned
+// expiry comes from the OpenAPI token.
 func ExchangeQoderCN20PATContext(
 	ctx context.Context,
 	pat string,
@@ -102,7 +128,10 @@ func ExchangeQoderCN20PATContext(
 	return CompleteQoderCN20IdentityContext(ctx, normalized, token, user, machine, doer)
 }
 
-// RefreshQoderCN20SessionContext 完成国内标准 OAuth 的 refresh、userinfo 和 status 链路。
+// RefreshQoderCN20SessionContext completes CN token refresh, userinfo lookup,
+// and Gateway status. The profile must select CN and nil machine creates its
+// site shape. Network or validation failures return before an inference identity
+// is published.
 func RefreshQoderCN20SessionContext(
 	ctx context.Context,
 	refreshToken string,
@@ -133,7 +162,15 @@ func RefreshQoderCN20SessionContext(
 	return CompleteQoderCN20IdentityContext(ctx, normalized, token, user, machine, doer)
 }
 
-// CompleteQoderCN20IdentityContext 将国内 OpenAPI token 换成可用于推理的最终 COSY 身份。
+// CompleteQoderCN20IdentityContext obtains COSY identity for a validated CN
+// OpenAPI token. The CN profile and token expiry are validated before status.
+// Device-token user ID takes precedence over userinfo identity because the
+// request checks ownership against that token.
+//
+// Status runs with pre-login Appcode signing and machine metadata. Returned
+// user, account, and organization fields normalize into AuthIdentity, while the
+// effective OpenAPI access and refresh tokens replace any status token values.
+// The returned expiry remains the OpenAPI expiry for provider persistence.
 func CompleteQoderCN20IdentityContext(
 	ctx context.Context,
 	profile Profile,
@@ -156,7 +193,9 @@ func CompleteQoderCN20IdentityContext(
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	// status 会校验用户与 token 的关联关系，必须优先使用设备 token 响应中的 user_id。
+	// Status verifies the token's owner, whose user_id can differ from userinfo.
+	// Prefer the device-token identifier before using userinfo to fill a missing
+	// ID.
 	userID := firstNonEmpty(token.UserID, userIDFromInfo(user))
 	if userID == "" {
 		return nil, time.Time{}, fmt.Errorf("qoder: QoderCN20 completion requires user id")
@@ -169,7 +208,9 @@ func CompleteQoderCN20IdentityContext(
 		SecurityOauthToken: token.AccessTokenValue(),
 		RefreshToken:       strings.TrimSpace(token.RefreshToken),
 	}
-	// status 使用登录前 Appcode 签名模式，不构造或发送 COSY Authorization。
+	// COSY identity has not been completed yet. Send status with Appcode signing
+	// and machine headers so authentication does not depend on the identity being
+	// requested.
 	session := &SessionContext{
 		Machine:       machine,
 		Site:          normalized.Site,
@@ -193,13 +234,18 @@ func CompleteQoderCN20IdentityContext(
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	// 国内标准登录保留本次 OpenAPI 的 effective access/refresh token，status 只补充提供商状态。
+	// Status resolves COSY identity fields, while OpenAPI supplied the effective
+	// token pair and expiry. Reinstall that pair so later refresh uses the same
+	// credentials.
 	identity.SecurityOauthToken = provisional.SecurityOauthToken
 	identity.RefreshToken = strings.TrimSpace(token.RefreshToken)
 	return identity, expiresAt, nil
 }
 
-// RefreshCosySessionForProfileContext 使用国内 Gateway 旧式协议刷新手动 COSY token。
+// RefreshCosySessionForProfileContext refreshes imported CN COSY credentials
+// through Gateway. CN site, user ID, security token, and refresh token are
+// required; nil machine creates the CN shape. Status can replace identity and
+// token fields, while an omitted refresh token retains the request value.
 func RefreshCosySessionForProfileContext(
 	ctx context.Context,
 	profile Profile,
@@ -253,13 +299,17 @@ func RefreshCosySessionForProfileContext(
 	if err != nil {
 		return nil, err
 	}
+	// Keep the saved token when the assembled refresh value is blank. The provider
+	// can then retain its existing refresh credentials when merging this result.
 	if strings.TrimSpace(identity.RefreshToken) == "" {
 		identity.RefreshToken = provisional.RefreshToken
 	}
 	return identity, nil
 }
 
-// marshalAuthStatusRequest 先把身份参数序列化成字符串，再按官方协议包入 EncodeVersion=1 的外层对象。
+// marshalAuthStatusRequest returns the status parameters as text inside the
+// Gateway JSON envelope. The envelope fixes encodeVersion to one and omits
+// requestId; Client applies COSY byte encoding before sending it.
 func marshalAuthStatusRequest(params AuthStatusParams) ([]byte, error) {
 	inner, err := json.Marshal(params)
 	if err != nil {
@@ -275,6 +325,15 @@ func marshalAuthStatusRequest(params AuthStatusParams) ([]byte, error) {
 	return body, nil
 }
 
+// identityFromAuthStatus resolves a status response against the provisional
+// request identity. Nil status is an error. Name, organization, and user type
+// prefer nonempty status fields, while user and account IDs use their respective
+// status ID/accountId order before request identity.
+//
+// A successful status can omit tokens already sent in the request. Token
+// selection therefore falls back to the provisional identity, and the resulting
+// security token is required. CN20 completion subsequently reinstalls its
+// effective OpenAPI tokens.
 func identityFromAuthStatus(status *AuthStatusResult, fallback *AuthIdentity) (*AuthIdentity, error) {
 	if status == nil {
 		return nil, fmt.Errorf("qoder: auth status response is empty")
@@ -287,7 +346,9 @@ func identityFromAuthStatus(status *AuthStatusResult, fallback *AuthIdentity) (*
 		OrganizationID:   firstNonEmpty(status.OrganizationID, fallbackIdentityValue(fallback, func(v *AuthIdentity) string { return v.OrganizationID })),
 		OrganizationName: firstNonEmpty(status.OrganizationName, fallbackIdentityValue(fallback, func(v *AuthIdentity) string { return v.OrganizationName })),
 		UserType:         firstNonEmpty(status.UserType, fallbackIdentityValue(fallback, func(v *AuthIdentity) string { return v.UserType }), "personal_standard"),
-		// QoderCN20 status 只负责校验并返回提供商状态，成功响应可能不重复回传请求中的 token。
+		// Status can omit tokens already sent in the request. Retain the provisional
+		// pair so a successful identity response still yields usable inference
+		// credentials.
 		SecurityOauthToken: firstNonEmpty(status.SecurityOauthToken, fallbackIdentityValue(fallback, func(v *AuthIdentity) string { return v.SecurityOauthToken })),
 		RefreshToken:       firstNonEmpty(status.RefreshToken, fallbackIdentityValue(fallback, func(v *AuthIdentity) string { return v.RefreshToken })),
 	}
@@ -297,6 +358,9 @@ func identityFromAuthStatus(status *AuthStatusResult, fallback *AuthIdentity) (*
 	return identity, nil
 }
 
+// fallbackIdentityValue reads a provisional identity field through getter.
+// A nil identity supplies empty text to firstNonEmpty; a nonnil identity requires
+// a usable getter and retains that field's spelling.
 func fallbackIdentityValue(identity *AuthIdentity, getter func(*AuthIdentity) string) string {
 	if identity == nil {
 		return ""
@@ -304,6 +368,9 @@ func fallbackIdentityValue(identity *AuthIdentity, getter func(*AuthIdentity) st
 	return getter(identity)
 }
 
+// userIDFromInfo selects the trimmed OpenAPI ownership identifier from userinfo.
+// UserID takes precedence over ID, and absent metadata supplies empty text so
+// completion can use the device-token identifier.
 func userIDFromInfo(user *UserInfo) string {
 	if user == nil {
 		return ""
@@ -311,6 +378,9 @@ func userIDFromInfo(user *UserInfo) string {
 	return firstNonEmpty(user.UserID, user.ID)
 }
 
+// userNameFromInfo selects the trimmed display name from OpenAPI userinfo.
+// Name takes precedence over UserName, and absent metadata supplies empty text
+// so completion can use the token response's name.
 func userNameFromInfo(user *UserInfo) string {
 	if user == nil {
 		return ""

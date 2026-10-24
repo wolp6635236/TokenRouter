@@ -9,8 +9,16 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/testutil/postgrescontainer"
 )
 
-// databaseSuite 在当前测试进程内共享迁移模板。
+// Promotion integration cases clone independent databases from one process-wide
+// migrated PostgreSQL template. TestMain keeps the suite available through
+// per-case fixture cleanup, then closes its shared container and exits with the
+// suite's test and cleanup result.
+
+// databaseSuite owns the migrated PostgreSQL template and independent promotion
+// database clones until the package runner ends.
 var databaseSuite postgrescontainer.Suite
 
-// TestMain 在推广测试完成后回收共享容器。
+// TestMain runs promotion cases through the shared PostgreSQL suite and exits
+// with its result. Per-case clone cleanup finishes before the suite releases
+// the process-wide container.
 func TestMain(m *testing.M) { os.Exit(databaseSuite.Run(m)) }

@@ -10,8 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// buildReplayTurnPayload 构造第 turn 轮的全量重发 payload：客户端历史逐轮追加
-// itemBytes 大小的项（Codex store=false 模式）。
+// buildReplayTurnPayload creates turn user-history items containing itemBytes
+// of filler each. Callers supply nonnegative sizes; the serialized full-history
+// payload models store-disabled replay and can be allocated before memory
+// measurements.
 func buildReplayTurnPayload(turn, itemBytes int) []byte {
 	var b strings.Builder
 	_, _ = b.WriteString(`{"type":"response.create","model":"gpt-5.5","stream":true,"input":[`)
@@ -26,9 +28,9 @@ func buildReplayTurnPayload(turn, itemBytes int) []byte {
 	return []byte(b.String())
 }
 
-// TestOpenAIWSReplayStateBuildAllocationBounded 检查 128 轮、每轮约 10KiB 增量并重发全量历史时的内存分配。
-// 状态构建和历史保存共用报文正文，累计分配约为 85MB 正文加头数组及解析开销。
-// 逐轮深拷贝会产生 O(T²) 的累计分配，本场景超过 160MB。
+// TestOpenAIWSReplayStateBuildAllocationBounded checks replay processing across 128 growing turns.
+// Payloads are allocated before measurement, so the bound covers parsing and history retention.
+// Copying the full history per turn would add quadratic allocation.
 func TestOpenAIWSReplayStateBuildAllocationBounded(t *testing.T) {
 	const (
 		turns     = 128
@@ -53,11 +55,11 @@ func TestOpenAIWSReplayStateBuildAllocationBounded(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, exists)
 		require.Len(t, items, turn)
-		// 保存历史 + collector 增量合并（与 ingress/bridge 保存点同构）。
+		// Retain history with the collector delta as the ingress and bridge paths do.
 		history = CombineOpenAIWSReplayItems(items, delta)
 		historyExists = true
-		// 下一轮 payload 含全部用户项但不含 collector 项，触发 sanitize+merge 路径中
-		// 最常见的 prefix 分支比较。
+		// The next payload contains all user items but omits the collector item,
+		// exercising the common prefix-comparison path on the next iteration.
 		history = history[:len(history)-1]
 	}
 
@@ -65,9 +67,9 @@ func TestOpenAIWSReplayStateBuildAllocationBounded(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	allocated := after.TotalAlloc - before.TotalAlloc
 
-	// 正文共享实现全程约 2.5MB（头数组与 gjson 解析开销）。任何逐轮 O(H) 的
-	// 字节级复制（extract 拷贝、正文 clone、保存点深拷贝）都会叠加 ≥84MB
-	// （sum(t×10KiB)），超过测试设置的上限。
+	// Sharing item bytes leaves room for slice and parser allocations. Copying each turn's
+	// full history would allocate over 80 MiB (the sum of turn * 10 KiB),
+	// which exceeds this limit.
 	const maxAllocatedBytes = 32 * 1024 * 1024
 	require.Lessf(
 		t,
@@ -78,6 +80,9 @@ func TestOpenAIWSReplayStateBuildAllocationBounded(t *testing.T) {
 	)
 }
 
+// TestApplyOpenAIWSRetryPayloadStrategy_KeepPromptCacheKey applies the
+// optional-field strategy to a third retry attempt. It checks include removal
+// while prompt_cache_key and text survive in the caller-owned payload.
 func TestApplyOpenAIWSRetryPayloadStrategy_KeepPromptCacheKey(t *testing.T) {
 	payload := map[string]any{
 		"model":            "gpt-5.3-codex",
@@ -98,6 +103,10 @@ func TestApplyOpenAIWSRetryPayloadStrategy_KeepPromptCacheKey(t *testing.T) {
 	require.Contains(t, payload, "text")
 }
 
+// TestApplyOpenAIWSRetryPayloadStrategy_AttemptSixKeepsSemanticFields supplies
+// history-relevant request fields on a sixth attempt. It checks include removal
+// while cache identity, instructions, tools, tool choice, parallel tool calls,
+// and text remain.
 func TestApplyOpenAIWSRetryPayloadStrategy_AttemptSixKeepsSemanticFields(t *testing.T) {
 	payload := map[string]any{
 		"prompt_cache_key":    "pcache_456",

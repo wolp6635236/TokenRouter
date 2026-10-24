@@ -15,11 +15,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// openAIRawStreamTruncatedUpstreamMessage 是 raw CC 直转路径上游截断的 Ops 消息。
+// openai_raw_truncation.go records truncated Chat streams and constructs their
+// failover errors.
+// A raw Chat stream ending before a terminal chunk becomes a retry signal only
+// while the execution reader still permits another attempt. Ops retains the
+// upstream request identifier and transport cause, while the failover body
+// uses the same stable read-error classification as failures after output
+// begins.
+
+// openAIRawStreamTruncatedUpstreamMessage identifies missing terminal Chat chunks in Ops and
+// supplies the common prefix used when a transport cause is appended.
 const openAIRawStreamTruncatedUpstreamMessage = "Upstream Chat Completions stream ended before any terminal chunk"
 
-// NewOpenAIRawTruncationFailure 处理"上游截断且尚未向客户端写出任何
-// 字节"的情况：响应头还没提交，可以透明换号重试，客户端不会看到半截流。
+// NewOpenAIRawTruncationFailure records truncation and returns a 502 failover
+// error with its read classification. Callers verify that retry remains
+// permitted before invoking it; a trimmed request identifier is copied into
+// new headers, and this constructor does not grant recovery after published
+// business output.
 func NewOpenAIRawTruncationFailure(
 	c *gin.Context,
 	provider *gatewayprovider.ExecutionProvider,
@@ -39,7 +51,10 @@ func NewOpenAIRawTruncationFailure(
 	}
 }
 
-// RecordOpenAIRawTruncation 将上游截断写入 Ops 上下文，供错误日志和提供商健康统计使用。
+// RecordOpenAIRawTruncation records the truncated Chat stream and optional
+// transport cause in request Ops state. Nil contexts are ignored; a missing
+// provider uses OpenAI with zero provider identity, while kind distinguishes
+// failover from final HTTP-error recording.
 func RecordOpenAIRawTruncation(
 	c *gin.Context,
 	provider *gatewayprovider.ExecutionProvider,
@@ -71,8 +86,10 @@ func RecordOpenAIRawTruncation(
 	})
 }
 
-// openAIRawStreamTruncatedMessage 拼出 Ops 消息：干净 EOF 没有底层错误可带，
-// 传输层错误（connection reset / http2 stream error）则保留原因以便定位。
+// openAIRawStreamTruncatedMessage appends a transport cause to the common
+// truncation description. Nil causes and errors matching
+// ErrOpenAIUpstreamStreamTruncated use the common message, because that
+// sentinel already describes the missing terminal chunk.
 func openAIRawStreamTruncatedMessage(cause error) string {
 	if cause == nil || errors.Is(cause, openai.ErrOpenAIUpstreamStreamTruncated) {
 		return openAIRawStreamTruncatedUpstreamMessage
@@ -80,8 +97,10 @@ func openAIRawStreamTruncatedMessage(cause error) string {
 	return openAIRawStreamTruncatedUpstreamMessage + ": " + cause.Error()
 }
 
-// openAIRawStreamTruncatedErrorBody 构造 failover 错误体，code/message 与
-// 写出后走 openAIUpstreamStreamReadError 的客户端分类保持一致。
+// openAIRawStreamTruncatedErrorBody builds a JSON failover envelope from the
+// stable stream-read classification. It returns a fixed truncation envelope if
+// serialization fails, allowing the outer failure writer to receive usable
+// JSON in that path.
 func openAIRawStreamTruncatedErrorBody(cause error) []byte {
 	code, message := openai.ClassifyUpstreamStreamReadError(cause)
 	body, err := json.Marshal(map[string]any{
@@ -91,6 +110,8 @@ func openAIRawStreamTruncatedErrorBody(cause error) []byte {
 			"message": message,
 		},
 	})
+	// If serialization fails, retain a valid classified truncation response for
+	// the outer failure writer even though the computed envelope could not be emitted.
 	if err != nil {
 		return []byte(`{"error":{"type":"upstream_error","code":"` + openai.OpenAIUpstreamStreamTruncatedCode +
 			`","message":"Upstream response stream ended before completion"}}`)

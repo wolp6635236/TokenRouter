@@ -25,14 +25,53 @@ import (
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	sessiontestkit "github.com/TokenFlux/TokenRouter/internal/gateway/session/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/ws"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/requestcontext"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// TestGrokWSModelUsesCanonicalID 验证 WebSocket HTTP bridge 使用相同的最终标准化入口。
+// bridgeDiagnosticRoundTrip replaces the wire response while preserving the production
+// upstream pool's dispatch observation and response ownership behavior.
+type bridgeDiagnosticRoundTrip func(*http.Request) (*http.Response, error)
+
+// bridgeDiagnosticTransport serves bridge response fixtures through the real pool.
+type bridgeDiagnosticTransport struct {
+	pool      *httpclient.UpstreamPool // production HTTP pool
+	responses []*http.Response         // ordered fixture responses
+}
+
+// bridgeRetryDelayBody holds one rejected response read before retry can start.
+// The independent delay distinguishes the rejected exchange from accepted timing.
+type bridgeRetryDelayBody struct {
+	reader   io.Reader // rejected response body
+	delayed  bool      // first delay consumed
+	released time.Time // injected wait completion
+}
+
+// A WS continuation executed over HTTP removes previous_response_id after
+// ingress reconstructs its retained input. Function-only upstream requests
+// lower custom and namespace tools, then restore client tool forms in output
+// and retain declaration mappings for later omitted-tool turns.
+//
+// A terminal event can provide usage and a failed result even when the adapter
+// returns no ordinary error. Bare-error synthesis, pre-output failover and
+// already delivered partial output therefore have different asserted results.
+// Current-turn replay after a later 429 carries matching call context to a
+// replacement provider while the client keeps its earlier response. Buffered
+// worker outcomes let network fixtures inspect completion and continuation
+// separately from reading client events.
+
+// TestGrokWSModelUsesCanonicalID resolves an explicitly named Grok model and
+// an omitted model through bridge helpers. The named ID remains grok; omission
+// selects the upstream default while leaving the billing model empty.
 func TestGrokWSModelUsesCanonicalID(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformGrok, Type: capability.ProviderTypeOAuth, Credentials: map[string]any{}}}
 	require.Equal(t, "grok", resolveGrokWSUpstreamModel(provider, []byte(`{"model":"grok"}`), "grok"))
@@ -47,6 +86,10 @@ func TestGrokWSModelUsesCanonicalID(t *testing.T) {
 	require.Equal(t, xai.DefaultResponsesModel, upstreamModel)
 }
 
+// TestGrokContentPolicySSEErrorDoesNotMutateOrFailover supplies a
+// new_sensitive error inside Grok HTTP 200 SSE. The client receives that code
+// with a nonnil result and ordinary error, while failover, provider blocking
+// and repository mutation counters remain absent.
 func TestGrokContentPolicySSEErrorDoesNotMutateOrFailover(t *testing.T) {
 	repo := &grokQuotaProviderRepo{}
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
@@ -85,6 +128,9 @@ func TestGrokContentPolicySSEErrorDoesNotMutateOrFailover(t *testing.T) {
 	require.False(t, wsFixtureProviderBlocked(svc, provider))
 }
 
+// wsFixtureRuntimeOptions returns the fixture's WS settings pointer or nil
+// when options are absent. The pointer aliases the original WS field, so
+// subsequent fixture writes are visible through the returned configuration.
 func wsFixtureRuntimeOptions(options *wsFixtureOptions) *OpenAIWSOptions {
 	if options == nil {
 		return nil
@@ -92,6 +138,10 @@ func wsFixtureRuntimeOptions(options *wsFixtureOptions) *OpenAIWSOptions {
 	return &options.WS
 }
 
+// TestResolveOpenAIWSClientFirstMessageTimeout compares absent settings,
+// zero-valued settings and an explicit 120-second override. The first two
+// select thirty seconds and the positive override becomes the returned
+// duration.
 func TestResolveOpenAIWSClientFirstMessageTimeout(t *testing.T) {
 	defaultTimeout := time.Duration(30) * time.Second
 	require.Equal(t, defaultTimeout, ResolveOpenAIWSClientFirstMessageTimeout(nil))
@@ -103,6 +153,10 @@ func TestResolveOpenAIWSClientFirstMessageTimeout(t *testing.T) {
 	require.Equal(t, 120*time.Second, ResolveOpenAIWSClientFirstMessageTimeout(wsFixtureRuntimeOptions(options)))
 }
 
+// TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields converts a WS request
+// carrying transport controls and a large integer. Conversion removes type,
+// generate and continuation, forces streaming, retains model/input and exact
+// integer bytes, and rejects trailing JSON.
 func TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields(t *testing.T) {
 	body, err := prepareOpenAIWSHTTPBridgeBody(nil, []byte(`{"type":"response.create","generate":true,"model":"gpt-5","stream":false,"previous_response_id":"resp_prev","input":"hi","sequence":900719925474099312345}`))
 	require.NoError(t, err)
@@ -117,7 +171,11 @@ func TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestPrepareOpenAIWSHTTPBridgeBodyStripsNoneReasoningForCompatibleEndpoint(t *testing.T) {
+// TestPrepareOpenAIWSHTTPBridgeBodyPreservesUnknownModelReasoning supplies
+// explicit none effort for an unknown model to custom and official API Key
+// providers. Both bridge-body conversions retain none, limiting this test to
+// conversion before later model preparation.
+func TestPrepareOpenAIWSHTTPBridgeBodyPreservesUnknownModelReasoning(t *testing.T) {
 	payload := []byte(`{"type":"response.create","model":"company-coding-model","reasoning":{"effort":"none"},"input":"hi"}`)
 	compatible := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{
 		"base_url": "https://compat.example/v1",
@@ -125,19 +183,20 @@ func TestPrepareOpenAIWSHTTPBridgeBodyStripsNoneReasoningForCompatibleEndpoint(t
 
 	body, err := prepareOpenAIWSHTTPBridgeBody(compatible, payload)
 	require.NoError(t, err)
-	require.False(t, gjson.GetBytes(body, "reasoning.effort").Exists())
-	require.False(t, gjson.GetBytes(body, "reasoning").Exists())
+	require.Equal(t, "none", gjson.GetBytes(body, "reasoning.effort").String())
 
 	officialBody, err := prepareOpenAIWSHTTPBridgeBody(&gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}, payload)
 	require.NoError(t, err)
 	require.Equal(t, "none", gjson.GetBytes(officialBody, "reasoning.effort").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurn_KeepsOutboundAndObservedServiceTiersSeparate
+// sends priority while the terminal declares default. The upstream request and
+// result ServiceTier retain priority, while UpstreamResponseServiceTier and
+// UpstreamResponseModel retain the observed response values.
 func TestProxyOpenAIWSHTTPBridgeTurn_KeepsOutboundAndObservedServiceTiersSeparate(t *testing.T) {
-	// proxyOpenAIWSHTTPBridgeTurn 是 client WS→HTTP bridge，本身不 canonicalize
-	// fast→priority；生产入口的归一化在 openai_ws_forwarder_ingress.go 的 fast
-	// policy. This test covers the local observer while preserving the canonical
-	// outbound priority tier independently.
+	// The request sends priority while the upstream response declares default.
+	// Keep these values separate so billing can resolve the effective tier from both sources.
 	sse := `data: {"type":"response.completed","response":{"id":"resp_tier","model":"gpt-5.5","status":"completed","service_tier":"default","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n" + ``
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -166,6 +225,10 @@ func TestProxyOpenAIWSHTTPBridgeTurn_KeepsOutboundAndObservedServiceTiersSeparat
 	require.Equal(t, "gpt-5.5", result.UpstreamResponseModel)
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurn_NormalizesFastWithoutLosingObservedDefault
+// sends the fast alias and receives an upstream default declaration. The
+// result records canonical priority for the outbound tier and separately keeps
+// default and the observed model.
 func TestProxyOpenAIWSHTTPBridgeTurn_NormalizesFastWithoutLosingObservedDefault(t *testing.T) {
 	// The client alias fast is canonicalized to priority while the local observer
 	// independently captures the upstream default declaration.
@@ -196,6 +259,11 @@ func TestProxyOpenAIWSHTTPBridgeTurn_NormalizesFastWithoutLosingObservedDefault(
 	require.Equal(t, "gpt-5.5", result.UpstreamResponseModel)
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnAPIKeyAdaptsClientTools sends a custom tool
+// declaration and matching historical call/output through an API Key bridge.
+// Upstream bytes use function tools. The output-item event restores custom
+// input and omits arguments; completed output and saved replay retain the same
+// client call type and input.
 func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyAdaptsClientTools(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"type":"function_call","id":"item_exec","call_id":"call_exec","name":"exec","status":"in_progress"}}`,
@@ -267,6 +335,46 @@ func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyAdaptsClientTools(t *testing.T) {
 	require.Equal(t, "pwd", gjson.GetBytes(replayInput[0], "input").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnAPIKeyKeepsDiscoveredFunctionNamespace sends
+// a discovered plain function through an API-key HTTP bridge. Upstream history
+// uses its bare declaration name, while client completion and replay recover
+// the original namespace and call correlation.
+func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyKeepsDiscoveredFunctionNamespace(t *testing.T) {
+	sse := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_js\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_2\",\"call_id\":\"call_2\",\"name\":\"js\",\"arguments\":\"{}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sse)),
+	}}
+	svc := newWSFixture(wsFixtureInputs{options: &wsFixtureOptions{}, transport: upstream})
+	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 5659, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Concurrency: 1}}
+	payload := []byte(`{"type":"response.create","model":"gpt-5.6-sol","tools":[{"type":"tool_search"}],"input":[{"type":"tool_search_call","call_id":"search_1","arguments":{"query":"js"}},{"type":"tool_search_output","call_id":"search_1","tools":[{"type":"function","name":"js","parameters":{"type":"object"}}]},{"type":"function_call","call_id":"call_1","name":"js","namespace":"js","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	var events [][]byte
+	result, err := svc.proxyOpenAIWSHTTPBridgeTurn(context.Background(), c, provider, "test-token", payload, len(payload), "gpt-5.6-sol", "", "", "", "", "", 1,
+		func(message []byte) error {
+			events = append(events, append([]byte(nil), message...))
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "js", gjson.GetBytes(upstream.lastBody, "input.2.name").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "input.2.namespace").Exists())
+	require.Len(t, events, 1)
+	require.Equal(t, "js", gjson.GetBytes(events[0], "response.output.0.namespace").String())
+	require.Equal(t, "call_2", gjson.GetBytes(events[0], "response.output.0.call_id").String())
+	replay, exists := result.WSReplayInput()
+	require.True(t, exists)
+	require.Len(t, replay, 1)
+	require.Equal(t, "js", gjson.GetBytes(replay[0], "namespace").String())
+}
+
+// TestProxyOpenAIWSHTTPBridgeTurnAPIKeyRestoresClientToolsInResponseDone ends
+// a lowered custom-tool stream with response.done. Four returned events
+// include a resequenced terminal with restored custom call input and no
+// arguments; retained tool replay also uses custom_tool_call.
 func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyRestoresClientToolsInResponseDone(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"type":"function_call","id":"item_exec","call_id":"call_exec","name":"exec","status":"in_progress"}}`,
@@ -317,6 +425,11 @@ func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyRestoresClientToolsInResponseDone(t *t
 	require.Equal(t, "custom_tool_call", gjson.GetBytes(replayInput[0], "type").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnGrokPromotesDiscoveryAndRestoresNamespaceSSE
+// supplies tool_search discoveries containing a namespace function. Grok
+// receives a flattened declaration and sanitized output, while stored mapping
+// and emitted added, done and terminal items restore namespace and function
+// names.
 func TestProxyOpenAIWSHTTPBridgeTurnGrokPromotesDiscoveryAndRestoresNamespaceSSE(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"type":"function_call","id":"item_spawn","call_id":"call_spawn","name":"multi_agent_v1__spawn_agent","status":"in_progress"}}`,
@@ -383,6 +496,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnGrokPromotesDiscoveryAndRestoresNamespaceSSE
 	require.Equal(t, "multi_agent_v1", gjson.GetBytes(events[3], "response.output.0.namespace").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnGrokInheritsToolSearchAndPromotesFollowupDiscovery
+// first declares tool_search then omits tools on a discovery turn. The second
+// request inherits search, promotes the namespace function, retains cache
+// identity and restores that function in terminal output.
 func TestProxyOpenAIWSHTTPBridgeTurnGrokInheritsToolSearchAndPromotesFollowupDiscovery(t *testing.T) {
 	firstSSE := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_first\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
 	secondSSE := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_second\",\"output\":[{\"type\":\"function_call\",\"id\":\"item_spawn\",\"call_id\":\"call_spawn\",\"name\":\"multi_agent_v1__spawn_agent\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
@@ -436,9 +553,13 @@ func TestProxyOpenAIWSHTTPBridgeTurnGrokInheritsToolSearchAndPromotesFollowupDis
 	require.Equal(t, "multi_agent_v1", gjson.GetBytes(events[0], "response.output.0.namespace").String())
 }
 
+// TestOpenAIWSHTTPBridgeAPIKeyReusesClientToolMappingWhenFollowupOmitsTools
+// declares a custom tool before a followup with its result and undeclared
+// namespace history. Both HTTP bodies contain the callable custom function,
+// while historical replay names stay out of saved mappings and declarations.
 func TestOpenAIWSHTTPBridgeAPIKeyReusesClientToolMappingWhenFollowupOmitsTools(t *testing.T) {
 	response := func(id string) *http.Response {
-		body := `data: {"type":"response.completed","response":{"id":"` + id + `","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
+		body := `data: {"type":"response.completed","response":{"id":"` + id + `","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n" // scripted successful terminal SSE bytes
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -463,7 +584,7 @@ func TestOpenAIWSHTTPBridgeAPIKeyReusesClientToolMappingWhenFollowupOmitsTools(t
 	)
 	require.NoError(t, err)
 
-	secondPayload := []byte(`{"type":"response.create","model":"gpt-5.6","stream":true,"previous_response_id":"resp_custom_first","input":[{"type":"custom_tool_call_output","id":"ctco_client_output_1","call_id":"call_custom_1","output":"ok"}]}`)
+	secondPayload := []byte(`{"type":"response.create","model":"gpt-5.6","stream":true,"previous_response_id":"resp_custom_first","input":[{"type":"custom_tool_call_output","id":"ctco_client_output_1","call_id":"call_custom_1","output":"ok"},{"type":"function_call","namespace":"mcp__cua_proxy","name":"js","call_id":"old_call","arguments":"{}"},{"type":"function_call_output","call_id":"old_call","output":"old result"}]}`)
 	_, err = svc.proxyOpenAIWSHTTPBridgeTurn(
 		context.Background(), c, provider, "test-token", secondPayload, len(secondPayload),
 		"gpt-5.6", "", "", "", "", "", 2, write,
@@ -477,8 +598,19 @@ func TestOpenAIWSHTTPBridgeAPIKeyReusesClientToolMappingWhenFollowupOmitsTools(t
 	require.Equal(t, "exec", gjson.GetBytes(upstream.bodies[1], "tools.0.name").String())
 	require.Equal(t, "function_call_output", gjson.GetBytes(upstream.bodies[1], "input.0.type").String())
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.0.id").Exists())
+	require.Equal(t, "mcp__cua_proxy__js", gjson.GetBytes(upstream.bodies[1], "input.1.name").String())
+	require.Equal(t, "old_call", gjson.GetBytes(upstream.bodies[1], "input.2.call_id").String())
+	require.Equal(t, int64(1), gjson.GetBytes(upstream.bodies[1], "tools.#").Int())
+	state, present := gatewayhttp.OpenAIWSHTTPBridgeToolStateFromContext(c)
+	require.True(t, present)
+	require.NotContains(t, state.ClientMapping.NamespaceTools, "mcp__cua_proxy__js")
 }
 
+// TestOpenAIWSHTTPBridgeFullCustomToolHistoryWithoutPreviousResponseIDDoesNotReplay
+// sends anchored continuation followed by repeated unanchored complete tool
+// history. The anchored body keeps its surviving prior input; each complete
+// history contains its three supplied items once, with matching call and
+// output IDs.
 func TestOpenAIWSHTTPBridgeFullCustomToolHistoryWithoutPreviousResponseIDDoesNotReplay(t *testing.T) {
 	completed := func(responseID string, output string) string {
 		return "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"" + responseID + "\",\"model\":\"gpt-5.1\",\"output\":" + output + ",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
@@ -506,6 +638,8 @@ func TestOpenAIWSHTTPBridgeFullCustomToolHistoryWithoutPreviousResponseIDDoesNot
 		},
 	}
 
+	// Buffer session return while four client responses are consumed, then
+	// inspect completed HTTP bodies for repeated history under that same execution.
 	errCh := make(chan error, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, nil)
@@ -574,6 +708,10 @@ func TestOpenAIWSHTTPBridgeFullCustomToolHistoryWithoutPreviousResponseIDDoesNot
 	}
 }
 
+// TestOpenAIWSHTTPBridgeObjectToolOutputWithoutPreviousResponseIDReplaysMatchingCall
+// receives a custom call then supplies an unanchored output object. The second
+// HTTP input expands to three entries containing the prior call and the output
+// with the same call_id.
 func TestOpenAIWSHTTPBridgeObjectToolOutputWithoutPreviousResponseIDReplaysMatchingCall(t *testing.T) {
 	completed := func(responseID string, output string) string {
 		return "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"" + responseID + "\",\"model\":\"gpt-5.1\",\"output\":" + output + ",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
@@ -599,6 +737,8 @@ func TestOpenAIWSHTTPBridgeObjectToolOutputWithoutPreviousResponseIDReplaysMatch
 		},
 	}
 
+	// Retain the server outcome until both client terminals arrive, making the
+	// second recorded input available after matching-call replay has finished.
 	errCh := make(chan error, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, nil)
@@ -658,6 +798,10 @@ func TestOpenAIWSHTTPBridgeObjectToolOutputWithoutPreviousResponseIDReplaysMatch
 	require.Equal(t, "call_1", secondInput[2].Get("call_id").String())
 }
 
+// TestOpenAIWSHTTPBridgeDecisionKeepsSmallFramesOnWS compares sizes below and
+// at the threshold plus a supplied continuation. Only the unanchored equality
+// case bridges for ordinary providers; Grok selects HTTP even for a small
+// anchored payload.
 func TestOpenAIWSHTTPBridgeDecisionKeepsSmallFramesOnWS(t *testing.T) {
 	svc := newWSFixture(wsFixtureInputs{options: &wsFixtureOptions{WS: OpenAIWSOptions{HTTPBridgeThresholdBytes: 100}}})
 
@@ -668,16 +812,22 @@ func TestOpenAIWSHTTPBridgeDecisionKeepsSmallFramesOnWS(t *testing.T) {
 	require.True(t, svc.shouldBridgeOpenAIWSHTTP(&gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformGrok}}, 1, "resp_existing"))
 }
 
+// TestOpenAIWSPassthroughFirstMessageBridgeDecision compares size, event type,
+// duplicate keys and malformed JSON before dedicated dialing. Large valid
+// unanchored creates bridge, including absent/null/blank type; small,
+// anchored, duplicate, nonstring and other-event inputs remain outside that
+// choice.
 func TestOpenAIWSPassthroughFirstMessageBridgeDecision(t *testing.T) {
+	// Build an exact-size frame to exercise the inclusive bridge threshold.
 	const threshold = 100
 	svc := newWSFixture(wsFixtureInputs{options: &wsFixtureOptions{WS: OpenAIWSOptions{HTTPBridgeThresholdBytes: threshold}}})
 	exactThresholdPayload := `{"type":"response.create","input":"` +
 		strings.Repeat("x", threshold-len(`{"type":"response.create","input":""}`)) + `"}`
 
 	tests := []struct {
-		name    string
-		payload string
-		want    bool
+		name    string // bridge scenario diagnostic label
+		payload string // client WebSocket request JSON
+		want    bool   // expected bridge selection result
 	}{
 		{name: "oversized without previous response id bridges", payload: `{"type":"response.create","input":"` + strings.Repeat("x", 100) + `"}`, want: true},
 		{name: "omitted type bridges as response create", payload: `{"input":"` + strings.Repeat("x", 100) + `"}`, want: true},
@@ -700,12 +850,19 @@ func TestOpenAIWSPassthroughFirstMessageBridgeDecision(t *testing.T) {
 	}
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnTransportErrorFailoverSafety injects EOF into
+// first and later HTTP exchanges. The first produces a diagnostic 502 failover
+// before client writes; the later turn returns an ordinary failure and writes
+// one 502 error event.
 func TestProxyOpenAIWSHTTPBridgeTurnTransportErrorFailoverSafety(t *testing.T) {
 	tests := []struct {
-		name         string
-		turn         int
-		wantFailover bool
-		wantWrites   int
+		// turn chooses first or later execution; wantFailover selects typed upstream
+		// failure versus ordinary error assertions. Positive wantWrites additionally
+		// checks the emitted error event type and HTTP status.
+		name         string // bridge scenario diagnostic label
+		turn         int    // local bridge execution turn number
+		wantFailover bool   // expected upstream failure marker presence
+		wantWrites   int    // expected client event write count
 	}{
 		{name: "first_turn_fails_over_before_downstream_event", turn: 1, wantFailover: true},
 		{name: "later_turn_does_not_replay_completed_turns", turn: 2, wantWrites: 1},
@@ -757,13 +914,20 @@ func TestProxyOpenAIWSHTTPBridgeTurnTransportErrorFailoverSafety(t *testing.T) {
 	}
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnHTTPStatusFailoverSafety supplies first-turn
+// 401, 429 and 500 responses alongside a later 500. Initial failures retain
+// their status in failover with no writes; later 500 produces one client event
+// and an ordinary error.
 func TestProxyOpenAIWSHTTPBridgeTurnHTTPStatusFailoverSafety(t *testing.T) {
 	tests := []struct {
-		name         string
-		turn         int
-		status       int
-		wantFailover bool
-		wantWrites   int
+		// turn and status supply one failed exchange. wantFailover selects typed
+		// error assertions that retain status; wantWrites records whether that outcome
+		// has already produced a client event for this turn.
+		name         string // bridge scenario diagnostic label
+		turn         int    // local bridge execution turn number
+		status       int    // scripted upstream HTTP failure status
+		wantFailover bool   // expected upstream failure marker presence
+		wantWrites   int    // expected client event write count
 	}{
 		{name: "first_turn_401", turn: 1, status: http.StatusUnauthorized, wantFailover: true},
 		{name: "first_turn_429", turn: 1, status: http.StatusTooManyRequests, wantFailover: true},
@@ -808,6 +972,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnHTTPStatusFailoverSafety(t *testing.T) {
 	}
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnRetriesRejectedFieldBeforeClientOutput
+// scripts an explicit truncation rejection before a completed stream. Two HTTP
+// bodies show truncation present then removed, and the client writer receives
+// only the final completion event.
 func TestProxyOpenAIWSHTTPBridgeTurnRetriesRejectedFieldBeforeClientOutput(t *testing.T) {
 	upstream := &httpUpstreamSequenceRecorder{responses: []*http.Response{
 		{
@@ -852,6 +1020,9 @@ func TestProxyOpenAIWSHTTPBridgeTurnRetriesRejectedFieldBeforeClientOutput(t *te
 	require.Equal(t, "response.completed", gjson.GetBytes(writes[0], "type").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnSSEErrorFailoverSafety supplies a rate-limit
+// error inside HTTP 200 for first and second turns. Both return a 429 upstream
+// failure with nil result and no client writes.
 func TestProxyOpenAIWSHTTPBridgeTurnSSEErrorFailoverSafety(t *testing.T) {
 	for _, turn := range []int{1, 2} {
 		t.Run(fmt.Sprintf("turn_%d", turn), func(t *testing.T) {
@@ -888,6 +1059,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnSSEErrorFailoverSafety(t *testing.T) {
 	}
 }
 
+// TestBuildOpenAIWSCurrentTurnRetryPayloadRejectsOrphanToolOutput supplies
+// replay containing an output whose call context is missing. Retry
+// construction returns no error but reports unsafe and supplies no replacement
+// payload.
 func TestBuildOpenAIWSCurrentTurnRetryPayloadRejectsOrphanToolOutput(t *testing.T) {
 	payload := []byte(`{"type":"response.create","model":"mapped-model","previous_response_id":"resp_old"}`)
 	fullInput := []json.RawMessage{
@@ -901,6 +1076,10 @@ func TestBuildOpenAIWSCurrentTurnRetryPayloadRejectsOrphanToolOutput(t *testing.
 	require.Nil(t, retryPayload)
 }
 
+// TestBuildOpenAIWSCurrentTurnRetryPayloadRebuildsChainWithoutPreviousResponseID
+// supplies matching call/output replay for provider replacement. The safe
+// result removes the old continuation, restores the client model and retains
+// both input items.
 func TestBuildOpenAIWSCurrentTurnRetryPayloadRebuildsChainWithoutPreviousResponseID(t *testing.T) {
 	payload := []byte(`{"type":"response.create","model":"mapped-model","previous_response_id":"resp_old","input":"continue"}`)
 	fullInput := []json.RawMessage{
@@ -917,6 +1096,10 @@ func TestBuildOpenAIWSCurrentTurnRetryPayloadRebuildsChainWithoutPreviousRespons
 	require.Len(t, gjson.GetBytes(retryPayload, "input").Array(), 2)
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnLaterTurn429FailsOverBeforeClientWrite
+// supplies OAuth 429 on turn 281 with an old continuation. The adapter returns
+// a typed 429 failover and nil result while the client writer count remains
+// zero.
 func TestProxyOpenAIWSHTTPBridgeTurnLaterTurn429FailsOverBeforeClientWrite(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusTooManyRequests,
@@ -947,6 +1130,11 @@ func TestProxyOpenAIWSHTTPBridgeTurnLaterTurn429FailsOverBeforeClientWrite(t *te
 	require.Zero(t, writes)
 }
 
+// TestOpenAIWSHTTPBridgeLaterTurn429CarriesCurrentTurnReplayPayload completes
+// one turn, fails its tool-output continuation and retries on another
+// provider. Retry bytes remove previous_response_id, retain four conversation
+// items and one matching call, and the client receives the second response
+// without replaying the first turn.
 func TestOpenAIWSHTTPBridgeLaterTurn429CarriesCurrentTurnReplayPayload(t *testing.T) {
 	options := &wsFixtureOptions{}
 	options.Request.URLPolicy.Enabled = false
@@ -992,6 +1180,8 @@ func TestOpenAIWSHTTPBridgeLaterTurn429CarriesCurrentTurnReplayPayload(t *testin
 	nextProvider.Record.Name = "replacement"
 
 	serverErrCh := make(chan error, 1)
+	// Retain one current-turn replay while replacement execution sends its terminal;
+	// the main test can inspect retry bytes after reading that client completion.
 	retryPayloadCh := make(chan []byte, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, nil)
@@ -1021,6 +1211,8 @@ func TestOpenAIWSHTTPBridgeLaterTurn429CarriesCurrentTurnReplayPayload(t *testin
 			serverErrCh <- errors.New("missing current-turn retry payload")
 			return
 		}
+		// Send this later turn's replay before invoking the replacement provider, so
+		// assertions inspect the same full-input request that produces the second response.
 		retryPayloadCh <- retryPayload
 		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(
 			r.Context(), ginCtx, conn, &nextProvider, "access-token-b", retryPayload, nil,
@@ -1086,14 +1278,16 @@ func TestOpenAIWSHTTPBridgeLaterTurn429CarriesCurrentTurnReplayPayload(t *testin
 	require.Contains(t, string(upstream.bodies[2]), "second")
 }
 
-// TestProxyOpenAIWSHTTPBridgeTurnRewritesCapacityShedCodeForClient 验证 error / response.failed 的容量降载码改写为可重试的 server_error。
-// Codex 对 server_is_overloaded / slow_down 终止会话。提供商策略使用改写前的事件。
+// TestProxyOpenAIWSHTTPBridgeTurnRewritesCapacityShedCodeForClient compares
+// later bare error and failed-terminal overload frames. Each writes one
+// server_error representation retaining the message; bare-error stream end
+// returns an error while the supplied failed terminal returns nil.
 func TestProxyOpenAIWSHTTPBridgeTurnRewritesCapacityShedCodeForClient(t *testing.T) {
 	tests := []struct {
-		name    string
-		turn    int
-		body    string
-		wantErr bool
+		name    string // bridge scenario diagnostic label
+		turn    int    // local bridge execution turn number
+		body    string // scripted upstream SSE failure bytes
+		wantErr bool   // expected final ordinary error presence
 	}{
 		{
 			name:    "turn2_error_frame",
@@ -1102,7 +1296,8 @@ func TestProxyOpenAIWSHTTPBridgeTurnRewritesCapacityShedCodeForClient(t *testing
 			wantErr: true,
 		},
 		{
-			// 后续 turn 将容量错误改写后返回，客户端负责重试。
+			// A supplied failed terminal ends the later turn directly, while a bare
+			// error ending at EOF selects synthesis and retains an ordinary error result.
 			name: "turn2_bare_response_failed",
 			turn: 2,
 			body: "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_shed\",\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}}\n\n",
@@ -1145,6 +1340,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnRewritesCapacityShedCodeForClient(t *testing
 	}
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnBareErrorUsesAuthoritativeFailed sends
+// partial text, a structured 403 error and its failed terminal. The result
+// retains terminal usage with nil ordinary error, the client receives text
+// then failure, and provider error writes occur once.
 func TestProxyOpenAIWSHTTPBridgeTurnBareErrorUsesAuthoritativeFailed(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"response.output_text.delta","response_id":"resp_failed","delta":"partial"}`,
@@ -1179,6 +1378,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnBareErrorUsesAuthoritativeFailed(t *testing.
 	require.Equal(t, "response.failed", gjson.GetBytes(writes[1], "type").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnBareErrorEOFSynthesizesFailed ends after
+// created and a bare invalid-request error. The adapter returns bad request
+// alongside a failed result and synthesizes a failed terminal using the
+// already observed response ID.
 func TestProxyOpenAIWSHTTPBridgeTurnBareErrorEOFSynthesizesFailed(t *testing.T) {
 	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_eof\",\"status\":\"in_progress\"}}\n\n" +
 		"data: {\"type\":\"error\",\"error\":{\"code\":\"invalid_request\",\"message\":\"bad request\"}}\n\n"
@@ -1205,6 +1408,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnBareErrorEOFSynthesizesFailed(t *testing.T) 
 	require.Equal(t, "resp_eof", gjson.GetBytes(writes[1], "response.id").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnBareErrorFollowedByCompletedUsesCompleted
+// places a recoverable bare error before successful completion. Only created
+// and completed reach the writer, and the result records response.completed
+// with eight input tokens and four output tokens.
 func TestProxyOpenAIWSHTTPBridgeTurnBareErrorFollowedByCompletedUsesCompleted(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_recovered","status":"in_progress"}}`,
@@ -1238,6 +1445,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnBareErrorFollowedByCompletedUsesCompleted(t 
 	require.Equal(t, "response.completed", gjson.GetBytes(writes[1], "type").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnStagesMetadataBeforeCapacityFailover supplies
+// created and in-progress metadata before an overload terminal. The first
+// attempt returns request-scoped retryable failover with nil result and leaves
+// every staged event outside client delivery.
 func TestProxyOpenAIWSHTTPBridgeTurnStagesMetadataBeforeCapacityFailover(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_shed"}}`,
@@ -1277,6 +1488,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnStagesMetadataBeforeCapacityFailover(t *test
 	require.Empty(t, writes)
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnDoesNotReplayCapacityAfterSemanticOutput
+// delivers text before overload failure. Three events reach the writer with
+// rewritten server_error, result remains present and error nil, and the
+// captured log identifies suppressed failover on ws_http_bridge.
 func TestProxyOpenAIWSHTTPBridgeTurnDoesNotReplayCapacityAfterSemanticOutput(t *testing.T) {
 	logSink, restore := captureHandlerStructuredLog(t)
 	defer restore()
@@ -1321,12 +1536,19 @@ func TestProxyOpenAIWSHTTPBridgeTurnDoesNotReplayCapacityAfterSemanticOutput(t *
 	require.True(t, logSink.ContainsFieldValue("path", "ws_http_bridge"))
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnRequiresTerminalEvent ends first-turn streams
+// with DONE alone or after created progress. Both return nil result and
+// upstream failover while the writer receives no staged events, so DONE cannot
+// substitute for response completion.
 func TestProxyOpenAIWSHTTPBridgeTurnRequiresTerminalEvent(t *testing.T) {
 	tests := []struct {
-		name         string
-		body         string
-		wantFailover bool
-		wantWrites   int
+		// body ends at DONE without a response terminal. Both exercised rows expect
+		// wantFailover with no result, while wantWrites checks that progress buffered
+		// before this failure remains outside client delivery.
+		name         string // bridge scenario diagnostic label
+		body         string // scripted upstream SSE failure bytes
+		wantFailover bool   // expected upstream failure marker presence
+		wantWrites   int    // expected client event write count
 	}{
 		{name: "done_without_events_fails_over", body: "data: [DONE]\n\n", wantFailover: true},
 		{
@@ -1374,6 +1596,11 @@ func TestProxyOpenAIWSHTTPBridgeTurnRequiresTerminalEvent(t *testing.T) {
 	}
 }
 
+// TestOpenAIWSHTTPBridgeRelaysSSEFramesAsWebSocketMessages sends created, text
+// and completion through an actual client socket. Client reads check event
+// types, while the result records response ID and usage. The captured HTTP
+// request forces stream, removes WS controls and applies Lite header and
+// parallel-tool rules.
 func TestOpenAIWSHTTPBridgeRelaysSSEFramesAsWebSocketMessages(t *testing.T) {
 	sseBody := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_bridge","model":"gpt-5"}}`,
@@ -1404,10 +1631,16 @@ func TestOpenAIWSHTTPBridgeRelaysSSEFramesAsWebSocketMessages(t *testing.T) {
 	}
 	payload := []byte(`{"type":"response.create","generate":true,"model":"gpt-5","stream":true,"parallel_tool_calls":true,"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"},"input":"hi"}`)
 
+	// bridgeResult keeps the HTTP turn result and worker error in one channel value.
 	type bridgeResult struct {
-		result *forwardcore.OpenAIResult
-		err    error
+		// result and err are the outcome of the same bridge invocation. The buffered
+		// send lets the handler publish its outcome while client reads events before inspecting
+		// these values; a nonnil result can coexist with an error.
+		result *forwardcore.OpenAIResult // observed bridge result metadata
+		err    error                     // final bridge invocation error
 	}
+	// Buffer the one bridge outcome while the main test reads three socket events;
+	// reporting the result therefore does not depend on the main test selecting it first.
 	resultCh := make(chan bridgeResult, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{CompressionMode: coderws.CompressionContextTakeover})
@@ -1493,6 +1726,10 @@ func TestOpenAIWSHTTPBridgeRelaysSSEFramesAsWebSocketMessages(t *testing.T) {
 	require.False(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Bool())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultsEmptyModelTo45 executes a Grok
+// request that omits model. The HTTP body and result UpstreamModel select the
+// configured code default, BillingModel remains empty, and two upstream events
+// reach the writer.
 func TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultsEmptyModelTo45(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -1537,8 +1774,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultsEmptyModelTo45(t *testing.T) 
 	require.Len(t, events, 2)
 }
 
-// TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultModelErrorUsesCanonicalKey 验证 WS 空模型旁路
-// 在错误策略中复用实际发送给 xAI 的默认模型。
+// TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultModelErrorUsesCanonicalKey
+// supplies model_not_found after a model-less Grok request. The adapter
+// returns nil result and failover, and exactly one model cooldown uses the
+// default model actually selected for sending.
 func TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultModelErrorUsesCanonicalKey(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusNotFound,
@@ -1574,8 +1813,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultModelErrorUsesCanonicalKey(t *
 	require.Equal(t, xai.DefaultResponsesModel, repo.modelRateLimitCalls[0].scope)
 }
 
-// TestProxyOpenAIWSHTTPBridgeTurnForGrokFreeFunctionToolsUsesMixedRoute 验证 Grok WS HTTP bridge
-// 与原生 Responses 使用相同的 Free 函数工具缓存路由。
+// TestProxyOpenAIWSHTTPBridgeTurnForGrokFreeFunctionToolsUsesMixedRoute
+// submits client lookup and search declarations for a Free Grok provider. The
+// recorded HTTP body contains lookup plus native web and X search tools and
+// retains auto choice.
 func TestProxyOpenAIWSHTTPBridgeTurnForGrokFreeFunctionToolsUsesMixedRoute(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -1629,6 +1870,11 @@ func TestProxyOpenAIWSHTTPBridgeTurnForGrokFreeFunctionToolsUsesMixedRoute(t *te
 	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "tool_choice").String())
 }
 
+// TestProxyOpenAIWSHTTPBridgeTurnPromotesCodexAdditionalToolsForMixedCache
+// supplies Codex additional_tools and a cache preference header. The body
+// promotes supported declarations, removes additional_tools, custom and
+// namespace forms, and shares the supplied cache identity with the Grok
+// conversation header while consuming the local preference header.
 func TestProxyOpenAIWSHTTPBridgeTurnPromotesCodexAdditionalToolsForMixedCache(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -1700,6 +1946,11 @@ func TestProxyOpenAIWSHTTPBridgeTurnPromotesCodexAdditionalToolsForMixedCache(t 
 	require.Empty(t, upstream.lastReq.Header.Get("X-TokenRouter-Grok-Client-Tool-Cache"))
 }
 
+// TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge executes three
+// socket turns with changing model and temperature capability. HTTP requests
+// use Grok headers, retain model spelling, enable temperature only for turn
+// two and reuse cache identity until the model changes, with WS-only controls
+// removed.
 func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T) {
 	bridgeResponse := func(responseID, requestID string, cachedTokens int) *http.Response {
 		sseBody := strings.Join([]string{
@@ -1739,6 +1990,8 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T)
 		},
 	}
 
+	// Buffer final session return while three client turns run, then inspect
+	// HTTP bodies after their sequential context and cache-identity decisions complete.
 	errCh := make(chan error, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{CompressionMode: coderws.CompressionContextTakeover})
@@ -1767,9 +2020,26 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T)
 		ginCtx.Request = req
 		ginCtx.Set("api_key", &apikey.APIKey{ID: 7101})
 
+		// Keep the server-abort signal while bridge request construction detaches client
+		// cancellation; each cached turn context supplies its own attribute capability.
 		requestCtx, abort := requestcontext.WithAbort(r.Context())
 		defer abort()
-		errCh <- svc.ProxyResponsesWebSocketFromClient(requestCtx, ginCtx, conn, provider, "access-token", firstMessage, nil)
+		turnContexts := map[int]context.Context{}
+		hooks := &ws.OpenAIIngressHooks{ContextForTurn: func(turn int) context.Context {
+			if current, exists := turnContexts[turn]; exists {
+				return current
+			}
+			// Change capability for only the middle turn, making refreshed logical-turn
+			// context visible as temperature presence in that HTTP body alone.
+			enabled := turn == 2
+			attributes := &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{Lookup: func(string) modelcatalog.Attributes {
+				return modelcatalog.Attributes{Temperature: &enabled}
+			}}}
+			current := routing.WithModelAttributes(requestCtx, attributes)
+			turnContexts[turn] = current
+			return current
+		}}
+		errCh <- svc.ProxyResponsesWebSocketFromClient(requestCtx, ginCtx, conn, provider, "access-token", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 
@@ -1779,7 +2049,7 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T)
 	require.NoError(t, err)
 
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","generate":true,"model":"grok","stream":true,"input":"hi","prompt_cache_retention":"24h"}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","generate":true,"model":"grok","stream":true,"temperature":0.4,"input":"hi","prompt_cache_retention":"24h"}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -1801,7 +2071,7 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T)
 	require.Equal(t, "resp_grok_ws_1", gjson.GetBytes(completed, "response.id").String())
 
 	writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","generate":true,"model":"grok","stream":true,"previous_response_id":"resp_grok_ws_1","input":"second turn"}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","generate":true,"model":"grok","stream":true,"temperature":0.4,"previous_response_id":"resp_grok_ws_1","input":"second turn"}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -1814,7 +2084,7 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T)
 	require.Equal(t, "resp_grok_ws_2", gjson.GetBytes(completed, "response.id").String())
 
 	writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","generate":true,"model":"grok-4.3","stream":true,"previous_response_id":"resp_grok_ws_2","input":"third turn with a different model"}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","generate":true,"model":"grok-4.3","stream":true,"temperature":0.4,"previous_response_id":"resp_grok_ws_2","input":"third turn with a different model"}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -1836,6 +2106,9 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T)
 
 	require.Len(t, upstream.requests, 3)
 	require.Len(t, upstream.bodies, 3)
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "temperature").Exists())
+	require.Equal(t, 0.4, gjson.GetBytes(upstream.bodies[1], "temperature").Float())
+	require.False(t, gjson.GetBytes(upstream.bodies[2], "temperature").Exists())
 	require.Equal(t, xai.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer access-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, xai.CLIUserAgent(xai.CLIClientVersion), upstream.lastReq.Header.Get("User-Agent"))
@@ -1863,6 +2136,11 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridge(t *testing.T)
 	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
 }
 
+// TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB sends a padded
+// seventeen-MiB input below the client read limit and above the bridge
+// threshold. The client receives completion and AfterTurn records usage; the
+// captured HTTP body remains above sixteen MiB but below the bridge threshold,
+// loses WS controls and uses the configured provider endpoint.
 func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 	sseBody := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_large_bridge","model":"gpt-5"}}`,
@@ -1900,16 +2178,25 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 		},
 	}
 
+	// Leading whitespace raises the incoming size over the chosen threshold.
+	// The recorded HTTP body is checked below that threshold and above sixteen MiB,
+	// separating incoming frame sizing from the converted HTTP request size.
 	payload := []byte(strings.Repeat(" ", 1024) + `{"type":"response.create","generate":true,"model":"gpt-5","stream":true,"input":"` + strings.Repeat("x", 17*1024*1024) + `"}`)
 	require.Greater(t, len(payload), 16*1024*1024)
 	require.GreaterOrEqual(t, int64(len(payload)), options.WS.HTTPBridgeThresholdBytes)
 	require.Less(t, int64(len(payload)), ResolveOpenAIWSClientReadLimitBytes(wsFixtureRuntimeOptions(options)))
 
+	// turnOutcome retains the logical turn and result reported by AfterTurn.
 	type turnOutcome struct {
-		turn   int
-		result *forwardcore.OpenAIResult
-		err    error
+		// turn, result and err are captured together by AfterTurn before channel
+		// publication. The main test receives this outcome after the client terminal
+		// and server exit, keeping the result associated with its local turn.
+		turn   int                       // local bridge execution turn number
+		result *forwardcore.OpenAIResult // observed bridge result metadata
+		err    error                     // final bridge invocation error
 	}
+	// Keep AfterTurn nonblocking until the large client frame has completed and
+	// the main test can inspect the captured turn ID, usage and terminal outcome.
 	turnOutcomeCh := make(chan turnOutcome, 1)
 	hooks := &ws.OpenAIIngressHooks{
 		AfterTurn: func(capture ws.OpenAITurnCapture) {
@@ -1917,6 +2204,8 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 		},
 	}
 
+	// Keep session return buffered while the client consumes its large-frame
+	// response; that outcome puts worker completion before the retained usage check.
 	errCh := make(chan error, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{CompressionMode: coderws.CompressionContextTakeover})
@@ -1925,6 +2214,8 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 			return
 		}
 		defer func() { _ = conn.CloseNow() }()
+		// Apply the fixture client limit before reading so the padded large frame
+		// reaches ingress transport selection rather than failing WebSocket admission.
 		conn.SetReadLimit(ResolveOpenAIWSClientReadLimitBytes(wsFixtureRuntimeOptions(options)))
 
 		readCtx, cancelRead := context.WithTimeout(r.Context(), 10*time.Second)
@@ -2012,6 +2303,11 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 	require.Equal(t, "gpt-5", gjson.GetBytes(upstream.lastBody, "model").String())
 }
 
+// TestOpenAIWSHTTPBridgeKeepsContinuationFramesOnHTTPWithoutPreviousResponseID
+// completes an HTTP bridge turn that returns a function call, then sends its
+// output continuation. Both HTTP bodies omit previous_response_id, the second
+// input contains prior input/call/output, and the configured WS dialer and
+// writer stay unused.
 func TestOpenAIWSHTTPBridgeKeepsContinuationFramesOnHTTPWithoutPreviousResponseID(t *testing.T) {
 	firstSSEBody := `data: {"type":"response.completed","response":{"id":"resp_bridge_first","model":"gpt-5.1","output":[{"type":"function_call","id":"fc_bridge_1","call_id":"call_bridge_1","name":"shell","arguments":"{}"}],"usage":{"input_tokens":9,"output_tokens":1}}}` + "\n" + ""
 	secondSSEBody := `data: {"type":"response.completed","response":{"id":"resp_bridge_second","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n" + ""
@@ -2066,6 +2362,8 @@ func TestOpenAIWSHTTPBridgeKeepsContinuationFramesOnHTTPWithoutPreviousResponseI
 		},
 	}
 
+	// Retain server return while the client reads both bridged turns, then
+	// inspect HTTP replay and unused WS captures after session execution has finished.
 	errCh := make(chan error, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{CompressionMode: coderws.CompressionContextTakeover})
@@ -2150,6 +2448,10 @@ func TestOpenAIWSHTTPBridgeKeepsContinuationFramesOnHTTPWithoutPreviousResponseI
 	require.Empty(t, captureConn.writes)
 }
 
+// TestOpenAIWSHTTPBridge_IdleTimeoutClosesClientSession completes one bridged
+// request then leaves the client idle. Client and server observe normal
+// closure with websocket idle timeout, and exactly one HTTP body shows no
+// later continuation was submitted.
 func TestOpenAIWSHTTPBridge_IdleTimeoutClosesClientSession(t *testing.T) {
 	sseBody := `data: {"type":"response.completed","response":{"id":"resp_bridge_idle","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n" + ""
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
@@ -2183,6 +2485,8 @@ func TestOpenAIWSHTTPBridge_IdleTimeoutClosesClientSession(t *testing.T) {
 		},
 	}
 
+	// Buffer idle-session return while the client reads completion and close,
+	// then inspect the final HTTP count after the server confirms normal timeout.
 	errCh := make(chan error, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{CompressionMode: coderws.CompressionContextTakeover})
@@ -2243,7 +2547,10 @@ func TestOpenAIWSHTTPBridge_IdleTimeoutClosesClientSession(t *testing.T) {
 	require.Len(t, upstream.bodies, 1, "an idle client must not leave a continuation request running")
 }
 
-// HTTP 桥接预热应返回空响应，输入留给下一轮生成。
+// TestHTTPBridgeWarmupDoesNotGenerate executes generate=false against a
+// prepared HTTP fixture. No HTTP request is recorded; usage and output stay
+// empty, and two local events include completion correlated to the result's
+// response ID.
 func TestHTTPBridgeWarmupDoesNotGenerate(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -2268,7 +2575,10 @@ func TestHTTPBridgeWarmupDoesNotGenerate(t *testing.T) {
 	require.Empty(t, gjson.GetBytes(events[1], "response.output").Array())
 }
 
-// 预热输入在当前连接中保留，业务轮次通过预热 ID 续接时只生成一次。
+// TestHTTPBridgeWarmupContinuation warms OpenAI and Grok API Key bridge
+// sessions with custom declarations before an anchored generating request.
+// Warmup stays local; one later HTTP call inherits input and lowered tools,
+// restores custom terminal output and records generated usage.
 func TestHTTPBridgeWarmupContinuation(t *testing.T) {
 	for _, platform := range []string{capability.PlatformOpenAI, capability.PlatformGrok} {
 		t.Run(platform, func(t *testing.T) {
@@ -2284,6 +2594,8 @@ func TestHTTPBridgeWarmupContinuation(t *testing.T) {
 				LoadLocation: time.LoadLocation, ID: 7001, Platform: platform, Type: capability.ProviderTypeAPIKey, Concurrency: 1,
 				Credentials: map[string]any{"api_key": "test", providercore.UpstreamProtocolsKey: []string{"openai_responses"}},
 			}}
+			// Buffer both turn captures and final session return so warmup and generating
+			// callbacks can complete while the client reads their corresponding terminal events.
 			captures := make(chan ws.OpenAITurnCapture, 2)
 			finished := make(chan error, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2320,6 +2632,8 @@ func TestHTTPBridgeWarmupContinuation(t *testing.T) {
 				}
 			}
 			require.NotEmpty(t, warmID)
+			// Observe local warmup completion before sending its continuation, so the
+			// second turn can inherit retained input and tools without an earlier HTTP call.
 			first := <-captures
 			require.NoError(t, first.Err)
 			require.True(t, first.Result.LocalWarmup)
@@ -2349,7 +2663,9 @@ func TestHTTPBridgeWarmupContinuation(t *testing.T) {
 	}
 }
 
-// 下行预热事件发送失败时结束本轮，上游保持未调用状态。
+// TestHTTPBridgeWarmupWriteFailure injects failure on each of the two local
+// warmup event writes. The helper returns the same cause and nil result
+// immediately, with its write count ending at the failing event.
 func TestHTTPBridgeWarmupWriteFailure(t *testing.T) {
 	for _, failAt := range []int{1, 2} {
 		writes := 0
@@ -2367,6 +2683,10 @@ func TestHTTPBridgeWarmupWriteFailure(t *testing.T) {
 	}
 }
 
+// TestOpenAIWSHTTPBridgeGrok429PersistsRateLimit supplies a Grok 429 with
+// Retry-After 45. The result is nil with error, one provider cooldown expires
+// near forty-five seconds, temporary blocks remain absent and runtime blocking
+// is observed.
 func TestOpenAIWSHTTPBridgeGrok429PersistsRateLimit(t *testing.T) {
 	repo := &grokQuotaProviderRepo{}
 	upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
@@ -2393,6 +2713,10 @@ func TestOpenAIWSHTTPBridgeGrok429PersistsRateLimit(t *testing.T) {
 	require.True(t, wsFixtureProviderBlocked(svc, provider))
 }
 
+// TestOpenAIWSHTTPBridgeSSEErrorSideEffectsRunOncePerPlatform supplies a
+// rate-limit SSE error to OpenAI and Grok OAuth fixtures. Each returns nil
+// result and 429 failover before writes, while exactly one repository
+// rate-limit call records provider effects.
 func TestOpenAIWSHTTPBridgeSSEErrorSideEffectsRunOncePerPlatform(t *testing.T) {
 	for _, platform := range []string{capability.PlatformOpenAI, capability.PlatformGrok} {
 		t.Run(platform, func(t *testing.T) {
@@ -2435,8 +2759,14 @@ func TestOpenAIWSHTTPBridgeSSEErrorSideEffectsRunOncePerPlatform(t *testing.T) {
 	}
 }
 
+// TestOpenAIWSHTTPBridgeGrokExhaustedSuccessPersistsRateLimit completes an
+// HTTP 200 stream whose headers report zero remaining requests. The result
+// succeeds, but one cooldown retains the supplied reset timestamp and the
+// provider becomes runtime blocked.
 func TestOpenAIWSHTTPBridgeGrokExhaustedSuccessPersistsRateLimit(t *testing.T) {
 	repo := &grokQuotaProviderRepo{}
+	// Match integer-second rate headers so the expected reset has no fractional
+	// part before provider health reads it and records the exhausted request window.
 	resetAt := time.Now().Add(20 * time.Minute).UTC().Truncate(time.Second)
 	resp := grokMessagesSSECompletedResponse("resp_ws_limited", 0)
 	resp.Header.Set("X-Ratelimit-Limit-Requests", "10")
@@ -2460,6 +2790,10 @@ func TestOpenAIWSHTTPBridgeGrokExhaustedSuccessPersistsRateLimit(t *testing.T) {
 	require.True(t, wsFixtureProviderBlocked(svc, provider))
 }
 
+// grokMessagesSSECompletedResponse returns a fresh HTTP 200 SSE response
+// ending in completion and DONE. Supplied response ID and cached-token count
+// are encoded into fixed usage; callers own closing the newly constructed
+// response body.
 func grokMessagesSSECompletedResponse(responseID string, cachedTokens int) *http.Response {
 	body := strings.Join([]string{
 		fmt.Sprintf(`data: {"type":"response.completed","response":{"id":%q,"object":"response","model":"grok-4.3","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7,"input_tokens_details":{"cached_tokens":%d}}}}`, responseID, cachedTokens),
@@ -2472,4 +2806,155 @@ func grokMessagesSSECompletedResponse(responseID string, cachedTokens int) *http
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+// TestProxyOpenAIWSHTTPBridgeGrokReasoningOptions applies offline attributes
+// to known and private Grok models. Reading reasoning.effort from captured
+// bodies yields empty for Build, xhigh for the known reasoning model and max
+// for the private model with no catalog metadata.
+func TestProxyOpenAIWSHTTPBridgeGrokReasoningOptions(t *testing.T) {
+	// model selects offline attribute rules, effort supplies client intent, and
+	// want records the sent parameter after preparation. Empty want marks the
+	// known unsupported knob; unknown model metadata retains its supplied level.
+	for _, tc := range []struct {
+		model, effort, want string /* requested model identifier; supplied client effort; expected outbound effort */
+	}{{"grok-build-0.1", "high", ""}, {"grok-4.7", "xhigh", "xhigh"}, {"grok-private-route", "max", "max"}} {
+		t.Run(tc.model, func(t *testing.T) {
+			upstream := &auxiliaryHTTPRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"id":"resp_options","model":"` + tc.model + `","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))}}
+			svc := newWSFixture(wsFixtureInputs{transport: upstream})
+			svc.Requests.Readers = newExecutionReadersFixture(nil, nil)
+			svc.Requests.Readers.Attributes = &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}
+			target := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 72, Platform: capability.PlatformGrok, Type: capability.ProviderTypeOAuth, Concurrency: 1, Credentials: map[string]any{"base_url": xai.DefaultCLIBaseURL}}}
+			payload := []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":"hi","reasoning":{"effort":%q}}`, tc.model, tc.effort))
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			result, err := svc.proxyOpenAIWSHTTPBridgeTurn(context.Background(), c, target, "access-token", payload, len(payload), tc.model, tc.model, "", "", "", "", 1, func([]byte) error { return nil })
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, tc.want, gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+		})
+	}
+}
+
+// RoundTrip delegates one local response fixture to its configured handler.
+func (f bridgeDiagnosticRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Do sends one fixture exchange through production attempt and header observation.
+func (p *bridgeDiagnosticTransport) Do(req *http.Request, _ string, id int64, _ int) (*http.Response, error) {
+	return p.pool.Do(req, httpclient.UpstreamRequestOptions{ProviderID: id, PrepareClient: func(c *http.Client) *http.Client {
+		c.Transport = bridgeDiagnosticRoundTrip(func(r *http.Request) (*http.Response, error) {
+			response := p.responses[0]
+			p.responses = p.responses[1:]
+			response.Request = r
+			return response, nil
+		})
+		return c
+	}})
+}
+
+// DoWithTLS reuses fixture dispatch while leaving fingerprint behavior outside this probe.
+func (p *bridgeDiagnosticTransport) DoWithTLS(req *http.Request, proxy string, id int64, n int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return p.Do(req, proxy, id, n)
+}
+
+// TestHTTPBridgeUsesTransportAttemptForDiagnostics runs the real bridge and HTTP
+// pool through success, rejection, and rejected-field retry. Header provenance,
+// response identity, and completion must agree on the transport's dispatch number.
+func TestHTTPBridgeUsesTransportAttemptForDiagnostics(t *testing.T) {
+	for _, mode := range []string{"success", "retry", "failure", "interrupted"} {
+		t.Run(mode, func(t *testing.T) {
+			var saved telemetry.RequestRecord
+			ctx := context.WithValue(t.Context(), telemetry.RequestID, "turn")
+			ctx = telemetry.WithRequestCapture(ctx, telemetry.RequestRecord{RequestID: "turn", StartedAt: time.Now()}, func(r telemetry.RequestRecord) { saved = r })
+			ctx = telemetry.WithRequestProvider(ctx, 7, "X-Custom")
+			target := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 7, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Concurrency: 1, Extra: map[string]any{providercore.ProviderExtraUpstreamRequestIDHeader: "X-Custom"}}}
+			responses := []*http.Response{}
+			if mode == "retry" {
+				responses = append(responses, &http.Response{StatusCode: 400, Header: http.Header{"X-Custom": {"rejected"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","code":"invalid_parameter","param":"truncation","message":"Unsupported parameter: truncation"}}`))})
+			}
+			status := 200
+			body := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bridge\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+			if mode == "failure" {
+				status = 503
+				body = `{"error":{"message":"unavailable"}}`
+			}
+			if mode == "interrupted" {
+				body = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bridge\"}}\n\n"
+			}
+			responses = append(responses, &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"text/event-stream"}, "X-Custom": {"selected"}, "X-Request-Id": {"unselected"}}, Body: io.NopCloser(strings.NewReader(body))})
+			count := len(responses)
+			transport := &bridgeDiagnosticTransport{pool: httpclient.NewUpstreamPool(), responses: responses}
+			svc := newWSFixture(wsFixtureInputs{options: &wsFixtureOptions{}, transport: transport})
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil).WithContext(ctx)
+			payload := []byte(`{"type":"response.create","model":"gpt-5","input":"hi","truncation":"auto"}`)
+			result, err := svc.proxyOpenAIWSHTTPBridgeTurn(ctx, c, target, "sk-test", payload, len(payload), "gpt-5", "", "", "", "", 1, func([]byte) error { return nil })
+			require.Len(t, saved.Attempts, count)
+			require.Equal(t, "selected", saved.Attempts[count-1].RequestID)
+			if mode == "failure" {
+				require.Error(t, err)
+				require.Equal(t, "failed", saved.Attempts[0].Outcome)
+				return
+			}
+			if mode == "interrupted" {
+				require.Error(t, err)
+				require.Contains(t, saved.Aliases, telemetry.RequestAlias{Kind: "response", Value: "resp_bridge", Source: "response.id", AttemptNumber: count, ProviderID: 7})
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, count, result.RequestAttempt.Number)
+			require.Equal(t, int64(count), result.Timings.Values["attempt_number"])
+			input := gatewayprovider.CaptureOpenAI(ctx, &gatewayprovider.OpenAICapture{Result: result, Provider: target.View()})
+			require.Nil(t, input.Result.UpstreamRequestID)
+			require.Equal(t, "completed", saved.Attempts[count-1].Outcome)
+			if mode == "retry" {
+				require.Equal(t, "failed", saved.Attempts[0].Outcome)
+			}
+			require.Contains(t, saved.Aliases, telemetry.RequestAlias{Kind: "response", Value: "resp_bridge", Source: "response.id", AttemptNumber: count, ProviderID: 7})
+			for _, alias := range saved.Aliases {
+				require.NotEqual(t, "unselected", alias.Value)
+			}
+		})
+	}
+}
+
+// Read delays the first fixture read before delegating to its stored reader.
+func (r *bridgeRetryDelayBody) Read(p []byte) (int, error) {
+	if !r.delayed {
+		r.delayed = true
+		time.Sleep(50 * time.Millisecond)
+		r.released = time.Now()
+	}
+	return r.reader.Read(p)
+}
+
+// TestHTTPBridgeRetryTimingBelongsToAcceptedDispatch retries a rejected field
+// after a measurable first-attempt delay. The performance labeled with the second
+// dispatch must start at that dispatch rather than include its rejected predecessor.
+func TestHTTPBridgeRetryTimingBelongsToAcceptedDispatch(t *testing.T) {
+	var saved telemetry.RequestRecord
+	origin := time.Now()
+	ctx := context.WithValue(t.Context(), telemetry.RequestID, "turn")
+	ctx = telemetry.WithRequestCapture(ctx, telemetry.RequestRecord{RequestID: "turn", StartedAt: origin}, func(r telemetry.RequestRecord) { saved = r })
+	ctx = telemetry.WithRequestProvider(ctx, 7, "X-Custom")
+	target := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 7, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, Concurrency: 1}}
+	delayed := &bridgeRetryDelayBody{reader: strings.NewReader(`{"error":{"type":"invalid_request_error","code":"invalid_parameter","param":"truncation","message":"Unsupported parameter: truncation"}}`)}
+	transport := &bridgeDiagnosticTransport{pool: httpclient.NewUpstreamPool(), responses: []*http.Response{
+		{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(delayed)},
+		{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))},
+	}}
+	svc := newWSFixture(wsFixtureInputs{options: &wsFixtureOptions{}, transport: transport})
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil).WithContext(ctx)
+	payload := []byte(`{"type":"response.create","model":"gpt-5","input":"hi","truncation":"auto"}`)
+	result, err := svc.proxyOpenAIWSHTTPBridgeTurn(ctx, c, target, "sk-test", payload, len(payload), "gpt-5", "", "", "", "", 1, func([]byte) error { return nil })
+	require.NoError(t, err)
+	require.Len(t, saved.Attempts, 2)
+	require.Equal(t, int64(2), result.Timings.Values["attempt_number"])
+	secondStart := saved.Attempts[1].StartedAt.Sub(origin).Milliseconds()
+	t.Logf("accepted attempt starts at %d ms; attributed performance=%+v", secondStart, result.Timings.Values)
+	require.GreaterOrEqual(t, result.Timings.Values["upstream_started_ms"], delayed.released.Sub(origin).Milliseconds())
+	require.GreaterOrEqual(t, result.Duration.Milliseconds()-int64(*result.Timings.DurationMs()), int64(49))
 }

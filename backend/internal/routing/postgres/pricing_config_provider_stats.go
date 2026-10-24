@@ -11,9 +11,25 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// batchLoadProviderStatsPricingRules 批量加载多个共享价格配置的提供商统计定价规则（含模型定价）。
+// pricing_config_provider_stats.go reads and replaces ordered provider-cost
+// rules with their nested prices and intervals.
+// Provider-cost rules contain their own model-price rows and context intervals,
+// separate from customer price rows. Rule order is retained through sort_order
+// and ID so pricing consumers can choose the first applicable rule. Batch
+// readers join these levels by generated IDs and return configurations without
+// rules as absent map entries.
+//
+// Replacement deletes the old rule parents and lets PostgreSQL cascade their
+// prices and intervals before inserting the new tree. Writers use the caller's
+// transaction and assign returned IDs to nested input values as they go.
+// Database rollback protects the persisted tree after a child failure, while
+// those caller-visible ID and timestamp assignments remain in memory.
+
+// batchLoadProviderStatsPricingRules reads provider-cost rules and attaches
+// their prices for each requested configuration. Rule slices follow sort_order
+// and ID, configurations without rules have no map entry, and any read failure
+// discards the map.
 func (r *PricingConfigStore) batchLoadProviderStatsPricingRules(ctx context.Context, pricingConfigIDs []int64) (map[int64][]routing.ProviderStatsPricingRule, error) {
-	// 1. 查询规则
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, pricing_config_id, name, group_ids, provider_ids, sort_order, created_at, updated_at
 		 FROM pricing_config_provider_stats_pricing_rules WHERE pricing_config_id = ANY($1) ORDER BY pricing_config_id, sort_order, id`,
@@ -42,13 +58,11 @@ func (r *PricingConfigStore) batchLoadProviderStatsPricingRules(ctx context.Cont
 		return nil, fmt.Errorf("iterate provider stats pricing rules: %w", err)
 	}
 
-	// 2. 批量加载规则的模型定价
 	pricingMap, err := r.batchLoadProviderStatsModelPricing(ctx, ruleIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. 按 pricingConfigID 分组并关联定价
 	result := make(map[int64][]routing.ProviderStatsPricingRule, len(pricingConfigIDs))
 	for i := range allRules {
 		allRules[i].Pricing = pricingMap[allRules[i].ID]
@@ -58,7 +72,9 @@ func (r *PricingConfigStore) batchLoadProviderStatsPricingRules(ctx context.Cont
 	return result, nil
 }
 
-// batchLoadProviderStatsModelPricing 批量加载规则的模型定价。
+// batchLoadProviderStatsModelPricing reads model prices and their intervals
+// grouped by rule ID. Empty rule IDs return an empty map; malformed model names
+// become an empty match list, and other read failures return no map.
 func (r *PricingConfigStore) batchLoadProviderStatsModelPricing(ctx context.Context, ruleIDs []int64) (map[int64][]routing.ModelPricingEntry, error) {
 	if len(ruleIDs) == 0 {
 		return make(map[int64][]routing.ModelPricingEntry), nil
@@ -87,6 +103,8 @@ func (r *PricingConfigStore) batchLoadProviderStatsModelPricing(ctx context.Cont
 		); err != nil {
 			return nil, fmt.Errorf("scan provider stats model pricing: %w", err)
 		}
+		// Keep corrupt model names out of provider-cost matching by returning an
+		// empty name list, while the other stored price columns remain readable.
 		if err := json.Unmarshal(modelsJSON, &p.Models); err != nil {
 			p.Models = []string{}
 		}
@@ -96,7 +114,8 @@ func (r *PricingConfigStore) batchLoadProviderStatsModelPricing(ctx context.Cont
 		return nil, fmt.Errorf("iterate provider stats model pricing: %w", err)
 	}
 
-	// Load intervals for all pricing entries.
+	// Attach intervals by the generated provider-cost price IDs, keeping their
+	// tier amounts with the corresponding price instead of customer-price rows.
 	var allPricingIDs []int64
 	for _, pricings := range pricingMap {
 		for _, p := range pricings {
@@ -119,7 +138,10 @@ func (r *PricingConfigStore) batchLoadProviderStatsModelPricing(ctx context.Cont
 	return pricingMap, nil
 }
 
-// loadProviderStatsPricingRules 加载单个共享价格配置的提供商统计定价规则（供 GetByID 使用）。
+// loadProviderStatsPricingRules reads one configuration's ordered provider-cost
+// rules and nested prices. A configuration without rules returns a nil slice;
+// database failures return to GetByID so it can discard the incomplete
+// configuration.
 func (r *PricingConfigStore) loadProviderStatsPricingRules(ctx context.Context, pricingConfigID int64) ([]routing.ProviderStatsPricingRule, error) {
 	result, err := r.batchLoadProviderStatsPricingRules(ctx, []int64{pricingConfigID})
 	if err != nil {
@@ -128,9 +150,21 @@ func (r *PricingConfigStore) loadProviderStatsPricingRules(ctx context.Context, 
 	return result[pricingConfigID], nil
 }
 
-// replaceProviderStatsPricingRulesTx 在事务中替换共享价格配置的提供商统计定价规则（删除旧的 + 插入新的）。
+// replaceProviderStatsPricingRulesTx replaces a configuration's provider-cost
+// rule tree on the supplied transaction. Empty input clears all rules, and
+// callers commit only after the replacement and their other configuration
+// writes succeed. Nested input IDs and timestamps are assigned during
+// insertion.
+//
+// Deleting rule parents cascades through their prices and intervals before
+// replacement insertion begins. Any child failure returns to the transaction
+// owner, which can roll back the delete and preceding inserts together.
+// Rollback restores database state but leaves generated values already assigned
+// into the supplied rules slice.
 func replaceProviderStatsPricingRulesTx(ctx context.Context, tx *sql.Tx, pricingConfigID int64, rules []routing.ProviderStatsPricingRule) error {
-	// CASCADE 会自动删除关联的 model_pricing
+	// Delete rule parents first; their foreign keys remove model prices and
+	// intervals, allowing the caller transaction to rebuild or roll back the full
+	// tree.
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM pricing_config_provider_stats_pricing_rules WHERE pricing_config_id = $1`, pricingConfigID,
 	); err != nil {
@@ -146,7 +180,16 @@ func replaceProviderStatsPricingRulesTx(ctx context.Context, tx *sql.Tx, pricing
 	return nil
 }
 
-// createProviderStatsPricingRuleTx 在事务中创建单条提供商统计定价规则及其模型定价。
+// createProviderStatsPricingRuleTx inserts a nonnil provider-cost rule and its
+// nested prices in tx. The returned rule ID and timestamps are assigned before
+// child insertion. Caller-supplied group and provider arrays are stored as
+// given.
+//
+// The generated rule ID becomes each price row's foreign key, keeping identical
+// model names under their owning rule. A later price or interval error stops
+// insertion and leaves rollback to the owner of tx. The caller retains
+// in-memory generated values after rollback and reloads persisted state before
+// reusing them.
 func createProviderStatsPricingRuleTx(ctx context.Context, tx *sql.Tx, rule *routing.ProviderStatsPricingRule) error {
 	err := tx.QueryRowContext(ctx,
 		`INSERT INTO pricing_config_provider_stats_pricing_rules (pricing_config_id, name, group_ids, provider_ids, sort_order)
@@ -157,6 +200,8 @@ func createProviderStatsPricingRuleTx(ctx context.Context, tx *sql.Tx, rule *rou
 		return fmt.Errorf("insert provider stats pricing rule: %w", err)
 	}
 
+	// Insert nested prices using the generated rule ID so duplicate model names
+	// under different cost rules retain their distinct owners.
 	for j := range rule.Pricing {
 		if err := createProviderStatsModelPricingTx(ctx, tx, rule.ID, &rule.Pricing[j]); err != nil {
 			return err
@@ -165,7 +210,16 @@ func createProviderStatsPricingRuleTx(ctx context.Context, tx *sql.Tx, rule *rou
 	return nil
 }
 
-// createProviderStatsModelPricingTx 在事务中创建单条提供商统计模型定价。
+// createProviderStatsModelPricingTx inserts a nonnil provider-cost price for
+// ruleID and its intervals in tx. Empty billing mode stores token, and
+// generated identity and timestamps are assigned into pricing. The caller owns
+// commit and rollback.
+//
+// Each interval receives the newly generated provider-cost price ID before
+// insertion; customer-price IDs belong to a separate table. A child error
+// returns after the parent and any preceding interval writes have executed,
+// allowing the caller to roll back the tree. Assigned in-memory IDs survive
+// that rollback.
 func createProviderStatsModelPricingTx(ctx context.Context, tx *sql.Tx, ruleID int64, pricing *routing.ModelPricingEntry) error {
 	modelsJSON, err := json.Marshal(pricing.Models)
 	if err != nil {
@@ -185,7 +239,9 @@ func createProviderStatsModelPricingTx(ctx context.Context, tx *sql.Tx, ruleID i
 	if err != nil {
 		return fmt.Errorf("insert provider stats model pricing: %w", err)
 	}
-	// Persist intervals (mirrors pricing_config_pricing_intervals logic).
+
+	// Assign the provider-cost parent ID before writing each interval; these
+	// foreign keys refer to the statistics price table's identity.
 	for i := range pricing.Intervals {
 		iv := &pricing.Intervals[i]
 		iv.PricingID = pricing.ID
@@ -196,7 +252,10 @@ func createProviderStatsModelPricingTx(ctx context.Context, tx *sql.Tx, ruleID i
 	return nil
 }
 
-// createProviderStatsIntervalTx 为提供商统计定价条目插入一个区间。
+// createProviderStatsIntervalTx inserts a nonnil interval under its
+// provider-cost PricingID and fills generated identity and timestamps. Its
+// parent must already exist in tx; the transaction owner completes or rolls
+// back the write.
 func createProviderStatsIntervalTx(ctx context.Context, tx *sql.Tx, iv *routing.PricingInterval) error {
 	return tx.QueryRowContext(ctx,
 		`INSERT INTO pricing_config_provider_stats_pricing_intervals
@@ -208,7 +267,9 @@ func createProviderStatsIntervalTx(ctx context.Context, tx *sql.Tx, iv *routing.
 	).Scan(&iv.ID, &iv.CreatedAt, &iv.UpdatedAt)
 }
 
-// batchLoadProviderStatsIntervals loads intervals for provider stats pricing entries.
+// batchLoadProviderStatsIntervals reads provider-cost intervals in sort_order
+// and ID order, grouped by price ID. Empty IDs return nil, and prices with no
+// intervals have no entry in the result map.
 func (r *PricingConfigStore) batchLoadProviderStatsIntervals(ctx context.Context, pricingIDs []int64) (map[int64][]routing.PricingInterval, error) {
 	if len(pricingIDs) == 0 {
 		return nil, nil

@@ -13,6 +13,25 @@ import (
 	acctcore "github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
+// ollama_usage.go persists shared Ollama usage state and selects due API-key
+// groups for refresh.
+// Ollama Cloud providers sharing the same API key use one managed
+// browser-session identity even when their proxy selections differ. Group
+// writes lock the selected proxy and eligible provider rows, compare the
+// anchor's complete identity, and optionally require the observed session,
+// refresh switch, and snapshot to match a current member before replacing the
+// managed values.
+//
+// Periodic scans combine activity from every eligible member with success
+// intervals and failure retry times. They rank one due member per exact key
+// before applying the page limit, then attach the group's latest activity to
+// that hydrated record so the service can check timing again. Configuration
+// and proxy writers reuse the SQL URL rule when clearing observations whose
+// identity became stale.
+
+// These SQL fragments share Ollama HTTPS-host eligibility across grouped usage
+// reads and identity-aware configuration cleanup, with API Key values
+// remaining query parameters.
 const (
 	OllamaCloudBaseURLRegexSQL       = `^[hH][tT][tT][pP][sS]://([wW][wW][wW]\.)?[oO][lL][lL][aA][mM][aA]\.[cC][oO][mM](:443)?(/v1)?$`
 	OllamaCloudBaseURLMatchSQLPrefix = "btrim("
@@ -25,16 +44,26 @@ const (
 `
 )
 
+// lockedOllamaCloudUsageMember holds one locked identity member and its
+// managed-state observations.
 type lockedOllamaCloudUsageMember struct {
-	id            int64
+	id int64 // locked provider database identifier
+	// anchorMatches compares this member with the loaded provider's full credential
+	// and proxy identity; the group writer requires at least one matching anchor.
 	anchorMatches bool
-	sessionJSON   string
-	autoJSON      string
-	snapshotJSON  string
+	// sessionJSON, autoJSON and snapshotJSON hold JSONB text from this locked row,
+	// using literal null for missing keys. The expected-state check compares their
+	// canonical forms together against the loaded provider's three managed values.
+	sessionJSON  string // encrypted session JSON observation
+	autoJSON     string // refresh-switch JSON observation
+	snapshotJSON string // usage snapshot JSON observation
 }
 
-// ListOllamaCloudUsageGroupProviders 通过一次 ID 查询和一次批量装载解析所有给定身份的同组提供商。
-// API Key 用于本次查询参数。
+// ListOllamaCloudUsageGroupProviders returns eligible nondeleted providers
+// sharing exact nonempty API keys from the supplied Ollama records. Keys are
+// query parameters and deduplicated before selection; no usable keys yield an
+// allocated empty slice, while absent SQL support returns
+// ErrOllamaCloudUsageUnavailable.
 func (r *ProviderStore) ListOllamaCloudUsageGroupProviders(ctx context.Context, providers []*acctcore.Record) ([]acctcore.Record, error) {
 	if r == nil || r.sql == nil {
 		return nil, acctcore.ErrOllamaCloudUsageUnavailable
@@ -69,6 +98,9 @@ func (r *ProviderStore) ListOllamaCloudUsageGroupProviders(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
+	// Keep cleanup for group-ID scan failures; normal iteration consumes the
+	// selected IDs before their hydrated provider reads need the shared
+	// storage executor.
 	defer func() { _ = rows.Close() }()
 	ids := make([]int64, 0, len(keys))
 	for rows.Next() {
@@ -94,6 +126,11 @@ func (r *ProviderStore) ListOllamaCloudUsageGroupProviders(ctx context.Context, 
 	return result, nil
 }
 
+// SaveOllamaCloudUsageSession replaces the group's managed keys with supplied
+// ciphertext and autoRefresh, clearing its prior snapshot. The caller
+// encrypts and validates session content; storage compares the anchor
+// identity and proxy, but deliberately skips the expected-managed-state
+// comparison for this replacement.
 func (r *ProviderStore) SaveOllamaCloudUsageSession(ctx context.Context, provider *acctcore.Record, ciphertext string, autoRefresh bool) error {
 	return r.updateOllamaCloudUsageGroup(ctx, provider, map[string]any{
 		acctcore.OllamaCloudUsageSessionExtraKey:     ciphertext,
@@ -101,10 +138,18 @@ func (r *ProviderStore) SaveOllamaCloudUsageSession(ctx context.Context, provide
 	}, false)
 }
 
+// DeleteOllamaCloudUsageSession clears all three managed session, refresh and
+// snapshot keys across the anchor's API-key group. The shared writer compares
+// current anchor/proxy identity before removal, and the caller owns outer
+// transaction completion when already participating.
 func (r *ProviderStore) DeleteOllamaCloudUsageSession(ctx context.Context, provider *acctcore.Record) error {
 	return r.updateOllamaCloudUsageGroup(ctx, provider, map[string]any{}, false)
 }
 
+// SetOllamaCloudUsageAutoRefresh changes the refresh switch while preserving
+// the loaded managed session and snapshot values. A missing nonempty session
+// string is rejected, and the group writer requires the observed managed
+// state to match a current locked member.
 func (r *ProviderStore) SetOllamaCloudUsageAutoRefresh(ctx context.Context, provider *acctcore.Record, enabled bool) error {
 	if !ollamaCloudUsageProviderHasSession(provider) {
 		return acctcore.ErrOllamaCloudUsageSessionRequired
@@ -114,6 +159,10 @@ func (r *ProviderStore) SetOllamaCloudUsageAutoRefresh(ctx context.Context, prov
 	return r.updateOllamaCloudUsageGroup(ctx, provider, payload, true)
 }
 
+// UpdateOllamaCloudUsageSnapshot replaces the group snapshot while retaining
+// loaded session and refresh values. Provider and snapshot must be nonnil and
+// a nonempty session is required; anchor/proxy identity must match and the
+// loaded managed state must jointly match at least one locked member.
 func (r *ProviderStore) UpdateOllamaCloudUsageSnapshot(ctx context.Context, provider *acctcore.Record, snapshot *acctcore.OllamaCloudUsageSnapshot) error {
 	if provider == nil || snapshot == nil {
 		return acctcore.ErrProviderNilInput
@@ -126,8 +175,10 @@ func (r *ProviderStore) UpdateOllamaCloudUsageSnapshot(ctx context.Context, prov
 	return r.updateOllamaCloudUsageGroup(ctx, provider, payload, true)
 }
 
-// DisableOllamaCloudUsageAutoRefresh 按共享身份组关闭自动刷新，并保留已加载身份的 CAS 校验。
-// 提供商更换 API Key 后，该操作不能误关新身份组。
+// DisableOllamaCloudUsageAutoRefresh writes a false refresh switch and
+// removes the loaded snapshot from the group replacement payload. A nonempty
+// session is required; matching anchor/proxy identity and one locked member's
+// managed state protect that replacement from a superseded observation.
 func (r *ProviderStore) DisableOllamaCloudUsageAutoRefresh(ctx context.Context, provider *acctcore.Record) error {
 	if !ollamaCloudUsageProviderHasSession(provider) {
 		return acctcore.ErrOllamaCloudUsageSessionRequired
@@ -138,6 +189,10 @@ func (r *ProviderStore) DisableOllamaCloudUsageAutoRefresh(ctx context.Context, 
 	return r.updateOllamaCloudUsageGroup(ctx, provider, payload, true)
 }
 
+// ollamaCloudUsageManagedPayload copies the three present managed keys into a
+// new top-level map. Nil record or Extra yields an empty map; values remain
+// borrowed until serialization, so callers coordinate access to nested
+// snapshot or session values.
 func ollamaCloudUsageManagedPayload(provider *acctcore.Record) map[string]any {
 	payload := make(map[string]any, 3)
 	if provider == nil || provider.Extra == nil {
@@ -155,6 +210,9 @@ func ollamaCloudUsageManagedPayload(provider *acctcore.Record) map[string]any {
 	return payload
 }
 
+// ollamaCloudUsageProviderHasSession reports whether Extra holds a nonempty
+// session string. Nil records or maps and other value types are false; this
+// storage guard does not decrypt, validate, or trim the session content.
 func ollamaCloudUsageProviderHasSession(provider *acctcore.Record) bool {
 	if provider == nil || provider.Extra == nil {
 		return false
@@ -163,6 +221,18 @@ func ollamaCloudUsageProviderHasSession(provider *acctcore.Record) bool {
 	return ok && value != ""
 }
 
+// updateOllamaCloudUsageGroup replaces managed values for the eligible
+// records sharing the anchor's exact API key. It rejects nil or unsupported
+// input, checks the selected proxy under a shared lock, then locks provider
+// members in ID order and requires the anchor's complete credential/proxy
+// identity to match.
+//
+// When requireExpectedState is true, the session, auto-refresh value and
+// snapshot from the supplied record must jointly match at least one locked
+// member. The update removes all three stored keys before merging payload and
+// requires every locked member to be affected. Locally opened transactions
+// commit here; context or transaction-bound clients remain caller-owned, and
+// this path emits no scheduling event.
 func (r *ProviderStore) updateOllamaCloudUsageGroup(
 	ctx context.Context,
 	provider *acctcore.Record,
@@ -180,6 +250,9 @@ func (r *ProviderStore) updateOllamaCloudUsageGroup(
 		return acctcore.ErrOllamaCloudUsageProviderInvalid
 	}
 	apply := func(txCtx context.Context, client *dbent.Client) error {
+		// Lock the selected proxy before provider members so its connection identity
+		// stays consistent with the anchor comparison and group replacement
+		// that follow.
 		matchesProxy, err := lockAndMatchProviderProxyIdentity(txCtx, client, provider)
 		if err != nil {
 			return err
@@ -198,6 +271,8 @@ func (r *ProviderStore) updateOllamaCloudUsageGroup(
 		if !anchorMatches {
 			return acctcore.ErrOllamaCloudUsageIdentityChanged
 		}
+		// Compare all three managed values as one observed state; a single matching
+		// member keeps the replacement tied to a currently stored group observation.
 		if requireExpectedState {
 			expectedSession, err := canonicalProviderExtraJSON(provider, acctcore.OllamaCloudUsageSessionExtraKey)
 			if err != nil {
@@ -232,6 +307,9 @@ func (r *ProviderStore) updateOllamaCloudUsageGroup(
 		for index := range members {
 			memberIDs[index] = members[index].id
 		}
+		// Replace the managed key set on exactly the locked members, retaining other
+		// Extra keys and checking the affected count before this transaction
+		// may commit.
 		result, err := client.ExecContext(txCtx, `
 			UPDATE providers
 			SET extra = (COALESCE(extra, '{}'::jsonb)
@@ -256,16 +334,23 @@ func (r *ProviderStore) updateOllamaCloudUsageGroup(
 		}
 		return nil
 	}
+	// A context transaction owns the earlier proxy/member locks and later completion;
+	// return its apply result so the outer caller decides commit or rollback.
 	if dbent.TxFromContext(ctx) != nil {
 		return apply(ctx, clientFromContext(ctx, r.client))
 	}
 	tx, err := r.client.Tx(ctx)
+	// A transaction-bound store client also supplies the shared lock lifetime;
+	// reusing it leaves completion with its caller rather than opening
+	// a nested transaction.
 	if errors.Is(err, dbent.ErrTxStarted) {
 		return apply(ctx, r.client)
 	}
 	if err != nil {
 		return err
 	}
+	// Keep the local group transaction recoverable after a failed identity/state
+	// comparison or member-count check, releasing all proxy and provider locks on exit.
 	defer func() { _ = tx.Rollback() }()
 	txCtx := dbent.NewTxContext(ctx, tx)
 	if err := apply(txCtx, tx.Client()); err != nil {
@@ -274,6 +359,17 @@ func (r *ProviderStore) updateOllamaCloudUsageGroup(
 	return tx.Commit()
 }
 
+// lockOllamaCloudUsageGroup locks eligible members of the exact API-key
+// identity in ascending ID order and returns their managed JSON observations.
+// The caller retains the transaction through its group replacement; an empty
+// group returns ErrOllamaCloudUsageIdentityChanged.
+//
+// Each member includes an anchor-match observation comparing ID, platform,
+// type, complete credentials and nullable proxy ID with the loaded provider.
+// That allows the group writer to distinguish a valid shared key from an
+// anchor whose identity was replaced. Missing managed keys become literal
+// null text for later canonical comparison, and the iterator is closed before
+// the helper returns.
 func lockOllamaCloudUsageGroup(
 	ctx context.Context,
 	client *dbent.Client,
@@ -309,6 +405,9 @@ func lockOllamaCloudUsageGroup(
 	if err != nil {
 		return nil, err
 	}
+	// Release locked-member result messages before the group UPDATE reuses this
+	// transaction connection; provider locks remain held until the surrounding
+	// transaction finishes.
 	defer func() { _ = rows.Close() }()
 	members := make([]lockedOllamaCloudUsageMember, 0, 1)
 	for rows.Next() {
@@ -327,6 +426,10 @@ func lockOllamaCloudUsageGroup(
 	return members, nil
 }
 
+// canonicalProviderExtraJSON serializes one loaded Extra value and returns
+// its canonical JSON text. A missing record, map or key encodes as null; JSON
+// marshaling errors stop the caller's managed-state comparison rather than
+// substituting an observation.
 func canonicalProviderExtraJSON(provider *acctcore.Record, key string) (string, error) {
 	var value any
 	if provider != nil && provider.Extra != nil {
@@ -339,30 +442,38 @@ func canonicalProviderExtraJSON(provider *acctcore.Record, key string) (string, 
 	return canonicalJSON(string(raw)), nil
 }
 
+// canonicalJSON normalizes JSON text through standard decoding and
+// re-encoding for managed-state comparison. Invalid input returns an empty
+// string, and separate failed normalizations can compare equal through that
+// sentinel. Decoding uses encoding/json's ordinary interface types, including
+// float64 numbers; callers account for that precision during comparisons.
 func canonicalJSON(raw string) string {
 	var value any
+	// Use the same empty sentinel for decode and encode failures, leaving this
+	// helper's caller with a string comparison rather than a separate decoding error.
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return ""
 	}
 	encoded, err := json.Marshal(value)
+	// Re-encoding errors select the same empty sentinel as decoding errors;
+	// callers receive no separate failure and may compare two failed normalizations.
 	if err != nil {
 		return ""
 	}
 	return string(encoded)
 }
 
-// ollamaCloudUsageParseRFC3339SQL 复用经过验证的 RFC3339(/Nano) 解析路径；
-// 时间戳缺失或无效时返回 NULL，以便按首次刷新处理。
+// ollamaCloudUsageParseRFC3339SQL builds a nullable timestamp-parser
+// expression around the trusted query fragments supplied here. Missing,
+// malformed or invalid values yield NULL; invalid fetched_at or
+// last_attempt_at can select initial refresh, while invalid next_refresh_at
+// adds no failure backoff.
 //
-// 值进入 jsonpath 前会经过两次改写：
-//  1. 截断超过 6 位的小数秒，因为 .datetime() 不接受高于微秒的精度，而 Go 会输出 9 位；
-//  2. 把尾随 "Z" 改写为 "+00:00"。PostgreSQL 17 起 jsonpath .datetime() 才接受
-//     ISO-8601 的 "Z" 标识，而本服务写入的所有时间戳都是 UTC（因此以 "Z" 结尾）。
-//     若不改写，PostgreSQL 16 及更早版本会静默返回 NULL，使所有到期列均为 NULL，
-//     最终让 ListDueOllamaCloudUsageProviders 退化到开放分支。
-//
-// jsonpath 将格式匹配但日期非法的值（例如 2026-02-30）解析为 NULL，
-// 查询按开放策略处理这些记录。
+// Go can emit nine fractional digits, while SQL truncates fractions to six
+// for PostgreSQL datetime parsing. A trailing Z becomes +00:00 before silent
+// jsonpath evaluation so accepted UTC observations remain parseable. Callers
+// supply fixed SQL fragments because the returned expression is embedded
+// directly rather than bound as request data.
 func ollamaCloudUsageParseRFC3339SQL(expression string) string {
 	return `CASE
 		WHEN ` + expression + ` IS NULL THEN NULL
@@ -383,18 +494,21 @@ func ollamaCloudUsageParseRFC3339SQL(expression string) string {
 	END`
 }
 
-// ListDueOllamaCloudUsageProviders 为每个精确 API Key 最多返回一个真正到期、
-// 由活动驱动的候选提供商。它会在 LIMIT 前按防抖、最大等待和失败退避规则判断到期，
-// 尚未到期的分组留给后续扫描。
-// Provider.LastUsedAt 会写入分组 MAX(last_used_at)，供服务层纯函数再次检查，
-// 防止查询候选与执行刷新之间出现竞态。
+// ListDueOllamaCloudUsageProviders returns at most one due eligible member
+// per exact API key, ranked before limit. A nonpositive limit returns an
+// allocated empty slice; nonpositive debounce and maxWait select one minute
+// and one hour, while absent SQL support is an error.
 //
-// 规则与 acctcore.ollamaCloudUsageAutoRefreshDueAt 保持一致，两处修改必须同步：
-//   - 快照或时间缺失/无效时按首次刷新处理；
-//   - 成功后仅处理晚于 fetched_at 的活动，
-//     due_at = GREATEST(LEAST(last_used+debounce, fetched+maxWait), fetched+minFetchInterval)；
-//   - 失败或未授权后仅处理晚于 last_attempt 的活动，活动到期时间仍使用 LEAST 公式，
-//     最终 due_at 不早于有效的 next_refresh_at，无效或缺失值按开放策略处理。
+// The query combines group activity with each active row's managed snapshot
+// when that row has a string session value and auto-refresh=true. Missing or
+// invalid status observations or their required timestamps are initially
+// due; success needs later activity and applies the minimum fetch interval,
+// while failure needs later activity and respects valid next-refresh backoff.
+// An empty session string can pass this SQL selection; the service rechecks
+// session configuration before work.
+//
+// Hydration can omit disappeared IDs. Returned LastUsedAt holds the group
+// maximum for OllamaCloudUsageAutoRefreshDueAt to check timing again before work.
 func (r *ProviderStore) ListDueOllamaCloudUsageProviders(
 	ctx context.Context,
 	now time.Time,
@@ -413,9 +527,13 @@ func (r *ProviderStore) ListDueOllamaCloudUsageProviders(
 	if maxWait <= 0 {
 		maxWait = time.Hour
 	}
+	// Pass duration values in seconds for make_interval while preserving fractional
+	// input, keeping SQL timing in the same units as the service's duration rules.
 	debounceSeconds := debounce.Seconds()
 	maxWaitSeconds := maxWait.Seconds()
 	minFetchIntervalSeconds := acctcore.OllamaCloudUsageMinFetchInterval.Seconds()
+	// Apply timing and identity ranking before LIMIT so a not-yet-due member
+	// cannot occupy a scan slot needed by another API-key group's due observation.
 	rows, err := r.sql.QueryContext(ctx, `
 		WITH eligible AS (
 			SELECT id,
@@ -510,9 +628,15 @@ func (r *ProviderStore) ListDueOllamaCloudUsageProviders(
 	if err != nil {
 		return nil, err
 	}
+	// Retain cleanup for due-selection failures while keeping the selected IDs
+	// and grouped activity values available together for the later hydration step.
 	defer func() { _ = rows.Close() }()
+	// dueRow retains one selected provider identity and its group activity observation.
 	type dueRow struct {
-		id            int64
+		id int64 // selected due provider identifier
+		// groupLastUsed is the eligible API-key group's maximum activity time; nil
+		// means no member had activity and clears the hydrated representative's
+		// LastUsedAt.
 		groupLastUsed *time.Time
 	}
 	rowsOut := make([]dueRow, 0, limit)
@@ -544,7 +668,9 @@ func (r *ProviderStore) ListDueOllamaCloudUsageProviders(
 		if provider == nil {
 			continue
 		}
-		// 写入分组 MAX(last_used_at)，供服务层判断是否到期。
+		// Attach activity from every eligible key-sharing member to this record;
+		// the service's later timing check would otherwise see this provider's own
+		// activity while missing the group's more recent use.
 		if row.groupLastUsed != nil {
 			ts := row.groupLastUsed.UTC()
 			provider.LastUsedAt = &ts
@@ -556,6 +682,16 @@ func (r *ProviderStore) ListDueOllamaCloudUsageProviders(
 	return result, nil
 }
 
+// lockAndMatchProviderProxyIdentity compares the loaded proxy connection
+// under a shared row lock before an Ollama group write. No selected proxy ID
+// succeeds immediately; otherwise the caller holds the transaction through
+// its later member locks and replacement.
+//
+// A missing proxy row matches only when the loaded record also has no proxy
+// object. Existing rows require that object's ID to match and compare
+// protocol, host, port, username, password and status; those fields define
+// egress.ProxyConnectionIdentity. Query, scan and iteration failures are
+// returned, and result closure completes before group locking continues.
 func lockAndMatchProviderProxyIdentity(ctx context.Context, client *dbent.Client, provider *acctcore.Record) (bool, error) {
 	if provider.ProxyID == nil {
 		return true, nil
@@ -569,6 +705,9 @@ func lockAndMatchProviderProxyIdentity(ctx context.Context, client *dbent.Client
 	if err != nil {
 		return false, err
 	}
+	// Finish proxy result messages before acquiring provider-member locks on the
+	// same connection; the shared proxy row lock stays with the
+	// surrounding transaction.
 	defer func() { _ = rows.Close() }()
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
@@ -586,7 +725,10 @@ func lockAndMatchProviderProxyIdentity(ctx context.Context, client *dbent.Client
 	return current == egress.ProxyConnectionIdentityFromProxy(provider.Proxy), rows.Err()
 }
 
-// OllamaCloudBaseURLMatchesSQL 生成匹配 Ollama Cloud 地址的 SQL 条件。
+// OllamaCloudBaseURLMatchesSQL returns a case-insensitive allowed-host
+// predicate around a trusted SQL expression. It trims surrounding text and
+// accepts HTTPS ollama.com or www.ollama.com with optional port 443 and /v1;
+// callers supply SQL fragments rather than user text.
 func OllamaCloudBaseURLMatchesSQL(expression string) string {
 	return OllamaCloudBaseURLMatchSQLPrefix + expression + OllamaCloudBaseURLMatchSQLSuffix
 }

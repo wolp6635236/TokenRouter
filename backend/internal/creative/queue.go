@@ -7,6 +7,17 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+// queue.go defines creative queue leases, processing locks, and transient
+// media storage operations.
+// Creative task queue ownership is separate from user/workspace access to task
+// metadata. A reservation carries a run identifier and queue lease token for
+// acknowledgment, heartbeat, and requeue, while the job lock has its own
+// ownership and renewal lifetime. Temporary payload and media operations keep
+// plaintext and byte content outside persistent run rows.
+
+// These queue errors distinguish an empty reserve, duplicate admission, lost
+// ownership, and malformed task identity so workers can select acknowledgment,
+// requeue, or recovery handling for the returned operation result.
 var (
 	ErrCreativeQueueEmpty    = infraerrors.New(infraerrors.CategoryNotFound, "CREATIVE_QUEUE_EMPTY", "creative queue is empty")
 	ErrCreativeAlreadyQueued = infraerrors.New(infraerrors.CategoryConflict, "CREATIVE_ALREADY_QUEUED", "creative run is already queued")
@@ -15,56 +26,117 @@ var (
 	ErrInvalidCreativeQueuePayload = infraerrors.New(infraerrors.CategoryBadRequest, "CREATIVE_QUEUE_INVALID_PAYLOAD", "invalid creative queue payload")
 )
 
-// ReservedCreativeRun 是队列保留的一次任务。
+// ReservedCreativeRun identifies a reserved task and the lease token required
+// for queue updates.
 type ReservedCreativeRun struct {
-	RunID      string
-	LeaseToken string
+	// RunID names the reserved task and LeaseToken fences updates to its active
+	// queue entry. Workers carry both through heartbeat, acknowledgment, and
+	// requeue so a stale reservation cannot change a later owner entry.
+	RunID      string // reserved creative task identifier
+	LeaseToken string // queue reservation ownership token
 }
 
-// CreativeRunJobLock 是任务级分布式锁。
+// CreativeRunJobLock is a task-level distributed lock that the holder releases
+// after processing.
 type CreativeRunJobLock interface {
+	// Release relinquishes the held job lock under the supplied context.
+	// Token-aware implementations leave expired or replacement locks unchanged,
+	// while transport errors can leave cleanup to the lock lifetime.
 	Release(ctx context.Context) error
 }
 
-// CreativeRunJobLockRefresher 是可选的锁续期能力；由具体锁实现按需提供。
+// CreativeRunJobLockRefresher optionally renews a task lock during processing.
 type CreativeRunJobLockRefresher interface {
+	// Refresh renews a job lock when its stored token still matches and reports
+	// ownership. A false result means renewal did not retain that lock; an error
+	// leaves ownership uncertain for the worker.
 	Refresh(ctx context.Context, ttl time.Duration) (bool, error)
 }
 
-// CreativeRunQueue 是创作台任务的 Redis 队列抽象。
-// 实现位于 internal/creative/rediscache/queue.go，语义与批量图片队列一致。
+// CreativeRunQueue coordinates ready, delayed, and active tasks using lease tokens.
+// The Redis implementation is in internal/creative/rediscache/queue.go.
 type CreativeRunQueue interface {
+	// Enqueue admits a creative run identifier to ready work and its inflight
+	// marker. Existing inflight work reports ErrCreativeAlreadyQueued, allowing
+	// recovery callers to treat repeated queue admission as represented work.
 	Enqueue(ctx context.Context, runID string) error
+	// Reserve waits up to the supplied budget for ready work and returns its
+	// active queue ownership. An empty budget still permits an immediate reserve
+	// attempt, while cancellation and store failures remain errors. Workers use
+	// the returned RunID and LeaseToken together for subsequent heartbeat,
+	// acknowledgment, or requeue and acquire a separate job lock before
+	// processing the task.
 	Reserve(ctx context.Context, blockTimeout time.Duration) (ReservedCreativeRun, error)
+	// RequeueAfter returns an owned active task to delayed or immediately ready
+	// work. The lease token must match the active reservation; missing or
+	// replaced ownership reports ErrCreativeLeaseLost instead of changing another
+	// worker entry.
 	RequeueAfter(ctx context.Context, runID, leaseToken string, delay time.Duration) error
+	// Ack removes queue bookkeeping for the matching active run and lease token.
+	// Missing or replaced ownership reports ErrCreativeLeaseLost, so workers
+	// acknowledge only the reservation whose processing they completed.
 	Ack(ctx context.Context, runID, leaseToken string) error
+	// Heartbeat renews the active timestamp for a matching reservation and
+	// reports whether it remains owned. A stale token or absent active entry
+	// cannot recreate it after acknowledgment or requeue has removed that
+	// membership.
 	Heartbeat(ctx context.Context, runID, leaseToken string) (bool, error)
+	// MoveDueDelayedToReady moves one bounded batch whose delayed availability is
+	// due to ready work. Returned counts describe moved entries, and callers poll
+	// again after nonempty batches or wait before another empty attempt.
 	MoveDueDelayedToReady(ctx context.Context, limit int) (int, error)
+	// RecoverStaleActive moves one bounded batch of old active timestamps back to
+	// ready. Recovery clears their prior lease ownership, so previously reserved
+	// workers cannot acknowledge a later reservation using stale tokens.
 	RecoverStaleActive(ctx context.Context, staleAfter time.Duration, limit int) (int, error)
+	// TryAcquireJobLock attempts a separate task lock and returns a handle only
+	// after acquisition. Callers release an acquired handle after processing and
+	// can renew it through CreativeRunJobLockRefresher while work remains active.
 	TryAcquireJobLock(ctx context.Context, runID string, ttl time.Duration) (CreativeRunJobLock, bool, error)
 }
 
-// CreativeTransientStore 是创作台临时 Redis 存储抽象。
-// 输入载荷和输出图片本体存放在临时存储中，TTL 到期即失效。数据库保存任务元数据。
+// CreativeTransientStore stores task payloads and media with expiration.
+// Payloads and image bytes expire with their TTL; the database stores task metadata.
 type CreativeTransientStore interface {
-	// SavePayload 保存任务载荷（prompt 与元数据），TTL 为配置的 transient_ttl_seconds。
+	// SavePayload stores execution prompt and metadata with the transient store
+	// lifetime. Source and mask bytes belong in their separate storage
+	// operations; callers save those before marking provisioning transient_saved.
 	SavePayload(ctx context.Context, runID string, payload *CreativeRunPayload) error
-	// LoadPayload 读取任务载荷；不存在或过期返回明确错误。
+	// LoadPayload returns decoded execution metadata or an error distinguishing
+	// absence, corruption, and store unavailability. Callers separately load
+	// referenced input and mask bytes before dispatching a provider request.
 	LoadPayload(ctx context.Context, runID string) (*CreativeRunPayload, error)
-	// SaveInput 保存一张源图字节，idx 从 0 开始。
+	// SaveInput stores nonempty source bytes under the run and supplied input
+	// index. The bytes expire with the store lifetime; callers keep the original
+	// index order for later payload SourceCount loading.
 	SaveInput(ctx context.Context, runID string, idx int, data []byte) error
-	// LoadInputs 按数量读取全部源图字节；缺失任一张都视为失败。
+	// LoadInputs loads the requested indexed source sequence or reports a missing
+	// source. Nonpositive counts yield no inputs in a configured store, and
+	// storage failures remain distinct from confirmed absence.
 	LoadInputs(ctx context.Context, runID string, count int) ([][]byte, error)
-	// SaveMask 保存 mask 字节。
+	// SaveMask stores nonempty mask bytes with the transient store lifetime.
+	// Callers pair this write with payload HasMask metadata so worker input
+	// loading can reconstruct the mask before provider execution.
 	SaveMask(ctx context.Context, runID string, data []byte) error
-	// LoadMask 读取 mask 字节；任务无 mask 时返回明确错误。
+	// LoadMask returns the stored mask bytes or a missing/unavailable storage
+	// error. Callers infer or retain MIME separately because this byte operation
+	// carries no mask metadata.
 	LoadMask(ctx context.Context, runID string) ([]byte, error)
-	// SaveOutput 保存一张临时输出图片，写入时设置独立 TTL。
+	// SaveOutput stores nonempty generated bytes for the supplied output index
+	// and TTL. Nonpositive TTL uses the store default, while callers record an
+	// aligned metadata deadline for public delivery checks.
 	SaveOutput(ctx context.Context, runID string, index int, data []byte, ttl time.Duration) error
-	// LoadOutput 读取临时输出图片；不存在或过期返回明确错误。
+	// LoadOutput returns image bytes or distinguishes missing, corrupt, and
+	// unavailable storage. Confirmed absence can classify delivery loss, while a
+	// storage outage remains an error for result recovery.
 	LoadOutput(ctx context.Context, runID string, index int) ([]byte, error)
-	// DeleteOutput 删除单张临时输出（客户端 ack 或清理），幂等。
+	// DeleteOutput removes one transient image key after receipt or cleanup.
+	// Missing keys succeed, allowing repeated acknowledgment and later cleanup to
+	// retry a previously failed deletion safely.
 	DeleteOutput(ctx context.Context, runID string, index int) error
-	// DeleteRunTransient 删除任务的全部临时数据（payload/inputs/mask/outputs），幂等。
+	// DeleteRunTransient removes payload, mask, and the supplied input/output
+	// indexes for a task. Nonpositive counts request key discovery;
+	// implementations can leave undiscovered keys to their existing TTL when
+	// discovery fails.
 	DeleteRunTransient(ctx context.Context, runID string, inputCount, outputCount int) error
 }

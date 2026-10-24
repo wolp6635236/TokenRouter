@@ -7,6 +7,24 @@ import (
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
+// input_validation.go validates platform credential choices and normalizes
+// Grok media eligibility updates.
+// CN provider credentials carry a mode and either legacy protocol selection or
+// a unified protocol set. Creation records legacy defaults when needed, while
+// editing can validate historical missing fields without writing those
+// defaults. Platform-specific protocol checks reject combinations that the
+// forwarding capability rules cannot serve.
+//
+// Grok media eligibility has a separate administrator override. An omitted
+// update retains a saved boolean, explicit null removes the override, and a
+// supplied boolean replaces it. Normalization copies the top-level map for this
+// selection so deleting or restoring the override does not directly mutate the
+// submitted settings. Other platforms keep their own Extra values untouched.
+
+// NormalizeProviderConcurrency replaces nonpositive Grok OAuth concurrency with
+// one. Other platform/type combinations and positive supplied values pass
+// through unchanged, allowing creation and single editing to apply that
+// platform default.
 func NormalizeProviderConcurrency(platform, providerType string, concurrency int) int {
 	if platform == PlatformGrok && providerType == ProviderTypeOAuth {
 		if concurrency <= 0 {
@@ -16,9 +34,17 @@ func NormalizeProviderConcurrency(platform, providerType string, concurrency int
 	return concurrency
 }
 
-// NormalizeCNProviderCredentials 校验国产平台提供商组合，并为新提供商补齐历史默认值。
-// 旧记录缺少 mode/protocol 时，读取按 payg + chat_completions 处理。
-// 新建记录保存默认值，前端和监控据此选择适配器。
+// NormalizeCNProviderCredentials validates API Key type, mode, and legacy
+// protocol for CN providers. Nil and non-CN records are skipped. Absent,
+// non-string, or blank mode and protocol values are interpreted as payg and
+// chat_completions. Creation stores an interpreted mode default regardless of
+// unified protocol presence. An interpreted legacy protocol default is stored
+// only when that unified key is absent.
+//
+// The credentials map is initialized when absent. Editing leaves missing
+// default keys absent while still checking their interpreted values. Responses
+// uses the provider's native platform capability check, and DeepSeek rejects
+// coding mode before the record can be accepted.
 // @project-doc docs/interfaces/upstream_provider_matrix.md#cn_provider_protocols
 func NormalizeCNProviderCredentials(provider *Record, isCreate bool) error {
 	if provider == nil || !IsCNProvider(provider.Platform) {
@@ -41,6 +67,8 @@ func NormalizeCNProviderCredentials(provider *Record, isCreate bool) error {
 	if mode != ProviderModePayG && mode != ProviderModeCoding {
 		return infraerrors.BadRequest("CN_PROVIDER_PROVIDER_MODE_INVALID", "provider_mode must be payg or coding")
 	}
+	// Interpret historical missing protocol keys for validation. Creation persists
+	// that legacy default only when a unified protocol set has not been supplied.
 	protocol, _ := provider.Credentials["api_protocol"].(string)
 	protocol = strings.TrimSpace(protocol)
 	if protocol == "" {
@@ -52,7 +80,9 @@ func NormalizeCNProviderCredentials(provider *Record, isCreate bool) error {
 	switch protocol {
 	case APIProtocolAdaptive, APIProtocolChatCompletions, APIProtocolAnthropic:
 	case APIProtocolResponses:
-		// 保存校验与转发共用平台协议能力列表。
+		// Forwarding uses the same platform Responses capability. Reject a
+		// legacy selection that cannot be served before it is saved as provider
+		// configuration.
 		if !provider.SupportsNativeCNResponses() {
 			return infraerrors.BadRequest("CN_PROVIDER_PROTOCOL_INVALID", "only DeepSeek and Kimi support Responses protocol")
 		}
@@ -65,8 +95,10 @@ func NormalizeCNProviderCredentials(provider *Record, isCreate bool) error {
 	return nil
 }
 
-// ValidateGrokMediaEligibilityExtra 校验可选的媒体调度覆盖；null 表示删除覆盖，
-// 让提供商恢复为根据上游观测自动判断。
+// ValidateGrokMediaEligibilityExtra validates a Grok media-eligibility override
+// when present. A boolean is accepted, null requests removal during
+// normalization, and nil settings or other platforms skip this
+// provider-specific validation.
 func ValidateGrokMediaEligibilityExtra(platform string, extra map[string]any) error {
 	if platform != PlatformGrok || extra == nil {
 		return nil
@@ -84,6 +116,9 @@ func ValidateGrokMediaEligibilityExtra(platform string, extra map[string]any) er
 	return nil
 }
 
+// NormalizeGrokMediaEligibilityExtra validates Grok settings and copies their
+// top-level map before removing a null override. Non-Grok settings are returned
+// as supplied, and nested values in a Grok copy remain shared.
 func NormalizeGrokMediaEligibilityExtra(platform string, extra map[string]any) (map[string]any, error) {
 	if platform != PlatformGrok {
 		return extra, nil
@@ -98,6 +133,16 @@ func NormalizeGrokMediaEligibilityExtra(platform string, extra map[string]any) (
 	return normalized, nil
 }
 
+// NormalizeGrokMediaEligibilityUpdateExtra reconciles Grok's submitted override
+// with the saved provider value. Explicit null removes the override, a supplied
+// boolean uses the normalized input, and an omitted key carries forward a saved
+// boolean. Invalid submitted types return an error.
+//
+// Grok callers supply a nonnil input and a normalized replacement already
+// containing any submitted boolean override. The normalized outer map is copied
+// before this decision and allocated when needed, retaining original input-key
+// presence separately from the full replacement. Nil or non-Grok providers
+// return the normalized map directly.
 func NormalizeGrokMediaEligibilityUpdateExtra(provider *Record, input *UpdateProviderInput, normalized map[string]any) (map[string]any, error) {
 	if provider == nil || provider.Platform != PlatformGrok {
 		return normalized, nil
@@ -109,6 +154,9 @@ func NormalizeGrokMediaEligibilityUpdateExtra(provider *Record, input *UpdatePro
 	if normalized == nil {
 		normalized = make(map[string]any)
 	}
+	// Full Extra replacement loses omitted keys. Consult original input
+	// presence before restoring the saved boolean so explicit null still clears
+	// the override.
 	raw, provided := input.Extra[GrokMediaEligibleExtraKey]
 	if provided {
 		if raw == nil {
@@ -122,7 +170,10 @@ func NormalizeGrokMediaEligibilityUpdateExtra(provider *Record, input *UpdatePro
 	return normalized, nil
 }
 
-// ValidateGeminiThirdPartyBaseURL 阻止第三方来源回退到官方 Gemini 默认端点。
+// ValidateGeminiThirdPartyBaseURL requires third-party Gemini API Keys to supply
+// a parsed URL with a scheme and hostname. It rejects GeminiOfficialAPIHost;
+// nil records and other provider kinds skip this rule. Broader transport
+// validation belongs to the request path.
 func ValidateGeminiThirdPartyBaseURL(provider *Record) error {
 	if provider == nil || !provider.IsGeminiThirdPartyProvider() || provider.HasGeminiThirdPartyBaseURL() {
 		return nil

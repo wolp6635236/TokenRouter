@@ -7,6 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestIsolateOpenAISessionID varies trimmed session input and API key scope,
+// including zero. It checks absence, determinism, distinct fixture digests,
+// and the sixteen-character lowercase hex representation.
 func TestIsolateOpenAISessionID(t *testing.T) {
 	t.Run("empty_raw_returns_empty", func(t *testing.T) {
 		assert.Equal(t, "", IsolateSessionID(1, ""))
@@ -43,12 +46,15 @@ func TestIsolateOpenAISessionID(t *testing.T) {
 	t.Run("zero_apiKeyID_still_works", func(t *testing.T) {
 		result := IsolateSessionID(0, "session")
 		assert.NotEmpty(t, result)
-		// apiKeyID=0 与 apiKeyID=1 应产生不同结果
+		// Zero remains a distinct API key scope.
 		other := IsolateSessionID(1, "session")
 		assert.NotEqual(t, result, other)
 	})
 }
 
+// TestGenerateAnthropicMsgID_FormatAndUniqueness samples one hundred message
+// identifiers. It checks the required prefix and base-62 suffix shape and
+// detects duplicate values within that finite sample.
 func TestGenerateAnthropicMsgID_FormatAndUniqueness(t *testing.T) {
 	seen := make(map[string]struct{}, 100)
 	for i := range 100 {

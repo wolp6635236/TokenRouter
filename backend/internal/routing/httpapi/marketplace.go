@@ -12,21 +12,39 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// MarketplaceStatsReader 查询首页公开统计。
+// marketplace.go serves public marketplace model listings and homepage
+// statistics.
+// Public model browsing can omit current capacity aggregation while retaining
+// model, price, and availability data returned by routing. The HTTP parameter
+// selects that work before the marketplace query; homepage totals use a
+// separate statistics reader and the same success envelope.
+
+// MarketplaceStatsReader supplies token and user totals for public homepage
+// responses.
 type MarketplaceStatsReader interface {
+	// PublicStats returns the current public token and user counters for the
+	// supplied request context. Reader failures become the endpoint's standard
+	// error response, so callers return the error with the failed read.
 	PublicStats(context.Context) (dto.ModelMarketplaceStats, error)
 }
 
+// MarketplaceHandler serves public model browsing and aggregate homepage
+// statistics.
 type MarketplaceHandler struct {
-	marketplace *routing.Marketplace
-	stats       MarketplaceStatsReader
+	marketplace *routing.Marketplace   // public group model reader
+	stats       MarketplaceStatsReader // public homepage totals reader
 }
 
+// NewMarketplaceHandler binds the marketplace and public statistics reader
+// for HTTP queries.
 func NewMarketplaceHandler(marketplace *routing.Marketplace, stats MarketplaceStatsReader) *MarketplaceHandler {
 	return &MarketplaceHandler{marketplace: marketplace, stats: stats}
 }
 
-// ListPublic 默认附带容量，页面可通过 include_capacity=false 跳过容量查询。
+// ListPublic returns publicly visible model groups and their display data.
+// include_capacity defaults to true; false skips capacity aggregation, and an
+// invalid boolean returns INVALID_INCLUDE_CAPACITY before reading marketplace
+// groups.
 func (h *MarketplaceHandler) ListPublic(c *gin.Context) {
 	includeCapacity, err := strconv.ParseBool(c.DefaultQuery("include_capacity", "true"))
 	if err != nil {
@@ -41,7 +59,9 @@ func (h *MarketplaceHandler) ListPublic(c *gin.Context) {
 	httpx.Success(c, dto.ModelMarketplaceGroupsFromRouting(groups))
 }
 
-// StatsPublic 返回公开的 Token 和用户计数。
+// StatsPublic returns homepage token and user counts through the configured
+// reader. It passes the HTTP request context to that reader and exposes read
+// failures through the standard error response.
 func (h *MarketplaceHandler) StatsPublic(c *gin.Context) {
 	stats, err := h.stats.PublicStats(c.Request.Context())
 	if err != nil {
@@ -51,7 +71,9 @@ func (h *MarketplaceHandler) StatsPublic(c *gin.Context) {
 	httpx.Success(c, stats)
 }
 
-// RegisterPublicMarketplaceRoutes 注册公开市场模型和统计查询路由。
+// RegisterPublicMarketplaceRoutes binds model browsing and homepage totals
+// under /marketplace. The caller supplies the router group used for public
+// access; this registration adds the two GET handlers directly.
 func RegisterPublicMarketplaceRoutes(v1 *gin.RouterGroup, endpoint *MarketplaceHandler) {
 	marketplace := v1.Group("/marketplace")
 	marketplace.GET("/models", endpoint.ListPublic)

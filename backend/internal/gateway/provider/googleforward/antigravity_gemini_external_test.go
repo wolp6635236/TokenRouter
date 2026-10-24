@@ -26,45 +26,72 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
 )
 
-// 编译期接口断言。
+// The assertion checks that the forwarding fixture supplies the complete
+// execution-provider store method set through its implemented and embedded
+// methods.
 var _ gatewayprovider.ExecutionProviderStore = (*stubAntigravityProviderRepo)(nil)
 
+// rateLimitCall records one provider cooldown deadline for forwarding
+// assertions.
 type rateLimitCall struct {
-	providerID int64
-	resetAt    time.Time
+	providerID int64     // observed execution provider identifier
+	resetAt    time.Time // observed cooldown expiration time
 }
 
+// modelRateLimitCall records one provider/model scope deadline for forwarding
+// assertions.
 type modelRateLimitCall struct {
-	providerID int64
-	modelKey   string // 存储的 key（应该是官方模型 ID，如 "claude-sonnet-4-5"）
-	resetAt    time.Time
+	providerID int64     // observed execution provider identifier
+	modelKey   string    // observed model cooldown key
+	resetAt    time.Time // observed cooldown expiration time
 }
 
+// extraUpdateCall records one provider extra-state update supplied by retry
+// feedback.
 type extraUpdateCall struct {
-	providerID int64
-	updates    map[string]any
+	providerID int64 // observed execution provider identifier
+	// updates retains the supplied map for later assertions; the fixture
+	// caller keeps its values stable until those observations have been
+	// inspected.
+	updates map[string]any // borrowed extra update values
 }
 
+// stubAntigravityProviderRepo records health writes exercised by Antigravity
+// native forwarding tests.
 type stubAntigravityProviderRepo struct {
-	gatewayprovider.ExecutionProviderStore
+	// ExecutionProviderStore embeds unused methods; the fixture records the
+	// exercised health writes and exposes unexpected repository calls
+	// through its nil embedded implementation.
+	gatewayprovider.ExecutionProviderStore // unused provider repository methods
 
-	rateCalls           []rateLimitCall
+	rateCalls []rateLimitCall // recorded provider cooldown writes
+	// recorded model cooldown writes
 	modelRateLimitCalls []modelRateLimitCall
-	extraUpdateCalls    []extraUpdateCall
+	extraUpdateCalls    []extraUpdateCall // recorded extra update writes
 }
 
-// stubSmartRetryCache 用于 handleSmartRetry 测试的 GatewayCache mock
-// 仅关注 DeleteSessionProviderID 的调用记录。
+// stubSmartRetryCache records sticky binding deletion performed during
+// Antigravity retry feedback.
 type stubSmartRetryCache struct {
-	session.GatewayCache // 嵌入接口，未实现的方法 panic（确保只调用预期方法）
-	deleteCalls          []deleteSessionCall
+	// GatewayCache embeds unused methods; DeleteSessionProviderID records
+	// the tested sticky removal while unexpected cache operations dispatch
+	// through the nil embedded implementation.
+	session.GatewayCache // unused sticky cache operations
+	// recorded sticky binding deletions
+	deleteCalls []deleteSessionCall
 }
 
+// deleteSessionCall identifies one group/session binding deletion observed by
+// the fixture.
 type deleteSessionCall struct {
-	groupID     int64
-	sessionHash string
+	groupID     int64  // observed sticky group identifier
+	sessionHash string // observed sticky session discriminator
 }
 
+// TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback
+// forwards native input using the configured project fallback credential. The
+// captured v1internal request contains that selected project and exactly one
+// upstream body is sent.
 func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -134,6 +161,10 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 	require.Equal(t, "configured-project", wrapped["project"])
 }
 
+// TestAntigravityGatewayService_ForwardGemini_ImageUsesDefaultMappingAndOAuth
+// forwards native image input with OAuth credentials and an inline-image
+// response. Captured headers/action and project/model envelope match the
+// provider, response modalities survive, and image count is one.
 func TestAntigravityGatewayService_ForwardGemini_ImageUsesDefaultMappingAndOAuth(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -206,6 +237,10 @@ func TestAntigravityGatewayService_ForwardGemini_ImageUsesDefaultMappingAndOAuth
 	require.Equal(t, []any{"TEXT", "IMAGE"}, generationConfig["responseModalities"])
 }
 
+// TestAntigravityGatewayService_ForwardGemini_PreservesServerSideToolInvocationConfig
+// forwards mixed native tools with includeServerSideToolInvocations enabled.
+// The captured request retains the camelCase option and omits an alternate
+// snake_case key after platform cleanup.
 func TestAntigravityGatewayService_ForwardGemini_PreservesServerSideToolInvocationConfig(t *testing.T) {
 	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"tools":[{"functionDeclarations":[{"name":"get_weather","parameters":{"type":"object","additionalProperties":false}}]},{"googleSearch":{}}],"toolConfig":{"includeServerSideToolInvocations":true}}`)
 	writer := httptest.NewRecorder()
@@ -260,6 +295,10 @@ func TestAntigravityGatewayService_ForwardGemini_PreservesServerSideToolInvocati
 	require.NotContains(t, toolConfig, "include_server_side_tool_invocations")
 }
 
+// TestAntigravityGatewayService_ForwardGemini_MissingProjectReturnsLocalError
+// supplies native input with credentials lacking project data. Forwarding
+// returns ErrProjectIDRequired and local status 400 before any upstream request
+// body is recorded.
 func TestAntigravityGatewayService_ForwardGemini_MissingProjectReturnsLocalError(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -312,7 +351,9 @@ func TestAntigravityGatewayService_ForwardGemini_MissingProjectReturnsLocalError
 }
 
 // TestAntigravityGatewayService_ForwardGemini_ModelRateLimitTriggersFailover
-// 验证：ForwardGemini 方法同样能正确将 AntigravityProviderSwitchError 转换为 UpstreamFailoverError。
+// supplies a native model with an existing cooldown beyond short retry
+// handling. The returned gateway failover carries status 503 and leaves forced
+// cache billing false for this nonsticky call.
 func TestAntigravityGatewayService_ForwardGemini_ModelRateLimitTriggersFailover(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -327,14 +368,14 @@ func TestAntigravityGatewayService_ForwardGemini_ModelRateLimitTriggersFailover(
 	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:generateContent", bytes.NewReader(body))
 	c.Request = req
 
-	// 不需要真正调用上游，因为预检查会直接返回切换信号
+	// The rate-limit precheck requests a switch before upstream transport.
 	svc := newAntigravityFixture(antigravityDependencies{
 		tokenProvider: newAntigravityTokenSourceForTest(nil),
 
 		httpUpstream: &httpUpstreamStub{resp: nil, err: nil},
 	})
 
-	// 设置模型限流：剩余时间 30 秒（> antigravityRateLimitThreshold 7s）
+	// A 30-second cooldown exceeds the seven-second retry threshold.
 	futureResetAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -370,16 +411,17 @@ func TestAntigravityGatewayService_ForwardGemini_ModelRateLimitTriggersFailover(
 	require.Nil(t, result, "ForwardGemini should not return result when model rate limited")
 	require.NotNil(t, err, "ForwardGemini should return error")
 
-	// 检查错误类型是否为 UpstreamFailoverError。
 	var failoverErr *forwardcore.UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr, "error should be UpstreamFailoverError to trigger provider switch")
 	require.Equal(t, http.StatusServiceUnavailable, failoverErr.StatusCode)
-	// 非粘性会话请求，ForceCacheBilling 应为 false
+	// A non-sticky switch does not force cache billing.
 	require.False(t, failoverErr.ForceCacheBilling, "ForceCacheBilling should be false for non-sticky session")
 }
 
-// TestAntigravityGatewayService_ForwardGemini_StickySessionForceCacheBilling verifies
-// that ForwardGemini sets ForceCacheBilling=true for sticky session switch.
+// TestAntigravityGatewayService_ForwardGemini_StickySessionForceCacheBilling
+// supplies the same long native cooldown with sticky selection enabled. The
+// returned status-503 gateway failover retains the forced cache-billing flag
+// for the provider switch.
 func TestAntigravityGatewayService_ForwardGemini_StickySessionForceCacheBilling(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -400,7 +442,7 @@ func TestAntigravityGatewayService_ForwardGemini_StickySessionForceCacheBilling(
 		httpUpstream: &httpUpstreamStub{resp: nil, err: nil},
 	})
 
-	// 设置模型限流：剩余时间 30 秒（> antigravityRateLimitThreshold 7s）
+	// A 30-second cooldown exceeds the seven-second retry threshold.
 	futureResetAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -432,18 +474,22 @@ func TestAntigravityGatewayService_ForwardGemini_StickySessionForceCacheBilling(
 		},
 	}
 
-	// 传入 isStickySession = true
+	// Mark this request as sticky.
 	result, err := svc.ForwardGemini(context.Background(), gatewayhttp.NewGoogleBoundary(c, svc.Options, true), provider, "gemini-2.5-flash", "generateContent", false, body, true)
 	require.Nil(t, result, "ForwardGemini should not return result when model rate limited")
 	require.NotNil(t, err, "ForwardGemini should return error")
 
-	// 核心验证：粘性会话切换时，ForceCacheBilling 应为 true
+	// A sticky-provider switch forces cache billing.
 	var failoverErr *forwardcore.UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr, "error should be UpstreamFailoverError to trigger provider switch")
 	require.Equal(t, http.StatusServiceUnavailable, failoverErr.StatusCode)
 	require.True(t, failoverErr.ForceCacheBilling, "ForceCacheBilling should be true for sticky session switch")
 }
 
+// TestAntigravityGatewayService_ForwardGemini_ClearsStickySessionOnGeminiRateLimit
+// returns model throttle evidence with an active group/session binding. Health
+// records model and family cooldown keys, and retry feedback removes the
+// supplied sticky binding once before failover.
 func TestAntigravityGatewayService_ForwardGemini_ClearsStickySessionOnGeminiRateLimit(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -531,8 +577,10 @@ func TestAntigravityGatewayService_ForwardGemini_ClearsStickySessionOnGeminiRate
 	require.Equal(t, "gemini:sticky-runtime", cache.deleteCalls[0].sessionHash)
 }
 
-// TestAntigravityGatewayService_ForwardGemini_BillsWithMappedModel
-// 验证：Antigravity Gemini 转发返回的计费模型使用映射后的模型。
+// TestAntigravityGatewayService_ForwardGemini_BillsWithMappedModel maps native
+// input to another provider model and reads a successful stream. Completion
+// metadata keeps the original client model and reports the mapped model as
+// UpstreamModel.
 func TestAntigravityGatewayService_ForwardGemini_BillsWithMappedModel(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -599,6 +647,10 @@ func TestAntigravityGatewayService_ForwardGemini_BillsWithMappedModel(t *testing
 	require.Equal(t, mappedModel, result.UpstreamModel)
 }
 
+// TestAntigravityGatewayService_ForwardGemini_RetriesCorruptedThoughtSignature
+// returns signature failure followed by a successful response on the same
+// provider. Two captured requests show corrupt signatures replaced by the
+// compatibility sentinel and diagnostics record signature_error.
 func TestAntigravityGatewayService_ForwardGemini_RetriesCorruptedThoughtSignature(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -709,6 +761,10 @@ func TestAntigravityGatewayService_ForwardGemini_RetriesCorruptedThoughtSignatur
 	require.Equal(t, "signature_error", events[0].Kind)
 }
 
+// TestAntigravityGatewayService_ForwardGemini_SignatureRetryPropagatesFailover
+// injects a model cooldown during the first signature-failure exchange.
+// Recovery emits sticky failover with two diagnostic stages while the recorder
+// confirms no second upstream request was sent.
 func TestAntigravityGatewayService_ForwardGemini_SignatureRetryPropagatesFailover(t *testing.T) {
 	writer := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(writer)
@@ -774,6 +830,10 @@ func TestAntigravityGatewayService_ForwardGemini_SignatureRetryPropagatesFailove
 			if stub.callCount != 1 {
 				return
 			}
+			// Advance the model window beyond short-retry handling
+			// during transport, making recovery inspect the
+			// replaced Extra map and stop before a second upstream
+			// dispatch.
 			futureResetAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 			provider.Record.Extra = map[string]any{
 				"model_rate_limits": map[string]any{
@@ -811,21 +871,30 @@ func TestAntigravityGatewayService_ForwardGemini_SignatureRetryPropagatesFailove
 	require.Equal(t, "failover", events[1].Kind)
 }
 
+// SetRateLimited records the selected provider and cooldown deadline for
+// assertions.
 func (s *stubAntigravityProviderRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
 	s.rateCalls = append(s.rateCalls, rateLimitCall{providerID: id, resetAt: resetAt})
 	return nil
 }
 
+// SetModelRateLimit records the selected provider, model key, and cooldown
+// deadline.
 func (s *stubAntigravityProviderRepo) SetModelRateLimit(ctx context.Context, id int64, modelKey string, resetAt time.Time, reason ...string) error {
 	s.modelRateLimitCalls = append(s.modelRateLimitCalls, modelRateLimitCall{providerID: id, modelKey: modelKey, resetAt: resetAt})
 	return nil
 }
 
+// UpdateExtra records provider identity and retains the supplied update map
+// for assertions. The caller keeps its values stable until those observations
+// have been inspected after forwarding.
 func (s *stubAntigravityProviderRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	s.extraUpdateCalls = append(s.extraUpdateCalls, extraUpdateCall{providerID: id, updates: updates})
 	return nil
 }
 
+// DeleteSessionProviderID records the group and session discriminator removed
+// by retry feedback.
 func (c *stubSmartRetryCache) DeleteSessionProviderID(_ context.Context, groupID int64, sessionHash string) error {
 	c.deleteCalls = append(c.deleteCalls, deleteSessionCall{groupID: groupID, sessionHash: sessionHash})
 	return nil

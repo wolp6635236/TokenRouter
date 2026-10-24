@@ -15,20 +15,32 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
-// 模型映射和失败决策由 Antigravity 错误适配器执行，替身记录写入次数。
+// Antigravity 429 responses may carry model metadata or only a reset delay,
+// while 503 capacity responses leave recovery with the retry loop. These cases
+// exercise antigravity_error_observation.go and check recorded model keys,
+// provider-wide writes, and caller retry or switch decisions.
+
+// antigravityErrorStoreFixture records serial health writes made by the model
+// observer.
 type antigravityErrorStoreFixture struct {
-	acct.AntigravityHealthStore
-	rateCalls           []int64
-	modelRateLimitCalls []struct{ modelKey string }
+	// AntigravityHealthStore leaves unconfigured operations on a nil interface.
+	// These observer cases use the model-window method below; other inherited
+	// methods panic when reached.
+	acct.AntigravityHealthStore         // unused health-store substitute
+	rateCalls                   []int64 // provider-wide write identities
+	modelRateLimitCalls         []struct {
+		modelKey string /* stored model-window identity */
+	} // recorded model-limit writes
 }
 
-// TestHandleUpstreamError_429_ModelRateLimit 测试 429 模型限流场景。
+// TestHandleUpstreamError_429_ModelRateLimit supplies explicit model metadata and
+// a fifteen-second reset delay. It checks a handled switch decision and the
+// same parsed model recorded in the health store.
 func TestHandleUpstreamError_429_ModelRateLimit(t *testing.T) {
 	repo := &antigravityErrorStoreFixture{}
 	svc := newAntigravityErrorFixture(repo)
 	provider := &acct.Record{ID: 1, Name: "acc-1", Platform: capability.PlatformAntigravity}
 
-	// 429 + RATE_LIMIT_EXCEEDED + 模型名 → 模型限流
 	body := []byte(`{
 		"error": {
 			"status": "RESOURCE_EXHAUSTED",
@@ -41,7 +53,6 @@ func TestHandleUpstreamError_429_ModelRateLimit(t *testing.T) {
 
 	result := svc.Observe(AntigravityErrorInput{Context: context.Background(), Prefix: "[test]", Provider: provider, Status: http.StatusTooManyRequests, Headers: http.Header{}, Body: body, RequestedModel: "claude-sonnet-4-5"})
 
-	// 应该触发模型限流
 	require.NotNil(t, result)
 	require.True(t, result.Handled)
 	require.NotNil(t, result.SwitchError)
@@ -50,26 +61,27 @@ func TestHandleUpstreamError_429_ModelRateLimit(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4-5", repo.modelRateLimitCalls[0].modelKey)
 }
 
-// TestHandleUpstreamError_429_NonModelRateLimit 检查普通 429 使用请求模型记录限流。
+// TestHandleUpstreamError_429_NonModelRateLimit supplies quota timing without model
+// classification metadata. It checks that the request model receives a window
+// while the observer returns no immediate retry or switch result.
 func TestHandleUpstreamError_429_NonModelRateLimit(t *testing.T) {
 	repo := &antigravityErrorStoreFixture{}
 	svc := newAntigravityErrorFixture(repo)
 	provider := &acct.Record{ID: 2, Name: "acc-2", Platform: capability.PlatformAntigravity}
 
-	// 429 响应缺少 RATE_LIMIT_EXCEEDED reason 时，按请求模型记录限流。
+	// This response has a reset delay but no RATE_LIMIT_EXCEEDED reason.
 	body := buildGeminiRateLimitBody("5s")
 
 	result := svc.Observe(AntigravityErrorInput{Context: context.Background(), Prefix: "[test]", Provider: provider, Status: http.StatusTooManyRequests, Headers: http.Header{}, Body: body, RequestedModel: "claude-sonnet-4-5"})
 
-	// handleModelRateLimit 不会处理（因为没有 RATE_LIMIT_EXCEEDED），
-	// 此时使用 requestedModel 设置模型限流。
 	require.Nil(t, result)
 	require.Len(t, repo.modelRateLimitCalls, 1)
 	require.Equal(t, "claude-sonnet-4-5", repo.modelRateLimitCalls[0].modelKey)
 }
 
-// TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey 测试 429 非模型限流场景
-// 验证：requestedModel 会被映射到 Antigravity 最终模型（例如 claude-opus-4-6 -> claude-opus-4-6-thinking）。
+// TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey uses an Opus
+// request without saved mappings or a thinking override. It checks that generic
+// 429 handling records that unchanged final model spelling.
 func TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey(t *testing.T) {
 	repo := &antigravityErrorStoreFixture{}
 	svc := newAntigravityErrorFixture(repo)
@@ -84,14 +96,14 @@ func TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey(t *testing
 	require.Equal(t, "claude-opus-4-6", repo.modelRateLimitCalls[0].modelKey)
 }
 
-// TestHandleUpstreamError_503_ModelCapacityExhausted 测试 503 模型容量不足场景
-// MODEL_CAPACITY_EXHAUSTED 时应等待重试，不切换提供商。
+// TestHandleUpstreamError_503_ModelCapacityExhausted supplies shared-capacity
+// metadata with a model and retry delay. It checks a handled result with no
+// observer retry, switch request, or model-limit write.
 func TestHandleUpstreamError_503_ModelCapacityExhausted(t *testing.T) {
 	repo := &antigravityErrorStoreFixture{}
 	svc := newAntigravityErrorFixture(repo)
 	provider := &acct.Record{ID: 3, Name: "acc-3", Platform: capability.PlatformAntigravity}
 
-	// 503 + MODEL_CAPACITY_EXHAUSTED → 等待重试，不切换提供商
 	body := []byte(`{
 		"error": {
 			"status": "UNAVAILABLE",
@@ -104,8 +116,8 @@ func TestHandleUpstreamError_503_ModelCapacityExhausted(t *testing.T) {
 
 	result := svc.Observe(AntigravityErrorInput{Context: context.Background(), Prefix: "[test]", Provider: provider, Status: http.StatusServiceUnavailable, Headers: http.Header{}, Body: body, RequestedModel: "gemini-3-pro-high"})
 
-	// MODEL_CAPACITY_EXHAUSTED 应该标记为已处理，不切换提供商，不设置模型限流
-	// 实际重试由 handleSmartRetry 处理
+	// The observer consumes the error without recording a model limit or
+	// requesting a switch.
 	require.NotNil(t, result)
 	require.True(t, result.Handled)
 	require.False(t, result.ShouldRetry, "MODEL_CAPACITY_EXHAUSTED should not trigger retry from handleModelRateLimit path")
@@ -113,13 +125,15 @@ func TestHandleUpstreamError_503_ModelCapacityExhausted(t *testing.T) {
 	require.Empty(t, repo.modelRateLimitCalls, "MODEL_CAPACITY_EXHAUSTED should not set model rate limit")
 }
 
-// TestHandleUpstreamError_503_NonModelRateLimit 测试 503 非模型限流场景（不处理）。
+// TestHandleUpstreamError_503_NonModelRateLimit supplies a generic
+// service-unavailable
+// response with no model window. It checks that the observer produces no result
+// and writes neither a provider-wide nor model-specific limit.
 func TestHandleUpstreamError_503_NonModelRateLimit(t *testing.T) {
 	repo := &antigravityErrorStoreFixture{}
 	svc := newAntigravityErrorFixture(repo)
 	provider := &acct.Record{ID: 4, Name: "acc-4", Platform: capability.PlatformAntigravity}
 
-	// 503 + 普通错误（非 MODEL_CAPACITY_EXHAUSTED）→ 不做任何处理
 	body := []byte(`{
 		"error": {
 			"status": "UNAVAILABLE",
@@ -132,43 +146,51 @@ func TestHandleUpstreamError_503_NonModelRateLimit(t *testing.T) {
 
 	result := svc.Observe(AntigravityErrorInput{Context: context.Background(), Prefix: "[test]", Provider: provider, Status: http.StatusServiceUnavailable, Headers: http.Header{}, Body: body, RequestedModel: "gemini-3-pro-high"})
 
-	// 503 非模型限流不应该做任何处理
 	require.Nil(t, result)
 	require.Empty(t, repo.modelRateLimitCalls, "503 non-model rate limit should not trigger model rate limit")
 	require.Empty(t, repo.rateCalls, "503 non-model rate limit should not trigger provider rate limit")
 }
 
-// TestHandleUpstreamError_503_EmptyBody 测试 503 空响应体（不处理）。
+// TestHandleUpstreamError_503_EmptyBody supplies an empty JSON object for a failed
+// service response. It checks that missing model metadata produces no retry
+// result and leaves both recorded limit collections empty.
 func TestHandleUpstreamError_503_EmptyBody(t *testing.T) {
 	repo := &antigravityErrorStoreFixture{}
 	svc := newAntigravityErrorFixture(repo)
 	provider := &acct.Record{ID: 5, Name: "acc-5", Platform: capability.PlatformAntigravity}
 
-	// 503 + 空响应体 → 不做任何处理
 	body := []byte(`{}`)
 
 	result := svc.Observe(AntigravityErrorInput{Context: context.Background(), Prefix: "[test]", Provider: provider, Status: http.StatusServiceUnavailable, Headers: http.Header{}, Body: body, RequestedModel: "gemini-3-pro-high"})
 
-	// 503 空响应不应该做任何处理
 	require.Nil(t, result)
 	require.Empty(t, repo.modelRateLimitCalls)
 	require.Empty(t, repo.rateCalls)
 }
 
+// buildGeminiRateLimitBody embeds the supplied delay in generic quota-reset
+// metadata.
 func buildGeminiRateLimitBody(delay string) []byte {
 	return []byte(fmt.Sprintf(`{"error":{"message":"too many requests","details":[{"metadata":{"quotaResetDelay":%q}}]}}`, delay))
 }
 
+// SetModelRateLimit records the supplied model key for later serial assertions.
 func (s *antigravityErrorStoreFixture) SetModelRateLimit(_ context.Context, _ int64, key string, _ time.Time, _ ...string) error {
-	s.modelRateLimitCalls = append(s.modelRateLimitCalls, struct{ modelKey string }{key})
+	s.modelRateLimitCalls = append(s.modelRateLimitCalls, struct {
+		modelKey string /* recorded model-window key */
+	}{key})
 	return nil
 }
 
+// SetRateLimited records the provider ID for each provider-wide write assertion.
 func (s *antigravityErrorStoreFixture) SetRateLimited(_ context.Context, id int64, _ time.Time) error {
 	s.rateCalls = append(s.rateCalls, id)
 	return nil
 }
 
+// newAntigravityErrorFixture binds model-window storage and platform reset parsing.
+// Body logging is disabled and the platform default supplies missing reset
+// timing. The fixture uses no general health observer or snapshot publisher.
 func newAntigravityErrorFixture(store *antigravityErrorStoreFixture) *AntigravityErrorObserver {
 	return &AntigravityErrorObserver{
 		Health:         &acct.AntigravityHealth{Store: store, ModelKeys: AntigravityModelLimitKeys, Logf: func(string, ...any) {}},

@@ -9,39 +9,81 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
+// billing.go converts frozen batch-job funding snapshots into reservation,
+// capture, and release commands.
+// A batch job reserves funds before provider submission and later captures or
+// releases that reservation through billing.Funds. Separate action prefixes
+// distinguish those operations while the task reference keeps the original
+// reserve identity. The job carries the payer, funding mode, held
+// allocations, allowance flag and submitted pricing needed after request
+// authentication has ended.
+//
+// Pricing versions two and three send base costs and source multipliers to
+// billing, allowing recorded subscriptions and balance to use their own
+// rates. Funding publishes returned allocations into the in-memory job after
+// successful reserve and clears its allowance flag after successful capture
+// or an ordinary successful release. Cancellation, failed submission and
+// recovery share the same release identity and request hash.
+
+// Reservation, capture and release prefixes give each batch funding action a
+// separate billing deduplication identity.
 const (
 	batchImageHoldRequestPrefix    = "batch_image_hold:"
 	batchImageCaptureRequestPrefix = "batch_image_capture:"
 	batchImageReleaseRequestPrefix = "batch_image_release:"
 
-	// FundingScope 标识批量图片作业的资金用途。
+	// FundingScope selects the batchimage task participant registered by app for
+	// reservation allocation and allowance writes.
 	FundingScope billing.TaskScope = "batchimage"
 )
 
-// FundingStore 由唯一 billing.Funds 提供，同一任务的三个动作复用原幂等标识。
+// FundingStore applies job reservations, charges and refunds through stable
+// billing action identities.
 type FundingStore interface {
+	// Reserve applies the task reservation described by the command and returns
+	// its allocated sources. Callers retain the action identity and request
+	// fingerprint across retries and persist the returned allocation snapshot.
 	Reserve(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
+	// Capture applies actual task costs against its recorded reservation and
+	// returns the charged allocation. Callers supply the original reserve
+	// reference and a stable capture identity so resumed settlement can replay
+	// the action.
 	Capture(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
+	// Release returns the unused task reservation identified by the command and
+	// its original reserve reference. Callers reuse the same release identity
+	// and request fingerprint across cancellation, failed submission and
+	// recovery.
 	Release(context.Context, *billing.TaskFundsCommand) (*billing.TaskFundsResult, error)
 }
+
+// Funding adapts persisted batch snapshots to the shared task funding
+// implementation.
 type Funding struct {
-	Store   FundingStore
-	Observe func(string, ...any)
+	Store   FundingStore         // shared task funds implementation
+	Observe func(string, ...any) // optional funding diagnostic callback
 }
 
+// BatchImageHoldRequestID builds the reservation action key from a trimmed
+// batch ID.
 func BatchImageHoldRequestID(batchID string) string {
 	return batchImageHoldRequestPrefix + strings.TrimSpace(batchID)
 }
 
+// BatchImageCaptureRequestID builds the capture action key from a trimmed
+// batch ID.
 func BatchImageCaptureRequestID(batchID string) string {
 	return batchImageCaptureRequestPrefix + strings.TrimSpace(batchID)
 }
 
+// BatchImageReleaseRequestID builds the refund action key from a trimmed
+// batch ID.
 func BatchImageReleaseRequestID(batchID string) string {
 	return batchImageReleaseRequestPrefix + strings.TrimSpace(batchID)
 }
 
-// BillingUserID 返回余额实际归属用户，兼容旧任务未写付款人的情况。
+// BillingUserID returns the payer retained by the job, or zero for nil input.
+// Older jobs with no positive payer snapshot use the submitting user as their
+// payer.
 func BillingUserID(job *BatchImageJob) int64 {
 	if job == nil {
 		return 0
@@ -52,6 +94,16 @@ func BillingUserID(job *BatchImageJob) int64 {
 	return job.UserID
 }
 
+// BuildHoldCommand converts a job snapshot into the funding command for
+// reserve, capture or release. It requires a positive API key identity and
+// clamps negative held and actual amounts to zero. The request ID and payload
+// hash come from the operation caller.
+//
+// Version two and later carry base image cost separately from source rates:
+// provider and hold multipliers scale the reservation, while the
+// discount-to-hold ratio scales capture. Allocation identity pointers and the
+// preferred subscription are copied; other job pointers remain shared with
+// the command.
 func BuildHoldCommand(job *BatchImageJob, requestID string, actualAmount float64, payloadHash string) (*billing.TaskFundsCommand, error) {
 	if job == nil {
 		return nil, ErrBatchImageBillingHoldFailed
@@ -87,6 +139,8 @@ func BuildHoldCommand(job *BatchImageJob, requestID string, actualAmount float64
 		ReservedAt:                  job.CreatedAt,
 		RequestPayloadHash:          strings.TrimSpace(payloadHash),
 	}
+	// Newer snapshots retain source rates, so billing receives base cost and a
+	// settlement ratio instead of a precombined charge.
 	if job.PricingSnapshotVersion >= 2 {
 		scale := math.Max(job.ProviderRateMultiplier, 0) * math.Max(job.HoldMultiplier, 0)
 		settlementScale := 0.0
@@ -106,6 +160,16 @@ func BuildHoldCommand(job *BatchImageJob, requestID string, actualAmount float64
 	return command, nil
 }
 
+// Reserve submits the reservation of a nonnil persisted job and copies
+// returned funding details into that job. Callers provide the selected group
+// and request fingerprint before invoking the upstream provider. A command
+// with neither held nor base cost returns immediately.
+//
+// Subscription eligibility and key or member quota errors remain available to
+// their callers; other funding errors use the hold-failed category. After
+// success the returned wallet and subscription allocations replace the local
+// snapshot, newer pricing versions take their total and estimate from
+// billing, and the local allowance flag records the reservation.
 func (f Funding) Reserve(ctx context.Context, job *BatchImageJob, groupID *int64, payloadHash string) error {
 	if f.Store == nil {
 		return ErrBatchImageBillingHoldFailed.WithCause(errors.New("batch image billing repository is not configured"))
@@ -123,16 +187,22 @@ func (f Funding) Reserve(ctx context.Context, job *BatchImageJob, groupID *int64
 		if errors.Is(err, ErrBatchImageInsufficientBalance) {
 			return ErrBatchImageInsufficientBalance
 		}
-		// 指定订阅是严格资金来源，冻结阶段的状态变化需要原样返回给调用方。
+		// Preferred-subscription errors identify the selected source that prevented
+		// reservation. Keep those categories available to admission callers for
+		// reporting the configured funding choice.
 		if errors.Is(err, billing.ErrPreferredSubscriptionInvalid) || errors.Is(err, billing.ErrPreferredSubscriptionGroup) || errors.Is(err, billing.ErrPreferredSubscriptionInsufficient) {
 			return err
 		}
+		// Key and member limits reject admission before provider work. Keep their
+		// categories distinguishable from a funding-store failure in public responses.
 		if errors.Is(err, billing.ErrAPIKeyQuotaExhausted) || errors.Is(err, billing.ErrAPIKeyRateLimit5hExceeded) || errors.Is(err, billing.ErrAPIKeyRateLimit1dExceeded) || errors.Is(err, billing.ErrAPIKeyRateLimit7dExceeded) ||
 			errors.Is(err, billing.ErrTeamMemberDailyExceeded) || errors.Is(err, billing.ErrTeamMemberWeeklyExceeded) || errors.Is(err, billing.ErrTeamMemberMonthlyExceeded) {
 			return err
 		}
 		return ErrBatchImageBillingHoldFailed.WithCause(err)
 	}
+	// Billing returns the reservation actually allocated; publish those values
+	// after the funding call so subsequent capture reads the committed sources.
 	if result != nil {
 		job.BalanceHoldAmount = result.BalanceAmountUSD
 		job.SubscriptionHoldAllocations = SubscriptionAllocations(result.BillingAllocations)
@@ -146,6 +216,10 @@ func (f Funding) Reserve(ctx context.Context, job *BatchImageJob, groupID *int64
 	return nil
 }
 
+// Capture charges the supplied actual amount for a nonnil job through the job
+// capture identity and returns billing allocations. Newer snapshots interpret
+// that amount as base cost; success clears the local allowance reservation
+// marker.
 func (f Funding) Capture(ctx context.Context, job *BatchImageJob, actualAmount float64, payloadHash string) (*billing.TaskFundsResult, error) {
 	if f.Store == nil {
 		return nil, ErrBatchImageSettlementBillingFailed.WithCause(errors.New("batch image billing repository is not configured"))
@@ -162,6 +236,11 @@ func (f Funding) Capture(ctx context.Context, job *BatchImageJob, actualAmount f
 	return result, nil
 }
 
+// Release refunds the job reservation through its stable release identity and
+// request fingerprint. Missing funding, nil jobs, nonpositive holds and an
+// existing conflicting release fingerprint return successfully. Those early
+// returns leave the local allowance marker unchanged; a successful Store.Release
+// clears that marker.
 func (f Funding) Release(ctx context.Context, job *BatchImageJob, payloadHash string) error {
 	if f.Store == nil || job == nil {
 		return nil
@@ -174,9 +253,9 @@ func (f Funding) Release(ctx context.Context, job *BatchImageJob, payloadHash st
 		return nil
 	}
 	if _, err := f.Store.Release(ctx, cmd); err != nil {
-		// 同一 release request id 出现指纹冲突，说明此前已有一次携带不同
-		// payloadHash 的释放成功提交（资金已归还）。视为幂等成功，
-		// 避免历史指纹不一致的 job 永远卡在释放失败的毒消息循环里。
+		// A fingerprint conflict means this release request ID already committed with a different
+		// payloadHash and returned the funds. Treat it as success so historical fingerprint
+		// mismatches do not leave the job retrying release indefinitely.
 		if errors.Is(err, billing.ErrUsageBillingRequestConflict) {
 			f.warn("batch_image.release_fingerprint_conflict_treated_as_released",
 				"batch_id", job.BatchID,
@@ -189,6 +268,10 @@ func (f Funding) Release(ctx context.Context, job *BatchImageJob, payloadHash st
 	return nil
 }
 
+// SubscriptionAllocations retains positive subscription allocations that
+// carry a subscription identity. The result owns its slice and copies present
+// subscription and plan identity pointers through
+// billing.CloneBillingAllocation.
 func SubscriptionAllocations(allocations []billing.BillingAllocation) []billing.BillingAllocation {
 	result := make([]billing.BillingAllocation, 0, len(allocations))
 	for _, allocation := range allocations {
@@ -200,6 +283,9 @@ func SubscriptionAllocations(allocations []billing.BillingAllocation) []billing.
 	return result
 }
 
+// CloneInt64Ptr returns fresh integer pointer storage for a present value and
+// nil for an absent value. Callers can retain or change that copied identity
+// independently of the source pointer.
 func CloneInt64Ptr(value *int64) *int64 {
 	if value == nil {
 		return nil
@@ -208,12 +294,16 @@ func CloneInt64Ptr(value *int64) *int64 {
 	return &cloned
 }
 
+// warn sends a funding diagnostic to the configured observation callback.
 func (f Funding) warn(event string, values ...any) {
 	if f.Observe != nil {
 		f.Observe(event, values...)
 	}
 }
 
+// cloneBillingAllocations copies allocation values and their optional source
+// identity pointers. Nil input remains nil, while a nonnil empty input
+// retains an allocated empty result for its caller.
 func cloneBillingAllocations(values []billing.BillingAllocation) []billing.BillingAllocation {
 	if values == nil {
 		return nil
@@ -225,7 +315,8 @@ func cloneBillingAllocations(values []billing.BillingAllocation) []billing.Billi
 	return out
 }
 
-// FundingReference 返回作业的资金引用和预留请求标识。
+// FundingReference trims the batch identity and pairs its funding scope with
+// the original reservation key.
 func FundingReference(id string) billing.TaskReference {
 	id = strings.TrimSpace(id)
 	return billing.TaskReference{Scope: FundingScope, ID: id, ReserveRequestID: "batch_image_hold:" + id}

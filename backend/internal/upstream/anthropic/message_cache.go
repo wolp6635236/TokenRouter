@@ -7,18 +7,33 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// StripMessageCacheControl 移除 $.messages[*].content[*].cache_control。
-// 与 Parrot _strip_message_cache_control 语义一致。
+// message_cache.go removes message cache markers and inserts breakpoints at
+// selected conversation positions.
+// Message history grows as conversations continue, so retaining every earlier
+// cache marker would accumulate breakpoints. Preparation can clear message
+// markers and rebuild them for the final message and, after four messages, the
+// second-most-recent user message.
 //
-// 旧策略为什么整体清空：客户端（特别是 Claude Code）经常把 cache_control 打在
-// "当前最后一条 user message" 上；下一轮对话 messages 追加后，原本的最后一条
-// 变成中间某条，cache_control 还挂着就导致"前缀签名变化"，破坏缓存命中。
-// 统一由代理重新打断点（AddMessageCacheBreakpoints）才能在多轮间稳定。
+// Adding a marker to string content converts that message into a text-block
+// array, while object blocks in array content retain their fields and nonempty
+// TTL values.
+// Selection here concerns message positions; EnforceCacheControlLimit later
+// handles the combined system, tool, and message count. JSON edits are best
+// effort, and the raw string conversion uses Go quoting, so unusual text
+// escapes need care before treating its output as valid JSON.
+
+// StripMessageCacheControl deletes message content-block markers and returns
+// successful edits. Call it before rebuilding message breakpoints so appended
+// history does not keep earlier markers; nonarray messages or content remain
+// untouched.
 func StripMessageCacheControl(body []byte) []byte {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return body
 	}
+	// Delete only markers inside array message content before rebuilding message
+	// anchors, keeping system and tool markers available for their separate
+	// preparation steps.
 	msgIdx := -1
 	messages.ForEach(func(_, msg gjson.Result) bool {
 		msgIdx++
@@ -33,6 +48,8 @@ func StripMessageCacheControl(body []byte) []byte {
 				return true
 			}
 			path := fmt.Sprintf("messages.%d.content.%d.cache_control", msgIdx, blockIdx)
+			// A failed path deletion keeps that marker in the working body; later
+			// content blocks still undergo the same message-cache cleanup pass.
 			if next, err := sjson.DeleteBytes(body, path); err == nil {
 				body = next
 			}
@@ -43,18 +60,16 @@ func StripMessageCacheControl(body []byte) []byte {
 	return body
 }
 
-// AddMessageCacheBreakpoints 在 messages 上注入两个稳定的 cache 断点：
-//  1. 最后一条 message
-//  2. 当 messages 数量 ≥ 4 时，倒数第二个 role=user 的 message
+// AddMessageCacheBreakpoints marks the final message and, with at least four
+// messages, the second-most-recent user message. Empty or nonarray history
+// returns directly, and StripMessageCacheControl can clear old message markers
+// first.
 //
-// 与 Parrot add_cache_breakpoints 一致。两个断点 + system prompt block 的断点
-// + tools[-1] 的断点共同构成最多 4 个断点（Anthropic 上限）。
-//
-// cache_control ttl 策略：
-//   - 若目标 block 已有 cache_control.ttl → 不覆盖
-//   - 否则写入 {"type":"ephemeral","ttl": DefaultCacheControlTTL}
-//
-// 调用前应先 StripMessageCacheControl 以保证幂等和稳定。
+// The final message can be an assistant message; the earlier anchor is selected
+// separately by scanning user roles backward. Each selected message delegates
+// content conversion and TTL handling. Two message anchors leave space for one
+// system and one tool marker, but this helper does not enforce their combined
+// count; EnforceCacheControlLimit owns that later reduction.
 func AddMessageCacheBreakpoints(body []byte) []byte {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
@@ -67,6 +82,9 @@ func AddMessageCacheBreakpoints(body []byte) []byte {
 
 	body = InjectCacheControlOnLastContentBlock(body, len(arr)-1, &arr[len(arr)-1])
 
+	// The earlier anchor is enabled after four history entries, then selected by
+	// user role rather than fixed index so assistant turns do not shift its
+	// identity.
 	if len(arr) >= 4 {
 		userCount := 0
 		for i := len(arr) - 1; i >= 0; i-- {
@@ -84,14 +102,22 @@ func AddMessageCacheBreakpoints(body []byte) []byte {
 	return body
 }
 
-// InjectCacheControlOnLastContentBlock 把 cache_control 断点打在 messages[idx]
-// 的最后一个 content block 上。若 content 是 string，先升级成单块 text 数组
-// （对齐 Parrot _inject_cache_on_msg 的行为）。
+// InjectCacheControlOnLastContentBlock attaches cache control at idx using the
+// supplied message snapshot. Callers align msg with that body's index and pass
+// a nonnil result. Content that is neither a string nor a nonempty array leaves
+// the body unchanged.
 //
-// msg 是调用方已持有的 gjson.Result 快照，用于省一次 GetBytes。
+// String content, including empty text, becomes one block through raw JSON
+// assembly. For an array of object blocks, a nonempty ttl string result keeps
+// the final block's marker. An absent or empty ttl receives the default while
+// other marker fields remain. Go-only string escapes can make the assembled
+// JSON invalid, and failed sjson edits retain the corresponding supplied body.
 func InjectCacheControlOnLastContentBlock(body []byte, idx int, msg *gjson.Result) []byte {
 	content := msg.Get("content")
 
+	// String content needs a block object to hold a marker. Its Go-quoted text is
+	// inserted as raw JSON here, so unusual Go-only escapes remain an input
+	// limitation.
 	if content.Type == gjson.String {
 		text := content.String()
 		blockRaw := fmt.Sprintf(
@@ -120,6 +146,9 @@ func InjectCacheControlOnLastContentBlock(body []byte, idx int, msg *gjson.Resul
 
 	pathPrefix := fmt.Sprintf("messages.%d.content.%d.cache_control", idx, lastBlockIdx)
 	existingCC := lastBlock.Get("cache_control")
+	// Retain existing marker attributes while filling an absent or empty TTL;
+	// replacing the whole cache object would discard additional fields supplied
+	// by the client.
 	if existingCC.Exists() {
 		if next, err := sjson.SetBytes(body, pathPrefix+".ttl", DefaultCacheControlTTL); err == nil {
 			body = next
@@ -133,8 +162,9 @@ func InjectCacheControlOnLastContentBlock(body []byte, idx int, msg *gjson.Resul
 	return body
 }
 
-// MustJSONString 把一个 Go string 序列化为合法 JSON string（含引号），
-// 用于 sjson.SetRawBytes 场景下手工拼 JSON。
+// MustJSONString returns Go's quoted string representation for raw assembly
+// callers. Go escapes such as hexadecimal byte escapes can be invalid JSON, so
+// callers need JSON-safe input or their own encoding.
 func MustJSONString(s string) string {
 	return fmt.Sprintf("%q", s)
 }

@@ -11,11 +11,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 )
 
+// TestAuthService_ValidateToken_ExpiredReturnsClaimsWithError validates a
+// generated access token, then a separately generated expired token. It
+// requires account claims on both paths and ErrTokenExpired alongside the
+// expired claims.
 func TestAuthService_ValidateToken_ExpiredReturnsClaimsWithError(t *testing.T) {
 	repo := &userRepoStub{}
 	service := newAuthService(repo, nil, nil)
 
-	// 创建用户并生成 token
+	// Create a user and issue an access token.
 	user := &identity.User{
 		ID:           1,
 		Email:        "test@test.com",
@@ -26,21 +30,21 @@ func TestAuthService_ValidateToken_ExpiredReturnsClaimsWithError(t *testing.T) {
 	token, err := service.GenerateToken(context.Background(), user)
 	require.NoError(t, err)
 
-	// 验证有效 token
+	// Validate the unexpired token.
 	claims, err := service.ValidateToken(token)
 	require.NoError(t, err)
 	require.NotNil(t, claims)
 	require.Equal(t, int64(1), claims.UserID)
 
-	// 模拟过期 token（通过创建一个过期很久的 token）
-	service.Options.JWT.ExpireHour = -1 // 设置为负数使 token 立即过期
+	// Issue an already-expired token to exercise the expiration path.
+	service.Options.JWT.ExpireHour = -1 // A negative lifetime places expiration in the past.
 	rebuildSessionForTest(service)
 	expiredToken, err := service.GenerateToken(context.Background(), user)
 	require.NoError(t, err)
-	service.Options.JWT.ExpireHour = 1 // 恢复
+	service.Options.JWT.ExpireHour = 1 // Restore the normal token lifetime.
 	rebuildSessionForTest(service)
 
-	// 验证过期 token 应返回 claims 和 ErrTokenExpired
+	// An expired token returns its claims alongside ErrTokenExpired.
 	claims, err = service.ValidateToken(expiredToken)
 	require.ErrorIs(t, err, identity.ErrTokenExpired)
 	require.NotNil(t, claims, "claims should not be nil when token is expired")
@@ -48,6 +52,10 @@ func TestAuthService_ValidateToken_ExpiredReturnsClaimsWithError(t *testing.T) {
 	require.Equal(t, "test@test.com", claims.Email)
 }
 
+// TestAuthService_RefreshToken_ExpiredTokenNoPanic issues an expired access
+// token for a current active account. It requires the legacy renewal path to
+// return a nonempty replacement successfully while accessing expiration-path
+// claims.
 func TestAuthService_RefreshToken_ExpiredTokenNoPanic(t *testing.T) {
 	user := &identity.User{
 		ID:           1,
@@ -59,7 +67,7 @@ func TestAuthService_RefreshToken_ExpiredTokenNoPanic(t *testing.T) {
 	repo := &userRepoStub{user: user}
 	service := newAuthService(repo, nil, nil)
 
-	// 创建过期 token
+	// Issue an expired access token.
 	service.Options.JWT.ExpireHour = -1
 	rebuildSessionForTest(service)
 	expiredToken, err := service.GenerateToken(context.Background(), user)
@@ -67,7 +75,7 @@ func TestAuthService_RefreshToken_ExpiredTokenNoPanic(t *testing.T) {
 	service.Options.JWT.ExpireHour = 1
 	rebuildSessionForTest(service)
 
-	// RefreshToken 使用过期 token 不应 panic
+	// Renewal must handle expired-token claims without panicking.
 	require.NotPanics(t, func() {
 		newToken, err := service.RefreshToken(context.Background(), expiredToken)
 		require.NoError(t, err)
@@ -75,6 +83,10 @@ func TestAuthService_RefreshToken_ExpiredTokenNoPanic(t *testing.T) {
 	})
 }
 
+// TestAuthService_GetAccessTokenExpiresIn_FallbackToExpireHour disables the
+// minute lifetime and sets twenty-four legacy hours. It requires the client
+// lifetime accessor to report the matching number of seconds after rebuilding
+// session options.
 func TestAuthService_GetAccessTokenExpiresIn_FallbackToExpireHour(t *testing.T) {
 	service := newAuthService(&userRepoStub{}, nil, nil)
 	service.Options.JWT.ExpireHour = 24
@@ -85,6 +97,10 @@ func TestAuthService_GetAccessTokenExpiresIn_FallbackToExpireHour(t *testing.T) 
 	require.Equal(t, 24*3600, service.GetAccessTokenExpiresIn())
 }
 
+// TestAuthService_GetAccessTokenExpiresIn_MinutesHasPriority provides both a
+// legacy hour value and ninety minute lifetime. It requires the minute
+// configuration to determine the client-facing seconds after the session
+// fixture copies those options.
 func TestAuthService_GetAccessTokenExpiresIn_MinutesHasPriority(t *testing.T) {
 	service := newAuthService(&userRepoStub{}, nil, nil)
 	service.Options.JWT.ExpireHour = 24
@@ -95,6 +111,9 @@ func TestAuthService_GetAccessTokenExpiresIn_MinutesHasPriority(t *testing.T) {
 	require.Equal(t, 90*60, service.GetAccessTokenExpiresIn())
 }
 
+// TestAuthService_GenerateToken_UsesExpireHourWhenMinutesZero signs with zero
+// minutes and a twenty-four-hour legacy setting. It checks the parsed expiry
+// against issued time using the test tolerance for the selected hour lifetime.
 func TestAuthService_GenerateToken_UsesExpireHourWhenMinutesZero(t *testing.T) {
 	service := newAuthService(&userRepoStub{}, nil, nil)
 	service.Options.JWT.ExpireHour = 24
@@ -119,9 +138,15 @@ func TestAuthService_GenerateToken_UsesExpireHourWhenMinutesZero(t *testing.T) {
 	require.NotNil(t, claims.IssuedAt)
 	require.NotNil(t, claims.ExpiresAt)
 
+	// Allow two seconds around parsed JWT dates for this wall-clock lifetime
+	// assertion.
 	require.WithinDuration(t, claims.IssuedAt.Add(24*time.Hour), claims.ExpiresAt.Time, 2*time.Second)
 }
 
+// TestAuthService_GenerateToken_UsesMinutesWhenConfigured signs with ninety
+// minutes and a separate legacy hour setting. It checks the parsed expiry
+// against issued time using the test tolerance for the selected minute
+// lifetime.
 func TestAuthService_GenerateToken_UsesMinutesWhenConfigured(t *testing.T) {
 	service := newAuthService(&userRepoStub{}, nil, nil)
 	service.Options.JWT.ExpireHour = 24
@@ -146,5 +171,7 @@ func TestAuthService_GenerateToken_UsesMinutesWhenConfigured(t *testing.T) {
 	require.NotNil(t, claims.IssuedAt)
 	require.NotNil(t, claims.ExpiresAt)
 
+	// Allow two seconds around parsed JWT dates for this wall-clock lifetime
+	// assertion.
 	require.WithinDuration(t, claims.IssuedAt.Add(90*time.Minute), claims.ExpiresAt.Time, 2*time.Second)
 }

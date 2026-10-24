@@ -11,15 +11,31 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
-// DescribeImage 保留单张辅助请求、错误资格和描述用量，不绑定主会话缓存身份。
+// composer.go describes images through an auxiliary Grok Responses request and
+// returns the description usage.
+// Composer turns an image into text through an auxiliary Responses exchange on
+// a fixed vision model. The description and its token usage return to the main-
+// request preparation step, while health observations and HTTP failure
+// diagnostics still refer to the selected provider.
+
+// DescribeImage sends one image-description request and returns its decoded
+// text and usage. The supplied adapter already has the provider credential
+// needed by Build, and this auxiliary request uses an empty cache identity with
+// runtime route defaults disabled. ResponsesExecutor performs one exchange and
+// closes the response after the custom reader finishes; response failures are
+// observed before returning a generic, failover, or descriptive error.
 func DescribeImage(ctx context.Context, p Ports, o Options, in Input, imageURL string, index int) (string, protocolopenai.ForwardUsage, error) {
 	body, err := o.Codec.BuildGrokComposerImageDescriptionBody(imageURL, index)
 	if err != nil {
 		return "", protocolopenai.ForwardUsage{}, err
 	}
 	upstreamCtx, releaseUpstreamCtx := p.Detach(ctx)
-	// 图片描述探测使用独立的 Grok 提示缓存身份。
+	// An empty cache identity keeps the auxiliary image-description prompt outside
+	// the main conversation identity; Build also disables runtime route defaults.
 	upstreamReq, err := p.Build(upstreamCtx, body, "", false)
+	// Release the detached-context handle after Build; the shared adapter
+	// currently returns a no-op release, leaving the request context usable by
+	// execution.
 	releaseUpstreamCtx()
 	if err != nil {
 		return "", protocolopenai.ForwardUsage{}, fmt.Errorf("build grok composer image bridge request: %w", err)
@@ -70,18 +86,11 @@ func DescribeImage(ctx context.Context, p Ports, o Options, in Input, imageURL s
 				if decision.Generic {
 					return true, fmt.Errorf("grok composer image bridge upstream gateway error")
 				}
+				// Translate health-selected failover into the outer loop's typed failure so
+				// auxiliary usage is not treated as a completed description.
 				if kind == "failover" {
 					retry := p.RetryMetadata(resp.StatusCode, respBody)
-					return true, p.Failure(Failure{
-						StatusCode:                resp.StatusCode,
-						ResponseBody:              respBody,
-						ResponseHeaders:           resp.Header.Clone(),
-						RetryableOnSameProvider:   retry.Retryable || decision.RetrySameProvider,
-						RequestScopedTransient:    retry.Retryable && resp.StatusCode == http.StatusTooManyRequests,
-						SameProviderRetryDelay:    retry.Delay,
-						SameProviderRetryDeadline: retry.Deadline,
-						SameProviderRetryMax:      retry.Max,
-					})
+					return true, p.Failure(newFailure(resp, respBody, retry, decision.RetrySameProvider))
 				}
 				return true, fmt.Errorf("grok composer image bridge upstream error: %s", upstreamMsg)
 			}

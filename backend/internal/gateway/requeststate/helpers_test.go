@@ -1,16 +1,20 @@
 package requeststate
 
-// benchmarkIntSink 保存请求解析和字段视图基准的计数结果。
+// benchmarkIntSink retains parsed lengths, field counts, and patched sizes so
+// each benchmark iteration leaves an observable result for comparison.
 var benchmarkIntSink int
 
-// benchmarkBodySizes 指定请求解析和字段读取基准的目标输入大小。
+// benchmarkBodySizes returns named partial-body targets from four through
+// thirty-two MiB for request benchmarks. Builders can exceed those targets when
+// completing messages and JSON framing, so benchmarks report each constructed
+// body's actual length.
 func benchmarkBodySizes() []struct {
-	name  string
-	bytes int
+	name  string // benchmark size case label
+	bytes int    // partial body target bytes
 } {
 	return []struct {
-		name  string
-		bytes int
+		name  string // benchmark size case label
+		bytes int    // partial body target bytes
 	}{
 		{name: "4MB", bytes: 4 << 20},
 		{name: "8MB", bytes: 8 << 20},

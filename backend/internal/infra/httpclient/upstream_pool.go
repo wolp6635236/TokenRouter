@@ -1,9 +1,6 @@
 package httpclient
 
 import (
-	"bufio"
-	"compress/flate"
-	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -18,15 +15,35 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/andybalholm/brotli"
-	"github.com/klauspost/compress/zstd"
 	"golang.org/x/net/http2"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/proxy"
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	servertiming "github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 )
 
+// upstream_pool.go shares upstream HTTP clients and tracks request
+// reservations through response-body closure.
+// An upstream client's connection identity depends on provider/proxy
+// isolation, pool settings, the caller's protocol variant, and any raw TLS
+// profile identity. Acquisition reserves an entry while its request is in
+// flight; successful responses keep that reservation until body Close
+// releases it once, while request failure releases after the result observer
+// has run. Callers close bodies even after abandoning response processing.
+// Failed transport calls finish their diagnostic attempt using the dispatched
+// request context before their original error returns to platform handling.
+//
+// Cache hits reserve under the read lock, and misses recheck under the write
+// lock before construction or eviction. Expired and oldest-entry eviction
+// skip reservations, while incompatible configuration replacement can remove
+// an active entry from the cache and close only its idle connections. Request
+// callbacks are installed on a copied client rather than cached. Fingerprint
+// HTTP/2 uses a separate timeout wrapper whose timer includes underlying
+// RoundTrip and requires that transport to honor cancellation.
+
+// Upstream phase and HTTP/2 PING defaults bound connection setup and idle
+// health checks independently of each request's body-processing lifetime.
 const (
 	defaultUpstreamDialTimeout         = 10 * time.Second
 	defaultUpstreamDialKeepAlive       = 30 * time.Second
@@ -35,106 +52,177 @@ const (
 	http2PingTimeout                   = 15 * time.Second
 )
 
+// Transport errors distinguish cache admission failure from the synthetic
+// response-return timeout so request observers and callers can classify either result.
 var (
-	// ErrUpstreamClientLimitReached 表示所有缓存条目仍被在途请求占用。
+	// ErrUpstreamClientLimitReached reports that the cache is full and every entry is in use.
 	ErrUpstreamClientLimitReached = errors.New("upstream client cache limit reached")
 
+	// errResponseHeaderTimeout shares the synthetic net.Error value returned when
+	// its timer wins the response-return race before a body reaches the caller.
 	errResponseHeaderTimeout = &responseHeaderTimeoutError{}
 )
 
-// TransportProtocol 只描述传输能力；CacheVariant 保留调用方已有的隔离标识。
+// TransportProtocol selects HTTP negotiation and the caller-defined cache variant.
 type TransportProtocol struct {
-	CacheVariant string
-	HTTP2        bool
-	DisableHTTP2 bool
+	// CacheVariant identifies protocol construction choices in cache keys.
+	// Callers distinguish incompatible HTTP2 and DisableHTTP2 choices because
+	// those flags are not independently hashed.
+	CacheVariant string // caller protocol cache identity
+	// HTTP2 wins over DisableHTTP2 on ordinary transports. Fingerprint
+	// selection also requires profile ALPN eligibility, while HTTPS proxy
+	// selection uses ordinary construction with default protocol options.
+	HTTP2        bool // enable HTTP/2 transport selection
+	DisableHTTP2 bool // disable ordinary HTTP/2 negotiation
 }
 
-// UpstreamRequestOptions 保存本次出站请求的代理、连接隔离和传输参数。
+// UpstreamRequestOptions configures one outbound request and its connection pool.
 type UpstreamRequestOptions struct {
-	ProxyURL   string
-	ProviderID int64
-	Isolation  string
-	MaxClients int
-	IdleTTL    time.Duration
-	Settings   UpstreamSettings
-	Protocol   TransportProtocol
-	TLSProfile *tlsfingerprint.Profile
-	// CheckRedirect 仅用于本次请求；nil 使用 net/http 的默认重定向策略。
+	ProxyURL   string // selected proxy URL text
+	ProviderID int64  // selected provider database identity
+	// Isolation selects proxy, provider, or provider_proxy cache identity;
+	// unrecognized values use proxy identity. Provider-only reuse additionally
+	// compares the stored normalized proxy key.
+	Isolation string // client cache isolation mode
+	// MaxClients bounds cached entries when positive, with idle eviction making
+	// room. Nonpositive values disable the cap, and configuration replacement
+	// can remove an active entry from membership.
+	MaxClients int // positive cache entry limit
+	// IdleTTL expires unreserved entries on acquisition when positive.
+	// Nonpositive values disable expiry, and an active reservation prevents this
+	// time-based eviction path.
+	IdleTTL  time.Duration     // cache entry idle lifetime
+	Settings UpstreamSettings  // configured transport pool values
+	Protocol TransportProtocol // protocol and cache identity choices
+	// TLSProfile contributes its raw CacheKey and is retained by custom dialers.
+	// Keep profile values stable and copy or serialize GREASE SupportedVersions
+	// storage before concurrent handshakes.
+	TLSProfile *tlsfingerprint.Profile // optional fingerprint profile pointer
+	// CheckRedirect belongs to this request's client copy; nil selects
+	// net/http's default redirect policy. It is installed before PrepareClient
+	// can adapt or replace the copy.
 	CheckRedirect func(*http.Request, []*http.Request) error
-	// PrepareClient 接收已设置 CheckRedirect 的请求级副本，可覆盖策略或包装共享 transport。
-	// 不得直接修改共享 transport 本身。
+	// PrepareClient receives a shallow client copy and can change callbacks or
+	// wrap the shared transport. Keep that transport immutable; return a non-nil
+	// configured client to retain selected routing, because nil makes timing.Do
+	// use http.DefaultClient.
 	PrepareClient func(*http.Client) *http.Client
-	// ObserveResult 在拿到响应头或执行失败时通知外层，早于释放或响应体处理。
+	// ObserveResult runs before decompression and reservation release after
+	// headers or failure. It must return normally so Do can install body
+	// tracking or release a failed attempt.
 	ObserveResult func(error)
 }
 
-// UpstreamPool 唯一持有普通和指纹上游客户端的缓存与在途计数。
+// UpstreamPool caches ordinary and fingerprinted clients and tracks in-flight requests.
 type UpstreamPool struct {
-	mu      sync.RWMutex
-	clients map[string]*upstreamClientEntry
+	// mu protects clients membership and reservation admission. Counters are
+	// atomic, but acquisition increments while holding the membership lock so
+	// idle eviction cannot remove a just-admitted entry.
+	mu      sync.RWMutex                    // cache membership and admission mutex
+	clients map[string]*upstreamClientEntry // cached clients by construction identity
 }
 
-// UpstreamSettings 包含已解析的连接池参数和响应头超时。
+// UpstreamSettings selects connection counts and phase budgets for cached transports.
 type UpstreamSettings struct {
-	MaxIdleConns          int           // 最大空闲连接总数
-	MaxIdleConnsPerHost   int           // 每主机最大空闲连接数
-	MaxConnsPerHost       int           // 每主机最大连接数（含活跃）
-	IdleConnTimeout       time.Duration // 空闲连接超时时间
-	ResponseHeaderTimeout time.Duration // 等待响应头超时时间
+	// MaxIdleConns, MaxIdleConnsPerHost, and MaxConnsPerHost configure ordinary
+	// http.Transport paths. Fingerprint HTTP/2 constructs an x/net transport
+	// without these connection-count fields; its retained pool has its own
+	// connection management.
+	MaxIdleConns        int           // Maximum idle connections across hosts.
+	MaxIdleConnsPerHost int           // Maximum idle connections per host.
+	MaxConnsPerHost     int           // Maximum connections per host, including active connections.
+	IdleConnTimeout     time.Duration // Maximum idle connection age.
+	// ResponseHeaderTimeout starts after request writing on an ordinary
+	// transport. Fingerprint HTTP/2 instead wraps the whole RoundTrip call,
+	// including connection setup; nonpositive values disable that synthetic timer.
+	ResponseHeaderTimeout time.Duration // Maximum wait for response headers.
 }
 
-// upstreamClientEntry 上游客户端缓存条目
-// 记录客户端实例及其元数据，用于连接池管理和淘汰策略。
+// upstreamClientEntry tracks a cached client and the metadata used for reuse and eviction.
 type upstreamClientEntry struct {
-	client       *http.Client // HTTP 客户端实例
-	proxyKey     string       // 代理标识（用于检测代理变更）
-	poolKey      string       // 连接池配置标识（用于检测配置变更）
-	protocolMode string       // 协议模式（default/openai_h1/openai_h2/openai_h1_fallback）
-	lastUsed     int64        // 最后使用时间戳（纳秒），用于 LRU 淘汰
-	inFlight     int64        // 当前进行中的请求数，>0 时不可淘汰
+	client       *http.Client // cached construction-time HTTP client
+	proxyKey     string       // normalized proxy identity text
+	poolKey      string       // connection settings identity text
+	protocolMode string       // caller protocol variant text
+	// lastUsed and inFlight use separate atomic accesses. Acquisition increments
+	// while membership is locked; response cleanup releases and timestamps the
+	// entry independently. Reservations prevent idle eviction, while incompatible
+	// configuration can still remove an active entry from cache membership.
+	lastUsed int64 // last reservation/release Unix nanoseconds
+	inFlight int64 // outstanding request reservation count
 }
 
+// responseHeaderTimeoutError identifies synthetic response-return timeout
+// errors for net.Error callers.
 type responseHeaderTimeoutError struct{}
 
-// responseHeaderTimeoutRoundTripper 为裸 http2.Transport 补齐等待响应头超时。
-// 请求拿到响应头后会停止计时，避免长时间 SSE 响应在读取 Body 阶段被误取消。
+// responseHeaderTimeoutRoundTripper bounds RoundTrip for an http2.Transport.
+// The timer stops at response headers so it does not cancel a long-lived SSE body.
 type responseHeaderTimeoutRoundTripper struct {
-	base    http.RoundTripper
-	timeout time.Duration
+	// base must honor cancellation for a timed-out RoundTrip to return promptly.
+	// The wrapper waits for that call after requesting cancellation rather than
+	// abandoning its work.
+	base    http.RoundTripper // wrapped HTTP/2 request transport
+	timeout time.Duration     // positive underlying call budget
 }
 
+// cancelOnCloseReadCloser retains a request context until its successful body
+// closes.
 type cancelOnCloseReadCloser struct {
-	io.ReadCloser
-	cancel context.CancelFunc
+	// ReadCloser and cancel retain the successful request's body and child
+	// context together. Close attempts body cleanup first and cancels afterward,
+	// including body errors.
+	io.ReadCloser                    // retained successful response body
+	cancel        context.CancelFunc // child request cancellation function
 }
 
-// trackedBody 带跟踪功能的响应体包装器
-// 在 Close 时执行回调，用于更新请求计数。
+// trackedBody runs its release callback once when the body is closed.
 type trackedBody struct {
-	io.ReadCloser // 原始响应体
-	once          sync.Once
-	onClose       func() // 关闭时的回调函数
+	io.ReadCloser           // retained decoded response body
+	once          sync.Once // reservation release completion guard
+	// onClose follows underlying Close and is guarded by once so successful
+	// response cleanup returns a reservation once even when callers close
+	// repeatedly.
+	onClose func() // request reservation release callback
 }
 
-type zstdResponseReader struct {
-	io.ReadCloser
-	warnOnce sync.Once
-}
-
-// decompressedBody 组合解压 reader 和原始 body 的 close。
-type decompressedBody struct {
-	reader io.Reader
-	closer io.Closer
-}
-
-// NewUpstreamPool 创建独立的上游池，不与通用或 req 客户端池合并状态。
+// NewUpstreamPool constructs an initialized upstream cache with its own entry
+// mutex.
 func NewUpstreamPool() *UpstreamPool {
 	return &UpstreamPool{clients: make(map[string]*upstreamClientEntry)}
 }
 
-// Do 闭合获取、请求执行、解压及释放；成功响应仍由调用方关闭 Body。
+// Do reserves an upstream client, executes req with per-request callbacks,
+// and installs supported response decoding. Close the successful response
+// body to release its reservation; failure releases after ObserveResult runs,
+// and callbacks must return normally to reach cleanup.
+//
+// CheckRedirect is set on a shallow client copy before PrepareClient, whose
+// returned client must retain usable transport ownership. ObserveResult sees
+// request error before decompression or release. The body release callback
+// runs once, while the underlying Close can still run repeatedly. Pool
+// construction and callback configuration remain separate from provider retry
+// policy. Transport failure updates the captured diagnostic attempt even when
+// the request has no performance collector or response headers.
 // @project-doc docs/operations/upstream_transport_security.md#upstream_client_pool
-func (s *UpstreamPool) Do(req *http.Request, opts UpstreamRequestOptions) (*http.Response, error) {
+func (s *UpstreamPool) Do(req *http.Request, opts UpstreamRequestOptions) (response *http.Response, failure error) {
+	var attemptNumber int64
+	defer func() {
+		if failure != nil && req != nil {
+			// The dispatched request retains its own ordinal after later exchanges start.
+			// Finish failure here because network errors provide no response for platform callbacks.
+			telemetry.ObserveRequestResult(req.Context(), telemetry.RequestAttemptFromContext(req.Context()), failure)
+			if stages := servertiming.StagesFromContext(req.Context()); stages != nil {
+				stages.FinishAttempt(attemptNumber)
+			}
+		}
+	}()
+	if req != nil {
+		req = req.WithContext(servertiming.BeginHTTPTrace(req.Context()))
+		if stages := servertiming.StagesFromContext(req.Context()); stages != nil {
+			attemptNumber = stages.Attempt()
+		}
+	}
 	entry, err := s.acquire(opts)
 	if err != nil {
 		return nil, err
@@ -143,15 +231,13 @@ func (s *UpstreamPool) Do(req *http.Request, opts UpstreamRequestOptions) (*http
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 	}
-	// 只共享 transport；请求回调不进入缓存，避免预热顺序或并发请求改变当前策略。
+	// Per-request callbacks change policy while transport resources remain shared.
+	// Copy the client before assignment so another request keeps its own redirect decision.
 	requestClient := *entry.client
 	requestClient.CheckRedirect = opts.CheckRedirect
 	client := &requestClient
 	if opts.PrepareClient != nil {
 		client = opts.PrepareClient(client)
-	}
-	if req != nil {
-		req = req.WithContext(servertiming.BeginHTTPTrace(req.Context()))
 	}
 	resp, err := servertiming.Do(client, req)
 	if opts.ObserveResult != nil {
@@ -163,10 +249,23 @@ func (s *UpstreamPool) Do(req *http.Request, opts UpstreamRequestOptions) (*http
 	}
 	decompressResponseBody(resp)
 	resp.Body = wrapTrackedBody(resp.Body, release)
+	servertiming.ObserveResponse(req.Context(), resp)
 	return resp, nil
 }
 
-// acquire 保持读锁快速路径、写锁重查和只逐出空闲条目的原有顺序。
+// acquire returns a compatible entry after incrementing its in-flight
+// reservation, or a construction/capacity error. Callers balance successful
+// acquisition through Do's failure or body-close path; NewUpstreamPool
+// initializes the map required by this operation.
+//
+// Hits reserve under a read lock, and misses recheck under the write lock
+// before constructing a transport. Changed pool settings or a provider-mode
+// proxy mismatch remove the existing cache entry even while its responses
+// remain active. A changed TLS profile hash chooses another cache key, so
+// that older profile entry can remain until ordinary eviction removes it.
+// Capacity and expiry remove idle entries only; when no idle entry can make
+// space, acquisition returns ErrUpstreamClientLimitReached. Protocol booleans
+// require an appropriately distinguishing caller CacheVariant.
 func (s *UpstreamPool) acquire(opts UpstreamRequestOptions) (*upstreamClientEntry, error) {
 	isolation := opts.Isolation
 	proxyKey, parsedProxy, err := proxy.NormalizePoolKey(opts.ProxyURL)
@@ -185,7 +284,8 @@ func (s *UpstreamPool) acquire(opts UpstreamRequestOptions) (*upstreamClientEntr
 	now := time.Now()
 	nowUnix := now.UnixNano()
 
-	// 读锁快速路径：命中缓存直接返回，减少锁竞争
+	// Reserve a compatible hit while membership stays read-locked; idle eviction
+	// needs the write lock and cannot remove this entry before its count increases.
 	s.mu.RLock()
 	if entry, ok := s.clients[cacheKey]; ok && s.shouldReuseEntry(entry, isolation, proxyKey, poolKey) {
 		atomic.StoreInt64(&entry.lastUsed, nowUnix)
@@ -197,7 +297,8 @@ func (s *UpstreamPool) acquire(opts UpstreamRequestOptions) (*upstreamClientEntr
 	}
 	s.mu.RUnlock()
 
-	// 写锁慢路径：创建或重建客户端
+	// Another miss may have published while the read lock was released. Recheck
+	// under exclusive ownership before constructing or replacing this cache identity.
 	s.mu.Lock()
 	if entry, ok := s.clients[cacheKey]; ok {
 		if s.shouldReuseEntry(entry, isolation, proxyKey, poolKey) {
@@ -211,7 +312,8 @@ func (s *UpstreamPool) acquire(opts UpstreamRequestOptions) (*upstreamClientEntr
 		s.removeClientLocked(cacheKey, entry)
 	}
 
-	// 超出缓存上限时尝试淘汰，无法淘汰则拒绝新建
+	// Keep active reservations during capacity eviction. If every cached entry
+	// is in flight, report a capacity error rather than evicting an active request.
 	if opts.MaxClients > 0 {
 		s.evictIdleLocked(now, opts.IdleTTL)
 		if len(s.clients) >= opts.MaxClients {
@@ -222,7 +324,6 @@ func (s *UpstreamPool) acquire(opts UpstreamRequestOptions) (*upstreamClientEntr
 		}
 	}
 
-	// 缓存未命中或需要重建，创建新客户端
 	var transport http.RoundTripper
 	if opts.TLSProfile == nil {
 		transport, err = buildUpstreamTransport(settings, parsedProxy, opts.Protocol)
@@ -249,15 +350,17 @@ func (s *UpstreamPool) acquire(opts UpstreamRequestOptions) (*upstreamClientEntr
 	}
 	s.clients[cacheKey] = entry
 
-	// 执行淘汰策略：先淘汰空闲超时的，再淘汰超出数量限制的
+	// Evict expired idle entries before enforcing the entry limit.
 	s.evictIdleLocked(now, opts.IdleTTL)
 	s.evictOverLimitLocked(opts.MaxClients)
 	s.mu.Unlock()
 	return entry, nil
 }
 
-// shouldReuseEntry 判断缓存条目是否可复用
-// 若代理或连接池配置发生变化，则需要重建客户端。
+// shouldReuseEntry reports whether a non-nil entry's pool key and
+// provider-isolated proxy identity still match. Other isolation modes already
+// include proxy identity in the cache key; active-count checks are left to
+// eviction callers.
 func (s *UpstreamPool) shouldReuseEntry(entry *upstreamClientEntry, isolation, proxyKey, poolKey string) bool {
 	if entry == nil {
 		return false
@@ -271,19 +374,17 @@ func (s *UpstreamPool) shouldReuseEntry(entry *upstreamClientEntry, isolation, p
 	return true
 }
 
-// removeClientLocked 移除客户端（需持有锁）
-// 从缓存中删除并关闭空闲连接
-//
-// 参数:
-//   - key: 缓存键
-//   - entry: 客户端条目
+// removeClientLocked deletes key and asks its cached transport to close idle
+// connections. The caller holds s.mu for writing; active bodies can still use
+// the removed entry and release its independent counters after completion.
 func (s *UpstreamPool) removeClientLocked(key string, entry *upstreamClientEntry) {
 	delete(s.clients, key)
 	if entry != nil && entry.client != nil {
-		// 关闭空闲连接，释放系统资源
-		// 注意：这不会中断活跃连接
+		// Remove membership before requesting idle cleanup, so later acquisitions
+		// cannot reuse this incompatible entry while existing body holders finish independently.
 		entry.client.CloseIdleConnections()
 		if closer, ok := entry.client.Transport.(interface {
+			// CloseIdleConnections asks the cached transport to release idle connection resources.
 			CloseIdleConnections()
 		}); ok {
 			closer.CloseIdleConnections()
@@ -291,39 +392,49 @@ func (s *UpstreamPool) removeClientLocked(key string, entry *upstreamClientEntry
 	}
 }
 
-// evictIdleLocked 淘汰空闲超时的客户端（需持有锁）
-// 遍历所有客户端，移除超过 TTL 且无活跃请求的条目
+// evictIdleLocked removes entries whose sampled reservation count is zero
+// and whose last-use time is at or before now minus ttl. The caller holds
+// s.mu for writing; nonpositive ttl disables expiry.
 //
-// 参数:
-//   - now: 当前时间
+// The write lock excludes a new acquisition while each entry is checked and
+// removed. Response cleanup can still update its two atomic fields
+// independently. Expiry deletes cache membership and asks the transport to
+// close idle connections, while a nonzero reservation keeps the entry
+// regardless of the sampled age.
 func (s *UpstreamPool) evictIdleLocked(now time.Time, ttl time.Duration) {
 	if ttl <= 0 {
 		return
 	}
-	// 计算淘汰截止时间
 	cutoff := now.Add(-ttl).UnixNano()
+	// Admission is excluded by the write lock. Skip reservations before the age
+	// test so a stale last-use observation alone cannot remove an in-flight client.
 	for key, entry := range s.clients {
-		// 跳过有活跃请求的客户端
 		if atomic.LoadInt64(&entry.inFlight) != 0 {
 			continue
 		}
-		// 淘汰超时的空闲客户端
 		if atomic.LoadInt64(&entry.lastUsed) <= cutoff {
 			s.removeClientLocked(key, entry)
 		}
 	}
 }
 
-// evictOldestIdleLocked 淘汰最久未使用且无活跃请求的客户端（需持有锁）。
+// evictOldestIdleLocked removes one entry with a sampled zero reservation
+// count and the oldest sampled last-use time. It reports false when no such
+// entry is found, allowing acquisition to return a capacity error.
+//
+// The caller holds s.mu for writing to exclude new admission during selection
+// and removal. Response releases can still update the atomic observations.
+// Equal oldest timestamps follow map iteration order; removing the selected
+// entry asks its transport to close idle connections.
 func (s *UpstreamPool) evictOldestIdleLocked() bool {
 	var (
 		oldestKey   string
 		oldestEntry *upstreamClientEntry
 		oldestTime  int64
 	)
-	// 查找最久未使用且无活跃请求的客户端
+	// Choose among unreserved entries before comparing last use. This keeps the
+	// capacity recovery decision separate from timestamps on clients still serving requests.
 	for key, entry := range s.clients {
-		// 跳过有活跃请求的客户端
 		if atomic.LoadInt64(&entry.inFlight) != 0 {
 			continue
 		}
@@ -334,7 +445,6 @@ func (s *UpstreamPool) evictOldestIdleLocked() bool {
 			oldestTime = lastUsed
 		}
 	}
-	// 所有客户端都有活跃请求，无法淘汰
 	if oldestEntry == nil {
 		return false
 	}
@@ -342,14 +452,16 @@ func (s *UpstreamPool) evictOldestIdleLocked() bool {
 	return true
 }
 
-// evictOverLimitLocked 淘汰超出数量限制的客户端（需持有锁）
-// 使用 LRU 策略，优先淘汰最久未使用且无活跃请求的客户端。
+// evictOverLimitLocked repeatedly removes oldest idle entries while cache
+// size exceeds positive maxClients and reports whether any entry was removed.
+// The caller holds s.mu for writing;
+// disabled limits return false, and remaining active entries can prevent
+// reaching the supplied limit.
 func (s *UpstreamPool) evictOverLimitLocked(maxClients int) bool {
 	if maxClients <= 0 {
 		return false
 	}
 	evicted := false
-	// 循环淘汰直到满足数量限制
 	for len(s.clients) > maxClients {
 		if !s.evictOldestIdleLocked() {
 			return evicted
@@ -359,7 +471,10 @@ func (s *UpstreamPool) evictOverLimitLocked(maxClients int) bool {
 	return evicted
 }
 
-// buildPoolKey 构建连接池配置键，用于检测连接池配置变更。
+// buildPoolKey identifies configured connection counts, lifetimes, header
+// timeout, and nondefault protocol variant. Empty and default variant values
+// share the base spelling; protocol booleans participate only through the
+// caller-selected variant.
 func buildPoolKey(settings UpstreamSettings, protocolMode string) string {
 	base := fmt.Sprintf(
 		"idle:%d|idle_host:%d|max:%d|idle_timeout:%s|header_timeout:%s",
@@ -375,21 +490,10 @@ func buildPoolKey(settings UpstreamSettings, protocolMode string) string {
 	return base + "|proto:" + protocolMode
 }
 
-// buildCacheKey 构建客户端缓存键
-// 根据隔离策略决定缓存键的组成
-//
-// 参数:
-//   - isolation: 隔离模式
-//   - proxyKey: 代理标识
-//   - providerID: 提供商 ID
-//
-// 返回:
-//   - string: 缓存键
-//
-// 缓存键格式:
-//   - proxy 模式: "proxy:{proxyKey}"
-//   - provider 模式: "provider:{providerID}"
-//   - provider_proxy 模式: "provider:{providerID}|proxy:{proxyKey}"
+// buildCacheKey chooses provider, provider/proxy, or proxy isolation and
+// appends a nondefault protocol variant. Unrecognized isolation uses proxy
+// identity; empty and default variants share spelling, so callers distinguish
+// incompatible protocol choices themselves.
 func buildCacheKey(isolation, proxyKey string, providerID int64, protocolMode string) string {
 	var base string
 	switch isolation {
@@ -406,10 +510,10 @@ func buildCacheKey(isolation, proxyKey string, providerID int64, protocolMode st
 	return base
 }
 
-// newUpstreamDialer 构建上游 Transport 的 TCP dialer。
-//
-// 必须显式提供：http.Transport 的 DialContext 为 nil 时使用零值 net.Dialer，
-// 建连没有任何超时上限，只能等内核 TCP 重传耗尽（Linux 约 130 秒）。
+// newUpstreamDialer supplies the upstream network setup budget and TCP
+// keepalive interval. Its ten-second limit covers DNS and connection
+// establishment when used as DialContext; custom SOCKS routing installs its
+// own bounded forward connector.
 func newUpstreamDialer() *net.Dialer {
 	return &net.Dialer{
 		Timeout:   defaultUpstreamDialTimeout,
@@ -417,25 +521,10 @@ func newUpstreamDialer() *net.Dialer {
 	}
 }
 
-// buildUpstreamTransport 构建上游请求的 Transport
-// 使用配置文件中的连接池参数，支持生产环境调优
-//
-// 参数:
-//   - settings: 连接池配置
-//   - proxyURL: 代理 URL（nil 表示直连）
-//
-// 返回:
-//   - *http.Transport: 配置好的 Transport 实例
-//   - error: 代理配置错误
-//
-// Transport 参数说明:
-//   - DialContext: DNS 解析 + TCP 建连超时（不设置则无上限，退化为内核默认重传）
-//   - TLSHandshakeTimeout: TLS 握手超时
-//   - MaxIdleConns: 所有主机的最大空闲连接总数
-//   - MaxIdleConnsPerHost: 每主机最大空闲连接数（影响连接复用率）
-//   - MaxConnsPerHost: 每主机最大连接数（达到后新请求等待）
-//   - IdleConnTimeout: 空闲连接超时（超时后关闭）
-//   - ResponseHeaderTimeout: 等待响应头超时（不影响流式传输）
+// buildUpstreamTransport applies settings and proxy routing to an ordinary
+// certificate-verifying transport. HTTP2 takes precedence when both protocol
+// flags are true; otherwise DisableHTTP2 removes TLS-next-protocol
+// negotiation, and selected HTTP2 adds idle PING settings.
 func buildUpstreamTransport(settings UpstreamSettings, proxyURL *url.URL, protocol TransportProtocol) (*http.Transport, error) {
 	transport := &http.Transport{
 		DialContext:           newUpstreamDialer().DialContext,
@@ -449,7 +538,8 @@ func buildUpstreamTransport(settings UpstreamSettings, proxyURL *url.URL, protoc
 	switch {
 	case protocol.HTTP2:
 		transport.ForceAttemptHTTP2 = true
-		// 空闲 PING 用于发现代理或 NAT 已断开、客户端仍认为可用的连接。
+		// HTTP/2 idle PINGs request a response after a quiet connection, letting the
+		// transport detect a connection whose peer or intermediary has stopped responding.
 		enableHTTP2KeepAlive(transport)
 	case protocol.DisableHTTP2:
 		transport.ForceAttemptHTTP2 = false
@@ -461,7 +551,10 @@ func buildUpstreamTransport(settings UpstreamSettings, proxyURL *url.URL, protoc
 	return transport, nil
 }
 
-// enableHTTP2KeepAlive 配置标准库的 HTTP/2 协商和空闲 PING。
+// enableHTTP2KeepAlive enables HTTP/2 alongside HTTP/1 on a caller-owned
+// transport and configures idle PING budgets. Configure before concurrent
+// requests; existing protocol selections are retained except HTTP/2 is
+// enabled, while new protocol storage starts with HTTP/1 enabled.
 func enableHTTP2KeepAlive(transport *http.Transport) {
 	if transport.TLSClientConfig == nil {
 		transport.TLSClientConfig = new(tls.Config)
@@ -478,23 +571,17 @@ func enableHTTP2KeepAlive(transport *http.Transport) {
 	transport.HTTP2.PingTimeout = http2PingTimeout
 }
 
-// buildUpstreamTransportWithTLSFingerprint 构建带 TLS 指纹伪装的 RoundTripper
-// 使用 utls 库模拟 Claude CLI 的 TLS 指纹
+// buildUpstreamTransportWithTLSFingerprint selects direct, SOCKS, or CONNECT
+// target dialing from profile and proxy. HTTPS proxies return an ordinary
+// transport with default protocol options, preserving proxy routing while
+// bypassing fingerprinted target dialing.
 //
-// 参数:
-//   - settings: 连接池配置
-//   - proxyURL: 代理 URL（nil 表示直连）
-//   - profile: TLS 指纹配置
-//
-// 返回:
-//   - http.RoundTripper: 配置好的上游传输实例
-//   - error: 配置错误
-//
-// 代理类型处理:
-//   - nil/空: 直连，使用 TLSFingerprintDialer
-//   - http: HTTP 代理，使用 HTTPProxyDialer（CONNECT 隧道 + utls 握手）
-//   - https: 指纹拨号器不支持 TLS 代理，回退普通 transport
-//   - socks5: SOCKS5 代理，使用 SOCKS5ProxyDialer（SOCKS5 隧道 + utls 握手）
+// HTTP/2 requires protocol.HTTP2 and profile eligibility, then actual
+// negotiated ALPN equal to h2; mismatch closes the connection. Its x/net
+// transport uses fixed PING budgets and the optional cancellation-based
+// RoundTrip timeout wrapper. The ordinary fingerprint path returns its
+// configured http.Transport, with target handshake timing owned by the custom
+// dialer.
 func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile, protocol TransportProtocol) (http.RoundTripper, error) {
 	useHTTP2 := protocol.HTTP2 && tlsfingerprint.SupportsHTTP2(profile)
 	transport := &http.Transport{
@@ -503,14 +590,12 @@ func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyUR
 		MaxConnsPerHost:       settings.MaxConnsPerHost,
 		IdleConnTimeout:       settings.IdleConnTimeout,
 		ResponseHeaderTimeout: settings.ResponseHeaderTimeout,
-		// 使用自定义 DialTLSContext；OpenAI/Codex 模板 ALPN 声明 h2 时才交给 HTTP/2 RoundTripper。
+		// Use the HTTP/2 round tripper only when the profile advertises h2.
 		ForceAttemptHTTP2: useHTTP2,
 	}
 
-	// 根据代理类型选择合适的 TLS 指纹 Dialer
 	var dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	if proxyURL == nil {
-		// 直连：使用 TLSFingerprintDialer
 		slog.Debug("tls_fingerprint_transport_direct")
 		dialer := tlsfingerprint.NewDialer(profile, nil)
 		dialTLSContext = dialer.DialTLSContext
@@ -518,20 +603,20 @@ func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyUR
 		scheme := strings.ToLower(proxyURL.Scheme)
 		switch scheme {
 		case "socks5", "socks5h":
-			// SOCKS5 代理：使用 SOCKS5ProxyDialer
 			slog.Debug("tls_fingerprint_transport_socks5", "proxy", proxyURL.Host)
 			socks5Dialer := tlsfingerprint.NewSOCKS5ProxyDialer(profile, proxyURL)
 			dialTLSContext = socks5Dialer.DialTLSContext
 		case "https":
-			// 指纹拨号器发送明文 CONNECT 前导，无法与 HTTPS 代理建 TLS，因此保留普通代理路由。
+			// HTTPS proxies select the ordinary connector here, retaining proxy TLS and
+			// routing while this path omits target fingerprint dialing and custom protocol flags.
 			return buildUpstreamTransport(settings, proxyURL, TransportProtocol{CacheVariant: "default"})
 		case "http":
-			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（CONNECT 隧道）
 			slog.Debug("tls_fingerprint_transport_http_connect", "proxy", proxyURL.Host)
 			httpDialer := tlsfingerprint.NewHTTPProxyDialer(profile, proxyURL)
 			dialTLSContext = httpDialer.DialTLSContext
 		default:
-			// 未知代理类型，回退到普通代理配置（无 TLS 指纹）
+			// This branch delegates unsupported scheme handling to ordinary proxy setup,
+			// so its validation error remains the result instead of selecting a direct route.
 			slog.Debug("tls_fingerprint_transport_unknown_scheme_fallback", "scheme", scheme)
 			if err := proxy.ConfigureTransportProxy(transport, proxyURL); err != nil {
 				return nil, err
@@ -541,7 +626,7 @@ func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyUR
 	transport.DialTLSContext = dialTLSContext
 
 	if useHTTP2 && dialTLSContext != nil {
-		//nolint:staticcheck // uTLS 返回独立的 ConnectionState 类型，通过 x/net 的裸连接拨号接口传给 HTTP/2。
+		//nolint:staticcheck // uTLS has its own ConnectionState type; x/net accepts the raw TLS connection.
 		h2Transport := &http2.Transport{
 			IdleConnTimeout: settings.IdleConnTimeout,
 			ReadIdleTimeout: http2ReadIdleTimeout,
@@ -552,6 +637,9 @@ func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyUR
 					return nil, err
 				}
 				negotiatedProtocol := tlsfingerprint.NegotiatedProtocol(conn)
+				// The HTTP/2 transport needs actual h2 negotiation before it sends frames.
+				// Close a differently negotiated connection instead of treating profile
+				// eligibility as negotiation success.
 				if negotiatedProtocol != "h2" {
 					_ = conn.Close()
 					return nil, fmt.Errorf("http2: unexpected ALPN protocol %q; want %q", negotiatedProtocol, "h2")
@@ -572,19 +660,32 @@ func buildUpstreamTransportWithTLSFingerprint(settings UpstreamSettings, proxyUR
 	return transport, nil
 }
 
+// Error supplies the response-header timeout's compatible net/http diagnostic
+// text.
 func (e *responseHeaderTimeoutError) Error() string {
 	return "net/http: timeout awaiting response headers"
 }
 
+// Timeout reports this synthetic header error as a network timeout.
 func (e *responseHeaderTimeoutError) Timeout() bool {
 	return true
 }
 
+// Temporary reports this synthetic header timeout as a retry-classifiable
+// temporary error.
 func (e *responseHeaderTimeoutError) Temporary() bool {
 	return true
 }
 
-// RoundTrip 在等待响应头超时后取消请求，收到响应头后停止计时。
+// RoundTrip delegates with a cancellable context and starts a timeout before
+// the underlying call, including its connection setup. Nonpositive timeout or
+// nil req delegates directly; a missing base returns an error. The base must
+// honor cancellation for the wait to end promptly.
+//
+// If timer firing races with completion, this method waits for timer
+// publication and timeout wins, closing any returned body. Otherwise failure
+// cancels immediately and success keeps the child context until body Close.
+// Long-lived body reads therefore continue after the header timer is stopped.
 func (r *responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if r == nil || r.base == nil {
 		return nil, errors.New("response header timeout round tripper missing base")
@@ -595,12 +696,17 @@ func (r *responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.
 	ctx, cancel := context.WithCancel(req.Context())
 	timeoutCh := make(chan struct{})
 	timedOut := atomic.Bool{}
+	// Publish timeout before cancellation can make the base return a context
+	// error. The completion path waits for this publication before choosing its
+	// caller-visible result when timer execution overlaps response return.
 	timer := time.AfterFunc(r.timeout, func() {
 		timedOut.Store(true)
 		close(timeoutCh)
 		cancel()
 	})
 	resp, err := r.base.RoundTrip(req.WithContext(ctx))
+	// A firing timer can overlap response return. Wait for its published
+	// timeout decision before selecting success so expiry cannot be lost in that race.
 	if !timer.Stop() {
 		<-timeoutCh
 	}
@@ -619,6 +725,8 @@ func (r *responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.
 		cancel()
 		return resp, nil
 	}
+	// Header timing is finished, but the body may stream for much longer.
+	// Keep its child context live until body Close releases the request lifetime.
 	resp.Body = &cancelOnCloseReadCloser{
 		ReadCloser: resp.Body,
 		cancel:     cancel,
@@ -626,20 +734,26 @@ func (r *responseHeaderTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.
 	return resp, nil
 }
 
-// CloseIdleConnections 关闭底层传输的空闲连接。
+// CloseIdleConnections delegates an idle-close request when the wrapped
+// transport exposes that operation. Missing receiver/base or an unsupported
+// operation is ignored; active response bodies retain their normal cleanup
+// and request cancellation obligations.
 func (r *responseHeaderTimeoutRoundTripper) CloseIdleConnections() {
 	if r == nil || r.base == nil {
 		return
 	}
 	if closer, ok := r.base.(interface {
+		// CloseIdleConnections releases idle resources while active response
+		// bodies remain caller-owned.
 		CloseIdleConnections()
 	}); ok {
 		closer.CloseIdleConnections()
 	}
 }
 
-// Close 关闭响应体并执行回调
-// 使用 sync.Once 确保回调只执行一次。
+// Close invokes the wrapped body's cleanup and then cancels its request
+// context when present. It returns the body's error unchanged; repeated calls
+// invoke underlying Close and the cancellation function again.
 func (r *cancelOnCloseReadCloser) Close() error {
 	err := r.ReadCloser.Close()
 	if r.cancel != nil {
@@ -648,8 +762,10 @@ func (r *cancelOnCloseReadCloser) Close() error {
 	return err
 }
 
-// Close 关闭响应体并执行回调
-// 使用 sync.Once 确保回调只执行一次。
+// Close invokes the underlying body's cleanup and then runs the release
+// callback at most once, including when cleanup returns an error. Repeated
+// calls still invoke underlying Close; callers retain that body's concurrency
+// obligations.
 func (b *trackedBody) Close() error {
 	err := b.ReadCloser.Close()
 	if b.onClose != nil {
@@ -658,15 +774,9 @@ func (b *trackedBody) Close() error {
 	return err
 }
 
-// wrapTrackedBody 包装响应体以跟踪关闭事件
-// 用于在响应体关闭时更新 inFlight 计数
-//
-// 参数:
-//   - body: 原始响应体
-//   - onClose: 关闭时的回调函数
-//
-// 返回:
-//   - io.ReadCloser: 包装后的响应体
+// wrapTrackedBody binds onClose to body cleanup through sync.Once, returning
+// nil bodies unchanged. Callers still close the returned body; repeat closes
+// rerun underlying cleanup but invoke the release callback at most once.
 func wrapTrackedBody(body io.ReadCloser, onClose func()) io.ReadCloser {
 	if body == nil {
 		return body
@@ -674,82 +784,9 @@ func wrapTrackedBody(body io.ReadCloser, onClose func()) io.ReadCloser {
 	return &trackedBody{ReadCloser: body, onClose: onClose}
 }
 
-// decompressResponseBody 根据 Content-Encoding 解压响应体。
-// 当请求显式设置了 accept-encoding 时，Go 的 Transport 不会自动解压，需要手动处理。
-// 解压成功后会删除 Content-Encoding 和 Content-Length header（长度已不准确）。
-func decompressResponseBody(resp *http.Response) {
-	if resp == nil || resp.Body == nil {
-		return
-	}
-	ce := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
-	if ce == "" {
-		return
-	}
-
-	originalBody := resp.Body
-	var reader io.Reader
-	switch ce {
-	case "gzip":
-		gr, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return // 解压失败，保持原样
-		}
-		reader = gr
-	case "br":
-		reader = brotli.NewReader(resp.Body)
-	case "deflate":
-		reader = flate.NewReader(resp.Body)
-	case "zstd":
-		bufferedBody := bufio.NewReader(resp.Body)
-		resp.Body = &decompressedBody{reader: bufferedBody, closer: originalBody}
-
-		headerBytes, _ := bufferedBody.Peek(zstd.HeaderMaxSize)
-		var header zstd.Header
-		if err := header.Decode(headerBytes); err != nil {
-			slog.Warn("zstd_decompress_failed", "error", err)
-			return
-		}
-
-		zr, err := zstd.NewReader(bufferedBody)
-		if err != nil {
-			slog.Warn("zstd_decompress_failed", "error", err)
-			return
-		}
-		reader = &zstdResponseReader{ReadCloser: zr.IOReadCloser()}
-	default:
-		return
-	}
-
-	resp.Body = &decompressedBody{reader: reader, closer: originalBody}
-	resp.Header.Del("Content-Encoding")
-	resp.Header.Del("Content-Length") // 解压后长度不确定
-	resp.ContentLength = -1
-}
-
-func (r *zstdResponseReader) Read(p []byte) (int, error) {
-	n, err := r.ReadCloser.Read(p)
-	if err != nil && !errors.Is(err, io.EOF) {
-		r.warnOnce.Do(func() {
-			slog.Warn("zstd_decompress_failed", "error", err)
-		})
-	}
-	return n, err
-}
-
-func (d *decompressedBody) Read(p []byte) (int, error) {
-	return d.reader.Read(p)
-}
-
-func (d *decompressedBody) Close() error {
-	// 如果 reader 本身也是 Closer（如 gzip.Reader），先关闭它
-	if rc, ok := d.reader.(io.Closer); ok {
-		_ = rc.Close()
-	}
-	return d.closer.Close()
-}
-
-// CloseIdleConnections 在请求与后台任务完成后释放本池的空闲连接。
-// 缓存条目继续复用，调用方仍需关闭使用中的响应体。
+// CloseIdleConnections asks every cached client to close idle connections
+// under the pool read lock. It retains cache entries and active bodies;
+// callers still close responses to release their reservations.
 func (s *UpstreamPool) CloseIdleConnections() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

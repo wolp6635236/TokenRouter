@@ -6,7 +6,15 @@ import (
 	"log/slog"
 )
 
-// 以下键保存用量展示设置。
+// runtime_settings.go reads runtime ranking settings and user error-record
+// visibility.
+// Missing ranking settings keep the public ranking enabled with all counters
+// visible. Stored false values opt out of individual options, while viewing
+// error records uses the stricter exact-true rule and returns false when
+// settings cannot be read.
+
+// These persisted keys connect administrator settings writes with runtime
+// ranking visibility, ordering, row-limit, and user error-view reads.
 const (
 	SettingKeyAllowUserViewErrorRequests  = "allow_user_view_error_requests"
 	SettingKeyUsageRankingEnabled         = "usage_ranking_enabled"
@@ -17,20 +25,27 @@ const (
 	SettingKeyUsageRankingSortBy          = "usage_ranking_sort_by"
 )
 
-// RuntimeSettingsStore 保留批量查询接口，避免拆分后按字段回源。
+// RuntimeSettingsStore supplies the persisted text values needed for usage
+// display decisions.
 type RuntimeSettingsStore interface {
+	// GetMultiple returns persisted text for requested keys in one repository
+	// call. Missing keys may be absent; ParseRankingSettings then selects defaults
+	// while exact boolean text remains available for its comparisons.
 	GetMultiple(context.Context, []string) (map[string]string, error)
 }
 
-// RuntimeSettings 解释排行和用户错误展示，不引入第二个查询缓存。
-type RuntimeSettings struct{ settingRepo RuntimeSettingsStore }
+// RuntimeSettings reads and parses ranking and user error-display settings.
+type RuntimeSettings struct {
+	settingRepo RuntimeSettingsStore /* persisted usage settings reader */
+}
 
-// NewRuntimeSettings 构造无回源副作用的读取器。
+// NewRuntimeSettings binds a repository for call-time usage setting reads.
 func NewRuntimeSettings(repo RuntimeSettingsStore) *RuntimeSettings {
 	return &RuntimeSettings{settingRepo: repo}
 }
 
-// DefaultRankingSettings 保留现有排行默认与字段规则。
+// DefaultRankingSettings returns the enabled public ranking with every counter
+// visible.
 func DefaultRankingSettings() UsageRankingSettings {
 	return UsageRankingSettings{
 		Enabled:         true,
@@ -42,7 +57,10 @@ func DefaultRankingSettings() UsageRankingSettings {
 	}
 }
 
-// ParseRankingSettings 保留现有排行默认与字段规则。
+// ParseRankingSettings parses persisted ranking text and normalizes the
+// resulting display choices. Only the exact string false disables boolean
+// settings; missing values retain defaults, and the selected sorting metric
+// becomes visible.
 func ParseRankingSettings(values map[string]string) UsageRankingSettings {
 	settings := DefaultRankingSettings()
 	if values == nil {
@@ -57,7 +75,9 @@ func ParseRankingSettings(values map[string]string) UsageRankingSettings {
 	return NormalizeUsageRankingSettings(settings)
 }
 
-// GetUsageRankingSettings 批量读取并解析用量排行设置。
+// GetUsageRankingSettings reads the six ranking settings in one batch and
+// applies normalization. A nil service or repository returns defaults;
+// configured repository errors are returned to the caller.
 func (s *RuntimeSettings) GetUsageRankingSettings(ctx context.Context) (UsageRankingSettings, error) {
 	if s == nil || s.settingRepo == nil {
 		return DefaultRankingSettings(), nil
@@ -76,10 +96,14 @@ func (s *RuntimeSettings) GetUsageRankingSettings(ctx context.Context) (UsageRan
 	return ParseRankingSettings(values), nil
 }
 
-// IsUserErrorViewAllowed 读取用户错误记录的展示开关，读取失败时返回 false。
+// IsUserErrorViewAllowed reports whether the persisted error-view switch is
+// exactly true. Callers supply a service with a repository; a read failure is
+// logged and denies visibility for this request.
 func (s *RuntimeSettings) IsUserErrorViewAllowed(ctx context.Context) bool {
 	vals, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyAllowUserViewErrorRequests})
 	if err != nil {
+		// A settings failure cannot establish permission to expose error records.
+		// Report the read failure and deny this optional view for the current request.
 		slog.Warn("failed to get allow_user_view_error_requests setting, defaulting to false", "error", err)
 		return false
 	}

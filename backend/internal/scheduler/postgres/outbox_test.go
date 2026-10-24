@@ -12,9 +12,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
+// Pending-event queries distinguish a missing row from a database failure,
+// and cleanup combines a watermark with an age-limited batch. SQL mocks check
+// those inputs and lease statements, while the nil-payload case checks the
+// bytes that participate in persisted deduplication.
+
+// TestSchedulerOutboxRepositoryFirstCreatedAtAfter supplies one timestamp
+// above the watermark. It checks the query arguments, found result and
+// returned time used by pending-event lag checks.
 func TestSchedulerOutboxRepositoryFirstCreatedAtAfter(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close this isolated mock database after its expectations are checked;
+	// teardown errors do not replace the assertions made by the test.
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
@@ -38,9 +48,14 @@ func TestSchedulerOutboxRepositoryFirstCreatedAtAfter(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSchedulerOutboxRepositoryFirstCreatedAtAfterReturnsNotFound supplies an
+// empty pending-event query. It checks found=false with a zero time and no
+// error, so absence is a valid lag observation.
 func TestSchedulerOutboxRepositoryFirstCreatedAtAfterReturnsNotFound(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close this isolated mock database after its expectations are checked;
+	// teardown errors do not replace the assertions made by the test.
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
@@ -63,9 +78,14 @@ func TestSchedulerOutboxRepositoryFirstCreatedAtAfterReturnsNotFound(t *testing.
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSchedulerOutboxRepositoryDeleteConsumedUpToUsesBoundedCTE expects the
+// age-limited deletion statement with watermark and batch arguments. It
+// checks that the repository returns the database's affected-row count.
 func TestSchedulerOutboxRepositoryDeleteConsumedUpToUsesBoundedCTE(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close this isolated mock database after its expectations are checked;
+	// teardown errors do not replace the assertions made by the test.
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
@@ -93,9 +113,14 @@ func TestSchedulerOutboxRepositoryDeleteConsumedUpToUsesBoundedCTE(t *testing.T)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSchedulerOutboxRepositoryDeleteConsumedUpToSkipsNonPositiveWatermark
+// calls cleanup before any positive watermark exists. It checks zero
+// deletions and expects no database statement for that input.
 func TestSchedulerOutboxRepositoryDeleteConsumedUpToSkipsNonPositiveWatermark(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close this isolated mock database after its expectations are checked;
+	// teardown errors do not replace the assertions made by the test.
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
@@ -107,9 +132,14 @@ func TestSchedulerOutboxRepositoryDeleteConsumedUpToSkipsNonPositiveWatermark(t 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSchedulerOutboxRepositoryTryAcquireCleanupLock makes the advisory-lock
+// query succeed. It checks that an acquired lease is returned and that
+// releasing it issues the matching unlock statement.
 func TestSchedulerOutboxRepositoryTryAcquireCleanupLock(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close this isolated mock database after its expectations are checked;
+	// teardown errors do not replace the assertions made by the test.
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
@@ -128,9 +158,14 @@ func TestSchedulerOutboxRepositoryTryAcquireCleanupLock(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSchedulerOutboxRepositoryTryAcquireCleanupLockUnavailable simulates
+// advisory-lock contention. It checks that acquired=false and a nil lease
+// return successfully after the database reports an existing lock holder.
 func TestSchedulerOutboxRepositoryTryAcquireCleanupLockUnavailable(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
+	// Close this isolated mock database after its expectations are checked;
+	// teardown errors do not replace the assertions made by the test.
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
@@ -145,20 +180,23 @@ func TestSchedulerOutboxRepositoryTryAcquireCleanupLockUnavailable(t *testing.T)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestEnqueueSchedulerOutbox_UngroupedProviderDedupesWithLiteralNilPayload 检查空分组返回 untyped nil，
-// 使分组事件与传入 nil payload 的事件生成相同 dedup_key。typed nil 会被编码为 null 并进入哈希计算。
+// TestEnqueueSchedulerOutbox_UngroupedProviderDedupesWithLiteralNilPayload
+// compares GroupPayload's empty-group result with a literal nil payload. It
+// checks equal deduplication hashes, protecting the interface-nil
+// representation used by ungrouped provider events.
 func TestEnqueueSchedulerOutbox_UngroupedProviderDedupesWithLiteralNilPayload(t *testing.T) {
 	providerID := int64(42)
 
-	// 路径 A 传入 nil payload，对应 SetError、SetStatus 的调用方式。
+	// Status and error updates pass a literal nil payload.
 	keyLiteralNil := schedulerOutboxDedupKey("provider_changed", &providerID, nil, nil)
 
-	// Path B: scheduler.GroupPayload(provider.GroupIDs) 当提供商没有任何分组
+	// An ungrouped provider produces the same nil payload through GroupPayload.
 	emptyGroupsPayload := scheduler.GroupPayload(nil)
 	require.Nil(t, emptyGroupsPayload,
 		"scheduler.GroupPayload(empty) must return untyped-nil any to avoid typed-nil marshal")
 
-	// 模拟 enqueueSchedulerOutbox 内部的判空逻辑
+	// Exercise the same interface-nil check as enqueueSchedulerOutbox; a typed
+	// nil would pass that check, marshal as null and change the persisted hash.
 	var payloadJSON []byte
 	if emptyGroupsPayload != nil {
 		t.Fatalf("typed-nil regression: scheduler.GroupPayload(empty) interface should be nil")

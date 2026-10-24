@@ -26,8 +26,42 @@ import (
 	openaiws "github.com/TokenFlux/TokenRouter/internal/upstream/openai/ws"
 )
 
-// executeWSIngressAdapter 处理客户端入站 WebSocket（OpenAI Responses WS Mode）并转发到上游。
-// 当前实现按“单请求 -> 终止事件 -> 下一请求”的顺序代理，适配 Codex CLI 的 turn 模式。
+// openai_ws_ingress_execution_adapter.go selects and connects pooled,
+// dedicated, or HTTP-bridged Responses execution.
+// A selected Responses WS provider can run pooled turns, a dedicated relay, or
+// an allowed HTTP bridge. Grok and an HTTP Responses route force bridging;
+// oversized initial frames can choose it only when group conversion and
+// upstream capability allow. Per-session providers otherwise receive a
+// dedicated connection, while pooled WS requires the resolved v2 transport.
+//
+// Pooled execution shares one mutable ingress state across normalized turns
+// and connection acquisitions. Handshake turn state is published to session
+// storage and future acquisition headers after a successful lease. Header
+// refresh for prewarming captures the stable identity service because turn
+// settings replace the local executor reference. The gateway core owns pins,
+// release and replay; typed acquisition failures preserve first-turn failover,
+// forced-continuation loss and capacity-retry distinctions.
+
+// executeWSIngressAdapter binds the upgraded client and selected provider to
+// one sequential ingress session or dedicated relay. It rejects missing
+// service, Gin context, client and provider before clearing tool state and
+// preparing Codex identity. Bearer validation, TLS matching and optional
+// global Fast settings precede session preemption and transport selection.
+//
+// Entry normally owns the preemption registration; direct calls can arm it
+// here and run cleanup at return. A preempted context overrides the returned
+// outcome with ErrSessionPreempted. The selected protocol determines forced
+// HTTP bridging, and initial oversized dedicated requests require allowed HTTP
+// conversion before transport changes.
+//
+// Pooled callbacks retain current affinity, prepare handshake headers, acquire
+// under one turn budget, and classify failures before the core chooses
+// recovery. Successful acquisition saves handshake state locally, requests its
+// session-cache publication, and prepares future headers. Downstream writing
+// uses the client's original lifetime
+// when supplied by hooks, while admission, upstream reads and acquisition use
+// control context. The core runs turns through terminal output and owns every
+// retained pin and lease.
 func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 	ctx context.Context,
 	c *gin.Context,
@@ -49,7 +83,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 	if provider == nil {
 		return errors.New("provider is nil")
 	}
-	// 复用 Gin 上下文时清理上一个提供商留下的工具名称映射。
+	// A provider retry reuses Gin; clear its old reverse tool map before preparing
+	// the new provider so response restoration cannot reuse another target's aliases.
 	gatewayhttp.SetCodexToolNameReverse(c, nil)
 	if _, err := gatewayhttp.PrepareCodexIdentity(ctx, c, s.Requests.Providers, provider); err != nil {
 		return err
@@ -60,16 +95,18 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 
 	tlsRouterMatch := s.Requests.MatchTLS(c, provider)
 
-	// 会话开始时读取 OpenAI Fast Policy 并绑定到上下文，后续帧共享这份配置。
-	// 配置读取时机见 gatewayprovider.WithFastPolicyContext。
+	// Bind a usable global Fast snapshot for the session before frame processing.
+	// Failed or empty reads keep the existing context, leaving the shared evaluator
+	// to resolve its own settings when no snapshot is bound.
 	if s.Requests.Readers != nil {
 		if settings, err := s.Requests.Readers.Gateway.GetOpenAIFastPolicySettings(ctx); err == nil && settings != nil {
 			ctx = gatewayprovider.WithFastPolicyContext(ctx, settings)
 		}
 	}
 
-	// The handler normally owns this registration across retry attempts. Direct
-	// callers still get the same session-scoped preemption behavior here.
+	// Entry-owned registrations are reused across provider attempts; direct calls
+	// obtain cleanup here, with the deferred cause check reporting confirmed session
+	// replacement after transport cleanup has run.
 	if preemptCtx, cleanupPreempt, armed := s.BeginOpenAIWSIngressSessionPreemption(ctx, c, provider, firstClientMessage); armed {
 		ctx = preemptCtx
 		defer cleanupPreempt()
@@ -92,6 +129,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 		return gatewayhttp.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "request exceeds the websocket size threshold and HTTP conversion is not allowed", nil)
 	}
 	ingressMode := provider.View().ResponsesWSConnectionMode()
+	// Dedicated mode has one transport for the conversation; choose allowed
+	// oversized HTTP conversion before dialing, otherwise bind its dedicated relay.
 	if !forceHTTPBridge && ingressMode == providercore.ResponsesWSPerSession {
 		if s.shouldBridgeOpenAIWSPassthroughFirstMessage(provider, firstClientMessage) && responsesWSHTTPBridgeAllowed(c, provider) {
 			forceHTTPBridge = true
@@ -115,6 +154,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 		if err != nil {
 			return fmt.Errorf("build ws url: %w", err)
 		}
+		// This parse supplies diagnostic labels after endpoint preparation; a failure
+		// keeps placeholders while the prepared dial URL remains available for execution.
 		if parsedURL, parseErr := url.Parse(wsURL); parseErr == nil && parsedURL != nil {
 			wsHost = gatewayprovider.NormalizeOpenAIWSLogValue(parsedURL.Host)
 			wsPath = gatewayprovider.NormalizeOpenAIWSLogValue(parsedURL.Path)
@@ -127,6 +168,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 
 	normalizer := &gatewayws.RequestNormalizer{State: state, Options: gatewayws.NormalizeOptions{ProviderID: provider.Record.ID, OAuth: provider.View().IsOpenAIOAuth(), ForceHTTPBridge: forceHTTPBridge}, Port: &wsRequestAdapter{wsPassthroughAdapter: &wsPassthroughAdapter{service: s, request: c, provider: provider, hooks: hooks}, client: clientConn, isCodex: isCodexCLI}}
 	parseClientPayload := func(raw []byte, replace bool, turn int) (gatewayws.ClientPayload, error) {
+		// Refresh acquisition and relay settings for this turn. The normalizer keeps
+		// its initially bound service reference, including the blocked-frame write budget.
 		s = s.forTurn()
 		return normalizer.Normalize(ctx, raw, replace, turn)
 	}
@@ -188,7 +231,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 			return fmt.Errorf("build ws headers: %w", buildHdrErr)
 		}
 		tlsProfile, tlsProfileKey := s.Requests.WSTLSProfile(provider, tlsRouterMatch)
-		// 后台预热与逐轮替换执行器并发，凭据刷新使用固定的身份服务。
+		// Pool prewarming can refresh headers after a later turn replaces s. Capture
+		// the shared identity service, avoiding reads of that changing executor reference.
 		identity := s.Requests.Identity
 		baseAcquireReq = openaiws.WSAcquireRequest{
 			Provider: openAIWSPoolProviderView(provider),
@@ -249,12 +293,15 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 		req.PreferredConnID = strings.TrimSpace(preferred)
 		req.ForcePreferredConn = forcePreferredConn
 		req.ForceNewConn = false
-		// 当前轮次的快照决定等待预算，排队期间的配置更新在下一轮生效。
+		// Freeze one deadline across reuse, queue wakeups and dialing for this lease;
+		// later turns can take a newer Options snapshot before starting another acquire.
 		acquireTimeout := s.openAIWSAcquireTimeout()
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
 		var dialErr *openai.WSDialError
+		// Return a distinct task-invalid marker before ordinary dial policy so the
+		// core can use its single identity repair and retry this acquisition.
 		if acquireErr != nil && s.Requests.Identity.UsesAgentIdentity(ctx, provider) && errors.As(acquireErr, &dialErr) && openai.IsAgentTaskInvalidWSDialError(dialErr) && allowRecovery {
 			return nil, &gatewayws.AcquireRecoveryError{Err: acquireErr}
 		}
@@ -312,6 +359,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 			return nil, acquireErr
 		}
 		connID := strings.TrimSpace(lease.ConnID())
+		// Handshake state belongs to the newly acquired connection. Publish it to
+		// session affinity and cloned future headers before any subsequent acquisition.
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
 			state.TurnState = handshakeTurnState
 			if stateStore != nil && state.SessionHash != "" {
@@ -342,10 +391,17 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 			return forceHTTPBridge || (responsesWSHTTPBridgeAllowed(c, provider) && s.shouldBridgeOpenAIWSHTTP(provider, payload.PayloadBytes, payload.PreviousResponseID))
 		},
 		InvalidFn: s.Lineage.Digests, StripFn: s.Lineage.Strip,
-		BridgeIdentityFn: func(body []byte, model string) (string, error) {
-			return resolveGrokWSCacheIdentity(c, provider, body, model)
+		BridgeIdentityFn: func(body []byte, model string, turn int) (string, error) {
+			turnContext := ctx
+			if hooks != nil && hooks.ContextForTurn != nil {
+				turnContext = hooks.ContextForTurn(turn)
+			}
+			return s.resolveGrokWSCacheIdentity(turnContext, c, provider, body, model)
 		},
 		BridgeFn: func(ctx context.Context, input gatewayws.ClientPayload, body []byte, identity string, turn int) (*gatewayws.ForwardResult, error) {
+			if hooks != nil && hooks.ContextForTurn != nil {
+				ctx = hooks.ContextForTurn(turn)
+			}
 			result, err := s.proxyOpenAIWSHTTPBridgeTurn(ctx, c, provider, token, body, len(body), input.OriginalModel, input.RoutingModel, input.ImageBillingModel, input.ImageSizeTier, input.ImageInputSize, identity, turn, writeClientMessage, tlsRouterMatch)
 			return gatewayprovider.ProjectWSResult(result), err
 		},
@@ -374,7 +430,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 			if hooks != nil {
 				streamHooks = &gatewayws.StreamHooks{OnUpstreamError: hooks.OnUpstreamError}
 			}
-			// 此连接句柄只能来自本适配器；保持错误类型按编程错误失败。
+			// AcquireFn returns this transport wrapper; require that type before exposing
+			// the underlying pool lease to RelayTurn, so unrelated leases cannot be misused.
 			typedLease, ok := lease.(*wsIngressLease)
 			if !ok {
 				panic("unexpected websocket ingress lease type")
@@ -390,6 +447,8 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 			nextRoutingFields := gjson.GetManyBytes(nextPayload.PayloadRaw, "model", "service_tier")
 			if nextPayload.PromptCacheKey != "" {
 				updatedHeaders, _, err := s.buildOpenAIWSHeaders(ctx, c, provider, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openai.WSTurnMetadataHeader)), nextPayload.PromptCacheKey, nextRoutingFields[0].String(), nextRoutingFields[1].String(), tlsRouterMatch)
+				// Keep prior handshake headers if identity rebuilding fails, while the
+				// routing hint below still follows this accepted frame's model and tier.
 				if err != nil {
 					gatewayprovider.LogOpenAIWSModeInfo("ingress_ws_update_headers_failed provider_id=%d err=%v", provider.Record.ID, err)
 				} else {
@@ -412,13 +471,25 @@ func (s *OpenAIWebSocketExecutor) executeWSIngressAdapter(
 	return runtime.Run(ctx, firstClientMessage)
 }
 
-// responsesWSHTTPBridgeAllowed 根据分组转换规则和上游能力检查 HTTP 路线。
+// responsesWSHTTPBridgeAllowed reports an HTTP Responses conversion permitted
+// by the current group and provider. Missing Key, group or provider returns
+// false. It removes the WS protocol from a copied enabled list before calling
+// ResolveRoute, so native WS support cannot satisfy a query about HTTP
+// conversion.
+//
+// The group fallback map and remaining provider protocols select the target
+// together, and only OpenAIResponses returns true. Cloning the list before
+// deletion leaves the provider snapshot stable for other request and route
+// checks. The result gates size-based conversion even when a WS endpoint
+// exists.
 func responsesWSHTTPBridgeAllowed(c *gin.Context, provider *gatewayprovider.ExecutionProvider) bool {
 	key := gatewayhttp.GetExecutionAPIKey(c)
 	if key == nil || key.Group == nil || provider == nil {
 		return false
 	}
 	value := provider.View().RoutingSnapshot().Protocols()
+	// Query conversion using a copied protocol list; retaining the native WS
+	// entry here would select WS before the group's HTTP fallback is considered.
 	value.Enabled = slices.DeleteFunc(slices.Clone(value.Enabled), func(id capability.ProtocolID) bool { return id == capability.ProtocolResponsesWebSocket })
 	var fallbacks map[capability.ProtocolID][]capability.ProtocolID
 	if key.Group != nil {
@@ -428,7 +499,10 @@ func responsesWSHTTPBridgeAllowed(c *gin.Context, provider *gatewayprovider.Exec
 	return ok && target == capability.ProtocolOpenAIResponses
 }
 
-// activeCodexFingerprintMode 返回具有指纹种子的提供商所配置的 Codex 指纹模式。
+// activeCodexFingerprintMode returns the configured fingerprint mode only when
+// a seed exists. Nil provider, off configuration, or absent seed returns off;
+// this value becomes part of the provider view passed to pool compatibility
+// checks.
 func activeCodexFingerprintMode(provider *gatewayprovider.ExecutionProvider) providercore.CodexFingerprintMode {
 	if provider == nil || gatewayprovider.ExecutionProtocolRecord(provider).GetCodexFingerprintMode() == providercore.CodexFingerprintOff {
 		return providercore.CodexFingerprintOff
@@ -439,7 +513,10 @@ func activeCodexFingerprintMode(provider *gatewayprovider.ExecutionProvider) pro
 	return gatewayprovider.ExecutionProtocolRecord(provider).GetCodexFingerprintMode()
 }
 
-// openAIWSPoolProviderView 构造连接池使用的提供商标识、并发额度和指纹模式。
+// openAIWSPoolProviderView returns the selected provider's identity,
+// concurrency and active fingerprint mode for pool operations. Nil provider
+// returns nil; the returned scalar view is independent of the full execution
+// record and contains no credentials.
 func openAIWSPoolProviderView(provider *gatewayprovider.ExecutionProvider) *openaiws.WSPoolProvider {
 	if provider == nil {
 		return nil

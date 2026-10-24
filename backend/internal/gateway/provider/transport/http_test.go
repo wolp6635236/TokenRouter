@@ -24,29 +24,31 @@ import (
 	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
-// HTTPUpstreamSuite HTTP 上游服务测试套件
-// 使用 testify/suite 组织测试，支持 SetupTest 初始化。
+// HTTPUpstreamSuite checks transport construction using fresh mutable options per test.
 type HTTPUpstreamSuite struct {
-	suite.Suite
-	cfg *Options // 测试用配置
+	suite.Suite          // suite assertions and lifecycle
+	cfg         *Options // per-test mutable options
 }
 
-// roundTripFunc 用测试函数处理 HTTP 请求。
+// roundTripFunc handles test requests with a supplied function.
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
-// testUpstreamPool 执行请求的客户端适配与结果通知。
+// testUpstreamPool applies client hooks and reports request results.
 type testUpstreamPool struct {
-	transport http.RoundTripper
+	transport http.RoundTripper // supplied request exchange
 }
 
-// upstreamClientView 记录执行请求时使用的客户端、代理和 TLS 配置。
+// upstreamClientView captures the client, proxy key, and TLS settings selected for a request.
 type upstreamClientView struct {
-	tlsProfile   *tlsfingerprint.Profile
-	client       *http.Client
-	proxyKey     string
-	protocolMode string
+	tlsProfile   *tlsfingerprint.Profile // effective transport fingerprint
+	client       *http.Client            // captured prepared client
+	proxyKey     string                  // normalized proxy identity
+	protocolMode string                  // selected protocol variant
 }
 
+// TestHTTPUpstreamDoCanDisableRedirectsPerRequest marks a request to stop at a
+// redirect response. The transport must return that response and leave the
+// redirect destination uncalled.
 func TestHTTPUpstreamDoCanDisableRedirectsPerRequest(t *testing.T) {
 	var redirectedCalls atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -75,6 +77,9 @@ func TestHTTPUpstreamDoCanDisableRedirectsPerRequest(t *testing.T) {
 	require.Zero(t, redirectedCalls.Load())
 }
 
+// TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredHTTPProxy supplies a
+// fingerprint for a plain HTTP target through an HTTP proxy. The proxy response
+// must win and the direct target must receive no request.
 func TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredHTTPProxy(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -100,6 +105,9 @@ func TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredHTTPProxy(t *testing.T) {
 	require.Zero(t, upstreamCalls.Load(), "plain HTTP must not bypass the configured proxy")
 }
 
+// TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredSOCKSProxy supplies a
+// fingerprint for a plain HTTP target through SOCKS. Both proxy and target
+// counters must observe one request with the target response returned.
 func TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredSOCKSProxy(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -120,6 +128,10 @@ func TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredSOCKSProxy(t *testing.T) {
 	require.Equal(t, int64(1), upstreamCalls.Load())
 }
 
+// startTestSOCKS5Proxy starts a loopback SOCKS listener and returns its URL and
+// accepted-connection counter. Test cleanup closes the listener to end
+// acceptance; each accepted connection is served independently and owns its
+// connection cleanup.
 func startTestSOCKS5Proxy(t *testing.T) (string, *atomic.Int64) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -128,6 +140,9 @@ func startTestSOCKS5Proxy(t *testing.T) (string, *atomic.Int64) {
 		_ = listener.Close()
 	})
 	calls := &atomic.Int64{}
+	// Closing the listener ends acceptance during test cleanup; each accepted
+	// connection receives its own handler so concurrent proxy exchanges can
+	// progress independently.
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -141,6 +156,13 @@ func startTestSOCKS5Proxy(t *testing.T) (string, *atomic.Int64) {
 	return "socks5h://" + listener.Addr().String(), calls
 }
 
+// serveTestSOCKS5Conn handles one unauthenticated SOCKS5 CONNECT and relays
+// traffic to its decoded destination. Invalid greetings, address forms, and
+// incomplete reads end the connection; a failed target dial sends the SOCKS
+// failure reply. After a successful reply, a goroutine copies client traffic
+// upstream while the caller copies target traffic back. The upload goroutine
+// closes the target when upload ends so download can finish; deferred closes
+// release both connections on return.
 func serveTestSOCKS5Conn(client net.Conn) {
 	defer func() {
 		_ = client.Close()
@@ -193,6 +215,8 @@ func serveTestSOCKS5Conn(client net.Conn) {
 	}
 	target, err := net.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", binary.BigEndian.Uint16(portBytes))))
 	if err != nil {
+		// A failed target dial ends this fixture connection; a rejected failure
+		// reply cannot change that outcome before deferred client cleanup.
 		_, _ = client.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
@@ -202,6 +226,10 @@ func serveTestSOCKS5Conn(client net.Conn) {
 	if _, err := client.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
 	}
+	// Relay upload concurrently with download; closing the target after upload
+	// finishes unblocks the download path before deferred connection cleanup runs.
+	// Copy errors end the relay in that direction; these fixture connections
+	// still reach their explicit or deferred cleanup.
 	go func() {
 		_, _ = io.Copy(target, client)
 		_ = target.Close()
@@ -209,6 +237,9 @@ func serveTestSOCKS5Conn(client net.Conn) {
 	_, _ = io.Copy(client, target)
 }
 
+// TestHTTPUpstreamDoAppliesGrokCLIIdentityBeforeOAuthRoundTrip intercepts
+// Responses and Chat requests at the transport. Both endpoints must carry the
+// configured CLI identity and pinned version before the exchange succeeds.
 func TestHTTPUpstreamDoAppliesGrokCLIIdentityBeforeOAuthRoundTrip(t *testing.T) {
 	t.Setenv("XAI_GROK_CLI_VERSION", "")
 
@@ -250,6 +281,10 @@ func TestHTTPUpstreamDoAppliesGrokCLIIdentityBeforeOAuthRoundTrip(t *testing.T) 
 	}
 }
 
+// TestHTTPUpstreamDoFallsBackToOfficialGrokAPIOnCLIAccessDenied returns a
+// recognized denial from the CLI endpoint. The second exchange must reach the
+// official API with replayed body and Bearer token while CLI identity headers
+// are removed.
 func TestHTTPUpstreamDoFallsBackToOfficialGrokAPIOnCLIAccessDenied(t *testing.T) {
 	upstream := New(nil)
 	svc := upstream
@@ -306,6 +341,9 @@ func TestHTTPUpstreamDoFallsBackToOfficialGrokAPIOnCLIAccessDenied(t *testing.T)
 	require.Empty(t, fallbackHeaders.Get("User-Agent"))
 }
 
+// TestGrokAccessDeniedFallbackRecognizesChatEndpointPermissionDenied supplies
+// the structured chat-permission compatibility message. The wrapper must try
+// the CLI host then the official API and return the successful replay response.
 func TestGrokAccessDeniedFallbackRecognizesChatEndpointPermissionDenied(t *testing.T) {
 	var hosts []string
 	transport := &xai.AccessDeniedFallbackTransport{
@@ -342,11 +380,15 @@ func TestGrokAccessDeniedFallbackRecognizesChatEndpointPermissionDenied(t *testi
 	require.Equal(t, []string{grokCLIProxyHost, grokOfficialAPIHost}, hosts)
 }
 
+// TestIsGrokCLICompatibilityAccessDenied compares recognized denial wording
+// with entitlement and unrelated permission failures. The classifier must
+// accept the compatibility cases and reject malformed or differently coded
+// responses.
 func TestIsGrokCLICompatibilityAccessDenied(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
-		want bool
+		name string // scenario display name
+		body string // upstream failure JSON
+		want bool   // expected compatibility decision
 	}{
 		{name: "legacy compatibility wording", body: `{"error":"Access denied"}`, want: true},
 		{
@@ -379,6 +421,10 @@ func TestIsGrokCLICompatibilityAccessDenied(t *testing.T) {
 	}
 }
 
+// TestIsGrokCLIAccessDeniedFallbackCandidateRequiresAuthenticatedReplayableCLI403
+// changes one qualification on an authenticated replayable CLI request. The
+// candidate predicate must reject missing identity, missing authentication,
+// other hosts or statuses, and an unavailable GetBody.
 func TestIsGrokCLIAccessDeniedFallbackCandidateRequiresAuthenticatedReplayableCLI403(t *testing.T) {
 	newRequest := func() *http.Request {
 		req, err := http.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", strings.NewReader(`{"model":"grok-4.5"}`))
@@ -421,6 +467,9 @@ func TestIsGrokCLIAccessDeniedFallbackCandidateRequiresAuthenticatedReplayableCL
 	})
 }
 
+// TestHTTPUpstreamDoDoesNotFallbackForGrokEntitlementDenial returns a
+// subscription-required response through the compatibility wrapper. The client
+// must receive its forbidden status and retained error body.
 func TestHTTPUpstreamDoDoesNotFallbackForGrokEntitlementDenial(t *testing.T) {
 	transport := &xai.AccessDeniedFallbackTransport{
 		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -446,6 +495,10 @@ func TestHTTPUpstreamDoDoesNotFallbackForGrokEntitlementDenial(t *testing.T) {
 	require.JSONEq(t, `{"error":"subscription required"}`, string(body))
 }
 
+// TestApplyGrokCLIProxyHeaders varies the operator version setting across
+// valid, unsafe, and unsupported values. CLI requests must receive accepted
+// identity headers, invalid overrides must select the pinned version, and
+// direct API requests must retain their supplied headers.
 func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	t.Run("uses pinned stable version for the CLI proxy", func(t *testing.T) {
 		t.Setenv("XAI_GROK_CLI_VERSION", "")
@@ -461,18 +514,18 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	})
 
 	t.Run("accepts a valid operator override", func(t *testing.T) {
-		t.Setenv("XAI_GROK_CLI_VERSION", "0.2.121-alpha.1")
+		t.Setenv("XAI_GROK_CLI_VERSION", "1.0.68-alpha.1")
 		req, err := http.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/chat/completions", nil)
 		require.NoError(t, err)
 
 		applyGrokCLIProxyHeaders(req)
 
-		require.Equal(t, "0.2.121-alpha.1", req.Header.Get("x-grok-client-version"))
-		require.Equal(t, xai.CLIUserAgent("0.2.121-alpha.1"), req.Header.Get("User-Agent"))
+		require.Equal(t, "1.0.68-alpha.1", req.Header.Get("x-grok-client-version"))
+		require.Equal(t, xai.CLIUserAgent("1.0.68-alpha.1"), req.Header.Get("User-Agent"))
 	})
 
 	t.Run("rejects an unsafe override", func(t *testing.T) {
-		t.Setenv("XAI_GROK_CLI_VERSION", "0.2.121\r\nX-Injected: true")
+		t.Setenv("XAI_GROK_CLI_VERSION", "1.0.68\r\nX-Injected: true")
 		req, err := http.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
 		require.NoError(t, err)
 
@@ -483,7 +536,7 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	})
 
 	t.Run("rejects an override below the supported minimum", func(t *testing.T) {
-		t.Setenv("XAI_GROK_CLI_VERSION", "0.2.119")
+		t.Setenv("XAI_GROK_CLI_VERSION", "1.0.66")
 		req, err := http.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
 		require.NoError(t, err)
 
@@ -494,7 +547,7 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	})
 
 	t.Run("rejects a prerelease override at the minimum version", func(t *testing.T) {
-		t.Setenv("XAI_GROK_CLI_VERSION", "0.2.120-beta.1")
+		t.Setenv("XAI_GROK_CLI_VERSION", xai.CLIClientVersion+"-beta.1")
 		req, err := http.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
 		require.NoError(t, err)
 
@@ -504,13 +557,15 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 		require.Equal(t, xai.CLIUserAgent(xai.CLIClientVersion), req.Header.Get("User-Agent"))
 	})
 
-	// 所有样本版本都高于固定版本，预期因 SemVer 格式非法而被拒绝。
+	// Invalid version syntax selects the platform's pinned CLI identity, so
+	// malformed and build-metadata overrides cannot become request version
+	// headers.
 	for _, version := range []string{
-		"0.2.0121",
-		"0.2.121-alpha..1",
+		"1.0.068",
+		"1.0.68-alpha..1",
 		"0.3",
 		"1",
-		"0.2.121+build.1",
+		"1.0.68+build.1",
 	} {
 		t.Run("rejects invalid semver "+version, func(t *testing.T) {
 			t.Setenv("XAI_GROK_CLI_VERSION", version)
@@ -538,22 +593,22 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	})
 }
 
-// SetupTest 每个测试用例执行前的初始化
-// 创建空配置，各测试用例可按需覆盖。
+// SetupTest allocates the mutable options used by each transport suite case.
 func (s *HTTPUpstreamSuite) SetupTest() {
 	s.cfg = &Options{}
 }
 
-// newService 创建测试用的 Client 实例
-// 返回具体类型以便访问内部状态进行断言。
+// newService creates a transport Client reading this test's current options
+// pointer.
 func (s *HTTPUpstreamSuite) newService() *Client {
 	up := New(func() *Options { return s.cfg })
 	svc := up
 	return svc
 }
 
-// TestDefaultResponseHeaderTimeout 测试默认响应头超时配置
-// 配置为 0 时禁用响应头超时。
+// TestDefaultResponseHeaderTimeout uses an existing Options value with a zero
+// header wait. The constructed ordinary transport must disable the response-
+// header timeout for that configured zero.
 func (s *HTTPUpstreamSuite) TestDefaultResponseHeaderTimeout() {
 	svc := s.newService()
 	entry := mustGetOrCreateClient(s.T(), svc, "", 0, 0)
@@ -562,7 +617,9 @@ func (s *HTTPUpstreamSuite) TestDefaultResponseHeaderTimeout() {
 	require.Equal(s.T(), time.Duration(0), transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
 }
 
-// TestNilConfigResponseHeaderTimeoutFallback 检查 nil 配置是否使用代码定义的默认值。
+// TestNilConfigResponseHeaderTimeoutFallback builds a client whose application
+// options source is absent. Its ordinary transport must select the built-in
+// three-hundred-second response-header timeout.
 func (s *HTTPUpstreamSuite) TestNilConfigResponseHeaderTimeoutFallback() {
 	up := New(nil)
 	svc := up
@@ -572,8 +629,9 @@ func (s *HTTPUpstreamSuite) TestNilConfigResponseHeaderTimeoutFallback() {
 	require.Equal(s.T(), 300*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
 }
 
-// TestCustomResponseHeaderTimeout 测试自定义响应头超时配置
-// 验证配置值能正确应用到 Transport。
+// TestCustomResponseHeaderTimeout sets a seven-second generic header wait in
+// suite options. The constructed transport must expose that value as a duration
+// measured in seconds.
 func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 	*s.cfg = Options{ResponseHeaderTimeout: 7}
 	svc := s.newService()
@@ -583,14 +641,18 @@ func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 	require.Equal(s.T(), 7*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
 }
 
-// TestGetOrCreateClient_InvalidURLReturnsError 测试无效代理 URL 返回错误
-// 验证解析失败时拒绝回退到直连模式。
+// TestGetOrCreateClient_InvalidURLReturnsError supplies a malformed proxy URL
+// during client inspection. Preparation must return an error before a client
+// can be selected for exchange.
 func (s *HTTPUpstreamSuite) TestGetOrCreateClient_InvalidURLReturnsError() {
 	svc := s.newService()
 	_, err := svc.getClientEntry("://bad-proxy-url", 1, 1, upstreamcore.HTTPUpstreamProfileDefault, false, false)
 	require.Error(s.T(), err, "expected error for invalid proxy URL")
 }
 
+// TestOpenAIProfileDefaultsToHTTP2AndNoHeaderTimeout enables OpenAI HTTP/2
+// alongside a generic timeout. The OpenAI transport must prefer HTTP/2 and use
+// a zero platform header wait.
 func (s *HTTPUpstreamSuite) TestOpenAIProfileDefaultsToHTTP2AndNoHeaderTimeout() {
 	*s.cfg = Options{
 		ResponseHeaderTimeout: 600,
@@ -609,6 +671,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileDefaultsToHTTP2AndNoHeaderTimeout()
 	require.Equal(s.T(), upstreamProtocolModeOpenAIH2, entry.protocolMode)
 }
 
+// TestOpenAIProfileCustomHeaderTimeout supplies generic and OpenAI-specific
+// waits with HTTP/2 enabled. The constructed OpenAI transport must use the
+// platform wait of eighteen hundred seconds.
 func (s *HTTPUpstreamSuite) TestOpenAIProfileCustomHeaderTimeout() {
 	*s.cfg = Options{
 		ResponseHeaderTimeout:       600,
@@ -625,6 +690,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileCustomHeaderTimeout() {
 	require.Equal(s.T(), 1800*time.Second, transport.ResponseHeaderTimeout)
 }
 
+// TestOpenAIProfileTLSFingerprintDoesNotInheritGenericHeaderTimeout supplies a
+// TLS template with no h2 advertisement. OpenAI must use HTTP/1 and a zero
+// platform header wait despite the generic setting.
 func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGenericHeaderTimeout() {
 	*s.cfg = Options{
 		ResponseHeaderTimeout: 600,
@@ -641,7 +709,11 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGeneric
 	require.Equal(s.T(), upstreamProtocolModeOpenAIH1, entry.protocolMode, "未声明 h2 的 TLS 模板应保持 HTTP/1.1")
 }
 
-//nolint:staticcheck // 此测试检查 uTLS 裸连接适配所需的 x/net/http2 Transport 和 PING 设置。
+// TestOpenAIProfileTLSFingerprintUsesHTTP2WhenALPNAllowsH2 supplies h2 ALPN in
+// the selected fingerprint. Construction must choose the x/net HTTP/2 transport
+// with raw TLS dialing and bounded idle PING settings.
+//
+//nolint:staticcheck // Check the x/net/http2 transport and PING settings used with raw uTLS connections.
 func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintUsesHTTP2WhenALPNAllowsH2() {
 	*s.cfg = Options{
 		OpenAIHTTP2: HTTP2Options{
@@ -662,7 +734,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintUsesHTTP2WhenALPNAllo
 	require.Equal(s.T(), upstreamProtocolModeOpenAIH2, entry.protocolMode)
 }
 
-// TestOpenAIProfileTLSFingerprintHTTP2HeaderTimeout 验证本场景验证配置到技术快照的映射；裸 H2 的超时行为由机制测试覆盖。
+// TestOpenAIProfileTLSFingerprintHTTP2HeaderTimeout resolves options for an
+// h2-capable fingerprint and one-second platform wait. The resulting options
+// must enable HTTP/2 and retain that configured duration.
 func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintHTTP2HeaderTimeout() {
 	*s.cfg = Options{OpenAIResponseHeaderTimeout: 1, OpenAIHTTP2: HTTP2Options{Enabled: true}}
 	svc := s.newService()
@@ -673,6 +747,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintHTTP2HeaderTimeout() 
 	require.Equal(s.T(), time.Second, opts.Settings.ResponseHeaderTimeout)
 }
 
+// TestTLSFingerprintProfileHashSplitsClientCache inspects two distinct cipher-
+// suite templates and repeats one selection. Matching templates must share a
+// transport while differing hashes must select separate transports.
 func (s *HTTPUpstreamSuite) TestTLSFingerprintProfileHashSplitsClientCache() {
 	svc := s.newService()
 	profileA := &tlsfingerprint.Profile{Name: "profile-a", CipherSuites: []uint16{0x1301}}
@@ -689,6 +766,10 @@ func (s *HTTPUpstreamSuite) TestTLSFingerprintProfileHashSplitsClientCache() {
 	require.NotSame(s.T(), entryA.client.Transport, entryB.client.Transport, "不同 TLS profile hash 不应复用旧 Transport")
 }
 
+// TestTLSFingerprintHTTP2FallbackSplitsClientCache records an eligible
+// compatibility failure after selecting a fingerprint HTTP/2 transport. The
+// next selection must use a distinct HTTP/1 transport and the recovery cache
+// variant.
 func (s *HTTPUpstreamSuite) TestTLSFingerprintHTTP2FallbackSplitsClientCache() {
 	*s.cfg = Options{
 		OpenAIHTTP2: HTTP2Options{
@@ -716,6 +797,10 @@ func (s *HTTPUpstreamSuite) TestTLSFingerprintHTTP2FallbackSplitsClientCache() {
 	require.False(s.T(), transport.ForceAttemptHTTP2)
 }
 
+// TestTLSFingerprintDefaultProfileStripsH2ALPNOutsideOpenAIH2Mode uses an
+// h2-advertising template with the ordinary profile. The selected HTTP/1
+// transport must receive a different fingerprint hash after h2 advertisement is
+// stripped.
 func (s *HTTPUpstreamSuite) TestTLSFingerprintDefaultProfileStripsH2ALPNOutsideOpenAIH2Mode() {
 	svc := s.newService()
 	profile := &tlsfingerprint.Profile{Name: "h2-profile", ALPNProtocols: []string{"h2", "http/1.1"}}
@@ -730,6 +815,9 @@ func (s *HTTPUpstreamSuite) TestTLSFingerprintDefaultProfileStripsH2ALPNOutsideO
 	require.NotEqual(s.T(), tlsfingerprint.CacheKey(profile), tlsfingerprint.CacheKey(entry.tlsProfile), "传给技术池的模板应使用剥离 h2 后的 profile hash")
 }
 
+// TestOpenAIProfileHTTP2DisabledUsesHTTP1Transport disables OpenAI HTTP/2 in
+// platform settings. The constructed client must use the HTTP/1 cache mode and
+// disable automatic HTTP/2 negotiation.
 func (s *HTTPUpstreamSuite) TestOpenAIProfileHTTP2DisabledUsesHTTP1Transport() {
 	*s.cfg = Options{
 		OpenAIHTTP2: HTTP2Options{Enabled: false},
@@ -744,6 +832,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileHTTP2DisabledUsesHTTP1Transport() {
 	require.Equal(s.T(), upstreamProtocolModeOpenAIH1, entry.protocolMode)
 }
 
+// TestOpenAIHeaderTimeoutChangeRebuildsClient changes the OpenAI wait after the
+// first client selection. The next inspection must return a distinct transport
+// carrying the updated platform timeout.
 func (s *HTTPUpstreamSuite) TestOpenAIHeaderTimeoutChangeRebuildsClient() {
 	*s.cfg = Options{
 		OpenAIHTTP2: HTTP2Options{Enabled: true},
@@ -761,6 +852,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIHeaderTimeoutChangeRebuildsClient() {
 	require.Equal(s.T(), 1800*time.Second, transport.ResponseHeaderTimeout)
 }
 
+// TestOpenAIHTTP2TimeoutDoesNotActivateProxyFallback records a response-header
+// timeout containing HTTP/2 text with a one-failure threshold. The selected
+// proxy recovery state must remain inactive.
 func (s *HTTPUpstreamSuite) TestOpenAIHTTP2TimeoutDoesNotActivateProxyFallback() {
 	*s.cfg = Options{
 		OpenAIHTTP2: HTTP2Options{
@@ -777,6 +871,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIHTTP2TimeoutDoesNotActivateProxyFallback()
 	require.False(s.T(), svc.transportPolicy.Active(proxyURL, time.Now()), "header timeout should not be treated as H2 compatibility failure")
 }
 
+// TestOpenAIHTTP2ProxyCompatibilityErrorActivatesFallback records a protocol
+// error for an eligible OpenAI HTTP proxy. Recovery must activate and the next
+// client selection must use HTTP/1 with automatic h2 negotiation disabled.
 func (s *HTTPUpstreamSuite) TestOpenAIHTTP2ProxyCompatibilityErrorActivatesFallback() {
 	*s.cfg = Options{
 		OpenAIHTTP2: HTTP2Options{
@@ -801,8 +898,9 @@ func (s *HTTPUpstreamSuite) TestOpenAIHTTP2ProxyCompatibilityErrorActivatesFallb
 	require.Equal(s.T(), upstreamProtocolModeOpenAIH1Fallback, entry.protocolMode)
 }
 
-// TestNormalizeProxyURL_Canonicalizes 测试代理 URL 规范化
-// 验证等价地址能够映射到同一缓存键。
+// TestNormalizeProxyURL_Canonicalizes normalizes proxy URLs that differ by a
+// trailing slash. Both accepted values must return the same key for later
+// client-pool selection.
 func (s *HTTPUpstreamSuite) TestNormalizeProxyURL_Canonicalizes() {
 	key1, _, err1 := normalizeProxyURL("http://proxy.local:8080")
 	require.NoError(s.T(), err1)
@@ -811,14 +909,14 @@ func (s *HTTPUpstreamSuite) TestNormalizeProxyURL_Canonicalizes() {
 	require.Equal(s.T(), key1, key2, "expected normalized proxy keys to match")
 }
 
-// TestAcquireClient_OverLimitReturnsError 测试连接池缓存上限保护
-// 验证超限且无可淘汰条目时返回错误
-
-// TestDo_WithoutProxy_GoesDirect 测试无代理时直连
-// 验证空代理 URL 时请求直接发送到目标服务器。
+// TestDo_WithoutProxy_GoesDirect sends an ordinary request to a loopback server
+// with no proxy. The returned body must contain the target server's direct-
+// response marker.
 func (s *HTTPUpstreamSuite) TestDo_WithoutProxy_GoesDirect() {
-	// 创建模拟上游服务器
 	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The routing assertion checks this fixed fixture marker; discard server
+		// write errors because the client-side exchange and body checks detect
+		// missing output.
 		_, _ = io.WriteString(w, "direct")
 	}))
 	s.T().Cleanup(upstream.Close)
@@ -832,18 +930,24 @@ func (s *HTTPUpstreamSuite) TestDo_WithoutProxy_GoesDirect() {
 	defer func() {
 		_ = resp.Body.Close()
 	}()
+	// Compare the received fixture marker after asserting the HTTP exchange;
+	// discarded read errors leave body equality as this routing case's
+	// observable output check.
 	b, _ := io.ReadAll(resp.Body)
 	require.Equal(s.T(), "direct", string(b), "unexpected body")
 }
 
-// TestDo_WithHTTPProxy_UsesProxy 测试 HTTP 代理功能
-// 验证请求通过代理服务器转发，使用绝对 URI 格式。
+// TestDo_WithHTTPProxy_UsesProxy captures the request received by a local HTTP
+// proxy. It must use the complete absolute target URI and return the proxy's
+// response body.
 func (s *HTTPUpstreamSuite) TestDo_WithHTTPProxy_UsesProxy() {
-	// 用于接收代理请求的通道
 	seen := make(chan string, 1)
-	// 创建模拟代理服务器
+
 	proxySrv := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- r.RequestURI // 记录请求 URI
+		seen <- r.RequestURI
+		// The routing assertion checks this fixed fixture marker; discard server
+		// write errors because the client-side exchange and body checks detect
+		// missing output.
 		_, _ = io.WriteString(w, "proxied")
 	}))
 	s.T().Cleanup(proxySrv.Close)
@@ -851,7 +955,6 @@ func (s *HTTPUpstreamSuite) TestDo_WithHTTPProxy_UsesProxy() {
 	*s.cfg = Options{ResponseHeaderTimeout: 1}
 	up := New(func() *Options { return s.cfg })
 
-	// 发送请求到外部地址，应通过代理
 	req, err := http.NewRequest(http.MethodGet, "http://example.com/test", nil)
 	require.NoError(s.T(), err, "NewRequest")
 	resp, err := up.Do(req, proxySrv.URL, 1, 1)
@@ -859,10 +962,12 @@ func (s *HTTPUpstreamSuite) TestDo_WithHTTPProxy_UsesProxy() {
 	defer func() {
 		_ = resp.Body.Close()
 	}()
+	// Compare the received fixture marker after asserting the HTTP exchange;
+	// discarded read errors leave body equality as this routing case's
+	// observable output check.
 	b, _ := io.ReadAll(resp.Body)
 	require.Equal(s.T(), "proxied", string(b), "unexpected body")
 
-	// 验证代理收到的是绝对 URI 格式（HTTP 代理规范要求）
 	select {
 	case uri := <-seen:
 		require.Equal(s.T(), "http://example.com/test", uri, "expected absolute-form request URI")
@@ -871,10 +976,13 @@ func (s *HTTPUpstreamSuite) TestDo_WithHTTPProxy_UsesProxy() {
 	}
 }
 
-// TestDo_EmptyProxy_UsesDirect 测试空代理字符串
-// 验证空字符串代理等同于直连。
+// TestDo_EmptyProxy_UsesDirect exercises an empty proxy string against a local
+// target. The request must succeed and return the body supplied by that target.
 func (s *HTTPUpstreamSuite) TestDo_EmptyProxy_UsesDirect() {
 	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The routing assertion checks this fixed fixture marker; discard server
+		// write errors because the client-side exchange and body checks detect
+		// missing output.
 		_, _ = io.WriteString(w, "direct-empty")
 	}))
 	s.T().Cleanup(upstream.Close)
@@ -887,60 +995,68 @@ func (s *HTTPUpstreamSuite) TestDo_EmptyProxy_UsesDirect() {
 	defer func() {
 		_ = resp.Body.Close()
 	}()
+	// Compare the received fixture marker after asserting the HTTP exchange;
+	// discarded read errors leave body equality as this routing case's
+	// observable output check.
 	b, _ := io.ReadAll(resp.Body)
 	require.Equal(s.T(), "direct-empty", string(b))
 }
 
-// TestProviderIsolation_DifferentProviders 测试提供商隔离模式
-// 验证不同提供商使用独立的连接池。
+// TestProviderIsolation_DifferentProviders selects one proxy for two provider
+// IDs under provider isolation. The pool must return distinct transports for
+// those provider identities.
 func (s *HTTPUpstreamSuite) TestProviderIsolation_DifferentProviders() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider"}
 	svc := s.newService()
-	// 同一代理，不同提供商
+
 	entry1 := mustGetOrCreateClient(s.T(), svc, "http://proxy.local:8080", 1, 3)
 	entry2 := mustGetOrCreateClient(s.T(), svc, "http://proxy.local:8080", 2, 3)
 	require.NotSame(s.T(), entry1.client.Transport, entry2.client.Transport, "不同提供商不应共享连接池")
 }
 
-// TestProviderProxyIsolation_DifferentProxy 测试提供商+代理组合隔离模式
-// 验证同一提供商使用不同代理时创建独立连接池。
+// TestProviderProxyIsolation_DifferentProxy selects two proxies for one
+// provider under provider_proxy isolation. Changing the proxy identity must
+// produce a distinct transport for the next selection.
 func (s *HTTPUpstreamSuite) TestProviderProxyIsolation_DifferentProxy() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider_proxy"}
 	svc := s.newService()
-	// 同一提供商，不同代理
+
 	entry1 := mustGetOrCreateClient(s.T(), svc, "http://proxy-a:8080", 1, 3)
 	entry2 := mustGetOrCreateClient(s.T(), svc, "http://proxy-b:8080", 1, 3)
 	require.NotSame(s.T(), entry1.client.Transport, entry2.client.Transport, "提供商+代理隔离应区分不同代理")
 }
 
-// TestProviderModeProxyChangeClearsPool 测试提供商模式下代理变更
-// TestProviderModeProxyChangeClearsPool 检查提供商切换代理时清理旧连接池。
+// TestProviderModeProxyChangeClearsPool changes a provider's proxy while using
+// provider isolation. The selected transport must be replaced when the provider
+// routes through the second proxy.
 func (s *HTTPUpstreamSuite) TestProviderModeProxyChangeClearsPool() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider"}
 	svc := s.newService()
-	// 同一提供商，先后使用不同代理
+
 	entry1 := mustGetOrCreateClient(s.T(), svc, "http://proxy-a:8080", 1, 3)
 	entry2 := mustGetOrCreateClient(s.T(), svc, "http://proxy-b:8080", 1, 3)
 	require.NotSame(s.T(), entry1.client.Transport, entry2.client.Transport, "提供商切换代理应创建新连接池")
 }
 
-// TestProviderConcurrencyOverridesPoolSettings 测试提供商并发数覆盖连接池配置
-// 验证提供商隔离模式下，连接池大小与提供商并发数对应。
+// TestProviderConcurrencyOverridesPoolSettings supplies a positive concurrency
+// limit under provider isolation. The constructed transport must use that
+// concurrency for active and both idle connection counts.
 func (s *HTTPUpstreamSuite) TestProviderConcurrencyOverridesPoolSettings() {
 	*s.cfg = Options{ConnectionPoolIsolation: "provider"}
 	svc := s.newService()
-	// 提供商并发数为 12
+
 	entry := mustGetOrCreateClient(s.T(), svc, "", 1, 12)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
-	// 连接池参数应与并发数一致
+
 	require.Equal(s.T(), 12, transport.MaxConnsPerHost, "MaxConnsPerHost mismatch")
 	require.Equal(s.T(), 12, transport.MaxIdleConns, "MaxIdleConns mismatch")
 	require.Equal(s.T(), 12, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost mismatch")
 }
 
-// TestProviderConcurrencyFallbackToDefault 测试提供商并发数为 0 时回退到默认配置
-// 验证未指定并发数时使用全局配置值。
+// TestProviderConcurrencyFallbackToDefault supplies zero provider concurrency
+// and distinct global connection counts. The transport must retain those
+// configured counts when the provider limit supplies no override.
 func (s *HTTPUpstreamSuite) TestProviderConcurrencyFallbackToDefault() {
 	*s.cfg = Options{
 		ConnectionPoolIsolation: "provider",
@@ -949,7 +1065,7 @@ func (s *HTTPUpstreamSuite) TestProviderConcurrencyFallbackToDefault() {
 		MaxConnsPerHost:         66,
 	}
 	svc := s.newService()
-	// 提供商并发数为 0，应使用全局配置
+
 	entry := mustGetOrCreateClient(s.T(), svc, "", 1, 0)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
@@ -958,22 +1074,16 @@ func (s *HTTPUpstreamSuite) TestProviderConcurrencyFallbackToDefault() {
 	require.Equal(s.T(), 55, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost fallback mismatch")
 }
 
-// TestHTTPUpstreamSuite 测试超出数量限制时的 LRU 淘汰
-// 验证优先淘汰最久未使用的空闲客户端
-
-// TestIdleTTLDoesNotEvictActive 测试活跃请求保护
-// 验证有进行中请求的客户端不会被空闲超时淘汰
-
-// TestHTTPUpstreamSuite 运行测试套件。
+// TestHTTPUpstreamSuite runs the transport suite with independent options per
+// case. Its cases protect profile timeouts, protocol recovery, proxy routing,
+// TLS identity, and pool isolation observations.
 func TestHTTPUpstreamSuite(t *testing.T) {
 	suite.Run(t, new(HTTPUpstreamSuite))
 }
 
-// mustGetOrCreateClient 测试辅助函数，调用 getOrCreateClient 并断言无错误
-
-// hasEntry 检查客户端是否存在于缓存中
-// 辅助函数，用于验证淘汰逻辑
-
+// TestHTTPUpstreamDoPublicHostsOnlyRejectsPrivateDestinationBeforeConnecting
+// reaches a loopback target with an ordinary request then marks another public-
+// only. The marked request must fail before adding another server call.
 func TestHTTPUpstreamDoPublicHostsOnlyRejectsPrivateDestinationBeforeConnecting(t *testing.T) {
 	var calls atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1000,6 +1110,10 @@ func TestHTTPUpstreamDoPublicHostsOnlyRejectsPrivateDestinationBeforeConnecting(
 	require.Equal(t, int64(1), calls.Load(), "marked request must be rejected before any connection is made")
 }
 
+// TestHTTPUpstreamPublicHostsOnlyValidatesEveryRedirectHop applies a public-
+// host policy to a borrowed client. The derived callback must reject private
+// address forms, accept the public fixture, cap redirects, and leave the base
+// client unchanged.
 func TestHTTPUpstreamPublicHostsOnlyValidatesEveryRedirectHop(t *testing.T) {
 	upstream := New(nil)
 	base := &http.Client{}
@@ -1033,7 +1147,10 @@ func TestHTTPUpstreamPublicHostsOnlyValidatesEveryRedirectHop(t *testing.T) {
 	require.Error(t, client.CheckRedirect(publicHop, make([]*http.Request, 10)), "redirect chain stays capped")
 }
 
-// TestHTTPUpstreamPublicHostsOnlyPreservesExistingRedirectPolicy 验证公网下载约束与已有的重定向策略必须同时生效，且不能污染缓存客户端。
+// TestHTTPUpstreamPublicHostsOnlyPreservesExistingRedirectPolicy combines a
+// public-host restriction with an existing redirect callback. A private hop
+// must fail before that callback runs, and a public hop must retain its stop-
+// response decision.
 func TestHTTPUpstreamPublicHostsOnlyPreservesExistingRedirectPolicy(t *testing.T) {
 	upstream := New(nil)
 	called := false
@@ -1053,11 +1170,14 @@ func TestHTTPUpstreamPublicHostsOnlyPreservesExistingRedirectPolicy(t *testing.T
 	require.NotSame(t, base, client)
 }
 
+// RoundTrip invokes the supplied test function with the prepared HTTP request.
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// newLocalTestServer 在环境无法监听时跳过测试。
+// newLocalTestServer verifies that the environment permits a loopback listener
+// before creating a test server. A listen failure skips the test, and the
+// caller registers cleanup for the returned server.
 func newLocalTestServer(tb testing.TB, handler http.Handler) *httptest.Server {
 	tb.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1068,6 +1188,9 @@ func newLocalTestServer(tb testing.TB, handler http.Handler) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
+// Do creates a test client, applies the request's preparation hook, and reports
+// exchange outcome through ObserveResult. Successful response bodies remain
+// available for the test caller to read and close.
 func (p testUpstreamPool) Do(req *http.Request, opts httpclient.UpstreamRequestOptions) (*http.Response, error) {
 	client := &http.Client{Transport: p.transport, CheckRedirect: opts.CheckRedirect}
 	if opts.PrepareClient != nil {
@@ -1080,10 +1203,18 @@ func (p testUpstreamPool) Do(req *http.Request, opts httpclient.UpstreamRequestO
 	return resp, err
 }
 
+// getClientEntry inspects the selected transport for the supplied proxy,
+// provider, and platform profile. Its trailing boolean arguments are ignored,
+// and the returned view describes an exchange through the configured technical
+// pool.
 func (s *Client) getClientEntry(proxyURL string, providerID int64, concurrency int, profile upstreamcore.HTTPUpstreamProfile, _, _ bool) (*upstreamClientView, error) {
 	return s.inspectClient(proxyURL, providerID, concurrency, profile, nil)
 }
 
+// getClientEntryWithTLS inspects transport selection with the supplied
+// fingerprint and platform profile. Its trailing boolean arguments are ignored;
+// the selected fingerprint and cache variant are returned through the borrowed-
+// client view.
 func (s *Client) getClientEntryWithTLS(
 	proxyURL string,
 	providerID int64,
@@ -1095,6 +1226,13 @@ func (s *Client) getClientEntryWithTLS(
 	return s.inspectClient(proxyURL, providerID, concurrency, profile, tlsProfile)
 }
 
+// inspectClient captures a prepared technical client while replacing the
+// request's exchange transport with a successful test response. It resolves
+// real pool options and cache identity before that hook runs, so assertions can
+// inspect pooling decisions without opening the target connection. The hook
+// returns a shallow client copy using the stub and records the supplied client
+// for inspection. The resulting response is closed before returning the view,
+// releasing any technical pool accounting.
 func (s *Client) inspectClient(
 	proxyURL string,
 	providerID int64,
@@ -1131,6 +1269,9 @@ func (s *Client) inspectClient(
 	return view, nil
 }
 
+// mustGetOrCreateClient inspects the ordinary profile for a proxy/provider
+// combination and returns its prepared transport view. It marks the test helper
+// and fails the current test when preparation returns an error.
 func mustGetOrCreateClient(t *testing.T, svc *Client, proxyURL string, providerID int64, concurrency int) *upstreamClientView {
 	t.Helper()
 	entry, err := svc.inspectClient(proxyURL, providerID, concurrency, upstreamcore.HTTPUpstreamProfileDefault, nil)

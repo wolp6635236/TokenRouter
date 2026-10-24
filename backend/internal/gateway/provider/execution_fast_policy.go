@@ -12,31 +12,41 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
+// execution_fast_policy.go binds request settings and provider scope to Fast
+// tier evaluation.
+// Fast request rules can be scoped to the authenticated payer and override
+// global rules while retaining configuration order within each scope.
+// Execution evaluation reads a context settings pointer when present or
+// runtime settings otherwise; it folds tier case and whitespace, while
+// tierpolicy.Resolve performs canonical tier validation before invoking its
+// callback.
+
+// openAIFastPolicyCtxKey stores a caller-supplied Fast settings pointer for
+// contexts derived from one request or WS session.
 var openAIFastPolicyCtxKey = openAIFastPolicyCtxKeyType{}
 
-// ExecutionFastPolicy 在处理请求时读取 Fast 设置和价格。
+// ExecutionFastPolicy supplies runtime Fast settings and model-price
+// capability checks to tier decisions.
 type ExecutionFastPolicy struct {
+	// Readers supplies live settings when no context pointer is bound. Nil Readers
+	// causes Evaluate to pass before attempting a runtime settings read.
 	Readers *RuntimeReaders
-	Prices  *billing.PriceResolver
+	Prices  *billing.PriceResolver // forced Fast price capability reader
 }
 
-// openAIFastPolicyCtxKeyType 标识 WebSocket 会话共用的 Fast 策略快照。
-// 同一会话的各帧复用该快照，策略更新在新会话中生效。
-// 管理员可断开会话，使重连后的请求读取新策略。
+// openAIFastPolicyCtxKeyType identifies a borrowed settings pointer in request
+// context.
 type openAIFastPolicyCtxKeyType struct{}
 
-// Evaluate 返回指定提供商、模型和 service_tier 应执行的动作及错误消息。
-// 策略服务不可用或没有规则命中时返回 pass，调用方可安全地直接放行。
+// Evaluate folds tier case and whitespace, then evaluates Fast settings with
+// the trusted payer ID and provider scope. Missing readers, blank tiers, read
+// errors, or absent settings return pass.
 //
-// 匹配规则：
-//   - Scope 按提供商类型过滤（all / oauth / apikey / bedrock）
-//   - UserIDs 非空时按 API Key 所属的可信用户 ID 过滤
-//   - ServiceTier 必须为空、all 或等于归一化后的 tier
-//   - ModelWhitelist 将规则限制到指定模型，FallbackAction 处理未匹配模型
-//   - 用户专属规则优先于全局规则，两组内部均保持配置顺序并首条命中
-//
-// 一次请求携带一个 service_tier，filter 删除该字段。同一 scope 和 tier 下
-// 多条模型白名单重叠时，管理员通过配置顺序决定先应用哪条规则。
+// User-specific rules precede global rules, and each set selects its first
+// qualifying rule before model whitelist action is resolved. Context settings
+// are read by reference; callers keep them immutable during evaluation. Direct
+// callers can supply unknown nonblank tiers, which an all-tier rule can match;
+// tierpolicy.Resolve canonicalizes its input before calling this adapter.
 func (s *ExecutionFastPolicy) Evaluate(ctx context.Context, provider *ExecutionProvider, model, serviceTier string) (action, errMsg string) {
 	if s == nil || s.Readers == nil {
 		return anthropic.BetaPolicyActionPass, ""
@@ -48,6 +58,8 @@ func (s *ExecutionFastPolicy) Evaluate(ctx context.Context, provider *ExecutionP
 	settings := FastPolicySettingsFromContext(ctx)
 	if settings == nil {
 		fetched, err := s.Readers.Gateway.GetOpenAIFastPolicySettings(ctx)
+		// Unavailable settings cannot supply a matching rule. Pass the tier through
+		// so request processing continues under the caller's remaining policy stages.
 		if err != nil || fetched == nil {
 			return anthropic.BetaPolicyActionPass, ""
 		}
@@ -56,7 +68,9 @@ func (s *ExecutionFastPolicy) Evaluate(ctx context.Context, provider *ExecutionP
 	return tierpolicy.Evaluate(settings, openAIFastPolicyUserID(ctx), provider != nil && provider.View().IsOAuth(), provider != nil && provider.View().IsBedrock(), model, tier)
 }
 
-// openAIFastPolicyUserID 从可信请求上下文读取 API Key 所属用户 ID。
+// openAIFastPolicyUserID returns the positive payer ID from the authenticated
+// access snapshot. Nil contexts, absent snapshots, and nonpositive IDs return
+// zero so user-scoped Fast rules have no trusted payer match.
 func openAIFastPolicyUserID(ctx context.Context) int64 {
 	if ctx == nil {
 		return 0
@@ -69,8 +83,10 @@ func openAIFastPolicyUserID(ctx context.Context) int64 {
 	return userID
 }
 
-// WithFastPolicyContext 将一份 settings 快照绑定到 context，供该 ctx
-// 衍生 goroutine 中的 Evaluate 复用。
+// WithFastPolicyContext binds the supplied settings pointer to ctx for
+// subsequent evaluation. Nil context or settings returns ctx unchanged; the
+// pointer is borrowed, so callers keep its rules immutable while derived
+// contexts use it.
 func WithFastPolicyContext(ctx context.Context, settings *tierpolicy.OpenAIFastPolicySettings) context.Context {
 	if ctx == nil || settings == nil {
 		return ctx
@@ -78,6 +94,9 @@ func WithFastPolicyContext(ctx context.Context, settings *tierpolicy.OpenAIFastP
 	return context.WithValue(ctx, openAIFastPolicyCtxKey, settings)
 }
 
+// FastPolicySettingsFromContext returns the stored settings pointer when its
+// context value has the expected type. Nil contexts or other values return
+// nil, letting Evaluate read runtime settings when no snapshot is available.
 func FastPolicySettingsFromContext(ctx context.Context) *tierpolicy.OpenAIFastPolicySettings {
 	if ctx == nil {
 		return nil
@@ -88,7 +107,9 @@ func FastPolicySettingsFromContext(ctx context.Context) *tierpolicy.OpenAIFastPo
 	return nil
 }
 
-// GroupFastPolicy 只信任认证链路完整加载的分组，并限于 OpenAI 提供商。
+// GroupFastPolicy reads the admitted group's effective Fast policy for OpenAI
+// targets. Missing context or target, another platform, or an invalid group
+// context selects follow_request instead of applying unavailable group data.
 func GroupFastPolicy(ctx context.Context, provider *ExecutionProvider) string {
 	if ctx == nil || provider == nil || !provider.View().IsOpenAI() {
 		return routing.GroupOpenAIFastPolicyFollowRequest
@@ -100,6 +121,10 @@ func GroupFastPolicy(ctx context.Context, provider *ExecutionProvider) string {
 	return group.EffectiveOpenAIFastPolicy()
 }
 
+// Input binds group, Key, settings evaluation, and forced-Fast capability
+// callbacks for tierpolicy.Resolve. The callbacks read their context and
+// provider when invoked, so callers keep those request inputs stable during a
+// decision.
 func (s *ExecutionFastPolicy) Input(ctx context.Context, value *ExecutionProvider, model string) tierpolicy.DecisionInput {
 	return tierpolicy.DecisionInput{
 		Model: model, GroupPolicy: GroupFastPolicy(ctx, value), OpenAI: value != nil && value.View().IsOpenAI(),
@@ -111,6 +136,10 @@ func (s *ExecutionFastPolicy) Input(ctx context.Context, value *ExecutionProvide
 	}
 }
 
+// ForceOnSupported requires an OpenAI target and service-tier support from
+// group pricing for model. Missing pricing evidence disables forced injection;
+// callers provide a configured ExecutionFastPolicy receiver when that check is
+// needed.
 func (s *ExecutionFastPolicy) ForceOnSupported(ctx context.Context, provider *ExecutionProvider, model string) bool {
 	return provider != nil && provider.View().IsOpenAI() &&
 		SupportsFastMode(ctx, s.Prices, model)

@@ -1,7 +1,5 @@
 package httpapi
 
-// Grok 执行场景覆盖 gateway/provider/model_policy.go 的模型解析、gateway/provider/health_observation.go 的健康处理和 gateway/httpapi/openai_response_output.go 的错误输出。
-
 import (
 	"context"
 	"io"
@@ -18,18 +16,30 @@ import (
 	gatewayhttp "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// Grok model IDs retain their spelling unless a configured provider mapping
+// selects another ID. Health and token-count scenarios use the resulting
+// upstream identity, while content refusals remain request errors that bypass
+// provider cooldown and custom status rules across text and media error
+// presentation.
+
+// TestGrokFinalUpstreamModelNormalization supplies built-in-looking, foreign
+// and custom model names to OAuth and API Key providers. Normalization trims
+// surrounding space while retaining each complete requested ID, including
+// grok-latest and the foreign GPT name.
 func TestGrokFinalUpstreamModelNormalization(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider *gatewayprovider.ExecutionProvider
-		model    string
-		want     string
+		name     string                             // Grok scenario diagnostic label
+		provider *gatewayprovider.ExecutionProvider // configured execution provider input
+		model    string                             // requested model spelling input
+		want     string                             // expected normalization or refusal result
 	}{
 		{
 			name:     "oauth normalizes builtin alias",
@@ -64,7 +74,10 @@ func TestGrokFinalUpstreamModelNormalization(t *testing.T) {
 	}
 }
 
-// TestGrokExplicitMappingPrecedesBuiltinNormalization 验证提供商映射目标随后才执行平台别名解析。
+// TestGrokExplicitMappingPrecedesBuiltinNormalization supplies configured
+// direct and client-alias mappings on Grok providers. Upstream resolution uses
+// those target IDs and retains grok-latest as the mapped spelling for both
+// resolver entry points.
 func TestGrokExplicitMappingPrecedesBuiltinNormalization(t *testing.T) {
 	direct := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -90,7 +103,10 @@ func TestGrokExplicitMappingPrecedesBuiltinNormalization(t *testing.T) {
 	require.Equal(t, "grok-latest", gatewayprovider.ExecutionModelPolicy(aliasTarget).UpstreamModel(context.Background(), "client-alias"))
 }
 
-// TestGrokRuntimeModelKeysUseFinalUpstreamID 验证封禁与限流状态不会按别名重复建键。
+// TestGrokRuntimeModelKeysUseFinalUpstreamID compares scheduler and
+// model-health keys with a provider mapping present. Requested aliases resolve
+// to their final key, and health handling of an already final default model
+// leaves that ID intact rather than applying its mapping again.
 func TestGrokRuntimeModelKeysUseFinalUpstreamID(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -109,11 +125,15 @@ func TestGrokRuntimeModelKeysUseFinalUpstreamID(t *testing.T) {
 	require.Equal(t, "grok-latest", gatewayprovider.ExecutionModelPolicy(provider).CanonicalSchedulingModel("client-alias"))
 	require.Equal(t, []string{"grok"}, gatewayprovider.ExecutionModelPolicy(provider).LimitKeys(context.Background(), "grok"))
 	require.Equal(t, "grok", (&provideradapter.ModelHealth{}).LimitKey(gatewayprovider.ExecutionRecord(provider), "grok", nil))
-	// 状态处理接收最终上游模型后不得再次命中 grok-4.5 -> grok-4.3。
+	// Health receives an already resolved upstream ID; this mapping would select
+	// another model if applied again, so the default-model key stays unchanged.
 	require.Equal(t, grok.DefaultResponsesModel, (&provideradapter.ModelHealth{}).LimitKey(gatewayprovider.ExecutionRecord(provider), grok.DefaultResponsesModel, nil))
 }
 
-// TestGrokModelNotFoundWritesFinalUpstreamID 验证 Grok 默认错误处理写入最终上游模型键。
+// TestGrokModelNotFoundWritesFinalUpstreamID supplies model_not_found for an
+// already mapped Grok target. Health records one model-specific cooldown with
+// its final ID and reason, stops this scheduling attempt, and leaves the
+// provider-wide runtime block absent.
 func TestGrokModelNotFoundWritesFinalUpstreamID(t *testing.T) {
 	repo := &grokModelStateProviderRepo{}
 	svc := newWSFixture(wsFixtureInputs{health: newUpstreamHealthForTest(repo, nil, nil, providercore.HealthOptions{}, nil)})
@@ -142,7 +162,10 @@ func TestGrokModelNotFoundWritesFinalUpstreamID(t *testing.T) {
 	require.False(t, wsFixtureProviderBlocked(svc, provider))
 }
 
-// TestGrokTransientErrorBlocksOnlyFinalModel 验证 API Key 的连续瞬态错误只冷却最终模型。
+// TestGrokTransientErrorBlocksOnlyFinalModel observes two 502 failures for a
+// mapped API Key model. The final model becomes transiently blocked while
+// another model and provider-wide runtime remain unblocked, with no repository
+// model-rate-limit writes.
 func TestGrokTransientErrorBlocksOnlyFinalModel(t *testing.T) {
 	repo := &grokModelStateProviderRepo{}
 	svc := newWSFixture(wsFixtureInputs{health: newUpstreamHealthForTest(repo, nil, nil, providercore.HealthOptions{}, nil)})
@@ -173,7 +196,9 @@ func TestGrokTransientErrorBlocksOnlyFinalModel(t *testing.T) {
 	require.Empty(t, repo.modelRateLimitCalls)
 }
 
-// TestGrokCountTokensUsesCanonicalModel 验证 count-tokens 转换记录映射模型并发送最终模型。
+// TestGrokCountTokensUsesCanonicalModel prepares Anthropic token-count input
+// through a configured Grok mapping. Billing model, upstream model and the
+// converted request all receive the same mapped grok-latest ID.
 func TestGrokCountTokensUsesCanonicalModel(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
@@ -195,12 +220,16 @@ func TestGrokCountTokensUsesCanonicalModel(t *testing.T) {
 	require.Equal(t, "grok-latest", prepared.Request.Model)
 }
 
+// TestIsGrokContentPolicyRejection compares explicit refusal codes and
+// messages with entitlement, account suspension and ambiguous policy errors.
+// Refusals require the tested 403 status, and structured provider suspension
+// overrides request-policy wording in the supplied cases.
 func TestIsGrokContentPolicyRejection(t *testing.T) {
 	tests := []struct {
-		name   string
-		status int
-		body   string
-		want   bool
+		name   string // Grok scenario diagnostic label
+		status int    // supplied HTTP response status
+		body   string // scripted upstream JSON error body
+		want   bool   // expected normalization or refusal result
 	}{
 		{
 			name:   "new sensitive code",
@@ -295,6 +324,10 @@ func TestIsGrokContentPolicyRejection(t *testing.T) {
 	}
 }
 
+// TestGrokContentPolicy403SharedErrorFallbackDoesNotMutate presents one
+// content-filter 403 through Responses and compatible error writers under
+// custom rules. Both return invalid_request_error at 403 while leaving
+// provider cooldown, rate-limit and Extra update counters zero.
 func TestGrokContentPolicy403SharedErrorFallbackDoesNotMutate(t *testing.T) {
 	body := []byte(`{"error":{"code":"content_filter","message":"prohibited content"}}`)
 	repo := &grokQuotaProviderRepo{}
@@ -345,6 +378,10 @@ func TestGrokContentPolicy403SharedErrorFallbackDoesNotMutate(t *testing.T) {
 	require.Zero(t, repo.updateCalls)
 }
 
+// TestGrokContentPolicy403MediaResponseBypassesCustomErrorCodes forwards a
+// new_sensitive media rejection under custom status rules. Client output
+// remains a 403 invalid_request_error and the fixture records no temporary
+// block, rate limit or Extra update.
 func TestGrokContentPolicy403MediaResponseBypassesCustomErrorCodes(t *testing.T) {
 	body := `{"error":{"code":"new_sensitive","message":"image is sensitive"}}`
 	repo := &grokQuotaProviderRepo{}
@@ -378,6 +415,10 @@ func TestGrokContentPolicy403MediaResponseBypassesCustomErrorCodes(t *testing.T)
 	require.Zero(t, repo.updateCalls)
 }
 
+// TestGrokPermissionDeniedContentRefusalDoesNotMutateOrFailover supplies a
+// top-level permission-denied usage-guidelines refusal. Health leaves all
+// repository mutation counters and provider runtime block empty, and Responses
+// failover classification returns false.
 func TestGrokPermissionDeniedContentRefusalDoesNotMutateOrFailover(t *testing.T) {
 	repo := &grokQuotaProviderRepo{}
 	svc := newWSFixture(wsFixtureInputs{providers: repo})
@@ -393,8 +434,16 @@ func TestGrokPermissionDeniedContentRefusalDoesNotMutateOrFailover(t *testing.T)
 	require.False(t, gatewayprovider.ShouldFailoverGrokResponse(http.StatusForbidden, body))
 }
 
+// mediaErrorResponseFixture runs media forwarding against a supplied HTTP
+// response using copied executor settings and fixture credentials. It mutates
+// the target credential map and response request-ID header, so callers provide
+// dedicated fixture values. The copied executor shares other service
+// references and forwards the generated image request through its replacement
+// transport.
 func mediaErrorResponseFixture(executor *gatewayhttp.GrokExecutor, ctx context.Context, resp *http.Response, c *gin.Context, target *gatewayprovider.ExecutionProvider, requestID, model string) (*forward.OpenAIResult, error) {
 	local := *executor
+	image := []string{"image"}
+	local.Attributes = &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{Lookup: func(string) modelcatalog.Attributes { return modelcatalog.Attributes{OutputModalities: &image} }}}
 	local.Transport = &auxiliaryHTTPRecorder{resp: resp}
 	local.Credentials = testkit.RequestCredentials(nil, &providercore.OpenAIExecutionCredentials{Grok: func(context.Context, *providercore.Record) (string, error) { return "fixture-token", nil }}, nil, nil)
 	local.Credentials.HasGrokTokenSource = true

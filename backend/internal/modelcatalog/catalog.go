@@ -9,113 +9,182 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"sort"
 	"strings"
 )
 
+// catalog.go parses model catalogs and resolves qualified, public, and
+// ambiguous model identities.
+// Catalog providers can offer the same bare model with different prices and
+// capabilities. Qualified keys retain each provider's complete entry, while a
+// bare key prefers one identified first party record and otherwise remains
+// ambiguous when several records compete. Public model metadata is queryable
+// even when its price fields are absent.
+//
+// An ambiguous bare name can still acquire public attributes when every
+// competing entry names the same canonical model. That metadata path leaves
+// the pricing ambiguity intact. Parsing validates entries before returning a
+// versioned catalog; callers apply supplements before publication and keep
+// published catalog maps and shared price values read-only for existing views.
+
+// RemoteURL identifies the complete models.dev catalog endpoint used when
+// configuring the application's remote catalog loader.
 const RemoteURL = "https://models.dev/catalog.json?type=all"
 
+// offlineData and modelSupplements provide the catalog and official supplement
+// inputs shipped with each binary.
 var (
-	// offlineData 保存经过解析验证的 models.dev 发布快照，支持离线首次启动。
+	// offlineData contains a validated models.dev snapshot for offline startup.
 	//
 	//go:embed catalog.json.gz
 	offlineData []byte
 
-	// modelSupplements 保存随版本发布的官方补充，运行时无需读取外部资源。
+	// modelSupplements contains the official supplements shipped with the binary.
 	//
 	//go:embed model_supplements.json
 	modelSupplements string
 )
 
-// Cost 保留源数据的美元/百万 token 单位及缺失值。
+// Cost preserves missing prices and the source unit of USD per million tokens.
 type Cost struct {
-	Input      *float64 `json:"input"`
-	Output     *float64 `json:"output"`
-	CacheRead  *float64 `json:"cache_read"`
-	CacheWrite *float64 `json:"cache_write"`
+	// Input, Output, CacheRead, and CacheWrite retain nil for missing prices and
+	// pointers to zero for declared free usage. Conversion to per-token billing
+	// prices belongs to the pricing consumer.
+	Input      *float64 `json:"input"`       // input USD per million tokens
+	Output     *float64 `json:"output"`      // output USD per million tokens
+	CacheRead  *float64 `json:"cache_read"`  // cache read USD per million tokens
+	CacheWrite *float64 `json:"cache_write"` // cache write USD per million tokens
 }
 
-// CostTier 使用明确的上下文阈值，不能从兼容字段名称猜测阈值。
+// CostTier carries an explicit context threshold; consumers must not infer it
+// from compatibility field names.
 type CostTier struct {
-	Cost
+	Cost // context tier token prices
 	Tier struct {
-		Type string `json:"type"`
-		Size int    `json:"size"`
-	} `json:"tier"`
+		Type string `json:"type"` // context threshold tier
+		Size int    `json:"size"` // tokens
+	} `json:"tier"` // context price activation threshold
 }
 
-// Entry 同时保存属性与报价，价格缺失不影响属性可见性。
+// Entry contains attributes and prices. Attributes remain available when
+// prices are missing.
 type Entry struct {
-	Model            string     `json:"model"`
-	Provider         string     `json:"provider"`
-	Canonical        string     `json:"canonical_model_id,omitempty"`
-	Source           string     `json:"source"`
-	Attributes       Attributes `json:"attributes"`
-	Cost             Cost       `json:"-"`
-	Tiers            []CostTier `json:"-"`
-	Fast             *Cost      `json:"-"`
-	FirstParty       bool       `json:"-"`
-	originalEndpoint bool
+	Model            string            `json:"model"`                        // complete catalog model identity
+	Provider         string            `json:"provider"`                     // catalog service provider identity
+	Canonical        string            `json:"canonical_model_id,omitempty"` // declared public model identity
+	Source           string            `json:"source"`                       // model entry data source
+	Attributes       Attributes        `json:"attributes"`                   // model display and control values
+	AttributeSources map[string]string `json:"attribute_sources,omitempty"`  // supplemental attribute source labels
+	// Cost, Tiers, and Fast can share pointers and slices with a published
+	// catalog entry. Lookup and Rows copy attribute data; consumers that change
+	// prices also copy these price values, as Index.Search does.
+	Cost  Cost       `json:"-"` // base catalog token prices
+	Tiers []CostTier `json:"-"` // ordered context price tiers
+	Fast  *Cost      `json:"-"` // optional fast mode prices
+	// FirstParty records known endpoint authorship, subject to an explicit
+	// Canonical identity. Bare-name selection uses it to prefer an author's record.
+	FirstParty       bool `json:"-"`
+	originalEndpoint bool // original author endpoint match
 }
 
-// Catalog 是一次不可变的目录版本；所有消费者只接收值副本。
+// Catalog holds a parsed catalog version. Apply supplements before publishing
+// it to readers.
 type Catalog struct {
-	Version   string
-	Entries   map[string]Entry
-	Providers map[string]bool
-	Ambiguous map[string]bool
-	// attributeFallbacks 保存归属一致的公共模型属性，供属性查询回退使用。
+	Version string // published content version fingerprint
+	// Entries, Providers, Ambiguous, attributeFallbacks, and publicEntries are
+	// prepared before publication. Existing views retain these maps, so callers
+	// finish supplement mutations before sharing a catalog with readers.
+	Entries   map[string]Entry // normalized queryable model identities
+	Providers map[string]bool  // known catalog provider qualifiers
+	Ambiguous map[string]bool  // ambiguous bare price identities
+	// attributeFallbacks holds public attributes when all competing provider
+	// records agree on one canonical identity that has public metadata available.
 	attributeFallbacks map[string]Attributes
+	publicEntries      map[string]Entry // public author model metadata
 }
 
+// sourceModel decodes the attributes and source-unit prices of one catalog record.
 type sourceModel struct {
-	Name             string `json:"name"`
-	Canonical        string `json:"canonical_model_id"`
-	Reasoning        *bool  `json:"reasoning"`
-	ToolCall         *bool  `json:"tool_call"`
-	StructuredOutput *bool  `json:"structured_output"`
-	Temperature      *bool  `json:"temperature"`
-	Attachment       *bool  `json:"attachment"`
-	Limit            struct {
-		Context int `json:"context"`
-		Input   int `json:"input"`
-		Output  int `json:"output"`
+	Name      string `json:"name"`               // catalog model display name
+	Canonical string `json:"canonical_model_id"` // declared public author identity
+	// Reasoning, ReasoningOptions, Interleaved, ToolCall, StructuredOutput,
+	// Temperature, and Attachment retain supplied false values and empty choices.
+	// Nil means the catalog has no declaration for that capability.
+	Reasoning        *bool              `json:"reasoning"`         // model reasoning capability flag
+	ReasoningOptions *[]ReasoningOption `json:"reasoning_options"` // configurable reasoning control declarations
+	Interleaved      *Interleaved       `json:"interleaved"`       // reasoning output format declaration
+	ToolCall         *bool              `json:"tool_call"`         // tool call capability flag
+	StructuredOutput *bool              `json:"structured_output"` // structured output capability flag
+	Temperature      *bool              `json:"temperature"`       // temperature parameter capability flag
+	Attachment       *bool              `json:"attachment"`        // attachment input capability flag
+	// Limit contains source token counts. entry converts zero limits to unknown
+	// attribute values and rejects negative limits before validating the record.
+	Limit struct {
+		Context int `json:"context"` // tokens
+		Input   int `json:"input"`   // tokens
+		Output  int `json:"output"`  // tokens
 	} `json:"limit"`
+	// Modalities.Input and Modalities.Output retain pointer presence for both
+	// declarations.
+	// Missing lists become unknown attributes, while explicit empty lists remain
+	// restrictions that later supplements cannot populate.
 	Modalities struct {
-		Input  *[]string `json:"input"`
-		Output *[]string `json:"output"`
+		Input  *[]string `json:"input"`  // declared input modality names
+		Output *[]string `json:"output"` // declared output modality names
 	} `json:"modalities"`
 	Cost struct {
-		Cost
-		Tiers    []CostTier `json:"tiers"`
-		Over200K *Cost      `json:"context_over_200k"`
-	} `json:"cost"`
+		Cost             // catalog base token prices
+		Tiers []CostTier `json:"tiers"` // explicit context price tiers
+		// Over200K supplies a compatibility tier at 200,000 tokens when Tiers
+		// is empty. Explicit tiers take precedence over this historical field.
+		Over200K *Cost `json:"context_over_200k"`
+	} `json:"cost"` // source catalog pricing object
+	// Experimental carries optional mode pricing as raw JSON. entry reads Fast
+	// prices from object values and leaves other representations unconsumed.
 	Experimental json.RawMessage `json:"experimental"`
 }
 
-// Supplements 返回官方补充正文，调用者负责校验并合并自定义补充。
+// Supplements returns a fresh byte slice containing official supplement JSON.
+// Catalog loaders validate this body and merge configured custom supplements
+// before publishing the resulting attribute and pricing version.
 func Supplements() []byte {
 	return []byte(modelSupplements)
 }
 
-// Offline 返回离线目录正文，调用者负责应用本地价格覆盖。
+// Offline decompresses the bundled models.dev catalog into fresh bytes.
+// Decompression and read failures are returned to the caller, which parses the
+// body and applies pricing and attribute supplements before publication.
 func Offline() ([]byte, error) {
 	r, err := gzip.NewReader(bytes.NewReader(offlineData))
 	if err != nil {
 		return nil, err
 	}
+	// Close the decompressor after ReadAll finishes; its lifetime belongs to this
+	// load. ReadAll's result determines whether the returned catalog body is
+	// usable.
 	defer func() { _ = r.Close() }()
 	return io.ReadAll(r)
 }
 
-// Parse 校验整个候选目录，构建原厂优先、供应商精确匹配的索引。
+// Parse validates catalog records and constructs qualified entries, preferred
+// bare identities, and public metadata lookups. The provider collection is
+// required, and malformed public canonical IDs, attributes, prices, or context
+// tiers reject the candidate catalog before it is returned.
+//
+// Bare-name selection prefers a unique first party entry, with the author's
+// own endpoint preferred among those entries. Multiple remaining candidates
+// produce a pricing ambiguity instead of selecting by map iteration order.
+// Public metadata can resolve attributes for that bare name when all provider
+// records agree on one canonical identity. Callers apply supplements to the
+// returned mutable catalog before sharing its maps through views or indexes.
 func Parse(body []byte) (*Catalog, error) {
 	var source struct {
 		Providers map[string]struct {
-			Models map[string]sourceModel `json:"models"`
-		} `json:"providers"`
-		Models map[string]sourceModel `json:"models"`
+			Models map[string]sourceModel `json:"models"` // provider model identity records
+		} `json:"providers"` // catalog provider model collections
+		Models map[string]sourceModel `json:"models"` // public canonical model metadata
 	}
 	if err := json.Unmarshal(body, &source); err != nil {
 		return nil, err
@@ -142,7 +211,9 @@ func Parse(body []byte) (*Catalog, error) {
 			}
 			_, canonicalExists := source.Models[lab+"/"+id]
 			entry.FirstParty = canonicalExists || knownOrigin
-			// 明确的归属优先，不能把原厂端点上的其他作者模型判为自有模型。
+			// An author's endpoint can also host another author's model. Prefer
+			// a supplied canonical identity over endpoint recognition when
+			// deciding bare-name ownership.
 			if model.Canonical != "" {
 				entry.FirstParty = strings.HasPrefix(model.Canonical, lab+"/")
 			}
@@ -170,6 +241,9 @@ func Parse(body []byte) (*Catalog, error) {
 				original = append(original, entry)
 			}
 		}
+		// Prefer original author endpoints within the first party candidates for
+		// this identity. The remaining candidate count still decides whether
+		// bare lookup is ambiguous.
 		if len(original) > 0 {
 			preferred = original
 		}
@@ -182,13 +256,17 @@ func Parse(body []byte) (*Catalog, error) {
 		}
 	}
 	publicAttributes := make(map[string]Attributes, len(source.Models))
-	// 模型资料可独立查询，报价按各供应商记录解析。
+	catalog.publicEntries = make(map[string]Entry, len(source.Models))
+	// Publish public metadata even when provider entries have no unique bare
+	// price. Attribute lookup can then describe a model with its author's
+	// declaration.
 	for id, model := range source.Models {
 		entry, err := model.entry(id, strings.SplitN(id, "/", 2)[0])
 		if err != nil {
 			return nil, err
 		}
 		publicAttributes[normalize(id)] = entry.Attributes
+		catalog.publicEntries[normalize(id)] = entry
 		if _, exists := catalog.Entries[normalize(id)]; !exists {
 			catalog.Entries[normalize(id)] = entry
 		}
@@ -198,6 +276,9 @@ func Parse(body []byte) (*Catalog, error) {
 		}
 	}
 	catalog.attributeFallbacks = make(map[string]Attributes)
+	// Ambiguous relay prices remain qualified, but unanimous canonical authorship
+	// permits public attribute lookup for the bare identity when that metadata
+	// exists.
 	for id, candidates := range bare {
 		if !catalog.Ambiguous[id] || strings.Contains(id, "/") {
 			continue
@@ -223,8 +304,9 @@ func Parse(body []byte) (*Catalog, error) {
 	return catalog, nil
 }
 
-// firstPartyProviderLab 为已知原厂端点补充缺失的 canonical 关联。
-// 聚合供应商不进入此表；其他来源仍须由明确的模型资料确认归属。
+// firstPartyProviderLab returns the recognized author identity for a catalog
+// provider. Unrecognized providers return their own name and false, requiring
+// canonical model metadata to establish first party authorship.
 func firstPartyProviderLab(provider string) (string, bool) {
 	switch provider {
 	case "openai", "anthropic", "google", "xai", "deepseek", "moonshotai", "mistral", "typesafe":
@@ -238,7 +320,9 @@ func firstPartyProviderLab(provider string) (string, bool) {
 	}
 }
 
-// FirstPartyAliases 返回同一原厂记录的查价键，不把日期版本或中继视为同一报价。
+// FirstPartyAliases returns sorted normalized lookup keys for the same first
+// party provider and complete model identity. Nil catalogs, unknown models,
+// and relay records return the supplied name as a single candidate.
 func (c *Catalog) FirstPartyAliases(model string) []string {
 	if c == nil {
 		return []string{model}
@@ -257,10 +341,22 @@ func (c *Catalog) FirstPartyAliases(model string) []string {
 	return aliases
 }
 
+// entry validates one source model and retains its complete identity and
+// source-unit price values. Zero limits become unknown attributes, while
+// negative limits and invalid capabilities or prices reject the record.
+//
+// Explicit context tiers take precedence over the historical context_over_200k
+// field, which supplies a 200,000-token tier when explicit tiers are absent.
+// Tiers are sorted and validated for positive, distinct thresholds so pricing
+// consumers receive ordered values. Optional Fast prices are decoded from an
+// experimental object and remain absent when that mode is unspecified.
 func (m sourceModel) entry(id, provider string) (Entry, error) {
 	if m.Limit.Context < 0 || m.Limit.Input < 0 || m.Limit.Output < 0 {
 		return Entry{}, fmt.Errorf("negative model limit")
 	}
+	// Catalog zero lengths represent unknown limits. Convert them to nil before
+	// administrator-style validation, which requires every populated token limit
+	// to be positive.
 	positive := func(value int) *int {
 		if value <= 0 {
 			return nil
@@ -274,6 +370,8 @@ func (m sourceModel) entry(id, provider string) (Entry, error) {
 		InputModalities:  m.Modalities.Input,
 		OutputModalities: m.Modalities.Output,
 		Reasoning:        m.Reasoning,
+		ReasoningOptions: m.ReasoningOptions,
+		Interleaved:      m.Interleaved,
 		ToolCall:         m.ToolCall,
 		StructuredOutput: m.StructuredOutput,
 		Temperature:      m.Temperature,
@@ -286,6 +384,9 @@ func (m sourceModel) entry(id, provider string) (Entry, error) {
 		return Entry{}, err
 	}
 	e := Entry{Model: id, Provider: provider, Canonical: m.Canonical, Source: "models.dev", Attributes: attrs, Cost: m.Cost.Cost, Tiers: m.Cost.Tiers}
+	// The compatibility field names a fixed context threshold. Materialize that
+	// threshold for tier consumers when the catalog has supplied no explicit
+	// tier list.
 	if len(e.Tiers) == 0 && m.Cost.Over200K != nil {
 		tier := CostTier{Cost: *m.Cost.Over200K}
 		tier.Tier.Type = "context"
@@ -294,8 +395,8 @@ func (m sourceModel) entry(id, provider string) (Entry, error) {
 	}
 	var experimental struct {
 		Modes map[string]struct {
-			Cost *Cost `json:"cost"`
-		} `json:"modes"`
+			Cost *Cost `json:"cost"` // optional mode token prices
+		} `json:"modes"` // experimental named pricing modes
 	}
 	if len(m.Experimental) > 0 && m.Experimental[0] == '{' {
 		if err := json.Unmarshal(m.Experimental, &experimental); err != nil {
@@ -323,6 +424,9 @@ func (m sourceModel) entry(id, provider string) (Entry, error) {
 	return e, nil
 }
 
+// validateCost rejects negative and nonfinite catalog token price values.
+// Nil prices remain unknown and zero prices remain declared free usage, so
+// attribute-only entries and free models are accepted.
 func validateCost(cost Cost) error {
 	for _, value := range []*float64{cost.Input, cost.Output, cost.CacheRead, cost.CacheWrite} {
 		if value != nil && (*value < 0 || math.IsInf(*value, 0) || math.IsNaN(*value)) {
@@ -332,24 +436,37 @@ func validateCost(cost Cost) error {
 	return nil
 }
 
+// normalize trims surrounding whitespace and folds case in catalog identity keys.
 func normalize(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
 
-// Lookup 仅沿明确的身份候选查询，返回独立属性值。
+// Lookup searches candidates in order and copies the first entry's attributes
+// and attribute source labels. Price pointers and tier slices still belong to
+// the catalog; callers copy them before mutation.
 func (c *Catalog) Lookup(candidates []string) (Entry, bool) {
 	if c == nil {
 		return Entry{}, false
 	}
 	for _, candidate := range candidates {
 		if entry, ok := c.Entries[normalize(candidate)]; ok {
-			entry.Attributes = Merge(Attributes{}, entry.Attributes)
+			entry.Attributes = entry.Attributes.Clone()
+			entry.AttributeSources = maps.Clone(entry.AttributeSources)
 			return entry, true
 		}
 	}
 	return Entry{}, false
 }
 
-// LookupAttributes 优先查询现有身份，仅为裸名歧义使用归属一致的公共属性。
-// 供应商限定查询不回退，返回值也不会带入任何供应商报价。
+// LookupAttributes returns copied attributes from the first resolved candidate,
+// then considers public metadata for an unresolved bare identity. Recognized
+// provider qualifiers constrain candidate preparation, and an exact entry
+// remains authoritative even when some attributes are missing. Nil catalogs
+// and missing metadata return false with unknown attributes.
+//
+// The bare-name path uses the public attributes selected by Parse when competing
+// providers agree on one canonical model. Names containing a slash skip this
+// path, keeping provider-specific omissions attached to that source. Attribute
+// fallback leaves the catalog's pricing ambiguity unchanged, so displaying
+// capabilities does not select a relay quote.
 func (c *Catalog) LookupAttributes(model string, candidates []string) (Attributes, bool) {
 	if entry, found := c.Lookup(c.IdentityCandidates(model, candidates)); found {
 		return entry.Attributes, true
@@ -357,14 +474,19 @@ func (c *Catalog) LookupAttributes(model string, candidates []string) (Attribute
 	if c == nil || strings.Contains(normalize(model), "/") {
 		return Attributes{}, false
 	}
+	// No exact candidate resolved this bare ID. Read attributeFallbacks,
+	// prepared from unanimous canonical identities, while leaving the price
+	// entry collection unchanged.
 	attributes, found := c.attributeFallbacks[normalize(model)]
 	if !found {
 		return Attributes{}, false
 	}
-	return Merge(Attributes{}, attributes), true
+	return attributes.Clone(), true
 }
 
-// Rows 返回稳定排序的可查询索引，明确保留供应商限定名称。
+// Rows returns entries sorted by their normalized lookup keys, including
+// qualified names and bare aliases. Attributes and source labels are copied;
+// price pointers and tier slices remain shared with the catalog.
 func (c *Catalog) Rows() []Entry {
 	rows := []Entry{}
 	if c == nil {
@@ -372,14 +494,23 @@ func (c *Catalog) Rows() []Entry {
 	}
 	for key, value := range c.Entries {
 		value.Model = key
-		value.Attributes = Merge(Attributes{}, value.Attributes)
+		value.Attributes = value.Attributes.Clone()
+		value.AttributeSources = maps.Clone(value.AttributeSources)
 		rows = append(rows, value)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Model < rows[j].Model })
 	return rows
 }
 
-// IdentityCandidates 保留已知供应商限定名，不能因名称归一化退回另一供应商。
+// IdentityCandidates prepares lookup names while retaining recognized
+// provider qualification. A qualified model accepts candidates from the same
+// provider and prefixes bare candidates; candidates naming another provider
+// are discarded, keeping metadata and price lookup within the requested source.
+//
+// The normalized input remains the first candidate. For a recognized azure/m
+// identity, a bare m candidate becomes azure/m, while relay/m is excluded.
+// Unknown qualifiers leave the supplied extra candidates available to Lookup,
+// which normalizes them during its search.
 func (c *Catalog) IdentityCandidates(model string, candidates []string) []string {
 	result := []string{normalize(model)}
 	prefix, _, qualified := strings.Cut(normalize(model), "/")
@@ -397,7 +528,9 @@ func (c *Catalog) IdentityCandidates(model string, candidates []string) []string
 	return append(result, candidates...)
 }
 
-// RequiresExact 禁止存在歧义或供应商限定名称的价格借用其它来源。
+// RequiresExact reports whether ambiguity or a recognized provider qualifier
+// requires exact pricing identity. Nil catalogs return false because they
+// contain neither provider recognition nor recorded bare-name ambiguities.
 func (c *Catalog) RequiresExact(model string) bool {
 	if c == nil {
 		return false

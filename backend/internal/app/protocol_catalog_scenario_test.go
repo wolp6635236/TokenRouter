@@ -1,7 +1,5 @@
 package app
 
-// 本文件检查 http_routes_admin.go 与 http_modules_wire.go 组合的协议目录和前端协议定义。
-
 import (
 	"encoding/json"
 	"os"
@@ -16,6 +14,15 @@ import (
 	routinghttpapi "github.com/TokenFlux/TokenRouter/internal/routing/httpapi"
 )
 
+// The administrative protocol catalogue and frontend ProtocolID union represent
+// one set of supported identities. The scenario checks catalogue counts and
+// auxiliary references, optionally exports the fixture, and compares both
+// frontend JSON data and TypeScript names to the assembled backend catalogue.
+
+// TestProtocolCatalogFixture validates unique backend protocol IDs, public and
+// auxiliary counts, and frontend synchronization. It checks saved catalogue
+// JSON and the TypeScript union, optionally exporting admin JSON to the
+// configured fixture path for review.
 func TestProtocolCatalogFixture(t *testing.T) {
 	catalog := capability.ProtocolCatalog()
 	require.Len(t, catalog, 25)
@@ -35,6 +42,9 @@ func TestProtocolCatalogFixture(t *testing.T) {
 			require.True(t, ids[operation.Protocol])
 		}
 	}
+	// Fixture export is an opt-in side effect for catalogue review. The
+	// configured path receives the current administrative JSON before the
+	// checked-in frontend fixture is compared.
 	if path := os.Getenv("PROTOCOL_CATALOG_TEST_FIXTURE"); path != "" {
 		data, err := json.MarshalIndent(routinghttpapi.AdminProtocolCatalog(testEndpoints()), "", "  ")
 		if err != nil {
@@ -44,7 +54,7 @@ func TestProtocolCatalogFixture(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 测试默认核对前端夹具，更新协议目录后需要导出并检查字段差异。
+	// Catalogue changes require exporting the frontend fixture and reviewing field differences.
 	frontend := filepath.Join("..", "..", "..", "frontend", "src")
 	fixture, err := os.ReadFile(filepath.Join(frontend, "__tests__", "fixtures", "protocol-catalog.json"))
 	require.NoError(t, err)
@@ -52,8 +62,9 @@ func TestProtocolCatalogFixture(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, string(fixture), string(actual))
 
-	// TypeScript 联合类型需要覆盖协议目录，增删协议后同步更新。
-	types, err := os.ReadFile(filepath.Join(frontend, "types", "index.ts"))
+	// Read the protocol API's type owner so catalogue additions and removals
+	// remain synchronized with the frontend's accepted identifiers.
+	types, err := os.ReadFile(filepath.Join(frontend, "api", "protocols.types.ts"))
 	require.NoError(t, err)
 	block := regexp.MustCompile(`(?s)export type ProtocolID =\s*((?:\s*\|\s*'[^']+')+)`).FindSubmatch(types)
 	require.Len(t, block, 2)

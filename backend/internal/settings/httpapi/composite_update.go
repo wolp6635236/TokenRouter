@@ -39,40 +39,64 @@ import (
 	runtimesettings "github.com/TokenFlux/TokenRouter/internal/settings"
 	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
 	settingsdto "github.com/TokenFlux/TokenRouter/internal/settings/httpapi/dto"
+	sitedto "github.com/TokenFlux/TokenRouter/internal/site/httpapi/dto"
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// composite_update.go validates and commits partial administrator settings
+// updates before returning saved values.
+// A combined settings request needs its raw field presence before typed
+// decoding supplies zero values. The handler rejects retired inputs first, then
+// acquires one update session before reading current values, merging partial
+// controls, and validating user-visible content or changed challenge credentials.
+// Those phases can fail before any settings batch is persisted.
+//
+// Broad prepared values are replaced by each registered owner's result before
+// the single Commit. Successful persistence precedes runtime callbacks, audit
+// logging, and response readback; a callback or later read failure therefore
+// reports a saved update with an incomplete later phase. Pointer merging and
+// raw-presence filtering have field-specific exceptions, including security
+// normalization and always-written merged switches, so they are kept visible
+// where the corresponding participant fields are assembled.
+
 var (
-	// semverPattern 校验由三段数字组成的版本号。
+	// semverPattern limits supported CLI version overrides to three dot-separated
+	// numeric components; the handler separately compares admitted minimum and maximum values.
 	semverPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
-	// menuItemIDPattern 校验由字母、数字、连字符和下划线组成的菜单项 ID。
+	// menuItemIDPattern limits submitted navigation IDs to ASCII letters, digits,
+	// hyphens, and underscores; length and within-list uniqueness are checked separately.
 	menuItemIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-	// markdownMenuSlugPattern 校验自定义 Markdown 页面 slug，需与页面读取接口保持一致。
+	// markdownMenuSlugPattern applies the page reader's ASCII slug shape to md:
+	// navigation targets before the handler accepts them as a page destination.
 	markdownMenuSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
-	// settingKeyJSONAliases 记录 JSON 名称与持久化设置键不同的请求字段。
-	// UpdateSettingsRequest 的其他字段均使用对应设置键作为 JSON 名称。
+	// settingKeyJSONAliases maps request JSON names that differ from their stored setting keys.
+	// Other UpdateSettingsRequest fields use their setting keys as JSON names.
 	settingKeyJSONAliases = map[string]string{
 		"smtp_from_email": notification.SettingKeySMTPFrom,
 	}
 
-	// settingKeyByJSONName 将 UpdateSettingsRequest 中非指针顶层 JSON 字段映射到其写入的设置键。
-	// 该映射只根据结构体标签构建一次，使新增字段无需修改此处也能自动纳入处理。
+	// settingKeyByJSONName maps non-pointer top-level request fields to stored setting keys.
+	// It is built once from struct tags so added fields participate automatically.
 	//
-	// 指针字段由 UpdateSettings 合并，省略时保留存储值，因此本表排除这些字段。
-	// 部分字段还依赖每次保存时重新写入，以重新规范化故障关闭的安全状态，参见
-	// TestUpdateSettingsMalformedForwardedClientIPHeadersRemainFailClosedWhenOmitted。
-	// 只有非指针字段无法区分省略与主动清空。
+	// UpdateSettings merges pointer fields with stored values, so they are excluded here.
+	// Some pointer fields are rewritten on every save to normalize invalid security settings;
+	// see TestUpdateSettingsMalformedForwardedClientIPHeadersRemainFailClosedWhenOmitted.
 	settingKeyByJSONName = buildSettingKeyByJSONName()
 )
 
-// UpdateSettingsRequest 更新设置请求。
+// UpdateSettingsRequest aliases the flat combined payload decoded for administrator settings updates.
 type UpdateSettingsRequest = settingsdto.UpdateSettingsRequest
 
-// generateMenuItemID 为自定义菜单项生成随机十六进制 ID。
+// generateMenuItemID returns sixteen hexadecimal characters from eight random
+// bytes for a missing navigation ID. The caller checks list uniqueness separately
+// and keeps supplied IDs. crypto/rand.Read in the configured Go toolchain fills
+// the buffer or terminates the process when its randomness source fails, so
+// successful generation returns a nil error.
 func generateMenuItemID() (string, error) {
+	// Encode 64 random bits within the accepted ASCII navigation-ID format.
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate menu item ID: %w", err)
@@ -80,12 +104,14 @@ func generateMenuItemID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// scopesContainOpenID 检查以空白分隔的权限范围中是否有 openid，比较时忽略大小写。
+// scopesContainOpenID reports whether whitespace-separated scope text includes openid, ignoring case.
 func scopesContainOpenID(scopes string) bool {
 	return slices.Contains(strings.Fields(strings.ToLower(strings.TrimSpace(scopes))), "openid")
 }
 
-// firstNonEmpty 返回首个去除首尾空白后非空的字符串。
+// firstNonEmpty returns the first value whose trimmed text is nonempty. It
+// returns empty text when no candidate remains, allowing each caller to select
+// its saved, deployment, or built-in default order.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -95,9 +121,10 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// ensureActorTotpForStepUp 校验操作者是否具备开启 step-up 验证的条件。
-// 操作者必须通过管理员会话登录且已启用 TOTP；管理 API Key 不满足条件。
-// 校验失败时写入错误响应并返回 false。
+// ensureActorTotpForStepUp checks the current actor before enabling step-up
+// for sensitive operations. The mounting route supplies administrator authorization; this
+// helper rejects management API keys, absent identity, unavailable user reads,
+// and an actor without TOTP, writing the failure response and returning false.
 func (h *Handler) ensureActorTotpForStepUp(c *gin.Context) bool {
 	if c.GetString("auth_method") == audit.AuditAuthMethodAdminAPIKey {
 		httpx.ErrorWithDetails(c, http.StatusForbidden,
@@ -130,6 +157,16 @@ func (h *Handler) ensureActorTotpForStepUp(c *gin.Context) bool {
 	return true
 }
 
+// buildSettingKeyByJSONName maps tagged non-pointer request fields to storage
+// keys used by omission filtering. It skips pointers because UpdateSettings handles
+// those fields through separate prior-value merging, and ignores fields with no
+// usable JSON name before retaining their mapping.
+//
+// Most request names already match storage keys. smtp_from_email instead uses
+// its declared alias so dropping an omitted sender field removes the actual
+// SMTP storage key. The returned map is constructed at initialization from the
+// request type, keeping later non-pointer additions included in omission detection
+// without treating the struct's zero values as submitted input.
 func buildSettingKeyByJSONName() map[string]string {
 	t := reflect.TypeFor[UpdateSettingsRequest]()
 	out := make(map[string]string, t.NumField())
@@ -150,8 +187,16 @@ func buildSettingKeyByJSONName() map[string]string {
 	return out
 }
 
-// omittedSettingKeys 返回当前载荷未包含的设置键。
-// 设置保存接口采用整份文档 PUT 语义；若不排除这些键，只发送单个字段的客户端会把其余字段重置为零值。
+// omittedSettingKeys records storage keys whose tagged non-pointer names are
+// absent from the raw request. JSON null is present and therefore does not add
+// an omission entry; the decoded field and owning preparer determine its supplied
+// value handling later in the update.
+//
+// This list is passed to broad preparation after normalization so missing typed
+// fields cannot reset unrelated stored settings to zero. The precomputed mapping
+// applies aliases such as smtp_from_email, while pointer fields follow their
+// separate merging path. The returned set is newly allocated for this request
+// and DropFrom mutates the eventual prepared value map.
 func omittedSettingKeys(sentFields map[string]json.RawMessage) runtimesettings.OmittedKeys {
 	omitted := make(runtimesettings.OmittedKeys, len(settingKeyByJSONName))
 	for jsonName, settingKey := range settingKeyByJSONName {
@@ -162,6 +207,10 @@ func omittedSettingKeys(sentFields map[string]json.RawMessage) runtimesettings.O
 	return omitted
 }
 
+// SettingsAuditRequest returns a shallow request copy with Tencent credential
+// text and Aliyun access-key secret trimmed for audit presence checks. Other
+// fields retain their supplied values, including shared pointer and collection
+// references; the handler captures this copy before credential fallback merging.
 func SettingsAuditRequest(req UpdateSettingsRequest) UpdateSettingsRequest {
 	req.TencentCaptchaAppSecretKey = strings.TrimSpace(req.TencentCaptchaAppSecretKey)
 	req.TencentCaptchaCloudSecretID = strings.TrimSpace(req.TencentCaptchaCloudSecretID)
@@ -170,13 +219,29 @@ func SettingsAuditRequest(req UpdateSettingsRequest) UpdateSettingsRequest {
 	return req
 }
 
+// UpdateSettings validates a partial administrator request, commits one combined
+// batch, and returns its saved readback. It decodes raw presence before typed
+// values, rejects retired fields before service access, and holds an update session
+// from current-value reads through response construction.
+//
+// Pointer fields use specific prior-value/default selection, while omitted
+// non-pointer keys are removed after normalization. The handler prepares every
+// registered owner before Commit and replaces broad-map keys with those results.
+// Changed credential probes and step-up transitions occur before persistence.
+//
+// Commit success precedes audit and final reads. Runtime application errors carry
+// persisted=true from the session; response read failures can also follow saved
+// settings and completed audit logging. Optional fast-policy read failures are
+// logged, while payment readback failure stops PUT response construction. The
+// caller supplies complete module dependencies before reaching their branches.
 func (h *Handler) UpdateSettings(c *gin.Context) {
 	var sentFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&sentFields, binding.JSON); err != nil {
 		httpx.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	// 废弃字段必须明确拒绝，避免旧客户端误以为自动跨型号映射仍会执行。
+	// Reject presence before loading settings so even false or null cannot make
+	// clients infer that the retired automatic cross-model mapping option remains supported.
 	if _, exists := sentFields["grok_cross_client_model_map_enabled"]; exists {
 		httpx.BadRequest(c, "grok_cross_client_model_map_enabled has been removed; configure explicit model_mapping instead")
 		return
@@ -203,9 +268,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	defer update.Close()
 	c.Request = c.Request.WithContext(update.Context())
 
-	// 管理端保存能力白名单，执行目录再与组内提供商的实际能力取交集。
+	// Normalize supplied selections through the installed model reader before
+	// preparing the batch so unsupported operations can be removed against current
+	// candidate capabilities.
 	if req.CreativeModelSettings != nil {
 		if sanitizer, ok := h.creativeModelReader.(interface {
+			// NormalizeCreativeModelSettingsForSave returns selections after resolving
+			// current candidate capabilities. The handler uses its normalized list before
+			// module validation, and a returned error prevents preparing this update.
 			NormalizeCreativeModelSettingsForSave(context.Context, []creative.CreativeModelSetting) ([]creative.CreativeModelSetting, error)
 		}); ok {
 			normalized, normalizeErr := sanitizer.NormalizeCreativeModelSettingsForSave(c.Request.Context(), *req.CreativeModelSettings)
@@ -230,7 +300,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
-	// 新增开关使用指针字段：省略字段=保持现值，避免旧客户端或脚本全量保存时静默重置。
+	// Merge these pointer switches with prior state before preparing owned fields;
+	// a supplied false remains distinct from nil so older partial requests retain the saved policy.
 	registrationEmailDomainQuotaEnabled := previousSettings.RegistrationEmailDomainQuotaEnabled
 	if req.RegistrationEmailDomainQuotaEnabled != nil {
 		registrationEmailDomainQuotaEnabled = *req.RegistrationEmailDomainQuotaEnabled
@@ -239,7 +310,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.UserEmailChangeEnabled != nil {
 		userEmailChangeEnabled = *req.UserEmailChangeEnabled
 	}
-	// 这两个安全开关省略时使用存储值。
+	// Retain prior session-binding and step-up state for nil inputs so a partial
+	// save cannot request a security transition through the struct's decoded zero values.
 	sessionBindingEnabled := previousSettings.SessionBindingEnabled
 	if req.SessionBindingEnabled != nil {
 		sessionBindingEnabled = *req.SessionBindingEnabled
@@ -253,24 +325,26 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		forwardedClientIPHeaders = append([]string(nil), *req.ForwardedClientIPHeaders...)
 	}
 
-	// 开启敏感操作 step-up 门控属自锁风险操作：仅允许本人已启用 TOTP 的管理员会话开启，
-	// 否则开启后操作者立即被挡在所有敏感操作之外。仅在 false→true 的开启瞬间校验，
-	// 保持开启状态的常规设置保存不受影响。
+	// Enabling step-up requires the actor's own TOTP to prevent locking the administrator out
+	// of sensitive operations. Check the precondition on the false-to-true transition;
+	// routine saves with step-up already enabled do not require this check.
 	if stepUpEnabled && !previousSettings.StepUpEnabled {
 		if !h.ensureActorTotpForStepUp(c) {
 			return
 		}
 	}
-	// 关闭 step-up 门控本身就是敏感操作：防止拿到管理员会话的攻击者先关闸再执行导出/备份。
-	// previousSettings 已证实开关处于开启状态，使用无条件门控变体，
-	// 避免门控内部二次读取开关时因存储故障 fail-open（前端捕获 STEP_UP_REQUIRED 弹码重试）。
+	// Disabling step-up requires verification before a session can remove that
+	// protection from later sensitive operations.
+	// The previous snapshot establishes that the switch is enabled. Use the unconditional check
+	// so a second settings read cannot fail open; the frontend handles STEP_UP_REQUIRED and retries.
 	if !stepUpEnabled && previousSettings.StepUpEnabled {
 		if !identityhttp.EnforceStepUp(c, h.totpService, h.userService, nil) {
 			return
 		}
 	}
 
-	// 验证参数
+	// Normalize registration grants before module preparation: concurrency keeps
+	// a usable minimum allowance, and a negative default balance becomes a zero grant.
 	if req.DefaultConcurrency < 1 {
 		req.DefaultConcurrency = 1
 	}
@@ -286,6 +360,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	req.AffiliateRebateFreezeHours = normalizedPromotion.AffiliateRebateFreezeHours
 	req.AffiliateRebateDurationDays = normalizedPromotion.AffiliateRebateDurationDays
 	req.AffiliateRebatePerInviteeCap = normalizedPromotion.AffiliateRebatePerInviteeCap
+	// Clamp supplied negative conversion values to zero, which the marketplace
+	// reader treats as unavailable official-price conversion rather than a usable positive rate.
 	if req.ReasoningPointRMBUnitPrice != nil && *req.ReasoningPointRMBUnitPrice < 0 {
 		*req.ReasoningPointRMBUnitPrice = 0
 	}
@@ -296,14 +372,16 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.AdminRechargeRebateEnabled != nil {
 		adminRechargeRebateEnabled = *req.AdminRechargeRebateEnabled
 	}
-	// 通用表格配置：兼容旧客户端未传字段时保留当前值。
+	// Keep prior table choices when older clients supply no usable row count
+	// or omit the list, leaving the owning site normalizer to select effective preferences.
 	if req.TableDefaultPageSize <= 0 {
 		req.TableDefaultPageSize = previousSettings.TableDefaultPageSize
 	}
 	if req.TablePageSizeOptions == nil {
 		req.TablePageSizeOptions = previousSettings.TablePageSizeOptions
 	}
-	// 将请求字段传给 usage，由 usage 处理省略字段、排序和展示规则。
+	// Resolve ranking fields together so the selected sorting metric remains
+	// visible after partial merging, then retain that normalized result for participant preparation.
 	usageRanking, rankingErr := usage.ResolveRankingSettings(usage.UsageRankingSettings{
 		Enabled: previousSettings.UsageRankingEnabled, SortBy: usage.UsageRankingSortBy(previousSettings.UsageRankingSortBy), ShowTotalTokens: previousSettings.UsageRankingShowTotalTokens, ShowRequests: previousSettings.UsageRankingShowRequests, ShowActualCost: previousSettings.UsageRankingShowActualCost, Limit: previousSettings.UsageRankingLimit,
 	}, usage.RankingSettingsUpdate{Limit: req.UsageRankingLimit, Enabled: req.UsageRankingEnabled, SortBy: req.UsageRankingSortBy, ShowTotalTokens: req.UsageRankingShowTotalTokens, ShowRequests: req.UsageRankingShowRequests, ShowActualCost: req.UsageRankingShowActualCost})
@@ -312,7 +390,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 	req.UsageRankingLimit = usageRanking.Limit
-	// 管理文档的 SMTP 保护由通知模块解释。
+	// Apply SMTP's separate empty-host and password retention rules before
+	// serialization so partial forms can retain their saved connection and authentication settings.
 	smtp := notification.NormalizeAdminSMTPSettings(notification.AdminSMTPSettings{SMTPHost: previousSettings.SMTPHost, SMTPPort: previousSettings.SMTPPort, SMTPUsername: previousSettings.SMTPUsername, SMTPPassword: previousSettings.SMTPPassword, SMTPFrom: previousSettings.SMTPFrom, SMTPFromName: previousSettings.SMTPFromName, SMTPUseTLS: previousSettings.SMTPUseTLS}, notification.AdminSMTPSettings{SMTPHost: req.SMTPHost, SMTPPort: req.SMTPPort, SMTPUsername: req.SMTPUsername, SMTPPassword: req.SMTPPassword, SMTPFrom: req.SMTPFrom, SMTPFromName: req.SMTPFromName, SMTPUseTLS: req.SMTPUseTLS})
 	req.SMTPHost = smtp.SMTPHost
 	req.SMTPPort = smtp.SMTPPort
@@ -355,6 +434,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if _, sent := sentFields["aliyun_captcha_enabled"]; !sent {
 		aliyunCaptchaEnabled = previousSettings.AliyunCaptchaEnabled
 	}
+	// Count saved-or-submitted switches together so a partial request cannot
+	// enable another challenge provider while an omitted provider remains enabled.
 	enabledCaptchaProviders := 0
 	for _, enabled := range []bool{turnstileEnabled, tencentCaptchaEnabled, aliyunCaptchaEnabled} {
 		if enabled {
@@ -365,14 +446,16 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		httpx.BadRequest(c, "Multiple captcha providers (Cloudflare Turnstile / Tencent Captcha / Aliyun Captcha) cannot be enabled at the same time")
 		return
 	}
-	// 规范化阿里云地域：未发送时保留已存值，非法值一律按中国内地落库。
+	// Use the saved Aliyun region when omitted, then select cn for every value
+	// except sgp so client configuration and verifier selection share the supported region choice.
 	if _, sent := sentFields["aliyun_captcha_region"]; !sent {
 		req.AliyunCaptchaRegion = previousSettings.AliyunCaptchaRegion
 	}
 	if req.AliyunCaptchaRegion != identity.AliyunCaptchaRegionSGP {
 		req.AliyunCaptchaRegion = identity.AliyunCaptchaRegionCN
 	}
-	// 天御站点 normalize：未发送保留已存值，非法值一律按中国站落库
+	// Use the saved Tencent region when omitted, then select cn for every value
+	// except intl so the widget and backend verifier retain the same supported site selection.
 	if _, sent := sentFields["tencent_captcha_region"]; !sent {
 		req.TencentCaptchaRegion = previousSettings.TencentCaptchaRegion
 	}
@@ -380,14 +463,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.TencentCaptchaRegion = identity.TencentCaptchaRegionCN
 	}
 
-	// Turnstile 参数验证
+	// Validate enabled Turnstile configuration.
 	if req.TurnstileEnabled {
-		// 检查必填字段
 		if req.TurnstileSiteKey == "" {
 			httpx.BadRequest(c, "Turnstile Site Key is required when enabled")
 			return
 		}
-		// 如果未提供 secret key，使用已保存的值（留空保留当前值）
+		// Empty submitted secret text reuses the saved credential before probing
+		// an enabled changed configuration, keeping an unchanged masked form usable for preparation.
 		if req.TurnstileSecretKey == "" {
 			if previousSettings.TurnstileSecretKey == "" {
 				httpx.BadRequest(c, "Turnstile Secret Key is required when enabled")
@@ -396,7 +479,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			req.TurnstileSecretKey = previousSettings.TurnstileSecretKey
 		}
 
-		// 当 site_key 或 secret_key 任一变化时验证（避免配置错误导致无法登录）
+		// Either site-key or secret change triggers a secret probe before persistence.
+		// The validator receives the secret alone. Its failure stops this batch before
+		// the saved login settings can be replaced.
 		siteKeyChanged := previousSettings.TurnstileSiteKey != req.TurnstileSiteKey
 		secretKeyChanged := previousSettings.TurnstileSecretKey != req.TurnstileSecretKey
 		if siteKeyChanged || secretKeyChanged {
@@ -407,10 +492,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	// Effective Tencent enablement retains public IDs and blank credentials from
+	// saved settings before validating this region's complete application/cloud tuple.
 	if tencentCaptchaEnabled {
 		if _, sent := sentFields["tencent_captcha_app_id"]; !sent {
 			req.TencentCaptchaAppID = previousSettings.TencentCaptchaAppID
 		}
+		// Treat a zero parsed value as a missing CAPTCHA application identifier.
 		appID, err := strconv.ParseUint(req.TencentCaptchaAppID, 10, 64)
 		if err != nil || appID == 0 {
 			httpx.BadRequest(c, "Tencent Captcha CaptchaAppId must be a positive integer when enabled")
@@ -439,7 +527,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// 阿里云验证码 2.0 参数验证
+	// Retain omitted public Aliyun fields before validating effective enablement,
+	// so a partial request is checked against the saved scene, prefix, and access-key ID.
 	if aliyunCaptchaEnabled {
 		if _, sent := sentFields["aliyun_captcha_scene_id"]; !sent {
 			req.AliyunCaptchaSceneID = previousSettings.AliyunCaptchaSceneID
@@ -462,7 +551,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			httpx.BadRequest(c, "Aliyun Captcha AccessKey ID is required when enabled")
 			return
 		}
-		// 如果未提供 AccessKey Secret，使用已保存的值（留空保留当前值）
+		// Empty access-secret text retains the saved value so a routine settings
+		// form can edit public scene or region fields while its credential stays available.
 		if req.AliyunCaptchaAccessKeySecret == "" {
 			if previousSettings.AliyunCaptchaAccessKeySecret == "" {
 				httpx.BadRequest(c, "Aliyun Captcha AccessKey Secret is required when enabled")
@@ -471,7 +561,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			req.AliyunCaptchaAccessKeySecret = previousSettings.AliyunCaptchaAccessKeySecret
 		}
 
-		// 凭证任一变化时真实调用一次阿里云校验（避免配置错误导致无法登录）
+		// Probe a changed access-key, scene, or region tuple before batch persistence
+		// so verifier failures are reported while the previously saved configuration remains available.
 		credentialsChanged := previousSettings.AliyunCaptchaAccessKeyID != req.AliyunCaptchaAccessKeyID ||
 			previousSettings.AliyunCaptchaAccessKeySecret != req.AliyunCaptchaAccessKeySecret ||
 			previousSettings.AliyunCaptchaSceneID != req.AliyunCaptchaSceneID ||
@@ -484,15 +575,16 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// TOTP 双因素认证参数验证
-	// 只有手动配置了加密密钥才允许启用 TOTP 功能
+	// Enabling TOTP requires a configured encryption key so stored credentials
+	// can be decrypted after a later process restart.
 	if req.TotpEnabled && !previousSettings.TotpEnabled {
-		// 尝试启用 TOTP，检查加密密钥是否已手动配置
 		if !h.settingService.IsTotpEncryptionKeyConfigured() {
 			httpx.BadRequest(c, "Cannot enable TOTP: TOTP_ENCRYPTION_KEY environment variable must be configured first. Generate a key with 'openssl rand -hex 32' and set it in your environment.")
 			return
 		}
 	}
+	// Keep the saved consent mode and update marker when submitted text is empty,
+	// then validate the selected mode before legal documents enter module preparation.
 	loginAgreementMode := strings.ToLower(strings.TrimSpace(req.LoginAgreementMode))
 	if loginAgreementMode == "" {
 		loginAgreementMode = strings.ToLower(strings.TrimSpace(previousSettings.LoginAgreementMode))
@@ -509,6 +601,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if loginAgreementUpdatedAt == "" {
 		loginAgreementUpdatedAt = strings.TrimSpace(previousSettings.LoginAgreementUpdatedAt)
 	}
+	// Select editor source content before legal validation, then retain prior
+	// documents when conversion yields an empty list, including an explicitly supplied empty list.
 	loginAgreementDocuments := loginAgreementDocumentsToService(req.LoginAgreementDocuments)
 	if len(loginAgreementDocuments) == 0 {
 		loginAgreementDocuments = previousSettings.LoginAgreementDocuments
@@ -518,10 +612,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			httpx.BadRequest(c, "Login agreement document title is required")
 			return
 		}
+		// Limit the stored title by UTF-8 bytes before it enters legal preparation.
 		if len(doc.Title) > 80 {
 			httpx.BadRequest(c, "Login agreement document title is too long (max 80 characters)")
 			return
 		}
+		// Bound each submitted Markdown body to two hundred kibibytes.
 		if len(doc.ContentMD) > 200*1024 {
 			httpx.BadRequest(c, "Login agreement document content is too large (max 200KB)")
 			return
@@ -532,7 +628,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
-	// LinuxDo Connect 参数验证
+	// Validate enabled LinuxDo Connect configuration.
 	if req.LinuxDoConnectEnabled {
 		req.LinuxDoConnectClientID = strings.TrimSpace(req.LinuxDoConnectClientID)
 		req.LinuxDoConnectClientSecret = strings.TrimSpace(req.LinuxDoConnectClientSecret)
@@ -551,7 +647,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 
-		// 如果未提供 client_secret，则保留现有值（如有）。
+		// Empty secret text retains the saved credential for this enabled provider
+		// before the normalized request is handed to identity's settings participant.
 		if req.LinuxDoConnectClientSecret == "" {
 			if previousSettings.LinuxDoConnectClientSecret == "" {
 				httpx.BadRequest(c, "LinuxDo Client Secret is required when enabled")
@@ -561,9 +658,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// DingTalk Connect 参数验证
-	// 防御性：任何写入路径上把已废弃的 corp_restriction_policy=whitelist 入参 coerce 为 none，
-	// 避免任何直连 admin API 的客户端把死值写回 DB（前端 UI 已无此选项）。
+	// Coerce the retired corp_restriction_policy=whitelist value to none
+	// so direct API clients cannot write the unsupported policy back to storage.
 	req.DingTalkConnectCorpRestrictionPolicy = identity.SettingsCoerceDingTalkCorpPolicyForWrite(req.DingTalkConnectCorpRestrictionPolicy)
 
 	if req.DingTalkConnectEnabled {
@@ -586,7 +682,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 
-		// 如果未提供 client_secret，则保留现有值（如有）。
+		// Empty secret text retains the saved credential for this enabled provider
+		// before the normalized request is handed to identity's settings participant.
 		if req.DingTalkConnectClientSecret == "" {
 			if previousSettings.DingTalkConnectClientSecret == "" {
 				httpx.BadRequest(c, "DingTalk Client Secret is required when enabled")
@@ -595,19 +692,21 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			req.DingTalkConnectClientSecret = previousSettings.DingTalkConnectClientSecret
 		}
 
-		// Corp 策略校验（V1/V4 fail-closed）
+		// Validate the corporation policy before persisting it.
 		dingTalkCfg := authconfig.DingTalkConnectConfig{
 			Enabled:               true,
-			DingTalkAppKind:       "internal_app", // 硬编码：settings 层仅支持 internal_app
-			AppType:               "internal",     // 对于 internal_only 策略的默认值
+			DingTalkAppKind:       "internal_app", // the settings API supports internal_app
+			AppType:               "internal",     // default for internal_only
 			CorpRestrictionPolicy: req.DingTalkConnectCorpRestrictionPolicy,
 			InternalCorpID:        req.DingTalkConnectInternalCorpID,
 		}
-		// 若未填 corp_restriction_policy，保留已有配置
+		// Validate against the prior policy when submitted text is empty so app-type
+		// checks use the policy that the current settings read supplied for this provider.
 		if dingTalkCfg.CorpRestrictionPolicy == "" {
 			dingTalkCfg.CorpRestrictionPolicy = previousSettings.DingTalkConnectCorpRestrictionPolicy
 		}
-		// 对于 internal_only 策略，app_type 必须为 internal（V1 校验）
+		// Select the validation app type from the resolved policy: internal_only
+		// requires internal while this settings API supports the internal_app application kind.
 		if dingTalkCfg.CorpRestrictionPolicy == "internal_only" {
 			dingTalkCfg.AppType = "internal"
 		} else {
@@ -618,16 +717,18 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 
-		// bypass_registration 仅在 internal_only 模式下有意义；其它策略下强制为 false，
-		// 防止 admin 在切换 policy 时把 bypass 残留在 DB 中（前端 UI 也已隐藏该开关）。
+		// Clear bypass and all profile-sync switches outside internal_only so a
+		// changed organization policy cannot retain those internal-organization permissions.
 		if dingTalkCfg.CorpRestrictionPolicy != "internal_only" {
 			req.DingTalkConnectBypassRegistration = false
-			// 身份同步三开关同理：仅 internal_only 模式下有意义，其它策略强制 false。
 			req.DingTalkConnectSyncCorpEmail = false
 			req.DingTalkConnectSyncDisplayName = false
 			req.DingTalkConnectSyncDept = false
 		}
-		// 身份同步目标 attr key：trimSpace + 空值 fallback 到默认值
+		// Fill empty attribute-key inputs within every enabled DingTalk request,
+		// including requests whose sync switches are false. Presence filtering later
+		// decides which computed keys reach storage; post-commit setup reads saved
+		// keys again before preparing enabled attribute definitions.
 		req.DingTalkConnectSyncCorpEmailAttrKey = strings.TrimSpace(req.DingTalkConnectSyncCorpEmailAttrKey)
 		if req.DingTalkConnectSyncCorpEmailAttrKey == "" {
 			req.DingTalkConnectSyncCorpEmailAttrKey = "dingtalk_email"
@@ -640,7 +741,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if req.DingTalkConnectSyncDeptAttrKey == "" {
 			req.DingTalkConnectSyncDeptAttrKey = "dingtalk_department"
 		}
-		// 身份同步目标 attr 显示名称：trim + 空值 fallback 到默认中文名
+		// Fill empty display-label inputs within this enabled-provider branch.
+		// Presence filtering can discard these defaults; definition setup uses the
+		// labels returned by committed readback when sync flags select that work.
 		req.DingTalkConnectSyncCorpEmailAttrName = strings.TrimSpace(req.DingTalkConnectSyncCorpEmailAttrName)
 		if req.DingTalkConnectSyncCorpEmailAttrName == "" {
 			req.DingTalkConnectSyncCorpEmailAttrName = "钉钉企业邮箱"
@@ -668,6 +771,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.WeChatConnectScopes = strings.TrimSpace(req.WeChatConnectScopes)
 		req.WeChatConnectRedirectURL = strings.TrimSpace(req.WeChatConnectRedirectURL)
 		req.WeChatConnectFrontendRedirectURL = strings.TrimSpace(req.WeChatConnectFrontendRedirectURL)
+		// Retain prior legacy application and callback text when enabled-client input
+		// is blank, before channel-specific credentials and web callback validation are selected.
 		req.WeChatConnectAppID = strings.TrimSpace(firstNonEmpty(req.WeChatConnectAppID, previousSettings.WeChatConnectAppID))
 		req.WeChatConnectRedirectURL = strings.TrimSpace(firstNonEmpty(req.WeChatConnectRedirectURL, previousSettings.WeChatConnectRedirectURL))
 		req.WeChatConnectFrontendRedirectURL = strings.TrimSpace(firstNonEmpty(req.WeChatConnectFrontendRedirectURL, previousSettings.WeChatConnectFrontendRedirectURL))
@@ -690,6 +795,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return
 			}
 		}
+		// Legacy mode input selects a channel when all decoded channel switches
+		// are false, including explicitly submitted false values. A missing mode is
+		// then derived from enabled request channels before credentials are chosen.
 		if !req.WeChatConnectOpenEnabled && !req.WeChatConnectMPEnabled && !req.WeChatConnectMobileEnabled {
 			switch req.WeChatConnectMode {
 			case "mp":
@@ -710,10 +818,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			}
 		}
 
+		// Each channel tries submitted channel ID, resolved legacy ID, saved channel
+		// ID, then saved legacy ID before identity's final preparation receives these selected values.
 		req.WeChatConnectOpenAppID = strings.TrimSpace(firstNonEmpty(req.WeChatConnectOpenAppID, req.WeChatConnectAppID, previousSettings.WeChatConnectOpenAppID, previousSettings.WeChatConnectAppID))
 		req.WeChatConnectMPAppID = strings.TrimSpace(firstNonEmpty(req.WeChatConnectMPAppID, req.WeChatConnectAppID, previousSettings.WeChatConnectMPAppID, previousSettings.WeChatConnectAppID))
 		req.WeChatConnectMobileAppID = strings.TrimSpace(firstNonEmpty(req.WeChatConnectMobileAppID, req.WeChatConnectAppID, previousSettings.WeChatConnectMobileAppID, previousSettings.WeChatConnectAppID))
 
+		// Blank channel secrets reuse saved channel and legacy credentials before
+		// submitted legacy text; a blank legacy secret is then filled from the resolved channels.
 		if req.WeChatConnectOpenAppSecret == "" {
 			req.WeChatConnectOpenAppSecret = strings.TrimSpace(firstNonEmpty(previousSettings.WeChatConnectOpenAppSecret, previousSettings.WeChatConnectAppSecret, req.WeChatConnectAppSecret))
 		}
@@ -758,6 +870,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			}
 		}
 
+		// Choose scope defaults after submitted and saved text are empty. Public-
+		// account enablement selects mp defaults; otherwise the resolved mode supplies that choice.
 		if req.WeChatConnectScopes == "" {
 			if req.WeChatConnectMPEnabled {
 				req.WeChatConnectScopes = identity.SettingsDefaultWeChatConnectScopesForMode("mp")
@@ -774,6 +888,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				httpx.BadRequest(c, "WeChat Redirect URL must be an absolute http(s) URL")
 				return
 			}
+			// Select the built-in callback path when the frontend destination is blank
+			// so enabled web OAuth has a supported completion route before redirect validation.
 			if req.WeChatConnectFrontendRedirectURL == "" {
 				req.WeChatConnectFrontendRedirectURL = "/auth/wechat/callback"
 			}
@@ -784,7 +900,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// Generic OIDC 参数验证
+	// Read presence-aware OIDC write defaults on every save before the enabled
+	// branch applies its optional pointer overrides and validates the current provider settings.
 	oidcUsePKCE, oidcValidateIDToken, err := h.settingService.OIDCSecurityWriteDefaults(c.Request.Context())
 	if err != nil {
 		httpx.ErrorFrom(c, err)
@@ -808,6 +925,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.OIDCConnectUserInfoEmailPath = strings.TrimSpace(req.OIDCConnectUserInfoEmailPath)
 		req.OIDCConnectUserInfoIDPath = strings.TrimSpace(req.OIDCConnectUserInfoIDPath)
 		req.OIDCConnectUserInfoUsernamePath = strings.TrimSpace(req.OIDCConnectUserInfoUsernamePath)
+		// Enabled-provider text uses submitted, saved, then applicable built-in
+		// candidates; blank input retains prior endpoint and profile choices in this branch.
 		req.OIDCConnectProviderName = strings.TrimSpace(firstNonEmpty(req.OIDCConnectProviderName, previousSettings.OIDCConnectProviderName, "OIDC"))
 		req.OIDCConnectClientID = strings.TrimSpace(firstNonEmpty(req.OIDCConnectClientID, previousSettings.OIDCConnectClientID))
 		req.OIDCConnectIssuerURL = strings.TrimSpace(firstNonEmpty(req.OIDCConnectIssuerURL, previousSettings.OIDCConnectIssuerURL))
@@ -830,6 +949,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if req.OIDCConnectValidateIDToken != nil {
 			oidcValidateIDToken = *req.OIDCConnectValidateIDToken
 		}
+		// This enabled update branch treats zero as a request for the saved skew,
+		// then 120 when both values are zero; the standalone runtime reader separately permits zero.
 		if req.OIDCConnectClockSkewSeconds == 0 {
 			req.OIDCConnectClockSkewSeconds = previousSettings.OIDCConnectClockSkewSeconds
 			if req.OIDCConnectClockSkewSeconds == 0 {
@@ -899,6 +1020,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			httpx.BadRequest(c, "OIDC Token Auth Method must be one of client_secret_post/client_secret_basic/none")
 			return
 		}
+		// Bound enabled-provider token timestamp tolerance before preparing
+		// saved OIDC settings for the identity participant.
 		if req.OIDCConnectClockSkewSeconds < 0 || req.OIDCConnectClockSkewSeconds > 600 {
 			httpx.BadRequest(c, "OIDC clock skew seconds must be between 0 and 600")
 			return
@@ -913,6 +1036,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return
 			}
 		}
+		// Secret-bearing authentication methods keep the saved secret when input is
+		// blank; none skips this requirement before the normalized request is prepared by identity.
 		if req.OIDCConnectTokenAuthMethod == "" || req.OIDCConnectTokenAuthMethod == "client_secret_post" || req.OIDCConnectTokenAuthMethod == "client_secret_basic" {
 			if req.OIDCConnectClientSecret == "" {
 				if previousSettings.OIDCConnectClientSecret == "" {
@@ -929,6 +1054,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	req.GitHubOAuthRedirectURL = strings.TrimSpace(req.GitHubOAuthRedirectURL)
 	req.GitHubOAuthFrontendRedirectURL = strings.TrimSpace(req.GitHubOAuthFrontendRedirectURL)
 	if req.GitHubOAuthEnabled {
+		// Reuse saved client/callback values for blank enabled GitHub fields, then
+		// validate selected URLs and require a current or retained exchange secret before preparation.
 		req.GitHubOAuthClientID = strings.TrimSpace(firstNonEmpty(req.GitHubOAuthClientID, previousSettings.GitHubOAuthClientID))
 		req.GitHubOAuthRedirectURL = strings.TrimSpace(firstNonEmpty(req.GitHubOAuthRedirectURL, previousSettings.GitHubOAuthRedirectURL))
 		req.GitHubOAuthFrontendRedirectURL = strings.TrimSpace(firstNonEmpty(req.GitHubOAuthFrontendRedirectURL, previousSettings.GitHubOAuthFrontendRedirectURL, "/auth/oauth/callback"))
@@ -966,6 +1093,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	req.GoogleOAuthRedirectURL = strings.TrimSpace(req.GoogleOAuthRedirectURL)
 	req.GoogleOAuthFrontendRedirectURL = strings.TrimSpace(req.GoogleOAuthFrontendRedirectURL)
 	if req.GoogleOAuthEnabled {
+		// Reuse saved client/callback values for blank enabled Google fields, then
+		// validate selected URLs and require a current or retained exchange secret before preparation.
 		req.GoogleOAuthClientID = strings.TrimSpace(firstNonEmpty(req.GoogleOAuthClientID, previousSettings.GoogleOAuthClientID))
 		req.GoogleOAuthRedirectURL = strings.TrimSpace(firstNonEmpty(req.GoogleOAuthRedirectURL, previousSettings.GoogleOAuthRedirectURL))
 		req.GoogleOAuthFrontendRedirectURL = strings.TrimSpace(firstNonEmpty(req.GoogleOAuthFrontendRedirectURL, previousSettings.GoogleOAuthFrontendRedirectURL, "/auth/oauth/callback"))
@@ -998,7 +1127,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// “购买订阅”页面配置验证
+	// Merge purchase entry and destination before validating them together so
+	// disabling the entry can coexist with an empty URL while supplied destinations remain checked.
 	purchaseEnabled := previousSettings.PurchaseSubscriptionEnabled
 	if req.PurchaseSubscriptionEnabled != nil {
 		purchaseEnabled = *req.PurchaseSubscriptionEnabled
@@ -1008,8 +1138,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		purchaseURL = strings.TrimSpace(*req.PurchaseSubscriptionURL)
 	}
 
-	// - 启用时要求 URL 合法且非空
-	// - 禁用时允许为空；若提供了 URL 也做基本校验，避免误配置
+	// An enabled purchase page requires a nonempty valid URL.
+	// When disabled, an empty URL is allowed; a supplied URL still needs validation.
 	if purchaseEnabled {
 		if purchaseURL == "" {
 			httpx.BadRequest(c, "Purchase Subscription URL is required when enabled")
@@ -1026,7 +1156,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// Frontend URL 验证
+	// Validate the frontend URL when supplied.
 	req.FrontendURL = strings.TrimSpace(req.FrontendURL)
 	if req.FrontendURL != "" {
 		if err := authconfig.ValidateAbsoluteHTTPURL(req.FrontendURL); err != nil {
@@ -1035,214 +1165,26 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// 自定义菜单项验证
-	const (
-		maxCustomMenuItems    = 20
-		maxMenuItemLabelLen   = 50
-		maxMenuItemURLLen     = 2048
-		maxMenuItemIconSVGLen = 10 * 1024 // 10KB
-		maxMenuItemIDLen      = 32
-	)
-
-	customMenuJSON := previousSettings.CustomMenuItems
-	if req.CustomMenuItems != nil {
-		items := *req.CustomMenuItems
-		if len(items) > maxCustomMenuItems {
-			httpx.BadRequest(c, "Too many custom menu items (max 20)")
-			return
-		}
-		for i, item := range items {
-			if strings.TrimSpace(item.Label) == "" {
-				httpx.BadRequest(c, "Custom menu item label is required")
-				return
-			}
-			if len(item.Label) > maxMenuItemLabelLen {
-				httpx.BadRequest(c, "Custom menu item label is too long (max 50 characters)")
-				return
-			}
-			urlTrimmed := strings.TrimSpace(item.URL)
-			if slug, ok := strings.CutPrefix(urlTrimmed, "md:"); ok {
-				// Markdown 页面模式使用 md:<slug>，slug 规则与 /api/v1/pages/:slug 保持一致。
-				if slug == "" {
-					httpx.BadRequest(c, "Custom menu item markdown slug cannot be empty (use md:slug format)")
-					return
-				}
-				if len(slug) > 64 || !markdownMenuSlugPattern.MatchString(slug) {
-					httpx.BadRequest(c, "Custom menu item markdown slug contains invalid characters")
-					return
-				}
-			} else {
-				if urlTrimmed == "" {
-					httpx.BadRequest(c, "Custom menu item URL is required (use md:slug for markdown pages)")
-					return
-				}
-				if len(urlTrimmed) > maxMenuItemURLLen {
-					httpx.BadRequest(c, "Custom menu item URL is too long (max 2048 characters)")
-					return
-				}
-				if err := authconfig.ValidateAbsoluteHTTPURL(urlTrimmed); err != nil {
-					httpx.BadRequest(c, "Custom menu item URL must be an absolute http(s) URL or md:<slug>")
-					return
-				}
-			}
-			// 保存规范化后的 URL，避免前后空白导致运行时 md: 页面识别失败。
-			items[i].URL = urlTrimmed
-			if item.Visibility != "user" && item.Visibility != "admin" {
-				httpx.BadRequest(c, "Custom menu item visibility must be 'user' or 'admin'")
-				return
-			}
-			if len(item.IconSVG) > maxMenuItemIconSVGLen {
-				httpx.BadRequest(c, "Custom menu item icon SVG is too large (max 10KB)")
-				return
-			}
-			// Auto-generate ID if missing
-			if strings.TrimSpace(item.ID) == "" {
-				id, err := generateMenuItemID()
-				if err != nil {
-					httpx.Error(c, http.StatusInternalServerError, "Failed to generate menu item ID")
-					return
-				}
-				items[i].ID = id
-			} else if len(item.ID) > maxMenuItemIDLen {
-				httpx.BadRequest(c, "Custom menu item ID is too long (max 32 characters)")
-				return
-			} else if !menuItemIDPattern.MatchString(item.ID) {
-				httpx.BadRequest(c, "Custom menu item ID contains invalid characters (only a-z, A-Z, 0-9, - and _ are allowed)")
-				return
-			}
-		}
-		// ID uniqueness check
-		seen := make(map[string]struct{}, len(items))
-		for _, item := range items {
-			if _, exists := seen[item.ID]; exists {
-				httpx.BadRequest(c, "Duplicate custom menu item ID: "+item.ID)
-				return
-			}
-			seen[item.ID] = struct{}{}
-		}
-		menuBytes, err := json.Marshal(items)
-		if err != nil {
-			httpx.BadRequest(c, "Failed to serialize custom menu items")
-			return
-		}
-		customMenuJSON = string(menuBytes)
+	customMenuJSON, ok := prepareCustomMenuItems(c, req.CustomMenuItems, previousSettings.CustomMenuItems)
+	if !ok {
+		return
 	}
 
-	// 自定义端点验证
-	const (
-		maxCustomEndpoints        = 10
-		maxEndpointNameLen        = 50
-		maxEndpointURLLen         = 2048
-		maxEndpointDescriptionLen = 200
-	)
-
-	customEndpointsJSON := previousSettings.CustomEndpoints
-	if req.CustomEndpoints != nil {
-		endpoints := *req.CustomEndpoints
-		if len(endpoints) > maxCustomEndpoints {
-			httpx.BadRequest(c, "Too many custom endpoints (max 10)")
-			return
-		}
-		for _, ep := range endpoints {
-			if strings.TrimSpace(ep.Name) == "" {
-				httpx.BadRequest(c, "Custom endpoint name is required")
-				return
-			}
-			if len(ep.Name) > maxEndpointNameLen {
-				httpx.BadRequest(c, "Custom endpoint name is too long (max 50 characters)")
-				return
-			}
-			if strings.TrimSpace(ep.Endpoint) == "" {
-				httpx.BadRequest(c, "Custom endpoint URL is required")
-				return
-			}
-			if len(ep.Endpoint) > maxEndpointURLLen {
-				httpx.BadRequest(c, "Custom endpoint URL is too long (max 2048 characters)")
-				return
-			}
-			if err := authconfig.ValidateAbsoluteHTTPURL(strings.TrimSpace(ep.Endpoint)); err != nil {
-				httpx.BadRequest(c, "Custom endpoint URL must be an absolute http(s) URL")
-				return
-			}
-			if len(ep.Description) > maxEndpointDescriptionLen {
-				httpx.BadRequest(c, "Custom endpoint description is too long (max 200 characters)")
-				return
-			}
-		}
-		endpointBytes, err := json.Marshal(endpoints)
-		if err != nil {
-			httpx.BadRequest(c, "Failed to serialize custom endpoints")
-			return
-		}
-		customEndpointsJSON = string(endpointBytes)
+	customEndpointsJSON, ok := prepareCustomEndpoints(c, req.CustomEndpoints, previousSettings.CustomEndpoints)
+	if !ok {
+		return
 	}
 
-	// 底栏链接分组验证
-	const (
-		maxFooterGroups      = 6
-		maxFooterLinksPerGrp = 10
-		maxFooterLabelLen    = 50
-		maxFooterURLLen      = 2048
-		maxFooterTextLen     = 500
-	)
-
-	footerLinksJSON := previousSettings.FooterLinks
-	if req.FooterLinks != nil {
-		groups := *req.FooterLinks
-		if len(groups) > maxFooterGroups {
-			httpx.BadRequest(c, "Too many footer link groups (max 6)")
-			return
-		}
-		for _, group := range groups {
-			if strings.TrimSpace(group.Title) == "" {
-				httpx.BadRequest(c, "Footer link group title is required")
-				return
-			}
-			if len(group.Title) > maxFooterLabelLen {
-				httpx.BadRequest(c, "Footer link group title is too long (max 50 characters)")
-				return
-			}
-			if len(group.Links) > maxFooterLinksPerGrp {
-				httpx.BadRequest(c, "Too many links in footer group (max 10)")
-				return
-			}
-			for _, link := range group.Links {
-				if strings.TrimSpace(link.Label) == "" {
-					httpx.BadRequest(c, "Footer link label is required")
-					return
-				}
-				if len(link.Label) > maxFooterLabelLen {
-					httpx.BadRequest(c, "Footer link label is too long (max 50 characters)")
-					return
-				}
-				trimmedURL := strings.TrimSpace(link.URL)
-				if trimmedURL == "" {
-					httpx.BadRequest(c, "Footer link URL is required")
-					return
-				}
-				if len(trimmedURL) > maxFooterURLLen {
-					httpx.BadRequest(c, "Footer link URL is too long (max 2048 characters)")
-					return
-				}
-				// 允许绝对 http(s) URL 或站内相对路径（以 / 开头）
-				if !strings.HasPrefix(trimmedURL, "/") {
-					if err := authconfig.ValidateAbsoluteHTTPURL(trimmedURL); err != nil {
-						httpx.BadRequest(c, "Footer link URL must be an absolute http(s) URL or a path starting with /")
-						return
-					}
-				}
-			}
-		}
-		groupBytes, err := json.Marshal(groups)
-		if err != nil {
-			httpx.BadRequest(c, "Failed to serialize footer links")
-			return
-		}
-		footerLinksJSON = string(groupBytes)
+	footerLinksJSON, ok := prepareFooterLinks(c, req.FooterLinks, previousSettings.FooterLinks)
+	if !ok {
+		return
 	}
 
-	// 首页展示模型列表验证：限制数量、去空白、去重，保持管理员配置的顺序
+	// Keep the first occurrence of each trimmed model ID so the stored featured
+	// list retains administrator order while duplicate selections do not consume display entries.
+	// Bound incoming featured selections before duplicate filtering and serialization.
 	const maxHomeFeaturedModels = 12
+	// Bound each trimmed identifier by UTF-8 byte length.
 	const maxHomeFeaturedModelIDLen = 200
 
 	homeFeaturedModelsJSON := previousSettings.HomeFeaturedModels
@@ -1278,6 +1220,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		homeFeaturedModelsJSON = string(modelBytes)
 	}
 
+	// Bound the trimmed footer copy by its UTF-8 byte length.
+	const maxFooterTextLen = 500
 	footerText := previousSettings.FooterText
 	if req.FooterText != nil {
 		trimmed := strings.TrimSpace(*req.FooterText)
@@ -1288,7 +1232,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		footerText = trimmed
 	}
 
-	// Ops metrics collector interval validation (seconds).
+	// Bound the requested Ops sampling cadence to sixty through 3,600 seconds
+	// before constructing the runtime Snapshot and its participant JSON fields.
 	if req.OpsMetricsIntervalSeconds != nil {
 		v := min(max(*req.OpsMetricsIntervalSeconds, 60), 3600)
 		req.OpsMetricsIntervalSeconds = &v
@@ -1300,7 +1245,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		})
 	}
 
-	// 验证最低版本号格式（空字符串=禁用，或合法 semver）
+	// An empty minimum version disables the lower bound; otherwise require three numeric components.
 	if req.MinClaudeCodeVersion != "" {
 		if !semverPattern.MatchString(req.MinClaudeCodeVersion) {
 			httpx.Error(c, http.StatusBadRequest, "min_claude_code_version must be empty or a valid semver (e.g. 2.1.63)")
@@ -1308,7 +1253,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// 验证最高版本号格式（空字符串=禁用，或合法 semver）
+	// An empty maximum version disables the upper bound; otherwise require three numeric components.
 	if req.MaxClaudeCodeVersion != "" {
 		if !semverPattern.MatchString(req.MaxClaudeCodeVersion) {
 			httpx.Error(c, http.StatusBadRequest, "max_claude_code_version must be empty or a valid semver (e.g. 3.0.0)")
@@ -1326,20 +1271,24 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.OpenAICodexUserAgent != nil {
 		normalized := strings.TrimSpace(*req.OpenAICodexUserAgent)
 		req.OpenAICodexUserAgent = &normalized
-		// 检查长度上限，运维可自行设置 codex 版本号格式。
+		// Bound the full upstream header by UTF-8 bytes while leaving its version
+		// spelling to operators; unlike the Antigravity override, this value is not parsed as semver.
 		if len(normalized) > 512 {
 			httpx.Error(c, http.StatusBadRequest, "openai_codex_user_agent must be at most 512 characters")
 			return
 		}
 	}
 
-	// 交叉验证：如果同时设置了最低和最高版本号，最高版本号必须 >= 最低版本号
+	// When both version bounds are supplied, reject an inverted range before
+	// the gateway uses the prepared values to admit later client requests.
 	if req.MinClaudeCodeVersion != "" && req.MaxClaudeCodeVersion != "" {
 		if clientmeta.CompareVersions(req.MaxClaudeCodeVersion, req.MinClaudeCodeVersion) < 0 {
 			httpx.Error(c, http.StatusBadRequest, "max_claude_code_version must be greater than or equal to min_claude_code_version")
 			return
 		}
 	}
+	// Reject nonpositive session lifetimes and worker counts before moderation
+	// or Creative receives these submitted values for persistent settings preparation.
 	if req.CyberSessionBlockTTLSeconds != nil && *req.CyberSessionBlockTTLSeconds <= 0 {
 		httpx.BadRequest(c, "cyber_session_block_ttl_seconds must be > 0")
 		return
@@ -1349,6 +1298,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
+	// Materialize merged scalar, collection, and pointer fields before broad
+	// preparation. Nil pointer closures retain prior values; raw-presence filtering
+	// later prevents omitted non-pointer zero values from becoming registered writes.
 	settings := &composite.Snapshot{
 		ProviderSchedulingThresholds: req.ProviderSchedulingThresholds,
 
@@ -1576,11 +1528,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion: req.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion: req.MaxClaudeCodeVersion,
 		BackendModeEnabled:   req.BackendModeEnabled,
-		OpenAITTFTMode: func() string {
-			if req.OpenAITTFTMode != nil {
-				return *req.OpenAITTFTMode
+		TTFTMode: func() string {
+			if req.TTFTMode != nil {
+				return *req.TTFTMode
 			}
-			return previousSettings.OpenAITTFTMode
+			return previousSettings.TTFTMode
 		}(),
 		AllowUserViewErrorRequests: func() bool {
 			if req.AllowUserViewErrorRequests != nil {
@@ -1849,7 +1801,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 	changes := []runtimesettings.PreparedChange{{Module: "system-values", Values: values}}
+	// Use native readback callbacks when offered; the compatibility callback
+	// otherwise stops its own application chain on the first failure before
+	// publishing the monitoring switch.
 	if native, ok := h.settingService.(interface {
+		// ApplicationChanges returns post-commit callbacks with update-local readback
+		// state. The handler appends them in order for its session to execute sequentially,
+		// allowing application errors to retain persisted=true reporting.
 		ApplicationChanges() []runtimesettings.PreparedChange
 	}); ok {
 		changes = append(changes, native.ApplicationChanges()...)
@@ -1865,7 +1823,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}})
 	}
 
-	// 已提取模块由静态参与者统一准备；保持全部准备成功后才执行唯一批量提交。
+	// Serialize normalized input for every registered owner before the single
+	// Commit so one preparation failure leaves the complete stored settings batch untouched.
 	rawInput, err := json.Marshal(req)
 	if err != nil {
 		httpx.ErrorFrom(c, err)
@@ -1876,13 +1835,17 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		httpx.ErrorFrom(c, err)
 		return
 	}
-	// 非指针字段省略时仍保留原持久值；指针字段沿用已有的合并和安全规范化流程。
+	// Remove absent non-pointer names before owners prepare their fields. Pointer
+	// names still carry request serialization here; the module replacements below
+	// supply their merged values and preserve field-specific presence rules.
 	for name := range settingKeyByJSONName {
 		if _, sent := sentFields[name]; !sent {
 			delete(fields, name)
 		}
 	}
-	// 此指针字段原先每次保存都会写回合并后的当前值，继续保留该行为。
+	// Serialize these merged scalar values on every save, even when omitted, so
+	// their registered owners receive the resolved prior-or-submitted state. These
+	// bool and string values encode directly; the assignments discard marshal errors.
 	fields["affiliate_admin_recharge_enabled"], _ = json.Marshal(settings.AdminRechargeRebateEnabled)
 	fields["usage_ranking_enabled"], _ = json.Marshal(settings.UsageRankingEnabled)
 	fields["usage_ranking_sort_by"], _ = json.Marshal(settings.UsageRankingSortBy)
@@ -1890,7 +1853,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	fields["usage_ranking_show_requests"], _ = json.Marshal(settings.UsageRankingShowRequests)
 	fields["usage_ranking_show_actual_cost"], _ = json.Marshal(settings.UsageRankingShowActualCost)
 	fields["allow_user_view_error_requests"], _ = json.Marshal(settings.AllowUserViewErrorRequests)
-	// 身份字段取自完成权限检查和兼容合并后的设置，省略的非指针字段从更新集合中移除。
+	// Replace identity inputs after security checks and source-grant merging so
+	// that owner receives normalized policy values; still skip omitted non-pointer identity names.
 	identityRaw, err := json.Marshal(settings.IdentityAdminSettings())
 	if err != nil {
 		httpx.ErrorFrom(c, err)
@@ -1910,6 +1874,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		fields[name] = value
 	}
+	// Encode merged scalar and collection fields for their registered owners.
+	// Current values use JSON-supported types, so encoding errors are discarded
+	// here before the owning preparers validate and select their stored representation.
 	fields["team_enabled"], _ = json.Marshal(settings.TeamEnabled)
 	fields["risk_control_enabled"], _ = json.Marshal(settings.RiskControlEnabled)
 	fields["cyber_session_block_enabled"], _ = json.Marshal(settings.CyberSessionBlockEnabled)
@@ -1928,6 +1895,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		httpx.ErrorFrom(c, err)
 		return
 	}
+	// Remove the initial pointer serialization before scheduler fields retain
+	// their normalized presence information, so omission can retain inherited sticky-escape policy.
 	delete(fields, "advanced_scheduler_sticky_escape_enabled")
 	for name, value := range schedulerFields {
 		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
@@ -1964,8 +1933,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		fields[name] = raw
 	}
+	// Keep the quota object absent until its nonnil request presence flag admits
+	// an update, leaving wider saved Ops settings outside an omitted quota change.
 	delete(fields, "openai_provider_quota_auto_pause")
 	if settings.OpenAIQuotaAutoPauseSettingsSet {
+		// Encode the supplied quota object for its participant; a discarded marshal
+		// error leaves nil bytes that its JSON decoding rejects before persistence.
 		fields["openai_provider_quota_auto_pause"], _ = json.Marshal(settings.OpenAIQuotaAutoPauseSettings)
 	}
 	if err := mergeNormalizedSettingsFields(fields, settings.GatewayAdminSettings(), sentFields); err != nil {
@@ -1978,6 +1951,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 	changes = append(changes, prepared...)
+	// Commit this complete prepared value batch before its application callbacks
+	// and audit event. A rejected write leaves those later update phases uncalled.
 	if err := update.Commit(changes...); err != nil {
 		httpx.ErrorFrom(c, err)
 		return
@@ -1985,7 +1960,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 	h.auditSettingsUpdate(c, previousSettings, settings, previousAuthSourceDefaults, authSourceDefaults, auditReq)
 
-	// 重新获取设置返回
+	// Read back after completed persistence and audit so the response reflects
+	// saved configuration; a failure here returns an error after that batch is already stored.
 	updatedSettings, err := h.settingService.GetAllSettings(c.Request.Context())
 	if err != nil {
 		httpx.ErrorFrom(c, err)
@@ -2004,7 +1980,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		})
 	}
 
-	// Reload payment config for response
+	// PUT readback propagates a payment-read error after commit, unlike GET
+	// recovery; a nil successful result still supplies empty configuration to the response mapper.
 	var updatedPaymentCfg *payment.PaymentConfig
 	if h.paymentConfigService != nil {
 		updatedPaymentCfg, err = h.paymentConfigService.GetPaymentConfig(c.Request.Context())
@@ -2019,6 +1996,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 	payload := buildSystemSettingsResponse(updatedSettings, updatedPaymentCfg, updatedDefaultSubscriptions, h.settingService.IsTotpEncryptionKeyConfigured())
 	payload.OpsMonitoringEnabled = updatedSettings.OpsMonitoringEnabled
+	// Log optional policy read failures after commit and keep the response's
+	// policy field absent; this read cannot undo the already persisted settings batch.
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)
 	} else if fastPolicy != nil {
@@ -2028,7 +2007,253 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	httpx.Success(c, systemSettingsResponseData(payload, updatedAuthSourceDefaults))
 }
 
-// mergeNormalizedSettingsFields 将规范化设置合入更新字段，省略的非指针字段继续使用存储值。
+// prepareCustomMenuItems validates menu entries and returns their settings JSON.
+// A nil input retains previous JSON, while a supplied slice is serialized even
+// when empty. URL normalization and generated IDs modify the caller's slice,
+// which also updates the shallow request copy retained for audit processing.
+//
+// Validation proceeds in entry order before the duplicate-ID pass. Mutations
+// completed before a later error remain visible to the caller, including a
+// trimmed URL on an entry whose visibility or ID is subsequently rejected.
+// False means the function has written the first HTTP error response.
+func prepareCustomMenuItems(c *gin.Context, input *[]sitedto.CustomMenuItem, previous string) (string, bool) {
+	// Bound menu count, text, icons, and IDs before producing stored navigation JSON.
+	const (
+		maxCustomMenuItems    = 20
+		maxMenuItemLabelLen   = 50
+		maxMenuItemURLLen     = 2048
+		maxMenuItemIconSVGLen = 10 * 1024 // maximum SVG bytes (ten kibibytes)
+		maxMenuItemIDLen      = 32
+	)
+
+	customMenuJSON := previous
+	if input != nil {
+		items := *input
+		if len(items) > maxCustomMenuItems {
+			httpx.BadRequest(c, "Too many custom menu items (max 20)")
+			return "", false
+		}
+		for i, item := range items {
+			if strings.TrimSpace(item.Label) == "" {
+				httpx.BadRequest(c, "Custom menu item label is required")
+				return "", false
+			}
+			if len(item.Label) > maxMenuItemLabelLen {
+				httpx.BadRequest(c, "Custom menu item label is too long (max 50 characters)")
+				return "", false
+			}
+			urlTrimmed := strings.TrimSpace(item.URL)
+			if slug, ok := strings.CutPrefix(urlTrimmed, "md:"); ok {
+				// Apply the page reader's bounded ASCII slug rules so the saved md:
+				// destination names a lookup key accepted by the protected page route.
+				if slug == "" {
+					httpx.BadRequest(c, "Custom menu item markdown slug cannot be empty (use md:slug format)")
+					return "", false
+				}
+				if len(slug) > 64 || !markdownMenuSlugPattern.MatchString(slug) {
+					httpx.BadRequest(c, "Custom menu item markdown slug contains invalid characters")
+					return "", false
+				}
+			} else {
+				if urlTrimmed == "" {
+					httpx.BadRequest(c, "Custom menu item URL is required (use md:slug for markdown pages)")
+					return "", false
+				}
+				if len(urlTrimmed) > maxMenuItemURLLen {
+					httpx.BadRequest(c, "Custom menu item URL is too long (max 2048 characters)")
+					return "", false
+				}
+				if err := authconfig.ValidateAbsoluteHTTPURL(urlTrimmed); err != nil {
+					httpx.BadRequest(c, "Custom menu item URL must be an absolute http(s) URL or md:<slug>")
+					return "", false
+				}
+			}
+			// Save the recognized trimmed destination so leading whitespace cannot hide
+			// its md: prefix from the later site page and visibility resolution helpers.
+			items[i].URL = urlTrimmed
+			if item.Visibility != "user" && item.Visibility != "admin" {
+				httpx.BadRequest(c, "Custom menu item visibility must be 'user' or 'admin'")
+				return "", false
+			}
+			if len(item.IconSVG) > maxMenuItemIconSVGLen {
+				httpx.BadRequest(c, "Custom menu item icon SVG is too large (max 10KB)")
+				return "", false
+			}
+			// Give a missing item a saved stable ID so later localization can match
+			// its identity after reordering; the next pass still checks within-list uniqueness.
+			if strings.TrimSpace(item.ID) == "" {
+				id, err := generateMenuItemID()
+				if err != nil {
+					httpx.Error(c, http.StatusInternalServerError, "Failed to generate menu item ID")
+					return "", false
+				}
+				items[i].ID = id
+			} else if len(item.ID) > maxMenuItemIDLen {
+				httpx.BadRequest(c, "Custom menu item ID is too long (max 32 characters)")
+				return "", false
+			} else if !menuItemIDPattern.MatchString(item.ID) {
+				httpx.BadRequest(c, "Custom menu item ID contains invalid characters (only a-z, A-Z, 0-9, - and _ are allowed)")
+				return "", false
+			}
+		}
+		// Reject duplicate item IDs after missing IDs are filled so one localized
+		// entry cannot be selected for two submitted menu records during later site preparation.
+		seen := make(map[string]struct{}, len(items))
+		for _, item := range items {
+			if _, exists := seen[item.ID]; exists {
+				httpx.BadRequest(c, "Duplicate custom menu item ID: "+item.ID)
+				return "", false
+			}
+			seen[item.ID] = struct{}{}
+		}
+		menuBytes, err := json.Marshal(items)
+		if err != nil {
+			httpx.BadRequest(c, "Failed to serialize custom menu items")
+			return "", false
+		}
+		customMenuJSON = string(menuBytes)
+	}
+	return customMenuJSON, true
+}
+
+// prepareCustomEndpoints validates endpoint entries and returns their settings
+// JSON, retaining previous JSON for nil input. URL checks trim whitespace while
+// serialization retains the supplied strings, and false reports an HTTP error
+// already written for the first invalid field.
+func prepareCustomEndpoints(c *gin.Context, input *[]sitedto.CustomEndpoint, previous string) (string, bool) {
+	// Bound endpoint counts and untrimmed text before producing their saved JSON records.
+	const (
+		maxCustomEndpoints        = 10
+		maxEndpointNameLen        = 50
+		maxEndpointURLLen         = 2048
+		maxEndpointDescriptionLen = 200
+	)
+
+	customEndpointsJSON := previous
+	if input != nil {
+		endpoints := *input
+		if len(endpoints) > maxCustomEndpoints {
+			httpx.BadRequest(c, "Too many custom endpoints (max 10)")
+			return "", false
+		}
+		for _, ep := range endpoints {
+			if strings.TrimSpace(ep.Name) == "" {
+				httpx.BadRequest(c, "Custom endpoint name is required")
+				return "", false
+			}
+			if len(ep.Name) > maxEndpointNameLen {
+				httpx.BadRequest(c, "Custom endpoint name is too long (max 50 characters)")
+				return "", false
+			}
+			if strings.TrimSpace(ep.Endpoint) == "" {
+				httpx.BadRequest(c, "Custom endpoint URL is required")
+				return "", false
+			}
+			if len(ep.Endpoint) > maxEndpointURLLen {
+				httpx.BadRequest(c, "Custom endpoint URL is too long (max 2048 characters)")
+				return "", false
+			}
+			if err := authconfig.ValidateAbsoluteHTTPURL(strings.TrimSpace(ep.Endpoint)); err != nil {
+				httpx.BadRequest(c, "Custom endpoint URL must be an absolute http(s) URL")
+				return "", false
+			}
+			if len(ep.Description) > maxEndpointDescriptionLen {
+				httpx.BadRequest(c, "Custom endpoint description is too long (max 200 characters)")
+				return "", false
+			}
+		}
+		endpointBytes, err := json.Marshal(endpoints)
+		if err != nil {
+			httpx.BadRequest(c, "Failed to serialize custom endpoints")
+			return "", false
+		}
+		customEndpointsJSON = string(endpointBytes)
+	}
+	return customEndpointsJSON, true
+}
+
+// prepareFooterLinks validates footer groups and returns their settings JSON,
+// retaining previous JSON for nil input. Slash-prefixed destinations are accepted
+// after trimming for validation, while serialization retains supplied whitespace.
+// False reports an HTTP error already written for the first invalid field.
+func prepareFooterLinks(c *gin.Context, input *[]sitedto.FooterLinkGroup, previous string) (string, bool) {
+	// Bound footer columns, nested links, and display text before preparing their stored JSON.
+	const (
+		maxFooterGroups      = 6
+		maxFooterLinksPerGrp = 10
+		maxFooterLabelLen    = 50
+		maxFooterURLLen      = 2048
+	)
+
+	footerLinksJSON := previous
+	if input != nil {
+		groups := *input
+		if len(groups) > maxFooterGroups {
+			httpx.BadRequest(c, "Too many footer link groups (max 6)")
+			return "", false
+		}
+		for _, group := range groups {
+			if strings.TrimSpace(group.Title) == "" {
+				httpx.BadRequest(c, "Footer link group title is required")
+				return "", false
+			}
+			if len(group.Title) > maxFooterLabelLen {
+				httpx.BadRequest(c, "Footer link group title is too long (max 50 characters)")
+				return "", false
+			}
+			if len(group.Links) > maxFooterLinksPerGrp {
+				httpx.BadRequest(c, "Too many links in footer group (max 10)")
+				return "", false
+			}
+			for _, link := range group.Links {
+				if strings.TrimSpace(link.Label) == "" {
+					httpx.BadRequest(c, "Footer link label is required")
+					return "", false
+				}
+				if len(link.Label) > maxFooterLabelLen {
+					httpx.BadRequest(c, "Footer link label is too long (max 50 characters)")
+					return "", false
+				}
+				trimmedURL := strings.TrimSpace(link.URL)
+				if trimmedURL == "" {
+					httpx.BadRequest(c, "Footer link URL is required")
+					return "", false
+				}
+				if len(trimmedURL) > maxFooterURLLen {
+					httpx.BadRequest(c, "Footer link URL is too long (max 2048 characters)")
+					return "", false
+				}
+				// Permit slash-prefixed footer destinations, including protocol-relative text,
+				// while other values must pass the absolute HTTP(S) check before they are serialized.
+				if !strings.HasPrefix(trimmedURL, "/") {
+					if err := authconfig.ValidateAbsoluteHTTPURL(trimmedURL); err != nil {
+						httpx.BadRequest(c, "Footer link URL must be an absolute http(s) URL or a path starting with /")
+						return "", false
+					}
+				}
+			}
+		}
+		groupBytes, err := json.Marshal(groups)
+		if err != nil {
+			httpx.BadRequest(c, "Failed to serialize footer links")
+			return "", false
+		}
+		footerLinksJSON = string(groupBytes)
+	}
+	return footerLinksJSON, true
+}
+
+// mergeNormalizedSettingsFields serializes a module value into flat request
+// field JSON and updates the supplied participant-input map. It checks names
+// against the original raw request when the precomputed field map identifies
+// that name as non-pointer input.
+//
+// Omitted non-pointer values stay excluded even when normalization supplied
+// a default, preventing an unrelated partial request from writing those defaults.
+// Pointer-backed names and supplied non-pointer names receive the normalized
+// module result instead of an earlier decoded value. Encoding or decoding failures
+// return before this loop, while successful assignments mutate the caller's map
+// for the next preparation phase.
 func mergeNormalizedSettingsFields(fields runtimesettings.Fields, normalized any, sentFields map[string]json.RawMessage) error {
 	raw, err := json.Marshal(normalized)
 	if err != nil {
@@ -2049,8 +2274,10 @@ func mergeNormalizedSettingsFields(fields runtimesettings.Fields, normalized any
 	return nil
 }
 
-// rejectDeprecatedAdvancedSchedulerRequestFields 阻止旧版 OpenAI 实验调度字段被静默忽略。
-// 高级调度器已改为分组级开关，设置接口只接受 advanced_scheduler_* 的通用参数。
+// rejectDeprecatedAdvancedSchedulerRequestFields rejects the retired global
+// scheduler switch and openai_advanced_scheduler_ names whenever present. It writes
+// the bad-request reason with the encountered field and returns true; other shared
+// scheduler parameters continue through the handler.
 func rejectDeprecatedAdvancedSchedulerRequestFields(c *gin.Context, sentFields map[string]json.RawMessage) bool {
 	for field := range sentFields {
 		if field == "advanced_scheduler_enabled" || strings.HasPrefix(field, "openai_advanced_scheduler_") {
@@ -2063,7 +2290,9 @@ func rejectDeprecatedAdvancedSchedulerRequestFields(c *gin.Context, sentFields m
 	return false
 }
 
-// mapDingTalkValidateError 将钉钉配置校验错误映射为机器可读的原因码。
+// mapDingTalkValidateError selects the two known application-rule reason codes
+// through errors.Is. Other validation failures use the corporation-config reason,
+// allowing the response to retain the supplied error text alongside a known category.
 func mapDingTalkValidateError(err error) string {
 	switch {
 	case errors.Is(err, authconfig.ErrDingTalkV1AppTypeMismatch):
@@ -2075,10 +2304,10 @@ func mapDingTalkValidateError(err error) string {
 	}
 }
 
-// ensureDingTalkSyncAttributes 在保存 settings 后，按 admin 配置的 (attr key, attr name)
-// 兜底 upsert 对应 user attribute definition：不存在则创建；存在但 name 不同则更新 name
-// （type/options/required 不变）。仅 internal_only + 对应 sync 开关开启时执行。
-// 失败时记录日志，settings 保存继续执行。
+// ensureDingTalkSyncAttributes prepares enabled profile-sync attribute definitions
+// after settings readback under internal_only policy. Missing service or Snapshot
+// skips work. Lookup failure selects creation; update and create failures are
+// logged by each helper, while later enabled attributes can still be attempted.
 func (h *Handler) ensureDingTalkSyncAttributes(ctx context.Context, settings *composite.Snapshot) {
 	if h.userAttributeService == nil || settings == nil {
 		return
@@ -2097,11 +2326,23 @@ func (h *Handler) ensureDingTalkSyncAttributes(ctx context.Context, settings *co
 	}
 }
 
+// ensureUserAttributeDefinition resolves a trimmed nonempty attribute key after
+// the settings commit. A found definition can receive a nonempty changed display
+// name; its existing type, options, and required flags remain as stored.
+//
+// An absent definition or lookup error selects creation using the supplied
+// name, description, type, and enabled flag. Update and creation failures are
+// logged and stop this helper while the saved settings batch remains committed.
+// The caller decides eligibility for profile-sync setup before invoking these
+// separate attribute writes.
 func (h *Handler) ensureUserAttributeDefinition(ctx context.Context, key, name, description string, attrType identity.UserAttributeType) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return
 	}
+	// Lookup failure selects creation, and failed updates or creates are logged
+	// after the settings batch is committed. The caller can continue setting up
+	// the other enabled attributes after this helper returns.
 	existing, err := h.userAttributeService.GetDefinitionByKey(ctx, key)
 	if err == nil && existing != nil {
 		if strings.TrimSpace(name) != "" && existing.Name != name {
@@ -2128,7 +2369,10 @@ func (h *Handler) ensureUserAttributeDefinition(ctx context.Context, key, name, 
 	slog.Info("dingtalk: created user attribute definition", "key", key, "name", name, "type", attrType)
 }
 
-// rejectRemovedPlatformQuotaFields 拒绝已移除的平台额度字段，并在响应中指出字段名。
+// rejectRemovedPlatformQuotaFields rejects the default or provider-specific
+// platform-quota names when they occur in the raw request. It writes the
+// removed-field reason with the encountered name and returns true, including
+// for supplied JSON null.
 func rejectRemovedPlatformQuotaFields(c *gin.Context, fields map[string]json.RawMessage) bool {
 	for name := range fields {
 		if name == "default_platform_quotas" || strings.HasPrefix(name, "auth_source_default_") && strings.HasSuffix(name, "_platform_quotas") {
@@ -2139,7 +2383,9 @@ func rejectRemovedPlatformQuotaFields(c *gin.Context, fields map[string]json.Raw
 	return false
 }
 
-// rejectRemovedUngroupedKeySchedulingField 拒绝未选组调度开关，并提示 API Key 需要绑定分组。
+// rejectRemovedUngroupedKeySchedulingField checks raw presence of the retired
+// ungrouped-key switch. Presence writes its bad-request removal response and returns
+// true for any value; absence returns false before the handler accesses settings.
 func rejectRemovedUngroupedKeySchedulingField(c *gin.Context, fields map[string]json.RawMessage) bool {
 	const field = "allow_ungrouped_key_scheduling"
 	if _, present := fields[field]; !present {

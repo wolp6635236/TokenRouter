@@ -6,7 +6,28 @@ import (
 	"time"
 )
 
-// RotateCredential 为所属用户原地生成新凭据，保留配置、状态和用量。
+// credential_rotation.go replaces the secret on an existing Key for subsequent
+// client requests. The storage compare against the old credential prevents a
+// racing replacement from winning twice, and successful persistence is
+// followed by invalidation of both old and generated cache keys.
+//
+// Managed or differently owned records appear missing to user callers. Team
+// keys first hydrate the assigned member context according to the existing
+// team rules. Cleanup uses a bounded context detached from client cancellation
+// after the write, while database triggers provide durable invalidation
+// delivery when the direct cache calls fail.
+
+// RotateCredential generates and persists a replacement credential for an owned
+// user-visible Key. Missing, managed or differently owned records return a
+// missing-key error, and eligible team records first load their current
+// context.
+//
+// Storage compares the supplied old credential before changing the same record,
+// retaining its configuration and usage fields. Failed writes return before
+// cache invalidation. Successful writes invalidate both secrets with a detached
+// five-second cleanup budget, so client cancellation after persistence does not
+// discard that attempt; cache failures rely on the separate durable outbox
+// protocol.
 // @project-doc docs/domains/identity_and_tenancy.md#api_key_rotation
 func (s *APIKeyService) RotateCredential(ctx context.Context, id, userID int64) (*APIKey, error) {
 	key, err := s.apiKeyRepo.GetByID(ctx, id)
@@ -33,7 +54,8 @@ func (s *APIKeyService) RotateCredential(ctx context.Context, id, userID int64) 
 		return nil, fmt.Errorf("rotate api key credential: %w", err)
 	}
 
-	// 数据库提交后即使客户端断开，也要完成新旧凭据的缓存失效。
+	// The write can commit before the client disconnects. Use a separate
+	// cleanup budget so that cancellation does not skip invalidating either secret.
 	invalidationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	s.InvalidateAuthCacheByKey(invalidationCtx, oldKey)

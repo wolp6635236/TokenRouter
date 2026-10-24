@@ -1,7 +1,5 @@
 package selection
 
-// 免费额度场景覆盖 free_quota.go 的额度过滤与 compatible_ports.go 的负载选择。
-
 import (
 	"context"
 	"testing"
@@ -18,6 +16,10 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
+// TestOpenAIProviderSchedulerLoadBalanceAppliesGrokFreeQuotaGate warms Free
+// OAuth usage above the configured soft threshold. Load-balanced compatible
+// selection then excludes the free provider while retaining the paid provider
+// in the same pool.
 func TestOpenAIProviderSchedulerLoadBalanceAppliesGrokFreeQuotaGate(t *testing.T) {
 	cfg := grokFreeQuotaTestConfig()
 
@@ -34,7 +36,8 @@ func TestOpenAIProviderSchedulerLoadBalanceAppliesGrokFreeQuotaGate(t *testing.T
 	}, cfg)
 	picker := &compatiblePicker{service: svc, stats: schedulercore.NewRuntimeStats(time.Now)}
 
-	// 通过后台刷新预热缓存，使负载均衡路径能够看到软性门禁结果。
+	// Initial unknown usage admits candidates while the tracked background query
+	// runs. Wait for its cached observation before testing load-balanced exclusion.
 	_ = picker.filterGrokFreeQuotaProviders(context.Background(), providers)
 	require.Eventually(t, func() bool {
 		filtered := picker.filterGrokFreeQuotaProviders(context.Background(), providers)
@@ -51,6 +54,8 @@ func TestOpenAIProviderSchedulerLoadBalanceAppliesGrokFreeQuotaGate(t *testing.T
 	require.Equal(t, int64(2), selection.Provider.Record.ID)
 }
 
+// grokFreeQuotaTestConfig enables a ninety-five-percent gate over a rolling
+// twenty-four-hour token window.
 func grokFreeQuotaTestConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Gateway.Grok.FreeQuotaSoftGateEnabled = true
@@ -61,6 +66,8 @@ func grokFreeQuotaTestConfig() *config.Config {
 	return cfg
 }
 
+// providerIDs collects fixture identifiers in the same order as filtered
+// candidates.
 func providerIDs(providers []gatewayprovider.ExecutionProvider) []int64 {
 	ids := make([]int64, 0, len(providers))
 	for i := range providers {

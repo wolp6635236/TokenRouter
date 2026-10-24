@@ -1,7 +1,5 @@
 package localauth
 
-// 本文件覆盖 local_auth.go 的认证读取、qoder/session.go 的会话建立与 qoder/client.go 的流式请求。
-
 import (
 	"context"
 	"encoding/json"
@@ -16,7 +14,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/qoder"
 )
 
-// TestRealAPI 使用本地认证调用 Qoder 流式 API。
+// The real-API scenario imports a local global-site identity and sends one
+// generated streaming payload. It runs only with the opt-in flag, then observes
+// nonempty visible text while a separate collection context bounds response-body
+// reading after dispatch.
+
+// TestRealAPI uses local global credentials to request one real Qoder response
+// when explicitly enabled. It skips absent local data and checks nonempty
+// collected text, with a separate context bounding collection after request
+// dispatch.
 func TestRealAPI(t *testing.T) {
 	if os.Getenv("QODER_RUN_REAL_API_TESTS") != "1" {
 		t.Skip("set QODER_RUN_REAL_API_TESTS=1 to run real Qoder API integration test")
@@ -80,6 +86,9 @@ func TestRealAPI(t *testing.T) {
 		},
 	}
 
+	// The fixture uses JSON-supported strings, numbers, and container values.
+	// Marshaling therefore supplies its request or response representation before
+	// the client behavior is exercised.
 	bodyJSON, _ := json.Marshal(payload)
 	client := qoder.NewClient(qoder.APIBaseURL)
 
@@ -106,11 +115,23 @@ func TestRealAPI(t *testing.T) {
 	}
 }
 
-// collectStream 在请求结束或超时前收集文本事件。
+// collectStream collects visible events until completion, channel closure, or
+// context cancellation. The caller supplies a usable response and collection
+// budget. A goroutine closes the body after cancellation so blocked reads can
+// end.
+//
+// StreamEvents owns its scanner channel and body cleanup, while this helper
+// stops collecting on DONE or returns false when cancellation is observed.
+// Stream error events are logged and scanning continues; channel closure reports
+// true, so that flag represents either a completion marker or exhausted event
+// delivery.
 func collectStream(ctx context.Context, resp *http.Response, t *testing.T) ([]string, bool) {
 	t.Helper()
 	var textParts []string
 
+	// StreamEvents can be blocked reading upstream while this collection budget
+	// expires. Closing the response body releases that read even before another
+	// event arrives.
 	go func() {
 		<-ctx.Done()
 		_ = resp.Body.Close()

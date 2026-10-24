@@ -1,21 +1,28 @@
 package payment
 
-// 本场景检查 billing/plan_validation.go 的套餐有效期换算，checkout_draft.go 使用该换算生成订单的套餐快照。
-
 import (
 	"testing"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 )
 
+// Checkout plan snapshots record subscription validity as a whole day count
+// before issuance. These cases exercise billing/plan_validation.go conversion
+// as used by checkout_draft.go, where week and month units become fixed day
+// durations before the plan snapshot is saved.
+
+// TestComputeValidityDaysSupportsSingularAndPluralUnits supplies day, week,
+// and month spellings used by checkout plan snapshots. Billing conversion
+// returns the expected whole day count for each supplied singular or plural
+// unit.
 func TestComputeValidityDaysSupportsSingularAndPluralUnits(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		days int
-		unit string
-		want int
+		name string // case diagnostic name
+		days int    // supplied validity period count
+		unit string // supplied validity unit spelling
+		want int    // expected whole day count
 	}{
 		{name: "days", days: 1, unit: "days", want: 1},
 		{name: "week", days: 1, unit: "week", want: 7},

@@ -28,6 +28,9 @@ import (
 	upstreamopenai "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
+// TestImagesURLToB64JSONEnabled checks missing providers and differently
+// typed extra settings. Backfill is enabled by the tested boolean true value,
+// while missing, string and false settings leave it disabled.
 func TestImagesURLToB64JSONEnabled(t *testing.T) {
 	require.False(t, gatewayprovider.ImagesURLToB64JSONEnabled(nil))
 	require.False(t, gatewayprovider.ImagesURLToB64JSONEnabled(&gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation}}))
@@ -36,17 +39,21 @@ func TestImagesURLToB64JSONEnabled(t *testing.T) {
 	require.True(t, gatewayprovider.ImagesURLToB64JSONEnabled(b64BackfillProvider(true)))
 }
 
+// TestBackfillOpenAIImagesB64JSON mixes eligible URL entries, existing
+// Base64, data URIs and failed downloads under response-format restrictions.
+// Expected fields and download counts protect selective filling and retention
+// of original item metadata.
 func TestBackfillOpenAIImagesB64JSON(t *testing.T) {
 	wantB64 := base64.StdEncoding.EncodeToString(b64BackfillPNGBytes)
 
 	tests := []struct {
-		name          string
-		enabled       bool
-		parsed        *media.ImageRequest
-		body          string
-		upstream      *auxiliaryHTTPRecorder
-		wantB64       []string
-		wantDownloads int
+		name          string                 // backfill eligibility case label
+		enabled       bool                   // provider backfill enable flag
+		parsed        *media.ImageRequest    // client image format restrictions
+		body          string                 // supplied upstream image JSON
+		upstream      *auxiliaryHTTPRecorder // configured download response fixture
+		wantB64       []string               // expected per-item Base64 values
+		wantDownloads int                    // expected HTTP download count
 	}{
 		{
 			name:          "开关关闭时原样返回",
@@ -158,7 +165,8 @@ func TestBackfillOpenAIImagesB64JSON(t *testing.T) {
 				require.Equal(t, want, items[i].Get("b64_json").String(), "data.%d.b64_json", i)
 			}
 			require.Len(t, tt.upstream.requests, tt.wantDownloads)
-			// b64_json 更新后，其他字段保持原样。
+			// Compare original item fields besides Base64 and the creation value, since
+			// delivery filling should retain upstream URL, prompt and other supplied metadata.
 			original := gjson.Parse(tt.body)
 			original.Get("data").ForEach(func(key, item gjson.Result) bool {
 				item.ForEach(func(field, value gjson.Result) bool {
@@ -175,6 +183,10 @@ func TestBackfillOpenAIImagesB64JSON(t *testing.T) {
 	}
 }
 
+// TestBackfillOpenAIImagesB64JSON_DownloadRequestShape downloads a signed
+// escaped URL through the selected provider proxy. The GET retains URL
+// spelling, omits authentication and cookies, and carries a deadline plus
+// public-host redirect policy.
 func TestBackfillOpenAIImagesB64JSON_DownloadRequestShape(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: b64BackfillImageResponse(http.StatusOK, "image/png", b64BackfillPNGBytes)}
 	svc := newImagesFixture(imagesFixtureInputs{transport: upstream})
@@ -197,11 +209,15 @@ func TestBackfillOpenAIImagesB64JSON_DownloadRequestShape(t *testing.T) {
 	require.Equal(t, "http://127.0.0.1:7890", upstream.lastProxyURL)
 	_, hasDeadline := req.Context().Deadline()
 	require.True(t, hasDeadline)
-	// 下载跟随重定向，并逐跳检查目的地是否解析为公网地址。
+	// Download requests permit redirects and require public destinations at every hop.
 	require.True(t, upstreamcore.HTTPUpstreamPublicHostsOnly(req.Context()))
 	require.False(t, upstreamcore.HTTPUpstreamRedirectsDisabled(req.Context()))
 }
 
+// TestBackfillOpenAIImagesB64JSON_RejectsPrivateHosts compares local and
+// private literals with a public hostname under the same HTTP configuration.
+// Blocked destinations produce no download, while the public control case
+// receives Base64 data.
 func TestBackfillOpenAIImagesB64JSON_RejectsPrivateHosts(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: b64BackfillImageResponse(http.StatusOK, "image/png", b64BackfillPNGBytes)}
 	svc := newImagesFixture(imagesFixtureInputs{allowHTTP: true, transport: upstream})
@@ -227,18 +243,21 @@ func TestBackfillOpenAIImagesB64JSON_RejectsPrivateHosts(t *testing.T) {
 	}
 	require.Empty(t, upstream.requests, "private destinations must never be requested")
 
-	// 同一配置下公网主机下载成功，测试覆盖目的地地址检查。
+	// The same configuration accepts a public hostname, isolating the host validation check.
 	got := svc.backfillOpenAIImagesB64JSON(context.Background(), provider, nil, []byte(`{"created":1,"data":[{"url":"http://cdn.example.com/a.png"}]}`))
 	require.Equal(t, base64.StdEncoding.EncodeToString(b64BackfillPNGBytes), gjson.GetBytes(got, "data.0.b64_json").String())
 	require.Len(t, upstream.requests, 1)
 }
 
+// TestIsBackfillImageContent supplies recognized image signatures and
+// unsupported binary or text bodies. Byte sniffing accepts the tested PNG,
+// JPEG, WebP and GIF signatures and rejects the other fixture formats.
 func TestIsBackfillImageContent(t *testing.T) {
 	webp := append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 "), make([]byte, 8)...)
 	tests := []struct {
-		name string
-		data []byte
-		want bool
+		name string // content signature case label
+		data []byte // supplied content sniffing bytes
+		want bool   // expected image-signature acceptance
 	}{
 		{name: "png", data: b64BackfillPNGBytes, want: true},
 		{name: "jpeg", data: []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}, want: true},
@@ -258,6 +277,9 @@ func TestIsBackfillImageContent(t *testing.T) {
 	}
 }
 
+// TestBackfillOpenAIImagesB64JSON_NonObjectBodies supplies malformed or
+// unsupported image-list shapes, including an empty list and scalar items.
+// Each tested body stays unchanged and causes no upstream download.
 func TestBackfillOpenAIImagesB64JSON_NonObjectBodies(t *testing.T) {
 	upstream := &auxiliaryHTTPRecorder{resp: b64BackfillImageResponse(http.StatusOK, "image/png", b64BackfillPNGBytes)}
 	svc := newImagesFixture(imagesFixtureInputs{transport: upstream})
@@ -270,7 +292,10 @@ func TestBackfillOpenAIImagesB64JSON_NonObjectBodies(t *testing.T) {
 	require.Empty(t, upstream.requests)
 }
 
-// TestBackfillOpenAIImagesB64JSON_ForkBoundaries 验证非 Images 同步交付、非法响应和非 OpenAI API Key 提供商都不得触发额外网络请求。
+// TestBackfillOpenAIImagesB64JSON_ForkBoundaries combines streaming,
+// malformed JSON, unsupported provider identity and a blocked URL policy. All
+// tested ineligible requests retain their original body and issue no
+// downloads.
 func TestBackfillOpenAIImagesB64JSON_ForkBoundaries(t *testing.T) {
 	body := []byte(`{"data":[{"url":"https://cdn.example.com/a.png"}]}`)
 	upstream := &auxiliaryHTTPRecorder{}
@@ -290,7 +315,10 @@ func TestBackfillOpenAIImagesB64JSON_ForkBoundaries(t *testing.T) {
 	require.Empty(t, upstream.requests)
 }
 
-// TestBackfillOpenAIImagesB64JSON_SizeAndDataURLValidation 验证超限下载及伪装为图片的 data URI 都保持原始结果，不能影响主请求成功。
+// TestBackfillOpenAIImagesB64JSON_SizeAndDataURLValidation supplies oversized
+// downloaded bytes and invalid inline image data. The response remains
+// unchanged, with exactly the one attempted HTTP download recorded by the
+// fixture.
 func TestBackfillOpenAIImagesB64JSON_SizeAndDataURLValidation(t *testing.T) {
 	oversized := make([]byte, upstreamopenai.OpenAIImageMaxDownloadBytes+1)
 	copy(oversized, b64BackfillPNGBytes)
@@ -306,7 +334,10 @@ func TestBackfillOpenAIImagesB64JSON_SizeAndDataURLValidation(t *testing.T) {
 	require.Len(t, upstream.requests, 1)
 }
 
-// TestBackfillOpenAIImagesB64JSON_PreservesBillingMetadata 验证下载图片可以补全响应，但不得改变 fork 已按原始响应确定的计费尺寸和用量。
+// TestBackfillOpenAIImagesB64JSON_PreservesBillingMetadata fills a URL entry
+// with a downloaded image of different dimensions. Usage and output count
+// still come from the pre-backfill response, with no newly inferred size in
+// those observations.
 func TestBackfillOpenAIImagesB64JSON_PreservesBillingMetadata(t *testing.T) {
 	var img bytes.Buffer
 	require.NoError(t, png.Encode(&img, image.NewNRGBA(image.Rect(0, 0, 2, 2))))
@@ -329,6 +360,10 @@ func TestBackfillOpenAIImagesB64JSON_PreservesBillingMetadata(t *testing.T) {
 	require.Equal(t, base64.StdEncoding.EncodeToString(img.Bytes()), gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
 
+// TestCollectOpenAIImagePointers_RecognizesDirectAssets mixes inline data, a
+// signed download URL and a file-service pointer under one prompt. Collection
+// retains all three identities and associates the expected prompt with the
+// inline item.
 func TestCollectOpenAIImagePointers_RecognizesDirectAssets(t *testing.T) {
 	items := upstreamopenai.CollectOpenAIImagePointers([]byte(`{
 		"revised_prompt": "cat astronaut",
@@ -358,6 +393,10 @@ func TestCollectOpenAIImagePointers_RecognizesDirectAssets(t *testing.T) {
 	require.True(t, sawPointer)
 }
 
+// TestResolveOpenAIImageBytes_PrefersInlineBase64 resolves inline encoded
+// bytes with no download client. The helper returns the decoded ABC payload
+// from its data-URI input, exercising byte resolution independently of
+// content sniffing.
 func TestResolveOpenAIImageBytes_PrefersInlineBase64(t *testing.T) {
 	data, err := upstreamopenai.ResolveOpenAIImageBytes(context.Background(), nil, nil, "", upstreamopenai.ImagePointerInfo{
 		B64JSON: "data:image/png;base64,QUJD",
@@ -366,7 +405,11 @@ func TestResolveOpenAIImageBytes_PrefersInlineBase64(t *testing.T) {
 	require.Equal(t, []byte("ABC"), data)
 }
 
+// TestNewOpenAIImageStatusError_UsesProvidedReadLimit places an error message
+// beyond the ordinary short read budget. The supplied larger limit retains
+// the complete response body and exposes its diagnostic message.
 func TestNewOpenAIImageStatusError_UsesProvidedReadLimit(t *testing.T) {
+	// Put the diagnostic beyond the shorter budget to expose ignored caller limits.
 	padding := strings.Repeat("x", int(int64(512<<10))+1024)
 	body := fmt.Sprintf(`{"error":{"padding":"%s","message":"diagnostic-marker"}}`, padding)
 	resp := &req.Response{Response: &http.Response{

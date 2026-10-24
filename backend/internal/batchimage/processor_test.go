@@ -15,14 +15,24 @@ import (
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 )
 
+// Provider result rows can use different identity and inline-image spellings
+// or omit expected custom IDs. The parser and index fixtures protect
+// metadata-only storage, custom-ID reconciliation and stage progression,
+// while transient polling failures receive another visit and confirmed
+// cancellation returns held funds.
+
+// TestParseBatchImageResultLine_SuccessShapes parses compatible custom-ID and
+// candidate shapes, including competing envelopes and malformed parts. It
+// checks counts, first MIME, extensions and physical line metadata while the
+// parsed value omits encoded payload content.
 func TestParseBatchImageResultLine_SuccessShapes(t *testing.T) {
 	tests := []struct {
-		name      string
-		line      string
-		wantID    string
-		wantMime  string
-		wantExt   string
-		wantCount int
+		name      string // scenario display name
+		line      string // provider JSON input
+		wantID    string // expected custom identity
+		wantMime  string // expected image MIME
+		wantExt   string // expected filename extension
+		wantCount int    // expected image count
 	}{
 		{
 			name:   "gemini_inlineData",
@@ -85,11 +95,15 @@ func TestParseBatchImageResultLine_SuccessShapes(t *testing.T) {
 	}
 }
 
+// TestParseBatchImageResultLine_FailureShapes supplies status, error, quota
+// and text-only result rows. The parser returns failed outcomes with the
+// expected stable category, protecting the item diagnostics later exposed by
+// public listings.
 func TestParseBatchImageResultLine_FailureShapes(t *testing.T) {
 	tests := []struct {
-		name     string
-		line     string
-		wantCode string
+		name     string // scenario display name
+		line     string // provider JSON input
+		wantCode string // expected failure category
 	}{
 		{name: "status_row", line: `{"key":"cover_001","status":{"code":3,"message":"invalid argument: bad prompt"}}`, wantCode: "INVALID_ARGUMENT"},
 		{name: "error_row", line: `{"key":"cover_002","error":{"code":"SAFETY","message":"blocked by safety policy"}}`, wantCode: "SAFETY_BLOCKED"},
@@ -107,12 +121,20 @@ func TestParseBatchImageResultLine_FailureShapes(t *testing.T) {
 	}
 }
 
+// TestParseBatchImageResultLine_RejectsMissingCustomIDAndDoesNotLeakData
+// submits an image-bearing row with no usable identity. It checks the
+// indexing parse category and confirms the diagnostic omits the encoded
+// sample included in that input.
 func TestParseBatchImageResultLine_RejectsMissingCustomIDAndDoesNotLeakData(t *testing.T) {
 	_, err := batchimage.ParseBatchImageResultLine([]byte(`{"response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"`+batchImageTestData+`"}}]}}]}}`), 3)
 	require.ErrorIs(t, err, batchimage.ErrBatchImageIndexParseFailed)
 	require.NotContains(t, err.Error(), batchImageTestData)
 }
 
+// TestBatchImageResultIndexer_WritesCountsAndReplacesItems indexes a
+// successful and failed row, then changes output to an unknown identity. It
+// checks replacement counts, metadata-only rows and missing failures for the
+// previously stored custom IDs.
 func TestBatchImageResultIndexer_WritesCountsAndReplacesItems(t *testing.T) {
 	output := `{"key":"ok","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"` + batchImageTestData + `"}}]}}]}}` + "\n" + `{"key":"bad","error":{"code":"SAFETY","message":"blocked by safety policy"}}` + "\n"
 	repo := newFakeBatchImageRepository()
@@ -133,8 +155,8 @@ func TestBatchImageResultIndexer_WritesCountsAndReplacesItems(t *testing.T) {
 	require.Equal(t, batchimage.BatchImageCounts{SuccessCount: 1, FailCount: 1}, repo.counts[job.BatchID])
 	require.NotContains(t, fmt.Sprintf("%+v", repo.items[job.BatchID]), batchImageTestData)
 
-	// 重新索引时与现有 custom_id 集对账：未知的 "ok2" 被丢弃，
-	// 输出中缺失的 ok/bad 补为 PROVIDER_RESULT_MISSING 失败记录。
+	// Reindex against existing custom IDs: discard unknown "ok2" and record missing
+	// "ok" and "bad" as PROVIDER_RESULT_MISSING failures.
 	platform.result = `{"key":"ok2","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/webp","data":"` + batchImageTestData + `"}}]}}]}}` + "\n"
 	result, err = (&batchimage.ResultIndexer{Repo: repo, Observe: resultObserve}).Index(context.Background(), job, batchimageprovider.BindProvider(platform, providercore.CloneRecord(&providercore.Record{})))
 	require.NoError(t, err)
@@ -150,17 +172,21 @@ func TestBatchImageResultIndexer_WritesCountsAndReplacesItems(t *testing.T) {
 	}
 }
 
+// TestBatchImageResultIndexer_ReconcilesMissingAndUnknownCustomIDs seeds
+// three submission placeholders and returns one unknown extra provider row.
+// The index retains only expected IDs, records the omitted result as failure
+// and reconciles totals to the submitted count.
 func TestBatchImageResultIndexer_ReconcilesMissingAndUnknownCustomIDs(t *testing.T) {
 	repo := newFakeBatchImageRepository()
 	outputRef := "files/output"
 	job := &batchimage.BatchImageJob{BatchID: "imgbatch_reconcile", ProviderOutputRef: &outputRef, ItemCount: 3}
-	// 预创建提交时的 pending 条目（提交流程的行为）。
+	// Seed pending items as the submission flow does.
 	require.NoError(t, repo.BulkCreateBatchImageItems(context.Background(), []batchimage.CreateBatchImageItemParams{
 		{JobID: job.BatchID, CustomID: "a", Status: batchimage.BatchImageItemStatusPending},
 		{JobID: job.BatchID, CustomID: "b", Status: batchimage.BatchImageItemStatusPending},
 		{JobID: job.BatchID, CustomID: "c", Status: batchimage.BatchImageItemStatusPending},
 	}))
-	// platform 输出：a 成功，b 失败，c 漏掉，多出未知的 x。
+	// Provider output succeeds for a, fails for b, omits c, and adds unknown x.
 	output := strings.Join([]string{
 		`{"key":"a","response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"` + batchImageTestData + `"}}]}}]}}`,
 		`{"key":"b","error":{"code":"SAFETY","message":"blocked"}}`,
@@ -183,15 +209,19 @@ func TestBatchImageResultIndexer_ReconcilesMissingAndUnknownCustomIDs(t *testing
 	require.Equal(t, batchimage.BatchImageItemStatusFailed, byID["b"].Status)
 	require.Equal(t, batchimage.BatchImageItemStatusFailed, byID["c"].Status)
 	require.Equal(t, "PROVIDER_RESULT_MISSING", batchimage.BatchImageDerefString(byID["c"].ErrorCode))
-	// 对账后 success+fail == item_count，结算计数校验可通过。
+	// Reconciliation restores the success+fail == item_count settlement invariant.
 	require.Equal(t, job.ItemCount, result.SuccessCount+result.FailCount)
 }
 
+// TestBatchImageResultIndexer_EmptyInvalidAndDuplicateOutput feeds empty,
+// malformed and duplicate-identity output into a fresh repository. Each
+// expected indexing error leaves result storage empty, protecting full-scan
+// validation before any replacement is published.
 func TestBatchImageResultIndexer_EmptyInvalidAndDuplicateOutput(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
-		want error
+		name string // scenario display name
+		body string // provider result input
+		want error  // expected observable result
 	}{
 		{name: "empty", body: "\n", want: batchimage.ErrBatchImageIndexNoResultLines},
 		{name: "invalid_json", body: "{bad-json}\n", want: batchimage.ErrBatchImageIndexParseFailed},
@@ -207,6 +237,10 @@ func TestBatchImageResultIndexer_EmptyInvalidAndDuplicateOutput(t *testing.T) {
 	}
 }
 
+// TestBatchImageProviderProcessor_ValidationAndTerminalCases uses terminal
+// jobs and missing backend, provider or upstream-name fixtures. It checks
+// terminal completion without polling and the specific validation errors
+// required before provider execution can resume.
 func TestBatchImageProviderProcessor_ValidationAndTerminalCases(t *testing.T) {
 	ctx := context.Background()
 	providerID := int64(10)
@@ -244,6 +278,10 @@ func TestBatchImageProviderProcessor_ValidationAndTerminalCases(t *testing.T) {
 	})
 }
 
+// TestBatchImageProviderProcessor_StatusFlow polls queued, running,
+// successful, failed and cancelled provider observations. It checks retry
+// intervals, stored state edges, output-reference persistence and the release
+// action used after confirmed cancellation.
 func TestBatchImageProviderProcessor_StatusFlow(t *testing.T) {
 	ctx := context.Background()
 	providerID := int64(10)
@@ -334,12 +372,19 @@ func TestBatchImageProviderProcessor_StatusFlow(t *testing.T) {
 	})
 }
 
+// TestCanTransitionBatchImageJob_PR5DirectIndexing checks status edges for a
+// provider already complete at the first observation. Submission may enter
+// indexing or failure directly, and indexing retains its failure transition.
 func TestCanTransitionBatchImageJob_PR5DirectIndexing(t *testing.T) {
 	require.True(t, batchimage.CanTransitionBatchImageJob(batchimage.BatchImageJobStatusSubmitted, batchimage.BatchImageJobStatusIndexing))
 	require.True(t, batchimage.CanTransitionBatchImageJob(batchimage.BatchImageJobStatusSubmitted, batchimage.BatchImageJobStatusFailed))
 	require.True(t, batchimage.CanTransitionBatchImageJob(batchimage.BatchImageJobStatusIndexing, batchimage.BatchImageJobStatusFailed))
 }
 
+// newTestBatchImageProcessor binds a fake polling backend to the supplied
+// repository and an explicit indexer. The fixture uses production
+// ResultAccess resolution while leaving funding absent unless a test injects
+// its store.
 func newTestBatchImageProcessor(repo *fakeBatchImageRepository, platform *fakeProcessorProvider) *batchimage.ProviderProcessor {
 	return newBatchProcessorFixture(repo,
 		batchimage.NewRegistry[batchimageprovider.BatchImageProvider](platform),

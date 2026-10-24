@@ -9,6 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestAnthropicToResponsesResponse_CacheTokensUseOpenAIInputSemantics supplies
+// uncached, cache-read, cache-write, and output usage. Assertions check summed
+// input/total counts, retained output, and the cached-token detail value.
 func TestAnthropicToResponsesResponse_CacheTokensUseOpenAIInputSemantics(t *testing.T) {
 	resp := &AnthropicResponse{
 		ID:    "msg_cache",
@@ -27,7 +30,7 @@ func TestAnthropicToResponsesResponse_CacheTokensUseOpenAIInputSemantics(t *test
 
 	out := AnthropicToResponsesResponse(testRuntime(), resp)
 	require.NotNil(t, out.Usage)
-	// 3318（非缓存）+ 50688（cache read）+ 200（cache creation）= 54206
+	// 3318 uncached + 50688 cache read + 200 cache creation = 54206.
 	assert.Equal(t, 54206, out.Usage.InputTokens)
 	assert.Equal(t, 123, out.Usage.OutputTokens)
 	assert.Equal(t, 54329, out.Usage.TotalTokens)
@@ -35,6 +38,9 @@ func TestAnthropicToResponsesResponse_CacheTokensUseOpenAIInputSemantics(t *test
 	assert.Equal(t, 50688, out.Usage.InputTokensDetails.CachedTokens)
 }
 
+// TestAnthropicToResponsesResponse_NoCacheTokens converts usage containing
+// uncached input and output alone. Input/output/total must retain those
+// counts, and cache-read detail remains nil in the returned struct.
 func TestAnthropicToResponsesResponse_NoCacheTokens(t *testing.T) {
 	resp := &AnthropicResponse{
 		ID:    "msg_nocache",
@@ -57,10 +63,14 @@ func TestAnthropicToResponsesResponse_NoCacheTokens(t *testing.T) {
 	assert.Nil(t, out.Usage.InputTokensDetails)
 }
 
+// TestAnthropicEventToResponses_CacheTokensRoundTripFromMessageStart supplies
+// initial uncached/read/write counters and a later output count. The terminal
+// event must retain normalized input/total usage and the inspected cache-read
+// detail.
 func TestAnthropicEventToResponses_CacheTokensRoundTripFromMessageStart(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 
-	// message_start 会在初始 Usage 对象里携带缓存字段。
+	// message_start supplies the initial cache counters.
 	AnthropicEventToResponsesEvents(testRuntime(), &AnthropicStreamEvent{
 		Type: "message_start",
 		Message: &AnthropicResponse{
@@ -83,7 +93,7 @@ func TestAnthropicEventToResponses_CacheTokensRoundTripFromMessageStart(t *testi
 
 	events := AnthropicEventToResponsesEvents(testRuntime(), &AnthropicStreamEvent{Type: "message_stop"}, state)
 
-	// 终止 response.completed 事件包含按 OpenAI 规则计算的 usage。
+	// response.completed includes usage normalized to OpenAI totals.
 	var completed *ResponsesStreamEvent
 	for i := range events {
 		if events[i].Type == "response.completed" {
@@ -93,7 +103,7 @@ func TestAnthropicEventToResponses_CacheTokensRoundTripFromMessageStart(t *testi
 	require.NotNil(t, completed, "response.completed event must be emitted")
 	require.NotNil(t, completed.Response)
 	require.NotNil(t, completed.Response.Usage)
-	// 12（非缓存）+ 9（cache read）+ 3（cache creation）= 24
+	// 12 uncached + 9 cache read + 3 cache creation = 24.
 	assert.Equal(t, 24, completed.Response.Usage.InputTokens)
 	assert.Equal(t, 7, completed.Response.Usage.OutputTokens)
 	assert.Equal(t, 31, completed.Response.Usage.TotalTokens)
@@ -101,6 +111,10 @@ func TestAnthropicEventToResponses_CacheTokensRoundTripFromMessageStart(t *testi
 	assert.Equal(t, 9, completed.Response.Usage.InputTokensDetails.CachedTokens)
 }
 
+// TestAnthropicEventToResponses_CacheTokensFromMessageDelta supplies input at
+// creation and cache/output counts later. The terminal snapshot must add the
+// retained input and final cache buckets, with the asserted output/detail
+// values.
 func TestAnthropicEventToResponses_CacheTokensFromMessageDelta(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 
@@ -113,7 +127,9 @@ func TestAnthropicEventToResponses_CacheTokensFromMessageDelta(t *testing.T) {
 		},
 	}, state)
 
-	// 部分上游只在最终 message_delta 上输出缓存字段。
+	// Withhold initial cache counts in this fixture so terminal aggregation
+	// depends on the later usage observation while retaining the initial uncached
+	// input.
 	AnthropicEventToResponsesEvents(testRuntime(), &AnthropicStreamEvent{
 		Type: "message_delta",
 		Usage: &AnthropicUsage{
@@ -133,15 +149,16 @@ func TestAnthropicEventToResponses_CacheTokensFromMessageDelta(t *testing.T) {
 	}
 	require.NotNil(t, completed)
 	require.NotNil(t, completed.Response.Usage)
-	// 20（非缓存）+ 11（cache read）+ 4（cache creation）= 35
+	// 20 uncached + 11 cache read + 4 cache creation = 35.
 	assert.Equal(t, 35, completed.Response.Usage.InputTokens)
 	assert.Equal(t, 8, completed.Response.Usage.OutputTokens)
 	require.NotNil(t, completed.Response.Usage.InputTokensDetails)
 	assert.Equal(t, 11, completed.Response.Usage.InputTokensDetails.CachedTokens)
 }
 
-// TestAnthropicEventToResponses_TextEmitsContentPart 检查每个文本分片先发送 content_part.added，再发送 output_text.delta。
-// SDK 在收到增量前需要先创建对应的内容项。
+// TestAnthropicEventToResponses_TextEmitsContentPart feeds one text block
+// split into two deltas. It checks part-added and first-delta presence/order
+// plus a part-done event, without decoding terminal payload content.
 func TestAnthropicEventToResponses_TextEmitsContentPart(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 	state.Model = "claude-sonnet-4-5"
@@ -187,7 +204,9 @@ func TestAnthropicEventToResponses_TextEmitsContentPart(t *testing.T) {
 	}
 }
 
-// TestAnthropicEventToResponses_DoneEventsCarryFullText 验证完成事件携带完整文本。
+// TestAnthropicEventToResponses_DoneEventsCarryFullText stops a text block
+// after two fragments. Both text-done and part-done events must appear with
+// the complete concatenated text in their inspected fields.
 func TestAnthropicEventToResponses_DoneEventsCarryFullText(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 	state.Model = "claude-sonnet-4-5"
@@ -225,7 +244,9 @@ func TestAnthropicEventToResponses_DoneEventsCarryFullText(t *testing.T) {
 	}
 }
 
-// TestAnthropicEventToResponses_CompletedCarriesOutput 检查终止事件携带完整输出，供 SDK 和追踪组件重建响应。
+// TestAnthropicEventToResponses_CompletedCarriesOutput completes a single text
+// stream. Its terminal snapshot must contain a message with content and the
+// expected text value in the first part.
 func TestAnthropicEventToResponses_CompletedCarriesOutput(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 	state.Model = "claude-sonnet-4-5"
@@ -263,8 +284,10 @@ func TestAnthropicEventToResponses_CompletedCarriesOutput(t *testing.T) {
 	}
 }
 
-// TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments 验证累积后的
-// 函数参数会进入 output_item.done 与 response.completed。
+// TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments splits
+// function JSON across two deltas and closes the stream. The terminal output
+// must contain a function call with its complete argument text and selected
+// name.
 func TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 	state.Model = "claude-sonnet-4-5"
@@ -309,10 +332,10 @@ func TestAnthropicEventToResponses_ToolCallCompletedCarriesArguments(t *testing.
 	}
 }
 
-// TestAnthropicEventToResponses_ThinkingAfterTextKeepsMessageOutput 检查 text 后到达的 thinking 块先关闭 message item。
-// text 块结束后 message 仍可接收后续文本，thinking 到来时需要将累计文本写入 Outputs 和 output_item.done。
-// 直接替换 CurrentItemType/CurrentItemID 会使 completed 丢失助手文本。
-// 网关透传的 interleaved-thinking-2025-05-14 支持这种先 text 后 thinking 的顺序。
+// TestAnthropicEventToResponses_ThinkingAfterTextKeepsMessageOutput places
+// thinking after a stopped text block. The terminal snapshot must retain
+// message then reasoning outputs, the message text, and two distinct added-
+// item indexes.
 func TestAnthropicEventToResponses_ThinkingAfterTextKeepsMessageOutput(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 	state.Model = "claude-sonnet-4-5"
@@ -355,7 +378,7 @@ func TestAnthropicEventToResponses_ThinkingAfterTextKeepsMessageOutput(t *testin
 		t.Errorf("output[1].type = %q, want reasoning", outputs[1].Type)
 	}
 
-	// message 与 reasoning 使用不同的 output_index。
+	// Message and reasoning items need distinct output indexes.
 	var addedIndexes []int
 	for _, evt := range events {
 		if evt.Type == "response.output_item.added" {
@@ -367,8 +390,10 @@ func TestAnthropicEventToResponses_ThinkingAfterTextKeepsMessageOutput(t *testin
 	}
 }
 
-// TestAnthropicEventToResponses_MultipleTextBlocksAdvanceContentIndex 检查同一消息的各文本块使用不同的 content_index。
-// OpenAI SDK 按 content_index 累积文本，重复索引会覆盖前一个块。
+// TestAnthropicEventToResponses_MultipleTextBlocksAdvanceContentIndex feeds
+// two stopped text blocks under one message. It checks added-part indexes
+// zero/one and groups delta text by those indexes to retain both
+// contributions.
 func TestAnthropicEventToResponses_MultipleTextBlocksAdvanceContentIndex(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 	state.Model = "claude-sonnet-4-5"
@@ -401,7 +426,7 @@ func TestAnthropicEventToResponses_MultipleTextBlocksAdvanceContentIndex(t *test
 		t.Errorf("content_part.added indexes = %v, want [0 1]", partAdded)
 	}
 
-	// delta/done 使用所属分片的索引，SDK 按此索引追加文本。
+	// Group the asserted delta text by the emitted content position.
 	byIndex := map[int]string{}
 	for _, evt := range events {
 		if evt.Type == "response.output_text.delta" {
@@ -413,11 +438,17 @@ func TestAnthropicEventToResponses_MultipleTextBlocksAdvanceContentIndex(t *test
 	}
 }
 
-// TestAnthropicEventToResponses_ItemLifecycleIsBalanced 检查 output_item.added 与 output_item.done 成对出现，终止事件包含所有已发布的输出项。
+// TestAnthropicEventToResponses_ItemLifecycleIsBalanced covers five
+// text/thinking/tool block orders. Added/done counts balance per item ID, and
+// terminal output IDs must match announcement order with one output per added
+// item.
 func TestAnthropicEventToResponses_ItemLifecycleIsBalanced(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		blocks []*AnthropicContentBlock
+		name string // block-order fixture case label
+		// blocks supplies one sequential block lifecycle per entry. The fixture
+		// injects matching deltas and stops so identity balance can be compared with
+		// terminal order.
+		blocks []*AnthropicContentBlock // ordered source block starts
 	}{
 		{"text then thinking", []*AnthropicContentBlock{{Type: "text"}, {Type: "thinking"}}},
 		{"thinking then text", []*AnthropicContentBlock{{Type: "thinking"}, {Type: "text"}}},
@@ -496,8 +527,9 @@ func TestAnthropicEventToResponses_ItemLifecycleIsBalanced(t *testing.T) {
 	}
 }
 
-// TestResponsesEventToSSE_CustomToolCallItemCarriesAllFields 验证序列化层（MarshalJSON → responsesItemWire）单独走白名单重组，事件结构体上的字段
-// 齐全不代表落到 SSE 线上的 JSON 齐全，必须在 wire 层再断言一次。
+// TestResponsesEventToSSE_CustomToolCallItemCarriesAllFields serializes one
+// completed custom item. The frame must contain its client kind, call ID,
+// name, and input strings in the inspected JSON fields.
 func TestResponsesEventToSSE_CustomToolCallItemCarriesAllFields(t *testing.T) {
 	evt := ResponsesStreamEvent{
 		Type:        "response.output_item.done",
@@ -521,8 +553,9 @@ func TestResponsesEventToSSE_CustomToolCallItemCarriesAllFields(t *testing.T) {
 	assert.Contains(t, sse, `"type":"custom_tool_call"`)
 }
 
-// TestStream_SSEWireComplete 让完整流经过 SSE 编码，确认 function_call 事件在
-// wire 上携带完整字段。
+// TestStream_SSEWireComplete collects a reasoning/tool Chat stream and
+// serializes its Responses events. The function-item added frame must exist
+// and contain the inspected empty arguments member plus call correlation.
 func TestStream_SSEWireComplete(t *testing.T) {
 	events := collectStreamEvents(t, []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"plan"}}]}`,
@@ -539,11 +572,14 @@ func TestStream_SSEWireComplete(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, addedLine)
-	// function_call 的 added 事件编码后带有 arguments:""。
+	// The serialized added event must include an empty arguments field.
 	require.True(t, strings.Contains(addedLine, `"arguments":""`), "added line missing arguments: %s", addedLine)
 	require.Contains(t, addedLine, `"call_id":"call_a"`)
 }
 
+// TestAnthropicToResponsesResponse_CacheCreation combines all input buckets
+// with output in a buffered reply. Assertions check normalized input and the
+// top-level cache-creation counter in the returned usage.
 func TestAnthropicToResponsesResponse_CacheCreation(t *testing.T) {
 	resp := AnthropicResponse{
 		ID:    "msg_test",
@@ -566,6 +602,9 @@ func TestAnthropicToResponsesResponse_CacheCreation(t *testing.T) {
 	assert.Equal(t, 6, out.Usage.CacheCreationInputTokens, "cache creation must round-trip")
 }
 
+// TestAnthropicToResponsesResponse_StampsCreatedAt converts a buffered
+// Messages reply without a source timestamp. The result must contain a
+// positive creation time from the supplied runtime.
 func TestAnthropicToResponsesResponse_StampsCreatedAt(t *testing.T) {
 	out := AnthropicToResponsesResponse(testRuntime(), &AnthropicResponse{
 		ID:      "msg_1",
@@ -578,6 +617,9 @@ func TestAnthropicToResponsesResponse_StampsCreatedAt(t *testing.T) {
 		"Anthropic 响应不带时间戳，网关必须自己盖一个")
 }
 
+// TestAnthropicEventToResponsesStream_CreatedAtStableAcrossEvents decodes and
+// completes a text stream using one constructed state. Created and completed
+// snapshots must both carry the captured positive state timestamp.
 func TestAnthropicEventToResponsesStream_CreatedAtStableAcrossEvents(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 	state.Model = "claude-sonnet-4-20250514"
@@ -613,6 +655,9 @@ func TestAnthropicEventToResponsesStream_CreatedAtStableAcrossEvents(t *testing.
 		"同一条流的 created_at 必须恒定")
 }
 
+// TestAnthropicStreamingMaxTokens_MapsToIncomplete supplies max_tokens stop
+// evidence before message stop. It checks retained stop state and the terminal
+// incomplete label/status with max_output_tokens details.
 func TestAnthropicStreamingMaxTokens_MapsToIncomplete(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 
@@ -650,6 +695,10 @@ func TestAnthropicStreamingMaxTokens_MapsToIncomplete(t *testing.T) {
 	assert.Equal(t, "max_output_tokens", completed.Response.IncompleteDetails.Reason)
 }
 
+// TestAnthropicStreamingMaxTokens_FinalizeMapsToIncompleteWithoutMessageStop
+// finalizes after max_tokens without a source stop event. One incomplete
+// terminal with details must appear, and repeated finalization must return no
+// events.
 func TestAnthropicStreamingMaxTokens_FinalizeMapsToIncompleteWithoutMessageStop(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 
@@ -673,6 +722,9 @@ func TestAnthropicStreamingMaxTokens_FinalizeMapsToIncompleteWithoutMessageStop(
 	assert.Empty(t, FinalizeAnthropicResponsesStream(state), "repeated finalization must be idempotent")
 }
 
+// TestAnthropicStreamingEndTurn_MapsToCompleted supplies end_turn evidence
+// before message stop. A completed terminal snapshot must appear with
+// completed status and no incomplete-details pointer.
 func TestAnthropicStreamingEndTurn_MapsToCompleted(t *testing.T) {
 	state := NewAnthropicEventToResponsesState(testRuntime())
 

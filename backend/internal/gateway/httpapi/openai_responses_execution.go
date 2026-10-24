@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
-	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	openaiexecution "github.com/TokenFlux/TokenRouter/internal/gateway/provider/openaiforward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
@@ -17,17 +16,52 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// OpenAIResponsesExecutor 绑定 Responses 请求构造、协议执行和响应输出。
+// openai_responses_execution.go dispatches Responses attempts and maintains
+// request representations during encrypted recovery.
+// A Responses attempt separates prelude dispatch from full native HTTP
+// transformation, so raw Chat, Grok, Anthropic and passthrough routes retain
+// their own execution behavior. The native branch keeps original client,
+// billing and upstream model values alongside a byte view and optional decoded
+// request map.
+//
+// Ciphertext recovery can change input after model policy has already run. The
+// decoder first applies pending byte patches, invalidates a cached map when
+// current bytes change and decodes the resulting view again. Lineage uses a
+// session identity derived before encrypted items are stripped, so later
+// rejection marking refers to the same prepared entry that a repeated request
+// can present. HTTP exchange callbacks carry one token, fingerprint and route
+// preparation through the shared runner's local recovery and response-reading
+// phases.
+
+// OpenAIResponsesExecutor combines selected-attempt request, output, text and
+// lineage services for Responses forwarding. App assembly shares these
+// dependencies with other protocol executors; each Forward call owns its
+// byte/decoded preparation state.
 type OpenAIResponsesExecutor struct {
-	Requests    *OpenAIRequests
-	Output      *OpenAIResponseOutput
-	Text        *OpenAITextExecutor
-	Grok        *GrokExecutor
-	Lineage     *OpenAIEncryptedLineage
+	Requests *OpenAIRequests       // shared upstream request builder
+	Output   *OpenAIResponseOutput // shared Responses output bindings
+	Text     *OpenAITextExecutor   // shared compatible text executor
+	Grok     *GrokExecutor         // shared Grok Responses executor
+	// shared encrypted-history rejection tracker
+	Lineage *OpenAIEncryptedLineage
+	// Responses image injection policy
 	ImageBridge *gatewayprovider.ResponseImagePolicy
 }
 
-// Forward 保持单次 Responses 的准备、协议分派和执行顺序。
+// Forward prepares and executes one selected Responses provider attempt,
+// returning observations and failure for outer handling. Callers retain the
+// live HTTP context and app-bound services during synchronous output. Prelude
+// dispatch can delegate directly to raw Chat, Grok, native Anthropic or
+// passthrough before native HTTP transformation runs.
+//
+// The native branch retains model identities and prepared byte/decoded views
+// through ciphertext recovery. Pending patches invalidate cached decoded state
+// before another map is used, and changed retry bytes also force a fresh
+// request view. Lineage identity is derived before encrypted-history stripping
+// and retained for marking rejected digests. The shared HTTP runner owns
+// response-body cleanup, local recovery and reading; the outer text loop
+// decides provider switching and completion. Deferred model capture uses the
+// returned result even when failure accompanies partial observations.
 func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, body []byte) (out *forwardcore.OpenAIResult, failure error) {
 	defer func() { captureResponseModel(c, out) }()
 	var routeErr error
@@ -72,8 +106,11 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 	imageIntent := transformed.ImageIntent
 	fingerprintIDs := transformed.Fingerprint
 	reqBody := transformed.Decoded
-	// 后续 WS 或密文恢复按需读取同一份准备结果，不重新运行模型映射和策略。
+	// HTTP ciphertext recovery reuses model/policy preparation. Apply pending byte
+	// patches before decoding so the mutable map describes the body selected for this retry.
 	ensureReqBody := func() (map[string]any, error) {
+		// A patched byte view supersedes its earlier decoded map; drop that cache
+		// before a retry decoder can trim history from stale request content.
 		if requestView.HasPatches() {
 			patched, err := requestView.ApplyPatches()
 			if err != nil {
@@ -93,10 +130,9 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 		reqBody = decoded
 		return reqBody, nil
 	}
-	// 剥离本会话已被上游判定失效的加密项（invalid_encrypted_content lineage），
-	// 阻断同一失效密文随客户端历史在每一轮重复触发"被拒→剥离→重试/重连"。
-	// lineage 会话键统一按进场形态的 body 派生：后续重试可能改写 body，
-	// 延迟计算会与下一请求的进场键漂移。
+	// Known rejected ciphertext is stripped using the session key from this
+	// prepared entry, before stripping or recovery changes its bytes. Retain that
+	// identity so later rejection marking matches another request presenting the same entry.
 	lineageGroupID := OpenAIResponseGroupID(c)
 	lineageEntryBody := body
 	lineageSessionHash := ""
@@ -106,6 +142,8 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 			strippedBody, strippedCount := s.Lineage.Strip(
 				body, invalidDigests, "invalid_encrypted_lineage_strip", provider.Record.ID, 0,
 			)
+			// Adopt successful lineage stripping and retire the decoded cache; later
+			// body validation or recovery must inspect the current stripped byte view.
 			if strippedCount > 0 {
 				body = strippedBody
 				requestView = requeststate.NewOpenAIRequestView(body)
@@ -117,15 +155,9 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 	imageSizeTier := ""
 	imageInputSize := ""
 	if imageIntent {
-		var imageCfg media.OpenAIResponsesImageBillingConfig
-		var imageCfgErr error
-		if reqBody != nil {
-			imageCfg, imageCfgErr = gatewayprovider.ImageIntent().ResolveOpenAIResponsesImageBillingConfigDetailed(reqBody, billingModel)
-		} else {
-			imageCfg, imageCfgErr = gatewayprovider.ImageIntent().ResolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, billingModel)
-		}
+		imageCfg, imageCfgErr := gatewayprovider.ResolveResponsesImageBilling(ctx, provider, body, s.Text.modelAttributes())
 		if imageCfgErr != nil {
-			openAIForwardPreludeAdapter{s: s, c: c, provider: provider, ctx: ctx}.Reject(openaiexecution.Rejection{Status: http.StatusBadRequest, Type: "invalid_request_error", Message: imageCfgErr.Error(), Param: "size", ObserveUpstream: true})
+			WriteOpenAIModelAttributeError(c, imageCfgErr, c.Writer.Written())
 			return nil, imageCfgErr
 		}
 		imageBillingModel = imageCfg.Model
@@ -140,7 +172,8 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 	SetOpsUpstreamModel(c, upstreamModel)
 
 	reasoningEffort := requeststate.ExtractOpenAIReasoningEffortFromBody(body)
-	// 国产模型默认 effort 补充：此处 reqModel 已被 mapping 重写为 billingModel。
+	// The mapped model guides enabled-thinking display effort after request
+	// transformation; this usage fallback does not add another outgoing reasoning control.
 	reasoningEffort = gatewayprovider.ApplyThinkingEnabledFallback(reasoningEffort, body, reqModel)
 	reasoningEffortValue := ""
 	if reasoningEffort != nil {
@@ -175,6 +208,7 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 			return s.Requests.Transport.DoWithTLS(request, proxyURL, provider.Record.ID, provider.Record.Concurrency, s.Requests.TLSProfile(provider, tlsRouterMatch))
 		},
 		Latency: func(elapsed time.Duration) {
+			// Ops latency stores whole milliseconds from this exchange duration.
 			SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, elapsed.Milliseconds())
 		},
 		HeaderTimeout: func() error {
@@ -185,6 +219,8 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 	options := s.nativeForwardHTTPOptions(ctx, c, provider, input, exchange,
 		func(current []byte) ([]byte, bool, error) {
 			return prepareOpenAIHTTPEncryptedRetry(current, func(current []byte) (map[string]any, error) {
+				// Local recovery may supply new bytes after prior preparation. Invalidate
+				// both view and map before trimming so the repair uses that current request.
 				if !bytes.Equal(body, current) {
 					body = current
 					requestView = requeststate.NewOpenAIRequestView(body)
@@ -198,17 +234,23 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 			if len(digests) == 0 {
 				return
 			}
+			// A request with no prior rejected lineage still needs its entry identity
+			// before these newly rejected digests are published for later session lookup.
 			if lineageSessionHash == "" {
 				lineageSessionHash = GenerateOpenAISessionHash(c, entry)
 			}
 			s.Lineage.Mark(lineageGroupID, lineageSessionHash, digests)
 		},
 	)
+	// The HTTP runner clears this explicit map reference after a successful
+	// response and before reading output; byte/view state remains available for later recovery decoding.
 	options.ReleaseDecodedRequest = func() { reqBody = nil }
 	result, err := openaiexecution.RunHTTP(ctx, input, options)
 	return openaiexecution.ToForwardResult(result), err
 }
 
+// shouldForwardOpenAIResponsesViaRawChatCompletions delegates raw-Chat routing
+// policy for the selected attempt provider.
 func shouldForwardOpenAIResponsesViaRawChatCompletions(provider *gatewayprovider.ExecutionProvider) bool {
 	return gatewayprovider.ExecutionModelPolicy(provider).RawChat()
 }

@@ -8,47 +8,92 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// ModelChain 分别保存客户端、Key 重定向后、分组映射后与提供商映射后的模型。每个阶段应用一次映射。
-// 执行层完成供应商名称规范化和响应恢复，用量记录读取本次模型链。
+// plan.go captures request routing policy and resolves provider-specific
+// protocol and model identities.
+// A request's final group and client protocol remain fixed while provider
+// attempts can choose different upstream protocols and model mappings. Group
+// policy collections are copied when the plan is built, keeping later
+// administrative edits from changing that request's retained conversion
+// choices.
+//
+// The model chain retains client, key, group, and provider identities
+// separately so restriction and billing consumers can select their configured
+// stage. Candidate resolution adds the chosen provider and protocol but leaves
+// provider mapping for the attempt's current snapshot. Each attempt receives
+// the scalar chain by value, keeping its provider mapping in that candidate
+// copy. Gateway admission authorizes the group and client entry before using
+// the plan.
+
+// ModelChain retains the request's model identities and the configured
+// restriction and billing stages.
 type ModelChain struct {
+	// ClientModel, RequestedModel, GroupMappedModel, and ProviderMappedModel
+	// retain successive routing identities. Each stage has its own restriction,
+	// response, or billing consumer; resolving an attempt fills the provider
+	// stage.
+	//
+	// ClientModel: original client model. RequestedModel: key-redirected request
+	// model. GroupMappedModel: group policy model. ProviderMappedModel:
+	// provider-mapped upstream model.
 	ClientModel, RequestedModel, GroupMappedModel, ProviderMappedModel string
-	APIKeyRedirected, GroupMapped                                      bool
-	RestrictionModelSource                                             string
-	RestrictModels                                                     bool
-	PricingConfigID                                                    int64
-	BillingModelSource                                                 string
+	// APIKeyRedirected and GroupMapped record whether their respective stages
+	// rewrote the client identity. They are retained independently so response
+	// consumers can recognize either rewrite in the captured model chain.
+	//
+	// APIKeyRedirected: key model rewritten. GroupMapped: group model rewritten.
+	APIKeyRedirected, GroupMapped bool
+
+	RestrictionModelSource string // selected whitelist identity stage
+	RestrictModels         bool   // retained group model restriction
+	PricingConfigID        int64  // associated pricing config ID
+	BillingModelSource     string // selected billing identity stage
 }
 
-// PlanInput 包含最终分组、请求模型和客户端协议。
+// PlanInput supplies the admitted group, completed group mapping, and client
+// entry for a request plan.
 type PlanInput struct {
+	// GroupID overrides Group.ID when supplied. Plan copies the pointed value, so
+	// changing the input pointer after construction leaves the captured identifier
+	// unchanged.
 	GroupID        *int64
-	RequestedModel string
-	GroupMapping   GroupMappingResult
+	RequestedModel string             // model after key redirection
+	GroupMapping   GroupMappingResult // completed group mapping metadata
+	// Group supplies scheduler and protocol settings for Plan. The caller
+	// authorizes this group first; Plan copies its protocol collections for
+	// retained request use.
 	Group          *Group
-	ClientProtocol capability.ProtocolID
+	ClientProtocol capability.ProtocolID // admitted client entry protocol
 }
 
-// RoutePlan 保存本次分组和协议策略，候选解析时确定提供商及其模型映射。
-// 私有字段保存一次尝试使用的协议回退表。
+// RoutePlan retains group policy and model metadata for provider-attempt
+// resolution.
 type RoutePlan struct {
-	models         ModelChain
-	groupID        int64
-	schedulerType  GroupSchedulerType
-	clientProtocol capability.ProtocolID
-	allowed        []capability.ProtocolID
-	fallbacks      map[capability.ProtocolID][]capability.ProtocolID
+	models         ModelChain            // retained request identity stages
+	groupID        int64                 // captured final group identifier
+	schedulerType  GroupSchedulerType    // captured group scheduler selection
+	clientProtocol capability.ProtocolID // current plan client source
+	// allowed and fallbacks retain copied group protocol policy. Plan copies the
+	// admission selection and each conversion list; plan copies with a different
+	// client protocol share these collections as read-only values.
+	allowed []capability.ProtocolID // copied client admission selection
+	// fallbacks is copied, including each target list, when Plan captures group
+	// policy. Missing and present empty entries retain their distinct automatic
+	// and native-only choices.
+	fallbacks map[capability.ProtocolID][]capability.ProtocolID
 }
 
-// CandidatePlan 是单个候选的本次路由结果。
+// CandidatePlan records the provider and protocol selected for one request
+// attempt.
 type CandidatePlan struct {
-	Models           ModelChain
-	ProviderID       int64
-	GroupID          int64
-	ClientProtocol   capability.ProtocolID
-	UpstreamProtocol capability.ProtocolID
+	Models           ModelChain            // attempt-specific model identity stages
+	ProviderID       int64                 // selected provider row identifier
+	GroupID          int64                 // authorized final group identifier
+	ClientProtocol   capability.ProtocolID // resolved client entry identity
+	UpstreamProtocol capability.ProtocolID // selected provider execution protocol
 }
 
-// Mapping 从路由计划返回本次模型映射、白名单阶段和计费元数据。
+// Mapping returns the retained group mapping, restriction settings, and billing
+// metadata.
 func (p RoutePlan) Mapping() GroupMappingResult {
 	return GroupMappingResult{
 		MappedModel:            p.models.GroupMappedModel,
@@ -62,16 +107,21 @@ func (p RoutePlan) Mapping() GroupMappingResult {
 	}
 }
 
+// Models returns the plan's retained scalar model-chain value by copy.
 func (p RoutePlan) Models() ModelChain { return p.models }
 
-// ResolveModel 使用本次提供商快照解析模型，返回候选的模型映射结果。
+// ResolveModel returns a candidate copy with requested resolved through the
+// supplied provider snapshot. The match flag describes that one mapping step;
+// callers supply the appropriate group-mapped input for the attempt.
 func (p CandidatePlan) ResolveModel(snapshot provider.ProviderSnapshot, requested string) (CandidatePlan, bool) {
 	mapped, matched := snapshot.ModelPolicy.Resolve(requested)
 	p.Models.ProviderMappedModel = mapped
 	return p, matched
 }
 
-// Plan 复制已通过入口准入的分组数据，构造请求路由计划。
+// Plan captures the caller's admitted group and completed model mapping for
+// later attempts. It copies admitted protocol lists and fallback targets, and a
+// supplied GroupID overrides the ID from Group.
 func Plan(input PlanInput) RoutePlan {
 	plan := RoutePlan{
 		clientProtocol: input.ClientProtocol,
@@ -99,7 +149,10 @@ func Plan(input PlanInput) RoutePlan {
 	return plan
 }
 
-// ResolveCandidate 优先选择提供商直接支持的协议，其次尝试单步转换，每次候选刷新或数据库复核时重新调用。
+// ResolveCandidate resolves the provider's enabled protocols against the
+// retained client source and conversion policy. It returns false for an
+// unusable route; callers repeat resolution for refreshed provider snapshots
+// and enforce entry admission separately.
 func (p RoutePlan) ResolveCandidate(candidate provider.ProviderSnapshot) (CandidatePlan, bool) {
 	target, ok := capability.ResolveRoute(candidate.Protocols(), p.clientProtocol, p.fallbacks)
 	if !ok {
@@ -108,14 +161,21 @@ func (p RoutePlan) ResolveCandidate(candidate provider.ProviderSnapshot) (Candid
 	return CandidatePlan{Models: p.models, ProviderID: candidate.ID, GroupID: p.groupID, ClientProtocol: p.clientProtocol, UpstreamProtocol: target}, true
 }
 
-// GroupID 返回计划中的最终分组 ID。
+// GroupID returns the captured final group identifier for this request.
 func (p RoutePlan) GroupID() int64 { return p.groupID }
 
+// SchedulerType returns the group selection strategy captured when planning
+// began.
 func (p RoutePlan) SchedulerType() GroupSchedulerType { return p.schedulerType }
 
+// AllowedProtocols returns a copy of the captured client admission selection.
+// Callers may modify the returned slice independently; a missing group produces
+// nil because no selection was captured.
 func (p RoutePlan) AllowedProtocols() []capability.ProtocolID { return slices.Clone(p.allowed) }
 
-// WithClientProtocol 使用执行层已确定的业务入口，保留计划其它不可变值。
+// WithClientProtocol returns a plan copy with the supplied client protocol.
+// Retained group policy collections remain shared between copies as read-only
+// plan data, and candidate routing uses the replacement source.
 func (p RoutePlan) WithClientProtocol(source capability.ProtocolID) RoutePlan {
 	p.clientProtocol = source
 	return p

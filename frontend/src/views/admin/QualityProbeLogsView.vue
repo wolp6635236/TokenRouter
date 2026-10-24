@@ -1,3 +1,4 @@
+<!-- QualityProbeLogsView.vue lists automatic and manual quality-probe records for administrators. Provider and action columns remain visible while optional log fields can be hidden in browser storage. -->
 <template>
   <AppLayout>
     <TablePageLayout>
@@ -62,35 +63,51 @@
           row-key="row_key"
         >
           <template #cell-at="{ value }">
-            <span class="text-sm text-gray-600 dark:text-dark-300">{{ formatDateTime(value) }}</span>
+            <span class="text-sm text-gray-600 dark:text-dark-300">{{
+              formatDateTime(value)
+            }}</span>
           </template>
           <template #cell-provider_name="{ row }">
             <div class="min-w-0">
-              <div class="truncate font-medium text-gray-900 dark:text-white">{{ row.provider_name || '—' }}</div>
+              <div class="truncate font-medium text-gray-900 dark:text-white">{{
+                row.provider_name || '—'
+              }}</div>
               <div class="text-xs text-gray-500 dark:text-dark-400">#{{ row.provider_id }}</div>
             </div>
           </template>
           <template #cell-trigger="{ value }">
-            {{ value === 'manual' ? t('admin.providers.qualityProbeLogs.triggerManual') : t('admin.providers.qualityProbeLogs.triggerAuto') }}
+            {{
+              value === 'manual'
+                ? t('admin.providers.qualityProbeLogs.triggerManual')
+                : t('admin.providers.qualityProbeLogs.triggerAuto')
+            }}
           </template>
           <template #cell-candy_ok="{ row }">
             <span v-if="row.skipped">—</span>
-            <span v-else>{{ row.candy_ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}</span>
+            <span v-else>{{
+              row.candy_ok
+                ? t('admin.providers.qualityProbeDialog.pass')
+                : t('admin.providers.qualityProbeDialog.fail')
+            }}</span>
           </template>
           <template #cell-trace_ok="{ row }">
             <span v-if="row.skipped">—</span>
             <span v-else>
-              {{ row.trace_ok ? t('admin.providers.qualityProbeDialog.pass') : t('admin.providers.qualityProbeDialog.fail') }}
-              <span v-if="row.trace_prediction" class="block text-xs text-gray-500 dark:text-dark-400">
+              {{
+                row.trace_ok
+                  ? t('admin.providers.qualityProbeDialog.pass')
+                  : t('admin.providers.qualityProbeDialog.fail')
+              }}
+              <span
+                v-if="row.trace_prediction"
+                class="block text-xs text-gray-500 dark:text-dark-400"
+              >
                 {{ row.trace_prediction }}
               </span>
             </span>
           </template>
           <template #cell-verdict="{ row }">
-            <span
-              class="badge"
-              :class="verdictClass(row)"
-            >
+            <span class="badge" :class="verdictClass(row)">
               {{ verdictLabel(row) }}
             </span>
           </template>
@@ -122,12 +139,7 @@
         />
       </template>
     </TablePageLayout>
-    <BaseDialog
-      :show="Boolean(detail)"
-      :title="detailTitle"
-      width="wide"
-      @close="detail = null"
-    >
+    <BaseDialog :show="Boolean(detail)" :title="detailTitle" width="wide" @close="detail = null">
       <div v-if="detail" class="space-y-4 text-sm">
         <p v-if="detail.trace_prediction" class="text-gray-600 dark:text-dark-300">
           {{ t('admin.providers.qualityProbeLogs.fingerprint') }}：{{ detail.trace_prediction }}
@@ -154,17 +166,17 @@ import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { adminAPI } from '@/api/admin'
 import type { QualityProbeLogItem } from '@/api/admin/settings'
 import { formatDateTime } from '@/utils/format'
-import type { Column } from '@/components/common/types'
+import type { Column } from '@/components/common/table/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
-import DataTable from '@/components/common/DataTable.vue'
+import DataTable from '@/components/common/table/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import QualityProbeSamples from '@/components/admin/provider/QualityProbeSamples.vue'
 import {
   QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY,
-  migrateQualityProbeLogsProviderFirst
-} from '@/components/admin/provider/qualityProbeLogsColumns'
+  migrateQualityProbeLogsProviderFirst,
+} from './qualityProbeLogsColumns'
 import MotionTransition from '@/components/common/MotionTransition.vue'
 import Icon from '@/components/icons/Icon.vue'
 
@@ -180,7 +192,7 @@ const detail = ref<QualityProbeLogItem | null>(null)
 const pagination = reactive({
   page: 1,
   page_size: getPersistedPageSize(),
-  total: 0
+  total: 0,
 })
 
 const detailTitle = computed(() => {
@@ -188,15 +200,15 @@ const detailTitle = computed(() => {
     return t('admin.providers.qualityProbeLogs.title')
   }
   return t('admin.providers.qualityProbeLogs.detailTitle', {
-    name: detail.value.provider_name || `#${detail.value.provider_id}`
+    name: detail.value.provider_name || `#${detail.value.provider_id}`,
   })
 })
 
 const rows = computed(() =>
   logs.value.map((item, index) => ({
     ...item,
-    row_key: `${item.provider_id}-${item.at}-${index}`
-  }))
+    row_key: `${item.provider_id}-${item.at}-${index}`,
+  })),
 )
 
 const ALWAYS_VISIBLE_COLUMNS = new Set(['provider_name', 'actions'])
@@ -208,10 +220,10 @@ const allColumns = computed<Column[]>(() => [
   { key: 'trace_ok', label: t('admin.providers.qualityProbeLogs.trace') },
   { key: 'verdict', label: t('admin.providers.qualityProbeLogs.verdict') },
   { key: 'model', label: t('admin.providers.qualityProbeLogs.model') },
-  { key: 'actions', label: t('common.actions') }
+  { key: 'actions', label: t('common.actions') },
 ])
 const toggleableColumns = computed(() =>
-  allColumns.value.filter(col => !ALWAYS_VISIBLE_COLUMNS.has(col.key))
+  allColumns.value.filter((col) => !ALWAYS_VISIBLE_COLUMNS.has(col.key)),
 )
 const hiddenColumns = reactive(new Set<string>())
 const showColumnDropdown = ref(false)
@@ -221,7 +233,7 @@ function loadSavedColumns() {
   hiddenColumns.clear()
   try {
     const saved = localStorage.getItem(QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY)
-    const validKeys = new Set(toggleableColumns.value.map(col => col.key))
+    const validKeys = new Set(toggleableColumns.value.map((col) => col.key))
     if (!saved) {
       return
     }
@@ -231,7 +243,7 @@ function loadSavedColumns() {
     }
     parsed
       .filter((key): key is string => typeof key === 'string' && validKeys.has(key))
-      .forEach(key => hiddenColumns.add(key))
+      .forEach((key) => hiddenColumns.add(key))
   } catch (error) {
     console.error('Failed to load quality probe log columns:', error)
   }
@@ -239,8 +251,8 @@ function loadSavedColumns() {
 
 function saveColumnsToStorage() {
   try {
-    const validKeys = new Set(toggleableColumns.value.map(col => col.key))
-    const keys = [...hiddenColumns].filter(key => validKeys.has(key))
+    const validKeys = new Set(toggleableColumns.value.map((col) => col.key))
+    const keys = [...hiddenColumns].filter((key) => validKeys.has(key))
     localStorage.setItem(QUALITY_PROBE_LOGS_HIDDEN_COLUMNS_KEY, JSON.stringify(keys))
   } catch (error) {
     console.error('Failed to save quality probe log columns:', error)
@@ -252,7 +264,7 @@ function isColumnVisible(key: string) {
 }
 
 function toggleColumn(key: string) {
-  if (ALWAYS_VISIBLE_COLUMNS.has(key) || !toggleableColumns.value.some(col => col.key === key)) {
+  if (ALWAYS_VISIBLE_COLUMNS.has(key) || !toggleableColumns.value.some((col) => col.key === key)) {
     return
   }
   if (hiddenColumns.has(key)) {
@@ -274,7 +286,9 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 const columns = computed<Column[]>(() =>
-  allColumns.value.filter(col => ALWAYS_VISIBLE_COLUMNS.has(col.key) || !hiddenColumns.has(col.key))
+  allColumns.value.filter(
+    (col) => ALWAYS_VISIBLE_COLUMNS.has(col.key) || !hiddenColumns.has(col.key),
+  ),
 )
 
 loadSavedColumns()

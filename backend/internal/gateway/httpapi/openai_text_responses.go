@@ -11,24 +11,59 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/gateway/execution"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	textflow "github.com/TokenFlux/TokenRouter/internal/gateway/text"
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// Responses 保留 HTTP Responses 的 compact、归属和等待后资金检查顺序。
+// openai_text_responses.go admits Responses requests while retaining canonical
+// session and mapped attempt input.
+// Responses admission keeps canonical session input separate from
+// effort/bootstrap rewrites and group-mapped attempt bytes. Prompt replacement
+// follows Compact normalization, and the resulting bytes are retained for
+// affinity and cyber checks so those identities do not change when later
+// forwarding controls are adjusted.
+//
+// Continuation ownership is checked in the effective group before moderation
+// and selection. Explicit image intent chooses permission, image admission and
+// capability requirements, while broad intent supplies transformation hints.
+// User-slot acquisition can change request context and output state, so its
+// lease is copied into the earlier selection context and eligibility is
+// checked after waiting. The admitted client model, mapped attempt model and
+// prepared route then reach synchronous execution with image, user and request
+// cleanup held until handler return.
+
+// Responses admits HTTP input, continuation ownership and image/capability
+// requirements before text execution. Authentication and dependencies precede
+// body reading; Compact normalization and heartbeat startup occur before
+// structural JSON validation, letting committed wait output use a protocol
+// terminal on later failure.
+//
+// Prompt-replaced input is retained as SessionHashBody before effort and
+// bootstrap rewrites. The current effective group validates ownership, and its
+// mapped body/model drives explicit image admission while client identity
+// remains available for observations. Image and user resources are held
+// through the configured post-wait eligibility call, cyber/session handling
+// and Execute. The selection context receives the acquired lease, and later
+// request-context hints reach execution separately. All acquired cleanup
+// remains deferred until the handler exits.
 // @project-doc docs/interfaces/openai_upstream.md#openai_protocol_dispatch
 func (h *OpenAITextHandler) Responses(c *gin.Context) {
 	done, accepted := h.BeginRequest(c, "openai")
 	if !accepted {
 		return
 	}
+	// Keep the HTTP request admitted through image/user cleanup and synchronous
+	// execution so shutdown cannot release shared services before this handler finishes.
 	defer done()
 
-	// 捕获 handler 内部 panic，按当前响应状态输出错误。
+	// Recovery uses the mutable output state because slot waits or Compact
+	// keepalives may have committed a format before a later admission callback panics.
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
 	compactStartedAt := time.Now()
@@ -37,7 +72,7 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 
 	requestStart := time.Now()
 
-	// 从认证中间件读取 Key 与行为主体。
+	// Read the key and acting subject set by authentication.
 	apiKey, ok := h.backend.Access(c)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
@@ -60,7 +95,7 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// 在认证及依赖校验后读取请求体。
+	// Read the body after authentication and dependency validation.
 	body, err := ReadLenientJSONRequestBodyWithPrealloc(c.Request, h.options.MaxBodyBytes)
 	if err != nil {
 		if maxErr, ok := openAITextMaxBytesError(err); ok {
@@ -83,22 +118,24 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 		return
 	}
 	legacyCompact, nativeCompactionV2 := IsOpenAIResponsesCompactPath(c), IsBareOpenAIResponsesPath(c) && IsOpenAIRemoteCompactionV2Request(body)
-	// body-signal Compact 等待上游期间发送 SSE 注释心跳，维持反向代理连接（#3887）。
-	// 首拍延迟一个心跳间隔，此前失败返回 JSON 和 HTTP 状态。客户端未标记流式或间隔为 0 时跳过心跳。
+	// A normalized body-signaled Compact stream can wait through admission and
+	// execution. Start its delayed heartbeat here and stop it on return; errors
+	// before the first beat can still choose JSON status, while later errors need a terminal.
 	stopCompactKeepalive := h.backend.StartCompact(c, h.options.CompactKeepaliveInterval)
 	defer stopCompactKeepalive()
 
-	// 校验请求体 JSON 合法性
+	// Validate request JSON.
 	if !gjson.ValidBytes(body) {
 		LogRequestBodyParseFailure(reqLog, body, nil)
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
-	// compact 规范化后替换用户提示词，再解析模型。
+	// Retain prompt-replaced bytes for identity before effort and bootstrap
+	// edits; affinity and cyber checks later use this view of the admitted client input.
 	body = h.prompt.ApplyUserPromptReplacementToBody(c.Request.Context(), body, "openai_responses")
 	sessionHashBody := body
 
-	// 使用 gjson 提取校验需要的字段。
+	// Extract fields needed for validation.
 	modelResult := gjson.GetBytes(body, "model")
 	if !modelResult.Exists() || modelResult.Type != gjson.String || modelResult.String() == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
@@ -117,12 +154,16 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 	} else if changed {
 		body = cappedBody
 	}
+	// Automation bootstrap repair can replace an unsupported call-output shape
+	// with user input; session identity continues to use the view saved before this repair.
 	if normalizedBody, changed := h.backend.NormalizeBootstrap(body, false); changed {
 		body = normalizedBody
 		reqLog.Info("openai.codex_automation_bootstrap_normalized",
 			zap.String("normalization", "call_output_to_user_message"),
 		)
 	}
+	// Delegation bootstrap has its own input repair. Adopt its changed bytes
+	// for forwarding while the saved session view keeps identity before bootstrap normalization.
 	if normalizedBody, changed := h.backend.NormalizeBootstrap(body, true); changed {
 		body = normalizedBody
 		reqLog.Info("openai.codex_delegation_bootstrap_normalized",
@@ -186,8 +227,9 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// 分组映射模型 G 决定生图并发和端点能力，客户端模型 R 用于日志与会话。
-	// 当前分组和映射结果保存在独立计划中。
+	// Group model G controls image concurrency and endpoint capability; client model R identifies logs and
+	// sessions.
+	// Store the group and mapped model in the execution plan.
 	groupMappingRoutePlan := h.backend.Plan(c.Request.Context(), apiKey, reqModel)
 	groupMapping := groupMappingRoutePlan.Mapping()
 	h.backend.BindPlan(c, groupMappingRoutePlan)
@@ -196,11 +238,12 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 	if forwardModel == "" {
 		forwardModel = reqModel
 	}
-	// 客户端声明的生图意图用于权限、并发和提供商能力检查，宽泛意图用于转发时的工具处理与计费。
+	// Client-declared image intent controls permissions, concurrency, and provider capability; broader intent
+	// guides tools and billing.
 	imageIntent := h.backend.ExplicitImageIntent("/v1/responses", routingModel, forwardBody)
-	selectionCtx := c.Request.Context()
+	selectionCtx := media.WithResponsesImageSelection(c.Request.Context(), forwardBody, openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || h.options.ForceCodexCLI)
 	if imageIntent {
-		// 生图家族限流的上下文标记使用分组映射后的客户端生图意图。
+		// Use group-mapped client image intent for the image-family concurrency marker.
 		selectionCtx = h.backend.ImageContext(selectionCtx)
 	}
 	if imageIntent && !h.backend.AllowsImages(apiKey) {
@@ -216,21 +259,23 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 			return
 		}
 		if imageReleaseFunc != nil {
+			// Keep image capacity until the request has completed synchronous execution;
+			// later admission rejection also returns through this same acquired cleanup.
 			defer imageReleaseFunc()
 		}
 	}
 
 	h.backend.SeedImageIntent(c, groupMapping.Mapped, forwardImageIntent)
 
-	// 转发前校验 function_call_output 的关联上下文，缺少上下文会触发上游 400。
+	// Validate function_call_output context before forwarding to prevent upstream 400 errors.
 	if !h.backend.ValidateTools(c, body, reqLog) {
 		return
 	}
 
-	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
+	// Bind passthrough rules for downstream non-failover error handling.
 	h.backend.BindErrors(c)
 
-	// 订阅为空时保持原余额路径。
+	// A missing subscription uses balance funding.
 	subscription, _ := SubscriptionFromContext(c)
 	requestPlatform := h.backend.Platform(apiKey)
 
@@ -241,16 +286,19 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 	if !acquired {
 		return
 	}
-	// 将已取得用户租约加入保留 HTTP passthrough 标记的选择上下文。
+	// The image-selection context was captured before user waiting. Carry its
+	// acquired lease into selection so provider admission uses this request's current resource handle.
 	if lease := scheduler.RequestLease(c.Request.Context()); lease != nil {
 		selectionCtx = scheduler.WithRequestLease(selectionCtx, lease)
 	}
-	// 请求取消时释放槽位，长连接中断也会触发释放。
+	// The resource binding already observes cancellation; retain completion
+	// cleanup here so successful or rejected synchronous handling also releases the user slot.
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
 
-	// 等待成功后按原时点复查资金权益。
+	// Waiting can change funding eligibility. Invoke the configured admission
+	// checker here; the default text binding uses the normal funding/RPM path with afterWait false.
 	if err := h.backend.Eligibility(c.Request.Context(), apiKey, subscription); err != nil {
 		reqLog.Info("openai.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := BillingErrorDetails(err)
@@ -261,7 +309,8 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// 会话标识仍优先读取 Header，再回退 prompt_cache_key。
+	// Derive affinity and explicit isolation from the saved pre-policy body,
+	// keeping forwarding-control rewrites out of the session and cyber identity inputs.
 	explicitSessionHash := h.backend.SessionHash(c, OpenAIExplicitSession, sessionHashBody)
 	sessionHash := h.backend.SessionHash(c, OpenAISelectionSession, sessionHashBody)
 	if h.backend.RejectCyber(c, apiKey, sessionHashBody, reqModel, protocol.ProtocolOpenAIResponses) {
@@ -278,9 +327,9 @@ func (h *OpenAITextHandler) Responses(c *gin.Context) {
 	))
 	requireCompact := legacyCompact
 
-	// OpenAI 生图请求选择支持 Responses API 的提供商，Chat Completions 直转无法生图（#4417）。
-	// Grok 由 forwardGrokResponses 单独处理。复用准入阶段根据分组模型 G 和 forwardBody 确认的客户端生图意图，省去 tools 重复扫描。
-	// Codex 被动 image_gen namespace 保持 Chat-only 提供商的可选资格（#4476）。
+	// OpenAI image generation requires Responses support; raw Chat cannot generate images (#4417).
+	// Grok has its own Responses execution. Reuse the admitted image intent from group model G and forwardBody.
+	// A passive Codex image_gen namespace leaves Chat-only providers eligible (#4476).
 	requiredCapability := textflow.RequiredResponsesCapability(
 		imageIntent,
 		nativeCompactionV2,

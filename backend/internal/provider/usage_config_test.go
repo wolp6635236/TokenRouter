@@ -8,6 +8,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
+// Usage configuration tests exercise default inheritance, scalar normalization
+// and rejection of credential or template fields. The same fixture also checks
+// unsafe root formatting and the ordered administrator adapter choices, tying
+// effective reads to persisted configuration validation.
+
+// TestEffectiveUpstreamUsageConfigDefaultsAndNormalization exercises absent,
+// disabled and malformed usage choices alongside adapter selection. It checks
+// normalized fields, structured errors for unsupported and sensitive input,
+// unsafe URL rejection and manual catalog order.
 func TestEffectiveUpstreamUsageConfigDefaultsAndNormalization(t *testing.T) {
 	provider := &Record{Type: capability.ProviderTypeAPIKey}
 	config, err := EffectiveUpstreamUsageConfig(provider)
@@ -51,5 +60,28 @@ func TestEffectiveUpstreamUsageConfigDefaultsAndNormalization(t *testing.T) {
 		{Name: UpstreamUsageAdapterSub2API, Label: "Sub2API / TokenRouter"},
 		{Name: UpstreamUsageAdapterNewAPI, Label: "New API"},
 		{Name: UpstreamUsageAdapterZivv, Label: "Zivv"},
+		{Name: UpstreamUsageAdapterDerouter, Label: "derouter.ai (Account Key)"},
 	}, UpstreamUsageAdapterOptions())
+}
+
+// TestEffectiveUpstreamUsageConfigDerouter resolves an omitted management root
+// and a custom override. Saved configuration and forwarding credentials remain
+// unchanged while the effective query uses the correct account endpoint.
+func TestEffectiveUpstreamUsageConfigDerouter(t *testing.T) {
+	for _, override := range []string{"", "https://management.example.test/prefix"} {
+		extra := map[string]any{UpstreamUsageQueryExtraKey: map[string]any{"adapter": UpstreamUsageAdapterDerouter, "base_url": override}}
+		require.NoError(t, NormalizeUpstreamUsageExtra(extra))
+		p := &Record{Type: ProviderTypeAPIKey, Platform: PlatformAnthropic, Credentials: map[string]any{"base_url": "https://forward.example.test/anthropic"}, Extra: extra}
+		original := CloneRecord(p)
+		got, err := EffectiveUpstreamUsageConfig(p)
+		require.NoError(t, err)
+		want := override
+		if want == "" {
+			want = DerouterUsageDefaultBaseURL
+		}
+		require.Equal(t, want, got.BaseURL)
+		require.Equal(t, UpstreamUsageAdapterDerouter, got.Adapter)
+		require.Equal(t, original, p)
+		require.True(t, BalanceAlertSupported(p))
+	}
 }

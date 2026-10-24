@@ -19,25 +19,39 @@ import (
 	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
+// OAuth rejection diagnostics record filtered request metadata and distinguish
+// policy evaluation from TLS selection. The fixtures also exercise injected and
+// default client detectors, platform eligibility for built-in TLS profiles, and
+// router-profile precedence with a configured provider profile.
+
+// requestClientDetectorFixture returns a fixed client-policy decision for
+// injection assertions.
 type requestClientDetectorFixture struct {
-	result providerpolicy.CodexClientRestrictionDetectionResult
+	result providerpolicy.CodexClientRestrictionDetectionResult // injected client-policy decision
 }
 
-// tlsProfileTestStore 通过相同读取入口提供固定测试策略。
+// tlsProfileTestStore supplies configured profile records to the production TLS
+// reader.
 type tlsProfileTestStore struct {
-	egress.TLSFingerprintProfileRepository
-	profiles []*egress.TLSFingerprintProfile
+	egress.TLSFingerprintProfileRepository                                 // unused embedded profile-repository methods
+	profiles                               []*egress.TLSFingerprintProfile // configured TLS profile records
 }
 
+// TestLogCodexCLIOnlyDetection_NilSafety supplies enabled and disabled
+// decisions with missing HTTP and provider inputs. It checks that diagnostic
+// calls finish without a panic, leaving log contents outside this assertion.
 func TestLogCodexCLIOnlyDetection_NilSafety(t *testing.T) {
-	// 不校验日志内容，仅保证在 nil 入参下不会 panic。
+	// Nil inputs must not panic; log contents are outside this assertion.
 	require.NotPanics(t, func() {
 		LogCodexCLIOnlyDetection(context.TODO(), nil, nil, 0, providerpolicy.CodexClientRestrictionDetectionResult{Enabled: true, Matched: false, Reason: "test"}, nil)
 		LogCodexCLIOnlyDetection(context.Background(), nil, nil, 0, providerpolicy.CodexClientRestrictionDetectionResult{Enabled: false, Matched: false, Reason: "disabled"}, nil)
 	})
 }
 
-func TestLogCodexCLIOnlyDetection_OnlyLogsRejected(t *testing.T) {
+// TestLogCodexCLIOnlyDetection_LogsDecisionLevels records matched and rejected
+// client decisions. It checks that acceptance is logged at info level and
+// rejection at warning level using the corresponding English diagnostic messages.
+func TestLogCodexCLIOnlyDetection_LogsDecisionLevels(t *testing.T) {
 	logSink, restore := captureHandlerStructuredLog(t)
 	defer restore()
 
@@ -53,10 +67,13 @@ func TestLogCodexCLIOnlyDetection_OnlyLogsRejected(t *testing.T) {
 		Reason:  providerpolicy.CodexClientRestrictionReasonNotMatchedUA,
 	}, nil)
 
-	require.False(t, logSink.ContainsMessage("OpenAI codex_cli_only 允许官方客户端请求"))
-	require.True(t, logSink.ContainsMessage("OpenAI codex_cli_only 拒绝非官方客户端请求"))
+	require.True(t, logSink.ContainsMessageAtLevel("OpenAI codex_cli_only allowed request", "info"))
+	require.True(t, logSink.ContainsMessageAtLevel("OpenAI codex_cli_only rejected unofficial client request", "warn"))
 }
 
+// TestLogCodexCLIOnlyDetection_RejectedIncludesRequestDetails rejects a request
+// containing client headers and a prompt-cache key. It checks selected
+// metadata, hashed cache identity, header names, and absence of a body preview.
 func TestLogCodexCLIOnlyDetection_RejectedIncludesRequestDetails(t *testing.T) {
 	logSink, restore := captureHandlerStructuredLog(t)
 	defer restore()
@@ -89,6 +106,10 @@ func TestLogCodexCLIOnlyDetection_RejectedIncludesRequestDetails(t *testing.T) {
 	require.False(t, logSink.ContainsFieldValue("request_body_preview", ""))
 }
 
+// TestOpenAIGatewayService_GetCodexClientRestrictionDetector compares injected,
+// missing-service, and ForceCLI defaults. It checks injected pointer identity
+// and the default detector's enabled, matched emulation decision for a
+// nonofficial UA.
 func TestOpenAIGatewayService_GetCodexClientRestrictionDetector(t *testing.T) {
 	t.Run("使用注入的 detector", func(t *testing.T) {
 		expected := &requestClientDetectorFixture{
@@ -124,10 +145,14 @@ func TestOpenAIGatewayService_GetCodexClientRestrictionDetector(t *testing.T) {
 	})
 }
 
+// DetectClient returns the fixed policy result for each fixture evaluation.
 func (s *requestClientDetectorFixture) DetectClient(read func() (string, string), record *providerpolicy.Record, allowed []string, matched bool) providerpolicy.CodexClientRestrictionDetectionResult {
 	return s.result
 }
 
+// TestTLSFingerprintProfileService_ResolveTLSProfileOpenAI enables
+// fingerprinting for OAuth and API-key OpenAI providers. It checks the default
+// profile exists for OAuth and remains unavailable for the API-key fixture.
 func TestTLSFingerprintProfileService_ResolveTLSProfileOpenAI(t *testing.T) {
 	svc := &egressadapter.TLSProfiles{}
 
@@ -150,6 +175,9 @@ func TestTLSFingerprintProfileService_ResolveTLSProfileOpenAI(t *testing.T) {
 	require.Nil(t, svc.ResolveRequestTLS(gatewayprovider.ExecutionTLSSelection(openAIAPIKey, nil)), "OpenAI API Key 不应启用 TLS 指纹伪装")
 }
 
+// TestTLSFingerprintProfileService_ResolveTLSProfileQoderCosy enables
+// fingerprinting on two Qoder credential types. It checks the default profile
+// for COSY and nil for the OAuth fixture under the same enable flag.
 func TestTLSFingerprintProfileService_ResolveTLSProfileQoderCosy(t *testing.T) {
 	svc := &egressadapter.TLSProfiles{}
 
@@ -172,6 +200,10 @@ func TestTLSFingerprintProfileService_ResolveTLSProfileQoderCosy(t *testing.T) {
 	require.Nil(t, svc.ResolveRequestTLS(gatewayprovider.ExecutionTLSSelection(qoderOtherType, nil)), "非 COSY Qoder 提供商不应启用 TLS 指纹伪装")
 }
 
+// TestOpenAIGatewayService_ResolveTLSProfileRouterFallback supplies fixed and
+// router TLS profiles through production lookup. It checks the router profile
+// wins when available and the fixed profile is used for a missing
+// router-profile ID.
 func TestOpenAIGatewayService_ResolveTLSProfileRouterFallback(t *testing.T) {
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providerpolicy.Record{
@@ -188,7 +220,9 @@ func TestOpenAIGatewayService_ResolveTLSProfileRouterFallback(t *testing.T) {
 
 	svc := newResponsesFixture(responsesFixtureInputs{profiles: profileSvc})
 
-	// 路由器命中优先使用规则目标模板。
+	// Select the available router profile to exercise precedence over the
+	// fixed provider profile supplied through the same production profile
+	// lookup path.
 	routerProfile := svc.Requests.TLSProfile(provider, egress.TLSFingerprintRouterMatchResult{
 		Matched:                 true,
 		TLSFingerprintProfileID: 20,
@@ -196,7 +230,9 @@ func TestOpenAIGatewayService_ResolveTLSProfileRouterFallback(t *testing.T) {
 	require.NotNil(t, routerProfile)
 	require.Equal(t, "router", routerProfile.Name)
 
-	// 规则目标模板不可用时安全回退提供商固定模板。
+	// Request an absent router-profile ID so the production reader recovers
+	// with the configured provider profile, keeping a usable selection for
+	// this fixture.
 	fallbackProfile := svc.Requests.TLSProfile(provider, egress.TLSFingerprintRouterMatchResult{
 		Matched:                 true,
 		TLSFingerprintProfileID: 404,
@@ -205,6 +241,9 @@ func TestOpenAIGatewayService_ResolveTLSProfileRouterFallback(t *testing.T) {
 	require.Equal(t, "fixed", fallbackProfile.Name)
 }
 
+// List returns the fixture's configured profile slice for TLS cache
+// initialization. The caller receives the stored slice and pointers directly.
+// This fixture performs no copy or error injection for profile-list reads.
 func (s *tlsProfileTestStore) List(context.Context) ([]*egress.TLSFingerprintProfile, error) {
 	return s.profiles, nil
 }

@@ -12,46 +12,80 @@ import (
 	ippkg "github.com/TokenFlux/TokenRouter/internal/server/clientip"
 )
 
+// rate_limiter.go adapts fixed-window admission results into HTTP rate-limit
+// responses.
+// Fixed-window storage reports admission, its observed count, and a retry delay
+// to the HTTP layer. Middleware adds the resolved client address to a route
+// bucket and translates rejection into 429, while each route chooses whether
+// counter failure favors availability or rejection.
+
 const (
+	// Counter failure modes control HTTP admission after a storage error; callers
+	// choose fail-close for routes that require counter availability.
+	// RateLimitFailOpen continues request handling after a failed counter
+	// operation.
 	RateLimitFailOpen RateLimitFailureMode = iota
+	// RateLimitFailClose rejects the request when the counter operation fails.
 	RateLimitFailClose
 )
 
-// FixedWindowAllower 只返回标量计数结果，避免 HTTP Adapter 引用具体 Redis 包或共享业务实体。
+// FixedWindowAllower supplies fixed-window admission, count, and retry
+// observations to HTTP adapters.
 type FixedWindowAllower interface {
+	// Allow reports admission, observed request count, retry duration, and any
+	// backend failure for the exact supplied key. HTTP callers choose the response
+	// and failure policy; storage implementations own key prefixes and window
+	// counting.
 	Allow(context.Context, string, int, time.Duration) (bool, int64, time.Duration, error)
 }
 
-// RateLimiter 为固定窗口结果提供 HTTP 适配。
+// RateLimiter converts a supplied fixed-window counter into client-address HTTP
+// middleware.
 type RateLimiter struct {
+	// allower is retained for request counting. The caller keeps the
+	// implementation usable and supports concurrent calls while installed
+	// middleware serves requests.
 	allower FixedWindowAllower
-	prefix  string
+	// prefix decorates failed-counter diagnostic keys. The supplied allower owns
+	// its storage namespace and receives the key passed to Allow directly.
+	prefix string
 }
 
-// RateLimitFailureMode Redis 故障策略。
+// RateLimitFailureMode selects HTTP admission behavior when request counting
+// returns an error.
 type RateLimitFailureMode int
 
-// RateLimitOptions 限流可选配置。
+// RateLimitOptions supplies the counter-failure policy selected for an
+// installed HTTP limiter.
 type RateLimitOptions struct {
+	// FailureMode rejects on errors when equal to RateLimitFailClose.
+	// LimitWithOptions treats zero and every other value as the availability
+	// policy.
 	FailureMode RateLimitFailureMode
 }
 
-// AllowResult 单次固定窗口限流判定结果。
+// AllowResult carries the counter observations used for admission and HTTP
+// retry headers.
 type AllowResult struct {
-	// Allowed 是否放行
-	Allowed bool
-	// Count 当前窗口内累计请求数（含本次）
-	Count int64
-	// RetryAfter 超限时距窗口重置的剩余时间（尽力而为；PTTL 不可用时回退为完整窗口）
+	Allowed bool  // counter permits this request
+	Count   int64 // window count including request
+	// RetryAfter carries the counter's rejected-request delay. The Redis adapter
+	// returns remaining TTL when available, otherwise the supplied full window;
+	// HTTP helpers round positive delays upward.
 	RetryAfter time.Duration
 }
 
-// NewRateLimiter 接受计数能力，HTTP 层不构造数据库客户端。
+// NewRateLimiter retains allower for later HTTP counting and sets the
+// diagnostic prefix. Supply a usable implementation before invoking Allow or
+// installed middleware; construction performs no counter operation and leaves
+// storage namespacing to allower.
 func NewRateLimiter(allower FixedWindowAllower) *RateLimiter {
 	return &RateLimiter{allower: allower, prefix: "rate_limit:"}
 }
 
-// Allow 保留面板调用方的结果形状，错误时继续返回零值。
+// Allow returns the supplied counter's admission, count, and retry delay for
+// the exact key. It passes ctx, limit, and window through directly; counter
+// errors return to callers for their selected failure policy.
 func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (AllowResult, error) {
 	allowed, count, retry, err := r.allower.Allow(ctx, key, limit, window)
 	if err != nil {
@@ -60,19 +94,29 @@ func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window t
 	return AllowResult{Allowed: allowed, Count: count, RetryAfter: retry}, nil
 }
 
-// clientIPForRateLimit 返回 IP 维度限流使用的客户端地址。
-// 与审计日志/会话绑定/API Key IP ACL 共用同一套安全客户端 IP 解析
-// （SessionBindingContext 快照：兼容开关开启时信任反代转发头，关闭时走
-// server.trusted_proxies 可信链）。避免默认反代部署下 Gin ClientIP 恒等于
-// 代理地址、所有用户坍缩进同一个限流桶造成整体误拦截。
+// clientIPForRateLimit resolves the client address used in an HTTP bucket. A
+// captured forwarding policy overrides the trusted-proxy default supplied here;
+// an empty resolver result falls back to Gin's ClientIP.
 func clientIPForRateLimit(c *gin.Context) string {
 	if resolved := ippkg.GetSecurityClientIP(c, false); resolved != "" {
 		return resolved
 	}
+	// An empty security result cannot distinguish client buckets. Use Gin's
+	// address resolution as the remaining request-level source for the bucket
+	// suffix.
 	return c.ClientIP()
 }
 
-// LimitWithOptions 返回速率限制中间件（带可选配置）。
+// LimitWithOptions constructs a client-address bucket from key and the
+// request's resolved address, then applies the supplied counter limit and
+// window. Only RateLimitFailClose rejects on counter errors; zero and other
+// option values continue request handling after logging that failure.
+//
+// A counter denial aborts with the fixed 429 JSON shape and adds a rounded
+// Retry-After for a positive delay. The counter receives the route-and-address
+// key directly, so its implementation supplies any storage prefix. Keep the
+// limiter and its counter available while the installed middleware serves
+// requests.
 func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Duration, opts RateLimitOptions) gin.HandlerFunc {
 	failureMode := opts.FailureMode
 	if failureMode != RateLimitFailClose {
@@ -83,16 +127,20 @@ func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Durati
 		result, err := r.Allow(c.Request.Context(), key+":"+clientIPForRateLimit(c), limit, window)
 		if err != nil {
 			log.Printf("[RateLimit] redis error: key=%s mode=%s err=%v", r.prefix+key, failureModeLabel(failureMode), err)
+			// When fail-close is selected, the route requires a working counter before
+			// admission. Its configured window supplies a retry delay when counting
+			// provides no remaining TTL.
 			if failureMode == RateLimitFailClose {
 				abortRateLimit(c, window)
 				return
 			}
-			// Redis 错误时放行，避免影响正常服务
+			// Counting has failed after this route selected availability on error.
+			// Continue the handler chain because a missing observation does not
+			// establish an exceeded budget.
 			c.Next()
 			return
 		}
 
-		// 超过限制
 		if !result.Allowed {
 			abortRateLimit(c, result.RetryAfter)
 			return
@@ -102,8 +150,13 @@ func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Durati
 	}
 }
 
+// abortRateLimit aborts with the limiter's 429 JSON response. A positive
+// retryAfter sets an integer-seconds Retry-After rounded upward; nonpositive
+// delays leave that header as it was before this helper.
 func abortRateLimit(c *gin.Context, retryAfter time.Duration) {
 	if retryAfter > 0 {
+		// Round fractional seconds upward to avoid advertising a retry before the
+		// counter's observed delay ends.
 		seconds := int64(retryAfter / time.Second)
 		if retryAfter%time.Second > 0 {
 			seconds++
@@ -116,6 +169,9 @@ func abortRateLimit(c *gin.Context, retryAfter time.Duration) {
 	})
 }
 
+// failureModeLabel returns the diagnostic name for the selected counter-failure
+// mode. The exact fail-close value names rejection; all other values use the
+// availability label, matching LimitWithOptions normalization.
 func failureModeLabel(mode RateLimitFailureMode) string {
 	if mode == RateLimitFailClose {
 		return "fail-close"

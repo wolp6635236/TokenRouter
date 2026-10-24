@@ -1,103 +1,82 @@
 package provider
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
+// antigravity_authorization_sessions.go retains Antigravity state and PKCE
+// proof
+// with the proxy selected for authorization code exchange. The typed store uses
+// authorizationSessionStore to check creation-time expiry and remove expired
+// entries while AntigravityAuthorization owns the exchange workflow.
+
+// AntigravitySessionTTL bounds authorization proof reuse while Get checks age
+// and periodic cleanup removes expired entries.
 const AntigravitySessionTTL = 30 * time.Minute
 
-// AntigravityAuthorizationSession 保存 OAuth 授权流程的临时状态。
+// AntigravityAuthorizationSession retains temporary OAuth proof and the
+// selected authorization request context.
 type AntigravityAuthorizationSession struct {
-	State        string    `json:"state"`
-	CodeVerifier string    `json:"code_verifier"`
-	ProxyURL     string    `json:"proxy_url,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	State        string `json:"state"`               // generated OAuth state proof
+	CodeVerifier string `json:"code_verifier"`       // stored PKCE verifier text
+	ProxyURL     string `json:"proxy_url,omitempty"` // selected authorization proxy URL
+	// CreatedAt anchors lookup expiry and periodic removal. Keep it unchanged
+	// while the retained session is stored and read by the cleanup worker.
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// AntigravityAuthorizationSessions OAuth session 存储。
+// AntigravityAuthorizationSessions retains typed authorization proof with a
+// stoppable cleanup worker.
 type AntigravityAuthorizationSessions struct {
-	runtimeMu      sync.Mutex
-	runtimeStarted bool
-	runtimeStopped bool
-	runtimeWG      sync.WaitGroup
-
-	mu       sync.RWMutex
-	sessions map[string]*AntigravityAuthorizationSession
-	stopCh   chan struct{}
+	// authorizationSessionStore owns locking, expiration, and cleanup for these
+	// sessions. Construct the enclosing platform store before invoking its methods.
+	authorizationSessionStore[AntigravityAuthorizationSession]
 }
 
+// NewAntigravityAuthorizationSessions creates empty authorization storage with
+// cleanup idle.
+// Call Start to begin periodic removal and Stop to join that worker; lookup
+// checks creation-time expiry even before Start.
 func NewAntigravityAuthorizationSessions() *AntigravityAuthorizationSessions {
-	store := &AntigravityAuthorizationSessions{
-		sessions: make(map[string]*AntigravityAuthorizationSession),
-		stopCh:   make(chan struct{}),
+	return &AntigravityAuthorizationSessions{
+		authorizationSessionStore: newAuthorizationSessionStore(
+			AntigravitySessionTTL,
+			func(session *AntigravityAuthorizationSession) time.Time { return session.CreatedAt },
+		),
 	}
-
-	return store
 }
 
+// Set retains session under sessionID, replacing any previous pointer for that
+// identifier. Supply a nonnil session and keep its fields stable while stored
+// or borrowed by a reader, including after Stop.
 func (s *AntigravityAuthorizationSessions) Set(sessionID string, session *AntigravityAuthorizationSession) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[sessionID] = session
+	s.set(sessionID, session)
 }
 
+// Get returns the stored pointer when its creation age is at most
+// AntigravitySessionTTL.
+// Missing or older entries return nil and false; expired entries remain stored
+// until deletion or cleanup, and returned fields remain shared.
 func (s *AntigravityAuthorizationSessions) Get(sessionID string) (*AntigravityAuthorizationSession, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	session, ok := s.sessions[sessionID]
-	if !ok {
-		return nil, false
-	}
-	if time.Since(session.CreatedAt) > AntigravitySessionTTL {
-		return nil, false
-	}
-	return session, true
+	return s.get(sessionID)
 }
 
+// Delete removes sessionID from subsequent lookups and accepts an absent ID.
+// Borrowers retain previously returned pointers, so callers coordinate
+// exclusive
+// exchange separately from the store's Get and Delete operations.
 func (s *AntigravityAuthorizationSessions) Delete(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, sessionID)
+	s.delete(sessionID)
 }
 
-// Start 启动当前会话实例的清理循环。
+// Start admits periodic expiry cleanup once for a constructed store.
+// Repeated calls leave the running worker unchanged, and calls after Stop
+// return with cleanup permanently disabled for this instance.
 func (s *AntigravityAuthorizationSessions) Start() {
-	s.runtimeMu.Lock()
-	defer s.runtimeMu.Unlock()
-	if s.runtimeStarted || s.runtimeStopped {
-		return
-	}
-	s.runtimeStarted = true
-	s.runtimeWG.Go(func() { ; s.cleanup() })
+	s.start()
 }
 
-// Stop 幂等停止并等待清理循环，未启动实例也可安全关闭。
+// Stop closes cleanup admission and waits for any admitted worker to exit.
+// Repeated calls and calls before Start are supported; Set, Get, and Delete
+// remain available after cleanup stops.
 func (s *AntigravityAuthorizationSessions) Stop() {
-	s.runtimeMu.Lock()
-	if !s.runtimeStopped {
-		s.runtimeStopped = true
-		close(s.stopCh)
-	}
-	s.runtimeMu.Unlock()
-	s.runtimeWG.Wait()
-}
-
-func (s *AntigravityAuthorizationSessions) cleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.mu.Lock()
-			for id, session := range s.sessions {
-				if time.Since(session.CreatedAt) > AntigravitySessionTTL {
-					delete(s.sessions, id)
-				}
-			}
-			s.mu.Unlock()
-		}
-	}
+	s.stop()
 }

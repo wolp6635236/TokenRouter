@@ -32,12 +32,25 @@ import (
 	usagepostgres "github.com/TokenFlux/TokenRouter/internal/usage/postgres"
 )
 
-// provideCNUsageMonitor 绑定提供商 Store、用量查询和数据库咨询锁。
+// provider_oauth_usage.go assembles platform usage queries, local usage
+// statistics, and periodic quota monitors. Provider usage presentation combines
+// platform queries with local statistics and shared display caching. OAuth
+// queries register service activity shutdown, CN and Ollama monitors receive
+// singleton coordination, and platform adapters keep credential preparation,
+// TLS, and destination policy attached to application resources.
+
+// provideCNUsageMonitor binds stored providers and upstream queries with
+// instance-specific singleton coordination. Nil cfg starts from its half-unit
+// balance threshold input; configured intervals and budgets are converted to
+// durations, and SQL advisory acquisition is attached only when db is present.
 func provideCNUsageMonitor(store *providerpostgres.ProviderStore, queries *provider.UpstreamUsageService, cfg *config.Config, leader provider.CNMonitorLeader, db *sql.DB) *provider.CNUsageMonitor {
+	// The default reported-balance cutoff gates CN monitor temporary provider pauses.
 	options := provider.CNMonitorOptions{Now: time.Now, InstanceID: uuid.NewString(), BalanceThreshold: 0.5, Leader: leader, Warn: slog.Warn, Debug: slog.Debug}
 	if cfg != nil {
 		v := cfg.Gateway.CNProviders
 		options.Enabled = v.MonitorEnabled
+		// Monitor intervals use configured minutes; probe and round budgets use
+		// seconds. Convert them together before the monitor normalizes its runtime options.
 		options.Interval = time.Duration(v.IntervalMinutes) * time.Minute
 		options.ProbeTimeout = time.Duration(v.ProbeTimeoutSeconds) * time.Second
 		options.RoundTimeout = time.Duration(v.RoundTimeoutSeconds) * time.Second
@@ -54,12 +67,20 @@ func provideCNUsageMonitor(store *providerpostgres.ProviderStore, queries *provi
 	return provider.NewCNUsageMonitor(store, queries, options)
 }
 
-// provideOAuthUsageStats 绑定存储批量查询和共享的展示缓存。
+// provideOAuthUsageStats binds local provider statistics and display cache to
+// the calendar.
 func provideOAuthUsageStats(store *usagepostgres.Store, cache *provider.OAuthUsageCache, calendar timezone.Calendar) *provider.LocalUsageStatistics {
 	return provider.NewLocalUsageStatistics(newProviderLocalUsageStats(store), cache, provider.LocalUsageStatisticsOptions{Now: time.Now, Today: calendar.Today, Log: log.Printf})
 }
 
-// provideOAuthUsageCore 为 OAuth 用量查询绑定数据读取、平台查询及启停操作。
+// provideOAuthUsageCore assembles OAuth platform readers and registers the
+// service activity stop hook. It creates a separate Qoder token/session
+// provider for quota queries, binds conditional agent credential preparation
+// and connection invalidation, and adapts local Gemini and Grok observations.
+// The registered hook calls OAuthUsageService.StopContext for its accepted
+// query activity. Qoder shared session builds can outlive a canceled query
+// waiter and remain owned by the separate token provider. This assembly leaves
+// that provider's StopContext unbound.
 func provideOAuthUsageCore(store *providerpostgres.ProviderStore, usageStore *usagepostgres.Store, cache *provider.OAuthUsageCache, stats *provider.LocalUsageStatistics, gemini *provider.GeminiQuotaService, antigravity *provider.AntigravityQuota, grokView *provider.GrokQuotaView, grok *provider.GrokQuotaService, openAI *provider.OpenAIQuotaService, fetcher provideradapter.ClaudeUsageClient, fingerprints anthropic.FingerprintCache, profiles *egressprovider.TLSProfiles, transport httpclient.UpstreamTransport, settings *provider.QuotaSettingsCache, connections *openaiws.OpenAIWSConnections, manager *lifecycle.Manager, coordinator *provider.OpenAITaskCoordinator) *provider.OAuthUsageService {
 	taskOptions := provider.OpenAITaskOptions{
 		Read: store.GetByID,
@@ -76,7 +97,8 @@ func provideOAuthUsageCore(store *providerpostgres.ProviderStore, usageStore *us
 		Transport: transport, Profiles: profiles, Fingerprints: fingerprints,
 		Tasks: coordinator, TaskOptions: taskOptions,
 	}
-	// 用量查询使用独立的会话缓存。
+	// Quota queries use their own Qoder token/session provider. Its Fetch
+	// callback is passed to OAuthUsageService; service activity shutdown is registered below.
 	sessions := provideradapter.NewQoderTokenProvider(qoder.SessionBuilder{})
 	sessions.SetHTTPUpstream(transport, profiles)
 	qoderQuery := &provideradapter.QoderUsage{Sessions: sessions, Transport: transport, Profiles: profiles}
@@ -138,20 +160,27 @@ func provideOAuthUsageCore(store *providerpostgres.ProviderStore, usageStore *us
 		},
 	}
 	core := provider.NewOAuthUsageService(store, cache, stats, options)
-	manager.Register(lifecycle.Hook{Name: "ProviderOAuthUsage", StopOrder: 25, Stop: core.StopContext})
+	manager.Register(lifecycle.Hook{Name: "ProviderOAuthUsage", StopOrder: shutdownStageProbesAndRefresh, Stop: core.StopContext})
 	return core
 }
 
-// geminiQuotaLocation 加载洛杉矶时区，失败时返回固定时区。
+// geminiQuotaLocation returns America/Los_Angeles when the location database
+// can load it. Otherwise it returns fixed PST at UTC minus eight, retaining
+// defined quota dates without daylight-saving transitions.
 func geminiQuotaLocation() *time.Location {
 	location, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
+		// Keep quota dates available when zone loading fails. The fixed UTC-minus-eight
+		// fallback has no daylight-saving adjustment, unlike the normal Los Angeles location.
 		return time.FixedZone("PST", -8*3600)
 	}
 	return location
 }
 
-// provideOllamaUsage 直接绑定唯一提供商存储、加密器、动态设置与供应商执行句柄。
+// provideOllamaUsage combines shared provider storage, encryption, settings,
+// and optional upstream execution. It supplies one instance identity and
+// singleton lease callback, adding SQL advisory capability when available; the
+// service owns its query and periodic lifetime.
 func provideOllamaUsage(store *providerpostgres.ProviderStore, upstream httpclient.UpstreamTransport, settings *provider.RuntimeSettings, cipher identity.SecretEncryptor, cfg *config.Config, leader provider.CNMonitorLeader, db *sql.DB) *provider.OllamaCloudUsageService {
 	var do func(*http.Request, string, int64, int) (*http.Response, error)
 	if upstream != nil {
@@ -171,7 +200,10 @@ func provideOllamaUsage(store *providerpostgres.ProviderStore, upstream httpclie
 	return provider.NewOllamaCloudUsageService(store, settings, cipher, options)
 }
 
-// provideUpstreamUsage 为提供商用量查询绑定存储、平台执行器和有超时限制的关闭流程。
+// provideUpstreamUsage binds optional transport and TLS with configured
+// operator destination policy. Availability requires both store and transport,
+// and its registered stop waits for query activity before the later HTTP and
+// database cleanup levels.
 func provideUpstreamUsage(store *providerpostgres.ProviderStore, upstream httpclient.UpstreamTransport, cfg *config.Config, tls *egressprovider.TLSProfiles, manager *lifecycle.Manager) *provider.UpstreamUsageService {
 	options := provideradapter.UsageHTTPOptions{Available: store != nil && upstream != nil}
 	if cfg != nil {
@@ -186,17 +218,20 @@ func provideUpstreamUsage(store *providerpostgres.ProviderStore, upstream httpcl
 	}
 	source := provideradapter.NewUpstreamUsageHTTPExecution(options)
 	core := provider.NewUpstreamUsageService(store, source, provider.UpstreamUsageOptions{Now: time.Now})
-	// 周期生产者停止后，查询完成才允许后续 SQL/HTTP 依赖释放。
-	manager.Register(lifecycle.Hook{Name: "ProviderUpstreamUsage", StopOrder: 25, Stop: core.StopContext})
+	// Query activity stops after producer shutdown and before shared SQL or
+	// HTTP cleanup. The manager returns an error if this service cannot finish within its budget.
+	manager.Register(lifecycle.Hook{Name: "ProviderUpstreamUsage", StopOrder: shutdownStageProbesAndRefresh, Stop: core.StopContext})
 	return core
 }
 
-// provideUpstreamUsageHTTP 将提供商用量查询用例绑定到 HTTP 接口。
-func provideUpstreamUsageHTTP(source *provider.UpstreamUsageService) *providerhttp.UpstreamUsageHandler {
-	return providerhttp.NewUpstreamUsageHandler(source)
+// provideUpstreamUsageHTTP exposes assembled upstream usage queries through
+// administrator HTTP.
+func provideUpstreamUsageHTTP(source *provider.UpstreamUsageService, alerts *provider.BalanceAlertMonitor) *providerhttp.UpstreamUsageHandler {
+	return providerhttp.NewUpstreamUsageHandler(source, alerts)
 }
 
-// provideProviderUsage 为管理和用量累计入口绑定共享的资金存储。
+// provideProviderUsage constructs shared quota consumption with provider events
+// and snapshot publication.
 func provideProviderUsage(db *sql.DB, store *providerpostgres.ProviderStore, cache scheduler.SnapshotCache) *billingpostgres.ProviderUsageStore {
 	return billingpostgres.NewProviderUsageStore(db, providerUsageEvents(store, cache, db))
 }
